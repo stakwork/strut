@@ -220,9 +220,10 @@ export interface WorkflowVersionInfo {
  *  `seed` a host's boot-time seeder (the committed template), `ui` the web
  *  UI, `api` any other HTTP caller, `builder` the chat builder's tools,
  *  `agent` the in-run `meta/*` authoring surface, `promote` a promoted param,
- *  `install` a package install (marketplace.md §3).
+ *  `install` a person's package install (marketplace.md §3), `distro` a
+ *  package the operator's distro applied, with no ask (§12).
  *  So "is the active version still the seed?" is one lookup. */
-export type VersionSource = "seed" | "ui" | "api" | "builder" | "agent" | "promote" | "install";
+export type VersionSource = "seed" | "ui" | "api" | "builder" | "agent" | "promote" | "install" | "distro";
 
 /** Where an installed version came from (marketplace.md §3): which package
  *  at which version, its tree digest, the source it was fetched from, and the

@@ -15,13 +15,28 @@
  * does anywhere. Missing secrets, binaries and runtimes are REPORTED, not
  * refused: the deployment provides them.
  *
- * A package already installed at the same digest installs again as what is
- * missing from it (a deleted item comes back; a fork stays as it is). At
- * another digest it is an UPDATE (§4), which is not built yet: refused.
+ * Two DOORS write a package. A person's (`install`, `POST /packages/install`)
+ * installs it, and installs the same digest again as what is missing from
+ * it (a deleted item comes back; a fork stays as it is); another digest is
+ * an UPDATE, which a person's door refuses until it asks first (§4, §8).
+ * The operator's distro (`distro`, §12, §12.1) applies a release with no
+ * ask — its publish was the accept — and is the door that updates, item by
+ * item (§4's table): an item whose active version the package wrote is
+ * FAST-FORWARDED to the release's; a fork gets the release's version BESIDE
+ * it, the fork staying active; an item the release no longer ships is
+ * RETIRED when untouched and kept when forked; an edited Concept is left as
+ * it is. A package the distro wrote is the distro's: a person's door
+ * refuses to write or remove it.
+ *
+ * Every step the install makes active is LOADED before the first write,
+ * beside the helpers as they will be (§12 step 6), so an update is not
+ * written and then taken back: no store deletes one version. What still
+ * fails after a write is taken back by re-pointing an updated item at the
+ * version that was active, and deleting a new one.
  */
 import { randomBytes } from "node:crypto";
-import { access, constants, readFile, rm } from "node:fs/promises";
-import { delimiter, join } from "node:path";
+import { access, constants, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { delimiter, dirname, join } from "node:path";
 import type { AppsCapability } from "../apps/apps.js";
 import { buildApp, type BuildDeps as AppBuildDeps } from "../apps/build.js";
 import { copyAppDir } from "../apps/files.js";
@@ -36,13 +51,24 @@ import type { SubjectRef } from "../graph/claims.js";
 import { isSealedStep, sealedStepPatterns } from "../sealed.js";
 import { formatStepLint, lintStepSource } from "../step-lint.js";
 import { baseType } from "../step-ref.js";
-import { stepLoadError } from "../steps/registry.js";
-import { treeHash } from "../version.js";
-import { assertValidWorkflowYaml, readClaimsBlock, type Upstream } from "../workspace.js";
+import { stepFileType, stepLoadError } from "../steps/registry.js";
+import { contentHash, treeHash } from "../version.js";
+import { assertValidWorkflowYaml, ensureEsmScope, readClaimsBlock, type Upstream } from "../workspace.js";
 import { loadYaml } from "../yaml.js";
 import { fileRefPath, resolvePackage, type CachedPackage } from "./cache.js";
 import type { PackageItem } from "./format.js";
-import { conceptHash, conceptPrefix, listInstalledPackages, packageConcepts, type InstalledDeps, type InstalledPackage } from "./installed.js";
+import {
+  conceptHash,
+  conceptPrefix,
+  listInstalledPackages,
+  packageConcepts,
+  type InstalledDeps,
+  type InstalledItem,
+  type InstalledPackage,
+  type PackageDoor,
+} from "./installed.js";
+
+export type { PackageDoor } from "./installed.js";
 
 export interface PackageDeps extends InstalledDeps {
   /** A FRESH registry: rebuilt from the workspace, package steps fenced.
@@ -62,18 +88,39 @@ export interface PackageDeps extends InstalledDeps {
   apps?: AppsCapability;
 }
 
-export type InstallItemStatus = "installed" | "present" | "modified";
+/** What happened to one item: `installed` new here; `present` already here
+ *  as the package has it; `modified` here and forked (or a Concept edited),
+ *  left as it is; `updated` fast-forwarded to the release; `diverged` the
+ *  release's version recorded beside a fork, which stays active; `retired`
+ *  dropped by the release and removed; `kept` dropped by the release and
+ *  kept, with the reason. */
+export type InstallItemStatus = "installed" | "present" | "modified" | "updated" | "diverged" | "retired" | "kept";
 
 export interface PackageInstallReport {
   package: string;
   version: string;
   digest: string;
   source: { ref: string };
-  /** `installed`: this call wrote something; `present`: it was all here. */
-  status: "installed" | "present";
-  /** `present` = already here as installed; `modified` = here and forked
-   *  (or a Concept edited), left as it is. */
-  items: Array<{ kind: PackageItem["kind"]; name: string; status: InstallItemStatus; version?: string }>;
+  /** `installed`: this call wrote something; `updated`: it moved the
+   *  package from another digest (`from`); `present`: it was all here. */
+  status: "installed" | "updated" | "present";
+  /** The release it was at before an update. */
+  from?: { version?: string; digest?: string };
+  items: Array<{ kind: PackageItem["kind"]; name: string; status: InstallItemStatus; version?: string; reason?: string }>;
+}
+
+export interface InstallOptions {
+  /** The digest `ref` must resolve to. */
+  digest?: string;
+  /** Recorded on every version written; owns the new workflows. */
+  actor?: string;
+  /** Who writes it (`install` unless said): the distro's door applies a
+   *  release with no ask and updates (§12). Code only: no route takes it. */
+  door?: PackageDoor;
+  /** A workflow with a run in flight: one the release drops refuses the update. */
+  busy?(workflow: string): boolean;
+  /** Drops a retired workflow's schedules. */
+  forget?(workflow: string): Promise<void>;
 }
 
 export interface InstallResult {
@@ -99,23 +146,39 @@ const conflict = (msg: string) => new Error(`package_conflict: ${msg}`);
 const isHelper = (item: PackageItem) => item.kind === "step" && !!item.helper;
 
 /** Install the package at `ref` (pinned to `digest` when given), and first
- *  every package it requires. `actor` is recorded on every version written
- *  and owns the workflows. */
-export async function installPackage(
-  deps: PackageDeps,
-  ref: string,
-  opts: { digest?: string; actor?: string } = {},
-): Promise<InstallResult> {
+ *  every package it requires — through the distro's door, updating it and
+ *  them (the module comment). */
+export async function installPackage(deps: PackageDeps, ref: string, opts: InstallOptions = {}): Promise<InstallResult> {
+  const door = opts.door ?? "install";
   const before = new Map((await listInstalledPackages(deps)).map((p) => [p.package, p]));
-  const members = await resolveSet(deps, ref, opts.digest, before);
+  const members = await resolveSet(deps, ref, opts.digest, before, door);
   const registry = await deps.getRegistry();
-  // The apps are copied out of the cache to build: a build writes `dist/`.
+  // The apps are copied out of the cache to build (a build writes `dist/`),
+  // and the steps to a trial directory to load.
   const scratch = join(deps.cache.root, ".install", randomBytes(8).toString("hex"));
   try {
-    return await installSet(deps, members, registry, before, scratch, opts);
+    return await installSet(deps, members, registry, before, scratch, { ...opts, door });
   } finally {
     await rm(scratch, { recursive: true, force: true });
   }
+}
+
+/** A workflow, step or app the release ships, and what the install does with it. */
+type ItemPlan =
+  | { action: "new" }
+  /** Here as the release has it; `modified`: a fork a person's door leaves alone. */
+  | { action: "present" | "modified" }
+  /** The package wrote the active version: the release's becomes active. */
+  | { action: "update"; previous: string }
+  /** A fork: the release's version is recorded beside it, not made active. */
+  | { action: "diverge" };
+
+/** A workflow, step or app the install writes: a new one (taken back by
+ *  deleting it), or an update (by re-pointing it at `previous`). */
+interface Wrote {
+  kind: "workflow" | "step" | "app";
+  name: string;
+  previous?: string;
 }
 
 async function installSet(
@@ -124,9 +187,12 @@ async function installSet(
   registry: StepRegistry,
   before: Map<string, InstalledPackage>,
   scratch: string,
-  opts: { actor?: string },
+  opts: InstallOptions & { door: PackageDoor },
 ): Promise<InstallResult> {
-  const checked = await checkSet(deps, members, registry, before, scratch);
+  const checked = await checkSet(deps, members, registry, before, scratch, opts.door);
+  const retiring = retirements(checked, members);
+  const busy = retiring.filter((i) => i.go && i.item.kind === "workflow" && opts.busy?.(i.item.name));
+  if (busy.length) throw new Error(`package_busy: ${busy.map((i) => i.item.name).join(", ")} has a run in flight, and the release no longer ships it — cancel it first`);
 
   const upstreamOf = (m: Member): Upstream => ({
     package: m.info.manifest.package,
@@ -135,27 +201,37 @@ async function installSet(
     source: m.source,
     secrets: m.info.manifest.requires?.secrets ?? [],
   });
-  const publish = { source: "install" as const, ...(opts.actor ? { actor: opts.actor } : {}) };
+  const publish = { source: opts.door, ...(opts.actor ? { actor: opts.actor } : {}) };
   const reports = new Map(members.map((m) => [m.info.manifest.package, [] as PackageInstallReport["items"]]));
-  const wrote: Array<{ kind: "workflow" | "step" | "app"; name: string }> = [];
+  const wrote: Wrote[] = [];
   const conceptsWritten = new Map<string, string[]>(); // package → the page files it wrote
   const { warnings } = checked;
+  /** What a publish of an item records, and how it is written. */
+  const options = (m: Member, plan: ItemPlan) => ({ ...publish, upstream: upstreamOf(m), ...(plan.action === "diverge" ? { activate: false } : {}) });
+  /** Report an item, and remember a write the install would take back. */
+  const done = (m: Member, kind: Wrote["kind"], name: string, plan: ItemPlan, version?: string) => {
+    if (plan.action === "new") wrote.push({ kind, name });
+    if (plan.action === "update") wrote.push({ kind, name, previous: plan.previous });
+    const status: InstallItemStatus = plan.action === "new" ? "installed" : plan.action === "update" ? "updated" : plan.action === "diverge" ? "diverged" : plan.action;
+    reports.get(m.info.manifest.package)!.push({ kind, name, status, ...(version && plan.action !== "present" && plan.action !== "modified" ? { version } : {}) });
+  };
+  const writes = (plan: ItemPlan) => plan.action !== "present" && plan.action !== "modified";
 
   try {
     // Steps first, every package's, so one registry rebuild loads them all.
     for (const m of members) {
       for (const item of m.info.items.filter((i) => i.kind === "step")) {
-        const here = checked.present.get(item.name);
-        if (here) {
-          reports.get(m.info.manifest.package)!.push({ kind: "step", name: item.name, status: here });
+        const plan = checked.plan.get(item.name)!;
+        if (!writes(plan)) {
+          done(m, "step", item.name, plan);
           continue;
         }
         const code = await readFile(join(m.info.dir, item.path), "utf-8");
-        const { version } = await deps.workspace.publishStep(item.name, code, undefined, undefined, { ...publish, upstream: upstreamOf(m) });
-        wrote.push({ kind: "step", name: item.name });
-        reports.get(m.info.manifest.package)!.push({ kind: "step", name: item.name, status: "installed", version });
+        const { version } = await deps.workspace.publishStep(item.name, code, undefined, undefined, options(m, plan));
+        done(m, "step", item.name, plan, version);
       }
     }
+    // The trial load found nothing; this is the registry as it now is.
     const loaded = await deps.getRegistry();
     for (const w of wrote) {
       if (w.name.split("/").pop()!.startsWith("_")) continue;
@@ -168,9 +244,9 @@ async function installSet(
     }
     for (const m of members) {
       for (const item of m.info.items.filter((i) => i.kind === "workflow")) {
-        const here = checked.present.get(item.name);
-        if (here) {
-          reports.get(m.info.manifest.package)!.push({ kind: "workflow", name: item.name, status: here });
+        const plan = checked.plan.get(item.name)!;
+        if (!writes(plan)) {
+          done(m, "workflow", item.name, plan);
           continue;
         }
         const text = await readFile(join(m.info.dir, item.path), "utf-8");
@@ -181,41 +257,55 @@ async function installSet(
           typeof description === "string" ? description : undefined,
           undefined,
           undefined,
-          { ...publish, upstream: upstreamOf(m) },
+          options(m, plan),
         );
-        wrote.push({ kind: "workflow", name: item.name });
-        if (opts.actor) await deps.workspace.setWorkflowOwner(item.name, opts.actor);
-        reports.get(m.info.manifest.package)!.push({ kind: "workflow", name: item.name, status: "installed", version });
+        if (plan.action === "new" && opts.actor) await deps.workspace.setWorkflowOwner(item.name, opts.actor);
+        done(m, "workflow", item.name, plan, version);
       }
     }
     // Apps, an app after the apps of the set it imports: its build finds
     // them published. A person's publish, as installing is a person's act.
     for (const m of members) {
       for (const item of m.info.items.filter((i) => i.kind === "app")) {
-        const here = checked.present.get(item.name);
-        if (here) reports.get(m.info.manifest.package)!.push({ kind: "app", name: item.name, status: here });
+        const plan = checked.plan.get(item.name)!;
+        if (!writes(plan)) done(m, "app", item.name, plan);
       }
     }
     for (const app of checked.apps) {
-      const r = await deps.apps!.publish(app.dir, app.name, { surface: "person", upstream: upstreamOf(app.member), ...publish });
+      const plan = checked.plan.get(app.name)!;
+      const r = await deps.apps!.publish(app.dir, app.name, { surface: "person", ...options(app.member, plan) });
       if (!r.ok) throw new Error(`bad_package: the app ${app.name} — ${r.errors.join("; ")}`);
-      wrote.push({ kind: "app", name: app.name });
-      reports.get(app.member.info.manifest.package)!.push({ kind: "app", name: app.name, status: "installed", version: r.version });
+      done(app.member, "app", app.name, plan, r.version);
     }
     // Concepts, through the seeder: a set per package, stamped `pkg/<package>/`.
     if (checked.conceptsOn) {
       for (const m of members) {
         if (!m.info.items.some((i) => i.kind === "concept")) continue;
         const pkg = m.info.manifest.package;
-        const outcomes = await seedConcepts(deps.graph, [{ dir: join(m.info.dir, "concepts"), prefix: conceptPrefix(pkg), keepEdited: true }]);
+        const here = before.get(pkg);
+        const update = opts.door === "distro" && !!here;
+        // An update leaves a page edited here out of the set: the seeder
+        // writes a page whose file changed over any edit. So is a page whose
+        // edit cannot be told (its old file is not in the cache).
+        const edited = new Set(update ? here!.items.filter((i) => i.kind === "concept" && i.modified !== false).map((i) => i.name) : []);
+        const shipped = m.info.items.filter((i) => i.kind === "concept");
+        let dir = join(m.info.dir, "concepts");
+        if (shipped.some((i) => edited.has(i.name))) {
+          dir = join(scratch, "concepts", ...pkg.split("/"));
+          await mkdir(dir, { recursive: true });
+          for (const i of shipped) if (!edited.has(i.name)) await writeFile(join(dir, i.path.slice("concepts/".length)), await readFile(join(m.info.dir, i.path)));
+        }
+        for (const i of shipped) if (edited.has(i.name)) reports.get(pkg)!.push({ kind: "concept", name: i.name, status: "modified" });
+        const outcomes = shipped.every((i) => edited.has(i.name)) ? [] : await seedConcepts(deps.graph, [{ dir, prefix: conceptPrefix(pkg), keepEdited: true }]);
         const written: string[] = [];
         conceptsWritten.set(pkg, written);
         for (const o of outcomes) {
-          if (o.action === "create" || o.action === "update") written.push(`${o.name}.md`);
+          // Taken back by retiring: a page this call made, never one an update rewrote.
+          if (o.action === "create" || (o.action === "update" && !update)) written.push(`${o.name}.md`);
           if (o.action === "error" || o.action === "skip") {
             throw conflict(o.action === "skip" ? `Concept ${o.name} was taken by someone else during the install` : `Concept ${o.name}: ${o.error}`);
           }
-          const status: InstallItemStatus = o.action === "keep" ? (o.edited ? "modified" : "present") : "installed";
+          const status: InstallItemStatus = o.action === "keep" ? (o.edited ? "modified" : "present") : o.action === "update" && update ? "updated" : "installed";
           reports.get(pkg)!.push({ kind: "concept", name: o.name, status });
         }
       }
@@ -223,6 +313,43 @@ async function installSet(
   } catch (err) {
     await takeBack(deps, wrote, conceptsWritten);
     throw err;
+  }
+
+  // What the release no longer ships, once the release is in: retired when
+  // untouched, kept when forked. A removal that fails is said, never a
+  // reason to take the release back.
+  if (retiring.length) {
+    for (const r of retiring) {
+      const report = reports.get(r.pkg)!;
+      if (!r.go) {
+        report.push({ kind: r.item.kind, name: r.item.name, status: "kept", reason: r.reason! });
+        continue;
+      }
+      if (r.item.kind === "concept") continue; // retired below, by their stamps
+      try {
+        if (r.item.kind === "workflow") {
+          await opts.forget?.(r.item.name);
+          await deps.workspace.deleteWorkflow(r.item.name);
+        } else if (r.item.kind === "app") await (deps.apps ? deps.apps.delete(r.item.name) : deps.workspace.deleteApp(r.item.name));
+        else if (r.item.kind === "step") await deps.workspace.deleteStep(r.item.name);
+        report.push({ kind: r.item.kind, name: r.item.name, status: "retired" });
+      } catch (err) {
+        warnings.push(`the ${r.item.kind} ${r.item.name}, which the release no longer ships, was not removed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    const pages = retiring.filter((r) => r.go && r.item.kind === "concept");
+    if (pages.length && deps.graph) {
+      const schema = await deps.graph.schemas.schema("Concept");
+      for (const [pkg, names] of groupBy(pages)) {
+        const files = new Map((await packageConcepts(deps.graph, pkg)).map((c) => [c.name, c.file]));
+        const gone = schema ? new Set(await retireConcepts(deps.graph, schema, { dir: "", prefix: conceptPrefix(pkg), retired: names.map((n) => files.get(n)).filter((f): f is string => !!f) })) : new Set<string>();
+        for (const name of names) {
+          if (gone.has(name)) reports.get(pkg)!.push({ kind: "concept", name, status: "retired" });
+          else warnings.push(`the Concept ${name}, which the release no longer ships, was not retired`);
+        }
+      }
+    }
+    if (retiring.some((r) => r.go && r.item.kind === "step")) await deps.getRegistry();
   }
 
   // The contract, once everything it names is here. A claim that will not
@@ -250,12 +377,16 @@ async function installSet(
     digest: root.info.digest,
     packages: members.map((m) => {
       const items = reports.get(m.info.manifest.package)!;
+      const here = before.get(m.info.manifest.package);
+      const moved = !!here?.digest && here.digest !== m.info.digest;
+      const changed = items.some((i) => ["installed", "updated", "diverged", "retired"].includes(i.status));
       return {
         package: m.info.manifest.package,
         version: m.info.manifest.version,
         digest: m.info.digest,
         source: m.source,
-        status: items.some((i) => i.status === "installed") ? "installed" : "present",
+        status: moved ? "updated" : changed ? "installed" : "present",
+        ...(moved ? { from: { ...(here!.version ? { version: here!.version } : {}), digest: here!.digest } } : {}),
         items,
       };
     }),
@@ -267,9 +398,10 @@ async function installSet(
 /** The package at `ref`, then every package it requires that is not
  *  installed here at its pin, each resolved from its source hint unless the
  *  cache holds its digest already — in install order, requirements first.
- *  Exact pins union; a name pinned at two digests, or required at one and
- *  installed at another, is refused. */
-async function resolveSet(deps: PackageDeps, ref: string, digest: string | undefined, installed: Map<string, InstalledPackage>): Promise<Member[]> {
+ *  Exact pins union; a name pinned at two digests is refused, and so is one
+ *  required at one digest and installed at another — unless the distro's
+ *  door is installing, which updates it first (§4). */
+async function resolveSet(deps: PackageDeps, ref: string, digest: string | undefined, installed: Map<string, InstalledPackage>, door: PackageDoor): Promise<Member[]> {
   const order: Member[] = [];
   const inSet = new Map<string, string>();
   const visit = async (ref: string, digest: string | undefined, base: string | undefined, expected?: { package: string; by: string }): Promise<void> => {
@@ -289,7 +421,9 @@ async function resolveSet(deps: PackageDeps, ref: string, digest: string | undef
       }
       const here = installed.get(req.package);
       if (here?.digest === req.digest) continue;
-      if (here) throw conflict(`${pkg} requires ${req.package} at ${req.digest}, and this strut has it at ${here.digest ?? "another digest"} — updating a package is not built yet`);
+      if (here && door === "install") {
+        throw conflict(`${pkg} requires ${req.package} at ${req.digest}, and this strut has it at ${here.digest ?? "another digest"} — updating a package from a person's door is not built yet`);
+      }
       await visit(req.source, req.digest, member.base, { package: req.package, by: pkg });
     }
     order.push(member);
@@ -299,8 +433,11 @@ async function resolveSet(deps: PackageDeps, ref: string, digest: string | undef
 }
 
 interface Checked {
-  /** Items already here as this package installed them: name → `present`, or `modified` for a fork. */
-  present: Map<string, "present" | "modified">;
+  /** Each workflow, step and app of the set, by name: what the install does with it. */
+  plan: Map<string, ItemPlan>;
+  /** By package: the items installed here that its release no longer
+   *  ships (an update through the distro's door). */
+  dropped: Map<string, InstalledItem[]>;
   conceptsOn: boolean;
   warnings: string[];
   /** The apps to publish, built once in their staged directory, in the
@@ -321,8 +458,9 @@ async function checkSet(
   registry: StepRegistry,
   installed: Map<string, InstalledPackage>,
   scratch: string,
+  door: PackageDoor,
 ): Promise<Checked & { members: Array<Member & { claims: MemberClaims[] }> }> {
-  const out: Checked = { present: new Map(), conceptsOn: false, warnings: [], apps: [] };
+  const out: Checked = { plan: new Map(), dropped: new Map(), conceptsOn: false, warnings: [], apps: [] };
   const sealed = deps.sealed ?? sealedStepPatterns();
   const problems: string[] = [];
 
@@ -341,11 +479,19 @@ async function checkSet(
       throw new Error(`package_unsupported: ${pkg} ships an app (apps/), and this strut hosts no apps`);
     }
     const here = installed.get(pkg);
-    if (here?.digest && here.digest !== m.info.digest) {
-      throw new Error(`package_update_not_built: ${pkg} ${here.version ?? ""} is installed here at ${here.digest}; updating it to ${m.info.digest} is not built yet — uninstall it first (DELETE /packages/${pkg})`.replace("  ", " "));
+    if (here && door === "install") {
+      if (here.door === "distro") throw new Error(`package_distro_owned: ${pkg} was installed here by the distro, which updates and removes it`);
+      if (here.digest && here.digest !== m.info.digest) {
+        throw new Error(`package_update_not_built: ${pkg} ${here.version ?? ""} is installed here at ${here.digest}; updating it to ${m.info.digest} from a person's door is not built yet (it asks first) — uninstall it first (DELETE /packages/${pkg})`.replace("  ", " "));
+      }
+      if (!here.digest) await sameConcepts(deps, m, here);
     }
-    if (here && !here.digest) await sameConcepts(deps, m, here);
     const mine = new Map((here?.items ?? []).map((i) => [i.name, i]));
+    if (here && door === "distro") {
+      const ships = new Set(m.info.items.map((i) => `${i.kind}:${i.name}`));
+      const gone = here.items.filter((i) => !ships.has(`${i.kind}:${i.name}`));
+      if (gone.length) out.dropped.set(pkg, gone);
+    }
 
     // The prefix holds this package's items alone.
     const under = (name: string) => name.startsWith(`${pkg}/`);
@@ -356,7 +502,7 @@ async function checkSet(
     for (const item of m.info.items) {
       if (item.kind === "step" || item.kind === "workflow" || item.kind === "app") {
         const at = mine.get(item.name);
-        if (at) out.present.set(item.name, at.modified ? "modified" : "present");
+        out.plan.set(item.name, at ? await planItem(deps, m, item, at, door) : { action: "new" });
         if (item.kind === "step" && isSealedStep(item.name, undefined, sealed)) problems.push(`${item.name} is in a sealed namespace (${sealed.join(", ")}): those are strut's`);
         if (item.kind === "step" && !at && registry[item.name] && !workspaceSteps.includes(item.name)) problems.push(`${item.name} is a step strut ships`);
       }
@@ -413,11 +559,17 @@ async function checkSet(
   }
   if (bad.length) throw new Error(`bad_package: ${bad.join("; ")}`);
 
-  // Apps: each one not here yet BUILDS against this strut's kit, with the
-  // set's workflows and apps in reach, before anything is written.
+  // Steps: each one the install makes active LOADS, as its own type,
+  // before anything is written.
+  bad.push(...(await trialLoad(deps, members, out.plan, join(scratch, "trial"))));
+  if (bad.length) throw new Error(`bad_package: ${bad.join("; ")}`);
+
+  // Apps: each one the install publishes BUILDS against this strut's kit,
+  // with the set's workflows and apps in reach, before anything is written.
+  const publishes = (name: string) => ["new", "update", "diverge"].includes(out.plan.get(name)?.action ?? "");
   const staged = new Map<string, { dir: string; hash: string; member: Member; path: string }>();
   for (const m of members) {
-    for (const item of m.info.items.filter((i) => i.kind === "app" && !out.present.has(i.name))) {
+    for (const item of m.info.items.filter((i) => i.kind === "app" && publishes(i.name))) {
       const dir = join(scratch, ...item.name.split("/"));
       await copyAppDir(join(m.info.dir, item.path), dir, { dist: false });
       staged.set(item.name, { dir, hash: await treeHash(dir), member: m, path: item.path });
@@ -508,6 +660,100 @@ async function sameConcepts(deps: PackageDeps, m: Member, here: InstalledPackage
   }
 }
 
+/** What an install does with an item it ships that is here already (§4's
+ *  table, through the distro's door). A person's door installs only what is
+ *  missing, so it leaves every item that is here as it is. */
+async function planItem(deps: PackageDeps, m: Member, item: PackageItem, at: InstalledItem, door: PackageDoor): Promise<ItemPlan> {
+  if (door === "install") return { action: at.modified ? "modified" : "present" };
+  const active = await activeVersion(deps, item.kind as Wrote["kind"], item.name);
+  if (!active) return { action: "new" };
+  const path = join(m.info.dir, item.path);
+  const hash = item.kind === "app" ? await treeHash(path) : contentHash(await readFile(path, "utf-8"));
+  if (active.hash === hash) return { action: "present" };
+  return at.modified ? { action: "diverge" } : { action: "update", previous: active.label };
+}
+
+/** An item's active version: its label and content hash. */
+async function activeVersion(deps: PackageDeps, kind: Wrote["kind"], name: string): Promise<{ label: string; hash?: string } | undefined> {
+  if (kind === "workflow") {
+    const meta = await deps.workspace.getWorkflowMetadata(name);
+    return meta ? { label: meta.active, hash: meta.versions[meta.active]?.hash } : undefined;
+  }
+  if (kind === "step") {
+    const meta = await deps.workspace.getStepMetadata(name);
+    return meta ? { label: meta.active, hash: meta.versions[meta.active]?.hash } : undefined;
+  }
+  const rec = await deps.workspace.getApp(name);
+  return rec ? { label: rec.active, hash: rec.versions[rec.active]?.hash } : undefined;
+}
+
+/** Load each step the install makes active, as discovery would, from a
+ *  trial directory that holds its namespace as it will be: the release's
+ *  file for what the install writes or already has as the release has it,
+ *  this strut's own for a fork it leaves active (§12 step 6). Nothing is
+ *  written to the workspace. The problems, each naming the step. */
+async function trialLoad(deps: PackageDeps, members: Member[], plan: Map<string, ItemPlan>, dir: string): Promise<string[]> {
+  const fileOf = (name: string) => join(dir, ...`${name}.ts`.split("/"));
+  const check: string[] = [];
+  for (const m of members) {
+    for (const item of m.info.items.filter((i) => i.kind === "step")) {
+      const action = plan.get(item.name)?.action;
+      const local = action === "modified" || action === "diverge";
+      const code = local ? (await deps.workspace.getStepSource(item.name))?.code : await readFile(join(m.info.dir, item.path), "utf-8");
+      if (code === undefined) continue;
+      await mkdir(dirname(fileOf(item.name)), { recursive: true });
+      await writeFile(fileOf(item.name), code);
+      if (!isHelper(item) && (action === "new" || action === "update")) check.push(item.name);
+    }
+  }
+  if (!check.length) return [];
+  await ensureEsmScope(dir);
+  const problems: string[] = [];
+  for (const name of check) {
+    const r = await stepFileType(fileOf(name));
+    if ("error" in r) problems.push(`the step ${name} — ${r.error}`);
+    else if (r.type !== name) problems.push(`the step ${name} — its defineStep says type "${r.type}" — a step's type is its path, ${name}`);
+  }
+  return problems;
+}
+
+/** An item a release no longer ships, and whether it goes. */
+interface Retirement {
+  pkg: string;
+  item: InstalledItem;
+  go: boolean;
+  /** Why it stays. */
+  reason?: string;
+}
+
+/** What each release drops (§4): an untouched item goes; a fork, an edited
+ *  Concept and a page whose edit cannot be told stay, and so does a helper
+ *  while a step of the package stays forked (it may import the helper). */
+function retirements(checked: Checked, members: Member[]): Retirement[] {
+  const out: Retirement[] = [];
+  for (const [pkg, items] of checked.dropped) {
+    const shipped = members.find((m) => m.info.manifest.package === pkg)?.info.items ?? [];
+    const forkedStep =
+      items.some((i) => i.kind === "step" && !i.helper && i.modified) ||
+      shipped.some((i) => i.kind === "step" && !isHelper(i) && ["modified", "diverge"].includes(checked.plan.get(i.name)?.action ?? ""));
+    for (const item of items) {
+      if (item.kind === "concept" && item.modified !== false) {
+        out.push({ pkg, item, go: false, reason: item.modified ? "edited here" : "its file is not in the package cache, so an edit cannot be told apart" });
+      } else if (item.modified) out.push({ pkg, item, go: false, reason: "modified here (a fork)" });
+      else if (item.helper && forkedStep) out.push({ pkg, item, go: false, reason: "a helper a forked step of the package may import" });
+      else out.push({ pkg, item, go: true });
+    }
+  }
+  return out;
+}
+
+/** The Concepts that go, by package. */
+function groupBy(rs: Retirement[]): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  for (const r of rs) out.set(r.pkg, [...(out.get(r.pkg) ?? []), r.item.name]);
+  return out;
+}
+
 /** What a workflow's steps name that is neither here nor in the set: a step
  *  type, a literal `agentTools` grant, a `subflow` target. Templates and
  *  globs are read at run time. */
@@ -536,13 +782,29 @@ function checkTypes(claims: MemberClaims["claims"], knownStep: (type: string) =>
   return out;
 }
 
-/** Undo an install's writes: the names it published (they were free) and
- *  the Concepts it wrote, retired by their stamps, then the registry
- *  without them. */
-async function takeBack(deps: PackageDeps, wrote: Array<{ kind: "workflow" | "step" | "app"; name: string }>, concepts: Map<string, string[]>): Promise<void> {
+/** Undo an install's writes: the names it published new (they were free)
+ *  go; an item it updated points at the version that was active again,
+ *  which the fold then reads as what is installed (the new version stays,
+ *  inactive: no store deletes one version); the Concepts it made are
+ *  retired by their stamps; then the registry as it was. */
+async function takeBack(deps: PackageDeps, wrote: Wrote[], concepts: Map<string, string[]>): Promise<void> {
+  const repoint = async (w: Wrote & { previous: string }) => {
+    if ((await activeVersion(deps, w.kind, w.name))?.label === w.previous) return;
+    if (w.kind === "workflow") await deps.workspace.setActiveVersion(w.name, w.previous);
+    else if (w.kind === "step") await deps.workspace.setActiveStepVersion(w.name, w.previous);
+    else await deps.workspace.setActiveAppVersion(w.name, w.previous);
+  };
   for (const w of [...wrote].reverse()) {
     const undo: Promise<unknown> =
-      w.kind === "workflow" ? deps.workspace.deleteWorkflow(w.name) : w.kind === "step" ? deps.workspace.deleteStep(w.name) : deps.apps ? deps.apps.delete(w.name) : deps.workspace.deleteApp(w.name);
+      w.previous !== undefined
+        ? repoint(w as Wrote & { previous: string })
+        : w.kind === "workflow"
+          ? deps.workspace.deleteWorkflow(w.name)
+          : w.kind === "step"
+            ? deps.workspace.deleteStep(w.name)
+            : deps.apps
+              ? deps.apps.delete(w.name)
+              : deps.workspace.deleteApp(w.name);
     await undo.catch((err) => {
       console.warn(`[packages] could not take back the ${w.kind} ${w.name}:`, err instanceof Error ? err.message : err);
     });
@@ -596,15 +858,17 @@ export interface UninstallResult {
  * untouched Concept is retired. A fork, an edited page, and the helpers
  * while a forked step of the package stays (it may import them) are kept and
  * listed. `busy` names a workflow with a run in flight, which refuses the
- * whole uninstall; `forget` drops a deleted workflow's schedules.
+ * whole uninstall; `forget` drops a deleted workflow's schedules. A package
+ * the distro installed is removed only through the distro's `door`.
  */
 export async function uninstallPackage(
   deps: PackageDeps,
   pkg: string,
-  opts: { busy?(workflow: string): boolean; forget?(workflow: string): Promise<void> } = {},
+  opts: { busy?(workflow: string): boolean; forget?(workflow: string): Promise<void>; door?: PackageDoor } = {},
 ): Promise<UninstallResult> {
   const p = (await listInstalledPackages(deps)).find((x) => x.package === pkg);
   if (!p) throw new Error(`package_not_installed: ${pkg} is not installed here`);
+  if (p.door === "distro" && opts.door !== "distro") throw new Error(`package_distro_owned: ${pkg} was installed here by the distro, which updates and removes it`);
   const forkedStep = p.items.some((i) => i.kind === "step" && !i.helper && i.modified);
   const result: UninstallResult = { package: pkg, removed: [], kept: [] };
   const go = p.items.filter((i) => {

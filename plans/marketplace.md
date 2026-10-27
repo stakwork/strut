@@ -1,9 +1,9 @@
 # Packages — sharing workflows, steps and Concepts between struts
 
-> **Status (2026-10-26): the package BYTES layer, step 1 and step 2 are
-> built** (`src/packages/`, see "Step order"): a package builds from a
+> **Status (2026-10-27): the package BYTES layer, step 1 and step 2 are
+> built, and step 4's update table through the distro's door** (`src/packages/`, see "Step order"): a package builds from a
 > strut's own workflows, steps, apps and Concepts into its cache, installs
-> from `file:`, lists and uninstalls. An app's migrations and declared
+> from `file:`, lists and uninstalls, and a distro updates it item by item. An app's migrations and declared
 > graph types wait for `apps.md` work items 3 and 4. Revised 2026-10-18
 > after a review against npm, Go modules, cargo, bundler, Homebrew taps and
 > OCI: the first draft's generated manifest, its first-installer name rule,
@@ -1706,6 +1706,53 @@ production until install (step 2) calls the resolver.
 4. **Updates:** the ask, each re-point classified `silent` / `named` by
    schema and claims diff (§4), fast-forward / coexist / retire, and
    `update_package`'s merge on request — per file for an app.
+   - **Built 2026-10-27: the table, through the distro's door**
+     (`src/packages/install.ts`, `installed.ts`; `specs/API.md` §16). §4's
+     table with no ask, for the fleet (§12, §12.1); the ask, the
+     classification and the merge are still this step's. These choices are
+     mine, proposed:
+     - **The door is code only.** `installPackage(…, { door: "distro" })`,
+       on the `Strut` object as `strut.packages.install` (with `uninstall`),
+       one write at a time with the routes. No route takes it: a door that
+       skips the ask is the operator's subscription, never an HTTP body.
+       Its versions record `source: "distro"` (a new `VersionSource`).
+     - **A package the distro wrote is the distro's.** `GET /packages` says
+       `door`, and a person's install or uninstall of it is refused
+       (`package_distro_owned`). The distro's door takes over a package a
+       person installed: the release is the operator's word.
+     - **"Untouched" is "the package wrote the active version"**: a version
+       with `source: install | distro` and an `upstream`, of ANY release,
+       not only the previous one. So a person who made an older release
+       active again is fast-forwarded over (a release is not their work),
+       and an update taken back by re-pointing (below) reads as untouched.
+       The fold's `installed` follows: the active version when the package
+       wrote it, else the newest one it wrote. The package's own version
+       and digest are its newest installed version's, since an item the
+       release dropped and a fork kept still names the release before.
+     - **The trial load is built here** (§12 step 6, for install too): every
+       step the install makes active is imported from a scratch directory
+       that holds its namespace as it will be — the release's files, a
+       fork's own source where the fork stays active — before the first
+       write. No store deletes one version, so an update cannot be written
+       and taken back cleanly. A failure after a write (the registry check
+       is kept as a backstop) re-points an updated item at the version that
+       was active; the release's version stays, inactive.
+     - **Per item, by content**: the release's hash against the active
+       version's, so the same release applied twice writes nothing, and a
+       retry after a partial failure converges.
+     - **Concepts.** An update leaves a page edited here out of the
+       seeder's set (the seeder rewrites a page whose file changed, even
+       under `keepEdited`), and so a page whose edit cannot be told (its old
+       file is gone from the cache). A dropped page is retired when
+       untouched.
+     - **What a release drops goes after the release is in**, and a removal
+       that fails is a warning, never a take-back. A dropped workflow with a
+       run in flight refuses the whole update first (`package_busy`), as an
+       uninstall does.
+     - **A required package at a new digest is updated first** through the
+       distro's door; a person's door still refuses it.
+     - **Claims** are recorded for what was installed or fast-forwarded,
+       never for a diverged item: the fork's contract stays its own.
 5. **Builder tools + UI:** an "installed from acme/linear 1.4.0 ·
    modified" line on a workflow's Versions tab and in a step's info
    flyout; the install and update asks as elicitation forms, with the
