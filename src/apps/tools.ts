@@ -36,6 +36,7 @@ import { isSealedStep } from "../sealed.js";
 import { baseType } from "../step-ref.js";
 import { resolveStep } from "../steps/registry.js";
 import type { AppsCapability } from "./apps.js";
+import { reservedAppType } from "./graph-types.js";
 import type { AppManifest } from "./manifest.js";
 import type { AppCallStatus, AppMonitor } from "./monitor.js";
 
@@ -213,7 +214,11 @@ export async function graphWriteRefusal(
   const touched = await graphWriteTypes(type, config, reader);
   if (typeof touched === "string") return touched;
   for (const t of touched) {
-    if (!declared.includes(t)) {
+    // Whatever an older manifest declares (./graph-types.ts).
+    const reserved = reservedAppType(t);
+    if (reserved) return `a graph write on "${t}" is refused: ${t} ${reserved} (plans/apps.md §4.3)`;
+    // Case-blind, as the graph resolves a type: a node read back carries its live casing.
+    if (!declared.some((d) => d.toLowerCase() === t.toLowerCase())) {
       return `a graph write on "${t}" is refused: this app declares ${declared.length ? declared.join(", ") : "no graph types"} (app.yaml data.graph.types) — an app writes only the types it declares (plans/apps.md §4.3)`;
     }
   }
