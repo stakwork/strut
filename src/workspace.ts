@@ -260,6 +260,21 @@ export function provenance(opts?: PublishOptions): Pick<WorkflowVersionInfo, "so
   };
 }
 
+/** The door a publish of KNOWN content fills in on that version, when the
+ *  version records none. Workflow versions written before 2026-10-06 and
+ *  step versions before 2026-10-26 carry no `source`, and a seeder whose
+ *  template has not changed since only ever publishes known content — so
+ *  its `seed` would never reach the record, which `buildPackage` reads to
+ *  leave a seed's item out of a package. Only an absent door is filled; a
+ *  recorded one never changes, and neither does a recorded actor. */
+export function missingProvenance(
+  recorded: { source?: unknown; actor?: unknown },
+  opts?: PublishOptions,
+): Pick<WorkflowVersionInfo, "source" | "actor"> | undefined {
+  if (recorded.source || !opts?.source) return undefined;
+  return { source: opts.source, ...(opts.actor && !recorded.actor ? { actor: opts.actor } : {}) };
+}
+
 export interface WorkflowMetadata {
   active: string;
   versions: Record<string, WorkflowVersionInfo>;
@@ -1034,7 +1049,9 @@ export class FileWorkspaceStore implements WorkspaceStore {
         ([, info]) => info.hash === hash,
       );
       if (match) {
-        const [vid] = match;
+        const [vid, info] = match;
+        const door = missingProvenance(info, opts);
+        if (door) await this.patchWorkflowMetadata(name, (m) => Object.assign(m.versions[vid]!, door));
         if (meta.active === vid || opts?.reactivateKnown === false || opts?.activate === false) {
           return { version: vid, changed: false };
         }
@@ -1133,7 +1150,7 @@ export class FileWorkspaceStore implements WorkspaceStore {
         ([, info]) => info.hash === hash,
       );
       if (match) {
-        const [vid] = match;
+        const [vid, info] = match;
         let changed = false;
         if (existing.active !== vid && opts?.reactivateKnown !== false && opts?.activate !== false) {
           const archived = await readFile(this.stepVersionPath(name, vid), "utf-8");
@@ -1142,12 +1159,17 @@ export class FileWorkspaceStore implements WorkspaceStore {
           existing.active = vid;
           changed = true;
         }
+        let dirty = changed;
         if (publisher !== undefined && existing.publisher !== publisher) {
           existing.publisher = publisher;
-          await this.writeStepMetadata(customDir, meta);
-        } else if (changed) {
-          await this.writeStepMetadata(customDir, meta);
+          dirty = true;
         }
+        const door = missingProvenance(info, opts);
+        if (door) {
+          Object.assign(info, door);
+          dirty = true;
+        }
+        if (dirty) await this.writeStepMetadata(customDir, meta);
         return { version: vid, changed };
       }
     }

@@ -48,6 +48,7 @@ import {
   validateStepName,
   validateWorkflowName,
   provenance,
+  missingProvenance,
   upstreamFor,
   fromPackage,
   refuseUnderInstalledPackage,
@@ -536,6 +537,17 @@ export class GraphWorkspaceStore implements WorkspaceStore {
     await this.swapActiveEdge("StrutWorkflow", wfRef, "StrutWorkflowVersion", version.ref_id);
   }
 
+  /** A known version's missing door, filled in by a publish of its content
+   *  (`missingProvenance`). */
+  private async fillDoor(row: { ref_id: string; version_source?: VersionSource; actor?: string }, opts?: PublishOptions): Promise<void> {
+    const door = missingProvenance({ source: row.version_source, actor: row.actor }, opts);
+    if (!door) return;
+    // An absent `actor` must stay out of the patch: patchFor removes a field
+    // the desired state leaves undefined, and a recorded actor is kept.
+    const patch = patchFor(row as unknown as Record<string, unknown>, { version_source: door.source, ...(door.actor ? { actor: door.actor } : {}) });
+    if (patch) await this.backend.nodes.update(row.ref_id, patch);
+  }
+
   /** Point a workflow, step or app at one version: its other ACTIVE_VERSION
    *  edges deleted and this one written, in one write transaction. Through
    *  `tx`, not `query`: on a LadybugDB file `query` is the read connection,
@@ -602,6 +614,7 @@ export class GraphWorkspaceStore implements WorkspaceStore {
       }
       const match = (await this.versionRows(name)).find((v) => v.content_hash === hash);
       if (match) {
+        await this.fillDoor(match, opts);
         if (w.active_version === hash || opts?.reactivateKnown === false || opts?.activate === false) {
           return { version: match.version_label, changed: false };
         }
@@ -866,6 +879,7 @@ export class GraphWorkspaceStore implements WorkspaceStore {
         const patch = patchFor(existing as unknown as Record<string, unknown>, desired);
         if (patch) await nodes.update(existing.ref_id, patch);
         if (changed) await this.swapActiveEdge("StrutStep", existing.ref_id, "StrutStepVersion", match.ref_id);
+        await this.fillDoor(match, opts);
         return { version: match.version_label, changed };
       }
     }

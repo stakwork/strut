@@ -237,6 +237,50 @@ export function workspaceConformance(impl: WorkspaceImpl): void {
       assert.equal(v["v4"]?.source, undefined, "a publish that names no door records none");
     });
 
+    it("a publish of known content fills in a door its version never recorded, and never changes one", async () => {
+      // A version written before its door was recorded (a workflow before
+      // 2026-10-06, a step before 2026-10-26) reads like one published with
+      // none named: a seeder whose template never changed since must still
+      // reach the record (buildPackage leaves a seed's item out).
+      await ws.createWorkflow("old", { steps, params: { greeting: "seeded" } });
+      const seed = await ws.getWorkflowSource("old", "v1");
+      await ws.publishWorkflowByContent("old", seed.replace("seeded", "forked")); // an edit, active, no door either
+      const reseed = await ws.publishWorkflowByContent("old", seed, undefined, undefined, undefined, {
+        reactivateKnown: false,
+        source: "seed",
+        actor: "boot",
+      });
+      assert.deepEqual(reseed, { version: "v1", changed: false });
+      let wf = (await ws.getWorkflowMetadata("old"))!;
+      assert.equal(wf.active, "v2", "the edit stays active");
+      assert.equal(wf.versions["v1"]?.source, "seed");
+      assert.equal(wf.versions["v1"]?.actor, "boot");
+      assert.equal(wf.versions["v2"]?.source, undefined, "only the version whose content was published");
+      await ws.publishWorkflowByContent("old", seed, undefined, undefined, undefined, { source: "ui", actor: "alice" });
+      wf = (await ws.getWorkflowMetadata("old"))!;
+      assert.equal(wf.active, "v1", "known content re-activates as before");
+      assert.equal(wf.versions["v1"]?.source, "seed", "a recorded door never changes");
+      assert.equal(wf.versions["v1"]?.actor, "boot");
+
+      await ws.publishStep("old/step", STEP_SRC("old/step", "one"));
+      await ws.publishStep("old/step", STEP_SRC("old/step", "two"));
+      const again = await ws.publishStep("old/step", STEP_SRC("old/step", "one"), "one", "lab-seed", {
+        reactivateKnown: false,
+        source: "seed",
+      });
+      assert.deepEqual(again, { version: "v1", changed: false });
+      let step = (await ws.getStepMetadata("old/step"))!;
+      assert.equal(step.active, "v2");
+      assert.equal(step.versions["v1"]?.source, "seed");
+      assert.equal(step.versions["v1"]?.actor, undefined, "no actor named, none made up");
+      assert.equal(step.versions["v2"]?.source, undefined);
+      await ws.publishStep("old/step", STEP_SRC("old/step", "one"), undefined, undefined, { source: "install", actor: "alice" });
+      step = (await ws.getStepMetadata("old/step"))!;
+      assert.equal(step.active, "v1");
+      assert.equal(step.versions["v1"]?.source, "seed", "a recorded door never changes");
+      assert.equal(step.versions["v1"]?.actor, undefined, "nor gains an actor beside it");
+    });
+
     it("createWorkflow allocates a fresh name/version and returns it", async () => {
       const a = await ws.createWorkflow("made", { steps });
       const b = await ws.createWorkflow("made", { steps });
