@@ -18,6 +18,10 @@
  * recorded (./graph-types.ts): on Neo4j only, so on a LadybugDB file or the
  * filesystem workspace it does not build.
  *
+ * An app's own SQLite file (./sqlite.ts) is one per app, beside its
+ * versions: a publish applies the directory's `db/*.sql` before the
+ * version is recorded, and a failing migration publishes nothing.
+ *
  * A version's directory is a CACHE over its history (./objects.ts): a
  * publish records the version's sources once per file, the active version
  * and the newest few keep their directory, and an older one is restored
@@ -39,6 +43,7 @@ import { copyAppDir, isEmptyDir, listAppFiles, validateAppName } from "./files.j
 import { checkAppGraph, registerAppGraph, type RegisteredGraph } from "./graph-types.js";
 import type { Kit, KitLocation } from "./kit.js";
 import { readManifest, type AppManifest } from "./manifest.js";
+import { AppDatabases, migrationFiles, type AppDatabase, type MigrationRecord } from "./sqlite.js";
 import { evictVersionDir, keptVersions, readTree, recordTree, restoreSources } from "./objects.js";
 import type { AppMonitor, AppUsageBrief } from "./monitor.js";
 import { lockDrift, lockProblems, takeLock, type LockDrift } from "./releases.js";
@@ -75,6 +80,9 @@ export interface AppView extends Omit<AppRecord, "releases"> {
   /** What the app's pages cost the server (./monitor.ts): calls, failures,
    *  data by step type, and the warnings — absent without a monitor. */
   usage?: AppUsageBrief;
+  /** The app's own SQLite file (./sqlite.ts), once it has one: its size and
+   *  the migrations applied. */
+  database?: { bytes: number; migrations: MigrationRecord[] };
 }
 
 /** A listed app, with the live version's warning count (./monitor.ts) when it has any. */
@@ -143,6 +151,8 @@ export type AppPublishResult =
       note?: string;
       /** The graph types and edges the publish registered (`data.graph`). */
       graph?: RegisteredGraph;
+      /** The `db/*.sql` this publish applied to the app's database. */
+      migrations?: string[];
     }
   | { ok: false; errors: string[]; warnings: string[] };
 
@@ -197,6 +207,14 @@ export interface AppsCapability {
    *  what is live alone. An app strut seeds is pinned without a hold. */
   pin(name: string, pinned: boolean, opts?: { by?: string }): Promise<{ release?: AppRelease }>;
   delete(name: string): Promise<boolean>;
+  /** The app's own SQLite file (./sqlite.ts), created on first use — what
+   *  the `sqlite/*` steps run on. Throws for an app not on this strut. */
+  database(name: string): Promise<AppDatabase>;
+  /** A consistent copy of the app's database at `to` (`GET /apps/:name/data`);
+   *  false when the app has none yet. */
+  exportDatabase(name: string, to: string): Promise<boolean>;
+  /** Close every database connection (`strut.close()`). */
+  close(): Promise<void>;
   /** Strut's template names. */
   templates(): Promise<string[]>;
   /** The build's dependencies, for a caller that builds elsewhere. */
@@ -219,6 +237,9 @@ export interface AppsDeps {
   /** The graph an app's declared types are checked against and registered
    *  on (./graph-types.ts). Absent: an app that declares any does not build. */
   graph?: GraphBackend;
+  /** `<dataDir>/apps`, where each app's SQLite file is kept (./sqlite.ts).
+   *  Absent: an app has no database, and a publish with migrations fails. */
+  root?: string;
 }
 
 
@@ -242,6 +263,7 @@ const exists = async (p: string) => {
 export function createApps(deps: AppsDeps): AppsCapability {
   const { workspace } = deps;
   const templatesDir = deps.templatesDir ?? TEMPLATES_DIR;
+  const databases = deps.root ? new AppDatabases(deps.root) : undefined;
 
   /**
    * A version's directory, there to be read: as it is when kept, else
@@ -415,6 +437,8 @@ export function createApps(deps: AppsDeps): AppsCapability {
       const stale = missing || (await isStale(path, build));
       const inertGrants = await inert(rec.manifest);
       const errors = deps.errors ? await errorsOf(name) : undefined;
+      const bytes = databases ? await databases.size(name) : null;
+      const database = bytes !== null && databases ? { bytes, migrations: (await databases.database(name)).migrations() } : undefined;
       const { releases, ...record } = rec;
       return {
         ...record,
@@ -427,6 +451,7 @@ export function createApps(deps: AppsDeps): AppsCapability {
         inertGrants,
         ...(errors ? { errors } : {}),
         ...(deps.monitor ? { usage: deps.monitor.brief(name) } : {}),
+        ...(database ? { database } : {}),
       };
     },
 
@@ -470,7 +495,19 @@ export function createApps(deps: AppsDeps): AppsCapability {
       if (check.errors.length) return { ok: false, errors: check.errors, warnings: check.warnings };
       const built = await buildApp(dir, buildDeps(name));
       if (!built.ok) return { ...built, warnings: [...check.warnings, ...built.warnings] };
-      // The types before the version: a version is never live without them.
+      const warnings = [...check.warnings, ...built.warnings];
+      // The migrations, then the types, before the version: a version is
+      // never live on a schema it does not have. A failing migration rolls
+      // back and publishes nothing; the types are add-only, so they come
+      // after it.
+      let migrations: string[] = [];
+      if (databases) {
+        const migrated = await databases.migrate(name, dir);
+        if (!migrated.ok) return { ok: false, errors: migrated.errors, warnings };
+        migrations = migrated.applied;
+      } else if ((await migrationFiles(dir)).length) {
+        return { ok: false, errors: [`db/: this strut keeps no app databases, so an app with migrations does not publish here`], warnings };
+      }
       const graph = deps.graph && built.manifest.data?.graph ? await registerAppGraph(built.manifest, deps.graph, name) : undefined;
       const publisher = opts.publisher ?? (opts.surface === "ai" ? "ai" : undefined);
       const r = await workspace.publishApp(name, built.hash, built.manifest, {
@@ -499,9 +536,10 @@ export function createApps(deps: AppsDeps): AppsCapability {
         changed: r.changed,
         hash: built.hash,
         bytes: built.bytes,
-        warnings: [...check.warnings, ...built.warnings],
+        warnings,
         live: !held,
         ...(graph && (graph.types.length || graph.edges.length) ? { graph } : {}),
+        ...(migrations.length ? { migrations } : {}),
         ...(held
           ? {
               liveVersion: held.active,
@@ -592,7 +630,24 @@ export function createApps(deps: AppsDeps): AppsCapability {
     async delete(name) {
       const removed = await workspace.deleteApp(name);
       if (removed) deps.monitor?.forget(name);
+      // The file stays, as the version directories do; its connections go.
+      if (removed) databases?.close(name);
       return removed;
+    },
+
+    async database(name) {
+      if (!databases) throw new Error("this strut keeps no app databases (createApps without a root)");
+      if (!(await workspace.getApp(name))) throw new Error(`no app "${name}" on this strut`);
+      return databases.database(name);
+    },
+
+    async exportDatabase(name, to) {
+      if (!databases || !(await workspace.getApp(name))) return false;
+      return databases.exportTo(name, to);
+    },
+
+    async close() {
+      databases?.close();
     },
 
     async templates() {

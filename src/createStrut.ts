@@ -1009,6 +1009,8 @@ export async function createStrut<TServices = unknown>(
       monitor: appMonitor,
       // An app's declared graph types are registered here, on Neo4j.
       ...(graph ? { graph } : {}),
+      // Each app's own SQLite file sits beside its versions (src/apps/sqlite.ts).
+      root: appsRoot(dataDir),
     });
   (services as Record<string, unknown>)["apps"] = apps;
   let stepSources: StepSources = {};
@@ -2460,6 +2462,30 @@ export async function createStrut<TServices = unknown>(
     if (at instanceof Response) return at;
     if (!(await workspace.getApp(at.name))) return c.json({ error: `App "${at.name}" not found` }, 404);
     return c.json(appMonitor.report(at.name));
+  });
+
+  // The app's own SQLite file (src/apps/sqlite.ts), as one consistent copy
+  // (`VACUUM INTO`). A read like every other: a peer reads it as it reads
+  // a run's outputs and a job's files.
+  app.get("/apps/:name/data", async (c) => {
+    const at = appRoute(c);
+    if (at instanceof Response) return at;
+    if (!(await workspace.getApp(at.name))) return c.json({ error: `App "${at.name}" not found` }, 404);
+    const dir = await mkdtemp(join(tmpdir(), "strut-app-data-"));
+    try {
+      const file = join(dir, "data.db");
+      if (!(await apps.exportDatabase(at.name, file))) return c.json({ error: `App "${at.name}" has no database yet` }, 404);
+      const bytes = await readFile(file);
+      return new Response(new Uint8Array(bytes), {
+        headers: {
+          "content-type": "application/vnd.sqlite3",
+          "content-disposition": `attachment; filename="${at.name.replace(/\//g, "-")}.db"`,
+          "cache-control": "no-store",
+        },
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   app.get("/apps/:name/versions", async (c) => {
@@ -5699,8 +5725,9 @@ export async function createStrut<TServices = unknown>(
     await ownStt?.close();
     // What the sink still holds goes out before the process does.
     await ownSink?.close();
-    // And the apps' usage counted since the last write.
+    // And the apps' usage counted since the last write, and their databases.
     await appMonitor.close();
+    await apps.close?.();
     // A room's sockets close with the server; their rooms queue what follows.
     for (const ws of roomsWss.clients) ws.terminate();
     const s = httpServer;

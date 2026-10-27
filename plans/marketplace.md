@@ -4,7 +4,8 @@
 > built** (`src/packages/`, see "Step order"): a package builds from a
 > strut's own workflows, steps, apps and Concepts into its cache, installs
 > from `file:`, lists and uninstalls. An app's migrations and declared
-> graph types wait for `apps.md` work items 3 and 4. Revised 2026-10-18
+> graph types run at the install's publish since `apps.md` work items 3
+> and 4 landed (2026-10-26). Revised 2026-10-18
 > after a review against npm, Go modules, cargo, bundler, Homebrew taps and
 > OCI: the first draft's generated manifest, its first-installer name rule,
 > its vendored foreign items and its server-shaped index are gone (§10 says
@@ -1664,12 +1665,11 @@ production until install (step 2) calls the resolver.
        digest) until `git+` and `pk:` sources land.
    - **Built 2026-10-26: apps as a kind** (`src/packages/build.ts`,
      `install.ts`, `installed.ts`; `specs/API.md` §16). §2's closure and
-     §3's build check as written, except what waits on `apps.md`: an app's
-     `db/*.sql` migrations and its declared graph types are work items 3
-     and 4 there, and nothing runs them yet. The install publishes an app
-     through the apps capability — the publish `POST /apps` makes — so when
-     those items make the publish run them, an install runs them with no
-     change here. These choices are mine, proposed:
+     §3's build check as written. The install publishes an app through the
+     apps capability — the publish `POST /apps` makes — so an app's
+     `db/*.sql` migrations and its declared graph types (`apps.md` work
+     items 3 and 4, built 2026-10-26) run at that publish with no change
+     here, and a failing one fails the install (`bad_package:`). These choices are mine, proposed:
      - **An app's imports are read off its build**, `dist/build.json`,
        which its publish wrote from the sources the version hash covers. A
        version with no build of those sources (a restore whose rebuild
@@ -1847,9 +1847,10 @@ production until install (step 2) calls the resolver.
   grants name; its item hash equals the app's version hash on the source
   strut. Install it on a strut whose kit builds it: the app is published,
   its migrations run, its graph types register, its granted workflows are
-  items. (Built 2026-10-26 without the migrations and graph types, which
-  wait on `apps.md` items 3 and 4: `src/packages/build.test.ts`, on the
-  filesystem and every graph backend.) A kit lacking one import refuses the whole install naming it. Fork
+  items. (Built 2026-10-26: `src/packages/build.test.ts`, on the
+  filesystem and every graph backend; the migrations and graph types run
+  through the publish, tested in `src/apps/sqlite.test.ts` and
+  `src/apps/graph-types.test.ts`.) A kit lacking one import refuses the whole install naming it. Fork
   one component file, then update the package: the forked file is merged,
   an untouched one fast-forwards, a new `db/*.sql` is added and run,
   `data.db` is untouched, and a merge whose result does not build comes

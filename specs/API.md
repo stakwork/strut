@@ -948,12 +948,13 @@ components as an app other apps import (`import { RunTimeline } from
 | Method | Path | Description |
 | ------ | ---- | ----------- |
 | GET    | `/apps` | `{ apps: [{ name, activeVersion, versions, title, description?, icon?, grants, publisher?, owner?, pinned?, live?, warnings? }] }` — `pinned: true` only on an app pinned as a tab; `live` (the release id) only on an app held at a release; `warnings` (§14.6) only when the active version has some from the last day |
-| GET    | `/apps/:name[?version=vN]` | one version (the active one by default): the record (`version`, `hash`, `manifest`, `createdAt`, `upstream?`, `active`, `versions: { vN: { createdAt, hash, publisher?, source?, actor?, upstream? } }`, `publisher?`, `owner?`, `pinned?`) plus `dir`, `files`, `build` (`dist/build.json`: `kit`, `builtAt`, `hash`, `imports: [{ name, version, hash, pinned? }]`, `bytes`, `warnings`), `stale` (the document is older than the sources, or an imported kit moved), `missing` (the directory is not on this host), `inertGrants` (granted workflows that no longer exist), `live?` and `releases?: [{ id, version, createdAt, by? }]` (§14.5, without their locks); 404 |
+| GET    | `/apps/:name[?version=vN]` | one version (the active one by default): the record (`version`, `hash`, `manifest`, `createdAt`, `upstream?`, `active`, `versions: { vN: { createdAt, hash, publisher?, source?, actor?, upstream? } }`, `publisher?`, `owner?`, `pinned?`) plus `dir`, `files`, `build` (`dist/build.json`: `kit`, `builtAt`, `hash`, `imports: [{ name, version, hash, pinned? }]`, `bytes`, `warnings`), `stale` (the document is older than the sources, or an imported kit moved), `missing` (the directory is not on this host), `inertGrants` (granted workflows that no longer exist), `live?` and `releases?: [{ id, version, createdAt, by? }]` (§14.5, without their locks), `database?: { bytes, migrations: [{ name, sha256, appliedAt }] }` once the app has its own SQLite file (§14.8); 404 |
+| GET    | `/apps/:name/data` | the app's own SQLite file (§14.8) as one consistent copy (`VACUUM INTO`), `application/vnd.sqlite3`, an attachment — a read like every other, so a peer reads it too; `404` for an unknown app, or one with no database yet |
 | GET    | `/apps/:name/usage` | what the app's pages cost the server (§14.6): `{ app, since, lastCallAt?, hour, day, minutes, types, warnings }`; 404 for an unknown app |
 | GET    | `/apps/:name/versions` | `{ name, active, versions, publisher?, owner?, pinned?, live, releases, behind }` — `live` is the live release's id or `"latest"`; `releases` each with its `lock` (§14.5); `behind: [{ kind: "workflow" \| "step", name, locked, current }]`, what the live release's lock names that has moved on since (`current: null` when gone) |
 | GET    | `/apps/:name/:version/files` | `{ app, version, hash, files, token? }` — the version's directory, served exactly as a run's artifacts are (§5): the listing mints the app's FILE TOKEN (scope `app:<name>@<vN>`), absent with no secret to sign it. A version past the newest five (not the active one) is restored from its history and rebuilt first, ~2 s |
 | GET    | `/apps/:name/:version/files/<path>` | one file, by `?t=<token>` or the key, sandboxed (`CSP: sandbox`, `nosniff`). `dist/index.html` — the document — read by TOKEN carries the token in `<meta name="strut-app-token">` (written as it is served; `dist/` holds no credential) and gets `sandbox allow-scripts`; read by the KEY it carries no meta and runs no script. The document has an `ETag` and `Cache-Control: private, no-cache`: the same version is the same bytes every time it is served, so a host keeps it and sends `If-None-Match`, answered `304` while it is current. A token for another app or version is `401` whatever else the request carries |
-| POST   | `/apps` | `{ name, files: { "<path>": "<text>" \| { base64 }, … }, publisher?, upstream?, reactivateKnown? }` → 201 `{ ok, name, version, changed, hash, bytes, warnings, live, liveVersion?, release?, note?, graph? }` — `live: false` when the app is held: the version is a draft (§14.5). Builds first; a build that fails is `400 { error, errors, warnings }` and publishes nothing. An app that declares graph types (`data.graph`) registers them before the version is recorded, add-only, on a Neo4j graph only: `graph: { types: [{ type, created, added }], edges: [{ edge, created }] }`. On a LadybugDB file or with no graph it does not build, and a declaration that conflicts with the graph (another attribute type, another key, a required attribute left out, a type strut keeps — `Strut*`, `Concept`, `Claim`, `Check`, `Evidence`) is a build error naming it (§14.7). A PERSON's door: the grants are unrestricted (`llm`, a sealed step — what `app/publish` refuses, §9 of the plan). The actor becomes the owner when the app has none. |
+| POST   | `/apps` | `{ name, files: { "<path>": "<text>" \| { base64 }, … }, publisher?, upstream?, reactivateKnown? }` → 201 `{ ok, name, version, changed, hash, bytes, warnings, live, liveVersion?, release?, note?, migrations?, graph? }` — `live: false` when the app is held: the version is a draft (§14.5). Builds first; a build that fails is `400 { error, errors, warnings }` and publishes nothing. Then the directory's `db/*.sql` not yet applied go into the app's database (§14.8), named in `migrations`; one that fails is a `400` the same way, and nothing is published. An app that declares graph types (`data.graph`) registers them before the version is recorded, add-only, on a Neo4j graph only: `graph: { types: [{ type, created, added }], edges: [{ edge, created }] }`. On a LadybugDB file or with no graph it does not build, and a declaration that conflicts with the graph (another attribute type, another key, a required attribute left out, a type strut keeps — `Strut*`, `Concept`, `Claim`, `Check`, `Evidence`) is a build error naming it (§14.7). A PERSON's door: the grants are unrestricted (`llm`, a sealed step — what `app/publish` refuses, §9 of the plan). The actor becomes the owner when the app has none. |
 | PUT    | `/apps/:name/active` | What people open (§14.5). `{ version: "vN" }` PROMOTES: a new release of that version with a lock taken now, made live — the app is held; `{ release: "rN" }` makes an earlier release live again, adding none; `{ version: "latest" }` follows the newest publish. → `{ ok, name, active, live, release? }` (`release` with its lock, on a promote). `400` without exactly one of the two; `404` for an unknown app, version or release; `409` for a refusal: a version that no longer builds on this strut's kit (the build's errors), an app strut seeds, a release whose lock names a workflow or step that no longer exists |
 | PUT    | `/apps/:name/pin` | `{ pinned: boolean }` → `{ ok, name, pinned, live, release? }`: pin the app as a TAB, or unpin it — the record's flag (not a version pin), which a publish and a rollback keep and a delete clears. A host that lists this strut's apps (a portal's sidebar for the workspace this strut belongs to) shows each `pinned` one as a tab at its active version. Pinning an app that follows latest also HOLDS it at that version (§14.5): `release` is the one made, `live` its id; unpinning leaves what is live alone. `400` without a boolean, `404` for an unknown app, `409` when the version to hold no longer builds |
 | DELETE | `/apps/:name` | remove the pointers (soft on the graph); the directories stay |
@@ -997,7 +998,8 @@ the call against that app's manifest, in every host:
 | a sealed step | refused |
 | a graph write (`graph/create-node`, `edit-node`, `create-triplet`, `create-batch-triplet`, `delete-edge`, `edit-edge`, `delete-node`, `move-node`) | refused on a type the manifest's `data.graph.types` does not declare, and on a type strut keeps whatever it declares — the type from the config for a create, the node read first for an edit or delete by `ref_id` (case-blind); every value checked must be a literal, an edge is located by its endpoints |
 | `job/get`, `job/read` | only when `grants.steps` names them |
-| `sqlite/*`, `automation/*`, `job/start`, `job/continue` | "not available in this strut yet" (work items 3, 7; a "continue this job" door, §12 of the plan) |
+| `sqlite/query`, `sqlite/exec`, `sqlite/batch` | only with `grants.sqlite: true` (never through `grants.steps`), on the app's OWN database — an `app` argument is refused (§14.8); `exec` and `batch` are writes, kept |
+| `automation/*`, `job/start`, `job/continue` | "not available in this strut yet" (work item 7; a "continue this job" door, §12 of the plan) |
 | `graph/create-schema`, `graph/register-namespace`, `graph/project`, `app/init`, `app/checkout`, `app/build`, `app/publish`, `job/dir` | not a thing a page does |
 | `app/report-error { message, stack?, componentStack? }` | always granted |
 
@@ -1228,6 +1230,36 @@ value (equal; `null` = not set) or to operators that must all hold: `gt`,
 default order is newest first; `limit` is 1–500 (default 50); a `cursor`
 comes back while there are more. It works on both engines, over any type
 the graph holds.
+
+### 14.8 The app's own database (`src/apps/sqlite.ts`)
+
+One SQLite file per app, `<dataDir>/apps/<name>/data.db`, shared by all its
+versions and never by another app, owner-only, on every workspace backend
+(`node:sqlite`; Node ≥ 22.13). Its schema is the app directory's
+`db/*.sql`: a publish applies the files not applied yet, in name order,
+each once and each in its own transaction, recorded in
+`_strut_migrations` (name, sha256, when) — before the version is recorded,
+so a failing migration rolls back and publishes nothing. A file applied
+before whose text changed is refused (a change is a new file), and nothing
+rolls back with a version.
+
+| Step | Input | Output |
+| ---- | ----- | ------ |
+| `sqlite/query` | `{ sql, params?, app? }` — ONE statement, on a read-only connection | `{ columns, rows, truncated? }`: rows as objects, bytes as `{ base64 }`, at most 5 000 rows or 2 MB |
+| `sqlite/exec` | `{ sql, params?, app? }` — one statement | `{ changes, lastInsertRowid }` |
+| `sqlite/batch` | `{ statements: [{ sql, params? }], app? }` — up to 500, one transaction | `{ results: [{ changes, lastInsertRowid }] }`; an error names `statements[i]` and rolls all back |
+
+`params` is a list (for `?`) or an object (for `:name`); a boolean binds
+as 1 / 0, `{ base64 }` as bytes, any other object or list as JSON text.
+WHICH file is `ctx.app`'s — a page's call through `step_run`, every step of
+a run the app launched — and `app` names it from anywhere else (an agent
+granted `sqlite/*`, a workflow outside the app); `app` is refused when
+`ctx.app` is set. Every statement first passes a keyword check: `ATTACH`,
+`DETACH`, `VACUUM INTO`, `load_extension`, a PRAGMA outside `table_info`,
+`table_xinfo`, `table_list`, `index_list`, `index_info`, `index_xinfo`,
+`foreign_key_list`, `foreign_key_check`, `integrity_check`, `quick_check`,
+`user_version` (read only), and a second statement in `query` or `exec`
+are refused. Extensions are never enabled.
 
 ## 15. Dictation — speech to text, its models and the user's vocabulary
 

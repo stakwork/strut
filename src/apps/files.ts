@@ -33,7 +33,7 @@ export function validateAppName(name: string): void {
       throw new Error(`Invalid app name "${name}": each segment must match [A-Za-z0-9][A-Za-z0-9_.-]*`);
     }
     if (/^v\d+$/.test(seg)) throw new Error(`Invalid app name "${name}": a segment may not be a version label (${seg})`);
-    if (seg === "data.db") throw new Error(`Invalid app name "${name}": "data.db" is the app's database`);
+    if (seg === "data.db" || seg.startsWith("data.db-")) throw new Error(`Invalid app name "${name}": "data.db" is the app's database (and its -wal, -shm)`);
   }
 }
 

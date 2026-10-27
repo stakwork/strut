@@ -20,7 +20,7 @@ apps/<name>/
   src/components/ui/  # optional: overrides of the kit's shadcn components (shadcn's own model)
   src/styles.css      # optional: @theme, @layer, custom utilities (Tailwind 4)
   public/             # images, fonts, JSON fixtures, imported by path (inlined at build)
-  db/                 # SQL migrations (a later strut; keep it empty for now)
+  db/                 # SQL migrations for the app's own database, applied at publish (below)
 ```
 
 `app/init { path: "apps/<name>" }` scaffolds this (a shadcn sidebar with
@@ -44,7 +44,7 @@ icon: bar-chart-3
 grants:
   workflows: [score-wf]        # the app's ROUTINES: run/* on these — list, read, launch, cancel
   steps: [graph/graph-get]     # cheap, deterministic steps it may call — never llm / agent / exec
-  sqlite: false                # its own tables (a later strut)
+  sqlite: false                # its own database: sqlite/query, exec, batch on it (below)
   automations: []              # schedules (a later strut)
 data:
   graph:
@@ -151,10 +151,40 @@ cancelable, verified.
 | --- | --- | --- |
 | What workflows did, one row per execution: scores, polls, extractions | Runs | Already there: `useRuns` and outputs |
 | Entities and relations others should see too: customers, facts, people | The graph (`graph/*`, declared types) | Agents find them, workflows write them, another app reads them |
-| The app's own tables: line items, a big import, settings | The app's SQLite (`sqlite/*`) | A later strut; until then keep state in runs or the graph |
+| The app's own tables: line items, a big import, settings | The app's SQLite (`sqlite/*`, `grants.sqlite: true`) | Real queries — filters, joins, sums, group by — in one file only this app reads, on every workspace |
 
-"If an agent should ever find it, it goes in the graph." Migrations (when
-they come) are additive: a rollback never rolls the schema back.
+"If an agent should ever find it, it goes in the graph."
+
+## The app's own database
+
+Each app has ONE SQLite file, shared by all its versions and never by
+another app. Its tables come from `db/*.sql` in the app directory:
+`app/publish` applies the files it has not applied yet, in name order
+(`001_init.sql`, `002_paid.sql`), each once and each in its own
+transaction, before the version is published. A migration that fails rolls
+back and publishes nothing; read its error, fix the file, publish again.
+Leave out `BEGIN` and `COMMIT`. A migration that ran is never edited: a
+change is a NEW file with a later name. Rolling a version back never rolls
+the schema back, so migrations only add: new tables, new columns with a
+default, new indexes.
+
+With `grants.sqlite: true` the page reads and writes the file through the
+three steps, by `useStep`, on its own database (they take no app name):
+
+- `sqlite/query { sql, params? }` → `{ columns, rows }`: ONE statement, on
+  a read-only connection, at most 5 000 rows (`truncated: true` past that).
+  Page through a big table with `LIMIT` / `OFFSET`, and sum in SQL rather
+  than in the page.
+- `sqlite/exec { sql, params? }` → `{ changes, lastInsertRowid }`: one write.
+- `sqlite/batch { statements: [{ sql, params? }] }`: several writes in one
+  transaction, all or none.
+
+Values go in `params`, never into the SQL text: `?` with a list, `:name`
+with an object. A boolean binds as 1 / 0, an object as JSON text. `ATTACH`,
+`VACUUM INTO`, `load_extension` and a PRAGMA that sets anything are
+refused. A workflow the app launches runs on the same file (its runs carry
+the app); a workflow outside the app, or an agent, names it with `{ app:
+"<name>" }`.
 
 ## Graph types
 
@@ -234,8 +264,8 @@ with `useLaunch`. The document's size over 6 MB is a warning.
   button, `useRun({ live })` on the newest run, a tab for its output.
 - **Invoice tracker**: customers, visits and invoices as declared graph
   types written with `graph/*`, a table from `@tanstack/react-table`, a
-  photo-reading workflow launched per invoice (a later strut adds SQLite
-  for line items and schedules for reminders).
+  photo-reading workflow launched per invoice, its line items in the app's
+  own SQLite (a later strut adds schedules for reminders).
 - **Fact library**: a URL goes to an ingest workflow whose agent writes
   `Fact` and `Source` nodes; the app searches them with
   `graph/graph-search` and shows a card per fact.
