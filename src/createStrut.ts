@@ -86,7 +86,15 @@ import { buildPackage, type BuildRequest } from "./packages/build.js";
 import { packageCache } from "./packages/cache.js";
 import { workspaceFences } from "./packages/fence.js";
 import { PACKAGE_DIGEST } from "./packages/format.js";
-import { installPackage, uninstallPackage, type PackageDeps } from "./packages/install.js";
+import {
+  installPackage,
+  uninstallPackage,
+  type InstallOptions,
+  type InstallResult,
+  type PackageDeps,
+  type PackageDoor,
+  type UninstallResult,
+} from "./packages/install.js";
 import { listInstalledPackages } from "./packages/installed.js";
 import type { AppRelease, Upstream } from "./workspace.js";
 import type { CassetteMode } from "./cassette.js";
@@ -549,6 +557,16 @@ export interface Strut<TServices = unknown> {
    *  `/automations` routes and the chat tools — list / create / update /
    *  remove / preview / fire. Ticks by itself unless `scheduler: false`. */
   automations: Automations;
+
+  /** Packages (plans/marketplace.md), in process: what `POST
+   *  /packages/install` and `DELETE /packages/…` do, one write at a time
+   *  with them — plus the distro's door (`door: "distro"`, §12), which
+   *  applies a release with no ask and updates an installed package item by
+   *  item (§4). No route takes the door: an operator's subscription does. */
+  packages: {
+    install(ref: string, opts?: Pick<InstallOptions, "digest" | "actor" | "door">): Promise<InstallResult>;
+    uninstall(pkg: string, opts?: { door?: PackageDoor }): Promise<UninstallResult>;
+  };
 
   /** Reads over the claims layer (plans/claims.md) — null unless the
    *  workspace is graph-backed AND the layer is on (`StrutOptions.claims`):
@@ -2651,12 +2669,12 @@ export async function createStrut<TServices = unknown>(
   // every byte, so the answer never changes: an ETag of the digest, kept a
   // year. Behind the gate like every route; a package a catalog publishes
   // is opened to anyone with the catalog (§13), a sold one by its token (§6).
-  const packages = packageCache(dataDir);
+  const packageStore = packageCache(dataDir);
   app.get("/packages/:publisher/:name/archive", async (c) => {
     const pkg = `${c.req.param("publisher")}/${c.req.param("name")}`;
     const digest = c.req.query("digest") ?? "";
     if (!PACKAGE_DIGEST.test(digest)) return c.json({ error: "digest=sha256:<64 hex> is required" }, 400);
-    const info = await packages.get(digest);
+    const info = await packageStore.get(digest);
     if (!info || info.manifest.package !== pkg) return c.json({ error: `no package ${pkg} at ${digest} here` }, 404);
     const etag = `"${digest}"`;
     const headers = {
@@ -2679,7 +2697,7 @@ export async function createStrut<TServices = unknown>(
   // at a time: an install checks every name before its first write.
   const packageDeps: PackageDeps = {
     workspace,
-    cache: packages,
+    cache: packageStore,
     ...(graph ? { graph } : {}),
     claims: claimsAuthoring,
     ...(verifier ? { verifyPublish: (subject) => verifier.verifyPublish(subject) } : {}),
@@ -2697,11 +2715,26 @@ export async function createStrut<TServices = unknown>(
     packageWrites = next.catch(() => undefined);
     return next;
   };
+  // The writes, in process (`strut.packages`) and behind the routes below.
+  const busyWorkflow = (workflow: string) => [...controllers.keys()].some((k) => k.startsWith(`${workflow}/`));
+  const forgetWorkflow = (workflow: string) => automations.forget(workflow);
+  const packages: Strut["packages"] = {
+    install: (ref, opts = {}) => {
+      if (registryWasInjected) return Promise.reject(new Error("package_unsupported: installing is disabled when the registry is provided at construction time"));
+      return oneAtATime(() => installPackage(packageDeps, ref, { ...opts, busy: busyWorkflow, forget: forgetWorkflow }));
+    },
+    uninstall: (pkg, opts = {}) =>
+      oneAtATime(async () => {
+        const out = await uninstallPackage(packageDeps, pkg, { ...opts, busy: busyWorkflow, forget: forgetWorkflow });
+        await rebuildRegistry();
+        return out;
+      }),
+  };
   /** A refusal's code (`package_conflict: …`) → its status. */
   const packageError = (c: Context, err: unknown) => {
     const message = err instanceof Error ? err.message : String(err);
     const code = /^([a-z_]+):/.exec(message)?.[1] ?? "";
-    const status = ["package_conflict", "package_update_not_built", "package_busy"].includes(code)
+    const status = ["package_conflict", "package_update_not_built", "package_busy", "package_distro_owned"].includes(code)
       ? 409
       : code === "package_not_installed"
         ? 404
@@ -2720,9 +2753,7 @@ export async function createStrut<TServices = unknown>(
     }
     const actor = await resolveActor(c);
     try {
-      const result = await oneAtATime(() =>
-        installPackage(packageDeps, body.ref as string, { ...(body.digest ? { digest: body.digest as string } : {}), ...(actor ? { actor } : {}) }),
-      );
+      const result = await packages.install(body.ref, { ...(body.digest ? { digest: body.digest as string } : {}), ...(actor ? { actor } : {}) });
       return c.json(result, 201);
     } catch (err) {
       return packageError(c, err);
@@ -2755,14 +2786,7 @@ export async function createStrut<TServices = unknown>(
   app.delete("/packages/:publisher/:name", async (c) => {
     const pkg = `${c.req.param("publisher")}/${c.req.param("name")}`;
     try {
-      const result = await oneAtATime(async () => {
-        const out = await uninstallPackage(packageDeps, pkg, {
-          busy: (workflow) => [...controllers.keys()].some((k) => k.startsWith(`${workflow}/`)),
-          forget: (workflow) => automations.forget(workflow),
-        });
-        await rebuildRegistry();
-        return out;
-      });
+      const result = await packages.uninstall(pkg);
       return c.json({ ok: true, ...result });
     } catch (err) {
       return packageError(c, err);
@@ -5764,6 +5788,7 @@ export async function createStrut<TServices = unknown>(
     stt,
     upgrade,
     automations,
+    packages,
     claims,
     verifier,
     listen,

@@ -305,6 +305,20 @@ export async function stepLoadError(filePath: string): Promise<string | null> {
   }
 }
 
+/** Import a step file as discovery does and say which type it defines, or
+ *  why it does not load — a package install's trial load, before anything
+ *  is written (plans/marketplace.md §12 step 6). */
+export async function stepFileType(filePath: string): Promise<{ type: string } | { error: string }> {
+  try {
+    const mod = await import(`${await hashedUrl(pathToFileURL(filePath))}&strict`);
+    const def = mod.default ?? mod;
+    if (def && typeof def === "object" && "type" in def && "run" in def) return { type: String(def.type) };
+    return { error: "no valid default export — expected `export default defineStep({ type, input, output, run })`" };
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 /**
  * Build the complete step registry by merging core steps (statically
  * imported) with lib steps (dynamically imported from `src/steps/lib/`)
