@@ -83,6 +83,7 @@ import { appsRoot, listAppFiles, readAppFile, validateAppName, writeAppFiles } f
 import { DOCUMENT_FILE, readBuildInfo, withToken, withoutTokenMeta } from "./apps/build.js";
 import { packArchive } from "./packages/archive.js";
 import { buildPackage, type BuildRequest } from "./packages/build.js";
+import { PUBLISHER_FILE, catalogStore, moveChannel, publishRelease, publisherStore } from "./packages/publisher.js";
 import { packageCache } from "./packages/cache.js";
 import { workspaceFences } from "./packages/fence.js";
 import { PACKAGE_DIGEST } from "./packages/format.js";
@@ -2732,24 +2733,123 @@ export async function createStrut<TServices = unknown>(
   // named workflows and apps can execute, the named steps, apps and Concepts,
   // written into the cache — so the archive route above serves it and an install takes it
   // from `file:<dir>`. A person's act like install, one write at a time.
-  app.post("/packages/build", async (c) => {
-    const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>);
+  /** A build request's body, checked, or the reason it is not one. */
+  const buildRequestOf = (body: Record<string, unknown>): BuildRequest | string => {
     const str = (k: string) => body[k] === undefined || typeof body[k] === "string";
     const list = (k: string) => body[k] === undefined || (Array.isArray(body[k]) && (body[k] as unknown[]).every((v) => typeof v === "string"));
     if (typeof body["package"] !== "string" || typeof body["version"] !== "string" || !str("description") || !str("license")) {
-      return c.json({ error: "package and version are required strings (publisher/name, 1.4.0); description and license are strings" }, 400);
+      return "package and version are required strings (publisher/name, 1.4.0); description and license are strings";
     }
-    if (!["workflows", "steps", "concepts", "apps"].every(list)) return c.json({ error: "workflows, steps, concepts and apps are lists of names" }, 400);
+    if (!["workflows", "steps", "concepts", "apps"].every(list)) return "workflows, steps, concepts and apps are lists of names";
     const requires = body["requires"] as { packages?: unknown } | undefined;
     const pinsOk = (p: unknown) => Array.isArray(p) && p.every((r) => r && typeof r === "object" && typeof (r as { package?: unknown }).package === "string" && typeof (r as { digest?: unknown }).digest === "string");
     if (requires !== undefined && (!requires || typeof requires !== "object" || (requires.packages !== undefined && !pinsOk(requires.packages)))) {
-      return c.json({ error: "requires is { packages: [{ package, digest }] }: packages built on this strut, by the digest their build returned" }, 400);
+      return "requires is { packages: [{ package, digest }] }: packages built on this strut, by the digest their build returned";
     }
+    return body as unknown as BuildRequest;
+  };
+  const builtBody = (built: Awaited<ReturnType<typeof buildPackage>>) => ({
+    package: built.package,
+    version: built.version,
+    digest: built.digest,
+    files: built.files,
+    requires: built.manifest.requires ?? {},
+    warnings: built.warnings,
+  });
+  app.post("/packages/build", async (c) => {
+    const req = buildRequestOf(await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>));
+    if (typeof req === "string") return c.json({ error: req }, 400);
     try {
-      const built = await oneAtATime(() => buildPackage(packageDeps, body as unknown as BuildRequest));
-      return c.json({ package: built.package, version: built.version, digest: built.digest, files: built.files, requires: built.manifest.requires ?? {}, warnings: built.warnings }, 201);
+      return c.json(builtBody(await oneAtATime(() => buildPackage(packageDeps, req))), 201);
     } catch (err) {
       return packageError(c, err);
+    }
+  });
+
+  // ── The publisher (plans/marketplace.md §13, §12.1) ─────────────────────
+  // This strut's Ed25519 key, in a file of its own beside peers.json, and
+  // the catalog it seals with it: what it PUBLISHED, where `GET /packages`
+  // folds what it installed. The byte host is this strut: the catalog is
+  // `GET /packages/catalog`, each release's archive the route above. Reads
+  // are open to any credential (a subscriber's); the writes are a person's.
+  const publisherSecrets = secretStore instanceof FileSecretStore ? new FileSecretStore(dataDir, PUBLISHER_FILE) : new MemorySecretStore();
+  const publisher = publisherStore(publisherSecrets, {
+    unsafe: () =>
+      publisherSecrets instanceof FileSecretStore && !bootEnv()["STRUT_SECRET_KEY"]
+        ? `STRUT_SECRET_KEY is not set, so ${PUBLISHER_FILE} would be stored under the dev default key — obfuscated, not encrypted. Set it and restart before publishing`
+        : undefined,
+  });
+  const catalogDeps = { publisher, catalogs: catalogStore(dataDir) };
+  /** A publisher refusal's code → its status, else as a package refusal. */
+  const catalogError = (c: Context, err: unknown) => {
+    const code = /^([a-z_]+):/.exec(err instanceof Error ? err.message : String(err))?.[1] ?? "";
+    const status = ({ publisher_unsafe_key: 409, catalog_no_release: 404, catalog_channel: 400 } as Record<string, 400 | 404 | 409>)[code];
+    return status ? c.json({ error: (err as Error).message }, status) : packageError(c, err);
+  };
+  app.get("/publisher", async (c) => {
+    const info = await publisher.get();
+    return info ? c.json(info) : c.json({ error: "this strut has no publisher key yet: POST /publisher, or publish a package" }, 404);
+  });
+  app.post("/publisher", async (c) => {
+    try {
+      const { info, minted } = await publisher.ensure();
+      return c.json(info, minted ? 201 : 200);
+    } catch (err) {
+      return catalogError(c, err);
+    }
+  });
+  // Build a package and publish it: its release added to the catalog, and
+  // `channel` moved to it when named. One write at a time with the rest.
+  app.post("/packages/publish", async (c) => {
+    const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>);
+    const { channel, ...rest } = body;
+    if (channel !== undefined && typeof channel !== "string") return c.json({ error: "channel is a channel's name (stable, canary)" }, 400);
+    const req = buildRequestOf(rest);
+    if (typeof req === "string") return c.json({ error: req }, 400);
+    try {
+      const { built, catalog } = await oneAtATime(async () => {
+        await publisher.ensure(); // refused before a build when the key cannot be kept safely
+        const built = await buildPackage(packageDeps, req);
+        const catalog = await publishRelease(catalogDeps, { manifest: built.manifest, digest: built.digest, ...(channel ? { channel } : {}) });
+        return { built, catalog };
+      });
+      return c.json({ ...builtBody(built), ...(channel ? { channel } : {}), catalog: { key: catalog.card.key, seq: catalog.card.seq, digest: catalog.digest } }, 201);
+    } catch (err) {
+      return catalogError(c, err);
+    }
+  });
+  // The catalog as served — its RFC 8785 bytes, which a reader checks
+  // against the key it subscribed to — the current one, or one by digest.
+  app.get("/packages/catalog", async (c) => {
+    const digest = c.req.query("digest");
+    if (digest !== undefined && !PACKAGE_DIGEST.test(digest)) return c.json({ error: "digest is sha256:<64 hex>" }, 400);
+    const file = digest ? await catalogDeps.catalogs.get(digest) : await catalogDeps.catalogs.current();
+    if (!file) return c.json({ error: digest ? `no catalog at ${digest} here` : "this strut has published nothing yet" }, 404);
+    const etag = `"${file.digest}"`;
+    const headers = {
+      "content-type": "application/json",
+      "x-content-type-options": "nosniff",
+      // The current one changes with every publish; one by digest never does.
+      "cache-control": digest ? "private, max-age=31536000, immutable" : "private, no-cache",
+      etag,
+    };
+    if (etagMatches(c.req.header("if-none-match"), etag)) return c.body(null, 304, headers);
+    return c.body(file.bytes.buffer.slice(file.bytes.byteOffset, file.bytes.byteOffset + file.bytes.byteLength) as ArrayBuffer, 200, headers);
+  });
+  // Point a channel at a release the catalog lists — a rollback is moving
+  // it back — or take a package out of it (`digest: null`).
+  app.put("/packages/channels/:channel", async (c) => {
+    const body = await c.req.json<{ package?: unknown; digest?: unknown }>().catch(() => ({}) as { package?: unknown; digest?: unknown });
+    if (typeof body.package !== "string" || !(body.digest === null || (typeof body.digest === "string" && PACKAGE_DIGEST.test(body.digest)))) {
+      return c.json({ error: "package is publisher/name, and digest is sha256:<64 hex> or null" }, 400);
+    }
+    try {
+      const catalog = await oneAtATime(() =>
+        moveChannel(catalogDeps, { channel: c.req.param("channel"), package: body.package as string, digest: body.digest as string | null }),
+      );
+      return c.json({ channel: c.req.param("channel"), package: body.package, digest: body.digest, catalog: { key: catalog.card.key, seq: catalog.card.seq, digest: catalog.digest } });
+    } catch (err) {
+      return catalogError(c, err);
     }
   });
   app.delete("/packages/:publisher/:name", async (c) => {
