@@ -6,12 +6,15 @@
  * by hand.
  *
  *   1. The closure: `flowClosure` per named workflow, `agentTools` globs
- *      expanded against the registry. A workflow or custom step it reaches
- *      under the prefix is an item. One outside it is a `requires.packages`
- *      pin when its active version carries an `upstream`, recorded nowhere
- *      when it is a seed's (`source: "seed"`, strut's own `job` or a host's —
- *      the installing strut must have it, and the install checks), and
- *      refuses the build otherwise — unless it is under a SIBLING the request
+ *      expanded against the registry; per named app, its grants (each
+ *      granted workflow walked the same way, `grants.steps` globs expanded)
+ *      and the apps it imports, read off its build (`dist/build.json`). A
+ *      workflow, custom step or app it reaches under the prefix is an item.
+ *      One outside it is a `requires.packages` pin when its active version
+ *      carries an `upstream`, recorded nowhere when it is a seed's (`source:
+ *      "seed"`, strut's own `job` or `strut/views`, or a host's — the
+ *      installing strut must have it, and the install checks), and refuses
+ *      the build otherwise — unless it is under a SIBLING the request
  *      requires, a package built here whose cached copy holds it as it is
  *      now. Core and lib types are recorded nowhere.
  *   2. Every `_` step under the prefix: helpers ride with their namespace.
@@ -24,6 +27,10 @@
  *      source, literal `exec` commands, literal `runtime:` fields.
  *   6. An item in a sealed namespace refuses the build.
  *
+ * An app goes in as its active version's sources, `apps/<name>/`: the files
+ * its version hash covers (never `dist/` or `data.db`), checked against that
+ * hash, so its item hash in the package is its version hash here.
+ *
  * Everything that refuses is collected before anything is written, and the
  * refusal names every one (`package_build_refused: …`). Building twice from
  * the same workspace gives the same digest.
@@ -31,6 +38,8 @@
 import { randomBytes } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import type { AppsCapability } from "../apps/apps.js";
+import { readBuildInfo } from "../apps/build.js";
 import type { ClaimsAuthoring } from "../claims-authoring.js";
 import { claimSpecSchema, type ClaimsBlock } from "../claims-schemas.js";
 import { flowClosure, globToRegExp, type FlowClosure } from "../closure.js";
@@ -43,6 +52,7 @@ import { secretNamesIn } from "../reach.js";
 import type { SubflowResolver } from "../runner.js";
 import { isSealedStep, sealedStepPatterns } from "../sealed.js";
 import { baseType } from "../step-ref.js";
+import { hashTree, treeFiles } from "../version.js";
 import { packagePrefixOf, type Upstream, type VersionSource, type WorkspaceStore } from "../workspace.js";
 import { dumpYaml, loadYaml } from "../yaml.js";
 import type { CachedPackage, PackageCache } from "./cache.js";
@@ -60,6 +70,9 @@ export interface BuildDeps {
   getRegistry(): Promise<StepRegistry>;
   /** The sealed namespaces (`STRUT_SEALED` + the defaults). */
   sealed?: readonly string[];
+  /** An app version's directory, restored when it is not kept; without it
+   *  the directory is the store's path as it is. */
+  apps?: Pick<AppsCapability, "versionDir">;
 }
 
 export interface BuildRequest {
@@ -76,7 +89,9 @@ export interface BuildRequest {
   steps?: string[];
   /** Concept pages, each with the pages under it. */
   concepts?: string[];
-  /** Not built yet: refused. */
+  /** Apps, each with what its grants can execute and the apps it imports.
+   *  One under the prefix is `apps/<name>/`, so its name has one segment
+   *  after the prefix; one outside it is a pin. */
   apps?: string[];
   /** Packages BUILT on this strut that this one requires (a sibling under
    *  another prefix of the same publisher): each at a digest this strut's
@@ -103,6 +118,8 @@ const isHelperName = (name: string) => name.split("/").pop()!.startsWith("_");
 /** A literal `secrets.get("NAME")` (or `secrets?.get`) in step source. */
 const SECRET_GET = /\bsecrets\??\.get\(\s*(["'`])([^"'`\s$\\]+)\1\s*[,)]/g;
 
+type Kind = "workflow" | "step" | "app";
+
 /** The record of an item's active version: where it came from. */
 interface Origin {
   upstream?: Upstream;
@@ -113,8 +130,7 @@ export async function buildPackage(deps: BuildDeps, req: BuildRequest): Promise<
   const pkg = req.package;
   if (typeof pkg !== "string" || !PACKAGE_NAME.test(pkg)) throw refused(["a package is named publisher/name: two lowercase segments, [a-z][a-z0-9-]*"]);
   if (typeof req.version !== "string" || !req.version) throw refused(["a package has a version, the publisher's label (1.4.0)"]);
-  if (req.apps?.length) throw new Error(`package_unsupported: ${req.apps.join(", ")} — a package with an app is not built yet`);
-  if (!req.workflows?.length && !req.steps?.length && !req.concepts?.length) throw refused(["name at least one workflow, step or Concept"]);
+  if (!req.workflows?.length && !req.steps?.length && !req.concepts?.length && !req.apps?.length) throw refused(["name at least one workflow, step, Concept or app"]);
 
   const prefix = `${pkg}/`;
   const under = (name: string) => name.startsWith(prefix);
@@ -126,6 +142,8 @@ export async function buildPackage(deps: BuildDeps, req: BuildRequest): Promise<
 
   const workflows = new Set<string>();
   const steps = new Set<string>();
+  /** The apps under the prefix, each with its sources: path → bytes. */
+  const apps = new Map<string, Map<string, Buffer>>();
   const pins = new Map<string, { digest: string; source: string; from: string }>();
   /** Every step a closure walked, a kept check's included: what `requires` is read from. */
   const walked: Step[] = [];
@@ -148,8 +166,9 @@ export async function buildPackage(deps: BuildDeps, req: BuildRequest): Promise<
     }
   }
 
-  const originOf = async (kind: "workflow" | "step", name: string): Promise<Origin | null> => {
-    const meta = kind === "workflow" ? await deps.workspace.getWorkflowMetadata(name) : await deps.workspace.getStepMetadata(name);
+  const originOf = async (kind: Kind, name: string): Promise<Origin | null> => {
+    const meta =
+      kind === "workflow" ? await deps.workspace.getWorkflowMetadata(name) : kind === "step" ? await deps.workspace.getStepMetadata(name) : await deps.workspace.getApp(name);
     const v = meta?.versions[meta.active];
     return meta ? { ...(v?.upstream ? { upstream: v.upstream } : {}), ...(v?.source ? { source: v.source } : {}) } : null;
   };
@@ -157,15 +176,24 @@ export async function buildPackage(deps: BuildDeps, req: BuildRequest): Promise<
   // Outside the prefix: a seed's is strut's (or the host's), another
   // package's is a pin at the digest it was installed at, anything else is
   // refused — a package carries its own prefix and nobody else's items.
-  const outside = async (kind: "workflow" | "step", name: string, o: Origin, by: string) => {
+  const outside = async (kind: Kind, name: string, o: Origin, by: string) => {
     if (o.source === "seed") return;
     const up = o.upstream;
     const sibling = siblings.get(packagePrefixOf(name) ?? "");
     if (sibling && (!up || up.package !== sibling.manifest.package)) {
       // A sibling built here: the item must be in it, byte for byte as it is now.
-      const file = `${kind === "workflow" ? "workflows" : "steps"}/${name.slice(sibling.manifest.package.length + 1)}.${kind === "workflow" ? "yaml" : "ts"}`;
-      const here = kind === "workflow" ? await deps.workspace.getWorkflowSource(name, (await deps.workspace.getWorkflowMetadata(name))!.active) : (await deps.workspace.getStepSource(name))?.code;
-      const there = sibling.files.includes(file) ? await readFile(join(sibling.dir, file), "utf-8") : undefined;
+      const path = name.slice(sibling.manifest.package.length + 1);
+      let here: string | undefined;
+      let there: string | undefined;
+      if (kind === "app") {
+        here = (await deps.workspace.getApp(name))?.hash;
+        const files = sibling.files.filter((f) => f.startsWith(`apps/${path}/`)).map((f) => f.slice(`apps/${path}/`.length));
+        there = files.length ? await hashTree(join(sibling.dir, "apps", path), files) : undefined;
+      } else {
+        const file = `${kind === "workflow" ? "workflows" : "steps"}/${path}.${kind === "workflow" ? "yaml" : "ts"}`;
+        here = kind === "workflow" ? await deps.workspace.getWorkflowSource(name, (await deps.workspace.getWorkflowMetadata(name))!.active) : (await deps.workspace.getStepSource(name))?.code;
+        there = sibling.files.includes(file) ? await readFile(join(sibling.dir, file), "utf-8") : undefined;
+      }
       if (there === undefined || there !== here) {
         problems.push(`${by} reaches the ${kind} ${name}, which ${sibling.manifest.package} at ${sibling.digest} ${there === undefined ? "does not hold" : "holds as it was, not as it is here"} — rebuild ${sibling.manifest.package} and require its new digest`);
       }
@@ -200,6 +228,19 @@ export async function buildPackage(deps: BuildDeps, req: BuildRequest): Promise<
     const o = await originOf("workflow", name);
     if (!o) problems.push(`${by} calls the workflow ${name}, which is not here`);
     else await outside("workflow", name, o, by);
+  };
+
+  /** Apps under the prefix still to walk: their grants and imports. */
+  const appQueue: string[] = [];
+  const reachApp = async (name: string, by: string): Promise<void> => {
+    const o = await originOf("app", name);
+    if (!o) problems.push(`${by} names the app ${name}, which is not here`);
+    else if (!under(name)) await outside("app", name, o, by);
+    else if (name.slice(prefix.length).includes("/")) problems.push(`the app ${name} cannot be a package folder, apps/<name>/: an app has one segment under ${prefix}`);
+    else if (!apps.has(name)) {
+      apps.set(name, new Map());
+      appQueue.push(name);
+    }
   };
 
   // The closure walks a workflow under the prefix and stops at one outside
@@ -241,17 +282,17 @@ export async function buildPackage(deps: BuildDeps, req: BuildRequest): Promise<
 
   // 1. The closures.
   const unread: Array<{ workflow: string; why: string[] }> = [];
-  for (const name of req.workflows ?? []) {
-    if (!under(name)) {
-      await reachWorkflow(name, "the request");
-      continue;
-    }
+  const rooted = new Set<string>();
+  const walkWorkflow = async (name: string, by: string): Promise<void> => {
+    if (!under(name)) return reachWorkflow(name, by);
+    if (rooted.has(name)) return;
+    rooted.add(name);
     let flow: Flow;
     try {
       flow = await deps.workspace.getWorkflow(name);
     } catch {
-      problems.push(`no workflow ${name} here`);
-      continue;
+      problems.push(by === "the request" ? `no workflow ${name} here` : `${by} names the workflow ${name}, which is not here`);
+      return;
     }
     workflows.add(name);
     root = name;
@@ -265,10 +306,45 @@ export async function buildPackage(deps: BuildDeps, req: BuildRequest): Promise<
       ...closure.unreadGrants.map((g) => `the grant ${g} is read when the run starts`),
     ];
     if (!closure.resolvable || why.length) unread.push({ workflow: name, why: why.length ? why : ["an agentTools value it cannot read"] });
-  }
+  };
+  for (const name of req.workflows ?? []) await walkWorkflow(name, "the request");
   for (const type of req.steps ?? []) {
     if (!custom.has(type)) problems.push(registry[type] ? `${type} is a step strut ships, not one a package carries` : `no custom step ${type} here`);
     else await reachStep(type, "the request");
+  }
+  // An app: its sources as its version hash covers them, what its grants can
+  // execute, and the apps it imports — read off the build of those sources.
+  for (const name of req.apps ?? []) await reachApp(name, "the request");
+  while (appQueue.length) {
+    const name = appQueue.shift()!;
+    const rec = (await deps.workspace.getApp(name))!;
+    const at = `${name}@${rec.version}`;
+    const dir = (await deps.apps?.versionDir(name))?.path ?? (await deps.workspace.materializeAppVersion(name, rec.version)).path;
+    const files = await treeFiles(dir);
+    if (!files.length) {
+      problems.push(`the files of ${at} are not on this host (${dir})`);
+      continue;
+    }
+    if ((await hashTree(dir, files)) !== rec.hash) {
+      problems.push(`the files of ${at} are not its version: its directory was edited in place — publish it again`);
+      continue;
+    }
+    for (const f of files) apps.get(name)!.set(f, await readFile(join(dir, f)));
+    const built = await readBuildInfo(dir);
+    if (!built || built.hash !== rec.hash) problems.push(`${at} has no build of its sources, so the apps it imports cannot be read — build and publish it again`);
+    for (const imp of built?.hash === rec.hash ? built.imports : []) {
+      if (imp.pinned) problems.push(`${at} imports ${imp.name}@${imp.version}: a version label is this strut's own — import the app by name`);
+      else await reachApp(imp.name, `the app ${name}`);
+    }
+    for (const wf of [...rec.manifest.grants.workflows, ...rec.manifest.grants.automations]) await walkWorkflow(wf, `the app ${name}`);
+    for (const grant of rec.manifest.grants.steps) {
+      const types = grant.includes("*") ? Object.keys(registry).filter((t) => globToRegExp(grant).test(t)) : [grant];
+      for (const type of types) {
+        await reachStep(type, `the app ${name} (grant ${grant})`);
+        // What it may call with any config: what a step reads by default.
+        walked.push({ id: `${name} (grant ${type})`, type, config: {} } as Step);
+      }
+    }
   }
   // A closure that cannot be read whole is a lower bound: built only when the
   // request lists more than the workflows it is the closure of — what it reaches.
@@ -286,12 +362,12 @@ export async function buildPackage(deps: BuildDeps, req: BuildRequest): Promise<
   for (const type of custom) if (under(type) && isHelperName(type)) steps.add(type);
 
   // 6. Sealed namespaces are strut's.
-  for (const name of [...workflows, ...steps]) {
+  for (const name of [...workflows, ...steps, ...apps.keys()]) {
     if (isSealedStep(name, undefined, sealed)) problems.push(`${name} is in a sealed namespace (${sealed.join(", ")}): those are strut's`);
   }
 
   // The items' files.
-  const files = new Map<string, string>();
+  const files = new Map<string, string | Buffer>();
   const rel = (name: string) => name.slice(prefix.length);
   for (const name of [...workflows].sort()) {
     const meta = await deps.workspace.getWorkflowMetadata(name);
@@ -310,6 +386,9 @@ export async function buildPackage(deps: BuildDeps, req: BuildRequest): Promise<
     // The install loads each step and refuses one whose defineStep is not its path.
     if (!isHelperName(type) && registry[type]?.type !== type) problems.push(`the step ${type} does not load here as ${type}`);
     files.set(`steps/${rel(type)}.ts`, src.code);
+  }
+  for (const [name, sources] of [...apps].sort(([a], [b]) => a.localeCompare(b))) {
+    for (const [file, bytes] of sources) files.set(`apps/${rel(name)}/${file}`, bytes);
   }
 
   // 3. Concepts, and 4. the steps' claims.
@@ -347,7 +426,7 @@ export async function buildPackage(deps: BuildDeps, req: BuildRequest): Promise<
   }
   for (const type of steps) {
     for (const name of registry[type]?.secrets ?? []) secrets.add(name);
-    for (const m of (files.get(`steps/${rel(type)}.ts`) ?? "").matchAll(SECRET_GET)) secrets.add(m[2]!);
+    for (const m of String(files.get(`steps/${rel(type)}.ts`) ?? "").matchAll(SECRET_GET)) secrets.add(m[2]!);
   }
   const sorted = (s: Set<string>) => [...s].sort();
   const requires: NonNullable<PackageManifest["requires"]> = {

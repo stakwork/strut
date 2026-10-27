@@ -4,13 +4,17 @@
  * install on a fresh one, run it, and the fence holds. First on the
  * filesystem workspace (the closure, the pins, the refusals, `requires`),
  * then the Concepts and a step's claims on every graph backend, installed on
- * a cleared graph and on a filesystem workspace.
+ * a cleared graph and on a filesystem workspace. Apps last: carried with
+ * their grants and imports, built against the buyer's kit, held to the
+ * prefix — on the filesystem, then on every graph backend.
  */
 import { after, afterEach, before, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import type { KitLocation } from "../apps/kit.js";
+import { readBuildInfo } from "../apps/build.js";
 import { createStrut, type Strut } from "../createStrut.js";
 import type { GraphBackend } from "../graph/backend.js";
 import { seedJarvisOntology } from "../graph/ontology-seed.js";
@@ -18,6 +22,8 @@ import { seedStrutDomain } from "../graph/schema-seed.js";
 import { testBackends } from "../graph/test-util.js";
 import { GraphWorkspaceStore } from "../graph/workspace-store.js";
 import { MemoryRunStore } from "../store.js";
+import { kitForTests } from "../test-util/app-kit.js";
+import { hashTree } from "../version.js";
 import { WorkspaceManager, type WorkspaceStore } from "../workspace.js";
 import { loadYaml } from "../yaml.js";
 import { buildPackage, type BuildDeps, type BuildRequest, type BuildResult } from "./build.js";
@@ -79,6 +85,7 @@ const json = (body: unknown, method = "POST") => ({ method, headers: { "content-
 const depsOf = (strut: Strut): BuildDeps => ({
   workspace: strut.workspace,
   cache: packageCache(strut.dataDir),
+  apps: strut.apps,
   ...(strut.workspace.graph ? { graph: strut.workspace.graph } : {}),
   claims: strut.claims ? { reader: strut.claims } : null,
   getRegistry: async () => {
@@ -264,7 +271,7 @@ describe("building a package on a filesystem workspace", () => {
     assert.equal((await post({ package: "acme/linear", version: "1", workflows: ["acme/linear/sync"], apps: ["acme/linear/issues"] })).status, 400);
   });
 
-  it("refuses what it cannot carry, naming each — a local item outside the prefix, a version label, two digests, a sealed namespace, an app", async () => {
+  it("refuses what it cannot carry, naming each — a local item outside the prefix, a version label, two digests, a sealed namespace", async () => {
     await ws.publishStep("local/judge", PLAIN("local/judge"));
     await ws.publishWorkflow("acme/linear/judged", "v1", flow("acme/linear/judged", "type: local/judge", "type: acme/linear/create-issue@v1"));
     let msg = await refusal(build(src, { workflows: ["acme/linear/judged"] }));
@@ -287,10 +294,10 @@ describe("building a package on a filesystem workspace", () => {
     assert.match(msg, /eval\/kit\/run is in a sealed namespace/);
     assert.match(msg, /eval\/kit\/score is in a sealed namespace/);
 
-    assert.match(await refusal(build(src, { workflows: ["acme/linear/sync"], apps: ["acme/linear/issues"] })), /^package_unsupported: /);
+    assert.match(await refusal(build(src, { workflows: ["acme/linear/sync"], apps: ["acme/linear/issues"] })), /the request names the app acme\/linear\/issues, which is not here/);
     assert.match(await refusal(build(src, { workflows: ["acme/linear/missing"] })), /no workflow acme\/linear\/missing here/);
     assert.match(await refusal(build(src, { steps: ["log"] })), /log is a step strut ships, not one a package carries/);
-    assert.match(await refusal(build(src, {})), /name at least one workflow, step or Concept/);
+    assert.match(await refusal(build(src, {})), /name at least one workflow, step, Concept or app/);
     assert.match(await refusal(build(src, { package: "Acme", workflows: ["acme/linear/sync"] })), /publisher\/name/);
     assert.match(await refusal(build(src, { concepts: ["Linear"] })), /there are no Concepts to package: this workspace has no graph/);
   });
@@ -333,6 +340,166 @@ describe("building a package on a filesystem workspace", () => {
   });
 });
 
+/** An app on the source strut: its files, published as a person would. */
+async function publishApp(strut: Strut, name: string, files: Record<string, string | Buffer>): Promise<string> {
+  const dir = join(strut.dataDir, "drafts", ...name.split("/"));
+  for (const [rel, body] of Object.entries(files)) {
+    await mkdir(dirname(join(dir, rel)), { recursive: true });
+    await writeFile(join(dir, rel), body);
+  }
+  const r = await strut.apps.publish(dir, name, { surface: "person" });
+  assert.ok(r.ok, r.ok ? "" : r.errors.join("\n"));
+  return r.hash;
+}
+/** Not UTF-8: an app's files are bytes. */
+const DOT = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0x00, 0xfe]);
+const UI = { "app.yaml": "title: Linear UI\n", "src/index.ts": 'export const LABEL = "linear-label";\n', "src/App.tsx": "export default () => null;\n", "public/dot.png": DOT };
+const ISSUES = (body = "{LABEL}") => ({
+  "app.yaml": "title: Issues\ngrants:\n  workflows: [acme/linear/sync]\n  automations: [acme/linear/report]\n  steps: [acme/linear/create-issue, run/*]\n",
+  "src/App.tsx": `import { LABEL } from "acme/linear/ui";\nexport default function App() { return <p>${body}</p>; }\n`,
+});
+const REPORT = flow("acme/linear/report", "type: log, config: { message: weekly }");
+
+describe("building and installing a package with apps (filesystem)", () => {
+  let kit: KitLocation;
+  let src: Strut;
+  const struts: Strut[] = [];
+  const fresh = async (name: string) => {
+    const s = await boot(new WorkspaceManager(join(root, name)), { kit });
+    struts.push(s);
+    return s;
+  };
+  before(async () => {
+    kit = await kitForTests();
+  });
+  beforeEach(async () => {
+    src = await fresh("source");
+    await publishLinear(src.workspace);
+    await src.workspace.publishWorkflow("acme/linear/report", "v1", REPORT);
+    await src.rebuildRegistry();
+  });
+  afterEach(async () => {
+    for (const s of struts.splice(0)) await s.close?.();
+  });
+
+  it("carries an app with what its grants execute and the apps it imports; its item hash is its version hash; it installs, builds and lists as installed", async () => {
+    const uiHash = await publishApp(src, "acme/linear/ui", UI);
+    const issuesHash = await publishApp(src, "acme/linear/issues", ISSUES());
+    const built = await build(src, { apps: ["acme/linear/issues"] });
+    assert.deepEqual(built.files, [
+      "apps/issues/app.yaml",
+      "apps/issues/src/App.tsx",
+      "apps/ui/app.yaml",
+      "apps/ui/public/dot.png",
+      "apps/ui/src/App.tsx",
+      "apps/ui/src/index.ts",
+      "steps/_shared.ts",
+      "steps/create-issue.ts",
+      "strut.yaml",
+      "workflows/report.yaml",
+      "workflows/sync.yaml",
+    ]);
+    assert.deepEqual(built.manifest.requires, { secrets: ["LINEAR_API_KEY", "NOTION_KEY"], binaries: ["sh"] });
+    assert.deepEqual(built.warnings, []);
+    assert.deepEqual(await readFile(join(built.dir, "apps/ui/public/dot.png")), DOT, "bytes, not text");
+    const appFiles = (app: string) => built.files.filter((f) => f.startsWith(`apps/${app}/`)).map((f) => f.slice(`apps/${app}/`.length));
+    assert.equal(await hashTree(join(built.dir, "apps/issues"), appFiles("issues")), issuesHash, "the item hash is the version hash");
+    assert.equal(await hashTree(join(built.dir, "apps/ui"), appFiles("ui")), uiHash);
+    assert.deepEqual((await readPackage(built.dir)).items.filter((i) => i.kind === "app").map((i) => i.name), ["acme/linear/issues", "acme/linear/ui"]);
+
+    const buyer = await fresh("buyer");
+    const r = await roundTrip(buyer, built.dir);
+    assert.deepEqual(r.packages[0]!.items.map((i) => [i.kind, i.name, i.status, i.version]), [
+      ["step", "acme/linear/_shared", "installed", "v1"],
+      ["step", "acme/linear/create-issue", "installed", "v1"],
+      ["workflow", "acme/linear/report", "installed", "v1"],
+      ["workflow", "acme/linear/sync", "installed", "v1"],
+      ["app", "acme/linear/issues", "installed", "v1"],
+      ["app", "acme/linear/ui", "installed", "v1"],
+    ]);
+    const issues = (await buyer.apps.get("acme/linear/issues"))!;
+    assert.deepEqual([issues.hash, issues.stale, issues.versions["v1"]?.source, issues.upstream?.package, issues.upstream?.digest], [issuesHash, false, "install", "acme/linear", built.digest]);
+    // Built here, against the buyer's kit, importing the buyer's copy of the kit app.
+    assert.deepEqual((await readBuildInfo(issues.dir))!.imports, [{ name: "acme/linear/ui", version: "v1", hash: uiHash }]);
+    assert.ok((await readFile(join(issues.dir, "dist", "index.html"), "utf-8")).includes("linear-label"));
+
+    const listed = (await (await buyer.app.request("/packages")).json()) as { packages: Array<{ package: string; items: Array<{ kind: string; name: string; installed?: string; modified?: boolean }> }> };
+    assert.deepEqual(listed.packages[0]!.items.filter((i) => i.kind === "app"), [
+      { kind: "app", name: "acme/linear/issues", installed: "v1", active: "v1", modified: false },
+      { kind: "app", name: "acme/linear/ui", installed: "v1", active: "v1", modified: false },
+    ]);
+
+    // The prefix is the package's: a new app there is refused; an edit is a fork.
+    const draft = join(buyer.dataDir, "drafts", "mine");
+    await buyer.apps.checkout("acme/linear/issues", draft);
+    await assert.rejects(buyer.apps.publish(draft, "acme/linear/mine", { surface: "person" }), /package_conflict: acme\/linear\/mine is under acme\/linear, an installed package/);
+    await writeFile(join(draft, "src", "App.tsx"), 'import { LABEL } from "acme/linear/ui";\nexport default function App() { return <p>{LABEL} forked</p>; }\n');
+    const forked = await buyer.apps.publish(draft, "acme/linear/issues", { surface: "person" });
+    assert.ok(forked.ok && forked.version === "v2");
+
+    // The same digest again: what is here stays as it is.
+    const again = await install(buyer, `file:${built.dir}`);
+    assert.equal(again.status, 201, JSON.stringify(again.body));
+    assert.equal(again.body.packages[0]!.status, "present");
+    assert.deepEqual(again.body.packages[0]!.items.filter((i) => i.kind === "app").map((i) => [i.name, i.status]), [["acme/linear/issues", "modified"], ["acme/linear/ui", "present"]]);
+
+    // Uninstall: the fork stays, the rest goes.
+    const gone = await buyer.app.request("/packages/acme/linear", { method: "DELETE" });
+    const body = (await gone.json()) as { removed: Array<{ kind: string; name: string }>; kept: Array<{ kind: string; name: string }> };
+    assert.deepEqual(body.kept.map((i) => [i.kind, i.name]), [["app", "acme/linear/issues"]]);
+    assert.ok(body.removed.some((i) => i.kind === "app" && i.name === "acme/linear/ui"));
+    assert.equal(await buyer.apps.get("acme/linear/ui"), null);
+    assert.equal((await buyer.apps.get("acme/linear/issues"))?.version, "v2");
+  });
+
+  it("refuses an app it cannot carry: outside the prefix from no package, an import pinned to a version, a name the format cannot hold", async () => {
+    await publishApp(src, "local-ui", UI);
+    await publishApp(src, "acme/linear/ui", UI);
+    await publishApp(src, "acme/linear/outer", { "app.yaml": "title: Outer\n", "src/App.tsx": 'import { LABEL } from "local-ui";\nexport default function App() { return <p>{LABEL}</p>; }\n' });
+    await publishApp(src, "acme/linear/pinned", { "app.yaml": "title: Pinned\n", "src/App.tsx": 'import { LABEL } from "acme/linear/ui@v1";\nexport default function App() { return <p>{LABEL}</p>; }\n' });
+    await publishApp(src, "acme/linear/deep/board", { "app.yaml": "title: Deep\n", "src/App.tsx": "export default () => null;\n" });
+    const msg = await refusal(build(src, { apps: ["acme/linear/outer", "acme/linear/pinned", "acme/linear/deep/board"] }));
+    assert.match(msg, /^package_build_refused: /);
+    assert.match(msg, /the app acme\/linear\/outer reaches the app local-ui, which is outside acme\/linear\/ and came from no package/);
+    assert.match(msg, /acme\/linear\/pinned@v1 imports acme\/linear\/ui@v1: a version label is this strut's own — import the app by name/);
+    assert.match(msg, /the app acme\/linear\/deep\/board cannot be a package folder, apps\/<name>\/: an app has one segment under acme\/linear\//);
+  });
+
+  it("refuses the whole install, writing nothing, when an app does not build here, grants a step nobody has, or its name is a local app's", async () => {
+    const buyer = await fresh("buyer");
+    const pkg = (app: Record<string, string>) => ({
+      "strut.yaml": "package: acme/linear\nversion: 1.4.0\nrequires:\n  secrets: [LINEAR_API_KEY]\n",
+      "steps/_shared.ts": HELPER,
+      "steps/create-issue.ts": STEP("acme/linear/create-issue"),
+      "workflows/sync.yaml": SYNC,
+      ...Object.fromEntries(Object.entries(app).map(([k, v]) => [`apps/issues/${k}`, v])),
+    });
+    const nothing = async () => {
+      assert.deepEqual((await buyer.workspace.listWorkflows()).map((w) => w.name), []);
+      assert.deepEqual(Object.keys(await buyer.workspace.getActiveStepHashes()), []);
+      assert.deepEqual(await buyer.workspace.listApps(), []);
+    };
+    const cases: Array<[Record<string, string>, RegExp]> = [
+      // The buyer's kit lacks the import: the build names it.
+      [{ "app.yaml": "title: Issues\n", "src/App.tsx": 'import pad from "left-pad";\nexport default function App() { return <p>{pad}</p>; }\n' }, /bad_package: the app acme\/linear\/issues does not build on this strut — .*left-pad/],
+      [{ "app.yaml": "title: Issues\ngrants:\n  workflows: [acme/linear/nowhere]\n", "src/App.tsx": "export default () => null;\n" }, /the app acme\/linear\/issues does not build on this strut — grants\.workflows: no workflow "acme\/linear\/nowhere"/],
+      [{ "app.yaml": "title: Issues\ngrants:\n  steps: [nope/missing]\n", "src/App.tsx": "export default () => null;\n" }, /the app acme\/linear\/issues grants the step nope\/missing, which is neither on this strut nor in the packages/],
+      [{ "app.yaml": "title: [\n", "src/App.tsx": "export default () => null;\n" }, /apps\/issues\/app\.yaml: /],
+    ];
+    for (const [app, re] of cases) {
+      const r = await install(buyer, `file:${await writeTree(pkg(app), crypto.randomUUID())}`);
+      assert.equal(r.status, 400, JSON.stringify(r.body));
+      assert.match(r.body.error!, re);
+      await nothing();
+    }
+    // A local app under the prefix.
+    await publishApp(buyer, "acme/linear/mine", UI);
+    const r = await install(buyer, `file:${await writeTree(pkg({ "app.yaml": "title: Issues\n", "src/App.tsx": "export default () => null;\n" }), "ok")}`);
+    assert.equal(r.status, 409);
+    assert.match(r.body.error!, /package_conflict: the app acme\/linear\/mine is a local one under acme\/linear\//);
+  });
+});
+
 for (const tb of testBackends()) {
   describe(`building a package with Concepts and step claims (${tb.name})`, { skip: tb.skip }, () => {
     let backend: GraphBackend;
@@ -357,9 +524,9 @@ for (const tb of testBackends()) {
       await rm(scratch, { recursive: true, force: true });
     });
     /** A strut on the graph with strut's own Concepts seeded (`Job`, …). */
-    const graphStrut = async (name: string) => {
+    const graphStrut = async (name: string, extra: Record<string, unknown> = {}) => {
       const dir = join(scratch, name);
-      const s = await boot(new GraphWorkspaceStore(backend, { materializeDir: join(dir, "steps"), appsDir: join(dir, "apps") }), { dataDir: dir, concepts: undefined });
+      const s = await boot(new GraphWorkspaceStore(backend, { materializeDir: join(dir, "steps"), appsDir: join(dir, "apps") }), { dataDir: dir, concepts: undefined, ...extra });
       struts.push(s);
       return s;
     };
@@ -420,6 +587,36 @@ for (const tb of testBackends()) {
       assert.deepEqual(parents?.edges.map((e) => e.other), [await conceptRef("Job")]);
       const listed = (await (await buyer.app.request(`/claims?kind=step&name=${encodeURIComponent("acme/linear/create-issue")}`)).json()) as { claims: Array<{ text: string; speaker?: string }> };
       assert.deepEqual(listed.claims.map((c) => [c.text, c.speaker]), [["it reads its key", "acme/linear"]]);
+    });
+
+    it("carries apps, installs them on a cleared graph, holds the prefix, and installs again after an uninstall", async () => {
+      const kit = await kitForTests();
+      const src = await graphStrut("source", { kit });
+      await publishLinear(src.workspace);
+      await src.workspace.publishWorkflow("acme/linear/report", "v1", REPORT);
+      await src.rebuildRegistry();
+      await publishApp(src, "acme/linear/ui", UI);
+      const issuesHash = await publishApp(src, "acme/linear/issues", ISSUES());
+      const built = await build(src, { apps: ["acme/linear/issues"] });
+      assert.deepEqual(built.files.filter((f) => f.startsWith("apps/")), ["apps/issues/app.yaml", "apps/issues/src/App.tsx", "apps/ui/app.yaml", "apps/ui/public/dot.png", "apps/ui/src/App.tsx", "apps/ui/src/index.ts"]);
+
+      for (const s of struts.splice(0)) await s.close?.();
+      await tb.clear(backend);
+      const buyer = await graphStrut("buyer", { kit });
+      const r = await roundTrip(buyer, built.dir);
+      assert.deepEqual(r.packages[0]!.items.filter((i) => i.kind === "app").map((i) => [i.name, i.status]), [["acme/linear/issues", "installed"], ["acme/linear/ui", "installed"]]);
+      const issues = (await buyer.apps.get("acme/linear/issues"))!;
+      assert.deepEqual([issues.hash, issues.stale, issues.upstream?.package], [issuesHash, false, "acme/linear"]);
+      await assert.rejects(buyer.workspace.publishApp("acme/linear/mine", "h", issues.manifest), /package_conflict: acme\/linear\/mine is under acme\/linear/);
+
+      const gone = await buyer.app.request("/packages/acme/linear", { method: "DELETE" });
+      assert.equal(gone.status, 200, await gone.text());
+      assert.deepEqual(await buyer.workspace.listApps(), []);
+      const back = await install(buyer, `file:${built.dir}`);
+      assert.equal(back.status, 201, JSON.stringify(back.body));
+      assert.deepEqual((await buyer.apps.get("acme/linear/issues"))?.hash, issuesHash);
+      const listed = (await (await buyer.app.request("/packages")).json()) as { packages: Array<{ items: Array<{ kind: string; name: string; modified?: boolean }> }> };
+      assert.deepEqual(listed.packages[0]!.items.filter((i) => i.kind === "app").map((i) => [i.name, i.modified]), [["acme/linear/issues", false], ["acme/linear/ui", false]]);
     });
   });
 }

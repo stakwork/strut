@@ -545,6 +545,21 @@ export function workspaceConformance(impl: WorkspaceImpl): void {
       await ws.publishStep("acme/linear/mine", STEP_SRC("acme/linear/mine", "x"));
     });
 
+    it("an app holds the prefix like a step or a workflow: installed alone, a new app or workflow beside it is refused", async () => {
+      const upstream = { package: "acme/board", version: "1.0.0", digest: "d1", source: { ref: "file:/tmp/acme-board" }, secrets: [] };
+      await ws.publishApp("acme/board/issues", "h1", APP("Issues"), { upstream, source: "install" });
+      await ws.publishApp("acme/board/issues", "h2", APP("Issues, forked"));
+      const refused = /package_conflict: acme\/board\/mine is under acme\/board, an installed package/;
+      await assert.rejects(ws.publishApp("acme/board/mine", "h3", APP("Mine")), refused);
+      await assert.rejects(ws.publishWorkflow("acme/board/mine", "v1", { steps }), refused);
+      assert.equal(await ws.getApp("acme/board/mine"), null, "a refused publish writes nothing");
+      await ws.publishApp("acme/board/kit", "h4", APP("Kit"), { upstream, source: "install" });
+      await ws.publishApp("acme/boards/mine", "h5", APP("Beside"));
+      await ws.deleteApp("acme/board/issues");
+      await ws.deleteApp("acme/board/kit");
+      await ws.publishApp("acme/board/mine", "h3", APP("Mine"));
+    });
+
     it("activate: false records the version and leaves the active pointer where it was", async () => {
       // Workflows.
       await ws.publishWorkflow("wf", "v1", { steps, params: { greeting: "local" } }, "local");
