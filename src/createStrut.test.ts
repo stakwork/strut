@@ -13,7 +13,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { createStrut } from "./createStrut.js";
 import { createRegistry } from "./steps/registry.js";
 import { defineStep, flow, step, withAccessedNodes, withMessages, type StepContext } from "./core.js";
-import { fileToken } from "./auth.js";
+import { fileToken, inProcessRequest } from "./auth.js";
 import { pathlessWorkspace } from "./test-util/pathless-workspace.js";
 import { WorkspaceManager } from "./workspace.js";
 import { MemoryRunStore, FileRunStore } from "./store.js";
@@ -1397,6 +1397,44 @@ describe("the API key gate", () => {
     assert.equal((await strut.app.request(`/workflows?key=${PEER}`)).status, 200);
     delete process.env["STRUT_PEER_KEY"];
     assert.equal((await strut.app.request("/workflows", { headers: { authorization: `Bearer ${PEER}` } })).status, 401);
+  });
+
+  it("a request strut makes to itself (app/look's page) passes the gate as the actor it names — not the header's, not the host hook's", async () => {
+    process.env["STRUT_API_KEY"] = KEY;
+    const store = new MemoryRunStore();
+    const workspace = new WorkspaceManager(join(tempDir, "ws"));
+    const strut = await createStrut({
+      workspace,
+      store,
+      serveUi: false,
+      scheduler: false,
+      // mcp's shape: the host names the actor from its own credential.
+      resolveActor: () => "host-said",
+      resolveScope: () => "peer",
+    });
+    await workspace.publishWorkflowByContent("hello", "name: hello\nsteps:\n  - id: say\n    type: log\n    config:\n      message: hi\n");
+    const launch = (marked: boolean) => {
+      const req = new Request("http://strut.invalid/workflows/hello/run", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-strut-actor": "mallory-9" },
+        body: "{}",
+      });
+      return strut.app.fetch(marked ? inProcessRequest(req, "evan-1") : req);
+    };
+    assert.equal((await launch(false)).status, 401, "the same request from outside");
+    const res = await launch(true);
+    assert.equal(res.status, 202, await res.clone().text());
+    const { runId } = (await res.json()) as { runId: string };
+    for (let i = 0; i < 100 && !store.getSummary("hello", runId); i++) await new Promise((r) => setTimeout(r, 10));
+    const summary = store.getSummary("hello", runId);
+    assert.equal(summary?.actor, "evan-1");
+    assert.notEqual(summary?.origin, "peer", "full scope, whatever the host's hook says");
+    // A request with no actor is still strut's own, and names nobody.
+    const anon = await strut.app.fetch(inProcessRequest(new Request("http://strut.invalid/secrets"), undefined));
+    assert.equal(anon.status, 200);
+    // The mark is the object: a copy of a marked request is a stranger.
+    const copy = new Request(inProcessRequest(new Request("http://strut.invalid/secrets"), "evan-1"));
+    assert.equal((await strut.app.fetch(copy)).status, 401);
   });
 
   it("a host's resolveScope decides who is a peer — behind its own gate, with no key here", async () => {

@@ -12,12 +12,14 @@ import { AppHost } from "./AppHost";
 // peer (one that does not answer would hold this app at "Loading apps…"),
 // and no poll for as long as the page shows. No `ui/message` and no
 // in-place link either: there is nothing of strut's to open them in.
+// A key ending in `@vN` shows that version instead of the live one — how
+// `app/look` sees a draft of a held app.
 
 export function SoloApp(props: { app: string }) {
-  // undefined: the listing has not answered; null: the app is not in it.
+  // undefined: the listing has not answered; null: the app (or the version) is not in it.
   const [entry, setEntry] = useState<api.AppListEntry | null | undefined>(undefined);
+  const ref = parseAppKey(props.app);
   useEffect(() => {
-    const ref = parseAppKey(props.app);
     if (!ref) {
       setEntry(null);
       return;
@@ -26,7 +28,8 @@ export function SoloApp(props: { app: string }) {
     (ref.peer ? api.listPeerApps(ref.peer) : api.listApps())
       .catch((): api.AppListEntry[] => [])
       .then((apps) => {
-        if (on) setEntry(apps.find((a) => appKey(a) === props.app) ?? null);
+        const found = apps.find((a) => appKey(a) === appKey(ref));
+        if (on) setEntry(found && (!ref.version || found.versions.includes(ref.version)) ? found : null);
       });
     return () => {
       on = false;
@@ -35,7 +38,7 @@ export function SoloApp(props: { app: string }) {
   return (
     <div class="app-solo">
       {entry
-        ? <AppHost app={{ name: entry.name, version: entry.activeVersion, ...(entry.peer ? { peer: entry.peer } : {}) }} />
+        ? <AppHost app={{ name: entry.name, version: ref?.version ?? entry.activeVersion, ...(entry.peer ? { peer: entry.peer } : {}) }} />
         : <div class="empty">{entry === null ? `No app "${props.app}"` : "Loading apps…"}</div>}
     </div>
   );

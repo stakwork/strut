@@ -68,7 +68,30 @@ export function warnIfUnconfigured(): void {
  * `<img>` / `<video>` / new tab). Permissive when the env var is unset.
  */
 export function carriesApiKey(c: Context): boolean {
-  return apiKeyMatches(c.req.header("authorization"), c.req.query("key")) || sessionOf(c) !== undefined;
+  return inProcessOf(c) !== undefined || apiKeyMatches(c.req.header("authorization"), c.req.query("key")) || sessionOf(c) !== undefined;
+}
+
+// ── In-process requests ──────────────────────────────────────────────────
+//
+// A request strut makes to its OWN app, in this process, on someone's
+// behalf: the page of strut's UI that `app/look` opens in a run's browser,
+// whose every request is answered by `app.fetch` instead of over the
+// network (BrowserService `lookAtApp`). Marked by the Request OBJECT, which
+// nothing outside this process can hand in: it carries the key's rights
+// (the gate, `requireApiKey`, scope `full`) and names its actor itself,
+// whatever its headers say — the browser never holds a credential.
+
+const IN_PROCESS = new WeakMap<Request, { actor?: string }>();
+
+/** Mark `req` as strut's own, made for `actor`; returns it. */
+export function inProcessRequest(req: Request, actor?: string): Request {
+  IN_PROCESS.set(req, actor ? { actor } : {});
+  return req;
+}
+
+/** The mark `inProcessRequest` left on this request, if any. */
+export function inProcessOf(c: Context): { actor?: string } | undefined {
+  return IN_PROCESS.get(c.req.raw);
 }
 
 /**
@@ -144,6 +167,7 @@ export function isPeerScope(scope: Scope | undefined): boolean {
  *  session), else `peer:person` for a person token, `peer` for the peer
  *  key, and `full` for the rest (dev mode). */
 export function scopeFromKey(c: Context): Scope {
+  if (inProcessOf(c)) return "full";
   if (configuredKey() && carriesApiKey(c)) return "full";
   if (personOf(c)) return "peer:person";
   return carriesPeerKey(c) ? "peer" : "full";
@@ -277,6 +301,8 @@ export function carriesBadFileToken(c: Context): boolean {
  * person token names its actor itself, and no header changes that.
  */
 export function actorFromHeader(c: Context): string | undefined {
+  const own = inProcessOf(c);
+  if (own) return own.actor;
   const person = personOf(c);
   if (person) return person.actor;
   const keyed = configuredKey() && apiKeyMatches(c.req.header("authorization"), c.req.query("key"));

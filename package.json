@@ -35,6 +35,7 @@
     "check:fixer": "tsc -p fixer/tsconfig.json",
     "test:privacy": "STRUT_PRIVACY_LIVE=1 tsx --test src/privacy/privacy.live.test.ts",
     "test:browser": "tsx --test src/browser/service.live.test.ts",
+    "test:app-look": "STRUT_TEST_APP_LOOK=1 tsx --test src/apps/look.live.test.ts",
     "test:gateway": "tsx scripts/gateway-smoke.ts",
     "test:graph": "node scripts/test-graph.mjs",
     "test:app-build": "node scripts/check-app-build.mjs"

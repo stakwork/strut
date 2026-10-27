@@ -52,10 +52,17 @@
  * (`BROWSER_SESSIONS_MAX`, 4) are open at once. Not over CDP (v1): there the
  * pages are the human's profile's.
  *
+ * An APP is looked at through strut's own UI, its host (`lookAtApp`, the
+ * `app/look` step): the page loads that UI from `STRUT_ORIGIN`, a name no
+ * network resolves, and every request it makes is answered by strut in
+ * this process (`serveStrut`, wired by createStrut) as the run's actor. So
+ * the browser needs no address for strut and holds no credential, and the
+ * app's calls go through the host and `step_run` exactly as a person's do.
+ *
  * `playwright-core` is imported lazily, on the first connection, so a strut
  * that never opens a browser never loads it (the lib step convention).
  */
-import type { Browser, BrowserContext, BrowserContextOptions, Page, Locator } from "playwright-core";
+import type { Browser, BrowserContext, BrowserContextOptions, Page, Locator, Route } from "playwright-core";
 import type { ArtifactsCapability } from "../capabilities.js";
 import { settle as settlePage, sleep } from "./settle.js";
 import { saveShot, type Shot, type ShotSink } from "./shot.js";
@@ -164,6 +171,40 @@ export type Walked = Verdict & {
 /** A walkthrough step: a capture verb, and a caption when it earns a frame. */
 export type WalkthroughStep = CaptureStep & { caption?: string };
 
+/** Where strut's own UI is served inside a browser that looks at an app
+ *  (`lookAtApp`). Never resolved and never fetched: every request to it is
+ *  answered in this process. `.invalid` is reserved (RFC 2606), so no host
+ *  answers it should a request ever get past the route; https, so the page
+ *  is a secure context, as the UI is in production. */
+export const STRUT_ORIGIN = "https://strut.invalid";
+
+/** Strut's own app in this process, answering a request as `actor`
+ *  (createStrut: `app.fetch` on a request marked in-process). */
+export type StrutFetch = (req: Request, actor: string | undefined) => Promise<Response>;
+
+/** What `lookAtApp` saw: the shot of the app in its host, the page's
+ *  text, and what went wrong on the way. */
+export type AppLooked = Shot & {
+  small: Buffer;
+  /** The app's page drew something (its root has content). */
+  rendered: boolean;
+  /** Why the host shows no app: it is not there, its document would not load. */
+  hostError?: string;
+  /** The app's visible text, capped at `LOOK_TEXT_CAP`. */
+  text: string;
+  /** Console errors, page errors, failed requests, HTTP errors — the host's and the app's. */
+  errors: string[];
+};
+
+/** How much of the app's text `lookAtApp` returns: a page's gist, not a table dump. */
+export const LOOK_TEXT_CAP = 8_000;
+/** How long `lookAtApp` gives the host and the app to draw. */
+export const LOOK_READY_MS = 30_000;
+/** The host's MCP client asks `/mcp` for a stream strut's stateless door
+ *  never opens: its 405 is the protocol, not a fault of the app. */
+const MCP_GET = /^http: 405 GET https:\/\/strut\.invalid\/mcp$/;
+const MCP_GET_CONSOLE = "console: Failed to load resource: the server responded with a status of 405 (Method Not Allowed)";
+
 /** The verbs a `capture` list may name — everything that drives the page
  *  the run already has; `open`/`close`/`screenshot` are the compound's own. */
 export const CAPTURE_VERBS = ["goto", "click", "fill", "type", "press", "select", "hover", "scroll", "wait", "text", "evaluate", "back"] as const;
@@ -252,6 +293,8 @@ export class BrowserService {
   /** A run attached to a kept page → that page's key (`keptKey`). */
   private readonly attached = new Map<string, string>();
   private checkSeq = 0;
+  /** Strut's own app, for `lookAtApp` (`serveStrut`). */
+  private strut?: StrutFetch;
 
   constructor(opts: BrowserServiceOptions = {}) {
     if (opts.wsUrl && opts.cdpUrl) throw new Error("browser: set BROWSER_WS_URL (a Playwright server) or BROWSER_CDP_URL (a real Chrome), not both");
@@ -288,6 +331,12 @@ export class BrowserService {
   /** True over CDP: pages in a real Chrome's own profile. */
   get cdp(): boolean {
     return Boolean(this.opts.cdpUrl);
+  }
+
+  /** Hand the service strut's own app, which answers the pages `lookAtApp`
+   *  opens. createStrut calls it when it serves a UI. */
+  serveStrut(fetch: StrutFetch): void {
+    this.strut = fetch;
   }
 
   /** The run's page — context + page created on first use. `viewport` and
@@ -1011,6 +1060,47 @@ export class BrowserService {
     });
   }
 
+  /**
+   * Look at an app as a person opening it would see it: strut's own UI
+   * hosting the version alone (`?app=<name>@<version>&solo=1`), loaded from
+   * `STRUT_ORIGIN` with every request answered by strut in this process as
+   * `actor` (the file comment). Waits for the host to fill its frame and for
+   * the app to draw, settles (the app's first calls answered), shoots the
+   * page, and drains what went wrong — the host's errors and the app's, its
+   * frame being part of the page. A host that shows no app (none by that
+   * name and version, a document that would not load) is a result,
+   * `hostError`; only the instrument failing throws. A session of its own,
+   * closed after, like a check.
+   */
+  async lookAtApp(
+    runId: string,
+    input: { name: string; version: string; actor?: string; wait?: number; fullPage?: boolean; viewport?: Viewport; timeoutMs?: number },
+    sink: ShotSink,
+  ): Promise<AppLooked> {
+    const strut = this.strut;
+    if (!strut) throw new Error("browser: this strut serves no UI to host an app in (createStrut hands it one when serveUi is on)");
+    return this.inOwnSession(runId, async (key) => {
+      const page = await this.page(key, { viewport: input.viewport });
+      await page.route(`${STRUT_ORIGIN}/**`, (route) => answerFromStrut(route, strut, input.actor));
+      const url = `${STRUT_ORIGIN}/?app=${encodeURIComponent(`${input.name}@${input.version}`)}&solo=1`;
+      const { status } = await this.goto(key, { url, timeoutMs: input.timeoutMs });
+      if (status >= 400) {
+        const said = await page.locator("body").innerText().catch(() => "");
+        throw new Error(`browser: strut's UI did not load (HTTP ${status}${said ? `: ${said.slice(0, 200)}` : ""})`);
+      }
+      const shown = await this.call(key, "app", LOOK_READY_MS, (s, ms) => appShown(s.page, ms));
+      await settlePage(page, input.wait);
+      const shot = await this.screenshot(key, { fullPage: input.fullPage, timeoutMs: input.timeoutMs }, sink);
+      const text = shown.rendered ? await this.call(key, "app", input.timeoutMs, (_s, ms) => appFrame(page).locator("body").innerText({ timeout: ms })) : "";
+      // The host's GET for an MCP stream is answered 405 by design (MCP_GET),
+      // and Chrome logs each such response once more in the console.
+      const seen = flattenObs(this.observe(key));
+      let expected = seen.filter((e) => MCP_GET.test(e)).length;
+      const errors = seen.filter((e) => !MCP_GET.test(e) && !(e === MCP_GET_CONSOLE && expected-- > 0));
+      return { ...shot, ...shown, text: cap(text, LOOK_TEXT_CAP), errors };
+    });
+  }
+
   // ── internals ────────────────────────────────────────────────────────────
 
   private async connect(): Promise<Browser> {
@@ -1159,6 +1249,69 @@ async function expectationsOn(page: Page, expect: VerifyExpect, errors: string[]
     }
   }
   return out;
+}
+
+/** Request and response headers that describe a connection, not a message.
+ *  `accept-encoding` too: an answer is never compressed, since a fulfilled
+ *  body is handed to the page as it is, undecoded. */
+const HOP_HEADERS = new Set(["host", "connection", "keep-alive", "content-length", "transfer-encoding", "accept-encoding", "content-encoding"]);
+
+/** Answer one of the page's requests to `STRUT_ORIGIN` from strut in this
+ *  process, as `actor`. A request strut cannot answer is a 502 the page
+ *  sees, as from a proxy; a page that closed meanwhile is nobody's to tell. */
+async function answerFromStrut(route: Route, strut: StrutFetch, actor: string | undefined): Promise<void> {
+  const req = route.request();
+  const headers = new Headers();
+  for (const [k, v] of Object.entries(req.headers())) if (!HOP_HEADERS.has(k)) headers.set(k, v);
+  const data = req.method() === "GET" || req.method() === "HEAD" ? null : req.postDataBuffer();
+  try {
+    const res = await strut(new Request(req.url(), { method: req.method(), headers, ...(data ? { body: new Uint8Array(data) } : {}) }), actor);
+    const out: Record<string, string> = {};
+    res.headers.forEach((v, k) => {
+      if (!HOP_HEADERS.has(k)) out[k] = v;
+    });
+    await route.fulfill({ status: res.status, headers: out, body: Buffer.from(await res.arrayBuffer()) });
+  } catch (err) {
+    await route.fulfill({ status: 502, contentType: "text/plain", body: `strut could not answer: ${message(err)}` }).catch(() => {});
+  }
+}
+
+/** The frame strut's AppHost renders an app's document in. */
+function appFrame(page: Page) {
+  return page.frameLocator("iframe.app-frame");
+}
+
+/** Wait for strut's UI to show the app: the host fills its frame (or says
+ *  why it cannot — no such app, a document that would not load), then the
+ *  app draws into its root. A host that never settles is a `hostError`; an
+ *  app that never draws is `rendered: false`. */
+async function appShown(page: Page, ms: number): Promise<{ rendered: boolean; hostError?: string }> {
+  const deadline = Date.now() + ms;
+  let state: { error?: string; ready?: boolean };
+  try {
+    const handle = await page.waitForFunction(
+      () => {
+        const failed =
+          document.querySelector(".app-host-overlay.is-error") ??
+          [...document.querySelectorAll(".app-solo > .empty")].find((e) => !(e.textContent ?? "").startsWith("Loading"));
+        if (failed) return { error: (failed.textContent ?? "").trim() };
+        const frame = document.querySelector("iframe.app-frame");
+        return frame?.hasAttribute("srcdoc") && !document.querySelector(".app-host-overlay") ? { ready: true } : null;
+      },
+      undefined,
+      { timeout: ms, polling: 100 },
+    );
+    state = (await handle.jsonValue()) as typeof state;
+  } catch {
+    return { rendered: false, hostError: `strut's UI did not show the app within ${ms} ms` };
+  }
+  if (state.error) return { rendered: false, hostError: state.error };
+  try {
+    await appFrame(page).locator("#root > *").first().waitFor({ state: "attached", timeout: Math.max(1, deadline - Date.now()) });
+    return { rendered: true };
+  } catch {
+    return { rendered: false };
+  }
 }
 
 export function flattenObs(o: Observations): string[] {

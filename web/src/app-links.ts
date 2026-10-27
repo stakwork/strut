@@ -37,14 +37,21 @@ export function appKey(app: { name: string; peer?: string }): string {
 
 /** `appKey` read back: which app a key names, and on which peer — what
  *  the page alone (`?solo=1`) needs to read that one listing. A peer id has
- *  no `/`, so the name is everything after the first one. Null for a key
- *  that names nothing (`@acme`, `@/x`, ""). */
-export function parseAppKey(key: string): { name: string; peer?: string } | null {
-  if (!key.startsWith("@")) return key ? { name: key } : null;
-  const slash = key.indexOf("/");
-  const peer = key.slice(1, slash);
-  const name = key.slice(slash + 1);
-  return slash > 0 && peer && name ? { name, peer } : null;
+ *  no `/`, so the name is everything after the first one. A key may end in
+ *  `@vN`, the pin an import takes (`hive/ui@v3`): that version rather than
+ *  the live one — a draft, for `app/look`. Null for a key that names nothing
+ *  (`@acme`, `@/x`, "", `bench@`). */
+export function parseAppKey(key: string): { name: string; peer?: string; version?: string } | null {
+  const pin = key.match(/^(.+)@(v\d+)$/);
+  const version = pin?.[2];
+  const rest = pin ? pin[1]! : key;
+  if (!pin && /@[^/]*$/.test(key.slice(1))) return null;
+  const at = version ? { version } : {};
+  if (!rest.startsWith("@")) return rest ? { name: rest, ...at } : null;
+  const slash = rest.indexOf("/");
+  const peer = rest.slice(1, slash);
+  const name = rest.slice(slash + 1);
+  return slash > 0 && peer && name ? { name, peer, ...at } : null;
 }
 
 /** What `ui/message` from an app becomes in the builder chat: the text,

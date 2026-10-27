@@ -34,7 +34,7 @@ import type { StepSources } from "./steps/registry.js";
 import { runWorkflow } from "./runner.js";
 import { RunController } from "./run-control.js";
 import { buildJournal, invalidateFrom, readRunStart } from "./journal.js";
-import { appIdentity, carriesApiKey, carriesPeerKey, carriesFileToken, carriesBadFileToken, fileToken, warnIfUnconfigured, actorFromHeader, scopeFromKey, isPeerScope, personOf, personToken, PERSON_TOKEN_DAYS, unauthorized, issueSession, sessionCookie, sessionOf, isSecureRequest, type Scope } from "./auth.js";
+import { appIdentity, carriesApiKey, carriesPeerKey, carriesFileToken, carriesBadFileToken, fileToken, warnIfUnconfigured, actorFromHeader, inProcessOf, inProcessRequest, scopeFromKey, isPeerScope, personOf, personToken, PERSON_TOKEN_DAYS, unauthorized, issueSession, sessionCookie, sessionOf, isSecureRequest, type Scope } from "./auth.js";
 import { standardServices, fileArtifactsCapability } from "./capabilities.js";
 import type { ArtifactsCapability, SecretsCapability } from "./capabilities.js";
 import type { SecretStore } from "./secret-store.js";
@@ -931,12 +931,19 @@ export async function createStrut<TServices = unknown>(
   // The host says who a request is from; strut never reads a header it did
   // not ask for. A run's spend lands on the actor who launched it, else on
   // the workflow's owner (an automation has no actor, so the owner pays).
-  const resolveActor = opts.resolveActor ?? actorFromHeader;
+  // A request strut made to itself (auth.ts `inProcessRequest`, app/look's
+  // page) names its actor and is `full`, before any host hook is asked.
+  const hostActor = opts.resolveActor ?? actorFromHeader;
+  const resolveActor = (c: Context) => {
+    const own = inProcessOf(c);
+    return own ? own.actor : hostActor(c);
+  };
   // And what it may do: a `peer` (another strut) reads, launches, and
   // controls the runs a peer launched (plans/federation.md §3); a
   // `peer:person` (a person's credential through one) the same, and more
   // (auth.ts `Scope`).
-  const resolveScope = opts.resolveScope ?? scopeFromKey;
+  const hostScope = opts.resolveScope ?? scopeFromKey;
+  const resolveScope = (c: Context) => (inProcessOf(c) ? ("full" as const) : hostScope(c));
   const scopeOf = async (c: Context): Promise<Scope> => (await resolveScope(c)) ?? "full";
   const isPeer = async (c: Context) => isPeerScope(await scopeOf(c));
   const principalFor = async (workflow: string, actor?: string): Promise<string | undefined> => {
@@ -5589,6 +5596,12 @@ export async function createStrut<TServices = unknown>(
         return c.text("UI not built. Run: cd web && npm run build", 404);
       }
     });
+
+    // `app/look`'s page (BrowserService `lookAtApp`): this UI hosting an
+    // app, every request it makes answered here, in process, as the run's
+    // actor — the browser needs no address for strut and holds no key.
+    const browser = (services as Record<string, unknown>)["browser"];
+    if (browser instanceof BrowserService) browser.serveStrut(async (req, actor) => app.fetch(inProcessRequest(req, actor)));
   }
 
   // ── Programmatic run helper ──────────────────────────────────────────────

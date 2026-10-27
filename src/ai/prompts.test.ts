@@ -55,6 +55,6 @@ describe("the builder chat's prompt, rendered from the one source", () => {
     const { chat, app, ...names } = JOB_TOOLS;
     assert.equal(chat, false);
     for (const [role, type] of Object.entries(names)) assert.ok(registry[type], `${role}: ${type}`);
-    for (const verb of ["list", "get", "init", "checkout", "build", "publish"]) assert.ok(registry[`${app}${verb}`], `${app}${verb}`);
+    for (const verb of ["list", "get", "init", "checkout", "build", "publish", "look"]) assert.ok(registry[`${app}${verb}`], `${app}${verb}`);
   });
 });

@@ -32,6 +32,13 @@ describe("the app host", () => {
     for (const key of ["", "@acme", "@acme/", "@/x"]) assert.equal(parseAppKey(key), null, key);
   });
 
+  it("a key may pin a version, as an import does", () => {
+    assert.deepEqual(parseAppKey("bench@v3"), { name: "bench", version: "v3" });
+    assert.deepEqual(parseAppKey("hive/ui@v12"), { name: "hive/ui", version: "v12" });
+    assert.deepEqual(parseAppKey("@acme/hive/ui@v2"), { name: "hive/ui", peer: "acme", version: "v2" });
+    for (const key of ["bench@", "bench@latest", "@v3", "@acme/@v3"]) assert.equal(parseAppKey(key), null, key);
+  });
+
   it("a page's message names the app it is about", () => {
     assert.equal(appMessage({ name: "bench", version: "v2" }, " add a tab for the latest run's output "), 'About the app "bench" (v2, open in front of me): add a tab for the latest run\'s output');
   });
