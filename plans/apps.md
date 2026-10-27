@@ -90,6 +90,13 @@
 > planned in stakwork/strut#305 and BUILT in #307
 > (`src/apps/peer-host.test.ts` runs them across two struts).
 >
+> **Work item 3 is BUILT** (2026-10-26): the app's own SQLite file,
+> migrations at publish, the `sqlite/*` steps, the export (§4.4, rewritten
+> to what was built). A job's app was retired before it landed, so the
+> file is a workspace app's only. Open question 7 stays open: migrations
+> run at publish, so a held app's draft migrates the file its live
+> release reads.
+>
 > What those rulings changed here, in place: §5 is no longer a tool set of
 > its own; §4.4's `sql_*` tools are the `sqlite/*` steps; the version hash
 > is the tree hash shared with packages and the kit is out of it (§1.3);
@@ -766,38 +773,61 @@ first. Reads may touch any type: the viewer can read the graph anyway.
 
 ### 4.4 The app's own SQLite
 
-- **One file per app.** A workspace app's is `<dataDir>/apps/<name>/data.db`,
-  shared by all its versions. A job's app's is `<path>/data.db` in the job's
-  directory. Both are owner-only, like the memory file. The file uses
-  `node:sqlite`, which is built into Node and already used by the
-  openhealth steps on the swarm. `engines` rises to `>=22.13`, where
-  `node:sqlite` needs no flag.
-- **Migrations live in the directory.** The files in `db/*.sql` are applied
-  in name order, each one once, each in its own transaction, and recorded
-  in `_strut_migrations`. A workspace app applies them at publish, before
-  the version activates: a failing migration fails the publish, its
-  transaction rolls back, and nothing activates. A job's app applies them
-  at build. Rolling back a version does not roll back the schema, so
-  migrations must be additive; the Concept page says so.
-- **The steps** (ruled: a backend is steps; there are no `sql_*` tools):
-  - `sqlite/query { sql, params? }` → `{ columns, rows }`, capped;
-  - `sqlite/exec { sql, params? }` → `{ changes, lastInsertRowid }`;
-  - `sqlite/batch { statements }`, in one transaction.
+**BUILT 2026-10-26** (`src/apps/sqlite.ts`, `src/steps/lib/sqlite/`).
+The choices below beyond the 2026-10-20 sketch are mine and open: the
+changed-migration refusal, the read-only connection, the caps, the grant
+being `grants.sqlite` alone, the export's copy.
 
+- **One file per app**, `<dataDir>/apps/<name>/data.db` beside its
+  versions, shared by all of them, never by another app. Owner-only
+  (`0600` from creation; SQLite gives its `-wal` and `-shm` the same
+  mode), WAL, foreign keys on, extensions never enabled. `node:sqlite`,
+  built into Node and imported on first use; `engines` is `>=22.13`, where
+  it needs no flag. An app name segment may not be `data.db` or start with
+  `data.db-`. A deleted app's file stays, as its version directories do.
+- **Migrations live in the directory.** The files in `db/*.sql` are applied
+  in name order, each once, each in its own transaction, and recorded in
+  `_strut_migrations` (name, sha256, applied_at). A publish applies them
+  after the build and before the version is recorded: a failing migration
+  rolls back, the publish fails naming the file and the error, and nothing
+  is published (the migrations before it in the same publish stay
+  applied). A file applied before whose text has changed fails the publish
+  too: a migration runs once, and a change is a new file with a later
+  name. Rolling back a version does not roll back the schema, so
+  migrations must be additive; the Concept page says so. A migration
+  passes the keyword check below with several statements allowed, and a
+  `BEGIN` / `COMMIT` in one gets a hint (it already runs in a transaction).
+- **The steps** (ruled: a backend is steps; there are no `sql_*` tools):
+  - `sqlite/query { sql, params? }` → `{ columns, rows, truncated? }`: one
+    statement on a READ-ONLY connection, so a query cannot write whatever
+    its text; at most 5 000 rows or 2 MB of JSON; bytes as `{ base64 }`;
+  - `sqlite/exec { sql, params? }` → `{ changes, lastInsertRowid }`: one
+    statement;
+  - `sqlite/batch { statements }`, up to 500 in one transaction, every one
+    checked and compiled before the first runs.
+
+  `params` is a list for `?` or an object for `:name`; a boolean binds as
+  1 / 0, `{ base64 }` as bytes, another object or list as JSON text.
   **Which file** is `ctx.app`'s: a page reaches its own file through
-  `step_run`, and a run the app launched, or an automation it set, carries
-  `app` and finds the same file from its steps. A step with no `ctx.app`
-  names it — `{ app: <name> }` or `{ job, path }` — which is how an agent
-  granted `agentTools: ["sqlite/*"]` or a workflow outside the app reads
-  it; the argument is REFUSED when `ctx.app` is set, so a page can never
-  name another app's file. `ATTACH`, `DETACH`, `VACUUM INTO`,
-  `load_extension` and any PRAGMA outside a short read allowlist are
-  refused by a keyword pre-check, the way `graph/query.ts` checks Cypher,
-  and extensions are never enabled. Raw SQL is fine here: the worst a page
-  can do is damage its own tables. A job's agent can also run `sqlite3
-  apps/<name>/data.db` with its bash.
-- **The export:** `GET /apps/:name/data` returns the file, behind the key.
-  A job's app's database is one of the job's files.
+  `step_run`, and a run the app launched (or, later, an automation it set)
+  carries `app` and finds the same file from its steps. A step with no
+  `ctx.app` names it — `{ app: <name> }` — which is how an agent granted
+  `agentTools: ["sqlite/*"]` or a workflow outside the app reads it; the
+  argument is REFUSED when `ctx.app` is set, so a page can never name
+  another app's file. At the door a page reaches the three steps on
+  `grants.sqlite: true` only (`grants.steps` never grants them), `exec`
+  and `batch` are kept as step runs, `query` is not. `ATTACH`, `DETACH`,
+  `VACUUM INTO`, `load_extension`, any PRAGMA outside a short read
+  allowlist (and any PRAGMA that sets) and a second statement in `query`
+  or `exec` are refused by a keyword pre-check over the statement with
+  its comments, strings and quoted names blanked, the way `graph/query.ts`
+  checks Cypher. Raw SQL is otherwise fine: the worst a page can do is
+  damage its own tables.
+- **The export:** `GET /apps/:name/data` returns one consistent copy
+  (`VACUUM INTO` a temporary file), behind the gate like every read — a
+  peer reads it too, as it reads a run's outputs and a job's files (the
+  route sweep pins "a peer reads every route"). `app/get` carries `database: { bytes,
+  migrations }` once there is a file.
 - **Not shared.** An app's database is its own; anything shared goes in the
   graph. A second app never opens another app's file in v1.
 
@@ -1499,10 +1529,11 @@ docs: `specs/API.md` sections, AGENTS.md layout rows and a key concept, and
    by its hash; "Publish as an app" made `visits` v1, which opens under
    Apps — and reads no job, since the implicit grant is the job app's
    alone: a prototype's data reaches the workspace as `data.db` (item 3).
-3. **SQLite.** The file per app, migrations at publish and at build, the
-   `sqlite/*` steps and their refusals (the file from `ctx.app`, or named
-   when there is none), the export, writes kept as step runs, and the
-   `engines` bump.
+3. **SQLite.** **BUILT** (2026-10-26). The file per app, migrations at
+   publish (a job's app, which would have migrated at build, was retired
+   first), the `sqlite/*` steps and their refusals (the file from
+   `ctx.app`, or named when there is none), the export, writes kept as
+   step runs, and the `engines` bump. Tests: `src/apps/sqlite.test.ts`.
 4. **Graph data.** Declared types on Neo4j (`createNodeSchema`) and on
    Ladybug: the declared-types table, per-type columns by `ALTER ADD`, rel
    tables, and the conflict rule. This reverses ruling 6 for app-declared

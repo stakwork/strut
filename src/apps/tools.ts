@@ -15,10 +15,11 @@
  * §5.1); a graph WRITE refused on a type the manifest's `data.graph` does
  * not declare — the type from the config for a create, the node read first
  * for an edit or delete by `ref_id` (so a page can never rewrite a Concept
- * or a `StrutWorkflow` node); `sqlite/*` and `automation/*` not available
- * until their work items land. The call runs through `runStep` with the
+ * or a `StrutWorkflow` node); `sqlite/*` only with `grants.sqlite`, on the
+ * app's own file (the step refuses an `app` argument under `ctx.app`);
+ * `automation/*` not available until its work item lands. The call runs through `runStep` with the
  * viewer as actor and `ctx.app` set, so a run `run/launch` starts carries
- * the app too. A write — a graph write, an error report — is KEPT under
+ * the app too. A write — a graph write, a SQLite write, an error report — is KEPT under
  * `step:<type>` with the actor and `app` on its summary (§9); a read is
  * not. Results are whole data, never trimmed for a model; past 5 MB they
  * are an error naming the cap. Every call of a known app — refused, failed
@@ -81,11 +82,15 @@ const NOT_A_PAGES: Record<string, string> = {
 
 /** Families this strut does not serve to an app yet, by work item. */
 const NOT_YET: Array<[prefix: string, what: string]> = [
-  ["sqlite/", "an app's own SQLite file is plans/apps.md work item 3"],
   ["automation/", "schedules from an app are plans/apps.md work item 7"],
   ["job/start", "a job's turn starts from its host, not a page — a \"continue this job\" door is later (plans/apps.md §12)"],
   ["job/continue", "a job's turn starts from its host, not a page — a \"continue this job\" door is later (plans/apps.md §12)"],
 ];
+
+/** The app's own database (§4.4): granted by `grants.sqlite`, never by `grants.steps`. */
+const SQLITE_STEPS: ReadonlySet<string> = new Set(["sqlite/query", "sqlite/exec", "sqlite/batch"]);
+/** …of which these write, and are kept. */
+const SQLITE_WRITES: ReadonlySet<string> = new Set(["sqlite/exec", "sqlite/batch"]);
 
 /** Always granted: the page's own door for its failures (§8). */
 export const ALWAYS_GRANTED: ReadonlySet<string> = new Set(["app/report-error"]);
@@ -112,6 +117,12 @@ export function grantRefusal(type: string, config: Record<string, unknown>, mani
   for (const [prefix, what] of NOT_YET) if (type === prefix || type.startsWith(prefix)) return `"${type}" is not available in this strut yet: ${what}`;
   const never = NOT_A_PAGES[type];
   if (never) return `"${type}" is not a thing a page does: ${never}`;
+  if (type.startsWith("sqlite/")) {
+    if (!SQLITE_STEPS.has(type)) return `"${type}" is not a step of the app's database — sqlite/query, sqlite/exec, sqlite/batch`;
+    if (!manifest.grants.sqlite) return `"${type}": this app does not use its own database — app.yaml grants.sqlite is false (plans/apps.md §4.4)`;
+    if (config["app"] !== undefined) return `${type}: \`app\` is refused — a page uses its own app's database`;
+    return null;
+  }
   const job = config["job"];
   if (job !== undefined && (typeof job !== "string" || hasTemplate(job))) return `${type}: \`job\` must be a literal job id, not a template`;
   if (type.startsWith("run/")) {
@@ -222,7 +233,7 @@ export async function graphWriteRefusal(
 
 /** Is this a write the door KEEPS as a step run (§9)? */
 export function keptFromApp(type: string): boolean {
-  return GRAPH_WRITES.has(type) || type === "app/report-error";
+  return GRAPH_WRITES.has(type) || SQLITE_WRITES.has(type) || type === "app/report-error";
 }
 
 export interface AppToolDeps {
