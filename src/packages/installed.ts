@@ -1,11 +1,12 @@
 /**
  * What is INSTALLED (plans/marketplace.md §3): a FOLD over the workspace,
- * never a store. A workflow, step or app version that a package install
- * wrote carries `upstream` (and `source: "install"`); a Concept a package wrote
- * carries the stamp `pkg/<package>/<file>@<hash>`. Grouped by package, each
- * item says which version the install put there and whether the active one
- * is still it — `modified` is a fork, which an update never activates over
- * and an uninstall leaves in place.
+ * never a store. A workflow, step or app version that a package wrote
+ * carries `upstream` and the door that wrote it (`source: "install"`, or
+ * `"distro"`); a Concept a package wrote carries the stamp
+ * `pkg/<package>/<file>@<hash>`. Grouped by package, each item says which
+ * version the package put there and whether the active one is the
+ * package's — `modified` is a fork (a version this strut wrote), which an
+ * update never activates over and an uninstall leaves in place.
  *
  * A Concept has no versions: whether it was edited is its text against the
  * file it came from, read from the package's directory in the cache
@@ -54,8 +55,18 @@ export interface InstalledPackage {
   source?: { ref: string };
   /** What its steps may read (the fence, src/packages/fence.ts). */
   secrets?: string[];
+  /** Which door wrote it: a person's install, or the distro, whose package
+   *  only the distro updates or removes (plans/marketplace.md §12). Absent
+   *  for a package of Concepts alone, which records no door. */
+  door?: PackageDoor;
   items: InstalledItem[];
 }
+
+/** The doors that write a package's versions: a person's install (`POST
+ *  /packages/install`), or the operator's distro, which applies a release
+ *  with no ask and is the one door that updates (§12, §12.1). */
+export type PackageDoor = Extract<VersionSource, "install" | "distro">;
+const PACKAGE_DOORS: readonly VersionSource[] = ["install", "distro"];
 
 export interface InstalledDeps {
   workspace: WorkspaceStore;
@@ -64,33 +75,50 @@ export interface InstalledDeps {
 }
 
 interface VersionRecord {
+  createdAt?: string;
   source?: VersionSource;
   upstream?: Upstream;
 }
 
-/** The version an install put there: the newest one the install door wrote,
- *  else (a record from before steps kept their door) the oldest that names
- *  a package. */
-function installedVersion(versions: Record<string, VersionRecord>): string | undefined {
+/** A version the package wrote, through either of its doors. */
+export const byPackage = (v: VersionRecord | undefined): boolean => !!v?.upstream && !!v.source && PACKAGE_DOORS.includes(v.source);
+
+/** The version the package put there: the ACTIVE one when the package wrote
+ *  it — so an update that was taken back, or an older release a person made
+ *  active again, reads as what is running — else the newest one it wrote
+ *  (the release a fork has not taken), else (a record from before steps kept
+ *  their door) the oldest that names a package. */
+function installedVersion(versions: Record<string, VersionRecord>, active: string): string | undefined {
+  if (byPackage(versions[active])) return active;
   const labels = Object.keys(versions).sort(versionLabelOrder);
-  return [...labels].reverse().find((l) => versions[l]!.source === "install" && versions[l]!.upstream) ?? labels.find((l) => versions[l]!.upstream);
+  return [...labels].reverse().find((l) => byPackage(versions[l])) ?? labels.find((l) => versions[l]!.upstream);
 }
 
 /** Every installed package, sorted by name, its items by kind then name. */
 export async function listInstalledPackages(deps: InstalledDeps): Promise<InstalledPackage[]> {
   const packages = new Map<string, InstalledPackage>();
+  /** When the package's release, as `packages` has it, was written. */
+  const releasedAt = new Map<string, string>();
   const entry = (name: string): InstalledPackage => {
     let p = packages.get(name);
     if (!p) packages.set(name, (p = { package: name, items: [] }));
     return p;
   };
   const note = (kind: "workflow" | "step" | "app", name: string, versions: Record<string, VersionRecord>, active: string) => {
-    const installed = installedVersion(versions);
+    const installed = installedVersion(versions, active);
     const upstream = installed ? versions[installed]!.upstream : undefined;
     // An item is its package's only under its prefix.
     if (!installed || !upstream || packagePrefixOf(name) !== upstream.package) return;
     const p = entry(upstream.package);
-    if (!p.digest) Object.assign(p, { version: upstream.version, digest: upstream.digest, source: upstream.source, secrets: upstream.secrets });
+    // The package is at the release its newest installed version came
+    // from: an item the release dropped and a fork kept still names the
+    // release before.
+    const at = versions[installed]!.createdAt ?? "";
+    if (!p.digest || at > (releasedAt.get(upstream.package) ?? "")) {
+      releasedAt.set(upstream.package, at);
+      const door = versions[installed]!.source === "distro" ? "distro" : "install";
+      Object.assign(p, { version: upstream.version, digest: upstream.digest, source: upstream.source, secrets: upstream.secrets, door });
+    }
     const helper = kind === "step" && name.split("/").pop()!.startsWith("_");
     p.items.push({ kind, name, ...(helper ? { helper: true as const } : {}), installed, active, modified: active !== installed });
   };

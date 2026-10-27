@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { appKey, appMessage, parseAppKey, strutLink } from "./app-links";
+import { appKey, appMessage, appToolInput, namesApp, parseAppKey, peerAppLink, strutLink } from "./app-links";
+import { appLink } from "../../kit/src/links";
 
 /** The pure parts of the app host's relay (./app-links, what ./app-host
  *  decides without the bridge): where a link leads, what a page's message
@@ -21,6 +22,35 @@ describe("the app host", () => {
     assert.deepEqual(strutLink("https://swarm.test/lab/?wf=bench", lab), { wf: "bench" });
     assert.deepEqual(strutLink("https://swarm.test/lab?run=1&wf=w", lab), { run: "1", wf: "w" });
     assert.equal(strutLink("https://swarm.test/?wf=bench", lab), null, "the root is another page");
+  });
+
+  it("a link to an app carries what it is opened with, which becomes its tool-input", () => {
+    const link = appLink("bench", { view: "/runs", run: 12 });
+    const params = strutLink(link, here);
+    assert.deepEqual(params, { app: "bench", input: "view=%2Fruns&run=12" });
+    assert.deepEqual(appToolInput(params!["input"]), { view: "/runs", run: "12" }, "the kit's link, read back by the host");
+    assert.deepEqual(strutLink("https://swarm.test/lab/?app=bench&input=view%3D%252Fruns", lab), { app: "bench", input: "view=%2Fruns" });
+    assert.equal(appToolInput(null), undefined);
+    assert.equal(appToolInput(""), undefined);
+    assert.equal(appToolInput("&"), undefined, "no keys, no input");
+  });
+
+  it("a peer's page names apps on that peer; its other links are the peer's", () => {
+    assert.deepEqual(peerAppLink({ app: "bench", input: "view=%2Fruns" }, "acme"), { app: "@acme/bench", input: "view=%2Fruns" });
+    assert.deepEqual(peerAppLink({ app: "hive/ui" }, "acme"), { app: "@acme/hive/ui" });
+    assert.equal(peerAppLink({ wf: "clip", run: "1" }, "acme"), null);
+    assert.equal(peerAppLink({ app: "@other/bench" }, "acme"), null, "the peer's own peer");
+  });
+
+  it("a link to the app on screen is told apart from one to another app", () => {
+    const bench = { name: "bench", version: "v3" };
+    assert.equal(namesApp("bench", bench), true);
+    assert.equal(namesApp("bench@v3", bench), true);
+    assert.equal(namesApp("bench@v2", bench), false, "another version");
+    assert.equal(namesApp("other", bench), false);
+    assert.equal(namesApp(undefined, bench), false);
+    assert.equal(namesApp("@acme/bench", { ...bench, peer: "acme" }), true);
+    assert.equal(namesApp("bench", { ...bench, peer: "acme" }), false, "the peer's, not this strut's");
   });
 
   it("an app is named by its name here, and by its peer and name when it lives on a peer", () => {

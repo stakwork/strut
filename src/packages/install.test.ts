@@ -155,7 +155,7 @@ describe("installing a package on a filesystem workspace", () => {
     assert.deepEqual(run.output, { greeting: "hello", LINEAR_API_KEY: "lin_123" });
 
     const [listed] = await api.list();
-    assert.deepEqual({ ...listed, items: undefined }, { package: "acme/linear", version: "1.4.0", digest, source: { ref: `file:${dir}` }, secrets: ["LINEAR_API_KEY"], items: undefined });
+    assert.deepEqual({ ...listed, items: undefined }, { package: "acme/linear", version: "1.4.0", digest, source: { ref: `file:${dir}` }, secrets: ["LINEAR_API_KEY"], door: "install", items: undefined });
     assert.deepEqual(listed!.items, [
       { kind: "workflow", name: "acme/linear/sync", installed: "v1", active: "v1", modified: false },
       { kind: "step", name: "acme/linear/_shared", helper: true, installed: "v1", active: "v1", modified: false },
@@ -252,7 +252,7 @@ describe("installing a package on a filesystem workspace", () => {
 
     const next = await api.install(`file:${await writeTree({ ...PACKAGE, "strut.yaml": PACKAGE["strut.yaml"]!.replace("1.4.0", "1.5.0") })}`);
     assert.equal(next.status, 409);
-    assert.match(next.body.error!, /^package_update_not_built: acme\/linear 1\.4\.0 is installed here at sha256:[0-9a-f]+; updating it to sha256:[0-9a-f]+ is not built yet/);
+    assert.match(next.body.error!, /^package_update_not_built: acme\/linear 1\.4\.0 is installed here at sha256:[0-9a-f]+; updating it to sha256:[0-9a-f]+ from a person's door is not built yet/);
   });
 
   it("installs the packages it requires first, from a source relative to it, and refuses a pin that disagrees", async () => {
@@ -305,6 +305,144 @@ describe("installing a package on a filesystem workspace", () => {
     await ws.deleteWorkflow("acme/linear/other");
     assert.equal((await api.uninstall("acme/linear")).status, 404);
     assert.equal((await api.req("/workflows", json({ name: "acme/linear/mine", yaml: WORKFLOW("acme/linear/mine", "log") }))).status, 201);
+  });
+
+  describe("through the distro's door", () => {
+    const distro = { door: "distro" as const };
+    const RELEASE_1: Record<string, string> = {
+      "strut.yaml": "package: acme/linear\nversion: 1.0.0\nrequires:\n  secrets: [LINEAR_API_KEY]\n",
+      "steps/create-issue.ts": STEP("acme/linear/create-issue"),
+      "steps/close-issue.ts": STEP("acme/linear/close-issue", "bye"),
+      "steps/_shared.ts": 'export const greeting = "hello";\n',
+      "workflows/sync.yaml": WORKFLOW("acme/linear/sync"),
+      "workflows/report.yaml": WORKFLOW("acme/linear/report"),
+      "workflows/old.yaml": WORKFLOW("acme/linear/old"),
+    };
+    // 1.1 changes a step, its helper and a workflow, leaves a workflow as it
+    // was, drops a step and a workflow, and adds a workflow.
+    const RELEASE_2: Record<string, string> = {
+      "strut.yaml": RELEASE_1["strut.yaml"]!.replace("1.0.0", "1.1.0"),
+      "steps/create-issue.ts": `${STEP("acme/linear/create-issue")}// 1.1\n`,
+      "steps/_shared.ts": 'export const greeting = "hi";\n',
+      "workflows/sync.yaml": WORKFLOW("acme/linear/sync"),
+      "workflows/report.yaml": WORKFLOW("acme/linear/report").replace("Sync the issues", "Report the issues"),
+      "workflows/triage.yaml": WORKFLOW("acme/linear/triage"),
+    };
+
+    it("fast-forwards what the package wrote, records a release beside a fork, retires what it drops, and keeps a dropped fork", async () => {
+      const d1 = await writeTree(RELEASE_1, "r1");
+      const first = await strut.packages.install(`file:${d1}`, distro);
+      assert.equal(first.packages[0]!.status, "installed");
+      assert.equal((await ws.getStepMetadata("acme/linear/create-issue"))!.versions["v1"]?.source, "distro");
+      // Forks on this strut: one the release changes, one it drops.
+      await ws.publishWorkflow("acme/linear/report", "v2", WORKFLOW("acme/linear/report").replace("Sync the issues", "forked here"));
+      await ws.publishWorkflow("acme/linear/old", "v2", WORKFLOW("acme/linear/old").replace("Sync the issues", "forked here"));
+
+      const d2 = await writeTree(RELEASE_2, "r2");
+      const [{ digest: digest1 }, { digest: digest2 }] = await Promise.all([readPackage(d1), readPackage(d2)]);
+      const [p] = (await strut.packages.install(`file:${d2}`, distro)).packages;
+      assert.equal(p!.status, "updated");
+      assert.deepEqual(p!.from, { version: "1.0.0", digest: digest1 });
+      assert.deepEqual(p!.items.map((i) => [i.kind, i.name, i.status, i.reason]), [
+        ["step", "acme/linear/_shared", "updated", undefined],
+        ["step", "acme/linear/close-issue", "retired", undefined],
+        ["step", "acme/linear/create-issue", "updated", undefined],
+        ["workflow", "acme/linear/old", "kept", "modified here (a fork)"],
+        ["workflow", "acme/linear/report", "diverged", undefined],
+        ["workflow", "acme/linear/sync", "present", undefined],
+        ["workflow", "acme/linear/triage", "installed", undefined],
+      ]);
+
+      const step = (await ws.getStepMetadata("acme/linear/create-issue"))!;
+      assert.equal(step.active, "v2");
+      assert.equal(step.versions["v2"]?.upstream?.digest, digest2);
+      assert.equal(await ws.getStepMetadata("acme/linear/close-issue"), null, "untouched and dropped: retired");
+      const report = (await ws.getWorkflowMetadata("acme/linear/report"))!;
+      assert.equal(report.active, "v2", "the fork stays active");
+      assert.equal(report.versions["v3"]?.source, "distro");
+      assert.equal(report.versions["v3"]?.upstream?.digest, digest2, "the release is recorded beside it");
+      assert.equal((await ws.getWorkflowMetadata("acme/linear/old"))?.active, "v2", "a dropped fork is kept");
+      const run = await strut.run("acme/linear/sync", {});
+      assert.deepEqual(run.output, { greeting: "hi", LINEAR_API_KEY: "lin_123" }, "the updated step and helper run");
+
+      const [listed] = await api.list();
+      assert.deepEqual([listed!.version, listed!.digest, listed!.door], ["1.1.0", digest2, "distro"], "at the release, though a kept fork names the one before");
+      assert.deepEqual(listed!.items.filter((i) => i.kind === "workflow").map((i) => [i.name, i.installed, i.active, i.modified]), [
+        ["acme/linear/old", "v1", "v2", true],
+        ["acme/linear/report", "v3", "v2", true],
+        ["acme/linear/sync", "v1", "v1", false],
+        ["acme/linear/triage", "v1", "v1", false],
+      ]);
+
+      // The same release again writes nothing.
+      const again = await strut.packages.install(`file:${d2}`, distro);
+      assert.deepEqual(again.packages[0]!.items.filter((i) => i.status !== "present").map((i) => [i.name, i.status]), [
+        ["acme/linear/old", "kept"],
+        ["acme/linear/report", "diverged"],
+      ]);
+      assert.equal((await ws.getWorkflowMetadata("acme/linear/report"))!.versions["v4"], undefined);
+
+      // A person makes the release active on the fork: it follows the next one.
+      await ws.setActiveVersion("acme/linear/report", "v3");
+      const d3 = await writeTree({ ...RELEASE_2, "strut.yaml": RELEASE_2["strut.yaml"]!.replace("1.1.0", "1.2.0"), "workflows/report.yaml": WORKFLOW("acme/linear/report").replace("Sync the issues", "Report v1.2") }, "r3");
+      const third = await strut.packages.install(`file:${d3}`, distro);
+      assert.equal(third.packages[0]!.items.find((i) => i.name === "acme/linear/report")?.status, "updated");
+      assert.equal((await ws.getWorkflowMetadata("acme/linear/report"))?.active, "v4");
+    });
+
+    it("refuses a release whose step does not load, before it writes anything", async () => {
+      await strut.packages.install(`file:${await writeTree(RELEASE_1, "r1")}`, distro);
+      const broken = { ...RELEASE_2, "steps/create-issue.ts": `${STEP("acme/linear/create-issue")}throw new Error("boom at load");\n` };
+      await assert.rejects(strut.packages.install(`file:${await writeTree(broken, "broken")}`, distro), /^Error: bad_package: the step acme\/linear\/create-issue — .*boom at load/);
+      const step = (await ws.getStepMetadata("acme/linear/create-issue"))!;
+      assert.deepEqual([step.active, Object.keys(step.versions)], ["v1", ["v1"]], "no version written");
+      assert.equal((await ws.getStepMetadata("acme/linear/_shared"))!.active, "v1");
+      assert.equal(await ws.getWorkflowMetadata("acme/linear/triage"), null);
+      assert.ok(await ws.getStepMetadata("acme/linear/close-issue"), "nothing retired");
+    });
+
+    it("keeps what the distro wrote the distro's, and takes over what a person installed", async () => {
+      const d1 = await writeTree(RELEASE_1, "r1");
+      assert.equal((await api.install(`file:${d1}`)).status, 201);
+      const r = await strut.packages.install(`file:${await writeTree(RELEASE_2, "r2")}`, distro);
+      assert.equal(r.packages[0]!.status, "updated");
+      assert.equal((await api.list())[0]!.door, "distro");
+
+      const again = await api.install(`file:${d1}`);
+      assert.equal(again.status, 409);
+      assert.match(again.body.error!, /^package_distro_owned: acme\/linear was installed here by the distro/);
+      const removal = await api.uninstall("acme/linear");
+      assert.equal(removal.status, 409);
+      assert.match(removal.body.error!, /^package_distro_owned:/);
+      const out = await strut.packages.uninstall("acme/linear", distro);
+      assert.ok(out.removed.some((i) => i.name === "acme/linear/sync"));
+    });
+
+    it("updates a package it requires first, where a person's door refuses", async () => {
+      const util = (v: string) => ({
+        "strut.yaml": `package: bob/util\nversion: '${v}'\n`,
+        "steps/fmt.ts": `import { z, defineStep } from "strut";\nexport default defineStep({ type: "bob/util/fmt", input: z.object({}), output: z.any(), async run() { return ${JSON.stringify(v)}; } });\n`,
+      });
+      const requiring = (v: string, digest: string, dir: string) => ({
+        "strut.yaml": `package: acme/linear\nversion: '${v}'\nrequires:\n  packages:\n    - { package: bob/util, digest: "${digest}", source: "file:${dir}" }\n`,
+        "workflows/sync.yaml": "name: acme/linear/sync\nsteps:\n  - { id: f, type: bob/util/fmt }\n",
+      });
+      const u1 = await writeTree(util("1"), "u1");
+      const u2 = await writeTree(util("2"), "u2");
+      await strut.packages.install(`file:${await writeTree(requiring("1", (await readPackage(u1)).digest, u1), "l1")}`, distro);
+      assert.equal((await strut.run("acme/linear/sync", {})).output, "1");
+
+      const l2 = await writeTree(requiring("2", (await readPackage(u2)).digest, u2), "l2");
+      const refused = await api.install(`file:${l2}`);
+      assert.equal(refused.status, 409);
+      assert.match(refused.body.error!, /package_conflict: acme\/linear requires bob\/util at sha256:[0-9a-f]+, and this strut has it at sha256:[0-9a-f]+ — updating a package from a person's door is not built yet/);
+      const r = await strut.packages.install(`file:${l2}`, distro);
+      assert.deepEqual(r.packages.map((p) => [p.package, p.status]), [
+        ["bob/util", "updated"],
+        ["acme/linear", "updated"],
+      ]);
+      assert.equal((await strut.run("acme/linear/sync", {})).output, "2");
+    });
   });
 });
 
@@ -406,6 +544,31 @@ for (const tb of testBackends()) {
       const orphan = await api.install(`file:${await writeTree({ "strut.yaml": "package: acme/orphan\nversion: '1'\n", "concepts/Child.md": "---\nparent: Nowhere\n---\nx\n" })}`);
       assert.equal(orphan.status, 409);
       assert.match(orphan.body.error!, /the Concept Child hangs under Nowhere, which is neither in the graph nor in the packages/);
+    });
+
+    it("updates Concepts through the distro's door: an untouched page follows, an edited one is left, a dropped one is retired", async () => {
+      const v1 = { "strut.yaml": "package: acme/ontology\nversion: '1'\n", ...CONCEPTS, "concepts/Old.md": "---\nparent: Linear\n---\nGoing away.\n" };
+      assert.equal((await strut.packages.install(`file:${await writeTree(v1)}`, { door: "distro" })).packages[0]!.status, "installed");
+      await backend.nodes.update((await conceptNode("Issues"))!.ref_id, { set: { docs: "Edited here." } });
+      const v2 = {
+        "strut.yaml": "package: acme/ontology\nversion: '2'\n",
+        "concepts/Linear.md": "---\ndescription: The tracker\n---\nHow Linear works now.\n",
+        "concepts/Issues.md": "---\ndescription: Its issues\nparent: Linear\n---\nTwo issues per bug.\n",
+        "concepts/Cycles.md": "---\ndescription: Its sprints\nparent: Linear\n---\nOne cycle a fortnight.\n",
+      };
+      const r = await strut.packages.install(`file:${await writeTree(v2)}`, { door: "distro" });
+      assert.deepEqual(r.packages[0]!.items.map((i) => [i.name, i.status]), [
+        ["Cycles", "installed"],
+        ["Issues", "modified"],
+        ["Linear", "updated"],
+        ["Old", "retired"],
+      ]);
+      assert.match((await conceptNode("Linear"))!.docs, /works now/);
+      assert.equal((await conceptNode("Issues"))?.docs, "Edited here.", "the edit is left as it is");
+      assert.equal(await conceptNode("Old"), undefined);
+      const linear = await conceptNode("Linear");
+      const children = await backend.tx((tx) => backend.edgeEngine.liveEdgesOf(tx, linear!.ref_id, "PARENT_OF", true));
+      assert.deepEqual(new Set(children?.edges.map((e) => e.other)), new Set([(await conceptNode("Issues"))!.ref_id, (await conceptNode("Cycles"))!.ref_id]));
     });
   });
 }

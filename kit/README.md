@@ -81,8 +81,11 @@ the `sideEffects` and `type` rules, and that the recorded versions are
   `{ launch(input, params?, key?), pending }` — a MUTATION with no query form,
   so nothing launches on mount or on a poll (§5.1) — `useCancel`,
   `useWorkflow` (`run/workflow`), `useStep(type)` → `run(config, input)`,
-  `useToolInput`, `useHost`. Graph, SQL, automation and job hooks are later
-  work items.
+  `useToolInput`, `useAppLink`, `useHost`. Graph, SQL, automation and job
+  hooks are later work items.
+- **`src/links.ts`** — `appLink(name, input?)`: a deep link to an app,
+  `?app=<name>&input=<input as a query string>` (plans/apps.md §7.1). A host
+  follows it and hands `input` back as `tool-input`, flat strings.
 - **`src/bootstrap.ts`** (`@strut/kit/bootstrap`) — §2.4: connects the MCP Apps
   client (`@modelcontextprotocol/ext-apps`, never a hand-rolled postMessage),
   which sends `ui/initialize`; applies the host context to the document; reads

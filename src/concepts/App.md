@@ -131,9 +131,17 @@ tool (`step_run`) the host relays to strut:
 | `useCancel()` → `{ cancel(workflow, runId) }` | `run/cancel` |
 | `useWorkflow(workflow)` | `run/workflow`: description, the `input:` block, params defaults — what a launch form renders |
 | `useStep(type)` → `{ run(config, input) }` | any granted step, as a function |
-| `useToolInput()` | what the model or a deep link opened the app with |
+| `useToolInput()` | what the model or a deep link opened the app with; a link's values are strings |
+| `useAppLink()` → `link(input?)`, `appLink(name, input?)` | a deep link to this app (or another) opened with `input`: `openLink(link({ view: "/runs", run: id }))` shows it, and the host's address bar follows, so the person can share it |
 | `useApp()` | which app the page is: `{ name, version }`, or a job's app `{ job, path }` |
 | `useHost()` → `{ theme, sendMessage(text), openLink(url) }` | the host: `sendMessage` reaches the builder chat ("change this app"), `openLink` opens a strut link in place |
+
+**Deep links.** The page is opened with whatever its link carries
+(`?app=<name>&input=…`), as `useToolInput()`. The starter template's router
+goes to `view`; add keys of your own for anything else a view needs (a run
+id, a filter) and read them there. A view a person would want to send
+someone opens through `useAppLink()` + `openLink` rather than the router
+alone. A link only opens a view: never launch a run from its input.
 
 A step's output comes back whole; a refused call or a failed step throws a
 `StrutError` with the reason. `useStrutClient().run(type, config, input)`

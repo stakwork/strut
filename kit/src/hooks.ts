@@ -8,6 +8,7 @@ import {
 } from "@tanstack/react-query";
 import type { AppIdentity, StrutClient } from "./client.js";
 import type { DisplayMode, HostState, Theme } from "./host.js";
+import { appLink, type AppLinkInput } from "./links.js";
 import { useStrutClient, useStrutHost } from "./provider.js";
 
 /** The run steps the hooks call (§5). */
@@ -302,9 +303,26 @@ export function useApp(): AppIdentity | undefined {
 }
 
 /** What the model or a link opened the app with (`ui/notifications/tool-input`,
- *  the bridge): `{ view?, runId?, … }`, undefined until one arrives. */
+ *  the bridge): `{ view?, runId?, … }`, undefined until one arrives. A
+ *  link's values are strings (`appLink`). */
 export function useToolInput<T extends Record<string, unknown> = Record<string, unknown>>(): T | undefined {
   return useHostState().toolInput as T | undefined;
+}
+
+/** Links to THIS app opened with an input (`appLink`, off the page's
+ *  identity): `openLink(link({ view: "/runs" }))` shows that view, with the
+ *  host's address bar following where it has one, so the person can share
+ *  it. Under a host's own client (no identity) the link throws: pass the
+ *  name to `appLink` there. */
+export function useAppLink(): (input?: AppLinkInput) => string {
+  const app = useApp();
+  return useCallback(
+    (input?: AppLinkInput) => {
+      if (!app) throw new Error("useAppLink: this page has no app identity — use appLink(name, input)");
+      return appLink(app.name, input);
+    },
+    [app?.name],
+  );
 }
 
 export interface UseHost {

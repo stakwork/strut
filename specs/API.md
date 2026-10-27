@@ -1054,8 +1054,16 @@ is one the same way, with no strut change per host:
 3. **Answer the two requests a page makes of its host:** `ui/message` goes
    to the host's conversation (strut's UI: the builder chat, the text
    prefixed with which app it is about); `ui/open-link` opens a strut deep
-   link (`?wf=`, `?run=`, `?job=`, `?app=`) in place and anything else in a
-   new tab. A theme change is a `ui/notifications/host-context-changed`.
+   link (`?wf=`, `?run=`, `?job=`, `?app=` with its `input`) in place and
+   anything else in a new tab. A theme change is a `ui/notifications/host-context-changed`.
+4. **Open it where a link says.** A deep link to an app is
+   `?app=<name>&input=<the app's own query string>` (the kit's
+   `appLink(name, input)`): read `input` back as flat strings —
+   `input=view%3D%252Fruns%26run%3D12` is `{ view: "/runs", run: "12" }` —
+   and send it as `ui/notifications/tool-input` after the page's
+   `ui/notifications/initialized`; a later link to the same app sends the
+   new input in place. Carry it as one param of the host's own URL and
+   never read inside it: the keys are the app's.
 
 Nothing else a host says to strut changes: runs, jobs, chat and files stay
 on the HTTP API. A page's `tools/call` reaches strut in the shape it left
@@ -1073,10 +1081,14 @@ its YAML says about peers, as the app's run (`origin: "app"`), never a peer
 launch. Open to every app on the peer; a plain peer key gets none of it.
 Strut's UI lists each peer's apps beside its own as `?app=@<peer>/<name>`;
 for one, it leaves out the version select, the tab toggle and the builder
-button, and answers neither `ui/message` nor an in-place `ui/open-link` yet.
+button, answers no `ui/message`, and opens in place only a link to an app
+on that peer (`?app=<name>` from its page is `@<peer>/<name>`).
 With `&solo=1` beside `?app=` (any app, here or a peer's) the UI renders the
 page ALONE, nothing of strut's around it — what a native host such as Peel
-opens in a web view of its own: `/?key=<the local strut's key>&app=@<peer>/<name>&solo=1`.
+opens in a web view of its own: `/?key=<the local strut's key>&app=@<peer>/<name>&solo=1`,
+with `&input=` for a deep link. A link the page opens to itself changes
+`input` in place, the URL following (replaced, as the full UI does); any
+other link opens in a new window.
 Alone, the page reads only the listing the app is in — `GET /apps`, or that
 one peer's `GET /peers/<id>/apps` — then the app's files and its relay: no
 workflows, step types or other peers (one that does not answer cannot hold
@@ -1423,8 +1435,9 @@ that workflow, a sibling that is not in the cache or no longer matches.
 the cache when it holds the digest, else from the pin's `source`; a
 relative `file:` source is relative to the requiring package's directory),
 and installs them FIRST. It is all or nothing: every name and file of every
-package is checked before the first write, and a step that then fails to
-load takes back what the install wrote. Each app is copied out of the
+package is checked before the first write — each step it makes active is
+LOADED from a trial directory first, beside the helpers as they will be —
+and a step that still fails to load takes back what the install wrote. Each app is copied out of the
 cache and BUILT against this strut's kit, with the packages' workflows and
 apps in reach, before anything is written — the kit is this strut's, so
 the build is the compatibility check — then published after the workflows
@@ -1447,8 +1460,10 @@ with the package as their speaker, and `publish` checks fire.
     {
       "package": "acme/linear", "version": "1.4.0", "digest": "sha256:…",
       "source": { "ref": "file:/srv/packages/acme-linear" },
-      "status": "installed",          // or "present": everything was here already
-      "items": [                      // installed | present | modified (here and forked, left as it is)
+      "status": "installed",          // or "present": everything was here already; "updated": moved from `from`
+      "from": { "version": "1.3.0", "digest": "sha256:…" },  // an update only (the distro's door, below)
+      "items": [                      // installed | present | modified (here and forked, left as it is) |
+                                      // updated | diverged | retired | kept (+ "reason") — an update only
         { "kind": "step", "name": "acme/linear/create-issue", "status": "installed", "version": "v1" },
         { "kind": "workflow", "name": "acme/linear/sync", "status": "installed", "version": "v1" },
         { "kind": "app", "name": "acme/linear/issues", "status": "installed", "version": "v1" },
@@ -1462,15 +1477,37 @@ with the package as their speaker, and `publish` checks fire.
 ```
 
 The same package at the same digest installs again as what is missing (a
-deleted item comes back; a fork stays active). Refusals, as `{ error }`
-with a code first:
+deleted item comes back; a fork stays active).
+
+**An update** — the package at another digest — is not taken by this
+route yet: a person's update asks first (`plans/marketplace.md` §4, §8).
+The operator's DISTRO applies one with no ask, in process
+(`strut.packages.install(ref, { door: "distro" })`, `plans/marketplace.md`
+§12, §12.1; no route takes the door), item by item, and updates a package
+the release requires first:
+
+| The item here | What the update does | `status` |
+| --- | --- | --- |
+| Its active version is one the package wrote (any release) | the release's version is published and made active | `updated` |
+| A fork: its active version is one this strut wrote | the release's version is recorded beside it, not active | `diverged` |
+| Already the release's content | nothing | `present` |
+| Not in the release, untouched | removed (the runs stay) | `retired` |
+| Not in the release, a fork — or a helper while a step of the package stays forked | kept | `kept` |
+| A Concept edited here (or whose edit cannot be told) | left as it is | `modified` |
+
+Versions it writes record `source: "distro"`, and `GET /packages` says
+`door: "distro"`: such a package is the distro's, and a person's install
+or uninstall of it is refused (`package_distro_owned`).
+
+Refusals, as `{ error }` with a code first:
 
 | Status | Code | When |
 | ------ | ---- | ---- |
 | 400 | `package_source_invalid`, `package_source_unsupported`, `package_digest_mismatch`, `package_name_mismatch` | the ref does not resolve to that package |
 | 400 | `bad_package` | a file it cannot install: a workflow naming a step, grant or subflow that is neither on this strut nor in the packages, a workflow whose `name:` is not its path, a claims file that is not a list of claims, a step that does not load or whose `defineStep` type is not its path, an app whose `app.yaml` does not parse, that grants a step that is neither here nor in the packages, or that does not build on this strut's kit (an import the kit lacks, a granted workflow that is nowhere) |
 | 409 | `package_conflict` | a local workflow, step or app under the prefix, a step in a sealed namespace, a Concept under the name that is someone else's, a Concept's `parent` that exists nowhere, a package pinned at two digests or installed here at another |
-| 409 | `package_update_not_built` | the package is installed here at another digest (updates are a later work item) |
+| 409 | `package_update_not_built` | the package is installed here at another digest (a person's update asks first, which is not built yet) |
+| 409 | `package_distro_owned` | the distro installed the package here: only the distro updates or removes it |
 
 Once installed, a NEW workflow, step or app name under the prefix is
 refused at every door (`package_conflict`, `refuseUnderInstalledPackage`,
@@ -1486,6 +1523,7 @@ only …` (`src/packages/fence.ts`).
 {
   "package": "acme/linear", "version": "1.4.0", "digest": "sha256:…",
   "source": { "ref": "file:/srv/packages/acme-linear" }, "secrets": ["LINEAR_API_KEY"],
+  "door": "install",                  // or "distro": the distro wrote it (absent for a package of Concepts alone)
   "items": [
     { "kind": "workflow", "name": "acme/linear/sync", "installed": "v1", "active": "v2", "modified": true },
     { "kind": "step", "name": "acme/linear/_shared", "helper": true, "installed": "v1", "active": "v1", "modified": false },
@@ -1501,7 +1539,8 @@ keeps the name it ran under — and retires each untouched Concept. A fork,
 an edited page, and the helpers while a forked step of the package stays
 are kept and listed in `kept: [{ kind, name, reason }]`. 404
 `package_not_installed`; 409 `package_busy` while one of its workflows has
-a run in flight.
+a run in flight; 409 `package_distro_owned` for a package the distro
+installed.
 
 The archive is transport: a fetcher checks the unpacked TREE against the
 digest, never the archive's bytes, so any URL that serves the right tree

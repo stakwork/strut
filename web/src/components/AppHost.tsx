@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import * as api from "../api";
 import { useFileScope } from "../use-artifact-url";
 import { connectAppHost, type AppHostConnection } from "../app-host";
+import { appToolInput, namesApp, peerAppLink } from "../app-links";
 
 // ── An app's page, hosted (plans/apps.md §7.3) ─────────────────────────────
 //
@@ -35,8 +36,14 @@ export function AppHost(props: {
   /** `ui/message` from the page: for the builder chat. None in a job's
    *  timeline (no send box for a job here yet, §12). */
   onMessage?: (text: string) => void | Promise<void>;
-  /** `ui/open-link` with a strut deep link: its params (absent: a new tab). */
-  onNavigate?: (params: Record<string, string>) => void;
+  /** `ui/open-link` with a strut deep link: its params (absent: a new tab).
+   *  A peer's page names apps on the peer, so its `app=<name>` arrives as
+   *  `@<peer>/<name>`, and any other strut link of its opens in a new tab.
+   *  False: not one to open in place, so a new tab. */
+  onNavigate?: (params: Record<string, string>) => boolean | void;
+  /** What a link opened the app with (`?input=`): `tool-input` once the
+   *  page has initialized, and again, in place, whenever it changes. */
+  toolInput?: Record<string, string>;
 }) {
   const app = props.app;
   // The version's token comes from its (cached) listing.
@@ -47,6 +54,11 @@ export function AppHost(props: {
   const connRef = useRef<AppHostConnection | null>(null);
   const handlers = useRef({ onMessage: props.onMessage, onNavigate: props.onNavigate });
   handlers.current = { onMessage: props.onMessage, onNavigate: props.onNavigate };
+  const inputKey = props.toolInput ? JSON.stringify(props.toolInput) : "";
+  const toolInput = useRef(props.toolInput);
+  toolInput.current = props.toolInput;
+  /** The input the open connection has (or sends at initialize). */
+  const sentInput = useRef("");
   const messages = !!props.onMessage;
   const theme = props.theme ?? "dark";
 
@@ -67,11 +79,29 @@ export function AppHost(props: {
           ...(app.peer ? { base: api.peerBase(app.peer) } : {}),
           handlers: {
             ...(messages ? { onMessage: (text: string) => handlers.current.onMessage?.(text) } : {}),
-            ...(handlers.current.onNavigate ? { onNavigate: (params: Record<string, string>) => handlers.current.onNavigate?.(params) } : {}),
+            ...(handlers.current.onNavigate ? {
+              onNavigate: (params: Record<string, string>) => {
+                const to = app.peer ? peerAppLink(params, app.peer) : params;
+                if (!to) return false;
+                const opened = handlers.current.onNavigate?.(to);
+                // A link to this page: its input goes to it now, even one
+                // equal to the last — the page may have moved since.
+                if (opened !== false && namesApp(to["app"], app)) {
+                  const args = appToolInput(to["input"]);
+                  sentInput.current = args ? JSON.stringify(args) : "";
+                  connRef.current?.setToolInput(args);
+                }
+                return opened;
+              },
+            } : {}),
           },
         });
         if (cancelled) { await conn.close(); return; }
         connRef.current = conn;
+        // Before the document loads: what initialize is followed by — the
+        // input as it is NOW, should it have changed while connecting.
+        conn.setToolInput(toolInput.current);
+        sentInput.current = toolInput.current ? JSON.stringify(toolInput.current) : "";
         frame.srcdoc = html;
         setState({ status: "ready" });
       } catch (err) {
@@ -92,6 +122,13 @@ export function AppHost(props: {
   useEffect(() => {
     connRef.current?.setTheme(theme);
   }, [theme]);
+
+  // A new input for the page already open: sent in place, no reload.
+  useEffect(() => {
+    if (!connRef.current || sentInput.current === inputKey) return;
+    sentInput.current = inputKey;
+    connRef.current?.setToolInput(toolInput.current);
+  }, [inputKey]);
 
   return (
     <div class="app-host">
