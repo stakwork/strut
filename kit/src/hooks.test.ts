@@ -8,8 +8,8 @@ import type { StrutClient } from "./client.js";
 import { createStaticHost, type StaticHost } from "./host.js";
 import { StrutProvider } from "./provider.js";
 import {
-  RUN_STEPS, RUN_WAIT_MS, anyInFlight, eventsSettled, isInFlight,
-  useAppLink, useCancel, useHost, useLaunch, useRun, useRunEvents, useRuns, useStep, useToolInput, useTranscript, useWorkflow,
+  JOB_STEPS, RUN_STEPS, RUN_WAIT_MS, anyInFlight, eventsSettled, fileData, isInFlight,
+  useAppLink, useCancel, useHost, useLaunch, useRun, useRunEvents, useRuns, useStep, useToolInput, useTranscript, useUpload, useWorkflow,
 } from "./hooks.js";
 import { appLink } from "./links.js";
 
@@ -173,6 +173,46 @@ describe("the mutations", () => {
     const h = await renderHook(() => useLaunch("wf"), { client });
     await act(async () => { await h.result().launch(); });
     assert.deepEqual(calls, [{ type: "run/launch", config: { workflow: "wf" } }]);
+    await h.unmount();
+  });
+
+  it("useLaunch(workflow, { job }) launches under the job; files go as the run's attachments, base64", async () => {
+    const { client, calls } = fakeClient();
+    const h = await renderHook(() => useLaunch("ask", { job: "library", title: "Library" }), { client });
+    const file = new File(["hello"], "notes.txt", { type: "text/plain" });
+    await act(async () => { await h.result().launch({ question: "what?" }, undefined, undefined, [file]); });
+    assert.deepEqual(calls, [{
+      type: "run/launch",
+      config: {
+        workflow: "ask", input: { question: "what?" }, job: "library", title: "Library",
+        attachments: [{ name: "notes.txt", mediaType: "text/plain", data: Buffer.from("hello").toString("base64") }],
+      },
+    }]);
+    await h.unmount();
+  });
+
+  it("fileData reads a file to base64 in slices, a file past one slice whole", async () => {
+    const bytes = new Uint8Array(100_000).map((_, i) => i % 251);
+    const out = await fileData(new File([bytes], "blob.bin"));
+    assert.deepEqual([out.name, out.mediaType], ["blob.bin", undefined]);
+    assert.deepEqual(new Uint8Array(Buffer.from(out.data, "base64")), bytes);
+  });
+
+  it("useUpload(job) sends nothing until upload(); then job/upload with the file, job/delete-upload by path", async () => {
+    const { client, calls } = fakeClient({
+      [JOB_STEPS.upload]: (c) => ({ job: `app/x/${c.config?.job}`, path: `uploads/${c.config?.name}`, name: c.config?.name, mediaType: "image/png", size: 3 }),
+      [JOB_STEPS.deleteUpload]: (c) => ({ job: `app/x/${c.config?.job}`, path: c.config?.path, removed: true }),
+    });
+    const h = await renderHook(() => useUpload("library"), { client });
+    await act(async () => { await sleep(20); });
+    assert.deepEqual(calls, [], "mounting uploads nothing");
+    let saved: unknown;
+    await act(async () => { saved = await h.result().upload(new File([new Uint8Array([1, 2, 3])], "shot.png", { type: "image/png" })); });
+    assert.deepEqual(calls[0], { type: "job/upload", config: { job: "library", name: "shot.png", mediaType: "image/png", data: "AQID" } });
+    assert.deepEqual(saved, { job: "app/x/library", path: "uploads/shot.png", name: "shot.png", mediaType: "image/png", size: 3 });
+    await until(() => h.result().data !== undefined, "the upload's data");
+    await act(async () => { await h.result().remove("uploads/shot.png"); });
+    assert.deepEqual(calls[1], { type: "job/delete-upload", config: { job: "library", path: "uploads/shot.png" } });
     await h.unmount();
   });
 

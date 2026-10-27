@@ -18,6 +18,7 @@
  */
 import type { AppRef, McpServer, PeerOpen, RunEvent, RunSummary } from "./core.js";
 import type { ArtifactRef } from "./artifact-refs.js";
+import type { AttachmentInput } from "./ai/attachments.js";
 import { slimEvent } from "./run-step.js";
 import type { PartialRunSummary } from "./store.js";
 
@@ -59,6 +60,10 @@ export interface RunLaunchQuery {
   /** Dedupe in flight (§5.1): a run of this workflow launched under the
    *  same key and still running is returned instead of a second launch. */
   key?: string;
+  /** Files for the run (`POST …/run { attachments }`'s shape and caps,
+   *  src/ai/attachments.ts): saved under the run's artifacts, never in
+   *  `input`, which `run.start` keeps for good. */
+  attachments?: AttachmentInput[];
 }
 
 /** Who is launching, and for what — from the calling step's context. */

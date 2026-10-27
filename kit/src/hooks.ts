@@ -224,8 +224,11 @@ export function useWorkflow(workflow: string, opts: { enabled?: boolean } = {}):
 
 export interface UseLaunch {
   /** Launch a run of the workflow (`run/launch`). `key` dedupes in flight:
-   *  a second launch under the same key returns the running run (§5.1). */
-  launch: (input?: unknown, params?: Record<string, unknown>, key?: string) => Promise<LaunchResult>;
+   *  a second launch under the same key returns the running run (§5.1).
+   *  `files` go with the run as its attachments — saved under its
+   *  artifacts as `attachments/<name>`, on each agent's prompt; for files
+   *  that outlive the run, `useUpload` into a job. */
+  launch: (input?: unknown, params?: Record<string, unknown>, key?: string, files?: readonly File[]) => Promise<LaunchResult>;
   pending: boolean;
   error: Error | null;
   /** The last launch's result. */
@@ -233,21 +236,92 @@ export interface UseLaunch {
   reset: () => void;
 }
 
+export interface UseLaunchOptions {
+  /** Launch every run under this job — the app's (plans/apps.md §12: a page
+   *  names `library`, strut keeps `app/<name>/library`), where `useUpload`
+   *  puts files and an agent on `session: "{{ $job }}"` keeps its thread. */
+  job?: string;
+  /** With `job`: the job's title. */
+  title?: string;
+}
+
 /** A MUTATION and nothing else (§5.1): a function to call, never a query —
  *  so no render, refetch or poll launches a run; a click does. */
-export function useLaunch(workflow: string): UseLaunch {
+export function useLaunch(workflow: string, opts: UseLaunchOptions = {}): UseLaunch {
   const client = useStrutClient();
   const qc = useQueryClient();
+  const { job, title } = opts;
   const m = useMutation({
-    mutationFn: (v: { input?: unknown; params?: Record<string, unknown>; key?: string }) =>
-      client.run<LaunchResult>(RUN_STEPS.launch, compact({ workflow, input: v.input, params: v.params, key: v.key })),
+    mutationFn: async (v: { input?: unknown; params?: Record<string, unknown>; key?: string; files?: readonly File[] }) => {
+      const attachments = v.files?.length ? await Promise.all(v.files.map(fileData)) : undefined;
+      return client.run<LaunchResult>(
+        RUN_STEPS.launch,
+        compact({ workflow, input: v.input, params: v.params, key: v.key, job, title: job ? title : undefined, attachments }),
+      );
+    },
     onSuccess: () => qc.invalidateQueries({ queryKey: runKeys.lists(workflow) }),
   });
   const launch = useCallback(
-    (input?: unknown, params?: Record<string, unknown>, key?: string) => m.mutateAsync({ input, params, key }),
+    (input?: unknown, params?: Record<string, unknown>, key?: string, files?: readonly File[]) => m.mutateAsync({ input, params, key, files }),
     [m.mutateAsync],
   );
   return { launch, pending: m.isPending, error: m.error, data: m.data, reset: m.reset };
+}
+
+/** The job steps the upload hook calls (plans/apps.md §12). */
+export const JOB_STEPS = {
+  upload: "job/upload",
+  deleteUpload: "job/delete-upload",
+} as const;
+
+/** A browser file as a step takes one: `{ name, mediaType, data }`, the
+ *  bytes base64 — so a page never writes `FileReader` code. */
+export async function fileData(file: File): Promise<{ name: string; mediaType?: string; data: string }> {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let binary = "";
+  // In slices: one String.fromCharCode over megabytes overflows the stack.
+  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return { name: file.name, ...(file.type ? { mediaType: file.type } : {}), data: btoa(binary) };
+}
+
+/** What `job/upload` returns: `path` is relative to the job's folder —
+ *  what a run launched under the job is handed in its `input`. */
+export interface UploadResult {
+  job: string;
+  path: string;
+  name: string;
+  mediaType: string;
+  size: number;
+}
+
+export interface UseUpload {
+  /** Save a file into the job's `uploads/` (`job/upload`); a taken name is numbered. */
+  upload: (file: File) => Promise<UploadResult>;
+  /** Remove one by the `path` its upload returned (`job/delete-upload`). */
+  remove: (path: string) => Promise<{ job: string; path: string; removed: boolean }>;
+  pending: boolean;
+  error: Error | null;
+  /** The last upload's result. */
+  data: UploadResult | undefined;
+  reset: () => void;
+}
+
+/** Files into a JOB (plans/apps.md §12): the app's — a page names `library`,
+ *  strut keeps `app/<name>/library` — so every run the page launches under
+ *  it (`useLaunch(workflow, { job })`) and an agent on
+ *  `session: "{{ $job }}"` find them at the same path. Mutations: nothing
+ *  is sent until `upload` is called. */
+export function useUpload(job: string): UseUpload {
+  const client = useStrutClient();
+  const up = useMutation({
+    mutationFn: async (file: File) => client.run<UploadResult>(JOB_STEPS.upload, { job, ...(await fileData(file)) }),
+  });
+  const del = useMutation({
+    mutationFn: (path: string) => client.run<{ job: string; path: string; removed: boolean }>(JOB_STEPS.deleteUpload, { job, path }),
+  });
+  const upload = useCallback((file: File) => up.mutateAsync(file), [up.mutateAsync]);
+  const remove = useCallback((path: string) => del.mutateAsync(path), [del.mutateAsync]);
+  return { upload, remove, pending: up.isPending || del.isPending, error: up.error ?? del.error, data: up.data, reset: up.reset };
 }
 
 export interface UseCancel {

@@ -16,6 +16,7 @@ export default defineStep({
   input: z.object({
     q: z.string().optional().describe("Words to search for; all must match. Omit to list every job."),
     workflow: z.string().optional().describe("Only jobs with a run of this workflow."),
+    prefix: z.string().optional().describe("Only jobs whose id starts with this (an app's own: app/<name>/)."),
     limit: z.number().int().positive().optional().describe("At most this many, newest-used first."),
   }),
   output: z.object({ jobs: z.array(z.any()) }),

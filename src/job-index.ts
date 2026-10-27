@@ -150,8 +150,9 @@ export interface JobIndex {
    *  without one) or a current artifact's title or summary. `workflow`
    *  keeps the jobs with a recorded run of that workflow (the sidebar's
    *  filter when one is selected); `actor` the jobs that actor launched a
-   *  run of (`GET /jobs?mine=1`). */
-  list(opts?: { q?: string; workflow?: string; actor?: string; limit?: number }): Promise<JobListing[]>;
+   *  run of (`GET /jobs?mine=1`); `prefix` the jobs whose id starts with it
+   *  (an app's own, `app/<name>/`, plans/apps.md §12). */
+  list(opts?: { q?: string; workflow?: string; actor?: string; prefix?: string; limit?: number }): Promise<JobListing[]>;
   /** One job; `null` when there is neither a record nor a directory. */
   get(job: string, opts?: GetJobOptions): Promise<JobView | null>;
   /** One file of a job's directory; `null` when it is not there. */
@@ -289,6 +290,7 @@ export function createJobIndex(deps: JobIndexDeps): JobIndex {
       let recs = await records();
       if (opts.workflow) recs = recs.filter((rec) => rec.runs?.some((r) => r.workflow === opts.workflow));
       if (opts.actor) recs = recs.filter((rec) => actorsOf(rec).includes(opts.actor!));
+      if (opts.prefix) recs = recs.filter((rec) => rec.name.startsWith(opts.prefix!));
       let rows = recs.map(listing);
       if (opts.q?.trim()) {
         const searchable = await Promise.all(

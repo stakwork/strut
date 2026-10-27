@@ -77,12 +77,15 @@ the `sideEffects` and `type` rules, and that the recorded versions are
   `useRunEvents` (`run/list`, `run/get` with `wait`, `run/events`; `live` =
   refetch while anything shown is in flight), `useTranscript` (`run/transcript`:
   an agent's session by step path — the log's `transcript` link, which a page
-  cannot follow), `useLaunch(workflow)` →
-  `{ launch(input, params?, key?), pending }` — a MUTATION with no query form,
-  so nothing launches on mount or on a poll (§5.1) — `useCancel`,
-  `useWorkflow` (`run/workflow`), `useStep(type)` → `run(config, input)`,
-  `useToolInput`, `useAppLink`, `useHost`. Graph, SQL, automation and job
-  hooks are later work items.
+  cannot follow), `useLaunch(workflow, { job? })` →
+  `{ launch(input, params?, key?, files?), pending }` — a MUTATION with no
+  query form, so nothing launches on mount or on a poll (§5.1); `job` is one
+  of the app's jobs, `files` the run's attachments — `useUpload(job)` →
+  `{ upload(file), remove(path) }` (`job/upload`, `job/delete-upload`: files
+  into the app's job, §12; `fileData` turns a `File` into what a step
+  takes), `useCancel`, `useWorkflow` (`run/workflow`), `useStep(type)` →
+  `run(config, input)`, `useToolInput`, `useAppLink`, `useHost`. Graph, SQL
+  and automation hooks are later work items.
 - **`src/links.ts`** — `appLink(name, input?)`: a deep link to an app,
   `?app=<name>&input=<input as a query string>` (plans/apps.md §7.1). A host
   follows it and hands `input` back as `tool-input`, flat strings.

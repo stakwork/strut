@@ -1391,7 +1391,7 @@ person's authority over the tools its grants name.
 | App | Workflows and steps | Graph | SQLite | Kit |
 | --- | --- | --- | --- | --- |
 | **Benchmark hill-climb** | `openhealth-list-tasks` (the catalogue), `openhealth-run` and `openhealth-improve-loop` (launch, cancel, live), `openhealth-improve` | Reads only: the Concepts an improve step wrote | A person's notes on a run | `RunList`, `LaunchForm`, `RunGraph`, `RunTimeline`, recharts (score over time against the target line), tabs, react-router |
-| **HVAC invoice tracker** | `invoice-from-photo`, where an `agent` with vision reads a photo; until uploads exist (§12) a pasted image goes in `input`, and the run returns the invoice and the app writes it. An automation on `invoice-reminders`, whose agent finds overdue invoices with `graph/find` and drafts the emails | `Customer`, `Visit`, `Invoice` plus the edges. "Mark the Henderson invoice paid" works from any agent, and `graph-search` finds "the furnace job on Elm St" | Line items, and last year's invoices imported from CSV | tanstack table, react-hook-form + zod, papaparse, react-leaflet (the day's visits), `NodeGraph` (a customer's history), sonner |
+| **HVAC invoice tracker** | `invoice-from-photo`, where an `agent` with vision reads a photo; the photo goes with the launch as an attachment (§12), and the run returns the invoice and the app writes it. An automation on `invoice-reminders`, whose agent finds overdue invoices with `graph/find` and drafts the emails | `Customer`, `Visit`, `Invoice` plus the edges. "Mark the Henderson invoice paid" works from any agent, and `graph-search` finds "the furnace job on Elm St" | Line items, and last year's invoices imported from CSV | tanstack table, react-hook-form + zod, papaparse, react-leaflet (the day's visits), `NodeGraph` (a customer's history), sonner |
 | **Fact library** | `fact-ingest`: a URL goes to an agent, which writes `Fact` and `Source` nodes and their edges with `graph/*` | `Fact`, `Source`, `Topic`. Semantic search comes free (`search: [...]` fields) | Reading lists and saved searches | `NodeSearch`, `NodeCard`, `NodeGraph` (React Flow over a topic), fuse.js, react-markdown |
 | **Virality tracker** | `tweet-poll` (`http` plus an `X_BEARER_TOKEN` secret, which the builder's `request_secret` asks for). "Track this tweet" creates an automation on it with `input: { tweetId }`. "Why did this take off?" is a routine, `explain-tweet`: a one-step workflow around `llm`, launched by the button and never by the chart (§5.1) | none | none. **The automations are its state** (one per tracked tweet), and each poll's output is a data point: `run/list { automation }` is the series | recharts, motion, simple-statistics (the growth rate), `useAutomations`, `useLaunch` |
 
@@ -1457,11 +1457,15 @@ fourth never load; the rest of each Kit cell is the stack.
 
 ## 12. Left out of v1
 
-- **File uploads**: one home, **the job** (plans/jobs.md: one folder and
-  one memory across many runs), never the app's version. A version is
-  code (hashed, built, packaged, rolled back), and an upload is data, as
-  `data.db` is (§4.4). An earlier draft put uploads in a folder of the
-  app's own (`files_upload` into `<dataDir>/apps/<name>/files/`); a job
+- **File uploads** (BUILT 2026-10-27: `job/upload`, `job/delete-upload`,
+  `job/dir { hold: false }`, `scopeAppJobs` in `src/apps/tools.ts`,
+  `run/launch { attachments }`, the kit's `useUpload` and
+  `useLaunch(workflow, { job })`): one home, **the job** (plans/jobs.md:
+  one folder and one memory across many runs), never the app's version.
+  A version is code (hashed, built, packaged, rolled back), and an upload
+  is data, as `data.db` is (§4.4). An earlier draft put uploads in a
+  folder of the app's own (`files_upload` into
+  `<dataDir>/apps/<name>/files/`); a job
   does that and more: an app keeps as many as it needs, an agent on
   `session: "{{ $job }}"` remembers a conversation about the files, and
   the orchestrator, hive, the Jobs sidebar and `job/list` see the same
@@ -1486,11 +1490,10 @@ fourth never load; the rest of each Kit cell is the stack.
     `run/list { job }` and `job/list` / `job/get` / `job/read`. So a
     model-written page never launches under, or reads, a job it did not
     start. Everything outside the app sees the whole id, and the
-    orchestrator may continue an app's job like any other. Today
-    `step_run` refuses `run/launch` with a `job` from a page
-    (`grantRefusal`, `src/apps/tools.ts`); inside the app's namespace it
-    is allowed, which is the "continue this job" door for the app's own
-    jobs. `job/start` and `job/continue` stay refused.
+    orchestrator may continue an app's job like any other. `step_run`
+    used to refuse `run/launch` with a `job` from a page; inside the
+    app's namespace it is allowed, which is the "continue this job" door
+    for the app's own jobs. `job/start` and `job/continue` stay refused.
   - **Reading the folder takes no hold.** A job is held by one run at a
     time, taken by `job/dir` and by a kept checkout, not by launching
     under the job (`holdJob`, `src/jobs.ts`), so a library with several
@@ -1514,8 +1517,8 @@ fourth never load; the rest of each Kit cell is the stack.
     { attachments }` (saved under the run's artifacts as
     `attachments/<name>`, recorded on `run.start` without the bytes,
     `ctx.attachments`, on each `agent` step's prompt), and `useLaunch`'s
-    `launch(input, { files })`. A launch-level field, never in `input`,
-    which is written on `run.start` for good. For "upload, run once,
+    `launch(input, params?, key?, files)`. A launch-level field, never in
+    `input`, which is written on `run.start` for good. For "upload, run once,
     done", with no job.
   - **Limits.** The document may open no connection (`connect-src
     'none'`, §9), so there is no upload route: the bytes ride `step_run`

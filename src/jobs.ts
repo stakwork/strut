@@ -49,7 +49,7 @@ import { isAncestorRun } from "./run-control.js";
 import { encodeId, idProblem } from "./session-store.js";
 import type { JobIndex } from "./job-index.js";
 import type { LedgerClaim } from "./ledger.js";
-import type { Attachment } from "./ai/attachments.js";
+import { writeNewFile, type Attachment } from "./ai/attachments.js";
 import { bootEnv } from "./env.js";
 
 export interface JobRecord {
@@ -660,6 +660,36 @@ export function jobFilePath(root: string, relPath: string): string {
     throw new Error(`jobs: path escapes the job directory: ${relPath}`);
   }
   return abs;
+}
+
+/** The folder of a job's directory that uploads go into (plans/apps.md §12). */
+export const JOB_UPLOADS_DIR = "uploads";
+
+/** Save a file into a job's `uploads/`, never over one already there (a
+ *  taken name is numbered), and stamp the job used — which makes its
+ *  record when there is none. Takes no hold: a file may arrive while a run
+ *  of the job is in flight. Returns the path relative to the job's
+ *  directory, `uploads/<name>`. */
+export async function saveJobUpload(root: string, job: string, file: { name: string; bytes: Buffer }): Promise<string> {
+  const abs = await writeNewFile(join(root, JOB_UPLOADS_DIR), file.name, file.bytes);
+  await touchJob(root, job);
+  return relative(root, abs).split(sep).join("/");
+}
+
+/** Remove one upload: a file under the job's `uploads/` and nowhere else.
+ *  False when there is no such file. */
+export async function deleteJobUpload(root: string, job: string, relPath: string): Promise<boolean> {
+  const abs = jobFilePath(root, relPath);
+  const uploads = join(root, JOB_UPLOADS_DIR);
+  if (!abs.startsWith(uploads + sep)) throw new Error(`jobs: only a file under ${JOB_UPLOADS_DIR}/ is an upload: ${relPath}`);
+  try {
+    await rm(abs);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw err;
+  }
+  await touchJob(root, job);
+  return true;
 }
 
 /** Relative paths of every file in a job's directory, recursive and sorted,

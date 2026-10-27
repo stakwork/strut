@@ -127,7 +127,8 @@ tool (`step_run`) the host relays to strut:
 | `useRun(workflow, runId, { live? })` | `run/get`: the summary, its whole `input` and `output`, `artifacts` as links; `live` long-polls (`wait`) while in flight |
 | `useRunEvents(workflow, runId, { live? })` | `run/events`: the log, transcripts as links |
 | `useTranscript(workflow, runId, path, { full? })` | `run/transcript`: the agent session a `step.end`'s `transcript` link names (the page cannot follow the link); `full` a session turn's whole thread; `truncated` says what a 2 MB cap cut |
-| `useLaunch(workflow)` → `{ launch(input, params?, key?), pending }` | `run/launch`: a MUTATION — a function to call on a click, never a query |
+| `useLaunch(workflow, { job? })` → `{ launch(input, params?, key?, files?), pending }` | `run/launch`: a MUTATION — a function to call on a click, never a query; `job` launches under one of the app's jobs, `files` go with the run |
+| `useUpload(job)` → `{ upload(file), remove(path) }` | `job/upload` / `job/delete-upload`: a file into the app's job, its `path` back (see "Files a person brings") |
 | `useCancel()` → `{ cancel(workflow, runId) }` | `run/cancel` |
 | `useWorkflow(workflow)` | `run/workflow`: description, the `input:` block, params defaults — what a launch form renders |
 | `useStep(type)` → `{ run(config, input) }` | any granted step, as a function |
@@ -168,6 +169,31 @@ poll, and `step_run` refuses `llm`, `agent` and `exec` whatever the manifest
 says — the workflow is the unit of spend, logged, billed to the viewer,
 cancelable, verified.
 
+## Files a person brings
+
+A page can open no connection, so a file reaches strut through the same
+tool, as base64 (a third larger; at most 10 MB a file). Hand the browser's
+`File` objects to a hook — a plain `<input type="file">` or a drop zone —
+and never read them yourself.
+
+- **For one run:** `launch(input, undefined, undefined, files)`. The files
+  are the run's attachments, saved under its artifacts as
+  `attachments/<name>` and put on each `agent` step's prompt. Upload, run
+  once, done.
+- **For many runs, or a conversation about them:** a JOB of the app's.
+  `useUpload("library").upload(file)` saves the file at `uploads/<name>` in
+  the job and returns its `path`. `library` is the app's own — strut keeps
+  `app/<name>/library`, so a job per case, project or person is just
+  another id. Launch with the same job, `useLaunch("ask", { job: "library" })`,
+  and pass the `path` in `input`: the workflow finds the file at that path
+  in the folder `job/dir` returns, and an agent on `session: "{{ $job }}"`
+  remembers the conversation about it.
+- A workflow that only READS the uploads takes `job/dir { hold: false }`,
+  so several people asking at once all run. One that writes into the folder
+  holds it, one run at a time (`job_busy:`).
+- Grant `job/upload`, `job/delete-upload` and `job/get` (its `files` is
+  what the job holds) in `grants.steps`.
+
 ## Where data lives
 
 | Data | Where | Why |
@@ -175,6 +201,7 @@ cancelable, verified.
 | What workflows did, one row per execution: scores, polls, extractions | Runs | Already there: `useRuns` and outputs |
 | Entities and relations others should see too: customers, facts, people | The graph (`graph/*`, declared types) | Agents find them, workflows write them, another app reads them |
 | The app's own tables: line items, a big import, settings | The app's SQLite (`sqlite/*`) | A later strut; until then keep state in runs or the graph |
+| Files a person uploads: photos, PDFs, a CSV to work from | A job of the app's (`useUpload`) | Every run under the job reads them; an agent's thread on it remembers them |
 
 "If an agent should ever find it, it goes in the graph." Migrations (when
 they come) are additive: a rollback never rolls the schema back.

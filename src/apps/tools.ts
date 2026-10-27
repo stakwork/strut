@@ -16,7 +16,10 @@
  * not declare — the type from the config for a create, the node read first
  * for an edit or delete by `ref_id` (so a page can never rewrite a Concept
  * or a `StrutWorkflow` node); `sqlite/*` and `automation/*` not available
- * until their work items land. The call runs through `runStep` with the
+ * until their work items land. A job id the page names is the APP's — kept
+ * under `app/<name>/` (`scopeAppJobs`, plans/apps.md §12), where its
+ * uploads (`job/upload`) and the runs it launches under the job meet. The
+ * call runs through `runStep` with the
  * viewer as actor and `ctx.app` set, so a run `run/launch` starts carries
  * the app too. A write — a graph write, an error report — is KEPT under
  * `step:<type>` with the actor and `app` on its summary (§9); a read is
@@ -78,15 +81,42 @@ const NOT_A_PAGES: Record<string, string> = {
   "app/publish": "an app does not author apps — the builder does, with the editor",
   "app/pin": "which apps are tabs is the person's call — the builder pins one when they ask",
   "job/dir": "a job's directory belongs to a run of the job",
+  "job/start": "a page runs a workflow in its own job with run/launch { job } (plans/apps.md §12); job/start is an agent's door",
+  "job/continue": "a page runs a workflow in its own job with run/launch { job } (plans/apps.md §12); job/continue is an agent's door",
 };
 
 /** Families this strut does not serve to an app yet, by work item. */
 const NOT_YET: Array<[prefix: string, what: string]> = [
   ["sqlite/", "an app's own SQLite file is plans/apps.md work item 3"],
   ["automation/", "schedules from an app are plans/apps.md work item 7"],
-  ["job/start", "a job's turn starts from its host, not a page — a \"continue this job\" door is later (plans/apps.md §12)"],
-  ["job/continue", "a job's turn starts from its host, not a page — a \"continue this job\" door is later (plans/apps.md §12)"],
 ];
+
+/** Where an app's jobs live (plans/apps.md §12): a job id a page names is
+ *  kept under `app/<name>/`, as a peer's is kept under `peer/` — so a
+ *  model-written page never launches under, or reads, a job it did not
+ *  start. Every version of the app shares them. */
+export const APP_JOB_NAMESPACE = "app/";
+
+export function appJobPrefix(app: string): string {
+  return `${APP_JOB_NAMESPACE}${app}/`;
+}
+
+/** `id` in the app's namespace — left as it is when it already is there:
+ *  a page hands back the ids its results carry (`run/list`'s `job`). */
+export function appJobId(app: string, id: string): string {
+  const prefix = appJobPrefix(app);
+  return id.startsWith(prefix) ? id : `${prefix}${id}`;
+}
+
+/** A page's config with its job ids in the app's namespace: `job` wherever
+ *  a step takes one, and `job/list`'s `prefix`, which a page can narrow and
+ *  never leave. */
+export function scopeAppJobs(app: string, type: string, config: Record<string, unknown>): Record<string, unknown> {
+  let out = config;
+  if (typeof config["job"] === "string") out = { ...out, job: appJobId(app, config["job"]) };
+  if (type === "job/list") out = { ...out, prefix: appJobId(app, typeof config["prefix"] === "string" ? config["prefix"] : "") };
+  return out;
+}
 
 /** Always granted: the page's own door for its failures (§8). */
 export const ALWAYS_GRANTED: ReadonlySet<string> = new Set(["app/report-error"]);
@@ -117,7 +147,6 @@ export function grantRefusal(type: string, config: Record<string, unknown>, mani
   if (job !== undefined && (typeof job !== "string" || hasTemplate(job))) return `${type}: \`job\` must be a literal job id, not a template`;
   if (type.startsWith("run/")) {
     const wf = config["workflow"];
-    if (job !== undefined && type === "run/launch") return `run/launch with \`job\`: a page does not launch a job's turn — its host does (plans/apps.md §12)`;
     if (typeof wf !== "string" || !wf) return `${type} needs \`workflow\``;
     if (hasTemplate(wf)) return `${type}: \`workflow\` must be a literal name, not a template`;
     if (!manifest.grants.workflows.includes(wf)) {
@@ -280,7 +309,7 @@ export function buildAppTools(deps: AppToolDeps): ToolSet {
       deps.registry,
       deps.services,
       {
-        config: cfg,
+        config: scopeAppJobs(app.name, base, cfg),
         ...(input !== undefined ? { input } : {}),
         ...(deps.actor ? { actor: deps.actor, principal: deps.actor } : {}),
         app: { name: app.name, version: app.version },
