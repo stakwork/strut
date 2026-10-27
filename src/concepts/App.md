@@ -48,7 +48,7 @@ grants:
   automations: []              # schedules (a later strut)
 data:
   graph:
-    types: {}                  # node types it declares and may WRITE (a later strut registers them)
+    types: {}                  # node types it declares and may WRITE (below: Graph types)
 ```
 
 The grants are the app's whole reach, checked by strut on every call in
@@ -155,6 +155,44 @@ cancelable, verified.
 
 "If an agent should ever find it, it goes in the graph." Migrations (when
 they come) are additive: a rollback never rolls the schema back.
+
+## Graph types
+
+```yaml
+data:
+  graph:
+    types:
+      Customer: { name: string, phone: string?, search: [name] }
+      Invoice: { number: string, amount: number, due: date, status: string, meta: json?, key: [number] }
+    edges:
+      - [Invoice, BILLED_TO, Customer]
+```
+
+An attribute is `string`, `number`, `boolean`, `date` or `json`, with `?`
+for optional. `key` lists the attributes that identify a node: the same key
+values are the same node, so a second create returns the first (default
+`[name]`, which every type has). `search` lists the ones the graph indexes
+(default the key). A `date` is an ISO string (`2026-11-01`) and compares as
+text. A `json` attribute is JSON text: `JSON.stringify` it when you write,
+`JSON.parse` it when you read.
+
+`app/publish` registers the types and edges on the workspace's graph
+before the version, add-only. Nothing is ever removed, so a rollback keeps
+them. A type another app declared is the same type: declare it with the
+same attribute types, the same key and every attribute it requires, and
+your new optional attributes are added; the build names whatever conflicts.
+Strut's own types, `Concept`, `Claim`, `Check` and `Evidence` cannot be
+declared. Only a Neo4j graph registers types: on a strut whose graph is a
+LadybugDB file, or that has no graph, an app that declares any does not
+build, so keep its data in runs there.
+
+The page writes them with `graph/create-node`, `edit-node`,
+`create-triplet` and `delete-node` (granted in `grants.steps`), and reads a
+LIST with `graph/find`: `{ node_type: "Invoice", where: { status: "unpaid",
+due: { lt: today } }, orderBy: "due" }`, with equality, `gt` / `gte` / `lt`
+/ `lte`, `in` and `contains`, a `cursor` for the next page, and `count:
+true` for the total. For words or meaning use `graph/graph-search`; for one
+node, `graph/graph-get`.
 
 ## Loading related data: one call, not a loop
 

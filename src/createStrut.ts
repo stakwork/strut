@@ -1007,6 +1007,8 @@ export async function createStrut<TServices = unknown>(
       // off the run store, newest first, when `app/get` asks.
       errors: (name, max) => appErrors(store, name, max),
       monitor: appMonitor,
+      // An app's declared graph types are registered here, on Neo4j.
+      ...(graph ? { graph } : {}),
     });
   (services as Record<string, unknown>)["apps"] = apps;
   let stepSources: StepSources = {};

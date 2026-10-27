@@ -23,8 +23,8 @@ import type { AppUsage } from "./monitor.js";
 /**
  * The app door (plans/apps.md §5, §7.2, §9): `step_run` under an app's
  * grants — refused outside them, on a run/* call to an ungranted workflow,
- * on a graph write to an undeclared type (an edit by ref_id of a Concept
- * among them), on llm whatever the manifest says, on a params widening, on
+ * on a graph write to an undeclared type, or to one strut keeps for itself
+ * (an edit by ref_id of a Concept among them), on llm whatever the manifest says, on a params widening, on
  * a missing or foreign token; `run/launch { key }` returning the in-flight
  * run; a run launched through it seeing `ctx.app`; writes kept under
  * `step:<type>` with the actor and the app on their summary, reads not,
@@ -99,10 +99,6 @@ const MANIFESTS: Record<string, string> = {
     "grants:",
     "  workflows: [score-wf, slow-wf, echo-app, agentish, grader-run, talk-wf]",
     "  steps: [graph/*, app/get, whoami, big, run/launch]",
-    "data:",
-    "  graph:",
-    "    types:",
-    "      Concept: { name: string, description: string?, docs: string? }",
     "",
   ].join("\n"),
   strict: "title: Strict\ngrants:\n  workflows: [score-wf]\n",
@@ -342,26 +338,23 @@ describe("step_run — the app door", () => {
     assert.equal(((await http.json()) as { errors: unknown[] }).errors.length, 1, "on the route too");
   });
 
-  it("a graph write is refused on an undeclared type — a create by type, an edit of a Concept by ref_id, a templated type, an edge by ref — and kept when it goes through", { skip: backend.skip }, async () => {
+  // A declared type going through, kept, is graph-types.test.ts's: only a
+  // Neo4j graph registers an app's types.
+  it("a graph write is refused on an undeclared type, and on one strut keeps for itself whatever the manifest says — a create by type, an edit of a Concept by ref_id, a templated type, an edge by ref", { skip: backend.skip }, async () => {
     const nodes = appIdentity("nodes", "v1");
-    await refused({ type: "graph/create-node", config: { node_type: "Concept", node_data: { name: "X" } }, app: nodes }, /declares no graph types/);
-    await refused({ type: "graph/edit-node", config: { ref_id: conceptRef, node_data: { description: "edited" } }, app: nodes }, /write on "Concept" is refused: this app declares no graph types/);
+    await refused({ type: "graph/create-node", config: { node_type: "Invoice", node_data: { name: "X" } }, app: nodes }, /write on "Invoice" is refused: this app declares no graph types/);
+    await refused({ type: "graph/create-node", config: { node_type: "Concept", node_data: { name: "X" } }, app: nodes }, /write on "Concept" is refused: Concept is the workspace's notes/);
+    await refused({ type: "graph/edit-node", config: { ref_id: conceptRef, node_data: { description: "edited" } }, app: nodes }, /write on "Concept" is refused: Concept is the workspace's notes/);
     await refused({ type: "graph/delete-node", config: { ref_id: conceptRef }, app: nodes }, /write on "Concept" is refused/);
+    await refused({ type: "graph/create-node", config: { node_type: "StrutRun", node_data: {} }, app: nodes }, /StrutRun is one of strut's own types/);
+    await refused({ type: "graph/create-node", config: { node_type: "Evidence", node_data: {} }, app: nodes }, /Evidence is the claims layer's/);
     await refused({ type: "graph/edit-node", config: { ref_id: "no-such-node", node_data: {} }, app: nodes }, /no node no-such-node/);
     await refused({ type: "graph/create-node", config: { node_type: "{{ input.t }}", node_data: {} }, app: identity }, /literal value, not a template/);
     await refused({ type: "graph/delete-edge", config: { edge_ref_id: "e1" }, app: identity }, /locate the edge by its endpoints/);
     await refused({ type: "graph/create-schema", config: {}, app: identity }, /not a thing a page does/);
-    // A declared type (bench declares Concept) goes through — and is kept.
-    const made = await ok({ type: "graph/create-node", config: { node_type: "Concept", node_data: { name: "From the app", description: "written by bench" } }, app: identity });
-    assert.equal(made.status, "Success", JSON.stringify(made));
-    const kept = await store.listRuns("step:graph/create-node");
-    assert.equal(kept.length, 1);
-    const summary = (await store.getRunSummary("step:graph/create-node", kept[0]!))!;
-    assert.deepEqual([summary.actor, summary.app, summary.status], ["viewer", { name: "bench", version: "v1" }, "success"]);
-    const start = (await store.getRunEvents("step:graph/create-node", kept[0]!)).find((e) => e.type === "step.start")!;
-    assert.equal((start.input as { node_type: string }).node_type, "Concept", "the statement is in the kept log");
-    // A read of the graph is not.
-    const read = await ok({ type: "graph/graph-get", config: { ref_id: made.ref_id }, app: identity });
+    assert.deepEqual(await store.listRuns("step:graph/create-node"), [], "a refusal keeps nothing");
+    // A read of the graph is not kept either.
+    const read = await ok({ type: "graph/graph-get", config: { ref_id: conceptRef }, app: identity });
     assert.equal(read.node_type, "Concept");
     assert.deepEqual(await store.listRuns("step:graph/graph-get"), []);
   });

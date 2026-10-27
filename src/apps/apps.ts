@@ -13,6 +13,11 @@
  * grant anything, the `peer: true` precedent. Built by `createStrut` into
  * `ctx.services.apps`; an embedder builds one with `createApps`.
  *
+ * An app that declares graph types (`data.graph`) is checked against the
+ * graph at every build and registers them at publish, before the version is
+ * recorded (./graph-types.ts): on Neo4j only, so on a LadybugDB file or the
+ * filesystem workspace it does not build.
+ *
  * A version's directory is a CACHE over its history (./objects.ts): a
  * publish records the version's sources once per file, the active version
  * and the newest few keep their directory, and an older one is restored
@@ -28,8 +33,10 @@ import { withLock } from "../jobs.js";
 import { isSealedStep } from "../sealed.js";
 import { treeHash } from "../version.js";
 import { newestVersion, type AppListEntry, type AppRecord, type AppRelease, type AppReleaseSummary, type Upstream, type VersionSource, type WorkspaceStore } from "../workspace.js";
+import type { GraphBackend } from "../graph/backend.js";
 import { buildApp, readBuildInfo, type BuildDeps, type BuildInfo, type BuildResult, type InstalledApp } from "./build.js";
 import { copyAppDir, isEmptyDir, listAppFiles, validateAppName } from "./files.js";
+import { checkAppGraph, registerAppGraph, type RegisteredGraph } from "./graph-types.js";
 import type { Kit, KitLocation } from "./kit.js";
 import { readManifest, type AppManifest } from "./manifest.js";
 import { evictVersionDir, keptVersions, readTree, recordTree, restoreSources } from "./objects.js";
@@ -134,6 +141,8 @@ export type AppPublishResult =
       liveVersion?: string;
       release?: string;
       note?: string;
+      /** The graph types and edges the publish registered (`data.graph`). */
+      graph?: RegisteredGraph;
     }
   | { ok: false; errors: string[]; warnings: string[] };
 
@@ -207,6 +216,9 @@ export interface AppsDeps {
   /** The monitor `step_run` counts into (./monitor.ts): `get` carries its
    *  brief, `list` its warning count. Absent, neither. */
   monitor?: Pick<AppMonitor, "brief" | "warningCount" | "forget">;
+  /** The graph an app's declared types are checked against and registered
+   *  on (./graph-types.ts). Absent: an app that declares any does not build. */
+  graph?: GraphBackend;
 }
 
 
@@ -305,6 +317,13 @@ export function createApps(deps: AppsDeps): AppsCapability {
     workflowExists: async (wf) => !!(await workspace.getWorkflowMetadata(wf).catch(() => null)),
     ...(deps.now ? { now: deps.now } : {}),
   });
+
+  /** The graph check a build of `dir` runs (./graph-types.ts); nothing when
+   *  its manifest does not parse — the build reports that. */
+  const graphCheck = async (dir: string, name?: string) => {
+    const read = await readManifest(dir);
+    return read.ok ? checkAppGraph(read.manifest, deps.graph, name) : { errors: [], warnings: [] };
+  };
 
   /** What a model-written manifest may not grant (§5.1, §9). */
   const refusedGrants = async (manifest: AppManifest): Promise<string[]> => {
@@ -414,7 +433,10 @@ export function createApps(deps: AppsDeps): AppsCapability {
     versionDir,
 
     async build(dir, opts) {
-      return buildApp(dir, buildDeps(opts?.name));
+      const graph = await graphCheck(dir, opts?.name);
+      if (graph.errors.length) return { ok: false, errors: graph.errors, warnings: graph.warnings };
+      const built = await buildApp(dir, buildDeps(opts?.name));
+      return graph.warnings.length ? { ...built, warnings: [...graph.warnings, ...built.warnings] } : built;
     },
 
     async getDir(dir) {
@@ -444,8 +466,12 @@ export function createApps(deps: AppsDeps): AppsCapability {
         const refused = await refusedGrants(read.manifest);
         if (refused.length) return { ok: false, errors: refused, warnings: [] };
       }
+      const check = await checkAppGraph(read.manifest, deps.graph, name);
+      if (check.errors.length) return { ok: false, errors: check.errors, warnings: check.warnings };
       const built = await buildApp(dir, buildDeps(name));
-      if (!built.ok) return built;
+      if (!built.ok) return { ...built, warnings: [...check.warnings, ...built.warnings] };
+      // The types before the version: a version is never live without them.
+      const graph = deps.graph && built.manifest.data?.graph ? await registerAppGraph(built.manifest, deps.graph, name) : undefined;
       const publisher = opts.publisher ?? (opts.surface === "ai" ? "ai" : undefined);
       const r = await workspace.publishApp(name, built.hash, built.manifest, {
         ...(publisher !== undefined ? { publisher } : {}),
@@ -473,8 +499,9 @@ export function createApps(deps: AppsDeps): AppsCapability {
         changed: r.changed,
         hash: built.hash,
         bytes: built.bytes,
-        warnings: built.warnings,
+        warnings: [...check.warnings, ...built.warnings],
         live: !held,
+        ...(graph && (graph.types.length || graph.edges.length) ? { graph } : {}),
         ...(held
           ? {
               liveVersion: held.active,
