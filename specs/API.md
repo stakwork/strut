@@ -991,14 +991,15 @@ the call against that app's manifest, in every host:
 
 | Call | Rule |
 | ---- | ---- |
-| `run/*` | only on a workflow in `grants.workflows` (`job` on `run/list` filters them); a sealed workflow refused by name; `run/launch { job }` refused — a page launches no job's turn |
+| `run/*` | only on a workflow in `grants.workflows` (`job` on `run/list` filters them); a sealed workflow refused by name |
+| a `job` in any config | the APP's job: a page's `library` is kept as `app/<name>/library` (an id already there is left as it is), so a page never launches under, uploads into or reads a job it did not start; `job/list` lists only the app's (`prefix` narrows inside it) |
 | any other type | only when `grants.steps` names it (globs as `agentTools` takes them) |
 | `llm`, `agent`, `exec`, `acp/prompt` | refused whatever the manifest says — the workflow is the unit of spend (§5.1): a paid or shell-shaped step runs inside a workflow the app launches |
 | a sealed step | refused |
 | a graph write (`graph/create-node`, `edit-node`, `create-triplet`, `create-batch-triplet`, `delete-edge`, `edit-edge`, `delete-node`, `move-node`) | refused on a type the manifest's `data.graph.types` does not declare, and on a type strut keeps whatever it declares — the type from the config for a create, the node read first for an edit or delete by `ref_id` (case-blind); every value checked must be a literal, an edge is located by its endpoints |
-| `job/get`, `job/read` | only when `grants.steps` names them |
-| `sqlite/*`, `automation/*`, `job/start`, `job/continue` | "not available in this strut yet" (work items 3, 7; a "continue this job" door, §12 of the plan) |
-| `graph/create-schema`, `graph/register-namespace`, `graph/project`, `app/init`, `app/checkout`, `app/build`, `app/publish`, `job/dir` | not a thing a page does |
+| `job/upload`, `job/delete-upload`, `job/get`, `job/read`, `job/list` | only when `grants.steps` names them |
+| `sqlite/*`, `automation/*` | "not available in this strut yet" (work items 3, 7) |
+| `graph/create-schema`, `graph/register-namespace`, `graph/project`, `app/init`, `app/checkout`, `app/build`, `app/publish`, `job/dir`, `job/start`, `job/continue` | not a thing a page does (a page runs a workflow in its own job with `run/launch { job }`) |
 | `app/report-error { message, stack?, componentStack? }` | always granted |
 
 A refused call, a missing or foreign token (a run's or a job's file token,
@@ -1025,10 +1026,27 @@ as `agentTools: ["run/*"]`, and the §3 … §7 routes' layers one more way
 | `run/get` | `{ workflow, runId, wait? (ms, ≤ 55 000) }` | the summary whole + `artifacts`; in flight, the partial summary (`partial: true`) after holding up to `wait` |
 | `run/events` | `{ workflow, runId, skip? }` | the log as `GET …/events` serves it (transcripts as links, long fields replaced by their size), cut at 5 000 keeping the head and the last event |
 | `run/transcript` | `{ workflow, runId, path, full? }` | `{ path, messages, full?, truncated? }` — one agent's session by step path, the bare array `GET …/transcripts/<path>` serves (a page cannot follow that link); `full` = `?full=1`, a session turn's thread (`full: true` when stitched). Cut at 2 MB of JSON: long strings to head + tail (64k, 16k, then 4k chars), then messages left out after the system prompt and the task; `truncated: { chars, strings, stringMax, messages?: { at, count } }` says what went. No transcript at the path, or a session gone, is an error with the route's 404 message |
-| `run/launch` | `{ workflow, input?, params?, job?, title?, key? }` | `{ runId }` at once (detached, like `POST …/run`; `params` may narrow a grant, never widen it, and may add to an `approve` list, never take from it); with `key`, the run of this workflow still in flight under the same key: `{ runId, existing: true }` |
+| `run/launch` | `{ workflow, input?, params?, job?, title?, key?, attachments? }` | `{ runId }` at once (detached, like `POST …/run`; `params` may narrow a grant, never widen it, and may add to an `approve` list, never take from it); with `key`, the run of this workflow still in flight under the same key: `{ runId, existing: true }`. `attachments`: `POST …/run`'s (§3: `[{ name, mediaType?, data }]`, at most 10, 10 MB each, 5 MB an image, 15 MB together), saved under the run's artifacts as `attachments/<name>` and on each agent's prompt, never in `input` |
 | `run/cancel` | `{ workflow, runId, force? }` | `{ ok: true, runId, state }`; a run that is not live is an error. `force: true` is `POST …/cancel { force: true }` (§6.1): it abandons a step that never returns |
 | `run/workflow` | `{ workflow }` | `{ name, description?, category?, activeVersion?, input? (the \`input:\` block), params?, peer? }` |
 | `run/files` | `{ workflow, runId, path }` | `{ path, mediaType, bytes, text }` or `{ …, base64 }`, cut at 2 MB (`truncated: true`) — the job's directory for a job run, else the run's artifacts |
+
+**Files from a page** (plans/apps.md §12). A page can open no connection,
+so its files ride `step_run` as base64, a third larger. A file for one run
+goes with the launch: `run/launch { attachments }`. A file for many runs, or
+for an agent's thread, goes into one of the app's jobs (above: the page's
+`library` is `app/<name>/library`):
+
+| Step | Config | Result |
+| ---- | ------ | ------ |
+| `job/upload` | `{ job, name, mediaType?, data }` — `data` base64 or a data URL, at most 10 MB | `{ job, path, name, mediaType, size }`: saved at `<job's directory>/uploads/<name>`, a taken name numbered (`notes-2.txt`), never overwritten; the job is made when there is none. Takes no hold and is never kept as a run (its input is the bytes) |
+| `job/delete-upload` | `{ job, path }` | `{ job, path, removed }` — only a file under `uploads/`; `removed: false` when there was none |
+
+A run launched under the same job (`run/launch { job: "library", input:
+{ file: "uploads/notes.txt" } }`) finds the file at that path in the folder
+`job/dir` returns. `job/dir { hold: false }` hands the folder out without
+holding it, so several runs that only read it run at once; a run that
+holds it is still one at a time (`job_busy:`).
 
 ### 14.3 Hosting an app (plans/apps.md §7.3, §7.4)
 

@@ -91,28 +91,34 @@ export function parseAttachments(raw: unknown): Attachment[] {
   if (raw.length > MAX_ATTACHMENTS) throw new Error(`at most ${MAX_ATTACHMENTS} attachments per message`);
   let total = 0;
   return raw.map((item, i) => {
-    const a = item as Partial<AttachmentInput> | null;
-    if (!a || typeof a.name !== "string" || !a.name.trim()) throw new Error(`attachments[${i}].name (string) is required`);
-    if (typeof a.data !== "string") throw new Error(`attachments[${i}].data (base64 string) is required`);
-    const name = a.name.trim();
-    let data = a.data;
-    let fromUrl: string | undefined;
-    const m = /^data:([^;,]*)(?:;[^,]*)?;base64,/.exec(data);
-    if (m) {
-      fromUrl = m[1] || undefined;
-      data = data.slice(m[0].length);
-    }
-    if (!/^[A-Za-z0-9+/\s]*={0,2}\s*$/.test(data)) throw new Error(`attachments[${i}] (${name}): data is not base64`);
-    const bytes = Buffer.from(data, "base64");
-    const mediaType = normalizeType(a.mediaType ?? fromUrl, name);
-    const cap = IMAGE_TYPES.has(mediaType) ? MAX_IMAGE_BYTES : MAX_ATTACHMENT_BYTES;
-    if (bytes.length > cap) throw new Error(`${name} is ${formatBytes(bytes.length)}; the limit is ${formatBytes(cap)}`);
-    total += bytes.length;
+    const a = decodeAttachment(item, `attachments[${i}]`);
+    const cap = IMAGE_TYPES.has(a.mediaType) ? MAX_IMAGE_BYTES : MAX_ATTACHMENT_BYTES;
+    if (a.bytes.length > cap) throw new Error(`${a.name} is ${formatBytes(a.bytes.length)}; the limit is ${formatBytes(cap)}`);
+    total += a.bytes.length;
     if (total > MAX_ATTACHMENTS_TOTAL_BYTES) {
       throw new Error(`attachments total more than ${formatBytes(MAX_ATTACHMENTS_TOTAL_BYTES)} in one message`);
     }
-    return { name, mediaType, bytes };
+    return a;
   });
+}
+
+/** One `{ name, mediaType?, data }` decoded — base64 or a data URL, the
+ *  media type from the data URL or the extension when not given. No size
+ *  cap: the caller's. `label` names it in an error. */
+export function decodeAttachment(item: unknown, label: string): Attachment {
+  const a = item as Partial<AttachmentInput> | null;
+  if (!a || typeof a.name !== "string" || !a.name.trim()) throw new Error(`${label}.name (string) is required`);
+  if (typeof a.data !== "string") throw new Error(`${label}.data (base64 string) is required`);
+  const name = a.name.trim();
+  let data = a.data;
+  let fromUrl: string | undefined;
+  const m = /^data:([^;,]*)(?:;[^,]*)?;base64,/.exec(data);
+  if (m) {
+    fromUrl = m[1] || undefined;
+    data = data.slice(m[0].length);
+  }
+  if (!/^[A-Za-z0-9+/\s]*={0,2}\s*$/.test(data)) throw new Error(`${label} (${name}): data is not base64`);
+  return { name, mediaType: normalizeType(a.mediaType ?? fromUrl, name), bytes: Buffer.from(data, "base64") };
 }
 
 /** The given media type, else the extension's; a browser sends "" or
@@ -147,24 +153,28 @@ function utf8(bytes: Buffer): string | null {
  *  Returns the absolute paths, in order. */
 export async function saveAttachments(dataDir: string, chatId: string, list: Attachment[]): Promise<string[]> {
   const dir = resolve(dataDir, "uploads", chatId);
-  await mkdir(dir, { recursive: true });
   const paths: string[] = [];
-  for (const a of list) {
-    const safe = safeName(a.name);
-    const ext = extname(safe);
-    const stem = safe.slice(0, safe.length - ext.length);
-    for (let n = 1; ; n++) {
-      const path = join(dir, n === 1 ? safe : `${stem}-${n}${ext}`);
-      try {
-        await writeFile(path, a.bytes, { flag: "wx" });
-        paths.push(path);
-        break;
-      } catch (err) {
-        if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
-      }
+  for (const a of list) paths.push(await writeNewFile(dir, a.name, a.bytes));
+  return paths;
+}
+
+/** Write `bytes` into `dir` under `name` made safe, never over a file
+ *  already there: a taken name is numbered (`photo-2.jpg`). Returns the
+ *  absolute path written. */
+export async function writeNewFile(dir: string, name: string, bytes: Buffer): Promise<string> {
+  await mkdir(dir, { recursive: true });
+  const safe = safeName(name);
+  const ext = extname(safe);
+  const stem = safe.slice(0, safe.length - ext.length);
+  for (let n = 1; ; n++) {
+    const path = join(dir, n === 1 ? safe : `${stem}-${n}${ext}`);
+    try {
+      await writeFile(path, bytes, { flag: "wx" });
+      return path;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
     }
   }
-  return paths;
 }
 
 function safeName(name: string): string {

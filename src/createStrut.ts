@@ -4377,6 +4377,8 @@ export async function createStrut<TServices = unknown>(
         const problem = idProblem(q.job);
         if (problem) throw new Error(`job "${q.job}" ${problem}`);
       }
+      const attachments = parseAttachments(q.attachments);
+      if (attachments.length) requireRunFiles();
       // Dedupe in flight (§5.1): the run launched under this key, while it
       // lives. Keys whose runs have ended are let go here.
       for (const [k, id] of launchKeys) if (!liveKey(k.slice(0, k.indexOf("\0")), id)) launchKeys.delete(k);
@@ -4391,6 +4393,7 @@ export async function createStrut<TServices = unknown>(
           ...(by.principal ? { principal: by.principal } : {}),
           ...(by.app ? { origin: "app" as const, app: by.app } : {}),
           ...(by.mcp?.length ? { mcp: by.mcp } : {}),
+          ...(attachments.length ? { attachments } : {}),
         },
       );
       if (key) launchKeys.set(key, runId);

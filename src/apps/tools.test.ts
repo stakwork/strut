@@ -1,6 +1,6 @@
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { z } from "zod";
@@ -16,7 +16,8 @@ import { testBackends } from "../graph/test-util.js";
 import type { GraphBackend } from "../graph/backend.js";
 import type { KitLocation } from "./kit.js";
 import { buildTools } from "../ai/tools.js";
-import { APP_TOOL_META, STEP_RUN_TOOL, buildAppTools, grantRefusal, keptFromApp } from "./tools.js";
+import { APP_TOOL_META, STEP_RUN_TOOL, appJobId, buildAppTools, grantRefusal, keptFromApp, scopeAppJobs } from "./tools.js";
+import { jobRoot, saveJobUpload } from "../jobs.js";
 import { parseManifest } from "./manifest.js";
 import type { AppUsage } from "./monitor.js";
 
@@ -28,7 +29,9 @@ import type { AppUsage } from "./monitor.js";
  * a missing or foreign token; `run/launch { key }` returning the in-flight
  * run; a run launched through it seeing `ctx.app`; writes kept under
  * `step:<type>` with the actor and the app on their summary, reads not,
- * `app/report-error` kept and read back by `app/get`; the tool listed
+ * `app/report-error` kept and read back by `app/get`; a page's jobs in the
+ * app's namespace — its uploads, the runs it launches under them, a
+ * non-holding read beside another, files on a launch; the tool listed
  * app-only on both MCP doors. Then the builder's own app tools and editor.
  */
 
@@ -74,6 +77,24 @@ const talker = defineStep({
     ]);
   },
 });
+/** Reads one file of a folder a step handed it — a job's uploads/. */
+const cat = defineStep({
+  type: "cat",
+  input: z.object({ dir: z.string(), file: z.string(), ms: z.number().default(0) }),
+  output: z.any(),
+  async run(cfg, ctx) {
+    if (cfg.ms) await new Promise((r) => setTimeout(r, cfg.ms));
+    return { text: await readFile(join(cfg.dir, cfg.file), "utf8"), job: ctx.job ?? null };
+  },
+});
+const attached = defineStep({
+  type: "attached",
+  input: z.object({}),
+  output: z.any(),
+  async run(_cfg, ctx) {
+    return { attachments: ctx.attachments ?? [] };
+  },
+});
 const big = defineStep({
   type: "big",
   input: z.object({}),
@@ -91,14 +112,18 @@ const WORKFLOWS: Record<string, string> = {
   "talk-wf": `name: talk-wf\nsteps:\n  - id: a\n    type: talker\n    config: { task: "say it" }\n`,
   agentish: `name: agentish\nparams:\n  tools: []\nsteps:\n  - id: a\n    type: agent\n    config:\n      prompt: hi\n      agentTools: "{{ params.tools }}"\n`,
   "grader-run": `name: grader-run\nsealed: true\nsteps:\n  - id: a\n    type: log\n    config: { message: hi }\n`,
+  // A job's uploads read by a run that holds the job's folder, and by one that does not.
+  "read-upload": `name: read-upload\ninput:\n  file: { type: string }\nsteps:\n  - id: dir\n    type: job/dir\n    config: { hold: false }\n  - id: c\n    type: cat\n    config: { dir: "{{ dir.path }}", file: "{{ input.file }}", ms: 400 }\n`,
+  "hold-upload": `name: hold-upload\ninput:\n  file: { type: string }\nsteps:\n  - id: dir\n    type: job/dir\n  - id: c\n    type: cat\n    config: { dir: "{{ dir.path }}", file: "{{ input.file }}", ms: 400 }\n`,
+  "attach-wf": `name: attach-wf\nsteps:\n  - id: a\n    type: attached\n`,
 };
 
 const MANIFESTS: Record<string, string> = {
   bench: [
     "title: Bench",
     "grants:",
-    "  workflows: [score-wf, slow-wf, echo-app, agentish, grader-run, talk-wf]",
-    "  steps: [graph/*, app/get, whoami, big, run/launch]",
+    "  workflows: [score-wf, slow-wf, echo-app, agentish, grader-run, talk-wf, read-upload, hold-upload, attach-wf]",
+    "  steps: [graph/*, app/get, whoami, big, run/launch, job/upload, job/delete-upload, job/get, job/list, job/read]",
     "",
   ].join("\n"),
   strict: "title: Strict\ngrants:\n  workflows: [score-wf]\n",
@@ -163,7 +188,7 @@ describe("step_run — the app door", () => {
       const written = await graph.nodes.write({ type: "Concept", data: { name: "Job", description: "the job page" } }, "create", { namespace: "default" });
       conceptRef = written.ref_id;
     }
-    registry = await createRegistry([score, nap, whoami, talker, big]);
+    registry = await createRegistry([score, nap, whoami, talker, big, cat, attached]);
     const workspace = new FileWorkspaceStore(dataDir);
     strut = await createStrut({
       workspace,
@@ -224,15 +249,15 @@ describe("step_run — the app door", () => {
     await refused({ type: "meta/run-workflow", config: {}, app: paid }, /sealed/);
     await refused({ type: "sqlite/query", config: { sql: "select 1" }, app: paid }, /not available in this strut yet: .*work item 3/);
     await refused({ type: "automation/list", config: {}, app: paid }, /not available in this strut yet: .*work item 7/);
-    await refused({ type: "job/start", config: {}, app: paid }, /continue this job/);
+    await refused({ type: "job/start", config: {}, app: paid }, /run\/launch \{ job \}.*an agent's door/);
     await refused({ type: "app/publish", config: {}, app: paid }, /does not author apps/);
     await refused({ type: "app/pin", config: { name: "paid" }, app: paid }, /the person's call/);
     // An app may filter a granted workflow's runs by job; it reads no job
-    // past its grants, and launches no job's turn.
+    // past its grants. (Launching under its own jobs: the job test below.)
     assert.deepEqual(await ok({ type: "run/list", config: { workflow: "score-wf", job: "j" }, app: identity }), []);
     await refused({ type: "run/list", config: { job: "j" }, app: identity }, /needs `workflow`/);
     await refused({ type: "run/files", config: { job: "j", path: "x.md" }, app: identity }, /needs `workflow`/);
-    await refused({ type: "run/launch", config: { workflow: "score-wf", job: "j" }, app: identity }, /does not launch a job's turn/);
+    await refused({ type: "run/launch", config: { workflow: "score-wf", job: "{{ input.j }}" }, app: identity }, /must be a literal job id/);
     await refused({ type: "run/launch", config: { workflow: "agentish", params: { tools: ["app/list"] } }, app: identity }, /params may not widen/);
     await refused({ type: "nope/step", config: {}, app: identity }, /not granted/);
     // The pure check, on a manifest alone.
@@ -321,6 +346,71 @@ describe("step_run — the app door", () => {
     await refused({ type: "run/transcript", config: { workflow: "talk-wf", runId: launched.runId, path: "talk-wf/nope" }, app: identity }, /No transcript at "talk-wf\/nope"/);
     await refused({ type: "run/transcript", config: { workflow: "talk-wf", runId: launched.runId, path: "talk-wf/a" }, app: appIdentity("strict", "v1") }, /workflow "talk-wf" is not granted/);
     await refused({ type: "run/transcript", config: { workflow: "grader-run", runId: "1", path: "grader-run/a" }, app: identity }, /sealed/);
+  });
+
+  it("a page's jobs are the app's: uploads into one, runs launched under it, a read beside a hold, files on a launch", async () => {
+    const b64 = (s: string) => Buffer.from(s).toString("base64");
+    // The namespace, pure: idempotent, and a page's job/list prefix can only narrow it.
+    assert.equal(appJobId("bench", "library"), "app/bench/library");
+    assert.equal(appJobId("bench", "app/bench/library"), "app/bench/library");
+    assert.deepEqual(scopeAppJobs("bench", "job/list", {}), { prefix: "app/bench/" });
+    assert.deepEqual(scopeAppJobs("bench", "job/list", { prefix: "lib" }), { prefix: "app/bench/lib" });
+    assert.deepEqual(scopeAppJobs("bench", "graph/graph-get", { ref_id: "x" }), { ref_id: "x" });
+
+    // An upload lands in the app's job, never over a file there, and is no kept run.
+    const up = await ok({ type: "job/upload", config: { job: "library", name: "notes.txt", data: b64("hello") }, app: identity });
+    assert.deepEqual(up, { job: "app/bench/library", path: "uploads/notes.txt", name: "notes.txt", mediaType: "text/plain", size: 5 });
+    const again = await ok({ type: "job/upload", config: { job: "library", name: "notes.txt", data: `data:text/plain;base64,${b64("again")}` }, app: identity });
+    assert.equal(again.path, "uploads/notes-2.txt");
+    assert.equal(await readFile(join(jobRoot(dataDir, "app/bench/library"), "uploads/notes.txt"), "utf8"), "hello");
+    assert.deepEqual(await store.listRuns("step:job/upload"), [], "the bytes are its input: never kept");
+    await refused({ type: "job/upload", config: { job: "library", name: "x.bin", data: "not base64!" }, app: identity }, /not base64/);
+
+    // The page sees only its own jobs, by the short id or the whole one.
+    await saveJobUpload(jobRoot(dataDir, "elsewhere"), "elsewhere", { name: "secret.txt", bytes: Buffer.from("no") });
+    const listed = await ok({ type: "job/list", config: {}, app: identity });
+    assert.deepEqual(listed.jobs.map((j: { job: string }) => j.job), ["app/bench/library"]);
+    assert.deepEqual((await ok({ type: "job/list", config: { prefix: "nope" }, app: identity })).jobs, []);
+    const view = await ok({ type: "job/get", config: { job: "library" }, app: identity });
+    assert.deepEqual(view.files, ["uploads/notes-2.txt", "uploads/notes.txt"]);
+    assert.equal((await ok({ type: "job/get", config: { job: "app/bench/library" }, app: identity })).job, "app/bench/library");
+    await refused({ type: "job/get", config: { job: "elsewhere" }, app: identity }, /No job "app\/bench\/elsewhere"/);
+    await refused({ type: "job/read", config: { job: "elsewhere", path: "uploads/secret.txt" }, app: identity }, /No file/);
+
+    // A run launched under the job reads the upload by its path. Two that do
+    // not hold the folder run at once; two that do, one at a time.
+    const readers = await Promise.all(
+      [1, 2].map(() => ok({ type: "run/launch", config: { workflow: "read-upload", job: "library", input: { file: up.path } }, app: identity })),
+    );
+    const read = await Promise.all(readers.map((r) => ok({ type: "run/get", config: { workflow: "read-upload", runId: r.runId, wait: 10_000 }, app: identity })));
+    assert.deepEqual(read.map((r) => [r.status, r.job, r.output?.text]), [
+      ["success", "app/bench/library", "hello"],
+      ["success", "app/bench/library", "hello"],
+    ]);
+    const holders = await Promise.all(
+      [1, 2].map(() => ok({ type: "run/launch", config: { workflow: "hold-upload", job: "library", input: { file: up.path } }, app: identity })),
+    );
+    const held = await Promise.all(holders.map((r) => ok({ type: "run/get", config: { workflow: "hold-upload", runId: r.runId, wait: 10_000 }, app: identity })));
+    assert.deepEqual(held.map((r) => r.status).sort(), ["error", "success"]);
+    assert.match(held.find((r) => r.status === "error")!.error.message, /job_busy:/);
+
+    // Deleting: an upload, by its path; nothing outside uploads/.
+    assert.deepEqual(await ok({ type: "job/delete-upload", config: { job: "library", path: again.path }, app: identity }), { job: "app/bench/library", path: again.path, removed: true });
+    assert.equal((await ok({ type: "job/delete-upload", config: { job: "library", path: again.path }, app: identity })).removed, false);
+    await refused({ type: "job/delete-upload", config: { job: "library", path: "plan.md" }, app: identity }, /only a file under uploads\//);
+    await refused({ type: "job/delete-upload", config: { job: "library", path: "uploads/../../elsewhere.json" }, app: identity }, /escapes|only a file under uploads/);
+
+    // A one-shot launch takes its files on the run: saved under its
+    // artifacts, handed to its steps, never in what the log keeps.
+    const one = await ok({ type: "run/launch", config: { workflow: "attach-wf", attachments: [{ name: "a.txt", data: b64("hi") }] }, app: identity });
+    const done = await ok({ type: "run/get", config: { workflow: "attach-wf", runId: one.runId, wait: 10_000 }, app: identity });
+    assert.deepEqual(done.output.attachments, [{ name: "a.txt", mediaType: "text/plain", size: 2, path: "attachments/a.txt" }]);
+    const start = (await store.getRunEvents("attach-wf", one.runId)).find((e) => e.type === "run.start")!;
+    assert.deepEqual(start.attachments, [{ name: "a.txt", mediaType: "text/plain", size: 2, path: "attachments/a.txt" }]);
+    assert.ok(!JSON.stringify(await store.getRunEvents("attach-wf", one.runId)).includes(b64("hi")), "no bytes in the log");
+    const file = await ok({ type: "run/files", config: { workflow: "attach-wf", runId: one.runId, path: "attachments/a.txt" }, app: identity });
+    assert.equal(file.text, "hi");
+    await refused({ type: "run/launch", config: { workflow: "attach-wf", attachments: [{ name: "big.png", data: Buffer.alloc(6 * 1024 * 1024).toString("base64") }] }, app: identity }, /big\.png is 6\.0 MB; the limit is 5\.0 MB/);
   });
 
   it("app/report-error is always granted and kept; app/get reads the app's errors back", async () => {

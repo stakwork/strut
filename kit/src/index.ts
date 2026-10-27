@@ -15,10 +15,10 @@ export {
 } from "./host.js";
 export { StrutProvider, createKitQueryClient, useStrutClient, useStrutHost, type StrutProviderProps } from "./provider.js";
 export {
-  RUN_STEPS, LIVE_INTERVAL_MS, RUN_WAIT_MS, runKeys, isInFlight, anyInFlight, eventsSettled,
-  useRuns, useRun, useRunEvents, useTranscript, useLaunch, useCancel, useWorkflow, useStep, useToolInput, useAppLink, useHost, useApp,
-  type RunSummary, type RunEvent, type RunTranscript, type WorkflowInfo, type LaunchResult,
-  type UseRunsOptions, type UseRunOptions, type UseRunEventsOptions, type UseTranscriptOptions, type UseLaunch, type UseCancel, type UseStep, type UseHost,
+  RUN_STEPS, JOB_STEPS, LIVE_INTERVAL_MS, RUN_WAIT_MS, runKeys, isInFlight, anyInFlight, eventsSettled, fileData,
+  useRuns, useRun, useRunEvents, useTranscript, useLaunch, useUpload, useCancel, useWorkflow, useStep, useToolInput, useAppLink, useHost, useApp,
+  type RunSummary, type RunEvent, type RunTranscript, type WorkflowInfo, type LaunchResult, type UploadResult,
+  type UseRunsOptions, type UseRunOptions, type UseRunEventsOptions, type UseTranscriptOptions, type UseLaunch, type UseLaunchOptions, type UseUpload, type UseCancel, type UseStep, type UseHost,
 } from "./hooks.js";
 export {
   ErrorBoundary, createErrorReporter, installWindowErrorReporting, toErrorReport,
