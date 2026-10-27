@@ -1583,11 +1583,12 @@ discovery, which is the adoption signal the choice rests on.
 
 **After step 2, the fleet first (2026-10-27, proposed; §12.1).** In this
 order:
-1. The lab-seed stamp fix.
-2. Step 4's update table without the ask: the `distro` door.
+1. The lab-seed stamp fix. *Built: strut#355.*
+2. Step 4's update table without the ask: the `distro` door. *strut#356.*
 3. Step 6 without the record: the publisher key, the card with `host:
    self` and `channels`, `POST /packages/publish`, `GET
-   /packages/catalog`, and the card's test vector.
+   /packages/catalog`, and the card's test vector. *Built 2026-10-27
+   (step 6's note).*
 4. The read token, subscriptions, the poll, the sync ping and `GET
    /packages/subscriptions`.
 5. Then mcp's `labAuth` line and hive's subscription pass.
@@ -1966,6 +1967,42 @@ production until install (step 2) calls the resolver.
    pinned at install and an update that asks when the index names another
    key; the hourly re-put — a publisher's own, and every installer's for
    the publishers it installed from; the Pkarr relay image in sphinx-swarm.
+   - **Built 2026-10-27: the half with no record**, the fleet's item 3
+     (§12.1; `src/packages/card.ts`, `publisher.ts`; `specs/API.md` §16).
+     It covers the card and every reader check, the test vector,
+     `publisher.json`, `host: self`, `channels`, `POST /packages/publish`,
+     `GET /packages/catalog` and `PUT /packages/channels/:channel`. Not
+     built: the record, the relay, the resolver, `yanked` as a write (a
+     reader already skips a yanked release), the upload target. These
+     choices are mine, proposed:
+     - **A release on `host: self` lists no `urls`.** Its archive is the
+       route beside the catalog, `GET /packages/:publisher/:name/archive`,
+       which the subscriber already knows the base of. So a swarm whose URL
+       changes needs no new seal, and a URL is written only by an upload
+       target, which is a later item.
+     - **The test vector uses RFC 8032's first key** (seed `9d61b1…7f60`,
+       public key `d75a98…511a`), so another implementation checks its key
+       handling against a published vector too. Its z-base-32 is
+       `47pjoycnsrfmxikm95jh13y88e8qnhzu5kungjpxyepgt7a8krpy`; the encoder
+       matches the z-base-32 spec's example (`0xF0BFC7` → `6n9hq`). Whether
+       it matches Pkarr's own client is checked when the client lands.
+     - **A reader's checks run in §13's order,** then the card's shape: a
+       sealed catalog whose channel holds a release it does not list is
+       `catalog_invalid`. Each publish starts from a copy of the current
+       catalog, so every member in it is carried forward.
+     - **The minting refusal applies to a FILE secret store only.** A
+       memory store writes nothing to obfuscate, so it mints, and its key
+       is gone at the next boot.
+     - **`POST /packages/publish` is build then release, in one write.**
+       The key is ensured first, so an unsafe store refuses before
+       anything is built. The same build published again adds no release,
+       though it may still move a channel.
+     - **The catalogs** are files under `<dataDir>/packages/catalogs/`, each
+       sealed one by its digest plus a `current` pointer, so an earlier
+       catalog stays servable by digest.
+     - **The publisher's members** are `v`, `key`, `seq`, `packages`,
+       `channels` and `sig`. §13's `publisher` member is left out until
+       something reads it.
 7. **The public index + the shipped defaults** (§7, §13): the index key
    and its catalog (step 6's card, prefix `strut-index`) on a Stakwork
    strut, `PUT /index/:prefix` and `GET /index/catalog`, `STRUT_PACKAGE_INDEXES` by key with the public one as

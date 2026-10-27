@@ -1349,6 +1349,11 @@ and `pk:` are refused by name (`package_source_unsupported`).
 | POST   | `/packages/install` | `{ ref: "file:/path/to/package", digest?: "sha256:<hex>" }` → 201 `InstallResult` (`src/packages/install.ts`). A person's act: behind the key at full scope (a peer is 403), one at a time |
 | DELETE | `/packages/:publisher/:name` | Uninstall → `{ ok: true, package, removed, kept }` (`UninstallResult`) |
 | GET    | `/packages/:publisher/:name/archive?digest=sha256:<hex>` | The package at that digest as a `.tar.gz` of its files (`content-type: application/gzip`, `ETag: "<digest>"`, `cache-control: private, max-age=31536000, immutable`; `If-None-Match` → 304). 400 without a well-formed `digest`; 404 when this strut holds no package `publisher/name` at that digest. Behind the key like every route |
+| GET    | `/publisher` | This strut's publisher key → `{ key, host: "self", createdAt }` (`src/packages/publisher.ts`); 404 before one is minted. Any credential may read it (a subscriber's, hive's) |
+| POST   | `/publisher` | Mint the key → 201 `PublisherInfo`, or 200 with the one already here. 409 `publisher_unsafe_key` on a file store with `STRUT_SECRET_KEY` unset |
+| POST   | `/packages/publish` | `BuildRequest` + `channel?` → 201 `{ package, version, digest, files, requires, warnings, channel?, catalog: { key, seq, digest } }`: build, then the release added to the catalog (and the channel moved to it). Mints the key on first use. Full scope, one at a time |
+| GET    | `/packages/catalog[?digest=sha256:<hex>]` | The catalog CARD as served (`application/json`, its RFC 8785 bytes; `ETag: "<catalog digest>"`, `If-None-Match` → 304): the current one (`cache-control: private, no-cache`), or an earlier one by digest (immutable). 404 before the first publish |
+| PUT    | `/packages/channels/:channel` | `{ package, digest }` → `{ channel, package, digest, catalog }`: the channel moved to a release the catalog lists — a rollback is moving it back — or, with `digest: null`, the package taken out of it. 404 `catalog_no_release`; 400 `catalog_channel` for a name that is not `[a-z0-9][a-z0-9._-]*` |
 
 **Build** writes a package from what this workspace holds and puts it in
 the cache by its digest, so the archive route serves it and an install
@@ -1542,3 +1547,52 @@ digest, never the archive's bytes, so any URL that serves the right tree
 is as good as the publisher's (`fetchArchive`, `src/packages/archive.ts`,
 which also refuses an entry that leaves the directory or that the digest
 never covers — a dotfile, an app's `dist/` or `data.db`).
+
+**Publish** (`plans/marketplace.md` §13, §12.1). A strut that publishes
+has an Ed25519 key, minted once and kept in an encrypted file of its own,
+`publisher.json` beside `peers.json`; its public key, in z-base-32 (Pkarr's
+form, 52 characters), is the publisher's identity between struts. What it
+publishes is listed in its CATALOG, a card it seals with that key:
+
+```jsonc
+// GET /packages/catalog — served without whitespace, members sorted (RFC 8785)
+{
+  "v": 1,
+  "key": "47pjoycnsrfmxikm95jh13y88e8qnhzu5kungjpxyepgt7a8krpy",
+  "seq": 1792972800000000,             // microseconds at signing; never goes back
+  "packages": {
+    "acme/linear": {
+      "description": "Linear issues",
+      "releases": [                    // newest first; earlier ones are kept
+        { "version": "1.1.0", "digest": "sha256:…", "license": "MIT", "requires": { "secrets": ["LINEAR_API_KEY"] } },
+        { "version": "1.0.0", "digest": "sha256:…" }
+      ]
+    }
+  },
+  "channels": { "stable": { "acme/linear": "sha256:…" } },  // which release each channel holds
+  "sig": "<128 hex>"                   // Ed25519 over "strut-catalog\n" + the fingerprint
+}
+```
+
+A reader checks it in this order, and refuses with the code that failed
+(`readCard`, `src/packages/card.ts`):
+1. **One byte form:** the file parsed and written back in RFC 8785 is the
+   same bytes (`catalog_noncanonical`).
+2. **The key it expected:** a subscription's, never taken from the file
+   (`catalog_key`).
+3. **The version:** `v: 1` (`catalog_version`). A member it does not know
+   is ignored, and the seal still covers it.
+4. **The seal:** `sig` verifies over `strut-catalog\n` followed by the
+   FINGERPRINT, `sha256:<hex>` over the RFC 8785 form without `sig`
+   (`catalog_seal`).
+5. **The order:** `seq` against the last catalog it accepted from the key.
+   A lower one is `catalog_rollback`; another one at the same `seq` is
+   `catalog_conflict`.
+
+A catalog's DIGEST is `sha256:<hex>` over its served bytes. The byte host
+is this strut (`host: self`), so a release lists no `urls`: its archive is
+`GET /packages/:publisher/:name/archive?digest=` beside the catalog. A
+channel names a release the catalog lists, and with no channel a reader
+takes the newest release not yanked. `src/packages/card.test.ts` holds a
+test vector (RFC 8032's first key, a catalog, its fingerprint, seal and
+digest) for another implementation to check itself against.
