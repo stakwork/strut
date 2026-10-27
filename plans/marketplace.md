@@ -1623,6 +1623,10 @@ order:
 4. The read token, subscriptions, the poll, the sync ping and `GET
    /packages/subscriptions`. *Built 2026-10-27 (§12.1's note).*
 5. Then mcp's `labAuth` line and hive's subscription pass.
+   *stakwork/stakgraph#1817 and stakwork/hive#5650:* the lab hands `?t=`
+   on the two catalog routes through to strut, and hive's `strut-peers`
+   cron subscribes every other workspace's strut, on `stable`, once the
+   org strut has a publisher key.
 
 Steps 3, 5 and the rest of 6–8 follow as written.
 
