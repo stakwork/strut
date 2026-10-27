@@ -364,9 +364,10 @@ export function sessionTtlMs(): number {
   return (Number.isFinite(h) && h > 0 ? h : DEFAULT_SESSION_HOURS) * 3_600_000;
 }
 
-/** A signed token's two kinds: a session cookie and a person token. The
- *  kind is in the HMAC input, so one is never accepted as the other. */
-type ClaimsKind = "session" | "person";
+/** A signed token's kinds: a session cookie, a person token, a catalog
+ *  read token. The kind is in the HMAC input, so one is never accepted as
+ *  another. */
+type ClaimsKind = "session" | "person" | "catalog";
 
 function sign(kind: ClaimsKind, payload: string, secret: string): string {
   return createHmac("sha256", secret).update(`${kind}:${payload}`).digest("base64url");
@@ -382,7 +383,7 @@ function signClaims(kind: ClaimsKind, claims: Record<string, unknown>, secret = 
 
 /** The claims a signed token holds, if the signature holds and its `exp`
  *  has not passed; undefined otherwise (and always with no secret). */
-function readClaims(kind: ClaimsKind, token: string, now: number): { exp: number; actor?: unknown } | undefined {
+function readClaims(kind: ClaimsKind, token: string, now: number): { exp: number; [claim: string]: unknown } | undefined {
   const secret = tokenSecret();
   if (!secret) return undefined;
   const dot = token.indexOf(".");
@@ -398,9 +399,10 @@ function readClaims(kind: ClaimsKind, token: string, now: number): { exp: number
     return undefined;
   }
   if (!parsed || typeof parsed !== "object") return undefined;
-  const { actor, exp } = parsed as { actor?: unknown; exp?: unknown };
+  const claims = parsed as Record<string, unknown>;
+  const exp = claims["exp"];
   if (typeof exp !== "number" || !(exp > now)) return undefined;
-  return { actor, exp };
+  return { ...claims, exp };
 }
 
 /** The signed token for a session — `base64url(json).hmac` — or undefined
@@ -527,6 +529,56 @@ export function personOf(c: Context): PersonToken | undefined {
   const match = (c.req.header("authorization") ?? "").match(/^Bearer\s+(.+)$/i);
   const token = match?.[1]?.trim();
   return token ? verifyPersonToken(token) : undefined;
+}
+
+// ── Catalog read tokens ──────────────────────────────────────────────────
+//
+// What a SUBSCRIBER holds to read this strut's published catalog and the
+// archives it names (plans/marketplace.md §12.1): §6's package token,
+// narrowed to one catalog. `strut-catalog.<claims>.<hmac>` — the publisher
+// key, who it was minted for, when it ends — signed like a person token
+// and as stateless: rotating the secret ends every one. It is a read of two
+// routes, `GET /packages/catalog` and `GET /packages/:publisher/:name/archive`
+// (a digest the catalog names), taken as `?t=` — what a host's gate in
+// front of strut hands through, as it does a file token — and nothing
+// else: no run, no workflow, no launch. Leaked, it is worth the packages,
+// which every subscriber holds anyway. `POST /publisher/tokens { subscriber,
+// days? }` mints one (`full` scope only).
+
+const CATALOG_PREFIX = "strut-catalog.";
+/** A catalog token's default life, a person token's. */
+export const CATALOG_TOKEN_DAYS = 60;
+/** The routes a catalog token opens. */
+export const CATALOG_TOKEN_PATH = /^\/packages\/(?:catalog|[^/]+\/[^/]+\/archive)$/;
+
+export interface CatalogToken {
+  /** The publisher key whose catalog it reads. */
+  key: string;
+  /** Who it was minted for: what a fleet's operator names the subscriber by. */
+  subscriber: string;
+  exp: number;
+}
+
+/** A catalog token, living `ttlMs` — or undefined with no secret to sign it. */
+export function catalogToken(key: string, subscriber: string, ttlMs = CATALOG_TOKEN_DAYS * 86_400_000): { token: string; exp: number } | undefined {
+  const exp = Date.now() + ttlMs;
+  const signed = signClaims("catalog", { key, subscriber, exp });
+  return signed ? { token: `${CATALOG_PREFIX}${signed}`, exp } : undefined;
+}
+
+export function verifyCatalogToken(token: string, now = Date.now()): CatalogToken | undefined {
+  if (!token.startsWith(CATALOG_PREFIX)) return undefined;
+  const claims = readClaims("catalog", token.slice(CATALOG_PREFIX.length), now);
+  if (!claims || typeof claims["key"] !== "string" || typeof claims["subscriber"] !== "string") return undefined;
+  return { key: claims["key"], subscriber: claims["subscriber"], exp: claims.exp };
+}
+
+/** The catalog token a READ of one of its routes carries as `?t=`, verified. */
+export function catalogTokenOf(c: Context): CatalogToken | undefined {
+  if (c.req.method !== "GET" && c.req.method !== "HEAD") return undefined;
+  if (!CATALOG_TOKEN_PATH.test(c.req.path)) return undefined;
+  const t = c.req.query("t")?.trim();
+  return t ? verifyCatalogToken(t) : undefined;
 }
 
 /**

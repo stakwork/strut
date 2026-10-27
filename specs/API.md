@@ -1354,6 +1354,11 @@ and `pk:` are refused by name (`package_source_unsupported`).
 | POST   | `/packages/publish` | `BuildRequest` + `channel?` → 201 `{ package, version, digest, files, requires, warnings, channel?, catalog: { key, seq, digest } }`: build, then the release added to the catalog (and the channel moved to it). Mints the key on first use. Full scope, one at a time |
 | GET    | `/packages/catalog[?digest=sha256:<hex>]` | The catalog CARD as served (`application/json`, its RFC 8785 bytes; `ETag: "<catalog digest>"`, `If-None-Match` → 304): the current one (`cache-control: private, no-cache`), or an earlier one by digest (immutable). 404 before the first publish |
 | PUT    | `/packages/channels/:channel` | `{ package, digest }` → `{ channel, package, digest, catalog }`: the channel moved to a release the catalog lists — a rollback is moving it back — or, with `digest: null`, the package taken out of it. 404 `catalog_no_release`; 400 `catalog_channel` for a name that is not `[a-z0-9][a-z0-9._-]*` |
+| POST   | `/publisher/tokens` | `{ subscriber, days? }` → 201 `{ key, subscriber, token, exp }`: a READ TOKEN for a strut that subscribes to this one's catalog (default 60 days, at most 366). Full scope; the key is minted first when there is none |
+| GET    | `/packages/subscriptions` | `{ subscriptions: SubscriptionInfo[] }` (`src/packages/subscriptions.ts`): what this strut follows, what it accepted and applied, and each package it installed with the items edited here (`diverged`). Never a token |
+| PUT    | `/packages/subscriptions/:id` | `{ key, url, channel?, token? }` → the `SubscriptionInfo`; the first read starts at once, its outcome on the `GET`. The operator's act: full scope (a peer is 403). 400 `subscription_invalid` |
+| DELETE | `/packages/subscriptions/:id[?uninstall=1]` | Stop following → `{ ok, removed, uninstalled }`; with `uninstall=1` its packages go through the distro's door (forks kept). 404 when there is none |
+| POST   | `/packages/subscriptions/sync` | `{ key? }` → 202: read the catalogs now — of the subscriptions to `key`, or all. What a publisher pings: a PEER may send it, since it carries nothing |
 
 **Build** writes a package from what this workspace holds and puts it in
 the cache by its digest, so the archive route serves it and an install
@@ -1596,3 +1601,56 @@ channel names a release the catalog lists, and with no channel a reader
 takes the newest release not yanked. `src/packages/card.test.ts` holds a
 test vector (RFC 8032's first key, a catalog, its fingerprint, seal and
 digest) for another implementation to check itself against.
+
+**A read token** opens two routes, as `?t=<token>`: `GET
+/packages/catalog`, and `GET /packages/:publisher/:name/archive` for a
+digest the catalog names (any other is a 404). It opens nothing else: no
+run, no workflow, no launch. It is `strut-catalog.<claims>.<hmac>` (the
+publisher key, the subscriber, the expiry), signed like a person token
+under `STRUT_API_KEY` (else `STRUT_SECRET_KEY`), so rotating that secret
+ends every one. A `?t=` this strut cannot vouch for is a 401 on those
+routes whatever the gate's mode.
+
+**Subscriptions** (`plans/marketplace.md` §12.1): this strut following
+another's catalog by its KEY.
+
+```jsonc
+// PUT /packages/subscriptions/acme — the operator's write (hive's cron)
+{
+  "key": "47pjoycnsrfmxikm95jh13y88e8qnhzu5kungjpxyepgt7a8krpy",  // the publisher's GET /publisher
+  "url": "https://central.example/lab",   // the base of the strut that serves the catalog
+  "channel": "stable",                    // optional: none = each package's newest release not yanked
+  "token": "strut-catalog.…"              // its POST /publisher/tokens; sent as ?t= to `url` alone
+}
+```
+
+A SYNC runs on that `PUT`, at boot, every `STRUT_DISTRO_POLL_MINUTES`
+(default 10; `0` = boot only), and on a ping:
+1. It fetches the catalog, with `If-None-Match` on the one accepted.
+2. It checks the catalog against the key and the last one accepted
+   (`readCard`, above).
+3. It fetches the archive of every release the channel holds, and of
+   every package one requires that the catalog lists, into the cache by
+   digest.
+4. It installs the whole set as ONE install through the distro's door:
+   §4's table item by item, no ask, all or nothing. Each item records
+   `upstream.source.ref` `subscription:<id>`.
+5. A package it installed that the channel no longer holds is uninstalled
+   the same way, forks kept.
+
+What it cannot apply leaves this strut on the release it applied last,
+with `error` on the `GET`. A publisher pings every peer on file after a
+publish and after a channel move.
+
+```jsonc
+// GET /packages/subscriptions → subscriptions[]
+{
+  "id": "acme", "key": "47pj…", "url": "https://central.example/lab", "channel": "stable", "token": true,
+  "accepted": { "seq": 1792972800000000, "digest": "sha256:…", "at": "…" },   // the last catalog accepted
+  "applied": { "seq": 1792972800000000, "digest": "sha256:…", "at": "…",
+               "packages": [{ "package": "acme/linear", "version": "1.1.0", "digest": "sha256:…" }] },
+  "checkedAt": "…", "error": "…",          // the last read, and what stopped it
+  "warnings": [],
+  "packages": [{ "package": "acme/linear", "version": "1.1.0", "digest": "sha256:…", "diverged": ["acme/linear/report"] }]
+}
+```

@@ -149,9 +149,19 @@ const isHelper = (item: PackageItem) => item.kind === "step" && !!item.helper;
  *  every package it requires — through the distro's door, updating it and
  *  them (the module comment). */
 export async function installPackage(deps: PackageDeps, ref: string, opts: InstallOptions = {}): Promise<InstallResult> {
+  const { digest, ...rest } = opts;
+  return installPackages(deps, [{ ref, ...(digest ? { digest } : {}) }], rest);
+}
+
+/** Install several packages as ONE install — all or nothing, every name of
+ *  every package checked before the first write — each with what it
+ *  requires, requirements first: a channel's release applied as a whole
+ *  (§12.1). The result names the last package as the one asked for. */
+export async function installPackages(deps: PackageDeps, refs: Array<{ ref: string; digest?: string }>, opts: Omit<InstallOptions, "digest"> = {}): Promise<InstallResult> {
+  if (!refs.length) throw new Error("package_source_invalid: nothing to install");
   const door = opts.door ?? "install";
   const before = new Map((await listInstalledPackages(deps)).map((p) => [p.package, p]));
-  const members = await resolveSet(deps, ref, opts.digest, before, door);
+  const members = await resolveSet(deps, refs, before, door);
   const registry = await deps.getRegistry();
   // The apps are copied out of the cache to build (a build writes `dist/`),
   // and the steps to a trial directory to load.
@@ -395,13 +405,13 @@ async function installSet(
   };
 }
 
-/** The package at `ref`, then every package it requires that is not
+/** Each package asked for, and first every package it requires that is not
  *  installed here at its pin, each resolved from its source hint unless the
  *  cache holds its digest already — in install order, requirements first.
  *  Exact pins union; a name pinned at two digests is refused, and so is one
  *  required at one digest and installed at another — unless the distro's
  *  door is installing, which updates it first (§4). */
-async function resolveSet(deps: PackageDeps, ref: string, digest: string | undefined, installed: Map<string, InstalledPackage>, door: PackageDoor): Promise<Member[]> {
+async function resolveSet(deps: PackageDeps, refs: Array<{ ref: string; digest?: string }>, installed: Map<string, InstalledPackage>, door: PackageDoor): Promise<Member[]> {
   const order: Member[] = [];
   const inSet = new Map<string, string>();
   const visit = async (ref: string, digest: string | undefined, base: string | undefined, expected?: { package: string; by: string }): Promise<void> => {
@@ -410,6 +420,12 @@ async function resolveSet(deps: PackageDeps, ref: string, digest: string | undef
     const pkg = info.manifest.package;
     if (expected && pkg !== expected.package) {
       throw new Error(`package_name_mismatch: ${expected.by} requires ${expected.package} from ${ref}, which is the package ${pkg}`);
+    }
+    // Asked for once already — as another package's requirement, or twice.
+    const seen = inSet.get(pkg);
+    if (seen !== undefined) {
+      if (seen !== info.digest) throw conflict(`${pkg} is asked for at two digests, ${seen} and ${info.digest}`);
+      return;
     }
     inSet.set(pkg, info.digest);
     const member: Member = { info, source: { ref }, ...(ref.startsWith("file:") ? { base: fileRefPath(ref, base) } : {}) };
@@ -428,7 +444,7 @@ async function resolveSet(deps: PackageDeps, ref: string, digest: string | undef
     }
     order.push(member);
   };
-  await visit(ref, digest, undefined);
+  for (const r of refs) await visit(r.ref, r.digest, undefined);
   return order;
 }
 
