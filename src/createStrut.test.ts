@@ -1368,9 +1368,10 @@ describe("the API key gate", () => {
         .filter((r) => r.method !== "ALL" && r.path !== "*")
         .map((r) => `${r.method} ${r.path.replace(/:[A-Za-z]+(\{[^}]*\})?/g, "x")}`),
     )].filter((r) => r !== "POST /auth/session" && r !== "DELETE /auth/session"); // the login, open to anyone
-    const peerPost = /^POST \/workflows\/x\/(?:x\/run|run|runs\/x\/(?:cancel|pause|resume))$/;
+    // A launch, a run's control, and the publisher's ping to sync subscriptions.
+    const peerPost = /^POST (?:\/workflows\/x\/(?:x\/run|run|runs\/x\/(?:cancel|pause|resume))|\/packages\/subscriptions\/sync)$/;
     const allowed = routes.filter((r) => r.startsWith("GET ") || peerPost.test(r));
-    assert.equal(allowed.filter((r) => r.startsWith("POST ")).length, 5, allowed.join(", "));
+    assert.equal(allowed.filter((r) => r.startsWith("POST ")).length, 6, allowed.join(", "));
     assert.ok(allowed.includes("GET /host/mounted"));
     assert.ok(routes.includes("POST /host/mounted") && !allowed.includes("POST /host/mounted"));
     for (const route of routes) {

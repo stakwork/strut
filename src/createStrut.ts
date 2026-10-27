@@ -34,7 +34,7 @@ import type { StepSources } from "./steps/registry.js";
 import { runWorkflow } from "./runner.js";
 import { RunController } from "./run-control.js";
 import { buildJournal, invalidateFrom, readRunStart } from "./journal.js";
-import { appIdentity, carriesApiKey, carriesPeerKey, carriesFileToken, carriesBadFileToken, fileToken, warnIfUnconfigured, actorFromHeader, inProcessOf, inProcessRequest, scopeFromKey, isPeerScope, personOf, personToken, PERSON_TOKEN_DAYS, unauthorized, issueSession, sessionCookie, sessionOf, isSecureRequest, type Scope } from "./auth.js";
+import { appIdentity, carriesApiKey, carriesPeerKey, carriesFileToken, carriesBadFileToken, catalogToken, catalogTokenOf, CATALOG_TOKEN_DAYS, fileToken, warnIfUnconfigured, actorFromHeader, inProcessOf, inProcessRequest, scopeFromKey, isPeerScope, personOf, personToken, PERSON_TOKEN_DAYS, unauthorized, issueSession, sessionCookie, sessionOf, isSecureRequest, type Scope } from "./auth.js";
 import { standardServices, fileArtifactsCapability } from "./capabilities.js";
 import type { ArtifactsCapability, SecretsCapability } from "./capabilities.js";
 import type { SecretStore } from "./secret-store.js";
@@ -84,11 +84,13 @@ import { DOCUMENT_FILE, readBuildInfo, withToken, withoutTokenMeta } from "./app
 import { packArchive } from "./packages/archive.js";
 import { buildPackage, type BuildRequest } from "./packages/build.js";
 import { PUBLISHER_FILE, catalogStore, moveChannel, publishRelease, publisherStore } from "./packages/publisher.js";
+import { SUBSCRIPTIONS_FILE, createSubscriptions, subscriptionProblem, type Subscription, type Subscriptions } from "./packages/subscriptions.js";
 import { packageCache } from "./packages/cache.js";
 import { workspaceFences } from "./packages/fence.js";
 import { PACKAGE_DIGEST } from "./packages/format.js";
 import {
   installPackage,
+  installPackages,
   uninstallPackage,
   type InstallOptions,
   type InstallResult,
@@ -329,6 +331,12 @@ export interface StrutOptions<TServices = unknown> {
    *  processes over one workspace would each fire. */
   scheduler?: boolean;
 
+  /** How often each package subscription reads its catalog
+   *  (plans/marketplace.md §12.1), in minutes: `STRUT_DISTRO_POLL_MINUTES`,
+   *  default 10; `0` = at boot only; `false` = never by itself (only on a
+   *  ping, a `PUT`, or `strut.subscriptions.sync`). */
+  subscriptionPoll?: number | false;
+
   /** The claims layer (plans/claims.md): claims, checks, the verify pass, the
    *  claim tools and the Claims panel. Needs a graph-backed workspace; there
    *  it defaults to ON unless `STRUT_CLAIMS=0`. Pass `false` to turn the
@@ -568,6 +576,11 @@ export interface Strut<TServices = unknown> {
     install(ref: string, opts?: Pick<InstallOptions, "digest" | "actor" | "door">): Promise<InstallResult>;
     uninstall(pkg: string, opts?: { door?: PackageDoor }): Promise<UninstallResult>;
   };
+
+  /** Package subscriptions (plans/marketplace.md §12.1): this strut
+   *  following another's catalog by its key — what `/packages/subscriptions`
+   *  is over. `sync` reads one now and applies what is new. */
+  subscriptions: Subscriptions;
 
   /** Reads over the claims layer (plans/claims.md) — null unless the
    *  workspace is graph-backed AND the layer is on (`StrutOptions.claims`):
@@ -1338,6 +1351,12 @@ export async function createStrut<TServices = unknown>(
   // rules `sessionOf` keeps — and `DELETE /auth/session` ends one; neither
   // needs a credential to be called.
   //
+  // A fifth: a CATALOG token (`catalogTokenOf`, auth.ts), a subscriber's
+  // read of the catalog this strut published and of the archives it names
+  // (plans/marketplace.md §12.1). And a peer may POST one more route,
+  // `/packages/subscriptions/sync`: it carries nothing, and makes this strut
+  // read its own subscriptions' catalogs — what the publisher pings.
+  //
   // One POST more for a PERSON's token (`peer:person`, never a plain peer):
   // `/mcp`, where it gets an app's `step_run` and nothing else — how a
   // person's own strut hosts an app that lives here (plans/apps.md §7.4).
@@ -1350,7 +1369,7 @@ export async function createStrut<TServices = unknown>(
     const path = c.req.path;
     const read = c.req.method === "GET" || c.req.method === "HEAD";
     const open = read
-      ? path === "/health" || (serveUi && UI_FILE.test(path)) || carriesFileToken(c)
+      ? path === "/health" || (serveUi && UI_FILE.test(path)) || carriesFileToken(c) || !!catalogTokenOf(c)
       : path === "/auth/session" && (c.req.method === "POST" || c.req.method === "DELETE");
     if (open) return next();
     if (!carriesApiKey(c) && !carriesPeerKey(c) && !personOf(c)) return unauthorized(c);
@@ -1358,8 +1377,8 @@ export async function createStrut<TServices = unknown>(
       const scope = await scopeOf(c);
       const post = c.req.method === "POST";
       const personPost = scope === "peer:person" && (path === "/mcp" || (homeRole === "box" && HOME_POSTS.has(path)));
-      if (isPeerScope(scope) && !(post && (PEER_POST.test(path) || personPost))) {
-        return c.json({ error: "forbidden: a peer may read, launch a run, and control a run a peer launched; a person's token may also call an app's step_run on /mcp" }, 403);
+      if (isPeerScope(scope) && !(post && (PEER_POST.test(path) || path === "/packages/subscriptions/sync" || personPost))) {
+        return c.json({ error: "forbidden: a peer may read, launch a run, control a run a peer launched, and ask this strut to sync its subscriptions; a person's token may also call an app's step_run on /mcp" }, 403);
       }
     }
     return next();
@@ -2675,6 +2694,14 @@ export async function createStrut<TServices = unknown>(
     const pkg = `${c.req.param("publisher")}/${c.req.param("name")}`;
     const digest = c.req.query("digest") ?? "";
     if (!PACKAGE_DIGEST.test(digest)) return c.json({ error: "digest=sha256:<64 hex> is required" }, 400);
+    // A subscriber's read (§12.1): a catalog token opens the digests this
+    // strut's catalog names, no other package the cache holds.
+    if (c.req.query("t") !== undefined) {
+      const token = catalogTokenOf(c);
+      const current = token ? await catalogDeps.catalogs.current() : undefined;
+      if (!token || token.key !== current?.card.key) return c.json({ error: "unauthorized: not a catalog token this strut minted" }, 401);
+      if (!current.card.packages[pkg]?.releases.some((r) => r.digest === digest)) return c.json({ error: `no release of ${pkg} at ${digest} in this strut's catalog` }, 404);
+    }
     const info = await packageStore.get(digest);
     if (!info || info.manifest.package !== pkg) return c.json({ error: `no package ${pkg} at ${digest} here` }, 404);
     const etag = `"${digest}"`;
@@ -2829,6 +2856,24 @@ export async function createStrut<TServices = unknown>(
       return catalogError(c, err);
     }
   });
+  // A subscriber's READ TOKEN (auth.ts, "Catalog read tokens"): what a
+  // fleet's operator hands each strut that follows this one's catalog, with
+  // the key. The key is minted first when there is none.
+  app.post("/publisher/tokens", async (c) => {
+    const body = await c.req.json<{ subscriber?: unknown; days?: unknown }>().catch(() => ({}) as { subscriber?: unknown; days?: unknown });
+    if (typeof body.subscriber !== "string" || !body.subscriber.trim() || body.subscriber.length > 200) {
+      return c.json({ error: "subscriber is who the token is for: the strut's name in the fleet (a workspace slug)" }, 400);
+    }
+    if (body.days !== undefined && !(typeof body.days === "number" && body.days > 0 && body.days <= 366)) return c.json({ error: "days is a number of days, at most 366" }, 400);
+    try {
+      const { info } = await publisher.ensure();
+      const minted = catalogToken(info.key, body.subscriber.trim(), ((body.days as number | undefined) ?? CATALOG_TOKEN_DAYS) * 86_400_000);
+      if (!minted) return c.json({ error: "no secret to sign a token: set STRUT_API_KEY or STRUT_SECRET_KEY" }, 409);
+      return c.json({ key: info.key, subscriber: body.subscriber.trim(), token: minted.token, exp: minted.exp }, 201);
+    } catch (err) {
+      return catalogError(c, err);
+    }
+  });
   // Build a package and publish it: its release added to the catalog, and
   // `channel` moved to it when named. One write at a time with the rest.
   app.post("/packages/publish", async (c) => {
@@ -2844,6 +2889,7 @@ export async function createStrut<TServices = unknown>(
         const catalog = await publishRelease(catalogDeps, { manifest: built.manifest, digest: built.digest, ...(channel ? { channel } : {}) });
         return { built, catalog };
       });
+      pingSubscribers(catalog.card.key);
       return c.json({ ...builtBody(built), ...(channel ? { channel } : {}), catalog: { key: catalog.card.key, seq: catalog.card.seq, digest: catalog.digest } }, 201);
     } catch (err) {
       return catalogError(c, err);
@@ -2855,6 +2901,12 @@ export async function createStrut<TServices = unknown>(
     const digest = c.req.query("digest");
     if (digest !== undefined && !PACKAGE_DIGEST.test(digest)) return c.json({ error: "digest is sha256:<64 hex>" }, 400);
     const file = digest ? await catalogDeps.catalogs.get(digest) : await catalogDeps.catalogs.current();
+    // A `?t=` strut cannot vouch for is refused whatever the gate's mode,
+    // as for a file token: a host's gate hands a token-bearing read through.
+    const token = c.req.query("t") !== undefined ? catalogTokenOf(c) : undefined;
+    if (c.req.query("t") !== undefined && (!token || token.key !== (await publisher.get())?.key)) {
+      return c.json({ error: "unauthorized: not a catalog token this strut minted" }, 401);
+    }
     if (!file) return c.json({ error: digest ? `no catalog at ${digest} here` : "this strut has published nothing yet" }, 404);
     const etag = `"${file.digest}"`;
     const headers = {
@@ -2878,11 +2930,89 @@ export async function createStrut<TServices = unknown>(
       const catalog = await oneAtATime(() =>
         moveChannel(catalogDeps, { channel: c.req.param("channel"), package: body.package as string, digest: body.digest as string | null }),
       );
+      pingSubscribers(catalog.card.key);
       return c.json({ channel: c.req.param("channel"), package: body.package, digest: body.digest, catalog: { key: catalog.card.key, seq: catalog.card.seq, digest: catalog.digest } });
     } catch (err) {
       return catalogError(c, err);
     }
   });
+  /** Tell every peer on file that this strut's catalog moved, so a strut
+   *  that subscribes to it reads it now instead of at its next poll
+   *  (§12.1). Best effort and detached: the ping carries nothing, and a
+   *  peer that subscribes to nothing of ours ignores it. */
+  const pingSubscribers = (key: string) => {
+    void (async () => {
+      const peers = await peerRecords.list().catch(() => []);
+      await Promise.allSettled(
+        peers.map(async (peer) => {
+          const res = await peersCap.fetch(peer.id, "/packages/subscriptions/sync", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ key }),
+            signal: AbortSignal.timeout(10_000),
+          });
+          await res.body?.cancel();
+        }),
+      );
+    })();
+  };
+
+  // ── Subscriptions (plans/marketplace.md §12.1) ──────────────────────────
+  // This strut following another's catalog by its KEY, and applying each
+  // release through the distro's door (src/packages/subscriptions.ts). The
+  // record is the operator's (full scope), in an encrypted file beside
+  // peers.json — its read token is a credential; `GET` is the fleet's view.
+  // Registered before the uninstall route, whose `/packages/:publisher/:name`
+  // would take `/packages/subscriptions/<id>`.
+  const subscriptionSecrets = secretStore instanceof FileSecretStore ? new FileSecretStore(dataDir, SUBSCRIPTIONS_FILE) : new MemorySecretStore();
+  const subscriptions = createSubscriptions({
+    secrets: subscriptionSecrets,
+    dir: join(dataDir, "packages", "subscriptions"),
+    cache: packageStore,
+    install: (refs, o) => {
+      if (registryWasInjected) return Promise.reject(new Error("package_unsupported: installing is disabled when the registry is provided at construction time"));
+      return oneAtATime(() => installPackages(packageDeps, refs, { ...o, busy: busyWorkflow, forget: forgetWorkflow }));
+    },
+    uninstall: (pkg, o) => packages.uninstall(pkg, o),
+    installed: () => listInstalledPackages(packageDeps),
+  });
+  app.get("/packages/subscriptions", async (c) => c.json({ subscriptions: await subscriptions.list() }));
+  app.put("/packages/subscriptions/:id", async (c) => {
+    const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>);
+    const sub = { ...body, id: c.req.param("id") } as Subscription;
+    const problem = subscriptionProblem(sub);
+    if (problem) return c.json({ error: `subscription_invalid: ${problem}` }, 400);
+    const info = await subscriptions.set(sub);
+    // The first read now; its outcome is on GET /packages/subscriptions.
+    void subscriptions.sync(sub.id);
+    return c.json(info);
+  });
+  app.delete("/packages/subscriptions/:id", async (c) => {
+    try {
+      const out = await subscriptions.delete(c.req.param("id"), { uninstall: c.req.query("uninstall") === "1" });
+      if (!out.removed) return c.json({ error: `no subscription "${c.req.param("id")}" here` }, 404);
+      return c.json({ ok: true, ...out });
+    } catch (err) {
+      return packageError(c, err);
+    }
+  });
+  // The publisher's ping (a peer may send it): read the catalogs now — of
+  // the subscriptions to `key`, or all of them. Answered at once.
+  app.post("/packages/subscriptions/sync", async (c) => {
+    const body = await c.req.json<{ key?: unknown }>().catch(() => ({}) as { key?: unknown });
+    if (body.key !== undefined && typeof body.key !== "string") return c.json({ error: "key is a publisher key" }, 400);
+    void subscriptions.syncAll(body.key ? { key: body.key } : {});
+    return c.json({ ok: true }, 202);
+  });
+  const envPoll = Number(bootEnv()["STRUT_DISTRO_POLL_MINUTES"] ?? 10);
+  const pollMinutes = opts.subscriptionPoll ?? (Number.isFinite(envPoll) && envPoll >= 0 ? envPoll : 10);
+  const subscriptionTimers: NodeJS.Timeout[] = [];
+  if (pollMinutes !== false) {
+    subscriptionTimers.push(setTimeout(() => void subscriptions.syncAll(), 3_000));
+    if (pollMinutes > 0) subscriptionTimers.push(setInterval(() => void subscriptions.syncAll(), pollMinutes * 60_000));
+    for (const t of subscriptionTimers) t.unref?.();
+  }
+
   app.delete("/packages/:publisher/:name", async (c) => {
     const pkg = `${c.req.param("publisher")}/${c.req.param("name")}`;
     try {
@@ -5831,6 +5961,7 @@ export async function createStrut<TServices = unknown>(
 
   async function close(): Promise<void> {
     automations.stop();
+    for (const t of subscriptionTimers) clearTimeout(t);
     // The browser connection, when strut built it: every run's context goes with it.
     await ownBrowser?.close();
     await ownStt?.close();
@@ -5889,6 +6020,7 @@ export async function createStrut<TServices = unknown>(
     upgrade,
     automations,
     packages,
+    subscriptions,
     claims,
     verifier,
     listen,

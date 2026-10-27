@@ -1227,7 +1227,9 @@ release lists.
    and seals the card. This is §13's publish with `host: self`, and like
    it, a person's act: the builder edits and never publishes (§8).
 3. **Tell the children.** The central strut POSTs
-   `/packages/subscriptions/<id>/sync` to each peer on file, best effort.
+   `/packages/subscriptions/sync { key }` to each peer on file, best
+   effort (built with the key, not a subscription id: the central does not
+   know what id each child gave it).
    That route is open to `peer` scope because the ping carries nothing:
    it makes the child read its own subscription's URL, which it would do
    on its next poll anyway. One sync runs at a time per subscription; a
@@ -1340,6 +1342,35 @@ workflow that uses `jarvis/*` or `pod/*` is refused as if those steps
 were local. The fix is strut's: a publish of content equal to a version
 whose record names no door records the door this publish names. The next
 boot of every swarm then stamps the lab's steps.
+
+**Built 2026-10-27: items 3 and 4.** The publisher and the card (step 6's
+note), and the subscriber: `src/packages/subscriptions.ts`, the read
+token in `src/auth.ts`, `specs/API.md` §16. These choices are mine,
+proposed:
+- **The ping names the publisher's key**: `POST /packages/subscriptions/sync
+  { key }`, open to a peer. The child syncs every subscription to that key.
+- **The `PUT` starts a sync at once**, so a new child is current without
+  waiting for a poll or a ping. Its outcome is on the `GET`.
+- **A channel's release is one install** (`installPackages`, several
+  packages in one all-or-nothing call), not one per package: §12's "all
+  or nothing per commit".
+- **Fetching:** the release's archive comes first from the strut that
+  served the catalog, with the token, then from any `urls` the release
+  lists, never with the token. A package one requires that the catalog
+  lists comes from the same place; any other resolves from its own source
+  hint at install.
+- **What the channel drops** is uninstalled through the distro's door,
+  forks kept. It covers the packages whose `source.ref` is this
+  subscription's, so a required package installed through its source
+  hint is not tracked.
+- **`DELETE /packages/subscriptions/:id`** leaves the packages in place
+  unless `?uninstall=1`. Left in place, they are still the distro's, and a
+  person's door cannot remove them. That is open.
+- **A subscription whose key changes starts over**: its accepted `seq`
+  belongs to the old key.
+- **The token's `subscriber` is a label.** Nothing checks it against the
+  caller, and a token is revoked only by its expiry or by rotating the
+  secret.
 
 **Not designed here:**
 - the distro's `host:` delta and `renames` (§12) riding in the card;
@@ -1590,7 +1621,7 @@ order:
    /packages/catalog`, and the card's test vector. *Built 2026-10-27
    (step 6's note).*
 4. The read token, subscriptions, the poll, the sync ping and `GET
-   /packages/subscriptions`.
+   /packages/subscriptions`. *Built 2026-10-27 (§12.1's note).*
 5. Then mcp's `labAuth` line and hive's subscription pass.
 
 Steps 3, 5 and the rest of 6–8 follow as written.
