@@ -1,5 +1,7 @@
-import { MemoryRouter, NavLink, Route, Routes } from "react-router";
+import { useEffect, useRef } from "react";
+import { MemoryRouter, NavLink, Route, Routes, useNavigate } from "react-router";
 import { Home, Settings } from "lucide-react";
+import { useToolInput } from "@strut/kit";
 import {
   Sidebar,
   SidebarContent,
@@ -44,6 +46,24 @@ function SettingsPage() {
   return <p className="text-sm text-muted-foreground">Nothing to set yet.</p>;
 }
 
+// A deep link opens a page: `?app=<this app>&input=view%3D%252Fsettings` (the
+// kit's `appLink(name, { view: "/settings" })`) arrives as tool-input
+// `{ view: "/settings" }`, and the router goes there — a later one too, in
+// place. Add keys of your own (`{ view: "/runs", run: "12" }`) and read
+// them with `useToolInput()`; a link's values are strings. Only a NEW input
+// moves the router: `navigate` changes with every page, and following it
+// would undo each click in the sidebar.
+function FollowToolInput() {
+  const input = useToolInput<{ view?: string }>();
+  const navigate = useNavigate();
+  const go = useRef(navigate);
+  go.current = navigate;
+  useEffect(() => {
+    if (input) go.current(input.view ?? "/");
+  }, [input]);
+  return null;
+}
+
 function AppSidebar() {
   return (
     <Sidebar>
@@ -76,6 +96,7 @@ function AppSidebar() {
 export default function App() {
   return (
     <MemoryRouter>
+      <FollowToolInput />
       <SidebarProvider>
         <AppSidebar />
         <SidebarInset>

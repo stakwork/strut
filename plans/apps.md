@@ -600,6 +600,7 @@ supplies it. Every hook names a STEP TYPE:
 | `useAutomations(workflow)` | `automation/*` |
 | `useJob()`: a job's app's own job, with its runs and deliverables | `run/list { job }`, `job/get`, `job/read` |
 | `useToolInput()`: what the model or a link opened the app with | `ui/notifications/tool-input` (the bridge, not a step) |
+| `appLink(name, input?)`, `useAppLink()`: a link to an app opened with an input (§7.1), which `openLink` follows | none: a string the host reads |
 | `useHost()` → theme, display mode, `sendMessage(text)`, `openLink(url)` | `ui/message`, `ui/open-link` (the bridge) |
 
 `live` means a refetch interval while anything shown is in flight, plus
@@ -991,10 +992,32 @@ same way it hands over a plan or a screenshot:
 | --- | --- |
 | `ui/initialize` → `hostContext` | Theme, `styles.variables`, `displayMode`, locale and time zone, which the kit applies |
 | `tools/call` (app → host) | The §5 tool, relayed by the host to `/mcp` as it is |
-| `ui/notifications/tool-input` | What the app was opened with, `{ view?, runId?, … }`, from the model or a deep link (`useToolInput`; react-router navigates to `view`) |
+| `ui/notifications/tool-input` | What the app was opened with, `{ view?, runId?, … }`, from the model or a deep link (`useToolInput`; the starter template's router navigates to `view`) |
 | `ui/message` | A message to the host's conversation (§6, §8) |
-| `ui/open-link` | Host-native views: a strut deep link (a run, a job, a workflow) opens in strut's UI; anything else opens in a new tab |
+| `ui/open-link` | Host-native views: a strut deep link (a run, a job, a workflow, an app with its `input`) opens in strut's UI; anything else opens in a new tab |
 | `ui/notifications/size-changed` | Inline display in a chat host |
+
+**Deep links** (2026-10-27). A link to an app is `?app=<name>&input=<the
+app's own query>`: the key `?app=` already takes (a peer's `@<peer>/<name>`,
+a pin `@vN`), and ONE more param holding what the app is opened with, a
+query string inside it — `?app=bench&input=view%3D%252Fruns%26run%3D12`.
+The host reads it back as flat strings, `{ view: "/runs", run: "12" }`, and
+sends it as `ui/notifications/tool-input` once the page has initialized, so
+a link and a model opening the app arrive the same way. A host copies the
+value and never reads it: what the keys mean is the app's, and a host
+learns one param, not a vocabulary. The kit builds the link —
+`appLink(name, input)`, `useAppLink()` for the page's own app — and a page
+that opens one for itself (`openLink(link({ view: "/runs" }))`) gets the
+input again in place, no reload, with the host's address bar following
+where it has one: that is how a person gets a link to what is on screen.
+The starter template follows `view` with its memory router. A link's input
+is the viewer's to send: it opens a view, under the viewer's grants, and a
+page never launches a run from it (a launch is a click, §5.1). Not built:
+an address bar that follows the page's OWN navigation (MCP Apps has no
+message for it; a notification of strut's, as `embed.ts` posts
+`strut:location` to hive, is the later piece), and one URL that opens in
+whichever host a person has (a host's universal link: hive's
+`/w/<slug>/apps/<name>?input=…`, claimed by Peel).
 
 ### 7.2 The doors in strut
 
@@ -1052,7 +1075,8 @@ the job's files. A job's app as a RESOURCE a model can open
 - **Selecting an app** shows it in the canvas area, the way the job timeline
   appears. The topbar shows the title, a version select for rollback, and
   **Edit with the builder**, which opens the chat with the app named. The
-  deep link is `?app=<name>`, which joins `embed.ts`'s params.
+  deep link is `?app=<name>` with its `?input=` (§7.1), both in
+  `embed.ts`'s params.
 - **The frame.** `api.ts` lists the version's files (which mints the
   token — `useFileScope`, as for a run's artifacts), fetches
   `dist/index.html?t=…` and frames the bytes as **`srcdoc`** in `<iframe
@@ -1073,7 +1097,11 @@ the job's files. A job's app as a RESOURCE a model can open
     call, wired to `AppBridge` — the pairing ext-apps is built for. Every
     other screen of the UI keeps the HTTP API as it is;
   - `ui/message` → `sendChat` on the builder chat (a workspace app);
-  - `ui/open-link` → the SPA's own navigation for a strut link;
+  - `ui/open-link` → the SPA's own navigation for a strut link — one to
+    the app on screen sends its `input` to the page in place;
+  - `?input=` → `tool-input` after the page's `initialized`, and again
+    when it changes; the URL is replaced, not pushed, as selecting an app
+    always was;
   - a theme change → `host-context-changed`.
 
   The same component renders a job's app in the job timeline and the
@@ -1098,7 +1126,10 @@ neither needs a strut change per host, and both end at `/mcp`:
   rendering it too. The app frame differs in two ways only: the document
   is framed as `srcdoc`, and its bridge is ext-apps' `AppBridge` relaying
   to `/mcp`. Nothing else hive says to strut changes: runs, jobs, chat and
-  files stay on the HTTP API as today.
+  files stay on the HTTP API as today. A deep link (§7.1) is the host's own
+  URL with the app's `input` in one param of it — hive's
+  `/w/<slug>/apps/<name>?input=…`, read into `StrutAppFrame`'s `toolInput`
+  — and a page's `ui/open-link` to `?app=<name>&input=…` is that route.
 - **Let MCP hand it the document.** Connect to `/mcp` as an MCP Apps host
   and read the app as a resource. Then every MCP server's apps work there,
   not only strut's.
@@ -1153,12 +1184,17 @@ host UI ── its own credential ──▶ the person's strut ── person tok
    (`GET /peers/<id>/apps`) beside the local ones, pinned first, badged
    `@acme`, opened as `?app=@acme/<name>` (`appKey`); for one, the topbar
    leaves out the version select, the tab toggle and **Edit with the
-   builder** — those are the peer's. Peel shows strut's UI, or does the
-   same in a frame of its own. **The page alone** (2026-10-23): with
-   `&solo=1` beside `?app=` the UI renders the app's page and nothing of
-   strut's around it — no sidebar, topbar or chat, and no `ui/message` or
-   in-place link, with nothing to open them in — so a native host opens
-   `http://127.0.0.1:<port>/?key=<its key>&app=@<org>/<name>&solo=1` in a
+   builder** — those are the peer's. A peer's page names apps on the
+   peer, so its link to `?app=<name>` opens `@acme/<name>` in place; its
+   other strut links are the peer's and open in a new tab. Peel shows
+   strut's UI, or does the same in a frame of its own. **The page alone**
+   (2026-10-23): with `&solo=1` beside `?app=` the UI renders the app's
+   page and nothing of strut's around it — no sidebar, topbar or chat, no
+   `ui/message`, and no in-place link but one to the app itself (its
+   `input`, with the URL following), with nothing to open the rest in — so
+   a native host opens
+   `http://127.0.0.1:<port>/?key=<its key>&app=@<org>/<name>&solo=1` (and
+   the link's `&input=`) in a
    web view of its own and shows the org's app as the app. It reads only
    the listing the app is in (`GET /apps`, or that one peer's) and the
    app's files — none of the sidebar's loads, no other peer, no poll
@@ -1186,8 +1222,9 @@ flag on the app record beside `pinned` is the later addition.
 when the app is a peer's — `ui/message` to the person's orchestrator
 conversation naming the peer rather than the local builder chat, **Edit
 with the builder** as a builder job on the peer (`job/start { workflow:
-builder, peer }`), and a strut deep link opened in hive or the peer's UI
-rather than the local SPA.
+builder, peer }`), and a strut deep link to a workflow, run or job opened
+in hive or the peer's UI rather than a new tab of the local SPA (a link to
+an app on the peer opens in place, §7.1).
 
 **The zero-strut alternative:** Peel embeds hive's own page for the app.
 Nothing changes in strut, but Peel then needs a hive web session — the

@@ -16,7 +16,7 @@ export {
 export { StrutProvider, createKitQueryClient, useStrutClient, useStrutHost, type StrutProviderProps } from "./provider.js";
 export {
   RUN_STEPS, LIVE_INTERVAL_MS, RUN_WAIT_MS, runKeys, isInFlight, anyInFlight, eventsSettled,
-  useRuns, useRun, useRunEvents, useTranscript, useLaunch, useCancel, useWorkflow, useStep, useToolInput, useHost, useApp,
+  useRuns, useRun, useRunEvents, useTranscript, useLaunch, useCancel, useWorkflow, useStep, useToolInput, useAppLink, useHost, useApp,
   type RunSummary, type RunEvent, type RunTranscript, type WorkflowInfo, type LaunchResult,
   type UseRunsOptions, type UseRunOptions, type UseRunEventsOptions, type UseTranscriptOptions, type UseLaunch, type UseCancel, type UseStep, type UseHost,
 } from "./hooks.js";
@@ -24,6 +24,7 @@ export {
   ErrorBoundary, createErrorReporter, installWindowErrorReporting, toErrorReport,
   type ErrorBoundaryProps, type ErrorReport, type ErrorReporter,
 } from "./error-boundary.js";
+export { appLink, type AppLinkInput } from "./links.js";
 export { applyHostContext } from "./apply-host-context.js";
 export * from "./folds/index.js";
 export * from "./folds/run-graph/layout.js";

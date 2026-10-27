@@ -4,13 +4,14 @@
 // from ./app-host, which imports the MCP packages, so the root test run —
 // which installs no web/node_modules — can test them.
 
-/** The deep-link params a strut link may carry (./embed). */
-const STRUT_PARAMS = new Set(["wf", "run", "v", "job", "app", "chat"]);
+/** The deep-link params a strut link may carry (./embed). `input` rides
+ *  beside `app`: what the app is opened with. */
+const STRUT_PARAMS = new Set(["wf", "run", "v", "job", "app", "input", "chat"]);
 
 /** Where `ui/open-link` leads: the SPA's own navigation for a link to THIS
  *  strut (the same origin and mount, carrying strut's deep-link params —
- *  `?wf=`, `?run=`, `?job=`, `?app=`), a new tab for anything else. Pure:
- *  `here` is the page's own location. */
+ *  `?wf=`, `?run=`, `?job=`, `?app=` with its `input`), a new tab for
+ *  anything else. Pure: `here` is the page's own location. */
 export function strutLink(url: string, here: { origin: string; pathname: string }): Record<string, string> | null {
   let u: URL;
   try {
@@ -25,6 +26,36 @@ export function strutLink(url: string, here: { origin: string; pathname: string 
   const params: Record<string, string> = {};
   for (const [k, v] of u.searchParams) if (STRUT_PARAMS.has(k) && v) params[k] = v;
   return Object.keys(params).length ? params : null;
+}
+
+/** What `?input=` opens an app with (plans/apps.md §7.1): the app's own
+ *  query string inside the one param, read back as flat strings —
+ *  `view=%2Fruns&run=123` is `{ view: "/runs", run: "123" }` — which the
+ *  host sends as `ui/notifications/tool-input`. The keys are the app's: a
+ *  host copies the value and never reads it. Undefined for no value, or
+ *  one with no keys. */
+export function appToolInput(input: string | null | undefined): Record<string, string> | undefined {
+  if (!input) return undefined;
+  const out: Record<string, string> = {};
+  for (const [k, v] of new URLSearchParams(input)) out[k] = v;
+  return Object.keys(out).length ? out : undefined;
+}
+
+/** A strut link from a PEER's app, as this strut's UI follows it. The page
+ *  names apps where it lives, so `app=<name>` is that peer's
+ *  `@<peer>/<name>`, its `input` kept. Anything else — a workflow, a run, a
+ *  job, an app on the peer's own peer — is the peer's to open: null. */
+export function peerAppLink(params: Record<string, string>, peer: string): Record<string, string> | null {
+  const app = params["app"];
+  if (!app || app.startsWith("@")) return null;
+  return { app: `@${peer}/${app}`, ...(params["input"] ? { input: params["input"] } : {}) };
+}
+
+/** Whether a link's `app` key names the app on screen — its name and peer,
+ *  and its version when the key pins one. */
+export function namesApp(key: string | undefined, app: { name: string; version: string; peer?: string }): boolean {
+  const to = key ? parseAppKey(key) : null;
+  return !!to && to.name === app.name && to.peer === app.peer && (!to.version || to.version === app.version);
 }
 
 /** How the sidebar and `?app=` name an app: its name for one here,

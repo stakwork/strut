@@ -10,7 +10,8 @@
 // bridge forwards tool calls to a connected client by itself. What is
 // strut's: `ui/message` goes to the builder chat, `ui/open-link` to the
 // SPA's own navigation for a strut link and a new tab for anything else,
-// and a theme change to `host-context-changed`.
+// a theme change to `host-context-changed`, and what a link opened the app
+// with (`?input=`) to `ui/notifications/tool-input`.
 import { AppBridge, PostMessageTransport } from "@modelcontextprotocol/ext-apps/app-bridge";
 import type { McpUiHostContext, McpUiTheme } from "@modelcontextprotocol/ext-apps/app-bridge";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
@@ -26,9 +27,10 @@ export interface AppHostHandlers {
    *  app in a job's timeline: strut's UI has no send box for a job yet,
    *  plans/apps.md §12), the host does not offer the capability. */
   onMessage?: (text: string) => void | Promise<void>;
-  /** `ui/open-link` with a strut link: its deep-link params. Absent, a
-   *  strut link opens in a new tab like any other. */
-  onNavigate?: (params: Record<string, string>) => void;
+  /** `ui/open-link` with a strut link: its deep-link params. Absent, or
+   *  returning false (not a link this host opens in place), it opens in a
+   *  new tab like any other. */
+  onNavigate?: (params: Record<string, string>) => boolean | void;
 }
 
 export interface AppHostOptions {
@@ -47,6 +49,11 @@ export interface AppHostConnection {
   bridge: AppBridge;
   /** A theme change → `ui/notifications/host-context-changed`. */
   setTheme(theme: McpUiTheme): void;
+  /** What the page is opened with (`?input=`, ./app-links `appToolInput`)
+   *  → `ui/notifications/tool-input`, sent once the page has initialized.
+   *  Called again (a link to the same app) it is sent in place, `{}` for
+   *  none. */
+  setToolInput(args: Record<string, string> | undefined): void;
   close(): Promise<void>;
 }
 
@@ -99,9 +106,17 @@ export async function connectAppHost(opts: AppHostOptions): Promise<AppHostConne
   };
   bridge.onopenlink = async ({ url }) => {
     const params = strutLink(url, opts.here ?? { origin: location.origin, pathname: location.pathname });
-    if (params && opts.handlers.onNavigate) opts.handlers.onNavigate(params);
-    else window.open(url, "_blank", "noopener");
+    if (!params || !opts.handlers.onNavigate || opts.handlers.onNavigate(params) === false) {
+      window.open(url, "_blank", "noopener");
+    }
     return {};
+  };
+  // `tool-input` goes after the page's `initialized`, as the spec orders it.
+  let initialized = false;
+  let toolInput: Record<string, string> | undefined;
+  bridge.oninitialized = () => {
+    initialized = true;
+    if (toolInput) void bridge.sendToolInput({ arguments: toolInput });
   };
   const win = opts.frame.contentWindow;
   if (!win) throw new Error("the frame has no window yet");
@@ -109,6 +124,10 @@ export async function connectAppHost(opts: AppHostOptions): Promise<AppHostConne
   return {
     bridge,
     setTheme: (theme) => bridge.setHostContext({ ...hostContextFor(theme), theme }),
+    setToolInput(args) {
+      toolInput = args;
+      if (initialized) void bridge.sendToolInput({ arguments: args ?? {} });
+    },
     async close() {
       await bridge.close().catch(() => undefined);
       await client.close().catch(() => undefined);
