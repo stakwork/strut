@@ -2052,8 +2052,10 @@ export async function getCatalog(): Promise<Catalog | null> {
   return res.json() as Promise<Catalog>;
 }
 
-/** `GET /publisher`: the key subscribers follow; null before one is minted. */
-export interface PublisherInfo { key: string; host: "self"; createdAt: string }
+/** `GET /publisher`: the key subscribers follow, and the publisher's NAME —
+ *  the first segment of every package published here (plans/packages-ux.md
+ *  §2); null before a key is minted. */
+export interface PublisherInfo { key: string; name?: string; host: "self"; createdAt: string }
 
 export async function getPublisher(): Promise<PublisherInfo | null> {
   const res = await apiFetch("/publisher");
@@ -2061,6 +2063,11 @@ export async function getPublisher(): Promise<PublisherInfo | null> {
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.json() as Promise<PublisherInfo>;
 }
+
+/** `PUT /publisher { name }`: set the publisher's name, `[a-z][a-z0-9-]*`.
+ *  Mints the key first when there is none. */
+export const setPublisherName = (name: string) =>
+  fetchJSON<PublisherInfo>("/publisher", { method: "PUT", body: JSON.stringify({ name }) });
 
 export interface PublishRequest {
   package: string;

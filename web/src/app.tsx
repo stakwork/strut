@@ -183,9 +183,6 @@ function Shell() {
   const [showSecrets, setShowSecrets] = useState(initialUrl.get("secrets") === "1");
   const [showSettings, setShowSettings] = useState(false);
   const [showPackages, setShowPackages] = useState(false);
-  // Bumped when the Packages dialog closes: a channel moved there, so the
-  // Publish tab reads the catalog again.
-  const [catalogEpoch, setCatalogEpoch] = useState(0);
   const [sttSettings, setSttSettings] = useState<SttSettings>(() => sttStore.get());
   const updateStt = (next: SttSettings) => { sttStore.set(next); setSttSettings(next); };
   const [showAddStep, setShowAddStep] = useState(false);
@@ -266,15 +263,14 @@ function Shell() {
   const viewingOld = viewVersion != null && activeVersion != null && viewVersion !== activeVersion;
   // The Workflow flyout's tabs — only what applies: no params → no Params
   // tab; claims off (filesystem workspace) → no Claims tab; history view →
-  // no Automate tab (a schedule runs the active version). Publish is always
-  // there: it says itself when a name has no package prefix.
+  // no Automate tab (a schedule runs the active version).
   const workflowTabs = useMemo<WorkflowTab[]>(() => {
     if (!selectedWf) return [];
     const tabs: WorkflowTab[] = [];
     if (localParams && Object.keys(localParams).length > 0) tabs.push("params");
     if (wfClaims?.enabled) tabs.push("claims");
     if (!viewingOld) tabs.push("automations");
-    tabs.push("versions", "publish");
+    tabs.push("versions");
     return tabs;
   }, [selectedWf, localParams, wfClaims, viewingOld]);
   const activeTab: WorkflowTab | null = workflowTabs.includes(wfTab) ? wfTab : (workflowTabs[0] ?? null);
@@ -1720,7 +1716,7 @@ function Shell() {
           {wf && workflowTabs.length > 0 && (
             <button
               class={`btn${panel === "workflow" ? " is-active" : ""}`}
-              title="Params, claims, schedules, versions and publishing"
+              title="Params, claims, schedules and versions"
               onClick={() => { setPanel((p) => (p === "workflow" ? null : "workflow")); setInfoStep(null); closeFlyout(); }}
             >Workflow{wfClaims?.enabled && <span class={`claims-dot claims-dot-${claimsTone(wfClaims)}`} />}</button>
           )}
@@ -1744,7 +1740,7 @@ function Shell() {
             >Edit with the builder</button>
           )}
           <button class="btn" onClick={() => setShowSecrets(true)}>Secrets</button>
-          <button class="btn" title="What this strut publishes, follows and has installed" onClick={() => setShowPackages(true)}>Packages</button>
+          <button class="btn" title="The packages here, what this strut follows and what it has installed" onClick={() => setShowPackages(true)}>Packages</button>
           <button class={`btn btn-ai${showChat ? " is-active" : ""}`} onClick={() => setShowChat(!showChat)}>AI</button>
           <button class="btn btn-icon" onClick={() => setShowSettings(true)} aria-label="Settings" title="Settings">
             <GearIcon />
@@ -1870,7 +1866,7 @@ function Shell() {
       {/* Create dialog */}
       {showCreate && <CreateDialog onClose={() => setShowCreate(false)} onCreate={handleCreate} categories={categories} />}
       {showSecrets && <SecretsDialog onClose={() => setShowSecrets(false)} />}
-      {showPackages && <PackagesDialog onClose={() => { setShowPackages(false); setCatalogEpoch((n) => n + 1); }} />}
+      {showPackages && <PackagesDialog onClose={() => setShowPackages(false)} />}
       {showSettings && (
         <SettingsDialog settings={sttSettings} onChange={updateStt} onClose={() => setShowSettings(false)} />
       )}
@@ -1936,8 +1932,6 @@ function Shell() {
           tabs={workflowTabs}
           apps={apps.filter((a) => a.grants.workflows.includes(selectedWf) || a.grants.automations.includes(selectedWf)).map((a) => ({ name: a.name, title: a.title }))}
           onOpenApp={selectApp}
-          onOpenPackages={() => setShowPackages(true)}
-          catalogEpoch={catalogEpoch}
           onTab={setWfTab}
           onClose={() => setPanel(null)}
           onDelete={handleDeleteWorkflow}

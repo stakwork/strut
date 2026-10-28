@@ -95,6 +95,15 @@
 > to the central strut's publisher key and reads its private catalog with a
 > token that opens nothing else; §4's update table applies with no ask. This
 > brings step 4 and the card half of step 6 forward ("Step order").
+>
+> **The UI and the builder's naming are `plans/packages-ux.md`** (ruled
+> 2026-10-27): the npm shape — a package has a name and holds any number of
+> workflows — with the PUBLISHER a server-wide setting nobody types, the
+> sidebar grouped by the name's package segment (an installed package looks
+> like a category; a category IS an unpublished package), the builder
+> naming into the selected package, and publishing on a PACKAGE PAGE, never
+> a workflow's flyout. Nothing here changes: §1's names, §8's person's act,
+> the §16 routes.
 
 ## Problem
 
@@ -696,6 +705,11 @@ Builder tools (`src/ai/tools.ts`), each thin over the functions above:
   (*ruled*), with the same two lines for what changed, and a yank of the
   installed release at its head.
 - `export_package({ package, workflows?, apps?, to })`: §2 + §5.
+- `create_workflow` / `create_step` compose an item's name from the turn's
+  WORKING PACKAGE — the sidebar group selected when the person asked, sent
+  as `POST /chat { package }` — and the publisher name the server holds;
+  the model names the path inside the package and never sees the prefix
+  (`plans/packages-ux.md` §3, ruled 2026-10-27).
 
 **Installing is a person's act.** Installing a step is running someone
 else's TypeScript in the server process — its module top level runs when

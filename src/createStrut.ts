@@ -83,7 +83,7 @@ import { appsRoot, listAppFiles, readAppFile, validateAppName, writeAppFiles } f
 import { DOCUMENT_FILE, readBuildInfo, withToken, withoutTokenMeta } from "./apps/build.js";
 import { packArchive } from "./packages/archive.js";
 import { buildPackage, type BuildRequest } from "./packages/build.js";
-import { PUBLISHER_FILE, catalogStore, moveChannel, publishRelease, publisherStore } from "./packages/publisher.js";
+import { PUBLISHER_FILE, PUBLISHER_NAME, catalogStore, moveChannel, publishRelease, publisherStore } from "./packages/publisher.js";
 import { SUBSCRIPTIONS_FILE, createSubscriptions, subscriptionProblem, type Subscription, type Subscriptions } from "./packages/subscriptions.js";
 import { packageCache } from "./packages/cache.js";
 import { workspaceFences } from "./packages/fence.js";
@@ -2841,7 +2841,7 @@ export async function createStrut<TServices = unknown>(
   /** A publisher refusal's code → its status, else as a package refusal. */
   const catalogError = (c: Context, err: unknown) => {
     const code = /^([a-z_]+):/.exec(err instanceof Error ? err.message : String(err))?.[1] ?? "";
-    const status = ({ publisher_unsafe_key: 409, catalog_no_release: 404, catalog_channel: 400 } as Record<string, 400 | 404 | 409>)[code];
+    const status = ({ publisher_unsafe_key: 409, publisher_name: 400, catalog_no_release: 404, catalog_channel: 400 } as Record<string, 400 | 404 | 409>)[code];
     return status ? c.json({ error: (err as Error).message }, status) : packageError(c, err);
   };
   app.get("/publisher", async (c) => {
@@ -2852,6 +2852,20 @@ export async function createStrut<TServices = unknown>(
     try {
       const { info, minted } = await publisher.ensure();
       return c.json(info, minted ? 201 : 200);
+    } catch (err) {
+      return catalogError(c, err);
+    }
+  });
+  // The publisher's NAME (plans/packages-ux.md §2): the first segment of
+  // every package built here, set once — the UI composes package names
+  // from it, and a publish under another prefix is refused below.
+  app.put("/publisher", async (c) => {
+    const body = await c.req.json<{ name?: unknown }>().catch(() => ({}) as { name?: unknown });
+    if (typeof body.name !== "string" || !PUBLISHER_NAME.test(body.name)) {
+      return c.json({ error: "name is the publisher's prefix segment, lowercase [a-z][a-z0-9-]* (`stakwork` in `stakwork/tools`)" }, 400);
+    }
+    try {
+      return c.json(await publisher.setName(body.name));
     } catch (err) {
       return catalogError(c, err);
     }
@@ -2884,7 +2898,11 @@ export async function createStrut<TServices = unknown>(
     if (typeof req === "string") return c.json({ error: req }, 400);
     try {
       const { built, catalog } = await oneAtATime(async () => {
-        await publisher.ensure(); // refused before a build when the key cannot be kept safely
+        const { info } = await publisher.ensure(); // refused before a build when the key cannot be kept safely
+        // With a name set, every package published here is under it.
+        if (info.name && req.package.split("/")[0] !== info.name) {
+          throw new Error(`package_build_refused: ${req.package} is not under this strut's publisher ${info.name}: a package published here is named ${info.name}/<name>`);
+        }
         const built = await buildPackage(packageDeps, req);
         const catalog = await publishRelease(catalogDeps, { manifest: built.manifest, digest: built.digest, ...(channel ? { channel } : {}) });
         return { built, catalog };
