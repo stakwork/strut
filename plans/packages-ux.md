@@ -19,7 +19,16 @@
 > "Comes along" is a DRY build (`POST /packages/build { dryRun: true }`,
 > nothing kept in the cache); the workflow list carries `activeSource` so
 > the page hides strut's own seeds (`job`, `builder`, the browser
-> workflows). Items 4 and 5 are the next PR.
+> workflows).
+> **Work item 4 BUILT** (stakwork/strut#371, from main, independent of
+> #362): src/package-lookup.ts and its call sites. Choices beyond §2: a
+> name's package is its PREFIX whether or not it was installed (stateless,
+> the same on every strut); an app's grant check compares names as
+> written (manifest and page are in one package), and the `run/*` step
+> resolves them; a check's step in a package's claims is written as the
+> package's at install; a skipped step's event, a check's
+> `config.workflow`, `job/start` and `strut/run-workflow` take names as
+> written. Item 5 is next.
 
 ## Problem
 
@@ -89,9 +98,9 @@ brings shows up in the sidebar as §4 says.
 
 ## 2. The lookup: a package's own items first
 
-An item's PACKAGE is the installed package whose prefix its name is under
-(`packagePrefixOf`, `src/workspace.ts:515`, checked against the installed
-fold). One function:
+An item's PACKAGE is its name's prefix (`packagePrefixOf`, three segments
+or more), whether the package was installed here or the name typed so by
+hand: the same rule on every strut, and no fold to read. One function:
 
 ```
 resolveName(pkg, name) = pkg && exists(`${pkg}/${name}`) ? `${pkg}/${name}` : name
@@ -109,10 +118,11 @@ step by name:
   (`expandAgentTools`, `src/steps/core/agent.ts:420`);
 - **a step that launches by name**: `run/launch`, `meta/run-workflow`,
   through `ctx.package`, set by the runner beside `ctx.workflow`;
-- **an app**: its package from its name; `grantRefusal`
-  (`src/apps/tools.ts:137`) compares resolved names on both sides, and
-  the app build's resolver (`appResolver`) finds an import of a bare app
-  name in the package first;
+- **an app**: its package from its name; the app door runs a page's step
+  in it, `grantRefusal` (`src/apps/tools.ts:137`) compares the names as
+  written (manifest and page are in one package), and the app build's
+  resolver finds an import of a bare app name, and a granted workflow, in
+  the package first;
 - **the closure walk** (`flowClosure`, `src/closure.ts:72`), so the
   sealed check, reach, the build and step stats see what will run;
 - **the install's check** (`namesIn`, `src/packages/install.ts:773`): a
