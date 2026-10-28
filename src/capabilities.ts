@@ -5,6 +5,12 @@ import type { PeersCapability } from "./peers.js";
 // Type-only: the graph backend stays a lazy, opt-in dependency.
 import type { GraphBackend } from "./graph/backend.js";
 import type { BrowserService } from "./browser/service.js";
+
+/** `createStrut({ memoryGraph })`: the workflows whose agents' graph/* read
+ *  calls read the memory graph (src/graph/memory/backend.ts). */
+export interface MemoryGraphOptions {
+  workflows: string[];
+}
 /**
  * Standard "capabilities" — the small, generic, host-owned services that
  * LLM-authored adapter STEPS build on (see AGENTS.md "step vs service").
@@ -385,6 +391,10 @@ export interface StrutCapabilities {
    *  and falls back to `NEO4J_*` when it is absent). A Neo4j or a LadybugDB
    *  file (plans/ladybug-backend.md). */
   graph?: GraphBackend;
+  /** Where the graph/* read steps read the person's MEMORY graph instead of
+   *  `graph` (`createStrut({ memoryGraph })`): an agent's tool calls in a
+   *  run of one of these workflows (src/graph/memory/backend.ts). */
+  memoryGraph?: MemoryGraphOptions;
   /** The browser the `browser/*` steps drive (src/browser/service.ts): one
    *  Playwright connection, a context per run, closed when the run ends.
    *  Built by the standard server from `BROWSER_*`; a host's own wins.

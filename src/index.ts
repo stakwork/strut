@@ -265,6 +265,7 @@ export {
   type ShellRequest,
   type ShellResult,
   type StrutCapabilities,
+  type MemoryGraphOptions,
   type HttpCapability,
   type HttpRequestOptions,
   type HttpResponse,

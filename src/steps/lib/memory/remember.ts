@@ -5,7 +5,9 @@ import { fitNote, resolve, termName, vocabulary, type Resolved as Term, type Voc
 
 const FactInput = z.object({
   subject: EntityRef,
-  predicate: z.string().min(1).describe("A predicate from memory/ontology, e.g. name, lives_in, works_on, prefers. A new one is kept as proposed."),
+  predicate: z.string().min(1).describe(
+    "A predicate, e.g. name, lives_in, works_on, prefers: graph/get-ontology lists them as the values of the Fact type's `predicate` attribute. A new one is kept as proposed.",
+  ),
   text: z.string().describe("The fact as one plain sentence, e.g. \"The user's name is Tom.\""),
   object: EntityRef.optional().describe("The other entity, when the fact links two (Kate works_on Project X)."),
   supersede: z
@@ -19,7 +21,7 @@ const FactInput = z.object({
     "It is no longer true (\"I used to …\"): stored as past, superseding nothing; the same fact held now is ended.",
   ),
   value: z.string().optional().describe(
-    "Only for a predicate with role mishearing (memory/ontology): the wrong text dictation writes for the subject, e.g. 'stack work'.",
+    "Only for a predicate with role mishearing (graph/get-ontology marks it): the wrong text dictation writes for the subject, e.g. 'stack work'.",
   ),
   form: z.string().optional().describe(
     "Only with value: the written form the wrong text stands for when it is not the subject's name, e.g. 'BTC' on Bitcoin.",
@@ -103,7 +105,7 @@ export default defineStep({
   description:
     "Store something in long-term memory. Always pass the episode (what was said, as said). " +
     "List the entities it is about in `mentions`, and any facts worth keeping in `facts`. " +
-    "Types and predicates are resolved through memory/ontology (aliases such as full_name → name); an unknown one is " +
+    "Types and predicates are resolved through the memory's vocabulary (graph/get-ontology; aliases such as full_name → name); an unknown one is " +
     "kept as proposed and reported. A one-value predicate (name, lives_in) supersedes the current fact by itself. " +
     "Entities are matched by type and name, so the same person is never stored twice. " +
     "A name given as a name fact's object is never an entity: it becomes another name of the subject, unless another " +
@@ -158,6 +160,8 @@ export default defineStep({
       const noteTerm = (r: Term) => {
         const label = `${r.term.kind === "entity_type" ? "type" : "predicate"} ${r.term.name}`;
         if (r.proposed) ontology.proposed.push(label);
+        // Said, not silent: the name given was not a type until its Type suffix came off.
+        else if (r.stripped) ontology.notes.push(`${r.given} read as ${r.term.name}`);
         else if (r.given !== r.term.name) ontology.resolved.push(`${r.given} → ${r.term.name}`);
       };
       const typeOf = async (ref: EntityRefT) => {

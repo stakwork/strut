@@ -1,8 +1,18 @@
-import type { AccessedNode, StepContext } from "../../../core.js";
+import { workflowOf, type AccessedNode, type StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
-import type { GraphBackend } from "../../../graph/backend.js";
+import type { GraphBackend as WorkspaceGraph } from "../../../graph/backend.js";
+import type { MemoryBackend } from "../../../graph/memory/backend.js";
 
-export type { GraphBackend };
+/** What the graph/* steps read and write through: the workspace graph, or
+ *  the person's memory graph, read-only (`kind: "memory"`). */
+export type GraphBackend = WorkspaceGraph | MemoryBackend;
+export type { WorkspaceGraph };
+
+/** The workspace graph, or an error for a step the memory graph cannot serve. */
+export function workspaceGraph(b: GraphBackend, step: string): WorkspaceGraph {
+  if (b.kind === "memory") throw new Error(`read-only: ${step} does not run on the memory graph`);
+  return b;
+}
 
 /**
  * The `graph/*` steps are thin plumbing over strut's own graph backend
@@ -40,8 +50,18 @@ export type { GraphBackend };
  * Per the lib dependency convention the backend module (and with it
  * neo4j-driver) is imported lazily here, inside `run()`, never at module
  * top level.
+ *
+ * Before all of that, the MEMORY graph: an agent's tool call (`agentTool`)
+ * in a run of a workflow the host named (`services.memoryGraph.workflows`,
+ * Peel's orchestrator and automation runs) reads the person's memory,
+ * read-only (src/graph/memory/backend.ts). The run's workflow, not the
+ * step's: a job the orchestrator starts is its own run, on the workspace.
  */
 export async function graphCtx(ctx?: StepContext<StrutCapabilities>): Promise<GraphBackend> {
+  if (ctx?.agentTool && ctx.services?.memoryGraph?.workflows.includes(workflowOf(ctx))) {
+    const { memoryGraph } = await import("../../../graph/memory/backend.js");
+    return memoryGraph(ctx);
+  }
   const wired = ctx?.services?.graph;
   if (wired) return wired;
   const secrets = ctx?.services?.secrets;

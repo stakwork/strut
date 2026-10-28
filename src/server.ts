@@ -38,10 +38,12 @@ let strutInstance: Strut | null = null;
  *  `STRUT_HOST_CONFIG` names: `{ job?, orchestrator?, builder? }`, each
  *  `{ tools?, approve?, system?, model? }` (and `peer: false` to close the
  *  builder to other struts — a file may only close one, never open one),
- *  and `automation?: { workflow, approve?, grants? }`. Nothing when unset.
+ *  and `automation?: { workflow, approve?, grants? }`, and `memoryGraph?: {
+ *  workflows }` (the workflows whose agents read memory through the graph/*
+ *  read steps). Nothing when unset.
  *  A file that cannot be read or parsed fails the boot, rather than
  *  seeding the workflows without the host's tools. */
-export function hostConfigFromEnv(env: NodeJS.ProcessEnv = bootEnv()): Pick<StrutOptions, "job" | "orchestrator" | "builder" | "automation" | "settings"> {
+export function hostConfigFromEnv(env: NodeJS.ProcessEnv = bootEnv()): Pick<StrutOptions, "job" | "orchestrator" | "builder" | "automation" | "settings" | "memoryGraph"> {
   const file = env["STRUT_HOST_CONFIG"];
   if (!file) return {};
   let raw: unknown;
@@ -50,7 +52,7 @@ export function hostConfigFromEnv(env: NodeJS.ProcessEnv = bootEnv()): Pick<Stru
   } catch (err) {
     throw new Error(`STRUT_HOST_CONFIG: could not read ${file}: ${err instanceof Error ? err.message : err}`);
   }
-  const out: Pick<StrutOptions, "job" | "orchestrator" | "builder" | "automation" | "settings"> = {};
+  const out: Pick<StrutOptions, "job" | "orchestrator" | "builder" | "automation" | "settings" | "memoryGraph"> = {};
   for (const key of ["job", "orchestrator", "builder"] as const) {
     const delta = (raw as Record<string, unknown> | null)?.[key];
     if (delta === undefined) continue;
@@ -93,6 +95,14 @@ export function hostConfigFromEnv(env: NodeJS.ProcessEnv = bootEnv()): Pick<Stru
       ...(grants !== undefined ? { grants: grants as boolean } : {}),
     };
   }
+  const memoryGraph = (raw as Record<string, unknown> | null)?.["memoryGraph"];
+  if (memoryGraph !== undefined) {
+    const workflows = (memoryGraph as { workflows?: unknown } | null)?.workflows;
+    if (!Array.isArray(workflows) || !workflows.every((w) => typeof w === "string" && w)) {
+      throw new Error(`STRUT_HOST_CONFIG: ${file}: "memoryGraph" must be { workflows: string[] }`);
+    }
+    out.memoryGraph = { workflows: workflows as string[] };
+  }
   return out;
 }
 
@@ -129,7 +139,7 @@ async function getDefault(): Promise<Strut> {
       bootEnv()["STRUT_MOTHERSHIP"] === "1"
         ? (await import("./mothership.js")).createMothership({ dataDir })
         : null;
-    const shared: Pick<StrutOptions, "llmAuth" | "publicUrl" | "eventsSink" | "job" | "orchestrator" | "builder" | "automation"> = {
+    const shared: Pick<StrutOptions, "llmAuth" | "publicUrl" | "eventsSink" | "job" | "orchestrator" | "builder" | "automation" | "memoryGraph"> = {
       ...(mothership ? { llmAuth: mothership.llmAuth } : {}),
       // Where a caller outside the UI (the MCP door) is told this server
       // is; else each request's own origin.

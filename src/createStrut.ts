@@ -36,7 +36,7 @@ import { RunController } from "./run-control.js";
 import { buildJournal, invalidateFrom, readRunStart } from "./journal.js";
 import { appIdentity, carriesApiKey, carriesPeerKey, carriesFileToken, carriesBadFileToken, catalogToken, catalogTokenOf, CATALOG_TOKEN_DAYS, fileToken, warnIfUnconfigured, actorFromHeader, inProcessOf, inProcessRequest, scopeFromKey, isPeerScope, personOf, personToken, PERSON_TOKEN_DAYS, unauthorized, issueSession, sessionCookie, sessionOf, isSecureRequest, type Scope } from "./auth.js";
 import { standardServices, fileArtifactsCapability } from "./capabilities.js";
-import type { ArtifactsCapability, SecretsCapability } from "./capabilities.js";
+import type { ArtifactsCapability, MemoryGraphOptions, SecretsCapability } from "./capabilities.js";
 import type { SecretStore } from "./secret-store.js";
 import {
   FileSessionStore,
@@ -411,6 +411,14 @@ export interface StrutOptions<TServices = unknown> {
    *  the chat builder's read-only `graph_query` (+ `graph_get`), and the
    *  `/graph/*` reads; without one none of those is offered. */
   graph?: GraphBackend;
+
+  /** Where the graph/* read steps (graph-search, graph-get, …, walk) read
+   *  the person's MEMORY graph (src/graph/memory/backend.ts) instead of
+   *  `graph`: an agent's tool calls in a run of one of `workflows` (Peel:
+   *  its orchestrator and automation runs). Everything else — a job, a
+   *  workflow's own steps, the /graph/* API — reads `graph` as before.
+   *  Absent: nothing reads memory through them. `ctx.services.memoryGraph`. */
+  memoryGraph?: MemoryGraphOptions;
 
   /** Directory containing the built web UI (the `dist` folder). Defaults
    *  to strut's own bundled UI resolved relative to this module, so it
@@ -897,6 +905,7 @@ export async function createStrut<TServices = unknown>(
     // The graph backend the server wired, for the graph/* steps (graphCtx
     // prefers it over opening one from env).
     ...(graph ? { graph } : {}),
+    ...(opts.memoryGraph ? { memoryGraph: opts.memoryGraph } : {}),
     ...(stt ? { stt } : {}),
     // The LLM auth seam, for the model-building call sites (llm.ts).
     ...(opts.llmAuth ? { llmAuth: opts.llmAuth } : {}),

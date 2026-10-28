@@ -70,7 +70,8 @@ export const snake = (s: string) =>
   s.trim().replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
 const pascal = (s: string) => snake(s).split("_").filter(Boolean).map((w) => w[0]!.toUpperCase() + w.slice(1)).join("");
 
-export type Resolved = { term: Term; given: string; proposed: boolean };
+/** `stripped`: found only once a trailing Type / _type came off the given name ("UserType" read as Self). */
+export type Resolved = { term: Term; given: string; proposed: boolean; stripped?: boolean };
 
 /** The name a new term of this kind would be stored under; "" when `given` has no letters or digits. */
 export function termName(kind: Kind, given: string): string {
@@ -162,7 +163,20 @@ export function invalidate(query: Query): void {
 export const wroteOntology = (query: Query): boolean => cache.written.has(query);
 
 export async function lookup(query: Query, kind: Kind, given: string): Promise<Term | undefined> {
-  return (await vocabulary(query)).term(kind, given);
+  return (await lookupTerm(query, kind, given)).term;
+}
+
+/** As `lookup`, and whether an entity type was found only once a trailing
+ *  Type or _type came off the name: "UserType" is User, which is Self's alias;
+ *  "PersonType" is Person. A model that read `user_type` off memory/ontology
+ *  wrote "UserType" and made a proposed type the user was then filed under. */
+async function lookupTerm(query: Query, kind: Kind, given: string): Promise<{ term?: Term; stripped?: boolean }> {
+  const vocab = await vocabulary(query);
+  const term = vocab.term(kind, given);
+  if (term || kind !== "entity_type") return { term };
+  const base = snake(given).replace(/_type$/, "");
+  const again = base && base !== snake(given) ? vocab.term(kind, base) : undefined;
+  return again ? { term: again, stripped: true } : {};
 }
 
 /**
@@ -175,8 +189,8 @@ export async function resolve(
   query: Query, kind: Kind, given: string, by: string,
   context: { subject?: string; object?: string } = {},
 ): Promise<Resolved> {
-  const found = await lookup(query, kind, given);
-  if (found) return { term: found, given, proposed: false };
+  const found = await lookupTerm(query, kind, given);
+  if (found.term) return { term: found.term, given, proposed: false, ...(found.stripped ? { stripped: true } : {}) };
   const name = termName(kind, given);
   if (!name) throw new Error(`invalid_input: ${kind === "entity_type" ? "type" : "predicate"} ${JSON.stringify(given)} has no letters or digits`);
   const base = { kind, name, description: "", status: "proposed" as const, aliases: [], parent: "", naming: "", role: "" };

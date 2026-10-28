@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
-import { graphCtx, errText } from "./_shared.js";
+import { graphCtx, errText, workspaceGraph } from "./_shared.js";
 
 const EXAMPLE = `- id: evidence_type
   type: graph/create-schema
@@ -50,7 +50,7 @@ export default defineStep({
   output: z.any(),
   async run(cfg, ctx) {
     try {
-      const b = await graphCtx(ctx as StepContext<StrutCapabilities>);
+      const b = workspaceGraph(await graphCtx(ctx as StepContext<StrutCapabilities>), "graph/create-schema");
       const { createNodeSchema } = await import("../../../graph/schema-crud.js");
       const r = await createNodeSchema(b, b.schemas, {
         type: cfg.type,

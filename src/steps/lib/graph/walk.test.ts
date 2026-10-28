@@ -1,8 +1,13 @@
-import { describe, it } from "node:test";
+import { after, describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { accessedNodesOf, type StepContext } from "../../../core.js";
 import type { NodeEnvelope, NeighborsParams, SearchParams } from "../../../graph/search.js";
 import type { Evaluate, EvalAnswer, EvalQuestion } from "../../../evaluate.js";
+import { memoryGraph } from "../../../graph/memory/backend.js";
+import { buildRegistry } from "../../registry.js";
 import walk, { runWalk, type WalkReader } from "./walk.js";
 
 // OFFLINE: the walk over an in-memory graph and a scripted decider — no
@@ -351,6 +356,40 @@ describe("graph/walk: evidence labels and edge attributes", () => {
     assert.deepEqual(calls[2]!.state.candidates.map((c: any) => c.name.split(":")[0]), ["refutes (-1)", "no verdict"]);
     assert.deepEqual(calls[2]!.state.gathered.find((g: any) => g.name.startsWith("supports")).similar_results, 1);
     assert.deepEqual(out.nodes.find((n) => n.ref_id === "e1")!.merged?.map((m) => m.ref_id), ["e4"]);
+  });
+});
+
+// The walk over a memory file (src/graph/memory/backend.ts), with the
+// scripted decider. Skips where @ladybugdb/core does not load.
+const hasLadybug = await import("@ladybugdb/core").then(() => true, () => false);
+
+describe("graph/walk: over the memory graph", { skip: !hasLadybug && "@ladybugdb/core is not installed" }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "strut-walk-memory-"));
+  after(() => rmSync(dir, { recursive: true, force: true }));
+
+  it("seeds from a search, walks from a person to their current facts, never to a replaced one", async () => {
+    const services = { secrets: { get: async (n: string) => (n === "STRUT_MEMORY_DB" ? join(dir, "graph.lbug") : undefined) } };
+    const ctx = { runId: "r", path: "test", scope: {}, input: undefined, emit: async () => {}, services } as unknown as StepContext;
+    const { registry } = await buildRegistry();
+    const remember = registry["memory/remember"]!;
+    const kate = { type: "Person", name: "Kate" };
+    const say = (input: unknown) => remember.run(remember.input.parse(input) as never, ctx) as Promise<any>;
+    const leeds = (await say({ episode: "Kate lives in Leeds.", facts: [{ subject: kate, predicate: "lives_in", object: { type: "Place", name: "Leeds" }, text: "Kate lives in Leeds." }] })).facts[0].ref_id;
+    const york = (await say({ episode: "Kate moved to York.", facts: [{ subject: kate, predicate: "lives_in", object: { type: "Place", name: "York" }, text: "Kate lives in York." }] })).facts[0].ref_id;
+    const { reader } = await memoryGraph(ctx);
+
+    // Hop 0: the search's seeds (Kate, then her current fact); expand Kate,
+    // then stop once her neighbors are judged.
+    const { evaluate, calls } = scripted((hop, state) => ({ next: hop === 0 ? optionFor(state, "Kate") : "none" }));
+    const out = await runWalk({ ...BASE, goal: "where does Kate live?", query: "Kate", maxHops: 3 }, { reader, evaluate });
+
+    assert.deepEqual(calls[0]!.state.candidates.map((c: any) => c.name), ["Kate", "Kate lives in York."]);
+    const fact = out.nodes.find((n) => n.ref_id === york)!;
+    assert.equal(fact.hop, 0, "found by the search");
+    const episodes = out.nodes.filter((n) => n.hop === 1);
+    assert.deepEqual(episodes.map((n) => n.via?.edge_type), ["MENTIONS", "MENTIONS"], "Kate's neighbors: the two episodes; York is already gathered");
+    assert.ok(!out.nodes.some((n) => n.ref_id === leeds), "the replaced fact is never a candidate");
+    assert.equal(calls.length, 2, "one decision per hop");
   });
 });
 

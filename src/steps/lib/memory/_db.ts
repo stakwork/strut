@@ -31,7 +31,7 @@ import { SEED } from "./_ontology-seed.js";
 export const EntityRef = z.object({
   ref_id: z.string().optional().describe("An existing entity's ref_id, when you already know it."),
   type: z.string().min(1).describe(
-    "An entity type from memory/ontology, e.g. Person; each type's description says when to use it, and user_type is the user. " +
+    "An entity type, e.g. Person (graph/get-ontology lists them); each type's description says when to use it, and Self (or 'user') is the user. " +
       "A new type is kept as proposed.",
   ),
   name: z.string().min(1).describe("The entity's name, e.g. 'Kate' or 'Friday Night Chef'."),

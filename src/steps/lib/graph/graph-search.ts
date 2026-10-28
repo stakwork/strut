@@ -110,7 +110,8 @@ export default defineStep({
         const p = (n.properties ?? {}) as Record<string, any>;
         return {
           ref_id: n.ref_id,
-          name: nameOf(n.node_type, p),
+          // The envelope's own name when no property gives one (a memory fact: its sentence).
+          name: nameOf(n.node_type, p) ?? n.name,
           node_type: n.node_type,
           description: descriptionOf(n.node_type, p),
           // {EDGE_TYPE: count} map of this node's relationships.

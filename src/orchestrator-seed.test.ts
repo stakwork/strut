@@ -46,7 +46,12 @@ describe("the orchestrator workflow strut ships", () => {
     assert.equal(turn["system"], "{{ params.system }}\n{{ concepts.text }}\n{{ builds.text }}", "the two lists close the prompt");
 
     const { tools } = paramsOf(text);
-    for (const t of ["job/start", "job/continue", "job/list", "job/get", "job/read", "memory/recall", "memory/remember"]) assert.ok(tools.includes(t), t);
+    for (const t of ["job/start", "job/continue", "job/list", "job/get", "job/read"]) assert.ok(tools.includes(t), t);
+    // Memory is a host's, per person (Peel adds it): one store for a whole
+    // workspace is nobody's. Nor does strut grant the graph reads; Hive's lab
+    // and Peel each add them.
+    assert.deepEqual(tools.filter((t) => t.startsWith("memory/") || t.startsWith("graph/")), []);
+    assert.ok(!/memory\//.test(paramsOf(text).system), "the prompt names no memory step");
     for (const t of tools) {
       assert.ok(!t.includes("*"), `strut's own list names steps, never globs: ${t}`);
       assert.ok(registry[t], `a grant strut cannot honor: ${t}`);
@@ -181,6 +186,17 @@ describe("the orchestrator workflow strut ships", () => {
       await writeFile(file, JSON.stringify({ orchestrator: { tools: "sphinx/*" } }));
       assert.throws(() => hostConfigFromEnv({ STRUT_HOST_CONFIG: file }), /"orchestrator" must be/);
       assert.throws(() => hostConfigFromEnv({ STRUT_HOST_CONFIG: join(dir, "missing.json") }), /could not read/);
+
+      // Where the graph reads read memory: workflow names, plain JSON.
+      await writeFile(file, JSON.stringify({ memoryGraph: { workflows: ["orchestrator", "peel-automation-run"] } }));
+      const mem = hostConfigFromEnv({ STRUT_HOST_CONFIG: file });
+      assert.deepEqual(mem, { memoryGraph: { workflows: ["orchestrator", "peel-automation-run"] } });
+      const strut = await createStrut({ workspace: new WorkspaceManager(join(dir, "ws2")), ...quiet(), ...mem });
+      assert.deepEqual((strut.services as { memoryGraph?: unknown }).memoryGraph, { workflows: ["orchestrator", "peel-automation-run"] });
+      for (const bad of [{ memoryGraph: { workflows: "orchestrator" } }, { memoryGraph: {} }, { memoryGraph: { workflows: [""] } }]) {
+        await writeFile(file, JSON.stringify(bad));
+        assert.throws(() => hostConfigFromEnv({ STRUT_HOST_CONFIG: file }), /"memoryGraph" must be \{ workflows: string\[\] \}/);
+      }
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -331,7 +347,8 @@ describe("the orchestrator, end to end", () => {
     assert.ok(system.includes("Start a JOB"), "strut's prompt");
     assert.ok(system.includes("HOSTSECTION"), "the host's section after it");
     const tools = seen.orch[0].tools.map((t: any) => t.name);
-    assert.ok(tools.includes("job_start") && tools.includes("job_continue") && tools.includes("memory_recall"), tools.join(","));
+    assert.ok(tools.includes("job_start") && tools.includes("job_continue"), tools.join(","));
+    assert.ok(!tools.some((t: string) => t.startsWith("memory_")), "no memory by default");
     assert.ok(!tools.includes("bash"), "no built-ins");
 
     // A revised prompt (a host's new section) between turns does not reach

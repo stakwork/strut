@@ -10,8 +10,10 @@ import { idProblem } from "./session-store.js";
  * folder) → `context/concept` (the `Job` Concept's children — the kinds
  * of work a job can do here, the kinds alone — for the end of the prompt)
  * → `agent` on the caller's `session` (one per conversation, compacted in
- * place, its prompt its first turn's), no built-ins, strut's memory and
- * job steps as tools → `pack` in job's reply shape. The turn is the
+ * place, its prompt its first turn's), no built-ins, strut's job steps as
+ * tools → `pack` in job's reply shape. No memory: a host that keeps one per
+ * person adds it (Peel: memory/remember, forget, merge and the graph/*
+ * reads over `memoryGraph`). The turn is the
  * conversation, the work is a job's: it answers from what is already
  * known, asks what a request needs answered first, may run a lookup the
  * deployment grants to orient, and starts or continues jobs DETACHED
@@ -35,7 +37,7 @@ export const ORCHESTRATOR_DESCRIPTION =
   "Launch it once per message — POST /workflows/orchestrator/run { input: { prompt, session }, callback }; without a session it is a one-shot. " +
   "Input: { prompt, session? (the conversation's thread), context?: { line } (put before the prompt: the time, the person's time zone) }. " +
   "Output: { text, artifacts, ask?: { message }, cost, session }, job's shape. " +
-  "params.tools (memory/*, job/start, continue, list, get, read, strut/list-peers, strut/run-workflow) and params.system are the evolvable surface; the host adds its own through createStrut({ orchestrator }).";
+  "params.tools (job/start, continue, list, get, read, strut/list-peers, strut/run-workflow) and params.system are the evolvable surface; the host adds its own through createStrut({ orchestrator }).";
 
 const ORCHESTRATOR_YAML = new URL("./workflows/orchestrator.yaml", import.meta.url);
 
