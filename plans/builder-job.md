@@ -103,8 +103,9 @@ request a secret), a prompt that is strut's YAML dialect plus the procedure
 (`src/ai/prompts.ts:169-178`, `:180-329`) plus the `Workflow Builder`
 Concept page as the deployment's section (`src/ai/builder-system.ts`).
 
-The orchestrator has none of it. Its tools are memory, the job launchers,
-the job reads and the two peer steps (`orchestrator.yaml:94-107`), and its
+The orchestrator has none of it. Its tools are the job launchers,
+the job reads (a host adds its own, its memory among them: memory/remember, forget and
+merge, read through the graph/* steps bound to memory by `memoryGraph`), and the two peer steps (`orchestrator.yaml:94-107`), and its
 rule is that anything needing a working directory is a job's
 (`:124`). The `job` workflow's agent holds the `meta/*` READ and RUN twins —
 list/get a workflow, run it, read a run — and the seed's comment holds the

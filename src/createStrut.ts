@@ -103,6 +103,7 @@ import type { AppRelease, Upstream } from "./workspace.js";
 import type { CassetteMode } from "./cassette.js";
 // Type-only: the graph backend stays a lazy, opt-in dependency.
 import type { GraphBackend } from "./graph/backend.js";
+import { createMemoryGraph } from "./graph/memory/backend.js";
 import { projectRunOnce } from "./graph/projector.js";
 // No runtime graph dependency in here either (type-only imports inside).
 import type { ClaimsReader } from "./graph/claims.js";
@@ -411,6 +412,18 @@ export interface StrutOptions<TServices = unknown> {
    *  the chat builder's read-only `graph_query` (+ `graph_get`), and the
    *  `/graph/*` reads; without one none of those is offered. */
   graph?: GraphBackend;
+
+  /** Point the `graph/*` read steps (graph-search, graph-get, graph-get-batched,
+   *  graph-neighbors, get-ontology, get-ontology-type, walk) at the person's
+   *  long-term memory (the `memory/*` steps' file; src/graph/memory/backend.ts,
+   *  read-only) in the named workflows, `["orchestrator"]` by default. Present
+   *  or not, `graph` is untouched: it stays the workspace graph for `/graph/*`,
+   *  Concept lookups, the builder, claims and every workflow not named here
+   *  (`graphCtx`, src/steps/lib/graph/_shared.ts). Memory is written only by
+   *  memory/remember, forget and merge, which a host grants itself. With a
+   *  memory file not yet created, the reads are empty. STRUT_HOST_CONFIG:
+   *  `"memoryGraph": { "workflows": [...] }`. */
+  memoryGraph?: { workflows?: string[] };
 
   /** Directory containing the built web UI (the `dist` folder). Defaults
    *  to strut's own bundled UI resolved relative to this module, so it
@@ -897,6 +910,14 @@ export async function createStrut<TServices = unknown>(
     // The graph backend the server wired, for the graph/* steps (graphCtx
     // prefers it over opening one from env).
     ...(graph ? { graph } : {}),
+    // The memory graph for the workflows `memoryGraph` names (graphCtx). Built
+    // over the bag itself (dataDir, secrets), so it opens nothing until a read.
+    ...(opts.memoryGraph
+      ? {
+          memoryGraph: createMemoryGraph(() => services as Record<string, unknown>),
+          memoryGraphWorkflows: opts.memoryGraph.workflows ?? ["orchestrator"],
+        }
+      : {}),
     ...(stt ? { stt } : {}),
     // The LLM auth seam, for the model-building call sites (llm.ts).
     ...(opts.llmAuth ? { llmAuth: opts.llmAuth } : {}),

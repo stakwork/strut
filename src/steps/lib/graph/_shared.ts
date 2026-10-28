@@ -1,4 +1,4 @@
-import type { AccessedNode, StepContext } from "../../../core.js";
+import { workflowOf, type AccessedNode, type StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
 import type { GraphBackend } from "../../../graph/backend.js";
 
@@ -21,6 +21,17 @@ export type { GraphBackend };
  * with the closed-registry error. Without a wired backend the steps open
  * a Neo4j from env, as before:
  *
+ * One exception, per WORKFLOW: when the host configured
+ * `createStrut({ memoryGraph: { workflows } })` (`ctx.services.memoryGraph`,
+ * src/graph/memory/backend.ts) and the run's workflow is one of those
+ * (`workflowOf(ctx)`: set for an agent's tool calls too), the steps read the
+ * person's long-term memory, read-only, instead. It is bound per workflow and
+ * not by pointing `services.graph` at memory because `services.graph` is also
+ * the workspace's own graph: `/graph/*`, the Job-concept lookup
+ * (context/concept), the builder's graph reads, claims and the run projector
+ * all read it, and on a host like Peel they must keep reading the workspace
+ * graph while only the orchestrator (and a few automation runs) read memory.
+ *
  * Config (all via `ctx.services.secrets`, secret store → env fallback; the
  * same names + defaults as the mcp host's own Neo4j client, so a local
  * Neo4j needs nothing and a deployment's existing vars just work):
@@ -42,6 +53,8 @@ export type { GraphBackend };
  * top level.
  */
 export async function graphCtx(ctx?: StepContext<StrutCapabilities>): Promise<GraphBackend> {
+  const memory = ctx?.services?.memoryGraph;
+  if (memory && ctx && memoryWorkflows(ctx).includes(workflowOf(ctx))) return memory;
   const wired = ctx?.services?.graph;
   if (wired) return wired;
   const secrets = ctx?.services?.secrets;
@@ -64,6 +77,11 @@ export async function graphCtx(ctx?: StepContext<StrutCapabilities>): Promise<Gr
     },
     { embeddings: !["off", "0", "false"].includes(emb), seedOntology: ["1", "true", "on"].includes(ont) },
   );
+}
+
+/** The workflows whose graph steps read memory: `memoryGraph.workflows`, kept on the bag beside the backend. */
+function memoryWorkflows(ctx: StepContext<StrutCapabilities>): string[] {
+  return (ctx.services as { memoryGraphWorkflows?: string[] }).memoryGraphWorkflows ?? ["orchestrator"];
 }
 
 export interface EdgeWriteArgs {
@@ -148,7 +166,10 @@ const DESCRIBE_CONCURRENCY = 8;
  *  type — try a generous ordered candidate list (same as jarvis/graph-get).
  *  Shared by graph-get, graph-get-batched, graph-neighbors and walk. */
 export function deriveNodeName(node: any, p: Record<string, any>): string {
+  // The memory graph's (src/graph/memory): a fact is named by its sentence, an episode by what was said.
+  const own = node?.node_type === "Fact" ? p.text : node?.node_type === "Episode" ? p.content : undefined;
   const candidates = [
+    own,
     node?.name, p.name, p.title, p.label, p.display_name, p.displayName,
     p.identifier, p.file_name, p.fileName, p.file, p.path, p.symbol,
     p.function_name, p.class_name, p.method_name, p.operation_id, p.endpoint,

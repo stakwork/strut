@@ -46,7 +46,9 @@ describe("the orchestrator workflow strut ships", () => {
     assert.equal(turn["system"], "{{ params.system }}\n{{ concepts.text }}\n{{ builds.text }}", "the two lists close the prompt");
 
     const { tools } = paramsOf(text);
-    for (const t of ["job/start", "job/continue", "job/list", "job/get", "job/read", "memory/recall", "memory/remember"]) assert.ok(tools.includes(t), t);
+    for (const t of ["job/start", "job/continue", "job/list", "job/get", "job/read", "strut/list-peers", "strut/run-workflow"]) assert.ok(tools.includes(t), t);
+    assert.deepEqual(tools.filter((t) => t.startsWith("memory/")), [], "no memory/* grant by default: a host adds its own");
+    assert.ok(!/memory/i.test(String((yaml.load(text) as { params: { system: string } }).params.system)), "the default prompt says nothing of memory");
     for (const t of tools) {
       assert.ok(!t.includes("*"), `strut's own list names steps, never globs: ${t}`);
       assert.ok(registry[t], `a grant strut cannot honor: ${t}`);
@@ -156,6 +158,46 @@ describe("the orchestrator workflow strut ships", () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
       await rm(fresh, { recursive: true, force: true });
+    }
+  });
+
+  it("STRUT_HOST_CONFIG's memoryGraph is { workflows?: string[] }, and createStrut puts the memory graph on the bag only when asked", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "orch-memgraph-config-"));
+    try {
+      const file = join(dir, "host.json");
+      const read = async (v: unknown) => {
+        await writeFile(file, JSON.stringify(v));
+        return hostConfigFromEnv({ STRUT_HOST_CONFIG: file });
+      };
+      assert.deepEqual(await read({ memoryGraph: { workflows: ["orchestrator", "peel-automation-run"] } }), { memoryGraph: { workflows: ["orchestrator", "peel-automation-run"] } });
+      assert.deepEqual(await read({ memoryGraph: {} }), { memoryGraph: {} }, "the default workflows");
+      for (const bad of [true, null, [], "orchestrator", { workflows: "orchestrator" }, { workflows: [1] }, { workflows: [""] }, { workflow: ["x"] }]) {
+        await writeFile(file, JSON.stringify({ memoryGraph: bad }));
+        assert.throws(() => hostConfigFromEnv({ STRUT_HOST_CONFIG: file }), /"memoryGraph" must be/, JSON.stringify(bad));
+      }
+
+      const off = await createStrut({ workspace: new WorkspaceManager(join(dir, "a")), ...quiet() });
+      assert.equal((off.services as Record<string, unknown>)["memoryGraph"], undefined, "no option: no memory graph on the bag");
+      const on = await createStrut({ workspace: new WorkspaceManager(join(dir, "b")), ...quiet(), memoryGraph: { workflows: ["orchestrator", "x"] } });
+      const bag = on.services as Record<string, unknown>;
+      assert.ok(bag["memoryGraph"]);
+      assert.deepEqual(bag["memoryGraphWorkflows"], ["orchestrator", "x"]);
+      const dflt = await createStrut({ workspace: new WorkspaceManager(join(dir, "c")), ...quiet(), memoryGraph: {} });
+      assert.deepEqual((dflt.services as Record<string, unknown>)["memoryGraphWorkflows"], ["orchestrator"]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("the shipped workflows' graph grants are exactly as they were: the orchestrator holds none, job and builder their own", async () => {
+    const grants = async (text: string) => (yaml.load(text) as { params: { tools: string[] } }).params.tools.filter((t) => t.startsWith("graph/") || t.startsWith("memory/"));
+    const { readFile } = await import("node:fs/promises");
+    const wf = (n: string) => readFile(new URL(`./workflows/${n}.yaml`, import.meta.url), "utf-8");
+    assert.deepEqual(await grants(await wf("orchestrator")), []);
+    assert.deepEqual(await grants(await wf("job")), ["graph/graph-search", "graph/graph-get", "graph/graph-neighbors", "graph/get-ontology"]);
+    assert.deepEqual(await grants(await wf("builder")), ["graph/graph-get", "graph/graph-search", "graph/get-ontology"]);
+    for (const name of ["job", "builder", "orchestrator"]) {
+      for (const t of await grants(await wf(name))) assert.ok(!t.startsWith("memory/"), `${name} grants ${t}`);
     }
   });
 
@@ -331,7 +373,7 @@ describe("the orchestrator, end to end", () => {
     assert.ok(system.includes("Start a JOB"), "strut's prompt");
     assert.ok(system.includes("HOSTSECTION"), "the host's section after it");
     const tools = seen.orch[0].tools.map((t: any) => t.name);
-    assert.ok(tools.includes("job_start") && tools.includes("job_continue") && tools.includes("memory_recall"), tools.join(","));
+    assert.ok(tools.includes("job_start") && tools.includes("job_continue") && !tools.some((t: string) => t.startsWith("memory_")), tools.join(","));
     assert.ok(!tools.includes("bash"), "no built-ins");
 
     // A revised prompt (a host's new section) between turns does not reach

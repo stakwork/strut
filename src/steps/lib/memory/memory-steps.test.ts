@@ -182,6 +182,31 @@ describe("memory/* steps", { skip: !hasLadybug && "@ladybugdb/core is not instal
   it("with neither STRUT_MEMORY_DB nor a dataDir the steps fail and say so", async () => {
     await assert.rejects(async () => run("memory/recall", { q: "x" }, ctxWith({})), /dataDir.*STRUT_MEMORY_DB/);
   });
+
+  it("a user typed UserType, User or 'user type' is the user type (Self): stored on the one Self, no type proposed, memory/get {user:true} finds it", async () => {
+    // The user's facts were once saved on a node of type "UserType", which has no user role, so
+    // memory/get { user: true } answered not_found. Such a spelling is mapped quietly to the
+    // user type (not refused), compared without case, spaces, underscores and hyphens.
+    const typesBefore = (await run("memory/ontology", {})).entity_types.map((t: any) => t.name).sort();
+    for (const type of ["UserType", "User", "user type", "user_type", "user-type", "SELF", "Me"]) {
+      const out = await run("memory/remember", {
+        episode: `About the user (${type}).`,
+        mentions: [{ type, name: "user" }],
+        facts: [{ subject: { type, name: "user" }, predicate: "prefers", text: `The user prefers ${type.toLowerCase()} things.` }],
+      });
+      assert.equal(out.entities.length, 1, type);
+      assert.equal(out.entities[0].type, "Self", type);
+      assert.equal(out.entities[0].ref_id, ids.self, `${type}: the one Self`);
+      assert.deepEqual(out.ontology?.proposed ?? [], [], `${type}: no new type`);
+    }
+    assert.deepEqual((await run("memory/ontology", {})).entity_types.map((t: any) => t.name).sort(), typesBefore, "no type was added");
+    const user = await run("memory/get", { user: true });
+    assert.equal(user.ref_id, ids.self);
+    assert.ok(user.facts.some((f: any) => f.text === "The user prefers usertype things."));
+    // The user type's aliases stay as they were; a type that merely contains the word is another type.
+    const other = await run("memory/remember", { episode: "x", mentions: [{ type: "UserGroup", name: "Staff" }] });
+    assert.deepEqual(other.ontology.proposed, ["type UserGroup"]);
+  });
 });
 
 describe("memory/* speaker and time", { skip: !hasLadybug && "@ladybugdb/core is not installed" }, () => {
