@@ -6,7 +6,13 @@
 > Written against strut `main` @998beb8 and stakgraph `main` @86732320. The
 > work lands mostly in stakgraph's lab (`mcp/src/lab/concepts/`, the
 > workflows that make Concepts from PRs); strut's piece is one step in the
-> orchestrator's prompt. Companion to `semantic-search.md` (what a Concept
+> orchestrator's prompt. **BUILT the same day**: items 1–2 in
+> stakwork/stakgraph#1819 (`concepts/pages`, the sweep wiring, the Explore
+> line), item 3 in stakwork/strut#364. Two things differ from the text
+> below, both marked *as built*: the Concept schema (jarvis's, `Thing`'s
+> attributes) has no slot for a second property, so both hashes ride in
+> the one stamp; and a page a person edited is still an INPUT of the root,
+> so the overview follows the edit. Companion to `semantic-search.md` (what a Concept
 > is in the graph), the `linked` filter in `src/graph/search.ts` (which Concepts explore reads)
 > and the seeded roots in `src/concepts/` (`Job`, `Workflow Builder`).
 
@@ -75,10 +81,12 @@ Products                               one per workspace; no repo
 - **A feature page**: unchanged. One `PARENT_OF` from its repository page,
   reconciled from `f.repo` (decision 9).
 - **Stamps**: both page levels carry `unique_source_id`, the property the
-  seeder uses for ownership + hash: `lab/concepts/<name>@<inputHash>`
-  (§3). Strut's seeder treats a stamp with another prefix as someone else's
-  and skips the node, so the two writers never fight. A second property,
-  `text_hash`, is the hash of the page's text as written (decision 7).
+  seeder uses for ownership + hash. *As built*: `lab/concepts/<name>@<inputHash>.<textHash>`
+  — the second hash, of the page's text as written (decision 7), rides in
+  the same stamp, since the Concept schema declares no property for it
+  and the node writer refuses an undeclared one. Strut's seeder treats a
+  stamp with another prefix as someone else's and skips the node, so the
+  two writers never fight.
 
 What the tree does not change: feature ids, `TOUCHES` and `MODIFIES`,
 hive's per-repo concept list, the eval harness's gold comparison. Hive's
@@ -119,16 +127,17 @@ by. The prompt is `params.productsSystem`.
 inputHash(repo)     = sha256( sorted doc files as "<name>\0<body>"  ‖  sorted features as "<name>\t<description>" )
 inputHash(Products) = sha256( sorted children as "<name>\t<description>\t<docs>" )
 textHash(page)      = sha256( description ‖ "\n" ‖ docs )   as last written by the step
+stamp               = lab/concepts/<name>@<inputHash>.<textHash>   (12 hex each, in unique_source_id)
 ```
 
 At the end of every sweep, for the repository just swept and then for the
 root:
 
 1. Compute `inputHash`. Read the page (by name).
-2. No page → write it, stamp `unique_source_id = lab/concepts/<name>@<inputHash>` and `text_hash`. (The migration for an existing workspace: every repository gets its page on its next sweep, the root once the first does.)
+2. No page → write it, stamped. (The migration for an existing workspace: every repository gets its page on its next sweep, the root once the first does.) A page under the name with no stamp of ours — a person's — is `foreign`: left alone, reported, still the parent of what hangs under it.
 3. Page with the same stamp → nothing.
-4. Page whose `text_hash` ≠ the hash of its current text → a person edited it: leave it, report `edited` in the step's output, one warn line. The stamp stays old, so the report repeats until someone takes the edit back or deletes the page.
-5. Otherwise → one model call, write, restamp.
+4. Page whose stamped text hash ≠ the hash of its current text → a person edited it: leave it, report `edited` in the step's output. The stamp stays old, so the report repeats until someone takes the edit back or deletes the page. *As built*: the edited page is still one of the ROOT's inputs, so the overview is rewritten over the person's words — the edit reaches it instead of being hidden from it.
+5. Otherwise → one model call, write, restamp. A repository with no doc files and no features gets no page (`empty`); the root stays a placeholder until a child gives it something to say.
 
 Then reconcile the edges (decision 9): `PARENT_OF` from the repository page
 to every Concept with that `repo`, through the edge writer (idempotent on
@@ -169,8 +178,9 @@ covered too):
       productsSystem: "{{ params.productsSystem }}"
 ```
 
-Output: `{ repoPage: written | unchanged | edited, products: written |
-unchanged | edited | skipped, reparented: n, usage }`. `record`'s usage list
+Output: `{ repoPage, products, reparented, unparented?, usage }`, each page
+`written | unchanged | edited | foreign | empty | skipped`. `root` (default
+`Products`) names the root page, for a test over a shared graph. `record`'s usage list
 gains `"{{ pages.usage }}"`. The step reads the doc files through
 `services.github(token)` (the `GITHUB_TOKEN` secret, as `fetch-content`
 does), the features through `storage.getAllConcepts(repoId)`, and writes
