@@ -12,6 +12,7 @@ import type { Step } from "../core.js";
 import { hasTemplates } from "../expr.js";
 import type { AppLock, WorkspaceStore } from "../workspace.js";
 import type { AppManifest } from "./manifest.js";
+import { nameInPackageAsync, packagePrefixOf } from "../package-lookup.js";
 
 /** Steps that start other runs: those run whatever is current
  *  (plans/app-releases.md, ruled question 3), so a lock that reaches one
@@ -28,8 +29,12 @@ export interface LockDrift {
 
 type LockStore = Pick<WorkspaceStore, "getWorkflow" | "getWorkflowVersion" | "getWorkflowMetadata" | "getActiveStepHashes" | "listStepVersions">;
 
-/** The lock for a page version's manifest, taken now. */
-export async function takeLock(manifest: AppManifest, workspace: LockStore): Promise<AppLock> {
+/** The lock for a page version's manifest, taken now. `app` names the app:
+ *  one in a package grants its package's own workflows bare, found there
+ *  first, as its runs find them (src/package-lookup.ts). */
+export async function takeLock(manifest: AppManifest, workspace: LockStore, app?: string): Promise<AppLock> {
+  const pkg = app ? packagePrefixOf(app) : undefined;
+  const active = await workspace.getActiveStepHashes();
   const workflows: AppLock["workflows"] = {};
   const floating = new Set<string>();
   const merged: FlowClosure = { types: new Set(), agentTools: new Set(), workflows: [], resolvable: true, unreadGrants: [], paramGrants: false };
@@ -54,10 +59,13 @@ export async function takeLock(manifest: AppManifest, workspace: LockStore): Pro
     if (templated(cfg["workflow"]) || templated(cfg["version"])) floating.add(`subflow step "${s.id}" chooses its workflow at run time`);
   };
 
-  for (const name of [...new Set(manifest.grants.workflows)].sort()) {
+  const granted = await Promise.all(
+    [...new Set(manifest.grants.workflows)].map((g) => nameInPackageAsync(pkg, g, async (n) => !!(await workspace.getWorkflowMetadata(n).catch(() => null)))),
+  );
+  for (const name of [...new Set(granted)].sort()) {
     if (!(await lockWorkflow(name))) continue;
     const flow = await workspace.getWorkflow(name);
-    const closure = await flowClosure(flow, workspace, onStep);
+    const closure = await flowClosure(flow, workspace, onStep, { name, stepExists: (t) => t in active });
     for (const t of closure.types) merged.types.add(t);
     for (const g of closure.agentTools) merged.agentTools.add(g);
     for (const g of closure.unreadGrants) floating.add(`agent grant "${g}" is read at run time`);
@@ -69,7 +77,7 @@ export async function takeLock(manifest: AppManifest, workspace: LockStore): Pro
   // Custom steps: every one the closure reaches — all of them when the
   // closure could not be read, the rule `run.start.stepHashes` follows.
   const steps: AppLock["steps"] = {};
-  for (const [type, hash] of Object.entries(await workspace.getActiveStepHashes())) {
+  for (const [type, hash] of Object.entries(active)) {
     if (merged.resolvable && !closureIncludes(merged, type)) continue;
     const { active } = await workspace.listStepVersions(type);
     steps[type] = { version: active, hash };

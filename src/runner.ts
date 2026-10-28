@@ -17,6 +17,7 @@ import { accessedNodesOf, messagesOf, takeUsage, type AccessedNode, type ModelUs
 import { resolveConfig } from "./expr.js";
 import { baseType, parseStepRef } from "./step-ref.js";
 import { resolveStep } from "./steps/registry.js";
+import { nameInPackageAsync, packagePrefixOf, stepInPackage } from "./package-lookup.js";
 import type { RunStore } from "./store.js";
 import { MemoryRunStore, countSteps, countUsage, generateRunId, tallyStep, tallyUsage } from "./store.js";
 import { RunController, isCancelledError } from "./run-control.js";
@@ -130,6 +131,10 @@ export interface RunOptions<TServices = unknown> {
    *  handed to every step as `ctx.app`, read back by a resume like `job`.
    *  Nothing a launch body sends can set it. */
   app?: AppRef;
+  /** The package the run's own steps look a bare name up in first
+   *  (src/package-lookup.ts) — the workflow's prefix when not given; a
+   *  single-step run for an app passes the app's (`runSingleStep`). */
+  package?: string;
   /** The launch asked for the result to be posted to a host (`POST …/run
    *  { callback }`). The runner records the URL's ORIGIN on `run.start` / `run.resumed` and
    *  nothing more; the launcher keeps the URL and does the posting. A ROOM
@@ -228,6 +233,10 @@ interface Exec {
   /** The run's workflow — the root flow's name, the same in every frame
    *  (`StepContext.workflow`). */
   workflow: string;
+  /** The package of THIS frame's workflow: where a bare name is looked up
+   *  first (`StepContext.package`, src/package-lookup.ts). A subflow's frame
+   *  takes its own workflow's. */
+  package?: string;
   emit: EmitFn;
   workspace: SubflowResolver | undefined;
   services: unknown;
@@ -405,6 +414,7 @@ export async function runWorkflow<TServices = unknown>(
     registry,
     runId,
     workflow: wfName,
+    ...((opts?.package ?? packagePrefixOf(wfName)) ? { package: opts?.package ?? packagePrefixOf(wfName) } : {}),
     emit,
     workspace: opts?.workspace,
     services,
@@ -709,11 +719,14 @@ function sliceJournal(
 }
 
 async function executeStep(
-  step: Step,
+  rawStep: Step,
   scope: Record<string, unknown>,
   exec: Exec,
   path: string,
 ): Promise<unknown> {
+  // The type as this frame means it: a package's own step first
+  // (src/package-lookup.ts). Events record the step that runs.
+  const step = stepOfFrame(rawStep, exec);
   // Resume replay (RUN_CONTROL_SPEC §5): a step whose path has a journaled
   // output replays it — zero cost, no side effects re-executed. Emitted as
   // `step.replayed`, never a fake `step.end` (honest timings). The first path
@@ -895,6 +908,8 @@ async function dispatchStep(
         runId: exec.runId,
         path,
         workflow: exec.workflow,
+        ...(exec.package ? { package: exec.package } : {}),
+        ...(exec.workspace ? { resolveWorkflow: (name: string) => workflowOfFrame(exec, name) } : {}),
         scope,
         input: scope["input"],
         emit: exec.emit,
@@ -1202,8 +1217,9 @@ async function describePin(step: Step, exec: Exec): Promise<RunEvent["stepVersio
 
 async function describeSubflow(step: Step, scope: Record<string, unknown>, exec: Exec): Promise<RunEvent["subflow"]> {
   try {
-    const workflow = resolveConfig(step.config["workflow"], scope);
-    if (typeof workflow !== "string" || !workflow) return undefined;
+    const named = resolveConfig(step.config["workflow"], scope);
+    if (typeof named !== "string" || !named) return undefined;
+    const workflow = await workflowOfFrame(exec, named);
     const v = step.config["version"] != null ? resolveConfig(step.config["version"], scope) : undefined;
     const version = typeof v === "string" && v ? v : undefined;
     const hashOf = (exec.workspace as { getWorkflowHash?: (name: string, version?: string) => Promise<string | null> } | undefined)?.getWorkflowHash;
@@ -1237,9 +1253,12 @@ async function executeSubflow(
     );
   }
 
+  // The child as this frame means it — its package's own first — and its
+  // steps then look names up in the CHILD's package.
+  const childName = await workflowOfFrame(exec, wfName);
   const childFlow = version
-    ? await exec.workspace.getWorkflowVersion(wfName, version)
-    : await exec.workspace.getWorkflow(wfName);
+    ? await exec.workspace.getWorkflowVersion(childName, version)
+    : await exec.workspace.getWorkflow(childName);
 
   // Validate child flow input against its schema
   const validatedInput = childFlow.input.parse(childInput);
@@ -1254,11 +1273,39 @@ async function executeSubflow(
   }
   const params = { ...(stepParams as Record<string, unknown> | undefined), ...exec.paramOverrides?.[childFlow.name] };
   // Once a frame is the AI's, everything under it is (src/reach.ts).
-  const childExec = !exec.aiAuthored && (await aiAuthored(exec.services, childFlow.name)) ? { ...exec, aiAuthored: true } : exec;
+  const childPackage = packagePrefixOf(childName);
+  const childAi = !exec.aiAuthored && (await aiAuthored(exec.services, childFlow.name));
+  const childExec: Exec = { ...exec, ...(childAi ? { aiAuthored: true } : {}) };
+  if (childPackage) childExec.package = childPackage;
+  else delete childExec.package;
   return executeFlow(childFlow, validatedInput, childExec, path, params, (scope["$settings"] as Record<string, unknown> | undefined) ?? {});
 }
 
 // ── Utilities ──────────────────────────────────────────────────────────────
+
+/** A step as its frame means it: its type found in the frame's package
+ *  first (src/package-lookup.ts). Control flow and a templated type are
+ *  what they say. */
+function stepOfFrame(step: Step, exec: Exec): Step {
+  if (!exec.package || SELF_RESOLVING_STEPS.has(step.type) || step.type.includes("{{")) return step;
+  const type = stepInPackage(exec.package, step.type, (t) => !!exec.registry[t]);
+  return type === step.type ? step : { ...step, type };
+}
+
+/** A workflow name as this frame means it: `<package>/<name>` when the
+ *  frame's package holds that workflow, else the name. */
+async function workflowOfFrame(exec: Exec, name: string): Promise<string> {
+  const ws = exec.workspace;
+  if (!exec.package || !ws) return name;
+  const meta = (ws as { getWorkflowMetadata?: (n: string) => Promise<unknown> }).getWorkflowMetadata;
+  return nameInPackageAsync(exec.package, name, async (candidate) => {
+    if (meta) return !!(await meta.call(ws, candidate).catch(() => null));
+    return ws.getWorkflow(candidate).then(
+      () => true,
+      () => false,
+    );
+  });
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));

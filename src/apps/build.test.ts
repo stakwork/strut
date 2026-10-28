@@ -153,6 +153,24 @@ describe("the app build", () => {
     assert.match(errorsOf(missing).join("\n"), /"acme\/ui\/nope": the installed app acme\/ui@v2 has no src\/nope/);
   });
 
+  it("an app in a package imports its package's app, and grants its package's workflow, by the bare name", async () => {
+    const ui = await writeApp(fresh(), { "app.yaml": "title: UI\n", "src/index.ts": 'export const LABEL = "package-ui";\n', "src/App.tsx": "export default () => null;\n" });
+    const other = await writeApp(fresh(), { "app.yaml": "title: UI\n", "src/index.ts": 'export const LABEL = "strut-ui";\n', "src/App.tsx": "export default () => null;\n" });
+    const resolveApp: BuildDeps["resolveApp"] = async (name) =>
+      name === "acme/tools/ui" ? { name, version: "v1", dir: ui, hash: await treeHash(ui) } : name === "ui" ? { name, version: "v3", dir: other, hash: await treeHash(other) } : null;
+    const workflowExists = async (wf: string) => wf === "acme/tools/run-bench";
+    const files = {
+      "app.yaml": "title: Board\ngrants:\n  workflows: [run-bench]\n",
+      "src/App.tsx": 'import { LABEL } from "ui";\nexport default function App() { return <p>{LABEL}</p>; }\n',
+    };
+    const inPackage = await build(await writeApp(fresh(), files), { name: "acme/tools/board", resolveApp, workflowExists });
+    assert.ok(inPackage.ok, errorsOf(inPackage).join("\n"));
+    assert.deepEqual(inPackage.imports.map((i) => i.name), ["acme/tools/ui"], "the package's own ui, over the strut's");
+    // Outside a package: the strut's ui, and no run-bench to grant.
+    const loose = await build(await writeApp(fresh(), files), { name: "board", resolveApp, workflowExists });
+    assert.match(errorsOf(loose).join("\n"), /grants\.workflows: no workflow "run-bench"/);
+  });
+
   it("a cycle is refused naming the chain; the app being built counts", async () => {
     const b = await writeApp(fresh(), { "app.yaml": "title: B\n", "src/index.ts": 'import { C } from "c";\nexport const B = "b" + C;\n' });
     const c = await writeApp(fresh(), { "app.yaml": "title: C\n", "src/index.ts": 'import { B } from "b";\nexport const C = "c" + B;\n' });

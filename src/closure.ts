@@ -24,6 +24,7 @@
 import type { Flow, Step, StepRegistry } from "./core.js";
 import { hasTemplates } from "./expr.js";
 import { baseType } from "./step-ref.js";
+import { packagePrefixOf, stepInPackage } from "./package-lookup.js";
 import type { SubflowResolver } from "./runner.js";
 
 const BODY_STEPS = new Set(["loop", "foreach"]);
@@ -66,13 +67,25 @@ export interface FlowClosure {
   paramGrants: boolean;
 }
 
+/** Where a closure looks a bare name up first (src/package-lookup.ts): the
+ *  flow's NAME gives its package, and `stepExists` says which of that
+ *  package's steps are here. Without it, names are taken as written. */
+export interface ClosureScope {
+  name?: string;
+  stepExists?: (type: string) => boolean;
+}
+
 /** `onStep` sees every step the closure walks, the children's included —
  *  for a reader that needs more than the types (src/reach.ts: the secret
- *  names in a step's config). */
+ *  names in a step's config). With a `scope`, a frame in a package names
+ *  its package's own steps and workflows first, as the runner does: the
+ *  types and grants come back as the steps that run, and the children as
+ *  the workflows that run. */
 export async function flowClosure(
   flow: Pick<Flow, "steps"> & { params?: Flow["params"] },
   workspace?: SubflowResolver,
   onStep?: (step: Step) => void,
+  scope?: ClosureScope,
 ): Promise<FlowClosure> {
   const out: FlowClosure = { types: new Set(), agentTools: new Set(), workflows: [], resolvable: true, unreadGrants: [], paramGrants: false };
   const seen = new Set<string>();
@@ -80,33 +93,54 @@ export async function flowClosure(
     out.resolvable = false;
     out.unreadGrants.push(t);
   };
-  // A grant from params: the strings every key it reads holds, in every
-  // params object the frame may run under. `null` = a subflow handed params
-  // the closure cannot read.
-  const grant = (t: string, params: Array<Record<string, unknown> | null>) => {
-    const keys = paramsGrantKeys(t);
-    if (!keys || params.includes(null)) return unread(t);
-    out.paramGrants = true;
-    for (const p of params) {
-      for (const k of keys) {
-        for (const g of stringsIn(p?.[k])) {
-          if (hasTemplates(g)) unread(g);
-          else out.agentTools.add(g);
-        }
-      }
-    }
+
+  // A frame's package: a step or a grant is its package's own first. A glob
+  // grant is read both ways, as the agent reads it.
+  const stepOf = (pkg: string | undefined, ref: string) => (pkg && scope?.stepExists ? stepInPackage(pkg, ref, scope.stepExists) : ref);
+  const addGrant = (pkg: string | undefined, t: string) => {
+    if (!t.includes("*")) return out.agentTools.add(stepOf(pkg, t));
+    out.agentTools.add(t);
+    if (pkg) out.agentTools.add(`${pkg}/${t}`);
+  };
+  const workflowOf = async (pkg: string | undefined, name: string): Promise<string> => {
+    if (!pkg || !workspace || name.startsWith(`${pkg}/`)) return name;
+    const candidate = `${pkg}/${name}`;
+    const meta = (workspace as { getWorkflowMetadata?: (n: string) => Promise<unknown> }).getWorkflowMetadata;
+    const here = meta
+      ? !!(await meta.call(workspace, candidate).catch(() => null))
+      : await workspace.getWorkflow(candidate).then(
+          () => true,
+          () => false,
+        );
+    return here ? candidate : name;
   };
 
-  const visitFlow = async (steps: readonly Step[], params: Array<Record<string, unknown> | null>): Promise<void> => {
+  const visitFlow = async (steps: readonly Step[], params: Array<Record<string, unknown> | null>, pkg: string | undefined): Promise<void> => {
     const children: Array<{ workflow: string; version?: string; params?: unknown }> = [];
+    // A grant from params: the strings every key it reads holds, in every
+    // params object the frame may run under. `null` = a subflow handed
+    // params the closure cannot read.
+    const grant = (t: string, params: Array<Record<string, unknown> | null>) => {
+      const keys = paramsGrantKeys(t);
+      if (!keys || params.includes(null)) return unread(t);
+      out.paramGrants = true;
+      for (const p of params) {
+        for (const k of keys) {
+          for (const g of stringsIn(p?.[k])) {
+            if (hasTemplates(g)) unread(g);
+            else addGrant(pkg, g);
+          }
+        }
+      }
+    };
     walkSteps(steps, (s) => {
       onStep?.(s);
-      out.types.add(baseType(s.type));
+      out.types.add(baseType(hasTemplates(s.type) ? s.type : stepOf(pkg, s.type)));
       const cfg = (s.config ?? {}) as Record<string, unknown>;
       const tools = cfg["agentTools"];
       if (Array.isArray(tools)) {
         for (const t of tools) {
-          if (typeof t === "string" && !hasTemplates(t)) out.agentTools.add(t);
+          if (typeof t === "string" && !hasTemplates(t)) addGrant(pkg, t);
           else if (typeof t === "string") grant(t, params);
           else out.resolvable = false;
         }
@@ -119,7 +153,8 @@ export async function flowClosure(
       if (!literal(wf) || (version !== undefined && version !== null && !literal(version))) out.resolvable = false;
       else children.push({ workflow: wf, ...(literal(version) ? { version } : {}), params: cfg["params"] });
     });
-    for (const c of children) {
+    for (const named of children) {
+      const c = { ...named, workflow: await workflowOf(pkg, named.workflow) };
       // The same child under other params is another reading of its grants.
       const key = `${c.workflow}@${c.version ?? ""}${c.params === undefined ? "" : JSON.stringify(c.params)}`;
       if (seen.has(key)) continue;
@@ -133,14 +168,14 @@ export async function flowClosure(
         // A subflow step's own `params` override the child's for that call
         // (a templated value in a key a grant reads is caught in `grant`).
         const handed = c.params === undefined ? [] : isPlainObject(c.params) ? [c.params] : [null];
-        await visitFlow(child.steps, [child.params ?? {}, ...handed]);
+        await visitFlow(child.steps, [child.params ?? {}, ...handed], scope ? packagePrefixOf(c.workflow) : undefined);
       } catch {
         out.resolvable = false;
       }
     }
   };
 
-  await visitFlow(flow.steps, [flow.params ?? {}]);
+  await visitFlow(flow.steps, [flow.params ?? {}], scope?.name ? packagePrefixOf(scope.name) : undefined);
   return out;
 }
 
@@ -286,13 +321,15 @@ export function closureIncludes(closure: FlowClosure, type: string): boolean {
  */
 export async function stepHashesFor(
   workspace: (SubflowResolver & { getActiveStepHashes(): Promise<Record<string, string>> }) | undefined,
-  flow: Pick<Flow, "steps">,
+  flow: Pick<Flow, "steps"> & { name?: string },
 ): Promise<Record<string, string> | undefined> {
   if (!workspace) return undefined;
   try {
     const active = await workspace.getActiveStepHashes();
     if (Object.keys(active).length === 0) return undefined;
-    const closure = await flowClosure(flow, workspace);
+    // A flow in a package runs its package's own steps first: those are
+    // the custom steps whose hashes it records.
+    const closure = await flowClosure(flow, workspace, undefined, flow.name ? { name: flow.name, stepExists: (t) => t in active } : undefined);
     const out: Record<string, string> = {};
     for (const [type, hash] of Object.entries(active)) {
       if (!closure.resolvable || closure.paramGrants || closureIncludes(closure, type)) out[type] = hash;

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
-import { requireRuns, runInput } from "./_shared.js";
+import { requireRuns, runInput, inFrame } from "./_shared.js";
 
 export default defineStep({
   type: "run/launch",
@@ -25,7 +25,7 @@ export default defineStep({
   }),
   output: z.any(),
   async run(cfg, ctx: StepContext<StrutCapabilities>) {
-    return requireRuns(ctx.services).launch(cfg, {
+    return requireRuns(ctx.services).launch(await inFrame(cfg, ctx), {
       ...(ctx.actor ? { actor: ctx.actor } : {}),
       ...(ctx.principal ? { principal: ctx.principal } : {}),
       ...(ctx.app ? { app: ctx.app } : {}),

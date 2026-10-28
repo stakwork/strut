@@ -146,7 +146,10 @@ export async function buildLedger(
  * lists as pending. (After a run, the verify result names what it observed.)
  */
 export async function subjectsOfFlow(flow: Pick<Flow, "name" | "steps">, workspace: SubflowResolver | undefined, workflowName?: string): Promise<SubjectRef[]> {
-  const closure = await flowClosure(flow, workspace);
+  // A flow in a package runs its package's own steps and workflows first
+  // (src/package-lookup.ts): those are its subjects.
+  const active = await (workspace as { getActiveStepHashes?: () => Promise<Record<string, string>> } | undefined)?.getActiveStepHashes?.().catch(() => undefined);
+  const closure = await flowClosure(flow, workspace, undefined, active ? { name: workflowName ?? flow.name, stepExists: (t) => t in active } : undefined);
   return [
     ...(workflowName ? [{ kind: "workflow" as const, name: workflowName }] : []),
     ...closure.workflows.map((w) => ({ kind: "workflow" as const, name: w.workflow })),

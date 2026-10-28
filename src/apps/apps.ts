@@ -389,7 +389,7 @@ export function createApps(deps: AppsDeps): AppsCapability {
     // committed tree active again, so a hold would not hold.
     if (rec.versions[rec.active]?.source === "seed") throw new Error(`${name} is seeded by strut and always runs its committed version — it cannot be held`);
     await buildable(name, version);
-    const lock = await takeLock(rec.manifest, workspace);
+    const lock = await takeLock(rec.manifest, workspace, name);
     const release = await workspace.addAppRelease(name, { version, lock, ...(opts?.by ? { by: opts.by } : {}) });
     await evict(name);
     return release;

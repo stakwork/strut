@@ -11,6 +11,7 @@ import { isCancelledError } from "../../run-control.js";
 import { AGENT_RETAIN, cachedSystem, compactAtFromEnv, compactionMessage, overMark, resultCapChars, stripExecute, summarize } from "../../compaction.js";
 import { globToRegExp } from "../../closure.js";
 import { parseStepRef } from "../../step-ref.js";
+import { nameInsidePackage, stepInPackage } from "../../package-lookup.js";
 import { connectMcpTools } from "../../mcp-servers.js";
 import { withinReach } from "../../reach.js";
 import { gatedByDefault, grantsTool, mcpGrantName, MCP_GRANT_PREFIX, resolveRegistration, type McpRegistry } from "../../mcp-registry.js";
@@ -416,20 +417,29 @@ function toolNameFor(stepType: string): string {
  * up automatically. Plain names pass through untouched (unknown ones still
  * warn in the tool-build loop). Duplicates collapse (first occurrence wins);
  * glob matches are sorted for a stable tool order.
+ *
+ * In a package (`pkg`, the frame's — src/package-lookup.ts) a name is the
+ * package's own step first, and a glob matches the package's steps and the
+ * strut's, the package's copy winning per name: `graph/*` from a package
+ * that ships one `graph/` step of its own still finds the lib's others.
  */
-export function expandAgentTools(names: string[], registry: StepRegistry): string[] {
+export function expandAgentTools(names: string[], registry: StepRegistry, pkg?: string): string[] {
   const out: string[] = [];
   const seen = new Set<string>();
+  const has = (t: string) => !!registry[t];
   for (const name of names) {
     let matches: string[];
     if (name.includes("*")) {
       const re = globToRegExp(name);
-      matches = Object.keys(registry).filter((t) => re.test(t)).sort();
+      const types = Object.keys(registry);
+      const strut = types.filter((t) => re.test(t)).map((t) => stepInPackage(pkg, t, has));
+      const own = pkg ? types.filter((t) => t.startsWith(`${pkg}/`) && re.test(t.slice(pkg.length + 1))) : [];
+      matches = [...new Set([...own, ...strut])].sort();
       if (matches.length === 0) {
         console.warn(`[agent] agentTools: pattern "${name}" matched no step types`);
       }
     } else {
-      matches = [name];
+      matches = [stepInPackage(pkg, name, has)];
     }
     for (const m of matches) {
       if (!seen.has(m)) {
@@ -711,7 +721,7 @@ export function buildRegistryTools(
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   if (!names?.length || !registry) return out;
-  for (const stepType of expandAgentTools(names, registry)) {
+  for (const stepType of expandAgentTools(names, registry, ctx?.package)) {
     const def = registry[stepType];
     if (!def) {
       // A system workflow's tools are its guard rails (tidy-memory without
@@ -727,7 +737,9 @@ export function buildRegistryTools(
     const stamp = def.input instanceof z.ZodObject && "created_by" in def.input.shape ? writerOf(ctx) : undefined;
     const gated = !!gate?.approve.has(stepType);
     const schema = stamp ? (def.input as z.ZodObject).omit({ created_by: true }) : def.input;
-    out[toolNameFor(stepType)] = toolFactory({
+    // A package's own step is shown by its name inside the package, as the
+    // strut that published it showed it (src/package-lookup.ts).
+    out[toolNameFor(nameInsidePackage(ctx?.package, stepType))] = toolFactory({
       description: (def.description ?? `Run the "${stepType}" step.`) + (gated ? GATE_NOTE : ""),
       inputSchema: gated ? gatedSchema(schema) : schema,
       execute: async (input: unknown, options?: { strutToolPath?: string }) => {
@@ -751,7 +763,7 @@ export function buildRegistryTools(
         // call's span instead of appearing as flat siblings of it.
         // A sub-agent the model configures is held to this agent (holdSubAgent).
         if (stepType === "agent") {
-          const held = holdSubAgent(parsed, names, gate?.approve, registry);
+          const held = holdSubAgent(parsed, names, gate?.approve, registry, ctx?.package);
           if (typeof held === "string") return `Error: ${held}`;
           parsed = held;
         }
@@ -782,10 +794,11 @@ export function holdSubAgent(
   parentGrants: string[],
   parentApprove: ReadonlySet<string> | undefined,
   registry: StepRegistry,
+  pkg?: string,
 ): Record<string, unknown> | string {
   const c = (cfg ?? {}) as { agentTools?: string[]; approve?: string[] };
-  const granted = new Set(expandAgentTools(parentGrants, registry));
-  const held = expandAgentTools(c.agentTools ?? [], registry);
+  const granted = new Set(expandAgentTools(parentGrants, registry, pkg));
+  const held = expandAgentTools(c.agentTools ?? [], registry, pkg);
   const extra = held.find((t) => !granted.has(t));
   if (extra) return `a sub-agent may hold only the tools you hold: "${extra}" is not one of them`;
   const gates = [...(parentApprove ?? [])].filter((t) => held.includes(t));
@@ -1428,7 +1441,10 @@ export default defineStep({
     // Needs the runner-populated ctx.registry; absent (in-code/test) → no-op.
     // A pinned grant (`clip/shout@v1`) is loaded once here so the sync
     // lookup below finds it (src/step-ref.ts).
-    if (ctx?.registry) for (const name of cfg.agentTools ?? []) if (parseStepRef(name).version) await resolveStep(ctx.registry, name);
+    if (ctx?.registry) {
+      const reg = ctx.registry;
+      for (const name of cfg.agentTools ?? []) if (parseStepRef(name).version) await resolveStep(reg, stepInPackage(ctx.package, name, (t) => !!reg[t]));
+    }
     // `mcp: false`: the caller's servers stop here — a sub-agent, a job or a
     // child run this agent launches through its tools gets none. A copy of
     // its own: a session's earlier files join it once the thread is open.
@@ -1443,8 +1459,8 @@ export default defineStep({
     const mcpApprove = cfg.approve.filter(isMcp);
     const approve = new Set<string>();
     if (cfg.approve.some((t) => !isMcp(t)) && ctx?.registry) {
-      const granted = new Set(expandAgentTools(stepGrants, ctx.registry));
-      for (const t of expandAgentTools(cfg.approve.filter((t) => !isMcp(t)), ctx.registry)) {
+      const granted = new Set(expandAgentTools(stepGrants, ctx.registry, ctx.package));
+      for (const t of expandAgentTools(cfg.approve.filter((t) => !isMcp(t)), ctx.registry, ctx.package)) {
         if (granted.has(t)) approve.add(t);
         else console.warn(`[agent] approve: "${t}" is not in agentTools — nothing to gate`);
       }

@@ -2,7 +2,7 @@ import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
 import { RUN_FILE_MAX_BYTES } from "../../../runs.js";
-import { requireRuns } from "./_shared.js";
+import { requireRuns, inFrame } from "./_shared.js";
 
 export default defineStep({
   type: "run/files",
@@ -16,7 +16,7 @@ export default defineStep({
   }),
   output: z.any(),
   async run(cfg, ctx: StepContext<StrutCapabilities>) {
-    const file = await requireRuns(ctx.services).files({ workflow: cfg.workflow, runId: cfg.runId, path: cfg.path });
+    const file = await requireRuns(ctx.services).files(await inFrame({ workflow: cfg.workflow, runId: cfg.runId, path: cfg.path }, ctx));
     if (!file) throw new Error(`No file "${cfg.path}" in run "${cfg.runId}" of "${cfg.workflow}"`);
     return file;
   },

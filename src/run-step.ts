@@ -5,6 +5,7 @@ import type { ClaimsReader } from "./graph/claims.js";
 import { runWorkflow, type SubflowResolver } from "./runner.js";
 import { baseType } from "./step-ref.js";
 import { resolveStep } from "./steps/registry.js";
+import { packagePrefixOf, stepInPackage } from "./package-lookup.js";
 import { MemoryRunStore, countSteps, generateRunId, stepRunKey, type RunStore } from "./store.js";
 import {
   withCassette,
@@ -89,12 +90,19 @@ export interface RunStepResult {
   recorded?: number;
 }
 
+/** The package a single-step run looks names up in first: the app's, for
+ *  the app door (src/package-lookup.ts) — so a page in a package calls its
+ *  package's steps and workflows by their bare names. */
+const packageOfRun = (opts: Pick<RunStepOptions, "app">) => (opts.app ? packagePrefixOf(opts.app.name) : undefined);
+
 export async function runSingleStep(
-  type: string,
+  named: string,
   registry: StepRegistry,
   services: unknown,
   opts: RunStepOptions = {},
 ): Promise<RunStepResult> {
+  const pkg = packageOfRun(opts);
+  const type = stepInPackage(pkg, named, (t) => !!registry[t]);
   const runId = generateRunId();
   if (!(await resolveStep(registry, type).catch(() => null))) {
     return {
@@ -135,6 +143,7 @@ export async function runSingleStep(
     ...(opts.principal ? { principal: opts.principal } : {}),
     ...(opts.job ? { job: opts.job } : {}),
     ...(opts.app ? { app: opts.app } : {}),
+    ...(pkg ? { package: pkg } : {}),
     ...(opts.aiAuthored ? { aiAuthored: true } : {}),
     onEvent: (e) => {
       events.push(e);
@@ -211,13 +220,15 @@ export interface KeptRunStepResult extends RunStepResult {
  * workflow's `list_runs` / `search_runs`, can see these runs.
  */
 export async function runStep(
-  type: string,
+  named: string,
   registry: StepRegistry,
   services: unknown,
   opts: RunStepOptions & { keep?: boolean },
   deps: RunStepDeps,
 ): Promise<KeptRunStepResult> {
   const { keep, ...runOpts } = opts;
+  // Kept, verified and hashed as the step that runs: a package's own first.
+  const type = stepInPackage(packageOfRun(runOpts), named, (t) => !!registry[t]);
   const flowSteps = [{ id: runStepId(type), type, config: runOpts.config ?? {} }];
   const stepHashes = runOpts.stepHashes ?? (await stepHashesFor(deps.workspace, { steps: flowSteps }));
   const result = await runSingleStep(type, registry, services, {
