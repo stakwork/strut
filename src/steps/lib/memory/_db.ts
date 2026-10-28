@@ -31,7 +31,7 @@ import { SEED } from "./_ontology-seed.js";
 export const EntityRef = z.object({
   ref_id: z.string().optional().describe("An existing entity's ref_id, when you already know it."),
   type: z.string().min(1).describe(
-    "An entity type from memory/ontology, e.g. Person; each type's description says when to use it, and user_type is the user. " +
+    "An entity type from graph/get-ontology, e.g. Person; each type's description says when to use it, and the user type (Self) is the user. " +
       "A new type is kept as proposed.",
   ),
   name: z.string().min(1).describe("The entity's name, e.g. 'Kate' or 'Friday Night Chef'."),
@@ -89,6 +89,10 @@ const HANDLES = Symbol.for("strut.memory.ladybug");
 
 /** `STRUT_MEMORY_DB` (secret store → env), else `<dataDir>/memory/graph.lbug`; absolute, so
  *  every spelling of one file shares one handle. */
+export async function memoryDbPath(ctx?: StepContext<unknown>): Promise<string> {
+  return dbPath(ctx as StepContext<StrutCapabilities> | undefined);
+}
+
 async function dbPath(ctx?: StepContext<StrutCapabilities>): Promise<string> {
   const services = ctx?.services as Partial<StrutCapabilities> | undefined;
   const explicit = await services?.secrets?.get("STRUT_MEMORY_DB");

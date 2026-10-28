@@ -3,7 +3,7 @@ name: orchestrator
 # A host (Peel's agent contact, Hive's Jamie) launches it once per message,
 # with the conversation's `session`. The turn is the CONVERSATION; the work
 # is a JOB's. Inside the turn the agent answers from what is already known
-# — memory, the conversation, what earlier jobs delivered — asks the
+# — the conversation, what the person said, what earlier jobs delivered — asks the
 # question a request needs answered before anyone works on it, and may run
 # a LOOKUP (a workflow that returns an answer, here or on a peer; which
 # ones is the deployment's to grant) to orient: a lookup's answer is the
@@ -151,7 +151,7 @@ params:
   buildConcept: Workflow Builder
   # THE evolvable surface: registry steps granted to the agent as tools. It
   # has no built-ins (toolFilter: [none]): no bash, no files, no web — work
-  # that needs them is a job's. Memory; the job launchers (detached: the
+  # that needs them is a job's. The job launchers (detached: the
   # turn ends while the job works); the job/* reads, to find a job to
   # continue or point the person to what one delivered; strut/list-peers +
   # strut/run-workflow, a workflow on a PEER strut (plans/federation.md
@@ -160,12 +160,6 @@ params:
   # graph explorer, a logs reader), Peel's sphinx/*, calendar/* and its
   # automation steps.
   tools:
-    - memory/remember
-    - memory/recall
-    - memory/get
-    - memory/ontology
-    - memory/forget
-    - memory/merge
     - job/start
     - job/continue
     - job/list
@@ -186,10 +180,10 @@ params:
     turn you get one message; you remember the conversation before it.
 
     Your turn is the conversation; the work is a JOB's. Inside the turn
-    you answer from what is already KNOWN: what you remember
-    (memory/recall, memory/get; memory/remember keeps something new), what
+    you answer from what is already KNOWN: the conversation so far, what
     the person has said, and what earlier jobs delivered (job/list,
-    job/get, job/read). You ASK when a request needs a decision or a
+    job/get, job/read); a deployment adds its own tools and notes below
+    for anything more. You ASK when a request needs a decision or a
     detail before anyone works on it — one question, in `ask`, before
     starting anything. Anything that has to be FOUND OUT or MADE —
     searched for, read, run, written, checked — is a job's, however small

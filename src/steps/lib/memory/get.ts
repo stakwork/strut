@@ -136,7 +136,7 @@ async function episode(query: Query, id: string) {
 export default defineStep({
   type: "memory/get",
   description:
-    "Read one node from long-term memory in full. An entity comes with its current facts and, under `past`, the ones that ended or were replaced " +
+    "Retired for agents: read memory with graph/graph-search, graph/graph-get, graph/graph-neighbors and graph/get-ontology (the host binds the graph tools to memory). Read one node from long-term memory in full. An entity comes with its current facts and, under `past`, the ones that ended or were replaced " +
     "(newest first; `until` only when the end in the world is known); a fact with its subject, " +
     "the episodes it came from and what it superseded; an episode with who said it (none when the user said it " +
     "before memory had an entity for them; { forgotten: true } once they are forgotten) and what it mentions. " +

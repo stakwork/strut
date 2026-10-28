@@ -6,7 +6,7 @@ import { vocabulary } from "./_ontology.js";
 export default defineStep({
   type: "memory/ontology",
   description:
-    "The memory's vocabulary: its entity types and fact predicates, each with a description, aliases, status (active " +
+    "Retired for agents: read memory with graph/graph-search, graph/graph-get, graph/graph-neighbors and graph/get-ontology (the host binds the graph tools to memory). The memory's vocabulary: its entity types and fact predicates, each with a description, aliases, status (active " +
     "or proposed) and how often it is used. A predicate also has its cardinality (one: a new fact replaces the current " +
     "one) and the entity types it connects. An entity type may have a parent (it is matched like its parent and fits " +
     "wherever its parent does), a naming (person, organisation or plain: how names are matched) and a role; user_type is " +

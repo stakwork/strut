@@ -580,3 +580,17 @@ Described here only as what strut reads.
 - The local turn waits on central's tail. An orchestrator turn that runs
   a slow lookup holds the laptop's turn with it. Acceptable until it
   isn't; `wait: false` plus the room is the escape.
+
+## Memory on a host (2026-10)
+
+The default `orchestrator` grants no `memory/*` tool and its prompt says nothing
+of memory: it answers from the conversation and what jobs delivered. A host that
+keeps a person's long-term memory (Peel) appends `memory/remember`, `forget` and
+`merge` through `createStrut({ orchestrator: { tools, system } })`, and reads it
+with the generic, read-only `graph/*` steps (graph-search, graph-get,
+graph-get-batched, graph-neighbors, get-ontology, get-ontology-type, walk), which
+`createStrut({ memoryGraph: { workflows } })` (STRUT_HOST_CONFIG `memoryGraph`)
+binds to the memory file in those workflows only (`src/graph/memory/backend.ts`;
+`graphCtx` picks it by `workflowOf(ctx)`); every other workflow, `/graph/*` and
+the Concept lookups keep the workspace graph. `memory/recall`, `get` and the read
+role of `memory/ontology` are retired for agents (the steps stay as helpers).

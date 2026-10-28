@@ -50,7 +50,7 @@ export default defineStep({
   type: "memory/forget",
   description:
     "Forget a node of long-term memory, with the reason. An entity takes all its facts with it; an episode, the facts " +
-    "that came only from it; a fact, only itself. The user (memory/ontology's user_type) cannot be forgotten whole: forget their facts instead. " +
+    "that came only from it; a fact, only itself. The user (graph/get-ontology's user type, Self) cannot be forgotten whole: forget their facts instead. " +
     "To replace a fact that changed, remember the new one instead; forget is for what is wrong or unwanted.",
   input: z.object({
     ref_id: z.string(),
