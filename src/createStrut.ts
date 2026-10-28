@@ -2830,9 +2830,12 @@ export async function createStrut<TServices = unknown>(
     warnings: built.warnings,
   });
   app.post("/packages/build", async (c) => {
-    const req = buildRequestOf(await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>));
+    const { dryRun, ...body } = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>);
+    if (dryRun !== undefined && typeof dryRun !== "boolean") return c.json({ error: "dryRun is true or false" }, 400);
+    const req = buildRequestOf(body);
     if (typeof req === "string") return c.json({ error: req }, 400);
     try {
+      if (dryRun) return c.json(builtBody(await oneAtATime(() => buildPackage(packageDeps, req, { dryRun: true }))), 200);
       return c.json(builtBody(await oneAtATime(() => buildPackage(packageDeps, req))), 201);
     } catch (err) {
       return packageError(c, err);

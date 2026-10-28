@@ -66,7 +66,7 @@ import { hashTree, treeFiles } from "../version.js";
 import { packagePrefixOf, type Upstream, type VersionSource, type WorkspaceStore } from "../workspace.js";
 import { dumpYaml, loadYaml } from "../yaml.js";
 import type { CachedPackage, PackageCache } from "./cache.js";
-import { MANIFEST_FILE, PACKAGE_DIGEST, PACKAGE_NAME, type PackageManifest } from "./format.js";
+import { MANIFEST_FILE, PACKAGE_DIGEST, PACKAGE_NAME, readPackage, type PackageManifest } from "./format.js";
 import { conceptPrefix } from "./installed.js";
 
 export interface BuildDeps {
@@ -118,7 +118,8 @@ export interface BuildResult {
   /** Every file the digest covers, sorted. */
   files: string[];
   manifest: PackageManifest;
-  /** The package's directory in the cache. */
+  /** The package's directory in the cache; empty on a dry run, which keeps
+   *  nothing. */
   dir: string;
   warnings: string[];
 }
@@ -152,7 +153,10 @@ interface Origin {
  *  one a service published. */
 const hosts = (o: Origin) => o.source === "seed" || (o.publisher !== undefined && o.publisher !== BUILDER_STAMP);
 
-export async function buildPackage(deps: BuildDeps, req: BuildRequest): Promise<BuildResult> {
+/** `dryRun`: everything a build does — the closure, the refusals, the
+ *  files and their digest — with nothing kept in the cache: what the
+ *  package page shows as "comes along" while a person picks. */
+export async function buildPackage(deps: BuildDeps, req: BuildRequest, opts: { dryRun?: boolean } = {}): Promise<BuildResult> {
   const pkg = req.package;
   if (typeof pkg !== "string" || !PACKAGE_NAME.test(pkg)) throw refused(["a package is named publisher/name: two lowercase segments, [a-z][a-z0-9-]*"]);
   if (typeof req.version !== "string" || !req.version) throw refused(["a package has a version, the publisher's label (1.4.0)"]);
@@ -568,6 +572,10 @@ export async function buildPackage(deps: BuildDeps, req: BuildRequest): Promise<
       const to = join(scratch, ...file.split("/"));
       await mkdir(dirname(to), { recursive: true });
       await writeFile(to, text);
+    }
+    if (opts.dryRun) {
+      const info = await readPackage(scratch);
+      return { package: pkg, version: req.version, digest: info.digest, files: info.files, manifest, dir: "", warnings: [...warnings] };
     }
     const info = await deps.cache.putDir(scratch);
     return { package: pkg, version: req.version, digest: info.digest, files: info.files, manifest, dir: info.dir, warnings: [...warnings] };

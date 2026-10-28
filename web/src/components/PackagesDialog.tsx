@@ -1,26 +1,26 @@
-import { useEffect, useMemo, useState } from "preact/hooks";
+import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import * as api from "../api";
 import { ago } from "./ClaimsPanel";
 import { errorMessage } from "../helpers";
-import { localPackages, nextVersion, packageLabel } from "../package-release";
+import { PACKAGE_SEGMENT, comesAlong, isHostsStamp, isInstalledName, nextVersion, packageLabel, pickerGroups, picksFromRelease } from "../package-release";
 import { ConfirmButton } from "./ConfirmButton";
 import { CopyButton } from "./CopyButton";
 
 // ── Packages dialog ─────────────────────────────────────────────────────────
 //
-// The npm shape (plans/packages-ux.md). At its head this strut's PUBLISHER:
-// a name set once — the first segment of every package published here,
-// which nobody types again — beside the key subscribers follow. Then the
-// packages HERE: every `publisher/package` prefix a workflow is named
-// under (its name carries its package, plans/marketplace.md §1), one row
-// each — the package segment and, once published, its newest version,
-// nothing more — and a click opens the PACKAGE PAGE: what the release
-// holds, version, channel, Publish, and the releases with what each
-// channel holds. Below, read only, what this strut FOLLOWS and has
-// INSTALLED (specs/API.md §16). A package is published from here, never
-// from a workflow's flyout: a release holds the whole package, and a
-// workflow left out of it is retired on every subscriber. Publishing is
-// a person's act; no builder tool does it.
+// Packages live here and nowhere else (plans/packages-ux.md): names stay
+// bare where they are made, the sidebar knows nothing of packages, and a
+// package is what a person PICKS on its page. At the head, this strut's
+// PUBLISHER: a name set once — the first segment of every package published
+// here, which nobody types again — beside the key subscribers follow. Then
+// the packages published HERE, one row each with its newest version, and
+// "New package": a name, then the page. The PACKAGE PAGE lists every
+// workflow here by category (an installed package's and the host's left
+// out), apps and Concepts, starts from what the newest release held, shows
+// what a dry build carries along with the picks, and publishes; below, the
+// releases with what each channel holds. Then, read only, what this strut
+// FOLLOWS and has INSTALLED (specs/API.md §16). Publishing is a person's
+// act; no builder tool does it.
 
 const secs = (iso?: string) => (iso ? Date.parse(iso) / 1000 : undefined);
 /** A digest, short: the first 12 hex. The full one rides in the title. */
@@ -154,21 +154,32 @@ function PublisherHead(props: { publisher: api.PublisherInfo | null | undefined;
   );
 }
 
-/** One package's page: what a release holds, the form, and its releases. */
+/** One package's page: what it holds, picked from everything here; what a
+ *  dry build carries along; the form; and its releases. */
 function PackagePage(props: {
   pkg: string;
   publisher?: string;
   catalog: api.Catalog | null;
-  /** Every workflow here, by name. */
-  workflows: string[];
+  workflows: api.WorkflowEntry[];
+  apps: api.AppListEntry[];
+  /** The installed packages' names: their items are someone else's. */
+  installed: string[];
+  /** Whether this strut has Concepts to offer (a graph). */
+  concepts: boolean;
   peers: string[] | null;
   onBack: () => void;
   onChanged: () => void;
 }) {
   const entry = props.catalog?.packages[props.pkg];
-  const under = useMemo(() => props.workflows.filter((n) => n.startsWith(`${props.pkg}/`)).sort(), [props.workflows, props.pkg]);
-  const [chosen, setChosen] = useState<Set<string>>(() => new Set(under));
-  const [version, setVersion] = useState(() => nextVersion(entry?.releases[0]?.version));
+  const newest = entry?.releases[0];
+  const [workflows, setWorkflows] = useState<Set<string>>(() => new Set());
+  const [apps, setApps] = useState<Set<string>>(() => new Set());
+  const [concepts, setConcepts] = useState<string[]>([]);
+  const [conceptDraft, setConceptDraft] = useState("");
+  const [conceptHits, setConceptHits] = useState<string[]>([]);
+  const [q, setQ] = useState("");
+  const [preview, setPreview] = useState<{ result?: api.BuildPreview; error?: string; busy?: boolean } | null>(null);
+  const [version, setVersion] = useState(() => nextVersion(newest?.version));
   const [channel, setChannel] = useState("stable");
   const [description, setDescription] = useState(entry?.description ?? "");
   const [busy, setBusy] = useState(false);
@@ -176,11 +187,80 @@ function PackagePage(props: {
   const [result, setResult] = useState<api.PublishResult | null>(null);
   const taken = (entry?.releases ?? []).some((r) => r.version === version.trim());
 
-  const toggle = (name: string) => {
-    const next = new Set(chosen);
+  const groups = useMemo(() => pickerGroups(props.workflows, { installed: props.installed, q }), [props.workflows, props.installed, q]);
+  const pickableApps = useMemo(
+    () => props.apps.filter((a) => !a.peer && !isInstalledName(a.name, props.installed) && !isHostsStamp(a.publisher)).sort((a, b) => a.name.localeCompare(b.name)),
+    [props.apps, props.installed],
+  );
+
+  // The boxes start as the newest release left them, once the lists are in.
+  const seeded = useRef(!newest);
+  useEffect(() => {
+    if (seeded.current || !newest || props.workflows.length === 0) return;
+    seeded.current = true;
+    api.getPackageItems(props.pkg, newest.digest).then(
+      (r) => {
+        const picks = picksFromRelease(props.pkg, r.items, {
+          workflows: new Set(props.workflows.map((w) => w.name)),
+          apps: new Set(props.apps.map((a) => a.name)),
+        });
+        setWorkflows(new Set(picks.workflows));
+        setApps(new Set(picks.apps));
+        setConcepts(picks.concepts);
+      },
+      () => {},
+    );
+  }, [props.pkg, newest?.digest, props.workflows, props.apps]);
+
+  // What a build of the picks carries, refused as a publish would be.
+  const picks = useMemo(
+    () => ({ workflows: [...workflows].sort(), apps: [...apps].sort(), concepts: [...concepts].sort() }),
+    [workflows, apps, concepts],
+  );
+  const empty = picks.workflows.length + picks.apps.length + picks.concepts.length === 0;
+  useEffect(() => {
+    if (empty) {
+      setPreview(null);
+      return;
+    }
+    let live = true;
+    setPreview((p) => ({ ...p, busy: true }));
+    const t = setTimeout(() => {
+      api.previewPackage({ package: props.pkg, version: "preview", ...picks }).then(
+        (r) => live && setPreview({ result: r }),
+        (err) => live && setPreview({ error: errorMessage(err) }),
+      );
+    }, 350);
+    return () => {
+      live = false;
+      clearTimeout(t);
+    };
+  }, [props.pkg, picks, empty]);
+  const along = preview?.result ? comesAlong(props.pkg, preview.result.files, picks) : null;
+
+  // Concept names, as typed: the graph's own names offered as they match.
+  useEffect(() => {
+    if (!props.concepts || !conceptDraft.trim()) {
+      setConceptHits([]);
+      return;
+    }
+    let live = true;
+    void api.searchNodes("Concept", conceptDraft.trim(), 8).then((hits) => live && setConceptHits(hits.map((h) => h.name)));
+    return () => {
+      live = false;
+    };
+  }, [conceptDraft, props.concepts]);
+  const addConcept = () => {
+    const name = conceptDraft.trim();
+    if (name && !concepts.includes(name)) setConcepts([...concepts, name]);
+    setConceptDraft("");
+  };
+
+  const toggle = (set: Set<string>, put: (s: Set<string>) => void, name: string) => {
+    const next = new Set(set);
     if (next.has(name)) next.delete(name);
     else next.add(name);
-    setChosen(next);
+    put(next);
   };
   const publish = async () => {
     setBusy(true);
@@ -190,7 +270,9 @@ function PackagePage(props: {
       const r = await api.publishPackage({
         package: props.pkg,
         version: version.trim(),
-        workflows: under.filter((n) => chosen.has(n)),
+        workflows: picks.workflows,
+        ...(picks.apps.length ? { apps: picks.apps } : {}),
+        ...(picks.concepts.length ? { concepts: picks.concepts } : {}),
         ...(channel.trim() ? { channel: channel.trim() } : {}),
         ...(description.trim() ? { description: description.trim() } : {}),
       });
@@ -209,21 +291,89 @@ function PackagePage(props: {
       <div class="package-page-head">
         <button class="auto-link" onClick={props.onBack}>← Packages</button>
         <span class="package-name" title={props.pkg}>{packageLabel(props.pkg, props.publisher)}</span>
-        {entry?.releases[0] && <span class="package-version">{entry.releases[0].version}</span>}
+        {newest && <span class="package-version">{newest.version}</span>}
       </div>
       <div class="dialog-field">
-        <label>In the release</label>
-        {under.length === 0 && <div class="auto-hint">No workflow is named under <code>{props.pkg}/</code> any more.</div>}
-        {under.map((n) => (
-          <label class="package-workflow" key={n}>
-            <input type="checkbox" checked={chosen.has(n)} onChange={() => toggle(n)} />
-            {n.slice(props.pkg.length + 1)}
-          </label>
+        <label>Workflows</label>
+        {props.workflows.length > 8 && (
+          <input type="text" class="package-filter" value={q} placeholder="Filter by name or category"
+            onInput={(e) => setQ((e.target as HTMLInputElement).value)} />
+        )}
+        {groups.length === 0 && <div class="auto-hint">{q ? "Nothing matches." : "No workflows here yet."}</div>}
+        {groups.map((g) => (
+          <div class="package-group" key={g.category ?? ""}>
+            <div class="package-group-title">{g.category ?? "No category"}</div>
+            {g.names.map((n) => (
+              <label class="package-workflow" key={n}>
+                <input type="checkbox" checked={workflows.has(n)} onChange={() => toggle(workflows, setWorkflows, n)} />
+                {n}
+              </label>
+            ))}
+          </div>
         ))}
-        <div class="auto-hint">
-          Each with the custom steps it runs. The release is built from the active versions; a workflow the last release had and this one leaves out is removed from the struts that follow the channel.
-        </div>
       </div>
+      {pickableApps.length > 0 && (
+        <div class="dialog-field">
+          <label>Apps</label>
+          {pickableApps.map((a) => (
+            <label class="package-workflow" key={a.name} title={a.name}>
+              <input type="checkbox" checked={apps.has(a.name)} onChange={() => toggle(apps, setApps, a.name)} />
+              {a.title || a.name}
+            </label>
+          ))}
+        </div>
+      )}
+      {props.concepts && (
+        <div class="dialog-field">
+          <label>Concepts</label>
+          {concepts.length > 0 && (
+            <div class="package-chips">
+              {concepts.map((c) => (
+                <span class="badge package-chip" key={c}>
+                  {c}
+                  <button class="auto-link" aria-label={`Remove ${c}`} onClick={() => setConcepts(concepts.filter((x) => x !== c))}>×</button>
+                </span>
+              ))}
+            </div>
+          )}
+          <input type="text" value={conceptDraft} list="package-concepts" placeholder="A Concept page, with the pages under it"
+            onInput={(e) => setConceptDraft((e.target as HTMLInputElement).value)}
+            onKeyDown={(e) => { if (e.key === "Enter") addConcept(); }} />
+          <datalist id="package-concepts">
+            {conceptHits.map((h) => <option key={h} value={h} />)}
+          </datalist>
+        </div>
+      )}
+      {!empty && (
+        <div class="package-along">
+          {preview?.error ? (
+            <div class="auto-error package-refusal">{preview.error}</div>
+          ) : along ? (
+            <>
+              {along.steps.length + along.workflows.length + along.apps.length > 0 && (
+                <div class="auto-hint">
+                  Comes along: {[
+                    ...along.workflows.map((w) => `the workflow ${w}`),
+                    ...along.steps.map((x) => `the step ${x}`),
+                    ...along.apps.map((x) => `the app ${x}`),
+                  ].join(", ")}.
+                </div>
+              )}
+              {along.leftOut.length > 0 && (
+                <div class="auto-hint">
+                  Not carried, since every strut has its own: {along.leftOut.join(", ")}.
+                </div>
+              )}
+              {preview?.result?.requires.secrets?.length ? (
+                <div class="auto-hint">Needs the secret{preview.result.requires.secrets.length === 1 ? "" : "s"} {preview.result.requires.secrets.join(", ")}.</div>
+              ) : null}
+              {preview?.result?.warnings.map((w, i) => <div class="auto-hint package-warning" key={i}>{w}</div>)}
+            </>
+          ) : (
+            <div class="auto-hint">Reading what comes along…</div>
+          )}
+        </div>
+      )}
       <div class="dialog-field">
         <label>Version</label>
         <input type="text" value={version} placeholder="1.0.0" onInput={(e) => setVersion((e.target as HTMLInputElement).value)} />
@@ -244,12 +394,13 @@ function PackagePage(props: {
           onInput={(e) => setDescription((e.target as HTMLInputElement).value)} />
       </div>
       <div class="auto-hint">
+        {newest ? "A workflow the last release held and this one leaves out is removed from the struts that follow the channel. " : ""}
         {props.peers === null ? "" : props.peers.length > 0
           ? <>Publishing pings {props.peers.map((p, i) => <span key={p}>{i > 0 && ", "}<code>{p}</code></span>)}, so the struts that follow this catalog read it now.</>
           : "No peers on file: struts that follow this catalog pick the release up at their next poll."}
       </div>
       <div class="package-publish-actions">
-        <button class="btn btn-primary" disabled={busy || !version.trim() || chosen.size === 0} onClick={() => void publish()}>
+        <button class="btn btn-primary" disabled={busy || !version.trim() || empty} onClick={() => void publish()}>
           {busy ? "Publishing…" : "Publish"}
         </button>
       </div>
@@ -289,10 +440,32 @@ function PackagePage(props: {
   );
 }
 
+/** "New package": a name, one segment, under this strut's publisher — then
+ *  its page. A name already published opens that package. */
+function NewPackage(props: { publisher?: string; onOpen: (pkg: string) => void }) {
+  const [draft, setDraft] = useState("");
+  const name = draft.trim();
+  const ok = PACKAGE_SEGMENT.test(name);
+  const open = () => {
+    if (props.publisher && ok) props.onOpen(`${props.publisher}/${name}`);
+  };
+  return (
+    <div class="package-new">
+      <input type="text" value={draft} placeholder={props.publisher ? "tools" : "Set the publisher first"} disabled={!props.publisher}
+        onInput={(e) => setDraft((e.target as HTMLInputElement).value)}
+        onKeyDown={(e) => { if (e.key === "Enter") open(); }} />
+      <button class="btn" disabled={!props.publisher || !ok} onClick={open}>New package</button>
+      {name && !ok && <div class="auto-hint">Lowercase letters, digits and dashes, starting with a letter.</div>}
+    </div>
+  );
+}
+
 export function PackagesDialog(props: { onClose: () => void }) {
   const [catalog, setCatalog] = useState<api.Catalog | null | undefined>(undefined);
   const [publisher, setPublisher] = useState<api.PublisherInfo | null | undefined>(undefined);
-  const [workflows, setWorkflows] = useState<string[]>([]);
+  const [workflows, setWorkflows] = useState<api.WorkflowEntry[]>([]);
+  const [apps, setApps] = useState<api.AppListEntry[]>([]);
+  const [hasConcepts, setHasConcepts] = useState(false);
   const [peers, setPeers] = useState<string[] | null>(null);
   const [subs, setSubs] = useState<api.SubscriptionInfo[] | null>(null);
   const [installed, setInstalled] = useState<api.InstalledPackage[] | null>(null);
@@ -304,21 +477,17 @@ export function PackagesDialog(props: { onClose: () => void }) {
   useEffect(() => {
     void loadCatalog();
     api.getPublisher().then(setPublisher, failed("catalog"));
-    api.listWorkflows().then((list) => setWorkflows(list.map((w) => w.name)), failed("catalog"));
+    api.listWorkflows().then(setWorkflows, failed("catalog"));
+    api.listApps().then(setApps, () => setApps([]));
+    void api.searchNodes("Concept", "", 1).then((hits) => setHasConcepts(hits.length > 0));
     api.listPeers().then((p) => setPeers(p.map((x) => x.id)), () => setPeers([]));
     api.listSubscriptions().then(setSubs, failed("subs"));
     api.listInstalledPackages().then(setInstalled, failed("installed"));
   }, []);
 
-  // The packages here: off the workflow names, plus what the catalog holds
-  // (a package whose workflows were deleted still has its releases).
-  const here = useMemo(() => {
-    const names = localPackages(workflows, {
-      ...(publisher?.name ? { publisher: publisher.name } : {}),
-      installed: (installed ?? []).map((p) => p.package),
-    });
-    return [...new Set([...names, ...Object.keys(catalog?.packages ?? {})])].sort();
-  }, [workflows, publisher, installed, catalog]);
+  // The packages published here: the catalog's.
+  const here = useMemo(() => Object.keys(catalog?.packages ?? {}).sort(), [catalog]);
+  const installedNames = useMemo(() => (installed ?? []).map((p) => p.package), [installed]);
   const newest = (pkg: string) => catalog?.packages[pkg]?.releases[0]?.version;
 
   return (
@@ -327,7 +496,8 @@ export function PackagesDialog(props: { onClose: () => void }) {
         <div class="dialog-title">Packages</div>
 
         {open ? (
-          <PackagePage pkg={open} publisher={publisher?.name} catalog={catalog ?? null} workflows={workflows} peers={peers}
+          <PackagePage key={open} pkg={open} publisher={publisher?.name} catalog={catalog ?? null} workflows={workflows} apps={apps}
+            installed={installedNames} concepts={hasConcepts} peers={peers}
             onBack={() => setOpen(null)} onChanged={() => void loadCatalog()} />
         ) : (
           <>
@@ -337,9 +507,7 @@ export function PackagesDialog(props: { onClose: () => void }) {
               <div class="flyout-section-title">Here</div>
               {catalog === undefined && !errors.catalog && <div class="auto-hint">Loading…</div>}
               {catalog !== undefined && here.length === 0 && (
-                <div class="auto-hint">
-                  No packages yet. A workflow named <code>{publisher?.name ?? "publisher"}/&lt;package&gt;/&lt;workflow&gt;</code> is in that package, with the custom steps it runs.
-                </div>
+                <div class="auto-hint">Nothing published from here yet. Name a package, then pick the workflows it holds.</div>
               )}
               {here.map((pkg) => (
                 <button class="package-row" key={pkg} onClick={() => setOpen(pkg)} title={pkg}>
@@ -347,6 +515,7 @@ export function PackagesDialog(props: { onClose: () => void }) {
                   {newest(pkg) && <span class="package-version">{newest(pkg)}</span>}
                 </button>
               ))}
+              <NewPackage publisher={publisher?.name} onOpen={setOpen} />
               {catalog && <div class="auto-meta package-signed">Catalog signed {ago(catalog.seq / 1e6)}</div>}
             </div>
 

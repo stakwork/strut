@@ -3670,7 +3670,8 @@ body.is-resizing-flyout * {
 .packages-dialog { width: min(680px, 92vw); }
 /* The publisher's name beside its key, at the head of the dialog. */
 .publisher-head { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; margin-bottom: var(--sp-3); }
-.publisher-head input {
+.publisher-head input,
+.package-new input {
   width: 160px;
   font: inherit;
   font-family: var(--font-mono);
@@ -3681,7 +3682,8 @@ body.is-resizing-flyout * {
   padding: var(--sp-1) var(--sp-2);
   border-radius: var(--r-md);
 }
-.publisher-head input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.publisher-head input:focus,
+.package-new input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 .publisher-head .package-key { margin-bottom: 0; margin-left: auto; }
 .publisher-hint { margin-bottom: var(--sp-3); }
 /* A package here: one row, the name and its newest release; click opens it. */
@@ -3743,6 +3745,15 @@ body.is-resizing-flyout * {
 }
 .dialog-field .package-workflow input { width: auto; padding: 0; margin: 0; }
 .package-publish-actions { display: flex; margin: var(--sp-3) 0; }
+.package-filter { margin-bottom: var(--sp-2); }
+.package-group { margin-bottom: var(--sp-2); }
+.package-group-title { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-dim); margin: var(--sp-1) 0 2px; }
+.package-along { margin: var(--sp-2) 0 var(--sp-3); display: flex; flex-direction: column; gap: var(--sp-1); }
+.package-chips { display: flex; flex-wrap: wrap; gap: var(--sp-1); margin-bottom: var(--sp-1); }
+.package-chip { display: inline-flex; align-items: center; gap: 4px; }
+.package-new { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); margin-top: var(--sp-3); }
+.package-new input { flex: 1 1 140px; width: auto; min-width: 0; }
+.package-new .auto-hint { flex-basis: 100%; }
 /* A refusal names every problem in one line: keep it readable as it came. */
 .package-refusal { white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-mono); font-size: 11px; }
 .package-warning { color: var(--warning); }

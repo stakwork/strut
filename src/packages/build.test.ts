@@ -369,7 +369,16 @@ describe("building a package from bare names (plans/packages-ux.md §3)", () => 
   const tools = (req: Partial<BuildRequest>) => buildPackage(depsOf(src), { package: "acme/tools", version: "1.0.0", ...req });
 
   it("carries local items at the paths of their names, writes only their own names under the prefix, and keeps references as written", async () => {
+    // A dry run answers what a build would, and keeps nothing.
+    const dry = await src.app.request("/packages/build", json({ package: "acme/tools", version: "1.0.0", workflows: ["summarize"], dryRun: true }));
+    assert.equal(dry.status, 200);
+    const preview = (await dry.json()) as { digest: string; files: string[] };
+    assert.equal(await packageCache(src.dataDir).get(preview.digest), undefined, "nothing in the cache");
+    assert.equal((await src.app.request("/packages/build", json({ package: "acme/tools", version: "1", workflows: ["summarize"], dryRun: "yes" }))).status, 400);
+
     const built = await tools({ workflows: ["summarize"] });
+    assert.equal(built.digest, preview.digest, "the dry run's digest is the build's");
+    assert.deepEqual(preview.files, built.files);
     assert.deepEqual(built.files, ["steps/clip/_shared.ts", "steps/clip/shout.ts", "strut.yaml", "workflows/summarize.yaml", "workflows/tidy.yaml"]);
     assert.deepEqual(built.warnings, []);
     assert.equal(await readFile(join(built.dir, "workflows/summarize.yaml"), "utf-8"), SUMMARIZE.replace("name: summarize", "name: acme/tools/summarize"), "its own name, nothing else");

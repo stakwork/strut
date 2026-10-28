@@ -64,6 +64,10 @@ export function workspaceConformance(impl: WorkspaceImpl): void {
         [["wf", "v1", ["v1"], "first", "exp", "me"]],
       );
       assert.equal("lastRunAt" in list[0]!, false, "runs are the run store's — never listed here");
+      assert.equal(list[0]!.activeSource, undefined, "no source recorded, none listed");
+      await ws.publishWorkflowByContent("seeded", "name: seeded\nsteps: []\n", undefined, undefined, undefined, { source: "seed" });
+      assert.equal((await ws.listWorkflows()).find((w) => w.name === "seeded")?.activeSource, "seed", "the active version's source");
+      await ws.deleteWorkflow("seeded");
       const meta = await ws.getWorkflowMetadata("wf");
       assert.equal(meta?.active, "v1");
       assert.equal(meta?.publisher, "me");

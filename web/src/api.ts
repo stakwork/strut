@@ -359,6 +359,11 @@ export interface WorkflowEntry {
   description?: string;
   /** Sidebar grouping label, if set. */
   category?: string;
+  /** The service that published it, if any (`ai`: the builder's authoring). */
+  publisher?: string;
+  /** Where the active version came from, when recorded: `seed` is strut's or
+   *  the host's own. */
+  activeSource?: string;
   /** The owning actor and per-run LLM spend cap, if set
    *  (plans/mothership-cost-control.md). */
   owner?: string;
@@ -2073,10 +2078,38 @@ export interface PublishRequest {
   package: string;
   version: string;
   description?: string;
-  /** Each with everything it can execute. */
+  /** By the names they have here (bare), each with everything it can
+   *  execute (plans/packages-ux.md §3). */
   workflows: string[];
+  apps?: string[];
+  /** Concept pages, each with the pages under it. */
+  concepts?: string[];
   channel?: string;
 }
+
+/** `POST /packages/build { …, dryRun: true }`: what a build of these picks
+ *  would carry, refused the way a publish would be, nothing kept. */
+export interface BuildPreview {
+  package: string;
+  version: string;
+  digest: string;
+  files: string[];
+  requires: PackageRequires;
+  warnings: string[];
+}
+export const previewPackage = (req: Omit<PublishRequest, "channel">) =>
+  fetchJSON<BuildPreview>("/packages/build", { method: "POST", body: JSON.stringify({ ...req, dryRun: true }) });
+
+/** `GET /packages/:publisher/:name/items?digest=`: what a release holds,
+ *  each item by its name inside the package. */
+export interface PackageItems {
+  package: string;
+  version: string;
+  digest: string;
+  items: Array<{ kind: "workflow" | "step" | "app" | "concept"; name: string }>;
+}
+export const getPackageItems = (pkg: string, digest: string) =>
+  fetchJSON<PackageItems>(`/packages/${pkg.split("/").map(encodeURIComponent).join("/")}/items?digest=${encodeURIComponent(digest)}`);
 
 export interface PublishResult {
   package: string;
@@ -2091,7 +2124,7 @@ export interface PublishResult {
 
 /** Build a package from this workspace, add it to the catalog and move the
  *  channel to it; every peer on file is pinged. A refusal is the server's
- *  `package_build_refused: …`, naming what to move under the prefix. */
+ *  `package_build_refused: …`, naming every problem. */
 export const publishPackage = (req: PublishRequest) =>
   fetchJSON<PublishResult>("/packages/publish", { method: "POST", body: JSON.stringify(req) });
 

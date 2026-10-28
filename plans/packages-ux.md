@@ -9,8 +9,17 @@
 > every local name (the sidebar grouped by package, the builder's working
 > package, a rename to move a workflow in). That half was built as
 > stakwork/strut#365 and closed unmerged on 2026-10-28.
-> **Work item 1 BUILT** (#362): the publisher name, `PUT /publisher`, the
-> publish route's prefix check. Items 2 and 3 are #362's next commits.
+> **Work items 1, 2 and 3 BUILT** (#362): the publisher name and the
+> publish route's prefix check; the build from bare names with the items
+> route; the package page. Choices beyond the text: a step or workflow a
+> SERVICE published (a `publisher` stamp other than `ai`) is the host's,
+> like a seed's, and never carried; a name under ANOTHER package of this
+> publisher (`acme/util/x` while building `acme/tools`) stays that
+> package's, built and required, rather than becoming `acme/tools/acme/util/x`;
+> "Comes along" is a DRY build (`POST /packages/build { dryRun: true }`,
+> nothing kept in the cache); the workflow list carries `activeSource` so
+> the page hides strut's own seeds (`job`, `builder`, the browser
+> workflows). Items 4 and 5 are the next PR.
 
 ## Problem
 
@@ -101,7 +110,9 @@ step by name:
 - **a step that launches by name**: `run/launch`, `meta/run-workflow`,
   through `ctx.package`, set by the runner beside `ctx.workflow`;
 - **an app**: its package from its name; `grantRefusal`
-  (`src/apps/tools.ts:137`) compares resolved names on both sides;
+  (`src/apps/tools.ts:137`) compares resolved names on both sides, and
+  the app build's resolver (`appResolver`) finds an import of a bare app
+  name in the package first;
 - **the closure walk** (`flowClosure`, `src/closure.ts:72`), so the
   sealed check, reach, the build and step stats see what will run;
 - **the install's check** (`namesIn`, `src/packages/install.ts:773`): a
