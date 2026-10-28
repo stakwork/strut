@@ -337,6 +337,7 @@ export class GraphWorkspaceStore implements WorkspaceStore {
         description: active?.description,
         ...(w.category ? { category: w.category } : {}),
         ...(w.publisher ? { publisher: w.publisher } : {}),
+        ...(active?.version_source ? { activeSource: active.version_source } : {}),
         ...(w.owner ? { owner: w.owner } : {}),
         ...(w.max_run_cost_usd != null ? { maxRunCostUsd: Number(w.max_run_cost_usd) } : {}),
         ...(automationsOf(w).length ? { automations: automationsOf(w) } : {}),

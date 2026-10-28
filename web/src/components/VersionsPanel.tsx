@@ -15,7 +15,9 @@ import { CopyButton } from "./CopyButton";
 // `claims:` / `sealed:` / `promotes:` blocks the canvas never shows included;
 // "Make active" rolls back (or forward) — Run, schedules and claims then use
 // that version. Activating publishes nothing: the next Publish still gets a
-// fresh number.
+// fresh number. A version that came from a package says which release
+// (`upstream`, read off the workflow's metadata): installed from it, or —
+// an edit here, which carries it forward — forked from it.
 
 const secs = (iso?: string) => (iso ? Date.parse(iso) / 1000 : undefined);
 /** When a version was published: relative within a day, then the date. */
@@ -73,12 +75,20 @@ export function VersionsPanel(props: {
   dirty: boolean;
 }) {
   const [data, setData] = useState<Awaited<ReturnType<typeof api.getWorkflowVersions>> | null>(null);
+  const [upstreams, setUpstreams] = useState<Record<string, api.Upstream>>({});
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
 
   const refresh = () =>
     api.getWorkflowVersions(props.workflow).then(setData, (err) => setError(errorMessage(err)));
-  useEffect(() => { void refresh(); }, [props.workflow]);
+  useEffect(() => {
+    void refresh();
+    api.getWorkflowMeta(props.workflow).then((m) => {
+      const found: Record<string, api.Upstream> = {};
+      for (const [v, info] of Object.entries(m.versions)) if (info.upstream) found[v] = info.upstream;
+      setUpstreams(found);
+    }, () => {});
+  }, [props.workflow]);
 
   const activate = async (v: string) => {
     setBusy(v);
@@ -107,6 +117,8 @@ export function VersionsPanel(props: {
       {data === null && !error && <div class="auto-hint">Loading…</div>}
       {data?.versions.map((v) => {
         const active = v.version === data.active;
+        const up = upstreams[v.version];
+        const installed = v.source === "install" || v.source === "distro";
         return (
           <div class={`auto-card${active ? " is-active-version" : ""}`} key={v.version}>
             <div class="auto-card-head">
@@ -123,6 +135,11 @@ export function VersionsPanel(props: {
               <span class="auto-meta" title={new Date(v.createdAt).toLocaleString()}>{published(v.createdAt)}</span>
             </div>
             {v.description && <div class="auto-hint">{v.description}</div>}
+            {up && (
+              <div class="auto-meta" title={`${up.digest}\n${up.source.ref}`}>
+                <span>{installed ? "installed" : "forked"} from <strong>{up.package} {up.version}</strong></span>
+              </div>
+            )}
             <div class="auto-meta">
               {v.runs === 0 ? (
                 <span>No runs</span>

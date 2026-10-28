@@ -53,6 +53,10 @@ export default defineConfig({
       "/actor": "http://localhost:3000",
       "/peers": "http://localhost:3000",
       "/runs": "http://localhost:3000",
+      // Packages: the catalog this strut publishes, its channels, and what
+      // it installed or follows (specs/API.md §16).
+      "/packages": "http://localhost:3000",
+      "/publisher": "http://localhost:3000",
       // Model downloads are SSE; /audio/stream is a WebSocket.
       "/audio": { target: "http://localhost:3000", ws: true, configure: sseConfigure },
     },

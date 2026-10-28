@@ -436,6 +436,9 @@ body.is-resizing-rows * {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* An installed package's group: its version beside the name, the one
+   marker it carries (plans/packages-ux.md §4). */
+.cat-version { font-family: var(--font-mono); font-size: 10px; color: var(--text-muted); margin-left: var(--sp-1); }
 .cat-count {
   margin-left: auto;
   font-weight: 400;
@@ -3665,6 +3668,101 @@ body.is-resizing-flyout * {
 .version-yaml-head { display: flex; align-items: center; gap: var(--sp-2); }
 .version-yaml-head .flyout-toggle { width: auto; flex: 1; }
 .auto-card.is-active-version { border-color: var(--accent); }
+
+/* ─── packages (the Packages dialog, plans/packages-ux.md) ───── */
+.packages-dialog { width: min(680px, 92vw); }
+/* The publisher's name beside its key, at the head of the dialog. */
+.publisher-head { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; margin-bottom: var(--sp-3); }
+.publisher-head input,
+.package-new input {
+  width: 160px;
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  color: var(--text);
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--r-md);
+}
+.publisher-head input:focus,
+.package-new input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.publisher-head .package-key { margin-bottom: 0; margin-left: auto; }
+.publisher-hint { margin-bottom: var(--sp-3); }
+/* A package here: one row, the name and its newest release; click opens it. */
+.package-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  padding: var(--sp-2) var(--sp-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  background: none;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  margin-bottom: var(--sp-1);
+}
+.package-row:hover { background: var(--surface-2); }
+.package-row .package-version { margin-left: auto; color: var(--text-muted); font-weight: 400; }
+.package-page-head { display: flex; align-items: center; gap: var(--sp-2); margin-bottom: var(--sp-3); }
+.package-page-head .package-name { font-size: 14px; }
+.package-name { font-size: 13px; font-weight: 600; color: var(--text); font-family: var(--font-mono); }
+.package-version { font-family: var(--font-mono); font-size: 12px; font-weight: 600; color: var(--text); }
+.package-digest {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.package-url { font-family: var(--font-mono); overflow-wrap: anywhere; }
+/* A long value (a key, a digest) beside its label and copy button. */
+.package-key { display: flex; align-items: center; gap: var(--sp-2); min-width: 0; margin-bottom: var(--sp-2); }
+.package-signed { margin-bottom: var(--sp-2); }
+.package-channel { align-items: center; margin-top: 0; }
+.package-channel-name { display: inline-flex; align-items: center; gap: var(--sp-2); font-size: 12px; color: var(--text-muted); margin-right: auto; }
+.package-releases { display: flex; flex-direction: column; border-top: 1px solid var(--border); }
+.package-release { padding: var(--sp-2) 0; border-bottom: 1px solid var(--border); }
+.package-release:last-child { border-bottom: none; padding-bottom: 0; }
+.package-release-head { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); font-size: 12px; color: var(--text-muted); }
+.package-items { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.package-items li { display: flex; align-items: center; gap: var(--sp-2); font-size: 12px; }
+.package-item-kind { flex: none; width: 64px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-dim); }
+.package-item-name { font-family: var(--font-mono); color: var(--text); overflow-wrap: anywhere; }
+/* The release's workflows, one checkbox each — not the field's label style. */
+.dialog-field .package-workflow {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: 12px;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text);
+  font-family: var(--font-mono);
+  margin-bottom: var(--sp-1);
+}
+.dialog-field .package-workflow input { width: auto; padding: 0; margin: 0; }
+.package-publish-actions { display: flex; margin: var(--sp-3) 0; }
+.package-filter { margin-bottom: var(--sp-2); }
+.package-group { margin-bottom: var(--sp-2); }
+.package-group-title { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-dim); margin: var(--sp-1) 0 2px; }
+.package-along { margin: var(--sp-2) 0 var(--sp-3); display: flex; flex-direction: column; gap: var(--sp-1); }
+.package-chips { display: flex; flex-wrap: wrap; gap: var(--sp-1); margin-bottom: var(--sp-1); }
+.package-chip { display: inline-flex; align-items: center; gap: 4px; }
+.package-new { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); margin-top: var(--sp-3); }
+.package-new input { flex: 1 1 140px; width: auto; min-width: 0; }
+.package-new .auto-hint { flex-basis: 100%; }
+/* A refusal names every problem in one line: keep it readable as it came. */
+.package-refusal { white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-mono); font-size: 11px; }
+.package-warning { color: var(--warning); }
+.package-files summary { cursor: pointer; font-size: 12px; color: var(--text-muted); }
+.package-files ul { margin: var(--sp-1) 0 0; padding-left: var(--sp-4); font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); }
+.package-releases-section { margin-top: var(--sp-4); }
 
 /* ─── jobs sidebar + timeline (plans/jobs-sidebar.md) ───────────── */
 

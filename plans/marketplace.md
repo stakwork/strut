@@ -95,6 +95,15 @@
 > to the central strut's publisher key and reads its private catalog with a
 > token that opens nothing else; §4's update table applies with no ask. This
 > brings step 4 and the card half of step 6 forward ("Step order").
+>
+> **The UI is `plans/packages-ux.md`** (ruled 2026-10-28, replacing a
+> 2026-10-27 version): names stay BARE on the strut that makes and
+> publishes them, categories stay free, and a package is a name plus the
+> workflows a person picks on a package page in the Packages dialog, with
+> the PUBLISHER a server-wide setting nobody types. Only the strut that
+> installs a package files its items under the package's prefix (§1, as
+> here), and inside an installed package a bare name is found in the
+> package first. §8's person's act and the §16 routes stand.
 
 ## Problem
 
@@ -216,6 +225,11 @@ requires:
   doesn't (step 1). Core and lib types have one or two segments, today's
   custom namespaces (`pod/test`) have two, a package item has three or
   more — nothing collides.
+- **References inside a package may be bare** (`plans/packages-ux.md`
+  §2–§3, 2026-10-28). The build stamps each item's OWN name with the
+  prefix and leaves its references as written; on the strut that installs
+  it, a bare name in an installed item resolves to `<package>/<name>` when
+  the package holds it, else to `<name>`. A full name works as before.
 - **One shape, any subset.** Every folder is optional: a package of one
   step, a package of Concepts alone (an ontology a deployment shares), a
   workflow over core and lib steps with no code at all, an app with the
@@ -302,8 +316,10 @@ steps?, apps?, concepts? })` writes the directory:
    expanded the same way) — walked on from there by `flowClosure`: an
    app's grants are what it can execute, as a workflow's subflows and
    `agentTools` are (`apps.md` §5). Every reached
-   workflow and custom step under the prefix is an item. One outside the
-   prefix: with an `upstream`, its package and digest become a
+   workflow and custom step under the prefix is an item — and, amended
+   2026-10-28 (`plans/packages-ux.md` §3), so is a LOCAL one whatever its
+   name, at the path of its local name, its own name written under the
+   prefix. One outside the prefix: with an `upstream`, its package and digest become a
    `requires.packages` pin (a second pin of the same package at another
    digest refuses the build); without one, the build is refused naming it
    — package it under your prefix, or install it from its package, or

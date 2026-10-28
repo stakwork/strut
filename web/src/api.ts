@@ -359,6 +359,11 @@ export interface WorkflowEntry {
   description?: string;
   /** Sidebar grouping label, if set. */
   category?: string;
+  /** The service that published it, if any (`ai`: the builder's authoring). */
+  publisher?: string;
+  /** Where the active version came from, when recorded: `seed` is strut's or
+   *  the host's own. */
+  activeSource?: string;
   /** The owning actor and per-run LLM spend cap, if set
    *  (plans/mothership-cost-control.md). */
   owner?: string;
@@ -371,7 +376,23 @@ export interface WorkflowEntry {
 
 export interface WorkflowMeta {
   active: string;
-  versions: Record<string, { createdAt: string; description?: string }>;
+  versions: Record<string, {
+    createdAt: string;
+    description?: string;
+    source?: string;
+    actor?: string;
+    /** The package this version came from — or, on a fork, derives from. */
+    upstream?: Upstream;
+  }>;
+}
+
+/** Where an installed version came from (plans/marketplace.md §3). */
+export interface Upstream {
+  package: string;
+  version: string;
+  digest: string;
+  source: { ref: string };
+  secrets: string[];
 }
 
 export const listWorkflows = () => fetchJSON<WorkflowEntry[]>("/workflows");
@@ -1992,3 +2013,169 @@ export async function fetchAppDocument(name: string, version: string, token: str
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.text();
 }
+
+// ── Packages (plans/marketplace.md §12.1, §13; specs/API.md §16) ────────────
+// Publishing is a person's act: the builder edits, a person releases. A
+// package's name rides in a body, never a path; a channel is one segment.
+
+/** What a package needs of the strut that installs it, as its strut.yaml says. */
+export interface PackageRequires {
+  secrets?: string[];
+  binaries?: string[];
+  runtimes?: Array<{ name: string; image?: string; binaries?: string[] }>;
+  packages?: Array<{ package: string; digest: string; source: string }>;
+}
+
+export interface CatalogRelease {
+  version: string;
+  digest: string;
+  urls?: string[];
+  license?: string;
+  requires?: PackageRequires;
+  /** Withdrawn, with the reason. */
+  yanked?: string;
+}
+
+/** `GET /packages/catalog`: the sealed card of what this strut publishes. */
+export interface Catalog {
+  v: number;
+  key: string;
+  /** Microseconds at signing. */
+  seq: number;
+  /** Each package's releases, newest first. */
+  packages: Record<string, { description?: string; releases: CatalogRelease[] }>;
+  /** Channel → package → the digest that channel holds. */
+  channels?: Record<string, Record<string, string>>;
+  sig: string;
+}
+
+/** This strut's catalog; null before its first publish (a 404). */
+export async function getCatalog(): Promise<Catalog | null> {
+  const res = await apiFetch("/packages/catalog", { cache: "no-cache" });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json() as Promise<Catalog>;
+}
+
+/** `GET /publisher`: the key subscribers follow, and the publisher's NAME —
+ *  the first segment of every package published here (plans/packages-ux.md
+ *  §2); null before a key is minted. */
+export interface PublisherInfo { key: string; name?: string; host: "self"; createdAt: string }
+
+export async function getPublisher(): Promise<PublisherInfo | null> {
+  const res = await apiFetch("/publisher");
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json() as Promise<PublisherInfo>;
+}
+
+/** `PUT /publisher { name }`: set the publisher's name, `[a-z][a-z0-9-]*`.
+ *  Mints the key first when there is none. */
+export const setPublisherName = (name: string) =>
+  fetchJSON<PublisherInfo>("/publisher", { method: "PUT", body: JSON.stringify({ name }) });
+
+export interface PublishRequest {
+  package: string;
+  version: string;
+  description?: string;
+  /** By the names they have here (bare), each with everything it can
+   *  execute (plans/packages-ux.md §3). */
+  workflows: string[];
+  apps?: string[];
+  /** Concept pages, each with the pages under it. */
+  concepts?: string[];
+  channel?: string;
+}
+
+/** `POST /packages/build { …, dryRun: true }`: what a build of these picks
+ *  would carry, refused the way a publish would be, nothing kept. */
+export interface BuildPreview {
+  package: string;
+  version: string;
+  digest: string;
+  files: string[];
+  requires: PackageRequires;
+  warnings: string[];
+}
+export const previewPackage = (req: Omit<PublishRequest, "channel">) =>
+  fetchJSON<BuildPreview>("/packages/build", { method: "POST", body: JSON.stringify({ ...req, dryRun: true }) });
+
+/** `GET /packages/:publisher/:name/items?digest=`: what a release holds,
+ *  each item by its name inside the package. */
+export interface PackageItems {
+  package: string;
+  version: string;
+  digest: string;
+  items: Array<{ kind: "workflow" | "step" | "app" | "concept"; name: string }>;
+}
+export const getPackageItems = (pkg: string, digest: string) =>
+  fetchJSON<PackageItems>(`/packages/${pkg.split("/").map(encodeURIComponent).join("/")}/items?digest=${encodeURIComponent(digest)}`);
+
+export interface PublishResult {
+  package: string;
+  version: string;
+  digest: string;
+  files: string[];
+  requires: PackageRequires;
+  warnings: string[];
+  channel?: string;
+  catalog: { key: string; seq: number; digest: string };
+}
+
+/** Build a package from this workspace, add it to the catalog and move the
+ *  channel to it; every peer on file is pinged. A refusal is the server's
+ *  `package_build_refused: …`, naming every problem. */
+export const publishPackage = (req: PublishRequest) =>
+  fetchJSON<PublishResult>("/packages/publish", { method: "POST", body: JSON.stringify(req) });
+
+/** Point `channel` at one of a package's releases (a rollback is moving it
+ *  back), or with `digest: null` take the package out — every strut that
+ *  follows the channel then uninstalls it. */
+export const moveChannel = (channel: string, pkg: string, digest: string | null) =>
+  fetchJSON<{ channel: string; package: string; digest: string | null }>(`/packages/channels/${encodeURIComponent(channel)}`, {
+    method: "PUT",
+    body: JSON.stringify({ package: pkg, digest }),
+  });
+
+/** `GET /packages`: what is installed here, folded from the workspace. */
+export interface InstalledPackage {
+  package: string;
+  version?: string;
+  digest?: string;
+  source?: { ref: string };
+  secrets?: string[];
+  /** A person's install, or the distro's (a subscription). */
+  door?: "install" | "distro";
+  items: Array<{
+    kind: "workflow" | "step" | "app" | "concept";
+    name: string;
+    helper?: true;
+    installed?: string;
+    active?: string;
+    /** A fork: the active version is not the installed one. */
+    modified?: boolean;
+  }>;
+}
+
+export const listInstalledPackages = () =>
+  fetchJSON<{ packages: InstalledPackage[] }>("/packages").then((r) => r.packages);
+
+/** `GET /packages/subscriptions`: the catalogs this strut follows. Never a token. */
+export interface SubscriptionInfo {
+  id: string;
+  key: string;
+  url: string;
+  channel?: string;
+  token: boolean;
+  accepted?: { seq: number; digest: string; at: string };
+  applied?: { seq: number; digest: string; at: string; packages: Array<{ package: string; version: string; digest: string }> };
+  checkedAt?: string;
+  /** What stopped the last sync: this strut stays on the release it applied last. */
+  error?: string;
+  warnings?: string[];
+  /** Each package it installed, and the items edited here since. */
+  packages: Array<{ package: string; version?: string; digest?: string; diverged: string[] }>;
+}
+
+export const listSubscriptions = () =>
+  fetchJSON<{ subscriptions: SubscriptionInfo[] }>("/packages/subscriptions").then((r) => r.subscriptions);

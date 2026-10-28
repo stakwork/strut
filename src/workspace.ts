@@ -488,6 +488,10 @@ export interface WorkflowListEntry {
   category?: string;
   /** Provenance stamp, if any (see WorkflowMetadata.publisher). */
   publisher?: string;
+  /** Where the ACTIVE version came from, when recorded
+   *  (`WorkflowVersionInfo.source`): `seed` for strut's or a host's own, which
+   *  the package page leaves out (plans/packages-ux.md §1). */
+  activeSource?: VersionSource;
   /** The owning actor and run cap, if set (see WorkflowMetadata). */
   owner?: string;
   maxRunCostUsd?: number;
@@ -731,6 +735,7 @@ export class FileWorkspaceStore implements WorkspaceStore {
           description: activeDesc,
           ...(meta.category ? { category: meta.category } : {}),
           ...(meta.publisher ? { publisher: meta.publisher } : {}),
+          ...(meta.versions[meta.active]?.source ? { activeSource: meta.versions[meta.active]!.source } : {}),
           ...(meta.owner ? { owner: meta.owner } : {}),
           ...(meta.maxRunCostUsd != null ? { maxRunCostUsd: meta.maxRunCostUsd } : {}),
           ...(meta.automations?.length ? { automations: meta.automations } : {}),
