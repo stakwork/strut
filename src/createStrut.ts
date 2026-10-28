@@ -895,8 +895,9 @@ export async function createStrut<TServices = unknown>(
       notify: (job, update) => ((services as Record<string, unknown>)["jobs"] as JobsCapability | undefined)?.notify?.(job, update),
     }),
     // The graph backend the server wired, for the graph/* steps (graphCtx
-    // prefers it over opening one from env).
-    ...(graph ? { graph } : {}),
+    // prefers it over opening one from env). Borrowed: a step's `close()`
+    // must not close the connection the workspace and claims read through.
+    ...(graph ? { graph: { ...graph, close: async () => undefined } } : {}),
     ...(stt ? { stt } : {}),
     // The LLM auth seam, for the model-building call sites (llm.ts).
     ...(opts.llmAuth ? { llmAuth: opts.llmAuth } : {}),

@@ -94,6 +94,12 @@ export interface GraphBackendBase extends GraphEngine {
   /** The pass, running on its timer; undefined with embeddings off or the
    *  boot skipped. `status()` is `GET /graph/embeddings`. */
   readonly embeddings: EmbeddingPass | undefined;
+  /** Let go of this handle. Every `openGraphBackend` call is a handle on
+   *  ONE shared connection per config; the connection closes when the last
+   *  handle does (or at `closeGraphBackends`), so a step that opens the
+   *  deployment's own graph and closes it at the end leaves everyone else's
+   *  open (2026-10-28, swarm38: a builder step's `close()` took the
+   *  workspace, claims and projector down with "Pool is closed"). */
   close(): Promise<void>;
 }
 
@@ -120,7 +126,13 @@ export interface LadybugBackend extends GraphBackendBase {
 
 export type GraphBackend = Neo4jBackend | LadybugBackend;
 
-const cache = new Map<string, Promise<GraphBackend>>();
+/** One open connection per config, and how many handles hold it. */
+interface Entry {
+  readonly backend: Promise<GraphBackend>;
+  holders: number;
+}
+
+const cache = new Map<string, Entry>();
 
 function keyOf(cfg: GraphConfig, opts: GraphBackendOptions): string {
   const emb = opts.embeddings === false ? "off" : typeof opts.embeddings === "object" ? "custom" : "minilm";
@@ -131,22 +143,45 @@ function keyOf(cfg: GraphConfig, opts: GraphBackendOptions): string {
 /**
  * Open (or reuse) the backend for `cfg`. The first call per config pays for
  * connectivity, seeding, embedder load, and the backfill sweep; later calls
- * get the same instance. A failed open is not cached.
+ * share its connection. A failed open is not cached. Each call returns a
+ * handle of its own: its `close()` lets go of that handle, and the
+ * connection closes with the last one.
  */
 export function openGraphBackend(cfg: Neo4jConfig, opts?: GraphBackendOptions): Promise<Neo4jBackend>;
 export function openGraphBackend(cfg: LadybugConfig, opts?: GraphBackendOptions): Promise<LadybugBackend>;
 export function openGraphBackend(cfg: GraphConfig, opts?: GraphBackendOptions): Promise<GraphBackend>;
 export function openGraphBackend(cfg: GraphConfig, opts: GraphBackendOptions = {}): Promise<GraphBackend> {
   const key = keyOf(cfg, opts);
-  let p = cache.get(key);
-  if (!p) {
-    p = (isLadybug(cfg) ? openLadybugBackend(cfg, opts) : open(cfg, opts)).catch((e) => {
-      cache.delete(key);
+  let entry = cache.get(key);
+  if (!entry) {
+    const backend = (isLadybug(cfg) ? openLadybugBackend(cfg, opts) : open(cfg, opts)).catch((e) => {
+      if (cache.get(key) === entry) cache.delete(key);
       throw e;
     });
-    cache.set(key, p);
+    entry = { backend, holders: 0 };
+    cache.set(key, entry);
   }
-  return p;
+  const held = entry;
+  held.holders++;
+  return held.backend.then(
+    (b) => {
+      let released = false;
+      return {
+        ...b,
+        async close() {
+          if (released) return;
+          released = true;
+          if (--held.holders > 0 || cache.get(key) !== held) return;
+          cache.delete(key);
+          await b.close();
+        },
+      };
+    },
+    (e) => {
+      held.holders--;
+      throw e;
+    },
+  );
 }
 
 async function openLadybugBackend(cfg: LadybugConfig, opts: GraphBackendOptions): Promise<LadybugBackend> {
@@ -176,7 +211,6 @@ async function openLadybugBackend(cfg: LadybugConfig, opts: GraphBackendOptions)
       seed: undefined,
       embeddings: undefined,
       async close() {
-        for (const [k, p] of cache) if ((await p.catch(() => null)) === backend) cache.delete(k);
         await lbug.close();
       },
     };
@@ -210,11 +244,11 @@ export function openGraphBackendFromEnv(
   });
 }
 
-/** Drop every cached backend and close its driver. */
+/** Drop every cached backend and close its driver, whoever still holds it. */
 export async function closeGraphBackends(): Promise<void> {
   const all = [...cache.values()];
   cache.clear();
-  await Promise.all(all.map((p) => p.then((b) => b.close()).catch(() => undefined)));
+  await Promise.all(all.map((e) => e.backend.then((b) => b.close()).catch(() => undefined)));
 }
 
 async function open(cfg: Neo4jConfig, opts: GraphBackendOptions): Promise<Neo4jBackend> {
@@ -307,7 +341,6 @@ async function open(cfg: Neo4jConfig, opts: GraphBackendOptions): Promise<Neo4jB
       indexReconcile,
       embeddings,
       async close() {
-        for (const [k, p] of cache) if ((await p.catch(() => null)) === backend) cache.delete(k);
         await embeddings?.stop();
         await passWorker?.close();
         await bolt.close();

@@ -244,8 +244,9 @@ for (const tb of testBackends()) {
           assert.equal((await workspace.listStepVersions("tools/greet")).active, "v1");
           assert.ok(existsSync(join(dir, "graph", "graph.lbug")));
           const again = await ladybugWorkspaceFromEnv({ STRUT_WORKSPACE: dir, STRUT_GRAPH_EMBEDDINGS: "off" });
-          assert.equal(again.backend, b, "the same cached backend");
+          assert.equal(again.backend.kind === "ladybug" && b.kind === "ladybug" && again.backend.lbug, b.lbug, "the same cached connection");
           assert.equal(again.imported.status, "nothing");
+          await again.backend.close();
         } finally {
           await b.close();
           backend = await tb.open();
