@@ -176,10 +176,8 @@ params:
   tools:
     - graph/graph-search
     - graph/graph-get
-    - graph/graph-get-batched
     - graph/graph-neighbors
     - graph/get-ontology
-    - graph/get-ontology-type
     - meta/list-workflows
     - meta/get-workflow
     - meta/run-workflow
