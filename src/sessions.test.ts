@@ -13,7 +13,7 @@ import { defineStep, withStop } from "./core.js";
 import { WorkspaceManager } from "./workspace.js";
 import { MemoryRunStore } from "./store.js";
 import { MemoryChatStore } from "./chat-store.js";
-import { FileSessionStore, MemorySessionStore } from "./session-store.js";
+import { FileSessionStore, MemorySessionStore, appSessionId, idProblem } from "./session-store.js";
 import { projectRunEvents } from "./graph/projector.js";
 import type { RunsCapability } from "./runs.js";
 
@@ -35,6 +35,20 @@ const finalAnswer = (id: string, answer: string) =>
   sse({ type: "content_block_stop", index: 0 }) +
   sse({ type: "message_delta", delta: { stop_reason: "tool_use", stop_sequence: null }, usage: { output_tokens: 20 } }) +
   sse({ type: "message_stop" });
+
+describe("appSessionId: a thread opened under an app", () => {
+  it("is the viewer's own in the app; the run's own job opens as it is; an actor that is no id segment becomes a digest", () => {
+    assert.equal(appSessionId("assistant", "canvas", "alice"), "app/canvas/alice/assistant");
+    assert.equal(appSessionId("app/canvas/alice/assistant", "canvas", "alice"), "app/canvas/alice/assistant", "already there");
+    assert.equal(appSessionId("app/canvas/bob/assistant", "canvas", "alice"), "app/canvas/alice/app/canvas/bob/assistant", "never another viewer's");
+    assert.equal(appSessionId("alice", "canvas", "alice"), "app/canvas/alice/alice", "never the person's own thread in a host");
+    assert.equal(appSessionId("app/canvas/library", "canvas", "alice", "app/canvas/library"), "app/canvas/library", "the run's job: the app's, every viewer's");
+    assert.equal(appSessionId("t", "canvas"), "app/canvas/t", "no actor (dev mode)");
+    const odd = appSessionId("t", "canvas", "alice@example.com");
+    assert.match(odd, /^app\/canvas\/u[0-9a-f]{16}\/t$/);
+    assert.equal(idProblem(odd), null);
+  });
+});
 
 describe("agent sessions over HTTP", () => {
   let dir = "";

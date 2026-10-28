@@ -10,7 +10,15 @@
  */
 import { z } from "zod";
 
+import type { RunCaller } from "../../../runs.js";
+
 export { requireRuns, type RunsCapability } from "../../../runs.js";
+
+/** Who asks (`RunCaller`): the step's actor and, for a page's call, its app
+ *  — what opens a sealed workflow a person granted that app. */
+export function callerOf(ctx: { actor?: string; app?: RunCaller["app"] }): RunCaller {
+  return { ...(ctx.actor ? { actor: ctx.actor } : {}), ...(ctx.app ? { app: ctx.app } : {}) };
+}
 
 /** A step's `workflow` as its frame means it: inside a package, the
  *  package's own workflow first (src/package-lookup.ts) — so an app in a

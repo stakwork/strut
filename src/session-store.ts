@@ -17,6 +17,7 @@
  * turn lines.
  */
 
+import { createHash } from "node:crypto";
 import { appendFile, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { StoredMessage } from "./chat-store.js";
@@ -71,6 +72,34 @@ export function peerScoped(id: string): string {
 export function peerSessionId(id: string, person?: string): string {
   if (person && (id === person || id.startsWith(`${person}/`))) return id;
   return peerScoped(id);
+}
+
+/** Where an APP's ids live (plans/apps.md §12): a job id a page names is
+ *  kept under `app/<name>/`, as a peer's is kept under `peer/`. */
+export const APP_NAMESPACE = "app/";
+
+/** `id` in app `app`'s namespace — left as it is when it already is there. */
+export function appScoped(app: string, id: string): string {
+  const prefix = `${APP_NAMESPACE}${app}/`;
+  return id.startsWith(prefix) ? id : `${prefix}${id}`;
+}
+
+/** An actor as one id segment: as it is when it is one (and short), else a
+ *  digest of it. */
+function actorSegment(actor: string): string {
+  return actor.length <= 40 && SEGMENT_RE.test(actor) ? actor : `u${createHash("sha256").update(actor).digest("hex").slice(0, 16)}`;
+}
+
+/** Where a session `id` opens in a run an APP launched (`ctx.app`): under
+ *  `app/<name>/<viewer>/`, so a page — code a model wrote — never opens a
+ *  thread that is not its viewer's in this app: the person's own
+ *  conversation with the assistant elsewhere, or another viewer's here.
+ *  The run's own JOB (already `app/<name>/<job>`, the app's library: every
+ *  viewer's) opens as it is, as the job agent's thread is its job id. */
+export function appSessionId(id: string, app: string, actor?: string, job?: string): string {
+  if (job && id === job) return id;
+  const prefix = `${APP_NAMESPACE}${app}/${actor ? `${actorSegment(actor)}/` : ""}`;
+  return id.startsWith(prefix) ? id : `${prefix}${id}`;
 }
 
 /** The one directory (or file stem) an id is stored under: flat, so

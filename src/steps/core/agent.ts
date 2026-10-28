@@ -1464,11 +1464,21 @@ export default defineStep({
         if (granted.has(t)) approve.add(t);
         else console.warn(`[agent] approve: "${t}" is not in agentTools — nothing to gate`);
       }
-      if (approve.size && !proposalsOf(ctx.services)) {
+      if (approve.size && !proposalsOf(ctx.services) && !ctx.app) {
         throw new Error("agent: `approve` needs strut's proposals (ctx.services.proposals); the standard strut server provides them.");
       }
     }
-    const registryTools = buildRegistryTools(stepGrants, ctx?.registry, toolCtx, tool, approve.size ? { approve, session: cfg.session } : undefined);
+    // A run an APP launched holds no gated tool: nothing shows its proposals
+    // to the person — the hosts draw the ones their own turns made — and a
+    // page, code a model wrote, must not decide them. They are left out.
+    const appGated = !!ctx?.app && approve.size > 0;
+    const registryTools = buildRegistryTools(
+      appGated ? expandAgentTools(stepGrants, ctx!.registry!, ctx!.package).filter((t) => !approve.has(t)) : stepGrants,
+      ctx?.registry,
+      toolCtx,
+      tool,
+      approve.size && !appGated ? { approve, session: cfg.session } : undefined,
+    );
     // A tool-step whose output is marked `withStop` (core.ts) ends the turn
     // after this tool round (a device that has not answered, an approval
     // waiting on a person): the loop stops, and the one answer turn below
@@ -1636,7 +1646,12 @@ export default defineStep({
           toModelOutput: registryToolModelOutput,
           taken: Object.keys(tools),
           maxChars: () => resultCap,
-          only: (server, t) => grantsTool(mcpGrants, server.name, t.name),
+          // Under an app, a tool that would be gated is left out (above).
+          only: (server, t) => {
+            if (!grantsTool(mcpGrants, server.name, t.name)) return false;
+            const reg = byName.get(server.name);
+            return !(ctx.app && reg && (grantsTool(mcpApprove, server.name, t.name) || gatedByDefault(reg, t)));
+          },
           gate: (server, t) => {
             const reg = byName.get(server.name);
             if (!reg || !(grantsTool(mcpApprove, server.name, t.name) || gatedByDefault(reg, t))) return undefined;

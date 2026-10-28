@@ -862,4 +862,21 @@ describe("agent sessions", () => {
       s2.close();
     }
   });
+
+  it("under an APP (ctx.app) a tool in `approve` is not offered at all — nothing would show its proposal — and the rest are", async () => {
+    const { proposalsCapability } = await import("../../proposals.js");
+    const write = defineStep({ type: "dev/write", input: z.object({ name: z.string() }), output: z.any(), async run() { return {}; } });
+    const reg = { ...registry, "dev/write": write };
+    const s = await serve([answer("toolu_1", "no writes here")]);
+    try {
+      const out = await run(
+        { toolFilter: ["none"], agentTools: ["dev/write", "dev/recall"], approve: ["dev/write"] },
+        { registry: reg, services: { sessions, proposals: proposalsCapability(cwd) }, app: { name: "canvas", version: "v1" } },
+      );
+      assert.equal(out.result, "no writes here");
+      assert.deepEqual((s.bodies[0].tools as any[]).map((t) => t.name).sort(), ["dev_recall", "final_answer"]);
+    } finally {
+      s.close();
+    }
+  });
 });

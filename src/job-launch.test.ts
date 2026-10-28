@@ -734,4 +734,21 @@ describe("job/start and job/continue on a resume", () => {
     await jobContinue.run({ job: "j2", prompt: "p" } as any, other.ctx);
     assert.equal(other.launched.length, 1, "a changed job is a fresh launch");
   });
+
+  it("a turn an APP launched starts its jobs in the app's namespace and continues only those", async () => {
+    const app = { name: "canvas", version: "v3" };
+    const start = ctxFor("orch/work/001-job_start", true);
+    start.ctx.app = app;
+    const started = await jobStart.run({ prompt: "p", title: "t" } as any, start.ctx);
+    assert.match(started.job, /^app\/canvas\/[0-9a-f-]{36}$/);
+    assert.equal(start.launched[0]!.job, started.job);
+    const cont = ctxFor("orch/work/002-job_continue", true);
+    cont.ctx.app = app;
+    await jobContinue.run({ job: "elsewhere", prompt: "p" } as any, cont.ctx);
+    assert.equal(cont.launched[0]!.job, "app/canvas/elsewhere", "a job outside the app is never reached");
+    const again = ctxFor("orch/work/003-job_continue", true);
+    again.ctx.app = app;
+    await jobContinue.run({ job: started.job, prompt: "p" } as any, again.ctx);
+    assert.equal(again.launched[0]!.job, started.job, "the app's own id as it is");
+  });
 });

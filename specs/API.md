@@ -956,7 +956,10 @@ components as an app other apps import (`import { RunTimeline } from
 | POST   | `/apps` | `{ name, files: { "<path>": "<text>" \| { base64 }, … }, publisher?, upstream?, reactivateKnown? }` → 201 `{ ok, name, version, changed, hash, bytes, warnings, live, liveVersion?, release?, note?, graph? }` — `live: false` when the app is held: the version is a draft (§14.5). Builds first; a build that fails is `400 { error, errors, warnings }` and publishes nothing. An app that declares graph types (`data.graph`) registers them before the version is recorded, add-only, on a Neo4j graph only: `graph: { types: [{ type, created, added }], edges: [{ edge, created }] }`. On a LadybugDB file or with no graph it does not build, and a declaration that conflicts with the graph (another attribute type, another key, a required attribute left out, a type strut keeps — `Strut*`, `Concept`, `Claim`, `Check`, `Evidence`) is a build error naming it (§14.7). A PERSON's door: the grants are unrestricted (`llm`, a sealed step — what `app/publish` refuses, §9 of the plan). The actor becomes the owner when the app has none. |
 | PUT    | `/apps/:name/active` | What people open (§14.5). `{ version: "vN" }` PROMOTES: a new release of that version with a lock taken now, made live — the app is held; `{ release: "rN" }` makes an earlier release live again, adding none; `{ version: "latest" }` follows the newest publish. → `{ ok, name, active, live, release? }` (`release` with its lock, on a promote). `400` without exactly one of the two; `404` for an unknown app, version or release; `409` for a refusal: a version that no longer builds on this strut's kit (the build's errors), an app strut seeds, a release whose lock names a workflow or step that no longer exists |
 | PUT    | `/apps/:name/pin` | `{ pinned: boolean }` → `{ ok, name, pinned, live, release? }`: pin the app as a TAB, or unpin it — the record's flag (not a version pin), which a publish and a rollback keep and a delete clears. A host that lists this strut's apps (a portal's sidebar for the workspace this strut belongs to) shows each `pinned` one as a tab at its active version. Pinning an app that follows latest also HOLDS it at that version (§14.5): `release` is the one made, `live` its id; unpinning leaves what is live alone. `400` without a boolean, `404` for an unknown app, `409` when the version to hold no longer builds |
-| DELETE | `/apps/:name` | remove the pointers (soft on the graph); the directories stay |
+| GET    | `/apps/:name/grants` | `{ name, grants: [{ workflow, at, by?, proposal? }] }` — the SEALED workflows a person granted the app (§14.8), by its name: an app need not be published yet |
+| POST   | `/apps/:name/grants` | `{ workflow }` → 201 `{ ok, name, grant }`: a person grants the app a sealed workflow (the assistant, `orchestrator`); the actor is `by`. `404` for a workflow that is not there, `400` for one that is not sealed (a manifest grants that itself) |
+| DELETE | `/apps/:name/grants?workflow=<name>` | take a grant back → `{ ok, name, workflow }`; `404` when there was none. The published versions keep naming it, and their calls to it are refused |
+| DELETE | `/apps/:name` | remove the pointers (soft on the graph); the directories stay; the app's grants go |
 
 The same reads and writes as steps — `app/list`, `app/get { name, version? }` (or `{ path, job? }`, an app directory you are working on),
 `app/init { path, template? }`, `app/checkout { name, version?, path }`,
@@ -991,7 +994,7 @@ the call against that app's manifest, in every host:
 
 | Call | Rule |
 | ---- | ---- |
-| `run/*` | only on a workflow in `grants.workflows` (`job` on `run/list` filters them); a sealed workflow refused by name |
+| `run/*` | only on a workflow in `grants.workflows` (`job` on `run/list` filters them); a sealed workflow refused by name — unless a person granted it to the app (§14.8): then the page reaches only the runs the app launched for the same viewer |
 | a `job` in any config | the APP's job: a page's `library` is kept as `app/<name>/library` (an id already there is left as it is), so a page never launches under, uploads into or reads a job it did not start; `job/list` lists only the app's (`prefix` narrows inside it) |
 | any other type | only when `grants.steps` names it (globs as `agentTools` takes them) |
 | `llm`, `agent`, `exec`, `acp/prompt` | refused whatever the manifest says — the workflow is the unit of spend (§5.1): a paid or shell-shaped step runs inside a workflow the app launches |
@@ -999,7 +1002,7 @@ the call against that app's manifest, in every host:
 | a graph write (`graph/create-node`, `edit-node`, `create-triplet`, `create-batch-triplet`, `delete-edge`, `edit-edge`, `delete-node`, `move-node`) | refused on a type the manifest's `data.graph.types` does not declare, and on a type strut keeps whatever it declares — the type from the config for a create, the node read first for an edit or delete by `ref_id` (case-blind); every value checked must be a literal, an edge is located by its endpoints |
 | `job/upload`, `job/delete-upload`, `job/get`, `job/read`, `job/list` | only when `grants.steps` names them |
 | `sqlite/*`, `automation/*` | "not available in this strut yet" (work items 3, 7) |
-| `graph/create-schema`, `graph/register-namespace`, `graph/project`, `app/init`, `app/checkout`, `app/build`, `app/publish`, `job/dir`, `job/start`, `job/continue` | not a thing a page does (a page runs a workflow in its own job with `run/launch { job }`) |
+| `graph/create-schema`, `graph/register-namespace`, `graph/project`, `app/init`, `app/checkout`, `app/build`, `app/publish`, `app/pin`, `app/grant`, `job/dir`, `job/start`, `job/continue` | not a thing a page does (a page runs a workflow in its own job with `run/launch { job }`) |
 | `app/report-error { message, stack?, componentStack? }` | always granted |
 
 A refused call, a missing or foreign token (a run's or a job's file token,
@@ -1269,6 +1272,38 @@ value (equal; `null` = not set) or to operators that must all hold: `gt`,
 default order is newest first; `limit` is 1–500 (default 50); a `cursor`
 comes back while there are more. It works on both engines, over any type
 the graph holds.
+
+### 14.8 The assistant in an app — a sealed workflow a person grants (`src/apps/grants.ts`)
+
+An app whose chat is the person's assistant grants `orchestrator` in
+`grants.workflows` and uses the kit's `useAssistant()`. The orchestrator is
+SEALED, so a model's publish (`app/publish`) naming it is refused until a
+PERSON grants it to that app, by name, once:
+
+- **On a proposal.** The orchestrator holds `app/grant { name, workflow }`
+  behind `approve:` (its template); a call becomes a proposal (§12), the
+  card Hive's Jamie chat and Peel's DM draw, and on accept strut records
+  the grant with the decider as `by` and the proposal's id. `app/grant` run
+  any other way — a direct tool call, `meta/run-step`, a DAG step — throws.
+- **Through `POST /apps/:name/grants`**, or a person's own `POST /apps` (a
+  package install among them) whose manifest names a sealed workflow.
+
+Every later version keeps the grant while its manifest names the workflow;
+nobody who opens the app is asked anything. With it, the `run/*` steps
+open the workflow to the app's pages SCOPED: `run/list` lists, and
+`run/get` / `events` / `files` / `transcript` / `cancel` reach, only the
+runs the app launched for the same viewer (another's is not found), and a
+`run/launch` `key` dedupes within that viewer's launches. A run an app
+launched (`origin: "app"`):
+
+- opens its agent sessions under `app/<name>/<viewer>/` — its `input.session`
+  is the viewer's thread in that app, never their conversation in a host or
+  another viewer's (the run's own job id opens as it is);
+- starts its jobs (`job/start`) under `app/<name>/`, and `job/continue`
+  continues only those — where the page reads them;
+- leaves out every tool its agent's `approve:` gates (graph writes): nothing
+  shows an app turn's proposals, and a page must not decide them;
+- carries no MCP servers (a page's call has none).
 
 ## 15. Dictation — speech to text, its models and the user's vocabulary
 

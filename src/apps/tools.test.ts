@@ -95,6 +95,17 @@ const attached = defineStep({
     return { attachments: ctx.attachments ?? [] };
   },
 });
+/** Opens the session a run names and says where it opened (an agent with `session:`). */
+const sess = defineStep({
+  type: "sess",
+  input: z.object({ id: z.string() }),
+  output: z.any(),
+  async run(cfg, ctx) {
+    const open = await (ctx.services as { sessions: { open: (id: string, h: { runId: string; path: string }) => Promise<{ id: string; release(): void }> } }).sessions.open(cfg.id, { runId: ctx.runId, path: ctx.path });
+    open.release();
+    return { opened: open.id };
+  },
+});
 const big = defineStep({
   type: "big",
   input: z.object({}),
@@ -112,6 +123,8 @@ const WORKFLOWS: Record<string, string> = {
   "talk-wf": `name: talk-wf\nsteps:\n  - id: a\n    type: talker\n    config: { task: "say it" }\n`,
   agentish: `name: agentish\nparams:\n  tools: []\nsteps:\n  - id: a\n    type: agent\n    config:\n      prompt: hi\n      agentTools: "{{ params.tools }}"\n`,
   "grader-run": `name: grader-run\nsealed: true\nsteps:\n  - id: a\n    type: log\n    config: { message: hi }\n`,
+  // A sealed workflow a person grants an app: the assistant's stand-in, opening its session.
+  assistant: `name: assistant\nsealed: true\ninput:\n  session: { type: string }\n  ms: { type: number, required: false }\nsteps:\n  - id: s\n    type: sess\n    config: { id: "{{ input.session }}" }\n  - id: n\n    type: nap\n    config: { ms: "{{ input.ms || 0 }}" }\n  - id: out\n    type: pack\n    config: { opened: "{{ s.opened }}" }\n`,
   // A job's uploads read by a run that holds the job's folder, and by one that does not.
   "read-upload": `name: read-upload\ninput:\n  file: { type: string }\nsteps:\n  - id: dir\n    type: job/dir\n    config: { hold: false }\n  - id: c\n    type: cat\n    config: { dir: "{{ dir.path }}", file: "{{ input.file }}", ms: 400 }\n`,
   "hold-upload": `name: hold-upload\ninput:\n  file: { type: string }\nsteps:\n  - id: dir\n    type: job/dir\n  - id: c\n    type: cat\n    config: { dir: "{{ dir.path }}", file: "{{ input.file }}", ms: 400 }\n`,
@@ -122,7 +135,7 @@ const MANIFESTS: Record<string, string> = {
   bench: [
     "title: Bench",
     "grants:",
-    "  workflows: [score-wf, slow-wf, echo-app, agentish, grader-run, talk-wf, read-upload, hold-upload, attach-wf]",
+    "  workflows: [score-wf, slow-wf, echo-app, agentish, grader-run, talk-wf, read-upload, hold-upload, attach-wf, assistant]",
     "  steps: [graph/*, app/get, whoami, big, run/launch, job/upload, job/delete-upload, job/get, job/list, job/read]",
     "",
   ].join("\n"),
@@ -188,7 +201,7 @@ describe("step_run — the app door", () => {
       const written = await graph.nodes.write({ type: "Concept", data: { name: "Job", description: "the job page" } }, "create", { namespace: "default" });
       conceptRef = written.ref_id;
     }
-    registry = await createRegistry([score, nap, whoami, talker, big, cat, attached]);
+    registry = await createRegistry([score, nap, whoami, talker, big, cat, attached, sess]);
     const workspace = new FileWorkspaceStore(dataDir);
     strut = await createStrut({
       workspace,
@@ -243,7 +256,10 @@ describe("step_run — the app door", () => {
     await refused({ type: "run/list", config: {}, app: strict }, /needs `workflow`/);
     await refused({ type: "graph/graph-get", config: { ref_id: "x" }, app: strict }, /not granted .* grants\.steps: \(none\)/);
     await refused({ type: "whoami", config: {}, app: strict }, /not granted/);
-    await refused({ type: "run/list", config: { workflow: "grader-run" }, app: identity }, /sealed/);
+    // A person's publish naming a sealed workflow is their grant of it (the
+    // next test); taken back, the workflow is refused by name again.
+    assert.equal(await strut.apps.revoke("bench", "grader-run"), true);
+    await refused({ type: "run/list", config: { workflow: "grader-run" }, app: identity }, /sealed — a person grants it to an app .* bench holds no grant of it/);
     const paid = appIdentity("paid", "v1");
     for (const type of ["llm", "exec", "agent", "acp/prompt"]) await refused({ type, config: {}, app: paid }, /paid or shell-shaped/);
     await refused({ type: "meta/run-workflow", config: {}, app: paid }, /sealed/);
@@ -295,6 +311,45 @@ describe("step_run — the app door", () => {
     await refused({ type: "big", config: {}, app: previewId }, /not granted/);
     await refused({ type: "whoami", config: {}, app: appIdentity("draft-app", "preview-000000000000") }, /no longer hosted/);
     assert.equal((await strut.app.request("/apps/draft-app/usage", { headers: auth })).status, 404, "counted nowhere");
+  });
+
+  it("a sealed workflow a person granted: its pages launch it, each viewer reaching only their own runs, on a thread kept per app and viewer", async () => {
+    const other = buildAppTools({ apps: strut.apps, registry, services: strut.services, actor: "other", runStepDeps: { store, workspace: strut.workspace } });
+    const asOther = async (args: Record<string, unknown>) =>
+      (await (other[STEP_RUN_TOOL] as any).execute(args, { toolCallId: "t", messages: [] })) as { error?: string; result?: any };
+    assert.ok((await strut.apps.grantsOf("bench")).some((g) => g.workflow === "assistant"), "the person's publish granted it");
+
+    const mine = await ok({ type: "run/launch", config: { workflow: "assistant", input: { session: "assistant" } }, app: identity });
+    const done = await ok({ type: "run/get", config: { workflow: "assistant", runId: mine.runId, wait: 10_000 }, app: identity });
+    assert.equal(done.status, "success", JSON.stringify(done.error));
+    assert.equal(done.output.opened, "app/bench/viewer/assistant", "the viewer's thread in this app, never the session the page named");
+    assert.deepEqual([done.origin, done.app?.name, done.actor], ["app", "bench", "viewer"]);
+    const theirs = (await asOther({ type: "run/launch", config: { workflow: "assistant", input: { session: "assistant" } }, app: identity })).result;
+    const theirsDone = (await asOther({ type: "run/get", config: { workflow: "assistant", runId: theirs.runId, wait: 10_000 }, app: identity })).result;
+    assert.equal(theirsDone.output.opened, "app/bench/other/assistant");
+
+    // Each viewer lists and reads only their own; another's is not found.
+    assert.deepEqual((await ok({ type: "run/list", config: { workflow: "assistant" }, app: identity })).map((r: any) => r.runId), [mine.runId]);
+    assert.deepEqual((await asOther({ type: "run/list", config: { workflow: "assistant" }, app: identity })).result.map((r: any) => r.runId), [theirs.runId]);
+    assert.match((await asOther({ type: "run/get", config: { workflow: "assistant", runId: mine.runId }, app: identity })).error!, /not found/);
+    assert.deepEqual((await asOther({ type: "run/events", config: { workflow: "assistant", runId: mine.runId }, app: identity })).result, []);
+    assert.match((await asOther({ type: "run/transcript", config: { workflow: "assistant", runId: mine.runId, path: "assistant/s" }, app: identity })).error!, /not found/);
+    assert.match((await asOther({ type: "run/cancel", config: { workflow: "assistant", runId: mine.runId }, app: identity })).error!, /not found/);
+
+    // A key is the viewer's own: in flight under it, another viewer still launches.
+    const k1 = await ok({ type: "run/launch", config: { workflow: "assistant", input: { session: "a", ms: 600 }, key: "k" }, app: identity });
+    assert.equal((await ok({ type: "run/launch", config: { workflow: "assistant", input: { session: "a", ms: 600 }, key: "k" }, app: identity })).existing, true);
+    const k2 = (await asOther({ type: "run/launch", config: { workflow: "assistant", input: { session: "a", ms: 600 }, key: "k" }, app: identity })).result;
+    assert.notEqual(k2.runId, k1.runId);
+    assert.equal(k2.existing, undefined);
+    // Readable at once, before its run.start is in the log.
+    assert.equal((await ok({ type: "run/get", config: { workflow: "assistant", runId: k1.runId }, app: identity })).runId, k1.runId);
+    await ok({ type: "run/get", config: { workflow: "assistant", runId: k1.runId, wait: 10_000 }, app: identity });
+
+    // Taken back: the pages' calls are refused.
+    assert.equal(await strut.apps.revoke("bench", "assistant"), true);
+    await refused({ type: "run/launch", config: { workflow: "assistant", input: { session: "a" } }, app: identity }, /bench holds no grant of it/);
+    await strut.apps.grant("bench", "assistant", { by: "alice" });
   });
 
   it("runs a granted step as the viewer, whole results; a result past 5 MB is an error naming the cap", async () => {

@@ -10,7 +10,10 @@
  * a model's door) a manifest may not grant a sealed workflow or step, nor
  * `llm`, `agent` or `exec` as direct step grants (§5.1, §9): the workflow
  * is the unit of spend. A person's `POST /apps` (`surface: "person"`) may
- * grant anything, the `peer: true` precedent. Built by `createStrut` into
+ * grant anything, the `peer: true` precedent — and a person may lift the
+ * seal for one app and one workflow (./grants.ts: `app/grant`, accepted as
+ * a proposal), after which the meta surface's publishes may name it. Built
+ * by `createStrut` into
  * `ctx.services.apps`; an embedder builds one with `createApps`.
  *
  * An app that declares graph types (`data.graph`) is checked against the
@@ -37,6 +40,7 @@ import { newestVersion, type AppListEntry, type AppRecord, type AppRelease, type
 import type { GraphBackend } from "../graph/backend.js";
 import { buildApp, readBuildInfo, type BuildDeps, type BuildInfo, type BuildResult, type InstalledApp } from "./build.js";
 import { copyAppDir, isEmptyDir, isPreviewLabel, listAppFiles, validateAppName } from "./files.js";
+import { memoryAppGrants, type AppGrant, type AppGrantStore } from "./grants.js";
 import { checkAppGraph, registerAppGraph, type RegisteredGraph } from "./graph-types.js";
 import type { Kit, KitLocation } from "./kit.js";
 import { readManifest, type AppManifest } from "./manifest.js";
@@ -76,6 +80,8 @@ export interface AppView extends Omit<AppRecord, "releases"> {
   /** What the app's pages cost the server (./monitor.ts): calls, failures,
    *  data by step type, and the warnings — absent without a monitor. */
   usage?: AppUsageBrief;
+  /** The sealed workflows a person granted the app (./grants.ts). */
+  granted: AppGrant[];
 }
 
 /** A listed app, with the live version's warning count (./monitor.ts) when it has any. */
@@ -227,6 +233,16 @@ export interface AppsCapability {
    *  what is live alone. An app strut seeds is pinned without a hold. */
   pin(name: string, pinned: boolean, opts?: { by?: string }): Promise<{ release?: AppRelease }>;
   delete(name: string): Promise<boolean>;
+  /** The sealed workflows a person granted the app (./grants.ts), by name:
+   *  the app need not exist yet. */
+  grantsOf(name: string): Promise<AppGrant[]>;
+  /** A PERSON's grant of a sealed workflow to one app — `app/grant` on an
+   *  accepted proposal, or `POST /apps/:name/grants`. Refused for a workflow
+   *  that is not there or not sealed (a manifest grants that itself). */
+  grant(name: string, workflow: string, opts?: { by?: string; proposal?: string }): Promise<AppGrant>;
+  /** Take a grant back; false when there was none. The app's published
+   *  versions keep naming it, and their calls to it are refused. */
+  revoke(name: string, workflow: string): Promise<boolean>;
   /** Strut's template names. */
   templates(): Promise<string[]>;
   /** The build's dependencies, for a caller that builds elsewhere. */
@@ -249,6 +265,8 @@ export interface AppsDeps {
   /** The graph an app's declared types are checked against and registered
    *  on (./graph-types.ts). Absent: an app that declares any does not build. */
   graph?: GraphBackend;
+  /** A person's grants of sealed workflows (./grants.ts). Default: in memory. */
+  grants?: AppGrantStore;
 }
 
 
@@ -271,6 +289,7 @@ const exists = async (p: string) => {
 
 export function createApps(deps: AppsDeps): AppsCapability {
   const { workspace } = deps;
+  const grants = deps.grants ?? memoryAppGrants();
   const templatesDir = deps.templatesDir ?? TEMPLATES_DIR;
 
   /**
@@ -355,8 +374,9 @@ export function createApps(deps: AppsDeps): AppsCapability {
     return read.ok ? checkAppGraph(read.manifest, deps.graph, name) : { errors: [], warnings: [] };
   };
 
-  /** What a model-written manifest may not grant (§5.1, §9). */
-  const refusedGrants = async (manifest: AppManifest): Promise<string[]> => {
+  /** What a model-written manifest may not grant (§5.1, §9) — a sealed
+   *  workflow a person granted `name` aside (./grants.ts). */
+  const refusedGrants = async (manifest: AppManifest, name: string): Promise<string[]> => {
     const out: string[] = [];
     const registry = deps.getRegistry?.() ?? {};
     for (const g of manifest.grants.steps) {
@@ -373,7 +393,13 @@ export function createApps(deps: AppsDeps): AppsCapability {
     for (const key of ["workflows", "automations"] as const) {
       for (const wf of manifest.grants[key]) {
         const flow = await workspace.getWorkflow(wf).catch(() => null);
-        if (flow?.sealed) out.push(`grants.${key}: "${wf}" is a sealed workflow — a person may grant it (POST /apps); the meta surface may not (plans/apps.md §9)`);
+        if (!flow?.sealed) continue;
+        if (key === "workflows" && (await grants.has(name, wf))) continue;
+        out.push(
+          key === "workflows"
+            ? `grants.workflows: "${wf}" is a sealed workflow — only a person may grant it to an app: say in your reply that ${name} needs "${wf}" granted (the assistant proposes app/grant { name: "${name}", workflow: "${wf}" }, a person approves it), then publish again`
+            : `grants.${key}: "${wf}" is a sealed workflow — a person may grant it (POST /apps); the meta surface may not (plans/apps.md §9)`,
+        );
       }
     }
     return out;
@@ -474,6 +500,7 @@ export function createApps(deps: AppsDeps): AppsCapability {
         inertGrants,
         ...(errors ? { errors } : {}),
         ...(deps.monitor ? { usage: deps.monitor.brief(name) } : {}),
+        granted: await grants.list(name),
       };
     },
 
@@ -510,7 +537,7 @@ export function createApps(deps: AppsDeps): AppsCapability {
       const read = await readManifest(dir);
       if (!read.ok) return { ok: false, errors: read.errors, warnings: [] };
       if (opts.surface === "ai") {
-        const refused = await refusedGrants(read.manifest);
+        const refused = await refusedGrants(read.manifest, name);
         if (refused.length) return { ok: false, errors: refused, warnings: [] };
       }
       const check = await checkAppGraph(read.manifest, deps.graph, name);
@@ -538,6 +565,16 @@ export function createApps(deps: AppsDeps): AppsCapability {
         await recordTree(path, built.hash);
       });
       await evict(name);
+      // A person's publish of a manifest naming a sealed workflow IS their
+      // grant of it (./grants.ts): recorded, so the pages may launch it.
+      if (opts.surface === "person") {
+        for (const wf of built.manifest.grants.workflows) {
+          if (await grants.has(name, wf)) continue;
+          if ((await workspace.getWorkflow(wf).catch(() => null))?.sealed) {
+            await grants.add(name, { workflow: wf, at: (deps.now ? deps.now() : new Date()).toISOString(), ...(opts.actor ? { by: opts.actor } : {}) });
+          }
+        }
+      }
       const rec = await workspace.getApp(name);
       const held = rec?.live && rec.active !== r.version ? rec : null;
       return {
@@ -565,7 +602,7 @@ export function createApps(deps: AppsDeps): AppsCapability {
       const read = await readManifest(dir);
       if (!read.ok) return { ok: false, errors: read.errors, warnings: [] };
       if (opts.surface === "ai") {
-        const refused = await refusedGrants(read.manifest);
+        const refused = await refusedGrants(read.manifest, name);
         if (refused.length) return { ok: false, errors: refused, warnings: [] };
       }
       const check = await checkAppGraph(read.manifest, deps.graph, name);
@@ -672,8 +709,26 @@ export function createApps(deps: AppsDeps): AppsCapability {
     async delete(name) {
       const removed = await workspace.deleteApp(name);
       if (removed) deps.monitor?.forget(name);
+      await grants.removeAll(name);
       return removed;
     },
+
+    grantsOf: (name) => grants.list(name),
+
+    async grant(name, workflow, opts) {
+      validateAppName(name);
+      const flow = await workspace.getWorkflow(workflow).catch(() => null);
+      if (!flow) throw new Error(`no workflow "${workflow}" on this strut`);
+      if (!flow.sealed) throw new Error(`"${workflow}" is not sealed: an app's manifest grants it in grants.workflows, no person's grant needed`);
+      return grants.add(name, {
+        workflow,
+        at: (deps.now ? deps.now() : new Date()).toISOString(),
+        ...(opts?.by ? { by: opts.by } : {}),
+        ...(opts?.proposal ? { proposal: opts.proposal } : {}),
+      });
+    },
+
+    revoke: (name, workflow) => grants.remove(name, workflow),
 
     async templates() {
       const { readdir } = await import("node:fs/promises");

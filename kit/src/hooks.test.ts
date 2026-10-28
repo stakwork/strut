@@ -10,6 +10,7 @@ import { StrutProvider } from "./provider.js";
 import {
   JOB_STEPS, RUN_STEPS, RUN_WAIT_MS, anyInFlight, eventsSettled, fileData, isInFlight,
   useAppLink, useCancel, useHost, useLaunch, useRun, useRunEvents, useRuns, useStep, useToolInput, useTranscript, useUpload, useWorkflow,
+  useAssistant, assistantJobs,
 } from "./hooks.js";
 import { appLink } from "./links.js";
 
@@ -290,6 +291,55 @@ describe("the host hooks", () => {
     const bare = await renderHook(() => useAppLink(), { client });
     assert.throws(() => bare.result()(), /no app identity/);
     await bare.unmount();
+  });
+});
+
+describe("useAssistant: a chat with the person's assistant", () => {
+  const RUNS: Record<string, { status: string; input: unknown; output?: unknown; error?: { message: string } }> = {
+    "3": { status: "success", input: { prompt: "draw a plan", session: "assistant" }, output: { text: "Started it.", artifacts: [] } },
+    "2": { status: "success", input: { prompt: "elsewhere", session: "side" }, output: { text: "other thread" } },
+    "1": { status: "error", input: { prompt: "hi", session: "assistant" }, error: { message: "boom" } },
+  };
+  const answers = {
+    // Newest first, as run/list answers.
+    [RUN_STEPS.list]: () => ["3", "2", "1"].map((runId) => ({ runId, workflow: "orchestrator", status: RUNS[runId]!.status })),
+    [RUN_STEPS.get]: (c: Call) => ({ runId: c.config?.runId, workflow: "orchestrator", ...RUNS[c.config?.runId as string]! }),
+    [RUN_STEPS.events]: () => [
+      { type: "run.start" },
+      { type: "step.start", path: "orchestrator/turn/001-job_start", stepType: "tool:job/start", input: { prompt: "p", title: "Plan", workflow: "builder" } },
+      { type: "step.end", path: "orchestrator/turn/001-job_start", stepType: "tool:job/start", output: { job: "app/canvas/j1", runId: "77", callback: false } },
+      { type: "step.end", path: "orchestrator/turn/002-job_list", stepType: "tool:job/list", output: { jobs: [] } },
+      { type: "run.end" },
+    ],
+  };
+
+  it("reads the thread's turns back oldest first, the reply's text and a failed turn's error; the latest turn's jobs; send launches one turn on the thread", async () => {
+    const { client, calls } = fakeClient(answers);
+    const h = await renderHook(() => useAssistant(), { client });
+    await until(() => h.result().messages.length === 4 && h.result().jobs.length === 1, "the thread and its jobs");
+    assert.deepEqual(
+      h.result().messages.map((m) => [m.role, m.runId, m.text, m.status]),
+      [["user", "1", "hi", "done"], ["assistant", "1", "boom", "error"], ["user", "3", "draw a plan", "done"], ["assistant", "3", "Started it.", "done"]],
+      "the other thread is left out",
+    );
+    assert.deepEqual(h.result().jobs, [{ job: "app/canvas/j1", runId: "77", workflow: "builder" }]);
+    assert.deepEqual(calls[0], { type: "run/list", config: { workflow: "orchestrator", limit: 10 } });
+    assert.equal(calls.filter((c) => c.type === "run/launch").length, 0, "nothing launches on its own");
+    await act(async () => { await h.result().send("and now?"); });
+    assert.deepEqual(calls.find((c) => c.type === "run/launch"), { type: "run/launch", config: { workflow: "orchestrator", input: { prompt: "and now?", session: "assistant" } } });
+    await h.unmount();
+  });
+
+  it("assistantJobs reads job/start and job/continue calls that came back with a job; a continue names no workflow", () => {
+    assert.deepEqual(assistantJobs(undefined), []);
+    assert.deepEqual(
+      assistantJobs([
+        { type: "step.end", path: "o/t/001-job_continue", stepType: "tool:job/continue", output: { job: "app/c/j", runId: "5" } },
+        { type: "step.end", path: "o/t/002-job_start", stepType: "tool:job/start", output: { error: "job_busy" } },
+        { type: "step.end", path: "o/t/003-job_start", stepType: "tool:job/start", output: { job: "app/c/k", runId: "6" } },
+      ]),
+      [{ job: "app/c/j", runId: "5" }, { job: "app/c/k", runId: "6", workflow: "job" }],
+    );
   });
 });
 

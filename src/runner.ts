@@ -25,7 +25,7 @@ import type { JobsCapability } from "./jobs.js";
 import { mcpOrigins } from "./mcp-servers.js";
 import { resolveSettings } from "./extensions.js";
 import { reachPolicyOf, withinReach } from "./reach.js";
-import { peerSessionId, type SessionsCapability } from "./session-store.js";
+import { appSessionId, peerSessionId, type SessionsCapability } from "./session-store.js";
 
 type JobsRecordRun = JobsCapability["recordRun"];
 
@@ -217,6 +217,21 @@ function bindPeer<TServices>(services: TServices, origin: RunOrigin | undefined,
   return { ...(services as object), sessions: view } as TServices;
 }
 
+/** A run an APP launched opens its sessions under the app and its viewer
+ *  (`appSessionId`): the assistant's thread for a page is that viewer's in
+ *  that app, never a conversation a page names. A per-run view like
+ *  `bindPeer`'s. */
+function bindApp<TServices>(services: TServices, app: AppRef | undefined, actor?: string, job?: string): TServices {
+  if (!app || services == null || typeof services !== "object") return services;
+  const sessions = (services as { sessions?: SessionsCapability }).sessions;
+  if (typeof sessions?.open !== "function") return services;
+  const view: SessionsCapability = {
+    open: (id, holder) => sessions.open(appSessionId(id, app.name, actor, job), holder),
+    holder: (id) => sessions.holder(appSessionId(id, app.name, actor, job)),
+  };
+  return { ...(services as object), sessions: view } as TServices;
+}
+
 /** Is `workflow` one the AI published, on a strut with `builder.reach`
  *  (src/reach.ts)? A publisher that cannot be read counts as the AI's. */
 async function aiAuthored(services: unknown, workflow: string): Promise<boolean> {
@@ -286,10 +301,15 @@ export async function runWorkflow<TServices = unknown>(
   // shallow per-run view, so the consumer's bag object is never mutated and
   // a step's `secrets.get(NAME)` needs to know nothing about actors. A
   // peer's run gets its own session namespace the same way (bindPeer).
-  const services = bindPeer(
-    bindPrincipal((opts?.services ?? ({} as TServices)) as TServices, opts?.principal),
-    opts?.origin,
-    opts?.peerPerson ? opts.actor : undefined,
+  const services = bindApp(
+    bindPeer(
+      bindPrincipal((opts?.services ?? ({} as TServices)) as TServices, opts?.principal),
+      opts?.origin,
+      opts?.peerPerson ? opts.actor : undefined,
+    ),
+    opts?.app,
+    opts?.actor,
+    opts?.job,
   );
 
   const onEvent = opts?.onEvent;

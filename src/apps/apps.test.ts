@@ -24,6 +24,7 @@ import appCheckout from "../steps/lib/app/checkout.js";
 import appBuild from "../steps/lib/app/build.js";
 import appPublish from "../steps/lib/app/publish.js";
 import appPin from "../steps/lib/app/pin.js";
+import appGrant from "../steps/lib/app/grant.js";
 import appLook from "../steps/lib/app/look.js";
 
 /**
@@ -364,6 +365,51 @@ describe("the apps capability", () => {
     assert.ok(ok.ok);
     const rec = (await ws.getApp("ok"))!;
     assert.deepEqual([rec.publisher, rec.owner, rec.versions["v1"]?.source], ["ai", "bot", "agent"]);
+  });
+});
+
+describe("a person's grant of a sealed workflow (src/apps/grants.ts)", () => {
+  it("lifts the meta surface's refusal for that app and workflow only, by name, before the first publish; delete drops it", async () => {
+    const { ws, apps } = setup();
+    await ws.publishWorkflowByContent("grader-run", SEALED_WF);
+    await ws.publishWorkflow("plain", "v1", { steps: [{ id: "a", type: "log", config: { message: "x" } }] });
+    const dir = await writeApp(fresh(), app("title: Chat\ngrants:\n  workflows: [grader-run]\n"));
+    const refused = await apps.publish(dir, "chat", { surface: "ai", actor: "bot" });
+    assert.equal(refused.ok, false);
+    assert.match(refused.ok ? "" : refused.errors.join("\n"), /only a person may grant it to an app: say in your reply that chat needs "grader-run" granted .*app\/grant \{ name: "chat", workflow: "grader-run" \}/);
+
+    await assert.rejects(apps.grant("chat", "plain"), /"plain" is not sealed/);
+    await assert.rejects(apps.grant("chat", "nope"), /no workflow "nope"/);
+    const g = await apps.grant("chat", "grader-run", { by: "alice", proposal: "p1" });
+    assert.deepEqual(g, { workflow: "grader-run", at: new Date(0).toISOString(), by: "alice", proposal: "p1" });
+    assert.ok((await apps.publish(dir, "chat", { surface: "ai", actor: "bot" })).ok, "granted: the builder's publish goes through");
+    assert.deepEqual((await apps.get("chat"))!.granted, [g]);
+    // Another app is not granted by it; automations stay refused.
+    assert.equal((await apps.publish(dir, "other", { surface: "ai", actor: "bot" })).ok, false);
+    const auto = await writeApp(fresh(), app("title: A\ngrants:\n  automations: [grader-run]\n"));
+    assert.equal((await apps.publish(auto, "chat", { surface: "ai", actor: "bot" })).ok, false);
+
+    assert.equal(await apps.revoke("chat", "grader-run"), true);
+    assert.equal(await apps.revoke("chat", "grader-run"), false);
+    assert.equal((await apps.publish(dir, "chat", { surface: "ai", actor: "bot" })).ok, false, "revoked: refused again");
+
+    // A person's publish naming it IS their grant.
+    assert.ok((await apps.publish(dir, "chat", { surface: "person", actor: "carol" })).ok);
+    assert.deepEqual((await apps.grantsOf("chat")).map((x) => [x.workflow, x.by]), [["grader-run", "carol"]]);
+    assert.equal(await apps.delete("chat"), true);
+    assert.deepEqual(await apps.grantsOf("chat"), [], "a new app of the same name starts with none");
+  });
+
+  it("app/grant runs only as a proposal a person accepted, the decider recorded", async () => {
+    const { ws, apps } = setup();
+    await ws.publishWorkflowByContent("grader-run", SEALED_WF);
+    const ctx = (extra: Record<string, unknown> = {}) =>
+      ({ runId: "r", path: "p", emit: async () => {}, services: { apps }, actor: "dana", ...extra }) as unknown as StepContext<StrutCapabilities>;
+    await assert.rejects(appGrant.run({ name: "chat", workflow: "grader-run" }, ctx()), /only as a proposal a person accepted/);
+    assert.deepEqual(await apps.grantsOf("chat"), []);
+    const out = (await appGrant.run({ name: "chat", workflow: "grader-run" }, ctx({ proposal: { id: "p9", by: { workflow: "orchestrator", runId: "1" } } }))) as Record<string, unknown>;
+    assert.deepEqual(out, { app: "chat", workflow: "grader-run", at: new Date(0).toISOString(), by: "dana", proposal: "p9" });
+    assert.equal(await apps.grantsOf("chat").then((l) => l.length), 1);
   });
 });
 
