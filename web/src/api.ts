@@ -2049,6 +2049,8 @@ export interface Catalog {
   packages: Record<string, { description?: string; releases: CatalogRelease[] }>;
   /** Channel → package → the digest that channel holds. */
   channels?: Record<string, Record<string, string>>;
+  /** On the fleet catalog: the publisher's PUBLIC key (§13, "One publisher, two keys"). */
+  public?: string;
   sig: string;
 }
 
@@ -2063,7 +2065,17 @@ export async function getCatalog(): Promise<Catalog | null> {
 /** `GET /publisher`: the key subscribers follow, and the publisher's NAME —
  *  the first segment of every package published here (plans/packages-ux.md
  *  §2); null before a key is minted. */
-export interface PublisherInfo { key: string; name?: string; host: "self"; createdAt: string }
+export interface PublisherInfo {
+  /** The FLEET key: what a subscribing strut follows. */
+  key: string;
+  name?: string;
+  host: "self";
+  createdAt: string;
+  /** The PUBLIC key, once a channel was made public: what the world will follow. */
+  public?: string;
+  /** The channels in the public catalog; every other channel is the fleet's alone. */
+  publicChannels: string[];
+}
 
 export async function getPublisher(): Promise<PublisherInfo | null> {
   const res = await apiFetch("/publisher");
@@ -2088,6 +2100,8 @@ export interface PublishRequest {
   /** Concept pages, each with the pages under it. */
   concepts?: string[];
   channel?: string;
+  /** With a channel: mark it public first (private → public only). */
+  public?: boolean;
 }
 
 /** `POST /packages/build { …, dryRun: true }`: what a build of these picks
@@ -2133,12 +2147,18 @@ export const publishPackage = (req: PublishRequest) =>
 
 /** Point `channel` at one of a package's releases (a rollback is moving it
  *  back), or with `digest: null` take the package out — every strut that
- *  follows the channel then uninstalls it. */
-export const moveChannel = (channel: string, pkg: string, digest: string | null) =>
-  fetchJSON<{ channel: string; package: string; digest: string | null }>(`/packages/channels/${encodeURIComponent(channel)}`, {
+ *  follows the channel then uninstalls it. `public: true` marks the channel
+ *  public first — **Make public** is this on the channel `public` — and the
+ *  release is listed in the public catalog, sealed by the public key, for
+ *  anyone; a public channel never goes private. */
+export const moveChannel = (channel: string, pkg: string, digest: string | null, opts: { public?: boolean } = {}) =>
+  fetchJSON<{ channel: string; package: string; digest: string | null; public: boolean }>(`/packages/channels/${encodeURIComponent(channel)}`, {
     method: "PUT",
-    body: JSON.stringify({ package: pkg, digest }),
+    body: JSON.stringify({ package: pkg, digest, ...(opts.public !== undefined ? { public: opts.public } : {}) }),
   });
+
+/** The channel **Make public** puts a release on. */
+export const PUBLIC_CHANNEL = "public";
 
 /** `GET /packages`: what is installed here, folded from the workspace. */
 export interface InstalledPackage {

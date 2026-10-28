@@ -34,7 +34,7 @@ import type { StepSources } from "./steps/registry.js";
 import { runWorkflow } from "./runner.js";
 import { RunController } from "./run-control.js";
 import { buildJournal, invalidateFrom, readRunStart } from "./journal.js";
-import { appIdentity, carriesApiKey, carriesPeerKey, carriesFileToken, carriesBadFileToken, catalogToken, catalogTokenOf, CATALOG_TOKEN_DAYS, fileToken, warnIfUnconfigured, actorFromHeader, inProcessOf, inProcessRequest, scopeFromKey, isPeerScope, personOf, personToken, PERSON_TOKEN_DAYS, unauthorized, issueSession, sessionCookie, sessionOf, isSecureRequest, type Scope } from "./auth.js";
+import { appIdentity, carriesApiKey, carriesPeerKey, carriesFileToken, carriesBadFileToken, catalogToken, catalogTokenOf, CATALOG_TOKEN_DAYS, publicPackageRead, fileToken, warnIfUnconfigured, actorFromHeader, inProcessOf, inProcessRequest, scopeFromKey, isPeerScope, personOf, personToken, PERSON_TOKEN_DAYS, unauthorized, issueSession, sessionCookie, sessionOf, isSecureRequest, type Scope } from "./auth.js";
 import { standardServices, fileArtifactsCapability } from "./capabilities.js";
 import type { ArtifactsCapability, SecretsCapability } from "./capabilities.js";
 import type { SecretStore } from "./secret-store.js";
@@ -84,7 +84,7 @@ import { appsRoot, isPreviewLabel, listAppFiles, readAppFile, validateAppName, w
 import { DOCUMENT_FILE, readBuildInfo, withToken, withoutTokenMeta } from "./apps/build.js";
 import { packArchive } from "./packages/archive.js";
 import { buildPackage, type BuildRequest } from "./packages/build.js";
-import { PUBLISHER_FILE, PUBLISHER_NAME, catalogStore, moveChannel, publishRelease, publisherStore } from "./packages/publisher.js";
+import { PUBLISHER_FILE, PUBLISHER_NAME, catalogStore, moveChannel, publicCatalogStore, publishRelease, publisherStore } from "./packages/publisher.js";
 import { SUBSCRIPTIONS_FILE, createSubscriptions, subscriptionProblem, type Subscription, type Subscriptions } from "./packages/subscriptions.js";
 import { packageCache } from "./packages/cache.js";
 import { workspaceFences } from "./packages/fence.js";
@@ -1361,7 +1361,11 @@ export async function createStrut<TServices = unknown>(
   //
   // A fifth: a CATALOG token (`catalogTokenOf`, auth.ts), a subscriber's
   // read of the catalog this strut published and of the archives it names
-  // (plans/marketplace.md §12.1). And a peer may POST one more route,
+  // (plans/marketplace.md §12.1) — and, marked `?public=1`, a read of the
+  // PUBLIC catalog and the archives it names with no credential at all
+  // (`publicPackageRead`, auth.ts; §13 "One publisher, two keys"): the
+  // routes serve nothing but what the public card lists, whatever the
+  // gate's mode. And a peer may POST one more route,
   // `/packages/subscriptions/sync`: it carries nothing, and makes this strut
   // read its own subscriptions' catalogs — what the publisher pings.
   //
@@ -1377,7 +1381,7 @@ export async function createStrut<TServices = unknown>(
     const path = c.req.path;
     const read = c.req.method === "GET" || c.req.method === "HEAD";
     const open = read
-      ? path === "/health" || (serveUi && UI_FILE.test(path)) || carriesFileToken(c) || !!catalogTokenOf(c)
+      ? path === "/health" || (serveUi && UI_FILE.test(path)) || carriesFileToken(c) || !!catalogTokenOf(c) || publicPackageRead(c)
       : path === "/auth/session" && (c.req.method === "POST" || c.req.method === "DELETE");
     if (open) return next();
     if (!carriesApiKey(c) && !carriesPeerKey(c) && !personOf(c)) return unauthorized(c);
@@ -2735,9 +2739,16 @@ export async function createStrut<TServices = unknown>(
     const pkg = `${c.req.param("publisher")}/${c.req.param("name")}`;
     const digest = c.req.query("digest") ?? "";
     if (!PACKAGE_DIGEST.test(digest)) return c.json({ error: "digest=sha256:<64 hex> is required" }, 400);
+    // A PUBLIC read (§13): `?public=1` opens a digest the public catalog
+    // lists, with no credential — and nothing else, whatever the gate's
+    // mode, since a host's gate hands such a read through (mcp's labAuth).
+    if (publicPackageRead(c)) {
+      const pub = await catalogDeps.publicCatalogs.current();
+      if (!pub?.card.packages[pkg]?.releases.some((r) => r.digest === digest)) return c.json({ error: `no public release of ${pkg} at ${digest} here` }, 404);
+    }
     // A subscriber's read (§12.1): a catalog token opens the digests this
     // strut's catalog names, no other package the cache holds.
-    if (c.req.query("t") !== undefined) {
+    else if (c.req.query("t") !== undefined) {
       const token = catalogTokenOf(c);
       const current = token ? await catalogDeps.catalogs.current() : undefined;
       if (!token || token.key !== current?.card.key) return c.json({ error: "unauthorized: not a catalog token this strut minted" }, 401);
@@ -2896,11 +2907,11 @@ export async function createStrut<TServices = unknown>(
         ? `STRUT_SECRET_KEY is not set, so ${PUBLISHER_FILE} would be stored under the dev default key — obfuscated, not encrypted. Set it and restart before publishing`
         : undefined,
   });
-  const catalogDeps = { publisher, catalogs: catalogStore(dataDir) };
+  const catalogDeps = { publisher, catalogs: catalogStore(dataDir), publicCatalogs: publicCatalogStore(dataDir) };
   /** A publisher refusal's code → its status, else as a package refusal. */
   const catalogError = (c: Context, err: unknown) => {
     const code = /^([a-z_]+):/.exec(err instanceof Error ? err.message : String(err))?.[1] ?? "";
-    const status = ({ publisher_unsafe_key: 409, publisher_name: 400, catalog_no_release: 404, catalog_channel: 400 } as Record<string, 400 | 404 | 409>)[code];
+    const status = ({ publisher_unsafe_key: 409, publisher_name: 400, catalog_no_release: 404, catalog_channel: 400, catalog_channel_public: 409, catalog_private_requirement: 409, publisher_not_public: 409 } as Record<string, 400 | 404 | 409>)[code];
     return status ? c.json({ error: (err as Error).message }, status) : packageError(c, err);
   };
   app.get("/publisher", async (c) => {
@@ -2951,8 +2962,9 @@ export async function createStrut<TServices = unknown>(
   // `channel` moved to it when named. One write at a time with the rest.
   app.post("/packages/publish", async (c) => {
     const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>);
-    const { channel, ...rest } = body;
+    const { channel, public: pub, ...rest } = body;
     if (channel !== undefined && typeof channel !== "string") return c.json({ error: "channel is a channel's name (stable, canary)" }, 400);
+    if (pub !== undefined && (typeof pub !== "boolean" || !channel)) return c.json({ error: "public is true to make the channel public (it needs a channel), or false" }, 400);
     const req = buildRequestOf(rest);
     if (typeof req === "string") return c.json({ error: req }, 400);
     try {
@@ -2963,7 +2975,7 @@ export async function createStrut<TServices = unknown>(
           throw new Error(`package_build_refused: ${req.package} is not under this strut's publisher ${info.name}: a package published here is named ${info.name}/<name>`);
         }
         const built = await buildPackage(packageDeps, req);
-        const catalog = await publishRelease(catalogDeps, { manifest: built.manifest, digest: built.digest, ...(channel ? { channel } : {}) });
+        const catalog = await publishRelease(catalogDeps, { manifest: built.manifest, digest: built.digest, ...(channel ? { channel } : {}), ...(pub !== undefined ? { public: pub as boolean } : {}) });
         return { built, catalog };
       });
       pingSubscribers(catalog.card.key);
@@ -2974,17 +2986,22 @@ export async function createStrut<TServices = unknown>(
   });
   // The catalog as served — its RFC 8785 bytes, which a reader checks
   // against the key it subscribed to — the current one, or one by digest.
+  // `?public=1` is the PUBLIC catalog, sealed by the public key, open to
+  // anyone (§13 "One publisher, two keys").
   app.get("/packages/catalog", async (c) => {
     const digest = c.req.query("digest");
     if (digest !== undefined && !PACKAGE_DIGEST.test(digest)) return c.json({ error: "digest is sha256:<64 hex>" }, 400);
-    const file = digest ? await catalogDeps.catalogs.get(digest) : await catalogDeps.catalogs.current();
+    const store = publicPackageRead(c) ? catalogDeps.publicCatalogs : catalogDeps.catalogs;
+    const file = digest ? await store.get(digest) : await store.current();
     // A `?t=` strut cannot vouch for is refused whatever the gate's mode,
     // as for a file token: a host's gate hands a token-bearing read through.
     const token = c.req.query("t") !== undefined ? catalogTokenOf(c) : undefined;
-    if (c.req.query("t") !== undefined && (!token || token.key !== (await publisher.get())?.key)) {
+    if (!publicPackageRead(c) && c.req.query("t") !== undefined && (!token || token.key !== (await publisher.get())?.key)) {
       return c.json({ error: "unauthorized: not a catalog token this strut minted" }, 401);
     }
-    if (!file) return c.json({ error: digest ? `no catalog at ${digest} here` : "this strut has published nothing yet" }, 404);
+    if (!file) {
+      return c.json({ error: digest ? `no ${publicPackageRead(c) ? "public " : ""}catalog at ${digest} here` : publicPackageRead(c) ? "this strut has made nothing public yet" : "this strut has published nothing yet" }, 404);
+    }
     const etag = `"${file.digest}"`;
     const headers = {
       "content-type": "application/json",
@@ -2997,18 +3014,23 @@ export async function createStrut<TServices = unknown>(
     return c.body(file.bytes.buffer.slice(file.bytes.byteOffset, file.bytes.byteOffset + file.bytes.byteLength) as ArrayBuffer, 200, headers);
   });
   // Point a channel at a release the catalog lists — a rollback is moving
-  // it back — or take a package out of it (`digest: null`).
+  // it back — or take a package out of it (`digest: null`). `public: true`
+  // marks the channel public first (**Make public** is this, on the
+  // channel `public`): the public key is minted, and the release is listed
+  // in the public catalog for anyone. A public channel never goes private.
   app.put("/packages/channels/:channel", async (c) => {
-    const body = await c.req.json<{ package?: unknown; digest?: unknown }>().catch(() => ({}) as { package?: unknown; digest?: unknown });
+    const body = await c.req.json<{ package?: unknown; digest?: unknown; public?: unknown }>().catch(() => ({}) as { package?: unknown; digest?: unknown; public?: unknown });
     if (typeof body.package !== "string" || !(body.digest === null || (typeof body.digest === "string" && PACKAGE_DIGEST.test(body.digest)))) {
       return c.json({ error: "package is publisher/name, and digest is sha256:<64 hex> or null" }, 400);
     }
+    if (body.public !== undefined && typeof body.public !== "boolean") return c.json({ error: "public is true to make the channel public, or false" }, 400);
     try {
       const catalog = await oneAtATime(() =>
-        moveChannel(catalogDeps, { channel: c.req.param("channel"), package: body.package as string, digest: body.digest as string | null }),
+        moveChannel(catalogDeps, { channel: c.req.param("channel"), package: body.package as string, digest: body.digest as string | null, ...(body.public !== undefined ? { public: body.public as boolean } : {}) }),
       );
       pingSubscribers(catalog.card.key);
-      return c.json({ channel: c.req.param("channel"), package: body.package, digest: body.digest, catalog: { key: catalog.card.key, seq: catalog.card.seq, digest: catalog.digest } });
+      const info = await publisher.get();
+      return c.json({ channel: c.req.param("channel"), package: body.package, digest: body.digest, public: info?.publicChannels.includes(c.req.param("channel")) ?? false, catalog: { key: catalog.card.key, seq: catalog.card.seq, digest: catalog.digest } });
     } catch (err) {
       return catalogError(c, err);
     }

@@ -1408,14 +1408,15 @@ and `pk:` are refused by name (`package_source_unsupported`).
 | POST   | `/packages/build` | `BuildRequest` → 201 `{ package, version, digest, files, requires, warnings }` (`src/packages/build.ts`): a package built from this workspace into the cache. With `dryRun: true`, 200 and the same answer with nothing kept: the package page's preview of what comes along. A person's act like install: full scope, one at a time with install and uninstall |
 | POST   | `/packages/install` | `{ ref: "file:/path/to/package", digest?: "sha256:<hex>" }` → 201 `InstallResult` (`src/packages/install.ts`). A person's act: behind the key at full scope (a peer is 403), one at a time |
 | DELETE | `/packages/:publisher/:name` | Uninstall → `{ ok: true, package, removed, kept }` (`UninstallResult`) |
-| GET    | `/packages/:publisher/:name/archive?digest=sha256:<hex>` | The package at that digest as a `.tar.gz` of its files (`content-type: application/gzip`, `ETag: "<digest>"`, `cache-control: private, max-age=31536000, immutable`; `If-None-Match` → 304). 400 without a well-formed `digest`; 404 when this strut holds no package `publisher/name` at that digest. Behind the key like every route |
+| GET    | `/packages/:publisher/:name/archive?digest=sha256:<hex>` | The package at that digest as a `.tar.gz` of its files (`content-type: application/gzip`, `ETag: "<digest>"`, `cache-control: private, max-age=31536000, immutable`; `If-None-Match` → 304). 400 without a well-formed `digest`; 404 when this strut holds no package `publisher/name` at that digest. Behind the key like every route; with `?t=` a subscriber's read of a digest the fleet catalog names; with `?public=1` anyone's read of a digest the PUBLIC catalog names (404 for any other, whatever the gate's mode) |
 | GET    | `/packages/:publisher/:name/items?digest=sha256:<hex>` | `{ package, version, digest, items: [{ kind: "workflow" \| "step" \| "app" \| "concept", name }] }`: what the package at that digest holds, each by its name INSIDE the package (`summarize` for `acme/tools/summarize`; a Concept by its page name), helpers left out — what the package page ticks from a release (`plans/packages-ux.md` §3). 400 without a well-formed `digest`; 404 when this strut's cache holds no package `publisher/name` at that digest |
-| GET    | `/publisher` | This strut's publisher key → `{ key, name?, host: "self", createdAt }` (`src/packages/publisher.ts`); 404 before one is minted. `name` is the publisher's prefix segment (`stakwork` in `stakwork/tools`), when set. Any credential may read it (a subscriber's, hive's) |
+| GET    | `/publisher` | This strut's publisher → `{ key, name?, host: "self", createdAt, public?, publicChannels }` (`src/packages/publisher.ts`); 404 before a key is minted. `key` is the FLEET key, what a subscribing strut follows; `public` the PUBLIC key, once a channel was made public — the only key the world sees; `publicChannels` the channels in the public catalog ("One publisher, two keys" below). `name` is the publisher's prefix segment (`stakwork` in `stakwork/tools`), when set. Any credential may read it (a subscriber's, hive's) |
 | POST   | `/publisher` | Mint the key → 201 `PublisherInfo`, or 200 with the one already here. 409 `publisher_unsafe_key` on a file store with `STRUT_SECRET_KEY` unset |
 | PUT    | `/publisher` | `{ name }` → `PublisherInfo`: the publisher's NAME, `[a-z][a-z0-9-]*` — the first segment of every package published here (`plans/packages-ux.md`). The web UI composes package names from it, so nobody types the prefix. Mints the key first when there is none (409 `publisher_unsafe_key` as above); 400 `publisher_name` for a name that is not one |
-| POST   | `/packages/publish` | `BuildRequest` + `channel?` → 201 `{ package, version, digest, files, requires, warnings, channel?, catalog: { key, seq, digest } }`: build, then the release added to the catalog (and the channel moved to it). Mints the key on first use. With a publisher `name` set, a `package` whose first segment is another is 400 `package_build_refused` before any build. Full scope, one at a time |
-| GET    | `/packages/catalog[?digest=sha256:<hex>]` | The catalog CARD as served (`application/json`, its RFC 8785 bytes; `ETag: "<catalog digest>"`, `If-None-Match` → 304): the current one (`cache-control: private, no-cache`), or an earlier one by digest (immutable). 404 before the first publish |
-| PUT    | `/packages/channels/:channel` | `{ package, digest }` → `{ channel, package, digest, catalog }`: the channel moved to a release the catalog lists — a rollback is moving it back — or, with `digest: null`, the package taken out of it. 404 `catalog_no_release`; 400 `catalog_channel` for a name that is not `[a-z0-9][a-z0-9._-]*` |
+| POST   | `/packages/publish` | `BuildRequest` + `channel?` + `public?` (with a channel: mark it public first) → 201 `{ package, version, digest, files, requires, warnings, channel?, catalog: { key, seq, digest } }`: build, then the release added to the catalog (and the channel moved to it). Mints the key on first use. With a publisher `name` set, a `package` whose first segment is another is 400 `package_build_refused` before any build. Full scope, one at a time |
+| GET    | `/packages/catalog[?digest=sha256:<hex>]` | The FLEET catalog CARD as served (`application/json`, its RFC 8785 bytes; `ETag: "<catalog digest>"`, `If-None-Match` → 304): the current one (`cache-control: private, no-cache`), or an earlier one by digest (immutable). 404 before the first publish |
+| GET    | `/packages/catalog?public=1[&digest=]` | The PUBLIC catalog the same way, sealed by the public key: the public channels and every release one holds or has held. Open to anyone — no credential; 404 before the first **Make public** (or for a fleet catalog's digest) |
+| PUT    | `/packages/channels/:channel` | `{ package, digest, public? }` → `{ channel, package, digest, public, catalog }`: the channel moved to a release the catalog lists — a rollback is moving it back — or, with `digest: null`, the package taken out of it. `public: true` marks the channel public first (**Make public** is this on the channel `public`); `false` on a public channel is 409 `catalog_channel_public` — what was published stays published. 409 `catalog_private_requirement` when the release goes public but requires a package no public channel holds. 404 `catalog_no_release`; 400 `catalog_channel` for a name that is not `[a-z0-9][a-z0-9._-]*` |
 | POST   | `/publisher/tokens` | `{ subscriber, days? }` → 201 `{ key, subscriber, token, exp }`: a READ TOKEN for a strut that subscribes to this one's catalog (default 60 days, at most 366). Full scope; the key is minted first when there is none |
 | GET    | `/packages/subscriptions` | `{ subscriptions: SubscriptionInfo[] }` (`src/packages/subscriptions.ts`): what this strut follows, what it accepted and applied, and each package it installed with the items edited here (`diverged`). Never a token |
 | PUT    | `/packages/subscriptions/:id` | `{ key, url, channel?, token? }` → the `SubscriptionInfo`; the first read starts at once, its outcome on the `GET`. The operator's act: full scope (a peer is 403). 400 `subscription_invalid` |
@@ -1675,6 +1676,24 @@ channel names a release the catalog lists, and with no channel a reader
 takes the newest release not yanked. `src/packages/card.test.ts` holds a
 test vector (RFC 8032's first key, a catalog, its fingerprint, seal and
 digest) for another implementation to check itself against.
+
+**One publisher, two keys** (`plans/marketplace.md` §13). A card's `seq`
+rule is per key, so one key cannot seal a catalog a fleet reads and
+another the world reads. The key minted first is the FLEET key: it seals
+the catalog above, the whole picture (every release, every channel), and
+is what a subscription follows. The first **Make public** — `PUT
+/packages/channels/public { package, digest, public: true }` — mints the
+PUBLIC key and marks the channel; from then on a second catalog, sealed by
+the public key and served at `GET /packages/catalog?public=1` with no
+credential, lists the public channels and every release one holds or has
+held (what was published stays published), and the archive route serves
+those digests to anyone as `?public=1`. A channel goes private → public
+only; a package has no visibility setting of its own, its releases are
+public once a public channel holds them; a release that requires a package
+no public channel holds may not go public (`catalog_private_requirement`).
+The fleet card names the public key as `public`; the public card never
+names the fleet key. On a swarm, mcp's `labAuth` hands a `?public=1` read
+through as it does a `?t=` one, and strut judges it.
 
 **A read token** opens two routes, as `?t=<token>`: `GET
 /packages/catalog`, and `GET /packages/:publisher/:name/archive` for a

@@ -26,6 +26,7 @@ let root: string;
 let ws: WorkspaceManager;
 let strut: Strut;
 let savedKey: string | undefined;
+let savedApiKey: string | undefined;
 
 const boot = () =>
   createStrut({
@@ -57,7 +58,9 @@ const catalog = async (query = "") => {
 beforeEach(async () => {
   root = await mkdtemp(join(tmpdir(), "strut-publish-"));
   savedKey = process.env["STRUT_SECRET_KEY"];
+  savedApiKey = process.env["STRUT_API_KEY"];
   process.env["STRUT_SECRET_KEY"] = "publisher-test-secret";
+  delete process.env["STRUT_API_KEY"];
   ws = new WorkspaceManager(join(root, "workspace"));
   strut = await boot();
   await ws.publishStep("acme/linear/fetch", STEP("acme/linear/fetch", "one"));
@@ -67,6 +70,8 @@ afterEach(async () => {
   await strut.close?.();
   if (savedKey === undefined) delete process.env["STRUT_SECRET_KEY"];
   else process.env["STRUT_SECRET_KEY"] = savedKey;
+  if (savedApiKey === undefined) delete process.env["STRUT_API_KEY"];
+  else process.env["STRUT_API_KEY"] = savedApiKey;
   await rm(root, { recursive: true, force: true });
 });
 
@@ -147,6 +152,138 @@ describe("publishing packages from this strut", () => {
     const again = await publish({ version: "1.1.0" });
     assert.equal(again.body.digest, second.body.digest);
     assert.equal(readCard((await catalog()).text, { key }).card.packages["acme/linear"]!.releases.length, 2);
+  });
+
+  it("makes a release public: a second key seals a public catalog of the public channels alone, open to anyone", async () => {
+    // Everything else on this strut needs the key; the public reads do not.
+    process.env["STRUT_API_KEY"] = "publisher-test-api-key";
+    const auth = { authorization: "Bearer publisher-test-api-key" };
+    const withKey = (path: string, init?: RequestInit) => req(path, { ...init, headers: { ...(init?.headers as Record<string, string> | undefined), ...auth } });
+    const publishAs = async (body: Record<string, unknown>) => {
+      const res = await withKey("/packages/publish", json({ package: "acme/linear", workflows: ["acme/linear/sync"], ...body }));
+      return { status: res.status, body: (await res.json()) as { digest: string; catalog: { key: string; seq: number; digest: string }; error?: string } };
+    };
+    const move = async (channel: string, digest: string | null, pub?: boolean) => {
+      const res = await withKey(`/packages/channels/${channel}`, json({ package: "acme/linear", digest, ...(pub !== undefined ? { public: pub } : {}) }, "PUT"));
+      return { status: res.status, body: (await res.json()) as { public?: boolean; catalog: { key: string; seq: number; digest: string }; error?: string } };
+    };
+    const publicCatalog = async (query = "") => {
+      const res = await req(`/packages/catalog?public=1${query}`); // no credential
+      return { res, text: await res.text() };
+    };
+
+    const v1 = await publishAs({ version: "1.0.0", channel: "stable" });
+    assert.equal(v1.status, 201, JSON.stringify(v1.body));
+    await ws.publishWorkflow("acme/linear/sync", "v2", FLOW("Sync the issues, faster"));
+    const v2 = await publishAs({ version: "1.1.0", channel: "stable" });
+    const fleetKey = v2.body.catalog.key;
+    // Nothing is public yet: the public reads find nothing, and leak nothing.
+    assert.equal((await publicCatalog()).res.status, 404);
+    assert.equal((await req(`/packages/acme/linear/archive?digest=${v1.body.digest}&public=1`)).status, 404);
+    assert.equal((await req(`/packages/acme/linear/archive?digest=${v1.body.digest}`)).status, 401, "the plain read still needs the key");
+    assert.equal((await req("/packages/catalog")).status, 401);
+    const before = (await (await withKey("/publisher")).json()) as { key: string; public?: string; publicChannels: string[] };
+    assert.equal(before.public, undefined);
+    assert.deepEqual(before.publicChannels, []);
+
+    // Make public: the channel `public` is marked and moved to 1.0.0 — the public key is minted then.
+    const made = await move("public", v1.body.digest, true);
+    assert.equal(made.status, 200, JSON.stringify(made.body));
+    assert.equal(made.body.public, true);
+    const info = (await (await withKey("/publisher")).json()) as { key: string; public?: string; publicChannels: string[] };
+    assert.equal(info.key, fleetKey, "the fleet key is the one minted first");
+    assert.match(info.public!, /^[ybndrfg8ejkmcpqxot1uwisza345h769]{52}$/);
+    assert.notEqual(info.public, fleetKey);
+    assert.deepEqual(info.publicChannels, ["public"]);
+
+    // The public catalog: sealed by the public key, the public channel and what it holds — never 1.1.0, never `stable`, never the fleet key.
+    const pub1 = await publicCatalog();
+    assert.equal(pub1.res.status, 200);
+    const pubCard1 = readCard(pub1.text, { key: info.public! });
+    assert.deepEqual(pubCard1.card.packages, { "acme/linear": { releases: [{ version: "1.0.0", digest: v1.body.digest }] } });
+    assert.deepEqual(pubCard1.card.channels, { public: { "acme/linear": v1.body.digest } });
+    assert.equal(pubCard1.card.public, undefined);
+    assert.ok(!pub1.text.includes(fleetKey), "the public card never names the fleet key");
+    assert.throws(() => readCard(pub1.text, { key: fleetKey }), /catalog_key/);
+    // The fleet catalog is the whole picture, and names the public key.
+    const fleet = readCard((await (await withKey("/packages/catalog")).text()), { key: fleetKey });
+    assert.equal(fleet.card.public, info.public);
+    assert.deepEqual(fleet.card.channels, { public: { "acme/linear": v1.body.digest }, stable: { "acme/linear": v2.body.digest } });
+    assert.equal(fleet.card.packages["acme/linear"]!.releases.length, 2);
+    // A public digest is served with no credential; a private one is not, even marked public.
+    assert.equal((await req(`/packages/acme/linear/archive?digest=${v1.body.digest}&public=1`)).status, 200);
+    assert.equal((await req(`/packages/acme/linear/archive?digest=${v2.body.digest}&public=1`)).status, 404);
+    assert.equal((await req(`/packages/catalog?public=1&digest=${pubCard1.digest}`)).status, 200, "an earlier public catalog by digest");
+    assert.equal((await req(`/packages/catalog?public=1&digest=${fleet.digest}`)).status, 404, "a fleet catalog is not served as public");
+
+    // A publish onto a private channel changes the public catalog not at all; onto the public channel, it carries the earlier release forward.
+    await ws.publishWorkflow("acme/linear/sync", "v3", FLOW("Sync the issues, fastest"));
+    const v3 = await publishAs({ version: "1.2.0", channel: "canary" });
+    assert.equal(v3.status, 201);
+    assert.equal(readCard((await publicCatalog()).text, { key: info.public! }).digest, pubCard1.digest, "unchanged");
+    const v3public = await publishAs({ version: "1.2.0", channel: "public" });
+    assert.equal(v3public.status, 201);
+    const pubCard2 = readCard((await publicCatalog()).text, { key: info.public!, last: { seq: pubCard1.card.seq, digest: pubCard1.digest } });
+    assert.deepEqual(pubCard2.card.packages["acme/linear"]!.releases.map((r) => r.version), ["1.2.0", "1.0.0"], "what was published stays published; 1.1.0 was never public");
+    assert.deepEqual(pubCard2.card.channels, { public: { "acme/linear": v3.body.digest } });
+
+    // A public channel never goes private; another channel may go public by name.
+    const back = await move("public", v1.body.digest, false);
+    assert.equal(back.status, 409);
+    assert.match(back.body.error!, /^catalog_channel_public: public is public/);
+    const beta = await move("beta", v2.body.digest, true);
+    assert.equal(beta.status, 200, JSON.stringify(beta.body));
+    assert.deepEqual(((await (await withKey("/publisher")).json()) as { publicChannels: string[] }).publicChannels, ["beta", "public"]);
+    assert.deepEqual(readCard((await publicCatalog()).text, { key: info.public! }).card.channels, { beta: { "acme/linear": v2.body.digest }, public: { "acme/linear": v3.body.digest } });
+    // Taking the package out of the public channel leaves its releases public.
+    const out = await move("public", null);
+    assert.equal(out.status, 200);
+    const pubCard3 = readCard((await publicCatalog()).text, { key: info.public! });
+    assert.deepEqual(pubCard3.card.channels, { beta: { "acme/linear": v2.body.digest } });
+    assert.equal(pubCard3.card.packages["acme/linear"]!.releases.length, 3);
+
+    // The keys outlive the process, in the one encrypted record.
+    await strut.close?.();
+    strut = await boot();
+    const again = (await (await withKey("/publisher")).json()) as { key: string; public?: string; publicChannels: string[] };
+    assert.deepEqual(again, { ...again, key: fleetKey, public: info.public, publicChannels: ["beta", "public"] });
+    assert.equal((await publicCatalog()).res.status, 200);
+  });
+
+  it("refuses a public release that requires a package no public channel holds", async () => {
+    // acme/util, which acme/linear requires, is published privately.
+    await ws.publishStep("acme/util/fetch", STEP("acme/util/fetch", "util"));
+    await ws.publishWorkflow("acme/util/sync", "v1", "name: acme/util/sync\nsteps:\n  - { id: s, type: acme/util/fetch }\n");
+    const util = await publish({ version: "1.0.0", package: "acme/util", workflows: ["acme/util/sync"], channel: "stable" });
+    assert.equal(util.status, 201, JSON.stringify(util.body));
+    await ws.publishWorkflow("acme/linear/sync", "v2", "name: acme/linear/sync\nsteps:\n  - { id: s, type: acme/linear/fetch }\n  - { id: u, type: subflow, config: { workflow: acme/util/sync } }\n");
+    const requires = { packages: [{ package: "acme/util", digest: util.body.digest }] };
+    const linear = await publish({ version: "2.0.0", channel: "stable", requires });
+    assert.equal(linear.status, 201, JSON.stringify(linear.body));
+    const move = async (pkg: string, digest: string) => {
+      const res = await req("/packages/channels/public", json({ package: pkg, digest, public: true }, "PUT"));
+      return { status: res.status, body: (await res.json()) as { error?: string } };
+    };
+    const refused = await move("acme/linear", linear.body.digest);
+    assert.equal(refused.status, 409, JSON.stringify(refused.body));
+    assert.match(refused.body.error!, /^catalog_private_requirement: acme\/linear 2\.0\.0 requires acme\/util at sha256:/);
+    // Nothing moved: the fleet catalog's `public` channel is empty, and no public catalog was written.
+    const fleet = JSON.parse(await (await req("/packages/catalog")).text()) as Catalog;
+    assert.equal(fleet.channels?.["public"], undefined);
+    assert.equal((await req("/packages/catalog?public=1")).status, 404);
+    // The required package first, then the one that requires it.
+    assert.equal((await move("acme/util", util.body.digest)).status, 200);
+    assert.equal((await move("acme/linear", linear.body.digest)).status, 200);
+    const pub = JSON.parse(await (await req("/packages/catalog?public=1")).text()) as Catalog;
+    assert.deepEqual(Object.keys(pub.packages).sort(), ["acme/linear", "acme/util"]);
+    // A publish straight onto the public channel is held to the same rule.
+    await ws.publishWorkflow("acme/util/sync", "v2", "name: acme/util/sync\ndescription: again\nsteps:\n  - { id: s, type: acme/util/fetch }\n");
+    const util2 = await publish({ version: "1.1.0", package: "acme/util", workflows: ["acme/util/sync"], channel: "stable" });
+    await ws.publishWorkflow("acme/linear/sync", "v3", "name: acme/linear/sync\ndescription: again\nsteps:\n  - { id: s, type: acme/linear/fetch }\n  - { id: u, type: subflow, config: { workflow: acme/util/sync } }\n");
+    const linear2 = await publish({ version: "2.1.0", channel: "public", requires: { packages: [{ package: "acme/util", digest: util2.body.digest }] } });
+    assert.equal(linear2.status, 409, JSON.stringify(linear2.body));
+    assert.match(linear2.body.error!, /^catalog_private_requirement: acme\/linear 2\.1\.0 requires acme\/util/);
+    assert.equal(util2.status, 201);
   });
 
   it("refuses to mint a key or publish while the secret store runs on the dev default key", async () => {

@@ -37,7 +37,7 @@ export function channelNames(catalog: api.Catalog | null): string[] {
  *  release newest first. A channel moves to any release — an earlier one is
  *  a rollback — and taking the package out of a channel uninstalls it from
  *  every strut that follows the channel. Each move pings the peers on file. */
-export function CatalogPackage(props: { name: string; catalog: api.Catalog; onChanged: () => void }) {
+export function CatalogPackage(props: { name: string; catalog: api.Catalog; publicChannels: string[]; onChanged: () => void }) {
   const entry = props.catalog.packages[props.name];
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -46,12 +46,15 @@ export function CatalogPackage(props: { name: string; catalog: api.Catalog; onCh
   const held = (ch: string) => props.catalog.channels?.[ch]?.[props.name];
   const versionAt = (digest: string) => entry.releases.find((r) => r.digest === digest)?.version ?? shortDigest(digest);
   const holding = channels.filter((ch) => held(ch));
+  const isPublic = (ch: string) => props.publicChannels.includes(ch);
+  // A release is public once a public channel holds it, and stays so.
+  const everPublic = (digest: string) => props.publicChannels.some((ch) => held(ch) === digest);
 
-  const move = async (channel: string, digest: string | null) => {
+  const move = async (channel: string, digest: string | null, opts: { public?: boolean } = {}) => {
     setBusy(true);
     setError(null);
     try {
-      await api.moveChannel(channel, props.name, digest);
+      await api.moveChannel(channel, props.name, digest, opts);
       props.onChanged();
     } catch (err) {
       setError(errorMessage(err));
@@ -67,9 +70,11 @@ export function CatalogPackage(props: { name: string; catalog: api.Catalog; onCh
       {holding.length === 0 && <div class="auto-hint">On no channel: no strut that follows a channel installs it.</div>}
       {holding.map((ch) => (
         <div class="auto-card-actions package-channel" key={ch}>
-          <span class="package-channel-name"><span class="badge badge-accent">{ch}</span> holds {versionAt(held(ch)!)}</span>
+          <span class="package-channel-name"><ChannelBadge name={ch} public={isPublic(ch)} /> holds {versionAt(held(ch)!)}</span>
           <ConfirmButton class="btn" label="Take out" disabled={busy}
-            note={`Take ${props.name} out of ${ch}? Every strut that follows ${ch} uninstalls it (items edited there are kept).`}
+            note={isPublic(ch)
+              ? `Take ${props.name} out of ${ch}? Its public catalog no longer offers it on ${ch}; what was published stays published.`
+              : `Take ${props.name} out of ${ch}? Every strut that follows ${ch} uninstalls it (items edited there are kept).`}
             confirmLabel="Take out" onConfirm={() => void move(ch, null)} />
         </div>
       ))}
@@ -81,20 +86,27 @@ export function CatalogPackage(props: { name: string; catalog: api.Catalog; onCh
             <div class="package-release" key={r.digest}>
               <div class="package-release-head">
                 <span class="package-version">{r.version}</span>
-                {on.map((ch) => <span class="badge badge-accent" key={ch}>{ch}</span>)}
+                {on.map((ch) => <ChannelBadge key={ch} name={ch} public={isPublic(ch)} />)}
                 {r.yanked && <span class="badge badge-warning" title={r.yanked}>yanked</span>}
                 <code class="package-digest" title={r.digest}>{shortDigest(r.digest)}</code>
                 {r.requires?.secrets?.length ? <span class="auto-meta">needs {r.requires.secrets.join(", ")}</span> : null}
               </div>
-              {offer.length > 0 && (
+              {(offer.length > 0 || !everPublic(r.digest)) && (
                 <div class="auto-card-actions">
                   {offer.map((ch) => (
                     <ConfirmButton key={ch} class="btn" label={`Put on ${ch}`} disabled={busy} tone="primary"
-                      note={held(ch)
-                        ? `Move ${ch} from ${versionAt(held(ch)!)} to ${r.version}? Every strut that follows ${ch} moves with it.`
-                        : `Put ${r.version} on ${ch}? Every strut that follows ${ch} installs it.`}
+                      note={isPublic(ch)
+                        ? `Put ${r.version} on ${ch}, a public channel? Anyone may install it from this strut's public catalog, and what was published stays published.`
+                        : held(ch)
+                          ? `Move ${ch} from ${versionAt(held(ch)!)} to ${r.version}? Every strut that follows ${ch} moves with it.`
+                          : `Put ${r.version} on ${ch}? Every strut that follows ${ch} installs it.`}
                       confirmLabel={`Put on ${ch}`} onConfirm={() => void move(ch, r.digest)} />
                   ))}
+                  {!everPublic(r.digest) && !channels.includes(api.PUBLIC_CHANNEL) && (
+                    <ConfirmButton class="btn" label="Make public" disabled={busy} tone="primary"
+                      note={`Make ${r.version} public? It is listed in this strut's PUBLIC catalog, sealed by a second key, on the channel ${api.PUBLIC_CHANNEL} — for anyone to install. What was published stays published.`}
+                      confirmLabel="Make public" onConfirm={() => void move(api.PUBLIC_CHANNEL, r.digest, { public: true })} />
+                  )}
                 </div>
               )}
             </div>
@@ -105,7 +117,16 @@ export function CatalogPackage(props: { name: string; catalog: api.Catalog; onCh
   );
 }
 
-/** The publisher's name, set once (`PUT /publisher`), beside the key. */
+/** A channel's badge: a public one says so. */
+function ChannelBadge(props: { name: string; public: boolean }) {
+  return (
+    <span class={`badge ${props.public ? "badge-warning" : "badge-accent"}`} title={props.public ? "A public channel: in the public catalog, for anyone" : "A private channel: in the fleet catalog, for the struts that follow it"}>
+      {props.name}{props.public && " · public"}
+    </span>
+  );
+}
+
+/** The publisher's name, set once (`PUT /publisher`), beside the keys. */
 function PublisherHead(props: { publisher: api.PublisherInfo | null | undefined; onChanged: (p: api.PublisherInfo) => void }) {
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
@@ -139,11 +160,21 @@ function PublisherHead(props: { publisher: api.PublisherInfo | null | undefined;
         )}
         {props.publisher && (
           <span class="package-key">
-            <code class="package-digest" title="The key a subscribing strut follows">{props.publisher.key}</code>
-            <CopyButton value={props.publisher.key} label="Copy the publisher key" />
+            <span class="auto-meta">fleet</span>
+            <code class="package-digest" title="The FLEET key: what a subscribing strut follows">{props.publisher.key}</code>
+            <CopyButton value={props.publisher.key} label="Copy the fleet key" />
           </span>
         )}
       </div>
+      {props.publisher?.public && (
+        <div class="publisher-head">
+          <span class="package-key">
+            <span class="auto-meta">public</span>
+            <code class="package-digest" title="The PUBLIC key: seals the public catalog, the only key the world sees">{props.publisher.public}</code>
+            <CopyButton value={props.publisher.public} label="Copy the public key" />
+          </span>
+        </div>
+      )}
       {!name && props.publisher !== undefined && (
         <div class="auto-hint publisher-hint">
           The publisher is the first segment of every package published here (<code>stakwork</code> in <code>stakwork/tools</code>). Set it once.
@@ -160,6 +191,8 @@ function PackagePage(props: {
   pkg: string;
   publisher?: string;
   catalog: api.Catalog | null;
+  /** The channels in the public catalog (`GET /publisher`). */
+  publicChannels: string[];
   workflows: api.WorkflowEntry[];
   apps: api.AppListEntry[];
   /** The installed packages' names: their items are someone else's. */
@@ -387,6 +420,7 @@ function PackagePage(props: {
           {channelNames(props.catalog).map((ch) => <option key={ch} value={ch} />)}
         </datalist>
         {!channel.trim() && <div class="auto-hint">No channel: the release is listed, and no strut moves to it.</div>}
+        {props.publicChannels.includes(channel.trim()) && <div class="auto-hint">{channel.trim()} is public: the release is listed in the public catalog, for anyone.</div>}
       </div>
       <div class="dialog-field">
         <label>Description</label>
@@ -434,7 +468,7 @@ function PackagePage(props: {
       <div class="flyout-section">
         <div class="flyout-section-title">Releases</div>
         {!entry && <div class="auto-hint">Not published yet.</div>}
-        {props.catalog && entry && <CatalogPackage name={props.pkg} catalog={props.catalog} onChanged={props.onChanged} />}
+        {props.catalog && entry && <CatalogPackage name={props.pkg} catalog={props.catalog} publicChannels={props.publicChannels} onChanged={props.onChanged} />}
       </div>
     </>
   );
@@ -496,9 +530,9 @@ export function PackagesDialog(props: { onClose: () => void }) {
         <div class="dialog-title">Packages</div>
 
         {open ? (
-          <PackagePage key={open} pkg={open} publisher={publisher?.name} catalog={catalog ?? null} workflows={workflows} apps={apps}
-            installed={installedNames} concepts={hasConcepts} peers={peers}
-            onBack={() => setOpen(null)} onChanged={() => void loadCatalog()} />
+          <PackagePage key={open} pkg={open} publisher={publisher?.name} catalog={catalog ?? null} publicChannels={publisher?.publicChannels ?? []}
+            workflows={workflows} apps={apps} installed={installedNames} concepts={hasConcepts} peers={peers}
+            onBack={() => setOpen(null)} onChanged={() => { void loadCatalog(); api.getPublisher().then(setPublisher, failed("catalog")); }} />
         ) : (
           <>
             <div class="flyout-section">

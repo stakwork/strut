@@ -55,6 +55,12 @@ export interface UnsignedCatalog {
   packages: Record<string, CatalogPackage>;
   /** Channel → package → the digest that channel holds. */
   channels?: Record<string, Record<string, string>>;
+  /** On a FLEET catalog: the publisher's PUBLIC key, z-base-32 — the
+   *  key that seals its public catalog (plans/marketplace.md §13, "One
+   *  publisher, two keys"), so a strut that follows the fleet key knows
+   *  both keys are one publisher. A public catalog never names the fleet
+   *  key. A reader that does not know the member ignores it. */
+  public?: string;
 }
 
 export interface Catalog extends UnsignedCatalog {
@@ -106,6 +112,8 @@ export function cardDigest(bytes: string | Buffer): string {
 // ── keys ─────────────────────────────────────────────────────────────────
 
 const Z32 = "ybndrfg8ejkmcpqxot1uwisza345h769";
+/** A 32-byte key in z-base-32: 52 characters of the alphabet. */
+export const Z32_KEY = /^[ybndrfg8ejkmcpqxot1uwisza345h769]{52}$/;
 
 /** z-base-32, the form Pkarr writes a 32-byte key in (52 characters). */
 export function z32Encode(bytes: Buffer): string {
@@ -223,6 +231,7 @@ function shapeProblem(card: Catalog): string | undefined {
       if (!card.packages[pkg]?.releases.some((r) => r.digest === digest)) return `the channel ${channel} holds ${pkg} at ${digest}, which the catalog does not list`;
     }
   }
+  if (card.public !== undefined && !(typeof card.public === "string" && Z32_KEY.test(card.public))) return "public is a key in z-base-32";
   return undefined;
 }
 
