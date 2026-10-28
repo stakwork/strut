@@ -53,7 +53,7 @@ import {
   isValidSecretName,
 } from "./secret-store.js";
 import { runStep, cassettePath, RUN_STEP_FLOW } from "./run-step.js";
-import { RUN_GET_MAX_WAIT_MS, RUN_LIST_DEFAULT_LIMIT, RUN_LIST_MAX_LIMIT, capEvents, capTranscript, fileResult, listEntryOf, matchesRunFilter, type RunListEntry, type RunTranscript, type RunsCapability } from "./runs.js";
+import { RUN_GET_MAX_WAIT_MS, RUN_LIST_DEFAULT_LIMIT, RUN_LIST_MAX_LIMIT, capEvents, capTranscript, fileResult, listEntryOf, matchesRunFilter, type RunCaller, type RunListEntry, type RunTranscript, type RunsCapability } from "./runs.js";
 import type { AppRef, StartedBy } from "./core.js";
 import { createVerifier, type Verifier, type VerifyResult } from "./verify.js";
 import { CLAIMS_OFF, type ClaimsBlock } from "./claims-schemas.js";
@@ -76,6 +76,7 @@ import { stepStats } from "./step-stats.js";
 import { AI_PUBLISHER, buildAuthoringCapability } from "./authoring.js";
 import type { ReachPolicy } from "./reach.js";
 import { appErrors, createApps, type AppsCapability, type AppPublishResult } from "./apps/apps.js";
+import { fileAppGrants } from "./apps/grants.js";
 import { createAppMonitor, type AppMonitor } from "./apps/monitor.js";
 import { seedViewsApp } from "./apps/views-seed.js";
 import type { KitLocation } from "./apps/kit.js";
@@ -1036,6 +1037,10 @@ export async function createStrut<TServices = unknown>(
   // dot and `app/get`'s `usage` — kept in each app's `.usage/` under dataDir,
   // so a restart loses only the last few seconds.
   const appMonitor = createAppMonitor({ root: appsRoot(dataDir) });
+  // A person's grants of sealed workflows to an app — the assistant for an
+  // app's own chat (src/apps/grants.ts): read by the publish and by the run
+  // doors below (`openFlow`), on every backend under dataDir.
+  const appGrants = fileAppGrants(dataDir);
   const apps: AppsCapability =
     ((services as Record<string, unknown>)["apps"] as AppsCapability | undefined) ??
     createApps({
@@ -1046,6 +1051,8 @@ export async function createStrut<TServices = unknown>(
       // off the run store, newest first, when `app/get` asks.
       errors: (name, max) => appErrors(store, name, max),
       monitor: appMonitor,
+      // A person's grants of sealed workflows (src/apps/grants.ts).
+      grants: appGrants,
       // An app's declared graph types are registered here, on Neo4j.
       ...(graph ? { graph } : {}),
     });
@@ -2672,6 +2679,38 @@ export async function createStrut<TServices = unknown>(
     // Pinning holds an app that followed latest (plans/app-releases.md): `release` is the one made.
     const live = (await workspace.getApp(at.name))?.live ?? "latest";
     return c.json({ ok: true, name: at.name, pinned: body.pinned, live, ...(made ? { release: made } : {}) });
+  });
+
+  // A person's grants of SEALED workflows to an app (src/apps/grants.ts):
+  // the assistant (`orchestrator`) for an app with a chat of its own. The
+  // builder's door is `app/grant`, run on an accepted proposal; this is a
+  // person's own, like `/pin`. By the app's name: it need not be published
+  // yet. `DELETE …?workflow=` takes one back.
+  app.get("/apps/:name/grants", async (c) => {
+    const at = appRoute(c);
+    if (at instanceof Response) return at;
+    return c.json({ name: at.name, grants: await apps.grantsOf(at.name) });
+  });
+  app.post("/apps/:name/grants", async (c) => {
+    const at = appRoute(c);
+    if (at instanceof Response) return at;
+    const body = (await c.req.json().catch(() => ({}))) as { workflow?: unknown };
+    if (typeof body.workflow !== "string" || !body.workflow) return c.json({ error: "workflow is required: the sealed workflow the app's pages may run" }, 400);
+    try {
+      const actor = await resolveActor(c);
+      return c.json({ ok: true, name: at.name, grant: await apps.grant(at.name, body.workflow, actor ? { by: actor } : {}) }, 201);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json({ error: message }, /^no workflow/.test(message) ? 404 : 400);
+    }
+  });
+  app.delete("/apps/:name/grants", async (c) => {
+    const at = appRoute(c);
+    if (at instanceof Response) return at;
+    const workflow = c.req.query("workflow") ?? "";
+    if (!workflow) return c.json({ error: "workflow=<name> is required" }, 400);
+    if (!(await apps.revoke(at.name, workflow))) return c.json({ error: `${at.name} holds no grant of "${workflow}"` }, 404);
+    return c.json({ ok: true, name: at.name, workflow });
   });
 
   app.delete("/apps/:name", async (c) => {
@@ -4337,11 +4376,38 @@ export async function createStrut<TServices = unknown>(
   const launchKeys = new Map<string, string>();
   const liveKey = (workflow: string, runId: string) => controllers.has(`${workflow}/${runId}`);
   /** The active flow — or a throw: unknown, or sealed (these are a model's
-   *  door; EVOLVE_SPEC §6). */
-  const openFlow = async (name: string): Promise<Flow> => {
+   *  door; EVOLVE_SPEC §6). A sealed workflow a PERSON granted the calling
+   *  app (src/apps/grants.ts: the assistant, for the app's own chat) opens
+   *  to that app's pages, `scoped`: they reach only the runs the app
+   *  launched for the same viewer (`ownRun`) — a sealed workflow's runs are
+   *  its people's conversations. */
+  const openFlow = async (name: string, by?: RunCaller): Promise<{ flow: Flow; scoped: boolean }> => {
     const flow = await workspace.getWorkflow(name);
-    if (flow.sealed) throw new Error(`workflow "${name}" is sealed — its runs are not readable or launchable from here`);
-    return flow;
+    if (!flow.sealed) return { flow, scoped: false };
+    if (by?.app && (await appGrants.has(by.app.name, name))) return { flow, scoped: true };
+    throw new Error(
+      by?.app
+        ? `workflow "${name}" is sealed — a person grants it to an app (app/grant, approved by them); ${by.app.name} holds no grant of it`
+        : `workflow "${name}" is sealed — its runs are not readable or launchable from here`,
+    );
+  };
+  /** The scoped launches still live, by `<workflow>/<runId>`: who they were
+   *  for, before the run's `run.start` is in its log. */
+  const scopedLaunches = new Map<string, { app: string; actor: string }>();
+  /** Was the run launched by `by.app` for `by.actor`? The summary's stamp,
+   *  a live run's `run.start`, or the launch itself. */
+  const ownRun = async (workflow: string, runId: string, by: RunCaller | undefined): Promise<boolean> => {
+    const launched = scopedLaunches.get(`${workflow}/${runId}`);
+    if (launched) return launched.app === by?.app?.name && launched.actor === (by?.actor ?? "");
+    const stamp: { app?: AppRef; actor?: string } | null =
+      (await store.getRunSummary(workflow, runId)) ?? (await store.getRunEvents(workflow, runId)).find((e) => e.type === "run.start") ?? null;
+    return !!stamp && stamp.app?.name === by?.app?.name && (stamp.actor ?? "") === (by?.actor ?? "");
+  };
+  /** `openFlow` for one run: a scoped caller's own runs only — any other is
+   *  not there, as a run that does not exist is not. */
+  const openRun = async (workflow: string, runId: string, by: RunCaller | undefined): Promise<{ flow: Flow; visible: boolean }> => {
+    const { flow, scoped } = await openFlow(workflow, by);
+    return { flow, visible: !scoped || (await ownRun(workflow, runId, by)) };
   };
   /** A job's runs, newest first, off its record — every workflow it ran;
    *  a sealed workflow's runs left out (a model's door). */
@@ -4358,9 +4424,9 @@ export async function createStrut<TServices = unknown>(
     return out;
   };
   const runsCap: RunsCapability = {
-    async list(q) {
+    async list(q, by) {
       if (!q.workflow && !q.job) throw new Error("run/list needs `workflow`, or `job` for a job's runs");
-      if (q.workflow) await openFlow(q.workflow);
+      const scoped = q.workflow ? (await openFlow(q.workflow, by)).scoped : false;
       const limit = Math.min(RUN_LIST_MAX_LIMIT, Math.max(1, q.limit ?? RUN_LIST_DEFAULT_LIMIT));
       // One workflow's runs, or a job's across its workflows (its record).
       const rows = q.workflow
@@ -4374,13 +4440,14 @@ export async function createStrut<TServices = unknown>(
           ? listEntryOf(summary)
           : { runId, workflow, status: liveStatus(workflow, runId), ...liveJob(controllers.get(`${workflow}/${runId}`)), ...(q.workflow ? {} : { job: q.job }) } as RunListEntry;
         if (!matchesRunFilter(row, q)) continue;
+        if (scoped && !(await ownRun(workflow, runId, by))) continue;
         const artifacts = summary ? await artifactRefs(runId, summary.output, summary.job).catch(() => undefined) : undefined;
         out.push({ ...row, ...(artifacts ? { artifacts } : {}) });
       }
       return out;
     },
-    async get(q) {
-      await openFlow(q.workflow);
+    async get(q, by) {
+      if (!(await openRun(q.workflow, q.runId, by)).visible) return null;
       const deadline = Date.now() + Math.min(RUN_GET_MAX_WAIT_MS, Math.max(0, q.wait ?? 0));
       for (;;) {
         const summary = await store.getRunSummary(q.workflow, q.runId);
@@ -4399,13 +4466,13 @@ export async function createStrut<TServices = unknown>(
         return partial ? { ...partial, partial: true } : null;
       }
     },
-    async events(q) {
-      await openFlow(q.workflow);
+    async events(q, by) {
+      if (!(await openRun(q.workflow, q.runId, by)).visible) return [];
       const events = await store.getRunEvents(q.workflow, q.runId);
       return capEvents(events.map((e) => withTranscriptLink(q.workflow, e)), q.skip);
     },
     async launch(q, by) {
-      const flow = await openFlow(q.workflow);
+      const { flow, scoped } = await openFlow(q.workflow, by);
       // Its params may narrow what its agents are granted, never widen it
       // (the meta/run-workflow rule).
       const widened = grantWidenedBy(flow, q.params ?? {}, registry);
@@ -4419,7 +4486,8 @@ export async function createStrut<TServices = unknown>(
       // Dedupe in flight (§5.1): the run launched under this key, while it
       // lives. Keys whose runs have ended are let go here.
       for (const [k, id] of launchKeys) if (!liveKey(k.slice(0, k.indexOf("\0")), id)) launchKeys.delete(k);
-      const key = q.key ? `${q.workflow}\0${q.key}` : undefined;
+      // A scoped caller's key is its own: another viewer's run is never theirs.
+      const key = q.key ? `${q.workflow}\0${scoped ? `${by.app!.name}\0${by.actor ?? ""}\0` : ""}${q.key}` : undefined;
       const prior = key ? launchKeys.get(key) : undefined;
       if (prior) return { runId: prior, existing: true };
       const runId = launchDetached(
@@ -4434,15 +4502,19 @@ export async function createStrut<TServices = unknown>(
         },
       );
       if (key) launchKeys.set(key, runId);
+      if (scoped) {
+        for (const k of scopedLaunches.keys()) if (!controllers.has(k)) scopedLaunches.delete(k);
+        scopedLaunches.set(`${q.workflow}/${runId}`, { app: by.app!.name, actor: by.actor ?? "" });
+      }
       return { runId };
     },
-    async cancel(q) {
-      await openFlow(q.workflow);
+    async cancel(q, by) {
+      if (!(await openRun(q.workflow, q.runId, by)).visible) return { ok: false, error: `Run "${q.runId}" not found for workflow "${q.workflow}"` };
       const r = await controlLiveRun(q.workflow, q.runId, "cancel", false, q.force === true);
       return r.ok ? { ok: true, runId: r.runId, state: r.state } : { ok: false, error: r.error };
     },
-    async workflow(q) {
-      const [meta, flow] = await Promise.all([workspace.getWorkflowMetadata(q.workflow), openFlow(q.workflow)]);
+    async workflow(q, by) {
+      const [meta, { flow }] = await Promise.all([workspace.getWorkflowMetadata(q.workflow), openFlow(q.workflow, by)]);
       const description = meta?.versions[meta.active]?.description;
       return {
         name: q.workflow,
@@ -4455,8 +4527,8 @@ export async function createStrut<TServices = unknown>(
         ...(flow.peer ? { peer: flow.peer } : {}),
       };
     },
-    async files(q) {
-      await openFlow(q.workflow);
+    async files(q, by) {
+      if (!(await openRun(q.workflow, q.runId, by)).visible) return null;
       const summary = await store.getRunSummary(q.workflow, q.runId);
       let job = summary?.job;
       if (!summary) {
@@ -4474,8 +4546,8 @@ export async function createStrut<TServices = unknown>(
         throw err;
       }
     },
-    async transcript(q) {
-      await openFlow(q.workflow);
+    async transcript(q, by) {
+      if (!(await openRun(q.workflow, q.runId, by)).visible) throw new Error(`Run "${q.runId}" not found for workflow "${q.workflow}"`);
       const t = await readTranscript(q.workflow, q.runId, q.path, !!q.full);
       if ("error" in t) throw new Error(t.error);
       return { path: q.path, ...capTranscript(t.messages as RunTranscript["messages"]), ...(t.full ? { full: true as const } : {}) };

@@ -74,7 +74,8 @@ every host: `run/*` only on `grants.workflows`, any other step only when
 `grants.steps` names it (globs as `agentTools` takes them). What a
 model-written manifest may NEVER grant: `llm`, `agent`, `exec` (a paid or
 shell-shaped step — put it in a workflow and grant the workflow), a sealed
-step or workflow. Granting a workflow that does not exist is a build
+step or workflow (but see "The assistant" below). Granting a workflow
+that does not exist is a build
 error; a graph WRITE is refused on a type the manifest does not declare,
 so an app can never rewrite a Concept.
 
@@ -139,6 +140,7 @@ tool (`step_run`) the host relays to strut:
 | `useAppLink()` → `link(input?)`, `appLink(name, input?)` | a deep link to this app (or another) opened with `input`: `openLink(link({ view: "/runs", run: id }))` shows it, and the host's address bar follows, so the person can share it |
 | `useApp()` | which app the page is: `{ name, version }`, or a job's app `{ job, path }` |
 | `useHost()` → `{ theme, sendMessage(text), openLink(url) }` | the host: `sendMessage` reaches the builder chat ("change this app"), `openLink` opens a strut link in place |
+| `useAssistant({ thread? })` → `{ messages, send(text, files?), pending, jobs }` | a chat with the person's ASSISTANT (`orchestrator`), as the viewer — see "The assistant" |
 
 **Deep links.** The page is opened with whatever its link carries
 (`?app=<name>&input=…`), as `useToolInput()`. The starter template's router
@@ -163,7 +165,38 @@ a click and never on a render:
 - then `useRun(workflow, runId, { live: true })` to follow it, and
   `useRuns(workflow, { live: true })` for the list.
 - A chat box inside an app is a workflow with an `agent` step on
-  `session: "{{ input.session }}"`, one run per turn.
+  `session: "{{ input.session }}"`, one run per turn — or, when the chat
+  should do what the person's assistant does (start jobs, follow them),
+  the assistant itself (below).
+
+## The assistant
+
+An app whose chat should be the person's ASSISTANT — the one that starts
+jobs, builds and answers in their host's chat — grants the `orchestrator`
+workflow and uses `useAssistant()`:
+
+```yaml
+grants:
+  workflows: [orchestrator, job]   # job: to follow the jobs it starts
+```
+
+`orchestrator` is sealed: only a PERSON grants it to an app, once. Your
+publish is refused until they have; then say in your reply that the app
+needs the assistant granted (the assistant asks the person, who approves a
+card), and publish again when the build is continued. Every version after
+keeps the grant, and nobody who opens the app is asked anything.
+
+`useAssistant({ thread })` sends a message per `send` (one run per turn)
+and reads the turns back as `messages` (the viewer's text, the reply's
+`text`, `artifacts` and `ask`, `pending` while it runs). The thread is the
+viewer's own in this app — strut keeps it apart from their conversation in
+their host and from every other viewer's — and remembers across visits by
+its name. `jobs` are the jobs the latest turn started or continued
+(`{ job, runId, workflow? }`): follow one with
+`useRun(workflow ?? "job", runId, { live: true })`, its output's
+`artifacts` the deliverables. The assistant cannot make changes that need
+the person's approval (graph writes) from inside an app: it does those in
+the person's own chat.
 
 Reads (`useRuns`, `useRun`, `useRunEvents`, `useTranscript`, `useWorkflow`) are free and may
 refetch on their own. A tool call (`useStep` on a cheap step) is fine on a

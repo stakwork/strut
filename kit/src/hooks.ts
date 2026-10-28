@@ -3,7 +3,7 @@
  *  `postMessage`, and nothing launches a run but a call to `launch`. */
 import { useCallback, useMemo, useSyncExternalStore } from "react";
 import {
-  useMutation, useQuery, useQueryClient,
+  useMutation, useQueries, useQuery, useQueryClient,
   type QueryKey, type UseQueryResult,
 } from "@tanstack/react-query";
 import type { AppIdentity, StrutClient } from "./client.js";
@@ -266,6 +266,149 @@ export function useLaunch(workflow: string, opts: UseLaunchOptions = {}): UseLau
     [m.mutateAsync],
   );
   return { launch, pending: m.isPending, error: m.error, data: m.data, reset: m.reset };
+}
+
+/** The ASSISTANT a page talks to: the workspace's `orchestrator`, the same
+ *  assistant the person has in their host's chat, granted to the app by a
+ *  person (app/grant) and named in app.yaml's grants.workflows. */
+export const ASSISTANT_WORKFLOW = "orchestrator";
+
+/** One message of a chat with the assistant: the viewer's, or its reply. */
+export interface AssistantMessage {
+  role: "user" | "assistant";
+  /** The run the turn is (one per message the viewer sent). */
+  runId: string;
+  text: string;
+  /** The reply's deliverables (a job's, by its link), as the assistant gave them. */
+  artifacts?: unknown[];
+  /** A question the assistant needs answered before it goes on; the answer is the next `send`. */
+  ask?: { message: string };
+  /** `pending` while the turn runs; `error` when it failed (the text says why). */
+  status: "pending" | "done" | "error";
+}
+
+/** A job the latest turn started or continued: follow it with
+ *  `useRun(workflow, runId, { live: true })` — its workflow (`job`, or
+ *  `builder`) granted in app.yaml too. */
+export interface AssistantJob {
+  job: string;
+  runId: string;
+  /** The job-shaped workflow it runs, when the turn named one (a new job). */
+  workflow?: string;
+}
+
+export interface UseAssistantOptions {
+  /** The thread: the same name every visit keeps one conversation. Strut
+   *  keeps it per app and per viewer, so another person's never mixes in.
+   *  Default `assistant`. */
+  thread?: string;
+  /** How many earlier turns to read back (default 10, at most 20). */
+  history?: number;
+  /** Default `orchestrator`. */
+  workflow?: string;
+}
+
+export interface UseAssistant {
+  /** Oldest first: each turn's message and its reply. */
+  messages: AssistantMessage[];
+  /** Send the viewer's message (`run/launch`); the reply arrives in `messages`. */
+  send: (text: string, files?: readonly File[]) => Promise<LaunchResult>;
+  /** A turn is running. */
+  pending: boolean;
+  error: Error | null;
+  /** The jobs the latest turn started or continued. */
+  jobs: AssistantJob[];
+}
+
+interface AssistantInput { prompt?: unknown; session?: unknown }
+interface AssistantOutput { text?: unknown; artifacts?: unknown; ask?: unknown }
+
+function assistantMessages(run: RunSummary): AssistantMessage[] {
+  const input = (run.input ?? {}) as AssistantInput;
+  const out: AssistantMessage[] = [{ role: "user", runId: run.runId, text: typeof input.prompt === "string" ? input.prompt : "", status: "done" }];
+  if (isInFlight(run)) return [...out, { role: "assistant", runId: run.runId, text: "", status: "pending" }];
+  if (run.status !== "success") {
+    return [...out, { role: "assistant", runId: run.runId, text: run.error?.message ?? `the turn ${run.status === "cancelled" ? "was cancelled" : "failed"}`, status: "error" }];
+  }
+  const o = (run.output ?? {}) as AssistantOutput;
+  const ask = o.ask && typeof (o.ask as { message?: unknown }).message === "string" ? { message: (o.ask as { message: string }).message } : undefined;
+  return [
+    ...out,
+    {
+      role: "assistant",
+      runId: run.runId,
+      text: typeof o.text === "string" ? o.text : "",
+      ...(Array.isArray(o.artifacts) && o.artifacts.length ? { artifacts: o.artifacts } : {}),
+      ...(ask ? { ask } : {}),
+      status: "done",
+    },
+  ];
+}
+
+/** The jobs a turn's log shows it started or continued (`job/start`,
+ *  `job/continue` tool calls that came back with a job). */
+export function assistantJobs(events: readonly RunEvent[] | undefined): AssistantJob[] {
+  if (!events) return [];
+  const starts = new Map<string, RunEvent>();
+  for (const e of events) if (e.type === "step.start" && e.path) starts.set(e.path, e);
+  const out: AssistantJob[] = [];
+  for (const e of events) {
+    if (e.type !== "step.end" || (e["stepType"] !== "tool:job/start" && e["stepType"] !== "tool:job/continue")) continue;
+    const o = e["output"] as { job?: unknown; runId?: unknown } | undefined;
+    if (typeof o?.job !== "string" || typeof o.runId !== "string") continue;
+    const started = e["stepType"] === "tool:job/start" ? ((starts.get(e.path ?? "")?.["input"] as { workflow?: unknown } | undefined)?.workflow ?? "job") : undefined;
+    out.push({ job: o.job, runId: o.runId, ...(typeof started === "string" ? { workflow: started } : {}) });
+  }
+  return out;
+}
+
+/**
+ * A chat with the ASSISTANT (`orchestrator`) — the app's own conversation
+ * with it, as the viewer, with no prompt at use: a person granted the app
+ * this once (app/grant). One run per message (`run/launch`), the thread
+ * kept by strut per app and viewer; the earlier turns read back with
+ * `run/list` + `run/get` (one per turn, `history` of them). A mutation for
+ * sending, queries for reading — nothing is sent but by `send`.
+ */
+export function useAssistant(opts: UseAssistantOptions = {}): UseAssistant {
+  const workflow = opts.workflow ?? ASSISTANT_WORKFLOW;
+  const thread = opts.thread ?? "assistant";
+  const client = useStrutClient();
+  const qc = useQueryClient();
+  const history = Math.min(20, Math.max(1, opts.history ?? 10));
+  const list = useRuns(workflow, { limit: history, live: true });
+  const runs = list.data ?? [];
+  const turns = useQueries({
+    queries: runs.map((r) => ({
+      queryKey: runKeys.run(workflow, r.runId),
+      queryFn: () => client.run<RunSummary>(RUN_STEPS.get, compact({ workflow, runId: r.runId, wait: isInFlight(r) ? RUN_WAIT_MS : undefined })),
+      // A settled turn never changes.
+      staleTime: isInFlight(r) ? 0 : Infinity,
+      refetchInterval: (q: { state: { data?: RunSummary } }) => (isInFlight(q.state.data ?? r) ? LIVE_INTERVAL_MS : false),
+    })),
+  });
+  const mine = turns
+    .map((t) => t.data)
+    .filter((r): r is RunSummary => !!r && (r.input as AssistantInput | undefined)?.session === thread)
+    .reverse();
+  const latest = mine[mine.length - 1];
+  const events = useRunEvents(workflow, latest?.runId, { live: true, enabled: !!latest });
+  const m = useMutation({
+    mutationFn: async (v: { text: string; files?: readonly File[] }) => {
+      const attachments = v.files?.length ? await Promise.all(v.files.map(fileData)) : undefined;
+      return client.run<LaunchResult>(RUN_STEPS.launch, compact({ workflow, input: { prompt: v.text, session: thread }, attachments }));
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: runKeys.lists(workflow) }),
+  });
+  const send = useCallback((text: string, files?: readonly File[]) => m.mutateAsync({ text, files }), [m.mutateAsync]);
+  const messages = useMemo(() => mine.flatMap(assistantMessages), [mine.map((r) => `${r.runId}:${r.status}`).join(",")]);
+  return {
+    messages,
+    send,
+    pending: m.isPending || mine.some(isInFlight),
+    error: m.error ?? (list.error as Error | null),
+    jobs: assistantJobs(events.data),
+  };
 }
 
 /** The job steps the upload hook calls (plans/apps.md §12). */

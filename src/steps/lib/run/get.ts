@@ -2,7 +2,7 @@ import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
 import { RUN_GET_MAX_WAIT_MS } from "../../../runs.js";
-import { requireRuns, inFrame } from "./_shared.js";
+import { requireRuns, inFrame, callerOf } from "./_shared.js";
 
 export default defineStep({
   type: "run/get",
@@ -17,7 +17,7 @@ export default defineStep({
   }),
   output: z.any(),
   async run(cfg, ctx: StepContext<StrutCapabilities>) {
-    const run = await requireRuns(ctx.services).get(await inFrame(cfg, ctx));
+    const run = await requireRuns(ctx.services).get(await inFrame(cfg, ctx), callerOf(ctx));
     if (!run) throw new Error(`Run "${cfg.runId}" not found for workflow "${cfg.workflow}"`);
     return run;
   },

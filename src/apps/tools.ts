@@ -36,6 +36,7 @@ import type { AppRef, StepRegistry } from "../core.js";
 import type { GraphReader } from "../graph/search.js";
 import { runStep, type RunStepDeps } from "../run-step.js";
 import { isSealedStep } from "../sealed.js";
+import { APP_NAMESPACE, appScoped } from "../session-store.js";
 import { baseType } from "../step-ref.js";
 import { resolveStep } from "../steps/registry.js";
 import type { AppsCapability } from "./apps.js";
@@ -81,6 +82,7 @@ const NOT_A_PAGES: Record<string, string> = {
   "app/build": "an app does not author apps — the builder does, with the editor",
   "app/publish": "an app does not author apps — the builder does, with the editor",
   "app/pin": "which apps are tabs is the person's call — the builder pins one when they ask",
+  "app/grant": "what an app may reach is a person's call, made on a proposal they approve",
   "job/dir": "a job's directory belongs to a run of the job",
   "job/start": "a page runs a workflow in its own job with run/launch { job } (plans/apps.md §12); job/start is an agent's door",
   "job/continue": "a page runs a workflow in its own job with run/launch { job } (plans/apps.md §12); job/continue is an agent's door",
@@ -96,7 +98,7 @@ const NOT_YET: Array<[prefix: string, what: string]> = [
  *  kept under `app/<name>/`, as a peer's is kept under `peer/` — so a
  *  model-written page never launches under, or reads, a job it did not
  *  start. Every version of the app shares them. */
-export const APP_JOB_NAMESPACE = "app/";
+export const APP_JOB_NAMESPACE = APP_NAMESPACE;
 
 export function appJobPrefix(app: string): string {
   return `${APP_JOB_NAMESPACE}${app}/`;
@@ -105,8 +107,7 @@ export function appJobPrefix(app: string): string {
 /** `id` in the app's namespace — left as it is when it already is there:
  *  a page hands back the ids its results carry (`run/list`'s `job`). */
 export function appJobId(app: string, id: string): string {
-  const prefix = appJobPrefix(app);
-  return id.startsWith(prefix) ? id : `${prefix}${id}`;
+  return appScoped(app, id);
 }
 
 /** A page's config with its job ids in the app's namespace: `job` wherever

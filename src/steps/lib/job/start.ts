@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
 import { JOB_WORKFLOWS } from "../../../jobs.js";
+import { appScoped } from "../../../session-store.js";
 import { attachmentsField, handedOn, launchOnce, requireJobLaunch } from "./_shared.js";
 
 /**
@@ -88,7 +89,9 @@ export default defineStep({
     }
     const attachments = await handedOn(ctx, cfg.attachments);
     return launchOnce(ctx, launch, {
-      job: randomUUID(),
+      // A turn an APP launched starts its jobs in the app's namespace, where
+      // its pages read them (plans/apps.md §12).
+      job: ctx.app ? appScoped(ctx.app.name, randomUUID()) : randomUUID(),
       title: cfg.title,
       ...(cfg.workflow ? { workflow: cfg.workflow } : {}),
       input: {

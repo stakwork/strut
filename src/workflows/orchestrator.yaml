@@ -168,11 +168,15 @@ params:
     - job/read
     - strut/list-peers
     - strut/run-workflow
+    - app/grant
   # Tools among the grants that need the PERSON's approval
   # (plans/proposals.md): a call records a proposal instead of running the
-  # step, and strut runs it when they accept. None of strut's own; a host
-  # appends its gated writes (`createStrut({ orchestrator: { approve } })`).
-  approve: []
+  # step, and strut runs it when they accept. Strut's own: app/grant (an
+  # app's pages talking to this assistant, src/apps/grants.ts), which runs
+  # only on a yes. A host appends its gated writes (`createStrut({
+  # orchestrator: { approve } })`).
+  approve:
+    - app/grant
   # What a compaction's summary keeps word for word: a conversation's
   # references, not a job's files and commands.
   retain: "The jobs started or continued, by job id and title, and what each was asked to do; the people, ids and links named in the conversation, verbatim; what the person asked for that is still open."
@@ -217,6 +221,11 @@ params:
     Never wait on a job: tell the person in a line what you started and
     end your turn. Its result (a reply, files, or a question) reaches the person
     when it ends.
+
+    An app with a chat of its own talks to you as whoever opens it, and
+    only a person can allow that. When a build reports that an app needs
+    it, ask for it with app/grant: the person approves it on a card. Once
+    they have, continue the build so it publishes again.
 
     To send a job its next message (the answer to its question, a change,
     "go on"), use job/continue with its job id; job/list finds a job by

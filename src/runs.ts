@@ -67,12 +67,17 @@ export interface RunLaunchQuery {
 }
 
 /** Who is launching, and for what — from the calling step's context. */
-export interface RunLaunchBy {
+/** Who is asking: the step's actor, and the app a page's call is for
+ *  (`ctx.app`). A SEALED workflow a person granted that app
+ *  (src/apps/grants.ts) opens to it — and only to the runs the app launched
+ *  for this same actor: a sealed workflow's runs are its people's. */
+export interface RunCaller {
   actor?: string;
-  principal?: string;
-  /** The app the launch is for (`ctx.app`): the run records it and
-   *  `origin: "app"`. */
   app?: AppRef;
+}
+
+export interface RunLaunchBy extends RunCaller {
+  principal?: string;
   /** The caller's MCP servers, handed on (`ctx.mcp`). */
   mcp?: McpServer[];
 }
@@ -138,24 +143,25 @@ export interface TranscriptCut {
 }
 
 /** Every method refuses a SEALED workflow (a grading harness) by name —
- *  these are a model's door, as the meta/* twins are (EVOLVE_SPEC §6). */
+ *  these are a model's door, as the meta/* twins are (EVOLVE_SPEC §6) —
+ *  unless `by.app` holds a person's grant of it (`RunCaller`). */
 export interface RunsCapability {
-  list(q: RunListQuery): Promise<RunListEntry[]>;
+  list(q: RunListQuery, by?: RunCaller): Promise<RunListEntry[]>;
   /** `wait` holds the call up to that many ms (at most `RUN_GET_MAX_WAIT_MS`)
    *  while the run is in flight, then answers with whatever it is. Null for a
    *  run that does not exist. */
-  get(q: { workflow: string; runId: string; wait?: number }): Promise<RunGetResult | null>;
+  get(q: { workflow: string; runId: string; wait?: number }, by?: RunCaller): Promise<RunGetResult | null>;
   /** The log from `skip` on, transcripts as links, capped (`capEvents`). */
-  events(q: { workflow: string; runId: string; skip?: number }): Promise<RunEvent[]>;
+  events(q: { workflow: string; runId: string; skip?: number }, by?: RunCaller): Promise<RunEvent[]>;
   launch(q: RunLaunchQuery, by: RunLaunchBy): Promise<RunLaunchResult>;
-  cancel(q: { workflow: string; runId: string; force?: boolean }): Promise<{ ok: true; runId: string; state: string } | { ok: false; error: string }>;
-  workflow(q: { workflow: string }): Promise<WorkflowInfo>;
+  cancel(q: { workflow: string; runId: string; force?: boolean }, by?: RunCaller): Promise<{ ok: true; runId: string; state: string } | { ok: false; error: string }>;
+  workflow(q: { workflow: string }, by?: RunCaller): Promise<WorkflowInfo>;
   /** Null when the run or the file is not there. */
-  files(q: { workflow: string; runId: string; path: string }): Promise<RunFile | null>;
+  files(q: { workflow: string; runId: string; path: string }, by?: RunCaller): Promise<RunFile | null>;
   /** One agent's transcript by step path (`wf/review`, a sub-agent's
    *  `wf/review/003-agent`), capped (`capTranscript`). Throws what the route
    *  answers 404 with: no transcript at the path, or (`full`) a session gone. */
-  transcript(q: { workflow: string; runId: string; path: string; full?: boolean }): Promise<RunTranscript>;
+  transcript(q: { workflow: string; runId: string; path: string; full?: boolean }, by?: RunCaller): Promise<RunTranscript>;
 }
 
 /** The most `run/get { wait }` may hold: under a client's request timeout,
