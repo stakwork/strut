@@ -204,9 +204,9 @@ group. That is all the sidebar knows of packages.
    category, the boxes from the newest release, "Comes along" from the dry
    build, publish. Medium, UI. #362.
 4. **Package-first lookup** (§2): `resolveName`, `ctx.package`, the call
-   sites, the install's check. Medium-large, engine. The next PR. Until it
-   lands, a package built from bare names refuses to install (the install
-   finds a bare reference nowhere): loudly, never wrongly.
+   sites, the install's check. Medium-large, engine. BUILT (#371): a
+   package built from bare names installs on another strut and runs there
+   (`src/packages/build.test.ts`, the round trip).
 5. **The installing strut's sidebar** (§4): the group drawn from what is
    installed, the name inside the package, the version and the hover.
    Small. BUILT (#362).
