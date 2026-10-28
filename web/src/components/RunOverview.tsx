@@ -2,14 +2,15 @@ import { useEffect, useMemo, useState } from "preact/hooks";
 import type { JSX } from "preact";
 import * as api from "../api";
 import { displayActor } from "../actor";
-import { isArtifactPath } from "@strut/kit/folds";
+import { artifactKind, isArtifactPath } from "@strut/kit/folds";
 import { formatTokens } from "../context-meter";
 import { foldRunOverview, type OverviewRow, type RowKind } from "@strut/kit/folds";
-import { AgentIcon, ExternalIcon, EyeIcon, FileIcon, ImageIcon, LoopIcon, RunLinkIcon, SparkIcon, StepIcon, SubflowIcon } from "../icons";
+import { AgentIcon, DownloadIcon, ExternalIcon, EyeIcon, FileIcon, ImageIcon, LoopIcon, RunLinkIcon, SparkIcon, StepIcon, SubflowIcon } from "../icons";
 import { ArtifactViewer } from "./ArtifactViewer";
 import { ProposalList } from "./ProposalList";
 import { fmtCost, fmtTime, linkOf, peerArtifactNote } from "./JobTimeline";
 import { fmtDuration } from "../duration";
+import { formatBytes } from "../attachments";
 import { ValueFields } from "./ValueFields";
 import { PALETTE, paletteKey } from "../step-colors";
 
@@ -18,7 +19,7 @@ import { PALETTE, paletteKey } from "../step-colors";
 // What a person wants from a run before reading its log: did it work, what
 // did it cost, how long did it take, what did it produce, and what did it
 // start. Cost and model calls on top, the split of the spend under them,
-// the deliverables, then a timeline — a row per top-level step with the
+// the files it was launched with, the deliverables, then a timeline — a row per top-level step with the
 // work it started (sub-agents, llm calls, child runs) under it; a hover
 // card has a row's numbers, a click opens it. The output and the claims
 // come last, folded. Everything but the artifacts and the claims is folded
@@ -218,6 +219,36 @@ export function RunOverview(props: {
         <div class="ov-sec">
           <div class="ov-sec-title">Proposals</div>
           <ProposalList proposals={proposals} onDecided={() => setProposalsKey((k) => k + 1)} />
+        </div>
+      )}
+
+      {/* What the launch attached (run.start): known from the first event,
+          so a live run lists them too. A file the viewer cannot render
+          downloads; every row has a download beside it. */}
+      {o.attachments && runId && (
+        <div class="ov-sec">
+          <div class="ov-sec-title">Attachments</div>
+          {o.attachments.map((a) => {
+            const path = `/artifacts/${runId}/${a.path}`;
+            const viewable = !!artifactKind(path);
+            const download = () => void api.downloadArtifact(path).catch(() => {});
+            const Icon = a.mediaType.startsWith("image/") ? ImageIcon : FileIcon;
+            return (
+              <div key={a.path} class="ov-art ov-att">
+                <button class="ov-att-open" onClick={() => (viewable ? setViewing(path) : download())} title={viewable ? `View ${a.name}` : `Download ${a.name}`}>
+                  <Icon size={14} />
+                  <span class="ov-art-text">
+                    <span class="ov-art-title">{a.name}</span>
+                    <span class="ov-art-sub">{formatBytes(a.size)} · {a.mediaType}</span>
+                  </span>
+                  {viewable && <EyeIcon />}
+                </button>
+                <button class="ov-att-dl" onClick={download} aria-label={`Download ${a.name}`} title="Download">
+                  <DownloadIcon />
+                </button>
+              </div>
+            );
+          })}
         </div>
       )}
 

@@ -132,13 +132,12 @@ export function ArtifactViewer(props: {
           <button class="copy-btn" onClick={back} aria-label="Back" title="Back"><ArrowLeftIcon /></button>
         )}
         <span class="artifact-dialog-path" title={path}>{path}</span>
-        {peer
-          ? scope && kind !== "directory" && (
-            <button class="artifact-dialog-open" onClick={() => void downloadArtifact(path).catch(() => {})}>Download ↓</button>
-          )
-          : url && kind !== "directory" && (
-            <a class="artifact-dialog-open" href={url} target="_blank" rel="noopener">Open in new tab ↗</a>
-          )}
+        {!peer && url && kind !== "directory" && (
+          <a class="artifact-dialog-open" href={url} target="_blank" rel="noopener">Open in new tab ↗</a>
+        )}
+        {scope && kind !== "directory" && (
+          <button class="artifact-dialog-open" onClick={() => void downloadArtifact(path).catch(() => {})}>Download ↓</button>
+        )}
         {props.onClose && (
           <button class="copy-btn" onClick={props.onClose} aria-label="Close" title="Close"><CloseIcon /></button>
         )}
@@ -166,8 +165,7 @@ function FileImg(props: { path: string; token: string; alt: string; class?: stri
 }
 
 /** One level of a directory: folders first, then files. A row the viewer
- *  can render opens in place; one it cannot is a link to the served file —
- *  a download for a peer's. */
+ *  can render opens in place; one it cannot downloads. */
 function Directory(props: { files: string[]; path: string; token: string; onOpen: (path: string) => void }) {
   const scope = fileScopeOf(props.path) ?? "";
   const rel = artifactRel(props.path) ?? "";
@@ -187,9 +185,7 @@ function Directory(props: { files: string[]; path: string; token: string; onOpen
           <li key={`f:${f}`}>
             {artifactKind(p)
               ? <button class="artifact-dir-row" onClick={() => props.onOpen(p)}>{f}</button>
-              : isPeerPath(p)
-                ? <button class="artifact-dir-row" onClick={() => void downloadArtifact(p).catch(() => {})}>{f} ↓</button>
-                : <a class="artifact-dir-row" href={artifactUrl(p, props.token)} target="_blank" rel="noopener">{f} ↗</a>}
+              : <button class="artifact-dir-row" onClick={() => void downloadArtifact(p).catch(() => {})}>{f} ↓</button>}
           </li>
         );
       })}

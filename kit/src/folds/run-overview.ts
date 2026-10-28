@@ -26,6 +26,10 @@ export interface TokenUsage {
  *  version. */
 export type RunApp = { name: string; version: string };
 
+/** A file the launch attached (`POST …/run { attachments }`), as `run.start`
+ *  records it: saved under the run's artifacts at `path`. */
+export type RunAttachmentRef = { name: string; mediaType: string; size: number; path: string };
+
 /** A run's app as a badge names it: its name. */
 export function runAppLabel(app: RunApp): string {
   return app.name;
@@ -42,6 +46,7 @@ export interface OverviewEvent {
   actor?: string;
   job?: string;
   app?: RunApp;
+  attachments?: RunAttachmentRef[];
   modelCalls?: number;
   usage?: TokenUsage;
   cost?: number;
@@ -83,6 +88,8 @@ export interface RunOverview {
   job?: string;
   /** The app the run was launched for (plans/apps.md §11). */
   app?: RunApp;
+  /** The files the launch attached, from `run.start`. */
+  attachments?: RunAttachmentRef[];
   cost: number;
   modelCalls: number;
   toolCalls: number;
@@ -297,6 +304,7 @@ export function foldRunOverview(events: OverviewEvent[], now = Date.now()): RunO
     ...(runStart?.actor ? { actor: runStart.actor } : {}),
     ...(runStart?.job ? { job: runStart.job } : {}),
     ...(runStart?.app ? { app: runStart.app } : {}),
+    ...(runStart?.attachments?.length ? { attachments: runStart.attachments } : {}),
     cost,
     modelCalls,
     toolCalls,
