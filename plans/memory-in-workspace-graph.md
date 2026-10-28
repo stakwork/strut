@@ -55,6 +55,16 @@ Personal graph first. Memory stays off shared graphs (Hive's Neo4j). The tools c
 
 **Home sync copies only memory, and that stays.** The box is memory's one writer. The Mac keeps a read copy of it, and pushes back only what dictation learns. Workflows, apps and automations stay on the box. Today the sync ships a snapshot of memory's own file, so once memory is inside the workspace graph, sync needs a memory-only export and import.
 
+## Ruling (Evan, 2026-10-28)
+
+**Ladybug's ontology is dynamic.** This replaces two earlier rulings:
+- the closed registry in `plans/ladybug-backend.md` ruling 6 ("ten types, in code, nothing else", with no runtime registration);
+- the gate in `plans/apps.md` §4.3 that put app graph types on Neo4j only (ruled 2026-10-26).
+
+Types live in the file, are seeded at open from today's list, and are created and edited at runtime. An app's `data.graph` types now build on Ladybug as on Neo4j.
+
+**The rest of ruling 6 stays:** one `Node` table, every declared attribute a real column, one full-text index and one vector index.
+
 ## Decisions
 
 1. **Schemas are nodes in the `Node` table, as on Neo4j.**
@@ -75,13 +85,40 @@ Personal graph first. Memory stays off shared graphs (Hive's Neo4j). The tools c
    - Memory's free-form `attributes` map stays one JSON attribute.
    - A proposed type's attributes stay in that map until the type is made active, so proposals don't grow columns.
 6. **No namespaces yet.** Ladybug holds only `default` (`ladybug/reader.ts:16`). Type filters separate memory from workflows, and edges cross freely.
-7. **Memory's types are managed.**
+7. **Writes to memory's types are managed.**
    - A schema can be `managed_by: "memory"`. The writers refuse a managed type unless the caller names that manager.
    - Allowed: remember, forget, merge, attributes, dictation, and the migration.
    - Refused: create-node, edit-node, delete-node, create-triplet, create-batch-triplet, move-node, edit-edge and delete-edge.
    - Workflow types are never managed, so nothing changes for them.
-8. **Personal graph only.** Memory steps refuse unless the workspace backend is Ladybug. Nothing changes on Neo4j.
-9. **Home sync stays memory-only.** It moves to a memory-only export and import over the workspace graph: the managed types' nodes, plus the edges between them.
+8. **Reads of memory are limited to the person's assistant.**
+   - **Who sees it:**
+     - memory's own steps;
+     - the graph read tools, but only in a tool call made by an agent inside a workflow the host lists in `memoryReaders`. Peel lists `orchestrator` and `peel-automation-run`.
+   - **Who doesn't:**
+     - every other workflow's graph tools: job, builder, and app workflows with graph grants;
+     - `graph/find`;
+     - the chat builder's `graph_query` and `graph_get`;
+     - app graph reads;
+     - `/graph/*` for every credential, peers included.
+
+     Peel's memory panel keeps using the memory steps.
+   - **How:**
+     - The reader leaves out managed types unless the context is allowed. That covers search, get, get-batched, neighbors, counts, walk and find.
+     - Neighbors drop memory endpoints, so a walk from a job never crosses into memory.
+     - Raw query results (`graph_query`) are filtered by `node_type`. An aggregate over memory (a count) can still pass. That's accepted on a personal graph; the point is to keep memory's content away from agents that browse and run code.
+9. **One name, one type, one owner.**
+   - Type names are unique across the whole ontology, case-insensitively, and aliases count. Each Schema has one owner: memory, an app, or strut (workflow types).
+   - **When memory proposes a name another owner holds** (say "Channel", declared by an app), remember creates no type and no node of that type. It reports a note. If the person means an existing node, the fact's OBJECT points at it by ref_id: a cross edge (decision 11).
+   - **When an app or create-schema declares a name memory holds** (a type or an alias, such as "Company"), it's refused with "owned by memory".
+   - A later janitor can hand a type from one owner to another; nothing does that yet.
+10. **Episodes stay out of search.**
+    - Episode is declared `embed: false`, and graph-search leaves it out unless the call asks for `type: Episode`. Dictation and transcripts would otherwise crowd out the results.
+    - Entities and facts are indexed as usual.
+11. **Personal graph only.** Memory steps refuse unless the workspace backend is Ladybug. Nothing changes on Neo4j.
+12. **Home sync stays memory-only.**
+    - It moves to a memory-only export and import over the workspace graph: memory's nodes, and the edges between them.
+    - **Cross edges are dropped from the export:** an edge between a memory node and a workflow node, such as a fact's OBJECT pointing at an app's Channel. On the Mac's copy, that fact has no object. This is accepted for now, and must change before the "direct edges" item in Later.
+    - **The import is bounded.** It writes in batches (500 nodes per transaction to start), releasing the workspace's write lock between batches, so run projections and publishes aren't stalled. It skips nodes whose `updated_at` already matches. C measures how long the lock is held and tunes the batch size.
 
 ## PRs
 
@@ -116,9 +153,12 @@ Behaviour doesn't change: the same types are stored in the file instead of code.
   - the descriptions of `graph/create-schema` and `create-triplet`;
   - `ai/prompts.ts:519`;
   - `AGENTS.md`;
-  - a new ruling in `plans/ladybug-backend.md` replacing ruling 6.
+  - the ruling above, written into `plans/ladybug-backend.md` (replacing ruling 6's closed registry) and `plans/apps.md` §4.3 (dropping the Neo4j-only gate).
+- **Name uniqueness:** a create-schema whose name or alias clashes with an existing type is refused (decision 9).
 - **Tests:**
   - `registry.test.ts`, `db.test.ts`, `schema-resolver.test.ts` (285-373), `schema-crud.test.ts`, `graph-steps.test.ts` (359), `graph-types.test.ts` (96);
+  - an app with `data.graph` builds on Ladybug: its types are created, and its nodes write and read;
+  - a type whose name or alias clashes is refused;
   - creating a type and an edge type on an open file while a read is running, then reopening;
   - a column clash is refused;
   - the seed runs twice with no change;
@@ -132,16 +172,19 @@ Behaviour doesn't change: the same types are stored in the file instead of code.
 - **Soft delete that keeps edges:** `softDelete(ref_id, { keepEdges: true, reason })`, plus a generic `deleted_reason` column. The default stays as today.
 - **Identity by ref_id:** a schema with `node_key: "ref_id"` makes create always add a new node, and never bring back a deleted one.
 - **The managed-type guard** (decision 7), in the writers.
+- **The read filter** (decision 8), in the reader, `find`, `graph_query` and `/graph/*`: managed types are left out unless the context's workflow is in `memoryReaders`. Until C, no type is managed, so it changes nothing.
 - **Tests:**
-  - the writers' existing tests pass unchanged;
+  - the writers' and readers' existing tests pass unchanged;
   - each new option;
-  - every graph write step refuses a managed type.
+  - every graph write step refuses a managed type;
+  - a managed node is invisible to a job's graph tools, `find`, `graph_query` and `/graph/*`, and visible to an allowed workflow's;
+  - neighbors and walk don't cross into a managed node.
 
 ### C (strut): memory on the workspace graph
 
 - **Seed memory's ontology** as Schema nodes, all `managed_by: "memory"` and `node_key: "ref_id"`:
   - the entity types from `_ontology-seed.ts` (Self, Person, Organization, Place, Topic, Project, Event, Task, Lingo), with aliases, naming, role and parent;
-  - Fact and Episode, with their attributes as columns;
+  - Fact and Episode, with their attributes as columns; Episode with `embed: false`, and left out of default search (decision 10);
   - the predicates (name, lives_in, works_at, works_on, knows, prefers, dislikes, interested_in, diet, about, heard_as, due), with cardinality and subject and object types;
   - the memory edge schemas.
 - **Rewrite memory on the workspace backend:**
@@ -153,6 +196,8 @@ Behaviour doesn't change: the same types are stored in the file instead of code.
   - `vocabulary()` reads Schema nodes.
   - `resolve()` proposes a type by creating a `proposed` Schema.
   - Keep the "UserType" fix: strip a trailing `Type` before proposing.
+  - A proposal that clashes with another owner's type creates nothing, and the result notes it (decision 9).
+- **Readers:** the host config's `memoryReaders` (Peel: `orchestrator`, `peel-automation-run`) turns on the read filter's allow list.
 - **Recall:** memory's nodes now get the FTS and vector index. Recall keeps its word scoring for this PR.
 - **Other callers:**
   - **Dictation** (`changes-since`, `apply-changes`, `undo`): onto the same queries.
@@ -160,7 +205,10 @@ Behaviour doesn't change: the same types are stored in the file instead of code.
   - **The privacy policy:** add `memory/attributes`.
   - **tidy-memory:** unchanged.
   - **Desktop exit:** the hook stops closing a separate memory handle, since there is none.
-- **Home sync:** `memory/export` and `memory/import` dump and load the managed types' nodes and their edges from the workspace graph. Keep the content hash and the `/home/pull` and `/home/push` shapes. Import replaces only memory's nodes, never the workspace's.
+- **Home sync:** `memory/export` and `memory/import` dump and load memory's nodes and the edges between them (decision 12).
+  - The content hash and the `/home/pull` and `/home/push` shapes stay.
+  - Import replaces only memory's nodes, never the workspace's. It writes in bounded batches, skipping unchanged nodes.
+  - Cross edges are left out of the export.
 - **Migration**, at boot, when `<dataDir>/memory/graph.lbug` (or `STRUT_MEMORY_DB`) exists and isn't marked migrated:
   1. back up a memory snapshot;
   2. copy every Entity, Fact and Episode, their edges and their proposed terms into the workspace graph, keeping ref_ids;
@@ -172,9 +220,11 @@ Behaviour doesn't change: the same types are stored in the file instead of code.
   - port `memory-steps.test.ts` (839 lines) and its four siblings to a Ladybug workspace;
   - migrating from a seeded old memory file;
   - home sync (`home-sync.test.ts`) and dictation correction;
-  - graph-search finds memory's nodes with a type filter;
-  - walk goes from the user to a workflow node;
-  - a generic graph write is refused on a Fact.
+  - graph-search finds memory's nodes with a type filter, in an allowed workflow, but not Episodes by default;
+  - walk goes from the user to a workflow node through a cross edge;
+  - a generic graph write is refused on a Fact;
+  - remember proposing a type an app owns creates nothing, and notes it;
+  - a home sync import of a seeded memory, with how long the write lock is held per batch, measured while a run projects.
 
 ### D (peel): read memory with the graph tools
 
@@ -194,11 +244,14 @@ Close strut#367 (the translator) and peel#424 (D takes its titles).
 - **Column growth.** Every active declared attribute is a column on one Node table. Proposed types keep theirs in the JSON map.
 - **Write cost.** Memory's nodes get FTS and vector embeddings on every write, so a remember costs more. Measure it in C.
 - **Migration.** Every Peel user's memory moves once. Back it up first, keep the old file, and make re-running safe.
+- **Sync lock.** A memory import holds the workspace's write lock. Bounded batches keep each hold short, and C measures it.
+- **Read leaks.** Raw `graph_query` is filtered by `node_type`, so a count over memory can still pass. Accepted on a personal graph.
 - **Size.** Memory is about 2,100 lines plus 1,800 lines of tests, and most of its queries are rewritten, so C is the big PR. A and B are medium.
 
 ## Later
 
 - A janitor that folds proposed types up ("FootballClub" under Organization) and merges near-duplicate types, by extending tidy-memory.
-- Direct edges between memory and workflow nodes.
+- Direct edges between memory and workflow nodes. Home sync's export drops cross edges today (decision 12), so it must carry them first: either the workflow node goes along as a stub, or the edge is kept by ref_id and the copy shows it unresolved.
+- Handing a type from one owner to another (decision 9), say when memory and an app both want "Channel".
 - Namespaces on Ladybug, if type filters aren't enough.
 - Memory on shared graphs, behind a per-person scope.
