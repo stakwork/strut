@@ -49,6 +49,7 @@ import { RunInputPopover } from "./components/RunInputPopover";
 import { ConfirmButton } from "./components/ConfirmButton";
 import { useDismiss } from "./use-dismiss";
 import { applyLookups, bindingsFromInputBlock, deriveInputBindings, nodeLookups, stepTypesIn, type InputBinding } from "./run-inputs";
+import { installedTitle, nameInGroup, sidebarGroups } from "./package-release";
 
 // A nested run-execution the user has drilled into. `pathPrefix` is the
 // original event-path prefix this child lives under (e.g. `wf/subflowId`),
@@ -122,6 +123,9 @@ function Shell() {
   // agent outside the UI (the MCP door) sends the user to add a credential.
   const [initialUrl] = useState(() => new URLSearchParams(location.search));
   const [workflows, setWorkflows] = useState<api.WorkflowEntry[]>([]);
+  // The packages installed here: the sidebar draws each as a group of its
+  // own (plans/packages-ux.md §4) — read with the workflows, never written.
+  const [installedPkgs, setInstalledPkgs] = useState<api.InstalledPackage[]>([]);
   const [runs, setRuns] = useState<api.RunSummary[]>([]);
   const [selectedWf, setSelectedWf] = useState<string | null>(initialUrl.get("wf"));
   const [selectedRun, setSelectedRun] = useState<string | null>(initialUrl.get("run"));
@@ -383,28 +387,24 @@ function Shell() {
       on = false;
     };
   }, [appEntry?.name, appEntry?.activeVersion, appEntry?.live]);
+  // An installed package's workflows are a group of its own, drawn from
+  // what is installed and labelled with the package's name — never a
+  // category, so nothing local mixes into it (plans/packages-ux.md §4).
   const wfGroups = useMemo(() => {
-    const byCat = new Map<string, api.WorkflowEntry[]>();
-    for (const wf of matchedWorkflows) {
-      const cat = wf.category ?? "";
-      const arr = byCat.get(cat) ?? [];
-      arr.push(wf);
-      byCat.set(cat, arr);
-    }
     const byRecency = (a: api.WorkflowEntry, b: api.WorkflowEntry) =>
       (b.lastRunAt ?? 0) - (a.lastRunAt ?? 0) || a.name.localeCompare(b.name);
-    const groups = [...byCat.entries()].map(([category, wfs]) => ({
-      category,
-      wfs: [...wfs].sort(byRecency),
-      latest: Math.max(0, ...wfs.map((w) => w.lastRunAt ?? 0)),
+    const groups = sidebarGroups(matchedWorkflows, installedPkgs).map((g) => ({
+      ...g,
+      wfs: [...g.wfs].sort(byRecency),
+      latest: Math.max(0, ...g.wfs.map((w) => w.lastRunAt ?? 0)),
     }));
     groups.sort((a, b) => {
-      if (!a.category !== !b.category) return a.category ? -1 : 1; // uncategorized last
-      return b.latest - a.latest || a.category.localeCompare(b.category);
+      if (!a.key !== !b.key) return a.key ? -1 : 1; // uncategorized last
+      return b.latest - a.latest || a.label.localeCompare(b.label);
     });
     return groups;
-  }, [matchedWorkflows]);
-  const showGroupHeaders = wfGroups.some((g) => g.category);
+  }, [matchedWorkflows, installedPkgs]);
+  const showGroupHeaders = wfGroups.some((g) => g.key);
   const categories = useMemo(
     () => [...new Set(workflows.map((w) => w.category ?? ""))].filter(Boolean).sort(),
     [workflows],
@@ -495,8 +495,9 @@ function Shell() {
   }, [flyoutStepId, viewWorkflow, viewEvents]);
 
   const refreshWorkflows = useCallback(async () => {
-    const wfs = await api.listWorkflows();
+    const [wfs, pkgs] = await Promise.all([api.listWorkflows(), api.listInstalledPackages().catch(() => [] as api.InstalledPackage[])]);
     setWorkflows(wfs);
+    setInstalledPkgs(pkgs);
   }, []);
   // This strut's apps, then each peer's through the read-through (plans/apps.md
   // §7.4) — a peer that does not answer just lists none.
@@ -1281,15 +1282,16 @@ function Shell() {
               <div class="empty-sidebar">No matching workflows</div>
             )}
             {wfGroups.map((g) => {
-              const catKey = g.category || "__uncategorized";
+              const catKey = g.key || "__uncategorized";
               // A filter shows every match regardless of collapsed groups.
               const collapsed = showGroupHeaders && !wfQuery.trim() && !!collapsedCats[catKey];
               return (
                 <div key={catKey}>
                   {showGroupHeaders && (
-                    <div class="cat-header" onClick={() => toggleCat(catKey)}>
+                    <div class="cat-header" onClick={() => toggleCat(catKey)} title={g.installed ? installedTitle(g.installed) : undefined}>
                       <span class={`cat-caret${collapsed ? "" : " is-open"}`}>▸</span>
-                      <span class="cat-name">{g.category || "uncategorized"}</span>
+                      <span class="cat-name">{g.label || "uncategorized"}</span>
+                      {g.installed?.version && <span class="cat-version">{g.installed.version}</span>}
                       {collapsed && g.wfs.some((wf) => runningByWf.has(wf.name)) && (
                         <span class="live-dot" title="A workflow in here is running" />
                       )}
@@ -1299,7 +1301,7 @@ function Shell() {
                   {!collapsed && g.wfs.map((wf) => (
                     <div key={wf.name} class={`list-item ${selectedWf === wf.name && !appOpen ? "is-active" : ""}`}
                       onClick={() => { setSelectedApp(null); setSelectedJob(null); setSelectedWf(wf.name); setSelectedRun(null); setEvents([]); closeFlyout(); }}>
-                      <span class="list-item-name">{wf.name}</span>
+                      <span class="list-item-name" title={g.installed ? wf.name : undefined}>{nameInGroup(wf.name, g)}</span>
                       {runningByWf.has(wf.name) && (
                         <span class="live-dot" title={`${runningByWf.get(wf.name)} run${runningByWf.get(wf.name) === 1 ? "" : "s"} in progress`} />
                       )}

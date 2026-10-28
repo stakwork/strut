@@ -436,6 +436,9 @@ body.is-resizing-rows * {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* An installed package's group: its version beside the name, the one
+   marker it carries (plans/packages-ux.md §4). */
+.cat-version { font-family: var(--font-mono); font-size: 10px; color: var(--text-muted); margin-left: var(--sp-1); }
 .cat-count {
   margin-left: auto;
   font-weight: 400;

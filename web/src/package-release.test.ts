@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { PACKAGE_NAME, PACKAGE_SEGMENT, comesAlong, isInstalledName, nextVersion, packageLabel, packageOf, pickerGroups, picksFromRelease } from "./package-release";
+import { PACKAGE_NAME, PACKAGE_SEGMENT, comesAlong, installedTitle, isInstalledName, nameInGroup, nextVersion, packageLabel, packageOf, pickerGroups, picksFromRelease, sidebarGroups } from "./package-release";
 
 test("packageOf reads the package off a name with a prefix", () => {
   assert.equal(packageOf("stakwork/tools/summarize"), "stakwork/tools");
@@ -80,4 +80,32 @@ test("packageLabel shows the package segment alone under this strut's publisher"
   assert.equal(packageLabel("stakwork/tools", "stakwork"), "tools");
   assert.equal(packageLabel("acme/demo", "stakwork"), "acme/demo");
   assert.equal(packageLabel("stakwork/tools", undefined), "stakwork/tools");
+});
+
+test("sidebarGroups puts an installed package's workflows in its own group, whatever their category", () => {
+  const workflows = [
+    { name: "acme/tools/summarize", category: "media" },
+    { name: "acme/tools/tidy" },
+    { name: "clip", category: "media" },
+    { name: "scratch" },
+    { name: "mine/local/x", category: "work" },
+  ];
+  const installed = [{ package: "acme/tools", version: "1.0.0", source: { ref: "subscription:acme" } }];
+  const groups = sidebarGroups(workflows, installed);
+  const by = (key: string) => groups.find((g) => g.key === key)!;
+  assert.deepEqual(by("pkg:acme/tools").wfs.map((w) => w.name), ["acme/tools/summarize", "acme/tools/tidy"]);
+  assert.equal(by("pkg:acme/tools").label, "tools");
+  assert.equal(by("pkg:acme/tools").installed?.version, "1.0.0");
+  assert.deepEqual(by("media").wfs.map((w) => w.name), ["clip"], "a local workflow never joins the package's group");
+  assert.deepEqual(by("work").wfs.map((w) => w.name), ["mine/local/x"], "a prefixed name that is not installed stays in its category");
+  assert.deepEqual(by("").wfs.map((w) => w.name), ["scratch"]);
+  assert.equal(nameInGroup("acme/tools/summarize", by("pkg:acme/tools")), "summarize");
+  assert.equal(nameInGroup("clip", by("media")), "clip");
+  assert.equal(installedTitle(installed[0]!), "acme/tools · 1.0.0 · installed from subscription:acme");
+});
+
+test("sidebarGroups names an installed package in full when another group reads the same", () => {
+  const workflows = [{ name: "acme/tools/a" }, { name: "bob/tools/b" }, { name: "acme/media/c" }, { name: "local", category: "media" }];
+  const groups = sidebarGroups(workflows, [{ package: "acme/tools" }, { package: "bob/tools" }, { package: "acme/media" }]);
+  assert.deepEqual(groups.filter((g) => g.installed).map((g) => g.label).sort(), ["acme/media", "acme/tools", "bob/tools"]);
 });

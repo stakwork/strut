@@ -120,6 +120,72 @@ export function picksFromRelease(
   return { workflows: out.workflows.sort(), apps: out.apps.sort(), concepts: out.concepts.sort() };
 }
 
+/** An installed package as the sidebar shows it: its name, version and
+ *  where it came from — `GET /packages`. */
+export interface InstalledRef {
+  package: string;
+  version?: string;
+  source?: { ref: string };
+}
+
+export interface SidebarGroup<W> {
+  /** The collapse key: a category, `pkg:<publisher/name>` for an installed
+   *  package's group, "" for the uncategorized. */
+  key: string;
+  /** What the header shows: the category; for an installed package its
+   *  segment (`tools`), or its whole name when another group would read the
+   *  same. */
+  label: string;
+  /** Set on an installed package's group: drawn from what is installed,
+   *  never from a category, so nothing local mixes into it. */
+  installed?: InstalledRef;
+  wfs: W[];
+}
+
+/** The sidebar's groups (plans/packages-ux.md §4): a workflow an installed
+ *  package brought sits in that package's group, whatever its category; any
+ *  other in its category, or the uncategorized group. Nothing is written for
+ *  it — uninstall the package and the group is gone. Unordered: the sidebar
+ *  orders groups by recency. */
+export function sidebarGroups<W extends { name: string; category?: string }>(
+  workflows: readonly W[],
+  installed: readonly InstalledRef[],
+): SidebarGroup<W>[] {
+  const byName = new Map(installed.map((p) => [p.package, p]));
+  const groups = new Map<string, SidebarGroup<W>>();
+  for (const wf of workflows) {
+    const pkg = packageOf(wf.name);
+    const inst = pkg ? byName.get(pkg) : undefined;
+    const key = inst ? `pkg:${inst.package}` : (wf.category ?? "");
+    let g = groups.get(key);
+    if (!g) groups.set(key, (g = { key, label: inst ? inst.package : (wf.category ?? ""), ...(inst ? { installed: inst } : {}), wfs: [] }));
+    g.wfs.push(wf);
+  }
+  // A package's segment alone, unless another group would read the same.
+  const all = [...groups.values()];
+  const segment = (p: string) => p.slice(p.indexOf("/") + 1);
+  for (const g of all) {
+    if (!g.installed) continue;
+    const seg = segment(g.installed.package);
+    const clash = all.some((o) => o !== g && (o.installed ? segment(o.installed.package) === seg : o.label === seg));
+    g.label = clash ? g.installed.package : seg;
+  }
+  return all;
+}
+
+/** A workflow's name in its sidebar group: inside an installed package's
+ *  group, its name inside the package (`summarize` for
+ *  `acme/tools/summarize`); elsewhere, the name. */
+export function nameInGroup(name: string, group: Pick<SidebarGroup<unknown>, "installed">): string {
+  const pkg = group.installed?.package;
+  return pkg && name.startsWith(`${pkg}/`) ? name.slice(pkg.length + 1) : name;
+}
+
+/** An installed package's header hover: name, version, where from. */
+export function installedTitle(p: InstalledRef): string {
+  return [p.package, p.version, p.source?.ref ? `installed from ${p.source.ref}` : "installed"].filter(Boolean).join(" · ");
+}
+
 /** How the UI names a package: the package segment alone when it is this
  *  strut's publisher's (`stakwork/tools` → `tools`), the whole name
  *  otherwise — the publisher is the server's, never typed. */

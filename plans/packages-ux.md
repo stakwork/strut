@@ -28,7 +28,9 @@
 > resolves them; a check's step in a package's claims is written as the
 > package's at install; a skipped step's event, a check's
 > `config.workflow`, `job/start` and `strut/run-workflow` take names as
-> written. Item 5 is next.
+> written.
+> **Work item 5 BUILT** (#362): §4 as ruled 2026-10-28 — the sidebar draws
+> an installed package's group from what is installed and writes nothing.
 
 ## Problem
 
@@ -70,7 +72,7 @@ finds its own files first.
 | References inside a package | *Proposed, accepted 2026-10-28:* **the package first.** A bare name in an installed item resolves to `<package>/<name>` when the package holds it, else to `<name>` (§2). Nothing is rewritten, so a prompt or a Concept page that names a workflow keeps working |
 | The build | *Proposed:* stamps each item's OWN name with the prefix and nothing else (§3) |
 | A step two packages use | *Proposed:* ships in both; each copy installs under its own prefix |
-| The installing strut's sidebar | *Proposed:* an installed workflow is filed under a category named for its package, shown by its name inside the package, the publisher on hover (§4) |
+| The installing strut's sidebar | **Its own group, drawn from what is installed** (ruled 2026-10-28): nothing written, so nothing local mixes into it and an uninstall removes it; each workflow by its name inside the package, the version beside the group's name, the package and its source on hover (§4) |
 | The builder | **Knows nothing about packages** (proposed, follows from the rulings): no working package, `create_workflow` keeps its `category` arg |
 | Moving a workflow into a package | **Never needed**: nothing is renamed on the strut that publishes |
 
@@ -166,12 +168,17 @@ Same picks on the same workspace, same digest, as now.
 
 ## 4. The strut that installs
 
-The install files each installed workflow under a category named for its
-package (`tools`) when it has none; an update never overwrites a category a
-person set. The sidebar shows a name under an installed prefix by its path
-inside the package (`summarize`), with the package, publisher and version on
-hover; it learns the prefixes from `GET /packages`. That is all the sidebar
-knows of packages.
+The sidebar reads `GET /packages` with the workflow list and draws each
+installed package as a group of its own (`sidebarGroups`,
+`web/src/package-release.ts`): every workflow under its prefix, whatever its
+category, and nothing else. Nothing is written, not even a category: a
+category is a person's to move workflows in and out of, and the version on
+the header would then be wrong. The header is the package's segment
+(`tools`), or its whole name when another group would read the same, with
+the installed version beside it, the one marker it carries; hover gives
+the package, version and source. Each workflow shows its name inside the
+package (`summarize`), its full name on hover. An uninstall removes the
+group. That is all the sidebar knows of packages.
 
 ## 5. What this does to #362 and #365
 
@@ -200,8 +207,9 @@ knows of packages.
    sites, the install's check. Medium-large, engine. The next PR. Until it
    lands, a package built from bare names refuses to install (the install
    finds a bare reference nowhere): loudly, never wrongly.
-5. **The installing strut's sidebar** (§4): the category at install, the
-   name inside the package shown, the hover. Small. With 4.
+5. **The installing strut's sidebar** (§4): the group drawn from what is
+   installed, the name inside the package, the version and the hover.
+   Small. BUILT (#362).
 
 ## Open questions
 
