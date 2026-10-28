@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { appKey, appMessage, appToolInput, namesApp, parseAppKey, peerAppLink, strutLink } from "./app-links";
+import { appKey, appMessage, appToolInput, isPreviewVersion, namesApp, parseAppKey, peerAppLink, strutLink } from "./app-links";
 import { appLink } from "../../kit/src/links";
 
 /** The pure parts of the app host's relay (./app-links, what ./app-host
@@ -67,6 +67,13 @@ describe("the app host", () => {
     assert.deepEqual(parseAppKey("hive/ui@v12"), { name: "hive/ui", version: "v12" });
     assert.deepEqual(parseAppKey("@acme/hive/ui@v2"), { name: "hive/ui", peer: "acme", version: "v2" });
     for (const key of ["bench@", "bench@latest", "@v3", "@acme/@v3"]) assert.equal(parseAppKey(key), null, key);
+  });
+
+  it("a key may name a preview, an unpublished build app/look hosts", () => {
+    assert.deepEqual(parseAppKey("bench@preview-0123456789ab"), { name: "bench", version: "preview-0123456789ab" });
+    assert.equal(isPreviewVersion("preview-0123456789ab"), true);
+    for (const v of ["v3", "preview-xyz", undefined]) assert.equal(isPreviewVersion(v), false, String(v));
+    assert.equal(parseAppKey("bench@preview-1"), null);
   });
 
   it("a page's message names the app it is about", () => {

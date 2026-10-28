@@ -1114,7 +1114,14 @@ it at "Loading apps…"), and no `GET /runs/active` poll while it shows.
 A key ending in `@vN` shows that version rather than the live one
 (`?app=bench@v3&solo=1`, `?app=@acme/hive/ui@v2&solo=1`), the pin an app
 import takes — how `app/look` sees a held app's draft. A version the app
-does not have reads as no app.
+does not have reads as no app. A key ending in `@preview-<12 hex>` is an
+unpublished build `app/look { path }` hosts (`apps.preview`: built under
+a publish's checks, held in memory for an hour, no version recorded); no
+listing holds one, so the page reads none, and its files are served at
+`/apps/<name>/preview-<hex>/files[/…]` exactly as a version's are, its
+file token and identity `app:<name>@preview-<hex>` with them. `step_run`
+checks its calls against the preview's own manifest and the usage
+monitor does not count them.
 
 **One file alone.** The twin for a deliverable that is a file:
 `/?key=<the local strut's key>&artifact=<encodeURIComponent(path)>&solo=1`

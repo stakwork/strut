@@ -269,6 +269,34 @@ describe("step_run — the app door", () => {
     assert.ok(keptFromApp("graph/edit-node") && keptFromApp("app/report-error") && !keptFromApp("run/list") && !keptFromApp("graph/graph-get"));
   });
 
+  it("a preview (app/look { path }): hosted under its label with no version recorded, served with its identity, calls checked against ITS manifest, uncounted", async () => {
+    const dir = join(root, "apps", "draft-app");
+    await mkdir(join(dir, "src"), { recursive: true });
+    await writeFile(join(dir, "app.yaml"), "title: Draft\ngrants:\n  steps: [whoami]\n", "utf8");
+    await writeFile(join(dir, "src", "App.tsx"), APP_TSX, "utf8");
+    const p = await strut.apps.preview(dir, "draft-app", { surface: "ai" });
+    assert.ok(p.ok, p.ok ? "" : p.errors.join("\n"));
+    assert.match(p.version, /^preview-[0-9a-f]{12}$/);
+    assert.equal(await strut.workspace.getApp("draft-app"), null, "no version recorded");
+    assert.deepEqual(strut.apps.previewOf("draft-app", p.version)?.manifest.grants.steps, ["whoami"]);
+    assert.equal(strut.apps.previewOf("bench", p.version), null, "another app's name");
+
+    // The file route hosts it where a version would be: the token minted, the identity written in.
+    const listed = (await (await strut.app.request(`/apps/draft-app/${p.version}/files`, { headers: auth })).json()) as { token: string; hash: string; files: string[] };
+    assert.equal(listed.hash, p.hash);
+    assert.ok(listed.files.includes("dist/index.html"));
+    const html = await (await strut.app.request(`/apps/draft-app/${p.version}/files/dist/index.html?t=${encodeURIComponent(listed.token)}`)).text();
+    const previewId = appIdentity("draft-app", p.version);
+    assert.ok(html.includes(`content="${previewId}"`));
+    assert.deepEqual(appOfIdentity(previewId), { name: "draft-app", version: p.version });
+    assert.equal((await strut.app.request(`/apps/draft-app/preview-000000000000/files`, { headers: auth })).status, 404);
+
+    assert.deepEqual(await ok({ type: "whoami", config: {}, app: previewId }), { app: { name: "draft-app", version: p.version }, actor: "viewer", principal: "viewer" });
+    await refused({ type: "big", config: {}, app: previewId }, /not granted/);
+    await refused({ type: "whoami", config: {}, app: appIdentity("draft-app", "preview-000000000000") }, /no longer hosted/);
+    assert.equal((await strut.app.request("/apps/draft-app/usage", { headers: auth })).status, 404, "counted nowhere");
+  });
+
   it("runs a granted step as the viewer, whole results; a result past 5 MB is an error naming the cap", async () => {
     const me = await ok({ type: "whoami", config: {}, app: identity });
     assert.deepEqual(me, { app: { name: "bench", version: "v1" }, actor: "viewer", principal: "viewer" });

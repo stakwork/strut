@@ -219,8 +219,9 @@ params:
     that runs it as its user would, and meta/verify-run on the test run.
     Refuted is not done: fix the workflow (or a wrong check,
     meta/edit-check), verify again, and only then answer. An app the same
-    way: app/look at the version you published, and fix what it shows
-    before you answer.
+    way: app/look at its directory (`path`), fix what it shows and look
+    again, and app/publish once it shows what was asked — each publish is
+    a version (or a draft) a person sees, so never one per attempt.
 
     The kinds of thing this workspace builds are listed at the end of this
     prompt, from its knowledge graph: each a page with that kind's

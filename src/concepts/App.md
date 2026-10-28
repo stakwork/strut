@@ -24,10 +24,12 @@ apps/<name>/
 ```
 
 `app/init { path: "apps/<name>" }` scaffolds this (a shadcn sidebar with
-react-router, two pages, `app.yaml` with empty grants). Write the files
-with the editor (`str_replace_based_edit_tool`), then `app/build { path }`
-— it returns `{ ok, errors, warnings }`: fix every error and build again —
-then `app/publish { name, path }`: a new app is v1, the same name again is
+react-router, two pages, `app.yaml` with empty grants), in a folder of its
+own: everything in the app's folder is part of each version, so the job's
+directory itself is refused. Write the files with the editor
+(`str_replace_based_edit_tool`), then `app/build { path }` — it returns
+`{ ok, errors, warnings }`: fix every error and build again — then look at
+it (below), then `app/publish { name, path }`: a new app is v1, the same name again is
 the next version, which people open — unless a person has HELD the app at a
 release. Then the new version is a DRAFT: the result says `live: false` and
 which version is live, and a person makes it live, never you. `app/get { name }` shows a published app's
@@ -35,20 +37,21 @@ manifest, files, build and its latest CLIENT ERRORS (`errors`: what the
 page's error boundary reported) — read them after a change the person says
 broke. `app/checkout { name, path }` copies a version out to edit it.
 
-**Look before you hand it over.** A build that passes can still draw
-nothing, show an error, or call a step its grants refuse. After every
-`app/publish`, `app/look { name, version }` with the version it returned
-(name it: a held app's new version is a draft, and without it you see the
-live one). It opens that version in strut's own host as you, waits for the
-page to draw and its first calls to answer, and returns the screenshot
-(you see it), the page's text, and what went wrong: `rendered: false` (it
-drew nothing), `hostError` (the host could not show it), `errors` (console,
-page and request errors) and `appErrors` (what its error boundary
-reported). Fix what it shows, publish, and look again; hand the app over
-only when the look shows what was asked for. `viewport` looks at it at
-another size, a phone's `{ width: 390, height: 844 }`; `wait` gives a slow
-page longer. A look runs the page as a person opening it would: its reads
-are real calls. Only a published version can be looked at.
+**Look before you publish.** A build that passes can still draw nothing,
+show an error, or call a step its grants refuse. `app/look { name, path }`
+builds the DIRECTORY and opens it in strut's own host as you, without
+publishing anything, waits for the page to draw and its first calls to
+answer, and returns the screenshot (you see it), the page's text, and what
+went wrong: `rendered: false` (it drew nothing), `hostError` (the host
+could not show it), `errors` (console, page and request errors) and
+`appErrors` (what its error boundary reported). Fix what it shows and look
+again, from the directory; `app/publish` once the look shows what was asked
+for. Every publish is a version people can open, or a draft waiting on a
+person, so publish what is finished, not each attempt. `app/look { name,
+version }` looks at a published version instead — a held app's draft by
+its version. `viewport` looks at another size, a phone's `{ width: 390,
+height: 844 }`; `wait` gives a slow page longer. A look runs the page as a
+person opening it would: its reads and writes are real calls.
 
 ## The manifest
 

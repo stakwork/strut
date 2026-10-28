@@ -70,10 +70,11 @@ export function appKey(app: { name: string; peer?: string }): string {
  *  the page alone (`?solo=1`) needs to read that one listing. A peer id has
  *  no `/`, so the name is everything after the first one. A key may end in
  *  `@vN`, the pin an import takes (`hive/ui@v3`): that version rather than
- *  the live one — a draft, for `app/look`. Null for a key that names nothing
+ *  the live one — a draft, for `app/look` — or in `@preview-<hex>`, an
+ *  unpublished build `app/look { path }` hosts. Null for a key that names nothing
  *  (`@acme`, `@/x`, "", `bench@`). */
 export function parseAppKey(key: string): { name: string; peer?: string; version?: string } | null {
-  const pin = key.match(/^(.+)@(v\d+)$/);
+  const pin = key.match(/^(.+)@(v\d+|preview-[0-9a-f]{12})$/);
   const version = pin?.[2];
   const rest = pin ? pin[1]! : key;
   if (!pin && /@[^/]*$/.test(key.slice(1))) return null;
@@ -84,6 +85,9 @@ export function parseAppKey(key: string): { name: string; peer?: string; version
   const name = rest.slice(slash + 1);
   return slash > 0 && peer && name ? { name, peer, ...at } : null;
 }
+
+/** Is this version label a preview's (`app/look { path }`), not a `vN`? */
+export const isPreviewVersion = (version: string | undefined): boolean => !!version && /^preview-[0-9a-f]{12}$/.test(version);
 
 /** What `ui/message` from an app becomes in the builder chat: the text,
  *  prefixed with which app it is about — the builder edits the directory. */

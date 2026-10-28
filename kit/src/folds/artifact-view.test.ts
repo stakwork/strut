@@ -92,6 +92,7 @@ describe("isServedFilePath", () => {
     assert.equal(isServedFilePath("/secrets"), false);
     assert.equal(isServedFilePath("/jobs/j-1"), false);
     assert.equal(isServedFilePath("/apps/hello/v3/files/dist/index.html"), false);
+    assert.equal(isServedFilePath("/apps/hello/preview-0123456789ab/files/dist/index.html"), false);
     assert.equal(isServedFilePath("https://x/jobs/j-1/files/a.md"), false);
     assert.equal(isServedFilePath("//x/jobs/j-1/files/a.md"), false);
     assert.equal(isServedFilePath("jobs/j-1/files/a.md"), false);
@@ -171,6 +172,7 @@ describe("fileScopeOf / artifactRel", () => {
   it("names the listing a served path reads from, and the path within it", () => {
     assert.equal(fileScopeOf("/artifacts/1790/chapters/README.md"), "/artifacts/1790");
     assert.equal(fileScopeOf("/jobs/job-1/files/notes/plan.md"), "/jobs/job-1/files");
+    assert.equal(fileScopeOf("/apps/hello/preview-0123456789ab/files/dist/index.html"), "/apps/hello/preview-0123456789ab/files");
     assert.equal(fileScopeOf("/jobs/job-1"), null);
     assert.equal(fileScopeOf("https://x/artifacts/1/a.md"), null);
     // Through a peer's read-through, one hop per prefix: the listing is the peer's.

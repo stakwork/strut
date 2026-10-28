@@ -35,8 +35,14 @@ export function requireApps(services: unknown): AppsCapability {
  * builder, whose tools run under no run — relative to the server's data
  * directory (its scratch, where its editor and bash work), and with no
  * data directory either, an absolute path as given.
+ *
+ * Never that directory ITSELF: an app's version is the tree of its
+ * directory, and the job's holds what else the job keeps — screenshots
+ * (`shots/`, which every `app/look` adds to), checkouts, notes — so each
+ * publish of it would be a new version with nothing of the app changed.
+ * `app/get` may read one back (`root: true`), to say what is there.
  */
-export async function resolveAppPath(ctx: StepContext<StrutCapabilities>, path: string, job?: string): Promise<string> {
+export async function resolveAppPath(ctx: StepContext<StrutCapabilities>, path: string, job?: string, opts?: { root?: boolean }): Promise<string> {
   const services = ctx.services as Partial<StrutCapabilities> | undefined;
   const jobId = job ?? ctx.job;
   let base: string | undefined;
@@ -55,6 +61,10 @@ export async function resolveAppPath(ctx: StepContext<StrutCapabilities>, path: 
     return resolve(path);
   }
   const abs = resolve(base, path);
-  if (abs !== base && !abs.startsWith(base + sep)) throw new Error(`"${path}" leaves the ${jobId ? "job's" : ctx.runId ? "run's" : "data"} directory (${base})`);
+  const where = jobId ? "job's" : ctx.runId ? "run's" : "data";
+  if (abs !== base && !abs.startsWith(base + sep)) throw new Error(`"${path}" leaves the ${where} directory (${base})`);
+  if (abs === base && !opts?.root) {
+    throw new Error(`"${path}" is the ${where} directory itself — an app lives in a folder of its own inside it (app/init { path: "app" }): everything in its folder is part of each version`);
+  }
   return abs;
 }
