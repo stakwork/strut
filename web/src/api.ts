@@ -1244,6 +1244,8 @@ export interface ChatMeta {
   elicitation?: Elicitation;
   /** How full the model's context window is, as of the last model call. */
   context?: ChatContext;
+  /** The working package of the latest message, a prefix (`acme/tools`). */
+  package?: string;
 }
 
 /** Tokens the conversation occupies after a model call, against the model's
@@ -1291,6 +1293,11 @@ export async function sendChat(
   chatId?: string,
   model?: string,
   attachments?: { name: string; mediaType: string; data: string }[],
+  /** The WORKING PACKAGE (plans/packages-ux.md §3): the sidebar group
+   *  selected when the person asked, one segment (`tools`). The server
+   *  composes its prefix from the publisher's name; the builder names new
+   *  workflows and steps into it. Absent: bare names. */
+  pkg?: string | null,
 ): Promise<{ chatId: string; turn: number }> {
   const res = await apiFetch(`/chat`, {
     method: "POST",
@@ -1300,6 +1307,7 @@ export async function sendChat(
       ...(chatId ? { chatId } : {}),
       ...(model ? { model } : {}),
       ...(attachments?.length ? { attachments } : {}),
+      ...(pkg ? { package: pkg } : {}),
     }),
   });
   if (!res.ok) {

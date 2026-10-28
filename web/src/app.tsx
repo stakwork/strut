@@ -23,6 +23,8 @@ import { CreateDialog } from "./components/CreateDialog";
 import { SecretsDialog } from "./components/SecretsDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { PackagesDialog } from "./components/PackagesDialog";
+import { PackagePanel } from "./components/PackagePanel";
+import { PACKAGE_NAME, packageLabel, packageOf } from "./package-release";
 import { ArrowLeftIcon, ClockIcon, GearIcon, UserIcon } from "./icons";
 import { displayActor } from "./actor";
 import { sttSettings as sttStore, type SttSettings } from "./storage";
@@ -183,6 +185,33 @@ function Shell() {
   const [showSecrets, setShowSecrets] = useState(initialUrl.get("secrets") === "1");
   const [showSettings, setShowSettings] = useState(false);
   const [showPackages, setShowPackages] = useState(false);
+  // Packages (plans/packages-ux.md §1): the publisher's name, what is
+  // published (a version on each group's header) and installed, the DRAFTS
+  // this browser keeps until a workflow lands in them, and the SELECTED
+  // package — the builder's working package, its page in the canvas area.
+  const [publisherName, setPublisherName] = useState<string | undefined>(undefined);
+  const [catalog, setCatalog] = useState<api.Catalog | null>(null);
+  const [installedPkgs, setInstalledPkgs] = useState<api.InstalledPackage[]>([]);
+  const [draftPkgs, setDraftPkgs] = useState<string[]>(() => loadPref("draftPackages", []));
+  const [selectedPkg, setSelectedPkg] = useState<string | null>(null);
+  const refreshPackages = useCallback(async () => {
+    const [p, c, i] = await Promise.all([
+      api.getPublisher().catch(() => null),
+      api.getCatalog().catch(() => null),
+      api.listInstalledPackages().catch(() => [] as api.InstalledPackage[]),
+    ]);
+    setPublisherName(p?.name);
+    setCatalog(c);
+    setInstalledPkgs(i);
+  }, []);
+  useEffect(() => { void refreshPackages(); }, [refreshPackages]);
+  const addDraftPkg = useCallback((seg: string) => {
+    setDraftPkgs((prev) => {
+      const next = [...new Set([...prev, seg])];
+      savePref("draftPackages", next);
+      return next;
+    });
+  }, []);
   const [sttSettings, setSttSettings] = useState<SttSettings>(() => sttStore.get());
   const updateStt = (next: SttSettings) => { sttStore.set(next); setSttSettings(next); };
   const [showAddStep, setShowAddStep] = useState(false);
@@ -383,28 +412,66 @@ function Shell() {
       on = false;
     };
   }, [appEntry?.name, appEntry?.activeVersion, appEntry?.live]);
+  // A group is a PACKAGE — the name's `publisher/package` prefix, shown as
+  // the package segment alone under this strut's publisher (plans/
+  // packages-ux.md §1) — or, for a bare workflow, its free-text category
+  // as before. A draft package is an empty group until a workflow lands.
   const wfGroups = useMemo(() => {
-    const byCat = new Map<string, api.WorkflowEntry[]>();
+    const byKey = new Map<string, { key: string; label: string; pkg: string | null; wfs: api.WorkflowEntry[] }>();
+    const add = (key: string, label: string, pkg: string | null, wf?: api.WorkflowEntry) => {
+      const g = byKey.get(key) ?? { key, label, pkg, wfs: [] };
+      if (wf) g.wfs.push(wf);
+      byKey.set(key, g);
+    };
     for (const wf of matchedWorkflows) {
-      const cat = wf.category ?? "";
-      const arr = byCat.get(cat) ?? [];
-      arr.push(wf);
-      byCat.set(cat, arr);
+      const pkg = packageOf(wf.name);
+      if (pkg && PACKAGE_NAME.test(pkg)) add(`pkg:${pkg}`, packageLabel(pkg, publisherName), pkg, wf);
+      else add(wf.category ? `cat:${wf.category}` : "", wf.category ?? "", null, wf);
+    }
+    if (!wfQuery.trim() && publisherName) {
+      for (const seg of draftPkgs) {
+        const pkg = `${publisherName}/${seg}`;
+        if (!byKey.has(`pkg:${pkg}`)) add(`pkg:${pkg}`, seg, pkg);
+      }
     }
     const byRecency = (a: api.WorkflowEntry, b: api.WorkflowEntry) =>
       (b.lastRunAt ?? 0) - (a.lastRunAt ?? 0) || a.name.localeCompare(b.name);
-    const groups = [...byCat.entries()].map(([category, wfs]) => ({
-      category,
-      wfs: [...wfs].sort(byRecency),
-      latest: Math.max(0, ...wfs.map((w) => w.lastRunAt ?? 0)),
+    const groups = [...byKey.values()].map((g) => ({
+      ...g,
+      wfs: [...g.wfs].sort(byRecency),
+      latest: Math.max(0, ...g.wfs.map((w) => w.lastRunAt ?? 0)),
     }));
     groups.sort((a, b) => {
-      if (!a.category !== !b.category) return a.category ? -1 : 1; // uncategorized last
-      return b.latest - a.latest || a.category.localeCompare(b.category);
+      if (!a.key !== !b.key) return a.key ? -1 : 1; // ungrouped last
+      return b.latest - a.latest || a.label.localeCompare(b.label);
     });
     return groups;
-  }, [matchedWorkflows]);
-  const showGroupHeaders = wfGroups.some((g) => g.category);
+  }, [matchedWorkflows, publisherName, draftPkgs, wfQuery]);
+  const showGroupHeaders = wfGroups.some((g) => g.key);
+  /** A package group's newest release — published here, or installed. */
+  const pkgVersion = useCallback(
+    (pkg: string) => catalog?.packages[pkg]?.releases[0]?.version ?? installedPkgs.find((p) => p.package === pkg)?.version,
+    [catalog, installedPkgs],
+  );
+  const pkgTitle = useCallback((pkg: string) => {
+    const inst = installedPkgs.find((p) => p.package === pkg);
+    if (inst) return `${pkg} — installed${inst.source ? ` from ${inst.source.ref}` : ""}${inst.version ? ` (${inst.version})` : ""}`;
+    return `${pkg} — publisher ${pkg.split("/")[0]}`;
+  }, [installedPkgs]);
+  // A draft is forgotten once a workflow is named under it.
+  useEffect(() => {
+    if (!publisherName) return;
+    const taken = draftPkgs.filter((seg) => workflows.some((w) => w.name.startsWith(`${publisherName}/${seg}/`)));
+    if (taken.length) {
+      const next = draftPkgs.filter((seg) => !taken.includes(seg));
+      savePref("draftPackages", next);
+      setDraftPkgs(next);
+    }
+  }, [workflows, publisherName, draftPkgs]);
+  // The selected workflow's package is the selected package.
+  useEffect(() => {
+    if (selectedWf) setSelectedPkg(packageOf(selectedWf));
+  }, [selectedWf]);
   const categories = useMemo(
     () => [...new Set(workflows.map((w) => w.category ?? ""))].filter(Boolean).sort(),
     [workflows],
@@ -434,6 +501,13 @@ function Shell() {
   // A selected app: its page in the canvas area, the topbar its own.
   const appOpen = selectedApp != null;
   const wf = timelineOpen || appOpen ? null : selectedWf;
+  // A selected package with nothing else open: its page in the canvas area.
+  const pkgOpen = selectedPkg != null && selectedWf == null && !timelineOpen && !appOpen;
+  // The working package the chat sends: the selected package's segment,
+  // only under this strut's own publisher (another's is never written to).
+  const workingSegment = selectedPkg && publisherName && selectedPkg.startsWith(`${publisherName}/`)
+    ? selectedPkg.slice(publisherName.length + 1)
+    : null;
 
   // ── View context: what the canvas + flyout operate on ───────────────────
   // Root view = the selected workflow. When drilled into a run's nested
@@ -857,6 +931,23 @@ function Shell() {
     setSelectedRun(null);
     setEvents([]);
   }, []);
+  /** Select a PACKAGE (plans/packages-ux.md §1): its page in the canvas
+   *  area, and the builder's working package from here on. */
+  const selectPkg = useCallback((pkg: string) => {
+    liveStreamRef.current = false;
+    setRunning(false);
+    setFlyoutStepId(null);
+    setFlyoutStepIndex(null);
+    setPanel(null);
+    setInfoStep(null);
+    setThreadView(null);
+    setSelectedApp(null);
+    setSelectedJob(null);
+    setSelectedRun(null);
+    setEvents([]);
+    setSelectedWf(null);
+    setSelectedPkg(pkg);
+  }, []);
   /** Open an app's page (plans/apps.md §7.3): the canvas area is its.
    *  `input` is what it is opened with (`?input=`); none, a plain open. */
   const selectApp = useCallback((name: string | null, input?: string) => {
@@ -1005,9 +1096,9 @@ function Shell() {
     }
   }, [selectedWf, localSteps, submitRun, localParams, loadInputBindings]);
 
-  const handleCreate = useCallback(async (name: string, yamlStr: string, desc: string, category?: string) => {
+  const handleCreate = useCallback(async (name: string, yamlStr: string, desc: string) => {
     // Server auto-suffixes on collision; navigate to the resolved name.
-    const res = await api.createWorkflowYaml(name, yamlStr, desc || undefined, category || undefined);
+    const res = await api.createWorkflowYaml(name, yamlStr, desc || undefined);
     await refreshWorkflows();
     setSelectedWf(res.workflow);
     setShowCreate(false);
@@ -1281,25 +1372,33 @@ function Shell() {
               <div class="empty-sidebar">No matching workflows</div>
             )}
             {wfGroups.map((g) => {
-              const catKey = g.category || "__uncategorized";
+              const catKey = g.key || "__uncategorized";
               // A filter shows every match regardless of collapsed groups.
               const collapsed = showGroupHeaders && !wfQuery.trim() && !!collapsedCats[catKey];
+              const version = g.pkg ? pkgVersion(g.pkg) : undefined;
               return (
                 <div key={catKey}>
                   {showGroupHeaders && (
-                    <div class="cat-header" onClick={() => toggleCat(catKey)}>
-                      <span class={`cat-caret${collapsed ? "" : " is-open"}`}>▸</span>
-                      <span class="cat-name">{g.category || "uncategorized"}</span>
+                    // A package header SELECTS the package (its page, the
+                    // builder's working package); the caret folds it. A
+                    // category header folds, as before.
+                    <div class={`cat-header${g.pkg && selectedPkg === g.pkg && pkgOpen ? " is-selected" : ""}`}
+                      title={g.pkg ? pkgTitle(g.pkg) : undefined}
+                      onClick={() => (g.pkg ? selectPkg(g.pkg) : toggleCat(catKey))}>
+                      <span class={`cat-caret${collapsed ? "" : " is-open"}`}
+                        onClick={(e) => { if (g.pkg) { e.stopPropagation(); toggleCat(catKey); } }}>▸</span>
+                      <span class="cat-name">{g.label || "uncategorized"}</span>
                       {collapsed && g.wfs.some((wf) => runningByWf.has(wf.name)) && (
                         <span class="live-dot" title="A workflow in here is running" />
                       )}
+                      {version && <span class="cat-version">{version}</span>}
                       <span class="cat-count">{g.wfs.length}</span>
                     </div>
                   )}
                   {!collapsed && g.wfs.map((wf) => (
                     <div key={wf.name} class={`list-item ${selectedWf === wf.name && !appOpen ? "is-active" : ""}`}
                       onClick={() => { setSelectedApp(null); setSelectedJob(null); setSelectedWf(wf.name); setSelectedRun(null); setEvents([]); closeFlyout(); }}>
-                      <span class="list-item-name">{wf.name}</span>
+                      <span class="list-item-name" title={wf.name}>{g.pkg ? wf.name.slice(g.pkg.length + 1) : wf.name}</span>
                       {runningByWf.has(wf.name) && (
                         <span class="live-dot" title={`${runningByWf.get(wf.name)} run${runningByWf.get(wf.name) === 1 ? "" : "s"} in progress`} />
                       )}
@@ -1536,7 +1635,10 @@ function Shell() {
       {/* Topbar */}
       <div class="shell-topbar">
         <span class="topbar-title">
-          {wf ?? (selectedJob ? (job?.title ?? selectedJob) : appOpen ? (appEntry?.title ?? selectedApp) : "Select a workflow")}
+          {wf
+            // A packaged workflow by its path inside the package; the stored name on hover.
+            ? <span title={wf}>{packageOf(wf) ? wf.slice(packageOf(wf)!.length + 1) : wf}</span>
+            : pkgOpen && selectedPkg ? packageLabel(selectedPkg, publisherName) : selectedJob ? (job?.title ?? selectedJob) : appOpen ? (appEntry?.title ?? selectedApp) : "Select a workflow"}
           {appOpen && appEntry?.peer && (
             // A peer's app (plans/apps.md §7.4): what is live there, run there
             // as you. Its releases and its tab are the peer's to change.
@@ -1610,7 +1712,7 @@ function Shell() {
               }}
             >Tab</button>
           )}
-          {wf && (
+          {wf && !packageOf(wf) && (
             <CategoryEditor
               key={wf}
               workflow={wf}
@@ -1799,7 +1901,9 @@ function Shell() {
         )}
         {/* A selected app: its page, hosted (plans/apps.md §7.3). A selected
             job with no run open: its timeline, not a graph. */}
-        {appOpen && selectedApp ? (
+        {pkgOpen && selectedPkg ? (
+          <PackagePanel pkg={selectedPkg} publisher={publisherName} workflows={workflows.map((w) => w.name)} onChanged={() => void refreshPackages()} />
+        ) : appOpen && selectedApp ? (
           appView
         ) : timelineOpen ? (
           job
@@ -1864,9 +1968,19 @@ function Shell() {
       )}
 
       {/* Create dialog */}
-      {showCreate && <CreateDialog onClose={() => setShowCreate(false)} onCreate={handleCreate} categories={categories} />}
+      {showCreate && (
+        <CreateDialog onClose={() => setShowCreate(false)} onCreate={handleCreate} publisher={publisherName}
+          packages={[...new Set([...wfGroups.filter((g) => g.pkg && publisherName && g.pkg.startsWith(`${publisherName}/`)).map((g) => g.label)])]}
+          defaultPackage={workingSegment} />
+      )}
       {showSecrets && <SecretsDialog onClose={() => setShowSecrets(false)} />}
-      {showPackages && <PackagesDialog onClose={() => setShowPackages(false)} />}
+      {showPackages && (
+        <PackagesDialog
+          onClose={() => { setShowPackages(false); void refreshPackages(); }}
+          drafts={draftPkgs}
+          onNewPackage={(seg) => { addDraftPkg(seg); if (publisherName) selectPkg(`${publisherName}/${seg}`); setShowPackages(false); }}
+        />
+      )}
       {showSettings && (
         <SettingsDialog settings={sttSettings} onChange={updateStt} onClose={() => setShowSettings(false)} />
       )}
@@ -1880,6 +1994,7 @@ function Shell() {
           stt={sttSettings}
           draft={chatDraft}
           inbound={chatInbound}
+          package={workingSegment}
           onAppPublished={(name) => {
             // The list (a new app, a new active version) and, when it is the
             // one in front of you, the frame.

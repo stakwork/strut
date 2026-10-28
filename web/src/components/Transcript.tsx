@@ -70,6 +70,7 @@ export function Transcript(props: {
         if (entry.kind === "user") {
           return (
             <div key={i} class="chat-msg chat-msg-user">
+              {entry.package && <span class="chat-msg-package" title="The package this message was sent under">{entry.package}</span>}
               {entry.attachments?.length ? <AttachmentList items={entry.attachments} /> : null}
               {entry.content && <div class="chat-msg-text">{entry.content}</div>}
             </div>

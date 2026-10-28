@@ -154,15 +154,17 @@ function PublisherHead(props: { publisher: api.PublisherInfo | null | undefined;
   );
 }
 
-/** One package's page: what a release holds, the form, and its releases. */
-function PackagePage(props: {
+/** One package's page: what a release holds, the form, and its releases.
+ *  In the dialog behind a row (`onBack`), and the canvas area's view of a
+ *  selected package (PackagePanel.tsx). */
+export function PackagePage(props: {
   pkg: string;
   publisher?: string;
   catalog: api.Catalog | null;
   /** Every workflow here, by name. */
   workflows: string[];
   peers: string[] | null;
-  onBack: () => void;
+  onBack?: () => void;
   onChanged: () => void;
 }) {
   const entry = props.catalog?.packages[props.pkg];
@@ -207,7 +209,7 @@ function PackagePage(props: {
   return (
     <>
       <div class="package-page-head">
-        <button class="auto-link" onClick={props.onBack}>← Packages</button>
+        {props.onBack && <button class="auto-link" onClick={props.onBack}>← Packages</button>}
         <span class="package-name" title={props.pkg}>{packageLabel(props.pkg, props.publisher)}</span>
         {entry?.releases[0] && <span class="package-version">{entry.releases[0].version}</span>}
       </div>
@@ -289,7 +291,14 @@ function PackagePage(props: {
   );
 }
 
-export function PackagesDialog(props: { onClose: () => void }) {
+export function PackagesDialog(props: {
+  onClose: () => void;
+  /** Draft packages this browser keeps (segments under the publisher):
+   *  empty groups until a workflow lands in them (plans/packages-ux.md §1). */
+  drafts?: string[];
+  /** A new draft: the name typed under "Here". */
+  onNewPackage?: (segment: string) => void;
+}) {
   const [catalog, setCatalog] = useState<api.Catalog | null | undefined>(undefined);
   const [publisher, setPublisher] = useState<api.PublisherInfo | null | undefined>(undefined);
   const [workflows, setWorkflows] = useState<string[]>([]);
@@ -298,6 +307,7 @@ export function PackagesDialog(props: { onClose: () => void }) {
   const [installed, setInstalled] = useState<api.InstalledPackage[] | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [open, setOpen] = useState<string | null>(null);
+  const [newPkg, setNewPkg] = useState("");
 
   const failed = (part: string) => (err: unknown) => setErrors((e) => ({ ...e, [part]: errorMessage(err) }));
   const loadCatalog = () => api.getCatalog().then(setCatalog, failed("catalog"));
@@ -317,8 +327,10 @@ export function PackagesDialog(props: { onClose: () => void }) {
       ...(publisher?.name ? { publisher: publisher.name } : {}),
       installed: (installed ?? []).map((p) => p.package),
     });
-    return [...new Set([...names, ...Object.keys(catalog?.packages ?? {})])].sort();
-  }, [workflows, publisher, installed, catalog]);
+    const drafts = publisher?.name ? (props.drafts ?? []).map((seg) => `${publisher.name}/${seg}`) : [];
+    return [...new Set([...names, ...Object.keys(catalog?.packages ?? {}), ...drafts])].sort();
+  }, [workflows, publisher, installed, catalog, props.drafts]);
+  const segmentOk = /^[a-z][a-z0-9-]{0,63}$/.test(newPkg.trim());
   const newest = (pkg: string) => catalog?.packages[pkg]?.releases[0]?.version;
 
   return (
@@ -347,6 +359,14 @@ export function PackagesDialog(props: { onClose: () => void }) {
                   {newest(pkg) && <span class="package-version">{newest(pkg)}</span>}
                 </button>
               ))}
+              {publisher?.name && props.onNewPackage && (
+                <div class="package-new">
+                  <input type="text" value={newPkg} placeholder="New package"
+                    onInput={(e) => setNewPkg((e.target as HTMLInputElement).value)}
+                    onKeyDown={(e) => { if (e.key === "Enter" && segmentOk) { props.onNewPackage!(newPkg.trim()); setNewPkg(""); } }} />
+                  <button class="btn" disabled={!segmentOk} onClick={() => { props.onNewPackage!(newPkg.trim()); setNewPkg(""); }}>Add</button>
+                </div>
+              )}
               {catalog && <div class="auto-meta package-signed">Catalog signed {ago(catalog.seq / 1e6)}</div>}
             </div>
 

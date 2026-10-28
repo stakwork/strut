@@ -675,6 +675,7 @@ body.is-resizing-rows * {
   margin-bottom: var(--sp-1);
 }
 .dialog-field input,
+.dialog-field select,
 .dialog-field textarea {
   width: 100%;
   font: inherit;
@@ -3702,6 +3703,40 @@ body.is-resizing-flyout * {
 .package-row:hover { background: var(--surface-2); }
 .package-row .package-version { margin-left: auto; color: var(--text-muted); font-weight: 400; }
 .package-page-head { display: flex; align-items: center; gap: var(--sp-2); margin-bottom: var(--sp-3); }
+/* A new draft package, typed once under "Here". */
+.package-new { display: flex; gap: var(--sp-2); margin: var(--sp-2) 0; }
+.package-new input {
+  flex: 1;
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  color: var(--text);
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--r-md);
+}
+/* The canvas area when a package is selected (PackagePanel.tsx). */
+.package-panel { height: 100%; overflow: auto; padding: var(--sp-5); box-sizing: border-box; }
+.package-panel-body { max-width: 640px; }
+/* A sidebar group that is a package: selected = the builder's working
+   package; its newest release's version beside the name, nothing else. */
+.cat-header.is-selected { color: var(--accent); }
+.cat-header.is-selected:hover { color: var(--accent); }
+.cat-version { margin-left: auto; font-family: var(--font-mono); font-size: 10px; text-transform: none; letter-spacing: 0; color: var(--text-muted); }
+.cat-header .cat-version + .cat-count { margin-left: 0; }
+.cat-header .live-dot + .cat-version { margin-left: 0; }
+/* The package a chat message was sent under, on its bubble. */
+.chat-msg-package {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 0 var(--sp-1);
+  margin-bottom: var(--sp-1);
+}
 .package-page-head .package-name { font-size: 14px; }
 .package-name { font-size: 13px; font-weight: 600; color: var(--text); font-family: var(--font-mono); }
 .package-version { font-family: var(--font-mono); font-size: 12px; font-weight: 600; color: var(--text); }

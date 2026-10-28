@@ -90,6 +90,11 @@ export interface ChatMeta {
    *  artifact link with its read token, a `ui` deep link — so the reply
    *  text a caller outside the UI reads carries links it can share. */
   publicUrl?: string;
+  /** The WORKING PACKAGE of the latest human message (plans/packages-ux.md
+   *  §3): a prefix, `acme/tools`, what `POST /chat { package }` named
+   *  through the publisher's name. Every turn of the chat builds its tools
+   *  with it until a message without one clears it. */
+  package?: string;
 }
 
 /** Tokens the conversation occupies after a model call — that call's input

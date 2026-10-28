@@ -14,7 +14,18 @@
 > and `PUT /publisher`, the publish route's prefix check, and the Packages
 > dialog as the package page. One choice beyond §2: the name is set in the
 > Packages dialog's head, beside the key, not in Settings — it is the one
-> place a person meets the publisher. Items 2 and 3 are next.
+> place a person meets the publisher. **Items 2 and 3 BUILT** (2026-10-27,
+> the PR after it): the sidebar grouped by the name's package segment with
+> the newest release's version on the header, a selected package as its
+> page in the canvas area and the builder's working package, `POST /chat
+> { package }` and the `[package]` line, `create_workflow` / `create_step`
+> naming under it in code. Choices beyond the text: a package's deeper
+> folders show in the row's name (`media/clip`), not as subgroups — one
+> level is enough until a package has hundreds; a draft package is made
+> under "Here" in the Packages dialog and lives in the browser until a
+> workflow lands in it; the free-text `category` stays only on a bare
+> workflow (its chip is hidden on a packaged one) and `set_workflow_category`
+> stays for it. Item 5, the move, is next.
 
 ## Problem
 
@@ -177,10 +188,13 @@ converts a legacy free-text category into a package.
    with subgroups, the last segment shown, versions from the catalog and
    the installed fold, hover text; the draft group in `localStorage`; the
    legacy `category` group kept for bare workflows, marked. Medium, UI.
+   BUILT (deeper folders in the row's name rather than subgroups; the
+   legacy group marked by its hover text only).
 3. **Working package**: the selected group → `POST /chat { package }` →
    the `[package]` line and the composed names in `create_workflow` /
    `create_step`; the New dialog's package select; the `category` arg
-   removed from the tool. Small-medium.
+   removed from the tool. Small-medium. BUILT; `set_workflow_category`
+   kept for a bare workflow's legacy category.
 4. **Package page**: #362's dialog keyed by package, the publish form on
    it, opened from the group header; the Packages dialog as overview.
    Medium, UI; no new routes. BUILT, opened from the dialog's package rows

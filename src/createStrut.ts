@@ -122,6 +122,7 @@ import { lintStepSource } from "./step-lint.js";
 import { createChatNotifier, formatRestartNotification, formatRunNotification } from "./ai/notifier.js";
 import { createTurnCallbacks, finalAssistantText } from "./ai/turn-callback.js";
 import { attachmentParts, parseAttachments, saveAttachments, saveRunAttachments, type Attachment } from "./ai/attachments.js";
+import { PACKAGE_SEGMENT, packageLine } from "./ai/working-package.js";
 import { callbackOrigin, parseCallback, parseLaunchCallback, postCallback, roomActorOf, roomTarget } from "./callback.js";
 import { createEventsSink, parseSinkUrl, type EventsSink } from "./events-sink.js";
 import { listServerTools, parseMcpServers } from "./mcp-servers.js";
@@ -4826,6 +4827,9 @@ export async function createStrut<TServices = unknown>(
             // carry absolute links (an artifact's with its read token), so
             // the reply text the caller reads can be shared as it is.
             ...(meta?.publicUrl ? { publicUrl: meta.publicUrl, artifactRefs } : {}),
+            // The working package (plans/packages-ux.md §3): create_workflow
+            // and create_step name under it, this turn and the wake-ups after.
+            ...(meta?.package ? { package: meta.package } : {}),
             toolResultMaxChars: resultCapChars(toolResultMaxCharsFromEnv(), llm.contextLimit, compactAt),
             // A document read (get_workflow / get_step) is bound by the
             // window alone — no env ceiling; uncapped with compaction off.
@@ -5354,6 +5358,9 @@ export async function createStrut<TServices = unknown>(
       /** A chat started over MCP: links in its builder's tool results are
        *  absolute on this base (`ChatMeta.publicUrl`, stamped once). */
       publicUrl?: string;
+      /** The WORKING PACKAGE this message was sent under — a prefix,
+       *  `acme/tools` — kept on the chat for its turns; null clears it. */
+      package?: string | null;
     }): Promise<{ chatId: string; turn: number; at: number } | { error: string; code: "not_found" | "busy" }> {
       let chatId = args.chatId;
       let meta = chatId ? await chatStore.getMeta(chatId) : null;
@@ -5389,6 +5396,7 @@ export async function createStrut<TServices = unknown>(
         ...(args.model ? { model: args.model } : {}),
         ...(args.callback !== undefined ? { callback: args.callback ?? undefined } : {}),
         ...(args.actor ? { actor: args.actor } : {}),
+        ...(args.package !== undefined ? { package: args.package ?? undefined } : {}),
         // The first identified speaker started the chat; nobody re-stamps it.
         ...(args.actor && !meta!.createdBy ? { createdBy: args.actor } : {}),
         ...(args.publicUrl && !meta!.publicUrl ? { publicUrl: args.publicUrl } : {}),
@@ -5433,7 +5441,21 @@ export async function createStrut<TServices = unknown>(
         model?: string;
         callback?: { url?: string } | null;
         attachments?: unknown;
+        package?: unknown;
       }>();
+      // The working package (plans/packages-ux.md §3): one segment, the
+      // sidebar group the person had selected; its prefix is composed from
+      // the publisher's name here, so the page never sends one. Absent (or
+      // empty): bare names, and the chat's earlier package is cleared.
+      let pkg: { segment: string; prefix: string } | null = null;
+      if (body.package !== undefined && body.package !== null && body.package !== "") {
+        if (typeof body.package !== "string" || !PACKAGE_SEGMENT.test(body.package)) {
+          return c.json({ error: "package is one segment of a package name, lowercase [a-z][a-z0-9-]* (`tools` in `acme/tools`)" }, 400);
+        }
+        const name = (await publisher.get())?.name;
+        if (!name) return c.json({ error: "publisher_name: set the publisher's name first (PUT /publisher { name }) — it is the first segment of every package here" }, 400);
+        pkg = { segment: body.package, prefix: `${name}/${body.package}` };
+      }
       // Files ride beside the text (ai/attachments.ts), validated before
       // anything is persisted. With them, the text may be empty.
       let attachments: Attachment[];
@@ -5492,13 +5514,16 @@ export async function createStrut<TServices = unknown>(
       const sent = await sendChatMessage({
         ...(chatId ? { chatId } : {}),
         title: body.title ?? (message || attachments.map((a) => a.name).join(", ")).slice(0, 80),
-        // Text first, then each file (saved where bash and a run can read it).
+        // The package line first, then the text, then each file (saved
+        // where bash and a run can read it).
         content: async (id) => {
-          if (!attachments.length) return message;
-          const paths = await saveAttachments(dataDir, id, attachments);
+          const head = pkg ? [{ type: "text", text: packageLine(pkg.segment) }] : [];
+          if (!attachments.length && !head.length) return message;
+          const paths = attachments.length ? await saveAttachments(dataDir, id, attachments) : [];
           const parts = await Promise.all(attachments.map((a, i) => attachmentParts(a, paths[i]!)));
-          return [...(message ? [{ type: "text", text: message }] : []), ...parts.flat()];
+          return [...head, ...(message ? [{ type: "text", text: message }] : []), ...parts.flat()];
         },
+        package: pkg?.prefix ?? null,
         ...(pickedModel ? { model: pickedModel } : {}),
         ...(callback !== undefined ? { callback } : {}),
         ...(actor ? { actor } : {}),

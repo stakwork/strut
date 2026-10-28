@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { nameInPackage, stampStepType, stampWorkflowName } from "./working-package.js";
 import { tool, type ToolSet } from "ai";
 import { runWorkflow } from "../runner.js";
 import { AiDeps, GRAPH_WALK_TOOL_ENABLED, graphConventions } from "./prompts.js";
@@ -452,7 +453,12 @@ export function buildTools(deps: AiDeps): ToolSet {
         description: z.string().optional(),
         ...claimsArg,
       }),
-      execute: async ({ name, code, description, ...rest }) => {
+      execute: async ({ name: given, code: source, description, ...rest }) => {
+        // Under a working package (plans/packages-ux.md §3) the model names
+        // the path inside it; the stored type is under the prefix, and the
+        // source's `type:` literal moves with it.
+        const name = nameInPackage(deps.package, given);
+        const code = stampStepType(source, given, name);
         const contract = (rest as { claims?: ClaimsArg }).claims;
         const invalid = await claims?.validateClaimsArg(contract, actor);
         if (invalid) return { error: `Nothing was published — fix the claims first. ${invalid.error}` };
@@ -522,27 +528,23 @@ export function buildTools(deps: AiDeps): ToolSet {
         "Create and publish a NEW workflow from YAML. If the name already " +
         "exists, a numeric suffix is appended (e.g. `send-email-2`). The " +
         "response includes the final name used. To publish a new version of " +
-        "an EXISTING workflow, use `edit_workflow` instead. Pass `category` " +
-        "to group the workflow in the UI sidebar (e.g. an experiment or " +
-        "project name) — set it when the user asks for one or when the " +
-        "workflow clearly belongs to an existing category (see " +
-        "list_workflows for categories already in use). The YAML is " +
+        "an EXISTING workflow, use `edit_workflow` instead. Under a " +
+        "[package] line the name is the path inside that package (a slash " +
+        "makes a folder); the response's `name` is the stored one. The YAML is " +
         "validated first (same checks as validate_workflow): on errors " +
         "nothing is published and the error lists them; warnings are " +
         "returned alongside a successful publish.",
       inputSchema: z.object({
-        name: z.string().describe("Workflow name (kebab-case)"),
+        name: z.string().describe("Workflow name (kebab-case; under a [package] line, the path inside the package)"),
         yaml: z.string().describe("Full workflow YAML"),
         description: z.string().optional(),
-        category: z
-          .string()
-          .optional()
-          .describe(
-            "Optional sidebar grouping label (kebab-case, e.g. an experiment name). Omit to leave uncategorized.",
-          ),
         ...claimsArg,
       }),
-      execute: async ({ name, yaml, description, category, ...rest }) => {
+      execute: async ({ name: given, yaml: source, description, ...rest }) => {
+        // Under a working package the stored name is under its prefix, and
+        // the YAML's `name:` must say it (the runner keys runs off it).
+        const name = nameInPackage(deps.package, given);
+        const yaml = stampWorkflowName(source, name);
         const v = await validate(yaml, name);
         if (!v.ok) return { error: formatValidationErrors(v), validation: v };
         // The YAML's own `claims:` block and the arg are one contract (merged by text).
@@ -553,7 +555,7 @@ export function buildTools(deps: AiDeps): ToolSet {
           name,
           yaml,
           description,
-          category,
+          undefined,
           undefined,
           publishOpts,
         );
@@ -597,15 +599,9 @@ export function buildTools(deps: AiDeps): ToolSet {
         yaml: z.string().optional().describe("Full updated workflow YAML. Omit when passing `edits`."),
         edits: editsSchema,
         description: z.string().optional(),
-        category: z
-          .string()
-          .optional()
-          .describe(
-            "Optional sidebar grouping label. Only pass to CHANGE the category (to merely re-categorize without editing YAML, use set_workflow_category).",
-          ),
         ...claimsArg,
       }),
-      execute: async ({ name, yaml: whole, edits, description, category, ...rest }) => {
+      execute: async ({ name, yaml: whole, edits, description, ...rest }) => {
         const meta = await deps.workspace.getWorkflowMetadata(name);
         if (!meta) {
           return {
@@ -631,7 +627,7 @@ export function buildTools(deps: AiDeps): ToolSet {
             name,
             yaml,
             description,
-            category,
+            undefined,
             undefined,
             publishOpts,
           );

@@ -20,14 +20,24 @@ steps:
       message: "Fetched: {{ fetch.body }}"
 `;
 
+const SEGMENT = /^[a-z][a-z0-9-]{0,63}$/;
+const NEW = "__new";
+
 export function CreateDialog(props: {
   onClose: () => void;
-  onCreate: (name: string, yamlStr: string, description: string, category?: string) => void;
-  /** Existing categories, offered as suggestions. */
-  categories?: string[];
+  onCreate: (name: string, yamlStr: string, description: string) => void;
+  /** This strut's publisher name: the first segment of a package. */
+  publisher?: string;
+  /** The packages here, as segments under the publisher. */
+  packages?: string[];
+  /** The selected package: what the workflow goes into unless changed. */
+  defaultPackage?: string | null;
 }) {
   const [desc, setDesc] = useState("");
-  const [category, setCategory] = useState("");
+  // The PACKAGE the workflow goes into (plans/packages-ux.md §1): one of
+  // the packages here, a new one, or none — a bare name.
+  const [pkg, setPkg] = useState(props.defaultPackage ?? "");
+  const [newPkg, setNewPkg] = useState("");
   const [yamlStr, setYamlStr] = useState(EXAMPLE_YAML);
   const [error, setError] = useState("");
 
@@ -36,8 +46,15 @@ export function CreateDialog(props: {
       const data = yaml.load(yamlStr) as any;
       if (!data?.name) { setError("YAML must have a 'name' field"); return; }
       if (!data?.steps || !Array.isArray(data.steps)) { setError("YAML must have a 'steps' array"); return; }
-      if (!/^[a-zA-Z][a-zA-Z0-9_-]*$/.test(data.name)) { setError("Name must be alphanumeric (hyphens/underscores ok)"); return; }
-      props.onCreate(data.name, yamlStr, desc, category.trim() || undefined);
+      if (!/^[a-zA-Z][a-zA-Z0-9_-]*(\/[a-zA-Z][a-zA-Z0-9_-]*)*$/.test(data.name)) { setError("Name must be alphanumeric (hyphens/underscores ok; a slash makes a folder)"); return; }
+      const seg = pkg === NEW ? newPkg.trim() : pkg;
+      if (seg && !SEGMENT.test(seg)) { setError("A package name is lowercase: letters, digits and hyphens"); return; }
+      if (seg && !props.publisher) { setError("Set the publisher name first (Packages), so the package has a prefix"); return; }
+      // The stored name carries the package; the YAML must say it too (the
+      // runner keys run storage off the workflow's name).
+      const name = seg ? `${props.publisher}/${seg}/${data.name}` : data.name;
+      const out = name === data.name ? yamlStr : yaml.dump({ ...data, name }, { lineWidth: 120, noRefs: true });
+      props.onCreate(name, out, desc);
     } catch (e) {
       setError(`Invalid YAML: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -52,17 +69,17 @@ export function CreateDialog(props: {
           <input type="text" value={desc} onInput={(e) => setDesc((e.target as HTMLInputElement).value)} placeholder="What this workflow does" />
         </div>
         <div class="dialog-field">
-          <label>Category</label>
-          <input
-            type="text"
-            list="create-cat-suggestions"
-            value={category}
-            onInput={(e) => setCategory((e.target as HTMLInputElement).value)}
-            placeholder="Optional — groups the workflow in the sidebar"
-          />
-          <datalist id="create-cat-suggestions">
-            {(props.categories ?? []).map((c) => <option key={c} value={c} />)}
-          </datalist>
+          <label>Package</label>
+          <select value={pkg} onChange={(e) => setPkg((e.target as HTMLSelectElement).value)}>
+            <option value="">None</option>
+            {(props.packages ?? []).map((p) => <option key={p} value={p}>{p}</option>)}
+            <option value={NEW}>New package…</option>
+          </select>
+          {pkg === NEW && (
+            <input type="text" value={newPkg} placeholder="tools" style="margin-top:6px"
+              onInput={(e) => setNewPkg((e.target as HTMLInputElement).value)} />
+          )}
+          <div class="dialog-hint">The YAML's name is its path inside the package; a slash makes a folder.</div>
         </div>
         <div class="dialog-field">
           <label>Workflow (YAML)</label>

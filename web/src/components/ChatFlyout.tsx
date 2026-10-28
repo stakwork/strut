@@ -76,6 +76,10 @@ export function ChatFlyout(props: {
   onAppPublished?: (name: string) => void;
   /** Text to put in the composer (Edit with the builder): applied when `id` changes. */
   draft?: { text: string; id: number } | null;
+  /** The WORKING PACKAGE (plans/packages-ux.md §3): the sidebar group
+   *  selected now, one segment — sent with each message so the builder
+   *  names new workflows and steps into it. */
+  package?: string | null;
   /** A message to SEND as the user's (an app's `ui/message`, plans/apps.md
    *  §7.3): sent when `id` changes; while a turn is live it waits in the
    *  composer instead. */
@@ -550,6 +554,7 @@ export function ChatFlyout(props: {
         chatId ?? undefined,
         model ?? undefined,
         sent.map(({ name, mediaType, data }) => ({ name, mediaType, data })),
+        props.package,
       );
       if (!chatId) {
         setChatId(id);

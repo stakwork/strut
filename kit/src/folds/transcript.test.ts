@@ -84,6 +84,16 @@ describe("transcript", () => {
     assert.deepEqual(transcriptToEntries([{ role: "user", content: content.slice(3) }])[0]?.kind, "user");
   });
 
+  it("a user message sent under a package carries the package, the line itself left out of the text", () => {
+    const content = [
+      { type: "text", text: "[package] tools — name new workflows and steps by their path in this package; a slash makes a folder" },
+      { type: "text", text: "make summarize" },
+    ];
+    assert.deepEqual(transcriptToEntries([{ role: "user", content }])[0], { kind: "user", content: "make summarize", package: "tools" });
+    assert.deepEqual(transcriptToEntries([{ role: "user", content: content.slice(0, 1) }])[0], { kind: "user", content: "", package: "tools" });
+    assert.equal(transcriptToEntries([{ role: "user", content: "make summarize" }])[0]?.kind, "user");
+  });
+
   it("attachResult finds the call from the end and leaves other entries alone", () => {
     const entries = transcriptToEntries(messages.slice(0, 3));
     const { entries: next, call } = attachResult(entries, "c3", { output: 1, isError: false });

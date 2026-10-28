@@ -36,7 +36,7 @@ export type ToolGroup = { name: string; calls: ToolCall[] };
 export type AttachmentView = { name: string; mediaType: string; size: string; src?: string };
 
 export type ChatEntry =
-  | { kind: "user"; content: string; attachments?: AttachmentView[] }
+  | { kind: "user"; content: string; attachments?: AttachmentView[]; package?: string }
   | { kind: "notice"; content: string }
   | { kind: "text"; content: string }
   | { kind: "tool"; groups: ToolGroup[] }
@@ -123,25 +123,31 @@ export function extractText(content: unknown): string {
 }
 
 const ATTACHMENT_RE = /^\[attachment\] (.+) \(([^,()]+), ([^()]+)\) — saved at /;
+/** The working package a message was sent under (src/ai/working-package.ts,
+ *  plans/packages-ux.md §3): `[package] <segment> — …`, the message's first part. */
+const PACKAGE_RE = /^\[package\] (\S+)(?: —|$)/;
 
 /** A user message's content split into what the person typed and the files
  *  they attached: an `[attachment] <name> (<type>, <size>) — saved at …`
  *  text part announces each file, the image part after it is its picture. */
-export function userContent(content: unknown): { text: string; attachments: AttachmentView[] } {
+export function userContent(content: unknown): { text: string; attachments: AttachmentView[]; package?: string } {
   if (!Array.isArray(content)) return { text: extractText(content), attachments: [] };
   const texts: string[] = [];
   const attachments: AttachmentView[] = [];
+  let pkg: string | undefined;
   for (const p of content as any[]) {
     if (p?.type === "text" && typeof p.text === "string") {
       const m = ATTACHMENT_RE.exec(p.text);
+      const k = PACKAGE_RE.exec(p.text);
       if (m) attachments.push({ name: m[1]!, mediaType: m[2]!, size: m[3]! });
+      else if (k && pkg === undefined) pkg = k[1]!;
       else texts.push(p.text);
     } else if (p?.type === "file" && typeof p.data === "string" && String(p.mediaType).startsWith("image/")) {
       const a = attachments[attachments.length - 1];
       if (a) a.src = `data:${p.mediaType};base64,${p.data}`;
     }
   }
-  return { text: texts.join(""), attachments };
+  return { text: texts.join(""), attachments, ...(pkg ? { package: pkg } : {}) };
 }
 
 /** Render stored ModelMessages (the transcript) into display entries. Tool
@@ -167,15 +173,16 @@ export function transcriptToEntries(messages: { role: string; content: unknown }
       continue;
     }
     if (m.role === "user") {
-      const { text, attachments } = userContent(m.content);
-      if (attachments.length) entries.push({ kind: "user", content: text, attachments });
+      const { text, attachments, package: pkg } = userContent(m.content);
+      const under = pkg ? { package: pkg } : {};
+      if (attachments.length) entries.push({ kind: "user", content: text, attachments, ...under });
       else if (text) {
         entries.push(
           isNotice(text)
             ? { kind: "notice", content: text }
-            : { kind: "user", content: text },
+            : { kind: "user", content: text, ...under },
         );
-      }
+      } else if (pkg) entries.push({ kind: "user", content: "", package: pkg });
     } else if (m.role === "assistant") {
       if (typeof m.content === "string") {
         if (m.content) entries.push({ kind: "text", content: m.content });

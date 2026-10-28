@@ -1549,6 +1549,46 @@ describe("chat endpoints", () => {
     }
   });
 
+  // ── the working package (src/ai/working-package.ts, plans/packages-ux.md §3) ──
+
+  it("package: the message opens with a [package] line, the chat keeps the prefix, and nothing is sent without a publisher name", async () => {
+    const savedKey = process.env["STRUT_SECRET_KEY"];
+    process.env["STRUT_SECRET_KEY"] = "chat-package-test-secret";
+    try {
+      const strut = await makeStrut();
+      const bad = await strut.app.request("/chat", JSON_({ message: "make summarize", package: "Tools" }));
+      assert.equal(bad.status, 400);
+      // No publisher name yet: the prefix cannot be composed.
+      const unnamed = await strut.app.request("/chat", JSON_({ message: "make summarize", package: "tools" }));
+      assert.equal(unnamed.status, 400);
+      assert.match(((await unnamed.json()) as { error: string }).error, /^publisher_name: set the publisher's name first/);
+      const named = await strut.app.request("/publisher", { ...JSON_({ name: "acme" }), method: "PUT" });
+      assert.equal(named.status, 200, await named.text());
+
+      const res = await strut.app.request("/chat", JSON_({ message: "make summarize", package: "tools" }));
+      const sent = (await res.json()) as { chatId: string; error?: string };
+      assert.equal(res.status, 202, sent.error);
+      const { chatId } = sent;
+      await settled(chatId);
+      const [stored] = await chatStore.loadMessages(chatId);
+      const parts = stored!.content as { type: string; text: string }[];
+      assert.match(parts[0]!.text, /^\[package\] tools — name new workflows and steps by their path in this package/);
+      assert.deepEqual(parts[1], { type: "text", text: "make summarize" });
+      assert.equal((await chatStore.getMeta(chatId))!.package, "acme/tools");
+
+      // A message with no package clears it.
+      const next = await strut.app.request("/chat", JSON_({ chatId, message: "thanks" }));
+      assert.equal(next.status, 202);
+      await settled(chatId);
+      assert.equal((await chatStore.getMeta(chatId))!.package, undefined);
+      const all = await chatStore.loadMessages(chatId);
+      assert.equal(all[all.length - 1]!.content, "thanks");
+    } finally {
+      if (savedKey === undefined) delete process.env["STRUT_SECRET_KEY"];
+      else process.env["STRUT_SECRET_KEY"] = savedKey;
+    }
+  });
+
   it("attachments: a message may be files alone; a bad or oversized file is a 400 before anything is persisted", async () => {
     const strut = await makeStrut();
     const tooBig = Buffer.alloc(6 * 1024 * 1024).toString("base64");
