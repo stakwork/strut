@@ -156,8 +156,32 @@ describe("publishing packages from this strut", () => {
     assert.match(((await mint.json()) as { error: string }).error, /^publisher_unsafe_key: STRUT_SECRET_KEY is not set/);
     const r = await publish({ version: "1.0.0" });
     assert.equal(r.status, 409);
+    assert.equal((await req("/publisher", json({ name: "acme" }, "PUT"))).status, 409, "naming mints the key, so it is refused too");
     assert.equal((await req("/publisher")).status, 404);
     assert.equal((await catalog()).res.status, 404, "nothing published");
+  });
+
+  it("takes a publisher name once, keeps it with the key, and refuses a package under another prefix", async () => {
+    const bad = await req("/publisher", json({ name: "Acme Inc" }, "PUT"));
+    assert.equal(bad.status, 400);
+    const set = await req("/publisher", json({ name: "acme" }, "PUT"));
+    const info = (await set.json()) as { key: string; name?: string; error?: string };
+    assert.equal(set.status, 200, info.error);
+    assert.equal(info.name, "acme");
+    assert.ok(info.key, "the key is minted with the name");
+    // The name lives in the encrypted record, so it outlives the process.
+    await strut.close?.();
+    strut = await boot();
+    const again = (await (await req("/publisher")).json()) as { key: string; name?: string };
+    assert.equal(again.key, info.key);
+    assert.equal(again.name, "acme");
+    const ok = await publish({ version: "1.0.0", channel: "stable" });
+    assert.equal(ok.status, 201, JSON.stringify(ok.body));
+    const other = await publish({ version: "1.0.0", package: "other/linear" });
+    assert.equal(other.status, 400);
+    assert.match(other.body.error!, /^package_build_refused: other\/linear is not under this strut's publisher acme/);
+    const { text } = await catalog();
+    assert.equal(Object.keys((JSON.parse(text) as Catalog).packages).join(), "acme/linear", "nothing was added for the refused one");
   });
 
   it("refuses a publish whose build is refused, and leaves the catalog as it was", async () => {

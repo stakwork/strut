@@ -31,9 +31,20 @@ const KEY_NAME = "PUBLISHER";
 /** A channel's name: what a subscription follows (`stable`, `canary`). */
 export const CHANNEL_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
+/** The publisher's NAME: `[a-z][a-z0-9-]*`, the first segment of every
+ *  package built here. */
+export const PUBLISHER_NAME = /^[a-z][a-z0-9-]{0,63}$/;
+
 export interface PublisherInfo {
   /** The public key, z-base-32: the publisher's identity between struts. */
   key: string;
+  /** The prefix segment every package this strut builds is named under
+   *  (`stakwork` in `stakwork/tools`), set once by `PUT /publisher { name }`
+   *  and never typed by a person again (plans/packages-ux.md §2): the UI
+   *  composes package names from it, and `POST /packages/publish` refuses a
+   *  package under another one. The human name the index lists the key
+   *  under (plans/marketplace.md §7, §13). Unset: any prefix, as before. */
+  name?: string;
   /** Where its bytes are served: this strut's own routes. */
   host: "self";
   createdAt: string;
@@ -48,6 +59,8 @@ export interface Publisher {
   get(): Promise<PublisherInfo | undefined>;
   /** The key, minted on first call; `minted` says whether this call made it. */
   ensure(): Promise<{ info: PublisherInfo; minted: boolean }>;
+  /** Set the publisher's name (the key minted first when there is none). */
+  setName(name: string): Promise<PublisherInfo>;
   /** Seal a catalog with the key (minted first when there is none). */
   seal(card: Omit<UnsignedCatalog, "key">): Promise<Catalog>;
 }
@@ -85,6 +98,13 @@ export function publisherStore(secrets: SecretStore, opts: { unsafe?: () => stri
     async ensure() {
       const { record, minted } = await ensure();
       return { info: info(record), minted };
+    },
+    async setName(name) {
+      if (!PUBLISHER_NAME.test(name)) throw new Error(`publisher_name: ${JSON.stringify(name)} is not a publisher name ([a-z][a-z0-9-]*, at most 64 characters)`);
+      const { record } = await ensure();
+      const next: PublisherRecord = { ...record, name };
+      await secrets.set(KEY_NAME, JSON.stringify(next));
+      return info(next);
     },
     async seal(card) {
       const { record } = await ensure();

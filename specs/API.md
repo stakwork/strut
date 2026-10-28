@@ -1363,13 +1363,15 @@ and `pk:` are refused by name (`package_source_unsupported`).
 | Method | Path | Description |
 | ------ | ---- | ----------- |
 | GET    | `/packages` | What is installed: `{ packages: InstalledPackage[] }` (`src/packages/installed.ts`), a fold over the workspace, never a store |
-| POST   | `/packages/build` | `BuildRequest` → 201 `{ package, version, digest, files, requires, warnings }` (`src/packages/build.ts`): a package built from this workspace into the cache. A person's act like install: full scope, one at a time with install and uninstall |
+| POST   | `/packages/build` | `BuildRequest` → 201 `{ package, version, digest, files, requires, warnings }` (`src/packages/build.ts`): a package built from this workspace into the cache. With `dryRun: true`, 200 and the same answer with nothing kept: the package page's preview of what comes along. A person's act like install: full scope, one at a time with install and uninstall |
 | POST   | `/packages/install` | `{ ref: "file:/path/to/package", digest?: "sha256:<hex>" }` → 201 `InstallResult` (`src/packages/install.ts`). A person's act: behind the key at full scope (a peer is 403), one at a time |
 | DELETE | `/packages/:publisher/:name` | Uninstall → `{ ok: true, package, removed, kept }` (`UninstallResult`) |
 | GET    | `/packages/:publisher/:name/archive?digest=sha256:<hex>` | The package at that digest as a `.tar.gz` of its files (`content-type: application/gzip`, `ETag: "<digest>"`, `cache-control: private, max-age=31536000, immutable`; `If-None-Match` → 304). 400 without a well-formed `digest`; 404 when this strut holds no package `publisher/name` at that digest. Behind the key like every route |
-| GET    | `/publisher` | This strut's publisher key → `{ key, host: "self", createdAt }` (`src/packages/publisher.ts`); 404 before one is minted. Any credential may read it (a subscriber's, hive's) |
+| GET    | `/packages/:publisher/:name/items?digest=sha256:<hex>` | `{ package, version, digest, items: [{ kind: "workflow" \| "step" \| "app" \| "concept", name }] }`: what the package at that digest holds, each by its name INSIDE the package (`summarize` for `acme/tools/summarize`; a Concept by its page name), helpers left out — what the package page ticks from a release (`plans/packages-ux.md` §3). 400 without a well-formed `digest`; 404 when this strut's cache holds no package `publisher/name` at that digest |
+| GET    | `/publisher` | This strut's publisher key → `{ key, name?, host: "self", createdAt }` (`src/packages/publisher.ts`); 404 before one is minted. `name` is the publisher's prefix segment (`stakwork` in `stakwork/tools`), when set. Any credential may read it (a subscriber's, hive's) |
 | POST   | `/publisher` | Mint the key → 201 `PublisherInfo`, or 200 with the one already here. 409 `publisher_unsafe_key` on a file store with `STRUT_SECRET_KEY` unset |
-| POST   | `/packages/publish` | `BuildRequest` + `channel?` → 201 `{ package, version, digest, files, requires, warnings, channel?, catalog: { key, seq, digest } }`: build, then the release added to the catalog (and the channel moved to it). Mints the key on first use. Full scope, one at a time |
+| PUT    | `/publisher` | `{ name }` → `PublisherInfo`: the publisher's NAME, `[a-z][a-z0-9-]*` — the first segment of every package published here (`plans/packages-ux.md`). The web UI composes package names from it, so nobody types the prefix. Mints the key first when there is none (409 `publisher_unsafe_key` as above); 400 `publisher_name` for a name that is not one |
+| POST   | `/packages/publish` | `BuildRequest` + `channel?` → 201 `{ package, version, digest, files, requires, warnings, channel?, catalog: { key, seq, digest } }`: build, then the release added to the catalog (and the channel moved to it). Mints the key on first use. With a publisher `name` set, a `package` whose first segment is another is 400 `package_build_refused` before any build. Full scope, one at a time |
 | GET    | `/packages/catalog[?digest=sha256:<hex>]` | The catalog CARD as served (`application/json`, its RFC 8785 bytes; `ETag: "<catalog digest>"`, `If-None-Match` → 304): the current one (`cache-control: private, no-cache`), or an earlier one by digest (immutable). 404 before the first publish |
 | PUT    | `/packages/channels/:channel` | `{ package, digest }` → `{ channel, package, digest, catalog }`: the channel moved to a release the catalog lists — a rollback is moving it back — or, with `digest: null`, the package taken out of it. 404 `catalog_no_release`; 400 `catalog_channel` for a name that is not `[a-z0-9][a-z0-9._-]*` |
 | POST   | `/publisher/tokens` | `{ subscriber, days? }` → 201 `{ key, subscriber, token, exp }`: a READ TOKEN for a strut that subscribes to this one's catalog (default 60 days, at most 366). Full scope; the key is minted first when there is none |
@@ -1410,11 +1412,21 @@ takes it from `file:<the cache directory>` (`<dataDir>/packages/sha256-<hex>/`).
 What goes in:
 
 - **The closure** of each named workflow (`flowClosure`: its subflows,
-  `agentTools` with globs expanded against the registry). A workflow or
-  custom step it reaches under the prefix is an item, and so is every `_`
-  helper under the prefix. Core and lib steps, and a seed's workflow or step
-  (`source: "seed"`, such as `job`), are recorded nowhere: the installing
-  strut must have them, and the install checks.
+  `agentTools` with globs expanded against the registry), the workflows
+  named by the names they have HERE (`summarize`, not
+  `acme/tools/summarize`; `plans/packages-ux.md` §3). A workflow or custom
+  step it reaches is an item when it is LOCAL — made here, from no
+  package, not the host's — at the path of its local name; one already
+  under the prefix keeps the rest of its name. Each item's own name is
+  written under the prefix (a workflow's `name:`, a step's `defineStep({
+  type })` literal) and nothing else: references stay as written. The
+  helpers are every file a carried step imports by a relative path, which
+  must sit at the same place beside it in the package, and every `_`
+  helper under the prefix. Core and lib steps, and the host's workflow or
+  step — a seed's (`source: "seed"`, such as `job`) or one a service
+  published (a `publisher` stamp other than the builder's `ai`) — are
+  recorded nowhere: the installing strut must have them, and the install
+  checks.
 - **Another package's item** the closure reaches is a `requires.packages`
   pin: at the digest it was installed at (its `upstream`), or, for a
   package built on this strut, at the digest the request names under
@@ -1427,10 +1439,9 @@ What goes in:
   hash here. Its grants are walked like a workflow's closure: each workflow
   in `grants.workflows` and `grants.automations`, each step in
   `grants.steps` (globs expanded against the registry). So are the apps it
-  imports, read off its build (`dist/build.json`): one under the prefix is
-  an item, another package's a pin, a seed's (`strut/views`) recorded
-  nowhere. An app under the prefix has one name segment after it
-  (`apps/<name>/`).
+  imports, read off its build (`dist/build.json`): a local one is an item,
+  another package's a pin, a seed's (`strut/views`) recorded nowhere. An
+  app the package carries has one segment as its path (`apps/<name>/`).
 - **The Concepts** named, with every page under each, as
   `concepts/<Name>.md` (front matter `description`, `parent`; the body is
   `docs`). A top page keeps its parent.
@@ -1443,9 +1454,11 @@ What goes in:
   step source, literal `exec` commands, literal `runtime:` fields.
 
 Building twice from the same workspace gives the same digest. Refusals are
-400 `{ error }`, one `package_build_refused: …` naming every problem: a
-workflow, step or app outside the prefix that came from no package, one
-package reached at two digests, a version label (`type@vN`, a subflow's
+400 `{ error }`, one `package_build_refused: …` naming every problem: one
+package reached at two digests, a local name and the same name under the
+prefix (both one path), a step that imports a file the package does not
+carry or one that would not sit beside it, a workflow whose `name:` line
+or a step whose `type:` literal cannot be written under the prefix, a version label (`type@vN`, a subflow's
 `version:`, an app import pinned as `name@vN`), an app whose directory is
 not its version or that has no build of its sources, an item in a sealed
 namespace, a step that does not load here as its own type, a Concept
