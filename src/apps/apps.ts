@@ -24,6 +24,7 @@
  * from its tree and rebuilt the first time it is read (`ensure`). Every
  * read of a version goes through `ensure`.
  */
+import { randomBytes } from "node:crypto";
 import { rename, rm, stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -35,7 +36,7 @@ import { treeHash } from "../version.js";
 import { newestVersion, type AppListEntry, type AppRecord, type AppRelease, type AppReleaseSummary, type Upstream, type VersionSource, type WorkspaceStore } from "../workspace.js";
 import type { GraphBackend } from "../graph/backend.js";
 import { buildApp, readBuildInfo, type BuildDeps, type BuildInfo, type BuildResult, type InstalledApp } from "./build.js";
-import { copyAppDir, isEmptyDir, listAppFiles, validateAppName } from "./files.js";
+import { copyAppDir, isEmptyDir, isPreviewLabel, listAppFiles, validateAppName } from "./files.js";
 import { checkAppGraph, registerAppGraph, type RegisteredGraph } from "./graph-types.js";
 import type { Kit, KitLocation } from "./kit.js";
 import { readManifest, type AppManifest } from "./manifest.js";
@@ -149,6 +150,25 @@ export type AppPublishResult =
     }
   | { ok: false; errors: string[]; warnings: string[] };
 
+/** What `preview` hosts: the directory as built, under a label of its own. */
+export interface AppPreview {
+  name: string;
+  /** `preview-<12 hex>`, where a version label would be. */
+  version: string;
+  /** The directory on this host — served as it is, `dist/` included. */
+  path: string;
+  hash: string;
+  manifest: AppManifest;
+}
+
+export type AppPreviewResult =
+  | { ok: true; name: string; version: string; hash: string; bytes: number; warnings: string[]; graph?: RegisteredGraph }
+  | { ok: false; errors: string[]; warnings: string[] };
+
+/** How long a preview is hosted, and how many at once. */
+export const PREVIEW_TTL_MS = 60 * 60_000;
+export const PREVIEWS_MAX = 100;
+
 /** An app's releases as `GET /apps/:name/versions` reads them. */
 export interface AppReleases {
   /** The live release's id, or `latest` while following. */
@@ -174,6 +194,13 @@ export interface AppsCapability {
   errorsOf(app: string): Promise<AppError[]>;
   /** Build, then record the version and copy the directory into place. */
   publish(dir: string, name: string, opts: AppPublishOptions): Promise<AppPublishResult>;
+  /** Build under the publish's checks and HOST the directory as `name` under
+   *  a preview label, recording no version: what `app/look { path }` looks
+   *  at, so a fix-and-look loop publishes once, at the end. In memory, for
+   *  an hour; the graph types are registered as a publish would. */
+  preview(dir: string, name: string, opts: { surface: PublishSurface }): Promise<AppPreviewResult>;
+  /** A preview still hosted, or null. */
+  previewOf(name: string, label: string): AppPreview | null;
   /** Copy a version's directory to an empty `to`, to edit. */
   checkout(name: string, to: string, version?: string): Promise<{ path: string; version: string; hash: string }>;
   /** Scaffold an empty `to` from a template: strut's (`default`), or an installed app by name — a copy, with no upstream. */
@@ -352,7 +379,24 @@ export function createApps(deps: AppsDeps): AppsCapability {
     return out;
   };
 
+  const previews = new Map<string, AppPreview & { at: number }>();
+  const nowMs = () => (deps.now ? deps.now() : new Date()).getTime();
+  const previewOf: AppsCapability["previewOf"] = (name, label) => {
+    const p = previews.get(label);
+    if (!p || p.name !== name) return null;
+    if (nowMs() - p.at > PREVIEW_TTL_MS) {
+      previews.delete(label);
+      return null;
+    }
+    const { at: _at, ...preview } = p;
+    return preview;
+  };
+
   const versionDir: AppsCapability["versionDir"] = async (name, version) => {
+    if (version && isPreviewLabel(version)) {
+      const p = previewOf(name, version);
+      return p ? { path: p.path, version: p.version, hash: p.hash } : null;
+    }
     const rec = await workspace.getApp(name, version);
     if (!rec) return null;
     const { path } = await ensure(name, rec.version);
@@ -515,6 +559,38 @@ export function createApps(deps: AppsDeps): AppsCapability {
           : {}),
       };
     },
+
+    async preview(dir, name, opts) {
+      validateAppName(name);
+      const read = await readManifest(dir);
+      if (!read.ok) return { ok: false, errors: read.errors, warnings: [] };
+      if (opts.surface === "ai") {
+        const refused = await refusedGrants(read.manifest);
+        if (refused.length) return { ok: false, errors: refused, warnings: [] };
+      }
+      const check = await checkAppGraph(read.manifest, deps.graph, name);
+      if (check.errors.length) return { ok: false, errors: check.errors, warnings: check.warnings };
+      const built = await buildApp(dir, buildDeps(name));
+      if (!built.ok) return { ...built, warnings: [...check.warnings, ...built.warnings] };
+      // As a publish does: the page's writes need the types it declares.
+      const graph = deps.graph && built.manifest.data?.graph ? await registerAppGraph(built.manifest, deps.graph, name) : undefined;
+      const now = nowMs();
+      for (const [label, p] of previews) if (now - p.at > PREVIEW_TTL_MS) previews.delete(label);
+      while (previews.size >= PREVIEWS_MAX) previews.delete(previews.keys().next().value!);
+      const version = `preview-${randomBytes(6).toString("hex")}`;
+      previews.set(version, { name, version, path: resolve(dir), hash: built.hash, manifest: built.manifest, at: now });
+      return {
+        ok: true,
+        name,
+        version,
+        hash: built.hash,
+        bytes: built.bytes,
+        warnings: [...check.warnings, ...built.warnings],
+        ...(graph && (graph.types.length || graph.edges.length) ? { graph } : {}),
+      };
+    },
+
+    previewOf,
 
     async checkout(name, to, version) {
       const at = await versionDir(name, version);

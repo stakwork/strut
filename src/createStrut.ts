@@ -79,7 +79,7 @@ import { appErrors, createApps, type AppsCapability, type AppPublishResult } fro
 import { createAppMonitor, type AppMonitor } from "./apps/monitor.js";
 import { seedViewsApp } from "./apps/views-seed.js";
 import type { KitLocation } from "./apps/kit.js";
-import { appsRoot, listAppFiles, readAppFile, validateAppName, writeAppFiles } from "./apps/files.js";
+import { appsRoot, isPreviewLabel, listAppFiles, readAppFile, validateAppName, writeAppFiles } from "./apps/files.js";
 import { DOCUMENT_FILE, readBuildInfo, withToken, withoutTokenMeta } from "./apps/build.js";
 import { packArchive } from "./packages/archive.js";
 import { buildPackage, type BuildRequest } from "./packages/build.js";
@@ -2530,7 +2530,8 @@ export async function createStrut<TServices = unknown>(
     const at = appRoute(c);
     if (at instanceof Response) return at;
     const version = c.req.param("version") ?? "";
-    if (!/^v\d+$/.test(version)) return c.json({ error: `"${version}" is not a version label (v1, v2, …)` }, 404);
+    // A preview (`apps.preview`, app/look { path }) is hosted where a version is.
+    if (!/^v\d+$/.test(version) && !isPreviewLabel(version)) return c.json({ error: `"${version}" is not a version label (v1, v2, …)` }, 404);
     const dir = await apps.versionDir(at.name, version);
     if (!dir) return c.json({ error: `App "${at.name}" has no version ${version}` }, 404);
     return { name: at.name, version, path: dir.path, hash: dir.hash };

@@ -39,6 +39,7 @@ import { isSealedStep } from "../sealed.js";
 import { baseType } from "../step-ref.js";
 import { resolveStep } from "../steps/registry.js";
 import type { AppsCapability } from "./apps.js";
+import { isPreviewLabel } from "./files.js";
 import { reservedAppType } from "./graph-types.js";
 import type { AppManifest } from "./manifest.js";
 import type { AppCallStatus, AppMonitor } from "./monitor.js";
@@ -277,6 +278,10 @@ export interface AppToolDeps {
 
 /** The app a call names, with its manifest — or why there is none. */
 async function appOf(app: AppRef, deps: AppToolDeps): Promise<{ manifest: AppManifest } | { error: string }> {
+  if (isPreviewLabel(app.version)) {
+    const preview = deps.apps.previewOf(app.name, app.version);
+    return preview ? { manifest: preview.manifest } : { error: `step_run: the preview ${app.name}@${app.version} is no longer hosted — app/look { path } again` };
+  }
   const view = await deps.apps.get(app.name, app.version).catch(() => null);
   return view ? { manifest: view.manifest } : { error: `step_run: no app ${app.name}@${app.version} on this strut` };
 }
@@ -350,7 +355,8 @@ export function buildAppTools(deps: AppToolDeps): ToolSet {
         if ("error" in found) return found;
         const started = Date.now();
         const call = await dispatch(app, found.manifest, type, config, input);
-        deps.monitor?.record({
+        // A preview is the builder looking: not what the app costs people.
+        if (!isPreviewLabel(app.version)) deps.monitor?.record({
           app: app.name,
           version: app.version,
           type: baseType(type),

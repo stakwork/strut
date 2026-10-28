@@ -20,7 +20,7 @@ export default defineStep({
   async run(cfg, ctx: StepContext<StrutCapabilities>) {
     const apps = requireApps(ctx.services);
     if (cfg.path) {
-      const dir = await resolveAppPath(ctx, cfg.path, cfg.job);
+      const dir = await resolveAppPath(ctx, cfg.path, cfg.job, { root: true });
       const view = await apps.getDir(dir);
       if (view.missing) throw new Error(`No directory "${cfg.path}"`);
       return view;

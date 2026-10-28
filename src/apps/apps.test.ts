@@ -24,6 +24,7 @@ import appCheckout from "../steps/lib/app/checkout.js";
 import appBuild from "../steps/lib/app/build.js";
 import appPublish from "../steps/lib/app/publish.js";
 import appPin from "../steps/lib/app/pin.js";
+import appLook from "../steps/lib/app/look.js";
 
 /**
  * The apps capability (plans/apps.md §1.2, §1.3, §8, §9), the `app/*` steps
@@ -99,6 +100,41 @@ describe("the apps capability", () => {
     const again = await apps.publish(good, "hello", { surface: "person" });
     assert.ok(again.ok && again.version === "v2" && !again.changed);
     assert.deepEqual((await ws.listApps()).map((a) => [a.name, a.activeVersion, a.versions]), [["hello", "v2", ["v1", "v2"]]]);
+  });
+
+  it("preview: built under the publish's checks and hosted in place under a label, no version recorded; a failing build or a refused grant previews nothing; an hour, then gone", async () => {
+    let clock = 0;
+    const dataDir = fresh("ws");
+    const ws = new FileWorkspaceStore(dataDir);
+    const apps = createApps({ workspace: ws, kit, getRegistry: () => REGISTRY, now: () => new Date(clock) });
+    const dir = fresh();
+    await cp(FIXTURE, dir, { recursive: true });
+    const p = await apps.preview(dir, "hello", { surface: "ai" });
+    assert.ok(p.ok, p.ok ? "" : p.errors.join("\n"));
+    assert.match(p.version, /^preview-[0-9a-f]{12}$/);
+    assert.equal(await ws.getApp("hello"), null, "nothing recorded");
+    assert.ok(!existsSync(join(dataDir, "apps")), "nothing copied");
+    assert.ok(existsSync(join(dir, "dist", "index.html")), "built in place");
+    assert.deepEqual(await apps.versionDir("hello", p.version), { path: dir, version: p.version, hash: p.hash });
+    assert.equal(await apps.versionDir("other", p.version), null);
+    // Previews do not move the published app: a publish after is v1, then another preview is not v2.
+    assert.ok((await apps.publish(dir, "hello", { surface: "ai" })).ok);
+    await writeFile(join(dir, "src", "lib", "greet.ts"), 'export function greet(w: string) { return `Yo, ${w}`; }\n');
+    const p2 = await apps.preview(dir, "hello", { surface: "ai" });
+    assert.ok(p2.ok && p2.version !== p.version);
+    assert.deepEqual(Object.keys((await ws.getApp("hello"))!.versions), ["v1"]);
+
+    const broken = await writeApp(fresh(), app("title: Broken\n", 'export default function App() { return <p>{eval("1")}</p>; }\n'));
+    const bad = await apps.preview(broken, "broken", { surface: "ai" });
+    assert.equal(bad.ok, false);
+    assert.match(bad.ok ? "" : bad.errors[0]!, /calls eval/);
+    const paid = await writeApp(fresh(), app("title: Paid\ngrants:\n  steps: [llm]\n"));
+    const refused = await apps.preview(paid, "paid", { surface: "ai" });
+    assert.match(refused.ok ? "" : refused.errors.join("\n"), /paid or shell-shaped/);
+
+    clock += 61 * 60_000;
+    assert.equal(apps.previewOf("hello", p2.version), null, "an hour on, gone");
+    assert.equal(await apps.versionDir("hello", p2.version), null);
   });
 
   it("get: stale after the version's sources change or an imported kit moves (unless pinned); missing when the directory is gone", async () => {
@@ -370,6 +406,15 @@ describe("the app/* steps", () => {
     const refused = (await appPublish.run({ name: "proto", path: "proto", job: "job-2" }, ctx)) as { ok: boolean; errors: string[] };
     assert.equal(refused.ok, false);
     assert.match(refused.errors[0]!, /paid or shell-shaped/);
+
+    // The job's directory ITSELF is no app's: everything in it would be part of every version.
+    await assert.rejects(appInit.run({ path: "." }, ctx), /is the job's directory itself/);
+    await assert.rejects(appPublish.run({ name: "root", path: "" }, ctx), /is the job's directory itself/);
+    await assert.rejects(appBuild.run({ path: "apps/.." }, ctx), /is the job's directory itself/);
+    assert.equal(((await appGet.run({ path: "." }, ctx)) as { missing: boolean }).missing, false, "app/get may read it back");
+    // app/look takes a directory or a version, never both.
+    assert.equal(appLook.input.safeParse({ name: "tracker", path: "apps/tracker", version: "v1" }).success, false);
+    assert.equal(appLook.input.safeParse({ name: "tracker", path: "apps/tracker" }).success, true);
 
     // No job: the run's artifact directory; with neither, an absolute path.
     const runCtx = ctxFor(apps, dataDir);

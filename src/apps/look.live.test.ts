@@ -144,3 +144,38 @@ test("an app or a version that is not there fails the step before a page opens",
     assert.match(res.error?.message ?? "", /not found|has no version v9/);
   }
 });
+
+/** An app directory in a job's folder, where a builder works on one. */
+const jobApp = async (job: string, path: string, files: Record<string, string>): Promise<void> => {
+  const dir = join(root, "ws", "jobs", job, path);
+  for (const [rel, text] of Object.entries(files)) {
+    await mkdir(join(dir, dirname(rel)), { recursive: true });
+    await writeFile(join(dir, rel), text);
+  }
+};
+
+test("a directory, never published: built and looked at as a preview, its calls under its grants, no version recorded", { skip }, async () => {
+  await jobApp("look-job", "apps/fresh", { "app.yaml": MANIFEST, "src/App.tsx": page("Not published yet") });
+  const out = await look({ name: "look-fresh", path: "apps/fresh", job: "look-job" });
+  assert.match(out.version, /^preview-[0-9a-f]{12}$/);
+  assert.equal(out.rendered, true, out.hostError);
+  assert.match(out.text, /Not published yet/);
+  assert.match(out.text, /1 runs, newest success/, "a run/* read on the preview's own grants");
+  assert.match(out.text, /viewer: evan-1/);
+  assert.deepEqual(out.errors, []);
+  assert.equal(await strut.workspace.getApp("look-fresh"), null, "nothing published");
+  assert.equal(mediaOf(out)?.[0]?.mediaType, "image/png");
+});
+
+test("a directory that throws: the error boundary's report, on the preview's label; one that does not build opens nothing", { skip }, async () => {
+  await jobApp("look-job", "apps/throws", {
+    "app.yaml": "title: Throws\nicon: bug\ngrants:\n  workflows: []\n  steps: []\n",
+    "src/App.tsx": 'export default function App() { throw new Error("kaboom in a draft"); }',
+  });
+  const out = await look({ name: "look-throws", path: "apps/throws", job: "look-job" });
+  assert.equal(out.appErrors[0]?.message, "kaboom in a draft");
+  await jobApp("look-job", "apps/broken-build", { "app.yaml": MANIFEST, "src/App.tsx": 'export default function App() { return <p>{eval("1")}</p>; }' });
+  const bad = await look({ name: "look-bb", path: "apps/broken-build", job: "look-job" });
+  assert.equal(bad.ok, false);
+  assert.match(bad.errors[0], /calls eval/);
+});

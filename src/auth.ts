@@ -221,7 +221,7 @@ export function fileToken(scope: FileScope): string | undefined {
  *  as the route decodes it — or undefined for any other path. */
 export function fileScopeOf(path: string): FileScope | undefined {
   try {
-    const app = path.match(/^\/apps\/([^/]+)\/(v\d+)\/files(?:\/|$)/);
+    const app = path.match(/^\/apps\/([^/]+)\/(v\d+|preview-[0-9a-f]{12})\/files(?:\/|$)/);
     if (app) return { kind: "app", id: `${decodeURIComponent(app[1]!)}@${app[2]}` };
     const m = path.match(/^\/artifacts\/([^/]+)(?:\/|$)/) ?? path.match(/^\/jobs\/([^/]+)\/files(?:\/|$)/);
     if (!m) return undefined;
@@ -261,7 +261,7 @@ export function appOfIdentity(identity: unknown): AppRef | undefined {
   if (dot < 0) return undefined;
   const scope = identity.slice(0, dot);
   const got = identity.slice(dot + 1);
-  const app = scope.match(/^app:(.+)@(v\d+)$/);
+  const app = scope.match(/^app:(.+)@(v\d+|preview-[0-9a-f]{12})$/);
   if (!app) return undefined;
   const [, name, version] = app as unknown as [string, string, string];
   const ref: AppRef = { name, version };

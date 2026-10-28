@@ -21,7 +21,7 @@ export type AppIdentity = { name: string; version: string };
 export function appOfToken(token: string | undefined): AppIdentity | undefined {
   if (!token) return undefined;
   const scope = token.slice(0, Math.max(0, token.lastIndexOf(".")));
-  const app = scope.match(/^app:(.+)@(v\d+)$/);
+  const app = scope.match(/^app:(.+)@(v\d+|preview-[0-9a-f]{12})$/);
   return app ? { name: app[1]!, version: app[2]! } : undefined;
 }
 

@@ -104,12 +104,13 @@ export function isServedFilePath(path: string): boolean {
   return true;
 }
 
-/** An app version's files: `/apps/<name>/<vN>/files` (plans/apps.md §7.2). */
-const APP_SCOPE_RE = /^\/apps\/[^/]+\/v\d+\/files/;
+/** An app version's files: `/apps/<name>/<vN>/files` (plans/apps.md §7.2),
+ *  or a preview's (`preview-<hex>`, `app/look { path }`) in its place. */
+const APP_SCOPE_RE = /^\/apps\/[^/]+\/(?:v\d+|preview-[0-9a-f]{12})\/files/;
 
 /** A scope read through a peer's read-through, one hop per `/peers/<id>`
  *  (plans/chained-orchestrators.md §5, plans/apps.md §7.4). */
-const SCOPE_RE = /^(?:\/peers\/[^/]+)*(?:\/artifacts\/[^/]+|\/jobs\/[^/]+\/files|\/apps\/[^/]+\/v\d+\/files)/;
+const SCOPE_RE = /^(?:\/peers\/[^/]+)*(?:\/artifacts\/[^/]+|\/jobs\/[^/]+\/files|\/apps\/[^/]+\/(?:v\d+|preview-[0-9a-f]{12})\/files)/;
 
 /** The scope a served-file path reads from — `/artifacts/<runId>`,
  *  `/jobs/<id>/files` or `/apps/<name>/<vN>/files`, here or behind a
@@ -133,7 +134,7 @@ export function artifactRel(path: string): string | null {
  *  `/artifacts/1790/systemmap/report.md` — short enough for a menu item and
  *  unambiguous within one run. The whole path when nothing follows the prefix. */
 export function artifactLabel(path: string): string {
-  const rel = path.replace(/^\/artifacts\/[^/]+\/|^\/jobs\/[^/]+\/files\/|^\/apps\/[^/]+\/v\d+\/files\//, "");
+  const rel = path.replace(/^\/artifacts\/[^/]+\/|^\/jobs\/[^/]+\/files\/|^\/apps\/[^/]+\/(?:v\d+|preview-[0-9a-f]{12})\/files\//, "");
   return rel && rel !== path ? rel : path;
 }
 

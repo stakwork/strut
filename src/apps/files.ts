@@ -37,6 +37,11 @@ export function validateAppName(name: string): void {
   }
 }
 
+/** A PREVIEW's label (`apps.preview`): an unpublished build hosted under a
+ *  label of its own, in place of a `vN`, for `app/look { path }`. */
+export const PREVIEW_LABEL_RE = /^preview-[0-9a-f]{12}$/;
+export const isPreviewLabel = (label: string): boolean => PREVIEW_LABEL_RE.test(label);
+
 /** `<appsRoot>/<name segments>` — the app's folder: its versions, its database. */
 export function appDir(root: string, name: string): string {
   return join(root, ...name.split("/"));
