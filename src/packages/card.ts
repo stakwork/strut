@@ -7,6 +7,7 @@
  * | Part        | Rule |
  * | ----------- | ---- |
  * | Bytes       | the object, `sig` included, in its RFC 8785 form — the only byte form a reader accepts |
+ * | Numbers     | integers within ±(2^53 − 1) only: a float, or an integer past that, has no card form (`catalog_invalid`) |
  * | Digest      | `sha256:<hex>` over those bytes: what serves a catalog by hash |
  * | Fingerprint | `sha256:<hex>` over the RFC 8785 form WITHOUT `sig`: what is signed |
  * | Seal        | `sig`: Ed25519 (RFC 8032), lowercase hex, over `strut-catalog\n` + the fingerprint as written |
@@ -63,13 +64,16 @@ export interface Catalog extends UnsignedCatalog {
 // ── RFC 8785 ─────────────────────────────────────────────────────────────
 
 /** A JSON value in its RFC 8785 form: members sorted by UTF-16 code units,
- *  no whitespace, ECMAScript's number and string forms (what
- *  `JSON.stringify` writes for a finite number and for a string). */
+ *  no whitespace, ECMAScript's string form (what `JSON.stringify` writes).
+ *  A card holds no floats: every number is an integer within ±(2^53 − 1),
+ *  written as plain digits, so the one part of RFC 8785 that implementations
+ *  disagree on — the shortest form of a float — never arises (the Graph
+ *  Protocol draft's rule, 2026-10-27). Anything else throws. */
 export function canonicalJson(value: unknown): string {
   if (value === null) return "null";
   if (typeof value === "boolean") return value ? "true" : "false";
   if (typeof value === "number") {
-    if (!Number.isFinite(value)) throw new Error(`catalog_invalid: ${value} has no JSON form`);
+    if (!Number.isSafeInteger(value)) throw new Error(`catalog_invalid: ${value} is not an integer within ±(2^53 - 1), and a card holds no other number`);
     return JSON.stringify(value);
   }
   if (typeof value === "string") return JSON.stringify(value);
@@ -172,9 +176,10 @@ export interface ReadCardOptions {
 }
 
 /**
- * A served catalog, every check of §13 in order — one byte form, the key
- * the reader expected, the version, the seal, then the order against the
- * last one accepted — or an error whose code says which failed:
+ * A served catalog, every check of §13 in order — one byte form (integers
+ * only: a float is `catalog_invalid`), the key the reader expected, the
+ * version, the seal, then the order against the last one accepted — or an
+ * error whose code says which failed:
  * `catalog_invalid`, `catalog_noncanonical`, `catalog_key`,
  * `catalog_version`, `catalog_seal`, `catalog_rollback`, `catalog_conflict`.
  */

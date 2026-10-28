@@ -1600,7 +1600,8 @@ publishes is listed in its CATALOG, a card it seals with that key:
 A reader checks it in this order, and refuses with the code that failed
 (`readCard`, `src/packages/card.ts`):
 1. **One byte form:** the file parsed and written back in RFC 8785 is the
-   same bytes (`catalog_noncanonical`).
+   same bytes (`catalog_noncanonical`). Every number in it is an integer
+   within ±(2^53 − 1); a float, or a larger integer, is `catalog_invalid`.
 2. **The key it expected:** a subscription's, never taken from the file
    (`catalog_key`).
 3. **The version:** `v: 1` (`catalog_version`). A member it does not know
