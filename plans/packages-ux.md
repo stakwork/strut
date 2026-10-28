@@ -1,203 +1,197 @@
-# Packages in the UI: the npm shape, without typing the prefix
+# Packages in the UI: bare names, a package is what you pick to publish
 
-> **Status (2026-10-27): ruled.** From one design conversation with the
-> owner over stakwork/strut#362 (a per-workflow Publish tab, not merged).
-> The rows in "Decided" marked **ruled** are his; the rows marked
-> *proposed* are mine, accepted as written. Written against strut `main`
-> @998beb8. This plan is the UI and the builder's naming ONLY. The bytes,
-> the build, the install, the protocol and the distro are
-> `plans/marketplace.md`, which this changes in nothing: §1's naming rule
-> stands, §8's "publishing is a person's act" stands, the §16 routes in
-> `specs/API.md` stand. Two pointer lines there name this file.
-> **Work items 1 and 4 BUILT** (2026-10-27, stakwork/strut#362, reworked
-> from its per-workflow Publish tab): the publisher name on the record
-> and `PUT /publisher`, the publish route's prefix check, and the Packages
-> dialog as the package page. One choice beyond §2: the name is set in the
-> Packages dialog's head, beside the key, not in Settings — it is the one
-> place a person meets the publisher. Items 2 and 3 are next.
+> **Status (2026-10-28): ruled, rewritten.** From the owner's second pass
+> over stakwork/strut#362: "packages shouldn't be something you're required
+> to think about … like node.js: you can code and make whatever project or
+> directory names you want, and never think about going to npm." Rows in
+> "Decided" marked **ruled** are his; rows marked *proposed* are mine. This
+> REPLACES the 2026-10-27 version of this plan, which put the package in
+> every local name (the sidebar grouped by package, the builder's working
+> package, a rename to move a workflow in). That half was built as
+> stakwork/strut#365 and closed unmerged on 2026-10-28.
+> **Work item 1 BUILT** (#362): the publisher name, `PUT /publisher`, the
+> publish route's prefix check. Items 2 and 3 are #362's next commits.
 
 ## Problem
 
-`plans/marketplace.md` §1 ruled that an item's NAME carries its package:
-`stakwork/tools/summarize` is the workflow `summarize` in the package
-`stakwork/tools` of the publisher `stakwork`. That is what makes install
-cheap — no package store, no reference rewriting, "installed packages" a
-fold over version records (`src/packages/installed.ts`) — and it is not
-revisited here.
+The 2026-10-27 plan kept `plans/marketplace.md` §1's rule on EVERY strut:
+an item's name carries its package, so a workflow in `stakwork/tools` had
+to be STORED as `stakwork/tools/summarize` where it was made. That made a
+person meet packages before they meant to:
 
-What #362 did with it was show the stored name raw. To publish, a
-workflow had to have been NAMED with two slashes at creation, by a person
-who typed the publisher segment by hand (nothing checked it against
-anything), before packaging was on anyone's mind. Nobody makes a workflow
-by hand here: the builder makes them, with bare names. And publishing sat
-on one workflow's flyout, though the unit a release holds is the package
-— a workflow left out of the set is retired on every subscriber.
+- a workflow had to be in a package before it could be published, so
+  the builder had to be told a "working package" at every turn;
+- a category had to BE a package, one to one, though one package may
+  hold workflows from many categories;
+- every workflow that already exists (all of them: the builder names
+  them bare) could join a package only by a rename across every store
+  that keys on its name — runs, jobs, automations, claims, app grants.
+
+Node does not work this way. Your project's files have whatever names you
+gave them; the package's name exists in `package.json` and, on the machine
+that installs it, in `node_modules/<name>/`. Inside a package, its code
+finds its own files first.
 
 | Strut has | Strut lacks |
 | --- | --- |
-| Names that carry the package (§1); `packagePrefixOf`, `refuseUnderInstalledPackage` (`src/workspace.ts:526`) | A publisher the SERVER knows, so a person never types that segment |
-| The publisher key, its catalog, releases and channels (`src/packages/publisher.ts`); `POST /packages/publish`, `GET /packages/catalog`, `PUT /packages/channels/:channel` (`src/createStrut.ts:2879`) | A place in the UI that is the PACKAGE, not one workflow |
-| The sidebar grouped by a free-text `category` (`web/src/app.tsx:352`); `create_workflow`'s `category` arg (`src/ai/tools.ts:520`) | Grouping by the name's package segment; the builder told which package a turn works in |
-| The installed fold with `version`, `door`, `items` (`src/packages/installed.ts:49`) | A package shown in the sidebar like any other group |
+| Names that carry the package where a package is INSTALLED (§1 of the marketplace plan), the installed fold over `upstream` records (`src/packages/installed.ts`) | A package built from workflows named anything |
+| The publisher key, its catalog, releases, channels; `POST /packages/publish`, `POST /packages/build` (`src/createStrut.ts:2817`) | A lookup that finds a package's own items by their bare names |
+| The publisher name (#362), the Packages dialog and its release list | A page that picks a package's workflows from anywhere on the strut |
+| The sidebar's free-text `category` (`web/src/app.tsx`) | Nothing: categories stay as they are |
 
 ## Decided
 
 | Question | Decision |
 | --- | --- |
-| The model | **npm** (ruled): a package has a name and holds as many workflows as it needs — one, or hundreds — and may have categories inside it. `@stakwork` is the publisher, `tools` the package, the workflows its exports, a folder inside it a category |
-| The publisher | **A server-wide setting** (ruled): one name, set once, the first segment of every package this strut builds. A person never types it |
-| The stored name | *Proposed:* **unchanged**, `publisher/package/path` as §1 rules. The slashes are the file path inside the package; nothing shows them whole. Changing this would mean rewriting references at build and at install, forever |
-| What the sidebar shows | **An installed package looks like a category** (ruled): the package name as a group, hover for the publisher; each workflow by its last segment. A package you are making looks the same |
-| What a category is | **An unpublished package** (ruled: "a scratchpad for not-yet-published package ideas"). One concept, one kind of group. Inside a package, a category is a folder: `media/clip` under `tools` |
-| The marker | **Minimal** (ruled): a group header is the name, and the latest release's version beside it when there is one. No "unpublished", no status words. A version is the reminder |
-| Where publishing lives | **Not on a workflow's flyout** (ruled). *Proposed:* the PACKAGE PAGE, opened from the group's header — #362's Packages dialog keyed by one package, with the publish form moved onto it |
-| Where new workflows go | *Proposed:* the **working package** — the group selected in the sidebar when the person asks. The UI sends it with the chat message; the server composes the name. Nothing selected, a bare name, as today |
-| Moving a bare workflow in | *Proposed:* **not in v1.** A rename touches every store that keys on the name (§5). Until it lands, ask the builder again with the package selected |
-| The free-text `category` | *Proposed:* stops being written. A bare workflow that has one still renders as a group, with no package page and no publish, until the move lands and converts it (§5) |
+| Local names | **Bare** (ruled): whatever the builder or a person names a workflow, step or app, as today. No package in it |
+| Categories | **Free, as today** (ruled): the sidebar's grouping. A package may take workflows from many categories; a category says nothing about packages |
+| Where packages live | **Their own area** (ruled): the Packages dialog. The sidebar of the strut that publishes shows nothing about packages |
+| The publisher | **A server-wide setting** (ruled 2026-10-27, built): one name, set once, the first segment of every package this strut publishes |
+| What a package is | *Proposed:* a name, a description, and the workflows, apps and Concepts a person PICKED, with everything they reach |
+| Names where a package is installed | **Under the package's prefix** (ruled; marketplace §1, unchanged there): `summarize` installs as `acme/tools/summarize`, so two packages, and the strut's own workflows, never collide |
+| References inside a package | *Proposed, accepted 2026-10-28:* **the package first.** A bare name in an installed item resolves to `<package>/<name>` when the package holds it, else to `<name>` (§2). Nothing is rewritten, so a prompt or a Concept page that names a workflow keeps working |
+| The build | *Proposed:* stamps each item's OWN name with the prefix and nothing else (§3) |
+| A step two packages use | *Proposed:* ships in both; each copy installs under its own prefix |
+| The installing strut's sidebar | *Proposed:* an installed workflow is filed under a category named for its package, shown by its name inside the package, the publisher on hover (§4) |
+| The builder | **Knows nothing about packages** (proposed, follows from the rulings): no working package, `create_workflow` keeps its `category` arg |
+| Moving a workflow into a package | **Never needed**: nothing is renamed on the strut that publishes |
 
 ## 1. What a person sees
 
-**The sidebar.** Workflows are grouped by their package — the second
-segment of a three-or-more-segment name under this strut's publisher, or
-`publisher/package` for an installed one. The header is the package name;
-beside it the newest release's version when the package has been
-published (yours: `GET /packages/catalog`; installed: `GET /packages`'s
-`version`). Hover: the publisher, and "installed" with its source for a
-package from elsewhere. Inside a group, deeper segments are subgroups
-(`tools/media/clip` draws `media` under `tools`), and each workflow shows
-its last segment. Bare workflows sit where they do now. One group kind,
-drawn from the name — nothing stored for it.
+**Making things: unchanged.** The builder names workflows; categories
+group them. Nobody chooses a package to make anything.
 
-**Making a category** is making a draft package: a name, typed once,
-appearing as an empty group. Until its first workflow lands it exists only
-in that browser (`localStorage`, beside the collapsed-groups state); after
-that the prefix is the record. The first time a person makes one on a strut
-with no publisher name, the UI asks for the publisher name, once —
-`npm init` asking for a scope.
+**Publishing**, from the topbar's **Packages**. The head is the publisher
+name (asked for once, the first time) and the key. Below, one row per
+package published here, its name and newest version; **New package** takes
+a name, one segment (`tools`), and opens the package page.
 
-**Asking the builder** with a group selected puts the new workflow in it.
-The person sees `summarize` appear under `tools`; the builder said
-`summarize`; the store holds `stakwork/tools/summarize`. Selecting an
-installed package and asking for a NEW workflow is refused by the store
-(`refuseUnderInstalledPackage`): a package's prefix holds its own items,
-and the UI says so. Editing one of its workflows is the fork §4 of the
-marketplace plan describes, unchanged.
+**The package page.** Every workflow on this strut grouped by category,
+each with a checkbox; installed ones are not offered (they are someone
+else's). Apps and Concepts the same way. For a package already published,
+the boxes start as its newest release left them. Under the list, **Comes
+along**: the custom steps, subflows and apps the picked workflows reach,
+from a dry build. Then version (the one after the newest), channel,
+description, **Publish**; the releases below, with the channel moves #362
+built.
 
-**The package page**, from the group header. For a package of yours: the
-items it holds (workflows, the steps and apps their closures reach — read
-by the same walk `buildPackage` does), version prefilled with the one after
-the newest release (`nextVersion`, #362's helper), channel (`stable`), one
-**Publish** button; below, releases newest first with the channel beside
-the one it points at — move it (a rollback), take the package off it (an
-uninstall on every subscriber). For an installed package: publisher,
-version, source, door, the items, "edited here" on a fork. This is #362's
-dialog, split per package, with the Publish tab's form moved in.
+**Installing: unchanged** (Packages → install or follow). What a package
+brings shows up in the sidebar as §4 says.
 
-**The topbar's Packages button** keeps the dialog as the overview:
-published here, following, installed — the fleet's view, read-only but
-for the channel moves it already has.
+## 2. The lookup: a package's own items first
 
-Apps follow the same rule with nothing new: an app is a package item named
-`publisher/package/name` (`apps/<name>/` in the directory), so the Apps
-section groups the same way.
-
-## 2. The publisher name
-
-`PublisherInfo` gains `name` (`src/packages/publisher.ts:35`): the prefix
-segment, `[a-z][a-z0-9-]*`, set by `PUT /publisher { name }` (the key is
-minted alongside when there is none) and read by `GET /publisher`. The
-Packages dialog's head shows it as one field beside the key. It is the
-human prefix the index lists the key under (`plans/marketplace.md` §7, §13: prefix → key rows),
-so it is a field that plan already needs; here it is also what the UI
-prefixes every package with.
-
-`POST /packages/publish` keeps taking `package: publisher/name`
-(`BuildRequest`, `src/packages/build.ts:78`); the UI composes it from the
-setting. One check added at the route: with a name set, a build whose
-first segment is another publisher is refused
-(`package_build_refused: … is not this strut's publisher`). With none set,
-as today.
-
-## 3. The working package
-
-The sidebar's selected group rides on the chat message: `POST /chat {
-message, package? }`, the package's one segment (`tools`). Per turn, never
-in the frozen system prompt (the chat's history is append-only; the
-builder's prompt heads its cached prefix). The turn's user message gets one
-line before the typed text, the way attachments do (`[attachment]`,
-`src/ai/attachments.ts:35`):
+An item's PACKAGE is the installed package whose prefix its name is under
+(`packagePrefixOf`, `src/workspace.ts:515`, checked against the installed
+fold). One function:
 
 ```
-[package] tools — name new workflows and steps by their path in this package; a slash makes a folder
+resolveName(pkg, name) = pkg && exists(`${pkg}/${name}`) ? `${pkg}/${name}` : name
 ```
 
-and `create_workflow` / `create_step` compose the stored name in CODE:
-`<publisher>/<package>/<name the model gave>`. The model never sees the
-publisher segment and never decides the package. `create_workflow`'s
-`category` arg goes (its description told the model to invent sidebar
-labels); the `category` of a bare workflow, when a turn has no package, is
-left as it is.
+called with the package of the CALLER wherever strut finds a workflow or a
+step by name:
 
-The New-workflow dialog does the same: its category field becomes the
-package select (the groups in the sidebar, or a new name), and the name is
-the path inside it.
+- **the runner**: a `subflow` target and each step's `type`, with the
+  package of the FRAME's workflow (the flow being executed, not the run's
+  root: a local workflow that calls an installed one calls into its
+  package) — `SubflowResolver` (`src/runner.ts:37`), `resolveStep`
+  (`src/steps/registry.ts:57`);
+- **the `agent` step**: `agentTools` and `approve` entries
+  (`expandAgentTools`, `src/steps/core/agent.ts:420`);
+- **a step that launches by name**: `run/launch`, `meta/run-workflow`,
+  through `ctx.package`, set by the runner beside `ctx.workflow`;
+- **an app**: its package from its name; `grantRefusal`
+  (`src/apps/tools.ts:137`) compares resolved names on both sides;
+- **the closure walk** (`flowClosure`, `src/closure.ts:72`), so the
+  sealed check, reach, the build and step stats see what will run;
+- **the install's check** (`namesIn`, `src/packages/install.ts:773`): a
+  bare name is known when the set holds `<package>/<name>`.
 
-A turn with a package selected that the store refuses (an installed
-package) answers the model with the store's `package_conflict:` as any
-refused publish does; the model says so and stops.
+On the strut that publishes, nothing is under an installed prefix, so
+every lookup is what it is today. Full names still work everywhere: another
+package's item (`bob/util/x`), a core or lib step, strut's `job`. A bare
+name the package does not hold falls through to the strut (a lib step, the
+host's own workflow), as it did on the publisher's strut. Inside an
+installed package its own item wins over a local one of the same name;
+outside it, the local one. The test that matters: the same YAML runs on the
+strut that made it and, installed, on another.
 
-## 4. What this does to stakwork/strut#362
+## 3. The build from bare names
 
-Keep: `PackagesDialog.tsx` (as the overview, §1), `package-release.ts`
-and its test, the Versions tab's "installed from / forked from" line, the
-Vite proxy entries. Drop: `PublishPanel.tsx` and the flyout's Publish tab
-— the per-workflow door is the wrong unit, and the read-only package name
-on it is what this plan removes the need for. Rework on the branch rather
-than merge-then-remove.
+`buildPackage` (`src/packages/build.ts:129`) takes the picked names as they
+are. What their closure reaches that is LOCAL (not core, lib, a seed's or
+installed) is an item at the path of its local name: today that is refused
+("outside the prefix and came from no package", `build.ts:203`). Installed
+items stay `requires.packages` pins and seeds stay external, as now.
 
-## 5. Not in v1: moving a workflow into a package
+- **Own names stamped.** A workflow's `name:` and a step's `defineStep({
+  type })` literal become `<package>/<path>`, which is what the archive
+  format (marketplace §1) and the install's checks already expect.
+  References stay as written; §2 resolves them.
+- **Helpers by import.** A step's helpers are the files it reaches by
+  relative imports (the walk `hashedUrl` already does,
+  `src/strut-resolve-hook.ts`), not "every `_` file under the prefix". The
+  folder layout is the same under the prefix, so the imports still resolve
+  once installed.
+- **A local name already under the package's own prefix** (one typed by
+  hand the 2026-10-27 way) is taken as is.
+- **The dry run** is `POST /packages/build`: it writes into the cache by
+  digest, harmless, and returns the items — the page's "Comes along".
+- **What the newest release held**, for the page's boxes: one read route,
+  `GET /packages/:publisher/:name/items?digest=`, the items of a package
+  in the cache by their names inside it. No store of its own.
 
-A workflow made outside any package (every builder-made workflow today) is
-renamed into one only by a cross-store operation: the run store keys runs
-by workflow name (`workflows/<name>/runs/`, `src/store.ts:453`), every
-event path roots on it, and job records, automations, claims (`ABOUT`),
-app grants and sessions name it. "Move to package" is that rename, with
-the closure's step types and subflow names rewritten in the YAML and
-`defineStep` literals once, on this strut — after which the name IS the
-address and nothing is rewritten again. Its design is a plan of its own.
-Until then: ask the builder again with the package selected, or copy and
-delete, history left on the old name. The same operation, when it lands,
-converts a legacy free-text category into a package.
+Same picks on the same workspace, same digest, as now.
+
+## 4. The strut that installs
+
+The install files each installed workflow under a category named for its
+package (`tools`) when it has none; an update never overwrites a category a
+person set. The sidebar shows a name under an installed prefix by its path
+inside the package (`summarize`), with the package, publisher and version on
+hover; it learns the prefixes from `GET /packages`. That is all the sidebar
+knows of packages.
+
+## 5. What this does to #362 and #365
+
+- **#365 closed** (2026-10-28): the sidebar by package, the working package,
+  the `[package]` line and the composed names are not needed.
+- **#362 keeps** the publisher name and its route check, the Packages
+  dialog's head and release list, `nextVersion`. **It changes**: the
+  package page picks any workflow instead of those under a prefix
+  (`localPackages`, which read packages off names, goes; a package is in
+  the list because it is in the catalog), and the build from bare names
+  (§3) lands with it, since without it the page cannot publish a bare
+  workflow.
+- **`plans/marketplace.md`**: §1 gains that references inside a package may
+  be bare and resolve in the package first; §8's working-package bullet
+  goes.
 
 ## Work items
 
-1. **Publisher name**: `name` on the record, `PUT /publisher`, the publish
-   route's check, the field at the Packages dialog's head. Small. BUILT.
-2. **Sidebar by package** (`web/`): group by the name's package segment
-   with subgroups, the last segment shown, versions from the catalog and
-   the installed fold, hover text; the draft group in `localStorage`; the
-   legacy `category` group kept for bare workflows, marked. Medium, UI.
-3. **Working package**: the selected group → `POST /chat { package }` →
-   the `[package]` line and the composed names in `create_workflow` /
-   `create_step`; the New dialog's package select; the `category` arg
-   removed from the tool. Small-medium.
-4. **Package page**: #362's dialog keyed by package, the publish form on
-   it, opened from the group header; the Packages dialog as overview.
-   Medium, UI; no new routes. BUILT, opened from the dialog's package rows
-   until item 2 gives the sidebar its groups.
-5. **Move into a package** (§5): its own plan, later.
-
-Items 1 and 4 are one PR; 2 and 3 the next.
+1. **Publisher name.** BUILT (#362).
+2. **Build from bare names** (§3): local items in the closure, own names
+   stamped, helpers by import, the items read route. Medium, engine. #362.
+3. **Package page** (§1): pick any workflows, apps and Concepts by
+   category, the boxes from the newest release, "Comes along" from the dry
+   build, publish. Medium, UI. #362.
+4. **Package-first lookup** (§2): `resolveName`, `ctx.package`, the call
+   sites, the install's check. Medium-large, engine. The next PR. Until it
+   lands, a package built from bare names refuses to install (the install
+   finds a bare reference nowhere): loudly, never wrongly.
+5. **The installing strut's sidebar** (§4): the category at install, the
+   name inside the package shown, the hover. Small. With 4.
 
 ## Open questions
 
-1. Should `GET /workflows` fold `package` and `path` onto each entry, or
-   does the UI split the name? *Lean:* the UI splits; one function in
-   `package-release.ts` (`packageOf` already does half of it). The server
-   adds nothing for a display rule.
-2. The publisher name and the index row (§13): one field, or may a strut
-   publish under a prefix the index lists for another key? *Lean:* one
-   field; the index's pair check (§13) is what refuses a mismatch, later.
-3. A bare workflow's free-text `category` during the transition: hide the
-   setter in the UI now, or keep it until §5 lands? *Lean:* hide it now;
-   what exists still renders.
+1. A package built from many categories installs as ONE group. Should the
+   installing strut keep the publisher's categories instead? *Lean:* no;
+   the publisher's categories are their scratchpad, and the person
+   installing thinks of the package.
+2. A glob inside a package (`agentTools: ["clip/*"]`): the package's
+   matches only, or the package's and the strut's? *Lean:* both, the
+   package's copy winning per name, so `graph/*` still finds the lib steps
+   from inside a package that ships one `graph/` step of its own.
+3. A custom step's code that launches a workflow by name resolves with the
+   package of the frame running it. Is the step's OWN package ever the
+   right one instead? *Lean:* the frame's, until a case says otherwise.
