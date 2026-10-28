@@ -88,7 +88,7 @@ describe("ladybugWorkspaceFromEnv → createStrut", { skip: ladybugSkip }, () =>
         stt: false,
         scheduler: false,
       });
-      assert.equal((strut.services as { graph?: unknown }).graph, backend, "services.graph is the wired backend");
+      assert.equal((strut.services as { graph?: { cfg: unknown } }).graph?.cfg, backend.cfg, "services.graph is the wired backend");
       process.env["STRUT_API_KEY"] = "k-wiring";
       try {
         const health = (await (await strut.app.request("/health", { headers: { authorization: "Bearer k-wiring" } })).json()) as Record<string, unknown>;
