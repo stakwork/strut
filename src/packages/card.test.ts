@@ -53,10 +53,22 @@ describe("the catalog card", () => {
     // RFC 8785 §3.2.3: members sorted by their UTF-16 code units.
     const keys = ["\u20ac", "\r", "\ufb33", "1", "\ud83d\ude00", "\u0080", "\u00f6"];
     assert.equal(canonicalJson(Object.fromEntries(keys.map((k, i) => [k, i]))), '{"\\r":1,"1":3,"\u0080":5,"\u00f6":6,"\u20ac":0,"\ud83d\ude00":4,"\ufb33":2}');
-    // ECMAScript's number forms, and the string escapes JCS keeps.
-    assert.equal(canonicalJson([1e21, 0.000001, -0, 1.5, 100]), "[1e+21,0.000001,0,1.5,100]");
+    // Integers as plain digits, and the string escapes JCS keeps.
+    assert.equal(canonicalJson([0, -0, 100, Number.MAX_SAFE_INTEGER, -Number.MAX_SAFE_INTEGER]), "[0,0,100,9007199254740991,-9007199254740991]");
     assert.equal(canonicalJson("\u0001\b\t\n\f\r\"\\/é"), '"\\u0001\\b\\t\\n\\f\\r\\"\\\\/é"');
-    assert.throws(() => canonicalJson(Number.NaN), /catalog_invalid/);
+  });
+
+  it("holds integers only: a float, or an integer past 2^53 - 1, is refused to write, to seal and to read", () => {
+    for (const n of [1.5, 0.000001, 1e21, 2 ** 53, -(2 ** 53), Number.NaN, Number.POSITIVE_INFINITY]) {
+      assert.throws(() => canonicalJson({ n }), /^Error: catalog_invalid: .* is not an integer within/, String(n));
+    }
+    assert.throws(() => sealed({ weight: 1.5 } as Partial<UnsignedCatalog>), /^Error: catalog_invalid/, "a publisher cannot seal one");
+    // In a served file, a member the reader does not know is no exception.
+    const withMember = (json: string) => VECTOR.bytes.replace('"v":1}', `"v":1,"w":${json}}`);
+    assert.throws(() => readCard(withMember("1.5"), { key: signer.key }), /^Error: catalog_invalid/);
+    assert.throws(() => readCard(withMember("9007199254740993"), { key: signer.key }), /^Error: catalog_invalid/);
+    // An integer written as a float is another byte form of the same card.
+    assert.throws(() => readCard(VECTOR.bytes.replace('"v":1}', '"v":1.0}'), { key: signer.key }), /^Error: catalog_noncanonical/);
   });
 
   it("writes a key in z-base-32, as the spec's example does", () => {

@@ -1445,7 +1445,8 @@ no one byte form (§10).
 
 | Part | Rule |
 | --- | --- |
-| Bytes | A JSON object written in its RFC 8785 form (JCS: members sorted, no whitespace, ECMAScript number and string forms), `sig` included. That is the only byte form: a reader parses the file, writes it back the same way and refuses a file that differs (`catalog_noncanonical:`), so no host can serve two byte forms of one catalog |
+| Bytes | A JSON object written in its RFC 8785 form (JCS: members sorted, no whitespace, ECMAScript string forms), `sig` included. That is the only byte form: a reader parses the file, writes it back the same way and refuses a file that differs (`catalog_noncanonical:`), so no host can serve two byte forms of one catalog |
+| Numbers | Integers within ±(2^53 − 1), written as plain digits, and nothing else: a float, or an integer past that, is refused to seal and to read (`catalog_invalid:`). The Graph Protocol draft's rule (`protocol-v0`, 2026-10-27), adopted 2026-10-28: the shortest form of a float is the one part of RFC 8785 that implementations get wrong, and a catalog's only numbers, `v` and `seq`, are integers. An amount, should one ever ride in a card, travels as a string |
 | Digest | `sha256:<hex>` over the served bytes, as an archive's (§1). It is what the record's `catalog=` names and what `GET /packages/catalog?digest=` serves by, so a byte host or a mirror checks a file without reading JSON |
 | Fingerprint | `sha256:<hex>` over the RFC 8785 form of the object WITHOUT its `sig` member. This, not the digest, is what is signed: a hash of bytes cannot be signed inside those bytes |
 | Seal | `sig`: the Ed25519 signature (RFC 8032), lowercase hex, by the publisher key over the UTF-8 bytes `strut-catalog\n` followed by the fingerprint as written (`sha256:` and 64 hex). The prefix keeps the signature from passing as anything else the key signs: its Pkarr record, an index catalog (`strut-index\n`), a later kind of card |
@@ -2034,6 +2035,11 @@ production until install (step 2) calls the resolver.
      - **The publisher's members** are `v`, `key`, `seq`, `packages`,
        `channels` and `sig`. §13's `publisher` member is left out until
        something reads it.
+   - **Built 2026-10-28: integers only** (§13's Numbers row). The card's
+     JSON writer refuses a float or an integer past ±(2^53 − 1), so a
+     publisher cannot seal one and a reader refuses a served catalog that
+     holds one, a member it does not know included (`catalog_invalid`). The
+     test vector is unchanged.
 7. **The public index + the shipped defaults** (§7, §13): the index key
    and its catalog (step 6's card, prefix `strut-index`) on a Stakwork
    strut, `PUT /index/:prefix` and `GET /index/catalog`, `STRUT_PACKAGE_INDEXES` by key with the public one as
