@@ -68,6 +68,17 @@ steps:
       name: "{{ params.buildConcept }}"
       docs: false
       tool: ""
+  # What the team BUILDS: the `Products` Concept — its docs, the overview,
+  # and under it one page per repository (name + line), written by a
+  # deployment's concept sweep (plans/concept-tree.md), never seeded. With
+  # docs: a request is placed by what it is about, and a job's brief names
+  # the repository. Empty on a workspace with no such page.
+  - id: products
+    type: context/concept
+    config:
+      name: "{{ params.productsConcept }}"
+      docs: true
+      tool: ""
   # The other struts this one can ask (strut/list-peers: ids and labels),
   # read every turn and put before the person's message, so "ask acme…"
   # finds @acme-web by its label, and a peer added mid-conversation is
@@ -92,12 +103,13 @@ steps:
       cacheTtl: 1h
       model: "{{ params.model }}"
       maxSteps: "{{ params.maxSteps }}"
-      # strut's prompt (with the host's section), then the kinds of job and
-      # the kinds of build.
+      # strut's prompt (with the host's section), then the kinds of job,
+      # the kinds of build, and what the team builds.
       system: |-
         {{ params.system }}
         {{ concepts.text }}
         {{ builds.text }}
+        {{ products.text }}
       retain: "{{ params.retain }}"
       prompt: "{{ input.context?.line || '' }}{{ peers.peers.length ? (peers.self?.id ? 'This workspace is @' + peers.self?.id + (peers.self?.label ? ' (' + peers.self?.label + ')' : '') + '. Other workspaces' : 'Workspaces') + ' you can ask: ' +peers.peers.map(p => '@' + p.id + (p.label ? ' (' + p.label + ')' : '')).join(', ') + '. ' : '' }}{{ input.prompt }}"
       toolFilter: [none]
@@ -149,6 +161,9 @@ params:
   # grows the trees under them.
   concept: Job
   buildConcept: Workflow Builder
+  # What the team builds: the overview and one page per repository, a
+  # tree the deployment's concept sweep writes (plans/concept-tree.md).
+  productsConcept: Products
   # THE evolvable surface: registry steps granted to the agent as tools. It
   # has no built-ins (toolFilter: [none]): no bash, no files, no web — work
   # that needs them is a job's. Memory; the job launchers (detached: the
@@ -211,7 +226,10 @@ params:
     pass its name as the job's `kind`: the job starts from that kind's
     page. When it is one under `Workflow Builder`, name it in the job's
     prompt. When none fits, or there are no lists, a job still does the
-    work.
+    work. After them, when the workspace has one, `Products`: what the
+    team builds, and under it one line per repository. Use it to place a
+    request — which repository, which part of the product it is about —
+    and name that repository in the job's prompt.
 
     Start a JOB (job/start) with everything it needs in its prompt, since
     it does not see this conversation — the request in full, links,
