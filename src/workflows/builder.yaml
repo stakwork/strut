@@ -168,14 +168,17 @@ params:
   # `meta/*` is the whole authoring surface as steps — the reads, the runs,
   # publish-workflow, create-step, edit-step, validate-workflow, run-step,
   # the claim steps, verify-run, verify-job — and a twin added later lands
-  # here without a seed edit. The graph reads the chat builder has; the
-  # job/* reads, to build from an earlier job's deliverables. A host
-  # appends its own (`createStrut({ builder: { tools } })`).
+  # here without a seed edit. The graph reads the chat builder has
+  # (graph/query is its graph_query: with none, the job wrote custom steps
+  # that opened the graph themselves); the job/* reads, to build from an
+  # earlier job's deliverables. A host appends its own
+  # (`createStrut({ builder: { tools } })`).
   tools:
     - meta/*
     - graph/graph-get
     - graph/graph-search
     - graph/get-ontology
+    - graph/query
     - job/list
     - job/get
     - job/read

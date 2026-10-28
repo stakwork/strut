@@ -1,15 +1,17 @@
 /**
  * Read-only raw Cypher against the strut graph backend — the chat builder's
- * `graph_query` tool (see ai/tools.ts). It exists so the assistant can
- * VERIFY what a workflow's `graph/*` steps actually wrote (counts by type,
- * exact properties, edge fan-out) — questions the typed read steps can't
- * answer (search is ranked + limited; get/neighbors need a ref_id).
+ * `graph_query` tool (see ai/tools.ts) and the `graph/query` step. It
+ * answers what the typed read steps can't (search is ranked + limited;
+ * get/neighbors need a ref_id; find reads one type): counts by type, exact
+ * properties, edge fan-out, a join across types.
  *
- * Deliberately NOT a workflow step: raw Cypher in published YAML would bypass
- * the schema validation and embeddings-on-write the `graph/*` steps exist to
- * provide, and since the workspace itself lives in this graph a stray write
- * corrupts the workflow store, not scratch data. Hence read-only, enforced
- * twice: a keyword pre-check for a clear error, and — the real guarantee —
+ * Never a write: raw Cypher would bypass the schema validation and
+ * embeddings-on-write the `graph/*` write steps exist to provide, and since
+ * the workspace itself lives in this graph a stray write corrupts the
+ * workflow store, not scratch data. (It was a chat tool only until
+ * 2026-10-28; with no step for it, the builder job wrote custom steps that
+ * opened the deployment's graph themselves, and one closed it.) Hence
+ * read-only, enforced twice: a keyword pre-check for a clear error, and — the real guarantee —
  * the engine's own read-only mode: on Neo4j a READ-mode transaction, which
  * the server rejects writes in ("Writing in read access mode not allowed");
  * on a LadybugDB file a READ ONLY transaction on a connection of its own
@@ -61,7 +63,7 @@ export class ReadOnlyViolation extends Error {
   readonly name = "ReadOnlyViolation";
   constructor(readonly keyword: string) {
     super(
-      `graph_query is read-only: "${keyword}" is not allowed. ` +
+      `read-only Cypher: "${keyword}" is not allowed. ` +
         "Write through the graph/* steps (create-node, create-triplet, edit-node, …) instead.",
     );
   }
