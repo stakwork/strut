@@ -1,4 +1,4 @@
-# Concept tree: Products → repo → features
+# Concept tree: Codebase → repo → features
 
 > **Status (2026-10-27): ruled.** From one design conversation with the
 > owner. The rows in "Decided" marked **ruled** are his; the rows marked
@@ -12,7 +12,13 @@
 > below, both marked *as built*: the Concept schema (jarvis's, `Thing`'s
 > attributes) has no slot for a second property, so both hashes ride in
 > the one stamp; and a page a person edited is still an INPUT of the root,
-> so the overview follows the edit. Companion to `semantic-search.md` (what a Concept
+> so the overview follows the edit. **Ruled after, the same day** (decision
+> 12, built into the same PR): the bootstrap names the doc files, with the
+> listing and a one-time pick as the fallbacks for repositories
+> bootstrapped before. **Renamed 2026-10-28** (decision 13): the root was
+> `Products` until the first live sweep on swarm38 met a hand-written page
+> of that name; it is `Codebase` (stakwork/stakgraph#1820, and stakwork/strut#364 on the
+> orchestrator's side). Companion to `semantic-search.md` (what a Concept
 > is in the graph), the `linked` filter in `src/graph/search.ts` (which Concepts explore reads)
 > and the seeded roots in `src/concepts/` (`Job`, `Workflow Builder`).
 
@@ -42,9 +48,9 @@ workspace. The feature pages exist; the two levels above them do not.
 
 | # | Decision | Who |
 |---|---|---|
-| 1 | Three levels: a `Products` root, one Concept per repository under it, the existing feature Concepts under each repository. `PARENT_OF` parent → child, as every reader walks it. | **ruled** |
+| 1 | Three levels: a `Codebase` root, one Concept per repository under it, the existing feature Concepts under each repository. `PARENT_OF` parent → child, as every reader walks it. | **ruled** |
 | 2 | A repository page's docs are distilled from the repository's essential docs: README, AGENTS.md, CLAUDE.md. The root's docs combine every repository page into one description of what the workspace (the team) builds. | **ruled** |
-| 3 | The workflow owns all three levels. `Products` is NOT a strut-seeded page: a seed always matches git and every boot would put the committed text back over the generated one (`concept-seed.ts`). The lab's sweep creates it when it is missing. The rule that strut owns the root Concepts was about the per-agent roots (`Job`, `Workflow Builder`); this is the one exception, named here. | *proposed* |
+| 3 | The workflow owns all three levels. `Codebase` is NOT a strut-seeded page: a seed always matches git and every boot would put the committed text back over the generated one (`concept-seed.ts`). The lab's sweep creates it when it is missing. The rule that strut owns the root Concepts was about the per-agent roots (`Job`, `Workflow Builder`); this is the one exception, named here. | *proposed* |
 | 4 | Pages are distillations, never copies. A page rendered into a prompt is capped at 6k chars (`context/concept`); strut's AGENTS.md alone is ~60k. The full file stays reachable where it is (the code graph's `File` node, the checkout). | *proposed* |
 | 5 | When to rewrite is decided by CONTENT HASH, never a threshold, a timer or a model's judgement: a page is a function of its inputs, the hash of the inputs is stamped on it, and the end of every sweep recomputes and rewrites only when the stamp differs (§3). The first sweep after this lands finds no stamp on any existing repository, which is the migration. | *proposed*, agreed |
 | 6 | A repository page depends on the doc files at HEAD plus its features' NAMES and DESCRIPTIONS, not their docs. The sweep rewrites the docs of every modified feature every run (`concepts/summarize`); a page that depended on them would churn every sweep for nothing. The root depends on its children's name, description and docs, so a rewritten repository page reaches it and a feature-docs-only sweep does not. | *proposed*, agreed |
@@ -53,11 +59,13 @@ workspace. The feature pages exist; the two levels above them do not.
 | 9 | The tree is RECONCILED at the end of every sweep from the `repo` property, in one idempotent statement, rather than written edge by edge as features are created: it reparents every feature of the repository, existing ones included, and a feature created mid-sweep by `concepts/decide` needs no code of its own. | *proposed* |
 | 10 | Nodes and edges for the two page levels go through strut's graph seams on `ctx.services.graph` (the node writer by (type, name), `edges.write({ edge: "PARENT_OF" })`), the way `seedConcepts` writes them, so every reader (the live-edge filter, `children: PARENT_OF`, the embedding pass by `node_key`) sees them exactly as it sees a seeded page. Feature nodes keep the lab's own `saveConcept`. | *proposed* |
 | 11 | The doc files are read at HEAD through the GitHub contents API with the token the sweep already holds, never from a clone: the clone exists only for a brand-new repository (`bootstrap-then-process` skips `clone` otherwise, `repoPath` is undefined on every later sweep). | *proposed* |
+| 12 | **Which files**: the BOOTSTRAP names them. Its agent already explores a clone on the first run; its output gains `docFiles` — the files that describe the repository as a whole — recorded per repo in `ConceptsMetadata`, and `pages` reads exactly those on every sweep. A repository bootstrapped before the pick existed falls back in order: the root (and `docs/`) listing matched against `docNames` case-insensitively, any extension; then, when nothing README-like is there, the bootstrap's pick run ALONE on a fresh clone, once — its record, empty or not, stops the asking. The repository's SHAPE (manifests at the root, the root listing) is always read too. Never an agent choosing files on every sweep: its choice would drift, every sweep would read as "inputs changed", and the cost bound would go. | **ruled** ("prioritize the very first run: bootstrap and then create the tree") |
+| 13 | **The root is named `Codebase`**, not `Products`. A Concept's key is its name lowercased with spaces and punctuation removed, so the root is whatever page of that name the workspace already holds, and the step keeps that page's text while hanging the repository pages under it. A workspace's own knowledge is Concepts too (a shop's catalogue, a firm's practice areas): `Products` met a hand-written page on swarm38, under `Company Context`, and would meet a domain page in any business workspace, which the orchestrator would then read as what the team builds. `Codebase` only means software; it was free among swarm38's 508 Concepts, and a page of that name someone already wrote is this overview. `Repositories` (a plausible feature name in any git product) and `Code` (medical coding) were passed over. **Migration**, in the step (`retiredRoots`, default `["Products"]`): every run first moves each repository page it wrote from under an old name to the root — new link before the old one goes, every repository's page, not only the swept one's — and soft-deletes the old root when it is the step's own, unedited, with nothing else under it; a hand-written or edited one stays without our pages. So the first sweep of any repository on a swarm migrates it whole, and the overview is written once over every page. Links record no author, so a link a person drew from a hand-written `Products` to one of our pages moves too. | **ruled** (2026-10-28, "Yes, Codebase"; migration "Build it") |
 
 ## 1. The tree
 
 ```
-Products                               one per workspace; no repo
+Codebase                               one per workspace; no repo
 ├── stakwork/strut                     one per repository; no repo; id = owner/repo
 │   ├── Workflow Runs                  the feature Concepts as they are today;
 │   ├── AI Workflow Builder            repo = "stakwork/strut", id = owner/repo/slug
@@ -67,9 +75,9 @@ Products                               one per workspace; no repo
 └── …
 ```
 
-- **`Products`**: `node_type: Concept`, `name: "Products"`, a fixed name
+- **`Codebase`**: `node_type: Concept`, `name: "Codebase"`, a fixed name
   like `Job` and `Workflow Builder`, so a reader finds it by name
-  (`graph-get { node_type: "Concept", name: "Products", children: "PARENT_OF" }`).
+  (`graph-get { node_type: "Concept", name: "Codebase", children: "PARENT_OF" }`).
   Its children are the repository pages. Its `description` is one line on
   what the team builds; its `docs` the combined overview (§2.2).
 - **A repository page**: `name: "owner/repo"` (the `node_key` jarvis derives,
@@ -97,13 +105,14 @@ two levels and their edges, which is the point.
 
 ### 2.1 A repository page
 
-Inputs, read at HEAD (decision 11): the doc files, by default `README.md`,
-`AGENTS.md`, `CLAUDE.md` at the repository root, case-insensitive, each
-capped (the first 40k chars; AGENTS.md is read for what the repo IS and
-HOW to work in it, not for its layout table); and the features under the
-page, each as `name — description`. The list of doc files is a workflow
-`params` entry (`docFiles`), the experiment surface, like every prompt in
-these workflows.
+Inputs, read at HEAD (decision 11): the doc files (decision 12: the
+bootstrap's recorded pick, else the listing's README-like matches against
+`params.docNames`, else a one-time pick on a clone), each capped at 40k
+chars; the repository's shape (the manifests at its root, 4k each, and the
+root listing); and the features under the page, each as `name —
+description`. `docNames` is a workflow `params` entry, the experiment
+surface, like every prompt in these workflows; the bootstrap prompt's
+paragraph that asks for `docFiles` is in `bootstrap-then-process`'s params.
 
 Output, from one model call (`summarizer`'s free-text path): a
 `description` (one line, what the repository is, for the root's list and
@@ -119,13 +128,13 @@ Inputs: every child's `name`, `description` and `docs`, sorted by name.
 Output: a `description` (one line) and `docs` (≤ 6k chars): what the team
 builds, how the repositories relate (which is the product, which the
 infrastructure, which serves which), in the words an orchestrator routes
-by. The prompt is `params.productsSystem`.
+by. The prompt is `params.codebaseSystem`.
 
 ## 3. When a page is rewritten
 
 ```
-inputHash(repo)     = sha256( sorted doc files as "<name>\0<body>"  ‖  sorted features as "<name>\t<description>" )
-inputHash(Products) = sha256( sorted children as "<name>\t<description>\t<docs>" )
+inputHash(repo)     = sha256( sorted doc files + shape as "<name>\0<body>"  ‖  sorted features as "<name>\t<description>" )
+inputHash(Codebase) = sha256( sorted children as "<name>\t<description>\t<docs>" )
 textHash(page)      = sha256( description ‖ "\n" ‖ docs )   as last written by the step
 stamp               = lab/concepts/<name>@<inputHash>.<textHash>   (12 hex each, in unique_source_id)
 ```
@@ -141,7 +150,7 @@ root:
 
 Then reconcile the edges (decision 9): `PARENT_OF` from the repository page
 to every Concept with that `repo`, through the edge writer (idempotent on
-`edge_key`); `PARENT_OF` from `Products` to the repository page.
+`edge_key`); `PARENT_OF` from `Codebase` to the repository page.
 
 Cost: at most one call per repository per sweep and one for the root,
 against the hundreds of decision calls a sweep makes; the sweep's cadence is
@@ -162,10 +171,10 @@ rewrites exactly those.
 ## 4. Where it runs
 
 One new step, `concepts/pages` (`steps/pages.ts`, seeded like the others
-in `seed.ts`), the last step of `process-repo-chronological` after
-`link`, so every path that sweeps a repository reaches it
-(`bootstrap-then-process` subflows the sweep; a direct run of the sweep is
-covered too):
+in `seed.ts`), after `summarize` in `process-repo-chronological`, so every
+path that sweeps a repository reaches it (`bootstrap-then-process` subflows
+the sweep after the bootstrap, so the first run is bootstrap → features →
+pick recorded → sweep → tree; a direct run of the sweep is covered too):
 
 ```yaml
   - id: pages
@@ -173,14 +182,16 @@ covered too):
     config:
       owner: "{{ input.owner }}"
       repo: "{{ input.repo }}"
-      docFiles: "{{ params.docFiles }}"
+      docNames: "{{ params.docNames }}"
       repoPageSystem: "{{ params.repoPageSystem }}"
-      productsSystem: "{{ params.productsSystem }}"
+      codebaseSystem: "{{ params.codebaseSystem }}"
 ```
 
-Output: `{ repoPage, products, reparented, unparented?, usage }`, each page
-`written | unchanged | edited | foreign | empty | skipped`. `root` (default
-`Products`) names the root page, for a test over a shared graph. `record`'s usage list
+Output: `{ repoPage, codebase, reparented, unparented?, docs: { source,
+files }, usage }`, each page `written | unchanged | edited | foreign | empty
+| skipped`, `source` one of `record | listing | identified | none`. `root`
+(default `Codebase`) names the root page, for a test over a shared graph;
+`identify: false` turns the one-time clone-and-pick pass off. `record`'s usage list
 gains `"{{ pages.usage }}"`. The step reads the doc files through
 `services.github(token)` (the `GITHUB_TOKEN` secret, as `fetch-content`
 does), the features through `storage.getAllConcepts(repoId)`, and writes
@@ -197,14 +208,14 @@ repository page restamped and the root restamped; a hand-edited root →
 ## 5. Who reads it
 
 - **The orchestrator** (strut, `src/workflows/orchestrator.yaml`): a third
-  `context/concept` beside the two it has, on `Products`, `docs: true`
+  `context/concept` beside the two it has, on `Codebase`, `docs: true`
   (the overview is what routing by repository needs), `tool: ""` as the
-  others. `params.productsConcept: Products`. On a workspace with no root
+  others. `params.codebaseConcept: Codebase`. On a workspace with no root
   the step returns `{ text: "" }` and the prompt is as it was. A session's
   prompt is its first turn's, so the page reaches new conversations only,
   as every change to that prompt does.
 - **A job agent exploring** (lab, `lab/job/concepts/Explore.md`): one
-  line: before exploring a repository, open its page under `Products`
+  line: before exploring a repository, open its page under `Codebase`
   (`graph-get { node_type: "Concept", name: "<owner>/<repo>", children:
   "PARENT_OF" }`) and start from what it says and the features it lists.
 - **Hive**: nothing. The per-repo list is feature-only as before; the
@@ -221,8 +232,10 @@ repository page restamped and the root restamped; a hand-edited root →
   written in `concepts/pages`.
 - Pages per directory or package inside a monorepo. A repository is the
   unit the sweep knows.
-- Doc files beyond the root (a `docs/` folder). `docFiles` is a param; a
-  path there works when someone needs it.
+- A way to re-run the bootstrap's pick for a repository that already has a
+  record (a `docs/` folder added after the pick). Clearing `docFiles` on the
+  repo's `ConceptsMetadata` makes the next sweep pick again; a route or a
+  step for that comes when someone needs it.
 - The orchestrator reading an individual repository page's docs. It reads
   the root; a job it starts opens the repository page.
 - Name collisions between two repositories' features (both named
