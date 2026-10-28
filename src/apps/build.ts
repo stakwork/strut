@@ -27,6 +27,7 @@ import { createRequire } from "node:module";
 import { dirname, extname, join, relative, resolve, sep } from "node:path";
 import type { Message, OnResolveResult } from "esbuild";
 import { treeFiles, treeHash } from "../version.js";
+import { packagePrefixOf } from "../package-lookup.js";
 import { kitOf, type Kit, type KitLocation } from "./kit.js";
 import { readManifest, type AppManifest } from "./manifest.js";
 
@@ -341,10 +342,13 @@ export async function buildApp(dir: string, deps: BuildDeps = {}): Promise<Build
   if (total > MAX_BYTES) return { ok: false, errors: [`${(total / 1e6).toFixed(1)} MB of files — an app has at most ${MAX_BYTES / 1024 / 1024} MB; a large dataset belongs in a run's output`], warnings };
 
   const errors: string[] = [];
-  // Grants name workflows that exist (§1.3).
+  // Grants name workflows that exist (§1.3) — an app in a package names its
+  // package's own bare, found there first (src/package-lookup.ts).
   if (deps.workflowExists) {
+    const pkg = deps.name ? packagePrefixOf(deps.name) : undefined;
+    const exists = async (wf: string) => (pkg && !wf.startsWith(`${pkg}/`) && (await deps.workflowExists!(`${pkg}/${wf}`))) || (await deps.workflowExists!(wf));
     for (const key of ["workflows", "automations"] as const) {
-      for (const wf of manifest.grants[key]) if (!(await deps.workflowExists(wf))) errors.push(`grants.${key}: no workflow "${wf}" — publish it first, or drop the grant`);
+      for (const wf of manifest.grants[key]) if (!(await exists(wf))) errors.push(`grants.${key}: no workflow "${wf}" — publish it first, or drop the grant`);
     }
   }
   const entryAbs = await resolveFile(resolve(root, manifest.entry));
@@ -388,18 +392,25 @@ export async function buildApp(dir: string, deps: BuildDeps = {}): Promise<Build
    *  not use is not in its document. */
   const ownModule = (path: string, from: Root): OnResolveResult => (from !== main && !path.endsWith(".css") ? { path, sideEffects: false } : { path });
 
-  /** The §3.4 rule: `name[@vN][/sub]`, the longest installed name first. */
+  /** The §3.4 rule: `name[@vN][/sub]`, the longest installed name first —
+   *  and, from an app in a package, that package's own app first
+   *  (src/package-lookup.ts), so a package's apps import each other bare. */
   async function resolveApp(spec: string, from: Root): Promise<OnResolveResult | null> {
     if (!deps.resolveApp) return null;
     const segs = spec.split("/");
+    const pkg = from.name ? packagePrefixOf(from.name) : undefined;
     for (let n = segs.length; n >= 1; n--) {
       const head = segs.slice(0, n).join("/");
       const m = /^(.+?)(?:@(v\d+))?$/.exec(head)!;
-      const name = m[1]!;
       const version = m[2];
-      let app: InstalledApp | null;
+      let name = m[1]!;
+      let app: InstalledApp | null = null;
       try {
-        app = await resolveInstalled(name, version);
+        if (pkg && !name.startsWith(`${pkg}/`)) {
+          app = await resolveInstalled(`${pkg}/${name}`, version);
+          if (app) name = `${pkg}/${name}`;
+        }
+        app ??= await resolveInstalled(name, version);
       } catch (e) {
         return err(`"${spec}": ${e instanceof Error ? e.message : String(e)}`);
       }

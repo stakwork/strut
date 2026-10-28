@@ -27,7 +27,10 @@ export default defineStep({
     // parentRunId links the child run's controller under this run's — so
     // cancelling/pausing this run reaches the children it launched
     // (RUN_CONTROL_SPEC §2.2 tree linkage).
-    return requireAuthoring(ctx.services).runWorkflow(cfg.name, cfg.input, cfg.params, cfg.version, {
+    // A bare name from a workflow in a package is the package's own first
+    // (src/package-lookup.ts).
+    const name = ctx.resolveWorkflow ? await ctx.resolveWorkflow(cfg.name) : cfg.name;
+    return requireAuthoring(ctx.services).runWorkflow(name, cfg.input, cfg.params, cfg.version, {
       parentRunId: ctx.runId,
       // Billed like the run that launched it (the principal rule, §2).
       ...(ctx.actor ? { actor: ctx.actor } : {}),

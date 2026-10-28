@@ -12,6 +12,14 @@ import { z } from "zod";
 
 export { requireRuns, type RunsCapability } from "../../../runs.js";
 
+/** A step's `workflow` as its frame means it: inside a package, the
+ *  package's own workflow first (src/package-lookup.ts) — so an app in a
+ *  package, or a workflow in one, names its siblings bare. */
+export async function inFrame<T extends { workflow?: string }>(cfg: T, ctx: { resolveWorkflow?: (name: string) => Promise<string> }): Promise<T> {
+  if (!cfg.workflow || !ctx.resolveWorkflow) return cfg;
+  return { ...cfg, workflow: await ctx.resolveWorkflow(cfg.workflow) };
+}
+
 /**
  * A run's input as a tool takes it: a JSON object, so the model is told to
  * send one. Models often send an object field as its JSON text instead;

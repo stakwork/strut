@@ -112,6 +112,18 @@ export interface StepContext<TServices = unknown> {
    *  run's, never their own frame's. Set by the runner; read it with
    *  `workflowOf(ctx)`, which also answers for a context built by hand. */
   workflow?: string;
+  /** The PACKAGE of the frame this step runs in — the prefix of the
+   *  workflow being executed (`acme/tools` for `acme/tools/summarize`),
+   *  which a subflow's steps take from their own workflow, unlike
+   *  `workflow`. A bare name the step looks up is found in it first
+   *  (src/package-lookup.ts): an agent's grants read it. Absent outside a
+   *  package. */
+  package?: string;
+  /** A workflow name as this frame means it — `<package>/<name>` when the
+   *  frame's package holds that, else the name (src/package-lookup.ts). Set
+   *  by the runner; a step that launches or reads a run by name (`run/*`,
+   *  `meta/run-workflow`) asks it. */
+  resolveWorkflow?: (name: string) => Promise<string>;
   scope: Record<string, unknown>;
   input: unknown;
   emit: (event: RunEvent) => Promise<void>;

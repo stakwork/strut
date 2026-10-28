@@ -67,6 +67,7 @@ import {
   type InstalledPackage,
   type PackageDoor,
 } from "./installed.js";
+import { packagePrefixOf, stepInPackage } from "../package-lookup.js";
 
 export type { PackageDoor } from "./installed.js";
 
@@ -536,6 +537,13 @@ async function checkSet(
   const withClaims: Array<Member & { claims: MemberClaims[] }> = [];
   for (const m of members) {
     const claims: MemberClaims[] = [];
+    // A bare name in the package is its own item first, as the runner will
+    // find it (src/package-lookup.ts); a check's step is written as it.
+    const pkg = m.info.manifest.package;
+    const stepHere = (t: string) => knownStep(t) || knownStep(`${pkg}/${t}`);
+    const workflowHere = (w: string) => [w, `${pkg}/${w}`].some((n) => setWorkflows.has(n) || workspaceWorkflows.has(n));
+    const own = (block: MemberClaims["claims"]): MemberClaims["claims"] =>
+      block.map((c) => ({ ...c, checks: c.checks.map((k) => (k.type ? { ...k, type: stepInPackage(pkg, k.type, knownStep) } : k)) }));
     for (const item of m.info.items) {
       if (item.kind === "workflow") {
         const text = await readFile(join(m.info.dir, item.path), "utf-8");
@@ -551,11 +559,11 @@ async function checkSet(
           bad.push(`${item.path}: a workflow has a steps list`);
           continue;
         }
-        bad.push(...namesIn(parsed.steps as Step[], knownStep, (w) => setWorkflows.has(w) || workspaceWorkflows.has(w)).map((p) => `${item.path} ${p}`));
+        bad.push(...namesIn(parsed.steps as Step[], stepHere, workflowHere).map((p) => `${item.path} ${p}`));
         const block = readClaimsBlock(parsed);
         if (block) {
-          bad.push(...checkTypes(block, knownStep).map((p) => `${item.path} claims: ${p}`));
-          claims.push({ subject: { kind: "workflow", name: item.name }, claims: block });
+          bad.push(...checkTypes(block, stepHere).map((p) => `${item.path} claims: ${p}`));
+          claims.push({ subject: { kind: "workflow", name: item.name }, claims: own(block) });
         }
       } else if (item.kind === "step" && !isHelper(item)) {
         const findings = lintStepSource(await readFile(join(m.info.dir, item.path), "utf-8"));
@@ -564,8 +572,8 @@ async function checkSet(
         try {
           const block = readClaimsBlock({ claims: loadYaml(await readFile(join(m.info.dir, item.claims), "utf-8")) });
           if (!block) continue;
-          bad.push(...checkTypes(block, knownStep).map((p) => `${item.claims}: ${p}`));
-          claims.push({ subject: { kind: "step", name: item.name }, claims: block });
+          bad.push(...checkTypes(block, stepHere).map((p) => `${item.claims}: ${p}`));
+          claims.push({ subject: { kind: "step", name: item.name }, claims: own(block) });
         } catch (err) {
           bad.push(`${item.claims}: ${(err instanceof Error ? err.message : String(err)).replace("Workflow YAML has an invalid `claims:` block", "not a list of claims")}`);
         }
@@ -599,7 +607,10 @@ async function checkSet(
       continue;
     }
     for (const g of read.manifest.grants.steps) {
-      if (!g.includes("*") && !knownStep(baseType(g))) bad.push(`the app ${name} grants the step ${g}, which is neither on this strut nor in the packages`);
+      const appPkg = packagePrefixOf(name);
+      if (!g.includes("*") && !knownStep(baseType(g)) && !(appPkg && knownStep(`${appPkg}/${baseType(g)}`))) {
+        bad.push(`the app ${name} grants the step ${g}, which is neither on this strut nor in the packages`);
+      }
     }
     const base = deps.apps!.buildDeps(name);
     const buildDeps: AppBuildDeps = {

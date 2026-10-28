@@ -402,14 +402,20 @@ describe("building a package from bare names (plans/packages-ux.md §3)", () => 
     assert.equal((await src.app.request("/packages/acme/tools/items")).status, 400);
   });
 
-  it("refuses to install until a bare reference can be found in the package (work item 4)", async () => {
+  it("installs on another strut and runs there, its bare references found in the package first", async () => {
     const built = await tools({ workflows: ["summarize"] });
     const buyer = await boot(new WorkspaceManager(join(root, "buyer")));
     struts.push(buyer);
+    // The buyer's own `tidy`: the package's summarize must call the package's.
+    await buyer.workspace.publishWorkflow("tidy", "v1", flow("tidy", "type: log, config: { message: the buyer's tidy }"));
     const r = await install(buyer, `file:${built.dir}`);
-    assert.notEqual(r.status, 201);
-    assert.match(r.body.error ?? "", /names the step clip\/shout, which is neither on this strut nor in the packages/);
-    assert.deepEqual(await buyer.workspace.listWorkflows(), [], "nothing written");
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    const run = await buyer.run("acme/tools/summarize", {});
+    assert.equal(run.status, "success", run.error?.message);
+    assert.equal(run.output, "tidy", "the package's tidy, not the buyer's");
+    const events = await buyer.store.getRunEvents("acme/tools/summarize", run.runId);
+    assert.equal(events.find((e) => e.type === "step.start" && e.path === "acme/tools/summarize/shout")?.stepType, "acme/tools/clip/shout");
+    assert.equal((await buyer.run("tidy", {})).output, "the buyer's tidy", "outside the package, the buyer's own");
   });
 
   it("leaves the host's items out and refuses what it cannot carry", async () => {

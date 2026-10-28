@@ -15,6 +15,7 @@ import { evaluateExpr } from "./expr.js";
 import { inputSchema, parseInputBlock, type InputBlock } from "./input-block.js";
 import { claimsArgSchema, type ClaimsBlock } from "./claims-schemas.js";
 import { bootEnv } from "./env.js";
+import { packagePrefixOf } from "./package-lookup.js";
 
 // Match a `{{ params.<path> }}` reference (and ONLY a params reference) so we can
 // resolve param-to-param references at load time without touching `{{ input.* }}`
@@ -514,12 +515,8 @@ export interface StepListEntry {
   upstream?: Upstream;
 }
 
-/** The package prefix a name sits under (`acme/linear` for
- *  `acme/linear/sync`): an item of a package has three segments or more. */
-export function packagePrefixOf(name: string): string | undefined {
-  const segments = name.split("/");
-  return segments.length >= 3 ? `${segments[0]}/${segments[1]}` : undefined;
-}
+/** The package prefix a name sits under (src/package-lookup.ts). */
+export { packagePrefixOf };
 
 /** A publish of a NEW name under an INSTALLED package's prefix is refused
  *  (marketplace.md §3, the name rule after install): only that package's

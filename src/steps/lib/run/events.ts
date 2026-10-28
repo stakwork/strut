@@ -2,7 +2,7 @@ import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
 import { RUN_EVENTS_MAX } from "../../../runs.js";
-import { requireRuns } from "./_shared.js";
+import { requireRuns, inFrame } from "./_shared.js";
 
 export default defineStep({
   type: "run/events",
@@ -17,6 +17,6 @@ export default defineStep({
   }),
   output: z.any(),
   async run(cfg, ctx: StepContext<StrutCapabilities>) {
-    return requireRuns(ctx.services).events(cfg);
+    return requireRuns(ctx.services).events(await inFrame(cfg, ctx));
   },
 });

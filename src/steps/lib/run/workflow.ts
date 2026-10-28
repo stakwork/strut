@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
-import { requireRuns } from "./_shared.js";
+import { requireRuns, inFrame } from "./_shared.js";
 
 export default defineStep({
   type: "run/workflow",
@@ -12,6 +12,6 @@ export default defineStep({
   }),
   output: z.any(),
   async run(cfg, ctx: StepContext<StrutCapabilities>) {
-    return requireRuns(ctx.services).workflow(cfg);
+    return requireRuns(ctx.services).workflow(await inFrame(cfg, ctx));
   },
 });
