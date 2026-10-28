@@ -1415,7 +1415,9 @@ points at bytes by hash.**
   (`STRUT_SECRET_KEY` unset, `src/secret-store.ts`): that file is only
   obfuscated, and a laptop checkout is where the default is most likely.
   The public key is the publisher's identity between struts; `acme` is
-  what people call it, and the index catalog binds the two (§7).
+  what people call it, and the index catalog binds the two (§7). A
+  publisher that also feeds a fleet holds a second key for its private
+  catalog ("One publisher, two keys", below).
 - **The record** is the key's one Pkarr packet: a signed, compressed DNS
   packet under 1000 bytes, a microsecond timestamp as its sequence number,
   put into the Mainline DHT as a BEP 44 mutable item. Strut writes one TXT
@@ -1617,7 +1619,77 @@ public repo is public whatever the catalog says. A package nobody should see
 is not published to a public catalog. It travels by `file:` or a private
 `git+` repo as before, or in a PRIVATE catalog: the same card, never put
 in the DHT, served behind the gate to subscribers holding its read token
-(§12.1).
+(§12.1). A publisher that has both kinds of package does not run two
+publishers for it (below).
+
+**One publisher, two keys** (*agreed 2026-10-28*: two keys behind one
+publisher, public or private set per channel; the shapes below are mine,
+proposed). An org's strut (swarm38 for Stakwork) feeds its fleet from a
+private catalog (§12.1) and will also publish to the world. A card's
+`seq` rule is per key: a reader that accepted one catalog from a key
+refuses another at a lower `seq`, and two at the same `seq` read as a
+stolen key. So one key cannot seal a public catalog and a private one
+that a reader might both read. A field on the card that splits the order
+by audience would be a new rule for every reader, a new archive rule and
+a new `v`. Two keys need none of it, and only one of them is ever seen
+outside the fleet.
+
+- **The publisher record holds two keys** under one name
+  (`publisher.json`, §13): the FLEET key, which seals the private catalog,
+  and the PUBLIC key, which seals the public one and is the only key in a
+  Pkarr record or an index row. The fleet key is the one minted today, so
+  every subscription a fleet already holds keeps its key. The public key
+  is minted the first time a release goes public. Each key keeps its own
+  `seq` and its own `current` catalog: the fleet key's where they are
+  today (`<dataDir>/packages/catalogs/`), the public key's in
+  `catalogs/public/`. The card is unchanged.
+- **A channel is private unless the publisher marks it public.** Channel
+  names stay free. The mark is the publisher's, kept beside the keys
+  (`publisher.json`: `publicChannels: ["public"]`), never in a card. A
+  private channel is in the fleet catalog only. A public channel is in
+  the public catalog only, under its own name. A channel has exactly one
+  audience, so moving a private channel never publishes anything. A
+  channel goes private → public. Public → private is refused, since what
+  was published stays published; take the release out of the channel
+  instead.
+- **A package has no public or private setting.** Its releases land on
+  channels. A release is public once a public channel holds it, and the
+  public catalog lists only those releases: a package's earlier releases,
+  and a package no public channel ever held, never appear in it.
+- **Going public is a channel move.** The same digest is listed in the
+  public catalog, sealed by the public key, with no rebuild. The UI says
+  **Make public** on a release, which creates or moves a public channel
+  named `public`. A public `beta` beside it is a channel the publisher
+  names and marks.
+- **The fleet card names the public key.** It carries one more member,
+  `public: <z32 key>`. A reader that does not know the member ignores it
+  (§13's Version row). The public card never names the fleet key. So a
+  workspace knows that both keys are its publisher, and the world knows
+  only one.
+- **One package under both keys.** A fleet workspace installed
+  `stakwork/x` from the fleet key (§12.1, `upstream.key`). The public
+  catalog may list the same name under the public key. A strut that holds
+  both keys for a prefix (it subscribes to the fleet key, whose card names
+  the public one) treats the public listing as the package it already
+  has: never an update, never a conflict, and its updates keep following
+  its subscription. Anywhere else the public key is the only key, pinned
+  as §3 says.
+- **Archives follow the catalog.** On `host: self`, a digest that any
+  public catalog of this strut lists is served with no credential. Every
+  other digest needs the read token or the key, as today. A digest in a
+  public card is public by definition, so nothing private leaks through
+  the route. The public catalog is served with no credential too. On a
+  swarm, mcp's `labAuth` lets both through (`mcp/src/lab/mount.ts`, the
+  line that passes `?t=` today).
+- **A public release may not require a private package.** `POST
+  /packages/publish` and a move onto a public channel refuse a release
+  whose `requires.packages` names a digest no public channel holds,
+  naming it, so a public install never stops at its first required
+  package.
+- **Losing a key.** The fleet key lost is a new fleet key that Hive's
+  subscription pass writes on every workspace. The public key lost is §13's
+  rotation through the index. One key leaking exposes only its own
+  catalog.
 
 **Scale.** A record is under 1000 bytes and a catalog a few kilobytes per
 hundred packages; archives are kilobytes to a few megabytes. At ten to ten
@@ -2015,6 +2087,12 @@ production until install (step 2) calls the resolver.
    pinned at install and an update that asks when the index names another
    key; the hourly re-put — a publisher's own, and every installer's for
    the publishers it installed from; the Pkarr relay image in sphinx-swarm.
+   Before the first record, the second key ("One publisher, two keys",
+   §13): the key built today becomes the fleet key, the public key is
+   minted at the first **Make public**, the public channels, the fleet
+   card's `public` member, the archive route opening a public digest, and
+   mcp's `labAuth` passing the public catalog and archives through. The
+   record names the public key only.
    - **Built 2026-10-27: the half with no record**, the fleet's item 3
      (§12.1; `src/packages/card.ts`, `publisher.ts`; `specs/API.md` §16).
      It covers the card and every reader check, the test vector,
