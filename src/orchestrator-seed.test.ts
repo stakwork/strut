@@ -46,7 +46,11 @@ describe("the orchestrator workflow strut ships", () => {
     assert.equal(turn["system"], "{{ params.system }}\n{{ concepts.text }}\n{{ builds.text }}", "the two lists close the prompt");
 
     const { tools } = paramsOf(text);
-    for (const t of ["job/start", "job/continue", "job/list", "job/get", "job/read", "memory/recall", "memory/remember"]) assert.ok(tools.includes(t), t);
+    for (const t of ["job/start", "job/continue", "job/list", "job/get", "job/read"]) assert.ok(tools.includes(t), t);
+    // Memory is a host's, per person (Peel grants it): one store for a whole
+    // workspace is nobody's.
+    assert.deepEqual(tools.filter((t) => t.startsWith("memory/")), []);
+    assert.ok(!/memory\//.test(paramsOf(text).system), "the prompt names no memory step");
     for (const t of tools) {
       assert.ok(!t.includes("*"), `strut's own list names steps, never globs: ${t}`);
       assert.ok(registry[t], `a grant strut cannot honor: ${t}`);
@@ -331,7 +335,8 @@ describe("the orchestrator, end to end", () => {
     assert.ok(system.includes("Start a JOB"), "strut's prompt");
     assert.ok(system.includes("HOSTSECTION"), "the host's section after it");
     const tools = seen.orch[0].tools.map((t: any) => t.name);
-    assert.ok(tools.includes("job_start") && tools.includes("job_continue") && tools.includes("memory_recall"), tools.join(","));
+    assert.ok(tools.includes("job_start") && tools.includes("job_continue"), tools.join(","));
+    assert.ok(!tools.some((t: string) => t.startsWith("memory_")), "no memory by default");
     assert.ok(!tools.includes("bash"), "no built-ins");
 
     // A revised prompt (a host's new section) between turns does not reach
