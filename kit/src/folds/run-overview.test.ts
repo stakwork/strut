@@ -146,3 +146,12 @@ describe("the app a run worked for", () => {
     assert.equal(runAppLabel(app), "bench");
   });
 });
+
+describe("the files a run was launched with", () => {
+  it("come from run.start; a run without any has none", () => {
+    const attachments = [{ name: "brief.pdf", mediaType: "application/pdf", size: 1234, path: "attachments/brief.pdf" }];
+    const o = foldRunOverview([ev(0, "run.start", "wf", { attachments }), ev(1, "run.end", "wf")]);
+    assert.deepEqual(o.attachments, attachments);
+    assert.equal(foldRunOverview([ev(0, "run.start", "wf", { attachments: [] }), ev(1, "run.end", "wf")]).attachments, undefined);
+  });
+});

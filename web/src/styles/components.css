@@ -4044,6 +4044,31 @@ body.is-resizing-flyout * {
 .ov-art-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .ov-art-title { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ov-art-sub { font-size: 11px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ov-att { padding: 0; gap: 0; }
+.ov-att-open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 6px var(--sp-2);
+  border: none;
+  background: none;
+  color: inherit;
+  text-align: left;
+}
+.ov-att-dl {
+  flex: none;
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  padding: 0 var(--sp-2);
+  border: none;
+  border-left: 1px solid var(--border);
+  background: none;
+  color: var(--text-muted);
+}
+.ov-att-dl:hover { color: var(--accent); }
 .ov-inline { font-family: var(--font-mono); font-size: 11px; background: var(--surface); border-radius: var(--r-sm); padding: var(--sp-2); margin: 0 0 6px; max-height: 200px; overflow: auto; white-space: pre-wrap; }
 .ov-link { background: none; border: none; padding: 0; color: var(--accent); font-size: 11px; }
 .ov-link:hover { text-decoration: underline; }

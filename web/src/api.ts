@@ -808,6 +808,9 @@ export interface RunEvent {
   /** On `run.start`: who launched the run, and the job it was launched under. */
   actor?: string;
   job?: string;
+  /** On `run.start`: the files the launch attached, saved under the run's
+   *  artifacts at `path` (src/ai/attachments.ts). */
+  attachments?: { name: string; mediaType: string; size: number; path: string }[];
   /** On a `step.end` whose step called a model (or waited on a run that
    *  did): what it spent (`withUsage`, src/core.ts). */
   modelCalls?: number;

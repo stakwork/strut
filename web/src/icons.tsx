@@ -314,6 +314,10 @@ export function ExternalIcon({ size = 13, ...rest }: IconProps) {
   return <Outline size={size} rest={rest}><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5" /></Outline>;
 }
 
+export function DownloadIcon({ size = 13, ...rest }: IconProps) {
+  return <Outline size={size} rest={rest}><path d="M12 4v11M7 10l5 5 5-5M5 20h14" /></Outline>;
+}
+
 export function ImageIcon({ size = 14, ...rest }: IconProps) {
   return (
     <Outline size={size} rest={rest}>
