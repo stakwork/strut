@@ -8,6 +8,7 @@ import { ClaimsPanel, claimsSummary } from "./ClaimsPanel";
 import { ParamsPanel } from "./ParamsPanel";
 import { AutomationsPanel } from "./AutomationsPanel";
 import { VersionsPanel } from "./VersionsPanel";
+import { PublishPanel } from "./PublishPanel";
 import type { InputBinding } from "../run-inputs";
 
 // ── Workflow Flyout ─────────────────────────────────────────────────────────
@@ -16,16 +17,17 @@ import type { InputBinding } from "../run-inputs";
 // its params (the tunable knobs — versioned content, so edits go through
 // Publish), its claims (the contract + evidence, computed on the active
 // version), its automations (schedules — metadata, never a version) and its
-// versions (run counts + rollback). One
+// versions (run counts + rollback) and its package's releases (Publish: a
+// release to every strut that follows this one's catalog). One
 // flyout means one topbar button, and the tabs exclude each other by
 // construction. Which tabs exist is the caller's call: a workflow with no
 // params has no Params tab, a filesystem workspace has no Claims tab, the
 // history view has no Automate tab. Deleting the workflow lives at the
 // bottom, out of the way.
 
-export type WorkflowTab = "params" | "claims" | "automations" | "versions";
+export type WorkflowTab = "params" | "claims" | "automations" | "versions" | "publish";
 
-const LABEL: Record<WorkflowTab, string> = { params: "Params", claims: "Claims", automations: "Automate", versions: "Versions" };
+const LABEL: Record<WorkflowTab, string> = { params: "Params", claims: "Claims", automations: "Automate", versions: "Versions", publish: "Publish" };
 
 /** The claims dot: what needs attention, at a glance — refuted > a to-do >
  *  unverified (or no claims at all) > every claim supported. */
@@ -72,6 +74,12 @@ export function WorkflowFlyout(props: {
   dirty: boolean;
   /** Every run of the workflow, all versions — the footer's totals. */
   runs: api.RunSummary[];
+  // Publish
+  /** Open the Packages dialog: every package this strut publishes, follows
+   *  and has installed. */
+  onOpenPackages: () => void;
+  /** Changes when the catalog may have moved elsewhere (the dialog). */
+  catalogEpoch: number;
   /** The apps that grant this workflow (plans/apps.md §1.3): a chip each. */
   apps?: Array<{ name: string; title: string }>;
   onOpenApp?: (name: string) => void;
@@ -163,6 +171,10 @@ export function WorkflowFlyout(props: {
           onActivate={props.onActivateVersion}
           dirty={props.dirty}
         />
+      )}
+
+      {props.tab === "publish" && (
+        <PublishPanel workflow={props.workflow} dirty={props.dirty} onOpenPackages={props.onOpenPackages} catalogEpoch={props.catalogEpoch} />
       )}
 
       {/* The automation editor and the params' Publish bar bring their own
