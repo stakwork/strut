@@ -12,7 +12,10 @@
 > below, both marked *as built*: the Concept schema (jarvis's, `Thing`'s
 > attributes) has no slot for a second property, so both hashes ride in
 > the one stamp; and a page a person edited is still an INPUT of the root,
-> so the overview follows the edit. Companion to `semantic-search.md` (what a Concept
+> so the overview follows the edit. **Ruled after, the same day** (decision
+> 12, built into the same PR): the bootstrap names the doc files, with the
+> listing and a one-time pick as the fallbacks for repositories
+> bootstrapped before. Companion to `semantic-search.md` (what a Concept
 > is in the graph), the `linked` filter in `src/graph/search.ts` (which Concepts explore reads)
 > and the seeded roots in `src/concepts/` (`Job`, `Workflow Builder`).
 
@@ -53,6 +56,7 @@ workspace. The feature pages exist; the two levels above them do not.
 | 9 | The tree is RECONCILED at the end of every sweep from the `repo` property, in one idempotent statement, rather than written edge by edge as features are created: it reparents every feature of the repository, existing ones included, and a feature created mid-sweep by `concepts/decide` needs no code of its own. | *proposed* |
 | 10 | Nodes and edges for the two page levels go through strut's graph seams on `ctx.services.graph` (the node writer by (type, name), `edges.write({ edge: "PARENT_OF" })`), the way `seedConcepts` writes them, so every reader (the live-edge filter, `children: PARENT_OF`, the embedding pass by `node_key`) sees them exactly as it sees a seeded page. Feature nodes keep the lab's own `saveConcept`. | *proposed* |
 | 11 | The doc files are read at HEAD through the GitHub contents API with the token the sweep already holds, never from a clone: the clone exists only for a brand-new repository (`bootstrap-then-process` skips `clone` otherwise, `repoPath` is undefined on every later sweep). | *proposed* |
+| 12 | **Which files**: the BOOTSTRAP names them. Its agent already explores a clone on the first run; its output gains `docFiles` — the files that describe the repository as a whole — recorded per repo in `ConceptsMetadata`, and `pages` reads exactly those on every sweep. A repository bootstrapped before the pick existed falls back in order: the root (and `docs/`) listing matched against `docNames` case-insensitively, any extension; then, when nothing README-like is there, the bootstrap's pick run ALONE on a fresh clone, once — its record, empty or not, stops the asking. The repository's SHAPE (manifests at the root, the root listing) is always read too. Never an agent choosing files on every sweep: its choice would drift, every sweep would read as "inputs changed", and the cost bound would go. | **ruled** ("prioritize the very first run: bootstrap and then create the tree") |
 
 ## 1. The tree
 
@@ -97,13 +101,14 @@ two levels and their edges, which is the point.
 
 ### 2.1 A repository page
 
-Inputs, read at HEAD (decision 11): the doc files, by default `README.md`,
-`AGENTS.md`, `CLAUDE.md` at the repository root, case-insensitive, each
-capped (the first 40k chars; AGENTS.md is read for what the repo IS and
-HOW to work in it, not for its layout table); and the features under the
-page, each as `name — description`. The list of doc files is a workflow
-`params` entry (`docFiles`), the experiment surface, like every prompt in
-these workflows.
+Inputs, read at HEAD (decision 11): the doc files (decision 12: the
+bootstrap's recorded pick, else the listing's README-like matches against
+`params.docNames`, else a one-time pick on a clone), each capped at 40k
+chars; the repository's shape (the manifests at its root, 4k each, and the
+root listing); and the features under the page, each as `name —
+description`. `docNames` is a workflow `params` entry, the experiment
+surface, like every prompt in these workflows; the bootstrap prompt's
+paragraph that asks for `docFiles` is in `bootstrap-then-process`'s params.
 
 Output, from one model call (`summarizer`'s free-text path): a
 `description` (one line, what the repository is, for the root's list and
@@ -124,7 +129,7 @@ by. The prompt is `params.productsSystem`.
 ## 3. When a page is rewritten
 
 ```
-inputHash(repo)     = sha256( sorted doc files as "<name>\0<body>"  ‖  sorted features as "<name>\t<description>" )
+inputHash(repo)     = sha256( sorted doc files + shape as "<name>\0<body>"  ‖  sorted features as "<name>\t<description>" )
 inputHash(Products) = sha256( sorted children as "<name>\t<description>\t<docs>" )
 textHash(page)      = sha256( description ‖ "\n" ‖ docs )   as last written by the step
 stamp               = lab/concepts/<name>@<inputHash>.<textHash>   (12 hex each, in unique_source_id)
@@ -162,10 +167,10 @@ rewrites exactly those.
 ## 4. Where it runs
 
 One new step, `concepts/pages` (`steps/pages.ts`, seeded like the others
-in `seed.ts`), the last step of `process-repo-chronological` after
-`link`, so every path that sweeps a repository reaches it
-(`bootstrap-then-process` subflows the sweep; a direct run of the sweep is
-covered too):
+in `seed.ts`), after `summarize` in `process-repo-chronological`, so every
+path that sweeps a repository reaches it (`bootstrap-then-process` subflows
+the sweep after the bootstrap, so the first run is bootstrap → features →
+pick recorded → sweep → tree; a direct run of the sweep is covered too):
 
 ```yaml
   - id: pages
@@ -173,14 +178,16 @@ covered too):
     config:
       owner: "{{ input.owner }}"
       repo: "{{ input.repo }}"
-      docFiles: "{{ params.docFiles }}"
+      docNames: "{{ params.docNames }}"
       repoPageSystem: "{{ params.repoPageSystem }}"
       productsSystem: "{{ params.productsSystem }}"
 ```
 
-Output: `{ repoPage, products, reparented, unparented?, usage }`, each page
-`written | unchanged | edited | foreign | empty | skipped`. `root` (default
-`Products`) names the root page, for a test over a shared graph. `record`'s usage list
+Output: `{ repoPage, products, reparented, unparented?, docs: { source,
+files }, usage }`, each page `written | unchanged | edited | foreign | empty
+| skipped`, `source` one of `record | listing | identified | none`. `root`
+(default `Products`) names the root page, for a test over a shared graph;
+`identify: false` turns the one-time clone-and-pick pass off. `record`'s usage list
 gains `"{{ pages.usage }}"`. The step reads the doc files through
 `services.github(token)` (the `GITHUB_TOKEN` secret, as `fetch-content`
 does), the features through `storage.getAllConcepts(repoId)`, and writes
@@ -221,8 +228,10 @@ repository page restamped and the root restamped; a hand-edited root →
   written in `concepts/pages`.
 - Pages per directory or package inside a monorepo. A repository is the
   unit the sweep knows.
-- Doc files beyond the root (a `docs/` folder). `docFiles` is a param; a
-  path there works when someone needs it.
+- A way to re-run the bootstrap's pick for a repository that already has a
+  record (a `docs/` folder added after the pick). Clearing `docFiles` on the
+  repo's `ConceptsMetadata` makes the next sweep pick again; a route or a
+  step for that comes when someone needs it.
 - The orchestrator reading an individual repository page's docs. It reads
   the root; a job it starts opens the repository page.
 - Name collisions between two repositories' features (both named
