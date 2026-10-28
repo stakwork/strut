@@ -1318,8 +1318,8 @@ export function buildTools(deps: AiDeps): ToolSet {
 
     // Read-only raw Cypher — only when the host wires a graph backend
     // (`deps.graph`). The builder's verification loop for graph-writing
-    // workflows; see graph/query.ts for why it is read-only and capped, and
-    // why it is a chat tool rather than a step.
+    // workflows; see graph/query.ts for why it is read-only and capped. The
+    // `graph/query` step is the same read for a workflow.
     ...(deps.graph
       ? {
           graph_query: tool({
@@ -1328,7 +1328,7 @@ export function buildTools(deps: AiDeps): ToolSet {
               "Writes (CREATE/MERGE/SET/DELETE/…, apoc.*, and COPY/LOAD/INSTALL) are rejected; write through the graph/* steps. " +
               `Conventions: ${graphConventions(deps.graph)} ` +
               "Output is capped: rows (default 100), long strings truncated, embedding vectors collapsed. Prefer aggregates (count, collect(DISTINCT …)) and LIMIT over dumping nodes. " +
-              "Returns { columns, rows, rowCount, truncated, elapsedMs } or { error }.",
+              "Returns { columns, rows, rowCount, truncated, elapsedMs } or { error }. In a workflow, the graph/query step runs the same read.",
             inputSchema: z.object({
               cypher: z.string().describe("A read-only Cypher query, e.g. \"MATCH (n:Concept {namespace: $ns}) RETURN count(n) AS n\"."),
               params: z

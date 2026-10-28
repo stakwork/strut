@@ -9,7 +9,10 @@
  * - reading `process.env` — the server's own env, where the deployment's
  *   keys arrive (empty once the default server scrubbed it, src/env.ts, but
  *   a step must not depend on that);
- * - calling the global `fetch` — the wire without the cassette or masking.
+ * - calling the global `fetch` — the wire without the cassette or masking;
+ * - opening the graph itself (`openGraphBackend` and its siblings): that is
+ *   the deployment's own connection, shared with the workspace and claims —
+ *   a step that closed it took a swarm's graph down (2026-10-28).
  *
  * Where it runs: the builder's `create_step` / `edit_step` (and their meta/*
  * twins) REFUSE on a finding — the model-authored door, where the prompt
@@ -48,6 +51,7 @@ export interface StepLintFinding {
 const IMPORT_RE = /(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)["'](?:node:)?([a-z_]+(?:\/[a-z_]+)?)["']/g;
 const ENV_RE = /\bprocess\.env\b/;
 const FETCH_RE = /(?<![.\w$])fetch\s*\(/;
+const GRAPH_RE = /\b(openGraphBackend|openGraphBackendFromEnv|closeGraphBackends|graphWorkspaceFromEnv)\b/;
 
 /** Blank out comments, keeping every line where it is. */
 function stripComments(source: string): string {
@@ -73,6 +77,15 @@ export function lintStepSource(source: string): StepLintFinding[] {
       }
       if (FETCH_RE.test(text)) {
         out.push({ line, message: "calls the global fetch — use ctx.services.http(url, opts), which a cassette records and masks" });
+      }
+      const graph = GRAPH_RE.exec(text);
+      if (graph) {
+        out.push({
+          line,
+          message:
+            `uses ${graph[1]} — the deployment's graph is ctx.services.graph, never opened or closed by a step; ` +
+            "for read-only Cypher in a workflow use the graph/query step",
+        });
       }
     });
   return out;

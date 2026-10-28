@@ -77,6 +77,7 @@ const NOT_A_PAGES: Record<string, string> = {
   "graph/create-schema": "an app declares its graph types in app.yaml (data.graph); a page registers none",
   "graph/register-namespace": "an app writes in the workspace's namespace; a page registers none",
   "graph/project": "projecting runs into the graph is the server's own pass",
+  "graph/query": "raw Cypher reads past the types app.yaml declares — a page reads a type's nodes with graph/find, or launches a workflow that queries (run/launch)",
   "app/init": "an app does not author apps — the builder does, with the editor",
   "app/checkout": "an app does not author apps — the builder does, with the editor",
   "app/build": "an app does not author apps — the builder does, with the editor",

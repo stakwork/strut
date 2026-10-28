@@ -52,6 +52,20 @@ export default { async run(cfg, ctx) {
     assert.deepEqual(lintStepSource(src), []);
   });
 
+  it("finds a step that opens or closes the deployment's graph itself", () => {
+    const src = `import { z, defineStep, openGraphBackend } from "strut";
+export default defineStep({ async run(cfg, ctx) {
+  const b = await openGraphBackend(cfg);
+  const rows = await ctx.services.graph.query("MATCH (n) RETURN n LIMIT 1");
+  return rows;
+} });`;
+    assert.deepEqual(
+      lintStepSource(src).map((f) => `${f.line}:${f.message.split(" — ")[0]}`),
+      ["1:uses openGraphBackend", "3:uses openGraphBackend"],
+    );
+    assert.match(lintStepSource(src)[0]!.message, /ctx\.services\.graph.*graph\/query/);
+  });
+
   it("leaves other modules alone", () => {
     assert.deepEqual(lintStepSource('import { z } from "zod";\nimport { join } from "node:path";\nimport { createHash } from "node:crypto";'), []);
   });
