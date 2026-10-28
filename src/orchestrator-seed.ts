@@ -9,7 +9,7 @@ import { idProblem } from "./session-store.js";
  * turn of a long conversation: `job/dir` (no job → the run's artifact
  * folder) → `context/concept` three times (the `Job` Concept's children —
  * the kinds of work a job can do here — and `Workflow Builder`'s, the kinds
- * alone; then `Products` with its docs, what the team builds, one page per
+ * alone; then `Codebase` with its docs, what the team builds, one page per
  * repository under it — for the end of the prompt)
  * → `agent` on the caller's `session` (one per conversation, compacted in
  * place, its prompt its first turn's), no built-ins, strut's memory and

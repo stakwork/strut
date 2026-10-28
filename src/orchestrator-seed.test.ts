@@ -38,13 +38,13 @@ describe("the orchestrator workflow strut ships", () => {
     // and this agent has no graph-get to open a page with.
     assert.deepEqual(flow.steps[1]!.config, { name: "{{ params.concept }}", docs: false, tool: "" });
     assert.deepEqual(flow.steps[2]!.config, { name: "{{ params.buildConcept }}", docs: false, tool: "" });
-    assert.deepEqual(flow.steps[3]!.config, { name: "{{ params.productsConcept }}", docs: true, tool: "" }, "the overview itself is read: it places a request");
-    const params = (yaml.load(text) as { params: { concept: string; buildConcept: string; productsConcept: string } }).params;
-    assert.deepEqual([params.concept, params.buildConcept, params.productsConcept], ["Job", "Workflow Builder", "Products"]);
+    assert.deepEqual(flow.steps[3]!.config, { name: "{{ params.codebaseConcept }}", docs: true, tool: "" }, "the overview itself is read: it places a request");
+    const params = (yaml.load(text) as { params: { concept: string; buildConcept: string; codebaseConcept: string } }).params;
+    assert.deepEqual([params.concept, params.buildConcept, params.codebaseConcept], ["Job", "Workflow Builder", "Codebase"]);
     const turn = flow.steps[5]!.config as Record<string, unknown>;
     assert.equal(turn["systemAtCompaction"], undefined, "a session keeps its first turn's prompt");
     assert.deepEqual(turn["toolFilter"], ["none"]);
-    assert.equal(turn["system"], "{{ params.system }}\n{{ concepts.text }}\n{{ builds.text }}\n{{ products.text }}", "the two lists and the products page close the prompt");
+    assert.equal(turn["system"], "{{ params.system }}\n{{ concepts.text }}\n{{ builds.text }}\n{{ codebase.text }}", "the two lists and the codebase page close the prompt");
 
     const { tools } = paramsOf(text);
     for (const t of ["job/start", "job/continue", "job/list", "job/get", "job/read", "memory/recall", "memory/remember"]) assert.ok(tools.includes(t), t);
