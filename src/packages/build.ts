@@ -9,15 +9,20 @@
  *      expanded against the registry; per named app, its grants (each
  *      granted workflow walked the same way, `grants.steps` globs expanded)
  *      and the apps it imports, read off its build (`dist/build.json`). A
- *      workflow, custom step or app it reaches under the prefix is an item.
- *      One outside it is a `requires.packages` pin when its active version
- *      carries an `upstream`, recorded nowhere when it is a seed's (`source:
- *      "seed"`, strut's own `job` or `strut/views`, or a host's — the
- *      installing strut must have it, and the install checks), and refuses
- *      the build otherwise — unless it is under a SIBLING the request
- *      requires, a package built here whose cached copy holds it as it is
- *      now. Core and lib types are recorded nowhere.
- *   2. Every `_` step under the prefix: helpers ride with their namespace.
+ *      workflow, custom step or app it reaches is an ITEM when it is LOCAL
+ *      — made here, from no package, not the host's — whatever its name
+ *      (plans/packages-ux.md §3): its path in the package is its name, and
+ *      one already under the prefix keeps the rest of it. A
+ *      `requires.packages` pin when its active version carries an
+ *      `upstream`, recorded nowhere when it is the host's (a seed's,
+ *      `source: "seed"` — strut's own `job` or `strut/views` — or one a
+ *      service published, a `publisher` stamp other than the builder's
+ *      `ai`: the installing strut must have it, and the install checks) —
+ *      or under a SIBLING the request requires, a package built here whose
+ *      cached copy holds it as it is now. Core and lib types are recorded
+ *      nowhere.
+ *   2. The helpers: every file a carried step imports by a relative path,
+ *      at the same place beside it, and every `_` step under the prefix.
  *   3. The named Concepts and the pages under each (`PARENT_OF`).
  *   4. Each step's live claims, as its `.claims.yaml` — a claim with a
  *      check that reaches outside the package and its requirements is left
@@ -26,6 +31,11 @@
  *      (`secretNamesIn`) and literal `secrets.get("…")` calls in step
  *      source, literal `exec` commands, literal `runtime:` fields.
  *   6. An item in a sealed namespace refuses the build.
+ *
+ * Each item's OWN name is written under the prefix — a workflow's `name:`,
+ * a step's `defineStep({ type })` literal — and nothing else: a reference
+ * stays as written, and the installing strut finds a bare one in the
+ * package first (plans/packages-ux.md §2).
  *
  * An app goes in as its active version's sources, `apps/<name>/`: the files
  * its version hash covers (never `dist/` or `data.db`), checked against that
@@ -37,7 +47,7 @@
  */
 import { randomBytes } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname, join, posix } from "node:path";
 import type { AppsCapability } from "../apps/apps.js";
 import { readBuildInfo } from "../apps/build.js";
 import type { ClaimsAuthoring } from "../claims-authoring.js";
@@ -81,17 +91,18 @@ export interface BuildRequest {
   version: string;
   description?: string;
   license?: string;
-  /** Workflows, each with everything it can execute. One outside the
-   *  prefix is a pin — for what a closure that cannot be read whole reaches. */
+  /** Workflows by the names they have here, each with everything it can
+   *  execute. An installed one is a pin — for what a closure that cannot be
+   *  read whole reaches. */
   workflows?: string[];
   /** Custom steps beyond what the workflows reach (a step-centric package),
-   *  or what such a closure reaches outside the prefix. */
+   *  or what such a closure reaches. */
   steps?: string[];
   /** Concept pages, each with the pages under it. */
   concepts?: string[];
   /** Apps, each with what its grants can execute and the apps it imports.
-   *  One under the prefix is `apps/<name>/`, so its name has one segment
-   *  after the prefix; one outside it is a pin. */
+   *  One the package carries is `apps/<name>/`, so its path in the package
+   *  is one segment; an installed one is a pin. */
   apps?: string[];
   /** Packages BUILT on this strut that this one requires (a sibling under
    *  another prefix of the same publisher): each at a digest this strut's
@@ -115,6 +126,15 @@ export interface BuildResult {
 const refused = (problems: string[]) => new Error(`package_build_refused: ${problems.join("; ")}`);
 const isHelperName = (name: string) => name.split("/").pop()!.startsWith("_");
 
+/** The stamp the builder's authoring puts on what it publishes
+ *  (`AI_PUBLISHER`, src/authoring.ts): any OTHER `publisher` is a service's,
+ *  the host's own. */
+const BUILDER_STAMP = "ai";
+/** A relative specifier in an import, an `export … from` or an `import()` —
+ *  the pattern src/strut-resolve-hook.ts walks. */
+const RELATIVE_IMPORT = /\b(?:from|import)\s*\(?\s*(["'])(\.\.?\/[^"'\n]+)\1/g;
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 /** A literal `secrets.get("NAME")` (or `secrets?.get`) in step source. */
 const SECRET_GET = /\bsecrets\??\.get\(\s*(["'`])([^"'`\s$\\]+)\1\s*[,)]/g;
 
@@ -124,7 +144,13 @@ type Kind = "workflow" | "step" | "app";
 interface Origin {
   upstream?: Upstream;
   source?: VersionSource;
+  /** The service stamp on the item (`WorkflowMetadata.publisher`). */
+  publisher?: string;
 }
+
+/** The installing strut's to have, never a package's to carry: a seed's, or
+ *  one a service published. */
+const hosts = (o: Origin) => o.source === "seed" || (o.publisher !== undefined && o.publisher !== BUILDER_STAMP);
 
 export async function buildPackage(deps: BuildDeps, req: BuildRequest): Promise<BuildResult> {
   const pkg = req.package;
@@ -134,6 +160,9 @@ export async function buildPackage(deps: BuildDeps, req: BuildRequest): Promise<
 
   const prefix = `${pkg}/`;
   const under = (name: string) => name.startsWith(prefix);
+  /** An item's path in the package: the rest of a name under the prefix, a
+   *  local name as it is. */
+  const pathOf = (name: string) => (under(name) ? name.slice(prefix.length) : name);
   const sealed = deps.sealed ?? sealedStepPatterns();
   const registry = await deps.getRegistry();
   const custom = new Set(Object.keys(await deps.workspace.getActiveStepHashes()));
@@ -170,14 +199,37 @@ export async function buildPackage(deps: BuildDeps, req: BuildRequest): Promise<
     const meta =
       kind === "workflow" ? await deps.workspace.getWorkflowMetadata(name) : kind === "step" ? await deps.workspace.getStepMetadata(name) : await deps.workspace.getApp(name);
     const v = meta?.versions[meta.active];
-    return meta ? { ...(v?.upstream ? { upstream: v.upstream } : {}), ...(v?.source ? { source: v.source } : {}) } : null;
+    const publisher = meta && "publisher" in meta ? (meta as { publisher?: string }).publisher : undefined;
+    return meta ? { ...(v?.upstream ? { upstream: v.upstream } : {}), ...(v?.source ? { source: v.source } : {}), ...(publisher ? { publisher } : {}) } : null;
+  };
+
+  /** A name under ANOTHER package's prefix of this publisher (`acme/util/x`
+   *  for `acme/linear`): that package's to carry, built and required. */
+  const publisherSeg = pkg.split("/")[0]!;
+  const anothersOfMine = (name: string) => {
+    const p = packagePrefixOf(name);
+    return !!p && p !== pkg && (siblings.has(p) || p.startsWith(`${publisherSeg}/`));
+  };
+  /** Does the package CARRY this name: under its prefix, or local — made
+   *  here, from no package, not the host's, not another package's of this
+   *  publisher. */
+  const carriedSeen = new Map<string, boolean>();
+  const carries = async (kind: Kind, name: string): Promise<boolean> => {
+    if (under(name)) return true;
+    const key = `${kind}:${name}`;
+    const known = carriedSeen.get(key);
+    if (known !== undefined) return known;
+    const o = await originOf(kind, name);
+    const yes = !!o && !o.upstream && !hosts(o) && !anothersOfMine(name);
+    carriedSeen.set(key, yes);
+    return yes;
   };
 
   // Outside the prefix: a seed's is strut's (or the host's), another
   // package's is a pin at the digest it was installed at, anything else is
   // refused — a package carries its own prefix and nobody else's items.
   const outside = async (kind: Kind, name: string, o: Origin, by: string) => {
-    if (o.source === "seed") return;
+    if (hosts(o)) return;
     const up = o.upstream;
     const sibling = siblings.get(packagePrefixOf(name) ?? "");
     if (sibling && (!up || up.package !== sibling.manifest.package)) {
@@ -200,7 +252,11 @@ export async function buildPackage(deps: BuildDeps, req: BuildRequest): Promise<
       return;
     }
     if (!up || packagePrefixOf(name) !== up.package) {
-      problems.push(`${by} reaches the ${kind} ${name}, which is outside ${prefix} and came from no package — move it under ${prefix}, install it from its package, or build its package and require it (requires.packages)`);
+      problems.push(
+        up
+          ? `${by} reaches the ${kind} ${name}, which came from ${up.package} but is not under its name — install it from its package`
+          : `${by} reaches the ${kind} ${name}, which is under ${packagePrefixOf(name)}/, another package of ${publisherSeg} — build that package and require it (requires.packages)`,
+      );
       return;
     }
     const have = pins.get(up.package);
@@ -219,12 +275,12 @@ export async function buildPackage(deps: BuildDeps, req: BuildRequest): Promise<
       return;
     }
     if (ref !== type) problems.push(`${by} pins ${ref}: a version label is this strut's own — name the step ${type}`);
-    if (under(type)) steps.add(type);
+    if (await carries("step", type)) steps.add(type);
     else await outside("step", type, (await originOf("step", type)) ?? {}, by);
   };
 
   const reachWorkflow = async (name: string, by: string): Promise<void> => {
-    if (under(name)) return; // the resolver below walks it
+    if (await carries("workflow", name)) return; // the resolver below walks it
     const o = await originOf("workflow", name);
     if (!o) problems.push(`${by} calls the workflow ${name}, which is not here`);
     else await outside("workflow", name, o, by);
@@ -235,23 +291,23 @@ export async function buildPackage(deps: BuildDeps, req: BuildRequest): Promise<
   const reachApp = async (name: string, by: string): Promise<void> => {
     const o = await originOf("app", name);
     if (!o) problems.push(`${by} names the app ${name}, which is not here`);
-    else if (!under(name)) await outside("app", name, o, by);
-    else if (name.slice(prefix.length).includes("/")) problems.push(`the app ${name} cannot be a package folder, apps/<name>/: an app has one segment under ${prefix}`);
+    else if (!(await carries("app", name))) await outside("app", name, o, by);
+    else if (pathOf(name).includes("/")) problems.push(`the app ${name} cannot be a package folder, apps/${pathOf(name)}/: an app has one segment in a package`);
     else if (!apps.has(name)) {
       apps.set(name, new Map());
       appQueue.push(name);
     }
   };
 
-  // The closure walks a workflow under the prefix and stops at one outside
-  // it: a pin carries its own closure, a seed is the installing strut's.
+  // The closure walks a workflow the package carries and stops at any other:
+  // a pin carries its own closure, the host's is the installing strut's.
   let root = "";
   const resolver: SubflowResolver = {
     getWorkflow: (name) => walkInto(name),
     getWorkflowVersion: (name) => walkInto(name),
   };
   const walkInto = async (name: string): Promise<Flow> => {
-    if (!under(name)) return { steps: [] } as unknown as Flow;
+    if (!(await carries("workflow", name))) return { steps: [] } as unknown as Flow;
     try {
       const flow = await deps.workspace.getWorkflow(name);
       workflows.add(name);
@@ -284,7 +340,13 @@ export async function buildPackage(deps: BuildDeps, req: BuildRequest): Promise<
   const unread: Array<{ workflow: string; why: string[] }> = [];
   const rooted = new Set<string>();
   const walkWorkflow = async (name: string, by: string): Promise<void> => {
-    if (!under(name)) return reachWorkflow(name, by);
+    if (!(await carries("workflow", name))) {
+      if (by === "the request" && !(await originOf("workflow", name))) {
+        problems.push(`no workflow ${name} here`);
+        return;
+      }
+      return reachWorkflow(name, by);
+    }
     if (rooted.has(name)) return;
     rooted.add(name);
     let flow: Flow;
@@ -358,24 +420,74 @@ export async function buildPackage(deps: BuildDeps, req: BuildRequest): Promise<
     }
   }
 
-  // 2. The helpers, with their namespace.
+  // 2. The helpers: with their namespace under the prefix, and every file a
+  // carried step imports by a relative path — which must sit at the same
+  // place beside it in the package, so the import still resolves there.
   for (const type of custom) if (under(type) && isHelperName(type)) steps.add(type);
+  const importQueue = [...steps];
+  const importsWalked = new Set<string>();
+  while (importQueue.length) {
+    const type = importQueue.shift()!;
+    if (importsWalked.has(type)) continue;
+    importsWalked.add(type);
+    const src = await deps.workspace.getStepSource(type);
+    if (!src || src.origin !== "custom") continue;
+    for (const [, , spec] of src.code.matchAll(RELATIVE_IMPORT)) {
+      const target = posix.normalize(posix.join(posix.dirname(type), spec!)).replace(/\.(?:[mc]?js|[mc]?ts)$/, "");
+      if (target.startsWith("../")) {
+        problems.push(`the step ${type} imports ${spec}, which is outside the steps`);
+        continue;
+      }
+      if (!custom.has(target)) {
+        problems.push(`the step ${type} imports ${spec}, which is no step or helper here`);
+        continue;
+      }
+      if (!(await carries("step", target))) {
+        problems.push(`the step ${type} imports ${target}, which is not this package's to carry — a package's steps import only its own files`);
+        continue;
+      }
+      const there = posix.normalize(posix.join(posix.dirname(pathOf(type)), spec!)).replace(/\.(?:[mc]?js|[mc]?ts)$/, "");
+      if (there !== pathOf(target)) {
+        problems.push(`the step ${type} imports ${target}, which would not sit beside it in the package (${pathOf(type)} → ${pathOf(target)})`);
+        continue;
+      }
+      if (!steps.has(target)) steps.add(target);
+      importQueue.push(target);
+    }
+  }
 
   // 6. Sealed namespaces are strut's.
   for (const name of [...workflows, ...steps, ...apps.keys()]) {
-    if (isSealedStep(name, undefined, sealed)) problems.push(`${name} is in a sealed namespace (${sealed.join(", ")}): those are strut's`);
+    if (isSealedStep(name, undefined, sealed) || isSealedStep(`${prefix}${pathOf(name)}`, undefined, sealed)) problems.push(`${name} is in a sealed namespace (${sealed.join(", ")}): those are strut's`);
+  }
+  // Two names, one path: a local name and the same name under the prefix.
+  for (const [kind, names] of [["workflow", workflows], ["step", steps], ["app", new Set(apps.keys())]] as const) {
+    const byPath = new Map<string, string>();
+    for (const name of names) {
+      const other = byPath.get(pathOf(name));
+      if (other) problems.push(`the ${kind}s ${other} and ${name} would both be ${prefix}${pathOf(name)}`);
+      else byPath.set(pathOf(name), name);
+    }
   }
 
   // The items' files.
   const files = new Map<string, string | Buffer>();
-  const rel = (name: string) => name.slice(prefix.length);
+  const rel = pathOf;
   for (const name of [...workflows].sort()) {
     const meta = await deps.workspace.getWorkflowMetadata(name);
     if (!meta) continue;
     const text = await deps.workspace.getWorkflowSource(name, meta.active);
     const declared = (loadYaml(text) as { name?: unknown } | null)?.name;
-    if (declared !== undefined && declared !== name) problems.push(`the workflow ${name} says name: ${String(declared)} — a package names a workflow by its path`);
-    files.set(`workflows/${rel(name)}.yaml`, text);
+    if (declared !== undefined && declared !== name) {
+      problems.push(`the workflow ${name} says name: ${String(declared)} — a package names a workflow by its path`);
+      continue;
+    }
+    const stamped = declared === undefined || under(name) ? text : stampWorkflowName(text, `${prefix}${rel(name)}`);
+    if (stamped === null) {
+      problems.push(`the workflow ${name}'s name: line could not be written as ${prefix}${rel(name)} — give it a plain top-level name: line`);
+      continue;
+    }
+    files.set(`workflows/${rel(name)}.yaml`, stamped);
   }
   for (const type of [...steps].sort()) {
     const src = await deps.workspace.getStepSource(type);
@@ -385,7 +497,12 @@ export async function buildPackage(deps: BuildDeps, req: BuildRequest): Promise<
     }
     // The install loads each step and refuses one whose defineStep is not its path.
     if (!isHelperName(type) && registry[type]?.type !== type) problems.push(`the step ${type} does not load here as ${type}`);
-    files.set(`steps/${rel(type)}.ts`, src.code);
+    const code = isHelperName(type) || under(type) ? src.code : stampStepType(src.code, type, `${prefix}${rel(type)}`);
+    if (code === null) {
+      problems.push(`the step ${type} names its type with no literal type: "${type}" — the build writes ${prefix}${rel(type)} there`);
+      continue;
+    }
+    files.set(`steps/${rel(type)}.ts`, code);
   }
   for (const [name, sources] of [...apps].sort(([a], [b]) => a.localeCompare(b))) {
     for (const [file, bytes] of sources) files.set(`apps/${rel(name)}/${file}`, bytes);
@@ -405,7 +522,7 @@ export async function buildPackage(deps: BuildDeps, req: BuildRequest): Promise<
     }
   }
   if (problems.length) throw refused([...new Set(problems)]);
-  if (!files.size) throw refused([`nothing under ${prefix} to package`]);
+  if (!files.size) throw refused([`nothing to package`]);
 
   // 5. What it needs.
   const secrets = new Set<string>();
@@ -470,7 +587,8 @@ function insideCheck(
   const pinned = (name: string) => pkg.pins.some((p) => name.startsWith(`${p}/`));
   const seed = async (kind: "workflow" | "step", name: string) => {
     const meta = kind === "workflow" ? await deps.workspace.getWorkflowMetadata(name) : await deps.workspace.getStepMetadata(name);
-    return meta?.versions[meta.active]?.source === "seed";
+    const publisher = meta && "publisher" in meta ? (meta as { publisher?: string }).publisher : undefined;
+    return !!meta && hosts({ ...(meta.versions[meta.active]?.source ? { source: meta.versions[meta.active]!.source } : {}), ...(publisher ? { publisher } : {}) });
   };
   const stepOk = async (type: string) =>
     pkg.custom.has(type) ? pkg.steps.has(type) || pinned(type) || (!pkg.under(type) && (await seed("step", type))) : !!pkg.registry[type];
@@ -626,4 +744,21 @@ async function conceptFiles(
     out.set(`concepts/${name}.md`, `${head}${page.docs ? `${page.docs}\n` : ""}`);
   }
   return out;
+}
+
+/** A workflow's text with its top-level `name:` line written as `full`, or
+ *  null when there is no plain one to write (the rest of the text as it is). */
+export function stampWorkflowName(text: string, full: string): string | null {
+  const line = /^name:[ \t]*[^\n]*$/m;
+  if (!line.test(text)) return null;
+  const out = text.replace(line, `name: ${full}`);
+  return (loadYaml(out) as { name?: unknown } | null)?.name === full ? out : null;
+}
+
+/** A step's source with each `type: "<from>"` literal written as `to`, or
+ *  null when there is none to write. */
+export function stampStepType(code: string, from: string, to: string): string | null {
+  const literal = new RegExp(`(\\btype\\s*:\\s*)(["'\`])${escapeRe(from)}\\2`, "g");
+  if (!literal.test(code)) return null;
+  return code.replace(literal, (_m, head: string, q: string) => `${head}${q}${to}${q}`);
 }

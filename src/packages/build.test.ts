@@ -59,6 +59,16 @@ steps:
     type: acme/linear/create-issue
     config: { secret: "{{ input.secret }}" }
 `;
+/** A workflow named bare, over a bare custom step and a bare subflow. */
+const SUMMARIZE = `name: summarize
+description: Summarize, then tidy
+steps:
+  - id: shout
+    type: clip/shout
+  - id: tidy
+    type: subflow
+    config: { workflow: tidy }
+`;
 const flow = (name: string, ...steps: string[]) => `name: ${name}\nsteps:\n${steps.map((s, i) => `  - { id: s${i}, ${s} }\n`).join("")}`;
 
 const boot = (workspace: WorkspaceStore, extra: Record<string, unknown> = {}) =>
@@ -237,7 +247,7 @@ describe("building a package on a filesystem workspace", () => {
 
     let r = await linear();
     assert.equal(r.status, 400);
-    assert.match(r.body.error!, /^package_build_refused: acme\/linear\/fmt reaches the step acme\/util\/fmt, which is outside acme\/linear\/ and came from no package — .*or build its package and require it \(requires\.packages\)/);
+    assert.match(r.body.error!, /^package_build_refused: acme\/linear\/fmt reaches the step acme\/util\/fmt, which is under acme\/util\/, another package of acme — build that package and require it \(requires\.packages\)/);
 
     const util = await post({ package: "acme/util", version: "1", steps: ["acme/util/fmt"] });
     assert.equal(util.status, 201, JSON.stringify(util.body));
@@ -271,12 +281,12 @@ describe("building a package on a filesystem workspace", () => {
     assert.equal((await post({ package: "acme/linear", version: "1", workflows: ["acme/linear/sync"], apps: ["acme/linear/issues"] })).status, 400);
   });
 
-  it("refuses what it cannot carry, naming each — a local item outside the prefix, a version label, two digests, a sealed namespace", async () => {
+  it("refuses what it cannot carry, naming each — a version label, two digests, a sealed namespace", async () => {
     await ws.publishStep("local/judge", PLAIN("local/judge"));
     await ws.publishWorkflow("acme/linear/judged", "v1", flow("acme/linear/judged", "type: local/judge", "type: acme/linear/create-issue@v1"));
     let msg = await refusal(build(src, { workflows: ["acme/linear/judged"] }));
     assert.match(msg, /^package_build_refused: /);
-    assert.match(msg, /acme\/linear\/judged reaches the step local\/judge, which is outside acme\/linear\/ and came from no package — move it under acme\/linear\/, install it from its package, or build its package and require it/);
+    assert.doesNotMatch(msg, /local\/judge/, "a local step is carried, whatever its name");
     assert.match(msg, /acme\/linear\/judged pins acme\/linear\/create-issue@v1: a version label is this strut's own/);
 
     // One package reached at two digests.
@@ -337,6 +347,86 @@ describe("building a package on a filesystem workspace", () => {
     const built = await build(src, { steps: ["acme/linear/create-issue"] });
     assert.deepEqual(built.files, ["steps/_shared.ts", "steps/create-issue.ts", "strut.yaml"]);
     assert.deepEqual(built.manifest.requires, { secrets: ["LINEAR_API_KEY"] });
+  });
+});
+
+describe("building a package from bare names (plans/packages-ux.md §3)", () => {
+  let src: Strut;
+  let ws: WorkspaceManager;
+  const struts: Strut[] = [];
+  beforeEach(async () => {
+    ws = new WorkspaceManager(join(root, "source"));
+    src = await boot(ws);
+    struts.push(src);
+    await ws.publishStep("clip/_shared", HELPER);
+    await ws.publishStep("clip/shout", STEP("clip/shout"));
+    await ws.publishWorkflow("tidy", "v1", flow("tidy", "type: log, config: { message: tidy }"));
+    await ws.publishWorkflow("summarize", "v1", SUMMARIZE);
+  });
+  afterEach(async () => {
+    for (const s of struts.splice(0)) await s.close?.();
+  });
+  const tools = (req: Partial<BuildRequest>) => buildPackage(depsOf(src), { package: "acme/tools", version: "1.0.0", ...req });
+
+  it("carries local items at the paths of their names, writes only their own names under the prefix, and keeps references as written", async () => {
+    const built = await tools({ workflows: ["summarize"] });
+    assert.deepEqual(built.files, ["steps/clip/_shared.ts", "steps/clip/shout.ts", "strut.yaml", "workflows/summarize.yaml", "workflows/tidy.yaml"]);
+    assert.deepEqual(built.warnings, []);
+    assert.equal(await readFile(join(built.dir, "workflows/summarize.yaml"), "utf-8"), SUMMARIZE.replace("name: summarize", "name: acme/tools/summarize"), "its own name, nothing else");
+    assert.equal(await readFile(join(built.dir, "workflows/tidy.yaml"), "utf-8"), flow("acme/tools/tidy", "type: log, config: { message: tidy }"));
+    const step = await readFile(join(built.dir, "steps/clip/shout.ts"), "utf-8");
+    assert.equal(step, STEP("acme/tools/clip/shout"), "the defineStep type, and the helper import as it was");
+    assert.equal(await readFile(join(built.dir, "steps/clip/_shared.ts"), "utf-8"), HELPER, "the helper the step imports, beside it");
+    assert.equal((await readPackage(built.dir)).digest, built.digest, "a package the format reads");
+    assert.equal((await tools({ workflows: ["summarize"] })).digest, built.digest, "the same picks, the same digest");
+
+    // The workspace is as it was: nothing renamed here.
+    assert.equal(await ws.getWorkflowSource("summarize", "v1"), SUMMARIZE);
+
+    // What the release holds, by the names inside the package.
+    const res = await src.app.request(`/packages/acme/tools/items?digest=${built.digest}`);
+    assert.equal(res.status, 200);
+    const body = (await res.json()) as { package: string; version: string; items: Array<{ kind: string; name: string }> };
+    assert.equal(body.version, "1.0.0");
+    assert.deepEqual(body.items.map((i) => `${i.kind} ${i.name}`).sort(), ["step clip/shout", "workflow summarize", "workflow tidy"]);
+    assert.equal((await src.app.request(`/packages/acme/other/items?digest=${built.digest}`)).status, 404);
+    assert.equal((await src.app.request("/packages/acme/tools/items")).status, 400);
+  });
+
+  it("refuses to install until a bare reference can be found in the package (work item 4)", async () => {
+    const built = await tools({ workflows: ["summarize"] });
+    const buyer = await boot(new WorkspaceManager(join(root, "buyer")));
+    struts.push(buyer);
+    const r = await install(buyer, `file:${built.dir}`);
+    assert.notEqual(r.status, 201);
+    assert.match(r.body.error ?? "", /names the step clip\/shout, which is neither on this strut nor in the packages/);
+    assert.deepEqual(await buyer.workspace.listWorkflows(), [], "nothing written");
+  });
+
+  it("leaves the host's items out and refuses what it cannot carry", async () => {
+    // A step a service published is the host's: the installing strut has its own.
+    await ws.publishStep("lab/ping", PLAIN("lab/ping"), undefined, "lab");
+    await ws.publishWorkflow("pinged", "v1", flow("pinged", "type: lab/ping", "type: clip/shout"));
+    const built = await tools({ workflows: ["pinged"] });
+    assert.deepEqual(built.files, ["steps/clip/_shared.ts", "steps/clip/shout.ts", "strut.yaml", "workflows/pinged.yaml"]);
+
+    // A local name and the same name under the prefix are one path.
+    await ws.publishWorkflow("acme/tools/tidy", "v1", flow("acme/tools/tidy", "type: log, config: { message: other }"));
+    await ws.publishWorkflow("both", "v1", flow("both", "type: subflow, config: { workflow: tidy }", "type: subflow, config: { workflow: acme/tools/tidy }"));
+    assert.match(await refusal(tools({ workflows: ["both"] })), /the workflows (acme\/tools\/tidy and tidy|tidy and acme\/tools\/tidy) would both be acme\/tools\/tidy/);
+
+    // A step whose type is no literal cannot be written under the prefix.
+    await ws.publishStep("dyn/x", `import { z, defineStep } from "strut";\nconst T = "dyn/x";\nexport default defineStep({ type: T, input: z.object({}).passthrough(), output: z.any(), async run() { return 1; } });\n`);
+    await ws.publishWorkflow("dynamic", "v1", flow("dynamic", "type: dyn/x"));
+    assert.match(await refusal(tools({ workflows: ["dynamic"] })), /the step dyn\/x names its type with no literal type: "dyn\/x" — the build writes acme\/tools\/dyn\/x there/);
+
+    // A step that imports a file the package does not carry.
+    await ws.publishStep("lab/_util", HELPER, undefined, "lab");
+    await ws.publishStep("odd/one", `import { greeting } from "../lab/_util.js";\n${PLAIN("odd/one")}`);
+    await ws.publishWorkflow("oddly", "v1", flow("oddly", "type: odd/one"));
+    assert.match(await refusal(tools({ workflows: ["oddly"] })), /the step odd\/one imports lab\/_util, which is not this package's to carry/);
+
+    assert.match(await refusal(tools({ workflows: ["missing"] })), /no workflow missing here/);
   });
 });
 
@@ -452,7 +542,7 @@ describe("building and installing a package with apps (filesystem)", () => {
     assert.equal((await buyer.apps.get("acme/linear/issues"))?.version, "v2");
   });
 
-  it("refuses an app it cannot carry: outside the prefix from no package, an import pinned to a version, a name the format cannot hold", async () => {
+  it("refuses an app it cannot carry: an import pinned to a version, a name the format cannot hold", async () => {
     await publishApp(src, "local-ui", UI);
     await publishApp(src, "acme/linear/ui", UI);
     await publishApp(src, "acme/linear/outer", { "app.yaml": "title: Outer\n", "src/App.tsx": 'import { LABEL } from "local-ui";\nexport default function App() { return <p>{LABEL}</p>; }\n' });
@@ -460,9 +550,9 @@ describe("building and installing a package with apps (filesystem)", () => {
     await publishApp(src, "acme/linear/deep/board", { "app.yaml": "title: Deep\n", "src/App.tsx": "export default () => null;\n" });
     const msg = await refusal(build(src, { apps: ["acme/linear/outer", "acme/linear/pinned", "acme/linear/deep/board"] }));
     assert.match(msg, /^package_build_refused: /);
-    assert.match(msg, /the app acme\/linear\/outer reaches the app local-ui, which is outside acme\/linear\/ and came from no package/);
+    assert.doesNotMatch(msg, /local-ui/, "a local app is carried, whatever its name");
     assert.match(msg, /acme\/linear\/pinned@v1 imports acme\/linear\/ui@v1: a version label is this strut's own — import the app by name/);
-    assert.match(msg, /the app acme\/linear\/deep\/board cannot be a package folder, apps\/<name>\/: an app has one segment under acme\/linear\//);
+    assert.match(msg, /the app acme\/linear\/deep\/board cannot be a package folder, apps\/deep\/board\/: an app has one segment in a package/);
   });
 
   it("refuses the whole install, writing nothing, when an app does not build here, grants a step nobody has, or its name is a local app's", async () => {

@@ -316,8 +316,10 @@ steps?, apps?, concepts? })` writes the directory:
    expanded the same way) — walked on from there by `flowClosure`: an
    app's grants are what it can execute, as a workflow's subflows and
    `agentTools` are (`apps.md` §5). Every reached
-   workflow and custom step under the prefix is an item. One outside the
-   prefix: with an `upstream`, its package and digest become a
+   workflow and custom step under the prefix is an item — and, amended
+   2026-10-28 (`plans/packages-ux.md` §3), so is a LOCAL one whatever its
+   name, at the path of its local name, its own name written under the
+   prefix. One outside the prefix: with an `upstream`, its package and digest become a
    `requires.packages` pin (a second pin of the same package at another
    digest refuses the build); without one, the build is refused naming it
    — package it under your prefix, or install it from its package, or

@@ -2716,6 +2716,21 @@ export async function createStrut<TServices = unknown>(
     const gz = await packArchive(info.dir, info.files);
     return c.body(gz.buffer.slice(gz.byteOffset, gz.byteOffset + gz.byteLength) as ArrayBuffer, 200, headers);
   });
+  // What a package in the cache holds, by each item's name INSIDE it — a
+  // workflow's, step's or app's path, a Concept's page name, helpers left
+  // out (plans/packages-ux.md §3): the package page ticks what a published
+  // package's newest release held. Reads only.
+  app.get("/packages/:publisher/:name/items", async (c) => {
+    const pkg = `${c.req.param("publisher")}/${c.req.param("name")}`;
+    const digest = c.req.query("digest") ?? "";
+    if (!PACKAGE_DIGEST.test(digest)) return c.json({ error: "digest=sha256:<64 hex> is required" }, 400);
+    const info = await packageStore.get(digest);
+    if (!info || info.manifest.package !== pkg) return c.json({ error: `no package ${pkg} at ${digest} here` }, 404);
+    const items = info.items
+      .filter((i) => !i.helper)
+      .map((i) => ({ kind: i.kind, name: i.kind === "concept" ? i.name : i.name.slice(pkg.length + 1) }));
+    return c.json({ package: pkg, version: info.manifest.version, digest, items });
+  });
 
   // What is INSTALLED — a fold over the workspace's version stamps and the
   // graph's Concept stamps, never a store (src/packages/installed.ts) — and
