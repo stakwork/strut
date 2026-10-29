@@ -14,9 +14,11 @@
  * vector index too) and **shared** (jarvis already seeded those; our
  * `IF NOT EXISTS` forms are no-ops).
  *
- * The Schema rows go through `SchemaSource` (`engine.ts`), so the same seed
- * runs on a Ladybug file; the constraints and search indexes are Neo4j DDL
- * and run only there (`engine.bolt`).
+ * The Schema rows go through `SchemaSource` (`engine.ts`). A Ladybug file
+ * seeds its own Strut types at open (`ladybug/registry.ts`, without the
+ * agent-session and chat types it does not keep), so there this has nothing
+ * to add; the constraints and search indexes are Neo4j DDL and run only
+ * there (`engine.bolt`).
  */
 import { randomUUID } from "node:crypto";
 import type { Bolt } from "./bolt.js";
@@ -66,8 +68,8 @@ export async function schemaStatement(bolt: Bolt, cypher: string): Promise<strin
 }
 
 export interface SeedReport {
-  /** `closed`: the engine's types are a registry in code (Ladybug) — nothing to seed. */
-  mode: "standalone" | "shared" | "closed";
+  /** `file`: the store seeded its Strut types itself at open (Ladybug). */
+  mode: "standalone" | "shared" | "file";
   /** Schema types created on this run. */
   createdSchemas: string[];
   /** Existing schemas that were extended with missing keys (add-only). */
@@ -112,7 +114,7 @@ export async function seedStrutDomain(e: EngineLike): Promise<SeedReport> {
     skippedEdgeSchemas: [],
     skippedSchemaObjects: [],
   };
-  if (src.registry) return { ...report, mode: "closed" };
+  if (src.holdsStrutTypes) return { ...report, mode: "file" };
   // Neo4j DDL (constraints, search indexes): nothing to run on Ladybug,
   // whose tables and indexes the handle creates at open.
   const ddl = async (cypher: string) => {

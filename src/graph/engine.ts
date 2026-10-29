@@ -213,19 +213,19 @@ export interface EdgeSchemaRow {
  *  `get_schema_edge_by_edge_type`). */
 export type EdgeSchemaWalk = "exact" | "source-ancestor" | "target-ancestor" | "both-ancestors" | "wildcard";
 
-/** A schema source that is a registry in code (Ladybug, `ladybug/registry.ts`):
- *  the resolver resolves types and edge rules from it alone — case-insensitive
- *  on the type name, exact on the edge triple, no allowlist, no hidden
- *  domains — and every write below is refused. */
-export interface ClosedRegistry {
-  schema(type: string): NodeSchema | null;
-  types(): readonly NodeSchema[];
-  edge(edge: string, source: string, target: string): EdgeSchemaRow | null;
+/** A live Schema matched by its type or an alias (decision 9 of
+ *  plans/memory-in-workspace-graph.md): who holds the name. */
+export interface NamedSchema {
+  type: string;
+  aliases: string[];
+  managed_by?: string;
 }
 
 export interface SchemaSource {
-  /** Present when the source is a closed registry (ruling 6). */
-  readonly registry?: ClosedRegistry;
+  /** True when Strut's own types are Schema rows in the store too (a
+   *  Ladybug file, seeded from `ladybug/registry.ts`): the resolver reads
+   *  them there instead of from `strut-schemas.ts`. */
+  readonly holdsStrutTypes: boolean;
   /** The Schema whose type matches case-insensitively, exact case first.
    *  `live` skips soft-deleted ones and the `*` sentinel. */
   schemaRow(type: string, opts?: { live?: boolean }, tx?: GraphTx): Promise<SchemaRow | null>;
@@ -254,6 +254,11 @@ export interface SchemaSource {
   ensureEdgeSchema(source: string, edge: string, target: string, props: Record<string, unknown>, tx?: GraphTx): Promise<{ created: boolean; ref_id: string } | null>;
   /** The `*` wildcard Schema sentinel. */
   ensureWildcardSchema(ref_id: string, tx?: GraphTx): Promise<void>;
+  /** Live Schemas whose type or an alias is one of `names`, case-blind.
+   *  Present where a type's names are one-to-one across the ontology (a
+   *  Ladybug file, decision 9 of plans/memory-in-workspace-graph.md); a
+   *  Neo4j graph keeps jarvis's rules. */
+  typesNamed?(names: string[], tx?: GraphTx): Promise<NamedSchema[]>;
   /** The migration ledger: stamp `id` as done (idempotent). */
   stampMigration(id: string): Promise<void>;
 }

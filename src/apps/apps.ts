@@ -18,8 +18,8 @@
  *
  * An app that declares graph types (`data.graph`) is checked against the
  * graph at every build and registers them at publish, before the version is
- * recorded (./graph-types.ts): on Neo4j only, so on a LadybugDB file or the
- * filesystem workspace it does not build.
+ * recorded (./graph-types.ts), on Neo4j and on a LadybugDB file alike; on
+ * the filesystem workspace, which has no graph, it does not build.
  *
  * A version's directory is a CACHE over its history (./objects.ts): a
  * publish records the version's sources once per file, the active version

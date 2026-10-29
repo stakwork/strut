@@ -367,6 +367,7 @@ class Neo4jEdges implements EdgeEngine {
 // ── The Schema meta-graph ───────────────────────────────────────────────────
 
 class Neo4jSchemas implements SchemaSource {
+  readonly holdsStrutTypes = false;
   constructor(private readonly bolt: Bolt) {}
 
   async schemaRow(type: string, opts: { live?: boolean } = {}, tx?: GraphTx): Promise<SchemaRow | null> {

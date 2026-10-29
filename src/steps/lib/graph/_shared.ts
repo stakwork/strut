@@ -15,11 +15,10 @@ export type { GraphBackend };
  *
  * The backend the SERVER wired comes first: `ctx.services.graph`
  * (`createStrut` puts the one behind its graph-backed workspace there — a
- * Neo4j, or the desktop's LadybugDB file, plans/ladybug-backend.md). On a
- * Ladybug file the Concept reads work as they do on Neo4j; a step that
- * registers a type or writes one outside the closed registry fails there
- * with the closed-registry error. Without a wired backend the steps open
- * a Neo4j from env, as before:
+ * Neo4j, or the desktop's LadybugDB file, plans/ladybug-backend.md). Both
+ * keep their ontology as Schema nodes, so every step, the schema writes
+ * included, works the same on either. Without a wired backend the steps
+ * open a Neo4j from env, as before:
  *
  * Config (all via `ctx.services.secrets`, secret store → env fallback; the
  * same names + defaults as the mcp host's own Neo4j client, so a local
@@ -41,6 +40,10 @@ export type { GraphBackend };
  * neo4j-driver) is imported lazily here, inside `run()`, never at module
  * top level.
  */
+/** Node types a traversal (graph-neighbors, walk) leaves out: noise, and the
+ *  ontology's own `Schema` nodes (read through get-ontology instead). */
+export const EXCLUDED_NODE_TYPES = ["Hint", "Memory", "Clip", "Turn", "Schema"];
+
 export async function graphCtx(ctx?: StepContext<StrutCapabilities>): Promise<GraphBackend> {
   const wired = ctx?.services?.graph;
   if (wired) return wired;

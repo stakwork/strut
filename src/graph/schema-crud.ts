@@ -26,8 +26,16 @@
  * `node_key`, `index`) are never touched. That is what lets a workflow add
  * `verdict` to a jarvis-seeded `Claim` without editing the ontology by hand.
  *
+ * On a Ladybug file names are one-to-one across the ontology
+ * (plans/memory-in-workspace-graph.md decision 9): a type's name and its
+ * `aliases` may not be another type's name or alias, case-blind, and a type
+ * `managed_by` an owner (memory) is extended by that owner only. Neo4j
+ * keeps jarvis's rules (`SchemaSource.typesNamed` is Ladybug's).
+ *
  * Strut's own types are a closed in-code registry (`strut-schemas.ts`) and
- * are refused here.
+ * are refused here. On Ladybug the same calls write `Schema` rows, and a
+ * new attribute adds its column (`ladybug/ontology.ts`), refused when the
+ * name is already a column of another type.
  */
 import { randomUUID } from "node:crypto";
 import type { EngineLike } from "./engine.js";
@@ -56,6 +64,10 @@ export interface NodeSchemaInput {
   /** Domain the type belongs to (→ `Domain_<domain>` label). Default `entity`. */
   domain?: string;
   type_description?: string;
+  /** Other names the type answers to; each unique across the ontology. */
+  aliases?: string[];
+  /** The owner whose writes the type is reserved for (`memory`). */
+  managed_by?: string;
 }
 
 /** A validated, normalized schema ready to write. */
@@ -67,6 +79,7 @@ export interface NodeSchemaPlan {
   index: string[];
   domain: string;
   attributes: Record<string, string>;
+  aliases: string[];
   /** The flat `:Schema` node properties (core keys + attributes). */
   flat: Record<string, unknown>;
 }
@@ -145,6 +158,14 @@ export function planNodeSchema(input: NodeSchemaInput): NodeSchemaPlan {
   }
   const domain = String(input.domain ?? "entity").trim() || "entity";
   if (!IDENT.test(domain)) throw new GraphValidationError("WRONG_TYPE", type, "domain must be a bare identifier", "domain");
+  // Case-blind, as a type name is: the first spelling of each is kept.
+  const aliases: string[] = [];
+  for (const a of (input.aliases ?? []).map((x) => String(x).trim())) {
+    const lower = a.toLowerCase();
+    if (a && lower !== type.toLowerCase() && !aliases.some((x) => x.toLowerCase() === lower)) aliases.push(a);
+  }
+  for (const a of aliases) if (!TYPE_LABEL.test(a)) throw new GraphValidationError("UNKNOWN_TYPE", type, `alias must match ^[A-Za-z][A-Za-z0-9_]*$, got ${JSON.stringify(a)}`, "aliases");
+  const managed_by = input.managed_by?.trim() || undefined;
 
   const flat: Record<string, unknown> = {
     type,
@@ -155,9 +176,11 @@ export function planNodeSchema(input: NodeSchemaInput): NodeSchemaPlan {
     ...(input.title_key ? { title_key: input.title_key } : {}),
     ...(input.description_key ? { description_key: input.description_key } : {}),
     ...(input.type_description ? { type_description: input.type_description } : {}),
+    ...(aliases.length ? { aliases } : {}),
+    ...(managed_by ? { managed_by } : {}),
     ...attributes,
   };
-  return { type, parent, node_key, tokens, index, domain, attributes, flat };
+  return { type, parent, node_key, tokens, index, domain, attributes, aliases, flat };
 }
 
 /**
@@ -168,7 +191,7 @@ export async function createNodeSchema(e: EngineLike, resolver: SchemaResolver, 
   const engine = asEngine(e);
   const src = engine.schemaSource;
   const plan = planNodeSchema(input);
-  if (src.registry) throw new GraphValidationError("UNKNOWN_TYPE", plan.type, `the ${engine.kind} backend's types are a closed registry (plans/ladybug-backend.md §3); a type cannot be registered at runtime`);
+  const managedBy = typeof plan.flat["managed_by"] === "string" ? (plan.flat["managed_by"] as string) : undefined;
 
   // Adopt the live casing of an existing type / parent (jarvis
   // `resolve_graph_label` / `resolve_canonical_node_type`).
@@ -178,6 +201,17 @@ export async function createNodeSchema(e: EngineLike, resolver: SchemaResolver, 
   if (isStrutType(parent)) throw new GraphValidationError("UNKNOWN_TYPE", plan.type, "Strut's own types cannot be extended (closed registry)", "parent");
 
   const result = await engine.tx(async (tx) => {
+    // One name, one type, one owner (decision 9), where the store keeps it.
+    for (const held of (await src.typesNamed?.([plan.type, ...plan.aliases], tx)) ?? []) {
+      const same = held.type.toLowerCase() === plan.type.toLowerCase();
+      if (same && held.managed_by !== managedBy) {
+        throw new GraphValidationError("DUPLICATE_KEY", plan.type, `${held.type} is owned by ${held.managed_by ?? "the workspace"}; it cannot be declared or extended here`);
+      }
+      if (same) continue;
+      const clash = [plan.type, ...plan.aliases].find((n) => n.toLowerCase() === held.type.toLowerCase() || held.aliases.some((a) => a.toLowerCase() === n.toLowerCase()))!;
+      const what = clash.toLowerCase() === held.type.toLowerCase() ? "the type" : "an alias of";
+      throw new GraphValidationError("DUPLICATE_KEY", plan.type, `${clash} is already ${what} ${held.type}${held.managed_by ? ` (owned by ${held.managed_by})` : ""}: a name or alias names one type`, clash === plan.type ? undefined : "aliases");
+    }
     if (existingType) {
       if (isStrutType(existingType)) throw new GraphValidationError("UNKNOWN_TYPE", existingType, "Strut's own types are a closed in-code registry");
       const live = await src.schemaRow(existingType, { live: true }, tx);

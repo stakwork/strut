@@ -1,7 +1,7 @@
 /**
  * The read surface over one Ladybug file (plans/ladybug-backend.md §6,
- * slice 3): `GraphReader` (`search.ts`) sized to the closed registry's ten
- * types. The same shapes as the Neo4j reader, so `graph-get` /
+ * slice 3): `GraphReader` (`search.ts`) over the file's ontology (its
+ * `Schema` rows, `ontology.ts`). The same shapes as the Neo4j reader, so `graph-get` /
  * `graph-search` / `graph-neighbors`, the builder's `graph_get`, the run
  * flyout's nodes and the Run popover's typeahead read a file as they read
  * a swarm — and the same ranking: the retrievers here hand `Hit`s to the
@@ -11,12 +11,14 @@
  *
  *   - one `Node` table, so a type is `node_type` and a hidden node is one
  *     with `deleted_at` (the file has no `is_muted`, no `status`);
- *   - types and schemas resolve from the registry, case-insensitively; an
- *     unknown type matches nothing, as on Neo4j;
+ *   - types and schemas resolve from the Schema rows, case-insensitively;
+ *     an unknown type matches nothing, as on Neo4j. Schema rows are never
+ *     search hits, and the root `Thing` (which holds no nodes) is left out
+ *     of the ontology views;
  *   - one namespace: `default` resolves, anything else is
  *     `INVALID_NAMESPACE`, and `registerNamespace` is refused;
- *   - one domain: `strut` names the Strut types; any other `domains`
- *     entry is `INVALID_DOMAIN`;
+ *   - a domain is the types whose Schema names it (`strut`: the Strut
+ *     types); a domain no type names is `INVALID_DOMAIN`;
  *   - one FTS index (`node_fts` over `Data_Bank` + `name`, BM25, porter) and
  *     one HNSW index (`node_vec`, cosine), each read with `QUERY_*_INDEX`
  *     and filtered AFTER the index's top-k — so a typed search over-fetches
@@ -66,24 +68,28 @@ import {
   type SearchParams,
   type SearchResult,
 } from "../search.js";
-import { STRUT_DOMAIN, getStrutSchema } from "../strut-schemas.js";
-import { LADYBUG_EDGES, LADYBUG_EDGE_TYPES, LADYBUG_SCHEMAS, LADYBUG_STRUT_TYPES, ladybugSchema, nodeColumns } from "./registry.js";
+import { THING_TYPE } from "../strut-schemas.js";
+import type { LadybugSchemas } from "./engine.js";
+import type { LadybugCatalog } from "./ontology.js";
+import { SCHEMA_TYPE } from "./registry.js";
 
 export interface LadybugReaderOptions {
   /** The semantic half; without it search is keyword-only. */
   embedder?: Embedder;
 }
 
-type Engine = Pick<GraphEngine, "query" | "namespace">;
+type Engine = Pick<GraphEngine, "query" | "namespace"> & { readonly catalog: LadybugCatalog; readonly schemaSource: LadybugSchemas };
 
 const q = (s: string) => `\`${s}\``;
 const lit = (s: string) => `'${s.replace(/'/g, "''")}'`;
 const LIVE = (alias: string) => `${alias}.deleted_at IS NULL`;
+/** A data node: the ontology's Schema rows are not walked or counted. */
+const DATA = (alias: string) => `${alias}.node_type <> '${SCHEMA_TYPE}'`;
 
 /** A node as a struct of every column but the vector: 384 floats on every
  *  row of an over-fetch are weight the response strips anyway. */
-function projection(alias: string): string {
-  return `{${Object.keys(nodeColumns())
+function projection(alias: string, columns: Record<string, string>): string {
+  return `{${Object.keys(columns)
     .filter((c) => c !== "text_embeddings")
     .map((c) => `${q(c)}: ${alias}.${q(c)}`)
     .join(", ")}}`;
@@ -96,37 +102,12 @@ function hitNode(row: unknown): HitNode {
   return { labels: typeof node_type === "string" ? [node_type] : [], properties };
 }
 
-/** A registry type name as the registry spells it; an unknown one as given
- *  (it matches nothing, jarvis's silent-empty behaviour). */
-function canonical(raw: string): string {
-  return ladybugSchema(raw)?.type ?? raw.trim();
-}
-
-/** The flat row jarvis would hold for a registry schema, for `splitSchema`:
- *  the Strut types with their domain and display keys, the jarvis-named
- *  types with the keys the registry declares. */
-function schemaRow(s: NodeSchema): Record<string, unknown> {
-  const strut = getStrutSchema(s.type);
-  return {
-    type: s.type,
-    parent: s.parent,
-    node_key: s.node_key,
-    index: s.index,
-    title_key: s.title_key,
-    description_key: s.description_key,
-    ...(strut
-      ? { domain: STRUT_DOMAIN, icon: strut.icon, shape: strut.shape, primary_color: strut.primary_color, secondary_color: strut.secondary_color, type_description: strut.type_description }
-      : {}),
-    ...s.attributes,
-  };
-}
-
 /** `links` as one condition on `node`: a live edge of the type, in its
  *  direction, to a live node of the type. An edge type the file has no
  *  table for is `false` — `EXISTS` over a missing table is a binder error. */
-export function ladybugLinkedClause(links: Link[]): string | null {
+export function ladybugLinkedClause(links: Link[], tables: ReadonlySet<string>): string | null {
   const alts = links.map(({ edge, direction, type }) => {
-    if (!LADYBUG_EDGE_TYPES.includes(edge)) return "false";
+    if (!tables.has(edge)) return "false";
     const rel = direction === ">" ? `-[e:${q(edge)}]->` : `<-[e:${q(edge)}]-`;
     return `EXISTS { MATCH (node)${rel}(x:Node) WHERE x.node_type = ${lit(type)} AND ${LIVE("x")} }`;
   });
@@ -144,6 +125,17 @@ export class LadybugReader implements GraphReader {
     private readonly engine: Engine,
     private readonly opts: LadybugReaderOptions = {},
   ) {}
+
+  /** The projection of every column the file has. */
+  private async project(alias: string): Promise<string> {
+    return projection(alias, (await this.engine.catalog.get()).columns);
+  }
+
+  /** A type name as the ontology spells it; an unknown one as given (it
+   *  matches nothing, jarvis's silent-empty behaviour). */
+  private async canonical(raw: string): Promise<string> {
+    return (await this.engine.schemaSource.schemaRow(raw, { live: true }))?.type ?? raw.trim();
+  }
 
   // ── namespaces ──────────────────────────────────────────────────────────
 
@@ -164,22 +156,23 @@ export class LadybugReader implements GraphReader {
   // ── nodes ───────────────────────────────────────────────────────────────
 
   async getNode(ref_id: string): Promise<NodeEnvelope | null> {
-    const rows = await this.engine.query(`MATCH (n:Node {ref_id: $ref_id}) WHERE ${LIVE("n")} RETURN ${projection("n")} AS n LIMIT 1`, { ref_id });
+    // A Schema row is read through the ontology views, never as a node.
+    const rows = await this.engine.query(`MATCH (n:Node {ref_id: $ref_id}) WHERE ${LIVE("n")} AND ${DATA("n")} RETURN ${await this.project("n")} AS n LIMIT 1`, { ref_id });
     return rows.length === 0 ? null : envelope(hitNode(rows[0]!["n"]));
   }
 
   async getNodeByKey(type: string, node_key: string, namespace?: string): Promise<NodeEnvelope | null> {
     await this.resolveNamespace(namespace);
     const rows = await this.engine.query(
-      `MATCH (n:Node {node_type: $type, node_key: $node_key}) WHERE ${LIVE("n")} RETURN ${projection("n")} AS n LIMIT 1`,
-      { type: canonical(type), node_key },
+      `MATCH (n:Node {node_type: $type, node_key: $node_key}) WHERE ${LIVE("n")} RETURN ${await this.project("n")} AS n LIMIT 1`,
+      { type: await this.canonical(type), node_key },
     );
     return rows.length === 0 ? null : envelope(hitNode(rows[0]!["n"]));
   }
 
   async namesLike(type: string, qstr: string, limit = 8, namespace?: string): Promise<NameHit[]> {
     const frag = qstr.trim().toLowerCase();
-    const schema = ladybugSchema(type);
+    const schema = frag ? await this.engine.schemaSource.schemaRow(type, { live: true }) : null;
     if (!frag || !schema) return [];
     await this.resolveNamespace(namespace);
     const cap = Math.min(50, Math.max(1, Math.floor(Number(limit) || 8)));
@@ -203,7 +196,7 @@ export class LadybugReader implements GraphReader {
     await this.resolveNamespace(namespace);
     const half = (dir: "out" | "in") =>
       this.engine.query(
-        `MATCH (n:Node {ref_id: $ref_id})${dir === "out" ? "-[r]->" : "<-[r]-"}(m:Node) WHERE ${LIVE("m")}
+        `MATCH (n:Node {ref_id: $ref_id})${dir === "out" ? "-[r]->" : "<-[r]-"}(m:Node) WHERE ${LIVE("m")} AND ${DATA("m")}
          RETURN label(r) AS edge_type, m.node_type AS target_type, count(*) AS cnt`,
         { ref_id },
       );
@@ -220,7 +213,7 @@ export class LadybugReader implements GraphReader {
     if (ref_ids.length === 0) return {};
     await this.resolveNamespace(namespace);
     const rows = await this.engine.query(
-      `UNWIND $ids AS id MATCH (n:Node {ref_id: id})-[r]-(m:Node) WHERE ${LIVE("m")}
+      `UNWIND $ids AS id MATCH (n:Node {ref_id: id})-[r]-(m:Node) WHERE ${LIVE("m")} AND ${DATA("m")}
        RETURN id AS ref_id, label(r) AS edge_type, count(*) AS cnt`,
       { ids: ref_ids },
     );
@@ -230,10 +223,10 @@ export class LadybugReader implements GraphReader {
   }
 
   async neighbors(ref_id: string, p: NeighborsParams = {}): Promise<{ nodes: NodeEnvelope[]; edges: EdgeEnvelope[] }> {
-    const where = [LIVE("node")];
+    const where = [LIVE("node"), DATA("node")];
     const params: Params = { ref_id };
     if (p.node_types?.length) {
-      params["node_types"] = p.node_types.map(canonical);
+      params["node_types"] = await Promise.all(p.node_types.map((t) => this.canonical(t)));
       where.push("node.node_type IN $node_types");
     }
     if (p.exclude_node_types?.length) {
@@ -244,11 +237,12 @@ export class LadybugReader implements GraphReader {
       params["edge_types"] = p.edge_types.map((e) => e.replace(/[<>]/g, ""));
       where.push("label(r) IN $edge_types");
     }
+    const [pn, ps] = [await this.project("node"), await this.project("source")];
     const half = async (dir: "forward" | "reverse"): Promise<Row[]> =>
       this.engine.query(
         `MATCH (source:Node {ref_id: $ref_id})${dir === "forward" ? "-[r]->" : "<-[r]-"}(node:Node)
          WHERE ${where.join(" AND ")}
-         RETURN label(r) AS type, r AS rel, ${projection("node")} AS node, ${projection("source")} AS source`,
+         RETURN label(r) AS type, r AS rel, ${pn} AS node, ${ps} AS source`,
         params,
       );
     const dirs: Array<"forward" | "reverse"> = p.direction ? [p.direction] : ["forward", "reverse"];
@@ -302,15 +296,21 @@ export class LadybugReader implements GraphReader {
     const limit = p.limit ?? 10;
     const skip = p.skip ?? 0;
     const domains = (p.domains ?? []).map((d) => d.toLowerCase()).filter(Boolean);
-    for (const d of domains) if (d !== STRUT_DOMAIN.toLowerCase()) throw new GraphReadError("INVALID_DOMAIN", `unknown domain ${d}`);
-    // `type` and `domains` are both a type list here: the one domain the
-    // file has is the Strut types.
-    let types = p.types?.length ? p.types.map(canonical) : undefined;
-    if (domains.length) types = types ? types.filter((t) => LADYBUG_STRUT_TYPES.includes(t)) : [...LADYBUG_STRUT_TYPES];
+    // `type` and `domains` are both a type list here: a domain is the types
+    // whose Schema names it.
+    let types = p.types?.length ? await Promise.all(p.types.map((t) => this.canonical(t))) : undefined;
+    const ontology = domains.length ? await this.engine.schemaSource.ontology() : undefined;
+    if (domains.length) {
+      const inDomain = (d: string) => ontology!.schemas.filter((s) => String(s.props["domain"] ?? "").toLowerCase() === d).map((s) => s.type);
+      for (const d of domains) if (!inDomain(d).length) throw new GraphReadError("INVALID_DOMAIN", `unknown domain ${d}`);
+      const allowed = new Set(domains.flatMap(inDomain));
+      types = types ? types.filter((t) => allowed.has(t)) : [...allowed];
+    }
     if (types && types.length === 0) return empty;
-    const links = parseLinks(p.linked ?? []).map((l) => ({ ...l, type: canonical(l.type) }));
+    const links = await Promise.all(parseLinks(p.linked ?? []).map(async (l) => ({ ...l, type: await this.canonical(l.type) })));
 
-    const clauses = [LIVE("node")];
+    // A Schema row has no search text, so no index returns it; said anyway.
+    const clauses = [LIVE("node"), DATA("node")];
     const base: Params = {};
     if (types) {
       clauses.push("node.node_type IN $node_types");
@@ -321,7 +321,7 @@ export class LadybugReader implements GraphReader {
       clauses.push("(node.file IS NULL OR NOT node.file =~ $exclude_re)");
       base["exclude_re"] = excludeRe;
     }
-    const linked = ladybugLinkedClause(links);
+    const linked = ladybugLinkedClause(links, (await this.engine.catalog.get()).edges);
     if (linked) clauses.push(linked);
     // Every filter is a WHERE after the index's top-k (one index, no
     // routing), so any filter widens both halves.
@@ -331,12 +331,13 @@ export class LadybugReader implements GraphReader {
     const warnings: string[] = [];
     const layer = retrieverLayer(warnings);
     const asHit = (r: Row): Hit => ({ node: hitNode(r["node"]), raw_score: Number(r["score"]) });
+    const pnode = await this.project("node");
 
     const runFts = async (conjunctive: boolean, k: number): Promise<Hit[]> => {
       const rows = await this.engine.query(
         `CALL QUERY_FTS_INDEX('Node', 'node_fts', $q, conjunctive := $conjunctive, top := $k)
          WITH node, score WHERE ${filter}
-         RETURN ${projection("node")} AS node, score`,
+         RETURN ${pnode} AS node, score`,
         { ...base, q: ftsTerms(qstr), conjunctive, k },
       );
       return rows.map(asHit);
@@ -358,7 +359,7 @@ export class LadybugReader implements GraphReader {
           const rows = await this.engine.query(
             `CALL QUERY_VECTOR_INDEX('Node', 'node_vec', $embedding, $k)
              WITH node, distance WHERE ${filter}
-             RETURN ${projection("node")} AS node, 1 - distance AS score`,
+             RETURN ${pnode} AS node, 1 - distance AS score`,
             { ...base, embedding, k },
           );
           return rows.map(asHit);
@@ -369,7 +370,12 @@ export class LadybugReader implements GraphReader {
     if (fieldQuery) warnings.push("input_q / output_q: a ladybug file keeps no per-field vectors; only q was searched");
 
     let ranked = fuseHits(fulltext, semantic, {}, fusionWeights(qstr));
-    ranked = applyTitleBoost(ranked, qstr, (t) => (t ? ladybugSchema(t)?.title_key ?? "name" : "name"));
+    const titles = new Map<string, string>();
+    for (const t of new Set(ranked.map((e) => e.node.labels[0]).filter((t): t is string => !!t))) {
+      const key = (await this.engine.schemaSource.schemaRow(t))?.props["title_key"];
+      titles.set(t, typeof key === "string" ? key : "name");
+    }
+    ranked = applyTitleBoost(ranked, qstr, (t) => (t ? titles.get(t) ?? "name" : "name"));
     ranked = applyUsageTiebreak(ranked);
 
     const total = ranked.length;
@@ -382,11 +388,15 @@ export class LadybugReader implements GraphReader {
     return { nodes, total, truncated: fulltext.length >= cap || semantic.length >= cap, ...(warnings.length ? { warnings } : {}) };
   }
 
-  // ── ontology: the registry ──────────────────────────────────────────────
+  // ── ontology: the Schema rows ───────────────────────────────────────────
 
   async listSchemas(opts: { domains?: string[]; includeDeleted?: boolean } = {}): Promise<{ schemas: SchemaEnvelope[]; edges: OntologyEdge[] }> {
-    let schemas = LADYBUG_SCHEMAS.map((s) => splitSchema(schemaRow(s)));
-    let edges: OntologyEdge[] = LADYBUG_EDGES.map((e) => ({ edge_type: e.edge, source_type: e.source, target_type: e.target }));
+    const ontology = await this.engine.schemaSource.ontology();
+    let schemas = ontology.schemas.filter((s) => s.type !== THING_TYPE).map((s) => splitSchema(s.props));
+    // A parent link to the root is ontology structure, left out with Thing.
+    let edges: OntologyEdge[] = ontology.edges
+      .filter((e) => e.source !== THING_TYPE && e.target !== THING_TYPE)
+      .map((e) => ({ edge_type: e.edge, source_type: e.source, target_type: e.target }));
     if (opts.domains) {
       const wanted = new Set(opts.domains.map((d) => d.toLowerCase()));
       schemas = schemas.filter((s) => wanted.has(String(s["domain"] ?? "").toLowerCase()));
@@ -397,7 +407,7 @@ export class LadybugReader implements GraphReader {
   }
 
   async getSchema(type: string): Promise<SchemaEnvelope | null> {
-    const s = ladybugSchema(type);
-    return s ? splitSchema(schemaRow(s)) : null;
+    const row = await this.engine.schemaSource.schemaRow(type, { live: true });
+    return row && row.type !== THING_TYPE ? splitSchema(row.props) : null;
   }
 }
