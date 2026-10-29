@@ -343,8 +343,9 @@ for (const tb of testBackends()) {
       assert.equal((await r.edgeSchema("TESTS", "Claim", "Check"))?.via, neo ? "allowlist" : undefined, "the other way round");
       assert.equal((await r.edgeSchema("RELATED_TO", "Concept", "Concept"))?.via, neo ? "allowlist" : undefined);
       assert.equal(await r.edgeSchema("MAPS_TO", "Concept", "Concept"), null);
-      // An ancestor's rule: the file walks CHILD_OF as Neo4j does.
-      assert.equal((await r.edgeSchema("ABOUT", "Claim", "StrutWorkflow"))?.via, neo ? "allowlist" : "exact");
+      // ABOUT is not on jarvis's allowlist: the file holds the seed's exact
+      // rule; Neo4j finds jarvis's through an ancestor of one end.
+      assert.equal((await r.edgeSchema("ABOUT", "Claim", "StrutWorkflow"))?.via, neo ? "ancestor" : "exact");
     });
 
     it("writes the claim chain and a Concept tree through the shared writers", async () => {
