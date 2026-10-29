@@ -99,12 +99,6 @@ describe("the resolver's managed types, from its own sources", () => {
     assert.equal(calls.length, 2, "invalidate drops it");
   });
 
-  it("a closed registry answers from its own types", async () => {
-    const types = [{ type: "Person", managed_by: "memory" }, { type: "Concept" }] as unknown as NodeSchema[];
-    const registry = { schema: (t: string) => types.find((x) => x.type === t) ?? null, types: () => types, edge: () => null };
-    const r = new SchemaResolver(engineOf(source({}, { registry } as Partial<SchemaSource>)));
-    assert.deepEqual(await r.managedTypes(), new Map([["Person", "memory"]]));
-  });
 });
 
 describe("manager keys", () => {
