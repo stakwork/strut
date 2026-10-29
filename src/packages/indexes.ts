@@ -236,7 +236,8 @@ export function createIndexes(deps: IndexesDeps): PackageIndexes {
           unreachable.push(err instanceof Error ? err.message : String(err));
           continue;
         }
-        const row: IndexRow | undefined = got.card.publishers[prefix];
+        // Own rows only: `constructor` is a valid prefix, and every object answers to it.
+        const row: IndexRow | undefined = Object.hasOwn(got.card.publishers, prefix) ? got.card.publishers[prefix] : undefined;
         if (row) return { ref: `pk:${row.key}/${name}`, urls: [...row.urls], index: sub.id };
       }
       // No card we could read lists the prefix: say which could not be read.

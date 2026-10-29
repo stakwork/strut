@@ -138,6 +138,10 @@ describe("following a package index", () => {
     let res = await install(client, { ref: "zeta/thing" });
     assert.equal(res.status, 404);
     assert.match(((await res.json()) as { error: string }).error, /^package_not_listed: .*zeta.*\(public\)/);
+    // A publisher named like a property every object has is no row.
+    res = await install(client, { ref: "constructor/thing" });
+    assert.equal(res.status, 404);
+    assert.match(((await res.json()) as { error: string }).error, /^package_not_listed: .*constructor/);
     // A package the publisher keeps private: the public catalog does not list it.
     res = await install(client, { ref: "acme/notion" });
     assert.equal(res.status, 404);
