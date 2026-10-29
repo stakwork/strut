@@ -577,7 +577,7 @@ export default defineStep({
       });
       return await runWalk(cfg, { reader: b.reader, evaluate: modelEvaluate(em.model), ctx });
     } catch (e) {
-      return errText("graph/walk", e);
+      return errText("graph/walk", e, ctx);
     }
   },
 });

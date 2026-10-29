@@ -129,7 +129,7 @@ export default defineStep({
       // it chose to read (`withAccessedNodes`).
       return hits;
     } catch (e) {
-      return errText("graph/graph-search", e);
+      return errText("graph/graph-search", e, ctx);
     }
   },
 });

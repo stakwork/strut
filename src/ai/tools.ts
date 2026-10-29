@@ -16,6 +16,7 @@ import { formatValidationErrors, validateWorkflowYaml } from "../validate.js";
 import { modelEvaluate } from "../evaluate.js";
 import { resolveEvaluationModel } from "../llm.js";
 import { graphWalkTool } from "./walk-tool.js";
+import { ManagedReadFilter } from "../graph/managed.js";
 import { secretLikeProperty, validateRequestedSchema } from "./elicitation.js";
 import { isValidSecretName } from "../secret-store.js";
 import { DOCUMENT_TOOLS, capToolOutput, toolResultMaxCharsFromEnv } from "../chat-store.js";
@@ -1350,6 +1351,9 @@ export function buildTools(deps: AiDeps): ToolSet {
                 return await readQuery(deps.graph!, cypher, {
                   params: coerceJsonArg(params) as Record<string, unknown> | undefined,
                   maxRows,
+                  // The builder reads no managed type (memory's; managed.ts):
+                  // while there is one, raw queries are refused.
+                  hideManaged: await deps.graph!.schemas?.managedTypes?.(),
                 });
               } catch (e) {
                 return { error: e instanceof Error ? e.message : String(e) };
@@ -1393,7 +1397,7 @@ export function buildTools(deps: AiDeps): ToolSet {
     ...(GRAPH_WALK_TOOL_ENABLED && deps.graph
       ? {
           graph_walk: graphWalkTool({
-            reader: deps.graph.reader,
+            reader: new ManagedReadFilter(deps.graph.reader, deps.graph.schemas),
             // As graph/walk's run(): jev when TYPESAFE_AI_API_KEY is set, else
             // the deployment's language model — keys via the secrets capability.
             evaluate:

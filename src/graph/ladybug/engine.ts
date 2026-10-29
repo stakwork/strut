@@ -33,6 +33,7 @@ import type {
   GraphTx,
   NodeEngine,
   NodeGuard,
+  SoftDeleteOptions,
   SoftDeleteResult,
   EdgeDeleteResult,
   Params,
@@ -162,7 +163,7 @@ class LadybugNodes implements NodeEngine {
         params[`v${i}`] = v;
         assigns.push(`n.${q(k)} = $v${i++}`);
       }
-      if (hit.deleted) assigns.push("n.deleted_at = NULL");
+      if (hit.deleted) assigns.push("n.deleted_at = NULL", "n.deleted_reason = NULL");
       if (assigns.length) await tx.run(`MATCH (n:Node {ref_id: $ref_id}) SET ${assigns.join(", ")}`, params);
     }
 
@@ -213,10 +214,11 @@ class LadybugNodes implements NodeEngine {
   }
 
   /** Three statements in one transaction: stamp `deleted_at` (the first
-   *  delete time kept), delete the node's outgoing edges, then its incoming
-   *  ones. Every node in the file is in scope. */
-  async softDelete(ref_id: string, _namespace: string, guard: NodeGuard): Promise<SoftDeleteResult | null> {
-    return this.lbug.withWrite(async (tx) => {
+   *  delete time and reason kept), delete the node's outgoing edges, then its
+   *  incoming ones — or leave them (`keepEdges`). Every node in the file is
+   *  in scope. */
+  async softDelete(ref_id: string, _namespace: string, guard: NodeGuard, opts: SoftDeleteOptions = {}): Promise<SoftDeleteResult | null> {
+    const go = async (tx: GraphTx): Promise<SoftDeleteResult | null> => {
       const params: Params = { ref_id, now: Date.now() };
       const pattern = ["ref_id: $ref_id"];
       const where: string[] = [];
@@ -235,16 +237,23 @@ class LadybugNodes implements NodeEngine {
         params[`g${i}`] = v;
         pattern.push(`${q(k)}: $g${i++}`);
       }
+      const sets = ["n.deleted_at = coalesce(n.deleted_at, CAST($now AS INT64))"];
+      if (opts.reason !== undefined) {
+        params["reason"] = opts.reason;
+        sets.push("n.deleted_reason = coalesce(n.deleted_reason, $reason)");
+      }
       const hit = await tx.run(
         `MATCH (n:Node {${pattern.join(", ")}}) ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
-         SET n.deleted_at = coalesce(n.deleted_at, CAST($now AS INT64)) RETURN n.ref_id AS ref_id`,
+         SET ${sets.join(", ")} RETURN n.ref_id AS ref_id`,
         params,
       );
       if (hit.length === 0) return null;
+      if (opts.keepEdges) return { edges: 0 };
       const out = await tx.run(`MATCH (n:Node {ref_id: $ref_id})-[r]->(:Node) DELETE r RETURN count(r) AS n`, { ref_id });
       const inc = await tx.run(`MATCH (n:Node {ref_id: $ref_id})<-[r]-(:Node) DELETE r RETURN count(r) AS n`, { ref_id });
       return { edges: Number(out[0]?.["n"] ?? 0) + Number(inc[0]?.["n"] ?? 0) };
-    });
+    };
+    return opts.tx ? go(opts.tx) : this.lbug.withWrite(go);
   }
 }
 
@@ -350,7 +359,8 @@ class LadybugEdges implements EdgeEngine {
     if (node.length === 0) return null;
     if (!edgeTable(edge)) return { node: ref_id, edges: [] };
     const hop = forward ? `-[r:${q(edge)}]->` : `<-[r:${q(edge)}]-`;
-    const rows = await tx.run(`MATCH (n:Node {ref_id: $ref_id})${hop}(p:Node) RETURN p.ref_id AS other, r.ref_id AS edge_ref_id, r AS rel`, { ref_id });
+    // Both ends live: a soft delete that kept its edges (`keepEdges`) leaves them to its manager.
+    const rows = await tx.run(`MATCH (n:Node {ref_id: $ref_id})${hop}(p:Node) WHERE n.deleted_at IS NULL AND p.deleted_at IS NULL RETURN p.ref_id AS other, r.ref_id AS edge_ref_id, r AS rel`, { ref_id });
     return {
       node: ref_id,
       edges: rows.map((r) => ({ other: String(r["other"]), edge_ref_id: String(r["edge_ref_id"]), props: edgeProps(r["rel"] as Record<string, unknown>) })),

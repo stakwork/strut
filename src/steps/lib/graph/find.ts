@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
-import { graphCtx, errText } from "./_shared.js";
+import { graphCtx, errText, hiddenManaged } from "./_shared.js";
 
 const EXAMPLE = `- id: unpaid
   type: graph/find
@@ -44,9 +44,9 @@ export default defineStep({
       const b = await graphCtx(ctx as StepContext<StrutCapabilities>);
       const { findNodes } = await import("../../../graph/find.js");
       // No provenance marker: a list is not what the caller named.
-      return await findNodes(b, cfg);
+      return await findNodes(b, cfg, await hiddenManaged(b, ctx as StepContext<StrutCapabilities>));
     } catch (e) {
-      return errText("graph/find", e);
+      return errText("graph/find", e, ctx);
     }
   },
 });

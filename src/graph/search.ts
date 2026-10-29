@@ -106,6 +106,9 @@ export interface SearchParams {
   output_q?: string;
   /** Node type labels (exact Neo4j labels). */
   types?: string[];
+  /** Types to leave out (exact names), as a filter on the index's rows —
+   *  the managed types a context may not read (`managed.ts`). */
+  exclude_types?: string[];
   /** Domain suffixes, e.g. `["strut"]`. Validated against the registry. */
   domains?: string[];
   namespace?: string;
@@ -776,7 +779,8 @@ export class Neo4jReader implements GraphReader {
    * node included in `nodes`, like jarvis.
    */
   async neighbors(ref_id: string, p: NeighborsParams = {}): Promise<{ nodes: NodeEnvelope[]; edges: EdgeEnvelope[] }> {
-    const where = [visibility("node"), EDGE_LIVE("r")];
+    // A deleted source shows nothing, though a manager's soft delete kept its edges.
+    const where = [NODE_LIVE("source"), visibility("node"), EDGE_LIVE("r")];
     const params: Record<string, unknown> = { ref_id, blocked_statuses: BLOCKED_NODE_STATUSES };
     if (p.node_types?.length) {
       params["imp_node_types"] = (await this.canonicalTypes(p.node_types)).map((n) => n.replace(/[-+/>]/g, ""));
@@ -879,10 +883,15 @@ export class Neo4jReader implements GraphReader {
         clauses.push(`(n.file IS NULL OR NOT n.file =~ $exclude_re)`);
         base["exclude_re"] = excludeRe;
       }
+      const excludeTypes = p.exclude_types?.length ? p.exclude_types : undefined;
+      if (excludeTypes) {
+        clauses.push(`NOT ANY(t IN $exclude_types WHERE t IN labels(n))`);
+        base["exclude_types"] = excludeTypes;
+      }
       // `linked`: an EXISTS per entry, on the same rows.
       const linked = linkedClause(links);
       if (linked) clauses.push(linked);
-      const postFilter = Boolean(excludeRe || linked);
+      const postFilter = Boolean(excludeRe || excludeTypes || linked);
       const filter = clauses.join(" AND ");
       const cap = fetchLimit(limit, skip);
 

@@ -230,7 +230,8 @@ export class LadybugReader implements GraphReader {
   }
 
   async neighbors(ref_id: string, p: NeighborsParams = {}): Promise<{ nodes: NodeEnvelope[]; edges: EdgeEnvelope[] }> {
-    const where = [LIVE("node")];
+    // A deleted source shows nothing, though a manager's soft delete kept its edges.
+    const where = [LIVE("source"), LIVE("node")];
     const params: Params = { ref_id };
     if (p.node_types?.length) {
       params["node_types"] = p.node_types.map(canonical);
@@ -321,11 +322,16 @@ export class LadybugReader implements GraphReader {
       clauses.push("(node.file IS NULL OR NOT node.file =~ $exclude_re)");
       base["exclude_re"] = excludeRe;
     }
+    const excludeTypes = p.exclude_types?.length ? p.exclude_types : undefined;
+    if (excludeTypes) {
+      clauses.push("NOT node.node_type IN $exclude_types");
+      base["exclude_types"] = excludeTypes;
+    }
     const linked = ladybugLinkedClause(links);
     if (linked) clauses.push(linked);
     // Every filter is a WHERE after the index's top-k (one index, no
     // routing), so any filter widens both halves.
-    const widen = Boolean(types || excludeRe || linked);
+    const widen = Boolean(types || excludeRe || excludeTypes || linked);
     const filter = clauses.join(" AND ");
     const cap = fetchLimit(limit, skip);
     const warnings: string[] = [];

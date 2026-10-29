@@ -67,7 +67,7 @@ export default defineStep({
         await describeNodes(b, [r.source_ref_id, r.target_ref_id]),
       );
     } catch (e) {
-      return errText("graph/edit-edge", e);
+      return errText("graph/edit-edge", e, ctx);
     }
   },
 });

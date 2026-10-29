@@ -38,10 +38,11 @@ let strutInstance: Strut | null = null;
  *  `STRUT_HOST_CONFIG` names: `{ job?, orchestrator?, builder? }`, each
  *  `{ tools?, approve?, system?, model? }` (and `peer: false` to close the
  *  builder to other struts — a file may only close one, never open one),
- *  and `automation?: { workflow, approve?, grants? }`. Nothing when unset.
+ *  `automation?: { workflow, approve?, grants? }`, and `memoryReaders?:
+ *  string[]` (the workflows whose agents read memory's graph types). Nothing when unset.
  *  A file that cannot be read or parsed fails the boot, rather than
  *  seeding the workflows without the host's tools. */
-export function hostConfigFromEnv(env: NodeJS.ProcessEnv = bootEnv()): Pick<StrutOptions, "job" | "orchestrator" | "builder" | "automation" | "settings"> {
+export function hostConfigFromEnv(env: NodeJS.ProcessEnv = bootEnv()): Pick<StrutOptions, "job" | "orchestrator" | "builder" | "automation" | "settings" | "memoryReaders"> {
   const file = env["STRUT_HOST_CONFIG"];
   if (!file) return {};
   let raw: unknown;
@@ -50,7 +51,7 @@ export function hostConfigFromEnv(env: NodeJS.ProcessEnv = bootEnv()): Pick<Stru
   } catch (err) {
     throw new Error(`STRUT_HOST_CONFIG: could not read ${file}: ${err instanceof Error ? err.message : err}`);
   }
-  const out: Pick<StrutOptions, "job" | "orchestrator" | "builder" | "automation" | "settings"> = {};
+  const out: Pick<StrutOptions, "job" | "orchestrator" | "builder" | "automation" | "settings" | "memoryReaders"> = {};
   for (const key of ["job", "orchestrator", "builder"] as const) {
     const delta = (raw as Record<string, unknown> | null)?.[key];
     if (delta === undefined) continue;
@@ -77,6 +78,15 @@ export function hostConfigFromEnv(env: NodeJS.ProcessEnv = bootEnv()): Pick<Stru
   const settings = (raw as Record<string, unknown> | null)?.["settings"];
   if (settings !== undefined && (!settings || typeof settings !== "object" || Array.isArray(settings))) throw new Error(`STRUT_HOST_CONFIG: ${file}: "settings" must be an object`);
   if (settings) out.settings = settings as Record<string, unknown>;
+  const memoryReaders = (raw as Record<string, unknown> | null)?.["memoryReaders"];
+  if (memoryReaders !== undefined) {
+    // A malformed list fails the boot: read as "nobody", it would hide memory
+    // from the assistant; read loosely, it could show it to a job.
+    if (!Array.isArray(memoryReaders) || !memoryReaders.every((w) => typeof w === "string" && w.length > 0)) {
+      throw new Error(`STRUT_HOST_CONFIG: ${file}: "memoryReaders" must be a list of workflow names`);
+    }
+    out.memoryReaders = memoryReaders as string[];
+  }
   const automation = (raw as Record<string, unknown> | null)?.["automation"];
   if (automation !== undefined) {
     const { workflow, approve, grants } = (automation ?? {}) as { workflow?: unknown; approve?: unknown; grants?: unknown };
@@ -129,7 +139,7 @@ async function getDefault(): Promise<Strut> {
       bootEnv()["STRUT_MOTHERSHIP"] === "1"
         ? (await import("./mothership.js")).createMothership({ dataDir })
         : null;
-    const shared: Pick<StrutOptions, "llmAuth" | "publicUrl" | "eventsSink" | "job" | "orchestrator" | "builder" | "automation"> = {
+    const shared: Pick<StrutOptions, "llmAuth" | "publicUrl" | "eventsSink" | "job" | "orchestrator" | "builder" | "automation" | "memoryReaders"> = {
       ...(mothership ? { llmAuth: mothership.llmAuth } : {}),
       // Where a caller outside the UI (the MCP door) is told this server
       // is; else each request's own origin.

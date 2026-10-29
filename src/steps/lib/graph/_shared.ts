@@ -1,6 +1,7 @@
-import type { AccessedNode, StepContext } from "../../../core.js";
+import { workflowOf, type AccessedNode, type StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
 import type { GraphBackend } from "../../../graph/backend.js";
+import { ManagedReadFilter, rawGraphOf } from "../../../graph/managed.js";
 
 export type { GraphBackend };
 
@@ -42,8 +43,39 @@ export type { GraphBackend };
  * top level.
  */
 export async function graphCtx(ctx?: StepContext<StrutCapabilities>): Promise<GraphBackend> {
+  const b = await openCtx(ctx);
+  // Nothing managed (every graph before memory moves in): the backend as wired.
+  return (await hiddenManaged(b, ctx)).size ? { ...b, reader: new ManagedReadFilter(b.reader, b.schemas) } : b;
+}
+
+/**
+ * May this step read the managed types (memory's; plans/memory-in-workspace-graph.md
+ * decision 8)? Only as an agent's tool call where the host lists, in
+ * `memoryReaders` (`StrutOptions.memoryReaders`), both the run's workflow
+ * and the frame's own (`ctx.frame`), so a subflow of the person's assistant
+ * reads nothing it is not listed for; that frame is `sealed: true`, so the
+ * meta surface cannot republish it with another agent; and the frame is
+ * not the AI's (`ctx.aiAuthored`). A workflow's own steps, every other
+ * workflow's agents (jobs, the builder, apps) and a call with no run do
+ * not. The writers refuse the managed types to every `graph/*` step
+ * whatever this says.
+ */
+export function readsManaged(ctx?: StepContext<StrutCapabilities>): boolean {
+  const readers = ctx?.services?.memoryReaders;
+  if (!ctx?.agentTool || ctx.aiAuthored || !readers?.length || !ctx.frame?.sealed) return false;
+  return readers.includes(workflowOf(ctx)) && readers.includes(ctx.frame.workflow);
+}
+
+/** The managed types this step may not read, type → manager (empty when it may). */
+export async function hiddenManaged(b: GraphBackend, ctx?: StepContext<StrutCapabilities>): Promise<ReadonlyMap<string, string>> {
+  return readsManaged(ctx) ? new Map() : ((await b.schemas?.managedTypes?.()) ?? new Map());
+}
+
+async function openCtx(ctx?: StepContext<StrutCapabilities>): Promise<GraphBackend> {
+  // The view steps are handed (`graphView`) leaves memory out; these steps
+  // filter by caller themselves, on the backend behind it.
   const wired = ctx?.services?.graph;
-  if (wired) return wired;
+  if (wired) return rawGraphOf(wired) ?? (wired as GraphBackend);
   const secrets = ctx?.services?.secrets;
   // Same resolution as the mcp host's own Neo4j client: `NEO4J_URI`, else
   // `bolt://<NEO4J_HOST>` (default localhost:7687), user/password defaulting
@@ -109,11 +141,22 @@ export function graphErrorCode(e: unknown): string | undefined {
 }
 
 /** Render a graph error as a plain string the agent can read (the same
- *  convention the jarvis/* steps use for HTTP failures). */
-export function errText(step: string, e: unknown): string {
+ *  convention the jarvis/* steps use for HTTP failures). With the step's
+ *  `ctx`, a managed-type refusal reads as not found to a caller that may
+ *  not read those types (`readsManaged`). */
+export function errText(step: string, e: unknown, ctx?: StepContext<unknown>): string {
   const code = graphErrorCode(e);
+  return code ? `${step} failed — ${errDetail(e, ctx)}` : `${step} failed: ${errDetail(e, ctx)}`;
+}
+
+/** `CODE: message` for a graph error (the message alone for any other):
+ *  `errText` without the step. A MANAGED refusal to a caller that may not
+ *  read the managed types is `NOT_FOUND`, naming neither type nor manager. */
+export function errDetail(e: unknown, ctx?: StepContext<unknown>): string {
+  const code = graphErrorCode(e);
+  if (code === "MANAGED" && !readsManaged(ctx as StepContext<StrutCapabilities> | undefined)) return "NOT_FOUND: no such node";
   const msg = e instanceof Error ? e.message : String(e);
-  return code ? `${step} failed — ${code}: ${msg}` : `${step} failed: ${msg}`;
+  return code ? `${code}: ${msg}` : msg;
 }
 
 const LABEL_MAX = 160;

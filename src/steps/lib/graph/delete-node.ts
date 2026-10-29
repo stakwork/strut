@@ -47,7 +47,7 @@ export default defineStep({
         [node],
       );
     } catch (e) {
-      return errText("graph/delete-node", e);
+      return errText("graph/delete-node", e, ctx);
     }
   },
 });

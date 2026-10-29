@@ -84,7 +84,7 @@ export default defineStep({
       // not chosen.
       return withAccessedNodes(neighbors, await describeNodes(b, [cfg.ref_id]));
     } catch (e) {
-      return errText("graph/graph-neighbors", e);
+      return errText("graph/graph-neighbors", e, ctx);
     }
   },
 });
