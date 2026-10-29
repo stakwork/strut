@@ -136,13 +136,22 @@ describe("the assistant MCP door (POST /mcp)", () => {
     };
     const client = await clientFor({ "x-strut-actor": "hermes" });
     try {
-      // Seven tools, none of the builder's own; short instructions naming the base.
+      // Nine tools, none of the builder's own; short instructions naming the base.
       const { tools } = await client.listTools();
       assert.deepEqual(
         tools.map((t) => t.name).sort(),
         // + step_run, the APP door (src/apps/tools.ts): listed app-only, so a model never sees it.
-        ["ask_workflow_builder", "get_run", "list_runs", "list_workflow_builder_chats", "list_workflows", "read_workflow_builder_chat", "run_workflow", "step_run"],
+        ["ask_workflow_builder", "get_package", "get_run", "list_runs", "list_workflow_builder_chats", "list_workflows", "read_workflow_builder_chat", "run_workflow", "search_packages", "step_run"],
       );
+      // The package store's two reads (src/packages/indexes.test.ts drives them against an index):
+      // this strut follows no index, so a search is empty and a page says why.
+      const noStore = json(await client.callTool({ name: "search_packages", arguments: { query: "linear" } }));
+      assert.deepEqual([noStore.packages, noStore.peers, noStore.errors], [[], [], []]);
+      assert.match(noStore.install, /Packages, Find the name, Install/);
+      const noPage = await client.callTool({ name: "get_package", arguments: { package: "acme/linear" } });
+      assert.ok(noPage.isError);
+      assert.match(json(noPage).error, /^package_index_none: .*follows no package index/);
+      for (const t of tools.filter((x) => x.name === "search_packages" || x.name === "get_package")) assert.match(t.description!, /You cannot install a package/, t.name);
       const instructions = client.getInstructions()!;
       assert.ok(instructions.includes(`${base}/`), instructions);
       assert.ok(instructions.length < 3000, `short: ${instructions.length}`);

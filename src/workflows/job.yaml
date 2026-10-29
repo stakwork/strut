@@ -195,6 +195,12 @@ params:
     - job/list
     - job/get
     - job/read
+    # The package STORE's reads (plans/marketplace.md §7, §8): is there a
+    # package for that — searched, a hit's page read (what it holds and
+    # reaches), the Concept tree browsed. Reads alone: a person installs.
+    - package/search
+    - package/get
+    - package/concepts
     # A repository the job finds it needs mid-turn, checked out INTO the
     # job's directory (`workdir` = the job id, which the prompt names) as
     # `input.repos` are: with the person's token, which reaches git's child

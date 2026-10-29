@@ -47,10 +47,12 @@ import { buildRegistryTools, textEdit, type TextEditInput } from "../steps/core/
 
 /** The builder's fixed registry grants: the app/* steps as named tools
  *  (plans/apps.md §8) — app_list, app_get, app_init, app_checkout,
- *  app_build, app_publish — and `package_search`, the packages someone
- *  already built (plans/marketplace.md §8), through `buildRegistryTools`,
- *  no wrapper. */
-export const BUILDER_REGISTRY_TOOLS: readonly string[] = ["app/*", "package/search"];
+ *  app_build, app_publish — and the package STORE's reads
+ *  (plans/marketplace.md §7, §8): `package_search`, `package_get` (a
+ *  package's page) and `package_concepts` (the Concept tree), through
+ *  `buildRegistryTools`, no wrapper. By name, never `package/*`: a later
+ *  write in that namespace (an install) is a person's, not the builder's. */
+export const BUILDER_REGISTRY_TOOLS: readonly string[] = ["app/*", "package/search", "package/get", "package/concepts"];
 
 /** The step behind the builder's `graph_get` tool. */
 const GRAPH_GET_STEP = "graph/graph-get";

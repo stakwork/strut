@@ -747,14 +747,15 @@ second one.
 
 ## 11. MCP — strut for an external agent
 
-Strut serves two tool sets over the Model Context Protocol (Streamable HTTP,
+Strut serves three tool sets over the Model Context Protocol (Streamable HTTP,
 stateless; `src/ai/mcp.ts`), for an agent outside strut — Claude Code, Hermes,
 any MCP client:
 
 | Door | Tool set | For |
 | ---- | -------- | --- |
-| `POST /mcp` | **assistant** (`src/ai/assistant-tools.ts`): seven tools — talk to the workflow builder, read its chats, list workflows and runs, read a run, run a workflow | an agent with its own connectors that wants workflows built, run and shared, and should not learn strut's YAML; the default |
-| `POST /mcp/builder` | **builder**: the SAME tools the builder chat's model gets — `list_steps` … `create_workflow` … `run_workflow` … `get_run`, the `app_*` steps and the text editor, with their descriptions, input schemas and capped results (`buildTools`, nothing reimplemented) | an agent that authors workflows itself |
+| `POST /mcp` | **assistant** (`src/ai/assistant-tools.ts`): nine tools — talk to the workflow builder, read its chats, list workflows and runs, read a run, run a workflow, search the package store and read a package's page | an agent with its own connectors that wants workflows built, run and shared, and should not learn strut's YAML; the default |
+| `POST /mcp/builder` | **builder**: the SAME tools the builder chat's model gets — `list_steps` … `create_workflow` … `run_workflow` … `get_run`, the `app_*` steps, the `package_*` reads and the text editor, with their descriptions, input schemas and capped results (`buildTools`, nothing reimplemented) | an agent that authors workflows itself |
+| `POST /index/mcp` | **store** (`src/packages/index-tools.ts`; §16): three READ tools over a package INDEX's derived pages — `search_packages`, `get_package`, `get_concept` — nothing that installs | any agent, with NO credential: a strut with the index role is the store, and this is its face for an agent as `?store=1` is for a person (`claude mcp add --transport http strut-store https://<index>/index/mcp`) |
 
 Both doors also list **`step_run`**, the APP door (§14.1): an app-only tool
 (`_meta.ui.visibility: ["app"]` — an MCP Apps host hides it from the model
@@ -809,6 +810,8 @@ carry absolute links too.
 | `list_runs` | `workflow`, `limit?`, `status?`, `since?` (ISO) | `{ workflow, runs: [{ runId, status, startedAt, durationMs?, cost?, modelCalls?, origin? \| actor?, error?, job?, artifacts?, ui }], total }` — `artifacts` on a successful run, as absolute links |
 | `get_run` | `workflow`, `runId`, `fields?`, `files?`, `wait?` | `{ workflow, runId, status, startedAt, finishedAt, durationMs, cost?, error?, artifacts?, input, output, omitted?, files?, hint?, ui }`. Every top-level `output` field over 2 000 chars is HELD BACK in place as `{ $omitted: { chars, kind, preview } }` and named in `omitted`; `fields` includes the named ones whole (cut at 50 000 with a note; a non-object output is the one field `output`). `files: true` lists every file under the run's artifact directory (or its job's) with a tokened link. A run still going is `{ status: "running", hint }` — `wait` holds for it. No step tree: a failing run is debugged by asking the builder |
 | `run_workflow` | `name`, `input?`, `params?`, `version?` | the builder's own `run_workflow` — its launch, detach and links — with `output` trimmed like `get_run`'s (+ `omitted`, `hint`). A run still going after the wait window (`STRUT_CHAT_RUN_WAIT_MS`) is `{ status: "running", detached: true, runId }`: poll `get_run` with `wait` |
+| `search_packages` | `query?` (empty lists everything), `limit?` (30, ≤ 200) | §16's `PackageSearch` — `{ packages: [IndexHit & { index }], peers, errors }`, each hit with its `detail` (the apps, counts, secrets, `can`) — plus `install`: where a PERSON installs (the UI's Packages dialog, or `<base>/?install=<name>`). The indexes this strut follows; none followed → empty lists, no error |
+| `get_package` | `package` (publisher/name), `index?` | the package's page from the index that lists its publisher (§16's `IndexPackage` + `index`), as a model reads it: `detail.readme` cut at 12 000 chars, the Concept pages' `docs` left out; plus `ui` (`<base>/?install=<name>`, the Packages dialog on the name) and `install`. `{ error }` with the code first: `package_not_listed` (no followed index lists the publisher), `package_not_found` (listed, but no public catalog has it), `package_index_none` (this strut follows no index), `package_index_unknown` / `package_index_unreachable` |
 
 `did` — what a turn changed, folded from the builder's tool calls by tool
 name (`src/chat-view.ts`; never inferred from prose): `workflows: [{ name,
@@ -818,8 +821,10 @@ and its later result are one entry), `automations: [{ workflow, id?,
 summary?, next?, action: set | deleted }]`. The `instructions` the door hands
 a client at `initialize` are ten lines: what strut is, ask for building and
 debugging, read for status and links, how `wait` and polling work, that links
-are shareable, never collect a secret's value. Nothing notifies an MCP
-client: a caller polls with `wait`, or `list_runs` with `since`.
+are shareable, never collect a secret's value, search the package store
+before asking for an integration from scratch (installing one is the
+person's act). Nothing notifies an MCP client: a caller polls with `wait`,
+or `list_runs` with `since`.
 
 ### 11.2 The builder set
 
@@ -1489,7 +1494,24 @@ and `pk:` are refused by name (`package_source_unsupported`).
 | GET    | `/index/packages/:publisher/:name` | `IndexPackage`: `{ package, publisher, key, urls, description?, releases (newest first, yanked kept), channels: { "<public channel>": digest }, readAt, detail?, detailError? }`. `detail` is the newest release not yanked read off its archive — `PackageDetail`: `{ digest, version, derivedAt, readme?, apps: [{ name, title, description?, icon?, grants: { workflows, steps }, can, files }], workflows: [{ name, description?, inputs: [{ name, type, required, description?, default? }], steps, grants, can, secrets, peer?, sealed?, claims?, error? }], steps: [{ name, helper?, description?, effect?, secrets, lint: [string], bytes, claims? }], concepts: [{ name, description?, parent?, docs? }], secrets, can, files, bytes }` (names inside the package; `can` = what running it reaches: `spends` an `agent` / `llm` step, `acts` a step declaring `effect: "write"`, `code` an `exec` or one of the package's own steps; the steps' facts are regexes over the source, the lint `src/step-lint.ts`'s findings — a reading, never a check); `detailError` says why there is none (the archive not fetched yet, or unreadable). **Open to anyone**; 404 when no listed publisher's catalog has it |
 | GET    | `/index/concepts?q=` | `{ concepts: IndexConcept[] }` — every Concept page across the crawled packages, one per name: `{ name, description?, parent?, packages: [{ package, version }] }` (the first package by name gives the description and parent; `q` over names and descriptions). **Open to anyone** |
 | GET    | `/index/concepts/:name` | `IndexConceptPage`: the entry plus `docs?` (the first package's text), `children: [{ name, description? }]` (the pages naming this one as parent) and `parents` (nearest first). **Open to anyone**; 404 when no listed package carries it |
+| POST   | `/index/mcp` | **Index role only.** The store for an AGENT (§11; `src/packages/index-tools.ts`): the three reads above as MCP tools over the same derived pages — `search_packages { query?, limit? }` → `{ packages: IndexHit[], total, store?, install }`; `get_package { package }` → the `IndexPackage` as a model reads it (`detail.readme` cut at 12 000 chars, the Concept pages' `docs` left out) + `store?` + `install`, or `{ error }`; `get_concept { name?, query? }` → one `IndexConceptPage` (+ `store?`) or `{ concepts: IndexConcept[], total }`. `store` links the store page (`?store=1&pkg=`, `&concept=`, `&q=`) when the index serves the UI; `install` says a PERSON installs, and where. The `instructions` say what the index is, that everything is derived and an install re-verifies against the publisher, and how a person installs. **Open to anyone** — the one POST the gate opens with the role; GET and DELETE are 405 |
 | GET    | `/` | **Index role, with the UI served:** a request for the UI's root with NO credential (no key, no session cookie, no `?key=`) is a 302 to `./?store=1` — the STORE FRONT (§14.3), the index's public face over the four open reads above; what else the URL carried rides along. With a credential, the shell as always |
+
+**The store's reads as steps** (`src/steps/lib/package/`; `ctx.services.packages`,
+`src/packages/indexes.ts`) — what an agent on a strut that FOLLOWS an index
+reads, the same derived pages through the index's open routes above; the
+builder chat holds them as `package_search` / `package_get` /
+`package_concepts`, the `builder`, `job` and `orchestrator` seeds grant them,
+and `POST /mcp` serves `search_packages` / `get_package` over the same
+capability (§11.1). Every one is `effect: "read"`, and every description
+says the agent cannot install — a person does, from the Packages dialog or
+the store's Install link:
+
+| Step | Input | Output |
+| ---- | ----- | ------ |
+| `package/search` | `query`, `limit?` (30) | `PackageSearch` (`GET /packages/search`): each hit with its `detail` |
+| `package/get` | `package`, `index?`, `full?` | the page from the first followed index whose card lists the publisher (or the one `index` names): `IndexPackage & { index }`, as a model reads it — `detail.readme` cut at 12 000 chars, the Concept pages' `docs` left out — or whole with `full: true`. Throws with the code first: `package_not_listed`, `package_not_found` (listed, but no public catalog has it), `package_index_none` (this strut follows no index), `package_index_unknown`, `package_index_unreachable`, `package_source_invalid`. A miss over memoized cards re-reads them once, so a publisher listed a moment ago is found now |
+| `package/concepts` | `query?`, `name?`, `index?` | without `name`: `{ concepts: [IndexConcept & { index }], errors }` — the tree across the followed indexes, one entry per name (the first index's), `query` over names and descriptions; with `name`: `IndexConceptPage & { index }` from the first index that carries it, or `{ error: "concept_not_found: …" }` |
 
 **Build** writes a package from what this workspace holds and puts it in
 the cache by its digest, so the archive route serves it and an install

@@ -4,17 +4,24 @@
  * served — seals the rows into an index card anyone may read, follows the
  * publisher's public catalog (on the row, on the publisher's ping, on the
  * poll) and serves search and package pages over it. Two struts over real
- * HTTP, both behind an API key: the index's reads are what opens.
+ * HTTP, both behind an API key: the index's reads are what opens — and its
+ * MCP door, `POST /index/mcp` (./index-tools.ts), the same three reads for
+ * an agent with no credential.
  */
 import { after, afterEach, before, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { createStrut, type Strut } from "../createStrut.js";
+import { toolsetServer } from "../ai/mcp.js";
 import { MemoryRunStore } from "../store.js";
 import { WorkspaceManager } from "../workspace.js";
 import { INDEX_DOMAIN, readCard, type IndexCatalog } from "./card.js";
+import { buildIndexTools, indexInstructions } from "./index-tools.js";
 import { createPackageIndex, type IndexConcept, type IndexConceptPage, type IndexHit, type IndexInfo, type IndexPackage } from "./index.js";
 import { packArchive } from "./archive.js";
 import { PackageCache } from "./cache.js";
@@ -49,6 +56,7 @@ const boot = (ws: WorkspaceManager, extra: Record<string, unknown> = {}) =>
     subscriptionPoll: false,
     ...extra,
   });
+const mcpJson = (r: { content: unknown }) => JSON.parse((r.content as Array<{ text: string }>)[0]!.text);
 const saved: Record<string, string | undefined> = {};
 before(() => {
   for (const k of ["STRUT_API_KEY", "STRUT_PEER_KEY", "STRUT_SECRET_KEY", "STRUT_INDEX"]) saved[k] = process.env[k];
@@ -121,6 +129,9 @@ describe("the package index", () => {
       assert.equal(plain.index, null);
       assert.equal((await plain.app.request("/index/catalog")).status, 401, "no such route: the gate answers");
       assert.equal((await plain.app.request("/index", { headers: auth })).status, 404);
+      // The MCP door is the role's too: without it the gate answers, and with the key there is no route.
+      assert.equal((await plain.app.request("/index/mcp", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).status, 401);
+      assert.equal((await plain.app.request("/index/mcp", { method: "POST", headers: { ...auth, "content-type": "application/json", accept: "application/json, text/event-stream" }, body: "{}" })).status, 404);
     } finally {
       await plain.close();
     }
@@ -188,6 +199,32 @@ describe("the package index", () => {
     // The Concept pages across the packages: none here; the reads are open all the same.
     assert.deepEqual(await (await fetch(`${indexUrl}/index/concepts`)).json(), { concepts: [] });
     assert.equal((await fetch(`${indexUrl}/index/concepts/Nope`)).status, 404);
+
+    // The same reads over MCP for an agent with NO credential (./index-tools.ts): three tools, none that installs.
+    const agent = new Client({ name: "any-agent", version: "0" });
+    await agent.connect(new StreamableHTTPClientTransport(new URL(`${indexUrl}/index/mcp`)));
+    try {
+      const { tools } = await agent.listTools();
+      assert.deepEqual(tools.map((t) => t.name).sort(), ["get_concept", "get_package", "search_packages"]);
+      for (const t of tools) assert.match(t.description!, /You cannot install a package/, t.name);
+      const instructions = agent.getInstructions()!;
+      for (const said of ["PACKAGE INDEX", "DERIVED", "re-verifies the package against its publisher", "Packages dialog"]) assert.ok(instructions.includes(said), said);
+      assert.ok(!instructions.includes("?store=1"), "no UI served here, so no store link");
+      const found = mcpJson(await agent.callTool({ name: "search_packages", arguments: {} }));
+      assert.deepEqual(found.packages.map((h: IndexHit) => h.package), ["acme/linear"]);
+      assert.equal(found.packages[0].detail.workflows, 1);
+      assert.match(found.install, /^You cannot install a package/);
+      const viaMcp = mcpJson(await agent.callTool({ name: "get_package", arguments: { package: "acme/linear" } }));
+      assert.deepEqual(viaMcp.detail.workflows.map((w: { name: string }) => w.name), ["sync"]);
+      assert.equal(viaMcp.store, undefined);
+      assert.ok((await agent.callTool({ name: "get_package", arguments: { package: "acme/notion" } })).isError, "the private package: not here");
+      assert.deepEqual(mcpJson(await agent.callTool({ name: "get_concept", arguments: {} })), { concepts: [], total: 0 });
+      assert.ok((await agent.callTool({ name: "get_concept", arguments: { name: "Nope" } })).isError);
+    } finally {
+      await agent.close().catch(() => {});
+    }
+    assert.equal((await fetch(`${indexUrl}/index/mcp`)).status, 405, "POST alone, like /mcp");
+    assert.equal((await fetch(`${indexUrl}/index/mcp`, { method: "DELETE" })).status, 401, "the gate opens the POST and the reads, nothing else");
 
     // Make public pings the index (the publisher's peer) with the PUBLIC key: the next release shows up by itself.
     await makePublic("acme/notion", notion.digest);
@@ -345,6 +382,29 @@ describe("the concept tree across the crawled packages", () => {
     assert.deepEqual(page.parents, [{ name: "Civil procedure", description: "How a civil case moves" }, { name: "Law", description: "The root" }]);
     assert.deepEqual((await index.concept("Law"))!.parents, []);
     assert.equal(await index.concept("Nope"), undefined);
+
+    // The index's tools (./index-tools.ts) over the same functions: the page a model reads (Concept docs left out), the tree, one page — each linking its store page when a store is served.
+    const server = await toolsetServer({ tools: buildIndexTools(index, { store: "https://store.example" }), instructions: indexInstructions({ publicUrl: "https://store.example", store: "https://store.example" }) });
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverSide);
+    const mcp = new Client({ name: "test", version: "0" });
+    await mcp.connect(clientSide);
+    try {
+      assert.ok(mcp.getInstructions()!.includes("https://store.example/?store=1&pkg=<publisher/name>"), "where a person installs from");
+      const civil = mcpJson(await mcp.callTool({ name: "get_package", arguments: { package: "openlaw/civil" } }));
+      assert.equal(civil.store, "https://store.example/?store=1&pkg=openlaw%2Fcivil");
+      assert.deepEqual(civil.detail.concepts.map((c: { name: string }) => [c.name, "docs" in c]), [["Civil procedure", false], ["Law", false], ["Statute of limitations", false]]);
+      const sol = mcpJson(await mcp.callTool({ name: "get_concept", arguments: { name: "Statute of limitations" } }));
+      assert.match(sol.docs, /How long you have/);
+      assert.deepEqual(sol.children, [{ name: "Tolling" }]);
+      assert.equal(sol.store, "https://store.example/?store=1&concept=Statute%20of%20limitations");
+      assert.deepEqual(mcpJson(await mcp.callTool({ name: "get_concept", arguments: { query: "civil" } })).concepts.map((c: IndexConcept) => c.name), ["Civil procedure"]);
+      const hits = mcpJson(await mcp.callTool({ name: "search_packages", arguments: { query: "civil" } }));
+      assert.equal(hits.packages[0].detail.concepts, 3);
+      assert.equal(hits.store, "https://store.example/?store=1&q=civil");
+    } finally {
+      await mcp.close().catch(() => {});
+    }
 
     // A second crawl reads the catalog and no archive again: the pages are kept by digest.
     fetched.length = 0;

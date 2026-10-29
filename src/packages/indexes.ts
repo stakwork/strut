@@ -16,6 +16,12 @@
  *   and every peer's `GET /packages` (what that strut installed). A hit is
  *   shown, never installed as it came: installing one is installing its
  *   bare name, which goes through the card.
+ * - The PAGES (the store front, plans/marketplace.md §7): `get` reads one
+ *   package's page from the index whose card lists its publisher, and
+ *   `concepts` / `concept` the Concept tree the listed packages carry —
+ *   the same derived reads, so an agent on this strut (the `package/*`
+ *   steps, the assistant door's `search_packages` / `get_package`) sees
+ *   what a person sees in the store, and installs nothing.
  */
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
@@ -25,7 +31,7 @@ import type { PeersCapability } from "../peers.js";
 import type { PackageCache } from "./cache.js";
 import { Z32_KEY, type IndexCatalog, type IndexRow } from "./card.js";
 import { PACKAGE_NAME } from "./format.js";
-import type { IndexHit } from "./index.js";
+import type { ConceptDetail, IndexConcept, IndexConceptPage, IndexHit, IndexPackage, PackageDetail } from "./index.js";
 import type { InstalledPackage } from "./installed.js";
 import { fetchCatalog } from "./pk.js";
 
@@ -123,6 +129,61 @@ export interface PackageSearch {
   errors: Array<{ index?: string; peer?: string; error: string }>;
 }
 
+/** A package's page as a followed index serves it (`GET
+ *  /index/packages/:publisher/:name` there, `detail` included), with the
+ *  index it came from. */
+export interface IndexPackagePage extends IndexPackage {
+  index: string;
+}
+
+/** A Concept page's entry across the followed indexes: one per name, the
+ *  first index's (in the order followed). */
+export interface IndexConceptHit extends IndexConcept {
+  index: string;
+}
+
+export interface IndexConceptPageHit extends IndexConceptPage {
+  index: string;
+}
+
+export interface ConceptSearch {
+  concepts: IndexConceptHit[];
+  /** An index that could not be read, and why; with no `index`, that none is followed. */
+  errors: Array<{ index?: string; error: string }>;
+}
+
+/** What every agent-facing door says about installing: a PERSON's act
+ *  (plans/marketplace.md §8) — no step or tool installs, and none says it
+ *  can. */
+export const INSTALL_IS_A_PERSONS_ACT =
+  "You cannot install a package. Tell the person its name (publisher/name): it installs from the Packages dialog of their strut's UI — Find the name, then Install — or from the store's Install link, which opens that dialog on the name; the install re-verifies the package against its publisher's signed catalog.";
+
+/** How much of a README a model-facing page keeps. */
+export const README_BRIEF_CHARS = 12_000;
+
+/** A package's detail as a MODEL reads it: the README cut, the Concept
+ *  pages' docs left out (one page is read whole with `concept`). */
+export type PackageDetailBrief = Omit<PackageDetail, "concepts"> & { concepts: Array<Omit<ConceptDetail, "docs">> };
+
+/** The page a step or a tool hands a model: a page, not a book. The
+ *  capability itself returns the whole page. */
+export function briefPackagePage<T extends IndexPackage>(page: T): Omit<T, "detail"> & { detail?: PackageDetailBrief } {
+  const { detail, ...rest } = page;
+  if (!detail) return rest;
+  const readme =
+    detail.readme !== undefined && detail.readme.length > README_BRIEF_CHARS
+      ? `${detail.readme.slice(0, README_BRIEF_CHARS)}\n\n… (cut at ${README_BRIEF_CHARS} of ${detail.readme.length} characters)`
+      : detail.readme;
+  return {
+    ...rest,
+    detail: {
+      ...detail,
+      ...(readme !== undefined ? { readme } : {}),
+      concepts: detail.concepts.map(({ docs: _docs, ...c }) => c),
+    },
+  };
+}
+
 export interface IndexesDeps {
   /** `<dataDir>/packages/indexes.json`. */
   file: string;
@@ -142,7 +203,23 @@ export interface PackageIndexes {
   resolveName(name: string, opts?: { index?: string }): Promise<ResolvedName>;
   /** The indexes' packages and the peers' installed ones, every word of `q` matched. */
   search(q: string, opts?: { limit?: number; peers?: boolean }): Promise<PackageSearch>;
+  /** One package's page from the first followed index whose card lists its
+   *  publisher (or the one `index` names): what `GET
+   *  /index/packages/:publisher/:name` serves there, `detail` included.
+   *  Throws `package_not_listed` / `package_not_found` / `package_index_*`. */
+  get(name: string, opts?: { index?: string }): Promise<IndexPackagePage>;
+  /** The Concept pages across the followed indexes (every word of `q` in a
+   *  name or description; none lists the tree), one entry per name. */
+  concepts(q?: string, opts?: { index?: string }): Promise<ConceptSearch>;
+  /** One Concept page — docs, children, parents — from the first index that
+   *  carries it; undefined when none does. */
+  concept(name: string, opts?: { index?: string }): Promise<IndexConceptPageHit | undefined>;
 }
+
+/** The package reads a step or a tool makes (`ctx.services.packages`,
+ *  capabilities.ts): what the indexes this strut follows know — never an
+ *  install. */
+export type PackagesCapability = Pick<PackageIndexes, "search" | "get" | "concepts" | "concept">;
 
 /** Where an index strut serves search, from its card's URL; nothing for a card that is a static file. */
 export function indexBaseOf(cardUrl: string): string | undefined {
@@ -180,18 +257,20 @@ export function createIndexes(deps: IndexesDeps): PackageIndexes {
   };
   const withState = (s: IndexSubscription): IndexSubscriptionInfo => ({ ...s, ...(states.get(s.id) ?? {}) });
 
-  const card = async (id: string): Promise<{ card: IndexCatalog; url: string }> => {
+  /** The index's card, from the memo while it is fresh (`cached: true`),
+   *  else read again from its URLs in order; `fresh` reads again regardless. */
+  const card = async (id: string, opts: { fresh?: boolean } = {}): Promise<{ card: IndexCatalog; url: string; cached: boolean }> => {
     const sub = (await readFileList()).find((s) => s.id === id);
     if (!sub) throw new Error(`package_index_unknown: this strut follows no index "${id}"`);
     const memo = cards.get(id);
-    if (memo && memo.key === sub.key && now() - memo.at < CARD_TTL_MS) return memo;
+    if (!opts.fresh && memo && memo.key === sub.key && now() - memo.at < CARD_TTL_MS) return { ...memo, cached: true };
     const failures: string[] = [];
     for (const url of sub.urls) {
       try {
         const { card: got, digest } = await fetchCatalog(sub.key, url, { cache: deps.cache, kind: "index", fetch: doFetch });
         cards.set(id, { key: sub.key, at: now(), card: got, url });
         states.set(id, { read: { seq: got.seq, digest, at: new Date(now()).toISOString(), url, publishers: Object.keys(got.publishers).length } });
-        return { card: got, url };
+        return { card: got, url, cached: false };
       } catch (err) {
         failures.push(`${url.split("?")[0]}: ${err instanceof Error ? err.message : String(err)}`);
       }
@@ -200,6 +279,74 @@ export function createIndexes(deps: IndexesDeps): PackageIndexes {
     states.set(id, { ...(states.get(id)?.read ? { read: states.get(id)!.read } : {}), error });
     throw new Error(`package_index_unreachable: index "${id}": ${error}`);
   };
+
+  /** The indexes followed, or the one `index` names (unknown: a throw). */
+  const subsFor = async (opts: { index?: string }): Promise<IndexSubscription[]> => {
+    const subs = (await readFileList()).filter((s) => !opts.index || s.id === opts.index);
+    if (opts.index && subs.length === 0) throw new Error(`package_index_unknown: this strut follows no index "${opts.index}"`);
+    return subs;
+  };
+  /** The first of `subs` whose card lists the publisher of `name`: the
+   *  subscription, its row, and the URL that served the card. A miss over
+   *  memoized cards reads them again once — a publisher listed a moment ago
+   *  is found now, not after the memo's minute. A card that could not be
+   *  read is passed over and named; none listing the prefix is
+   *  `package_not_listed`. */
+  const rowFor = async (name: string, subs: IndexSubscription[]): Promise<{ sub: IndexSubscription; row: IndexRow; url: string }> => {
+    const prefix = name.split("/")[0]!;
+    const pass = async (fresh: boolean) => {
+      const unreachable: string[] = [];
+      let anyCached = false;
+      for (const sub of subs) {
+        let got: { card: IndexCatalog; url: string; cached: boolean };
+        try {
+          got = await card(sub.id, { fresh });
+        } catch (err) {
+          unreachable.push(err instanceof Error ? err.message : String(err));
+          continue;
+        }
+        anyCached ||= got.cached;
+        // Own rows only: `constructor` is a valid prefix, and every object answers to it.
+        const row: IndexRow | undefined = Object.hasOwn(got.card.publishers, prefix) ? got.card.publishers[prefix] : undefined;
+        if (row) return { hit: { sub, row, url: got.url }, unreachable, anyCached };
+      }
+      return { hit: undefined, unreachable, anyCached };
+    };
+    let found = await pass(false);
+    if (!found.hit && found.anyCached) found = await pass(true);
+    if (found.hit) return found.hit;
+    const { unreachable } = found;
+    // No card we could read lists the prefix: say which could not be read.
+    if (unreachable.length === subs.length) throw new Error(unreachable.join("; "));
+    const also = unreachable.length ? ` (and ${unreachable.join("; ")})` : "";
+    throw new Error(`package_not_listed: no index this strut follows lists the publisher ${prefix} (${subs.map((s) => s.id).join(", ")})${also}`);
+  };
+  /** One of an index strut's derived reads — `path` under its base, from
+   *  the subscription's URLs in order: the body, `notFound` (its 404), or
+   *  why nothing answered. A card that is a static file has no base. */
+  const readIndex = async <T>(sub: IndexSubscription, path: string): Promise<{ body: T } | { notFound: true } | { error: string }> => {
+    const failures: string[] = [];
+    for (const url of sub.urls) {
+      const base = indexBaseOf(url);
+      if (!base) continue;
+      try {
+        const res = await doFetch(`${base}${path}`, { signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS) });
+        if (res.status === 404) {
+          await res.body?.cancel();
+          return { notFound: true };
+        }
+        if (!res.ok) {
+          await res.body?.cancel();
+          throw new Error(`answered ${res.status}`);
+        }
+        return { body: (await res.json()) as T };
+      } catch (err) {
+        failures.push(`${base}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    return { error: failures.length ? failures.join("; ") : "its card is a file, not an index strut: no pages there" };
+  };
+  const noIndex = (what: string) => `package_index_none: this strut follows no package index to ${what} (PUT /packages/indexes/:id, or STRUT_PACKAGE_INDEXES)`;
 
   return {
     list: async () => (await readFileList()).map(withState),
@@ -221,29 +368,12 @@ export function createIndexes(deps: IndexesDeps): PackageIndexes {
     card,
     async resolveName(name, opts = {}) {
       if (!PACKAGE_NAME.test(name)) throw new Error(`package_source_invalid: ${name} is not a package name (publisher/name)`);
-      const prefix = name.split("/")[0]!;
-      const subs = (await readFileList()).filter((s) => !opts.index || s.id === opts.index);
-      if (opts.index && subs.length === 0) throw new Error(`package_index_unknown: this strut follows no index "${opts.index}"`);
+      const subs = await subsFor(opts);
       if (subs.length === 0) {
         throw new Error(`package_source_invalid: ${name} is a name, and this strut follows no index to look it up in — install by pk:<key>/${name} with url, or follow one (PUT /packages/indexes/:id)`);
       }
-      const unreachable: string[] = [];
-      for (const sub of subs) {
-        let got: { card: IndexCatalog };
-        try {
-          got = await card(sub.id);
-        } catch (err) {
-          unreachable.push(err instanceof Error ? err.message : String(err));
-          continue;
-        }
-        // Own rows only: `constructor` is a valid prefix, and every object answers to it.
-        const row: IndexRow | undefined = Object.hasOwn(got.card.publishers, prefix) ? got.card.publishers[prefix] : undefined;
-        if (row) return { ref: `pk:${row.key}/${name}`, urls: [...row.urls], index: sub.id };
-      }
-      // No card we could read lists the prefix: say which could not be read.
-      if (unreachable.length === subs.length) throw new Error(unreachable.join("; "));
-      const also = unreachable.length ? ` (and ${unreachable.join("; ")})` : "";
-      throw new Error(`package_not_listed: no index this strut follows lists the publisher ${prefix} (${subs.map((s) => s.id).join(", ")})${also}`);
+      const { sub, row } = await rowFor(name, subs);
+      return { ref: `pk:${row.key}/${name}`, urls: [...row.urls], index: sub.id };
     },
     async search(q, opts = {}) {
       const limit = Math.max(1, Math.min(opts.limit ?? 50, 500));
@@ -251,24 +381,12 @@ export function createIndexes(deps: IndexesDeps): PackageIndexes {
       const subs = await readFileList();
       await Promise.all(
         subs.map(async (sub) => {
-          const failures: string[] = [];
-          for (const url of sub.urls) {
-            const base = indexBaseOf(url);
-            if (!base) continue;
-            try {
-              const res = await doFetch(`${base}/index/packages?q=${encodeURIComponent(q)}&limit=${limit}`, { signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS) });
-              if (!res.ok) {
-                await res.body?.cancel();
-                throw new Error(`answered ${res.status}`);
-              }
-              const body = (await res.json()) as { packages?: IndexHit[] };
-              for (const hit of body.packages ?? []) out.packages.push({ ...hit, index: sub.id });
-              return;
-            } catch (err) {
-              failures.push(`${base}: ${err instanceof Error ? err.message : String(err)}`);
-            }
+          const read = await readIndex<{ packages?: IndexHit[] }>(sub, `/index/packages?q=${encodeURIComponent(q)}&limit=${limit}`);
+          if ("body" in read) {
+            for (const hit of read.body.packages ?? []) out.packages.push({ ...hit, index: sub.id });
+            return;
           }
-          out.errors.push({ index: sub.id, error: failures.length ? failures.join("; ") : "its card is a file, not an index strut: no search there" });
+          out.errors.push({ index: sub.id, error: "error" in read ? read.error : "answered 404" });
         }),
       );
       if (opts.peers !== false && deps.peers) {
@@ -298,6 +416,53 @@ export function createIndexes(deps: IndexesDeps): PackageIndexes {
       out.peers.sort((a, b) => a.peer.localeCompare(b.peer) || a.package.localeCompare(b.package));
       out.errors.sort((a, b) => (a.index ?? a.peer ?? "").localeCompare(b.index ?? b.peer ?? ""));
       return out;
+    },
+    async get(name, opts = {}) {
+      if (!PACKAGE_NAME.test(name)) throw new Error(`package_source_invalid: ${name} is not a package name (publisher/name)`);
+      const subs = await subsFor(opts);
+      if (subs.length === 0) throw new Error(noIndex(`look ${name} up in`));
+      const { sub } = await rowFor(name, subs);
+      const read = await readIndex<IndexPackage>(sub, `/index/packages/${name}`);
+      if ("body" in read) return { ...read.body, index: sub.id };
+      if ("notFound" in read) throw new Error(`package_not_found: the index "${sub.id}" lists the publisher ${name.split("/")[0]}, but no public catalog it read has ${name}`);
+      throw new Error(`package_index_unreachable: index "${sub.id}": ${read.error}`);
+    },
+    async concepts(q = "", opts = {}) {
+      const subs = await subsFor(opts);
+      const out: ConceptSearch = { concepts: [], errors: [] };
+      if (subs.length === 0) {
+        out.errors.push({ error: noIndex("read Concept pages from") });
+        return out;
+      }
+      const reads = await Promise.all(subs.map((sub) => readIndex<{ concepts?: IndexConcept[] }>(sub, `/index/concepts?q=${encodeURIComponent(q)}`)));
+      // In the order followed: the first index's entry for a name is the one kept.
+      const seen = new Set<string>();
+      subs.forEach((sub, i) => {
+        const read = reads[i]!;
+        if (!("body" in read)) {
+          out.errors.push({ index: sub.id, error: "error" in read ? read.error : "answered 404" });
+          return;
+        }
+        for (const c of read.body.concepts ?? []) {
+          if (seen.has(c.name)) continue;
+          seen.add(c.name);
+          out.concepts.push({ ...c, index: sub.id });
+        }
+      });
+      out.concepts.sort((a, b) => a.name.localeCompare(b.name));
+      return out;
+    },
+    async concept(name, opts = {}) {
+      const subs = await subsFor(opts);
+      if (subs.length === 0) throw new Error(noIndex(`read the Concept page "${name}" from`));
+      const errors: string[] = [];
+      for (const sub of subs) {
+        const read = await readIndex<IndexConceptPage>(sub, `/index/concepts/${encodeURIComponent(name)}`);
+        if ("body" in read) return { ...read.body, index: sub.id };
+        if ("error" in read) errors.push(`index "${sub.id}": ${read.error}`);
+      }
+      if (errors.length === subs.length) throw new Error(`package_index_unreachable: ${errors.join("; ")}`);
+      return undefined;
     },
   };
 }

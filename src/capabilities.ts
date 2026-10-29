@@ -2,7 +2,7 @@ import type { SttService } from "./audio/stt.js";
 import type { SessionsCapability } from "./session-store.js";
 import { jobsCapability, type JobsCapability } from "./jobs.js";
 import type { PeersCapability } from "./peers.js";
-import type { PackageSearch } from "./packages/indexes.js";
+import type { PackagesCapability } from "./packages/indexes.js";
 // Type-only: the graph backend stays a lazy, opt-in dependency.
 import type { GraphBackend } from "./graph/backend.js";
 import type { BrowserService } from "./browser/service.js";
@@ -384,10 +384,12 @@ export interface StrutCapabilities {
    *  bare in-code bag may not carry one (`strut/run-workflow` then fails
    *  naming it). */
   peers?: PeersCapability;
-  /** Package search (src/packages/indexes.ts): the indexes this strut
-   *  follows and the peers' installed packages — what the `package/search`
-   *  step reads. Set by the standard server. */
-  packages?: { search(query: string, opts?: { limit?: number }): Promise<PackageSearch> };
+  /** The package STORE's reads (src/packages/indexes.ts): `search` over the
+   *  indexes this strut follows and the peers' installed packages, `get` a
+   *  package's page, `concepts` / `concept` the Concept tree — what the
+   *  `package/*` steps and the assistant door's package tools read. Never
+   *  an install. Set by the standard server. */
+  packages?: PackagesCapability;
   /** The graph backend the SERVER wired (`createStrut({ graph })`, else the
    *  one behind a graph-backed workspace): what the `graph/*` steps read and
    *  write through, instead of opening one from env (`graphCtx` prefers it
