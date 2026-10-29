@@ -1421,7 +1421,14 @@ and `pk:` are refused by name (`package_source_unsupported`).
 | GET    | `/packages/subscriptions` | `{ subscriptions: SubscriptionInfo[] }` (`src/packages/subscriptions.ts`): what this strut follows, what it accepted and applied, and each package it installed with the items edited here (`diverged`). Never a token |
 | PUT    | `/packages/subscriptions/:id` | `{ key, url, channel?, token? }` → the `SubscriptionInfo`; the first read starts at once, its outcome on the `GET`. The operator's act: full scope (a peer is 403). 400 `subscription_invalid` |
 | DELETE | `/packages/subscriptions/:id[?uninstall=1]` | Stop following → `{ ok, removed, uninstalled }`; with `uninstall=1` its packages go through the distro's door (forks kept). 404 when there is none |
-| POST   | `/packages/subscriptions/sync` | `{ key? }` → 202: read the catalogs now — of the subscriptions to `key`, or all. What a publisher pings: a PEER may send it, since it carries nothing |
+| POST   | `/packages/subscriptions/sync` | `{ key? }` → 202: read the catalogs now — of the subscriptions to `key`, or all; with the index role on, the index rows whose key it is are read too. What a publisher pings: a PEER may send it, since it carries nothing |
+| GET    | `/index` | **Index role only** (`STRUT_INDEX=1`, `createStrut({ index })`; `src/packages/index.ts`). `IndexInfo`: `{ key, createdAt, urls, publishers: { "<prefix>": { key, urls, description?, url? } }, crawled: [{ prefix, key, accepted?: { seq, digest, at, url }, checkedAt?, error?, packages? }] }` — the rows as the card has them and each listed publisher's catalog as last read. Any credential; 404 before the first row |
+| PUT    | `/index/:prefix` | `{ key, urls, description?, url? }` → `IndexInfo`: list a publisher — its PUBLIC key and where its public catalog is served (`urls`, tried in order) — the index key minted first when there is none, the card re-sealed, that publisher read now. Full scope. 400 `index_row_invalid`; 409 `publisher_unsafe_key` on a file store with `STRUT_SECRET_KEY` unset |
+| DELETE | `/index/:prefix` | Drop the row and re-seal → `{ ok, prefix }`; its crawl state goes. 404 when there is none |
+| POST   | `/index/crawl` | `{ crawled: CrawlState[] }`: read every listed publisher's catalog now. Full scope |
+| GET    | `/index/catalog[?digest=]` | The INDEX card as served (RFC 8785 bytes, sealed under `strut-index\n` by the index key; `ETag`, `If-None-Match` → 304; `cache-control: public`): `{ v, key, seq, publishers, urls?, sig }`. **Open to anyone.** A reader checks it with `readCard(bytes, { key, kind: "index" })`; 404 before the first row |
+| GET    | `/index/packages?q=&limit=` | `{ packages: IndexHit[] }` — every listed publisher's public packages, each at its newest release not yanked: `{ package, publisher, key, urls, version, digest, description?, license?, requires? }`; `q` as the sidebar's matcher (every word in the name, description or publisher), at most `limit` (100; ≤ 500). **Open to anyone**; derived and unsigned — an install re-verifies against the publisher |
+| GET    | `/index/packages/:publisher/:name` | `IndexPackage`: `{ package, publisher, key, urls, description?, releases (newest first, yanked kept), channels: { "<public channel>": digest }, readAt }`. **Open to anyone**; 404 when no listed publisher's catalog has it |
 
 **Build** writes a package from what this workspace holds and puts it in
 the cache by its digest, so the archive route serves it and an install
@@ -1676,6 +1683,27 @@ channel names a release the catalog lists, and with no channel a reader
 takes the newest release not yanked. `src/packages/card.test.ts` holds a
 test vector (RFC 8032's first key, a catalog, its fingerprint, seal and
 digest) for another implementation to check itself against.
+
+**The index** (`plans/marketplace.md` §7, step 7; `src/packages/index.ts`).
+A strut with the index role is the phone book and the crawler behind it.
+The ROWS are the trust root for names: a prefix → the publisher's PUBLIC
+key and where its public catalog is served, sealed into an index card
+(the catalog card one level up — `publishers` where a catalog has
+`packages` — under the domain `strut-index\n`, with the same byte form,
+`seq` and reader checks) by the index key, which lives beside the
+publisher's keys in `publisher.json` and is minted at the first row. The
+CRAWL follows each row: the publisher's public catalog is fetched from the
+row's `urls` and read as that key's card (`fetchCatalog`, the per-key
+`seq` rule holding), kept under `<dataDir>/packages/catalogs/index/crawl/`
+— at the row, on a publisher's ping (`POST /packages/subscriptions/sync
+{ key }` with the public key, which a publisher sends to every peer on
+file when its public catalog changes), and on the poll
+(`STRUT_DISTRO_POLL_MINUTES`). Over the crawled catalogs the index serves
+search and package pages, open to anyone, derived and unsigned: a client
+that finds a package there installs it by `pk:` with the hit's `key` and
+`urls` and re-verifies everything against the publisher, so a wrong
+answer from the index is a failed install, never wrong code. The index
+holds no archive it alone has.
 
 **Installing by key** (`plans/marketplace.md` §5, §13 — HTTP-first,
 2026-10-28; `src/packages/pk.ts`). `POST /packages/install { ref:
