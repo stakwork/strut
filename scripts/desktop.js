@@ -92,12 +92,10 @@ try {
 const nativeDir = join(here, "native");
 const ladybug =
   staged.ladybug === true &&
+  typeof staged.ladybugVersion === "string" &&
   ["lbugjs.node", "libvector.lbug_extension", "libfts.lbug_extension"].every((f) => existsSync(join(nativeDir, f)));
 dflt("STRUT_WORKSPACE_BACKEND", ladybug ? "ladybug" : "fs");
 if (ladybug) {
-  // The graph backend REQUIRES both extensions (ruling 4); the package's
-  // copies, never a download — a notarised app cannot fetch them.
-  dflt("STRUT_LADYBUG_EXTENSION_DIR", nativeDir);
   // Without the embeddings stack (package:desktop --embeddings) the graph is
   // fulltext-only; the default would try to load MiniLM and fail the boot.
   if (!staged.embeddings) dflt("STRUT_GRAPH_EMBEDDINGS", "off");
@@ -115,6 +113,21 @@ dflt("STRUT_API_KEY", randomBytes(24).toString("hex"));
 // The commit package-desktop.mjs staged: what `strut move check` compares.
 if (staged.strut) dflt("STRUT_VERSION", staged.strut);
 env["STRUT_READY_KEY"] = "1"; // put the key on the ready line for the host
+
+if (ladybug && !env["STRUT_LADYBUG_EXTENSION_DIR"]) {
+  // The graph backend REQUIRES both extensions (ruling 4); the package's
+  // copies, never a download — a notarised app cannot fetch them. Loaded
+  // from a copy under the model dir, not native/: a WAL names the paths it
+  // loaded, so a graph left open by one build must replay in the next, from
+  // wherever that build lives.
+  try {
+    const { stableExtensionDir } = await import("./build/graph/ladybug/extensions.js");
+    env["STRUT_LADYBUG_EXTENSION_DIR"] = await stableExtensionDir(nativeDir, staged.ladybugVersion);
+  } catch (err) {
+    console.error("strut: copying the ladybug extensions failed, loading them from native/:", err);
+    env["STRUT_LADYBUG_EXTENSION_DIR"] = nativeDir;
+  }
+}
 
 // `strut move …` (AGENTS.md, "Moving strut to another host"): over the
 // stopped strut's folders, with the defaults above (STRUT_WORKSPACE), and
@@ -141,8 +154,18 @@ const leave = async (why) => {
   }
   process.exit(0);
 };
-// A second signal while closing is the person insisting.
-for (const sig of ["SIGTERM", "SIGINT"]) process.on(sig, () => (leaving ? process.exit(0) : void leave(sig)));
+// A second signal while closing is the person insisting. A signal after
+// stdin closed is not: a host stops strut with both at once (Peel closes
+// stdin, then SIGTERM, then SIGKILL two seconds on), and that signal waits
+// for the close like the first.
+let signalled = false;
+for (const sig of ["SIGTERM", "SIGINT"]) {
+  process.on(sig, () => {
+    if (signalled) process.exit(0);
+    signalled = true;
+    void leave(sig);
+  });
+}
 
 if (env["STRUT_EXIT_ON_STDIN_EOF"] === "1") {
   // A host that holds our stdin pipe open sets this so we exit with it: the

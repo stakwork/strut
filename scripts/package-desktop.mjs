@@ -87,6 +87,7 @@
  * native/ (`relocateEsbuild`; desktop.js sets ESBUILD_BINARY_PATH to it).
  */
 import { chmod, copyFile, cp, lstat, mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
@@ -1086,12 +1087,21 @@ export default defineStep({
   } catch (e) {
     failures.push(String(e));
   } finally {
+    // How a host stops it (Peel: stdin closed, SIGTERM at once): the graph
+    // must still close, leaving no WAL that names this build's paths.
     child.stdin.end();
+    await new Promise((r) => setTimeout(r, 50));
+    child.kill("SIGTERM");
     const gone = await Promise.race([exited, new Promise((r) => setTimeout(() => r(null), 5000))]);
     if (!gone) {
-      failures.push("STRUT_EXIT_ON_STDIN_EOF=1: still running 5 s after stdin closed");
+      failures.push("STRUT_EXIT_ON_STDIN_EOF=1: still running 5 s after stdin closed and SIGTERM");
       child.kill("SIGKILL");
-    } else if (ready && gone.code !== 0) failures.push(`STRUT_EXIT_ON_STDIN_EOF=1: exited ${JSON.stringify(gone)} after stdin closed, expected code 0`);
+    } else if (ready && gone.code !== 0) failures.push(`STRUT_EXIT_ON_STDIN_EOF=1: exited ${JSON.stringify(gone)} after stdin closed and SIGTERM, expected code 0`);
+    if (ready && ladybug) {
+      if (existsSync(join(workspace, "graph", "graph.lbug.wal"))) failures.push("stdin closed then SIGTERM left graph.lbug.wal: the graph did not close");
+      const stable = join(cache, "strut", "models", "ladybug", "bundled", ladybugVersion);
+      if (!LADYBUG_EXTENSIONS.every((e) => existsSync(join(stable, `lib${e}.lbug_extension`)))) failures.push(`the ladybug extensions were not copied to ${stable}`);
+    }
   }
   if (/Warning: failed to load step/.test(output)) failures.push(`step load warning:\n${output}`);
   if (ladybug) failures.push(...(await smokeLadybug(app, tmp)));
