@@ -1,0 +1,32 @@
+# The Pkarr relay beside the package index (docker-compose.yml).
+# Every option: relay/src/config.example.toml in github.com/pubky/pkarr.
+
+[http]
+# Reached only through Caddy (PKARR_RELAY_HOST); not published on the host.
+port = 6881
+
+[mainline]
+# The DHT node, UDP. Published on the host as PKARR_DHT_PORT.
+port = 6881
+request_timeout_seconds = 2
+# The box's public IPv4, for a BEP 42 secure node ID. Omitted, the node
+# learns it from its peers.
+# public_ip = "203.0.113.10"
+
+[cache]
+# The volume pkarr-cache; packets land in /cache/pkarr-cache.
+path = "/cache"
+size = 1_000_000
+minimum_ttl = 300
+maximum_ttl = 86400
+
+[rate_limiter]
+# Behind Caddy, so the client's address comes from X-Forwarded-For. Safe only
+# while the HTTP port stays off the host (the compose file publishes UDP).
+behind_proxy = true
+quota = "2r/s"
+burst = 10
+dht_quota = "2r/s"
+dht_burst = 10
+user_dht_quota = "2r/s"
+user_dht_burst = 10
