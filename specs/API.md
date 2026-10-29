@@ -1406,7 +1406,7 @@ and `pk:` are refused by name (`package_source_unsupported`).
 | ------ | ---- | ----------- |
 | GET    | `/packages` | What is installed: `{ packages: InstalledPackage[] }` (`src/packages/installed.ts`), a fold over the workspace, never a store |
 | POST   | `/packages/build` | `BuildRequest` → 201 `{ package, version, digest, files, requires, warnings }` (`src/packages/build.ts`): a package built from this workspace into the cache. With `dryRun: true`, 200 and the same answer with nothing kept: the package page's preview of what comes along. A person's act like install: full scope, one at a time with install and uninstall |
-| POST   | `/packages/install` | `{ ref: "file:/path/to/package", digest?: "sha256:<hex>" }` → 201 `InstallResult` (`src/packages/install.ts`). A person's act: behind the key at full scope (a peer is 403), one at a time |
+| POST   | `/packages/install` | `{ ref, digest?, url? }` → 201 `InstallResult` (`src/packages/install.ts`). `ref` is `file:/path/to/package`, or `pk:<key>/<publisher>/<name>[@sha256:<hex>]` with `url`, where the publisher's catalog is served (a strut's `…/packages/catalog?public=1`, or the file it uploaded) — see "Installing by key" below. A person's act: behind the key at full scope (a peer is 403), one at a time |
 | DELETE | `/packages/:publisher/:name` | Uninstall → `{ ok: true, package, removed, kept }` (`UninstallResult`) |
 | GET    | `/packages/:publisher/:name/archive?digest=sha256:<hex>` | The package at that digest as a `.tar.gz` of its files (`content-type: application/gzip`, `ETag: "<digest>"`, `cache-control: private, max-age=31536000, immutable`; `If-None-Match` → 304). 400 without a well-formed `digest`; 404 when this strut holds no package `publisher/name` at that digest. Behind the key like every route; with `?t=` a subscriber's read of a digest the fleet catalog names; with `?public=1` anyone's read of a digest the PUBLIC catalog names (404 for any other, whatever the gate's mode) |
 | GET    | `/packages/:publisher/:name/items?digest=sha256:<hex>` | `{ package, version, digest, items: [{ kind: "workflow" \| "step" \| "app" \| "concept", name }] }`: what the package at that digest holds, each by its name INSIDE the package (`summarize` for `acme/tools/summarize`; a Concept by its page name), helpers left out — what the package page ticks from a release (`plans/packages-ux.md` §3). 400 without a well-formed `digest`; 404 when this strut's cache holds no package `publisher/name` at that digest |
@@ -1676,6 +1676,25 @@ channel names a release the catalog lists, and with no channel a reader
 takes the newest release not yanked. `src/packages/card.test.ts` holds a
 test vector (RFC 8032's first key, a catalog, its fingerprint, seal and
 digest) for another implementation to check itself against.
+
+**Installing by key** (`plans/marketplace.md` §5, §13 — HTTP-first,
+2026-10-28; `src/packages/pk.ts`). `POST /packages/install { ref:
+"pk:<key>/acme/linear", url }` resolves the package by the PUBLISHER's
+key: the catalog is fetched from `url` and read as a card against the key
+— its seal, and its `seq` against the last catalog accepted from that key
+on this strut (`<dataDir>/packages/index/<key>.json`; an older one served
+later is `catalog_rollback`, 409) — the release is the digest the ref or
+`digest` pins (which the catalog must list: `package_not_published`, 404)
+or else the newest not yanked, and its archive is fetched by digest from
+the archive route beside the catalog (`…/packages/acme/linear/archive?digest=…&public=1`)
+and then the release's own `urls`, verified against the digest. What the
+release requires and the catalog lists is fetched from it too, so the
+install never follows a `file:` hint that names the publisher's disk. The
+install records `upstream.key` (the key an update must match) and
+`upstream.source.url` (where the next read starts) on every version it
+writes; `GET /packages` shows `source: { ref, url }`. The URL is only
+where the catalog is today: an index row or, later, the key's Pkarr
+record are other places it comes from, and neither changes a check.
 
 **One publisher, two keys** (`plans/marketplace.md` §13). A card's `seq`
 rule is per key, so one key cannot seal a catalog a fleet reads and
