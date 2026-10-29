@@ -615,6 +615,11 @@ export interface WorkspaceStore extends SubflowResolver {
   setWorkflowOwner(name: string, owner: string | null): Promise<void>;
   /** Set (or clear) the per-run spend cap — metadata-only. */
   setWorkflowRunCap(name: string, maxRunCostUsd: number | null): Promise<void>;
+  /** Set (or clear) the `publisher` stamp — metadata-only. A publish never
+   *  re-stamps a workflow; this is the one way to move it, and who may is
+   *  the caller's rule (`PUT /workflows/:name/publisher`: a person handing a
+   *  workflow to the builder, `"ai"`, or taking it back). */
+  setWorkflowPublisher(name: string, publisher: string | null): Promise<void>;
   /** Replace the workflow's automations (an empty list clears the field).
    *  Metadata-only, like `setWorkflowCategory`; throws for an unknown
    *  workflow. The whole list, because every mutation is a
@@ -944,6 +949,13 @@ export class FileWorkspaceStore implements WorkspaceStore {
     await this.patchWorkflowMetadata(name, (meta) => {
       if (maxRunCostUsd != null) meta.maxRunCostUsd = maxRunCostUsd;
       else delete meta.maxRunCostUsd;
+    });
+  }
+
+  async setWorkflowPublisher(name: string, publisher: string | null): Promise<void> {
+    await this.patchWorkflowMetadata(name, (meta) => {
+      if (publisher) meta.publisher = publisher;
+      else delete meta.publisher;
     });
   }
 

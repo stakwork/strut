@@ -125,12 +125,28 @@ reads.
 | GET    | `/workflows/:name/versions`     | `{ active, versions: [{ version, createdAt, description?, source?, actor?, runs, success, error, lastRunAt? }], unattributed }` newest first; counts by the run's recorded `workflowHash` |
 | GET    | `/workflows/:name/:version`     | the YAML source, `text/yaml` |
 | PUT    | `/workflows/:name/active`       | `{ version }` → `{ ok, workflow, active }` — rollback; publishes nothing |
+| PUT    | `/workflows/:name/publisher`    | `{ publisher: "ai" \| null }` → `{ ok, workflow, publisher }` — hand the workflow to the builder, or take it back (below); publishes nothing |
 | DELETE | `/workflows/:name`    | `{ ok, workflow }` — every version, metadata, schedules and run records; 409 while a run is in flight |
 
 `?q=` is the sidebar's filter: the query is split into words and every word
 must appear (case-insensitive) in the name, the category or the description.
 Name hits rank first; otherwise the list keeps its order. Empty or absent
 returns everything.
+
+`publisher` is the stamp the builder's authoring (`meta/publish-workflow`,
+the builder job's tool) publishes over: it writes only over workflows
+stamped `ai`, so the builder can edit what it made and nothing else. A
+person hands a workflow to it with `PUT /workflows/:name/publisher {
+publisher: "ai" }` — the Workflow flyout's "Let the builder edit this" — and
+takes it back with `null`. From then on the builder publishes new versions
+without asking; every version stays, so a bad one is rolled back with
+`PUT …/active`. A publish never moves the stamp, a person's included. `400`
+for any other value, `404` for an unknown workflow, `409` when the workflow
+is stamped by a service (another value, theirs to keep) or, to hand it
+over, when its active version is a seed (every boot puts the committed
+version back), says `sealed: true` (a grading harness) or `peer:` (the
+builder may not publish that key, so its next version would close the
+workflow to other struts). A peer's request is refused by the gate.
 
 ## 3. Run
 

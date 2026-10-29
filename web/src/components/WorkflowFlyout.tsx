@@ -20,8 +20,10 @@ import type { InputBinding } from "../run-inputs";
 // flyout means one topbar button, and the tabs exclude each other by
 // construction. Which tabs exist is the caller's call: a workflow with no
 // params has no Params tab, a filesystem workspace has no Claims tab, the
-// history view has no Automate tab. Deleting the workflow lives at the
-// bottom, out of the way.
+// history view has no Automate tab. Under the tabs, "Let the builder edit
+// this" hands the workflow to the builder (its `publisher` stamp, which the
+// meta surface publishes over). Deleting the workflow lives at the bottom,
+// out of the way.
 
 export type WorkflowTab = "params" | "claims" | "automations" | "versions";
 
@@ -75,10 +77,37 @@ export function WorkflowFlyout(props: {
   /** The apps that grant this workflow (plans/apps.md §1.3): a chip each. */
   apps?: Array<{ name: string; title: string }>;
   onOpenApp?: (name: string) => void;
+  /** The workflow's `publisher` stamp and its active version's source — what
+   *  "Let the builder edit this" reads. Absent: no checkbox. */
+  stamp?: { publisher?: string; activeSource?: string };
+  /** Hand it to the builder (`"ai"`) or take it back; rejects with the
+   *  server's reason. */
+  onSetPublisher?: (publisher: "ai" | null) => Promise<void>;
 }) {
   const [editing, setEditing] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [stamping, setStamping] = useState(false);
+  const [stampError, setStampError] = useState<string | null>(null);
+  const builderEdits = props.stamp?.publisher === "ai";
+  // Refused by the server too; said here so the box is never a dead click.
+  const cannotHand = builderEdits ? null
+    : props.stamp?.publisher ? `Stamped "${props.stamp.publisher}" by a service — it is the service's.`
+    : props.stamp?.activeSource === "seed" ? "A seed: every boot puts the committed version back. Change it where it is seeded."
+    : null;
+
+  const setBuilderEdits = async (on: boolean) => {
+    if (!props.onSetPublisher) return;
+    setStamping(true);
+    setStampError(null);
+    try {
+      await props.onSetPublisher(on ? "ai" : null);
+    } catch (err) {
+      setStampError(errorMessage(err));
+    } finally {
+      setStamping(false);
+    }
+  };
   const scheduled = props.automations.filter((a) => a.enabled).length;
   const ok = props.runs.filter((r) => r.status === "success").length;
   const failed = props.runs.filter((r) => r.status === "error").length;
@@ -127,6 +156,23 @@ export function WorkflowFlyout(props: {
           {props.apps.map((a) => (
             <button key={a.name} type="button" class="app-chip" onClick={() => props.onOpenApp?.(a.name)}>{a.title}</button>
           ))}
+        </div>
+      )}
+      {props.stamp && props.onSetPublisher && (
+        <div class="flyout-builder">
+          <label
+            class="flyout-builder-toggle"
+            title={cannotHand ?? (builderEdits
+              ? "The builder (Jamie's, and any agent with meta/publish-workflow) publishes new versions of this workflow without asking. Uncheck to take it back."
+              : "Let the builder (Jamie's, and any agent with meta/publish-workflow) publish new versions of this workflow without asking. Every version stays, so a bad one can be rolled back.")}
+          >
+            <input type="checkbox" checked={builderEdits} disabled={stamping || !!cannotHand}
+              onChange={(e) => void setBuilderEdits((e.target as HTMLInputElement).checked)} />
+            Let the builder edit this
+          </label>
+          {builderEdits && !stampError && <span class="flyout-builder-note">It publishes new versions without asking.</span>}
+          {cannotHand && <span class="flyout-builder-note">{cannotHand}</span>}
+          {stampError && <span class="flyout-builder-error">{stampError}</span>}
         </div>
       )}
 

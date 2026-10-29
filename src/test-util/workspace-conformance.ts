@@ -155,6 +155,7 @@ export function workspaceConformance(impl: WorkspaceImpl): void {
       await ws.setWorkflowAutomations("wf", automations);
       await ws.setWorkflowOwner("wf", "alice-1");
       await ws.setWorkflowRunCap("wf", 2.5);
+      await ws.setWorkflowPublisher("wf", "ai");
       await ws.publishWorkflow("other", "v1", { steps });
 
       assert.equal(await ws.deleteWorkflow("wf"), true);
@@ -174,6 +175,23 @@ export function workspaceConformance(impl: WorkspaceImpl): void {
       assert.equal(meta!.owner, undefined);
       assert.equal(meta!.maxRunCostUsd, undefined);
       assert.equal(meta!.automations, undefined);
+      assert.equal(meta!.publisher, undefined, "a new workflow is nobody's to hand over");
+    });
+
+    it("the publisher stamp moves only by setWorkflowPublisher: set, kept by a publish that carries none, cleared", async () => {
+      const stamp = async () => (await ws.getWorkflowMetadata("wf"))?.publisher;
+      await ws.publishWorkflow("wf", "v1", { steps });
+      assert.equal(await stamp(), undefined);
+      await ws.setWorkflowPublisher("wf", "ai");
+      assert.equal(await stamp(), "ai");
+      assert.equal((await ws.listWorkflows()).find((w) => w.name === "wf")?.publisher, "ai");
+
+      await ws.publishWorkflowByContent("wf", (await ws.getWorkflowSource("wf", "v1")).replace("hi", "bye"));
+      assert.equal(await stamp(), "ai", "a person's publish keeps the stamp");
+
+      await ws.setWorkflowPublisher("wf", null);
+      assert.equal(await stamp(), undefined);
+      await assert.rejects(() => ws.setWorkflowPublisher("missing", "ai"), /not found/);
     });
 
     it("owner and run cap are workflow-level metadata: set, survive a publish, clear", async () => {
