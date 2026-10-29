@@ -130,6 +130,13 @@ export function indexRowProblem(prefix: unknown, row: unknown): string | undefin
   return undefined;
 }
 
+/** Whether a package's name is under a publisher's prefix. A catalog may
+ *  list any name its key signs; the index lists only what the row's prefix
+ *  covers, since the row is what binds a prefix to a key. */
+function underPrefix(prefix: string, pkg: string): boolean {
+  return pkg.startsWith(`${prefix}/`);
+}
+
 export function createPackageIndex(deps: IndexDeps): PackageIndex {
   const cards = new CatalogStore(deps.dir);
   const crawlDir = join(deps.dir, "crawl");
@@ -206,7 +213,7 @@ export function createPackageIndex(deps: IndexDeps): PackageIndex {
         const { card, digest } = await fetchCatalog(row.key, url, { cache: deps.cache, ...(deps.fetch ? { fetch: deps.fetch } : {}) });
         if (state.accepted?.digest !== digest) await writeFileAtomic(cardFile(prefix), canonicalJson(card));
         state.accepted = { seq: card.seq, digest, at, url };
-        state.packages = Object.keys(card.packages).length;
+        state.packages = Object.keys(card.packages).filter((pkg) => underPrefix(prefix, pkg)).length;
         delete state.error;
         await writeFileAtomic(stateFile(prefix), JSON.stringify(state));
         return state;
@@ -248,6 +255,8 @@ export function createPackageIndex(deps: IndexDeps): PackageIndex {
       const card = await cardOf(prefix);
       if (!card) continue;
       for (const [pkg, entry] of Object.entries(card.packages)) {
+        // The row binds the prefix to the key: a name under another prefix is not this row's to list.
+        if (!underPrefix(prefix, pkg)) continue;
         const release = releaseFor(card, pkg);
         if (!release) continue;
         out.push({
@@ -283,7 +292,7 @@ export function createPackageIndex(deps: IndexDeps): PackageIndex {
     },
     async removeRow(prefix) {
       const card = await base();
-      if (!(prefix in card.publishers)) return false;
+      if (!Object.hasOwn(card.publishers, prefix)) return false;
       const { [prefix]: _gone, ...rest } = card.publishers;
       card.publishers = rest;
       await seal(card);
@@ -305,7 +314,8 @@ export function createPackageIndex(deps: IndexDeps): PackageIndex {
     },
     async package(name) {
       const prefix = name.split("/")[0]!;
-      const row = (await rows())[prefix];
+      const all = await rows();
+      const row = Object.hasOwn(all, prefix) ? all[prefix] : undefined;
       if (!row) return undefined;
       const state = await readState(prefix);
       const card = await cardOf(prefix);

@@ -192,6 +192,27 @@ describe("the package index", () => {
     assert.equal((await index.app.request("/index/acme", { method: "DELETE", headers: auth })).status, 404);
   });
 
+  it("lists only the names under the row's prefix: the key may sign others, the row binds one prefix", async () => {
+    const linear = await publish("acme/linear", "1.0.0", ["acme/linear/sync"]);
+    await makePublic("acme/linear", linear.digest);
+    // The same key signs a package under a prefix this row does not cover.
+    await publisherWs.publishStep("other/thing/fetch", STEP("other/thing/fetch", "things"));
+    await publisherWs.publishWorkflow("other/thing/sync", "v1", FLOW("other/thing/sync", "other/thing/fetch"));
+    const other = await publish("other/thing", "1.0.0", ["other/thing/sync"]);
+    await makePublic("other/thing", other.digest);
+
+    const put = await index.app.request("/index/acme", json({ key: await publicKey(), urls: [catalogUrl] }, "PUT"));
+    assert.equal(put.status, 200, await put.clone().text());
+    assert.equal(((await put.json()) as IndexInfo).crawled[0]!.packages, 1, "the catalog lists two; one is under acme");
+    assert.deepEqual((await search()).map((h) => [h.package, h.publisher]), [["acme/linear", "acme"]]);
+    assert.deepEqual(await search("thing"), []);
+    assert.equal((await fetch(`${indexUrl}/index/packages/other/thing`)).status, 404);
+
+    // A prefix every object answers to is no row.
+    assert.equal((await index.app.request("/index/constructor", { method: "DELETE", headers: auth })).status, 404);
+    assert.equal((await fetch(`${indexUrl}/index/packages/constructor/thing`)).status, 404);
+  });
+
   it("refuses a row that is not one, and a peer may ping but never list", async () => {
     const put = (body: unknown) => index.app.request("/index/acme", json(body, "PUT"));
     assert.equal((await put({ key: "nope", urls: [catalogUrl] })).status, 400);

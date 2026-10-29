@@ -3082,7 +3082,9 @@ export async function createStrut<TServices = unknown>(
    *  what an index strut among the peers follows (§7). */
   const pingPublic = async (before: string | undefined) => {
     const after = (await catalogDeps.publicCatalogs.current().catch(() => undefined))?.digest;
-    if (after && after !== before) pingSubscribers((await publisher.get())?.public ?? after);
+    if (!after || after === before) return;
+    const key = (await publisher.get().catch(() => undefined))?.public;
+    if (key) pingSubscribers(key);
   };
   /** Tell every peer on file that this strut's catalog moved, so a strut
    *  that subscribes to it reads it now instead of at its next poll
