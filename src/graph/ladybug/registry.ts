@@ -190,6 +190,8 @@ export const GENERIC_COLUMNS: Readonly<Record<string, ColumnType>> = {
   // System stamp: epoch ms of the last create / change, set by the writer.
   updated_at: "INT64",
   deleted_at: "INT64",
+  // Why a soft delete happened, when the deleter said (`SoftDeleteOptions.reason`).
+  deleted_reason: "STRING",
 };
 
 /** Every edge has the same columns: the writer's stamps, `importance` (the

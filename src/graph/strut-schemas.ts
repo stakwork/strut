@@ -161,11 +161,14 @@ export const SCHEMA_CORE_PROPERTIES = new Set([
   // `text_embeddings` vector. In this list so the resolver reads it as a
   // mark, not as an attribute named `embed` of type `false`.
   "embed",
+  // The owner mark (plans/memory-in-workspace-graph.md decision 7): only
+  // the named manager writes the type's nodes.
+  "managed_by",
 ]);
 
 /** Attribute names a schema may not declare (jarvis reserved keys, plus the
  *  delete markers `deletion.ts` owns). */
-export const RESERVED_ATTRIBUTE_NAMES = new Set(["type", "parent", "node_key", "index", "deleted_at", "deleted_at_backfilled"]);
+export const RESERVED_ATTRIBUTE_NAMES = new Set(["type", "parent", "node_key", "index", "deleted_at", "deleted_at_backfilled", "deleted_reason"]);
 
 /** Preview fields are capped so search/embedding text stays light; full
  *  payloads stay in the run/chat log behind `log_ref`. */
