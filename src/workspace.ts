@@ -236,7 +236,14 @@ export interface Upstream {
   package: string;
   version: string;
   digest: string;
-  source: { ref: string };
+  /** The ref it was fetched from; for a `pk:` ref, `url` is where its
+   *  catalog was read (what an update starts from, until the catalog's own
+   *  `urls` say otherwise). */
+  source: { ref: string; url?: string };
+  /** The publisher key a `pk:` ref resolved (marketplace.md §3): an update
+   *  follows this key, and an index row that later names another is asked
+   *  about, never followed. */
+  key?: string;
   secrets: string[];
 }
 

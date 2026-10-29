@@ -19,6 +19,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { unpackArchive } from "./archive.js";
 import { PACKAGE_DIGEST, type PackageInfo, readPackage } from "./format.js";
+import { resolvePk } from "./pk.js";
 
 export type CachedPackage = PackageInfo & { dir: string };
 
@@ -106,7 +107,11 @@ async function isDir(path: string): Promise<boolean> {
 }
 
 export interface ResolvedPackage extends CachedPackage {
-  source: { ref: string };
+  /** The ref, and for `pk:` the catalog URL it was read from — what an
+   *  update starts from (`Upstream.source`). */
+  source: { ref: string; url?: string };
+  /** The publisher key a `pk:` ref resolved: pinned on the install (§3). */
+  key?: string;
 }
 
 export interface ResolveOptions {
@@ -116,12 +121,16 @@ export interface ResolveOptions {
   digest?: string;
   /** What a relative `file:` path is relative to (a distro repo, §12). */
   base?: string;
+  /** A `pk:` ref's catalog URL (src/packages/pk.ts). */
+  url?: string;
+  fetch?: typeof fetch;
 }
 
 /**
  * A package REF → its directory in the cache (§5's `resolve`). `file:<path>`
- * (or `file:///…`) copies a directory in; `git+` and `pk:` are later work
- * items and refuse by name.
+ * (or `file:///…`) copies a directory in; `pk:<key>/<pkg>` reads the key's
+ * catalog at `url` and fetches the release by hash (pk.ts); `git+` is a
+ * later work item and refuses by name.
  */
 export async function resolvePackage(ref: string, opts: ResolveOptions): Promise<ResolvedPackage> {
   if (ref.startsWith("file:")) {
@@ -129,8 +138,13 @@ export async function resolvePackage(ref: string, opts: ResolveOptions): Promise
     if (!(await isDir(path))) throw new Error(`package_source_invalid: ${ref}: no directory at ${path}`);
     return { ...(await opts.cache.putDir(path, opts.digest)), source: { ref } };
   }
-  const scheme = /^(git\+|pk:)/.exec(ref)?.[1];
-  if (scheme) throw new Error(`package_source_unsupported: ${ref}: ${scheme === "pk:" ? "pk:" : "git+"} sources are not built yet — file: is`);
+  if (ref.startsWith("pk:")) {
+    if (!opts.url) throw new Error(`package_source_invalid: ${ref}: a pk: ref needs url, where the publisher's catalog is served (its strut's /packages/catalog?public=1, or the file it uploaded)`);
+    const got = await resolvePk(ref, { cache: opts.cache, url: opts.url, ...(opts.digest ? { digest: opts.digest } : {}), ...(opts.fetch ? { fetch: opts.fetch } : {}) });
+    const { key, url, release: _release, catalog: _catalog, ...info } = got;
+    return { ...info, source: { ref, url }, key };
+  }
+  if (ref.startsWith("git+")) throw new Error(`package_source_unsupported: ${ref}: git+ sources are not built yet — file: and pk: are`);
   throw new Error(`package_source_invalid: ${ref}: a package ref starts with file:, git+ or pk:`);
 }
 

@@ -2252,6 +2252,21 @@ production until install (step 2) calls the resolver.
        beside its `?t=` test, stakgraph); a subscriber doing anything with
        the fleet card's `public` member (the install-dedup rule is step 6's
        resolver's); the record, which will name the public key only.
+   - **Built 2026-10-28: the resolver, HTTP-first** (`src/packages/pk.ts`;
+     `POST /packages/install { ref: "pk:…", url, digest? }`, `specs/API.md`
+     §16; the ruling is strut#380's revision of §5, §7, §13 and steps
+     6–7): the catalog at `url` read as the key's card with `seq` kept per
+     key under `<dataDir>/packages/index/`, the release and its archive by
+     digest from the route beside the catalog then its `urls`, required
+     packages from the same catalog, `upstream.key` + `upstream.source.url`
+     pinned. Choices of mine, proposed: `url` is the CATALOG's full URL
+     (its query, `public=1`, rides onto the derived archive URL), not a
+     strut base, so an uploaded file works the same; a `pk:` ref is always
+     re-read from its catalog even when the cache holds the digest (the
+     catalog is the key's word, and the resolve is what pins the key); a
+     person's door still refuses an update (step 4's ask). Not built:
+     `yanked` as a write, the upload target, a catalog's own `urls`
+     member, the index row.
 7. **The public index + the shipped defaults** (§7, §13; *revised
    2026-10-28*): the INDEX ROLE on a strut (`STRUT_INDEX=1`, the way
    `STRUT_HOME_SYNC=box` is a role) — the index key and its card (step

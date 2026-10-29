@@ -87,6 +87,8 @@ export interface PackageDeps extends InstalledDeps {
   sealed?: readonly string[];
   /** Builds and publishes an app; without it a package with an app is refused. */
   apps?: AppsCapability;
+  /** What a `pk:` resolve fetches with (tests). */
+  fetch?: typeof fetch;
 }
 
 /** What happened to one item: `installed` new here; `present` already here
@@ -113,6 +115,8 @@ export interface PackageInstallReport {
 export interface InstallOptions {
   /** The digest `ref` must resolve to. */
   digest?: string;
+  /** A `pk:` ref's catalog URL (src/packages/pk.ts). */
+  url?: string;
   /** Recorded on every version written; owns the new workflows. */
   actor?: string;
   /** Who writes it (`install` unless said): the distro's door applies a
@@ -138,7 +142,9 @@ export interface InstallResult {
 /** One package of the set an install resolves. */
 interface Member {
   info: CachedPackage;
-  source: { ref: string };
+  source: { ref: string; url?: string };
+  /** The publisher key a `pk:` ref resolved. */
+  key?: string;
   /** Where a relative `file:` ref of its requirements resolves from. */
   base?: string;
 }
@@ -150,15 +156,15 @@ const isHelper = (item: PackageItem) => item.kind === "step" && !!item.helper;
  *  every package it requires — through the distro's door, updating it and
  *  them (the module comment). */
 export async function installPackage(deps: PackageDeps, ref: string, opts: InstallOptions = {}): Promise<InstallResult> {
-  const { digest, ...rest } = opts;
-  return installPackages(deps, [{ ref, ...(digest ? { digest } : {}) }], rest);
+  const { digest, url, ...rest } = opts;
+  return installPackages(deps, [{ ref, ...(digest ? { digest } : {}), ...(url ? { url } : {}) }], rest);
 }
 
 /** Install several packages as ONE install — all or nothing, every name of
  *  every package checked before the first write — each with what it
  *  requires, requirements first: a channel's release applied as a whole
  *  (§12.1). The result names the last package as the one asked for. */
-export async function installPackages(deps: PackageDeps, refs: Array<{ ref: string; digest?: string }>, opts: Omit<InstallOptions, "digest"> = {}): Promise<InstallResult> {
+export async function installPackages(deps: PackageDeps, refs: Array<{ ref: string; digest?: string; url?: string }>, opts: Omit<InstallOptions, "digest" | "url"> = {}): Promise<InstallResult> {
   if (!refs.length) throw new Error("package_source_invalid: nothing to install");
   const door = opts.door ?? "install";
   const before = new Map((await listInstalledPackages(deps)).map((p) => [p.package, p]));
@@ -206,6 +212,7 @@ async function installSet(
   if (busy.length) throw new Error(`package_busy: ${busy.map((i) => i.item.name).join(", ")} has a run in flight, and the release no longer ships it — cancel it first`);
 
   const upstreamOf = (m: Member): Upstream => ({
+    ...(m.key ? { key: m.key } : {}),
     package: m.info.manifest.package,
     version: m.info.manifest.version,
     digest: m.info.digest,
@@ -412,12 +419,15 @@ async function installSet(
  *  Exact pins union; a name pinned at two digests is refused, and so is one
  *  required at one digest and installed at another — unless the distro's
  *  door is installing, which updates it first (§4). */
-async function resolveSet(deps: PackageDeps, refs: Array<{ ref: string; digest?: string }>, installed: Map<string, InstalledPackage>, door: PackageDoor): Promise<Member[]> {
+async function resolveSet(deps: PackageDeps, refs: Array<{ ref: string; digest?: string; url?: string }>, installed: Map<string, InstalledPackage>, door: PackageDoor): Promise<Member[]> {
   const order: Member[] = [];
   const inSet = new Map<string, string>();
-  const visit = async (ref: string, digest: string | undefined, base: string | undefined, expected?: { package: string; by: string }): Promise<void> => {
-    const cached = digest ? await deps.cache.get(digest) : undefined;
-    const info = cached ?? (await resolvePackage(ref, { cache: deps.cache, ...(digest ? { digest } : {}), ...(base ? { base } : {}) }));
+  const visit = async (ref: string, digest: string | undefined, base: string | undefined, expected?: { package: string; by: string }, url?: string): Promise<void> => {
+    // A `pk:` ref is always resolved: the catalog is the key's word on the
+    // release, and the resolve records the key and URL the install pins.
+    const cached = digest && !ref.startsWith("pk:") ? await deps.cache.get(digest) : undefined;
+    const resolved = cached ? undefined : await resolvePackage(ref, { cache: deps.cache, ...(digest ? { digest } : {}), ...(base ? { base } : {}), ...(url ? { url } : {}), ...(deps.fetch ? { fetch: deps.fetch } : {}) });
+    const info = cached ?? resolved!;
     const pkg = info.manifest.package;
     if (expected && pkg !== expected.package) {
       throw new Error(`package_name_mismatch: ${expected.by} requires ${expected.package} from ${ref}, which is the package ${pkg}`);
@@ -429,7 +439,7 @@ async function resolveSet(deps: PackageDeps, refs: Array<{ ref: string; digest?:
       return;
     }
     inSet.set(pkg, info.digest);
-    const member: Member = { info, source: { ref }, ...(ref.startsWith("file:") ? { base: fileRefPath(ref, base) } : {}) };
+    const member: Member = { info, source: resolved?.source ?? { ref }, ...(resolved?.key ? { key: resolved.key } : {}), ...(ref.startsWith("file:") ? { base: fileRefPath(ref, base) } : {}) };
     for (const req of info.manifest.requires?.packages ?? []) {
       const pinned = inSet.get(req.package);
       if (pinned !== undefined) {
@@ -445,7 +455,7 @@ async function resolveSet(deps: PackageDeps, refs: Array<{ ref: string; digest?:
     }
     order.push(member);
   };
-  for (const r of refs) await visit(r.ref, r.digest, undefined);
+  for (const r of refs) await visit(r.ref, r.digest, undefined, undefined, r.url);
   return order;
 }
 

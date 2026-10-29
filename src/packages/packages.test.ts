@@ -176,7 +176,7 @@ describe("the package cache", () => {
     assert.equal(rel.manifest.package, "acme/linear");
     await assert.rejects(resolvePackage(`file:${join(root, "nope")}`, { cache }), /package_source_invalid: .*no directory/);
     await assert.rejects(resolvePackage("git+https://github.com/acme/linear@v1", { cache }), /package_source_unsupported: .*git\+ sources are not built yet/);
-    await assert.rejects(resolvePackage(`pk:${"y".repeat(52)}/acme/linear`, { cache }), /package_source_unsupported: .*pk: sources/);
+    await assert.rejects(resolvePackage(`pk:${"y".repeat(52)}/acme/linear`, { cache }), /package_source_invalid: .*a pk: ref needs url/);
     await assert.rejects(resolvePackage("https://example.com/x.tar.gz", { cache }), /package_source_invalid: .*starts with file:, git\+ or pk:/);
   });
 

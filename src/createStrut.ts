@@ -574,7 +574,7 @@ export interface Strut<TServices = unknown> {
    *  applies a release with no ask and updates an installed package item by
    *  item (§4). No route takes the door: an operator's subscription does. */
   packages: {
-    install(ref: string, opts?: Pick<InstallOptions, "digest" | "actor" | "door">): Promise<InstallResult>;
+    install(ref: string, opts?: Pick<InstallOptions, "digest" | "url" | "actor" | "door">): Promise<InstallResult>;
     uninstall(pkg: string, opts?: { door?: PackageDoor }): Promise<UninstallResult>;
   };
 
@@ -2829,9 +2829,9 @@ export async function createStrut<TServices = unknown>(
   const packageError = (c: Context, err: unknown) => {
     const message = err instanceof Error ? err.message : String(err);
     const code = /^([a-z_]+):/.exec(message)?.[1] ?? "";
-    const status = ["package_conflict", "package_update_not_built", "package_busy", "package_distro_owned"].includes(code)
+    const status = ["package_conflict", "package_update_not_built", "package_busy", "package_distro_owned"].includes(code) || code.startsWith("catalog_")
       ? 409
-      : code === "package_not_installed"
+      : code === "package_not_installed" || code === "package_not_published"
         ? 404
         : code === "bad_package" || code.startsWith("package_")
           ? 400
@@ -2841,14 +2841,17 @@ export async function createStrut<TServices = unknown>(
   app.get("/packages", async (c) => c.json({ packages: await listInstalledPackages(packageDeps) }));
   app.post("/packages/install", async (c) => {
     if (registryWasInjected) return c.json({ error: "Installing is disabled when the registry is provided at construction time" }, 409);
-    const body = await c.req.json<{ ref?: unknown; digest?: unknown }>().catch(() => ({}) as { ref?: unknown; digest?: unknown });
-    if (typeof body.ref !== "string" || !body.ref) return c.json({ error: "ref is required: the package's directory, file:/path/to/package" }, 400);
+    const body = await c.req.json<{ ref?: unknown; digest?: unknown; url?: unknown }>().catch(() => ({}) as { ref?: unknown; digest?: unknown; url?: unknown });
+    if (typeof body.ref !== "string" || !body.ref) return c.json({ error: "ref is required: the package's directory, file:/path/to/package, or pk:<key>/<publisher>/<name> with url" }, 400);
     if (body.digest !== undefined && (typeof body.digest !== "string" || !PACKAGE_DIGEST.test(body.digest))) {
       return c.json({ error: "digest is sha256:<64 hex>" }, 400);
     }
+    if (body.url !== undefined && (typeof body.url !== "string" || !/^https?:\/\/\S+$/.test(body.url))) {
+      return c.json({ error: "url is where the publisher's catalog is served: an http(s) URL (a strut's …/packages/catalog?public=1)" }, 400);
+    }
     const actor = await resolveActor(c);
     try {
-      const result = await packages.install(body.ref, { ...(body.digest ? { digest: body.digest as string } : {}), ...(actor ? { actor } : {}) });
+      const result = await packages.install(body.ref, { ...(body.digest ? { digest: body.digest as string } : {}), ...(body.url ? { url: body.url as string } : {}), ...(actor ? { actor } : {}) });
       return c.json(result, 201);
     } catch (err) {
       return packageError(c, err);
