@@ -191,10 +191,13 @@ params:
     # the prompt names), where the editor family reads it. A copy without
     # `workdir` lands in the run's own directory, out of the editor's reach.
     - git/checkout
-    # Packages someone already built (plans/marketplace.md §8): searched
-    # before writing an integration; installed only on the person's yes
-    # (package/install is a proposal: the card says what it brings).
+    # The package STORE (plans/marketplace.md §7, §8): searched before
+    # writing an integration, a hit's page read (what it holds and
+    # reaches), the Concept tree browsed; installed only on the person's
+    # yes (package/install is a proposal: the card says what it brings).
     - package/search
+    - package/get
+    - package/concepts
     - package/install
   # Tools among the grants that need the PERSON's approval
   # (plans/proposals.md): a call records a proposal instead of running the

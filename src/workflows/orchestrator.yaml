@@ -168,6 +168,13 @@ params:
     - job/read
     - strut/list-peers
     - strut/run-workflow
+    # The package STORE's reads (plans/marketplace.md §7, §8): "is there a
+    # package for that?" answered inside the turn — searched, a hit's page
+    # read, the Concept tree browsed. Reads: an install is proposed with
+    # package/install, below.
+    - package/search
+    - package/get
+    - package/concepts
     - app/grant
     # A package someone published (plans/marketplace.md §8): installed only
     # on the person's yes — the call is a proposal, the card says what it
