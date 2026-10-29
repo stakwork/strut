@@ -1,9 +1,8 @@
 import { z } from "zod";
 import { defineStep, type StepContext, withAccessedNodes } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
-import { graphCtx, errText, deriveNodeName, describeNodes } from "./_shared.js";
+import { graphCtx, errText, deriveNodeName, describeNodes, EXCLUDED_NODE_TYPES } from "./_shared.js";
 const NEIGHBOR_CAP = 50;
-const EXCLUDED_NODE_TYPES = ["Hint", "Memory", "Clip", "Turn"];
 
 export default defineStep({
   type: "graph/graph-neighbors",

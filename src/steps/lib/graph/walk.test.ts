@@ -191,7 +191,7 @@ describe("graph/walk: runWalk (offline)", () => {
     const out = await runWalk({ ...BASE, start: ["wf"], edge_type: ["VERSION_OF"], node_type: ["StrutWorkflowVersion"], namespace: "ns", maxHops: 3 }, { reader, evaluate });
 
     assert.deepEqual(calls.neighbors[0], ["wf", {
-      edge_types: ["VERSION_OF"], node_types: ["StrutWorkflowVersion"], exclude_node_types: ["Hint", "Memory", "Clip", "Turn"],
+      edge_types: ["VERSION_OF"], node_types: ["StrutWorkflowVersion"], exclude_node_types: ["Hint", "Memory", "Clip", "Turn", "Schema"],
       limit: 50, namespace: "ns", include_edge_counts: true,
     }]);
     assert.equal(out.stopped, "hops");

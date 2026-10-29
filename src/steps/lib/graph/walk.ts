@@ -5,7 +5,7 @@ import type { NodeEnvelope, EdgeEnvelope, NeighborsParams, SearchParams, SearchR
 import { modelEvaluate, type Evaluate, type EvalQuestion, type EvalAnswer } from "../../../evaluate.js";
 import { addUsage, emptyUsage, type TokenUsage } from "../../../pricing.js";
 import { resolveEvaluationModel, stepAuth } from "../../../llm.js";
-import { graphCtx, errText, deriveNodeName } from "./_shared.js";
+import { graphCtx, errText, deriveNodeName, EXCLUDED_NODE_TYPES } from "./_shared.js";
 import { bootEnv } from "../../../env.js";
 
 /**
@@ -34,8 +34,6 @@ import { bootEnv } from "../../../env.js";
 
 /** Neighbor fetch cap per hop, as in graph/graph-neighbors (importance-sorted first). */
 const NEIGHBOR_CAP = 50;
-/** Noise types graph/graph-neighbors also leaves out of a traversal. */
-const EXCLUDED_NODE_TYPES = ["Hint", "Memory", "Clip", "Turn"];
 /** Seeds taken from a `query` search. */
 const SEED_LIMIT = 5;
 /** Options offered to `next` per hop: this hop's candidates, then the best of the frontier. */

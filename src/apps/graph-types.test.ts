@@ -89,11 +89,10 @@ describe("an app's graph types, as a declaration", () => {
     for (const t of ["Invoice", "Customer", "Person", "Strategy"]) assert.equal(reservedAppType(t), null, t);
   });
 
-  it("a build is refused with no graph, on a LadybugDB file, on a reserved type or an attribute the schema writer refuses — and passes with nothing declared", async () => {
+  it("a build is refused with no graph, on a reserved type or an attribute the schema writer refuses — and passes with nothing declared", async () => {
     const m = manifest(INVOICES);
     assert.deepEqual(await checkAppGraph(manifest("title: T\n"), undefined), { errors: [], warnings: [] });
     assert.match((await checkAppGraph(m, undefined)).errors.join("\n"), /this strut has no graph .* does not build here/);
-    assert.match((await checkAppGraph(m, { kind: "ladybug" } as GraphBackend)).errors.join("\n"), /LadybugDB file, whose types are fixed in code/);
     const reserved = await checkAppGraph(manifest("title: T\ndata:\n  graph:\n    types:\n      Concept: { name: string }\n      StrutRun: { x: string }\n"), undefined);
     assert.equal(reserved.errors.length, 2);
     assert.match(reserved.errors[0]!, /^app\.yaml: data\.graph\.types\.Concept: Concept is the workspace's notes/);
@@ -119,9 +118,9 @@ describe("an app's graph types, as a declaration", () => {
   });
 });
 
-const neo4j = testBackends().find((t) => t.kind === "neo4j")!;
-
-describe("an app's graph types on Neo4j (live)", { skip: neo4j.skip }, () => {
+// On every graph: a LadybugDB file builds an app's types as Neo4j does
+// (plans/memory-in-workspace-graph.md, PR A).
+for (const tb of testBackends()) describe(`an app's graph types on ${tb.name}`, { skip: tb.skip }, () => {
   let b: GraphBackend;
   let kit: KitLocation;
   let root: string;
@@ -136,8 +135,8 @@ describe("an app's graph types on Neo4j (live)", { skip: neo4j.skip }, () => {
   before(async () => {
     savedKey = process.env["STRUT_API_KEY"];
     process.env["STRUT_API_KEY"] = "graph-types-key";
-    b = await neo4j.open();
-    await neo4j.wipe(b);
+    b = await tb.open();
+    await tb.wipe(b);
     await seedStrutDomain(b);
     kit = await kitForTests();
     root = await mkdtemp(join(tmpdir(), "strut-app-graph-"));
@@ -163,7 +162,7 @@ describe("an app's graph types on Neo4j (live)", { skip: neo4j.skip }, () => {
   });
   after(async () => {
     await strut?.close?.().catch(() => {});
-    if (b) await neo4j.close(b);
+    if (b) await tb.close(b);
     await rm(root, { recursive: true, force: true });
     if (savedKey === undefined) delete process.env["STRUT_API_KEY"];
     else process.env["STRUT_API_KEY"] = savedKey;

@@ -2,6 +2,8 @@
  * Node-schema registration: pure planning rules, and (live) the write —
  * a new type becomes writable through the NodeWriter, an existing jarvis
  * type can be extended add-only, and Strut's closed registry is refused.
+ * The same calls on a Ladybug file, and the one-name-one-type rule, are in
+ * `ladybug/ontology.test.ts`.
  */
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -56,6 +58,15 @@ describe("planNodeSchema (pure)", () => {
     assert.equal(code(() => planNodeSchema({ type: "X", attributes: { a: "string" }, title_key: "zz" })), "UNKNOWN_ATTRIBUTE:title_key");
     assert.equal(code(() => planNodeSchema({ type: "X", attributes: {}, node_key: "-" })), "MISSING_REQUIRED:node_key");
     assert.equal(code(() => planNodeSchema({ type: "X", attributes: { a: "?list", b: "datetime", name: "string" } })), "ok");
+  });
+
+  it("aliases and an owner: deduplicated case-blind, the type's own name dropped, each a type label; stored flat", () => {
+    const p = planNodeSchema({ type: "Organization", attributes: {}, aliases: ["Company", "company", "organization", " Firm "], managed_by: "memory" });
+    assert.deepEqual(p.aliases, ["Company", "Firm"]);
+    assert.deepEqual(p.flat["aliases"], ["Company", "Firm"]);
+    assert.equal(p.flat["managed_by"], "memory");
+    assert.equal(code(() => planNodeSchema({ type: "X", attributes: {}, aliases: ["two words"] })), "UNKNOWN_TYPE:aliases");
+    assert.ok(!("aliases" in planNodeSchema({ type: "X", attributes: {} }).flat));
   });
 });
 

@@ -2,16 +2,20 @@
  * An app's GRAPH TYPES (plans/apps.md §4.3, work item 4): what `data.graph`
  * in `app.yaml` becomes on the workspace's graph.
  *
- * Neo4j only (ruled 2026-10-26). A LadybugDB file keeps its closed registry
- * (plans/ladybug-backend.md ruling 6), and the filesystem workspace has no
- * graph, so on either an app that declares graph types does not build, and
- * the error says why. On Neo4j:
+ * On Neo4j and on a LadybugDB file alike (the Neo4j-only rule of 2026-10-26
+ * was lifted 2026-10-28 when Ladybug's ontology became dynamic,
+ * plans/memory-in-workspace-graph.md). The filesystem workspace has no
+ * graph, so there an app that declares graph types does not build, and the
+ * error says why. On a graph:
  *
  *   - every BUILD checks the declaration against the graph (`checkAppGraph`):
  *     a type strut keeps for itself is refused, and so is one the graph
  *     already holds with an attribute of another type, another key, or a
  *     required attribute this app does not declare — "a conflicting
  *     declaration is a build error";
+ *   - on Ladybug every attribute is a column, so an attribute whose name
+ *     another type holds as another column type is refused at publish
+ *     (`ladybug/ontology.ts`);
  *   - a PUBLISH registers it (`registerAppGraph`), before the version is
  *     recorded: each type through `createNodeSchema` (jarvis's `POST
  *     /v2/schema` shape — a new type, or an existing one extended add-only),
@@ -126,11 +130,7 @@ export async function checkAppGraph(manifest: AppManifest, graph: GraphBackend |
   if (errors.length) return { errors, warnings };
 
   if (!graph) {
-    errors.push(`${MANIFEST_FILE}: data.graph: this strut has no graph (its workspace is on the filesystem), so an app that declares graph types does not build here — keep the data in runs, or build the app on a strut whose graph is Neo4j`);
-    return { errors, warnings };
-  }
-  if (graph.kind !== "neo4j") {
-    errors.push(`${MANIFEST_FILE}: data.graph: this strut's graph is a LadybugDB file, whose types are fixed in code (plans/ladybug-backend.md §3), so an app that declares graph types does not build here — build it on a strut whose graph is Neo4j`);
+    errors.push(`${MANIFEST_FILE}: data.graph: this strut has no graph (its workspace is on the filesystem), so an app that declares graph types does not build here — keep the data in runs, or build the app on a strut with a graph`);
     return { errors, warnings };
   }
 
@@ -176,7 +176,7 @@ export interface RegisteredGraph {
 }
 
 /**
- * Register the declared types and edges on a Neo4j graph, add-only. Run
+ * Register the declared types and edges on the graph, add-only. Run
  * after `checkAppGraph` passed; one registration at a time per process.
  */
 export async function registerAppGraph(manifest: AppManifest, graph: GraphBackend, app?: string): Promise<RegisteredGraph> {
