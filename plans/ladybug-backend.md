@@ -187,8 +187,9 @@ read-write PROCESS per file, N read-only.
 > (`node_type: 'Schema'`, as Neo4j keeps `:Schema` nodes), a parent is a
 > `CHILD_OF` edge between two of them and an allowed `S -[E]-> T` an `E`
 > edge between them — both in one rel table of the ontology's own,
-> `SCHEMA_EDGE`, its `edge_type` the CHILD_OF or E, so the data's rel
-> tables hold only data (`src/graph/ladybug/ontology.ts`). `registry.ts` is the
+> `SCHEMA_EDGE` (a parent link marked `is_parent`, a rule carrying its
+> `edge_type`; neither ever read as the other), so the data's rel tables
+> hold only data (`src/graph/ladybug/ontology.ts`). `registry.ts` is the
 > SEED: its types and edges are written at open, add-only, stamped in
 > `Migration`, and types and edge types are created and extended at runtime
 > (`graph/create-schema`, `create_schema_if_missing`, an app's

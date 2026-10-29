@@ -52,8 +52,8 @@ import { GraphValidationError } from "../node-writer.js";
 import type { NodeSchema } from "../schema-resolver.js";
 import type { LadybugHandle } from "./db.js";
 import * as ontology from "./ontology.js";
-import { catalogOf, readCatalog, type Catalog, type LadybugCatalog } from "./ontology.js";
-import { EDGE_COLUMNS, GENERIC_COLUMNS, LADYBUG_STRUT_TYPES, nodeColumns } from "./registry.js";
+import { SCHEMA_EDGE, catalogOf, readCatalog, type Catalog, type LadybugCatalog } from "./ontology.js";
+import { EDGE_COLUMNS, GENERIC_COLUMNS, LADYBUG_STRUT_TYPES, SCHEMA_TYPE } from "./registry.js";
 
 const q = (s: string) => `\`${s}\``;
 const lit = (s: string) => `'${s.replace(/'/g, "''")}'`;
@@ -111,12 +111,13 @@ export class LadybugEngine implements GraphEngine {
 const on = (lbug: LadybugHandle, tx: GraphTx | undefined, cypher: string, params: Params = {}) =>
   tx ? tx.run(cypher, params) : lbug.exclusive((w) => w(cypher, params));
 
-/** The catalog, read again on `tx` when it lacks one of `names` (a column or
- *  table another handle's write, or one in this transaction, just made). */
+/** The catalog, read again on `tx` when it lacks what `has` asks for (a
+ *  column or table this transaction just made). The shared cache is left
+ *  alone: a miss is as often a name the file never had, and a schema write
+ *  drops the cache itself once it commits. */
 async function catalogFor(catalog: LadybugCatalog, tx: GraphTx, has: (c: Catalog) => boolean): Promise<Catalog> {
   const cached = await catalog.get();
   if (has(cached)) return cached;
-  catalog.invalidate();
   return readCatalog((cypher, params) => tx.run(cypher, params));
 }
 
@@ -243,7 +244,8 @@ class LadybugNodes implements NodeEngine {
     const go = async (tx: GraphTx): Promise<SoftDeleteResult | null> => {
       const params: Params = { ref_id, now: opts.at ?? Date.now() };
       const pattern = ["ref_id: $ref_id"];
-      const where: string[] = [];
+      // A Schema row is the ontology, not a node any delete may take.
+      const where: string[] = [`n.node_type <> '${SCHEMA_TYPE}'`];
       if (guard.type) {
         params["type"] = guard.type;
         pattern.push("node_type: $type");
@@ -255,7 +257,7 @@ class LadybugNodes implements NodeEngine {
       }
       let i = 0;
       for (const [k, v] of Object.entries(guard.props ?? {})) {
-        if (!nodeColumns()[k]) return null;
+        if (!(await this.known(tx, [k]))[k]) return null;
         params[`g${i}`] = v;
         pattern.push(`${q(k)}: $g${i++}`);
       }
@@ -345,7 +347,8 @@ class LadybugEdges implements EdgeEngine {
   }
 
   private async locate(tx: GraphTx, ref_id: string): Promise<{ edge: string; src: string; tgt: string } | null> {
-    const rows = await tx.run(`MATCH (s:Node)-[r {ref_id: $ref_id}]->(t:Node) RETURN label(r) AS edge, s.ref_id AS src, t.ref_id AS tgt LIMIT 1`, { ref_id });
+    // The ontology's own edges are not edges a writer may touch.
+    const rows = await tx.run(`MATCH (s:Node)-[r {ref_id: $ref_id}]->(t:Node) WHERE label(r) <> '${SCHEMA_EDGE}' RETURN label(r) AS edge, s.ref_id AS src, t.ref_id AS tgt LIMIT 1`, { ref_id });
     const r = rows[0];
     return r ? { edge: String(r["edge"]), src: String(r["src"]), tgt: String(r["tgt"]) } : null;
   }
@@ -406,7 +409,7 @@ class LadybugEdges implements EdgeEngine {
   }
 
   async copyProps(tx: GraphTx, fromRef: string, toRef: string): Promise<void> {
-    const old = await tx.run(`MATCH ()-[r {ref_id: $ref_id}]->() RETURN r AS rel LIMIT 1`, { ref_id: fromRef });
+    const old = await tx.run(`MATCH ()-[r {ref_id: $ref_id}]->() WHERE label(r) <> '${SCHEMA_EDGE}' RETURN r AS rel LIMIT 1`, { ref_id: fromRef });
     const at = await this.locate(tx, toRef);
     if (!old[0] || !at) return;
     const props = edgeProps(old[0]["rel"] as Record<string, unknown>);
@@ -438,15 +441,17 @@ export class LadybugSchemas implements SchemaSource {
     return tx ? (c, p) => tx.run(c, p) : (c, p) => this.lbug.query(c, p);
   }
 
+  /** A schema write. The shared catalog is dropped now and again once the
+   *  transaction is over: a read on the read connection before the COMMIT
+   *  caches the tables as they were, so the second drop is queued behind
+   *  the transaction on the handle's write queue, where it runs after the
+   *  COMMIT (or ROLLBACK) whoever opened the transaction. */
   private async write<T>(tx: GraphTx | undefined, fn: (run: ontology.Run, catalog: Catalog) => Promise<T>): Promise<T> {
     const go = async (t: GraphTx) => {
       const run: ontology.Run = (c, p) => t.run(c, p);
       this.catalog.invalidate();
-      try {
-        return await fn(run, await readCatalog(run));
-      } finally {
-        this.catalog.invalidate();
-      }
+      void this.lbug.exclusive(async () => this.catalog.invalidate()).catch(() => this.catalog.invalidate());
+      return fn(run, await readCatalog(run));
     };
     return tx ? go(tx) : this.lbug.withWrite(go);
   }

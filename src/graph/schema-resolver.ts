@@ -217,7 +217,7 @@ export class SchemaResolver {
     return {
       type,
       parent: typeof merged["parent"] === "string" ? (merged["parent"] as string) : undefined,
-      node_key: String(own["node_key"] ?? merged["node_key"] ?? `${type.toLowerCase()}-name`),
+      node_key: String(merged["node_key"] ?? `${type.toLowerCase()}-name`),
       ...(merged["exact_key"] === true ? { exact_key: true } : {}),
       index: index.length ? index : ["node_key"],
       vector_index: Array.isArray(rawVi) ? rawVi.map(String) : [],
@@ -303,7 +303,6 @@ export class SchemaResolver {
       }
       const ref_id = randomUUID();
       const r = await this.source.ensureEdgeSchema(sourceType, edgeType, targetType, { ref_id }, tx);
-      if (!r) throw new Error(`schema ${sourceType} or ${targetType} does not exist`);
       this.edges.clear();
       return { created: r?.created ?? false, ref_id: r?.ref_id ?? ref_id };
     });

@@ -49,17 +49,19 @@ import type { NodeInput } from "./node-writer.js";
 import type { EdgeInput } from "./edge-writer.js";
 import { PREVIEW_MAX_CHARS, getStrutSchema } from "./strut-schemas.js";
 
-/** Does this backend's ontology hold nodes of `type`? A stand-in with no
- *  resolver holds every type. */
+/** Does this backend's ontology hold nodes of `type`? Every type where
+ *  Strut's own types come from code (Neo4j: jarvis's meta-graph is open, and
+ *  a stand-in with no store); on a Ladybug file, what its Schema rows hold. */
 async function holds(backend: GraphBackend, type: string): Promise<boolean> {
-  return !backend.schemas || (await backend.schemas.schema(type)) !== null;
+  if (!backend.schemaSource?.holdsStrutTypes) return true;
+  return (await backend.schemas.schema(type)) !== null;
 }
 
 /** The `unique_source_id` reconciliation stamp is jarvis's (Thing's); a type
  *  that leaves it off (a Ladybug file's) gets the nodes without it — identity
  *  is the node_key there anyway. */
 async function fit(backend: GraphBackend, nodes: NodeInput[]): Promise<NodeInput[]> {
-  if (!backend.schemas) return nodes;
+  if (!backend.schemaSource?.holdsStrutTypes) return nodes;
   return Promise.all(
     nodes.map(async (n) => ((await backend.schemas.schema(n.type))?.attributes["unique_source_id"] ? n : { ...n, data: Object.fromEntries(Object.entries(n.data).filter(([k]) => k !== "unique_source_id")) })),
   );

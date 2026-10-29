@@ -2,10 +2,12 @@
  * A Ladybug file's ontology (plans/memory-in-workspace-graph.md, PR A;
  * decisions 1, 4, 5): types are `Schema` rows of the `Node` table, as Neo4j
  * keeps `:Schema` nodes. The ontology's edges are one rel table of their
- * own, `SCHEMA_EDGE`, whose `edge_type` says what each is: a type's parent
- * is a `CHILD_OF` one between two Schema rows, and an allowed `source
- * -[EDGE]-> target` an `EDGE` one (so, as on Neo4j, a parent link is also
- * the rule "CHILD_OF from the child to the parent"). Kept apart from the
+ * own, `SCHEMA_EDGE`: a type's parent is a `CHILD_OF` one between two
+ * Schema rows marked `is_parent`, and an allowed `source -[EDGE]-> target`
+ * an unmarked one with `edge_type` EDGE. The two never stand in for each
+ * other: the ancestor walk reads only parent links, the edge-rule lookups
+ * only rules (so a type's parent link to Thing allows no CHILD_OF edge, and
+ * the rule Concept -[CHILD_OF]-> Concept is no parent). Kept apart from the
  * data's rel tables, a read of an edge type never meets the ontology. The `*` row is the
  * wildcard sentinel.
  *
@@ -44,6 +46,9 @@ export const SCHEMA_EDGE = "SCHEMA_EDGE";
 const NODE_TABLES = new Set(["NODE", "MIGRATION", SCHEMA_EDGE]);
 /** One ontology edge of a type: `(a)-[r:SCHEMA_EDGE]->(b)` with `r.edge_type`. */
 const SE = (alias: string) => `[${alias}:${SCHEMA_EDGE}]`;
+/** A parent link, and an edge rule: the one mark that tells them apart. */
+const PARENT = (alias: string) => `${alias}.is_parent = true`;
+const RULE = (alias: string) => `${alias}.is_parent IS NULL`;
 const WILDCARD = "*";
 /** jarvis's ancestor walk depth (`MAX_ANCESTOR_WALK_DEPTH`). */
 const MAX_DEPTH = 10;
@@ -160,11 +165,10 @@ export async function schemaRows(run: Run): Promise<SchemaRow[]> {
   return rows.map((r) => toSchemaRow(r["n"] as Record<string, unknown>));
 }
 
-/** Every ontology edge between two live Schemas, the wildcard's and the
- *  parent links included (as Neo4j lists them). */
+/** Every edge rule between two live Schemas, the wildcard's included. */
 export async function edgeSchemaRows(run: Run): Promise<Array<{ edge: string; source: string; target: string }>> {
   const rows = await run(
-    `MATCH ${S("s")}-${SE("r")}->${S("t")} WHERE s.deleted_at IS NULL AND t.deleted_at IS NULL
+    `MATCH ${S("s")}-${SE("r")}->${S("t")} WHERE s.deleted_at IS NULL AND t.deleted_at IS NULL AND ${RULE("r")}
      RETURN r.edge_type AS edge, s.type AS source, t.type AS target`,
   );
   return rows
@@ -172,13 +176,14 @@ export async function edgeSchemaRows(run: Run): Promise<Array<{ edge: string; so
     .sort((a, b) => a.edge.localeCompare(b.edge) || a.source.localeCompare(b.source) || a.target.localeCompare(b.target));
 }
 
-/** The CHILD_OF ancestors of `type` (exact), nearest first. */
+/** The CHILD_OF ancestors of `type` (exact), nearest first: parent links
+ *  only, never an edge rule named CHILD_OF. */
 export async function ancestors(run: Run, type: string): Promise<{ chain: string[]; rows: Array<Record<string, unknown>> }> {
   const chain: string[] = [];
   const rows: Array<Record<string, unknown>> = [];
   let at = type;
   for (let i = 0; i < MAX_DEPTH; i++) {
-    const up = await run(`MATCH ${S("c")}-${SE("r")}->${S("p")} WHERE c.type = $t AND r.edge_type = 'CHILD_OF' RETURN p ORDER BY p.type LIMIT 1`, { t: at });
+    const up = await run(`MATCH ${S("c")}-${SE("r")}->${S("p")} WHERE c.type = $t AND ${PARENT("r")} RETURN p ORDER BY p.type LIMIT 1`, { t: at });
     if (!up.length) break;
     const row = toSchemaRow(up[0]!["p"] as Record<string, unknown>);
     if (row.type === type || chain.includes(row.type)) break;
@@ -190,10 +195,10 @@ export async function ancestors(run: Run, type: string): Promise<{ chain: string
 }
 
 /** The rule `source -[edge]-> target` (exact types), case-blind on the edge
- *  type: its edge type as stored, and its properties. */
+ *  type: its edge type as stored, and its properties. A parent link is no rule. */
 async function edgeBetween(run: Run, edge: string, source: string, target: string): Promise<{ edge: string; props: Record<string, unknown> } | null> {
   const rows = await run(
-    `MATCH ${S("s")}-${SE("r")}->${S("t")} WHERE s.type = $s AND t.type = $t AND lower(r.edge_type) = lower($e)
+    `MATCH ${S("s")}-${SE("r")}->${S("t")} WHERE s.type = $s AND t.type = $t AND ${RULE("r")} AND lower(r.edge_type) = lower($e)
      RETURN r.edge_type AS edge, r.ref_id AS ref_id ORDER BY CASE WHEN r.edge_type = $e THEN 0 ELSE 1 END LIMIT 1`,
     { s: source, t: target, e: edge },
   );
@@ -269,23 +274,31 @@ export async function addColumns(run: Run, catalog: Catalog, type: string, attri
   // Every check before the first ALTER: rolling back a transaction that
   // altered a table can crash the engine (ladybug 0.21), so a refused type
   // must leave its transaction without DDL in it.
+  const wanted = planColumns(catalog.columns, type, attributes);
+  for (const [k, col] of wanted) {
+    await run(`ALTER TABLE Node ADD IF NOT EXISTS ${q(k)} ${col}`);
+    catalog.columns[k] = col;
+  }
+  return wanted.map(([k]) => k);
+}
+
+/** The columns `attributes` need that `columns` lacks, with their types;
+ *  throws the refusal when one cannot be a column or clashes with one
+ *  `columns` has (decision 5). Pure: no statement runs. */
+export function planColumns(columns: Readonly<Record<string, string>>, type: string, attributes: Record<string, string>): Array<[string, ColumnType]> {
   const wanted: Array<[string, ColumnType]> = [];
   for (const [k, t] of Object.entries(attributes)) {
     if (!IDENT.test(k)) throw new GraphValidationError("UNKNOWN_ATTRIBUTE", type, "attribute name is not a bare identifier", k);
     const base = t.replace(/^\?/, "") as Parameters<typeof columnTypeOf>[0];
     const col: ColumnType | null = columnTypeOf(base);
     if (!col) throw new GraphValidationError("WRONG_TYPE", type, `a ${base} attribute has no column type in a ladybug file (string, boolean, int, float, datetime or list)`, k);
-    const have = catalog.columns[k];
+    const have = columns[k];
     if (have && have !== col) {
       throw new GraphValidationError("WRONG_TYPE", type, `${k} is a ${have} column in this graph and ${t} would need ${col} — one attribute name keeps one column type across every type`, k);
     }
     if (!have) wanted.push([k, col]);
   }
-  for (const [k, col] of wanted) {
-    await run(`ALTER TABLE Node ADD IF NOT EXISTS ${q(k)} ${col}`);
-    catalog.columns[k] = col;
-  }
-  return wanted.map(([k]) => k);
+  return wanted;
 }
 
 /** The rel table for `edge`, created when the file lacks it (decision 4). */
@@ -305,10 +318,10 @@ export async function ensureSchemaEdgeTable(run: Run, catalog: Catalog): Promise
   catalog.edges.add(SCHEMA_EDGE);
 }
 
-/** Shaped like every other rel table (the edge columns), plus the type. */
+/** Shaped like every other rel table (the edge columns), plus the type and the parent mark. */
 export const SCHEMA_EDGE_DDL = `CREATE REL TABLE IF NOT EXISTS ${SCHEMA_EDGE}(FROM Node TO Node, ${Object.entries(EDGE_COLUMNS)
   .map(([k, t]) => `${q(k)} ${t}`)
-  .join(", ")}, ${q("edge_type")} STRING)`;
+  .join(", ")}, ${q("edge_type")} STRING, ${q("is_parent")} BOOL)`;
 
 /** The row's fields as a CREATE / SET list, lists cast (an empty list has no type of its own). */
 function assigns(alias: string, fields: Record<string, unknown>, params: Params, sep: ": " | " = "): string[] {
@@ -342,8 +355,9 @@ export async function createSchemaRow(run: Run, catalog: Catalog, flat: Record<s
   await run(`CREATE (n:Node {${fields.join(", ")}})`, params);
 }
 
-/** Add keys to an existing Schema (exact type): its fields set, its
- *  attributes merged in, a new attribute's column added. */
+/** Set keys on an existing Schema (exact type): its fields set (its
+ *  `node_key` spec too, when given), its attributes merged in (the given
+ *  ones win), a new attribute's column added. */
 export async function extendSchemaRow(run: Run, catalog: Catalog, type: string, props: Record<string, unknown>): Promise<void> {
   const rows = await run(`MATCH ${S("n")} WHERE n.type = $t RETURN n.attributes AS a`, { t: type });
   if (!rows.length) return;
@@ -351,6 +365,10 @@ export async function extendSchemaRow(run: Run, catalog: Catalog, type: string, 
   await addColumns(run, catalog, type, attributes);
   const params: Params = { t: type, attributes: JSON.stringify({ ...parseAttributes(rows[0]!["a"]), ...attributes }) };
   const sets = ["n.attributes = $attributes", ...assigns("n", core, params, " = ")];
+  if (typeof props["node_key"] === "string") {
+    params["node_key"] = props["node_key"];
+    sets.push("n.node_key = $node_key");
+  }
   await run(`MATCH ${S("n")} WHERE n.type = $t SET ${sets.join(", ")}`, params);
 }
 
@@ -365,8 +383,9 @@ export async function ensureChildOf(run: Run, catalog: Catalog, child: string, p
   await ensureSchemaEdgeTable(run, catalog);
   const ends = await run(`MATCH ${S("c")}, ${S("p")} WHERE c.type = $c AND p.type = $p RETURN c.ref_id AS c`, { c: child, p: parent });
   if (!ends.length) return null;
-  if (await edgeBetween(run, "CHILD_OF", child, parent)) return false;
-  await run(`MATCH ${S("c")}, ${S("p")} WHERE c.type = $c AND p.type = $p CREATE (c)-[:${SCHEMA_EDGE} {ref_id: $ref_id, edge_type: 'CHILD_OF'}]->(p)`, { c: child, p: parent, ref_id });
+  const have = await run(`MATCH ${S("c")}-${SE("r")}->${S("p")} WHERE c.type = $c AND p.type = $p AND ${PARENT("r")} RETURN r.ref_id AS r LIMIT 1`, { c: child, p: parent });
+  if (have.length) return false;
+  await run(`MATCH ${S("c")}, ${S("p")} WHERE c.type = $c AND p.type = $p CREATE (c)-[:${SCHEMA_EDGE} {ref_id: $ref_id, edge_type: 'CHILD_OF', is_parent: true}]->(p)`, { c: child, p: parent, ref_id });
   return true;
 }
 
@@ -397,37 +416,78 @@ export async function ensureWildcardSchema(run: Run, ref_id: string): Promise<vo
 
 export interface OntologySeedReport {
   createdSchemas: string[];
-  /** Existing Schemas given the seed keys they lacked (add-only). */
+  /** Seed types whose stored row differed from the seed, with the keys the
+   *  seed set back: strut's own definitions win on their own keys. */
   reconciled: Record<string, string[]>;
   createdEdgeSchemas: string[];
+  /** Seed types left as they are, and why: a column of another type, or a
+   *  name another type holds. Never a failed open. */
+  skipped: string[];
 }
 
-/** The seed (`registry.ts`) into the file, add-only: a missing type is
- *  created, an existing one only gains the keys it lacks, its parent link
- *  and edge rules are made when absent. A second run changes nothing. */
-export async function seedOntology(run: Run): Promise<OntologySeedReport> {
-  const seed = ontologySeed();
+const same = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+
+/**
+ * The seed (`registry.ts`) into the file. A missing type is created; an
+ * existing seed type is RECONCILED: the seed's own keys (fields, `node_key`
+ * spec, parent, the attributes it declares) are set back to the seed's, so
+ * a change to strut's types reaches files made before it, and anything
+ * added at runtime (another attribute, an alias) stays. Edge rules are
+ * add-only. A second run changes nothing.
+ *
+ * Planned whole before any statement that alters a table, since rolling
+ * back DDL can crash the engine: a seed type whose attributes clash with a
+ * column (a runtime type took the name first), or whose name a runtime type
+ * holds as an alias or in another casing, is skipped and reported, and the
+ * rest of the seed lands.
+ */
+export async function seedOntology(run: Run, seed = ontologySeed()): Promise<OntologySeedReport> {
   const catalog = await readCatalog(run);
-  const report: OntologySeedReport = { createdSchemas: [], reconciled: {}, createdEdgeSchemas: [] };
+  const report: OntologySeedReport = { createdSchemas: [], reconciled: {}, createdEdgeSchemas: [], skipped: [] };
+  const names = await typesNamed(run, seed.schemas.map((f) => String(f["type"])));
+  const columns: Record<string, string> = { ...catalog.columns };
+  const plans: Array<{ flat: Record<string, unknown>; hit: SchemaRow | null; changed: string[] }> = [];
   for (const flat of seed.schemas) {
     const type = String(flat["type"]);
-    const hit = await schemaRow(run, type);
-    if (!hit || hit.type !== type) {
-      await createSchemaRow(run, catalog, flat);
-      report.createdSchemas.push(type);
+    const holder = names.find((n) => n.type !== type && (n.type.toLowerCase() === type.toLowerCase() || n.aliases.some((a) => a.toLowerCase() === type.toLowerCase())));
+    if (holder) {
+      report.skipped.push(`${type}: the name is held by ${holder.type}`);
       continue;
     }
-    const missing: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(flat)) if (k !== "type" && k !== "parent" && k !== "node_key" && !(k in hit.props)) missing[k] = v;
-    if (Object.keys(missing).length) {
-      await extendSchemaRow(run, catalog, type, missing);
-      report.reconciled[type] = Object.keys(missing).sort();
+    const hit = await schemaRow(run, type);
+    const { attributes } = splitFlat(flat);
+    try {
+      for (const [k, col] of planColumns(columns, type, attributes)) columns[k] = col;
+    } catch (e) {
+      if (!(e instanceof GraphValidationError)) throw e;
+      report.skipped.push(`${type}: ${e.message}`);
+      continue;
+    }
+    const changed = hit ? Object.entries(flat).filter(([k, v]) => k !== "type" && !same(hit.props[k], v)).map(([k]) => k) : [];
+    plans.push({ flat, hit: hit && hit.type === type ? hit : null, changed });
+  }
+
+  for (const { flat, hit, changed } of plans) {
+    const type = String(flat["type"]);
+    if (!hit) {
+      await createSchemaRow(run, catalog, flat);
+      report.createdSchemas.push(type);
+    } else if (changed.length) {
+      await extendSchemaRow(run, catalog, type, flat);
+      report.reconciled[type] = changed.sort();
     }
   }
-  for (const flat of seed.schemas) {
-    if (typeof flat["parent"] === "string") await ensureChildOf(run, catalog, String(flat["type"]), flat["parent"], randomUUID());
+  const planned = new Set(plans.map((p) => String(p.flat["type"])));
+  for (const { flat } of plans) {
+    const type = String(flat["type"]);
+    const parent = typeof flat["parent"] === "string" ? flat["parent"] : undefined;
+    if (!parent) continue;
+    // One parent, the seed's: a link to another (an older seed's) goes.
+    await run(`MATCH ${S("c")}-${SE("r")}->${S("p")} WHERE c.type = $c AND ${PARENT("r")} AND p.type <> $p DELETE r`, { c: type, p: parent });
+    await ensureChildOf(run, catalog, type, parent, randomUUID());
   }
   for (const e of seed.edges) {
+    if (!planned.has(e.source) || !planned.has(e.target)) continue;
     const r = await ensureEdgeSchema(run, catalog, e.source, e.edge, e.target, { ref_id: randomUUID() });
     if (r?.created) report.createdEdgeSchemas.push(`${e.source}-[${e.edge}]->${e.target}`);
   }

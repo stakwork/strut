@@ -26,10 +26,11 @@
  * `node_key`, `index`) are never touched. That is what lets a workflow add
  * `verdict` to a jarvis-seeded `Claim` without editing the ontology by hand.
  *
- * Names are one-to-one across the ontology (plans/memory-in-workspace-graph.md
- * decision 9): a type's name and its `aliases` may not be another type's
- * name or alias, case-blind, and a type `managed_by` an owner (memory) is
- * extended by that owner only.
+ * On a Ladybug file names are one-to-one across the ontology
+ * (plans/memory-in-workspace-graph.md decision 9): a type's name and its
+ * `aliases` may not be another type's name or alias, case-blind, and a type
+ * `managed_by` an owner (memory) is extended by that owner only. Neo4j
+ * keeps jarvis's rules (`SchemaSource.typesNamed` is Ladybug's).
  *
  * Strut's own types are a closed in-code registry (`strut-schemas.ts`) and
  * are refused here. On Ladybug the same calls write `Schema` rows, and a
@@ -200,8 +201,8 @@ export async function createNodeSchema(e: EngineLike, resolver: SchemaResolver, 
   if (isStrutType(parent)) throw new GraphValidationError("UNKNOWN_TYPE", plan.type, "Strut's own types cannot be extended (closed registry)", "parent");
 
   const result = await engine.tx(async (tx) => {
-    // One name, one type, one owner (decision 9).
-    for (const held of await src.typesNamed([plan.type, ...plan.aliases], tx)) {
+    // One name, one type, one owner (decision 9), where the store keeps it.
+    for (const held of (await src.typesNamed?.([plan.type, ...plan.aliases], tx)) ?? []) {
       const same = held.type.toLowerCase() === plan.type.toLowerCase();
       if (same && held.managed_by !== managedBy) {
         throw new GraphValidationError("DUPLICATE_KEY", plan.type, `${held.type} is owned by ${held.managed_by ?? "the workspace"}; it cannot be declared or extended here`);

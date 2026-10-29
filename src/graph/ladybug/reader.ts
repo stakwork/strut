@@ -83,6 +83,8 @@ type Engine = Pick<GraphEngine, "query" | "namespace"> & { readonly catalog: Lad
 const q = (s: string) => `\`${s}\``;
 const lit = (s: string) => `'${s.replace(/'/g, "''")}'`;
 const LIVE = (alias: string) => `${alias}.deleted_at IS NULL`;
+/** A data node: the ontology's Schema rows are not walked or counted. */
+const DATA = (alias: string) => `${alias}.node_type <> '${SCHEMA_TYPE}'`;
 
 /** A node as a struct of every column but the vector: 384 floats on every
  *  row of an over-fetch are weight the response strips anyway. */
@@ -154,7 +156,8 @@ export class LadybugReader implements GraphReader {
   // ── nodes ───────────────────────────────────────────────────────────────
 
   async getNode(ref_id: string): Promise<NodeEnvelope | null> {
-    const rows = await this.engine.query(`MATCH (n:Node {ref_id: $ref_id}) WHERE ${LIVE("n")} RETURN ${await this.project("n")} AS n LIMIT 1`, { ref_id });
+    // A Schema row is read through the ontology views, never as a node.
+    const rows = await this.engine.query(`MATCH (n:Node {ref_id: $ref_id}) WHERE ${LIVE("n")} AND ${DATA("n")} RETURN ${await this.project("n")} AS n LIMIT 1`, { ref_id });
     return rows.length === 0 ? null : envelope(hitNode(rows[0]!["n"]));
   }
 
@@ -193,7 +196,7 @@ export class LadybugReader implements GraphReader {
     await this.resolveNamespace(namespace);
     const half = (dir: "out" | "in") =>
       this.engine.query(
-        `MATCH (n:Node {ref_id: $ref_id})${dir === "out" ? "-[r]->" : "<-[r]-"}(m:Node) WHERE ${LIVE("m")}
+        `MATCH (n:Node {ref_id: $ref_id})${dir === "out" ? "-[r]->" : "<-[r]-"}(m:Node) WHERE ${LIVE("m")} AND ${DATA("m")}
          RETURN label(r) AS edge_type, m.node_type AS target_type, count(*) AS cnt`,
         { ref_id },
       );
@@ -210,7 +213,7 @@ export class LadybugReader implements GraphReader {
     if (ref_ids.length === 0) return {};
     await this.resolveNamespace(namespace);
     const rows = await this.engine.query(
-      `UNWIND $ids AS id MATCH (n:Node {ref_id: id})-[r]-(m:Node) WHERE ${LIVE("m")}
+      `UNWIND $ids AS id MATCH (n:Node {ref_id: id})-[r]-(m:Node) WHERE ${LIVE("m")} AND ${DATA("m")}
        RETURN id AS ref_id, label(r) AS edge_type, count(*) AS cnt`,
       { ids: ref_ids },
     );
@@ -220,7 +223,7 @@ export class LadybugReader implements GraphReader {
   }
 
   async neighbors(ref_id: string, p: NeighborsParams = {}): Promise<{ nodes: NodeEnvelope[]; edges: EdgeEnvelope[] }> {
-    const where = [LIVE("node")];
+    const where = [LIVE("node"), DATA("node")];
     const params: Params = { ref_id };
     if (p.node_types?.length) {
       params["node_types"] = await Promise.all(p.node_types.map((t) => this.canonical(t)));
@@ -307,7 +310,7 @@ export class LadybugReader implements GraphReader {
     const links = await Promise.all(parseLinks(p.linked ?? []).map(async (l) => ({ ...l, type: await this.canonical(l.type) })));
 
     // A Schema row has no search text, so no index returns it; said anyway.
-    const clauses = [LIVE("node"), `node.node_type <> '${SCHEMA_TYPE}'`];
+    const clauses = [LIVE("node"), DATA("node")];
     const base: Params = {};
     if (types) {
       clauses.push("node.node_type IN $node_types");

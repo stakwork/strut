@@ -273,8 +273,11 @@ export interface SchemaSource {
   ensureEdgeSchema(source: string, edge: string, target: string, props: Record<string, unknown>, tx?: GraphTx): Promise<{ created: boolean; ref_id: string } | null>;
   /** The `*` wildcard Schema sentinel. */
   ensureWildcardSchema(ref_id: string, tx?: GraphTx): Promise<void>;
-  /** Live Schemas whose type or an alias is one of `names`, case-blind. */
-  typesNamed(names: string[], tx?: GraphTx): Promise<NamedSchema[]>;
+  /** Live Schemas whose type or an alias is one of `names`, case-blind.
+   *  Present where a type's names are one-to-one across the ontology (a
+   *  Ladybug file, decision 9 of plans/memory-in-workspace-graph.md); a
+   *  Neo4j graph keeps jarvis's rules. */
+  typesNamed?(names: string[], tx?: GraphTx): Promise<NamedSchema[]>;
   /** The migration ledger: stamp `id` as done (idempotent). */
   stampMigration(id: string): Promise<void>;
 }

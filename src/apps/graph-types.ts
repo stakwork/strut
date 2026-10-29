@@ -165,6 +165,22 @@ export async function checkAppGraph(manifest: AppManifest, graph: GraphBackend |
       warnings.push(`${at(input.type, "search")}: ${named} is indexed on [${schema.index.join(", ")}] in the graph — an existing type keeps its index, so this app's search list does not apply`);
     }
   }
+  // On a LadybugDB file every attribute is a column of one table: a name
+  // another type (or another of this app's types) holds as another column
+  // type is refused here, at build, rather than part-way through a publish.
+  if (!errors.length && graph.kind === "ladybug") {
+    const { catalogOf, planColumns } = await import("../graph/ladybug/ontology.js");
+    const columns: Record<string, string> = { ...(await catalogOf(graph.lbug).get()).columns };
+    for (const input of inputs) {
+      try {
+        for (const [k, col] of planColumns(columns, input.type, input.attributes)) columns[k] = col;
+      } catch (e) {
+        if (!(e instanceof Error) || e.name !== "GraphValidationError") throw e;
+        const attribute = (e as Error & { attribute?: string }).attribute;
+        errors.push(`${at(input.type, attribute)}: ${e.message.replace(/^[^:]*: /, "")} — name the attribute something else`);
+      }
+    }
+  }
   return { errors, warnings };
 }
 

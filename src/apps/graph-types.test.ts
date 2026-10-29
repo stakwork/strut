@@ -211,6 +211,18 @@ for (const tb of testBackends()) describe(`an app's graph types on ${tb.name}`, 
     await refused("notes", "Concept: { name: string }", /Concept is the workspace's notes/);
   });
 
+  it("on a LadybugDB file, an attribute another type holds as another column type fails the BUILD, and nothing registers", { skip: tb.kind !== "ladybug" && "ladybug only" }, async () => {
+    // `run_id` is a STRING column (StrutRun's); within one app, `qty` cannot be two types either.
+    const app = "title: X\ndata:\n  graph:\n    types:\n      Gizmo: { name: string, qty: number }\n      Widget: { name: string, qty: boolean }\n      Sprocket: { name: string, run_id: number }\n";
+    const check = await checkAppGraph(manifest(app), b);
+    assert.equal(check.errors.length, 2, check.errors.join("\n"));
+    assert.match(check.errors[0]!, /data\.graph\.types\.Widget\.qty: qty is a DOUBLE column in this graph and boolean would need BOOL/);
+    assert.match(check.errors[1]!, /data\.graph\.types\.Sprocket\.run_id: run_id is a STRING column/);
+    const r = await publish("clashing", app);
+    assert.equal(r.ok, false);
+    for (const t of ["Gizmo", "Widget", "Sprocket"]) assert.equal(await b.schemas.resolveType(t), null, `${t} is not registered`);
+  });
+
   it("a page writes a declared type through step_run — kept, as the viewer — and reads it back with graph/find", async () => {
     const tools = buildAppTools({ apps: strut.apps, registry, services: strut.services, actor: "viewer", runStepDeps: { store, workspace } });
     const call = async (type: string, config: Record<string, unknown>) => {
