@@ -2183,6 +2183,39 @@ export interface InstalledPackage {
 export const listInstalledPackages = () =>
   fetchJSON<{ packages: InstalledPackage[] }>("/packages").then((r) => r.packages);
 
+/** `POST /packages/install`: `ref` is `file:`, `pk:` (with `url`), or a bare
+ *  name (`acme/linear`) looked up in the indexes this strut follows — the
+ *  first whose card lists its publisher, or the one `index` names. */
+export const installPackage = (ref: string, opts: { index?: string; digest?: string; url?: string } = {}) =>
+  fetchJSON<{ package: string; digest: string; missing: { secrets: string[]; binaries: string[]; runtimes: string[] }; warnings: string[] }>("/packages/install", {
+    method: "POST",
+    body: JSON.stringify({ ref, ...opts }),
+  });
+
+/** `GET /packages/indexes`: the indexes this strut follows, each with its last read. */
+export interface PackageIndexInfo {
+  id: string;
+  key: string;
+  urls: string[];
+  label?: string;
+  read?: { seq: number; digest: string; at: string; url: string; publishers: number };
+  error?: string;
+}
+
+export const listPackageIndexes = () =>
+  fetchJSON<{ indexes: PackageIndexInfo[] }>("/packages/indexes").then((r) => r.indexes);
+
+/** `GET /packages/search?q=`: the indexes' packages (unsigned — installing
+ *  one goes by its name, through the index's card) and the peers' installs. */
+export interface PackageSearch {
+  packages: Array<{ package: string; publisher: string; key: string; version: string; digest: string; description?: string; license?: string; index: string }>;
+  peers: Array<{ peer: string; package: string; version?: string; digest?: string }>;
+  errors: Array<{ index?: string; peer?: string; error: string }>;
+}
+
+export const searchPackages = (q: string, limit = 30) =>
+  fetchJSON<PackageSearch>(`/packages/search?q=${encodeURIComponent(q)}&limit=${limit}`);
+
 /** `GET /packages/subscriptions`: the catalogs this strut follows. Never a token. */
 export interface SubscriptionInfo {
   id: string;

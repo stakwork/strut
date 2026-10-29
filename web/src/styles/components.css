@@ -3674,7 +3674,8 @@ body.is-resizing-flyout * {
 /* The publisher's name beside its key, at the head of the dialog. */
 .publisher-head { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; margin-bottom: var(--sp-3); }
 .publisher-head input,
-.package-new input {
+.package-new input,
+input.package-search {
   width: 160px;
   font: inherit;
   font-family: var(--font-mono);
@@ -3686,7 +3687,8 @@ body.is-resizing-flyout * {
   border-radius: var(--r-md);
 }
 .publisher-head input:focus,
-.package-new input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.package-new input:focus,
+input.package-search:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 .publisher-head .package-key { margin-bottom: 0; margin-left: auto; }
 .publisher-hint { margin-bottom: var(--sp-3); }
 /* A package here: one row, the name and its newest release; click opens it. */
@@ -3705,6 +3707,7 @@ body.is-resizing-flyout * {
   margin-bottom: var(--sp-1);
 }
 .package-row:hover { background: var(--surface-2); }
+input.package-search { width: 100%; margin-bottom: var(--sp-2); }
 .package-row .package-version { margin-left: auto; color: var(--text-muted); font-weight: 400; }
 .package-page-head { display: flex; align-items: center; gap: var(--sp-2); margin-bottom: var(--sp-3); }
 .package-page-head .package-name { font-size: 14px; }

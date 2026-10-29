@@ -18,9 +18,12 @@ import { CopyButton } from "./CopyButton";
 // workflow here by category (an installed package's and the host's left
 // out), apps and Concepts, starts from what the newest release held, shows
 // what a dry build carries along with the picks, and publishes; below, the
-// releases with what each channel holds. Then, read only, what this strut
-// FOLLOWS and has INSTALLED (specs/API.md §16). Publishing is a person's
-// act; no builder tool does it.
+// releases with what each channel holds. Then FIND: a search over the
+// indexes this strut follows and its peers' installs, a hit installed by
+// its NAME (the index's signed card names the key, so nothing in a search
+// answer is trusted as is). Then, read only, what this strut FOLLOWS and has
+// INSTALLED (specs/API.md §16). Publishing and installing are a person's
+// acts; no builder tool does either.
 
 const secs = (iso?: string) => (iso ? Date.parse(iso) / 1000 : undefined);
 /** A digest, short: the first 12 hex. The full one rides in the title. */
@@ -494,6 +497,107 @@ function NewPackage(props: { publisher?: string; onOpen: (pkg: string) => void }
   );
 }
 
+/** Find a package: the indexes this strut follows and the peers' installs. */
+function FindPackages(props: { installed: string[]; onInstalled: () => void }) {
+  const [indexes, setIndexes] = useState<api.PackageIndexInfo[] | null>(null);
+  const [q, setQ] = useState("");
+  const [found, setFound] = useState<api.PackageSearch | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [outcome, setOutcome] = useState<{ pkg: string; text: string; ok: boolean } | null>(null);
+  const seq = useRef(0);
+
+  useEffect(() => {
+    api.listPackageIndexes().then(setIndexes, (err) => setError(errorMessage(err)));
+  }, []);
+  // A search per pause in the typing; only the newest answer is shown.
+  useEffect(() => {
+    const mine = ++seq.current;
+    const t = setTimeout(() => {
+      api.searchPackages(q.trim()).then(
+        (r) => { if (seq.current === mine) { setFound(r); setError(null); } },
+        (err) => { if (seq.current === mine) setError(errorMessage(err)); },
+      );
+    }, 250);
+    return () => clearTimeout(t);
+  }, [q]);
+
+  const install = async (pkg: string, index: string) => {
+    setBusy(pkg);
+    setOutcome(null);
+    try {
+      const r = await api.installPackage(pkg, { index });
+      const needs = [...r.missing.secrets.map((s) => `secret ${s}`), ...r.missing.binaries, ...r.missing.runtimes];
+      setOutcome({ pkg, ok: true, text: `Installed ${r.package}.${needs.length ? ` It needs ${needs.join(", ")}.` : ""}` });
+      props.onInstalled();
+    } catch (err) {
+      setOutcome({ pkg, ok: false, text: errorMessage(err) });
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const none = indexes !== null && indexes.length === 0;
+  return (
+    <div class="flyout-section">
+      <div class="flyout-section-title">Find</div>
+      <input class="package-search" type="text" placeholder="Search packages" value={q} onInput={(e) => setQ((e.target as HTMLInputElement).value)} />
+      {indexes && (
+        <div class="auto-meta">
+          {none ? (
+            <span>This strut follows no index: only the peers' installs are searched.</span>
+          ) : (
+            indexes.map((ix) => (
+              <span key={ix.id} title={ix.error ?? ix.urls.join("\n")}>
+                {ix.label ?? ix.id}{ix.error ? " (unreachable)" : ix.read ? ` · ${ix.read.publishers} publishers` : ""}
+              </span>
+            ))
+          )}
+        </div>
+      )}
+      {error && <div class="auto-error">{error}</div>}
+      {found?.errors.map((e, i) => <div class="auto-hint" key={i}>{e.index ? `Index ${e.index}` : `@${e.peer}`}: {e.error}</div>)}
+      {found && found.packages.length === 0 && found.peers.length === 0 && <div class="auto-hint">{q.trim() ? "Nothing matches." : "Nothing listed yet."}</div>}
+      {found?.packages.map((h) => {
+        const have = props.installed.includes(h.package);
+        return (
+          <div class="auto-card" key={`${h.index}:${h.package}`}>
+            <div class="auto-card-head">
+              <span class="package-name">{h.package} <span class="package-version">{h.version}</span></span>
+              {have ? (
+                <span class="badge">installed</span>
+              ) : (
+                <button class="btn btn-sm" disabled={busy !== null} onClick={() => void install(h.package, h.index)} title={`Installs ${h.package} from the catalog the index ${h.index} names for ${h.publisher}. Its code runs on this strut.`}>
+                  {busy === h.package ? "Installing…" : "Install"}
+                </button>
+              )}
+            </div>
+            {h.description && <div class="auto-hint">{h.description}</div>}
+            <div class="auto-meta">
+              <span>{h.index}</span>
+              {h.license && <span>{h.license}</span>}
+              <code class="package-digest" title={h.digest}>{shortDigest(h.digest)}</code>
+            </div>
+            {outcome?.pkg === h.package && <div class={outcome.ok ? "auto-hint" : "auto-error"}>{outcome.text}</div>}
+          </div>
+        );
+      })}
+      {found && found.peers.length > 0 && (
+        <>
+          <div class="auto-meta">On the peers</div>
+          {found.peers.map((p) => (
+            <div class="package-release-head" key={`${p.peer}:${p.package}`}>
+              <span class="package-version">{p.package}</span>
+              {p.version && <span>{p.version}</span>}
+              <span class="badge">@{p.peer}</span>
+            </div>
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
+
 export function PackagesDialog(props: { onClose: () => void }) {
   const [catalog, setCatalog] = useState<api.Catalog | null | undefined>(undefined);
   const [publisher, setPublisher] = useState<api.PublisherInfo | null | undefined>(undefined);
@@ -552,6 +656,8 @@ export function PackagesDialog(props: { onClose: () => void }) {
               <NewPackage publisher={publisher?.name} onOpen={setOpen} />
               {catalog && <div class="auto-meta package-signed">Catalog signed {ago(catalog.seq / 1e6)}</div>}
             </div>
+
+            <FindPackages installed={installedNames} onInstalled={() => api.listInstalledPackages().then(setInstalled, failed("installed"))} />
 
             <div class="flyout-section">
               <div class="flyout-section-title">Following</div>

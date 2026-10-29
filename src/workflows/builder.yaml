@@ -191,6 +191,9 @@ params:
     # the prompt names), where the editor family reads it. A copy without
     # `workdir` lands in the run's own directory, out of the editor's reach.
     - git/checkout
+    # Packages someone already built (plans/marketplace.md §8): searched
+    # before writing an integration; a person installs one.
+    - package/search
   # Tools among the grants that need the PERSON's approval
   # (plans/proposals.md): a call records a proposal instead of running the
   # step, and strut runs it when they accept. None by default; a deployment
