@@ -1,0 +1,101 @@
+# A package INDEX (plans/marketplace.md §7, §13): a strut with the index role
+# — the phone book of publishers and the crawl behind it — beside a Pkarr
+# relay, both behind Caddy for TLS. Nothing else of a swarm: no Neo4j, no
+# browser, no lab. The index key every strut's defaults name lives in this
+# strut's data volume, so this box is small on purpose.
+#
+#   cp deploy/index/env.example .env.index      # then fill it in
+#   docker compose -f docker-compose.index.yml --env-file .env.index up -d
+#
+# Two hostnames, both pointed at this box (Caddy gets their certificates from
+# Let's Encrypt, so ports 80 and 443 must reach it):
+#   STRUT_INDEX_HOST   the index strut: GET /index/catalog, /index/packages
+#                      open to anyone; rows (PUT /index/:prefix) need the key
+#   PKARR_RELAY_HOST   the Pkarr relay: PUT/GET /:z32key over HTTP for clients
+#                      with no UDP (browsers), and the DHT node behind them
+# For a local try, `index.localhost` and `relay.localhost` get Caddy's own
+# certificates (curl -k).
+#
+# BACK UP the strut volume before the first row is written: the index key is
+# minted then, into publisher.json, sealed under STRUT_SECRET_KEY. Keep the
+# two apart. Losing either is losing the key every strut was told to trust.
+#
+#   docker compose -f docker-compose.index.yml --env-file .env.index \
+#     run --rm --no-deps -v "$PWD:/backup" --entrypoint tar strut \
+#     czf /backup/index-workspace.tgz -C /data workspace
+#
+# The relay's DHT node listens on UDP 6881; open it to the internet so the
+# node answers peers (it works outbound-only behind NAT, just less well).
+name: strut-index
+
+services:
+  strut:
+    # Published by .github/workflows/publish-image.yml (amd64 + arm64). The
+    # index role is STRUT_INDEX=1 (src/packages/index.ts).
+    image: ghcr.io/stakwork/strut:${STRUT_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      STRUT_WORKSPACE_BACKEND: fs
+      STRUT_WORKSPACE: /data/workspace
+      STRUT_INDEX: "1"
+      # Where this index's catalog is served, written into every card so a
+      # reader that holds one follows a move. Add mirrors to the list.
+      STRUT_INDEX_URLS: '["https://${STRUT_INDEX_HOST:?set STRUT_INDEX_HOST}/index/catalog"]'
+      STRUT_PUBLIC_URL: "https://${STRUT_INDEX_HOST}"
+      # The operator's credential: rows, crawl, everything but the open reads.
+      STRUT_API_KEY: "${STRUT_API_KEY:?set STRUT_API_KEY}"
+      # Seals publisher.json, which holds the index key. Never the dev default.
+      STRUT_SECRET_KEY: "${STRUT_SECRET_KEY:?set STRUT_SECRET_KEY}"
+    volumes:
+      - strut:/data/workspace   # publisher.json (the index key), the rows, the crawl
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 30s
+
+  pkarr-relay:
+    # Pkarr's own image (github.com/pubky/pkarr, .github/workflows/docker.yml).
+    image: synonymsoft/pkarr-relay:${PKARR_RELAY_TAG:-v8.1.0}
+    restart: unless-stopped
+    command: ["pkarr-relay", "--config=/config.toml"]
+    ports:
+      # The DHT node only. The relay's HTTP side (TCP 6881) is reached
+      # through Caddy alone, which the rate limiter's behind_proxy needs.
+      - "${PKARR_DHT_PORT:-6881}:6881/udp"
+    volumes:
+      - ./deploy/index/pkarr-relay.toml:/config.toml:ro
+      - pkarr-cache:/cache
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:6881/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  caddy:
+    image: caddy:${CADDY_TAG:-2}
+    restart: unless-stopped
+    depends_on:
+      strut:
+        condition: service_healthy
+      pkarr-relay:
+        condition: service_started
+    ports:
+      - "${INDEX_HTTP_PORT:-80}:80"
+      - "${INDEX_HTTPS_PORT:-443}:443"
+      - "${INDEX_HTTPS_PORT:-443}:443/udp"   # HTTP/3
+    environment:
+      STRUT_INDEX_HOST: "${STRUT_INDEX_HOST}"
+      PKARR_RELAY_HOST: "${PKARR_RELAY_HOST:?set PKARR_RELAY_HOST}"
+    volumes:
+      - ./deploy/index/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data       # certificates and the ACME account
+      - caddy-config:/config
+
+volumes:
+  strut:
+  pkarr-cache:
+  caddy-data:
+  caddy-config:

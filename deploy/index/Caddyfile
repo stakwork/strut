@@ -1,0 +1,16 @@
+# TLS for the package index (docker-compose.index.yml). Caddy fetches and
+# renews each host's certificate itself; a `*.localhost` host gets one from
+# Caddy's own CA instead.
+
+{$STRUT_INDEX_HOST} {
+	reverse_proxy strut:3000 {
+		# Run tails and the chat are SSE: pass every chunk on at once.
+		flush_interval -1
+	}
+}
+
+{$PKARR_RELAY_HOST} {
+	# Caddy sets X-Forwarded-For from the connection, ignoring a client's
+	# own, which is what the relay's behind_proxy rate limiting trusts.
+	reverse_proxy pkarr-relay:6881
+}
