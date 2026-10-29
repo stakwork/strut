@@ -32,6 +32,7 @@
  * core, the symbol check against each platform's addon, a release with the
  * files, and this table.
  */
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createInstaller, type Installer } from "../../audio/download.js";
 import { bootEnv } from "../../env.js";
@@ -134,4 +135,33 @@ export async function pinnedExtensions(core: string, o: PinnedOptions = {}): Pro
     files[name] = join(dir, file);
   }
   return { files };
+}
+
+/** The extensions in `from` (the desktop package's native/, signed with its
+ *  app), copied to `<STRUT_MODEL_DIR>/ladybug/bundled/<core>/` for strut to
+ *  load from there: a path that stays put across builds sharing a data
+ *  folder. A graph a process could not close leaves a WAL naming the
+ *  extension paths it loaded, and replaying it fails once that path is gone
+ *  (a deleted dev build, a moved app). One folder per core, so a build on
+ *  another core never rewrites the files one on this core loads; within it
+ *  a file whose bytes differ (another build's signature) is replaced by a
+ *  rename, so a strut still holding the old one keeps it. */
+export async function stableExtensionDir(from: string, core: string, modelDir: string = modelDirFromEnv()): Promise<string> {
+  const dir = join(modelDir, "ladybug", "bundled", core);
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  for (const name of EXTENSION_NAMES) {
+    const file = `lib${name}.lbug_extension`;
+    const want = await readFile(join(from, file));
+    const have = await readFile(join(dir, file)).catch(() => null);
+    if (have?.equals(want)) continue;
+    const temp = join(dir, `.${file}.${process.pid}`);
+    try {
+      await writeFile(temp, want, { mode: 0o755 });
+      await rename(temp, join(dir, file));
+    } catch (err) {
+      await rm(temp, { force: true });
+      throw err;
+    }
+  }
+  return dir;
 }

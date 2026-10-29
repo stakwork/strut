@@ -1,11 +1,11 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInstaller } from "../../audio/download.js";
-import { EXTENSION_NAMES, LADYBUG_EXTENSION_PINS, extensionAsset, extensionPlatform, pinnedExtensions, type ExtensionPins } from "./extensions.js";
+import { EXTENSION_NAMES, LADYBUG_EXTENSION_PINS, extensionAsset, extensionPlatform, pinnedExtensions, stableExtensionDir, type ExtensionPins } from "./extensions.js";
 
 const sha = (b: Buffer) => createHash("sha256").update(b).digest("hex");
 const bytes = { vector: Buffer.from("vector bytes"), fts: Buffer.from("fts bytes") };
@@ -92,5 +92,51 @@ describe("ladybug's pinned extensions", () => {
         assert.ok(files[name].bytes > 100_000, `${platform} ${name}`);
       }
     }
+  });
+});
+
+describe("the desktop package's extensions, from a stable folder", () => {
+  let root: string;
+  before(() => (root = mkdtempSync(join(tmpdir(), "strut-lbug-stable-"))));
+  after(() => rmSync(root, { recursive: true, force: true }));
+
+  const build = (name: string, tag: string) => {
+    const dir = join(root, name, "native");
+    mkdirSync(dir, { recursive: true });
+    for (const ext of EXTENSION_NAMES) writeFileSync(join(dir, `lib${ext}.lbug_extension`), `${ext} from ${tag}`);
+    return dir;
+  };
+
+  it("hands every build on a core the same folder, holding the last one's bytes", async () => {
+    const models = join(root, "models");
+    const first = await stableExtensionDir(build("old-build", "old"), "1.0.0", models);
+    assert.equal(first, join(models, "ladybug", "bundled", "1.0.0"));
+    const second = await stableExtensionDir(build("new-build", "new"), "1.0.0", models);
+    assert.equal(second, first);
+    for (const ext of EXTENSION_NAMES) assert.equal(readFileSync(join(second, `lib${ext}.lbug_extension`), "utf-8"), `${ext} from new`);
+    assert.deepEqual(readdirSync(second).sort(), ["libfts.lbug_extension", "libvector.lbug_extension"]);
+  });
+
+  it("gives another core its own folder, leaving this core's files alone", async () => {
+    const models = join(root, "cores");
+    const mine = await stableExtensionDir(build("core-a", "a"), "1.0.0", models);
+    const theirs = await stableExtensionDir(build("core-b", "b"), "2.0.0", models);
+    assert.notEqual(theirs, mine);
+    assert.equal(readFileSync(join(mine, "libfts.lbug_extension"), "utf-8"), "fts from a");
+  });
+
+  it("leaves a file alone when its bytes are already there", async () => {
+    const models = join(root, "same");
+    const from = build("same-build", "same");
+    const dir = await stableExtensionDir(from, "1.0.0", models);
+    const inode = statSync(join(dir, "libvector.lbug_extension")).ino;
+    await stableExtensionDir(from, "1.0.0", models);
+    assert.equal(statSync(join(dir, "libvector.lbug_extension")).ino, inode);
+  });
+
+  it("fails when the package lacks one", async () => {
+    const from = build("partial", "x");
+    rmSync(join(from, "libfts.lbug_extension"));
+    await assert.rejects(stableExtensionDir(from, "1.0.0", join(root, "partial-models")), /ENOENT/);
   });
 });
