@@ -26,6 +26,7 @@ import { mcpOrigins } from "./mcp-servers.js";
 import { resolveSettings } from "./extensions.js";
 import { reachPolicyOf, withinReach } from "./reach.js";
 import { appSessionId, peerSessionId, type SessionsCapability } from "./session-store.js";
+import { bindGraph } from "./graph-writes.js";
 
 type JobsRecordRun = JobsCapability["recordRun"];
 
@@ -300,16 +301,21 @@ export async function runWorkflow<TServices = unknown>(
   // `secrets` is bound to that principal (plans/code-change.md §3.2): a
   // shallow per-run view, so the consumer's bag object is never mutated and
   // a step's `secrets.get(NAME)` needs to know nothing about actors. A
-  // peer's run gets its own session namespace the same way (bindPeer).
-  const services = bindApp(
-    bindPeer(
-      bindPrincipal((opts?.services ?? ({} as TServices)) as TServices, opts?.principal),
-      opts?.origin,
-      opts?.peerPerson ? opts.actor : undefined,
+  // peer's run gets its own session namespace the same way (bindPeer). Its
+  // graph writes are heard (bindGraph, plans/live-feeds.md §2): told to the
+  // run's job and kept in the deployment's change feed.
+  const { services, reporter: graphReports } = bindGraph(
+    bindApp(
+      bindPeer(
+        bindPrincipal((opts?.services ?? ({} as TServices)) as TServices, opts?.principal),
+        opts?.origin,
+        opts?.peerPerson ? opts.actor : undefined,
+      ),
+      opts?.app,
+      opts?.actor,
+      opts?.job,
     ),
-    opts?.app,
-    opts?.actor,
-    opts?.job,
+    { runId, ...(opts?.job ? { job: opts.job } : {}) },
   );
 
   const onEvent = opts?.onEvent;
@@ -516,6 +522,9 @@ export async function runWorkflow<TServices = unknown>(
     // consumer (the verify pass, plans/claims.md §4) needs and a teardown
     // hook can ignore.
     const info: RunEndInfo = { workflow: wfName, ...(opts?.origin ? { origin: opts.origin } : {}) };
+    // The run's last graph writes, sent now rather than a second from now
+    // (never throws: a report is a notification).
+    await graphReports?.flush();
     // Step-registered disposers (`ctx.onRunEnd`) first, newest first, each
     // guarded — a step's worktree or browser is gone before the consumer's
     // per-run teardown looks. A disposer that throws never blocks the rest.

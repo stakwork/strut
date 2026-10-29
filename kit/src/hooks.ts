@@ -1,7 +1,7 @@
 /** The hooks (plans/apps.md §3.2): react-query over the `StrutClient`, each
  *  naming a STEP TYPE of the §5 `run/*` family — so the model never writes
  *  `postMessage`, and nothing launches a run but a call to `launch`. */
-import { useCallback, useMemo, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import {
   useMutation, useQueries, useQuery, useQueryClient,
   type QueryKey, type UseQueryResult,
@@ -345,6 +345,26 @@ function assistantMessages(run: RunSummary): AssistantMessage[] {
   ];
 }
 
+/** An agent's tool call to `job/start` or `job/continue`, as its event
+ *  names it: the tool is `job_start` (a tool name has no `/`), so the
+ *  event's `stepType` is `tool:job_start`; the `/` forms are kept for a
+ *  log from before. */
+const JOB_TOOL = /^tool:job[_/](start|continue)$/;
+
+/** A tool call's logged `output`: the run log keeps it as the JSON text the
+ *  model was handed, an object only when a caller wrote one. */
+function toolOutput(v: unknown): Record<string, unknown> | undefined {
+  if (typeof v === "string") {
+    try {
+      const parsed: unknown = JSON.parse(v);
+      return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  return v && typeof v === "object" ? (v as Record<string, unknown>) : undefined;
+}
+
 /** The jobs a turn's log shows it started or continued (`job/start`,
  *  `job/continue` tool calls that came back with a job). */
 export function assistantJobs(events: readonly RunEvent[] | undefined): AssistantJob[] {
@@ -353,11 +373,13 @@ export function assistantJobs(events: readonly RunEvent[] | undefined): Assistan
   for (const e of events) if (e.type === "step.start" && e.path) starts.set(e.path, e);
   const out: AssistantJob[] = [];
   for (const e of events) {
-    if (e.type !== "step.end" || (e["stepType"] !== "tool:job/start" && e["stepType"] !== "tool:job/continue")) continue;
-    const o = e["output"] as { job?: unknown; runId?: unknown } | undefined;
-    if (typeof o?.job !== "string" || typeof o.runId !== "string") continue;
-    const started = e["stepType"] === "tool:job/start" ? ((starts.get(e.path ?? "")?.["input"] as { workflow?: unknown } | undefined)?.workflow ?? "job") : undefined;
-    out.push({ job: o.job, runId: o.runId, ...(typeof started === "string" ? { workflow: started } : {}) });
+    const tool = e.type === "step.end" ? JOB_TOOL.exec(String(e["stepType"] ?? "")) : null;
+    if (!tool) continue;
+    const o = toolOutput(e["output"]);
+    if (typeof o?.["job"] !== "string" || typeof o["runId"] !== "string") continue;
+    const input = toolOutput(starts.get(e.path ?? "")?.["input"]);
+    const started = tool[1] === "start" ? (input?.["workflow"] ?? "job") : undefined;
+    out.push({ job: o["job"], runId: o["runId"], ...(typeof started === "string" ? { workflow: started } : {}) });
   }
   return out;
 }
@@ -415,7 +437,204 @@ export function useAssistant(opts: UseAssistantOptions = {}): UseAssistant {
 export const JOB_STEPS = {
   upload: "job/upload",
   deleteUpload: "job/delete-upload",
+  updates: "job/updates",
 } as const;
+
+/** The graph's change feed (plans/live-feeds.md §3). */
+export const GRAPH_CHANGES_STEP = "graph/changes";
+
+/** How long a live feed hook holds one call: under the server's 55 s, so a
+ *  host that times a tool call out never sees one this long. */
+export const FEED_WAIT_MS = 25_000;
+/** After a failed read, the next waits this long. */
+const FEED_RETRY_MS = 5_000;
+
+/** A job's update as `job/updates` returns it (the `job.update` a host hears
+ *  on its callback, specs/CALLBACKS.md §5). */
+export interface JobUpdate {
+  event: "job.update";
+  job: string;
+  at: string;
+  runId?: string;
+  /** image | walkthrough | a hold's kind | evidence | verify | proposal | status | graph | … */
+  kind: string;
+  url?: string;
+  id?: string;
+  title?: string;
+  state?: string;
+  detail?: Record<string, unknown>;
+}
+
+/** A graph write as `graph/changes` returns it. */
+export interface GraphChange {
+  kind: "node" | "edge";
+  op: "created" | "updated" | "deleted";
+  ref_id: string;
+  at: string;
+  node_type?: string;
+  edge_type?: string;
+  source?: string;
+  target?: string;
+  types?: string[];
+}
+
+interface FeedAnswer { cursor: string; reset?: true; more?: true }
+
+const pageVisible = (): boolean => typeof document === "undefined" || document.visibilityState !== "hidden";
+
+/** Resolves when the page is visible again (at once when it is). */
+function whenVisible(stopped: () => boolean): Promise<void> {
+  if (pageVisible() || typeof document === "undefined") return Promise.resolve();
+  return new Promise((resolve) => {
+    const on = () => {
+      if (!pageVisible() && !stopped()) return;
+      document.removeEventListener("visibilitychange", on);
+      resolve();
+    };
+    document.addEventListener("visibilitychange", on);
+  });
+}
+
+/**
+ * One feed read after another, while mounted: each call hands back the
+ * cursor the last returned and, when `live`, waits on the server for
+ * something new — one call in flight, none while the page is hidden. The
+ * server gathers a second before it answers, so this is at most a call a
+ * second however fast things change.
+ */
+function useFeed<A extends FeedAnswer>(
+  key: string | null,
+  read: (since: string | undefined, wait: number | undefined) => Promise<A>,
+  live: boolean,
+  /** `first`: the answer to the hook's first read (the job's history, the graph's position). */
+  apply: (answer: A, first: boolean) => void,
+  first?: string,
+): Error | null {
+  const [error, setError] = useState<Error | null>(null);
+  useEffect(() => {
+    if (key === null) return;
+    let stopped = false;
+    let cursor = first;
+    void (async () => {
+      for (let n = 0; !stopped; n++) {
+        try {
+          const answer = await read(cursor, live && n > 0 ? FEED_WAIT_MS : undefined);
+          if (stopped) return;
+          cursor = answer.cursor;
+          apply(answer, n === 0);
+          setError(null);
+          if (!live) return;
+          if (answer.more) continue;
+          await whenVisible(() => stopped);
+        } catch (e) {
+          if (stopped) return;
+          setError(e instanceof Error ? e : new Error(String(e)));
+          await new Promise((r) => setTimeout(r, FEED_RETRY_MS));
+        }
+      }
+    })();
+    return () => {
+      stopped = true;
+    };
+    // `read` and `apply` are the caller's, made anew each render; the key says what is read.
+  }, [key, live]);
+  return error;
+}
+
+export interface UseJobUpdatesOptions {
+  /** Keep reading as the job changes (default true). */
+  live?: boolean;
+  enabled?: boolean;
+}
+
+export interface UseJobUpdates {
+  /** The newest state of each thing the job reported, in the order they last changed. */
+  updates: JobUpdate[];
+  /** The newest update of a kind (`latest("status")` is the job's current line). */
+  latest: (kind: string) => JobUpdate | undefined;
+  error: Error | null;
+}
+
+const updateKey = (u: Pick<JobUpdate, "kind" | "url" | "id">) => `${u.kind}\u0000${u.url ?? ""}\u0000${u.id ?? ""}`;
+
+/**
+ * A JOB's live updates (`job/updates`, plans/live-feeds.md §1): the shots,
+ * frames, holds, verdicts, status lines and graph writes the job reports,
+ * as they happen — what a host hears on its callback, for a page that has
+ * none. The job is the app's (strut keeps a page's job ids in the app's
+ * namespace), including the jobs its assistant starts (`useAssistant().jobs`).
+ */
+export function useJobUpdates(job: string | undefined, opts: UseJobUpdatesOptions = {}): UseJobUpdates {
+  const client = useStrutClient();
+  const live = opts.live ?? true;
+  const [updates, setUpdates] = useState<JobUpdate[]>([]);
+  const kept = useMemo(() => new Map<string, JobUpdate>(), [job]);
+  const error = useFeed<FeedAnswer & { updates: JobUpdate[] }>(
+    job && opts.enabled !== false ? job : null,
+    (since, wait) => client.run(JOB_STEPS.updates, compact({ job, since, wait })),
+    live,
+    (answer, first) => {
+      if (answer.reset) kept.clear();
+      if (!first && !answer.reset && answer.updates.length === 0) return;
+      for (const u of answer.updates) {
+        const k = updateKey(u);
+        kept.delete(k);
+        kept.set(k, u);
+      }
+      setUpdates([...kept.values()]);
+    },
+  );
+  const latest = useCallback(
+    (kind: string) => {
+      for (let i = updates.length - 1; i >= 0; i--) if (updates[i]!.kind === kind) return updates[i];
+      return undefined;
+    },
+    [updates],
+  );
+  return { updates, latest, error };
+}
+
+export interface UseGraphChangesOptions {
+  /** Keep reading as the graph changes (default true). */
+  live?: boolean;
+  enabled?: boolean;
+}
+
+export interface UseGraphChanges {
+  /** Changes each time a write of those types lands (and when the server
+   *  restarted, since then anything may have): put it in the dependencies
+   *  of the reads that show those types. 0 until the first write. */
+  rev: number;
+  /** The writes the last change brought. */
+  changes: GraphChange[];
+  error: Error | null;
+}
+
+/**
+ * The graph writes made through strut, from now on (`graph/changes`,
+ * plans/live-feeds.md §3): a page that shows part of the graph reads it
+ * again when that part changes — whoever wrote it. Ids and types only; the
+ * page reads what changed with the reads it already makes. Grant
+ * `graph/changes` in app.yaml.
+ */
+export function useGraphChanges(types: readonly string[] | undefined, opts: UseGraphChangesOptions = {}): UseGraphChanges {
+  const client = useStrutClient();
+  const live = opts.live ?? true;
+  const [state, setState] = useState<{ rev: number; changes: GraphChange[] }>({ rev: 0, changes: [] });
+  const list = types?.length ? [...types].sort() : undefined;
+  const error = useFeed<FeedAnswer & { changes: GraphChange[] }>(
+    opts.enabled === false ? null : JSON.stringify(list ?? null),
+    (since, wait) => client.run(GRAPH_CHANGES_STEP, compact({ types: list, since, wait })),
+    live,
+    (answer) => {
+      if (!answer.reset && answer.changes.length === 0) return;
+      setState((s) => ({ rev: s.rev + 1, changes: answer.changes }));
+    },
+    // Only what is written from here: the page has just read what is.
+    "now",
+  );
+  return { ...state, error };
+}
 
 /** A browser file as a step takes one: `{ name, mediaType, data }`, the
  *  bytes base64 — so a page never writes `FileReader` code. */

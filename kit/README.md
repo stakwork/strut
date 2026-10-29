@@ -84,8 +84,14 @@ the `sideEffects` and `type` rules, and that the recorded versions are
   `{ upload(file), remove(path) }` (`job/upload`, `job/delete-upload`: files
   into the app's job, §12; `fileData` turns a `File` into what a step
   takes), `useCancel`, `useWorkflow` (`run/workflow`), `useStep(type)` →
-  `run(config, input)`, `useToolInput`, `useAppLink`, `useHost`. Graph, SQL
-  and automation hooks are later work items.
+  `run(config, input)`, `useToolInput`, `useAppLink`, `useHost`. The LIVE
+  FEEDS (`plans/live-feeds.md`), one call held on the server at a time and
+  none while the page is hidden: `useJobUpdates(job)` → `{ updates,
+  latest(kind) }` (`job/updates`: a job's shots, frames, holds, verdicts,
+  status lines and graph writes as they happen) and `useGraphChanges(types)`
+  → `{ rev, changes }` (`graph/changes` from now: put `rev` in the
+  dependencies of the reads that show those types). Grant the step in
+  `grants.steps`. SQL and automation hooks are later work items.
 - **`src/links.ts`** — `appLink(name, input?)`: a deep link to an app,
   `?app=<name>&input=<input as a query string>` (plans/apps.md §7.1). A host
   follows it and hands `input` back as `tool-input`, flat strings.

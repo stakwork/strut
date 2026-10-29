@@ -10,7 +10,7 @@ import { StrutProvider } from "./provider.js";
 import {
   JOB_STEPS, RUN_STEPS, RUN_WAIT_MS, anyInFlight, eventsSettled, fileData, isInFlight,
   useAppLink, useCancel, useHost, useLaunch, useRun, useRunEvents, useRuns, useStep, useToolInput, useTranscript, useUpload, useWorkflow,
-  useAssistant, assistantJobs,
+  useAssistant, assistantJobs, useJobUpdates, useGraphChanges, FEED_WAIT_MS,
 } from "./hooks.js";
 import { appLink } from "./links.js";
 
@@ -306,9 +306,11 @@ describe("useAssistant: a chat with the person's assistant", () => {
     [RUN_STEPS.get]: (c: Call) => ({ runId: c.config?.runId, workflow: "orchestrator", ...RUNS[c.config?.runId as string]! }),
     [RUN_STEPS.events]: () => [
       { type: "run.start" },
-      { type: "step.start", path: "orchestrator/turn/001-job_start", stepType: "tool:job/start", input: { prompt: "p", title: "Plan", workflow: "builder" } },
-      { type: "step.end", path: "orchestrator/turn/001-job_start", stepType: "tool:job/start", output: { job: "app/canvas/j1", runId: "77", callback: false } },
-      { type: "step.end", path: "orchestrator/turn/002-job_list", stepType: "tool:job/list", output: { jobs: [] } },
+      // As the run log keeps an agent's tool call: the tool is `job_start`,
+      // its output the JSON text the model was handed.
+      { type: "step.start", path: "orchestrator/turn/001-job_start", stepType: "tool:job_start", input: { prompt: "p", title: "Plan", workflow: "builder" } },
+      { type: "step.end", path: "orchestrator/turn/001-job_start", stepType: "tool:job_start", output: JSON.stringify({ job: "app/canvas/j1", runId: "77", callback: false }) },
+      { type: "step.end", path: "orchestrator/turn/002-job_list", stepType: "tool:job_list", output: JSON.stringify({ jobs: [] }) },
       { type: "run.end" },
     ],
   };
@@ -334,12 +336,70 @@ describe("useAssistant: a chat with the person's assistant", () => {
     assert.deepEqual(assistantJobs(undefined), []);
     assert.deepEqual(
       assistantJobs([
-        { type: "step.end", path: "o/t/001-job_continue", stepType: "tool:job/continue", output: { job: "app/c/j", runId: "5" } },
-        { type: "step.end", path: "o/t/002-job_start", stepType: "tool:job/start", output: { error: "job_busy" } },
-        { type: "step.end", path: "o/t/003-job_start", stepType: "tool:job/start", output: { job: "app/c/k", runId: "6" } },
+        { type: "step.end", path: "o/t/001-job_continue", stepType: "tool:job_continue", output: JSON.stringify({ job: "app/c/j", runId: "5" }) },
+        { type: "step.end", path: "o/t/002-job_start", stepType: "tool:job_start", output: "Error: job_busy: job \"x\" has a run in flight" },
+        { type: "step.end", path: "o/t/003-job_start", stepType: "tool:job_start", output: JSON.stringify({ job: "app/c/k", runId: "6", callback: false }) },
       ]),
       [{ job: "app/c/j", runId: "5" }, { job: "app/c/k", runId: "6", workflow: "job" }],
     );
+  });
+
+  it("assistantJobs still reads a log from before the tool names lost their slash, with object outputs", () => {
+    assert.deepEqual(
+      assistantJobs([{ type: "step.end", path: "o/t/001-job_start", stepType: "tool:job/start", output: { job: "app/c/k", runId: "6" } }]),
+      [{ job: "app/c/k", runId: "6", workflow: "job" }],
+    );
+  });
+});
+
+describe("the live feeds (plans/live-feeds.md)", () => {
+  it("useJobUpdates reads the job's history, then waits on the cursor; the newest state of each thing, latest(kind)", async () => {
+    const answers: Array<Record<string, unknown>> = [
+      { job: "j", cursor: "e.2", updates: [
+        { event: "job.update", job: "j", at: "t1", kind: "status", id: "r1", title: "Drafting round 1" },
+        { event: "job.update", job: "j", at: "t2", kind: "image", url: "/jobs/j/files/shots/001.png", state: "done" },
+      ] },
+      { job: "j", cursor: "e.3", updates: [{ event: "job.update", job: "j", at: "t3", kind: "status", id: "r1", title: "Drafting round 2" }] },
+    ];
+    let n = 0;
+    const { client, calls } = fakeClient({
+      "job/updates": () => answers[n++] ?? new Promise(() => {}), // then hold, as the server would
+    });
+    const h = await renderHook(() => useJobUpdates("j"), { client });
+    await until(() => h.result().latest("status")?.title === "Drafting round 2", "the second answer");
+    assert.deepEqual(h.result().updates.map((u) => [u.kind, u.title ?? u.url]), [["image", "/jobs/j/files/shots/001.png"], ["status", "Drafting round 2"]]);
+    assert.deepEqual(calls[0], { type: "job/updates", config: { job: "j" } }, "the first read takes the history at once");
+    assert.deepEqual(calls[1], { type: "job/updates", config: { job: "j", since: "e.2", wait: FEED_WAIT_MS } });
+    assert.deepEqual(calls[2], { type: "job/updates", config: { job: "j", since: "e.3", wait: FEED_WAIT_MS } });
+    await h.unmount();
+  });
+
+  it("useJobUpdates on a reset starts over from what the answer holds", async () => {
+    const answers: Array<Record<string, unknown>> = [
+      { job: "j", cursor: "e.1", updates: [{ event: "job.update", job: "j", at: "t1", kind: "image", url: "/a.png" }] },
+      { job: "j", cursor: "f.1", reset: true, updates: [{ event: "job.update", job: "j", at: "t2", kind: "image", url: "/b.png" }] },
+    ];
+    let n = 0;
+    const { client } = fakeClient({ "job/updates": () => answers[n++] ?? new Promise(() => {}) });
+    const h = await renderHook(() => useJobUpdates("j"), { client });
+    await until(() => h.result().updates[0]?.url === "/b.png", "the reset");
+    assert.equal(h.result().updates.length, 1);
+    await h.unmount();
+  });
+
+  it("useGraphChanges starts from now and bumps rev for each answer with writes", async () => {
+    const answers: Array<Record<string, unknown>> = [
+      { cursor: "e.9", changes: [] },
+      { cursor: "e.11", changes: [{ kind: "node", op: "created", ref_id: "o1", node_type: "Option", at: "t" }] },
+    ];
+    let n = 0;
+    const { client, calls } = fakeClient({ "graph/changes": () => answers[n++] ?? new Promise(() => {}) });
+    const h = await renderHook(() => useGraphChanges(["Option", "Question"]), { client });
+    await until(() => h.result().rev === 1, "the first write");
+    assert.deepEqual(h.result().changes.map((c) => c.ref_id), ["o1"]);
+    assert.deepEqual(calls[0], { type: "graph/changes", config: { types: ["Option", "Question"], since: "now" } });
+    assert.deepEqual(calls[1], { type: "graph/changes", config: { types: ["Option", "Question"], since: "e.9", wait: FEED_WAIT_MS } });
+    await h.unmount();
   });
 });
 

@@ -311,6 +311,8 @@ What strut sends today:
 | the hold's kind (`pod`, `browser` — a page the job keeps, `id: browser:<session>`) | a hold is taken, or let go (by its tool, a delete, the idle sweep; a kept page also when it goes idle) | `held` / `released` |
 | `evidence` | a check writes evidence about the job (`detail: { claim, check }`; `url` = what it pointed at, a screenshot) | `supported` / `refuted` / `planned` (a slot for a person) |
 | `verify` | a verify of the job ended (`detail: { evidence, slots, claims: [{ id, status }] }`) | `done` |
+| `status` | a `job/status` step: one line of what the run is doing now (`title`; `id` = the run, so a newer line from the same run replaces the older) | — |
+| `graph` | the run wrote the graph through strut (any `graph/*` step, however it was called; `id` = the run). Sent a second after the run's last write, at most five after the first, and when the run ends. `detail: { writes, types: { <type>: n }, refs }` is CUMULATIVE for the run: the newest says everything. Strut's own types (`Strut*`, the claims layer, the ontology) are left out. Read the part of the graph you show again | `written` |
 | anything a step names | a step called `ctx.services.jobs.notify` — the lab's browser steps for a screenshot (`image`) and every frame of a walkthrough (`walkthrough`, its manifest's url); never a captcha's crop, which its own card shows | the step's |
 
 **An event is a notification, never the record.** Each points at something
@@ -325,6 +327,15 @@ and read the job when you open it or think you missed one.
 `POST /jobs/:id/verify { detach: true }` starts a verify and answers `202 {
 job, started: true }` at once: the evidence and the `verify` event arrive
 here as they land (`API.md`). `plans/live-artifacts.md` is the design.
+
+**No callback? Read them.** Strut keeps each job's updates whether or not a
+`jobCallback` is on file — the newest state of each thing, in the order
+they last changed, in memory — and `GET /jobs/:id/updates?since=&wait=`
+(the `job/updates` step; `useJobUpdates` in the kit) answers with the ones
+after your cursor, holding up to `wait` ms while nothing is new. That is
+how an app's page, which cannot be called, follows its jobs; a restart
+empties it and the next read says `reset: true`. `API.md` has the shape;
+`plans/live-feeds.md` the design.
 
 ## 6. Proposals — what the run asked the person to approve
 
