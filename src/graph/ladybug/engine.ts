@@ -35,6 +35,7 @@ import type {
   GraphTx,
   NodeEngine,
   NodeGuard,
+  SoftDeleteOptions,
   SoftDeleteResult,
   EdgeDeleteResult,
   Params,
@@ -184,7 +185,7 @@ class LadybugNodes implements NodeEngine {
         params[`v${i}`] = v;
         assigns.push(`n.${q(k)} = $v${i++}`);
       }
-      if (hit.deleted) assigns.push("n.deleted_at = NULL");
+      if (hit.deleted) assigns.push("n.deleted_at = NULL", "n.deleted_reason = NULL");
       if (assigns.length) await tx.run(`MATCH (n:Node {ref_id: $ref_id}) SET ${assigns.join(", ")}`, params);
     }
 
@@ -235,10 +236,11 @@ class LadybugNodes implements NodeEngine {
   }
 
   /** Three statements in one transaction: stamp `deleted_at` (the first
-   *  delete time kept), delete the node's outgoing edges, then its incoming
-   *  ones. Every node in the file is in scope. */
-  async softDelete(ref_id: string, _namespace: string, guard: NodeGuard): Promise<SoftDeleteResult | null> {
-    return this.lbug.withWrite(async (tx) => {
+   *  delete time and reason kept), delete the node's outgoing edges, then its
+   *  incoming ones — or leave them (`keepEdges`). Every node in the file is
+   *  in scope. */
+  async softDelete(ref_id: string, _namespace: string, guard: NodeGuard, opts: SoftDeleteOptions = {}): Promise<SoftDeleteResult | null> {
+    const go = async (tx: GraphTx): Promise<SoftDeleteResult | null> => {
       const params: Params = { ref_id, now: Date.now() };
       const pattern = ["ref_id: $ref_id"];
       const where: string[] = [];
@@ -257,16 +259,23 @@ class LadybugNodes implements NodeEngine {
         params[`g${i}`] = v;
         pattern.push(`${q(k)}: $g${i++}`);
       }
+      const sets = ["n.deleted_at = coalesce(n.deleted_at, CAST($now AS INT64))"];
+      if (opts.reason !== undefined) {
+        params["reason"] = opts.reason;
+        sets.push("n.deleted_reason = coalesce(n.deleted_reason, $reason)");
+      }
       const hit = await tx.run(
         `MATCH (n:Node {${pattern.join(", ")}}) ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
-         SET n.deleted_at = coalesce(n.deleted_at, CAST($now AS INT64)) RETURN n.ref_id AS ref_id`,
+         SET ${sets.join(", ")} RETURN n.ref_id AS ref_id`,
         params,
       );
       if (hit.length === 0) return null;
+      if (opts.keepEdges) return { edges: 0 };
       const out = await tx.run(`MATCH (n:Node {ref_id: $ref_id})-[r]->(:Node) DELETE r RETURN count(r) AS n`, { ref_id });
       const inc = await tx.run(`MATCH (n:Node {ref_id: $ref_id})<-[r]-(:Node) DELETE r RETURN count(r) AS n`, { ref_id });
       return { edges: Number(out[0]?.["n"] ?? 0) + Number(inc[0]?.["n"] ?? 0) };
-    });
+    };
+    return opts.tx ? go(opts.tx) : this.lbug.withWrite(go);
   }
 }
 
@@ -459,6 +468,12 @@ export class LadybugSchemas implements SchemaSource {
   }
   async typesNamed(names: string[], tx?: GraphTx): Promise<NamedSchema[]> {
     return ontology.typesNamed(this.reader(tx), names);
+  }
+  async managedTypes(tx?: GraphTx): Promise<Map<string, string>> {
+    const rows = await this.reader(tx)(
+      `MATCH (n:Node {node_type: 'Schema'}) WHERE n.managed_by IS NOT NULL AND n.deleted_at IS NULL RETURN n.type AS type, n.managed_by AS manager`,
+    );
+    return new Map(rows.map((r) => [String(r["type"]), String(r["manager"])]));
   }
   /** Every live Schema and edge rule: the reader's ontology. */
   async ontology(): Promise<{ schemas: SchemaRow[]; edges: Array<{ edge: string; source: string; target: string }> }> {

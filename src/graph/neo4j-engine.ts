@@ -27,6 +27,7 @@ import type {
   GraphTx,
   NodeEngine,
   NodeGuard,
+  SoftDeleteOptions,
   SoftDeleteResult,
   EdgeDeleteResult,
   Params,
@@ -123,7 +124,7 @@ class Neo4jNodes implements NodeEngine {
    * CREATE gets the full stamped payload; ON MATCH gets the non-identity
    * payload only when the mode is `upsert` or the node is soft-deleted
    * (restore). A restore clears both delete markers (`deleted_at`,
-   * `is_deleted`) and never touches `is_muted`; otherwise the markers are left
+   * `is_deleted`) and the `deleted_reason`, and never touches `is_muted`; otherwise the markers are left
    * exactly as they were. Whether the node was deleted is read in a WITH
    * before the MERGE: SET items apply in order, so a CASE reading a marker an
    * earlier item cleared would never fire.
@@ -157,7 +158,8 @@ class Neo4jNodes implements NodeEngine {
          node += CASE WHEN $mode = 'upsert' OR restore THEN row.on_match ELSE {} END,
          node.updated_at = CASE WHEN restore OR ($mode = 'upsert' AND NOT same) THEN row.stamp ELSE node.updated_at END,
          node.deleted_at = CASE WHEN restore THEN null ELSE node.deleted_at END,
-         node.is_deleted = CASE WHEN restore THEN null ELSE node.is_deleted END
+         node.is_deleted = CASE WHEN restore THEN null ELSE node.is_deleted END,
+         node.deleted_reason = CASE WHEN restore THEN null ELSE node.deleted_reason END
        RETURN row.node_key AS node_key, node.ref_id AS ref_id, node.ref_id = row.on_create.ref_id AS created`,
       {
         rows: nodes.map((n) => {
@@ -211,14 +213,22 @@ class Neo4jNodes implements NodeEngine {
     await tx.run(`MATCH (n:Data_Bank {ref_id: $ref_id}) SET n += $set ${removeClause}`, { ref_id, set: wrapInts(schema, set) });
   }
 
-  async softDelete(ref_id: string, namespace: string, guard: NodeGuard): Promise<SoftDeleteResult | null> {
+  async softDelete(ref_id: string, namespace: string, guard: NodeGuard, opts: SoftDeleteOptions = {}): Promise<SoftDeleteResult | null> {
     // No domain, no type: any content node in the namespace.
     const label = guard.domainLabel ?? guard.type ?? "Data_Bank";
     const extra = Object.keys(guard.props ?? {});
     const pattern = ["ref_id: $ref_id", "namespace: $ns", ...extra.map((k) => `${q(k)}: $p_${k}`)].join(", ");
     const params: Params = { ref_id, ns: namespace, now_ms: nowMs() };
     for (const k of extra) params[`p_${k}`] = guard.props![k];
-    const rows = await this.bolt.run(`MATCH (n:${q(label)} {${pattern}}) ${DELETE_NODE_TAIL("n")}`, params);
+    let reason = "";
+    if (opts.reason !== undefined) {
+      params["reason"] = opts.reason;
+      reason = "SET n.deleted_reason = coalesce(n.deleted_reason, $reason)";
+    }
+    const tail = opts.keepEdges
+      ? `SET n.deleted_at = coalesce(n.deleted_at, toInteger($now_ms)), n.is_deleted = true RETURN n.ref_id AS ref_id, 0 AS deleted_edge_count`
+      : DELETE_NODE_TAIL("n");
+    const rows = await on(this.bolt, opts.tx, `MATCH (n:${q(label)} {${pattern}}) ${reason} ${tail}`, params);
     return rows.length > 0 ? { edges: Number(rows[0]!["deleted_edge_count"] ?? 0) } : null;
   }
 }
@@ -449,6 +459,15 @@ class Neo4jSchemas implements SchemaSource {
     const r = rows[0];
     if (!r) return null;
     return { source: String(r["source"]), target: String(r["target"]), edge_type: String(r["edge_type"]), props: r["props"] as Record<string, unknown> };
+  }
+
+  async managedTypes(tx?: GraphTx): Promise<Map<string, string>> {
+    const rows = await on(
+      this.bolt,
+      tx,
+      `MATCH (s:Schema) WHERE s.managed_by IS NOT NULL AND (s.is_deleted IS NULL OR s.is_deleted = false) RETURN s.type AS type, s.managed_by AS manager`,
+    );
+    return new Map(rows.map((r) => [String(r["type"]), String(r["manager"])]));
   }
 
   async createSchema(flat: Record<string, unknown>, tx?: GraphTx): Promise<void> {

@@ -318,11 +318,16 @@ export class LadybugReader implements GraphReader {
       clauses.push("(node.file IS NULL OR NOT node.file =~ $exclude_re)");
       base["exclude_re"] = excludeRe;
     }
+    const excludeTypes = p.exclude_types?.length ? p.exclude_types : undefined;
+    if (excludeTypes) {
+      clauses.push("NOT node.node_type IN $exclude_types");
+      base["exclude_types"] = excludeTypes;
+    }
     const linked = ladybugLinkedClause(links, (await this.engine.catalog.get()).edges);
     if (linked) clauses.push(linked);
     // Every filter is a WHERE after the index's top-k (one index, no
     // routing), so any filter widens both halves.
-    const widen = Boolean(types || excludeRe || linked);
+    const widen = Boolean(types || excludeRe || excludeTypes || linked);
     const filter = clauses.join(" AND ");
     const cap = fetchLimit(limit, skip);
     const warnings: string[] = [];

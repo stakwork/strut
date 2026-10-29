@@ -89,6 +89,10 @@ export interface NodeSchema {
   domainLabels: string[];
   /** True for Strut's own types (strut's in-code rules apply). */
   isStrut: boolean;
+  /** Who owns this type's nodes (plans/memory-in-workspace-graph.md
+   *  decision 7): the writers refuse it unless the caller names this
+   *  manager, and the reads leave it out unless the context may see it. */
+  managed_by?: string;
 }
 
 export interface EdgeSchemaMatch {
@@ -109,6 +113,7 @@ export class SchemaResolver {
   private readonly schemas = new Map<string, Cached<NodeSchema | null>>();
   private readonly edges = new Map<string, Cached<EdgeSchemaMatch | null>>();
   private hidden: Cached<{ domains: Set<string>; types: Set<string> }> | undefined;
+  private managed: Cached<ReadonlyMap<string, string>> | undefined;
 
   private readonly engine: GraphEngine;
 
@@ -131,6 +136,7 @@ export class SchemaResolver {
     this.schemas.clear();
     this.edges.clear();
     this.hidden = undefined;
+    this.managed = undefined;
   }
 
   private fresh<T>(c: Cached<T> | undefined): c is Cached<T> {
@@ -221,7 +227,18 @@ export class SchemaResolver {
       description_key: typeof merged["description_key"] === "string" ? (merged["description_key"] as string) : undefined,
       domainLabels,
       isStrut,
+      // The type's own mark: a subtype of a managed type is not managed by it.
+      ...(typeof own["managed_by"] === "string" && own["managed_by"] ? { managed_by: own["managed_by"] as string } : {}),
     };
+  }
+
+  /** Every managed type, canonical name → its manager. Empty until a
+   *  Schema names one (none does before memory moves in). */
+  async managedTypes(tx?: GraphTx): Promise<ReadonlyMap<string, string>> {
+    if (this.fresh(this.managed)) return this.managed.value;
+    const value: ReadonlyMap<string, string> = (await this.source.managedTypes?.(tx)) ?? new Map();
+    this.managed = { at: Date.now(), value };
+    return value;
   }
 
   /** `About.hidden_domains` (lowercased) and `hidden_types`. */

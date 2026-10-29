@@ -106,6 +106,17 @@ export interface NodeGuard {
   props?: Record<string, unknown>;
 }
 
+/** How a soft delete goes, beyond what it matches. */
+export interface SoftDeleteOptions {
+  /** Run on the caller's write transaction. */
+  tx?: GraphTx;
+  /** Leave the node's edges in place: a reader that follows them out of a
+   *  deleted node (memory's `canonical()` along ALIAS_OF) still can. */
+  keepEdges?: boolean;
+  /** Why, stored as `deleted_reason` (the first delete's kept). */
+  reason?: string;
+}
+
 /** What a soft delete took with it. */
 export interface SoftDeleteResult {
   /** The node's in-scope edges hard-deleted with it. */
@@ -133,8 +144,9 @@ export interface NodeEngine {
    *  values) and remove `remove` on one node. */
   update(tx: GraphTx, schema: NodeSchema, ref_id: string, set: Record<string, unknown>, remove: string[]): Promise<void>;
   /** `deletion.ts`: stamp `deleted_at` (first delete kept) + `is_deleted`
-   *  and hard-delete the node's in-scope edges, counted. Null when nothing matched. */
-  softDelete(ref_id: string, namespace: string, guard: NodeGuard): Promise<SoftDeleteResult | null>;
+   *  and hard-delete the node's in-scope edges, counted — or keep them
+   *  (`keepEdges`, 0 counted). Null when nothing matched. */
+  softDelete(ref_id: string, namespace: string, guard: NodeGuard, opts?: SoftDeleteOptions): Promise<SoftDeleteResult | null>;
 }
 
 // ── Edges ───────────────────────────────────────────────────────────────────
@@ -238,6 +250,10 @@ export interface SchemaSource {
   /** `About.hidden_domains` / `hidden_types`, as stored (unknown shape). */
   hidden(tx?: GraphTx): Promise<{ domains: unknown; types: unknown }>;
   findEdgeSchema(walk: EdgeSchemaWalk, source: string, edge: string, target: string, tx?: GraphTx): Promise<EdgeSchemaRow | null>;
+  /** Every live Schema that names a manager (`managed_by`), type → manager.
+   *  Absent on a source with no such Schemas (a closed registry answers
+   *  from its own types). */
+  managedTypes?(tx?: GraphTx): Promise<Map<string, string>>;
 
   /** Write a new Schema from its flat map (`ref_id` included). */
   createSchema(flat: Record<string, unknown>, tx?: GraphTx): Promise<void>;

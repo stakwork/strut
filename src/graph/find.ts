@@ -88,11 +88,13 @@ function decodeCursor(cursor: string): number {
   throw new FindError("cursor: not a cursor graph/find returned — pass it back as it came");
 }
 
-export async function findNodes(b: GraphBackend, input: FindInput): Promise<FindResult> {
+/** `hide`: the managed types the caller may not read (`managed.ts`) — one
+ *  of them is an unknown type here. */
+export async function findNodes(b: GraphBackend, input: FindInput, hide: ReadonlyMap<string, string> = new Map()): Promise<FindResult> {
   const raw = String(input.node_type ?? "").trim();
   if (!raw) throw new FindError("node_type is required");
   const type = await b.schemas.resolveType(raw);
-  const schema = type ? await b.schemas.schema(type) : null;
+  const schema = type && !hide.has(type) ? await b.schemas.schema(type) : null;
   if (!type || !schema) throw new FindError(`unknown node type "${raw}" — graph/get-ontology lists the types`);
 
   const fields: Record<string, string> = { ...schema.attributes, ...NODE_FIELDS };

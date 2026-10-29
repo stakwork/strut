@@ -29,6 +29,7 @@
  */
 import type { GraphBackend } from "./backend.js";
 import { rowOf, type Params, type Row } from "./bolt.js";
+import { withoutManagedRows } from "./managed.js";
 
 export interface ReadQueryOptions {
   params?: Params;
@@ -38,6 +39,9 @@ export interface ReadQueryOptions {
   timeoutMs?: number;
   /** Strings longer than this are truncated (default 500). */
   maxStringLength?: number;
+  /** Managed types the caller may not read (type → manager): a row holding
+   *  one of their nodes is dropped (`withoutManagedRows`). */
+  hideManaged?: ReadonlyMap<string, string>;
 }
 
 export interface ReadQueryResult {
@@ -156,12 +160,14 @@ export async function readQuery(
   const maxString = opts.maxStringLength ?? DEFAULT_MAX_STRING;
 
   const started = Date.now();
+  const hide = (rows: Row[]) => (opts.hideManaged ? withoutManagedRows(rows, opts.hideManaged) : rows);
   if (backend.kind === "ladybug") {
     // A READ ONLY transaction on its own connection: the engine is the
     // guarantee. Rows stream through `run`, so a huge result stops at the cap.
     const ro = await backend.lbug.readOnly({ queryTimeoutMs: timeout });
     try {
-      const { columns, rows, truncated } = await ro.run(cypher, opts.params ?? {}, { maxRows });
+      const { columns, rows: all, truncated } = await ro.run(cypher, opts.params ?? {}, { maxRows });
+      const rows = hide(all);
       return { columns, rows: rows.map((r) => compactValue(r, maxString) as Row), rowCount: rows.length, truncated, elapsedMs: Date.now() - started };
     } finally {
       await ro.close();
@@ -183,10 +189,11 @@ export async function readQuery(
             truncated = true;
             break;
           }
-          rows.push(compactValue(rowOf(rec), maxString) as Row);
+          rows.push(rowOf(rec));
         }
         if (columns.length === 0) columns = (await result.keys()).map(String);
-        return { columns, rows, rowCount: rows.length, truncated, elapsedMs: Date.now() - started };
+        const kept = hide(rows).map((r) => compactValue(r, maxString) as Row);
+        return { columns, rows: kept, rowCount: kept.length, truncated, elapsedMs: Date.now() - started };
       },
       { timeout },
     );
