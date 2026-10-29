@@ -508,6 +508,15 @@ export const setWorkflowRunCap = (name: string, maxRunCostUsd: number | null) =>
     body: JSON.stringify({ maxRunCostUsd }),
   });
 
+/** Hand a workflow to the builder (`"ai"`: Jamie's builder may publish over
+ *  it) or take it back (`null`). 409 for a seed, a sealed workflow, one open
+ *  to peers, or one a service stamped. */
+export const setWorkflowPublisher = (name: string, publisher: "ai" | null) =>
+  fetchJSON<{ ok: boolean; publisher: "ai" | null }>(`${workflowPath(name)}/publisher`, {
+    method: "PUT",
+    body: JSON.stringify({ publisher }),
+  });
+
 /** Every version, its metadata and its runs. 409 while a run is in flight. */
 export const deleteWorkflow = (name: string) =>
   fetchJSON<{ ok: boolean; workflow: string }>(workflowPath(name), { method: "DELETE" });

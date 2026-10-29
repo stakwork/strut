@@ -2414,6 +2414,42 @@ export async function createStrut<TServices = unknown>(
     }
   });
 
+  // Hand a workflow to the builder, or take it back: the `publisher` stamp
+  // the meta surface publishes over (it writes only over names stamped
+  // "ai", src/authoring.ts). A person's door — the gate refuses a peer, and
+  // no tool reaches it. It moves the stamp between none and "ai" only (a
+  // service's stamp is the service's), and refuses to hand over what the
+  // builder could not keep: a sealed workflow (a candidate without
+  // `sealed:` would unseal a grading harness), one open to peers (the
+  // builder may not publish `peer:`, so its next version would close it to
+  // them) and a seed (every boot puts the committed version back).
+  app.put("/workflows/:name/publisher", async (c) => {
+    const name = c.req.param("name")!;
+    const body = await c.req.json<{ publisher?: string | null }>().catch(() => ({}) as { publisher?: string | null });
+    const publisher = body.publisher ?? null;
+    if (publisher !== null && publisher !== AI_PUBLISHER) {
+      return c.json({ error: `publisher is "${AI_PUBLISHER}" (hand the workflow to the builder) or null (take it back)` }, 400);
+    }
+    const meta = await workspace.getWorkflowMetadata(name);
+    if (!meta) return c.json({ error: `Workflow "${name}" not found` }, 404);
+    if (meta.publisher && meta.publisher !== AI_PUBLISHER) {
+      return c.json({ error: `Workflow "${name}" is stamped "${meta.publisher}", a service's: only an unstamped workflow is handed to the builder` }, 409);
+    }
+    if (publisher) {
+      const refusal = async (): Promise<string | undefined> => {
+        if (meta.versions[meta.active]?.source === "seed") return "it is a seed: every boot puts the committed version back, so change it where it is seeded";
+        const flow = await workspace.getWorkflow(name);
+        if (flow.sealed) return "it is sealed: the builder may never publish over a grading harness";
+        if (flow.peer) return `it is open to other struts (\`peer: ${flow.peer}\`), and the builder may not publish that key: its next version would close it to them`;
+        return undefined;
+      };
+      const why = await refusal();
+      if (why) return c.json({ error: `Workflow "${name}" is not handed to the builder — ${why}` }, 409);
+    }
+    await workspace.setWorkflowPublisher(name, publisher);
+    return c.json({ ok: true, workflow: name, publisher });
+  });
+
   app.put("/workflows/:name/active", async (c) => {
     const name = c.req.param("name");
     const body = await c.req.json<{ version: string }>();

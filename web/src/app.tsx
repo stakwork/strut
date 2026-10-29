@@ -1934,6 +1934,10 @@ function Shell() {
           tabs={workflowTabs}
           apps={apps.filter((a) => a.grants.workflows.includes(selectedWf) || a.grants.automations.includes(selectedWf)).map((a) => ({ name: a.name, title: a.title }))}
           onOpenApp={selectApp}
+          {...(selectedEntry ? {
+            stamp: { publisher: selectedEntry.publisher, activeSource: selectedEntry.activeSource },
+            onSetPublisher: async (publisher: "ai" | null) => { await api.setWorkflowPublisher(selectedWf, publisher); await refreshWorkflows(); },
+          } : {})}
           onTab={setWfTab}
           onClose={() => setPanel(null)}
           onDelete={handleDeleteWorkflow}

@@ -4212,6 +4212,30 @@ body.is-resizing-flyout * {
 }
 .flyout-apps .app-chip { margin-left: 0; }
 
+/* "Let the builder edit this": the workflow handed to the builder (its
+   `publisher` stamp), a row under the tabs like the apps above it. */
+.flyout-builder {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  padding: var(--sp-1) var(--sp-4);
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.flyout-builder-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.flyout-builder-toggle input { margin: 0; }
+.flyout-builder-toggle:has(input:disabled) { cursor: default; opacity: 0.6; }
+.flyout-builder-note { color: var(--text-dim); }
+.flyout-builder-error { color: var(--danger); }
+
 /* The topbar's select for an app: following latest, or the release it is
    held at — a release picked rolls back, a version picked is made live. */
 .app-version-select {

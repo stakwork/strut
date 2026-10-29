@@ -1881,6 +1881,54 @@ describe("actors and the principal rule", () => {
     assert.equal((await call("PUT", "/workflows/nope/run-cap", { maxRunCostUsd: 1 })).status, 404);
   });
 
+  it("PUT /publisher hands a workflow to the builder and takes it back; a seed, a sealed or peer workflow and a service's stamp are refused", async () => {
+    const { strut, call } = await boot();
+    const authoring = (strut.services as { authoring: { publishWorkflow: (name: string, yaml: string) => Promise<{ ok?: boolean; error?: string }> } }).authoring;
+    const candidate = (n: number) => `steps:\n  - id: who${n}\n    type: whoami\n`;
+    const versions = async () => Object.keys((await strut.workspace.getWorkflowMetadata("wf"))!.versions);
+
+    const refused = await authoring.publishWorkflow("wf", candidate(1));
+    assert.match(refused.error ?? "", /not agent-authored/);
+    assert.match(refused.error ?? "", /Let the builder edit this/, "the refusal says how the person hands it over");
+
+    const before = await versions();
+    assert.equal((await call("PUT", "/workflows/wf/publisher", { publisher: "ai" })).status, 200);
+    assert.deepEqual(await versions(), before, "handing it over publishes no version");
+    assert.equal((await call("GET", "/workflows")).json.find((w: any) => w.name === "wf").publisher, "ai");
+    assert.equal((await authoring.publishWorkflow("wf", candidate(2))).ok, true, "the builder may publish over it now");
+    assert.equal((await versions()).length, before.length + 1);
+
+    assert.equal((await call("PUT", "/workflows/wf/publisher", { publisher: null })).status, 200);
+    assert.equal((await strut.workspace.getWorkflowMetadata("wf"))!.publisher, undefined);
+    assert.match((await authoring.publishWorkflow("wf", candidate(3))).error ?? "", /not agent-authored/, "taken back");
+
+    for (const bad of ["lab", "", 7, true]) {
+      assert.equal((await call("PUT", "/workflows/wf/publisher", { publisher: bad })).status, 400, String(bad));
+    }
+    assert.equal((await call("PUT", "/workflows/nope/publisher", { publisher: "ai" })).status, 404);
+
+    // What the builder could not keep, or is not the person's to give.
+    await strut.workspace.publishWorkflowByContent("seeded", candidate(4), undefined, undefined, undefined, { source: "seed" });
+    await strut.workspace.publishWorkflow("harness", "v1", { sealed: true, steps: STEPS });
+    await strut.workspace.publishWorkflow("open", "v1", { peer: true, steps: STEPS });
+    for (const [name, why] of [["seeded", /a seed/], ["harness", /sealed/], ["open", /open to other struts/]] as const) {
+      const res = await call("PUT", `/workflows/${name}/publisher`, { publisher: "ai" });
+      assert.equal(res.status, 409, name);
+      assert.match(res.json.error, why);
+      assert.equal((await strut.workspace.getWorkflowMetadata(name))!.publisher, undefined);
+    }
+    await strut.workspace.setWorkflowPublisher("wf", "lab");
+    for (const publisher of ["ai", null]) {
+      const res = await call("PUT", "/workflows/wf/publisher", { publisher });
+      assert.equal(res.status, 409, String(publisher));
+      assert.match(res.json.error, /a service's/);
+    }
+    assert.equal((await strut.workspace.getWorkflowMetadata("wf"))!.publisher, "lab");
+
+    process.env["STRUT_API_KEY"] = "deploy-key";
+    assert.equal((await call("PUT", "/workflows/open/publisher", { publisher: null })).status, 401);
+  });
+
   it("a durable resume bills the principal recorded at launch, not today's owner", async () => {
     const { strut, store, call, finished } = await boot();
     await strut.workspace.setWorkflowOwner("wf", "new-owner-5");

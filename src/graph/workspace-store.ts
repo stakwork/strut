@@ -650,6 +650,13 @@ export class GraphWorkspaceStore implements WorkspaceStore {
     if (patch) await this.backend.nodes.update(w.ref_id, patch);
   }
 
+  async setWorkflowPublisher(name: string, publisher: string | null): Promise<void> {
+    const w = await this.workflowRow(name);
+    if (!w) throw new Error(`Workflow "${name}" not found`);
+    const patch = patchFor(w as unknown as Record<string, unknown>, { publisher: publisher || undefined });
+    if (patch) await this.backend.nodes.update(w.ref_id, patch);
+  }
+
   async setWorkflowAutomations(name: string, automations: Automation[]): Promise<void> {
     const w = await this.workflowRow(name);
     if (!w) throw new Error(`Workflow "${name}" not found`);
@@ -661,13 +668,13 @@ export class GraphWorkspaceStore implements WorkspaceStore {
   /** Soft, like `deleteStep`: the nodes stay, stamped `deleted_at`, and
    *  their edges go. A later publish under the same name RESTORES the
    *  workflow node (the node writer clears the markers on a key match), so the metadata that would otherwise
-   *  ride along — schedules, owner, cap, category — is cleared first: the
+   *  ride along — schedules, owner, cap, category, the publisher stamp — is cleared first: the
    *  new workflow is a new one, not this one back. Versions stay deleted
    *  unless their exact content is published again. */
   async deleteWorkflow(name: string): Promise<boolean> {
     const w = await this.workflowRow(name);
     if (!w) return false;
-    const remove = (["automations", "owner", "max_run_cost_usd", "category"] as const).filter((k) => w[k] != null);
+    const remove = (["automations", "owner", "max_run_cost_usd", "category", "publisher"] as const).filter((k) => w[k] != null);
     if (remove.length) await this.backend.nodes.update(w.ref_id, { remove: [...remove] });
     for (const v of await this.versionRows(name)) await this.backend.nodes.softDelete(v.ref_id);
     await this.backend.nodes.softDelete(w.ref_id);

@@ -1956,7 +1956,11 @@ the same steps are an agent's tools (`agentTools: ["browser/*"]`), and
 
 - **Sealed — what the meta surface may never touch** (`src/sealed.ts`;
   EVOLVE_SPEC §6). The `meta/*` steps publish only over names they stamped
-  `ai`, but RUN, read the runs of, and verify any workflow except a sealed
+  `ai` — a person hands one of theirs over with `PUT
+  /workflows/:name/publisher { publisher: "ai" }` (the Workflow flyout's
+  "Let the builder edit this"; never a seed, a sealed or `peer:` workflow,
+  or another publisher's; `null` takes it back; a publish never moves the
+  stamp) — but RUN, read the runs of, and verify any workflow except a sealed
   one — `sealed: true` at the top of its YAML, a grading harness whose run
   log records what its graders were handed — and run any step except a
   sealed one: the sealed namespaces (`eval/*`, `meta/*`, plus

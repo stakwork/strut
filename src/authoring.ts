@@ -765,7 +765,8 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
           error:
             `Workflow "${name}" exists and is not agent-authored (publisher: ` +
             `${entry.publisher ?? "none"}). The meta surface never edits workflows it ` +
-            `didn't publish — choose a new name to author a candidate.`,
+            `didn't publish — choose a new name to author a candidate, or ask the person to ` +
+            `hand this one to you ("Let the builder edit this" on the workflow, in strut).`,
         };
       }
       // What the candidate can EXECUTE is read off its definition: it may
