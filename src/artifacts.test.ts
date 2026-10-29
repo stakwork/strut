@@ -61,6 +61,20 @@ describe("fileArtifactsCapability (per-run artifact files)", () => {
     }
   });
 
+  it("takes the run's own /artifacts/<runId>/ link as the path inside it", async () => {
+    const a = fileArtifactsCapability(root);
+    await a.write("run1", "output/brief.docx", "doc");
+    const bytes = await a.read("run1", "/artifacts/run1/output/brief.docx");
+    assert.equal(Buffer.from(bytes).toString(), "doc");
+  });
+
+  it("still refuses another run's link, or a link that climbs out", async () => {
+    const a = fileArtifactsCapability(root);
+    await a.write("run2", "x.txt", "two");
+    await assert.rejects(() => a.read("run1", "/artifacts/run2/x.txt"), /escapes the artifact root/);
+    await assert.rejects(() => a.read("run1", "/artifacts/run1/../run2/x.txt"), /escapes the artifact root/);
+  });
+
   it("rejects relPaths that escape the run dir", async () => {
     const a = fileArtifactsCapability(root);
     await assert.rejects(
