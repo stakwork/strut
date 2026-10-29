@@ -87,10 +87,11 @@ import { buildPackage, type BuildRequest } from "./packages/build.js";
 import { PUBLISHER_FILE, PUBLISHER_NAME, catalogStore, moveChannel, publicCatalogStore, publishRelease, publisherStore } from "./packages/publisher.js";
 import { SUBSCRIPTIONS_FILE, createSubscriptions, subscriptionProblem, type Subscription, type Subscriptions } from "./packages/subscriptions.js";
 import { createPackageIndex, indexDir, indexRowProblem, type PackageIndex } from "./packages/index.js";
+import { INDEXES_FILE, createIndexes, indexSubscriptionProblem, parseIndexesEnv, type IndexSubscription, type PackageIndexes } from "./packages/indexes.js";
 import type { IndexRow } from "./packages/card.js";
 import { packageCache } from "./packages/cache.js";
 import { workspaceFences } from "./packages/fence.js";
-import { PACKAGE_DIGEST } from "./packages/format.js";
+import { PACKAGE_DIGEST, PACKAGE_NAME } from "./packages/format.js";
 import {
   installPackage,
   installPackages,
@@ -267,6 +268,11 @@ export interface StrutOptions<TServices = unknown> {
    *  for a strut nobody pushes to (a desktop host, a test). Each replaces
    *  the record of the same id. */
   peers?: Peer[];
+  /** Package INDEXES to follow (src/packages/indexes.ts; plans/marketplace.md
+   *  §7), put on file at boot after `STRUT_PACKAGE_INDEXES` (else the
+   *  built-in defaults) — each `{ id, key, urls, label? }` replaces the
+   *  record of the same id. A bare package name installs through them. */
+  packageIndexes?: IndexSubscription[];
   /** This strut's OWN workspace — `{ id?, label?, description?, repos? }`,
    *  what `strut/list-peers` reports as `self` so an agent knows which repos
    *  are here. Seeded at boot after `STRUT_SELF` (this wins); `PUT /self` is
@@ -586,7 +592,10 @@ export interface Strut<TServices = unknown> {
    *  applies a release with no ask and updates an installed package item by
    *  item (§4). No route takes the door: an operator's subscription does. */
   packages: {
-    install(ref: string, opts?: Pick<InstallOptions, "digest" | "url" | "actor" | "door">): Promise<InstallResult>;
+    /** `ref` is `file:`, `pk:` (with `url`), or a bare name looked up in
+     *  the indexes this strut follows — the first that lists its publisher,
+     *  or the one `index` names. */
+    install(ref: string, opts?: Pick<InstallOptions, "digest" | "url" | "actor" | "door"> & { index?: string }): Promise<InstallResult>;
     uninstall(pkg: string, opts?: { door?: PackageDoor }): Promise<UninstallResult>;
   };
 
@@ -598,6 +607,12 @@ export interface Strut<TServices = unknown> {
   /** The package index (plans/marketplace.md §7) — null unless this strut
    *  has the index role (`StrutOptions.index`, STRUT_INDEX=1). */
   index: PackageIndex | null;
+
+  /** The package indexes this strut FOLLOWS (src/packages/indexes.ts): a
+   *  bare name resolves through their cards; `search` reads them and the
+   *  peers' installed packages — what `/packages/indexes` and
+   *  `/packages/search` are over. */
+  indexes: PackageIndexes;
 
   /** Reads over the claims layer (plans/claims.md) — null unless the
    *  workspace is graph-backed AND the layer is on (`StrutOptions.claims`):
@@ -2848,10 +2863,44 @@ export async function createStrut<TServices = unknown>(
   // The writes, in process (`strut.packages`) and behind the routes below.
   const busyWorkflow = (workflow: string) => [...controllers.keys()].some((k) => k.startsWith(`${workflow}/`));
   const forgetWorkflow = (workflow: string) => automations.forget(workflow);
+  // The indexes this strut FOLLOWS (src/packages/indexes.ts): a bare name
+  // installs through their signed cards, and `/packages/search` reads them
+  // and the peers. On file at boot from STRUT_PACKAGE_INDEXES (else the
+  // built-in defaults) and `opts.packageIndexes`, each replacing its id; a
+  // bad env value fails the boot.
+  const indexes = createIndexes({ file: join(packageStore.root, INDEXES_FILE), cache: packageStore, peers: peersCap });
+  for (const sub of [...parseIndexesEnv(bootEnv()["STRUT_PACKAGE_INDEXES"]), ...(opts.packageIndexes ?? [])]) {
+    const problem = indexSubscriptionProblem(sub);
+    if (problem) throw new Error(`packageIndexes: ${problem}`);
+    await indexes.set(sub);
+  }
+  // The package/search step's door (src/steps/lib/package/search.ts).
+  (services as Record<string, unknown>)["packages"] ??= { search: (q: string, o?: { limit?: number }) => indexes.search(q, o) };
+  /** A bare name (`acme/linear`) → `pk:` through the first card that lists
+   *  its publisher, the row's catalog URLs tried in order; any other ref as
+   *  it came. */
+  const installByName = async (ref: string, opts: Parameters<Strut["packages"]["install"]>[1] = {}): Promise<InstallResult> => {
+    const { index: which, ...rest } = opts;
+    const run = (r: string, o: typeof rest) => oneAtATime(() => installPackage(packageDeps, r, { ...o, busy: busyWorkflow, forget: forgetWorkflow }));
+    if (!PACKAGE_NAME.test(ref)) return run(ref, rest);
+    if (rest.url) throw new Error(`package_source_invalid: ${ref} is a name, looked up in an index; a url goes with a pk: ref`);
+    const named = await indexes.resolveName(ref, which ? { index: which } : {});
+    let last: unknown;
+    for (const url of named.urls) {
+      try {
+        return await run(named.ref, { ...rest, url });
+      } catch (err) {
+        last = err;
+        // Only a host that did not answer moves on to the row's next URL.
+        if (!(err instanceof Error && err.message.startsWith("package_fetch_failed:"))) throw err;
+      }
+    }
+    throw last;
+  };
   const packages: Strut["packages"] = {
     install: (ref, opts = {}) => {
       if (registryWasInjected) return Promise.reject(new Error("package_unsupported: installing is disabled when the registry is provided at construction time"));
-      return oneAtATime(() => installPackage(packageDeps, ref, { ...opts, busy: busyWorkflow, forget: forgetWorkflow }));
+      return installByName(ref, opts);
     },
     uninstall: (pkg, opts = {}) =>
       oneAtATime(async () => {
@@ -2866,7 +2915,9 @@ export async function createStrut<TServices = unknown>(
     const code = /^([a-z_]+):/.exec(message)?.[1] ?? "";
     const status = ["package_conflict", "package_update_not_built", "package_busy", "package_distro_owned"].includes(code) || code.startsWith("catalog_")
       ? 409
-      : code === "package_not_installed" || code === "package_not_published"
+      : code === "package_index_unreachable"
+        ? 502
+      : ["package_not_installed", "package_not_published", "package_not_listed", "package_index_unknown"].includes(code)
         ? 404
         : code === "bad_package" || code.startsWith("package_")
           ? 400
@@ -2876,8 +2927,9 @@ export async function createStrut<TServices = unknown>(
   app.get("/packages", async (c) => c.json({ packages: await listInstalledPackages(packageDeps) }));
   app.post("/packages/install", async (c) => {
     if (registryWasInjected) return c.json({ error: "Installing is disabled when the registry is provided at construction time" }, 409);
-    const body = await c.req.json<{ ref?: unknown; digest?: unknown; url?: unknown }>().catch(() => ({}) as { ref?: unknown; digest?: unknown; url?: unknown });
-    if (typeof body.ref !== "string" || !body.ref) return c.json({ error: "ref is required: the package's directory, file:/path/to/package, or pk:<key>/<publisher>/<name> with url" }, 400);
+    const body = await c.req.json<{ ref?: unknown; digest?: unknown; url?: unknown; index?: unknown }>().catch(() => ({}) as { ref?: unknown; digest?: unknown; url?: unknown; index?: unknown });
+    if (typeof body.ref !== "string" || !body.ref) return c.json({ error: "ref is required: file:/path/to/package, pk:<key>/<publisher>/<name> with url, or a name (publisher/name) looked up in the indexes this strut follows" }, 400);
+    if (body.index !== undefined && typeof body.index !== "string") return c.json({ error: "index is the id of an index this strut follows (GET /packages/indexes)" }, 400);
     if (body.digest !== undefined && (typeof body.digest !== "string" || !PACKAGE_DIGEST.test(body.digest))) {
       return c.json({ error: "digest is sha256:<64 hex>" }, 400);
     }
@@ -2886,7 +2938,7 @@ export async function createStrut<TServices = unknown>(
     }
     const actor = await resolveActor(c);
     try {
-      const result = await packages.install(body.ref, { ...(body.digest ? { digest: body.digest as string } : {}), ...(body.url ? { url: body.url as string } : {}), ...(actor ? { actor } : {}) });
+      const result = await packages.install(body.ref, { ...(body.digest ? { digest: body.digest as string } : {}), ...(body.url ? { url: body.url as string } : {}), ...(body.index ? { index: body.index as string } : {}), ...(actor ? { actor } : {}) });
       return c.json(result, 201);
     } catch (err) {
       return packageError(c, err);
@@ -3124,6 +3176,33 @@ export async function createStrut<TServices = unknown>(
     uninstall: (pkg, o) => packages.uninstall(pkg, o),
     installed: () => listInstalledPackages(packageDeps),
   });
+  // ── The indexes this strut FOLLOWS (§7, step 7's client half) ──────────
+  // `{ id, key, urls }`: the operator's (full scope; a peer reads). Search
+  // reads each index strut's derived `/index/packages` and every peer's
+  // `GET /packages` — a peer asking gets the indexes' answer alone, never a
+  // fan-out over this strut's own peers. Before the uninstall route, whose
+  // `/packages/:publisher/:name` would take `/packages/indexes/<id>`.
+  app.get("/packages/indexes", async (c) => c.json({ indexes: await indexes.list() }));
+  app.put("/packages/indexes/:id", async (c) => {
+    const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>);
+    const sub = { ...body, id: c.req.param("id") } as IndexSubscription;
+    const problem = indexSubscriptionProblem(sub);
+    if (problem) return c.json({ error: `package_index_invalid: ${problem}` }, 400);
+    await indexes.set(sub);
+    // The first read now, so a wrong key or URL shows at once.
+    await indexes.card(sub.id).catch(() => undefined);
+    return c.json((await indexes.list()).find((s) => s.id === sub.id));
+  });
+  app.delete("/packages/indexes/:id", async (c) => {
+    const removed = await indexes.remove(c.req.param("id"));
+    return removed ? c.json({ ok: true, id: c.req.param("id") }) : c.json({ error: `this strut follows no index "${c.req.param("id")}"` }, 404);
+  });
+  app.get("/packages/search", async (c) => {
+    const limit = Number(c.req.query("limit"));
+    const peers = c.req.query("peers") !== "0" && !isPeerScope(await scopeOf(c));
+    return c.json(await indexes.search(c.req.query("q") ?? "", { ...(Number.isFinite(limit) && limit > 0 ? { limit } : {}), peers }));
+  });
+
   app.get("/packages/subscriptions", async (c) => c.json({ subscriptions: await subscriptions.list() }));
   app.put("/packages/subscriptions/:id", async (c) => {
     const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>);
@@ -6282,6 +6361,7 @@ export async function createStrut<TServices = unknown>(
     packages,
     subscriptions,
     index,
+    indexes,
     claims,
     verifier,
     listen,

@@ -2308,6 +2308,37 @@ production until install (step 2) calls the resolver.
      builder — the archive mirror, the static mirror, self-serve rows. A
      Stakwork index strut exists only once one is deployed with the role
      and its key is written into the defaults.
+   - **Built 2026-10-28: the client half** (`src/packages/indexes.ts`,
+     `src/steps/lib/package/search.ts`; `specs/API.md` §16): a strut
+     follows indexes BY KEY — `{ id, key, urls, label? }` in
+     `<dataDir>/packages/indexes.json`, put on file at boot from
+     `STRUT_PACKAGE_INDEXES` (else `DEFAULT_PACKAGE_INDEXES`, EMPTY until
+     Stakwork's index is deployed and its key written there) and
+     `createStrut({ packageIndexes })`, `PUT`/`DELETE
+     /packages/indexes/:id` the paste door; a bare name installs through
+     the cards (`POST /packages/install { ref: "acme/linear", index? }`:
+     the first card listing `acme`, read with the index kind and the
+     per-key `seq` rule, names the key and its catalog URLs, and the
+     install goes on as `pk:` — the key pinned is the card's, never a
+     search answer's); `GET /packages/search?q=` reads each index strut's
+     `/index/packages` and every peer's `GET /packages`; the Packages
+     dialog's **Find** section searches and installs a hit by its name;
+     the `package/search` step (`ctx.services.packages`) is the builder's
+     `package_search` (chat, a fixed registry grant beside `app/*`) and in
+     the `builder` seed's tools. Choices of mine, proposed: no separate
+     `STRUT_PACKAGE_INDEX_URL` — the URLs ride on each subscription, since
+     HTTP-first a key with no URL resolves nothing; the subscription file
+     is plain JSON (no token, nothing secret); the env re-applies at every
+     boot like `STRUT_PEERS`, so a deleted default comes back unless the
+     env says `[]`; a peer asking `/packages/search` gets the indexes alone,
+     never a fan-out over this strut's peers; the builder tool is named
+     after the step (`package_search`), and the chat prompt is unchanged —
+     the tool's own description says to search before writing an
+     integration (the prompt is pinned byte for byte and heads every
+     chat's cached prefix). Not built: the Stakwork default (needs the
+     deployed index's key), `index.yaml` by `git+`, an index row naming
+     another key than an install pinned (asks, §4 — no update door yet),
+     the archive and static mirrors, self-serve rows.
    - **6b, later: the Pkarr record.** The JS client (relay-only: a relay is a
      dependency), Stakwork's relay at a stable hostname and the
      sphinx-swarm container, a publisher's record naming its public
