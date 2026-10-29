@@ -282,10 +282,11 @@ describe("jarvis ontology + resolver + jarvis-typed writes (live Neo4j)", { skip
 });
 
 /**
- * What both engines must agree on: the ten types the Ladybug registry holds
- * resolve the same way, the claim edges and the Concept tree write through
- * the shared writers, and the registry refuses what the meta-graph allows.
- * On Neo4j the types come from the jarvis ontology seeded once here.
+ * What both engines must agree on: the ten types a Ladybug file is seeded
+ * with resolve the same way, the claim edges and the Concept tree write
+ * through the shared writers, and both take runtime types and edge types
+ * (plans/memory-in-workspace-graph.md, PR A). The jarvis ontology is seeded
+ * on both here; on a file it skips the types whose columns clash.
  */
 for (const tb of testBackends()) {
   describe(`type and edge resolution on ${tb.name}`, { skip: tb.skip }, () => {
@@ -298,24 +299,27 @@ for (const tb of testBackends()) {
       const seed = await seedStrutDomain(backend);
       if (neo) {
         assert.equal(ont.createdSchemas.length, 153);
+        assert.deepEqual(ont.skippedSchemas, []);
         assert.equal(seed.mode, "shared");
       } else {
-        assert.deepEqual(ont.createdSchemas, [], "a closed registry seeds nothing");
-        assert.equal(seed.mode, "closed");
+        assert.ok(ont.createdSchemas.length > 100, "the jarvis types the file has no row for");
+        assert.ok(ont.skippedSchemas.some((s) => /^ConflictCheck: .*result is a DOUBLE column/.test(s)), "a column clash is skipped, named");
+        assert.ok(!ont.createdSchemas.includes("Claim") && !ont.createdSchemas.includes("Concept"), "the seed's own types are kept as seeded");
+        assert.equal(seed.mode, "file", "the file seeded its Strut types at open");
       }
     });
     after(async () => {
       await tb.close(backend);
     });
 
-    it("resolves the registry's types case-insensitively; the dropped types are unknown to the file", async () => {
+    it("resolves the seeded types case-insensitively; the dropped Strut types are unknown to the file", async () => {
       const r = backend.schemas;
       assert.equal(await r.resolveType("strutrun"), "StrutRun");
       assert.equal(await r.resolveType(" claim "), "Claim");
       assert.equal(await r.resolveType("CONCEPT"), "Concept");
       assert.equal(await r.resolveType("Nope"), null);
       assert.equal(await r.resolveType("StrutToolCall"), neo ? "StrutToolCall" : null);
-      assert.equal(await r.resolveType("Document"), neo ? "Document" : null);
+      assert.equal(await r.resolveType("Document"), "Document", "jarvis's types, seeded on both");
       const check = (await r.schema("Check"))!;
       assert.equal(check.node_key, "check-id");
       assert.equal(check.attributes["freshness_days"], "?int");
@@ -329,6 +333,7 @@ for (const tb of testBackends()) {
     });
 
     it("edge rules: the claim edges and the Concept tree on both; jarvis's allowlist on Neo4j only", async () => {
+      // jarvis's wildcard rules (`*`→`*`) are not seeded by the bundled fixture.
       const r = backend.schemas;
       assert.ok(await r.edgeSchema("TESTS", "Check", "Claim"));
       assert.ok(await r.edgeSchema("EVIDENCED_BY", "Claim", "Evidence"));
@@ -338,6 +343,8 @@ for (const tb of testBackends()) {
       assert.equal((await r.edgeSchema("TESTS", "Claim", "Check"))?.via, neo ? "allowlist" : undefined, "the other way round");
       assert.equal((await r.edgeSchema("RELATED_TO", "Concept", "Concept"))?.via, neo ? "allowlist" : undefined);
       assert.equal(await r.edgeSchema("MAPS_TO", "Concept", "Concept"), null);
+      // An ancestor's rule: the file walks CHILD_OF as Neo4j does.
+      assert.equal((await r.edgeSchema("ABOUT", "Claim", "StrutWorkflow"))?.via, neo ? "allowlist" : "exact");
     });
 
     it("writes the claim chain and a Concept tree through the shared writers", async () => {
@@ -369,10 +376,21 @@ for (const tb of testBackends()) {
       await assert.rejects(nodes.write({ type: "Concept", data: { description: "no name" } }), (e: unknown) => e instanceof GraphValidationError && e.code === "MISSING_REQUIRED");
     });
 
-    it("the file refuses what the meta-graph allows: runtime schemas and edge schemas", { skip: neo && "ladybug only" }, async () => {
-      await assert.rejects(backend.schemas.createEdgeSchema("Concept", "RELATED_TO", "Concept"), /closed registry/);
-      await assert.rejects(createNodeSchema(backend, backend.schemas, { type: "FieldNote", attributes: { description: "string" } }), (e: unknown) => e instanceof GraphValidationError && e.code === "UNKNOWN_TYPE");
-      await assert.rejects(backend.nodes.write({ type: "Document", data: { source_link: "/x" } }), (e: unknown) => e instanceof GraphValidationError && e.code === "UNKNOWN_TYPE");
+    it("both take a runtime type and edge type: the node and the edge write and read back", async () => {
+      const made = await createNodeSchema(backend, backend.schemas, { type: "FieldNote", attributes: { description: "string", pages: "?int" } });
+      assert.equal(made.created, true);
+      assert.equal((await backend.schemas.schema("fieldnote"))?.attributes["pages"], "?int");
+      const r = await backend.schemas.createEdgeSchema("FieldNote", "CITES", "Concept");
+      assert.equal(r.created, true);
+      const [note, concept] = (await backend.nodes.writeMany([
+        { type: "FieldNote", data: { name: "on webhooks", description: "notes", pages: 3 } },
+        { type: "Concept", data: { name: "Webhooks" } },
+      ])).map((x) => x.ref_id);
+      const edge = await backend.edges.write({ edge: "CITES", source_ref_id: note!, target_ref_id: concept! });
+      assert.equal(edge.created, true);
+      assert.equal((await backend.reader.getNode(note!))?.properties["pages"], 3);
+      assert.deepEqual((await backend.reader.neighbors(note!, { edge_types: ["CITES"] })).edges.map((e) => e.edge_type), ["CITES"]);
+      await assert.rejects(backend.edges.write({ edge: "QUOTES", source_ref_id: note!, target_ref_id: concept! }), (e: unknown) => e instanceof GraphValidationError);
     });
   });
 }

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { defineStep } from "../../../core.js";
-import { type Query, type Row, editAliases, memoryWrite, normalize, supersede } from "./_db.js";
+import { type MemoryTx, type Query, type Row, editAliases, memoryWrite, normalize, supersede } from "./_db.js";
 import { lookup, vocabulary } from "./_ontology.js";
 import { candidatePairs } from "./duplicates.js";
 import { SYSTEM_WRITER as JANITOR } from "../../../system-workflows.js";
@@ -26,7 +26,8 @@ async function janitorRefusal(query: Query, keep: string, dup: string, keepIsUse
 }
 
 /** Moves every `edge` between `table` nodes and the duplicate onto the kept entity. */
-async function repoint(query: Query, edge: string, table: "Fact" | "Episode", dup: string, keep: string): Promise<number> {
+async function repoint(m: MemoryTx, edge: string, table: "Fact" | "Episode", dup: string, keep: string): Promise<number> {
+  const query = m.query;
   const from = (await query(
     `MATCH (x:${table})-[:${edge}]->(d:Entity) WHERE d.ref_id = $dup RETURN x.ref_id AS id`, { dup },
   )).map((r) => r.id as string);
@@ -34,10 +35,8 @@ async function repoint(query: Query, edge: string, table: "Fact" | "Episode", du
     `MATCH (x:${table})-[:${edge}]->(k:Entity) WHERE k.ref_id = $keep AND x.ref_id IN $ids RETURN x.ref_id AS id`, { keep, ids: from },
   )).map((r) => r.id as string));
   const moving = from.filter((id) => !already.has(id));
-  if (moving.length) {
-    await query(`MATCH (x:${table}), (k:Entity) WHERE x.ref_id IN $ids AND k.ref_id = $keep CREATE (x)-[:${edge}]->(k)`, { ids: moving, keep });
-  }
-  await query(`MATCH (x:${table})-[r:${edge}]->(d:Entity) WHERE d.ref_id = $dup DELETE r`, { dup });
+  await m.linkMany(moving.map((id) => ({ edge, from: id, to: keep })));
+  for (const id of from) await m.unlink(edge, id, dup);
   return moving.length;
 }
 
@@ -55,7 +54,8 @@ export default defineStep({
   }),
   output: z.any(),
   async run(cfg, ctx) {
-    return memoryWrite(ctx, async (query) => {
+    return memoryWrite(ctx, async (m) => {
+      const query = m.query;
       const now = Date.now();
       const { keep, duplicate: dup } = cfg;
       if (keep === dup) return { error: "invalid_input: keep and duplicate are the same entity" };
@@ -76,30 +76,26 @@ export default defineStep({
 
       // A mishearing with no form meant the duplicate's name: it keeps meaning that.
       if (normalize(gone.name) !== normalize(kept.name)) {
-        await query(
+        const formless = await query(
           `MATCH (f:Fact)-[:SUBJECT]->(d:Entity) WHERE d.ref_id = $dup AND f.predicate IN $heard AND f.value IS NOT NULL AND f.form IS NULL
-           SET f.form = $name`,
-          { dup, heard: vocab.predicatesWithRole("mishearing"), name: gone.name },
+           RETURN f.ref_id AS id`,
+          { dup, heard: vocab.predicatesWithRole("mishearing") },
         );
+        for (const f of formless) await m.set(f.id, { form: gone.name });
       }
       const moved = {
-        subject_of: await repoint(query, "SUBJECT", "Fact", dup, keep),
-        object_of: await repoint(query, "OBJECT", "Fact", dup, keep),
-        mentions: await repoint(query, "MENTIONS", "Episode", dup, keep),
+        subject_of: await repoint(m, "SUBJECT", "Fact", dup, keep),
+        object_of: await repoint(m, "OBJECT", "Fact", dup, keep),
+        mentions: await repoint(m, "MENTIONS", "Episode", dup, keep),
       };
       // Aliases that pointed at the duplicate now point at the kept entity.
       const pointing = (await query("MATCH (a:Entity)-[:ALIAS_OF]->(d:Entity) WHERE d.ref_id = $dup RETURN a.ref_id AS id", { dup })).map((r) => r.id);
-      if (pointing.length) {
-        await query("MATCH (a:Entity), (k:Entity) WHERE a.ref_id IN $ids AND k.ref_id = $keep CREATE (a)-[:ALIAS_OF]->(k)", { ids: pointing, keep });
-        await query("MATCH (a:Entity)-[r:ALIAS_OF]->(d:Entity) WHERE d.ref_id = $dup DELETE r", { dup });
-      }
-      await query("MATCH (ep:Episode) WHERE ep.speaker = $dup SET ep.speaker = $keep", { dup, keep });
-      const aliases = await editAliases(query, keep, [...(gone.aliases ?? []), gone.name], now);
-      await query("MATCH (d:Entity), (k:Entity) WHERE d.ref_id = $dup AND k.ref_id = $keep CREATE (d)-[:ALIAS_OF]->(k)", { dup, keep });
-      await query(
-        "MATCH (d:Entity) WHERE d.ref_id = $dup SET d.deleted_at = $now, d.deleted_reason = $why, d.updated_at = $now",
-        { dup, now, why: `merged into ${keep} by ${cfg.created_by}` },
-      );
+      await m.linkMany(pointing.map((id) => ({ edge: "ALIAS_OF", from: id, to: keep })));
+      for (const id of pointing) await m.unlink("ALIAS_OF", id, dup);
+      for (const ep of await query("MATCH (ep:Episode) WHERE ep.speaker = $dup RETURN ep.ref_id AS id", { dup })) await m.set(ep.id, { speaker: keep });
+      const aliases = await editAliases(m, keep, [...(gone.aliases ?? []), gone.name], now);
+      await m.link("ALIAS_OF", dup, keep);
+      await m.forget(dup, `merged into ${keep} by ${cfg.created_by}`);
 
       // Tidy the kept entity's current facts: a repeat, or a second value of a
       // one-value predicate, is superseded by the newest: the one that began
@@ -131,7 +127,7 @@ export default defineStep({
         const winner = newest.get(group);
         if (!winner) { newest.set(group, { id: f.id, valid_at: f.valid_at }); continue; }
         // As in remember: a replaced value ended when the kept one began, if known; a repeat just stops being held.
-        await supersede(query, winner.id, one.has(f.predicate) && winner.valid_at != null ? Number(winner.valid_at) : null, [f.id], now);
+        await supersede(m, winner.id, one.has(f.predicate) && winner.valid_at != null ? Number(winner.valid_at) : null, [f.id], now);
         superseded.push(f.id);
       }
       return {

@@ -1,31 +1,30 @@
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, statSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
 import type { StepContext } from "../../../core.js";
 import { buildRegistry } from "../../registry.js";
 import { memoryDb, memoryWrite } from "./_db.js";
 import { invalidate, resolve, vocabulary } from "./_ontology.js";
+import { NO_LADYBUG, memoryWorkspace, type MemoryWorkspace } from "./_test-workspace.js";
 
-// Against a real LadybugDB in a temp folder. @ladybugdb/core is an optional
+// Against a real Ladybug workspace graph in a temp folder: memory lives there
+// (plans/memory-in-workspace-graph.md). @ladybugdb/core is an optional
 // dependency with a native addon; where it does not load, the suite skips.
-const hasLadybug = await import("@ladybugdb/core").then(
-  () => true,
-  () => false,
-);
+const hasLadybug = !NO_LADYBUG;
+
+/** A raw statement on the workspace's write queue, outside memory's writers (test seeding). */
+const rawWrite = (ws: MemoryWorkspace, cypher: string, params: Record<string, unknown> = {}) => ws.graph.lbug.withWrite((tx) => tx.run(cypher, params));
 
 type StepDef = { input: { parse(v: unknown): unknown }; run(cfg: unknown, ctx: StepContext): Promise<any> };
 
 describe("memory/* steps", { skip: !hasLadybug && "@ladybugdb/core is not installed" }, () => {
-  const dir = mkdtempSync(join(tmpdir(), "strut-memory-"));
-  const ctxWith = (services: unknown) =>
-    ({ runId: "test", path: "test", scope: {}, input: undefined, emit: async () => {}, services }) as unknown as StepContext;
-  const ctx = ctxWith({ secrets: { get: async (n: string) => (n === "STRUT_MEMORY_DB" ? join(dir, "db", "graph.lbug") : undefined) } });
+  let ws: MemoryWorkspace;
+  let ctx: StepContext;
   let run: (type: string, input: unknown, c?: StepContext) => Promise<any>;
   let types: string[];
 
   before(async () => {
+    ws = await memoryWorkspace();
+    ctx = ws.ctx();
     const { registry } = await buildRegistry();
     types = Object.keys(registry).filter((t) => t.startsWith("memory/"));
     run = (type, input, c = ctx) => {
@@ -33,7 +32,7 @@ describe("memory/* steps", { skip: !hasLadybug && "@ladybugdb/core is not instal
       return def.run(def.input.parse(input), c);
     };
   });
-  after(() => rmSync(dir, { recursive: true, force: true }));
+  after(() => ws.close());
 
   const me = { type: "Self", name: "Me" };
   const ids: Record<string, string> = {};
@@ -55,7 +54,6 @@ describe("memory/* steps", { skip: !hasLadybug && "@ladybugdb/core is not instal
     assert.deepEqual(out.ontology.resolved, ["full_name → name"]);
     ids.self = out.entities[0].ref_id;
     ids.tom = out.facts[0].ref_id;
-    assert.equal((statSync(join(dir, "db")).mode & 0o777), 0o700, "memory folder is owner-only");
   });
 
   it("a one-value predicate supersedes the current fact", async () => {
@@ -111,7 +109,7 @@ describe("memory/* steps", { skip: !hasLadybug && "@ladybugdb/core is not instal
     assert.match(out.error, /^invalid_input: .*type "\?\?\?".*predicate "!!!"/);
     await assert.rejects(async () => run("memory/remember", { episode: "x", mentions: [{ type: "", name: "X" }] }));
     await assert.rejects(async () => run("memory/remember", { episode: "x", facts: [{ subject: me, predicate: "", text: "x" }] }));
-    await assert.rejects(resolve(await memoryDb(ctx), "predicate", "--", "test"), /invalid_input/);
+    await assert.rejects(memoryWrite(ctx, (m) => resolve(m, "predicate", "--", "test")), /invalid_input/);
     const ontology = await run("memory/ontology", {});
     assert.ok(![...ontology.entity_types, ...ontology.predicates].some((t: any) => !t.name));
     assert.equal((await run("memory/recall", { q: "noise" })).length, 0, "no episode was written");
@@ -172,33 +170,38 @@ describe("memory/* steps", { skip: !hasLadybug && "@ladybugdb/core is not instal
     assert.match((await run("memory/get", { ref_id: ids.kate })).error, /^not_found/);
   });
 
-  it("without STRUT_MEMORY_DB the graph lives under dataDir/memory", async () => {
-    const dataDir = join(dir, "data");
-    await run("memory/remember", { episode: "hello", mentions: [me] }, ctxWith({ dataDir }));
-    assert.equal(statSync(join(dataDir, "memory")).mode & 0o777, 0o700);
-    assert.ok(statSync(join(dataDir, "memory", "graph.lbug")));
+  it("memory's nodes are the workspace graph's: managed by memory, keyed by ref_id", async () => {
+    const [self] = await ws.graph.lbug.query("MATCH (n:Node) WHERE n.ref_id = $id RETURN n.node_type AS type, n.node_key AS key", { id: ids.self });
+    assert.equal(self!["type"], "Self");
+    assert.equal(self!["key"], `self-${ids.self}`);
+    assert.equal((await ws.graph.schemas.managedTypes()).get("Fact"), "memory");
   });
 
-  it("with neither STRUT_MEMORY_DB nor a dataDir the steps fail and say so", async () => {
-    await assert.rejects(async () => run("memory/recall", { q: "x" }, ctxWith({})), /dataDir.*STRUT_MEMORY_DB/);
+  it("without a Ladybug workspace graph the steps refuse and say so", async () => {
+    const bare = { ...ctx, services: {} } as unknown as StepContext;
+    await assert.rejects(async () => run("memory/recall", { q: "x" }, bare), /workspace graph/);
+    const neo = { ...ctx, services: { graph: { kind: "neo4j" } } } as unknown as StepContext;
+    await assert.rejects(async () => run("memory/recall", { q: "x" }, neo), /Ladybug/);
   });
 });
 
 describe("memory/* speaker and time", { skip: !hasLadybug && "@ladybugdb/core is not installed" }, () => {
-  const dir = mkdtempSync(join(tmpdir(), "strut-memory-"));
-  const ctx = {
-    runId: "test", path: "test", scope: {}, input: undefined, emit: async () => {},
-    services: { secrets: { get: async (n: string) => (n === "STRUT_MEMORY_DB" ? join(dir, "graph.lbug") : undefined) } },
-  } as unknown as StepContext;
+  let ws: MemoryWorkspace;
+  let ctx: StepContext;
   let run: (type: string, input: unknown, c?: StepContext) => Promise<any>;
+  const extra: MemoryWorkspace[] = [];
   before(async () => {
+    ws = await memoryWorkspace();
+    ctx = ws.ctx();
     const { registry } = await buildRegistry();
     run = (type, input, c = ctx) => {
       const def = registry[type] as unknown as StepDef;
       return def.run(def.input.parse(input), c);
     };
   });
-  after(() => rmSync(dir, { recursive: true, force: true }));
+  after(async () => {
+    for (const w of [ws, ...extra]) await w.close();
+  });
 
   const me = { type: "Self", name: "Me" };
   const kate = { type: "Person", name: "Kate" };
@@ -439,11 +442,11 @@ describe("memory/* speaker and time", { skip: !hasLadybug && "@ladybugdb/core is
     const evieId = evie.entities.find((e: any) => e.name === "Evie").ref_id;
     // Learned last, with an end that has since passed and nothing that expired it.
     const now = Date.now();
-    await (await memoryDb(ctx))(
+    await memoryWrite(ctx, (m) => m.query(
       `MATCH (s:Entity) WHERE s.ref_id = $s
        CREATE (:Fact {ref_id: 'lapsed', predicate: 'lives_in', text: 'Evie lives in Bath.', valid_at: $t, invalid_at: $t, created_at: $now})-[:SUBJECT]->(s)`,
       { s: evieId, t: now - 1000, now },
-    );
+    ));
     const out = await run("memory/merge", { keep: eveId, duplicate: evieId });
     assert.deepEqual(out.superseded, [evie.facts[0].ref_id], "Leeds began after York, though York was learned last");
     const york = await run("memory/get", { ref_id: evie.facts[0].ref_id });
@@ -598,52 +601,34 @@ describe("memory/* speaker and time", { skip: !hasLadybug && "@ladybugdb/core is
     assert.deepEqual(derby.past.map((f: any) => [f.text, f.role, f.subject, f.until]), [["Dee used to live in Derby.", "object", "Dee", undefined]]);
   });
 
-  it("opening a database written before world time clears record time stored as world time", async () => {
-    const path = join(dir, "old", "graph.lbug");
-    mkdirSync(dirname(path), { recursive: true });
-    const lbug = await import("@ladybugdb/core");
-    const db = new lbug.Database(path);
-    const conn = new lbug.Connection(db);
-    await conn.query(`CREATE NODE TABLE Fact(ref_id STRING PRIMARY KEY, predicate STRING, text STRING, confidence DOUBLE,
-      valid_at INT64, invalid_at INT64, expired_at INT64, created_by STRING, created_at INT64, updated_at INT64, deleted_at INT64)`);
-    await conn.query(`CREATE (:Fact {ref_id: 'held', valid_at: 100, created_at: 100}),
-      (:Fact {ref_id: 'replaced', valid_at: 100, created_at: 100, invalid_at: 200, expired_at: 200}),
-      (:Fact {ref_id: 'dated', valid_at: 50, created_at: 100, invalid_at: 150, expired_at: 200})`);
-    await conn.close();
-    await db.close();
-    const old = { ...ctx, services: { secrets: { get: async (n: string) => (n === "STRUT_MEMORY_DB" ? path : undefined) } } } as unknown as StepContext;
-    const rows = await (await memoryDb(old))("MATCH (f:Fact) RETURN f.ref_id AS id, f.valid_at AS valid, f.invalid_at AS invalid ORDER BY f.ref_id");
-    assert.deepEqual(rows.map((r) => [r.id, r.valid, r.invalid]), [["dated", 50, 150], ["held", null, null], ["replaced", null, null]]);
-  });
-
   it("a transaction that caught a failed statement still writes nothing", async () => {
-    await assert.rejects(memoryWrite(ctx, async (query) => {
-      await query("THIS IS NOT CYPHER").catch(() => undefined);
-      await query("CREATE (:Entity {ref_id: 'caught', type: 'Person', name: 'Caught', aliases: []})");
+    await assert.rejects(memoryWrite(ctx, async (m) => {
+      await m.query("THIS IS NOT CYPHER").catch(() => undefined);
+      await m.query("CREATE (:Entity {ref_id: 'caught', type: 'Person', name: 'Caught', aliases: []})");
       return "done";
     }));
     assert.equal((await (await memoryDb(ctx))("MATCH (e:Entity) WHERE e.ref_id = 'caught' RETURN e.ref_id AS id")).length, 0);
   });
 
   it("a remember that fails part-way leaves nothing behind, not even a type it proposed", async () => {
-    // A damaged ontology row (a predicate with no name) makes remember throw
+    // A damaged Schema (memory's predicate with no name) makes remember throw
     // when it looks up a new predicate: after it has written the episode, the
     // entity and its proposed type, and reloaded the vocabulary inside the
     // transaction.
     const query = await memoryDb(ctx);
-    await query(
-      `CREATE (:Ontology {key: 'predicate:', kind: 'predicate', description: '', status: 'proposed',
-               cardinality: 'many', subject_types: [], object_types: [], aliases: []})`,
+    await rawWrite(ws,
+      `CREATE (:Node {ref_id: 'damaged', node_type: 'Schema', kind: 'predicate', managed_by: 'memory', status: 'proposed',
+               cardinality: 'many', subject_types: CAST([] AS STRING[]), object_types: CAST([] AS STRING[]), aliases: CAST([] AS STRING[])})`,
     );
     invalidate(query);
     await assert.rejects(run("memory/remember", {
       episode: "Zed is a gizmo.", mentions: [{ type: "Person", name: "Zed" }],
       facts: [{ subject: { type: "Gizmo", name: "Zed" }, predicate: "frobs", text: "Zed frobs." }],
     }));
-    assert.equal((await query("MATCH (o:Ontology) WHERE o.name = 'Gizmo' RETURN o.key AS key")).length, 0);
+    assert.equal((await ws.graph.lbug.query("MATCH (n:Node) WHERE n.node_type = 'Schema' AND n.type = 'Gizmo' RETURN n.ref_id AS id")).length, 0);
     // Read without invalidating first: the vocabulary memoryWrite left behind.
     assert.equal((await vocabulary(query)).term("entity_type", "Gizmo"), undefined);
-    await query("MATCH (o:Ontology) WHERE o.key = 'predicate:' DELETE o");
+    await rawWrite(ws, "MATCH (n:Node) WHERE n.ref_id = 'damaged' DELETE n");
     invalidate(query);
     assert.match((await run("memory/get", { type: "Person", name: "Zed" })).error, /^not_found/);
     assert.equal((await run("memory/recall", { q: "Zed" })).length, 0);
@@ -652,12 +637,11 @@ describe("memory/* speaker and time", { skip: !hasLadybug && "@ladybugdb/core is
   });
 
   it("with no user type there is no default speaker and nothing is flagged as about the user", async () => {
-    const other = {
-      ...ctx,
-      services: { secrets: { get: async (n: string) => (n === "STRUT_MEMORY_DB" ? join(dir, "nouser", "graph.lbug") : undefined) } },
-    } as unknown as StepContext;
+    const nouser = await memoryWorkspace();
+    extra.push(nouser);
+    const other = nouser.ctx();
     const query = await memoryDb(other);
-    await query("MATCH (o:Ontology) WHERE o.role = 'user' SET o.role = ''");
+    await rawWrite(nouser, "MATCH (n:Node) WHERE n.node_type = 'Schema' AND n.role = 'user' SET n.role = ''");
     invalidate(query);
     const out = await run("memory/remember", { episode: "Hello.", mentions: [kate] }, other);
     assert.equal(out.speaker, undefined);
@@ -672,21 +656,25 @@ describe("memory/* speaker and time", { skip: !hasLadybug && "@ladybugdb/core is
 });
 
 describe("memory/duplicates and merge's created_by", { skip: !hasLadybug && "@ladybugdb/core is not installed" }, () => {
-  const dir = mkdtempSync(join(tmpdir(), "strut-memory-dups-"));
-  const ctxAt = (db: string) => ({
-    runId: "test", path: "test", scope: {}, input: undefined, emit: async () => {},
-    services: { secrets: { get: async (n: string) => (n === "STRUT_MEMORY_DB" ? join(dir, db) : undefined) } },
-  }) as unknown as StepContext;
-  const ctx = ctxAt("graph.lbug");
+  // One workspace per name, opened on first use.
+  const spaces = new Map<string, MemoryWorkspace>();
+  let ctx: StepContext;
+  const ctxAt = async (db: string) => {
+    if (!spaces.has(db)) spaces.set(db, await memoryWorkspace("strut-memory-dups-"));
+    return spaces.get(db)!.ctx();
+  };
   let run: (type: string, input: unknown, c?: StepContext) => Promise<any>;
   before(async () => {
+    ctx = await ctxAt("graph.lbug");
     const { registry } = await buildRegistry();
     run = (type, input, c = ctx) => {
       const def = registry[type] as unknown as StepDef;
       return def.run(def.input.parse(input), c);
     };
   });
-  after(() => rmSync(dir, { recursive: true, force: true }));
+  after(async () => {
+    for (const w of spaces.values()) await w.close();
+  });
 
   const person = (name: string) => ({ type: "Person", name });
   const pairOf = (p: any) => [p.a.name, p.b.name].sort().join(" + ");
@@ -735,7 +723,7 @@ describe("memory/duplicates and merge's created_by", { skip: !hasLadybug && "@la
 
   it("a single alias word is a first name: a second Kate beside Katie Moss (alias kate) is not \"same name\"", async () => {
     const now = Date.now();
-    await memoryWrite(ctx, (q) => q(
+    await memoryWrite(ctx, (m) => m.query(
       "CREATE (:Entity {ref_id: 'kate-2', type: 'Person', name: 'Kate', aliases: [], created_by: 'test', created_at: $now, updated_at: $now})", { now },
     ));
     const pair = (await run("memory/duplicates", { limit: 100 })).find((p: any) => [p.a.ref_id, p.b.ref_id].includes("kate-2") && pairOf(p) === "Kate + Katie Moss");
@@ -780,7 +768,7 @@ describe("memory/duplicates and merge's created_by", { skip: !hasLadybug && "@la
     const now = Date.now();
     const query = await memoryDb(ctx);
     const [{ n }] = await query("MATCH (e:Entity) WHERE e.deleted_reason ENDS WITH ' by janitor' RETURN count(e) AS n") as any;
-    await memoryWrite(ctx, async (q) => {
+    await memoryWrite(ctx, async ({ query: q }) => {
       for (let i = Number(n); i < 10; i++) {
         await q("CREATE (:Entity {ref_id: $id, type: 'Person', name: 'x', aliases: [], deleted_at: $now, deleted_reason: 'merged into y by janitor'})", { id: `cap-${i}`, now });
       }
@@ -792,12 +780,12 @@ describe("memory/duplicates and merge's created_by", { skip: !hasLadybug && "@la
     const out = await run("memory/merge", { keep: pair.a.ref_id, duplicate: pair.b.ref_id, created_by: "janitor" });
     assert.match(out.error, /^refused: the janitor has already merged 10 pairs in the last 24 hours/);
     // One under the cap merges again.
-    await memoryWrite(ctx, (q) => q("MATCH (e:Entity) WHERE e.ref_id = 'cap-9' OR e.ref_id = 'cap-0' SET e.deleted_at = 1"));
+    await memoryWrite(ctx, (m) => m.query("MATCH (e:Entity) WHERE e.ref_id = 'cap-9' OR e.ref_id = 'cap-0' SET e.deleted_at = 1"));
     assert.equal((await run("memory/merge", { keep: pair.a.ref_id, duplicate: pair.b.ref_id, created_by: "janitor" })).kept.ref_id, pair.a.ref_id);
   });
 
   it("a user who gave one name (\"call me Tom\") is never offered against a Person", async () => {
-    const one = ctxAt("one-name.lbug");
+    const one = await ctxAt("one-name.lbug");
     await run("memory/remember", { episode: "Call me Tom.", facts: [{ subject: { type: "Self", name: "Me" }, predicate: "name", object: { type: "Person", name: "Tom" }, text: "Call me Tom." }] }, one);
     await run("memory/remember", { episode: "Tom from work called.", mentions: [person("Tom")] }, one);
     const pairs = await run("memory/duplicates", {}, one);
@@ -805,7 +793,7 @@ describe("memory/duplicates and merge's created_by", { skip: !hasLadybug && "@la
   });
 
   it("a one-word alias a merge left does not resolve a write; the entity's own name and a many-word alias do", async () => {
-    const db = ctxAt("bare-alias.lbug");
+    const db = await ctxAt("bare-alias.lbug");
     const said = async (name: string, type = "Person") => (await run("memory/remember", { episode: `${name}.`, mentions: [{ type, name }] }, db)).entities[0];
     const wife = await said("Kate O'Brien");
     await run("memory/merge", { keep: wife.ref_id, duplicate: (await said("Kate")).ref_id }, db);

@@ -13,7 +13,7 @@ function ms(at: string | number | undefined): number {
 }
 
 /** What dictation changed over [since, until), read with `query`. The
- *  caller holds the writes' queue (memoryExclusive) and takes `until` inside
+ *  caller holds memory's queue (memoryExclusive) and takes `until` inside
  *  it, as the step does: home/sync reads so too, and again inside the
  *  import's lock. */
 export async function dictationChanges(query: Query, since: number, until: number): Promise<{ kind: "dictation"; since: string; until: string; changes: ChangeT[] }> {
@@ -74,7 +74,7 @@ export async function dictationChanges(query: Query, since: number, until: numbe
 // reason (dictation/remove), or expired, is left out: replayed, it would
 // come back.
 //
-// Read in the writes' queue, over [since, until): a write stamps its time
+// Read in memory's queue, over [since, until): a write stamps its time
 // when it starts and commits later, so a read beside one would miss it for
 // good. In the queue every stamp before `until` is committed, and every
 // write after it stamps `until` or later, which the next read starts from.

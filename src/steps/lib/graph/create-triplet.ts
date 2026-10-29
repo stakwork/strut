@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { defineStep, type StepContext, withAccessedNodes } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
-import { graphCtx, errText, graphErrorCode, writeEdge, describeNodes } from "./_shared.js";
+import { graphCtx, errText, errDetail, graphErrorCode, writeEdge, describeNodes } from "./_shared.js";
 /** Validate one side of a triplet: either ref_id XOR (type + data). */
 function validateTripletSide(
   side: "source" | "target",
@@ -27,7 +27,7 @@ export default defineStep({
     "REUSE existing nodes wherever possible: search first, and only create inline when the entity " +
     "genuinely doesn't exist yet — duplicate nodes fragment the graph. " +
     "Node types and the edge type must already exist in the ontology (check with graph_get_ontology); " +
-    "create_schema_if_missing auto-creates a missing edge schema as a last resort. " +
+    "create_schema_if_missing auto-creates a missing edge schema as a last resort (on a LadybugDB file it also creates the edge type's table). " +
     "WILDCARD EDGE MATCHING: when checking source_type/target_type against graph_get_ontology's edges for validity, " +
     'an edge entry with "*" on either side matches any concrete type on that side. ' +
     '"*" is NEVER a valid value to SUPPLY as source_type or target_type — it is a backend sentinel, not a real node type. ' +
@@ -104,7 +104,9 @@ export default defineStep({
         try {
           return (await b.nodes.write({ type: nodeType!, data: nodeData! }, "create", { namespace })).ref_id;
         } catch (e) {
-          throw new Error(`could not create/merge ${side} node: ${e instanceof Error ? e.message : String(e)}`);
+          // A managed type's refusal as the caller may hear it (errDetail).
+          const why = graphErrorCode(e) === "MANAGED" ? errDetail(e, ctx) : e instanceof Error ? e.message : String(e);
+          throw new Error(`could not create/merge ${side} node: ${why}`);
         }
       };
       const sourceRef = await resolveSide("source", cfg.source_ref_id, cfg.source_type, cfg.source_data);
@@ -123,7 +125,7 @@ export default defineStep({
       } catch (e) {
         return (
           `graph/create-triplet: nodes resolved (source=${sourceRef}, target=${targetRef}) ` +
-          `but the edge write failed — ${graphErrorCode(e) ? `${graphErrorCode(e)}: ` : ""}${e instanceof Error ? e.message : String(e)}`
+          `but the edge write failed — ${errDetail(e, ctx)}`
         );
       }
       return withAccessedNodes(
@@ -140,7 +142,7 @@ export default defineStep({
         await describeNodes(b, [edge.source_ref_id, edge.target_ref_id]),
       );
     } catch (e) {
-      return errText("graph/create-triplet", e);
+      return errText("graph/create-triplet", e, ctx);
     }
   },
 });

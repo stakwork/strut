@@ -252,6 +252,8 @@ interface Exec {
    *  first (`StepContext.package`, src/package-lookup.ts). A subflow's frame
    *  takes its own workflow's. */
   package?: string;
+  /** THIS frame's workflow and whether it is sealed (`StepContext.frame`). */
+  frame: { workflow: string; sealed?: boolean };
   emit: EmitFn;
   workspace: SubflowResolver | undefined;
   services: unknown;
@@ -435,6 +437,7 @@ export async function runWorkflow<TServices = unknown>(
     runId,
     workflow: wfName,
     ...((opts?.package ?? packagePrefixOf(wfName)) ? { package: opts?.package ?? packagePrefixOf(wfName) } : {}),
+    frame: { workflow: wfName, ...(workflow.sealed ? { sealed: true } : {}) },
     emit,
     workspace: opts?.workspace,
     services,
@@ -929,6 +932,7 @@ async function dispatchStep(
         path,
         workflow: exec.workflow,
         ...(exec.package ? { package: exec.package } : {}),
+        frame: exec.frame,
         ...(exec.workspace ? { resolveWorkflow: (name: string) => workflowOfFrame(exec, name) } : {}),
         scope,
         input: scope["input"],
@@ -1295,7 +1299,11 @@ async function executeSubflow(
   // Once a frame is the AI's, everything under it is (src/reach.ts).
   const childPackage = packagePrefixOf(childName);
   const childAi = !exec.aiAuthored && (await aiAuthored(exec.services, childFlow.name));
-  const childExec: Exec = { ...exec, ...(childAi ? { aiAuthored: true } : {}) };
+  const childExec: Exec = {
+    ...exec,
+    frame: { workflow: childFlow.name, ...(childFlow.sealed ? { sealed: true } : {}) },
+    ...(childAi ? { aiAuthored: true } : {}),
+  };
   if (childPackage) childExec.package = childPackage;
   else delete childExec.package;
   return executeFlow(childFlow, validatedInput, childExec, path, params, (scope["$settings"] as Record<string, unknown> | undefined) ?? {});

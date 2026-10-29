@@ -14,13 +14,12 @@ import { createStrut, type Strut } from "./createStrut.js";
 import { MemoryRunStore, type RunSummary } from "./store.js";
 import { WorkspaceManager } from "./workspace.js";
 import { personToken } from "./auth.js";
-import type { StepContext } from "./core.js";
 import { memoryWrite } from "./steps/lib/memory/_db.js";
+import { NO_LADYBUG, memoryWorkspace, type MemoryWorkspace } from "./steps/lib/memory/_test-workspace.js";
 
-const hasLadybug = await import("@ladybugdb/core").then(
-  () => true,
-  () => false,
-);
+// Each strut's memory lives in its own Ladybug workspace graph
+// (plans/memory-in-workspace-graph.md), handed to createStrut as its graph.
+const hasLadybug = !NO_LADYBUG;
 
 const KEY = "home-box-api-key";
 const PEER_KEY = "a-strut-peer-key";
@@ -30,17 +29,23 @@ describe("home sync: what the box serves", { skip: !hasLadybug && "@ladybugdb/co
   const saved = { api: process.env["STRUT_API_KEY"], peer: process.env["STRUT_PEER_KEY"] };
   let box: Strut;
   let mac: Strut;
+  let boxWs: MemoryWorkspace;
+  let macWs: MemoryWorkspace;
   const NO_SEEDS = { serveUi: false, enableChat: false, scheduler: false, systemWorkflows: false, browserWorkflows: false, job: false, orchestrator: false, builder: false } as const;
 
   before(async () => {
     process.env["STRUT_API_KEY"] = KEY;
     process.env["STRUT_PEER_KEY"] = PEER_KEY;
-    box = await createStrut({ workspace: new WorkspaceManager(join(dir, "box-ws")), store: new MemoryRunStore(), dataDir: join(dir, "box"), homeSync: "box", ...NO_SEEDS });
-    mac = await createStrut({ workspace: new WorkspaceManager(join(dir, "mac-ws")), store: new MemoryRunStore(), dataDir: join(dir, "mac"), ...NO_SEEDS });
+    boxWs = await memoryWorkspace("strut-home-box-");
+    macWs = await memoryWorkspace("strut-home-mac-");
+    box = await createStrut({ workspace: new WorkspaceManager(join(dir, "box-ws")), store: new MemoryRunStore(), dataDir: boxWs.dir, graph: boxWs.graph, homeSync: "box", ...NO_SEEDS });
+    mac = await createStrut({ workspace: new WorkspaceManager(join(dir, "mac-ws")), store: new MemoryRunStore(), dataDir: macWs.dir, graph: macWs.graph, ...NO_SEEDS });
   });
   after(async () => {
     await box.close();
     await mac.close();
+    await boxWs.close();
+    await macWs.close();
     rmSync(dir, { recursive: true, force: true });
     for (const [name, value] of [["STRUT_API_KEY", saved.api], ["STRUT_PEER_KEY", saved.peer]] as const) {
       if (value === undefined) delete process.env[name];
@@ -142,8 +147,8 @@ describe("home sync: what the box serves", { skip: !hasLadybug && "@ladybugdb/co
     // later; this one stamps the fact again and holds the commit.
     let commit!: () => void;
     const held = new Promise<void>((resolve) => (commit = resolve));
-    const writing = memoryWrite({ services: mac.services } as unknown as StepContext, async (query) => {
-      await query("MATCH (f:Fact) WHERE f.value = 'type script' AND f.created_by = 'dictation' SET f.created_at = $now", { now: Date.now() });
+    const writing = memoryWrite(macWs.ctx(), async (m) => {
+      await m.query("MATCH (f:Fact) WHERE f.value = 'type script' AND f.created_by = 'dictation' SET f.created_at = $now", { now: Date.now() });
       await held;
     });
     const reading = step(mac, "dictation/changes-since", { since: start });
@@ -243,6 +248,8 @@ describe("home sync end to end: two struts over peers", { skip: !hasLadybug && "
   const saved = process.env["STRUT_API_KEY"];
   let box: Strut;
   let mac: Strut;
+  let boxWs: MemoryWorkspace;
+  let macWs: MemoryWorkspace;
   let proxy: http.Server;
   let boxUrl: string;
   /** Runs when the box is asked for its memory, before it answers: the moment a sync is in. */
@@ -253,7 +260,9 @@ describe("home sync end to end: two struts over peers", { skip: !hasLadybug && "
 
   before(async () => {
     process.env["STRUT_API_KEY"] = KEY;
-    box = await createStrut({ workspace: new WorkspaceManager(join(dir, "box-ws")), store: new MemoryRunStore(), dataDir: join(dir, "box"), homeSync: "box", ...NO_SEEDS });
+    boxWs = await memoryWorkspace("strut-home-box-");
+    macWs = await memoryWorkspace("strut-home-mac-");
+    box = await createStrut({ workspace: new WorkspaceManager(join(dir, "box-ws")), store: new MemoryRunStore(), dataDir: boxWs.dir, graph: boxWs.graph, homeSync: "box", ...NO_SEEDS });
     boxUrl = `http://127.0.0.1:${await box.listen(0, "127.0.0.1")}`;
     // The box's front door, where a test can step in.
     proxy = http.createServer(async (req, res) => {
@@ -267,7 +276,7 @@ describe("home sync end to end: two struts over peers", { skip: !hasLadybug && "
     await new Promise<void>((r) => proxy.listen(0, "127.0.0.1", r));
     // The record `strut move` hands back: the box's address and a person token it signed.
     mac = await createStrut({
-      workspace: new WorkspaceManager(join(dir, "mac-ws")), store: new MemoryRunStore(), dataDir: join(dir, "mac"), homeSync: "copy", ...NO_SEEDS,
+      workspace: new WorkspaceManager(join(dir, "mac-ws")), store: new MemoryRunStore(), dataDir: macWs.dir, graph: macWs.graph, homeSync: "copy", ...NO_SEEDS,
       peers: [{ id: "home", baseUrl: `http://127.0.0.1:${(proxy.address() as { port: number }).port}`, token: personToken("tom")!.token }],
     });
   });
@@ -275,6 +284,8 @@ describe("home sync end to end: two struts over peers", { skip: !hasLadybug && "
     proxy.close();
     await mac.close();
     await box.close();
+    await macWs.close();
+    await boxWs.close();
     rmSync(dir, { recursive: true, force: true });
     if (saved === undefined) delete process.env["STRUT_API_KEY"];
     else process.env["STRUT_API_KEY"] = saved;
@@ -376,7 +387,7 @@ describe("home sync end to end: two struts over peers", { skip: !hasLadybug && "
   });
 
   it("changes a sync kept but could not replay are replayed and pushed by the next one; a since that does not read pushes everything again", async () => {
-    const statePath = join(dir, "mac", "home-sync.json");
+    const statePath = join(macWs.dir, "home-sync.json");
     const kept = JSON.parse(readFileSync(statePath, "utf-8"));
     writeFileSync(statePath, JSON.stringify({ ...kept, pending: [{ op: "learn", heard: "left over", written: "LeftOver", at: new Date().toISOString() }] }));
     await synced();
@@ -411,5 +422,18 @@ describe("home sync end to end: two struts over peers", { skip: !hasLadybug && "
     assert.ok(!(await pairs(box)).includes("mid sync→MidSync"), "not pushed yet: it came after the push");
     await synced();
     assert.ok((await pairs(box)).includes("mid sync→MidSync"), "pushed by the next sync");
+  });
+
+  it("the import on the Mac replaces memory's nodes only: a node of the Mac's workspace beside them is untouched", async () => {
+    const { ref_id } = await macWs.graph.nodes.write({ type: "Concept", data: { name: "Home sync", description: "The Mac keeps a read copy." } }, "create");
+    const node = async () =>
+      (await macWs.graph.lbug.query("MATCH (n:Node) WHERE n.ref_id = $id RETURN n.node_type AS type, n.name AS name, n.description AS description, n.updated_at AS updated, n.deleted_at AS deleted", { id: ref_id }))[0];
+    const was = await node();
+    assert.deepEqual([was?.type, was?.name, was?.description, was?.deleted], ["Concept", "Home sync", "The Mac keeps a read copy.", null]);
+    await step(box, "dictation/add", { heard: "concept", written: "Konzept" });
+    const out = await synced();
+    assert.equal(out.pulled, true);
+    assert.ok((await pairs(mac)).includes("concept→Konzept"), "the box's memory was loaded");
+    assert.deepEqual(await node(), was);
   });
 });

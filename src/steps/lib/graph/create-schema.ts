@@ -19,7 +19,7 @@ const EXAMPLE = `- id: evidence_type
 export default defineStep({
   type: "graph/create-schema",
   description:
-    "Register a NODE TYPE in the strut knowledge graph's ontology (a `:Schema` node), or add attributes to an existing one. " +
+    "Register a NODE TYPE in the strut knowledge graph's ontology (a Schema node — on Neo4j and on a LadybugDB file alike), or add attributes to an existing one. " +
     "graph/create-node and graph/create-triplet refuse a node whose type has no schema, or whose properties the schema " +
     "does not declare — call this first when the type (or attribute) you need is missing from graph_get_ontology. " +
     "`attributes` maps attribute name → type: string | boolean | int | float | complex | datetime | list, with a `?` prefix " +
@@ -28,7 +28,9 @@ export default defineStep({
     "values in a namespace are the same node. `index` (default: the node_key attributes) lists the searchable attributes. " +
     "If the type ALREADY EXISTS this is add-only: attributes it lacks are added, nothing existing changes, and " +
     "parent/node_key/index are left alone (status 'Warning' with `added_attributes`). Strut's own types (StrutRun, " +
-    "StrutWorkflow, …) are a closed registry and cannot be created or extended. Edge types between node types are NOT " +
+    "StrutWorkflow, …) are a closed registry and cannot be created or extended. A type name or alias names ONE type: a name " +
+    "that is already another type's name or alias is refused. On a LadybugDB file every attribute is a real column, so an " +
+    "attribute name another type already holds with a different type (say `score` as int vs float) is refused. Edge types between node types are NOT " +
     "schemas — create them with graph/create-triplet's create_schema_if_missing.\n\n" +
     EXAMPLE,
   input: z.object({
@@ -46,6 +48,7 @@ export default defineStep({
     description_key: z.string().optional().describe("Attribute shown as a node's description in search results."),
     domain: z.string().optional().describe("Domain the type belongs to (a `Domain_<domain>` label on its nodes). Default 'entity'."),
     type_description: z.string().optional().describe("Human/LLM-facing description of what the type represents."),
+    aliases: z.array(z.string()).optional().describe("Other names the type answers to (e.g. 'Company' for Organization). Each must not already name another type."),
   }),
   output: z.any(),
   async run(cfg, ctx) {
@@ -62,6 +65,7 @@ export default defineStep({
         description_key: cfg.description_key,
         domain: cfg.domain,
         type_description: cfg.type_description,
+        aliases: cfg.aliases,
       });
       // No provenance marker: a Schema node is ontology, not data (not a
       // Data_Bank node), so there is nothing for an ACCESSED edge to land on.
@@ -76,7 +80,7 @@ export default defineStep({
         attributes: r.attributes,
       };
     } catch (e) {
-      return errText("graph/create-schema", e);
+      return errText("graph/create-schema", e, ctx);
     }
   },
 });

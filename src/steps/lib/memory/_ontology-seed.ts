@@ -1,7 +1,7 @@
-// The memory's core vocabulary, seeded into the Ontology table on open
-// (_ontology.ts `seed`). This file and the language data are the only
-// non-test places a type or predicate is named: steps read behaviour
-// (parent, naming, role) from the rows, never from a name.
+// The memory's core vocabulary, seeded as Schema nodes of the workspace graph
+// (_ontology.ts `seedMemoryOntology`). This file and the language data are the
+// only non-test places a type or predicate is named: steps read behaviour
+// (parent, naming, role) from the Schemas, never from a name.
 import type { Term } from "./_ontology.js";
 
 type Base = Pick<Term, "name" | "description" | "aliases"> & Partial<Term>;
@@ -19,6 +19,53 @@ export const predicate = (t: Base & Pick<Term, "cardinality">): Term => ({
 });
 
 const ANY = ["*"];
+
+/** What every entity type inherits: the abstract MemoryEntity its types hang
+ *  under (none is ever written as one). `memory_entity` marks a node of any
+ *  of them, so a read finds every entity whatever its type (_db.ts `cypher`).
+ *  `alias_keys` and `attributes_json` are an entity's aliases and attributes:
+ *  a Schema row keeps its own `aliases` and `attributes`. */
+export const ENTITY_BASE = "MemoryEntity";
+export const FACT = "Fact";
+export const EPISODE = "Episode";
+
+/** The base types memory declares, attributes as columns (times are epoch ms). */
+export const BASE_SCHEMAS: Array<Record<string, unknown>> = [
+  {
+    type: ENTITY_BASE, parent: "Thing", index: ["name", "summary"], title_key: "name", description_key: "summary",
+    type_description: "Something long-term memory knows of: a person, place, organisation, topic, … (the base of memory's entity types).",
+    memory_entity: "boolean", name: "string", summary: "?string", alias_keys: "?list", attributes_json: "?string",
+    created_by: "?string", created_at: "int",
+  },
+  {
+    type: FACT, parent: "Thing", index: ["text"], title_key: "text",
+    type_description: "One sentence long-term memory holds about an entity: its predicate, SUBJECT and OBJECT edges, and when it held.",
+    predicate: "string", text: "?string", confidence: "?float", valid_at: "?int", invalid_at: "?int", expired_at: "?int",
+    value: "?string", form: "?string", created_by: "?string", created_at: "int",
+  },
+  {
+    // Out of search by default (decision 10): transcripts would crowd it.
+    type: EPISODE, parent: "Thing", index: ["content"], title_key: "content", embed: false,
+    type_description: "What was said or observed, as said: the source of memory's facts.",
+    kind: "?string", source: "?string", content: "?string", occurred_at: "?int", speaker: "?string",
+    created_by: "?string", created_at: "int",
+  },
+];
+
+/** The allowed edges between memory's nodes. OBJECT may also point at a
+ *  workflow node or an app's (a cross edge, decision 9): remember adds the
+ *  rule for that node's type the first time. */
+export const EDGE_SCHEMAS: Array<{ source: string; edge: string; target: string }> = [
+  { source: FACT, edge: "SUBJECT", target: ENTITY_BASE },
+  { source: FACT, edge: "OBJECT", target: ENTITY_BASE },
+  { source: EPISODE, edge: "MENTIONS", target: ENTITY_BASE },
+  { source: FACT, edge: "FROM_EPISODE", target: EPISODE },
+  { source: FACT, edge: "SUPERSEDES", target: FACT },
+  { source: ENTITY_BASE, edge: "ALIAS_OF", target: ENTITY_BASE },
+];
+
+/** Every edge type memory writes: what memory/export carries. */
+export const MEMORY_EDGES = [...new Set(EDGE_SCHEMAS.map((e) => e.edge))];
 
 export const SEED: Seeded[] = [
   entityType({

@@ -7,7 +7,7 @@ export const toolNameFor = (type: string): string => type.replace(/[^a-zA-Z0-9_]
  *  must not reach them. A step def says so itself with `sideEffects: true` (or `effect: "write"`). */
 export const SIDE_EFFECT_STEPS = [
   "sphinx/send", "sphinx/post", "sphinx/approve",
-  "memory/remember", "memory/merge", "memory/forget",
+  "memory/remember", "memory/merge", "memory/forget", "memory/attributes",
   "automation/create", "automation/update", "automation/delete",
   "job/start", "strut/run-workflow",
 ];

@@ -19,15 +19,17 @@
  *   - `create_schema_if_missing` (`schema_crud.create_edge_schema`).
  *
  * Strut's own types resolve from the in-code registry (`strut-schemas.ts`)
- * without touching the DB. Everything is cached per resolver with a short
+ * without touching the DB — except on a store that holds them as Schema
+ * rows too (`SchemaSource.holdsStrutTypes`, a Ladybug file), where the row
+ * is the type. Everything is cached per resolver with a short
  * TTL, like jarvis's in-process caches.
  *
  * The reads and the one write live behind `SchemaSource` (`engine.ts`):
- * the `:Schema` meta-graph on Neo4j; on Ladybug a closed registry in code
- * (`ladybug/registry.ts`, ruling 6), which resolves types case-insensitively
- * and edge triples exactly, knows no allowlist, no hidden domains and no
- * ancestors, and refuses `createEdgeSchema`. This file merges, walks,
- * caches and canonicalizes; it issues no Cypher.
+ * the `:Schema` meta-graph on Neo4j, the `Schema` rows of the `Node` table
+ * on Ladybug (`ladybug/ontology.ts`) — the same lookups, so a type resolves
+ * the same way on both. A Ladybug file has no `About` (no hidden domains)
+ * and no label catalog. This file merges, walks, caches and canonicalizes;
+ * it issues no Cypher.
  */
 import { randomUUID } from "node:crypto";
 import type { EdgeSchemaWalk, EngineLike, GraphEngine, GraphTx } from "./engine.js";
@@ -38,6 +40,7 @@ import {
   STRUT_SCHEMAS,
   effectiveAttributes,
   getStrutSchema,
+  isStrutType,
   type StrutSchema,
 } from "./strut-schemas.js";
 
@@ -84,8 +87,12 @@ export interface NodeSchema {
   /** `Domain_<x>` labels to stamp on nodes of this type (already filtered
    *  by hidden types/domains). */
   domainLabels: string[];
-  /** True for Strut's own types (closed registry rules apply). */
+  /** True for Strut's own types (strut's in-code rules apply). */
   isStrut: boolean;
+  /** Who owns this type's nodes (plans/memory-in-workspace-graph.md
+   *  decision 7): the writers refuse it unless the caller names this
+   *  manager, and the reads leave it out unless the context may see it. */
+  managed_by?: string;
 }
 
 export interface EdgeSchemaMatch {
@@ -106,6 +113,7 @@ export class SchemaResolver {
   private readonly schemas = new Map<string, Cached<NodeSchema | null>>();
   private readonly edges = new Map<string, Cached<EdgeSchemaMatch | null>>();
   private hidden: Cached<{ domains: Set<string>; types: Set<string> }> | undefined;
+  private managed: Cached<ReadonlyMap<string, string>> | undefined;
 
   private readonly engine: GraphEngine;
 
@@ -117,9 +125,9 @@ export class SchemaResolver {
     return this.engine.schemaSource;
   }
 
-  /** The closed registry, when the engine has one (Ladybug). */
-  get registry() {
-    return this.source.registry;
+  /** Strut's own types come from code unless the store holds them. */
+  private strut(type: string): StrutSchema | undefined {
+    return this.source.holdsStrutTypes ? undefined : getStrutSchema(type);
   }
 
   /** Drop every cache (call after seeding or schema edits). */
@@ -128,6 +136,7 @@ export class SchemaResolver {
     this.schemas.clear();
     this.edges.clear();
     this.hidden = undefined;
+    this.managed = undefined;
   }
 
   private fresh<T>(c: Cached<T> | undefined): c is Cached<T> {
@@ -148,27 +157,25 @@ export class SchemaResolver {
   async resolveType(raw: string, tx?: GraphTx): Promise<string | null> {
     const key = raw.trim();
     if (!key) return null;
-    if (this.registry) return this.registry.schema(key)?.type ?? null;
-    if (getStrutSchema(key)) return key;
+    if (this.strut(key)) return key;
     const c = this.types.get(key.toLowerCase());
     if (this.fresh(c)) return c.value;
     let out: string | null = (await this.source.schemaRow(key, { live: true }, tx))?.type ?? null;
     if (!out) out = await this.source.labelLike(key, tx);
-    if (out && getStrutSchema(out)) out = getStrutSchema(out)!.type;
+    if (out && this.strut(out)) out = this.strut(out)!.type;
     this.types.set(key.toLowerCase(), { at: Date.now(), value: out });
     return out;
   }
 
   /** The merged schema for a (raw) type, or null when unknown. */
   async schema(raw: string, tx?: GraphTx): Promise<NodeSchema | null> {
-    if (this.registry) return this.registry.schema(raw);
     const type = await this.resolveType(raw, tx);
     if (!type) return null;
     const c = this.schemas.get(type);
     if (this.fresh(c)) return c.value;
     const hidden = await this.hiddenSets(tx);
     let out: NodeSchema | null;
-    const strut = getStrutSchema(type);
+    const strut = this.strut(type);
     if (strut) out = fromStrut(strut, hidden);
     else out = await this.fromDb(type, hidden, tx);
     this.schemas.set(type, { at: Date.now(), value: out });
@@ -193,10 +200,12 @@ export class SchemaResolver {
     // Thing's `description: "?string"`). Those, plus `name`, are skipped by
     // its required-attribute check, so they are optional here; a node_key
     // token among them is still enforced by the node_key presence check.
+    // A Strut type stored as a row (Ladybug) keeps its attributes as declared.
+    const isStrut = isStrutType(type);
     const attributes: Record<string, string> = {};
     for (const [k, v] of Object.entries(merged)) {
       if (typeof v !== "string" || !TYPE_GRAMMAR.test(v)) continue;
-      const neverRequired = k === "name" || SCHEMA_CORE_PROPERTIES.has(k);
+      const neverRequired = !isStrut && (k === "name" || SCHEMA_CORE_PROPERTIES.has(k));
       attributes[k] = neverRequired && !v.startsWith("?") ? `?${v}` : v;
     }
     const domain = typeof own["domain"] === "string" ? (own["domain"] as string) : undefined;
@@ -209,6 +218,7 @@ export class SchemaResolver {
       type,
       parent: typeof merged["parent"] === "string" ? (merged["parent"] as string) : undefined,
       node_key: String(merged["node_key"] ?? `${type.toLowerCase()}-name`),
+      ...(merged["exact_key"] === true ? { exact_key: true } : {}),
       index: index.length ? index : ["node_key"],
       vector_index: Array.isArray(rawVi) ? rawVi.map(String) : [],
       embed: merged["embed"] !== false,
@@ -216,13 +226,23 @@ export class SchemaResolver {
       title_key: typeof merged["title_key"] === "string" ? (merged["title_key"] as string) : undefined,
       description_key: typeof merged["description_key"] === "string" ? (merged["description_key"] as string) : undefined,
       domainLabels,
-      isStrut: false,
+      isStrut,
+      // The type's own mark: a subtype of a managed type is not managed by it.
+      ...(typeof own["managed_by"] === "string" && own["managed_by"] ? { managed_by: own["managed_by"] as string } : {}),
     };
+  }
+
+  /** Every managed type, canonical name → its manager. Empty until a
+   *  Schema names one (none does before memory moves in). */
+  async managedTypes(tx?: GraphTx): Promise<ReadonlyMap<string, string>> {
+    if (this.fresh(this.managed)) return this.managed.value;
+    const value: ReadonlyMap<string, string> = (await this.source.managedTypes?.(tx)) ?? new Map();
+    this.managed = { at: Date.now(), value };
+    return value;
   }
 
   /** `About.hidden_domains` (lowercased) and `hidden_types`. */
   async hiddenSets(tx?: GraphTx): Promise<{ domains: Set<string>; types: Set<string> }> {
-    if (this.registry) return { domains: new Set(), types: new Set() };
     if (this.fresh(this.hidden)) return this.hidden.value;
     const { domains: d, types: t } = await this.source.hidden(tx);
     const value = {
@@ -239,11 +259,8 @@ export class SchemaResolver {
    * canonical labels. Returns the match, or null.
    */
   async edgeSchema(edge: string, sourceType: string, targetType: string, tx?: GraphTx): Promise<EdgeSchemaMatch | null> {
-    if (this.registry) {
-      const row = this.registry.edge(edge, sourceType, targetType);
-      return row ? { source: row.source, target: row.target, edge_type: row.edge_type, properties: row.props, via: "exact" } : null;
-    }
-    if (EDGE_TYPES_ALLOWLIST.has(edge)) return { source: sourceType, target: targetType, edge_type: edge, properties: {}, via: "allowlist" };
+    // jarvis's allowlist is jarvis's: a Ladybug file allows only the edges its ontology holds.
+    if (!this.source.holdsStrutTypes && EDGE_TYPES_ALLOWLIST.has(edge)) return { source: sourceType, target: targetType, edge_type: edge, properties: {}, via: "allowlist" };
     const key = `${sourceType}|${edge}|${targetType}`;
     const c = this.edges.get(key);
     if (this.fresh(c)) return c.value;
@@ -275,7 +292,6 @@ export class SchemaResolver {
   async createEdgeSchema(sourceType: string, edge: string, targetType: string): Promise<{ created: boolean; ref_id: string }> {
     const edgeType = edge.toUpperCase().replace(/ /g, "_");
     if (!/^[A-Z][A-Z0-9_]*$/.test(edgeType)) throw new Error(`invalid edge type ${edge}`);
-    if (this.registry) throw new Error(`the ${this.engine.kind} backend's types and edges are a closed registry (plans/ladybug-backend.md §3): ${sourceType}-[${edgeType}]->${targetType} cannot be registered at runtime`);
     return this.engine.tx(async (tx) => {
       for (const t of [sourceType, targetType]) {
         if (t === "*") {

@@ -1,36 +1,30 @@
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import type { StepContext } from "../../../core.js";
 import { buildRegistry } from "../../registry.js";
 import { memoryWrite } from "./_db.js";
+import { NO_LADYBUG, memoryWorkspace, type MemoryWorkspace } from "./_test-workspace.js";
 
 // Dictation's vocabulary: the Lingo type, heard_as facts, memory/lexicon and
-// memory/attributes, against a real LadybugDB as memory-steps.test.ts.
-const hasLadybug = await import("@ladybugdb/core").then(
-  () => true,
-  () => false,
-);
+// memory/attributes, against a real Ladybug workspace graph as memory-steps.test.ts.
+const hasLadybug = !NO_LADYBUG;
 
 type StepDef = { input: { parse(v: unknown): unknown }; run(cfg: unknown, ctx: StepContext): Promise<any> };
 
 describe("memory: dictation's vocabulary", { skip: !hasLadybug && "@ladybugdb/core is not installed" }, () => {
-  const dir = mkdtempSync(join(tmpdir(), "strut-memory-lexicon-"));
-  const ctx = {
-    runId: "test", path: "test", scope: {}, input: undefined, emit: async () => {},
-    services: { secrets: { get: async (n: string) => (n === "STRUT_MEMORY_DB" ? join(dir, "graph.lbug") : undefined) } },
-  } as unknown as StepContext;
+  let ws: MemoryWorkspace;
+  let ctx: StepContext;
   let run: (type: string, input: unknown) => Promise<any>;
   before(async () => {
+    ws = await memoryWorkspace("strut-memory-lexicon-");
+    ctx = ws.ctx();
     const { registry } = await buildRegistry();
     run = (type, input) => {
       const def = registry[type] as unknown as StepDef;
       return def.run(def.input.parse(input), ctx);
     };
   });
-  after(() => rmSync(dir, { recursive: true, force: true }));
+  after(() => ws.close());
 
   const stakwork = { type: "Organization", name: "Stakwork" };
   const bitcoin = { type: "Lingo", name: "Bitcoin" };
@@ -206,7 +200,7 @@ describe("memory: dictation's vocabulary", { skip: !hasLadybug && "@ladybugdb/co
 
   it("attributes that are not a JSON object read as none", async () => {
     const e = (await row("Bitcoin")).ref_id;
-    await memoryWrite(ctx, (q) => q("MATCH (e:Entity) WHERE e.ref_id = $e SET e.attributes = 'null'", { e }));
+    await memoryWrite(ctx, (m) => m.query("MATCH (e:Entity) WHERE e.ref_id = $e SET e.attributes = 'null'", { e }));
     assert.equal((await row("Bitcoin")).dictation_off, false);
     assert.deepEqual((await run("memory/attributes", { ref_id: e, set: { dictation: "off" } })).attributes, { dictation: "off" });
   });

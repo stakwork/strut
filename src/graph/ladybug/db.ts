@@ -1,8 +1,9 @@
 /**
  * The LadybugDB handle (plans/ladybug-backend.md §3.2): one embedded
- * database file holding the graph layer strut owns — the `Node` table, one
- * rel table per edge type in the registry, the migration ledger — opened
- * once per absolute path per process.
+ * database file holding the graph layer strut owns — the `Node` table (its
+ * ontology among the rows, as `Schema` nodes: `ontology.ts`), one rel table
+ * per edge type, the migration ledger — opened once per absolute path per
+ * process.
  *
  * The generalization of `steps/lib/memory/_db.ts`'s `connection()`: a
  * registry on `globalThis` (a re-imported module shares the handle), the
@@ -18,9 +19,10 @@
  * size 8796093022208 failed".) On open: the
  * `vector` and `fts` extensions (REQUIRED, ruling 4:
  * an open without them fails with the hint), the DDL (§3.1; every column
- * `ALTER TABLE ADD IF NOT EXISTS`, so a new attribute in the registry
- * lands on the next open), the two indexes, then the append-only
- * `MIGRATIONS`.
+ * `ALTER TABLE ADD IF NOT EXISTS`, so a new attribute in the seed lands on
+ * the next open), the two indexes, the append-only `MIGRATIONS`, then the
+ * ontology seed (`registry.ts`), add-only, once per version of the seed
+ * (its `Migration` stamp).
  *
  * A failed statement inside a transaction ENDS it (the engine rolls back
  * and the next statement would run auto-commit), so a transaction that saw
@@ -32,6 +34,8 @@ import type { GraphTx, Params, Row } from "../engine.js";
 import { EDGE_COLUMNS, LADYBUG_EDGE_TYPES, nodeColumns, type ColumnType } from "./registry.js";
 import { bootEnv } from "../../env.js";
 import { ladybugMaxDbSize } from "./max-size.js";
+import { SCHEMA_EDGE_DDL, seedOntology } from "./ontology.js";
+import { ontologySeed } from "./registry.js";
 import { EXTENSION_NAMES, LADYBUG_EXTENSION_PINS, pinnedExtensions, type ExtensionName, type PinnedExtensions, type PinnedOptions } from "./extensions.js";
 
 export type Query = (cypher: string, params?: Params) => Promise<Row[]>;
@@ -116,6 +120,8 @@ export function ddlStatements(): string[] {
     out.push(`CREATE REL TABLE IF NOT EXISTS ${q(edge)}(FROM Node TO Node, ${cols(EDGE_COLUMNS)})`);
     for (const [k, t] of Object.entries(EDGE_COLUMNS)) out.push(`ALTER TABLE ${q(edge)} ADD IF NOT EXISTS ${q(k)} ${t}`);
   }
+  // The ontology's own edges (`ontology.ts`), apart from the data's.
+  out.push(SCHEMA_EDGE_DDL);
   return out;
 }
 
@@ -130,6 +136,26 @@ export function indexCalls(): Array<[string, string]> {
     ["node_vec", `CALL CREATE_VECTOR_INDEX('Node', 'node_vec', 'text_embeddings', metric := 'cosine')`],
     ["node_fts", `CALL CREATE_FTS_INDEX('Node', 'node_fts', ['Data_Bank', 'name'], stemmer := 'porter')`],
   ];
+}
+
+/** The ontology seed (`ontology.ts`), in one transaction, when this version
+ *  of it has not been stamped: a file seeded by an older version gets the
+ *  seed's types as they are now, and keeps every type created at runtime.
+ *  A seed type the file cannot take (a runtime type holds its name or one
+ *  of its columns) is skipped with a warning, never a failed open. */
+async function seedOnce(read: Query, write: Query): Promise<void> {
+  const { id } = ontologySeed();
+  if (Number((await read("MATCH (m:Migration {migration_id: $id}) RETURN count(m) AS c", { id }))[0]?.["c"]) > 0) return;
+  await write("BEGIN TRANSACTION");
+  try {
+    const report = await seedOntology(write);
+    for (const why of report.skipped) console.warn(`[graph] ontology seed: skipped ${why}`);
+    await write("MERGE (m:Migration {migration_id: $id}) ON CREATE SET m.executed_at = $now", { id, now: Date.now() });
+    await write("COMMIT");
+  } catch (err) {
+    await write("ROLLBACK").catch(() => undefined);
+    throw err;
+  }
 }
 
 /** After an exit without `close()` Ladybug replays its WAL but not the FTS
@@ -326,6 +352,7 @@ async function openFresh(path: string, opts: OpenOptions): Promise<LadybugHandle
     const have = new Set((await read(`CALL SHOW_INDEXES() RETURN index_name`)).map((r) => String(r["index_name"]))); // `_PK` rows included; harmless
     for (const [name, call] of indexCalls()) if (!have.has(name)) await write(call);
     await rebuildBrokenFts(read, write, unclean);
+    await seedOnce(read, write);
 
     let queue: Promise<unknown> = Promise.resolve();
     let closed = false;
@@ -363,7 +390,10 @@ async function openFresh(path: string, opts: OpenOptions): Promise<LadybugHandle
             await tx.run("COMMIT");
             return out;
           } catch (err) {
-            if (!dead) await w("ROLLBACK").catch(() => undefined);
+            // Always: a statement Ladybug refuses before running it (a parse
+            // or bind error) leaves the transaction open, and the connection
+            // with it. One it already rolled back makes this ROLLBACK fail, harmlessly.
+            await w("ROLLBACK").catch(() => undefined);
             throw err;
           }
         }),

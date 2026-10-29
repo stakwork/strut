@@ -14,7 +14,8 @@ export default defineStep({
   }),
   output: z.any(),
   async run(cfg, ctx) {
-    return memoryWrite(ctx, async (query) => {
+    return memoryWrite(ctx, async (m) => {
+      const query = m.query;
       // A merged-away entity means the one it was merged into, as in memory/get.
       const id = await canonical(query, cfg.ref_id);
       const [e] = await query("MATCH (e:Entity) WHERE e.ref_id = $id AND e.deleted_at IS NULL RETURN e.name AS name, e.attributes AS attributes", { id });
@@ -24,7 +25,7 @@ export default defineStep({
         if (v === null) delete attributes[k];
         else attributes[k] = v;
       }
-      await query("MATCH (e:Entity) WHERE e.ref_id = $id SET e.attributes = $a, e.updated_at = $now", { id, a: JSON.stringify(attributes), now: Date.now() });
+      await m.set(id, { attributes_json: JSON.stringify(attributes) });
       return { ref_id: id, name: e.name, attributes };
     });
   },

@@ -9,20 +9,18 @@ import { WorkspaceManager } from "../../../workspace.js";
 import type { SttService, TranscribeResult } from "../../../audio/stt.js";
 import type { LoadedFixer } from "../../../audio/fixer.js";
 import type { StepContext } from "../../../core.js";
-import { memoryDb, memoryWrite } from "../memory/_db.js";
-import { invalidate, seed } from "../memory/_ontology.js";
-import { SEED } from "../memory/_ontology-seed.js";
+import { memoryDb } from "../memory/_db.js";
+import { invalidate, seedMemoryOntology } from "../memory/_ontology.js";
+import { NO_LADYBUG, memoryWorkspace, type MemoryWorkspace } from "../memory/_test-workspace.js";
 import { PENDING_DAYS, pendingFile, recordPending } from "./_pending.js";
 
 // Dictation's vocabulary end to end, through strut's own doors: what an edit
 // teaches (POST /steps/dictation/correction/run) and the next transcription
-// putting it right (POST /audio/transcribe), on a real LadybugDB, with a fake
+// putting it right (POST /audio/transcribe), on a real Ladybug workspace graph
+// (memory lives there, plans/memory-in-workspace-graph.md), with a fake
 // fixer: it says yes to a written form with a capital or a digit, and finds a
 // sentence likelier with the vocabulary word in it.
-const hasLadybug = await import("@ladybugdb/core").then(
-  () => true,
-  () => false,
-);
+const hasLadybug = !NO_LADYBUG;
 
 describe("dictation: correction and transcription", { skip: !hasLadybug && "@ladybugdb/core is not installed" }, () => {
   const dir = mkdtempSync(join(tmpdir(), "strut-dictation-"));
@@ -45,16 +43,20 @@ describe("dictation: correction and transcription", { skip: !hasLadybug && "@lad
     transcribe: async (): Promise<TranscribeResult> => ({ text: heard, segments: [{ text: heard, words: [] }], model: "fake", hotwords: null, durationMs: 1 }),
   } as unknown as SttService;
   let strut: Awaited<ReturnType<typeof createStrut>>;
-  const ctx = { services: { dataDir } } as unknown as StepContext;
+  let ws: MemoryWorkspace;
+  let ctx: StepContext;
 
   before(async () => {
+    ws = await memoryWorkspace("strut-dictation-graph-");
+    ctx = ws.ctx({ dataDir });
     strut = await createStrut({
-      workspace: new WorkspaceManager(join(dir, "ws")), store: new MemoryRunStore(), dataDir, stt,
+      workspace: new WorkspaceManager(join(dir, "ws")), store: new MemoryRunStore(), dataDir, graph: ws.graph, stt,
       serveUi: false, enableChat: false, scheduler: false, systemWorkflows: false, browserWorkflows: false,
     });
   });
   after(async () => {
     await strut.close();
+    await ws.close();
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -310,13 +312,17 @@ describe("dictation: correction and transcription", { skip: !hasLadybug && "@lad
     assert.deepEqual([lexicon.lingo_type, lexicon.mishearing], ["Lingo", "heard_as"]);
   });
 
-  it("a memory seeded before Lingo had its role gets it on the next open", async () => {
-    await memoryWrite(ctx, async (q) => {
-      await q("MATCH (o:Ontology) WHERE o.key = 'entity_type:Lingo' SET o.role = ''");
-      invalidate(q);
-    });
+  it("a memory seeded before Lingo had its role gets it on the next seed", async () => {
+    // Lingo's Schema row as an earlier seed left it: no role. A raw write, as
+    // no memory step writes a Schema's role.
+    const query = await memoryDb(ctx);
+    await ws.graph.lbug.withWrite((tx) => tx.run("MATCH (n:Node) WHERE n.node_type = 'Schema' AND n.managed_by = 'memory' AND n.type = 'Lingo' SET n.role = ''"));
+    invalidate(query);
     assert.equal((await step("memory/lexicon", {})).lingo_type, null);
-    await memoryWrite(ctx, (q) => seed(q, SEED));
+    // A new seed version (its stamp not there yet) backfills the role.
+    await ws.graph.lbug.withWrite((tx) => tx.run("MATCH (m:Migration) WHERE m.migration_id STARTS WITH 'memory_ontology_seed:' DELETE m"));
+    assert.ok(await seedMemoryOntology(ws.graph), "the seed ran");
+    invalidate(query);
     assert.equal((await step("memory/lexicon", {})).lingo_type, "Lingo");
   });
 });

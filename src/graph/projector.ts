@@ -32,9 +32,9 @@
  * Not projected: `PROMOTED_FROM` — promotions publish a new version without
  * recording the source run.
  *
- * On a backend whose schema is a closed registry (a LadybugDB file,
- * plans/ladybug-backend.md ruling 6) only the types the file holds are
- * written: `StrutRun` and `StrutJob` with `EXECUTED` and `IN_JOB`; the
+ * Only the types the backend's ontology holds are written: every Strut type
+ * on Neo4j; on a LadybugDB file (plans/ladybug-backend.md), whose seed
+ * leaves the chat and agent-session types out, `StrutRun` and `StrutJob` with `EXECUTED` and `IN_JOB`; the
  * agent sessions, tool calls, their edges and the whole chat projection are
  * skipped there, and the report counts what was written. The statements
  * are written with the backend's dialect helpers (`engine.ts`).
@@ -49,20 +49,22 @@ import type { NodeInput } from "./node-writer.js";
 import type { EdgeInput } from "./edge-writer.js";
 import { PREVIEW_MAX_CHARS, getStrutSchema } from "./strut-schemas.js";
 
-/** Does this backend hold nodes of `type`: every type on Neo4j (jarvis's
- *  meta-graph is open), the registry's on a Ladybug file. */
-function holds(backend: GraphBackend, type: string): boolean {
-  const registry = backend.schemaSource.registry;
-  return !registry || registry.schema(type) !== null;
+/** Does this backend's ontology hold nodes of `type`? Every type where
+ *  Strut's own types come from code (Neo4j: jarvis's meta-graph is open, and
+ *  a stand-in with no store); on a Ladybug file, what its Schema rows hold. */
+async function holds(backend: GraphBackend, type: string): Promise<boolean> {
+  if (!backend.schemaSource?.holdsStrutTypes) return true;
+  return (await backend.schemas.schema(type)) !== null;
 }
 
-/** The `unique_source_id` reconciliation stamp is jarvis's (Thing's); a
- *  registry that leaves it off gets the nodes without it — identity is the
- *  node_key there anyway. */
-function fit(backend: GraphBackend, nodes: NodeInput[]): NodeInput[] {
-  const registry = backend.schemaSource.registry;
-  if (!registry) return nodes;
-  return nodes.map((n) => (registry.schema(n.type)?.attributes["unique_source_id"] ? n : { ...n, data: Object.fromEntries(Object.entries(n.data).filter(([k]) => k !== "unique_source_id")) }));
+/** The `unique_source_id` reconciliation stamp is jarvis's (Thing's); a type
+ *  that leaves it off (a Ladybug file's) gets the nodes without it — identity
+ *  is the node_key there anyway. */
+async function fit(backend: GraphBackend, nodes: NodeInput[]): Promise<NodeInput[]> {
+  if (!backend.schemaSource?.holdsStrutTypes) return nodes;
+  return Promise.all(
+    nodes.map(async (n) => ((await backend.schemas.schema(n.type))?.attributes["unique_source_id"] ? n : { ...n, data: Object.fromEntries(Object.entries(n.data).filter(([k]) => k !== "unique_source_id")) })),
+  );
 }
 
 /** What the projector needs of the job index (plans/job-index.md §6): a
@@ -354,7 +356,7 @@ export async function ensureJobNode(backend: GraphBackend, jobs: JobReader | und
   if (!jobs?.get) return null;
   const view = await jobs.get(job, { threads: false });
   if (!view) return null;
-  const [node] = await backend.nodes.writeMany(fit(backend, [jobNode(view)]), "upsert");
+  const [node] = await backend.nodes.writeMany(await fit(backend, [jobNode(view)]), "upsert");
   return node!.ref_id;
 }
 
@@ -411,11 +413,11 @@ export async function projectRun(
   if (!p) return null;
 
   // A file that holds no agent sessions (and so no tool calls) gets the run alone.
-  if (!holds(backend, "StrutAgentSession")) {
+  if (!(await holds(backend, "StrutAgentSession"))) {
     p.sessions = [];
     p.toolCalls = [];
   }
-  const nodes = fit(backend, [p.run, ...p.sessions, ...p.toolCalls.map((t) => t.node)]);
+  const nodes = await fit(backend, [p.run, ...p.sessions, ...p.toolCalls.map((t) => t.node)]);
   const written = await backend.nodes.writeMany(nodes, "upsert");
   const runRef = written[0]!.ref_id;
   const sessionRef = new Map<string, string>();
@@ -507,7 +509,7 @@ export async function projectRun(
  * github-handle or user-id field to match on exactly.
  */
 async function writeSpeakerEdges(backend: GraphBackend, userId: string, sessionRef: string): Promise<number> {
-  if (!holds(backend, "HiveWorkspaceMember")) return 0;
+  if (!(await holds(backend, "HiveWorkspaceMember"))) return 0;
   const { namespace: ns, dialect: d } = backend;
   const rows = await backend.query(
     `MATCH ${d.node("m", "HiveWorkspaceMember", { namespace: "$ns", user_id: "$uid" })} WHERE ${d.live("m")} RETURN DISTINCT m.ref_id AS ref_id`,
@@ -614,7 +616,7 @@ export function spawnedRunIds(messages: StoredMessage[]): string[] {
  *  Nothing on a backend that holds no chats (a Ladybug file). */
 export async function projectChats(backend: GraphBackend, chatStore: ChatStore): Promise<ProjectReport> {
   const report = emptyReport();
-  if (!holds(backend, "StrutChat")) return report;
+  if (!(await holds(backend, "StrutChat"))) return report;
   const { namespace: ns, dialect: d } = backend;
   for (const meta of await chatStore.listChats()) {
     const messages = await chatStore.loadMessages(meta.id);

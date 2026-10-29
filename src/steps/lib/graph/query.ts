@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
-import { graphCtx } from "./_shared.js";
+import { graphCtx, hiddenManaged } from "./_shared.js";
 
 const EXAMPLE = `- id: hosts
   type: graph/query
@@ -66,6 +66,7 @@ export default defineStep({
       ...(cfg.maxRows ? { maxRows: cfg.maxRows } : {}),
       ...(cfg.timeoutMs ? { timeoutMs: cfg.timeoutMs } : {}),
       maxStringLength: Infinity,
+      hideManaged: await hiddenManaged(b, ctx as StepContext<StrutCapabilities>),
     });
   },
 });

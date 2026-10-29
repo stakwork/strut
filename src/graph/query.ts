@@ -29,6 +29,7 @@
  */
 import type { GraphBackend } from "./backend.js";
 import { rowOf, type Params, type Row } from "./bolt.js";
+import { ManagedReadRefused } from "./managed.js";
 
 export interface ReadQueryOptions {
   params?: Params;
@@ -38,6 +39,12 @@ export interface ReadQueryOptions {
   timeoutMs?: number;
   /** Strings longer than this are truncated (default 500). */
   maxStringLength?: number;
+  /** Managed types the caller may not read (type → manager;
+   *  plans/memory-in-workspace-graph.md decision 8). While there is any,
+   *  the query is refused (`ManagedReadRefused`): a raw query's rows cannot
+   *  be filtered soundly — `RETURN n.body`, `properties(n)` or a
+   *  `collect(...)` carries no type to filter by. */
+  hideManaged?: ReadonlyMap<string, string>;
 }
 
 export interface ReadQueryResult {
@@ -151,6 +158,7 @@ export async function readQuery(
 ): Promise<ReadQueryResult> {
   const kw = findWriteKeyword(cypher);
   if (kw) throw new ReadOnlyViolation(kw);
+  if (opts.hideManaged?.size) throw new ManagedReadRefused();
   const maxRows = Math.min(Math.max(1, Math.trunc(opts.maxRows ?? DEFAULT_MAX_ROWS)), HARD_MAX_ROWS);
   const timeout = Math.min(Math.max(1, Math.trunc(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS)), HARD_MAX_TIMEOUT_MS);
   const maxString = opts.maxStringLength ?? DEFAULT_MAX_STRING;

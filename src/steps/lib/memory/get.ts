@@ -17,7 +17,7 @@ async function entity(query: Query, where: string, params: Record<string, unknow
   const facts = (held: boolean, order: string) => query(
     `MATCH (f:Fact)-[r]->(e:Entity) WHERE e.ref_id = $id AND f.deleted_at IS NULL AND f.expired_at IS ${held ? "NULL" : "NOT NULL"}
      OPTIONAL MATCH (f)-[:SUBJECT]->(s:Entity)
-     OPTIONAL MATCH (f)-[:OBJECT]->(o:Entity)
+     OPTIONAL MATCH (f)-[:OBJECT]->(o:Node)
      RETURN f.ref_id AS ref_id, f.text AS text, f.predicate AS predicate, f.valid_at AS valid_at,
             f.invalid_at AS invalid_at, f.value AS value, f.form AS form, label(r) AS role, s.name AS subject, o.name AS object
      ORDER BY ${order}`,
@@ -57,7 +57,7 @@ async function entity(query: Query, where: string, params: Record<string, unknow
     // Marks the user, so a reader needs no type name to know them.
     ...((await vocabulary(query)).role(e.type) === "user" ? { user: true } : {}),
     name: e.name,
-    summary: e.summary,
+    summary: e.summary ?? "",
     aliases: e.aliases,
     attributes: JSON.parse(e.attributes || "{}"),
     created_by: e.created_by,
@@ -73,7 +73,7 @@ async function fact(query: Query, id: string) {
     // Filter in WHERE, not as {ref_id: $id}: in Ladybug 0.21.2 an inline
     // parameter filter plus OPTIONAL MATCH returns the node's fields as null.
     `MATCH (f:Fact)-[:SUBJECT]->(s:Entity) WHERE f.ref_id = $id AND f.deleted_at IS NULL
-     OPTIONAL MATCH (f)-[:OBJECT]->(o:Entity)
+     OPTIONAL MATCH (f)-[:OBJECT]->(o:Node)
      RETURN f.text AS text, f.predicate AS predicate, f.confidence AS confidence, f.valid_at AS valid_at,
             f.invalid_at AS invalid_at, f.expired_at AS expired_at, f.created_by AS created_by, f.created_at AS created_at,
             s.ref_id AS s_id, s.name AS s_name, o.ref_id AS o_id, o.name AS o_name`,

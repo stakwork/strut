@@ -44,7 +44,7 @@ export default defineStep({
         [{ ref_id: r.ref_id, node_type: cfg.node_type, name: deriveNodeName(undefined, cfg.node_data ?? {}) }],
       );
     } catch (e) {
-      return errText("graph/create-node", e);
+      return errText("graph/create-node", e, ctx);
     }
   },
 });

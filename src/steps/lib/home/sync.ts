@@ -26,10 +26,12 @@ async function post(peers: PeersCapability, peer: string, path: string, body: un
 // the output is a summary. A failure anywhere records nothing, and the next
 // run pushes the same changes again (the home replays them idempotently).
 // What dictation changes here after the push read its changes is read from
-// the old graph inside the memory lock, before the replace, and replayed on
-// the new one, so the next push carries it. Both reads are in the writes'
+// the old memory inside memory's queue, before the replace, and replayed on
+// the new one, so the next push carries it. Both reads are in memory's
 // queue over [since, until), as dictation/changes-since reads, and the next
-// sync starts where the last read ended.
+// sync starts where the last read ended. The import holds memory's queue
+// throughout but the workspace's write lock only per batch, so runs go on
+// projecting while it loads.
 export default defineStep({
   type: "home/sync",
   description:
@@ -77,7 +79,7 @@ async function sync(peer: string, ctx: StepContext<{ peers?: PeersCapability }>)
   // A `since` that does not read is the start: everything is pushed again, which the home skips as known.
   const parsed = state.since ? Date.parse(state.since) : 0;
   const since = Number.isFinite(parsed) ? parsed : 0;
-  // In the writes' queue, `until` taken there, as dictation/changes-since reads:
+  // In memory's queue, `until` taken there, as dictation/changes-since reads:
   // no write in flight is missed, and every later one stamps `until` or later.
   const { changes, until } = await memoryExclusive(ctx, async ({ read }) => {
     const until = Date.now();
@@ -104,7 +106,7 @@ async function sync(peer: string, ctx: StepContext<{ peers?: PeersCapability }>)
     // On disk before the graph they are in is replaced: a replay that fails
     // (or a crash) leaves them for the next sync, never nowhere.
     if (late.length) writeState(ctx, { ...state, pending: late });
-    const result = await importSnapshot(handle, snapshot, true);
+    const result = await importSnapshot(handle, snapshot, true, { dataDir: (ctx.services as { dataDir?: string } | undefined)?.dataDir });
     if ("error" in result && late.length) writeState(ctx, state); // the old graph is back, and has them
     return { late, lateUntil, result };
   });

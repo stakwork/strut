@@ -42,7 +42,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { int } from "./bolt.js";
 import { EVIDENCE_TYPE } from "./claims.js";
-import type { EngineLike, GraphEngine, PreparedNode, SoftDeleteResult, WriteMode, WriteOutcome } from "./engine.js";
+import type { EngineLike, GraphEngine, GraphTx, PreparedNode, SoftDeleteOptions, SoftDeleteResult, WriteMode, WriteOutcome } from "./engine.js";
 import { sameStored } from "./engine.js";
 import { asEngine } from "./neo4j-engine.js";
 import { SchemaResolver, fromStrut, type NodeSchema } from "./schema-resolver.js";
@@ -61,7 +61,8 @@ export type GraphValidationCode =
   | "INVALID_DATETIME"
   | "EMPTY_NODE_KEY_TOKEN"
   | "NOT_FOUND"
-  | "DUPLICATE_KEY";
+  | "DUPLICATE_KEY"
+  | "MANAGED";
 
 export class GraphValidationError extends Error {
   readonly code: GraphValidationCode;
@@ -74,6 +75,42 @@ export class GraphValidationError extends Error {
     this.type = type;
     this.attribute = attribute;
   }
+}
+
+/**
+ * A manager's write key (decision 7): what lets a caller write the types a
+ * manager owns. Minted where the host wires that manager's own steps and
+ * handed only to them; the writers honour only a key minted here, so a
+ * string, a copy or a lookalike names no manager. Not exported from the
+ * package.
+ */
+export interface ManagerKey {
+  readonly manager: string;
+}
+
+const minted = new WeakSet<object>();
+
+export function mintManagerKey(manager: string): ManagerKey {
+  const key = Object.freeze({ manager });
+  minted.add(key);
+  return key;
+}
+
+/** The manager a key names, when the key is one `mintManagerKey` made. */
+export function managerOf(key: ManagerKey | undefined): string | undefined {
+  return key && typeof key === "object" && minted.has(key) ? key.manager : undefined;
+}
+
+/**
+ * The managed-type guard (plans/memory-in-workspace-graph.md decision 7): a
+ * type whose schema names a manager is written only by a caller holding
+ * that manager's key. Throws MANAGED; a schema without a manager, or none,
+ * passes. Shared by the node and edge writers.
+ */
+export function refuseManaged(schema: Pick<NodeSchema, "type" | "managed_by"> | null | undefined, key: ManagerKey | undefined): void {
+  const owner = schema?.managed_by;
+  if (!owner || owner === managerOf(key)) return;
+  throw new GraphValidationError("MANAGED", schema!.type, `managed by ${owner}: its nodes and edges are written through ${owner}'s own steps, not the generic graph writers`);
 }
 
 // ── Validation + normalization (§6) ─────────────────────────────────────────
@@ -226,6 +263,16 @@ export function toEpochSeconds(v: unknown): number | null {
 export const MAX_NODE_KEY_LENGTH = 200;
 export const NODE_KEY_HASH_LENGTH = 32;
 
+/** A schema keyed by `ref_id` (`node_key: "ref_id"`): every create is a new
+ *  node, never a match on its attributes, and never a deleted one brought
+ *  back — two people may share a name. */
+export const keyedByRef = (schema: Pick<NodeSchema, "node_key">): boolean => schema.node_key === "ref_id";
+
+/** The node_key of a node keyed by `ref_id`: the type token, then the ref_id. */
+export function refNodeKey(type: string, ref_id: string): string {
+  return `${type.toLowerCase().replace(/[^a-zA-Z0-9\s]/g, "")}-${ref_id}`;
+}
+
 /** `String(v).trim()` → drop spaces → lowercase → strip `[^a-zA-Z0-9\s]`. */
 export function sanitizeKeyValue(v: unknown): string {
   return String(v)
@@ -354,6 +401,10 @@ export interface NodeInput {
    *  case-insensitively against the live schema). */
   type: string;
   data: Record<string, unknown>;
+  /** The ref_id to create the node with, for a type keyed by `ref_id`
+   *  (`keyedByRef`): a copy that keeps its ids (memory's migration and home
+   *  sync import). Ignored for every other type, whose ref_id is minted. */
+  ref_id?: string;
 }
 
 export interface NodeWriteResult {
@@ -376,11 +427,30 @@ export interface NodeWriterOptions {
  *  the writer on every node type, declared or not; never a caller's. */
 export const UPDATED_AT = "updated_at";
 
-export interface WriteOptions {
+/** What every write may carry: the caller's transaction, and the manager it
+ *  writes for. */
+export interface WriterCallOptions {
+  /** Run on the caller's write transaction (an engine's `tx()` does not
+   *  nest), so the write lands with the caller's other statements. */
+  tx?: GraphTx;
+  /** The key of the manager the caller writes for: required to write a
+   *  managed type (`refuseManaged`). */
+  manager?: ManagerKey;
+}
+
+export interface WriteOptions extends WriterCallOptions {
   /** Override the backend's default namespace for this write. Must already
    *  be registered when it is not `default` (callers check via
    *  `GraphReader.resolveNamespace`). */
   namespace?: string;
+}
+
+/** `softDelete`'s options: the engine's (`tx`, `keepEdges`, `reason`) and
+ *  the manager whose node it is. */
+export interface NodeSoftDeleteOptions extends SoftDeleteOptions {
+  /** Delete a node of a type this manager owns, instead of one of Strut's
+   *  own. Required for `keepEdges`. */
+  manager?: ManagerKey;
 }
 
 export interface NodeUpdate {
@@ -436,15 +506,17 @@ export class NodeWriter {
     const validated: ValidatedNode[] = [];
     const now = this.stamp();
     for (const i of inputs) {
-      const schema = await this.resolver.schema(i.type);
+      const schema = await this.resolver.schema(i.type, opts.tx);
       if (!schema) throw new GraphValidationError("UNKNOWN_TYPE", i.type, "unknown node type (not a Strut type and no such Schema in the graph)");
+      refuseManaged(schema, opts.manager);
       validated.push(validateNode(schema, this.callerData(i.data)));
     }
     // Gather every text to embed across the batch → one encoder call.
     const jobs: Array<{ idx: number; column: string; text: string }> = [];
     const prepared: PreparedNode[] = validated.map((v, idx) => {
-      const node_key = composeNodeKey(v.schema, v.values);
-      const ref_id = randomUUID();
+      const given = inputs[idx]!.ref_id;
+      const ref_id = given && keyedByRef(v.schema) ? given : randomUUID();
+      const node_key = keyedByRef(v.schema) ? refNodeKey(v.schema.type, ref_id) : composeNodeKey(v.schema, v.values);
       const { text, fields } = buildSearchText(v.schema, v.values);
       // One clock read for both stamps; `date_added_to_graph` is identity
       // (PRESERVED), so only a create writes it.
@@ -482,11 +554,12 @@ export class NodeWriter {
    * Write many nodes (any mix of types) in one transaction — one batch per
    * type, same resulting state as the single form. Results are in input
    * order. All-or-nothing: a validation error anywhere writes nothing.
+   * With `tx`, on the caller's transaction.
    */
   async writeMany(inputs: NodeInput[], mode: WriteMode = "create", opts: WriteOptions = {}): Promise<NodeWriteResult[]> {
     if (inputs.length === 0) return [];
     const namespace = opts.namespace ?? this.engine.namespace;
-    const prepared = await this.prepareMany(inputs, { namespace });
+    const prepared = await this.prepareMany(inputs, { ...opts, namespace });
     const byType = new Map<string, Array<{ i: number; p: PreparedNode }>>();
     prepared.forEach((p, i) => {
       const list = byType.get(p.schema.type) ?? [];
@@ -494,14 +567,15 @@ export class NodeWriter {
       byType.set(p.schema.type, list);
     });
     const results: NodeWriteResult[] = new Array(inputs.length);
-    await this.engine.tx(async (tx) => {
+    const go = async (tx: GraphTx) => {
       for (const [type, rows] of byType) {
         const out = await this.engine.nodeEngine.mergeBatch(tx, rows[0]!.p.schema, namespace, rows.map((r) => r.p), mode);
         rows.forEach((r, k) => {
           results[r.i] = { ...out[k]!, node_type: type };
         });
       }
-    });
+    };
+    await (opts.tx ? go(opts.tx) : this.engine.tx(go));
     return results;
   }
 
@@ -513,17 +587,20 @@ export class NodeWriter {
    * another node fails with DUPLICATE_KEY, nothing written), and
    * `Data_Bank` + vectors are rebuilt. Identity stamps (`ref_id`,
    * `namespace`, `date_added_to_graph`) and the delete markers are untouched.
+   * A type keyed by `ref_id` keeps its node_key. With `tx`, on the caller's
+   * transaction.
    */
-  async update(ref_id: string, patch: NodeUpdate): Promise<NodeUpdateResult> {
+  async update(ref_id: string, patch: NodeUpdate, opts: WriterCallOptions = {}): Promise<NodeUpdateResult> {
     const remove = patch.remove ?? [];
     const set = this.callerData(patch.set ?? {});
-    return this.engine.tx(async (tx) => {
+    const go = async (tx: GraphTx): Promise<NodeUpdateResult> => {
       const raw = await this.engine.nodeEngine.readRaw(tx, ref_id);
       if (!raw) throw new GraphValidationError("NOT_FOUND", "?", `no node with ref_id ${ref_id}`);
       const props = raw.props;
       const type = raw.type ?? "?";
       const schema = await this.resolver.schema(type, tx);
       if (!schema) throw new GraphValidationError("UNKNOWN_TYPE", type, "stored node's type has no schema");
+      refuseManaged(schema, opts.manager);
       const attrs = schema.attributes;
 
       const current: Record<string, unknown> = {};
@@ -540,8 +617,8 @@ export class NodeWriter {
       const merged = { ...current, ...set };
       for (const k of remove) if (k in set) delete merged[k];
 
-      const [p] = await this.prepareMany([{ type: schema.type, data: merged }], { namespace: String(props["namespace"]) });
-      const node_key = p!.node_key;
+      const [p] = await this.prepareMany([{ type: schema.type, data: merged }], { namespace: String(props["namespace"]), tx, manager: opts.manager });
+      const node_key = keyedByRef(schema) ? String(props["node_key"]) : p!.node_key;
       const rekeyed = node_key !== props["node_key"];
       if (rekeyed) {
         const clash = await this.engine.nodeEngine.refByKey(tx, schema.type, node_key, String(props["namespace"]));
@@ -569,23 +646,46 @@ export class NodeWriter {
       if (!rekeyed && Object.keys(attrs).every((k) => k === UPDATED_AT || sameStored(props[k], p!.props[k]))) delete setMap[UPDATED_AT];
       await this.engine.nodeEngine.update(tx, schema, ref_id, setMap, [...drop]);
       return { ref_id, node_key, rekeyed };
-    });
+    };
+    return opts.tx ? go(opts.tx) : this.engine.tx(go);
   }
 
   /** Soft delete (`deletion.ts`): stamps `deleted_at` (the first delete
    *  time is kept) + `is_deleted`, and hard-deletes the node's in-scope edges
-   *  in the same statement. Scoped to Strut's own nodes in this namespace. */
-  async softDelete(ref_id: string): Promise<boolean> {
-    return (await this.engine.nodeEngine.softDelete(ref_id, this.engine.namespace, { domainLabel: STRUT_DOMAIN_LABEL })) !== null;
+   *  in the same statement. Scoped to Strut's own nodes in this namespace —
+   *  or, with `manager`, to the nodes of a type that manager owns. Options:
+   *  `keepEdges` leaves the edges, `reason` is stored as `deleted_reason`,
+   *  `tx` runs on the caller's transaction. False when nothing matched. */
+  async softDelete(ref_id: string, opts: NodeSoftDeleteOptions = {}): Promise<boolean> {
+    const { manager: key, ...how } = opts;
+    const manager = managerOf(key);
+    // A node that keeps its edges is still reached through them, by readers
+    // that check liveness; only a manager, for its own types, leaves them.
+    if (how.keepEdges && !manager) throw new GraphValidationError("MANAGED", "node", "keepEdges is for a manager's own nodes: pass its key");
+    const ns = this.engine.namespace;
+    if (!manager) return (await this.engine.nodeEngine.softDelete(ref_id, ns, { domainLabel: STRUT_DOMAIN_LABEL }, how)) !== null;
+    const go = async (tx: GraphTx): Promise<boolean> => {
+      const raw = await this.engine.nodeEngine.readRaw(tx, ref_id);
+      const schema = raw?.type ? await this.resolver.schema(raw.type, tx) : null;
+      if (!schema || schema.managed_by !== manager) return false;
+      return (await this.engine.nodeEngine.softDelete(ref_id, ns, { type: schema.type }, { ...how, tx })) !== null;
+    };
+    return how.tx ? go(how.tx) : this.engine.tx(go);
   }
 
   /** `softDelete` for a node of ANY type in the namespace, on a caller's
    *  say-so (`graph/delete-node`, the twin of hive's graphNodeDelete):
    *  `deleted_at` stamped, its in-scope edges hard-deleted and counted.
    *  Null when there is no such node there. The `Domain_strut` guard stays
-   *  on `softDelete` for strut's own rows. */
+   *  on `softDelete` for strut's own rows. A managed type is refused
+   *  (`refuseManaged`): its manager deletes through `softDelete`. */
   async deleteNode(ref_id: string, opts: { namespace?: string } = {}): Promise<SoftDeleteResult | null> {
-    return this.engine.nodeEngine.softDelete(ref_id, opts.namespace ?? this.engine.namespace, {});
+    const ns = opts.namespace ?? this.engine.namespace;
+    return this.engine.tx(async (tx) => {
+      const raw = await this.engine.nodeEngine.readRaw(tx, ref_id);
+      if (raw?.type) refuseManaged(await this.resolver.schema(raw.type, tx), undefined);
+      return this.engine.nodeEngine.softDelete(ref_id, ns, {}, { tx });
+    });
   }
 
   /** `softDelete` for the one non-Strut node strut retires: a stale
