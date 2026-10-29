@@ -391,7 +391,8 @@ class LadybugEdges implements EdgeEngine {
     if (node.length === 0) return null;
     if (!(await this.table(tx, edge))) return { node: ref_id, edges: [] };
     const hop = forward ? `-[r:${q(edge)}]->` : `<-[r:${q(edge)}]-`;
-    const rows = await tx.run(`MATCH (n:Node {ref_id: $ref_id})${hop}(p:Node) RETURN p.ref_id AS other, r.ref_id AS edge_ref_id, r AS rel`, { ref_id });
+    // Both ends live: a soft delete that kept its edges (`keepEdges`) leaves them to its manager.
+    const rows = await tx.run(`MATCH (n:Node {ref_id: $ref_id})${hop}(p:Node) WHERE n.deleted_at IS NULL AND p.deleted_at IS NULL RETURN p.ref_id AS other, r.ref_id AS edge_ref_id, r AS rel`, { ref_id });
     return {
       node: ref_id,
       edges: rows.map((r) => ({ other: String(r["other"]), edge_ref_id: String(r["edge_ref_id"]), props: edgeProps(r["rel"] as Record<string, unknown>) })),

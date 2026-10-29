@@ -223,7 +223,8 @@ export class LadybugReader implements GraphReader {
   }
 
   async neighbors(ref_id: string, p: NeighborsParams = {}): Promise<{ nodes: NodeEnvelope[]; edges: EdgeEnvelope[] }> {
-    const where = [LIVE("node"), DATA("node")];
+    // A deleted source shows nothing, though a manager's soft delete kept its edges.
+    const where = [LIVE("source"), LIVE("node"), DATA("node")];
     const params: Params = { ref_id };
     if (p.node_types?.length) {
       params["node_types"] = await Promise.all(p.node_types.map((t) => this.canonical(t)));

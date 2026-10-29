@@ -80,7 +80,7 @@ export default defineStep({
         attributes: r.attributes,
       };
     } catch (e) {
-      return errText("graph/create-schema", e);
+      return errText("graph/create-schema", e, ctx);
     }
   },
 });

@@ -333,7 +333,7 @@ class Neo4jEdges implements EdgeEngine {
       `MATCH (x:Data_Bank {ref_id: $ref_id})
        OPTIONAL MATCH (x)-[:IS_ALIAS]->(xa)
        WITH COALESCE(xa, x) AS n
-       OPTIONAL MATCH (n)${hop}(p) WHERE ${EDGE_LIVE("r")}
+       OPTIONAL MATCH (n)${hop}(p) WHERE ${NODE_LIVE("n")} AND ${EDGE_LIVE("r")} AND ${NODE_LIVE("p")}
        RETURN n.ref_id AS node, p.ref_id AS other, r.ref_id AS edge_ref_id, properties(r) AS props`,
       { ref_id },
     );

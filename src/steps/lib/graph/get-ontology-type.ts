@@ -24,7 +24,7 @@ export default defineStep({
       if (!schema) return `graph/get-ontology-type: unknown type ${cfg.type}`;
       return { attributes: schema.attributes };
     } catch (e) {
-      return errText("graph/get-ontology-type", e);
+      return errText("graph/get-ontology-type", e, ctx);
     }
   },
 });

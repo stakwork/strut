@@ -1351,7 +1351,8 @@ export function buildTools(deps: AiDeps): ToolSet {
                 return await readQuery(deps.graph!, cypher, {
                   params: coerceJsonArg(params) as Record<string, unknown> | undefined,
                   maxRows,
-                  // The builder reads no managed type (memory's; managed.ts).
+                  // The builder reads no managed type (memory's; managed.ts):
+                  // while there is one, raw queries are refused.
                   hideManaged: await deps.graph!.schemas?.managedTypes?.(),
                 });
               } catch (e) {

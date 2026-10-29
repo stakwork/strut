@@ -779,7 +779,8 @@ export class Neo4jReader implements GraphReader {
    * node included in `nodes`, like jarvis.
    */
   async neighbors(ref_id: string, p: NeighborsParams = {}): Promise<{ nodes: NodeEnvelope[]; edges: EdgeEnvelope[] }> {
-    const where = [visibility("node"), EDGE_LIVE("r")];
+    // A deleted source shows nothing, though a manager's soft delete kept its edges.
+    const where = [NODE_LIVE("source"), visibility("node"), EDGE_LIVE("r")];
     const params: Record<string, unknown> = { ref_id, blocked_statuses: BLOCKED_NODE_STATUSES };
     if (p.node_types?.length) {
       params["imp_node_types"] = (await this.canonicalTypes(p.node_types)).map((n) => n.replace(/[-+/>]/g, ""));

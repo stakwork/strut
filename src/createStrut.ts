@@ -104,7 +104,7 @@ import type { AppRelease, Upstream } from "./workspace.js";
 import type { CassetteMode } from "./cassette.js";
 // Type-only: the graph backend stays a lazy, opt-in dependency.
 import type { GraphBackend } from "./graph/backend.js";
-import { ManagedReadFilter } from "./graph/managed.js";
+import { ManagedReadFilter, graphView } from "./graph/managed.js";
 import { projectRunOnce } from "./graph/projector.js";
 // No runtime graph dependency in here either (type-only imports inside).
 import type { ClaimsReader } from "./graph/claims.js";
@@ -904,10 +904,12 @@ export async function createStrut<TServices = unknown>(
       hostApprove: [opts.job, opts.orchestrator, opts.builder].flatMap((d) => (d ? (d.approve ?? []) : [])),
       notify: (job, update) => ((services as Record<string, unknown>)["jobs"] as JobsCapability | undefined)?.notify?.(job, update),
     }),
-    // The graph backend the server wired, for the graph/* steps (graphCtx
-    // prefers it over opening one from env). Borrowed: a step's `close()`
-    // must not close the connection the workspace and claims read through.
-    ...(graph ? { graph: { ...graph, close: async () => undefined } } : {}),
+    // The graph backend the server wired, as a step holds it (`graphView`:
+    // memory left out, no engine handles); the graph/* steps read the
+    // backend behind it (graphCtx prefers it over opening one from env).
+    // Borrowed: a step's `close()` must not close the connection the
+    // workspace and claims read through.
+    ...(graph ? { graph: graphView(graph) } : {}),
     ...(opts.memoryReaders?.length ? { memoryReaders: [...opts.memoryReaders] } : {}),
     ...(stt ? { stt } : {}),
     // The LLM auth seam, for the model-building call sites (llm.ts).
@@ -3385,7 +3387,20 @@ export async function createStrut<TServices = unknown>(
   // embeddings off. Read-only — a debugging read. 501 without a graph.
   app.get("/graph/embeddings", async (c) => {
     if (!graph) return c.json({ error: "this deployment has no graph" }, 501);
-    return c.json(graph.embeddings ? graph.embeddings.status() : { enabled: false });
+    if (!graph.embeddings) return c.json({ enabled: false });
+    // Per-type counts without the managed types (memory's; graph/managed.ts).
+    const status = graph.embeddings.status();
+    const managed = new Set([...(await graph.schemas.managedTypes())].map(([t]) => t.toLowerCase()));
+    if (!managed.size) return c.json(status);
+    const keep = (t: string | null) => !t || !managed.has(t.toLowerCase());
+    const without = <V>(m: Record<string, V>) => Object.fromEntries(Object.entries(m).filter(([t]) => keep(t)));
+    return c.json({
+      ...status,
+      sweep: { ...status.sweep, ...(keep(status.sweep.type) ? {} : { type: null, cursor: null }) },
+      current: without(status.current),
+      last: without(status.last),
+      skipped: status.skipped.filter((s) => keep(s.type)),
+    });
   });
 
   // ── Secrets ──────────────────────────────────────────────────────────────

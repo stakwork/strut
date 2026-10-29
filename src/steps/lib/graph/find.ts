@@ -46,7 +46,7 @@ export default defineStep({
       // No provenance marker: a list is not what the caller named.
       return await findNodes(b, cfg, await hiddenManaged(b, ctx as StepContext<StrutCapabilities>));
     } catch (e) {
-      return errText("graph/find", e);
+      return errText("graph/find", e, ctx);
     }
   },
 });

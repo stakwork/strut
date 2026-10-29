@@ -168,7 +168,7 @@ function flatOf(t: Term, extra: Record<string, unknown> = {}): Record<string, un
 
 /** Whoever else holds `name` (a type or alias, case-blind): decision 9's clash. */
 async function heldByOther(b: LadybugBackend, tx: GraphTx, names: string[]): Promise<{ type: string; owner: string } | undefined> {
-  const held = (await b.schemaSource.typesNamed(names, tx)).find((h) => h.managed_by !== MANAGER);
+  const held = ((await b.schemaSource.typesNamed?.(names, tx)) ?? []).find((h) => h.managed_by !== MANAGER);
   return held && { type: held.type, owner: held.managed_by ?? "the workspace" };
 }
 
@@ -188,7 +188,7 @@ async function linkParent(b: LadybugBackend, tx: GraphTx, t: Term): Promise<void
 /** An existing entity type's parent, moved: its old CHILD_OF link goes, as there is one parent. */
 async function reparent(b: LadybugBackend, tx: GraphTx, type: string, parent: string): Promise<void> {
   await tx.run(
-    `MATCH (c:Node)-[r:SCHEMA_EDGE]->(p:Node) WHERE c.node_type = 'Schema' AND c.type = $t AND r.edge_type = 'CHILD_OF' AND p.type <> $p DELETE r`,
+    `MATCH (c:Node)-[r:SCHEMA_EDGE]->(p:Node) WHERE c.node_type = 'Schema' AND c.type = $t AND r.is_parent = true AND p.type <> $p DELETE r`,
     { t: type, p: parent },
   );
   await b.schemaSource.extendSchema(type, { parent }, tx);
@@ -303,7 +303,7 @@ export async function seedMemoryOntology(b: LadybugBackend): Promise<MemorySeedR
           continue;
         }
         // A seed alias another owner holds is left off; the term still lands.
-        const taken = new Set((await b.schemaSource.typesNamed(t.aliases, tx)).filter((h) => h.managed_by !== MANAGER).flatMap((h) => [h.type, ...h.aliases].map((n) => n.toLowerCase())));
+        const taken = new Set(((await b.schemaSource.typesNamed?.(t.aliases, tx)) ?? []).filter((h) => h.managed_by !== MANAGER).flatMap((h) => [h.type, ...h.aliases].map((n) => n.toLowerCase())));
         const role = t.role === "user" && user && user !== t.name ? "" : t.role;
         await createTerm(b, tx, { ...t, role, aliases: t.aliases.filter((a) => !taken.has(a.toLowerCase())) }, false);
         if (role === "user") user = t.name;

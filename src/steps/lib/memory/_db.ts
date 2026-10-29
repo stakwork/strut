@@ -31,7 +31,8 @@ import type { StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
 import type { GraphTx } from "../../../graph/engine.js";
 import type { GraphBackend, LadybugBackend } from "../../../graph/backend.js";
-import { NodeWriter } from "../../../graph/node-writer.js";
+import { NodeWriter, mintManagerKey, type ManagerKey } from "../../../graph/node-writer.js";
+import { rawGraphOf } from "../../../graph/managed.js";
 import { seedMemoryOntology, invalidate, wroteOntology } from "./_ontology.js";
 
 export const EntityRef = z.object({
@@ -46,6 +47,10 @@ export type EntityRefT = z.infer<typeof EntityRef>;
 
 /** Who writes memory's types (decision 7): the writers refuse anyone else. */
 export const MANAGER = "memory";
+
+/** Memory's write key (node-writer.ts `mintManagerKey`), minted here and
+ *  never handed out: only these steps, through MemoryTx, write memory's types. */
+const KEY: ManagerKey = mintManagerKey(MANAGER);
 
 export type Row = Record<string, any>;
 type Run = (cypher: string, params?: Record<string, any>) => Promise<Row[]>;
@@ -135,9 +140,12 @@ export type Handle = {
 // One per workspace handle, kept on globalThis so a re-imported module shares it.
 const HANDLES = ((globalThis as Record<symbol, unknown>)[Symbol.for("strut.memory.workspace")] ??= new WeakMap()) as WeakMap<object, Promise<Handle>>;
 
-/** The workspace graph memory lives in; memory steps refuse without a Ladybug one (decision 11). */
+/** The workspace graph memory lives in; memory steps refuse without a Ladybug one (decision 11).
+ *  A step is handed the graph as a view that leaves memory out (`graphView`); memory's own
+ *  steps read the backend behind it, as strut's graph steps do. */
 export function memoryBackend(ctx?: StepContext<unknown>): LadybugBackend {
-  const graph = (ctx?.services as Partial<StrutCapabilities> | undefined)?.graph as GraphBackend | undefined;
+  const view = (ctx?.services as Partial<StrutCapabilities> | undefined)?.graph;
+  const graph = (rawGraphOf(view) ?? view) as GraphBackend | undefined;
   if (!graph) throw new Error("memory/* steps need the workspace graph (ctx.services.graph): memory lives in the person's Ladybug workspace");
   if (graph.kind !== "ladybug") {
     throw new Error(`memory/* steps run on a personal (Ladybug) workspace graph only; this workspace is on ${graph.kind} (STRUT_WORKSPACE_BACKEND=ladybug)`);
@@ -195,7 +203,7 @@ export class MemoryTx {
   }
 
   private get opts() {
-    return { tx: this.tx, manager: MANAGER };
+    return { tx: this.tx, manager: KEY };
   }
 
   /** A new node of a memory type; `ref_id` defaults to a new one. */

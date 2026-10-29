@@ -78,14 +78,38 @@ export class GraphValidationError extends Error {
 }
 
 /**
- * The managed-type guard (plans/memory-in-workspace-graph.md decision 7): a
- * type whose schema names a manager is written only by a caller that names
- * the same one. Throws MANAGED; a schema without a manager, or none, passes.
- * Shared by the node and edge writers.
+ * A manager's write key (decision 7): what lets a caller write the types a
+ * manager owns. Minted where the host wires that manager's own steps and
+ * handed only to them; the writers honour only a key minted here, so a
+ * string, a copy or a lookalike names no manager. Not exported from the
+ * package.
  */
-export function refuseManaged(schema: Pick<NodeSchema, "type" | "managed_by"> | null | undefined, manager: string | undefined): void {
+export interface ManagerKey {
+  readonly manager: string;
+}
+
+const minted = new WeakSet<object>();
+
+export function mintManagerKey(manager: string): ManagerKey {
+  const key = Object.freeze({ manager });
+  minted.add(key);
+  return key;
+}
+
+/** The manager a key names, when the key is one `mintManagerKey` made. */
+export function managerOf(key: ManagerKey | undefined): string | undefined {
+  return key && typeof key === "object" && minted.has(key) ? key.manager : undefined;
+}
+
+/**
+ * The managed-type guard (plans/memory-in-workspace-graph.md decision 7): a
+ * type whose schema names a manager is written only by a caller holding
+ * that manager's key. Throws MANAGED; a schema without a manager, or none,
+ * passes. Shared by the node and edge writers.
+ */
+export function refuseManaged(schema: Pick<NodeSchema, "type" | "managed_by"> | null | undefined, key: ManagerKey | undefined): void {
   const owner = schema?.managed_by;
-  if (!owner || owner === manager) return;
+  if (!owner || owner === managerOf(key)) return;
   throw new GraphValidationError("MANAGED", schema!.type, `managed by ${owner}: its nodes and edges are written through ${owner}'s own steps, not the generic graph writers`);
 }
 
@@ -409,9 +433,9 @@ export interface WriterCallOptions {
   /** Run on the caller's write transaction (an engine's `tx()` does not
    *  nest), so the write lands with the caller's other statements. */
   tx?: GraphTx;
-  /** The manager the caller writes for: required to write a managed type
-   *  (`refuseManaged`). */
-  manager?: string;
+  /** The key of the manager the caller writes for: required to write a
+   *  managed type (`refuseManaged`). */
+  manager?: ManagerKey;
 }
 
 export interface WriteOptions extends WriterCallOptions {
@@ -424,8 +448,9 @@ export interface WriteOptions extends WriterCallOptions {
 /** `softDelete`'s options: the engine's (`tx`, `keepEdges`, `reason`) and
  *  the manager whose node it is. */
 export interface NodeSoftDeleteOptions extends SoftDeleteOptions {
-  /** Delete a node of a type this manager owns, instead of one of Strut's own. */
-  manager?: string;
+  /** Delete a node of a type this manager owns, instead of one of Strut's
+   *  own. Required for `keepEdges`. */
+  manager?: ManagerKey;
 }
 
 export interface NodeUpdate {
@@ -632,7 +657,11 @@ export class NodeWriter {
    *  `keepEdges` leaves the edges, `reason` is stored as `deleted_reason`,
    *  `tx` runs on the caller's transaction. False when nothing matched. */
   async softDelete(ref_id: string, opts: NodeSoftDeleteOptions = {}): Promise<boolean> {
-    const { manager, ...how } = opts;
+    const { manager: key, ...how } = opts;
+    const manager = managerOf(key);
+    // A node that keeps its edges is still reached through them, by readers
+    // that check liveness; only a manager, for its own types, leaves them.
+    if (how.keepEdges && !manager) throw new GraphValidationError("MANAGED", "node", "keepEdges is for a manager's own nodes: pass its key");
     const ns = this.engine.namespace;
     if (!manager) return (await this.engine.nodeEngine.softDelete(ref_id, ns, { domainLabel: STRUT_DOMAIN_LABEL }, how)) !== null;
     const go = async (tx: GraphTx): Promise<boolean> => {

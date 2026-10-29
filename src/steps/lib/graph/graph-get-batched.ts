@@ -31,7 +31,7 @@ export default defineStep({
     try {
       b = await graphCtx(ctx as StepContext<StrutCapabilities>);
     } catch (e) {
-      return errText("graph/graph-get-batched", e);
+      return errText("graph/graph-get-batched", e, ctx);
     }
 
     async function fetchNode(ref_id: string): Promise<Record<string, any>> {

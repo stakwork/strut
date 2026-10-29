@@ -144,6 +144,6 @@ async function resolve(
     const listed = children.slice(0, CHILD_CAP);
     return withAccessedNodes({ ...out, children: listed, ...(truncated ? { children_truncated: true } : {}) }, read);
   } catch (e) {
-    return errText("graph/graph-get", e);
+    return errText("graph/graph-get", e, ctx as StepContext<StrutCapabilities>);
   }
 }

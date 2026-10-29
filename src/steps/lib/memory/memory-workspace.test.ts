@@ -169,8 +169,8 @@ describe("memory moves into the workspace graph at boot", { skip: NO_LADYBUG }, 
 describe("the graph tools read memory; only memory writes it", { skip: NO_LADYBUG }, () => {
   let ws: MemoryWorkspace;
   let remember: ReturnType<typeof runIn>;
-  // The person's assistant (a host's memoryReaders), and a job.
-  const as = (workflow: string) => runIn({ ...ws.ctx({ memoryReaders: ["orchestrator"] }), path: `${workflow}/agent`, agentTool: true } as unknown as StepContext);
+  // The person's assistant (a host's memoryReaders, its sealed frame), and a job.
+  const as = (workflow: string) => runIn({ ...ws.ctx({ memoryReaders: ["orchestrator"] }), path: `${workflow}/agent`, agentTool: true, frame: { workflow, sealed: true } } as unknown as StepContext);
   let concept: string;
   let out: any;
   before(async () => {
