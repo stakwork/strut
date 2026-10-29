@@ -108,6 +108,7 @@ import type { CassetteMode } from "./cassette.js";
 // Type-only: the graph backend stays a lazy, opt-in dependency.
 import type { GraphBackend } from "./graph/backend.js";
 import { projectRunOnce } from "./graph/projector.js";
+import { createGraphChangeFeed, GRAPH_FEED_READ_MAX } from "./graph-writes.js";
 // No runtime graph dependency in here either (type-only imports inside).
 import type { ClaimsReader } from "./graph/claims.js";
 import { buildClaimsAuthoring, type ClaimsReconcileOutcome } from "./claims-authoring.js";
@@ -133,7 +134,7 @@ import { fileMcpRegistry, gatedByDefault, mcpStepDef, parseRegistration, resolve
 import { briefOf, decideProposal, listProposals, proposalsCapability, proposalsRoot, readProposal, type ProposalStatus } from "./proposals.js";
 import type { AssistantChatDoor } from "./ai/assistant-tools.js";
 import { shellCapability, type ShellCapability } from "./capabilities.js";
-import { deleteJob, jobFilePath, jobRoot, jobsCapability, listJobFiles, readJobRecord, releaseWith, setJobCallback, turnOf, type JobsCapability } from "./jobs.js";
+import { deleteJob, jobFilePath, jobRoot, jobsCapability, listJobFiles, readJobRecord, releaseWith, setJobCallback, turnOf, wakeJobFeeds, type JobsCapability } from "./jobs.js";
 import { createJobIndex } from "./job-index.js";
 import { transcriptUrl } from "./job-threads.js";
 import { resolveArtifactRefs, type ArtifactRef } from "./artifact-refs.js";
@@ -731,6 +732,11 @@ export async function createStrut<TServices = unknown>(
   // workspace's own (Neo4j or a LadybugDB file). The claims gate below is
   // deliberately `workspace.graph`: claims hang off the workspace's nodes.
   const graph: GraphBackend | undefined = opts.graph ?? workspace.graph;
+  // The graph writes made through strut, for a reader that shows what the
+  // graph holds (plans/live-feeds.md §3): every run's writes land here
+  // (bindGraph, src/graph-writes.ts), `graph/changes` and
+  // `GET /graph/changes` read it.
+  const graphChanges = graph ? createGraphChangeFeed() : undefined;
   // Backend mode, used ONLY to pick unspecified defaults: the run/chat/secret
   // stores follow the workspace's kind (file-backed → file stores under
   // dataDir; anything else → in-memory). No capability is gated on it —
@@ -946,6 +952,7 @@ export async function createStrut<TServices = unknown>(
     // prefers it over opening one from env). Borrowed: a step's `close()`
     // must not close the connection the workspace and claims read through.
     ...(graph ? { graph: { ...graph, close: async () => undefined } } : {}),
+    ...(graphChanges ? { graphChanges } : {}),
     ...(stt ? { stt } : {}),
     // The LLM auth seam, for the model-building call sites (llm.ts).
     ...(opts.llmAuth ? { llmAuth: opts.llmAuth } : {}),
@@ -3389,6 +3396,32 @@ export async function createStrut<TServices = unknown>(
     return c.json(claims ? { ...view, claims } : view);
   });
 
+  // A job's live updates (plans/live-feeds.md §1): `?since=` the cursor the
+  // last read returned (or `now`), `?wait=` ms to hold while nothing is new,
+  // `?limit=`. Answers for a job with no record yet: a reader may start
+  // watching before the job's first run.
+  app.get("/jobs/:id/updates", async (c) => {
+    if (!jobsCap?.updates) return c.json({ error: "jobs are managed by an injected capability with no update feed" }, 501);
+    let id: string;
+    try {
+      id = decodeURIComponent(c.req.param("id") ?? "");
+    } catch {
+      return c.json({ error: "malformed job id" }, 400);
+    }
+    const problem = idProblem(id);
+    if (problem) return c.json({ error: `job id "${id}" ${problem}` }, 400);
+    const wait = Number(c.req.query("wait"));
+    const limit = Number(c.req.query("limit"));
+    return c.json(
+      await jobsCap.updates(id, {
+        since: c.req.query("since"),
+        ...(wait > 0 ? { wait } : {}),
+        ...(limit > 0 ? { limit } : {}),
+        signal: c.req.raw.signal,
+      }),
+    );
+  });
+
   app.get("/jobs/:id/files", async (c) => {
     const refused = badToken(c);
     if (refused) return refused;
@@ -3576,6 +3609,26 @@ export async function createStrut<TServices = unknown>(
   app.get("/graph/embeddings", async (c) => {
     if (!graph) return c.json({ error: "this deployment has no graph" }, 501);
     return c.json(graph.embeddings ? graph.embeddings.status() : { enabled: false });
+  });
+
+  // The graph writes made through strut after a cursor (plans/live-feeds.md
+  // §3): ids, types and time, the latest per node or edge. `?types=A,B`,
+  // `?since=` the cursor the last read returned (or `now`), `?wait=` ms to
+  // hold while nothing is new, `?limit=`. 501 without a graph.
+  app.get("/graph/changes", async (c) => {
+    if (!graphChanges) return c.json({ error: "this deployment has no graph" }, 501);
+    const types = (c.req.query("types") ?? "").split(",").map((t) => t.trim()).filter(Boolean);
+    const wait = Number(c.req.query("wait"));
+    const limit = Number(c.req.query("limit"));
+    return c.json(
+      await graphChanges.read({
+        ...(types.length ? { types } : {}),
+        since: c.req.query("since"),
+        ...(wait > 0 ? { wait } : {}),
+        limit: limit > 0 ? Math.min(limit, GRAPH_FEED_READ_MAX) : GRAPH_FEED_READ_MAX,
+        signal: c.req.raw.signal,
+      }),
+    );
   });
 
   // ── Secrets ──────────────────────────────────────────────────────────────
@@ -6302,6 +6355,9 @@ export async function createStrut<TServices = unknown>(
 
   async function close(): Promise<void> {
     automations.stop();
+    // Every feed read still waiting answers now (plans/live-feeds.md).
+    graphChanges?.close();
+    wakeJobFeeds(dataDir);
     for (const t of subscriptionTimers) clearTimeout(t);
     // The browser connection, when strut built it: every run's context goes with it.
     await ownBrowser?.close();

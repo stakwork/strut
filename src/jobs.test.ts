@@ -888,6 +888,52 @@ describe("jobs — over HTTP", () => {
     assert.equal((await api("/jobs/never/files")).status, 404);
     assert.equal((await api("/jobs/%2Freview/files")).status, 400);
   });
+
+  it("a job's updates are kept for a reader with no callback: GET /jobs/:id/updates and job/updates, a cursor, a wait (plans/live-feeds.md §1)", async () => {
+    const { strut, api } = await boot();
+    await strut.workspace.publishWorkflow("narrate", "v1", {
+      steps: [
+        { id: "s", type: "job/status", config: { title: "Drafting round 1", detail: { round: 1 } } },
+        { id: "shot", type: "notifier", config: { path: "shots/001.png" } },
+        { id: "s2", type: "job/status", config: { title: "Drafting round 2" } },
+      ],
+    });
+    const { runId } = (await api("/workflows/narrate/run", { body: { job: "j-live", input: {} } })).json;
+    // The run is detached: read until its last update is in.
+    let read = (await api(`/jobs/j-live/updates?wait=5000`)).json;
+    for (let i = 0; i < 40 && read.updates.at(-1)?.title !== "Drafting round 2"; i++) read = (await api(`/jobs/j-live/updates?wait=200`)).json;
+    assert.deepEqual(
+      read.updates.map((u: any) => [u.kind, u.title ?? u.url, u.runId]),
+      [["image", "/jobs/j-live/files/shots/001.png", runId], ["status", "Drafting round 2", runId]],
+      "the run's one status line is its newest; no callback was on file",
+    );
+    assert.equal(read.job, "j-live");
+    // A cursor reads only what came after it; a wait is woken by the next update.
+    const waiting = api(`/jobs/j-live/updates?since=${encodeURIComponent(read.cursor)}&wait=5000`);
+    notifyJob(jobRoot(tempDir, "j-live"), "j-live", { kind: "pod", id: "pod-1", state: "held" });
+    const next = (await waiting).json;
+    assert.deepEqual(next.updates.map((u: any) => [u.kind, u.state]), [["pod", "held"]]);
+    // The step reads the same feed.
+    const jobUpdates = (await import("./steps/lib/job/updates.js")).default;
+    const viaStep = await jobUpdates.run({ job: "j-live", since: read.cursor }, { services: strut.services } as never);
+    assert.deepEqual(viaStep.updates.map((u: any) => u.kind), ["pod"]);
+    // A job with no record yet answers; a bad id does not.
+    assert.deepEqual((await api("/jobs/j-not-yet/updates")).json.updates, []);
+    assert.equal((await api("/jobs/%2Freview/updates")).status, 400);
+    // A stale cursor (another process's) reads everything with reset.
+    const stale = (await api(`/jobs/j-live/updates?since=0.1`)).json;
+    assert.equal(stale.reset, true);
+    assert.equal(stale.updates.length, 3);
+  });
+
+  it("job/status says nothing on a run with no job", async () => {
+    const jobStatus = (await import("./steps/lib/job/status.js")).default;
+    const told: unknown[] = [];
+    const services = { jobs: { notify: (...a: unknown[]) => void told.push(a) } };
+    assert.deepEqual(await jobStatus.run({ title: "x" }, { runId: "r", services } as never), { sent: false });
+    assert.deepEqual(await jobStatus.run({ title: "x" }, { runId: "r", job: "j", services } as never), { sent: true, job: "j" });
+    assert.deepEqual(told, [["j", { kind: "status", id: "r", runId: "r", title: "x" }]]);
+  });
 });
 
 // ── the index (plans/job-index.md) ───────────────────────────────────────

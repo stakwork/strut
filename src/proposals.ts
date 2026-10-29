@@ -7,6 +7,7 @@ import { withLock } from "./jobs.js";
 import { globToRegExp } from "./closure.js";
 import { reachPolicyOf, withinReach } from "./reach.js";
 import type { JobUpdateInput } from "./jobs.js";
+import { bindGraph } from "./graph-writes.js";
 
 /**
  * Proposals (plans/proposals.md): a tool call a person approves before it
@@ -425,7 +426,12 @@ export async function decideProposal(root: string, id: string, decision: Decisio
 async function applyProposal(p: Proposal, def: AnyStepDef, input: unknown, by: string | undefined, deps: DecideDeps): Promise<unknown> {
   const bag = (deps.services ?? {}) as Record<string, unknown>;
   const secrets = bag["secrets"] as { forPrincipal?: (principal: string) => unknown } | undefined;
-  const bound = p.by.principal && secrets?.forPrincipal ? { ...bag, secrets: secrets.forPrincipal(p.by.principal) } : bag;
+  // Its graph writes are heard like a run's (plans/live-feeds.md §2): the
+  // proposing job's host reads the canvas again when a person's yes lands.
+  const { services: bound, reporter } = bindGraph(
+    p.by.principal && secrets?.forPrincipal ? { ...bag, secrets: secrets.forPrincipal(p.by.principal) } : bag,
+    { id: `proposal:${p.id}`, ...(p.by.job ? { job: p.by.job } : {}) },
+  );
   const mcp = deps.mcpOf ? await deps.mcpOf(p.by.workflow, p.by.runId).catch(() => null) : null;
   const ctx: StepContext<unknown> = {
     runId: `proposal:${p.id}`,
@@ -443,7 +449,11 @@ async function applyProposal(p: Proposal, def: AnyStepDef, input: unknown, by: s
     ...((await reachPolicyOf(bound)?.aiWorkflow(p.by.workflow).catch(() => true)) ? { aiAuthored: true } : {}),
     proposal: { id: p.id, by: { workflow: p.by.workflow, runId: p.by.runId } },
   };
-  return def.run(input, withinReach(p.step, input, ctx));
+  try {
+    return await def.run(input, withinReach(p.step, input, ctx));
+  } finally {
+    await reporter?.flush();
+  }
 }
 
 // ── what the agent is told (§5) ────────────────────────────────────────────

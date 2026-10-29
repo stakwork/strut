@@ -1,6 +1,8 @@
 # Live feeds: what a job and the graph are doing, for hosts and for apps
 
-> **Status (2026-10-29): proposed, not ruled.** Nothing is built. Written
+> **Status (2026-10-29): strut side BUILT (items 0–4), not ruled.** Hive's
+> item 5 and the builder's side are not done. Where the build differs from
+> the text below, "As built" at the end says so. Written
 > after a live look at swarm38's `brainstorm` workflows and the Infinite
 > Canvas app (`brainstorm-canvas` v26). Every row below is mine and open to
 > a ruling. Companion to `live-artifacts.md` (the `job.update` callback this
@@ -241,6 +243,24 @@ and a deploy. A kit change reaches an app when the app is published again
   updates onto the caller's job (found in the 2026-10-29 review; the
   peer's job has no callback today).
 - Streaming the reply's text (`agent-reply-streaming-research`).
+
+## As built (2026-10-29)
+
+- **Item 2's edge types** come from the run's own node writes, else a
+  `reader.getNode` per unknown end (at most 50 a send): the edge writer's
+  results carry no endpoint types. An edge whose ends could not be typed
+  passes any `types` filter.
+- **A proposal's apply** is heard (`bindGraph` around `applyProposal`): the
+  update's `id` is `proposal:<id>` and it carries no `runId`. A hold's
+  release (`releaseWith`) is not wrapped: no release step writes the graph.
+- **`useAssistant`** does not gain `updates`: a hook cannot be called per
+  job in a loop. A page renders a component per `useAssistant().jobs` entry
+  and calls `useJobUpdates(job)` in it.
+- **`job/status`** takes no `job`: it speaks for the run's own job only.
+- **The monitor** needs no change; no test pins it yet.
+- Defaults taken for the open questions below: memory only (1), any app
+  granted `graph/changes` sees ids and types of every write (2), 1 s / 5 s
+  (3), `job/status` not in the `job` seed's grants (4).
 
 ## Open questions
 

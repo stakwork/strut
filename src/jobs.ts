@@ -51,6 +51,7 @@ import type { JobIndex } from "./job-index.js";
 import type { LedgerClaim } from "./ledger.js";
 import { writeNewFile, type Attachment } from "./ai/attachments.js";
 import { bootEnv } from "./env.js";
+import { LiveFeed, type FeedRead } from "./live-feed.js";
 
 export interface JobRecord {
   name: string;
@@ -262,20 +263,84 @@ const LIVE_RETRY_MS = [1_000, 5_000];
  *  leave in order. */
 const outboxes = new Map<string, { pending: Map<string, { url: string; update: JobUpdate }>; draining: boolean }>();
 
+/** One thing a job reports about: a newer update with the same key is its
+ *  newer state (the outbox's coalescing, and the feed's). */
+const updateKey = (u: Pick<JobUpdate, "kind" | "url" | "id">): string => `${u.kind}\0${u.url ?? ""}\0${u.id ?? ""}`;
+
+/** What a job's feed keeps: the newest state of this many things. */
+export const JOB_FEED_MAX = 200;
+/** A job's feed nobody touched for this long is let go… */
+const JOB_FEED_IDLE_MS = 60 * 60_000;
+/** …and at most this many are kept at all, the least recently touched going first. */
+const JOB_FEED_JOBS_MAX = 1_000;
+
+/** Per job (by its directory, so two struts in one process never share
+ *  one): the updates a READER asks for (plans/live-feeds.md §1) — an app's
+ *  page through `job/updates`, `GET /jobs/:id/updates` — whether or not a
+ *  host is listening on a callback. */
+const jobFeeds = new Map<string, LiveFeed<JobUpdate>>();
+
+function jobFeed(root: string): LiveFeed<JobUpdate> {
+  let feed = jobFeeds.get(root);
+  if (feed) return feed;
+  const now = Date.now();
+  for (const [r, f] of jobFeeds) if (now - f.touchedAt > JOB_FEED_IDLE_MS) jobFeeds.delete(r);
+  while (jobFeeds.size >= JOB_FEED_JOBS_MAX) {
+    let oldest: string | undefined;
+    for (const [r, f] of jobFeeds) if (oldest === undefined || f.touchedAt < jobFeeds.get(oldest)!.touchedAt) oldest = r;
+    jobFeeds.delete(oldest!);
+  }
+  jobFeeds.set(root, (feed = new LiveFeed<JobUpdate>({ max: JOB_FEED_MAX, keyOf: updateKey })));
+  return feed;
+}
+
+/** Let every read waiting on a job of this data directory answer now (the
+ *  server closing). */
+export function wakeJobFeeds(dataDir: string): void {
+  const under = join(resolve(dataDir), "jobs") + sep;
+  for (const [root, feed] of jobFeeds) if (resolve(root).startsWith(under)) feed.wakeAll();
+}
+
+/** What `job/updates` and `GET /jobs/:id/updates` answer. */
+export interface JobUpdatesRead {
+  job: string;
+  cursor: string;
+  reset?: true;
+  more?: true;
+  updates: JobUpdate[];
+}
+
+/** A job's updates after `since` (src/live-feed.ts): the newest state of
+ *  each thing that changed, in the order they last changed; with `wait`,
+ *  held until something does. */
+export async function readJobUpdates(
+  root: string,
+  job: string,
+  o: { since?: string; wait?: number; limit?: number; signal?: AbortSignal } = {},
+): Promise<JobUpdatesRead> {
+  const read: FeedRead<JobUpdate> = await jobFeed(root).read(o);
+  const { items, ...rest } = read;
+  return { job, ...rest, updates: items };
+}
+
 /**
- * Tell the job's host that something changed (plans/live-artifacts.md §2).
- * Fire and forget: never throws, never waits, a no-op when no callback is
- * on file. The URL is read here, at the call, so a sweep that removes the
- * job right after still delivers what it reported on the way out.
+ * Tell the job's host that something changed (plans/live-artifacts.md §2),
+ * and keep it for a reader (plans/live-feeds.md §1). Fire and forget: never
+ * throws, never waits. Kept whether or not a callback is on file; POSTed
+ * only when one is. The URL is read here, at the call, so a sweep that
+ * removes the job right after still delivers what it reported on the way
+ * out.
  */
 export function notifyJob(root: string, job: string, input: JobUpdateInput): void {
+  const update: JobUpdate = { event: "job.update", job, at: new Date().toISOString(), ...input };
+  jobFeed(root).push(update);
   const url = jobCallbackUrl(root);
   if (!url) return;
   let box = outboxes.get(root);
   if (!box) outboxes.set(root, (box = { pending: new Map(), draining: false }));
-  const key = `${input.kind}\0${input.url ?? ""}\0${input.id ?? ""}`;
+  const key = updateKey(input);
   box.pending.delete(key);
-  box.pending.set(key, { url, update: { event: "job.update", job, at: new Date().toISOString(), ...input } });
+  box.pending.set(key, { url, update });
   if (!box.draining) void drainOutbox(root, box);
 }
 
@@ -327,9 +392,15 @@ export interface JobsCapability extends Partial<JobIndex> {
   recordRun(job: string, run: Omit<JobRun, "at"> & { title?: string; actor?: string }): Promise<void>;
   /** Tell the job's host that something changed (plans/live-artifacts.md):
    *  a step that wrote a file the person may want to watch — a screenshot,
-   *  a walkthrough's frame. Fire and forget: never throws, never waits, a
-   *  no-op when the job has no callback. Holds announce themselves. */
+   *  a walkthrough's frame. Fire and forget: never throws, never waits.
+   *  Kept for a reader (`updates`) and POSTed when the job has a callback.
+   *  Holds announce themselves. */
   notify?(job: string, update: JobUpdateInput): void;
+  /** The job's updates after `since` (plans/live-feeds.md §1): what
+   *  `job/updates` and `GET /jobs/:id/updates` read — the same updates a
+   *  host hears on its callback, for a reader that has none (an app's page).
+   *  With `wait`, held until something changes. */
+  updates?(job: string, o?: { since?: string; wait?: number; limit?: number; signal?: AbortSignal }): Promise<JobUpdatesRead>;
   /** The job's claims as the ledger reads them (plans/job-claims.md §6) —
    *  set by the server where the claims layer is on, so `GET /jobs/:id`
    *  and `job/get` carry the same `claims`; absent on a filesystem
@@ -435,6 +506,9 @@ export function jobsCapability(
     notify(job, update) {
       if (idProblem(job)) return;
       notifyJob(jobRoot(dataDir, job), job, update);
+    },
+    updates(job, o) {
+      return readJobUpdates(rootOf(job), job, o);
     },
   };
 }

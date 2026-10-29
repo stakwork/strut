@@ -18,6 +18,8 @@ export {
   RUN_STEPS, JOB_STEPS, LIVE_INTERVAL_MS, RUN_WAIT_MS, runKeys, isInFlight, anyInFlight, eventsSettled, fileData,
   useRuns, useRun, useRunEvents, useTranscript, useLaunch, useUpload, useCancel, useWorkflow, useStep, useToolInput, useAppLink, useHost, useApp,
   useAssistant, assistantJobs, ASSISTANT_WORKFLOW,
+  useJobUpdates, useGraphChanges, GRAPH_CHANGES_STEP, FEED_WAIT_MS,
+  type JobUpdate, type GraphChange, type UseJobUpdates, type UseJobUpdatesOptions, type UseGraphChanges, type UseGraphChangesOptions,
   type AssistantMessage, type AssistantJob, type UseAssistant, type UseAssistantOptions,
   type RunSummary, type RunEvent, type RunTranscript, type WorkflowInfo, type LaunchResult, type UploadResult,
   type UseRunsOptions, type UseRunOptions, type UseRunEventsOptions, type UseTranscriptOptions, type UseLaunch, type UseLaunchOptions, type UseUpload, type UseCancel, type UseStep, type UseHost,
