@@ -139,15 +139,17 @@ export function indexCalls(): Array<[string, string]> {
 }
 
 /** The ontology seed (`ontology.ts`), in one transaction, when this version
- *  of it has not been stamped: add-only, so a file seeded by an older
- *  version gains only what the new one adds, and keeps every type created
- *  at runtime. */
+ *  of it has not been stamped: a file seeded by an older version gets the
+ *  seed's types as they are now, and keeps every type created at runtime.
+ *  A seed type the file cannot take (a runtime type holds its name or one
+ *  of its columns) is skipped with a warning, never a failed open. */
 async function seedOnce(read: Query, write: Query): Promise<void> {
   const { id } = ontologySeed();
   if (Number((await read("MATCH (m:Migration {migration_id: $id}) RETURN count(m) AS c", { id }))[0]?.["c"]) > 0) return;
   await write("BEGIN TRANSACTION");
   try {
-    await seedOntology(write);
+    const report = await seedOntology(write);
+    for (const why of report.skipped) console.warn(`[graph] ontology seed: skipped ${why}`);
     await write("MERGE (m:Migration {migration_id: $id}) ON CREATE SET m.executed_at = $now", { id, now: Date.now() });
     await write("COMMIT");
   } catch (err) {

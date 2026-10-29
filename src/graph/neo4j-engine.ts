@@ -21,7 +21,6 @@ import type {
   EdgeMergeRow,
   EdgeSchemaRow,
   EdgeSchemaWalk,
-  NamedSchema,
   EngineLike,
   GraphEngine,
   GraphTx,
@@ -496,24 +495,6 @@ class Neo4jSchemas implements SchemaSource {
 
   async ensureWildcardSchema(ref_id: string, tx?: GraphTx): Promise<void> {
     await on(this.bolt, tx, `MERGE (s:Schema {type: "*"}) ON CREATE SET s.ref_id = $r, s.is_system = true`, { r: ref_id });
-  }
-
-  async typesNamed(names: string[], tx?: GraphTx): Promise<NamedSchema[]> {
-    const wanted = names.map((n) => n.trim().toLowerCase()).filter(Boolean);
-    if (!wanted.length) return [];
-    const rows = await on(
-      this.bolt,
-      tx,
-      `MATCH (s:Schema) WHERE (s.is_deleted IS NULL OR s.is_deleted = false) AND s.type <> "*"
-         AND (toLower(s.type) IN $names OR any(a IN coalesce(s.aliases, []) WHERE toLower(toString(a)) IN $names))
-       RETURN s.type AS type, s.aliases AS aliases, s.managed_by AS managed_by`,
-      { names: wanted },
-    );
-    return rows.map((r) => ({
-      type: String(r["type"]),
-      aliases: Array.isArray(r["aliases"]) ? (r["aliases"] as unknown[]).map(String) : [],
-      ...(typeof r["managed_by"] === "string" ? { managed_by: r["managed_by"] as string } : {}),
-    }));
   }
 
   async stampMigration(id: string): Promise<void> {
