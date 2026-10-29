@@ -1,8 +1,12 @@
 # Live feeds: what a job and the graph are doing, for hosts and for apps
 
-> **Status (2026-10-29): strut side BUILT (items 0–4), not ruled.** Hive's
-> item 5 and the builder's side are not done. Where the build differs from
-> the text below, "As built" at the end says so. Written
+> **Status (2026-10-29): BUILT, not ruled.** Items 0–4 are strut#390
+> (live on swarm38 through stakgraph#1824), item 5 is hive#5666, and Peel's
+> bridge reads the new kinds (sphinx#402: a status line says its words, a
+> graph update makes no line; Peel's pins, peel#453). The builder's side —
+> the workflow and the app — is not done: its section is written as hints
+> to hand the author's agent. Where the build differs from the text below,
+> "As built" at the end says so. Written
 > after a live look at swarm38's `brainstorm` workflows and the Infinite
 > Canvas app (`brainstorm-canvas` v26). Every row below is mine and open to
 > a ruling. Companion to `live-artifacts.md` (the `job.update` callback this
@@ -189,32 +193,79 @@ narrate. Nothing new in the update itself: `kind` is already free.
   orchestrator starts, the card appears only when the orchestrator's reply
   lands, and anything the job sent before that is in the store but hidden.
 
-## The builder's side (recommendations for the workflow and app author)
+## The builder's side (hints for the workflow and app author)
 
 None of this needs strut code; it is built with the builder on swarm38.
+Written to be handed to the author's agent as it is. Read against the
+workflows and the app's v26 source on 2026-10-29.
+
+**What strut already does — do not build it**
+
+- A run's graph writes through the `graph/*` steps are reported to its job
+  a second after the last write and when the run ends (item 2), including
+  `canvas/bs-write` calling `graph/create-node` and `graph/create-triplet`
+  through `ctx.registry`. Hive's canvas reads the card's trees again on
+  that update, so a card shows when it is written. No notify step is
+  needed for cards.
+- A write through raw Cypher (`ctx.services.graph.query`) is NOT reported.
+  Keep card writes on the `graph/*` steps.
+- `job/status { title, detail? }` (item 4) sends one line of progress per
+  run: Hive's job card shows the newest, Peel's chat shows it as a quiet
+  line (at most one a minute). It does nothing on a run with no job.
+- The job agent runs `canvas` through `meta/run-workflow` under the same
+  job, so both reach Hive with nothing to wire.
 
 **`canvas-brainstorm` / `canvas`**
 
-- Write the root question first: it is known before the first draft.
-- Write each option as its round passes the audit, or write a round's
-  draft at once as cards in a drafting state and confirm or remove them
-  after the audit. This is the author's call: the audit gate is the
-  design ("only a passing draft is written").
-- Say where it is: a `job/status` step per round (item 4). Before that
-  ships, a custom step can call `ctx.services.jobs.notify` the same way,
-  and Hive's canvas already reads the trees again on any update, so a
-  notify right after `canvas/bs-write` makes Hive's cards appear when they
-  are written, today.
-- Look at the audit's failures: in the run above four drafts in a row
-  failed, and about 30% of recent `canvas` runs fail (59 of the last 200).
+- Cards appear when they are written, and today all of them are written by
+  one step after up to four draft → audit rounds (~70 s a round). Write
+  earlier: the question and first options as soon as a draft passes, then
+  expand in a second pass; or a draft's options at once as cards in a
+  drafting state (options already take `state: simulated`), confirmed or
+  removed when the audit decides. The question is the writer's draft, not
+  the person's words, so it is not known before the first draft. Keep the
+  audit gate's promise: nothing unaudited looks final.
+- Say where it is: a `job/status` step before the loop ("Reading the
+  plan"), one per round with its number and the audit's verdict ("Draft 2:
+  audit failed on effects, redrafting"; the round runs as the
+  `canvas-brainstorm-round` subflow, so the step can sit in it or around
+  it) and one before the write ("Writing 6 cards").
+- Look at the audit's failures: on 2026-10-29 one run failed four drafts in
+  a row (334 s, nothing written), and 59 of the last 200 `canvas` runs
+  ended in error. Each run's `audit_history` names the rules that failed.
+  Consider writing the best draft with its notes on the last round instead
+  of failing the whole run.
 
-**The Infinite Canvas app**
+**The Infinite Canvas app (`brainstorm-canvas`)**
 
-- Replace `useLiveSync`'s run-list probe with `useGraphChanges` over the
-  types it draws (item 3), and its `JobWatch` polling with
-  `useAssistant().jobs` (item 0) and `useJobUpdates` (item 1).
-- Until then it can already show progress: it polls the `canvas` run's
-  events, and each draft round's `step.end` is in them.
+- Grant `job/updates` and `graph/changes` in `app.yaml`'s `grants.steps`,
+  and publish again: the build bundles the kit the server has, and the
+  hooks below are in it since 2026-10-29.
+- Replace `useLiveSync` (the last 3 `canvas` / `canvas-ops` runs polled
+  every 2 s as a change feed) with `useGraphChanges` over the types the
+  canvas draws — `HiveInitiative`, `HiveMilestone`, `Brief`,
+  `InitiativeFeature`, `UserStory`, `Requirement`, `Architecture`,
+  `Question`, `Option`, `Choice`, `Effect` — and read `canvas/desk` /
+  `canvas/board` again when its `rev` changes. Keep the read on focus and
+  visibility: the feed holds only the writes made through strut, never
+  Hive's own.
+- Replace the hand-written `jobsOf` with the kit's `assistantJobs(events)`,
+  which now reads `tool:job_start` and its JSON-text output (item 0); or
+  `useAssistant().jobs`, for a page on the kit's assistant.
+- Per job, `useJobUpdates(job)` in a small component, showing
+  `latest("status")?.title` on the working card or the Jamie bar, in
+  place of `JobWatch` polling `run/get`.
+- The Brainstorm button launches `canvas` with `job` in the INPUT (the
+  workflow's own field), so the run has no job: `job/status` says nothing
+  there and the page sees the cards through `graph/changes` alone. For
+  status lines, launch with `useLaunch("canvas", { job: <an id per
+  brainstorm> })` and read `useJobUpdates` on that job.
+- Until then the page can show progress from what it already reads: it
+  polls the `canvas` run's events, and each draft round's `step.end` is in
+  them.
+
+The steps' shapes: `specs/API.md` §14.2 ("Live, from a page"); the hooks:
+`kit/README.md`.
 
 ## Order, and what each unlocks
 
@@ -257,6 +308,12 @@ and a deploy. A kit change reaches an app when the app is published again
   job in a loop. A page renders a component per `useAssistant().jobs` entry
   and calls `useJobUpdates(job)` in it.
 - **`job/status`** takes no `job`: it speaks for the run's own job only.
+- **Item 5 (hive#5666):** the window starts at the launch only for a job
+  the orchestrator started — its card carries the turn's strut run id (a
+  millisecond timestamp on strut's clock) as `launchedAt`, compared with
+  each update's `at`. A card launched by a tool call or an event row
+  appears with its launch and keeps the mount time. `graph` joins `verify`
+  as a signal the strip never draws.
 - **The monitor** needs no change; no test pins it yet.
 - Defaults taken for the open questions below: memory only (1), any app
   granted `graph/changes` sees ids and types of every write (2), 1 s / 5 s
