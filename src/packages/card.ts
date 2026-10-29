@@ -29,6 +29,39 @@ export const CARD_VERSION = 1;
  *  never passes as anything else the key signs (its Pkarr record, an index
  *  catalog's `strut-index\n`). */
 export const CATALOG_DOMAIN = "strut-catalog\n";
+/** The INDEX card's domain (§7): the same card one level up, `publishers`
+ *  where a catalog has `packages`, sealed by the index key. */
+export const INDEX_DOMAIN = "strut-index\n";
+
+/** One row of an index: the key that publishes under a prefix, and where
+ *  its PUBLIC catalog is served (§7; the record that would answer "where"
+ *  is deferred, §13). */
+export interface IndexRow {
+  key: string;
+  description?: string;
+  /** A homepage. */
+  url?: string;
+  /** Where the publisher's public catalog is served, tried in order. */
+  urls: string[];
+}
+
+export interface UnsignedIndexCatalog {
+  v: number;
+  key: string;
+  seq: number;
+  /** Prefix → the row. */
+  publishers: Record<string, IndexRow>;
+  /** Where THIS catalog is served, so a reader that has it follows a move. */
+  urls?: string[];
+}
+
+export interface IndexCatalog extends UnsignedIndexCatalog {
+  sig: string;
+}
+
+/** The two kinds of card: a publisher's catalog and an index. */
+export type CardKind = "catalog" | "index";
+const DOMAINS: Record<CardKind, string> = { catalog: CATALOG_DOMAIN, index: INDEX_DOMAIN };
 
 /** One release of a package. With no `urls`, a reader fetches it from the
  *  archive route of the strut that served the catalog (`host: self`). */
@@ -169,10 +202,12 @@ function publicKeyOf(key: string): KeyObject {
 // ── seal and read ────────────────────────────────────────────────────────
 
 /** The catalog sealed by `privateKey`, whose public key is `card.key`. */
-export function sealCard(card: UnsignedCatalog, privateKey: KeyObject): Catalog {
-  const unsigned = { ...card };
+export function sealCard(card: UnsignedCatalog, privateKey: KeyObject): Catalog;
+export function sealCard(card: UnsignedIndexCatalog, privateKey: KeyObject, kind: "index"): IndexCatalog;
+export function sealCard(card: UnsignedCatalog | UnsignedIndexCatalog, privateKey: KeyObject, kind: CardKind = "catalog"): Catalog | IndexCatalog {
+  const unsigned = { ...card } as Catalog;
   delete (unsigned as Partial<Catalog>).sig;
-  const sig = sign(null, Buffer.from(CATALOG_DOMAIN + fingerprintOf(unsigned), "utf8"), privateKey).toString("hex");
+  const sig = sign(null, Buffer.from(DOMAINS[kind] + fingerprintOf(unsigned), "utf8"), privateKey).toString("hex");
   return { ...unsigned, sig };
 }
 
@@ -181,6 +216,8 @@ export interface ReadCardOptions {
   key: string;
   /** The last catalog the reader accepted from that key. */
   last?: { seq: number; digest: string };
+  /** Which card it is: a publisher's catalog (the default) or an index. */
+  kind?: CardKind;
 }
 
 /**
@@ -191,7 +228,10 @@ export interface ReadCardOptions {
  * `catalog_invalid`, `catalog_noncanonical`, `catalog_key`,
  * `catalog_version`, `catalog_seal`, `catalog_rollback`, `catalog_conflict`.
  */
-export function readCard(bytes: string | Buffer, opts: ReadCardOptions): { card: Catalog; digest: string } {
+export function readCard(bytes: string | Buffer, opts: ReadCardOptions & { kind?: "catalog" }): { card: Catalog; digest: string };
+export function readCard(bytes: string | Buffer, opts: ReadCardOptions & { kind: "index" }): { card: IndexCatalog; digest: string };
+export function readCard(bytes: string | Buffer, opts: ReadCardOptions): { card: Catalog | IndexCatalog; digest: string } {
+  const kind = opts.kind ?? "catalog";
   const text = typeof bytes === "string" ? bytes : bytes.toString("utf8");
   let parsed: unknown;
   try {
@@ -205,9 +245,9 @@ export function readCard(bytes: string | Buffer, opts: ReadCardOptions): { card:
   if (card.key !== opts.key) throw new Error(`catalog_key: the catalog is ${JSON.stringify(card.key)}'s, and the reader expected ${opts.key}'s`);
   if (card.v !== CARD_VERSION) throw new Error(`catalog_version: the catalog is v ${JSON.stringify(card.v)}, and this reader reads v ${CARD_VERSION}`);
   if (typeof card.sig !== "string" || !/^[0-9a-f]{128}$/.test(card.sig)) throw new Error("catalog_seal: the catalog carries no seal (sig, 128 hex)");
-  const signed = Buffer.from(CATALOG_DOMAIN + fingerprintOf(card), "utf8");
-  if (!verify(null, signed, publicKeyOf(opts.key), Buffer.from(card.sig, "hex"))) throw new Error(`catalog_seal: the seal is not ${opts.key}'s over this catalog`);
-  const problem = shapeProblem(card);
+  const signed = Buffer.from(DOMAINS[kind] + fingerprintOf(card), "utf8");
+  if (!verify(null, signed, publicKeyOf(opts.key), Buffer.from(card.sig, "hex"))) throw new Error(`catalog_seal: the seal is not ${opts.key}'s over this ${kind}`);
+  const problem = kind === "index" ? indexShapeProblem(card as unknown as IndexCatalog) : shapeProblem(card);
   if (problem) throw new Error(`catalog_invalid: ${problem}`);
   const digest = cardDigest(text);
   if (opts.last) {
@@ -234,6 +274,22 @@ function shapeProblem(card: Catalog): string | undefined {
   if (card.public !== undefined && !(typeof card.public === "string" && Z32_KEY.test(card.public))) return "public is a key in z-base-32";
   return undefined;
 }
+
+/** What a sealed index must hold for a reader to act on it. */
+function indexShapeProblem(card: IndexCatalog): string | undefined {
+  if (!Number.isSafeInteger(card.seq) || card.seq < 0) return "seq is a whole number of microseconds";
+  if (!card.publishers || typeof card.publishers !== "object" || Array.isArray(card.publishers)) return "publishers is an object";
+  for (const [prefix, row] of Object.entries(card.publishers)) {
+    if (!PUBLISHER_PREFIX.test(prefix)) return `${JSON.stringify(prefix)} is not a publisher prefix`;
+    if (!row || typeof row.key !== "string" || !Z32_KEY.test(row.key)) return `${prefix} has no key in z-base-32`;
+    if (!Array.isArray(row.urls) || !row.urls.every((u) => typeof u === "string")) return `${prefix} has no urls list`;
+  }
+  if (card.urls !== undefined && !(Array.isArray(card.urls) && card.urls.every((u) => typeof u === "string"))) return "urls is a list of strings";
+  return undefined;
+}
+
+/** A publisher's prefix, the first segment of its packages' names. */
+export const PUBLISHER_PREFIX = /^[a-z][a-z0-9-]{0,63}$/;
 
 /** The release a channel holds for a package — or, with no channel, its
  *  newest release not yanked. */

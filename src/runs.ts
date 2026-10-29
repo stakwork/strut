@@ -174,7 +174,7 @@ export const RUN_LIST_MAX_LIMIT = 500;
  *  `eventsSettled`); `skip` pages past the cut. */
 export const RUN_EVENTS_MAX = 5_000;
 /** `run/files`: the most of a file that comes through (text or base64). */
-export const RUN_FILE_MAX_BYTES = 2 * 1024 * 1024;
+export const RUN_FILE_MAX_BYTES = 10 * 1024 * 1024;
 /** `run/transcript`: the most of a transcript that comes through, in JSON chars. */
 export const RUN_TRANSCRIPT_MAX_CHARS = 2 * 1024 * 1024;
 /** The lengths `capTranscript` cuts long strings to, in turn, before it

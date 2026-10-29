@@ -24,7 +24,7 @@ import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { archiveUrl, fetchArchive } from "./archive.js";
 import type { CachedPackage, PackageCache } from "./cache.js";
-import { Z32_KEY, readCard, releaseFor, type Catalog, type CatalogRelease } from "./card.js";
+import { Z32_KEY, readCard, releaseFor, type CardKind, type Catalog, type CatalogRelease, type IndexCatalog } from "./card.js";
 import { PACKAGE_DIGEST, PACKAGE_NAME } from "./format.js";
 
 export interface PkRef {
@@ -83,8 +83,13 @@ async function writeKeyState(cache: PackageCache, key: string, state: { seq: num
   await rename(tmp, join(dir, `${key}.json`));
 }
 
-/** The catalog at `url`, read as the key's card. */
-export async function fetchCatalog(key: string, url: string, opts: { cache: PackageCache; fetch?: typeof fetch }): Promise<{ card: Catalog; digest: string }> {
+/** The catalog at `url`, read as the key's card — or, with `kind: "index"`,
+ *  an index's card (src/packages/indexes.ts): the same checks, the same
+ *  per-key order. */
+export async function fetchCatalog(key: string, url: string, opts: { cache: PackageCache; fetch?: typeof fetch; kind?: "catalog" }): Promise<{ card: Catalog; digest: string }>;
+export async function fetchCatalog(key: string, url: string, opts: { cache: PackageCache; fetch?: typeof fetch; kind: "index" }): Promise<{ card: IndexCatalog; digest: string }>;
+export async function fetchCatalog(key: string, url: string, opts: { cache: PackageCache; fetch?: typeof fetch; kind?: CardKind }): Promise<{ card: Catalog | IndexCatalog; digest: string }> {
+  const kind = opts.kind ?? "catalog";
   let u: URL;
   try {
     u = new URL(url);
@@ -101,12 +106,12 @@ export async function fetchCatalog(key: string, url: string, opts: { cache: Pack
   }
   if (!res.ok) {
     await res.body?.cancel();
-    throw new Error(`package_fetch_failed: ${where} answered ${res.status} for the catalog`);
+    throw new Error(`package_fetch_failed: ${where} answered ${res.status} for the ${kind}`);
   }
   const bytes = Buffer.from(await res.arrayBuffer());
-  if (bytes.byteLength > MAX_CATALOG_BYTES) throw new Error(`package_fetch_failed: ${where}: the catalog is over ${MAX_CATALOG_BYTES} bytes`);
+  if (bytes.byteLength > MAX_CATALOG_BYTES) throw new Error(`package_fetch_failed: ${where}: the ${kind} is over ${MAX_CATALOG_BYTES} bytes`);
   const last = await readKeyState(opts.cache, key);
-  const read = readCard(bytes, { key, ...(last ? { last } : {}) });
+  const read = kind === "index" ? readCard(bytes, { key, kind, ...(last ? { last } : {}) }) : readCard(bytes, { key, ...(last ? { last } : {}) });
   if (!last || read.card.seq > last.seq) await writeKeyState(opts.cache, key, { seq: read.card.seq, digest: read.digest, url });
   return read;
 }

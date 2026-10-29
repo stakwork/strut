@@ -1,0 +1,31 @@
+import { z } from "zod";
+import { defineStep, type StepContext } from "../../../core.js";
+import type { StrutCapabilities } from "../../../capabilities.js";
+
+/**
+ * Packages someone already built (plans/marketplace.md §7, §8): the indexes
+ * this strut follows and what its peers have installed, over
+ * `ctx.services.packages` (src/packages/indexes.ts). Reads only — installing
+ * is a person's act, by name from the Packages dialog or `POST
+ * /packages/install`.
+ */
+export default defineStep({
+  type: "package/search",
+  effect: "read",
+  description:
+    "Search for PACKAGES — workflows, steps, apps and Concepts someone already built and published — before writing an integration yourself. " +
+    "Every word of `query` must match a package's name, description or publisher. Returns { packages, peers, errors }: " +
+    "`packages` from the indexes this strut follows, each { package, publisher, version, digest, description?, license?, requires?, index }; " +
+    "`peers` the packages the other struts on file have installed, each { peer, package, version?, digest? }; " +
+    "`errors` an index or peer that could not be read. You cannot install one: tell the person its name (publisher/name) and that it installs from the Packages dialog.",
+  input: z.object({
+    query: z.string().describe("Words to match, e.g. \"linear issues\"; empty lists everything."),
+    limit: z.number().int().min(1).max(200).default(30),
+  }),
+  output: z.any(),
+  async run(cfg, ctx: StepContext<StrutCapabilities>) {
+    const cap = ctx.services?.packages;
+    if (!cap) throw new Error("package/search needs strut's package indexes (ctx.services.packages); the standard strut server provides them.");
+    return cap.search(cfg.query, { limit: cfg.limit });
+  },
+});

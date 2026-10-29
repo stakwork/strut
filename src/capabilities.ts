@@ -2,6 +2,7 @@ import type { SttService } from "./audio/stt.js";
 import type { SessionsCapability } from "./session-store.js";
 import { jobsCapability, type JobsCapability } from "./jobs.js";
 import type { PeersCapability } from "./peers.js";
+import type { PackageSearch } from "./packages/indexes.js";
 // Type-only: the graph backend stays a lazy, opt-in dependency.
 import type { GraphBackend } from "./graph/backend.js";
 import type { BrowserService } from "./browser/service.js";
@@ -262,11 +263,15 @@ export interface ArtifactsCapability {
 
 /** Reject run ids / relative paths that could escape the RUN's directory
  *  (one run must not reach another run's files). Returns the resolved
- *  absolute path when safe. */
+ *  absolute path when safe. The run's own link (`/artifacts/<runId>/<path>`,
+ *  what `GET /artifacts/:runId` serves) is taken as `<path>`: callers hand
+ *  it back as the path; another run's link still escapes. */
 function artifactPath(root: string, runId: string, relPath = ""): string {
   if (!runId || /[/\\]|\.\./.test(runId)) {
     throw new Error(`artifacts: invalid runId "${runId}"`);
   }
+  const ownLink = `/artifacts/${runId}/`;
+  if (relPath.startsWith(ownLink)) relPath = relPath.slice(ownLink.length);
   const runDir = pathResolve(root, runId);
   const abs = pathResolve(runDir, relPath);
   if (abs !== runDir && !abs.startsWith(runDir + pathSep)) {
@@ -379,6 +384,10 @@ export interface StrutCapabilities {
    *  bare in-code bag may not carry one (`strut/run-workflow` then fails
    *  naming it). */
   peers?: PeersCapability;
+  /** Package search (src/packages/indexes.ts): the indexes this strut
+   *  follows and the peers' installed packages — what the `package/search`
+   *  step reads. Set by the standard server. */
+  packages?: { search(query: string, opts?: { limit?: number }): Promise<PackageSearch> };
   /** The graph backend the SERVER wired (`createStrut({ graph })`, else the
    *  one behind a graph-backed workspace): what the `graph/*` steps read and
    *  write through, instead of opening one from env (`graphCtx` prefers it
