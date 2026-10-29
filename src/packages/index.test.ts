@@ -15,15 +15,21 @@ import { createStrut, type Strut } from "../createStrut.js";
 import { MemoryRunStore } from "../store.js";
 import { WorkspaceManager } from "../workspace.js";
 import { INDEX_DOMAIN, readCard, type IndexCatalog } from "./card.js";
-import type { IndexHit, IndexInfo, IndexPackage } from "./index.js";
+import { createPackageIndex, type IndexConcept, type IndexConceptPage, type IndexHit, type IndexInfo, type IndexPackage } from "./index.js";
+import { packArchive } from "./archive.js";
+import { PackageCache } from "./cache.js";
+import { canonicalJson, keyFromSeed, sealCard, type Catalog } from "./card.js";
+import { MemorySecretStore } from "../secret-store.js";
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname } from "node:path";
 
 const KEY = "index-api-key";
 const PEER_KEY = "index-peer-key";
 const auth = { authorization: `Bearer ${KEY}` };
 const json = (body: unknown, method = "POST") => ({ method, headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify(body) });
 const STEP = (type: string, out: string) =>
-  `import { z, defineStep } from "strut";\nexport default defineStep({ type: ${JSON.stringify(type)}, input: z.object({}), output: z.any(), async run() { return ${JSON.stringify(out)}; } });\n`;
-const FLOW = (name: string, step: string) => `name: ${name}\nsteps:\n  - { id: s, type: ${step} }\n`;
+  `import { z, defineStep } from "strut";\nexport default defineStep({ type: ${JSON.stringify(type)}, description: "Fetch ${out}", effect: "read", secrets: ["LINEAR_API_KEY"], input: z.object({}), output: z.any(), async run() { return ${JSON.stringify(out)}; } });\n`;
+const FLOW = (name: string, step: string) => `name: ${name}\ndescription: Sync them\ninput:\n  team: { type: string }\nsteps:\n  - { id: s, type: ${step} }\n`;
 const boot = (ws: WorkspaceManager, extra: Record<string, unknown> = {}) =>
   createStrut({
     workspace: ws,
@@ -162,7 +168,12 @@ describe("the package index", () => {
     // Search and the package page: the public release, where to get it, and nothing of the private one.
     let hits = await search();
     assert.equal(hits.length, 1);
-    assert.deepEqual(hits[0], { package: "acme/linear", publisher: "acme", key: pub, urls: [catalogUrl], version: "1.0.0", digest: linear.digest, description: "Linear issues", license: "MIT" });
+    assert.deepEqual(hits[0], {
+      package: "acme/linear", publisher: "acme", key: pub, urls: [catalogUrl], version: "1.0.0", digest: linear.digest, description: "Linear issues", license: "MIT", requires: { secrets: ["LINEAR_API_KEY"] },
+      // The archive was fetched from the route beside the catalog and read (./detail.ts): the store's face of the package.
+      detail: { apps: [], workflows: 1, steps: 1, concepts: 0, secrets: ["LINEAR_API_KEY"], can: { spends: false, acts: false, code: true }, readme: false },
+    });
+    assert.equal(listed.crawled[0]!.derived, 1);
     assert.equal((await search("notion")).length, 0);
     assert.equal((await search("linear acme")).length, 1, "every word, in the name or the publisher");
     assert.equal((await fetch(`${indexUrl}/index/packages/acme/notion`)).status, 404);
@@ -170,6 +181,13 @@ describe("the package index", () => {
     assert.equal(page.package, "acme/linear");
     assert.deepEqual(page.releases.map((r) => r.version), ["1.0.0"]);
     assert.deepEqual(page.channels, { public: linear.digest });
+    assert.equal(page.detailError, undefined);
+    assert.equal(page.detail!.digest, linear.digest);
+    assert.deepEqual(page.detail!.workflows.map((w) => [w.name, w.description, w.inputs.map((i) => i.name), w.steps, w.secrets]), [["sync", "Sync them", ["team"], ["fetch"], ["LINEAR_API_KEY"]]]);
+    assert.deepEqual(page.detail!.steps.map((st) => [st.name, st.effect, st.secrets, st.lint, st.description]), [["fetch", "read", ["LINEAR_API_KEY"], [], "Fetch issues"]]);
+    // The Concept pages across the packages: none here; the reads are open all the same.
+    assert.deepEqual(await (await fetch(`${indexUrl}/index/concepts`)).json(), { concepts: [] });
+    assert.equal((await fetch(`${indexUrl}/index/concepts/Nope`)).status, 404);
 
     // Make public pings the index (the publisher's peer) with the PUBLIC key: the next release shows up by itself.
     await makePublic("acme/notion", notion.digest);
@@ -213,6 +231,28 @@ describe("the package index", () => {
     assert.equal((await fetch(`${indexUrl}/index/packages/constructor/thing`)).status, 404);
   });
 
+  it("lands a visitor with no credential on the store front, and the operator on the shell", async () => {
+    const dist = join(root, "dist");
+    await mkdir(join(dist, "assets"), { recursive: true });
+    await writeFile(join(dist, "index.html"), "<html>the strut ui</html>");
+    const ui = await boot(new WorkspaceManager(join(root, "ui-index")), { index: true, serveUi: true, webDist: dist });
+    const plain = await boot(new WorkspaceManager(join(root, "ui-plain")), { serveUi: true, webDist: dist });
+    try {
+      const home = await ui.app.request("/");
+      assert.equal(home.status, 302);
+      assert.equal(home.headers.get("location"), "./?store=1");
+      const kept = await ui.app.request("/?wf=job");
+      assert.equal(kept.headers.get("location"), "./?wf=job&store=1", "what else the URL carried rides along");
+      assert.equal((await ui.app.request("/?store=1")).status, 200, "the store page itself");
+      assert.equal((await ui.app.request("/", { headers: auth })).status, 200, "the operator's shell, with the key");
+      assert.equal((await ui.app.request("/?key=" + KEY)).status, 200);
+      assert.equal((await plain.app.request("/")).status, 200, "a strut without the role serves its shell as before");
+    } finally {
+      await ui.close();
+      await plain.close();
+    }
+  });
+
   it("refuses a row that is not one, and a peer may ping but never list", async () => {
     const put = (body: unknown) => index.app.request("/index/acme", json(body, "PUT"));
     assert.equal((await put({ key: "nope", urls: [catalogUrl] })).status, 400);
@@ -224,5 +264,96 @@ describe("the package index", () => {
     assert.equal((await index.app.request("/packages/subscriptions/sync", { method: "POST", headers: asPeer, body: JSON.stringify({ key: "y".repeat(52) }) })).status, 202);
     assert.equal((await index.app.request("/index/crawl", { method: "POST", headers: asPeer, body: "{}" })).status, 403);
     assert.equal((await index.app.request("/index/crawl", { method: "POST", ...{ headers: { ...auth, "content-type": "application/json" } }, body: "{}" })).status, 200);
+  });
+});
+
+
+describe("the concept tree across the crawled packages", () => {
+  let root: string;
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), "strut-index-concepts-"));
+  });
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  /** A package directory → its archive bytes and digest. */
+  const archive = async (name: string, files: Record<string, string>): Promise<{ gz: Buffer; digest: string }> => {
+    const dir = join(root, "pkgs", ...name.split("/"));
+    for (const [rel, body] of Object.entries(files)) {
+      await mkdir(dirname(join(dir, rel)), { recursive: true });
+      await writeFile(join(dir, rel), body);
+    }
+    const info = await new PackageCache(join(root, "scratch-cache")).putDir(dir);
+    return { gz: await packArchive(dir, info.files), digest: info.digest };
+  };
+
+  it("folds every package's Concept pages into one tree, with the docs, children and parents of each", async () => {
+    const seed = Buffer.alloc(32, 7);
+    const { privateKey, key } = keyFromSeed(seed);
+    const law = await archive("openlaw/civil", {
+      "strut.yaml": "package: openlaw/civil\nversion: '12'\n",
+      "concepts/Law.md": "---\ndescription: The root\n---\n\nAll of it.\n",
+      "concepts/Civil procedure.md": "---\ndescription: How a civil case moves\nparent: Law\n---\n\nPleadings, discovery, trial.\n",
+      "concepts/Statute of limitations.md": "---\nparent: Civil procedure\n---\n\nHow long you have.\n",
+    });
+    const forked = await archive("openlaw/limits", {
+      "strut.yaml": "package: openlaw/limits\nversion: 0.3.0\n",
+      "concepts/Statute of limitations.md": "---\ndescription: A fork's page\nparent: Civil procedure\n---\n\nAnother reading.\n",
+      "concepts/Tolling.md": "---\nparent: Statute of limitations\n---\n\nWhen the clock stops.\n",
+    });
+    const card = sealCard(
+      {
+        v: 1, key, seq: 1_000_000,
+        packages: { "openlaw/civil": { description: "Civil procedure", releases: [{ version: "12", digest: law.digest }] }, "openlaw/limits": { releases: [{ version: "0.3.0", digest: forked.digest }] } },
+        channels: { public: { "openlaw/civil": law.digest, "openlaw/limits": forked.digest } },
+      },
+      privateKey,
+    ) as Catalog;
+    const served: Record<string, Buffer | string> = {
+      "https://pub.example/packages/catalog": canonicalJson(card),
+      [`https://pub.example/packages/openlaw/civil/archive?digest=${encodeURIComponent(law.digest)}&public=1`]: law.gz,
+      [`https://pub.example/packages/openlaw/limits/archive?digest=${encodeURIComponent(forked.digest)}&public=1`]: forked.gz,
+    };
+    const fetched: string[] = [];
+    const fakeFetch = (async (input: string | URL | Request) => {
+      const url = String(input);
+      fetched.push(url);
+      const body = served[url] ?? served[url.split("?")[0]!];
+      return body === undefined ? new Response("no", { status: 404 }) : new Response(body, { status: 200 });
+    }) as typeof fetch;
+    const index = createPackageIndex({ secrets: new MemorySecretStore(), dir: join(root, "index"), cache: new PackageCache(join(root, "cache")), fetch: fakeFetch });
+    const info = await index.setRow("openlaw", { key, urls: ["https://pub.example/packages/catalog?public=1"] });
+    assert.equal(info.crawled[0]!.error, undefined, JSON.stringify(info.crawled));
+    assert.equal(info.crawled[0]!.packages, 2);
+    assert.equal(info.crawled[0]!.derived, 2);
+
+    const all = await index.concepts();
+    assert.deepEqual(all.map((c: IndexConcept) => [c.name, c.parent, c.packages.map((p) => p.package)]), [
+      ["Civil procedure", "Law", ["openlaw/civil"]],
+      ["Law", undefined, ["openlaw/civil"]],
+      ["Statute of limitations", "Civil procedure", ["openlaw/civil", "openlaw/limits"]],
+      ["Tolling", "Statute of limitations", ["openlaw/limits"]],
+    ]);
+    assert.equal(all.find((c) => c.name === "Statute of limitations")!.description, "A fork's page", "a field the first package's page leaves blank is the next one's");
+    assert.deepEqual((await index.concepts("clock")).map((c) => c.name), [], "the search is over names and descriptions, never the docs");
+    assert.deepEqual((await index.concepts("civil")).map((c) => c.name), ["Civil procedure"]);
+
+    const page = (await index.concept("Statute of limitations")) as IndexConceptPage;
+    assert.match(page.docs!, /How long you have/, "the first package's docs");
+    assert.deepEqual(page.children, [{ name: "Tolling" }]);
+    assert.deepEqual(page.parents, [{ name: "Civil procedure", description: "How a civil case moves" }, { name: "Law", description: "The root" }]);
+    assert.deepEqual((await index.concept("Law"))!.parents, []);
+    assert.equal(await index.concept("Nope"), undefined);
+
+    // A second crawl reads the catalog and no archive again: the pages are kept by digest.
+    fetched.length = 0;
+    await index.crawl();
+    assert.deepEqual(fetched, ["https://pub.example/packages/catalog?public=1"]);
+    const hit = (await index.search("civil"))[0]!;
+    assert.equal(hit.detail?.concepts, 3);
+    // The row gone, the pages go with it.
+    assert.equal(await index.removeRow("openlaw"), true);
+    assert.deepEqual(await index.concepts(), []);
   });
 });

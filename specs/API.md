@@ -1156,6 +1156,30 @@ file token and identity `app:<name>@preview-<hex>` with them. `step_run`
 checks its calls against the preview's own manifest and the usage
 monitor does not count them.
 
+**The store front** (`plans/marketplace.md` §7; `web/src/components/Store.tsx`,
+`web/src/store-links.ts`). `?store=1` renders a third page alone: an index
+strut's public face, for anyone with no credential — the apps across the
+publishers it lists first (each app a package's face, off the derived
+`detail`), then the packages, the Concept pages as a wiki (`?store=1&concept=<name>`,
+the tree from `/index/concepts`), the publishers off the signed card, and
+a package's page (`?store=1&pkg=<publisher/name>`: apps, the workflows
+with their inputs and what each reaches, the steps with their secrets
+and lint, the Concepts, the README, what it needs, the publisher's key,
+the releases and channels). It reads only `/index/catalog`,
+`/index/packages`, `/index/packages/:publisher/:name` and
+`/index/concepts[/:name]` (§16), never with a credential; on a strut
+without the index role it says so. Nothing on it installs: **Install into
+your strut** is a link INTO the visitor's own strut —
+`<their strut>/?install=<publisher/name>&index=<the index key>&index_url=<its catalog URL>`
+— where the shell opens the Packages dialog's Find on that name, offers
+to FOLLOW the index first when the strut does not yet (`PUT
+/packages/indexes/:id` with the link's key, the id the index's host), and
+installs on a tap through the followed card, so the key pinned is the
+signed card's, never the page's. The visitor names their strut once
+("Your strut", kept in that browser); with none the button asks, and the
+name to paste is beside it. On an index strut the UI's root redirects a
+visitor with no credential there (§16, `GET /`).
+
 **One file alone.** The twin for a deliverable that is a file:
 `/?key=<the local strut's key>&artifact=<encodeURIComponent(path)>&solo=1`
 renders the artifact viewer alone, filling the window, and reads nothing
@@ -1461,8 +1485,11 @@ and `pk:` are refused by name (`package_source_unsupported`).
 | DELETE | `/index/:prefix` | Drop the row and re-seal → `{ ok, prefix }`; its crawl state goes. 404 when there is none |
 | POST   | `/index/crawl` | `{ crawled: CrawlState[] }`: read every listed publisher's catalog now. Full scope |
 | GET    | `/index/catalog[?digest=]` | The INDEX card as served (RFC 8785 bytes, sealed under `strut-index\n` by the index key; `ETag`, `If-None-Match` → 304; `cache-control: public`): `{ v, key, seq, publishers, urls?, sig }`. **Open to anyone.** A reader checks it with `readCard(bytes, { key, kind: "index" })`; 404 before the first row |
-| GET    | `/index/packages?q=&limit=` | `{ packages: IndexHit[] }` — every listed publisher's public packages, each at its newest release not yanked: `{ package, publisher, key, urls, version, digest, description?, license?, requires? }`; `q` as the sidebar's matcher (every word in the name, description or publisher), at most `limit` (100; ≤ 500). **Open to anyone**; derived and unsigned — an install re-verifies against the publisher |
-| GET    | `/index/packages/:publisher/:name` | `IndexPackage`: `{ package, publisher, key, urls, description?, releases (newest first, yanked kept), channels: { "<public channel>": digest }, readAt }`. **Open to anyone**; 404 when no listed publisher's catalog has it |
+| GET    | `/index/packages?q=&limit=` | `{ packages: IndexHit[] }` — every listed publisher's public packages, each at its newest release not yanked: `{ package, publisher, key, urls, version, digest, description?, license?, requires?, detail? }`; `q` as the sidebar's matcher (every word in the name, description or publisher), at most `limit` (100; ≤ 500). `detail` is the release's archive as the index READ it at the crawl (`src/packages/detail.ts`, below): `{ apps: [{ name, title, description?, icon?, can }], workflows, steps, concepts (counts), secrets, can: { spends, acts, code }, readme }` — absent until the archive has been fetched. **Open to anyone**; derived and unsigned — an install re-verifies against the publisher |
+| GET    | `/index/packages/:publisher/:name` | `IndexPackage`: `{ package, publisher, key, urls, description?, releases (newest first, yanked kept), channels: { "<public channel>": digest }, readAt, detail?, detailError? }`. `detail` is the newest release not yanked read off its archive — `PackageDetail`: `{ digest, version, derivedAt, readme?, apps: [{ name, title, description?, icon?, grants: { workflows, steps }, can, files }], workflows: [{ name, description?, inputs: [{ name, type, required, description?, default? }], steps, grants, can, secrets, peer?, sealed?, claims?, error? }], steps: [{ name, helper?, description?, effect?, secrets, lint: [string], bytes, claims? }], concepts: [{ name, description?, parent?, docs? }], secrets, can, files, bytes }` (names inside the package; `can` = what running it reaches: `spends` an `agent` / `llm` step, `acts` a step declaring `effect: "write"`, `code` an `exec` or one of the package's own steps; the steps' facts are regexes over the source, the lint `src/step-lint.ts`'s findings — a reading, never a check); `detailError` says why there is none (the archive not fetched yet, or unreadable). **Open to anyone**; 404 when no listed publisher's catalog has it |
+| GET    | `/index/concepts?q=` | `{ concepts: IndexConcept[] }` — every Concept page across the crawled packages, one per name: `{ name, description?, parent?, packages: [{ package, version }] }` (the first package by name gives the description and parent; `q` over names and descriptions). **Open to anyone** |
+| GET    | `/index/concepts/:name` | `IndexConceptPage`: the entry plus `docs?` (the first package's text), `children: [{ name, description? }]` (the pages naming this one as parent) and `parents` (nearest first). **Open to anyone**; 404 when no listed package carries it |
+| GET    | `/` | **Index role, with the UI served:** a request for the UI's root with NO credential (no key, no session cookie, no `?key=`) is a 302 to `./?store=1` — the STORE FRONT (§14.3), the index's public face over the four open reads above; what else the URL carried rides along. With a credential, the shell as always |
 
 **Build** writes a package from what this workspace holds and puts it in
 the cache by its digest, so the archive route serves it and an install
@@ -1737,7 +1764,19 @@ search and package pages, open to anyone, derived and unsigned: a client
 that finds a package there installs it by `pk:` with the hit's `key` and
 `urls` and re-verifies everything against the publisher, so a wrong
 answer from the index is a failed install, never wrong code. The index
-holds no archive it alone has.
+holds no archive it alone has — but it MIRRORS what it lists: at the
+crawl each package's newest release not yanked is fetched by digest from
+the route beside the publisher's catalog into the index's cache and READ
+(`src/packages/detail.ts`): the apps' manifests, each workflow's YAML
+(inputs, the closure's step types and `agentTools`, a `description:`, the
+`claims:` count, what it reaches), each step's source (its declared
+`effect` and `secrets`, every `secrets.get("NAME")`, the lint's findings),
+the Concept pages' front matter and docs, the root README. The page is
+kept under `crawl/pages/<prefix>/<name>.json` by digest (an archive is
+read once; one that cannot be fetched is tried again at the next crawl
+and never blocks the catalog's acceptance), served on the hit's `detail`
+and the package page's, and folded across packages into the Concept tree
+(`/index/concepts`). The STORE FRONT (§14.3) draws these.
 
 **Installing by key** (`plans/marketplace.md` §5, §13 — HTTP-first,
 2026-10-28; `src/packages/pk.ts`). `POST /packages/install { ref:

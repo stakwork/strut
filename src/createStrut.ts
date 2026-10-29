@@ -763,7 +763,7 @@ export async function createStrut<TServices = unknown>(
     if (!Array.isArray(urls) || !urls.every((u) => typeof u === "string" && /^https?:\/\/\S+$/.test(u))) throw new Error("STRUT_INDEX_URLS is a JSON list of http(s) URLs");
     return { urls };
   })();
-  const INDEX_READ = /^\/index\/(?:catalog|packages(?:\/|$))/;
+  const INDEX_READ = /^\/index\/(?:catalog|packages(?:\/|$)|concepts(?:\/|$))/;
   const mcpRegistry = fileMcpRegistry(dataDir);
   // Controllers for runs currently executing **in this process** (keyed
   // `${workflow}/${runId}`) — RUN_CONTROL_SPEC §2.2. A controller's presence
@@ -3289,6 +3289,12 @@ export async function createStrut<TServices = unknown>(
         dir: indexDir(dataDir),
         cache: packageStore,
         ...(indexConfig.urls ? { urls: indexConfig.urls } : {}),
+        // What this strut knows of a step a package's workflow uses — a lib
+        // step's `effect` and `secrets` — for the derived page's flags.
+        stepInfo: (type) => {
+          const def = registry[type];
+          return def ? { ...(def.effect ? { effect: def.effect } : {}), ...(def.secrets ? { secrets: def.secrets } : {}), ...(def.description ? { description: def.description } : {}) } : undefined;
+        },
         unsafe: () =>
           publisherSecrets instanceof FileSecretStore && !bootEnv()["STRUT_SECRET_KEY"]
             ? `STRUT_SECRET_KEY is not set, so the index key in ${PUBLISHER_FILE} would be stored under the dev default key — obfuscated, not encrypted. Set it and restart before listing a publisher`
@@ -3345,6 +3351,14 @@ export async function createStrut<TServices = unknown>(
       const name = `${c.req.param("publisher")}/${c.req.param("name")}`;
       const page = await index.package(name);
       return page ? c.json(page, 200, { "cache-control": "public, no-cache" }) : c.json({ error: `no listed publisher's catalog has ${name}` }, 404);
+    });
+    // The Concept pages across every crawled package (plans/marketplace.md
+    // §7, the store): the tree, and one page with its docs.
+    app.get("/index/concepts", async (c) => c.json({ concepts: await index.concepts(c.req.query("q") ?? "") }, 200, { "cache-control": "public, no-cache" }));
+    app.get("/index/concepts/:name", async (c) => {
+      const name = c.req.param("name");
+      const page = await index.concept(name);
+      return page ? c.json(page, 200, { "cache-control": "public, no-cache" }) : c.json({ error: `no listed package carries a Concept page named ${name}` }, 404);
     });
   }
 
@@ -6258,6 +6272,19 @@ export async function createStrut<TServices = unknown>(
   if (serveUi) {
     app.use("/assets/*", serveStatic({ root: webDist }));
     app.use("/favicon.ico", serveStatic({ root: webDist }));
+
+    // On an index strut the UI's root is the STORE FRONT for anyone who
+    // arrives with no credential (`?store=1`, web/src/components/Store.tsx:
+    // the page over the three open reads above). The operator's shell is
+    // one `?key=` or a signed-in session away, as before.
+    if (index) {
+      app.get("/", async (c, next) => {
+        if (c.req.query("store") !== undefined || carriesApiKey(c) || carriesPeerKey(c)) return next();
+        const q = new URLSearchParams(c.req.query());
+        q.set("store", "1");
+        return c.redirect(`./?${q.toString()}`, 302);
+      });
+    }
 
     app.get("*", async (c, next) => {
       const path = c.req.path;

@@ -2339,6 +2339,55 @@ production until install (step 2) calls the resolver.
      deployed index's key), `index.yaml` by `git+`, an index row naming
      another key than an install pinned (asks, §4 — no update door yet),
      the archive and static mirrors, self-serve rows.
+   - **Built 2026-10-29: the STORE FRONT** — the app store the plan was
+     for, as fast as the pieces allowed (Evan: "a cross between the Apple
+     App Store, Wikipedia and npm; the best way to understand what
+     concepts or workflows do is to see an app on top", "it can start
+     simple"). Two halves. On the index strut, DERIVED PAGES
+     (`src/packages/detail.ts`, index.ts `derivePages`): after a catalog
+     is accepted, each package's newest release not yanked is fetched by
+     digest from the route beside the publisher's catalog into the index's
+     cache — the mirror §7 allows — and READ with nothing loaded or run:
+     the apps' manifests (title, icon, grants), each workflow's YAML
+     (inputs, the closure's step types, `agentTools`, `claims:`), each
+     step's source by regex (`effect`, `secrets`, every
+     `secrets.get("NAME")`) with the lint's findings, the Concept pages,
+     the README; and what each REACHES — `spends` (an agent / llm step),
+     `acts` (a step declaring `effect: "write"`, by this strut's registry
+     or the package step's source), `code` (exec, or the package's own
+     TypeScript) — folded over package-first subflows and onto the apps
+     through their grants. Kept by digest under
+     `crawl/pages/<prefix>/<name>.json`, on the hit's `detail` and the
+     package page's; `GET /index/concepts[/:name]` folds every page's
+     Concept pages into one tree. Then the PAGE: `?store=1`
+     (`web/src/components/Store.tsx`, `store-links.ts`; specs/API.md
+     §14.3) rendered alone by strut's own UI over the open reads and
+     never a credential — apps first, packages, the Concept wiki, the
+     publishers off the signed card, a footer saying it is all derived —
+     and an index strut sends a visitor with no credential from `/` to
+     it. **Install is a link into the visitor's own strut**
+     (`?install=<name>&index=<key>&index_url=<catalog url>`): the
+     Packages dialog's Find opens on the name, offers to follow the index
+     first when the strut does not yet, and installs through the followed
+     card, so the key pinned is the signed card's and the store page
+     trusts nothing. The four mockups this was built from:
+     https://claude.ai/artifact/9jZKBbgh93cS49zJpSFL8g. Choices of mine,
+     proposed: the index READS archives (the plan allowed a mirror; a page
+     that shows what a package does needs its files, and a catalog holds
+     none of that) — one at a time, never blocking the catalog's
+     acceptance; a workflow's description is its YAML's `description:`
+     (the metadata description is not in the file today — `buildPackage`
+     could stamp it in, a digest-changing choice left to you); `can` is
+     a reading of files, labelled as such, not a sandbox or a check; no
+     preview images yet (a convention to design: `app/look` at publish
+     time, shipped in the archive); the store is a solo page of the
+     Preact UI, not a kit app (a visitor has no credential and an app's
+     document may reach nothing but the bridge) and not a separate site
+     (one deploy, same origin, no CORS). Not built: the install ASK with
+     license and spend / act consent (step 5) — Find's card shows what
+     the hit brings, reaches and needs, and the tap installs; the
+     Stakwork default (the deployed index's key); a static export of the
+     store's pages (the static mirror).
    - **6b, later: the Pkarr record.** The JS client (relay-only: a relay is a
      dependency), Stakwork's relay at a stable hostname and the
      sphinx-swarm container, a publisher's record naming its public
