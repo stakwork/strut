@@ -262,11 +262,15 @@ export interface ArtifactsCapability {
 
 /** Reject run ids / relative paths that could escape the RUN's directory
  *  (one run must not reach another run's files). Returns the resolved
- *  absolute path when safe. */
+ *  absolute path when safe. The run's own link (`/artifacts/<runId>/<path>`,
+ *  what `GET /artifacts/:runId` serves) is taken as `<path>`: callers hand
+ *  it back as the path; another run's link still escapes. */
 function artifactPath(root: string, runId: string, relPath = ""): string {
   if (!runId || /[/\\]|\.\./.test(runId)) {
     throw new Error(`artifacts: invalid runId "${runId}"`);
   }
+  const ownLink = `/artifacts/${runId}/`;
+  if (relPath.startsWith(ownLink)) relPath = relPath.slice(ownLink.length);
   const runDir = pathResolve(root, runId);
   const abs = pathResolve(runDir, relPath);
   if (abs !== runDir && !abs.startsWith(runDir + pathSep)) {
