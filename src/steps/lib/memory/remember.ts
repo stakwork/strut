@@ -1,7 +1,9 @@
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { defineStep } from "../../../core.js";
-import { EntityRef, type EntityRefT, type Query, canonical, editAliases, memoryDb, memoryWrite, newRefId, normalize, supersede } from "./_db.js";
+import { EntityRef, type EntityRefT, type MemoryTx, type Query, canonical, editAliases, memoryDb, memoryWrite, normalize, supersede } from "./_db.js";
 import { fitNote, resolve, termName, vocabulary, type Resolved as Term, type Vocabulary } from "./_ontology.js";
+import { ENTITY_BASE } from "./_ontology-seed.js";
 
 const FactInput = z.object({
   subject: EntityRef,
@@ -42,7 +44,19 @@ function worldTime(given: string): number | undefined {
   return Number.isNaN(ms) ? undefined : ms;
 }
 
-type Resolved = { ref_id: string; type: string; name: string; status: "matched" | "created"; similar?: { ref_id: string; name: string }[] };
+type Resolved = { ref_id: string; type: string; name: string; status: "matched" | "created"; similar?: { ref_id: string; name: string }[]; foreign?: true };
+
+/** A live node of the workspace that is not memory's (a workflow node, an app's Channel):
+ *  a fact may point at it by ref_id, a cross edge (decision 9). */
+async function foreign(query: Query, id: string): Promise<Resolved | undefined> {
+  const [n] = await (query as Query & { raw: Query }).raw(
+    `MATCH (n:Node) WHERE n.ref_id = $id AND n.deleted_at IS NULL AND n.node_type <> 'Schema' AND n.node_type <> 'Fact' AND n.node_type <> 'Episode'
+       AND (n.memory_entity IS NULL OR n.memory_entity = false)
+     RETURN n.ref_id AS ref_id, n.node_type AS type, coalesce(n.name, n.ref_id) AS name`,
+    { id },
+  );
+  return n && { ref_id: n.ref_id, type: n.type, name: n.name, status: "matched", foreign: true };
+}
 
 // A person's one-word alias ("kate", left by merging a Kate into Kate O'Brien) is only a first
 // name: recall still finds her by it, but a write resolves it only to someone so named.
@@ -71,7 +85,8 @@ async function find(query: Query, type: string, name: string): Promise<Resolved 
   return hit && { ...hit, status: "matched" };
 }
 
-async function resolveEntity(query: Query, ref: EntityRefT, type: string, createdBy: string, now: number): Promise<Resolved> {
+async function resolveEntity(m: MemoryTx, ref: EntityRefT, type: string, createdBy: string, now: number): Promise<Resolved> {
+  const query = m.query;
   if (ref.ref_id) {
     const id = await canonical(query, ref.ref_id);
     const [hit] = await query("MATCH (e:Entity) WHERE e.ref_id = $id AND e.deleted_at IS NULL RETURN e.ref_id AS ref_id, e.type AS type, e.name AS name", { id });
@@ -89,12 +104,7 @@ async function resolveEntity(query: Query, ref: EntityRefT, type: string, create
         { type, w: firstWord, key },
       )
     : [];
-  const ref_id = newRefId();
-  await query(
-    `CREATE (:Entity {ref_id: $ref_id, type: $type, name: $name, summary: '', attributes: '{}', aliases: [$key],
-             created_by: $by, created_at: $now, updated_at: $now})`,
-    { ref_id, type, name: ref.name, key, by: createdBy, now },
-  );
+  const ref_id = await m.create(type, { memory_entity: true, name: ref.name, attributes_json: "{}", alias_keys: [key], created_by: createdBy, created_at: now });
   return { ref_id, type, name: ref.name, status: "created", ...(similar.length ? { similar: similar as Resolved["similar"] } : {}) };
 }
 
@@ -151,7 +161,8 @@ export default defineStep({
       return [...(!f.value?.trim() ? [`${f.predicate} needs the misheard text as value`] : []), ...(f.object ? [`${f.predicate} takes no object`] : [])];
     });
     if (misheard.length) return { error: `invalid_input: ${misheard.join(", ")}` };
-    return memoryWrite(ctx, async (query) => {
+    return memoryWrite(ctx, async (m) => {
+      const query = m.query;
       const now = Date.now();
       const by = cfg.created_by;
       const ontology = { resolved: [] as string[], proposed: [] as string[], notes: [] as string[] };
@@ -160,8 +171,13 @@ export default defineStep({
         if (r.proposed) ontology.proposed.push(label);
         else if (r.given !== r.term.name) ontology.resolved.push(`${r.given} → ${r.term.name}`);
       };
-      const typeOf = async (ref: EntityRefT) => {
-        const r = await resolve(query, "entity_type", ref.type, by);
+      // A type another owner holds (an app's Channel) makes no type and no node (decision 9).
+      const typeOf = async (ref: EntityRefT): Promise<string | undefined> => {
+        const r = await resolve(m, "entity_type", ref.type, by);
+        if ("clash" in r) {
+          ontology.notes.push(`${r.clash.type} is ${r.clash.owner}'s type, not memory's: nothing was stored as a ${r.clash.type}; to mean one of its nodes, give its ref_id as a fact's object.`);
+          return undefined;
+        }
         noteTerm(r);
         return r.term.name;
       };
@@ -172,12 +188,19 @@ export default defineStep({
       const byId = new Map<string, Resolved>();
       const given = new Map<string, Resolved>();
       const listed = new Set<string>();
-      const entity = async (ref: EntityRefT, list = true) => {
+      const entity = async (ref: EntityRefT, list = true, crossing = false): Promise<Resolved | undefined> => {
+        // An object given by the ref_id of a node that is not memory's is that node, never listed as mentioned.
+        if (crossing && ref.ref_id && (await canonical(query, ref.ref_id)) === ref.ref_id) {
+          const [own] = await query("MATCH (e:Entity) WHERE e.ref_id = $id RETURN e.ref_id AS id", { id: ref.ref_id });
+          const other = own ? undefined : await foreign(query, ref.ref_id);
+          if (other) return other;
+        }
         const type = await typeOf(ref);
+        if (!type) return undefined;
         const k = ref.ref_id ?? `${type}:${normalize(ref.name)}`;
         let e = given.get(k);
         if (!e) {
-          const found = await resolveEntity(query, ref, type, by, now);
+          const found = await resolveEntity(m, ref, type, by, now);
           e = byId.get(found.ref_id) ?? found;
           byId.set(e.ref_id, e);
           given.set(k, e);
@@ -191,14 +214,8 @@ export default defineStep({
       const speaker = cfg.speaker ? await entity(cfg.speaker, false) : undefined;
       let vocab = await vocabulary(query);
       if (speaker && vocab.role(speaker.type) !== "user") listed.add(speaker.ref_id);
-      const episodeId = newRefId();
-      await query(
-        `CREATE (:Episode {ref_id: $id, kind: $kind, source: $source, content: $content, occurred_at: $now,
-                 created_by: $by, created_at: $now, updated_at: $now})`,
-        { id: episodeId, kind: cfg.kind, source: cfg.source ?? "", content: cfg.episode, now, by },
-      );
-      const fromEpisode = (f: string) =>
-        query("MATCH (x:Fact), (e:Episode) WHERE x.ref_id = $f AND e.ref_id = $e CREATE (x)-[:FROM_EPISODE]->(e)", { f, e: episodeId });
+      const episodeId = await m.create("Episode", { kind: cfg.kind, source: cfg.source, content: cfg.episode, occurred_at: now, created_by: by, created_at: now });
+      const fromEpisode = (f: string) => m.link("FROM_EPISODE", f, episodeId);
 
       // A name given as a name fact's object is not an entity, so the same name in mentions makes none either.
       const naming = (f: (typeof cfg.facts)[number]) => !!f.object && vocab.term("predicate", f.predicate)?.role === "alias";
@@ -212,6 +229,10 @@ export default defineStep({
         // A fact whose end is given and not in the future is past, as if `ended`.
         const past = f.ended || (invalid !== null && invalid <= now);
         const subject = await entity(f.subject);
+        if (!subject) {
+          facts.push({ text: f.text, predicate: f.predicate, status: "skipped" });
+          continue;
+        }
         // Read again: resolving a type may have proposed one.
         vocab = await vocabulary(query);
         const fromOther = (e?: Resolved) => !!speaker && !!e && e.ref_id !== speaker.ref_id && vocab.role(e.type) === "user";
@@ -222,9 +243,9 @@ export default defineStep({
         // user is one entity, so sharing a name with someone never stops it.
         let alias = naming(f) && !fromOther(subject) ? normalize(f.object!.name) : undefined;
         let similar: { ref_id: string; name: string }[] = [];
-        if (alias && vocab.role(subject.type) === "user") await editAliases(query, subject.ref_id, [alias], now);
+        if (alias && vocab.role(subject.type) === "user") await editAliases(m, subject.ref_id, [alias], now);
         else if (alias) {
-          const lineage = vocab.terms.filter((t) => t.kind === "entity_type").map((t) => t.name)
+          const lineage = [ENTITY_BASE, ...vocab.terms.filter((t) => t.kind === "entity_type").map((t) => t.name)]
             .filter((t) => vocab.ancestors(subject.type).includes(t) || vocab.ancestors(t).includes(subject.type))
             // Sharing a name with the user is not being them.
             .filter((t) => vocab.role(t) !== "user");
@@ -237,10 +258,19 @@ export default defineStep({
           )) as typeof similar).filter((e) => byAlias || normalize(e.name) === alias).slice(0, 3);
           if (similar.length) alias = undefined;
           // A name replaced later stays an alias: an old name still finds them.
-          else await editAliases(query, subject.ref_id, [alias], now);
+          else await editAliases(m, subject.ref_id, [alias], now);
         }
-        const object = f.object && !naming(f) ? await entity(f.object) : undefined;
-        const p = await resolve(query, "predicate", f.predicate, by, { subject: subject.type, object: object?.type });
+        const object = f.object && !naming(f) ? await entity(f.object, true, true) : undefined;
+        if (f.object && !naming(f) && !object) {
+          facts.push({ text: f.text, predicate: f.predicate, status: "skipped" });
+          continue;
+        }
+        const p = await resolve(m, "predicate", f.predicate, by, { subject: subject.type, object: object?.foreign ? undefined : object?.type });
+        if ("clash" in p) {
+          ontology.notes.push(`${p.clash.type} is ${p.clash.owner}'s type, not a predicate: the fact "${f.text}" was not stored.`);
+          facts.push({ text: f.text, predicate: f.predicate, status: "skipped" });
+          continue;
+        }
         noteTerm(p);
         vocab = await vocabulary(query);
         const note = fitNote(vocab, p.term, subject.type, object?.type);
@@ -264,7 +294,7 @@ export default defineStep({
         const same = async (held: boolean) => (await query(
           `MATCH (x:Fact)-[:SUBJECT]->(s:Entity) WHERE s.ref_id = $s AND x.predicate = $p AND ${heard ? "x.value IS NOT NULL" : "x.text = $t"}
              AND x.expired_at IS ${held ? "NULL" : "NOT NULL"} AND x.deleted_at IS NULL
-           OPTIONAL MATCH (x)-[:OBJECT]->(o:Entity)
+           OPTIONAL MATCH (x)-[:OBJECT]->(o:Node)
            WITH x, o WHERE ${object ? "o.ref_id = $o" : "o IS NULL"}
            RETURN x.ref_id AS ref_id, x.valid_at AS valid_at, x.invalid_at AS invalid_at, x.value AS value, x.form AS form`,
           { s: subject.ref_id, p: predicate, ...(heard ? {} : { t: f.text }), ...(object ? { o: object.ref_id } : {}) },
@@ -274,7 +304,7 @@ export default defineStep({
         if (hit) {
           await fromEpisode(hit.ref_id);
           // A name fact from before names were kept on the fact learns its name now.
-          if (alias) await query("MATCH (x:Fact) WHERE x.ref_id = $f AND x.value IS NULL SET x.value = $value", { f: hit.ref_id, value: f.object!.name });
+          if (alias && hit.value == null) await m.set(hit.ref_id, { value: f.object!.name });
           const was = { valid: hit.valid_at == null ? null : Number(hit.valid_at), invalid: hit.invalid_at == null ? null : Number(hit.invalid_at) };
           const ending = !!held && past;
           const v = was.valid ?? (valid !== null && (was.invalid === null || valid <= was.invalid) ? valid : null);
@@ -286,11 +316,7 @@ export default defineStep({
           // A filled end that has passed stops the fact being held, as `ended` does.
           const expire = !!held && (ending || (inv !== null && inv <= now));
           if (filled.length || expire) {
-            await query(
-              `MATCH (x:Fact) WHERE x.ref_id = $f SET x.valid_at = $v, x.invalid_at = $inv, x.updated_at = $now
-               ${expire ? ", x.expired_at = $now" : ""}`,
-              { f: hit.ref_id, v, inv, now },
-            );
+            await m.set(hit.ref_id, { valid_at: v, invalid_at: inv, ...(expire ? { expired_at: now } : {}) });
           }
           facts.push({
             ref_id: hit.ref_id, text: f.text, predicate, status: "existing",
@@ -315,18 +341,23 @@ export default defineStep({
         const history = later.length > 0;
         const ended = past || history;
 
-        const factId = newRefId();
-        await query(
-          `CREATE (:Fact {ref_id: $id, predicate: $p, text: $t, confidence: 1.0, valid_at: $valid, invalid_at: $invalid,
-                   expired_at: $expired, created_by: $by, created_at: $now, updated_at: $now, value: $value, form: $form})`,
-          { id: factId, p: predicate, t: f.text, value: alias ? f.object!.name : heard?.value ?? null, form: heard?.form ?? null, valid, invalid: history ? Math.min(...later, ...(invalid !== null ? [invalid] : [])) : invalid, expired: ended ? now : null, now, by },
-        );
-        await query("MATCH (x:Fact), (s:Entity) WHERE x.ref_id = $f AND s.ref_id = $s CREATE (x)-[:SUBJECT]->(s)", { f: factId, s: subject.ref_id });
-        if (object) await query("MATCH (x:Fact), (o:Entity) WHERE x.ref_id = $f AND o.ref_id = $o CREATE (x)-[:OBJECT]->(o)", { f: factId, o: object.ref_id });
+        const factId = await m.create("Fact", {
+          predicate, text: f.text, confidence: 1.0, valid_at: valid,
+          invalid_at: history ? Math.min(...later, ...(invalid !== null ? [invalid] : [])) : invalid,
+          expired_at: ended ? now : null, created_by: by, created_at: now,
+          value: alias ? f.object!.name : heard?.value ?? null, form: heard?.form ?? null,
+        });
+        await m.link("SUBJECT", factId, subject.ref_id);
+        if (object?.foreign) {
+          // A cross edge: the rule for its target type, made the first time (decision 9).
+          await m.backend.schemaSource.ensureEdgeSchema("Fact", "OBJECT", object.type, { ref_id: randomUUID() }, m.tx);
+          m.backend.schemas.invalidate();
+        }
+        if (object) await m.link("OBJECT", factId, object.ref_id);
         await fromEpisode(factId);
 
         const superseded = ended ? [] : current.map((r) => r.ref_id as string);
-        await supersede(query, factId, valid, superseded, now);
+        await supersede(m, factId, valid, superseded, now);
         facts.push({
           ref_id: factId, text: f.text, predicate, status: "created",
           ...(superseded.length ? { superseded } : {}), ...(ended ? { ended: true } : {}), ...flag, ...also,
@@ -338,10 +369,8 @@ export default defineStep({
       // which means the user too.
       const userType = (await vocabulary(query)).userType();
       const said = speaker ?? (userType ? await find(query, userType, "") : undefined);
-      if (said) await query("MATCH (ep:Episode) WHERE ep.ref_id = $ep SET ep.speaker = $s", { ep: episodeId, s: said.ref_id });
-      for (const e of listed) {
-        await query("MATCH (ep:Episode), (e:Entity) WHERE ep.ref_id = $ep AND e.ref_id = $e CREATE (ep)-[:MENTIONS]->(e)", { ep: episodeId, e });
-      }
+      if (said) await m.set(episodeId, { speaker: said.ref_id });
+      for (const e of listed) if (!byId.get(e)?.foreign) await m.link("MENTIONS", episodeId, e);
       const terms = Object.fromEntries(Object.entries(ontology).filter(([, v]) => v.length));
       return {
         episode: episodeId, ...(said ? { speaker: { ref_id: said.ref_id, name: said.name } } : {}),

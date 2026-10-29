@@ -1,32 +1,38 @@
-// Shared Ladybug handle and schema for the memory/* steps. Leading-underscore
-// file → imported by siblings, skipped by registry discovery (see AGENTS.md).
+// The memory/* steps' graph: the person's workspace graph (Ladybug), where
+// memory's nodes are ordinary nodes beside the workflows and runs
+// (plans/memory-in-workspace-graph.md). Leading-underscore file → imported by
+// siblings, skipped by registry discovery (see AGENTS.md).
 //
 // The memory is a Graphiti-style graph: an Episode is what was said, an
-// Entity what it was about, a Fact one sentence linking them, with valid /
+// entity what it was about, a Fact one sentence linking them, with valid /
 // invalid / expired times. A fact that changes is superseded, never
-// overwritten. Vocabulary (entity types, predicates) lives in the Ontology
-// table (_ontology.ts).
+// overwritten. Vocabulary (entity types, predicates) is memory's Schema
+// nodes (_ontology.ts).
 //
 // Two clocks: valid_at / invalid_at say when a fact was true in the world
 // (NULL when the words gave no time), created_at / expired_at when the memory
-// learned it and stopped holding it current.
+// learned it and stopped holding it current. Every time is an int attribute
+// in epoch ms.
 //
 // An episode's speaker is the ref_id of who said it; NULL means the user, so
 // an episode the user said before they had an entity needs none made.
 //
-// remember, merge and forget each run as one transaction on a connection of their
-// own (memoryWrite): a failure part-way leaves nothing behind, and a read on
-// the shared connection never sees a write in progress.
-import type { Connection } from "@ladybugdb/core";
+// Every memory type is managed by "memory" (decision 7): only these steps
+// write it, through the generic node and edge writers, naming the manager.
+// remember, merge, forget and attributes each run as one transaction of the
+// workspace (memoryWrite): a failure part-way leaves nothing behind, and a
+// read beside it never sees a write in progress. Memory's own queue sits
+// above the workspace's write lock, so a home sync import can hold memory
+// still while it lets the workspace's other writers in between its batches.
 import { randomBytes } from "node:crypto";
-import { chmodSync, mkdirSync, statSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { chmodSync, mkdirSync } from "node:fs";
 import { z } from "zod";
 import type { StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
-import { ladybugMaxDbSize } from "../../../graph/ladybug/max-size.js";
-import { ONTOLOGY_DDL, invalidate, seed, wroteOntology } from "./_ontology.js";
-import { SEED } from "./_ontology-seed.js";
+import type { GraphTx } from "../../../graph/engine.js";
+import type { GraphBackend, LadybugBackend } from "../../../graph/backend.js";
+import { NodeWriter } from "../../../graph/node-writer.js";
+import { seedMemoryOntology, invalidate, wroteOntology } from "./_ontology.js";
 
 export const EntityRef = z.object({
   ref_id: z.string().optional().describe("An existing entity's ref_id, when you already know it."),
@@ -38,96 +44,129 @@ export const EntityRef = z.object({
 });
 export type EntityRefT = z.infer<typeof EntityRef>;
 
-const SCHEMA = [
-  `CREATE NODE TABLE IF NOT EXISTS Entity(ref_id STRING PRIMARY KEY, type STRING, name STRING, summary STRING,
-     attributes STRING, aliases STRING[], created_by STRING, created_at INT64, updated_at INT64, deleted_at INT64)`,
-  `CREATE NODE TABLE IF NOT EXISTS Fact(ref_id STRING PRIMARY KEY, predicate STRING, text STRING, confidence DOUBLE,
-     valid_at INT64, invalid_at INT64, expired_at INT64, created_by STRING, created_at INT64, updated_at INT64, deleted_at INT64)`,
-  `CREATE NODE TABLE IF NOT EXISTS Episode(ref_id STRING PRIMARY KEY, kind STRING, source STRING, content STRING,
-     occurred_at INT64, created_by STRING, created_at INT64, updated_at INT64, deleted_at INT64)`,
-  "CREATE REL TABLE IF NOT EXISTS MENTIONS(FROM Episode TO Entity)",
-  "CREATE REL TABLE IF NOT EXISTS SUBJECT(FROM Fact TO Entity)",
-  "CREATE REL TABLE IF NOT EXISTS OBJECT(FROM Fact TO Entity)",
-  "CREATE REL TABLE IF NOT EXISTS FROM_EPISODE(FROM Fact TO Episode)",
-  "CREATE REL TABLE IF NOT EXISTS SUPERSEDES(FROM Fact TO Fact)",
-  "CREATE REL TABLE IF NOT EXISTS CONTRADICTS(FROM Fact TO Fact)",
-  "CREATE REL TABLE IF NOT EXISTS ALIAS_OF(FROM Entity TO Entity)",
-  ONTOLOGY_DDL,
-];
-
-// Changes to tables that already exist, in order. Each is safe to run again,
-// so they all run on every open (once per process); append, never edit one
-// that has shipped. The Fact scans are fine at personal scale.
-const MIGRATIONS = [
-  "ALTER TABLE Entity ADD IF NOT EXISTS deleted_reason STRING",
-  "ALTER TABLE Fact ADD IF NOT EXISTS deleted_reason STRING",
-  "ALTER TABLE Episode ADD IF NOT EXISTS deleted_reason STRING",
-  // No default: rows written before read NULL, which seed() backfills.
-  "ALTER TABLE Ontology ADD IF NOT EXISTS parent STRING",
-  "ALTER TABLE Ontology ADD IF NOT EXISTS naming STRING",
-  "ALTER TABLE Ontology ADD IF NOT EXISTS role STRING",
-  "ALTER TABLE Episode ADD IF NOT EXISTS speaker STRING",
-  // Facts written before world time stored record time in its place: a
-  // valid_at equal to created_at, an invalid_at equal to expired_at. Neither
-  // is a date the words gave. A new write makes them equal only when the
-  // date given is the very millisecond it was written.
-  "MATCH (f:Fact) WHERE f.valid_at = f.created_at SET f.valid_at = NULL",
-  "MATCH (f:Fact) WHERE f.invalid_at IS NOT NULL AND f.invalid_at = f.expired_at SET f.invalid_at = NULL",
-  // The name a name fact (predicate role alias) gave its subject as an alias, so forgetting the fact can take it back.
-  "ALTER TABLE Fact ADD IF NOT EXISTS value STRING",
-  // A mishearing fact's written form, when it is not its subject's name ("bee tee see" → BTC on Bitcoin).
-  "ALTER TABLE Fact ADD IF NOT EXISTS form STRING",
-];
+/** Who writes memory's types (decision 7): the writers refuse anyone else. */
+export const MANAGER = "memory";
 
 export type Row = Record<string, any>;
-export type Query = (cypher: string, params?: Record<string, any>) => Promise<Row[]>;
+type Run = (cypher: string, params?: Record<string, any>) => Promise<Row[]>;
+/** A query in memory's dialect; `raw`, when there, runs Cypher as it is. */
+export type Query = Run & { raw?: Run };
 
-// One handle per database file per process: Ladybug allows one open
-// database per file. Kept on globalThis so a re-imported module shares it,
-// with the queue that runs its writes one at a time.
-const HANDLES = Symbol.for("strut.memory.ladybug");
+// ── The query dialect ───────────────────────────────────────────────────────
+//
+// Memory's Cypher names its three kinds of node as labels, `(e:Entity)`,
+// `(f:Fact)`, `(ep:Episode)`, and an entity's fields as they read
+// (`e.type`, `e.aliases`, `e.attributes`). In the workspace they are all
+// rows of the one `Node` table: an entity is a node whose type inherits
+// MemoryEntity (marked `memory_entity`), and `aliases` / `attributes` are
+// stored as `alias_keys` / `attributes_json`, since a Schema row keeps its
+// own `aliases` and `attributes` (ladybug/ontology.ts). `cypher()` rewrites
+// the one into the other. A label's filter goes into the clause's WHERE,
+// never inline: in Ladybug 0.21 an inline filter (a literal one too) plus an
+// OPTIONAL MATCH returns the node's fields as null.
 
-/** `STRUT_MEMORY_DB` (secret store → env), else `<dataDir>/memory/graph.lbug`; absolute, so
- *  every spelling of one file shares one handle. */
-async function dbPath(ctx?: StepContext<StrutCapabilities>): Promise<string> {
-  const services = ctx?.services as Partial<StrutCapabilities> | undefined;
-  const explicit = await services?.secrets?.get("STRUT_MEMORY_DB");
-  if (explicit) return resolve(explicit);
-  if (!services?.dataDir) {
-    throw new Error("memory/* steps need the server's dataDir (ctx.services.dataDir) or STRUT_MEMORY_DB set to the database file");
+const KIND: Record<string, (v: string) => string> = {
+  Entity: (v) => `${v}.memory_entity = true`,
+  Fact: (v) => `${v}.node_type = 'Fact'`,
+  Episode: (v) => `${v}.node_type = 'Episode'`,
+};
+const CLAUSE = /\b(OPTIONAL MATCH|MATCH|(?<!STARTS |ENDS )WITH|RETURN|SET|CREATE|DETACH DELETE|DELETE|ORDER BY|UNWIND|MERGE|LIMIT)\b/;
+const FIELDS: Array<[RegExp, string]> = [
+  [/\b([a-z_][A-Za-z0-9_]*)\.type\b/g, "$1.node_type"],
+  [/\b([a-z_][A-Za-z0-9_]*)\.aliases\b/g, "$1.alias_keys"],
+  [/\b([a-z_][A-Za-z0-9_]*)\.attributes\b/g, "$1.attributes_json"],
+];
+
+/** Memory's Cypher as the workspace's. */
+export function cypher(text: string): string {
+  let n = 0;
+  const parts = text.split(CLAUSE);
+  // parts: [before, keyword, body, keyword, body, …]
+  for (let i = 1; i < parts.length; i += 2) {
+    // A CREATE names the kind in the node's own map (no OPTIONAL MATCH follows a write).
+    if (parts[i] === "CREATE" || parts[i] === "MERGE") {
+      parts[i + 1] = parts[i + 1]!.replace(/\((\w*):(Entity|Fact|Episode)\s*(\{([^}]*)\})?/g, (_m, v: string, label: string, _b, map?: string) => {
+        const own = label === "Entity" ? "memory_entity: true" : `node_type: '${label}'`;
+        const rest = (map ?? "").replace(/\btype:/g, "node_type:").replace(/\baliases:/g, "alias_keys:").replace(/\battributes:/g, "attributes_json:");
+        return `(${v}:Node {${own}${rest.trim() ? `, ${rest}` : ""}}`;
+      });
+      continue;
+    }
+    if (!/MATCH$/.test(parts[i]!)) continue;
+    const conds: string[] = [];
+    let body = parts[i + 1]!.replace(/\((\w*):(Entity|Fact|Episode)\s*(\{([^}]*)\})?/g, (_m, v: string, label: string, _b, map?: string) => {
+      const name = v || `_m${n++}`;
+      conds.push(KIND[label]!(name));
+      for (const kv of (map ?? "").split(",").map((s) => s.trim()).filter(Boolean)) {
+        const [k, ...rest] = kv.split(":");
+        conds.push(`${name}.${k!.trim()} = ${rest.join(":").trim()}`);
+      }
+      return `(${name}:Node`;
+    });
+    if (conds.length) {
+      const where = /\bWHERE\b/.exec(body);
+      body = where
+        ? `${body.slice(0, where.index)}WHERE ${conds.join(" AND ")} AND (${body.slice(where.index + 5).trimEnd()}) `
+        : `${body.trimEnd()} WHERE ${conds.join(" AND ")} `;
+    }
+    parts[i + 1] = body;
   }
-  return resolve(join(services.dataDir, "memory", "graph.lbug"));
+  let out = parts.join("");
+  for (const [re, to] of FIELDS) out = out.replace(re, to);
+  return out;
 }
 
-export type Handle = { path: string; read: Query; write: Query; queue: Promise<unknown>; ladybug: string };
+/** `run` in memory's dialect; `.raw` is `run` as it is (the Schema rows, _ontology.ts). */
+const translated = (run: Run): Query =>
+  Object.assign((text: string, params: Record<string, any> = {}) => run(cypher(text), params), { raw: run });
 
-async function open(path: string): Promise<Handle> {
-  // Owner-only: whatever modes Ladybug gives its files, nobody else on
-  // this machine can reach them through this folder. A folder that was
-  // already there keeps its modes; an open one gets a warning.
-  const folder = dirname(path);
-  if (!ownerOnly(folder) && statSync(folder).mode & 0o077) {
-    console.warn(`memory: ${folder} is readable by other users; chmod 700 it to keep the memory graph private`);
+// ── The handle ──────────────────────────────────────────────────────────────
+
+/** Memory on one workspace graph: its read query, its queue, the writers. */
+export type Handle = {
+  backend: LadybugBackend;
+  /** Reads on the workspace's read connection: committed writes only. */
+  read: Query;
+  /** Memory's own queue (memoryExclusive): one memory write at a time. */
+  queue: Promise<unknown>;
+  ladybug: string;
+};
+
+// One per workspace handle, kept on globalThis so a re-imported module shares it.
+const HANDLES = ((globalThis as Record<symbol, unknown>)[Symbol.for("strut.memory.workspace")] ??= new WeakMap()) as WeakMap<object, Promise<Handle>>;
+
+/** The workspace graph memory lives in; memory steps refuse without a Ladybug one (decision 11). */
+export function memoryBackend(ctx?: StepContext<unknown>): LadybugBackend {
+  const graph = (ctx?.services as Partial<StrutCapabilities> | undefined)?.graph as GraphBackend | undefined;
+  if (!graph) throw new Error("memory/* steps need the workspace graph (ctx.services.graph): memory lives in the person's Ladybug workspace");
+  if (graph.kind !== "ladybug") {
+    throw new Error(`memory/* steps run on a personal (Ladybug) workspace graph only; this workspace is on ${graph.kind} (STRUT_WORKSPACE_BACKEND=ladybug)`);
   }
-  // Lazy: an optional dependency with a native addon, loaded on first use
-  // only, so registry build never needs it (lib step dependency convention).
-  const lbug = await import("@ladybugdb/core").catch((err: unknown) => {
-    throw new Error(
-      `memory/* steps need @ladybugdb/core, an optional dependency that did not load here ` +
-        `(${err instanceof Error ? err.message : String(err)}). Install it with: npm install @ladybugdb/core`,
-    );
-  });
-  // The address space it reserves: the workspace graph's setting (max-size.ts).
-  const db = new lbug.Database(path, 0, true, false, ladybugMaxDbSize());
-  const handle = {
-    path,
-    read: queryOn(new lbug.Connection(db)),
-    write: queryOn(new lbug.Connection(db)),
-    queue: Promise.resolve(),
-    ladybug: lbug.Database.getVersion(),
-  };
-  await ensureSchema(handle.read);
-  return handle;
+  return graph;
+}
+
+/** Memory on `backend`: its ontology seeded once per handle. */
+export function memoryOn(backend: LadybugBackend): Promise<Handle> {
+  let h = HANDLES.get(backend.lbug);
+  if (!h) {
+    h = (async () => {
+      await seedMemoryOntology(backend);
+      return { backend, read: translated(backend.lbug.query as Run), queue: Promise.resolve(), ladybug: backend.lbug.version };
+    })();
+    HANDLES.set(backend.lbug, h);
+    const mine = h;
+    h.catch(() => {
+      if (HANDLES.get(backend.lbug) === mine) HANDLES.delete(backend.lbug);
+    });
+  }
+  return h;
+}
+
+const handleFor = (ctx?: StepContext<unknown>) => memoryOn(memoryBackend(ctx));
+
+/** The memory this run's workspace keeps, as a query function. */
+export async function memoryDb(ctx?: StepContext<unknown>): Promise<Query> {
+  return (await handleFor(ctx)).read;
 }
 
 /** Makes `folder` owner-only (0700, whatever the umask) when it creates it; true when it did. */
@@ -137,80 +176,101 @@ export function ownerOnly(folder: string): boolean {
   return true;
 }
 
-/** Creates what is missing, brings older tables up to date, and seeds the ontology. */
-export async function ensureSchema(query: Query): Promise<void> {
-  for (const ddl of [...SCHEMA, ...MIGRATIONS]) await query(ddl);
-  await seed(query, SEED);
-}
+// ── Writes ──────────────────────────────────────────────────────────────────
 
-/** How many migrations this strut knows: a snapshot's tables are up to date to this many. */
-export const MIGRATION_COUNT = MIGRATIONS.length;
+/** Node data as the writer takes it: nulls and undefined left out. */
+const present = (data: Record<string, unknown>) => Object.fromEntries(Object.entries(data).filter(([, v]) => v !== null && v !== undefined));
 
-function connection(path: string): Promise<Handle> {
-  const g = globalThis as Record<symbol, Map<string, Promise<Handle>> | undefined>;
-  const handles = (g[HANDLES] ??= new Map());
-  let handle = handles.get(path);
-  if (!handle) {
-    handle = open(path);
-    handles.set(path, handle);
-    // A failed open is not cached: the next run tries again.
-    handle.catch(() => handles.delete(path));
+/** One memory transaction: reads on it, and every write through the generic
+ *  writers, naming memory as the manager. */
+export class MemoryTx {
+  readonly query: Query;
+  constructor(
+    readonly backend: LadybugBackend,
+    readonly tx: GraphTx,
+    /** The node writer: the backend's, or one on a copy's clock (memory/import). */
+    private readonly nodes: NodeWriter = backend.nodes,
+  ) {
+    this.query = translated((c, p) => tx.run(c, p) as Promise<Row[]>);
   }
-  return handle;
+
+  private get opts() {
+    return { tx: this.tx, manager: MANAGER };
+  }
+
+  /** A new node of a memory type; `ref_id` defaults to a new one. */
+  async create(type: string, data: Record<string, unknown>, ref_id = newRefId()): Promise<string> {
+    return (await this.nodes.write({ type, data: present(data), ref_id }, "create", this.opts)).ref_id;
+  }
+
+  /** Several new nodes of one clock in one write; returns their ref_ids. */
+  async createMany(inputs: Array<{ type: string; data: Record<string, unknown>; ref_id: string }>): Promise<string[]> {
+    if (!inputs.length) return [];
+    const out = await this.nodes.writeMany(inputs.map((i) => ({ ...i, data: present(i.data) })), "create", this.opts);
+    return out.map((r) => r.ref_id);
+  }
+
+  /** Sets attributes; a null (or undefined) one is removed. */
+  async set(ref_id: string, patch: Record<string, unknown>): Promise<void> {
+    const set: Record<string, unknown> = {};
+    const remove: string[] = [];
+    for (const [k, v] of Object.entries(patch)) (v === null || v === undefined ? remove.push(k) : (set[k] = v));
+    await this.nodes.update(ref_id, { set, remove }, this.opts);
+  }
+
+  /** Soft delete that keeps the edges (canonical() follows ALIAS_OF out of a
+   *  merged node; unalias and dictation read a forgotten fact's SUBJECT). */
+  async forget(ref_id: string, reason: string, at?: number): Promise<boolean> {
+    return this.nodes.softDelete(ref_id, { ...this.opts, keepEdges: true, reason, ...(at !== undefined ? { at } : {}) });
+  }
+
+  async link(edge: string, from: string, to: string): Promise<void> {
+    await this.backend.edges.write({ edge, source_ref_id: from, target_ref_id: to }, this.opts);
+  }
+
+  async linkMany(edges: Array<{ edge: string; from: string; to: string }>): Promise<void> {
+    if (!edges.length) return;
+    await this.backend.edges.writeMany(edges.map((e) => ({ edge: e.edge, source_ref_id: e.from, target_ref_id: e.to })), this.opts);
+  }
+
+  async unlink(edge: string, from: string, to: string): Promise<void> {
+    await this.backend.edges.delete({ edge, source_ref_id: from, target_ref_id: to }, this.opts);
+  }
 }
 
-function queryOn(conn: Connection): Query {
-  return async (cypher, params = {}) => {
-    const result = Object.keys(params).length
-      ? await conn.execute(await conn.prepare(cypher), params)
-      : await conn.query(cypher);
-    const last = Array.isArray(result) ? result[result.length - 1]! : result;
-    return (await last.getAll()) as Row[];
-  };
+/** Runs `fn` as one transaction of the workspace, in memory's queue: all of
+ *  it lands, or, when it throws, none of it. Must not nest: an inner call
+ *  would wait on the queue the outer one holds. */
+export async function memoryWrite<T>(ctx: StepContext<unknown> | undefined, fn: (tx: MemoryTx) => Promise<T>): Promise<T> {
+  return memoryExclusive(ctx, (handle) => writeOn(handle, fn));
 }
 
-const handleFor = async (ctx?: StepContext<unknown>) => connection(await dbPath(ctx as StepContext<StrutCapabilities> | undefined));
-
-/** The memory graph this run's deployment keeps, as a query function. */
-export async function memoryDb(ctx?: StepContext<unknown>): Promise<Query> {
-  return (await handleFor(ctx)).read;
-}
-
-/** Runs `fn` as one transaction on the write connection, one write at a time:
- *  all of it lands, or, when it throws, none of it. Must not nest: an inner
- *  call would wait on the queue the outer one holds. */
-export async function memoryWrite<T>(ctx: StepContext<unknown> | undefined, fn: (query: Query) => Promise<T>): Promise<T> {
-  return memoryExclusive(ctx, async (handle) => {
-    // A failed statement rolls the transaction back, so every later one,
-    // and the commit, fails with it, even when `fn` caught the first.
-    let dead: { err: unknown } | undefined;
-    const tx: Query = async (cypher, params) => {
-      if (dead) throw dead.err;
-      try {
-        return await handle.write(cypher, params);
-      } catch (err) {
-        dead = { err };
-        throw err;
-      }
-    };
-    await handle.write("BEGIN TRANSACTION");
-    try {
-      const out = await fn(tx);
-      await tx("COMMIT");
-      if (wroteOntology(tx)) invalidate(handle.read);
+/** One workspace transaction on `handle`, for a caller already in memory's queue. */
+export async function writeOn<T>(handle: Handle, fn: (tx: MemoryTx) => Promise<T>, nodes?: NodeWriter): Promise<T> {
+  let wrote = false;
+  try {
+    return await handle.backend.lbug.withWrite(async (tx) => {
+      const m = new MemoryTx(handle.backend, tx, nodes);
+      const out = await fn(m);
+      wrote = wroteOntology(m.query);
       return out;
-    } catch (err) {
-      await handle.write("ROLLBACK").catch(() => undefined);
-      throw err;
+    });
+  } finally {
+    // A proposal (a new Schema) is seen by readers once it commits.
+    if (wrote) {
+      invalidate(handle.read);
+      handle.backend.schemas.invalidate();
     }
-  });
+  }
 }
 
-/** Runs `fn` in the writes' queue with no transaction around it: for what
- *  cannot run inside one (CHECKPOINT, EXPORT / IMPORT DATABASE, DROP TABLE).
- *  Reads go on meanwhile. Must not nest, as memoryWrite. */
+/** Runs `fn` in memory's queue, outside any transaction: what holds memory
+ *  still across several (an import's batches, a sync's read). Must not nest. */
 export async function memoryExclusive<T>(ctx: StepContext<unknown> | undefined, fn: (handle: Handle) => Promise<T>): Promise<T> {
-  const handle = await handleFor(ctx);
+  return exclusiveOn(await handleFor(ctx), fn);
+}
+
+export function exclusiveOn<T>(handle: Handle, fn: (handle: Handle) => Promise<T>): Promise<T> {
   const run = () => fn(handle);
   const next = handle.queue.then(run, run);
   handle.queue = next.catch(() => undefined);
@@ -230,33 +290,36 @@ export function iso(ms: unknown): string | undefined {
   return typeof ms === "number" || typeof ms === "bigint" ? new Date(Number(ms)).toISOString() : undefined;
 }
 
+const num = (v: unknown): number | null => (v === null || v === undefined ? null : Number(v));
+
 /** Ends the `old` facts as replaced by `by` (expired now) and links them to it. In
  *  the world one ended when `by` began, when that is known and not before it began itself;
  *  an end still to come is brought forward to then, or to now when that is not known. */
-export async function supersede(query: Query, by: string, valid: number | null, old: string[], now: number): Promise<void> {
+export async function supersede(m: MemoryTx, by: string, valid: number | null, old: string[], now: number): Promise<void> {
   if (!old.length) return;
-  // When `by` began, if known and not before `o` did.
-  const began = valid === null ? "false" : "(o.valid_at IS NULL OR o.valid_at <= $valid)";
-  await query(
-    `MATCH (o:Fact), (n:Fact) WHERE o.ref_id IN $old AND n.ref_id = $by
-     SET o.expired_at = $now, o.updated_at = $now,
-         o.invalid_at = CASE
-           WHEN o.invalid_at IS NULL THEN CASE WHEN ${began} THEN $valid ELSE o.invalid_at END
-           WHEN o.invalid_at <= $now THEN o.invalid_at
-           WHEN ${began} THEN CASE WHEN $valid < o.invalid_at THEN $valid ELSE o.invalid_at END
-           ELSE $now END
-     CREATE (n)-[:SUPERSEDES]->(o)`,
-    { old, by, valid, now },
-  );
+  const rows = await m.query("MATCH (o:Fact) WHERE o.ref_id IN $old RETURN o.ref_id AS id, o.valid_at AS valid_at, o.invalid_at AS invalid_at", { old });
+  for (const o of rows) {
+    const ov = num(o.valid_at);
+    const oi = num(o.invalid_at);
+    // When `by` began, if known and not before `o` did.
+    const began = valid !== null && (ov === null || ov <= valid);
+    const invalid = oi === null ? (began ? valid : null)
+      : oi <= now ? oi
+      : began ? Math.min(valid!, oi)
+      : now;
+    await m.set(o.id, { expired_at: now, invalid_at: invalid });
+    await m.link("SUPERSEDES", by, o.id);
+  }
 }
 
 /** Adds names to an entity's aliases, or with `remove` takes them off; normalised either way. Returns the aliases after. */
-export async function editAliases(query: Query, id: string, names: string[], now: number, remove = false): Promise<string[]> {
-  const [e] = await query("MATCH (e:Entity) WHERE e.ref_id = $id RETURN e.aliases AS aliases", { id });
+export async function editAliases(m: MemoryTx, id: string, names: string[], now: number, remove = false): Promise<string[]> {
+  void now; // the writer stamps updated_at
+  const [e] = await m.query("MATCH (e:Entity) WHERE e.ref_id = $id RETURN e.aliases AS aliases", { id });
   const was: string[] = e?.aliases ?? [];
   const keys = names.map(normalize);
   const next = remove ? was.filter((a) => !keys.includes(a)) : [...new Set([...was, ...keys])];
-  if (e && next.length !== was.length) await query("MATCH (e:Entity) WHERE e.ref_id = $id SET e.aliases = $next, e.updated_at = $now", { id, next, now });
+  if (e && next.length !== was.length) await m.set(id, { alias_keys: next });
   return next;
 }
 

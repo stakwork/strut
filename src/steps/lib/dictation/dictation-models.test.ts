@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { createStrut } from "../../../createStrut.js";
+import { NO_LADYBUG, memoryWorkspace, type MemoryWorkspace } from "../memory/_test-workspace.js";
 import { MemoryRunStore } from "../../../store.js";
 import { WorkspaceManager } from "../../../workspace.js";
 import { createStt, type SttEngine, type TranscribeResult } from "../../../audio/stt.js";
@@ -13,12 +14,10 @@ import type { Installer } from "../../../audio/download.js";
 // steps (POST /steps/<type>/run) and the next POST /audio/transcribe using
 // the pick. A fake installer stands in for the network; a fake engine for
 // sherpa, each recognizer saying which model it is.
-// The fixer runs only on a vocabulary read from memory, which needs Ladybug;
-// without it (CI) the transcript goes out as heard, no fixer named.
-const hasLadybug = await import("@ladybugdb/core").then(
-  () => true,
-  () => false,
-);
+// The fixer runs only on a vocabulary read from memory, which lives in a
+// Ladybug workspace graph; without one (CI) the transcript goes out as heard,
+// no fixer named.
+const hasLadybug = !NO_LADYBUG;
 
 const FAKE_FIXER = `data:text/javascript,${encodeURIComponent(`
 export function make() {
@@ -72,15 +71,18 @@ describe("dictation models: steps and transcription", () => {
   const fixerSpec = () => ({ module: FAKE_FIXER, factory: "make" });
   const stt = createStt({ dataDir, modelDir, engine: async () => engine, install, fixerSpec, env: {}, log: () => {} });
   let strut: Awaited<ReturnType<typeof createStrut>>;
+  let memory: MemoryWorkspace | undefined;
 
   before(async () => {
+    memory = hasLadybug ? await memoryWorkspace() : undefined;
     strut = await createStrut({
-      workspace: new WorkspaceManager(join(dir, "ws")), store: new MemoryRunStore(), dataDir, stt,
+      workspace: new WorkspaceManager(join(dir, "ws")), store: new MemoryRunStore(), dataDir, stt, ...(memory ? { graph: memory.graph } : {}),
       serveUi: false, enableChat: false, scheduler: false, systemWorkflows: false, browserWorkflows: false,
     });
   });
   after(async () => {
     await strut.close();
+    await memory?.close();
     rmSync(dir, { recursive: true, force: true });
   });
 

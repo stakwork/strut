@@ -1,15 +1,15 @@
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import type { StepContext } from "../../../core.js";
 import { buildRegistry } from "../../registry.js";
 import { memoryDb } from "./_db.js";
-import { invalidate, seed, vocabulary } from "./_ontology.js";
-import { SEED, entityType, predicate } from "./_ontology-seed.js";
+import { applyTerms, invalidate, seedMemoryOntology, vocabulary } from "./_ontology.js";
+import { ENTITY_BASE, SEED, entityType, predicate } from "./_ontology-seed.js";
+import { NO_LADYBUG, memoryWorkspace, type MemoryWorkspace } from "./_test-workspace.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -44,55 +44,70 @@ describe("memory: behaviour comes from the ontology, not from names", () => {
 
   it("no step file names a seed type or predicate in a string literal", () => {
     const files = (readdirSync(here, { recursive: true }) as string[])
-      .filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts") && !f.endsWith("_ontology-seed.ts") && !/(^|\/)_lang-/.test(f));
+      .filter((f) => f.endsWith(".ts") && !f.endsWith(".test.ts") && !f.endsWith("_ontology-seed.ts") && !/(^|\/)_lang-/.test(f))
+      // The one-off import of the old memory file: its tables' columns (name) and their old defaults.
+      .filter((f) => f !== "_migrate.ts");
     assert.ok(files.includes("remember.ts") && files.includes("_db.ts"));
     const hits = files.flatMap((f) => namedTerms(readFileSync(join(here, f), "utf8"), names).map((h) => `${f}: ${h}`));
     assert.deepEqual(hits, []);
   });
 });
 
-// Against a real LadybugDB, as memory-steps.test.ts; skipped where it does not load.
-const hasLadybug = await import("@ladybugdb/core").then(
-  () => true,
-  () => false,
-);
+// Against a real Ladybug workspace graph, as memory-steps.test.ts; skipped where it does not load.
+const hasLadybug = !NO_LADYBUG;
+
+/** A raw statement on the workspace's write queue, outside memory's writers (test seeding). */
+const rawWrite = (ws: MemoryWorkspace, cypher: string, params: Record<string, unknown> = {}) => ws.graph.lbug.withWrite((tx) => tx.run(cypher, params));
+/** Memory's Schema rows, named by type: the WHERE for a raw edit of them. */
+const schemaOf = (types: string[]) => `n.node_type = 'Schema' AND n.managed_by = 'memory' AND n.type IN [${types.map((t) => `'${t}'`).join(", ")}]`;
+/** Edits memory's Schema rows raw, then drops the vocabulary both caches hold. */
+const editSchemas = async (ws: MemoryWorkspace, cypher: string) => {
+  await rawWrite(ws, cypher);
+  invalidate(await memoryDb(ws.ctx()));
+  ws.graph.schemas.invalidate();
+};
+/** Runs the seed again, as a new seed version would: its stamp removed first. */
+const reseed = async (ws: MemoryWorkspace) => {
+  await rawWrite(ws, "MATCH (m:Migration) WHERE m.migration_id STARTS WITH 'memory_ontology_seed:' DELETE m");
+  await seedMemoryOntology(ws.graph);
+  invalidate(await memoryDb(ws.ctx()));
+};
 
 type StepDef = { input: { parse(v: unknown): unknown }; run(cfg: unknown, ctx: StepContext): Promise<any> };
 
 describe("memory: ontology behaviour", { skip: !hasLadybug && "@ladybugdb/core is not installed" }, () => {
-  const dir = mkdtempSync(join(tmpdir(), "strut-memory-ontology-"));
-  const ctxFor = (file: string) =>
-    ({
-      runId: "test", path: "test", scope: {}, input: undefined, emit: async () => {},
-      services: { secrets: { get: async (n: string) => (n === "STRUT_MEMORY_DB" ? join(dir, file, "graph.lbug") : undefined) } },
-    }) as unknown as StepContext;
   let registry: Record<string, unknown>;
-  const runIn = (c: StepContext) => (type: string, input: unknown) => {
+  const runIn = (c: () => StepContext) => (type: string, input: unknown) => {
     const def = registry[type] as StepDef;
-    return def.run(def.input.parse(input), c);
+    return def.run(def.input.parse(input), c());
   };
   before(async () => {
     ({ registry } = await buildRegistry());
   });
-  after(() => rmSync(dir, { recursive: true, force: true }));
 
   describe("a vocabulary whose user type is Owner, with no Self anywhere", () => {
-    const ctx = ctxFor("owner");
-    const run = runIn(ctx);
+    let ws: MemoryWorkspace;
+    let ctx: StepContext;
+    const run = runIn(() => ctx);
     const owner = { type: "Owner", name: "Me" };
     const ids: Record<string, string> = {};
 
     before(async () => {
-      const query = await memoryDb(ctx);
-      await query("MATCH (o:Ontology) DELETE o");
-      await seed(query, [
+      ws = await memoryWorkspace("strut-memory-ontology-");
+      ctx = ws.ctx();
+      await memoryDb(ctx);
+      // The seed's terms out, this vocabulary in (the base types stay).
+      await rawWrite(ws, "MATCH (n:Node) WHERE n.node_type = 'Schema' AND n.managed_by = 'memory' AND n.kind IN ['entity_type', 'predicate'] DETACH DELETE n");
+      await ws.graph.lbug.withWrite((tx) => applyTerms(ws.graph, tx, [
         entityType({ name: "Being", description: "Anyone.", aliases: [], naming: "person" }),
         entityType({ name: "Owner", description: "The one this memory belongs to.", aliases: ["me"], parent: "Being", role: "user" }),
         entityType({ name: "Spot", description: "Somewhere.", aliases: [] }),
         predicate({ name: "called", description: "A name.", cardinality: "one", subject_types: ["*"], aliases: [], role: "alias" }),
         predicate({ name: "home", description: "Where they live.", cardinality: "one", subject_types: ["Being"], object_types: ["Spot"], aliases: [] }),
-      ]);
+      ]));
+      invalidate(await memoryDb(ctx));
     });
+    after(() => ws.close());
 
     it("memory/ontology names Owner as the user type and lists no Self", async () => {
       const out = await run("memory/ontology", {});
@@ -152,31 +167,35 @@ describe("memory: ontology behaviour", { skip: !hasLadybug && "@ladybugdb/core i
     it("a subtype of the user type is not the user: role is not inherited", async () => {
       const query = await memoryDb(ctx);
       await run("memory/remember", { episode: "Alt.", mentions: [{ type: "Alter", name: "Al" }] });
-      await query("MATCH (o:Ontology) WHERE o.key = 'entity_type:Alter' SET o.parent = 'Owner'");
-      invalidate(query);
+      await editSchemas(ws, `MATCH (n:Node) WHERE ${schemaOf(["Alter"])} SET n.parent = 'Owner'`);
+      assert.deepEqual((await vocabulary(query)).ancestors("Alter"), ["Owner", "Being"]);
       assert.equal((await vocabulary(query)).role("Alter"), "");
       const two = await run("memory/remember", { episode: "Bo.", mentions: [{ type: "Alter", name: "Bo" }] });
       assert.equal(two.entities[0].status, "created", "not matched as a singleton");
       assert.ok((await run("memory/forget", { ref_id: two.entities[0].ref_id, reason: "test" })).forgotten);
     });
 
-    it("seeding never gives the user role to a second type, so the database still opens", async () => {
+    it("seeding never gives the user role to a second type, so the graph still opens", async () => {
       const query = await memoryDb(ctx);
-      await seed(query, SEED);
-      await seed(query, [entityType({ name: "Twin", description: "Also the user.", aliases: [], role: "user" })]);
+      await reseed(ws);
       const vocab = await vocabulary(query);
+      assert.ok(vocab.term("entity_type", "Self"), "the seed's Self is made");
       assert.equal(vocab.userType(), "Owner");
       assert.equal(vocab.role("Self"), "");
-      assert.equal(vocab.role("Twin"), "");
       assert.equal((await run("memory/ontology", {})).user_type, "Owner");
-      await query("MATCH (o:Ontology) WHERE o.key IN ['entity_type:Twin', 'entity_type:Self'] DELETE o");
-      invalidate(query);
+      await editSchemas(ws, `MATCH (n:Node) WHERE ${schemaOf(["Self"])} DETACH DELETE n`);
     });
   });
 
   describe("with the seed vocabulary", () => {
-    const ctx = ctxFor("seed");
-    const run = runIn(ctx);
+    let ws: MemoryWorkspace;
+    let ctx: StepContext;
+    const run = runIn(() => ctx);
+    before(async () => {
+      ws = await memoryWorkspace("strut-memory-ontology-");
+      ctx = ws.ctx();
+    });
+    after(() => ws.close());
 
     it("a proposed type given parent Person is named like a person and fits people predicates", async () => {
       const query = await memoryDb(ctx);
@@ -186,8 +205,7 @@ describe("memory: ontology behaviour", { skip: !hasLadybug && "@ladybugdb/core i
       assert.equal(vocab.naming("Colleague"), "plain");
       assert.equal(vocab.naming("Self"), "person");
 
-      await query("MATCH (o:Ontology) WHERE o.key = 'entity_type:Colleague' SET o.parent = 'Person'");
-      invalidate(query);
+      await editSchemas(ws, `MATCH (n:Node) WHERE ${schemaOf(["Colleague"])} SET n.parent = 'Person'`);
       vocab = await vocabulary(query);
       assert.deepEqual(vocab.ancestors("Colleague"), ["Person"]);
       assert.equal(vocab.naming("Colleague"), "person");
@@ -201,21 +219,21 @@ describe("memory: ontology behaviour", { skip: !hasLadybug && "@ladybugdb/core i
     });
 
     it("an agent's proposed type leaves behaviour unset, so a later seed can fill it", async () => {
-      const query = await memoryDb(ctx);
-      const out = await run("memory/remember", { episode: "Rex.", mentions: [{ type: "Pet", name: "Rex" }] });
-      assert.deepEqual(out.ontology.proposed, ["type Pet"]);
-      const [row] = await query("MATCH (o:Ontology) WHERE o.key = 'entity_type:Pet' RETURN o.parent AS parent, o.naming AS naming, o.role AS role");
-      assert.deepEqual(row, { parent: null, naming: null, role: null });
-      await seed(query, [...SEED, entityType({ name: "Pet", description: "An animal.", aliases: [], naming: "person" })]);
-      assert.equal((await vocabulary(query)).naming("Pet"), "person");
+      // Organization taken out of the vocabulary, so an agent proposes it.
+      await editSchemas(ws, `MATCH (n:Node) WHERE ${schemaOf(["Organization"])} DETACH DELETE n`);
+      const out = await run("memory/remember", { episode: "Acme.", mentions: [{ type: "Organization", name: "Acme" }] });
+      assert.deepEqual(out.ontology.proposed, ["type Organization"]);
+      const [row] = await ws.graph.lbug.query(`MATCH (n:Node) WHERE ${schemaOf(["Organization"])} RETURN n.parent AS parent, n.naming AS naming, n.role AS role`);
+      assert.deepEqual(row, { parent: ENTITY_BASE, naming: null, role: null });
+      await reseed(ws);
+      assert.equal((await vocabulary(await memoryDb(ctx))).naming("Organization"), "organisation");
     });
 
     it("a seed description left as an earlier seed wrote it is updated; an edited one is kept", async () => {
-      const query = await memoryDb(ctx);
-      await query("MATCH (o:Ontology) WHERE o.key = 'entity_type:Self' SET o.description = 'The user. There is one.'");
-      await query("MATCH (o:Ontology) WHERE o.key = 'entity_type:Task' SET o.description = 'Chores.'");
-      await seed(query, SEED);
-      const rows = await query("MATCH (o:Ontology) WHERE o.key IN ['entity_type:Self', 'entity_type:Task'] RETURN o.name AS name, o.description AS d ORDER BY o.name");
+      await editSchemas(ws, `MATCH (n:Node) WHERE ${schemaOf(["Self"])} SET n.type_description = 'The user. There is one.'`);
+      await editSchemas(ws, `MATCH (n:Node) WHERE ${schemaOf(["Task"])} SET n.type_description = 'Chores.'`);
+      await reseed(ws);
+      const rows = await ws.graph.lbug.query(`MATCH (n:Node) WHERE ${schemaOf(["Self", "Task"])} RETURN n.type AS name, n.type_description AS d ORDER BY n.type`);
       assert.match(rows[0]!.d, /^The user: the person this memory belongs to/);
       assert.equal(rows[1]!.d, "Chores.");
     });
@@ -226,30 +244,29 @@ describe("memory: ontology behaviour", { skip: !hasLadybug && "@ladybugdb/core i
       assert.deepEqual([vocab.naming("Nope"), vocab.role("Nope"), vocab.ancestors("Nope")], ["plain", "", []]);
 
       await run("memory/remember", { episode: "Pals.", mentions: [{ type: "Pal", name: "Al" }, { type: "Buddy", name: "Bo" }] });
-      await query("MATCH (o:Ontology) WHERE o.key = 'entity_type:Pal' SET o.parent = 'Buddy'");
-      await query("MATCH (o:Ontology) WHERE o.key = 'entity_type:Buddy' SET o.parent = 'Pal'");
-      invalidate(query);
+      await editSchemas(ws, `MATCH (n:Node) WHERE ${schemaOf(["Pal"])} SET n.parent = 'Buddy'`);
+      await editSchemas(ws, `MATCH (n:Node) WHERE ${schemaOf(["Buddy"])} SET n.parent = 'Pal'`);
       vocab = await vocabulary(query);
       assert.deepEqual(vocab.ancestors("Pal"), ["Buddy"]);
       assert.equal(vocab.naming("Pal"), "plain");
     });
 
     it("the backfill fills an unset property and keeps one someone set, even empty", async () => {
-      const query = await memoryDb(ctx);
-      await query("MATCH (o:Ontology) WHERE o.key = 'entity_type:Self' SET o.role = NULL, o.parent = NULL");
-      await query("MATCH (o:Ontology) WHERE o.key = 'entity_type:Person' SET o.naming = ''");
-      await query("MATCH (o:Ontology) WHERE o.key = 'entity_type:Organization' SET o.naming = 'plain'");
-      await seed(query, SEED);
-      const rows = await query(
-        "MATCH (o:Ontology) WHERE o.kind = 'entity_type' AND o.name IN ['Self', 'Person', 'Organization'] RETURN o.name AS name, o.parent AS parent, o.naming AS naming, o.role AS role ORDER BY o.name",
+      await editSchemas(ws, `MATCH (n:Node) WHERE ${schemaOf(["Self"])} SET n.role = NULL, n.parent = NULL`);
+      await editSchemas(ws, `MATCH (n:Node) WHERE ${schemaOf(["Person"])} SET n.naming = ''`);
+      await editSchemas(ws, `MATCH (n:Node) WHERE ${schemaOf(["Organization"])} SET n.naming = 'plain'`);
+      await reseed(ws);
+      const rows = await ws.graph.lbug.query(
+        `MATCH (n:Node) WHERE ${schemaOf(["Self", "Person", "Organization"])} RETURN n.type AS name, n.parent AS parent, n.naming AS naming, n.role AS role ORDER BY n.type`,
       );
       assert.deepEqual(rows, [
-        { name: "Organization", parent: "", naming: "plain", role: "" },
-        { name: "Person", parent: "", naming: "", role: "" },
+        { name: "Organization", parent: ENTITY_BASE, naming: "plain", role: null },
+        { name: "Person", parent: ENTITY_BASE, naming: "", role: null },
         { name: "Self", parent: "Person", naming: "person", role: "user" },
       ]);
-      const vocab = await vocabulary(query);
+      const vocab = await vocabulary(await memoryDb(ctx));
       assert.equal(vocab.userType(), "Self");
+      assert.deepEqual(vocab.ancestors("Self"), ["Person"]);
       assert.deepEqual(vocab.predicatesWithRole("alias"), ["name"]);
     });
   });

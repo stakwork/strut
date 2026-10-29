@@ -51,7 +51,7 @@ export default defineStep({
     if (!types || types.has("Fact")) {
       const rows = await query(
         `MATCH (f:Fact)-[:SUBJECT]->(s:Entity) WHERE f.deleted_at IS NULL
-         OPTIONAL MATCH (f)-[:OBJECT]->(o:Entity)
+         OPTIONAL MATCH (f)-[:OBJECT]->(o:Node)
          RETURN f.ref_id AS ref_id, f.text AS text, f.predicate AS predicate, f.valid_at AS valid_at,
                 f.invalid_at AS invalid_at, f.expired_at AS expired_at, s.name AS subject, o.name AS object`,
       );

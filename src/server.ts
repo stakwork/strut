@@ -174,6 +174,17 @@ async function getDefault(): Promise<Strut> {
         await backend.close();
         strutInstance = await createStrut(shared);
       } else {
+        // Memory moves into this graph once, from its own file (plans/memory-in-workspace-graph.md, PR C).
+        // A failure leaves that file as it was and boots on; the next boot tries again.
+        const { migrateMemory } = await import("./steps/lib/memory/_migrate.js");
+        try {
+          const moved = await migrateMemory(backend, dataDir, bootEnv());
+          if (moved.status === "migrated") {
+            console.warn(`[memory] moved ${moved.nodes} node(s) and ${moved.edges} edge(s) from ${moved.from} into ${backend.cfg.path}; the old file is ${moved.to}, a copy is ${moved.backup}`);
+          } else if (moved.status === "renamed") console.warn(`[memory] ${moved.from} was already moved in; renamed it to ${moved.to}`);
+        } catch (err) {
+          console.error(`[memory] moving memory into ${backend.cfg.path} failed: ${err instanceof Error ? err.message : String(err)}; its file is untouched, and the next boot tries again`);
+        }
         strutInstance = await createStrut({ workspace, graph: backend, ...fileStores(), ...shared });
       }
     } else if (kind === "neo4j") {

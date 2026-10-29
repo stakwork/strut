@@ -1,25 +1,22 @@
 import { z } from "zod";
 import { defineStep } from "../../../core.js";
-import { type Query, canonical, editAliases, memoryWrite, normalize } from "./_db.js";
+import { type MemoryTx, canonical, editAliases, memoryWrite, normalize } from "./_db.js";
 import { vocabulary } from "./_ontology.js";
 
 // Soft delete: the nodes stay, marked with when and why, so a janitor can
 // purge them once every copy has seen the forget, and nothing reads them
-// meanwhile. An entity takes its facts with it; an episode, the facts that
-// came only from it.
-async function forgetNodes(query: Query, table: "Entity" | "Fact" | "Episode", ids: string[], reason: string, now: number) {
-  if (!ids.length) return;
-  await query(
-    `MATCH (n:${table}) WHERE n.ref_id IN $ids AND n.deleted_at IS NULL
-     SET n.deleted_at = $now, n.deleted_reason = $reason, n.updated_at = $now`,
-    { ids, reason, now },
-  );
+// meanwhile. Their edges stay too: unalias and dictation read a forgotten
+// fact's SUBJECT. An entity takes its facts with it; an episode, the facts
+// that came only from it.
+async function forgetNodes(m: MemoryTx, ids: string[], reason: string) {
+  for (const id of ids) await m.forget(id, reason);
 }
 
 /** Forgotten name facts take back the alias they gave their subject, unless
  *  another of its name facts not forgotten (held or replaced) gives the same
  *  name, or it is the subject's own name. */
-async function unalias(query: Query, ids: string[], now: number) {
+async function unalias(m: MemoryTx, ids: string[], now: number) {
+  const query = m.query;
   const vocab = await vocabulary(query);
   const names = vocab.predicatesWithRole("alias");
   const forgotten = await query(
@@ -42,7 +39,7 @@ async function unalias(query: Query, ids: string[], now: number) {
        RETURN d.ref_id AS id LIMIT 1`,
       { s: f.s, key },
     );
-    if (!merged.length) await editAliases(query, f.s, [key], now, true);
+    if (!merged.length) await editAliases(m, f.s, [key], now, true);
   }
 }
 
@@ -58,7 +55,8 @@ export default defineStep({
   }),
   output: z.any(),
   async run(cfg, ctx) {
-    return memoryWrite(ctx, async (query) => {
+    return memoryWrite(ctx, async (m) => {
+      const query = m.query;
       const now = Date.now();
       // A merged-away entity means the one it was merged into, as in memory/get.
       const id = await canonical(query, cfg.ref_id);
@@ -68,8 +66,7 @@ export default defineStep({
         const facts = (await query(
           "MATCH (f:Fact)-[]->(e:Entity) WHERE e.ref_id = $id AND f.deleted_at IS NULL RETURN DISTINCT f.ref_id AS id", { id },
         )).map((r) => r.id as string);
-        await forgetNodes(query, "Entity", [id], cfg.reason, now);
-        await forgetNodes(query, "Fact", facts, cfg.reason, now);
+        await forgetNodes(m, [id, ...facts], cfg.reason);
         return {
           forgotten: { ref_id: id, node_type: entity.type, name: entity.name }, with_facts: facts.length,
           ...(id !== cfg.ref_id ? { merged_from: cfg.ref_id } : {}),
@@ -77,8 +74,8 @@ export default defineStep({
       }
       const [fact] = await query("MATCH (f:Fact) WHERE f.ref_id = $id AND f.deleted_at IS NULL RETURN f.text AS text", { id });
       if (fact) {
-        await forgetNodes(query, "Fact", [id], cfg.reason, now);
-        await unalias(query, [id], now);
+        await forgetNodes(m, [id], cfg.reason);
+        await unalias(m, [id], now);
         return { forgotten: { ref_id: id, node_type: "Fact", name: fact.text } };
       }
       const [episode] = await query("MATCH (e:Episode) WHERE e.ref_id = $id AND e.deleted_at IS NULL RETURN e.content AS content", { id });
@@ -90,9 +87,8 @@ export default defineStep({
            RETURN f.ref_id AS id`,
           { id },
         )).map((r) => r.id as string);
-        await forgetNodes(query, "Episode", [id], cfg.reason, now);
-        await forgetNodes(query, "Fact", onlyHere, cfg.reason, now);
-        await unalias(query, onlyHere, now);
+        await forgetNodes(m, [id, ...onlyHere], cfg.reason);
+        await unalias(m, onlyHere, now);
         return { forgotten: { ref_id: id, node_type: "Episode", name: String(episode.content).slice(0, 80) }, with_facts: onlyHere.length };
       }
       return { error: `not_found: no node with ref_id ${id}` };

@@ -1,72 +1,64 @@
 import { randomBytes } from "node:crypto";
-import { mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { z } from "zod";
 import { defineStep } from "../../../core.js";
-import { type Handle, type Query, ensureSchema, memoryExclusive, ownerOnly } from "./_db.js";
+import type { StrutCapabilities } from "../../../capabilities.js";
+import { type Handle, memoryExclusive, ownerOnly } from "./_db.js";
 import { invalidate } from "./_ontology.js";
 import {
+  type ApplyReport,
   MAX_DATA_BYTES,
   MAX_UNPACKED_BYTES,
   MB,
-  countRows,
-  dropAll,
-  literal,
+  applyDump,
+  countsOf,
+  dump,
+  memoryFolder,
   message,
   openSnapshot,
-  removeWork,
-  snapshotDirs,
   writeSnapshot,
 } from "./_snapshot.js";
 
-// Loads a memory/export snapshot into an EMPTY graph (no Entity, Fact or
-// Episode rows), or with `replace` in place of the graph there: no merge of
-// two graphs. The snapshot is checked in full before the graph is touched.
-// Replacing first writes the graph as it is to backups/memory-<time>.tar.gz
-// in the memory folder (owner-only; the newest KEEP_BACKUPS are kept), checked
-// as an incoming snapshot is, and a failure part-way loads that back. IMPORT DATABASE needs
-// no tables there, so every table is dropped first (the seeded Ontology rows
-// go with them), and the schema, migrations and seed run again after: an older
-// snapshot comes up to date. A failure part-way with no graph before leaves it empty.
-// The unpacked files sit in snapshots/import under the memory folder until the step returns.
+// Loads a memory/export snapshot into an EMPTY memory (no entity, fact or
+// episode in the workspace), or with `replace` in place of the memory there:
+// no merge of two memories. Only memory's nodes are replaced, never the
+// workspace's. The snapshot is checked in full before anything is touched.
+// Replacing first writes memory as it is to backups/memory-<time>.tar.gz in
+// the memory folder (owner-only; the newest KEEP_BACKUPS are kept), checked
+// as an incoming snapshot is, and a failure part-way loads that back. The
+// load is bounded (_snapshot.ts `applyDump`): batches of at most BATCH a
+// transaction, unchanged nodes skipped, memory's queue held throughout.
 const KEEP_BACKUPS = 3;
 
-/** Replaces the graph with `graph` (a snapshot's graph/ files), unpacked into `work`. */
-async function load(query: Query, work: string, graph: Map<string, Buffer>): Promise<void> {
-  rmSync(work, { recursive: true, force: true });
-  mkdirSync(work, { mode: 0o700 });
-  for (const [name, bytes] of graph) writeFileSync(join(work, name), bytes, { mode: 0o600 });
-  await dropAll(query);
-  await query(`IMPORT DATABASE ${literal(work)}`);
-  await ensureSchema(query);
-  await query("CHECKPOINT");
-}
+export type ImportResult = { counts: Record<string, number>; replaced: boolean; backup?: string; applied: ApplyReport } | { error: string };
 
 /** Loads a checked snapshot into the memory `handle` is: the step's work,
  *  run by the caller inside memoryExclusive (home/sync runs it there too).
- *  Returns the step's reply: `{ counts, replaced, backup? }` or `{ error }`. */
+ *  Returns the step's reply: `{ counts, replaced, backup?, applied }` or `{ error }`. */
 export async function importSnapshot(
   handle: Handle,
   snapshot: Awaited<ReturnType<typeof openSnapshot>>,
   replace?: boolean,
-): Promise<{ counts: Record<string, number>; replaced: boolean; backup?: string } | { error: string }> {
-  const { Entity: entities = 0, Fact: facts = 0, Episode: episodes = 0 } = await countRows(handle.write);
+  opts: { dataDir?: string; batch?: number } = {},
+): Promise<ImportResult> {
+  const local = await dump(handle);
+  const { Entity: entities = 0, Fact: facts = 0, Episode: episodes = 0 } = countsOf(local);
   const replaced = entities + facts + episodes > 0;
   if (replaced && !replace) {
     return {
       error: `not_empty: memory already holds ${entities} entities, ${facts} facts and ${episodes} episodes; import loads into an empty memory only, or give replace`,
     };
   }
-  const backups = join(dirname(handle.path), "backups");
-  // What a restore needs: the backup's file name and its checked graph/ files.
-  let backup: { name: string; graph: Map<string, Buffer> } | undefined;
+  const backups = join(memoryFolder(handle, opts.dataDir), "backups");
+  let backup: { name: string } | undefined;
   if (replaced) {
     try {
-      const { gz, name } = await writeSnapshot(handle, snapshotDirs(handle.path, "backup").work);
+      const { gz, name } = await writeSnapshot(handle);
       // Checked as an incoming snapshot is: one that could not be loaded back refuses the replace.
-      const { graph } = await openSnapshot(gz);
+      await openSnapshot(gz);
       // A random suffix after the time: two backups in one millisecond do not collide, and names still sort by time.
-      backup = { name: name.replace(/\.tar\.gz$/, `-${randomBytes(3).toString("hex")}.tar.gz`), graph };
+      backup = { name: name.replace(/\.tar\.gz$/, `-${randomBytes(3).toString("hex")}.tar.gz`) };
       ownerOnly(backups);
       writeFileSync(join(backups, backup.name), gz, { mode: 0o600, flag: "wx" }); // never overwrites
     } catch (err) {
@@ -76,33 +68,29 @@ export async function importSnapshot(
     const older = readdirSync(backups).filter((n) => n !== backup!.name && /^memory-.*\.tar\.gz$/.test(n)).sort().reverse();
     for (const old of older.slice(KEEP_BACKUPS - 1)) rmSync(join(backups, old), { force: true });
   }
-  const { work } = snapshotDirs(handle.path, "import");
+  let applied: ApplyReport;
   try {
-    await load(handle.write, work, snapshot.graph);
+    applied = await applyDump(handle, snapshot.dump, local, { batch: opts.batch });
   } catch (err) {
     try {
-      // The backup is this graph as it was; with none, it was empty.
-      if (backup) await load(handle.write, work, backup.graph);
-      else {
-        await dropAll(handle.write);
-        await ensureSchema(handle.write);
-      }
+      // What was here before, loaded back over what landed (empty when there was nothing).
+      await applyDump(handle, local, await dump(handle), { batch: opts.batch });
     } catch (cleanup) {
-      const what = backup ? `restored from backups/${backup.name}` : "emptied";
+      const what = backup ? `restored (backups/${backup.name} holds it)` : "emptied";
       return { error: `import_failed: ${message(err)}; and the memory could not be ${what} after: ${message(cleanup)}` };
     }
     return { error: `import_failed: ${message(err)}; ${backup ? "the memory is as it was" : "the memory is left empty"}` };
   } finally {
     invalidate(handle.read);
-    removeWork(work);
   }
-  return { counts: await countRows(handle.write), replaced, ...(backup && { backup: backup.name }) };
+  return { counts: countsOf(await dump(handle)), replaced, ...(backup && { backup: backup.name }), applied };
 }
 
 export default defineStep({
   type: "memory/import",
   description:
     "Load a memory/export snapshot (.tar.gz) into this strut's long-term memory, which must be empty unless replace is given. " +
+    "Only memory's nodes are replaced, never the rest of the workspace graph. " +
     "With replace, a memory that is not empty is first backed up on this machine, then replaced; the output names the backup. " +
     `Give data (the file as base64, at most ${MAX_DATA_BYTES / MB} MB) or path (a file on this machine).`,
   input: z.object({
@@ -137,7 +125,7 @@ export default defineStep({
     } catch (err) {
       return { error: message(err) };
     }
-
-    return memoryExclusive(ctx, (handle) => importSnapshot(handle, snapshot, cfg.replace));
+    const dataDir = (ctx.services as Partial<StrutCapabilities> | undefined)?.dataDir;
+    return memoryExclusive(ctx, (handle) => importSnapshot(handle, snapshot, cfg.replace, { dataDir }));
   },
 });
