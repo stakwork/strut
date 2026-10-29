@@ -1,6 +1,7 @@
-import type { AccessedNode, StepContext } from "../../../core.js";
+import { workflowOf, type AccessedNode, type StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
 import type { GraphBackend } from "../../../graph/backend.js";
+import { ManagedReadFilter } from "../../../graph/managed.js";
 
 export type { GraphBackend };
 
@@ -42,6 +43,30 @@ export type { GraphBackend };
  * top level.
  */
 export async function graphCtx(ctx?: StepContext<StrutCapabilities>): Promise<GraphBackend> {
+  const b = await openCtx(ctx);
+  // Nothing managed (every graph before memory moves in): the backend as wired.
+  return (await hiddenManaged(b, ctx)).size ? { ...b, reader: new ManagedReadFilter(b.reader, b.schemas) } : b;
+}
+
+/**
+ * May this step read the managed types (memory's; plans/memory-in-workspace-graph.md
+ * decision 8)? Only as an agent's tool call in a run of a workflow the host
+ * lists in `memoryReaders` (`StrutOptions.memoryReaders`) — the person's
+ * assistant. A workflow's own steps, every other workflow's agents (jobs,
+ * the builder, apps) and a call with no run do not. The writers refuse the
+ * managed types to every `graph/*` step whatever this says.
+ */
+export function readsManaged(ctx?: StepContext<StrutCapabilities>): boolean {
+  const readers = ctx?.services?.memoryReaders;
+  return !!ctx?.agentTool && !!readers?.length && readers.includes(workflowOf(ctx));
+}
+
+/** The managed types this step may not read, type → manager (empty when it may). */
+export async function hiddenManaged(b: GraphBackend, ctx?: StepContext<StrutCapabilities>): Promise<ReadonlyMap<string, string>> {
+  return readsManaged(ctx) ? new Map() : ((await b.schemas?.managedTypes?.()) ?? new Map());
+}
+
+async function openCtx(ctx?: StepContext<StrutCapabilities>): Promise<GraphBackend> {
   const wired = ctx?.services?.graph;
   if (wired) return wired;
   const secrets = ctx?.services?.secrets;

@@ -385,6 +385,9 @@ export interface StrutCapabilities {
    *  and falls back to `NEO4J_*` when it is absent). A Neo4j or a LadybugDB
    *  file (plans/ladybug-backend.md). */
   graph?: GraphBackend;
+  /** The workflows whose agents' graph tools read the managed types
+   *  (`StrutOptions.memoryReaders`; `graphCtx`). Absent: none do. */
+  memoryReaders?: readonly string[];
   /** The browser the `browser/*` steps drive (src/browser/service.ts): one
    *  Playwright connection, a context per run, closed when the run ends.
    *  Built by the standard server from `BROWSER_*`; a host's own wins.

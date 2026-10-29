@@ -104,6 +104,7 @@ import type { AppRelease, Upstream } from "./workspace.js";
 import type { CassetteMode } from "./cassette.js";
 // Type-only: the graph backend stays a lazy, opt-in dependency.
 import type { GraphBackend } from "./graph/backend.js";
+import { ManagedReadFilter } from "./graph/managed.js";
 import { projectRunOnce } from "./graph/projector.js";
 // No runtime graph dependency in here either (type-only imports inside).
 import type { ClaimsReader } from "./graph/claims.js";
@@ -367,6 +368,14 @@ export interface StrutOptions<TServices = unknown> {
    *  detached. Seeded as `job` is, with the same host delta (`{ tools,
    *  system }`, appended after strut's). `false` seeds nothing. */
   orchestrator?: false | OrchestratorSeedOptions;
+  /** The workflows whose agents may read the managed graph types
+   *  (plans/memory-in-workspace-graph.md decision 8): an agent's graph tool
+   *  call in a run of one of these sees memory's nodes; every other caller —
+   *  a workflow's own steps, other workflows' agents, `graph/find`, the chat
+   *  builder's `graph_query` / `graph_get`, `/graph/*` — does not. Peel lists
+   *  `orchestrator` and `peel-automation-run`. Default: none. Changes nothing
+   *  until a type is managed. STRUT_HOST_CONFIG: `memoryReaders`. */
+  memoryReaders?: string[];
   /** The `builder` workflow strut ships (`src/builder-seed.ts`,
    *  plans/builder-job.md): one turn of a WORKFLOW BUILD as a job — the
    *  meta/* authoring twins as its agent's tools, the web tools as its only
@@ -899,6 +908,7 @@ export async function createStrut<TServices = unknown>(
     // prefers it over opening one from env). Borrowed: a step's `close()`
     // must not close the connection the workspace and claims read through.
     ...(graph ? { graph: { ...graph, close: async () => undefined } } : {}),
+    ...(opts.memoryReaders?.length ? { memoryReaders: [...opts.memoryReaders] } : {}),
     ...(stt ? { stt } : {}),
     // The LLM auth seam, for the model-building call sites (llm.ts).
     ...(opts.llmAuth ? { llmAuth: opts.llmAuth } : {}),
@@ -3343,10 +3353,13 @@ export async function createStrut<TServices = unknown>(
   // One node as the graph holds it NOW — what the run flyout opens when a
   // node an agent read is clicked (the run log records which node, its type
   // and its name; never its content). Read-only. 501 without a graph.
+  // No credential reads a managed type here (memory's; managed.ts), a peer's
+  // included: the person's memory is read through the memory steps.
+  const graphReads = graph ? new ManagedReadFilter(graph.reader, graph.schemas) : undefined;
   app.get("/graph/nodes/:ref_id", async (c) => {
-    if (!graph) return c.json({ error: "this deployment has no graph" }, 501);
+    if (!graph || !graphReads) return c.json({ error: "this deployment has no graph" }, 501);
     const ref_id = c.req.param("ref_id");
-    const node = await graph.reader.getNode(ref_id);
+    const node = await graphReads.getNode(ref_id);
     if (!node) return c.json({ error: `No node "${ref_id}" in the graph` }, 404);
     return c.json({ ref_id: node.ref_id, node_type: node.node_type ?? null, name: node.name ?? null, properties: node.properties });
   });
@@ -3359,11 +3372,11 @@ export async function createStrut<TServices = unknown>(
   // node_type, name, description? }] }, names starting with the fragment
   // first. Read-only. 501 without a graph, 400 without a type.
   app.get("/graph/names", async (c) => {
-    if (!graph) return c.json({ error: "this deployment has no graph" }, 501);
+    if (!graphReads) return c.json({ error: "this deployment has no graph" }, 501);
     const type = (c.req.query("type") ?? "").trim();
     if (!type) return c.json({ error: "type is required" }, 400);
     const limit = Number(c.req.query("limit") ?? 8);
-    return c.json({ nodes: await graph.reader.namesLike(type, c.req.query("q") ?? "", Number.isFinite(limit) ? limit : 8) });
+    return c.json({ nodes: await graphReads.namesLike(type, c.req.query("q") ?? "", Number.isFinite(limit) ? limit : 8) });
   });
 
   // The embedding pass (plans/semantic-search.md §1) as the graph backend
