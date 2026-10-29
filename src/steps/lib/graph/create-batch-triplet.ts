@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { defineStep, type StepContext, withAccessedNodes } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
-import { graphCtx, errText, graphErrorCode, writeEdge, describeNodes, type GraphBackend } from "./_shared.js";
+import { graphCtx, errText, errDetail, writeEdge, describeNodes, type GraphBackend } from "./_shared.js";
 /** Validate one side of a triplet: either ref_id XOR (type + data). */
 function validateTripletSide(
   side: "source" | "target",
@@ -72,7 +72,7 @@ export default defineStep({
       b = await graphCtx(ctx as StepContext<StrutCapabilities>);
       namespace = await b.reader.resolveNamespace(cfg.namespace);
     } catch (e) {
-      return errText("graph/create-batch-triplet", e);
+      return errText("graph/create-batch-triplet", e, ctx);
     }
 
     // Inline-node resolution cache: identical sides resolve once per batch.
@@ -116,7 +116,7 @@ export default defineStep({
           });
         } catch (e) {
           results.push({
-            error: `edge write failed — ${graphErrorCode(e) ? `${graphErrorCode(e)}: ` : ""}${e instanceof Error ? e.message : String(e)}`,
+            error: `edge write failed — ${errDetail(e, ctx)}`,
             source_ref_id: sourceRef,
             target_ref_id: targetRef,
             edge_type: edgeType,

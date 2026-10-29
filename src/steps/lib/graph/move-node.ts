@@ -65,7 +65,7 @@ export default defineStep({
         await describeNodes(b, [r.ref_id, r.from_ref_id, ...(r.moved ? [r.to_ref_id] : [])]),
       );
     } catch (e) {
-      return errText("graph/move-node", e);
+      return errText("graph/move-node", e, ctx);
     }
   },
 });

@@ -62,7 +62,7 @@ export default defineStep({
         await describeNodes(b, [cfg.ref_id]),
       );
     } catch (e) {
-      return errText("graph/edit-node", e);
+      return errText("graph/edit-node", e, ctx);
     }
   },
 });

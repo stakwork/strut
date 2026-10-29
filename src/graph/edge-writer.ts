@@ -32,7 +32,7 @@
 import { randomUUID } from "node:crypto";
 import type { EdgeDeleteResult, EdgeMergeRow, EngineLike, GraphEngine, GraphTx } from "./engine.js";
 import { asEngine } from "./neo4j-engine.js";
-import { GraphValidationError, refuseManaged, type WriterCallOptions } from "./node-writer.js";
+import { GraphValidationError, refuseManaged, type ManagerKey, type WriterCallOptions } from "./node-writer.js";
 import { SchemaResolver } from "./schema-resolver.js";
 import { STRUT_EDGES, WILDCARD_TARGET_EDGES, isStrutType, typeLabelOf } from "./strut-schemas.js";
 
@@ -226,20 +226,29 @@ export class EdgeWriter {
 
     const go = async (tx: GraphTx): Promise<EdgeUpdateResult> => {
       const ref_id = await this.locateEdge(tx, where);
-      const r = await this.engine.edgeEngine.setProps(tx, ref_id, set, remove);
+      // The ends first: a refusal changes nothing, even on a caller's
+      // transaction that goes on to commit.
+      const ends = await this.edgeEnds(tx, ref_id);
+      if (ends) await this.guardEnds(tx, ends, opts.manager);
+      const r = ends && (await this.engine.edgeEngine.setProps(tx, ref_id, set, remove));
       if (!r) throw new GraphValidationError("NOT_FOUND", "edge", `no edge with ref_id ${ref_id}`);
-      // Located by ref_id, the ends are known only now: a refusal throws,
-      // and the transaction takes the change back with it.
-      await this.guardEnds(tx, [r.source_ref_id, r.target_ref_id], opts.manager);
       return { ...r, updated: Object.keys(set), removed: remove };
     };
     return opts.tx ? go(opts.tx) : this.engine.tx(go);
   }
 
   /** `refuseManaged` for each node's type, as the graph holds it. */
-  private async guardEnds(tx: GraphTx, ids: string[], manager: string | undefined): Promise<void> {
+  private async guardEnds(tx: GraphTx, ids: string[], manager: ManagerKey | undefined): Promise<void> {
     const ends = await this.engine.edgeEngine.endpoints(tx, ids);
     for (const t of new Set([...ends.values()].map((e) => e.type))) if (t && !isStrutType(t)) refuseManaged(await this.resolver.schema(t, tx), manager);
+  }
+
+  /** The source and target ref_ids of the edge `ref_id` names, before
+   *  anything changes it; null when there is none. One pattern both
+   *  engines read, as their own edge statements match an edge by ref_id. */
+  private async edgeEnds(tx: GraphTx, ref_id: string): Promise<[string, string] | null> {
+    const [r] = await tx.run(`MATCH (s)-[r {ref_id: $ref_id}]->(t) RETURN s.ref_id AS s, t.ref_id AS t LIMIT 1`, { ref_id });
+    return r ? [String(r["s"]), String(r["t"])] : null;
   }
 
   /** The ref_id of the one edge `where` names: a ref_id as given, or the
@@ -267,9 +276,11 @@ export class EdgeWriter {
   async delete(where: string | EdgeLocator, opts: WriterCallOptions = {}): Promise<EdgeDeleteResult | null> {
     const at: EdgeLocator = typeof where === "string" ? { ref_id: where } : where;
     const go = async (tx: GraphTx): Promise<EdgeDeleteResult | null> => {
-      const r = await this.engine.edgeEngine.delete(await this.locateEdge(tx, at), tx);
-      if (r) await this.guardEnds(tx, [r.source_ref_id, r.target_ref_id], opts.manager);
-      return r;
+      const ref_id = await this.locateEdge(tx, at);
+      const ends = await this.edgeEnds(tx, ref_id);
+      if (!ends) return null;
+      await this.guardEnds(tx, ends, opts.manager);
+      return this.engine.edgeEngine.delete(ref_id, tx);
     };
     return opts.tx ? go(opts.tx) : this.engine.tx(go);
   }
@@ -296,6 +307,8 @@ export class EdgeWriter {
       const found = await this.engine.edgeEngine.liveEdgesOf(tx, m.ref_id, edge, forward);
       if (!found) throw new GraphValidationError("NOT_FOUND", edge, `no node with ref_id ${m.ref_id}`);
       const node = found.node;
+      // The node's own type before anything about its edges is told.
+      await this.guardEnds(tx, [node], opts.manager);
       const current = found.edges;
       const hits = m.from_ref_id ? current.filter((r) => r.other === m.from_ref_id) : current;
       if (hits.length === 0) {
@@ -308,11 +321,13 @@ export class EdgeWriter {
         );
       }
       if (hits.length > 1) {
+        // The refusal names the other ends: none of them a managed node.
+        await this.guardEnds(tx, hits.map((h) => h.other), opts.manager);
         throw new GraphValidationError("DUPLICATE_KEY", edge, `${node} has ${hits.length} live ${way} edges (to ${hits.map((h) => h.other).join(", ")}) — pass from_ref_id`);
       }
       const old = hits[0]!;
       const from = old.other;
-      await this.guardEnds(tx, [node, from], opts.manager);
+      await this.guardEnds(tx, [from], opts.manager);
       const unmoved = { moved: false, ref_id: node, from_ref_id: from, to_ref_id: m.to_ref_id, edge_ref_id: old.edge_ref_id, previous_edge_ref_id: old.edge_ref_id };
       if (m.to_ref_id === from) return unmoved;
       if (m.to_ref_id === node) throw new GraphValidationError("WRONG_TYPE", edge, "a node cannot be moved under itself");
@@ -350,7 +365,7 @@ export class EdgeWriter {
    *  registry for Strut sources, jarvis's allowlist/edge-schema rules for the
    *  rest. Throws on a missing endpoint, a disallowed triple, or a managed
    *  endpoint `manager` does not own. */
-  private async validateEndpoints(tx: GraphTx, inputs: EdgeInput[], manager: string | undefined): Promise<ResolvedEdge[]> {
+  private async validateEndpoints(tx: GraphTx, inputs: EdgeInput[], manager: ManagerKey | undefined): Promise<ResolvedEdge[]> {
     const ids = [...new Set(inputs.flatMap((i) => [i.source_ref_id, i.target_ref_id]))];
     const nodes = await this.engine.edgeEngine.endpoints(tx, ids);
     const out: ResolvedEdge[] = [];

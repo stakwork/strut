@@ -54,7 +54,7 @@ export default defineStep({
       );
       return { dataDir, workflows, ...report };
     } catch (e) {
-      return errText("graph/project", e);
+      return errText("graph/project", e, ctx);
     }
   },
 });

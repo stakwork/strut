@@ -8,6 +8,7 @@ import { createStrut } from "../createStrut.js";
 import { coreRegistry } from "../steps/registry.js";
 import { MemoryRunStore } from "../store.js";
 import { graphConfigFromEnv } from "./bolt.js";
+import { rawGraphOf } from "./managed.js";
 import { testBackends } from "./test-util.js";
 import {
   DEFAULT_NEO4J_HOST,
@@ -88,7 +89,7 @@ describe("ladybugWorkspaceFromEnv → createStrut", { skip: ladybugSkip }, () =>
         stt: false,
         scheduler: false,
       });
-      assert.equal((strut.services as { graph?: { cfg: unknown } }).graph?.cfg, backend.cfg, "services.graph is the wired backend");
+      assert.equal(rawGraphOf((strut.services as { graph?: unknown }).graph), backend, "services.graph is a view of the wired backend");
       process.env["STRUT_API_KEY"] = "k-wiring";
       try {
         const health = (await (await strut.app.request("/health", { headers: { authorization: "Bearer k-wiring" } })).json()) as Record<string, unknown>;

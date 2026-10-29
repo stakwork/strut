@@ -21,7 +21,7 @@ export default defineStep({
       const r = await b.reader.registerNamespace(cfg.namespace);
       return { namespace: r.namespace, registered: true, ...(r.created ? {} : { alreadyExisted: true }) };
     } catch (e) {
-      return errText("graph/register-namespace", e);
+      return errText("graph/register-namespace", e, ctx);
     }
   },
 });

@@ -13,16 +13,26 @@
  *     filter on the index's rows, so a page is as full as without them;
  *   - neighbors: from a managed node, nothing; from any other, its managed
  *     endpoints are excluded before the limit, so a walk never crosses in;
- *   - counts: edges to a managed node are not counted.
+ *   - counts: edges to a managed node are not counted;
+ *   - the ontology: a managed type's schema and its edge schemas are not
+ *     there, and a search `linked` to one finds nothing.
  *
- * Until a Schema names a manager every call goes straight through.
- * `withoutManagedRows` is the same for raw Cypher rows (`graph_query`,
- * `graph/query`): a row holding a managed node, by its `node_type` or its
- * label, is dropped. An aggregate over managed nodes still passes —
- * accepted on a personal graph.
+ * Until a Schema names a manager every call goes straight through. Raw
+ * Cypher (`graph/query`, the builder's `graph_query`) is not filtered but
+ * refused while anything is managed (`query.ts`, `hideManaged`): its rows
+ * carry no type to filter by.
+ *
+ * `graphView` is what a step is handed as `ctx.services.graph`: the reads
+ * through this filter, the writers (which refuse a managed type without
+ * its manager's key) and no engine handle.
  *
  * No runtime imports: the steps load this beside `graphCtx`.
  */
+import type { GraphBackend } from "./backend.js";
+import type { Params, Row } from "./bolt.js";
+import type { EdgeWriter } from "./edge-writer.js";
+import type { NodeWriter } from "./node-writer.js";
+import type { SchemaResolver } from "./schema-resolver.js";
 import type {
   ConnectionCount,
   EdgeEnvelope,
@@ -65,11 +75,20 @@ export class ManagedReadFilter implements GraphReader {
   resolveNamespace(namespace: string | undefined): Promise<string> {
     return this.inner.resolveNamespace(namespace);
   }
-  listSchemas(opts?: { domains?: string[]; includeDeleted?: boolean }): Promise<{ schemas: SchemaEnvelope[]; edges: OntologyEdge[] }> {
-    return this.inner.listSchemas(opts);
+  async listSchemas(opts?: { domains?: string[]; includeDeleted?: boolean }): Promise<{ schemas: SchemaEnvelope[]; edges: OntologyEdge[] }> {
+    const { hidden } = await this.managed();
+    const out = await this.inner.listSchemas(opts);
+    if (!hidden.size) return out;
+    return {
+      schemas: out.schemas.filter((s) => !isHidden(hidden, s.type)),
+      edges: out.edges.filter((e) => !isHidden(hidden, e.source_type) && !isHidden(hidden, e.target_type)),
+    };
   }
-  getSchema(type: string): Promise<SchemaEnvelope | null> {
-    return this.inner.getSchema(type);
+  async getSchema(type: string): Promise<SchemaEnvelope | null> {
+    const { hidden } = await this.managed();
+    if (isHidden(hidden, type)) return null;
+    const s = await this.inner.getSchema(type);
+    return s && isHidden(hidden, s.type) ? null : s;
   }
 
   async getNode(ref_id: string): Promise<NodeEnvelope | null> {
@@ -141,6 +160,8 @@ export class ManagedReadFilter implements GraphReader {
     if (!hidden.size) return this.inner.search(p);
     const types = p.types?.filter((t) => !isHidden(hidden, t));
     if (p.types?.length && !types?.length) return { nodes: [], total: 0, truncated: false };
+    // `linked: ["ABOUT<Person"]` would tell which nodes a managed one points at.
+    if (p.linked?.some((l) => isHidden(hidden, l.split(/[<>]/).pop()?.trim()))) return { nodes: [], total: 0, truncated: false };
     const res = await this.inner.search({
       ...p,
       ...(types ? { types } : {}),
@@ -156,20 +177,66 @@ export class ManagedReadFilter implements GraphReader {
   }
 }
 
-/** Does `v` hold a node of a hidden type: a Ladybug node struct (its
- *  `node_type`), a Neo4j node (`labels`), at any depth? */
-function holdsHidden(v: unknown, hidden: ReadonlySet<string>): boolean {
-  if (Array.isArray(v)) return v.some((x) => holdsHidden(x, hidden));
-  if (!v || typeof v !== "object") return false;
-  const o = v as Record<string, unknown>;
-  if (typeof o["node_type"] === "string" && hidden.has(o["node_type"].toLowerCase())) return true;
-  if (Array.isArray(o["labels"]) && o["labels"].some((l) => typeof l === "string" && hidden.has(l.toLowerCase()))) return true;
-  return Object.values(o).some((x) => holdsHidden(x, hidden));
+/** A raw query refused because the graph holds types the caller may not read. */
+export class ManagedReadRefused extends Error {
+  constructor() {
+    super(
+      "raw graph queries are off on this graph: it holds managed types (memory's) this caller may not read — use the typed reads (graph/graph-search, graph/graph-get, graph/graph-neighbors, graph/find)",
+    );
+    this.name = "ManagedReadRefused";
+  }
 }
 
-/** Raw query rows without the ones that hold a managed node. */
-export function withoutManagedRows<R extends Record<string, unknown>>(rows: R[], managed: ReadonlyMap<string, string>): R[] {
-  if (!managed.size) return rows;
-  const hidden = lower(managed);
-  return rows.filter((r) => !holdsHidden(r, hidden));
+/**
+ * The deployment's graph as every step sees it (`ctx.services.graph`):
+ * reads that leave managed types out, the writers, the schemas' lookups and
+ * `query`, which is refused while anything is managed. Each is a bound
+ * method, so nothing reaches the engine, the driver, the config (its
+ * credentials) or the unfiltered reader. Strut's own `graph/*` steps get the
+ * backend behind it (`rawGraphOf`, through `graphCtx`) and filter by
+ * caller; a manager's steps get their key where the host wires them.
+ */
+export interface GraphView {
+  readonly kind: GraphBackend["kind"];
+  readonly namespace: string;
+  readonly reader: GraphReader;
+  readonly nodes: Pick<NodeWriter, "write" | "writeMany" | "update" | "softDelete" | "deleteNode">;
+  readonly edges: Pick<EdgeWriter, "write" | "writeMany" | "update" | "delete" | "move">;
+  readonly schemas: Pick<SchemaResolver, "schema" | "resolveType" | "managedTypes">;
+  query(cypher: string, params?: Params): Promise<Row[]>;
+  /** A no-op: the backend is the server's, shared with the workspace. */
+  close(): Promise<void>;
+}
+
+const behind = new WeakMap<object, GraphBackend>();
+
+function bound<T extends object, K extends keyof T>(o: T, keys: readonly K[]): Pick<T, K> {
+  return Object.freeze(Object.fromEntries(keys.map((k) => [k, (o[k] as (...a: unknown[]) => unknown).bind(o)]))) as Pick<T, K>;
+}
+
+export function graphView(raw: GraphBackend): GraphView {
+  const filter = new ManagedReadFilter(raw.reader, raw.schemas);
+  const reads = Object.getOwnPropertyNames(ManagedReadFilter.prototype).filter((k) => k !== "constructor" && k !== "managed") as Array<keyof GraphReader>;
+  const view: GraphView = Object.freeze({
+    kind: raw.kind,
+    namespace: raw.namespace,
+    reader: bound(filter, reads) as GraphReader,
+    nodes: bound(raw.nodes, ["write", "writeMany", "update", "softDelete", "deleteNode"] as const),
+    edges: bound(raw.edges, ["write", "writeMany", "update", "delete", "move"] as const),
+    schemas: bound(raw.schemas, ["schema", "resolveType", "managedTypes"] as const),
+    async query(cypher: string, params?: Params) {
+      if ((await raw.schemas.managedTypes()).size) throw new ManagedReadRefused();
+      return raw.query(cypher, params);
+    },
+    close: async () => undefined,
+  });
+  behind.set(view, raw);
+  return view;
+}
+
+/** The backend behind a `graphView`, for strut's own graph steps; undefined
+ *  for anything else (a backend handed in as it is, in tests). Not exported
+ *  from the package. */
+export function rawGraphOf(g: unknown): GraphBackend | undefined {
+  return g && typeof g === "object" ? behind.get(g) : undefined;
 }

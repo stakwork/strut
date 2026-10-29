@@ -3,7 +3,7 @@ import type { SessionsCapability } from "./session-store.js";
 import { jobsCapability, type JobsCapability } from "./jobs.js";
 import type { PeersCapability } from "./peers.js";
 // Type-only: the graph backend stays a lazy, opt-in dependency.
-import type { GraphBackend } from "./graph/backend.js";
+import type { GraphView } from "./graph/managed.js";
 import type { BrowserService } from "./browser/service.js";
 /**
  * Standard "capabilities" — the small, generic, host-owned services that
@@ -380,11 +380,13 @@ export interface StrutCapabilities {
    *  naming it). */
   peers?: PeersCapability;
   /** The graph backend the SERVER wired (`createStrut({ graph })`, else the
-   *  one behind a graph-backed workspace): what the `graph/*` steps read and
-   *  write through, instead of opening one from env (`graphCtx` prefers it
-   *  and falls back to `NEO4J_*` when it is absent). A Neo4j or a LadybugDB
-   *  file (plans/ladybug-backend.md). */
-  graph?: GraphBackend;
+   *  one behind a graph-backed workspace), as a step may hold it
+   *  (`graphView`, src/graph/managed.ts): reads without the managed types,
+   *  the writers, no engine handle. The `graph/*` steps read and write the
+   *  backend behind it, instead of opening one from env (`graphCtx` prefers
+   *  it and falls back to `NEO4J_*` when it is absent). A Neo4j or a
+   *  LadybugDB file (plans/ladybug-backend.md). */
+  graph?: GraphView;
   /** The workflows whose agents' graph tools read the managed types
    *  (`StrutOptions.memoryReaders`; `graphCtx`). Absent: none do. */
   memoryReaders?: readonly string[];

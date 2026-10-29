@@ -119,6 +119,10 @@ export interface StepContext<TServices = unknown> {
    *  (src/package-lookup.ts): an agent's grants read it. Absent outside a
    *  package. */
   package?: string;
+  /** THIS frame's workflow, unlike `workflow`: a subflow's steps see the
+   *  subflow's, and an agent's tool calls the agent's frame's. `sealed` is
+   *  its YAML `sealed: true` (`src/sealed.ts`). Set by the runner. */
+  frame?: { workflow: string; sealed?: boolean };
   /** A workflow name as this frame means it — `<package>/<name>` when the
    *  frame's package holds that, else the name (src/package-lookup.ts). Set
    *  by the runner; a step that launches or reads a run by name (`run/*`,

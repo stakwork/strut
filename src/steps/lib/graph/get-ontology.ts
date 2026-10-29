@@ -97,7 +97,7 @@ export default defineStep({
       const data = await b.reader.listSchemas(domains && domains.length ? { domains } : {});
       return buildOntologyPayload(data, cfg.include_edges ?? false, cfg.include_attributes ?? false);
     } catch (e) {
-      return errText("graph/get-ontology", e);
+      return errText("graph/get-ontology", e, ctx);
     }
   },
 });
