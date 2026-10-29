@@ -777,6 +777,29 @@ the registry rebuilds, before any workflow calls it, this world's npm
   person's publish there (§12.1, proposed). Still a person, still never an
   agent.
 
+***Ruled 2026-10-29: an agent may ASK, as a proposal.*** Evan: "Yes, by
+proposal." The `package/install` step (`src/steps/lib/package/install.ts`)
+runs only as a proposal a person accepted (`ctx.proposal`, the `app/grant`
+pattern): the `orchestrator`, `builder` and `job` seeds grant it and list
+it in `approve:`, so the agent's call records a proposal and the person
+decides on the card (Hive's, strut's run overview, `POST
+/proposals/:id/decide`); the apply installs as `POST /packages/install`
+would, with the decider as `ctx.actor`, and the session hears the result
+on its next turn. The ask above is the card's `summary`, read at proposal
+time by the step's `describe` hook (plans/proposals.md §7, built now) off
+the index's page of the package (`detail`, the store front's reading of
+the archive): publisher and key, which index lists it, digest, license,
+what it brings, what it can spend or act on, the secrets it needs — or
+that no followed index lists it. Nothing is fetched from the publisher
+before the yes. The door behind the step (`ctx.services.packages.install`)
+checks the ACCEPTED record on disk for that very ref before calling the
+in-process install, so a step authored or installed cannot forge a
+`ctx.proposal` and pull code. "Never an agent" above stands for the
+DECISION: the agent proposes, the person installs. Not built: the builder
+chat's `install_package` with `ask_user` (the chat has no proposals; the
+person is at the Packages dialog anyway), `update_package`, the missing
+secrets asked for after the install.
+
 ## 9. What this changes in `federation.md` §2.3
 
 §2.3 (not built) planned one origin per workflow, `source: { repo, path }`,
@@ -2388,6 +2411,10 @@ production until install (step 2) calls the resolver.
      the hit brings, reaches and needs, and the tap installs; the
      Stakwork default (the deployed index's key); a static export of the
      store's pages (the static mirror).
+   - **Built 2026-10-29: an agent installs by PROPOSAL** (§8, ruled):
+     `package/install` as a gated step on the orchestrator, builder and
+     job seeds, the card's summary read off the index by the step's
+     `describe` hook, the door behind it checking the accepted record.
    - **6b, later: the Pkarr record.** The JS client (relay-only: a relay is a
      dependency), Stakwork's relay at a stable hostname and the
      sphinx-swarm container, a publisher's record naming its public

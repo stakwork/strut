@@ -2917,8 +2917,9 @@ export async function createStrut<TServices = unknown>(
     if (problem) throw new Error(`packageIndexes: ${problem}`);
     await indexes.set(sub);
   }
-  // The package/search step's door (src/steps/lib/package/search.ts).
-  (services as Record<string, unknown>)["packages"] ??= { search: (q: string, o?: { limit?: number }) => indexes.search(q, o) };
+  // The package/search step's door (src/steps/lib/package/search.ts) — and
+  // package/install's, below, once the in-process door exists.
+  const packagesBag = ((services as Record<string, unknown>)["packages"] ??= { search: (q: string, o?: { limit?: number }) => indexes.search(q, o) }) as Record<string, unknown>;
   /** A bare name (`acme/linear`) → `pk:` through the first card that lists
    *  its publisher, the row's catalog URLs tried in order; any other ref as
    *  it came. */
@@ -2951,6 +2952,26 @@ export async function createStrut<TServices = unknown>(
         await rebuildRegistry();
         return out;
       }),
+  };
+  // `package/install`'s door (src/steps/lib/package/install.ts; plans/
+  // marketplace.md §8, ruled 2026-10-29: an agent ASKS, a person accepts):
+  // the install runs only as the apply of an ACCEPTED proposal of that step
+  // for this very ref. The record on disk is the proof — an `accepted`
+  // `package/install` proposal whose input names `ref` — so no step, authored
+  // or installed, reaches this with a forged `ctx.proposal`; `applied` and
+  // `failed` records do not open it again (a failed apply is accepted again
+  // by the person, which puts it back to `accepted`).
+  packagesBag["install"] ??= async (ref: string, opts: { proposal: string; index?: string; digest?: string; url?: string; actor?: string }) => {
+    const rec = typeof opts?.proposal === "string" ? await readProposal(proposalsDir, opts.proposal) : null;
+    const asked = (rec?.input ?? {}) as { package?: unknown; digest?: unknown };
+    if (!rec || rec.step !== "package/install" || rec.status !== "accepted" || asked.package !== ref || (asked.digest !== undefined && asked.digest !== opts.digest)) {
+      throw new Error(
+        `package_install_needs_person: installing ${ref} runs only as the apply of a proposal a person accepted for it` +
+          (rec ? ` (proposal ${rec.id} is ${rec.status}, for ${rec.step}${asked.package ? ` ${String(asked.package)}` : ""})` : ""),
+      );
+    }
+    const { proposal: _id, ...rest } = opts;
+    return packages.install(ref, rest);
   };
   /** A refusal's code (`package_conflict: …`) → its status. */
   const packageError = (c: Context, err: unknown) => {

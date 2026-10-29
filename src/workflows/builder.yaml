@@ -192,14 +192,18 @@ params:
     # `workdir` lands in the run's own directory, out of the editor's reach.
     - git/checkout
     # Packages someone already built (plans/marketplace.md §8): searched
-    # before writing an integration; a person installs one.
+    # before writing an integration; installed only on the person's yes
+    # (package/install is a proposal: the card says what it brings).
     - package/search
+    - package/install
   # Tools among the grants that need the PERSON's approval
   # (plans/proposals.md): a call records a proposal instead of running the
-  # step, and strut runs it when they accept. None by default; a deployment
-  # that wants a hand on every publish names meta/publish-workflow,
-  # meta/create-step and meta/edit-step here through its delta.
-  approve: []
+  # step, and strut runs it when they accept. Strut's own: package/install
+  # (someone's code into this strut). A deployment that wants a hand on
+  # every publish names meta/publish-workflow, meta/create-step and
+  # meta/edit-step here through its delta.
+  approve:
+    - package/install
   # The agent's system prompt. What is the JOB's — who the agent is,
   # claims, the kinds, the reply — is written here, around ONE line the
   # seed replaces with strut's rules for building (src/builder-seed.ts):
