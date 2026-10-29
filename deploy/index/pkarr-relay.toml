@@ -1,4 +1,4 @@
-# The Pkarr relay beside the package index (docker-compose.index.yml).
+# The Pkarr relay beside the package index (docker-compose.yml).
 # Every option: relay/src/config.example.toml in github.com/pubky/pkarr.
 
 [http]

@@ -37,4 +37,3 @@ package-lock.json
 
 # dictation fixer models for the eval (src/audio/dictation-eval)
 /.models
-.env.index

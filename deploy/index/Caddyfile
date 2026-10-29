@@ -1,4 +1,4 @@
-# TLS for the package index (docker-compose.index.yml). Caddy fetches and
+# TLS for the package index (docker-compose.yml). Caddy fetches and
 # renews each host's certificate itself; a `*.localhost` host gets one from
 # Caddy's own CA instead.
 

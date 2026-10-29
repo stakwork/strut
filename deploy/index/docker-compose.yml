@@ -4,8 +4,9 @@
 # browser, no lab. The index key every strut's defaults name lives in this
 # strut's data volume, so this box is small on purpose.
 #
-#   cp deploy/index/env.example .env.index      # then fill it in
-#   docker compose -f docker-compose.index.yml --env-file .env.index up -d
+# Run from this folder; compose reads ./.env (gitignored) by itself:
+#   cp env.example .env      # then fill it in
+#   docker compose up -d
 #
 # Two hostnames, both pointed at this box (Caddy gets their certificates from
 # Let's Encrypt, so ports 80 and 443 must reach it):
@@ -20,8 +21,7 @@
 # minted then, into publisher.json, sealed under STRUT_SECRET_KEY. Keep the
 # two apart. Losing either is losing the key every strut was told to trust.
 #
-#   docker compose -f docker-compose.index.yml --env-file .env.index \
-#     run --rm --no-deps -v "$PWD:/backup" --entrypoint tar strut \
+#   docker compose run --rm --no-deps -v "$PWD:/backup" --entrypoint tar strut \
 #     czf /backup/index-workspace.tgz -C /data workspace
 #
 # The relay's DHT node listens on UDP 6881; open it to the internet so the
@@ -65,7 +65,7 @@ services:
       # through Caddy alone, which the rate limiter's behind_proxy needs.
       - "${PKARR_DHT_PORT:-6881}:6881/udp"
     volumes:
-      - ./deploy/index/pkarr-relay.toml:/config.toml:ro
+      - ./pkarr-relay.toml:/config.toml:ro
       - pkarr-cache:/cache
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:6881/"]
@@ -90,7 +90,7 @@ services:
       STRUT_INDEX_HOST: "${STRUT_INDEX_HOST}"
       PKARR_RELAY_HOST: "${PKARR_RELAY_HOST:?set PKARR_RELAY_HOST}"
     volumes:
-      - ./deploy/index/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data       # certificates and the ACME account
       - caddy-config:/config
 
