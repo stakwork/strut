@@ -151,7 +151,7 @@ describe("the assistant MCP door (POST /mcp)", () => {
       const noPage = await client.callTool({ name: "get_package", arguments: { package: "acme/linear" } });
       assert.ok(noPage.isError);
       assert.match(json(noPage).error, /^package_index_none: .*follows no package index/);
-      for (const t of tools.filter((x) => x.name === "search_packages" || x.name === "get_package")) assert.match(t.description!, /You cannot install a package/, t.name);
+      for (const t of tools.filter((x) => x.name === "search_packages" || x.name === "get_package")) assert.match(t.description!, /Installing is a PERSON's decision/, t.name);
       const instructions = client.getInstructions()!;
       assert.ok(instructions.includes(`${base}/`), instructions);
       assert.ok(instructions.length < 3000, `short: ${instructions.length}`);

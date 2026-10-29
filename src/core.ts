@@ -51,10 +51,22 @@ export interface StepDef<
    *  it first is refused (409), so it applies after them. `meta/set-automation`
    *  waits for the publish of the workflow it schedules. */
   after?: (cfg: z.infer<TInput>, pending: { step: string; input: unknown }) => boolean;
+  /** For a gated step (plans/proposals.md §7): what the person's CARD says
+   *  beyond the input — a title in their words and a summary read at
+   *  proposal time (`package/install` reads the index's page of the
+   *  package). Called by the gate once, best effort: a throw or nothing
+   *  leaves the description's first sentence as the title. */
+  describe?: (cfg: z.infer<TInput>, ctx: StepContext<TServices>) => Promise<ProposalDescription | undefined>;
   run: (
     cfg: z.infer<TInput>,
     ctx: StepContext<TServices>,
   ) => Promise<z.infer<TOutput>>;
+}
+
+/** What a gated step says of itself on the person's card (`StepDef.describe`). */
+export interface ProposalDescription {
+  title?: string;
+  summary?: string;
 }
 
 /** What running a step does outside the run (`StepDef.effect`). */
@@ -772,6 +784,8 @@ export interface AnyStepDef {
   effect?: StepEffect;
   /** Which pending proposals one of its own waits for (see `StepDef.after`). */
   after?: (cfg: any, pending: { step: string; input: unknown }) => boolean;
+  /** The person's card's title and summary (see `StepDef.describe`). */
+  describe?: (cfg: any, ctx: StepContext<any>) => Promise<ProposalDescription | undefined>;
   run: (cfg: any, ctx: StepContext<any>) => Promise<any>;
 }
 

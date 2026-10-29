@@ -206,14 +206,14 @@ describe("the package index", () => {
     try {
       const { tools } = await agent.listTools();
       assert.deepEqual(tools.map((t) => t.name).sort(), ["get_concept", "get_package", "search_packages"]);
-      for (const t of tools) assert.match(t.description!, /You cannot install a package/, t.name);
+      for (const t of tools) assert.match(t.description!, /Installing is a PERSON's decision/, t.name);
       const instructions = agent.getInstructions()!;
       for (const said of ["PACKAGE INDEX", "DERIVED", "re-verifies the package against its publisher", "Packages dialog"]) assert.ok(instructions.includes(said), said);
       assert.ok(!instructions.includes("?store=1"), "no UI served here, so no store link");
       const found = mcpJson(await agent.callTool({ name: "search_packages", arguments: {} }));
       assert.deepEqual(found.packages.map((h: IndexHit) => h.package), ["acme/linear"]);
       assert.equal(found.packages[0].detail.workflows, 1);
-      assert.match(found.install, /^You cannot install a package/);
+      assert.match(found.install, /^Installing is a PERSON's decision/);
       const viaMcp = mcpJson(await agent.callTool({ name: "get_package", arguments: { package: "acme/linear" } }));
       assert.deepEqual(viaMcp.detail.workflows.map((w: { name: string }) => w.name), ["sync"]);
       assert.equal(viaMcp.store, undefined);

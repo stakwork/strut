@@ -193,16 +193,20 @@ params:
     - git/checkout
     # The package STORE (plans/marketplace.md §7, §8): searched before
     # writing an integration, a hit's page read (what it holds and
-    # reaches), the Concept tree browsed; a person installs one.
+    # reaches), the Concept tree browsed; installed only on the person's
+    # yes (package/install is a proposal: the card says what it brings).
     - package/search
     - package/get
     - package/concepts
+    - package/install
   # Tools among the grants that need the PERSON's approval
   # (plans/proposals.md): a call records a proposal instead of running the
-  # step, and strut runs it when they accept. None by default; a deployment
-  # that wants a hand on every publish names meta/publish-workflow,
-  # meta/create-step and meta/edit-step here through its delta.
-  approve: []
+  # step, and strut runs it when they accept. Strut's own: package/install
+  # (someone's code into this strut). A deployment that wants a hand on
+  # every publish names meta/publish-workflow, meta/create-step and
+  # meta/edit-step here through its delta.
+  approve:
+    - package/install
   # The agent's system prompt. What is the JOB's — who the agent is,
   # claims, the kinds, the reply — is written here, around ONE line the
   # seed replaces with strut's rules for building (src/builder-seed.ts):

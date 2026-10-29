@@ -777,6 +777,29 @@ the registry rebuilds, before any workflow calls it, this world's npm
   person's publish there (§12.1, proposed). Still a person, still never an
   agent.
 
+***Ruled 2026-10-29: an agent may ASK, as a proposal.*** Evan: "Yes, by
+proposal." The `package/install` step (`src/steps/lib/package/install.ts`)
+runs only as a proposal a person accepted (`ctx.proposal`, the `app/grant`
+pattern): the `orchestrator`, `builder` and `job` seeds grant it and list
+it in `approve:`, so the agent's call records a proposal and the person
+decides on the card (Hive's, strut's run overview, `POST
+/proposals/:id/decide`); the apply installs as `POST /packages/install`
+would, with the decider as `ctx.actor`, and the session hears the result
+on its next turn. The ask above is the card's `summary`, read at proposal
+time by the step's `describe` hook (plans/proposals.md §7, built now) off
+the index's page of the package (`detail`, the store front's reading of
+the archive): publisher and key, which index lists it, digest, license,
+what it brings, what it can spend or act on, the secrets it needs — or
+that no followed index lists it. Nothing is fetched from the publisher
+before the yes. The door behind the step (`ctx.services.packages.install`)
+checks the ACCEPTED record on disk for that very ref before calling the
+in-process install, so a step authored or installed cannot forge a
+`ctx.proposal` and pull code. "Never an agent" above stands for the
+DECISION: the agent proposes, the person installs. Not built: the builder
+chat's `install_package` with `ask_user` (the chat has no proposals; the
+person is at the Packages dialog anyway), `update_package`, the missing
+secrets asked for after the install.
+
 ## 9. What this changes in `federation.md` §2.3
 
 §2.3 (not built) planned one origin per workflow, `source: { repo, path }`,
@@ -2388,10 +2411,15 @@ production until install (step 2) calls the resolver.
      the hit brings, reaches and needs, and the tap installs; the
      Stakwork default (the deployed index's key); a static export of the
      store's pages (the static mirror).
+   - **Built 2026-10-29: an agent installs by PROPOSAL** (§8, ruled):
+     `package/install` as a gated step on the orchestrator, builder and
+     job seeds, the card's summary read off the index by the step's
+     `describe` hook, the door behind it checking the accepted record.
    - **Built 2026-10-29: the store for an AGENT** — the read side alone
      (Evan: "maximally friendly to agents too — browse, search, and
-     install"; install stays a PERSON's act by §8, a separate decision, so
-     no step or tool installs and every one says so). On a strut that
+     install"; the INSTALL is the bullet above, by proposal — no read
+     installs, and every read's description says so: propose with
+     `package/install` where it is held, else tell the person). On a strut that
      FOLLOWS an index, `ctx.services.packages` grew `get` (a package's
      page from the index whose card lists its publisher — a miss over
      memoized cards re-reads them once) and `concepts` / `concept` (the
@@ -2418,8 +2446,9 @@ production until install (step 2) calls the resolver.
      by the steps and tools, never by the capability or the routes; the
      index door is the ROLE's, on whatever `enableMcp` says of the keyed
      doors; the grants are by name, so a later write in the namespace (an
-     install step, if §8 ever opens one to a model) is never granted by
-     accident. Not built: an install tool or ask (§8, step 5).
+     install step) is never granted by accident — `package/install` is
+     granted beside them, by name, and gated by `approve:`. Not built: the
+     rest of the install ASK (the bullet above's "not built").
    - **6b, later: the Pkarr record.** The JS client (relay-only: a relay is a
      dependency), Stakwork's relay at a stable hostname and the
      sphinx-swarm container, a publisher's record naming its public

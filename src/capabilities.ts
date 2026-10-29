@@ -384,11 +384,13 @@ export interface StrutCapabilities {
    *  bare in-code bag may not carry one (`strut/run-workflow` then fails
    *  naming it). */
   peers?: PeersCapability;
-  /** The package STORE's reads (src/packages/indexes.ts): `search` over the
-   *  indexes this strut follows and the peers' installed packages, `get` a
-   *  package's page, `concepts` / `concept` the Concept tree — what the
-   *  `package/*` steps and the assistant door's package tools read. Never
-   *  an install. Set by the standard server. */
+  /** The package STORE (src/packages/indexes.ts): the reads — `search`
+   *  over the indexes this strut follows and the peers' installed packages,
+   *  `get` a package's page, `concepts` / `concept` the Concept tree — what
+   *  the `package/*` steps and the assistant door's package tools read; and
+   *  `install`, `package/install`'s door, which opens only to an ACCEPTED
+   *  proposal of that step (plans/marketplace.md §8). Set by the standard
+   *  server. */
   packages?: PackagesCapability;
   /** The graph backend the SERVER wired (`createStrut({ graph })`, else the
    *  one behind a graph-backed workspace): what the `graph/*` steps read and

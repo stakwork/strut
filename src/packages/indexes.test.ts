@@ -315,7 +315,7 @@ describe("following a package index", () => {
       await assert.rejects(getStep.run({ package: "acme/notion", full: false }, ctx), /package_not_found/);
       for (const step of [searchStep, getStep, conceptsStep]) {
         assert.equal(step.effect, "read", step.type);
-        assert.match(step.description!, /You cannot install a package/, step.type);
+        assert.match(step.description!, /Installing is a PERSON's decision/, step.type);
       }
 
       // The assistant door (src/ai/assistant-tools.ts): the same reads for an agent over MCP, on a strut that follows the index.

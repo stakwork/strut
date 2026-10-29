@@ -152,11 +152,12 @@ export interface ConceptSearch {
   errors: Array<{ index?: string; error: string }>;
 }
 
-/** What every agent-facing door says about installing: a PERSON's act
- *  (plans/marketplace.md §8) — no step or tool installs, and none says it
- *  can. */
+/** What every agent-facing READ says about installing (plans/marketplace.md
+ *  §8, ruled 2026-10-29): a PERSON decides — an agent that holds
+ *  `package/install` proposes (a card they approve), any other tells them
+ *  the name. No read installs. */
 export const INSTALL_IS_A_PERSONS_ACT =
-  "You cannot install a package. Tell the person its name (publisher/name): it installs from the Packages dialog of their strut's UI — Find the name, then Install — or from the store's Install link, which opens that dialog on the name; the install re-verifies the package against its publisher's signed catalog.";
+  "Installing is a PERSON's decision, never yours: if you hold package/install, propose it with that tool (the call becomes a card the person approves — say why in `rationale`); otherwise tell the person its name (publisher/name) — it installs from the Packages dialog of their strut's UI (Find the name, then Install) or from the store's Install link, which opens that dialog on the name. Either way the install re-verifies the package against its publisher's signed catalog.";
 
 /** How much of a README a model-facing page keeps. */
 export const README_BRIEF_CHARS = 12_000;
@@ -216,10 +217,18 @@ export interface PackageIndexes {
   concept(name: string, opts?: { index?: string }): Promise<IndexConceptPageHit | undefined>;
 }
 
-/** The package reads a step or a tool makes (`ctx.services.packages`,
- *  capabilities.ts): what the indexes this strut follows know — never an
- *  install. */
-export type PackagesCapability = Pick<PackageIndexes, "search" | "get" | "concepts" | "concept">;
+/** `ctx.services.packages` (capabilities.ts): the READS a step or a tool
+ *  makes — what the indexes this strut follows know — and the one door
+ *  that writes, behind a person's yes. */
+export type PackagesCapability = Pick<PackageIndexes, "search" | "get" | "concepts" | "concept"> & {
+  /** `package/install`'s door (plans/marketplace.md §8, ruled 2026-10-29):
+   *  installs ONLY as the apply of an ACCEPTED proposal of that step for
+   *  this very ref — `proposal` is the record's id, checked against the
+   *  record on disk (createStrut) — so no step, authored or installed, pulls
+   *  code without a person's yes. `ref` is a name through the followed
+   *  indexes, or a `pk:` ref with its `url`. */
+  install?(ref: string, opts: { proposal: string; index?: string; digest?: string; url?: string; actor?: string }): Promise<unknown>;
+};
 
 /** Where an index strut serves search, from its card's URL; nothing for a card that is a static file. */
 export function indexBaseOf(cardUrl: string): string | undefined {

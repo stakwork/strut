@@ -41,8 +41,13 @@ export interface Proposal {
   input: unknown;
   /** The model's, for the person. */
   rationale?: string;
-  /** For the card: the step description's first sentence. */
+  /** For the card: the step description's first sentence, or what the
+   *  step's `describe` gave (plans/proposals.md §7). */
   title: string;
+  /** What the step read at proposal time for the card (`describe`): for
+   *  `package/install`, the index's page of the package — what it brings,
+   *  what it can reach, what it needs. */
+  summary?: string;
   status: ProposalStatus;
   createdAt: string;
   /** Who proposed it. */
@@ -58,6 +63,7 @@ export interface ProposalBrief {
   id: string;
   step: string;
   title: string;
+  summary?: string;
   status: ProposalStatus;
   url: string;
   rationale?: string;
@@ -65,7 +71,7 @@ export interface ProposalBrief {
   decidedAt?: string;
 }
 
-export type NewProposal = Pick<Proposal, "step" | "input" | "rationale" | "title" | "by">;
+export type NewProposal = Pick<Proposal, "step" | "input" | "rationale" | "title" | "summary" | "by">;
 
 export interface ProposalFilter {
   job?: string;
@@ -90,6 +96,7 @@ export function briefOf(p: Proposal): ProposalBrief {
     id: p.id,
     step: p.step,
     title: p.title,
+    ...(p.summary ? { summary: p.summary } : {}),
     status: p.status,
     url: proposalUrl(p.id),
     ...(p.rationale ? { rationale: p.rationale } : {}),
@@ -290,11 +297,21 @@ export async function proposeCall(
     const was = await cap.get(prior.proposal);
     if (was) return result(was);
   }
+  // The step's own words for the card (§7), read now, best effort.
+  let described: { title?: string; summary?: string } | undefined;
+  if (def.describe) {
+    try {
+      described = await def.describe(parsed, ctx);
+    } catch {
+      described = undefined;
+    }
+  }
   const rec = await cap.propose({
     step: stepType,
     input: parsed,
     ...(rationale ? { rationale } : {}),
-    title: titleOf(stepType, def.description),
+    title: described?.title?.trim() || titleOf(stepType, def.description),
+    ...(described?.summary?.trim() ? { summary: described.summary.trim() } : {}),
     by: {
       workflow: workflowOf(ctx),
       runId: ctx.runId,
