@@ -86,6 +86,8 @@ import { packArchive } from "./packages/archive.js";
 import { buildPackage, type BuildRequest } from "./packages/build.js";
 import { PUBLISHER_FILE, PUBLISHER_NAME, catalogStore, moveChannel, publicCatalogStore, publishRelease, publisherStore } from "./packages/publisher.js";
 import { SUBSCRIPTIONS_FILE, createSubscriptions, subscriptionProblem, type Subscription, type Subscriptions } from "./packages/subscriptions.js";
+import { createPackageIndex, indexDir, indexRowProblem, type PackageIndex } from "./packages/index.js";
+import type { IndexRow } from "./packages/card.js";
 import { packageCache } from "./packages/cache.js";
 import { workspaceFences } from "./packages/fence.js";
 import { PACKAGE_DIGEST } from "./packages/format.js";
@@ -405,6 +407,16 @@ export interface StrutOptions<TServices = unknown> {
    *  STRUT_HOME_SYNC=box | copy. */
   homeSync?: HomeSyncRole;
 
+  /** The package INDEX role (plans/marketplace.md §7, step 7;
+   *  src/packages/index.ts): this strut as the phone book — a signed card
+   *  of publisher rows, `PUT /index/:prefix`, served to anyone at `GET
+   *  /index/catalog` — and the crawler behind it, which follows every
+   *  listed publisher's public catalog and serves `GET /index/packages?q=`
+   *  and `GET /index/packages/:publisher/:name`, open to anyone. `true`, or
+   *  `{ urls }` — where this index's catalog is served, written into every
+   *  card. Off unless set, or STRUT_INDEX=1 (STRUT_INDEX_URLS, a JSON list). */
+  index?: boolean | { urls?: string[] };
+
   /** The strut graph backend, when the deployment has one. Default: the one
    *  behind a graph-backed workspace (`workspace.graph`), so the default
    *  server need not pass it; a host wiring a graph beside a filesystem
@@ -583,6 +595,10 @@ export interface Strut<TServices = unknown> {
    *  is over. `sync` reads one now and applies what is new. */
   subscriptions: Subscriptions;
 
+  /** The package index (plans/marketplace.md §7) — null unless this strut
+   *  has the index role (`StrutOptions.index`, STRUT_INDEX=1). */
+  index: PackageIndex | null;
+
   /** Reads over the claims layer (plans/claims.md) — null unless the
    *  workspace is graph-backed AND the layer is on (`StrutOptions.claims`):
    *  claims hang off the subjects' graph nodes, so on a filesystem workspace
@@ -711,6 +727,22 @@ export async function createStrut<TServices = unknown>(
   const store: RunStore = opts.store ?? (fileBacked ? new FileRunStore(dataDir) : new MemoryRunStore());
   // Home sync's role here (src/home-sync.ts): a box serves it, a copy runs it.
   const homeRole = opts.homeSync ?? homeSyncRole(bootEnv()["STRUT_HOME_SYNC"]);
+  // The package index role (src/packages/index.ts): on, two reads open to anyone.
+  const indexConfig = ((): { urls?: string[] } | undefined => {
+    if (opts.index !== undefined) return opts.index === false ? undefined : opts.index === true ? {} : opts.index;
+    if (bootEnv()["STRUT_INDEX"] !== "1") return undefined;
+    const raw = bootEnv()["STRUT_INDEX_URLS"];
+    if (!raw) return {};
+    let urls: unknown;
+    try {
+      urls = JSON.parse(raw);
+    } catch (err) {
+      throw new Error(`STRUT_INDEX_URLS is not JSON: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    if (!Array.isArray(urls) || !urls.every((u) => typeof u === "string" && /^https?:\/\/\S+$/.test(u))) throw new Error("STRUT_INDEX_URLS is a JSON list of http(s) URLs");
+    return { urls };
+  })();
+  const INDEX_READ = /^\/index\/(?:catalog|packages(?:\/|$))/;
   const mcpRegistry = fileMcpRegistry(dataDir);
   // Controllers for runs currently executing **in this process** (keyed
   // `${workflow}/${runId}`) — RUN_CONTROL_SPEC §2.2. A controller's presence
@@ -1365,7 +1397,10 @@ export async function createStrut<TServices = unknown>(
   // PUBLIC catalog and the archives it names with no credential at all
   // (`publicPackageRead`, auth.ts; §13 "One publisher, two keys"): the
   // routes serve nothing but what the public card lists, whatever the
-  // gate's mode. And a peer may POST one more route,
+  // gate's mode. With the INDEX role on, `GET /index/catalog` and
+  // `/index/packages…` are open the same way: the phone book and the
+  // search over public catalogs, public by construction (§7). And a peer
+  // may POST one more route,
   // `/packages/subscriptions/sync`: it carries nothing, and makes this strut
   // read its own subscriptions' catalogs — what the publisher pings.
   //
@@ -1381,7 +1416,7 @@ export async function createStrut<TServices = unknown>(
     const path = c.req.path;
     const read = c.req.method === "GET" || c.req.method === "HEAD";
     const open = read
-      ? path === "/health" || (serveUi && UI_FILE.test(path)) || carriesFileToken(c) || !!catalogTokenOf(c) || publicPackageRead(c)
+      ? path === "/health" || (serveUi && UI_FILE.test(path)) || carriesFileToken(c) || !!catalogTokenOf(c) || publicPackageRead(c) || (!!indexConfig && INDEX_READ.test(path))
       : path === "/auth/session" && (c.req.method === "POST" || c.req.method === "DELETE");
     if (open) return next();
     if (!carriesApiKey(c) && !carriesPeerKey(c) && !personOf(c)) return unauthorized(c);
@@ -2971,17 +3006,19 @@ export async function createStrut<TServices = unknown>(
     const req = buildRequestOf(rest);
     if (typeof req === "string") return c.json({ error: req }, 400);
     try {
-      const { built, catalog } = await oneAtATime(async () => {
+      const { built, catalog, publicBefore } = await oneAtATime(async () => {
         const { info } = await publisher.ensure(); // refused before a build when the key cannot be kept safely
         // With a name set, every package published here is under it.
         if (info.name && req.package.split("/")[0] !== info.name) {
           throw new Error(`package_build_refused: ${req.package} is not under this strut's publisher ${info.name}: a package published here is named ${info.name}/<name>`);
         }
         const built = await buildPackage(packageDeps, req);
+        const publicBefore = (await catalogDeps.publicCatalogs.current())?.digest;
         const catalog = await publishRelease(catalogDeps, { manifest: built.manifest, digest: built.digest, ...(channel ? { channel } : {}), ...(pub !== undefined ? { public: pub as boolean } : {}) });
-        return { built, catalog };
+        return { built, catalog, publicBefore };
       });
       pingSubscribers(catalog.card.key);
+      void pingPublic(publicBefore);
       return c.json({ ...builtBody(built), ...(channel ? { channel } : {}), catalog: { key: catalog.card.key, seq: catalog.card.seq, digest: catalog.digest } }, 201);
     } catch (err) {
       return catalogError(c, err);
@@ -3028,16 +3065,27 @@ export async function createStrut<TServices = unknown>(
     }
     if (body.public !== undefined && typeof body.public !== "boolean") return c.json({ error: "public is true to make the channel public, or false" }, 400);
     try {
-      const catalog = await oneAtATime(() =>
-        moveChannel(catalogDeps, { channel: c.req.param("channel"), package: body.package as string, digest: body.digest as string | null, ...(body.public !== undefined ? { public: body.public as boolean } : {}) }),
-      );
+      const { catalog, publicBefore } = await oneAtATime(async () => {
+        const publicBefore = (await catalogDeps.publicCatalogs.current())?.digest;
+        const catalog = await moveChannel(catalogDeps, { channel: c.req.param("channel"), package: body.package as string, digest: body.digest as string | null, ...(body.public !== undefined ? { public: body.public as boolean } : {}) });
+        return { catalog, publicBefore };
+      });
       pingSubscribers(catalog.card.key);
+      void pingPublic(publicBefore);
       const info = await publisher.get();
       return c.json({ channel: c.req.param("channel"), package: body.package, digest: body.digest, public: info?.publicChannels.includes(c.req.param("channel")) ?? false, catalog: { key: catalog.card.key, seq: catalog.card.seq, digest: catalog.digest } });
     } catch (err) {
       return catalogError(c, err);
     }
   });
+  /** The same ping with the PUBLIC key, when the public catalog changed —
+   *  what an index strut among the peers follows (§7). */
+  const pingPublic = async (before: string | undefined) => {
+    const after = (await catalogDeps.publicCatalogs.current().catch(() => undefined))?.digest;
+    if (!after || after === before) return;
+    const key = (await publisher.get().catch(() => undefined))?.public;
+    if (key) pingSubscribers(key);
+  };
   /** Tell every peer on file that this strut's catalog moved, so a strut
    *  that subscribes to it reads it now instead of at its next poll
    *  (§12.1). Best effort and detached: the ping carries nothing, and a
@@ -3104,14 +3152,90 @@ export async function createStrut<TServices = unknown>(
     const body = await c.req.json<{ key?: unknown }>().catch(() => ({}) as { key?: unknown });
     if (body.key !== undefined && typeof body.key !== "string") return c.json({ error: "key is a publisher key" }, 400);
     void subscriptions.syncAll(body.key ? { key: body.key } : {});
+    // The index follows the same ping: a listed publisher's public catalog moved.
+    if (index) void index.crawl(body.key ? { key: body.key } : {}).catch(() => undefined);
     return c.json({ ok: true }, 202);
   });
+
+  // ── The package INDEX (plans/marketplace.md §7, step 7) ─────────────────
+  // This strut as the phone book and the crawler behind it (src/packages/
+  // index.ts): the rows are a person's (full scope), the card and the
+  // search are anyone's — open in the gate, as the public catalog is.
+  const index: PackageIndex | null = indexConfig
+    ? createPackageIndex({
+        secrets: publisherSecrets,
+        dir: indexDir(dataDir),
+        cache: packageStore,
+        ...(indexConfig.urls ? { urls: indexConfig.urls } : {}),
+        unsafe: () =>
+          publisherSecrets instanceof FileSecretStore && !bootEnv()["STRUT_SECRET_KEY"]
+            ? `STRUT_SECRET_KEY is not set, so the index key in ${PUBLISHER_FILE} would be stored under the dev default key — obfuscated, not encrypted. Set it and restart before listing a publisher`
+            : undefined,
+      })
+    : null;
+  if (index) {
+    const indexError = (c: Context, err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      const code = /^([a-z_]+):/.exec(message)?.[1] ?? "";
+      return c.json({ error: message }, code === "index_row_invalid" ? 400 : code === "publisher_unsafe_key" ? 409 : 500);
+    };
+    app.get("/index", async (c) => {
+      const info = await index.info();
+      return info ? c.json(info) : c.json({ error: "this index has no key yet: PUT /index/:prefix lists the first publisher and mints it" }, 404);
+    });
+    app.put("/index/:prefix", async (c) => {
+      const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>);
+      const problem = indexRowProblem(c.req.param("prefix"), body);
+      if (problem) return c.json({ error: `index_row_invalid: ${problem}` }, 400);
+      try {
+        return c.json(await oneAtATime(() => index.setRow(c.req.param("prefix"), body as unknown as IndexRow)));
+      } catch (err) {
+        return indexError(c, err);
+      }
+    });
+    app.delete("/index/:prefix", async (c) => {
+      try {
+        const removed = await oneAtATime(() => index.removeRow(c.req.param("prefix")));
+        return removed ? c.json({ ok: true, prefix: c.req.param("prefix") }) : c.json({ error: `no publisher ${c.req.param("prefix")} in this index` }, 404);
+      } catch (err) {
+        return indexError(c, err);
+      }
+    });
+    // Read the listed publishers' catalogs now (full scope; a peer's ping
+    // arrives on /packages/subscriptions/sync).
+    app.post("/index/crawl", async (c) => c.json({ crawled: await index.crawl() }));
+    // Open to anyone from here on.
+    app.get("/index/catalog", async (c) => {
+      const digest = c.req.query("digest");
+      if (digest !== undefined && !PACKAGE_DIGEST.test(digest)) return c.json({ error: "digest is sha256:<64 hex>" }, 400);
+      const file = await index.catalog(digest);
+      if (!file) return c.json({ error: digest ? `no index catalog at ${digest} here` : "this index lists no publisher yet" }, 404);
+      const etag = `"${file.digest}"`;
+      const headers = { "content-type": "application/json", "x-content-type-options": "nosniff", "cache-control": digest ? "public, max-age=31536000, immutable" : "public, no-cache", etag };
+      if (etagMatches(c.req.header("if-none-match"), etag)) return c.body(null, 304, headers);
+      return c.body(file.bytes.buffer.slice(file.bytes.byteOffset, file.bytes.byteOffset + file.bytes.byteLength) as ArrayBuffer, 200, headers);
+    });
+    app.get("/index/packages", async (c) => {
+      const limit = Number(c.req.query("limit") ?? 100);
+      return c.json({ packages: await index.search(c.req.query("q") ?? "", Number.isFinite(limit) ? limit : 100) }, 200, { "cache-control": "public, no-cache" });
+    });
+    app.get("/index/packages/:publisher/:name", async (c) => {
+      const name = `${c.req.param("publisher")}/${c.req.param("name")}`;
+      const page = await index.package(name);
+      return page ? c.json(page, 200, { "cache-control": "public, no-cache" }) : c.json({ error: `no listed publisher's catalog has ${name}` }, 404);
+    });
+  }
+
   const envPoll = Number(bootEnv()["STRUT_DISTRO_POLL_MINUTES"] ?? 10);
   const pollMinutes = opts.subscriptionPoll ?? (Number.isFinite(envPoll) && envPoll >= 0 ? envPoll : 10);
   const subscriptionTimers: NodeJS.Timeout[] = [];
   if (pollMinutes !== false) {
-    subscriptionTimers.push(setTimeout(() => void subscriptions.syncAll(), 3_000));
-    if (pollMinutes > 0) subscriptionTimers.push(setInterval(() => void subscriptions.syncAll(), pollMinutes * 60_000));
+    const tick = () => {
+      void subscriptions.syncAll();
+      if (index) void index.crawl().catch(() => undefined);
+    };
+    subscriptionTimers.push(setTimeout(tick, 3_000));
+    if (pollMinutes > 0) subscriptionTimers.push(setInterval(tick, pollMinutes * 60_000));
     for (const t of subscriptionTimers) t.unref?.();
   }
 
@@ -6159,6 +6283,7 @@ export async function createStrut<TServices = unknown>(
     automations,
     packages,
     subscriptions,
+    index,
     claims,
     verifier,
     listen,

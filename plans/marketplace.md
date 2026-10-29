@@ -2284,6 +2284,30 @@ production until install (step 2) calls the resolver.
    private index. A bare name (`acme/linear`) resolves index → key + URLs
    → step 6's resolver. The env table in AGENTS.md gains the names when
    this lands. No relay, no `STRUT_PKARR_RELAYS` until 6b.
+   - **Built 2026-10-28: the index role** (`src/packages/index.ts`;
+     `createStrut({ index })`, `STRUT_INDEX=1`, `STRUT_INDEX_URLS`;
+     `specs/API.md` §16): the index key, minted at the first row in
+     `publisher.json`; the rows (`PUT`/`DELETE /index/:prefix`, a person's)
+     sealed as an index card — `card.ts` grew a second KIND, domain
+     `strut-index\n`, same bytes, `seq` and checks — served to anyone at
+     `GET /index/catalog`; the crawl, each row's public catalog read through
+     pk.ts's `fetchCatalog` (the per-key `seq` rule holds) at the row, on
+     the publisher's ping (a publish or channel move now pings every peer
+     with the PUBLIC key when the public catalog changed) and on the
+     subscriptions' poll; `GET /index/packages?q=` and `GET
+     /index/packages/:publisher/:name`, open to anyone. Choices of mine,
+     proposed: the index key is a third key in `publisher.json`, not a
+     file of its own; the crawl is its own small reader over `fetchCatalog`
+     rather than a no-install subscription (a subscription is an installed
+     thing with a token and a channel; the index needs neither); a row's
+     `urls` are tried in order and the one that answered is recorded; the
+     search's hit carries the row's `key` and `urls`, which is exactly what
+     a `pk:` install takes. Not built: the client side — `STRUT_PACKAGE_INDEXES`
+     / `STRUT_PACKAGE_INDEX_URL` defaults, a bare name resolving through
+     the index, the Packages dialog's search box, `search_packages` for the
+     builder — the archive mirror, the static mirror, self-serve rows. A
+     Stakwork index strut exists only once one is deployed with the role
+     and its key is written into the defaults.
    - **6b, later: the Pkarr record.** The JS client (relay-only: a relay is a
      dependency), Stakwork's relay at a stable hostname and the
      sphinx-swarm container, a publisher's record naming its public
