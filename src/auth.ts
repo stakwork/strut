@@ -543,7 +543,8 @@ export function personOf(c: Context): PersonToken | undefined {
 // front of strut hands through, as it does a file token — and nothing
 // else: no run, no workflow, no launch. Leaked, it is worth the packages,
 // which every subscriber holds anyway. `POST /publisher/tokens { subscriber,
-// days? }` mints one (`full` scope only).
+// days? }` mints one (`full` scope only). The PUBLIC catalog and the
+// archives it names need no token: `?public=1` (`publicPackageRead`).
 
 const CATALOG_PREFIX = "strut-catalog.";
 /** A catalog token's default life, a person token's. */
@@ -579,6 +580,19 @@ export function catalogTokenOf(c: Context): CatalogToken | undefined {
   if (!CATALOG_TOKEN_PATH.test(c.req.path)) return undefined;
   const t = c.req.query("t")?.trim();
   return t ? verifyCatalogToken(t) : undefined;
+}
+
+/**
+ * A PUBLIC read of the same two routes (plans/marketplace.md §13, "One
+ * publisher, two keys"): `?public=1` asks for the catalog the PUBLIC key
+ * seals, or an archive it lists, and carries no credential. The routes
+ * serve nothing but what that card lists, whatever the gate's mode, so a
+ * host's gate hands such a read through as it does a `?t=` one.
+ */
+export function publicPackageRead(c: Context): boolean {
+  if (c.req.method !== "GET" && c.req.method !== "HEAD") return false;
+  if (!CATALOG_TOKEN_PATH.test(c.req.path)) return false;
+  return c.req.query("public") !== undefined;
 }
 
 /**

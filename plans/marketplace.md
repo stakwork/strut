@@ -1647,11 +1647,14 @@ outside the fleet.
   names stay free. The mark is the publisher's, kept beside the keys
   (`publisher.json`: `publicChannels: ["public"]`), never in a card. A
   private channel is in the fleet catalog only. A public channel is in
-  the public catalog only, under its own name. A channel has exactly one
-  audience, so moving a private channel never publishes anything. A
-  channel goes private → public. Public → private is refused, since what
-  was published stays published; take the release out of the channel
-  instead.
+  the public catalog under its own name — and in the fleet catalog too
+  (*as built, 2026-10-28, revising "the public catalog only"*: the fleet
+  card is the WHOLE picture, every release and every channel, so a fleet
+  that follows `stable` keeps following it when `stable` is made public,
+  and the public card is a projection of it). Moving a private channel
+  never publishes anything. A channel goes private → public. Public →
+  private is refused, since what was published stays published; take the
+  release out of the channel instead.
 - **A package has no public or private setting.** Its releases land on
   channels. A release is public once a public channel holds it, and the
   public catalog lists only those releases: a package's earlier releases,
@@ -2092,7 +2095,8 @@ production until install (step 2) calls the resolver.
    minted at the first **Make public**, the public channels, the fleet
    card's `public` member, the archive route opening a public digest, and
    mcp's `labAuth` passing the public catalog and archives through. The
-   record names the public key only.
+   record names the public key only. *Built 2026-10-28 but for the mcp
+   line (the note below).*
    - **Built 2026-10-27: the half with no record**, the fleet's item 3
      (§12.1; `src/packages/card.ts`, `publisher.ts`; `specs/API.md` §16).
      It covers the card and every reader check, the test vector,
@@ -2134,6 +2138,43 @@ production until install (step 2) calls the resolver.
      publisher cannot seal one and a reader refuses a served catalog that
      holds one, a member it does not know included (`catalog_invalid`). The
      test vector is unchanged.
+   - **Built 2026-10-28: the second key** ("One publisher, two keys", §13;
+     `src/packages/publisher.ts`, `card.ts`, the routes; `specs/API.md`
+     §16). The key minted today is the fleet key; the public key is minted
+     at the first **Make public** (`PUT /packages/channels/public {
+     package, digest, public: true }`, the Packages dialog's button on a
+     release); `publicChannels` on the publisher record; the fleet card's
+     `public` member; the public catalog under `catalogs/public/`, served
+     at `GET /packages/catalog?public=1` with no credential, and the
+     archive route serving a public digest as `?public=1` — the routes
+     judge both whatever the gate's mode, so a host's gate hands such a
+     read through as it does `?t=`; a public release that requires a
+     private package refused (`catalog_private_requirement`) before
+     anything is written. These choices are mine, proposed:
+     - **The fleet card is the whole picture** (§13's channel row,
+       revised): every release and channel, public ones included. The
+       public card is `projectPublic` — the public channels, and every
+       release one holds or has held, carried forward from the public card
+       before, each release's fields as the fleet card has them now (so a
+       later yank reaches it). It is re-sealed only when that picture
+       changed, so a private publish moves the public `seq` not at all.
+     - **The public read is a query marker, `?public=1`,** on the same two
+       routes a catalog token opens, not a path of its own: the token's
+       path pattern and mcp's `labAuth` line serve both, and a release's
+       archive URL stays what `host: self` derives. A public read with a
+       credential is still judged as public: the marker means "the public
+       card's word only".
+     - **`public` rides on the channel write,** `PUT /packages/channels/:channel`
+       and `POST /packages/publish`, not a route of its own: the mark and
+       the move are one act. `public: false` on a public channel is
+       `catalog_channel_public` (409); the UI never offers it.
+     - **Taking a package out of a public channel** leaves its releases in
+       the public card (published stays published) and only empties the
+       channel's row.
+     - **Not built:** mcp's `labAuth` passing `?public=1` through (one line
+       beside its `?t=` test, stakgraph); a subscriber doing anything with
+       the fleet card's `public` member (the install-dedup rule is step 6's
+       resolver's); the record, which will name the public key only.
 7. **The public index + the shipped defaults** (§7, §13): the index key
    and its catalog (step 6's card, prefix `strut-index`) on a Stakwork
    strut, `PUT /index/:prefix` and `GET /index/catalog`, `STRUT_PACKAGE_INDEXES` by key with the public one as
