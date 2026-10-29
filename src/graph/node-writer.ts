@@ -377,6 +377,10 @@ export interface NodeInput {
    *  case-insensitively against the live schema). */
   type: string;
   data: Record<string, unknown>;
+  /** The ref_id to create the node with, for a type keyed by `ref_id`
+   *  (`keyedByRef`): a copy that keeps its ids (memory's migration and home
+   *  sync import). Ignored for every other type, whose ref_id is minted. */
+  ref_id?: string;
 }
 
 export interface NodeWriteResult {
@@ -485,7 +489,8 @@ export class NodeWriter {
     // Gather every text to embed across the batch → one encoder call.
     const jobs: Array<{ idx: number; column: string; text: string }> = [];
     const prepared: PreparedNode[] = validated.map((v, idx) => {
-      const ref_id = randomUUID();
+      const given = inputs[idx]!.ref_id;
+      const ref_id = given && keyedByRef(v.schema) ? given : randomUUID();
       const node_key = keyedByRef(v.schema) ? refNodeKey(v.schema.type, ref_id) : composeNodeKey(v.schema, v.values);
       const { text, fields } = buildSearchText(v.schema, v.values);
       // One clock read for both stamps; `date_added_to_graph` is identity

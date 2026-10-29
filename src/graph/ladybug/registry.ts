@@ -246,6 +246,12 @@ export const SCHEMA_COLUMNS: Readonly<Record<string, ColumnType>> = {
   naming: "STRING",
   cardinality: "STRING",
   managed_by: "STRING",
+  // Memory's vocabulary (plans/memory-in-workspace-graph.md decision 1): a
+  // predicate is a Schema with kind "predicate", and the entity types its
+  // facts start from and point at.
+  kind: "STRING",
+  subject_types: "STRING[]",
+  object_types: "STRING[]",
 };
 
 const baseOf = (t: string) => t.replace(/^\?/, "") as AttrBase | "complex";

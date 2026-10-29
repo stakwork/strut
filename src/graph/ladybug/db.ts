@@ -388,7 +388,10 @@ async function openFresh(path: string, opts: OpenOptions): Promise<LadybugHandle
             await tx.run("COMMIT");
             return out;
           } catch (err) {
-            if (!dead) await w("ROLLBACK").catch(() => undefined);
+            // Always: a statement Ladybug refuses before running it (a parse
+            // or bind error) leaves the transaction open, and the connection
+            // with it. One it already rolled back makes this ROLLBACK fail, harmlessly.
+            await w("ROLLBACK").catch(() => undefined);
             throw err;
           }
         }),

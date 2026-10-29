@@ -115,6 +115,9 @@ export interface SoftDeleteOptions {
   keepEdges?: boolean;
   /** Why, stored as `deleted_reason` (the first delete's kept). */
   reason?: string;
+  /** When, as epoch ms, in place of now: a copy keeping its source's
+   *  stamps (memory's migration and home sync import). */
+  at?: number;
 }
 
 /** What a soft delete took with it. */

@@ -2,7 +2,7 @@ import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
 import { getStrutSchema } from "../../../graph/strut-schemas.js";
-import { graphCtx, errText } from "./_shared.js";
+import { graphCtx, errText, quietTypes } from "./_shared.js";
 const splitList = (s?: string) => s?.split(",").map((x) => x.trim()).filter(Boolean);
 
 /** A node's human label: the Strut schema's title_key when it is a Strut type,
@@ -92,11 +92,14 @@ export default defineStep({
     }
     try {
       const b = await graphCtx(ctx as StepContext<StrutCapabilities>);
+      const types = splitList(cfg.type);
       const res = await b.reader.search({
         q: cfg.q,
         input_q: cfg.input_q,
         output_q: cfg.output_q,
-        types: splitList(cfg.type),
+        types,
+        // Managed types marked embed: false (memory's Episodes) only when asked for by type.
+        ...(types?.length ? {} : { exclude_types: await quietTypes(b) }),
         domains: splitList(cfg.domains),
         exclude: splitList(cfg.exclude),
         linked: splitList(cfg.linked),

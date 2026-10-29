@@ -241,7 +241,7 @@ class LadybugNodes implements NodeEngine {
    *  in scope. */
   async softDelete(ref_id: string, _namespace: string, guard: NodeGuard, opts: SoftDeleteOptions = {}): Promise<SoftDeleteResult | null> {
     const go = async (tx: GraphTx): Promise<SoftDeleteResult | null> => {
-      const params: Params = { ref_id, now: Date.now() };
+      const params: Params = { ref_id, now: opts.at ?? Date.now() };
       const pattern = ["ref_id: $ref_id"];
       const where: string[] = [];
       if (guard.type) {

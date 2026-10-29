@@ -218,7 +218,7 @@ class Neo4jNodes implements NodeEngine {
     const label = guard.domainLabel ?? guard.type ?? "Data_Bank";
     const extra = Object.keys(guard.props ?? {});
     const pattern = ["ref_id: $ref_id", "namespace: $ns", ...extra.map((k) => `${q(k)}: $p_${k}`)].join(", ");
-    const params: Params = { ref_id, ns: namespace, now_ms: nowMs() };
+    const params: Params = { ref_id, ns: namespace, now_ms: opts.at ?? nowMs() };
     for (const k of extra) params[`p_${k}`] = guard.props![k];
     let reason = "";
     if (opts.reason !== undefined) {

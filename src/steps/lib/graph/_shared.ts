@@ -69,6 +69,17 @@ export async function hiddenManaged(b: GraphBackend, ctx?: StepContext<StrutCapa
   return readsManaged(ctx) ? new Map() : ((await b.schemas?.managedTypes?.()) ?? new Map());
 }
 
+/** Managed types whose Schema says `embed: false` (memory's Episodes,
+ *  plans/memory-in-workspace-graph.md decision 10): graph-search leaves them
+ *  out unless the call names the type, so transcripts do not crowd out the
+ *  results. Empty when nothing is managed. */
+export async function quietTypes(b: GraphBackend): Promise<string[]> {
+  const managed = (await b.schemas?.managedTypes?.()) ?? new Map<string, string>();
+  const out: string[] = [];
+  for (const type of managed.keys()) if ((await b.schemas.schema(type))?.embed === false) out.push(type);
+  return out;
+}
+
 async function openCtx(ctx?: StepContext<StrutCapabilities>): Promise<GraphBackend> {
   const wired = ctx?.services?.graph;
   if (wired) return wired;
