@@ -57,6 +57,8 @@ export default defineConfig({
       // it installed or follows (specs/API.md §16).
       "/packages": "http://localhost:3000",
       "/publisher": "http://localhost:3000",
+      // The index role's open reads: the store front (`?store=1`).
+      "/index": "http://localhost:3000",
       // Model downloads are SSE; /audio/stream is a WebSocket.
       "/audio": { target: "http://localhost:3000", ws: true, configure: sseConfigure },
     },

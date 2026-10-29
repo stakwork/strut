@@ -2217,7 +2217,7 @@ export const listPackageIndexes = () =>
 /** `GET /packages/search?q=`: the indexes' packages (unsigned — installing
  *  one goes by its name, through the index's card) and the peers' installs. */
 export interface PackageSearch {
-  packages: Array<{ package: string; publisher: string; key: string; version: string; digest: string; description?: string; license?: string; index: string }>;
+  packages: Array<{ package: string; publisher: string; key: string; version: string; digest: string; description?: string; license?: string; index: string; detail?: DetailSummary }>;
   peers: Array<{ peer: string; package: string; version?: string; digest?: string }>;
   errors: Array<{ index?: string; peer?: string; error: string }>;
 }
@@ -2244,3 +2244,156 @@ export interface SubscriptionInfo {
 
 export const listSubscriptions = () =>
   fetchJSON<{ subscriptions: SubscriptionInfo[] }>("/packages/subscriptions").then((r) => r.subscriptions);
+
+/** `PUT /packages/indexes/:id`: follow an index — from the store's link,
+ *  or by hand. The first read happens at once; a wrong key or URL shows as
+ *  `error` on the answer. */
+export const followPackageIndex = (id: string, body: { key: string; urls: string[]; label?: string }) =>
+  fetchJSON<PackageIndexInfo>(`/packages/indexes/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(body) });
+
+// ── The store front (plans/marketplace.md §7; src/packages/index.ts) ───────
+//
+// What an INDEX strut serves to anyone, with no credential: its signed card,
+// the packages across the publishers it lists — each with what its archive
+// holds, read at the crawl (src/packages/detail.ts) — and the Concept pages
+// across them. Derived and unsigned: a strut that installs re-verifies
+// against the publisher. The shapes mirror the server's.
+
+export interface PackageCan {
+  spends: boolean;
+  acts: boolean;
+  code: boolean;
+}
+export interface AppDetail {
+  name: string;
+  title: string;
+  description?: string;
+  icon?: string;
+  grants: { workflows: string[]; steps: string[] };
+  can: PackageCan;
+  files: number;
+}
+export interface WorkflowDetail {
+  name: string;
+  description?: string;
+  inputs: Array<{ name: string; type: string; required: boolean; description?: string; default?: unknown }>;
+  steps: string[];
+  grants: string[];
+  can: PackageCan;
+  secrets: string[];
+  peer?: true | "person";
+  sealed?: true;
+  claims?: number;
+  error?: string;
+}
+export interface StepDetail {
+  name: string;
+  helper?: true;
+  description?: string;
+  effect?: "read" | "write";
+  secrets: string[];
+  lint: string[];
+  bytes: number;
+  claims?: number;
+}
+export interface ConceptDetail {
+  name: string;
+  description?: string;
+  parent?: string;
+  docs?: string;
+}
+export interface PackageDetail {
+  digest: string;
+  version: string;
+  derivedAt: string;
+  readme?: string;
+  apps: AppDetail[];
+  workflows: WorkflowDetail[];
+  steps: StepDetail[];
+  concepts: ConceptDetail[];
+  secrets: string[];
+  can: PackageCan;
+  files: number;
+  bytes: number;
+}
+/** The short form a search hit carries. */
+export interface DetailSummary {
+  apps: Array<{ name: string; title: string; description?: string; icon?: string; can: PackageCan }>;
+  workflows: number;
+  steps: number;
+  concepts: number;
+  secrets: string[];
+  can: PackageCan;
+  readme: boolean;
+}
+/** `GET /index/catalog`: the index card as served. */
+export interface IndexCard {
+  v: number;
+  key: string;
+  seq: number;
+  publishers: Record<string, { key: string; urls: string[]; description?: string; url?: string }>;
+  urls?: string[];
+  sig: string;
+}
+/** `GET /index/packages?q=`: one hit, a package at its newest release not yanked. */
+export interface StoreHit {
+  package: string;
+  publisher: string;
+  key: string;
+  urls: string[];
+  version: string;
+  digest: string;
+  description?: string;
+  license?: string;
+  requires?: PackageRequires;
+  detail?: DetailSummary;
+}
+/** `GET /index/packages/:publisher/:name`: the package's page. */
+export interface StorePackage {
+  package: string;
+  publisher: string;
+  key: string;
+  urls: string[];
+  description?: string;
+  releases: CatalogRelease[];
+  channels: Record<string, string>;
+  readAt: string;
+  detail?: PackageDetail;
+  detailError?: string;
+}
+export interface StoreConcept {
+  name: string;
+  description?: string;
+  parent?: string;
+  packages: Array<{ package: string; version: string }>;
+}
+export interface StoreConceptPage extends StoreConcept {
+  docs?: string;
+  children: Array<{ name: string; description?: string }>;
+  parents: Array<{ name: string; description?: string }>;
+}
+
+/** The three open reads, plus the concept tree. A plain `fetch` with no
+ *  credential: the store runs for anyone, and a 401 here means this strut
+ *  is not an index — never a sign-in to open. */
+async function storeJSON<T>(path: string): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, { headers: { accept: "application/json" } });
+  if (!res.ok) {
+    let msg = `${res.status} ${res.statusText}`;
+    try {
+      const body = await res.json();
+      if (body?.error) msg = body.error;
+    } catch {}
+    throw new Error(res.status === 401 ? "This strut is not an index: nothing is served here without a credential." : msg);
+  }
+  return res.json() as Promise<T>;
+}
+export const storeCatalog = () => storeJSON<IndexCard>("/index/catalog");
+export const storeSearch = (q = "", limit = 200) => storeJSON<{ packages: StoreHit[] }>(`/index/packages?q=${encodeURIComponent(q)}&limit=${limit}`).then((r) => r.packages);
+export const storePackage = (pkg: string) => storeJSON<StorePackage>(`/index/packages/${pkg.split("/").map(encodeURIComponent).join("/")}`);
+export const storeConcepts = (q = "") => storeJSON<{ concepts: StoreConcept[] }>(`/index/concepts?q=${encodeURIComponent(q)}`).then((r) => r.concepts);
+export const storeConcept = (name: string) => storeJSON<StoreConceptPage>(`/index/concepts/${encodeURIComponent(name)}`);
+/** Where this index's card is served, for the link into a strut: what the
+ *  card itself says, else this page's own origin. */
+export const storeCatalogUrl = (card: IndexCard | null) => card?.urls?.[0] ?? `${location.origin}${BASE}/index/catalog`;
+

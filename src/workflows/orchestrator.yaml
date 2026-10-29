@@ -169,14 +169,20 @@ params:
     - strut/list-peers
     - strut/run-workflow
     - app/grant
+    # A package someone published (plans/marketplace.md §8): installed only
+    # on the person's yes — the call is a proposal, the card says what it
+    # brings, reaches and needs.
+    - package/install
   # Tools among the grants that need the PERSON's approval
   # (plans/proposals.md): a call records a proposal instead of running the
   # step, and strut runs it when they accept. Strut's own: app/grant (an
-  # app's pages talking to this assistant, src/apps/grants.ts), which runs
-  # only on a yes. A host appends its gated writes (`createStrut({
-  # orchestrator: { approve } })`).
+  # app's pages talking to this assistant, src/apps/grants.ts) and
+  # package/install (someone's code into this strut), which run only on a
+  # yes. A host appends its gated writes (`createStrut({ orchestrator: {
+  # approve } })`).
   approve:
     - app/grant
+    - package/install
   # What a compaction's summary keeps word for word: a conversation's
   # references, not a job's files and commands.
   retain: "The jobs started or continued, by job id and title, and what each was asked to do; the people, ids and links named in the conversation, verbatim; what the person asked for that is still open."
@@ -226,6 +232,14 @@ params:
     only a person can allow that. When a build reports that an app needs
     it, ask for it with app/grant: the person approves it on a card. Once
     they have, continue the build so it publishes again.
+
+    A PACKAGE is something someone already built and published — workflows,
+    steps, apps, pages of knowledge — that this strut can install by name.
+    When the person asks for one by name, or a package would do what they
+    ask, propose it with package/install: the person approves it on a card
+    that says what it brings, what it can spend or act on, and what it
+    needs. Say in your reply what you proposed and why; the result reaches
+    you on a later turn. Never install anything another way.
 
     To send a job its next message (the answer to its question, a change,
     "go on"), use job/continue with its job id; job/list finds a job by

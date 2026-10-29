@@ -387,7 +387,16 @@ export interface StrutCapabilities {
   /** Package search (src/packages/indexes.ts): the indexes this strut
    *  follows and the peers' installed packages — what the `package/search`
    *  step reads. Set by the standard server. */
-  packages?: { search(query: string, opts?: { limit?: number }): Promise<PackageSearch> };
+  packages?: {
+    search(query: string, opts?: { limit?: number }): Promise<PackageSearch>;
+    /** `package/install`'s door (plans/marketplace.md §8, ruled 2026-10-29):
+     *  installs ONLY as the apply of an ACCEPTED proposal of that step for
+     *  this very ref — `proposal` is the record's id, checked against the
+     *  record on disk — so no step, authored or installed, pulls code
+     *  without a person's yes. `ref` is a name through the followed
+     *  indexes, or a `pk:` ref with its `url`. */
+    install?(ref: string, opts: { proposal: string; index?: string; digest?: string; url?: string; actor?: string }): Promise<unknown>;
+  };
   /** The graph backend the SERVER wired (`createStrut({ graph })`, else the
    *  one behind a graph-backed workspace): what the `graph/*` steps read and
    *  write through, instead of opening one from env (`graphCtx` prefers it

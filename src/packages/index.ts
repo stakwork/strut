@@ -21,10 +21,13 @@ import { mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promise
 import { join } from "node:path";
 import { searchSteps } from "../search.js";
 import type { SecretStore } from "../secret-store.js";
+import { fetchArchive } from "./archive.js";
 import type { PackageCache } from "./cache.js";
 import { CARD_VERSION, PUBLISHER_PREFIX, Z32_KEY, canonicalJson, keyFromSeed, releaseFor, sealCard, type Catalog, type CatalogRelease, type IndexCatalog, type IndexRow, type UnsignedIndexCatalog } from "./card.js";
 export type { IndexRow } from "./card.js";
-import { fetchCatalog } from "./pk.js";
+import { derivePackageDetail, summarizeDetail, type DetailSummary, type PackageDetail, type StepFacts } from "./detail.js";
+export type { AppDetail, ConceptDetail, DetailSummary, PackageCan, PackageDetail, StepDetail, WorkflowDetail } from "./detail.js";
+import { fetchCatalog, releaseUrls } from "./pk.js";
 import { CatalogStore, type CatalogFile } from "./publisher.js";
 
 const KEY_NAME = "INDEX";
@@ -51,6 +54,8 @@ export interface CrawlState {
   error?: string;
   /** How many packages the accepted catalog lists. */
   packages?: number;
+  /** How many of them have a page derived from their archive (./detail.ts). */
+  derived?: number;
 }
 
 /** One search hit: a package's newest public release, with where to get it. */
@@ -64,6 +69,9 @@ export interface IndexHit {
   description?: string;
   license?: string;
   requires?: CatalogRelease["requires"];
+  /** What the release holds — the apps' faces and the counts — once its
+   *  archive has been read (./detail.ts). */
+  detail?: DetailSummary;
 }
 
 /** A package's page: its releases newest first and the public channels that hold them. */
@@ -77,6 +85,37 @@ export interface IndexPackage {
   channels: Record<string, string>;
   /** When the catalog this comes from was read. */
   readAt: string;
+  /** The newest release not yanked, read off its archive (./detail.ts). */
+  detail?: PackageDetail;
+  /** Why it has no `detail`: the archive could not be fetched or read. */
+  detailError?: string;
+}
+
+/** One Concept page as the index knows it: across every crawled package. */
+export interface IndexConcept {
+  name: string;
+  description?: string;
+  parent?: string;
+  /** The packages that carry a page of this name, newest release each. */
+  packages: Array<{ package: string; version: string }>;
+}
+
+export interface IndexConceptPage extends IndexConcept {
+  docs?: string;
+  /** The pages that name this one as their parent. */
+  children: Array<{ name: string; description?: string }>;
+  /** The page's ancestors, nearest first, as far as the index knows them. */
+  parents: Array<{ name: string; description?: string }>;
+}
+
+/** The derived page of one package, as kept on disk: `detail` or the error. */
+interface PageFile {
+  package: string;
+  digest: string;
+  version: string;
+  derivedAt: string;
+  detail?: PackageDetail;
+  error?: string;
 }
 
 export interface IndexDeps {
@@ -89,6 +128,8 @@ export interface IndexDeps {
   urls?: string[];
   /** Why this strut may not mint (its secret store is only obfuscated), or nothing. */
   unsafe?: () => string | undefined;
+  /** This strut's registry, for a derived page's flags (./detail.ts). */
+  stepInfo?: (type: string) => StepFacts | undefined;
   fetch?: typeof fetch;
   now?: () => number;
 }
@@ -108,6 +149,10 @@ export interface PackageIndex {
   search(q: string, limit?: number): Promise<IndexHit[]>;
   /** One package's page, or undefined when no listed publisher's catalog has it. */
   package(name: string): Promise<IndexPackage | undefined>;
+  /** Every Concept page across the crawled packages (every word of `q` in the name or description). */
+  concepts(q?: string): Promise<IndexConcept[]>;
+  /** One Concept page with its docs, children and parents; undefined when no package carries it. */
+  concept(name: string): Promise<IndexConceptPage | undefined>;
 }
 
 interface IndexRecord {
@@ -142,6 +187,10 @@ export function createPackageIndex(deps: IndexDeps): PackageIndex {
   const crawlDir = join(deps.dir, "crawl");
   const stateFile = (prefix: string) => join(crawlDir, `${prefix}.json`);
   const cardFile = (prefix: string) => join(crawlDir, `${prefix}.catalog.json`);
+  // The derived pages (./detail.ts), one file per package under its
+  // prefix's folder — apart from the state files `crawledPrefixes` lists.
+  const pagesDir = (prefix: string) => join(crawlDir, "pages", prefix);
+  const pageFile = (prefix: string, name: string) => join(pagesDir(prefix), `${name.slice(prefix.length + 1)}.json`);
 
   const read = async (): Promise<IndexRecord | undefined> => {
     const raw = await deps.secrets.get(KEY_NAME);
@@ -203,10 +252,49 @@ export function createPackageIndex(deps: IndexDeps): PackageIndex {
       throw err;
     }
   };
+  const readPage = async (prefix: string, name: string): Promise<PageFile | undefined> => {
+    try {
+      return JSON.parse(await readFile(pageFile(prefix, name), "utf8")) as PageFile;
+    } catch (err: any) {
+      if (err?.code === "ENOENT") return undefined;
+      throw err;
+    }
+  };
+  /** The page of every package under the prefix at its newest release not
+   *  yanked: the archive fetched by digest from the route beside the catalog
+   *  (then the release's own `urls`) into the cache — the mirror §7 allows —
+   *  and read into its detail. One at a time; a page already derived for
+   *  that digest is kept; a fetch that fails is recorded on the page and
+   *  tried again at the next crawl. Never the catalog's acceptance: a
+   *  publisher whose archives are slow is still listed. */
+  const derivePages = async (prefix: string, card: Catalog, url: string): Promise<number> => {
+    let derived = 0;
+    for (const pkg of Object.keys(card.packages).sort()) {
+      if (!underPrefix(prefix, pkg)) continue;
+      const release = releaseFor(card, pkg);
+      if (!release) continue;
+      const have = await readPage(prefix, pkg);
+      if (have?.digest === release.digest && have.detail) {
+        derived++;
+        continue;
+      }
+      const page: PageFile = { package: pkg, digest: release.digest, version: release.version, derivedAt: new Date().toISOString() };
+      try {
+        const info = await fetchArchive({ urls: releaseUrls(url, pkg, release), digest: release.digest, cache: deps.cache, package: pkg, ...(deps.fetch ? { fetch: deps.fetch } : {}) });
+        page.detail = await derivePackageDetail(info, { ...(deps.stepInfo ? { stepInfo: deps.stepInfo } : {}) });
+        derived++;
+      } catch (err) {
+        page.error = (err instanceof Error ? err.message : String(err)).replace(/\?[^\s;]*/g, "");
+      }
+      await mkdir(pagesDir(prefix), { recursive: true });
+      await writeFileAtomic(pageFile(prefix, pkg), JSON.stringify(page));
+    }
+    return derived;
+  };
   const crawlOne = async (prefix: string, row: IndexRow): Promise<CrawlState> => {
     const prev = await readState(prefix);
     const at = new Date().toISOString();
-    const state: CrawlState = { prefix, key: row.key, ...(prev?.key === row.key && prev.accepted ? { accepted: prev.accepted, packages: prev.packages } : {}), checkedAt: at };
+    const state: CrawlState = { prefix, key: row.key, ...(prev?.key === row.key && prev.accepted ? { accepted: prev.accepted, packages: prev.packages, ...(prev.derived !== undefined ? { derived: prev.derived } : {}) } : {}), checkedAt: at };
     const failures: string[] = [];
     for (const url of row.urls) {
       try {
@@ -215,6 +303,8 @@ export function createPackageIndex(deps: IndexDeps): PackageIndex {
         state.accepted = { seq: card.seq, digest, at, url };
         state.packages = Object.keys(card.packages).filter((pkg) => underPrefix(prefix, pkg)).length;
         delete state.error;
+        await writeFileAtomic(stateFile(prefix), JSON.stringify(state));
+        state.derived = await derivePages(prefix, card, url);
         await writeFileAtomic(stateFile(prefix), JSON.stringify(state));
         return state;
       } catch (err) {
@@ -259,6 +349,7 @@ export function createPackageIndex(deps: IndexDeps): PackageIndex {
         if (!underPrefix(prefix, pkg)) continue;
         const release = releaseFor(card, pkg);
         if (!release) continue;
+        const page = await readPage(prefix, pkg);
         out.push({
           package: pkg,
           publisher: prefix,
@@ -269,10 +360,51 @@ export function createPackageIndex(deps: IndexDeps): PackageIndex {
           ...(entry.description !== undefined ? { description: entry.description } : {}),
           ...(release.license ? { license: release.license } : {}),
           ...(release.requires ? { requires: release.requires } : {}),
+          ...(page?.detail && page.digest === release.digest ? { detail: summarizeDetail(page.detail) } : {}),
         });
       }
     }
     return out.sort((a, b) => a.package.localeCompare(b.package));
+  };
+  /** Every derived page, at the release the catalog lists today. */
+  const pagesOf = async (): Promise<Array<PageFile & { detail: PackageDetail }>> => {
+    const out: Array<PageFile & { detail: PackageDetail }> = [];
+    for (const [prefix] of Object.entries(await rows())) {
+      const card = await cardOf(prefix);
+      if (!card) continue;
+      for (const pkg of Object.keys(card.packages)) {
+        if (!underPrefix(prefix, pkg)) continue;
+        const release = releaseFor(card, pkg);
+        const page = release ? await readPage(prefix, pkg) : undefined;
+        if (page?.detail && page.digest === release!.digest) out.push(page as PageFile & { detail: PackageDetail });
+      }
+    }
+    return out.sort((a, b) => a.package.localeCompare(b.package));
+  };
+  /** The Concept pages across every package, one entry per name: the first
+   *  package (by name) gives the description and parent, every one is listed. */
+  const conceptsOf = async (): Promise<Map<string, IndexConcept & { docs?: string }>> => {
+    const out = new Map<string, IndexConcept & { docs?: string }>();
+    for (const page of await pagesOf()) {
+      for (const c of page.detail.concepts) {
+        const have = out.get(c.name);
+        if (have) {
+          have.packages.push({ package: page.package, version: page.version });
+          if (!have.description && c.description) have.description = c.description;
+          if (!have.parent && c.parent) have.parent = c.parent;
+          if (!have.docs && c.docs) have.docs = c.docs;
+          continue;
+        }
+        out.set(c.name, {
+          name: c.name,
+          ...(c.description ? { description: c.description } : {}),
+          ...(c.parent ? { parent: c.parent } : {}),
+          ...(c.docs ? { docs: c.docs } : {}),
+          packages: [{ package: page.package, version: page.version }],
+        });
+      }
+    }
+    return out;
   };
 
   return {
@@ -298,6 +430,7 @@ export function createPackageIndex(deps: IndexDeps): PackageIndex {
       await seal(card);
       await rm(stateFile(prefix), { force: true });
       await rm(cardFile(prefix), { force: true });
+      await rm(pagesDir(prefix), { recursive: true, force: true });
       return true;
     },
     catalog: (digest) => (digest ? cards.get(digest) : cards.current()),
@@ -323,6 +456,9 @@ export function createPackageIndex(deps: IndexDeps): PackageIndex {
       if (!card || !entry || !state?.accepted) return undefined;
       const channels: Record<string, string> = {};
       for (const [ch, held] of Object.entries(card.channels ?? {})) if (held[name]) channels[ch] = held[name]!;
+      const release = releaseFor(card, name);
+      const page = release ? await readPage(prefix, name) : undefined;
+      const current = page && page.digest === release!.digest ? page : undefined;
       return {
         package: name,
         publisher: prefix,
@@ -332,7 +468,30 @@ export function createPackageIndex(deps: IndexDeps): PackageIndex {
         releases: entry.releases,
         channels,
         readAt: state.accepted.at,
+        ...(current?.detail ? { detail: current.detail } : {}),
+        ...(current?.error ? { detailError: current.error } : !release ? { detailError: "every release is yanked" } : !current ? { detailError: "its archive has not been read yet" } : {}),
       };
+    },
+    async concepts(q = "") {
+      const all = [...(await conceptsOf()).values()].map(({ docs: _docs, ...c }) => c).sort((a, b) => a.name.localeCompare(b.name));
+      const words = q.trim();
+      return words ? searchSteps(all.map((c) => ({ type: c.name, description: c.description ?? "", c })), words).map((m) => m.c) : all;
+    },
+    async concept(name) {
+      const all = await conceptsOf();
+      const page = all.get(name);
+      if (!page) return undefined;
+      const brief = (c: IndexConcept) => ({ name: c.name, ...(c.description ? { description: c.description } : {}) });
+      const children = [...all.values()].filter((c) => c.parent === name).map(brief).sort((a, b) => a.name.localeCompare(b.name));
+      const parents: Array<{ name: string; description?: string }> = [];
+      const seen = new Set<string>([name]);
+      for (let p = page.parent; p && !seen.has(p); p = all.get(p)?.parent) {
+        seen.add(p);
+        const node = all.get(p);
+        parents.push(node ? brief(node) : { name: p });
+      }
+      const { docs, ...rest } = page;
+      return { ...rest, ...(docs ? { docs } : {}), children, parents };
     },
   };
 }

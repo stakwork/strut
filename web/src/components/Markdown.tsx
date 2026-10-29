@@ -2,7 +2,8 @@ import { h, Fragment, JSX } from "preact";
 
 // ── Tiny markdown renderer ─────────────────────────────────────────────────
 // Supports: headers (#..######), unordered lists (- / *), ordered lists (1.),
-// fenced code blocks (```), blockquotes (>), inline code (`x`), bold (**x**),
+// fenced code blocks (```), blockquotes (>), pipe tables (a header row, a
+// `---` separator row, then rows), inline code (`x`), bold (**x**),
 // italic (*x* / _x_), links [text](url), images ![alt](src), horizontal
 // rules (---), paragraphs. Deliberately small — no external deps.
 //
@@ -208,6 +209,26 @@ export function Markdown(props: { source: string; class?: string; resolveLink?: 
         <ol key={out.length} class="md-ol">
           {items.map((it, idx) => <li key={idx}>{renderInline(it, resolve)}</li>)}
         </ol>
+      );
+      continue;
+    }
+
+    // Pipe table: a `| a | b |` row followed by its `| --- | --- |` separator.
+    if (/^\s*\|.*\|\s*$/.test(line) && i + 1 < lines.length && /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(lines[i + 1])) {
+      flushPara();
+      const cells = (row: string) => row.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
+      const head = cells(line);
+      i += 2;
+      const rows: string[][] = [];
+      while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) {
+        rows.push(cells(lines[i]));
+        i++;
+      }
+      out.push(
+        <table key={out.length} class="md-table">
+          <thead><tr>{head.map((c, idx) => <th key={idx}>{renderInline(c, resolve)}</th>)}</tr></thead>
+          <tbody>{rows.map((r, ri) => <tr key={ri}>{head.map((_, ci) => <td key={ci}>{renderInline(r[ci] ?? "", resolve)}</td>)}</tr>)}</tbody>
+        </table>
       );
       continue;
     }

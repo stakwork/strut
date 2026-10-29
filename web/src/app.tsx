@@ -42,6 +42,8 @@ import { ThreadFlyout } from "./components/ThreadFlyout";
 import { AppHost } from "./components/AppHost";
 import { AppUsageFlyout } from "./components/AppUsageFlyout";
 import { SoloApp } from "./components/SoloApp";
+import { Store } from "./components/Store";
+import { INSTALL_LINK_PARAMS, parseInstallLink, type InstallLink } from "./store-links";
 import { ArtifactViewer } from "./components/ArtifactViewer";
 import { AppGlyph } from "./icons";
 import { appKey, appMessage, appToolInput } from "./app-links";
@@ -102,10 +104,15 @@ export function App() {
   //  - beside `?artifact=<path>`: one served file — a job's file or a run's
   //    artifact, here or a peer's through the read-through — for a
   //    deliverable. Only a path of that shape (`isServedFilePath`).
+  //  - `?store=1`: the STORE FRONT (plans/marketplace.md §7) — an index
+  //    strut's public page over its open reads, where a visitor with no
+  //    credential lands (the server redirects `/` there on an index).
   const [solo] = useState(() => {
     const p = new URLSearchParams(location.search);
+    if (p.get("store") === "1") return { store: true as const };
     return p.get("solo") === "1" ? { app: p.get("app"), input: p.get("input"), artifact: p.get("artifact") } : null;
   });
+  if (solo && "store" in solo) return <Store />;
   if (solo?.app) return <SoloApp app={solo.app} input={solo.input} />;
   if (solo?.artifact) {
     return isServedFilePath(solo.artifact)
@@ -186,7 +193,11 @@ function Shell() {
   const [showCreate, setShowCreate] = useState(false);
   const [showSecrets, setShowSecrets] = useState(initialUrl.get("secrets") === "1");
   const [showSettings, setShowSettings] = useState(false);
-  const [showPackages, setShowPackages] = useState(false);
+  // `?install=<name>` — the store front's link into this strut (store-links.ts):
+  // the Packages dialog opens on that package, its index followed first
+  // when this strut does not yet. Dropped from the URL once closed.
+  const [installLink] = useState<InstallLink | null>(() => parseInstallLink(location.search));
+  const [showPackages, setShowPackages] = useState(installLink !== null);
   const [sttSettings, setSttSettings] = useState<SttSettings>(() => sttStore.get());
   const updateStt = (next: SttSettings) => { sttStore.set(next); setSttSettings(next); };
   const [showAddStep, setShowAddStep] = useState(false);
@@ -303,6 +314,7 @@ function Shell() {
     put("app", selectedApp);
     put("input", selectedApp ? appInput : null);
     put("secrets", showSecrets ? "1" : null);
+    if (!showPackages) for (const k of INSTALL_LINK_PARAMS) p.delete(k);
     const qs = p.toString();
     const next = `${location.pathname}${qs ? `?${qs}` : ""}${location.hash}`;
     const state = withTrail(history.state, trail);
@@ -315,7 +327,7 @@ function Shell() {
     ) {
       replaceUrl(next, state);
     }
-  }, [selectedWf, selectedRun, viewVersion, selectedJob, selectedApp, appInput, showSecrets, trail]);
+  }, [selectedWf, selectedRun, viewVersion, selectedJob, selectedApp, appInput, showSecrets, showPackages, trail]);
 
   // The back (or forward) button: show what that entry's URL says, with
   // the trail it had.
@@ -1868,7 +1880,7 @@ function Shell() {
       {/* Create dialog */}
       {showCreate && <CreateDialog onClose={() => setShowCreate(false)} onCreate={handleCreate} categories={categories} />}
       {showSecrets && <SecretsDialog onClose={() => setShowSecrets(false)} />}
-      {showPackages && <PackagesDialog onClose={() => setShowPackages(false)} />}
+      {showPackages && <PackagesDialog install={installLink} onClose={() => { setShowPackages(false); void refreshWorkflows(); void refreshApps(); }} />}
       {showSettings && (
         <SettingsDialog settings={sttSettings} onChange={updateStt} onClose={() => setShowSettings(false)} />
       )}

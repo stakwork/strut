@@ -357,6 +357,14 @@ diff; `graph/create-node` returns `"Add <node_type>: <name>"`; a step
 without one gets its description's first sentence. Not in v1 unless the
 first card needs it; the generic card is enough to decide a node create.
 
+*Built 2026-10-29 (the first card that needed it: `package/install`,
+plans/marketplace.md §8):* `StepDef.describe(cfg, ctx) → { title?,
+summary? }`, called by the gate in `proposeCall` once, best effort (a
+throw leaves the description's first sentence), its `title` and `summary`
+on the record and the brief (`run.end { proposals }`, `GET
+…/runs/:runId/proposals`). No `preview` yet: the edit diff waits for the
+graph steps to want it.
+
 ## 8. How it meets the rest of strut
 
 | | |

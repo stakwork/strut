@@ -3,6 +3,7 @@ import * as api from "../api";
 import { ago } from "./ClaimsPanel";
 import { errorMessage } from "../helpers";
 import { PACKAGE_SEGMENT, comesAlong, isHostsStamp, isInstalledName, nextVersion, packageLabel, pickerGroups, picksFromRelease } from "../package-release";
+import { canWords, indexIdOf, type InstallLink } from "../store-links";
 import { ConfirmButton } from "./ConfirmButton";
 import { CopyButton } from "./CopyButton";
 
@@ -497,14 +498,20 @@ function NewPackage(props: { publisher?: string; onOpen: (pkg: string) => void }
   );
 }
 
-/** Find a package: the indexes this strut follows and the peers' installs. */
-function FindPackages(props: { installed: string[]; onInstalled: () => void }) {
+/** Find a package: the indexes this strut follows and the peers' installs.
+ *  `initial` is the store front's link (`?install=`, ../store-links.ts): the
+ *  search starts on that name, and when the link names an index this strut
+ *  does not follow, following it comes first — one tap, the key the signed
+ *  card will be checked against being the link's. */
+function FindPackages(props: { installed: string[]; initial?: InstallLink | null; onInstalled: () => void }) {
   const [indexes, setIndexes] = useState<api.PackageIndexInfo[] | null>(null);
-  const [q, setQ] = useState("");
+  const [q, setQ] = useState(props.initial?.pkg ?? "");
   const [found, setFound] = useState<api.PackageSearch | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [outcome, setOutcome] = useState<{ pkg: string; text: string; ok: boolean } | null>(null);
+  const [following, setFollowing] = useState<string | null>(null);
+  const [searchSeq, setSearchSeq] = useState(0);
   const seq = useRef(0);
 
   useEffect(() => {
@@ -520,7 +527,24 @@ function FindPackages(props: { installed: string[]; onInstalled: () => void }) {
       );
     }, 250);
     return () => clearTimeout(t);
-  }, [q]);
+  }, [q, searchSeq]);
+
+  // The link's index, when this strut follows no index with that key.
+  const linkedIndex = props.initial?.index;
+  const unfollowed = linkedIndex && indexes !== null && !indexes.some((ix) => ix.key === linkedIndex.key) ? linkedIndex : null;
+  const follow = async () => {
+    if (!unfollowed) return;
+    setFollowing("…");
+    try {
+      const id = indexIdOf(unfollowed.url);
+      const r = await api.followPackageIndex(id, { key: unfollowed.key, urls: [unfollowed.url], label: id });
+      setIndexes((all) => [...(all ?? []).filter((ix) => ix.id !== r.id), r]);
+      setFollowing(r.error ? `Followed, but its card could not be read: ${r.error}` : null);
+      setSearchSeq((n) => n + 1);
+    } catch (err) {
+      setFollowing(errorMessage(err));
+    }
+  };
 
   const install = async (pkg: string, index: string) => {
     setBusy(pkg);
@@ -541,6 +565,22 @@ function FindPackages(props: { installed: string[]; onInstalled: () => void }) {
   return (
     <div class="flyout-section">
       <div class="flyout-section-title">Find</div>
+      {props.initial && (
+        <div class="auto-card">
+          <div class="auto-card-head"><span class="package-name">{props.initial.pkg}</span><span class="badge badge-accent">from the store</span></div>
+          {unfollowed ? (
+            <>
+              <div class="auto-hint">The store that linked here is an index this strut does not follow yet: <span class="package-url">{unfollowed.url}</span>. Following it reads its signed card, which names the publisher's key an install is checked against.</div>
+              <div class="auto-card-actions">
+                <button class="btn btn-sm btn-primary" disabled={following === "…"} onClick={() => void follow()}>{following === "…" ? "Following…" : "Follow this index"}</button>
+              </div>
+              {following && following !== "…" && <div class="auto-error">{following}</div>}
+            </>
+          ) : (
+            <div class="auto-hint">Install it below once it shows; its code will run on this strut.</div>
+          )}
+        </div>
+      )}
       <input class="package-search" type="text" placeholder="Search packages" value={q} onInput={(e) => setQ((e.target as HTMLInputElement).value)} />
       {indexes && (
         <div class="auto-meta">
@@ -578,6 +618,13 @@ function FindPackages(props: { installed: string[]; onInstalled: () => void }) {
               {h.license && <span>{h.license}</span>}
               <code class="package-digest" title={h.digest}>{shortDigest(h.digest)}</code>
             </div>
+            {h.detail && (
+              <div class="auto-meta" title="Read off the release's archive by the index: what it brings, what running it reaches, the secrets it names">
+                <span>brings {[h.detail.apps.length && `${h.detail.apps.length} app${h.detail.apps.length === 1 ? "" : "s"}`, h.detail.workflows && `${h.detail.workflows} workflow${h.detail.workflows === 1 ? "" : "s"}`, h.detail.steps && `${h.detail.steps} step${h.detail.steps === 1 ? "" : "s"}`, h.detail.concepts && `${h.detail.concepts} concept${h.detail.concepts === 1 ? "" : "s"}`].filter(Boolean).join(", ") || "nothing"}</span>
+                <span>{canWords(h.detail.can).join(" · ")}</span>
+                {h.detail.secrets.length > 0 && <span>needs {h.detail.secrets.join(", ")}</span>}
+              </div>
+            )}
             {outcome?.pkg === h.package && <div class={outcome.ok ? "auto-hint" : "auto-error"}>{outcome.text}</div>}
           </div>
         );
@@ -598,7 +645,7 @@ function FindPackages(props: { installed: string[]; onInstalled: () => void }) {
   );
 }
 
-export function PackagesDialog(props: { onClose: () => void }) {
+export function PackagesDialog(props: { install?: InstallLink | null; onClose: () => void }) {
   const [catalog, setCatalog] = useState<api.Catalog | null | undefined>(undefined);
   const [publisher, setPublisher] = useState<api.PublisherInfo | null | undefined>(undefined);
   const [workflows, setWorkflows] = useState<api.WorkflowEntry[]>([]);
@@ -657,7 +704,7 @@ export function PackagesDialog(props: { onClose: () => void }) {
               {catalog && <div class="auto-meta package-signed">Catalog signed {ago(catalog.seq / 1e6)}</div>}
             </div>
 
-            <FindPackages installed={installedNames} onInstalled={() => api.listInstalledPackages().then(setInstalled, failed("installed"))} />
+            <FindPackages installed={installedNames} initial={props.install} onInstalled={() => api.listInstalledPackages().then(setInstalled, failed("installed"))} />
 
             <div class="flyout-section">
               <div class="flyout-section-title">Following</div>
