@@ -105,6 +105,9 @@ export function Store() {
           </span>
         )}
         <span>Everything on this page is derived from publishers' signed catalogs and archives. An install re-verifies against the publisher, never against this page.</span>
+        <span>
+          For an agent: <a href="llms.txt">llms.txt</a> · MCP at <code>/index/mcp</code>
+        </span>
       </footer>
     </div>
   );

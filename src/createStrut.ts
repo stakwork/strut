@@ -764,7 +764,7 @@ export async function createStrut<TServices = unknown>(
     if (!Array.isArray(urls) || !urls.every((u) => typeof u === "string" && /^https?:\/\/\S+$/.test(u))) throw new Error("STRUT_INDEX_URLS is a JSON list of http(s) URLs");
     return { urls };
   })();
-  const INDEX_READ = /^\/index\/(?:catalog|packages(?:\/|$)|concepts(?:\/|$)|mcp$)/;
+  const INDEX_READ = /^(?:\/llms\.txt$|\/index\/(?:catalog|packages(?:\/|$)|concepts(?:\/|$)|mcp$))/;
   /** The index's MCP door (src/packages/index-tools.ts): the one POST the
    *  role opens, the three read tools over the same derived pages. */
   const INDEX_MCP = "/index/mcp";
@@ -1426,9 +1426,11 @@ export async function createStrut<TServices = unknown>(
   // gate's mode. With the INDEX role on, `GET /index/catalog`,
   // `/index/packages…` and `/index/concepts…` are open the same way — the
   // phone book and the search over public catalogs, public by construction
-  // (§7) — and so is ONE POST, `/index/mcp`: the same three reads as MCP
-  // tools for an agent with no credential (src/packages/index-tools.ts);
-  // nothing on it installs or writes. And a peer may POST one more route,
+  // (§7) — and so are `GET /llms.txt` (the same store as a markdown page
+  // for an agent that fetches URLs; llmstxt.org) and ONE POST,
+  // `/index/mcp`: the same three reads as MCP tools for an agent with no
+  // credential (src/packages/index-tools.ts); nothing on them installs or
+  // writes. And a peer may POST one more route,
   // `/packages/subscriptions/sync`: it carries nothing, and makes this strut
   // read its own subscriptions' catalogs — what the publisher pings.
   //
@@ -3421,6 +3423,16 @@ export async function createStrut<TServices = unknown>(
     const indexMcpNotAllowed = (c: Context) => c.json({ error: "method not allowed: /index/mcp takes POST (JSON-RPC over HTTP, stateless)" }, 405);
     app.get(INDEX_MCP, indexMcpNotAllowed);
     app.delete(INDEX_MCP, indexMcpNotAllowed);
+    // The store as ONE markdown page at the root (llmstxt.org), for an
+    // agent that fetches URLs rather than speaks MCP: what the index is, the
+    // door above, the open reads, every package and Concept page, each a
+    // link to its JSON page here. Open like the reads; derived like them.
+    app.get("/llms.txt", async (c) => {
+      const { llmsTxt } = await import("./packages/index-tools.js");
+      const publicUrl = publicUrlOf(c);
+      const text = await llmsTxt(index, { publicUrl, ...(serveUi ? { store: publicUrl } : {}) });
+      return c.body(text, 200, { "content-type": "text/markdown; charset=utf-8", "x-content-type-options": "nosniff", "cache-control": "public, no-cache" });
+    });
   }
 
   const envPoll = Number(bootEnv()["STRUT_DISTRO_POLL_MINUTES"] ?? 10);
