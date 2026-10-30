@@ -12,7 +12,7 @@ export default defineStep({
     "Stamped publisher `ai`. Under the meta surface's rules: grants.steps may not name llm, agent or exec (put them in a workflow and grant that), nor a sealed step, and grants.workflows no sealed workflow — a person may, through POST /apps. " +
     "`job` publishes from another job's directory. Returns { ok, name, version, changed, hash, bytes, warnings, live, liveVersion?, release?, note? } or { ok: false, errors }.",
   input: z.object({
-    name: z.string().describe("The app's workspace name — workflow-style (`hvac-invoices`), or under a package prefix (`acme/hvac/invoices`)."),
+    name: z.string().describe("The app's workspace name — workflow-style (`hvac-invoices`), or under a package prefix (`acme/hvac/invoices`). It is the app's identity and never changes: the same name publishes its next version, another name a second app. To rename an app as people see it, change `title` in app.yaml and publish under the same name."),
     path: z.string().describe("The app directory, relative to the job's (or run's) directory."),
     job: z.string().optional().describe("Another job whose directory `path` is relative to (a builder job publishing a code job's prototype)."),
   }),
