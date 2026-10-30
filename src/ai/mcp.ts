@@ -2,20 +2,24 @@
  * Strut over MCP — one stateless server + transport per request, serving an
  * AI SDK ToolSet to an external agent (Claude Code: `claude mcp add
  * --transport http strut <url>/mcp --header "Authorization: Bearer <key>"`).
- * Two tool sets ride on it (createStrut mounts both):
+ * Three tool sets ride on it (createStrut mounts them):
  *
- *   `POST /mcp`          the ASSISTANT set (ai/assistant-tools.ts): seven
+ *   `POST /mcp`          the ASSISTANT set (ai/assistant-tools.ts): nine
  *                        tools — talk to the workflow builder, read a chat,
- *                        list workflows / runs, read a run, run a workflow —
- *                        for an agent that has forty other tools and should
- *                        not learn strut's YAML. The default.
+ *                        list workflows / runs, read a run, run a workflow,
+ *                        search the package store and read a package's page
+ *                        — for an agent that has forty other tools and
+ *                        should not learn strut's YAML. The default.
  *   `POST /mcp/builder`  the BUILDER set: the SAME tools the builder chat's
  *                        model gets — `buildTools(deps)`: their names,
  *                        descriptions, input schemas and CAPPED results
  *                        (`capToolResults`) — for an agent that authors
  *                        workflows itself.
  *
- * Either set is adapted generically here, so no tool exists twice. tools/list reads each tool's JSON Schema through the AI SDK's own
+ * A third door is the INDEX role's, `POST /index/mcp` (src/packages/
+ * index-tools.ts): the store's three reads for an agent with no credential.
+ *
+ * Every set is adapted generically here, so no tool exists twice. tools/list reads each tool's JSON Schema through the AI SDK's own
  * `asSchema`; tools/call validates the arguments with it (defaults applied),
  * runs `execute`, drains a generator tool to its last yield (the earlier
  * ones become `notifications/progress` when the client asked for them), and
@@ -71,6 +75,7 @@ export function assistantInstructions(publicUrl: string): string {
     `Continue the same chat for changes, debugging ("why did run X fail?") and questions; it remembers. The call holds up to \`wait\` for the reply; status "working" means read_workflow_builder_chat with wait until it is not; "asked" means it has a question in \`question\` — answer it in your next message on that chat, or for a secret send YOUR USER to the link (never collect a credential's value). ` +
     `Lost the chat id? list_workflow_builder_chats. ` +
     `For a workflow that exists: list_workflows (schedules, last run), run_workflow (now), list_runs (each run's deliverables as links), get_run (the result; large output fields are held back until you name them in \`fields\`). ` +
+    `Before asking for an integration from scratch, search the package STORE: search_packages (what people published — workflows, steps, apps, Concept pages — each hit with what it holds and reaches), get_package (one package's page); installing one is the PERSON's act, in the UI's Packages dialog, and the result says where. ` +
     `Ask the builder to declare a workflow's deliverables as \`artifacts\` (a file, a URL): then every run hands you links instead of big blobs. ` +
     `Every link is absolute on ${publicUrl} and an artifact link carries its own read token — anyone with the link reads that one run's files, nothing else, with no expiry — so share it with your other connectors as it is. ` +
     `The web UI is at ${publicUrl}/; a \`ui\` link opens that workflow, run or chat there. Nothing notifies you over MCP: poll with \`wait\`, or check list_runs with \`since\`.`

@@ -6,7 +6,7 @@
  * An external agent — Claude Code, Hermes, anything with forty other tools —
  * should not learn strut's YAML dialect, its step catalog or its claims to
  * get a workflow built: the workflow builder already knows all of that. So
- * this surface has SEVEN tools and no model behind any but the first:
+ * this surface has NINE tools and no model behind any but the first:
  *
  *   ask_workflow_builder        — a message to the builder (a new chat, or a
  *                                 continuation), answered in the same call
@@ -20,6 +20,12 @@
  *   get_run                     — the basics up front, big output fields
  *                                 held back until asked for by name
  *   run_workflow                — the builder's own, its output trimmed
+ *   search_packages             — the package STORE: what people published,
+ *                                 each hit with what its release holds
+ *   get_package                 — one package's page (apps, workflows with
+ *                                 inputs, steps, Concept pages, README, can)
+ *                                 — read only: installing is the person's
+ *                                 act, and the tools say where
  *
  * Every link is ABSOLUTE on `publicUrl` and an artifact link carries its
  * read token: a caller shares it with its own connectors as it is. The chat
@@ -40,6 +46,7 @@ import { fileScopeOf, fileToken } from "../auth.js";
 import { jobFileUrl } from "../artifact-refs.js";
 import { MAX_RUN_WAIT_MS, publicRef } from "./tools.js";
 import { capToolResults } from "./tools.js";
+import { INSTALL_IS_A_PERSONS_ACT, README_BRIEF_CHARS, briefPackagePage, type PackagesCapability } from "../packages/indexes.js";
 
 export interface AssistantChatDoor {
   /** `POST /chat`'s core: append the caller's message to the chat (a new one
@@ -80,6 +87,10 @@ export interface AssistantDeps {
   runWorkflow: Tool;
   /** The caller's actor (`x-strut-actor`): the chats it starts are its. */
   actor?: string;
+  /** The package store's reads (src/packages/indexes.ts): the indexes this
+   *  strut follows and the peers' installs. Absent → the two package tools
+   *  answer with an error. */
+  packages?: PackagesCapability;
 }
 
 /** A run's output as this surface hands it over (`get_run`, `run_workflow`):
@@ -457,6 +468,48 @@ export function buildAssistantTools(deps: AssistantDeps): ToolSet {
         } else yield held;
       },
     } as Tool,
+
+    search_packages: tool({
+      description:
+        "Search the package STORE — PACKAGES people published for strut (workflows, steps, apps and Concept pages), listed by the package indexes this strut follows — before asking the builder to build an integration from scratch. Every word of `query` must match a package's name, description or publisher; empty lists everything (up to `limit`). " +
+        "Each hit: { package, publisher, version, digest, description?, license?, requires?, index, detail? } — `detail` is what the release HOLDS, read off its archive: its `apps` (title, `can`), the counts of `workflows`, `steps` and `concepts`, the `secrets` it needs, `can: { spends, acts, code }` (whether running it reaches a model call, a step that acts on the world, or code — a reading of its files, not a check) and whether it has a `readme`. `peers` lists what the other struts on file have installed; `errors` an index or peer that could not be read. get_package reads one package's whole page. " +
+        INSTALL_IS_A_PERSONS_ACT,
+      inputSchema: z.object({
+        query: z.string().default("").describe("Words to match, e.g. \"linear issues\"; empty lists everything."),
+        limit: z.number().int().min(1).max(200).default(30),
+      }),
+      execute: async ({ query, limit }) => {
+        if (!deps.packages) return { error: "This strut has no package indexes wired (ctx.services.packages)." };
+        const found = await deps.packages.search(query, { limit });
+        return { ...found, install: `A person installs a hit from the UI at ${base}/ — Packages, Find the name, Install — or opens ${base}/?install=<publisher/name>, which opens that dialog on the name.` };
+      },
+    }),
+
+    get_package: tool({
+      description:
+        "One package's PAGE from the index that lists it: { package, publisher, key, urls, description?, releases (newest first), channels, readAt, detail?, detailError?, index, ui, install }. `detail` is the newest release READ OFF ITS ARCHIVE — `apps` (title, grants, `can`), `workflows` (each with its `inputs`, the step types it runs, its `grants`, `secrets`, `can`, `claims`), `steps` (effect, the secrets they read, the lint's findings), `concepts` (name, description, parent), the README (cut at " +
+        `${README_BRIEF_CHARS} chars), the \`secrets\` the whole package needs, and \`can: { spends, acts, code }\` — whether running it reaches a model call (spends money), a step that acts on the world (effect: write), or code (exec, or the package's own TypeScript). ` +
+        "`can` is a READING off the files — regexes over step sources, the YAML's step types — never a check or a sandbox; an install re-reads everything through the real parsers and re-verifies the package against its publisher's signed catalog. `detailError` says why there is no detail yet. " +
+        INSTALL_IS_A_PERSONS_ACT +
+        " `ui` is that door on this strut: the link opens its Packages dialog on the name.",
+      inputSchema: z.object({
+        package: z.string().describe("The package name, publisher/name (a hit's `package`)."),
+        index: z.string().optional().describe("Read it from this followed index alone (its id, a hit's `index`)."),
+      }),
+      execute: async ({ package: name, index }) => {
+        if (!deps.packages?.get) return { error: "This strut has no package indexes wired (ctx.services.packages)." };
+        try {
+          const page = briefPackagePage(await deps.packages.get(name, index ? { index } : {}));
+          return {
+            ...page,
+            ui: `${base}/?install=${encodeURIComponent(name)}`,
+            install: `A person installs it from the UI at ${base}/ — Packages, Find "${name}", Install — or opens the \`ui\` link, which opens that dialog on the name.`,
+          };
+        } catch (err) {
+          return { error: err instanceof Error ? err.message : String(err) };
+        }
+      },
+    }),
   };
   return capToolResults(tools);
 }

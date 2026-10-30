@@ -87,7 +87,7 @@ import { buildPackage, type BuildRequest } from "./packages/build.js";
 import { PUBLISHER_FILE, PUBLISHER_NAME, catalogStore, moveChannel, publicCatalogStore, publishRelease, publisherStore } from "./packages/publisher.js";
 import { SUBSCRIPTIONS_FILE, createSubscriptions, subscriptionProblem, type Subscription, type Subscriptions } from "./packages/subscriptions.js";
 import { createPackageIndex, indexDir, indexRowProblem, type PackageIndex } from "./packages/index.js";
-import { INDEXES_FILE, createIndexes, indexSubscriptionProblem, parseIndexesEnv, type IndexSubscription, type PackageIndexes } from "./packages/indexes.js";
+import { INDEXES_FILE, createIndexes, indexSubscriptionProblem, parseIndexesEnv, type IndexSubscription, type PackageIndexes, type PackagesCapability } from "./packages/indexes.js";
 import type { IndexRow } from "./packages/card.js";
 import { packageCache } from "./packages/cache.js";
 import { workspaceFences } from "./packages/fence.js";
@@ -748,7 +748,8 @@ export async function createStrut<TServices = unknown>(
   const store: RunStore = opts.store ?? (fileBacked ? new FileRunStore(dataDir) : new MemoryRunStore());
   // Home sync's role here (src/home-sync.ts): a box serves it, a copy runs it.
   const homeRole = opts.homeSync ?? homeSyncRole(bootEnv()["STRUT_HOME_SYNC"]);
-  // The package index role (src/packages/index.ts): on, two reads open to anyone.
+  // The package index role (src/packages/index.ts): on, its reads — and
+  // its MCP door, `POST /index/mcp` — open to anyone.
   const indexConfig = ((): { urls?: string[] } | undefined => {
     if (opts.index !== undefined) return opts.index === false ? undefined : opts.index === true ? {} : opts.index;
     if (bootEnv()["STRUT_INDEX"] !== "1") return undefined;
@@ -763,7 +764,10 @@ export async function createStrut<TServices = unknown>(
     if (!Array.isArray(urls) || !urls.every((u) => typeof u === "string" && /^https?:\/\/\S+$/.test(u))) throw new Error("STRUT_INDEX_URLS is a JSON list of http(s) URLs");
     return { urls };
   })();
-  const INDEX_READ = /^\/index\/(?:catalog|packages(?:\/|$)|concepts(?:\/|$))/;
+  const INDEX_READ = /^\/index\/(?:catalog|packages(?:\/|$)|concepts(?:\/|$)|mcp$)/;
+  /** The index's MCP door (src/packages/index-tools.ts): the one POST the
+   *  role opens, the three read tools over the same derived pages. */
+  const INDEX_MCP = "/index/mcp";
   const mcpRegistry = fileMcpRegistry(dataDir);
   // Controllers for runs currently executing **in this process** (keyed
   // `${workflow}/${runId}`) — RUN_CONTROL_SPEC §2.2. A controller's presence
@@ -1419,10 +1423,12 @@ export async function createStrut<TServices = unknown>(
   // PUBLIC catalog and the archives it names with no credential at all
   // (`publicPackageRead`, auth.ts; §13 "One publisher, two keys"): the
   // routes serve nothing but what the public card lists, whatever the
-  // gate's mode. With the INDEX role on, `GET /index/catalog` and
-  // `/index/packages…` are open the same way: the phone book and the
-  // search over public catalogs, public by construction (§7). And a peer
-  // may POST one more route,
+  // gate's mode. With the INDEX role on, `GET /index/catalog`,
+  // `/index/packages…` and `/index/concepts…` are open the same way — the
+  // phone book and the search over public catalogs, public by construction
+  // (§7) — and so is ONE POST, `/index/mcp`: the same three reads as MCP
+  // tools for an agent with no credential (src/packages/index-tools.ts);
+  // nothing on it installs or writes. And a peer may POST one more route,
   // `/packages/subscriptions/sync`: it carries nothing, and makes this strut
   // read its own subscriptions' catalogs — what the publisher pings.
   //
@@ -1439,7 +1445,7 @@ export async function createStrut<TServices = unknown>(
     const read = c.req.method === "GET" || c.req.method === "HEAD";
     const open = read
       ? path === "/health" || (serveUi && UI_FILE.test(path)) || carriesFileToken(c) || !!catalogTokenOf(c) || publicPackageRead(c) || (!!indexConfig && INDEX_READ.test(path))
-      : path === "/auth/session" && (c.req.method === "POST" || c.req.method === "DELETE");
+      : (path === "/auth/session" && (c.req.method === "POST" || c.req.method === "DELETE")) || (!!indexConfig && path === INDEX_MCP && c.req.method === "POST");
     if (open) return next();
     if (!carriesApiKey(c) && !carriesPeerKey(c) && !personOf(c)) return unauthorized(c);
     if (!read) {
@@ -2917,9 +2923,15 @@ export async function createStrut<TServices = unknown>(
     if (problem) throw new Error(`packageIndexes: ${problem}`);
     await indexes.set(sub);
   }
-  // The package/search step's door (src/steps/lib/package/search.ts) — and
-  // package/install's, below, once the in-process door exists.
-  const packagesBag = ((services as Record<string, unknown>)["packages"] ??= { search: (q: string, o?: { limit?: number }) => indexes.search(q, o) }) as Record<string, unknown>;
+  // The package/* steps' door (src/steps/lib/package/): the store's reads —
+  // search, a package's page, the Concept tree — and package/install's,
+  // below, once the in-process door exists.
+  const packagesBag = ((services as Record<string, unknown>)["packages"] ??= {
+    search: (q, o) => indexes.search(q, o),
+    get: (n, o) => indexes.get(n, o),
+    concepts: (q, o) => indexes.concepts(q, o),
+    concept: (n, o) => indexes.concept(n, o),
+  } satisfies PackagesCapability) as Record<string, unknown>;
   /** A bare name (`acme/linear`) → `pk:` through the first card that lists
    *  its publisher, the row's catalog URLs tried in order; any other ref as
    *  it came. */
@@ -3304,6 +3316,16 @@ export async function createStrut<TServices = unknown>(
   // This strut as the phone book and the crawler behind it (src/packages/
   // index.ts): the rows are a person's (full scope), the card and the
   // search are anyone's — open in the gate, as the public catalog is.
+  /** The base a caller OUTSIDE the UI is handed links on: `STRUT_PUBLIC_URL`
+   *  (`opts.publicUrl`), else the request's own origin (a proxy's headers
+   *  honored) — the MCP doors' links, the index door's store links. */
+  const publicUrlOf = (c: Context) => {
+    if (opts.publicUrl) return opts.publicUrl.replace(/\/+$/, "");
+    const url = new URL(c.req.url);
+    const proto = c.req.header("x-forwarded-proto")?.split(",")[0]?.trim() || url.protocol.replace(/:$/, "");
+    const host = c.req.header("x-forwarded-host")?.split(",")[0]?.trim() || c.req.header("host") || url.host;
+    return `${proto}://${host}`;
+  };
   const index: PackageIndex | null = indexConfig
     ? createPackageIndex({
         secrets: publisherSecrets,
@@ -3381,6 +3403,24 @@ export async function createStrut<TServices = unknown>(
       const page = await index.concept(name);
       return page ? c.json(page, 200, { "cache-control": "public, no-cache" }) : c.json({ error: `no listed package carries a Concept page named ${name}` }, 404);
     });
+    // The same reads as MCP tools — search_packages, get_package,
+    // get_concept — for an agent with no credential (src/packages/
+    // index-tools.ts; src/ai/mcp.ts adapts them like the other doors, the
+    // SDK loaded on the first request). Part of the role, whatever
+    // `enableMcp` says of the keyed doors: it is the store's face for an
+    // agent, as `?store=1` is for a person. Stateless, POST alone.
+    app.post(INDEX_MCP, async (c) => {
+      const { createMcpDoor, toolsetServer } = await import("./ai/mcp.js");
+      const { buildIndexTools, indexInstructions } = await import("./packages/index-tools.js");
+      const publicUrl = publicUrlOf(c);
+      const store = serveUi ? publicUrl : undefined;
+      return createMcpDoor(() =>
+        toolsetServer({ tools: buildIndexTools(index, { ...(store ? { store } : {}) }), instructions: indexInstructions({ publicUrl, ...(store ? { store } : {}) }) }),
+      ).handle(c.req.raw);
+    });
+    const indexMcpNotAllowed = (c: Context) => c.json({ error: "method not allowed: /index/mcp takes POST (JSON-RPC over HTTP, stateless)" }, 405);
+    app.get(INDEX_MCP, indexMcpNotAllowed);
+    app.delete(INDEX_MCP, indexMcpNotAllowed);
   }
 
   const envPoll = Number(bootEnv()["STRUT_DISTRO_POLL_MINUTES"] ?? 10);
@@ -6147,16 +6187,11 @@ export async function createStrut<TServices = unknown>(
   // to, so `/mcp` serves the builder set then. The caller is not the UI, so
   // every link is absolute (`publicUrl`, else the request's origin) and an
   // artifact link carries its file token; a `ui` link opens the workflow,
-  // run or chat in the UI.
+  // run or chat in the UI. A third door, `POST /index/mcp`, is the INDEX
+  // role's (above, with its routes): the store's three reads for an agent
+  // with no credential.
 
   if (enableMcp) {
-    const publicUrlOf = (c: Context) => {
-      if (opts.publicUrl) return opts.publicUrl.replace(/\/+$/, "");
-      const url = new URL(c.req.url);
-      const proto = c.req.header("x-forwarded-proto")?.split(",")[0]?.trim() || url.protocol.replace(/:$/, "");
-      const host = c.req.header("x-forwarded-host")?.split(",")[0]?.trim() || c.req.header("host") || url.host;
-      return `${proto}://${host}`;
-    };
     /** The app door (src/apps/tools.ts): `step_run`, app-only, on BOTH
      *  doors — hidden from a model, callable by a page whose host relays
      *  its tools/call here. The viewer is the connection's actor. */
@@ -6235,6 +6270,7 @@ export async function createStrut<TServices = unknown>(
         listFiles: async (runId, job) => (job ? ((await jobIndex.get(job))?.files ?? []) : artifacts ? artifacts.list(runId) : []),
         runWorkflow: buildTools(deps)["run_workflow"]!,
         ...(actor ? { actor } : {}),
+        packages: (services as Record<string, unknown>)["packages"] as PackagesCapability,
       });
       return createMcpDoor(() => toolsetServer({ tools: { ...tools, ...appTools }, instructions: assistantInstructions(publicUrl), meta: appMeta })).handle(c.req.raw);
     };

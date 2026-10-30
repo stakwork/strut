@@ -2415,6 +2415,40 @@ production until install (step 2) calls the resolver.
      `package/install` as a gated step on the orchestrator, builder and
      job seeds, the card's summary read off the index by the step's
      `describe` hook, the door behind it checking the accepted record.
+   - **Built 2026-10-29: the store for an AGENT** — the read side alone
+     (Evan: "maximally friendly to agents too — browse, search, and
+     install"; the INSTALL is the bullet above, by proposal — no read
+     installs, and every read's description says so: propose with
+     `package/install` where it is held, else tell the person). On a strut that
+     FOLLOWS an index, `ctx.services.packages` grew `get` (a package's
+     page from the index whose card lists its publisher — a miss over
+     memoized cards re-reads them once) and `concepts` / `concept` (the
+     Concept tree, one page), behind three `effect: "read"` steps —
+     `package/search` (its description now names the hit's `detail`),
+     `package/get` (the page as a model reads it: README cut at 12k,
+     Concept docs left out, `full` for the whole), `package/concepts` —
+     granted to the builder chat (`BUILDER_REGISTRY_TOOLS`, by name, never
+     `package/*`) and the `builder`, `job` and `orchestrator` seeds, so
+     "is there a package for that?" is answered inside a turn; the
+     assistant MCP door (`POST /mcp`) gained `search_packages` and
+     `get_package` over the same capability, each answering where a person
+     installs (`<base>/?install=<name>`). On the INDEX, `POST /index/mcp`
+     (`src/packages/index-tools.ts`): three read tools —
+     `search_packages`, `get_package`, `get_concept` — over the index's
+     own search / package / concept functions, OPEN to anyone like the
+     other `/index/*` reads (the one POST the gate opens with the role),
+     its instructions saying what the index is, that everything is derived
+     and an install re-verifies against the publisher, and how a person
+     installs — so any MCP-capable agent adds the store with one line.
+     Choices of mine, proposed: one step for the tree and a page
+     (`package/concepts { query?, name? }`) rather than two; the model-facing
+     page brief lives beside the capability (`briefPackagePage`), applied
+     by the steps and tools, never by the capability or the routes; the
+     index door is the ROLE's, on whatever `enableMcp` says of the keyed
+     doors; the grants are by name, so a later write in the namespace (an
+     install step) is never granted by accident — `package/install` is
+     granted beside them, by name, and gated by `approve:`. Not built: the
+     rest of the install ASK (the bullet above's "not built").
    - **6b, later: the Pkarr record.** The JS client (relay-only: a relay is a
      dependency), Stakwork's relay at a stable hostname and the
      sphinx-swarm container, a publisher's record naming its public
