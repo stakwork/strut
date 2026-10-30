@@ -1,5 +1,5 @@
 ---
-description: An APP — a front-end project over this strut's workflows, built against a fixed kit and rendered by any MCP Apps host; how to lay one out, what it may call, pinning one as a tab of the workspace, and the rules that keep it cheap and safe.
+description: An APP — a front-end project over this strut's workflows, built against a fixed kit and rendered by any MCP Apps host; how to lay one out, what it may call, renaming one (its title), pinning one as a tab of the workspace, and the rules that keep it cheap and safe.
 parent: Workflow Builder
 ---
 An APP is interactive software the builder writes on top of this strut's
@@ -36,6 +36,14 @@ which version is live, and a person makes it live, never you. `app/get { name }`
 manifest, files, build and its latest CLIENT ERRORS (`errors`: what the
 page's error boundary reported) — read them after a change the person says
 broke. `app/checkout { name, path }` copies a version out to edit it.
+
+**The name is permanent; the title is what people see.** The `name` you
+publish under is the app itself: its versions, links, grants, releases and
+tab all hang on it, and nothing renames it. What a person calls the app's
+name is its `title` in `app.yaml`. Asked to rename an app, check it out,
+change `title` (and `description`, if it says the old name) and publish
+under the SAME name. Publishing under another name makes a second app
+beside the first, never a rename.
 
 **Look before you publish.** A build that passes can still draw nothing,
 show an error, or call a step its grants refuse. `app/look { name, path }`
