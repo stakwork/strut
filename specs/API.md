@@ -376,7 +376,12 @@ One object per line of the run's append-only log. Common fields:
 `step.start.stepVersion: { version, hash }` records a pinned custom step's
 version; `step.start.subflow: { workflow, version?, hash? }` the child a
 subflow step resolved. Tool-call events inside an agent step have their I/O
-truncated for the log; every other input and output is stored whole.
+truncated for the log; every other input and output is stored whole. A
+step output over `STRUT_STEP_OUTPUT_MAX_BYTES` (8 MB as JSON) never reaches
+the log: the step fails, its `step.error` naming the size, the cap and
+where large data goes (a file under `ctx.services.artifacts`, its relative
+path in the output); a tool call's result over it fails the call the same
+way, the error text being the model's tool result.
 
 ### 5.4 Evidence (`RunEvidence`, `src/claims-authoring.ts`)
 
@@ -526,7 +531,11 @@ Response: 202 `{ ok, runId, resumed: "journal", replaying: <n>, version? }`
 (`version` when a stored version matches the run's hash and is what runs).
 400 for a successful run without `from`; 404 unknown; 409 when the log has
 no `run.start`, when a resume is already in flight, or when the workflow
-changed and no stored version matches its hash (pass `force`).
+changed and no stored version matches its hash (pass `force`); 413 when the
+run's log is over `STRUT_RESUME_MAX_LOG_BYTES` (64 MB) — refused by its
+size, never read (`{ error: "run log is 139.0 MB (…), over the 64.0 MB (…)
+resume cap (STRUT_RESUME_MAX_LOG_BYTES) — not loaded" }`); boot-time
+auto-resume skips such a run the same way.
 
 ## 7. Run one step
 

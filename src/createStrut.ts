@@ -121,6 +121,7 @@ import { WebSocketServer } from "ws";
 import { STATUS_CODES, type IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { bootEnv } from "./env.js";
+import { fmtBytes, positiveBytes } from "./output-cap.js";
 import { lintStepSource } from "./step-lint.js";
 // Static import is safe: notifier depends only on chat-store, never the AI
 // SDK (which stays lazy-loaded inside launchChatTurn).
@@ -333,6 +334,15 @@ export interface StrutOptions<TServices = unknown> {
    *  considered. */
   autoResume?: boolean | AutoResumeOptions;
 
+  /** The largest run log a durable resume will READ, in bytes — boot-time
+   *  auto-resume and `POST …/resume` alike: a log past it is skipped (one
+   *  line) or refused (413) by its size, never loaded. A run's log is read
+   *  whole to replay its journal, and a step that returns megabytes writes
+   *  a log the serving process cannot hold (swarm38, 2026-10-30: a 139 MB
+   *  log replayed at every boot crashed the process each time). Default
+   *  `STRUT_RESUME_MAX_LOG_BYTES` or 64 MB. */
+  resumeMaxLogBytes?: number;
+
   /** The automations tick loop (plans/automations.md §6): fires scheduled
    *  workflows from inside this process. Defaults to ON unless
    *  `STRUT_SCHEDULER=0`. Pass `false` for a host that owns the clock itself
@@ -471,6 +481,9 @@ export interface StrutOptions<TServices = unknown> {
    *  (`scopeFromKey`), else `"full"`. */
   resolveScope?: (c: Context) => Scope | undefined | Promise<Scope | undefined>;
 }
+
+/** `STRUT_RESUME_MAX_LOG_BYTES` unset: 64 MB (`StrutOptions.resumeMaxLogBytes`). */
+export const DEFAULT_RESUME_MAX_LOG_BYTES = 64 * 1024 * 1024;
 
 export interface AutoResumeOptions {
   /** Ignore cut-off runs whose last event is older than this. Default 7 days. */
@@ -1064,6 +1077,8 @@ export async function createStrut<TServices = unknown>(
   // the end of construction; the chat flag also decides whether a read that
   // finds a chat cut off by a restart wakes it or only marks it.
   const autoResumeOpts: AutoResumeOptions = typeof opts.autoResume === "object" ? opts.autoResume : {};
+  const resumeMaxLogBytes =
+    opts.resumeMaxLogBytes ?? positiveBytes(bootEnv()["STRUT_RESUME_MAX_LOG_BYTES"], DEFAULT_RESUME_MAX_LOG_BYTES);
   const autoResumeOn = (persistent: boolean) =>
     opts.autoResume === undefined ? persistent && bootEnv()["STRUT_AUTO_RESUME"] !== "0" : opts.autoResume !== false;
   /** Set inside the chat block; a no-op without chat. */
@@ -1808,7 +1823,18 @@ export async function createStrut<TServices = unknown>(
     /** The caller's MCP servers the launch recorded (`RunStore.setRunMcp`). */
     mcp?: McpServer[];
   };
-  type ResumeRefusal = { ok: false; status: 400 | 404 | 409; error: string };
+  type ResumeRefusal = { ok: false; status: 400 | 404 | 409 | 413; error: string };
+
+  /** The refusal for a run log past `resumeMaxLogBytes`, or null — asked
+   *  BEFORE the log is read, since reading it is what the cap prevents. */
+  const logTooBig = async (name: string, runId: string): Promise<string | null> => {
+    const size = await store.logSize(name, runId);
+    if (size <= resumeMaxLogBytes) return null;
+    return (
+      `run log is ${fmtBytes(size)}, over the ${fmtBytes(resumeMaxLogBytes)} resume cap ` +
+      `(STRUT_RESUME_MAX_LOG_BYTES) — not loaded`
+    );
+  };
 
   /** Everything a durable resume (§5) needs, or a refusal with the HTTP
    *  status it maps to. Shared by the resume endpoint and boot-time
@@ -1826,6 +1852,8 @@ export async function createStrut<TServices = unknown>(
     if (await store.repairLog?.(name, runId)) {
       console.warn(`[run ${runId}] repaired a torn event log before resume`);
     }
+    const big = await logTooBig(name, runId);
+    if (big) return { ok: false, status: 413, error: big };
     const events = await store.getRunEvents(name, runId);
     const runStart = readRunStart(events);
     if (!runStart) {
@@ -1999,6 +2027,13 @@ export async function createStrut<TServices = unknown>(
         if (controllers.has(`${name}/${runId}`)) break; // live in this process
         if (await store.getRunSummary(name, runId)) break; // newest finished → nothing was cut off
         await store.repairLog?.(name, runId);
+        // Asked before the read: a log the process cannot hold is what
+        // crashed it, and loading it again at every boot would again.
+        const big = await logTooBig(name, runId);
+        if (big) {
+          report(name, runId, "skipped", big);
+          break;
+        }
         const events = await store.getRunEvents(name, runId);
         const runStart = readRunStart(events);
         if (!runStart) break; // unreadable / empty — a human's call
@@ -2145,6 +2180,12 @@ export async function createStrut<TServices = unknown>(
       .json<{ from?: string; force?: boolean }>()
       .catch(() => ({}) as { from?: string; force?: boolean });
 
+    // A durable resume reads the whole log (findRun does too): refuse one
+    // past the cap before anything reads it. A live run is in memory already.
+    if (!controllers.has(`${name}/${runId}`)) {
+      const big = await logTooBig(name, runId);
+      if (big) return c.json({ error: big }, 413);
+    }
     const { controller, summary, exists, byPeer } = await findRun(name, runId);
     if (exists && !byPeer && (await isPeer(c))) return c.json({ error: NOT_A_PEER_RUN }, 403);
 

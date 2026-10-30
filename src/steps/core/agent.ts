@@ -14,6 +14,7 @@ import { parseStepRef } from "../../step-ref.js";
 import { nameInsidePackage, stepInPackage } from "../../package-lookup.js";
 import { connectMcpTools } from "../../mcp-servers.js";
 import { withinReach } from "../../reach.js";
+import { outputTooBig } from "../../output-cap.js";
 import { gatedByDefault, grantsTool, mcpGrantName, MCP_GRANT_PREFIX, resolveRegistration, type McpRegistry } from "../../mcp-registry.js";
 import { isSystemWorkflow, SYSTEM_WRITER } from "../../system-workflows.js";
 import { resolveStep } from "../registry.js";
@@ -1054,6 +1055,12 @@ export function wrapToolsWithEmit(tools: Record<string, any>, ctx: StepContext |
             ? { ...(opts as Record<string, unknown>), strutToolPath: path }
             : { strutToolPath: path };
         const out = await (orig as (i: unknown, o: unknown) => Promise<unknown>)(input, optsWithPath);
+        // The event keeps a preview, but the whole result goes on the
+        // model's context and into the transcript the session and the run
+        // log keep: a result past the cap fails the call (src/output-cap.ts),
+        // and the SDK hands the model the error text as the tool's result.
+        const tooBig = outputTooBig(out, `the ${name} tool's result`);
+        if (tooBig) throw tooBig;
         const nodes = accessedNodesOf(out);
         const messages = messagesOf(out); // a sub-agent's session
         await emit({

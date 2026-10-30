@@ -687,6 +687,90 @@ describe("step.end carries a step's session marker as `messages`", () => {
   });
 });
 
+// ── Output cap (STRUT_STEP_OUTPUT_MAX_BYTES, src/output-cap.ts) ───────────
+
+describe("step output cap", () => {
+  /** Run `fn` under a cap of `bytes`, the env put back after. */
+  async function withCap(bytes: number, fn: () => Promise<void>) {
+    const prev = process.env["STRUT_STEP_OUTPUT_MAX_BYTES"];
+    process.env["STRUT_STEP_OUTPUT_MAX_BYTES"] = String(bytes);
+    try {
+      await fn();
+    } finally {
+      if (prev === undefined) delete process.env["STRUT_STEP_OUTPUT_MAX_BYTES"];
+      else process.env["STRUT_STEP_OUTPUT_MAX_BYTES"] = prev;
+    }
+  }
+  // `value` returns its `result` as given: a string of n chars is n + 2 bytes as JSON.
+  const big = (chars: number) => step("big", "value", { result: "x".repeat(chars) });
+
+  it("a step whose output is over the cap fails with the size, the cap and where large data goes; one at the cap passes", async () => {
+    await withCap(300, async () => {
+      const store = new MemoryRunStore();
+      const over = await runWorkflow(flow("cap-over", { input: z.object({}), steps: [big(400)] }), {}, makeRegistry(), { store });
+      assert.equal(over.status, "error");
+      assert.equal(
+        over.error?.message,
+        'output_too_large: step "cap-over/big" output is 402 bytes as JSON, over the 300 bytes cap (STRUT_STEP_OUTPUT_MAX_BYTES). ' +
+          "An output is recorded in the run log and held in memory for the whole run: write large data to a file under " +
+          "ctx.services.artifacts (write(ctx.runId, relPath, content)) and return its relative path instead.",
+      );
+      const errors = eventsOfType(store, "cap-over", over.runId, "step.error");
+      assert.equal(errors.length, 1);
+      assert.equal(errors[0]!.path, "cap-over/big");
+      assert.equal(errors[0]!.error?.message, over.error?.message);
+      assert.equal(eventsOfType(store, "cap-over", over.runId, "step.end").length, 0, "the output never reaches the log");
+
+      const under = await runWorkflow(flow("cap-under", { input: z.object({}), steps: [big(298)] }), {}, makeRegistry(), { store });
+      assert.equal(under.status, "success");
+      assert.equal((under.output as string).length, 298);
+    });
+  });
+
+  it("is a normal step error: retry and onError apply", async () => {
+    // 600 bytes: room for the fallback's own output, which echoes the message.
+    await withCap(600, async () => {
+      const store = new MemoryRunStore();
+      const retried = await runWorkflow(
+        flow("cap-retry", { input: z.object({}), steps: [step("big", "value", { result: "x".repeat(700) }, { retry: { max: 1, delayMs: 0 } })] }),
+        {},
+        makeRegistry(),
+        { store },
+      );
+      assert.equal(retried.status, "error");
+      assert.equal(eventsOfType(store, "cap-retry", retried.runId, "step.retry").length, 1);
+
+      const recovered = await runWorkflow(
+        flow("cap-fallback", {
+          input: z.object({}),
+          steps: [step("big", "value", { result: "x".repeat(700) }, { onError: step("recover", "echo", { why: "{{ $error.message }}" }) })],
+        }),
+        {},
+        makeRegistry(),
+        { store },
+      );
+      assert.equal(recovered.status, "success");
+      assert.match((recovered.output as { why: string }).why, /^output_too_large: step "cap-fallback\/big" output is 702 bytes as JSON, over the 600 bytes cap/);
+    });
+  });
+
+  it("a foreach iteration's output is capped the same way, failing the foreach", async () => {
+    await withCap(300, async () => {
+      const store = new MemoryRunStore();
+      const wf = flow("cap-each", {
+        input: z.object({ items: z.array(z.string()) }),
+        steps: [step("each", "foreach", { items: "{{ input.items }}", body: step("b", "value", { result: "{{ $current }}" }) })],
+      });
+      const result = await runWorkflow(wf, { items: ["fine", "x".repeat(400)] }, makeRegistry({ foreach: foreachStep }), { store });
+      assert.equal(result.status, "error");
+      assert.match(result.error?.message ?? "", /^output_too_large: step "cap-each\/each#1" output is 402 bytes/);
+      assert.equal(eventsOfType(store, "cap-each", result.runId, "step.error")[0]!.path, "cap-each/each");
+      const ok = await runWorkflow(wf, { items: ["fine", "also"] }, makeRegistry({ foreach: foreachStep }), { store });
+      assert.equal(ok.status, "success");
+    });
+  });
+});
+
 // ── Usage marker (withUsage → step.end.modelCalls / usage / cost) ──────────
 
 describe("step.end carries a step's spend; the summary sums it once", () => {

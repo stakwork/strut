@@ -71,6 +71,18 @@ for (const impl of runImpls) {
       assert.equal(await store.getRunSummary(WF, "nope"), null);
     });
 
+    it("logSize is the bytes of the event log as JSON lines, read without the log; 0 for an unknown run", async () => {
+      const a = ev("1000", "run.start", { input: { q: 1 } });
+      const b = ev("1000", "step.end", { path: "wf/big", stepType: "value", output: "x".repeat(4000) });
+      assert.equal(await store.logSize(WF, "1000"), 0);
+      await store.append(WF, "1000", a);
+      await store.append(WF, "1000", b);
+      const expected = [a, b].reduce((n, e) => n + Buffer.byteLength(JSON.stringify(e) + "\n"), 0);
+      assert.equal(await store.logSize(WF, "1000"), expected);
+      await store.deleteRuns(WF);
+      assert.equal(await store.logSize(WF, "1000"), 0);
+    });
+
     it("listRuns is per-workflow, newest first; lastRunAt is the newest run's start", async () => {
       await store.append(WF, "1000", ev("1000", "run.start"));
       await store.append(WF, "3000", ev("3000", "run.start"));
