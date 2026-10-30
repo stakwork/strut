@@ -27,6 +27,7 @@ import { resolveSettings } from "./extensions.js";
 import { reachPolicyOf, withinReach } from "./reach.js";
 import { appSessionId, peerSessionId, type SessionsCapability } from "./session-store.js";
 import { bindGraph } from "./graph-writes.js";
+import { outputTooBig } from "./output-cap.js";
 
 type JobsRecordRun = JobsCapability["recordRun"];
 
@@ -820,6 +821,10 @@ async function executeStep(
 
       // Execute based on step type
       const output = await dispatchStep(step, resolvedConfig, scope, exec, path);
+      // An output the run cannot hold fails the step like any error
+      // (src/output-cap.ts): retry and onError apply, step.error says why.
+      const tooBig = outputTooBig(output, `step "${path}" output`);
+      if (tooBig) throw tooBig;
 
       const durationMs = Date.now() - startTime;
 
@@ -1038,6 +1043,8 @@ async function executeLoop(
 
     const startTime = Date.now();
     current = await dispatchStep(rawBody, resolvedBodyConfig, iterScope, exec, iterPath);
+    const tooBig = outputTooBig(current, `step "${iterPath}" output`);
+    if (tooBig) throw tooBig;
 
     await exec.emit({
       type: "step.end",
@@ -1175,6 +1182,8 @@ async function executeForeach(
 
     const startTime = Date.now();
     const output = await dispatchStep(rawBody, resolvedBodyConfig, iterScope, exec, iterPath);
+    const tooBig = outputTooBig(output, `step "${iterPath}" output`);
+    if (tooBig) throw tooBig;
 
     await exec.emit({
       type: "step.end",

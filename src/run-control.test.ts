@@ -1020,7 +1020,7 @@ describe("crash hardening", () => {
 // ── HTTP endpoints: cancel / pause / resume ────────────────────────────────
 
 describe("run control endpoints", () => {
-  async function makeServer(steps: Record<string, unknown>, services?: Record<string, unknown>) {
+  async function makeServer(steps: Record<string, unknown>, services?: Record<string, unknown>, extra: { resumeMaxLogBytes?: number } = {}) {
     const dir = join(tmpdir(), `strut-test-${randomUUID()}`);
     await mkdir(dir, { recursive: true });
     const workspace = new WorkspaceManager(dir);
@@ -1035,6 +1035,7 @@ describe("run control endpoints", () => {
       enableChat: false,
       autoResume: false, // exercised explicitly via strut.autoResumeStaleRuns()
       ...(services ? { services } : {}),
+      ...extra,
     });
     const store = strut.store as FileRunStore;
     const cleanup = () => rm(dir, { recursive: true, force: true });
@@ -1775,7 +1776,7 @@ describe("run control endpoints", () => {
       workspace: WorkspaceManager,
       store: RunStore,
       runId: string,
-      extra: { ts?: string; parentRunId?: string; markers?: RunEvent["type"][]; terminal?: RunEvent["type"]; attachments?: RunEvent["attachments"] } = {},
+      extra: { ts?: string; parentRunId?: string; markers?: RunEvent["type"][]; terminal?: RunEvent["type"]; attachments?: RunEvent["attachments"]; pad?: number } = {},
     ) {
       const ts = extra.ts ?? new Date().toISOString();
       const ev = (type: RunEvent["type"], path: string, more: Partial<RunEvent> = {}) =>
@@ -1791,7 +1792,8 @@ describe("run control endpoints", () => {
           ...(extra.attachments ? { attachments: extra.attachments } : {}),
         }),
       );
-      await store.append("boot", runId, ev("step.end", "boot/one", { stepType: "counter", output: 1 }));
+      // `pad`: a step output of that many bytes, for a log over a size cap.
+      await store.append("boot", runId, ev("step.end", "boot/one", { stepType: "counter", output: extra.pad ? "x".repeat(extra.pad) : 1 }));
       for (const m of extra.markers ?? []) await store.append("boot", runId, ev(m, "boot"));
       await store.append("boot", runId, ev("step.start", "boot/two", { stepType: "flakey" }));
       if (extra.terminal) await store.append("boot", runId, ev(extra.terminal, "boot", { output: { done: true } }));
@@ -1819,6 +1821,50 @@ describe("run control endpoints", () => {
         assert.ok(types.includes("run.resumed"));
         // Idempotent: a second scan finds the summary and does nothing.
         assert.deepEqual(await strut.autoResumeStaleRuns(), []);
+      } finally {
+        await cleanup();
+      }
+    });
+
+    it("a cut-off run whose log is over the resume cap is skipped by its size, never read; POST …/resume answers 413", async () => {
+      const counter = createCounterStep();
+      const flakey = createFlakeyStep(0);
+      const { strut, workspace, store, cleanup } = await makeServer(
+        { counter: counter.stepDef, flakey: flakey.stepDef },
+        undefined,
+        { resumeMaxLogBytes: 2048 },
+      );
+      try {
+        await workspace.publishWorkflowByContent("boot", WF);
+        await writeCutOffLog(workspace, store, "1000", { pad: 4000 });
+        const size = await store.logSize("boot", "1000");
+        assert.ok(size > 2048, `the padded log is ${size} bytes`);
+
+        const report = await strut.autoResumeStaleRuns();
+        assert.deepEqual(report.map((r) => [r.runId, r.action]), [["1000", "skipped"]]);
+        const reason = report[0]!.reason;
+        assert.match(reason, /^run log is .* over the 2\.0 KB \(2048 bytes\) resume cap \(STRUT_RESUME_MAX_LOG_BYTES\) — not loaded$/);
+        assert.ok(reason.includes(`(${size} bytes)`), `names the log's size: ${reason}`);
+
+        const res = await strut.app.request(`/workflows/boot/runs/1000/resume`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: "{}",
+        });
+        assert.equal(res.status, 413);
+        assert.deepEqual(await res.json(), { error: reason });
+
+        // Nothing was loaded or launched: no run.resumed, no summary, no step re-run.
+        assert.ok(!(await store.getRunEvents("boot", "1000")).some((e) => e.type === "run.resumed"));
+        assert.equal(await store.getRunSummary("boot", "1000"), null);
+        assert.equal(flakey.attempts(), 0);
+
+        // A newer cut-off run under the cap resumes as before.
+        await writeCutOffLog(workspace, store, "2000");
+        const again = await strut.autoResumeStaleRuns();
+        assert.deepEqual(again.map((r) => [r.runId, r.action]), [["2000", "resumed"]]);
+        assert.equal((await waitForSummary(store, "boot", "2000")).status, "success");
+        assert.equal(flakey.attempts(), 1);
       } finally {
         await cleanup();
       }

@@ -1,4 +1,4 @@
-import { mkdir, writeFile, appendFile, readdir, readFile, open, rename, rm } from "node:fs/promises";
+import { mkdir, writeFile, appendFile, readdir, readFile, open, rename, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { McpServer, ModelUsage, RunEvent, RunSummary, StepCounts } from "./core.js";
 import { addUsage, emptyUsage } from "./pricing.js";
@@ -198,6 +198,10 @@ export interface RunStore {
   getRunSummary(workflow: string, runId: string): Promise<RunSummary | null>;
   /** The full event log (empty for an unknown run). */
   getRunEvents(workflow: string, runId: string): Promise<RunEvent[]>;
+  /** The size of the event log in bytes — what `getRunEvents` would read —
+   *  without reading it: a resume refuses a log the process cannot hold
+   *  (`STRUT_RESUME_MAX_LOG_BYTES`). 0 for an unknown run. */
+  logSize(workflow: string, runId: string): Promise<number>;
   /** History → live tail; see the interface doc for terminality. */
   tailEvents(workflow: string, runId: string, opts?: TailOpts): AsyncGenerator<RunEvent>;
   /** Start time (epoch ms) of the most recent run, or null if never run. */
@@ -652,6 +656,14 @@ export class FileRunStore implements RunStore {
     return events;
   }
 
+  async logSize(workflow: string, runId: string): Promise<number> {
+    try {
+      return (await stat(join(this.runDir(workflow, runId), "events.jsonl"))).size;
+    } catch {
+      return 0;
+    }
+  }
+
   async lastRunAt(workflow: string): Promise<number | null> {
     return lastRunAtFromIds(await this.listRuns(workflow));
   }
@@ -727,6 +739,13 @@ export class MemoryRunStore implements RunStore {
 
   async getRunEvents(workflow: string, runId: string): Promise<RunEvent[]> {
     return [...(this.events.get(this.key(workflow, runId)) ?? [])];
+  }
+
+  /** The bytes the events would take as JSON lines — the file store's measure. */
+  async logSize(workflow: string, runId: string): Promise<number> {
+    let size = 0;
+    for (const e of this.events.get(this.key(workflow, runId)) ?? []) size += Buffer.byteLength(JSON.stringify(e)) + 1;
+    return size;
   }
 
   tailEvents(workflow: string, runId: string, opts: TailOpts = {}): AsyncGenerator<RunEvent> {

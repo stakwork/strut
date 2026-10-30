@@ -385,6 +385,29 @@ describe("wrapToolsWithEmit (per-call nested run events)", () => {
     assert.equal(events[1].error.message, "nope");
   });
 
+  it("fails a tool call whose result is over the output cap: step.error, and the error — the model's tool result — says where large data goes", async () => {
+    const prev = process.env["STRUT_STEP_OUTPUT_MAX_BYTES"];
+    process.env["STRUT_STEP_OUTPUT_MAX_BYTES"] = "100";
+    try {
+      const events: any[] = [];
+      const tools: Record<string, any> = {
+        fetch_all: { execute: async () => ({ rows: "x".repeat(200) }) },
+        small: { execute: async () => ({ rows: "x" }) },
+      };
+      wrapToolsWithEmit(tools, makeCtx(events));
+      await assert.rejects(
+        () => tools.fetch_all.execute({}),
+        /^Error: output_too_large: the fetch_all tool's result is 211 bytes as JSON, over the 100 bytes cap \(STRUT_STEP_OUTPUT_MAX_BYTES\)\./,
+      );
+      assert.equal(events[1].type, "step.error");
+      assert.match(events[1].error.message, /ctx\.services\.artifacts .* relative path/);
+      assert.deepEqual(await tools.small.execute({}), { rows: "x" }, "one under the cap is the tool's result as it was");
+    } finally {
+      if (prev === undefined) delete process.env["STRUT_STEP_OUTPUT_MAX_BYTES"];
+      else process.env["STRUT_STEP_OUTPUT_MAX_BYTES"] = prev;
+    }
+  });
+
   it("is a no-op without a runner ctx (in-code/test)", async () => {
     const tools: Record<string, any> = { bash: { execute: async () => "ok" } };
     const orig = tools.bash.execute;

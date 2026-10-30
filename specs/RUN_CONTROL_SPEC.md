@@ -305,7 +305,10 @@ at-least-once), so resuming orphaned children would only duplicate work
 that reports to nobody.
 
 **Per workflow, the newest run only**, newest-first by run id. If the
-newest root run has a summary, nothing was cut off. Guards: a log that
+newest root run has a summary, nothing was cut off. Guards: a log over
+`STRUT_RESUME_MAX_LOG_BYTES` (**64 MB**) is skipped by its size, unread —
+loading it is what the dead process could not survive, and the same cap
+is a 413 on `POST …/resume`; a log that
 already ends in a terminal event just gets its missing summary written;
 a run whose last event is older than **7 days** is skipped; a run with
 **5** or more `run.resumed` markers is skipped (a step that
