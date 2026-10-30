@@ -12,6 +12,12 @@
  *                    steps, Concept pages, the README, the secrets, `can`
  *   get_concept      the Concept tree the packages carry, or one page
  *
+ * And `GET /llms.txt` at the index's root (`llmsTxt`, llmstxt.org): the
+ * same store as ONE markdown page for an agent that fetches URLs rather
+ * than speaks MCP — what the index is, the door above, the open JSON
+ * reads, every listed package with what it holds, every Concept page —
+ * each a link to its JSON page, so the agent reads on without a browser.
+ *
  * Nothing installs: the index holds no strut to install into, and an
  * install is a person's act on their own strut (§8). The tools say so, and
  * where: the store's Install link, which opens the person's Packages
@@ -102,6 +108,74 @@ export function buildIndexTools(index: PackageIndex, opts: IndexToolsOptions = {
     }),
   };
   return capToolResults(tools);
+}
+
+const plural = (n: number, word: string) => (n === 0 ? "" : `${n} ${word}${n === 1 ? "" : "s"}`);
+const oneLine = (s: string) => s.replace(/\s+/g, " ").trim();
+const canWords = (can: { spends: boolean; acts: boolean; code: boolean }) =>
+  [can.spends && "spends (model calls)", can.acts && "acts on the world", can.code && "runs code"].filter(Boolean).join(", ");
+
+/** `GET /llms.txt` on an index strut (llmstxt.org): the store as one
+ *  markdown page for an agent that fetches URLs. An H1, a blockquote
+ *  saying what this is, how an agent reaches it (the MCP door, the open
+ *  reads), then `## Reads`, `## Packages` (every listed package at its
+ *  newest release, with what its archive holds), `## Concepts` (every page
+ *  the packages carry) and `## Optional` (the store page for a person) —
+ *  each entry `- [name](url): notes`, the url its JSON page here. Derived
+ *  like everything on the index; nothing on it installs. */
+export async function llmsTxt(index: PackageIndex, opts: { publicUrl: string; store?: string }): Promise<string> {
+  const base = opts.publicUrl.replace(/\/+$/, "");
+  const host = (() => {
+    try {
+      return new URL(base).host;
+    } catch {
+      return base;
+    }
+  })();
+  const [info, packages, concepts] = await Promise.all([index.info(), index.search("", 500), index.concepts("")]);
+  const out: string[] = [
+    `# strut package index at ${host}`,
+    "",
+    `> The store of PACKAGES people published for strut, the workflow engine: workflows (automations), steps, apps (front ends over workflows) and Concept pages (knowledge), each pinned by its digest. This index is the phone book — it lists publishers by the public key that signs each one's catalog and follows every listed catalog. Everything here is DERIVED and unsigned past the index card: a reading of the publishers' catalogs and archives as this index crawled them, never a check — an install re-verifies the package against its publisher's own signed catalog and re-reads its files through the real parsers.`,
+    "",
+    `For an agent: this index is an MCP server — \`claude mcp add --transport http strut-store ${base}/index/mcp\` gives you search_packages, get_package and get_concept with no credential. The same reads are plain JSON, open to anyone, under Reads below; every package and Concept link on this page is one of them.`,
+    "",
+    INSTALL_IS_A_PERSONS_ACT,
+    "",
+    "## Reads",
+    "",
+    `- [Search](${base}/index/packages?q=): every listed package at its newest release, \`{ packages: [{ package, publisher, key, urls, version, digest, description?, license?, requires?, detail? }] }\`; every word of \`q\` must match the name, description or publisher, empty lists all (\`limit\`, 100). \`detail\` is what the archive holds: the apps, counts of workflows, steps and Concept pages, the secrets it needs, \`can\`, whether it has a README`,
+    `- [A package's page](${base}/index/packages/{publisher}/{name}): its releases and channels, and \`detail\` — apps (title, grants, \`can\`), workflows (inputs, the step types they run, grants, secrets, claims), steps (effect, the secrets they read, lint findings), Concept pages, the README, the secrets the whole package needs, and \`can: { spends, acts, code }\`: whether running it reaches a model call, a step that acts on the world, or code`,
+    `- [The Concept tree](${base}/index/concepts?q=): the knowledge pages the packages carry, folded into one tree, \`{ concepts: [{ name, description?, parent?, packages }] }\`; one page with its docs, children and parents at ${base}/index/concepts/{name}`,
+    `- [The index card](${base}/index/catalog): the signed list of publishers (Ed25519 over RFC 8785 JSON, \`strut-index\`), what a strut follows${info ? ` — key ${info.key}` : ""}`,
+    `- [MCP](${base}/index/mcp): POST, JSON-RPC over HTTP, stateless, no credential — the three tools above`,
+    "",
+    "## Packages",
+    "",
+  ];
+  if (packages.length === 0) out.push("No package is listed yet.");
+  for (const h of packages) {
+    const facts: string[] = [h.version];
+    const d = h.detail;
+    if (d) {
+      const counts = [plural(d.workflows, "workflow"), plural(d.steps, "step"), plural(d.apps.length, "app"), plural(d.concepts, "Concept page")].filter(Boolean).join(", ");
+      if (counts) facts.push(counts);
+      if (d.secrets.length) facts.push(`needs ${d.secrets.join(", ")}`);
+      const can = canWords(d.can);
+      if (can) facts.push(can);
+    } else facts.push("archive not read yet");
+    out.push(`- [${h.package}](${base}/index/packages/${h.package}): ${h.description ? `${oneLine(h.description)} — ` : ""}${facts.join("; ")}`);
+  }
+  out.push("", "## Concepts", "");
+  if (concepts.length === 0) out.push("No listed package carries a Concept page yet.");
+  for (const c of concepts) {
+    const notes = [c.description && oneLine(c.description), c.parent ? `under ${c.parent}` : "a root", `in ${c.packages.map((p) => p.package).join(", ")}`].filter(Boolean).join(" — ");
+    out.push(`- [${c.name}](${base}/index/concepts/${encodeURIComponent(c.name)}): ${notes}`);
+  }
+  out.push("", "## Optional", "");
+  if (opts.store) out.push(`- [The store page](${opts.store}/?store=1): the same, for a person — a package's Install link there opens their strut's Packages dialog on the name`);
+  out.push(`- [strut](https://github.com/stakwork/strut): the workflow engine these packages install into`);
+  return out.join("\n") + "\n";
 }
 
 /** `InitializeResult.instructions` for the index door: what the index is,

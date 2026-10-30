@@ -2440,6 +2440,13 @@ production until install (step 2) calls the resolver.
      its instructions saying what the index is, that everything is derived
      and an install re-verifies against the publisher, and how a person
      installs — so any MCP-capable agent adds the store with one line.
+     And `GET /llms.txt` at the index's root (llmstxt.org; `llmsTxt`,
+     the same module): the store as ONE markdown page for an agent that
+     fetches URLs rather than speaks MCP — the blockquote, the `claude mcp
+     add` line, the open reads, every package with what its archive holds,
+     every Concept page, the store page — each a link to its JSON page, so
+     `index.sphinx.chat/llms.txt` is how such an agent learns the store;
+     the Store page's footer links it.
      Choices of mine, proposed: one step for the tree and a page
      (`package/concepts { query?, name? }`) rather than two; the model-facing
      page brief lives beside the capability (`briefPackagePage`), applied

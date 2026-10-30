@@ -21,7 +21,7 @@ import { toolsetServer } from "../ai/mcp.js";
 import { MemoryRunStore } from "../store.js";
 import { WorkspaceManager } from "../workspace.js";
 import { INDEX_DOMAIN, readCard, type IndexCatalog } from "./card.js";
-import { buildIndexTools, indexInstructions } from "./index-tools.js";
+import { buildIndexTools, indexInstructions, llmsTxt } from "./index-tools.js";
 import { createPackageIndex, type IndexConcept, type IndexConceptPage, type IndexHit, type IndexInfo, type IndexPackage } from "./index.js";
 import { packArchive } from "./archive.js";
 import { PackageCache } from "./cache.js";
@@ -132,6 +132,9 @@ describe("the package index", () => {
       // The MCP door is the role's too: without it the gate answers, and with the key there is no route.
       assert.equal((await plain.app.request("/index/mcp", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).status, 401);
       assert.equal((await plain.app.request("/index/mcp", { method: "POST", headers: { ...auth, "content-type": "application/json", accept: "application/json, text/event-stream" }, body: "{}" })).status, 404);
+      // So is llms.txt: the role's page, nothing without it.
+      assert.equal((await plain.app.request("/llms.txt")).status, 401);
+      assert.equal((await plain.app.request("/llms.txt", { headers: auth })).status, 404);
     } finally {
       await plain.close();
     }
@@ -226,6 +229,29 @@ describe("the package index", () => {
     assert.equal((await fetch(`${indexUrl}/index/mcp`)).status, 405, "POST alone, like /mcp");
     assert.equal((await fetch(`${indexUrl}/index/mcp`, { method: "DELETE" })).status, 401, "the gate opens the POST and the reads, nothing else");
 
+    // And for an agent that fetches URLs: llms.txt at the root (llmstxt.org), the store as one markdown page, open like the reads.
+    const txt = await fetch(`${indexUrl}/llms.txt`);
+    assert.equal(txt.status, 200);
+    assert.match(txt.headers.get("content-type")!, /^text\/markdown/);
+    const md = await txt.text();
+    assert.match(md, /^# strut package index at 127\.0\.0\.1:\d+\n\n> The store of PACKAGES/);
+    for (const said of [
+      `claude mcp add --transport http strut-store ${indexUrl}/index/mcp`,
+      `- [Search](${indexUrl}/index/packages?q=)`,
+      `- [The index card](${indexUrl}/index/catalog)`,
+      `key ${listed.key}`,
+      "## Packages",
+      `- [acme/linear](${indexUrl}/index/packages/acme/linear): Linear issues — 1.0.0; 1 workflow, 1 step; needs LINEAR_API_KEY`,
+      "DERIVED",
+      "re-verifies the package against its publisher",
+      "Installing is a PERSON's decision",
+      "## Concepts",
+      "No listed package carries a Concept page yet.",
+    ])
+      assert.ok(md.includes(said), said);
+    assert.ok(!md.includes("acme/notion"), "the private package is not on the page");
+    assert.ok(!md.includes("?store=1"), "no UI served here, so no store page");
+
     // Make public pings the index (the publisher's peer) with the PUBLIC key: the next release shows up by itself.
     await makePublic("acme/notion", notion.digest);
     await reached("acme", (s) => s.packages === 2);
@@ -284,6 +310,11 @@ describe("the package index", () => {
       assert.equal((await ui.app.request("/", { headers: auth })).status, 200, "the operator's shell, with the key");
       assert.equal((await ui.app.request("/?key=" + KEY)).status, 200);
       assert.equal((await plain.app.request("/")).status, 200, "a strut without the role serves its shell as before");
+      // llms.txt links the store page when the UI is served; a strut without the role has no such page.
+      const txt = await ui.app.request("/llms.txt");
+      assert.equal(txt.status, 200);
+      assert.ok((await txt.text()).includes("- [The store page](http://localhost/?store=1)"), "the store page, for a person");
+      assert.equal((await plain.app.request("/llms.txt")).status, 401);
     } finally {
       await ui.close();
       await plain.close();
@@ -364,6 +395,14 @@ describe("the concept tree across the crawled packages", () => {
     assert.equal(info.crawled[0]!.error, undefined, JSON.stringify(info.crawled));
     assert.equal(info.crawled[0]!.packages, 2);
     assert.equal(info.crawled[0]!.derived, 2);
+
+    // llms.txt lists every page under ## Concepts, each a link to its JSON page, with its parent and the packages that carry it.
+    const md = await llmsTxt(index, { publicUrl: "https://index.example/" });
+    assert.ok(md.includes("- [Law](https://index.example/index/concepts/Law): "), md);
+    assert.ok(/- \[Law\]\([^)]+\): .*a root — in openlaw\/civil\n/.test(md), md);
+    assert.ok(md.includes("- [Statute of limitations](https://index.example/index/concepts/Statute%20of%20limitations): "), md);
+    assert.ok(/\[Statute of limitations\]\([^)]+\): .*under Civil procedure — in openlaw\/civil, openlaw\/limits\n/.test(md), md);
+    assert.ok(md.includes("- [openlaw/civil](https://index.example/index/packages/openlaw/civil): Civil procedure — 12; "), md);
 
     const all = await index.concepts();
     assert.deepEqual(all.map((c: IndexConcept) => [c.name, c.parent, c.packages.map((p) => p.package)]), [
