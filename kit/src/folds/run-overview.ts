@@ -10,8 +10,10 @@
 // The timeline has one row per top-level step, foreach iterations folded
 // into theirs, and under each the work it started that a person wants to
 // see: an agent, a sub-agent, an llm call, a child run — anything that
-// spent. An agent's other tool calls are the event log's business. Pure;
-// tested.
+// spent. An agent's other tool calls are the event log's business. A report
+// asks for more (`OverviewOptions`): every row at its true depth under the
+// row that started it (`tree`), and a foreach's iterations as rows of their
+// own (`split`), so parallel siblings show as such. Pure; tested.
 
 /** A model call's tokens (`withUsage`, src/core.ts). */
 export interface TokenUsage {
@@ -61,9 +63,10 @@ export interface OverviewRow {
   label: string;
   kind: RowKind;
   stepType: string;
-  /** 0: a top-level step. 1: work it started. */
-  depth: 0 | 1;
-  /** The top-level row's label, on a depth-1 row. */
+  /** 0: a top-level step. 1: work it started — or, with `tree`, how many
+   *  rows it sits under. */
+  depth: number;
+  /** The label of the row it sits under, on a nested row. */
   parent?: string;
   /** Ms from the run's start. */
   start: number;
@@ -73,6 +76,8 @@ export interface OverviewRow {
   count: number;
   cost: number;
   modelCalls: number;
+  /** The tokens its own model calls spent (a sub-agent's are its row's). */
+  usage: TokenUsage;
   toolCalls: number;
   /** A run this step launched: open it (`workflow` known, no `peer`). */
   child?: { runId: string; workflow?: string; peer?: string };
@@ -101,6 +106,16 @@ export interface RunOverview {
   error?: { path?: string; message: string };
   /** The top-level row that took longest, and its share of the run. */
   longest?: { label: string; share: number };
+}
+
+export interface OverviewOptions {
+  /** Every row at its true depth, under the nearest row above it — a
+   *  subflow's agent under the subflow, a sub-agent's spend under it — not
+   *  everything under the top-level step. */
+  tree?: boolean;
+  /** A foreach's iterations as rows of their own, under the foreach — the
+   *  ones that ran in parallel side by side — not folded into one ×N row. */
+  split?: boolean;
 }
 
 /** Step types that launch a run and say which one (`runId` in the output). */
@@ -170,11 +185,15 @@ interface Acc {
   last: number;
   cost: number;
   modelCalls: number;
+  usage: TokenUsage;
   toolCalls: number;
   child?: OverviewRow["child"];
 }
 
-export function foldRunOverview(events: OverviewEvent[], now = Date.now()): RunOverview {
+/** Kinds a nested row is shown for even when it spent nothing. */
+const SHOWN = new Set<RowKind>(["agent", "subagent", "llm", "run", "peer"]);
+
+export function foldRunOverview(events: OverviewEvent[], now = Date.now(), opts: OverviewOptions = {}): RunOverview {
   const runStart = events.find((e) => e.type === "run.start");
   // The run's own path, the workflow's name — slashes included, so a run
   // event's path, never a step path's first segment unless there is none.
@@ -194,7 +213,7 @@ export function foldRunOverview(events: OverviewEvent[], now = Date.now()): RunO
   const accs = new Map<string, Acc>();
   const acc = (key: string, stepType: string, at: number) => {
     let a = accs.get(key);
-    if (!a) accs.set(key, (a = { key, stepType, starts: new Map(), ends: new Map(), first: at, last: at, cost: 0, modelCalls: 0, toolCalls: 0 }));
+    if (!a) accs.set(key, (a = { key, stepType, starts: new Map(), ends: new Map(), first: at, last: at, cost: 0, modelCalls: 0, usage: emptyUsage(), toolCalls: 0 }));
     return a;
   };
 
@@ -208,7 +227,7 @@ export function foldRunOverview(events: OverviewEvent[], now = Date.now()): RunO
       case "run.resumed": status = "running"; terminalAt = undefined; continue;
     }
     if (!e.type.startsWith("step.") || !e.stepType || e.path === root) continue;
-    const key = normalize(e.path);
+    const key = opts.split ? e.path : normalize(e.path);
     const isTool = e.stepType.startsWith("tool:");
     // The row this step folds into: a foreach's iterations (`wf/each#2`)
     // into the foreach's, which keeps the container's own step type.
@@ -232,7 +251,12 @@ export function foldRunOverview(events: OverviewEvent[], now = Date.now()): RunO
     a.modelCalls += s.modelCalls;
     cost += s.cost;
     modelCalls += s.modelCalls;
-    if (s.usage) for (const k of Object.keys(usage) as (keyof TokenUsage)[]) usage[k] += Number(s.usage[k]) || 0;
+    if (s.usage) {
+      for (const k of Object.keys(usage) as (keyof TokenUsage)[]) {
+        usage[k] += Number(s.usage[k]) || 0;
+        a.usage[k] += Number(s.usage[k]) || 0;
+      }
+    }
     const child = childOf(e.stepType, a.starts.get(e.path), e);
     if (child) a.child = child;
   }
@@ -241,16 +265,22 @@ export function foldRunOverview(events: OverviewEvent[], now = Date.now()): RunO
   const total = Math.max(0, end - t0);
 
   // Rows: every top-level step, and under it what it started that spent or
-  // that a person opens (an agent, a sub-agent, an llm call, a child run).
+  // that a person opens (an agent, a sub-agent, an llm call, a child run) —
+  // with `tree`, a container (a subflow, a loop) too, and with `split` each
+  // iteration, so what sits under them has a row to sit under.
   const prefix = `${root}/`;
-  const tops: OverviewRow[] = [];
-  const nested = new Map<string, OverviewRow[]>();
+  // A row's parent key: an iteration's is its foreach (`wf/each#2` → `wf/each`).
+  const parentKey = (key: string) => (/#\d+$/.test(key) ? key.replace(/#\d+$/, "") : key.slice(0, key.lastIndexOf("/")));
+  const built = new Map<string, OverviewRow>();
   for (const a of accs.values()) {
     if (!a.key.startsWith(prefix)) continue;
     const rest = a.key.slice(prefix.length);
-    const depth = rest.includes("/") ? 1 : 0;
+    const depth = rest.includes("/") || /#\d+$/.test(rest) ? 1 : 0;
     const kind = kindOf(a.stepType, a.child);
-    if (depth === 1 && a.cost === 0 && a.modelCalls === 0 && !["agent", "subagent", "llm", "run", "peer"].includes(kind)) continue;
+    const shown = depth === 0 || a.cost > 0 || a.modelCalls > 0 || SHOWN.has(kind)
+      || (opts.tree && (kind === "subflow" || kind === "loop"))
+      || (opts.split && /#\d+$/.test(a.key));
+    if (!shown) continue;
     const open = [...a.starts.keys()].some((p) => !a.ends.has(p));
     const finals = [...a.ends.values()].map((e) => e.type);
     const rowStatus: RowStatus = open && (status === "running" || status === "paused")
@@ -272,21 +302,37 @@ export function foldRunOverview(events: OverviewEvent[], now = Date.now()): RunO
       count: Math.max(1, [...new Set([...a.starts.keys(), ...a.ends.keys()])].filter((p) => p !== a.key).length),
       cost: a.cost,
       modelCalls: a.modelCalls,
+      usage: a.usage,
       toolCalls: a.toolCalls,
       ...(a.child ? { child: a.child } : {}),
     };
-    if (depth === 0) tops.push(row);
-    else {
-      const top = `${prefix}${rest.slice(0, rest.indexOf("/"))}`;
-      nested.set(top, [...(nested.get(top) ?? []), row]);
+    built.set(a.key, row);
+  }
+  // Each nested row under the nearest row above it — with `tree`; without,
+  // under its top-level step, one level down.
+  const under = new Map<string, OverviewRow[]>();
+  const tops: OverviewRow[] = [];
+  for (const row of built.values()) {
+    if (row.depth === 0) {
+      tops.push(row);
+      continue;
     }
+    let up = parentKey(row.key);
+    if (opts.tree || opts.split) while (up.length > root.length && !built.has(up)) up = parentKey(up);
+    else up = `${prefix}${row.key.slice(prefix.length).split(/[/#]/)[0]}`;
+    if (!built.has(up)) continue;
+    under.set(up, [...(under.get(up) ?? []), row]);
   }
-  tops.sort((x, y) => x.start - y.start);
+  const byStart = (x: OverviewRow, y: OverviewRow) => x.start - y.start;
+  tops.sort(byStart);
   const rows: OverviewRow[] = [];
-  for (const t of tops) {
-    rows.push(t);
-    for (const r of (nested.get(t.key) ?? []).sort((x, y) => x.start - y.start)) rows.push({ ...r, parent: t.label });
-  }
+  const place = (r: OverviewRow, depth: number, parent?: string) => {
+    rows.push({ ...r, depth, ...(parent !== undefined ? { parent } : {}) });
+    const children = (under.get(r.key) ?? []).sort(byStart);
+    // Without `tree`, everything under a top-level step is one level down.
+    for (const c of children) place(c, opts.tree || opts.split ? depth + 1 : 1, opts.tree || opts.split ? r.label : parent ?? r.label);
+  };
+  for (const t of tops) place(t, 0);
 
   // The deepest step error carrying the failure's message: a subflow's
   // child fails first, then each container above it with the same message.

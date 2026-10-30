@@ -116,19 +116,24 @@ drawing a run by hand:
 import { LaunchForm, RunList, RunTimeline, RunGraph } from "strut/views";
 <LaunchForm workflow="score" />            // the input: block, deduped launch, last run
 <RunList workflow="score" onSelect={(r) => setRunId(r.runId)} />
-<RunTimeline workflow="score" runId={runId} />   // status, cost, a row per step
+<RunTimeline workflow="score" runId={runId} />   // status, cost, a row per step (`tree split`: every level, each iteration)
 <RunGraph workflow="score" runId={runId} live />  // the graph calls, replayable
 ```
 
 Also `RunStatus`, `Transcript` (an agent step's session through
 `run/transcript` — `workflow`, `runId`, `path` — or `messages` you pass),
-`ArtifactView` (a run's file through `run/files`), `NodeCard`, `NodeSearch`, `NodeGraph`. They run on
+`ArtifactView` (a run's file through `run/files`), `DocumentView` (an HTML
+page, markdown or text from `run/files`, with `terms` highlighted; HTML drawn
+from its safe elements, never as HTML — `SafeHtml` for HTML you hold),
+`RunHealth` (what failed, was retried, skipped or cut off, and the log's
+numbers), `NodeCard`, `NodeSearch`, `NodeGraph`. They run on
 YOUR grants: the run views need the workflow (and a child run's) in
 `grants.workflows`; the graph views need `graph/graph-get-batched`,
 `graph/graph-neighbors` (and `graph/graph-search` for `NodeSearch`) in
 `grants.steps`. Its own page is a gallery of all of them. The pure folds
-under them — `foldRunOverview`, `transcriptToEntries`, `projectWithLaunches`
-— come from `@strut/kit`, for a run drawn your own way.
+under them — `foldRunOverview`, `foldRunHealth`, `transcriptToEntries`,
+`projectWithLaunches`, `sanitizeHtml` — come from `@strut/kit`, for a run
+drawn your own way.
 
 **The hooks** come from `@strut/kit`, each naming a `run/*` step, over one
 tool (`step_run`) the host relays to strut:

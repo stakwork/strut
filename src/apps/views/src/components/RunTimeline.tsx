@@ -34,21 +34,31 @@ export interface RunTimelineProps {
   onOpenStep?: (path: string) => void;
   /** A row for a run the step launched was clicked (`meta/run-workflow`, `job/start`). */
   onOpenRun?: (workflow: string, runId: string) => void;
+  /** Every row at its true depth, under the row that started it — a subflow's agent under the subflow, a sub-agent under its agent. */
+  tree?: boolean;
+  /** A foreach's iterations as rows of their own, side by side, not one ×N row. */
+  split?: boolean;
   className?: string;
 }
+
+const tokensOf = (u: { inputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; outputTokens: number }) =>
+  u.inputTokens + u.cacheReadTokens + u.cacheWriteTokens + u.outputTokens;
 
 /**
  * The run at a glance, folded from its events (`foldRunOverview`): status,
  * cost, model calls, how long — and a timeline with a row per top-level step,
  * a foreach's iterations folded into theirs (×N), and under each the work it
- * started: an agent, a sub-agent, an llm call, a child run. A live run moves
- * as its log grows. strut's own run overview (web/) draws the same fold.
+ * started: an agent, a sub-agent, an llm call, a child run, with its tokens
+ * and cost. `tree` nests each row under the one that started it, at any
+ * depth; `split` gives each iteration a row, so parallel ones sit side by
+ * side. A live run moves as its log grows. strut's own run overview (web/)
+ * draws the same fold.
  */
-export function RunTimeline({ workflow, runId, events: given, onOpenStep, onOpenRun, className }: RunTimelineProps) {
+export function RunTimeline({ workflow, runId, events: given, onOpenStep, onOpenRun, tree, split, className }: RunTimelineProps) {
   const q = useRunEvents(workflow ?? "", runId, { live: true, enabled: !given && !!workflow && !!runId });
   const events = (given ?? q.data) as OverviewEvent[] | undefined;
   const [now, setNow] = useState(() => Date.now());
-  const o = useMemo(() => (events?.length ? foldRunOverview(events, now) : null), [events, now]);
+  const o = useMemo(() => (events?.length ? foldRunOverview(events, now, { tree, split }) : null), [events, now, tree, split]);
   const ticking = o?.status === "running";
   useEffect(() => {
     if (!ticking) return;
@@ -62,7 +72,7 @@ export function RunTimeline({ workflow, runId, events: given, onOpenStep, onOpen
     return <Skeleton className={cn("h-40 w-full", className)} />;
   }
   const total = Math.max(1, o.durationMs);
-  const tokens = o.usage.inputTokens + o.usage.cacheReadTokens + o.usage.cacheWriteTokens + o.usage.outputTokens;
+  const tokens = tokensOf(o.usage);
   const open = (r: OverviewRow) => {
     if (r.child?.workflow && !r.child.peer && onOpenRun) return onOpenRun(r.child.workflow, r.child.runId);
     onOpenStep?.(r.key);
@@ -94,7 +104,7 @@ export function RunTimeline({ workflow, runId, events: given, onOpenStep, onOpen
         <Tile label="Time" value={fmtDuration(o.durationMs)} sub={o.longest && o.rows.length > 1 && o.longest.share >= 0.3 ? `${Math.round(o.longest.share * 100)}% in ${o.longest.label}` : `${o.steps} step${o.steps === 1 ? "" : "s"}`} />
         <Tile label="Cost" value={fmtCost(o.cost)} sub={tokens ? `${fmtTokens(tokens)} tokens` : "no model calls"} />
         <Tile label="Model calls" value={String(o.modelCalls)} sub={`${o.toolCalls} tool call${o.toolCalls === 1 ? "" : "s"}`} />
-        <Tile label="Steps" value={String(o.rows.filter((r) => r.depth === 0).length)} sub={`${o.rows.filter((r) => r.depth === 1).length} started under them`} />
+        <Tile label="Steps" value={String(o.rows.filter((r) => r.depth === 0).length)} sub={`${o.rows.filter((r) => r.depth > 0).length} started under them`} />
       </div>
       <ol className="flex flex-col gap-0.5" data-testid="run-timeline-rows">
         {o.rows.map((r) => {
@@ -104,7 +114,7 @@ export function RunTimeline({ workflow, runId, events: given, onOpenStep, onOpen
           const width = Math.max(0.6, ((r.end - r.start) / total) * 100);
           const body = (
             <>
-              <span className={cn("flex min-w-0 items-center gap-1.5", r.depth === 1 && "pl-4 text-muted-foreground")}>
+              <span className={cn("flex min-w-0 items-center gap-1.5", r.depth > 0 && "text-muted-foreground")} style={{ paddingLeft: `${Math.min(r.depth, 6)}rem` }}>
                 <Icon className="size-3.5 shrink-0" aria-label={k.label} />
                 <span className="truncate">{r.label}</span>
                 {r.count > 1 && <span className="shrink-0 text-xs text-muted-foreground">×{r.count}</span>}
@@ -120,13 +130,14 @@ export function RunTimeline({ workflow, runId, events: given, onOpenStep, onOpen
                   style={{ left: `${left}%`, width: `${Math.min(width, 100 - left)}%` }}
                 />
               </span>
+              <span className="text-right text-xs tabular-nums text-muted-foreground">{tokensOf(r.usage) > 0 ? fmtTokens(tokensOf(r.usage)) : ""}</span>
               <span className="text-right text-xs tabular-nums text-muted-foreground">{r.cost > 0 ? fmtCost(r.cost) : ""}</span>
             </>
           );
-          const title = `${r.label} · ${k.label}${r.stepType ? ` (${r.stepType})` : ""} · ${clock(r.start)}–${clock(r.end)} · ${r.status}${r.modelCalls ? ` · ${r.modelCalls} model calls` : ""}${r.toolCalls ? ` · ${r.toolCalls} tool calls` : ""}`;
-          const grid = "grid grid-cols-[minmax(0,13rem)_1fr_4rem] items-center gap-2 rounded px-1 py-1";
+          const title = `${r.label} · ${k.label}${r.stepType ? ` (${r.stepType})` : ""} · ${clock(r.start)}–${clock(r.end)} · ${r.status}${r.modelCalls ? ` · ${r.modelCalls} model calls` : ""}${tokensOf(r.usage) ? ` · ${fmtTokens(tokensOf(r.usage))} tokens` : ""}${r.toolCalls ? ` · ${r.toolCalls} tool calls` : ""}`;
+          const grid = "grid grid-cols-[minmax(0,13rem)_1fr_3.5rem_4rem] items-center gap-2 rounded px-1 py-1";
           return (
-            <li key={`${r.key}|${r.depth}`} data-kind={r.kind} data-status={r.status}>
+            <li key={`${r.key}|${r.depth}|${r.parent ?? ""}`} data-kind={r.kind} data-status={r.status}>
               {clickable(r) ? (
                 <button type="button" title={title} onClick={() => open(r)} className={cn(grid, "w-full text-left hover:bg-muted/60")}>
                   {body}

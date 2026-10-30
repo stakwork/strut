@@ -5,6 +5,7 @@ import type { StrutClient } from "@strut/kit";
 import { FILES, TRANSCRIPT } from "./content";
 import { getBatched, neighbors, search } from "./graph";
 import { CHILD_EVENTS, CHILD_RUN_ID, EXPLORE_PATH, RUNS, RUN_EVENTS, RUN_ID, WORKFLOW_INFO } from "./runs";
+import { REPORT_EVENTS, REPORT_RUN_ID } from "./report";
 
 const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -20,6 +21,7 @@ export function createFixtureClient(): StrutClient {
       case "run/events":
         if (c["runId"] === RUN_ID) return RUN_EVENTS;
         if (c["runId"] === CHILD_RUN_ID) return CHILD_EVENTS;
+        if (c["runId"] === REPORT_RUN_ID) return REPORT_EVENTS;
         throw new Error(`no run ${String(c["runId"])}`);
       case "run/workflow":
         return WORKFLOW_INFO;

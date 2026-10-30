@@ -41,6 +41,27 @@ export const FILES: Record<string, RunFile> = {
     ].join("\n"),
   },
   "chart.svg": svgFile("chart.svg", CHART),
+  // An HTML page a step wrote (a converted document): what DocumentView keeps
+  // of it — the text, the headings, the table — and what it drops: the
+  // script, the styles, the inline handler, a javascript: link.
+  "memo.html": {
+    path: "memo.html",
+    mediaType: "text/html",
+    bytes: 1_400,
+    text: [
+      "<!doctype html><html><head><title>Memo</title><style>body{color:red}</style><script>alert('never runs')</script></head><body>",
+      '<h1 style="font-size:40px">Atrial fibrillation in hypertension</h1>',
+      '<p class="lead" onclick="alert(1)">Hypertension is the <strong>leading modifiable risk factor</strong> for atrial fibrillation: about 1.5× the risk.</p>',
+      "<h2>What the sources say</h2>",
+      "<table><thead><tr><th>Finding</th><th>Source</th></tr></thead><tbody>",
+      "<tr><td>Intensive BP control cut incident AF by 26%</td><td>SPRINT-AF, Table 2</td></tr>",
+      '<tr><td>Treat blood pressure to &lt; 130/80</td><td><a href="https://example.org/esc-2026">ESC guideline 2026</a></td></tr>',
+      "</tbody></table>",
+      '<p>Screen for atrial fibrillation in long-standing hypertension. <a href="javascript:alert(2)">Not a link</a>.</p>',
+      "<ul><li>Rhythm control early</li><li>Rate control when rhythm control fails</li></ul>",
+      "</body></html>",
+    ].join("\n"),
+  },
   "notes.txt": { path: "notes.txt", mediaType: "text/plain", bytes: 64, text: "walk depth 2 · 6 nodes read · 1 node written\nchild run summarize 1790000000500" },
   "report.pdf": { path: "report.pdf", mediaType: "application/pdf", bytes: 48_213, base64: "" },
   "walkthrough/walkthrough.json": {

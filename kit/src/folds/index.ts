@@ -4,7 +4,9 @@
  *  imports them as `@strut/kit/folds`, `strut/views` and any app from
  *  `@strut/kit`. No React, no DOM, nothing from the server. */
 export * from "./run-overview.js";
+export * from "./run-health.js";
 export * from "./transcript.js";
 export * from "./accessed-nodes.js";
 export * from "./artifact-view.js";
+export * from "./document.js";
 export * from "./run-graph/index.js";

@@ -99,6 +99,59 @@ describe("foldRunOverview", () => {
     assert.equal(o.cost, 1.5);
   });
 
+  it("keeps each row's own tokens", () => {
+    const o = foldRunOverview(jobRun);
+    assert.deepEqual(o.rows.map((r) => [r.label, r.usage.totalTokens]), [["dir", 0], ["work", 240], ["agent", 120], ["pod-pr", 60], ["summarize", 12], ["pack", 0]]);
+  });
+
+  /** A subflow whose agent calls a sub-agent, and a foreach of agents run in parallel. */
+  const report: OverviewEvent[] = [
+    ev(0, "run.start", "r"),
+    ev(0, "step.start", "r/sub", { stepType: "subflow" }),
+    ev(1, "step.start", "r/sub/inner", { stepType: "subflow" }),
+    ev(1, "step.start", "r/sub/inner/a", { stepType: "agent" }),
+    ev(2, "step.start", "r/sub/inner/a/001-agent", { stepType: "tool:agent" }),
+    ev(3, "step.start", "r/sub/inner/a/001-agent/001-bash", { stepType: "tool:bash" }),
+    ev(4, "step.end", "r/sub/inner/a/001-agent/001-bash", { stepType: "tool:bash" }),
+    ev(5, "step.end", "r/sub/inner/a/001-agent", { stepType: "tool:agent", modelCalls: 2, usage: usage(1), cost: 0.1 }),
+    ev(6, "step.end", "r/sub/inner/a", { stepType: "agent", modelCalls: 3, usage: usage(2), cost: 0.2 }),
+    ev(6, "step.end", "r/sub/inner", { stepType: "subflow" }),
+    ev(6, "step.end", "r/sub", { stepType: "subflow" }),
+    ev(6, "step.start", "r/each", { stepType: "foreach" }),
+    ...[0, 1].flatMap((i) => [
+      ev(6, "step.start", `r/each#${i}`, { stepType: "agent" }),
+      ev(7, "step.start", `r/each#${i}/001-llm`, { stepType: "tool:llm" }),
+      ev(8, "step.end", `r/each#${i}/001-llm`, { stepType: "tool:llm", modelCalls: 1, usage: usage(1), cost: 0.01 }),
+      ev(10 + i, "step.end", `r/each#${i}`, { stepType: "agent", modelCalls: 2, usage: usage(3), cost: 0.3 }),
+    ]),
+    ev(11, "step.end", "r/each", { stepType: "foreach" }),
+    ev(11, "run.end", "r"),
+  ];
+
+  it("with `tree`, puts each row under the nearest row above it, at its true depth", () => {
+    assert.deepEqual(
+      foldRunOverview(report).rows.map((r) => [r.depth, r.label, r.count]),
+      [[0, "sub", 1], [1, "a", 1], [1, "agent", 1], [0, "each", 2], [1, "llm", 2]],
+      "by default: everything one level under its top-level step",
+    );
+    assert.deepEqual(
+      foldRunOverview(report, undefined, { tree: true }).rows.map((r) => [r.depth, r.label, r.parent ?? null]),
+      [[0, "sub", null], [1, "inner", "sub"], [2, "a", "inner"], [3, "agent", "a"], [0, "each", null], [1, "llm", "each"]],
+    );
+  });
+
+  it("with `split`, shows a foreach's iterations as rows of their own, side by side, each with its own spend", () => {
+    const o = foldRunOverview(report, undefined, { tree: true, split: true });
+    assert.deepEqual(o.rows.slice(4).map((r) => [r.depth, r.label, r.count, r.start, r.end, r.cost]), [
+      [0, "each", 1, 6000, 11_000, 0],
+      [1, "each#0", 1, 6000, 10_000, 0.3],
+      [2, "llm", 1, 7000, 8000, 0.01],
+      [1, "each#1", 1, 6000, 11_000, 0.3],
+      [2, "llm", 1, 7000, 8000, 0.01],
+    ]);
+    assert.equal(o.cost, foldRunOverview(report).cost, "the totals do not change");
+  });
+
   it("runs a live run's clock and its open rows up to now", () => {
     const now = T0 + 90_000;
     const o = foldRunOverview(jobRun.slice(0, 5), now);

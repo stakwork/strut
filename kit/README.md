@@ -106,8 +106,14 @@ the `sideEffects` and `type` rules, and that the recorded versions are
   once per distinct error.
 - **`src/folds/`** — the folds (plans/apps.md §3), pure and dependency-free,
   one copy for strut's UI, `strut/views` and any app: `run-overview.ts`
-  (`foldRunOverview`: status, cost, model calls, the timeline rows),
-  `transcript.ts` (`transcriptToEntries`), `accessed-nodes.ts`
+  (`foldRunOverview`: status, cost, model calls, the timeline rows — `tree`
+  every level, `split` each iteration — each with its tokens),
+  `run-health.ts` (`foldRunHealth`: failures, retries, onError fallbacks,
+  skips and branches, what was cut off, tool failures by tool, log stats),
+  `document.ts` (`sanitizeHtml`: a parsed DOM walked against a pinned tag
+  and attribute allowlist into a plain tree a view draws element by element;
+  `findHighlightRanges` / `highlightPieces`, with `indexOf`, never a RegExp
+  built from the terms), `transcript.ts` (`transcriptToEntries`), `accessed-nodes.ts`
   (`foldAccessedNodes`), `artifact-view.ts` (`artifactKind`,
   `parseWalkthrough`, …), and `run-graph/` — the run graph's model ported
   from hive with its tests (the projection of a run's log into graph calls,

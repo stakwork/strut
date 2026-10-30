@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { distinctNodeRefs, foldRunOverview, projectWithLaunches, type OverviewEvent } from "@strut/kit/folds";
+import { distinctNodeRefs, foldRunHealth, foldRunOverview, projectWithLaunches, type HealthEvent, type OverviewEvent } from "@strut/kit/folds";
 import { createStrut } from "../createStrut.js";
 import { MemoryRunStore } from "../store.js";
 import { FileWorkspaceStore } from "../workspace.js";
@@ -13,6 +13,7 @@ import { VIEWS_APP, VIEWS_DIR, seedViewsApp } from "./views-seed.js";
 import { treeHash } from "../version.js";
 import { CHILD_EVENTS, CHILD_RUN_ID, REF, RUN_EVENTS } from "./views/src/fixtures/runs.js";
 import { createFixtureClient } from "./views/src/fixtures/client.js";
+import { REPORT_EVENTS } from "./views/src/fixtures/report.js";
 import { RunGraphReader } from "./views/src/components/run-graph/reader.js";
 
 const quiet = { serveUi: false, enableChat: false, scheduler: false } as const;
@@ -38,6 +39,19 @@ describe("strut/views — what its run views draw", () => {
     );
     assert.deepEqual(o.rows[3]!.child, { runId: CHILD_RUN_ID, workflow: "summarize" });
     assert.equal(o.rows[4]!.child?.peer, "acme-lab");
+  });
+
+  it("the report's run: RunTimeline with tree and split, RunHealth", () => {
+    const o = foldRunOverview(REPORT_EVENTS as OverviewEvent[], undefined, { tree: true, split: true });
+    assert.deepEqual(
+      o.rows.map((r) => `${"  ".repeat(r.depth)}${r.label}`),
+      ["fetch", "gate", "notify", "sub", "  inner", "    explore", "      agent", "each", "  each#0", "    llm", "  each#1", "    llm", "  each#2", "    llm", "parse", "write", "publish"],
+    );
+    const h = foldRunHealth(REPORT_EVENTS as HealthEvent[]);
+    assert.deepEqual(
+      [h.status, h.errors.map((e) => e.label), h.retries.map((r) => r.label), h.recovered.map((r) => r.label), h.skipped.map((s) => s.label), h.tools.failed],
+      ["error", ["publish"], ["fetch"], ["parse"], ["notify"], 2],
+    );
   });
 
   it("RunGraph's data path: the calls from run/events, the nodes, edges and lineage read through graph-get-batched and graph-neighbors, a peer's node never read here", async () => {
