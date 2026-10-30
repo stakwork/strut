@@ -1,7 +1,7 @@
 /** The hooks (plans/apps.md §3.2): react-query over the `StrutClient`, each
  *  naming a STEP TYPE of the §5 `run/*` family — so the model never writes
  *  `postMessage`, and nothing launches a run but a call to `launch`. */
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   useMutation, useQueries, useQuery, useQueryClient,
   type QueryKey, type UseQueryResult,
@@ -26,6 +26,10 @@ export const RUN_STEPS = {
 export const LIVE_INTERVAL_MS = 2_000;
 /** How long `run/get { wait }` may hold for a single live run before answering. */
 export const RUN_WAIT_MS = 20_000;
+/** The most events one `run/events` answers (src/runs.ts): a full answer
+ *  ends in the log's terminal event when the log has one, so only the ones
+ *  before it are in order. */
+export const RUN_EVENTS_MAX = 5_000;
 
 /** A run summary as `run/list` and `run/get` return it (the server's
  *  `RunSummary`; an in-flight run has no `finishedAt`). */
@@ -101,9 +105,11 @@ export function anyInFlight(runs: ReadonlyArray<Pick<RunSummary, "status">> | un
   return !!runs?.some(isInFlight);
 }
 
+const TERMINAL_EVENTS = new Set(["run.end", "run.error", "run.cancelled"]);
+
 /** A run's log is settled once its terminal event is in it. */
 export function eventsSettled(events: ReadonlyArray<Pick<RunEvent, "type">> | undefined): boolean {
-  return !!events?.some((e) => e.type === "run.end" || e.type === "run.error");
+  return !!events?.some((e) => TERMINAL_EVENTS.has(e.type));
 }
 
 /** Query keys, so a component can invalidate what the hooks hold. */
@@ -175,19 +181,47 @@ export function useRun(workflow: string, runId: string | undefined, opts: UseRun
 }
 
 export interface UseRunEventsOptions {
-  /** Refetch while the log has no terminal event. */
+  /** Read what was appended while the log has no terminal event. */
   live?: boolean;
+  /** How often, live (default `LIVE_INTERVAL_MS`). Each read is only what
+   *  is new, but the server reads the whole log to answer it: a view over a
+   *  long run asks every ~10 s. */
+  intervalMs?: number;
   enabled?: boolean;
 }
 
-/** `run/events`: a run's event log (transcripts as links). */
+/** The log from `skip` on, past `run/events`' cap: a full answer's last
+ *  event may be the terminal one out of order, so the next read starts
+ *  before it. */
+async function readEventsFrom(client: StrutClient, workflow: string, runId: string, skip: number): Promise<RunEvent[]> {
+  const out: RunEvent[] = [];
+  for (;;) {
+    const page = await client.run<RunEvent[]>(RUN_STEPS.events, compact({ workflow, runId, skip: skip + out.length || undefined }));
+    if (!Array.isArray(page) || page.length < RUN_EVENTS_MAX) return Array.isArray(page) ? out.concat(page) : out;
+    out.push(...page.slice(0, RUN_EVENTS_MAX - 1));
+  }
+}
+
+/** `run/events`: a run's event log (transcripts as links). Read once, then
+ *  only what was appended (`skip`) — so following a long run costs what it
+ *  adds, not the whole log each time; a log over `RUN_EVENTS_MAX` is read
+ *  in pages. */
 export function useRunEvents(workflow: string, runId: string | undefined, opts: UseRunEventsOptions = {}): UseQueryResult<RunEvent[]> {
   const client = useStrutClient();
+  const qc = useQueryClient();
+  const key: QueryKey = runKeys.events(workflow, runId ?? "");
+  const interval = opts.intervalMs ?? LIVE_INTERVAL_MS;
   return useQuery({
-    queryKey: runKeys.events(workflow, runId ?? ""),
-    queryFn: () => client.run<RunEvent[]>(RUN_STEPS.events, compact({ workflow, runId })),
+    queryKey: key,
+    queryFn: async () => {
+      const have = qc.getQueryData<RunEvent[]>(key) ?? [];
+      const added = await readEventsFrom(client, workflow, runId!, have.length);
+      return added.length ? have.concat(added) : have;
+    },
     enabled: (opts.enabled ?? true) && !!workflow && !!runId,
-    refetchInterval: opts.live ? (q) => (eventsSettled(q.state.data) ? false : LIVE_INTERVAL_MS) : false,
+    // The log only grows: the new array is the old one with events after it.
+    structuralSharing: false,
+    refetchInterval: opts.live ? (q) => (eventsSettled(q.state.data) ? false : interval) : false,
   });
 }
 
@@ -208,6 +242,50 @@ export function useTranscript(workflow: string, runId: string | undefined, path:
     enabled: (opts.enabled ?? true) && !!workflow && !!runId && !!path,
     staleTime: Infinity,
   });
+}
+
+/**
+ * Several agents' transcripts (`run/transcript`), by step path: read one at
+ * a time — a page over a hundred sub-agents is no burst of calls — and kept,
+ * since a finished agent's is written once. A path that cannot be read is
+ * left out. Ask only for agents that ended: strut writes the transcript then.
+ */
+export function useTranscripts(workflow: string, runId: string | undefined, paths: readonly string[], opts: { enabled?: boolean } = {}): ReadonlyMap<string, RunTranscript> {
+  const client = useStrutClient();
+  const qc = useQueryClient();
+  const run = `${workflow}\u0000${runId ?? ""}`;
+  const store = useRef({ run, read: new Map<string, RunTranscript>() });
+  if (store.current.run !== run) store.current = { run, read: new Map() };
+  const [tick, setTick] = useState(0);
+  const wanted = paths.join("\n");
+  const enabled = (opts.enabled ?? true) && !!workflow && !!runId;
+  useEffect(() => {
+    if (!enabled) return;
+    let stopped = false;
+    const mine = store.current;
+    void (async () => {
+      for (const path of wanted ? wanted.split("\n") : []) {
+        if (stopped) return;
+        if (mine.read.has(path)) continue;
+        try {
+          const t = await qc.fetchQuery({
+            queryKey: runKeys.transcript(workflow, runId!, path),
+            queryFn: () => client.run<RunTranscript>(RUN_STEPS.transcript, { workflow, runId, path }),
+            staleTime: Infinity,
+          });
+          if (stopped) return;
+          mine.read.set(path, t);
+          setTick((n) => n + 1);
+        } catch {
+          // Unreadable (gone, or not this caller's): the view goes on without it.
+        }
+      }
+    })();
+    return () => {
+      stopped = true;
+    };
+  }, [run, wanted, enabled]);
+  return useMemo(() => new Map(store.current.read), [run, tick]);
 }
 
 /** `run/workflow`: the description, the active version, the `input:` block,

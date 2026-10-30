@@ -42,7 +42,7 @@ const QUERY_KEYS = [
 const MAX_QUERY_STRING = 300;
 const MAX_QUERY_LIST = 50;
 
-const WRITE_RE = /(^|[/_-])(create|edit|update|delete|remove|write|merge|upsert|register)([/_-]|$)/;
+const WRITE_RE = /(^|[/_-])(create|edit|update|delete|remove|write|merge|upsert|register|move)([/_-]|$)/;
 
 export function accessOf(tool: string): RunGraphAccess {
   return WRITE_RE.test(tool.toLowerCase()) ? "write" : "read";

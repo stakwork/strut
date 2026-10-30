@@ -3,6 +3,7 @@
 // graph-neighbors and graph-search answer.
 import type { GraphHit, GraphNeighbor, GraphNode } from "../lib/graph";
 import { REF } from "./runs";
+import { FINDING } from "./trace";
 
 const node = (ref_id: string, node_type: string, name: string, properties: Record<string, unknown>): Omit<GraphNode, "edges"> => ({
   ref_id, node_type, name, properties: { name, namespace: "default", ...properties },
@@ -16,6 +17,10 @@ const NODES: Array<Omit<GraphNode, "edges">> = [
   node(REF.heartFailure, "Concept", "Heart failure", { description: "The heart cannot pump enough to meet the body's needs." }),
   node(REF.guideline, "Document", "ESC guideline 2026", { content: "Rhythm control is preferred early in AF with hypertension…", source_link: "https://example.org/esc-2026" }),
   node(REF.trial, "Document", "SPRINT-AF trial", { content: "Intensive blood-pressure control reduced incident AF by 26%…" }),
+  // What AgentTrace's run wrote (fixtures/trace.ts).
+  node(FINDING.af, "Finding", "Hypertension raises AF risk ~1.5-fold", { description: "ESC guideline 2026, §3.2 line 41.", source_ref: "esc-guideline-2026.txt:41" }),
+  node(FINDING.dose, "Finding", "Early rhythm control preferred when AF and hypertension coexist", { description: "ESC guideline 2026, §5.1." }),
+  node(FINDING.bp, "Finding", "Intensive BP control cut incident AF by ~25%", { description: "SPRINT-AF Table 2: 88/4678 vs 118/4683; RRR 25.3% (95% CI 3–43%).", source_ref: "sprint-af-trial.txt:214" }),
 ];
 
 const EDGES: Array<{ source: string; target: string; edge_type: string }> = [
@@ -26,6 +31,9 @@ const EDGES: Array<{ source: string; target: string; edge_type: string }> = [
   { source: REF.guideline, target: REF.arrhythmia, edge_type: "ABOUT" },
   { source: REF.trial, target: REF.arrhythmia, edge_type: "ABOUT" },
   { source: REF.trial, target: REF.hypertension, edge_type: "ABOUT" },
+  { source: FINDING.af, target: REF.arrhythmia, edge_type: "ABOUT" },
+  { source: FINDING.dose, target: REF.arrhythmia, edge_type: "ABOUT" },
+  { source: FINDING.bp, target: REF.arrhythmia, edge_type: "ABOUT" },
 ];
 
 function edgesOf(ref: string): Record<string, number> {

@@ -75,9 +75,11 @@ the `sideEffects` and `type` rules, and that the recorded versions are
   client.
 - **`src/hooks.ts`** — §3.2, each naming a step: `useRuns` / `useRun` /
   `useRunEvents` (`run/list`, `run/get` with `wait`, `run/events`; `live` =
-  refetch while anything shown is in flight), `useTranscript` (`run/transcript`:
-  an agent's session by step path — the log's `transcript` link, which a page
-  cannot follow), `useLaunch(workflow, { job? })` →
+  refetch while anything shown is in flight — the log read once, then only
+  what was appended, `run/events { skip }`, paged past its 5 000-event cap,
+  every `intervalMs`), `useTranscript` (`run/transcript`: an agent's session
+  by step path — the log's `transcript` link, which a page cannot follow) and
+  `useTranscripts` (several, one call at a time, kept), `useLaunch(workflow, { job? })` →
   `{ launch(input, params?, key?, files?), pending }` — a MUTATION with no
   query form, so nothing launches on mount or on a poll (§5.1); `job` is one
   of the app's jobs, `files` the run's attachments — `useUpload(job)` →
@@ -113,7 +115,10 @@ the `sideEffects` and `type` rules, and that the recorded versions are
   `document.ts` (`sanitizeHtml`: a parsed DOM walked against a pinned tag
   and attribute allowlist into a plain tree a view draws element by element;
   `findHighlightRanges` / `highlightPieces`, with `indexOf`, never a RegExp
-  built from the terms), `transcript.ts` (`transcriptToEntries`), `accessed-nodes.ts`
+  built from the terms), `agent-trace.ts` (`foldAgentTrace`: a run's agents
+  as a nested cascade — sessions, their turns in fixed slots, the rows
+  `strut/views`' AgentTrace draws; ported from hive's Traces view),
+  `transcript.ts` (`transcriptToEntries`), `accessed-nodes.ts`
   (`foldAccessedNodes`), `artifact-view.ts` (`artifactKind`,
   `parseWalkthrough`, …), and `run-graph/` — the run graph's model ported
   from hive with its tests (the projection of a run's log into graph calls,

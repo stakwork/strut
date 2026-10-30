@@ -6,23 +6,36 @@ import { FILES, TRANSCRIPT } from "./content";
 import { getBatched, neighbors, search } from "./graph";
 import { CHILD_EVENTS, CHILD_RUN_ID, EXPLORE_PATH, RUNS, RUN_EVENTS, RUN_ID, WORKFLOW_INFO } from "./runs";
 import { REPORT_EVENTS, REPORT_RUN_ID } from "./report";
+import { TRACE_EVENTS, TRACE_LIVE_RUN_ID, TRACE_RUN_ID, traceTranscript } from "./trace";
 
 const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export function createFixtureClient(): StrutClient {
   const launched = new Map<string, string>();
   let next = 1790000001000;
+  // The live run: each read of its log reveals a little more, as a run in
+  // flight would have written; read from the start, it starts over.
+  let revealed = 0;
+  const liveLog = (skip: number) => {
+    if (skip === 0) revealed = 12;
+    revealed = Math.min(TRACE_EVENTS.length, revealed + 9);
+    return TRACE_EVENTS.slice(0, revealed);
+  };
   const answer = (type: string, c: Record<string, unknown>): unknown => {
     switch (type) {
       case "run/list":
         return RUNS.filter((r) => r.workflow === c["workflow"]).slice(0, Number(c["limit"] ?? 50));
       case "run/get":
         return RUNS.find((r) => r.runId === c["runId"]) ?? null;
-      case "run/events":
-        if (c["runId"] === RUN_ID) return RUN_EVENTS;
-        if (c["runId"] === CHILD_RUN_ID) return CHILD_EVENTS;
-        if (c["runId"] === REPORT_RUN_ID) return REPORT_EVENTS;
+      case "run/events": {
+        const skip = Number(c["skip"] ?? 0);
+        if (c["runId"] === RUN_ID) return RUN_EVENTS.slice(skip);
+        if (c["runId"] === CHILD_RUN_ID) return CHILD_EVENTS.slice(skip);
+        if (c["runId"] === REPORT_RUN_ID) return REPORT_EVENTS.slice(skip);
+        if (c["runId"] === TRACE_RUN_ID) return TRACE_EVENTS.slice(skip);
+        if (c["runId"] === TRACE_LIVE_RUN_ID) return liveLog(skip).slice(skip);
         throw new Error(`no run ${String(c["runId"])}`);
+      }
       case "run/workflow":
         return WORKFLOW_INFO;
       case "run/launch": {
@@ -37,9 +50,13 @@ export function createFixtureClient(): StrutClient {
         return { ok: true };
       case "run/files":
         return FILES[String(c["path"])] ?? null;
-      case "run/transcript":
+      case "run/transcript": {
         if (c["runId"] === RUN_ID && c["path"] === EXPLORE_PATH) return { path: EXPLORE_PATH, messages: TRANSCRIPT };
+        const live = c["runId"] === TRACE_LIVE_RUN_ID;
+        const messages = c["runId"] === TRACE_RUN_ID || live ? traceTranscript(String(c["path"]), live ? TRACE_EVENTS.slice(0, revealed) : undefined) : undefined;
+        if (messages) return { path: c["path"], messages };
         throw new Error(`No transcript at "${String(c["path"])}" in run "${String(c["runId"])}"`);
+      }
       case "graph/graph-get-batched":
         return getBatched((c["ref_ids"] as string[]) ?? []);
       case "graph/graph-neighbors":

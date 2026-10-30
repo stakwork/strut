@@ -1,7 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import type { RunEvent } from "./core.js";
-import { RUN_FILE_MAX_BYTES, capEvents, capTranscript, fileResult, listEntryOf, matchesRunFilter, mediaTypeOf, sinceMs } from "./runs.js";
+import { RUN_EVENTS_MAX as KIT_RUN_EVENTS_MAX } from "../kit/src/hooks.js";
+import { RUN_EVENTS_MAX, RUN_FILE_MAX_BYTES, capEvents, capTranscript, fileResult, listEntryOf, matchesRunFilter, mediaTypeOf, sinceMs } from "./runs.js";
 
 /**
  * The pure parts of the runs capability (src/runs.ts): the list filter,
@@ -53,6 +54,8 @@ describe("runs — the pure parts", () => {
     const long = capEvents([ev("step.end", "wf/s", { output: { text: "x".repeat(70_000) } })]);
     assert.equal((long[0]!.output as { text: string }).text, "[70000 chars not logged]");
     assert.equal(capEvents(events).length, events.length, "under the cap: whole");
+    // The kit's useRunEvents pages past the cut by this number.
+    assert.equal(KIT_RUN_EVENTS_MAX, RUN_EVENTS_MAX);
   });
 
   it("a file comes back as text or base64, typed by extension, cut at the cap", () => {

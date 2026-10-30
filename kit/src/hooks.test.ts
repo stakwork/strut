@@ -8,8 +8,8 @@ import type { StrutClient } from "./client.js";
 import { createStaticHost, type StaticHost } from "./host.js";
 import { StrutProvider } from "./provider.js";
 import {
-  JOB_STEPS, RUN_STEPS, RUN_WAIT_MS, anyInFlight, eventsSettled, fileData, isInFlight,
-  useAppLink, useCancel, useHost, useLaunch, useRun, useRunEvents, useRuns, useStep, useToolInput, useTranscript, useUpload, useWorkflow,
+  JOB_STEPS, RUN_EVENTS_MAX, RUN_STEPS, RUN_WAIT_MS, anyInFlight, eventsSettled, fileData, isInFlight,
+  useAppLink, useCancel, useHost, useLaunch, useRun, useRunEvents, useRuns, useStep, useToolInput, useTranscript, useTranscripts, useUpload, useWorkflow,
   useAssistant, assistantJobs, useJobUpdates, useGraphChanges, FEED_WAIT_MS,
 } from "./hooks.js";
 import { appLink } from "./links.js";
@@ -62,11 +62,11 @@ async function renderHook<T>(use: () => T, opts: { client: StrutClient; host?: S
   let renders = 0;
   function Probe() { current = use(); renders++; return null; }
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 }, mutations: { retry: false } } });
-  await act(async () => {
-    root.render(createElement(StrutProvider, { client: opts.client, host: opts.host, queryClient }, createElement(Probe)));
-  });
+  const render = () => root.render(createElement(StrutProvider, { client: opts.client, host: opts.host, queryClient }, createElement(Probe)));
+  await act(async () => { render(); });
   return {
     result: () => current as T,
+    rerender: () => act(async () => { render(); }),
     renders: () => renders,
     unmount: () => act(async () => { root.unmount(); container.remove(); }),
   };
@@ -119,6 +119,66 @@ describe("the run hooks name their step and pass what they were given", () => {
     await until(() => h.result().data !== undefined, "events");
     assert.deepEqual(calls, [{ type: "run/events", config: { workflow: "wf", runId: "r1" } }]);
     assert.equal(h.result().data!.length, 2);
+    await h.unmount();
+  });
+
+  it("useRunEvents live reads only what was appended (`skip`), and stops once the run settles", async () => {
+    const log: Array<{ type: string; n?: number }> = [{ type: "run.start" }, { type: "step.start", n: 1 }];
+    const { client, calls } = fakeClient({ [RUN_STEPS.events]: (c) => log.slice(Number(c.config?.skip ?? 0)) });
+    const h = await renderHook(() => useRunEvents("wf", "r1", { live: true, intervalMs: 20 }), { client });
+    await until(() => h.result().data?.length === 2, "the first read");
+    const first = h.result().data;
+    await until(() => calls.length >= 3, "two more polls");
+    assert.equal(h.result().data, first, "nothing new: the same array");
+    log.push({ type: "step.end", n: 1 }, { type: "run.cancelled" });
+    await until(() => h.result().data?.length === 4, "the appended events");
+    assert.deepEqual(h.result().data!.slice(0, 2), first);
+    const skips = calls.map((c) => c.config?.skip);
+    assert.equal(skips[0], undefined);
+    // Every poll asked from what it had; the one that brought the terminal event was the last.
+    assert.ok(skips.slice(1).every((s) => s === 2), String(skips));
+    const settled = calls.length;
+    await act(async () => { await sleep(80); });
+    assert.equal(calls.length, settled, "a cancelled run's log is settled: no more polls");
+    await h.unmount();
+  });
+
+  it("useRunEvents pages past run/events' cap, starting each page before a cut answer's terminal event", async () => {
+    const log = [...Array.from({ length: RUN_EVENTS_MAX + 10 }, (_, n) => ({ type: "step.start", n })), { type: "run.end" }];
+    // The server's cut: the head, and the last event.
+    const cut = (from: number) => {
+      const rest = log.slice(from);
+      return rest.length <= RUN_EVENTS_MAX ? rest : [...rest.slice(0, RUN_EVENTS_MAX - 1), rest.at(-1)!];
+    };
+    const { client, calls } = fakeClient({ [RUN_STEPS.events]: (c) => cut(Number(c.config?.skip ?? 0)) });
+    const h = await renderHook(() => useRunEvents("wf", "r1"), { client });
+    await until(() => h.result().data !== undefined, "the paged log");
+    assert.deepEqual(calls.map((c) => c.config?.skip), [undefined, RUN_EVENTS_MAX - 1]);
+    assert.deepEqual(h.result().data, log);
+    await h.unmount();
+  });
+
+  it("useTranscripts reads each path once, one call at a time, and skips one it cannot read", async () => {
+    let inFlight = 0;
+    let most = 0;
+    const { client, calls } = fakeClient({
+      [RUN_STEPS.transcript]: async (c) => {
+        most = Math.max(most, ++inFlight);
+        await sleep(10);
+        inFlight--;
+        if (c.config?.path === "wf/gone") throw new Error("No transcript");
+        return { path: c.config?.path, messages: [] };
+      },
+    });
+    let paths = ["wf/a", "wf/gone", "wf/b"];
+    const h = await renderHook(() => useTranscripts("wf", "r1", paths), { client });
+    await until(() => h.result().size === 2, "two transcripts");
+    assert.deepEqual([...h.result().keys()], ["wf/a", "wf/b"]);
+    assert.equal(most, 1);
+    paths = [...paths, "wf/c"];
+    await h.rerender();
+    await until(() => h.result().size === 3, "the new path");
+    assert.deepEqual(calls.map((c) => c.config?.path), ["wf/a", "wf/gone", "wf/b", "wf/gone", "wf/c"]);
     await h.unmount();
   });
 

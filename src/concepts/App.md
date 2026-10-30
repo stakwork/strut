@@ -118,7 +118,15 @@ import { LaunchForm, RunList, RunTimeline, RunGraph } from "strut/views";
 <RunList workflow="score" onSelect={(r) => setRunId(r.runId)} />
 <RunTimeline workflow="score" runId={runId} />   // status, cost, a row per step (`tree split`: every level, each iteration)
 <RunGraph workflow="score" runId={runId} live />  // the graph calls, replayable
+<AgentTrace workflow="score" runId={runId} live /> // the run's agents as a cascade
 ```
+
+`AgentTrace` draws every agent the run started as a nested cascade: the
+agents that ran together side by side, their tool calls in pills that open
+into each call and the reasoning before it, the nodes a call read or wrote
+(a click opens one, with `graph/graph-get-batched` granted), sub-agents on
+lanes of their own, and a "Download HTML" of what is on screen. Use it
+rather than folding a run's events into agents yourself.
 
 Also `RunStatus`, `Transcript` (an agent step's session through
 `run/transcript` — `workflow`, `runId`, `path` — or `messages` you pass),
@@ -131,9 +139,9 @@ YOUR grants: the run views need the workflow (and a child run's) in
 `grants.workflows`; the graph views need `graph/graph-get-batched`,
 `graph/graph-neighbors` (and `graph/graph-search` for `NodeSearch`) in
 `grants.steps`. Its own page is a gallery of all of them. The pure folds
-under them — `foldRunOverview`, `foldRunHealth`, `transcriptToEntries`,
-`projectWithLaunches`, `sanitizeHtml` — come from `@strut/kit`, for a run
-drawn your own way.
+under them — `foldRunOverview`, `foldRunHealth`, `foldAgentTrace`,
+`transcriptToEntries`, `projectWithLaunches`, `sanitizeHtml` — come from
+`@strut/kit`, for a run drawn your own way.
 
 **The hooks** come from `@strut/kit`, each naming a `run/*` step, over one
 tool (`step_run`) the host relays to strut:
@@ -142,7 +150,8 @@ tool (`step_run`) the host relays to strut:
 | --- | --- |
 | `useRuns(workflow, { status?, automation?, job?, limit?, since?, live? })` | `run/list`: the runs, newest first; `live` refetches while any is in flight; `useRuns(null, { job })` a job's runs across workflows |
 | `useRun(workflow, runId, { live? })` | `run/get`: the summary, its whole `input` and `output`, `artifacts` as links; `live` long-polls (`wait`) while in flight |
-| `useRunEvents(workflow, runId, { live? })` | `run/events`: the log, transcripts as links |
+| `useRunEvents(workflow, runId, { live?, intervalMs? })` | `run/events`: the log, transcripts as links; `live` reads only what was appended, every `intervalMs` (2 s; pass 10 000 for a long run) until the run ends |
+| `useTranscripts(workflow, runId, paths)` | `run/transcript` for several agents, one call at a time, each kept: a Map by path. Ask only for agents that ended |
 | `useTranscript(workflow, runId, path, { full? })` | `run/transcript`: the agent session a `step.end`'s `transcript` link names (the page cannot follow the link); `full` a session turn's whole thread; `truncated` says what a 2 MB cap cut |
 | `useLaunch(workflow, { job? })` → `{ launch(input, params?, key?, files?), pending }` | `run/launch`: a MUTATION — a function to call on a click, never a query; `job` launches under one of the app's jobs, `files` go with the run |
 | `useUpload(job)` → `{ upload(file), remove(path) }` | `job/upload` / `job/delete-upload`: a file into the app's job, its `path` back (see "Files a person brings") |
@@ -211,7 +220,7 @@ its name. `jobs` are the jobs the latest turn started or continued
 the person's approval (graph writes) from inside an app: it does those in
 the person's own chat.
 
-Reads (`useRuns`, `useRun`, `useRunEvents`, `useTranscript`, `useWorkflow`) are free and may
+Reads (`useRuns`, `useRun`, `useRunEvents`, `useTranscript`, `useTranscripts`, `useWorkflow`) are free and may
 refetch on their own. A tool call (`useStep` on a cheap step) is fine on a
 render. A launch is a click. Nothing in the kit launches on mount or on a
 poll, and `step_run` refuses `llm`, `agent` and `exec` whatever the manifest

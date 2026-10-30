@@ -15,8 +15,8 @@ export {
 } from "./host.js";
 export { StrutProvider, createKitQueryClient, useStrutClient, useStrutHost, type StrutProviderProps } from "./provider.js";
 export {
-  RUN_STEPS, JOB_STEPS, LIVE_INTERVAL_MS, RUN_WAIT_MS, runKeys, isInFlight, anyInFlight, eventsSettled, fileData,
-  useRuns, useRun, useRunEvents, useTranscript, useLaunch, useUpload, useCancel, useWorkflow, useStep, useToolInput, useAppLink, useHost, useApp,
+  RUN_STEPS, JOB_STEPS, LIVE_INTERVAL_MS, RUN_WAIT_MS, RUN_EVENTS_MAX, runKeys, isInFlight, anyInFlight, eventsSettled, fileData,
+  useRuns, useRun, useRunEvents, useTranscript, useTranscripts, useLaunch, useUpload, useCancel, useWorkflow, useStep, useToolInput, useAppLink, useHost, useApp,
   useAssistant, assistantJobs, ASSISTANT_WORKFLOW,
   useJobUpdates, useGraphChanges, GRAPH_CHANGES_STEP, FEED_WAIT_MS,
   type JobUpdate, type GraphChange, type UseJobUpdates, type UseJobUpdatesOptions, type UseGraphChanges, type UseGraphChangesOptions,
