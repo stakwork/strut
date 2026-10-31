@@ -6,12 +6,13 @@ import { StrutProvider, useStrutHost } from "@strut/kit";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import {
-  ArtifactView, DocumentView, LaunchForm, RunHealth, NodeCard, NodeGraph, NodeSearch, RunGraph, RunList, RunStatus, RunTimeline, Transcript,
+  AgentTrace, ArtifactView, DocumentView, LaunchForm, RunHealth, NodeCard, NodeGraph, NodeSearch, RunGraph, RunList, RunStatus, RunTimeline, Transcript,
 } from "./index";
 import { createFixtureClient } from "./fixtures/client";
 import { TRANSCRIPT_MARKS } from "./fixtures/content";
 import { EXPLORE_PATH, REF, RUN_ID, WORKFLOW } from "./fixtures/runs";
 import { REPORT_RUN_ID } from "./fixtures/report";
+import { TRACE_LIVE_RUN_ID, TRACE_RUN_ID } from "./fixtures/trace";
 
 interface Entry {
   name: string;
@@ -45,6 +46,23 @@ function TimelineDemo() {
         ))}
       </div>
       {report ? <RunTimeline key="report" workflow={WORKFLOW} runId={REPORT_RUN_ID} tree split /> : <RunTimeline key="default" workflow={WORKFLOW} runId={RUN_ID} />}
+    </div>
+  );
+}
+
+/** The finished run, or the same run replayed as if in flight (its log revealed a little more at each read). */
+function TraceDemo() {
+  const [live, setLive] = useState(false);
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex gap-1">
+        {[false, true].map((l) => (
+          <button key={String(l)} type="button" onClick={() => setLive(l)} className={cn("rounded-md border px-2.5 py-1 text-xs", live === l ? "bg-muted font-medium" : "text-muted-foreground hover:bg-muted/60")}>
+            {l ? "Live replay" : "Finished run"}
+          </button>
+        ))}
+      </div>
+      {live ? <AgentTrace key="live" workflow={WORKFLOW} runId={TRACE_LIVE_RUN_ID} live intervalMs={1500} /> : <AgentTrace key="done" workflow={WORKFLOW} runId={TRACE_RUN_ID} />}
     </div>
   );
 }
@@ -86,6 +104,13 @@ const ENTRIES: Entry[] = [
         <RunGraph workflow={WORKFLOW} runId={RUN_ID} fill />
       </div>
     ),
+  },
+  {
+    name: "AgentTrace",
+    what: "A run's agents as a nested cascade: one lane per agent step, the ones that ran together side by side, pills of tool calls that open into each call and the reasoning before it, the nodes a call read or wrote (a click opens one), sub-agents forking off and merging back. Live, it reads only what the log gained. Download HTML saves what is on screen as one file.",
+    grants: "grants.workflows: the run's workflow · grants.steps: graph/graph-get-batched (to open a node)",
+    usage: `<AgentTrace workflow="research" runId={runId} live />`,
+    demo: () => <TraceDemo />,
   },
   {
     name: "LaunchForm",

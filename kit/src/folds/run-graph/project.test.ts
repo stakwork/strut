@@ -229,6 +229,7 @@ describe("accessOf", () => {
     ["graph/edit-node", "write"],
     ["jarvis/create-triplet", "write"],
     ["graph/register-namespace", "write"],
+    ["graph_move_node", "write"],
   ])("%s is a %s", (tool, access) => {
     expect(accessOf(tool)).toBe(access);
   });
