@@ -4705,3 +4705,12 @@ input.package-search { width: 100%; margin-bottom: var(--sp-2); }
   .store-top { flex-wrap: wrap; height: auto; padding: var(--sp-2) var(--sp-4); gap: var(--sp-2); }
   .store-main { padding: var(--sp-4); }
 }
+
+.prop-summary { color: var(--text-muted); margin-top: 4px; white-space: pre-wrap; }
+.prop-summary-full { margin: 0 0 8px; }
+.prop-fields { margin: 0 0 8px; display: grid; gap: 4px; }
+.prop-field { display: grid; grid-template-columns: 9rem 1fr; gap: 8px; }
+.prop-field dt { color: var(--text-muted); }
+.prop-field dd { margin: 0; white-space: pre-wrap; word-break: break-word; }
+.prop-field-danger dd { color: var(--danger, #c0392b); font-weight: 600; }
+.prop-code { font-family: var(--font-mono, monospace); }

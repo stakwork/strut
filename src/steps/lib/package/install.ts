@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { CardField } from "../../../core.js";
 import { defineStep, type StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
 import { PACKAGE_NAME } from "../../../packages/format.js";
@@ -87,7 +88,22 @@ export default defineStep({
     if (req?.packages?.length) lines.push(`It installs ${req.packages.map((p) => p.package).join(", ")} with it.`);
     if (req?.binaries?.length || req?.runtimes?.length) lines.push(`It needs on this machine: ${[...(req.binaries ?? []), ...(req.runtimes ?? [])].join(", ")}.`);
     lines.push("Read off the index's copy, unsigned; the install re-verifies every file against the publisher's own catalog, and the key above is pinned.");
-    return { title, summary: lines.join(" ") };
+    const fields: CardField[] = [
+      { label: "Version and license", value: `${hit.package} ${hit.version}${hit.license ? ` (${hit.license})` : " (no license named)"}` },
+      { label: "Publisher key", value: `${hit.publisher} — ${hit.key.slice(0, 8)}…${hit.key.slice(-6)}`, kind: "ref" },
+    ];
+    if (d) {
+      const holds = [
+        d.apps.length ? words(d.apps.length, "app") : "",
+        d.workflows ? words(d.workflows, "workflow") : "",
+        d.steps ? words(d.steps, "step") : "",
+        d.concepts ? words(d.concepts, "Concept page") : "",
+      ].filter(Boolean);
+      fields.push({ label: "Brings", value: holds.join(", ") || "nothing the index could read" });
+      fields.push({ label: "Needs", value: d.secrets.length ? d.secrets.join(", ") : "no secret" });
+      fields.push({ label: "Runs code", value: d.can.code ? "yes" : "no", ...(d.can.code ? { danger: true } : {}) });
+    }
+    return { title, summary: lines.join(" "), fields, actions: { accept: "Install", reject: "Don't install" }, full: !!d };
   },
   async run(cfg, ctx: StepContext<StrutCapabilities>) {
     if (!ctx.proposal) {

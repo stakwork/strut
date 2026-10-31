@@ -1,7 +1,8 @@
 import { z } from "zod";
+import type { CardField } from "../../../core.js";
 import { defineStep, type StepContext, withAccessedNodes } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
-import { graphCtx, errText, describeNodes } from "./_shared.js";
+import { graphCtx, errText, describeNodes, namesOf } from "./_shared.js";
 
 const EXAMPLE = `- id: rehome
   type: graph/move-node
@@ -40,6 +41,17 @@ export default defineStep({
     to_ref_id: z.string().describe("Where it should hang instead."),
   }),
   output: z.any(),
+  async describe(cfg, ctx) {
+    const names = await namesOf(ctx, [cfg.ref_id, cfg.from_ref_id, cfg.to_ref_id]);
+    const n = (id: string) => names.get(id) ?? id;
+    const fields: CardField[] = [
+      { label: "Node", value: n(cfg.ref_id), kind: "ref" },
+      ...(cfg.from_ref_id ? [{ label: "From", value: n(cfg.from_ref_id), kind: "ref" as const }] : []),
+      { label: "To", value: n(cfg.to_ref_id), kind: "ref" },
+      { label: "Edge", value: `${cfg.edge_type.toUpperCase()} (${cfg.direction})` },
+    ];
+    return { title: `Move ${n(cfg.ref_id)} under ${n(cfg.to_ref_id)}`, fields, actions: { accept: "Move", reject: "Don't move" } };
+  },
   async run(cfg, ctx) {
     try {
       const b = await graphCtx(ctx as StepContext<StrutCapabilities>);

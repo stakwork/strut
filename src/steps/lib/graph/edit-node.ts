@@ -1,7 +1,9 @@
 import { z } from "zod";
+import { objectFields } from "../../../proposal-card.js";
+import type { CardField } from "../../../core.js";
 import { defineStep, type StepContext, withAccessedNodes } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
-import { graphCtx, errText, describeNodes } from "./_shared.js";
+import { graphCtx, errText, describeNodes, namesOf } from "./_shared.js";
 export default defineStep({
   type: "graph/edit-node",
   description:
@@ -38,6 +40,12 @@ export default defineStep({
       .describe("Namespace (data partition) the node lives in. Not an access-control boundary."),
   }),
   output: z.any(),
+  async describe(cfg, ctx) {
+    const names = await namesOf(ctx, [cfg.ref_id]);
+    const fields: CardField[] = objectFields(cfg.node_data ?? {});
+    if (cfg.properties_to_be_deleted?.length) fields.push({ label: "Delete keys", value: cfg.properties_to_be_deleted.join(", "), danger: true });
+    return { title: `Edit node ${names.get(cfg.ref_id) ?? cfg.ref_id}`, fields };
+  },
   async run(cfg, ctx) {
     const hasSet = cfg.node_data && Object.keys(cfg.node_data).length > 0;
     const hasDelete = cfg.properties_to_be_deleted && cfg.properties_to_be_deleted.length > 0;

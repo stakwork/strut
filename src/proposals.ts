@@ -2,12 +2,14 @@ import { randomBytes } from "node:crypto";
 import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
-import { accessedNodesOf, takeUsage, workflowOf, type AnyStepDef, type McpServer, type StepContext, type StepRegistry } from "./core.js";
+import { accessedNodesOf, type ProposalDescription, takeUsage, workflowOf, type AnyStepDef, type McpServer, type StepContext, type StepRegistry } from "./core.js";
 import { withLock } from "./jobs.js";
 import { globToRegExp } from "./closure.js";
 import { reachPolicyOf, withinReach } from "./reach.js";
 import type { JobUpdateInput } from "./jobs.js";
 import { bindGraph } from "./graph-writes.js";
+import type { Scope } from "./auth.js";
+import { buildCard, type ProposalCard } from "./proposal-card.js";
 
 /**
  * Proposals (plans/proposals.md): a tool call a person approves before it
@@ -48,6 +50,9 @@ export interface Proposal {
    *  `package/install`, the index's page of the package — what it brings,
    *  what it can reach, what it needs. */
   summary?: string;
+  /** What the person decides on, as data (src/proposal-card.ts), computed
+   *  once at proposal time. Records from before it have none. */
+  card?: ProposalCard;
   status: ProposalStatus;
   createdAt: string;
   /** Who proposed it. */
@@ -64,6 +69,7 @@ export interface ProposalBrief {
   step: string;
   title: string;
   summary?: string;
+  card?: ProposalCard;
   status: ProposalStatus;
   url: string;
   rationale?: string;
@@ -71,7 +77,7 @@ export interface ProposalBrief {
   decidedAt?: string;
 }
 
-export type NewProposal = Pick<Proposal, "step" | "input" | "rationale" | "title" | "summary" | "by">;
+export type NewProposal = Pick<Proposal, "step" | "input" | "rationale" | "title" | "summary" | "card" | "by">;
 
 export interface ProposalFilter {
   job?: string;
@@ -91,12 +97,20 @@ export function proposalUrl(id: string): string {
   return `/proposals/${encodeURIComponent(id)}`;
 }
 
+/** What a request may see: `full` everything; a person token its actor's
+ *  own proposals; a plain peer none. */
+export function visibleTo(scope: Scope, actor: string | undefined, p: Proposal): boolean {
+  if (scope === "full") return true;
+  return scope === "peer:person" && !!actor && p.by.actor === actor;
+}
+
 export function briefOf(p: Proposal): ProposalBrief {
   return {
     id: p.id,
     step: p.step,
     title: p.title,
     ...(p.summary ? { summary: p.summary } : {}),
+    ...(p.card ? { card: p.card } : {}),
     status: p.status,
     url: proposalUrl(p.id),
     ...(p.rationale ? { rationale: p.rationale } : {}),
@@ -298,7 +312,7 @@ export async function proposeCall(
     if (was) return result(was);
   }
   // The step's own words for the card (§7), read now, best effort.
-  let described: { title?: string; summary?: string } | undefined;
+  let described: ProposalDescription | undefined;
   if (def.describe) {
     try {
       described = await def.describe(parsed, ctx);
@@ -306,12 +320,21 @@ export async function proposeCall(
       described = undefined;
     }
   }
+  const title = described?.title?.trim() || titleOf(stepType, def.description);
+  const summary = described?.summary?.trim() || undefined;
+  let card: ProposalCard | undefined;
+  try {
+    card = buildCard({ input: parsed, title, ...(summary ? { summary } : {}), ...(described ? { described } : {}) });
+  } catch {
+    card = undefined;
+  }
   const rec = await cap.propose({
     step: stepType,
     input: parsed,
     ...(rationale ? { rationale } : {}),
-    title: described?.title?.trim() || titleOf(stepType, def.description),
-    ...(described?.summary?.trim() ? { summary: described.summary.trim() } : {}),
+    title,
+    ...(summary ? { summary } : {}),
+    ...(card ? { card } : {}),
     by: {
       workflow: workflowOf(ctx),
       runId: ctx.runId,
@@ -348,6 +371,10 @@ export interface Decision {
   reason?: string;
   /** Who decided (the request's actor). */
   by?: string;
+  /** The request's scope. A person token (`peer:person`) decides only a
+   *  proposal its actor made; a plain `peer` decides none. Absent or `full`:
+   *  unchanged. */
+  scope?: Scope;
 }
 
 export interface DecideDeps {
@@ -362,7 +389,7 @@ export interface DecideDeps {
   stepFor?: (type: string) => Promise<AnyStepDef | undefined>;
 }
 
-export type DecideOutcome = { status: 200 | 400 | 404 | 409; body: Proposal | { error: string; proposal?: Proposal } };
+export type DecideOutcome = { status: 200 | 400 | 403 | 404 | 409; body: Proposal | { error: string; proposal?: Proposal } };
 
 /**
  * Decide a proposal: `reject` records the reason and runs nothing; `accept`
@@ -376,6 +403,10 @@ export type DecideOutcome = { status: 200 | 400 | 404 | 409; body: Proposal | { 
 export async function decideProposal(root: string, id: string, decision: Decision, deps: DecideDeps): Promise<DecideOutcome> {
   const rec = await readProposal(root, id);
   if (!rec) return { status: 404, body: { error: `No proposal "${id}"` } };
+  if (decision.scope === "peer") return { status: 403, body: { error: "forbidden: a peer without a person cannot decide a proposal" } };
+  if (decision.scope === "peer:person" && (!rec.by.actor || rec.by.actor !== decision.by)) {
+    return { status: 403, body: { error: `forbidden: proposal "${id}" is not yours to decide` } };
+  }
   const tell = (p: Proposal) => {
     if (p.by.job) deps.notify?.(p.by.job, proposalUpdate(p));
   };

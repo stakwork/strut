@@ -2,6 +2,7 @@ import { z } from "zod";
 import { defineStep, type StepContext, withAccessedNodes } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
 import { graphCtx, errText, deriveNodeName } from "./_shared.js";
+import { objectFields } from "../../../proposal-card.js";
 export default defineStep({
   type: "graph/create-node",
   description:
@@ -26,6 +27,11 @@ export default defineStep({
       .describe("Namespace (data partition) to create the node in — must be registered. Not an access-control boundary."),
   }),
   output: z.any(),
+  async describe(cfg) {
+    const data = (cfg.node_data ?? {}) as Record<string, unknown>;
+    const name = typeof data["name"] === "string" && data["name"] ? data["name"] : cfg.node_type;
+    return { title: `Add ${cfg.node_type}: ${name}`, fields: objectFields(data) };
+  },
   async run(cfg, ctx) {
     try {
       const b = await graphCtx(ctx as StepContext<StrutCapabilities>);

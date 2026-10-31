@@ -355,6 +355,8 @@ accept or reject. `run.end` lists them, resolved by strut from its records
 | ----- | ------- |
 | `step` | the registry step the proposal will run — what picks your card |
 | `status` | `pending` → `applied` (accepted and run) \| `rejected` \| `failed` (accepted, the step failed; may be accepted again) |
+| `summary` | optional: what the step's `describe` read at proposal time, plain text, may be long, may contain line breaks |
+| `card` | optional: `{ v: 1, title, summary?, fields: [{ label, value, kind?, danger? }] (≤ 12, values ≤ 500 chars), actions: { accept, reject }, full }` — what the person decides on, as data to draw; `full` is true when the fields cover everything that will run. Computed once at proposal time; absent on older records (API.md §12) |
 | `url` | the record: `GET /proposals/:id` gives the step's `input` (what will run), the rationale, who proposed it, the decision and the result |
 
 A person decides at `POST /proposals/:id/decide { action: "accept" | "reject",
@@ -363,7 +365,7 @@ re-validated by the step's schema (400 when they do not fit); the response is
 the record after the decision, the step already run on accept. A decided
 proposal answers `409` with its record. `x-strut-actor` on the request is
 recorded as who decided. On a job run each change is also a `job.update {
-kind: "proposal", id, url, state }` (§5). Absent when the run proposed
+kind: "proposal", id, url, title, state, detail: { step, error? } }` (§5), at the proposal and at every decision. Absent when the run proposed
 nothing; `GET …/runs/:runId/proposals` is the same list for a host that
 missed the callback.
 
