@@ -64,60 +64,30 @@ export function clampFields(fields: CardField[]): { fields: CardField[]; full: b
   return { fields: out, full };
 }
 
-type TableEntry = (input: Record<string, unknown>) => ProposalDescription | undefined;
-
-const str = (v: unknown): string | undefined => (typeof v === "string" && v.trim() ? v.trim() : undefined);
-
-/** Steps this repo does not own, by type, used when a step has no
- *  `describe`. `concept/create` is the stakgraph lab's; its clean home is a
- *  `describe` on that step. */
-const TABLE: Record<string, TableEntry> = {
-  "concept/create": (i) => {
-    const name = str(i["name"]) ?? "(unnamed)";
-    const fields: CardField[] = [];
-    for (const k of ["parent", "kind", "description"]) if (str(i[k])) fields.push({ label: k, value: str(i[k])! });
-    if (typeof i["docs"] === "string" && i["docs"]) fields.push({ label: "docs", value: i["docs"], kind: "markdown" });
-    return { title: `New Concept: ${name}`, fields };
-  },
-};
-
 export interface BuildCardArgs {
-  step: string;
   input: unknown;
-  /** The title the record carries (describe's, else titleOf). */
+  /** The record's title: describe's, else the description's first sentence. */
   title: string;
   summary?: string;
   described?: ProposalDescription;
 }
 
 export function buildCard(a: BuildCardArgs): ProposalCard {
-  const obj = typeof a.input === "object" && a.input !== null && !Array.isArray(a.input) ? (a.input as Record<string, unknown>) : undefined;
-  let d = a.described;
-  let title = a.title;
-  const summary = a.summary;
-  if (!d?.fields) {
-    const t = obj ? TABLE[a.step]?.(obj) : undefined;
-    if (t) {
-      d = { ...d, ...t };
-      if (!a.described?.title?.trim()) title = t.title ?? title;
-    }
-  }
-  let fields: CardField[];
-  let explicitFull = true;
-  if (d?.fields) {
-    fields = d.fields;
-    explicitFull = d.full !== false;
-  } else {
-    // The generic card: every top-level key of the parsed input.
-    fields = obj ? objectFields(obj) : a.input === undefined ? [] : [{ label: "input", value: valueText(a.input), kind: "code" }];
-  }
-  const clamped = clampFields(fields);
+  const d = a.described;
+  // The generic card: every top-level key of the parsed input.
+  const generic: CardField[] =
+    typeof a.input === "object" && a.input !== null && !Array.isArray(a.input)
+      ? objectFields(a.input)
+      : a.input === undefined
+        ? []
+        : [{ label: "input", value: valueText(a.input), kind: "code" }];
+  const clamped = clampFields(d?.fields ?? generic);
   return {
     v: 1,
-    title,
-    ...(summary ? { summary } : {}),
+    title: a.title,
+    ...(a.summary ? { summary: a.summary } : {}),
     fields: clamped.fields,
     actions: d?.actions ?? { accept: "Accept", reject: "Reject" },
-    full: clamped.full && explicitFull,
+    full: clamped.full && d?.full !== false,
   };
 }

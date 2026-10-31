@@ -49,7 +49,8 @@ export function ProposalList(props: {
       {props.proposals.map((p) => {
         const rec = full(p);
         const status = rec?.status ?? p.status;
-        const labels = labelsOf(rec?.card ?? p.card);
+        const card = rec?.card ?? p.card;
+        const labels = labelsOf(card);
         return (
           <div key={p.id} class={`prop prop-${status}`}>
             <button class="prop-head" onClick={() => void toggle(p)} title={p.id}>
@@ -62,15 +63,15 @@ export function ProposalList(props: {
             {open === p.id && (
               <div class="prop-body">
                 {p.summary && <div class="prop-summary prop-summary-full">{p.summary}</div>}
-                {(rec?.card ?? p.card) ? (
+                {card ? (
                   <dl class="prop-fields">
-                    {(rec?.card ?? p.card)!.fields.map((f, i) => (
+                    {card.fields.map((f, i) => (
                       <div key={i} class={`prop-field${f.danger ? " prop-field-danger" : ""}`}>
                         <dt>{f.label}</dt>
                         <dd class={f.kind === "code" ? "prop-code" : undefined}>{f.value}</dd>
                       </div>
                     ))}
-                    {!(rec?.card ?? p.card)!.full && <div class="prop-meta">Not everything is shown; the full input is in the record.</div>}
+                    {!card.full && <div class="prop-meta">Not everything is shown; the full input is in the record.</div>}
                   </dl>
                 ) : (
                   <pre class="flyout-json">{rec ? JSON.stringify(rec.input, null, 2) : "…"}</pre>

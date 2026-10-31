@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { buildCard } from "./proposal-card.js";
 import { defineStep, type AnyStepDef, type StepContext } from "./core.js";
-import { briefOf, proposalsCapability, proposalsRoot, proposeCall, proposalUpdate } from "./proposals.js";
+import { briefOf, proposalsCapability, proposeCall } from "./proposals.js";
 import createNode from "./steps/lib/graph/create-node.js";
 import editNode from "./steps/lib/graph/edit-node.js";
 import createTriplet from "./steps/lib/graph/create-triplet.js";
@@ -18,14 +18,14 @@ import appGrant from "./steps/lib/app/grant.js";
 import pkgInstall from "./steps/lib/package/install.js";
 
 const ctx = {} as StepContext<any>;
-const describeOf = async (def: AnyStepDef, cfg: unknown, step = def.type) => {
+const describeOf = async (def: AnyStepDef, cfg: unknown) => {
   const d = await def.describe!(def.input.parse(cfg), ctx);
-  return buildCard({ step, input: def.input.parse(cfg), title: d?.title ?? step, ...(d?.summary ? { summary: d.summary } : {}), ...(d ? { described: d } : {}) });
+  return buildCard({ input: def.input.parse(cfg), title: d?.title ?? def.type, ...(d?.summary ? { summary: d.summary } : {}), ...(d ? { described: d } : {}) });
 };
 
 describe("proposal card", () => {
   it("generic fallback: one field per key, JSON for non-strings, cut and full=false", () => {
-    const c = buildCard({ step: "x/y", input: { a: "hi", b: { k: 1 }, c: 3, long: "z".repeat(600) }, title: "T" });
+    const c = buildCard({ input: { a: "hi", b: { k: 1 }, c: 3, long: "z".repeat(600) }, title: "T" });
     assert.deepEqual(c.fields.slice(0, 3), [
       { label: "a", value: "hi" },
       { label: "b", value: '{"k":1}', kind: "code" },
@@ -34,7 +34,7 @@ describe("proposal card", () => {
     assert.ok(c.fields[3]!.value.length <= 500 && c.fields[3]!.value.endsWith("… (see full input)"));
     assert.equal(c.full, false);
     assert.deepEqual(c.actions, { accept: "Accept", reject: "Reject" });
-    const small = buildCard({ step: "x/y", input: { a: "hi" }, title: "T", summary: "S" });
+    const small = buildCard({ input: { a: "hi" }, title: "T", summary: "S" });
     assert.equal(small.full, true);
     assert.equal(small.summary, "S");
     assert.equal(small.v, 1);
@@ -42,19 +42,11 @@ describe("proposal card", () => {
 
   it("keeps the first 12 keys", () => {
     const input = Object.fromEntries(Array.from({ length: 15 }, (_, i) => [`k${i}`, i]));
-    const c = buildCard({ step: "x/y", input, title: "T" });
+    const c = buildCard({ input, title: "T" });
     assert.equal(c.fields.length, 12);
     assert.equal(c.full, false);
   });
 
-  it("concept/create table", () => {
-    const c = buildCard({ step: "concept/create", input: { name: "Tea", parent: "Drinks", kind: "x", description: "d", docs: "m".repeat(700) }, title: "Create a concept" });
-    assert.equal(c.title, "New Concept: Tea");
-    assert.deepEqual(c.fields.map((f) => f.label), ["parent", "kind", "description", "docs"]);
-    assert.equal(c.fields[3]!.kind, "markdown");
-    assert.equal(c.full, false);
-    assert.equal(buildCard({ step: "concept/create", input: { name: "Tea", docs: "short" }, title: "t" }).full, true);
-  });
 
   it("graph/create-node", async () => {
     const c = await describeOf(createNode, { node_type: "Concept", node_data: { name: "Tea", n: 1 } });
@@ -109,7 +101,7 @@ describe("proposal card", () => {
     const input = pkgInstall.input.parse({ package: "acme/linear" });
     const d = await pkgInstall.describe!(input, c2);
     assert.match(d!.summary!, /^acme\/linear 1\.0\.0 \(MIT\) from acme/);
-    const card = buildCard({ step: "package/install", input, title: d!.title!, summary: d!.summary!, described: d! });
+    const card = buildCard({ input, title: d!.title!, summary: d!.summary!, described: d! });
     assert.deepEqual(card.fields.map((f) => f.label), ["Version and license", "Publisher key", "Brings", "Needs", "Runs code"]);
     assert.equal(card.fields[4]!.danger, true);
     assert.equal(card.fields[3]!.value, "LINEAR_KEY");
@@ -134,10 +126,11 @@ describe("proposeCall carries the card", () => {
     assert.ok(!JSON.stringify(rec!.card).includes("because"));
     assert.equal(rec!.rationale, "because");
     assert.deepEqual(briefOf(rec!).card, rec!.card);
-    assert.deepEqual(seen[0].detail.card, { title: "Do a thing.", status: "pending" });
+    // the job hears the title and the state, not the card
+    assert.equal(seen[0].title, "Do a thing.");
+    assert.equal(seen[0].state, "pending");
+    assert.equal(seen[0].detail.card, undefined);
     const { card: _c, ...old } = rec!;
     assert.equal(briefOf(old).card, undefined);
-    assert.equal(proposalUpdate(old).detail?.["card"], undefined);
-    void proposalsRoot;
   });
 });

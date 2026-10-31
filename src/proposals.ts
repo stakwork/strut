@@ -129,7 +129,7 @@ export function proposalUpdate(p: Proposal): JobUpdateInput {
     title: p.title,
     state: p.status,
     runId: p.by.runId,
-    detail: { step: p.step, ...(p.card ? { card: { title: p.card.title, status: p.status } } : {}), ...(p.result?.error ? { error: p.result.error } : {}) },
+    detail: { step: p.step, ...(p.result?.error ? { error: p.result.error } : {}) },
   };
 }
 
@@ -324,7 +324,7 @@ export async function proposeCall(
   const summary = described?.summary?.trim() || undefined;
   let card: ProposalCard | undefined;
   try {
-    card = buildCard({ step: stepType, input: parsed, title, ...(summary ? { summary } : {}), ...(described ? { described } : {}) });
+    card = buildCard({ input: parsed, title, ...(summary ? { summary } : {}), ...(described ? { described } : {}) });
   } catch {
     card = undefined;
   }
@@ -332,7 +332,7 @@ export async function proposeCall(
     step: stepType,
     input: parsed,
     ...(rationale ? { rationale } : {}),
-    title: card && !described?.title?.trim() ? card.title : title,
+    title,
     ...(summary ? { summary } : {}),
     ...(card ? { card } : {}),
     by: {

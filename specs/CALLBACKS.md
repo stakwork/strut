@@ -365,7 +365,7 @@ re-validated by the step's schema (400 when they do not fit); the response is
 the record after the decision, the step already run on accept. A decided
 proposal answers `409` with its record. `x-strut-actor` on the request is
 recorded as who decided. On a job run each change is also a `job.update {
-kind: "proposal", id, url, state, detail: { step, card?: { title, status }, error? } }` (§5), at the proposal and at every decision; `detail.card.status` is the proposal's status (`pending | accepted | applied | rejected | failed`). Absent when the run proposed
+kind: "proposal", id, url, title, state, detail: { step, error? } }` (§5), at the proposal and at every decision. Absent when the run proposed
 nothing; `GET …/runs/:runId/proposals` is the same list for a host that
 missed the callback.
 

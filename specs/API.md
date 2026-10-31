@@ -912,10 +912,9 @@ A step's `describe` may also return `fields`, `actions` and `full`; with no
 per top-level key, strings as they are, anything else as JSON (`kind: "code"`
 for objects and arrays), a value over 500 chars cut with `… (see full input)`,
 the first 12 keys kept, `full: false` when anything was cut or left out;
-actions `Accept` / `Reject`. `concept/create` (a lab step) has a table entry
-in `proposal-card.ts` until it has a `describe`. The model's `rationale` is
-its own field, never in `card.fields`. The job's `job.update { kind:
-"proposal" }` carries `detail.card: { title, status }` (§CALLBACKS 6).
+actions `Accept` / `Reject`. The model's `rationale` is its own field, never
+in `card.fields`. The job's `job.update { kind: "proposal" }` carries the
+proposal's `title` and `state`, not the card (§CALLBACKS 6).
 
 **Who may decide and see.** A full-scope credential (the deployment key, a
 session) decides and sees every proposal, as before. A **person token**
