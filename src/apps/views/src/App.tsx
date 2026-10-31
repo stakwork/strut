@@ -6,11 +6,12 @@ import { StrutProvider, useStrutHost } from "@strut/kit";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import {
-  ArtifactView, LaunchForm, NodeCard, NodeGraph, NodeSearch, RunGraph, RunList, RunStatus, RunTimeline, Transcript,
+  ArtifactView, DocumentView, LaunchForm, RunHealth, NodeCard, NodeGraph, NodeSearch, RunGraph, RunList, RunStatus, RunTimeline, Transcript,
 } from "./index";
 import { createFixtureClient } from "./fixtures/client";
 import { TRANSCRIPT_MARKS } from "./fixtures/content";
 import { EXPLORE_PATH, REF, RUN_ID, WORKFLOW } from "./fixtures/runs";
+import { REPORT_RUN_ID } from "./fixtures/report";
 
 interface Entry {
   name: string;
@@ -31,13 +32,49 @@ function NodePicker() {
   );
 }
 
+/** The same run folded, or every row at its depth with the foreach's iterations side by side. */
+function TimelineDemo() {
+  const [report, setReport] = useState(false);
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex gap-1">
+        {[false, true].map((r) => (
+          <button key={String(r)} type="button" onClick={() => setReport(r)} className={cn("rounded-md border px-2.5 py-1 text-xs", report === r ? "bg-muted font-medium" : "text-muted-foreground hover:bg-muted/60")}>
+            {r ? "tree split — a report's run" : "default"}
+          </button>
+        ))}
+      </div>
+      {report ? <RunTimeline key="report" workflow={WORKFLOW} runId={REPORT_RUN_ID} tree split /> : <RunTimeline key="default" workflow={WORKFLOW} runId={RUN_ID} />}
+    </div>
+  );
+}
+
 const ENTRIES: Entry[] = [
   {
     name: "RunTimeline",
-    what: "The run at a glance: status, cost, model calls, time, and a row per step with the work it started (agents, llm calls, child runs).",
+    what: "The run at a glance: status, cost, model calls, time, and a row per step with the work it started (agents, llm calls, child runs), its tokens and cost. `tree` puts every row under the one that started it, at any depth; `split` gives a foreach's iterations a row each, so the ones that ran in parallel sit side by side.",
     grants: "grants.workflows: the run's workflow",
-    usage: `<RunTimeline workflow="research" runId={runId} onOpenRun={(wf, id) => …} />`,
-    demo: () => <RunTimeline workflow={WORKFLOW} runId={RUN_ID} />,
+    usage: `<RunTimeline workflow="research" runId={runId} tree split onOpenRun={(wf, id) => …} />`,
+    demo: () => <TimelineDemo />,
+  },
+  {
+    name: "RunHealth",
+    what: "What went wrong and what was done about it: the steps that failed, the ones tried again, the ones an onError fallback stood in for, skipped branches and which way each `if` went, what was cut off, the tool calls that failed by tool — and the log's own numbers.",
+    grants: "grants.workflows: the run's workflow",
+    usage: `<RunHealth workflow="research" runId={runId} onOpenStep={(path) => …} />`,
+    demo: () => <RunHealth workflow={WORKFLOW} runId={REPORT_RUN_ID} />,
+  },
+  {
+    name: "DocumentView",
+    what: "A document a run produced — an HTML page, markdown, text — drawn in the page with the terms you give highlighted and the first scrolled to. An HTML page is drawn from its safe elements (SafeHtml): nothing of it runs, only text and plain elements survive, a link opens through the host.",
+    grants: "grants.workflows: the run's workflow (run/files) · none: pass the text",
+    usage: `<DocumentView workflow="research" runId={runId} path="memo.html" terms={["atrial fibrillation"]} />  <SafeHtml html={html} />`,
+    demo: () => (
+      <div className="grid gap-6 lg:grid-cols-2">
+        <DocumentView workflow={WORKFLOW} runId={RUN_ID} path="memo.html" terms={["atrial fibrillation", "130/80"]} />
+        <DocumentView workflow={WORKFLOW} runId={RUN_ID} path="report.md" terms={["hypertension"]} />
+      </div>
+    ),
   },
   {
     name: "RunGraph",
@@ -84,13 +121,14 @@ const ENTRIES: Entry[] = [
   },
   {
     name: "ArtifactView",
-    what: "A file a run produced, rendered: markdown, images, video, sound, text, a walkthrough's frames to scrub; a PDF or HTML opens in strut.",
+    what: "A file a run produced, rendered: markdown, an HTML page (its safe elements, through DocumentView), images, video, sound, text, a walkthrough's frames to scrub; a PDF opens in strut.",
     grants: "grants.workflows: the run's workflow (run/files)",
     usage: `<ArtifactView workflow="research" runId={runId} path="report.md" />`,
     demo: () => (
       <div className="grid gap-6 lg:grid-cols-2">
         <ArtifactView workflow={WORKFLOW} runId={RUN_ID} path="report.md" />
         <ArtifactView workflow={WORKFLOW} runId={RUN_ID} path="walkthrough/walkthrough.json" />
+        <ArtifactView workflow={WORKFLOW} runId={RUN_ID} path="memo.html" />
         <ArtifactView workflow={WORKFLOW} runId={RUN_ID} path="/artifacts/1790000000100/chart.svg" />
         <div className="flex flex-col gap-4">
           <ArtifactView workflow={WORKFLOW} runId={RUN_ID} path="notes.txt" />

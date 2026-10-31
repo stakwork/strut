@@ -1,24 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import { useQuery } from "@tanstack/react-query";
 import { ChevronLeft, ChevronRight, ExternalLink, FileText } from "lucide-react";
-import { artifactKind, artifactRel, parseWalkthrough, useHost, useStrutClient } from "@strut/kit";
+import { artifactKind, parseWalkthrough, useHost } from "@strut/kit";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Slider } from "@/components/ui/slider";
 import { cn } from "@/lib/utils";
 import { errorText } from "../lib/format";
+import { relPath as rel, useRunFile, type RunFile } from "../lib/run-file";
+import { DocumentView } from "./DocumentView";
 
-/** One file of a run, as `run/files` returns it (src/runs.ts `RunFile`). */
-export interface RunFile {
-  path: string;
-  mediaType: string;
-  bytes: number;
-  text?: string;
-  base64?: string;
-  truncated?: true;
-}
+export type { RunFile } from "../lib/run-file";
 
 export interface ArtifactViewProps {
   /** The run whose file to show — read through `run/files` (the importing app's grant). */
@@ -29,19 +20,6 @@ export interface ArtifactViewProps {
   /** Draw this file instead of reading it. */
   file?: RunFile;
   className?: string;
-}
-
-const rel = (path: string) => artifactRel(path) ?? path.replace(/^\/+/, "");
-
-function useRunFile(workflow: string, runId: string, path: string, given?: RunFile) {
-  const client = useStrutClient();
-  return useQuery({
-    queryKey: ["strut", "run/files", workflow, runId, path],
-    queryFn: () => client.run<RunFile | null>("run/files", { workflow, runId, path }),
-    enabled: !given && !!workflow && !!runId && !!path,
-    staleTime: Infinity,
-    initialData: given,
-  });
 }
 
 const dataUrl = (f: RunFile) => (f.base64 !== undefined ? `data:${f.mediaType};base64,${f.base64}` : `data:${f.mediaType};charset=utf-8,${encodeURIComponent(f.text ?? "")}`);
@@ -60,11 +38,12 @@ function useBlobUrl(f: RunFile | null | undefined): string | null {
 }
 
 /**
- * A file a run produced, rendered: markdown as markdown, an image, a video or
- * a sound to play, text in a block, a walkthrough (`browser/walkthrough`'s
- * manifest) as frames to scrub. The page cannot fetch a URL (connect-src
- * 'none'), so the bytes come through `run/files`; a PDF or an HTML page —
- * which the document may not frame — opens in strut instead.
+ * A file a run produced, rendered: markdown, an HTML page and text through
+ * DocumentView (an HTML page drawn from its safe elements — nothing of it
+ * runs), an image, a video or a sound to play, a walkthrough
+ * (`browser/walkthrough`'s manifest) as frames to scrub. The page cannot
+ * fetch a URL (connect-src 'none'), so the bytes come through `run/files`; a
+ * PDF — which the document may not frame — opens in strut instead.
  */
 export function ArtifactView({ workflow, runId, path, file: given, className }: ArtifactViewProps) {
   const q = useRunFile(workflow, runId, rel(path), given);
@@ -85,11 +64,8 @@ function Body({ kind, file, workflow, runId, path }: { kind: ReturnType<typeof a
   const blob = useBlobUrl(kind === "video" || kind === "audio" ? file : null);
   switch (kind) {
     case "markdown":
-      return (
-        <div className="leading-relaxed [&_a]:underline [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_h1]:text-xl [&_h1]:font-semibold [&_h2]:text-lg [&_h2]:font-semibold [&_h3]:font-semibold [&_li]:ml-4 [&_ol]:list-decimal [&_p]:my-2 [&_pre]:overflow-x-auto [&_pre]:rounded [&_pre]:bg-muted [&_pre]:p-2 [&_table]:text-xs [&_td]:border [&_td]:px-2 [&_th]:border [&_th]:px-2 [&_ul]:list-disc">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{file.text ?? ""}</ReactMarkdown>
-        </div>
-      );
+    case "html":
+      return <DocumentView file={file} kind={kind} />;
     case "image":
       return <img src={dataUrl(file)} alt={rel(path)} className="max-h-[70vh] max-w-full rounded-md border object-contain" />;
     case "video":
@@ -99,11 +75,10 @@ function Body({ kind, file, workflow, runId, path }: { kind: ReturnType<typeof a
     case "walkthrough":
       return <Walkthrough text={file.text ?? ""} workflow={workflow} runId={runId} path={path} />;
     case "pdf":
-    case "html":
-      return <OpenInStrut workflow={workflow} runId={runId} path={path} what={kind === "pdf" ? "A PDF" : "An HTML page"} />;
+      return <OpenInStrut workflow={workflow} runId={runId} path={path} what="A PDF" />;
     default:
       return file.text !== undefined ? (
-        <pre className="max-h-[70vh] overflow-auto rounded-md border bg-muted/40 p-3 font-mono text-xs whitespace-pre-wrap">{file.text}</pre>
+        <DocumentView file={file} kind="text" />
       ) : (
         <OpenInStrut workflow={workflow} runId={runId} path={path} what={`A ${file.mediaType} file`} />
       );

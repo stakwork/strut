@@ -18,6 +18,8 @@ export { RunTimeline, type RunTimelineProps } from "./components/RunTimeline";
 export { Transcript, type TranscriptProps } from "./components/Transcript";
 export { LaunchForm, type LaunchFormProps, type InputField } from "./components/LaunchForm";
 export { ArtifactView, type ArtifactViewProps, type RunFile } from "./components/ArtifactView";
+export { DocumentView, SafeHtml, type DocumentViewProps, type DocumentKind, type SafeHtmlProps } from "./components/DocumentView";
+export { RunHealth, type RunHealthProps } from "./components/RunHealth";
 export { NodeCard, type NodeCardProps } from "./components/NodeCard";
 export { NodeSearch, type NodeSearchProps } from "./components/NodeSearch";
 export { NodeGraph, type NodeGraphProps } from "./components/NodeGraph";
