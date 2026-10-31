@@ -1,7 +1,8 @@
 import { z } from "zod";
+import type { CardField } from "../../../core.js";
 import { defineStep, type StepContext, withAccessedNodes } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
-import { graphCtx, errText, describeNodes } from "./_shared.js";
+import { graphCtx, errText, describeNodes, namesOf } from "./_shared.js";
 
 const EXAMPLE = `- id: retire
   type: graph/delete-node
@@ -26,6 +27,14 @@ export default defineStep({
       .describe("Namespace (data partition) the node lives in — must be registered. Not an access-control boundary."),
   }),
   output: z.any(),
+  async describe(cfg, ctx) {
+    const name = (await namesOf(ctx, [cfg.ref_id])).get(cfg.ref_id) ?? cfg.ref_id;
+    return {
+      title: `Delete node ${name}`,
+      fields: [{ label: "Node", value: name, kind: "ref", danger: true }, { label: "Edges", value: "Every edge it has is deleted too", danger: true }],
+      actions: { accept: "Delete", reject: "Keep" },
+    };
+  },
   async run(cfg, ctx) {
     try {
       const b = await graphCtx(ctx as StepContext<StrutCapabilities>);

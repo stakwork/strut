@@ -1764,10 +1764,29 @@ export const fireAutomation = (workflow: string, id: string) =>
 
 export type ProposalStatus = "pending" | "accepted" | "rejected" | "applied" | "failed";
 
+export interface CardField {
+  label: string;
+  value: string;
+  kind?: "text" | "code" | "markdown" | "ref";
+  danger?: boolean;
+}
+
+/** What a person decides on (src/proposal-card.ts, specs/API.md §12). */
+export interface ProposalCard {
+  v: 1;
+  title: string;
+  summary?: string;
+  fields: CardField[];
+  actions: { accept: string; reject: string };
+  full: boolean;
+}
+
 export interface ProposalBrief {
   id: string;
   step: string;
   title: string;
+  summary?: string;
+  card?: ProposalCard;
   status: ProposalStatus;
   url: string;
   rationale?: string;

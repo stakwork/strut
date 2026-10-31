@@ -132,7 +132,7 @@ import { callbackOrigin, parseCallback, parseLaunchCallback, postCallback, roomA
 import { createEventsSink, parseSinkUrl, type EventsSink } from "./events-sink.js";
 import { listServerTools, parseMcpServers } from "./mcp-servers.js";
 import { fileMcpRegistry, gatedByDefault, mcpStepDef, parseRegistration, resolveRegistration, type McpRegistration } from "./mcp-registry.js";
-import { briefOf, decideProposal, listProposals, proposalsCapability, proposalsRoot, readProposal, type ProposalStatus } from "./proposals.js";
+import { briefOf, decideProposal, visibleTo, listProposals, proposalsCapability, proposalsRoot, readProposal, type ProposalStatus } from "./proposals.js";
 import type { AssistantChatDoor } from "./ai/assistant-tools.js";
 import { shellCapability, type ShellCapability } from "./capabilities.js";
 import { deleteJob, jobFilePath, jobRoot, jobsCapability, listJobFiles, readJobRecord, releaseWith, setJobCallback, turnOf, wakeJobFeeds, type JobsCapability } from "./jobs.js";
@@ -1456,6 +1456,7 @@ export async function createStrut<TServices = unknown>(
   // and a plain peer's actor is a header any strut sets. On a home box
   // (`homeSync: "box"`), home sync's `/home/pull` and `/home/push` too.
   const UI_FILE = /^\/($|index\.html$|favicon\.ico$|assets\/)/;
+  const PROPOSAL_DECIDE = /^\/proposals\/[^/]+\/decide$/;
   const PEER_POST = /^\/workflows\/[^/]+\/(?:[^/]+\/run|run|runs\/[^/]+\/(?:cancel|pause|resume))$/;
   app.use("*", async (c, next) => {
     const path = c.req.path;
@@ -1468,9 +1469,9 @@ export async function createStrut<TServices = unknown>(
     if (!read) {
       const scope = await scopeOf(c);
       const post = c.req.method === "POST";
-      const personPost = scope === "peer:person" && (path === "/mcp" || (homeRole === "box" && HOME_POSTS.has(path)));
+      const personPost = scope === "peer:person" && (path === "/mcp" || (homeRole === "box" && HOME_POSTS.has(path)) || PROPOSAL_DECIDE.test(path));
       if (isPeerScope(scope) && !(post && (PEER_POST.test(path) || path === "/packages/subscriptions/sync" || personPost))) {
-        return c.json({ error: "forbidden: a peer may read, launch a run, control a run a peer launched, and ask this strut to sync its subscriptions; a person's token may also call an app's step_run on /mcp" }, 403);
+        return c.json({ error: "forbidden: a peer may read, launch a run, control a run a peer launched, and ask this strut to sync its subscriptions; a person's token may also call an app's step_run on /mcp and decide the proposals it made" }, 403);
       }
     }
     return next();
@@ -1705,7 +1706,9 @@ export async function createStrut<TServices = unknown>(
   // run still going lists what it has proposed so far.
   app.get("/workflows/:name/runs/:runId/proposals", async (c) => {
     const { name, runId } = c.req.param();
-    const proposals = (await listProposals(proposalsRoot(dataDir), { runId })).filter((p) => p.by.workflow === name).map(briefOf);
+    const scope = await scopeOf(c);
+    const actor = await resolveActor(c);
+    const proposals = (await listProposals(proposalsRoot(dataDir), { runId })).filter((p) => p.by.workflow === name && visibleTo(scope, actor, p)).map(briefOf);
     return c.json({ workflow: name, runId, proposals });
   });
 
@@ -3653,12 +3656,14 @@ export async function createStrut<TServices = unknown>(
       ...(c.req.query("runId") !== undefined ? { runId: c.req.query("runId") } : {}),
       ...(status !== undefined ? { status: status as ProposalStatus } : {}),
     });
-    return c.json({ proposals });
+    const scope = await scopeOf(c);
+    const actor = await resolveActor(c);
+    return c.json({ proposals: proposals.filter((p) => visibleTo(scope, actor, p)) });
   });
 
   app.get("/proposals/:id", async (c) => {
     const p = await readProposal(proposalsDir, c.req.param("id"));
-    return p ? c.json(p) : c.json({ error: `No proposal "${c.req.param("id")}"` }, 404);
+    return p && visibleTo(await scopeOf(c), await resolveActor(c), p) ? c.json(p) : c.json({ error: `No proposal "${c.req.param("id")}"` }, 404);
   });
 
   app.post("/proposals/:id/decide", async (c) => {
@@ -3683,6 +3688,7 @@ export async function createStrut<TServices = unknown>(
         ...(body.input ? { input: body.input as Record<string, unknown> } : {}),
         ...(body.reason ? { reason: body.reason } : {}),
         ...(actor ? { by: actor } : {}),
+        scope: await scopeOf(c),
       },
       {
         registry,

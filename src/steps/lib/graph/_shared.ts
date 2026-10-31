@@ -178,3 +178,33 @@ export function edgeCountMap(counts: Array<{ edge_type: string; direction?: "out
   }
   return out;
 }
+
+/** Names for refs, for a proposal's card: read through the graph the server
+ *  WIRED only (never opens one), best effort — a ref it cannot read maps to
+ *  nothing, and nothing here throws. */
+export async function namesOf(ctx: StepContext<any> | undefined, refs: Array<string | null | undefined>): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  try {
+    const b = (ctx as StepContext<StrutCapabilities> | undefined)?.services?.graph;
+    if (!b) return out;
+    for (const n of await describeNodes(b, refs)) if (n.name) out.set(n.ref_id, n.name);
+  } catch {
+    /* the card falls back to ids */
+  }
+  return out;
+}
+
+/** The label of one end of a triplet as the input gives it: an inline
+ *  node's name (or type), else the ref's name when known, else the ref. */
+export function endLabel(type: unknown, data: unknown, ref: unknown, names?: Map<string, string>): string {
+  const d = data && typeof data === "object" ? (data as Record<string, unknown>) : undefined;
+  if (typeof ref === "string" && ref) return names?.get(ref) ?? ref;
+  if (d) return deriveNodeName(undefined, d as Record<string, any>) || (typeof type === "string" ? type : "(new node)");
+  return typeof type === "string" ? type : "?";
+}
+
+/** `A -TYPE-> B`, for the triplet steps' cards. */
+export function tripletLine(t: any, names?: Map<string, string>): string {
+  const type = String(t.edge_type ?? "").toUpperCase().replace(/ /g, "_");
+  return `${endLabel(t.source_type, t.source_data, t.source_ref_id, names)} -${type}-> ${endLabel(t.target_type, t.target_data, t.target_ref_id, names)}`;
+}

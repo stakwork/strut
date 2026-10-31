@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { defineStep, type StepContext, withAccessedNodes } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
-import { graphCtx, errText, graphErrorCode, writeEdge, describeNodes } from "./_shared.js";
+import { graphCtx, errText, graphErrorCode, writeEdge, describeNodes, namesOf, tripletLine } from "./_shared.js";
 /** Validate one side of a triplet: either ref_id XOR (type + data). */
 function validateTripletSide(
   side: "source" | "target",
@@ -84,6 +84,11 @@ export default defineStep({
       .describe("Accepted for input parity with jarvis/create-triplet; the strut graph has no scratchpad, so this has no effect."),
   }),
   output: z.any(),
+  async describe(cfg, ctx) {
+    const names = await namesOf(ctx, [cfg.source_ref_id, cfg.target_ref_id]);
+    const line = tripletLine(cfg, names);
+    return { title: `Add link: ${line}`, fields: [{ label: "Link", value: line }] };
+  },
   async run(cfg, ctx) {
     for (const err of [
       validateTripletSide("source", cfg.source_ref_id, cfg.source_type, cfg.source_data),

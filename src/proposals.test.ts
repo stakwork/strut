@@ -21,6 +21,7 @@ import {
   readProposal,
   type Proposal,
 } from "./proposals.js";
+import { personToken } from "./auth.js";
 import type { JobUpdateInput } from "./jobs.js";
 
 // Proposals (plans/proposals.md): the gate on an agent's tool, the record,
@@ -263,6 +264,109 @@ describe("proposals", () => {
       assert.deepEqual(rec.result?.output, { wrote: "x", n: 3 });
       assert.equal((await decide({ action: "reject" })).status, 409);
       assert.deepEqual(await readdir(proposalsRoot(dir)), [`${p.id}.json`]);
+    });
+  });
+
+  describe("who may decide (person tokens)", () => {
+    const saved: Record<string, string | undefined> = {};
+    let strut: Strut;
+    let ids: { ann: string; bob: string };
+    const KEYS = ["STRUT_API_KEY", "STRUT_PEER_KEY", "STRUT_SECRET_KEY"];
+    const boot = async (extra: Record<string, unknown> = {}) => {
+      for (const k of KEYS) saved[k] = process.env[k];
+      process.env["STRUT_API_KEY"] = "api";
+      process.env["STRUT_PEER_KEY"] = "peer";
+      strut = await createStrut({
+        workspace: new WorkspaceManager(join(dir, "ws")),
+        dataDir: dir,
+        registry: await createRegistry([write]),
+        store: new MemoryRunStore(),
+        serveUi: false, enableChat: false, scheduler: false, systemWorkflows: false, job: false, orchestrator: false, builder: false,
+        ...extra,
+      });
+      const bag = strut.services as unknown as { proposals: ReturnType<typeof proposalsCapability> };
+      const mk = (actor?: string) =>
+        bag.proposals.propose({ step: "dev/write", input: { name: actor ?? "none" }, title: "Write.", by: { workflow: "wf", runId: "r1", path: "wf/t", ...(actor ? { actor } : {}) } });
+      ids = { ann: (await mk("ann")).id, bob: (await mk("bob")).id };
+    };
+    afterEach(async () => {
+      await strut?.close();
+      for (const k of KEYS) {
+        if (saved[k] === undefined) delete process.env[k];
+        else process.env[k] = saved[k];
+      }
+    });
+    const req = (path: string, bearer: string, o: { actor?: string; body?: unknown } = {}) =>
+      strut.app.request(path, {
+        method: o.body ? "POST" : "GET",
+        headers: { authorization: `Bearer ${bearer}`, "content-type": "application/json", ...(o.actor ? { "x-strut-actor": o.actor } : {}) },
+        ...(o.body ? { body: JSON.stringify(o.body) } : {}),
+      });
+    const decide = (id: string, bearer: string, actor?: string) => req(`/proposals/${id}/decide`, bearer, { body: { action: "accept" }, ...(actor ? { actor } : {}) });
+    const idsOf = async (path: string, bearer: string) => ((await (await req(path, bearer)).json()) as { proposals: Array<{ id: string }> }).proposals.map((p) => p.id);
+
+    it("a person token decides its own proposal only; repeats are 409; reads are its own", async () => {
+      await boot();
+      const ann = personToken("ann")!.token;
+      const bob = personToken("bob")!.token;
+      // (b) another person: 403, still pending
+      const wrong = await decide(ids.ann, bob);
+      assert.equal(wrong.status, 403);
+      assert.ok(((await wrong.json()) as { error: string }).error);
+      assert.equal((await readProposal(root(), ids.ann))!.status, "pending");
+      // (a) the creator
+      assert.equal((await decide(ids.ann, ann, "mallory")).status, 200);
+      assert.equal((await readProposal(root(), ids.ann))!.decision?.by, "ann");
+      // (c) repeat
+      const again = await decide(ids.ann, ann);
+      assert.equal(again.status, 409);
+      assert.equal(((await again.json()) as { proposal: Proposal }).proposal.status, "applied");
+      // (d) reads
+      assert.deepEqual(await idsOf("/proposals", ann), [ids.ann]);
+      assert.equal((await req(`/proposals/${ids.bob}`, ann)).status, 404);
+      assert.equal((await req(`/proposals/${ids.ann}`, ann)).status, 200);
+      assert.deepEqual(await idsOf("/workflows/wf/runs/r1/proposals", ann), [ids.ann]);
+      assert.deepEqual((await idsOf("/proposals", "api")).sort(), [ids.ann, ids.bob].sort());
+    });
+
+    it("the plain peer key decides nothing and sees none; the full key is unchanged", async () => {
+      await boot();
+      // (e)
+      assert.equal((await decide(ids.ann, "peer", "ann")).status, 403);
+      assert.deepEqual(await idsOf("/proposals", "peer"), []);
+      assert.equal((await req(`/proposals/${ids.ann}`, "peer", { actor: "ann" })).status, 404);
+      assert.deepEqual(await idsOf("/workflows/wf/runs/r1/proposals", "peer"), []);
+      assert.equal((await readProposal(root(), ids.ann))!.status, "pending");
+      // (f) the deployment key, any actor
+      assert.equal((await decide(ids.ann, "api", "someone-else")).status, 200);
+      assert.equal((await decide(ids.bob, "api")).status, 200);
+    });
+
+    it("a proposal with no creator can be decided by no person token", async () => {
+      await boot();
+      const bag = strut.services as unknown as { proposals: ReturnType<typeof proposalsCapability> };
+      const orphan = await bag.proposals.propose({ step: "dev/write", input: { name: "o" }, title: "W.", by: { workflow: "wf", runId: "r2", path: "p" } });
+      assert.equal((await decide(orphan.id, personToken("ann")!.token)).status, 403);
+    });
+
+    it("a lab-style credential (host resolveScope + resolveActor, a `sub`) behaves the same", async () => {
+      // (g) mcp maps a `lab:peer` JWT with a `sub` to peer:person + that actor.
+      const lab = (c: { req: { header(n: string): string | undefined } }) => {
+        const m = (c.req.header("authorization") ?? "").match(/^Bearer lab-jwt:(.+)$/);
+        return m?.[1];
+      };
+      await boot({
+        resolveScope: (c: any) => (lab(c) ? "peer:person" : undefined),
+        resolveActor: (c: any) => lab(c),
+      });
+      delete process.env["STRUT_API_KEY"]; // the host's own gate vouches for the JWT
+      delete process.env["STRUT_PEER_KEY"];
+      assert.equal((await decide(ids.ann, "lab-jwt:bob")).status, 403);
+      assert.equal((await readProposal(root(), ids.ann))!.status, "pending");
+      assert.deepEqual(await idsOf("/proposals", "lab-jwt:ann"), [ids.ann]);
+      assert.equal((await req(`/proposals/${ids.bob}`, "lab-jwt:ann")).status, 404);
+      assert.equal((await decide(ids.ann, "lab-jwt:ann")).status, 200);
+      assert.equal((await decide(ids.ann, "lab-jwt:ann")).status, 409);
     });
   });
 });

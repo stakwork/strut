@@ -67,6 +67,22 @@ export interface StepDef<
 export interface ProposalDescription {
   title?: string;
   summary?: string;
+  /** The facts the person decides on, for the card (src/proposal-card.ts
+   *  clamps them: 12 fields, 500 chars a value). Nothing: the card is built
+   *  from the step's input. */
+  fields?: CardField[];
+  /** Button labels; default Accept / Reject. */
+  actions?: { accept: string; reject: string };
+  /** False when `fields` leave part of what will run out. */
+  full?: boolean;
+}
+
+/** One line of a proposal's card (`ProposalCard.fields`). */
+export interface CardField {
+  label: string;
+  value: string;
+  kind?: "text" | "code" | "markdown" | "ref";
+  danger?: boolean;
 }
 
 /** What running a step does outside the run (`StepDef.effect`). */

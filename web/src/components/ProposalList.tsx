@@ -1,5 +1,6 @@
 import { useState } from "preact/hooks";
 import * as api from "../api";
+import { summaryHead, labelsOf } from "../proposal-view";
 
 // ── Proposals (plans/proposals.md §6) ──────────────────────────────────────
 //
@@ -48,6 +49,7 @@ export function ProposalList(props: {
       {props.proposals.map((p) => {
         const rec = full(p);
         const status = rec?.status ?? p.status;
+        const labels = labelsOf(rec?.card ?? p.card);
         return (
           <div key={p.id} class={`prop prop-${status}`}>
             <button class="prop-head" onClick={() => void toggle(p)} title={p.id}>
@@ -55,10 +57,24 @@ export function ProposalList(props: {
               <span class="prop-title">{p.title}</span>
               <span class={`badge prop-badge prop-badge-${status}`}>{status}</span>
             </button>
+            {p.summary && open !== p.id && <div class="prop-summary">{summaryHead(p.summary)}</div>}
             {p.rationale && <div class="prop-why">{p.rationale}</div>}
             {open === p.id && (
               <div class="prop-body">
-                <pre class="flyout-json">{rec ? JSON.stringify(rec.input, null, 2) : "…"}</pre>
+                {p.summary && <div class="prop-summary prop-summary-full">{p.summary}</div>}
+                {(rec?.card ?? p.card) ? (
+                  <dl class="prop-fields">
+                    {(rec?.card ?? p.card)!.fields.map((f, i) => (
+                      <div key={i} class={`prop-field${f.danger ? " prop-field-danger" : ""}`}>
+                        <dt>{f.label}</dt>
+                        <dd class={f.kind === "code" ? "prop-code" : undefined}>{f.value}</dd>
+                      </div>
+                    ))}
+                    {!(rec?.card ?? p.card)!.full && <div class="prop-meta">Not everything is shown; the full input is in the record.</div>}
+                  </dl>
+                ) : (
+                  <pre class="flyout-json">{rec ? JSON.stringify(rec.input, null, 2) : "…"}</pre>
+                )}
                 {rec?.decision && (
                   <div class="prop-meta">
                     {rec.decision.action === "accept" ? "Accepted" : "Rejected"}
@@ -73,11 +89,11 @@ export function ProposalList(props: {
             {(status === "pending" || status === "failed") && (
               <div class="prop-actions">
                 <button class="btn btn-primary btn-sm" disabled={busy === p.id} onClick={() => void decide(p, "accept")}>
-                  {status === "failed" ? "Accept again" : "Accept"}
+                  {status === "failed" ? "Accept again" : labels.accept}
                 </button>
                 {status === "pending" && (
                   <button class="btn btn-sm" disabled={busy === p.id} onClick={() => void decide(p, "reject")}>
-                    Reject
+                    {labels.reject}
                   </button>
                 )}
               </div>

@@ -1,7 +1,8 @@
 import { z } from "zod";
+import type { CardField } from "../../../core.js";
 import { defineStep, type StepContext, withAccessedNodes } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
-import { graphCtx, errText, describeNodes } from "./_shared.js";
+import { graphCtx, errText, describeNodes, namesOf } from "./_shared.js";
 
 const EXAMPLE = `- id: unlink
   type: graph/delete-edge
@@ -26,6 +27,22 @@ export default defineStep({
     target_ref_id: z.string().optional().describe("Target node ref_id, when locating by endpoints."),
   }),
   output: z.any(),
+  async describe(cfg, ctx) {
+    const names = await namesOf(ctx, [cfg.source_ref_id, cfg.target_ref_id]);
+    const n = (id?: string) => (id ? names.get(id) ?? id : "?");
+    const fields: CardField[] = cfg.edge_ref_id
+      ? [{ label: "Edge", value: cfg.edge_ref_id, kind: "ref", danger: true }]
+      : [
+          { label: "From", value: n(cfg.source_ref_id), kind: "ref", danger: true },
+          { label: "Edge", value: String(cfg.edge_type ?? "").toUpperCase(), danger: true },
+          { label: "To", value: n(cfg.target_ref_id), kind: "ref", danger: true },
+        ];
+    return {
+      title: cfg.edge_ref_id ? "Delete a link" : `Delete link: ${n(cfg.source_ref_id)} -${String(cfg.edge_type ?? "").toUpperCase()}-> ${n(cfg.target_ref_id)}`,
+      fields,
+      actions: { accept: "Delete", reject: "Keep" },
+    };
+  },
   async run(cfg, ctx) {
     const byRef = Boolean(cfg.edge_ref_id);
     const byTriple = Boolean(cfg.source_ref_id || cfg.edge_type || cfg.target_ref_id);

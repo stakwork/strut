@@ -24,6 +24,17 @@ export default defineStep({
     workflow: z.string().min(1).default("orchestrator").describe("The protected workflow the app's pages may run: `orchestrator`, the assistant."),
   }),
   output: z.any(),
+  async describe(cfg) {
+    const what = cfg.workflow === "orchestrator" ? "talk to the assistant" : `run ${cfg.workflow}`;
+    return {
+      title: `Let app ${cfg.name} ${what} as whoever opens it`,
+      fields: [
+        { label: "app", value: cfg.name, kind: "ref", danger: true },
+        { label: "workflow", value: cfg.workflow, kind: "ref", danger: true },
+      ],
+      actions: { accept: "Grant", reject: "Don't grant" },
+    };
+  },
   async run(cfg, ctx) {
     if (!ctx.proposal) {
       throw new Error(

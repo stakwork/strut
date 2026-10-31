@@ -50,9 +50,11 @@ own (§3, "A peer's launch").
 and its request is scoped `peer:person` — everything a peer may do, its
 actor the token's own whatever `x-strut-actor` says, and three things
 more: a launch of a workflow whose YAML says `peer: person`, the actor's
-own agent sessions (§3), the actor's room, and `POST /mcp`, where it gets
+own agent sessions (§3), the actor's room, `POST /mcp`, where it gets
 an app's `step_run` alone, run as the actor under the app's grants (§14.3,
-"A peer's app"). A host maps its
+"A peer's app"), and `POST /proposals/:id/decide` for a proposal its actor
+made — and it sees only those (§12). The plain peer key decides no proposal
+and sees none. A host maps its
 own credential to `peer:person` through `resolveScope` (mcp: a `lab:peer`
 JWT with a `sub`).
 
@@ -887,7 +889,43 @@ grants.
 
 ## 12. Proposals — a tool call a person approves before it runs
 
-A record (`src/proposals.ts`) is `{ id, step, input, rationale?, title, summary?, status, createdAt, by, decision?, result?, reportedAt? }`. `title` is the step description's first sentence, or what the step's `describe` hook gave; `summary` is what that hook read at proposal time for the card (plans/proposals.md §7; `package/install` reads the package's page off the index this strut follows). `GET …/runs/:runId/proposals` and `run.end { proposals }` carry both.
+A record (`src/proposals.ts`) is `{ id, step, input, rationale?, title, summary?, card?, status, createdAt, by, decision?, result?, reportedAt? }`. `title` is the step description's first sentence, or what the step's `describe` hook gave; `summary` is what that hook read at proposal time for the card (plans/proposals.md §7; `package/install` reads the package's page off the index this strut follows). `GET …/runs/:runId/proposals` and `run.end { proposals }` carry both.
+
+**`card`** (optional; records from before it have none) is what a person
+decides on, as data a host draws without knowing the step, computed ONCE at
+proposal time (after `describe`) and stored on the record and on the brief:
+
+```ts
+card?: {
+  v: 1,
+  title: string,
+  summary?: string,
+  fields: { label: string; value: string; kind?: "text" | "code" | "markdown" | "ref"; danger?: boolean }[], // ≤ 12; value ≤ 500 chars
+  actions: { accept: string; reject: string },   // button labels, e.g. "Install" / "Don't install"
+  full: boolean   // true when `fields` cover everything that will run (nothing cut, nothing left out)
+}
+```
+
+`title` / `summary` are `describe`'s, else the description's first sentence.
+A step's `describe` may also return `fields`, `actions` and `full`; with no
+`fields` the card is built from the input (`src/proposal-card.ts`): one field
+per top-level key, strings as they are, anything else as JSON (`kind: "code"`
+for objects and arrays), a value over 500 chars cut with `… (see full input)`,
+the first 12 keys kept, `full: false` when anything was cut or left out;
+actions `Accept` / `Reject`. `concept/create` (a lab step) has a table entry
+in `proposal-card.ts` until it has a `describe`. The model's `rationale` is
+its own field, never in `card.fields`. The job's `job.update { kind:
+"proposal" }` carries `detail.card: { title, status }` (§CALLBACKS 6).
+
+**Who may decide and see.** A full-scope credential (the deployment key, a
+session) decides and sees every proposal, as before. A **person token**
+(`peer:person`: a `strut-person` token, or a host's credential mapped by
+`resolveScope`, its actor its own subject) may decide a proposal only when its
+actor equals the proposal's `by.actor` (`403 { error }` otherwise; a proposal
+with no `by.actor` is no person token's), and `GET /proposals`, `GET
+/proposals/:id` and `GET …/runs/:runId/proposals` show it only its own (`404`
+/ omitted for others'). The plain `peer` scope decides none (`403`) and sees
+none. A repeat decide is still `409` with the record.
 
 `plans/proposals.md`. An `agent` step's `approve:` list gates registry
 steps: a call to one is RECORDED (`<dataDir>/proposals/<id>.json`) rather
@@ -905,7 +943,7 @@ lines).
 | ------ | ---- | ----------- |
 | GET    | `/proposals?job=&session=&runId=&status=` | `{ proposals: Proposal[] }`, newest first; `status` one of the five |
 | GET    | `/proposals/:id` | one record; 404 |
-| GET    | `/workflows/:name/runs/:runId/proposals` | `{ workflow, runId, proposals: [{ id, step, title, status, url, rationale?, createdAt, decidedAt? }] }` — what the run proposed, the `run.end` field's twin (`CALLBACKS.md` §6) |
+| GET    | `/workflows/:name/runs/:runId/proposals` | `{ workflow, runId, proposals: [{ id, step, title, summary?, card?, status, url, rationale?, createdAt, decidedAt? }] }` — what the run proposed, the `run.end` field's twin (`CALLBACKS.md` §6) |
 | POST   | `/proposals/:id/decide` | `{ action: "accept" \| "reject", input?: object, reason?: string }` → the record after the decision. `accept` merges `input` (one level) onto the proposal's, re-parses with the step's schema (400, still pending, when it does not fit), records the decision, runs the step under a minimal context (the decider — the request's actor — as `ctx.actor`, the proposing run's principal binding its secrets, its job, the registry), and records `result`. `reject` records `reason`, runs nothing. 409 with the record once decided (`failed` may be accepted again); 409 too, still pending, while a proposal its step waits for (`StepDef.after`: `meta/set-automation` waits for a pending `meta/publish-workflow` of its workflow) is pending; 400 for a step no longer in the registry; 404 |
 
 A step that reaches past this strut — `strut/run-workflow`, another org's
