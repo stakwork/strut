@@ -51,6 +51,7 @@ Core attributes are listed under "Core attributes" below.
 - Add `namespace`, `created_by`, `updated_at` and `deleted_at` to edges.
 - Move Claim-only columns off the shared edge columns, onto the edge types that use them.
 - Add `role`, `temporal`, `cardinality`, `key`, `identifiers` and `domain` to the core schema properties, `schema-crud.ts`, the resolver and the Ladybug Schema columns.
+- Cardinality is a rule on each edge type, never on nodes. An edge type declares `temporal` and `cardinality`, the slot is source node plus edge type, and `assert` reads the rule from the schema. `cardinality: one` means one current edge per source node. One per target isn't in v1 until something needs it.
 - Add namespaces to Ladybug. It refuses anything but `default` today. Writes default to `private`.
 - Seed base types without Jarvis's fixture.
 
