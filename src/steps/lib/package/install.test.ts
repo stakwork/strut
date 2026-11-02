@@ -98,9 +98,8 @@ describe("package/install — an agent asks, a person accepts", () => {
     assert.equal(followed.status, 200, await followed.clone().text());
   });
   afterEach(async () => {
-    await strut.close();
-    await publisher.close();
-    await index.close();
+    // allSettled: a failed beforeEach leaves some of these unset, and an open server keeps the test process alive.
+    await Promise.allSettled([strut?.close(), publisher?.close(), index?.close()]);
     await rm(root, { recursive: true, force: true });
   });
 
