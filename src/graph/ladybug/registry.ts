@@ -1,28 +1,36 @@
 /**
- * The closed registry (plans/ladybug-backend.md §3, ruling 6): the twelve node
- * types a Ladybug file holds and the sixteen edge types between them,
- * declared here and nowhere else. No Schema meta-graph, no runtime
- * registration: on Ladybug the `SchemaResolver` resolves from this module
- * (`SchemaSource.registry`), and the table's columns are derived from it.
+ * The SEED of a Ladybug file's ontology (plans/ladybug-backend.md §3, ruling 6
+ * as amended 2026-10-28; plans/memory-in-workspace-graph.md, PR A): the
+ * twelve node types a new file starts with and the sixteen edge types
+ * between them. The ontology itself lives in the file, as `Schema` rows of
+ * the `Node` table (`ontology.ts`), seeded from this module at open
+ * (add-only) and created and edited at runtime like Neo4j's `:Schema` nodes.
  *
  *   - the eight Strut types the workspace store and the projector need, from
  *     `strut-schemas.ts` by name, with Thing's unread stamps left off;
  *   - `Claim`, `Check`, `Evidence` (plans/claims.md) and `Concept`, under
  *     their jarvis names with the SAME `node_key` specs, so the ids and
  *     keys a desktop writes match a swarm's — but with exactly the
- *     attributes strut writes and reads (`claims.ts`'s field lists).
+ *     attributes strut writes and reads (`claims.ts`'s field lists);
+ *   - `Thing`, the root, with `name` and `description` only.
  *
- * Pure: no engine, no addon. `nodeColumns()` is the union of every type's
- * attributes as column types, and the module refuses to load when two types
- * declare one name with different column types — the registry's one
- * invariant, since every attribute is a real column (no JSON).
+ * Pure: no engine, no addon. `nodeColumns()` is the columns a new file is
+ * created with: the generic ones, the Schema type's own fields, and the
+ * union of the seed types' attributes; the module refuses to load when two
+ * types declare one name with different column types — one name, one
+ * column type, since every attribute is a real column. A type created at
+ * runtime adds its columns then (`ontology.ts`), under the same rule.
  */
+import { createHash } from "node:crypto";
 import { CHECK_TYPE, CLAIM_TYPE, EVIDENCE_TYPE } from "../claims.js";
 import type { EdgeSchemaRow } from "../engine.js";
 import { fromStrut, type NodeSchema } from "../schema-resolver.js";
-import { STRUT_EDGES, getStrutSchema, type AttrBase, type AttrType } from "../strut-schemas.js";
+import { STRUT_DOMAIN, STRUT_EDGES, THING_TYPE, getStrutSchema, type AttrBase, type AttrType } from "../strut-schemas.js";
 
 export const CONCEPT_TYPE = "Concept";
+
+/** The ontology's own type: one row per type in the `Node` table. */
+export const SCHEMA_TYPE = "Schema";
 
 /** The Strut types in the file (plans/ladybug-backend.md §3). */
 export const LADYBUG_STRUT_TYPES: readonly string[] = ["StrutWorkflow", "StrutWorkflowVersion", "StrutStep", "StrutStepVersion", "StrutApp", "StrutAppVersion", "StrutRun", "StrutJob"];
@@ -210,16 +218,44 @@ export const EDGE_COLUMNS: Readonly<Record<string, ColumnType>> = {
   post_url: "STRING",
 };
 
+/** The Schema type's own fields (plans/memory-in-workspace-graph.md decision
+ *  1), one column each on its rows. The attributes a type declares are one
+ *  JSON attribute, `attributes`; the type's `node_key` spec is the row's
+ *  `node_key`, as on a Neo4j `:Schema` node. */
+export const SCHEMA_COLUMNS: Readonly<Record<string, ColumnType>> = {
+  type: "STRING",
+  parent: "STRING",
+  index: "STRING[]",
+  vector_index: "STRING[]",
+  title_key: "STRING",
+  description_key: "STRING",
+  type_description: "STRING",
+  domain: "STRING",
+  icon: "STRING",
+  shape: "STRING",
+  primary_color: "STRING",
+  secondary_color: "STRING",
+  embed: "BOOL",
+  exact_key: "BOOL",
+  attributes: "STRING",
+  aliases: "STRING[]",
+  status: "STRING",
+  role: "STRING",
+  naming: "STRING",
+  cardinality: "STRING",
+  managed_by: "STRING",
+};
+
 const baseOf = (t: string) => t.replace(/^\?/, "") as AttrBase | "complex";
 
 function buildColumns(): Record<string, ColumnType> {
-  const out: Record<string, ColumnType> = { ...GENERIC_COLUMNS };
+  const out: Record<string, ColumnType> = { ...GENERIC_COLUMNS, ...SCHEMA_COLUMNS };
   const by: Record<string, string> = {};
   for (const s of LADYBUG_SCHEMAS) {
     for (const [k, t] of Object.entries(s.attributes)) {
       const col = columnTypeOf(baseOf(t));
       if (!col) throw new Error(`ladybug registry: ${s.type}.${k} has type ${t}, which has no column type`);
-      if (k in GENERIC_COLUMNS) throw new Error(`ladybug registry: ${s.type}.${k} shadows a generic column`);
+      if (k in GENERIC_COLUMNS || k in SCHEMA_COLUMNS) throw new Error(`ladybug registry: ${s.type}.${k} shadows a generic or Schema column`);
       if (out[k] && out[k] !== col) throw new Error(`ladybug registry: ${s.type}.${k} is ${col} but ${by[k]}.${k} is ${out[k]} — one name, one column type`);
       out[k] = col;
       by[k] = s.type;
@@ -230,10 +266,68 @@ function buildColumns(): Record<string, ColumnType> {
 
 let COLUMNS: Record<string, ColumnType> | undefined;
 
-/** Every Node column with its type: the generic ones plus the union of
- *  the ten types' attributes. Built once; throws on a type conflict. */
+/** The Node columns a new file is created with: the generic ones, the
+ *  Schema fields, and the union of the seed types' attributes. Built once;
+ *  throws on a type conflict. A file's actual columns are its catalog
+ *  (`ontology.ts`), which runtime types add to. */
 export function nodeColumns(): Readonly<Record<string, ColumnType>> {
   return (COLUMNS ??= buildColumns());
 }
 
 nodeColumns();
+
+// ── The seed ────────────────────────────────────────────────────────────────
+
+/** The root every seed type is CHILD_OF: Thing without its jarvis stamps. */
+const THING_SEED: NodeSchema = {
+  type: THING_TYPE,
+  node_key: "thing-name",
+  index: ["name", "description"],
+  vector_index: [],
+  embed: true,
+  attributes: { name: "string", description: "?string" },
+  title_key: "name",
+  description_key: "description",
+  domainLabels: [],
+  isStrut: false,
+};
+
+/** One seed type as the flat map a Schema row is written from: the core
+ *  keys, then the attributes, as `schema-seed.ts` flattens a Strut schema.
+ *  The Strut types carry their domain and display keys. */
+function seedFlat(s: NodeSchema): Record<string, unknown> {
+  const strut = getStrutSchema(s.type);
+  return {
+    type: s.type,
+    ...(s.parent ? { parent: s.parent } : {}),
+    node_key: s.node_key,
+    index: [...s.index],
+    vector_index: [...s.vector_index],
+    ...(s.title_key ? { title_key: s.title_key } : {}),
+    ...(s.description_key ? { description_key: s.description_key } : {}),
+    embed: s.embed,
+    ...(s.exact_key ? { exact_key: true } : {}),
+    ...(strut
+      ? { domain: STRUT_DOMAIN, icon: strut.icon, shape: strut.shape, primary_color: strut.primary_color, secondary_color: strut.secondary_color, type_description: strut.type_description }
+      : {}),
+    ...s.attributes,
+  };
+}
+
+export interface OntologySeed {
+  /** Thing first, then every seed type: flat maps, as `createSchema` takes them. */
+  schemas: Array<Record<string, unknown>>;
+  edges: readonly LadybugEdgeDef[];
+  /** Changes when the seed does: the `Migration` stamp the open checks. */
+  id: string;
+}
+
+let SEED: OntologySeed | undefined;
+
+/** What a file's ontology is seeded with at open (`db.ts`). */
+export function ontologySeed(): OntologySeed {
+  if (SEED) return SEED;
+  const schemas = [THING_SEED, ...LADYBUG_SCHEMAS].map(seedFlat);
+  const hash = createHash("sha256").update(JSON.stringify({ schemas, edges: LADYBUG_EDGES })).digest("hex").slice(0, 16);
+  return (SEED = { schemas, edges: LADYBUG_EDGES, id: `ladybug_ontology_seed:${hash}` });
+}

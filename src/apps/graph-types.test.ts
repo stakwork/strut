@@ -89,11 +89,10 @@ describe("an app's graph types, as a declaration", () => {
     for (const t of ["Invoice", "Customer", "Person", "Strategy"]) assert.equal(reservedAppType(t), null, t);
   });
 
-  it("a build is refused with no graph, on a LadybugDB file, on a reserved type or an attribute the schema writer refuses — and passes with nothing declared", async () => {
+  it("a build is refused with no graph, on a reserved type or an attribute the schema writer refuses — and passes with nothing declared", async () => {
     const m = manifest(INVOICES);
     assert.deepEqual(await checkAppGraph(manifest("title: T\n"), undefined), { errors: [], warnings: [] });
     assert.match((await checkAppGraph(m, undefined)).errors.join("\n"), /this strut has no graph .* does not build here/);
-    assert.match((await checkAppGraph(m, { kind: "ladybug" } as GraphBackend)).errors.join("\n"), /LadybugDB file, whose types are fixed in code/);
     const reserved = await checkAppGraph(manifest("title: T\ndata:\n  graph:\n    types:\n      Concept: { name: string }\n      StrutRun: { x: string }\n"), undefined);
     assert.equal(reserved.errors.length, 2);
     assert.match(reserved.errors[0]!, /^app\.yaml: data\.graph\.types\.Concept: Concept is the workspace's notes/);
@@ -119,9 +118,9 @@ describe("an app's graph types, as a declaration", () => {
   });
 });
 
-const neo4j = testBackends().find((t) => t.kind === "neo4j")!;
-
-describe("an app's graph types on Neo4j (live)", { skip: neo4j.skip }, () => {
+// On every graph: a LadybugDB file builds an app's types as Neo4j does
+// (plans/memory-in-workspace-graph.md, PR A).
+for (const tb of testBackends()) describe(`an app's graph types on ${tb.name}`, { skip: tb.skip }, () => {
   let b: GraphBackend;
   let kit: KitLocation;
   let root: string;
@@ -136,8 +135,8 @@ describe("an app's graph types on Neo4j (live)", { skip: neo4j.skip }, () => {
   before(async () => {
     savedKey = process.env["STRUT_API_KEY"];
     process.env["STRUT_API_KEY"] = "graph-types-key";
-    b = await neo4j.open();
-    await neo4j.wipe(b);
+    b = await tb.open();
+    await tb.wipe(b);
     await seedStrutDomain(b);
     kit = await kitForTests();
     root = await mkdtemp(join(tmpdir(), "strut-app-graph-"));
@@ -163,7 +162,7 @@ describe("an app's graph types on Neo4j (live)", { skip: neo4j.skip }, () => {
   });
   after(async () => {
     await strut?.close?.().catch(() => {});
-    if (b) await neo4j.close(b);
+    if (b) await tb.close(b);
     await rm(root, { recursive: true, force: true });
     if (savedKey === undefined) delete process.env["STRUT_API_KEY"];
     else process.env["STRUT_API_KEY"] = savedKey;
@@ -210,6 +209,18 @@ describe("an app's graph types on Neo4j (live)", { skip: neo4j.skip }, () => {
     await refused("keyed", "Invoice: { number: string, amount: number, due: date, status: string }", /data\.graph\.types\.Invoice\.key: Invoice is keyed by \[number\] in the graph, and this app declares \[name\]/);
     await refused("partial", "Invoice: { number: string, amount: number, key: [number] }", /Invoice requires due \(string\) on every node, and this app does not declare it/);
     await refused("notes", "Concept: { name: string }", /Concept is the workspace's notes/);
+  });
+
+  it("on a LadybugDB file, an attribute another type holds as another column type fails the BUILD, and nothing registers", { skip: tb.kind !== "ladybug" && "ladybug only" }, async () => {
+    // `run_id` is a STRING column (StrutRun's); within one app, `qty` cannot be two types either.
+    const app = "title: X\ndata:\n  graph:\n    types:\n      Gizmo: { name: string, qty: number }\n      Widget: { name: string, qty: boolean }\n      Sprocket: { name: string, run_id: number }\n";
+    const check = await checkAppGraph(manifest(app), b);
+    assert.equal(check.errors.length, 2, check.errors.join("\n"));
+    assert.match(check.errors[0]!, /data\.graph\.types\.Widget\.qty: qty is a DOUBLE column in this graph and boolean would need BOOL/);
+    assert.match(check.errors[1]!, /data\.graph\.types\.Sprocket\.run_id: run_id is a STRING column/);
+    const r = await publish("clashing", app);
+    assert.equal(r.ok, false);
+    for (const t of ["Gizmo", "Widget", "Sprocket"]) assert.equal(await b.schemas.resolveType(t), null, `${t} is not registered`);
   });
 
   it("a page writes a declared type through step_run — kept, as the viewer — and reads it back with graph/find", async () => {

@@ -2,9 +2,9 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { CLAIM_EDGES } from "../claims.js";
 import { STRUT_EDGES, STRUT_SCHEMAS } from "../strut-schemas.js";
-import { EDGE_COLUMNS, GENERIC_COLUMNS, LADYBUG_EDGES, LADYBUG_EDGE_TYPES, LADYBUG_SCHEMAS, LADYBUG_STRUT_TYPES, ladybugEdge, ladybugSchema, nodeColumns } from "./registry.js";
+import { EDGE_COLUMNS, GENERIC_COLUMNS, LADYBUG_EDGES, LADYBUG_EDGE_TYPES, LADYBUG_SCHEMAS, LADYBUG_STRUT_TYPES, SCHEMA_COLUMNS, ladybugEdge, ladybugSchema, nodeColumns, ontologySeed } from "./registry.js";
 
-describe("ladybug registry (plans/ladybug-backend.md §3, ruling 6)", () => {
+describe("ladybug registry — the ontology seed (plans/ladybug-backend.md §3, ruling 6 as amended 2026-10-28)", () => {
   it("holds exactly the ten types, and the Strut ones without Thing's vestiges or per-stem vectors", () => {
     assert.deepEqual(
       LADYBUG_SCHEMAS.map((s) => s.type),
@@ -60,7 +60,7 @@ describe("ladybug registry (plans/ladybug-backend.md §3, ruling 6)", () => {
     assert.ok(ladybugEdge("VERSION_OF", "StrutAppVersion", "StrutApp") && ladybugEdge("ACTIVE_VERSION", "StrutApp", "StrutAppVersion") && ladybugEdge("USES_WORKFLOW", "StrutAppVersion", "StrutWorkflow"));
   });
 
-  it("columns: one per attribute, no conflicts, no jarvis stamps but a seeded Concept's source", () => {
+  it("columns: one per attribute and one per Schema field, no conflicts, no jarvis stamps but a seeded Concept's source", () => {
     const cols = nodeColumns();
     for (const s of LADYBUG_SCHEMAS) for (const k of Object.keys(s.attributes)) assert.ok(cols[k], `${s.type}.${k}`);
     assert.equal(cols["created_at"], "INT64");
@@ -69,9 +69,31 @@ describe("ladybug registry (plans/ladybug-backend.md §3, ruling 6)", () => {
     assert.equal(cols["sample_rate"], "DOUBLE");
     assert.equal(cols["max_run_cost_usd"], "DOUBLE");
     assert.equal(cols["unique_source_id"], "STRING", "a seeded Concept's stamp (concept-seed.ts)");
-    for (const k of ["is_deleted", "is_muted", "relevancy_score", "weight", "_search_fields_used", "input_embeddings", "attrs", "domain"]) assert.ok(!(k in cols), k);
+    for (const k of ["is_deleted", "is_muted", "relevancy_score", "weight", "_search_fields_used", "input_embeddings", "attrs"]) assert.ok(!(k in cols), k);
     for (const k of Object.keys(GENERIC_COLUMNS)) assert.ok(cols[k], k);
-    assert.ok(Object.keys(cols).length > 60 && Object.keys(cols).length < 100, `${Object.keys(cols).length} columns`);
+    for (const [k, t] of Object.entries(SCHEMA_COLUMNS)) assert.equal(cols[k], t, `the Schema field ${k}`);
+    assert.equal(cols["attributes"], "STRING", "a type's declared attributes are one JSON column");
+    assert.equal(cols["aliases"], "STRING[]");
+    assert.ok(Object.keys(cols).length > 80 && Object.keys(cols).length < 110, `${Object.keys(cols).length} columns`);
     assert.deepEqual(Object.keys(EDGE_COLUMNS), ["ref_id", "edge_key", "date_added_to_graph", "weight", "importance", "strength", "context", "start_time", "end_time", "post_url"]);
+  });
+
+  it("the seed: Thing, then every type as the flat Schema map it is written from, the edges, and a stamp that follows its content", () => {
+    const seed = ontologySeed();
+    assert.deepEqual(seed.schemas.map((s) => s["type"]), ["Thing", ...LADYBUG_SCHEMAS.map((s) => s.type)]);
+    const thing = seed.schemas[0]!;
+    assert.equal(thing["parent"], undefined, "the root");
+    assert.equal(thing["name"], "string");
+    for (const k of ["weight", "is_muted", "unique_source_id", "image_url"]) assert.ok(!(k in thing), `no jarvis stamp ${k} on Thing`);
+    const run = seed.schemas.find((s) => s["type"] === "StrutRun")!;
+    assert.equal(run["parent"], "Thing");
+    assert.equal(run["domain"], "Strut");
+    assert.equal(run["run_id"], "string", "attributes flat beside the core keys");
+    assert.equal(run["embed"], true);
+    assert.equal(seed.schemas.find((s) => s["type"] === "StrutStep")!["exact_key"], true);
+    assert.equal(seed.schemas.find((s) => s["type"] === "Claim")!["domain"], undefined);
+    assert.equal(seed.edges, LADYBUG_EDGES);
+    assert.match(seed.id, /^ladybug_ontology_seed:[0-9a-f]{16}$/);
+    assert.equal(ontologySeed().id, seed.id, "the same content, the same stamp");
   });
 });

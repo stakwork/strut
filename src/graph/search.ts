@@ -564,7 +564,7 @@ export interface NameHit {
  * shapes (above); a backend's `reader` is one of these. The Neo4j reader
  * resolves types through the live Schema meta-graph and routes a search
  * through domain indexes; the Ladybug reader resolves them from the
- * closed registry and reads one FTS and one HNSW index. What one engine
+ * file's Schema rows and reads one FTS and one HNSW index. What one engine
  * cannot answer it says so: a namespace other than `default` or a
  * `registerNamespace` on a Ladybug file is a `GraphReadError`.
  */

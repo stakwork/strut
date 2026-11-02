@@ -1,8 +1,8 @@
 /**
  * The Ladybug engine (plans/ladybug-backend.md §3, §4): the three seams of
  * `engine.ts` over one LadybugDB file — one `Node` table whose columns are
- * the closed registry's attributes (`registry.ts`), one rel table per edge
- * type, a `Migration` ledger. The writers and the resolver above it are the
+ * the ontology's attributes, one rel table per edge type, a `Migration`
+ * ledger. The writers and the resolver above it are the
  * shared ones; this file is the statements.
  *
  *   - identity is `(node_type, node_key)`, resolved by a pre-read in the
@@ -13,15 +13,16 @@
  *     (outgoing, incoming) in the same transaction;
  *   - no alias rewrite, no edge flags, no namespace but `default`: an edge
  *     is live or gone, and `edgeLive` is `true`;
- *   - the schema source IS the registry: types resolve from code, and
- *     every schema write is refused.
+ *   - the schema source is the file's `Schema` rows (`ontology.ts`), seeded
+ *     from `registry.ts` at open and written at runtime: a new attribute
+ *     adds its column, a new edge type its rel table. The columns and rel
+ *     tables a write checks against are the file's catalog.
  *
  * Integers are plain numbers here (INT64 reads back as a number); a JS
  * number into an INT64 column is written as given, the writer having
  * validated it an integer.
  */
 import type {
-  ClosedRegistry,
   Dialect,
   EdgeEndpoint,
   EdgeEngine,
@@ -30,6 +31,7 @@ import type {
   EdgeSchemaRow,
   EdgeSchemaWalk,
   GraphEngine,
+  NamedSchema,
   GraphTx,
   NodeEngine,
   NodeGuard,
@@ -48,7 +50,9 @@ import { sameStored } from "../engine.js";
 import { GraphValidationError } from "../node-writer.js";
 import type { NodeSchema } from "../schema-resolver.js";
 import type { LadybugHandle } from "./db.js";
-import { EDGE_COLUMNS, GENERIC_COLUMNS, LADYBUG_EDGE_TYPES, LADYBUG_SCHEMAS, LADYBUG_STRUT_TYPES, ladybugEdge, ladybugSchema, nodeColumns } from "./registry.js";
+import * as ontology from "./ontology.js";
+import { SCHEMA_EDGE, catalogOf, readCatalog, type Catalog, type LadybugCatalog } from "./ontology.js";
+import { EDGE_COLUMNS, GENERIC_COLUMNS, LADYBUG_STRUT_TYPES, SCHEMA_TYPE } from "./registry.js";
 
 const q = (s: string) => `\`${s}\``;
 const lit = (s: string) => `'${s.replace(/'/g, "''")}'`;
@@ -79,15 +83,18 @@ export class LadybugEngine implements GraphEngine {
   readonly dialect = LADYBUG_DIALECT;
   readonly nodeEngine: NodeEngine;
   readonly edgeEngine: EdgeEngine;
-  readonly schemaSource: SchemaSource;
+  readonly schemaSource: LadybugSchemas;
+  /** The file's tables, shared by every engine and reader over the handle. */
+  readonly catalog: LadybugCatalog;
 
   constructor(
     readonly lbug: LadybugHandle,
     readonly namespace: string,
   ) {
-    this.nodeEngine = new LadybugNodes(lbug, namespace);
-    this.edgeEngine = new LadybugEdges(lbug);
-    this.schemaSource = new LadybugSchemas(lbug);
+    this.catalog = catalogOf(lbug);
+    this.nodeEngine = new LadybugNodes(lbug, namespace, this.catalog);
+    this.edgeEngine = new LadybugEdges(lbug, this.catalog);
+    this.schemaSource = new LadybugSchemas(lbug, this.catalog);
   }
 
   query(cypher: string, params: Params = {}): Promise<Row[]> {
@@ -103,19 +110,35 @@ export class LadybugEngine implements GraphEngine {
 const on = (lbug: LadybugHandle, tx: GraphTx | undefined, cypher: string, params: Params = {}) =>
   tx ? tx.run(cypher, params) : lbug.exclusive((w) => w(cypher, params));
 
+/** The catalog, read again on `tx` when it lacks what `has` asks for (a
+ *  column or table this transaction just made). The shared cache is left
+ *  alone: a miss is as often a name the file never had, and a schema write
+ *  drops the cache itself once it commits. */
+async function catalogFor(catalog: LadybugCatalog, tx: GraphTx, has: (c: Catalog) => boolean): Promise<Catalog> {
+  const cached = await catalog.get();
+  if (has(cached)) return cached;
+  return readCatalog((cypher, params) => tx.run(cypher, params));
+}
+
 // ── Nodes ───────────────────────────────────────────────────────────────────
 
 class LadybugNodes implements NodeEngine {
   constructor(
     private readonly lbug: LadybugHandle,
     private readonly ns: string,
+    private readonly catalog: LadybugCatalog,
   ) {}
+
+  /** The file's columns, with every one of `names` in it if the file has it. */
+  private async known(tx: GraphTx, names: string[]): Promise<Record<string, string>> {
+    return (await catalogFor(this.catalog, tx, (c) => names.every((k) => DROPPED_PROPS.has(k) || k in c.columns))).columns;
+  }
 
   /** The writer's props as columns: every key must be an attribute of the
    *  schema or one of the generic columns the writer fills. */
-  private columns(schema: NodeSchema, props: Record<string, unknown>): Record<string, unknown> {
+  private async columns(tx: GraphTx, schema: NodeSchema, props: Record<string, unknown>): Promise<Record<string, unknown>> {
     const out: Record<string, unknown> = {};
-    const known = nodeColumns();
+    const known = await this.known(tx, Object.keys(props));
     for (const [k, v] of Object.entries(props)) {
       if (DROPPED_PROPS.has(k)) continue;
       if (!(k in schema.attributes) && !(k in GENERIC_COLUMNS)) throw new GraphValidationError("UNKNOWN_ATTRIBUTE", schema.type, "not a column of the ladybug Node table", k);
@@ -135,13 +158,13 @@ class LadybugNodes implements NodeEngine {
 
     const misses = nodes.filter((n) => !hits.has(n.node_key));
     if (misses.length) {
-      const rows = misses.map((n) => ({
+      const rows = await Promise.all(misses.map(async (n) => ({
         ref_id: n.ref_id,
         node_key: n.node_key,
         namespace,
         node_type: schema.type,
-        ...this.columns(schema, n.props),
-      }));
+        ...(await this.columns(tx, schema, n.props)),
+      })));
       // One row shape for the batch; a column null on every row is left out.
       const columns = [...new Set(rows.flatMap((r) => Object.keys(r)))].filter((c) => rows.some((r) => r[c as keyof typeof r] != null));
       await tx.run(`UNWIND $rows AS r CREATE (n:Node {${columns.map((c) => `${q(c)}: r.${q(c)}`).join(", ")}})`, {
@@ -152,7 +175,7 @@ class LadybugNodes implements NodeEngine {
     for (const n of nodes) {
       const hit = hits.get(n.node_key);
       if (!hit || (mode !== "upsert" && !hit.deleted)) continue;
-      const set = this.columns(schema, n.props);
+      const set = await this.columns(tx, schema, n.props);
       if (!hit.deleted && !(await this.changed(tx, schema, hit.ref_id, set))) delete set["updated_at"]; // a resync that changes nothing keeps its stamp
       const params: Params = { ref_id: hit.ref_id };
       const assigns: string[] = [];
@@ -198,8 +221,8 @@ class LadybugNodes implements NodeEngine {
   }
 
   async update(tx: GraphTx, schema: NodeSchema, ref_id: string, set: Record<string, unknown>, remove: string[]): Promise<void> {
-    const columns = this.columns(schema, set);
-    const known = nodeColumns();
+    const columns = await this.columns(tx, schema, set);
+    const known = await this.known(tx, remove);
     const params: Params = { ref_id };
     const assigns: string[] = [];
     let i = 0;
@@ -219,7 +242,8 @@ class LadybugNodes implements NodeEngine {
     return this.lbug.withWrite(async (tx) => {
       const params: Params = { ref_id, now: Date.now() };
       const pattern = ["ref_id: $ref_id"];
-      const where: string[] = [];
+      // A Schema row is the ontology, not a node any delete may take.
+      const where: string[] = [`n.node_type <> '${SCHEMA_TYPE}'`];
       if (guard.type) {
         params["type"] = guard.type;
         pattern.push("node_type: $type");
@@ -231,7 +255,7 @@ class LadybugNodes implements NodeEngine {
       }
       let i = 0;
       for (const [k, v] of Object.entries(guard.props ?? {})) {
-        if (!nodeColumns()[k]) return null;
+        if (!(await this.known(tx, [k]))[k]) return null;
         params[`g${i}`] = v;
         pattern.push(`${q(k)}: $g${i++}`);
       }
@@ -250,7 +274,6 @@ class LadybugNodes implements NodeEngine {
 
 // ── Edges ───────────────────────────────────────────────────────────────────
 
-const edgeTable = (edge: string): boolean => LADYBUG_EDGE_TYPES.includes(edge);
 
 /** An edge struct (`RETURN r`) as its properties: the columns it has. */
 function edgeProps(rel: Record<string, unknown>): Record<string, unknown> {
@@ -273,7 +296,15 @@ function edgeColumns(edge: string, props: Record<string, unknown>): Record<strin
 }
 
 class LadybugEdges implements EdgeEngine {
-  constructor(private readonly lbug: LadybugHandle) {}
+  constructor(
+    private readonly lbug: LadybugHandle,
+    private readonly catalog: LadybugCatalog,
+  ) {}
+
+  /** Does the file have a rel table for `edge`? */
+  private async table(tx: GraphTx, edge: string): Promise<boolean> {
+    return (await catalogFor(this.catalog, tx, (c) => c.edges.has(edge))).edges.has(edge);
+  }
 
   async endpoints(tx: GraphTx, ids: string[]): Promise<Map<string, EdgeEndpoint>> {
     const rows = await tx.run(`UNWIND $ids AS id MATCH (n:Node {ref_id: id}) RETURN id, n.node_type AS type`, { ids });
@@ -281,7 +312,7 @@ class LadybugEdges implements EdgeEngine {
   }
 
   async mergeBatch(tx: GraphTx, edge: string, rows: EdgeMergeRow[]): Promise<EdgeMergeResult[]> {
-    if (!edgeTable(edge)) throw new GraphValidationError("WRONG_TYPE", edge, `not an edge type the ladybug file holds (${LADYBUG_EDGE_TYPES.join(", ")})`);
+    if (!(await this.table(tx, edge))) throw new GraphValidationError("WRONG_TYPE", edge, "not an edge type this graph holds: register it between two types first (graph/create-triplet's create_schema_if_missing)");
     const out: EdgeMergeResult[] = [];
     for (const e of rows) {
       const extra = edgeColumns(edge, e.props);
@@ -307,7 +338,8 @@ class LadybugEdges implements EdgeEngine {
   }
 
   private async locate(tx: GraphTx, ref_id: string): Promise<{ edge: string; src: string; tgt: string } | null> {
-    const rows = await tx.run(`MATCH (s:Node)-[r {ref_id: $ref_id}]->(t:Node) RETURN label(r) AS edge, s.ref_id AS src, t.ref_id AS tgt LIMIT 1`, { ref_id });
+    // The ontology's own edges are not edges a writer may touch.
+    const rows = await tx.run(`MATCH (s:Node)-[r {ref_id: $ref_id}]->(t:Node) WHERE label(r) <> '${SCHEMA_EDGE}' RETURN label(r) AS edge, s.ref_id AS src, t.ref_id AS tgt LIMIT 1`, { ref_id });
     const r = rows[0];
     return r ? { edge: String(r["edge"]), src: String(r["src"]), tgt: String(r["tgt"]) } : null;
   }
@@ -330,7 +362,7 @@ class LadybugEdges implements EdgeEngine {
   }
 
   async findByTriple(tx: GraphTx, edge: string, src: string, tgt: string): Promise<string[]> {
-    if (!edgeTable(edge)) return [];
+    if (!(await this.table(tx, edge))) return [];
     const rows = await tx.run(`MATCH (s:Node {ref_id: $src})-[r:${q(edge)}]->(t:Node {ref_id: $tgt}) RETURN r.ref_id AS ref_id`, { src, tgt });
     return rows.map((r) => String(r["ref_id"]));
   }
@@ -348,7 +380,7 @@ class LadybugEdges implements EdgeEngine {
   async liveEdgesOf(tx: GraphTx, ref_id: string, edge: string, forward: boolean) {
     const node = await tx.run(`MATCH (x:Node {ref_id: $ref_id}) RETURN x.ref_id AS ref_id`, { ref_id });
     if (node.length === 0) return null;
-    if (!edgeTable(edge)) return { node: ref_id, edges: [] };
+    if (!(await this.table(tx, edge))) return { node: ref_id, edges: [] };
     const hop = forward ? `-[r:${q(edge)}]->` : `<-[r:${q(edge)}]-`;
     const rows = await tx.run(`MATCH (n:Node {ref_id: $ref_id})${hop}(p:Node) RETURN p.ref_id AS other, r.ref_id AS edge_ref_id, r AS rel`, { ref_id });
     return {
@@ -358,7 +390,7 @@ class LadybugEdges implements EdgeEngine {
   }
 
   async wouldCycle(tx: GraphTx, edge: string, node: string, to: string, forward: boolean): Promise<boolean> {
-    if (!edgeTable(edge)) return false;
+    if (!(await this.table(tx, edge))) return false;
     const [a, b] = forward ? [to, node] : [node, to];
     const rows = await tx.run(
       `MATCH (a:Node {ref_id: $a}), (b:Node {ref_id: $b}) MATCH p = (a)-[:${q(edge)}* SHORTEST 1..30]->(b) RETURN count(p) AS c`,
@@ -368,7 +400,7 @@ class LadybugEdges implements EdgeEngine {
   }
 
   async copyProps(tx: GraphTx, fromRef: string, toRef: string): Promise<void> {
-    const old = await tx.run(`MATCH ()-[r {ref_id: $ref_id}]->() RETURN r AS rel LIMIT 1`, { ref_id: fromRef });
+    const old = await tx.run(`MATCH ()-[r {ref_id: $ref_id}]->() WHERE label(r) <> '${SCHEMA_EDGE}' RETURN r AS rel LIMIT 1`, { ref_id: fromRef });
     const at = await this.locate(tx, toRef);
     if (!old[0] || !at) return;
     const props = edgeProps(old[0]["rel"] as Record<string, unknown>);
@@ -384,65 +416,77 @@ class LadybugEdges implements EdgeEngine {
   }
 }
 
-// ── The schema source: the registry ─────────────────────────────────────────
+// ── The schema source: the file's Schema rows ───────────────────────────────
 
-const REGISTRY: ClosedRegistry = {
-  schema: ladybugSchema,
-  types: () => LADYBUG_SCHEMAS,
-  edge: ladybugEdge,
-};
+/** `ontology.ts` over the handle: reads on the caller's transaction when
+ *  there is one, else the read connection; writes in the caller's
+ *  transaction, else one of their own. Every write drops the catalog. */
+export class LadybugSchemas implements SchemaSource {
+  readonly holdsStrutTypes = true;
+  constructor(
+    private readonly lbug: LadybugHandle,
+    private readonly catalog: LadybugCatalog,
+  ) {}
 
-function closed(what: string): never {
-  throw new Error(`the ladybug backend's types and edges are a closed registry (plans/ladybug-backend.md §3): ${what}`);
-}
+  private reader(tx?: GraphTx): ontology.Run {
+    return tx ? (c, p) => tx.run(c, p) : (c, p) => this.lbug.query(c, p);
+  }
 
-/** A registry schema as the flat row jarvis would store, for callers that
- *  read `props` (the seeds, which return at once on a closed registry). */
-function flat(s: NodeSchema): SchemaRow {
-  return {
-    type: s.type,
-    ref_id: undefined,
-    props: { type: s.type, parent: s.parent, node_key: s.node_key, index: s.index, title_key: s.title_key, description_key: s.description_key, ...s.attributes },
-  };
-}
+  /** A schema write. The shared catalog is dropped now and again once the
+   *  transaction is over: a read on the read connection before the COMMIT
+   *  caches the tables as they were, so the second drop is queued behind
+   *  the transaction on the handle's write queue, where it runs after the
+   *  COMMIT (or ROLLBACK) whoever opened the transaction. */
+  private async write<T>(tx: GraphTx | undefined, fn: (run: ontology.Run, catalog: Catalog) => Promise<T>): Promise<T> {
+    const go = async (t: GraphTx) => {
+      const run: ontology.Run = (c, p) => t.run(c, p);
+      this.catalog.invalidate();
+      void this.lbug.exclusive(async () => this.catalog.invalidate()).catch(() => this.catalog.invalidate());
+      return fn(run, await readCatalog(run));
+    };
+    return tx ? go(tx) : this.lbug.withWrite(go);
+  }
 
-class LadybugSchemas implements SchemaSource {
-  readonly registry = REGISTRY;
-  constructor(private readonly lbug: LadybugHandle) {}
-
-  async schemaRow(type: string, _opts: { live?: boolean } = {}): Promise<SchemaRow | null> {
-    const s = ladybugSchema(type);
-    return s ? flat(s) : null;
+  async schemaRow(type: string, opts: { live?: boolean } = {}, tx?: GraphTx): Promise<SchemaRow | null> {
+    return ontology.schemaRow(this.reader(tx), type, opts.live);
   }
   async labelLike(): Promise<string | null> {
-    return null;
+    return null; // no label catalog: a type is a Schema row or nothing
   }
-  async ancestors(): Promise<{ chain: string[]; rows: Array<Record<string, unknown>> }> {
-    return { chain: [], rows: [] };
+  async ancestors(type: string, tx?: GraphTx): Promise<{ chain: string[]; rows: Array<Record<string, unknown>> }> {
+    return ontology.ancestors(this.reader(tx), type);
   }
   async hidden(): Promise<{ domains: unknown; types: unknown }> {
-    return { domains: undefined, types: undefined };
+    return { domains: undefined, types: undefined }; // no About node
   }
-  async findEdgeSchema(walk: EdgeSchemaWalk, source: string, edge: string, target: string): Promise<EdgeSchemaRow | null> {
-    return walk === "exact" ? ladybugEdge(edge, source, target) : null;
+  async findEdgeSchema(walk: EdgeSchemaWalk, source: string, edge: string, target: string, tx?: GraphTx): Promise<EdgeSchemaRow | null> {
+    return ontology.findEdgeSchema(this.reader(tx), walk, source, edge, target);
   }
-  async createSchema(flat: Record<string, unknown>): Promise<void> {
-    closed(`cannot create schema ${String(flat["type"])}`);
+  async typesNamed(names: string[], tx?: GraphTx): Promise<NamedSchema[]> {
+    return ontology.typesNamed(this.reader(tx), names);
   }
-  async extendSchema(type: string): Promise<void> {
-    closed(`cannot extend schema ${type}`);
+  /** Every live Schema and edge rule: the reader's ontology. */
+  async ontology(): Promise<{ schemas: SchemaRow[]; edges: Array<{ edge: string; source: string; target: string }> }> {
+    const run = this.reader();
+    return { schemas: await ontology.schemaRows(run), edges: await ontology.edgeSchemaRows(run) };
   }
-  async deleteSchema(type: string): Promise<void> {
-    closed(`cannot delete schema ${type}`);
+  async createSchema(flat: Record<string, unknown>, tx?: GraphTx): Promise<void> {
+    await this.write(tx, (run, c) => ontology.createSchemaRow(run, c, flat));
   }
-  async ensureChildOf(child: string, parent: string): Promise<boolean | null> {
-    return closed(`cannot register ${child} CHILD_OF ${parent}`);
+  async extendSchema(type: string, props: Record<string, unknown>, tx?: GraphTx): Promise<void> {
+    await this.write(tx, (run, c) => ontology.extendSchemaRow(run, c, type, props));
   }
-  async ensureEdgeSchema(source: string, edge: string, target: string) {
-    return closed(`cannot register ${source}-[${edge}]->${target}`);
+  async deleteSchema(type: string, tx?: GraphTx): Promise<void> {
+    await this.write(tx, (run) => ontology.deleteSchemaRow(run, type));
   }
-  async ensureWildcardSchema(): Promise<void> {
-    closed("no wildcard schema");
+  async ensureChildOf(child: string, parent: string, ref_id: string, tx?: GraphTx): Promise<boolean | null> {
+    return this.write(tx, (run, c) => ontology.ensureChildOf(run, c, child, parent, ref_id));
+  }
+  async ensureEdgeSchema(source: string, edge: string, target: string, props: Record<string, unknown>, tx?: GraphTx) {
+    return this.write(tx, (run, c) => ontology.ensureEdgeSchema(run, c, source, edge, target, props));
+  }
+  async ensureWildcardSchema(ref_id: string, tx?: GraphTx): Promise<void> {
+    await this.write(tx, (run) => ontology.ensureWildcardSchema(run, ref_id));
   }
   async stampMigration(id: string): Promise<void> {
     await this.lbug.exclusive((w) => w(`MERGE (m:Migration {migration_id: $id}) ON CREATE SET m.executed_at = CAST($now AS INT64)`, { id, now: Date.now() }));
