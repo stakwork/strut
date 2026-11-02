@@ -105,19 +105,27 @@ for its canvas, over the full key.
 
 Strut alone changes nothing a tribe sees: the bytes leave the tribe when
 Hive stops putting the card in the post, and the card comes back when
-Peel reads the record. Order: strut (and the mcp pin bump that puts it on
-the swarms), then Peel, then Hive. Peel first is safe (a post that still
-carries a card draws it as today); Hive before Peel leaves an older Peel
-drawing a card from the title alone (`ProposalCard.generic`), which loses
-nothing it may show.
+Peel reads the record. **No ship order between Hive and Peel.** Peel is a
+desktop app, updated on each person's own schedule, so every Hive post must
+read on every Peel version: a Peel from before this draws a stub as a
+title-only card with the owner's buttons (`ProposalCard.generic`; its reply
+words match Hive's plain accept / reject), never reads the strut for a
+post-backed proposal, and the outcome posts still move it — it loses
+nothing it may show. A Peel with a card-bearing post from an older Hive
+draws it as today. The one dependency is strut on the swarms (the mcp pin
+bump) before a new Peel reads by id, and even that degrades to "not
+readable here".
 
 **Hive.**
 
 - **The rule, strict: nothing large rides in a Sphinx message; a tribe
   envelope carries references only.** `metadata.strut` is `{ workspace,
-  artifacts: [{ id, kind, title, url | app }], proposals: [{ id, step,
+  artifacts: [{ id, kind, title, url | app | path }], proposals: [{ id, step,
   title, status, url }] }` and nothing else — never `content`, `card`,
-  `summary` or `rationale`, whatever the entry holds beside its address.
+  `summary` or `rationale`, whatever the entry holds beside its address. A
+  `path` is an address too (a job's file), and a peer's entry keeps the tags
+  Peel opens it by (`peer`, `via`, `job`): a build on another strut has no
+  `url` of its own.
   Today `strutReferenceEntries` keeps a whole entry once it has an
   address, so a deliverable with both a `url` and inline `content` ships
   the content, and the proposal entry ships the card. The text already
