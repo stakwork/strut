@@ -53,9 +53,9 @@ export const BUILDER_CATEGORY = "job";
 export const BUILDER_DESCRIPTION =
   "A workflow-building turn, as a job: an agent with the meta/* authoring twins (list/get/search steps and workflows, create/edit a step, validate, publish, run, run a step with a cassette, read runs, claims) and the app/* steps (scaffold, build and publish an APP — a front-end project over workflows), with the web tools and the text editor (never bash) as its built-ins, in a thread that remembers every earlier turn (agent with session: {{ input.session || $job }}), with the Workflow Builder page — what this workspace builds — in its prompt. " +
   "Launch it with `job` on the launch — POST /workflows/builder/run { job, input: { prompt }, callback } — and the same job again to go on with the same build. " +
-  "Input: { prompt, workspace? (this strut's workspace slug), session? (the thread: the job id unless given), peer? (a peer's id: the build happens on THAT strut's builder, under this job id — this run waits on it) }. " +
+  "Input: { prompt, workspace? (this strut server's workspace slug), session? (the thread: the job id unless given), peer? (a peer's id: the build happens on THAT workspace's builder, under this job id — this run waits on it) }. " +
   "Output: { text, artifacts, ask?: { message }, cost, session, peer? }, job's shape. " +
-  "Open to peers (`peer: true`): another strut launches it as published. params.tools (meta/*, app/*, the graph reads, job/list, get, read, git/checkout — a repository to learn from, checked out into the job's directory), params.builtins (the web tools, the editor family) and params.system are the evolvable surface; the host adds its own through createStrut({ builder }).";
+  "Open to peers (`peer: true`): another strut server launches it as published. params.tools (meta/*, app/*, the graph reads, job/list, get, read, git/checkout — a repository to learn from, checked out into the job's directory), params.builtins (the web tools, the editor family) and params.system are the evolvable surface; the host adds its own through createStrut({ builder }).";
 
 const BUILDER_YAML = new URL("./workflows/builder.yaml", import.meta.url);
 

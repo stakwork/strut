@@ -73,11 +73,11 @@ export function tagArtifacts(output: unknown, peer: string, job: string | undefi
 export default defineStep({
   type: "strut/run-workflow",
   description:
-    `Run a workflow on ANOTHER strut (a PEER this one has on file — GET /peers; in a prompt, @<id>) and return its result: { peer, workflow, runId, status, output?, error?, durationMs }. ` +
+    `Run a workflow on a PEER — another workspace's strut server, on file here (GET /peers; in a prompt, @<id>) — and return its result: { peer, workflow, runId, status, output?, error?, durationMs }. ` +
     `The run executes on the peer, under the peer's secrets and billing for this run's principal (forwarded as x-strut-actor); its files and artifacts stay there (an entry of the output's \`artifacts\` comes back tagged { peer, job } — its path is the peer's, in that job there — and a graph ref_id in it is the peer's graph). ` +
     `Waits on the peer's event stream, reattaching if the connection drops; cancelling this run cancels the peer's. wait: false returns { peer, workflow, runId, status: "running" } at once and leaves the run going. ` +
     `A peer runs only a workflow whose YAML says \`peer: true\`, as published (no params), under a job of its own: a refused launch fails this step with the peer's message (not open to peers, job_busy:, an unknown workflow); an unknown peer fails peer_unknown:; a peer's run that died with its process and was not resumed fails peer_run_stale:. ` +
-    `\`job\` names a job on the PEER to launch under — this run's own job is never forwarded (no shared directory across struts). Nothing returned is thrown: a child that failed is status "error" with its message.\n\n${EXAMPLE}`,
+    `\`job\` names a job on the PEER to launch under — this run's own job is never forwarded (no shared directory across strut servers). Nothing returned is thrown: a child that failed is status "error" with its message.\n\n${EXAMPLE}`,
   input: z.object({
     peer: z.string().describe("The peer's id, as GET /peers lists it (hive registers workspaces by slug: @acme-web → acme-web)"),
     workflow: z.string().describe("The workflow to run ON THE PEER (its name there)"),
@@ -95,7 +95,7 @@ export default defineStep({
     room: z
       .boolean()
       .optional()
-      .describe("true → the peer delivers this run's callbacks, and those of the jobs it starts, to the person's ROOM there (callback and jobCallback { room: true }): for a run whose jobs finish after it returns — another strut's orchestrator. The peer record's token must be a person's credential, or the peer refuses the launch."),
+      .describe("true → the peer delivers this run's callbacks, and those of the jobs it starts, to the person's ROOM there (callback and jobCallback { room: true }): for a run whose jobs finish after it returns — another strut server's orchestrator. The peer record's token must be a person's credential, or the peer refuses the launch."),
   }),
   output: z.object({
     peer: z.string(),

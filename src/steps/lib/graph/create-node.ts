@@ -6,7 +6,7 @@ import { objectFields } from "../../../proposal-card.js";
 export default defineStep({
   type: "graph/create-node",
   description:
-    "Create (or merge) a SINGLE node in the strut knowledge graph as DATA, with no edge " +
+    "Create (or merge) a SINGLE node in the knowledge graph as DATA, with no edge " +
     "(to assert a relationship at the same time, use graph_create_triplet instead). Writes live to the graph. " +
     "REUSE existing nodes: graph_graph_search first, and only create when the entity genuinely doesn't exist yet — " +
     "duplicate nodes fragment the graph. The node type must already exist in the ontology " +

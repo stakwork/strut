@@ -113,7 +113,7 @@ export function walkForModel(out: WalkProgress): unknown {
 export function graphWalkTool(deps: WalkToolDeps) {
   return tool({
     description:
-      "Walk the strut knowledge graph to gather evidence for a question, then answer from what it returns. Use it for questions about how a workflow " +
+      "Walk the knowledge graph to gather evidence for a question, then answer from what it returns. Use it for questions about how a workflow " +
       "or step BEHAVES — does it work, why do its runs fail, what do its claims say and what supports or refutes them. Set `goal` to the user's " +
       "question and `query` to the workflow or step name (the walk seeds from a graph search on it). A small decision model walks hop by hop and " +
       "keeps what is relevant; the user watches the walk as a live graph. Returns { goal, stopped, nodes } — the kept nodes, most relevant first " +

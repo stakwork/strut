@@ -20,7 +20,7 @@ function validateTripletSide(
 export default defineStep({
   type: "graph/create-triplet",
   description:
-    "Assert a fact into the strut knowledge graph as DATA: a triplet of source node -[edge]-> target node " +
+    "Assert a fact into the knowledge graph as DATA: a triplet of source node -[edge]-> target node " +
     "(instances, not schema). Writes live to the graph. " +
     "For each side pass EITHER the ref_id of an existing node (preferred — find it with graph_graph_search) " +
     "OR a node type + data object to create/merge the node inline. " +
@@ -81,7 +81,7 @@ export default defineStep({
     allow_scratchpad: z
       .boolean()
       .optional()
-      .describe("Accepted for input parity with jarvis/create-triplet; the strut graph has no scratchpad, so this has no effect."),
+      .describe("Accepted for input parity with jarvis/create-triplet; this graph has no scratchpad, so this has no effect."),
   }),
   output: z.any(),
   async describe(cfg, ctx) {

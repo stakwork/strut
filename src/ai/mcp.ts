@@ -57,7 +57,7 @@ export const MCP_DETACH_HINT =
  *  over MCP — short, where the whole prompt (~28k chars) would not fit. */
 export function builderInstructions(publicUrl: string): string {
   return (
-    `Strut's workflow builder over MCP: the tools its builder chat's model uses, with the same descriptions and result caps. ` +
+    `This strut server's workflow builder over MCP: the tools its builder chat's model uses, with the same descriptions and result caps. ` +
     `The "${PROMPT_NAME}" prompt (prompts/get) is that chat's full system prompt — the YAML rules, every tool's use, this deployment's own notes on what is built here and how, and the step catalog; read it before building anything. ` +
     `The web UI is at ${publicUrl}/ — a \`ui\` link in a result opens that workflow or run there, and an artifact link in a result opens the file (it carries its own read token).\n\n` +
     `${BUILDER_PROCEDURE}\n\n` +
@@ -70,8 +70,8 @@ export function builderInstructions(publicUrl: string): string {
  *  — the caller's context is the point of this surface. */
 export function assistantInstructions(publicUrl: string): string {
   return (
-    `Strut runs workflows — automations built from steps (HTTP, shell, LLM and agent calls, browser, git, …), scheduled or run on demand, each run keeping its output and the files it wrote. ` +
-    `You do not author them: strut's own WORKFLOW BUILDER does. ask_workflow_builder with what you want in plain words (what it should do, its inputs, a schedule, what the deliverable is); the reply is its text plus \`did\` — what it published, ran and scheduled, with links. ` +
+    `This strut server runs workflows (people may also call one a "strut") — automations built from steps (HTTP, shell, LLM and agent calls, browser, git, …), scheduled or run on demand, each run keeping its output and the files it wrote. ` +
+    `You do not author them: the server's own WORKFLOW BUILDER does. ask_workflow_builder with what you want in plain words (what it should do, its inputs, a schedule, what the deliverable is); the reply is its text plus \`did\` — what it published, ran and scheduled, with links. ` +
     `Continue the same chat for changes, debugging ("why did run X fail?") and questions; it remembers. The call holds up to \`wait\` for the reply; status "working" means read_workflow_builder_chat with wait until it is not; "asked" means it has a question in \`question\` — answer it in your next message on that chat, or for a secret send YOUR USER to the link (never collect a credential's value). ` +
     `Lost the chat id? list_workflow_builder_chats. ` +
     `For a workflow that exists: list_workflows (schedules, last run), run_workflow (now), list_runs (each run's deliverables as links), get_run (the result; large output fields are held back until you name them in \`fields\`). ` +

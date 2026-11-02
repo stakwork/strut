@@ -45,7 +45,7 @@ export function fixerRuntime(): string | null {
 }
 
 export const NO_FIXER_RUNTIME =
-  "dictation's fixer needs node-llama-cpp, which this strut does not have: only the desktop package carries it " +
+  "dictation's fixer needs node-llama-cpp, which this strut server does not have: only the desktop package carries it " +
   "(in a checkout: yarn --cwd fixer install --frozen-lockfile --ignore-scripts)";
 
 /** The worker a fixer model runs in: fixer-engine.ts over fixer/'s node-llama-cpp. */

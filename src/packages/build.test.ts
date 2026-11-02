@@ -586,9 +586,9 @@ describe("building and installing a package with apps (filesystem)", () => {
     };
     const cases: Array<[Record<string, string>, RegExp]> = [
       // The buyer's kit lacks the import: the build names it.
-      [{ "app.yaml": "title: Issues\n", "src/App.tsx": 'import pad from "left-pad";\nexport default function App() { return <p>{pad}</p>; }\n' }, /bad_package: the app acme\/linear\/issues does not build on this strut — .*left-pad/],
-      [{ "app.yaml": "title: Issues\ngrants:\n  workflows: [acme/linear/nowhere]\n", "src/App.tsx": "export default () => null;\n" }, /the app acme\/linear\/issues does not build on this strut — grants\.workflows: no workflow "acme\/linear\/nowhere"/],
-      [{ "app.yaml": "title: Issues\ngrants:\n  steps: [nope/missing]\n", "src/App.tsx": "export default () => null;\n" }, /the app acme\/linear\/issues grants the step nope\/missing, which is neither on this strut nor in the packages/],
+      [{ "app.yaml": "title: Issues\n", "src/App.tsx": 'import pad from "left-pad";\nexport default function App() { return <p>{pad}</p>; }\n' }, /bad_package: the app acme\/linear\/issues does not build on this strut server — .*left-pad/],
+      [{ "app.yaml": "title: Issues\ngrants:\n  workflows: [acme/linear/nowhere]\n", "src/App.tsx": "export default () => null;\n" }, /the app acme\/linear\/issues does not build on this strut server — grants\.workflows: no workflow "acme\/linear\/nowhere"/],
+      [{ "app.yaml": "title: Issues\ngrants:\n  steps: [nope/missing]\n", "src/App.tsx": "export default () => null;\n" }, /the app acme\/linear\/issues grants the step nope\/missing, which is neither on this strut server nor in the packages/],
       [{ "app.yaml": "title: [\n", "src/App.tsx": "export default () => null;\n" }, /apps\/issues\/app\.yaml: /],
     ];
     for (const [app, re] of cases) {

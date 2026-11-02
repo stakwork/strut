@@ -7,7 +7,7 @@ import { bootEnv } from "../../../env.js";
 export default defineStep({
   type: "graph/project",
   description:
-    "Project strut's own run and chat history into the knowledge graph (StrutRun / StrutAgentSession / " +
+    "Project this strut server's own run and chat history into the knowledge graph (StrutRun / StrutAgentSession / " +
     "StrutToolCall / StrutChat / StrutTurn nodes with EXECUTED, IN_RUN, IN_SESSION, SPAWNED, IN_CHAT edges, plus " +
     "ACCESSED edges from each tool call to the graph nodes it reported touching), " +
     "reading the raw logs under the server's data dir. Idempotent — re-run any time; settled runs are " +

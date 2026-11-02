@@ -31,7 +31,7 @@ export function AccessedNodes(props: { nodes: TouchedNode[] }) {
     setOpen(refId);
     if (loaded[refId] && loaded[refId] !== "loading") return;
     if (peer) {
-      setLoaded((l) => ({ ...l, [refId]: { error: `On @${peer}'s graph — this strut cannot open it yet.` } }));
+      setLoaded((l) => ({ ...l, [refId]: { error: `On @${peer}'s graph — this strut server cannot open it yet.` } }));
       return;
     }
     setLoaded((l) => ({ ...l, [refId]: "loading" }));

@@ -139,7 +139,7 @@ export async function resolvePackage(ref: string, opts: ResolveOptions): Promise
     return { ...(await opts.cache.putDir(path, opts.digest)), source: { ref } };
   }
   if (ref.startsWith("pk:")) {
-    if (!opts.url) throw new Error(`package_source_invalid: ${ref}: a pk: ref needs url, where the publisher's catalog is served (its strut's /packages/catalog?public=1, or the file it uploaded)`);
+    if (!opts.url) throw new Error(`package_source_invalid: ${ref}: a pk: ref needs url, where the publisher's catalog is served (its strut server's /packages/catalog?public=1, or the file it uploaded)`);
     const got = await resolvePk(ref, { cache: opts.cache, url: opts.url, ...(opts.digest ? { digest: opts.digest } : {}), ...(opts.fetch ? { fetch: opts.fetch } : {}) });
     const { key, url, release: _release, catalog: _catalog, ...info } = got;
     return { ...info, source: { ref, url }, key };

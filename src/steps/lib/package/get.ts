@@ -14,7 +14,7 @@ export default defineStep({
   type: "package/get",
   effect: "read",
   description:
-    "Read one PACKAGE's page from the store — the indexes this strut follows (the first whose card lists its publisher, or the one `index` names) — to see what it holds and does before recommending it or building the same thing. " +
+    "Read one PACKAGE's page from the store — the indexes this strut server follows (the first whose card lists its publisher, or the one `index` names) — to see what it holds and does before recommending it or building the same thing. " +
     "Returns { package, publisher, key, urls, description?, releases (newest first), channels, readAt, detail?, detailError?, index }. `detail` is the newest release READ OFF ITS ARCHIVE: `apps` (title, grants, `can`), `workflows` (each with its `inputs`, the step types it runs, its `grants`, `secrets`, `can`, `claims`), `steps` (effect, the secrets they read, the lint's findings), `concepts` (name, description, parent — a page's docs through package/concepts), the README (cut at " +
     `${README_BRIEF_CHARS} chars unless \`full\`), the \`secrets\` the whole package needs, and \`can: { spends, acts, code }\` — whether running it reaches a model call (spends money), a step that acts on the world (effect: write), or code (exec, or the package's own TypeScript). ` +
     "`can` is a READING off the files — regexes over step sources, the YAML's step types — never a check or a sandbox; an install re-reads everything through the real parsers and re-verifies the package against its publisher's signed catalog. " +

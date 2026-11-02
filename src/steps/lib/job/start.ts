@@ -51,14 +51,14 @@ export default defineStep({
       .optional()
       .describe(
         "Which hands the job gets. `job` (the default): code, research, pages, plans, an app over this job's own results — a working directory, repositories, the shell. " +
-          "`builder`: the thing to build, change, test or debug is a WORKFLOW (an automation, a pipeline, a custom step, a schedule) or an APP that lives in a workspace (new, changed, or on another strut) — the authoring tools, no shell. " +
-          "A workflow or a workspace's app belongs to one strut's workspace: it is built on this strut unless `peer` names another.",
+          "`builder`: the thing to build, change, test or debug is a WORKFLOW (an automation, a pipeline, a custom step, a schedule) or an APP that lives in a workspace (new, changed, or in another workspace) — the authoring tools, no shell. " +
+          "A workflow or a workspace's app belongs to one workspace: it is built in this one unless `peer` names another.",
       ),
     peer: z
       .string()
       .optional()
       .describe(
-        "With workflow: builder only — the strut the workflow or app belongs to when it is not this one, by id as strut/list-peers gives it (@acme-web → acme-web): the build happens there, under this job. Never with workflow: job.",
+        "With workflow: builder only — the workspace the workflow or app belongs to when it is not this one, by id as strut/list-peers gives it (@acme-web → acme-web): the build happens there, under this job. Never with workflow: job.",
       ),
     repos: z
       .array(z.string())
@@ -79,7 +79,7 @@ export default defineStep({
     const launch = requireJobLaunch(ctx.services);
     const workflow = cfg.workflow ?? "job";
     if (cfg.peer && workflow !== "builder") {
-      throw new Error(`peer: only a builder job runs on another strut (workflow: builder); a code job runs here, with its repositories — leave peer out, or start a builder job`);
+      throw new Error(`peer: only a builder job runs on another strut server (workflow: builder); a code job runs here, with its repositories — leave peer out, or start a builder job`);
     }
     if (cfg.repos?.length && workflow === "builder") {
       throw new Error(`repos: a builder job checks nothing out — it authors workflows through its tools; leave repos out, or start a job (workflow: job) for work on a repository`);

@@ -1,12 +1,12 @@
 ---
-description: An APP — a front-end project over this strut's workflows, built against a fixed kit and rendered by any MCP Apps host; how to lay one out, what it may call, renaming one (its title), pinning one as a tab of the workspace, and the rules that keep it cheap and safe.
+description: An APP — a front-end project over this workspace's workflows, built against a fixed kit and rendered by any MCP Apps host; how to lay one out, what it may call, renaming one (its title), pinning one as a tab of the workspace, and the rules that keep it cheap and safe.
 parent: Workflow Builder
 ---
-An APP is interactive software the builder writes on top of this strut's
-own workflows (plans/apps.md): a directory of TSX, CSS and an `app.yaml`,
+An APP is interactive software the builder writes on top of this
+workspace's own workflows (plans/apps.md): a directory of TSX, CSS and an `app.yaml`,
 built against a FIXED kit into one self-contained HTML document, published
 as a versioned object in the workspace and rendered in a sandboxed frame by
-strut's own UI, by a portal, by Claude — any MCP Apps host. Its backend is the
+the strut server's own UI, by a portal, by Claude — any MCP Apps host. Its backend is the
 registry, reached through ONE tool under the grants its manifest declares.
 Workflows are its server functions, steps its API, runs its history.
 
@@ -20,7 +20,7 @@ apps/<name>/
   src/components/ui/  # optional: overrides of the kit's shadcn components (shadcn's own model)
   src/styles.css      # optional: @theme, @layer, custom utilities (Tailwind 4)
   public/             # images, fonts, JSON fixtures, imported by path (inlined at build)
-  db/                 # SQL migrations (a later strut; keep it empty for now)
+  db/                 # SQL migrations (a later release; keep it empty for now)
 ```
 
 `app/init { path: "apps/<name>" }` scaffolds this (a shadcn sidebar with
@@ -47,7 +47,7 @@ beside the first, never a rename.
 
 **Look before you publish.** A build that passes can still draw nothing,
 show an error, or call a step its grants refuse. `app/look { name, path }`
-builds the DIRECTORY and opens it in strut's own host as you, without
+builds the DIRECTORY and opens it in the strut server's own host as you, without
 publishing anything, waits for the page to draw and its first calls to
 answer, and returns the screenshot (you see it), the page's text, and what
 went wrong: `rendered: false` (it drew nothing), `hostError` (the host
@@ -70,14 +70,14 @@ icon: bar-chart-3
 grants:
   workflows: [score-wf]        # the app's ROUTINES: run/* on these — list, read, launch, cancel
   steps: [graph/graph-get]     # cheap, deterministic steps it may call — never llm / agent / exec
-  sqlite: false                # its own tables (a later strut)
-  automations: []              # schedules (a later strut)
+  sqlite: false                # its own tables (a later release)
+  automations: []              # schedules (a later release)
 data:
   graph:
     types: {}                  # node types it declares and may WRITE (below: Graph types)
 ```
 
-The grants are the app's whole reach, checked by strut on every call in
+The grants are the app's whole reach, checked by the strut server on every call in
 every host: `run/*` only on `grants.workflows`, any other step only when
 `grants.steps` names it (globs as `agentTools` takes them). What a
 model-written manifest may NEVER grant: `llm`, `agent`, `exec` (a paid or
@@ -144,7 +144,7 @@ under them — `foldRunOverview`, `foldRunHealth`, `foldAgentTrace`,
 `@strut/kit`, for a run drawn your own way.
 
 **The hooks** come from `@strut/kit`, each naming a `run/*` step, over one
-tool (`step_run`) the host relays to strut:
+tool (`step_run`) the host relays to the strut server:
 
 | Hook | What it does |
 | --- | --- |
@@ -162,7 +162,7 @@ tool (`step_run`) the host relays to strut:
 | `useToolInput()` | what the model or a deep link opened the app with; a link's values are strings |
 | `useAppLink()` → `link(input?)`, `appLink(name, input?)` | a deep link to this app (or another) opened with `input`: `openLink(link({ view: "/runs", run: id }))` shows it, and the host's address bar follows, so the person can share it |
 | `useApp()` | which app the page is: `{ name, version }`, or a job's app `{ job, path }` |
-| `useHost()` → `{ theme, sendMessage(text), openLink(url) }` | the host: `sendMessage` reaches the builder chat ("change this app"), `openLink` opens a strut link in place |
+| `useHost()` → `{ theme, sendMessage(text), openLink(url) }` | the host: `sendMessage` reaches the builder chat ("change this app"), `openLink` opens a link to the strut server's UI in place |
 | `useAssistant({ thread? })` → `{ messages, send(text, files?), pending, jobs }` | a chat with the person's ASSISTANT (`orchestrator`), as the viewer — see "The assistant" |
 
 **Deep links.** The page is opened with whatever its link carries
@@ -212,7 +212,7 @@ keeps the grant, and nobody who opens the app is asked anything.
 `useAssistant({ thread })` sends a message per `send` (one run per turn)
 and reads the turns back as `messages` (the viewer's text, the reply's
 `text`, `artifacts` and `ask`, `pending` while it runs). The thread is the
-viewer's own in this app — strut keeps it apart from their conversation in
+viewer's own in this app — the strut server keeps it apart from their conversation in
 their host and from every other viewer's — and remembers across visits by
 its name. `jobs` are the jobs the latest turn started or continued
 (`{ job, runId, workflow? }`): follow one with
@@ -230,7 +230,7 @@ cancelable, verified.
 
 ## Files a person brings
 
-A page can open no connection, so a file reaches strut through the same
+A page can open no connection, so a file reaches the strut server through the same
 tool, as base64 (a third larger; at most 10 MB a file). Hand the browser's
 `File` objects to a hook — a plain `<input type="file">` or a drop zone —
 and never read them yourself.
@@ -241,8 +241,8 @@ and never read them yourself.
   once, done.
 - **For many runs, or a conversation about them:** a JOB of the app's.
   `useUpload("library").upload(file)` saves the file at `uploads/<name>` in
-  the job and returns its `path`. `library` is the app's own — strut keeps
-  `app/<name>/library`, so a job per case, project or person is just
+  the job and returns its `path`. `library` is the app's own — the strut
+  server keeps `app/<name>/library`, so a job per case, project or person is just
   another id. Launch with the same job, `useLaunch("ask", { job: "library" })`,
   and pass the `path` in `input`: the workflow finds the file at that path
   in the folder `job/dir` returns, and an agent on `session: "{{ $job }}"`
@@ -259,9 +259,9 @@ and never read them yourself.
 | --- | --- | --- |
 | What workflows did, one row per execution: scores, polls, extractions | Runs | Already there: `useRuns` and outputs |
 | Entities and relations others should see too: customers, facts, people | The graph (`graph/*`, declared types) | Agents find them, workflows write them, another app reads them |
-| The app's own tables: line items, a big import, settings | The app's SQLite (`sqlite/*`) | A later strut; until then keep state in runs or the graph |
+| The app's own tables: line items, a big import, settings | The app's SQLite (`sqlite/*`) | A later release; until then keep state in runs or the graph |
 | Files a person uploads: photos, PDFs, a CSV to work from | A job of the app's (`useUpload`) | Every run under the job reads them; an agent's thread on it remembers them |
-| What one viewer's page remembers: a tab, a filter, a draft | `useAppState` | Kept by strut per app and viewer, on every host and device; 256 KB a viewer |
+| What one viewer's page remembers: a tab, a filter, a draft | `useAppState` | Kept by the strut server per app and viewer, on every host and device; 256 KB a viewer |
 
 A page has no browser storage: it is framed with an opaque origin, so
 `localStorage` and `sessionStorage` last only the page's life (the kit
@@ -297,10 +297,10 @@ before the version, add-only. Nothing is ever removed, so a rollback keeps
 them. A type another app declared is the same type: declare it with the
 same attribute types, the same key and every attribute it requires, and
 your new optional attributes are added; the build names whatever conflicts.
-Strut's own types, `Concept`, `Claim`, `Check` and `Evidence` cannot be
-declared. Only a Neo4j graph registers types: on a strut whose graph is a
-LadybugDB file, or that has no graph, an app that declares any does not
-build, so keep its data in runs there.
+The strut server's own types, `Concept`, `Claim`, `Check` and `Evidence` cannot be
+declared. A graph registers types on Neo4j and on a LadybugDB file alike;
+on a strut server with no graph, an app that declares any does not build,
+so keep its data in runs there.
 
 The page writes them with `graph/create-node`, `edit-node`,
 `create-triplet` and `delete-node` (granted in `grants.steps`), and reads a
@@ -327,7 +327,7 @@ used to take up to ~240 browser round trips. The `strut/views` graph
 components read node by node, so they suit a small graph; a big one needs
 a step like this.
 
-Strut counts every call a page makes, and `app/get` returns it as `usage`:
+The strut server counts every call a page makes, and `app/get` returns it as `usage`:
 calls, failures and data by step type, and `warnings` — one call per item,
 the same call polled too fast, too many calls, too much data, a call
 failing in a loop — each on the version that caused it, with what to do
@@ -350,7 +350,7 @@ with `useLaunch`. The document's size over 6 MB is a warning.
   button, `useRun({ live })` on the newest run, a tab for its output.
 - **Invoice tracker**: customers, visits and invoices as declared graph
   types written with `graph/*`, a table from `@tanstack/react-table`, a
-  photo-reading workflow launched per invoice (a later strut adds SQLite
+  photo-reading workflow launched per invoice (a later release adds SQLite
   for line items and schedules for reminders).
 - **Fact library**: a URL goes to an ingest workflow whose agent writes
   `Fact` and `Source` nodes; the app searches them with
@@ -364,7 +364,7 @@ Describe the app's pages in `text` when you publish, and where your reply
 carries `artifacts` (a job's), hand the app over by NAME and with the
 VERSION `app/publish` returned — `{ id, kind: "app", title, app: "<name>",
 version: "v4" }`, so a draft opens as the draft — so the person opens
-it where they are: under Apps in strut's UI, where "Edit with the builder"
+it where they are: under Apps in the strut server's UI, where "Edit with the builder"
 brings a request back here, and a message typed inside the app ("add a
 column") arrives in this chat naming the app; or in a host's own frame.
 An app lives in the workspace: never hand over an app directory as a

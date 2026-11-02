@@ -270,7 +270,7 @@ export function createIndexes(deps: IndexesDeps): PackageIndexes {
    *  else read again from its URLs in order; `fresh` reads again regardless. */
   const card = async (id: string, opts: { fresh?: boolean } = {}): Promise<{ card: IndexCatalog; url: string; cached: boolean }> => {
     const sub = (await readFileList()).find((s) => s.id === id);
-    if (!sub) throw new Error(`package_index_unknown: this strut follows no index "${id}"`);
+    if (!sub) throw new Error(`package_index_unknown: this strut server follows no index "${id}"`);
     const memo = cards.get(id);
     if (!opts.fresh && memo && memo.key === sub.key && now() - memo.at < CARD_TTL_MS) return { ...memo, cached: true };
     const failures: string[] = [];
@@ -292,7 +292,7 @@ export function createIndexes(deps: IndexesDeps): PackageIndexes {
   /** The indexes followed, or the one `index` names (unknown: a throw). */
   const subsFor = async (opts: { index?: string }): Promise<IndexSubscription[]> => {
     const subs = (await readFileList()).filter((s) => !opts.index || s.id === opts.index);
-    if (opts.index && subs.length === 0) throw new Error(`package_index_unknown: this strut follows no index "${opts.index}"`);
+    if (opts.index && subs.length === 0) throw new Error(`package_index_unknown: this strut server follows no index "${opts.index}"`);
     return subs;
   };
   /** The first of `subs` whose card lists the publisher of `name`: the
@@ -328,7 +328,7 @@ export function createIndexes(deps: IndexesDeps): PackageIndexes {
     // No card we could read lists the prefix: say which could not be read.
     if (unreachable.length === subs.length) throw new Error(unreachable.join("; "));
     const also = unreachable.length ? ` (and ${unreachable.join("; ")})` : "";
-    throw new Error(`package_not_listed: no index this strut follows lists the publisher ${prefix} (${subs.map((s) => s.id).join(", ")})${also}`);
+    throw new Error(`package_not_listed: no index this strut server follows lists the publisher ${prefix} (${subs.map((s) => s.id).join(", ")})${also}`);
   };
   /** One of an index strut's derived reads — `path` under its base, from
    *  the subscription's URLs in order: the body, `notFound` (its 404), or
@@ -355,7 +355,7 @@ export function createIndexes(deps: IndexesDeps): PackageIndexes {
     }
     return { error: failures.length ? failures.join("; ") : "its card is a file, not an index strut: no pages there" };
   };
-  const noIndex = (what: string) => `package_index_none: this strut follows no package index to ${what} (PUT /packages/indexes/:id, or STRUT_PACKAGE_INDEXES)`;
+  const noIndex = (what: string) => `package_index_none: this strut server follows no package index to ${what} (PUT /packages/indexes/:id, or STRUT_PACKAGE_INDEXES)`;
 
   return {
     list: async () => (await readFileList()).map(withState),
@@ -379,7 +379,7 @@ export function createIndexes(deps: IndexesDeps): PackageIndexes {
       if (!PACKAGE_NAME.test(name)) throw new Error(`package_source_invalid: ${name} is not a package name (publisher/name)`);
       const subs = await subsFor(opts);
       if (subs.length === 0) {
-        throw new Error(`package_source_invalid: ${name} is a name, and this strut follows no index to look it up in — install by pk:<key>/${name} with url, or follow one (PUT /packages/indexes/:id)`);
+        throw new Error(`package_source_invalid: ${name} is a name, and this strut server follows no index to look it up in — install by pk:<key>/${name} with url, or follow one (PUT /packages/indexes/:id)`);
       }
       const { sub, row } = await rowFor(name, subs);
       return { ref: `pk:${row.key}/${name}`, urls: [...row.urls], index: sub.id };

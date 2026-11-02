@@ -64,7 +64,7 @@ describe("the orchestrator workflow strut ships", () => {
     // "builder job", and tells the agent to talk in the person's words.
     const system = (yaml.load(text) as { params: { system: string } }).params.system.replace(/\s+/g, " ");
     assert.ok(
-      system.includes("To build, change, test or debug a workflow, or an app that lives in a workspace, start the job with `workflow: builder`, on the strut whose workspace it belongs to (`peer` when that is not this one)."),
+      system.includes("To build, change, test or debug a workflow, or an app that lives in a workspace, start the job with `workflow: builder`, in the workspace it belongs to (`peer` when that is not this one)."),
       system,
     );
     assert.doesNotMatch(system, /builder job/i, "no internal noun for the person to repeat");

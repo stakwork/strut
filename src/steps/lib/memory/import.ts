@@ -102,7 +102,7 @@ export async function importSnapshot(
 export default defineStep({
   type: "memory/import",
   description:
-    "Load a memory/export snapshot (.tar.gz) into this strut's long-term memory, which must be empty unless replace is given. " +
+    "Load a memory/export snapshot (.tar.gz) into this strut server's long-term memory, which must be empty unless replace is given. " +
     "With replace, a memory that is not empty is first backed up on this machine, then replaced; the output names the backup. " +
     `Give data (the file as base64, at most ${MAX_DATA_BYTES / MB} MB) or path (a file on this machine).`,
   input: z.object({

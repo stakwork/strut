@@ -19,7 +19,7 @@ const EXAMPLE = `- id: evidence_type
 export default defineStep({
   type: "graph/create-schema",
   description:
-    "Register a NODE TYPE in the strut knowledge graph's ontology (a Schema node — on Neo4j and on a LadybugDB file alike), or add attributes to an existing one. " +
+    "Register a NODE TYPE in the knowledge graph's ontology (a Schema node — on Neo4j and on a LadybugDB file alike), or add attributes to an existing one. " +
     "graph/create-node and graph/create-triplet refuse a node whose type has no schema, or whose properties the schema " +
     "does not declare — call this first when the type (or attribute) you need is missing from graph_get_ontology. " +
     "`attributes` maps attribute name → type: string | boolean | int | float | complex | datetime | list, with a `?` prefix " +

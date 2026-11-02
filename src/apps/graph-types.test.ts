@@ -92,7 +92,7 @@ describe("an app's graph types, as a declaration", () => {
   it("a build is refused with no graph, on a reserved type or an attribute the schema writer refuses — and passes with nothing declared", async () => {
     const m = manifest(INVOICES);
     assert.deepEqual(await checkAppGraph(manifest("title: T\n"), undefined), { errors: [], warnings: [] });
-    assert.match((await checkAppGraph(m, undefined)).errors.join("\n"), /this strut has no graph .* does not build here/);
+    assert.match((await checkAppGraph(m, undefined)).errors.join("\n"), /this strut server has no graph .* does not build here/);
     const reserved = await checkAppGraph(manifest("title: T\ndata:\n  graph:\n    types:\n      Concept: { name: string }\n      StrutRun: { x: string }\n"), undefined);
     assert.equal(reserved.errors.length, 2);
     assert.match(reserved.errors[0]!, /^app\.yaml: data\.graph\.types\.Concept: Concept is the workspace's notes/);

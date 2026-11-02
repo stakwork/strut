@@ -65,7 +65,7 @@ export const JOB_CATEGORY = "job";
 export const JOB_DESCRIPTION =
   "A job turn: an agent working in the job's directory with a thread that remembers every earlier turn (job/dir → agent with session: {{ input.session || $job }} → pack). " +
   "Launch it with `job` on the launch — POST /workflows/job/run { job, input: { prompt }, callback } — and the same job again to revise the same files; without a job it is a one-shot in the run's artifact directory. " +
-  "Input: { prompt, workspace? (the slug of the workspace this strut belongs to — the agent's message starts with it; another workspace is a peer, @<slug>), session? (the agent's thread: the job id unless given), repos? (repository URLs checked out into the job's directory, kept turn to turn) }. " +
+  "Input: { prompt, workspace? (the slug of the workspace this strut server belongs to — the agent's message starts with it; another workspace is a peer, @<slug>), session? (the agent's thread: the job id unless given), repos? (repository URLs checked out into the job's directory, kept turn to turn) }. " +
   "Output: { text, artifacts: [{ id, kind?, title, label?, summary?, path | url | content }], ask?: { message }, cost, session }; the callback carries `artifacts` resolved to links. " +
   "params.tools (registry steps granted on top of the agent's built-ins: graph reads; meta/list-workflows, get-workflow, run-workflow, get-run; strut/run-workflow — a workflow on a peer; job/list, get, read — earlier jobs) and params.system are the evolvable surface; the host adds its own through createStrut({ job }).";
 

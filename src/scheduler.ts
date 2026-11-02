@@ -97,7 +97,7 @@ export interface Automations {
   tick(): Promise<void>;
 }
 
-const NO_SECRETS = "callback: this strut has no secret store to keep its URL in";
+const NO_SECRETS = "callback: this strut server has no secret store to keep its URL in";
 
 /** How many of a workflow's newest runs a lookup reads before giving up. */
 const SCAN_LIMIT = 100;

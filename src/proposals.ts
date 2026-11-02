@@ -259,7 +259,7 @@ export function proposalsCapability(
 export function requireApproval(type: string, ctx: StepContext): void {
   if (ctx.proposal || !proposalsOf(ctx.services)?.hostGates?.(type)) return;
   throw new Error(
-    `${type} needs the person's approval on this strut (its host gates it), and this call is not an approved proposal. ` +
+    `${type} needs the person's approval on this strut server (its host gates it), and this call is not an approved proposal. ` +
       `Ask for it as a tool call the person approves; a workflow step, meta/run-step or a launch with \`peer\` cannot reach it.`,
   );
 }
@@ -310,7 +310,7 @@ export async function proposeCall(
   opts: ProposeCallOptions = {},
 ): Promise<{ proposal: string; status: ProposalStatus; step: string; title: string; url: string }> {
   const cap = proposalsOf(ctx.services);
-  if (!cap) throw new Error(`agent: "${stepType}" is in approve: but this strut has no proposals capability (ctx.services.proposals).`);
+  if (!cap) throw new Error(`agent: "${stepType}" is in approve: but this strut server has no proposals capability (ctx.services.proposals).`);
   const key = journalKeyOf(ctx);
   const prior = key ? (ctx.journal?.[key] as { proposal?: unknown } | undefined) : undefined;
   if (prior && typeof prior.proposal === "string") {
@@ -430,7 +430,7 @@ export async function decideProposal(root: string, id: string, decision: Decisio
   if (rec.status !== "pending" && rec.status !== "failed") return { status: 409, body: { error: `Proposal "${id}" is ${rec.status}`, proposal: rec } };
   // `stepFor` first: a name it answers for is never a registry step's.
   const def = (await deps.stepFor?.(rec.step)) ?? deps.registry[rec.step];
-  if (!def) return { status: 400, body: { error: `The step "${rec.step}" is not in this strut's registry; the proposal cannot be applied.`, proposal: rec } };
+  if (!def) return { status: 400, body: { error: `The step "${rec.step}" is not in this strut server's registry; the proposal cannot be applied.`, proposal: rec } };
   const merged = decision.input && typeof rec.input === "object" && rec.input !== null ? { ...(rec.input as object), ...decision.input } : decision.input ?? rec.input;
   let input: unknown;
   try {

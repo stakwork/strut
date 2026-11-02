@@ -61,7 +61,7 @@ export function requireAutomations(services: unknown): AutomationStepsCapability
   const cap = (services as { automations?: AutomationStepsCapability } | undefined)?.automations;
   if (!cap?.api) throw new Error("automation/* steps need strut's automations (ctx.services.automations); the standard strut server provides them.");
   if (!cap.workflow) {
-    throw new Error("automation/* steps: this strut names no workflow for them to schedule (createStrut({ automation: { workflow } }), or STRUT_HOST_CONFIG's \"automation\").");
+    throw new Error("automation/* steps: this strut server names no workflow for them to schedule (createStrut({ automation: { workflow } }), or STRUT_HOST_CONFIG's \"automation\").");
   }
   return cap as AutomationStepsCapability & { workflow: string };
 }
@@ -85,10 +85,10 @@ export async function approval(
   grant?: Record<string, unknown>,
 ): Promise<{ ok: true } | { output: unknown }> {
   if (!cap.approve) {
-    throw new Error("automation/* steps: this strut has no approval step (automation.approve), so they cannot change automations.");
+    throw new Error("automation/* steps: this strut server has no approval step (automation.approve), so they cannot change automations.");
   }
   const def = ctx.registry?.[cap.approve];
-  if (!def) throw new Error(`automation/* steps: the approval step "${cap.approve}" is not in this strut's registry.`);
+  if (!def) throw new Error(`automation/* steps: the approval step "${cap.approve}" is not in this strut server's registry.`);
   const out = await def.run(def.input.parse({ intent, ...(grant ? { grant } : {}) }), { ...ctx, path: `${ctx.path}/approve` });
   if (stopOf(out)) return { output: withStop({ changed: false, waiting: out }) };
   const answer = (out ?? {}) as { approved?: unknown; status?: unknown; error?: unknown };
@@ -174,7 +174,7 @@ export function cardGrant(
   automation: string,
   name: string,
 ): Record<string, unknown> | undefined {
-  if (grant && !cap.grants) throw new Error("automation/* steps: this strut's approval step takes no grant; leave grant out.");
+  if (grant && !cap.grants) throw new Error("automation/* steps: this strut server's approval step takes no grant; leave grant out.");
   return cap.grants ? { ...grant, automation, name } : undefined;
 }
 
@@ -243,5 +243,5 @@ export const promptField = z
 export const grantField = z
   .record(z.string(), z.unknown())
   .optional()
-  .describe("Only when your instructions say this strut takes one: what the automation may do beyond its prompt, shown to the person to allow with it. Leave out otherwise.");
+  .describe("Only when your instructions say this strut server takes one: what the automation may do beyond its prompt, shown to the person to allow with it. Leave out otherwise.");
 export { triggerSchema };

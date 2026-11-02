@@ -1078,7 +1078,7 @@ export class BrowserService {
     sink: ShotSink,
   ): Promise<AppLooked> {
     const strut = this.strut;
-    if (!strut) throw new Error("browser: this strut serves no UI to host an app in (createStrut hands it one when serveUi is on)");
+    if (!strut) throw new Error("browser: this strut server serves no UI to host an app in (createStrut hands it one when serveUi is on)");
     return this.inOwnSession(runId, async (key) => {
       const page = await this.page(key, { viewport: input.viewport });
       await page.route(`${STRUT_ORIGIN}/**`, (route) => answerFromStrut(route, strut, input.actor));

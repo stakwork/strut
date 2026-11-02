@@ -127,7 +127,7 @@ function YourStrut(props: { target: string | null; onChange: (url: string | null
   };
   if (!editing) {
     return (
-      <button class="btn btn-sm store-strut" onClick={() => { setDraft(props.target ?? ""); setEditing(true); }} title={props.target ? `Install links open ${props.target}` : "Name your strut once: Install then opens it"}>
+      <button class="btn btn-sm store-strut" onClick={() => { setDraft(props.target ?? ""); setEditing(true); }} title={props.target ? `Install links open ${props.target}` : "Name your strut server once: Install then opens it"}>
         {props.target ? `Your strut · ${props.target.replace(/^https?:\/\//, "")}` : "Your strut"}
       </button>
     );
@@ -153,23 +153,23 @@ function InstallButton(props: { pkg: string; target: string | null; link: (pkg: 
   if (props.target && !asking) {
     return (
       <a class={`btn btn-primary${props.big ? " btn-lg" : " btn-sm"}`} href={installLink(props.target, props.link(props.pkg))} title={`Opens ${props.target} on this package. The install is checked there against the publisher's own catalog.`}>
-        Install into your strut
+        Install into your strut server
       </a>
     );
   }
   return (
     <div class="store-install-ask">
       {!asking ? (
-        <button class={`btn btn-primary${props.big ? " btn-lg" : " btn-sm"}`} onClick={() => setAsking(true)}>Install into your strut</button>
+        <button class={`btn btn-primary${props.big ? " btn-lg" : " btn-sm"}`} onClick={() => setAsking(true)}>Install into your strut server</button>
       ) : (
         <form class="store-strut-form" onSubmit={(e) => { e.preventDefault(); const url = normalizeStrutUrl(draft); if (url) { props.onNeedStrut(url); open(url); } }}>
-          <input type="text" value={draft} placeholder="Where is your strut? http://localhost:3000" onInput={(e) => setDraft((e.target as HTMLInputElement).value)} aria-label="Your strut's address" autoFocus />
+          <input type="text" value={draft} placeholder="Where is your strut server? http://localhost:3000" onInput={(e) => setDraft((e.target as HTMLInputElement).value)} aria-label="Your strut server's address" autoFocus />
           <button class="btn btn-sm btn-primary" type="submit" disabled={!normalizeStrutUrl(draft)}>Open</button>
           <button class="btn btn-sm" type="button" onClick={() => setAsking(false)}>Cancel</button>
         </form>
       )}
       <div class="store-paste">
-        Or, in your strut's Packages dialog, find <code>{props.pkg}</code> <CopyButton value={props.pkg} label="Copy the package name" />
+        Or, in your strut server's Packages dialog, find <code>{props.pkg}</code> <CopyButton value={props.pkg} label="Copy the package name" />
       </div>
     </div>
   );
@@ -177,7 +177,7 @@ function InstallButton(props: { pkg: string; target: string | null; link: (pkg: 
 
 function CanChips(props: { can: api.PackageCan; title?: string }) {
   return (
-    <span class="store-can" title={props.title ?? "What running it reaches: spends = a model is called; acts = a step changes something outside the run; code = TypeScript runs in your strut; reads = none of those"}>
+    <span class="store-can" title={props.title ?? "What running it reaches: spends = a model is called; acts = a step changes something outside the run; code = TypeScript runs in your strut server; reads = none of those"}>
       {canWords(props.can).map((w) => <span key={w} class={`badge store-can-${w}`}>{w}</span>)}
     </span>
   );
@@ -209,7 +209,7 @@ function Browse(props: { q?: string; card: api.IndexCard | undefined; go: (v: St
     <>
       {!props.q && (
         <section class="store-hero">
-          <h1>Apps, workflows and knowledge for your strut</h1>
+          <h1>Apps, workflows and knowledge for your strut server</h1>
           <p>
             Each package is a publisher's own, signed with its key; this index is the phone book that lists them.
             {hits && concepts && ` ${count(apps.length, "app")}, ${count(hits.length, "package")}, ${count(concepts.length, "Concept page")}, ${count(publishers.length, "publisher")}.`}
@@ -588,7 +588,7 @@ function ConceptPage(props: { name: string; target: string | null; link: (pkg: s
         <aside class="store-package-aside">
           <section>
             <h3>Have it in your graph</h3>
-            <div class="auto-hint">Installing the package puts this page, and the tree it sits in, under your strut's Concepts — where the builder and the job agents read it.</div>
+            <div class="auto-hint">Installing the package puts this page, and the tree it sits in, under your strut server's Concepts — where the builder and the job agents read it.</div>
             {first && <InstallButton pkg={first.package} target={props.target} link={props.link} onNeedStrut={props.onNeedStrut} />}
           </section>
           <section>

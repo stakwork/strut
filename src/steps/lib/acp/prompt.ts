@@ -119,7 +119,7 @@ export default defineStep({
       .describe(`a preset (${Object.keys(ACP_PRESETS).join(", ")}) or the command line of any ACP agent`),
     cwd: z.string().min(1).describe("absolute path of the folder the agent works in"),
     prompt: z.string().min(1).describe("what to do this turn"),
-    session: z.string().optional().describe("strut's name for the thread; the same name next turn continues it"),
+    session: z.string().optional().describe("This strut server's name for the thread; the same name next turn continues it"),
     mode: z.enum(["plan", "edit", "auto"]).default("edit").describe("plan: look only. edit: edit files; commands only inside the agent's own sandbox. auto: anything"),
     model: z.string().optional().describe("a model id the agent offers (session/set_model); ignored when it doesn't"),
     env: z

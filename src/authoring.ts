@@ -618,7 +618,7 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
   // Under a reach the AI writes workflows, never step code: a step is code
   // in this process, past any scope (src/reach.ts).
   const noStepCode = (type: string) =>
-    `Nothing was published — "${type}": this strut does not let the AI publish step code (builder.reach). Build the workflow from the steps it has.`;
+    `Nothing was published — "${type}": this strut server does not let the AI publish step code (builder.reach). Build the workflow from the steps it has.`;
 
   return {
     async listSteps(path = "steps") {
@@ -699,7 +699,7 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
       // With a reach, a test run is held to it as a publish is: the model
       // wrote the config (src/reach.ts).
       if (deps.reach && !stepInReach(baseType(type), deps.reach)) {
-        return { error: `Nothing was run — "${type}" is outside what this strut lets the AI run (builder.reach).` };
+        return { error: `Nothing was run — "${type}" is outside what this strut server lets the AI run (builder.reach).` };
       }
       if (args.cassette && !deps.dataDir) {
         return { error: "Cassette record/replay is unavailable (no local data dir configured)." };

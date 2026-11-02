@@ -158,7 +158,7 @@ export function apiKeyMatches(authorization: string | undefined, queryKey?: stri
  */
 export type Scope = "full" | "peer" | "peer:person";
 
-/** Is this a peer's request — a strut's, or a person's through one? */
+/** Is this a peer's request — a strut server's, or a person's through one? */
 export function isPeerScope(scope: Scope | undefined): boolean {
   return scope === "peer" || scope === "peer:person";
 }
