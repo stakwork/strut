@@ -431,9 +431,9 @@ GATEWAY_IMAGE=stakgraph-gateway:v1.6.2 docker compose -f docker-compose.yml \
 | `STRUT_CHAT_MODEL`   | `claude-sonnet-5-5` | Default model for the AI-builder chat — any aieo name (alias, id, or `provider/id`; OpenRouter as `openrouter/org/model`). The flyout's picker overrides it per chat |
 | `STRUT_CHAT_MAX_STEPS` | `100`        | Max agent tool-call iterations per chat turn |
 | `STRUT_CHAT_RUN_WAIT_MS` | `60000`    | How long the chat's `run_workflow` waits before a run auto-detaches (dispatch mode) |
-| `STRUT_CHAT_TOOL_RESULT_MAX_CHARS` | `50000` | Per-string CEILING on the builder's tool RESULTS, applied where the result is made — the model reads the capped result in the turn that ran the tool, and later turns replay the same bytes (history stays append-only, so the prompt cache holds). The uncapped output is in the chat's `events.jsonl`. The cap in force is this bounded by the window's headroom below the compaction mark (`STRUT_COMPACT_AT`): 50k on a 1M window, 16k on 200k. `0` removes the ceiling; the window's cap still applies while compaction is on. The builder's DOCUMENT reads — `get_workflow`, `get_step` (`DOCUMENT_TOOLS`, `chat-store.ts`), what `edit_workflow` / `edit_step` work from — are bound by the window's headroom alone, never this ceiling (176k on a 1M window), and are never re-cut on replay. |
+| `STRUT_CHAT_TOOL_RESULT_MAX_CHARS` | `50000` | CEILING on one of the builder's tool RESULTS — each string in it, and the result as a whole, as the model reads it (a query's thousands of short rows are cut to their first and last, a `{ omitted, from, to }` gap between: `capToolOutput`) — applied where the result is made — the model reads the capped result in the turn that ran the tool, and later turns replay the same bytes (history stays append-only, so the prompt cache holds). The uncapped output is in the chat's `events.jsonl`. The cap in force is this bounded by the window's headroom below the compaction mark (`STRUT_COMPACT_AT`): 50k on a 1M window, 16k on 200k. `0` removes the ceiling; the window's cap still applies while compaction is on. The builder's DOCUMENT reads — `get_workflow`, `get_step` (`DOCUMENT_TOOLS`, `chat-store.ts`), what `edit_workflow` / `edit_step` work from — are bound by the window's headroom alone, never this ceiling (176k on a 1M window), and are never re-cut on replay. |
 | `STRUT_CHAT_MAX_AUTO_TURNS` | `10`    | Max consecutive notification-triggered chat turns before the chat parks (runaway guard) |
-| `STRUT_COMPACT_AT` | `0.9` | Compaction (plans/compaction.md): the share of the model's window past which the builder chat and the `agent` step fold everything the model has seen into its own summary and go on from it — one APPENDED `[compaction]` user message and a replay boundary (`ChatMeta.replayFrom`; `replayFrom` on an agent session's turn line). Nothing is edited: the whole history stays, the read endpoints serve it, and the prompt cache and prefix-bound thinking blocks hold. Also sizes the per-result caps: one `bash` / `view` / builder-tool result may be at most `((1 − at) × window − 12k) × 2` chars (the 12k reserves the summary and one generation), under each surface's own ceiling. `1` disables it: the provider's limit and `session_full:` are the backstops. |
+| `STRUT_COMPACT_AT` | `0.9` | Compaction (plans/compaction.md): the share of the model's window past which the builder chat and the `agent` step fold everything the model has seen into its own summary and go on from it — one APPENDED `[compaction]` user message and a replay boundary (`ChatMeta.replayFrom`; `replayFrom` on an agent session's turn line). Nothing is edited: the whole history stays, the read endpoints serve it, and the prompt cache and prefix-bound thinking blocks hold. Also sizes the per-result caps: one `bash` / `view` / builder-tool / agent tool-step result may be at most `((1 − at) × window − 12k) × 2` chars (the 12k reserves the summary and one generation), under each surface's own ceiling. `1` disables it: the provider's limit and `session_full:` are the backstops. |
 | `EXA_API_KEY`        | (unset)        | Exa key for `web_search` on non-anthropic providers (agent step + AI builder), and on EVERY provider when the call is routed through the Mothership gateway (`createWebTools` `routed` — Bifrost cannot round-trip Anthropic's server-executed tools); anthropic called directly uses its native tool. Without it a routed call has `web_fetch` only. Store or env, like provider keys |
 | `STRUT_SCHEDULER`   | `1`            | The automations tick loop (plans/automations.md): fires scheduled workflows from inside this process, every 15 s. `0` disables it (or `createStrut({ scheduler: false })`) for a host that owns the clock and calls `strut.automations.fire` — automations can still be stored, previewed and run on demand. Single-process by design: two strut processes over one workspace would each fire. |
 | `STRUT_WORKDIR_TTL_DAYS` | `7` | How long a job (`job/dir`, `git/checkout` with `workdir`) may sit unused before its REPOSITORIES are removed — its other files are kept, and a job with nothing left goes with its record. Swept by the next `job/dir` or kept checkout — no timer. `0` keeps them forever. |
@@ -1786,12 +1786,19 @@ the same steps are an agent's tools (`agentTools: ["browser/*"]`), and
   invalidates every later block — a 400 on accounts enforced for it. So
   (1) tool results are capped WHERE THEY ARE MADE: `capToolResults`
   (`ai/tools.ts`) wraps every builder tool's `toModelOutput` with
-  `capToolOutput` (per string, marker included, idempotent; env
+  `capToolOutput` (each string, then the whole result as the model reads
+  it — long arrays kept head + tail with a `{ omitted, from, to }` gap,
+  strings cut shorter, by the largest factor that fits; idempotent; env
   `STRUT_CHAT_TOOL_RESULT_MAX_CHARS`, default 50000, `0` disables), so
   the model reads the capped result in its own turn and `messages.jsonl`
   records exactly that (the uncapped output is in `events.jsonl`);
-  `truncateToolMessages` applies the same cap on replay, a no-op except
-  for histories recorded before the cap moved. The two DOCUMENT reads
+  `truncateToolMessages` applies the cap on replay: to a result the model
+  READ (an assistant message came after it) only its strings, a no-op
+  except for histories recorded before the cap moved; to a result nothing
+  came after (its request refused) the whole cap, since nothing is bound
+  to its bytes — the way out for a chat whose last result was over the
+  window (swarm38, 2026-11-02: 5,622 rows in one `run_workflow`, every
+  later turn `prompt is too long`). The two DOCUMENT reads
   (`get_workflow`, `get_step` — `DOCUMENT_TOOLS`) get the window's headroom
   with no ceiling at the source (`AiDeps.documentMaxChars`) and are skipped
   on replay: a 50k workflow is read whole, and `edit_workflow` /
@@ -2224,11 +2231,12 @@ the same steps are an agent's tools (`agentTools: ["browser/*"]`), and
   system, tools and provider options, pushes the summary onto the record
   and continues from it alone, with one nested `compaction` event beside
   the tool calls (`<agentPath>/NNN-compaction`) and `compactions: n` on the
-  output. One `bash` / `view` result is capped at the window's headroom
-  below the mark (`BASH_MAX_CHARS` is the ceiling). With compaction off
-  (`STRUT_COMPACT_AT=1`) a thread over 90% is refused before any model
-  call (`session_full:`). An `agent` called as a TOOL cannot take a
-  session: the model would be choosing the id.
+  output. One `bash` / `view` result, and what the model reads of one
+  `agentTools` step's (`capToolOutput`: each string, then the whole), is
+  capped at the window's headroom below the mark (`BASH_MAX_CHARS` is the
+  ceiling). With compaction off (`STRUT_COMPACT_AT=1`) a thread over 90%
+  is refused before any model call (`session_full:`). An `agent` called as
+  a TOOL cannot take a session: the model would be choosing the id.
   **The files** follow through `workdir` on `git/checkout`, a name of its
   own (usually the job, `"{{ $job }}"`): the working copy lives inside
   that job's directory, `<dataDir>/jobs/<name>/<repo>` — the same path
@@ -2719,7 +2727,12 @@ the same steps are an agent's tools (`agentTools: ["browser/*"]`), and
     plus one file part per entry, while templates, the event log and
     `run.json` see only the plain output (non-enumerable; `maskDeep` carries
     it). The recorded session (`step.end.messages`, the transcript endpoint)
-    keeps what the model saw, file parts included. On a chat-completions
+    keeps what the model saw, file parts included. What the model reads
+    of any tool-step's result is capped where it is made, at the cap
+    `bash` gets (`capToolOutput`, the builder's: each string, then the
+    whole result, long arrays kept head + tail with a `{ omitted, from, to
+    }` gap; file parts left whole): before 2026-11-02 nothing bounded it
+    but the 8 MB output cap. On a chat-completions
     model (`openai.chat`: xai and google routed through the gateway) the
     AI SDK would send a tool result as one string, the image as base64 text,
     so `resolveModel` wraps that model to move the images to a user message

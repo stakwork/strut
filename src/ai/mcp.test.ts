@@ -120,11 +120,10 @@ describe("the builder over MCP", () => {
     const capped = await connect({ ...deps, toolResultMaxChars: 300 });
     const step = await capped.callTool({ name: "get_step", arguments: { type: "http" } });
     assert.ok(!step.isError);
-    // The cap is per string (capToolOutput): the description is cut, the marker in it.
+    // The cap is on the whole result (capToolOutput): a step's schemas keep
+    // no structure in 300 chars, so it is the head of the JSON, the marker in it.
     assert.ok(text(step).includes("[TRUNCATED:"), "the cap's marker, as the chat reads it");
-    const strings: string[] = [];
-    JSON.parse(text(step), (_k, v) => (typeof v === "string" && strings.push(v), v));
-    assert.ok(strings.every((s) => s.length <= 300), `longest: ${Math.max(...strings.map((s) => s.length))}`);
+    assert.ok(text(step).length <= 300, String(text(step).length));
   });
 
   it("a generator tool's earlier yields are progress notifications; its last yield is the result", async () => {

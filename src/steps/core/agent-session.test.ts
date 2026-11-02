@@ -685,6 +685,34 @@ describe("agent sessions", () => {
     }
   });
 
+  it("a tool-step's result is capped as a whole at the same headroom: thousands of short rows to their first and last", async () => {
+    const rows = defineStep({
+      type: "dev/rows",
+      description: "Every row.",
+      input: z.object({}),
+      output: z.any(),
+      async run() {
+        return { rows: Array.from({ length: 5000 }, (_, i) => ({ id: `row-${i}`, status: "open" })), total: 5000 };
+      },
+    });
+    const s = await serve([call("toolu_1", "dev_rows", {}), answer("toolu_2", "saw them")]);
+    try {
+      const out = await run({ model: "claude-haiku-4-5", toolFilter: ["none"], agentTools: ["dev/rows"] }, { registry: { "dev/rows": rows } });
+      assert.equal(out.result, "saw them");
+      const sent = (s.bodies[1].messages[2].content as any[]).find((b) => b.type === "tool_result");
+      const text = typeof sent.content === "string" ? sent.content : sent.content.map((b: any) => b.text).join("");
+      assert.ok(text.length <= 16_000, `${text.length} chars`);
+      const read = JSON.parse(text);
+      assert.equal(read.total, 5000);
+      const gap = read.rows.find((r: object) => "omitted" in r);
+      assert.ok(gap && gap.omitted > 4000, JSON.stringify(gap));
+      assert.deepEqual(read.rows[0], { id: "row-0", status: "open" });
+      assert.deepEqual(read.rows.at(-1), { id: "row-4999", status: "open" });
+    } finally {
+      s.close();
+    }
+  });
+
   // ── a tool that ends the turn ────────────────────────────────────────────
 
   it("a tool output marked withStop ends the turn after that round: one answer turn with inert tools, no nudge", async () => {

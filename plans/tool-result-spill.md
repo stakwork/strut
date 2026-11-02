@@ -12,6 +12,24 @@
 > alone (176k on 1M, never the 50k ceiling; `DOCUMENT_TOOLS`) and never
 > re-cut on replay. The exemption below — an ERROR past the budget instead
 > of a cut — is superseded: with `edits`, a cut document is still editable.
+>
+> **2026-11-02: problem 1 fixed, without the spill.** Chat `mvz2uo5h-vsp3ul`
+> on swarm38 put 5,622 rows (2.4M chars) of one `run_workflow` into a
+> request: `prompt is too long: 1734056 tokens` on that turn and on every
+> turn after it, while the meter still read the last call that went
+> through, 145k. `capToolOutput` (`src/chat-store.ts`) now bounds the
+> result as a whole, measured as this plan says: over the budget, its
+> strings and arrays are cut by the LARGEST factor that fits (arrays head +
+> tail with the `{ omitted, from, to }` gap below), not the fixed levels,
+> because with no file to read past the cut, the preview is all the model
+> gets. No envelope, no spill yet; when the spill lands, the levels and the
+> envelope come with it. Replay gained one rule this plan did not have:
+> `truncateToolMessages` gives the whole cap to a result no assistant
+> message came after (its request refused, so nothing is bound to its
+> bytes), and keeps a read one as recorded. Problem 3 is fixed the same way:
+> the `agent` step caps what the model reads of each `agentTools` result at
+> `resultCap` (176k on 1M, 16k on 200k), where it is made. Problem 2, the
+> spill, is the part of this plan still to build.
 
 ## Problem
 
