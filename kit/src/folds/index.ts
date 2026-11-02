@@ -1,7 +1,8 @@
 /** The FOLDS (plans/apps.md §3): pure functions from what strut serves — a
  *  run's event log, an agent's transcript, a step's accessed nodes, an
  *  artifact path, the graph a run walked, a run's agents as a cascade, the
- *  work products a run declares — to what a view draws. One copy: strut's own UI (`web/`) imports them as
+ *  work products a run declares, a graph walk hop by hop — to what a view
+ *  draws. One copy: strut's own UI (`web/`) imports them as
  *  `@strut/kit/folds`, `strut/views` and any app from `@strut/kit`. No
  *  React, no DOM, nothing from the server. */
 export * from "./run-overview.js";
@@ -13,3 +14,5 @@ export * from "./document.js";
 export * from "./agent-trace.js";
 export * from "./run-graph/index.js";
 export * from "./work-products.js";
+export * from "./replay.js";
+export * from "./walk/index.js";

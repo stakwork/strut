@@ -14,16 +14,11 @@ import {
   Eye,
   ListTree,
   Loader2,
-  Pause,
   PenLine,
-  Play,
-  SkipBack,
-  SkipForward,
   X,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Slider } from "@/components/ui/slider";
 import { cn } from "@/lib/utils";
 import {
   ancestorsOf,
@@ -39,7 +34,9 @@ import {
   nodeText,
   parseQualifiedRef,
   projectWithLaunches,
+  replayDelay,
   replayFrame,
+  replayTime,
   runGraphHops,
   runGraphLinks,
   scopeCalls,
@@ -63,6 +60,7 @@ import {
 import { isProvenanceType, runGraphColorMap } from "../../lib/colors";
 import { errorText } from "../../lib/format";
 import { getNodes } from "../../lib/graph";
+import { ReplayBar } from "../ReplayBar";
 import { RunGraphNodeReader } from "./NodeReader";
 import { RunGraphCanvas, type RunGraphCanvasNode } from "./RunGraphCanvas";
 import { RunGraphReader } from "./reader";
@@ -71,8 +69,6 @@ import { RunGraphReader } from "./reader";
 const LIVE_POLL_MS = 10_000;
 /** A run that touched fewer nodes than this opens the runs it launched on its own. */
 const AUTO_OPEN_BELOW = 10;
-/** One call per tick when playing. */
-const PLAY_INTERVAL_MS = 800;
 
 /** Width the legend takes at the right of the canvas: `w-52` and its margin. */
 const LEGEND_INSET = 232;
@@ -691,13 +687,19 @@ export function RunGraph({
     setExpanded((prev) => (prev.has(root) ? prev : new Set(prev).add(root)));
   }, [tree]);
 
+  // The replay keeps the run's own pace between calls (the kit's clock: a
+  // readable least, an idle stretch cut short), times the speed picked.
+  const [speed, setSpeed] = useState(1);
   useEffect(() => {
-    if (!playing) return;
-    const timer = setInterval(() => {
+    if (!playing || current === null) return;
+    const next = calls[current + 1];
+    const from = replayTime(calls[current]?.startedAt);
+    const to = replayTime(next?.startedAt);
+    const timer = setTimeout(() => {
       setStep((s) => (s === null || s + 1 >= calls.length ? null : s + 1));
-    }, PLAY_INTERVAL_MS);
-    return () => clearInterval(timer);
-  }, [playing, calls.length]);
+    }, replayDelay(from !== null && to !== null ? to - from : null, speed));
+    return () => clearTimeout(timer);
+  }, [playing, current, calls, speed]);
 
   // Playing starts on a call, so the whole run while playing is the end of the replay.
   useEffect(() => {
@@ -849,48 +851,22 @@ export function RunGraph({
     <div className={cn("flex flex-col", fill && "h-full min-h-0")} data-testid="run-graph">
       <div className="flex flex-col gap-2 border-b px-4 py-3">
         <div className="flex flex-wrap items-center gap-3">
-          <div className="flex items-center gap-1">
-            <Button
-              variant="outline"
-              size="icon"
-              className="h-7 w-7"
-              aria-label="Previous call"
-              disabled={calls.length === 0 || current === 0}
-              onClick={() => pick(current === null ? last : current - 1)}
-            >
-              <SkipBack className="h-3.5 w-3.5" />
-            </Button>
-            <Button
-              variant="outline"
-              size="icon"
-              className="h-7 w-7"
-              aria-label={playing ? "Pause" : "Play"}
-              disabled={calls.length === 0}
-              onClick={togglePlay}
-              data-testid="run-graph-play"
-            >
-              {playing ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
-            </Button>
-            <Button
-              variant="outline"
-              size="icon"
-              className="h-7 w-7"
-              aria-label="Next call"
-              disabled={current === null}
-              onClick={() => (current === null || current >= last ? showAll() : pick(current + 1))}
-            >
-              <SkipForward className="h-3.5 w-3.5" />
-            </Button>
-          </div>
-          <Slider
-            className="min-w-40 flex-1"
-            min={0}
-            max={calls.length}
-            step={1}
-            value={[current ?? calls.length]}
-            onValueChange={([value]) => (value >= calls.length ? showAll() : pick(value))}
-            aria-label="Replay position"
-            data-testid="run-graph-slider"
+          <ReplayBar
+            className="min-w-72 flex-1"
+            position={current ?? calls.length}
+            total={calls.length}
+            playing={playing}
+            onPlay={togglePlay}
+            onPause={togglePlay}
+            onStepBack={() => pick(current === null ? last : current - 1)}
+            onStepForward={() => (current === null || current >= last ? showAll() : pick(current + 1))}
+            canStepBack={current !== 0}
+            canStepForward={current !== null}
+            onSeek={(value) => (value >= calls.length ? showAll() : pick(value))}
+            speed={speed}
+            onSpeed={setSpeed}
+            unit="call"
+            {...(live && !settled ? { live: { following: current === null, onLive: showAll } } : {})}
           />
           <div className="flex items-center gap-1">
             {(Object.keys(ACCESS_LABEL) as RunGraphAccess[]).map((access) => (
