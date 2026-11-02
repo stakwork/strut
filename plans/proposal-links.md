@@ -10,6 +10,8 @@
 > `sphinx/src/msg/`). Companion to `proposals.md` (the record, the gate,
 > decide) and `chained-orchestrators.md` §2 (the person token).
 >
+> **Amended again (2026-11-02):** §3 now points at the sphinx plan and its type-38 mechanism; the `contact_pubkey` sketch it held was wrong (the uuid). The halves on Hive and sphinx are built.
+>
 > **Amended:** the first draft marked a proposal `shared` before another
 > person could read it, and asked who in a tribe may decide. Review found
 > the flag guards nothing strut holds (§"Considered") and the owner ruled
@@ -171,38 +173,42 @@ readable here".
   direct decide on strut would not. With §3, buttons for a member whose
   pairing is the proposal's actor.
 
-## 3. Item two: the tribe tells Jamie who is speaking (later, sphinx)
+## 3. Item two: the tribe tells Jamie who is speaking (built, sphinx)
 
 Not part of this plan's PRs. Needed so that each asker's turn runs on
 their own resources — their GitHub token (actor secrets), their
-delegation — and so their proposals are theirs. Its own plan belongs in
-the sphinx repo beside `docs/sovereign-tribes.md`; hive's
-`docs/plans/jamie-in-tribes.md` open question 6 points at it. What was
-settled here, so the two items fit:
+delegation — and so their proposals are theirs. Its plan is sphinx's
+`docs/tribe-sender-identity.md` (stakwork/sphinx#417, #418), which
+supersedes the sketch this section first held. What it settled, and what
+is built (2026-11-02):
 
-- **The server tells the bot, and only the bot.** When the owner has
-  granted it (a tribe command), the tribe server puts the sender's pubkey
-  in `contact_pubkey` on the copy sent to Jamie's member record. The key
-  already exists and every client parses it (`ser.rs` `deserialize_sender`
-  refuses an unknown key as `bad key`, so a NEW key would break every old
-  client); the room's copies are unchanged, so the server's anonymity
-  property holds; the cost is a second signature in the fan-out. The
-  daemon passes `sender` to Hive's messages route.
-- **Hive** maps pubkey → `User.lightningPubkey` → `resolveStrutActor` and
-  launches the turn as that actor with their delegation ensured; decides
-  by reply as the identified replier, matched to the proposal's actor.
-  The lookup is a decrypt-and-compare scan today, so it needs a hashed
-  column. An unidentified sender (no pubkey, or one no member holds) runs
-  as the linker, as now.
-- **Peel** registers its Sphinx pubkey with Hive at pairing (a signature),
-  so a paired Peel user is identified without a settings step; grants
-  Jamie the sender view as part of linking; shows buttons to the member
-  whose pairing is the proposal's actor.
-- Considered: a signed member list bound by alias (`ListMembers` exists;
-  the server keeps aliases unique per tribe at forward time, but a change
-  between list and message misattributes — a fallback for servers not yet
-  upgraded); Peel signing its own mentions (Peel users only, bytes to
-  every reader).
+- **The server tells the members the owner marks, in a message of its
+  own.** The first sketch here put the sender's pubkey in `contact_pubkey`
+  on the bot's copy of each message. That cannot work: a message's uuid is
+  the hash of its bytes, so the bot's copy would carry a uuid the room does
+  not share, and Jamie threads its replies by uuid. Instead the tribe server
+  sends a marked member one extra message after each forward,
+  `MsgType::SentBy = 38` from the tribe key, `{ uuid, pubkey }`; the room's
+  copy is byte for byte what it was. The mark is a flag on the member record
+  (v2), set by the owner's `TribeCmd::ShowSenders`. Built: stakwork/sphinx#419
+  (server, core, sphinx-chat, the daemon's `sender` and the 2 KB metadata
+  refusal from §2), stakwork/sphinx-rs#102 + release v0.8.41 (the
+  `show_senders` bindings Peel calls).
+- **Hive** maps the pubkey through a hashed lookup to a member, runs the
+  turn as them when they can use the linked workspace (their actor, their
+  delegation, their secrets), and decides a reply by the turn's user —
+  anyone else is told whose it is. An unidentified sender runs as the
+  linker, as before. A paired device registers its Sphinx pubkey over the
+  device credential. Built: stakwork/hive#5688.
+- **Peel**, one PR: registers the pubkey at pairing and at each renewal
+  until Hive says the person is identified, marks Jamie as part of
+  linking, hides types 35–38, and gives the member whose actor made a
+  proposal its buttons. In progress on sphinx-rs v0.8.41.
+- Considered there, not taken: a per-recipient copy (the uuid), the
+  per-recipient tag (32 random bytes, 8 a signal), a new `Sender` key (a
+  `bad key` to every old client), a signed member list bound by alias (a
+  change between list and message misattributes), Peel signing its own
+  mentions (Peel users only, bytes to every reader).
 
 ## 4. Not in this plan
 
