@@ -181,7 +181,7 @@ export async function openSnapshot(gz: Buffer): Promise<{ manifest: Manifest; gr
   }
   if (!manifest || typeof manifest.format !== "number") throw new Error("bad_snapshot: no manifest.json with a format");
   if (manifest.format > FORMAT) {
-    throw new Error(`newer_format: this snapshot is format ${manifest.format}; this strut reads format ${FORMAT}. Update strut`);
+    throw new Error(`newer_format: this snapshot is format ${manifest.format}; this strut server reads format ${FORMAT}. Update strut`);
   }
   if (manifest.format !== FORMAT) throw new Error(`bad_snapshot: unknown format ${manifest.format}`);
   if (typeof manifest.migrations === "number" && manifest.migrations > MIGRATION_COUNT) {

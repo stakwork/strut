@@ -46,7 +46,7 @@ const TripletSchema = z.object({
 export default defineStep({
   type: "graph/create-batch-triplet",
   description:
-    "Assert MANY facts into the strut knowledge graph in a single call. " +
+    "Assert MANY facts into the knowledge graph in a single call. " +
     "Each item in `triplets` has the same shape as graph_create_triplet (source/target as ref_id or inline " +
     "node_type+node_data, plus edge_type and optional edge_data/weight). " +
     "A single top-level `namespace` applies to all inline node creation. " +
@@ -63,7 +63,7 @@ export default defineStep({
     allow_scratchpad: z
       .boolean()
       .optional()
-      .describe("Accepted for input parity with jarvis/create-batch-triplet; the strut graph has no scratchpad, so this has no effect."),
+      .describe("Accepted for input parity with jarvis/create-batch-triplet; this graph has no scratchpad, so this has no effect."),
   }),
   output: z.any(),
   async describe(cfg, ctx) {

@@ -20,7 +20,7 @@ const selfShape = z.object({
 export default defineStep({
   type: "strut/list-peers",
   description:
-    "List the OTHER struts this one can call with strut/run-workflow: { self?, peers: [{ id, label?, description?, repos? }] }. " +
+    "List the OTHER workspaces, each on a strut server of its own, that strut/run-workflow can run a workflow on: { self?, peers: [{ id, label?, description?, repos? }] }. " +
     "`self` is THIS workspace (its repos are the code here); `peers` are the others. " +
     "`id` is what strut/run-workflow's `peer` takes (hive registers a workspace by its slug, what a person types as @<slug>); " +
     "`repos` are the repositories that workspace holds, so code that is not here can be found there.",

@@ -564,7 +564,7 @@ export interface NameHit {
  * shapes (above); a backend's `reader` is one of these. The Neo4j reader
  * resolves types through the live Schema meta-graph and routes a search
  * through domain indexes; the Ladybug reader resolves them from the
- * closed registry and reads one FTS and one HNSW index. What one engine
+ * file's Schema rows and reads one FTS and one HNSW index. What one engine
  * cannot answer it says so: a namespace other than `default` or a
  * `registerNamespace` on a Ladybug file is a `GraphReadError`.
  */
@@ -776,7 +776,8 @@ export class Neo4jReader implements GraphReader {
    * node included in `nodes`, like jarvis.
    */
   async neighbors(ref_id: string, p: NeighborsParams = {}): Promise<{ nodes: NodeEnvelope[]; edges: EdgeEnvelope[] }> {
-    const where = [visibility("node"), EDGE_LIVE("r")];
+    // A deleted source shows nothing, though its soft delete may have kept its edges.
+    const where = [NODE_LIVE("source"), visibility("node"), EDGE_LIVE("r")];
     const params: Record<string, unknown> = { ref_id, blocked_statuses: BLOCKED_NODE_STATUSES };
     if (p.node_types?.length) {
       params["imp_node_types"] = (await this.canonicalTypes(p.node_types)).map((n) => n.replace(/[-+/>]/g, ""));

@@ -19,6 +19,7 @@ import { randomUUID } from "node:crypto";
 import type { EngineLike } from "./engine.js";
 import { JARVIS_ONTOLOGY, type OntologyFixture } from "./fixtures/jarvis-ontology.js";
 import { asEngine } from "./neo4j-engine.js";
+import { GraphValidationError } from "./node-writer.js";
 import { schemaStatement } from "./schema-seed.js";
 import { SCHEMA_CORE_PROPERTIES } from "./strut-schemas.js";
 
@@ -28,6 +29,10 @@ export interface OntologySeedReport {
   domains: string[];
   /** Schema statements skipped over an equivalent pre-existing object. */
   skippedSchemaObjects: string[];
+  /** Types the store refused, with why: on a Ladybug file, an attribute
+   *  whose name is already a column of another type (one name, one column
+   *  type) or a grammar type with no column. Never on Neo4j. */
+  skippedSchemas: string[];
 }
 
 const VECTOR_OPTIONS =
@@ -65,9 +70,7 @@ export async function seedJarvisOntology(e: EngineLike, fixture: OntologyFixture
   const engine = asEngine(e);
   const src = engine.schemaSource;
   const bolt = engine.bolt;
-  const report: OntologySeedReport = { createdSchemas: [], createdEdgeSchemas: 0, domains: [], skippedSchemaObjects: [] };
-  // A closed registry (Ladybug) holds no jarvis ontology: nothing to seed.
-  if (src.registry) return report;
+  const report: OntologySeedReport = { createdSchemas: [], createdEdgeSchemas: 0, domains: [], skippedSchemaObjects: [], skippedSchemas: [] };
   // Neo4j DDL only (see schema-seed.ts).
   const ddl = async (cypher: string) => {
     if (!bolt) return;
@@ -81,7 +84,13 @@ export async function seedJarvisOntology(e: EngineLike, fixture: OntologyFixture
     if (await src.schemaRow(type)) continue;
     const props = { ...schema };
     if (typeof props["ref_id"] !== "string") props["ref_id"] = randomUUID();
-    await src.createSchema(props);
+    try {
+      await src.createSchema(props);
+    } catch (e) {
+      if (!(e instanceof GraphValidationError)) throw e;
+      report.skippedSchemas.push(`${type}: ${e.message}`);
+      continue;
+    }
     report.createdSchemas.push(type);
   }
 

@@ -17,7 +17,7 @@ export default defineStep({
   description:
     "Search for PACKAGES — workflows, steps, apps and Concepts someone already built and published — before writing an integration yourself. " +
     "Every word of `query` must match a package's name, description or publisher. Returns { packages, peers, errors }: " +
-    "`packages` from the indexes this strut follows, each { package, publisher, version, digest, description?, license?, requires?, index, detail? } — `detail` is what the release HOLDS, read off its archive: `apps` (each with its title and `can`), the counts of `workflows`, `steps` and `concepts`, the `secrets` it needs, `can: { spends, acts, code }` (whether running it reaches a model call, a step that acts on the world, or code — a reading of its files, not a check) and whether it has a `readme`; package/get reads the whole page. " +
+    "`packages` from the indexes this strut server follows, each { package, publisher, version, digest, description?, license?, requires?, index, detail? } — `detail` is what the release HOLDS, read off its archive: `apps` (each with its title and `can`), the counts of `workflows`, `steps` and `concepts`, the `secrets` it needs, `can: { spends, acts, code }` (whether running it reaches a model call, a step that acts on the world, or code — a reading of its files, not a check) and whether it has a `readme`; package/get reads the whole page. " +
     "`peers` the packages the other struts on file have installed, each { peer, package, version?, digest? }; " +
     "`errors` an index or peer that could not be read. " +
     INSTALL_IS_A_PERSONS_ACT,

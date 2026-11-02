@@ -14,7 +14,7 @@ const EXAMPLE = `- id: unlink
 export default defineStep({
   type: "graph/delete-edge",
   description:
-    "Delete ONE edge from the strut knowledge graph (writes live to the graph; the edge is removed for good, never " +
+    "Delete ONE edge from the knowledge graph (writes live to the graph; the edge is removed for good, never " +
     "hidden — both nodes stay). Locate it by `edge_ref_id` (from create-triplet's output) OR by the triple " +
     "`source_ref_id` + `edge_type` + `target_ref_id`, as graph/edit-edge does. Several edges of that type between " +
     "the two nodes is refused — pass the edge ref_id. To re-home a node under a different parent use graph/move-node " +

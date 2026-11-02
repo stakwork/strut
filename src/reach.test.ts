@@ -145,7 +145,7 @@ describe("builder.reach", () => {
 
   it("the meta surface's test run of one step is held to reach: outside it refused, inside it the AI's frame", async () => {
     const outside = (await authoring.runStep("slack/post-message", { config: { channel: "C1", text: "hi" } })) as { error?: string };
-    assert.match(outside.error ?? "", /outside what this strut lets the AI run/);
+    assert.match(outside.error ?? "", /outside what this strut server lets the AI run/);
     assert.match(((await authoring.runStep("exec", { config: { cmd: "true" } })) as { error?: string }).error ?? "", /builder\.reach/);
 
     const d = join(dir, "exec-reach");

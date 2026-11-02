@@ -1188,13 +1188,14 @@ describe("chat endpoints", () => {
       await settled(chatId);
       assert.equal(fake.calls(), 2, "tool call, then the reply");
 
-      // The turn that ran the tool already read the capped result…
+      // The turn that ran the tool already read the capped result — the
+      // whole of it within the cap, so the string a little shorter…
       const sent = JSON.stringify(fake.bodies[1].messages);
-      assert.ok(sent.includes("[TRUNCATED: 5000 chars, cut to 2000]"), sent.slice(0, 400));
-      assert.ok(!sent.includes("x".repeat(2001)));
+      assert.match(sent, /\[TRUNCATED: 5000 chars, cut to \d+\]/, sent.slice(0, 400));
+      assert.ok(!sent.includes("x".repeat(2000)));
       // …and the transcript holds exactly that.
       const tool = (await chatStore.loadMessages(chatId)).find((m) => m.role === "tool") as any;
-      assert.equal(tool.content[0].output.value.output.length, 2000);
+      assert.ok(JSON.stringify(tool.content[0].output.value).length <= 2000);
 
       // The next turn replays the history byte-identical — system prompt included.
       await strut.app.request("/chat", JSON_({ chatId, message: "again" }));

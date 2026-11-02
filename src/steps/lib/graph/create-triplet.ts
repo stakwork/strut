@@ -20,14 +20,14 @@ function validateTripletSide(
 export default defineStep({
   type: "graph/create-triplet",
   description:
-    "Assert a fact into the strut knowledge graph as DATA: a triplet of source node -[edge]-> target node " +
+    "Assert a fact into the knowledge graph as DATA: a triplet of source node -[edge]-> target node " +
     "(instances, not schema). Writes live to the graph. " +
     "For each side pass EITHER the ref_id of an existing node (preferred — find it with graph_graph_search) " +
     "OR a node type + data object to create/merge the node inline. " +
     "REUSE existing nodes wherever possible: search first, and only create inline when the entity " +
     "genuinely doesn't exist yet — duplicate nodes fragment the graph. " +
     "Node types and the edge type must already exist in the ontology (check with graph_get_ontology); " +
-    "create_schema_if_missing auto-creates a missing edge schema as a last resort. " +
+    "create_schema_if_missing auto-creates a missing edge schema as a last resort (on a LadybugDB file it also creates the edge type's table). " +
     "WILDCARD EDGE MATCHING: when checking source_type/target_type against graph_get_ontology's edges for validity, " +
     'an edge entry with "*" on either side matches any concrete type on that side. ' +
     '"*" is NEVER a valid value to SUPPLY as source_type or target_type — it is a backend sentinel, not a real node type. ' +
@@ -81,7 +81,7 @@ export default defineStep({
     allow_scratchpad: z
       .boolean()
       .optional()
-      .describe("Accepted for input parity with jarvis/create-triplet; the strut graph has no scratchpad, so this has no effect."),
+      .describe("Accepted for input parity with jarvis/create-triplet; this graph has no scratchpad, so this has no effect."),
   }),
   output: z.any(),
   async describe(cfg, ctx) {

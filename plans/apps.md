@@ -90,6 +90,11 @@
 > planned in stakwork/strut#305 and BUILT in #307
 > (`src/apps/peer-host.test.ts` runs them across two struts).
 >
+> **2026-10-28: the Neo4j-only gate is lifted.** Ladybug's ontology is now
+> dynamic (plans/memory-in-workspace-graph.md, ladybug-backend.md §3), so
+> an app's `data.graph` builds and registers on a LadybugDB file as on
+> Neo4j. The rest of this note is history.
+>
 > **Work item 4 is BUILT, on Neo4j only** (2026-10-26). The owner ruled
 > that apps need graph types on Neo4j alone, which settles open question
 > 2: a LadybugDB file keeps its closed registry (ladybug-backend.md
@@ -727,8 +732,13 @@ find it, it goes in the graph" is the rule of thumb.
 
 ### 4.3 The graph
 
-**The app declares its types** in `app.yaml` (`data.graph`, §1.1), on a
-**Neo4j graph only** (ruled 2026-10-26; `src/apps/graph-types.ts`):
+**The app declares its types** in `app.yaml` (`data.graph`, §1.1), on
+either graph — Neo4j or a LadybugDB file (`src/apps/graph-types.ts`; the
+Neo4j-only ruling of 2026-10-26 was lifted 2026-10-28 when Ladybug's
+ontology became dynamic). On Ladybug every attribute is a real column, so
+an attribute name another type already holds as another column type is
+refused at publish; a type's name or alias that already names another
+type is refused on both:
 
 ```yaml
 data:

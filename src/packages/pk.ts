@@ -118,7 +118,7 @@ export async function fetchCatalog(key: string, url: string, opts: { cache: Pack
 
 /** The archive URLs of a release: the strut's archive route beside the
  *  catalog (`host: self`, so the catalog's own query — `public=1` — rides
- *  along), then the release's own `urls`. A catalog that is not a strut's
+ *  along), then the release's own `urls`. A catalog that is not a strut server's
  *  route (an uploaded file) has no route beside it. */
 export function releaseUrls(catalogUrl: string, pkg: string, release: CatalogRelease): string[] {
   const urls: string[] = [];

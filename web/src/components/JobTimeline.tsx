@@ -385,7 +385,7 @@ export function peerArtifactNote(ref: { peer?: string; via?: string; job?: strin
   if (link && isArtifactPath(link)) return `${ref.path} on @${ref.via ?? ref.peer} — read through @${ref.peer}`;
   if (link) return `${link} — on @${ref.peer}`;
   if (ref.content !== undefined) return `Inline, from @${ref.peer}`;
-  return `${ref.path ?? ref.url} on @${ref.peer} — this strut cannot open it yet`;
+  return `${ref.path ?? ref.url} on @${ref.peer} — this strut server cannot open it yet`;
 }
 
 export function fmtCost(c: number): string {

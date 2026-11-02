@@ -55,8 +55,11 @@ export interface Proposal {
   card?: ProposalCard;
   status: ProposalStatus;
   createdAt: string;
-  /** Who proposed it. */
-  by: { workflow: string; runId: string; path: string; job?: string; session?: string; actor?: string; principal?: string };
+  /** Who proposed it. `conversation` is the thread the work belongs to,
+   *  which decides where the proposal shows (`visibleTo`): the session the
+   *  root run's launch named, or, for a job's run, the session of the turn
+   *  that started it (`startedBy`). Records from before it have none. */
+  by: { workflow: string; runId: string; path: string; job?: string; session?: string; conversation?: string; actor?: string; principal?: string };
   decision?: { action: ProposalAction; by?: string; at: string; input?: unknown; reason?: string };
   result?: { output?: unknown; error?: string; cost?: number; nodes?: unknown[]; at: string };
   /** When the proposing session was told of the decision (§5). */
@@ -97,9 +100,13 @@ export function proposalUrl(id: string): string {
   return `/proposals/${encodeURIComponent(id)}`;
 }
 
-/** What a request may see: `full` everything; a person token its actor's
- *  own proposals in a list (what waits on you) and ANY proposal by id
- *  (`byId`, `GET /proposals/:id`); a plain peer none. By id because a person
+/** What a request may see: `full` everything; a person token, in a list,
+ *  the proposals made in its OWN threads — its actor's, in a conversation
+ *  that person's credential holds (`<actor>`, `<actor>/…`: what the
+ *  person's own strut opens here) — and ANY proposal by id (`byId`, `GET
+ *  /proposals/:id`); a plain peer none. A proposal shows where it was made:
+ *  one from the same person's chat on the host's key (a Hive conversation)
+ *  is answered there, never listed to their device. By id because a person
  *  token already reads every run's log here — a gated call's `step.start`
  *  carries its input, its `step.end` the proposal's id — and every job's
  *  files by id; the id is 72 random bits and the lists stay own-only, so "by
@@ -107,7 +114,10 @@ export function proposalUrl(id: string): string {
  *  proposer's (`decideProposal`). */
 export function visibleTo(scope: Scope, actor: string | undefined, p: Proposal, opts: { byId?: boolean } = {}): boolean {
   if (scope === "full") return true;
-  return scope === "peer:person" && (!!opts.byId || (!!actor && p.by.actor === actor));
+  if (scope !== "peer:person") return false;
+  if (opts.byId) return true;
+  const thread = p.by.conversation ?? p.by.session;
+  return !!actor && p.by.actor === actor && !!thread && (thread === actor || thread.startsWith(`${actor}/`));
 }
 
 export function briefOf(p: Proposal): ProposalBrief {
@@ -222,7 +232,12 @@ export interface ProposalsCapability {
 
 export function proposalsCapability(
   dataDir: string,
-  deps: { notify?: (job: string, update: JobUpdateInput) => void; hostApprove?: readonly string[] } = {},
+  deps: {
+    notify?: (job: string, update: JobUpdateInput) => void;
+    hostApprove?: readonly string[];
+    /** The thread the run `runId` belongs to (`Proposal.by.conversation`). */
+    conversationOf?: (runId: string) => Promise<string | undefined>;
+  } = {},
 ): ProposalsCapability {
   const hostApprove = (deps.hostApprove ?? []).map(globToRegExp);
   const root = proposalsRoot(dataDir);
@@ -231,7 +246,8 @@ export function proposalsCapability(
   };
   return {
     async propose(p) {
-      const rec = await createProposal(root, p);
+      const conversation = p.by.conversation ?? (await deps.conversationOf?.(p.by.runId).catch(() => undefined));
+      const rec = await createProposal(root, conversation ? { ...p, by: { ...p.by, conversation } } : p);
       tell(rec);
       return rec;
     },
@@ -259,7 +275,7 @@ export function proposalsCapability(
 export function requireApproval(type: string, ctx: StepContext): void {
   if (ctx.proposal || !proposalsOf(ctx.services)?.hostGates?.(type)) return;
   throw new Error(
-    `${type} needs the person's approval on this strut (its host gates it), and this call is not an approved proposal. ` +
+    `${type} needs the person's approval on this strut server (its host gates it), and this call is not an approved proposal. ` +
       `Ask for it as a tool call the person approves; a workflow step, meta/run-step or a launch with \`peer\` cannot reach it.`,
   );
 }
@@ -310,7 +326,7 @@ export async function proposeCall(
   opts: ProposeCallOptions = {},
 ): Promise<{ proposal: string; status: ProposalStatus; step: string; title: string; url: string }> {
   const cap = proposalsOf(ctx.services);
-  if (!cap) throw new Error(`agent: "${stepType}" is in approve: but this strut has no proposals capability (ctx.services.proposals).`);
+  if (!cap) throw new Error(`agent: "${stepType}" is in approve: but this strut server has no proposals capability (ctx.services.proposals).`);
   const key = journalKeyOf(ctx);
   const prior = key ? (ctx.journal?.[key] as { proposal?: unknown } | undefined) : undefined;
   if (prior && typeof prior.proposal === "string") {
@@ -430,7 +446,7 @@ export async function decideProposal(root: string, id: string, decision: Decisio
   if (rec.status !== "pending" && rec.status !== "failed") return { status: 409, body: { error: `Proposal "${id}" is ${rec.status}`, proposal: rec } };
   // `stepFor` first: a name it answers for is never a registry step's.
   const def = (await deps.stepFor?.(rec.step)) ?? deps.registry[rec.step];
-  if (!def) return { status: 400, body: { error: `The step "${rec.step}" is not in this strut's registry; the proposal cannot be applied.`, proposal: rec } };
+  if (!def) return { status: 400, body: { error: `The step "${rec.step}" is not in this strut server's registry; the proposal cannot be applied.`, proposal: rec } };
   const merged = decision.input && typeof rec.input === "object" && rec.input !== null ? { ...(rec.input as object), ...decision.input } : decision.input ?? rec.input;
   let input: unknown;
   try {

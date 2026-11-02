@@ -71,7 +71,7 @@ export function assertValidWorkflowYaml(yamlStr: string): void {
   // another strut a workflow nobody vouched for.
   const peer = (parsed as { peer?: unknown } | null)?.peer;
   if (peer != null && typeof peer !== "boolean" && peer !== "person") {
-    throw new Error("Workflow YAML has an invalid `peer:` key — it is `true` (another strut may launch it), `person` (only through a credential that names a person) or absent.");
+    throw new Error("Workflow YAML has an invalid `peer:` key — it is `true` (another strut server may launch it), `person` (only through a credential that names a person) or absent.");
   }
   // A `claims:` block is checked for SHAPE here (every backend, no graph
   // needed) so a malformed contract fails the publish like a bad `input:`;

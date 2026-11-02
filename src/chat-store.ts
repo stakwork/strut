@@ -178,8 +178,9 @@ export interface ChatStore {
 
 // ── Tool-result cap (token hygiene for long autonomous loops) ───────────────
 
-/** Default per-string cap on the builder's tool results. Env
- *  `STRUT_CHAT_TOOL_RESULT_MAX_CHARS` overrides it; `0` disables it. */
+/** Default cap on one of the builder's tool results, in chars: each string
+ *  in it, and the result as a whole. Env `STRUT_CHAT_TOOL_RESULT_MAX_CHARS`
+ *  overrides it; `0` disables it. */
 export const DEFAULT_TOOL_RESULT_MAX_CHARS = 50_000;
 
 /** Resolve the tool-result cap from the environment (see above). */
@@ -190,11 +191,29 @@ export function toolResultMaxCharsFromEnv(): number {
   return Number.isFinite(n) && n >= 0 ? n : DEFAULT_TOOL_RESULT_MAX_CHARS;
 }
 
+/** The builder's DOCUMENT reads — what edit_workflow / edit_step work
+ *  from. Capped where they are made by the window's headroom alone, never
+ *  the env ceiling (`capToolResults`, ai/tools.ts: 176k chars on a 1M
+ *  window against the 50k every other result gets), and never re-cut on
+ *  replay (`truncateToolMessages`): the number they were cut to follows the
+ *  model, so a fixed cap here could rewrite what the model already read. */
+export const DOCUMENT_TOOLS: ReadonlySet<string> = new Set(["get_workflow", "get_step"]);
+
 /**
- * Cap every long string in a tool result at `maxChars`, marker included: a
- * capped string is never longer than `maxChars`, so capping twice changes
- * nothing. Structure is kept; binary parts (`{ data, mediaType }`) are left
- * whole.
+ * Cap a tool result at `maxChars`: every long string in it, marker
+ * included, and then the result as a whole — what the model reads of it (a
+ * text result's text, a JSON result's JSON). A cap on strings alone lets a
+ * query's thousands of short rows through untouched (swarm38, 2026-11-02:
+ * one `run_workflow` returned 5,622 rows, 2.4M chars, and the chat could
+ * never send a request again), so a result still over the cap is shrunk by
+ * one factor, the largest that fits: its strings to that share of the cap,
+ * its arrays to that share of the longest one's items, each cut array
+ * keeping its first and last items with `{ omitted, from, to }` in place of
+ * the stretch it left out (plans/tool-result-spill.md). A JSON result that does not fit even so (an object of a hundred
+ * thousand keys) becomes the head of its JSON, as text. Structure is kept
+ * otherwise; binary parts (`{ data, mediaType }`) are left whole and not
+ * counted, and a content result's list of parts is never cut. A capped
+ * result fits the cap, so capping twice changes nothing.
  *
  * The builder's tools apply it where the result is made (`capToolResults`,
  * ai/tools.ts): the model reads the capped result in the turn that ran the
@@ -204,28 +223,32 @@ export function toolResultMaxCharsFromEnv(): number {
  * once it sat beyond the provider's lookback), and on models that bind
  * thinking blocks to the prefix, every later block invalidated.
  */
-/** The builder's DOCUMENT reads — what edit_workflow / edit_step work
- *  from. Capped where they are made by the window's headroom alone, never
- *  the env ceiling (`capToolResults`, ai/tools.ts: 176k chars on a 1M
- *  window against the 50k every other result gets), and never re-cut on
- *  replay (`truncateToolMessages`): the number they were cut to follows the
- *  model, so a fixed cap here could rewrite what the model already read. */
-export const DOCUMENT_TOOLS: ReadonlySet<string> = new Set(["get_workflow", "get_step"]);
-
 export function capToolOutput<T>(value: T, maxChars = toolResultMaxCharsFromEnv()): T {
   if (maxChars <= 0) return value;
-  const walk = (v: unknown): unknown => {
-    if (typeof v === "string") return capString(v, maxChars);
-    if (Array.isArray(v)) return v.map(walk);
-    if (v && typeof v === "object") {
-      if ("data" in v && typeof (v as { mediaType?: unknown }).mediaType === "string") return v;
-      const out: Record<string, unknown> = {};
-      for (const [k, val] of Object.entries(v)) out[k] = walk(val);
-      return out;
-    }
-    return v;
-  };
-  return walk(value) as T;
+  const strings = capStrings(value, maxChars);
+  if (readChars(strings) <= maxChars) return strings as T;
+  const longest = longestArray(isToolOutput(value) ? value.value : value);
+  let fits: unknown;
+  let lo = 0;
+  let hi = 1;
+  for (let i = 0; i < 30; i++) {
+    const t = (lo + hi) / 2;
+    const out = shrinkOutput(value, Math.floor(t * maxChars), Math.max(1, Math.ceil(t * longest)));
+    if (readChars(out) <= maxChars) [fits, lo] = [out, t];
+    else hi = t;
+  }
+  if (fits !== undefined) return fits as T;
+  if (isToolOutput(strings) && (strings.type === "json" || strings.type === "error-json")) {
+    const type = strings.type === "json" ? "text" : "error-text";
+    return { type, value: capString(JSON.stringify(strings.value) ?? "null", maxChars) } as T;
+  }
+  return strings as T;
+}
+
+/** The cap on strings alone — what `capToolOutput` was before the whole
+ *  result counted, and what a result the model has read is replayed with. */
+function capStrings<T>(value: T, maxChars: number): T {
+  return shrinkOutput(value, maxChars, Infinity) as T;
 }
 
 function capString(s: string, maxChars: number): string {
@@ -234,25 +257,115 @@ function capString(s: string, maxChars: number): string {
   return marker.length < maxChars ? s.slice(0, maxChars - marker.length) + marker : s.slice(0, maxChars);
 }
 
+/** The AI SDK's tool-result output (`ToolResultOutput`): what the model
+ *  reads is its `value`, never the wrapper. */
+const OUTPUT_TYPES = new Set(["text", "json", "error-text", "error-json", "content"]);
+
+function isToolOutput(v: unknown): v is { type: string; value: unknown } {
+  return !!v && typeof v === "object" && "value" in v && OUTPUT_TYPES.has((v as { type?: unknown }).type as string);
+}
+
+function isMedia(v: object): boolean {
+  return "data" in v && typeof (v as { mediaType?: unknown }).mediaType === "string";
+}
+
+function shrinkOutput(v: unknown, strMax: number, items: number): unknown {
+  if (!isToolOutput(v)) return shrink(v, strMax, items);
+  // A content result's parts are the SDK's: their text is cut, never the list.
+  if (v.type === "content" && Array.isArray(v.value)) return { ...v, value: v.value.map((p) => shrink(p, strMax, Infinity)) };
+  return { ...v, value: shrink(v.value, strMax, items) };
+}
+
+function shrink(v: unknown, strMax: number, items: number): unknown {
+  if (typeof v === "string") return capString(v, strMax);
+  if (Array.isArray(v)) {
+    const walk = (x: unknown) => shrink(x, strMax, items);
+    if (v.length <= items) return v.map(walk);
+    const head = Math.ceil(items / 2);
+    const tail = items - head;
+    return [
+      ...v.slice(0, head).map(walk),
+      { omitted: v.length - items, from: head, to: v.length - tail - 1 },
+      ...v.slice(v.length - tail).map(walk),
+    ];
+  }
+  if (v && typeof v === "object") {
+    if (isMedia(v)) return v;
+    const out: Record<string, unknown> = {};
+    for (const [k, val] of Object.entries(v)) out[k] = shrink(val, strMax, items);
+    return out;
+  }
+  return v;
+}
+
+/** How many chars the model reads of a result. */
+function readChars(v: unknown): number {
+  if (!isToolOutput(v)) return typeof v === "string" ? v.length : jsonChars(v);
+  if (typeof v.value === "string") return v.value.length;
+  if (v.type === "content" && Array.isArray(v.value)) {
+    return v.value.reduce<number>((n, p) => {
+      const text = (p as { type?: unknown; text?: unknown } | null)?.type === "text" ? (p as { text?: unknown }).text : undefined;
+      return n + (typeof text === "string" ? text.length : jsonChars(p));
+    }, 0);
+  }
+  return jsonChars(v.value);
+}
+
+/** A value's length as JSON; binary parts count nothing. */
+function jsonChars(v: unknown): number {
+  if (typeof v === "string") return JSON.stringify(v).length;
+  if (v === null) return 4;
+  if (typeof v === "number" || typeof v === "boolean") return String(v).length;
+  if (Array.isArray(v)) return v.reduce<number>((n, x) => n + jsonChars(x) + 1, 1) + (v.length ? 0 : 1);
+  if (typeof v === "object") {
+    if (isMedia(v)) return 0;
+    let n = 1;
+    for (const [k, x] of Object.entries(v)) if (x !== undefined) n += k.length + 3 + jsonChars(x) + 1;
+    return n === 1 ? 2 : n;
+  }
+  return 0;
+}
+
+function longestArray(v: unknown): number {
+  if (Array.isArray(v)) return v.reduce<number>((m, x) => Math.max(m, longestArray(x)), v.length);
+  if (v && typeof v === "object" && !isMedia(v)) return Object.values(v).reduce<number>((m, x) => Math.max(m, longestArray(x)), 0);
+  return 0;
+}
+
 /**
  * The same cap over a stored history's `role: "tool"` messages, on what a
- * turn replays. A no-op on anything recorded since the tools cap at the
- * source; it keeps a history recorded before then (full results on disk) at
- * the size the model has been reading. A DOCUMENT read (`DOCUMENT_TOOLS`)
- * is left as recorded: it was cut to the window, not this number.
+ * turn replays. A result an assistant message came after was READ by the
+ * model: it is replayed as recorded but for its long strings — a no-op on
+ * anything recorded since the tools cap at the source, and a history
+ * recorded before then kept at the size the model has been reading. Cutting
+ * a read result now would rewrite the prefix the prompt cache and the
+ * thinking blocks after it are bound to. A result no assistant message came
+ * after — the last step's, its request refused — gets the whole cap: no
+ * request with it in went through, so nothing is bound to its bytes, and one
+ * recorded over the window before the whole result counted would fail every
+ * turn from then on. A DOCUMENT read (`DOCUMENT_TOOLS`) is left as recorded:
+ * it was cut to the window, not this number.
  */
 export function truncateToolMessages(
   messages: StoredMessage[],
   maxChars = toolResultMaxCharsFromEnv(),
 ): StoredMessage[] {
   if (maxChars <= 0) return messages;
+  let lastAnswer = -1;
+  messages.forEach((m, i) => {
+    if (m.role === "assistant") lastAnswer = i;
+  });
   const isDocument = (part: unknown) =>
     !!part && typeof part === "object" && DOCUMENT_TOOLS.has((part as { toolName?: string }).toolName ?? "");
-  return messages.map((m) => {
+  return messages.map((m, i) => {
     if (m.role !== "tool") return m;
-    const content = Array.isArray(m.content)
-      ? m.content.map((part) => (isDocument(part) ? part : capToolOutput(part, maxChars)))
-      : capToolOutput(m.content, maxChars);
+    const cap: (v: unknown, max: number) => unknown = i > lastAnswer ? capToolOutput : capStrings;
+    const capPart = (part: unknown) => {
+      if (isDocument(part)) return part;
+      if (part && typeof part === "object" && "output" in part) return { ...part, output: cap(part.output, maxChars) };
+      return cap(part, maxChars);
+    };
+    const content = Array.isArray(m.content) ? m.content.map(capPart) : cap(m.content, maxChars);
     return { ...m, content };
   });
 }

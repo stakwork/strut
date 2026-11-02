@@ -202,14 +202,14 @@ describe("installing a package on a filesystem workspace", () => {
     await nothing();
 
     const cases: Array<[Record<string, string>, RegExp]> = [
-      [{ ...PACKAGE, "workflows/sync.yaml": WORKFLOW("acme/linear/sync", "nope/missing") }, /names the step nope\/missing, which is neither on this strut nor in the packages/],
+      [{ ...PACKAGE, "workflows/sync.yaml": WORKFLOW("acme/linear/sync", "nope/missing") }, /names the step nope\/missing, which is neither on this strut server nor in the packages/],
       [{ ...PACKAGE, "workflows/sync.yaml": WORKFLOW("other-name") }, /workflows\/sync\.yaml says name: other-name — a workflow's name is its path, acme\/linear\/sync/],
       [{ ...PACKAGE, "workflows/sync.yaml": `${WORKFLOW("acme/linear/sync")}  - id: sub\n    type: subflow\n    config: { workflow: nowhere }\n` }, /calls the workflow nowhere/],
       [{ ...PACKAGE, "steps/create-issue.claims.yaml": "- text: it creates one issue\n" }, /steps\/create-issue\.claims\.yaml: .*checks/],
       // Found only once the steps are written: the install takes them back.
       [{ ...PACKAGE, "steps/create-issue.ts": STEP("acme/linear/other") }, /the step acme\/linear\/create-issue — its defineStep says type "acme\/linear\/other"/],
       [{ ...PACKAGE, "steps/create-issue.ts": "export default {;" }, /bad_package: the step acme\/linear\/create-issue — /],
-      [{ ...PACKAGE, "apps/issues/app.yaml": "title: Issues\n" }, /bad_package: the app acme\/linear\/issues does not build on this strut — entry: "src\/App\.tsx" is not a file/],
+      [{ ...PACKAGE, "apps/issues/app.yaml": "title: Issues\n" }, /bad_package: the app acme\/linear\/issues does not build on this strut server — entry: "src\/App\.tsx" is not a file/],
     ];
     for (const [files, re] of cases) {
       r = await api.install(`file:${await writeTree(files)}`);
@@ -276,7 +276,7 @@ describe("installing a package on a filesystem workspace", () => {
     const other = `sha256:${"a".repeat(64)}`;
     const refused = await api.install(`file:${await writeTree({ ...requiring(other), "strut.yaml": requiring(other)["strut.yaml"].replace("acme/linear", "carol/x") }, "carol")}`);
     assert.equal(refused.status, 409);
-    assert.match(refused.body.error!, new RegExp(`package_conflict: carol/x requires bob/util at ${other}, and this strut has it at ${utilDigest}`));
+    assert.match(refused.body.error!, new RegExp(`package_conflict: carol/x requires bob/util at ${other}, and this strut server has it at ${utilDigest}`));
   });
 
   it("reports what the deployment lacks, without refusing", async () => {
@@ -435,7 +435,7 @@ describe("installing a package on a filesystem workspace", () => {
       const l2 = await writeTree(requiring("2", (await readPackage(u2)).digest, u2), "l2");
       const refused = await api.install(`file:${l2}`);
       assert.equal(refused.status, 409);
-      assert.match(refused.body.error!, /package_conflict: acme\/linear requires bob\/util at sha256:[0-9a-f]+, and this strut has it at sha256:[0-9a-f]+ — updating a package from a person's door is not built yet/);
+      assert.match(refused.body.error!, /package_conflict: acme\/linear requires bob\/util at sha256:[0-9a-f]+, and this strut server has it at sha256:[0-9a-f]+ — updating a package from a person's door is not built yet/);
       const r = await strut.packages.install(`file:${l2}`, distro);
       assert.deepEqual(r.packages.map((p) => [p.package, p.status]), [
         ["bob/util", "updated"],

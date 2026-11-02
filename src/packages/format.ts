@@ -185,7 +185,7 @@ export async function readPackage(dir: string): Promise<PackageInfo> {
         if (rest.slice(at + 1) === "app.yaml") apps.set(app, true);
       } else if (!unknown.has(top)) {
         unknown.add(top);
-        problems.push(`${top}/ is not a folder this strut knows (workflows, steps, concepts, apps) — a package from a newer strut?`);
+        problems.push(`${top}/ is not a folder this strut server knows (workflows, steps, concepts, apps) — a package from a newer strut release?`);
       }
     } catch (err) {
       problems.push(`${file}: ${err instanceof Error ? err.message : String(err)}`);

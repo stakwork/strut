@@ -94,15 +94,17 @@ export function testBackends(): TestBackend[] {
       },
       async wipe(b) {
         if (b.kind !== "ladybug") return;
+        // The ontology stays: it is the file's schema, seeded at open (its
+        // stamp goes with the ledger; the next open seeds nothing new).
         await b.lbug.exclusive(async (w) => {
-          await w("MATCH (n:Node) DETACH DELETE n");
+          await w("MATCH (n:Node) WHERE n.node_type <> 'Schema' DETACH DELETE n");
           await w("MATCH (m:Migration) DELETE m");
         });
         b.schemas.invalidate();
       },
       async clear(b) {
         if (b.kind !== "ladybug") return;
-        await b.lbug.exclusive((w) => w("MATCH (n:Node) DETACH DELETE n"));
+        await b.lbug.exclusive((w) => w("MATCH (n:Node) WHERE n.node_type <> 'Schema' DETACH DELETE n"));
       },
       async close(b) {
         await b.close();
@@ -132,7 +134,7 @@ export function testBackends(): TestBackend[] {
 }
 
 /** Lets a suite write `Concept` nodes on either engine: on Ladybug the
- *  registry already holds the type; on Neo4j (after `seedStrutDomain`) this
+ *  file's seed already holds the type; on Neo4j (after `seedStrutDomain`) this
  *  adds the one Schema row the writer validates against — jarvis's shape:
  *  the `General` domain (a node outside every domain is invisible to the
  *  connection counts), `file` / `repo` as gitree's summaries carry — and
@@ -156,6 +158,10 @@ export async function seedConceptSchema(b: GraphBackend): Promise<void> {
 export function anyNode(b: GraphBackend, alias: string): string {
   return b.kind === "neo4j" ? `(${alias}:Data_Bank)` : `(${alias}:Node)`;
 }
+
+/** A Ladybug Schema row is in the Node table, but it is not data. */
+const dataOnly = (b: GraphBackend, ...aliases: string[]) =>
+  b.kind === "ladybug" ? aliases.map((a) => `${a}.node_type <> 'Schema'`).join(" AND ") : "true";
 
 /** The type a `dialect.typeOf(alias)` column holds (`typeValue`). */
 export const typeFrom = typeValue;
@@ -217,11 +223,12 @@ export async function setNodeProps(b: GraphBackend, ref_id: string, props: Recor
 }
 
 /** How many DATA edges of `edge` the graph holds (every edge when omitted).
- *  Both ends data nodes: on Neo4j an edge SCHEMA is a relationship of the
- *  same type between two `:Schema` nodes, and must not count. */
+ *  Both ends data nodes: an edge SCHEMA (a Neo4j relationship between two
+ *  `:Schema` nodes, a Ladybug `SCHEMA_EDGE` between two Schema rows) must
+ *  not count. */
 export async function edgeCount(b: GraphBackend, edge?: string): Promise<number> {
   const rel = edge ? `[r:\`${edge}\`]` : "[r]";
-  const rows = await b.query(`MATCH ${anyNode(b, "a")}-${rel}->${anyNode(b, "b")} RETURN count(r) AS c`);
+  const rows = await b.query(`MATCH ${anyNode(b, "a")}-${rel}->${anyNode(b, "b")} WHERE ${dataOnly(b, "a", "b")} RETURN count(r) AS c`);
   return Number(rows[0]?.["c"] ?? 0);
 }
 
@@ -229,7 +236,7 @@ export async function edgeCount(b: GraphBackend, edge?: string): Promise<number>
 export async function nodeCount(b: GraphBackend, type?: string): Promise<number> {
   const d = b.dialect;
   const pattern = type ? d.node("n", type) : b.kind === "neo4j" ? "(n:Data_Bank)" : "(n:Node)";
-  const rows = await b.query(`MATCH ${pattern} WHERE ${d.live("n")} RETURN count(n) AS c`);
+  const rows = await b.query(`MATCH ${pattern} WHERE ${d.live("n")} AND ${dataOnly(b, "n")} RETURN count(n) AS c`);
   return Number(rows[0]?.["c"] ?? 0);
 }
 

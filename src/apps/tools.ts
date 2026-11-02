@@ -144,7 +144,7 @@ export function grantRefusal(type: string, config: Record<string, unknown>, mani
     return `"${type}" is a paid or shell-shaped step: a page never calls it, whatever the manifest grants — put it in a workflow and launch that (run/launch), the workflow is the unit of spend (plans/apps.md §5.1)`;
   }
   if (isSealedStep(type, registry)) return `"${type}" is sealed — nothing an app calls (plans/apps.md §9)`;
-  for (const [prefix, what] of NOT_YET) if (type === prefix || type.startsWith(prefix)) return `"${type}" is not available in this strut yet: ${what}`;
+  for (const [prefix, what] of NOT_YET) if (type === prefix || type.startsWith(prefix)) return `"${type}" is not available in this strut server yet: ${what}`;
   const never = NOT_A_PAGES[type];
   if (never) return `"${type}" is not a thing a page does: ${never}`;
   const job = config["job"];
@@ -286,7 +286,7 @@ async function appOf(app: AppRef, deps: AppToolDeps): Promise<{ manifest: AppMan
     return preview ? { manifest: preview.manifest } : { error: `step_run: the preview ${app.name}@${app.version} is no longer hosted — app/look { path } again` };
   }
   const view = await deps.apps.get(app.name, app.version).catch(() => null);
-  return view ? { manifest: view.manifest } : { error: `step_run: no app ${app.name}@${app.version} on this strut` };
+  return view ? { manifest: view.manifest } : { error: `step_run: no app ${app.name}@${app.version} on this strut server` };
 }
 
 /** `{ step_run }` — the app tool set a door spreads beside its own. */

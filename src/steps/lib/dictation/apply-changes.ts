@@ -30,7 +30,7 @@ const Applied = z.object({
 export default defineStep({
   type: "dictation/apply-changes",
   description:
-    "Replays dictation changes from another strut (dictation/changes-since there) into this memory, in order: a learn " +
+    "Replays dictation changes from another strut server (dictation/changes-since there) into this memory, in order: a learn " +
     "through dictation/add, an undo of the same heard/written pair through dictation/undo. Idempotent: a pair already known " +
     "or already undone is skipped, so the same changes can be sent again. Reports what each did.",
   effect: "write",

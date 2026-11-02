@@ -33,7 +33,7 @@ async function post(peers: PeersCapability, peer: string, path: string, body: un
 export default defineStep({
   type: "home/sync",
   description:
-    "Syncs this strut's read copy of its home's memory with the home, a peer on file (default \"home\") holding a person " +
+    "Syncs this strut server's read copy of its home's memory with the home, a peer on file (default \"home\") holding a person " +
     "token: pushes what dictation learned or undid here since the last sync (POST /home/push there), then pulls the " +
     "home's memory when it changed (POST /home/pull) and loads it in place of this one (memory/import replace: backed up, " +
     "put back on failure), keeping what dictation changes meanwhile. Records the sync (home/state) only once all of it " +

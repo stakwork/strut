@@ -15,7 +15,7 @@ const EXAMPLE = `- id: set_strength
 export default defineStep({
   type: "graph/edit-edge",
   description:
-    "Update the properties of an EXISTING edge in the strut knowledge graph (writes live to the graph). " +
+    "Update the properties of an EXISTING edge in the knowledge graph (writes live to the graph). " +
     "Edges are create-only in graph/create-triplet: writing the same source-[EDGE]->target again returns the " +
     "existing edge unchanged ('Warning'), so this is the one way to change an edge's data afterwards. " +
     "Locate the edge by `edge_ref_id` (from create-triplet's output) OR by the triple `source_ref_id` + `edge_type` + " +

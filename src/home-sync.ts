@@ -80,7 +80,7 @@ export async function seedHomeSyncWorkflow(workspace: WorkspaceStore): Promise<{
   return workspace.publishWorkflowByContent(
     "home-sync",
     text,
-    "Syncs this strut's read copy of its home's memory with the home (a peer, default \"home\"): pushes dictation's changes, " +
+    "Syncs this strut server's read copy of its home's memory with the home (a peer, default \"home\"): pushes dictation's changes, " +
       "pulls the memory when it changed and loads it, keeping what dictation changes meanwhile. Input { peer? }.",
     "home",
     undefined,

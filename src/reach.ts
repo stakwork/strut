@@ -149,7 +149,7 @@ export function withinReach<T extends StepContext<unknown>>(type: string, cfg: u
   if (!policy) return ctx;
   const problems = stepProblems(baseType(type), cfg, policy.reach);
   if (problems.length) {
-    throw new Error(`"${type}" runs inside a workflow the AI published and reaches ${[...new Set(problems)].join(", ")}, outside what this strut lets the AI run (builder.reach)`);
+    throw new Error(`"${type}" runs inside a workflow the AI published and reaches ${[...new Set(problems)].join(", ")}, outside what this strut server lets the AI run (builder.reach)`);
   }
   // The launcher's MCP servers are not in reach: an AI frame never holds them.
   return ctx.mcp ? { ...ctx, mcp: undefined } : ctx;
@@ -192,5 +192,5 @@ export async function reachRefusal(
     if (!reached.length || outside) problems.push(`the grant "${grant}"${outside ? ` (reaches "${outside}")` : ""}`);
   }
   if (!problems.length) return null;
-  return `it reaches ${[...new Set(problems)].join(", ")}, outside what this strut lets the AI publish (builder.reach)`;
+  return `it reaches ${[...new Set(problems)].join(", ")}, outside what this strut server lets the AI publish (builder.reach)`;
 }

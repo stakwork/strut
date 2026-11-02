@@ -18,8 +18,8 @@
  *
  * An app that declares graph types (`data.graph`) is checked against the
  * graph at every build and registers them at publish, before the version is
- * recorded (./graph-types.ts): on Neo4j only, so on a LadybugDB file or the
- * filesystem workspace it does not build.
+ * recorded (./graph-types.ts), on Neo4j and on a LadybugDB file alike; on
+ * the filesystem workspace, which has no graph, it does not build.
  *
  * A version's directory is a CACHE over its history (./objects.ts): a
  * publish records the version's sources once per file, the active version
@@ -347,7 +347,7 @@ export function createApps(deps: AppsDeps): AppsCapability {
     const { path } = await ensure(name, version);
     if ((await isDir(path)) && !(await exists(join(path, "dist", "index.html")))) {
       const built = await buildApp(path, buildDeps(name));
-      if (!built.ok) throw new Error(`${name}@${version} does not build on this strut's kit: ${built.errors.join("; ")}`);
+      if (!built.ok) throw new Error(`${name}@${version} does not build on this strut server's kit: ${built.errors.join("; ")}`);
     }
   };
 
@@ -722,7 +722,7 @@ export function createApps(deps: AppsDeps): AppsCapability {
     async grant(name, workflow, opts) {
       validateAppName(name);
       const flow = await workspace.getWorkflow(workflow).catch(() => null);
-      if (!flow) throw new Error(`no workflow "${workflow}" on this strut`);
+      if (!flow) throw new Error(`no workflow "${workflow}" on this strut server`);
       if (!flow.sealed) throw new Error(`"${workflow}" is not sealed: an app's manifest grants it in grants.workflows, no person's grant needed`);
       return grants.add(name, {
         workflow,

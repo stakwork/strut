@@ -93,7 +93,10 @@ One change. **Reading** (`visibleTo`, `src/proposals.ts`): `full` reads
 everything; `peer:person` reads its actor's own in the lists and, by id
 (`GET /proposals/:id`), any proposal on this strut; a plain `peer` reads
 none. The route passes a flag, so `GET /proposals` and `GET
-/workflows/:name/runs/:runId/proposals` keep the own-only rule. A record
+/workflows/:name/runs/:runId/proposals` keep the own-only rule — since
+2026-11-02 its own THREADS only (`by.conversation`, else `by.session`, is
+`<actor>` or `<actor>/…`): a proposal shows where it was made, so the same
+person's Hive chat's is never listed to Peel. A record
 is served whole (input, rationale, decision, result): a line for the
 hosts, since `result.output` may be as large as a step output (8 MB) and
 Peel caps a read at 4 MB — today's gated steps return small outputs.

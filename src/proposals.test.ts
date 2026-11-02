@@ -285,8 +285,9 @@ describe("proposals", () => {
         ...extra,
       });
       const bag = strut.services as unknown as { proposals: ReturnType<typeof proposalsCapability> };
+      // Each made in its proposer's own thread: what the person's own strut opens here.
       const mk = (actor?: string) =>
-        bag.proposals.propose({ step: "dev/write", input: { name: actor ?? "none" }, title: "Write.", by: { workflow: "wf", runId: "r1", path: "wf/t", ...(actor ? { actor } : {}) } });
+        bag.proposals.propose({ step: "dev/write", input: { name: actor ?? "none" }, title: "Write.", by: { workflow: "wf", runId: "r1", path: "wf/t", ...(actor ? { actor, session: `${actor}/c1` } : {}) } });
       ids = { ann: (await mk("ann")).id, bob: (await mk("bob")).id };
     };
     afterEach(async () => {
@@ -376,6 +377,57 @@ describe("proposals", () => {
       // (f) the deployment key, any actor
       assert.equal((await decide(ids.ann, "api", "someone-else")).status, 200);
       assert.equal((await decide(ids.bob, "api")).status, 200);
+    });
+
+    it("a person token's lists leave out its actor's proposals from threads it does not hold", async () => {
+      // A Hive chat runs on the host's key, session = its conversation id:
+      // that proposal is answered in Hive, never listed to the person's device.
+      await boot();
+      const bag = strut.services as unknown as { proposals: ReturnType<typeof proposalsCapability> };
+      const mk = (by: Partial<Proposal["by"]>) =>
+        bag.proposals.propose({ step: "dev/write", input: { name: "x" }, title: "W.", by: { workflow: "wf", runId: "r1", path: "wf/t", actor: "ann", ...by } });
+      const hive = await mk({ session: "cmh2x9conversation" });
+      const none = await mk({});
+      const lookalike = await mk({ session: "anna/c1" });
+      const own = await mk({ session: "ann" });
+      const job = await mk({ session: "j1", job: "j1", conversation: "ann/c2" });
+      const jobOfHive = await mk({ session: "ann/c3", job: "j2", conversation: "cmh2x9conversation" });
+      const ann = personToken("ann")!.token;
+      assert.deepEqual((await idsOf("/proposals", ann)).sort(), [ids.ann, own.id, job.id].sort());
+      assert.deepEqual((await idsOf("/workflows/wf/runs/r1/proposals", ann)).sort(), [ids.ann, own.id, job.id].sort());
+      for (const p of [hive, none, lookalike, jobOfHive]) assert.equal((await req(`/proposals/${p.id}`, ann)).status, 200, "still readable by id");
+      // Who decides is unchanged: the proposal's actor.
+      assert.equal((await decide(hive.id, ann)).status, 200);
+      assert.equal((await idsOf("/proposals", "api")).length, 8, "the full key lists them all");
+    });
+
+    it("records the thread a proposal belongs to: the turn's session, and for a job's run the turn that started it", async () => {
+      const propose = defineStep({
+        type: "dev/propose",
+        description: "Propose a write; start job j1 when asked.",
+        input: z.object({ startJob: z.boolean().default(false) }),
+        output: z.any(),
+        async run(cfg, c) {
+          const bag = c.services as { proposals: ReturnType<typeof proposalsCapability>; jobs: { launch(o: unknown): Promise<unknown> } };
+          const rec = await bag.proposals.propose({ step: "dev/write", input: { name: "x" }, title: "W.", by: { workflow: c.workflow ?? "", runId: c.runId, path: c.path, ...(c.actor ? { actor: c.actor } : {}) } });
+          if (cfg.startJob) await bag.jobs.launch({ job: "j1", workflow: "job", input: {}, from: c.runId, ...(c.actor ? { actor: c.actor } : {}) });
+          return { proposal: rec.id };
+        },
+      });
+      await boot({ registry: await createRegistry([write, propose]) });
+      await strut.workspace.publishWorkflow("turn", "v1", { steps: [{ id: "p", type: "dev/propose", config: { startJob: true } }] });
+      await strut.workspace.publishWorkflow("job", "v1", { steps: [{ id: "p", type: "dev/propose", config: {} }] });
+      const turn = await strut.run("turn", { session: "ann/c9" }, { actor: "ann" });
+      assert.equal(turn.status, "success");
+      let all: Proposal[] = [];
+      for (let i = 0; i < 100 && all.length < 4; i++) {
+        await new Promise((r) => setTimeout(r, 20));
+        all = await listProposals(root());
+      }
+      const made = all.filter((p) => p.by.workflow === "turn" || p.by.workflow === "job");
+      assert.deepEqual(made.map((p) => [p.by.workflow, p.by.conversation]).sort(), [["job", "ann/c9"], ["turn", "ann/c9"]]);
+      const listed = await idsOf("/proposals", personToken("ann")!.token);
+      for (const p of made) assert.ok(listed.includes(p.id), `${p.by.workflow}'s proposal is listed to ann's device`);
     });
 
     it("a proposal with no creator can be decided by no person token", async () => {

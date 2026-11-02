@@ -148,7 +148,7 @@ describe("package/install — an agent asks, a person accepts", () => {
     assert.equal(rec.rationale, "You asked for Linear issues on the board.");
     // §8's ask, read off the index's page: who, what it brings, what it can, what it needs.
     assert.match(rec.summary!, /^acme\/linear 1\.4\.0 \(MIT\) from acme — key [a-z0-9]{8}…[a-z0-9]{6}, listed by the index idx; digest [0-9a-f]{12}\./);
-    assert.match(rec.summary!, /It brings 1 workflow, 1 step — TypeScript that runs inside this strut\./);
+    assert.match(rec.summary!, /It brings 1 workflow, 1 step — TypeScript that runs inside this strut server\./);
     assert.match(rec.summary!, /It can spend \(a model is called\); run code/);
     assert.match(rec.summary!, /It needs the secret LINEAR_API_KEY\./);
     assert.match(rec.summary!, /re-verifies every file against the publisher's own catalog/);
@@ -173,7 +173,7 @@ describe("package/install — an agent asks, a person accepts", () => {
   it("a package no followed index lists, or a ref that is not a name or a pk: ref, is proposed honestly and fails at the apply, never silently", async () => {
     const notListed = (await gated(ctx()).execute({ package: "acme/notion" }, { strutToolPath: "orchestrator/turn/002-package_install" })) as Record<string, unknown>;
     const rec = await record(notListed["proposal"] as string);
-    assert.match(rec.summary!, /acme\/notion is not listed by an index this strut follows\./);
+    assert.match(rec.summary!, /acme\/notion is not listed by an index this strut server follows\./);
     const failed = await decide(rec.id, "accept");
     assert.equal(failed.status, "failed");
     assert.match(failed.result!.error!, /package_not_listed|package_not_published/);

@@ -316,7 +316,7 @@ describe("publishing packages from this strut", () => {
     assert.equal(ok.status, 201, JSON.stringify(ok.body));
     const other = await publish({ version: "1.0.0", package: "other/linear" });
     assert.equal(other.status, 400);
-    assert.match(other.body.error!, /^package_build_refused: other\/linear is not under this strut's publisher acme/);
+    assert.match(other.body.error!, /^package_build_refused: other\/linear is not under this strut server's publisher acme/);
     const { text } = await catalog();
     assert.equal(Object.keys((JSON.parse(text) as Catalog).packages).join(), "acme/linear", "nothing was added for the refused one");
   });

@@ -964,6 +964,9 @@ export async function createStrut<TServices = unknown>(
       // checks it whatever the route (proposals.ts `requireApproval`).
       hostApprove: [opts.job, opts.orchestrator, opts.builder].flatMap((d) => (d ? (d.approve ?? []) : [])),
       notify: (job, update) => ((services as Record<string, unknown>)["jobs"] as JobsCapability | undefined)?.notify?.(job, update),
+      // Where a proposal shows (proposals.ts `visibleTo`); called at
+      // proposal time, long after this function has returned.
+      conversationOf: (runId) => conversationOf(runId),
     }),
     // The graph backend the server wired, for the graph/* steps (graphCtx
     // prefers it over opening one from env). Borrowed: a step's `close()`
@@ -1473,7 +1476,7 @@ export async function createStrut<TServices = unknown>(
       const post = c.req.method === "POST";
       const personPost = scope === "peer:person" && (path === "/mcp" || (homeRole === "box" && HOME_POSTS.has(path)) || PROPOSAL_DECIDE.test(path));
       if (isPeerScope(scope) && !(post && (PEER_POST.test(path) || path === "/packages/subscriptions/sync" || personPost))) {
-        return c.json({ error: "forbidden: a peer may read, launch a run, control a run a peer launched, and ask this strut to sync its subscriptions; a person's token may also call an app's step_run on /mcp and decide the proposals it made" }, 403);
+        return c.json({ error: "forbidden: a peer may read, launch a run, control a run a peer launched, and ask this strut server to sync its subscriptions; a person's token may also call an app's step_run on /mcp and decide the proposals it made" }, 403);
       }
     }
     return next();
@@ -2898,8 +2901,8 @@ export async function createStrut<TServices = unknown>(
     else if (c.req.query("t") !== undefined) {
       const token = catalogTokenOf(c);
       const current = token ? await catalogDeps.catalogs.current() : undefined;
-      if (!token || token.key !== current?.card.key) return c.json({ error: "unauthorized: not a catalog token this strut minted" }, 401);
-      if (!current.card.packages[pkg]?.releases.some((r) => r.digest === digest)) return c.json({ error: `no release of ${pkg} at ${digest} in this strut's catalog` }, 404);
+      if (!token || token.key !== current?.card.key) return c.json({ error: "unauthorized: not a catalog token this strut server minted" }, 401);
+      if (!current.card.packages[pkg]?.releases.some((r) => r.digest === digest)) return c.json({ error: `no release of ${pkg} at ${digest} in this strut server's catalog` }, 404);
     }
     const info = await packageStore.get(digest);
     if (!info || info.manifest.package !== pkg) return c.json({ error: `no package ${pkg} at ${digest} here` }, 404);
@@ -3052,13 +3055,13 @@ export async function createStrut<TServices = unknown>(
   app.post("/packages/install", async (c) => {
     if (registryWasInjected) return c.json({ error: "Installing is disabled when the registry is provided at construction time" }, 409);
     const body = await c.req.json<{ ref?: unknown; digest?: unknown; url?: unknown; index?: unknown }>().catch(() => ({}) as { ref?: unknown; digest?: unknown; url?: unknown; index?: unknown });
-    if (typeof body.ref !== "string" || !body.ref) return c.json({ error: "ref is required: file:/path/to/package, pk:<key>/<publisher>/<name> with url, or a name (publisher/name) looked up in the indexes this strut follows" }, 400);
-    if (body.index !== undefined && typeof body.index !== "string") return c.json({ error: "index is the id of an index this strut follows (GET /packages/indexes)" }, 400);
+    if (typeof body.ref !== "string" || !body.ref) return c.json({ error: "ref is required: file:/path/to/package, pk:<key>/<publisher>/<name> with url, or a name (publisher/name) looked up in the indexes this strut server follows" }, 400);
+    if (body.index !== undefined && typeof body.index !== "string") return c.json({ error: "index is the id of an index this strut server follows (GET /packages/indexes)" }, 400);
     if (body.digest !== undefined && (typeof body.digest !== "string" || !PACKAGE_DIGEST.test(body.digest))) {
       return c.json({ error: "digest is sha256:<64 hex>" }, 400);
     }
     if (body.url !== undefined && (typeof body.url !== "string" || !/^https?:\/\/\S+$/.test(body.url))) {
-      return c.json({ error: "url is where the publisher's catalog is served: an http(s) URL (a strut's …/packages/catalog?public=1)" }, 400);
+      return c.json({ error: "url is where the publisher's catalog is served: an http(s) URL (a strut server's …/packages/catalog?public=1)" }, 400);
     }
     const actor = await resolveActor(c);
     try {
@@ -3083,7 +3086,7 @@ export async function createStrut<TServices = unknown>(
     const requires = body["requires"] as { packages?: unknown } | undefined;
     const pinsOk = (p: unknown) => Array.isArray(p) && p.every((r) => r && typeof r === "object" && typeof (r as { package?: unknown }).package === "string" && typeof (r as { digest?: unknown }).digest === "string");
     if (requires !== undefined && (!requires || typeof requires !== "object" || (requires.packages !== undefined && !pinsOk(requires.packages)))) {
-      return "requires is { packages: [{ package, digest }] }: packages built on this strut, by the digest their build returned";
+      return "requires is { packages: [{ package, digest }] }: packages built on this strut server, by the digest their build returned";
     }
     return body as unknown as BuildRequest;
   };
@@ -3130,7 +3133,7 @@ export async function createStrut<TServices = unknown>(
   };
   app.get("/publisher", async (c) => {
     const info = await publisher.get();
-    return info ? c.json(info) : c.json({ error: "this strut has no publisher key yet: POST /publisher, or publish a package" }, 404);
+    return info ? c.json(info) : c.json({ error: "this strut server has no publisher key yet: POST /publisher, or publish a package" }, 404);
   });
   app.post("/publisher", async (c) => {
     try {
@@ -3160,7 +3163,7 @@ export async function createStrut<TServices = unknown>(
   app.post("/publisher/tokens", async (c) => {
     const body = await c.req.json<{ subscriber?: unknown; days?: unknown }>().catch(() => ({}) as { subscriber?: unknown; days?: unknown });
     if (typeof body.subscriber !== "string" || !body.subscriber.trim() || body.subscriber.length > 200) {
-      return c.json({ error: "subscriber is who the token is for: the strut's name in the fleet (a workspace slug)" }, 400);
+      return c.json({ error: "subscriber is who the token is for: the strut server's name in the fleet (a workspace slug)" }, 400);
     }
     if (body.days !== undefined && !(typeof body.days === "number" && body.days > 0 && body.days <= 366)) return c.json({ error: "days is a number of days, at most 366" }, 400);
     try {
@@ -3186,7 +3189,7 @@ export async function createStrut<TServices = unknown>(
         const { info } = await publisher.ensure(); // refused before a build when the key cannot be kept safely
         // With a name set, every package published here is under it.
         if (info.name && req.package.split("/")[0] !== info.name) {
-          throw new Error(`package_build_refused: ${req.package} is not under this strut's publisher ${info.name}: a package published here is named ${info.name}/<name>`);
+          throw new Error(`package_build_refused: ${req.package} is not under this strut server's publisher ${info.name}: a package published here is named ${info.name}/<name>`);
         }
         const built = await buildPackage(packageDeps, req);
         const publicBefore = (await catalogDeps.publicCatalogs.current())?.digest;
@@ -3213,10 +3216,10 @@ export async function createStrut<TServices = unknown>(
     // as for a file token: a host's gate hands a token-bearing read through.
     const token = c.req.query("t") !== undefined ? catalogTokenOf(c) : undefined;
     if (!publicPackageRead(c) && c.req.query("t") !== undefined && (!token || token.key !== (await publisher.get())?.key)) {
-      return c.json({ error: "unauthorized: not a catalog token this strut minted" }, 401);
+      return c.json({ error: "unauthorized: not a catalog token this strut server minted" }, 401);
     }
     if (!file) {
-      return c.json({ error: digest ? `no ${publicPackageRead(c) ? "public " : ""}catalog at ${digest} here` : publicPackageRead(c) ? "this strut has made nothing public yet" : "this strut has published nothing yet" }, 404);
+      return c.json({ error: digest ? `no ${publicPackageRead(c) ? "public " : ""}catalog at ${digest} here` : publicPackageRead(c) ? "this strut server has made nothing public yet" : "this strut server has published nothing yet" }, 404);
     }
     const etag = `"${file.digest}"`;
     const headers = {
@@ -3321,7 +3324,7 @@ export async function createStrut<TServices = unknown>(
   });
   app.delete("/packages/indexes/:id", async (c) => {
     const removed = await indexes.remove(c.req.param("id"));
-    return removed ? c.json({ ok: true, id: c.req.param("id") }) : c.json({ error: `this strut follows no index "${c.req.param("id")}"` }, 404);
+    return removed ? c.json({ ok: true, id: c.req.param("id") }) : c.json({ error: `this strut server follows no index "${c.req.param("id")}"` }, 404);
   });
   app.get("/packages/search", async (c) => {
     const limit = Number(c.req.query("limit"));
@@ -4075,7 +4078,7 @@ export async function createStrut<TServices = unknown>(
    *  plain peer's actor is a header any strut sets, so it has no room. */
   const roomActorFor = async (c: Context): Promise<{ actor: string } | { error: string }> => {
     if ((await scopeOf(c)) === "peer") {
-      return { error: "a room is a person's — a strut's credential names its actor by header; use a person's credential" };
+      return { error: "a room is a person's — a strut server's credential names its actor by header; use a person's credential" };
     }
     const actor = await resolveActor(c);
     return actor ? { actor } : { error: "this request names no actor, and a room is a person's" };
@@ -4626,6 +4629,17 @@ export async function createStrut<TServices = unknown>(
     const session = (start?.input as Record<string, unknown> | undefined)?.["session"];
     return { workflow: root.workflow, runId: root.runId, ...(typeof session === "string" && session ? { session } : {}) };
   }
+  /** The thread the run `runId` belongs to, for its proposals
+   *  (`Proposal.by.conversation`): a job's run belongs to the turn that
+   *  started it (its `run.start.startedBy`), any other run to the session
+   *  its root's launch named. */
+  async function conversationOf(runId: string): Promise<string | undefined> {
+    const root = rootRunOf(runId);
+    if (!root) return undefined;
+    const start = (await store.getRunEvents(root.workflow, root.runId).catch(() => [])).find((e) => e.type === "run.start");
+    const session = start?.startedBy ? start.startedBy.session : (start?.input as Record<string, unknown> | undefined)?.["session"];
+    return typeof session === "string" && session ? session : undefined;
+  }
   if (launchCap) {
     launchCap.launch = async ({ job, title, input, from, actor, principal, mcp, attachments, workflow: wanted }) => {
       const problem = idProblem(job);
@@ -4647,7 +4661,7 @@ export async function createStrut<TServices = unknown>(
       // A builder job on a peer runs there (builder.yaml's `remote`
       // branch), and strut/run-workflow carries no files.
       if (attachments?.length && typeof input["peer"] === "string") {
-        throw new Error(`attachments: a build on another strut (peer "${input["peer"]}") cannot take files yet — describe what the job needs from them in its prompt`);
+        throw new Error(`attachments: a build on another strut server (peer "${input["peer"]}") cannot take files yet — describe what the job needs from them in its prompt`);
       }
       // The workspace this strut belongs to (its `self` record): both
       // job-shaped workflows put it on the agent's first line, so a job the
@@ -4657,7 +4671,7 @@ export async function createStrut<TServices = unknown>(
         if (self?.id) input = { ...input, workspace: self.id };
       }
       const flow = await workspace.getWorkflow(workflow).catch((e: unknown) => {
-        throw new Error(`no_workflow: this strut has no "${workflow}" workflow to run the job on (${(e as Error).message})`);
+        throw new Error(`no_workflow: this strut server has no "${workflow}" workflow to run the job on (${(e as Error).message})`);
       });
       const url = await rootCallbackOf(from);
       const live = await rootJobCallbackOf(from);

@@ -1754,7 +1754,7 @@ function Shell() {
             >Edit with the builder</button>
           )}
           <button class="btn" onClick={() => setShowSecrets(true)}>Secrets</button>
-          <button class="btn" title="The packages here, what this strut follows and what it has installed" onClick={() => setShowPackages(true)}>Packages</button>
+          <button class="btn" title="The packages here, what this strut server follows and what it has installed" onClick={() => setShowPackages(true)}>Packages</button>
           <button class={`btn btn-ai${showChat ? " is-active" : ""}`} onClick={() => setShowChat(!showChat)}>AI</button>
           <button class="btn btn-icon" onClick={() => setShowSettings(true)} aria-label="Settings" title="Settings">
             <GearIcon />

@@ -23,8 +23,9 @@
  * dialect helpers and the three engine seams, plus the writers, the reader
  * and the boot reports on top. The Neo4j one is built here over a `Bolt`;
  * the Ladybug one (plans/ladybug-backend.md) over a `LadybugHandle`, whose
- * open IS the schema (the DDL from the closed registry) — no seeds, no
- * migrations, no embedding pass (the writer embeds inline), and the
+ * open IS the schema (the DDL, and the ontology seeded as Schema rows from
+ * `ladybug/registry.ts`) — no boot seeds, no migrations, no embedding pass
+ * (the writer embeds inline), and the
  * `LadybugReader` over its one FTS and one HNSW index.
  */
 import { resolve } from "node:path";
@@ -117,7 +118,7 @@ export interface Neo4jBackend extends GraphBackendBase {
   readonly indexReconcile: IndexReconcileReport | undefined;
 }
 
-/** The Ladybug backend: one file, the closed registry's ten types. */
+/** The Ladybug backend: one file, its ontology in the file as Schema rows. */
 export interface LadybugBackend extends GraphBackendBase {
   readonly kind: "ladybug";
   readonly cfg: LadybugConfig;

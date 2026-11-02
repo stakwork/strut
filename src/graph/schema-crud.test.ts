@@ -2,10 +2,13 @@
  * Node-schema registration: pure planning rules, and (live) the write —
  * a new type becomes writable through the NodeWriter, an existing jarvis
  * type can be extended add-only, and Strut's closed registry is refused.
+ * The same calls on a Ladybug file, and the one-name-one-type rule, are in
+ * `ladybug/ontology.test.ts`.
  */
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { Bolt } from "./bolt.js";
+import type { GraphEngine } from "./engine.js";
 import { EdgeWriter } from "./edge-writer.js";
 import { GraphValidationError, NodeWriter } from "./node-writer.js";
 import { seedJarvisOntology } from "./ontology-seed.js";
@@ -56,6 +59,32 @@ describe("planNodeSchema (pure)", () => {
     assert.equal(code(() => planNodeSchema({ type: "X", attributes: { a: "string" }, title_key: "zz" })), "UNKNOWN_ATTRIBUTE:title_key");
     assert.equal(code(() => planNodeSchema({ type: "X", attributes: {}, node_key: "-" })), "MISSING_REQUIRED:node_key");
     assert.equal(code(() => planNodeSchema({ type: "X", attributes: { a: "?list", b: "datetime", name: "string" } })), "ok");
+  });
+
+  it("aliases and an owner: deduplicated case-blind, the type's own name dropped, each a type label; stored flat", () => {
+    const p = planNodeSchema({ type: "Organization", attributes: {}, aliases: ["Company", "company", "organization", " Firm "], managed_by: "memory" });
+    assert.deepEqual(p.aliases, ["Company", "Firm"]);
+    assert.deepEqual(p.flat["aliases"], ["Company", "Firm"]);
+    assert.equal(p.flat["managed_by"], "memory");
+    assert.equal(code(() => planNodeSchema({ type: "X", attributes: {}, aliases: ["two words"] })), "UNKNOWN_TYPE:aliases");
+    assert.ok(!("aliases" in planNodeSchema({ type: "X", attributes: {} }).flat));
+  });
+});
+
+describe("createNodeSchema: the one-name rule is the store's", () => {
+  it("a source without `typesNamed` (Neo4j) keeps jarvis's rules: an alias another type holds is not refused", async () => {
+    const created: Array<Record<string, unknown>> = [];
+    const source = {
+      holdsStrutTypes: false,
+      schemaRow: async () => null,
+      createSchema: async (flat: Record<string, unknown>) => void created.push(flat),
+      ensureChildOf: async () => true,
+    };
+    const engine = { kind: "neo4j", schemaSource: source, tx: (fn: (tx: unknown) => Promise<unknown>) => fn({}) } as unknown as GraphEngine;
+    const resolver = { resolveType: async (t: string) => (t === "Thing" ? "Thing" : null), invalidate: () => {}, schema: async () => null } as unknown as SchemaResolver;
+    const r = await createNodeSchema(engine, resolver, { type: "Business", attributes: {}, aliases: ["Company"] });
+    assert.equal(r.created, true);
+    assert.deepEqual(created.map((f) => f["aliases"]), [["Company"]]);
   });
 });
 

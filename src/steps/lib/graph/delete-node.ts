@@ -12,7 +12,7 @@ const EXAMPLE = `- id: retire
 export default defineStep({
   type: "graph/delete-node",
   description:
-    "Delete a node from the strut knowledge graph (writes live to the graph). Any node type. The node is soft-deleted " +
+    "Delete a node from the knowledge graph (writes live to the graph). Any node type. The node is soft-deleted " +
     "— hidden from every read, restored in place by a later create of the same identity — and EVERY edge it had in " +
     "the namespace is deleted for good, so whatever hung under it is cut loose (its children stay, parentless). " +
     "Read the node first (graph/graph-get with its `edges` counts, graph/graph-neighbors) and be sure: a delete is " +

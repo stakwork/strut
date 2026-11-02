@@ -45,9 +45,9 @@ name: builder
 peer: true
 input:
   prompt: { type: string, description: "What to build, change, test or debug this turn" }
-  workspace: { type: string, required: false, description: "The workspace this strut belongs to, by its slug" }
+  workspace: { type: string, required: false, description: "The workspace this build runs in, by its slug" }
   session: { type: string, required: false, description: "The agent's thread (a session id). Defaults to the job id — one thread across every turn of the build" }
-  peer: { type: string, required: false, description: "Build on THAT strut instead (a peer's id, as strut/list-peers gives it): this run launches the peer's `builder` under this job id and waits. Unset on the strut that does the building" }
+  peer: { type: string, required: false, description: "Build in THAT workspace instead (a peer's id, as strut/list-peers gives it): this run launches the peer's `builder` under this job id and waits. Unset in the workspace that does the building" }
 steps:
   - id: dir
     type: job/dir
@@ -79,7 +79,7 @@ steps:
       system: |-
         {{ params.system }}
         {{ concepts.text }}
-      prompt: "{{ input.workspace ? 'Workspace: @' + input.workspace + ', the one this strut belongs to. ' : '' }}{{ $job ? 'Your job id: ' + $job + '. ' : '' }}{{ input.prompt }}"
+      prompt: "{{ input.workspace ? 'Workspace: @' + input.workspace + ', the one this job runs in. ' : '' }}{{ $job ? 'Your job id: ' + $job + '. ' : '' }}{{ input.prompt }}"
       # The web tools (API documentation while authoring) and the EDITOR
       # family — view, create, str_replace, insert on the job's directory,
       # a tree listing, a grep — for an app's files (plans/apps.md §8). No
@@ -216,8 +216,9 @@ params:
   # is appended after it (`createStrut({ builder: { system } })`).
   system: |
     You are a workflow BUILDER working on a job with a person, over many
-    turns: you author, revise, test and debug this strut's workflows and
-    custom steps, and the APPS over them. Each turn you get one message;
+    turns: you author, revise, test and debug this workspace's workflows
+    (a person may call one a "strut") and custom steps, and the APPS over
+    them. Each turn you get one message;
     you remember the turns before it. You have no shell: a workflow or a
     step is published through your tools, an app is a directory you write
     with the editor in the job's directory, and everything you learn comes

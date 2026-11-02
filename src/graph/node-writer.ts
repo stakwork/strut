@@ -42,7 +42,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { int } from "./bolt.js";
 import { EVIDENCE_TYPE } from "./claims.js";
-import type { EngineLike, GraphEngine, PreparedNode, SoftDeleteResult, WriteMode, WriteOutcome } from "./engine.js";
+import type { EngineLike, GraphEngine, GraphTx, PreparedNode, SoftDeleteOptions, SoftDeleteResult, WriteMode, WriteOutcome } from "./engine.js";
 import { sameStored } from "./engine.js";
 import { asEngine } from "./neo4j-engine.js";
 import { SchemaResolver, fromStrut, type NodeSchema } from "./schema-resolver.js";
@@ -226,6 +226,16 @@ export function toEpochSeconds(v: unknown): number | null {
 export const MAX_NODE_KEY_LENGTH = 200;
 export const NODE_KEY_HASH_LENGTH = 32;
 
+/** A schema keyed by `ref_id` (`node_key: "ref_id"`): every create is a new
+ *  node, never a match on its attributes, and never a deleted one brought
+ *  back — two people may share a name. */
+export const keyedByRef = (schema: Pick<NodeSchema, "node_key">): boolean => schema.node_key === "ref_id";
+
+/** The node_key of a node keyed by `ref_id`: the type token, then the ref_id. */
+export function refNodeKey(type: string, ref_id: string): string {
+  return `${type.toLowerCase().replace(/[^a-zA-Z0-9\s]/g, "")}-${ref_id}`;
+}
+
 /** `String(v).trim()` → drop spaces → lowercase → strip `[^a-zA-Z0-9\s]`. */
 export function sanitizeKeyValue(v: unknown): string {
   return String(v)
@@ -376,7 +386,14 @@ export interface NodeWriterOptions {
  *  the writer on every node type, declared or not; never a caller's. */
 export const UPDATED_AT = "updated_at";
 
-export interface WriteOptions {
+/** What every write may carry: the caller's transaction. */
+export interface WriterCallOptions {
+  /** Run on the caller's write transaction (an engine's `tx()` does not
+   *  nest), so the write lands with the caller's other statements. */
+  tx?: GraphTx;
+}
+
+export interface WriteOptions extends WriterCallOptions {
   /** Override the backend's default namespace for this write. Must already
    *  be registered when it is not `default` (callers check via
    *  `GraphReader.resolveNamespace`). */
@@ -436,15 +453,15 @@ export class NodeWriter {
     const validated: ValidatedNode[] = [];
     const now = this.stamp();
     for (const i of inputs) {
-      const schema = await this.resolver.schema(i.type);
+      const schema = await this.resolver.schema(i.type, opts.tx);
       if (!schema) throw new GraphValidationError("UNKNOWN_TYPE", i.type, "unknown node type (not a Strut type and no such Schema in the graph)");
       validated.push(validateNode(schema, this.callerData(i.data)));
     }
     // Gather every text to embed across the batch → one encoder call.
     const jobs: Array<{ idx: number; column: string; text: string }> = [];
     const prepared: PreparedNode[] = validated.map((v, idx) => {
-      const node_key = composeNodeKey(v.schema, v.values);
       const ref_id = randomUUID();
+      const node_key = keyedByRef(v.schema) ? refNodeKey(v.schema.type, ref_id) : composeNodeKey(v.schema, v.values);
       const { text, fields } = buildSearchText(v.schema, v.values);
       // One clock read for both stamps; `date_added_to_graph` is identity
       // (PRESERVED), so only a create writes it.
@@ -482,11 +499,12 @@ export class NodeWriter {
    * Write many nodes (any mix of types) in one transaction — one batch per
    * type, same resulting state as the single form. Results are in input
    * order. All-or-nothing: a validation error anywhere writes nothing.
+   * With `tx`, on the caller's transaction.
    */
   async writeMany(inputs: NodeInput[], mode: WriteMode = "create", opts: WriteOptions = {}): Promise<NodeWriteResult[]> {
     if (inputs.length === 0) return [];
     const namespace = opts.namespace ?? this.engine.namespace;
-    const prepared = await this.prepareMany(inputs, { namespace });
+    const prepared = await this.prepareMany(inputs, { ...opts, namespace });
     const byType = new Map<string, Array<{ i: number; p: PreparedNode }>>();
     prepared.forEach((p, i) => {
       const list = byType.get(p.schema.type) ?? [];
@@ -494,14 +512,15 @@ export class NodeWriter {
       byType.set(p.schema.type, list);
     });
     const results: NodeWriteResult[] = new Array(inputs.length);
-    await this.engine.tx(async (tx) => {
+    const go = async (tx: GraphTx) => {
       for (const [type, rows] of byType) {
         const out = await this.engine.nodeEngine.mergeBatch(tx, rows[0]!.p.schema, namespace, rows.map((r) => r.p), mode);
         rows.forEach((r, k) => {
           results[r.i] = { ...out[k]!, node_type: type };
         });
       }
-    });
+    };
+    await (opts.tx ? go(opts.tx) : this.engine.tx(go));
     return results;
   }
 
@@ -513,11 +532,13 @@ export class NodeWriter {
    * another node fails with DUPLICATE_KEY, nothing written), and
    * `Data_Bank` + vectors are rebuilt. Identity stamps (`ref_id`,
    * `namespace`, `date_added_to_graph`) and the delete markers are untouched.
+   * A type keyed by `ref_id` keeps its node_key. With `tx`, on the caller's
+   * transaction.
    */
-  async update(ref_id: string, patch: NodeUpdate): Promise<NodeUpdateResult> {
+  async update(ref_id: string, patch: NodeUpdate, opts: WriterCallOptions = {}): Promise<NodeUpdateResult> {
     const remove = patch.remove ?? [];
     const set = this.callerData(patch.set ?? {});
-    return this.engine.tx(async (tx) => {
+    const go = async (tx: GraphTx): Promise<NodeUpdateResult> => {
       const raw = await this.engine.nodeEngine.readRaw(tx, ref_id);
       if (!raw) throw new GraphValidationError("NOT_FOUND", "?", `no node with ref_id ${ref_id}`);
       const props = raw.props;
@@ -540,8 +561,8 @@ export class NodeWriter {
       const merged = { ...current, ...set };
       for (const k of remove) if (k in set) delete merged[k];
 
-      const [p] = await this.prepareMany([{ type: schema.type, data: merged }], { namespace: String(props["namespace"]) });
-      const node_key = p!.node_key;
+      const [p] = await this.prepareMany([{ type: schema.type, data: merged }], { namespace: String(props["namespace"]), tx });
+      const node_key = keyedByRef(schema) ? String(props["node_key"]) : p!.node_key;
       const rekeyed = node_key !== props["node_key"];
       if (rekeyed) {
         const clash = await this.engine.nodeEngine.refByKey(tx, schema.type, node_key, String(props["namespace"]));
@@ -569,23 +590,27 @@ export class NodeWriter {
       if (!rekeyed && Object.keys(attrs).every((k) => k === UPDATED_AT || sameStored(props[k], p!.props[k]))) delete setMap[UPDATED_AT];
       await this.engine.nodeEngine.update(tx, schema, ref_id, setMap, [...drop]);
       return { ref_id, node_key, rekeyed };
-    });
+    };
+    return opts.tx ? go(opts.tx) : this.engine.tx(go);
   }
 
   /** Soft delete (`deletion.ts`): stamps `deleted_at` (the first delete
    *  time is kept) + `is_deleted`, and hard-deletes the node's in-scope edges
-   *  in the same statement. Scoped to Strut's own nodes in this namespace. */
-  async softDelete(ref_id: string): Promise<boolean> {
-    return (await this.engine.nodeEngine.softDelete(ref_id, this.engine.namespace, { domainLabel: STRUT_DOMAIN_LABEL })) !== null;
+   *  in the same statement. Scoped to Strut's own nodes in this namespace.
+   *  Options: `keepEdges` leaves the edges, `reason` is stored as
+   *  `deleted_reason`, `tx` runs on the caller's transaction. */
+  async softDelete(ref_id: string, opts: SoftDeleteOptions = {}): Promise<boolean> {
+    return (await this.engine.nodeEngine.softDelete(ref_id, this.engine.namespace, { domainLabel: STRUT_DOMAIN_LABEL }, opts)) !== null;
   }
 
   /** `softDelete` for a node of ANY type in the namespace, on a caller's
    *  say-so (`graph/delete-node`, the twin of hive's graphNodeDelete):
    *  `deleted_at` stamped, its in-scope edges hard-deleted and counted.
    *  Null when there is no such node there. The `Domain_strut` guard stays
-   *  on `softDelete` for strut's own rows. */
-  async deleteNode(ref_id: string, opts: { namespace?: string } = {}): Promise<SoftDeleteResult | null> {
-    return this.engine.nodeEngine.softDelete(ref_id, opts.namespace ?? this.engine.namespace, {});
+   *  on `softDelete` for strut's own rows. Takes `softDelete`'s options. */
+  async deleteNode(ref_id: string, opts: SoftDeleteOptions & { namespace?: string } = {}): Promise<SoftDeleteResult | null> {
+    const { namespace, ...how } = opts;
+    return this.engine.nodeEngine.softDelete(ref_id, namespace ?? this.engine.namespace, {}, how);
   }
 
   /** `softDelete` for the one non-Strut node strut retires: a stale

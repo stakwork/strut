@@ -250,6 +250,6 @@ describe("a package with bare references, installed", () => {
     const broken = { ...PACKAGE, "workflows/summarize.yaml": PACKAGE["workflows/summarize.yaml"]!.replace("type: clip/shout", "type: clip/whisper") };
     const r = await install(buyer, `file:${await writeTree(broken, "broken")}`);
     assert.notEqual(r.status, 201);
-    assert.match(r.body.error ?? "", /names the step clip\/whisper, which is neither on this strut nor in the packages/);
+    assert.match(r.body.error ?? "", /names the step clip\/whisper, which is neither on this strut server nor in the packages/);
   });
 });
