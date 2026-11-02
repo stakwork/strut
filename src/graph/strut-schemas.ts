@@ -541,9 +541,10 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
 
 // ── Edge registry ───────────────────────────────────────────────────────────
 
-/** Every (source, edge, target) strut may write. `ACCESSED` is declared
- *  against `Thing` — provenance may point at ANY node — and the writer
- *  accepts any target label for it (plan §6 item 6). */
+/** Every (source, edge, target) strut may write. `ACCESSED` and
+ *  `DERIVED_FROM` are declared against `Thing` — provenance may point at
+ *  ANY node — and the writer accepts any target label for them (plan §6
+ *  item 6). */
 export const STRUT_EDGES: readonly StrutEdgeDef[] = [
   { edge: "VERSION_OF", source: "StrutWorkflowVersion", target: "StrutWorkflow" },
   { edge: "VERSION_OF", source: "StrutStepVersion", target: "StrutStep" },
@@ -573,6 +574,11 @@ export const STRUT_EDGES: readonly StrutEdgeDef[] = [
   // artifacts of kind "pull-request" carry the PR url, and the key is stable.
   { edge: "HAS_ARTIFACT", source: "StrutJob", target: "StrutArtifact" },
   { edge: "DELIVERED", source: "StrutRun", target: "StrutArtifact" },
+  // What a work product was made from (`from` on the deliverable,
+  // plans/work-products.md §2): the Concepts it follows, the excerpts it
+  // quotes. jarvis's own name for "computed from" (ComputedFigure
+  // -[:DERIVED_FROM]-> Excerpt), so one query reads both.
+  { edge: "DERIVED_FROM", source: "StrutArtifact", target: "Thing", note: "any node" },
   { edge: "ACCESSED", source: "StrutToolCall", target: "Thing", note: "any node" },
 ];
 
@@ -594,7 +600,7 @@ export const JARVIS_SOURCED_EDGES: readonly StrutEdgeDef[] = [
 ];
 
 /** Edge types whose declared target is a wildcard (any node label). */
-export const WILDCARD_TARGET_EDGES = new Set(["ACCESSED"]);
+export const WILDCARD_TARGET_EDGES = new Set(["ACCESSED", "DERIVED_FROM"]);
 
 // ── Lookups ─────────────────────────────────────────────────────────────────
 

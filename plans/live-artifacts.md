@@ -9,6 +9,13 @@
 > beside). The `browser/*` steps live in the stakgraph repo
 > (`mcp/src/lab/browser`). Hive's half is described here only as the
 > contract it reads.
+>
+> **Companion (2026-11-02, proposed):** `work-products.md` — the same
+> deliverables seen by a PAGE following a run: the work-product kinds
+> (`sheet`, `table`, `timeline`, `docx`, `redline`), `render`, provenance
+> (`from`, `content.sources`, the `DERIVED_FROM` edge), a step's own
+> `artifacts` folded live, and the `WorkProducts` shelf. It keeps every
+> ruling here: the output is the record, a live item is progress.
 
 ## Problem
 

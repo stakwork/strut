@@ -98,13 +98,15 @@ steps:
               required: [id, title]
               properties:
                 id: { type: string, description: "Stable across turns: the same id next turn means a newer version of the same thing (\"plan\", not \"plan-v3\")." }
-                kind: { type: string, description: "As given when a workflow handed you the artifact (captcha, walkthrough, …; `app` with `app: <name>` for an app the builder published). Otherwise only when the file extension would mislead: markdown | html | image | video | audio | pdf | url | diff | pull_request | code | log | json" }
+                kind: { type: string, description: "As given when a workflow handed you the artifact (captcha, walkthrough, …; `app` with `app: <name>` for an app the builder published). Otherwise only when the file extension would mislead: markdown | html | image | video | audio | pdf | url | diff | pull_request | code | log | json | sheet | table | timeline | docx | redline" }
                 title: { type: string }
                 label: { type: string, description: "What it is to the reader: Plan, Page, Screenshot" }
                 summary: { type: string, description: "One sentence about what is in it" }
                 path: { type: string, description: "A file you wrote, relative to the working directory" }
                 url: { type: string, description: "Instead of a file you wrote: an absolute link, or the url job/get gave an earlier job's deliverable" }
                 content: { type: string, description: "Small inline content instead of a file (a diff, short JSON)" }
+                render: { type: string, description: "A file a page can draw in its place, relative to the working directory: a .docx's HTML, a sheet's CSV" }
+                from: { type: array, items: { type: string }, description: "The ref_ids of the graph nodes it was made from — the Concepts it follows, the excerpts it quotes — as the graph tools gave them" }
                 app: { type: string, description: "An app in this workspace, by name, as the builder's reply gave it (with kind: app); its active version unless `version` names one" }
                 version: { type: string, description: "With `app`: a version to pin (v3)" }
           ask:

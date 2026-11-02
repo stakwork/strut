@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { distinctNodeRefs, foldRunHealth, foldRunOverview, projectWithLaunches, type HealthEvent, type OverviewEvent } from "@strut/kit/folds";
+import { distinctNodeRefs, foldRunHealth, foldRunOverview, foldWorkProducts, productView, projectWithLaunches, type HealthEvent, type OverviewEvent, type WorkProductEvent } from "@strut/kit/folds";
 import { createStrut } from "../createStrut.js";
 import { MemoryRunStore } from "../store.js";
 import { FileWorkspaceStore } from "../workspace.js";
@@ -15,6 +15,8 @@ import { CHILD_EVENTS, CHILD_RUN_ID, REF, RUN_EVENTS } from "./views/src/fixture
 import { createFixtureClient } from "./views/src/fixtures/client.js";
 import { REPORT_EVENTS } from "./views/src/fixtures/report.js";
 import { RunGraphReader } from "./views/src/components/run-graph/reader.js";
+import { MATTER, MATTER_EVENTS, MATTER_LIVE_RUN_ID, MATTER_WORKFLOW } from "./views/src/fixtures/matter.js";
+import { NDA_FRAMES, NDA_SHEET, NDA_SOURCES } from "./views/src/fixtures/sheets.js";
 
 const quiet = { serveUi: false, enableChat: false, scheduler: false } as const;
 
@@ -84,6 +86,39 @@ describe("strut/views — what its run views draw", () => {
     assert.deepEqual(child.calls.map((c) => c.path), [`${prefix}/summarize/read/001-graph_graph_get`, `${prefix}/summarize/read/002-graph_graph_get`]);
     await reader.read(distinctNodeRefs(child.calls));
     assert.equal(reader.snapshot().nodes.filter((n) => n.name === "ESC guideline 2026").length, 1, "read once");
+  });
+
+  it("WorkProducts over the gallery's matter: memo, sheet, redline, timeline appear one by one, each made by the step that declared it; the sheet is SheetView's live NDA matrix", async () => {
+    const products = foldWorkProducts(MATTER_EVENTS as WorkProductEvent[]);
+    assert.deepEqual(products.map((p) => [p.id, p.kind, p.step.replace(`${MATTER_WORKFLOW}/`, ""), p.versions, p.final]), [
+      ["memo", "markdown", "memo", 1, true],
+      ["matrix", "sheet", "review/001-sheets_create-spreadsheet", 2, true],
+      ["redline", "redline", "review/003-docx_redline", 1, true],
+      ["timeline", "timeline", "timeline", 1, true],
+    ]);
+    assert.deepEqual(products.map((p) => productView(p).view), ["document", "sheet", "document", "timeline"]);
+    const matrix = products.find((p) => p.id === "matrix")!;
+    assert.deepEqual((matrix.content as { sources: unknown }).sources, NDA_SOURCES, "the sheet's sources in SheetView's keys");
+    assert.ok(products.find((p) => p.id === "memo")!.from.includes(MATTER.drafting));
+    // Live: the client reveals a step's end per read, and each read adds a product.
+    const client = createFixtureClient();
+    const seen: string[][] = [];
+    let log: WorkProductEvent[] = [];
+    for (let i = 0; i < 12; i++) {
+      log = log.concat(await client.run<WorkProductEvent[]>("run/events", { workflow: MATTER_WORKFLOW, runId: MATTER_LIVE_RUN_ID, skip: log.length }));
+      seen.push(foldWorkProducts(log).map((p) => `${p.id}@${p.versions}`));
+    }
+    assert.deepEqual([...new Set(seen.flat().map((x) => x.split("@")[0]))], ["memo", "matrix", "redline", "timeline"]);
+    assert.ok(seen.some((s) => s.includes("matrix@1")) && seen.some((s) => s.includes("matrix@2")), "the sheet declared, then declared again filled");
+    const live = productView(foldWorkProducts(log).find((p) => p.id === "matrix")!);
+    assert.ok(live.view === "sheet" && live.spreadsheet?.includes(NDA_SHEET), "the live run's matrix is the NDA sheet");
+    // The run stays in flight while SheetView fills the sheet a provision a read, then ends.
+    const status = async () => (await client.run<{ status: string }>("run/get", { workflow: MATTER_WORKFLOW, runId: MATTER_LIVE_RUN_ID })).status;
+    assert.equal(await status(), "running");
+    const rows: number[] = [];
+    for (let i = 0; i < NDA_FRAMES; i++) rows.push((await client.run<{ values: unknown[][] }>("sheets/get-values", { spreadsheet_id: NDA_SHEET, range: "", grid: true })).values.length);
+    assert.ok(rows[0]! < rows[rows.length - 1]!, `the matrix fills: ${rows.join(" → ")}`);
+    assert.equal(await status(), "success");
   });
 
   it("without the graph steps granted, the nodes are as the run's log named them", async () => {

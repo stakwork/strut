@@ -121,6 +121,19 @@ import { LaunchForm, RunList, RunTimeline, RunGraph } from "strut/views";
 <AgentTrace workflow="score" runId={runId} live /> // the run's agents as a cascade
 ```
 
+`WorkProducts` is what a run MADE for a person — memos, sheets, redlines,
+timelines — as a shelf that fills while the run goes: every `artifacts`
+entry a step declared in its output (a tool's included), the run's own
+output winning by id. Each card says which step made it and how many
+Concepts it draws on (`from`); a click opens it in the viewer its kind
+reads in — a sheet or a table in SheetView, filling in while the run
+writes it (a Google sheet needs `sheets/get-values` in `grants.steps`) —
+and `renderers={{ <kind>: … }}` plugs your own in per kind. Show a
+run's work this way rather than listing its files. The products' shape —
+the kinds `sheet`, `table`, `timeline`, `docx`, `redline`, a `render` file a
+page draws, `from` and `content.sources` for provenance — is
+plans/work-products.md.
+
 `AgentTrace` draws every agent the run started as a nested cascade: the
 agents that ran together side by side, their tool calls in pills that open
 into each call and the reasoning before it, the nodes a call read or wrote
@@ -156,7 +169,8 @@ YOUR grants: the run views need the workflow (and a child run's) in
 `graph/graph-neighbors` (and `graph/graph-search` for `NodeSearch`) in
 `grants.steps`. Its own page is a gallery of all of them. The pure folds
 under them — `foldRunOverview`, `foldRunHealth`, `foldAgentTrace`,
-`transcriptToEntries`, `projectWithLaunches`, `sanitizeHtml` — come from
+`foldWorkProducts`, `transcriptToEntries`, `projectWithLaunches`,
+`sanitizeHtml` — come from
 `@strut/kit`, for a run drawn your own way.
 
 **The hooks** come from `@strut/kit`, each naming a `run/*` step, over one
@@ -167,6 +181,7 @@ tool (`step_run`) the host relays to the strut server:
 | `useRuns(workflow, { status?, automation?, job?, limit?, since?, live? })` | `run/list`: the runs, newest first; `live` refetches while any is in flight; `useRuns(null, { job })` a job's runs across workflows |
 | `useRun(workflow, runId, { live? })` | `run/get`: the summary, its whole `input` and `output`, `artifacts` as links; `live` long-polls (`wait`) while in flight |
 | `useRunEvents(workflow, runId, { live?, intervalMs? })` | `run/events`: the log, transcripts as links; `live` reads only what was appended, every `intervalMs` (2 s; pass 10 000 for a long run) until the run ends |
+| `useWorkProducts(workflow, runId, { live?, intervalMs? })` → `{ products, events }` | the run's work products folded from `run/events`, appearing as steps declare them; what `WorkProducts` draws |
 | `useTranscripts(workflow, runId, paths)` | `run/transcript` for several agents, one call at a time, each kept: a Map by path. Ask only for agents that ended |
 | `useTranscript(workflow, runId, path, { full? })` | `run/transcript`: the agent session a `step.end`'s `transcript` link names (the page cannot follow the link); `full` a session turn's whole thread; `truncated` says what a 2 MB cap cut |
 | `useLaunch(workflow, { job? })` → `{ launch(input, params?, key?, files?), pending }` | `run/launch`: a MUTATION — a function to call on a click, never a query; `job` launches under one of the app's jobs, `files` go with the run |

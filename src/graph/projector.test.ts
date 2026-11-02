@@ -11,7 +11,7 @@ import { MemoryRunStore } from "../store.js";
 import { MemoryChatStore } from "../chat-store.js";
 import type { GraphBackend } from "./backend.js";
 import { seedStrutDomain } from "./schema-seed.js";
-import { edgeCount, nodeCount, rawWrite, testBackends } from "./test-util.js";
+import { edgeCount, nodeCount, rawWrite, seedConceptSchema, testBackends } from "./test-util.js";
 import { GraphWorkspaceStore } from "./workspace-store.js";
 import { jobNode, messageText, preview, projectAll, projectChats, projectRun, projectRunEvents, projectRunOnce, projectRuns, runRef, spawnedRunIds } from "./projector.js";
 import type { JobView } from "../job-index.js";
@@ -674,6 +674,22 @@ for (const tb of testBackends()) describe(`projector on ${tb.name}`, { skip: tb.
       (await backend.query(`MATCH ${d().node("r", "StrutRun", { run_id: "$r" })}-[:DELIVERED]->${d().node("a", "StrutArtifact")} RETURN a.artifact_id AS id ORDER BY id`, { r })).map((x) => x["id"]);
     assert.deepEqual(await delivered(RUN), ["plan", "pr"], "run 1 delivered the first plan, though the node now holds the second");
     assert.deepEqual(await delivered(RUN2), ["plan"]);
+  });
+
+  it("job artifacts: `from` is a DERIVED_FROM edge to each node it names that the graph holds; another graph's ref is skipped; a re-projection adds none", async () => {
+    await seedConceptSchema(backend);
+    const [rule] = await backend.nodes.writeMany([{ type: "Concept", data: { name: "NDA drafting rules", description: "How an NDA is drafted here" } }], "create");
+    const elsewhere = "00000000-0000-4000-8000-00000000dead";
+    const views = await twoTurns();
+    const view = { ...views[0]!, artifacts: views[0]!.artifacts.map((a) => (a.id === "plan" ? { ...a, from: [rule!.ref_id, elsewhere] } : a)) };
+    const jobs = { get: async () => view };
+    await projectRun(backend, store, WF, RUN, undefined, jobs);
+    const derived = async () =>
+      (await backend.query(`MATCH ${d().node("a", "StrutArtifact")}-[:DERIVED_FROM]->${d().node("c", "Concept")} RETURN a.artifact_id AS id, c.name AS name`)).map((r) => [r["id"], r["name"]]);
+    assert.deepEqual(await derived(), [["plan", "NDA drafting rules"]]);
+    assert.equal(await edges("DERIVED_FROM"), 1);
+    await projectRun(backend, store, WF, RUN, undefined, jobs);
+    assert.equal(await edges("DERIVED_FROM"), 1);
   });
 
   it("createStrut: a run launched under a job refreshes its StrutJob through the run-end hook — title from the launch, summary from the fold; a plain run touches no job", async () => {

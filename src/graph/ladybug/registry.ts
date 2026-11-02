@@ -1,7 +1,7 @@
 /**
  * The SEED of a Ladybug file's ontology (plans/ladybug-backend.md §3, ruling 6
  * as amended 2026-10-28; plans/memory-in-workspace-graph.md, PR A): the
- * thirteen node types a new file starts with and the eighteen edge types
+ * thirteen node types a new file starts with and the nineteen edge types
  * between them. The ontology itself lives in the file, as `Schema` rows of
  * the `Node` table (`ontology.ts`), seeded from this module at open
  * (add-only) and created and edited at runtime like Neo4j's `:Schema` nodes.
@@ -151,6 +151,10 @@ export const LADYBUG_EDGES: readonly LadybugEdgeDef[] = [
   // at its children (graph/graph-get `children: "PARENT_OF"`, the seeded
   // pages).
   { edge: "PARENT_OF", source: CONCEPT_TYPE, target: CONCEPT_TYPE },
+  // What a work product was made from: on the file, its rel table. The
+  // Strut registry's wildcard lets it point at any node the file holds (a
+  // Concept, an app's excerpt type), as `STRUT_EDGES` declares it.
+  { edge: "DERIVED_FROM", source: "StrutArtifact", target: CONCEPT_TYPE },
 ];
 
 /** The rel tables, sorted. */

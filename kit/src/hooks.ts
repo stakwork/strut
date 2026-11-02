@@ -10,6 +10,7 @@ import type { AppIdentity, StrutClient } from "./client.js";
 import type { DisplayMode, HostState, Theme } from "./host.js";
 import { appLink, type AppLinkInput } from "./links.js";
 import { useStrutClient, useStrutHost } from "./provider.js";
+import { foldWorkProducts, type WorkProduct, type WorkProductEvent } from "./folds/work-products.js";
 
 /** The run steps the hooks call (§5). */
 export const RUN_STEPS = {
@@ -223,6 +224,22 @@ export function useRunEvents(workflow: string, runId: string | undefined, opts: 
     structuralSharing: false,
     refetchInterval: opts.live ? (q) => (eventsSettled(q.state.data) ? false : interval) : false,
   });
+}
+
+export interface UseWorkProducts {
+  /** Every product declared so far, in the order they appeared (`foldWorkProducts`). */
+  products: WorkProduct[];
+  /** The log they were folded from. */
+  events: UseQueryResult<RunEvent[]>;
+}
+
+/** A run's WORK PRODUCTS (plans/work-products.md): the artifacts its steps
+ *  and its output declared, folded from `run/events` — live, they appear as
+ *  each step declares one, and the run's own output wins once it ends. */
+export function useWorkProducts(workflow: string, runId: string | undefined, opts: UseRunEventsOptions = {}): UseWorkProducts {
+  const events = useRunEvents(workflow, runId, opts);
+  const products = useMemo(() => foldWorkProducts((events.data ?? []) as WorkProductEvent[]), [events.data]);
+  return { products, events };
 }
 
 export interface UseTranscriptOptions {

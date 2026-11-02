@@ -415,6 +415,21 @@ describe("wrapToolsWithEmit (per-call nested run events)", () => {
     assert.equal(tools.bash.execute, orig, "execute is left untouched");
   });
 
+  it("lifts a tool's declared `artifacts` onto step.end, though the event's output is a preview (plans/work-products.md §3)", async () => {
+    const events: any[] = [];
+    const sheet = { id: "matrix", kind: "sheet", title: "Deviation matrix", url: "https://docs.google.com/spreadsheets/d/x", from: ["c-1"] };
+    const tools: Record<string, any> = {
+      fill: { execute: async () => ({ rows: "x".repeat(5000), artifacts: [sheet] }) },
+      plain: { execute: async () => ({ ok: true }) },
+    };
+    wrapToolsWithEmit(tools, makeCtx(events));
+    await tools.fill.execute({});
+    await tools.plain.execute({});
+    assert.match(events[1].output, /truncated for event log/);
+    assert.deepEqual(events[1].artifacts, [sheet]);
+    assert.equal("artifacts" in events[3], false);
+  });
+
   it("lifts the provenance marker onto step.end as `nodes`, untruncated, without touching the tool result", async () => {
     const events: any[] = [];
     const big = "x".repeat(5000);

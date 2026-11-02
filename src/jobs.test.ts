@@ -13,7 +13,8 @@ import { fileArtifactsCapability, shellCapability, standardServices, type StrutC
 import { readRunStart } from "./journal.js";
 import { holdJob, jobHolder, jobRoot, jobsCapability, listJobFiles, notifyJob, readJobRecord, releaseWith, setJobCallback, sweepJobs, touchJob, turnOf, JOB_WORKFLOWS } from "./jobs.js";
 import { RunController } from "./run-control.js";
-import { artifactKind, jobFileUrl, resolveArtifactRefs } from "./artifact-refs.js";
+import { artifactKind, jobFileUrl, liftedArtifacts, resolveArtifactRefs } from "./artifact-refs.js";
+import { productKind } from "@strut/kit/folds";
 import { captchaFiles } from "./browser/captcha.js";
 import { mediaOf } from "./core.js";
 import { MemorySessionStore } from "./session-store.js";
@@ -531,6 +532,41 @@ describe("jobs — artifact refs", () => {
       { id: "gone-but-inline", kind: "markdown", title: "Gone", content: "# still here" },
       { id: "none", kind: "url", title: "None", error: "one of path, url, app or content is required" },
       { id: "big", kind: "url", title: "Big", error: "too large" },
+    ]);
+  });
+
+  it("work products (plans/work-products.md): the extension names docx and table; `render` resolves like a path and is left out when missing; `from` is kept, trimmed and deduped", async () => {
+    assert.equal(artifactKind("contract.docx"), "docx");
+    assert.equal(artifactKind("matrix.csv"), "table");
+    assert.equal(artifactKind("matrix.TSV"), "table");
+    assert.equal(artifactKind("matrix.xlsx"), "table");
+    // The kit's fold reads a step's raw entries with its own copy of the list.
+    for (const f of ["a.md", "a.html", "a.png", "a.mp4", "a.wav", "a.pdf", "a.json", "a.diff", "a.log", "a.txt", "a.ts", "a.yaml", "a.csv", "a.tsv", "a.xlsx", "a.docx", "README", "w/walkthrough.json", "captcha-2.json", "https://x/y?z=1"]) {
+      assert.equal(productKind({ path: f }), artifactKind(f), f);
+    }
+    const concept = "c1000000-0000-4000-8000-000000000001";
+    const output = {
+      artifacts: [
+        { id: "redline", kind: "redline", title: "NDA redline", path: "nda-redline.docx", render: "nda-redline.html", from: [concept, ` ${concept} `, "", 7], content: { sources: { "0": [concept] } } },
+        { id: "matrix", kind: "sheet", title: "Deviation matrix", url: "https://docs.google.com/spreadsheets/d/x", render: "matrix.csv" },
+        { id: "memo", title: "Memo", path: "memo.docx", render: "nope.md" },
+        { id: "far", kind: "redline", title: "Theirs", path: "r.docx", render: "r.html", peer: "acme", job: "peer/j", from: [concept] },
+      ],
+    };
+    assert.deepEqual(await resolveArtifactRefs(output, at("j-1")), [
+      { id: "redline", kind: "redline", title: "NDA redline", from: [concept], url: "/jobs/j-1/files/nda-redline.docx", render: "/jobs/j-1/files/nda-redline.html", content: { sources: { "0": [concept] } } },
+      { id: "matrix", kind: "sheet", title: "Deviation matrix", url: "https://docs.google.com/spreadsheets/d/x", render: "/jobs/j-1/files/matrix.csv" },
+      { id: "memo", kind: "docx", title: "Memo", url: "/jobs/j-1/files/memo.docx" },
+      { id: "far", kind: "redline", title: "Theirs", from: [concept], peer: "acme", job: "peer/j", path: "r.docx", render: "r.html" },
+    ]);
+  });
+
+  it("liftedArtifacts: a tool's declared entries for its step.end — whole entries only, a content over the cap left out", () => {
+    assert.equal(liftedArtifacts({ text: "no list" }), undefined);
+    assert.equal(liftedArtifacts({ artifacts: [{ title: "no id" }, "x"] }), undefined);
+    assert.deepEqual(liftedArtifacts({ artifacts: [{ id: "s", kind: "sheet", title: "S", url: "https://x" }, { id: "b", title: "B", path: "b.json", content: "x".repeat(50_001) }] }), [
+      { id: "s", kind: "sheet", title: "S", url: "https://x" },
+      { id: "b", title: "B", path: "b.json" },
     ]);
   });
 

@@ -32,7 +32,8 @@
  * Jobs (plans/job-index.md §6): a run under a job upserts its `StrutJob`
  * (`IN_JOB`) and one `StrutArtifact` per current deliverable of the job
  * (`HAS_ARTIFACT`), and gets a `DELIVERED` edge to each artifact its own
- * output declares.
+ * output declares. An artifact's `from` (plans/work-products.md §2) is a
+ * `DERIVED_FROM` edge to each of those nodes the graph holds.
  *
  * Not projected: `PROMOTED_FROM` — promotions publish a new version without
  * recording the source run.
@@ -40,7 +41,8 @@
  * Only the types the backend's ontology holds are written: every Strut type
  * on Neo4j; on a LadybugDB file (plans/ladybug-backend.md), whose seed
  * leaves the chat and agent-session types out, `StrutRun`, `StrutJob` and
- * `StrutArtifact` with `EXECUTED`, `IN_JOB`, `HAS_ARTIFACT` and `DELIVERED`; the
+ * `StrutArtifact` with `EXECUTED`, `IN_JOB`, `HAS_ARTIFACT`, `DELIVERED` and
+ * `DERIVED_FROM`; the
  * agent sessions, tool calls, their edges and the whole chat projection are
  * skipped there, and the report counts what was written. The statements
  * are written with the backend's dialect helpers (`engine.ts`).
@@ -425,8 +427,27 @@ async function upsertJob(backend: GraphBackend, jobs: JobReader | undefined, job
     } catch (e) {
       console.warn(`[projector] job ${job}: artifacts not written: ${e instanceof Error ? e.message : String(e)}`);
     }
+    try {
+      await writeDerivedFrom(backend, local.flatMap((a) => (out.artifacts.has(a.id) && a.from?.length ? [{ ref: out.artifacts.get(a.id)!, from: a.from }] : [])));
+    } catch (e) {
+      console.warn(`[projector] job ${job}: DERIVED_FROM not written: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
   return out;
+}
+
+/** `DERIVED_FROM`: each artifact → every node its `from` names that this
+ *  graph holds (plans/work-products.md §2) — a ref on another graph, or a
+ *  node since deleted, gets no edge (the writer refuses a missing end).
+ *  Add-only, like every edge here: one per (artifact, node), so a ref a
+ *  later version no longer names keeps its edge. */
+async function writeDerivedFrom(backend: GraphBackend, artifacts: { ref: string; from: string[] }[]): Promise<void> {
+  const wanted = [...new Set(artifacts.flatMap((a) => a.from))];
+  if (!wanted.length) return;
+  const present = new Set<string>();
+  for (const id of wanted) if (await backend.reader.getNode(id).catch(() => null)) present.add(id);
+  const edges = artifacts.flatMap((a) => a.from.filter((id) => present.has(id)).map((id) => ({ edge: "DERIVED_FROM", source_ref_id: a.ref, target_ref_id: id })));
+  if (edges.length) await backend.edges.writeMany(edges);
 }
 
 /** Project runs from a `RunStore` into the graph. */
