@@ -449,7 +449,7 @@ async function resolveSet(deps: PackageDeps, refs: Array<{ ref: string; digest?:
       const here = installed.get(req.package);
       if (here?.digest === req.digest) continue;
       if (here && door === "install") {
-        throw conflict(`${pkg} requires ${req.package} at ${req.digest}, and this strut has it at ${here.digest ?? "another digest"} — updating a package from a person's door is not built yet`);
+        throw conflict(`${pkg} requires ${req.package} at ${req.digest}, and this strut server has it at ${here.digest ?? "another digest"} — updating a package from a person's door is not built yet`);
       }
       await visit(req.source, req.digest, member.base, { package: req.package, by: pkg });
     }
@@ -503,7 +503,7 @@ async function checkSet(
   for (const m of members) {
     const pkg = m.info.manifest.package;
     if (!deps.apps && m.info.items.some((i) => i.kind === "app")) {
-      throw new Error(`package_unsupported: ${pkg} ships an app (apps/), and this strut hosts no apps`);
+      throw new Error(`package_unsupported: ${pkg} ships an app (apps/), and this strut server hosts no apps`);
     }
     const here = installed.get(pkg);
     if (here && door === "install") {
@@ -619,7 +619,7 @@ async function checkSet(
     for (const g of read.manifest.grants.steps) {
       const appPkg = packagePrefixOf(name);
       if (!g.includes("*") && !knownStep(baseType(g)) && !(appPkg && knownStep(`${appPkg}/${baseType(g)}`))) {
-        bad.push(`the app ${name} grants the step ${g}, which is neither on this strut nor in the packages`);
+        bad.push(`the app ${name} grants the step ${g}, which is neither on this strut server nor in the packages`);
       }
     }
     const base = deps.apps!.buildDeps(name);
@@ -636,7 +636,7 @@ async function checkSet(
       workflowExists: async (wf) => setWorkflows.has(wf) || ((await base.workflowExists?.(wf)) ?? false),
     };
     const built = await buildApp(app.dir, buildDeps);
-    if (!built.ok) bad.push(`the app ${name} does not build on this strut — ${built.errors.join("; ")}`);
+    if (!built.ok) bad.push(`the app ${name} does not build on this strut server — ${built.errors.join("; ")}`);
     else imports.set(name, built.imports.map((i) => i.name).filter((n) => staged.has(n)));
   }
   if (bad.length) throw new Error(`bad_package: ${bad.join("; ")}`);
@@ -798,15 +798,15 @@ function namesIn(steps: Step[], knownStep: (type: string) => boolean, knownWorkf
   const out = new Set<string>();
   walkSteps(steps, (s) => {
     const type = baseType(s.type);
-    if (!hasTemplates(type) && !knownStep(type)) out.add(`names the step ${type}, which is neither on this strut nor in the packages`);
+    if (!hasTemplates(type) && !knownStep(type)) out.add(`names the step ${type}, which is neither on this strut server nor in the packages`);
     const cfg = (s.config ?? {}) as Record<string, unknown>;
     for (const grant of Array.isArray(cfg["agentTools"]) ? (cfg["agentTools"] as unknown[]) : []) {
       if (typeof grant !== "string" || hasTemplates(grant) || grant.includes("*") || grant.startsWith("mcp/")) continue;
-      if (!knownStep(baseType(grant))) out.add(`grants the step ${grant}, which is neither on this strut nor in the packages`);
+      if (!knownStep(baseType(grant))) out.add(`grants the step ${grant}, which is neither on this strut server nor in the packages`);
     }
     const wf = cfg["workflow"];
     if (s.type === "subflow" && typeof wf === "string" && !hasTemplates(wf) && !knownWorkflow(wf)) {
-      out.add(`calls the workflow ${wf}, which is neither on this strut nor in the packages`);
+      out.add(`calls the workflow ${wf}, which is neither on this strut server nor in the packages`);
     }
   });
   return [...out];
@@ -815,7 +815,7 @@ function namesIn(steps: Step[], knownStep: (type: string) => boolean, knownWorkf
 /** The step types a contract's checks name that are not here or in the set. */
 function checkTypes(claims: MemberClaims["claims"], knownStep: (type: string) => boolean): string[] {
   const out: string[] = [];
-  for (const c of claims) for (const k of c.checks) if (k.type && !knownStep(baseType(k.type))) out.push(`a check of "${c.text}" runs the step ${k.type}, which is neither on this strut nor in the packages`);
+  for (const c of claims) for (const k of c.checks) if (k.type && !knownStep(baseType(k.type))) out.push(`a check of "${c.text}" runs the step ${k.type}, which is neither on this strut server nor in the packages`);
   return out;
 }
 

@@ -158,7 +158,7 @@ export function publisherStore(secrets: SecretStore, opts: { unsafe?: () => stri
     },
     async sealPublic(card) {
       const record = await read();
-      if (!record?.publicSeed) throw new Error("publisher_not_public: this strut has no public key yet — make a channel public first");
+      if (!record?.publicSeed) throw new Error("publisher_not_public: this strut server has no public key yet — make a channel public first");
       const { privateKey, key } = keyFromSeed(Buffer.from(record.publicSeed, "hex"));
       return sealCard({ ...card, key } as UnsignedCatalog, privateKey);
     },
@@ -367,13 +367,13 @@ export async function moveChannel(
   await markChannel(deps, move.channel, move.public);
   const card = await base(deps.catalogs);
   const releases = card.packages[move.package]?.releases;
-  if (!releases) throw new Error(`catalog_no_release: ${move.package} is not in this strut's catalog`);
+  if (!releases) throw new Error(`catalog_no_release: ${move.package} is not in this strut server's catalog`);
   const held = { ...(card.channels?.[move.channel] ?? {}) };
   if (move.digest === null) {
     if (!(move.package in held)) throw new Error(`catalog_no_release: the channel ${move.channel} does not hold ${move.package}`);
     delete held[move.package];
   } else {
-    if (!releases.some((r) => r.digest === move.digest)) throw new Error(`catalog_no_release: ${move.package} has no release at ${move.digest} in this strut's catalog`);
+    if (!releases.some((r) => r.digest === move.digest)) throw new Error(`catalog_no_release: ${move.package} has no release at ${move.digest} in this strut server's catalog`);
     held[move.package] = move.digest;
   }
   const channels = { ...(card.channels ?? {}), [move.channel]: held };

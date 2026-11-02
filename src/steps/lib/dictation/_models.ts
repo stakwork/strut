@@ -20,7 +20,7 @@ export const ModelList = z.object({
       progress: z.number().optional().describe("0..1 while downloading."),
       downloaded: z.number().optional().describe("Bytes received so far, while downloading."),
       selected: z.boolean().describe("The user's pick for its kind; a pick is used once it is installed."),
-      active: z.boolean().describe("What strut uses now: the installed speech pick (else the default speech model) and the installed fixer pick. Differs from `selected` while a pick downloads."),
+      active: z.boolean().describe("What the strut server uses now: the installed speech pick (else the default speech model) and the installed fixer pick. Differs from `selected` while a pick downloads."),
       removable: z.boolean().describe("False for the active model and the default speech model; dictation/remove-model refuses them."),
       error: z.string().optional().describe("Why the last download failed."),
     }),
@@ -29,6 +29,6 @@ export const ModelList = z.object({
 
 export function dictationModels(ctx: StepContext<unknown>): DictationModels {
   const stt = (ctx.services as StrutCapabilities | undefined)?.stt;
-  if (!stt) throw new Error("dictation: this strut has no speech-to-text service");
+  if (!stt) throw new Error("dictation: this strut server has no speech-to-text service");
   return stt.dictation;
 }

@@ -70,7 +70,7 @@ export class RunGraphReader {
       if (ref.peer) {
         // In a peer's graph: a ref means something only against the graph that recorded it.
         this.nodes.set(ref.ref_id, this.fromLog(ref));
-        if (!this.peers.has(ref.peer)) this.peers.set(ref.peer, { slug: ref.peer, read: false, reason: "a peer's run touched it; its graph is read on that strut" });
+        if (!this.peers.has(ref.peer)) this.peers.set(ref.peer, { slug: ref.peer, read: false, reason: "a peer's run touched it; its graph is read on that strut server" });
         continue;
       }
       if (this.touched.size + local.length >= MAX_NODES) {

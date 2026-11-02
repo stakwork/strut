@@ -5,7 +5,7 @@ import { requireAutomations, schedule, triggerSchema, unwrap } from "./_shared.j
 /** strut's own words for a schedule and its next fires, saving nothing. */
 export default defineStep({
   type: "automation/preview",
-  description: "strut's own words for a schedule and its next runs, saving nothing: { summary, next }. Check a schedule with it before proposing one.",
+  description: "The strut server's own words for a schedule and its next runs, saving nothing: { summary, next }. Check a schedule with it before proposing one.",
   input: z.object({ trigger: triggerSchema }),
   output: z.object({ summary: z.string(), next: z.array(z.string()) }),
   async run(cfg, ctx) {

@@ -98,7 +98,7 @@ describe("readPackage", () => {
       });
     const { "strut.yaml": _m, ...noManifest } = PACKAGE;
     await bad(noManifest, /no strut\.yaml/);
-    await bad({ ...PACKAGE, "prompts/a.txt": "x", "prompts/b.txt": "y", "hotwords/c.txt": "z" }, /hotwords\/ is not a folder this strut knows.*; prompts\/ is not/);
+    await bad({ ...PACKAGE, "prompts/a.txt": "x", "prompts/b.txt": "y", "hotwords/c.txt": "z" }, /hotwords\/ is not a folder this strut server knows.*; prompts\/ is not/);
     await bad({ ...PACKAGE, "workflows/sync.json": "{}" }, /workflows\/sync\.json: a workflow is a \.yaml file/);
     await bad({ ...PACKAGE, "workflows/runs/x.yaml": "steps: []" }, /Invalid workflow name "acme\/linear\/runs\/x": "runs" is reserved/);
     await bad({ ...PACKAGE, "workflows/each#2.yaml": "steps: []" }, /Invalid workflow name "acme\/linear\/each#2": "#" is not allowed/);

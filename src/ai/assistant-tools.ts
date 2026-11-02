@@ -249,7 +249,7 @@ export function buildAssistantTools(deps: AssistantDeps): ToolSet {
   const tools: ToolSet = {
     ask_workflow_builder: tool({
       description:
-        "Send a message to strut's workflow builder — an AI assistant that builds, edits, runs, debugs and schedules workflows here (it knows the step catalog, the YAML, the secrets' names). Say what you want in plain words, as to a colleague: 'make a workflow that …', 'schedule it every weekday at 9', 'why did the last run fail?', 'change the summary to be shorter'. Omit `chat` to start a new conversation; pass the `chat` from an earlier result to continue it (the builder remembers that conversation). " +
+        "Send a message to this strut server's workflow builder — an AI assistant that builds, edits, runs, debugs and schedules workflows here (it knows the step catalog, the YAML, the secrets' names). Say what you want in plain words, as to a colleague: 'make a workflow that …', 'schedule it every weekday at 9', 'why did the last run fail?', 'change the summary to be shorter'. Omit `chat` to start a new conversation; pass the `chat` from an earlier result to continue it (the builder remembers that conversation). " +
         "The call holds up to `wait` for the builder's turn to end and returns its reply: `text` (what it said), `did` (what it changed: workflows published, runs launched with their artifact links, schedules set), `status` — done | working (still going: read_workflow_builder_chat with wait) | asked (it has a question for you or your user — `question`; answer with your next message on this chat) | parked | error — and `settled` (false: a run it launched will wake it again later). " +
         "Links in results are absolute and shareable: an artifact link opens the file by itself (it carries its own read token).",
       inputSchema: z.object({
@@ -298,7 +298,7 @@ export function buildAssistantTools(deps: AssistantDeps): ToolSet {
 
     list_workflow_builder_chats: tool({
       description:
-        "The workflow builder chats on this strut, newest first: id, title, status (working | asked | parked | error | done), when it was last active, how many turns, who started it. Use it to find a conversation again — a long build outlives a session — or to see whether the builder is busy before starting another chat about the same workflow. By default only YOUR chats (the actor this connection carries); `mine: false` lists everyone's. Without an actor on the connection every chat is listed.",
+        "The workflow builder chats on this strut server, newest first: id, title, status (working | asked | parked | error | done), when it was last active, how many turns, who started it. Use it to find a conversation again — a long build outlives a session — or to see whether the builder is busy before starting another chat about the same workflow. By default only YOUR chats (the actor this connection carries); `mine: false` lists everyone's. Without an actor on the connection every chat is listed.",
       inputSchema: z.object({
         q: z.string().optional().describe("Words that must all appear in the title (case-insensitive)."),
         limit: z.number().int().positive().default(20).describe("At most this many (default 20)."),
@@ -471,7 +471,7 @@ export function buildAssistantTools(deps: AssistantDeps): ToolSet {
 
     search_packages: tool({
       description:
-        "Search the package STORE — PACKAGES people published for strut (workflows, steps, apps and Concept pages), listed by the package indexes this strut follows — before asking the builder to build an integration from scratch. Every word of `query` must match a package's name, description or publisher; empty lists everything (up to `limit`). " +
+        "Search the package STORE — PACKAGES people published for strut servers (workflows, steps, apps and Concept pages), listed by the package indexes this strut server follows — before asking the builder to build an integration from scratch. Every word of `query` must match a package's name, description or publisher; empty lists everything (up to `limit`). " +
         "Each hit: { package, publisher, version, digest, description?, license?, requires?, index, detail? } — `detail` is what the release HOLDS, read off its archive: its `apps` (title, `can`), the counts of `workflows`, `steps` and `concepts`, the `secrets` it needs, `can: { spends, acts, code }` (whether running it reaches a model call, a step that acts on the world, or code — a reading of its files, not a check) and whether it has a `readme`. `peers` lists what the other struts on file have installed; `errors` an index or peer that could not be read. get_package reads one package's whole page. " +
         INSTALL_IS_A_PERSONS_ACT,
       inputSchema: z.object({
@@ -479,7 +479,7 @@ export function buildAssistantTools(deps: AssistantDeps): ToolSet {
         limit: z.number().int().min(1).max(200).default(30),
       }),
       execute: async ({ query, limit }) => {
-        if (!deps.packages) return { error: "This strut has no package indexes wired (ctx.services.packages)." };
+        if (!deps.packages) return { error: "This strut server has no package indexes wired (ctx.services.packages)." };
         const found = await deps.packages.search(query, { limit });
         return { ...found, install: `A person installs a hit from the UI at ${base}/ — Packages, Find the name, Install — or opens ${base}/?install=<publisher/name>, which opens that dialog on the name.` };
       },
@@ -497,7 +497,7 @@ export function buildAssistantTools(deps: AssistantDeps): ToolSet {
         index: z.string().optional().describe("Read it from this followed index alone (its id, a hit's `index`)."),
       }),
       execute: async ({ package: name, index }) => {
-        if (!deps.packages?.get) return { error: "This strut has no package indexes wired (ctx.services.packages)." };
+        if (!deps.packages?.get) return { error: "This strut server has no package indexes wired (ctx.services.packages)." };
         try {
           const page = briefPackagePage(await deps.packages.get(name, index ? { index } : {}));
           return {

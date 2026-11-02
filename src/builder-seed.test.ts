@@ -389,7 +389,7 @@ describe("the builder, end to end", () => {
     assert.ok(system.includes("HOSTSECTION"), "the host's section after it");
     assert.ok(system.indexOf("workflow BUILDER") < system.indexOf("HOSTSECTION"));
     const lastUser = JSON.stringify(req.messages.filter((m: any) => m.role === "user").at(-1));
-    assert.ok(lastUser.includes("Workspace: @acme, the one this strut belongs to. Your job id: build-1. Build a hello-world workflow"), lastUser);
+    assert.ok(lastUser.includes("Workspace: @acme, the one this job runs in. Your job id: build-1. Build a hello-world workflow"), lastUser);
     assert.ok(system.includes("git/checkout, `workdir` your job id"), "how a repository reaches the editor");
   });
 

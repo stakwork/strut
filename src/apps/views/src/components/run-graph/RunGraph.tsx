@@ -729,7 +729,7 @@ export function RunGraph({
         // The run the call started, by the `runId` its output named; its calls go under the call's path.
         const launch = launchesRef.current.get(full);
         if (!launch) throw new Error("The run's log names no run this call started");
-        if (launch.peer) throw new Error(`It ran on @${launch.peer}: its calls are read on that strut`);
+        if (launch.peer) throw new Error(`It ran on @${launch.peer}: its calls are read on that strut server`);
         const events = await client.run<RunEvent[]>("run/events", { workflow: launch.workflow, runId: launch.runId });
         const { calls: loaded, launches } = projectWithLaunches(events, { prefix: full });
         for (const [path, l] of launches) launchesRef.current.set(path, l);

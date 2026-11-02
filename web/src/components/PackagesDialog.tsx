@@ -100,7 +100,7 @@ export function CatalogPackage(props: { name: string; catalog: api.Catalog; publ
                   {offer.map((ch) => (
                     <ConfirmButton key={ch} class="btn" label={`Put on ${ch}`} disabled={busy} tone="primary"
                       note={isPublic(ch)
-                        ? `Put ${r.version} on ${ch}, a public channel? Anyone may install it from this strut's public catalog, and what was published stays published.`
+                        ? `Put ${r.version} on ${ch}, a public channel? Anyone may install it from this strut server's public catalog, and what was published stays published.`
                         : held(ch)
                           ? `Move ${ch} from ${versionAt(held(ch)!)} to ${r.version}? Every strut that follows ${ch} moves with it.`
                           : `Put ${r.version} on ${ch}? Every strut that follows ${ch} installs it.`}
@@ -108,7 +108,7 @@ export function CatalogPackage(props: { name: string; catalog: api.Catalog; publ
                   ))}
                   {!everPublic(r.digest) && !channels.includes(api.PUBLIC_CHANNEL) && (
                     <ConfirmButton class="btn" label="Make public" disabled={busy} tone="primary"
-                      note={`Make ${r.version} public? It is listed in this strut's PUBLIC catalog, sealed by a second key, on the channel ${api.PUBLIC_CHANNEL} — for anyone to install. What was published stays published.`}
+                      note={`Make ${r.version} public? It is listed in this strut server's PUBLIC catalog, sealed by a second key, on the channel ${api.PUBLIC_CHANNEL} — for anyone to install. What was published stays published.`}
                       confirmLabel="Make public" onConfirm={() => void move(api.PUBLIC_CHANNEL, r.digest, { public: true })} />
                   )}
                 </div>
@@ -570,14 +570,14 @@ function FindPackages(props: { installed: string[]; initial?: InstallLink | null
           <div class="auto-card-head"><span class="package-name">{props.initial.pkg}</span><span class="badge badge-accent">from the store</span></div>
           {unfollowed ? (
             <>
-              <div class="auto-hint">The store that linked here is an index this strut does not follow yet: <span class="package-url">{unfollowed.url}</span>. Following it reads its signed card, which names the publisher's key an install is checked against.</div>
+              <div class="auto-hint">The store that linked here is an index this strut server does not follow yet: <span class="package-url">{unfollowed.url}</span>. Following it reads its signed card, which names the publisher's key an install is checked against.</div>
               <div class="auto-card-actions">
                 <button class="btn btn-sm btn-primary" disabled={following === "…"} onClick={() => void follow()}>{following === "…" ? "Following…" : "Follow this index"}</button>
               </div>
               {following && following !== "…" && <div class="auto-error">{following}</div>}
             </>
           ) : (
-            <div class="auto-hint">Install it below once it shows; its code will run on this strut.</div>
+            <div class="auto-hint">Install it below once it shows; its code will run on this strut server.</div>
           )}
         </div>
       )}
@@ -607,7 +607,7 @@ function FindPackages(props: { installed: string[]; initial?: InstallLink | null
               {have ? (
                 <span class="badge">installed</span>
               ) : (
-                <button class="btn btn-sm" disabled={busy !== null} onClick={() => void install(h.package, h.index)} title={`Installs ${h.package} from the catalog the index ${h.index} names for ${h.publisher}. Its code runs on this strut.`}>
+                <button class="btn btn-sm" disabled={busy !== null} onClick={() => void install(h.package, h.index)} title={`Installs ${h.package} from the catalog the index ${h.index} names for ${h.publisher}. Its code runs on this strut server.`}>
                   {busy === h.package ? "Installing…" : "Install"}
                 </button>
               )}

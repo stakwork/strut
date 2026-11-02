@@ -27,7 +27,7 @@ export default defineStep({
   description:
     "Schedule a workflow you published: create an automation on it, or (with `id`) change one — only the fields you pass change; " +
     "pause with { id, enabled: false }; delete with { id, remove: true }. Only on workflows published through meta/publish-workflow " +
-    "(publisher 'ai'), never a seeded or a person's workflow. It runs only on the person's yes: where this strut gates it, the call " +
+    "(publisher 'ai'), never a seeded or a person's workflow. It runs only on the person's yes: where this strut server gates it, the call " +
     "becomes a proposal, applied when they accept it (after the publish of that workflow if that is waiting too); where it does not, " +
     "it is refused and you tell the person to schedule it themselves. Returns the automation and its next fires.",
   input: z.object({
@@ -46,7 +46,7 @@ export default defineStep({
     // meta/run-step or a subflow.
     if (!ctx.proposal) {
       throw new Error(
-        "meta/set-automation runs only as a proposal a person accepted, and this strut grants it ungated. " +
+        "meta/set-automation runs only as a proposal a person accepted, and this strut server grants it ungated. " +
           "A host that wants the builder to schedule lists it in the builder's approve: (its delta).",
       );
     }

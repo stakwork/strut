@@ -15,7 +15,7 @@ import { PACKAGE_NAME } from "../../../packages/format.js";
  * that grant it list it in `approve:`; a host's delta may add it to others.
  *
  * The CARD is the ask §8 designed: `describe` runs at proposal time and
- * reads the package's page off the index this strut follows (the hit's
+ * reads the package's page off the index this strut server follows (the hit's
  * `detail`, derived by the index from the archive — src/packages/detail.ts):
  * the publisher and its key, which index vouches for the pair, the digest,
  * the license, what it brings, what it can spend or act on (the §8 lines,
@@ -30,7 +30,7 @@ const input = z.object({
   package: z
     .string()
     .min(1)
-    .describe("The package by name, `publisher/name` (looked up in the indexes this strut follows), or a `pk:<key>/<publisher>/<name>` ref with its `url`."),
+    .describe("The package by name, `publisher/name` (looked up in the indexes this strut server follows), or a `pk:<key>/<publisher>/<name>` ref with its `url`."),
   index: z.string().optional().describe("Which followed index to resolve the name through, when more than one lists its publisher."),
   digest: z.string().optional().describe("`sha256:<hex>`: pin this release; else the newest not yanked."),
   url: z.string().optional().describe("With a `pk:` ref: where the publisher's public catalog is served."),
@@ -42,7 +42,7 @@ export default defineStep({
   type: "package/install",
   effect: "write",
   description:
-    "Install a package — the workflows, steps, apps and Concept pages someone published — on this strut, on the person's yes. " +
+    "Install a package — the workflows, steps, apps and Concept pages someone published — on this strut server, on the person's yes. " +
     "The call becomes a proposal the person approves on a card that says what the package brings, what it can spend or act on, and which secrets it needs; " +
     "strut installs it when they accept, and tells you the result on a later turn. Find the name with package/search first (its `detail` says what a package holds) " +
     "and put the reason in `rationale`, in the person's terms. Never installs on its own: a direct call is refused.",
@@ -59,7 +59,7 @@ export default defineStep({
       return {
         title,
         summary:
-          `${name} is not listed by an index this strut follows` +
+          `${name} is not listed by an index this strut server follows` +
           (cfg.package.startsWith("pk:") ? `; it would be fetched by its publisher's key from ${cfg.url ?? "the catalog URL given"}.` : ".") +
           " What it holds is not known before the install, which checks every file against the publisher's signed catalog.",
       };
@@ -71,7 +71,7 @@ export default defineStep({
       const holds = [
         d.apps.length ? `${words(d.apps.length, "app")} (${d.apps.map((a) => a.title).join(", ")})` : "",
         d.workflows ? words(d.workflows, "workflow") : "",
-        d.steps ? `${words(d.steps, "step")} — TypeScript that runs inside this strut` : "",
+        d.steps ? `${words(d.steps, "step")} — TypeScript that runs inside this strut server` : "",
         d.concepts ? words(d.concepts, "Concept page") : "",
       ].filter(Boolean);
       lines.push(`It brings ${holds.length ? holds.join(", ") : "nothing the index could read"}.`);
@@ -108,7 +108,7 @@ export default defineStep({
   async run(cfg, ctx: StepContext<StrutCapabilities>) {
     if (!ctx.proposal) {
       throw new Error(
-        "package/install runs only as a proposal a person accepted: installing puts someone's code in this strut, and a person decides that, never a tool call. " +
+        "package/install runs only as a proposal a person accepted: installing puts someone's code in this strut server, and a person decides that, never a tool call. " +
           "Ask for it as a tool call the person approves (the agent's approve: list names it); a workflow step, meta/run-step or a subflow cannot reach it.",
       );
     }

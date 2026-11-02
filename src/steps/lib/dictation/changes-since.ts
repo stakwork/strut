@@ -81,8 +81,8 @@ export async function dictationChanges(query: Query, since: number, until: numbe
 export default defineStep({
   type: "dictation/changes-since",
   description:
-    "What dictation learned or undid in this strut's memory from `since` up to now, for another strut to replay with " +
-    "dictation/apply-changes (a Mac's strut pushing to its home box). Each change is keyed by its pair (heard, written, and " +
+    "What dictation learned or undid in this strut server's memory from `since` up to now, for another strut server to replay with " +
+    "dictation/apply-changes (a Mac's strut server pushing to its home box). Each change is keyed by its pair (heard, written, and " +
     "the entity's name when written is another form of it), never a ref_id. Pass the reply's `until` as the next `since`: " +
     "nothing falls between two reads.",
   input: z.object({

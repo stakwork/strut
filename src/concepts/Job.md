@@ -42,8 +42,8 @@ meta/run-workflow { name: "builder", input: { prompt, session: "<your job id>/bu
 - `session` is the build's own thread: the same on every turn of this job,
   so a later turn continues the build ("also post it to Slack") instead of
   starting over.
-- `peer` only when the workflow or app belongs on another strut, by its id
-  as strut/list-peers gives it; leave it out for this one.
+- `peer` only when the workflow or app belongs to another workspace, by its
+  id as strut/list-peers gives it; leave it out for this one.
 - It answers `{ text, artifacts, ask? }`. Say in your `text` what it
   published and what its test run showed; its `ask` is yours to put to the
   person, and their answer goes back to it next turn on the same session.

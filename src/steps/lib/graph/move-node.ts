@@ -15,7 +15,7 @@ const EXAMPLE = `- id: rehome
 export default defineStep({
   type: "graph/move-node",
   description:
-    "Move a node in the strut knowledge graph to hang under a different node (writes live to the graph): the ONE edge " +
+    "Move a node in the knowledge graph to hang under a different node (writes live to the graph): the ONE edge " +
     "that ties it to where it is now is re-pointed at `to_ref_id`. Any edge type, either direction — pass the current " +
     "link as graph/graph-neighbors reports it from the moved node's side: `edge_type`, and `direction` 'reverse' when the " +
     "edge points AT the node ((parent)-[PARENT_OF]->(node), (folder)-[CONTAINS]->(node)) or 'forward' when it points OUT " +

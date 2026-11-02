@@ -130,7 +130,7 @@ export async function checkAppGraph(manifest: AppManifest, graph: GraphBackend |
   if (errors.length) return { errors, warnings };
 
   if (!graph) {
-    errors.push(`${MANIFEST_FILE}: data.graph: this strut has no graph (its workspace is on the filesystem), so an app that declares graph types does not build here — keep the data in runs, or build the app on a strut with a graph`);
+    errors.push(`${MANIFEST_FILE}: data.graph: this strut server has no graph (its workspace is on the filesystem), so an app that declares graph types does not build here — keep the data in runs, or build the app on a strut with a graph`);
     return { errors, warnings };
   }
 

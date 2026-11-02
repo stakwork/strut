@@ -5,7 +5,7 @@ import { requireApps } from "./_shared.js";
 export default defineStep({
   type: "app/pin",
   description:
-    "Pin a published APP as a TAB, or unpin it (`pinned: false`): a host that lists this workspace's apps (a portal's sidebar for the workspace this strut belongs to) shows a pinned app as a tab of its own, at its live version. " +
+    "Pin a published APP as a TAB, or unpin it (`pinned: false`): a host that lists this workspace's apps (a portal's sidebar for this workspace) shows a pinned app as a tab of its own, at its live version. " +
     "Pinning also HOLDS an app that follows latest at the version it shows (plans/app-releases.md): from then on a publish is a DRAFT until a person makes it live. Unpinning leaves what is live alone. " +
     "The app's record, not a version: a later publish keeps the tab. Only when the person asks for it. Returns { name, pinned, live, release? } — `live` the live release's id or `latest`, `release` the one pinning made.",
   input: z.object({

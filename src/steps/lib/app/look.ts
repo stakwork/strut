@@ -27,7 +27,7 @@ import { requireApps, resolveAppPath } from "./_shared.js";
 export default defineStep({
   type: "app/look",
   description:
-    "LOOK at an app as a person opening it sees it: strut's own UI hosts it in a browser, as you, and its page makes its calls through the real host under the app's grants. " +
+    "LOOK at an app as a person opening it sees it: the strut server's own UI hosts it in a browser, as you, and its page makes its calls through the real host under the app's grants. " +
     "With `path`: the app DIRECTORY you are working on — built (a failing build returns { ok: false, errors } and nothing opens) and looked at WITHOUT publishing anything, so look, fix and look again from the directory, and app/publish once it shows what was asked for. " +
     "With `version` (or neither): a published version — the active one by default; name a held app's draft to see it. " +
     "Returns { name, version, rendered, hostError?, text, errors, appErrors, path, url, width, height } — `version` a `preview-…` label for a directory; `rendered`: the page drew something; `hostError`: why the host shows no app; `text`: the page's visible text (capped); " +

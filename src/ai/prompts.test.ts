@@ -45,7 +45,7 @@ describe("the builder chat's prompt, rendered from the one source", () => {
   });
 
   it("is the chat's first line, then builderRules in the chat's names; the MCP door's procedure is its last part", () => {
-    assert.equal(SYSTEM, `You are a workflow builder. Users describe what they want and you create workflows.\n\n${builderRules(CHAT_TOOLS)}`);
+    assert.equal(SYSTEM, `You are a workflow builder. Users describe what they want and you create workflows. A user may call a workflow a "strut": it means a workflow.\n\n${builderRules(CHAT_TOOLS)}`);
     assert.ok(SYSTEM.endsWith(`\n\n${BUILDER_PROCEDURE}`));
     assert.ok(BUILDER_PROCEDURE.startsWith("Workflow:\n1. Call list_workflows FIRST"));
   });

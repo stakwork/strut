@@ -347,7 +347,7 @@ export function createApps(deps: AppsDeps): AppsCapability {
     const { path } = await ensure(name, version);
     if ((await isDir(path)) && !(await exists(join(path, "dist", "index.html")))) {
       const built = await buildApp(path, buildDeps(name));
-      if (!built.ok) throw new Error(`${name}@${version} does not build on this strut's kit: ${built.errors.join("; ")}`);
+      if (!built.ok) throw new Error(`${name}@${version} does not build on this strut server's kit: ${built.errors.join("; ")}`);
     }
   };
 
@@ -722,7 +722,7 @@ export function createApps(deps: AppsDeps): AppsCapability {
     async grant(name, workflow, opts) {
       validateAppName(name);
       const flow = await workspace.getWorkflow(workflow).catch(() => null);
-      if (!flow) throw new Error(`no workflow "${workflow}" on this strut`);
+      if (!flow) throw new Error(`no workflow "${workflow}" on this strut server`);
       if (!flow.sealed) throw new Error(`"${workflow}" is not sealed: an app's manifest grants it in grants.workflows, no person's grant needed`);
       return grants.add(name, {
         workflow,

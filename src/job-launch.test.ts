@@ -465,7 +465,7 @@ describe("job/start and job/continue", () => {
     orchTool = { name: "job_start", input: { prompt: "Build a workflow", title: "Build", workflow: "builder" } };
     const run = await launch({ prompt: "build one" });
     await settle("orch", run);
-    assert.ok(seen.orch.at(-1)!.includes('no_workflow: this strut has no \\"builder\\" workflow'), seen.orch.at(-1));
+    assert.ok(seen.orch.at(-1)!.includes('no_workflow: this strut server has no \\"builder\\" workflow'), seen.orch.at(-1));
     assert.deepEqual(await jobs.list!(), [], "no record was written");
   });
 
