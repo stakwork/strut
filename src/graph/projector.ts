@@ -34,7 +34,8 @@
  *
  * On a backend whose schema is a closed registry (a LadybugDB file,
  * plans/ladybug-backend.md ruling 6) only the types the file holds are
- * written: `StrutRun` and `StrutJob` with `EXECUTED` and `IN_JOB`; the
+ * written: `StrutRun`, `StrutJob` and `StrutArtifact` with `EXECUTED`, `IN_JOB`,
+ * `HAS_ARTIFACT` and `PRODUCED`; the
  * agent sessions, tool calls, their edges and the whole chat projection are
  * skipped there, and the report counts what was written. The statements
  * are written with the backend's dialect helpers (`engine.ts`).
@@ -351,11 +352,57 @@ export function jobNode(view: JobView): NodeInput {
  * run of it ended (plans/job-claims.md §1).
  */
 export async function ensureJobNode(backend: GraphBackend, jobs: JobReader | undefined, job: string): Promise<string | null> {
+  return (await upsertJob(backend, jobs, job))?.jobRef ?? null;
+}
+
+/** One `StrutArtifact` per (job, artifact id), from the index's fold (the
+ *  newest version of each id): a re-delivery in a later turn lands on the
+ *  same node (see the schema's key comment). */
+export function artifactNode(job: string, a: JobView["artifacts"][number], at?: string): NodeInput {
+  return {
+    type: "StrutArtifact",
+    data: compact({
+      job_id: job,
+      artifact_id: a.id,
+      kind: a.kind,
+      label: a.label,
+      title: a.title,
+      summary: preview(a.summary, JOB_SUMMARY_MAX_CHARS),
+      url: a.url,
+      path: a.path,
+      run_id: a.runId,
+      created_at: at ?? new Date().toISOString(),
+      unique_source_id: `strutartifact:${job}:${a.id}`,
+    }),
+  };
+}
+
+interface JobUpsert {
+  jobRef: string;
+  /** Artifact ref_ids by artifact id, with the run that delivered the newest version. */
+  artifacts: Array<{ ref: string; runId: string }>;
+}
+
+/** The job node, plus its artifacts and `HAS_ARTIFACT` edges. The artifact
+ *  part is best effort: a failure there never costs the job node, the run
+ *  projection or the turn. */
+async function upsertJob(backend: GraphBackend, jobs: JobReader | undefined, job: string): Promise<JobUpsert | null> {
   if (!jobs?.get) return null;
   const view = await jobs.get(job, { threads: false });
   if (!view) return null;
   const [node] = await backend.nodes.writeMany(fit(backend, [jobNode(view)]), "upsert");
-  return node!.ref_id;
+  const jobRef = node!.ref_id;
+  const out: JobUpsert = { jobRef, artifacts: [] };
+  if (view.artifacts.length && holds(backend, "StrutArtifact")) {
+    try {
+      const written = await backend.nodes.writeMany(fit(backend, view.artifacts.map((a) => artifactNode(job, a, view.runs.find((r) => r.runId === a.runId)?.at))), "upsert");
+      await backend.edges.writeMany(written.map((w) => ({ edge: "HAS_ARTIFACT", source_ref_id: jobRef, target_ref_id: w.ref_id })));
+      out.artifacts = written.map((w, i) => ({ ref: w.ref_id, runId: view.artifacts[i]!.runId }));
+    } catch (e) {
+      console.warn(`[projector] job ${job}: artifacts not written: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  return out;
 }
 
 /** Project runs from a `RunStore` into the graph. */
@@ -470,10 +517,13 @@ export async function projectRun(
   // — and `IN_JOB` from this run. No index, or no record (the job was
   // deleted): nothing written, and the node the graph holds stays.
   if (p.job) {
-    const jobRef = await ensureJobNode(backend, jobs, p.job);
-    if (jobRef) {
-      edges.push({ edge: "IN_JOB", source_ref_id: runRef, target_ref_id: jobRef });
+    const up = await upsertJob(backend, jobs, p.job);
+    if (up) {
+      edges.push({ edge: "IN_JOB", source_ref_id: runRef, target_ref_id: up.jobRef });
       report.jobs++;
+      // This run delivered the newest version of these; earlier runs keep
+      // the PRODUCED edges they got when they ended.
+      for (const a of up.artifacts) if (a.runId === runId) edges.push({ edge: "PRODUCED", source_ref_id: runRef, target_ref_id: a.ref });
     }
   }
   if (edges.length) {

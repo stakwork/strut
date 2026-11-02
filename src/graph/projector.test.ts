@@ -596,6 +596,63 @@ for (const tb of testBackends()) describe(`projector on ${tb.name}`, { skip: tb.
     assert.equal(await edges("IN_JOB"), 2, "re-projection does not duplicate the edges");
   });
 
+  it("job artifacts: one StrutArtifact per (job, id) with its attributes, HAS_ARTIFACT from the job, PRODUCED from each delivering run; a later turn updates the same node; searchable by kind", async () => {
+    const hash = (await ws.getWorkflowHash(WF))!;
+    const RUN2 = "1788307097999";
+    const withJob = (runId: string) => sampleEvents(hash).map((e) => ({ ...e, runId, ...(e.type === "run.start" ? { job: "j-a" } : {}) }));
+    for (const e of withJob(RUN)) await store.append(WF, RUN, e);
+    for (const e of withJob(RUN2)) await store.append(WF, RUN2, e);
+    const runs = (ids: string[]) => ids.map((r) => ({ workflow: WF, runId: r, at: ts(0), status: "success" as const }));
+    const base = { job: "j-a", title: "Job", usedAt: ts(9), holds: [], repos: [], files: [], sessions: [] };
+    // Turn 1 delivers `plan` and a PR; turn 2 re-delivers `plan` (newer text), the PR stays.
+    let current: JobView = {
+      ...base, runs: runs([RUN]),
+      artifacts: [
+        { id: "plan", kind: "markdown", title: "Plan", summary: "first draft", url: "/jobs/j-a/files/plan.md", runId: RUN, path: "plan.md" },
+        { id: "pr", kind: "pull-request", label: "PR", title: "Fix login", summary: "fixes the login redirect", url: "https://github.com/o/r/pull/1", runId: RUN },
+      ],
+    };
+    const jobs = { get: async () => current };
+    await projectRun(backend, store, WF, RUN, undefined, jobs);
+    assert.equal(await count("StrutArtifact"), 2);
+    assert.equal(await edges("HAS_ARTIFACT"), 2);
+    assert.equal(await edges("PRODUCED"), 2);
+
+    current = {
+      ...base, runs: runs([RUN2, RUN]),
+      artifacts: [
+        { id: "plan", kind: "markdown", title: "Plan v2", summary: "second draft", url: "/jobs/j-a/files/plan.md", runId: RUN2, path: "plan.md" },
+        current.artifacts[1]!,
+      ],
+    };
+    await projectRun(backend, store, WF, RUN2, undefined, jobs);
+    assert.equal(await count("StrutArtifact"), 2, "same node updated, none added");
+    assert.equal(await edges("HAS_ARTIFACT"), 2);
+    assert.equal(await edges("PRODUCED"), 3, "run 2 produced the new plan; run 1 keeps its edges");
+
+    const FIELDS = ["job_id", "artifact_id", "kind", "label", "title", "summary", "url", "path", "run_id"];
+    const rows = await backend.query(`MATCH ${d().node("a", "StrutArtifact", { artifact_id: "$id" })} RETURN ${d().project("a", FIELDS)} AS p`, { id: "plan" });
+    assert.deepEqual(rows.map((r) => r["p"]), [{ job_id: "j-a", artifact_id: "plan", kind: "markdown", title: "Plan v2", summary: "second draft", url: "/jobs/j-a/files/plan.md", path: "plan.md", run_id: RUN2 }]);
+    const [pr] = await backend.query(`MATCH ${d().node("a", "StrutArtifact", { artifact_id: "$id" })} RETURN a.label AS label, a.kind AS kind`, { id: "pr" });
+    assert.deepEqual([pr!["label"], pr!["kind"]], ["PR", "pull-request"]);
+
+    // Walk: job → artifacts, and run → artifacts.
+    const viaJob = await backend.query(`MATCH ${d().node("j", "StrutJob")}-[:HAS_ARTIFACT]->${d().node("a", "StrutArtifact")} RETURN a.artifact_id AS id ORDER BY id`);
+    assert.deepEqual(viaJob.map((r) => r["id"]), ["plan", "pr"]);
+    const viaRun = await backend.query(`MATCH ${d().node("r", "StrutRun", { run_id: "$r" })}-[:PRODUCED]->${d().node("a", "StrutArtifact")} RETURN a.artifact_id AS id ORDER BY id`, { r: RUN2 });
+    assert.deepEqual(viaRun.map((r) => r["id"]), ["plan"]);
+
+    // Filter and search by kind.
+    const byKind = await backend.query(`MATCH ${d().node("a", "StrutArtifact", { kind: "$k" })} RETURN a.artifact_id AS id`, { k: "pull-request" });
+    assert.deepEqual(byKind.map((r) => r["id"]), ["pr"]);
+    // `kind` and `label` are part of the search text (Data_Bank is what the FTS index
+    // and the embedding read), so a kind finds its artifacts by keyword and by meaning.
+    const [bank] = await backend.query(`MATCH ${d().node("a", "StrutArtifact", { artifact_id: "$id" })} RETURN a.Data_Bank AS b`, { id: "pr" });
+    assert.equal(bank!["b"], "Fix login\nfixes the login redirect\npull-request\nPR");
+    const hit = await backend.reader.search({ q: "login", types: ["StrutArtifact"] });
+    assert.deepEqual(hit.nodes.map((n) => n.node_type), ["StrutArtifact"]);
+  });
+
   it("createStrut: a run launched under a job refreshes its StrutJob through the run-end hook — title from the launch, summary from the fold; a plain run touches no job", async () => {
     const dataDir = await mkdtemp(join(tmpdir(), "strut-project-job-"));
     await ws.publishWorkflowByContent(
