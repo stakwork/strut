@@ -9,6 +9,7 @@ import { REPORT_EVENTS, REPORT_RUN_ID } from "./report";
 import { TRACE_EVENTS, TRACE_LIVE_RUN_ID, TRACE_RUN_ID, traceTranscript } from "./trace";
 import { COVENANT_SHEET, NDA_FRAMES, NDA_SHEET, NDA_WORKFLOW, SHEET_FILES, covenantSheet, ndaFrame, ndaPlaybook, ndaRun } from "./sheets";
 import { MATTER_EVENTS, MATTER_FILES, MATTER_LIVE_EVENTS, MATTER_LIVE_RUN_ID, MATTER_RUN_ID, MATTER_SHEET_DONE, MATTER_WORKFLOW } from "./matter";
+import { AGENT_WALK_EVENTS, AGENT_WALK_PATH, AGENT_WALK_RUN_ID, WALK_EVENTS, WALK_LIVE_RUN_ID, WALK_RUN_ID, agentWalkTranscript, walkNode } from "./walk";
 
 const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -49,6 +50,15 @@ export function createFixtureClient(): StrutClient {
     return MATTER_LIVE_EVENTS.slice(0, matterRevealed);
   };
   const matterRun = (runId: string, done: boolean) => ({ runId, workflow: MATTER_WORKFLOW, status: done ? "success" : "running", startedAt: new Date(Number(runId)).toISOString(), actor: "ada-7f3c" });
+  // The live walk: three more events at each read — a hop and a half, so a
+  // read can land between a hop's candidates and its choice, and the player
+  // falls behind and catches up.
+  let walked = 0;
+  const walkLog = (skip: number) => {
+    if (skip === 0) walked = 2;
+    walked = Math.min(WALK_EVENTS.length, walked + 3);
+    return WALK_EVENTS.slice(0, walked);
+  };
   const answer = (type: string, c: Record<string, unknown>): unknown => {
     switch (type) {
       case "run/list":
@@ -69,6 +79,9 @@ export function createFixtureClient(): StrutClient {
         if (c["runId"] === MATTER_LIVE_RUN_ID) return matterLog(skip).slice(skip);
         if (c["runId"] === MATTER_RUN_ID) return MATTER_EVENTS.slice(skip);
         if (c["runId"] === MATTER_LIVE_RUN_ID) return matterLog(skip).slice(skip);
+        if (c["runId"] === WALK_RUN_ID) return WALK_EVENTS.slice(skip);
+        if (c["runId"] === WALK_LIVE_RUN_ID) return walkLog(skip).slice(skip);
+        if (c["runId"] === AGENT_WALK_RUN_ID) return AGENT_WALK_EVENTS.slice(skip);
         throw new Error(`no run ${String(c["runId"])}`);
       }
       case "run/workflow":
@@ -89,13 +102,17 @@ export function createFixtureClient(): StrutClient {
         return FILES[String(c["path"])] ?? SHEET_FILES[String(c["path"])] ?? null;
       case "run/transcript": {
         if (c["runId"] === RUN_ID && c["path"] === EXPLORE_PATH) return { path: EXPLORE_PATH, messages: TRANSCRIPT };
+        if (c["runId"] === AGENT_WALK_RUN_ID && c["path"] === AGENT_WALK_PATH) return { path: AGENT_WALK_PATH, messages: agentWalkTranscript() };
         const live = c["runId"] === TRACE_LIVE_RUN_ID;
         const messages = c["runId"] === TRACE_RUN_ID || live ? traceTranscript(String(c["path"]), live ? TRACE_EVENTS.slice(0, revealed) : undefined) : undefined;
         if (messages) return { path: c["path"], messages };
         throw new Error(`No transcript at "${String(c["path"])}" in run "${String(c["runId"])}"`);
       }
-      case "graph/graph-get-batched":
-        return getBatched((c["ref_ids"] as string[]) ?? []);
+      case "graph/graph-get-batched": {
+        const found = getBatched((c["ref_ids"] as string[]) ?? []);
+        const nodes = found.nodes.map((n) => ("error" in n ? (walkNode(n.ref_id) ?? n) : n));
+        return { ...found, nodes, returned: nodes.filter((n) => !("error" in n)).length };
+      }
       case "graph/graph-neighbors":
         return neighbors(String(c["ref_id"]), c["edge_type"] as string[] | undefined);
       case "sheets/get-values":

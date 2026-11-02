@@ -129,6 +129,11 @@ the `sideEffects` and `type` rules, and that the recorded versions are
   built from the terms), `agent-trace.ts` (`foldAgentTrace`: a run's agents
   as a nested cascade — sessions, their turns in fixed slots, the rows
   `strut/views`' AgentTrace draws; ported from hive's Traces view),
+  `walk/` (a graph walk hop by hop: `findWalks` reads a `graph/walk`
+  step's hop events, or an agent's own graph calls — a listing, then the
+  node it read next — as one hop-event shape; `foldWalkTrail` makes the
+  trail `strut/views`' WalkView draws, `foldWalkGraph` the graph strut's
+  chat draws),
   `transcript.ts` (`transcriptToEntries`), `accessed-nodes.ts`
   (`foldAccessedNodes`), `artifact-view.ts` (`artifactKind`,
   `parseWalkthrough`, …), `work-products.ts` (`foldWorkProducts`: the

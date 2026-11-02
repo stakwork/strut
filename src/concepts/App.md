@@ -119,6 +119,7 @@ import { LaunchForm, RunList, RunTimeline, RunGraph } from "strut/views";
 <RunTimeline workflow="score" runId={runId} />   // status, cost, a row per step (`tree split`: every level, each iteration)
 <RunGraph workflow="score" runId={runId} live />  // the graph calls, replayable
 <AgentTrace workflow="score" runId={runId} live /> // the run's agents as a cascade
+<WalkView workflow="score" runId={runId} live />   // a walk through the graph, hop by hop
 ```
 
 `WorkProducts` is what a run MADE for a person — memos, sheets, redlines,
@@ -157,6 +158,14 @@ page may not frame Google Sheets: draw the sheet with SheetView, whose
   sources={{ "Non-solicit": [conceptRef], C4: [passageRef] }} />
 ```
 
+`WalkView` draws a walk through the graph as it plays out — a `graph/walk`
+step's hops, or an agent reading a Concept tree with its own graph calls:
+the path as a trail (Law › Corporate / M&A › NDA › …), the candidates each
+hop dropped faded beside the one it chose, the newest hop pulsing, a
+scrubber once it ends. Put it at the centre of a page that shows a person
+the harness at work; `path` picks the walk when a run took several,
+`onOpenNode` hears a node opened from its card.
+
 Also `RunStatus`, `Transcript` (an agent step's session through
 `run/transcript` — `workflow`, `runId`, `path` — or `messages` you pass),
 `ArtifactView` (a run's file through `run/files`), `DocumentView` (an HTML
@@ -169,8 +178,8 @@ YOUR grants: the run views need the workflow (and a child run's) in
 `graph/graph-neighbors` (and `graph/graph-search` for `NodeSearch`) in
 `grants.steps`. Its own page is a gallery of all of them. The pure folds
 under them — `foldRunOverview`, `foldRunHealth`, `foldAgentTrace`,
-`foldWorkProducts`, `transcriptToEntries`, `projectWithLaunches`,
-`sanitizeHtml` — come from
+`foldWorkProducts`, `findWalks` + `foldWalkTrail`, `transcriptToEntries`,
+`projectWithLaunches`, `sanitizeHtml` — come from
 `@strut/kit`, for a run drawn your own way.
 
 **The hooks** come from `@strut/kit`, each naming a `run/*` step, over one

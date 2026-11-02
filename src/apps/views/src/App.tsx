@@ -7,7 +7,7 @@ import { StrutProvider, useStrutClient, useStrutHost } from "@strut/kit";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import {
-  AgentTrace, ArtifactView, DocumentView, LaunchForm, RunHealth, NodeCard, NodeGraph, NodeSearch, RunGraph, RunList, RunStatus, RunTimeline, SheetView, SHEETS_STEP, Transcript, WorkProducts,
+  AgentTrace, ArtifactView, DocumentView, LaunchForm, RunHealth, NodeCard, NodeGraph, NodeSearch, RunGraph, RunList, RunStatus, RunTimeline, SheetView, SHEETS_STEP, Transcript, WalkView, WorkProducts,
 } from "./index";
 import { createFixtureClient } from "./fixtures/client";
 import { TRANSCRIPT_MARKS } from "./fixtures/content";
@@ -16,6 +16,7 @@ import { REPORT_RUN_ID } from "./fixtures/report";
 import { TRACE_LIVE_RUN_ID, TRACE_RUN_ID } from "./fixtures/trace";
 import { COVENANT_RANGE, COVENANT_SHEET, COVENANT_SOURCES, DEVIATIONS_CSV, NDA_RANGE, NDA_SHEET, NDA_SOURCES, NDA_WORKFLOW } from "./fixtures/sheets";
 import { MATTER_LIVE_RUN_ID, MATTER_RUN_ID, MATTER_WORKFLOW } from "./fixtures/matter";
+import { AGENT_WALK_RUN_ID, WALK_LIVE_RUN_ID, WALK_RUN_ID, WALK_WORKFLOW } from "./fixtures/walk";
 
 interface Entry {
   name: string;
@@ -127,6 +128,30 @@ function WorkProductsDemo() {
   );
 }
 
+/** A graph/walk step live (its log revealed a hop at a time) or finished, or an agent walking the same tree by its own calls. */
+function WalkDemo() {
+  const demos = [
+    ["live", "graph/walk · live"],
+    ["done", "graph/walk · finished"],
+    ["agent", "an agent's own graph calls"],
+  ] as const;
+  const [shown, setShown] = useState<(typeof demos)[number][0]>("live");
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-wrap gap-1">
+        {demos.map(([d, label]) => (
+          <button key={d} type="button" onClick={() => setShown(d)} className={cn("rounded-md border px-2.5 py-1 text-xs", shown === d ? "bg-muted font-medium" : "text-muted-foreground hover:bg-muted/60")}>
+            {label}
+          </button>
+        ))}
+      </div>
+      {shown === "live" && <WalkView key="live" workflow={WALK_WORKFLOW} runId={WALK_LIVE_RUN_ID} live intervalMs={1200} />}
+      {shown === "done" && <WalkView key="done" workflow={WALK_WORKFLOW} runId={WALK_RUN_ID} />}
+      {shown === "agent" && <WalkView key="agent" workflow={WALK_WORKFLOW} runId={AGENT_WALK_RUN_ID} />}
+    </div>
+  );
+}
+
 const ENTRIES: Entry[] = [
   {
     name: "RunTimeline",
@@ -185,6 +210,13 @@ const ENTRIES: Entry[] = [
     grants: "grants.workflows: the run's workflow · grants.steps: graph/graph-get-batched (to open a node)",
     usage: `<AgentTrace workflow="research" runId={runId} live />`,
     demo: () => <TraceDemo />,
+  },
+  {
+    name: "WalkView",
+    what: "A walk through the graph as it plays out: the path as a trail that grows hop by hop (Law › Corporate / M&A › NDA › …), the node chosen at each hop drawn solid with the candidates it considered beside it — kept ones outlined, dropped ones faded — and the newest hop pulsing. It reads a graph/walk step's hops, or an agent's own graph calls (a listing, then the node it read next). Live, it plays what each read brings at a readable pace, never skipping a hop; once the walk ends, a scrubber steps through it. A click on a node opens its card; Tree draws everything it discovered.",
+    grants: "grants.workflows: the run's workflow · grants.steps: graph/graph-get-batched (a node's card)",
+    usage: `<WalkView workflow="matter-intake" runId={runId} live onOpenNode={(node) => …} />`,
+    demo: () => <WalkDemo />,
   },
   {
     name: "LaunchForm",
