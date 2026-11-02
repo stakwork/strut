@@ -1,15 +1,14 @@
 // The TRAIL: one row per hop, the node the walk chose drawn solid on a
-// spine that grows downward, and beside it the candidates it considered —
-// kept ones outlined, dropped ones faded, ones still being judged
-// shimmering. A breadcrumb above reads the path at a glance.
-import { useState, type CSSProperties } from "react";
+// spine that grows downward and, behind "+N considered", the candidates it
+// considered — kept ones outlined, dropped ones faded, ones still being
+// judged shimmering. Laid out for the whole walk, the hops shown so far
+// drawn in place, so a replay never changes its height. A breadcrumb (the
+// tree's) reads the path at a glance.
+import { useState, type CSSProperties, type ReactNode } from "react";
 import { Check, ChevronRight, CornerDownRight, Loader2 } from "lucide-react";
 import type { WalkBrief, WalkTrail as Trail, WalkTrailCandidate, WalkTrailStep } from "@strut/kit";
 import { cn } from "@/lib/utils";
 import { nodeColor } from "../../lib/colors";
-
-/** Siblings shown beside a choice before "+N more". */
-const SIBLINGS_SHOWN = 8;
 
 /**
  * The keyframes the trail moves by (an app's CSP allows inline styles). No
@@ -36,24 +35,53 @@ interface Common {
   onSelect: (node: WalkBrief) => void;
 }
 
-/** Law › Corporate / M&A › NDA › … — each hop's choice, the nodes of one read at once joined by +; the newest pulses while the walk moves. */
-export function WalkBreadcrumb({ steps, moving, selected, onSelect }: Common & { steps: WalkTrailStep[]; moving: boolean }) {
-  const groups = steps.map((s) => s.chosen).filter((g) => g.length > 0);
-  if (!groups.length) return null;
+/**
+ * `shown` drawn over `whole` in one grid cell: the cell is as big as the
+ * larger of the two, so drawing more or less of the walk never moves what
+ * is around it. `whole` is laid out but invisible (no focus, no reader).
+ */
+function InPlace({ whole, shown }: { whole: ReactNode; shown?: ReactNode }) {
   return (
-    <nav aria-label="The walk's path" className="flex flex-wrap items-center gap-x-1 gap-y-1.5 text-sm" data-testid="walk-breadcrumb">
+    <div className="grid">
+      <div className="invisible min-w-0" style={{ gridArea: "1 / 1" }} aria-hidden>
+        {whole}
+      </div>
+      {shown && (
+        <div className="min-w-0" style={{ gridArea: "1 / 1" }}>
+          {shown}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Law › Corporate / M&A › NDA › … — each hop's choice, the nodes of one read at once joined by +; the newest pulses while the walk moves. Laid out for the whole walk (`full`), the hops shown so far drawn in place. */
+export function WalkBreadcrumb({ steps, full, moving, selected, onSelect }: Common & { steps: WalkTrailStep[]; full: WalkTrailStep[]; moving: boolean }) {
+  if (!full.some((s) => s.chosen.length)) return null;
+  return (
+    <InPlace
+      whole={<Crumbs steps={full} moving={false} selected={null} onSelect={onSelect} />}
+      shown={<Crumbs steps={steps} moving={moving} selected={selected} onSelect={onSelect} testId="walk-breadcrumb" />}
+    />
+  );
+}
+
+function Crumbs({ steps, moving, selected, onSelect, testId }: Common & { steps: WalkTrailStep[]; moving: boolean; testId?: string }) {
+  const groups = steps.map((s) => s.chosen).filter((g) => g.length > 0);
+  return (
+    <nav aria-label="The walk's path" className="flex flex-wrap items-center gap-x-1 gap-y-1.5 text-sm" data-testid={testId}>
       {groups.map((group, i) => {
         const last = i === groups.length - 1;
         return (
-          <span key={`${i}-${group[0]!.ref_id}`} className="sv-walk-in inline-flex items-center gap-1">
-            {i > 0 && <ChevronRight className="size-3.5 text-muted-foreground" aria-hidden />}
+          <span key={`${i}-${group[0]!.ref_id}`} className="inline-flex min-w-0 items-center gap-1">
+            {i > 0 && <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />}
             {group.map((n, j) => (
-              <span key={n.ref_id} className="inline-flex items-center gap-1">
+              <span key={n.ref_id} className="inline-flex min-w-0 items-center gap-1">
                 {j > 0 && <span className="text-xs text-muted-foreground" aria-hidden>+</span>}
                 <button
                   type="button"
                   onClick={() => onSelect(n)}
-                  className={cn("rounded-md px-1.5 py-0.5 hover:bg-muted", last ? "font-semibold" : "text-muted-foreground", selected === n.ref_id && "ring-2 ring-ring", last && moving && "sv-walk-current")}
+                  className={cn("min-w-0 truncate rounded-md px-1.5 py-0.5 hover:bg-muted", last ? "font-semibold" : "text-muted-foreground", selected === n.ref_id && "ring-2 ring-ring", last && moving && "sv-walk-current")}
                   style={{ "--sv-walk-color": tint(n.node_type, 55) } as CSSProperties}
                 >
                   {n.name || n.ref_id.slice(0, 8)}
@@ -76,25 +104,44 @@ function ordered(step: WalkTrailStep): WalkTrailCandidate[] {
     .map(({ c }) => c);
 }
 
-export function WalkTrailSteps({ trail, moving, selected, onSelect }: Common & { trail: Trail; moving: boolean }) {
-  const steps = trail.steps;
+/**
+ * The trail: a row per hop of the whole walk (`full`), the hops of `trail`
+ * (the walk as far as it is shown) drawn in place over it — so a replay
+ * reveals rows where they will stay and the trail never changes height.
+ */
+export function WalkTrailSteps({ trail, full, moving, selected, onSelect }: Common & { trail: Trail; full: Trail; moving: boolean }) {
+  const shown = trail.steps;
   return (
     <ol className="flex flex-col" data-testid="walk-trail">
-      {steps.map((step, i) => (
-        <Step key={step.hop} step={step} last={i === steps.length - 1} current={moving && i === steps.length - 1} selected={selected} onSelect={onSelect} />
-      ))}
+      {full.steps.map((whole, i) => {
+        const step = shown[i];
+        const last = i === shown.length - 1;
+        return (
+          <li key={whole.hop} className="grid" data-hop={whole.hop}>
+            <StepRow step={whole} last={i === full.steps.length - 1} current={false} selected={null} onSelect={onSelect} whole />
+            {step && <StepRow step={step} last={last} current={moving && last} selected={selected} onSelect={onSelect} />}
+          </li>
+        );
+      })}
     </ol>
   );
 }
 
-function Step({ step, last, current, selected, onSelect }: Common & { step: WalkTrailStep; last: boolean; current: boolean }) {
-  const [all, setAll] = useState(false);
+/** A pill's box: every form the choice takes is this tall, so a hop's row is the same height judged or not. */
+const PILL = "inline-flex max-w-full items-center gap-2 rounded-md border-2 px-2.5 py-1.5 text-left text-sm";
+
+function StepRow({ step, last, current, selected, onSelect, whole = false }: Common & { step: WalkTrailStep; last: boolean; current: boolean; whole?: boolean }) {
+  const [open, setOpen] = useState(false);
   const chosen = step.chosen;
   const rest = ordered(step).filter((c) => c.state !== "chosen");
-  const shown = all ? rest : rest.slice(0, SIBLINGS_SHOWN);
+  const kept = rest.filter((c) => c.state === "kept").length;
   const color = chosen[0] ? nodeColor(chosen[0].node_type) : undefined;
   return (
-    <li className="sv-walk-in relative pb-4 pl-8" data-hop={step.hop} data-state={step.pending ? "pending" : chosen.length ? "chosen" : "none"}>
+    <div
+      className={cn("relative min-w-0 pb-4 pl-8", whole ? "invisible" : "sv-walk-in")}
+      style={{ gridArea: "1 / 1" }}
+      {...(whole ? { "aria-hidden": true } : { "data-testid": "walk-step", "data-state": step.pending ? "pending" : chosen.length ? "chosen" : "none" })}
+    >
       {!last && <span className="absolute top-4 bottom-0 left-[11px] w-px bg-border" aria-hidden />}
       <span
         className={cn("absolute top-2.5 left-1.5 size-3 rounded-full border-2", step.pending && "sv-walk-considering border-muted-foreground", !chosen.length && !step.pending && "border-muted-foreground/40 bg-background")}
@@ -103,8 +150,18 @@ function Step({ step, last, current, selected, onSelect }: Common & { step: Walk
       />
       <div className="mb-1.5 flex flex-wrap items-center gap-x-2 font-mono text-[10.5px] tracking-wide text-muted-foreground uppercase">
         <span>hop {step.hop + 1}</span>
-        <span className="normal-case">{step.from ? <>from <button type="button" className="hover:text-foreground hover:underline" onClick={() => onSelect(step.from!)}>{step.from.name}</button></> : "seeds"}</span>
-        {step.candidates.length > 0 && <span>· {step.candidates.length} considered</span>}
+        <span className="min-w-0 normal-case">
+          {step.from ? (
+            <>
+              from{" "}
+              <button type="button" className="hover:text-foreground hover:underline" onClick={() => onSelect(step.from!)}>
+                {step.from.name}
+              </button>
+            </>
+          ) : (
+            "seeds"
+          )}
+        </span>
         {step.jump && (
           <span className="inline-flex items-center gap-0.5 normal-case" title="The chosen node was not one of this hop's candidates: an earlier hop's, or read directly.">
             <CornerDownRight className="size-3" aria-hidden /> jumped
@@ -116,15 +173,14 @@ function Step({ step, last, current, selected, onSelect }: Common & { step: Walk
         {chosen.length ? (
           chosen.map((n) => {
             const relevance = step.candidates.find((c) => c.ref_id === n.ref_id)?.relevance;
-            const tone = nodeColor(n.node_type);
             return (
               <button
                 key={n.ref_id}
                 type="button"
                 onClick={() => onSelect(n)}
-                className={cn("inline-flex max-w-full items-center gap-2 rounded-md border-2 px-2.5 py-1.5 text-left text-sm", current && "sv-walk-current", selected === n.ref_id && "ring-2 ring-ring ring-offset-1 ring-offset-background")}
-                style={{ borderColor: tone, backgroundColor: tint(n.node_type, 16), "--sv-walk-color": tint(n.node_type, 55) } as CSSProperties}
-                data-testid="walk-chosen"
+                className={cn(PILL, current && "sv-walk-current", selected === n.ref_id && "ring-2 ring-ring ring-offset-1 ring-offset-background")}
+                style={{ borderColor: nodeColor(n.node_type), backgroundColor: tint(n.node_type, 16), "--sv-walk-color": tint(n.node_type, 55) } as CSSProperties}
+                {...(whole ? {} : { "data-testid": "walk-chosen" })}
               >
                 <span className="min-w-0 truncate font-medium">{n.name || n.ref_id.slice(0, 8)}</span>
                 <span className="shrink-0 font-mono text-[10px] text-muted-foreground">{n.node_type}</span>
@@ -133,24 +189,35 @@ function Step({ step, last, current, selected, onSelect }: Common & { step: Walk
             );
           })
         ) : step.pending ? (
-          <span className="sv-walk-considering inline-flex items-center gap-1.5 rounded-md border-2 border-dashed px-2.5 py-1.5 text-sm text-muted-foreground">
+          <span className={cn(PILL, "sv-walk-considering border-dashed text-muted-foreground")}>
             <Loader2 className="size-3.5 motion-safe:animate-spin" aria-hidden /> choosing…
           </span>
         ) : step.error ? (
-          <span className="rounded-md border border-destructive/40 px-2.5 py-1.5 text-sm text-destructive">{step.error}</span>
+          <span className={cn(PILL, "border-destructive/40 text-destructive")}>{step.error}</span>
         ) : (
-          step.candidates.length > 0 && <span className="px-1 text-xs text-muted-foreground italic">chose none</span>
+          step.candidates.length > 0 && <span className={cn(PILL, "border-transparent px-1 text-muted-foreground italic")}>chose none</span>
         )}
-        {shown.map((c) => (
-          <Candidate key={c.ref_id} c={c} selected={selected === c.ref_id} onSelect={onSelect} />
-        ))}
-        {rest.length > shown.length && (
-          <button type="button" onClick={() => setAll(true)} className="rounded-md px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground">
-            +{rest.length - shown.length} more
+        {rest.length > 0 && (
+          <button
+            type="button"
+            onClick={() => setOpen((o) => !o)}
+            aria-expanded={open}
+            className={cn("rounded-md px-1.5 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground", step.pending && "sv-walk-considering")}
+            title={open ? "Hide the candidates" : "Show every candidate this hop considered"}
+            {...(whole ? {} : { "data-testid": "walk-considered" })}
+          >
+            {open ? "hide" : `+${rest.length} considered${kept ? ` · ${kept} kept` : ""}`}
           </button>
         )}
       </div>
-    </li>
+      {open && (
+        <div className="mt-1.5 flex flex-wrap gap-1">
+          {rest.map((c) => (
+            <Candidate key={c.ref_id} c={c} selected={selected === c.ref_id} onSelect={onSelect} />
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
