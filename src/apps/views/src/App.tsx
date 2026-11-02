@@ -17,6 +17,7 @@ import { TRACE_LIVE_RUN_ID, TRACE_RUN_ID } from "./fixtures/trace";
 import { COVENANT_RANGE, COVENANT_SHEET, COVENANT_SOURCES, DEVIATIONS_CSV, NDA_RANGE, NDA_SHEET, NDA_SOURCES, NDA_WORKFLOW } from "./fixtures/sheets";
 import { MATTER_LIVE_RUN_ID, MATTER_RUN_ID, MATTER_WORKFLOW } from "./fixtures/matter";
 import { AGENT_WALK_RUN_ID, WALK_JOIN_RUN_ID, WALK_LIVE_RUN_ID, WALK_RUN_ID, WALK_WORKFLOW } from "./fixtures/walk";
+import { BIG_WALK_RUN_ID } from "./fixtures/walk-large";
 
 interface Entry {
   name: string;
@@ -132,7 +133,8 @@ function WorkProductsDemo() {
  * A graph/walk step live from its start (its log revealed a hop and a half
  * at each read), joined mid-walk, finished (at its end, the controls to step
  * back), a finished run opened in replay (playing from its start at the pace
- * it ran), or an agent walking the same tree by its own calls.
+ * it ran), an agent walking the same tree by its own calls, or a walk over
+ * a very large graph (2,000 candidates, names past 120 characters).
  */
 function WalkDemo() {
   const demos = [
@@ -141,8 +143,11 @@ function WalkDemo() {
     ["done", "finished"],
     ["replay", "finished, opened in replay"],
     ["agent", "an agent's own graph calls"],
+    ["big", "a very large graph (2,000 candidates)"],
   ] as const;
   const [shown, setShown] = useState<(typeof demos)[number][0]>("live");
+  // The view in a panel of its own width: it sizes by its container, never the window.
+  const [width, setWidth] = useState<number | null>(null);
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-wrap gap-1">
@@ -152,11 +157,24 @@ function WalkDemo() {
           </button>
         ))}
       </div>
-      {shown === "live" && <WalkView key="live" workflow={WALK_WORKFLOW} runId={WALK_LIVE_RUN_ID} live intervalMs={1200} />}
-      {shown === "join" && <WalkView key="join" workflow={WALK_WORKFLOW} runId={WALK_JOIN_RUN_ID} live intervalMs={2500} />}
-      {shown === "done" && <WalkView key="done" workflow={WALK_WORKFLOW} runId={WALK_RUN_ID} />}
-      {shown === "replay" && <WalkView key="replay" workflow={WALK_WORKFLOW} runId={WALK_RUN_ID} replay />}
-      {shown === "agent" && <WalkView key="agent" workflow={WALK_WORKFLOW} runId={AGENT_WALK_RUN_ID} />}
+      <div className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground" role="group" aria-label="Panel width">
+        <span className="mr-1">Panel</span>
+        {([null, 480, 900, 1400] as const).map((w) => (
+          <button key={String(w)} type="button" onClick={() => setWidth(w)} aria-pressed={width === w} className={cn("rounded-md border px-2 py-0.5", width === w ? "bg-muted font-medium text-foreground" : "hover:bg-muted/60")} data-testid={`walk-demo-width-${w ?? "fill"}`}>
+            {w ? `${w.toLocaleString("en-US")} px` : "fill"}
+          </button>
+        ))}
+      </div>
+      <div className="overflow-x-auto">
+        <div className={cn(width && "rounded-lg border border-dashed p-3")} style={width ? { width, boxSizing: "content-box" } : undefined} data-testid="walk-demo-panel">
+          {shown === "live" && <WalkView key="live" workflow={WALK_WORKFLOW} runId={WALK_LIVE_RUN_ID} live intervalMs={1200} />}
+          {shown === "join" && <WalkView key="join" workflow={WALK_WORKFLOW} runId={WALK_JOIN_RUN_ID} live intervalMs={2500} />}
+          {shown === "done" && <WalkView key="done" workflow={WALK_WORKFLOW} runId={WALK_RUN_ID} />}
+          {shown === "replay" && <WalkView key="replay" workflow={WALK_WORKFLOW} runId={WALK_RUN_ID} replay />}
+          {shown === "agent" && <WalkView key="agent" workflow={WALK_WORKFLOW} runId={AGENT_WALK_RUN_ID} />}
+          {shown === "big" && <WalkView key="big" workflow={WALK_WORKFLOW} runId={BIG_WALK_RUN_ID} />}
+        </div>
+      </div>
     </div>
   );
 }
@@ -222,9 +240,9 @@ const ENTRIES: Entry[] = [
   },
   {
     name: "WalkView",
-    what: "A walk through the graph as it plays out: the path as a trail that grows hop by hop (Law › Corporate / M&A › NDA › …), the node chosen at each hop drawn solid with the candidates it considered beside it — kept ones outlined, dropped ones faded — and the newest hop pulsing. It reads a graph/walk step's hops, or an agent's own graph calls (a listing, then the nodes it read next, one or several at once), and draws them the same way. Live and replay are one view with RunGraph's controls — a hop back, play/pause, a hop on, scrub, speed: joined in flight it shows the hops so far and follows, Live returns to the newest; a finished walk replays from its log alone, at the pace it ran. A click on a node opens its card; Tree draws everything it discovered.",
+    what: "A walk through the graph as it plays out: the path as a trail that grows hop by hop (Law › Corporate / M&A › NDA › …), the node chosen at each hop drawn solid, the candidates it considered behind “+N considered” — kept ones outlined, dropped ones faded — and the newest hop pulsing. It reads a graph/walk step's hops, or an agent's own graph calls (a listing, then the nodes it read next, one or several at once), and draws them the same way. Live and replay are one view with RunGraph's controls above the walk — a hop back, play/pause, a hop on, scrub, speed: joined in flight it shows the hops so far and follows, Live returns to the newest; a finished walk replays from its log alone, at the pace it ran. The walk is laid out whole and the hops shown drawn in place, so scrubbing never changes its height. A click on a node opens it in a drawer over the walk (✕, Esc or a click outside closes it), or hands it to `onOpenNode`; Tree draws everything it discovered, fitted to the width, with pan and zoom. It sizes by its container: try the panel widths.",
     grants: "grants.workflows: the run's workflow · grants.steps: graph/graph-get-batched (a node's card)",
-    usage: `<WalkView workflow="matter-intake" runId={runId} live onOpenNode={(node) => …} />  <WalkView workflow="matter-intake" runId={runId} replay />`,
+    usage: `<WalkView workflow="matter-intake" runId={runId} live />  <WalkView workflow="matter-intake" runId={runId} replay onOpenNode={(node) => …} />`,
     demo: () => <WalkDemo />,
   },
   {

@@ -39,3 +39,13 @@ export function displayActor(actor: string): string {
 export function errorText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
+
+/** The most of a node's name a view draws on a label: past it the name is
+ *  cut with an ellipsis, and the whole of it is in the label's tooltip and
+ *  the node's own page. Names in a workspace graph run past 120 characters. */
+export const NAME_CHARS = 30;
+
+/** A name as one label: cut with an ellipsis past `max` characters. */
+export function clipName(name: string, max = NAME_CHARS): string {
+  return name.length > max ? `${name.slice(0, max - 1).trimEnd()}…` : name;
+}

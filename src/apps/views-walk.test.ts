@@ -6,6 +6,8 @@ import assert from "node:assert/strict";
 import { findWalks, foldWalkTrail, latestWalk, replayStart, toolResultsByCall, walkFrame, type WalkLogEvent } from "@strut/kit/folds";
 import { createFixtureClient } from "./views/src/fixtures/client.js";
 import { AGENT_WALK_EVENTS, AGENT_WALK_PATH, AGENT_WALK_RUN_ID, WALK_EVENTS, WALK_JOIN_RUN_ID, WALK_LIVE_RUN_ID, WALK_RUN_ID, WALK_WORKFLOW } from "./views/src/fixtures/walk.js";
+import { BIG_WALK_EVENTS, BIG_WALK_RUN_ID, bigWalkNode } from "./views/src/fixtures/walk-large.js";
+import { NAME_CHARS, clipName } from "./views/src/lib/format.js";
 
 const TRAIL = ["Law", "Corporate / M&A", "NDA", "NDA drafting rules", "Deviation matrix (Google Sheet)"];
 /** The agent read the drafting rules and the playbook in one call: both chosen at NDA. */
@@ -81,5 +83,24 @@ describe("strut/views — WalkView", () => {
     assert.deepEqual(start, { at: 6, mode: "follow" }, "three hops shown at once");
     assert.deepEqual(names(walkFrame(w.hops, start.at).trail.path), TRAIL.slice(0, 3));
     assert.deepEqual(names(walkFrame(w.hops, 2).trail.path), ["Law"], "a step back");
+  });
+
+  it("the large walk: 9 hops over about 2,000 candidates, some names past 120 characters, each node there to open", async () => {
+    const client = createFixtureClient();
+    const log = await client.run<WalkLogEvent[]>("run/events", { workflow: WALK_WORKFLOW, runId: BIG_WALK_RUN_ID });
+    assert.deepEqual(log, BIG_WALK_EVENTS);
+    const w = findWalks(log)[0]!;
+    const t = foldWalkTrail(w.hops);
+    assert.equal(t.steps.length, 9);
+    assert.equal(t.considered, 9 * 222);
+    assert.equal(t.path.length, 9);
+    const names = t.steps.flatMap((s) => s.candidates.map((c) => c.name));
+    assert.ok(names.some((n) => n.length > 120), "names past 120 characters");
+    assert.ok(t.path.some((n) => n.name.length > 120), "one on the path");
+    const long = names.find((n) => n.length > 120)!;
+    assert.equal(clipName(long).length, NAME_CHARS);
+    assert.ok(clipName(long).endsWith("…"));
+    assert.equal(clipName("NDA"), "NDA");
+    assert.equal(bigWalkNode(t.path[4]!.ref_id)?.name, t.path[4]!.name);
   });
 });
