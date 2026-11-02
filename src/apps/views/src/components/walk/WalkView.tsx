@@ -4,7 +4,6 @@ import {
   findWalks, foldWalkGraph, latestWalk, toolResultsByCall, useRunEvents, useTranscripts, walkBeats, walkFrame, walkHopStop, walkTrailSummary,
   type RunEvent, type WalkBrief, type WalkLogEvent, type WalkSource,
 } from "@strut/kit";
-import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { nodeColor } from "../../lib/colors";
@@ -135,17 +134,16 @@ export function WalkView({ workflow, runId, live, events: given, path, onPathCha
           </span>
         )}
         {walks.length > 1 ? (
-          <select value={walk.path} onChange={(e) => pick(e.target.value)} className="rounded-md border bg-background px-2 py-1 font-mono text-xs" aria-label="Which walk">
+          <select value={walk.path} onChange={(e) => pick(e.target.value)} title={sourceOf(walk)} className="rounded-md border bg-background px-2 py-1 font-mono text-xs" aria-label="Which walk">
             {walks.map((w) => (
-              <option key={w.path} value={w.path}>
-                {w.label} · {w.kind === "walk" ? "graph/walk" : "agent"}
+              <option key={w.path} value={w.path} title={sourceOf(w)}>
+                {w.label}
               </option>
             ))}
           </select>
         ) : (
-          <span className="font-mono text-xs font-semibold">{walk.label}</span>
+          <span className="font-mono text-xs font-semibold" title={sourceOf(walk)}>{walk.label}</span>
         )}
-        <Badge variant="outline" className="font-normal">{walk.kind === "walk" ? "graph/walk" : "agent's graph calls"}</Badge>
         <span className={cn("font-mono text-xs text-muted-foreground", walk.error && done && "text-destructive")} data-testid="walk-summary">{summary}</span>
         <span className="ml-auto inline-flex rounded-md border p-0.5" role="group" aria-label="View">
           {([["trail", ListTree, "Trail"], ["tree", GitFork, "Tree"]] as const).map(([m, Icon, label]) => (
@@ -159,7 +157,7 @@ export function WalkView({ workflow, runId, live, events: given, path, onPathCha
 
       <div className="flex flex-col gap-4 lg:flex-row">
         <div className="flex min-w-0 flex-1 flex-col gap-3">
-          <WalkBreadcrumb path={trail.path} moving={moving} selected={selected?.ref_id ?? null} onSelect={setSelected} />
+          <WalkBreadcrumb steps={trail.steps} moving={moving} selected={selected?.ref_id ?? null} onSelect={setSelected} />
           {mode === "tree" && graph ? (
             <WalkTree graph={graph} path={trail.path} moving={moving} selected={selected?.ref_id ?? null} onSelect={setSelected} />
           ) : trail.steps.length ? (
@@ -212,4 +210,9 @@ export function WalkView({ workflow, runId, live, events: given, path, onPathCha
       )}
     </div>
   );
+}
+
+/** Where a walk came from, for a tooltip: the view draws every walk the same. */
+function sourceOf(w: WalkSource): string {
+  return w.kind === "walk" ? `${w.path}: a graph/walk step` : `${w.path}: an agent's own graph calls`;
 }

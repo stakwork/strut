@@ -131,8 +131,9 @@ the `sideEffects` and `type` rules, and that the recorded versions are
   `strut/views`' AgentTrace draws; ported from hive's Traces view),
   `walk/` (a graph walk hop by hop: `findWalks` reads a `graph/walk`
   step's hop events, or an agent's own graph calls — a listing, then the
-  node it read next — as one hop-event shape; `foldWalkTrail` makes the
-  trail `strut/views`' WalkView draws, `foldWalkGraph` the graph strut's
+  nodes it read next, one or several at once — as one hop-event shape;
+  `foldWalkTrail` makes the trail `strut/views`' WalkView draws,
+  `foldWalkGraph` the graph strut's
   chat draws, `walkBeats` / `walkFrame` the walk at any beat of a replay),
   `replay.ts` (a replay's clock: where a viewer starts, how long each beat
   stays — the run's own pace, a readable least, a speed — and what play,

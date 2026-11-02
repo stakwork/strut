@@ -36,24 +36,30 @@ interface Common {
   onSelect: (node: WalkBrief) => void;
 }
 
-/** Law › Corporate / M&A › NDA › … — the chosen nodes; the newest pulses while the walk moves. */
-export function WalkBreadcrumb({ path, moving, selected, onSelect }: Common & { path: WalkBrief[]; moving: boolean }) {
-  if (!path.length) return null;
+/** Law › Corporate / M&A › NDA › … — each hop's choice, the nodes of one read at once joined by +; the newest pulses while the walk moves. */
+export function WalkBreadcrumb({ steps, moving, selected, onSelect }: Common & { steps: WalkTrailStep[]; moving: boolean }) {
+  const groups = steps.map((s) => s.chosen).filter((g) => g.length > 0);
+  if (!groups.length) return null;
   return (
     <nav aria-label="The walk's path" className="flex flex-wrap items-center gap-x-1 gap-y-1.5 text-sm" data-testid="walk-breadcrumb">
-      {path.map((n, i) => {
-        const last = i === path.length - 1;
+      {groups.map((group, i) => {
+        const last = i === groups.length - 1;
         return (
-          <span key={`${i}-${n.ref_id}`} className="sv-walk-in inline-flex items-center gap-1">
+          <span key={`${i}-${group[0]!.ref_id}`} className="sv-walk-in inline-flex items-center gap-1">
             {i > 0 && <ChevronRight className="size-3.5 text-muted-foreground" aria-hidden />}
-            <button
-              type="button"
-              onClick={() => onSelect(n)}
-              className={cn("rounded-md px-1.5 py-0.5 hover:bg-muted", last ? "font-semibold" : "text-muted-foreground", selected === n.ref_id && "ring-2 ring-ring", last && moving && "sv-walk-current")}
-              style={{ "--sv-walk-color": tint(n.node_type, 55) } as CSSProperties}
-            >
-              {n.name || n.ref_id.slice(0, 8)}
-            </button>
+            {group.map((n, j) => (
+              <span key={n.ref_id} className="inline-flex items-center gap-1">
+                {j > 0 && <span className="text-xs text-muted-foreground" aria-hidden>+</span>}
+                <button
+                  type="button"
+                  onClick={() => onSelect(n)}
+                  className={cn("rounded-md px-1.5 py-0.5 hover:bg-muted", last ? "font-semibold" : "text-muted-foreground", selected === n.ref_id && "ring-2 ring-ring", last && moving && "sv-walk-current")}
+                  style={{ "--sv-walk-color": tint(n.node_type, 55) } as CSSProperties}
+                >
+                  {n.name || n.ref_id.slice(0, 8)}
+                </button>
+              </span>
+            ))}
           </span>
         );
       })}
@@ -86,14 +92,13 @@ function Step({ step, last, current, selected, onSelect }: Common & { step: Walk
   const chosen = step.chosen;
   const rest = ordered(step).filter((c) => c.state !== "chosen");
   const shown = all ? rest : rest.slice(0, SIBLINGS_SHOWN);
-  const color = chosen ? nodeColor(chosen.node_type) : undefined;
-  const chosenCand = chosen ? step.candidates.find((c) => c.ref_id === chosen.ref_id) : undefined;
+  const color = chosen[0] ? nodeColor(chosen[0].node_type) : undefined;
   return (
-    <li className="sv-walk-in relative pb-4 pl-8" data-hop={step.hop} data-state={step.pending ? "pending" : chosen ? "chosen" : "none"}>
+    <li className="sv-walk-in relative pb-4 pl-8" data-hop={step.hop} data-state={step.pending ? "pending" : chosen.length ? "chosen" : "none"}>
       {!last && <span className="absolute top-4 bottom-0 left-[11px] w-px bg-border" aria-hidden />}
       <span
-        className={cn("absolute top-2.5 left-1.5 size-3 rounded-full border-2", step.pending && "sv-walk-considering border-muted-foreground", !chosen && !step.pending && "border-muted-foreground/40 bg-background")}
-        style={chosen ? { backgroundColor: color, borderColor: color } : undefined}
+        className={cn("absolute top-2.5 left-1.5 size-3 rounded-full border-2", step.pending && "sv-walk-considering border-muted-foreground", !chosen.length && !step.pending && "border-muted-foreground/40 bg-background")}
+        style={chosen.length ? { backgroundColor: color, borderColor: color } : undefined}
         aria-hidden
       />
       <div className="mb-1.5 flex flex-wrap items-center gap-x-2 font-mono text-[10.5px] tracking-wide text-muted-foreground uppercase">
@@ -108,18 +113,25 @@ function Step({ step, last, current, selected, onSelect }: Common & { step: Walk
         {step.sufficient !== undefined && <span title="The decider's answer to: is what was gathered enough?">· enough? {step.sufficient.toFixed(2)}</span>}
       </div>
       <div className="flex flex-wrap items-center gap-1.5">
-        {chosen ? (
-          <button
-            type="button"
-            onClick={() => onSelect(chosen)}
-            className={cn("inline-flex max-w-full items-center gap-2 rounded-md border-2 px-2.5 py-1.5 text-left text-sm", current && "sv-walk-current", selected === chosen.ref_id && "ring-2 ring-ring ring-offset-1 ring-offset-background")}
-            style={{ borderColor: color, backgroundColor: tint(chosen.node_type, 16), "--sv-walk-color": tint(chosen.node_type, 55) } as CSSProperties}
-            data-testid="walk-chosen"
-          >
-            <span className="min-w-0 truncate font-medium">{chosen.name || chosen.ref_id.slice(0, 8)}</span>
-            <span className="shrink-0 font-mono text-[10px] text-muted-foreground">{chosen.node_type}</span>
-            {chosenCand?.relevance !== undefined && <span className="shrink-0 font-mono text-[10px] text-muted-foreground">{chosenCand.relevance.toFixed(2)}</span>}
-          </button>
+        {chosen.length ? (
+          chosen.map((n) => {
+            const relevance = step.candidates.find((c) => c.ref_id === n.ref_id)?.relevance;
+            const tone = nodeColor(n.node_type);
+            return (
+              <button
+                key={n.ref_id}
+                type="button"
+                onClick={() => onSelect(n)}
+                className={cn("inline-flex max-w-full items-center gap-2 rounded-md border-2 px-2.5 py-1.5 text-left text-sm", current && "sv-walk-current", selected === n.ref_id && "ring-2 ring-ring ring-offset-1 ring-offset-background")}
+                style={{ borderColor: tone, backgroundColor: tint(n.node_type, 16), "--sv-walk-color": tint(n.node_type, 55) } as CSSProperties}
+                data-testid="walk-chosen"
+              >
+                <span className="min-w-0 truncate font-medium">{n.name || n.ref_id.slice(0, 8)}</span>
+                <span className="shrink-0 font-mono text-[10px] text-muted-foreground">{n.node_type}</span>
+                {relevance !== undefined && <span className="shrink-0 font-mono text-[10px] text-muted-foreground">{relevance.toFixed(2)}</span>}
+              </button>
+            );
+          })
         ) : step.pending ? (
           <span className="sv-walk-considering inline-flex items-center gap-1.5 rounded-md border-2 border-dashed px-2.5 py-1.5 text-sm text-muted-foreground">
             <Loader2 className="size-3.5 motion-safe:animate-spin" aria-hidden /> choosing…

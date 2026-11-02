@@ -8,7 +8,7 @@
 
 import { replayTime } from "../replay.js";
 import type { WalkHopEvent } from "./source.js";
-import { foldWalkTrail, type WalkTrail } from "./trail.js";
+import { chosenOf, foldWalkTrail, type WalkTrail } from "./trail.js";
 
 export type WalkBeatKind = "candidates" | "choice" | "error";
 
@@ -19,7 +19,7 @@ export interface WalkBeat {
   kind: WalkBeatKind;
   /** Epoch ms, from the event's `ts`; null when the log has none. */
   at: number | null;
-  /** What happened, as a person reads it: `NDA: 3 candidates`, `chose NDA drafting rules`. */
+  /** What happened, as a person reads it: `NDA: 3 candidates`, `chose NDA drafting rules`, `chose M&A, Litigation`. */
   label: string;
 }
 
@@ -32,8 +32,8 @@ export function walkBeats(hops: readonly WalkHopEvent[]): WalkBeat[] {
       return { index, hop: e.iteration, kind: "candidates", at, label: `${from}: ${n === 1 ? "1 candidate" : `${n} candidates`}` };
     }
     if (e.type === "step.error") return { index, hop: e.iteration, kind: "error", at, label: `failed: ${e.error?.message ?? "the hop failed"}` };
-    const next = e.output?.next;
-    return { index, hop: e.iteration, kind: "choice", at, label: next ? `chose ${next.name || next.ref_id}` : "chose none" };
+    const went = e.output ? chosenOf(e.output) : [];
+    return { index, hop: e.iteration, kind: "choice", at, label: went.length ? `chose ${went.map((n) => n.name || n.ref_id).join(", ")}` : "chose none" };
   });
 }
 
