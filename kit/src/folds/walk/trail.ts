@@ -6,10 +6,11 @@
  *
  *  - A hop's `step.start` opens a step: its candidates `considering`, the
  *    node it expanded to find them as `from` (none for the seeds).
- *  - Its `step.end` settles it: the candidate it chose next is `chosen`,
- *    the rest `kept` or `dropped` by the verdicts. A `next` that is not
- *    among the hop's candidates came from an earlier hop (graph/walk's
- *    frontier) or was read directly (an agent): a `jump`.
+ *  - Its `step.end` settles it: the candidate it chose next is `chosen` —
+ *    several, when an agent read several at once — the rest `kept` or
+ *    `dropped` by the verdicts. A chosen node that is not among the hop's
+ *    candidates came from an earlier hop (graph/walk's frontier) or was
+ *    read directly (an agent): a `jump`.
  *  - Evidence folded into an earlier candidate (`merged_into`) is counted
  *    on it, never drawn twice.
  */
@@ -32,9 +33,9 @@ export interface WalkTrailStep {
   from: WalkBrief | null;
   /** Every node considered at this choice, in the order the hop listed them. */
   candidates: WalkTrailCandidate[];
-  /** The node chosen to go on from; null while judging, or when it chose none. */
-  chosen: WalkBrief | null;
-  /** The chosen node is not one of this hop's candidates (an earlier hop's, or read directly). */
+  /** The nodes chosen to go on from: one, or every node an agent read at once; none while judging, or when it chose none. */
+  chosen: WalkBrief[];
+  /** A chosen node is not one of this hop's candidates (an earlier hop's, or read directly). */
   jump: boolean;
   /** Its candidates are listed, its verdicts not yet in. */
   pending: boolean;
@@ -47,7 +48,7 @@ export interface WalkTrailStep {
 
 export interface WalkTrail {
   steps: WalkTrailStep[];
-  /** The chosen nodes in order — the trail itself: Law › M&A › NDA › … */
+  /** The chosen nodes in order — the trail itself: Law › M&A › NDA › … (a hop that went to several gives each). */
   path: WalkBrief[];
   /** Candidates kept anywhere (the bundle a graph/walk hands on), the chosen ones included. */
   kept: number;
@@ -68,7 +69,7 @@ export function foldWalkTrail(hops: readonly WalkHopEvent[]): WalkTrail {
         hop: e.iteration,
         from: e.input.expanded ? brief(e.input.expanded) : null,
         candidates: [],
-        chosen: null,
+        chosen: [],
         jump: false,
         pending: true,
         ...(e.ts ? { at: e.ts } : {}),
@@ -92,14 +93,15 @@ export function foldWalkTrail(hops: readonly WalkHopEvent[]): WalkTrail {
     if (!step) continue;
     if (e.type === "step.end" && e.output) {
       const verdicts = new Map((e.output.verdicts ?? []).map((v) => [v.ref_id, v]));
-      const next = e.output.next;
+      const went = chosenOf(e.output);
+      const ids = new Set(went.map((n) => n.ref_id));
       for (const c of step.candidates) {
         const v = verdicts.get(c.ref_id);
         if (v?.relevance !== undefined) c.relevance = v.relevance;
-        c.state = next && c.ref_id === next.ref_id ? "chosen" : v?.kept ? "kept" : "dropped";
+        c.state = ids.has(c.ref_id) ? "chosen" : v?.kept ? "kept" : "dropped";
       }
-      step.chosen = next ? brief(next) : null;
-      step.jump = !!next && !step.candidates.some((c) => c.ref_id === next.ref_id);
+      step.chosen = went.map(brief);
+      step.jump = went.some((n) => !step.candidates.some((c) => c.ref_id === n.ref_id));
       step.pending = false;
       if (typeof e.output.sufficient === "number") step.sufficient = e.output.sufficient;
     } else if (e.type === "step.error") {
@@ -116,11 +118,16 @@ export function foldWalkTrail(hops: readonly WalkHopEvent[]): WalkTrail {
     kept += s.candidates.filter((c) => c.state === "kept" || c.state === "chosen").length;
     scored ||= s.candidates.some((c) => c.relevance !== undefined);
   }
-  return { steps, path: steps.flatMap((s) => (s.chosen ? [s.chosen] : [])), kept, considered, scored };
+  return { steps, path: steps.flatMap((s) => s.chosen), kept, considered, scored };
 }
 
 function brief(n: WalkBrief): WalkBrief {
   return { ref_id: n.ref_id, node_type: n.node_type, name: n.name };
+}
+
+/** Every node a hop's `step.end` went to: `chosen` when it went to several, else its `next`. */
+export function chosenOf(output: NonNullable<WalkHopEvent["output"]>): WalkBrief[] {
+  return output.chosen?.length ? output.chosen : output.next ? [output.next] : [];
 }
 
 /** One line for a walk's state: `4 hops · 6 kept · walking…`, `5 hops · 7 kept · stopped: sufficient`;

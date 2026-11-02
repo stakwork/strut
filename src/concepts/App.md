@@ -159,16 +159,18 @@ page may not frame Google Sheets: draw the sheet with SheetView, whose
 ```
 
 `WalkView` draws a walk through the graph as it plays out — a `graph/walk`
-step's hops, or an agent reading a Concept tree with its own graph calls:
-the path as a trail (Law › Corporate / M&A › NDA › …), the candidates each
-hop dropped faded beside the one it chose, the newest hop pulsing. Live and
-replay are one view with RunGraph's controls (a hop back, play/pause, a hop
-on, scrub, speed): joined in flight it shows the hops so far and follows,
-Live returns to the newest; a finished walk replays from the run's log at
-the pace it ran — `replay` opens it playing from the start. Put it at the
-centre of a page that shows a person the harness at work; `path` picks the
-walk when a run took several, `onOpenNode` hears a node opened from its
-card.
+step's hops, or an agent reading a Concept tree with its own graph calls,
+drawn the same way: the path as a trail (Law › Corporate / M&A › NDA › …),
+each hop's other candidates behind "+N considered", the newest hop
+pulsing. Live and replay are one view with RunGraph's controls above the
+walk (a hop back, play/pause, a hop on, scrub, speed): joined in flight it
+shows the hops so far and follows, Live returns to the newest; a finished
+walk replays from the run's log at the pace it ran — `replay` opens it
+playing from the start. Scrubbing never changes its height. A click on a
+node opens it in a drawer over the walk; pass `onOpenNode` to open it your
+own way instead. It sizes by its container, so it works in a half-width
+panel: put it at the centre of a page that shows a person the harness at
+work; `path` picks the walk when a run took several.
 
 Also `RunStatus`, `Transcript` (an agent step's session through
 `run/transcript` — `workflow`, `runId`, `path` — or `messages` you pass),

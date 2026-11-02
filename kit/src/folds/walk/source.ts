@@ -15,9 +15,11 @@
  *    `graph_graph_neighbors`, `graph_graph_search`, then reading one of what
  *    came back — leaves the same choices in its tool calls. A call that
  *    LISTED nodes (children, neighbours, hits) opens a hop with them as the
- *    candidates; the next call that names a node (its `ref_id`, or its type
- *    and name) closes it, that node the one chosen. A node read with no
- *    choice open is a hop of its own (a seed, or a jump). The listed nodes
+ *    candidates; the next call that reads nodes (by `ref_id`, or type and
+ *    name; one, or several at once with `graph_get_batched`) closes it, the
+ *    nodes it read the ones chosen. A node read that no open choice listed
+ *    is a hop of its own from the node the walk was on (a jump), or one of
+ *    the walk's seeds when it was on none. The listed nodes
  *    are in the call's output, which the log keeps as a 1.5 KB preview: what
  *    the preview cut is read back from the agent's transcript once it has
  *    ended (`toolResultsByCall`), so a live agent's hop may show fewer
@@ -63,7 +65,8 @@ export interface WalkHopEvent {
   iteration: number;
   ts?: string;
   input?: { hop: number; expanded: WalkBrief | null; candidates: WalkCandidateRef[] };
-  output?: { verdicts: WalkVerdict[]; next?: WalkBrief; sufficient?: number };
+  /** `next`: the node the hop went to; `chosen`: every one of them, when it went to several at once (an agent reading several nodes in one call). */
+  output?: { verdicts: WalkVerdict[]; next?: WalkBrief; chosen?: WalkBrief[]; sufficient?: number };
   error?: { message: string };
 }
 
@@ -224,14 +227,22 @@ export function toolResultsByCall(messages: unknown): Map<string, unknown> {
   return out;
 }
 
-/** The single node a call reported (`withAccessedNodes`), when it reported one. */
-function reportedNode(nodes: unknown): WalkBrief | null {
-  if (!Array.isArray(nodes) || nodes.length !== 1) return null;
-  const n = listedOf(nodes[0]);
-  return n ? { ref_id: n.ref_id, node_type: n.node_type, name: n.name } : null;
+/** The nodes a call reported reading (`withAccessedNodes`): one, or several read at once (`graph_get_batched`). */
+function reportedNodes(nodes: unknown): WalkBrief[] {
+  if (!Array.isArray(nodes)) return [];
+  const out: WalkBrief[] = [];
+  for (const item of nodes) {
+    const n = listedOf(item);
+    if (n && !out.some((o) => o.ref_id === n.ref_id)) out.push(brief(n));
+  }
+  return out;
 }
 
 const brief = (n: WalkBrief): WalkBrief => ({ ref_id: n.ref_id, node_type: n.node_type, name: n.name });
+
+/** A hop's choice as its `step.end` says it: `next` the node it went to, `chosen` all of them when it went to several. */
+const choiceOf = (went: readonly WalkBrief[]): Pick<NonNullable<WalkHopEvent["output"]>, "next" | "chosen"> =>
+  went.length > 1 ? { next: went[0]!, chosen: [...went] } : went.length === 1 ? { next: went[0]! } : {};
 
 /** An agent's tool call that may move it through the graph: a read. */
 export interface WalkToolCall {
@@ -243,27 +254,33 @@ export interface WalkToolCall {
 
 /**
  * An agent's graph tool calls as hop events (the header's second source),
- * given in the order the calls ENDED. A call that read one node (it reported
- * exactly one, `withAccessedNodes`) is a move: it closes the choice open
- * when that node is among its candidates, else it is a hop of its own. A
- * call whose output lists nodes opens the next choice, with them as its
- * candidates. `ended` (the agent's end) closes a choice it left open.
+ * given in the order the calls ENDED. A call that read nodes (it reported
+ * them, `withAccessedNodes`) is a move — one node, or several read at once:
+ * it closes the choice open with every one of them among its candidates as
+ * chosen, and the ones no choice listed are a hop of their own, from the
+ * node the walk was on (the walk's seeds when it was on none). Reading again
+ * a node the walk is on is no hop. A call whose output lists nodes opens the
+ * next choice, with them as its candidates. `ended` (the agent's end) closes
+ * a choice it left open.
  */
 export function agentWalkHops(calls: readonly WalkToolCall[], ended: { ts?: string } | null, opts: FindWalksOptions = {}): WalkHopEvent[] {
   const hops: WalkHopEvent[] = [];
   /** Every node any call listed, with the edge it came by: a jump's via. */
   const seen = new Map<string, WalkCandidateRef>();
   let open: { iteration: number; candidates: WalkCandidateRef[] } | null = null;
+  /** The node the walk is on (the last one read), and every node its last move went to. */
   let from: WalkBrief | null = null;
+  let on = new Set<string>();
   let hop = 0;
 
-  const close = (ts: string | undefined, next?: WalkBrief) => {
+  const close = (ts: string | undefined, went: readonly WalkBrief[] = []) => {
     if (!open) return;
+    const picked = new Set(went.map((n) => n.ref_id));
     hops.push({
       type: "step.end",
       iteration: open.iteration,
       ...(ts ? { ts } : {}),
-      output: { verdicts: open.candidates.map((c) => ({ ref_id: c.ref_id, kept: !!next && c.ref_id === next.ref_id })), ...(next ? { next } : {}) },
+      output: { verdicts: open.candidates.map((c) => ({ ref_id: c.ref_id, kept: picked.has(c.ref_id) })), ...choiceOf(went) },
     });
     open = null;
   };
@@ -272,26 +289,30 @@ export function agentWalkHops(calls: readonly WalkToolCall[], ended: { ts?: stri
     if (call.end?.type !== "step.end") continue;
     const e = call.end!;
     const ts = e.ts;
-    const read = isSearch(call.tool) ? null : reportedNode(e.nodes);
-    if (read) {
-      const candidates: WalkCandidateRef[] = (open as { candidates: WalkCandidateRef[] } | null)?.candidates ?? [];
-      if (candidates.some((c) => c.ref_id === read.ref_id)) close(ts, read);
-      else {
-        // Not among the open choice's candidates: that choice took none of
-        // them, and this read is a hop of its own — a seed, or a jump.
-        close(ts);
-        const known = seen.get(read.ref_id);
-        const target: WalkCandidateRef = { ...(known ?? {}), ...read };
+    const reads = isSearch(call.tool) ? [] : reportedNodes(e.nodes);
+    if (reads.length) {
+      const offered = new Set(((open as { candidates: WalkCandidateRef[] } | null)?.candidates ?? []).map((c) => c.ref_id));
+      const chosen = reads.filter((n) => offered.has(n.ref_id));
+      // Not among the open choice's candidates, nor where the walk already
+      // is: a hop of its own — a seed, or a jump.
+      const elsewhere = reads.filter((n) => !offered.has(n.ref_id) && !on.has(n.ref_id));
+      if (chosen.length || elsewhere.length) close(ts, chosen);
+      if (elsewhere.length) {
+        const targets: WalkCandidateRef[] = elsewhere.map((n) => ({ ...(seen.get(n.ref_id) ?? {}), ...n }));
         const iteration = hop++;
-        hops.push({ type: "step.start", iteration, ...(ts ? { ts } : {}), input: { hop: iteration, expanded: from, candidates: [target] } });
-        hops.push({ type: "step.end", iteration, ...(ts ? { ts } : {}), output: { verdicts: [{ ref_id: read.ref_id, kept: true }], next: read } });
+        hops.push({ type: "step.start", iteration, ...(ts ? { ts } : {}), input: { hop: iteration, expanded: from, candidates: targets } });
+        hops.push({ type: "step.end", iteration, ...(ts ? { ts } : {}), output: { verdicts: elsewhere.map((n) => ({ ref_id: n.ref_id, kept: true })), ...choiceOf(elsewhere) } });
       }
-      from = read;
+      from = reads.at(-1)!;
+      on = new Set(reads.map((n) => n.ref_id));
     }
     const toolCallId = call.start.toolCallId ?? e.toolCallId;
     const result = toolCallId ? opts.results?.get(toolCallId) : undefined;
-    const listed = listedNodes(result ?? e.output).filter((n) => n.ref_id !== read?.ref_id);
+    const readIds = new Set(reads.map((n) => n.ref_id));
+    const listed = listedNodes(result ?? e.output).filter((n) => !readIds.has(n.ref_id));
     if (!listed.length) continue;
+    // What a call lists hangs off the one node it read.
+    const read = reads.length === 1 ? reads[0]! : null;
     const input = parsed(call.start.input);
     const childEdge = isRecord(input) ? str(input.children) : undefined;
     const candidates: WalkCandidateRef[] = [];

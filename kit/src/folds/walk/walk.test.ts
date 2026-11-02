@@ -123,7 +123,7 @@ describe("findWalks + foldWalkTrail: a graph/walk step", () => {
     assert.equal(t.steps.length, 3);
     const last = t.steps[2]!;
     assert.equal(last.pending, true);
-    assert.equal(last.chosen, null);
+    assert.deepEqual(last.chosen, []);
     assert.ok(last.candidates.every((c) => c.state === "considering"));
     assert.deepEqual(names(t.path), ["Law", "Corporate / M&A"]);
     assert.equal(walkTrailSummary(t, { live: true }), "3 hops · 2 kept · walking…");
@@ -167,6 +167,15 @@ const get = (agent: string, s: number, ref: string) =>
   call(agent, "graph_graph_get", s, { ref_id: ref, children: "PARENT_OF" }, {
     output: { ...brief(ref), properties: { name: TREE[ref]![0] }, edges: {}, children: TREE[ref]![1].map((k) => ({ ...brief(k), description: "" })) },
     nodes: [brief(ref)],
+  });
+/** graph_graph_get without `children`: one node read, nothing listed. */
+const read = (agent: string, s: number, ref: string) =>
+  call(agent, "graph_graph_get", s, { ref_id: ref }, { output: { ...brief(ref), properties: { name: TREE[ref]![0] }, edges: {} }, nodes: [brief(ref)] });
+/** graph_graph_get_batched: several nodes read at once, every one reported. */
+const batched = (agent: string, s: number, refs: string[]) =>
+  call(agent, "graph_graph_get_batched", s, { ref_ids: refs }, {
+    output: { requested: refs.length, returned: refs.length, truncated: false, omitted_ref_ids: [], nodes: refs.map((r) => ({ ...brief(r), properties: { name: TREE[r]![0] }, edges: {} })) },
+    nodes: refs.map(brief),
   });
 
 describe("findWalks + foldWalkTrail: an agent walking by its own tool calls", () => {
@@ -231,10 +240,65 @@ describe("findWalks + foldWalkTrail: an agent walking by its own tool calls", ()
     const t = foldWalkTrail(walks[0]!.hops);
     assert.deepEqual(names(t.path), ["Law", "Deviation matrix (Google Sheet)"]);
     // Law's children were listed and none taken; the matrix is a hop of its own.
-    assert.equal(t.steps[1]!.chosen, null);
+    assert.deepEqual(t.steps[1]!.chosen, []);
     assert.ok(t.steps[1]!.candidates.every((c) => c.state === "dropped"));
     assert.equal(t.steps[2]!.from?.name, "Law");
     assert.deepEqual(names(t.steps[2]!.candidates), ["Deviation matrix (Google Sheet)"]);
+  });
+
+  it("a read of several nodes at once chose every one of them: no hop chose none before it, and going on from one is no new hop", () => {
+    const B = "legal/compare";
+    const events: WalkLogEvent[] = [
+      ...get(B, 1, "law"),
+      ...batched(B, 2, ["corp", "lit"]),
+      ...get(B, 3, "corp"),
+      ...read(B, 4, "nda"),
+    ];
+    const w = findWalks(events)[0]!;
+    const t = foldWalkTrail(w.hops);
+    assert.deepEqual(t.steps.map((s) => [s.from?.name ?? null, names(s.chosen)]), [
+      [null, ["Law"]],
+      ["Law", ["Corporate / M&A", "Litigation"]],
+      ["Corporate / M&A", ["NDA"]],
+    ]);
+    assert.deepEqual(t.steps[1]!.candidates.map((c) => [c.name, c.state]), [
+      ["Corporate / M&A", "chosen"], ["Litigation", "chosen"], ["Employment", "dropped"], ["Intellectual property", "dropped"],
+    ]);
+    assert.ok(t.steps.every((s) => !s.jump && !s.pending));
+    assert.deepEqual(names(t.path), ["Law", "Corporate / M&A", "Litigation", "NDA"]);
+    assert.deepEqual(walkBeats(w.hops).filter((b) => b.kind === "choice").map((b) => b.label), ["chose Law", "chose Corporate / M&A, Litigation", "chose NDA"]);
+    const g = foldWalkGraph(w.hops);
+    assert.deepEqual([g.nodes.get("corp")!.state, g.nodes.get("lit")!.state, g.nodes.get("emp")!.state], ["kept", "kept", "dropped"]);
+    assert.deepEqual(g.edges.find((e) => e.target === "lit"), { source: "law", target: "lit", type: "PARENT_OF" });
+  });
+
+  it("a walk that starts with a read of several nodes: they are its seeds", () => {
+    const B = "legal/open";
+    const events: WalkLogEvent[] = [
+      ...batched(B, 1, ["law", "corp"]),
+      ...get(B, 2, "corp"),
+      ...read(B, 3, "nda"),
+    ];
+    const w = findWalks(events)[0]!;
+    const t = foldWalkTrail(w.hops);
+    assert.deepEqual(t.steps.map((s) => [s.from?.name ?? null, names(s.candidates), names(s.chosen)]), [
+      [null, ["Law", "Corporate / M&A"], ["Law", "Corporate / M&A"]],
+      ["Corporate / M&A", ["NDA", "Share purchase agreement", "Letter of intent"], ["NDA"]],
+    ]);
+    assert.ok(t.steps.every((s) => !s.jump));
+    assert.deepEqual(walkBeats(w.hops).slice(0, 2).map((b) => b.label), ["seeds: 2 candidates", "chose Law, Corporate / M&A"]);
+  });
+
+  it("a read of several nodes no listing offered is a hop from the node the walk was on", () => {
+    const B = "legal/skip";
+    const events: WalkLogEvent[] = [...get(B, 1, "law"), ...get(B, 2, "corp"), ...batched(B, 3, ["draft", "matrix"])];
+    const t = foldWalkTrail(findWalks(events)[0]!.hops);
+    // Corporate / M&A's children were listed and none of them read.
+    assert.deepEqual(names(t.steps[2]!.chosen), []);
+    const last = t.steps.at(-1)!;
+    assert.equal(last.from?.name, "Corporate / M&A");
+    assert.deepEqual(names(last.chosen), ["Drafting rules", "Deviation matrix (Google Sheet)"]);
+    assert.equal(last.jump, false);
   });
 
   it("reads a cut preview's complete entries, and the transcript's whole result once there is one", () => {
@@ -253,7 +317,7 @@ describe("findWalks + foldWalkTrail: an agent walking by its own tool calls", ()
     const ndaCall = events[3]!.toolCallId!;
     const live = foldWalkTrail(findWalks(events)[0]!.hops);
     assert.equal(live.steps.at(-1)!.jump, false);
-    assert.equal(live.steps.at(-1)!.chosen, null, "Drafting rules was read, but nothing listed it: the preview cut it");
+    assert.deepEqual(live.steps.at(-1)!.chosen, [], "Drafting rules was read, but nothing listed it: the preview cut it");
     const transcript = [
       { role: "assistant", content: [{ type: "tool-call", toolCallId: ndaCall, toolName: "graph_graph_get", input: {} }] },
       { role: "tool", content: [{ type: "tool-result", toolCallId: ndaCall, toolName: "graph_graph_get", output: { type: "json", value: full } }] },
