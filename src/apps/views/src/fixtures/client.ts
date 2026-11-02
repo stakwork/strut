@@ -9,7 +9,7 @@ import { REPORT_EVENTS, REPORT_RUN_ID } from "./report";
 import { TRACE_EVENTS, TRACE_LIVE_RUN_ID, TRACE_RUN_ID, traceTranscript } from "./trace";
 import { COVENANT_SHEET, NDA_FRAMES, NDA_SHEET, NDA_WORKFLOW, SHEET_FILES, covenantSheet, ndaFrame, ndaPlaybook, ndaRun } from "./sheets";
 import { MATTER_EVENTS, MATTER_FILES, MATTER_LIVE_EVENTS, MATTER_LIVE_RUN_ID, MATTER_RUN_ID, MATTER_SHEET_DONE, MATTER_WORKFLOW } from "./matter";
-import { AGENT_WALK_EVENTS, AGENT_WALK_PATH, AGENT_WALK_RUN_ID, WALK_EVENTS, WALK_LIVE_RUN_ID, WALK_RUN_ID, agentWalkTranscript, walkNode } from "./walk";
+import { AGENT_WALK_EVENTS, AGENT_WALK_PATH, AGENT_WALK_RUN_ID, WALK_EVENTS, WALK_JOIN_RUN_ID, WALK_LIVE_RUN_ID, WALK_RUN_ID, agentWalkTranscript, walkNode } from "./walk";
 
 const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -53,11 +53,12 @@ export function createFixtureClient(): StrutClient {
   // The live walk: three more events at each read — a hop and a half, so a
   // read can land between a hop's candidates and its choice, and the player
   // falls behind and catches up.
-  let walked = 0;
-  const walkLog = (skip: number) => {
-    if (skip === 0) walked = 2;
-    walked = Math.min(WALK_EVENTS.length, walked + 3);
-    return WALK_EVENTS.slice(0, walked);
+  // Joined mid-walk, the first read already holds three hops.
+  const walked: Record<string, number> = {};
+  const walkLog = (runId: string, skip: number) => {
+    if (skip === 0) walked[runId] = runId === WALK_JOIN_RUN_ID ? 5 : 2;
+    walked[runId] = Math.min(WALK_EVENTS.length, (walked[runId] ?? 0) + 3);
+    return WALK_EVENTS.slice(0, walked[runId]);
   };
   const answer = (type: string, c: Record<string, unknown>): unknown => {
     switch (type) {
@@ -80,7 +81,7 @@ export function createFixtureClient(): StrutClient {
         if (c["runId"] === MATTER_RUN_ID) return MATTER_EVENTS.slice(skip);
         if (c["runId"] === MATTER_LIVE_RUN_ID) return matterLog(skip).slice(skip);
         if (c["runId"] === WALK_RUN_ID) return WALK_EVENTS.slice(skip);
-        if (c["runId"] === WALK_LIVE_RUN_ID) return walkLog(skip).slice(skip);
+        if (c["runId"] === WALK_LIVE_RUN_ID || c["runId"] === WALK_JOIN_RUN_ID) return walkLog(String(c["runId"]), skip).slice(skip);
         if (c["runId"] === AGENT_WALK_RUN_ID) return AGENT_WALK_EVENTS.slice(skip);
         throw new Error(`no run ${String(c["runId"])}`);
       }

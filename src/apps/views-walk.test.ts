@@ -3,9 +3,9 @@
 // and its live replay, read the way useRunEvents reads a run in flight.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { findWalks, foldWalkTrail, latestWalk, toolResultsByCall, type WalkLogEvent } from "@strut/kit/folds";
+import { findWalks, foldWalkTrail, latestWalk, replayStart, toolResultsByCall, walkFrame, type WalkLogEvent } from "@strut/kit/folds";
 import { createFixtureClient } from "./views/src/fixtures/client.js";
-import { AGENT_WALK_EVENTS, AGENT_WALK_PATH, AGENT_WALK_RUN_ID, WALK_EVENTS, WALK_LIVE_RUN_ID, WALK_RUN_ID, WALK_WORKFLOW } from "./views/src/fixtures/walk.js";
+import { AGENT_WALK_EVENTS, AGENT_WALK_PATH, AGENT_WALK_RUN_ID, WALK_EVENTS, WALK_JOIN_RUN_ID, WALK_LIVE_RUN_ID, WALK_RUN_ID, WALK_WORKFLOW } from "./views/src/fixtures/walk.js";
 
 const TRAIL = ["Law", "Corporate / M&A", "NDA", "NDA drafting rules", "Deviation matrix (Google Sheet)"];
 const names = (l: Array<{ name: string }>) => l.map((n) => n.name);
@@ -65,5 +65,16 @@ describe("strut/views — WalkView", () => {
     assert.equal(seen.at(-1), "done");
     assert.ok(pending, "a read landed between a hop's candidates and its choice");
     assert.deepEqual(log, WALK_EVENTS);
+  });
+
+  it("joined mid-walk: the hops so far at once, following; scrubbing back reads the same log", async () => {
+    const client = createFixtureClient();
+    const first = await client.run<WalkLogEvent[]>("run/events", { workflow: WALK_WORKFLOW, runId: WALK_JOIN_RUN_ID });
+    const w = findWalks(first)[0]!;
+    assert.equal(w.status, "running");
+    const start = replayStart(w.hops.length, true);
+    assert.deepEqual(start, { at: 6, mode: "follow" }, "three hops shown at once");
+    assert.deepEqual(names(walkFrame(w.hops, start.at).trail.path), TRAIL.slice(0, 3));
+    assert.deepEqual(names(walkFrame(w.hops, 2).trail.path), ["Law"], "a step back");
   });
 });

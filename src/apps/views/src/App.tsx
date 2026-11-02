@@ -16,7 +16,7 @@ import { REPORT_RUN_ID } from "./fixtures/report";
 import { TRACE_LIVE_RUN_ID, TRACE_RUN_ID } from "./fixtures/trace";
 import { COVENANT_RANGE, COVENANT_SHEET, COVENANT_SOURCES, DEVIATIONS_CSV, NDA_RANGE, NDA_SHEET, NDA_SOURCES, NDA_WORKFLOW } from "./fixtures/sheets";
 import { MATTER_LIVE_RUN_ID, MATTER_RUN_ID, MATTER_WORKFLOW } from "./fixtures/matter";
-import { AGENT_WALK_RUN_ID, WALK_LIVE_RUN_ID, WALK_RUN_ID, WALK_WORKFLOW } from "./fixtures/walk";
+import { AGENT_WALK_RUN_ID, WALK_JOIN_RUN_ID, WALK_LIVE_RUN_ID, WALK_RUN_ID, WALK_WORKFLOW } from "./fixtures/walk";
 
 interface Entry {
   name: string;
@@ -128,11 +128,18 @@ function WorkProductsDemo() {
   );
 }
 
-/** A graph/walk step live (its log revealed a hop at a time) or finished, or an agent walking the same tree by its own calls. */
+/**
+ * A graph/walk step live from its start (its log revealed a hop and a half
+ * at each read), joined mid-walk, finished (at its end, the controls to step
+ * back), a finished run opened in replay (playing from its start at the pace
+ * it ran), or an agent walking the same tree by its own calls.
+ */
 function WalkDemo() {
   const demos = [
-    ["live", "graph/walk · live"],
-    ["done", "graph/walk · finished"],
+    ["live", "live, from the start"],
+    ["join", "live, joined mid-walk"],
+    ["done", "finished"],
+    ["replay", "finished, opened in replay"],
     ["agent", "an agent's own graph calls"],
   ] as const;
   const [shown, setShown] = useState<(typeof demos)[number][0]>("live");
@@ -146,7 +153,9 @@ function WalkDemo() {
         ))}
       </div>
       {shown === "live" && <WalkView key="live" workflow={WALK_WORKFLOW} runId={WALK_LIVE_RUN_ID} live intervalMs={1200} />}
+      {shown === "join" && <WalkView key="join" workflow={WALK_WORKFLOW} runId={WALK_JOIN_RUN_ID} live intervalMs={2500} />}
       {shown === "done" && <WalkView key="done" workflow={WALK_WORKFLOW} runId={WALK_RUN_ID} />}
+      {shown === "replay" && <WalkView key="replay" workflow={WALK_WORKFLOW} runId={WALK_RUN_ID} replay />}
       {shown === "agent" && <WalkView key="agent" workflow={WALK_WORKFLOW} runId={AGENT_WALK_RUN_ID} />}
     </div>
   );
@@ -213,9 +222,9 @@ const ENTRIES: Entry[] = [
   },
   {
     name: "WalkView",
-    what: "A walk through the graph as it plays out: the path as a trail that grows hop by hop (Law › Corporate / M&A › NDA › …), the node chosen at each hop drawn solid with the candidates it considered beside it — kept ones outlined, dropped ones faded — and the newest hop pulsing. It reads a graph/walk step's hops, or an agent's own graph calls (a listing, then the node it read next). Live, it plays what each read brings at a readable pace, never skipping a hop; once the walk ends, a scrubber steps through it. A click on a node opens its card; Tree draws everything it discovered.",
+    what: "A walk through the graph as it plays out: the path as a trail that grows hop by hop (Law › Corporate / M&A › NDA › …), the node chosen at each hop drawn solid with the candidates it considered beside it — kept ones outlined, dropped ones faded — and the newest hop pulsing. It reads a graph/walk step's hops, or an agent's own graph calls (a listing, then the node it read next). Live and replay are one view with RunGraph's controls — a hop back, play/pause, a hop on, scrub, speed: joined in flight it shows the hops so far and follows, Live returns to the newest; a finished walk replays from its log alone, at the pace it ran. A click on a node opens its card; Tree draws everything it discovered.",
     grants: "grants.workflows: the run's workflow · grants.steps: graph/graph-get-batched (a node's card)",
-    usage: `<WalkView workflow="matter-intake" runId={runId} live onOpenNode={(node) => …} />`,
+    usage: `<WalkView workflow="matter-intake" runId={runId} live onOpenNode={(node) => …} />  <WalkView workflow="matter-intake" runId={runId} replay />`,
     demo: () => <WalkDemo />,
   },
   {

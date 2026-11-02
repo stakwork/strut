@@ -1,24 +1,24 @@
 import { useMemo, useState } from "react";
-import { GitFork, ListTree, Pause, Play, SkipBack, StepBack, StepForward } from "lucide-react";
+import { GitFork, ListTree } from "lucide-react";
 import {
-  findWalks, foldWalkGraph, foldWalkTrail, latestWalk, toolResultsByCall, useRunEvents, useTranscripts, walkTrailSummary,
+  findWalks, foldWalkGraph, latestWalk, toolResultsByCall, useRunEvents, useTranscripts, walkBeats, walkFrame, walkHopStop, walkTrailSummary,
   type RunEvent, type WalkBrief, type WalkLogEvent, type WalkSource,
 } from "@strut/kit";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Slider } from "@/components/ui/slider";
 import { cn } from "@/lib/utils";
 import { nodeColor } from "../../lib/colors";
 import { errorText } from "../../lib/format";
 import { useNode } from "../../lib/graph";
+import { useReplay } from "../../lib/replay";
 import { NodeCard } from "../NodeCard";
+import { ReplayBar } from "../ReplayBar";
 import { RunGraphNodeReader } from "../run-graph/NodeReader";
-import { useWalkPlayer, WALK_PACE_MS } from "./player";
 import { WALK_CSS, WalkBreadcrumb, WalkTrailSteps } from "./WalkTrail";
 import { WalkTree } from "./WalkTree";
 
 /** How often a live walk reads what its log gained. A walk hops every second
- *  or two; the player paces whatever a read brings. */
+ *  or two; the replay paces whatever a read brings. */
 export const WALK_VIEW_INTERVAL_MS = 3_000;
 
 export type WalkViewMode = "trail" | "tree";
@@ -39,8 +39,10 @@ export interface WalkViewProps {
   onOpenNode?: (node: WalkBrief) => void;
   /** Start as the trail (default) or the tree. */
   mode?: WalkViewMode;
-  /** A beat's pace when caught up, ms (default 800): a hop is two — its candidates, then its choice. */
-  paceMs?: number;
+  /** A finished walk opens playing from its start, at the pace it ran, rather than at its end. */
+  replay?: boolean;
+  /** The replay's speed to start at (default 1×; the controls offer 0.5× to 4×). */
+  speed?: number;
   /** How often a live walk polls (default 3 s). */
   intervalMs?: number;
   /** Read a finished agent's transcript for the candidates its log's previews cut (default true). */
@@ -49,17 +51,19 @@ export interface WalkViewProps {
 }
 
 /**
- * A run's graph WALK as it plays out (`findWalks` → `foldWalkTrail`): the
- * path as a trail that grows hop by hop, the node chosen at each hop drawn
- * solid and the candidates it considered beside it — kept ones outlined,
- * dropped ones faded — the newest hop pulsing. Reads a `graph/walk` step's
- * hop events, or an agent's own graph tool calls (a listing, then the node
- * it read next). Live, it follows the run and plays what each read brings
- * at a readable pace; once the walk ends, a scrubber steps through it. A
- * click on a node shows its card. `mode="tree"` draws the same walk as a
- * tree of everything it discovered.
+ * A run's graph WALK as it plays out (`findWalks` → `walkFrame`): the path
+ * as a trail that grows hop by hop, the node chosen at each hop drawn solid
+ * and the candidates it considered beside it — kept ones outlined, dropped
+ * ones faded — the newest hop pulsing. Reads a `graph/walk` step's hop
+ * events, or an agent's own graph tool calls (a listing, then the node it
+ * read next). Live and replay are one view: joined in flight it shows the
+ * hops so far and follows, at a readable pace; the controls (RunGraph's:
+ * a hop back, play/pause, a hop on, scrub, speed) step back through it, and
+ * Live returns. A finished walk replays from its log alone, in its own order
+ * and at its own pace. A click on a node shows its card. `mode="tree"` draws
+ * the same walk as a tree of everything it discovered.
  */
-export function WalkView({ workflow, runId, live, events: given, path, onPathChange, onOpenNode, mode: initialMode = "trail", paceMs = WALK_PACE_MS, intervalMs, transcripts = true, className }: WalkViewProps) {
+export function WalkView({ workflow, runId, live, events: given, path, onPathChange, onOpenNode, mode: initialMode = "trail", replay: replayFromStart, speed, intervalMs, transcripts = true, className }: WalkViewProps) {
   const wf = workflow ?? "";
   const q = useRunEvents(wf, runId, { live, intervalMs: intervalMs ?? WALK_VIEW_INTERVAL_MS, enabled: !given && !!workflow && !!runId });
   const events = (given ?? q.data) as WalkLogEvent[] | undefined;
@@ -84,12 +88,14 @@ export function WalkView({ workflow, runId, live, events: given, path, onPathCha
   const walk: WalkSource | undefined = walks.find((w) => w.path === want) ?? latestWalk(walks);
 
   const running = walk?.status === "running";
-  const player = useWalkPlayer(walk?.path, walk?.hops.length ?? 0, running, paceMs);
-  const moving = running || player.playing;
-  const hops = useMemo(() => walk?.hops.slice(0, player.at) ?? [], [walk, player.at]);
-  const trail = useMemo(() => foldWalkTrail(hops), [hops]);
+  const beats = useMemo(() => (walk ? walkBeats(walk.hops) : []), [walk]);
+  const times = useMemo(() => beats.map((b) => b.at), [beats]);
+  const replay = useReplay(walk?.path, times, running, { replay: replayFromStart, speed });
+  const moving = replay.moving;
+  const frame = useMemo(() => walkFrame(walk?.hops ?? [], replay.at, beats), [walk, replay.at, beats]);
+  const trail = frame.trail;
   const [mode, setMode] = useState<WalkViewMode>(initialMode);
-  const graph = useMemo(() => (mode === "tree" ? foldWalkGraph(hops) : null), [mode, hops]);
+  const graph = useMemo(() => (mode === "tree" ? foldWalkGraph(walk?.hops.slice(0, replay.at) ?? []) : null), [mode, walk, replay.at]);
 
   const [selected, setSelected] = useState<WalkBrief | null>(null);
   const [reading, setReading] = useState(false);
@@ -109,17 +115,23 @@ export function WalkView({ workflow, runId, live, events: given, path, onPathCha
     setSelected(null);
     onPathChange?.(p);
   };
-  const done = player.at >= walk.hops.length;
-  const summary = walkTrailSummary(trail, { live: moving && !walk.error, ...(walk.stopped && done ? { stopped: walk.stopped } : {}), ...(walk.error && done ? { error: walk.error } : {}) });
+  const done = replay.at >= replay.total && !running;
+  const summary = walkTrailSummary(trail, {
+    live: running && replay.following && !walk.error,
+    replaying: replay.playing && !replay.following,
+    scored: walk.kind === "walk",
+    ...(walk.stopped && done ? { stopped: walk.stopped } : {}),
+    ...(walk.error && done ? { error: walk.error } : {}),
+  });
 
   return (
     <div className={cn("flex flex-col gap-3 text-sm", className)} data-testid="walk-view">
       <style>{WALK_CSS}</style>
       <div className="flex flex-wrap items-center gap-2">
-        {moving && running && (
-          <span className="inline-flex items-center gap-1.5 font-mono text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">
-            <span className="size-2 rounded-full bg-emerald-500 motion-safe:animate-pulse" />
-            live
+        {running && (
+          <span className={cn("inline-flex items-center gap-1.5 font-mono text-[11px] font-semibold", replay.following ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground")}>
+            <span className={cn("size-2 rounded-full", replay.following ? "bg-emerald-500 motion-safe:animate-pulse" : "bg-muted-foreground")} />
+            {replay.following ? "live" : replay.playing ? "live · replaying" : "live · paused"}
           </span>
         )}
         {walks.length > 1 ? (
@@ -168,16 +180,24 @@ export function WalkView({ workflow, runId, live, events: given, path, onPathCha
         )}
       </div>
 
-      {!running && walk.hops.length > 0 && (
-        <div className="flex items-center gap-2 rounded-md border px-2 py-1.5" data-testid="walk-scrubber">
-          <button type="button" onClick={() => player.seek(0)} className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground" aria-label="Back to the start"><SkipBack className="size-3.5" /></button>
-          <button type="button" onClick={() => player.seek(player.at - 1)} disabled={player.at === 0} className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40" aria-label="One beat back"><StepBack className="size-3.5" /></button>
-          <button type="button" onClick={() => (player.playing ? player.pause() : player.play())} className="rounded p-1 hover:bg-muted" aria-label={player.playing ? "Pause" : "Play"}>
-            {player.playing ? <Pause className="size-3.5" /> : <Play className="size-3.5" />}
-          </button>
-          <button type="button" onClick={() => player.seek(player.at + 1)} disabled={done} className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40" aria-label="One beat on"><StepForward className="size-3.5" /></button>
-          <Slider value={[player.at]} min={0} max={walk.hops.length} step={1} onValueChange={([v]) => player.seek(v ?? 0)} className="flex-1" aria-label="Replay the walk" />
-          <span className="w-20 shrink-0 text-right font-mono text-[11px] text-muted-foreground">hop {trail.steps.length} / {new Set(walk.hops.map((h) => h.iteration)).size}</span>
+      {beats.length > 0 && (
+        <div className="flex flex-col gap-1 rounded-md border px-2 py-1.5" data-testid="walk-replay">
+          <ReplayBar
+            position={replay.at}
+            total={replay.total}
+            playing={replay.playing}
+            onPlay={replay.play}
+            onPause={replay.pause}
+            onStepBack={() => replay.seek(walkHopStop(beats, replay.at, -1))}
+            onStepForward={() => replay.seek(walkHopStop(beats, replay.at, 1))}
+            onSeek={replay.seek}
+            speed={replay.speed}
+            onSpeed={replay.setSpeed}
+            unit="hop"
+            label={`hop ${frame.hop} / ${frame.hops}`}
+            {...(running ? { live: { following: replay.following, onLive: replay.live } } : {})}
+          />
+          {frame.beat && <p className="truncate px-1 font-mono text-[11px] text-muted-foreground" data-testid="walk-beat">{frame.beat.label}</p>}
         </div>
       )}
 

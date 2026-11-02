@@ -124,10 +124,10 @@ function brief(n: WalkBrief): WalkBrief {
 }
 
 /** One line for a walk's state: `4 hops · 6 kept · walking…`, `5 hops · 7 kept · stopped: sufficient`;
- *  an agent's, which keeps nothing by score, `5 hops · 17 considered`. */
-export function walkTrailSummary(trail: WalkTrail, opts: { live?: boolean; stopped?: string; error?: string } = {}): string {
+ *  an agent's, which keeps nothing by score, `5 hops · 17 considered`. `scored` says which before any verdict is in. */
+export function walkTrailSummary(trail: WalkTrail, opts: { live?: boolean; replaying?: boolean; stopped?: string; error?: string; scored?: boolean } = {}): string {
   const hop = trail.steps.length;
-  const count = trail.scored ? `${trail.kept} kept` : `${trail.considered} considered`;
-  const tail = opts.error ? `error: ${opts.error}` : opts.live ? "walking…" : opts.stopped ? `stopped: ${opts.stopped}` : "";
+  const count = (opts.scored ?? trail.scored) ? `${trail.kept} kept` : `${trail.considered} considered`;
+  const tail = opts.error ? `error: ${opts.error}` : opts.live ? "walking…" : opts.replaying ? "replaying…" : opts.stopped ? `stopped: ${opts.stopped}` : "";
   return `${hop === 1 ? "1 hop" : `${hop} hops`} · ${count}${tail ? ` · ${tail}` : ""}`;
 }

@@ -119,7 +119,7 @@ import { LaunchForm, RunList, RunTimeline, RunGraph } from "strut/views";
 <RunTimeline workflow="score" runId={runId} />   // status, cost, a row per step (`tree split`: every level, each iteration)
 <RunGraph workflow="score" runId={runId} live />  // the graph calls, replayable
 <AgentTrace workflow="score" runId={runId} live /> // the run's agents as a cascade
-<WalkView workflow="score" runId={runId} live />   // a walk through the graph, hop by hop
+<WalkView workflow="score" runId={runId} live />   // a walk through the graph, hop by hop (`replay`: from its start)
 ```
 
 `WorkProducts` is what a run MADE for a person — memos, sheets, redlines,
@@ -161,10 +161,14 @@ page may not frame Google Sheets: draw the sheet with SheetView, whose
 `WalkView` draws a walk through the graph as it plays out — a `graph/walk`
 step's hops, or an agent reading a Concept tree with its own graph calls:
 the path as a trail (Law › Corporate / M&A › NDA › …), the candidates each
-hop dropped faded beside the one it chose, the newest hop pulsing, a
-scrubber once it ends. Put it at the centre of a page that shows a person
-the harness at work; `path` picks the walk when a run took several,
-`onOpenNode` hears a node opened from its card.
+hop dropped faded beside the one it chose, the newest hop pulsing. Live and
+replay are one view with RunGraph's controls (a hop back, play/pause, a hop
+on, scrub, speed): joined in flight it shows the hops so far and follows,
+Live returns to the newest; a finished walk replays from the run's log at
+the pace it ran — `replay` opens it playing from the start. Put it at the
+centre of a page that shows a person the harness at work; `path` picks the
+walk when a run took several, `onOpenNode` hears a node opened from its
+card.
 
 Also `RunStatus`, `Transcript` (an agent step's session through
 `run/transcript` — `workflow`, `runId`, `path` — or `messages` you pass),

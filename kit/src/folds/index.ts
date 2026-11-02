@@ -14,4 +14,5 @@ export * from "./document.js";
 export * from "./agent-trace.js";
 export * from "./run-graph/index.js";
 export * from "./work-products.js";
+export * from "./replay.js";
 export * from "./walk/index.js";

@@ -6,7 +6,8 @@ import { runWalk, type WalkReader } from "../../../../src/steps/lib/graph/walk.j
 import type { NodeEnvelope } from "../../../../src/graph/search.js";
 import type { Evaluate, EvalAnswer } from "../../../../src/evaluate.js";
 import type { StepContext } from "../../../../src/core.js";
-import { findWalks, foldWalkGraph, foldWalkTrail, latestWalk, listedNodes, toolResultsByCall, walkTrailSummary, type WalkLogEvent } from "./index.js";
+import { findWalks, foldWalkGraph, foldWalkTrail, latestWalk, listedNodes, toolResultsByCall, walkBeats, walkFrame, walkHopStop, walkTrailSummary, type WalkLogEvent } from "./index.js";
+import { replayStart, replayAdvance, replayWait } from "../replay.js";
 
 // A law Concept tree (PARENT_OF, parent → child).
 const TREE: Record<string, [string, string[]]> = {
@@ -284,5 +285,70 @@ describe("findWalks + foldWalkTrail: an agent walking by its own tool calls", ()
     assert.deepEqual(g.edges.find((e) => e.target === "nda"), { source: "corp", target: "nda", type: "PARENT_OF" });
     assert.equal(g.nodes.get("nda")!.state, "kept");
     assert.equal(g.nodes.get("spa")!.state, "dropped");
+  });
+});
+
+describe("walk replay frames: the walk from its log alone, beat by beat", () => {
+  it("a hop is two beats — its candidates, then its choice — in the walk's order, at its times", async () => {
+    const w = findWalks(await walkRun())[0]!;
+    const beats = walkBeats(w.hops);
+    assert.equal(beats.length, 10);
+    assert.deepEqual(beats.slice(0, 4).map((b) => [b.hop, b.kind, b.label]), [
+      [0, "candidates", "seeds: 1 candidate"],
+      [0, "choice", "chose Law"],
+      [1, "candidates", "Law: 4 candidates"],
+      [1, "choice", "chose Corporate / M&A"],
+    ]);
+    assert.deepEqual(beats.map((b) => b.at), w.hops.map((h) => Date.parse(h.ts!)));
+    assert.ok(beats.every((b, i) => i === 0 || b.at! > beats[i - 1]!.at!), "in the run's order");
+  });
+
+  it("a finished run replays exactly as it was live: at every point of its log, the live trail is the replay's frame", async () => {
+    const log = await walkRun();
+    const whole = findWalks(log)[0]!;
+    let checked = 0;
+    for (let n = 1; n <= log.length; n++) {
+      const live = findWalks(log.slice(0, n))[0];
+      if (!live) continue;
+      const frame = walkFrame(whole.hops, live.hops.length);
+      assert.deepEqual(frame.trail, foldWalkTrail(live.hops), `after ${n} events of the log`);
+      checked++;
+    }
+    assert.ok(checked >= 10);
+    const mid = walkFrame(whole.hops, 5);
+    assert.deepEqual([mid.hop, mid.hops, mid.beat?.label], [3, 5, "Corporate / M&A: 3 candidates"]);
+    assert.equal(mid.trail.steps.at(-1)!.pending, true);
+    assert.deepEqual(walkFrame(whole.hops, 0), { trail: foldWalkTrail([]), beat: null, hop: 0, hops: 5 });
+  });
+
+  it("a step is one hop: it lands where a hop's choice has shown, never between its candidates and its choice", async () => {
+    const beats = walkBeats(findWalks(await walkRun())[0]!.hops);
+    assert.equal(walkHopStop(beats, 0, 1), 2);
+    assert.equal(walkHopStop(beats, 2, 1), 4);
+    assert.equal(walkHopStop(beats, 3, 1), 4, "from mid-hop, on to its choice");
+    assert.equal(walkHopStop(beats, 4, -1), 2);
+    assert.equal(walkHopStop(beats, 3, -1), 2, "from mid-hop, back to the hop before");
+    assert.equal(walkHopStop(beats, 0, -1), 0);
+    assert.equal(walkHopStop(beats, 10, 1), 10);
+    assert.equal(walkHopStop(beats, 10, -1), 8);
+  });
+
+  it("played on the kit's clock, every beat shows in order at the run's pace — an agent's too", async () => {
+    const times = walkBeats(findWalks(await walkRun())[0]!.hops).map((b) => b.at);
+    let c = replayStart(times.length, false, true);
+    const shown: number[] = [];
+    for (let wait = replayWait(c, times); wait !== null; wait = replayWait(c, times)) {
+      c = replayAdvance(c, times.length, false);
+      shown.push(c.at);
+    }
+    assert.deepEqual(shown, Array.from({ length: times.length }, (_, i) => i + 1));
+    const agent = walkBeats(findWalks([
+      ...get("legal/ag", 1, "law"),
+      ...get("legal/ag", 30, "corp"),
+    ])[0]!.hops);
+    assert.deepEqual(agent.map((b) => b.kind), ["candidates", "choice", "candidates", "choice", "candidates"]);
+    assert.equal(agent[2]!.at! - agent[1]!.at!, 0, "a read and the listing it brought are one moment");
+    assert.equal(agent[3]!.at! - agent[2]!.at!, 29_000, "the agent took 29 s to choose");
+    assert.equal(replayWait({ at: 3, mode: "play" }, agent.map((b) => b.at)), 4_000, "an idle stretch cut short");
   });
 });

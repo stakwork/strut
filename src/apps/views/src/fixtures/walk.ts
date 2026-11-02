@@ -12,6 +12,8 @@ export const WALK_WORKFLOW = "matter-intake";
 export const WALK_RUN_ID = "1790000000950";
 /** The same run, its log revealed a little more at every read: a walk in flight. */
 export const WALK_LIVE_RUN_ID = "1790000000951";
+/** The same run in flight, joined mid-walk: its first read already holds three hops. */
+export const WALK_JOIN_RUN_ID = "1790000000952";
 export const AGENT_WALK_RUN_ID = "1790000000960";
 export const AGENT_WALK_PATH = `${WALK_WORKFLOW}/explore`;
 
