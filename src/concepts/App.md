@@ -128,6 +128,22 @@ into each call and the reasoning before it, the nodes a call read or wrote
 lanes of their own, and a "Download HTML" of what is on screen. Use it
 rather than folding a run's events into agents yourself.
 
+`SheetView` draws a spreadsheet work product in the page and fills it in
+as a workflow writes it: a Google Sheet (`spreadsheet`, its id or URL, and
+`range`; grant `sheets/get-values`), a CSV, TSV or JSON table a run wrote
+(`path`, through `run/files`), or `rows` you hold. Give it the run that
+writes it (`workflow`, `runId`) and it reads again while that run is in
+flight, lighting what each read changed; `refresh` reads again on demand.
+`sources` maps a cell (`C4`) or a row's key (its first column's text) to
+the graph ref_ids it came from, and a corner mark on the cell opens them. A
+page may not frame Google Sheets: draw the sheet with SheetView, whose
+"Open in Google Sheets" asks the host to open it.
+
+```tsx
+<SheetView spreadsheet={sheetId} range="Matrix!A1:H40" workflow="nda-review" runId={runId}
+  sources={{ "Non-solicit": [conceptRef], C4: [passageRef] }} />
+```
+
 Also `RunStatus`, `Transcript` (an agent step's session through
 `run/transcript` — `workflow`, `runId`, `path` — or `messages` you pass),
 `ArtifactView` (a run's file through `run/files`), `DocumentView` (an HTML

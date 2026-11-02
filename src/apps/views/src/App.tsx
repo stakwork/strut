@@ -1,18 +1,20 @@
 // The gallery: every component of strut/views over fixtures (./fixtures/),
 // through a client that answers the steps they call — so a person, and the
 // builder, can see each one as it draws against a strut, with no grant.
-import { useMemo, useState, type ReactNode } from "react";
-import { StrutProvider, useStrutHost } from "@strut/kit";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { StrutProvider, useStrutClient, useStrutHost } from "@strut/kit";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import {
-  AgentTrace, ArtifactView, DocumentView, LaunchForm, RunHealth, NodeCard, NodeGraph, NodeSearch, RunGraph, RunList, RunStatus, RunTimeline, Transcript,
+  AgentTrace, ArtifactView, DocumentView, LaunchForm, RunHealth, NodeCard, NodeGraph, NodeSearch, RunGraph, RunList, RunStatus, RunTimeline, SheetView, SHEETS_STEP, Transcript,
 } from "./index";
 import { createFixtureClient } from "./fixtures/client";
 import { TRANSCRIPT_MARKS } from "./fixtures/content";
 import { EXPLORE_PATH, REF, RUN_ID, WORKFLOW } from "./fixtures/runs";
 import { REPORT_RUN_ID } from "./fixtures/report";
 import { TRACE_LIVE_RUN_ID, TRACE_RUN_ID } from "./fixtures/trace";
+import { COVENANT_RANGE, COVENANT_SHEET, COVENANT_SOURCES, DEVIATIONS_CSV, NDA_RANGE, NDA_SHEET, NDA_SOURCES, NDA_WORKFLOW } from "./fixtures/sheets";
 
 interface Entry {
   name: string;
@@ -67,6 +69,44 @@ function TraceDemo() {
   );
 }
 
+const SHEET_DEMOS = {
+  nda: "NDA deviation matrix — a run filling it",
+  covenant: "Covenant compliance — formulas, two tabs",
+  csv: "A CSV a run wrote",
+} as const;
+
+/** The matrix a review run fills row by row (Replay launches it again), a finished book with formulas, a run's CSV. */
+function SheetDemo() {
+  const client = useStrutClient();
+  const qc = useQueryClient();
+  const [shown, setShown] = useState<keyof typeof SHEET_DEMOS>("nda");
+  const [runId, setRunId] = useState<string>();
+  const replay = useCallback(() => {
+    qc.removeQueries({ queryKey: ["strut", SHEETS_STEP, NDA_SHEET] });
+    void client.run<{ runId: string }>("run/launch", { workflow: NDA_WORKFLOW }).then((r) => setRunId(r.runId));
+  }, [client, qc]);
+  useEffect(replay, [replay]);
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-wrap gap-1">
+        {(Object.keys(SHEET_DEMOS) as Array<keyof typeof SHEET_DEMOS>).map((k) => (
+          <button key={k} type="button" onClick={() => setShown(k)} className={cn("rounded-md border px-2.5 py-1 text-xs", shown === k ? "bg-muted font-medium" : "text-muted-foreground hover:bg-muted/60")}>
+            {SHEET_DEMOS[k]}
+          </button>
+        ))}
+        {shown === "nda" && (
+          <button type="button" onClick={replay} className="ml-auto rounded-md border px-2.5 py-1 text-xs text-muted-foreground hover:bg-muted/60">
+            Replay
+          </button>
+        )}
+      </div>
+      {shown === "nda" && runId && <SheetView key={runId} spreadsheet={NDA_SHEET} range={NDA_RANGE} workflow={NDA_WORKFLOW} runId={runId} sources={NDA_SOURCES} intervalMs={1200} />}
+      {shown === "covenant" && <SheetView spreadsheet={`https://docs.google.com/spreadsheets/d/${COVENANT_SHEET}/edit#gid=0`} range={COVENANT_RANGE} sources={COVENANT_SOURCES} />}
+      {shown === "csv" && <SheetView workflow={WORKFLOW} runId={RUN_ID} path={DEVIATIONS_CSV} />}
+    </div>
+  );
+}
+
 const ENTRIES: Entry[] = [
   {
     name: "RunTimeline",
@@ -93,6 +133,13 @@ const ENTRIES: Entry[] = [
         <DocumentView workflow={WORKFLOW} runId={RUN_ID} path="report.md" terms={["hypertension"]} />
       </div>
     ),
+  },
+  {
+    name: "SheetView",
+    what: "A spreadsheet work product drawn in the page, filling in as a workflow writes it: a Google Sheet (one read brings its tabs, values and formulas), a CSV, TSV or JSON table a run wrote, or rows you pass. While the run that writes it is in flight it reads again and lights what each read changed. The header row and first column stay put while the rest scrolls; numbers sit right; fx shows the formulas; a corner mark on a cited cell opens the Concepts and passages it came from. An app may not frame Google, so Open in Google Sheets goes through the host.",
+    grants: "grants.steps: sheets/get-values (a Google sheet), graph/graph-get-batched (sources) · grants.workflows: the run's workflow (run/get while it writes, run/files for a file)",
+    usage: `<SheetView spreadsheet={id} range="Matrix!A1:H40" workflow="nda-review" runId={runId} sources={{ "Non-solicit": [conceptRef], C4: [passageRef] }} />`,
+    demo: () => <SheetDemo />,
   },
   {
     name: "RunGraph",
