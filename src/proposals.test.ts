@@ -305,7 +305,7 @@ describe("proposals", () => {
     const decide = (id: string, bearer: string, actor?: string) => req(`/proposals/${id}/decide`, bearer, { body: { action: "accept" }, ...(actor ? { actor } : {}) });
     const idsOf = async (path: string, bearer: string) => ((await (await req(path, bearer)).json()) as { proposals: Array<{ id: string }> }).proposals.map((p) => p.id);
 
-    it("a person token decides its own proposal only; repeats are 409; reads are its own", async () => {
+    it("a person token decides its own proposal only; repeats are 409; its lists are its own", async () => {
       await boot();
       const ann = personToken("ann")!.token;
       const bob = personToken("bob")!.token;
@@ -321,12 +321,48 @@ describe("proposals", () => {
       const again = await decide(ids.ann, ann);
       assert.equal(again.status, 409);
       assert.equal(((await again.json()) as { proposal: Proposal }).proposal.status, "applied");
-      // (d) reads
+      // (d) reads: the lists its own, by id any
       assert.deepEqual(await idsOf("/proposals", ann), [ids.ann]);
-      assert.equal((await req(`/proposals/${ids.bob}`, ann)).status, 404);
+      assert.equal((await req(`/proposals/${ids.bob}`, ann)).status, 200);
       assert.equal((await req(`/proposals/${ids.ann}`, ann)).status, 200);
       assert.deepEqual(await idsOf("/workflows/wf/runs/r1/proposals", ann), [ids.ann]);
       assert.deepEqual((await idsOf("/proposals", "api")).sort(), [ids.ann, ids.bob].sort());
+    });
+
+    it("another person's token reads a proposal by id, its input and its proposer with it", async () => {
+      await boot();
+      const res = await req(`/proposals/${ids.ann}`, personToken("bob")!.token, { actor: "mallory" });
+      assert.equal(res.status, 200);
+      const rec = (await res.json()) as Proposal;
+      assert.equal(rec.id, ids.ann);
+      assert.deepEqual(rec.input, { name: "ann" });
+      assert.equal(rec.by.actor, "ann");
+    });
+
+    it("another person's token reads by id what its lists leave out", async () => {
+      await boot();
+      const bob = personToken("bob")!.token;
+      assert.equal((await req(`/proposals/${ids.ann}`, bob)).status, 200);
+      assert.deepEqual(await idsOf("/proposals", bob), [ids.bob]);
+      assert.deepEqual(await idsOf("/proposals?runId=r1", bob), [ids.bob]);
+      assert.deepEqual(await idsOf("/workflows/wf/runs/r1/proposals", bob), [ids.bob]);
+    });
+
+    it("a proposal another person's token can read is still not its to decide", async () => {
+      await boot();
+      const bob = personToken("bob")!.token;
+      assert.equal((await req(`/proposals/${ids.ann}`, bob)).status, 200);
+      const res = await decide(ids.ann, bob);
+      assert.equal(res.status, 403);
+      assert.match(((await res.json()) as { error: string }).error, /not yours to decide/);
+      assert.equal((await readProposal(root(), ids.ann))!.status, "pending");
+    });
+
+    it("the plain peer key reads no proposal, by id or in a list", async () => {
+      await boot();
+      for (const id of [ids.ann, ids.bob]) assert.equal((await req(`/proposals/${id}`, "peer")).status, 404);
+      assert.deepEqual(await idsOf("/proposals", "peer"), []);
+      assert.deepEqual(await idsOf("/workflows/wf/runs/r1/proposals", "peer"), []);
     });
 
     it("the plain peer key decides nothing and sees none; the full key is unchanged", async () => {
@@ -364,7 +400,8 @@ describe("proposals", () => {
       assert.equal((await decide(ids.ann, "lab-jwt:bob")).status, 403);
       assert.equal((await readProposal(root(), ids.ann))!.status, "pending");
       assert.deepEqual(await idsOf("/proposals", "lab-jwt:ann"), [ids.ann]);
-      assert.equal((await req(`/proposals/${ids.bob}`, "lab-jwt:ann")).status, 404);
+      assert.equal((await req(`/proposals/${ids.bob}`, "lab-jwt:ann")).status, 200);
+      assert.deepEqual(await idsOf("/workflows/wf/runs/r1/proposals", "lab-jwt:ann"), [ids.ann]);
       assert.equal((await decide(ids.ann, "lab-jwt:ann")).status, 200);
       assert.equal((await decide(ids.ann, "lab-jwt:ann")).status, 409);
     });
