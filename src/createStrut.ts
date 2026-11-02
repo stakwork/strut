@@ -964,6 +964,9 @@ export async function createStrut<TServices = unknown>(
       // checks it whatever the route (proposals.ts `requireApproval`).
       hostApprove: [opts.job, opts.orchestrator, opts.builder].flatMap((d) => (d ? (d.approve ?? []) : [])),
       notify: (job, update) => ((services as Record<string, unknown>)["jobs"] as JobsCapability | undefined)?.notify?.(job, update),
+      // Where a proposal shows (proposals.ts `visibleTo`); called at
+      // proposal time, long after this function has returned.
+      conversationOf: (runId) => conversationOf(runId),
     }),
     // The graph backend the server wired, for the graph/* steps (graphCtx
     // prefers it over opening one from env). Borrowed: a step's `close()`
@@ -4625,6 +4628,17 @@ export async function createStrut<TServices = unknown>(
     const start = (await store.getRunEvents(root.workflow, root.runId).catch(() => [])).find((e) => e.type === "run.start");
     const session = (start?.input as Record<string, unknown> | undefined)?.["session"];
     return { workflow: root.workflow, runId: root.runId, ...(typeof session === "string" && session ? { session } : {}) };
+  }
+  /** The thread the run `runId` belongs to, for its proposals
+   *  (`Proposal.by.conversation`): a job's run belongs to the turn that
+   *  started it (its `run.start.startedBy`), any other run to the session
+   *  its root's launch named. */
+  async function conversationOf(runId: string): Promise<string | undefined> {
+    const root = rootRunOf(runId);
+    if (!root) return undefined;
+    const start = (await store.getRunEvents(root.workflow, root.runId).catch(() => [])).find((e) => e.type === "run.start");
+    const session = start?.startedBy ? start.startedBy.session : (start?.input as Record<string, unknown> | undefined)?.["session"];
+    return typeof session === "string" && session ? session : undefined;
   }
   if (launchCap) {
     launchCap.launch = async ({ job, title, input, from, actor, principal, mcp, attachments, workflow: wanted }) => {
