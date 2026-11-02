@@ -2415,9 +2415,12 @@ the same steps are an agent's tools (`agentTools: ["browser/*"]`), and
   [{ id, step, title, status, url, rationale? }]` beside `artifacts`, from
   the records (`GET …/runs/:runId/proposals` is the same list; `GET
   /proposals?job=&session=&runId=&status=`, `GET /proposals/:id` the
-  records); the `proposal/list` + `proposal/get` steps are the agent's
-  reads. The host's card renders by `step` — `graph/create-node`'s input is
-  what hive's `graphNodeCreate` card draws — and a generic one from the
+  records — a person token (`peer:person`) lists and decides only its own
+  but reads any by id, as it already reads every run's log and a job's
+  files, plans/proposal-links.md; the plain `peer` none); the
+  `proposal/list` + `proposal/get` steps are the agent's reads. The host's
+  card renders by `step` — `graph/create-node`'s input is what hive's
+  `graphNodeCreate` card draws — and a generic one from the
   step's schema (`GET /steps/:type/schema`). V1 gates the graph and Concept
   writes (`graph/create-node`, `edit-node`, `create-triplet`,
   `create-batch-triplet`, `move-node`, `delete-edge`, `delete-node`; a

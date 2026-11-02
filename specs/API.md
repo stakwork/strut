@@ -53,8 +53,8 @@ more: a launch of a workflow whose YAML says `peer: person`, the actor's
 own agent sessions (§3), the actor's room, `POST /mcp`, where it gets
 an app's `step_run` alone, run as the actor under the app's grants (§14.3,
 "A peer's app"), and `POST /proposals/:id/decide` for a proposal its actor
-made — and it sees only those (§12). The plain peer key decides no proposal
-and sees none. A host maps its
+made — and it lists only those, but reads any proposal by id (§12). The
+plain peer key decides no proposal and sees none. A host maps its
 own credential to `peer:person` through `resolveScope` (mcp: a `lab:peer`
 JWT with a `sub`).
 
@@ -921,10 +921,14 @@ session) decides and sees every proposal, as before. A **person token**
 (`peer:person`: a `strut-person` token, or a host's credential mapped by
 `resolveScope`, its actor its own subject) may decide a proposal only when its
 actor equals the proposal's `by.actor` (`403 { error }` otherwise; a proposal
-with no `by.actor` is no person token's), and `GET /proposals`, `GET
-/proposals/:id` and `GET …/runs/:runId/proposals` show it only its own (`404`
-/ omitted for others'). The plain `peer` scope decides none (`403`) and sees
-none. A repeat decide is still `409` with the record.
+with no `by.actor` is no person token's). `GET /proposals` and `GET
+…/runs/:runId/proposals` list it only its own (what waits on it; others'
+omitted); `GET /proposals/:id` answers it for ANY proposal on this strut —
+it already reads every run's log here (a gated call's `step.start` carries
+its input, its `step.end` the proposal's id) and every job's files by id, so
+one rule holds for files, jobs and proposals (plans/proposal-links.md). The
+plain `peer` scope decides none (`403`) and sees none, by id (`404`) or in a
+list. A repeat decide is still `409` with the record.
 
 `plans/proposals.md`. An `agent` step's `approve:` list gates registry
 steps: a call to one is RECORDED (`<dataDir>/proposals/<id>.json`) rather
@@ -941,7 +945,7 @@ lines).
 | Method | Path | Description |
 | ------ | ---- | ----------- |
 | GET    | `/proposals?job=&session=&runId=&status=` | `{ proposals: Proposal[] }`, newest first; `status` one of the five |
-| GET    | `/proposals/:id` | one record; 404 |
+| GET    | `/proposals/:id` | one record (a person token: any, by its id); 404 |
 | GET    | `/workflows/:name/runs/:runId/proposals` | `{ workflow, runId, proposals: [{ id, step, title, summary?, card?, status, url, rationale?, createdAt, decidedAt? }] }` — what the run proposed, the `run.end` field's twin (`CALLBACKS.md` §6) |
 | POST   | `/proposals/:id/decide` | `{ action: "accept" \| "reject", input?: object, reason?: string }` → the record after the decision. `accept` merges `input` (one level) onto the proposal's, re-parses with the step's schema (400, still pending, when it does not fit), records the decision, runs the step under a minimal context (the decider — the request's actor — as `ctx.actor`, the proposing run's principal binding its secrets, its job, the registry), and records `result`. `reject` records `reason`, runs nothing. 409 with the record once decided (`failed` may be accepted again); 409 too, still pending, while a proposal its step waits for (`StepDef.after`: `meta/set-automation` waits for a pending `meta/publish-workflow` of its workflow) is pending; 400 for a step no longer in the registry; 404 |
 

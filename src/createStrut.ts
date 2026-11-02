@@ -3642,7 +3642,8 @@ export async function createStrut<TServices = unknown>(
   //
   // A gated tool call's record, and the person's door onto it. Reads list
   // the records; `decide` applies the step in code (never a model turn).
-  // The actor of the decide request is recorded as who decided.
+  // The actor of the decide request is recorded as who decided. A person
+  // token's lists are its own; by id it reads any (`visibleTo`).
 
   const proposalsDir = proposalsRoot(dataDir);
   const STATUSES: ReadonlySet<string> = new Set(["pending", "accepted", "rejected", "applied", "failed"]);
@@ -3663,7 +3664,7 @@ export async function createStrut<TServices = unknown>(
 
   app.get("/proposals/:id", async (c) => {
     const p = await readProposal(proposalsDir, c.req.param("id"));
-    return p && visibleTo(await scopeOf(c), await resolveActor(c), p) ? c.json(p) : c.json({ error: `No proposal "${c.req.param("id")}"` }, 404);
+    return p && visibleTo(await scopeOf(c), await resolveActor(c), p, { byId: true }) ? c.json(p) : c.json({ error: `No proposal "${c.req.param("id")}"` }, 404);
   });
 
   app.post("/proposals/:id/decide", async (c) => {

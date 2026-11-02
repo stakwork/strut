@@ -98,10 +98,16 @@ export function proposalUrl(id: string): string {
 }
 
 /** What a request may see: `full` everything; a person token its actor's
- *  own proposals; a plain peer none. */
-export function visibleTo(scope: Scope, actor: string | undefined, p: Proposal): boolean {
+ *  own proposals in a list (what waits on you) and ANY proposal by id
+ *  (`byId`, `GET /proposals/:id`); a plain peer none. By id because a person
+ *  token already reads every run's log here — a gated call's `step.start`
+ *  carries its input, its `step.end` the proposal's id — and every job's
+ *  files by id; the id is 72 random bits and the lists stay own-only, so "by
+ *  id" means someone showed it to you, as with a job. Deciding stays the
+ *  proposer's (`decideProposal`). */
+export function visibleTo(scope: Scope, actor: string | undefined, p: Proposal, opts: { byId?: boolean } = {}): boolean {
   if (scope === "full") return true;
-  return scope === "peer:person" && !!actor && p.by.actor === actor;
+  return scope === "peer:person" && (!!opts.byId || (!!actor && p.by.actor === actor));
 }
 
 export function briefOf(p: Proposal): ProposalBrief {

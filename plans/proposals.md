@@ -2,6 +2,8 @@
 
 > **Status (2026-10-19): BUILT** (v1, §11 items 1–6, on branch `claude/proposal-tools-architecture-e87119`; the two graph deletes included). The design text below is as proposed and ruled.
 >
+> **Who reads a proposal (2026-11-01):** a person token lists and decides only its own but reads any proposal by id — `plans/proposal-links.md` (stakwork/strut#406) has the rule and why.
+>
 > **Design status (2026-10-19): proposed, scope ruled.** Written after a read of
 > the three repos as they are today — hive `master` @146e2465 and the open
 > stakwork/hive#5551 (`mcp-org-propose-tools`), stakgraph `main` @8ede556e
