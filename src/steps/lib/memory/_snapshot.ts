@@ -155,7 +155,7 @@ const WITH = "WITH \\(storage = '[^'\\\\\\n]*', format = 'icebug-disk'\\);";
 /** One line of EXPORT DATABASE's schema.cypher (Ladybug 0.21.2). */
 const TABLE_DDL = new RegExp(
   `^(?:CREATE NODE TABLE ${NAME} \\((?:${COLUMN},)* ?PRIMARY KEY\\(${NAME}\\)\\)` +
-    `|CREATE REL TABLE ${NAME} \\(FROM ${NAME} TO ${NAME}(?:, ?${COLUMN})*, (?:MANY|ONE)_(?:MANY|ONE)\\)) ${WITH}$`,
+    `|CREATE REL TABLE ${NAME} \\(FROM ${NAME} TO ${NAME}(?:, ?${COLUMN})*, ?(?:MANY|ONE)_(?:MANY|ONE)\\)) ${WITH}$`,
 );
 
 /** Opens and checks a snapshot: names, manifest, format, content hash, statements. Throws `code: message`. */
