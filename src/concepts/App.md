@@ -158,6 +158,7 @@ tool (`step_run`) the host relays to strut:
 | `useCancel()` → `{ cancel(workflow, runId) }` | `run/cancel` |
 | `useWorkflow(workflow)` | `run/workflow`: description, the `input:` block, params defaults — what a launch form renders |
 | `useStep(type)` → `{ run(config, input) }` | any granted step, as a function |
+| `useAppState(key, initial)` → `[value, set, { loaded }]` | what THIS viewer's page remembers across visits, like `useState`: a tab, a filter, a draft (`app/state`, always granted) |
 | `useToolInput()` | what the model or a deep link opened the app with; a link's values are strings |
 | `useAppLink()` → `link(input?)`, `appLink(name, input?)` | a deep link to this app (or another) opened with `input`: `openLink(link({ view: "/runs", run: id }))` shows it, and the host's address bar follows, so the person can share it |
 | `useApp()` | which app the page is: `{ name, version }`, or a job's app `{ job, path }` |
@@ -260,6 +261,13 @@ and never read them yourself.
 | Entities and relations others should see too: customers, facts, people | The graph (`graph/*`, declared types) | Agents find them, workflows write them, another app reads them |
 | The app's own tables: line items, a big import, settings | The app's SQLite (`sqlite/*`) | A later strut; until then keep state in runs or the graph |
 | Files a person uploads: photos, PDFs, a CSV to work from | A job of the app's (`useUpload`) | Every run under the job reads them; an agent's thread on it remembers them |
+| What one viewer's page remembers: a tab, a filter, a draft | `useAppState` | Kept by strut per app and viewer, on every host and device; 256 KB a viewer |
+
+A page has no browser storage: it is framed with an opaque origin, so
+`localStorage` and `sessionStorage` last only the page's life (the kit
+swaps in an in-memory one, so a library that persists does not break) and
+IndexedDB and cookies are not there. Never write `localStorage` for
+anything that should outlive the page: use `useAppState`.
 
 "If an agent should ever find it, it goes in the graph." Migrations (when
 they come) are additive: a rollback never rolls the schema back.

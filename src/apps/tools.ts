@@ -121,8 +121,9 @@ export function scopeAppJobs(app: string, type: string, config: Record<string, u
   return out;
 }
 
-/** Always granted: the page's own door for its failures (§8). */
-export const ALWAYS_GRANTED: ReadonlySet<string> = new Set(["app/report-error"]);
+/** Always granted: the page's own door for its failures (§8), and its
+ *  storage (`app/state`, ./state.ts) — a framed page has no other. */
+export const ALWAYS_GRANTED: ReadonlySet<string> = new Set(["app/report-error", "app/state"]);
 
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const hasTemplate = (v: unknown): boolean => typeof v === "string" && v.includes("{{");
@@ -341,7 +342,7 @@ export function buildAppTools(deps: AppToolDeps): ToolSet {
   return {
     [STEP_RUN_TOOL]: tool({
       description:
-        "An APP's one tool (plans/apps.md §5): run one registry step under the app's grants, as the viewer. `type` is the step (run/list, run/get, run/events, run/transcript, run/launch, run/cancel, run/workflow, run/files on a granted workflow; graph/* and any step grants.steps names; app/report-error always), " +
+        "An APP's one tool (plans/apps.md §5): run one registry step under the app's grants, as the viewer. `type` is the step (run/list, run/get, run/events, run/transcript, run/launch, run/cancel, run/workflow, run/files on a granted workflow; graph/* and any step grants.steps names; app/report-error and app/state always), " +
         "`config` its fields, `input` the scope its {{ input.* }} templates read, `app` the app's identity — the token the served document carries in <meta name=\"strut-app-token\">. " +
         "A refused call is an error naming the grant; a step's own failure is an error with its message. The result is the step's whole output.",
       inputSchema: z.object({

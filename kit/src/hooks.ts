@@ -805,6 +805,133 @@ export function useStep<T = unknown>(type: string): UseStep<T> {
   return { run, pending: m.isPending, error: m.error, data: m.data, reset: m.reset };
 }
 
+/** The step behind `useAppState` (src/apps/state.ts on the server). */
+export const APP_STATE_STEP = "app/state";
+/** A page's state writes go out at most this often, every key set since
+ *  the last one in one call: a draft typed into a box is a call per this. */
+export const APP_STATE_WRITE_MS = 500;
+
+type AppState = Record<string, unknown>;
+
+/** One page's state: what the server holds, under what it has not answered
+ *  for yet. Every call — the read, then each batch of writes — goes out in
+ *  order, so an answer never lands behind a later one. */
+class AppStateStore {
+  private server: AppState = {};
+  /** Set and not sent; `undefined` removes the key. */
+  private pending = new Map<string, unknown>();
+  /** Sent and not answered. */
+  private sending = new Map<string, unknown>();
+  private queue: Promise<unknown> = Promise.resolve();
+  private timer: ReturnType<typeof setTimeout> | undefined;
+  private started = false;
+  private listeners = new Set<() => void>();
+  private rev = 0;
+  loaded = false;
+  error: Error | null = null;
+
+  constructor(private client: StrutClient) {
+    if (typeof window !== "undefined") window.addEventListener("pagehide", () => this.flush());
+  }
+
+  subscribe = (fn: () => void) => {
+    this.listeners.add(fn);
+    return () => this.listeners.delete(fn);
+  };
+  version = () => this.rev;
+  private emit() {
+    this.rev++;
+    for (const fn of this.listeners) fn();
+  }
+
+  /** Under a host's own client (no app identity) there is no server state:
+   *  the page's lasts its life. */
+  load() {
+    if (this.started) return;
+    this.started = true;
+    if (!this.client.app) {
+      this.loaded = true;
+      this.emit();
+      return;
+    }
+    this.send({}).then(() => {
+      this.loaded = true;
+      this.emit();
+    });
+  }
+
+  get(key: string, initial: unknown): unknown {
+    for (const m of [this.pending, this.sending]) if (m.has(key)) return m.get(key) ?? initial;
+    return key in this.server ? this.server[key] : initial;
+  }
+
+  set(key: string, value: unknown) {
+    this.pending.set(key, value);
+    this.emit();
+    if (this.client.app) this.timer ??= setTimeout(() => this.flush(), APP_STATE_WRITE_MS);
+  }
+
+  flush() {
+    clearTimeout(this.timer);
+    this.timer = undefined;
+    if (!this.pending.size || !this.client.app) return;
+    const batch = this.pending;
+    this.pending = new Map();
+    this.sending = new Map([...this.sending, ...batch]);
+    void this.send({ set: Object.fromEntries([...batch].map(([k, v]) => [k, v === undefined ? null : v])) }).then((ok) => {
+      // A refused write stays on the page (a draft never vanishes); the
+      // next set of its key sends it again.
+      if (ok) for (const [k, v] of batch) if (this.sending.get(k) === v) this.sending.delete(k);
+      this.emit();
+    });
+  }
+
+  private send(config: Record<string, unknown>): Promise<boolean> {
+    const call = this.queue.then(() => this.client.run<{ state: AppState }>(APP_STATE_STEP, config)).then(
+      (r) => {
+        this.server = r.state;
+        this.error = null;
+        return true;
+      },
+      (e: unknown) => {
+        this.error = e instanceof Error ? e : new Error(String(e));
+        return false;
+      },
+    );
+    this.queue = call;
+    return call;
+  }
+}
+
+const appStateStores = new WeakMap<StrutClient, AppStateStore>();
+
+/**
+ * What THIS viewer's page remembers, across visits, hosts and devices — a
+ * tab, a filter, a draft — like `useState`: `const [tab, setTab] =
+ * useAppState("tab", "runs")`. A framed page has no browser storage
+ * (`localStorage` throws), so strut keeps it (`app/state`, always granted):
+ * the value shows at once and goes out within half a second, all keys set
+ * meanwhile in one call. `initial` until the viewer's state is read
+ * (`loaded`); `undefined` removes the key. 256 KB a viewer: data others or
+ * an agent should see goes in the graph.
+ */
+export function useAppState<T>(key: string, initial: T): [T, (value: T | ((prev: T) => T)) => void, { loaded: boolean; error: Error | null }] {
+  const client = useStrutClient();
+  let store = appStateStores.get(client);
+  if (!store) appStateStores.set(client, (store = new AppStateStore(client)));
+  const s = store;
+  useSyncExternalStore(s.subscribe, s.version, s.version);
+  useEffect(() => s.load(), [s]);
+  const first = useRef(initial);
+  first.current = initial;
+  const set = useCallback(
+    (value: T | ((prev: T) => T)) =>
+      s.set(key, typeof value === "function" ? (value as (prev: T) => T)(s.get(key, first.current) as T) : value),
+    [s, key],
+  );
+  return [s.get(key, initial) as T, set, { loaded: s.loaded, error: s.error }];
+}
+
 function useHostState(): HostState {
   const host = useStrutHost();
   return useSyncExternalStore(host.subscribe, host.getState, host.getState);

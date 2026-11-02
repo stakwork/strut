@@ -41,6 +41,7 @@ import type { GraphBackend } from "../graph/backend.js";
 import { buildApp, readBuildInfo, type BuildDeps, type BuildInfo, type BuildResult, type InstalledApp } from "./build.js";
 import { copyAppDir, isEmptyDir, isPreviewLabel, listAppFiles, validateAppName } from "./files.js";
 import { memoryAppGrants, type AppGrant, type AppGrantStore } from "./grants.js";
+import { removeAppState } from "./state.js";
 import { checkAppGraph, registerAppGraph, type RegisteredGraph } from "./graph-types.js";
 import type { Kit, KitLocation } from "./kit.js";
 import { readManifest, type AppManifest } from "./manifest.js";
@@ -267,6 +268,8 @@ export interface AppsDeps {
   graph?: GraphBackend;
   /** A person's grants of sealed workflows (./grants.ts). Default: in memory. */
   grants?: AppGrantStore;
+  /** Where the viewers' state lives (./state.ts), dropped with the app. */
+  dataDir?: string;
 }
 
 
@@ -710,6 +713,7 @@ export function createApps(deps: AppsDeps): AppsCapability {
       const removed = await workspace.deleteApp(name);
       if (removed) deps.monitor?.forget(name);
       await grants.removeAll(name);
+      if (deps.dataDir) await removeAppState(deps.dataDir, name);
       return removed;
     },
 

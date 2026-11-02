@@ -5,7 +5,9 @@
  *  app's file token off the `<meta>` the file route wrote (§7.2); mounts
  *  `<StrutProvider><ErrorBoundary><App/></ErrorBoundary></StrutProvider>`;
  *  reports its size (`ui/notifications/size-changed`, the SDK's observer);
- *  and turns a render failure or a `window.onerror` into `app/report-error`. */
+ *  and turns a render failure or a `window.onerror` into `app/report-error`.
+ *  Before any of that — before the app's own modules run — a page with no
+ *  browser storage gets an in-memory one (`installMemoryStorage`). */
 import { App, type AppOptions } from "@modelcontextprotocol/ext-apps";
 import { createElement, type ComponentType } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -15,6 +17,51 @@ import { createBridgeClient, type StrutClient } from "./client.js";
 import { ErrorBoundary, createErrorReporter, installWindowErrorReporting, type ErrorReporter } from "./error-boundary.js";
 import { BridgeHost } from "./host.js";
 import { StrutProvider } from "./provider.js";
+
+/** A framed page has no browser storage: every host frames it under
+ *  `sandbox="allow-scripts"`, never `allow-same-origin`, so its origin is
+ *  opaque and `localStorage` / `sessionStorage` throw on first touch — a
+ *  library that persists by default (zustand's `persist`, a theme hook)
+ *  then warns or breaks the page. Each one that throws (or is missing) is
+ *  replaced by an in-memory Storage, so a write lasts the page's life and
+ *  nothing more; what should outlive it is `useAppState`'s. Returns the
+ *  names it replaced. */
+export function installMemoryStorage(win: Window = window): string[] {
+  const replaced: string[] = [];
+  for (const name of ["localStorage", "sessionStorage"] as const) {
+    try {
+      if (win[name]) continue;
+    } catch {
+      // An opaque origin: the getter throws a SecurityError.
+    }
+    try {
+      Object.defineProperty(win, name, { value: memoryStorage(), configurable: true, enumerable: true });
+      replaced.push(name);
+    } catch {
+      // Left as it is.
+    }
+  }
+  return replaced;
+}
+
+function memoryStorage(): Storage {
+  const m = new Map<string, string>();
+  const storage = {
+    get length() {
+      return m.size;
+    },
+    clear: () => m.clear(),
+    getItem: (key: string) => m.get(String(key)) ?? null,
+    key: (i: number) => [...m.keys()][i] ?? null,
+    removeItem: (key: string) => void m.delete(String(key)),
+    setItem: (key: string, value: string) => void m.set(String(key), String(value)),
+  };
+  return storage as Storage;
+}
+
+// At module evaluation: the bundle imports the bootstrap before the app, so
+// this runs before any of the app's modules touch storage.
+if (typeof window !== "undefined") installMemoryStorage();
 
 /** The bridge transport the SDK's `App` connects over (`PostMessageTransport` by default). */
 export type Transport = NonNullable<Parameters<App["connect"]>[0]>;

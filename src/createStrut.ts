@@ -1127,6 +1127,8 @@ export async function createStrut<TServices = unknown>(
       monitor: appMonitor,
       // A person's grants of sealed workflows (src/apps/grants.ts).
       grants: appGrants,
+      // The viewers' state (src/apps/state.ts), dropped with the app.
+      dataDir,
       // An app's declared graph types are registered here, on Neo4j.
       ...(graph ? { graph } : {}),
     });
