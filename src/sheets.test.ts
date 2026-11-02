@@ -276,6 +276,9 @@ describe("sheets/batch-update-values", () => {
 });
 
 describe("sheets/get-values", () => {
+  const GRID_FIELDS =
+    "spreadsheetId,properties(title),sheets(properties(sheetId,title,hidden)," +
+    "data(startRow,startColumn,rowData(values(formattedValue,effectiveValue,userEnteredValue(formulaValue)))))";
   it("maps render to the value render option and defaults values to []", async () => {
     for (const [render, option] of [
       [undefined, "UNFORMATTED_VALUE"],
@@ -286,6 +289,58 @@ describe("sheets/get-values", () => {
       const out = await run(getValues, { spreadsheet_id: "S", range: "A1", ...(render ? { render } : {}) }, ctx);
       assert.deepEqual(out, { range: "Sheet1!A1", values: [] });
     }
+  });
+
+  it("grid: true reads the tabs, display text, values and formulas in ONE request, trimmed and placed at the range's start", async () => {
+    const range = "'Q''s Tab'!B2:E9";
+    const body = {
+      spreadsheetId: "S",
+      properties: { title: "Covenants" },
+      sheets: [
+        { properties: { sheetId: 0, title: "Inputs" } },
+        { properties: { sheetId: 7, title: "Q's Tab" }, data: [{ startRow: 1, startColumn: 1, rowData: [
+          { values: [{ formattedValue: "Covenant", effectiveValue: { stringValue: "Covenant" } }, { formattedValue: "Q1", effectiveValue: { stringValue: "Q1" } }, {}] },
+          { values: [{ formattedValue: "Leverage", effectiveValue: { stringValue: "Leverage" } }, { formattedValue: "2.50x", effectiveValue: { numberValue: 2.5 }, userEnteredValue: { formulaValue: "=Inputs!B3/Inputs!B2" } }] },
+          {},
+        ] }] },
+        { properties: { sheetId: 9, title: "Scratch", hidden: true } },
+      ],
+    };
+    const { ctx, api } = makeCtx({ [`GET ${SHEETS}/S?ranges=${encodeURIComponent(range)}&fields=${encodeURIComponent(GRID_FIELDS)}`]: { body } });
+    const out = await run(getValues, { spreadsheet_id: "S", range, grid: true }, ctx);
+    assert.equal(api().length, 1);
+    assert.deepEqual(out, {
+      spreadsheet_id: "S",
+      title: "Covenants",
+      url: "https://docs.google.com/spreadsheets/d/S/edit#gid=7",
+      sheet: "Q's Tab",
+      sheetId: 7,
+      tabs: [{ id: 0, title: "Inputs" }, { id: 7, title: "Q's Tab" }],
+      range: "'Q''s Tab'!B2:C3",
+      values: [["Covenant", "Q1"], ["Leverage", 2.5]],
+      display: [["Covenant", "Q1"], ["Leverage", "2.50x"]],
+      formulas: [[null, null], [null, "=Inputs!B3/Inputs!B2"]],
+    });
+  });
+
+  it("grid: true on an empty tab names it, with no formulas key", async () => {
+    const body = { spreadsheetId: "S", properties: { title: "T" }, sheets: [{ properties: { sheetId: 0, title: "Main" } }, { properties: { sheetId: 3, title: "Inputs" } }] };
+    const { ctx } = makeCtx({ [`GET ${SHEETS}/S?ranges=Inputs&fields=${encodeURIComponent(GRID_FIELDS)}`]: { body } });
+    const out = await run(getValues, { spreadsheet_id: "S", range: "Inputs", grid: true }, ctx);
+    assert.deepEqual([out.sheet, out.range, out.url], ["Inputs", "'Inputs'!A1", "https://docs.google.com/spreadsheets/d/S/edit#gid=3"]);
+    assert.deepEqual([out.values, out.display, "formulas" in out], [[], [], false]);
+  });
+
+  it("grid: true with no range reads the first visible tab's name, then that tab whole", async () => {
+    const meta = { sheets: [{ properties: { title: "Hidden", hidden: true } }, { properties: { title: "Deal's" } }] };
+    const body = { spreadsheetId: "S", sheets: [{ properties: { sheetId: 4, title: "Deal's" }, data: [{ rowData: [{ values: [{ formattedValue: "x", effectiveValue: { stringValue: "x" } }] }] }] }] };
+    const { ctx, api } = makeCtx({
+      [`GET ${SHEETS}/S?fields=${encodeURIComponent("sheets(properties(title,hidden))")}`]: { body: meta },
+      [`GET ${SHEETS}/S?ranges=${encodeURIComponent("'Deal''s'")}&fields=${encodeURIComponent(GRID_FIELDS)}`]: { body },
+    });
+    const out = await run(getValues, { spreadsheet_id: "S", range: "", grid: true }, ctx);
+    assert.equal(api().length, 2);
+    assert.deepEqual([out.sheet, out.range, out.display], ["Deal's", "'Deal''s'!A1:A1", [["x"]]]);
   });
 });
 

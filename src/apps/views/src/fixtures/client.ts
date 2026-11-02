@@ -7,6 +7,7 @@ import { getBatched, neighbors, search } from "./graph";
 import { CHILD_EVENTS, CHILD_RUN_ID, EXPLORE_PATH, RUNS, RUN_EVENTS, RUN_ID, WORKFLOW_INFO } from "./runs";
 import { REPORT_EVENTS, REPORT_RUN_ID } from "./report";
 import { TRACE_EVENTS, TRACE_LIVE_RUN_ID, TRACE_RUN_ID, traceTranscript } from "./trace";
+import { COVENANT_SHEET, NDA_FRAMES, NDA_SHEET, NDA_WORKFLOW, SHEET_FILES, covenantSheet, ndaFrame, ndaPlaybook, ndaRun } from "./sheets";
 
 const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -21,11 +22,23 @@ export function createFixtureClient(): StrutClient {
     revealed = Math.min(TRACE_EVENTS.length, revealed + 9);
     return TRACE_EVENTS.slice(0, revealed);
   };
+  // The NDA review: each read of its matrix finds one more provision written,
+  // until the run ends; launching it again starts the matrix over.
+  const nda = { runId: "", reads: 0 };
+  const ndaDone = () => nda.reads >= NDA_FRAMES;
+  const sheet = (c: Record<string, unknown>) => {
+    const range = String(c["range"] ?? "");
+    if (c["spreadsheet_id"] === COVENANT_SHEET) return covenantSheet(range);
+    if (c["spreadsheet_id"] !== NDA_SHEET) return `sheets_get_values failed: HTTP 404: Requested entity was not found.`;
+    if (/^'?Playbook'?(!|$)/.test(range)) return ndaPlaybook();
+    return ndaFrame(Math.min(NDA_FRAMES - 1, nda.reads++));
+  };
   const answer = (type: string, c: Record<string, unknown>): unknown => {
     switch (type) {
       case "run/list":
         return RUNS.filter((r) => r.workflow === c["workflow"]).slice(0, Number(c["limit"] ?? 50));
       case "run/get":
+        if (c["runId"] === nda.runId) return ndaRun(nda.runId, ndaDone());
         return RUNS.find((r) => r.runId === c["runId"]) ?? null;
       case "run/events": {
         const skip = Number(c["skip"] ?? 0);
@@ -44,12 +57,13 @@ export function createFixtureClient(): StrutClient {
         if (existing) return { runId: existing, existing: true };
         const runId = String(next++);
         if (key) launched.set(key, runId);
+        if (c["workflow"] === NDA_WORKFLOW) Object.assign(nda, { runId, reads: 0 });
         return { runId };
       }
       case "run/cancel":
         return { ok: true };
       case "run/files":
-        return FILES[String(c["path"])] ?? null;
+        return FILES[String(c["path"])] ?? SHEET_FILES[String(c["path"])] ?? null;
       case "run/transcript": {
         if (c["runId"] === RUN_ID && c["path"] === EXPLORE_PATH) return { path: EXPLORE_PATH, messages: TRANSCRIPT };
         const live = c["runId"] === TRACE_LIVE_RUN_ID;
@@ -61,6 +75,8 @@ export function createFixtureClient(): StrutClient {
         return getBatched((c["ref_ids"] as string[]) ?? []);
       case "graph/graph-neighbors":
         return neighbors(String(c["ref_id"]), c["edge_type"] as string[] | undefined);
+      case "sheets/get-values":
+        return sheet(c);
       case "graph/graph-search":
         return search(String(c["q"] ?? ""), c["type"] as string | undefined, Number(c["limit"] ?? 10));
       default:
