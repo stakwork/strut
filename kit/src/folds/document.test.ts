@@ -36,6 +36,19 @@ describe("sanitizeHtml", () => {
     assert.deepEqual(nodes, ["x", { t: "a", a: { href: " mailto:a@b.c" }, c: ["m"] }, { t: "img", a: { src: png, alt: "chart" } }]);
   });
 
+  it("keeps a tracked change's date and title, nothing else on it", () => {
+    const nodes = sanitizeHtml('<p><del datetime="2026-11-02T00:00:00Z" title="Deleted by Strut, 2026-11-02" data-author="Strut" cite="javascript:x">30</del><ins title="Inserted by Strut" onclick="x()">60</ins></p>');
+    assert.deepEqual(nodes, [
+      {
+        t: "p",
+        c: [
+          { t: "del", a: { dateTime: "2026-11-02T00:00:00Z", title: "Deleted by Strut, 2026-11-02" }, c: ["30"] },
+          { t: "ins", a: { title: "Inserted by Strut" }, c: ["60"] },
+        ],
+      },
+    ]);
+  });
+
   it("keeps a table's spans as React props and leaves out the whitespace between its rows", () => {
     const nodes = sanitizeHtml("<table>\n <tbody>\n  <tr>\n   <td colspan=\"2\" bgcolor=\"red\">a</td>\n  </tr>\n </tbody>\n</table>");
     assert.deepEqual(nodes, [{ t: "table", c: [{ t: "tbody", c: [{ t: "tr", c: [{ t: "td", a: { colSpan: "2" }, c: ["a"] }] }] }] }]);
