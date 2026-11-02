@@ -53,7 +53,9 @@ Core attributes are listed under "Core attributes" below.
 - Add `role`, `temporal`, `cardinality`, `key`, `identifiers` and `domain` to the core schema properties, `schema-crud.ts`, the resolver and the Ladybug Schema columns.
 - Cardinality is a rule on each edge type, never on nodes. An edge type declares `temporal` and `cardinality`, the slot is source node plus edge type, and `assert` reads the rule from the schema. `cardinality: one` means one current edge per source node. One per target isn't in v1 until something needs it.
 - Add namespaces to Ladybug. It refuses anything but `default` today. Writes default to `private`.
-- Seed base types without Jarvis's fixture.
+- Seed base types without Jarvis's fixture. The user is an ordinary `Person` marked as the owner, with no separate `Self` type. `Lingo` stays, because dictation reads it.
+- Add a `system` namespace for Schema rows and strut's own records: workflows, steps, apps, runs and jobs. Reads leave it out unless the caller asks for it. Edges from it to real things, such as a run that read a Concept, follow the cross-namespace rule. The assistant and the builder can read it, and jobs can't.
+- Add `walkable` as a schema setting, and make neighbor reads and walks follow it. This replaces the hard-coded skip list in `graph-neighbors.ts` and `walk.ts`. Set `walkable: false` on Hint, Memory, Clip and Turn for swarm graphs, so their walks don't change.
 
 ### 3. Add temporal edges, `assert` and search rows
 - Give temporal edge tables the two clocks, a sentence, an embedding and sources.
@@ -144,6 +146,8 @@ Each step is done when its tests pass, on top of the end-to-end criteria above. 
 - Adding a key to a type with clashing nodes is refused and changes nothing.
 - Node and edge writes accept a namespace, and the same key in two namespaces gives two nodes.
 - A fresh file boots with base types and without the Jarvis fixture.
+- A search or walk leaves out `system` unless asked, and a type with `walkable: false` never comes back as a neighbor.
+- Swarm walks return the same results as before for Hint, Memory, Clip and Turn.
 - An existing Peel file migrates to the new names, keeps its nodes and edges, and still searches.
 - Every node and edge has the core attributes, and a caller can't set the writer-owned ones.
 - Existing Neo4j graph tests still pass.
