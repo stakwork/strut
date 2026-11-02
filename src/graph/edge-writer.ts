@@ -32,7 +32,7 @@
 import { randomUUID } from "node:crypto";
 import type { EdgeDeleteResult, EdgeMergeRow, EngineLike, GraphEngine, GraphTx } from "./engine.js";
 import { asEngine } from "./neo4j-engine.js";
-import { GraphValidationError } from "./node-writer.js";
+import { GraphValidationError, type WriterCallOptions } from "./node-writer.js";
 import { SchemaResolver } from "./schema-resolver.js";
 import { STRUT_EDGES, WILDCARD_TARGET_EDGES, isStrutType, typeLabelOf } from "./strut-schemas.js";
 
@@ -198,8 +198,9 @@ export class EdgeWriter {
    * Identity stamps (`ref_id`, `edge_key`, `date_added_to_graph`,
    * `unique_source_id`) cannot be set or removed; `weight` can. On Neo4j
    * numbers write as FLOAT (an integral `weight` as Integer, like create).
+   * With `tx`, on the caller's transaction.
    */
-  async update(where: EdgeLocator, patch: EdgeUpdate): Promise<EdgeUpdateResult> {
+  async update(where: EdgeLocator, patch: EdgeUpdate, opts: WriterCallOptions = {}): Promise<EdgeUpdateResult> {
     const set: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(patch.set ?? {})) {
       if (v === undefined) continue;
@@ -214,12 +215,13 @@ export class EdgeWriter {
     }
     if (Object.keys(set).length === 0 && remove.length === 0) throw new GraphValidationError("MISSING_REQUIRED", "edge", "nothing to set or remove");
 
-    return this.engine.tx(async (tx) => {
+    const go = async (tx: GraphTx): Promise<EdgeUpdateResult> => {
       const ref_id = await this.locateEdge(tx, where);
       const r = await this.engine.edgeEngine.setProps(tx, ref_id, set, remove);
       if (!r) throw new GraphValidationError("NOT_FOUND", "edge", `no edge with ref_id ${ref_id}`);
       return { ...r, updated: Object.keys(set), removed: remove };
-    });
+    };
+    return opts.tx ? go(opts.tx) : this.engine.tx(go);
   }
 
   /** The ref_id of the one edge `where` names: a ref_id as given, or the
@@ -242,10 +244,12 @@ export class EdgeWriter {
   /** Edge delete (`DELETE r`, `deletion.ts`: hard, never muted), by edge
    *  ref_id or by the (source, EDGE, target) triple like `update`. Returns the
    *  edge as it was; null when a ref_id names no edge (a triple that names
-   *  none throws NOT_FOUND, like `update`). */
-  async delete(where: string | EdgeLocator): Promise<EdgeDeleteResult | null> {
+   *  none throws NOT_FOUND, like `update`). With `tx`, on the caller's
+   *  transaction. */
+  async delete(where: string | EdgeLocator, opts: WriterCallOptions = {}): Promise<EdgeDeleteResult | null> {
     const at: EdgeLocator = typeof where === "string" ? { ref_id: where } : where;
-    return this.engine.tx(async (tx) => this.engine.edgeEngine.delete(await this.locateEdge(tx, at), tx));
+    const go = async (tx: GraphTx) => this.engine.edgeEngine.delete(await this.locateEdge(tx, at), tx);
+    return opts.tx ? go(opts.tx) : this.engine.tx(go);
   }
 
   /**
@@ -256,15 +260,16 @@ export class EdgeWriter {
    * write). Refused when `to_ref_id` is the node itself or hangs under it
    * along `edge` (a cycle would cut the subtree loose). A legacy muted edge
    * to `to_ref_id` is made live rather than duplicated (`mergeEdges`).
+   * With `tx`, on the caller's transaction.
    */
-  async move(m: EdgeMove): Promise<EdgeMoveResult> {
+  async move(m: EdgeMove, opts: WriterCallOptions = {}): Promise<EdgeMoveResult> {
     const edge = m.edge.toUpperCase().replace(/ /g, "_");
     if (!EDGE_TYPE.test(edge)) throw new GraphValidationError("UNKNOWN_TYPE", edge, "edge type must match ^[A-Z][A-Z0-9_]*$");
     if (!m.ref_id || !m.to_ref_id) throw new GraphValidationError("MISSING_REQUIRED", edge, "ref_id and to_ref_id are required");
     if (m.direction !== "forward" && m.direction !== "reverse") throw new GraphValidationError("MISSING_REQUIRED", edge, "direction must be forward or reverse");
     const forward = m.direction === "forward";
     const way = forward ? `(node)-[${edge}]->(…)` : `(…)-[${edge}]->(node)`;
-    return this.engine.tx(async (tx) => {
+    const go = async (tx: GraphTx): Promise<EdgeMoveResult> => {
       const found = await this.engine.edgeEngine.liveEdgesOf(tx, m.ref_id, edge, forward);
       if (!found) throw new GraphValidationError("NOT_FOUND", edge, `no node with ref_id ${m.ref_id}`);
       const node = found.node;
@@ -313,7 +318,8 @@ export class EdgeWriter {
         edge_ref_id: written!.ref_id,
         previous_edge_ref_id: old.edge_ref_id,
       };
-    });
+    };
+    return opts.tx ? go(opts.tx) : this.engine.tx(go);
   }
 
   /** Resolve every endpoint's type label and check each triple: Strut
