@@ -55,7 +55,7 @@ resources.
 | Who sees that a proposal exists | **Anyone in the tribe**: the post's text, "Waiting for <linker> to approve: <title>" |
 | Who reads the card and the input | **Any person token for the strut, by id.** In a Hive org, that is its paired members. Nothing marks a proposal readable: a person token already reads every run's log on that strut (the gate passes every GET to a peer scope, `createStrut.ts` "the API key gate"; the run routes check neither scope nor sealed), and a gated call's `step.start` carries its whole input, rationale included (`agent.ts` `wrapToolsWithEmit`), with the proposal's id on its `step.end`. It reads every job's files the same way. The id is 72 random bits (`randomBytes(9)`), and the lists stay each person's own, so "by id" already means "someone showed it to you", as a job id does. One rule for files, jobs and proposals |
 | Who decides | **The proposal's actor: whoever's resources the turn ran on.** The apply runs on `by.principal`'s secrets (`applyProposal`: `secrets.forPrincipal`), so another member approving would run a push on the proposer's token. Today every tribe turn is the linker's, so the linker decides: the tribe's owner replies, and Hive decides on strut as them (`decideStrutProposal`, the org key with `x-strut-actor`; `/api/tribes/messages` checks the sender is the owner). Peel's buttons stay with the owner (`tribe.canManage`), which mirrors that rule. Strut: #404's rule as it stands — a person token decides its own, full scope decides and Hive enforces the match. **No strut change.** With §3, each asker's proposals are theirs and Hive matches the replier to `by.actor` |
-| What the tribe post carries | **A stub**: `{ id, step, title, status, url }` per proposal beside the workspace (~150 bytes, one chunk). No card, summary or rationale. Decision posts are already this small |
+| What the tribe post carries | **A stub**: `{ id, step, title, status, url }` per proposal beside the workspace (~150 bytes, one chunk). No card, summary or rationale. Decision posts are already this small. The rule is strict and holds for deliverables too: a tribe envelope is references only, capped in bytes, and the daemon refuses anything larger (§2) |
 | Where the card comes from | **The record on the org's strut**: `GET /proposals/:id`, read by Peel with its own person token for that workspace (`HivePeer.proposal`, which exists). The record has the input, so "Show the full input" works in a tribe |
 | A reader who cannot read it | **Sees the title.** An unpaired member, a Peel paired to another org, a strut from before this: the post's text already says everything they may know |
 | Lists | **Stay each person's own.** `GET /proposals` and `…/runs/:runId/proposals` answer "what waits on you"; another person's proposal opens by id only. (Peel also uses the list's other-people count to spot a strut from before #404.) |
@@ -113,13 +113,31 @@ nothing it may show.
 
 **Hive.**
 
-- `callMessages.ts` `proposalEnvelope`: the tribe's entry becomes `{ id,
-  step, title, status, url }`. The row keeps the card (the canvas reads it,
-  and `tribeDecisions.ts` reads its button words to match the owner's
-  reply). Decision entries are already this size; cut `error` to one line.
-- The same principle for deliverables: `strutReferenceEntries` keeps an
-  entry that has both an address and inline `content`; drop the `content`
-  in the tribe's envelope so a deliverable is only ever its link.
+- **The rule, strict: nothing large rides in a Sphinx message; a tribe
+  envelope carries references only.** `metadata.strut` is `{ workspace,
+  artifacts: [{ id, kind, title, url | app }], proposals: [{ id, step,
+  title, status, url }] }` and nothing else — never `content`, `card`,
+  `summary` or `rationale`, whatever the entry holds beside its address.
+  Today `strutReferenceEntries` keeps a whole entry once it has an
+  address, so a deliverable with both a `url` and inline `content` ships
+  the content, and the proposal entry ships the card. The text already
+  has a cap (`MAX_TRIBE_TEXT_CHARS`, 4 000); the envelope gets one too,
+  `MAX_TRIBE_METADATA_BYTES`, proposed 2 KB (about six chunks), entries
+  past it dropped and the conversation link in the text standing for
+  them. A proposal can be very large (12 fields of 500 chars, a long
+  `summary`), so the rule is on the SHAPE, not a size check of the card.
+- `callMessages.ts` `proposalEnvelope`: the stub. The row keeps the card
+  (the canvas reads it, and `tribeDecisions.ts` reads its button words to
+  match the owner's reply). Decision entries are already this size; cut
+  `error` to one line.
+- **Enforced at the sender, not only shaped in Hive.** The daemon
+  (`wasm/daemon`, Jamie's sphinx-chat account) refuses to post `metadata`
+  over the same cap: the text goes, the metadata does not, the refusal is
+  logged — so no later Hive change can put a card back into a tribe.
+  sphinx-chat's 32 KB `MAX_SEND_BYTES` is a transport limit, not this
+  rule. Peel sends no metadata into a tribe today (`sendText(metadata:)`
+  is the CLI's path; `sendControl` is a DM); its tribe send gains the
+  same guard, so the rule holds when its own agent posts there.
 - Deciding by reply stays as it is: the owner's reply decides, as the
   linker, whom every tribe turn runs as. When §3 lands, a mention that
   carries an identified sender decides only a proposal whose `by.actor`
