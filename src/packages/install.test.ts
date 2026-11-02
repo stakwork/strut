@@ -458,7 +458,7 @@ for (const tb of testBackends()) {
       // on Neo4j the jarvis ontology (Concept, Claim, Check, Evidence); a
       // Ladybug file holds them in its registry. Each case clears the data.
       await tb.wipe(backend);
-      await seedJarvisOntology(backend);
+      if (tb.kind === "neo4j") await seedJarvisOntology(backend);
       await seedStrutDomain(backend);
       backend.schemas.invalidate();
     });
