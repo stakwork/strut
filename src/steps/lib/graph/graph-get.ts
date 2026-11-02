@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { defineStep, type StepContext, withAccessedNodes } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
+import { nodeTitle } from "../../../graph/title.js";
 import { graphCtx, errText, deriveNodeName, edgeCountMap } from "./_shared.js";
 
 const CHILD_CAP = 50;
@@ -81,7 +82,7 @@ async function resolve(
       if (!cfg.node_type || !cfg.name) return "graph/graph-get failed: pass ref_id, or node_type + name";
       const schema = await b.schemas.schema(cfg.node_type);
       if (!schema) return `graph/graph-get failed: unknown node type "${cfg.node_type}"`;
-      const keyed = schema.node_key.split("-").slice(1);
+      const keyed = schema.key_spec.split("-").slice(1);
       if (keyed.length !== 1 || keyed[0]!.toLowerCase() !== "name") {
         return `graph/graph-get failed: ${schema.type} is keyed by ${keyed.join(" + ") || "nothing"}, not name — pass its ref_id (graph_graph_search finds it)`;
       }
@@ -133,7 +134,7 @@ async function resolve(
       children.push({
         ref_id: n.ref_id,
         node_type: type,
-        name: (k.title && text(p[k.title])) || deriveNodeName(n, p),
+        name: nodeTitle(p, k.title) || deriveNodeName(n, p),
         ...(description
           ? { description: description.length > CHILD_DESCRIPTION_MAX ? `${description.slice(0, CHILD_DESCRIPTION_MAX)}…` : description }
           : {}),

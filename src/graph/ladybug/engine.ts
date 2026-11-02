@@ -5,7 +5,7 @@
  * ledger. The writers and the resolver above it are the
  * shared ones; this file is the statements.
  *
- *   - identity is `(node_type, node_key)`, resolved by a pre-read in the
+ *   - identity is `(node_type, key)`, resolved by a pre-read in the
  *     write transaction (MERGE needs the primary key): the misses are
  *     CREATEd in one UNWIND with their `ref_id`s, the hits SET one by one
  *     with explicit column lists;
@@ -73,11 +73,11 @@ export const LADYBUG_DIALECT: Dialect = {
 };
 
 /** Identity props never touched after create. */
-const PRESERVED = new Set(["ref_id", "node_key", "namespace", "node_type", "date_added_to_graph"]);
+const PRESERVED = new Set(["ref_id", "key", "namespace", "node_type", "created_at"]);
 /** What the shared writer composes that the file does not keep. */
 const DROPPED_PROPS = new Set(["_search_fields_used"]);
 /** Edge stamps the writer sets on create and `setProps` never touches. */
-const EDGE_STAMPS = new Set(["ref_id", "edge_key", "date_added_to_graph"]);
+const EDGE_STAMPS = new Set(["ref_id", "edge_key", "created_at"]);
 
 export class LadybugEngine implements GraphEngine {
   readonly kind = "ladybug" as const;
@@ -152,16 +152,16 @@ class LadybugNodes implements NodeEngine {
   async mergeBatch(tx: GraphTx, schema: NodeSchema, namespace: string, nodes: PreparedNode[], mode: WriteMode) {
     if (namespace !== this.ns) throw new GraphValidationError("UNKNOWN_ATTRIBUTE", schema.type, `a ladybug file holds one namespace (${this.ns}); got ${namespace}`, "namespace");
     const found = await tx.run(
-      `UNWIND $keys AS k MATCH (n:Node {node_type: $type, node_key: k}) RETURN k AS node_key, n.ref_id AS ref_id, n.deleted_at IS NOT NULL AS deleted`,
-      { keys: nodes.map((n) => n.node_key), type: schema.type },
+      `UNWIND $keys AS k MATCH (n:Node {node_type: $type, \`key\`: k}) RETURN k AS k, n.ref_id AS ref_id, n.deleted_at IS NOT NULL AS deleted`,
+      { keys: nodes.map((n) => n.key), type: schema.type },
     );
-    const hits = new Map(found.map((r) => [String(r["node_key"]), { ref_id: String(r["ref_id"]), deleted: r["deleted"] === true }]));
+    const hits = new Map(found.map((r) => [String(r["k"]), { ref_id: String(r["ref_id"]), deleted: r["deleted"] === true }]));
 
-    const misses = nodes.filter((n) => !hits.has(n.node_key));
+    const misses = nodes.filter((n) => !hits.has(n.key));
     if (misses.length) {
       const rows = await Promise.all(misses.map(async (n) => ({
         ref_id: n.ref_id,
-        node_key: n.node_key,
+        key: n.key,
         namespace,
         node_type: schema.type,
         ...(await this.columns(tx, schema, n.props)),
@@ -174,7 +174,7 @@ class LadybugNodes implements NodeEngine {
     }
 
     for (const n of nodes) {
-      const hit = hits.get(n.node_key);
+      const hit = hits.get(n.key);
       if (!hit || (mode !== "upsert" && !hit.deleted)) continue;
       const set = await this.columns(tx, schema, n.props);
       if (!hit.deleted && !(await this.changed(tx, schema, hit.ref_id, set))) delete set["updated_at"]; // a resync that changes nothing keeps its stamp
@@ -191,18 +191,18 @@ class LadybugNodes implements NodeEngine {
     }
 
     return nodes.map((n) => {
-      const hit = hits.get(n.node_key);
+      const hit = hits.get(n.key);
       let outcome: WriteOutcome;
       if (!hit) outcome = "created";
       else if (hit.deleted) outcome = "restored";
       else if (mode === "upsert") outcome = "updated";
       else outcome = "existing";
-      return { ref_id: hit?.ref_id ?? n.ref_id, node_key: n.node_key, outcome };
+      return { ref_id: hit?.ref_id ?? n.ref_id, key: n.key, outcome };
     });
   }
 
-  /** Would writing `set` over the stored row change an attribute? Data_Bank
-   *  and the vectors follow from the attributes. */
+  /** Would writing `set` over the stored row change an attribute? The search
+   *  text, the title and the vectors follow from the attributes. */
   private async changed(tx: GraphTx, schema: NodeSchema, ref_id: string, set: Record<string, unknown>): Promise<boolean> {
     const rows = await tx.run(`MATCH (n:Node {ref_id: $ref_id}) RETURN n`, { ref_id });
     const stored = (rows[0]?.["n"] ?? {}) as Record<string, unknown>;
@@ -216,8 +216,8 @@ class LadybugNodes implements NodeEngine {
     return { ref_id, type: typeof node_type === "string" ? node_type : undefined, props };
   }
 
-  async refByKey(tx: GraphTx, type: string, node_key: string): Promise<string | null> {
-    const rows = await tx.run(`MATCH (n:Node {node_type: $type, node_key: $k}) RETURN n.ref_id AS ref_id LIMIT 1`, { type, k: node_key });
+  async refByKey(tx: GraphTx, type: string, key: string): Promise<string | null> {
+    const rows = await tx.run(`MATCH (n:Node {node_type: $type, \`key\`: $k}) RETURN n.ref_id AS ref_id LIMIT 1`, { type, k: key });
     return rows.length ? String(rows[0]!["ref_id"]) : null;
   }
 
@@ -325,8 +325,8 @@ class LadybugEdges implements EdgeEngine {
     const out: EdgeMergeResult[] = [];
     for (const e of rows) {
       const extra = edgeColumns(edge, e.props);
-      const params: Params = { src: e.src, tgt: e.tgt, edge_key: e.edge_key, ref_id: e.ref_id, weight: e.weight, added: e.date_added_to_graph };
-      const sets = ["r.ref_id = $ref_id", "r.weight = $weight", "r.date_added_to_graph = CAST($added AS INT64)"];
+      const params: Params = { src: e.src, tgt: e.tgt, edge_key: e.edge_key, ref_id: e.ref_id, weight: e.weight, added: e.created_at };
+      const sets = ["r.ref_id = $ref_id", "r.weight = $weight", "r.created_at = CAST($added AS INT64)"];
       let i = 0;
       for (const [k, v] of Object.entries(extra)) {
         params[`p${i}`] = v;

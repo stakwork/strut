@@ -3760,7 +3760,7 @@ export async function createStrut<TServices = unknown>(
     const ref_id = c.req.param("ref_id");
     const node = await graph.reader.getNode(ref_id);
     if (!node) return c.json({ error: `No node "${ref_id}" in the graph` }, 404);
-    return c.json({ ref_id: node.ref_id, node_type: node.node_type ?? null, name: node.name ?? null, properties: node.properties });
+    return c.json({ ref_id: node.ref_id, node_type: node.node_type ?? null, name: node.name ?? null, title: node.title ?? null, properties: node.properties });
   });
 
   // The names of one type's nodes a typed fragment matches — the Run

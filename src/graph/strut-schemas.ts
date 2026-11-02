@@ -23,8 +23,10 @@ export interface StrutSchema {
   type: string;
   parent: "Thing";
   domain: "Strut";
-  /** `-`-joined spec: token 0 = type.lower(), then attribute names. */
-  node_key: string;
+  /** The key spec, `-`-joined: token 0 = type.lower(), then attribute
+   *  names. A node's `key` is composed from it (`node-writer.ts`); Neo4j
+   *  stores the spec as the Schema node's `node_key`. */
+  key_spec: string;
   /** Compose the key from the HEX of each token's exact value instead of
    *  jarvis's sanitized form (`node-writer.ts` `keyToken`). The sanitizer
    *  strips every non-alphanumeric character, so without this `pod/test`,
@@ -91,7 +93,7 @@ const COLORS = { primary_color: "#1D3140", secondary_color: "#4FA7D9" };
 export const THING_SCHEMA = {
   type: "Thing",
   name: "string",
-  node_key: "thing-name",
+  key_spec: "thing-name",
   index: ["name", "description"],
   icon: "NodesIcon",
   shape: "sphere",
@@ -128,6 +130,11 @@ export const USAGE_ATTRIBUTES: Record<string, AttrType> = {
  *  never accepted from a caller (`GENERIC_NODE_PROPERTIES` + the write-time
  *  system props). */
 export const GENERIC_NODE_PROPERTIES = new Set([
+  // The core attributes under their shared names (Neo4j stores them under
+  // jarvis's, listed below too: `neo4j-engine.ts` maps between them).
+  "key",
+  "search_text",
+  "created_at",
   "Data_Bank",
   "namespace",
   "spelling_verification",
@@ -153,7 +160,7 @@ export const GENERIC_NODE_PROPERTIES = new Set([
  *  are NOT attributes (everything else on the node is one). */
 export const SCHEMA_CORE_PROPERTIES = new Set([
   "type", "parent", "attributes", "icon", "media_url", "source_link", "primary_color", "secondary_color",
-  "shape", "index", "node_key", "conditional_formatting", "action", "type_description", "description",
+  "shape", "index", "node_key", "key_spec", "conditional_formatting", "action", "type_description", "description",
   "display_name", "title_key", "description_key", "paid_properties", "domain", "vector_index", "volatility",
   "ref_id",
   // The no-embed mark (plans/semantic-search.md ruling 2): `embed: false`
@@ -165,7 +172,7 @@ export const SCHEMA_CORE_PROPERTIES = new Set([
 
 /** Attribute names a schema may not declare (jarvis reserved keys, plus the
  *  delete markers `deletion.ts` owns). */
-export const RESERVED_ATTRIBUTE_NAMES = new Set(["type", "parent", "node_key", "index", "deleted_at", "deleted_at_backfilled", "deleted_reason"]);
+export const RESERVED_ATTRIBUTE_NAMES = new Set(["type", "parent", "node_key", "key_spec", "index", "deleted_at", "deleted_at_backfilled", "deleted_reason"]);
 
 /** Preview fields are capped so search/embedding text stays light; full
  *  payloads stay in the run/chat log behind `log_ref`. */
@@ -194,7 +201,7 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
   {
     ...base,
     type: "StrutWorkflow",
-    node_key: "strutworkflow-name",
+    key_spec: "strutworkflow-name",
     exact_key: true,
     index: ["name", "description"],
     title_key: "name",
@@ -221,7 +228,7 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
   {
     ...base,
     type: "StrutWorkflowVersion",
-    node_key: "strutworkflowversion-name-content_hash",
+    key_spec: "strutworkflowversion-name-content_hash",
     exact_key: true,
     index: ["name", "description"],
     vector_index: ["input_schema", "output_schema"],
@@ -233,7 +240,8 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
       content_hash: "string",
       version_label: "?string",
       description: "?string",
-      created_at: "datetime",
+      /** When the version was published (epoch seconds, from disk). */
+      published_at: "datetime",
       /** Full workflow source — deliberately NOT indexed. */
       source: "?string",
       input_schema: "?string",
@@ -250,7 +258,7 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
   {
     ...base,
     type: "StrutStep",
-    node_key: "strutstep-step_type",
+    key_spec: "strutstep-step_type",
     exact_key: true,
     index: ["step_type", "description"],
     vector_index: ["input_schema", "output_schema"],
@@ -270,7 +278,7 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
   {
     ...base,
     type: "StrutStepVersion",
-    node_key: "strutstepversion-step_type-content_hash",
+    key_spec: "strutstepversion-step_type-content_hash",
     exact_key: true,
     index: ["step_type", "description"],
     title_key: "step_type",
@@ -281,7 +289,8 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
       content_hash: "string",
       version_label: "?string",
       description: "?string",
-      created_at: "datetime",
+      /** When the version was published (epoch seconds, from disk). */
+      published_at: "datetime",
       /** Full step source — deliberately NOT indexed. */
       source: "?string",
       publisher: "?string",
@@ -295,7 +304,7 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
   {
     ...base,
     type: "StrutApp",
-    node_key: "strutapp-name",
+    key_spec: "strutapp-name",
     exact_key: true,
     index: ["name", "title", "description"],
     title_key: "title",
@@ -322,7 +331,7 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
   {
     ...base,
     type: "StrutAppVersion",
-    node_key: "strutappversion-name-content_hash",
+    key_spec: "strutappversion-name-content_hash",
     exact_key: true,
     index: ["name", "description"],
     title_key: "name",
@@ -334,7 +343,8 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
       content_hash: "string",
       version_label: "?string",
       description: "?string",
-      created_at: "datetime",
+      /** When the version was published (epoch seconds, from disk). */
+      published_at: "datetime",
       /** The manifest (`app.yaml`), JSON-encoded. */
       manifest: "?string",
       publisher: "?string",
@@ -347,7 +357,7 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
   {
     ...base,
     type: "StrutRun",
-    node_key: "strutrun-run_id",
+    key_spec: "strutrun-run_id",
     index: ["workflow_name", "run_status", "summary"],
     title_key: "workflow_name",
     description_key: "summary",
@@ -379,7 +389,7 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
   {
     ...base,
     type: "StrutAgentSession",
-    node_key: "strutagentsession-run_id-path",
+    key_spec: "strutagentsession-run_id-path",
     index: ["prompt_preview", "result_preview"],
     title_key: "path",
     description_key: "prompt_preview",
@@ -410,7 +420,7 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
   {
     ...base,
     type: "StrutToolCall",
-    node_key: "struttoolcall-run_id-path-seq",
+    key_spec: "struttoolcall-run_id-path-seq",
     index: ["tool_name", "input_preview"],
     embed: false,
     title_key: "tool_name",
@@ -432,7 +442,7 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
   {
     ...base,
     type: "StrutChat",
-    node_key: "strutchat-chat_id",
+    key_spec: "strutchat-chat_id",
     index: ["title", "summary"],
     title_key: "title",
     description_key: "summary",
@@ -444,7 +454,8 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
       status: "?string",
       model: "?string",
       created_by: "?string",
-      created_at: "datetime",
+      /** When the chat began (epoch seconds). */
+      started_at: "datetime",
       last_active_at: "?datetime",
       turn_count: "?int",
       log_ref: "?string",
@@ -453,7 +464,7 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
   {
     ...base,
     type: "StrutTurn",
-    node_key: "strutturn-chat_id-turn",
+    key_spec: "strutturn-chat_id-turn",
     index: ["user_text_preview"],
     embed: false,
     title_key: "user_text_preview",
@@ -471,7 +482,7 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
   {
     ...base,
     type: "StrutJob",
-    node_key: "strutjob-job_id",
+    key_spec: "strutjob-job_id",
     // Ids may hold `/`, `.` and `-` (the session-id format): the sanitizer
     // would fold `abc/review` and `abc-review` into one node.
     exact_key: true,
@@ -488,7 +499,8 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
        *  job index's `get`; as fresh as the job's last finished run. */
       summary: "?string",
       created_by: "?string",
-      created_at: "datetime",
+      /** When the job began (epoch seconds). */
+      started_at: "datetime",
       /** The record's `usedAt`. (`updated_at` is a generic node property.) */
       last_used_at: "?datetime",
       run_count: "?int",
@@ -508,7 +520,7 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
     // history is the DELIVERED edges, one from each run that declared it.
     // Ids are only unique within a job, hence the job id in the key; both
     // tokens are hex-encoded (`exact_key`) as ids may hold `/`, `.`, `-`.
-    node_key: "strutartifact-job_id-artifact_id",
+    key_spec: "strutartifact-job_id-artifact_id",
     exact_key: true,
     // `kind` and `label` are in the search text so "pull-request" / "url"
     // find artifacts by keyword and meaning; an exact filter is
@@ -599,6 +611,18 @@ export const JARVIS_SOURCED_EDGES: readonly StrutEdgeDef[] = [
   { edge: "SENT", source: "Person", target: "StrutAgentSession", note: "jarvis type; seeded only when Person exists" },
 ];
 
+/** The Strut types whose own time had the name the core `created_at` now
+ *  has, and the field it is under now (epoch seconds, as before). A Neo4j
+ *  graph keeps it as the type's stored `created_at` (`neo4j-engine.ts`); a
+ *  Ladybug file moved it once (`ladybug/db.ts`). */
+export const OWN_CREATED_AT: Readonly<Record<string, "published_at" | "started_at">> = {
+  StrutWorkflowVersion: "published_at",
+  StrutStepVersion: "published_at",
+  StrutAppVersion: "published_at",
+  StrutChat: "started_at",
+  StrutJob: "started_at",
+};
+
 /** Edge types whose declared target is a wildcard (any node label). */
 export const WILDCARD_TARGET_EDGES = new Set(["ACCESSED", "DERIVED_FROM"]);
 
@@ -662,7 +686,7 @@ export function vectorIndexName(type: string, prop: string): string {
 
 /** Node-key tokens after the type token. */
 export function nodeKeyFields(schema: StrutSchema): string[] {
-  return schema.node_key.split("-").slice(1);
+  return schema.key_spec.split("-").slice(1);
 }
 
 /**
@@ -723,19 +747,20 @@ export function assertLibraryWellFormed(
       if (!ATTR_TYPES.has(baseType(t))) throw new Error(`schema ${s.type}: attribute "${name}" has unknown type "${t}"`);
     }
 
-    const tokens = s.node_key.split("-");
-    if (s.node_key.startsWith("-") || s.node_key.endsWith("-") || tokens.length < 2) {
-      throw new Error(`schema ${s.type}: malformed node_key "${s.node_key}"`);
+    const tokens = s.key_spec.split("-");
+    if (s.key_spec.startsWith("-") || s.key_spec.endsWith("-") || tokens.length < 2) {
+      throw new Error(`schema ${s.type}: malformed key_spec "${s.key_spec}"`);
     }
     if (tokens[0] !== s.type.toLowerCase()) {
-      throw new Error(`schema ${s.type}: node_key must start with "${s.type.toLowerCase()}"`);
+      throw new Error(`schema ${s.type}: key_spec must start with "${s.type.toLowerCase()}"`);
     }
     for (const tok of tokens.slice(1)) {
       const t = s.attributes[tok];
-      if (!t) throw new Error(`schema ${s.type}: node_key token "${tok}" is not a declared attribute`);
-      if (isOptional(t)) throw new Error(`schema ${s.type}: node_key token "${tok}" must be required`);
+      if (!t) throw new Error(`schema ${s.type}: key_spec token "${tok}" is not a declared attribute`);
+      if (isOptional(t)) throw new Error(`schema ${s.type}: key_spec token "${tok}" must be required`);
     }
 
+    if ("title" in s.attributes && s.title_key !== "title") throw new Error(`schema ${s.type}: declares its own title, so its title_key must be "title"`);
     const declared = effectiveAttributes(s);
     if (s.index.length === 0) throw new Error(`schema ${s.type}: index must be non-empty`);
     for (const f of [...s.index, ...(s.vector_index ?? []), s.title_key, s.description_key]) {

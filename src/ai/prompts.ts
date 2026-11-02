@@ -518,12 +518,13 @@ export function graphConventions(graph: GraphBackend): string {
   if (graph.kind === "ladybug") {
     return (
       `every node is a row of the one Node table with its type in node_type — MATCH (n:Node {node_type: 'Concept'}) — and each edge type is a rel table of that name (label(r) is its type); ` +
+      `every node has key (its identity in its type), title, search_text and created_at (epoch ms); ` +
       `a node is live when n.deleted_at IS NULL; RETURN n is the whole row (every column), so project the columns you need. One namespace, "default". ` +
       `The ontology is in the same table: each type is a row with node_type 'Schema' (its name in \`type\`, its declared attributes as JSON in \`attributes\`), its parent (is_parent = true) and its allowed edges (edge_type) SCHEMA_EDGE edges between Schema rows — leave node_type 'Schema' out when you count nodes.`
     );
   }
   return (
-    `every node has its type as a label plus :Node:Data_Bank and the properties {ref_id, node_key, namespace}; the deployment's default namespace is "${graph.cfg.namespace}" — filter on it (n.namespace = $ns) so you don't read across partitions. Edge types are UPPER_SNAKE.`
+    `every node has its type as a label plus :Node:Data_Bank and the properties {ref_id, node_key, namespace} (jarvis's names: node_key is the identity, Data_Bank the search text, date_added_to_graph the creation time in ms); the deployment's default namespace is "${graph.cfg.namespace}" — filter on it (n.namespace = $ns) so you don't read across partitions. Edge types are UPPER_SNAKE.`
   );
 }
 

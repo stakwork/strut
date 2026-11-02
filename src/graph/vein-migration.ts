@@ -58,7 +58,7 @@ export function legacyTypes(): LegacyType[] {
     return {
       type: s.type,
       legacy,
-      nodeKeySpec: s.node_key,
+      nodeKeySpec: s.key_spec,
       keyPrefix: `${s.type.toLowerCase()}-`,
       legacyKeyPrefix: `${legacy.toLowerCase()}-`,
     };

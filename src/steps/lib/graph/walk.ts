@@ -55,7 +55,7 @@ const TEXT_KEYS = ["description", "summary", "text", "content", "body", "docs", 
 /** Edge attributes shown to the decider are cut here (HAS_SOURCE.context is a JSON blob). */
 const EDGE_PROPERTY_MAX = 160;
 /** Edge stamps that say nothing about the relationship itself. */
-const EDGE_STAMPS = new Set(["date_added_to_graph", "is_muted", "namespace", "importance"]);
+const EDGE_STAMPS = new Set(["created_at", "date_added_to_graph", "is_muted", "namespace", "importance"]);
 
 /**
  * Claims and checks are immutable: an edit writes a successor that

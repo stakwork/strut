@@ -14,7 +14,7 @@
  *   - one edge per (src, type, tgt): ON CREATE only — existing edges are
  *     never mutated, except that a legacy flagged one is made live again;
  *   - stamps: `ref_id`, `edge_key`, `weight` (1 unless given),
- *     `date_added_to_graph` (epoch ms), and `unique_source_id` when both
+ *     `created_at` (epoch ms; Neo4j's `date_added_to_graph`), and `unique_source_id` when both
  *     endpoints carry the same one; NO `namespace` on edges;
  *   - delete = `DELETE r` (`deletion.ts`): edges are never muted or flagged.
  *
@@ -43,7 +43,7 @@ export interface EdgeInput {
   source_ref_id: string;
   target_ref_id: string;
   /** Extra edge attributes — unvalidated passthrough, as in jarvis. Stamp
-   *  keys (`ref_id`, `edge_key`, `weight`, `date_added_to_graph`) may not
+   *  keys (`ref_id`, `edge_key`, `weight`, `created_at`) may not
    *  be supplied. On Neo4j a plain JS number is written as FLOAT; wrap with
    *  `int()` from `bolt.ts` for an Integer. */
   properties?: Record<string, unknown>;
@@ -112,9 +112,11 @@ export interface EdgeWriterOptions {
   resolver?: SchemaResolver;
 }
 
-const STAMPS = new Set(["ref_id", "edge_key", "weight", "date_added_to_graph", "unique_source_id"]);
+/** The writer's stamps, under the shared names and jarvis's (`created_at` is
+ *  Neo4j's `date_added_to_graph`): neither may come from a caller. */
+const STAMPS = new Set(["ref_id", "edge_key", "weight", "created_at", "date_added_to_graph", "unique_source_id"]);
 /** Stamps `update` may never touch (`weight` is caller-settable, as on create). */
-const PROTECTED = new Set(["ref_id", "edge_key", "date_added_to_graph", "unique_source_id"]);
+const PROTECTED = new Set(["ref_id", "edge_key", "created_at", "date_added_to_graph", "unique_source_id"]);
 const IDENT = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 const EDGE_TYPE = /^[A-Z][A-Z0-9_]*$/;
 
@@ -195,7 +197,7 @@ export class EdgeWriter {
    * `(source, EDGE, target)` triple (alias-rewritten like a write; legacy
    * flagged edges are skipped; more than one live edge of that type between the
    * endpoints — distinct edge_keys — is an error: pass the ref_id).
-   * Identity stamps (`ref_id`, `edge_key`, `date_added_to_graph`,
+   * Identity stamps (`ref_id`, `edge_key`, `created_at`,
    * `unique_source_id`) cannot be set or removed; `weight` can. On Neo4j
    * numbers write as FLOAT (an integral `weight` as Integer, like create).
    * With `tx`, on the caller's transaction.
@@ -354,7 +356,7 @@ export class EdgeWriter {
   }
 
   /** Stamp every edge (`ref_id`, `edge_key`, `weight` 1 unless given,
-   *  `date_added_to_graph`, `unique_source_id` when both ends share one) and
+   *  `created_at`, `unique_source_id` when both ends share one) and
    *  merge the batch; results in input order. */
   private async mergeEdges(tx: GraphTx, edge: string, edges: ResolvedEdge[]): Promise<EdgeWriteResult[]> {
     const rows: EdgeMergeRow[] = edges.map((e, k) => ({
@@ -364,7 +366,7 @@ export class EdgeWriter {
       edge_key: e.edge_key,
       ref_id: randomUUID(),
       weight: e.input.weight ?? 1,
-      date_added_to_graph: Date.now(),
+      created_at: Date.now(),
       ...(e.unique_source_id ? { unique_source_id: e.unique_source_id } : {}),
       props: e.input.properties ?? {},
     }));

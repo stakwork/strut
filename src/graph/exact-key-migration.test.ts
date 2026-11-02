@@ -63,7 +63,7 @@ describe("exact-key-migration (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_N
     const nodes = await workspaceNodes();
     assert.equal(nodes.length, 7, "2 steps + 2 step versions + 1 workflow + 2 versions");
     await bolt.run(`UNWIND $rows AS row MATCH (n:Data_Bank {ref_id: row.ref_id}) SET n.node_key = row.key`, {
-      rows: nodes.map((n) => ({ ref_id: n.ref_id, key: composeNodeKey({ type: n.schema.type, node_key: n.schema.node_key }, n.values) })),
+      rows: nodes.map((n) => ({ ref_id: n.ref_id, key: composeNodeKey({ type: n.schema.type, key_spec: n.schema.key_spec }, n.values) })),
     });
     assert.equal((await bolt.run(`MATCH (s:StrutStep {step_type: "pod_test"}) RETURN s.node_key AS k`))[0]!["k"], "strutstep-podtest");
 

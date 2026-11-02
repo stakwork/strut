@@ -20,7 +20,7 @@ const KEYED = "Claim";
 class RefKeyedResolver extends SchemaResolver {
   override async schema(raw: string, tx?: GraphTx): Promise<NodeSchema | null> {
     const s = await super.schema(raw, tx);
-    return s?.type === KEYED ? { ...s, node_key: "ref_id" } : s;
+    return s?.type === KEYED ? { ...s, key_spec: "ref_id" } : s;
   }
 }
 
@@ -171,7 +171,7 @@ for (const tb of testBackends()) {
       assert.equal(a.outcome, "created");
       assert.equal(c.outcome, "created");
       assert.notEqual(a.ref_id, c.ref_id, "two nodes with the same attributes");
-      assert.equal(a.node_key, `claim-${a.ref_id}`);
+      assert.equal(a.key, `claim-${a.ref_id}`);
 
       await b.nodes.deleteNode(a.ref_id, { keepEdges: true });
       const d = await b.nodes.write(claim("same"), "upsert");
@@ -180,7 +180,7 @@ for (const tb of testBackends()) {
       assert.ok((await rawNode(b, a.ref_id))!.props["deleted_at"], "the deleted one stays deleted");
 
       const u = await b.nodes.update(c.ref_id, { set: { claim_text: "changed" } });
-      assert.deepEqual([u.node_key, u.rekeyed], [c.node_key, false]);
+      assert.deepEqual([u.key, u.rekeyed], [c.key, false]);
     });
 
     it("a type keyed as before still matches on its attributes", async () => {

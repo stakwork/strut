@@ -19,7 +19,7 @@
  *     `INVALID_NAMESPACE`, and `registerNamespace` is refused;
  *   - a domain is the types whose Schema names it (`strut`: the Strut
  *     types); a domain no type names is `INVALID_DOMAIN`;
- *   - one FTS index (`node_fts` over `Data_Bank` + `name`, BM25, porter) and
+ *   - one FTS index (`node_fts` over `search_text` + `title`, BM25, porter) and
  *     one HNSW index (`node_vec`, cosine), each read with `QUERY_*_INDEX`
  *     and filtered AFTER the index's top-k — so a typed search over-fetches
  *     BOTH halves (Neo4j routes the keyword half through a domain index
@@ -161,11 +161,11 @@ export class LadybugReader implements GraphReader {
     return rows.length === 0 ? null : envelope(hitNode(rows[0]!["n"]));
   }
 
-  async getNodeByKey(type: string, node_key: string, namespace?: string): Promise<NodeEnvelope | null> {
+  async getNodeByKey(type: string, key: string, namespace?: string): Promise<NodeEnvelope | null> {
     await this.resolveNamespace(namespace);
     const rows = await this.engine.query(
-      `MATCH (n:Node {node_type: $type, node_key: $node_key}) WHERE ${LIVE("n")} RETURN ${await this.project("n")} AS n LIMIT 1`,
-      { type: await this.canonical(type), node_key },
+      `MATCH (n:Node {node_type: $type, key: $key}) WHERE ${LIVE("n")} RETURN ${await this.project("n")} AS n LIMIT 1`,
+      { type: await this.canonical(type), key },
     );
     return rows.length === 0 ? null : envelope(hitNode(rows[0]!["n"]));
   }

@@ -256,6 +256,8 @@ export interface CheckRow {
   freshness_days?: number;
   sample_rate?: number;
   publisher?: string;
+  /** When the check was written, epoch SECONDS: the node's core
+   *  `created_at` (ms), as checks have always reported it. */
   created_at: number;
   /** Set = retired or superseded. ACTIVE = unset. */
   retired_at?: number;
@@ -275,9 +277,9 @@ export interface EvidenceRow {
   evidence_mode?: EvidenceMode | string;
   evidence_status?: EvidenceStatus | string;
   observed_at?: number;
-  /** Epoch MILLISECONDS (jarvis's node stamp) — the ordering fallback for
-   *  evidence an outside system wrote without `observed_at`. */
-  date_added_to_graph?: number;
+  /** Epoch MILLISECONDS (the node's core `created_at`) — the ordering
+   *  fallback for evidence an outside system wrote without `observed_at`. */
+  created_at?: number;
   /** The claim whose `EVIDENCED_BY` edge reached this node. */
   claim_id: string;
   /** `EVIDENCED_BY.strength`: > 0 supports, < 0 refutes; absent on a slot. */
@@ -346,7 +348,7 @@ const NO_CHECK = "";
  * are ms timestamps), then when the node was written, then the id.
  */
 export function newestFirst(a: EvidenceRow, b: EvidenceRow): number {
-  const seconds = (e: EvidenceRow) => (typeof e.observed_at === "number" ? e.observed_at : Math.floor((e.date_added_to_graph ?? 0) / 1000));
+  const seconds = (e: EvidenceRow) => (typeof e.observed_at === "number" ? e.observed_at : Math.floor((e.created_at ?? 0) / 1000));
   const runMs = (e: EvidenceRow) => {
     const n = Number(e.source?.run_id);
     return Number.isFinite(n) ? n : 0;
@@ -354,7 +356,7 @@ export function newestFirst(a: EvidenceRow, b: EvidenceRow): number {
   return (
     seconds(b) - seconds(a) ||
     runMs(b) - runMs(a) ||
-    (b.date_added_to_graph ?? 0) - (a.date_added_to_graph ?? 0) ||
+    (b.created_at ?? 0) - (a.created_at ?? 0) ||
     (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
   );
 }
@@ -440,13 +442,20 @@ const CHECK_FIELDS = [
   "sample_rate", "publisher", "created_at", "retired_at",
 ] as const;
 const EVIDENCE_FIELDS = [
-  "ref_id", "id", "name", "description", "content", "evidence_mode", "evidence_status", "observed_at", "date_added_to_graph",
+  "ref_id", "id", "name", "description", "content", "evidence_mode", "evidence_status", "observed_at", "created_at",
 ] as const;
 
 function compact<T>(row: Record<string, unknown>): T {
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(row)) if (v !== null && v !== undefined) out[k] = v;
   return out as T;
+}
+
+/** A Check as read: its core `created_at` (ms) in the seconds a check reports. */
+function checkRow(row: Record<string, unknown>): CheckRow {
+  const out = compact<CheckRow>(row);
+  if (typeof out.created_at === "number") out.created_at = Math.floor(out.created_at / 1000);
+  return out;
 }
 
 function parseContext(raw: unknown): SourceContext | undefined {
@@ -547,7 +556,7 @@ export class ClaimsReader {
       `MATCH ${d.node("k", CHECK_TYPE, { namespace: "$ns", id: "$id" })} WHERE ${d.live("k")} RETURN ${d.project("k", CHECK_FIELDS)} AS chk LIMIT 1`,
       { ns: this.ns, id },
     );
-    return rows.length ? compact<CheckRow>(rows[0]!["chk"] as Record<string, unknown>) : null;
+    return rows.length ? checkRow(rows[0]!["chk"] as Record<string, unknown>) : null;
   }
 
   /** The subjects a claim is attached to (live `ABOUT` edges), with the
@@ -609,7 +618,7 @@ export class ClaimsReader {
       { ns: this.ns, id: claimId },
     );
     return rows
-      .map((r) => compact<CheckRow>(r["chk"] as Record<string, unknown>))
+      .map((r) => checkRow(r["chk"] as Record<string, unknown>))
       .sort((a, b) => a.created_at - b.created_at || a.id.localeCompare(b.id));
   }
 

@@ -21,7 +21,7 @@ describe("graph/graph-get `required`: a failure is an error, not the result", ()
       connectionCounts: async () => [{ edge_type: "PARENT_OF", count: 2 }],
       neighbors: async () => ({ nodes: [] }),
     },
-    schemas: { schema: async (t: string) => (t === "Concept" ? { type: "Concept", node_key: "concept-name" } : null) },
+    schemas: { schema: async (t: string) => (t === "Concept" ? { type: "Concept", key_spec: "concept-name" } : null) },
   };
   const ctx = { services: { graph } } as unknown as StepContext;
   const get = async (input: Record<string, unknown>) => {

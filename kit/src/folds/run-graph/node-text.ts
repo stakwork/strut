@@ -27,6 +27,10 @@ const IDENTITY_KEYS: ReadonlySet<string> = new Set([
   "node_type",
   "name",
   "namespace",
+  "key",
+  "title",
+  "created_at",
+  "search_text",
   "date_added_to_graph",
   "Data_Bank",
 ]);

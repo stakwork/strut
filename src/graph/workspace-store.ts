@@ -122,8 +122,9 @@ interface VersionRow {
   content_hash: string;
   version_label: string;
   description?: string;
-  created_at: number; // epoch seconds
-  date_added_to_graph?: number;
+  published_at: number; // epoch seconds
+  /** The row's creation, epoch ms (core). */
+  created_at?: number;
   source: string;
   publisher?: string;
   /** `WorkflowVersionInfo.source` — `source` is the YAML here. */
@@ -147,8 +148,8 @@ interface StepVersionRow {
   content_hash: string;
   version_label: string;
   description?: string;
-  created_at: number;
-  date_added_to_graph?: number;
+  published_at: number;
+  created_at?: number;
   source: string;
   publisher?: string;
   version_source?: VersionSource;
@@ -177,8 +178,8 @@ interface AppVersionRow {
   name: string;
   content_hash: string;
   version_label: string;
-  created_at: number;
-  date_added_to_graph?: number;
+  published_at: number;
+  created_at?: number;
   /** JSON `AppManifest`. */
   manifest?: string;
   publisher?: string;
@@ -189,7 +190,7 @@ interface AppVersionRow {
 }
 
 const APP_FIELDS = ["ref_id", "name", "title", "description", "publisher", "owner", "pinned", "active_version", "live", "releases"] as const;
-const APP_VERSION_FIELDS = ["ref_id", "name", "content_hash", "version_label", "created_at", "manifest", "publisher", "version_source", "actor", "upstream", "date_added_to_graph"] as const;
+const APP_VERSION_FIELDS = ["ref_id", "name", "content_hash", "version_label", "published_at", "manifest", "publisher", "version_source", "actor", "upstream", "created_at"] as const;
 
 /** A JSON attribute, or undefined when absent or unreadable. */
 function parseJson<T>(text: string | undefined): T | undefined {
@@ -202,16 +203,17 @@ function parseJson<T>(text: string | undefined): T | undefined {
 }
 
 const WORKFLOW_FIELDS = ["ref_id", "name", "description", "category", "publisher", "active_version", "automations", "owner", "max_run_cost_usd"] as const;
-const VERSION_FIELDS = ["ref_id", "name", "content_hash", "version_label", "description", "created_at", "source", "publisher", "version_source", "actor", "upstream", "date_added_to_graph"] as const;
+const VERSION_FIELDS = ["ref_id", "name", "content_hash", "version_label", "description", "published_at", "source", "publisher", "version_source", "actor", "upstream", "created_at"] as const;
 const STEP_FIELDS = ["ref_id", "step_type", "description", "publisher", "active_version"] as const;
-const STEP_VERSION_FIELDS = ["ref_id", "step_type", "content_hash", "version_label", "description", "created_at", "source", "publisher", "version_source", "actor", "upstream", "date_added_to_graph"] as const;
+const STEP_VERSION_FIELDS = ["ref_id", "step_type", "content_hash", "version_label", "description", "published_at", "source", "publisher", "version_source", "actor", "upstream", "created_at"] as const;
 
 const isoFromSeconds = (s: number | undefined): string =>
   new Date((s ?? 0) * 1000).toISOString();
 
-/** Versions in creation order: `created_at` (seconds), then the write stamp. */
-const byCreation = <T extends { created_at: number; date_added_to_graph?: number }>(a: T, b: T) =>
-  a.created_at - b.created_at || (a.date_added_to_graph ?? 0) - (b.date_added_to_graph ?? 0);
+/** Versions in publish order: `published_at` (seconds), then the row's
+ *  `created_at` (ms), then the ref_id. */
+const byCreation = <T extends { published_at: number; created_at?: number; ref_id: string }>(a: T, b: T) =>
+  a.published_at - b.published_at || (a.created_at ?? 0) - (b.created_at ?? 0) || (a.ref_id < b.ref_id ? -1 : a.ref_id > b.ref_id ? 1 : 0);
 
 /** Drop undefined/null values so the writer sees only real attributes. */
 function compact(o: Record<string, unknown>): Record<string, unknown> {
@@ -355,7 +357,7 @@ export class GraphWorkspaceStore implements WorkspaceStore {
     for (const v of versions) {
       const upstream = parseJson<Upstream>(v.upstream);
       meta.versions[v.version_label] = {
-        createdAt: isoFromSeconds(v.created_at),
+        createdAt: isoFromSeconds(v.published_at),
         ...(v.description !== undefined ? { description: v.description } : {}),
         hash: v.content_hash,
         ...(v.version_source ? { source: v.version_source } : {}),
@@ -489,7 +491,7 @@ export class GraphWorkspaceStore implements WorkspaceStore {
           content_hash: hash,
           version_label: label,
           description,
-          created_at: new Date().toISOString(),
+          published_at: new Date().toISOString(),
           source: yamlStr,
           params_json: parsed["params"] != null ? JSON.stringify(parsed["params"]) : undefined,
           publisher,
@@ -769,7 +771,7 @@ export class GraphWorkspaceStore implements WorkspaceStore {
       out.push({
         type: step.step_type,
         description: active?.description,
-        createdAt: active ? isoFromSeconds(active.created_at) : undefined,
+        createdAt: active ? isoFromSeconds(active.published_at) : undefined,
         publisher: step.publisher,
         ...(upstream ? { upstream } : {}),
       });
@@ -810,7 +812,7 @@ export class GraphWorkspaceStore implements WorkspaceStore {
     for (const v of await this.stepVersionRows(name)) {
       const upstream = parseJson<Upstream>(v.upstream);
       out.versions[v.version_label] = {
-        createdAt: isoFromSeconds(v.created_at),
+        createdAt: isoFromSeconds(v.published_at),
         ...(v.description !== undefined ? { description: v.description } : {}),
         hash: v.content_hash,
         ...(v.version_source ? { source: v.version_source } : {}),
@@ -902,7 +904,7 @@ export class GraphWorkspaceStore implements WorkspaceStore {
         content_hash: hash,
         version_label: vid,
         description,
-        created_at: new Date().toISOString(),
+        published_at: new Date().toISOString(),
         source: code,
         publisher: publisher ?? existing?.publisher,
         version_source,
@@ -997,7 +999,7 @@ export class GraphWorkspaceStore implements WorkspaceStore {
       if (!manifest || !v.version_label) continue;
       const upstream = parseJson<Upstream>(v.upstream);
       const info: AppVersionInfo = {
-        createdAt: isoFromSeconds(v.created_at),
+        createdAt: isoFromSeconds(v.published_at),
         hash: v.content_hash,
         manifest,
         ...(v.publisher ? { publisher: v.publisher } : {}),
@@ -1081,7 +1083,7 @@ export class GraphWorkspaceStore implements WorkspaceStore {
         content_hash: hash,
         version_label: vid,
         description: manifest.description,
-        created_at: new Date().toISOString(),
+        published_at: new Date().toISOString(),
         manifest: JSON.stringify(manifest),
         publisher,
         version_source: opts?.source,

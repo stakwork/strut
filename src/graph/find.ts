@@ -10,7 +10,8 @@
  * access and comparisons are the same text on both. Every field a filter,
  * an order or the projection names is an attribute of the type's schema
  * (as the resolver merges it, inherited included), `ref_id` or
- * `date_added_to_graph` — never text from the caller in the statement, and
+ * `created_at` (`date_added_to_graph`, its old name, still accepted; Neo4j
+ * stores it so) — never text from the caller in the statement, and
  * on a LadybugDB file never a column the table does not have. Values are
  * parameters; a `datetime` attribute's value is turned into the epoch
  * seconds the writer stores (an ISO string or a number), and an app's
@@ -21,7 +22,9 @@
  */
 import type { GraphBackend } from "./backend.js";
 import { DEFAULT_NAMESPACE } from "./bolt.js";
+import { neo4jName } from "./neo4j-engine.js";
 import { toEpochSeconds } from "./node-writer.js";
+import { nodeTitle } from "./title.js";
 
 export const FIND_LIMIT_DEFAULT = 50;
 export const FIND_LIMIT_MAX = 500;
@@ -36,7 +39,7 @@ export type FindCondition = string | number | boolean | null | Partial<Record<Fi
 export interface FindInput {
   node_type: string;
   where?: Record<string, FindCondition>;
-  /** A field to order by (default: newest first, `date_added_to_graph`). */
+  /** A field to order by (default: newest first, `created_at`). */
   orderBy?: string;
   desc?: boolean;
   limit?: number;
@@ -69,7 +72,10 @@ export class FindError extends Error {
 }
 
 /** Fields every node has besides its type's attributes. */
-const NODE_FIELDS: Record<string, string> = { ref_id: "string", date_added_to_graph: "float" };
+const NODE_FIELDS: Record<string, string> = { ref_id: "string", created_at: "float" };
+/** Old field names a caller may still give: jarvis's for `created_at`. */
+const FIELD_ALIASES: Record<string, string> = { date_added_to_graph: "created_at" };
+const canonicalField = (name: string) => FIELD_ALIASES[name] ?? name;
 
 const baseOf = (t: string) => t.replace(/^\?/, "");
 const isPlain = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -97,12 +103,12 @@ export async function findNodes(b: GraphBackend, input: FindInput): Promise<Find
 
   const fields: Record<string, string> = { ...schema.attributes, ...NODE_FIELDS };
   const known = Object.keys(fields).sort();
+  const d = b.dialect;
   const field = (name: string, where: string): string => {
     if (!(name in fields)) throw new FindError(`${where}: ${type} has no field "${name}" — its fields: ${known.join(", ")}`);
-    return `n.\`${name}\``;
+    return `n.\`${d.kind === "neo4j" ? neo4jName(name, type) : name}\``;
   };
 
-  const d = b.dialect;
   const params: Record<string, unknown> = { ns: input.namespace ?? b.namespace ?? DEFAULT_NAMESPACE, default_ns: DEFAULT_NAMESPACE };
   let p = 0;
   const param = (name: string, value: unknown): string => {
@@ -125,8 +131,9 @@ export async function findNodes(b: GraphBackend, input: FindInput): Promise<Find
   // jarvis's hide flag, which every Neo4j read honors (the file keeps none).
   // Not its blocked statuses: a `status: failed` is an app's data here.
   if (b.kind === "neo4j") clauses.push(`(n.is_muted IS NULL OR n.is_muted <> true)`);
-  for (const [name, cond] of Object.entries(input.where ?? {})) {
-    const ref = field(name, `where.${name}`);
+  for (const [given, cond] of Object.entries(input.where ?? {})) {
+    const name = canonicalField(given);
+    const ref = field(name, `where.${given}`);
     const base = baseOf(fields[name]!);
     if (cond === null) {
       clauses.push(`${ref} IS NULL`);
@@ -162,24 +169,25 @@ export async function findNodes(b: GraphBackend, input: FindInput): Promise<Find
   const match = `MATCH ${d.node("n", type)} WHERE ${clauses.join(" AND ")}`;
   const limit = Math.min(FIND_LIMIT_MAX, Math.max(1, Math.floor(Number(input.limit ?? FIND_LIMIT_DEFAULT)) || FIND_LIMIT_DEFAULT));
   const offset = input.cursor ? decodeCursor(input.cursor) : 0;
-  const order = input.orderBy ? field(input.orderBy, "orderBy") : "n.`date_added_to_graph`";
+  const order = field(input.orderBy ? canonicalField(input.orderBy) : "created_at", "orderBy");
   const dir = (input.orderBy ? input.desc : input.desc ?? true) ? "DESC" : "ASC";
 
   const rows = await b.query(
     `${match}
-     RETURN ${d.project("n", known)} AS props
+     RETURN ${d.project("n", [...new Set([...known, "title"])])} AS props
      ORDER BY ${order} ${dir}, n.\`ref_id\`
      SKIP ${offset} LIMIT ${limit + 1}`,
     params,
   );
   const more = rows.length > limit;
-  const title = schema.title_key && schema.title_key in fields ? schema.title_key : "name";
   const nodes = rows.slice(0, limit).map((r): FoundNode => {
     const props: Record<string, unknown> = {};
     for (const [k, v] of Object.entries((r["props"] ?? {}) as Record<string, unknown>)) if (v !== null && v !== undefined) props[k] = v;
     const ref_id = String(props["ref_id"]);
     delete props["ref_id"];
-    const name = props[title] ?? props["name"];
+    const name = nodeTitle(props, schema.title_key) || props["name"];
+    // The core title is the node's `name` here; `properties` are the type's fields.
+    if (!("title" in fields)) delete props["title"];
     return { ref_id, node_type: type, ...(typeof name === "string" && name ? { name } : {}), properties: props };
   });
 

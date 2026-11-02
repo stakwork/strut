@@ -68,7 +68,7 @@ async function holds(backend: GraphBackend, type: string): Promise<boolean> {
 
 /** The `unique_source_id` reconciliation stamp is jarvis's (Thing's); a type
  *  that leaves it off (a Ladybug file's) gets the nodes without it — identity
- *  is the node_key there anyway. */
+ *  is the key there anyway. */
 async function fit(backend: GraphBackend, nodes: NodeInput[]): Promise<NodeInput[]> {
   if (!backend.schemaSource?.holdsStrutTypes) return nodes;
   return Promise.all(
@@ -342,7 +342,7 @@ export function jobNode(view: JobView): NodeInput {
       title: view.title ?? view.job,
       summary: preview(lines.join("\n"), JOB_SUMMARY_MAX_CHARS),
       created_by: view.createdBy,
-      created_at: view.createdAt ?? view.runs[view.runs.length - 1]?.at ?? new Date().toISOString(),
+      started_at: view.createdAt ?? view.runs[view.runs.length - 1]?.at ?? new Date().toISOString(),
       last_used_at: view.usedAt || undefined,
       run_count: view.runs.length,
       artifact_count: view.artifacts.length,
@@ -655,7 +655,7 @@ export async function runRef(backend: GraphBackend, store: RunStore, workflow: s
   // that have no graph.
   const { composeNodeKey } = await import("./node-writer.js");
   const rows = await backend.query(
-    `MATCH ${backend.dialect.node("r", "StrutRun", { node_key: "$key", namespace: "$ns" })} WHERE r.workflow_name = $wf RETURN r.ref_id AS ref_id, r.run_status AS status`,
+    `MATCH ${backend.dialect.node("r", "StrutRun", { key: "$key", namespace: "$ns" })} WHERE r.workflow_name = $wf RETURN r.ref_id AS ref_id, r.run_status AS status`,
     { key: composeNodeKey(getStrutSchema("StrutRun")!, { run_id: runId }), ns: backend.namespace, wf: workflow },
   );
   const held = rows[0];
@@ -748,7 +748,7 @@ export async function projectChats(backend: GraphBackend, chatStore: ChatStore):
         status: meta.status,
         model: meta.model,
         created_by: meta.createdBy,
-        created_at: meta.createdAt,
+        started_at: meta.createdAt,
         last_active_at: meta.updatedAt,
         turn_count: turns.length,
         log_ref: meta.id,

@@ -3,9 +3,18 @@
  * needs from a database, as small interfaces with one implementation per
  * engine — `neo4j-engine.ts` (today's Cypher over bolt, moved here as it
  * was) and `ladybug/engine.ts` (one LadybugDB file). Everything pure —
- * validation, `node_key` and `Data_Bank` composition, the edge rules, the
- * schema merge, the seeds' add-only discipline — stays in the writers and
- * the resolver and runs on both.
+ * validation, `key`, `search_text` and `title` composition, the edge rules,
+ * the schema merge, the seeds' add-only discipline — stays in the writers
+ * and the resolver and runs on both.
+ *
+ * Everything that crosses a seam uses the core attributes' shared names
+ * (plans/graph-memory-plan.md "Core attributes"): a node's `key`,
+ * `search_text`, `created_at`, `title`; an edge's `created_at`; a Schema's
+ * `key_spec`. A Ladybug file stores them so. Neo4j keeps jarvis's names
+ * (`node_key`, `Data_Bank`, `date_added_to_graph`, a Schema's `node_key`):
+ * its engine and dialect map them (`NEO4J_NAMES`, `neo4j-engine.ts`), so a
+ * caller never sees them — except raw Neo4j Cypher in the Neo4j-only
+ * modules (seeds, migrations, the embedding pass, the Neo4j reader).
  *
  * Three kinds of thing cross a seam:
  *
@@ -48,7 +57,8 @@ export interface Dialect {
   /** A node pattern of one type: ``(a:`Type` {k: $v})`` vs
    *  `(a:Node {node_type: 'Type', k: $v})`. `props` maps a property to the
    *  Cypher expression it must equal — on Ladybug one of the hot columns
-   *  (every Strut and claim attribute is one; §3.1). */
+   *  (every Strut and claim attribute is one; §3.1). A core attribute is
+   *  named by its shared name (`key`), and Neo4j's spells it jarvis's way. */
   node(alias: string, type: string, props?: Record<string, string>): string;
   /** `a` is one of `types`: label checks vs `a.node_type IN [...]`. */
   isType(alias: string, types: readonly string[]): string;
@@ -67,7 +77,8 @@ export interface Dialect {
   lower(expr: string): string;
   /** `{a: n.a, b: n.b}` — the projection both engines return as a map;
    *  never `properties(n)` on a hot path (a Ladybug node struct carries
-   *  every column). */
+   *  every column). Keys are the shared names: Neo4j's reads a core
+   *  attribute from its jarvis name (`{created_at: n.date_added_to_graph}`). */
   project(alias: string, fields: readonly string[]): string;
 }
 
@@ -78,18 +89,20 @@ export type WriteOutcome = "created" | "existing" | "restored" | "updated";
 
 /** A node the writer validated and composed, ready for the engine: the
  *  identity, and every property as a plain value — attributes (a datetime
- *  as epoch seconds), `Data_Bank` + `_search_fields_used`, the vectors. */
+ *  as epoch seconds), `search_text` + `_search_fields_used`, `title`,
+ *  `created_at`, the vectors. */
 export interface PreparedNode {
   schema: NodeSchema;
-  node_key: string;
+  key: string;
   ref_id: string;
   namespace: string;
   props: Record<string, unknown>;
 }
 
 /** A stored node as the engine holds it: its type and every property,
- *  stamps included (`namespace`, `node_key`, `Data_Bank`, …), as Neo4j's
- *  `properties(n)` — absent properties absent, never null. */
+ *  stamps included (`namespace`, `key`, `search_text`, …, under their
+ *  shared names), as Neo4j's `properties(n)` — absent properties absent,
+ *  never null. */
 export interface RawNode {
   ref_id: string;
   type: string | undefined;
@@ -136,11 +149,11 @@ export interface NodeEngine {
    *  non-identity properties when `mode` is `upsert` or the node is
    *  soft-deleted (a restore clears both delete markers). Returns the
    *  outcome per row, input order. */
-  mergeBatch(tx: GraphTx, schema: NodeSchema, namespace: string, nodes: PreparedNode[], mode: WriteMode): Promise<Array<{ ref_id: string; node_key: string; outcome: WriteOutcome }>>;
+  mergeBatch(tx: GraphTx, schema: NodeSchema, namespace: string, nodes: PreparedNode[], mode: WriteMode): Promise<Array<{ ref_id: string; key: string; outcome: WriteOutcome }>>;
   readRaw(tx: GraphTx, ref_id: string): Promise<RawNode | null>;
   /** The ref_id of the node of `type` with this identity, or null. */
-  refByKey(tx: GraphTx, type: string, node_key: string, namespace: string): Promise<string | null>;
-  /** Set `set` (attributes + `node_key` + search text + vectors, plain
+  refByKey(tx: GraphTx, type: string, key: string, namespace: string): Promise<string | null>;
+  /** Set `set` (attributes + `key` + search text + title + vectors, plain
    *  values) and remove `remove` on one node. */
   update(tx: GraphTx, schema: NodeSchema, ref_id: string, set: Record<string, unknown>, remove: string[]): Promise<void>;
   /** `deletion.ts`: stamp `deleted_at` (first delete kept) + `is_deleted`
@@ -165,7 +178,7 @@ export interface EdgeMergeRow {
   edge_key: string;
   ref_id: string;
   weight: number;
-  date_added_to_graph: number;
+  created_at: number;
   unique_source_id?: string;
   props: Record<string, unknown>;
 }
@@ -207,7 +220,7 @@ export interface EdgeEngine {
 // ── The Schema meta-graph ───────────────────────────────────────────────────
 
 /** One Schema as jarvis stores it: the flat property map (core keys and
- *  attribute declarations alike). */
+ *  attribute declarations alike), its key spec as `key_spec`. */
 export interface SchemaRow {
   type: string;
   ref_id: string | undefined;

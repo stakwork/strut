@@ -70,7 +70,7 @@ describe("workspace graph export → import is lossless", { skip: tb.skip }, () 
     const ids = await backend.query("MATCH (n:Node) RETURN n.ref_id AS id");
     await backend.lbug.exclusive(async (w) => {
       for (const [i, r] of ids.entries()) await w("MATCH (n:Node {ref_id: $id}) SET n.text_embeddings = $v", { id: r["id"], v: vec(i) });
-      await w("MATCH (n:Node {ref_id: $id}) SET n.date_added_to_graph = 9223372036854775807, n.deleted_at = 9007199254740993", { id: ids[0]!["id"] });
+      await w("MATCH (n:Node {ref_id: $id}) SET n.created_at = 9223372036854775807, n.deleted_at = 9007199254740993", { id: ids[0]!["id"] });
     });
 
     // The store writes two edge kinds; give every other rel table an edge too, with every column set.
@@ -78,7 +78,7 @@ describe("workspace graph export → import is lossless", { skip: tb.skip }, () 
     await backend.lbug.exclusive(async (w) => {
       for (const [i, rel] of rels.entries()) {
         await w(
-          `MATCH (a:Node {ref_id: $a}), (b:Node {ref_id: $b}) CREATE (a)-[:\`${rel}\` {ref_id: $id, edge_key: $id, date_added_to_graph: 9223372036854775807, weight: 0.1, importance: $i,
+          `MATCH (a:Node {ref_id: $a}), (b:Node {ref_id: $b}) CREATE (a)-[:\`${rel}\` {ref_id: $id, edge_key: $id, created_at: 9223372036854775807, weight: 0.1, importance: $i,
              strength: 1e-300, context: 'a, "b"\nc', start_time: -9223372036854775808, end_time: 9007199254740993, post_url: ''}]->(b)`,
           { a: ids[0]!["id"], b: ids[(i % 5) + 1]!["id"], id: `edge-${rel}`, i: i / 3 },
         );

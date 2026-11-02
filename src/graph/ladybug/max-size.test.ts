@@ -42,14 +42,14 @@ describe("a graph's max size is not kept in its file", { skip }, () => {
     const file = join(dir, "g", "graph.lbug");
     process.env["STRUT_LADYBUG_MAX_DB_SIZE"] = "1T";
     const made = await openLadybug(file);
-    await made.withWrite((tx) => tx.run("CREATE (:Node {ref_id: 'a', name: 'one', Data_Bank: 'made on the mac'})"));
+    await made.withWrite((tx) => tx.run("CREATE (:Node {ref_id: 'a', name: 'one', search_text: 'made on the mac'})"));
     await made.close();
 
     process.env["STRUT_LADYBUG_MAX_DB_SIZE"] = "64M";
     const small = await openLadybug(file);
     try {
-      assert.equal((await small.query("MATCH (n:Node {ref_id: 'a'}) RETURN n.Data_Bank AS t"))[0]!["t"], "made on the mac");
-      await small.withWrite((tx) => tx.run("CREATE (:Node {ref_id: 'b', name: 'two', Data_Bank: 'written on the pi'})"));
+      assert.equal((await small.query("MATCH (n:Node {ref_id: 'a'}) RETURN n.search_text AS t"))[0]!["t"], "made on the mac");
+      await small.withWrite((tx) => tx.run("CREATE (:Node {ref_id: 'b', name: 'two', search_text: 'written on the pi'})"));
     } finally {
       await small.close();
     }

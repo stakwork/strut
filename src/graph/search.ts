@@ -29,6 +29,8 @@ import { Bolt, int, txRows, type Row } from "./bolt.js";
 import { EDGE_LIVE, NODE_LIVE } from "./deletion.js";
 import { typeLabelOf } from "./edge-writer.js";
 import { renderVectorField, type Embedder } from "./node-writer.js";
+import { fromNeo4j } from "./neo4j-engine.js";
+import { nodeTitle } from "./title.js";
 import type { SchemaResolver } from "./schema-resolver.js";
 import { GLOBAL_VECTOR_INDEX } from "./schema-seed.js";
 import { SCHEMA_CORE_PROPERTIES, getStrutSchema, vectorIndexedPairs, vectorStem } from "./strut-schemas.js";
@@ -48,8 +50,10 @@ export const DEFAULT_NAMESPACE = "default";
 export const BLOCKED_NODE_STATUSES = ["halted", "paused", "stopped", "stopping", "error", "failed", "stuck"];
 
 /** jarvis `GENERIC_NODE_PROPERTIES` — stripped from every response
- *  `properties` map. (Distinct from the write-side set in strut-schemas.) */
+ *  `properties` map, under jarvis's names (a Neo4j node) and the shared ones
+ *  (a Ladybug row). (Distinct from the write-side set in strut-schemas.) */
 export const RESPONSE_STRIPPED_NODE_PROPERTIES = new Set([
+  "key", "search_text", "created_at",
   "Data_Bank", "namespace", "spelling_verification", "topic_lower", "ref_id", "node_key",
   "relevancy_score", "date_added_to_graph", "updated_at", "text_embeddings", "input_embeddings",
   "output_embeddings", "embeddings", "algo_page_rank", "algo_score", "algo_community_id",
@@ -83,7 +87,11 @@ export interface NodeEnvelope {
   node_type: string | undefined;
   properties: Record<string, unknown>;
   name?: string;
-  date_added_to_graph?: number;
+  /** The node's title (`title.ts`): the stored one, else its type's
+   *  `title_key` field. Set by `envelope`. */
+  title?: string;
+  /** When the node was created, epoch ms (Neo4j's `date_added_to_graph`). */
+  created_at?: number;
   weight?: number;
   score?: number;
   match_type?: string;
@@ -454,16 +462,16 @@ export function titleMatchMultiplier(qLower: string, valLower: string): number {
   return 1.0;
 }
 
-/** `_apply_title_key_boost`: multiply by the title-field match tier, re-sort,
- *  re-normalize. `titleKeyFor` resolves a node type's `title_key` (default
- *  `name`). */
+/** `_apply_title_key_boost`: multiply by the title's match tier, re-sort,
+ *  re-normalize. The title is the node's stored one, else its type's
+ *  `title_key` field (`nodeTitle`); `titleKeyFor` resolves a node type's
+ *  `title_key` (default `name`). */
 export function applyTitleBoost(ranked: RankedEntry[], q: string, titleKeyFor: (type: string | undefined) => string): RankedEntry[] {
   if (!q || ranked.length === 0) return ranked;
   const ql = q.toLowerCase();
   for (const e of ranked) {
-    const field = titleKeyFor(typeLabelOf(e.node.labels)) || "name";
-    const val = e.node.properties[field];
-    if (typeof val === "string") e.score *= titleMatchMultiplier(ql, val.toLowerCase());
+    const val = nodeTitle(e.node.properties, titleKeyFor(typeLabelOf(e.node.labels)) || "name");
+    if (val) e.score *= titleMatchMultiplier(ql, val.toLowerCase());
   }
   ranked.sort((a, b) => b.score - a.score || a.best_rank - b.best_rank || cmp(refIdOf(a.node), refIdOf(b.node)));
   const max = ranked[0]!.score || 1;
@@ -491,16 +499,18 @@ export function applyUsageTiebreak(ranked: RankedEntry[], epsilon = USAGE_TIEBRE
   });
 }
 
-/** `_serialize_node`. */
+/** `_serialize_node`, under the shared names: a Neo4j node (it has
+ *  `date_added_to_graph`) is read through `fromNeo4j`, so its stamp is
+ *  `created_at` and a version's own stored `created_at` its `published_at`. */
 export function serializeNode(n: HitNode, extra?: Record<string, unknown>): NodeEnvelope {
-  const props = n.properties;
+  const props = "date_added_to_graph" in n.properties ? fromNeo4j(n.properties, typeLabelOf(n.labels)) : n.properties;
   const filtered: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(props)) if (!RESPONSE_STRIPPED_NODE_PROPERTIES.has(k)) filtered[k] = v;
   if ("image_url" in filtered && typeof filtered["image_url"] !== "string") filtered["image_url"] = "";
   const out: NodeEnvelope = {
     ref_id: String(props["ref_id"]),
     node_type: typeLabelOf(n.labels),
-    date_added_to_graph: Number(props["date_added_to_graph"]) || 0,
+    created_at: Number(props["created_at"]) || 0,
     properties: filtered,
   };
   if (props["weight"] !== null && props["weight"] !== undefined) out.weight = Number(props["weight"]);
@@ -508,10 +518,12 @@ export function serializeNode(n: HitNode, extra?: Record<string, unknown>): Node
   return out;
 }
 
-/** `_serialize_edge`: the edge envelope, generic stamps stripped. */
+/** `_serialize_edge`: the edge envelope, generic stamps stripped, its
+ *  creation stamp under the shared name (a Neo4j edge's
+ *  `date_added_to_graph` as `created_at`). */
 export function serializeEdge(type: string, props: Record<string, unknown>, source: string, target: string): EdgeEnvelope {
   const filtered: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(props)) if (!RESPONSE_STRIPPED_EDGE_PROPERTIES.has(k)) filtered[k] = v;
+  for (const [k, v] of Object.entries(props)) if (!RESPONSE_STRIPPED_EDGE_PROPERTIES.has(k)) filtered[k === "date_added_to_graph" ? "created_at" : k] = v;
   const out: EdgeEnvelope = { source, target, ref_id: String(props["ref_id"] ?? ""), edge_type: type, properties: filtered };
   if (props["weight"] !== null && props["weight"] !== undefined) out.weight = Number(props["weight"]);
   return out;
@@ -525,13 +537,16 @@ function visibility(alias: string): string {
   ].join(" AND ");
 }
 
-/** GET /v2/nodes/:ref_id's response shape for one node. */
+/** GET /v2/nodes/:ref_id's response shape for one node, with its `title`:
+ *  the stored one, else (a node written before titles) jarvis's name chain.
+ *  `name` is kept, the same, for callers that read it. */
 export function envelope(n: HitNode): NodeEnvelope {
   const p = n.properties;
   const env = serializeNode(n);
-  delete env.date_added_to_graph;
-  const name = p["name"] ?? p["episode_title"] ?? p["show_title"] ?? p["Data_Bank"];
-  return { name: name === undefined || name === null ? undefined : String(name), ...env };
+  delete env.created_at;
+  const fallback = p["name"] ?? p["episode_title"] ?? p["show_title"] ?? p["search_text"] ?? p["Data_Bank"];
+  const name = nodeTitle(p) || (fallback === undefined || fallback === null ? undefined : String(fallback));
+  return { name, ...(name ? { title: name } : {}), ...env };
 }
 
 function asHit(r: Row): Hit {
@@ -577,8 +592,8 @@ export interface GraphReader {
   resolveNamespace(namespace: string | undefined): Promise<string>;
   /** GET /v2/nodes/:ref_id — null when absent or hidden. */
   getNode(ref_id: string): Promise<NodeEnvelope | null>;
-  /** The node of `type` under `node_key` — an exact lookup, never a search. */
-  getNodeByKey(type: string, node_key: string, namespace?: string): Promise<NodeEnvelope | null>;
+  /** The node of `type` under `key` — an exact lookup, never a search. */
+  getNodeByKey(type: string, key: string, namespace?: string): Promise<NodeEnvelope | null>;
   /** The nodes of `type` whose name contains a fragment — the typeahead. */
   namesLike(type: string, q: string, limit?: number, namespace?: string): Promise<NameHit[]>;
   /** `(edge_type, target_type, direction) → count` around one node. */
@@ -672,15 +687,16 @@ export class Neo4jReader implements GraphReader {
     return rows.length === 0 ? null : envelope(rows[0]!["n"] as HitNode);
   }
 
-  /** The node of `type` under this `node_key` in a namespace (default: the
-   *  backend's) — an exact lookup, never a search. Same envelope as
-   *  `getNode`; null when absent/hidden. `type` is a resolved schema type. */
-  async getNodeByKey(type: string, node_key: string, namespace?: string): Promise<NodeEnvelope | null> {
+  /** The node of `type` under this `key` (stored as `node_key`) in a
+   *  namespace (default: the backend's) — an exact lookup, never a search.
+   *  Same envelope as `getNode`; null when absent/hidden. `type` is a
+   *  resolved schema type. */
+  async getNodeByKey(type: string, key: string, namespace?: string): Promise<NodeEnvelope | null> {
     const rows = await this.bolt.run(
       `MATCH (n:Data_Bank {node_key: $node_key})
        WHERE $type IN labels(n) AND coalesce(n.namespace, $default_ns) = $ns AND ${visibility("n")}
        RETURN n LIMIT 1`,
-      { node_key, type, ns: namespace ?? this.bolt.namespace, default_ns: DEFAULT_NAMESPACE, blocked_statuses: BLOCKED_NODE_STATUSES },
+      { node_key: key, type, ns: namespace ?? this.bolt.namespace, default_ns: DEFAULT_NAMESPACE, blocked_statuses: BLOCKED_NODE_STATUSES },
     );
     return rows.length === 0 ? null : envelope(rows[0]!["n"] as HitNode);
   }

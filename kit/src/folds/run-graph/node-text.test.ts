@@ -44,5 +44,9 @@ describe("nodeText", () => {
       prose: [],
       rest: [],
     });
+    expect(nodeText({ ref_id: "c-1", name: "Problem List", title: "Problem List", key: "concept-problemlist", search_text: "Problem List", created_at: 1700000000000 })).toEqual({
+      prose: [],
+      rest: [],
+    });
   });
 });

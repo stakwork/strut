@@ -3,11 +3,19 @@
  *
  * Every node strut puts in the graph goes through `NodeWriter`. The writer
  * validates BEFORE building any Cypher (§6 — nothing invalid or unexpected
- * reaches the graph through strut), composes `node_key` exactly like jarvis
- * (`schema_validation.py:350-399`), builds the `Data_Bank` search text
+ * reaches the graph through strut), composes the node's `key` exactly like
+ * jarvis's `node_key` (`schema_validation.py:350-399`), builds the
+ * `search_text` (jarvis's `Data_Bank`)
  * (`schema_node_helper.py:141-234`, including jarvis's kitchen-sink fallback
  * for schemas without a usable explicit index), and MERGEs with jarvis's
  * label set and generic stamps (`schema_node_helper.py:238-268`).
+ *
+ * The core attributes go under their shared names — `key`, `search_text`,
+ * `created_at`, `title` — on both engines; Neo4j stores the first three
+ * under jarvis's (`node_key`, `Data_Bank`, `date_added_to_graph`), mapped in
+ * `neo4j-engine.ts`. `created_at` is when the row was created, epoch ms, the
+ * writer's alone. `title` is filled on every write from the schema's
+ * `title_key` (`composeTitle`), as `search_text` is from its `index`.
  *
  * Types: Strut's own come from the in-code registry; any other type
  * (Document, EvalSet, Concept, …) is resolved from the live `:Schema`
@@ -21,13 +29,13 @@
  *     `is_muted` is left as it is, so a muted node stays hidden. A restore brings back the node,
  *     not its edges: a delete removed those for good (`deletion.ts`).
  *   - `upsert`: jarvis `reprocess` semantics — SET everything except the
- *     preserved identity (`ref_id`, `node_key`, `namespace`,
- *     `date_added_to_graph`). Unlike jarvis's reprocess, `Data_Bank` and
+ *     preserved identity (`ref_id`, `key`, `namespace`, `created_at`).
+ *     Unlike jarvis's reprocess, `search_text` and
  *     the embeddings ARE rebuilt from the new payload, so the resulting
  *     state equals what a fresh create with that payload would produce.
  *
  * `updated_at` is the writer's stamp, as in jarvis (migration 136): epoch ms,
- * equal to `date_added_to_graph` on create, set again on a restore and on an
+ * equal to `created_at` on create, set again on a restore and on an
  * upsert or update that changes an attribute. A caller's value is dropped.
  *
  * Embeddings are computed in-process before the write (no queue, no
@@ -46,6 +54,7 @@ import type { EngineLike, GraphEngine, GraphTx, PreparedNode, SoftDeleteOptions,
 import { sameStored } from "./engine.js";
 import { asEngine } from "./neo4j-engine.js";
 import { SchemaResolver, fromStrut, type NodeSchema } from "./schema-resolver.js";
+import { nodeTitleFor } from "./title.js";
 import { GENERIC_NODE_PROPERTIES, STRUT_DOMAIN_LABEL, embeddingColumn, getStrutSchema, vectorStem } from "./strut-schemas.js";
 
 export type { PreparedNode, WriteMode, WriteOutcome };
@@ -81,8 +90,8 @@ export class GraphValidationError extends Error {
 export interface ValidatedNode {
   schema: NodeSchema;
   /** Attribute values as JS primitives (datetime → epoch seconds), with
-   *  null/undefined and empty strings dropped. Used for node_key and
-   *  Data_Bank composition. */
+   *  null/undefined and empty strings dropped. Used for key and
+   *  search_text composition. */
   values: Record<string, unknown>;
   /** The same values as Neo4j parameter values (ints wrapped) — what a
    *  caller feeding bolt directly needs; the writer hands the engine
@@ -135,20 +144,20 @@ export function validateNode(typeOrSchema: string | NodeSchema, data: Record<str
     params[name] = norm.param;
   }
 
-  // 5. node_key integrity: every token after the type must be present
+  // 5. key integrity: every token after the type must be present
   //    (jarvis: "Attribute referenced in node_key not found in node data")
   //    and must not sanitize to nothing.
-  for (const field of schema.node_key.split("-").slice(1)) {
+  for (const field of schema.key_spec.split("-").slice(1)) {
     const lower = field.toLowerCase();
     const hit = Object.keys(values).find((k) => k.toLowerCase() === lower);
-    if (!hit) throw new GraphValidationError("MISSING_REQUIRED", type, "attribute referenced in node_key is missing", field);
+    if (!hit) throw new GraphValidationError("MISSING_REQUIRED", type, "attribute referenced in the key is missing", field);
     if (keyToken(schema, values[hit]).length === 0) {
-      throw new GraphValidationError("EMPTY_NODE_KEY_TOKEN", type, "node_key attribute sanitizes to an empty token", field);
+      throw new GraphValidationError("EMPTY_NODE_KEY_TOKEN", type, "key attribute sanitizes to an empty token", field);
     }
   }
 
   // Keep the caller's key order (jarvis iterates the request payload, and
-  // the kitchen-sink Data_Bank fallback depends on that order).
+  // the kitchen-sink search_text fallback depends on that order).
   const ordered: Record<string, unknown> = {};
   for (const k of Object.keys(data)) if (k in values) ordered[k] = values[k];
   return { schema, values: ordered, params };
@@ -221,17 +230,17 @@ export function toEpochSeconds(v: unknown): number | null {
   return null;
 }
 
-// ── node_key (§1) ───────────────────────────────────────────────────────────
+// ── key (§1: jarvis's node_key) ─────────────────────────────────────────────
 
 export const MAX_NODE_KEY_LENGTH = 200;
 export const NODE_KEY_HASH_LENGTH = 32;
 
-/** A schema keyed by `ref_id` (`node_key: "ref_id"`): every create is a new
+/** A schema keyed by `ref_id` (`key_spec: "ref_id"`): every create is a new
  *  node, never a match on its attributes, and never a deleted one brought
  *  back — two people may share a name. */
-export const keyedByRef = (schema: Pick<NodeSchema, "node_key">): boolean => schema.node_key === "ref_id";
+export const keyedByRef = (schema: Pick<NodeSchema, "key_spec">): boolean => schema.key_spec === "ref_id";
 
-/** The node_key of a node keyed by `ref_id`: the type token, then the ref_id. */
+/** The key of a node keyed by `ref_id`: the type token, then the ref_id. */
 export function refNodeKey(type: string, ref_id: string): string {
   return `${type.toLowerCase().replace(/[^a-zA-Z0-9\s]/g, "")}-${ref_id}`;
 }
@@ -262,16 +271,16 @@ function keyToken(schema: { exact_key?: boolean }, v: unknown): string {
  * property is an error. If the composed key exceeds 200 chars, the value
  * portion collapses to a 32-hex sha256 prefix.
  */
-export function composeNodeKey(schema: { type: string; node_key: string; exact_key?: boolean }, values: Record<string, unknown>): string {
+export function composeNodeKey(schema: { type: string; key_spec: string; exact_key?: boolean }, values: Record<string, unknown>): string {
   const lower = new Map(Object.entries(values).map(([k, v]) => [k.toLowerCase(), v]));
   const parts: string[] = [];
-  const tokens = schema.node_key.split("-");
+  const tokens = schema.key_spec.split("-");
   tokens.forEach((tok, i) => {
     if (i === 0) {
       parts.push(schema.type.toLowerCase().replace(/[^a-zA-Z0-9\s]/g, ""));
       return;
     }
-    if (!lower.has(tok.toLowerCase())) throw new GraphValidationError("MISSING_REQUIRED", schema.type, "node_key property missing", tok);
+    if (!lower.has(tok.toLowerCase())) throw new GraphValidationError("MISSING_REQUIRED", schema.type, "key property missing", tok);
     parts.push(keyToken(schema, lower.get(tok.toLowerCase())));
   });
   const composed = parts.join("-");
@@ -280,11 +289,13 @@ export function composeNodeKey(schema: { type: string; node_key: string; exact_k
   return `${parts[0]}-${digest}`;
 }
 
-// ── Data_Bank (§2) ──────────────────────────────────────────────────────────
+// ── search_text (§2: jarvis's Data_Bank) ────────────────────────────────────
 
-/** jarvis `DATA_BANK_EXCLUDED_FIELDS` — never part of kitchen-sink search text. */
+/** jarvis `DATA_BANK_EXCLUDED_FIELDS` — never part of kitchen-sink search
+ *  text — plus the shared names of its core keys. */
 export const DATA_BANK_EXCLUDED_FIELDS = new Set([
   "ref_id", "node_key", "date_added_to_graph", "namespace", "Data_Bank", "text_embeddings", "_search_fields_used",
+  "key", "search_text",
   "id", "uuid", "tweet_id", "bounty_id", "episode_id", "video_id", "podcast_id", "clip_id", "message_id", "project_id",
   "org_uuid", "workspace_uuid", "phase_uuid", "owner_id", "pub_key", "pubkey",
   "created", "updated", "date", "timestamp", "created_at", "updated_at",
@@ -335,7 +346,7 @@ export function searchFieldsFor(schema: Pick<NodeSchema, "index">, values: Recor
  *  "\n" — no field-name prefixes. Null when nothing qualifies. The ONE
  *  composition: the writer, the pass (`embeddings.ts`) and jarvis's
  *  `build_search_text` all produce this text, which is why "stored
- *  `Data_Bank` ≠ composed text" is the pass's stale test. */
+ *  search text ≠ composed text" is the pass's stale test. */
 export function buildSearchText(schema: Pick<NodeSchema, "index">, values: Record<string, unknown>): { text: string | null; fields: string[] } {
   const fields = searchFieldsFor(schema, values);
   const parts = fields.map((f) => String(values[f]).trim()).filter(Boolean);
@@ -368,7 +379,7 @@ export interface NodeInput {
 
 export interface NodeWriteResult {
   ref_id: string;
-  node_key: string;
+  key: string;
   /** Canonical type label the node was written under. */
   node_type: string;
   outcome: WriteOutcome;
@@ -378,11 +389,11 @@ export interface NodeWriterOptions {
   embedder?: Embedder;
   /** Shared resolver (one per backend); a private one is created otherwise. */
   resolver?: SchemaResolver;
-  /** The writer's clock for `date_added_to_graph` and `updated_at` (epoch ms). */
+  /** The writer's clock for `created_at` and `updated_at` (epoch ms). */
   now?: () => number;
 }
 
-/** The system stamp: epoch ms, the format of `date_added_to_graph`. Owned by
+/** The system stamp: epoch ms, the format of `created_at`. Owned by
  *  the writer on every node type, declared or not; never a caller's. */
 export const UPDATED_AT = "updated_at";
 
@@ -410,13 +421,13 @@ export interface NodeUpdate {
 
 export interface NodeUpdateResult {
   ref_id: string;
-  node_key: string;
-  /** True when the update changed the node_key (identity attrs edited). */
+  key: string;
+  /** True when the update changed the key (identity attrs edited). */
   rekeyed: boolean;
 }
 
 /** Identity props never touched after create. */
-const PRESERVED = new Set(["ref_id", "node_key", "namespace", "date_added_to_graph"]);
+const PRESERVED = new Set(["ref_id", "key", "namespace", "created_at"]);
 
 export class NodeWriter {
   readonly resolver: SchemaResolver;
@@ -461,13 +472,24 @@ export class NodeWriter {
     const jobs: Array<{ idx: number; column: string; text: string }> = [];
     const prepared: PreparedNode[] = validated.map((v, idx) => {
       const ref_id = randomUUID();
-      const node_key = keyedByRef(v.schema) ? refNodeKey(v.schema.type, ref_id) : composeNodeKey(v.schema, v.values);
+      const key = keyedByRef(v.schema) ? refNodeKey(v.schema.type, ref_id) : composeNodeKey(v.schema, v.values);
       const { text, fields } = buildSearchText(v.schema, v.values);
-      // One clock read for both stamps; `date_added_to_graph` is identity
+      // One clock read for both stamps; `created_at` is identity
       // (PRESERVED), so only a create writes it.
-      const props: Record<string, unknown> = { ...v.values, date_added_to_graph: now, [UPDATED_AT]: now };
+      const props: Record<string, unknown> = { ...v.values, created_at: now, [UPDATED_AT]: now };
+      // A type that declares `title` itself (StrutApp, StrutJob: title_key
+      // `title`) owns it: the caller's value is the title, or there is none.
+      // So does a jarvis type that breaks the title_key rule (Person, whose
+      // `title` is a job title): its stored `title` is left as it is.
+      if (!("title" in v.schema.attributes)) {
+        const title = nodeTitleFor(v.schema, v.values, text);
+        if (title) props["title"] = title;
+        else if (v.schema.requiresTitle) {
+          throw new GraphValidationError("MISSING_REQUIRED", v.schema.type, `an Entity or Concept needs a title: its ${v.schema.title_key} (the type's title_key) is empty and it has no text`, v.schema.title_key);
+        }
+      }
       if (text !== null) {
-        props["Data_Bank"] = text;
+        props["search_text"] = text;
         props["_search_fields_used"] = fields;
         // The no-embed mark: keyword text, never a vector.
         if (v.schema.embed) jobs.push({ idx, column: "text_embeddings", text });
@@ -478,7 +500,7 @@ export class NodeWriter {
         const rendered = renderVectorField(vi, raw);
         if (rendered) jobs.push({ idx, column: embeddingColumn(vi), text: rendered });
       }
-      return { schema: v.schema, node_key, ref_id, namespace, props };
+      return { schema: v.schema, key, ref_id, namespace, props };
     });
     if (this.opts.embedder && jobs.length) {
       const vectors = await this.opts.embedder.embed(jobs.map((j) => j.text));
@@ -528,11 +550,11 @@ export class NodeWriter {
    * Partial update by ref_id (jarvis `POST /v2/nodes/:ref_id` with
    * `node_data` / `properties_to_be_deleted`): the patch is merged over the
    * node's current attributes, the merged payload is re-validated as a
-   * whole, `node_key` is recomposed (an identity edit that collides with
+   * whole, the `key` is recomposed (an identity edit that collides with
    * another node fails with DUPLICATE_KEY, nothing written), and
-   * `Data_Bank` + vectors are rebuilt. Identity stamps (`ref_id`,
-   * `namespace`, `date_added_to_graph`) and the delete markers are untouched.
-   * A type keyed by `ref_id` keeps its node_key. With `tx`, on the caller's
+   * `search_text`, `title` + vectors are rebuilt. Identity stamps (`ref_id`,
+   * `namespace`, `created_at`) and the delete markers are untouched.
+   * A type keyed by `ref_id` keeps its key. With `tx`, on the caller's
    * transaction.
    */
   async update(ref_id: string, patch: NodeUpdate, opts: WriterCallOptions = {}): Promise<NodeUpdateResult> {
@@ -562,20 +584,21 @@ export class NodeWriter {
       for (const k of remove) if (k in set) delete merged[k];
 
       const [p] = await this.prepareMany([{ type: schema.type, data: merged }], { namespace: String(props["namespace"]), tx });
-      const node_key = keyedByRef(schema) ? String(props["node_key"]) : p!.node_key;
-      const rekeyed = node_key !== props["node_key"];
+      const key = keyedByRef(schema) ? String(props["key"]) : p!.key;
+      const rekeyed = key !== props["key"];
       if (rekeyed) {
-        const clash = await this.engine.nodeEngine.refByKey(tx, schema.type, node_key, String(props["namespace"]));
-        if (clash && clash !== ref_id) throw new GraphValidationError("DUPLICATE_KEY", type, `Node already exists in the graph with node_key: ${node_key}`);
+        const clash = await this.engine.nodeEngine.refByKey(tx, schema.type, key, String(props["namespace"]));
+        if (clash && clash !== ref_id) throw new GraphValidationError("DUPLICATE_KEY", type, `Node already exists in the graph with key: ${key}`);
       }
 
       // Everything the fresh payload would carry, minus identity stamps.
-      const setMap: Record<string, unknown> = { node_key };
+      const setMap: Record<string, unknown> = { key };
       for (const [k, val] of Object.entries(p!.props)) if (!PRESERVED.has(k)) setMap[k] = val;
       const drop = new Set<string>(remove);
-      if (!("Data_Bank" in setMap)) for (const k of ["Data_Bank", "_search_fields_used", "text_embeddings"]) drop.add(k);
+      if (!("search_text" in setMap)) for (const k of ["search_text", "_search_fields_used", "text_embeddings"]) drop.add(k);
       else if (!schema.embed) drop.add("text_embeddings"); // a vector an earlier writer left on a no-embed node goes with the update
-      else if (!this.opts.embedder && setMap["Data_Bank"] !== props["Data_Bank"]) drop.add("text_embeddings");
+      else if (!this.opts.embedder && setMap["search_text"] !== props["search_text"]) drop.add("text_embeddings");
+      if (!("title" in setMap) && !("title" in attrs)) drop.add("title");
       for (const vi of schema.vector_index) {
         const col = embeddingColumn(vi);
         if (!(vi in merged)) drop.add(col);
@@ -586,10 +609,10 @@ export class NodeWriter {
       // (e.g. explicitly set to null) go too.
       for (const k of Object.keys(attrs)) if (k in props && !(k in setMap) && !drop.has(k) && !(k in merged)) drop.add(k);
       // `updated_at` moves only when an attribute does, so a resync keeps its
-      // stamp. Data_Bank and the vectors follow from the attributes.
+      // stamp. search_text, title and the vectors follow from the attributes.
       if (!rekeyed && Object.keys(attrs).every((k) => k === UPDATED_AT || sameStored(props[k], p!.props[k]))) delete setMap[UPDATED_AT];
       await this.engine.nodeEngine.update(tx, schema, ref_id, setMap, [...drop]);
-      return { ref_id, node_key, rekeyed };
+      return { ref_id, key, rekeyed };
     };
     return opts.tx ? go(opts.tx) : this.engine.tx(go);
   }

@@ -77,7 +77,7 @@ describe("upgradeClaimSchema (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NE
     await seedStrutDomain(bolt);
     const nodes = new NodeWriter(bolt, { resolver: new SchemaResolver(bolt) });
     const old = await nodes.write({ type: "Claim", data: { name: "n", claim_text: "the sky is blue", speaker_name: "alice" } });
-    assert.equal(old.node_key, "claim-theskyisblue-alice");
+    assert.equal(old.key, "claim-theskyisblue-alice");
 
     // The re-dumped fixture by itself changes nothing on an existing Claim schema…
     const seeded = await seedJarvisOntology(bolt, fixtureWith(schemaOf("Claim")));
@@ -103,7 +103,7 @@ describe("upgradeClaimSchema (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NE
     // A claim nobody "said", keyed on id, is now writable — and lands in Epistemic.
     const fresh = new NodeWriter(bolt, { resolver: new SchemaResolver(bolt) });
     const c = await fresh.write({ type: "Claim", data: { id: "c1", name: "n", claim_text: "the clip contains the quote" } });
-    assert.equal(c.node_key, "claim-c1");
+    assert.equal(c.key, "claim-c1");
 
     // A second boot is a no-op and never deletes new-shape claims.
     const snap = await graphSnapshot(bolt);
@@ -141,7 +141,7 @@ describe("upgradeClaimSchema (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NE
       assert.ok(standalone.ontologySeed!.createdSchemas.includes("Check") && standalone.ontologySeed!.createdSchemas.includes("Evidence"));
       // The whole layer is writable on the upgraded, re-seeded database.
       const c = await standalone.nodes.write({ type: "Claim", data: { id: "c1", name: "n", claim_text: "t" } });
-      const k = await standalone.nodes.write({ type: "Check", data: { id: "k1", name: "k", created_at: 1 } });
+      const k = await standalone.nodes.write({ type: "Check", data: { id: "k1", name: "k"} });
       assert.ok((await standalone.edges.write({ edge: "TESTS", source_ref_id: k.ref_id, target_ref_id: c.ref_id })).created);
     } finally {
       await closeGraphBackends();

@@ -221,7 +221,7 @@ describe("graph/* lib steps (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO
   it("create-triplet: inline side, idempotent edge, registry gate", async () => {
     let out = await run("graph/create-triplet", {
       source_type: "StrutWorkflowVersion",
-      source_data: { name: "harvey-deliver", content_hash: "c-1", created_at: "2026-09-01T00:00:00Z" },
+      source_data: { name: "harvey-deliver", content_hash: "c-1", published_at: "2026-09-01T00:00:00Z" },
       target_ref_id: wfRef,
       edge_type: "version of",
       edge_data: { importance: 0.5 },
@@ -318,7 +318,7 @@ describe("graph/* lib steps (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO
     });
     assert.equal(out.status, "Success", JSON.stringify(out));
     assert.equal(out.created, true);
-    assert.deepEqual([out.type, out.parent, out.node_key], ["Evidence", "Thing", "evidence-description"]);
+    assert.deepEqual([out.type, out.parent, out.key_spec], ["Evidence", "Thing", "evidence-description"], "node_key accepted as key_spec's old name");
     assert.equal(out.attributes.description, "?string", "core-name attribute reads optional; required via node_key");
     assert.equal(out.attributes.content, "?string");
     assert.equal(accessedNodesOf(out), undefined, "a Schema node is not data — no provenance marker");
@@ -333,7 +333,7 @@ describe("graph/* lib steps (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO
     assert.equal(out.created, false);
     assert.deepEqual(out.added_attributes, ["strength"]);
     assert.equal(out.attributes.strength, "?float");
-    assert.equal(out.node_key, "evidence-description");
+    assert.equal(out.key_spec, "evidence-description");
     const edited = await run("graph/edit-node", { ref_id: node.ref_id, node_data: { strength: 0.75, evidence_status: "collected" } });
     assert.equal(edited.status, "Success", JSON.stringify(edited));
     const single = await run("graph/get-ontology-type", { type: "Evidence" });
@@ -428,7 +428,7 @@ describe("graph/* lib steps (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO
     const step = async (step_type: string, description?: string) =>
       (await run("graph/create-triplet", {
         source_type: "StrutWorkflowVersion",
-        source_data: { name: "toc", content_hash: "t-1", created_at: "2026-09-01T00:00:00Z" },
+        source_data: { name: "toc", content_hash: "t-1", published_at: "2026-09-01T00:00:00Z" },
         target_type: "StrutStep",
         target_data: { step_type, ...(description ? { description } : {}) },
         edge_type: "USES_STEP",

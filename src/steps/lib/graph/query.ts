@@ -31,9 +31,9 @@ export default defineStep({
     "Returns `{ columns, rows, rowCount, truncated, elapsedMs }`, one object per row keyed by column; at most `maxRows` rows " +
     "(1–1000, default 100) — `truncated: true` means there were more: page with ORDER BY … SKIP $skip LIMIT n, or aggregate. " +
     "Embedding vectors come back as a placeholder. A refused or failed query fails the step. " +
-    "The layout depends on the backend: on Neo4j a node carries its type as a label plus {ref_id, node_key, namespace} — filter on " +
+    "The layout depends on the backend: on Neo4j a node carries its type as a label plus {ref_id, node_key, namespace} (jarvis's names: node_key, Data_Bank, date_added_to_graph) — filter on " +
     "the namespace ($ns, the workspace's is usually \"default\") — and edge types are UPPER_SNAKE; on a LadybugDB file every node is a " +
-    "row of the one Node table, `MATCH (n:Node {node_type: 'Concept'})`, live when n.deleted_at IS NULL, and each edge type is a rel " +
+    "row of the one Node table, `MATCH (n:Node {node_type: 'Concept'})`, with `key`, `title`, `search_text` and `created_at`, live when n.deleted_at IS NULL, and each edge type is a rel " +
     "table of its name. A query written for one does not run on the other. " +
     "For one node use graph/graph-get, for words or meaning graph/graph-search, for the nodes of one type by their properties graph/find.\n\n" +
     EXAMPLE,

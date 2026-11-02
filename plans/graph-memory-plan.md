@@ -33,6 +33,10 @@ All four PRs currently conflict with main, so each needs a rebase whatever we de
 
 Nothing has been closed or changed yet.
 
+## Rulings
+
+- **Ladybug's ontology is dynamic** (Evan's review on strut#369; merged as strut#386). This replaces the closed registry in ruling 6 of [ladybug-backend.md](ladybug-backend.md), and the 2026-10-26 ruling that apps declaring types build only on Neo4j (lifted in [apps.md](apps.md)). The rest of ruling 6 stands: one `Node` table, every attribute a real column, one full-text index and one vector index.
+
 ## Steps
 
 Peel's current memory keeps working on its own store until step 7, so nothing breaks along the way.
@@ -47,7 +51,8 @@ Core attributes are listed under "Core attributes" below.
 
 - On Ladybug, rename `date_added_to_graph` to `created_at`, `Data_Bank` to `search_text` and `node_key` to `key`. Add the rename to `MIGRATIONS` in `db.ts`, and rebuild the text index, so existing Peel files carry over.
 - Neo4j keeps Jarvis's names for now: its engine maps them at the boundary, so shared code uses the new names.
-- Add `name`, `description`, `aliases` and `created_by` as core node attributes.
+- Add `title` and `created_by` as core node attributes. The writer fills `title` from the schema's `title_key` (see "Core attributes"). `name`, `description` and `aliases` stay ordinary type fields.
+- Make `title_key` and `description_key` core Schema properties, defaulting to `name` and `description`.
 - Add `namespace`, `created_by`, `updated_at` and `deleted_at` to edges.
 - Move Claim-only columns off the shared edge columns, onto the edge types that use them.
 - Add `role`, `temporal`, `cardinality`, `key`, `identifiers` and `domain` to the core schema properties, `schema-crud.ts`, the resolver and the Ladybug Schema columns.
@@ -56,6 +61,7 @@ Core attributes are listed under "Core attributes" below.
 - Seed base types without Jarvis's fixture. The user is an ordinary `Person` marked as the owner, with no separate `Self` type. `Lingo` stays, because dictation reads it.
 - Add a `system` namespace for Schema rows and strut's own records: workflows, steps, apps, runs and jobs. Reads leave it out unless the caller asks for it. Edges from it to real things, such as a run that read a Concept, follow the cross-namespace rule. The assistant and the builder can read it, and jobs can't.
 - Keep the hard-coded skip list in `graph-neighbors.ts` and `walk.ts` for v1. A `walkable` schema setting can replace it later.
+- Add a per-type `embed` setting. Source types (dictation, transcripts, messages) default to keyword search only, with no embedding, so they don't crowd vector results. Entities, Concepts and Claims are embedded.
 
 ### 3. Add temporal edges, `assert` and search rows
 - Give temporal edge tables the two clocks, a sentence, an embedding and sources.
@@ -77,6 +83,7 @@ Core attributes are listed under "Core attributes" below.
 - Replace `managed_by: memory` with one check under every read tool: each reader has a list of namespaces, set by the host.
 - In Peel, everything is written to `private` by default, and public Concepts go in `shared`. The assistant reads both. Jobs read only `shared`, and get anything else through their brief.
 - Keep B's reader rule and raw-query refusal, keyed on the list.
+- Every reader gets its own list, including the two outside Peel's chat: apps with graph grants, and peers reading through `/graph/*`. A reader the host hasn't given a list reads nothing.
 - A person can move something to `shared` by hand.
 
 ### 7. Rebuild the workflows and Peel on top
@@ -87,6 +94,8 @@ This is the first step a Peel user notices.
 - Concepts need no tool or workflow of their own: the assistant writes them with create and edit node.
 - Rebuild home sync from C's code to move knowledge, once we decide what counts.
 - Rewrite D: grants, prompts, journey test, and re-pinned `strut.lock`.
+- Sync imports are bounded and batched, so a pull never holds the workspace write lock long enough to stall run projections or publishes.
+- Sync and export say how they treat an edge that crosses namespaces: it travels only when both ends and its own namespace travel. Today only the read rule exists.
 - Add a small one-off import for current memory: facts linking two nodes become edges, and the rest are reviewed. The new graph otherwise starts fresh, so the assistant doesn't forget everything at the switch.
 
 ### 8. Confirm Concepts and Claims on Peel's path
@@ -118,15 +127,17 @@ Run the real orchestrator and a live model on a fresh graph through a scripted c
 
 ## Core attributes
 
-Every time is epoch milliseconds. Claims keep the seconds format they use today.
+Every time is epoch milliseconds. Claims are stored in ms like every other time and still show seconds through the claims API.
 
-**Every node:** `ref_id`, `node_type`, `namespace`, `key`, `name`, `description`, `aliases`, `search_text`, `text_embeddings`, `created_at`, `created_by`, `updated_at`, `deleted_at`.
+**Every node:** `ref_id`, `node_type`, `namespace`, `key`, `title`, `search_text`, `text_embeddings`, `created_at`, `created_by`, `updated_at`, `deleted_at`.
+
+**Titles come from the schema.** Not every node has a name: a message or a dictation turn is its text. Each Schema row says which field is its title (`title_key`, a field or a small template such as `{first} {last}`) and which is its description (`description_key`). They default to `name` and `description`. The writer fills `title` from `title_key` on every write, as it fills `search_text` from `index`, so reads, search, the UI and `resolve` never look up the schema to show a node. A node with no title field gets a trimmed first line of its text. The writer refuses an Entity or Concept whose title comes out empty. Changing a type's `title_key` needs a one-off recompute. `name`, `description` and `aliases` are ordinary fields that most types declare; `aliases` matters on the types `resolve` matches, such as Person, Organization and Concept.
 
 **Every edge:** `ref_id`, `namespace`, `created_at`, `created_by`, `updated_at`, `deleted_at`.
 
 **Temporal edges also have:** `text`, `sources`, `valid_at`, `invalid_at`, `expired_at`, `superseded_by`, `last_confirmed_at`.
 
-Only the writer sets `ref_id`, `created_at`, `created_by` and `updated_at`. Everything else belongs to its type: `docs` on Concept, `email` on Person. Check how `importance` is used before dropping `weight` and `importance` from edges, since it orders neighbors today.
+Only the writer sets `ref_id`, `title`, `search_text`, `created_at`, `created_by` and `updated_at`. Everything else belongs to its type: `docs` on Concept, `email` on Person. Check how `importance` is used before dropping `weight` and `importance` from edges, since it orders neighbors today.
 
 ## What exists on Ladybug today
 
@@ -146,9 +157,12 @@ Each step is done when its tests pass, on top of the end-to-end criteria above. 
 - Adding a key to a type with clashing nodes is refused and changes nothing.
 - Node and edge writes accept a namespace, and the same key in two namespaces gives two nodes.
 - A fresh file boots with base types and without the Jarvis fixture.
+- An app that declares types (`data.graph`) still builds on Ladybug (`src/apps/graph-types.test.ts`, already passing).
+- A Source type is found by keyword and has no embedding; an Entity type has both.
 - A search or walk leaves out `system` unless asked.
 - An existing Peel file migrates to the new names, keeps its nodes and edges, and still searches.
 - Every node and edge has the core attributes, and a caller can't set the writer-owned ones.
+- Every node has a non-empty `title` from its type's `title_key`, and an Entity or Concept with an empty title is refused.
 - Existing Neo4j graph tests still pass.
 
 ### Step 3: `assert`
@@ -198,6 +212,8 @@ Today the box owns the data and the Mac holds a read copy, which pushes only dic
 - A pull replaces the copy, after a backup, and the hashes match.
 - Search rows and embeddings are rebuilt or carried so that search works straight after a pull.
 - Which node types travel is listed and tested. Run records stay on the box unless we decide otherwise.
+- An import holds the write lock for at most one batch at a time, and a run projected during a pull isn't delayed by more than one batch. The time held is measured in the test.
+- An edge crossing namespaces travels only with both ends, and the test covers one that doesn't.
 
 ## Search rows: prototype result
 
