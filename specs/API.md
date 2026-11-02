@@ -922,8 +922,12 @@ session) decides and sees every proposal, as before. A **person token**
 `resolveScope`, its actor its own subject) may decide a proposal only when its
 actor equals the proposal's `by.actor` (`403 { error }` otherwise; a proposal
 with no `by.actor` is no person token's). `GET /proposals` and `GET
-…/runs/:runId/proposals` list it only its own (what waits on it; others'
-omitted); `GET /proposals/:id` answers it for ANY proposal on this strut —
+…/runs/:runId/proposals` list it only the proposals made in its own threads:
+its actor's, whose `by.conversation` (else `by.session`) is `<actor>` or
+`<actor>/…` — the conversations a person's own strut opens here. A
+proposal shows where it was made: one from the same person's chat on the
+host's key (a Hive conversation, its session the conversation id) is
+answered there and never listed to the person's device. `GET /proposals/:id` answers it for ANY proposal on this strut —
 it already reads every run's log here (a gated call's `step.start` carries
 its input, its `step.end` the proposal's id) and every job's files by id, so
 one rule holds for files, jobs and proposals (plans/proposal-links.md). The
@@ -935,9 +939,11 @@ steps: a call to one is RECORDED (`<dataDir>/proposals/<id>.json`) rather
 than run, and the person's accept runs it in code. The record (`Proposal`,
 `src/proposals.ts`): `{ id, step, input, rationale?, title, status: pending
 | accepted | rejected | applied | failed, createdAt, by: { workflow, runId,
-path, job?, session?, actor?, principal? }, decision?: { action, by?, at,
+path, job?, session?, conversation?, actor?, principal? }, decision?: { action, by?, at,
 input?, reason? }, result?: { output?, error?, cost?, nodes?, at },
-reportedAt? }`. `input` is what the step's schema parsed at proposal time;
+reportedAt? }`. `by.conversation` is the thread the work belongs to: the
+session the root run's launch named, or, for a job's run, the session of
+the turn that started it (`startedBy`). `input` is what the step's schema parsed at proposal time;
 on accept it runs with `decision.input` merged over it. `reportedAt` is
 when the proposing session was told (its next turn's `[proposal-result]`
 lines).

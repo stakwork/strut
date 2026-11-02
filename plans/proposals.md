@@ -4,6 +4,8 @@
 >
 > **Who reads a proposal (2026-11-01):** a person token lists and decides only its own but reads any proposal by id — `plans/proposal-links.md` (stakwork/strut#406) has the rule and why.
 >
+> **Where a proposal shows (ruled 2026-11-02):** only where it was made. A Hive chat's is answered in Hive; a tribe `@jamie`'s on the tribe's post; what a person's own strut (Peel) handed to an org, in Peel. So a person token's LIST is the proposals of its own threads (`by.conversation`, else `by.session`, is `<actor>` or `<actor>/…`), not every proposal its actor made: Peel's org watch had listed a Hive chat's proposals in Peel's agent chat.
+>
 > **Design status (2026-10-19): proposed, scope ruled.** Written after a read of
 > the three repos as they are today — hive `master` @146e2465 and the open
 > stakwork/hive#5551 (`mcp-org-propose-tools`), stakgraph `main` @8ede556e
