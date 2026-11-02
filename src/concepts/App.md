@@ -159,8 +159,9 @@ page may not frame Google Sheets: draw the sheet with SheetView, whose
 ```
 
 `WalkView` draws a walk through the graph as it plays out — a `graph/walk`
-step's hops, or an agent reading a Concept tree with its own graph calls:
-the path as a trail (Law › Corporate / M&A › NDA › …), the candidates each
+step's hops, or an agent reading a Concept tree with its own graph calls,
+drawn the same way: the path as a trail (Law › Corporate / M&A › NDA ›
+…), the candidates each
 hop dropped faded beside the one it chose, the newest hop pulsing. Live and
 replay are one view with RunGraph's controls (a hop back, play/pause, a hop
 on, scrub, speed): joined in flight it shows the hops so far and follows,

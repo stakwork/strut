@@ -2,9 +2,10 @@
 // M&A → NDA → NDA drafting rules → a tool Concept, "Deviation matrix
 // (Google Sheet)", with siblings at every level) walked twice — by a
 // `graph/walk` step, its hop events as runWalk emits them, and by an agent
-// reading the tree itself with graph_graph_get { children }, its tool calls
-// as the agent step logs them (outputs as 1.5 KB previews, the whole results
-// in its transcript).
+// reading the tree itself with graph_graph_get { children } — and, at NDA,
+// the drafting rules and the playbook at once with graph_graph_get_batched —
+// its tool calls as the agent step logs them (outputs as 1.5 KB previews,
+// the whole results in its transcript).
 import type { RunEvent } from "@strut/kit";
 import type { GraphNode } from "../lib/graph";
 
@@ -147,6 +148,12 @@ const getResult = (k: Key) => {
   return { ref_id: n.ref_id, node_type: n.node_type, name: n.name, properties: n.properties, edges: n.edges, children: kids };
 };
 
+/** graph/graph-get-batched, as the step returns it: every node it read. */
+const batchedResult = (keys: Key[]) => {
+  const nodes = keys.map((k) => NODES.get(LAW[k])!).map((n) => ({ ref_id: n.ref_id, node_type: n.node_type, name: n.name, properties: n.properties, edges: n.edges }));
+  return { requested: keys.length, returned: keys.length, truncated: false, omitted_ref_ids: [], nodes };
+};
+
 interface AgentCall {
   tool: string;
   input: Record<string, unknown>;
@@ -161,7 +168,8 @@ const AGENT_CALLS: AgentCall[] = [
   { tool: "graph_graph_get", input: { node_type: "Concept", name: "Law", children: "PARENT_OF" }, result: getResult("law"), nodes: [brief("law")], think: "Start at the root of the Concept tree and find the practice area.", gap: 2 },
   { tool: "graph_graph_get", input: { ref_id: LAW.corp, children: "PARENT_OF" }, result: getResult("corp"), nodes: [brief("corp")], think: "An NDA before a deal is Corporate / M&A.", gap: 3 },
   { tool: "graph_graph_get", input: { ref_id: LAW.nda, children: "PARENT_OF" }, result: getResult("nda"), nodes: [brief("nda")], think: "The NDA page, for its rules.", gap: 2.5 },
-  { tool: "graph_graph_get", input: { ref_id: LAW.rules, children: "PARENT_OF" }, result: getResult("rules"), nodes: [brief("rules")], think: "The drafting rules are the house standard to review against.", gap: 3 },
+  { tool: "graph_graph_get_batched", input: { ref_ids: [LAW.rules, LAW.playbook] }, result: batchedResult(["rules", "playbook"]), nodes: [brief("rules"), brief("playbook")], think: "Read the drafting rules and the negotiation playbook side by side.", gap: 3 },
+  { tool: "graph_graph_get", input: { ref_id: LAW.rules, children: "PARENT_OF" }, result: getResult("rules"), nodes: [brief("rules")], think: "The drafting rules are the house standard to review against; open what is under them.", gap: 2.5 },
   { tool: "graph_graph_get", input: { ref_id: LAW.matrix }, result: getResult("matrix"), nodes: [brief("matrix")], think: "The rules say to record each deviation in the Deviation matrix — a Google Sheet. Read how it is laid out.", gap: 4 },
   { tool: "sheets_create_spreadsheet", input: { title: "Acme NDA — deviation matrix" }, result: { spreadsheetId: "1x9Acme", url: "https://docs.google.com/spreadsheets/d/1x9Acme" }, think: "Make the sheet the page describes.", gap: 3 },
   { tool: "sheets_update_values", input: { spreadsheetId: "1x9Acme", range: "A1:E4" }, result: { updatedRows: 4 }, think: "One row per deviation: residuals, term, non-solicit.", gap: 6 },
