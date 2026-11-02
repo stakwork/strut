@@ -1077,7 +1077,7 @@ the call against that app's manifest, in every host:
 | a graph write (`graph/create-node`, `edit-node`, `create-triplet`, `create-batch-triplet`, `delete-edge`, `edit-edge`, `delete-node`, `move-node`) | refused on a type the manifest's `data.graph.types` does not declare, and on a type strut keeps whatever it declares — the type from the config for a create, the node read first for an edit or delete by `ref_id` (case-blind); every value checked must be a literal, an edge is located by its endpoints |
 | `job/upload`, `job/delete-upload`, `job/get`, `job/read`, `job/list` | only when `grants.steps` names them |
 | `sqlite/*`, `automation/*` | "not available in this strut yet" (work items 3, 7) |
-| `graph/create-schema`, `graph/register-namespace`, `graph/project`, `app/init`, `app/checkout`, `app/build`, `app/publish`, `app/pin`, `app/grant`, `job/dir`, `job/start`, `job/continue` | not a thing a page does (a page runs a workflow in its own job with `run/launch { job }`) |
+| `graph/create-schema`, `graph/register-namespace`, `graph/project`, `app/init`, `app/checkout`, `app/build`, `app/publish`, `app/pin`, `app/grant`, `app/delete`, `app/promote`, `job/dir`, `job/start`, `job/continue` | not a thing a page does (a page runs a workflow in its own job with `run/launch { job }`) |
 | `app/report-error { message, stack?, componentStack? }` | always granted |
 
 A refused call, a missing or foreign token (a run's or a job's file token,

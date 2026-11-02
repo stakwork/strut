@@ -83,6 +83,8 @@ const NOT_A_PAGES: Record<string, string> = {
   "app/build": "an app does not author apps — the builder does, with the editor",
   "app/publish": "an app does not author apps — the builder does, with the editor",
   "app/pin": "which apps are tabs is the person's call — the builder pins one when they ask",
+  "app/delete": "an app does not delete apps — a person's call, made on a proposal they approve",
+  "app/promote": "an app does not promote apps — a person's call, made on a proposal they approve",
   "app/grant": "what an app may reach is a person's call, made on a proposal they approve",
   "job/dir": "a job's directory belongs to a run of the job",
   "job/start": "a page runs a workflow in its own job with run/launch { job } (plans/apps.md §12); job/start is an agent's door",

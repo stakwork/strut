@@ -4274,6 +4274,7 @@ input.package-search { width: 100%; margin-bottom: var(--sp-2); }
   border-color: var(--accent);
   background: rgba(110, 168, 255, 0.12);
 }
+.app-tab-toggle.app-delete:hover { color: var(--danger, #e5484d); border-color: var(--danger, #e5484d); }
 /* The sidebar's marker on a pinned app. */
 .app-tab-badge {
   color: var(--text-muted);

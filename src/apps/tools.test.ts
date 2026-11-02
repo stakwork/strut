@@ -142,7 +142,7 @@ const MANIFESTS: Record<string, string> = {
   ].join("\n"),
   strict: "title: Strict\ngrants:\n  workflows: [score-wf]\n",
   nodes: "title: Nodes\ngrants:\n  steps: [graph/*]\n",
-  paid: "title: Paid\ngrants:\n  steps: [llm, exec, agent, acp/prompt, meta/*, sqlite/*, automation/*, job/start, app/publish, app/pin]\n",
+  paid: "title: Paid\ngrants:\n  steps: [llm, exec, agent, acp/prompt, meta/*, sqlite/*, automation/*, job/start, app/publish, app/pin, app/delete, app/promote]\n",
 };
 const APP_TSX = 'export default function App() { return <p className="p-2">hi</p>; }\n';
 
@@ -269,6 +269,8 @@ describe("step_run — the app door", () => {
     await refused({ type: "job/start", config: {}, app: paid }, /run\/launch \{ job \}.*an agent's door/);
     await refused({ type: "app/publish", config: {}, app: paid }, /does not author apps/);
     await refused({ type: "app/pin", config: { name: "paid" }, app: paid }, /the person's call/);
+    await refused({ type: "app/delete", config: { name: "paid" }, app: paid }, /a person's call/);
+    await refused({ type: "app/promote", config: { name: "paid", follow_latest: true }, app: paid }, /a person's call/);
     // An app may filter a granted workflow's runs by job; it reads no job
     // past its grants. (Launching under its own jobs: the job test below.)
     assert.deepEqual(await ok({ type: "run/list", config: { workflow: "score-wf", job: "j" }, app: identity }), []);

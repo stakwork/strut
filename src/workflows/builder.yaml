@@ -207,6 +207,9 @@ params:
   # meta/edit-step here through its delta.
   approve:
     - package/install
+    # An app removed, or a draft made live: a person's call (the card says what changes).
+    - app/delete
+    - app/promote
   # The agent's system prompt. What is the JOB's — who the agent is,
   # claims, the kinds, the reply — is written here, around ONE line the
   # seed replaces with strut's rules for building (src/builder-seed.ts):

@@ -1624,6 +1624,45 @@ function Shell() {
               }}
             >Tab</button>
           )}
+          {appOpen && appEntry && !appEntry.peer && appEntry.live && (() => {
+            const newest = [...appEntry.versions].sort((a, b) => Number(b.slice(1)) - Number(a.slice(1)))[0];
+            if (!newest || Number(newest.slice(1)) <= Number(appEntry.activeVersion.slice(1))) return null;
+            return (
+              <button
+                type="button"
+                class="app-tab-toggle"
+                title={`${newest} is a draft: the app is held at ${appEntry.live} (${appEntry.activeVersion}). Make ${newest} live for everyone.`}
+                onClick={async () => {
+                  try {
+                    await api.setAppLive(appEntry.name, { version: newest });
+                    await refreshApps();
+                    setAppReload((n) => n + 1);
+                  } catch (err) {
+                    alert(errorMessage(err));
+                  }
+                }}
+              >Make {newest} live</button>
+            );
+          })()}
+          {appOpen && appEntry && !appEntry.peer && (
+            <button
+              type="button"
+              class="app-tab-toggle app-delete"
+              title="Delete this app"
+              onClick={async () => {
+                const msg = `Delete app "${appEntry.name}"? This removes the app, its versions, grants and saved page state, and cannot be undone.` +
+                  (appEntry.pinned ? "\n\nIt is pinned as a tab: the tab goes with it." : "");
+                if (!window.confirm(msg)) return;
+                try {
+                  await api.deleteApp(appEntry.name);
+                  setSelectedApp(null);
+                  await refreshApps();
+                } catch (err) {
+                  alert(errorMessage(err));
+                }
+              }}
+            >Delete</button>
+          )}
           {wf && (
             <CategoryEditor
               key={wf}

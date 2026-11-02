@@ -376,3 +376,8 @@ workspace's apps (a portal's sidebar) shows it as a tab of its own, at its
 live version, until `app/pin { name, pinned: false }`. Pinning also HOLDS
 the app at the version it shows: from then on what you publish is a draft
 until a person makes it live — say so when you pin. Never pin on your own.
+
+To retire an old app once its replacement is published, propose
+`app/delete { name }`; to make a draft live, propose `app/promote { name,
+version }` (or `release: "rN"` to roll back, `follow_latest: true` to lift
+the hold). Both are proposals a person approves; nothing changes until they do.

@@ -25,6 +25,8 @@ import appBuild from "../steps/lib/app/build.js";
 import appPublish from "../steps/lib/app/publish.js";
 import appPin from "../steps/lib/app/pin.js";
 import appGrant from "../steps/lib/app/grant.js";
+import appDelete from "../steps/lib/app/delete.js";
+import appPromote from "../steps/lib/app/promote.js";
 import appLook from "../steps/lib/app/look.js";
 
 /**
@@ -410,6 +412,43 @@ describe("a person's grant of a sealed workflow (src/apps/grants.ts)", () => {
     const out = (await appGrant.run({ name: "chat", workflow: "grader-run" }, ctx({ proposal: { id: "p9", by: { workflow: "orchestrator", runId: "1" } } }))) as Record<string, unknown>;
     assert.deepEqual(out, { app: "chat", workflow: "grader-run", at: new Date(0).toISOString(), by: "dana", proposal: "p9" });
     assert.equal(await apps.grantsOf("chat").then((l) => l.length), 1);
+  });
+
+  it("app/delete and app/promote run only as an accepted proposal", async () => {
+    const { apps, dataDir } = setup();
+    const ctx = (extra: Record<string, unknown> = {}) =>
+      ({ runId: "r", path: "p", emit: async () => {}, services: { apps, dataDir }, actor: "dana", ...extra }) as unknown as StepContext<StrutCapabilities>;
+    const yes = { proposal: { id: "p1", by: { workflow: "builder", runId: "1" } } };
+    const dir = await writeApp(fresh(), app("title: Life\n", "export default function App() { return <p>hi</p>; }\n"));
+    assert.ok((await apps.publish(dir, "life", { surface: "person" })).ok);
+
+    // promote: refused without a proposal; bad input; v1 held by pin, v2 a draft.
+    await assert.rejects(appPromote.run({ name: "life", follow_latest: true }, ctx()), /only as a proposal/);
+    assert.equal(appPromote.input.safeParse({ name: "life" }).success, false);
+    assert.equal(appPromote.input.safeParse({ name: "life", version: "v1", release: "r1" }).success, false);
+    assert.equal(appPromote.input.safeParse({ name: "life", version: "v1" }).success, true);
+    await appPin.run({ name: "life", pinned: true }, ctx());
+    const dir2 = await writeApp(fresh(), app("title: Life\n", "export default function App() { return <p>two</p>; }\n"));
+    assert.equal(((await apps.publish(dir2, "life", { surface: "person" })) as { version: string }).version, "v2");
+    assert.equal((await apps.get("life"))?.active, "v1", "a draft until promoted");
+    const d = await appPromote.describe!(appPromote.input.parse({ name: "life", version: "v2" }), ctx());
+    assert.match(d!.title!, /v2/);
+    assert.ok(d!.fields!.some((f) => f.label === "live now" && /r1/.test(f.value)));
+    assert.deepEqual(await appPromote.run({ name: "life", version: "v2" }, ctx(yes)), { name: "life", live: "r2", active: "v2", release: "r2" });
+    assert.deepEqual(await appPromote.run({ name: "life", release: "r1" }, ctx(yes)), { name: "life", live: "r1", active: "v1" });
+    assert.deepEqual(await appPromote.run({ name: "life", follow_latest: true }, ctx(yes)), { name: "life", live: "latest", active: "v2" });
+
+    // delete
+    await assert.rejects(appDelete.run({ name: "life" }, ctx()), /only as a proposal/);
+    assert.ok(await apps.get("life"));
+    const card = await appDelete.describe!({ name: "life" }, ctx());
+    assert.equal(card!.title, "Delete app life");
+    assert.ok(card!.fields!.every((f) => f.danger));
+    assert.match(card!.fields!.at(-1)!.value, /not reversible/);
+    assert.deepEqual(card!.actions, { accept: "Delete", reject: "Keep" });
+    assert.deepEqual(await appDelete.run({ name: "life" }, ctx(yes)), { name: "life", deleted: true });
+    assert.equal(await apps.get("life"), null);
+    await assert.rejects(appDelete.run({ name: "life" }, ctx(yes)), /App "life" not found/);
   });
 });
 
