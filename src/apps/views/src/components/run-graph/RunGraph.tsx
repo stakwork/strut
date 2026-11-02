@@ -31,6 +31,7 @@ import {
   launchSections,
   layoutRunGraph,
   lineageParents,
+  placeKey,
   nodeText,
   parseQualifiedRef,
   projectWithLaunches,
@@ -54,6 +55,7 @@ import {
   type RunGraphNode,
   type RunGraphNodeBody,
   type RunGraphPeer,
+  type RunGraphPlace,
   type RunGraphTrace,
   type RunGraphTreeNode,
 } from "@strut/kit";
@@ -67,6 +69,38 @@ import { RunGraphReader } from "./reader";
 
 /** Refresh cadence while the run is still going. */
 const LIVE_POLL_MS = 10_000;
+/** A cell draws this many of one parent's children, or of its loose nodes of one type (fewer when it has many parents), and folds the rest into "+N". */
+const FOLD_CAP = 8;
+/** The arc between two nodes on a ring once folded: only a few are named, so they sit closer than names would need. */
+const FOLD_ARC = 36;
+/** Members a click on a "+N" node shows at a time, around it. */
+const REVEAL = 40;
+/** Rings of revealed members around their "+N" node: the first's radius, then the step out and the arc between two. */
+const REVEAL_RING = 46;
+const REVEAL_STEP = 34;
+
+/** The `i`th member revealed around its "+N" node, on rings that fill outward. */
+function revealPoint(i: number): { x: number; y: number } {
+  let ring = 0;
+  let first = 0;
+  for (;;) {
+    const r = REVEAL_RING + ring * REVEAL_STEP;
+    const fits = Math.max(6, Math.floor((2 * Math.PI * r) / REVEAL_STEP));
+    if (i < first + fits) {
+      const a = -Math.PI / 2 + ((i - first) / fits) * 2 * Math.PI;
+      return { x: Math.cos(a) * r, y: Math.sin(a) * r };
+    }
+    first += fits;
+    ring++;
+  }
+}
+
+/** A node as a click hands it on (`onSelectNode`). */
+export interface RunGraphSelection {
+  ref_id: string;
+  node_type: string;
+  name: string;
+}
 /** A run that touched fewer nodes than this opens the runs it launched on its own. */
 const AUTO_OPEN_BELOW = 10;
 
@@ -450,7 +484,7 @@ function NodeDetail({
 function CurrentCall({ call, index, total }: { call: RunGraphCall; index: number; total: number }) {
   const query = Object.entries(call.query);
   return (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs" data-testid="run-graph-current-call">
+    <div className="flex items-center gap-x-3 overflow-hidden whitespace-nowrap text-xs" data-testid="run-graph-current-call">
       <span className="tabular-nums text-muted-foreground">
         Call {index + 1} of {total}
       </span>
@@ -498,6 +532,10 @@ export function RunGraph({
   live = false,
   fill = false,
   scope: scopeProp = null,
+  highlight: highlightProp,
+  selected: selectedProp,
+  onSelectNode,
+  details = true,
 }: {
   workflow: string;
   runId: string;
@@ -512,6 +550,14 @@ export function RunGraph({
    * reader can climb out of it and into another; a change to it is followed.
    */
   scope?: string | null;
+  /** Ref_ids to stand out (a lens's): the rest dims where it is. A change never moves anything. */
+  highlight?: string[];
+  /** The selected node, held by the app (a lens's panel); omit to let the graph hold it. */
+  selected?: string | null;
+  /** A node was clicked: a lens's panel can answer it, and select a node itself through `selected`. */
+  onSelectNode?: (node: RunGraphSelection) => void;
+  /** Open the selected node's own panel over the graph (default true); false when the app has a panel of its own. */
+  details?: boolean;
 }) {
   const [trace, setTrace] = useState<RunGraphTrace | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -520,7 +566,9 @@ export function RunGraph({
   /** Index of the current call; null = the whole run. */
   const [step, setStep] = useState<number | null>(null);
   const [playing, setPlaying] = useState(false);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [ownSelected, setOwnSelected] = useState<string | null>(null);
+  const selectedId = selectedProp !== undefined ? selectedProp : ownSelected;
+  const highlight = useMemo(() => new Set(highlightProp ?? []), [highlightProp]);
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   /** The branch shown, as its path under the run; null = the whole run. */
   const [scope, setScope] = useState<string | null>(scopeProp);
@@ -655,6 +703,7 @@ export function RunGraph({
     return runGraphLinks(graph.edges, runGraphHops(calls)).filter((l) => ids.has(l.source) && ids.has(l.target));
   }, [graphNodes, graph.edges, calls]);
   const hopCount = useMemo(() => links.filter((l) => l.hops.length > 0).length, [links]);
+  const typeOf = useMemo(() => new Map(drawn.map((n) => [n.ref_id, n.node_type])), [drawn]);
   const layout = useMemo(
     () =>
       layoutRunGraph(
@@ -663,11 +712,79 @@ export function RunGraph({
         links,
         parents,
         sections,
+        1.6,
+        { cap: FOLD_CAP, typeOf, arc: FOLD_ARC },
       ),
-    [calls, graphNodes, links, parents, sections],
+    [calls, graphNodes, links, parents, sections, typeOf],
+  );
+
+  // A "+N" node's members, shown around it a click at a time: laid over the
+  // layout, never into it, so nothing else moves.
+  const [revealed, setRevealed] = useState<ReadonlyMap<string, number>>(new Map());
+  const shownLayout = useMemo(() => {
+    if (revealed.size === 0) return layout;
+    const places = new Map<string, RunGraphPlace>(layout.places);
+    for (const [id, count] of revealed) {
+      const cluster = layout.clusters.get(id);
+      const at = cluster && layout.places.get(placeKey(cluster.cell, id));
+      if (!cluster || !at) continue;
+      cluster.members.slice(0, count).forEach((m, i) => {
+        const p = revealPoint(i);
+        places.set(placeKey(cluster.cell, m.id), { id: m.id, cell: cluster.cell, since: m.since, x: at.x + p.x, y: at.y + p.y });
+      });
+    }
+    return { ...layout, places };
+  }, [layout, revealed]);
+  const canvasNodes = useMemo<RunGraphCanvasNode[]>(
+    () => [
+      ...graphNodes,
+      ...[...layout.clusters.values()].map((c) => {
+        const open = Math.min(revealed.get(c.id) ?? 0, c.members.length);
+        const hidden = c.members.slice(open);
+        return { id: c.id, name: "", type: c.type ?? "", cluster: { hidden: hidden.length, highlighted: hidden.filter((m) => highlight.has(m.id)).length, open: open > 0 } };
+      }),
+    ],
+    [graphNodes, layout.clusters, revealed, highlight],
+  );
+  // A "+N" node under its parent is linked to it like a child.
+  const canvasLinks = useMemo<RunGraphLink[]>(
+    () => [...links, ...[...layout.clusters.values()].flatMap((c) => (c.parent ? [{ source: c.parent, target: c.id, edgeType: "PARENT_OF", hops: [] }] : []))],
+    [links, layout.clusters],
   );
 
   const frame = useMemo(() => replayFrame(calls, current ?? calls.length), [calls, current]);
+  /** The step's nodes, and the "+N" nodes that hold some of them. */
+  const activeIds = useMemo(() => {
+    if (frame.active.size === 0 || layout.clusters.size === 0) return frame.active;
+    const ids = new Set(frame.active);
+    for (const c of layout.clusters.values()) if (c.members.some((m) => frame.active.has(m.id))) ids.add(c.id);
+    return ids;
+  }, [frame.active, layout.clusters]);
+
+  /** Select a node (or none), telling the app; a click on a "+N" node shows more of it, or folds it back. */
+  const select = useCallback(
+    (id: string | null) => {
+      if (selectedProp === undefined) setOwnSelected(id);
+      if (id && onSelectNode) {
+        const n = nodeById.get(id);
+        onSelectNode({ ref_id: id, node_type: n?.node_type ?? "", name: n?.name ?? id });
+      }
+    },
+    [selectedProp, onSelectNode, nodeById],
+  );
+  const clickNode = useCallback(
+    (id: string) => {
+      const cluster = layout.clusters.get(id);
+      if (!cluster) return select(id);
+      setRevealed((prev) => {
+        const next = new Map(prev);
+        const now = next.get(id) ?? 0;
+        next.set(id, now >= cluster.members.length ? 0 : Math.min(cluster.members.length, now + REVEAL));
+        return next;
+      });
+    },
+    [layout.clusters, select],
+  );
 
   // The current call's branch is always open.
   useEffect(() => {
@@ -796,7 +913,7 @@ export function RunGraph({
   const focus = useCallback((next: string | null) => {
     setPlaying(false);
     setStep(null);
-    setSelectedId(null);
+    setOwnSelected(null);
     setExpanded(new Set());
     setScope(next);
   }, []);
@@ -887,6 +1004,8 @@ export function RunGraph({
             ))}
           </div>
         </div>
+        {/* One fixed box for the step's call or the run's summary: scrubbing never moves the graph. */}
+        <div className="h-8 overflow-hidden" data-testid="run-graph-caption">
         {current !== null ? (
           <CurrentCall call={calls[current]} index={current} total={calls.length} />
         ) : scope !== null && inScope.length === 0 ? (
@@ -894,7 +1013,7 @@ export function RunGraph({
             Nothing under {scopeLabel} touched the graph.
           </p>
         ) : (
-          <p className="text-xs text-muted-foreground" data-testid="run-graph-summary">
+          <p className="line-clamp-2 text-xs text-muted-foreground" data-testid="run-graph-summary">
             {calls.length} calls{scope !== null ? ` under ${scopeLabel}` : ""} read or wrote {touched.length} nodes
             {live && !settled ? " so far" : ""}
             {lineage.length > 0
@@ -904,6 +1023,7 @@ export function RunGraph({
             {trace.truncated ? " The run touched more than are shown." : ""}
           </p>
         )}
+        </div>
         {(trace.nodesRead === false || trace.edgesRead === false || trace.lineageRead === false) && (
           <p className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground" data-testid="run-graph-unread">
             {trace.nodesRead === false
@@ -965,19 +1085,20 @@ export function RunGraph({
         <div className="relative min-w-0 overflow-hidden" data-testid="run-graph-canvas">
           {graphNodes.length > 0 && (
             <RunGraphCanvas
-              layout={layout}
-              nodes={graphNodes}
-              links={links}
+              layout={shownLayout}
+              nodes={canvasNodes}
+              links={canvasLinks}
               colorMap={colorMap}
-              activeIds={frame.active}
+              activeIds={activeIds}
               selectedId={selectedId}
+              highlight={highlight}
               step={current}
               insetRight={LEGEND_INSET}
-              onNodeClick={setSelectedId}
+              onNodeClick={clickNode}
               onFocus={focusLane}
             />
           )}
-          {selected && (
+          {selected && details && (
             <NodeDetail
               node={selected}
               color={colorMap[selected.node_type] ?? "#6b7280"}
@@ -994,8 +1115,8 @@ export function RunGraph({
               body={bodies[selected.ref_id]}
               onRead={() => void readNode(selected.ref_id)}
               onPick={pick}
-              onSelect={setSelectedId}
-              onClose={() => setSelectedId(null)}
+              onSelect={select}
+              onClose={() => select(null)}
             />
           )}
           <ul

@@ -117,10 +117,17 @@ import { LaunchForm, RunList, RunTimeline, RunGraph } from "strut/views";
 <LaunchForm workflow="score" />            // the input: block, deduped launch, last run
 <RunList workflow="score" onSelect={(r) => setRunId(r.runId)} />
 <RunTimeline workflow="score" runId={runId} />   // status, cost, a row per step (`tree split`: every level, each iteration)
-<RunGraph workflow="score" runId={runId} live />  // the graph calls, replayable
+<RunGraph workflow="score" runId={runId} live />  // the graph calls, replayable; a run screen's master view (below)
 <AgentTrace workflow="score" runId={runId} live /> // the run's agents as a cascade
 <WalkView workflow="score" runId={runId} live />   // a walk through the graph, hop by hop (`replay`: from its start)
 ```
+
+`RunGraph` can be a run screen's one master view, with lenses beside it: a
+lens passes `highlight` (the ref_ids it is about: the rest dims where it
+is, nothing moves), and its panel answers a click through `onSelectNode`
+and selects a node itself through `selected`; `details={false}` leaves the
+node's page to that panel. A run that touched thousands of nodes draws a
+few dozen a stage, the rest folded into "+N" nodes a click opens.
 
 `WorkProducts` is what a run MADE for a person — memos, sheets, redlines,
 timelines — as a shelf that fills while the run goes: every `artifacts`

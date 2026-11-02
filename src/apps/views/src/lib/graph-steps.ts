@@ -54,14 +54,27 @@ export function readableProperties(p: Record<string, unknown> | undefined): Reco
   return out;
 }
 
-/** Nodes by ref_id, in batches of 50; one that is gone comes back as `{ ref_id, error }`. */
+/** Batches of `getNodes` in flight at once: a run of thousands of nodes reads in seconds, not a minute. */
+const BATCHES_AT_ONCE = 4;
+
+/** Nodes by ref_id, in batches of 50, a few at a time; one that is gone comes back as `{ ref_id, error }`. */
 export async function getNodes(client: StrutClient, refIds: string[]): Promise<Map<string, GraphNode | { ref_id: string; error: string }>> {
   const out = new Map<string, GraphNode | { ref_id: string; error: string }>();
   const unique = [...new Set(refIds)];
-  for (let i = 0; i < unique.length; i += BATCH_MAX) {
-    const r = answer<{ nodes: Array<GraphNode | { ref_id: string; error: string }> }>(GET_BATCHED, await client.run(GET_BATCHED, { ref_ids: unique.slice(i, i + BATCH_MAX) }));
-    for (const n of r.nodes ?? []) out.set(n.ref_id, "error" in n ? n : { ...n, properties: readableProperties(n.properties) });
-  }
+  const batches: string[][] = [];
+  for (let i = 0; i < unique.length; i += BATCH_MAX) batches.push(unique.slice(i, i + BATCH_MAX));
+  const answers: Array<Array<GraphNode | { ref_id: string; error: string }>> = new Array(batches.length);
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(BATCHES_AT_ONCE, batches.length) }, async () => {
+      while (next < batches.length) {
+        const i = next++;
+        answers[i] = answer<{ nodes: Array<GraphNode | { ref_id: string; error: string }> }>(GET_BATCHED, await client.run(GET_BATCHED, { ref_ids: batches[i]! })).nodes ?? [];
+      }
+    }),
+  );
+  // In the order asked, whatever order the answers came in.
+  for (const nodes of answers) for (const n of nodes) out.set(n.ref_id, "error" in n ? n : { ...n, properties: readableProperties(n.properties) });
   return out;
 }
 
