@@ -15,6 +15,7 @@ import { nameInsidePackage, stepInPackage } from "../../package-lookup.js";
 import { connectMcpTools } from "../../mcp-servers.js";
 import { withinReach } from "../../reach.js";
 import { outputTooBig } from "../../output-cap.js";
+import { liftedArtifacts } from "../../artifact-refs.js";
 import { capToolOutput } from "../../chat-store.js";
 import { gatedByDefault, grantsTool, mcpGrantName, MCP_GRANT_PREFIX, resolveRegistration, type McpRegistry } from "../../mcp-registry.js";
 import { isSystemWorkflow, SYSTEM_WRITER } from "../../system-workflows.js";
@@ -891,7 +892,9 @@ function toJsonValue(value: unknown): Extract<ToolResultOutput, { type: "json" }
  * provenance marker: a result marked with `withAccessedNodes` gets its node
  * refs lifted verbatim onto the `step.end` event as `nodes`, the one part of
  * tool output that must survive into the log untruncated because it is data
- * for the graph projector (`ACCESSED` edges), not a preview for humans.
+ * for the graph projector (`ACCESSED` edges), not a preview for humans. A
+ * result that declares `artifacts` gets them lifted the same way
+ * (`liftedArtifacts`), so a page sees a work product appear mid-turn.
  */
 /** `maskSecretValues` lives in shell.ts (shared with the exec step); re-exported
  *  here because it is part of the agent step's tested surface. */
@@ -1064,6 +1067,9 @@ export function wrapToolsWithEmit(tools: Record<string, any>, ctx: StepContext |
         if (tooBig) throw tooBig;
         const nodes = accessedNodesOf(out);
         const messages = messagesOf(out); // a sub-agent's session
+        // Work products the tool declared (plans/work-products.md §3): data
+        // for a page following the run, which reads only the preview below.
+        const artifacts = liftedArtifacts(out);
         await emit({
           type: "step.end",
           path,
@@ -1073,6 +1079,7 @@ export function wrapToolsWithEmit(tools: Record<string, any>, ctx: StepContext |
           ...idField,
           ...(nodes ? { nodes } : {}),
           ...(messages ? { messages } : {}),
+          ...(artifacts ? { artifacts } : {}),
           // A sub-agent's spend (or a waited-on run's): the output above is
           // a string cut at 1500 chars, so it rides as fields of its own.
           ...takeUsage(out),

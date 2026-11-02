@@ -21,6 +21,7 @@ export { LaunchForm, type LaunchFormProps, type InputField } from "./components/
 export { ArtifactView, type ArtifactViewProps, type RunFile } from "./components/ArtifactView";
 export { DocumentView, SafeHtml, type DocumentViewProps, type DocumentKind, type SafeHtmlProps } from "./components/DocumentView";
 export { RunHealth, type RunHealthProps } from "./components/RunHealth";
+export { WorkProducts, type WorkProductsProps, type WorkProductRenderer, type WorkProductRendererProps } from "./components/WorkProducts";
 export { NodeCard, type NodeCardProps } from "./components/NodeCard";
 export { SheetView, SHEETS_STEP, SHEET_INTERVAL_MS, type SheetViewProps } from "./components/SheetView";
 export { NodeSearch, type NodeSearchProps } from "./components/NodeSearch";

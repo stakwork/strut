@@ -7,7 +7,7 @@ import { StrutProvider, useStrutClient, useStrutHost } from "@strut/kit";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import {
-  AgentTrace, ArtifactView, DocumentView, LaunchForm, RunHealth, NodeCard, NodeGraph, NodeSearch, RunGraph, RunList, RunStatus, RunTimeline, SheetView, SHEETS_STEP, Transcript,
+  AgentTrace, ArtifactView, DocumentView, LaunchForm, RunHealth, NodeCard, NodeGraph, NodeSearch, RunGraph, RunList, RunStatus, RunTimeline, SheetView, SHEETS_STEP, Transcript, WorkProducts,
 } from "./index";
 import { createFixtureClient } from "./fixtures/client";
 import { TRANSCRIPT_MARKS } from "./fixtures/content";
@@ -15,6 +15,7 @@ import { EXPLORE_PATH, REF, RUN_ID, WORKFLOW } from "./fixtures/runs";
 import { REPORT_RUN_ID } from "./fixtures/report";
 import { TRACE_LIVE_RUN_ID, TRACE_RUN_ID } from "./fixtures/trace";
 import { COVENANT_RANGE, COVENANT_SHEET, COVENANT_SOURCES, DEVIATIONS_CSV, NDA_RANGE, NDA_SHEET, NDA_SOURCES, NDA_WORKFLOW } from "./fixtures/sheets";
+import { MATTER_LIVE_RUN_ID, MATTER_RUN_ID, MATTER_WORKFLOW } from "./fixtures/matter";
 
 interface Entry {
   name: string;
@@ -107,6 +108,25 @@ function SheetDemo() {
   );
 }
 
+/** A legal matter's products: the finished run, or the run replayed as if in flight — they appear one by one. */
+function WorkProductsDemo() {
+  const [live, setLive] = useState(true);
+  const [node, setNode] = useState<string | null>(null);
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex gap-1">
+        {[true, false].map((l) => (
+          <button key={String(l)} type="button" onClick={() => setLive(l)} className={cn("rounded-md border px-2.5 py-1 text-xs", live === l ? "bg-muted font-medium" : "text-muted-foreground hover:bg-muted/60")}>
+            {l ? "Live replay" : "Finished run"}
+          </button>
+        ))}
+      </div>
+      <WorkProducts key={String(live)} workflow={MATTER_WORKFLOW} runId={live ? MATTER_LIVE_RUN_ID : MATTER_RUN_ID} intervalMs={1500} onOpenNode={setNode} />
+      {node && <NodeCard refId={node} className="max-w-md" />}
+    </div>
+  );
+}
+
 const ENTRIES: Entry[] = [
   {
     name: "RunTimeline",
@@ -140,6 +160,13 @@ const ENTRIES: Entry[] = [
     grants: "grants.steps: sheets/get-values (a Google sheet), graph/graph-get-batched (sources) · grants.workflows: the run's workflow (run/get while it writes, run/files for a file)",
     usage: `<SheetView spreadsheet={id} range="Matrix!A1:H40" workflow="nda-review" runId={runId} sources={{ "Non-solicit": [conceptRef], C4: [passageRef] }} />`,
     demo: () => <SheetDemo />,
+  },
+  {
+    name: "WorkProducts",
+    what: "What a run made for a person — memos, sheets, redlines, timelines — as a shelf that fills while the run goes: each step's declared artifacts, the run's own output winning. A card says which step made it and how many Concepts it draws on; it opens in the viewer its kind reads in (a .docx or redline through its HTML render, media, a dated list, a sheet or table in SheetView — here the deviation matrix, filling in while the run writes it), and the nodes it was made from are listed under it. `renderers` plugs a page's own viewer in per kind.",
+    grants: "grants.workflows: the run's workflow (run/events, run/get, run/files) · grants.steps: graph/graph-get-batched (to name what a product draws on), sheets/get-values (a Google sheet)",
+    usage: `<WorkProducts workflow="matter" runId={runId} onOpenNode={(ref) => …} renderers={{ timeline: ({ product }) => <MyTimeline … /> }} />`,
+    demo: () => <WorkProductsDemo />,
   },
   {
     name: "RunGraph",

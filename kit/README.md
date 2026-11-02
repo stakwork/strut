@@ -79,7 +79,10 @@ the `sideEffects` and `type` rules, and that the recorded versions are
   what was appended, `run/events { skip }`, paged past its 5 000-event cap,
   every `intervalMs`), `useTranscript` (`run/transcript`: an agent's session
   by step path — the log's `transcript` link, which a page cannot follow) and
-  `useTranscripts` (several, one call at a time, kept), `useLaunch(workflow, { job? })` →
+  `useTranscripts` (several, one call at a time, kept), `useWorkProducts(workflow,
+  runId, { live })` → `{ products, events }` (the run's work products folded
+  from `run/events` — `foldWorkProducts` — appearing as steps declare them,
+  plans/work-products.md), `useLaunch(workflow, { job? })` →
   `{ launch(input, params?, key?, files?), pending }` — a MUTATION with no
   query form, so nothing launches on mount or on a poll (§5.1); `job` is one
   of the app's jobs, `files` the run's attachments — `useUpload(job)` →
@@ -128,7 +131,10 @@ the `sideEffects` and `type` rules, and that the recorded versions are
   `strut/views`' AgentTrace draws; ported from hive's Traces view),
   `transcript.ts` (`transcriptToEntries`), `accessed-nodes.ts`
   (`foldAccessedNodes`), `artifact-view.ts` (`artifactKind`,
-  `parseWalkthrough`, …), and `run-graph/` — the run graph's model ported
+  `parseWalkthrough`, …), `work-products.ts` (`foldWorkProducts`: the
+  artifacts a run's steps and output declared, latest per id, the output
+  winning; `productView`, `isGoogleSheet`, `parseTimeline`, `sourcesOf`), and
+  `run-graph/` — the run graph's model ported
   from hive with its tests (the projection of a run's log into graph calls,
   replay, lineage, walk, peer refs, node text; `layout.ts` needs d3, so it is
   exported from `@strut/kit` and not from `@strut/kit/folds`).

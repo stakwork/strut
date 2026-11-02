@@ -499,6 +499,12 @@ export interface RunEvent {
    *  (`step.end.messages`), where the full result lives. Absent outside a
    *  tool call. */
   toolCallId?: string;
+  /** On a tool call's `step.end`: the `artifacts` its result declared
+   *  (`liftedArtifacts`, src/artifact-refs.ts) — the log keeps only a
+   *  preview of a tool's result, and a page following the run reads its
+   *  work products from here (plans/work-products.md §3). A workflow
+   *  step's are in its `output`. */
+  artifacts?: Record<string, unknown>[];
   /** On the `step.end` of a step that called a model — an `agent`, an
    *  `llm`, a sub-agent's tool call — or waited on a run that did
    *  (`meta/run-workflow`): what it spent, lifted from the output's

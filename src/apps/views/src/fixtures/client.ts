@@ -8,6 +8,7 @@ import { CHILD_EVENTS, CHILD_RUN_ID, EXPLORE_PATH, RUNS, RUN_EVENTS, RUN_ID, WOR
 import { REPORT_EVENTS, REPORT_RUN_ID } from "./report";
 import { TRACE_EVENTS, TRACE_LIVE_RUN_ID, TRACE_RUN_ID, traceTranscript } from "./trace";
 import { COVENANT_SHEET, NDA_FRAMES, NDA_SHEET, NDA_WORKFLOW, SHEET_FILES, covenantSheet, ndaFrame, ndaPlaybook, ndaRun } from "./sheets";
+import { MATTER_EVENTS, MATTER_FILES, MATTER_LIVE_EVENTS, MATTER_LIVE_RUN_ID, MATTER_RUN_ID, MATTER_SHEET_DONE, MATTER_WORKFLOW } from "./matter";
 
 const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -29,16 +30,33 @@ export function createFixtureClient(): StrutClient {
   const sheet = (c: Record<string, unknown>) => {
     const range = String(c["range"] ?? "");
     if (c["spreadsheet_id"] === COVENANT_SHEET) return covenantSheet(range);
+    // The finished matter's matrix: as the review left it.
+    if (c["spreadsheet_id"] === MATTER_SHEET_DONE) return /^'?Playbook'?(!|$)/.test(range) ? ndaPlaybook() : ndaFrame(NDA_FRAMES - 1);
     if (c["spreadsheet_id"] !== NDA_SHEET) return `sheets_get_values failed: HTTP 404: Requested entity was not found.`;
     if (/^'?Playbook'?(!|$)/.test(range)) return ndaPlaybook();
     return ndaFrame(Math.min(NDA_FRAMES - 1, nda.reads++));
   };
+  // The live matter: one step's end more at each read of its log, so its
+  // products come one at a time; its matrix is the NDA sheet, filling in a
+  // provision a read, and the run is in flight until both are done.
+  let matterRevealed = 0;
+  const matterLog = (skip: number) => {
+    if (skip === 0) {
+      matterRevealed = 3;
+      Object.assign(nda, { runId: "", reads: 0 });
+    }
+    matterRevealed = Math.min(MATTER_LIVE_EVENTS.length, matterRevealed + 2);
+    return MATTER_LIVE_EVENTS.slice(0, matterRevealed);
+  };
+  const matterRun = (runId: string, done: boolean) => ({ runId, workflow: MATTER_WORKFLOW, status: done ? "success" : "running", startedAt: new Date(Number(runId)).toISOString(), actor: "ada-7f3c" });
   const answer = (type: string, c: Record<string, unknown>): unknown => {
     switch (type) {
       case "run/list":
         return RUNS.filter((r) => r.workflow === c["workflow"]).slice(0, Number(c["limit"] ?? 50));
       case "run/get":
         if (c["runId"] === nda.runId) return ndaRun(nda.runId, ndaDone());
+        if (c["runId"] === MATTER_RUN_ID) return matterRun(MATTER_RUN_ID, true);
+        if (c["runId"] === MATTER_LIVE_RUN_ID) return matterRun(MATTER_LIVE_RUN_ID, matterRevealed >= MATTER_LIVE_EVENTS.length && ndaDone());
         return RUNS.find((r) => r.runId === c["runId"]) ?? null;
       case "run/events": {
         const skip = Number(c["skip"] ?? 0);
@@ -47,6 +65,10 @@ export function createFixtureClient(): StrutClient {
         if (c["runId"] === REPORT_RUN_ID) return REPORT_EVENTS.slice(skip);
         if (c["runId"] === TRACE_RUN_ID) return TRACE_EVENTS.slice(skip);
         if (c["runId"] === TRACE_LIVE_RUN_ID) return liveLog(skip).slice(skip);
+        if (c["runId"] === MATTER_RUN_ID) return MATTER_EVENTS.slice(skip);
+        if (c["runId"] === MATTER_LIVE_RUN_ID) return matterLog(skip).slice(skip);
+        if (c["runId"] === MATTER_RUN_ID) return MATTER_EVENTS.slice(skip);
+        if (c["runId"] === MATTER_LIVE_RUN_ID) return matterLog(skip).slice(skip);
         throw new Error(`no run ${String(c["runId"])}`);
       }
       case "run/workflow":
@@ -63,6 +85,7 @@ export function createFixtureClient(): StrutClient {
       case "run/cancel":
         return { ok: true };
       case "run/files":
+        if (c["runId"] === MATTER_RUN_ID || c["runId"] === MATTER_LIVE_RUN_ID) return MATTER_FILES[String(c["path"])] ?? null;
         return FILES[String(c["path"])] ?? SHEET_FILES[String(c["path"])] ?? null;
       case "run/transcript": {
         if (c["runId"] === RUN_ID && c["path"] === EXPLORE_PATH) return { path: EXPLORE_PATH, messages: TRANSCRIPT };

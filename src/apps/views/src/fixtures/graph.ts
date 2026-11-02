@@ -5,6 +5,7 @@ import type { GraphHit, GraphNeighbor, GraphNode } from "../lib/graph";
 import { REF } from "./runs";
 import { FINDING } from "./trace";
 import { LEGAL_EDGES, LEGAL_NODES } from "./sheets";
+import { MATTER_EDGES, MATTER_NODES } from "./matter";
 
 const node = (ref_id: string, node_type: string, name: string, properties: Record<string, unknown>): Omit<GraphNode, "edges"> => ({
   ref_id, node_type, name, properties: { name, namespace: "default", ...properties },
@@ -24,6 +25,8 @@ const NODES: Array<Omit<GraphNode, "edges">> = [
   node(FINDING.bp, "Finding", "Intensive BP control cut incident AF by ~25%", { description: "SPRINT-AF Table 2: 88/4678 vs 118/4683; RRR 25.3% (95% CI 3–43%).", source_ref: "sprint-af-trial.txt:214" }),
   // What SheetView's cells cite (fixtures/sheets.ts).
   ...LEGAL_NODES,
+  // The legal tree above them, for the matter WorkProducts draws (fixtures/matter.ts).
+  ...MATTER_NODES,
 ];
 
 const EDGES: Array<{ source: string; target: string; edge_type: string }> = [
@@ -38,6 +41,7 @@ const EDGES: Array<{ source: string; target: string; edge_type: string }> = [
   { source: FINDING.dose, target: REF.arrhythmia, edge_type: "ABOUT" },
   { source: FINDING.bp, target: REF.arrhythmia, edge_type: "ABOUT" },
   ...LEGAL_EDGES,
+  ...MATTER_EDGES,
 ];
 
 function edgesOf(ref: string): Record<string, number> {

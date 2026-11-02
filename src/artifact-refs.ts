@@ -20,7 +20,37 @@
  * `kind` is the HOST's renderer vocabulary (hive's canvas chat:
  * `markdown | html | image | video | audio | pdf | url | diff |
  * pull_request | code | log | json`), passed through unchecked; the
- * inference below only picks a name from that list.
+ * inference below only picks a name from that list, or one of the WORK
+ * PRODUCT kinds (plans/work-products.md) — what a person's work is made of:
+ *
+ *   `sheet`    a spreadsheet: `url` the live one (a Google Sheet), `render`
+ *              a table file a page draws (CSV or table JSON); or `path`, the
+ *              table file alone
+ *   `table`    `path` a CSV / TSV / .xlsx / table JSON file, or `content`
+ *              `{ columns: string[], rows: unknown[][] }` (or an array of
+ *              row objects)
+ *   `timeline` `path` a JSON file or `content`: `{ entries: [{ date, title,
+ *              detail?, sources? }] }` (or the bare array); `date` ISO when
+ *              it can be, `sources` the entry's ref_ids
+ *   `docx`     `path` the .docx, `render` its HTML
+ *   `redline`  `path` the tracked-changes .docx, `render` its HTML with the
+ *              changes as `<ins>` / `<del>`
+ *
+ * A host that does not know a kind shows the link (`url`, or the file a
+ * `path` resolved to): so a product of these kinds carries a `path` or a
+ * `url` beside any `content`. Hive does exactly that (`readerKind`: an
+ * unknown kind is a `url` card), and drops an entry that has only
+ * `content` of a kind it does not know.
+ *
+ * PROVENANCE: `from` is the graph `ref_id`s the product was made from — the
+ * Concepts whose rules it follows, the excerpts it quotes — and the
+ * projector writes one `StrutArtifact -[:DERIVED_FROM]->` edge per ref the
+ * graph holds. Finer than the product, `content.sources` (or the file's
+ * own `sources`) maps an item to its refs: a sheet's or table's cell by its
+ * address (`C4`, `'Deal Terms'!C4`) or a row by its key (its first
+ * column's text, `"Non-solicit"`) — what SheetView marks — a timeline's entry
+ * by its index (or the entry's own `sources`), a redline's change by its
+ * index among the render's `<ins>` / `<del>` in document order.
  *
  * One kind is strut's own: `app`, `app: "<name>"` (+ `version?`) — an app
  * PUBLISHED in this workspace, what the builder hands over
@@ -48,6 +78,11 @@ export interface ArtifactEntry {
   url?: string;
   /** Inline: a diff, a JSON value, short markdown. */
   content?: unknown;
+  /** A rendition a page can draw in place of the file itself — a .docx's
+   *  HTML, a sheet's table file: a path like `path`, or a url. */
+  render?: string;
+  /** The graph `ref_id`s it was made from: Concepts, document excerpts. */
+  from?: string[];
   /** A published app, by name (`kind: "app"`): its active version, or `version`. */
   app?: string;
   version?: string;
@@ -69,6 +104,11 @@ export interface ArtifactRef {
   summary?: string;
   url?: string;
   content?: unknown;
+  /** The rendition's link (`render` resolved like `path`); absent when the
+   *  file is not there. */
+  render?: string;
+  /** The graph `ref_id`s it was made from, as declared. */
+  from?: string[];
   /** Why there is no `url`/`content`: the file is not there, the url is
    *  not one, the content is over the cap. The host shows "unavailable". */
   error?: string;
@@ -106,6 +146,9 @@ export function appDocumentUrl(name: string, version: string): string {
 /** Inline content larger than this is refused (the ref carries `error`). */
 export const ARTIFACT_CONTENT_MAX_CHARS = 50_000;
 
+/** At most this many `from` refs are kept per artifact. */
+export const ARTIFACT_FROM_MAX = 200;
+
 const KIND_BY_EXT: Record<string, string> = {
   md: "markdown", markdown: "markdown",
   html: "html", htm: "html",
@@ -117,7 +160,9 @@ const KIND_BY_EXT: Record<string, string> = {
   diff: "diff", patch: "diff",
   log: "log", txt: "log",
   js: "code", ts: "code", tsx: "code", jsx: "code", py: "code", sh: "code", rb: "code", go: "code", rs: "code",
-  yaml: "code", yml: "code", toml: "code", xml: "code", csv: "code", css: "code", sql: "code",
+  yaml: "code", yml: "code", toml: "code", xml: "code", css: "code", sql: "code",
+  csv: "table", tsv: "table", xlsx: "table",
+  docx: "docx",
 };
 
 /** The link strut serves a job's file at — what a deliverable's `path`
@@ -172,6 +217,41 @@ export function artifactEntriesOf(output: unknown): unknown[] | undefined {
   return output["artifacts"];
 }
 
+/** A `from` as declared → the refs kept: strings, trimmed, deduped, capped. */
+function refsOf(v: unknown): string[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  const out = [...new Set(v.filter((x): x is string => typeof x === "string").map((x) => x.trim()).filter(Boolean))].slice(0, ARTIFACT_FROM_MAX);
+  return out.length ? out : undefined;
+}
+
+/** At most this many entries ride on a tool call's `step.end`. */
+const LIFTED_MAX = 50;
+
+/**
+ * The artifacts a STEP declared in its output, for its `step.end` event —
+ * what an agent's tool call cannot otherwise carry, since the log keeps
+ * only a preview of a tool's result (plans/work-products.md §3). The raw
+ * entries with an `id` and a `title`, a `content` over the inline cap left
+ * out; undefined when there are none. Never resolved: the page reads files
+ * through `run/files`, and the run's own output is the record.
+ */
+export function liftedArtifacts(output: unknown): Record<string, unknown>[] | undefined {
+  const entries = artifactEntriesOf(output);
+  if (!entries) return undefined;
+  const out: Record<string, unknown>[] = [];
+  for (const raw of entries) {
+    if (!isRecord(raw) || !text(raw["id"]) || !text(raw["title"])) continue;
+    const c = raw["content"];
+    const size = c === undefined ? 0 : typeof c === "string" ? c.length : (JSON.stringify(c) ?? "").length;
+    if (size > ARTIFACT_CONTENT_MAX_CHARS) {
+      const { content: _dropped, ...rest } = raw;
+      out.push(rest);
+    } else out.push(raw);
+    if (out.length >= LIFTED_MAX) break;
+  }
+  return out.length ? out : undefined;
+}
+
 /**
  * Resolve a run's declared artifacts. Entries with no `id` or `title` are
  * dropped (nothing to key or name them by); every other entry comes back,
@@ -197,7 +277,10 @@ export async function resolveArtifactRefs(output: unknown, at: ResolveArtifactsA
       ...(text(raw["label"]) ? { label: raw["label"] as string } : {}),
       ...(text(raw["summary"]) ? { summary: raw["summary"] as string } : {}),
     };
+    const from = refsOf(raw["from"]);
+    if (from) ref.from = from;
     const path = text(raw["path"]);
+    const render = text(raw["render"]);
     const url = text(raw["url"]);
     const appName = text(raw["app"]);
     const appVersion = text(raw["version"]);
@@ -211,6 +294,7 @@ export async function resolveArtifactRefs(output: unknown, at: ResolveArtifactsA
     // strut (it knows where the file is); it takes the place of a `url`.
     // A `content` rides along whichever way the location resolved.
     let error: string | undefined;
+    const fileUrl = (r: string) => (at.job ? jobFileUrl(at.job, r) : `/artifacts/${encodeURIComponent(at.runId)}/${r}`);
     const peer = text(raw["peer"]);
     if (peer) {
       // Another strut's: kept as it came. Its path and url are the peer's,
@@ -218,7 +302,7 @@ export async function resolveArtifactRefs(output: unknown, at: ResolveArtifactsA
       const job = text(raw["job"]);
       const via = text(raw["via"]);
       if (!text(raw["kind"])) ref.kind = appName ? APP_KIND : artifactKind((path ?? url) ?? "");
-      Object.assign(ref, { peer, ...(via ? { via } : {}), ...(job ? { job } : {}), ...(path !== undefined ? { path } : {}), ...(url !== undefined ? { url } : {}) });
+      Object.assign(ref, { peer, ...(via ? { via } : {}), ...(job ? { job } : {}), ...(path !== undefined ? { path } : {}), ...(url !== undefined ? { url } : {}), ...(render !== undefined ? { render } : {}) });
       if (appName) ref.app = { name: appName, ...(appVersion ? { version: appVersion } : {}) };
     } else if (appName !== undefined && path === undefined && url === undefined) {
       // A published app, by name: the version's document, or why not.
@@ -234,7 +318,6 @@ export async function resolveArtifactRefs(output: unknown, at: ResolveArtifactsA
       }
     } else if (path !== undefined) {
       const rel = path.replace(/^\/+/, "");
-      const fileUrl = (r: string) => (at.job ? jobFileUrl(at.job, r) : `/artifacts/${encodeURIComponent(at.runId)}/${r}`);
       const bad = rel.split("/").includes("..") || !rel;
       if (!text(raw["kind"])) ref.kind = artifactKind(rel);
       if (bad) error = "bad path";
@@ -245,6 +328,13 @@ export async function resolveArtifactRefs(output: unknown, at: ResolveArtifactsA
       if (!text(raw["kind"])) ref.kind = artifactKind(url);
       if (/^(https?:\/\/|\/)/.test(url)) ref.url = url;
       else error = "bad url";
+    }
+    // The rendition: a file of the run's like `path`, or a link as given.
+    // One that is not there is left out — the thing itself still shows.
+    if (render !== undefined && !peer) {
+      const r = render.replace(/^\/+/, "");
+      if (/^https?:\/\//.test(render) || render.startsWith("/")) ref.render = render;
+      else if (r && !r.split("/").includes("..") && (await at.exists(fileUrl(r)))) ref.render = fileUrl(r);
     }
     if (hasContent) {
       const size = typeof raw["content"] === "string" ? raw["content"].length : JSON.stringify(raw["content"]).length;

@@ -127,12 +127,14 @@ pull request, a pod. Each entry names one:
 | Field     | Meaning |
 | --------- | ------- |
 | `id`      | stable across runs: the same `id` from a later run is a newer version of the same thing (turn 12's `plan` replaces turn 3's) |
-| `kind`    | how to show it — the host's renderer names (`markdown`, `html`, `image`, `video`, `audio`, `pdf`, `url`, `diff`, `pull_request`, `code`, `log`, `json`), or `app` (below). Read off the file's extension when omitted (`url` when that says nothing) — or a manifest's name: `walkthrough.json` → `walkthrough`, `captcha-<round>.json` → `captcha`; a `path` with no extension that holds an `app.yaml` → `app` |
+| `kind`    | how to show it — the host's renderer names (`markdown`, `html`, `image`, `video`, `audio`, `pdf`, `url`, `diff`, `pull_request`, `code`, `log`, `json`), the work-product kinds (`sheet`, `table`, `timeline`, `docx`, `redline`, below), or `app` (below). Read off the file's extension when omitted (`url` when that says nothing; `.docx` → `docx`, `.csv` / `.tsv` / `.xlsx` → `table`) — or a manifest's name: `walkthrough.json` → `walkthrough`, `captcha-<round>.json` → `captcha`; a `path` with no extension that holds an `app.yaml` → `app` |
 | `title`   | shown on the card |
 | `label`, `summary` | optional: what it is to the reader ("Plan", "Screenshot"), and a sentence about it |
 | `path`    | a file, relative to the run's directory — the **job's** for a run launched with `job` (see below), else the run's own artifact directory |
 | `url`     | an absolute URL, or a strut-relative one starting with `/` (another run's `/artifacts/<runId>/clip.mp4`) |
 | `content` | inline, up to 50 KB: a diff, a JSON value, short markdown |
+| `render`  | a file a page can draw in the thing's place — a .docx's HTML, a sheet's CSV: relative like `path`, or a link. Resolved like `path`; left out when the file is not there |
+| `from`    | the graph `ref_id`s it was made from (Concepts, document excerpts), kept as declared; the graph holds one `StrutArtifact -[:DERIVED_FROM]->` edge per ref it has |
 | `app`     | an APP published in this workspace, by name (`kind: "app"`): its active version, or the one `version` names (below) |
 
 At least one of `path`, `url`, `app`, `content`; they are not exclusive (a pull
@@ -146,6 +148,28 @@ behind the key like every read — see `API.md` §5 — and takes the place of a
 unavailable. Entries with no `id` or `title` are dropped. The same
 list is at `GET /workflows/:name/runs/:runId/artifacts` for a callback you
 missed.
+
+**Work products — `sheet`, `table`, `timeline`, `docx`, `redline`**
+(`plans/work-products.md`). What a person's work is made of, each with its
+shape:
+
+| Kind | `path` | `url` | `render` | `content` |
+| --- | --- | --- | --- | --- |
+| `sheet` | a table file, when there is no live sheet | the live spreadsheet (a Google Sheet) | the table file a page draws | `{ sources }` |
+| `table` | a CSV / TSV / .xlsx / table JSON file | | | `{ columns, rows, sources? }` or an array of row objects |
+| `timeline` | a JSON file of the content's shape | | | `{ entries: [{ date, title, detail?, sources? }] }` or the bare array |
+| `docx` | the .docx | | its HTML | |
+| `redline` | the tracked-changes .docx | | its HTML, changes as `<ins>` / `<del>` | `{ sources }` |
+
+`content.sources` maps an item to the `ref_id`s it came from: a sheet's or
+table's cell by its address (`C4`, `'Deal Terms'!C4` — row 1 the header) or
+a row by its key (its first column's text, `"Non-solicit"`), a timeline's
+entry by index, a redline's change by its index among the render's `<ins>`
+/ `<del>`. A host that does not know a kind shows the link, so a product of
+these kinds carries a `path` or a `url` beside any `content` (hive drops an
+entry of an unknown kind that has only `content`). A step may declare the
+same entries in its own output while the run goes, for a page following the
+run (`strut/views` `WorkProducts`); only the run's output is delivered here.
 
 **An app — `kind: "app"`.** An APP (`plans/apps.md`) is a front-end
 project built into one page; the `builder` workflow publishes one in the
