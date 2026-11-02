@@ -78,6 +78,7 @@ describe("memory/export and memory/import", { skip: !hasLadybug && "@ladybugdb/c
     assert.equal(snap.counts.Fact, 4);
     assert.equal(snap.counts.Episode, 4);
     assert.equal(snap.counts.ALIAS_OF, 1);
+    assert.equal(snap.counts.Cause, 0);
     const files = untar(gunzipSync(readFileSync(snap.path)));
     assert.deepEqual(JSON.parse(files.get("manifest.json")!.toString()), snap.manifest);
     assert.ok(files.has("graph/schema.cypher"));

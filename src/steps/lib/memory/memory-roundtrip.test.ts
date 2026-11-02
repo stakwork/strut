@@ -145,6 +145,20 @@ describe("memory export → import is lossless", { skip: !hasLadybug && "@ladybu
       await edge("CONTRADICTS", ["Fact", "f-pi"], ["Fact", "f-third"]);
       await edge("CONTRADICTS", ["Fact", "f-third"], ["Fact", "f-pi"]);
       await edge("ALIAS_OF", ["Entity", "e-ints"], ["Entity", "e-zero"]);
+      // What it learned: causes, a concept, and every edge kind between them.
+      await q(`CREATE (:Cause {ref_id: 'c-1', statement: 's, "q"', cause_type: 'correction', severity: 'low', mechanism: null, identity_key: 'k',
+        created_by: 'u', created_at: $t, updated_at: 2, deleted_at: 3, deleted_reason: 'r'}), (:Cause {ref_id: 'c-0'}),
+        (:Concept {ref_id: 'k-1', name: 'n', description: 'd', docs: 'x\ny', keywords: ['a,b', ''], created_at: 1})`, { t: BEYOND_2_53 });
+      await edge("CAUSE_CHILD_OF", ["Cause", "c-1"], ["Cause", "c-0"]);
+      await edge("ADDRESSES", ["Concept", "k-1"], ["Cause", "c-1"]);
+      for (const [rel, to] of [["ENTITY", ["Entity", "e-ints"]], ["FACT", ["Fact", "f-pi"]], ["EPISODE", ["Episode", "ep-all"]],
+        ["CONCEPT", ["Concept", "k-1"]], ["CAUSE", ["Cause", "c-0"]]] as const) {
+        await q(
+          `MATCH (a:Cause {ref_id: 'c-1'}), (b:${to[0]} {ref_id: $b}) CREATE (a)-[:EVIDENCED_BY_${rel} {excerpt: 'e, "x"', confidence: 0.25, kind: 'k',
+            why: 'w', previous_ref: null, turn_at: $t, created_by: 'u'}]->(b)`,
+          { b: to[1], t: BEYOND_2_53 },
+        );
+      }
     });
 
     // Not empty by luck: every table of the schema holds rows.

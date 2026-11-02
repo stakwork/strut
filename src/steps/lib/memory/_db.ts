@@ -14,6 +14,19 @@
 // An episode's speaker is the ref_id of who said it; NULL means the user, so
 // an episode the user said before they had an entity needs none made.
 //
+// What it learned (schema only; no step writes these yet): a Cause is one
+// sentence about why something went wrong (statement <= 25 words; cause_type
+// prompt_gap | reasoning_error | missing_context | format_violation |
+// correction | inefficiency | concept_issue; severity critical | high | medium
+// | low; both plain STRING, not enforced; identity_key = _cause-key.ts's
+// causeKey, the find-or-create key). A Concept here is the memory's own, apart
+// from the workspace graph's Concept: name, description, docs, keywords.
+// EVIDENCED_BY_<TARGET> (ENTITY, FACT, EPISODE, CONCEPT, CAUSE: one rel table
+// each, since EXPORT DATABASE refuses a rel group over several node pairs) goes
+// from a Cause to that kind of memory node, with excerpt, confidence, kind, why, previous_ref, turn_at,
+// created_by; CAUSE_CHILD_OF is child Cause -> parent Cause; ADDRESSES is
+// Concept -> the Causes it answers.
+//
 // remember, merge and forget each run as one transaction on a connection of their
 // own (memoryWrite): a failure part-way leaves nothing behind, and a read on
 // the shared connection never sees a write in progress.
@@ -45,6 +58,16 @@ const SCHEMA = [
      valid_at INT64, invalid_at INT64, expired_at INT64, created_by STRING, created_at INT64, updated_at INT64, deleted_at INT64)`,
   `CREATE NODE TABLE IF NOT EXISTS Episode(ref_id STRING PRIMARY KEY, kind STRING, source STRING, content STRING,
      occurred_at INT64, created_by STRING, created_at INT64, updated_at INT64, deleted_at INT64)`,
+  `CREATE NODE TABLE IF NOT EXISTS Cause(ref_id STRING PRIMARY KEY, statement STRING, cause_type STRING, severity STRING,
+     mechanism STRING, identity_key STRING, created_by STRING, created_at INT64, updated_at INT64, deleted_at INT64,
+     deleted_reason STRING)`,
+  `CREATE NODE TABLE IF NOT EXISTS Concept(ref_id STRING PRIMARY KEY, name STRING, description STRING, docs STRING,
+     keywords STRING[], created_by STRING, created_at INT64, updated_at INT64, deleted_at INT64, deleted_reason STRING)`,
+  ...["Entity", "Fact", "Episode", "Concept", "Cause"].map(
+    (to) => `CREATE REL TABLE IF NOT EXISTS EVIDENCED_BY_${to.toUpperCase()}(FROM Cause TO ${to}, excerpt STRING, confidence DOUBLE, kind STRING, why STRING, previous_ref STRING, turn_at INT64, created_by STRING)`,
+  ),
+  "CREATE REL TABLE IF NOT EXISTS CAUSE_CHILD_OF(FROM Cause TO Cause)",
+  "CREATE REL TABLE IF NOT EXISTS ADDRESSES(FROM Concept TO Cause)",
   "CREATE REL TABLE IF NOT EXISTS MENTIONS(FROM Episode TO Entity)",
   "CREATE REL TABLE IF NOT EXISTS SUBJECT(FROM Fact TO Entity)",
   "CREATE REL TABLE IF NOT EXISTS OBJECT(FROM Fact TO Entity)",
