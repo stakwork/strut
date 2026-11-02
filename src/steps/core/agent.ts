@@ -15,6 +15,7 @@ import { nameInsidePackage, stepInPackage } from "../../package-lookup.js";
 import { connectMcpTools } from "../../mcp-servers.js";
 import { withinReach } from "../../reach.js";
 import { outputTooBig } from "../../output-cap.js";
+import { capToolOutput } from "../../chat-store.js";
 import { gatedByDefault, grantsTool, mcpGrantName, MCP_GRANT_PREFIX, resolveRegistration, type McpRegistry } from "../../mcp-registry.js";
 import { isSystemWorkflow, SYSTEM_WRITER } from "../../system-workflows.js";
 import { resolveStep } from "../registry.js";
@@ -1261,9 +1262,9 @@ export default defineStep({
     // writes only what the last step added). `cacheTtl` picks the lifetime. Other
     // providers fall back to the generic editor tool. (Web search/fetch
     // are NOT provider-gated — see the web tools after model resolution.)
-    // What one `bash` / `view` result may be: the ceiling now, the window's
-    // headroom once the model is resolved (plans/compaction.md §4). Read when
-    // a tool RUNS, so the closures below see the resolved value.
+    // What one `bash` / `view` / tool-step result may be: the ceiling now,
+    // the window's headroom once the model is resolved (plans/compaction.md
+    // §4). Read when a tool RUNS, so the closures below see the resolved value.
     let resultCap = BASH_MAX_CHARS;
     let textEditorTool: any;
     let providerOptions: any;
@@ -1492,6 +1493,11 @@ export default defineStep({
     // runs no tool. In code, not in the prompt, so a model cannot talk past
     // it; a marker, not a field, so the model never sees it and a step's own
     // `stop` field means nothing here.
+    // What the model reads of a tool-step's result is capped where it is
+    // made, at the cap `bash` gets (`capToolOutput`: each string, then the
+    // whole result — a query's thousands of rows cut to their first and
+    // last): one step can return megabytes, and a request with them in is
+    // refused. The event log and `run.json` keep the step's own output.
     let stoppedBy: string | undefined;
     for (const [name, t] of Object.entries(registryTools) as [string, any][]) {
       const run = t.execute;
@@ -1500,6 +1506,8 @@ export default defineStep({
         if (stopOf(out)) stoppedBy ??= name;
         return out;
       };
+      const own = t.toModelOutput;
+      t.toModelOutput = async (o: unknown) => capToolOutput(await own(o), resultCap);
     }
     Object.assign(tools, registryTools);
 

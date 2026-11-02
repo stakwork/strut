@@ -74,10 +74,10 @@ export interface AiDeps {
    *  the chat with a `[verify-notification]` when that run's verify pass
    *  settles. Optional: without it the evidence is still written. */
   watchVerify?: (runId: string) => void;
-  /** Per-string cap on the builder's tool results (`capToolResults`): the
-   *  env cap bounded by the model's window, so one result fits in the room
-   *  above the compaction mark (plans/compaction.md §4). Absent → the env
-   *  cap alone. */
+  /** Cap on one of the builder's tool results, each string and the whole
+   *  (`capToolResults`): the env cap bounded by the model's window, so one
+   *  result fits in the room above the compaction mark (plans/compaction.md
+   *  §4). Absent → the env cap alone. */
   toolResultMaxChars?: number;
   /** The cap on the builder's DOCUMENT reads (get_workflow, get_step —
    *  `DOCUMENT_TOOLS`): the window's headroom alone, no env ceiling, so a
