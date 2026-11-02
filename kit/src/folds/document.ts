@@ -44,6 +44,9 @@ const ATTRS: Record<string, Record<string, string>> = {
   col: { span: "span" },
   colgroup: { span: "span" },
   time: { datetime: "dateTime" },
+  // A tracked change's author and date (docx/to-html's redlines), shown on hover.
+  ins: { datetime: "dateTime", title: "title" },
+  del: { datetime: "dateTime", title: "title" },
   abbr: { title: "title" },
   q: { cite: "cite" },
   blockquote: { cite: "cite" },
