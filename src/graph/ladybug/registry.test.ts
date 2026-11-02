@@ -5,7 +5,7 @@ import { STRUT_EDGES, STRUT_SCHEMAS } from "../strut-schemas.js";
 import { EDGE_COLUMNS, GENERIC_COLUMNS, LADYBUG_EDGES, LADYBUG_EDGE_TYPES, LADYBUG_SCHEMAS, LADYBUG_STRUT_TYPES, SCHEMA_COLUMNS, ladybugEdge, ladybugSchema, nodeColumns, ontologySeed } from "./registry.js";
 
 describe("ladybug registry — the ontology seed (plans/ladybug-backend.md §3, ruling 6 as amended 2026-10-28)", () => {
-  it("holds exactly the ten types, and the Strut ones without Thing's vestiges or per-stem vectors", () => {
+  it("holds exactly the thirteen types, and the Strut ones without Thing's vestiges or per-stem vectors", () => {
     assert.deepEqual(
       LADYBUG_SCHEMAS.map((s) => s.type),
       [...LADYBUG_STRUT_TYPES, "Claim", "Check", "Evidence", "Concept"],
@@ -55,7 +55,7 @@ describe("ladybug registry — the ontology seed (plans/ladybug-backend.md §3, 
     assert.equal(ladybugEdge("ACCESSED", "StrutToolCall", "Concept"), null);
     assert.equal(ladybugEdge("PUBLISHED_BY", "StrutStepVersion", "Person"), null);
     assert.equal(ladybugEdge("RELATED_TO", "Concept", "Concept"), null, "no jarvis allowlist");
-    assert.deepEqual(LADYBUG_EDGE_TYPES, ["ABOUT", "ACTIVE_VERSION", "CHILD_OF", "DEPENDS_ON", "EVIDENCED_BY", "EXECUTED", "HAS_SOURCE", "IN_JOB", "PARENT_OF", "PRODUCED_BY", "PROMOTED_FROM", "SUPERSEDES", "TESTS", "USES_STEP", "USES_WORKFLOW", "VERSION_OF"]);
+    assert.deepEqual(LADYBUG_EDGE_TYPES, ["ABOUT", "ACTIVE_VERSION", "CHILD_OF", "DELIVERED", "DEPENDS_ON", "EVIDENCED_BY", "EXECUTED", "HAS_ARTIFACT", "HAS_SOURCE", "IN_JOB", "PARENT_OF", "PRODUCED_BY", "PROMOTED_FROM", "SUPERSEDES", "TESTS", "USES_STEP", "USES_WORKFLOW", "VERSION_OF"]);
     // Apps (plans/apps.md §1.3): the version → app pair and the workflows a version's grants name.
     assert.ok(ladybugEdge("VERSION_OF", "StrutAppVersion", "StrutApp") && ladybugEdge("ACTIVE_VERSION", "StrutApp", "StrutAppVersion") && ladybugEdge("USES_WORKFLOW", "StrutAppVersion", "StrutWorkflow"));
   });

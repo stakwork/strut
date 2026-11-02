@@ -497,6 +497,46 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
       log_ref: "?string",
     },
   },
+  {
+    ...base,
+    type: "StrutArtifact",
+    // IDENTITY (decision): one node per (job, artifact id). A job's artifact
+    // ids are stable across turns ("the same id on a later run is a newer
+    // version of the same thing", plans/jobs.md §3), so a later turn that
+    // re-delivers `plan` UPDATES this node (title, summary, url, run_id move
+    // to the newest version) instead of piling up one node per turn; the
+    // history is the DELIVERED edges, one from each run that declared it.
+    // Ids are only unique within a job, hence the job id in the key; both
+    // tokens are hex-encoded (`exact_key`) as ids may hold `/`, `.`, `-`.
+    node_key: "strutartifact-job_id-artifact_id",
+    exact_key: true,
+    // `kind` and `label` are in the search text so "pull-request" / "url"
+    // find artifacts by keyword and meaning; an exact filter is
+    // `graph/find { type: StrutArtifact, where: { kind } }`.
+    index: ["title", "summary", "kind", "label"],
+    title_key: "title",
+    description_key: "summary",
+    type_description: "A deliverable a strut job turn declared (`artifacts` in the run output): the newest version of one artifact id of one job",
+    attributes: {
+      job_id: "string",
+      /** The artifact's own id within the job. */
+      artifact_id: "string",
+      kind: "?string",
+      label: "?string",
+      title: "string",
+      summary: "?string",
+      /** The resolved link (`/jobs/<job>/files/…`, an app document, or the
+       *  declared url). A deliverable another strut server holds is not
+       *  projected here: its node is on that server's graph. */
+      url: "?string",
+      /** Relative to the job's directory, when the artifact is a file. */
+      path: "?string",
+      /** The run that delivered this (newest) version. */
+      run_id: "?string",
+      /** When that run started (the job record's line). */
+      delivered_at: "?datetime",
+    },
+  },
 ];
 
 // ── Edge registry ───────────────────────────────────────────────────────────
@@ -526,6 +566,13 @@ export const STRUT_EDGES: readonly StrutEdgeDef[] = [
   { edge: "SPAWNED", source: "StrutChat", target: "StrutRun" },
   { edge: "IN_CHAT", source: "StrutTurn", target: "StrutChat" },
   { edge: "IN_JOB", source: "StrutRun", target: "StrutJob" },
+  // Deliverables: the job holds the artifact (one node per job + id, newest
+  // version); each run whose output declared it DELIVERED it.
+  // A later `StrutArtifact -[:FOR_PR]-> PullRequest` (a jarvis type, so a
+  // JARVIS_SOURCED_EDGES-style seeded row, not a registry row) fits here:
+  // artifacts of kind "pull-request" carry the PR url, and the key is stable.
+  { edge: "HAS_ARTIFACT", source: "StrutJob", target: "StrutArtifact" },
+  { edge: "DELIVERED", source: "StrutRun", target: "StrutArtifact" },
   { edge: "ACCESSED", source: "StrutToolCall", target: "Thing", note: "any node" },
 ];
 

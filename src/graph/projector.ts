@@ -29,12 +29,18 @@
  * carries `session_id` + `session_turn`, so a thread is every node with that
  * id, across runs and workflows.
  *
+ * Jobs (plans/job-index.md §6): a run under a job upserts its `StrutJob`
+ * (`IN_JOB`) and one `StrutArtifact` per current deliverable of the job
+ * (`HAS_ARTIFACT`), and gets a `DELIVERED` edge to each artifact its own
+ * output declares.
+ *
  * Not projected: `PROMOTED_FROM` — promotions publish a new version without
  * recording the source run.
  *
  * Only the types the backend's ontology holds are written: every Strut type
  * on Neo4j; on a LadybugDB file (plans/ladybug-backend.md), whose seed
- * leaves the chat and agent-session types out, `StrutRun` and `StrutJob` with `EXECUTED` and `IN_JOB`; the
+ * leaves the chat and agent-session types out, `StrutRun`, `StrutJob` and
+ * `StrutArtifact` with `EXECUTED`, `IN_JOB`, `HAS_ARTIFACT` and `DELIVERED`; the
  * agent sessions, tool calls, their edges and the whole chat projection are
  * skipped there, and the report counts what was written. The statements
  * are written with the backend's dialect helpers (`engine.ts`).
@@ -43,6 +49,7 @@ import type { AccessedNode, RunEvent, RunSummary } from "../core.js";
 import { stepTypeOfRunKey, type RunStore } from "../store.js";
 import type { ChatStore, StoredMessage } from "../chat-store.js";
 import { idProblem, peerSessionId } from "../session-store.js";
+import { artifactEntriesOf } from "../artifact-refs.js";
 import type { JobIndex, JobView } from "../job-index.js";
 import type { GraphBackend } from "./backend.js";
 import type { NodeInput } from "./node-writer.js";
@@ -353,11 +360,73 @@ export function jobNode(view: JobView): NodeInput {
  * run of it ended (plans/job-claims.md §1).
  */
 export async function ensureJobNode(backend: GraphBackend, jobs: JobReader | undefined, job: string): Promise<string | null> {
+  return (await upsertJob(backend, jobs, job))?.jobRef ?? null;
+}
+
+/** One `StrutArtifact` per (job, artifact id), from the index's fold (the
+ *  newest version of each id): a re-delivery in a later turn lands on the
+ *  same node (see the schema's key comment). `at` is when the run that
+ *  delivered that version started. */
+export function artifactNode(job: string, a: JobView["artifacts"][number], at?: string): NodeInput {
+  return {
+    type: "StrutArtifact",
+    data: compact({
+      job_id: job,
+      artifact_id: a.id,
+      kind: a.kind,
+      label: a.label,
+      title: a.title,
+      summary: preview(a.summary, JOB_SUMMARY_MAX_CHARS),
+      url: a.url,
+      path: a.path,
+      run_id: a.runId,
+      delivered_at: at,
+      unique_source_id: `strutartifact:${job}:${a.id}`,
+    }),
+  };
+}
+
+/** The artifact ids a run's output declares, as the fold reads them (an
+ *  entry with a string `id` and `title`). */
+function declaredArtifactIds(output: unknown): string[] {
+  return (artifactEntriesOf(output) ?? []).flatMap((e) => {
+    const r = e as Record<string, unknown> | null;
+    return r && typeof r === "object" && typeof r["id"] === "string" && typeof r["title"] === "string" ? [r["id"]] : [];
+  });
+}
+
+interface JobUpsert {
+  jobRef: string;
+  /** The job's runs, as the index reads them. */
+  runs: JobView["runs"];
+  /** Artifact ref_ids by artifact id. */
+  artifacts: Map<string, string>;
+}
+
+/** The job node, plus its artifacts and `HAS_ARTIFACT` edges. Left out: a
+ *  deliverable another strut server holds (`peer`: its url and path are
+ *  that server's, and its node is on that server's graph — the handle rule,
+ *  plans/federation.md §2.2), and one with an `error` (nothing to open).
+ *  The artifact part is best effort: a failure there never costs the job
+ *  node, the run projection or the turn. */
+async function upsertJob(backend: GraphBackend, jobs: JobReader | undefined, job: string): Promise<JobUpsert | null> {
   if (!jobs?.get) return null;
   const view = await jobs.get(job, { threads: false });
   if (!view) return null;
   const [node] = await backend.nodes.writeMany(await fit(backend, [jobNode(view)]), "upsert");
-  return node!.ref_id;
+  const jobRef = node!.ref_id;
+  const out: JobUpsert = { jobRef, runs: view.runs, artifacts: new Map() };
+  const local = view.artifacts.filter((a) => !a.peer && !a.error);
+  if (local.length && (await holds(backend, "StrutArtifact"))) {
+    try {
+      const written = await backend.nodes.writeMany(await fit(backend, local.map((a) => artifactNode(job, a, view.runs.find((r) => r.runId === a.runId)?.at))), "upsert");
+      await backend.edges.writeMany(written.map((w) => ({ edge: "HAS_ARTIFACT", source_ref_id: jobRef, target_ref_id: w.ref_id })));
+      written.forEach((w, i) => out.artifacts.set(local[i]!.id, w.ref_id));
+    } catch (e) {
+      console.warn(`[projector] job ${job}: artifacts not written: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  return out;
 }
 
 /** Project runs from a `RunStore` into the graph. */
@@ -472,10 +541,20 @@ export async function projectRun(
   // — and `IN_JOB` from this run. No index, or no record (the job was
   // deleted): nothing written, and the node the graph holds stays.
   if (p.job) {
-    const jobRef = await ensureJobNode(backend, jobs, p.job);
-    if (jobRef) {
-      edges.push({ edge: "IN_JOB", source_ref_id: runRef, target_ref_id: jobRef });
+    const up = await upsertJob(backend, jobs, p.job);
+    if (up) {
+      edges.push({ edge: "IN_JOB", source_ref_id: runRef, target_ref_id: up.jobRef });
       report.jobs++;
+      // DELIVERED from this run to each artifact its output declares, read
+      // as the fold reads a turn (a top-level, successful run), so
+      // projecting any run of the job — in any order — writes its own.
+      const line = up.runs.find((r) => r.runId === runId);
+      if (line && !line.parentRunId && !line.sealed && summary?.status === "success") {
+        for (const id of declaredArtifactIds(summary.output)) {
+          const ref = up.artifacts.get(id);
+          if (ref) edges.push({ edge: "DELIVERED", source_ref_id: runRef, target_ref_id: ref });
+        }
+      }
     }
   }
   if (edges.length) {

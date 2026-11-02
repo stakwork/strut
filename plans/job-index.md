@@ -2,7 +2,8 @@
 
 > **Status (2026-10-09): BUILT, in strut — the record, the routes, the
 > steps and the graph (§9's two commits). Rulings 1–7 confirmed as
-> proposed (StrutJob, no StrutArtifact).** What was built departs from the
+> proposed (StrutJob, no StrutArtifact — ruling 5 revisited 2026-11-02:
+> a `StrutArtifact` per deliverable).** What was built departs from the
 > text below in four small ways, all simplifications: ONE write instead of
 > two — the runner's `recordRun` carries the launch's `title` and `actor`,
 > so there is no `describe` and `title` is a `RunOptions` field beside
@@ -108,6 +109,17 @@ them.
    edge from a later job that viewed it, or hive's artifact-events index
    moving in — and not before (the precedent: tool calls are nodes because
    `ACCESSED` hangs off them).
+   **Revisited 2026-11-02 (strut#413): a `StrutArtifact` node per (job,
+   id)**, so a deliverable is found and walked to on its own — by kind
+   ("the pull requests"), from its job (`HAS_ARTIFACT`), from each run whose
+   output declared it (`DELIVERED`) — and a later edge from an artifact of
+   kind `pull-request` to its `PullRequest` has a node to start from. The
+   node holds the fold's newest version (title, summary, url, path, the
+   delivering run); the history is the `DELIVERED` edges, each written when
+   its own run is projected, so a backfill in any order gives the same
+   picture. A deliverable another strut server holds (`peer`) is not
+   projected — its node is on that server's graph — nor is one with an
+   `error`.
 6. **Reading across jobs follows the key's trust domain.** `GET
    /jobs/:id/files` already serves any job's files to anyone with the API
    key; a step that reads another job's file is the same door from inside
@@ -358,9 +370,9 @@ cards are unchanged. Nothing else.
   `StrutChat` attribute and the `IN_JOB` chat edge come with it.
 - **Renaming through a route** (`PATCH /jobs/:id { title }`): a later launch
   with a title renames; enough for now.
-- **`StrutArtifact` nodes** — ruling 5: when something must point at an
-  artifact, or when the artifact-events index (`job-artifact-events.md`)
-  moves from hive into strut.
+- **An edge from a `StrutArtifact` to what it names** (its `PullRequest`,
+  an app's `StrutApp`) — the node is there since 2026-11-02 (ruling 5
+  revisited); the edges come when something reads them.
 - **History of one file** (`jobs.md` §10): the fold gives the current
   version of each id; versions are the file history's job.
 - **A per-actor read rule** — ruling 6. (`GET /jobs?mine=1` — the

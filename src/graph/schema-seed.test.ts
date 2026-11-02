@@ -11,8 +11,8 @@ const cfg = testGraphConfig();
 describe("strut-schemas (pure)", () => {
   it("library is well-formed", () => {
     assertLibraryWellFormed();
-    assert.equal(STRUT_SCHEMAS.length, 12);
-    assert.equal(STRUT_EDGES.length, 19);
+    assert.equal(STRUT_SCHEMAS.length, 13);
+    assert.equal(STRUT_EDGES.length, 21);
   });
 
   it("flattens attributes onto the top level with no attributes blob", () => {
@@ -67,7 +67,7 @@ describe("seedStrutDomain (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J
     assert.equal(thing[0]!.properties["node_key"], "thing-name");
     assert.ok(typeof thing[0]!.properties["ref_id"] === "string");
     const schemas = snap1.nodes.filter((n) => n.labels.includes("Schema"));
-    assert.equal(schemas.length, 13);
+    assert.equal(schemas.length, 14);
     for (const s of schemas) {
       assert.deepEqual(s.labels, ["Schema"], "Schema nodes carry no other label");
       assert.equal(s.properties["attributes"], undefined);
@@ -79,7 +79,7 @@ describe("seedStrutDomain (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J
     assert.equal(run.properties["run_id"], "string");
     assert.deepEqual(run.properties["index"], ["workflow_name", "run_status", "summary"]);
     const childOf = snap1.rels.filter((r) => r.type === "CHILD_OF");
-    assert.equal(childOf.length, 12);
+    assert.equal(childOf.length, 13);
     for (const r of childOf) {
       assert.equal((r.to as { type: string }).type, "Thing");
       assert.ok(typeof r.properties["ref_id"] === "string");
@@ -165,7 +165,7 @@ describe("seedStrutDomain (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J
     const before = await graphSnapshot(bolt);
     const r = await seedStrutDomain(bolt);
     assert.equal(r.mode, "shared");
-    assert.equal(r.createdSchemas.length, 11);
+    assert.equal(r.createdSchemas.length, 12);
     assert.ok(!r.createdSchemas.includes("StrutRun"));
     assert.deepEqual(r.reconciled, { StrutRun: ["summary"] });
     assert.deepEqual(r.skippedEdgeSchemas, ["HiveWorkspaceMember-[SENT]->StrutAgentSession"], "no member type in this jarvis");
