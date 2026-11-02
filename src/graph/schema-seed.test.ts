@@ -165,7 +165,7 @@ describe("seedStrutDomain (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J
     const before = await graphSnapshot(bolt);
     const r = await seedStrutDomain(bolt);
     assert.equal(r.mode, "shared");
-    assert.equal(r.createdSchemas.length, 11);
+    assert.equal(r.createdSchemas.length, 12);
     assert.ok(!r.createdSchemas.includes("StrutRun"));
     assert.deepEqual(r.reconciled, { StrutRun: ["summary"] });
     assert.deepEqual(r.skippedEdgeSchemas, ["HiveWorkspaceMember-[SENT]->StrutAgentSession"], "no member type in this jarvis");

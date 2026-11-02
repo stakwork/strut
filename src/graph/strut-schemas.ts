@@ -505,7 +505,7 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
     // version of the same thing", plans/jobs.md §3), so a later turn that
     // re-delivers `plan` UPDATES this node (title, summary, url, run_id move
     // to the newest version) instead of piling up one node per turn; the
-    // history is the PRODUCED edges, one from each run that delivered it.
+    // history is the DELIVERED edges, one from each run that declared it.
     // Ids are only unique within a job, hence the job id in the key; both
     // tokens are hex-encoded (`exact_key`) as ids may hold `/`, `.`, `-`.
     node_key: "strutartifact-job_id-artifact_id",
@@ -525,13 +525,16 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
       label: "?string",
       title: "string",
       summary: "?string",
-      /** The resolved link (`/jobs/<job>/files/…`, an app document, or the declared url). */
+      /** The resolved link (`/jobs/<job>/files/…`, an app document, or the
+       *  declared url). A deliverable another strut server holds is not
+       *  projected here: its node is on that server's graph. */
       url: "?string",
       /** Relative to the job's directory, when the artifact is a file. */
       path: "?string",
       /** The run that delivered this (newest) version. */
       run_id: "?string",
-      created_at: "datetime",
+      /** When that run started (the job record's line). */
+      delivered_at: "?datetime",
     },
   },
 ];
@@ -564,12 +567,12 @@ export const STRUT_EDGES: readonly StrutEdgeDef[] = [
   { edge: "IN_CHAT", source: "StrutTurn", target: "StrutChat" },
   { edge: "IN_JOB", source: "StrutRun", target: "StrutJob" },
   // Deliverables: the job holds the artifact (one node per job + id, newest
-  // version); each run that delivered a version PRODUCED it.
+  // version); each run whose output declared it DELIVERED it.
   // A later `StrutArtifact -[:FOR_PR]-> PullRequest` (a jarvis type, so a
   // JARVIS_SOURCED_EDGES-style seeded row, not a registry row) fits here:
   // artifacts of kind "pull-request" carry the PR url, and the key is stable.
   { edge: "HAS_ARTIFACT", source: "StrutJob", target: "StrutArtifact" },
-  { edge: "PRODUCED", source: "StrutRun", target: "StrutArtifact" },
+  { edge: "DELIVERED", source: "StrutRun", target: "StrutArtifact" },
   { edge: "ACCESSED", source: "StrutToolCall", target: "Thing", note: "any node" },
 ];
 
