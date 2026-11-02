@@ -17,6 +17,7 @@ import { TRACE_LIVE_RUN_ID, TRACE_RUN_ID } from "./fixtures/trace";
 import { COVENANT_RANGE, COVENANT_SHEET, COVENANT_SOURCES, DEVIATIONS_CSV, NDA_RANGE, NDA_SHEET, NDA_SOURCES, NDA_WORKFLOW } from "./fixtures/sheets";
 import { MATTER_LIVE_RUN_ID, MATTER_RUN_ID, MATTER_WORKFLOW } from "./fixtures/matter";
 import { AGENT_WALK_RUN_ID, WALK_JOIN_RUN_ID, WALK_LIVE_RUN_ID, WALK_RUN_ID, WALK_WORKFLOW } from "./fixtures/walk";
+import { BIG_WALK_RUN_ID } from "./fixtures/walk-large";
 
 interface Entry {
   name: string;
@@ -132,7 +133,8 @@ function WorkProductsDemo() {
  * A graph/walk step live from its start (its log revealed a hop and a half
  * at each read), joined mid-walk, finished (at its end, the controls to step
  * back), a finished run opened in replay (playing from its start at the pace
- * it ran), or an agent walking the same tree by its own calls.
+ * it ran), an agent walking the same tree by its own calls, or a walk over
+ * a very large graph (2,000 candidates, names past 120 characters).
  */
 function WalkDemo() {
   const demos = [
@@ -141,6 +143,7 @@ function WalkDemo() {
     ["done", "finished"],
     ["replay", "finished, opened in replay"],
     ["agent", "an agent's own graph calls"],
+    ["big", "a very large graph (2,000 candidates)"],
   ] as const;
   const [shown, setShown] = useState<(typeof demos)[number][0]>("live");
   // The view in a panel of its own width: it sizes by its container, never the window.
@@ -169,6 +172,7 @@ function WalkDemo() {
           {shown === "done" && <WalkView key="done" workflow={WALK_WORKFLOW} runId={WALK_RUN_ID} />}
           {shown === "replay" && <WalkView key="replay" workflow={WALK_WORKFLOW} runId={WALK_RUN_ID} replay />}
           {shown === "agent" && <WalkView key="agent" workflow={WALK_WORKFLOW} runId={AGENT_WALK_RUN_ID} />}
+          {shown === "big" && <WalkView key="big" workflow={WALK_WORKFLOW} runId={BIG_WALK_RUN_ID} />}
         </div>
       </div>
     </div>

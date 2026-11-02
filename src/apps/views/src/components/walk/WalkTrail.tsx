@@ -9,6 +9,10 @@ import { Check, ChevronRight, CornerDownRight, Loader2 } from "lucide-react";
 import type { WalkBrief, WalkTrail as Trail, WalkTrailCandidate, WalkTrailStep } from "@strut/kit";
 import { cn } from "@/lib/utils";
 import { nodeColor } from "../../lib/colors";
+import { clipName } from "../../lib/format";
+
+/** Candidates a hop shows when its "+N considered" is opened, before "+N more". */
+const CANDIDATES_SHOWN = 5;
 
 /**
  * The keyframes the trail moves by (an app's CSP allows inline styles). No
@@ -83,8 +87,9 @@ function Crumbs({ steps, moving, selected, onSelect, testId }: Common & { steps:
                   onClick={() => onSelect(n)}
                   className={cn("min-w-0 truncate rounded-md px-1.5 py-0.5 hover:bg-muted", last ? "font-semibold" : "text-muted-foreground", selected === n.ref_id && "ring-2 ring-ring", last && moving && "sv-walk-current")}
                   style={{ "--sv-walk-color": tint(n.node_type, 55) } as CSSProperties}
+                  title={n.name}
                 >
-                  {n.name || n.ref_id.slice(0, 8)}
+                  {clipName(n.name || n.ref_id.slice(0, 8))}
                 </button>
               </span>
             ))}
@@ -132,6 +137,7 @@ const PILL = "inline-flex max-w-full items-center gap-2 rounded-md border-2 px-2
 
 function StepRow({ step, last, current, selected, onSelect, whole = false }: Common & { step: WalkTrailStep; last: boolean; current: boolean; whole?: boolean }) {
   const [open, setOpen] = useState(false);
+  const [all, setAll] = useState(false);
   const chosen = step.chosen;
   const rest = ordered(step).filter((c) => c.state !== "chosen");
   const kept = rest.filter((c) => c.state === "kept").length;
@@ -154,8 +160,8 @@ function StepRow({ step, last, current, selected, onSelect, whole = false }: Com
           {step.from ? (
             <>
               from{" "}
-              <button type="button" className="hover:text-foreground hover:underline" onClick={() => onSelect(step.from!)}>
-                {step.from.name}
+              <button type="button" className="hover:text-foreground hover:underline" onClick={() => onSelect(step.from!)} title={step.from.name}>
+                {clipName(step.from.name)}
               </button>
             </>
           ) : (
@@ -180,9 +186,10 @@ function StepRow({ step, last, current, selected, onSelect, whole = false }: Com
                 onClick={() => onSelect(n)}
                 className={cn(PILL, current && "sv-walk-current", selected === n.ref_id && "ring-2 ring-ring ring-offset-1 ring-offset-background")}
                 style={{ borderColor: nodeColor(n.node_type), backgroundColor: tint(n.node_type, 16), "--sv-walk-color": tint(n.node_type, 55) } as CSSProperties}
+                title={n.name}
                 {...(whole ? {} : { "data-testid": "walk-chosen" })}
               >
-                <span className="min-w-0 truncate font-medium">{n.name || n.ref_id.slice(0, 8)}</span>
+                <span className="min-w-0 truncate font-medium">{clipName(n.name || n.ref_id.slice(0, 8))}</span>
                 <span className="shrink-0 font-mono text-[10px] text-muted-foreground">{n.node_type}</span>
                 {relevance !== undefined && <span className="shrink-0 font-mono text-[10px] text-muted-foreground">{relevance.toFixed(2)}</span>}
               </button>
@@ -200,21 +207,29 @@ function StepRow({ step, last, current, selected, onSelect, whole = false }: Com
         {rest.length > 0 && (
           <button
             type="button"
-            onClick={() => setOpen((o) => !o)}
+            onClick={() => {
+              setOpen((o) => !o);
+              setAll(false);
+            }}
             aria-expanded={open}
             className={cn("rounded-md px-1.5 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground", step.pending && "sv-walk-considering")}
             title={open ? "Hide the candidates" : "Show every candidate this hop considered"}
             {...(whole ? {} : { "data-testid": "walk-considered" })}
           >
-            {open ? "hide" : `+${rest.length} considered${kept ? ` · ${kept} kept` : ""}`}
+            {open ? "hide" : `+${rest.length.toLocaleString("en-US")} considered${kept ? ` · ${kept} kept` : ""}`}
           </button>
         )}
       </div>
       {open && (
-        <div className="mt-1.5 flex flex-wrap gap-1">
-          {rest.map((c) => (
+        <div className={cn("mt-1.5 flex flex-wrap gap-1", all && "max-h-48 overflow-y-auto")} data-testid="walk-candidates">
+          {(all ? rest : rest.slice(0, CANDIDATES_SHOWN)).map((c) => (
             <Candidate key={c.ref_id} c={c} selected={selected === c.ref_id} onSelect={onSelect} />
           ))}
+          {!all && rest.length > CANDIDATES_SHOWN && (
+            <button type="button" onClick={() => setAll(true)} className="rounded-md px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground">
+              +{(rest.length - CANDIDATES_SHOWN).toLocaleString("en-US")} more
+            </button>
+          )}
         </div>
       )}
     </div>
@@ -222,7 +237,7 @@ function StepRow({ step, last, current, selected, onSelect, whole = false }: Com
 }
 
 function Candidate({ c, selected, onSelect }: { c: WalkTrailCandidate; selected: boolean; onSelect: (n: WalkBrief) => void }) {
-  const title = `${c.node_type}${c.relevance !== undefined ? ` · relevance ${c.relevance.toFixed(2)}` : ""} · ${c.state}${c.merged ? ` · +${c.merged} like it` : ""}`;
+  const title = `${c.name} · ${c.node_type}${c.relevance !== undefined ? ` · relevance ${c.relevance.toFixed(2)}` : ""} · ${c.state}${c.merged ? ` · +${c.merged} like it` : ""}`;
   return (
     <button
       type="button"
@@ -239,7 +254,7 @@ function Candidate({ c, selected, onSelect }: { c: WalkTrailCandidate; selected:
       style={c.state === "kept" ? { borderColor: tint(c.node_type, 60) } : undefined}
     >
       {c.state === "kept" && <Check className="size-3 shrink-0" style={{ color: nodeColor(c.node_type) }} aria-hidden />}
-      <span className="truncate">{c.name || c.ref_id.slice(0, 8)}</span>
+      <span className="truncate">{clipName(c.name || c.ref_id.slice(0, 8))}</span>
       {c.merged > 0 && <span className="shrink-0 font-mono text-[10px]">+{c.merged}</span>}
     </button>
   );

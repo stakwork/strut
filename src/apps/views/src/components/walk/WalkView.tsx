@@ -25,6 +25,9 @@ export type WalkViewMode = "trail" | "tree";
 /** The node drawer's height: the walk is at least DRAWER_MIN_H tall while it is open, the drawer never past DRAWER_MAX_H. */
 const DRAWER_MIN_H = 352;
 const DRAWER_MAX_H = 448;
+/** The drawer's width beside the walk. A walk narrower than DRAWER_W + BESIDE_MIN gets a drawer across its whole width instead: nothing is ever half under it. */
+const DRAWER_W = 416;
+const BESIDE_MIN = 340;
 
 export interface WalkViewProps {
   /** Read the run's log (`run/events`) — the importing app's grant. */
@@ -109,7 +112,7 @@ export function WalkView({ workflow, runId, live, events: given, path, onPathCha
   // The node open in the drawer, and where the drawer sits: by the node the
   // click came from, so it opens in sight however long the walk is (a host
   // grows the frame to its content, so the page scrolls, not the view).
-  const [opened, setOpened] = useState<{ node: WalkBrief; top: number; height: number } | null>(null);
+  const [opened, setOpened] = useState<{ node: WalkBrief; top: number; height: number; beside: boolean } | null>(null);
   const selected = opened?.node ?? null;
   const area = useRef<HTMLDivElement>(null);
   const clickedAt = useRef(0);
@@ -119,7 +122,9 @@ export function WalkView({ workflow, runId, live, events: given, path, onPathCha
       if (onOpenNode) return onOpenNode(n);
       const tall = Math.max(area.current?.clientHeight ?? 0, DRAWER_MIN_H);
       const height = Math.min(tall, DRAWER_MAX_H);
-      setOpened({ node: n, height, top: Math.max(0, Math.min(clickedAt.current - 24, tall - height)) });
+      // Room for it beside the walk, which then reflows to its left; else across the whole walk.
+      const beside = (area.current?.clientWidth ?? 0) >= DRAWER_W + BESIDE_MIN;
+      setOpened({ node: n, height, beside, top: Math.max(0, Math.min(clickedAt.current - 24, tall - height)) });
     },
     [onOpenNode],
   );
@@ -213,35 +218,40 @@ export function WalkView({ workflow, runId, live, events: given, path, onPathCha
         }}
         data-testid="walk-area"
       >
-        {mode === "tree" && graph && fullGraph ? (
-          <WalkTree
-            graph={graph}
-            full={fullGraph}
-            path={trail.path}
-            fullPath={fullTrail.path}
-            header={<WalkBreadcrumb steps={trail.steps} full={fullTrail.steps} moving={moving} selected={selected?.ref_id ?? null} onSelect={open} />}
-            moving={moving}
-            selected={selected?.ref_id ?? null}
-            onSelect={open}
-          />
-        ) : fullTrail.steps.length ? (
-          <WalkTrailSteps trail={trail} full={fullTrail} moving={moving} selected={selected?.ref_id ?? null} onSelect={open} />
-        ) : (
-          <p className="text-muted-foreground">{running ? "Walking…" : "No hop yet."}</p>
-        )}
-        {opened && <NodeDrawer node={opened.node} top={opened.top} height={opened.height} onClose={close} />}
+        <div style={opened?.beside ? { paddingRight: DRAWER_W + 12 } : undefined}>
+          {mode === "tree" && graph && fullGraph ? (
+            <WalkTree
+              graph={graph}
+              full={fullGraph}
+              path={trail.path}
+              fullPath={fullTrail.path}
+              header={<WalkBreadcrumb steps={trail.steps} full={fullTrail.steps} moving={moving} selected={selected?.ref_id ?? null} onSelect={open} />}
+              moving={moving}
+              selected={selected?.ref_id ?? null}
+              onSelect={open}
+            />
+          ) : fullTrail.steps.length ? (
+            <WalkTrailSteps trail={trail} full={fullTrail} moving={moving} selected={selected?.ref_id ?? null} onSelect={open} />
+          ) : (
+            <p className="text-muted-foreground">{running ? "Walking…" : "No hop yet."}</p>
+          )}
+        </div>
+        {/* Across a narrow walk, the rows above and below it are veiled, never cut in half. */}
+        {opened && !opened.beside && <div className="absolute inset-0 z-10 rounded-lg bg-background/90" aria-hidden data-testid="walk-node-scrim" />}
+        {opened && <NodeDrawer node={opened.node} top={opened.top} height={opened.height} width={opened.beside ? DRAWER_W : "100%"} onClose={close} />}
       </div>
     </div>
   );
 }
 
 /**
- * A node's page in a drawer over the walk, beside the node it opened from:
- * opaque, as wide as the walk allows up to a column's width, its text
+ * A node's page in a drawer by the node it opened from: beside the walk,
+ * which reflows to its left, when the walk is wide enough, else across the
+ * walk's whole width — so no label is ever half under it. Opaque, its text
  * scrolling inside. ✕, Esc or a press anywhere outside it closes it; a
  * press on another node opens that one instead.
  */
-function NodeDrawer({ node: brief, top, height, onClose }: { node: WalkBrief; top: number; height: number; onClose: () => void }) {
+function NodeDrawer({ node: brief, top, height, width, onClose }: { node: WalkBrief; top: number; height: number; width: number | string; onClose: () => void }) {
   const q = useNode(brief.ref_id);
   const node = q.data;
   const box = useRef<HTMLElement>(null);
@@ -268,7 +278,7 @@ function NodeDrawer({ node: brief, top, height, onClose }: { node: WalkBrief; to
       role="dialog"
       aria-label={node?.name || brief.name || brief.ref_id}
       className="absolute right-0 z-20 flex flex-col overflow-hidden rounded-lg border bg-background text-foreground shadow-xl"
-      style={{ top, height, width: "min(100%, 26rem)" }}
+      style={{ top, height, width }}
       data-testid="walk-node"
     >
       <div className="flex shrink-0 items-start gap-2 border-b bg-background p-3">

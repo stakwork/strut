@@ -1,6 +1,11 @@
 // The walk as a TREE, left to right: every node it discovered hung from the
 // one it arrived from (`foldWalkGraph`: the edge each came by), the trail
 // drawn as a thick line through it, kept nodes solid, dropped ones faded.
+// At the scale of a workspace graph — hundreds of candidates a hop — a
+// node's children past a few fold into one "+N more" node a click opens,
+// and only the path, the selected or hovered node and those "+N" nodes are
+// labelled (one line, cut at NAME_CHARS); the rest are dots, their whole
+// names in their tooltips.
 // A tidy tree, not a force layout: a walk reaches each node once, so it IS
 // a tree. It is laid out ONCE, from the whole walk (`full`), and the nodes
 // reached so far (`graph`) are drawn in place: a replay moves nothing and
@@ -16,6 +21,7 @@ import type { WalkBrief, WalkGraphNode, WalkGraphState } from "@strut/kit";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { nodeColor } from "../../lib/colors";
+import { clipName } from "../../lib/format";
 
 const ROW_H = 26;
 /** Room around the drawing when it is fitted. */
@@ -31,12 +37,20 @@ const MIN_H = 200;
 const MAX_H = 480;
 const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 4;
+/** A node's children drawn before the rest fold into "+N more": the path's and the kept ones always, then the most relevant. */
+const SIBLINGS_SHOWN = 5;
+/** The room a column of dots takes when nothing in it is labelled. */
+const DOTS_W = 24;
 
 interface TNode {
   id: string;
   node: WalkGraphNode | null;
+  /** A "+N more" node (`fold`) or an opened parent's "show fewer" (`unfold`): `parent`'s hidden children. */
+  group?: { kind: "fold" | "unfold"; parent: string; members: string[] };
   children: TNode[];
 }
+
+const groupLabel = (g: NonNullable<TNode["group"]>) => (g.kind === "fold" ? `+${g.members.length.toLocaleString("en-US")} more` : "show fewer");
 
 interface Place {
   x: number;
@@ -54,7 +68,9 @@ let measurer: CanvasRenderingContext2D | null | undefined;
 function labelWidth(text: string, onTrail: boolean): number {
   if (measurer === undefined) measurer = typeof document === "undefined" ? null : document.createElement("canvas").getContext("2d");
   if (!measurer) return text.length * CHAR_W;
-  measurer.font = `${onTrail ? 600 : 400} ${onTrail ? 12 : 11}px ${getComputedStyle(document.body).fontFamily || "sans-serif"}`;
+  // The drawing's own font (`font-sans`), not the body's: they may differ.
+  const family = getComputedStyle(document.documentElement).getPropertyValue("--font-sans").trim() || getComputedStyle(document.body).fontFamily || "sans-serif";
+  measurer.font = `${onTrail ? 600 : 400} ${onTrail ? 12 : 11}px ${family}`;
   return Math.ceil(measurer.measureText(text).width) + 4;
 }
 
@@ -73,7 +89,20 @@ export function WalkTree({ graph, full, path, fullPath, header, moving, selected
   selected: string | null;
   onSelect: (node: WalkBrief) => void;
 }) {
+  /** Parents whose every child is shown. */
+  const [opened, setOpened] = useState<ReadonlySet<string>>(() => new Set());
+  const [hovered, setHovered] = useState<string | null>(null);
+  const toggle = (parent: string) =>
+    setOpened((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(parent)) next.add(parent);
+      return next;
+    });
+
+  // Laid out from the whole walk — what folds is decided by it too — so a
+  // replay never moves a node.
   const layout = useMemo(() => {
+    const onPath = new Set(fullPath.map((n) => n.ref_id));
     const root: TNode = { id: "", node: null, children: [] };
     const byId = new Map<string, TNode>();
     for (const n of full.nodes.values()) byId.set(n.id, { id: n.id, node: n, children: [] });
@@ -83,16 +112,40 @@ export function WalkTree({ graph, full, path, fullPath, header, moving, selected
       (parent ?? root).children.push(t);
     }
     if (!root.children.length) return null;
+    const fold = (parent: TNode) => {
+      const kids = parent.children;
+      for (const k of kids) fold(k);
+      if (kids.length <= SIBLINGS_SHOWN + 1) return;
+      if (opened.has(parent.id)) {
+        parent.children = [...kids, { id: `-${parent.id}`, node: null, group: { kind: "unfold", parent: parent.id, members: [] }, children: [] }];
+        return;
+      }
+      const always = kids.filter((k) => onPath.has(k.id) || k.node?.state === "kept" || k.children.length > 0);
+      const room = Math.max(0, SIBLINGS_SHOWN - always.length);
+      const best = new Set(
+        kids
+          .filter((k) => !always.includes(k))
+          .sort((a, b) => (b.node?.relevance ?? -1) - (a.node?.relevance ?? -1))
+          .slice(0, room)
+          .map((k) => k.id),
+      );
+      const shown = kids.filter((k) => always.includes(k) || best.has(k.id));
+      const hidden = kids.filter((k) => !shown.includes(k)).map((k) => k.id);
+      parent.children = [...shown, { id: `+${parent.id}`, node: null, group: { kind: "fold", parent: parent.id, members: hidden }, children: [] }];
+    };
+    fold(root);
     const laid = tree<TNode>().nodeSize([ROW_H, 1])(hierarchy<TNode>(root, (d) => d.children));
     const nodes = laid.descendants().filter((d) => d.depth > 0);
-    const bold = new Set(fullPath.map((n) => n.ref_id));
-    // Each column as wide as its longest label.
+    // Each column as wide as the longest label it keeps: the path's (bold)
+    // and the "+N" nodes'. A dot needs no more than DOTS_W.
     const widest = new Map<number, number>();
     let depth = 0;
     let minY = Infinity;
     let maxY = -Infinity;
     for (const d of nodes) {
-      widest.set(d.depth, Math.max(widest.get(d.depth) ?? 0, labelWidth(labelOf(d.data.node!), bold.has(d.data.id))));
+      const t = d.data;
+      const w = t.group ? labelWidth(groupLabel(t.group), false) : onPath.has(t.id) ? labelWidth(clipName(labelOf(t.node!)), true) : DOTS_W;
+      widest.set(d.depth, Math.max(widest.get(d.depth) ?? 0, w));
       depth = Math.max(depth, d.depth);
       minY = Math.min(minY, d.x);
       maxY = Math.max(maxY, d.x);
@@ -106,9 +159,10 @@ export function WalkTree({ graph, full, path, fullPath, header, moving, selected
       x = width + GAP;
     }
     const place = new Map<string, Place>(nodes.map((d) => [d.data.id, { x: column.get(d.depth)! + DOT, y: d.x - minY + ROW_H / 2 }]));
+    const groups = nodes.flatMap((d) => (d.data.group ? [{ id: d.data.id, ...d.data.group }] : []));
     const links = laid.links().filter((l) => l.source.depth > 0).map((l) => ({ source: l.source.data.id, target: l.target.data.id }));
-    return { place, links, width, height: maxY - minY + ROW_H };
-  }, [full, fullPath]);
+    return { place, groups, links, width, height: maxY - minY + ROW_H };
+  }, [full, fullPath, opened]);
 
   const box = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -173,7 +227,16 @@ export function WalkTree({ graph, full, path, fullPath, header, moving, selected
   };
 
   const onTrail = useMemo(() => new Set(path.map((n) => n.ref_id)), [path]);
+  const groupById = useMemo(() => new Map((layout?.groups ?? []).map((g) => [g.id, g])), [layout]);
   if (!layout) return <p className="text-sm text-muted-foreground">Nothing discovered yet.</p>;
+  /** Drawn at this point of the walk: a node it has reached, or a "+N" node whose parent it has and whose members it has met. */
+  const present = (id: string): boolean => {
+    if (graph.nodes.has(id)) return true;
+    const g = groupById.get(id);
+    if (!g) return false;
+    const parentIn = g.parent === "" || graph.nodes.has(g.parent);
+    return parentIn && (g.kind === "unfold" || g.members.some((m) => graph.nodes.has(m)));
+  };
   const current = moving ? path[path.length - 1]?.ref_id : undefined;
   const link = linkHorizontal<{ source: Place; target: Place }, [number, number]>()
     .source((l) => [l.source.x, l.source.y])
@@ -210,22 +273,43 @@ export function WalkTree({ graph, full, path, fullPath, header, moving, selected
         <svg ref={svgRef} width="100%" height="100%" className="block cursor-grab touch-none font-sans active:cursor-grabbing">
           <g ref={view}>
             {layout.links.map(({ source, target }) => {
+              if (!present(source)) return null;
               const t = graph.nodes.get(target);
-              if (!t || !graph.nodes.has(source)) return null;
-              const trail = onTrail.has(source) && onTrail.has(target);
+              const group = groupById.get(target);
+              if (!t && !(group && present(group.id))) return null;
+              const trail = !!t && onTrail.has(source) && onTrail.has(target);
               return (
                 <path
                   key={`${source}>${target}`}
                   d={link({ source: layout.place.get(source)!, target: layout.place.get(target)! }) ?? ""}
                   fill="none"
-                  stroke={trail ? nodeColor(t.type) : "currentColor"}
+                  stroke={trail ? nodeColor(t!.type) : "currentColor"}
                   strokeWidth={trail ? 3 : 1}
-                  strokeDasharray={t.state === "dropped" ? "3 3" : undefined}
+                  strokeDasharray={!t || t.state === "dropped" ? "3 3" : undefined}
                   className={cn("transition-all duration-300", !trail && "text-border")}
                 />
               );
             })}
             {[...layout.place].map(([id, p]) => {
+              const group = groupById.get(id);
+              if (group) {
+                if (!present(id)) return null;
+                return (
+                  <g
+                    key={id}
+                    style={{ transform: `translate(${p.x}px, ${p.y}px)`, transition: "transform .4s ease" }}
+                    className="cursor-pointer"
+                    onClick={() => toggle(group.parent)}
+                    data-testid="walk-tree-group"
+                  >
+                    <title>{group.kind === "fold" ? `${group.members.length.toLocaleString("en-US")} more candidates here — click to show them` : "Show fewer"}</title>
+                    <circle r={5} style={{ fill: "var(--card)" }} className="stroke-muted-foreground" strokeWidth={1.5} strokeDasharray="2 2" />
+                    <text x={LABEL_AT} dy="0.32em" style={{ stroke: "var(--card)", strokeWidth: 3, paintOrder: "stroke" }} className="fill-muted-foreground text-[11px]">
+                      {groupLabel(group)}
+                    </text>
+                  </g>
+                );
+              }
               const n = graph.nodes.get(id);
               if (!n) return null;
               const color = nodeColor(n.type);
@@ -239,17 +323,34 @@ export function WalkTree({ graph, full, path, fullPath, header, moving, selected
                   style={{ transform: `translate(${p.x}px, ${p.y}px)`, transition: "transform .4s ease" }}
                   className={cn("cursor-pointer", faded && "opacity-45")}
                   onClick={() => onSelect({ ref_id: n.id, node_type: n.type, name: n.name })}
+                  onMouseEnter={() => setHovered(n.id)}
+                  onMouseLeave={() => setHovered((h) => (h === n.id ? null : h))}
                   data-state={chosen ? "chosen" : n.state}
                   data-testid="walk-tree-node"
                 >
                   <title>{`${n.name} · ${n.type}${n.relevance !== undefined ? ` · relevance ${n.relevance.toFixed(2)}` : ""} · ${chosen ? "chosen" : n.state}`}</title>
                   {current === n.id && <circle r={7} fill={color} className="sv-walk-ping" />}
+                  {/* A wider target than the dot, for a pointer. */}
+                  <circle r={9} fill="transparent" />
                   <circle r={chosen ? 7 : 5} style={{ fill: solid ? color : "var(--card)" }} stroke={color} strokeWidth={2} strokeDasharray={n.state === "discovered" ? "2 2" : undefined} />
                   {selected === n.id && <circle r={11} fill="none" style={{ stroke: "var(--ring)" }} strokeWidth={2} />}
-                  <text x={LABEL_AT} dy="0.32em" style={{ stroke: "var(--card)", strokeWidth: 3, paintOrder: "stroke" }} className={cn("fill-foreground text-[12px]", chosen ? "font-semibold" : "text-[11px]", faded && "fill-muted-foreground")}>
-                    {labelOf(n)}
-                  </text>
+                  {chosen && (
+                    <text x={LABEL_AT} dy="0.32em" style={{ stroke: "var(--card)", strokeWidth: 3, paintOrder: "stroke" }} className="fill-foreground text-[12px] font-semibold">
+                      {clipName(labelOf(n))}
+                    </text>
+                  )}
                 </g>
+              );
+            })}
+            {/* The selected and the hovered node's names, over everything else. */}
+            {[selected, hovered].map((id, i) => {
+              const n = id ? graph.nodes.get(id) : undefined;
+              const p = id ? layout.place.get(id) : undefined;
+              if (!n || !p || onTrail.has(n.id) || (i === 1 && id === selected)) return null;
+              return (
+                <text key={`label-${i}`} x={p.x + LABEL_AT} y={p.y} dy="0.32em" pointerEvents="none" style={{ stroke: "var(--card)", strokeWidth: 4, paintOrder: "stroke" }} className="fill-foreground text-[11px]" data-testid="walk-tree-label">
+                  {clipName(labelOf(n))}
+                </text>
               );
             })}
           </g>
