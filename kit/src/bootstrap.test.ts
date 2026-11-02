@@ -2,7 +2,7 @@ import { teardownDom } from "./test-dom.js";
 import { after, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createElement } from "react";
-import { bootstrap, readToken, TOKEN_META, type Transport } from "./bootstrap.js";
+import { bootstrap, installMemoryStorage, readToken, TOKEN_META, type Transport } from "./bootstrap.js";
 import { useHost, useToolInput } from "./hooks.js";
 
 type Msg = { jsonrpc: "2.0"; id?: number | string; method?: string; params?: Record<string, unknown>; result?: unknown; error?: unknown };
@@ -84,6 +84,26 @@ function ThrowingApp(): never {
 }
 
 describe("bootstrap", () => {
+  it("gives a page whose storage throws (an opaque origin) an in-memory one, and leaves a working one alone", () => {
+    const denied = () => { throw new DOMException("The document is sandboxed and lacks the 'allow-same-origin' flag.", "SecurityError"); };
+    const framed = Object.defineProperties({}, {
+      localStorage: { get: denied, configurable: true },
+      sessionStorage: { get: denied, configurable: true },
+    }) as Window;
+    assert.deepEqual(installMemoryStorage(framed), ["localStorage", "sessionStorage"]);
+    framed.localStorage.setItem("theme", "dark");
+    assert.equal(framed.localStorage.getItem("theme"), "dark");
+    assert.equal(framed.localStorage.getItem("nope"), null);
+    assert.deepEqual([framed.localStorage.length, framed.localStorage.key(0)], [1, "theme"]);
+    framed.localStorage.removeItem("theme");
+    assert.equal(framed.localStorage.length, 0);
+    assert.equal(framed.sessionStorage.getItem("theme"), null, "one store each");
+    const real = { setItem() {}, getItem: () => "kept" };
+    const open = { localStorage: real, sessionStorage: real } as unknown as Window;
+    assert.deepEqual(installMemoryStorage(open), []);
+    assert.equal(open.localStorage, real);
+  });
+
   it("reads the token meta", () => {
     setMeta("tok-abc");
     assert.equal(readToken(document), "tok-abc");

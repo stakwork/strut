@@ -86,7 +86,11 @@ the `sideEffects` and `type` rules, and that the recorded versions are
   `{ upload(file), remove(path) }` (`job/upload`, `job/delete-upload`: files
   into the app's job, §12; `fileData` turns a `File` into what a step
   takes), `useCancel`, `useWorkflow` (`run/workflow`), `useStep(type)` →
-  `run(config, input)`, `useToolInput`, `useAppLink`, `useHost`. The LIVE
+  `run(config, input)`, `useToolInput`, `useAppLink`, `useHost`,
+  `useAppState(key, initial)` → `[value, set, { loaded, error }]` (`app/state`:
+  what this viewer's page remembers across visits — the page has no browser
+  storage; writes go out within `APP_STATE_WRITE_MS`, every key set meanwhile
+  in one call). The LIVE
   FEEDS (`plans/live-feeds.md`), one call held on the server at a time and
   none while the page is hidden: `useJobUpdates(job)` → `{ updates,
   latest(kind) }` (`job/updates`: a job's shots, frames, holds, verdicts,
@@ -105,7 +109,11 @@ the `sideEffects` and `type` rules, and that the recorded versions are
   `<StrutProvider><ErrorBoundary><App/></ErrorBoundary></StrutProvider>`;
   reports its size (`ui/notifications/size-changed`); turns render failures and
   `window.onerror` into `app/report-error { message, stack?, componentStack? }`,
-  once per distinct error.
+  once per distinct error. First, when its module is evaluated (before the
+  app's own modules), it gives a page whose `localStorage` / `sessionStorage`
+  throws — every host frames it with an opaque origin — an in-memory one
+  (`installMemoryStorage`), so a library that persists by default works for
+  the page's life instead of breaking it.
 - **`src/folds/`** — the folds (plans/apps.md §3), pure and dependency-free,
   one copy for strut's UI, `strut/views` and any app: `run-overview.ts`
   (`foldRunOverview`: status, cost, model calls, the timeline rows — `tree`

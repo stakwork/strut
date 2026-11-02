@@ -1,6 +1,6 @@
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { z } from "zod";
@@ -18,6 +18,7 @@ import type { KitLocation } from "./kit.js";
 import { buildTools } from "../ai/tools.js";
 import { APP_TOOL_META, STEP_RUN_TOOL, appJobId, buildAppTools, grantRefusal, keptFromApp, scopeAppJobs } from "./tools.js";
 import { jobRoot, saveJobUpload } from "../jobs.js";
+import { runStep } from "../run-step.js";
 import { parseManifest } from "./manifest.js";
 import type { AppUsage } from "./monitor.js";
 
@@ -282,6 +283,8 @@ describe("step_run — the app door", () => {
     assert.equal(grantRefusal("graph/graph-search", {}, m.manifest, registry), null);
     assert.match(grantRefusal("app/get", {}, m.manifest, registry)!, /not granted/);
     assert.equal(grantRefusal("app/report-error", {}, m.manifest, registry), null, "always granted");
+    assert.equal(grantRefusal("app/state", {}, m.manifest, registry), null, "always granted");
+    assert.ok(!keptFromApp("app/state"), "never kept");
     assert.ok(keptFromApp("graph/edit-node") && keptFromApp("app/report-error") && !keptFromApp("run/list") && !keptFromApp("graph/graph-get"));
   });
 
@@ -509,6 +512,33 @@ describe("step_run — the app door", () => {
     assert.deepEqual((await strut.apps.get("bench"))!.errors, [], "another app's errors are its own");
     const http = await strut.app.request("/apps/strict", { headers: auth });
     assert.equal(((await http.json()) as { errors: unknown[] }).errors.length, 1, "on the route too");
+  });
+
+  it("app/state is always granted and never kept: one state per app and viewer, null removes a key, over the cap refused with nothing written; gone with the app", async () => {
+    const strict = appIdentity("strict", "v1");
+    assert.deepEqual(await ok({ type: "app/state", config: {}, app: strict }), { state: {} });
+    assert.deepEqual(await ok({ type: "app/state", config: { set: { tab: "runs", draft: "hi" } }, app: strict }), { state: { tab: "runs", draft: "hi" } });
+    assert.deepEqual(await ok({ type: "app/state", config: { set: { draft: null, n: 3 } }, app: strict }), { state: { tab: "runs", n: 3 } });
+    assert.deepEqual(await ok({ type: "app/state", config: {}, app: identity }), { state: {} }, "another app's is its own");
+    const other = buildAppTools({ apps: strut.apps, registry, services: strut.services, actor: "someone-else", runStepDeps: { store, workspace: strut.workspace } });
+    const theirs = (await (other[STEP_RUN_TOOL] as any).execute({ type: "app/state", config: {}, app: strict }, { toolCallId: "t", messages: [] })) as { result?: any };
+    assert.deepEqual(theirs.result, { state: {} }, "another viewer's is theirs");
+    await refused({ type: "app/state", config: { set: { big: "x".repeat(300 * 1024) } }, app: strict }, /over the 256 KB cap/);
+    assert.deepEqual(await ok({ type: "app/state", config: {}, app: strict }), { state: { tab: "runs", n: 3 } }, "nothing written");
+    assert.deepEqual(await store.listRuns("step:app/state"), [], "never a kept run");
+    const direct = await runStep("app/state", registry, strut.services, { config: {} }, { store });
+    assert.match(direct.error?.message ?? "", /runs only from an app's page/);
+
+    const dir = join(root, "apps", "notes");
+    await mkdir(join(dir, "src"), { recursive: true });
+    await writeFile(join(dir, "app.yaml"), "title: Notes\n");
+    await writeFile(join(dir, "src", "App.tsx"), APP_TSX);
+    assert.ok((await strut.apps.publish(dir, "notes", { surface: "person" })).ok);
+    await ok({ type: "app/state", config: { set: { tab: "a" } }, app: appIdentity("notes", "v1") });
+    assert.equal(await strut.apps.delete("notes"), true);
+    await assert.rejects(stat(join(dataDir, "apps", "notes", ".state")), { code: "ENOENT" });
+    assert.ok((await strut.apps.publish(dir, "notes", { surface: "person" })).ok);
+    assert.deepEqual(await ok({ type: "app/state", config: {}, app: appIdentity("notes", "v1") }), { state: {} }, "a new app of the name starts with none");
   });
 
   // A declared type going through, kept, is graph-types.test.ts's: only a

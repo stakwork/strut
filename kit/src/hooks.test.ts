@@ -11,6 +11,7 @@ import {
   JOB_STEPS, RUN_EVENTS_MAX, RUN_STEPS, RUN_WAIT_MS, anyInFlight, eventsSettled, fileData, isInFlight,
   useAppLink, useCancel, useHost, useLaunch, useRun, useRunEvents, useRuns, useStep, useToolInput, useTranscript, useTranscripts, useUpload, useWorkflow,
   useAssistant, assistantJobs, useJobUpdates, useGraphChanges, FEED_WAIT_MS,
+  useAppState, APP_STATE_STEP, APP_STATE_WRITE_MS,
 } from "./hooks.js";
 import { appLink } from "./links.js";
 
@@ -459,6 +460,84 @@ describe("the live feeds (plans/live-feeds.md)", () => {
     assert.deepEqual(h.result().changes.map((c) => c.ref_id), ["o1"]);
     assert.deepEqual(calls[0], { type: "graph/changes", config: { types: ["Option", "Question"], since: "now" } });
     assert.deepEqual(calls[1], { type: "graph/changes", config: { types: ["Option", "Question"], since: "e.9", wait: FEED_WAIT_MS } });
+    await h.unmount();
+  });
+});
+
+describe("useAppState: what this viewer's page remembers", () => {
+  /** A client for an app, answering app/state like the server: a merge. */
+  function stateClient(initial: Record<string, unknown> = {}, opts: { fail?: string } = {}) {
+    let server = { ...initial };
+    const { client: base, calls } = fakeClient({
+      [APP_STATE_STEP]: (c) => {
+        if (opts.fail) throw new Error(opts.fail);
+        for (const [k, v] of Object.entries((c.config?.set ?? {}) as Record<string, unknown>)) {
+          if (v === null) delete server[k];
+          else server[k] = v;
+        }
+        return { state: { ...server } };
+      },
+    });
+    const client: StrutClient = { run: base.run, app: { name: "bench", version: "v1" } };
+    return { client, calls, server: () => server };
+  }
+
+  it("reads the viewer's state once, shows a set at once and sends every key set meanwhile in one call", async () => {
+    const { client, calls, server } = stateClient({ tab: "graph" });
+    const h = await renderHook(() => ({ tab: useAppState("tab", "runs"), draft: useAppState("draft", ""), again: useAppState("tab", "x") }), { client });
+    await until(() => h.result().tab[2].loaded, "the read");
+    assert.deepEqual(calls, [{ type: APP_STATE_STEP, config: {} }], "one read for every hook");
+    assert.equal(h.result().tab[0], "graph");
+    assert.equal(h.result().draft[0], "", "initial for a key never set");
+    await act(async () => {
+      h.result().draft[1]("h");
+      h.result().draft[1]((d) => d + "i");
+      h.result().tab[1]("runs");
+    });
+    assert.deepEqual([h.result().draft[0], h.result().tab[0], h.result().again[0]], ["hi", "runs", "runs"], "at once, in every hook on the key");
+    assert.equal(calls.length, 1, "nothing sent yet");
+    await until(() => calls.length === 2, "the write", APP_STATE_WRITE_MS + 2000);
+    assert.deepEqual(calls[1], { type: APP_STATE_STEP, config: { set: { draft: "hi", tab: "runs" } } });
+    await act(async () => { h.result().draft[1](undefined as unknown as string); });
+    await until(() => calls.length === 3, "the removal", APP_STATE_WRITE_MS + 2000);
+    assert.deepEqual(calls[2]!.config, { set: { draft: null } }, "undefined removes the key");
+    assert.deepEqual(server(), { tab: "runs" });
+    assert.equal(h.result().draft[0], "");
+    await h.unmount();
+  });
+
+  it("a set before the read lands is kept over it", async () => {
+    const { client, calls } = stateClient({ tab: "graph" });
+    const h = await renderHook(() => useAppState("tab", "runs"), { client });
+    await act(async () => { h.result()[1]("mine"); });
+    await until(() => h.result()[2].loaded, "the read");
+    assert.equal(h.result()[0], "mine");
+    await until(() => calls.length === 2, "the write", APP_STATE_WRITE_MS + 2000);
+    assert.equal(h.result()[0], "mine");
+    await h.unmount();
+  });
+
+  it("a refused call is the hook's error, and the value the page set stays", async () => {
+    const { client, calls } = stateClient({}, { fail: "app/state: over the 256 KB cap" });
+    const h = await renderHook(() => useAppState("big", "a"), { client });
+    await until(() => h.result()[2].loaded, "the read");
+    assert.match(h.result()[2].error?.message ?? "", /256 KB/);
+    await act(async () => { h.result()[1]("b"); });
+    await until(() => calls.length === 2, "the write", APP_STATE_WRITE_MS + 2000);
+    await act(async () => { await sleep(10); });
+    assert.match(h.result()[2].error?.message ?? "", /256 KB/);
+    assert.equal(h.result()[0], "b");
+    await h.unmount();
+  });
+
+  it("under a host's own client (no app identity) nothing is sent and the value lasts the page's life", async () => {
+    const { client, calls } = fakeClient();
+    const h = await renderHook(() => useAppState("tab", "runs"), { client });
+    await until(() => h.result()[2].loaded, "loaded");
+    await act(async () => { h.result()[1]("graph"); });
+    await sleep(APP_STATE_WRITE_MS + 100);
+    assert.equal(h.result()[0], "graph");
+    assert.deepEqual(calls, []);
     await h.unmount();
   });
 });
