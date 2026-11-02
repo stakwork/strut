@@ -28,7 +28,7 @@ export default defineStep({
     "values in a namespace are the same node (`node_key` is accepted as its old name). `index` (default: the key_spec attributes) lists the searchable attributes. " +
     "`title_key` names the attribute a node's title comes from, or a template like '{first} {last}' (default 'name'). " +
     "If the type ALREADY EXISTS this is add-only: attributes it lacks are added, nothing existing changes, and " +
-    "parent/key_spec/index are left alone (status 'Warning' with `added_attributes`). Strut's own types (StrutRun, " +
+    "parent/key_spec/index are left alone (status 'Warning' with `added_attributes`) — except the rules role, identifiers, embed and key, which are set when given. Strut's own types (StrutRun, " +
     "StrutWorkflow, …) are a closed registry and cannot be created or extended. A type name or alias names ONE type: a name " +
     "that is already another type's name or alias is refused. On a LadybugDB file every attribute is a real column, so an " +
     "attribute name another type already holds with a different type (say `score` as int vs float) is refused. Edge types between node types are NOT " +
@@ -51,6 +51,16 @@ export default defineStep({
     domain: z.string().optional().describe("Domain the type belongs to (a `Domain_<domain>` label on its nodes). Default 'entity'."),
     type_description: z.string().optional().describe("Human/LLM-facing description of what the type represents."),
     aliases: z.array(z.string()).optional().describe("Other names the type answers to (e.g. 'Company' for Organization). Each must not already name another type."),
+    role: z
+      .enum(["entity", "concept", "claim", "source", "record"])
+      .optional()
+      .describe("What its nodes are, inherited by subtypes: an entity or concept must have a title; a source (dictation, a transcript, a message) is keyword-searched only, with no embedding."),
+    identifiers: z.array(z.string()).optional().describe("Attributes whose value names one node in a namespace (e.g. ['email']): a second node with the same value is refused."),
+    embed: z.boolean().optional().describe("false: keyword search only, no embedding. Default false for a source, else true."),
+    key: z
+      .string()
+      .optional()
+      .describe("The type's key, like key_spec, or 'ref_id' for a type whose every write is a new node (two people may share a name). On an EXISTING type a different key re-keys its nodes, refused when two would share one."),
   }),
   output: z.any(),
   async run(cfg, ctx) {
@@ -68,6 +78,10 @@ export default defineStep({
         domain: cfg.domain,
         type_description: cfg.type_description,
         aliases: cfg.aliases,
+        role: cfg.role,
+        identifiers: cfg.identifiers,
+        embed: cfg.embed,
+        key: cfg.key,
       });
       // No provenance marker: a Schema node is ontology, not data (not a
       // data node), so there is nothing for an ACCESSED edge to land on.
@@ -80,7 +94,13 @@ export default defineStep({
         key_spec: r.key_spec,
         // Deprecated: key_spec's old name, kept for a release.
         node_key: r.key_spec,
-        ...(r.created ? {} : { added_attributes: r.added, messages: [r.added.length ? `Schema already existed — added ${r.added.join(", ")}` : "Schema already existed — nothing to add"] }),
+        ...(r.created
+          ? {}
+          : {
+              added_attributes: r.added,
+              ...(r.changed.length ? { changed_rules: r.changed, rekeyed: r.rekeyed } : {}),
+              messages: [r.added.length || r.changed.length ? `Schema already existed — ${[r.added.length ? `added ${r.added.join(", ")}` : "", r.changed.length ? `changed ${r.changed.join(", ")}` : ""].filter(Boolean).join("; ")}` : "Schema already existed — nothing to add"],
+            }),
         attributes: r.attributes,
       };
     } catch (e) {

@@ -23,11 +23,24 @@
  *     node_key index on Neo4j. The domain's search indexes are created when absent
  *     (`ensure_indexes_for_schema`).
  *
+ * The type's rules (plans/graph-memory-plan.md step 2), enforced by the
+ * writers: `role` (`NODE_ROLES`: an entity or concept needs a title, a
+ * source is keyword-only by default), `embed`, `identifiers` (attributes
+ * whose value names one node in a namespace) and `key` (the plan's name for
+ * the key spec; `ref_id` makes every write a new node). An edge type's
+ * `temporal` and `cardinality` are rules on its edge rules
+ * (`SchemaResolver.createEdgeSchema`), never on a node type.
+ *
  * `createNodeSchema` also EXTENDS an existing non-Strut schema — add-only,
  * the way `seedStrutDomain` reconciles: attributes the schema lacks are
  * added, nothing existing is changed, identity keys (`type`, `parent`,
  * `key_spec`, `index`) are never touched. That is what lets a workflow add
  * `verdict` to a jarvis-seeded `Claim` without editing the ontology by hand.
+ * The rules are the exception: a `role`, `embed` or `identifiers` given is
+ * set, and a `key` given re-keys every node of the type. Both check the
+ * stored nodes first — two live nodes sharing an identifier value, or two
+ * nodes the new key would give one key, refuse the change, and nothing is
+ * written.
  *
  * On a Ladybug file names are one-to-one across the ontology
  * (plans/memory-in-workspace-graph.md decision 9): a type's name and its
@@ -41,11 +54,11 @@
  * name is already a column of another type.
  */
 import { randomUUID } from "node:crypto";
-import type { EngineLike, GraphKind } from "./engine.js";
+import type { EngineLike, GraphEngine, GraphKind } from "./engine.js";
 import { asEngine } from "./neo4j-engine.js";
-import { GraphValidationError } from "./node-writer.js";
+import { GraphValidationError, composeNodeKey, keyedByRef, refNodeKey } from "./node-writer.js";
 import { searchableAttributesOf } from "./ontology-seed.js";
-import type { SchemaResolver } from "./schema-resolver.js";
+import { NODE_ROLES, isNodeRole, type NodeSchema, type SchemaResolver } from "./schema-resolver.js";
 import { schemaStatement } from "./schema-seed.js";
 import { RESERVED_ATTRIBUTE_NAMES, THING_TYPE, TYPE_OWNABLE_CORE, isGenericProperty, isStrutType } from "./strut-schemas.js";
 import { titleFields } from "./title.js";
@@ -77,6 +90,19 @@ export interface NodeSchemaInput {
   aliases?: string[];
   /** The owner whose writes the type is reserved for (`memory`). */
   managed_by?: string;
+  /** What its nodes are: entity | concept | claim | source | record
+   *  (`NODE_ROLES`), inherited by its subtypes. */
+  role?: string;
+  /** Attributes whose value names one node of the type in a namespace: a
+   *  second live node with the same value is refused. */
+  identifiers?: string[];
+  /** `false`: keyword search only, never an embedding. Default false for a
+   *  `source`, else inherited (true). */
+  embed?: boolean;
+  /** The type's key: `-`-joined attribute tokens like `key_spec`, or
+   *  `ref_id` (every write a new node). Unlike `key_spec`, on an existing
+   *  type a different key re-keys its nodes. */
+  key?: string;
 }
 
 /** A validated, normalized schema ready to write. */
@@ -105,6 +131,11 @@ export interface NodeSchemaResult {
   added: string[];
   /** Full effective attribute map after the write (inherited included). */
   attributes: Record<string, string>;
+  /** The rules an existing schema had changed (`role`, `embed`,
+   *  `identifiers`, `key_spec`); empty on create. */
+  changed: string[];
+  /** Nodes given a new key by a change of `key`. */
+  rekeyed: number;
 }
 
 const TYPE_LABEL = /^[A-Za-z][A-Za-z0-9_]*$/;
@@ -140,9 +171,11 @@ function checkAttribute(type: string, name: string, value: unknown, kind?: Graph
 /**
  * Pure validation + normalization of a schema input (no DB). Throws a
  * `GraphValidationError` on the first problem. Existence checks (parent,
- * duplicate type) happen in `createNodeSchema`.
+ * duplicate type) happen in `createNodeSchema`. `known` is the attributes
+ * the type already has or inherits (name → type string), which its key,
+ * index, identifiers and title may name besides its own.
  */
-export function planNodeSchema(input: NodeSchemaInput, kind?: GraphKind): NodeSchemaPlan {
+export function planNodeSchema(input: NodeSchemaInput, kind?: GraphKind, known: Readonly<Record<string, string>> = {}): NodeSchemaPlan {
   const type = String(input.type ?? "").trim();
   if (!TYPE_LABEL.test(type)) throw new GraphValidationError("UNKNOWN_TYPE", type || "?", "type must match ^[A-Za-z][A-Za-z0-9_]*$");
   if (type === "*" || type === THING_TYPE) throw new GraphValidationError("UNKNOWN_TYPE", type, "cannot create the root or wildcard schema");
@@ -155,19 +188,21 @@ export function planNodeSchema(input: NodeSchemaInput, kind?: GraphKind): NodeSc
     checkAttribute(type, k, v, kind);
     attributes[k] = v as string;
   }
-  const declared = new Set(["name", ...Object.keys(attributes)]);
+  const declared = new Set(["name", ...Object.keys(known), ...Object.keys(attributes)]);
 
   const prefix = `${type.toLowerCase()}-`;
-  let rawKey = String(input.key_spec ?? input.node_key ?? "name").trim();
+  let rawKey = String(input.key ?? input.key_spec ?? input.node_key ?? "name").trim();
   if (rawKey.toLowerCase().startsWith(prefix)) rawKey = rawKey.slice(prefix.length);
-  const tokens = rawKey.split("-").map((t) => t.trim()).filter(Boolean);
-  if (tokens.length === 0) throw new GraphValidationError("MISSING_REQUIRED", type, "key_spec needs at least one attribute token", "key_spec");
+  // `ref_id`: no key of its own — every create is a new node (`keyedByRef`).
+  const byRef = rawKey === REF_KEY;
+  const tokens = byRef ? [] : rawKey.split("-").map((t) => t.trim()).filter(Boolean);
+  if (!byRef && tokens.length === 0) throw new GraphValidationError("MISSING_REQUIRED", type, "key_spec needs at least one attribute token", "key_spec");
   for (const t of tokens) {
     if (!declared.has(t)) throw new GraphValidationError("UNKNOWN_ATTRIBUTE", type, `key_spec token ${t} is not a declared attribute`, "key_spec");
   }
-  const key_spec = `${prefix}${tokens.join("-")}`;
+  const key_spec = byRef ? REF_KEY : `${prefix}${tokens.join("-")}`;
 
-  const index = (input.index ?? tokens).map((f) => String(f).trim()).filter(Boolean);
+  const index = (input.index ?? (byRef ? ["name"] : tokens)).map((f) => String(f).trim()).filter(Boolean);
   for (const f of index) {
     if (!declared.has(f)) throw new GraphValidationError("UNKNOWN_ATTRIBUTE", type, `index field ${f} is not a declared attribute`, "index");
   }
@@ -191,6 +226,7 @@ export function planNodeSchema(input: NodeSchemaInput, kind?: GraphKind): NodeSc
   }
   for (const a of aliases) if (!TYPE_LABEL.test(a)) throw new GraphValidationError("UNKNOWN_TYPE", type, `alias must match ^[A-Za-z][A-Za-z0-9_]*$, got ${JSON.stringify(a)}`, "aliases");
   const managed_by = input.managed_by?.trim() || undefined;
+  const rules = planRules(type, input, (k) => attributes[k] ?? known[k] ?? (k === "name" ? "string" : undefined));
 
   const flat: Record<string, unknown> = {
     type,
@@ -203,9 +239,38 @@ export function planNodeSchema(input: NodeSchemaInput, kind?: GraphKind): NodeSc
     ...(input.type_description ? { type_description: input.type_description } : {}),
     ...(aliases.length ? { aliases } : {}),
     ...(managed_by ? { managed_by } : {}),
+    ...rules,
     ...attributes,
   };
   return { type, parent, key_spec, tokens, index, domain, attributes, aliases, flat };
+}
+
+/** A type keyed by its nodes' ref_ids (`keyedByRef`, node-writer.ts). */
+const REF_KEY = "ref_id";
+
+/** The node rules an input sets, checked: a known role, a boolean embed,
+ *  identifiers that are scalar attributes of the type. */
+function planRules(type: string, input: NodeSchemaInput, typeOf: (attr: string) => string | undefined): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (input.role !== undefined) {
+    if (!isNodeRole(input.role)) throw new GraphValidationError("WRONG_TYPE", type, `role is one of ${NODE_ROLES.join(", ")}, got ${JSON.stringify(input.role)}`, "role");
+    out["role"] = input.role;
+  }
+  if (input.embed !== undefined) {
+    if (typeof input.embed !== "boolean") throw new GraphValidationError("WRONG_TYPE", type, "embed is true or false", "embed");
+    out["embed"] = input.embed;
+  }
+  if (input.identifiers !== undefined) {
+    if (!Array.isArray(input.identifiers)) throw new GraphValidationError("WRONG_TYPE", type, "identifiers is a list of attribute names", "identifiers");
+    const ids = [...new Set(input.identifiers.map((x) => String(x).trim()).filter(Boolean))];
+    for (const id of ids) {
+      const t = typeOf(id);
+      if (!t) throw new GraphValidationError("UNKNOWN_ATTRIBUTE", type, `identifier ${id} is not a declared attribute`, "identifiers");
+      if (/^\??(list|complex)$/.test(t)) throw new GraphValidationError("WRONG_TYPE", type, `identifier ${id} is a ${t}: an identifier is one value`, "identifiers");
+    }
+    out["identifiers"] = ids;
+  }
+  return out;
 }
 
 /**
@@ -215,13 +280,15 @@ export function planNodeSchema(input: NodeSchemaInput, kind?: GraphKind): NodeSc
 export async function createNodeSchema(e: EngineLike, resolver: SchemaResolver, input: NodeSchemaInput): Promise<NodeSchemaResult> {
   const engine = asEngine(e);
   const src = engine.schemaSource;
-  const plan = planNodeSchema(input, engine.kind);
-  const managedBy = typeof plan.flat["managed_by"] === "string" ? (plan.flat["managed_by"] as string) : undefined;
-
   // Adopt the live casing of an existing type / parent (jarvis
   // `resolve_graph_label` / `resolve_canonical_node_type`).
-  const existingType = await resolver.resolveType(plan.type);
-  const parent = (await resolver.resolveType(plan.parent)) ?? null;
+  const existingType = typeof input.type === "string" && input.type.trim() ? await resolver.resolveType(input.type) : null;
+  const parent = (await resolver.resolveType(String(input.parent ?? THING_TYPE).trim() || THING_TYPE)) ?? null;
+  // What the type has or inherits already, which its key and rules may name.
+  const held = existingType && !isStrutType(existingType) ? await resolver.schema(existingType) : parent && !isStrutType(parent) ? await resolver.schema(parent) : null;
+  const plan = planNodeSchema(input, engine.kind, held?.attributes ?? {});
+  const managedBy = typeof plan.flat["managed_by"] === "string" ? (plan.flat["managed_by"] as string) : undefined;
+
   if (!parent) throw new GraphValidationError("UNKNOWN_TYPE", plan.type, `parent schema ${plan.parent} does not exist`, "parent");
   if (isStrutType(parent)) throw new GraphValidationError("UNKNOWN_TYPE", plan.type, "Strut's own types cannot be extended (closed registry)", "parent");
 
@@ -247,8 +314,22 @@ export async function createNodeSchema(e: EngineLike, resolver: SchemaResolver, 
         for (const [k, v] of Object.entries(plan.attributes)) if (!have.has(k)) missing[k] = v;
         const liveTitleKey = typeof live.props["title_key"] === "string" && live.props["title_key"] ? String(live.props["title_key"]) : "name";
         if ("title" in missing && liveTitleKey !== "title") throw new GraphValidationError("WRONG_TYPE", existingType, titleOwnRule(liveTitleKey), "title");
+        // The rules given that differ from the stored ones, and a new key.
+        const rules: Record<string, unknown> = {};
+        for (const k of RULE_KEYS) if (k in plan.flat && JSON.stringify(plan.flat[k]) !== JSON.stringify(live.props[k] ?? null)) rules[k] = plan.flat[k];
+        const newKey = input.key !== undefined && plan.key_spec !== live.props["key_spec"] ? plan.key_spec : undefined;
+        // Every check before the first write (on Ladybug a new attribute is
+        // DDL, and a transaction that ran DDL must not roll back).
+        const schema = held!;
+        const ids = Array.isArray(rules["identifiers"]) ? (rules["identifiers"] as string[]) : [];
+        const nodes = ids.length || newKey ? await engine.nodeEngine.ofType(tx, existingType) : [];
+        if (ids.length) refuseSharedIdentifiers(engine, schema, ids, nodes);
+        const rekeys = newKey ? planRekey(engine, { ...schema, key_spec: newKey }, nodes) : [];
         if (Object.keys(missing).length) await src.extendSchema(existingType, missing, tx);
-        return { created: false, ref_id: String(live.ref_id), type: existingType, added: Object.keys(missing).sort() };
+        if (newKey) rules["key_spec"] = newKey;
+        if (Object.keys(rules).length) await src.extendSchema(existingType, rules, tx);
+        for (const r of rekeys) await engine.nodeEngine.update(tx, schema, r.ref_id, { key: r.key }, []);
+        return { created: false, ref_id: String(live.ref_id), type: existingType, added: Object.keys(missing).sort(), changed: Object.keys(rules).sort(), rekeyed: rekeys.length };
       }
       // A soft-deleted schema is replaced (jarvis: delete_schema_permanently, then create).
       await src.deleteSchema(existingType, tx);
@@ -256,7 +337,7 @@ export async function createNodeSchema(e: EngineLike, resolver: SchemaResolver, 
     const ref_id = randomUUID();
     await src.createSchema({ ...plan.flat, parent, ref_id }, tx);
     await src.ensureChildOf(plan.type, parent, randomUUID(), tx);
-    return { created: true, ref_id, type: plan.type, added: [] as string[] };
+    return { created: true, ref_id, type: plan.type, added: [] as string[], changed: [] as string[], rekeyed: 0 };
   });
 
   const bolt = engine.bolt;
@@ -286,5 +367,48 @@ export async function createNodeSchema(e: EngineLike, resolver: SchemaResolver, 
     key_spec: schema?.key_spec ?? plan.key_spec,
     added: result.added,
     attributes: schema?.attributes ?? plan.attributes,
+    changed: result.changed,
+    rekeyed: result.rekeyed,
   };
+}
+
+/** The rules an extend may change (`key_spec` through `key`, `planRekey`). */
+const RULE_KEYS = ["role", "embed", "identifiers"] as const;
+
+/** Refuse identifiers two live nodes of the type share in one namespace. */
+function refuseSharedIdentifiers(engine: GraphEngine, schema: NodeSchema, ids: string[], nodes: Array<{ ref_id: string; props: Record<string, unknown> }>): void {
+  for (const id of ids) {
+    const seen = new Map<string, string>();
+    for (const n of nodes) {
+      const v = n.props[id];
+      if (n.props["deleted_at"] != null || v === null || v === undefined || v === "") continue;
+      const slot = `${String(n.props["namespace"] ?? engine.namespace)}\u0000${String(v)}`;
+      const other = seen.get(slot);
+      if (other) throw new GraphValidationError("DUPLICATE_KEY", schema.type, `${other} and ${n.ref_id} share ${id} ${JSON.stringify(v)}: an identifier names one node`, "identifiers");
+      seen.set(slot, n.ref_id);
+    }
+  }
+}
+
+/** Every node's key under the type's new key spec, and the ones that
+ *  change; refused when a node lacks a key attribute or two nodes in one
+ *  namespace would share a key. Pure. */
+function planRekey(engine: GraphEngine, schema: NodeSchema, nodes: Array<{ ref_id: string; props: Record<string, unknown> }>): Array<{ ref_id: string; key: string }> {
+  const seen = new Map<string, string>();
+  const out: Array<{ ref_id: string; key: string }> = [];
+  for (const n of nodes) {
+    let key: string;
+    try {
+      key = keyedByRef(schema) ? refNodeKey(schema.type, n.ref_id) : composeNodeKey(schema, n.props);
+    } catch (err) {
+      if (!(err instanceof GraphValidationError)) throw err;
+      throw new GraphValidationError("MISSING_REQUIRED", schema.type, `node ${n.ref_id} has no ${err.attribute ?? "key attribute"}, so it has no key under ${schema.key_spec}`, "key");
+    }
+    const slot = `${String(n.props["namespace"] ?? engine.namespace)}\u0000${key}`;
+    const other = seen.get(slot);
+    if (other) throw new GraphValidationError("DUPLICATE_KEY", schema.type, `${other} and ${n.ref_id} would share the key ${key}: the type cannot take ${schema.key_spec}`, "key");
+    seen.set(slot, n.ref_id);
+    if (key !== n.props["key"]) out.push({ ref_id: n.ref_id, key });
+  }
+  return out;
 }

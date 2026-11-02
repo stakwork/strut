@@ -34,6 +34,7 @@
 import { randomUUID } from "node:crypto";
 import type { EdgeSchemaWalk, EngineLike, GraphEngine, GraphTx } from "./engine.js";
 import { asEngine } from "./neo4j-engine.js";
+import { GraphValidationError } from "./node-writer.js";
 import {
   GENERIC_NODE_PROPERTIES,
   TYPE_OWNABLE_CORE,
@@ -66,6 +67,33 @@ const TYPE_GRAMMAR = /^\??(string|boolean|int|float|complex|datetime|list)$/;
 /** The types whose nodes must have a title (`NodeSchema.requiresTitle`). */
 const CONCEPT_TYPE = "Concept";
 const ENTITY_TYPE = "Entity";
+
+/** What a type's nodes are: a Schema's `role`, inherited down CHILD_OF
+ *  (plans/graph-memory-plan.md step 2). An `entity` or `concept` needs a
+ *  title; a `source` (dictation, a transcript, a message) is found by
+ *  keyword and gets no embedding unless its Schema says `embed: true`;
+ *  `claim` is the claim layer; `record` is strut's own bookkeeping. */
+export const NODE_ROLES = ["entity", "concept", "claim", "source", "record"] as const;
+export type NodeRole = (typeof NODE_ROLES)[number];
+
+export const isNodeRole = (v: unknown): v is NodeRole => typeof v === "string" && (NODE_ROLES as readonly string[]).includes(v);
+
+/** An edge type's rule, kept on its edge rules (plans/graph-memory-plan.md
+ *  step 2). `cardinality: "one"` is one live edge of the type per source
+ *  node: the slot is the source plus the edge type. `temporal` edges are
+ *  written by `assert` (step 3). Unset is `many`, not temporal. */
+export interface EdgeRule {
+  temporal?: boolean;
+  cardinality?: "one" | "many";
+}
+
+/** The rule an edge rule's properties carry. */
+export function edgeRuleOf(props: Record<string, unknown>): EdgeRule {
+  const out: EdgeRule = {};
+  if (typeof props["temporal"] === "boolean") out.temporal = props["temporal"];
+  if (props["cardinality"] === "one" || props["cardinality"] === "many") out.cardinality = props["cardinality"];
+  return out;
+}
 
 /** The schema shape the writers validate against — Strut registry entries
  *  and DB-resolved jarvis schemas both reduce to this. */
@@ -103,9 +131,15 @@ export interface NodeSchema {
   /** The field that describes a node. Default `description`. */
   description_key: string;
   /** True when the writer refuses a node whose title comes out empty: an
-   *  Entity or a Concept. Until Schema rows carry a `role`, that is the
-   *  `Concept` type and every type with `Entity` in its parent chain. */
+   *  Entity or a Concept — a type whose `role` is `entity` or `concept`,
+   *  and (jarvis's types, which carry no role) the `Concept` type and every
+   *  type with `Entity` in its parent chain. */
   requiresTitle?: boolean;
+  /** What the type's nodes are (`NODE_ROLES`); inherited. */
+  role?: NodeRole;
+  /** Attributes whose value names one node of the type in a namespace: the
+   *  writer refuses a second live node with the same value. Inherited. */
+  identifiers?: string[];
   /** `Domain_<x>` labels to stamp on nodes of this type (already filtered
    *  by hidden types/domains). */
   domainLabels: string[];
@@ -118,6 +152,8 @@ export interface EdgeSchemaMatch {
   target: string;
   edge_type: string;
   properties: Record<string, unknown>;
+  /** The edge type's rule (`edgeRuleOf(properties)`). */
+  rule: EdgeRule;
   via: "exact" | "ancestor" | "wildcard" | "allowlist";
 }
 
@@ -232,6 +268,11 @@ export class SchemaResolver {
     const rawIndex = merged["index"];
     const index = Array.isArray(rawIndex) ? rawIndex.map(String).filter(Boolean) : typeof rawIndex === "string" && rawIndex ? [rawIndex] : [];
     const rawVi = merged["vector_index"];
+    const role = isNodeRole(merged["role"]) ? merged["role"] : undefined;
+    const identifiers = Array.isArray(merged["identifiers"]) ? merged["identifiers"].map(String).filter(Boolean) : [];
+    // The type's own mark wins; else a source is keyword-only; else the
+    // inherited mark (Thing's is `embed: true`).
+    const embed = typeof own["embed"] === "boolean" ? own["embed"] : role === "source" ? false : merged["embed"] !== false;
     return {
       type,
       parent: typeof merged["parent"] === "string" ? (merged["parent"] as string) : undefined,
@@ -239,11 +280,13 @@ export class SchemaResolver {
       ...(merged["exact_key"] === true ? { exact_key: true } : {}),
       index: index.length ? index : ["node_key"],
       vector_index: Array.isArray(rawVi) ? rawVi.map(String) : [],
-      embed: merged["embed"] !== false,
+      embed,
       attributes,
       title_key: typeof merged["title_key"] === "string" && merged["title_key"] ? (merged["title_key"] as string) : "name",
       description_key: typeof merged["description_key"] === "string" && merged["description_key"] ? (merged["description_key"] as string) : "description",
-      ...(type === CONCEPT_TYPE || chain.includes(ENTITY_TYPE) ? { requiresTitle: true } : {}),
+      ...(role === "entity" || role === "concept" || type === CONCEPT_TYPE || chain.includes(ENTITY_TYPE) ? { requiresTitle: true } : {}),
+      ...(role ? { role } : {}),
+      ...(identifiers.length ? { identifiers } : {}),
       domainLabels,
       isStrut,
     };
@@ -268,7 +311,7 @@ export class SchemaResolver {
    */
   async edgeSchema(edge: string, sourceType: string, targetType: string, tx?: GraphTx): Promise<EdgeSchemaMatch | null> {
     // jarvis's allowlist is jarvis's: a Ladybug file allows only the edges its ontology holds.
-    if (!this.source.holdsStrutTypes && EDGE_TYPES_ALLOWLIST.has(edge)) return { source: sourceType, target: targetType, edge_type: edge, properties: {}, via: "allowlist" };
+    if (!this.source.holdsStrutTypes && EDGE_TYPES_ALLOWLIST.has(edge)) return { source: sourceType, target: targetType, edge_type: edge, properties: {}, rule: {}, via: "allowlist" };
     const key = `${sourceType}|${edge}|${targetType}`;
     const c = this.edges.get(key);
     if (this.fresh(c)) return c.value;
@@ -283,7 +326,7 @@ export class SchemaResolver {
     for (const [walk, via] of walks) {
       const row = await this.source.findEdgeSchema(walk, sourceType, edge, targetType, tx);
       if (row) {
-        match = { source: row.source, target: row.target, edge_type: row.edge_type, properties: row.props, via };
+        match = { source: row.source, target: row.target, edge_type: row.edge_type, properties: row.props, rule: edgeRuleOf(row.props), via };
         break;
       }
     }
@@ -296,10 +339,17 @@ export class SchemaResolver {
    * `create_schema_if_missing`: register `source -[EDGE]-> target` between
    * two existing `:Schema` nodes (`*` allowed on either side; the sentinel
    * is ensured). Idempotent. Returns whether a new schema edge was created.
+   *
+   * The edge TYPE has one rule (`EdgeRule`), held on each of its edge rules:
+   * a new rule of a type takes the type's rule, and a `rule` given here
+   * becomes the type's, on every rule of the type. Making a type
+   * `cardinality: "one"` is refused, changing nothing, while a source node
+   * holds two live edges of it.
    */
-  async createEdgeSchema(sourceType: string, edge: string, targetType: string): Promise<{ created: boolean; ref_id: string }> {
+  async createEdgeSchema(sourceType: string, edge: string, targetType: string, rule?: EdgeRule): Promise<{ created: boolean; ref_id: string; rule: EdgeRule }> {
     const edgeType = edge.toUpperCase().replace(/ /g, "_");
     if (!/^[A-Z][A-Z0-9_]*$/.test(edgeType)) throw new Error(`invalid edge type ${edge}`);
+    const wanted = rule === undefined ? undefined : checkEdgeRule(edgeType, rule);
     return this.engine.tx(async (tx) => {
       for (const t of [sourceType, targetType]) {
         if (t === "*") {
@@ -309,12 +359,40 @@ export class SchemaResolver {
         const exists = await this.source.schemaRow(t, {}, tx);
         if (!exists || exists.type !== t) throw new Error(`schema ${t} does not exist`);
       }
+      const held = edgeRuleOf((await this.source.edgeRule(edgeType, tx)) ?? {});
+      const effective = wanted ?? held;
       const ref_id = randomUUID();
-      const r = await this.source.ensureEdgeSchema(sourceType, edgeType, targetType, { ref_id }, tx);
+      const r = await this.source.ensureEdgeSchema(sourceType, edgeType, targetType, { ref_id, ...effective }, tx);
+      if (wanted && JSON.stringify(wanted) !== JSON.stringify(held)) {
+        if (wanted.cardinality === "one" && held.cardinality !== "one") await this.refuseCrowdedSlots(tx, edgeType);
+        await this.source.setEdgeRule(edgeType, wanted, tx);
+      }
       this.edges.clear();
-      return { created: r?.created ?? false, ref_id: r?.ref_id ?? ref_id };
+      return { created: r?.created ?? false, ref_id: r?.ref_id ?? ref_id, rule: effective };
     });
   }
+
+  /** Refuse when a source node holds more than one live `edge` edge (its
+   *  rel table exists: `ensureEdgeSchema` ran first). */
+  private async refuseCrowdedSlots(tx: GraphTx, edge: string): Promise<void> {
+    const d = this.engine.dialect;
+    const rows = await tx.run(
+      `MATCH (s)-[r:\`${edge}\`]->(t) WHERE NOT ${d.isType("s", ["Schema"])} AND ${d.live("s")} AND ${d.live("t")}
+       WITH s, count(r) AS c WHERE c > 1 RETURN count(s) AS n`,
+    );
+    const n = Number(rows[0]?.["n"] ?? 0);
+    if (n > 0) throw new GraphValidationError("DUPLICATE_KEY", edge, `cardinality one allows one live ${edge} edge per source node, and ${n} source node(s) hold more: end the extra edges first`, "cardinality");
+  }
+}
+
+/** A caller's edge rule, checked: only `temporal` (boolean) and
+ *  `cardinality` (`one` | `many`). */
+export function checkEdgeRule(edge: string, rule: EdgeRule): EdgeRule {
+  const raw = rule as Record<string, unknown>;
+  for (const k of Object.keys(raw)) if (k !== "temporal" && k !== "cardinality") throw new GraphValidationError("UNKNOWN_ATTRIBUTE", edge, "an edge rule has temporal and cardinality only", k);
+  if (raw["temporal"] !== undefined && typeof raw["temporal"] !== "boolean") throw new GraphValidationError("WRONG_TYPE", edge, "temporal is true or false", "temporal");
+  if (raw["cardinality"] !== undefined && raw["cardinality"] !== "one" && raw["cardinality"] !== "many") throw new GraphValidationError("WRONG_TYPE", edge, 'cardinality is "one" or "many"', "cardinality");
+  return edgeRuleOf(raw);
 }
 
 /** A Strut registry schema as a `NodeSchema` (Thing's attributes inherited,

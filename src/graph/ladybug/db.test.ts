@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { LADYBUG_EDGE_TYPES, nodeColumns, ontologySeed } from "./registry.js";
-import { CORE_RENAME_MIGRATION, MIGRATIONS, ddlStatements, indexCalls, openLadybug, type LadybugHandle } from "./db.js";
+import { CORE_RENAME_MIGRATION, MIGRATIONS, SCHEMA_RULES_MIGRATION, ddlStatements, indexCalls, openLadybug, type LadybugHandle } from "./db.js";
 import { openGraphBackend } from "../backend.js";
 import { testBackends } from "../test-util.js";
 
@@ -25,7 +25,7 @@ describe("ladybug DDL (pure)", () => {
     assert.ok(ddl[0]!.startsWith("CREATE NODE TABLE IF NOT EXISTS Node("));
     assert.ok(ddl.some((s) => s.startsWith("CREATE NODE TABLE IF NOT EXISTS Migration(")));
     assert.ok(!ddl.some((s) => /NODE TABLE IF NOT EXISTS (Schema|Meta)\b/.test(s)), "no meta-graph node table: a type is a Node row");
-    assert.ok(ddl.some((s) => s.startsWith("CREATE REL TABLE IF NOT EXISTS SCHEMA_EDGE(FROM Node TO Node, `ref_id` STRING,") && s.endsWith("`edge_type` STRING, `is_parent` BOOL)")), "parent links and edge rules, apart from the data's edges");
+    assert.ok(ddl.some((s) => s.startsWith("CREATE REL TABLE IF NOT EXISTS SCHEMA_EDGE(FROM Node TO Node, `ref_id` STRING,") && s.endsWith("`edge_type` STRING, `is_parent` BOOL, `temporal` BOOL, `cardinality` STRING)")), "parent links and edge rules, apart from the data's edges");
     for (const col of Object.keys(nodeColumns())) if (col !== "ref_id") assert.ok(ddl.includes(`ALTER TABLE Node ADD IF NOT EXISTS \`${col}\` ${nodeColumns()[col]}`), col);
     for (const edge of LADYBUG_EDGE_TYPES) assert.ok(ddl.some((s) => s.startsWith(`CREATE REL TABLE IF NOT EXISTS \`${edge}\`(FROM Node TO Node, `)), edge);
     assert.ok(!ddl.some((s) => /IS_ALIAS|ACCESSED|IN_RUN|IN_SESSION/.test(s)));
@@ -229,6 +229,8 @@ describe("a file written with the old core column names (plans/graph-memory-plan
          await run("CREATE NODE TABLE Migration(\`migration_id\` STRING PRIMARY KEY, \`executed_at\` INT64)");
          for (const c of ${JSON.stringify(columns)}) await run("ALTER TABLE Node ADD " + c);
          await run("CREATE REL TABLE VERSION_OF(FROM Node TO Node, \`ref_id\` STRING, \`edge_key\` STRING, \`date_added_to_graph\` INT64, \`weight\` DOUBLE)");
+         // The ontology's rel table as the dynamic ontology made it: no edge rule columns.
+         await run("CREATE REL TABLE SCHEMA_EDGE(FROM Node TO Node, \`ref_id\` STRING, \`edge_key\` STRING, \`weight\` DOUBLE, \`importance\` DOUBLE, \`strength\` DOUBLE, \`edge_type\` STRING, \`is_parent\` BOOL)");
          for (const r of ${JSON.stringify(rows)}) {
            const fields = Object.keys(r).map((f) => "\`" + f + "\`: $" + f);
            await run("CREATE (:Node {" + [...fields, "namespace: 'default'", "date_added_to_graph: $at", "updated_at: $at"].join(", ") + "})", { ...r, at: ${at} });
@@ -275,6 +277,12 @@ describe("a file written with the old core column names (plans/graph-memory-plan
       const indexes = (await h.query("CALL SHOW_INDEXES() RETURN index_name, property_names")).filter((r) => r["index_name"] === "node_fts");
       assert.deepEqual(indexes.map((r) => r["property_names"]), [["search_text", "title"]]);
       assert.equal((await h.query("MATCH (m:Migration {migration_id: $id}) RETURN count(m) AS c", { id: CORE_RENAME_MIGRATION }))[0]!["c"], 1);
+      // The schema rules: the edge rules' columns added once, the base types seeded with theirs.
+      const schemaEdge = await columnsOf(h, "SCHEMA_EDGE");
+      assert.ok(schemaEdge.has("temporal") && schemaEdge.has("cardinality"));
+      assert.equal((await h.query("MATCH (m:Migration {migration_id: $id}) RETURN count(m) AS c", { id: SCHEMA_RULES_MIGRATION }))[0]!["c"], 1);
+      const person = (await h.query("MATCH (n:Node {node_type: 'Schema', type: 'Person'}) RETURN n.identifiers AS ids, n.role AS role, n.key_spec AS k"))[0]!;
+      assert.deepEqual([person["ids"], person["role"], person["k"]], [["email"], "entity", "ref_id"]);
     } finally {
       await h.close();
     }
@@ -292,6 +300,9 @@ describe("a file written with the old core column names (plans/graph-memory-plan
       assert.equal(hits.nodes[0]!.created_at! > 1e12, true);
       const memos = await b.reader.search({ q: "memos again" });
       assert.ok(memos.nodes.some((n) => n.ref_id === ref["wf"]));
+      // An edge rule on the migrated file keeps its edge type's rule.
+      await b.schemas.createEdgeSchema("Person", "MENTORS", "Concept", { cardinality: "one" });
+      assert.deepEqual((await b.schemas.edgeSchema("MENTORS", "Person", "Concept"))!.rule, { cardinality: "one" });
     } finally {
       await b.close();
     }

@@ -183,6 +183,14 @@ export const SCHEMA_CORE_PROPERTIES = new Set([
   // `text_embeddings` vector. In this list so the resolver reads it as a
   // mark, not as an attribute named `embed` of type `false`.
   "embed",
+  // The type's rules (plans/graph-memory-plan.md step 2, `SCHEMA_RULES` in
+  // schema-crud.ts): what kind of thing it is, its identifiers, its key, and
+  // an edge type's `temporal` / `cardinality`.
+  "role",
+  "identifiers",
+  "key",
+  "temporal",
+  "cardinality",
 ]);
 
 /** Attribute names a schema may not declare (jarvis reserved keys, plus the

@@ -21,7 +21,7 @@
  * an open without them fails with the hint), the DDL (§3.1; every column
  * `ALTER TABLE ADD IF NOT EXISTS`, so a new attribute in the seed lands on
  * the next open), the two indexes, the append-only `MIGRATIONS` and the
- * one-time ones (`renameCoreColumns`), then the
+ * one-time ones (`renameCoreColumns`, `addSchemaRuleColumns`), then the
  * ontology seed (`registry.ts`), add-only, once per version of the seed
  * (its `Migration` stamp).
  *
@@ -32,10 +32,10 @@
 import { chmodSync, existsSync, mkdirSync, rmSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type { GraphTx, Params, Row } from "../engine.js";
-import { EDGE_COLUMNS, LADYBUG_EDGE_TYPES, nodeColumns, type ColumnType } from "./registry.js";
+import { LADYBUG_EDGE_TYPES, edgeColumnsOf, nodeColumns, type ColumnType } from "./registry.js";
 import { bootEnv } from "../../env.js";
 import { ladybugMaxDbSize } from "./max-size.js";
-import { SCHEMA_EDGE_DDL, readCatalog, seedOntology } from "./ontology.js";
+import { SCHEMA_EDGE, SCHEMA_EDGE_DDL, SCHEMA_EDGE_RULE_COLUMNS, readCatalog, seedOntology } from "./ontology.js";
 import { SCHEMA_TYPE, ontologySeed } from "./registry.js";
 import { OWN_CREATED_AT } from "../strut-schemas.js";
 import { nodeTitleFor } from "../title.js";
@@ -120,8 +120,8 @@ export function ddlStatements(): string[] {
   ];
   for (const [k, t] of Object.entries(nodeColumns())) if (k !== "ref_id") out.push(`ALTER TABLE Node ADD IF NOT EXISTS ${q(k)} ${t}`);
   for (const edge of LADYBUG_EDGE_TYPES) {
-    out.push(`CREATE REL TABLE IF NOT EXISTS ${q(edge)}(FROM Node TO Node, ${cols(EDGE_COLUMNS)})`);
-    for (const [k, t] of Object.entries(EDGE_COLUMNS)) out.push(`ALTER TABLE ${q(edge)} ADD IF NOT EXISTS ${q(k)} ${t}`);
+    out.push(`CREATE REL TABLE IF NOT EXISTS ${q(edge)}(FROM Node TO Node, ${cols(edgeColumnsOf(edge))})`);
+    for (const [k, t] of Object.entries(edgeColumnsOf(edge))) out.push(`ALTER TABLE ${q(edge)} ADD IF NOT EXISTS ${q(k)} ${t}`);
   }
   // The ontology's own edges (`ontology.ts`), apart from the data's.
   out.push(SCHEMA_EDGE_DDL);
@@ -208,6 +208,21 @@ async function renameCoreColumns(read: Query, write: Query): Promise<void> {
     }
   }
   await write("MERGE (m:Migration {migration_id: $id}) ON CREATE SET m.executed_at = $now", { id: CORE_RENAME_MIGRATION, now: Date.now() });
+}
+
+/** The schema rules (plans/graph-memory-plan.md step 2): an edge rule
+ *  carries its edge type's `temporal` and `cardinality`. A file an older
+ *  build made gets the two `SCHEMA_EDGE` columns, once (its `Migration`
+ *  stamp); a new file has them from `SCHEMA_EDGE_DDL`. The Schema rows'
+ *  `identifiers` column is a Node column, added by the DDL like any other.
+ *  The claim-only edge columns (`EDGE_TYPE_COLUMNS`) stay on the rel
+ *  tables an older build gave them to, empty: a column is never dropped. */
+export const SCHEMA_RULES_MIGRATION = "schema_rules_v1";
+
+async function addSchemaRuleColumns(read: Query, write: Query): Promise<void> {
+  if (Number((await read("MATCH (m:Migration {migration_id: $id}) RETURN count(m) AS c", { id: SCHEMA_RULES_MIGRATION }))[0]?.["c"]) > 0) return;
+  for (const [k, t] of Object.entries(SCHEMA_EDGE_RULE_COLUMNS)) await write(`ALTER TABLE ${q(SCHEMA_EDGE)} ADD IF NOT EXISTS ${q(k)} ${t}`);
+  await write("MERGE (m:Migration {migration_id: $id}) ON CREATE SET m.executed_at = $now", { id: SCHEMA_RULES_MIGRATION, now: Date.now() });
 }
 
 /** Every data row without a `title` gets the one the writer would give it:
@@ -468,6 +483,7 @@ async function openFresh(path: string, opts: OpenOptions): Promise<LadybugHandle
     }
     for (const ddl of [...ddlStatements(), ...MIGRATIONS]) await write(ddl);
     await renameCoreColumns(read, write);
+    await addSchemaRuleColumns(read, write);
     const have = new Set((await read(`CALL SHOW_INDEXES() RETURN index_name`)).map((r) => String(r["index_name"]))); // `_PK` rows included; harmless
     for (const [name, call] of indexCalls()) if (!have.has(name)) await write(call);
     await rebuildBrokenFts(read, write, unclean);

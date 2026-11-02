@@ -547,6 +547,7 @@ export class NodeWriter {
     });
     const results: NodeWriteResult[] = new Array(inputs.length);
     const go = async (tx: GraphTx) => {
+      await this.refuseSharedIdentifiers(tx, prepared.map((p) => ({ p, key: p.key })), namespace);
       for (const [type, rows] of byType) {
         const out = await this.engine.nodeEngine.mergeBatch(tx, rows[0]!.p.schema, namespace, rows.map((r) => r.p), mode);
         rows.forEach((r, k) => {
@@ -598,6 +599,7 @@ export class NodeWriter {
       const [p] = await this.prepareMany([{ type: schema.type, data: merged }], { namespace: String(props["namespace"]), tx });
       const key = keyedByRef(schema) ? String(props["key"]) : p!.key;
       const rekeyed = key !== props["key"];
+      await this.refuseSharedIdentifiers(tx, [{ p: p!, key, self: ref_id }], String(props["namespace"]));
       if (rekeyed) {
         const clash = await this.engine.nodeEngine.refByKey(tx, schema.type, key, String(props["namespace"]));
         if (clash && clash !== ref_id) throw new GraphValidationError("DUPLICATE_KEY", type, `Node already exists in the graph with key: ${key}`);
@@ -628,6 +630,42 @@ export class NodeWriter {
       return { ref_id, key, rekeyed };
     };
     return opts.tx ? go(opts.tx) : this.engine.tx(go);
+  }
+
+  /**
+   * The identifier rule (`NodeSchema.identifiers`): an identifier's value
+   * names one live node of the type in the namespace. A write that would give
+   * it to a second node — another stored node, or another node of the batch
+   * — is refused before anything is written. The node itself (`self`, or a
+   * node with the write's own key: a create that finds it) is no clash.
+   */
+  private async refuseSharedIdentifiers(tx: GraphTx, nodes: Array<{ p: PreparedNode; key: string; self?: string }>, namespace: string): Promise<void> {
+    const slots = new Map<string, { type: string; id: string; rows: Array<{ value: unknown; key: string; self?: string }> }>();
+    for (const n of nodes) {
+      for (const id of n.p.schema.identifiers ?? []) {
+        const value = n.p.props[id];
+        if (value === undefined || value === null || value === "") continue;
+        const slot = `${n.p.schema.type}\u0000${id}`;
+        const at = slots.get(slot) ?? { type: n.p.schema.type, id, rows: [] };
+        at.rows.push({ value, key: n.key, self: n.self });
+        slots.set(slot, at);
+      }
+    }
+    const clash = (type: string, id: string, value: unknown, other: string) =>
+      new GraphValidationError("DUPLICATE_KEY", type, `${other} already has ${id} ${JSON.stringify(value)}: an identifier names one node`, id);
+    for (const { type, id, rows } of slots.values()) {
+      const byValue = new Map<string, string>();
+      for (const r of rows) {
+        const other = byValue.get(String(r.value));
+        if (other !== undefined && other !== r.key) throw clash(type, id, r.value, "another node in this write");
+        byValue.set(String(r.value), r.key);
+      }
+      const holders = await this.engine.nodeEngine.holdersOf(tx, type, id, rows.map((r) => r.value), namespace);
+      for (const r of rows) {
+        const other = holders.find((h) => String(h.value) === String(r.value) && h.ref_id !== r.self && h.key !== r.key);
+        if (other) throw clash(type, id, r.value, other.ref_id);
+      }
+    }
   }
 
   /** Soft delete (`deletion.ts`): stamps `deleted_at` (the first delete
