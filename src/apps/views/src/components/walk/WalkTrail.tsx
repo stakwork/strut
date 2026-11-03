@@ -4,7 +4,7 @@
 // judged shimmering. Laid out for the whole walk, the hops shown so far
 // drawn in place, so a replay never changes its height. A breadcrumb (the
 // tree's) reads the path at a glance.
-import { useState, type CSSProperties, type ReactNode } from "react";
+import { useState, type CSSProperties } from "react";
 import { Check, ChevronRight, CornerDownRight, Loader2 } from "lucide-react";
 import type { WalkBrief, WalkTrail as Trail, WalkTrailCandidate, WalkTrailStep } from "@strut/kit";
 import { cn } from "@/lib/utils";
@@ -40,62 +40,52 @@ interface Common {
 }
 
 /**
- * `shown` drawn over `whole` in one grid cell: the cell is as big as the
- * larger of the two, so drawing more or less of the walk never moves what
- * is around it. `whole` is laid out but invisible (no focus, no reader).
+ * The tree's path in one line: the first node › … › the node the walk is on
+ * now (the nodes one read went to, joined by +), the whole path in the
+ * "…"'s tooltip — the tree draws the rest, and the trail lists it all. The
+ * newest pulses while the walk moves.
  */
-function InPlace({ whole, shown }: { whole: ReactNode; shown?: ReactNode }) {
-  return (
-    <div className="grid">
-      <div className="invisible min-w-0" style={{ gridArea: "1 / 1" }} aria-hidden>
-        {whole}
-      </div>
-      {shown && (
-        <div className="min-w-0" style={{ gridArea: "1 / 1" }}>
-          {shown}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/** Law › Corporate / M&A › NDA › … — each hop's choice, the nodes of one read at once joined by +; the newest pulses while the walk moves. Laid out for the whole walk (`full`), the hops shown so far drawn in place. */
-export function WalkBreadcrumb({ steps, full, moving, selected, onSelect }: Common & { steps: WalkTrailStep[]; full: WalkTrailStep[]; moving: boolean }) {
-  if (!full.some((s) => s.chosen.length)) return null;
-  return (
-    <InPlace
-      whole={<Crumbs steps={full} moving={false} selected={null} onSelect={onSelect} />}
-      shown={<Crumbs steps={steps} moving={moving} selected={selected} onSelect={onSelect} testId="walk-breadcrumb" />}
-    />
-  );
-}
-
-function Crumbs({ steps, moving, selected, onSelect, testId }: Common & { steps: WalkTrailStep[]; moving: boolean; testId?: string }) {
+export function WalkBreadcrumb({ steps, moving, selected, onSelect }: Common & { steps: WalkTrailStep[]; full: WalkTrailStep[]; moving: boolean }) {
   const groups = steps.map((s) => s.chosen).filter((g) => g.length > 0);
+  const first = groups[0];
+  const last = groups.length > 1 ? groups[groups.length - 1] : undefined;
+  const crumb = (n: WalkBrief, current: boolean) => (
+    <button
+      key={n.ref_id}
+      type="button"
+      onClick={() => onSelect(n)}
+      className={cn("min-w-0 truncate rounded-md px-1.5 py-0.5 hover:bg-muted", current ? "font-semibold" : "text-muted-foreground", selected === n.ref_id && "ring-2 ring-ring", current && moving && "sv-walk-current")}
+      style={{ "--sv-walk-color": tint(n.node_type, 55) } as CSSProperties}
+      title={n.name}
+    >
+      {clipName(n.name || n.ref_id.slice(0, 8))}
+    </button>
+  );
+  const group = (g: WalkBrief[], current: boolean) =>
+    g.map((n, j) => (
+      <span key={n.ref_id} className="inline-flex min-w-0 items-center gap-1">
+        {j > 0 && <span className="text-xs text-muted-foreground" aria-hidden>+</span>}
+        {crumb(n, current)}
+      </span>
+    ));
+  const arrow = <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />;
   return (
-    <nav aria-label="The walk's path" className="flex flex-wrap items-center gap-x-1 gap-y-1.5 text-sm" data-testid={testId}>
-      {groups.map((group, i) => {
-        const last = i === groups.length - 1;
-        return (
-          <span key={`${i}-${group[0]!.ref_id}`} className="inline-flex min-w-0 items-center gap-1">
-            {i > 0 && <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />}
-            {group.map((n, j) => (
-              <span key={n.ref_id} className="inline-flex min-w-0 items-center gap-1">
-                {j > 0 && <span className="text-xs text-muted-foreground" aria-hidden>+</span>}
-                <button
-                  type="button"
-                  onClick={() => onSelect(n)}
-                  className={cn("min-w-0 truncate rounded-md px-1.5 py-0.5 hover:bg-muted", last ? "font-semibold" : "text-muted-foreground", selected === n.ref_id && "ring-2 ring-ring", last && moving && "sv-walk-current")}
-                  style={{ "--sv-walk-color": tint(n.node_type, 55) } as CSSProperties}
-                  title={n.name}
-                >
-                  {clipName(n.name || n.ref_id.slice(0, 8))}
-                </button>
-              </span>
-            ))}
+    <nav aria-label="The walk's path" className="flex h-7 min-w-0 flex-nowrap items-center gap-1 overflow-hidden whitespace-nowrap text-sm" data-testid="walk-breadcrumb">
+      {first && group(first, !last)}
+      {groups.length > 2 && (
+        <>
+          {arrow}
+          <span className="shrink-0 px-1 text-muted-foreground" title={groups.map((g) => g.map((n) => n.name).join(" + ")).join(" › ")}>
+            …
           </span>
-        );
-      })}
+        </>
+      )}
+      {last && (
+        <>
+          {arrow}
+          {group(last, true)}
+        </>
+      )}
     </nav>
   );
 }
