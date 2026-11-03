@@ -454,10 +454,10 @@ label registry in generic-storage.md. Keys:
 | `StrutStep`            | `strutstep-step_type`                            | `[step_type, description]`               |
 | `StrutStepVersion`     | `strutstepversion-step_type-content_hash`        | `[step_type, description]`               |
 | `StrutRun`             | `strutrun-run_id`                                | `[workflow_name, status, summary]`       |
-| `StrutAgentSession`    | `strutagentsession-run_id-path`                  | `[prompt_preview, result_preview]`       |
+| `StrutAgentSession`    | `strutagentsession-run_id-path`                  | `[message, reply, prompt_preview, result_preview]` |
 | `StrutToolCall`        | `struttoolcall-run_id-path-seq`                  | `[tool_name, input_preview]`             |
 | `StrutChat`            | `strutchat-chat_id`                              | `[title, summary]`                       |
-| `StrutTurn`            | `strutturn-chat_id-turn`                         | `[user_text_preview]`                    |
+| `StrutTurn`            | `strutturn-chat_id-turn`                         | `[user_text, assistant_text, user_text_preview]` |
 
 Since 2026-10-07 the four workspace types are `exact_key` (strut-schemas.ts):
 each token is the HEX of its exact value, not the sanitized form — the
@@ -469,7 +469,10 @@ Rules baked in: every node_key token is a required (non-`?`) attribute;
 `*_preview` fields are truncated (~500 chars) copies specifically so
 search/embeddings stay light while full payloads stay in the run log
 (pointer property `log_ref`); no raw transcripts, tool I/O, or step
-source in any `index` list. Full step/workflow source lives as a
+source in any `index` list. The one payload kept whole (2026-11-03): a
+conversation turn's words — `StrutTurn.user_text` / `assistant_text`, and
+`StrutAgentSession.message` / `reply` on a turn of a thread — capped at
+50k chars, so search reads what people said. Full step/workflow source lives as a
 non-indexed node property (like Concept's `docs` predecessor
 `documentation` — deliberately invisible to retrieval).
 

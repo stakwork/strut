@@ -1289,7 +1289,19 @@ the same steps are an agent's tools (`agentTools: ["browser/*"]`), and
   their stores; `src/graph/projector.ts` (or the `graph/project` step)
   projects them into `StrutRun`/`StrutAgentSession`/`StrutToolCall`/
   `StrutChat`/`StrutTurn` with `EXECUTED`/`IN_RUN`/`IN_SESSION`/`SPAWNED`/
-  `IN_CHAT` edges — summaries + `log_ref` pointers, never payloads,
+  `IN_CHAT` edges — summaries + `log_ref` pointers, never payloads, but
+  for a CONVERSATION TURN's words, kept whole (`TEXT_MAX_CHARS`, 50k; past
+  it the start and the end) and first in the node's search text, so
+  keyword search reads what was said and the embedding its first 256
+  tokens: a `StrutTurn`'s `user_text` / `assistant_text` (every text of
+  the turn's steps, never its thinking), and on a `StrutAgentSession` with
+  a `session_id` its `message` (the agent step's `message` config — the
+  person's words when the prompt wraps them in more, which the
+  orchestrator, job and builder seeds set to `{{ input.prompt }}` — else
+  the prompt) and `reply` (a structured reply's `text`, else the result);
+  a one-shot agent keeps previews, and no node keeps tool traffic, a
+  system prompt or an attachment. Search hits carry the preview
+  (`description_key`); `graph/graph-get` reads the whole text;
   idempotent upserts; on a Ladybug file the projector writes `StrutRun`,
   `StrutJob` and `StrutArtifact` with `EXECUTED` / `IN_JOB` /
   `HAS_ARTIFACT` / `DELIVERED` and skips the rest, and its statements are the dialect's. **Every top-level run is projected when it ends**
@@ -2316,7 +2328,8 @@ the same steps are an agent's tools (`agentTools: ["browser/*"]`), and
   (from `step.start`'s resolved config: a failed turn is grouped too) and
   `session_turn` (from the output: committed turns only), so "which nodes
   did this thread touch" is one query over `session_id` → `IN_SESSION` →
-  `ACCESSED`. Endpoints (`/sessions`, all behind the key,
+  `ACCESSED`, and keeps the turn's `message` and `reply` whole, so what
+  was said in a thread is searchable. Endpoints (`/sessions`, all behind the key,
   reads included; the id is a query parameter): list, one session's turn
   log, its messages, delete (409 while held). Tests:
   `storage-conformance.test.ts` (the store), `steps/core/agent-session.test.ts`

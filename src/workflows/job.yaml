@@ -81,6 +81,8 @@ steps:
       # builder's thread are named by), then the checkouts, then the kind's
       # page, then the message.
       prompt: "{{ input.workspace ? 'Workspace: @' + input.workspace + ', the one this job runs in. ' : '' }}{{ $job ? 'Your job id: ' + $job + '. ' : '' }}{{ checkouts.length ? 'Repositories checked out in your directory, one subdirectory each: ' + checkouts.map(c => c.repo).join(', ') + '. ' : '' }}{{ kindPage.text ? params.kindLead + kindPage.text + params.kindEnd : '' }}{{ input.prompt }}"
+      # The message alone, what the graph keeps as this turn's text.
+      message: "{{ input.prompt }}"
       agentTools: "{{ params.tools }}"
       approve: "{{ params.approve }}"
       schema:

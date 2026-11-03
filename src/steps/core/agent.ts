@@ -1254,6 +1254,12 @@ export default defineStep({
     cwd: z.string().describe("working directory the tools operate in"),
     system: z.string().describe("system prompt / agent persona"),
     prompt: z.string().describe("the user task driving the agent"),
+    message: z
+      .string()
+      .optional()
+      .describe(
+        "The words this turn answers — the person's message — when `prompt` wraps them in more (a context line, a page, the workspaces to ask), usually \"{{ input.prompt }}\". The agent never reads it: the graph keeps it as the turn's text, so search finds what was said (with a `session`). Defaults to `prompt`.",
+      ),
     session: z
       .string()
       .optional()
