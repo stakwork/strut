@@ -1,5 +1,6 @@
 import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
+import http from "node:http";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,7 +14,23 @@ import type { GraphBackend } from "./backend.js";
 import { seedStrutDomain } from "./schema-seed.js";
 import { edgeCount, nodeCount, rawWrite, seedConceptSchema, testBackends } from "./test-util.js";
 import { GraphWorkspaceStore } from "./workspace-store.js";
-import { jobNode, messageText, preview, projectAll, projectChats, projectRun, projectRunEvents, projectRunOnce, projectRuns, runRef, runsThatRead, spawnedRunIds } from "./projector.js";
+import {
+  jobNode,
+  messageText,
+  preview,
+  projectAll,
+  projectChat,
+  projectChatOnce,
+  projectChats,
+  projectionsSettled,
+  projectRun,
+  projectRunEvents,
+  projectRunOnce,
+  projectRuns,
+  runRef,
+  runsThatRead,
+  spawnedRunIds,
+} from "./projector.js";
 import type { JobView } from "../job-index.js";
 import { runStep } from "../run-step.js";
 import { buildRegistry, coreRegistry } from "../steps/registry.js";
@@ -597,6 +614,99 @@ for (const tb of testBackends()) describe(`projector on ${tb.name}`, { skip: tb.
     assert.equal(chatNode!["created_by"], "evanfeenstra-s8fhs8efhs8ehf", "who started the chat is projected whole");
     assert.equal(await count("StrutTurn"), 2);
     assert.equal(await edges("IN_CHAT"), 2);
+  });
+
+  it("createStrut projects a builder chat when each of its turns ends", neoOnly("chats and turns are not in the file"), async () => {
+    // A stand-in provider that refuses every call (400, never retried): each
+    // turn ends at once, as an error, and its user message is on file.
+    const dead = http.createServer((_req, res) => {
+      res.writeHead(400, { "content-type": "application/json" });
+      res.end(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "nope" } }));
+    });
+    await new Promise<void>((r) => dead.listen(0, "127.0.0.1", r));
+    const env = ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"] as const;
+    const saved = env.map((k) => process.env[k]);
+    process.env["ANTHROPIC_API_KEY"] = "test-key";
+    process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${(dead.address() as { port: number }).port}`;
+    const dataDir = await mkdtemp(join(tmpdir(), "strut-project-chat-"));
+    const chats = new MemoryChatStore();
+    const strut = await createStrut({ workspace: ws, store, chatStore: chats, registry: coreRegistry(), dataDir, claims: false, serveUi: false, stt: false, scheduler: false });
+    const turns = () => backend.query(`MATCH (t:StrutTurn)-[:IN_CHAT]->(c:StrutChat) RETURN c.status AS status, t.turn AS turn, t.user_text_preview AS said ORDER BY turn`);
+    // The projection follows the turn's end, detached: poll the graph.
+    const projected = async (n: number) => {
+      for (let i = 0; i < 200 && (await turns()).length < n; i++) await new Promise((r) => setTimeout(r, 25));
+      await projectionsSettled(backend);
+    };
+    try {
+      const send = async (body: object) => {
+        const res = await strut.app.request("/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+        assert.equal(res.status, 202);
+        return ((await res.json()) as { chatId: string }).chatId;
+      };
+      const chatId = await send({ message: "start", model: "sonnet" });
+      await projected(1);
+      assert.deepEqual(await turns(), [{ status: "error", turn: 0, said: "start" }]);
+
+      await send({ chatId, message: "again" });
+      await projected(2);
+      assert.deepEqual(await turns(), [
+        { status: "error", turn: 0, said: "start" },
+        { status: "error", turn: 1, said: "again" },
+      ]);
+      assert.equal(await count("StrutChat"), 1);
+    } finally {
+      await strut.close();
+      dead.close();
+      env.forEach((k, i) => (saved[i] === undefined ? delete process.env[k] : (process.env[k] = saved[i])));
+      await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("a chat links a run it launched whose projection is still in flight", neoOnly("chats are not in the file"), async () => {
+    for (const e of sampleEvents("h")) await store.append(WF, RUN, e);
+    // The run's projection reads its log slowly: a chat projected meanwhile
+    // finds no StrutRun unless it waits for it.
+    const slow = Object.assign(Object.create(store) as MemoryRunStore, {
+      getRunEvents: async (wf: string, id: string) => (await new Promise((r) => setTimeout(r, 300)), store.getRunEvents(wf, id)),
+    });
+    const chats = new MemoryChatStore();
+    await chats.createChat({ id: "c1", title: "Deliver", model: "claude" });
+    await chats.appendMessages("c1", [
+      { role: "user", content: "run the delivery" },
+      { role: "tool", content: [{ type: "tool-result", toolName: "run_workflow", output: { type: "json", value: { runId: RUN, status: "success" } } }] },
+    ]);
+    const run = projectRunOnce(backend, slow, WF, RUN); // what the run-end hook does
+    const report = await projectChat(backend, chats, "c1");
+    assert.deepEqual([report.chats, report.turns], [1, 1]);
+    assert.equal(await edges("SPAWNED"), 1);
+    await run;
+    assert.deepEqual((await projectChat(backend, chats, "nope")).chats, 0, "a chat the store does not have writes nothing");
+  });
+
+  it("projectChatOnce: a call during a projection queues one more, which later calls join", neoOnly("chats are not in the file"), async () => {
+    const chats = new MemoryChatStore();
+    await chats.createChat({ id: "c1", title: "Deliver", model: "claude" });
+    await chats.appendMessages("c1", [{ role: "user", content: "hi" }]);
+    // The first read waits on a gate, so the first projection is running
+    // while the next calls arrive.
+    let reads = 0;
+    let open!: () => void;
+    const gate = new Promise<void>((r) => (open = r));
+    const counting = Object.assign(Object.create(chats) as MemoryChatStore, {
+      loadMessages: async (id: string) => (++reads === 1 && (await gate), chats.loadMessages(id)),
+    });
+    const a = projectChatOnce(backend, counting, "c1");
+    assert.equal(projectChatOnce(backend, counting, "c1"), a, "not started yet: the next call joins it");
+    while (reads === 0) await new Promise((r) => setTimeout(r, 5));
+    await chats.appendMessages("c1", [{ role: "assistant", content: "hello" }, { role: "user", content: "again" }]);
+    const [b, c] = [projectChatOnce(backend, counting, "c1"), projectChatOnce(backend, counting, "c1")];
+    assert.notEqual(b, a);
+    assert.equal(b, c, "one projection queued behind the running one");
+    open();
+    await Promise.all([a, b, c]);
+    assert.equal(reads, 2);
+    assert.equal(await count("StrutTurn"), 2, "the queued projection read the chat as it was then");
+    await projectionsSettled(backend);
   });
 
   it("a run under a job upserts ONE StrutJob from the index, IN_JOB from each run; no index or no record writes nothing (plans/job-index.md §6)", async () => {
