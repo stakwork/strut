@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { LADYBUG_EDGE_TYPES, nodeColumns, ontologySeed } from "./registry.js";
-import { CORE_RENAME_MIGRATION, MIGRATIONS, SCHEMA_RULES_MIGRATION, ddlStatements, indexCalls, openLadybug, type LadybugHandle } from "./db.js";
+import { CORE_RENAME_MIGRATION, MIGRATIONS, SCHEMA_RULES_MIGRATION, backupPath, ddlStatements, indexCalls, openLadybug, type LadybugHandle } from "./db.js";
 import { openGraphBackend } from "../backend.js";
 import { testBackends } from "../test-util.js";
 
@@ -185,6 +185,9 @@ describe("ladybug handle", { skip }, () => {
     await c.withWrite((tx) => tx.run("CREATE (:Node {ref_id: 'a', name: 'one', search_text: 'some text'})"));
     await c.close();
     assert.equal(existsSync(`${file}.wal`), false);
+    const again = await openLadybug(file);
+    await again.close();
+    assert.equal(existsSync(backupPath(file, CORE_RENAME_MIGRATION)), false, "a file this build made needs no backup");
   });
 });
 
@@ -286,6 +289,37 @@ describe("a file written with the old core column names (plans/graph-memory-plan
     } finally {
       await h.close();
     }
+  });
+
+  it("the file as the older build left it is copied aside first, once, and still has its old columns", async () => {
+    const copy = backupPath(file, CORE_RENAME_MIGRATION);
+    assert.equal(existsSync(copy), true);
+    assert.equal(statSync(copy).mode & 0o077, 0, "owner-only, like the graph");
+    // Read raw in a child: a second Database in this process breaks the next open's extensions.
+    const child = spawnSync(
+      process.execPath,
+      [
+        "--import",
+        "tsx",
+        "--input-type=module",
+        "-e",
+        `import { loadLadybug } from ${JSON.stringify(fileURLToPath(new URL("./db.js", import.meta.url)))};
+         const lbug = await loadLadybug();
+         const db = new lbug.Database(${JSON.stringify(copy)});
+         const conn = new lbug.Connection(db);
+         const rows = await (await conn.query("MATCH (n:Node) WHERE n.Data_Bank IS NOT NULL AND n.node_key IS NOT NULL RETURN count(n) AS c")).getAll();
+         process.stdout.write(String(rows[0].c));
+         await conn.close();
+         await db.close();`,
+      ],
+      { env: process.env, encoding: "utf-8" },
+    );
+    assert.equal(child.status, 0, child.stderr);
+    assert.equal(child.stdout, "4", "every data row with its old values, for an older strut to open");
+    const before = statSync(copy).mtimeMs;
+    const h = await openLadybug(file);
+    await h.close();
+    assert.equal(statSync(copy).mtimeMs, before, "a migrated file is not backed up again");
   });
 
   it("keys still upsert onto the old nodes, and search finds them over search_text and title", async () => {

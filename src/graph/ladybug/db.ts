@@ -29,7 +29,7 @@
  * and the next statement would run auto-commit), so a transaction that saw
  * one error refuses every later statement with that error.
  */
-import { chmodSync, existsSync, mkdirSync, rmSync, statSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, rmSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type { GraphTx, Params, Row } from "../engine.js";
 import { LADYBUG_EDGE_TYPES, edgeColumnsOf, nodeColumns, type ColumnType } from "./registry.js";
@@ -136,6 +136,33 @@ export const MIGRATIONS: readonly string[] = [];
  *  attributes"): `date_added_to_graph` → `created_at`, `Data_Bank` →
  *  `search_text`, `node_key` → `key` (a Schema row's → `key_spec`). */
 export const CORE_RENAME_MIGRATION = "core_attribute_names_v1";
+
+/** The migrations an older strut cannot read back from, in order: a file
+ *  that holds data and lacks one of their stamps is copied aside before
+ *  the open changes it (`backUp`). Add a one-way migration's stamp here. */
+export const ONE_WAY_MIGRATIONS: readonly string[] = [CORE_RENAME_MIGRATION];
+
+/** The copy of `path` taken before the one-way migration `stamp`. */
+export const backupPath = (path: string, stamp: string): string => `${path}.before-${stamp}.bak`;
+
+/** The first one-way migration this file still needs, when it holds data:
+ *  an empty or new file has nothing to keep. */
+async function pendingOneWayMigration(read: Query): Promise<string | undefined> {
+  const tables = new Set((await read("CALL show_tables() RETURN name")).map((r) => String(r["name"])));
+  if (!tables.has("Node") || !Number((await read("MATCH (n:Node) RETURN count(n) AS c"))[0]?.["c"])) return undefined;
+  const done = tables.has("Migration") ? new Set((await read("MATCH (m:Migration) RETURN m.migration_id AS id")).map((r) => String(r["id"]))) : new Set<string>();
+  return ONE_WAY_MIGRATIONS.find((id) => !done.has(id));
+}
+
+/** Copies the file (and a WAL an unclean exit left) to its backup
+ *  path, owner-only, so a rollback to an older strut has the file it wrote. */
+function backUp(path: string, stamp: string): void {
+  const to = backupPath(path, stamp);
+  if (existsSync(`${path}.wal`)) copyFileSync(`${path}.wal`, `${to}.wal`);
+  copyFileSync(path, to);
+  chmodSync(to, 0o600);
+  console.warn(`[graph] ${path} needs a one-way migration (${stamp}); copied it to ${to} first`);
+}
 const TITLE_PAGE = 1000;
 
 /**
@@ -443,6 +470,7 @@ async function openFresh(path: string, opts: OpenOptions): Promise<LadybugHandle
   if (!existsSync(path) && existsSync(`${path}.wal`)) rmSync(`${path}.wal`, { force: true });
   // A WAL still here means the last process did not close the file.
   const unclean = existsSync(`${path}.wal`);
+  const existed = existsSync(path);
 
   const lbug = await loadLadybug();
   const db = new lbug.Database(path, 0, true, false, ladybugMaxDbSize());
@@ -457,6 +485,10 @@ async function openFresh(path: string, opts: OpenOptions): Promise<LadybugHandle
   };
 
   try {
+    // Copied before this open writes anything (the DDL, the migrations):
+    // the file is as the last close left it.
+    const pending = existed ? await pendingOneWayMigration(read) : undefined;
+    if (pending && !existsSync(backupPath(path, pending))) backUp(path, pending);
     // Extensions: by path from the given folder, else strut's pinned copies
     // (extensions.ts), else — no pin for this core or platform — the ladybug download.
     const dir = opts.extensionDir ?? bootEnv()["STRUT_LADYBUG_EXTENSION_DIR"];
