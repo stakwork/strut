@@ -110,7 +110,7 @@ for (const tb of testBackends()) describe(`claims authoring on ${tb.name}`, { sk
     await tb.wipe(backend);
     const { seedJarvisOntology } = await import("./ontology-seed.js");
     const { seedStrutDomain } = await import("./schema-seed.js");
-    await seedJarvisOntology(backend);
+    if (tb.kind === "neo4j") await seedJarvisOntology(backend);
     await seedStrutDomain(backend);
     backend.schemas.invalidate();
   });

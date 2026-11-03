@@ -617,7 +617,7 @@ for (const tb of testBackends()) {
     before(async () => {
       backend = await tb.open();
       await tb.wipe(backend);
-      await seedJarvisOntology(backend);
+      if (tb.kind === "neo4j") await seedJarvisOntology(backend);
       await seedStrutDomain(backend);
       backend.schemas.invalidate();
     });
