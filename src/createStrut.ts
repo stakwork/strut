@@ -108,6 +108,7 @@ import type { AppRelease, Upstream } from "./workspace.js";
 import type { CassetteMode } from "./cassette.js";
 // Type-only: the graph backend stays a lazy, opt-in dependency.
 import type { GraphBackend } from "./graph/backend.js";
+import { graphView, mayQueryRaw, readerFor, listFor, type GraphReaders } from "./graph/scope.js";
 import { projectChatOnce, projectRunOnce } from "./graph/projector.js";
 import { createGraphChangeFeed, GRAPH_FEED_READ_MAX } from "./graph-writes.js";
 // No runtime graph dependency in here either (type-only imports inside).
@@ -445,6 +446,14 @@ export interface StrutOptions<TServices = unknown> {
    *  the chat builder's read-only `graph_query` (+ `graph_get`), and the
    *  `/graph/*` reads; without one none of those is offered. */
   graph?: GraphBackend;
+
+  /** Who may read which namespaces of the graph (src/graph/scope.ts,
+   *  plans/graph-memory-plan.md step 6): a list per reader — `assistant`
+   *  (with its `workflows`), `builder`, `jobs`, `apps`, `peers`, `ui` —
+   *  each `{ namespaces, exclude_domains? }`. Unset: every reader reads
+   *  everything, as before. Set: a reader it leaves out reads nothing.
+   *  `STRUT_HOST_CONFIG`'s `graphReaders` (src/server.ts). */
+  graphReaders?: GraphReaders;
 
   /** Directory containing the built web UI (the `dist` folder). Defaults
    *  to strut's own bundled UI resolved relative to this module, so it
@@ -987,7 +996,9 @@ export async function createStrut<TServices = unknown>(
     // The graph backend the server wired, for the graph/* steps (graphCtx
     // prefers it over opening one from env). Borrowed: a step's `close()`
     // must not close the connection the workspace and claims read through.
-    ...(graph ? { graph: { ...graph, close: async () => undefined } } : {}),
+    // On a host that set `graphReaders`, a view that holds each `graph/*`
+    // step to its caller's list (src/graph/scope.ts).
+    ...(graph ? { graph: graphView({ ...graph, close: async () => undefined }, opts.graphReaders) } : {}),
     ...(graphChanges ? { graphChanges } : {}),
     ...(stt ? { stt } : {}),
     // The LLM auth seam, for the model-building call sites (llm.ts).
@@ -3825,10 +3836,20 @@ export async function createStrut<TServices = unknown>(
   // One node as the graph holds it NOW — what the run flyout opens when a
   // node an agent read is clicked (the run log records which node, its type
   // and its name; never its content). Read-only. 501 without a graph.
+  //
+  // Each read is held to its caller's reader list (src/graph/scope.ts): a
+  // peer strut's (`peers`), or a person's — the key, a session, a person
+  // token — (`ui`), when the host set `graphReaders`; a node outside it
+  // reads as missing.
+  const graphRouteKind = async (c: Context): Promise<"peers" | "ui"> => ((await scopeOf(c)) === "peer" ? "peers" : "ui");
+  const graphReaderOf = async (c: Context) => readerFor(graph!, opts.graphReaders, await graphRouteKind(c));
+  /** The per-type counts and change feed name what the graph holds: only
+   *  for a reader that may read all of it. */
+  const readsWholeGraph = async (c: Context) => mayQueryRaw(listFor(opts.graphReaders, await graphRouteKind(c)), graph!.reader, graph!.namespace);
   app.get("/graph/nodes/:ref_id", async (c) => {
     if (!graph) return c.json({ error: "this deployment has no graph" }, 501);
     const ref_id = c.req.param("ref_id");
-    const node = await graph.reader.getNode(ref_id);
+    const node = await (await graphReaderOf(c)).getNode(ref_id);
     if (!node) return c.json({ error: `No node "${ref_id}" in the graph` }, 404);
     return c.json({ ref_id: node.ref_id, node_type: node.node_type ?? null, name: node.name ?? null, title: node.title ?? null, properties: node.properties });
   });
@@ -3845,8 +3866,28 @@ export async function createStrut<TServices = unknown>(
     const type = (c.req.query("type") ?? "").trim();
     if (!type) return c.json({ error: "type is required" }, 400);
     const limit = Number(c.req.query("limit") ?? 8);
-    return c.json({ nodes: await graph.reader.namesLike(type, c.req.query("q") ?? "", Number.isFinite(limit) ? limit : 8) });
+    return c.json({ nodes: await (await graphReaderOf(c)).namesLike(type, c.req.query("q") ?? "", Number.isFinite(limit) ? limit : 8) });
   });
+
+  // A person moves one node or edge to another namespace — `shared`, or back
+  // to `private` (plans/graph-memory-plan.md step 6; src/graph/set-namespace.ts).
+  // `{ namespace }` → `{ kind, ref_id, from, namespace, moved }`. A full
+  // credential only: peers and person tokens post nowhere here (the gate
+  // above). Moving a node doesn't move its edges.
+  for (const kind of ["node", "edge"] as const) {
+    app.post(`/graph/${kind}s/:ref_id/namespace`, async (c) => {
+      if (!graph) return c.json({ error: "this deployment has no graph" }, 501);
+      const body = (await c.req.json().catch(() => null)) as { namespace?: unknown } | null;
+      if (typeof body?.namespace !== "string" || !body.namespace.trim()) return c.json({ error: "namespace is required" }, 400);
+      const { setNamespace } = await import("./graph/set-namespace.js");
+      try {
+        return c.json(await setNamespace(graph, { kind, ref_id: c.req.param("ref_id"), namespace: body.namespace }));
+      } catch (e) {
+        const code = (e as { code?: unknown }).code;
+        return c.json({ error: e instanceof Error ? e.message : String(e), ...(typeof code === "string" ? { code } : {}) }, code === "NOT_FOUND" ? 404 : 400);
+      }
+    });
+  }
 
   // The embedding pass (plans/semantic-search.md §1) as the graph backend
   // reports it: the sweep's position, per-type counts, the types it skips
@@ -3854,6 +3895,7 @@ export async function createStrut<TServices = unknown>(
   // embeddings off. Read-only — a debugging read. 501 without a graph.
   app.get("/graph/embeddings", async (c) => {
     if (!graph) return c.json({ error: "this deployment has no graph" }, 501);
+    if (!(await readsWholeGraph(c))) return c.json({ error: "this reader may not read every namespace in the graph" }, 403);
     return c.json(graph.embeddings ? graph.embeddings.status() : { enabled: false });
   });
 
@@ -3863,6 +3905,7 @@ export async function createStrut<TServices = unknown>(
   // hold while nothing is new, `?limit=`. 501 without a graph.
   app.get("/graph/changes", async (c) => {
     if (!graphChanges) return c.json({ error: "this deployment has no graph" }, 501);
+    if (!(await readsWholeGraph(c))) return c.json({ error: "this reader may not read every namespace in the graph" }, 403);
     const types = (c.req.query("types") ?? "").split(",").map((t) => t.trim()).filter(Boolean);
     const wait = Number(c.req.query("wait"));
     const limit = Number(c.req.query("limit"));

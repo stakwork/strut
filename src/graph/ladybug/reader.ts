@@ -17,8 +17,9 @@
  *     of the ontology views;
  *   - namespaces need no registering (`namespaces.ts`): any well-formed
  *     name resolves (`default` to the backend's own, `private`), and a key
- *     or name lookup reads the one asked for. Search and walk are not yet
- *     scoped by namespace (plans/graph-memory-plan.md step 4);
+ *     or name lookup reads the one asked for. A search names one or reads
+ *     them all; a reader built `withScope` (step 6) reads only its list,
+ *     and an edge only when its own namespace and both ends are in it;
  *   - a domain is the types whose Schema names it (`strut`: the Strut
  *     types); a domain no type names is `INVALID_DOMAIN`;
  *   - one FTS index (`node_fts` over `search_text` + `title`, BM25, porter) and
@@ -68,6 +69,7 @@ import {
   type NeighborsParams,
   type NodeEnvelope,
   type OntologyEdge,
+  type ReadScope,
   type SchemaEnvelope,
   type SearchParams,
   type SearchResult,
@@ -86,6 +88,10 @@ export interface LadybugReaderOptions {
 type Engine = Pick<GraphEngine, "query" | "namespace"> & { readonly catalog: LadybugCatalog; readonly schemaSource: LadybugSchemas };
 
 const q = (s: string) => `\`${s}\``;
+/** The HNSW search breadth for a vector query: recall at 10 held at 100% on
+ *  50k rows with 500, and fell to 90% with the default (the plan's
+ *  search-row prototype). */
+export const VECTOR_EFS = 500;
 const lit = (s: string) => `'${s.replace(/'/g, "''")}'`;
 const LIVE = (alias: string) => `${alias}.deleted_at IS NULL`;
 /** A data node: the ontology's Schema rows and the edges' search rows (`EdgeText`) are not read, walked or counted. */
@@ -125,11 +131,41 @@ export function ftsTerms(qstr: string): string {
   return qstr.replace(/"/g, " ").trim().replace(/\s+/g, " ");
 }
 
+/** A scope as query text: a clause per node or edge alias (each with its
+ *  leading AND, empty when unscoped) and the parameters they read. */
+interface ScopeSql {
+  node(alias: string): string;
+  edge(alias: string): string;
+  params: Params;
+}
+const UNSCOPED: ScopeSql = { node: () => "", edge: () => "", params: {} };
+
 export class LadybugReader implements GraphReader {
   constructor(
     private readonly engine: Engine,
     private readonly opts: LadybugReaderOptions = {},
+    private readonly scope?: ReadScope,
   ) {}
+
+  withScope(scope: ReadScope): LadybugReader {
+    return new LadybugReader(this.engine, this.opts, scope);
+  }
+
+  /** This reader's scope as query text. The excluded domains are read as
+   *  their types, from the Schema rows, on every call. */
+  private async sql(): Promise<ScopeSql> {
+    if (!this.scope) return UNSCOPED;
+    const domains = new Set((this.scope.exclude_domains ?? []).map((d) => d.toLowerCase()));
+    const hidden = domains.size
+      ? (await this.engine.schemaSource.ontology()).schemas.filter((s) => domains.has(String(s.props["domain"] ?? "").toLowerCase())).map((s) => s.type)
+      : [];
+    const ns = this.scope.namespaces;
+    return {
+      node: (a) => `${ns ? ` AND ${a}.namespace IN $scope_ns` : ""}${hidden.length ? ` AND NOT ${a}.node_type IN $scope_hidden` : ""}`,
+      edge: (a) => (ns ? ` AND ${a}.namespace IN $scope_ns` : ""),
+      params: { ...(ns ? { scope_ns: ns } : {}), ...(hidden.length ? { scope_hidden: hidden } : {}) },
+    };
+  }
 
   /** The projection of every column the file has. */
   private async project(alias: string): Promise<string> {
@@ -147,7 +183,10 @@ export class LadybugReader implements GraphReader {
   /** The namespaces the file holds a node in, beyond the backend's own. */
   async listNamespaces(): Promise<string[]> {
     const rows = await this.engine.query(`MATCH (n:Node) WHERE n.namespace IS NOT NULL RETURN DISTINCT n.namespace AS ns`);
-    return rows.map((r) => String(r["ns"])).filter((ns) => ns !== this.engine.namespace).sort();
+    return rows
+      .map((r) => String(r["ns"]))
+      .filter((ns) => ns !== this.engine.namespace && (!this.scope?.namespaces || this.scope.namespaces.includes(ns)))
+      .sort();
   }
 
   /** Nothing to store: a namespace is there once something is written in
@@ -170,15 +209,17 @@ export class LadybugReader implements GraphReader {
 
   async getNode(ref_id: string): Promise<NodeEnvelope | null> {
     // A Schema row is read through the ontology views, never as a node.
-    const rows = await this.engine.query(`MATCH (n:Node {ref_id: $ref_id}) WHERE ${LIVE("n")} AND ${DATA("n")} RETURN ${await this.project("n")} AS n LIMIT 1`, { ref_id });
+    const sc = await this.sql();
+    const rows = await this.engine.query(`MATCH (n:Node {ref_id: $ref_id}) WHERE ${LIVE("n")} AND ${DATA("n")}${sc.node("n")} RETURN ${await this.project("n")} AS n LIMIT 1`, { ref_id, ...sc.params });
     return rows.length === 0 ? null : envelope(hitNode(rows[0]!["n"]));
   }
 
   async getNodeByKey(type: string, key: string, namespace?: string): Promise<NodeEnvelope | null> {
     const canonical = await this.canonical(type);
+    const sc = await this.sql();
     const rows = await this.engine.query(
-      `MATCH (n:Node {node_type: $type, namespace: $ns, key: $key}) WHERE ${LIVE("n")} RETURN ${await this.project("n")} AS n LIMIT 1`,
-      { type: canonical, key, ns: await this.resolveNamespace(namespace) },
+      `MATCH (n:Node {node_type: $type, namespace: $ns, key: $key}) WHERE ${LIVE("n")}${sc.node("n")} RETURN ${await this.project("n")} AS n LIMIT 1`,
+      { type: canonical, key, ns: await this.resolveNamespace(namespace), ...sc.params },
     );
     return rows.length === 0 ? null : envelope(hitNode(rows[0]!["n"]));
   }
@@ -189,13 +230,14 @@ export class LadybugReader implements GraphReader {
     if (!frag || !schema) return [];
     const ns = await this.resolveNamespace(namespace);
     const cap = Math.min(50, Math.max(1, Math.floor(Number(limit) || 8)));
+    const sc = await this.sql();
     const rows = await this.engine.query(
       `MATCH (n:Node {node_type: $type, namespace: $ns})
-       WHERE n.name IS NOT NULL AND lower(n.name) CONTAINS $frag AND ${LIVE("n")}
+       WHERE n.name IS NOT NULL AND lower(n.name) CONTAINS $frag AND ${LIVE("n")}${sc.node("n")}
        RETURN n.ref_id AS ref_id, n.name AS name, n.description AS description
        ORDER BY CASE WHEN lower(n.name) STARTS WITH $frag THEN 0 ELSE 1 END, lower(n.name)
        LIMIT ${cap}`,
-      { type: schema.type, frag, ns },
+      { type: schema.type, frag, ns, ...sc.params },
     );
     return rows.map((r) => ({
       ref_id: String(r["ref_id"]),
@@ -207,11 +249,12 @@ export class LadybugReader implements GraphReader {
 
   async connectionCounts(ref_id: string, namespace?: string): Promise<ConnectionCount[]> {
     await this.resolveNamespace(namespace);
+    const sc = await this.sql();
     const half = (dir: "out" | "in") =>
       this.engine.query(
-        `MATCH (n:Node {ref_id: $ref_id})${dir === "out" ? "-[r]->" : "<-[r]-"}(m:Node) WHERE ${LIVE("m")} AND ${DATA("m")}
+        `MATCH (n:Node {ref_id: $ref_id})${dir === "out" ? "-[r]->" : "<-[r]-"}(m:Node) WHERE ${LIVE("m")} AND ${DATA("m")}${sc.node("n")}${sc.node("m")}${sc.edge("r")}
          RETURN label(r) AS edge_type, m.node_type AS target_type, count(*) AS cnt`,
-        { ref_id },
+        { ref_id, ...sc.params },
       );
     const out: ConnectionCount[] = [];
     for (const direction of ["out", "in"] as const) {
@@ -225,10 +268,11 @@ export class LadybugReader implements GraphReader {
   async edgeCounts(ref_ids: string[], namespace: string, _pinNamespace = false): Promise<Record<string, Record<string, number>>> {
     if (ref_ids.length === 0) return {};
     await this.resolveNamespace(namespace);
+    const sc = await this.sql();
     const rows = await this.engine.query(
-      `UNWIND $ids AS id MATCH (n:Node {ref_id: id})-[r]-(m:Node) WHERE ${LIVE("m")} AND ${DATA("m")}
+      `UNWIND $ids AS id MATCH (n:Node {ref_id: id})-[r]-(m:Node) WHERE ${LIVE("m")} AND ${DATA("m")}${sc.node("n")}${sc.node("m")}${sc.edge("r")}
        RETURN id AS ref_id, label(r) AS edge_type, count(*) AS cnt`,
-      { ids: ref_ids },
+      { ids: ref_ids, ...sc.params },
     );
     const out: Record<string, Record<string, number>> = {};
     for (const r of rows) (out[String(r["ref_id"])] ??= {})[String(r["edge_type"])] = Number(r["cnt"]);
@@ -237,8 +281,9 @@ export class LadybugReader implements GraphReader {
 
   async neighbors(ref_id: string, p: NeighborsParams = {}): Promise<{ nodes: NodeEnvelope[]; edges: EdgeEnvelope[] }> {
     // A deleted source shows nothing, though its soft delete may have kept its edges.
-    const where = [LIVE("source"), LIVE("node"), DATA("node")];
-    const params: Params = { ref_id };
+    const sc = await this.sql();
+    const where = [LIVE("source"), LIVE("node"), DATA("node") + sc.node("source") + sc.node("node") + sc.edge("r")];
+    const params: Params = { ref_id, ...sc.params };
     if (p.node_types?.length) {
       params["node_types"] = await Promise.all(p.node_types.map((t) => this.canonical(t)));
       where.push("node.node_type IN $node_types");
@@ -302,18 +347,20 @@ export class LadybugReader implements GraphReader {
   async edgesAmong(ref_ids: string[], among: string[] = [], limit = EDGES_AMONG_MAX): Promise<{ edges: EdgeLink[]; truncated: boolean }> {
     if (ref_ids.length === 0) return { edges: [], truncated: false };
     const all = [...new Set([...ref_ids, ...among])];
+    const sc = await this.sql();
+    const scoped = sc.node("a") + sc.node("b") + sc.edge("r");
     const rows = [
       ...(await this.engine.query(
         `UNWIND $ids AS id MATCH (a:Node {ref_id: id})-[r]->(b:Node)
-         WHERE b.ref_id IN $within AND b.ref_id <> id AND ${LIVE("a")} AND ${LIVE("b")} AND ${DATA("b")}
+         WHERE b.ref_id IN $within AND b.ref_id <> id AND ${LIVE("a")} AND ${LIVE("b")} AND ${DATA("b")}${scoped}
          RETURN id AS source, label(r) AS edge_type, b.ref_id AS target`,
-        { ids: ref_ids, within: all },
+        { ids: ref_ids, within: all, ...sc.params },
       )),
       ...(await this.engine.query(
         `UNWIND $ids AS id MATCH (a:Node {ref_id: id})<-[r]-(b:Node)
-         WHERE b.ref_id IN $within AND NOT b.ref_id IN $ids AND ${LIVE("a")} AND ${LIVE("b")} AND ${DATA("b")}
+         WHERE b.ref_id IN $within AND NOT b.ref_id IN $ids AND ${LIVE("a")} AND ${LIVE("b")} AND ${DATA("b")}${scoped}
          RETURN b.ref_id AS source, label(r) AS edge_type, id AS target`,
-        { ids: ref_ids, within: all },
+        { ids: ref_ids, within: all, ...sc.params },
       )),
     ];
     const seen = new Set<string>();
@@ -331,11 +378,12 @@ export class LadybugReader implements GraphReader {
   /** `GraphReader.incoming`; an edge type the file has no table for has none. */
   async incoming(ref_ids: string[], edge_type: string): Promise<Array<{ target: string; node: NodeEnvelope }>> {
     if (ref_ids.length === 0 || !EDGE_TYPE_NAME.test(edge_type) || !(await this.engine.catalog.get()).edges.has(edge_type)) return [];
+    const sc = await this.sql();
     const rows = await this.engine.query(
       `UNWIND $ids AS id MATCH (p:Node)-[r:${q(edge_type)}]->(c:Node {ref_id: id})
-       WHERE ${LIVE("p")} AND ${DATA("p")}
+       WHERE ${LIVE("p")} AND ${DATA("p")}${sc.node("p")}${sc.node("c")}${sc.edge("r")}
        RETURN id AS target, ${await this.project("p")} AS node`,
-      { ids: ref_ids },
+      { ids: ref_ids, ...sc.params },
     );
     return rows.map((r) => ({ target: String(r["target"]), node: serializeNode(hitNode(r["node"])) }));
   }
@@ -366,8 +414,14 @@ export class LadybugReader implements GraphReader {
     const links = await Promise.all(parseLinks(p.linked ?? []).map(async (l) => ({ ...l, type: await this.canonical(l.type) })));
 
     // A Schema row has no search text, so no index returns it; said anyway.
-    const clauses = [LIVE("node"), DATA("node")];
-    const base: Params = {};
+    // A namespace asked for narrows the reader's scope; none reads them all.
+    const sc = await this.sql();
+    const clauses = [LIVE("node"), DATA("node") + sc.node("node")];
+    const base: Params = { ...sc.params };
+    if (p.namespace !== undefined) {
+      clauses.push("node.namespace = $namespace");
+      base["namespace"] = namespace;
+    }
     if (types) {
       clauses.push("node.node_type IN $node_types");
       base["node_types"] = types;
@@ -381,7 +435,7 @@ export class LadybugReader implements GraphReader {
     if (linked) clauses.push(linked);
     // Every filter is a WHERE after the index's top-k (one index, no
     // routing), so any filter widens both halves.
-    const widen = Boolean(types || excludeRe || linked);
+    const widen = Boolean(types || excludeRe || linked || this.scope || p.namespace !== undefined);
     const filter = clauses.join(" AND ");
     const cap = fetchLimit(limit, skip);
     const warnings: string[] = [];
@@ -413,7 +467,7 @@ export class LadybugReader implements GraphReader {
         const [embedding] = await this.opts.embedder!.embed([qstr]);
         const runVec = async (k: number): Promise<Hit[]> => {
           const rows = await this.engine.query(
-            `CALL QUERY_VECTOR_INDEX('Node', 'node_vec', $embedding, $k)
+            `CALL QUERY_VECTOR_INDEX('Node', 'node_vec', $embedding, $k, efs := ${VECTOR_EFS})
              WITH node, distance WHERE ${filter}
              RETURN ${pnode} AS node, 1 - distance AS score`,
             { ...base, embedding, k },

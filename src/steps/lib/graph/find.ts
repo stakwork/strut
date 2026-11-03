@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
-import { graphCtx, errText } from "./_shared.js";
+import { graphCtx, errText, excludeDomainsInput } from "./_shared.js";
 
 const EXAMPLE = `- id: unpaid
   type: graph/find
@@ -37,11 +37,13 @@ export default defineStep({
     cursor: z.string().optional().describe("The `cursor` the previous page returned."),
     count: z.boolean().optional().describe("Also count every match (`total`)."),
     namespace: z.string().optional().describe("The data partition to read (default: the workspace's)."),
+    exclude_domains: z.string().optional().describe(excludeDomainsInput),
   }),
   output: z.any(),
   async run(cfg, ctx) {
     try {
-      const b = await graphCtx(ctx as StepContext<StrutCapabilities>);
+      const exclude_domains = cfg.exclude_domains?.split(",").map((d) => d.trim()).filter(Boolean);
+      const b = await graphCtx(ctx as StepContext<StrutCapabilities>, { exclude_domains });
       const { findNodes } = await import("../../../graph/find.js");
       // No provenance marker: a list is not what the caller named.
       return await findNodes(b, cfg);
