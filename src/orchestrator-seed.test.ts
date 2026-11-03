@@ -96,6 +96,15 @@ describe("the orchestrator workflow strut ships", () => {
     const reply = turn["schema"] as { properties: Record<string, unknown> };
     assert.deepEqual(Object.keys(reply.properties).slice(0, 2), ["text", "start"], "text first, so it streams before the rest");
     assert.deepEqual((reply.properties["start"] as any).required, ["brief", "title"]);
+    // `start` takes what the job/start tool takes, but a DAG step after the
+    // agent sees only THIS turn's files: the agent hands its tools alone the
+    // files of the thread's earlier turns.
+    assert.deepEqual(Object.keys((reply.properties["start"] as any).properties), ["brief", "title", "kind", "workflow", "peer", "repos", "attachments"]);
+    const started = flow.steps.find((st) => st.id === "started")!.config as Record<string, unknown>;
+    for (const k of ["peer", "repos", "attachments"]) assert.equal(started[k], `{{ turn.object.start.${k} }}`);
+    assert.ok(
+      String(p["system"]).replace(/\s+/g, " ").includes("or to hand the job a file from an earlier message: `start` carries only this message's files."),
+    );
   });
   it("the host's delta is appended after strut's tools and prompt, and changes the hash; an empty one does not", async () => {
     const plain = await orchestratorWorkflowYaml();
@@ -300,6 +309,7 @@ describe("the orchestrator, end to end", () => {
       enableChat: false,
       scheduler: false,
       job: false,
+      builder: false,
       orchestrator: { system: "HOSTSECTION: the person's chats are on their Mac." },
       ...(peers ? { peers } : {}),
       ...(self ? { self } : {}),
@@ -318,11 +328,14 @@ describe("the orchestrator, end to end", () => {
         { id: "result", type: "pack", config: { text: "{{ work.object.text }}" } },
       ],
     });
-    const turn = async (input: Record<string, unknown>) => {
+    // A stand-in `builder` too: strut's dispatches to the peer when `peer` is set.
+    await strut.workspace.publishWorkflow("builder", "v1", { steps: [{ id: "result", type: "pack", config: { text: "Built." } }] });
+    /** Launch one turn; `extra` is more of the launch body (attachments). */
+    const turn = async (input: Record<string, unknown>, extra: Record<string, unknown> = {}) => {
       const res = await strut.app.request(`/workflows/${ORCHESTRATOR_WORKFLOW}/run`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ input, callback: { url: callback } }),
+        body: JSON.stringify({ input, callback: { url: callback }, ...extra }),
       });
       assert.equal(res.status, 202);
       const runId = ((await res.json()) as any).runId as string;
@@ -396,6 +409,47 @@ describe("the orchestrator, end to end", () => {
     assert.equal(jobEnd.runId, first.output.runId);
     assert.equal(jobEnd.startedBy?.runId, first.runId, "started by this turn, the callback the turn was launched with");
     assert.ok(seen.job[0]!.includes("Find flights to Lisbon for 3 May"));
+  });
+  /** The job run `start` launched, and its `run.start` as the job's log keeps it. */
+  const startedJob = async (strut: any, ends: any[], workflow: string) => {
+    const end = await until(() => ends.find((e) => e.workflow === workflow));
+    const runStart = (strut.store.getEvents(workflow, end.runId) as any[]).find((e) => e.type === "run.start");
+    return { end, runStart };
+  };
+  it("`start` carries `peer` to a build on another workspace, as job/start would", async () => {
+    const { strut, ends, turn } = await boot(() =>
+      toolUse("toolu_1", "final_answer", {
+        text: "On it.",
+        start: { brief: "Build a digest workflow", title: "Digest", workflow: "builder", peer: "acme-web" },
+        artifacts: [],
+      }),
+    );
+    const first = await turn({ prompt: "Build a digest on @acme-web", session: "peel/agent-1/dm-p" });
+    assert.equal(first.status, "success", JSON.stringify(first));
+    const { end, runStart } = await startedJob(strut, ends, "builder");
+    assert.equal(end.runId, first.output.runId);
+    assert.equal(runStart.input.peer, "acme-web");
+    assert.equal(runStart.input.prompt, "Build a digest workflow");
+  });
+  it("`start` carries `repos` and THIS message's `attachments` to the job, which keeps its own copy of the file", async () => {
+    const notes = "# Notes\nThe flaky test is in ci.yml.";
+    const { strut, ends, turn } = await boot(() =>
+      toolUse("toolu_1", "final_answer", {
+        text: "Looking into it.",
+        start: { brief: "Fix the flaky CI test", title: "Flaky CI", repos: ["https://github.com/acme/web"], attachments: ["notes.md"] },
+        artifacts: [],
+      }),
+    );
+    const first = await turn(
+      { prompt: "fix the flaky test, see my notes", session: "peel/agent-1/dm-r" },
+      { attachments: [{ name: "notes.md", mediaType: "text/markdown", data: Buffer.from(notes).toString("base64") }] },
+    );
+    assert.equal(first.status, "success", JSON.stringify(first));
+    const { end, runStart } = await startedJob(strut, ends, "job");
+    assert.equal(end.runId, first.output.runId);
+    assert.deepEqual(runStart.input.repos, ["https://github.com/acme/web"]);
+    assert.deepEqual(runStart.attachments, [{ name: "notes.md", mediaType: "text/markdown", size: Buffer.byteLength(notes), path: "attachments/notes.md" }]);
+    assert.equal(await (await strut.app.request(`/artifacts/${end.runId}/attachments/notes.md`)).text(), notes);
   });
   it("without `start` the job step is skipped and the result carries no job", async () => {
     const { turn, seen } = await boot(() => toolUse("toolu_1", "final_answer", { text: "Kate's birthday is 3 May.", artifacts: [] }));
