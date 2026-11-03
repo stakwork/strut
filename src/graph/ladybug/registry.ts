@@ -1,7 +1,7 @@
 /**
  * The SEED of a Ladybug file's ontology (plans/ladybug-backend.md §3, ruling 6
  * as amended 2026-10-28; plans/memory-in-workspace-graph.md, PR A): the
- * sixteen node types a new file starts with and the twenty edge types
+ * seventeen node types a new file starts with and the twenty edge types
  * between them. The ontology itself lives in the file, as `Schema` rows of
  * the `Node` table (`ontology.ts`), seeded from this module at open
  * (add-only) and created and edited at runtime like Neo4j's `:Schema` nodes.
@@ -38,6 +38,11 @@ export const LINGO_TYPE = "Lingo";
  *  node per fact, holding its composed text and vector, since a rel table
  *  takes no index. Written by `assert` alone (`ladybug/temporal.ts`). */
 export const EDGE_TEXT_TYPE = "EdgeText";
+/** A merge's record (`../merge.ts`): one hidden node per merge, saying who
+ *  merged which node into which, and every edge it moved, so an old ref_id
+ *  still leads to the kept node and the merge can be undone. Written by
+ *  `graph/merge` alone. */
+export const MERGE_TYPE = "Merge";
 
 /** The ontology's own type: one row per type in the `Node` table. */
 export const SCHEMA_TYPE = "Schema";
@@ -159,6 +164,15 @@ export const LADYBUG_SCHEMAS: readonly NodeSchema[] = [
     invalid_at: "?int",
     expired_at: "?int",
   }, { role: "record" }),
+  // Not searched or embedded: read by ref_id and by `duplicate_ref_id`.
+  { ...jarvisType(MERGE_TYPE, "ref_id", [], "title", "title", {
+    kept_ref_id: "string",
+    duplicate_ref_id: "string",
+    /** What the merge did, as JSON (`MergeMoves`): what the undo reads. */
+    merge_moves: "string",
+    undone_at: "?int",
+    undone_by: "?string",
+  }, { role: "record" }), embed: false },
 ];
 
 const BY_TYPE = new Map(LADYBUG_SCHEMAS.map((s) => [s.type.toLowerCase(), s]));

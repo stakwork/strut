@@ -81,7 +81,8 @@ import { THING_TYPE } from "../strut-schemas.js";
 import { namespaceName } from "./namespaces.js";
 import type { LadybugSchemas } from "./engine.js";
 import type { LadybugCatalog } from "./ontology.js";
-import { EDGE_TEXT_TYPE, SCHEMA_TYPE } from "./registry.js";
+import { mergedInto } from "./merge.js";
+import { EDGE_TEXT_TYPE, MERGE_TYPE, SCHEMA_TYPE } from "./registry.js";
 import { temporalEdgeTypes } from "./temporal.js";
 
 export interface LadybugReaderOptions {
@@ -98,8 +99,8 @@ const q = (s: string) => `\`${s}\``;
 export const VECTOR_EFS = 500;
 const lit = (s: string) => `'${s.replace(/'/g, "''")}'`;
 const LIVE = (alias: string) => `${alias}.deleted_at IS NULL`;
-/** A data node: the ontology's Schema rows and the edges' search rows (`EdgeText`) are not read, walked or counted. */
-const DATA = (alias: string) => `NOT ${alias}.node_type IN ['${SCHEMA_TYPE}', '${EDGE_TEXT_TYPE}']`;
+/** A data node: the ontology's Schema rows, the edges' search rows (`EdgeText`) and merge records are not read, walked or counted. */
+const DATA = (alias: string) => `NOT ${alias}.node_type IN ['${SCHEMA_TYPE}', '${EDGE_TEXT_TYPE}', '${MERGE_TYPE}']`;
 
 /** Which temporal edges a read shows, as one condition on an edge or a
  *  search row (both hold the clocks; a plain edge has none, so it always
@@ -241,10 +242,18 @@ export class LadybugReader implements GraphReader {
 
   // ── nodes ───────────────────────────────────────────────────────────────
 
+  /** A node merged into another (`../merge.ts`) is read as the node it
+   *  was merged into: an old ref_id keeps working in every tool. */
   async getNode(ref_id: string): Promise<NodeEnvelope | null> {
     // A Schema row is read through the ontology views, never as a node.
     const sc = await this.sql();
-    const rows = await this.engine.query(`MATCH (n:Node {ref_id: $ref_id}) WHERE ${LIVE("n")} AND ${DATA("n")}${sc.node("n")} RETURN ${await this.project("n")} AS n LIMIT 1`, { ref_id, ...sc.params });
+    const read = async (id: string) =>
+      this.engine.query(`MATCH (n:Node {ref_id: $ref_id}) WHERE ${LIVE("n")} AND ${DATA("n")}${sc.node("n")} RETURN ${await this.project("n")} AS n LIMIT 1`, { ref_id: id, ...sc.params });
+    let rows = await read(ref_id);
+    if (rows.length === 0) {
+      const kept = await mergedInto((c, p) => this.engine.query(c, p), ref_id);
+      if (kept) rows = await read(kept);
+    }
     return rows.length === 0 ? null : envelope(hitNode(rows[0]!["n"]));
   }
 

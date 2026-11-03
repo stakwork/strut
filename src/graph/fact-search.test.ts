@@ -14,6 +14,7 @@ import type { Embedder } from "./node-writer.js";
 import { createNodeSchema } from "./schema-crud.js";
 import { graphView, parseGraphReaders } from "./scope.js";
 import { assertEdge } from "./temporal.js";
+import { mergeNodes } from "./merge.js";
 import { seedStrutDomain } from "./schema-seed.js";
 import { testBackends } from "./test-util.js";
 import type { Evaluate, EvalAnswer } from "../evaluate.js";
@@ -230,9 +231,20 @@ describe("search returns facts on a ladybug file (plans/graph-memory-plan.md ste
     assert.ok(Array.isArray(none.nodes));
   });
 
-  it("graph/find never lists a fact's search row: EdgeText is no node type", async () => {
+  it("graph/find never lists a fact's search row or a merge record: EdgeText and Merge are no node types", async () => {
     await works(stakwork, "Tom works at Stakwork");
     assert.match(await run(graphFind, { node_type: "EdgeText" }, jobCtx({ graph: b })), /unknown node type/);
+    assert.match(await run(graphFind, { node_type: "Merge" }, jobCtx({ graph: b })), /unknown node type/);
+  });
+
+  it("after a merge, a fact is found once, on the kept node", async () => {
+    const dup = (await b.nodes.write({ type: "Company", data: { name: "Stakwork Inc" } })).ref_id;
+    const fact = await works(dup, "Tom works at Stakwork Inc");
+    await mergeNodes(b, { keep: stakwork, duplicate: dup });
+    const facts = (await b.reader.search({ q: "Tom works at Stakwork" })).facts ?? [];
+    assert.equal(facts.length, 1, JSON.stringify(facts));
+    assert.notEqual(facts[0]!.ref_id, fact.ref_id, "the copy, not the duplicate's original");
+    assert.equal(facts[0]!.target.ref_id, stakwork);
   });
 });
 

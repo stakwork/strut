@@ -27,7 +27,7 @@
 import type { GraphBackend } from "./backend.js";
 import { DEFAULT_NAMESPACE } from "./bolt.js";
 import { namespaceName } from "./ladybug/namespaces.js";
-import { EDGE_TEXT_TYPE } from "./ladybug/registry.js";
+import { EDGE_TEXT_TYPE, MERGE_TYPE } from "./ladybug/registry.js";
 import { boundsOf, hidesType, readsNamespace } from "./scope.js";
 import { storedName } from "./neo4j-engine.js";
 import { stampKey, toEpochSeconds } from "./node-writer.js";
@@ -103,8 +103,9 @@ export async function findNodes(b: GraphBackend, input: FindInput): Promise<Find
   // A reader's list (scope.ts) applies here, on the one type and namespace
   // read: a hidden type is unknown, a hidden namespace holds nothing.
   const bounds = boundsOf(b);
-  // A fact's search row (EdgeText) is read as its fact, through search, never as a node.
-  const hiddenRow = b.kind === "ladybug" && type === EDGE_TEXT_TYPE;
+  // A fact's search row (EdgeText) is read as its fact, through search, and a
+  // merge record (Merge) through the node it points to: neither is a node.
+  const hiddenRow = b.kind === "ladybug" && (type === EDGE_TEXT_TYPE || type === MERGE_TYPE);
   if (!type || !schema || hiddenRow || (bounds && hidesType(bounds.list, schema.domainLabels))) throw new FindError(`unknown node type "${raw}" — graph/get-ontology lists the types`);
   const query = bounds?.query ?? b.query.bind(b);
 
