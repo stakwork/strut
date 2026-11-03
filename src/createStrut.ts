@@ -115,7 +115,8 @@ import { createGraphChangeFeed, GRAPH_FEED_READ_MAX } from "./graph-writes.js";
 import type { ClaimsReader } from "./graph/claims.js";
 import { buildClaimsAuthoring, type ClaimsReconcileOutcome } from "./claims-authoring.js";
 import { createStt, type SttService } from "./audio/stt.js";
-import { audioRoutes } from "./audio/routes.js";
+import { createTts, type TtsService } from "./audio/tts.js";
+import { audioRoutes, speakRoutes } from "./audio/routes.js";
 import { readLexicon } from "./steps/lib/dictation/_shared.js";
 import { createAudioUpgradeHandler } from "./audio/ws.js";
 import { roomsFor } from "./rooms.js";
@@ -470,6 +471,13 @@ export interface StrutOptions<TServices = unknown> {
    *  at boot and the routes answer 501 without it. */
   stt?: SttService | false;
 
+  /** Text-to-speech (src/audio/tts.ts): `POST /audio/speak` and its listing,
+   *  Kokoro through the same optional sherpa addon, in a worker thread of
+   *  its own. Defaults to a service with models under `STRUT_MODEL_DIR`;
+   *  pass your own, or `false` to mount nothing. Nothing loads until the
+   *  first speech, and without the addon the route answers 501. */
+  tts?: TtsService | false;
+
   /** Where an LLM call goes and how it is attributed (plans/mothership-
    *  cost-control.md §1): consulted by the `agent`/`llm` steps and the chat
    *  turn before a model client is built. `undefined` from the hook = call
@@ -605,6 +613,9 @@ export interface Strut<TServices = unknown> {
    *  host that mounts `app` itself must call `attachAudioWebSocket(server,
    *  strut.stt)` to get the dictation socket; `listen()` does it. */
   stt: SttService | null;
+
+  /** The text-to-speech service behind `/audio/speak` (null when disabled). */
+  tts: TtsService | null;
 
   /** Strut's WebSocket paths for a Node server's `upgrade` event: `/rooms`
    *  (plans/chained-orchestrators.md §3, src/rooms.ts). The upgrade request
@@ -935,6 +946,9 @@ export async function createStrut<TServices = unknown>(
   const stt: SttService | null = opts.stt === false ? null : (opts.stt ?? createStt({ dataDir }));
   // The recognizer thread strut started, stopped by `close()`; a host's own service is the host's.
   const ownStt = opts.stt === undefined ? stt : null;
+  // Text-to-speech: models under STRUT_MODEL_DIR; nothing loads until a speech.
+  const tts: TtsService | null = opts.tts === false ? null : (opts.tts ?? createTts());
+  const ownTts = opts.tts === undefined ? tts : null;
   // What the job index may not read past a run's status (plans/job-index.md
   // §2): a sealed workflow's runs — `job/get` is the meta surface from
   // inside a run (src/sealed.ts).
@@ -6530,10 +6544,11 @@ export async function createStrut<TServices = unknown>(
     });
   });
 
-  // ── Speech-to-text (src/audio) ─────────────────────────────────────────
+  // ── Speech, both ways (src/audio) ──────────────────────────────────────
 
   // Dictation's vocabulary, from the memory graph the memory/* steps keep.
   if (stt) audioRoutes(app, stt, { lexicon: () => readLexicon({ services } as unknown as StepContext) });
+  if (tts) speakRoutes(app, tts);
   if (homeRole === "box") homeSyncRoutes(app, { services, scopeOf });
 
   // ── Static files (web UI) ────────────────────────────────────────────────
@@ -6694,6 +6709,7 @@ export async function createStrut<TServices = unknown>(
     // The browser connection, when strut built it: every run's context goes with it.
     await ownBrowser?.close();
     await ownStt?.close();
+    await ownTts?.close();
     // What the sink still holds goes out before the process does.
     await ownSink?.close();
     // And the apps' usage counted since the last write.
@@ -6770,6 +6786,7 @@ export async function createStrut<TServices = unknown>(
     apps,
     appMonitor,
     stt,
+    tts,
     upgrade,
     automations,
     packages,
