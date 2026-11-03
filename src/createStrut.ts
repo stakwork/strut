@@ -149,6 +149,7 @@ import { seedBrowserWorkflows } from "./browser/seed.js";
 import "./privacy/register.js";
 import { seedPrivacyWorkflows } from "./privacy/seed.js";
 import { HOME_POSTS, homeSyncRole, homeSyncRoutes, seedHomeSyncWorkflow, type HomeSyncRole } from "./home-sync.js";
+import { VOICE_CALLS, voiceConfig, voiceRoutes, type VoiceConfig } from "./voice.js";
 // Pure (node:crypto only): the ask/answer shapes behind the two elicitation
 // tools and endpoints — plans/elicitation.md.
 import {
@@ -429,6 +430,13 @@ export interface StrutOptions<TServices = unknown> {
    *  seeds the `home-sync` workflow that copy runs. Off unless set, or
    *  STRUT_HOME_SYNC=box | copy. */
   homeSync?: HomeSyncRole;
+
+  /** The voice service beside this strut (src/voice.ts,
+   *  plans/private-voice.md §4.1): `POST /voice/calls` forwards a person's
+   *  call set-up to `<url>/calls` as that person, with `token` as the
+   *  bearer, and answers what it answers. Wins over STRUT_VOICE_URL +
+   *  STRUT_VOICE_TOKEN; `false` turns it off. Unset, the route is a 503. */
+  voice?: VoiceConfig | false;
 
   /** The package INDEX role (plans/marketplace.md §7, step 7;
    *  src/packages/index.ts): this strut as the phone book — a signed card
@@ -793,6 +801,9 @@ export async function createStrut<TServices = unknown>(
   const store: RunStore = opts.store ?? (fileBacked ? new FileRunStore(dataDir) : new MemoryRunStore());
   // Home sync's role here (src/home-sync.ts): a box serves it, a copy runs it.
   const homeRole = opts.homeSync ?? homeSyncRole(bootEnv()["STRUT_HOME_SYNC"]);
+  // The voice service a person's call is handed to (src/voice.ts); half a
+  // configuration fails the boot.
+  const voice = voiceConfig(opts.voice, bootEnv());
   // The package index role (src/packages/index.ts): on, its reads — and
   // its MCP door, `POST /index/mcp` — open to anyone.
   const indexConfig = ((): { urls?: string[] } | undefined => {
@@ -1504,6 +1515,7 @@ export async function createStrut<TServices = unknown>(
   // `step_run` holds every call to the app's grants and runs as the viewer,
   // and a plain peer's actor is a header any strut sets. On a home box
   // (`homeSync: "box"`), home sync's `/home/pull` and `/home/push` too.
+  // And `/voice/calls`, a call set up as that person (src/voice.ts).
   const UI_FILE = /^\/($|index\.html$|favicon\.ico$|assets\/)/;
   const PROPOSAL_DECIDE = /^\/proposals\/[^/]+\/decide$/;
   const PEER_POST = /^\/workflows\/[^/]+\/(?:[^/]+\/run|run|runs\/[^/]+\/(?:cancel|pause|resume))$/;
@@ -1518,9 +1530,9 @@ export async function createStrut<TServices = unknown>(
     if (!read) {
       const scope = await scopeOf(c);
       const post = c.req.method === "POST";
-      const personPost = scope === "peer:person" && (path === "/mcp" || (homeRole === "box" && HOME_POSTS.has(path)) || PROPOSAL_DECIDE.test(path));
+      const personPost = scope === "peer:person" && (path === "/mcp" || path === VOICE_CALLS || (homeRole === "box" && HOME_POSTS.has(path)) || PROPOSAL_DECIDE.test(path));
       if (isPeerScope(scope) && !(post && (PEER_POST.test(path) || path === "/packages/subscriptions/sync" || personPost))) {
-        return c.json({ error: "forbidden: a peer may read, launch a run, control a run a peer launched, and ask this strut server to sync its subscriptions; a person's token may also call an app's step_run on /mcp and decide the proposals it made" }, 403);
+        return c.json({ error: "forbidden: a peer may read, launch a run, control a run a peer launched, and ask this strut server to sync its subscriptions; a person's token may also call an app's step_run on /mcp, start a voice call and decide the proposals it made" }, 403);
       }
     }
     return next();
@@ -6550,6 +6562,7 @@ export async function createStrut<TServices = unknown>(
   if (stt) audioRoutes(app, stt, { lexicon: () => readLexicon({ services } as unknown as StepContext) });
   if (tts) speakRoutes(app, tts);
   if (homeRole === "box") homeSyncRoutes(app, { services, scopeOf });
+  voiceRoutes(app, { voice, resolveActor });
 
   // ── Static files (web UI) ────────────────────────────────────────────────
 

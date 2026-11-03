@@ -52,7 +52,8 @@ actor the token's own whatever `x-strut-actor` says, and three things
 more: a launch of a workflow whose YAML says `peer: person`, the actor's
 own agent sessions (§3), the actor's room, `POST /mcp`, where it gets
 an app's `step_run` alone, run as the actor under the app's grants (§14.3,
-"A peer's app"), and `POST /proposals/:id/decide` for a proposal its actor
+"A peer's app"), `POST /voice/calls`, a call set up as the actor (§15.2),
+and `POST /proposals/:id/decide` for a proposal its actor
 made — and it lists only those, but reads any proposal by id (§12). The
 plain peer key decides no proposal and sees none. A host maps its
 own credential to `peer:person` through `resolveScope` (mcp: a `lab:peer`
@@ -1551,6 +1552,37 @@ while the next speech waits its turn (1.7 s, measured with long sentences).
 A client that sends one sentence per request keeps that to the one in
 flight. Measured on four cores of an M4 (Docker, `npm run test:tts`): a
 two-sentence reply's first audio in 0.36 s, all 5.5 s of it in 1.2 s.
+
+### 15.2 A voice call — handed to the voice service (`src/voice.ts`)
+
+A person's call to their agent is set up by the voice service running beside
+strut (plans/private-voice.md §4.1); strut only says who the call is for.
+
+| Method | Path | Body / reply |
+| ------ | ---- | ------------ |
+| POST   | `/voice/calls` | the body as it came (≤ 16 KB) → the voice service's status and body, as they came |
+
+The caller is a **person token** (the call runs as its actor, whatever
+`x-strut-actor` says) or the deployment key with `x-strut-actor` (a test,
+the deployment itself). strut POSTs the body unchanged to
+`{STRUT_VOICE_URL}/calls` with `content-type: application/json`,
+`x-strut-actor: <the person>` and `authorization: Bearer
+<STRUT_VOICE_TOKEN>`, the secret the two share (`createStrut({ voice: { url,
+token } })` wins over the env, `false` turns it off), and answers what the
+service answers (`cache-control: no-store`) — a `402` from it stays a `402`.
+
+```bash
+curl -s -X POST localhost:3000/voice/calls -H "authorization: Bearer $PERSON_TOKEN" \
+  -H 'content-type: application/json' -d '{}'
+# → 200 { "url": "ws://127.0.0.1:7880", "room": "sphinx.call.voice.<32 hex>", "token": "<LiveKit JWT>", … }
+```
+
+401 with no credential strut can verify; 403 for the plain peer key, or the
+deployment key with no `x-strut-actor` (a call always runs as a person); 413
+for a body over 16 KB; 503 with no voice service configured, or one that
+does not answer within 15 s. A route, not a workflow: the body and the
+answer hold the call's key and room tokens, so nothing of either is logged,
+kept or recorded as a run.
 
 ## 16. Packages — sharing workflows, steps, apps and Concepts (`plans/marketplace.md` §1–§5)
 
