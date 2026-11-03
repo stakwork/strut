@@ -405,6 +405,20 @@ describe("useAssistant: a chat with the person's assistant", () => {
     );
   });
 
+  it("assistantJobs reads the orchestrator's own `job/start` step too (the job its reply's `start` asked for), never its launch journal", () => {
+    assert.deepEqual(
+      assistantJobs([
+        { type: "step.start", path: "orchestrator/started", stepType: "job/start", input: { prompt: "p", title: "Plan", workflow: "builder" } },
+        // job/start journals its launch (no stepType), so a resume launches once.
+        { type: "step.end", path: "orchestrator/started#launch", output: { job: "app/c/k", runId: "6", callback: true } },
+        { type: "step.end", path: "orchestrator/started", stepType: "job/start", output: { job: "app/c/k", runId: "6", callback: true } },
+        { type: "step.start", path: "orchestrator/again", stepType: "job/start", input: { prompt: "q", title: "Q" } },
+        { type: "step.end", path: "orchestrator/again", stepType: "job/start", output: { job: "app/c/m", runId: "7", callback: true } },
+      ]),
+      [{ job: "app/c/k", runId: "6", workflow: "builder" }, { job: "app/c/m", runId: "7", workflow: "job" }],
+    );
+  });
+
   it("assistantJobs still reads a log from before the tool names lost their slash, with object outputs", () => {
     assert.deepEqual(
       assistantJobs([{ type: "step.end", path: "o/t/001-job_start", stepType: "tool:job/start", output: { job: "app/c/k", runId: "6" } }]),

@@ -1,4 +1,4 @@
-import { useState, useEffect, useLayoutEffect, useRef } from "preact/hooks";
+import { useState, useEffect, useLayoutEffect, useRef, useMemo } from "preact/hooks";
 import type { ComponentChildren } from "preact";
 import * as api from "../api";
 import { eventTone, statusTone } from "../helpers";
@@ -43,6 +43,8 @@ export function EventsPanel(props: {
   /** A column beside the log — the run overview. */
   aside?: ComponentChildren;
 }) {
+  // `reply.delta` (agent `stream: true`) is a reply as it is written: kept in the log, never listed.
+  const events = useMemo(() => props.events.filter((e) => e.type !== "reply.delta"), [props.events]);
   const [expanded, setExpanded] = useState<number | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   // Follow the log while it is scrolled to the bottom — the replay of a run's
@@ -53,9 +55,9 @@ export function EventsPanel(props: {
 
   // Auto-expand run.end when it arrives
   useEffect(() => {
-    const idx = props.events.findIndex((e) => e.type === "run.end");
+    const idx = events.findIndex((e) => e.type === "run.end");
     if (idx >= 0) setExpanded(idx);
-  }, [props.events]);
+  }, [events]);
 
   // Layout effect: the scroll lands in the same commit as the new rows, so no
   // scroll event ever sees the grown log unpinned and stops following.
@@ -64,7 +66,7 @@ export function EventsPanel(props: {
     if (!el) return;
     if (following.current) el.scrollTop = el.scrollHeight;
     setAtBottom(isAtBottom(el));
-  }, [props.events.length, expanded]);
+  }, [events.length, expanded]);
 
   const onScroll = () => {
     const el = scrollRef.current;
@@ -88,9 +90,9 @@ export function EventsPanel(props: {
             <button class="events-jump" onClick={jumpToBottom} title="Jump to the latest event">↓ Latest</button>
           </div>
         )}
-        <div class="events-header">Events ({props.events.length})</div>
-        <EvolveChart events={props.events} onOpenRun={props.onOpenRun} />
-        {props.events.map((evt, i) => {
+        <div class="events-header">Events ({events.length})</div>
+        <EvolveChart events={events} onOpenRun={props.onOpenRun} />
+        {events.map((evt, i) => {
           const hasData = evt.input != null || evt.output != null || evt.error != null;
           const isOpen = expanded === i;
           const refs = props.onOpenRun ? runRefs(evt) : [];

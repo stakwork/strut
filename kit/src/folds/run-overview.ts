@@ -193,7 +193,9 @@ interface Acc {
 /** Kinds a nested row is shown for even when it spent nothing. */
 const SHOWN = new Set<RowKind>(["agent", "subagent", "llm", "run", "peer"]);
 
-export function foldRunOverview(events: OverviewEvent[], now = Date.now(), opts: OverviewOptions = {}): RunOverview {
+export function foldRunOverview(allEvents: OverviewEvent[], now = Date.now(), opts: OverviewOptions = {}): RunOverview {
+  // `reply.delta` is a reply as it is written (agent `stream: true`): no fold draws it.
+  const events = allEvents.some((e) => e.type === "reply.delta") ? allEvents.filter((e) => e.type !== "reply.delta") : allEvents;
   const runStart = events.find((e) => e.type === "run.start");
   // The run's own path, the workflow's name — slashes included, so a run
   // event's path, never a step path's first segment unless there is none.

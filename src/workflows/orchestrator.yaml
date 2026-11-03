@@ -91,6 +91,12 @@ steps:
       session: "{{ input.session }}"
       cacheTtl: 1h
       model: "{{ params.model }}"
+      # How hard the model thinks before each call: a knob per launch (a voice
+      # turn launches with `none`). `medium` is what this turn always ran at.
+      reasoning: "{{ params.reasoning }}"
+      # Opt-in `reply.delta` run events as `text` is written (a voice agent
+      # follows them over the run's SSE stream); off, the log holds none.
+      stream: "{{ params.stream }}"
       maxSteps: "{{ params.maxSteps }}"
       # strut's prompt (with the host's section), then the kinds of job and
       # the kinds of build.
@@ -99,6 +105,10 @@ steps:
         {{ concepts.text }}
         {{ builds.text }}
       retain: "{{ params.retain }}"
+      # `input.context.line` (the host's per-turn line: the time, the device,
+      # "On a voice call: answer in a sentence or two") is the head of THIS
+      # turn's prompt — never the system prompt, which the session froze at
+      # its first turn.
       prompt: "{{ input.context?.line || '' }}{{ peers.peers.length ? (peers.self?.id ? 'This workspace is @' + peers.self?.id + (peers.self?.label ? ' (' + peers.self?.label + ')' : '') + '. Other workspaces' : 'Workspaces') + ' you can ask: ' +peers.peers.map(p => '@' + p.id + (p.label ? ' (' + p.label + ')' : '')).join(', ') + '. ' : '' }}{{ input.prompt }}"
       toolFilter: [none]
       agentTools: "{{ params.tools }}"
@@ -109,6 +119,19 @@ steps:
         required: [text, artifacts]
         properties:
           text: { type: string, description: "Your reply to the person, markdown: a chat message, short, in prose. A turn that started a job is a line or two." }
+          start:
+            type: object
+            description: "Only when the request needs work found out or made: the job to start now, from this reply. strut starts it after this turn, so write `text` first and do not also call job/start for it. Use the job/start tool instead to start several jobs in one turn, or to hand a job a file from an earlier message."
+            additionalProperties: false
+            required: [brief, title]
+            properties:
+              brief: { type: string, description: "Everything the job needs, as job/start's prompt: the job does not see this conversation." }
+              title: { type: string, description: "A short name for the job, as the person would say it." }
+              kind: { type: string, description: "The kind of work, by its name under the first list, when the request is one of them. Not with workflow: builder." }
+              workflow: { type: string, enum: [job, builder], description: "builder for a workflow or an app that lives in a workspace; job (the default) for anything else." }
+              peer: { type: string, description: "With workflow: builder only: the workspace the workflow or app belongs to when it is not this one, by id (@acme-web → acme-web)." }
+              repos: { type: array, items: { type: string }, description: "Repository URLs the job works on, checked out before it starts (a private one only this way). workflow: job only." }
+              attachments: { type: array, items: { type: string }, description: "Files attached to THIS message that the job needs, by name as the message shows them. A file from an earlier message: call job/start instead." }
           artifacts:
             type: array
             description: "Usually none. A job's deliverable you point the person to, by the url job/get gave it, or a small piece of inline content. You write no files: anything that is one is a job's."
@@ -131,16 +154,46 @@ steps:
             required: [message]
             properties:
               message: { type: string }
+  # The job the reply asked to start (`start`), started after the turn so a
+  # turn is ONE model call. job/start is the same step the agent's tool is:
+  # detached, and the job inherits this run's `jobCallback` (specs/CALLBACKS.md
+  # §5), so its end reaches whoever launched the turn.
+  - id: wantsJob
+    type: if
+    depends: turn
+    config:
+      cond: "{{ !!turn.object.start?.brief }}"
+  - id: started
+    type: job/start
+    depends: wantsJob
+    when: true
+    config:
+      prompt: "{{ turn.object.start.brief }}"
+      title: "{{ turn.object.start.title }}"
+      workflow: "{{ turn.object.start.workflow }}"
+      kind: "{{ turn.object.start.kind }}"
+      peer: "{{ turn.object.start.peer }}"
+      repos: "{{ turn.object.start.repos }}"
+      # This turn's files only: a DAG step sees the files its run was
+      # launched with, never an earlier turn's (the agent hands those to its
+      # tools alone), so a file from an earlier message goes by job/start.
+      attachments: "{{ turn.object.start.attachments }}"
   - id: result
     type: pack
+    depends: [turn, started]
     config:
       text: "{{ turn.object.text }}"
       artifacts: "{{ turn.object.artifacts }}"
       ask: "{{ turn.object.ask }}"
+      # The job the reply started: { job, runId, callback }; undefined when none.
+      job: "{{ started?.job }}"
+      runId: "{{ started?.runId }}"
       cost: "{{ turn.cost }}"
       session: "{{ turn.session }}"
 params:
   model: claude-sonnet-5-5
+  reasoning: medium
+  stream: false
   maxSteps: 50
   # The Concepts whose children close the system prompt: the kinds of work
   # a job does here (`Job`, src/concepts/Job.md, the tree the job agent
@@ -223,7 +276,7 @@ params:
     prompt. When none fits, or there are no lists, a job still does the
     work.
 
-    Start a JOB (job/start) with everything it needs in its prompt, since
+    Start a JOB with everything it needs in its brief, since
     it does not see this conversation — the request in full, links,
     names, what a lookup found, the peer that holds the code when you
     know it — and a short title. A file the person attached that the job
@@ -285,6 +338,15 @@ params:
     person may call a workflow a "strut": it means a workflow. Never use
     the word for anything else — not a workspace, not the server you run
     on.
+
+    To start ONE job, put it in `start` of your reply instead of calling
+    job/start: { brief, title, kind?, workflow?, peer?, repos?,
+    attachments? }, the fields job/start takes, `brief` its prompt. strut
+    starts it right after your reply, so write `text` first, in a line or
+    two, and never both call job/start and fill `start` for the same job.
+    Call job/start itself only to start several jobs in one turn, when you
+    need its job id before you answer, or to hand the job a file from an
+    earlier message: `start` carries only this message's files.
 
     Answer with `text`, your reply to the person. Point them to a job's
     deliverable in `artifacts`, by the `url` job/get gave it, never as a

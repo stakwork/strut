@@ -49,6 +49,12 @@ describe("foldRunOverview", () => {
     assert.deepEqual(o.longest, { label: "work", share: 60 / 64 });
   });
 
+  it("skips reply.delta: the reply as it is written changes nothing a fold draws", () => {
+    const deltas = [ev(2, "reply.delta", "job/work", { text: "On it." } as Partial<OverviewEvent>), ev(2, "reply.delta", "job/work/001-x", { text: "x" } as Partial<OverviewEvent>)];
+    const withDeltas = [...jobRun.slice(0, 5), ...deltas, ...jobRun.slice(5)];
+    assert.deepEqual(foldRunOverview(withDeltas), foldRunOverview(jobRun));
+  });
+
   it("lists the top-level steps, and under each the work it started that a person opens", () => {
     const o = foldRunOverview(jobRun);
     assert.deepEqual(
@@ -68,6 +74,20 @@ describe("foldRunOverview", () => {
     const child = o.rows.find((r) => r.kind === "run")!;
     assert.deepEqual(child.child, { runId: "1790000000001", workflow: "pod-pr" });
     assert.equal(child.parent, "work");
+  });
+
+  it("a `job/start` STEP (the orchestrator's, after its turn) opens the job's run like the tool call does", () => {
+    const o = foldRunOverview([
+      ev(0, "run.start", "orchestrator"),
+      ev(0, "step.start", "orchestrator/turn", { stepType: "agent" }),
+      ev(2, "step.end", "orchestrator/turn", { stepType: "agent", output: {} }),
+      ev(2, "step.start", "orchestrator/started", { stepType: "job/start", input: { prompt: "p", title: "t", workflow: "builder" } }),
+      ev(2, "step.end", "orchestrator/started#launch", { output: { job: "j", runId: "1790000000002", callback: true } }),
+      ev(3, "step.end", "orchestrator/started", { stepType: "job/start", output: { job: "j", runId: "1790000000002", callback: true } }),
+      ev(3, "run.end", "orchestrator", { output: {} }),
+    ]);
+    const started = o.rows.find((r) => r.key === "orchestrator/started")!;
+    assert.deepEqual([started.kind, started.label, started.child], ["run", "builder", { runId: "1790000000002", workflow: "builder" }]);
   });
 
   it("reads an agent's and an llm step's own output in a log from before the spend fields", () => {
