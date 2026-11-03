@@ -76,6 +76,20 @@ describe("foldRunOverview", () => {
     assert.equal(child.parent, "work");
   });
 
+  it("a `job/start` STEP (the orchestrator's, after its turn) opens the job's run like the tool call does", () => {
+    const o = foldRunOverview([
+      ev(0, "run.start", "orchestrator"),
+      ev(0, "step.start", "orchestrator/turn", { stepType: "agent" }),
+      ev(2, "step.end", "orchestrator/turn", { stepType: "agent", output: {} }),
+      ev(2, "step.start", "orchestrator/started", { stepType: "job/start", input: { prompt: "p", title: "t", workflow: "builder" } }),
+      ev(2, "step.end", "orchestrator/started#launch", { output: { job: "j", runId: "1790000000002", callback: true } }),
+      ev(3, "step.end", "orchestrator/started", { stepType: "job/start", output: { job: "j", runId: "1790000000002", callback: true } }),
+      ev(3, "run.end", "orchestrator", { output: {} }),
+    ]);
+    const started = o.rows.find((r) => r.key === "orchestrator/started")!;
+    assert.deepEqual([started.kind, started.label, started.child], ["run", "builder", { runId: "1790000000002", workflow: "builder" }]);
+  });
+
   it("reads an agent's and an llm step's own output in a log from before the spend fields", () => {
     const o = foldRunOverview([
       ev(0, "run.start", "old"),
