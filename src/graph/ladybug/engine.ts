@@ -59,7 +59,7 @@ import * as ontology from "./ontology.js";
 import { SCHEMA_EDGE, catalogOf, readCatalog, type Catalog, type LadybugCatalog } from "./ontology.js";
 import { namespaceName, writeNamespace } from "./namespaces.js";
 import { deleteEdgeRows, deleteRowsOf, embedPendingRows, recomposeRowsOf } from "./temporal.js";
-import { ALL_EDGE_COLUMNS, EDGE_TEXT_TYPE, GENERIC_COLUMNS, LADYBUG_STRUT_TYPES, SCHEMA_TYPE, edgeColumnsOf } from "./registry.js";
+import { ALL_EDGE_COLUMNS, EDGE_TEXT_TYPE, GENERIC_COLUMNS, LADYBUG_STRUT_TYPES, MERGE_TYPE, SCHEMA_TYPE, edgeColumnsOf } from "./registry.js";
 
 const q = (s: string) => `\`${s}\``;
 const lit = (s: string) => `'${s.replace(/'/g, "''")}'`;
@@ -158,6 +158,7 @@ class LadybugNodes implements NodeEngine {
 
   async mergeBatch(tx: GraphTx, schema: NodeSchema, asked: string, nodes: PreparedNode[], mode: WriteMode) {
     if (schema.type === EDGE_TEXT_TYPE) throw new GraphValidationError("WRONG_TYPE", schema.type, "an edge's search row is written with its edge, by graph/assert");
+    if (schema.type === MERGE_TYPE) throw new GraphValidationError("WRONG_TYPE", schema.type, "a merge's record is written by graph/merge");
     const namespace = writeNamespace(schema.type, asked, this.ns);
     const found = await tx.run(
       `UNWIND $keys AS k MATCH (n:Node {node_type: $type, namespace: $ns, \`key\`: k}) RETURN k AS k, n.ref_id AS ref_id, n.deleted_at IS NOT NULL AS deleted`,
