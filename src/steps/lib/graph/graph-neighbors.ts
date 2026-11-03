@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { defineStep, type StepContext, withAccessedNodes } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
-import { graphCtx, errText, deriveNodeName, describeNodes, EXCLUDED_NODE_TYPES } from "./_shared.js";
+import { graphCtx, errText, deriveNodeName, describeNodes, isoDates, timeInputs, EXCLUDED_NODE_TYPES } from "./_shared.js";
 const NEIGHBOR_CAP = 50;
 
 export default defineStep({
@@ -12,7 +12,8 @@ export default defineStep({
     "Each neighbor also includes an `edges` map ({EDGE_TYPE: count}) showing how " +
     "connected that neighbor is and which relationship types you can hop along next. " +
     "Optionally filter by edge_type and/or node_type. " +
-    "Use this to traverse relationships between workflows, versions, steps, runs, sessions, tool calls, chats, and concepts.",
+    "Use this to traverse relationships between workflows, versions, steps, runs, sessions, tool calls, chats, and concepts. " +
+    "A fact's edge (a sentence on an edge, \"Tom works at Stakwork\") carries its `text` and dates, and only current facts are shown unless `include_ended` or `as_of` says otherwise.",
   input: z.object({
     ref_id: z.string().describe("The ref_id of the node to expand."),
     edge_type: z
@@ -27,6 +28,7 @@ export default defineStep({
       .string()
       .optional()
       .describe("Scope neighbor edge-count computation to a namespace (data partition). Only affects each neighbor's `edges` map."),
+    ...timeInputs,
   }),
   output: z.any(),
   async run(cfg, ctx) {
@@ -41,6 +43,8 @@ export default defineStep({
         limit: NEIGHBOR_CAP,
         namespace: cfg.namespace,
         include_edge_counts: true,
+        include_ended: cfg.include_ended,
+        as_of: cfg.as_of,
       });
 
       // Node details by ref_id (excluding the queried node) so each neighbor
@@ -66,7 +70,8 @@ export default defineStep({
         seen.add(neighborRefId);
 
         const detail = nodeMap.get(neighborRefId);
-        const importance = (edge.properties as Record<string, unknown>)?.["importance"] as number | undefined;
+        const props = (edge.properties ?? {}) as Record<string, unknown>;
+        const importance = props["importance"] as number | undefined;
         neighbors.push({
           ref_id: neighborRefId,
           node_type: detail?.node_type ?? "unknown",
@@ -75,6 +80,9 @@ export default defineStep({
           direction,
           edges: detail?.edges ?? {},
           ...(importance !== undefined ? { importance } : {}),
+          // A temporal edge's sentence and dates (a Ladybug file's facts).
+          ...(typeof props["text"] === "string" ? { text: props["text"], ...isoDates(props) } : {}),
+          ...(typeof props["superseded_by"] === "string" ? { superseded_by: props["superseded_by"] } : {}),
         });
         if (neighbors.length >= NEIGHBOR_CAP) break;
       }

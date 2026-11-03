@@ -3,7 +3,8 @@ import { defineStep, type StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
 import { getStrutSchema } from "../../../graph/strut-schemas.js";
 import { nodeTitle } from "../../../graph/title.js";
-import { graphCtx, errText, excludeDomainsInput } from "./_shared.js";
+import type { FactEnvelope } from "../../../graph/search.js";
+import { graphCtx, errText, excludeDomainsInput, isoDates, timeInputs } from "./_shared.js";
 const splitList = (s?: string) => s?.split(",").map((x) => x.trim()).filter(Boolean);
 
 /** A node's human label: its title (the Strut schema's title_key when it is
@@ -20,6 +21,22 @@ function descriptionOf(nodeType: string | undefined, p: Record<string, any>): st
   return p.description ?? p.summary ?? p.text ?? "";
 }
 
+/** A fact as the caller reads it: its dates as ISO. */
+function factOut(f: FactEnvelope) {
+  return {
+    ref_id: f.ref_id,
+    edge_type: f.edge_type,
+    text: f.text,
+    source: f.source,
+    target: f.target,
+    ...isoDates({ ...f }),
+    ...(f.superseded_by ? { superseded_by: f.superseded_by } : {}),
+    sources: f.sources,
+    ...(f.namespace ? { namespace: f.namespace } : {}),
+    score: f.score,
+  };
+}
+
 export default defineStep({
   type: "graph/graph-search",
   description:
@@ -32,7 +49,11 @@ export default defineStep({
     "Each result includes an `edges` map ({EDGE_TYPE: count}) showing how connected the node is and " +
     "which relationship types you can traverse next with graph_graph_neighbors. " +
     "A code result also carries where it lives — `file`, and its lines `start` and `end`, counted from 0 as the parser counts them (add 1 for the line number an editor shows) — so you can open it. " +
-    "Call graph_get_ontology first to discover valid values for the `type` parameter.",
+    "Call graph_get_ontology first to discover valid values for the `type` parameter. " +
+    "Pass `facts: true` when you are looking for what is true about someone or something (where a person works, lives, who they know): " +
+    "the search then also finds facts — sentences on edges, \"Tom works at Stakwork\" — and returns `{ nodes, facts }`, each fact with its sentence, both ends and its dates. " +
+    "Only current facts are returned unless `include_ended` (history too) or `as_of` (what was true then) says otherwise. A search with `type`, `domains` or `linked` finds no facts. " +
+    "Without `facts: true` the result is the list of nodes alone.",
   input: z.object({
     q: z
       .string()
@@ -86,6 +107,11 @@ export default defineStep({
       .optional()
       .describe("Scope the search to one namespace (who the data is for: `private`, `shared`). Default: every namespace this caller may read."),
     exclude_domains: z.string().optional().describe(excludeDomainsInput),
+    facts: z
+      .boolean()
+      .optional()
+      .describe("Also find facts (sentences on edges) and return `{ nodes, facts }` instead of the list of nodes. Use it to find what is true about someone or something."),
+    ...timeInputs,
   }),
   output: z.any(),
   async run(cfg, ctx) {
@@ -104,6 +130,9 @@ export default defineStep({
         linked: splitList(cfg.linked),
         namespace: cfg.namespace,
         limit: cfg.limit ?? 10,
+        facts: Boolean(cfg.facts),
+        include_ended: cfg.include_ended,
+        as_of: cfg.as_of,
         // Per-node {EDGE_TYPE: count} map inline, so connectivity + hop
         // targets come back in one call.
         include_edge_counts: true,
@@ -128,8 +157,9 @@ export default defineStep({
         };
       });
       // No provenance marker: a hit is a node the caller was SHOWN, not one
-      // it chose to read (`withAccessedNodes`).
-      return hits;
+      // it chose to read (`withAccessedNodes`). Facts only when asked, so the
+      // shape never depends on the data; a graph holding none (Neo4j) has `[]`.
+      return cfg.facts ? { nodes: hits, facts: (res.facts ?? []).map(factOut) } : hits;
     } catch (e) {
       return errText("graph/graph-search", e);
     }

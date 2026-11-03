@@ -44,6 +44,7 @@ import {
   GraphReadError,
   applyTitleBoost,
   applyUsageTiebreak,
+  asOfTime,
   cmp,
   envelope,
   excludeRegex,
@@ -61,6 +62,8 @@ import {
   type ConnectionCount,
   type EdgeEnvelope,
   type EdgeLink,
+  type FactEnd,
+  type FactEnvelope,
   type GraphReader,
   type Hit,
   type HitNode,
@@ -79,6 +82,7 @@ import { namespaceName } from "./namespaces.js";
 import type { LadybugSchemas } from "./engine.js";
 import type { LadybugCatalog } from "./ontology.js";
 import { EDGE_TEXT_TYPE, SCHEMA_TYPE } from "./registry.js";
+import { temporalEdgeTypes } from "./temporal.js";
 
 export interface LadybugReaderOptions {
   /** The semantic half; without it search is keyword-only. */
@@ -96,6 +100,26 @@ const lit = (s: string) => `'${s.replace(/'/g, "''")}'`;
 const LIVE = (alias: string) => `${alias}.deleted_at IS NULL`;
 /** A data node: the ontology's Schema rows and the edges' search rows (`EdgeText`) are not read, walked or counted. */
 const DATA = (alias: string) => `NOT ${alias}.node_type IN ['${SCHEMA_TYPE}', '${EDGE_TEXT_TYPE}']`;
+
+/** Which temporal edges a read shows, as one condition on an edge or a
+ *  search row (both hold the clocks; a plain edge has none, so it always
+ *  passes): by default the current ones, not expired and not past their
+ *  `invalid_at`; `include_ended` every one; `as_of` the ones true then,
+ *  begun by it (or with no start) and not yet ended (`invalid_at`, else
+ *  `expired_at` for an edge that was ended with no date). */
+export function timeClause(alias: string, p: { include_ended?: boolean; as_of?: string | number }, params: Params): string {
+  const asOf = asOfTime(p.as_of);
+  if (asOf !== undefined) {
+    params["as_of"] = asOf;
+    const end = `coalesce(${alias}.invalid_at, ${alias}.expired_at)`;
+    return `(${alias}.valid_at IS NULL OR ${alias}.valid_at <= $as_of) AND (${end} IS NULL OR ${end} > $as_of)`;
+  }
+  if (p.include_ended) return "true";
+  params["now"] ??= Date.now();
+  return `${alias}.expired_at IS NULL AND (${alias}.invalid_at IS NULL OR ${alias}.invalid_at > $now)`;
+}
+
+const msOf = (v: unknown): number | undefined => (v === null || v === undefined ? undefined : Number(v));
 
 /** A node as a struct of every column but the vector: 384 floats on every
  *  row of an over-fetch are weight the response strips anyway. */
@@ -165,6 +189,16 @@ export class LadybugReader implements GraphReader {
       edge: (a) => (ns ? ` AND ${a}.namespace IN $scope_ns` : ""),
       params: { ...(ns ? { scope_ns: ns } : {}), ...(hidden.length ? { scope_hidden: hidden } : {}) },
     };
+  }
+
+  /** `timeClause` on an edge alias, when the file has a temporal edge
+   *  table to read the clocks from; else every edge is a plain one, and
+   *  passes (a column no table holds is a binder error). */
+  private async edgeTime(alias: string, p: { include_ended?: boolean; as_of?: string | number }, params: Params): Promise<string> {
+    asOfTime(p.as_of);
+    const tables = (await this.engine.catalog.get()).edges;
+    const temporal = (await temporalEdgeTypes((c, x) => this.engine.query(c, x))).some((t) => tables.has(t));
+    return temporal ? timeClause(alias, p, params) : "true";
   }
 
   /** The projection of every column the file has. */
@@ -250,11 +284,13 @@ export class LadybugReader implements GraphReader {
   async connectionCounts(ref_id: string, namespace?: string): Promise<ConnectionCount[]> {
     await this.resolveNamespace(namespace);
     const sc = await this.sql();
+    const params: Params = { ref_id, ...sc.params };
+    const time = await this.edgeTime("r", {}, params);
     const half = (dir: "out" | "in") =>
       this.engine.query(
-        `MATCH (n:Node {ref_id: $ref_id})${dir === "out" ? "-[r]->" : "<-[r]-"}(m:Node) WHERE ${LIVE("m")} AND ${DATA("m")}${sc.node("n")}${sc.node("m")}${sc.edge("r")}
+        `MATCH (n:Node {ref_id: $ref_id})${dir === "out" ? "-[r]->" : "<-[r]-"}(m:Node) WHERE ${LIVE("m")} AND ${DATA("m")}${sc.node("n")}${sc.node("m")}${sc.edge("r")} AND ${time}
          RETURN label(r) AS edge_type, m.node_type AS target_type, count(*) AS cnt`,
-        { ref_id, ...sc.params },
+        params,
       );
     const out: ConnectionCount[] = [];
     for (const direction of ["out", "in"] as const) {
@@ -269,10 +305,12 @@ export class LadybugReader implements GraphReader {
     if (ref_ids.length === 0) return {};
     await this.resolveNamespace(namespace);
     const sc = await this.sql();
+    const params: Params = { ids: ref_ids, ...sc.params };
+    const time = await this.edgeTime("r", {}, params);
     const rows = await this.engine.query(
-      `UNWIND $ids AS id MATCH (n:Node {ref_id: id})-[r]-(m:Node) WHERE ${LIVE("m")} AND ${DATA("m")}${sc.node("n")}${sc.node("m")}${sc.edge("r")}
+      `UNWIND $ids AS id MATCH (n:Node {ref_id: id})-[r]-(m:Node) WHERE ${LIVE("m")} AND ${DATA("m")}${sc.node("n")}${sc.node("m")}${sc.edge("r")} AND ${time}
        RETURN id AS ref_id, label(r) AS edge_type, count(*) AS cnt`,
-      { ids: ref_ids, ...sc.params },
+      params,
     );
     const out: Record<string, Record<string, number>> = {};
     for (const r of rows) (out[String(r["ref_id"])] ??= {})[String(r["edge_type"])] = Number(r["cnt"]);
@@ -284,6 +322,7 @@ export class LadybugReader implements GraphReader {
     const sc = await this.sql();
     const where = [LIVE("source"), LIVE("node"), DATA("node") + sc.node("source") + sc.node("node") + sc.edge("r")];
     const params: Params = { ref_id, ...sc.params };
+    where.push(await this.edgeTime("r", p, params));
     if (p.node_types?.length) {
       params["node_types"] = await Promise.all(p.node_types.map((t) => this.canonical(t)));
       where.push("node.node_type IN $node_types");
@@ -411,6 +450,8 @@ export class LadybugReader implements GraphReader {
       types = types ? types.filter((t) => allowed.has(t)) : [...allowed];
     }
     if (types && types.length === 0) return empty;
+    const time: Params = {};
+    const timeRow = timeClause("node", p, time);
     const links = await Promise.all(parseLinks(p.linked ?? []).map(async (l) => ({ ...l, type: await this.canonical(l.type) })));
 
     // A Schema row has no search text, so no index returns it; said anyway.
@@ -479,6 +520,13 @@ export class LadybugReader implements GraphReader {
     }
     if (fieldQuery) warnings.push("input_q / output_q: a ladybug file keeps no per-field vectors; only q was searched");
 
+    // Facts, through their search rows, unless the search asks for nodes of
+    // some types (`type`, `domains`, `linked` say what a node is; a fact is none).
+    // A file whose Node table has no search-row columns holds no facts.
+    const columns = (await this.engine.catalog.get()).columns;
+    const rowsHeld = ["edge_ref_id", "valid_at", "invalid_at", "expired_at"].every((c) => c in columns);
+    const facts = p.facts === false || types || links.length || !rowsHeld ? { facts: [], truncated: false } : await this.searchFacts(qstr, { ...p, limit, skip }, sc, timeRow, time, layer);
+
     let ranked = fuseHits(fulltext, semantic, {}, fusionWeights(qstr));
     const titles = new Map<string, string>();
     for (const t of new Set(ranked.map((e) => e.node.labels[0]).filter((t): t is string => !!t))) {
@@ -495,7 +543,120 @@ export class LadybugReader implements GraphReader {
       const counts = await this.edgeCounts(nodes.map((n) => n.ref_id), namespace, Boolean(p.namespace));
       for (const n of nodes) n.edges = counts[n.ref_id] ?? {};
     }
-    return { nodes, total, truncated: fulltext.length >= cap || semantic.length >= cap, ...(warnings.length ? { warnings } : {}) };
+    return {
+      nodes,
+      ...(facts.facts.length ? { facts: facts.facts } : {}),
+      total,
+      truncated: fulltext.length >= cap || semantic.length >= cap || facts.truncated,
+      ...(warnings.length ? { warnings } : {}),
+    };
+  }
+
+  /**
+   * The facts a query finds (plans/graph-edge-search.md "Reads"): the
+   * keyword and vector indexes hit the edges' search rows (`EdgeText`),
+   * filtered after their top-k to the reader's namespaces, a namespace
+   * asked for and the time asked for (the row holds its edge's clocks), and
+   * fused as the nodes are. Each hit then fetches its edge and both ends,
+   * which must be live data nodes the reader may see, as must the edge.
+   * Ranked among facts only.
+   */
+  private async searchFacts(
+    qstr: string,
+    p: SearchParams & { limit: number; skip: number },
+    sc: ScopeSql,
+    timeRow: string,
+    time: Params,
+    layer: ReturnType<typeof retrieverLayer>,
+  ): Promise<{ facts: FactEnvelope[]; truncated: boolean }> {
+    const where = [`node.node_type = '${EDGE_TEXT_TYPE}'`, LIVE("node") + sc.node("node"), timeRow];
+    const base: Params = { ...sc.params, ...time };
+    if (p.namespace !== undefined) {
+      where.push("node.namespace = $namespace");
+      base["namespace"] = await this.resolveNamespace(p.namespace);
+    }
+    const filter = where.join(" AND ");
+    const cap = fetchLimit(p.limit, p.skip);
+    const row = `{ref_id: node.edge_ref_id, edge_type: node.edge_type, source_ref_id: node.source_ref_id, target_ref_id: node.target_ref_id}`;
+    const asHit = (r: Row): Hit => ({ node: { labels: [EDGE_TEXT_TYPE], properties: (r["row"] as Record<string, unknown>) ?? {} }, raw_score: Number(r["score"]) });
+    // The rows are a filter after the index's top-k, as a typed node search is: always over-fetched.
+    const fts = (conjunctive: boolean) =>
+      overfetch(cap, async (k) =>
+        (await this.engine.query(
+          `CALL QUERY_FTS_INDEX('Node', 'node_fts', $q, conjunctive := $conjunctive, top := $k)
+           WITH node, score WHERE ${filter}
+           RETURN ${row} AS row, score`,
+          { ...base, q: ftsTerms(qstr), conjunctive, k },
+        )).map(asHit),
+      );
+    const fulltext = await layer("facts fulltext", async () => {
+      let hits = await fts(true);
+      if (hits.length === 0 && !isExactQuery(qstr) && ftsTerms(qstr).includes(" ")) hits = await fts(false);
+      return hits;
+    }, [] as Hit[]);
+    const semantic = this.opts.embedder
+      ? await layer("facts semantic", async () => {
+          const [embedding] = await this.opts.embedder!.embed([qstr]);
+          return overfetch(cap, async (k) =>
+            (await this.engine.query(
+              `CALL QUERY_VECTOR_INDEX('Node', 'node_vec', $embedding, $k, efs := ${VECTOR_EFS})
+               WITH node, distance WHERE ${filter}
+               RETURN ${row} AS row, 1 - distance AS score`,
+              { ...base, embedding, k },
+            )).map(asHit),
+          );
+        }, [] as Hit[])
+      : [];
+    const ranked = fuseHits(fulltext, semantic, {}, fusionWeights(qstr));
+    if (ranked.length === 0) return { facts: [], truncated: false };
+
+    // Each hit's edge and ends, one statement per edge type.
+    const tables = (await this.engine.catalog.get()).edges;
+    const byType = new Map<string, Array<{ e: string; s: string; t: string }>>();
+    for (const r of ranked) {
+      const x = r.node.properties;
+      const type = String(x["edge_type"] ?? "");
+      if (!EDGE_TYPE_NAME.test(type) || !tables.has(type)) continue;
+      const list = byType.get(type) ?? [];
+      list.push({ e: String(x["ref_id"]), s: String(x["source_ref_id"]), t: String(x["target_ref_id"]) });
+      byType.set(type, list);
+    }
+    const end = (a: string) => `{ref_id: ${a}.ref_id, node_type: ${a}.node_type, title: coalesce(${a}.title, ${a}.name)}`;
+    const found = new Map<string, Omit<FactEnvelope, "score" | "match_type">>();
+    for (const [type, pairs] of byType) {
+      const rows = await this.engine.query(
+        `UNWIND $pairs AS p MATCH (s:Node {ref_id: p.s})-[r:${q(type)}]->(t:Node {ref_id: p.t})
+         WHERE r.ref_id = p.e AND ${LIVE("s")} AND ${LIVE("t")} AND ${DATA("s")} AND ${DATA("t")}${sc.node("s")}${sc.node("t")}${sc.edge("r")}
+         RETURN r AS rel, ${end("s")} AS source, ${end("t")} AS target`,
+        { pairs, ...sc.params },
+      );
+      for (const r of rows) {
+        const rel = (r["rel"] as Record<string, unknown>) ?? {};
+        const asEnd = (v: unknown): FactEnd => {
+          const o = (v ?? {}) as Record<string, unknown>;
+          return { ref_id: String(o["ref_id"]), node_type: typeof o["node_type"] === "string" ? o["node_type"] : undefined, ...(typeof o["title"] === "string" ? { title: o["title"] } : {}) };
+        };
+        const times: Partial<Record<"valid_at" | "invalid_at" | "expired_at", number>> = {};
+        for (const k of ["valid_at", "invalid_at", "expired_at"] as const) if (msOf(rel[k]) !== undefined) times[k] = msOf(rel[k])!;
+        found.set(String(rel["ref_id"]), {
+          ref_id: String(rel["ref_id"]),
+          edge_type: type,
+          text: String(rel["text"] ?? ""),
+          source: asEnd(r["source"]),
+          target: asEnd(r["target"]),
+          ...times,
+          ...(typeof rel["superseded_by"] === "string" ? { superseded_by: rel["superseded_by"] } : {}),
+          sources: Array.isArray(rel["sources"]) ? (rel["sources"] as unknown[]).map(String) : [],
+          ...(typeof rel["namespace"] === "string" ? { namespace: rel["namespace"] } : {}),
+        });
+      }
+    }
+    const facts: FactEnvelope[] = [];
+    for (const r of ranked) {
+      const f = found.get(refIdOf(r.node));
+      if (f) facts.push({ ...f, score: r.extra.score, match_type: r.extra.match_type });
+    }
+    return { facts: facts.slice(p.skip, p.skip + p.limit), truncated: fulltext.length >= cap || semantic.length >= cap };
   }
 
   // ── ontology: the Schema rows ───────────────────────────────────────────
