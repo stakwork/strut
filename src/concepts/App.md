@@ -213,6 +213,8 @@ from its safe elements, never as HTML — `SafeHtml` for HTML you hold),
 numbers), `NodeCard`, `NodeSearch`, `NodeGraph`. They run on
 YOUR grants: the run views need the workflow (and a child run's) in
 `grants.workflows`; the graph views need `graph/graph-get-batched`,
+`graph/graph-edges` (`RunGraph`'s edges and lineage, a call per thousand
+nodes — without it, it reads them a node at a time, slowly),
 `graph/graph-neighbors` (and `graph/graph-search` for `NodeSearch`) in
 `grants.steps`. Its own page is a gallery of all of them. The pure folds
 under them — `foldRunOverview`, `foldRunHealth`, `foldAgentTrace`,
@@ -397,7 +399,8 @@ query that returns everything, for example), grant it, and call it once.
 Never assemble it in the page: a `graph/graph-neighbors` call per node,
 `graph/graph-get-batched` in a loop, a lineage walked hop by hop. Every
 call is a browser round trip through the host, and a few hundred of them
-make the page slow. A cheap read is a step (`useStep`, fine on a render);
+make the page slow. (The edges among nodes you hold, and their lineage,
+are `graph/graph-edges`: one call per thousand nodes.) A cheap read is a step (`useStep`, fine on a render);
 an analysis too slow for that is a workflow, launched on a click and
 followed with `useRun`. The worked example is `openhealth/run-graph`: one
 call runs three queries and returns the nodes, edges and ancestors that

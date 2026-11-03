@@ -37,6 +37,8 @@ import type { Embedder } from "../node-writer.js";
 import type { NodeSchema } from "../schema-resolver.js";
 import {
   DEFAULT_NAMESPACE,
+  EDGE_TYPE_NAME,
+  EDGES_AMONG_MAX,
   GraphReadError,
   applyTitleBoost,
   applyUsageTiebreak,
@@ -56,6 +58,7 @@ import {
   splitSchema,
   type ConnectionCount,
   type EdgeEnvelope,
+  type EdgeLink,
   type GraphReader,
   type Hit,
   type HitNode,
@@ -283,6 +286,48 @@ export class LadybugReader implements GraphReader {
       for (const n of nodes) n.edges = counts[n.ref_id] ?? {};
     }
     return { nodes, edges };
+  }
+
+  /** `GraphReader.edgesAmong`: out of `ref_ids`, then into them from the rest of the set, each edge once. */
+  async edgesAmong(ref_ids: string[], among: string[] = [], limit = EDGES_AMONG_MAX): Promise<{ edges: EdgeLink[]; truncated: boolean }> {
+    if (ref_ids.length === 0) return { edges: [], truncated: false };
+    const all = [...new Set([...ref_ids, ...among])];
+    const rows = [
+      ...(await this.engine.query(
+        `UNWIND $ids AS id MATCH (a:Node {ref_id: id})-[r]->(b:Node)
+         WHERE b.ref_id IN $within AND b.ref_id <> id AND ${LIVE("a")} AND ${LIVE("b")} AND ${DATA("b")}
+         RETURN id AS source, label(r) AS edge_type, b.ref_id AS target`,
+        { ids: ref_ids, within: all },
+      )),
+      ...(await this.engine.query(
+        `UNWIND $ids AS id MATCH (a:Node {ref_id: id})<-[r]-(b:Node)
+         WHERE b.ref_id IN $within AND NOT b.ref_id IN $ids AND ${LIVE("a")} AND ${LIVE("b")} AND ${DATA("b")}
+         RETURN b.ref_id AS source, label(r) AS edge_type, id AS target`,
+        { ids: ref_ids, within: all },
+      )),
+    ];
+    const seen = new Set<string>();
+    const edges: EdgeLink[] = [];
+    for (const r of rows) {
+      const e = { source: String(r["source"]), target: String(r["target"]), edge_type: String(r["edge_type"]) };
+      const key = `${e.source}|${e.edge_type}|${e.target}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      edges.push(e);
+    }
+    return { edges: edges.slice(0, limit), truncated: edges.length > limit };
+  }
+
+  /** `GraphReader.incoming`; an edge type the file has no table for has none. */
+  async incoming(ref_ids: string[], edge_type: string): Promise<Array<{ target: string; node: NodeEnvelope }>> {
+    if (ref_ids.length === 0 || !EDGE_TYPE_NAME.test(edge_type) || !(await this.engine.catalog.get()).edges.has(edge_type)) return [];
+    const rows = await this.engine.query(
+      `UNWIND $ids AS id MATCH (p:Node)-[r:${q(edge_type)}]->(c:Node {ref_id: id})
+       WHERE ${LIVE("p")} AND ${DATA("p")}
+       RETURN id AS target, ${await this.project("p")} AS node`,
+      { ids: ref_ids },
+    );
+    return rows.map((r) => ({ target: String(r["target"]), node: serializeNode(hitNode(r["node"])) }));
   }
 
   // ── search ──────────────────────────────────────────────────────────────

@@ -7,9 +7,60 @@ import { distinctNodeRefs, lineageParents, projectWithLaunches, runGraphHops, ru
 import { layoutRunGraph } from "../../kit/src/folds/run-graph/layout.js";
 import { createFixtureClient } from "./views/src/fixtures/client.js";
 import { LARGE_RUN_EVENTS, LARGE_RUN_HIGHLIGHTS, LARGE_RUN_ID, LARGE_RUN_WORKFLOW } from "./views/src/fixtures/run-large.js";
+import { RUN_ID, WORKFLOW } from "./views/src/fixtures/runs.js";
 import { RunGraphReader } from "./views/src/components/run-graph/reader.js";
 import { NAME_CHARS, clipName } from "./views/src/lib/format.js";
 import { placeLabels, type LabelBox, type LabelInput, type LabelRequest } from "./views/src/components/run-graph/labels.js";
+
+/** The fixture client, counting the steps it answers; `refuse` answers one as an app that has not granted it. */
+function countingClient(refuse?: string) {
+  const inner = createFixtureClient({ latencyMs: 0 });
+  const calls = new Map<string, number>();
+  return {
+    calls,
+    async run<T>(type: string, config: Record<string, unknown> = {}): Promise<T> {
+      calls.set(type, (calls.get(type) ?? 0) + 1);
+      if (type === refuse) throw new Error(`step "${type}" is not granted to this app — its grants.steps: graph/graph-get-batched, graph/graph-neighbors`);
+      return inner.run<T>(type, config);
+    },
+  };
+}
+
+describe("strut/views — RunGraph reads edges in a few calls", () => {
+  const edgeSet = (s: { edges: Array<{ source: string; edge_type: string; target: string }> }) => s.edges.map((e) => `${e.source}|${e.edge_type}|${e.target}`).sort();
+
+  it("the large run's edges and lineage: graph-edges a call per 1,000 nodes, no graph-neighbors", async () => {
+    const client = countingClient();
+    const { calls } = projectWithLaunches(await client.run<unknown[]>("run/events", { workflow: LARGE_RUN_WORKFLOW, runId: LARGE_RUN_ID }));
+    const reader = new RunGraphReader(client);
+    await reader.read(distinctNodeRefs(calls));
+    const s = reader.snapshot();
+    assert.equal(s.edgesRead, true);
+    assert.equal(s.lineageRead, true);
+    assert.equal(client.calls.get("graph/graph-neighbors") ?? 0, 0);
+    assert.ok((client.calls.get("graph/graph-edges") ?? 0) <= 4, `${client.calls.get("graph/graph-edges")} graph-edges calls`);
+    assert.equal(lineageParents(s.edges).size, 2904 + 12, "every document under its area, every area under Law");
+  });
+
+  it("an app that has not granted graph-edges reads the same edges a node at a time", async () => {
+    const run = { workflow: WORKFLOW, runId: RUN_ID };
+    const read = async (refuse?: string) => {
+      const client = countingClient(refuse);
+      const { calls } = projectWithLaunches(await client.run<unknown[]>("run/events", run));
+      const reader = new RunGraphReader(client);
+      await reader.read(distinctNodeRefs(calls));
+      return { client, s: reader.snapshot() };
+    };
+    const batched = await read();
+    const fallback = await read("graph/graph-edges");
+    assert.equal(fallback.client.calls.get("graph/graph-edges"), 1, "asked once, refused, not asked again");
+    assert.ok((fallback.client.calls.get("graph/graph-neighbors") ?? 0) > 1);
+    assert.equal(fallback.s.edgesRead, true);
+    assert.ok(edgeSet(batched.s).length > 0);
+    assert.deepEqual(edgeSet(batched.s), edgeSet(fallback.s));
+    assert.deepEqual(batched.s.nodes.map((n) => n.ref_id).sort(), fallback.s.nodes.map((n) => n.ref_id).sort());
+  });
+});
 
 describe("strut/views — RunGraph at scale", () => {
   it("reads the large run whole — about 3,000 nodes and their lineage — and lays it out folded, a few thousand pixels at most", async () => {
