@@ -418,6 +418,7 @@ Content-Type: application/json
 {}                                     step 1
 { "key": "<base64, 32 bytes>" }        from step 2
 { "sealed": "<base64 HPKE envelope>" } from step 4, in place of key (§6)
+{ ..., "voice": "am_michael" }         any step, optional: Jamie's voice
 ```
 
 `200`:
@@ -429,13 +430,20 @@ Content-Type: application/json
   "token": "<LiveKit JWT for the member>",
   "identity": "<the member's identity in the room, random>",
   "agent": "<the agent's identity in the room, random>",
-  "encrypted": false
+  "encrypted": false,
+  "voice": "af_heart"
 }
 ```
 
 - **`url`** is the LiveKit server to connect to.
 - **`encrypted`** is true from step 2. Peel then joins with `key` as the shared
   key and with Opus RED off (§2).
+- **`voice`** is the voice in effect for this call.
+  - It's the request's `voice` when that is a voice strut's `/audio/speak`
+    has (`GET /audio/speak` lists them), otherwise a 400.
+  - With no `voice` in the request: the service's `STRUT_TTS_VOICE`, else
+    strut's default, `af_heart`.
+  - Peel's Talk screen toggles between `af_heart` ♀ and `am_michael` ♂.
 
 Errors are JSON, `{ error }`:
 
@@ -486,7 +494,8 @@ Errors are JSON, `{ error }`:
 2. It names the room (`sphinx.call.voice.` + 32 random hex) and two random
    identities.
 3. It mints the member's token: join this room only, publish and subscribe
-   audio, no admin, valid 10 minutes for joining.
+   audio, update its own attributes (the `voice` below), no admin, valid 10
+   minutes for joining.
 4. It gets the agent into the room before it answers, so a member never talks
    to an empty room.
    - Step 1: it joins with its own token on the local server, or by worker
@@ -506,6 +515,15 @@ of it, so the call screen needs nothing from the home:
   it is) and `lk.transcription_final`.
 - **From step 2, encryption covers these** only because the agent connects
   with `encryption`, not the legacy `e2ee`.
+
+**What Peel sets in the room: the member's participant attribute `voice`.**
+- Peel sets it to change Jamie's voice mid-call. The agent switches from the
+  next sentence it sends to `/audio/speak`; the sentence it is speaking ends
+  in the old voice.
+- An unknown name is ignored.
+- Attributes go over LiveKit's signaling, which end-to-end encryption doesn't
+  cover. A voice name isn't private, so that's fine; nothing private may ride
+  in an attribute.
 
 **Local values (step 1)**
 - **strut:**
