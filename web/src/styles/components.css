@@ -220,6 +220,74 @@ body.is-resizing-rows * {
   background: var(--accent);
   box-shadow: 0 0 12px var(--accent);
 }
+.sidebar-toggle {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--text-dim);
+}
+.sidebar-toggle:hover { background: var(--surface-2); color: var(--text); }
+
+/* Collapsed: the toggle on top and one tile per app (AppRail). The sections
+   stay mounted, hidden. */
+.shell.is-sidebar-collapsed { grid-template-columns: 52px 1fr; }
+.shell.is-sidebar-collapsed .shell-sidebar > :not(.sidebar-brand, .app-rail) { display: none; }
+.shell.is-sidebar-collapsed .sidebar-brand { padding: 0; justify-content: center; }
+.shell.is-sidebar-collapsed .sidebar-toggle { margin-left: 0; }
+.app-rail {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: var(--sp-3) 0;
+}
+.app-rail-tile {
+  position: relative;
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--r-lg);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: hsl(var(--hue) 70% 76%);
+  background: hsl(var(--hue) 60% 60% / 0.13);
+  border: 1px solid hsl(var(--hue) 60% 60% / 0.28);
+  transition: background 80ms, border-color 80ms;
+}
+.app-rail-tile:hover { background: hsl(var(--hue) 60% 60% / 0.22); border-color: hsl(var(--hue) 60% 60% / 0.45); }
+.app-rail-tile.is-active { box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--accent); }
+.app-rail-tile .usage-dot { position: absolute; top: -2px; right: -2px; box-shadow: 0 0 0 2px var(--surface); }
+.app-rail-empty { font-size: 10px; color: var(--text-dim); text-align: center; padding: 0 4px; }
+.app-rail-tip {
+  position: fixed;
+  left: 60px;
+  transform: translateY(-50%);
+  z-index: 50;
+  pointer-events: none;
+  white-space: nowrap;
+  padding: 4px 8px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border-strong);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 500;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+}
 
 /* --grow is set by SidebarResizer (a drag between sections); unset = even split. */
 .sidebar-section {
