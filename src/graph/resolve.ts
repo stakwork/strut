@@ -27,7 +27,10 @@
  *
  * It reads only the namespaces it is given, default the backend's own (where
  * a write that names none goes); two namespaces holding the same key are two
- * nodes, and ambiguous.
+ * nodes, and ambiguous. Under a reader list (scope.ts) it reads only what the
+ * list reads: the namespaces asked for that the list holds, or with none
+ * asked, the list's own; a type the list's domains hide is unknown, and a
+ * node outside the list is no match.
  *
  * Ladybug only. On Neo4j it is refused (`ResolveError`): a Neo4j graph
  * stores no core `title` and no `alt_names`, and its namespaces are jarvis's
@@ -39,6 +42,7 @@ import type { Row } from "./engine.js";
 import { namespaceName } from "./ladybug/namespaces.js";
 import { EDGE_TEXT_TYPE, SCHEMA_TYPE } from "./ladybug/registry.js";
 import { GraphValidationError, composeNodeKey, keyedByRef } from "./node-writer.js";
+import { ALL_NAMESPACES, boundsOf, hidesType, readsNamespace, type ReaderList } from "./scope.js";
 import type { NodeSchema } from "./schema-resolver.js";
 import { GraphReadError } from "./search.js";
 import { composeTitle } from "./title.js";
@@ -107,14 +111,18 @@ const LIVE_IN = (alias: string) => `${alias}.node_type = $type AND ${alias}.name
 export async function resolveNode(b: GraphBackend, input: ResolveInput): Promise<ResolveResult> {
   if (b.kind !== "ladybug") throw new ResolveError(`resolve is not on this backend (${b.kind}): it reads a Ladybug file's titles, alt_names and namespaces`);
   const schema = await b.schemas.schema(String(input.type ?? ""));
-  if (!schema) throw new GraphValidationError("UNKNOWN_TYPE", String(input.type), "unknown node type");
+  // The view's own query refuses a limited reader: the list is applied here.
+  const bounds = boundsOf(b);
+  if (!schema || (bounds && hidesType(bounds.list, schema.domainLabels))) throw new GraphValidationError("UNKNOWN_TYPE", String(input.type), "unknown node type");
   // The ontology's Schema rows and the edges' search rows are not data nodes.
   if (schema.type === SCHEMA_TYPE || schema.type === EDGE_TEXT_TYPE) throw new GraphValidationError("WRONG_TYPE", schema.type, "not a node type resolve reads");
-  const namespaces = scope(input.namespaces, b.namespace);
+  const namespaces = scope(input.namespaces, b.namespace, bounds?.list);
+  if (!namespaces.length) return { node_type: schema.type, namespaces, match: null, ambiguous: false, candidates: [] };
+  const query: GraphBackend["query"] = bounds?.query ?? b.query.bind(b);
   const limit = Math.min(CANDIDATES_MAX, Math.max(1, Math.floor(Number(input.limit) || CANDIDATES_DEFAULT)));
   const data = input.data ?? {};
   const base = { type: schema.type, ns: namespaces };
-  const run = (cypher: string, params: Record<string, unknown>) => b.query(cypher, { ...base, ...params });
+  const run = (cypher: string, params: Record<string, unknown>) => query(cypher, { ...base, ...params });
   const refs = (rows: Row[]) => [...new Set(rows.map((r) => String(r["ref_id"])))];
 
   const name = (input.name ?? "").trim() || composeTitle(schema.title_key, data);
@@ -152,21 +160,25 @@ export async function resolveNode(b: GraphBackend, input: ResolveInput): Promise
   for (const [stage, find] of stages) {
     const found = await find();
     if (!found.length) continue;
-    const nodes = await hydrate(b, schema, namespaces, found, stage);
+    const nodes = await hydrate(query, schema, namespaces, found, stage);
     if (nodes.length === 1) return { node_type: schema.type, namespaces, match: nodes[0]!, ambiguous: false, candidates: [] };
     if (nodes.length > 1) return { node_type: schema.type, namespaces, match: null, ambiguous: true, candidates: nodes.slice(0, limit) };
   }
 
-  return { node_type: schema.type, namespaces, match: null, ambiguous: false, candidates: await candidates(b, schema, namespaces, [name, ...aliases].filter(Boolean), limit) };
+  return { node_type: schema.type, namespaces, match: null, ambiguous: false, candidates: await candidates(b, query, schema, namespaces, [name, ...aliases].filter(Boolean), limit) };
 }
 
-/** The namespaces asked for, checked; the backend's own when none are. */
-function scope(asked: string[] | undefined, own: string): string[] {
-  const list = asked?.length ? asked : [own];
+/** The namespaces asked for, checked; the backend's own when none are.
+ *  Under a reader list, only those it reads, and with none asked, the
+ *  list's own (`*` keeps the backend's). */
+function scope(asked: string[] | undefined, own: string, reads?: ReaderList): string[] {
+  const all = !reads || reads.namespaces.includes(ALL_NAMESPACES);
+  const list = asked?.length ? asked : all ? [own] : reads.namespaces;
   const out: string[] = [];
   for (const raw of list) {
     const ns = namespaceName(String(raw), own);
     if (ns === null) throw new GraphReadError("INVALID_NAMESPACE", `${String(raw)} is not a namespace name`);
+    if (reads && !readsNamespace(reads, ns, own)) continue;
     if (!out.includes(ns)) out.push(ns);
   }
   return out;
@@ -188,10 +200,10 @@ function stringList(v: unknown): string[] {
 }
 
 /** The nodes behind `ref_ids` that are in scope, in the order given. */
-async function hydrate(b: GraphBackend, schema: NodeSchema, namespaces: string[], ref_ids: string[], matched_by: ResolvedNode["matched_by"]): Promise<ResolvedNode[]> {
+async function hydrate(query: GraphBackend["query"], schema: NodeSchema, namespaces: string[], ref_ids: string[], matched_by: ResolvedNode["matched_by"]): Promise<ResolvedNode[]> {
   if (!ref_ids.length) return [];
   const fields = [...new Set([schema.description_key, ...(schema.identifiers ?? []), ...(ALT_NAMES in schema.attributes ? [ALT_NAMES] : [])])].filter((f) => f && f in schema.attributes);
-  const rows = await b.query(
+  const rows = await query(
     `MATCH (n:Node) WHERE n.ref_id IN $ids AND ${LIVE_IN("n")}
      RETURN n.ref_id AS ref_id, n.namespace AS namespace, n.\`key\` AS key, n.title AS title${fields.map((f, i) => `, n.${q(f)} AS f${i}`).join("")}`,
     { ids: ref_ids, type: schema.type, ns: namespaces },
@@ -221,7 +233,7 @@ async function hydrate(b: GraphBackend, schema: NodeSchema, namespaces: string[]
 
 /** Nodes that may be the one: the search's ranking for each name, then the
  *  titles that contain the name, in scope and once each. */
-async function candidates(b: GraphBackend, schema: NodeSchema, namespaces: string[], names: string[], limit: number): Promise<ResolvedNode[]> {
+async function candidates(b: GraphBackend, query: GraphBackend["query"], schema: NodeSchema, namespaces: string[], names: string[], limit: number): Promise<ResolvedNode[]> {
   const seen = new Set<string>();
   const ordered: string[] = [];
   const add = (ids: string[]) => ids.forEach((id) => !seen.has(id) && (seen.add(id), ordered.push(id)));
@@ -229,15 +241,15 @@ async function candidates(b: GraphBackend, schema: NodeSchema, namespaces: strin
     const hits = await b.reader.search({ q: n, types: [schema.type], limit: limit * SEARCH_OVERFETCH });
     add(hits.nodes.map((h) => h.ref_id));
   }
-  const ranked = await hydrate(b, schema, namespaces, ordered, "search");
+  const ranked = await hydrate(query, schema, namespaces, ordered, "search");
   if (names[0] && ranked.length < limit) {
-    const rows = await b.query(`MATCH (n:Node) WHERE ${LIVE_IN("n")} AND lower(n.title) CONTAINS $frag RETURN n.ref_id AS ref_id ORDER BY n.title LIMIT ${limit}`, {
+    const rows = await query(`MATCH (n:Node) WHERE ${LIVE_IN("n")} AND lower(n.title) CONTAINS $frag RETURN n.ref_id AS ref_id ORDER BY n.title LIMIT ${limit}`, {
       type: schema.type,
       ns: namespaces,
       frag: norm(names[0]),
     });
     const more = rows.map((r) => String(r["ref_id"])).filter((id) => !seen.has(id));
-    ranked.push(...(await hydrate(b, schema, namespaces, more, "search")));
+    ranked.push(...(await hydrate(query, schema, namespaces, more, "search")));
   }
   return ranked.slice(0, limit);
 }

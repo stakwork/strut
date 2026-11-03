@@ -34,6 +34,8 @@ import { appOfIdentity } from "../auth.js";
 import { globToRegExp } from "../closure.js";
 import type { AppRef, StepRegistry } from "../core.js";
 import type { GraphReader } from "../graph/search.js";
+import type { GraphBackend } from "../graph/backend.js";
+import { pinnedTo } from "../graph/scope.js";
 import { runStep, type RunStepDeps } from "../run-step.js";
 import { isSealedStep } from "../sealed.js";
 import { APP_NAMESPACE, appScoped } from "../session-store.js";
@@ -76,6 +78,7 @@ export const GRAPH_WRITES: ReadonlySet<string> = new Set([
 const NOT_A_PAGES: Record<string, string> = {
   "graph/create-schema": "an app declares its graph types in app.yaml (data.graph); a page registers none",
   "graph/register-namespace": "an app writes in the workspace's namespace; a page registers none",
+  "graph/set-namespace": "moving data between namespaces is the person's own act, on a proposal they accept",
   "graph/project": "projecting runs into the graph is the server's own pass",
   "graph/query": "raw Cypher reads past the types app.yaml declares — a page reads a type's nodes with graph/find, or launches a workflow that queries (run/launch)",
   "app/init": "an app does not author apps — the builder does, with the editor",
@@ -291,7 +294,9 @@ async function appOf(app: AppRef, deps: AppToolDeps): Promise<{ manifest: AppMan
 
 /** `{ step_run }` — the app tool set a door spreads beside its own. */
 export function buildAppTools(deps: AppToolDeps): ToolSet {
-  const reader = deps.reader ?? (deps.services as { graph?: { reader?: Pick<GraphReader, "getNode"> } } | undefined)?.graph?.reader;
+  // As the `apps` reader where the host set `graphReaders` (src/graph/scope.ts).
+  const wired = (deps.services as { graph?: GraphBackend } | undefined)?.graph;
+  const reader = deps.reader ?? (pinnedTo(wired, "apps") ?? wired)?.reader;
   /** One call past the identity check: the grant checks, then the step.
    *  `status` and `bytes` are what the monitor counts. */
   const dispatch = async (

@@ -31,6 +31,7 @@
 
 import type { JobUpdateInput } from "./jobs.js";
 import { LiveFeed, type FeedRead } from "./live-feed.js";
+import { fullReaderOf } from "./graph/scope.js";
 
 /** One write, as the feed keeps it. */
 export interface GraphChange {
@@ -352,7 +353,7 @@ export function reportingGraph<G extends object>(graph: G, r: GraphReporter): G 
   const g = graph as { nodes?: object; edges?: object; reader?: TypeReader };
   return {
     ...graph,
-    ...(g.nodes ? { nodes: watchNodes(g.nodes, r, g.reader) } : {}),
+    ...(g.nodes ? { nodes: watchNodes(g.nodes, r, (fullReaderOf(graph) as TypeReader | undefined) ?? g.reader) } : {}),
     ...(g.edges ? { edges: watchEdges(g.edges, r) } : {}),
   } as G;
 }
@@ -377,13 +378,16 @@ export function bindGraph<TServices>(
   if (!graph || (!graph.nodes && !graph.edges)) return { services };
   const notify = bag.jobs?.notify ? (job: string, update: JobUpdateInput) => bag.jobs!.notify!(job, update) : undefined;
   if (!bag.graphChanges && !(o.job && notify)) return { services };
+  // The change feed's types come from the whole graph, whoever wrote
+  // (a view's reader is held to the jobs list, src/graph/scope.ts).
+  const typeReader = (fullReaderOf(graph) as TypeReader | undefined) ?? graph.reader;
   const reporter = graphReporter({
     ...(o.runId ? { runId: o.runId } : {}),
     ...(o.id ? { id: o.id } : {}),
     ...(o.job ? { job: o.job } : {}),
     ...(notify ? { notify } : {}),
     ...(bag.graphChanges ? { feed: bag.graphChanges } : {}),
-    ...(graph.reader ? { reader: graph.reader } : {}),
+    ...(typeReader ? { reader: typeReader } : {}),
     ...(o.debounceMs !== undefined ? { debounceMs: o.debounceMs } : {}),
     ...(o.maxDelayMs !== undefined ? { maxDelayMs: o.maxDelayMs } : {}),
   });

@@ -1,6 +1,7 @@
 import type { AccessedNode, StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
 import type { GraphBackend } from "../../../graph/backend.js";
+import { graphFor, type Narrowing } from "../../../graph/scope.js";
 
 export type { GraphBackend };
 
@@ -40,13 +41,22 @@ export type { GraphBackend };
  * neo4j-driver) is imported lazily here, inside `run()`, never at module
  * top level.
  */
+/** A call's own `exclude_domains`, as the read steps take it: comma-separated. */
+export const excludeDomainsInput = "Comma-separated domains to leave out, e.g. 'strut' to skip strut's own runs, jobs and workflows. It only narrows what this caller may read.";
+
 /** Node types a traversal (graph-neighbors, walk) leaves out: noise, and the
  *  ontology's own `Schema` nodes (read through get-ontology instead). */
 export const EXCLUDED_NODE_TYPES = ["Hint", "Memory", "Clip", "Turn", "Schema"];
 
-export async function graphCtx(ctx?: StepContext<StrutCapabilities>): Promise<GraphBackend> {
+/**
+ * The backend a step reads and writes through, held to its caller's reader
+ * list (`src/graph/scope.ts`, plans/graph-memory-plan.md step 6) and
+ * narrowed by the call's own asks (`exclude_domains`, a walk's namespace). Every `graph/*` step goes
+ * through here, so none reads past the list.
+ */
+export async function graphCtx(ctx?: StepContext<StrutCapabilities>, ask: Narrowing = {}): Promise<GraphBackend> {
   const wired = ctx?.services?.graph;
-  if (wired) return wired;
+  if (wired) return graphFor(wired, ctx, ask);
   const secrets = ctx?.services?.secrets;
   // Same resolution as the mcp host's own Neo4j client: `NEO4J_URI`, else
   // `bolt://<NEO4J_HOST>` (default localhost:7687), user/password defaulting
@@ -57,7 +67,7 @@ export async function graphCtx(ctx?: StepContext<StrutCapabilities>): Promise<Gr
   const emb = ((await secrets?.get("STRUT_GRAPH_EMBEDDINGS")) ?? "").toLowerCase();
   const ont = ((await secrets?.get("STRUT_GRAPH_SEED_ONTOLOGY")) ?? "").toLowerCase();
   const { openGraphBackend } = await import("../../../graph/backend.js");
-  return openGraphBackend(
+  const opened = await openGraphBackend(
     {
       uri,
       user: (await secrets?.get("NEO4J_USER")) || "neo4j",
@@ -67,6 +77,7 @@ export async function graphCtx(ctx?: StepContext<StrutCapabilities>): Promise<Gr
     },
     { embeddings: !["off", "0", "false"].includes(emb), seedOntology: ["1", "true", "on"].includes(ont) },
   );
+  return graphFor(opened, ctx, ask);
 }
 
 export interface EdgeWriteArgs {
