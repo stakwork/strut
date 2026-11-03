@@ -196,6 +196,11 @@ export interface RunStore {
   /** The finalized summary, or null while the run is in flight / if it never
    *  finalized (crash) — callers fall back to `summarizeFromEvents`. */
   getRunSummary(workflow: string, runId: string): Promise<RunSummary | null>;
+  /** Drop a run's summary: a durable resume does, before the run goes on,
+   *  so a summary always means the latest attempt FINISHED — a resumed run
+   *  reads as live, never as the outcome it is being resumed from. The log
+   *  keeps the old terminal event. Nothing to drop is not an error. */
+  clearRunSummary(workflow: string, runId: string): Promise<void>;
   /** The full event log (empty for an unknown run). */
   getRunEvents(workflow: string, runId: string): Promise<RunEvent[]>;
   /** The size of the event log in bytes — what `getRunEvents` would read —
@@ -527,11 +532,10 @@ export class FileRunStore implements RunStore {
   async finalize(workflow: string, runId: string, summary: RunSummary): Promise<void> {
     const dir = this.runDir(workflow, runId);
     await mkdir(dir, { recursive: true });
-    // Written beside and renamed into place: a resume REWRITES an existing
-    // run.json (the failed summary becomes the successful one), and a plain
-    // writeFile truncates first — a reader polling `getRunSummary` in that
-    // window saw an empty file, and a summary that was there read as null.
-    // rename is atomic, so a reader sees the old summary or the new one.
+    // Written beside and renamed into place: a plain writeFile truncates
+    // first, and a reader polling `getRunSummary` in that window saw an
+    // empty file. rename is atomic, so a reader sees no summary or the whole
+    // one. (A resume clears the old one first, `clearRunSummary`.)
     const tmp = join(dir, "run.json.tmp");
     await writeFile(tmp, JSON.stringify(summary, null, 2), "utf-8");
     await rename(tmp, join(dir, "run.json"));
@@ -560,6 +564,10 @@ export class FileRunStore implements RunStore {
     } catch {
       return null;
     }
+  }
+
+  async clearRunSummary(workflow: string, runId: string): Promise<void> {
+    await rm(join(this.runDir(workflow, runId), "run.json"), { force: true });
   }
 
   /**
@@ -701,6 +709,10 @@ export class MemoryRunStore implements RunStore {
 
   async getRunSummary(workflow: string, runId: string): Promise<RunSummary | null> {
     return this.summaries.get(this.key(workflow, runId)) ?? null;
+  }
+
+  async clearRunSummary(workflow: string, runId: string): Promise<void> {
+    this.summaries.delete(this.key(workflow, runId));
   }
 
   async deleteRuns(workflow: string): Promise<void> {

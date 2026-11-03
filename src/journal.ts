@@ -6,7 +6,7 @@
  * and implements the `from` invalidation ("re-run from this step", §5.2).
  */
 
-import type { Flow, RunAttachment, RunEvent, Step } from "./core.js";
+import type { AppRef, Flow, RunAttachment, RunEvent, StartedBy, Step } from "./core.js";
 import type { SubflowResolver } from "./runner.js";
 
 /** Completed units: last `step.end` per path wins — a resumed log may carry
@@ -48,6 +48,12 @@ export function readRunStart(
   /** The files the launch attached, saved under the run's artifacts — a
    *  resume hands them to its steps again. */
   attachments?: RunAttachment[];
+  /** The app a page's launch ran for (`origin: "app"`) — a resume keeps it,
+   *  so the run's agent sessions stay under the app's namespace. */
+  app?: AppRef;
+  /** The turn that started a job run — a resume keeps it, so the run's
+   *  `run.end` still names it (CALLBACKS.md §2). */
+  startedBy?: StartedBy;
 } | null {
   const start = events.find((e) => e.type === "run.start");
   if (!start) return null;
@@ -64,6 +70,8 @@ export function readRunStart(
     origin: start.origin,
     ...(start.peerPerson ? { peerPerson: true as const } : {}),
     attachments: start.attachments,
+    ...(start.app ? { app: start.app } : {}),
+    ...(start.startedBy ? { startedBy: start.startedBy } : {}),
   };
 }
 
