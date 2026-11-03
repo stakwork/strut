@@ -105,13 +105,13 @@ describe("concept files (pure)", () => {
     assert.deepEqual(STRUT_CONCEPTS.legacyPrefixes, ["lab/builder/concepts/", "lab/job/concepts/"]);
   });
 
-  it("ships Personal as a root of its own set, the person's once edited, and apart from strut's pages", async () => {
+  it("ships Personal as a root of its own set, kept as shipped, and apart from strut's pages", async () => {
     const file = "Personal.md";
     const c = parseConceptFile(file, await readFile(join(PERSONAL_CONCEPTS.dir, file), "utf-8"), PERSONAL_CONCEPTS.prefix);
     assert.equal(c.parent, undefined, "a root");
     assert.ok(c.description && c.docs?.includes("PARENT_OF"), "says how to walk it");
     assert.doesNotMatch(c.docs!, /hive|@<slug>|\bpod\b|workspace/i, "names nothing one deployment has");
-    assert.equal(PERSONAL_CONCEPTS.keepEdited, true);
+    assert.equal(PERSONAL_CONCEPTS.keepEdited, undefined, "the page is strut's; the person's knowledge is its children");
     assert.notEqual(PERSONAL_CONCEPTS.dir, STRUT_CONCEPTS.dir);
   });
 
