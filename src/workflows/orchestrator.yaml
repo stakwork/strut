@@ -127,8 +127,8 @@ steps:
             additionalProperties: false
             required: [brief, title]
             properties:
-              brief: { type: string, description: "Everything the job needs, as job/start's prompt: the job does not see this conversation." }
-              title: { type: string, description: "A short name for the job, as the person would say it." }
+              brief: { type: string, minLength: 1, description: "Everything the job needs, as job/start's prompt: the job does not see this conversation." }
+              title: { type: string, minLength: 1, description: "A short name for the job, as the person would say it." }
               kind: { type: string, description: "The kind of work, by its name under the first list, when the request is one of them. Not with workflow: builder." }
               workflow: { type: string, enum: [job, builder], description: "builder for a workflow or an app that lives in a workspace; job (the default) for anything else." }
               peer: { type: string, description: "With workflow: builder only: the workspace the workflow or app belongs to when it is not this one, by id (@acme-web → acme-web)." }
@@ -159,7 +159,10 @@ steps:
   # The job the reply asked to start (`start`), started after the turn so a
   # turn is ONE model call. job/start is the same step the agent's tool is:
   # detached, and the job inherits this run's `jobCallback` (specs/CALLBACKS.md
-  # §5), so its end reaches whoever launched the turn.
+  # §5), so its end reaches whoever launched the turn. A start job/start
+  # refuses (a file from an earlier message, a job busy) never fails the turn:
+  # the session already holds the reply, so the reply goes out saying the job
+  # did not start, and `startError` says why.
   - id: wantsJob
     type: if
     depends: turn
@@ -173,18 +176,26 @@ steps:
       prompt: "{{ turn.object.start.brief }}"
       title: "{{ turn.object.start.title }}"
       workflow: "{{ turn.object.start.workflow }}"
-      kind: "{{ turn.object.start.kind }}"
+      # job/start refuses `kind` on a builder job (it reads its own page).
+      kind: "{{ turn.object.start.workflow === 'builder' ? undefined : turn.object.start.kind }}"
       peer: "{{ turn.object.start.peer }}"
       repos: "{{ turn.object.start.repos }}"
       # This turn's files only: a DAG step sees the files its run was
       # launched with, never an earlier turn's (the agent hands those to its
       # tools alone), so a file from an earlier message goes by job/start.
       attachments: "{{ turn.object.start.attachments }}"
+    options:
+      onError:
+        id: notStarted
+        type: pack
+        config: { error: "{{ $error.message }}" }
   - id: result
     type: pack
     depends: [turn, started]
     config:
-      text: "{{ turn.object.text }}"
+      # Both arms are evaluated (src/expr.ts never short-circuits): `?.` in each.
+      text: "{{ started?.error ? turn.object.text + ' (The job did not start: ' + started?.error + ')' : turn.object.text }}"
+      startError: "{{ started?.error }}"
       artifacts: "{{ turn.object.artifacts }}"
       ask: "{{ turn.object.ask }}"
       # The job the reply started: { job, runId, callback }; undefined when none.
