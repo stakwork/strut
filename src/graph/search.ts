@@ -31,6 +31,7 @@ import { typeLabelOf } from "./edge-writer.js";
 import { renderVectorField, type Embedder } from "./node-writer.js";
 import { fromNeo4j } from "./neo4j-engine.js";
 import { nodeTitle } from "./title.js";
+import { worldTime } from "./world-time.js";
 import type { SchemaResolver } from "./schema-resolver.js";
 import { GLOBAL_VECTOR_INDEX } from "./schema-seed.js";
 import { OWN_CREATED_AT, SCHEMA_CORE_PROPERTIES, getStrutSchema, vectorIndexedPairs, vectorStem } from "./strut-schemas.js";
@@ -146,10 +147,49 @@ export interface SearchParams {
    *  (`parseLinks`): `MODIFIES>File` leaving the node, `TOUCHES<PullRequest`
    *  arriving at it. A node passes with any one. */
   linked?: string[];
+  /** Temporal edges that ended (or were superseded) as well as current ones.
+   *  A Ladybug file only: Neo4j holds no temporal edges, and ignores it. */
+  include_ended?: boolean;
+  /** The temporal edges true at this time (`asOfTime`): an ISO date or epoch
+   *  ms. Wins over `include_ended`. A Ladybug file only, as above. */
+  as_of?: string | number;
+  /** `false` leaves facts out (no fact queries run). Default: a Ladybug
+   *  search finds them too. Neo4j holds none. */
+  facts?: boolean;
+}
+
+/** One end of a fact. */
+export interface FactEnd {
+  ref_id: string;
+  node_type: string | undefined;
+  title?: string;
+}
+
+/**
+ * A fact a search found (plans/graph-edge-search.md "Reads"): a temporal
+ * edge, matched through its search row, with its sentence, both ends and
+ * its clocks (epoch ms). Ranked among facts only, by its own `score`.
+ */
+export interface FactEnvelope {
+  ref_id: string;
+  edge_type: string;
+  text: string;
+  source: FactEnd;
+  target: FactEnd;
+  valid_at?: number;
+  invalid_at?: number;
+  expired_at?: number;
+  superseded_by?: string;
+  sources: string[];
+  namespace?: string;
+  score: number;
+  match_type?: string;
 }
 
 export interface SearchResult {
   nodes: NodeEnvelope[];
+  /** Facts, apart from the nodes; a Ladybug file only, left out when none matched. */
+  facts?: FactEnvelope[];
   total: number;
   truncated: boolean;
   /** Retriever layers that failed and were skipped (jarvis logs these and
@@ -169,6 +209,20 @@ export interface NeighborsParams {
   /** Explicit namespace pins the edge-count map to that partition. */
   namespace?: string;
   include_edge_counts?: boolean;
+  /** As `SearchParams`: ended temporal edges too, or the ones true at a time. Ignored on Neo4j. */
+  include_ended?: boolean;
+  as_of?: string | number;
+}
+
+/** `as_of` as epoch ms: an ISO date (a bare year or year-month is its first
+ *  day, `worldTime`) or epoch ms, as a number or as digits that are not a year. Undefined when not
+ *  given; anything else is `INVALID_INPUT`. */
+export function asOfTime(v: string | number | undefined): number | undefined {
+  if (v === undefined || v === null || v === "") return undefined;
+  // A date first, so a bare year ("2021") is the year, not 2021 ms.
+  const ms = typeof v === "number" ? v : worldTime(v) ?? (/^\d+$/.test(v.trim()) ? Number(v.trim()) : undefined);
+  if (ms === undefined || !Number.isFinite(ms)) throw new GraphReadError("INVALID_INPUT", `as_of: ${String(v)} is not a date (an ISO date or epoch ms)`);
+  return ms;
 }
 
 export interface ConnectionCount {
