@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { threadId } from "node:worker_threads";
 import { join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import {
   createStt,
   pcm16ToFloat32,
@@ -399,6 +400,68 @@ export function readWave() { return { samples: new Float32Array(16000 * 3), samp
     assert.match(String(m1), /sha256 mismatch/);
     assert.equal(m1, m2);
     assert.equal(fetches, 1);
+  });
+
+  // The recognizers are held by open streams and calls in flight; idleMs
+  // after the last hold goes, they are unloaded and the next use builds
+  // them again (Parakeet alone is ~1.1 GB; plans/desktop-memory.md).
+  it("unloads the recognizers once nothing has held them for idleMs, and builds them again on the next use", async () => {
+    const built: Record<string, unknown>[] = [];
+    const engine = fakeEngine({ "zipformer-en-kroko": [{ at: 1, text: "hi", endpoint: true }] }, built);
+    const logs: string[] = [];
+    const stt = createStt({ dataDir, modelDir, env, engine: async () => engine, idleMs: 40, log: (m) => logs.push(m) });
+    const s1 = await stt.openStream({ partialModel: null });
+    await s1.push(silence(1));
+    await s1.end();
+    // Used again within idleMs: the recognizer it has.
+    const s2 = await stt.openStream({ partialModel: null });
+    await s2.end();
+    assert.equal(built.length, 1);
+    await sleep(120);
+    assert.ok(logs.some((m) => /unloaded/.test(m)), logs.join("\n"));
+    const s3 = await stt.openStream({ partialModel: null });
+    assert.ok((await s3.push(silence(1))).some((ev) => ev.type === "partial" && ev.text === "hi"));
+    await s3.end();
+    assert.equal(built.length, 2);
+    await stt.close();
+  });
+
+  it("an open stream and a call in flight hold the recognizers past idleMs", async () => {
+    const built: Record<string, unknown>[] = [];
+    const engine = fakeEngine({ "zipformer-en-kroko": [{ at: 1, text: "hi", endpoint: true }] }, built);
+    const stt = createStt({ dataDir, modelDir, env, engine: async () => engine, idleMs: 40, log: () => {} });
+    const s = await stt.openStream({ partialModel: null });
+    await sleep(120);
+    // Still its recognizer, still its stream.
+    assert.ok((await s.push(silence(1))).some((ev) => ev.type === "partial" && ev.text === "hi"));
+    assert.equal(built.length, 1);
+    s.close();
+    await sleep(120);
+    // A transcription after the idle unload builds again, and holds while it runs.
+    const r = await stt.transcribe(new Uint8Array(100), { model: "zipformer-en-kroko" });
+    assert.equal(r.model, "zipformer-en-kroko");
+    assert.equal(built.length, 2);
+    await stt.close();
+  });
+
+  it("an open that fails holds nothing, and close() cancels a pending unload", async () => {
+    const built: Record<string, unknown>[] = [];
+    const engine = fakeEngine({ "zipformer-en-kroko": [] }, built);
+    const logs: string[] = [];
+    const stt = createStt({ dataDir, modelDir, env, engine: async () => engine, idleMs: 40, log: (m) => logs.push(m) });
+    // Parakeet cannot stream: the open fails, and no stream is left holding the recognizers.
+    await installFake(modelDir, "parakeet-tdt-en-0.6b-v2");
+    await assert.rejects(() => stt.openStream({ model: "parakeet-tdt-en-0.6b-v2", partialModel: null }), /offline/);
+    const s = await stt.openStream({ partialModel: null });
+    await s.end();
+    await sleep(120);
+    assert.equal(logs.filter((m) => /unloaded/.test(m)).length, 1, "the failed open left no hold behind");
+    // A use arms the timer; closing the service cancels it.
+    await (await stt.openStream({ partialModel: null })).end();
+    await stt.close();
+    await sleep(120);
+    assert.equal(logs.filter((m) => /unloaded/.test(m)).length, 1);
+    await stt.close();
   });
 });
 

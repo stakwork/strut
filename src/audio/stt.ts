@@ -164,6 +164,12 @@ export interface SttServiceOptions {
   /** What the fixer's worker loads (tests: a fake model). Default: node-llama-cpp (fixer-engine.ts) from
    *  fixer/, which only the desktop package carries; a strut without either offers no fixer. */
   fixerSpec?: (m: { id: string; path: string }) => ModelWorkerSpec;
+  /** End the recognizer thread — and every recognizer it built, ~1.1 GB
+   *  for Parakeet — after this long with no stream open and no call in
+   *  flight; the next call starts another and builds again (about a
+   *  second). Default ten minutes; `Infinity` keeps them for the process's
+   *  life. */
+  idleMs?: number;
   env?: Record<string, string | undefined>;
   log?: (msg: string) => void;
 }
@@ -172,6 +178,7 @@ export interface SttServiceOptions {
 
 const DEFAULT_HOTWORDS_SCORE = 2;
 const DEFAULT_ENDPOINT: Required<EndpointRules> = { rule1: 2.4, rule2: 1.0, rule3: 20 };
+const IDLE_MS = 10 * 60_000;
 
 interface Loaded {
   model: SttModel;
@@ -187,8 +194,46 @@ export function createStt(opts: SttServiceOptions): SttService {
   const hotwords = new HotwordsStore(opts.dataDir);
   const sessions = new SessionStore(opts.dataDir);
 
-  const host = opts.engine ? inProcess(opts.engine) : inWorker(opts.engineModule);
-  const available = () => host.call<boolean>("available");
+  const recognizers = opts.engine ? inProcess(opts.engine) : inWorker(opts.engineModule);
+  // Every call and every open stream holds the recognizers; `idleMs` after
+  // the last hold goes they are unloaded (the thread ends), and the next
+  // call starts over. Before this a desktop strut kept every recognizer a
+  // dictation had built for as long as it ran (plans/desktop-memory.md).
+  const idleMs = opts.idleMs ?? IDLE_MS;
+  let holds = 0;
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  const hold = () => {
+    holds++;
+    clearTimeout(idleTimer);
+  };
+  const release = () => {
+    if (--holds > 0 || !Number.isFinite(idleMs)) return;
+    idleTimer = setTimeout(() => {
+      recognizers.close().then(
+        () => log(`recognizers unloaded after ${Math.round(idleMs / 1000)} s idle`),
+        (e: unknown) => log(`recognizers did not unload: ${e instanceof Error ? e.message : String(e)}`),
+      );
+    }, idleMs);
+    idleTimer.unref();
+  };
+  const host: Host = {
+    async call<T>(method: keyof SttHost, args?: unknown[], transfer?: Transferable[]): Promise<T> {
+      hold();
+      try {
+        return await recognizers.call<T>(method, args, transfer);
+      } finally {
+        release();
+      }
+    },
+    close: () => {
+      clearTimeout(idleTimer);
+      return recognizers.close();
+    },
+  };
+  // Whether the addon is here cannot change while the process runs: asked
+  // of the thread once, so a models poll after an unload does not start one.
+  let addon: boolean | undefined;
+  const available = async () => (addon ??= await host.call<boolean>("available"));
   const requireEngine = async (): Promise<void> => {
     if (!(await available())) throw new SttUnavailableError();
   };
@@ -337,10 +382,12 @@ export function createStt(opts: SttServiceOptions): SttService {
       id,
       { main: spec, partial, sampleRate, tailPadMs: loaded.model.tailPadMs, firstIndex },
     ]);
+    hold(); // the stream's own, until it ends or closes
     logBuilt(built);
     return new Stream({
       id,
       host,
+      release,
       model: loaded.model.id,
       partialModel: partial ? partialId : null,
       hotwords: hotwordsName,
@@ -450,6 +497,8 @@ export class SttUnavailableError extends Error {
 interface StreamDeps {
   id: string;
   host: Host;
+  /** Lets go of the stream's hold on the recognizers; once, when it ends or closes. */
+  release: () => void;
   model: string;
   partialModel: string | null;
   hotwords: string | null;
@@ -486,7 +535,9 @@ class Stream implements SttStream {
   async end(): Promise<SttEvent[]> {
     if (this.closed) return [];
     this.closed = true;
-    return this.logged(await this.d.host.call<SttEvent[]>("end", [this.d.id]));
+    const ended = this.d.host.call<SttEvent[]>("end", [this.d.id]);
+    this.d.release(); // the call holds until it settles
+    return this.logged(await ended);
   }
 
   flush(): Promise<void> {
@@ -497,6 +548,7 @@ class Stream implements SttStream {
     if (this.closed) return;
     this.closed = true;
     this.d.host.call("close", [this.d.id]).catch(() => {});
+    this.d.release();
   }
 
   private async send(method: "push", args: unknown[], transfer?: Transferable[]): Promise<SttEvent[]> {
