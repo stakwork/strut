@@ -152,9 +152,8 @@ describe("following a package index", () => {
     });
   });
   afterEach(async () => {
-    await client.close();
-    await publisher.close();
-    await index.close();
+    // allSettled: a failed beforeEach leaves some of these unset, and an open server keeps the test process alive.
+    await Promise.allSettled([client?.close(), publisher?.close(), index?.close()]);
     await rm(root, { recursive: true, force: true });
   });
 
