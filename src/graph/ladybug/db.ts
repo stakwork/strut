@@ -21,7 +21,8 @@
  * an open without them fails with the hint), the DDL (§3.1; every column
  * `ALTER TABLE ADD IF NOT EXISTS`, so a new attribute in the seed lands on
  * the next open), the two indexes, the append-only `MIGRATIONS` and the
- * one-time ones (`renameCoreColumns`, `addSchemaRuleColumns`), then the
+ * one-time ones (`renameCoreColumns`, `addSchemaRuleColumns`,
+ * `moveToNamespaces`), then the
  * ontology seed (`registry.ts`), add-only, once per version of the seed
  * (its `Migration` stamp).
  *
@@ -32,7 +33,9 @@
 import { chmodSync, existsSync, mkdirSync, rmSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type { GraphTx, Params, Row } from "../engine.js";
-import { LADYBUG_EDGE_TYPES, edgeColumnsOf, nodeColumns, type ColumnType } from "./registry.js";
+import { EDGE_COLUMNS, EDGE_CORE_COLUMNS, LADYBUG_EDGE_TYPES, edgeColumnsOf, nodeColumns, type ColumnType } from "./registry.js";
+import { PRIVATE_NAMESPACE } from "./namespaces.js";
+import { DEFAULT_NAMESPACE } from "../bolt.js";
 import { bootEnv } from "../../env.js";
 import { ladybugMaxDbSize } from "./max-size.js";
 import { SCHEMA_EDGE, SCHEMA_EDGE_DDL, SCHEMA_EDGE_RULE_COLUMNS, readCatalog, seedOntology } from "./ontology.js";
@@ -223,6 +226,51 @@ async function addSchemaRuleColumns(read: Query, write: Query): Promise<void> {
   if (Number((await read("MATCH (m:Migration {migration_id: $id}) RETURN count(m) AS c", { id: SCHEMA_RULES_MIGRATION }))[0]?.["c"]) > 0) return;
   for (const [k, t] of Object.entries(SCHEMA_EDGE_RULE_COLUMNS)) await write(`ALTER TABLE ${q(SCHEMA_EDGE)} ADD IF NOT EXISTS ${q(k)} ${t}`);
   await write("MERGE (m:Migration {migration_id: $id}) ON CREATE SET m.executed_at = $now", { id: SCHEMA_RULES_MIGRATION, now: Date.now() });
+}
+
+/** Namespaces and `created_by` (plans/graph-memory-plan.md step 2;
+ *  `namespaces.ts`), once per file (its `Migration` stamp). A file held
+ *  `default` alone, and it was one person's graph, so its data is theirs:
+ *  every data row in `default` (or none) moves to `private`, Strut's own
+ *  records included. A Schema row is the file's type definition, outside
+ *  namespace scoping, so it holds none: its `default` is cleared. Every rel
+ *  table gets the edge core columns (a new file has them from the DDL),
+ *  and an edge without a namespace takes its source node's, the rule a new
+ *  edge follows. The Node table's `created_by` comes from the DDL like any
+ *  generic column; the one type that declared its own (StrutJob, the same
+ *  column) keeps its values, and the declaration leaves the Schema rows.
+ *  The columns go first (DDL, outside the transaction); the rows move in
+ *  one transaction, guarded (only rows without a namespace of their own),
+ *  so a process that dies part way is finished by the next open; the stamp
+ *  comes last.
+ *  TODO(stakwork/strut#437): one-way — an older strut refuses any namespace
+ *  but `default` — so add this stamp to `ONE_WAY_MIGRATIONS` once #437 lands. */
+export const NAMESPACES_MIGRATION = "namespaces_v1";
+
+async function moveToNamespaces(read: Query, write: Query): Promise<void> {
+  if (Number((await read("MATCH (m:Migration {migration_id: $id}) RETURN count(m) AS c", { id: NAMESPACES_MIGRATION }))[0]?.["c"]) > 0) return;
+  const { edges } = await readCatalog(read);
+  const rels = [...new Set([...edges, SCHEMA_EDGE])];
+  const added = Object.entries(EDGE_COLUMNS).filter(([k]) => EDGE_CORE_COLUMNS.includes(k));
+  for (const e of rels) for (const [k, t] of added) await write(`ALTER TABLE ${q(e)} ADD IF NOT EXISTS ${q(k)} ${t}`);
+  await write("BEGIN TRANSACTION");
+  try {
+    await write(`MATCH (n:Node) WHERE n.node_type <> '${SCHEMA_TYPE}' AND (n.namespace IS NULL OR n.namespace = '${DEFAULT_NAMESPACE}') SET n.namespace = '${PRIVATE_NAMESPACE}'`);
+    await write(`MATCH (n:Node {node_type: '${SCHEMA_TYPE}'}) WHERE n.namespace IS NOT NULL SET n.namespace = NULL`);
+    for (const e of edges) {
+      await write(`MATCH (s:Node)-[r:${q(e)}]->(:Node) WHERE r.namespace IS NULL AND s.namespace IS NOT NULL SET r.namespace = s.namespace, r.updated_at = coalesce(r.updated_at, r.created_at)`);
+    }
+    for (const r of await write(`MATCH (n:Node {node_type: '${SCHEMA_TYPE}'}) WHERE n.attributes CONTAINS '"created_by"' RETURN n.ref_id AS id, n.attributes AS a`)) {
+      const attrs = JSON.parse(String(r["a"])) as Record<string, unknown>;
+      delete attrs["created_by"];
+      await write("MATCH (n:Node {ref_id: $id}) SET n.attributes = $a", { id: r["id"], a: JSON.stringify(attrs) });
+    }
+    await write("COMMIT");
+  } catch (err) {
+    await write("ROLLBACK").catch(() => undefined);
+    throw err;
+  }
+  await write("MERGE (m:Migration {migration_id: $id}) ON CREATE SET m.executed_at = $now", { id: NAMESPACES_MIGRATION, now: Date.now() });
 }
 
 /** Every data row without a `title` gets the one the writer would give it:
@@ -484,6 +532,7 @@ async function openFresh(path: string, opts: OpenOptions): Promise<LadybugHandle
     for (const ddl of [...ddlStatements(), ...MIGRATIONS]) await write(ddl);
     await renameCoreColumns(read, write);
     await addSchemaRuleColumns(read, write);
+    await moveToNamespaces(read, write);
     const have = new Set((await read(`CALL SHOW_INDEXES() RETURN index_name`)).map((r) => String(r["index_name"]))); // `_PK` rows included; harmless
     for (const [name, call] of indexCalls()) if (!have.has(name)) await write(call);
     await rebuildBrokenFts(read, write, unclean);

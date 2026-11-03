@@ -180,9 +180,11 @@ describe("projectRunEvents (pure)", () => {
     assert.deepEqual(jobNode(view), {
       type: "StrutJob",
       data: {
-        job_id: "j-1", title: "Landing page", summary: "Plan — the landing page\nPod\ndrafted", created_by: "ann",
+        job_id: "j-1", title: "Landing page", summary: "Plan — the landing page\nPod\ndrafted",
         started_at: ts(0), last_used_at: ts(5), run_count: 1, artifact_count: 2, log_ref: "j-1", unique_source_id: "strutjob:j-1",
       },
+      // Who launched it is the core `created_by`, the writer's stamp.
+      created_by: "ann",
     });
     // No title: the id names it. No record stamp: the oldest run's time.
     const { title: _t, createdAt: _c, ...nameless } = view;

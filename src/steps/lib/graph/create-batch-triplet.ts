@@ -92,7 +92,7 @@ export default defineStep({
       const cached = refCache.get(key);
       if (cached) return cached;
       try {
-        const created = (await b.nodes.write({ type: nodeType!, data: nodeData! }, "create", { namespace })).ref_id;
+        const created = (await b.nodes.write({ type: nodeType!, data: nodeData!, ...(ctx?.actor ? { created_by: ctx.actor } : {}) }, "create", { namespace })).ref_id;
         refCache.set(key, created);
         return created;
       } catch (e) {
@@ -122,6 +122,7 @@ export default defineStep({
             edge_data: t.edge_data,
             weight: t.weight,
             create_schema_if_missing: t.create_schema_if_missing ?? false,
+            ...(ctx?.actor ? { created_by: ctx.actor } : {}),
           });
         } catch (e) {
           results.push({

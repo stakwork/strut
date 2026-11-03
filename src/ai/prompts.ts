@@ -519,7 +519,7 @@ export function graphConventions(graph: GraphBackend): string {
     return (
       `every node is a row of the one Node table with its type in node_type — MATCH (n:Node {node_type: 'Concept'}) — and each edge type is a rel table of that name (label(r) is its type); ` +
       `every node has key (its identity in its type), title, search_text and created_at (epoch ms); ` +
-      `a node is live when n.deleted_at IS NULL; RETURN n is the whole row (every column), so project the columns you need. One namespace, "default". ` +
+      `a node is live when n.deleted_at IS NULL; RETURN n is the whole row (every column), so project the columns you need. Every node and edge has a namespace, whose data it is: "private" (the person's own) or another such as "shared"; Strut's own workflows, runs and jobs are in the strut domain, in whichever namespace wrote them. ` +
       `The ontology is in the same table: each type is a row with node_type 'Schema' (its name in \`type\`, its declared attributes as JSON in \`attributes\`), its parent (is_parent = true) and its allowed edges (edge_type) SCHEMA_EDGE edges between Schema rows — leave node_type 'Schema' out when you count nodes.`
     );
   }

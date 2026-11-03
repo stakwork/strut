@@ -90,7 +90,7 @@ describe("ladybug registry — the ontology seed (plans/ladybug-backend.md §3, 
     assert.equal(cols["attributes"], "STRING", "a type's declared attributes are one JSON column");
     assert.equal(cols["aliases"], "STRING[]");
     assert.ok(Object.keys(cols).length > 80 && Object.keys(cols).length < 110, `${Object.keys(cols).length} columns`);
-    assert.deepEqual(Object.keys(EDGE_COLUMNS), ["ref_id", "edge_key", "created_at", "weight", "importance"]);
+    assert.deepEqual(Object.keys(EDGE_COLUMNS), ["ref_id", "edge_key", "namespace", "created_by", "created_at", "updated_at", "deleted_at", "weight", "importance"]);
     assert.deepEqual(EDGE_TYPE_COLUMNS, { EVIDENCED_BY: { strength: "DOUBLE" }, HAS_SOURCE: { context: "STRING", start_time: "INT64", end_time: "INT64", post_url: "STRING" } }, "the claim columns, on the claim edges only");
     assert.ok(!("cardinality" in SCHEMA_COLUMNS), "cardinality is an edge type's rule, never a node type's");
     assert.equal(SCHEMA_COLUMNS["identifiers"], "STRING[]");

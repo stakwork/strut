@@ -67,7 +67,7 @@ for (const tb of testBackends()) {
     const rel = async (ref_id: string) => (await rawEdge(backend, ref_id))!;
     const bolt = () => (backend as { bolt: Bolt }).bolt;
 
-    it("creates with the stamps, no namespace, and never mutates an existing edge", async () => {
+    it("creates with the stamps (a namespace on Ladybug only) and never mutates an existing edge", async () => {
       const t0 = Date.now();
       const a = await edges.write({ edge: "IN_JOB", source_ref_id: run, target_ref_id: job });
       assert.equal(a.created, true);
@@ -77,7 +77,8 @@ for (const tb of testBackends()) {
       const r = await rel(a.ref_id);
       assert.equal(r.type, "IN_JOB");
       assert.deepEqual([r.src, r.tgt], [run, job]);
-      assert.deepEqual(Object.keys(r.props).sort(), ["created_at", "edge_key", "ref_id", "weight"]);
+      assert.deepEqual(Object.keys(r.props).sort(), neo ? ["created_at", "edge_key", "ref_id", "weight"] : ["created_at", "edge_key", "namespace", "ref_id", "updated_at", "weight"]);
+      if (!neo) assert.equal(r.props["namespace"], "private", "a run's edge is in the run's namespace");
       assert.equal(r.props["weight"], 1);
       assert.ok((r.props["created_at"] as number) >= t0);
       if (neo) {

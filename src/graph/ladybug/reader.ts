@@ -15,8 +15,10 @@
  *     an unknown type matches nothing, as on Neo4j. Schema rows are never
  *     search hits, and the root `Thing` (which holds no nodes) is left out
  *     of the ontology views;
- *   - one namespace: `default` resolves, anything else is
- *     `INVALID_NAMESPACE`, and `registerNamespace` is refused;
+ *   - namespaces need no registering (`namespaces.ts`): any well-formed
+ *     name resolves (`default` to the backend's own, `private`), and a key
+ *     or name lookup reads the one asked for. Search and walk are not yet
+ *     scoped by namespace (plans/graph-memory-plan.md step 4);
  *   - a domain is the types whose Schema names it (`strut`: the Strut
  *     types); a domain no type names is `INVALID_DOMAIN`;
  *   - one FTS index (`node_fts` over `search_text` + `title`, BM25, porter) and
@@ -36,7 +38,6 @@ import type { GraphEngine, Params, Row } from "../engine.js";
 import type { Embedder } from "../node-writer.js";
 import type { NodeSchema } from "../schema-resolver.js";
 import {
-  DEFAULT_NAMESPACE,
   EDGE_TYPE_NAME,
   EDGES_AMONG_MAX,
   GraphReadError,
@@ -72,6 +73,7 @@ import {
   type SearchResult,
 } from "../search.js";
 import { THING_TYPE } from "../strut-schemas.js";
+import { namespaceName } from "./namespaces.js";
 import type { LadybugSchemas } from "./engine.js";
 import type { LadybugCatalog } from "./ontology.js";
 import { SCHEMA_TYPE } from "./registry.js";
@@ -142,19 +144,27 @@ export class LadybugReader implements GraphReader {
 
   // ── namespaces ──────────────────────────────────────────────────────────
 
+  /** The namespaces the file holds a node in, beyond the backend's own. */
   async listNamespaces(): Promise<string[]> {
-    return [];
+    const rows = await this.engine.query(`MATCH (n:Node) WHERE n.namespace IS NOT NULL RETURN DISTINCT n.namespace AS ns`);
+    return rows.map((r) => String(r["ns"])).filter((ns) => ns !== this.engine.namespace).sort();
   }
 
+  /** Nothing to store: a namespace is there once something is written in
+   *  it. `created` says it held nothing yet. */
   async registerNamespace(name: string): Promise<{ namespace: string; created: boolean }> {
-    throw new GraphReadError("INVALID_INPUT", `a ladybug file holds one namespace, ${DEFAULT_NAMESPACE}; ${String(name)} cannot be registered`);
+    const ns = namespaceName(String(name ?? ""), this.engine.namespace);
+    if (!String(name ?? "").trim() || ns === null) throw new GraphReadError("INVALID_INPUT", `${String(name)} is not a namespace name`);
+    const held = await this.engine.query(`MATCH (n:Node {namespace: $ns}) RETURN n.ref_id AS r LIMIT 1`, { ns });
+    return { namespace: ns, created: held.length === 0 };
   }
 
   async resolveNamespace(namespace: string | undefined): Promise<string> {
-    const ns = namespace ?? this.engine.namespace;
-    if (ns.toLowerCase() === DEFAULT_NAMESPACE) return DEFAULT_NAMESPACE;
-    throw new GraphReadError("INVALID_NAMESPACE", `namespace ${ns} is not registered: a ladybug file holds ${DEFAULT_NAMESPACE} only`);
+    const ns = namespaceName(namespace, this.engine.namespace);
+    if (ns === null) throw new GraphReadError("INVALID_NAMESPACE", `${String(namespace)} is not a namespace name`);
+    return ns;
   }
+
 
   // ── nodes ───────────────────────────────────────────────────────────────
 
@@ -165,10 +175,10 @@ export class LadybugReader implements GraphReader {
   }
 
   async getNodeByKey(type: string, key: string, namespace?: string): Promise<NodeEnvelope | null> {
-    await this.resolveNamespace(namespace);
+    const canonical = await this.canonical(type);
     const rows = await this.engine.query(
-      `MATCH (n:Node {node_type: $type, key: $key}) WHERE ${LIVE("n")} RETURN ${await this.project("n")} AS n LIMIT 1`,
-      { type: await this.canonical(type), key },
+      `MATCH (n:Node {node_type: $type, namespace: $ns, key: $key}) WHERE ${LIVE("n")} RETURN ${await this.project("n")} AS n LIMIT 1`,
+      { type: canonical, key, ns: await this.resolveNamespace(namespace) },
     );
     return rows.length === 0 ? null : envelope(hitNode(rows[0]!["n"]));
   }
@@ -177,15 +187,15 @@ export class LadybugReader implements GraphReader {
     const frag = qstr.trim().toLowerCase();
     const schema = frag ? await this.engine.schemaSource.schemaRow(type, { live: true }) : null;
     if (!frag || !schema) return [];
-    await this.resolveNamespace(namespace);
+    const ns = await this.resolveNamespace(namespace);
     const cap = Math.min(50, Math.max(1, Math.floor(Number(limit) || 8)));
     const rows = await this.engine.query(
-      `MATCH (n:Node {node_type: $type})
+      `MATCH (n:Node {node_type: $type, namespace: $ns})
        WHERE n.name IS NOT NULL AND lower(n.name) CONTAINS $frag AND ${LIVE("n")}
        RETURN n.ref_id AS ref_id, n.name AS name, n.description AS description
        ORDER BY CASE WHEN lower(n.name) STARTS WITH $frag THEN 0 ELSE 1 END, lower(n.name)
        LIMIT ${cap}`,
-      { type: schema.type, frag },
+      { type: schema.type, frag, ns },
     );
     return rows.map((r) => ({
       ref_id: String(r["ref_id"]),

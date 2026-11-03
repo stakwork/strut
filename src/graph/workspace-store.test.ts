@@ -68,11 +68,13 @@ for (const tb of testBackends()) {
           `MATCH ${anyNode(backend, "n")} WHERE ${d().isType("n", ["StrutWorkflow", "StrutWorkflowVersion"])}
            RETURN ${d().typeOf("n")} AS type, n.${keyProp()} AS key, n.namespace AS ns`,
         );
+        // A file's own namespace is `private`; Strut's records live in their writer's.
+        const ns = backend.kind === "neo4j" ? "default" : "private";
         assert.deepEqual(
           rows.map((r) => [typeFrom(r["type"]), r["key"], r["ns"]]).sort((a, b) => String(a[1]).localeCompare(String(b[1]))),
           [
-            ["StrutWorkflow", key("StrutWorkflow", { name: "wf" }), "default"],
-            ["StrutWorkflowVersion", key("StrutWorkflowVersion", { name: "wf", content_hash: await ws.getWorkflowHash("wf") }), "default"],
+            ["StrutWorkflow", key("StrutWorkflow", { name: "wf" }), ns],
+            ["StrutWorkflowVersion", key("StrutWorkflowVersion", { name: "wf", content_hash: await ws.getWorkflowHash("wf") }), ns],
           ],
         );
         assert.equal((await edgesOf("VERSION_OF")).length, 1);

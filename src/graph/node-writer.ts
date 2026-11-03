@@ -55,7 +55,7 @@ import { sameStored } from "./engine.js";
 import { asEngine } from "./neo4j-engine.js";
 import { SchemaResolver, fromStrut, type NodeSchema } from "./schema-resolver.js";
 import { nodeTitleFor } from "./title.js";
-import { STRUT_DOMAIN_LABEL, isGenericProperty, embeddingColumn, getStrutSchema, vectorStem } from "./strut-schemas.js";
+import { OWN_CREATED_BY, STRUT_DOMAIN_LABEL, isGenericProperty, embeddingColumn, getStrutSchema, vectorStem } from "./strut-schemas.js";
 
 export type { PreparedNode, WriteMode, WriteOutcome };
 
@@ -375,6 +375,11 @@ export interface NodeInput {
    *  case-insensitively against the live schema). */
   type: string;
   data: Record<string, unknown>;
+  /** Who is writing it: the host's name for the caller's actor (a run's
+   *  `actor`, a chat's or job's creator). The writer stamps it as the core
+   *  `created_by` on create, never from `data`. Ladybug stores it on every
+   *  node; Neo4j only on the types that held their own (`OWN_CREATED_BY`). */
+  created_by?: string;
 }
 
 export interface NodeWriteResult {
@@ -431,7 +436,7 @@ export interface NodeUpdateResult {
 
 /** Identity props never touched after create. `date_added_to_graph` is
  *  the core stamp of a type that declares its own `created_at` (`stampKey`). */
-const PRESERVED = new Set(["ref_id", "key", "namespace", "created_at", "date_added_to_graph"]);
+const PRESERVED = new Set(["ref_id", "key", "namespace", "created_at", "date_added_to_graph", "created_by"]);
 
 /** Where the writer puts a node's core creation stamp: `created_at`, or,
  *  on a type that declares its own `created_at` (jarvis's Concept, Check,
@@ -487,6 +492,8 @@ export class NodeWriter {
       // One clock read for both stamps; `created_at` is identity
       // (PRESERVED), so only a create writes it.
       const props: Record<string, unknown> = { ...v.values, [stampKey(v.schema)]: now, [UPDATED_AT]: now };
+      const by = inputs[idx]!.created_by;
+      if (by && (this.engine.kind !== "neo4j" || OWN_CREATED_BY.has(v.schema.type))) props["created_by"] = by;
       // A type that declares `title` itself (StrutApp, StrutJob: title_key
       // `title`) owns it: the caller's value is the title, or there is none.
       // So does a jarvis type that breaks the title_key rule (Person, whose
