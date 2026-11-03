@@ -125,6 +125,9 @@ export const LADYBUG_SCHEMAS: readonly NodeSchema[] = [
     // The source stamp a seeded page carries (src/concept-seed.ts): whose
     // file it came from, and which version of it.
     unique_source_id: "?string",
+    // Its other names, for `resolve` (`resolve.ts`): `aliases` is the
+    // Schema rows' column.
+    alt_names: "?list",
   }, { role: "concept" }),
   // The base types (plans/graph-memory-plan.md step 2), without jarvis's
   // fixture. Two people may share a name, so a Person is keyed by its
@@ -135,6 +138,7 @@ export const LADYBUG_SCHEMAS: readonly NodeSchema[] = [
     description: "?string",
     email: "?string",
     is_owner: "?boolean",
+    alt_names: "?list",
   }, { role: "entity", identifiers: ["email"] }),
   jarvisType(LINGO_TYPE, "lingo-name", ["name", "description"], "name", "description", {
     name: "string",
