@@ -29,7 +29,7 @@ describe("the orchestrator workflow strut ships", () => {
     assert.equal(v.ok, true, JSON.stringify(v.errors, null, 2));
 
     const flow = flowFromYaml(ORCHESTRATOR_WORKFLOW, "v1", text);
-    assert.deepEqual(flow.steps.map((s) => s.type), ["job/dir", "context/concept", "context/concept", "strut/list-peers", "agent", "pack"]);
+    assert.deepEqual(flow.steps.map((s) => s.type), ["job/dir", "context/concept", "context/concept", "strut/list-peers", "agent", "if", "job/start", "pack"]);
     assert.equal(flow.inputBlock?.["prompt"]?.required ?? true, true);
     for (const k of ["session", "context"]) assert.equal(flow.inputBlock?.[k]?.required, false, `${k} is optional`);
     // Two lists, one per agent's tree, children alone: the kinds of work a
@@ -80,6 +80,23 @@ describe("the orchestrator workflow strut ships", () => {
     assert.match(start.properties["peer"]!.description!, /^With workflow: builder only/);
   });
 
+  it("model, reasoning and stream are launch KNOBS: grantWidenedBy passes them, and still refuses a tool the template does not grant", async () => {
+    const { grantWidenedBy } = await import("./closure.js");
+    const text = await orchestratorWorkflowYaml();
+    const registry = await createRegistry([]);
+    const flow = flowFromYaml(ORCHESTRATOR_WORKFLOW, "v1", text);
+    assert.equal(grantWidenedBy(flow, { model: "claude-haiku-4-5", reasoning: "none", stream: true }, registry), null);
+    assert.equal(grantWidenedBy(flow, { tools: ["job/start"] }, registry), null, "narrowing is fine");
+    assert.match(grantWidenedBy(flow, { tools: ["job/start", "exec"] }, registry) ?? "", /"exec" \(params\.tools\)/);
+    const p = (yaml.load(text) as { params: Record<string, unknown> }).params;
+    assert.deepEqual([p["model"], p["reasoning"], p["stream"]], ["claude-sonnet-5-5", "medium", false], "defaults keep today's behaviour");
+    const turn = flow.steps.find((st) => st.id === "turn")!.config as Record<string, unknown>;
+    assert.equal(turn["reasoning"], "{{ params.reasoning }}");
+    assert.equal(turn["stream"], "{{ params.stream }}");
+    const reply = turn["schema"] as { properties: Record<string, unknown> };
+    assert.deepEqual(Object.keys(reply.properties).slice(0, 2), ["text", "start"], "text first, so it streams before the rest");
+    assert.deepEqual((reply.properties["start"] as any).required, ["brief", "title"]);
+  });
   it("the host's delta is appended after strut's tools and prompt, and changes the hash; an empty one does not", async () => {
     const plain = await orchestratorWorkflowYaml();
     const delta = await orchestratorWorkflowYaml({ tools: ["sphinx/*", "calendar/*"], system: "\nThe person's chats are on their Mac.\n" });
@@ -360,6 +377,62 @@ describe("the orchestrator, end to end", () => {
     assert.equal(jobEnd.output.text, "Three flights.");
     assert.ok(seen.job[0]!.includes("Find flights to Lisbon for 3 May"));
     assert.equal(seen.orch.length, 3, "the orchestrator never waited on the job");
+  });
+  it("a reply's `start` starts the job after the turn: ONE model call, the job inherits the callback, the result names the job", async () => {
+    const { seen, ends, turn } = await boot(() =>
+      toolUse("toolu_1", "final_answer", {
+        text: "Looking into the flights.",
+        start: { brief: "Find flights to Lisbon for 3 May", title: "Flights to Lisbon" },
+        artifacts: [],
+      }),
+    );
+    const first = await turn({ prompt: "flights to Lisbon?", session: "peel/agent-1/dm-s" });
+    assert.equal(first.status, "success", JSON.stringify(first));
+    assert.equal(first.output.text, "Looking into the flights.");
+    assert.equal(seen.orch.length, 1, "no job/start tool call, so no second model call");
+    const jobEnd = await until(() => ends.find((e) => e.workflow === "job"));
+    assert.equal(jobEnd.status, "success");
+    assert.equal(jobEnd.job, first.output.job, "the pack names the started job");
+    assert.equal(jobEnd.runId, first.output.runId);
+    assert.equal(jobEnd.startedBy?.runId, first.runId, "started by this turn, the callback the turn was launched with");
+    assert.ok(seen.job[0]!.includes("Find flights to Lisbon for 3 May"));
+  });
+  it("without `start` the job step is skipped and the result carries no job", async () => {
+    const { turn, seen } = await boot(() => toolUse("toolu_1", "final_answer", { text: "Kate's birthday is 3 May.", artifacts: [] }));
+    const ended = await turn({ prompt: "when is Kate's birthday?", session: "peel/agent-1/dm-n" });
+    assert.equal(ended.status, "success", JSON.stringify(ended));
+    assert.equal(ended.output.job, undefined);
+    assert.equal(seen.job.length, 0);
+  });
+  it("per-launch knobs: params.model, params.reasoning and params.stream ride on a launch (no grant guard); the voice line heads the turn's prompt, never the system prompt; deltas stay in the log, off the sink", async () => {
+    const { strut, seen, turn } = await boot(() => toolUse("toolu_1", "final_answer", { text: "Sure thing.", artifacts: [] }));
+    // The default launch: the template's own model and reasoning.
+    await turn({ prompt: "hi", session: "peel/agent-1/dm-k1" });
+    const base = seen.orch[0];
+    assert.equal(base.model, "claude-sonnet-5-5");
+
+    const res = await strut.app.request(`/workflows/${ORCHESTRATOR_WORKFLOW}/run`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        input: { prompt: "what's on today?", session: "peel/agent-1/dm-k2", context: { line: "On a voice call: answer in a sentence or two. " } },
+        params: { model: "claude-haiku-4-5", reasoning: "none", stream: true },
+      }),
+    });
+    assert.equal(res.status, 202, "a knob is not a grant");
+    const runId = ((await res.json()) as any).runId as string;
+    const end = await until(() => (strut as any).store.getSummary?.(ORCHESTRATOR_WORKFLOW, runId));
+    assert.equal(end.status, "success", JSON.stringify(end));
+    const body = seen.orch[1];
+    assert.equal(body.model, "claude-haiku-4-5");
+    assert.deepEqual(base.output_config, { effort: "medium" }, "the default is what the turn always ran at");
+    assert.deepEqual(body.thinking, { type: "disabled" }, "reasoning none: no thinking");
+    assert.ok(lastUser(body).includes("On a voice call: answer in a sentence or two. what's on today?"));
+    assert.ok(!JSON.stringify(body.system).includes("On a voice call"), "the line is the turn's, not the session's frozen system prompt");
+    const events = (strut as any).store.getEvents(ORCHESTRATOR_WORKFLOW, runId);
+    const deltas = events.filter((e: any) => e.type === "reply.delta");
+    assert.equal(deltas.map((d: any) => d.text).join(""), "Sure thing.");
+    assert.ok(deltas.every((d: any) => d.path === `${ORCHESTRATOR_WORKFLOW}/turn`));
   });
   it("each turn's message lists the peers it can ask, by id and label, so a label finds the id and a peer added mid-session is known", async () => {
     const { seen, turn } = await boot(

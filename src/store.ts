@@ -143,8 +143,40 @@ export async function* tailJsonl<T>(
       return;
     }
 
-    await sleep(intervalMs);
+    await sleepOrWake(file, intervalMs, signal);
   }
+}
+
+// ── Live tail wake-up ──────────────────────────────────────────────────────
+// A tail polls its log every `intervalMs` as the fallback; `append` also
+// signals the tails waiting on that log (keyed by file path or `wf/runId`),
+// so a live reader hears an event within milliseconds, not at the next poll.
+const tailWaiters = new Map<string, Set<() => void>>();
+
+function wakeTails(key: string): void {
+  const set = tailWaiters.get(key);
+  if (!set) return;
+  tailWaiters.delete(key);
+  for (const wake of set) wake();
+}
+
+/** Sleep up to `ms`, or until `wakeTails(key)` (or `signal` aborts). */
+function sleepOrWake(key: string, ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    let set = tailWaiters.get(key);
+    if (!set) tailWaiters.set(key, (set = new Set()));
+    const done = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      const cur = tailWaiters.get(key);
+      cur?.delete(done);
+      if (cur && cur.size === 0) tailWaiters.delete(key);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    set.add(done);
+    signal?.addEventListener("abort", done, { once: true });
+  });
 }
 
 // ── Interface ──────────────────────────────────────────────────────────────
@@ -279,7 +311,7 @@ export async function* tailFromPolling(
       if (fresh.length > 0) continue;
       return; // a stale log: nobody producing, nothing terminal
     }
-    await sleep(intervalMs);
+    await sleepOrWake(`${workflow}/${runId}`, intervalMs, opts.signal);
   }
 }
 
@@ -526,7 +558,9 @@ export class FileRunStore implements RunStore {
     const dir = this.runDir(workflow, runId);
     await mkdir(dir, { recursive: true });
     const line = JSON.stringify(event) + "\n";
-    await appendFile(join(dir, "events.jsonl"), line, "utf-8");
+    const file = join(dir, "events.jsonl");
+    await appendFile(file, line, "utf-8");
+    wakeTails(file);
   }
 
   async finalize(workflow: string, runId: string, summary: RunSummary): Promise<void> {
@@ -774,6 +808,7 @@ export class MemoryRunStore implements RunStore {
       this.events.set(k, []);
     }
     this.events.get(k)!.push(event);
+    wakeTails(`${workflow}/${runId}`);
   }
 
   async finalize(workflow: string, runId: string, summary: RunSummary): Promise<void> {

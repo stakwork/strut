@@ -75,4 +75,10 @@ describe("foldRunHealth", () => {
     ]);
     assert.deepEqual([resumed.status, resumed.stats.resumes, resumed.stats.replayed], ["success", 1, 1]);
   });
+
+  it("skips reply.delta: not an event of the run's health, not counted in its log stats", () => {
+    const deltas = [ev(3, "reply.delta", "wf/work", { text: "hello" } as Partial<HealthEvent>)];
+    const folded = foldRunHealth([...run.slice(0, 9), ...deltas, ...run.slice(9)]);
+    assert.deepEqual(folded, foldRunHealth(run));
+  });
 });

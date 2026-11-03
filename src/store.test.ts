@@ -306,6 +306,26 @@ describe("FileRunStore", () => {
     assert.deepEqual(seen.map((e) => e.type), ["run.start", "step.start", "run.end"]);
   });
 
+  it("an append wakes a live tail within milliseconds, whatever the poll interval (file and memory stores)", async () => {
+    for (const store of [new FileRunStore(tempDir), new MemoryRunStore()]) {
+      await store.append(WF, "wake", ev("run.start", "wake"));
+      const got: Array<[string, number]> = [];
+      const t0 = Date.now();
+      const consume = (async () => {
+        for await (const e of store.tailEvents(WF, "wake", { intervalMs: 60_000 })) got.push([e.type, Date.now() - t0]);
+      })();
+      await new Promise((r) => setTimeout(r, 50)); // the tail is asleep on its 60 s poll
+      const sent = Date.now() - t0;
+      await store.append(WF, "wake", ev("reply.delta", "wake"));
+      await new Promise((r) => setTimeout(r, 50));
+      assert.deepEqual(got.map((g) => g[0]), ["run.start", "reply.delta"], store.constructor.name);
+      assert.ok(got[1]![1] - sent < 40, `${store.constructor.name}: heard ${got[1]![1] - sent} ms after the append`);
+      await store.append(WF, "wake", ev("run.end", "wake"));
+      await consume;
+      assert.equal(got.at(-1)![0], "run.end");
+    }
+  });
+
   it("tailEvents waits for a not-yet-created log (race-free join)", async () => {
     const store = new FileRunStore(tempDir);
 

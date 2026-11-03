@@ -352,7 +352,12 @@ export type RunEventType =
    *  `run.cancelled` at its next boundary — but if the process dies first,
    *  this marker is what tells boot-time auto-resume (§5.3) that the run
    *  was being cancelled, not cut off. */
-  | "run.cancelling";
+  | "run.cancelling"
+  /** A piece of an agent's reply as the model writes it (`stream: true` on
+   *  the agent step, plans/private-voice.md §3.4): `{ path, call, text,
+   *  reset? }`, batched about every 50 ms. Kept in the log, never sent by the
+   *  events sink, skipped by the UI and the folds. */
+  | "reply.delta";
 
 /** Who launched a run, when it was not a person or an API call. `"app"`:
  *  an APP's page, through `step_run` → `run/launch` (plans/apps.md §5, §11)
@@ -385,6 +390,12 @@ export interface RunEvent {
   runId: string;
   path: string;
   type: RunEventType;
+  /** `reply.delta`: the tool call (or `"text"`) the piece belongs to, the
+   *  text new since the last delta of that call, and `reset: true` when a new
+   *  `final_answer` call starts over what was said. */
+  call?: string;
+  text?: string;
+  reset?: true;
   stepType?: string;
   input?: unknown;
   output?: unknown;

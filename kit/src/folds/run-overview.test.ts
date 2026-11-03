@@ -49,6 +49,12 @@ describe("foldRunOverview", () => {
     assert.deepEqual(o.longest, { label: "work", share: 60 / 64 });
   });
 
+  it("skips reply.delta: the reply as it is written changes nothing a fold draws", () => {
+    const deltas = [ev(2, "reply.delta", "job/work", { text: "On it." } as Partial<OverviewEvent>), ev(2, "reply.delta", "job/work/001-x", { text: "x" } as Partial<OverviewEvent>)];
+    const withDeltas = [...jobRun.slice(0, 5), ...deltas, ...jobRun.slice(5)];
+    assert.deepEqual(foldRunOverview(withDeltas), foldRunOverview(jobRun));
+  });
+
   it("lists the top-level steps, and under each the work it started that a person opens", () => {
     const o = foldRunOverview(jobRun);
     assert.deepEqual(
