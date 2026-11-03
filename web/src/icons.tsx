@@ -337,3 +337,13 @@ export function AppGlyph({ size = 12, ...rest }: IconProps) {
     </svg>
   );
 }
+
+/** A window with its left panel: the sidebar's collapse / expand button. */
+export function SidebarIcon({ size = 16, ...rest }: IconProps) {
+  return (
+    <Outline size={size} rest={rest}>
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <line x1="9" y1="4" x2="9" y2="20" />
+    </Outline>
+  );
+}
