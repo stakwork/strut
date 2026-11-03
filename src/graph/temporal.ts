@@ -102,7 +102,7 @@ function timeOf(edge: string, field: string, v: string | number | undefined): nu
  *  the edge `o` it replaces in the world: `supersede()`'s rule. An end not
  *  set becomes `valid` when that is known and not before `o` began; an end
  *  still to come is brought forward to then, or to now. */
-function endOfReplaced(o: { valid_at: number | null; invalid_at: number | null }, valid: number | null, now: number): number | null {
+export function endOfReplaced(o: { valid_at: number | null; invalid_at: number | null }, valid: number | null, now: number): number | null {
   const began = valid !== null && (o.valid_at === null || o.valid_at <= valid);
   if (o.invalid_at === null) return began ? valid : null;
   if (o.invalid_at <= now) return o.invalid_at;
