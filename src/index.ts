@@ -666,6 +666,7 @@ export {
   projectRuns,
   projectRun,
   projectChats,
+  projectChat,
   projectAll,
   projectRunEvents,
   ensureJobNode,

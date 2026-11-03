@@ -139,6 +139,10 @@ async function roundTrip(buyer: Strut, dir: string): Promise<InstallResult> {
   const fenced = await buyer.run("acme/linear/sync", { secret: "GITHUB_TOKEN" });
   assert.equal(fenced.status, "error");
   assert.match(fenced.error!.message, /secret_fenced: acme\/linear\/create-issue came from the package acme\/linear, which declares only LINEAR_API_KEY, NOTION_KEY — it may not read GITHUB_TOKEN/);
+  // On a graph each run schedules a detached verify pass, whose check runs
+  // write into the buyer's data dir: wait for them, or the test's cleanup
+  // races them (ENOTEMPTY). Single-flighted, so the scheduled pass joins.
+  for (const id of [run.runId, fenced.runId]) await buyer.verifier?.verifyRun("acme/linear/sync", id);
   return r.body;
 }
 
@@ -613,7 +617,7 @@ for (const tb of testBackends()) {
     before(async () => {
       backend = await tb.open();
       await tb.wipe(backend);
-      await seedJarvisOntology(backend);
+      if (tb.kind === "neo4j") await seedJarvisOntology(backend);
       await seedStrutDomain(backend);
       backend.schemas.invalidate();
     });

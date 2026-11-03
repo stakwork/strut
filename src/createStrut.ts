@@ -108,7 +108,7 @@ import type { AppRelease, Upstream } from "./workspace.js";
 import type { CassetteMode } from "./cassette.js";
 // Type-only: the graph backend stays a lazy, opt-in dependency.
 import type { GraphBackend } from "./graph/backend.js";
-import { projectRunOnce } from "./graph/projector.js";
+import { projectChatOnce, projectRunOnce } from "./graph/projector.js";
 import { createGraphChangeFeed, GRAPH_FEED_READ_MAX } from "./graph-writes.js";
 // No runtime graph dependency in here either (type-only imports inside).
 import type { ClaimsReader } from "./graph/claims.js";
@@ -5399,6 +5399,14 @@ export async function createStrut<TServices = unknown>(
     // it. In-process, like the notifier's liveness set.
     const turnAborts = new Map<string, AbortController>();
 
+    // The chat in the graph (projector.ts: its `StrutChat`, turns and the
+    // runs it launched), as every run is at its end: at every turn's end, and
+    // when a detached run it launched settles. Detached: a graph that is
+    // slow or down never holds a turn.
+    const projectChatToGraph = (chatId: string): void => {
+      if (runGraph) void projectChatOnce(runGraph, chatStore, chatId).catch((err) => console.error(`[projector] chat ${chatId} was not projected:`, err));
+    };
+
     /**
      * Run one chat turn detached: build the agent, stream it server-side,
      * persist each fine-grained part to `events.jsonl`, then append the new
@@ -5549,7 +5557,10 @@ export async function createStrut<TServices = unknown>(
                   .catch((err) =>
                     console.error(`[chat ${chatId}] run-notification delivery failed:`, err),
                   )
-                  .finally(delivered);
+                  .finally(() => {
+                    delivered();
+                    projectChatToGraph(chatId);
+                  });
               },
             },
           };
@@ -5817,6 +5828,7 @@ export async function createStrut<TServices = unknown>(
           } catch (err) {
             console.error(`[chat ${chatId}] turn callback failed:`, err);
           }
+          projectChatToGraph(chatId);
         }
       })();
     }

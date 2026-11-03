@@ -397,9 +397,11 @@ class Neo4jEdges implements EdgeEngine {
   }
 
   async setProps(tx: GraphTx, ref_id: string, set: Record<string, unknown>, remove: string[]) {
+    // A caller's properties, stored as named: the stamps are not settable
+    // (edge-writer.ts), and a `created_at` here is the edge's own.
     const wrapped: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(set)) wrapped[neo4jName(k)] = k === "weight" && typeof v === "number" && Number.isInteger(v) ? int(v) : v;
-    const removeClause = remove.length ? `REMOVE ${remove.map((k) => `r.${q(neo4jName(k))}`).join(", ")}` : "";
+    for (const [k, v] of Object.entries(set)) wrapped[k] = k === "weight" && typeof v === "number" && Number.isInteger(v) ? int(v) : v;
+    const removeClause = remove.length ? `REMOVE ${remove.map((k) => `r.${q(k)}`).join(", ")}` : "";
     const rows = await tx.run(
       `MATCH (s)-[r {ref_id: $ref_id}]->(t) SET r += $set ${removeClause}
        RETURN r.ref_id AS ref_id, type(r) AS edge, s.ref_id AS source_ref_id, t.ref_id AS target_ref_id`,
