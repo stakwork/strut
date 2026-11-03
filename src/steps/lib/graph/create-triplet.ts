@@ -107,7 +107,7 @@ export default defineStep({
       const resolveSide = async (side: "source" | "target", refId?: string, nodeType?: string, nodeData?: Record<string, any>): Promise<string> => {
         if (refId) return refId;
         try {
-          return (await b.nodes.write({ type: nodeType!, data: nodeData! }, "create", { namespace })).ref_id;
+          return (await b.nodes.write({ type: nodeType!, data: nodeData!, ...(ctx?.actor ? { created_by: ctx.actor } : {}) }, "create", { namespace })).ref_id;
         } catch (e) {
           throw new Error(`could not create/merge ${side} node: ${e instanceof Error ? e.message : String(e)}`);
         }
@@ -124,6 +124,7 @@ export default defineStep({
           edge_data: cfg.edge_data,
           weight: cfg.weight,
           create_schema_if_missing: cfg.create_schema_if_missing ?? false,
+          ...(ctx?.actor ? { created_by: ctx.actor } : {}),
         });
       } catch (e) {
         return (

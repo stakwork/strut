@@ -36,7 +36,7 @@ export default defineStep({
     try {
       const b = await graphCtx(ctx as StepContext<StrutCapabilities>);
       const namespace = await b.reader.resolveNamespace(cfg.namespace);
-      const r = await b.nodes.write({ type: cfg.node_type, data: cfg.node_data }, "create", { namespace });
+      const r = await b.nodes.write({ type: cfg.node_type, data: cfg.node_data, ...(ctx?.actor ? { created_by: ctx.actor } : {}) }, "create", { namespace });
       const existed = r.outcome === "existing";
       return withAccessedNodes(
         {

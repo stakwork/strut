@@ -46,7 +46,7 @@ describe("workspace backend selection (plans/ladybug-backend.md §4)", () => {
     assert.equal(graphWorkspaceRequested({ STRUT_WORKSPACE_BACKEND: "ladybug" }), true);
   });
   it("the Ladybug file: STRUT_GRAPH_DB, else <dataDir>/graph/graph.lbug; the extension dir and namespace from env", () => {
-    assert.deepEqual(ladybugConfigFromEnv({}, "/data"), { kind: "ladybug", path: "/data/graph/graph.lbug", namespace: "default" });
+    assert.deepEqual(ladybugConfigFromEnv({}, "/data"), { kind: "ladybug", path: "/data/graph/graph.lbug", namespace: "private" });
     assert.deepEqual(ladybugConfigFromEnv({ STRUT_GRAPH_DB: "/elsewhere/g.lbug", STRUT_LADYBUG_EXTENSION_DIR: "/app/native", STRUT_GRAPH_NAMESPACE: "x" }, "/data"), {
       kind: "ladybug",
       path: "/elsewhere/g.lbug",

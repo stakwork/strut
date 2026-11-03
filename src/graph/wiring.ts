@@ -15,6 +15,7 @@ import { join } from "node:path";
 import type { GraphBackend, GraphBackendOptions, LadybugBackend, LadybugConfig } from "./backend.js";
 import { embeddingsOn, openGraphBackend, openGraphBackendFromEnv } from "./backend.js";
 import { importFileWorkspace, type FileImportReport } from "./fs-import.js";
+import { PRIVATE_NAMESPACE } from "./ladybug/namespaces.js";
 import { GraphWorkspaceStore, type GraphWorkspaceStoreOptions } from "./workspace-store.js";
 import { bootEnv } from "../env.js";
 import { appsRoot } from "../apps/files.js";
@@ -83,14 +84,15 @@ export function ladybugGraphPath(dataDir: string): string {
 
 /** `STRUT_GRAPH_DB` (default `<dataDir>/graph/graph.lbug`), the extension
  *  folder from `STRUT_LADYBUG_EXTENSION_DIR` (unset → the handle INSTALLs
- *  them), and the namespace — `default`, the only one a file holds; a
- *  `STRUT_GRAPH_NAMESPACE` set to anything else fails the open, loudly. */
+ *  them), and the namespace a write with none goes to: `private` unless
+ *  `STRUT_GRAPH_NAMESPACE` names another (`default` reads as `private`; a
+ *  malformed name fails the open, loudly). */
 export function ladybugConfigFromEnv(env: Record<string, string | undefined>, dataDir: string): LadybugConfig {
   const extensionDir = env["STRUT_LADYBUG_EXTENSION_DIR"];
   return {
     kind: "ladybug",
     path: env["STRUT_GRAPH_DB"] || ladybugGraphPath(dataDir),
-    namespace: env["STRUT_GRAPH_NAMESPACE"] || "default",
+    namespace: env["STRUT_GRAPH_NAMESPACE"] || PRIVATE_NAMESPACE,
     ...(extensionDir ? { extensionDir } : {}),
   };
 }

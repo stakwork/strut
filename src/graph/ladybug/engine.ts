@@ -11,8 +11,12 @@
  *     with explicit column lists;
  *   - a soft delete is `deleted_at` alone, then the node's edges go
  *     (outgoing, incoming) in the same transaction;
- *   - no alias rewrite, no edge flags, no namespace but `default`: an edge
- *     is live or gone, and `edgeLive` is `true`;
+ *   - no alias rewrite, no edge flags: an edge is live or gone, and
+ *     `edgeLive` is `true` (its `deleted_at` column is there for the core
+ *     attributes, and nothing sets it yet);
+ *   - identity is per namespace (`namespaces.ts`): `(node_type, namespace,
+ *     key)`, so one key in two namespaces is two nodes. An edge is in one
+ *     namespace too: the writer's, else its source node's;
  *   - the schema source is the file's `Schema` rows (`ontology.ts`), seeded
  *     from `registry.ts` at open and written at runtime: a new attribute
  *     adds its column, a new edge type its rel table. The columns and rel
@@ -53,6 +57,7 @@ import type { NodeSchema } from "../schema-resolver.js";
 import type { LadybugHandle } from "./db.js";
 import * as ontology from "./ontology.js";
 import { SCHEMA_EDGE, catalogOf, readCatalog, type Catalog, type LadybugCatalog } from "./ontology.js";
+import { namespaceName, writeNamespace } from "./namespaces.js";
 import { ALL_EDGE_COLUMNS, GENERIC_COLUMNS, LADYBUG_STRUT_TYPES, SCHEMA_TYPE, edgeColumnsOf } from "./registry.js";
 
 const q = (s: string) => `\`${s}\``;
@@ -76,8 +81,9 @@ export const LADYBUG_DIALECT: Dialect = {
 const PRESERVED = new Set(["ref_id", "key", "namespace", "node_type", "created_at"]);
 /** What the shared writer composes that the file does not keep. */
 const DROPPED_PROPS = new Set(["_search_fields_used"]);
-/** Edge stamps the writer sets on create and `setProps` never touches. */
-const EDGE_STAMPS = new Set(["ref_id", "edge_key", "created_at"]);
+/** Edge stamps the writer sets on create and `setProps` never touches
+ *  (`updated_at` it moves itself). */
+const EDGE_STAMPS = new Set(["ref_id", "edge_key", "created_at", "namespace", "created_by", "updated_at", "deleted_at"]);
 
 export class LadybugEngine implements GraphEngine {
   readonly kind = "ladybug" as const;
@@ -149,11 +155,11 @@ class LadybugNodes implements NodeEngine {
     return out;
   }
 
-  async mergeBatch(tx: GraphTx, schema: NodeSchema, namespace: string, nodes: PreparedNode[], mode: WriteMode) {
-    if (namespace !== this.ns) throw new GraphValidationError("UNKNOWN_ATTRIBUTE", schema.type, `a ladybug file holds one namespace (${this.ns}); got ${namespace}`, "namespace");
+  async mergeBatch(tx: GraphTx, schema: NodeSchema, asked: string, nodes: PreparedNode[], mode: WriteMode) {
+    const namespace = writeNamespace(schema.type, asked, this.ns);
     const found = await tx.run(
-      `UNWIND $keys AS k MATCH (n:Node {node_type: $type, \`key\`: k}) RETURN k AS k, n.ref_id AS ref_id, n.deleted_at IS NOT NULL AS deleted`,
-      { keys: nodes.map((n) => n.key), type: schema.type },
+      `UNWIND $keys AS k MATCH (n:Node {node_type: $type, namespace: $ns, \`key\`: k}) RETURN k AS k, n.ref_id AS ref_id, n.deleted_at IS NOT NULL AS deleted`,
+      { keys: nodes.map((n) => n.key), type: schema.type, ns: namespace },
     );
     const hits = new Map(found.map((r) => [String(r["k"]), { ref_id: String(r["ref_id"]), deleted: r["deleted"] === true }]));
 
@@ -184,7 +190,8 @@ class LadybugNodes implements NodeEngine {
       for (const [k, v] of Object.entries(set)) {
         if (PRESERVED.has(k)) continue;
         params[`v${i}`] = v;
-        assigns.push(`n.${q(k)} = $v${i++}`);
+        // Who made it is kept; one learned later fills a node made without.
+        assigns.push(k === "created_by" ? `n.created_by = coalesce(n.created_by, $v${i++})` : `n.${q(k)} = $v${i++}`);
       }
       if (hit.deleted) assigns.push("n.deleted_at = NULL", "n.deleted_reason = NULL");
       if (assigns.length) await tx.run(`MATCH (n:Node {ref_id: $ref_id}) SET ${assigns.join(", ")}`, params);
@@ -216,16 +223,16 @@ class LadybugNodes implements NodeEngine {
     return { ref_id, type: typeof node_type === "string" ? node_type : undefined, props };
   }
 
-  async refByKey(tx: GraphTx, type: string, key: string): Promise<string | null> {
-    const rows = await tx.run(`MATCH (n:Node {node_type: $type, \`key\`: $k}) RETURN n.ref_id AS ref_id LIMIT 1`, { type, k: key });
+  async refByKey(tx: GraphTx, type: string, key: string, namespace: string): Promise<string | null> {
+    const rows = await tx.run(`MATCH (n:Node {node_type: $type, namespace: $ns, \`key\`: $k}) RETURN n.ref_id AS ref_id LIMIT 1`, { type, k: key, ns: writeNamespace(type, namespace, this.ns) });
     return rows.length ? String(rows[0]!["ref_id"]) : null;
   }
 
-  async holdersOf(tx: GraphTx, type: string, attribute: string, values: unknown[]) {
+  async holdersOf(tx: GraphTx, type: string, attribute: string, values: unknown[], namespace: string) {
     if (!(attribute in (await this.known(tx, [attribute])))) return [];
     const rows = await tx.run(
-      `MATCH (n:Node {node_type: $type}) WHERE n.${q(attribute)} IN $values AND n.deleted_at IS NULL RETURN n.ref_id AS ref_id, n.\`key\` AS key, n.${q(attribute)} AS value`,
-      { type, values },
+      `MATCH (n:Node {node_type: $type, namespace: $ns}) WHERE n.${q(attribute)} IN $values AND n.deleted_at IS NULL RETURN n.ref_id AS ref_id, n.\`key\` AS key, n.${q(attribute)} AS value`,
+      { type, values, ns: writeNamespace(type, namespace, this.ns) },
     );
     return rows.map((r) => ({ ref_id: String(r["ref_id"]), key: String(r["key"]), value: r["value"] }));
   }
@@ -256,14 +263,16 @@ class LadybugNodes implements NodeEngine {
 
   /** Three statements in one transaction: stamp `deleted_at` (the first
    *  delete time and reason kept), delete the node's outgoing edges, then its
-   *  incoming ones — or leave them (`keepEdges`). Every node in the file is
-   *  in scope. */
-  async softDelete(ref_id: string, _namespace: string, guard: NodeGuard, opts: SoftDeleteOptions = {}): Promise<SoftDeleteResult | null> {
+   *  incoming ones — or leave them (`keepEdges`). In scope: a node in
+   *  `namespace`. */
+  async softDelete(ref_id: string, namespace: string, guard: NodeGuard, opts: SoftDeleteOptions = {}): Promise<SoftDeleteResult | null> {
+    const ns = namespaceName(namespace, this.ns);
+    if (ns === null) return null;
     const go = async (tx: GraphTx): Promise<SoftDeleteResult | null> => {
-      const params: Params = { ref_id, now: Date.now() };
+      const params: Params = { ref_id, now: Date.now(), ns };
       const pattern = ["ref_id: $ref_id"];
       // A Schema row is the ontology, not a node any delete may take.
-      const where: string[] = [`n.node_type <> '${SCHEMA_TYPE}'`];
+      const where: string[] = [`n.node_type <> '${SCHEMA_TYPE}'`, "n.namespace = $ns"];
       if (guard.type) {
         params["type"] = guard.type;
         pattern.push("node_type: $type");
@@ -336,8 +345,10 @@ class LadybugEdges implements EdgeEngine {
   }
 
   async endpoints(tx: GraphTx, ids: string[]): Promise<Map<string, EdgeEndpoint>> {
-    const rows = await tx.run(`UNWIND $ids AS id MATCH (n:Node {ref_id: id}) RETURN id, n.node_type AS type`, { ids });
-    return new Map(rows.map((r) => [String(r["id"]), { type: typeof r["type"] === "string" ? r["type"] : undefined, uid: null }]));
+    const rows = await tx.run(`UNWIND $ids AS id MATCH (n:Node {ref_id: id}) RETURN id, n.node_type AS type, n.namespace AS ns`, { ids });
+    return new Map(
+      rows.map((r) => [String(r["id"]), { type: typeof r["type"] === "string" ? r["type"] : undefined, uid: null, ...(typeof r["ns"] === "string" ? { namespace: r["ns"] } : {}) }]),
+    );
   }
 
   async mergeBatch(tx: GraphTx, edge: string, rows: EdgeMergeRow[]): Promise<EdgeMergeResult[]> {
@@ -346,7 +357,15 @@ class LadybugEdges implements EdgeEngine {
     for (const e of rows) {
       const extra = edgeColumns(edge, e.props);
       const params: Params = { src: e.src, tgt: e.tgt, edge_key: e.edge_key, ref_id: e.ref_id, weight: e.weight, added: e.created_at };
-      const sets = ["r.ref_id = $ref_id", "r.weight = $weight", "r.created_at = CAST($added AS INT64)"];
+      const sets = ["r.ref_id = $ref_id", "r.weight = $weight", "r.created_at = CAST($added AS INT64)", "r.updated_at = CAST($added AS INT64)"];
+      if (e.namespace !== undefined) {
+        params["ns"] = e.namespace;
+        sets.push("r.namespace = $ns");
+      }
+      if (e.created_by !== undefined) {
+        params["by"] = e.created_by;
+        sets.push("r.created_by = $by");
+      }
       let i = 0;
       for (const [k, v] of Object.entries(extra)) {
         params[`p${i}`] = v;
@@ -386,7 +405,11 @@ class LadybugEdges implements EdgeEngine {
       assigns.push(`r.${q(k)} = $v${i++}`);
     }
     for (const k of remove) if (!(k in columns)) assigns.push(`r.${q(k)} = NULL`);
-    if (assigns.length) await tx.run(`MATCH ()-[r:${q(at.edge)} {ref_id: $ref_id}]->() SET ${assigns.join(", ")}`, params);
+    if (assigns.length) {
+      params["now"] = Date.now();
+      assigns.push("r.updated_at = CAST($now AS INT64)");
+      await tx.run(`MATCH ()-[r:${q(at.edge)} {ref_id: $ref_id}]->() SET ${assigns.join(", ")}`, params);
+    }
     return { ref_id, edge: at.edge, source_ref_id: at.src, target_ref_id: at.tgt };
   }
 

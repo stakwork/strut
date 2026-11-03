@@ -158,10 +158,11 @@ function checkAttribute(type: string, name: string, value: unknown, kind?: Graph
   if (RESERVED_ATTRIBUTE_NAMES.has(name) || isGenericProperty(name)) {
     throw new GraphValidationError("UNKNOWN_ATTRIBUTE", type, "attribute name is a reserved schema/system property", name);
   }
-  // Neo4j keeps a type's own `created_at` beside the core stamp
-  // (`date_added_to_graph`); a Ladybug file has one `created_at`, the core.
+  // Neo4j keeps a type's own `created_at` / `created_by` beside the core
+  // stamps; a Ladybug file has one of each, the core.
   if (kind === "ladybug" && TYPE_OWNABLE_CORE.has(name)) {
-    throw new GraphValidationError("UNKNOWN_ATTRIBUTE", type, `${name} is the node's own creation time on this graph, set by the writer — name the type's date something else (e.g. published_at, started_at)`, name);
+    const hint = name === "created_at" ? "name the type's date something else (e.g. published_at, started_at)" : "name the type's field something else (e.g. author)";
+    throw new GraphValidationError("UNKNOWN_ATTRIBUTE", type, `${name} is a core attribute on this graph, set by the writer — ${hint}`, name);
   }
   if (typeof value !== "string" || !TYPE_GRAMMAR.test(value)) {
     throw new GraphValidationError("WRONG_TYPE", type, `attribute type must be one of string|boolean|int|float|complex|datetime|list (optionally ?-prefixed), got ${JSON.stringify(value)}`, name);

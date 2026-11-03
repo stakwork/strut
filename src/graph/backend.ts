@@ -37,6 +37,7 @@ import type { GraphEngine } from "./engine.js";
 import { reconcileIndexLists, type IndexReconcileReport } from "./index-reconcile.js";
 import { openLadybug, type LadybugHandle } from "./ladybug/db.js";
 import { LadybugEngine } from "./ladybug/engine.js";
+import { PRIVATE_NAMESPACE, namespaceName } from "./ladybug/namespaces.js";
 import { LadybugReader } from "./ladybug/reader.js";
 import { Neo4jEngine } from "./neo4j-engine.js";
 import { NodeWriter, type Embedder } from "./node-writer.js";
@@ -54,7 +55,8 @@ export interface LadybugConfig {
   kind: "ladybug";
   /** The database file; its folder is created owner-only. */
   path: string;
-  /** Always `default`: one namespace per file. */
+  /** Where a write that names no namespace goes: `private` (`default`
+   *  reads as it), or another name (`ladybug/namespaces.ts`). */
   namespace: string;
   /** Where the `vector` + `fts` extensions are (`STRUT_LADYBUG_EXTENSION_DIR`). */
   extensionDir?: string;
@@ -186,12 +188,13 @@ export function openGraphBackend(cfg: GraphConfig, opts: GraphBackendOptions = {
 }
 
 async function openLadybugBackend(cfg: LadybugConfig, opts: GraphBackendOptions): Promise<LadybugBackend> {
-  if (cfg.namespace !== "default") throw new Error(`a ladybug file holds one namespace, default; got ${cfg.namespace}`);
+  const namespace = namespaceName(cfg.namespace, PRIVATE_NAMESPACE);
+  if (namespace === null) throw new Error(`a ladybug file's own namespace must be a namespace name; got ${cfg.namespace}`);
   const lbug = await openLadybug(cfg.path, { extensionDir: cfg.extensionDir });
   try {
     const embedder: Embedder | undefined =
       opts.embeddings === false ? undefined : typeof opts.embeddings === "object" ? opts.embeddings : await MiniLMEmbedder.load();
-    const engine = new LadybugEngine(lbug, cfg.namespace);
+    const engine = new LadybugEngine(lbug, namespace);
     const schemas = new SchemaResolver(engine);
     const backend: LadybugBackend = {
       kind: "ladybug",

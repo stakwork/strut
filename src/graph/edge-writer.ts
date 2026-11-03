@@ -15,7 +15,10 @@
  *     never mutated, except that a legacy flagged one is made live again;
  *   - stamps: `ref_id`, `edge_key`, `weight` (1 unless given),
  *     `created_at` (epoch ms; Neo4j's `date_added_to_graph`), and `unique_source_id` when both
- *     endpoints carry the same one; NO `namespace` on edges;
+ *     endpoints carry the same one; NO `namespace` on edges on Neo4j
+ *     (jarvis's edges have none). On Ladybug an edge is in one namespace:
+ *     the one the write names, else its source node's, plus `created_by`
+ *     when the write names an author;
  *   - delete = `DELETE r` (`deletion.ts`): edges are never muted or flagged.
  *
  * Validation: an edge whose SOURCE is a Strut type must be a row of the
@@ -37,6 +40,7 @@ import { asEngine } from "./neo4j-engine.js";
 import { GraphValidationError, type WriterCallOptions } from "./node-writer.js";
 import { SchemaResolver } from "./schema-resolver.js";
 import { STRUT_EDGES, WILDCARD_TARGET_EDGES, isStrutType, typeLabelOf } from "./strut-schemas.js";
+import { writeNamespace } from "./ladybug/namespaces.js";
 
 export { typeLabelOf };
 
@@ -52,6 +56,11 @@ export interface EdgeInput {
   /** Overrides the `weight: 1` stamp on create (jarvis accepts a caller
    *  weight on POST /v2/edges). Written as an Integer when integral. */
   weight?: number;
+  /** The edge's namespace, where edges have one (Ladybug); default its
+   *  source node's. */
+  namespace?: string;
+  /** Who wrote it: the host's name for the actor (Ladybug stores it). */
+  created_by?: string;
 }
 
 export interface EdgeWriteResult {
@@ -117,6 +126,9 @@ export interface EdgeWriterOptions {
 /** The writer's stamps, under the shared names and jarvis's (`created_at` is
  *  Neo4j's `date_added_to_graph`): neither may come from a caller. */
 const STAMPS = new Set(["ref_id", "edge_key", "weight", "created_at", "date_added_to_graph", "unique_source_id"]);
+/** The core attributes a Ladybug edge has besides the stamps: the
+ *  writer's, never carried over as properties. */
+const EDGE_CORE = new Set(["namespace", "created_by", "updated_at", "deleted_at"]);
 /** Stamps `update` may never touch (`weight` is caller-settable, as on create). */
 const PROTECTED = new Set(["ref_id", "edge_key", "created_at", "date_added_to_graph", "unique_source_id"]);
 const IDENT = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
@@ -151,6 +163,7 @@ interface ResolvedEdge {
   input: EdgeInput;
   edge_key: string;
   unique_source_id?: string;
+  namespace?: string;
 }
 
 export class EdgeWriter {
@@ -302,10 +315,12 @@ export class EdgeWriter {
         throw new GraphValidationError("WRONG_TYPE", edge, `${m.to_ref_id} is under ${node} along ${edge} — moving there would make a cycle`);
       }
 
-      const props = Object.fromEntries(Object.entries(old.props).filter(([k]) => !STAMPS.has(k) && k !== "is_muted" && k !== "is_deleted"));
+      const props = Object.fromEntries(Object.entries(old.props).filter(([k]) => !STAMPS.has(k) && !EDGE_CORE.has(k) && k !== "is_muted" && k !== "is_deleted"));
+      // The moved edge keeps its namespace and author (Ladybug's; Neo4j has neither).
+      const kept = Object.fromEntries(["namespace", "created_by"].filter((k) => typeof old.props[k] === "string").map((k) => [k, old.props[k] as string]));
       const input: EdgeInput = forward
-        ? { edge, source_ref_id: node, target_ref_id: m.to_ref_id, properties: props }
-        : { edge, source_ref_id: m.to_ref_id, target_ref_id: node, properties: props };
+        ? { edge, source_ref_id: node, target_ref_id: m.to_ref_id, properties: props, ...kept }
+        : { edge, source_ref_id: m.to_ref_id, target_ref_id: node, properties: props, ...kept };
       validateEdgeShape(input);
       const resolved = await this.validateEndpoints(tx, [input], old.edge_ref_id);
       const [written] = await this.mergeEdges(tx, edge, resolved);
@@ -356,7 +371,7 @@ export class EdgeWriter {
         if (typeof pattern === "string" && pattern) edge_key = composeEdgeKey(pattern, i.properties ?? {});
         if (match.rule.cardinality === "one") single.push(i);
       }
-      out.push({ input: i, edge_key, unique_source_id: s.uid && s.uid === t.uid ? s.uid : undefined });
+      out.push({ input: i, edge_key, unique_source_id: s.uid && s.uid === t.uid ? s.uid : undefined, namespace: edgeNamespace(i, s.namespace) });
     }
     await this.refuseFullSlots(tx, single, replacing);
     return out;
@@ -393,6 +408,8 @@ export class EdgeWriter {
       weight: e.input.weight ?? 1,
       created_at: Date.now(),
       ...(e.unique_source_id ? { unique_source_id: e.unique_source_id } : {}),
+      ...(e.namespace ? { namespace: e.namespace } : {}),
+      ...(e.input.created_by !== undefined ? { created_by: e.input.created_by } : {}),
       props: e.input.properties ?? {},
     }));
     const out = await this.engine.edgeEngine.mergeBatch(tx, edge, rows);
@@ -402,6 +419,13 @@ export class EdgeWriter {
       return { ref_id: r.ref_id, edge_key: e.edge_key, created: r.created, source_ref_id: r.source_ref_id, target_ref_id: r.target_ref_id };
     });
   }
+}
+
+/** An edge's namespace where its endpoints have one (Ladybug): the one asked
+ *  for, else the source's. Undefined on Neo4j. */
+function edgeNamespace(i: EdgeInput, source: string | undefined): string | undefined {
+  if (source === undefined) return undefined;
+  return i.namespace === undefined ? source : writeNamespace(i.edge, i.namespace, source);
 }
 
 function validateEdgeShape(i: EdgeInput): void {

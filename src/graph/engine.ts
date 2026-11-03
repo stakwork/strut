@@ -173,6 +173,8 @@ export interface NodeEngine {
 export interface EdgeEndpoint {
   type: string | undefined;
   uid: string | null;
+  /** The node's namespace, where the engine keeps one on edges (Ladybug). */
+  namespace?: string;
 }
 
 /** One edge to merge: the writer's stamps as plain values, the caller's
@@ -186,6 +188,10 @@ export interface EdgeMergeRow {
   weight: number;
   created_at: number;
   unique_source_id?: string;
+  /** The edge's namespace and author: Ladybug stores them, Neo4j (whose
+   *  edges carry no namespace, as in jarvis) does not. */
+  namespace?: string;
+  created_by?: string;
   props: Record<string, unknown>;
 }
 

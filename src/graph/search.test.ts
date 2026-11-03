@@ -331,7 +331,9 @@ for (const tb of testBackends()) {
       const uses = all.edges.find((e) => e.edge_type === "USES_STEP")!;
       assert.equal(uses.source, ids["wfv"]);
       assert.equal(uses.target, ids["stepEmail"]);
-      assert.deepEqual(uses.properties, { importance: 0.9, created_at: uses.properties["created_at"] });
+      // A file's edges carry their namespace and the writer's updated_at too.
+      const stamps = neo ? {} : { namespace: "private", updated_at: uses.properties["created_at"] };
+      assert.deepEqual(uses.properties, { importance: 0.9, created_at: uses.properties["created_at"], ...stamps });
       assert.equal(typeof uses.properties["created_at"], "number");
       assert.equal(uses.weight, 1);
       const step = all.nodes.find((n) => n.ref_id === ids["stepEmail"])!;
@@ -513,9 +515,17 @@ for (const tb of testBackends()) {
       assert.ok(strut.nodes.every((n) => n.node_type!.startsWith("Strut")));
       assert.equal((await reader.search({ q: "webhook", domains: ["strut"] })).nodes.filter((n) => n.node_type === "Concept").length, 0, "a Concept is outside the domain");
       await assert.rejects(reader.search({ q: "harvey", domains: ["legal"] }), (e: unknown) => e instanceof GraphReadError && e.code === "INVALID_DOMAIN");
-      await assert.rejects(reader.search({ q: "harvey", namespace: "tenant-x" }), (e: unknown) => e instanceof GraphReadError && e.code === "INVALID_NAMESPACE");
-      assert.equal(await reader.resolveNamespace(undefined), "default");
-      assert.equal(await reader.resolveNamespace("DEFAULT"), "default");
+      if (neo) {
+        await assert.rejects(reader.search({ q: "harvey", namespace: "tenant-x" }), (e: unknown) => e instanceof GraphReadError && e.code === "INVALID_NAMESPACE");
+        assert.equal(await reader.resolveNamespace(undefined), "default");
+        assert.equal(await reader.resolveNamespace("DEFAULT"), "default");
+      } else {
+        // A file's namespaces need no registering; `default` is its own, `private`.
+        assert.equal(await reader.resolveNamespace(undefined), "private");
+        assert.equal(await reader.resolveNamespace("DEFAULT"), "private");
+        assert.equal(await reader.resolveNamespace("Tenant-X"), "tenant-x");
+        await assert.rejects(reader.search({ q: "harvey", namespace: "not a name" }), (e: unknown) => e instanceof GraphReadError && e.code === "INVALID_NAMESPACE");
+      }
     });
 
     it("namespaces are registered on Neo4j", { skip: neoOnly("the file holds one") }, async () => {
@@ -528,10 +538,13 @@ for (const tb of testBackends()) {
       assert.equal(empty.total, 0);
     });
 
-    it("a file holds one namespace: none to list, none to register", { skip: neo && "ladybug only" }, async () => {
-      assert.deepEqual(await reader.listNamespaces(), []);
-      await assert.rejects(reader.registerNamespace("tenant-x"), (e: unknown) => e instanceof GraphReadError && e.code === "INVALID_INPUT");
-      await assert.rejects(reader.getNodeByKey("Concept", "concept-research", "tenant-x"), (e: unknown) => e instanceof GraphReadError && e.code === "INVALID_NAMESPACE");
+    it("a file's namespaces are what it holds: nothing stored to register", { skip: neo && "ladybug only" }, async () => {
+      assert.deepEqual(await reader.listNamespaces(), [], "everything is in the backend's own");
+      assert.deepEqual(await reader.registerNamespace("Tenant-X"), { namespace: "tenant-x", created: true });
+      assert.deepEqual(await reader.registerNamespace("private"), { namespace: "private", created: false });
+      await assert.rejects(reader.registerNamespace("two words"), (e: unknown) => e instanceof GraphReadError && e.code === "INVALID_INPUT");
+      assert.equal(await reader.getNodeByKey("Concept", "concept-research", "tenant-x"), null, "a key in another namespace is another node");
+      assert.ok(await reader.getNodeByKey("Concept", "concept-research"));
     });
 
     it("ontology: listSchemas and getSchema mirror jarvis's shapes", { skip: neoOnly("the Schema meta-graph with Thing") }, async () => {

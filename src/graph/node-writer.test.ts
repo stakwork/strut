@@ -233,7 +233,7 @@ for (const tb of testBackends()) {
       const n = (await node(r.ref_id))!;
       assert.equal(n.type, "StrutRun");
       const p = n.props;
-      assert.equal(p["namespace"], "default");
+      assert.equal(p["namespace"], neo ? "default" : "private", "a file's own namespace is private");
       assert.equal(p["key"], "strutrun-1725220000123");
       assert.ok((p["created_at"] as number) >= t0 && (p["created_at"] as number) <= Date.now() + 1);
       assert.equal(p["started_at"], 1788292800);
@@ -332,10 +332,8 @@ for (const tb of testBackends()) {
       assert.equal(await nodeCount(backend, "StrutJob"), 1, "the other ends stay");
       assert.equal(await writer.deleteNode("not-a-ref"), null);
       assert.deepEqual(await writer.deleteNode(job.ref_id), { edges: 0 }, "a node with no edges");
-      if (neo) {
-        assert.equal(await writer.deleteNode(wf.ref_id, { namespace: "elsewhere" }), null, "scoped to the namespace");
-        assert.equal(await nodeCount(backend, "StrutWorkflowVersion"), 1);
-      }
+      assert.equal(await writer.deleteNode(wf.ref_id, { namespace: "elsewhere" }), null, "scoped to the namespace");
+      assert.equal(await nodeCount(backend, "StrutWorkflowVersion"), 1);
       // Not a Strut type: softDelete's Domain_strut guard refuses it, deleteNode takes it.
       if (!neo) return; // the file's registry has no Concept Schema row to seed here; the step suite covers it
       const bolt = (backend as { bolt: Bolt }).bolt;
@@ -604,7 +602,7 @@ for (const tb of testBackends()) {
       assert.deepEqual(seen, ["harvey-deliver\nsuccess\nDelivered 60 of 60"]);
     });
 
-    it("per-write namespace overrides the backend default", neoOnly("a ladybug file holds one namespace"), async () => {
+    it("per-write namespace overrides the backend default", async () => {
       const r = await writer.write({ type: "StrutRun", data: RUN }, "create", { namespace: "tenant-z" });
       assert.equal((await props(r.ref_id))["namespace"], "tenant-z");
       const again = await writer.write({ type: "StrutRun", data: RUN }, "create", { namespace: "tenant-z" });
@@ -613,7 +611,7 @@ for (const tb of testBackends()) {
       assert.equal(dflt.outcome, "created");
     });
 
-    it("namespace scopes identity", neoOnly("a ladybug file holds one namespace"), async () => {
+    it("namespace scopes identity", neoOnly("a second Bolt client; namespaces.test.ts covers a file"), async () => {
       const other = new Bolt({ ...testGraphConfig()!, namespace: "tenant-b" });
       try {
         const a = await writer.write({ type: "StrutRun", data: RUN });
@@ -661,8 +659,8 @@ for (const tb of testBackends()) {
       assert.equal((await props(said.ref_id))["title"], stored("hello there"));
     });
 
-    it("the file holds one namespace, the registry's types, and none of Thing's vestiges", { skip: neo && "ladybug only" }, async () => {
-      await assert.rejects(writer.write({ type: "StrutRun", data: RUN }, "create", { namespace: "tenant-z" }), (e: unknown) => e instanceof GraphValidationError && e.code === "UNKNOWN_ATTRIBUTE");
+    it("a malformed namespace, the registry's types, and none of Thing's vestiges", { skip: neo && "ladybug only" }, async () => {
+      await assert.rejects(writer.write({ type: "Concept", data: { name: "Job" } }, "create", { namespace: "Not A Name" }), (e: unknown) => e instanceof GraphValidationError && e.code === "UNKNOWN_ATTRIBUTE");
       await assert.rejects(writer.write({ type: "StrutToolCall", data: { run_id: "r", path: "p", seq: 1, tool_name: "bash" } }), (e: unknown) => e instanceof GraphValidationError && e.code === "UNKNOWN_TYPE");
       await assert.rejects(writer.write({ type: "StrutRun", data: { ...RUN, weight: 1 } }), (e: unknown) => e instanceof GraphValidationError && e.code === "UNKNOWN_ATTRIBUTE" && e.attribute === "weight");
       const c = await writer.write({ type: "concept", data: { name: "Job", description: "the root" } });

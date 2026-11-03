@@ -232,6 +232,8 @@ export const GENERIC_COLUMNS: Readonly<Record<string, ColumnType>> = {
   text_embeddings: "FLOAT[384]",
   // Epoch ms of the row's creation, set by the writer.
   created_at: "INT64",
+  // Who wrote the row (the caller's actor), set by the writer on create.
+  created_by: "STRING",
   // System stamp: epoch ms of the last create / change, set by the writer.
   updated_at: "INT64",
   deleted_at: "INT64",
@@ -244,10 +246,20 @@ export const GENERIC_COLUMNS: Readonly<Record<string, ColumnType>> = {
 export const EDGE_COLUMNS: Readonly<Record<string, ColumnType>> = {
   ref_id: "STRING",
   edge_key: "STRING",
+  // The core attributes every edge has (plans/graph-memory-plan.md): its
+  // namespace, who wrote it, and the writer's times.
+  namespace: "STRING",
+  created_by: "STRING",
   created_at: "INT64",
+  updated_at: "INT64",
+  deleted_at: "INT64",
   weight: "DOUBLE",
   importance: "DOUBLE",
 };
+
+/** The edge columns an older file's rel tables lack (`db.ts`
+ *  `moveToNamespaces` adds them). */
+export const EDGE_CORE_COLUMNS: readonly string[] = ["namespace", "created_by", "updated_at", "deleted_at"];
 
 /** The columns only some edge types have: what the claim layer writes
  *  (`verify.ts`: `strength` on EVIDENCED_BY, `context` / `start_time` /

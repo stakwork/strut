@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { LADYBUG_EDGE_TYPES, nodeColumns, ontologySeed } from "./registry.js";
-import { CORE_RENAME_MIGRATION, MIGRATIONS, SCHEMA_RULES_MIGRATION, backupPath, ddlStatements, indexCalls, openLadybug, type LadybugHandle } from "./db.js";
+import { CORE_RENAME_MIGRATION, MIGRATIONS, NAMESPACES_MIGRATION, SCHEMA_RULES_MIGRATION, backupPath, ddlStatements, indexCalls, openLadybug, type LadybugHandle } from "./db.js";
 import { openGraphBackend } from "../backend.js";
 import { testBackends } from "../test-util.js";
 
@@ -212,7 +212,7 @@ describe("a file written with the old core column names (plans/graph-memory-plan
       { ref_id: "v1", node_key: `strutworkflowversion-${hex("harvey-deliver")}-${hex("c-1")}`, node_type: "StrutWorkflowVersion", name: "harvey-deliver", content_hash: "c-1", version_label: "v1", created_at: 1_788_000_000, Data_Bank: "harvey-deliver" },
       { ref_id: "check", node_key: "check-k1", node_type: "Check", id: "k1", name: "bounds", policy: "always", created_at: 1_789_999_999, Data_Bank: "bounds" },
       { ref_id: "concept", node_key: "concept-lighthousekeeper", node_type: "Concept", name: "Lighthouse keeper", description: "who keeps the light", Data_Bank: "Lighthouse keeper\nwho keeps the light" },
-      { ref_id: "schema-check", node_key: "check-id", node_type: "Schema", type: "Check", title_key: "name", attributes: JSON.stringify({ id: "string", name: "?string", policy: "?string", created_at: "datetime" }) },
+      { ref_id: "schema-check", node_key: "check-id", node_type: "Schema", type: "Check", title_key: "name", attributes: JSON.stringify({ id: "string", name: "?string", policy: "?string", created_at: "datetime", created_by: "?string" }) },
     ];
     const columns = ["node_key STRING", "namespace STRING", "node_type STRING", "Data_Bank STRING", "text_embeddings FLOAT[384]", "date_added_to_graph INT64", "updated_at INT64", "deleted_at INT64",
       "name STRING", "description STRING", "content_hash STRING", "version_label STRING", "created_at INT64", "id STRING", "policy STRING", "type STRING", "attributes STRING", "title_key STRING"];
@@ -286,6 +286,16 @@ describe("a file written with the old core column names (plans/graph-memory-plan
       assert.equal((await h.query("MATCH (m:Migration {migration_id: $id}) RETURN count(m) AS c", { id: SCHEMA_RULES_MIGRATION }))[0]!["c"], 1);
       const person = (await h.query("MATCH (n:Node {node_type: 'Schema', type: 'Person'}) RETURN n.identifiers AS ids, n.role AS role, n.key_spec AS k"))[0]!;
       assert.deepEqual([person["ids"], person["role"], person["k"]], [["email"], "entity", "ref_id"]);
+      // Namespaces: default's data is private, Strut's records too; a Schema row has none (file-wide).
+      const ns = Object.fromEntries((await h.query("MATCH (n:Node) WHERE n.ref_id IN $ids RETURN n.ref_id AS r, n.namespace AS ns", { ids: ["wf", "v1", "check", "concept", "schema-check"] })).map((r) => [r["r"], r["ns"] ?? null]));
+      assert.deepEqual(ns, { wf: "private", v1: "private", check: "private", concept: "private", "schema-check": null });
+      assert.equal((await h.query("MATCH (n:Node) WHERE n.namespace IS NOT NULL AND n.node_type = 'Schema' RETURN count(n) AS c"))[0]!["c"], 0, "seeded rows too");
+      assert.equal((await h.query("MATCH (n:Node) WHERE n.node_type <> 'Schema' AND (n.namespace IS NULL OR n.namespace = 'default') RETURN count(n) AS c"))[0]!["c"], 0);
+      assert.ok(!String(checkSchema["a"]).includes("created_by") && (await columnsOf(h, "Node")).has("created_by"), "created_by is a core column");
+      for (const c of ["namespace", "created_by", "updated_at", "deleted_at"]) assert.ok(versionOf.has(c), `VERSION_OF.${c}`);
+      const moved = (await h.query("MATCH ()-[r:VERSION_OF {ref_id: $id}]->() RETURN r.namespace AS ns, r.updated_at AS at", { id: ref["edge"] }))[0]!;
+      assert.deepEqual([moved["ns"], moved["at"]], ["private", 1_790_000_000_000], "an edge takes its source's namespace");
+      assert.equal((await h.query("MATCH (m:Migration {migration_id: $id}) RETURN count(m) AS c", { id: NAMESPACES_MIGRATION }))[0]!["c"], 1);
     } finally {
       await h.close();
     }
