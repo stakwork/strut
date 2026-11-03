@@ -37,7 +37,7 @@
  * the rel-table form. This file validates and decides; it issues no Cypher.
  */
 import { randomUUID } from "node:crypto";
-import type { EdgeDeleteResult, EdgeMergeRow, EngineLike, GraphEngine, GraphTx } from "./engine.js";
+import type { EdgeDeleteResult, EdgeMergeRow, EngineLike, GraphEngine, GraphKind, GraphTx } from "./engine.js";
 import { asEngine } from "./neo4j-engine.js";
 import { GraphValidationError, type WriterCallOptions } from "./node-writer.js";
 import { SchemaResolver } from "./schema-resolver.js";
@@ -52,7 +52,8 @@ export interface EdgeInput {
   target_ref_id: string;
   /** Extra edge attributes — unvalidated passthrough, as in jarvis. Stamp
    *  keys (`ref_id`, `edge_key`, `weight`, `created_at`) may not
-   *  be supplied. On Neo4j a plain JS number is written as FLOAT; wrap with
+   *  be supplied — on Neo4j `date_added_to_graph`, where a `created_at` is
+   *  the edge's own property (`isStamp`). On Neo4j a plain JS number is written as FLOAT; wrap with
    *  `int()` from `bolt.ts` for an Integer. */
   properties?: Record<string, unknown>;
   /** Overrides the `weight: 1` stamp on create (jarvis accepts a caller
@@ -133,6 +134,11 @@ const STAMPS = new Set(["ref_id", "edge_key", "weight", "created_at", "date_adde
 const EDGE_CORE = new Set(["namespace", "created_by", "updated_at", "deleted_at"]);
 /** Stamps `update` may never touch (`weight` is caller-settable, as on create). */
 const PROTECTED = new Set(["ref_id", "edge_key", "created_at", "date_added_to_graph", "unique_source_id"]);
+/** Whether a caller's property `k` is one of the writer's stamps on this
+ *  engine. On Neo4j the stamp is stored as `date_added_to_graph` alone, so a
+ *  `created_at` there is a property of the edge's own, as in jarvis (its
+ *  Cause -[EVIDENCED_BY]-> and EvalSet -[HAS_CASE]-> declare one). */
+const isStamp = (stamps: ReadonlySet<string>, k: string, kind: GraphKind): boolean => stamps.has(k) && !(kind === "neo4j" && k === "created_at");
 const IDENT = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 const EDGE_TYPE = /^[A-Z][A-Z0-9_]*$/;
 
@@ -190,7 +196,7 @@ export class EdgeWriter {
    */
   async writeMany(inputs: EdgeInput[], tx?: GraphTx): Promise<EdgeWriteResult[]> {
     if (inputs.length === 0) return [];
-    for (const i of inputs) validateEdgeShape(i);
+    for (const i of inputs) validateEdgeShape(i, this.engine.kind);
     const results: EdgeWriteResult[] = new Array(inputs.length);
     const go = async (tx: GraphTx) => {
       const resolved = await this.validateEndpoints(tx, inputs);
@@ -223,13 +229,13 @@ export class EdgeWriter {
     const set: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(patch.set ?? {})) {
       if (v === undefined) continue;
-      if (PROTECTED.has(k)) throw new GraphValidationError("UNKNOWN_ATTRIBUTE", "edge", "edge stamp is system-managed", k);
+      if (isStamp(PROTECTED, k, this.engine.kind)) throw new GraphValidationError("UNKNOWN_ATTRIBUTE", "edge", "edge stamp is system-managed", k);
       if (!IDENT.test(k)) throw new GraphValidationError("UNKNOWN_ATTRIBUTE", "edge", "edge property is not a bare identifier", k);
       set[k] = v;
     }
     const remove = [...new Set(patch.remove ?? [])];
     for (const k of remove) {
-      if (PROTECTED.has(k) || k === "weight") throw new GraphValidationError("UNKNOWN_ATTRIBUTE", "edge", "edge stamp is system-managed", k);
+      if (isStamp(PROTECTED, k, this.engine.kind) || k === "weight") throw new GraphValidationError("UNKNOWN_ATTRIBUTE", "edge", "edge stamp is system-managed", k);
       if (!IDENT.test(k)) throw new GraphValidationError("UNKNOWN_ATTRIBUTE", "edge", "edge property is not a bare identifier", k);
     }
     if (Object.keys(set).length === 0 && remove.length === 0) throw new GraphValidationError("MISSING_REQUIRED", "edge", "nothing to set or remove");
@@ -323,7 +329,7 @@ export class EdgeWriter {
       const input: EdgeInput = forward
         ? { edge, source_ref_id: node, target_ref_id: m.to_ref_id, properties: props, ...kept }
         : { edge, source_ref_id: m.to_ref_id, target_ref_id: node, properties: props, ...kept };
-      validateEdgeShape(input);
+      validateEdgeShape(input, this.engine.kind);
       const resolved = await this.validateEndpoints(tx, [input], old.edge_ref_id);
       const [written] = await this.mergeEdges(tx, edge, resolved);
       // `to_ref_id` was an alias of where it already hangs.
@@ -432,11 +438,11 @@ function edgeNamespace(i: EdgeInput, source: string | undefined): string | undef
   return i.namespace === undefined ? source : writeNamespace(i.edge, i.namespace, source);
 }
 
-function validateEdgeShape(i: EdgeInput): void {
+function validateEdgeShape(i: EdgeInput, kind: GraphKind): void {
   if (!EDGE_TYPE.test(i.edge)) throw new GraphValidationError("UNKNOWN_TYPE", i.edge, "edge type must match ^[A-Z][A-Z0-9_]*$");
   if (!i.source_ref_id || !i.target_ref_id) throw new GraphValidationError("MISSING_REQUIRED", i.edge, "source_ref_id and target_ref_id are required");
   for (const k of Object.keys(i.properties ?? {})) {
-    if (STAMPS.has(k)) throw new GraphValidationError("UNKNOWN_ATTRIBUTE", i.edge, "edge stamp is system-managed", k);
+    if (isStamp(STAMPS, k, kind)) throw new GraphValidationError("UNKNOWN_ATTRIBUTE", i.edge, "edge stamp is system-managed", k);
     if (!IDENT.test(k)) throw new GraphValidationError("UNKNOWN_ATTRIBUTE", i.edge, "edge property is not a bare identifier", k);
   }
 }

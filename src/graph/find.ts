@@ -193,6 +193,8 @@ export async function findNodes(b: GraphBackend, input: FindInput): Promise<Find
     for (const [k, v] of Object.entries((r["props"] ?? {}) as Record<string, unknown>)) if (v !== null && v !== undefined) props[k] = v;
     const ref_id = String(props["ref_id"]);
     delete props["ref_id"];
+    // The stamp's old name, kept for a release as the node envelopes keep it.
+    if (stamp === "created_at" && props["created_at"] !== undefined) props["date_added_to_graph"] = props["created_at"];
     const name = nodeTitle(props, schema.title_key) || props["name"];
     // The core title is the node's `name` here; `properties` are the type's fields.
     if (!("title" in fields)) delete props["title"];
