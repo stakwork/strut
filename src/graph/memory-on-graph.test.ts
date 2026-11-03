@@ -30,6 +30,12 @@ import remember from "../steps/lib/memory/remember.js";
 import forget from "../steps/lib/memory/forget.js";
 
 const lb = testBackends().find((b) => b.kind === "ladybug")!;
+// The old memory database loads @ladybugdb/core on its own (steps/lib/memory/_db.ts),
+// which can fail where the graph's Ladybug loads; the import suite needs both.
+const hasMemoryDb = await import("@ladybugdb/core").then(
+  () => true,
+  () => false,
+);
 const neo4j = testBackends().find((b) => b.kind === "neo4j");
 
 type Step = { input: { parse(v: unknown): unknown }; run: (cfg: any, ctx: any) => Promise<unknown> };
@@ -193,7 +199,7 @@ describe("the generic tools cover remember and forget (ladybug)", { skip: lb.ski
   });
 });
 
-describe("graph/import-memory from the old memory database (ladybug)", { skip: lb.skip }, () => {
+describe("graph/import-memory from the old memory database (ladybug)", { skip: lb.skip || (!hasMemoryDb && "@ladybugdb/core is not installed") }, () => {
   const dir = mkdtempSync(join(tmpdir(), "strut-import-memory-"));
   const secrets = { get: async (n: string) => (n === "STRUT_MEMORY_DB" ? join(dir, "memory", "graph.lbug") : undefined) };
   const old = ctxOf({ secrets });
