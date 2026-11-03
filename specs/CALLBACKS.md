@@ -497,8 +497,14 @@ on its launch. The peer record's token must be a person's credential.
   never returns the URL — the run log records only its origin, and the URL
   is kept beside the log where no endpoint serves it.
 - **If strut restarts mid-run**, it resumes the run at boot and the callback
-  posts when the run settles, as if nothing had happened. If you have not
-  heard back after a run should have finished, read the summary endpoint above.
+  posts when the run settles, as if nothing had happened. A run that had
+  finished but whose result the dead process never posted is posted at
+  boot. A post that was in flight when the process died is lost: if you
+  have not heard back after a run should have finished, read the summary
+  endpoint above.
+- **A resumed run posts again.** Resuming a run that had already ended
+  (by hand, after an error) posts a second `run.end` for the same `runId`
+  when the resume settles: the newer one is the run's outcome.
 - `POST /chat` accepts the same `callback` field for the AI builder; that one
   posts once per turn with `event: "turn.end"`. A turn a restart cut off
   posts `turn.end { status: "error" }` once strut is back, with `settled:

@@ -244,6 +244,15 @@ the journal executes live, and everything downstream follows. Scope,
 templates, and skip/gate logic are reconstructed naturally because they
 only ever consume step outputs.
 
+The resume first drops the attempt's summary (`run.json`,
+`store.clearRunSummary`): a summary always means the LATEST attempt
+finished, so a resumed run reads as live — its controller's state —
+everywhere (the run, the lists, the scheduler's overlap rule, the job
+index), never as the outcome it is resumed from. The log keeps the old
+terminal event. A crash before `run.resumed` is appended leaves that
+terminal event last, which boot finalizes again (§5.3); a crash after it
+leaves a cut-off run boot resumes.
+
 ### 5.1 Hard stops are the same case
 
 Nothing above requires a graceful shutdown. The journal is written AS
@@ -286,7 +295,9 @@ whenever the RUN STORE outlives the process — anything but
 with a `FileRunStore` counts — `STRUT_AUTO_RESUME=0` or `autoResume:
 false` to disable; runs a few seconds after construction). A resumed run
 posts its `run.end` callback: the URL is kept by the run store beside the
-log (`setRunCallback`), never in it. The operational goal:
+log (`setRunCallback`), never in it — and so does a run boot finalizes
+(its log ended, its summary was never written): the dead process never
+posted it. The operational goal:
 a long serial workflow must never need to be started over because the
 server restarted.
 
@@ -304,15 +315,27 @@ parent re-executing its launching step relaunches its children (§5.1
 at-least-once), so resuming orphaned children would only duplicate work
 that reports to nobody.
 
-**Per workflow, the newest run only**, newest-first by run id. If the
-newest root run has a summary, nothing was cut off. Guards: a log over
+**Every run the last death cut off.** The scan reads when the previous
+process started from `<dataDir>/boot.json` and looks at every root run
+with no summary whose last event is at or after it — however many runs
+of one workflow were in flight (a `job` or `orchestrator` runs many at
+once). It writes this process's start there once it is done, so a
+process that dies before its scan leaves the record as it was. A run
+whose last event is older was cut off by an earlier death, which the
+boot after it already looked at: left alone, unreported. With no record
+(the first boot), only the newest root run of each workflow is looked at,
+newest-first by run id: if it has a summary, nothing was cut off. No
+dedupe is needed by job or automation — one job, and one automation,
+never has two runs in flight. Guards: a log over
 `STRUT_RESUME_MAX_LOG_BYTES` (**64 MB**) is skipped by its size, unread —
 loading it is what the dead process could not survive, and the same cap
 is a 413 on `POST …/resume`; a log that
 already ends in a terminal event just gets its missing summary written;
 a run whose last event is older than **7 days** is skipped; a run with
-**5** or more `run.resumed` markers is skipped (a step that
-deterministically kills the server must not loop forever). Every
+**5** or more durable `run.resumed` markers is skipped (a step that
+deterministically kills the server must not loop forever) — the
+`run.resumed` the control routes write when they UNPAUSE a live run is
+marked `live: true` and never counted. Every
 decision is logged as `[auto-resume] wf/run: resumed|finalized|skipped —
 reason`, and the same DAG resolution as the endpoint applies (pinned
 version by hash; refused, never forced, when no version matches).
