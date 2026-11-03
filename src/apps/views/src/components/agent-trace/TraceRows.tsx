@@ -26,11 +26,16 @@ type Pill = Extract<TraceRow, { kind: "pill" }>;
 type AgentRow = Extract<TraceRow, { kind: "agent" }>;
 type NodeRow = Extract<TraceRow, { kind: "node" }>;
 
-/** What renders: the model's rows, an open agent row's prompt, an open pill's turns. */
+/** What renders: the model's rows, an open agent row's prompt, an open pill's turns, and a run of nodes other than Concepts folded into one row (open: the row, then them). */
 export type ViewRow =
   | { type: "row"; row: TraceRow; key: string }
   | { type: "prompt"; row: AgentRow; key: string }
-  | { type: "turn"; pill: Pill; turn: TraceTurn; key: string };
+  | { type: "turn"; pill: Pill; turn: TraceTurn; key: string }
+  | { type: "nodes"; rows: NodeRow[]; depth: number; open: boolean; key: string };
+
+/** The nodes a trace keeps a row each for, folded or not; the rest fold, two or more in a row, into one. */
+const KEPT_TYPES: ReadonlySet<string> = new Set(["Concept"]);
+const folds = (row: TraceRow | undefined): row is NodeRow => row?.kind === "node" && !KEPT_TYPES.has(row.node.node_type ?? "");
 
 /** A pill by its first call, so the reasoning a transcript adds before it keeps the pill open. */
 export function pillKey(row: Pill): string {
@@ -39,16 +44,38 @@ export function pillKey(row: Pill): string {
 
 export function buildViewRows(rows: TraceRow[], open: ReadonlySet<string>): ViewRow[] {
   const out: ViewRow[] = [];
-  rows.forEach((row, i) => {
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i]!;
+    if (folds(row)) {
+      let j = i;
+      while (folds(rows[j + 1]) && rows[j + 1]!.session === row.session) j++;
+      if (j > i) {
+        const key = `nodes:${row.session}:${i}`;
+        const group = rows.slice(i, j + 1) as NodeRow[];
+        out.push({ type: "nodes", rows: group, depth: row.depth, open: open.has(key), key });
+        if (open.has(key)) group.forEach((r, k) => out.push({ type: "row", row: r, key: `node:${r.session}:${i + k}` }));
+        i = j;
+        continue;
+      }
+    }
     const key = row.kind === "pill" ? `pill:${pillKey(row)}` : row.kind === "agent" ? `agent:${row.session}` : `${row.kind}:${row.session}:${i}`;
     out.push({ type: "row", row, key });
     if (row.kind === "agent" && row.prompt && open.has(key)) out.push({ type: "prompt", row, key: `prompt:${row.session}` });
     if (row.kind === "pill" && open.has(key)) for (const turn of row.turns) out.push({ type: "turn", pill: row, turn, key: `turn:${row.session}:${turn.order}` });
-  });
+  }
   return out;
 }
 
-export const viewLane = (vr: ViewRow) => laneOf(vr.type === "turn" ? vr.pill.depth : vr.row.depth);
+/** What "expand all" opens: every pill and every folded run of nodes. */
+export function foldKeys(rows: TraceRow[]): string[] {
+  return buildViewRows(rows, new Set()).flatMap((vr) => (vr.type === "nodes" || (vr.type === "row" && vr.row.kind === "pill") ? [vr.key] : []));
+}
+
+export const viewLane = (vr: ViewRow) => laneOf(vr.type === "turn" ? vr.pill.depth : vr.type === "nodes" ? vr.depth : vr.row.depth);
+
+/** When the row happened (epoch ms), or null. */
+export const atOf = (vr: ViewRow): number | null =>
+  vr.type === "turn" ? vr.turn.at : vr.type === "prompt" ? null : vr.type === "nodes" ? vr.rows[0]!.at : vr.row.at;
 
 /** `m:ss` from the run's first agent; blank when either time is unknown. */
 function clock(at: number | null, start: number | null): string {
@@ -129,6 +156,7 @@ function marker(vr: ViewRow, lane: number): ReactNode {
   const fill = LANE_FILL[lane];
   const stroke = LANE_STROKE[lane];
   if (vr.type === "prompt") return <rect x={5} y={5} width={8} height={8} rx={2} className="fill-foreground" />;
+  if (vr.type === "nodes") return <rect x={4.5} y={4.5} width={9} height={9} transform="rotate(45 9 9)" strokeWidth={1.5} strokeDasharray="2 2" className="fill-card stroke-amber-600 dark:stroke-amber-400" />;
   if (vr.type === "turn") {
     const t = vr.turn;
     if (t.kind === "reasoning") return <circle cx={9} cy={9} r={4} className={cn("fill-card", stroke)} strokeWidth={2} />;
@@ -173,16 +201,22 @@ export interface RowProps {
   onPeek: (node: AccessedNode) => void;
   /** A node being read, by ref. */
   peeking: string | null;
+  /** A replay elsewhere is on this row. */
+  current?: boolean;
 }
 
 /** One 34px row: the time gutter, its marker on the lane, and its content. */
 export function TraceRowItem(p: RowProps) {
   const { vr, index } = p;
   const lane = viewLane(vr);
-  const at = vr.type === "turn" ? vr.turn.at : vr.type === "prompt" ? null : vr.row.at;
-  const gutter = clock(at, p.startMs);
+  const gutter = clock(atOf(vr), p.startMs);
   return (
-    <div className="absolute right-0 left-0 flex items-center rounded-md hover:bg-muted/40" style={{ top: TOP_PAD + index * ROW_H, height: ROW_H }} data-row={vr.type === "row" ? vr.row.kind : vr.type}>
+    <div
+      className={cn("absolute right-0 left-0 flex items-center rounded-md transition-colors duration-300 hover:bg-muted/40", p.current && "bg-sky-500/10")}
+      style={{ top: TOP_PAD + index * ROW_H, height: ROW_H }}
+      data-row={vr.type === "row" ? vr.row.kind : vr.type}
+      data-replay={p.current ? "current" : undefined}
+    >
       {gutter && <div className="absolute left-1 w-[52px] text-right font-mono text-[10px] text-muted-foreground tabular-nums">{gutter}</div>}
       <Marker x={LANE_X[lane]!}>{marker(vr, lane)}</Marker>
       <RowContent {...p} lane={lane} />
@@ -208,6 +242,7 @@ function RowContent({ vr, lane, open, onToggle, onRead, onPeek, peeking }: RowPr
       </TextButton>
     );
   }
+  if (vr.type === "nodes") return <NodeGroupChip vr={vr} x={x} onToggle={onToggle} />;
   if (vr.type === "turn") {
     const t = vr.turn;
     const title = `${t.tool ?? t.kind} · ${t.kind}`;
@@ -315,6 +350,34 @@ function NodeChip({ row, x, onPeek, peeking }: { row: NodeRow; x: number; onPeek
         </svg>
         <span className="min-w-0 flex-1 overflow-hidden text-left font-semibold text-ellipsis whitespace-nowrap">{name}</span>
         <span className="shrink-0 text-[9px] tracking-[0.12em] opacity-85">{VERB[row.verb]}</span>
+      </button>
+    </>
+  );
+}
+
+/** A run of nodes other than Concepts, folded: how many, of which types; a click shows them a row each, or folds them back. */
+function NodeGroupChip({ vr, x, onToggle }: { vr: Extract<ViewRow, { type: "nodes" }>; x: number; onToggle: RowProps["onToggle"] }) {
+  const types = new Map<string, number>();
+  for (const r of vr.rows) types.set(r.node.node_type ?? "node", (types.get(r.node.node_type ?? "node") ?? 0) + 1);
+  const ranked = [...types.entries()].sort((a, b) => b[1] - a[1]);
+  const verbs = new Set(vr.rows.map((r) => r.verb));
+  const verb = verbs.size === 1 ? VERB[vr.rows[0]!.verb] : "NODES";
+  const names = vr.rows.slice(0, 40).map((r) => `${r.node.name || r.node.ref_id.slice(0, 8)} · ${r.node.node_type ?? "node"} · ${r.verb}`);
+  return (
+    <>
+      <div className="absolute top-1/2 border-t border-dashed border-amber-600/40 dark:border-amber-400/40" style={{ left: x + 12, right: RAIL_RIGHT + RAIL_CHIP_W + 12 }} aria-hidden />
+      <button
+        type="button"
+        onClick={() => onToggle(vr.key)}
+        title={`${names.join("\n")}${vr.rows.length > names.length ? `\n… ${vr.rows.length - names.length} more` : ""}`}
+        className="absolute top-1/2 flex h-[26px] -translate-y-1/2 items-center gap-1.5 rounded-full border border-dashed border-amber-600/45 px-2.5 font-mono text-[11px] text-amber-700 hover:border-amber-600 dark:border-amber-400/45 dark:text-amber-400"
+        style={{ right: RAIL_RIGHT, width: RAIL_CHIP_W }}
+        data-testid="trace-node-group"
+      >
+        <span className="text-[9px] opacity-80">{vr.open ? "▾" : "▸"}</span>
+        <b className="font-semibold">{vr.rows.length}</b>
+        <span className="min-w-0 flex-1 overflow-hidden text-left text-ellipsis whitespace-nowrap">{ranked.map(([t, n]) => `${t} ×${n}`).join(" · ")}</span>
+        <span className="shrink-0 text-[9px] tracking-[0.12em] opacity-85">{verb}</span>
       </button>
     </>
   );
