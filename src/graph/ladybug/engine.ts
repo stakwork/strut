@@ -57,6 +57,7 @@ import type { NodeSchema } from "../schema-resolver.js";
 import type { LadybugHandle } from "./db.js";
 import * as ontology from "./ontology.js";
 import { SCHEMA_EDGE, catalogOf, readCatalog, type Catalog, type LadybugCatalog } from "./ontology.js";
+import { mergedInto } from "./merge.js";
 import { namespaceName, writeNamespace } from "./namespaces.js";
 import { deleteEdgeRows, deleteRowsOf, embedPendingRows, recomposeRowsOf } from "./temporal.js";
 import { ALL_EDGE_COLUMNS, EDGE_TEXT_TYPE, GENERIC_COLUMNS, LADYBUG_STRUT_TYPES, MERGE_TYPE, SCHEMA_TYPE, edgeColumnsOf } from "./registry.js";
@@ -231,6 +232,20 @@ class LadybugNodes implements NodeEngine {
   async refByKey(tx: GraphTx, type: string, key: string, namespace: string): Promise<string | null> {
     const rows = await tx.run(`MATCH (n:Node {node_type: $type, namespace: $ns, \`key\`: $k}) RETURN n.ref_id AS ref_id LIMIT 1`, { type, k: key, ns: writeNamespace(type, namespace, this.ns) });
     return rows.length ? String(rows[0]!["ref_id"]) : null;
+  }
+
+  async mergedAway(tx: GraphTx, type: string, attribute: string, values: unknown[], namespace: string): Promise<Map<string, string>> {
+    const out = new Map<string, string>();
+    if (!values.length || !(attribute in (await this.known(tx, [attribute])))) return out;
+    const rows = await tx.run(
+      `MATCH (n:Node {node_type: $type, namespace: $ns}) WHERE n.${q(attribute)} IN $values AND n.deleted_at IS NOT NULL RETURN n.ref_id AS ref_id, n.${q(attribute)} AS value`,
+      { type, values, ns: writeNamespace(type, namespace, this.ns) },
+    );
+    for (const r of rows) {
+      const kept = await mergedInto(tx.run.bind(tx), String(r["ref_id"]));
+      if (kept && !out.has(String(r["value"]))) out.set(String(r["value"]), kept);
+    }
+    return out;
   }
 
   async holdersOf(tx: GraphTx, type: string, attribute: string, values: unknown[], namespace: string) {

@@ -160,6 +160,11 @@ export interface NodeEngine {
   readRaw(tx: GraphTx, ref_id: string, schemaOf?: SchemaOf): Promise<RawNode | null>;
   /** The ref_id of the node of `type` with this identity, or null. */
   refByKey(tx: GraphTx, type: string, key: string, namespace: string): Promise<string | null>;
+  /** Of `values` of `attribute` (`key`, or an identifier), those held by a
+   *  node of `type` merged away (soft-deleted by `graph/merge`), each to the
+   *  node it now lives on, chains followed. Ladybug only: a write that would
+   *  match such a node lands on that one (`NodeWriter.ontoKept`). */
+  mergedAway?(tx: GraphTx, type: string, attribute: string, values: unknown[], namespace: string): Promise<Map<string, string>>;
   /** The live nodes of `type` in `namespace` whose `attribute` is one of
    *  `values`: an identifier's holders (`NodeSchema.identifiers`). */
   holdersOf(tx: GraphTx, type: string, attribute: string, values: unknown[], namespace: string): Promise<Array<{ ref_id: string; key: string; value: unknown }>>;

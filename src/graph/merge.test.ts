@@ -188,6 +188,84 @@ describe("merge on a ladybug file (plans/graph-memory-plan.md step 5)", { skip: 
   });
 });
 
+describe("a write to a merged-away key lands on the kept node", { skip: lb.skip }, () => {
+  let b: LadybugBackend;
+  before(async () => {
+    b = (await lb.open({ embedder })) as LadybugBackend;
+    await ontology(b);
+  });
+  after(() => lb.close(b));
+  beforeEach(() => lb.clear(b));
+  const lingo = (name: string, description?: string, mode: "create" | "upsert" = "create") =>
+    b.nodes.write({ type: "Lingo", data: { name, ...(description ? { description } : {}) } }, mode);
+  const row = async (ref_id: string) => (await b.query(`MATCH (n:Node {ref_id: $r}) RETURN n AS n`, { r: ref_id }))[0]!["n"] as Record<string, unknown>;
+  const live = async (type: string) => (await b.query(`MATCH (n:Node {node_type: $t}) WHERE n.deleted_at IS NULL RETURN n.ref_id AS r`, { t: type })).map((r) => r["r"]);
+
+  it("k8s merged into Kubernetes: writing k8s again updates Kubernetes, and k8s stays merged", async () => {
+    const kube = (await lingo("Kubernetes", "container orchestration")).ref_id;
+    const k8s = (await lingo("k8s", "short for it")).ref_id;
+    const m = await mergeNodes(b, { keep: kube, duplicate: k8s });
+    const kubeKey = (await row(kube))["key"];
+
+    const created = await lingo("k8s");
+    assert.deepEqual([created.ref_id, created.outcome], [kube, "existing"], "a create finds the kept node");
+    const upserted = await lingo("k8s", "runs containers", "upsert");
+    assert.deepEqual([upserted.ref_id, upserted.outcome, upserted.node_key], [kube, "updated", kubeKey]);
+    assert.deepEqual(await live("Lingo"), [kube], "one node: the duplicate was not revived");
+    const kept = await row(kube);
+    assert.deepEqual([kept["name"], kept["title"], kept["key"], kept["description"]], ["Kubernetes", "Kubernetes", kubeKey, "runs containers"], "its own name and key, the written field");
+    assert.match(String(kept["search_text"]), /Kubernetes/);
+    assert.ok((await row(k8s))["deleted_at"] !== null, "the duplicate is as the merge left it");
+
+    // The undo still works: the duplicate comes back as it was, the write stays on the kept node.
+    await unmergeNodes(b, { merge: m.merge });
+    assert.deepEqual((await live("Lingo")).sort(), [kube, k8s].sort());
+    assert.equal((await row(k8s))["description"], "short for it");
+    assert.equal((await row(kube))["description"], "runs containers");
+    // Once undone, the key is k8s's own again.
+    assert.equal((await lingo("k8s")).ref_id, k8s);
+  });
+
+  it("follows a chain of merges to the node in force", async () => {
+    const [a, mid, c] = [(await lingo("a")).ref_id, (await lingo("b")).ref_id, (await lingo("c")).ref_id];
+    await mergeNodes(b, { keep: mid, duplicate: a });
+    await mergeNodes(b, { keep: c, duplicate: mid });
+    const w = await lingo("a", "via b", "upsert");
+    assert.equal(w.ref_id, c);
+    assert.deepEqual(await live("Lingo"), [c]);
+    assert.deepEqual([(await row(c))["name"], (await row(c))["description"]], ["c", "via b"]);
+  });
+
+  it("a node deleted but never merged is restored, as before", async () => {
+    const helm = (await lingo("Helm")).ref_id;
+    assert.ok(await b.nodes.deleteNode(helm));
+    const w = await lingo("Helm");
+    assert.deepEqual([w.ref_id, w.outcome], [helm, "restored"]);
+    assert.equal((await row(helm))["deleted_at"] ?? null, null);
+  });
+
+  it("a Person named by a merged-away node's email lands on the kept node; undo keeps the write's stamp", async () => {
+    const kate = await person(b, { name: "Kate Moss" });
+    const katie = await person(b, { name: "Katie", email: "katie@example.com" });
+    const m = await mergeNodes(b, { keep: kate, duplicate: katie });
+    const stamped = (await row(kate))["updated_at"];
+    const w = await b.nodes.write({ type: "Person", data: { name: "Katie", email: "katie@example.com", description: "a friend" } }, "upsert");
+    assert.equal(w.ref_id, kate, "no second Person for the email");
+    assert.deepEqual(await live("Person"), [kate]);
+    const kept = await row(kate);
+    assert.deepEqual([kept["name"], kept["email"], kept["description"], kept["alt_names"]], ["Kate Moss", "katie@example.com", "a friend", ["Katie"]]);
+    assert.notEqual(kept["updated_at"], stamped);
+
+    // Undo: the email now names both Kate and the revived Katie.
+    await assert.rejects(unmergeNodes(b, { merge: m.merge }), refused(/katie@example.com/));
+    await b.nodes.update(kate, { remove: ["email"] });
+    const before = (await row(kate))["updated_at"];
+    await unmergeNodes(b, { merge: m.merge });
+    assert.deepEqual([(await row(kate))["alt_names"] ?? null, (await row(kate))["updated_at"]], [null, before], "alt_names set back, the later stamp kept");
+    assert.equal((await row(katie))["deleted_at"] ?? null, null);
+  });
+});
+
 describe("merge by the janitor", { skip: lb.skip }, () => {
   let b: LadybugBackend;
   let me: string;
@@ -245,5 +323,12 @@ describe("merge on Neo4j", { skip: neo4j.skip }, () => {
     const ctx = { services: { graph: b } } as never;
     assert.match(String(await graphMerge.run({ keep: x.ref_id, duplicate: y.ref_id } as never, ctx)), /^graph\/merge failed — REFUSED: graph\/merge works on a LadybugDB graph only/);
     assert.ok(await b.reader.getNode(y.ref_id), "the duplicate is untouched");
+  });
+
+  it("a soft-deleted node is restored by a write of its key, as before", async () => {
+    const x = await b.nodes.write({ type: "StrutWorkflow", data: { name: "revived" } });
+    assert.ok(await b.nodes.softDelete(x.ref_id));
+    const again = await b.nodes.write({ type: "StrutWorkflow", data: { name: "revived" } });
+    assert.deepEqual([again.ref_id, again.outcome], [x.ref_id, "restored"]);
   });
 });

@@ -93,7 +93,9 @@ export interface MergeMoves {
   skipped: Array<{ edge: string; ref_id: string; reason: string }>;
   /** The duplicate's facts whose search rows were deleted. */
   rows: string[];
-  kept: { alt_names_before: string[] | null; alt_names_after: string[] | null; updated_at_before: number | null };
+  /** `updated_at_after`: the stamp the merge left on it (records before it
+   *  was kept have none). */
+  kept: { alt_names_before: string[] | null; alt_names_after: string[] | null; updated_at_before: number | null; updated_at_after?: number | null };
 }
 
 export interface MergeResult {
@@ -336,6 +338,7 @@ export async function mergeNodes(b: GraphBackend, input: MergeInput, opts: { now
         alt_names = [...alt_names, ...add];
         await b.nodes.update(keep, { set: { [ALT_NAMES]: alt_names } }, { tx });
         moves.kept.alt_names_after = alt_names;
+        moves.kept.updated_at_after = (await readLive(tx, keep))?.updated_at ?? null;
       }
     } else if (gone.title && norm(gone.title) !== norm(kept.title ?? "")) {
       notes.push(`${kept.type} has no alt_names: the name "${gone.title}" is kept only on the merge record`);
@@ -438,8 +441,22 @@ export async function unmergeNodes(b: GraphBackend, input: UnmergeInput, opts: {
     const kept = await readLive(tx, rec.kept_ref_id);
     if (!kept) why.push(`the node kept (${rec.kept_ref_id}) was deleted since`);
     else if (JSON.stringify(kept.alt_names) !== JSON.stringify(moves.kept.alt_names_after)) why.push("the node kept's alt_names changed since");
-    const dup = (await tx.run(`MATCH (n:Node {ref_id: $r}) RETURN n.deleted_at AS d`, { r: rec.duplicate_ref_id }))[0];
+    const dup = (await tx.run(`MATCH (n:Node {ref_id: $r}) RETURN n.deleted_at AS d, n AS n`, { r: rec.duplicate_ref_id }))[0];
     if (!dup || num(dup["d"]) !== at) why.push(`the duplicate (${rec.duplicate_ref_id}) was written since: it is no longer as the merge left it`);
+    else {
+      // An identifier names one live node: a write to the duplicate's may
+      // have landed on another since (`node-writer.ts`, `ontoKept`).
+      const row = dup["n"] as Record<string, unknown>;
+      for (const id of (await b.schemas.schema(String(row["node_type"]), tx))?.identifiers ?? []) {
+        const v = row[id];
+        if (v === undefined || v === null || v === "") continue;
+        const holders = await tx.run(
+          `MATCH (n:Node {node_type: $t, namespace: $ns}) WHERE n.${"`"}${id}${"`"} = $v AND n.deleted_at IS NULL AND n.ref_id <> $r RETURN n.ref_id AS r`,
+          { t: row["node_type"], ns: row["namespace"], v, r: rec.duplicate_ref_id },
+        );
+        if (holders.length) why.push(`${holders.map((h) => h["r"]).join(", ")} has the duplicate's ${id} ${JSON.stringify(v)} since: an identifier names one node`);
+      }
+    }
 
     const check = async (edge: string, ref_id: string, ok: (u: number | null) => boolean, what: string) => {
       const row = await storedEdge(tx, edge, ref_id);
@@ -468,7 +485,10 @@ export async function unmergeNodes(b: GraphBackend, input: UnmergeInput, opts: {
     if (JSON.stringify(moves.kept.alt_names_before) !== JSON.stringify(moves.kept.alt_names_after)) {
       const before = moves.kept.alt_names_before;
       await b.nodes.update(rec.kept_ref_id, before?.length ? { set: { [ALT_NAMES]: before } } : { remove: [ALT_NAMES] }, { tx });
-      const u = moves.kept.updated_at_before;
+      // A later write stamped the kept node (one to the duplicate's key lands
+      // there, `node-writer.ts`): its stamp stays.
+      const written = moves.kept.updated_at_after !== undefined && kept?.updated_at !== moves.kept.updated_at_after;
+      const u = written ? (kept?.updated_at ?? null) : moves.kept.updated_at_before;
       await tx.run(`MATCH (n:Node {ref_id: $r}) SET n.updated_at = ${u === null ? "NULL" : "CAST($u AS INT64)"}`, { r: rec.kept_ref_id, ...(u === null ? {} : { u }) });
     }
     await showRows(tx, moves.rows, at);
