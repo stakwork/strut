@@ -16,6 +16,8 @@ import { formatValidationErrors, validateWorkflowYaml } from "../validate.js";
 import { modelEvaluate } from "../evaluate.js";
 import { resolveEvaluationModel } from "../llm.js";
 import { graphWalkTool } from "./walk-tool.js";
+import { pinnedTo } from "../graph/scope.js";
+import type { GraphBackend } from "../graph/backend.js";
 import { secretLikeProperty, validateRequestedSchema } from "./elicitation.js";
 import { isValidSecretName } from "../secret-store.js";
 import { DOCUMENT_TOOLS, capToolOutput, toolResultMaxCharsFromEnv } from "../chat-store.js";
@@ -256,6 +258,12 @@ export function capToolResults(
 }
 
 export function buildTools(deps: AiDeps): ToolSet {
+  // The builder reads the graph as the `builder` reader (src/graph/scope.ts)
+  // where the host set `graphReaders`: its graph_query, graph_get and
+  // graph_walk all go through this view.
+  const wiredGraph = (deps.services as { graph?: GraphBackend } | undefined)?.graph;
+  const builderGraph = pinnedTo(wiredGraph, "builder") ?? deps.graph;
+  const builderServices = builderGraph !== deps.graph ? { ...(deps.services as object), graph: builderGraph } : deps.services;
   /** The static check behind validate_workflow — also the gate on
    *  create_workflow / edit_workflow, so an invalid YAML never becomes a
    *  version. Registry + workflow list come from deps at call time. */
@@ -1351,7 +1359,7 @@ export function buildTools(deps: AiDeps): ToolSet {
               try {
                 // Lazy so embedders that never call it don't load neo4j-driver here.
                 const { readQuery } = await import("../graph/query.js");
-                return await readQuery(deps.graph!, cypher, {
+                return await readQuery(builderGraph!, cypher, {
                   params: coerceJsonArg(params) as Record<string, unknown> | undefined,
                   maxRows,
                 });
@@ -1382,7 +1390,7 @@ export function buildTools(deps: AiDeps): ToolSet {
               const cfg = def.input.safeParse(input ?? {});
               if (!cfg.success) return { error: `invalid input: ${cfg.error.message}` };
               try {
-                return await def.run(cfg.data, { runId: "", path: "graph_get", scope: {}, input: undefined, emit: async () => {}, services: deps.services });
+                return await def.run(cfg.data, { runId: "", path: "graph_get", scope: {}, input: undefined, emit: async () => {}, services: builderServices });
               } catch (e) {
                 return { error: e instanceof Error ? e.message : String(e) };
               }
@@ -1397,7 +1405,7 @@ export function buildTools(deps: AiDeps): ToolSet {
     ...(GRAPH_WALK_TOOL_ENABLED && deps.graph
       ? {
           graph_walk: graphWalkTool({
-            reader: deps.graph.reader,
+            reader: builderGraph!.reader,
             // As graph/walk's run(): jev when TYPESAFE_AI_API_KEY is set, else
             // the deployment's language model — keys via the secrets capability.
             evaluate:

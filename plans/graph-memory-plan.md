@@ -82,8 +82,8 @@ Core attributes are listed under "Core attributes" below.
 - `merge`: move edges, keep old ids working, record it, allow undo.
 
 ### 6. Enforce privacy with namespaces
-- Replace `managed_by: memory` with one check under every read tool: each reader has a list of namespaces, plus an optional domain filter, set by the host. A job's list is `shared` with domain `Strut` left out, so it sees no Strut records.
-- In Peel, everything is written to `private` by default, and public Concepts go in `shared`. The assistant reads both. Jobs read only `shared`, and get anything else through their brief.
+- Replace `managed_by: memory` with one check under every read tool: each reader has a list of namespaces, plus an optional domain filter, set by the host (`graphReaders`; a host that sets none runs as before). A job's list leaves domain `Strut` out, so it sees no Strut records.
+- In Peel, everything is written to `private` by default, and public Concepts go in `shared`. The assistant reads both, and so do the jobs the person or the assistant starts, so they can work on the person's memory. Apps and peers read only `shared`. Narrowing a job that runs a third-party workflow to `shared` is a later refinement.
 - Keep B's reader rule and raw-query refusal, keyed on the list.
 - Every reader gets its own list, including the two outside Peel's chat: apps with graph grants, and peers reading through `/graph/*`. A reader the host hasn't given a list reads nothing.
 - A person can move something to `shared` by hand.
@@ -126,7 +126,7 @@ Run the real orchestrator and a live model on a fresh graph through a scripted c
 7. Claims, Checks and Evidence behave exactly as they do today.
 8. Adding a new type needs no code change.
 9. Two people with the same name stay two, and a merge can be undone.
-10. A job or unlisted workflow can't read anything in `private`.
+10. An app or a peer can't read anything in `private`, and a reader the host gave no list reads nothing.
 11. Sync between box and Mac gives matching hashes.
 12. Workflows hold no temporal logic of their own.
 13. A fresh Peel graph boots without Jarvis's bundled ontology.
@@ -212,9 +212,10 @@ The rules:
 
 The tests:
 - A reader gets nothing outside its list through search, find, get, neighbors, walk, `as_of`, edge counts or search rows.
+- A job reads `private` and `shared`; an app or peer reads only `shared`.
 - A job sees no Strut records, through its domain filter.
 - A raw query is refused unless the reader can read every namespace in the graph.
-- An edge from `shared` into `private` is invisible to a job, and so is the fact that it exists.
+- An edge from `shared` into `private` is invisible to a `shared`-only reader, and so is the fact that it exists.
 - `resolve` never reveals a node outside the reader's list.
 - A hidden node returns the same result as a node that doesn't exist.
 - A new read tool can't skip the check, because the check sits below the tools.

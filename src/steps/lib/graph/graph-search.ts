@@ -3,7 +3,7 @@ import { defineStep, type StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
 import { getStrutSchema } from "../../../graph/strut-schemas.js";
 import { nodeTitle } from "../../../graph/title.js";
-import { graphCtx, errText } from "./_shared.js";
+import { graphCtx, errText, excludeDomainsInput } from "./_shared.js";
 const splitList = (s?: string) => s?.split(",").map((x) => x.trim()).filter(Boolean);
 
 /** A node's human label: its title (the Strut schema's title_key when it is
@@ -84,7 +84,8 @@ export default defineStep({
     namespace: z
       .string()
       .optional()
-      .describe("Scope the search to a namespace (data partition). Not an access-control boundary."),
+      .describe("Scope the search to one namespace (who the data is for: `private`, `shared`). Default: every namespace this caller may read."),
+    exclude_domains: z.string().optional().describe(excludeDomainsInput),
   }),
   output: z.any(),
   async run(cfg, ctx) {
@@ -92,7 +93,7 @@ export default defineStep({
       return "graph/graph-search requires at least one of: q, input_q, output_q";
     }
     try {
-      const b = await graphCtx(ctx as StepContext<StrutCapabilities>);
+      const b = await graphCtx(ctx as StepContext<StrutCapabilities>, { exclude_domains: splitList(cfg.exclude_domains) });
       const res = await b.reader.search({
         q: cfg.q,
         input_q: cfg.input_q,

@@ -29,6 +29,7 @@
  */
 import type { GraphBackend } from "./backend.js";
 import { rowOf, type Params, type Row } from "./bolt.js";
+import { assertRawQuery } from "./scope.js";
 
 export interface ReadQueryOptions {
   params?: Params;
@@ -151,6 +152,8 @@ export async function readQuery(
 ): Promise<ReadQueryResult> {
   const kw = findWriteKeyword(cypher);
   if (kw) throw new ReadOnlyViolation(kw);
+  // A reader held to a list reads raw rows only when the list covers the graph (scope.ts).
+  await assertRawQuery(backend);
   const maxRows = Math.min(Math.max(1, Math.trunc(opts.maxRows ?? DEFAULT_MAX_ROWS)), HARD_MAX_ROWS);
   const timeout = Math.min(Math.max(1, Math.trunc(opts.timeoutMs ?? DEFAULT_TIMEOUT_MS)), HARD_MAX_TIMEOUT_MS);
   const maxString = opts.maxStringLength ?? DEFAULT_MAX_STRING;

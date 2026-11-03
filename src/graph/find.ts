@@ -23,6 +23,7 @@
 import type { GraphBackend } from "./backend.js";
 import { DEFAULT_NAMESPACE } from "./bolt.js";
 import { namespaceName } from "./ladybug/namespaces.js";
+import { boundsOf, hidesType, readsNamespace } from "./scope.js";
 import { neo4jName } from "./neo4j-engine.js";
 import { toEpochSeconds } from "./node-writer.js";
 import { nodeTitle } from "./title.js";
@@ -100,7 +101,11 @@ export async function findNodes(b: GraphBackend, input: FindInput): Promise<Find
   if (!raw) throw new FindError("node_type is required");
   const type = await b.schemas.resolveType(raw);
   const schema = type ? await b.schemas.schema(type) : null;
-  if (!type || !schema) throw new FindError(`unknown node type "${raw}" — graph/get-ontology lists the types`);
+  // A reader's list (scope.ts) applies here, on the one type and namespace
+  // read: a hidden type is unknown, a hidden namespace holds nothing.
+  const bounds = boundsOf(b);
+  if (!type || !schema || (bounds && hidesType(bounds.list, schema.domainLabels))) throw new FindError(`unknown node type "${raw}" — graph/get-ontology lists the types`);
+  const query = bounds?.query ?? b.query.bind(b);
 
   const fields: Record<string, string> = { ...schema.attributes, ...NODE_FIELDS };
   const known = Object.keys(fields).sort();
@@ -113,6 +118,7 @@ export async function findNodes(b: GraphBackend, input: FindInput): Promise<Find
   // On a ladybug file `default` is the backend's own namespace.
   const ns = b.kind === "ladybug" ? namespaceName(input.namespace, b.namespace) : input.namespace ?? b.namespace ?? DEFAULT_NAMESPACE;
   if (ns === null) throw new FindError(`namespace ${String(input.namespace)} is not a namespace name`);
+  if (bounds && !readsNamespace(bounds.list, ns, b.namespace)) return { node_type: type, nodes: [], returned: 0, ...(input.count ? { total: 0 } : {}) };
   const params: Record<string, unknown> = { ns, default_ns: DEFAULT_NAMESPACE };
   let p = 0;
   const param = (name: string, value: unknown): string => {
@@ -176,7 +182,7 @@ export async function findNodes(b: GraphBackend, input: FindInput): Promise<Find
   const order = field(input.orderBy ? canonicalField(input.orderBy) : "created_at", "orderBy");
   const dir = (input.orderBy ? input.desc : input.desc ?? true) ? "DESC" : "ASC";
 
-  const rows = await b.query(
+  const rows = await query(
     `${match}
      RETURN ${d.project("n", [...new Set([...known, "title"])])} AS props
      ORDER BY ${order} ${dir}, n.\`ref_id\`
@@ -197,7 +203,7 @@ export async function findNodes(b: GraphBackend, input: FindInput): Promise<Find
 
   let total: number | undefined;
   if (input.count) {
-    const counted = await b.query(`${match} RETURN count(n) AS total`, params);
+    const counted = await query(`${match} RETURN count(n) AS total`, params);
     total = Number(counted[0]?.["total"] ?? 0);
   }
   return { node_type: type, nodes, returned: nodes.length, ...(more ? { cursor: encodeCursor(offset + limit) } : {}), ...(total !== undefined ? { total } : {}) };

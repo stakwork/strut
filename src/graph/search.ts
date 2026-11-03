@@ -111,6 +111,21 @@ export interface EdgeEnvelope {
   properties: Record<string, unknown>;
 }
 
+/**
+ * What one reader may see (plans/graph-memory-plan.md step 6): the
+ * namespaces it may read, and the domains whose types it never sees. A
+ * reader built `withScope` applies it in every query, below the tools: a
+ * node outside it reads as missing, and an edge shows only when its own
+ * namespace (Ladybug; a Neo4j edge has none) and both its ends are in it.
+ * An empty list reads nothing.
+ */
+export interface ReadScope {
+  /** Undefined: every namespace. */
+  namespaces?: string[];
+  /** Lowercase domain names (`strut`). */
+  exclude_domains?: string[];
+}
+
 export interface SearchParams {
   q?: string;
   input_q?: string;
@@ -640,6 +655,8 @@ export interface GraphReader {
   listSchemas(opts?: { domains?: string[]; includeDeleted?: boolean }): Promise<{ schemas: SchemaEnvelope[]; edges: OntologyEdge[] }>;
   /** One schema by type, case-insensitive; null when unknown. */
   getSchema(type: string): Promise<SchemaEnvelope | null>;
+  /** The same reader held to a scope (`ReadScope`). */
+  withScope?(scope: ReadScope): GraphReader;
 }
 
 /** jarvis's read paths over bolt: the live `:Schema` meta-graph, domain
@@ -648,7 +665,30 @@ export class Neo4jReader implements GraphReader {
   constructor(
     private readonly bolt: Bolt,
     private readonly opts: GraphReaderOptions = {},
+    private readonly scope?: ReadScope,
   ) {}
+
+  withScope(scope: ReadScope): Neo4jReader {
+    return new Neo4jReader(this.bolt, this.opts, scope);
+  }
+
+  /** This reader's scope on one node alias, with its leading AND; empty
+   *  when unscoped. A Neo4j edge holds no namespace, so an edge is seen
+   *  when both its ends are. A domain is its `Domain_<d>` label. */
+  private sc(alias: string): string {
+    if (!this.scope) return "";
+    const domains = this.scope.exclude_domains?.length ? ` AND NONE(lbl IN labels(${alias}) WHERE lbl IN $scope_domain_labels)` : "";
+    return `${this.scope.namespaces ? ` AND coalesce(${alias}.namespace, $default_ns) IN $scope_ns` : ""}${domains}`;
+  }
+
+  private get scParams(): Record<string, unknown> {
+    if (!this.scope) return {};
+    return {
+      scope_ns: this.scope.namespaces ?? [],
+      scope_domain_labels: (this.scope.exclude_domains ?? []).map((d) => `Domain_${d.toLowerCase()}`),
+      default_ns: DEFAULT_NAMESPACE,
+    };
+  }
 
   // ── domains / namespaces ────────────────────────────────────────────────
 
@@ -677,7 +717,7 @@ export class Neo4jReader implements GraphReader {
   async listNamespaces(): Promise<string[]> {
     const rows = await this.bolt.run(`MATCH (n:NameSpace) RETURN n.data AS data LIMIT 1`);
     const data = rows[0]?.["data"];
-    return Array.isArray(data) ? data.map(String) : [];
+    return Array.isArray(data) ? data.map(String).filter((ns) => !this.scope?.namespaces || this.scope.namespaces.includes(ns)) : [];
   }
 
   /** Idempotent `POST /namespace`: append the lowercased name to the single
@@ -713,8 +753,8 @@ export class Neo4jReader implements GraphReader {
    *  or null when absent/hidden. */
   async getNode(ref_id: string): Promise<NodeEnvelope | null> {
     const rows = await this.bolt.run(
-      `MATCH (n:Data_Bank {ref_id: $ref_id}) WHERE ${visibility("n")} RETURN n LIMIT 1`,
-      { ref_id, blocked_statuses: BLOCKED_NODE_STATUSES },
+      `MATCH (n:Data_Bank {ref_id: $ref_id}) WHERE ${visibility("n")}${this.sc("n")} RETURN n LIMIT 1`,
+      { ref_id, blocked_statuses: BLOCKED_NODE_STATUSES, ...this.scParams },
     );
     return rows.length === 0 ? null : envelope(rows[0]!["n"] as HitNode);
   }
@@ -726,9 +766,9 @@ export class Neo4jReader implements GraphReader {
   async getNodeByKey(type: string, key: string, namespace?: string): Promise<NodeEnvelope | null> {
     const rows = await this.bolt.run(
       `MATCH (n:Data_Bank {node_key: $node_key})
-       WHERE $type IN labels(n) AND coalesce(n.namespace, $default_ns) = $ns AND ${visibility("n")}
+       WHERE $type IN labels(n) AND coalesce(n.namespace, $default_ns) = $ns AND ${visibility("n")}${this.sc("n")}
        RETURN n LIMIT 1`,
-      { node_key: key, type, ns: namespace ?? this.bolt.namespace, default_ns: DEFAULT_NAMESPACE, blocked_statuses: BLOCKED_NODE_STATUSES },
+      { node_key: key, type, ns: namespace ?? this.bolt.namespace, blocked_statuses: BLOCKED_NODE_STATUSES, ...this.scParams, default_ns: DEFAULT_NAMESPACE },
     );
     return rows.length === 0 ? null : envelope(rows[0]!["n"] as HitNode);
   }
@@ -748,11 +788,11 @@ export class Neo4jReader implements GraphReader {
     const rows = await this.bolt.run(
       `MATCH (n:Data_Bank)
        WHERE $type IN labels(n) AND n.name IS NOT NULL AND toLower(toString(n.name)) CONTAINS $frag
-         AND coalesce(n.namespace, $default_ns) = $ns AND ${visibility("n")}
+         AND coalesce(n.namespace, $default_ns) = $ns AND ${visibility("n")}${this.sc("n")}
        RETURN n.ref_id AS ref_id, toString(n.name) AS name, n.description AS description
        ORDER BY CASE WHEN toLower(toString(n.name)) STARTS WITH $frag THEN 0 ELSE 1 END, toLower(toString(n.name))
        LIMIT ${cap}`,
-      { type: type.trim(), frag, ns: namespace ?? this.bolt.namespace, default_ns: DEFAULT_NAMESPACE, blocked_statuses: BLOCKED_NODE_STATUSES },
+      { type: type.trim(), frag, ns: namespace ?? this.bolt.namespace, blocked_statuses: BLOCKED_NODE_STATUSES, ...this.scParams, default_ns: DEFAULT_NAMESPACE },
     );
     return rows.map((r) => ({
       ref_id: String(r["ref_id"]),
@@ -776,10 +816,10 @@ export class Neo4jReader implements GraphReader {
     const rows = await this.bolt.run(
       `MATCH (n:Data_Bank {ref_id: $ref_id})-[r]-(m)
        WHERE coalesce(n.namespace, $default_ns) = $namespace AND ${EDGE_LIVE("r")} AND ${NODE_LIVE("m")}
-         AND coalesce(m.namespace, $default_ns) = $namespace
+         AND coalesce(m.namespace, $default_ns) = $namespace${this.sc("n")}${this.sc("m")}
          ${visible.length ? "AND ANY(lbl IN labels(m) WHERE lbl IN $visible_labels)" : ""}
        RETURN type(r) AS edge_type, labels(m) AS m_labels, startNode(r) = n AS out, count(*) AS cnt`,
-      { ref_id, namespace: ns, default_ns: DEFAULT_NAMESPACE, visible_labels: visible },
+      { ref_id, namespace: ns, visible_labels: visible, ...this.scParams, default_ns: DEFAULT_NAMESPACE },
     );
     const bucket = new Map<string, ConnectionCount>();
     for (const r of rows) {
@@ -806,10 +846,10 @@ export class Neo4jReader implements GraphReader {
     const rows = await this.rows(
       tx,
       `MATCH (n:Data_Bank)-[r]-(m)
-       WHERE n.ref_id IN $ref_ids AND ${nsCond} AND ${EDGE_LIVE("r")} AND ${NODE_LIVE("m")}
+       WHERE n.ref_id IN $ref_ids AND ${nsCond} AND ${EDGE_LIVE("r")} AND ${NODE_LIVE("m")}${this.sc("n")}${this.sc("m")}
          ${visible.length ? "AND ANY(lbl IN labels(m) WHERE lbl IN $visible_labels)" : ""}
        RETURN n.ref_id AS ref_id, type(r) AS edge_type, count(*) AS cnt`,
-      { ref_ids, namespace, default_ns: DEFAULT_NAMESPACE, visible_labels: visible },
+      { ref_ids, namespace, visible_labels: visible, ...this.scParams, default_ns: DEFAULT_NAMESPACE },
     );
     const out: Record<string, Record<string, number>> = {};
     for (const r of rows) (out[String(r["ref_id"])] ??= {})[String(r["edge_type"])] = Number(r["cnt"]);
@@ -825,8 +865,8 @@ export class Neo4jReader implements GraphReader {
    */
   async neighbors(ref_id: string, p: NeighborsParams = {}): Promise<{ nodes: NodeEnvelope[]; edges: EdgeEnvelope[] }> {
     // A deleted source shows nothing, though its soft delete may have kept its edges.
-    const where = [NODE_LIVE("source"), visibility("node"), EDGE_LIVE("r")];
-    const params: Record<string, unknown> = { ref_id, blocked_statuses: BLOCKED_NODE_STATUSES };
+    const where = [NODE_LIVE("source"), visibility("node"), EDGE_LIVE("r") + this.sc("source") + this.sc("node")];
+    const params: Record<string, unknown> = { ref_id, blocked_statuses: BLOCKED_NODE_STATUSES, ...this.scParams };
     if (p.node_types?.length) {
       params["imp_node_types"] = (await this.canonicalTypes(p.node_types)).map((n) => n.replace(/[-+/>]/g, ""));
       where.push("any(lbl IN labels(node) WHERE lbl IN $imp_node_types)");
@@ -886,11 +926,11 @@ export class Neo4jReader implements GraphReader {
   async edgesAmong(ref_ids: string[], among: string[] = [], limit = EDGES_AMONG_MAX): Promise<{ edges: EdgeLink[]; truncated: boolean }> {
     if (ref_ids.length === 0) return { edges: [], truncated: false };
     const rows = await this.bolt.run(
-      `MATCH (a:Data_Bank) WHERE a.ref_id IN $ids AND ${NODE_LIVE("a")}
-       MATCH (a)-[r]-(b:Data_Bank) WHERE b.ref_id IN $within AND a <> b AND ${EDGE_LIVE("r")} AND ${NODE_LIVE("b")}
+      `MATCH (a:Data_Bank) WHERE a.ref_id IN $ids AND ${NODE_LIVE("a")}${this.sc("a")}
+       MATCH (a)-[r]-(b:Data_Bank) WHERE b.ref_id IN $within AND a <> b AND ${EDGE_LIVE("r")} AND ${NODE_LIVE("b")}${this.sc("b")}
        WITH DISTINCT startNode(r).ref_id AS source, type(r) AS edge_type, endNode(r).ref_id AS target
        RETURN source, edge_type, target LIMIT $cap`,
-      { ids: ref_ids, within: [...new Set([...ref_ids, ...among])], cap: int(limit + 1) },
+      { ids: ref_ids, within: [...new Set([...ref_ids, ...among])], cap: int(limit + 1), ...this.scParams },
     );
     const edges = rows.slice(0, limit).map((r) => ({ source: String(r["source"]), target: String(r["target"]), edge_type: String(r["edge_type"]) }));
     return { edges, truncated: rows.length > limit };
@@ -900,10 +940,10 @@ export class Neo4jReader implements GraphReader {
   async incoming(ref_ids: string[], edge_type: string): Promise<Array<{ target: string; node: NodeEnvelope }>> {
     if (ref_ids.length === 0 || !EDGE_TYPE_NAME.test(edge_type)) return [];
     const rows = await this.bolt.run(
-      `MATCH (c:Data_Bank) WHERE c.ref_id IN $ids
-       MATCH (p:Data_Bank)-[r:\`${edge_type}\`]->(c) WHERE ${EDGE_LIVE("r")} AND ${NODE_LIVE("p")}
+      `MATCH (c:Data_Bank) WHERE c.ref_id IN $ids${this.sc("c")}
+       MATCH (p:Data_Bank)-[r:\`${edge_type}\`]->(c) WHERE ${EDGE_LIVE("r")} AND ${NODE_LIVE("p")}${this.sc("p")}
        RETURN c.ref_id AS target, p AS node`,
-      { ids: ref_ids },
+      { ids: ref_ids, ...this.scParams },
     );
     return rows.map((r) => ({ target: String(r["target"]), node: serializeNode(r["node"] as HitNode) }));
   }
@@ -938,8 +978,8 @@ export class Neo4jReader implements GraphReader {
 
       // Filter: namespace + visibility + optional type list; untyped search
       // also excludes types whose domain is hidden.
-      const clauses = [`n.namespace = $namespace`, visibility("n")];
-      const base: Record<string, unknown> = { namespace, blocked_statuses: BLOCKED_NODE_STATUSES };
+      const clauses = [`n.namespace = $namespace`, visibility("n") + this.sc("n")];
+      const base: Record<string, unknown> = { namespace, blocked_statuses: BLOCKED_NODE_STATUSES, ...this.scParams };
       if (types?.length) {
         clauses.push(`ANY(t IN $node_types WHERE t IN labels(n))`);
         base["node_types"] = types;
@@ -961,7 +1001,8 @@ export class Neo4jReader implements GraphReader {
       // `linked`: an EXISTS per entry, on the same rows.
       const linked = linkedClause(links);
       if (linked) clauses.push(linked);
-      const postFilter = Boolean(excludeRe || linked);
+      // A scope is a WHERE on the index's rows too.
+      const postFilter = Boolean(excludeRe || linked || this.scope);
       const filter = clauses.join(" AND ");
       const cap = fetchLimit(limit, skip);
 
