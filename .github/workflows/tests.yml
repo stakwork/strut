@@ -18,7 +18,8 @@ name: tests
 # LadybugDB file, so a Neo4j-only regression (strut#448: editing a jarvis-typed
 # Concept; a type's own created_at in graph/find) was green there. It is
 # neo4j:5.19.0, what the swarms run — a newer 5.x accepts Cypher 5.19 refuses.
-# Its own job, so the unit job's budget is untouched; same install. The STT
+# Its own job and budget (~18 min on a runner: every suite runs on a Ladybug
+# file and on Neo4j), so the unit job's is untouched; same install. The STT
 # suite needs a model download and stays opt-in (see AGENTS.md).
 
 on:
@@ -60,7 +61,7 @@ jobs:
 
   graph:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     services:
       neo4j:
         image: neo4j:5.19.0
