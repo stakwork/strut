@@ -33,7 +33,7 @@ import { fromNeo4j } from "./neo4j-engine.js";
 import { nodeTitle } from "./title.js";
 import type { SchemaResolver } from "./schema-resolver.js";
 import { GLOBAL_VECTOR_INDEX } from "./schema-seed.js";
-import { SCHEMA_CORE_PROPERTIES, getStrutSchema, vectorIndexedPairs, vectorStem } from "./strut-schemas.js";
+import { OWN_CREATED_AT, SCHEMA_CORE_PROPERTIES, getStrutSchema, vectorIndexedPairs, vectorStem } from "./strut-schemas.js";
 
 // ── Constants (jarvis) ──────────────────────────────────────────────────────
 
@@ -517,21 +517,28 @@ export function applyUsageTiebreak(ranked: RankedEntry[], epsilon = USAGE_TIEBRE
   });
 }
 
-/** `_serialize_node`, under the shared names: a Neo4j node (it has
- *  `date_added_to_graph`) is read through `fromNeo4j`, so its stamp is
- *  `created_at` and a version's own stored `created_at` its `published_at`. */
+/** A node read from Neo4j: every node jarvis or strut writes there carries
+ *  `:Data_Bank`, stamped or not. A Ladybug row's labels are its type alone. */
+const onNeo4j = (n: HitNode): boolean => n.labels.includes("Data_Bank");
+
+/** `_serialize_node`, under the shared names: a Neo4j node is read through
+ *  `fromNeo4j`, so its stamp is `created_at` and a version's own stored
+ *  `created_at` its `published_at`. Any other `created_at` stored there is
+ *  the type's own field (jarvis's Concept, PullRequest; an Advisor* node
+ *  another writer left with no stamp at all), and the stamp keeps its
+ *  jarvis name beside it. */
 export function serializeNode(n: HitNode, extra?: Record<string, unknown>): NodeEnvelope {
-  const props = "date_added_to_graph" in n.properties ? fromNeo4j(n.properties, typeLabelOf(n.labels)) : n.properties;
-  // A jarvis type's own `created_at` (Concept, PullRequest, …) sits beside
-  // the core stamp, which kept its jarvis name (`fromNeo4j`): a field.
-  const ownCreatedAt = "date_added_to_graph" in props;
+  const type = typeLabelOf(n.labels);
+  const neo4j = onNeo4j(n);
+  const props = neo4j ? fromNeo4j(n.properties, type) : n.properties;
+  const ownCreatedAt = neo4j && !(type && OWN_CREATED_AT[type]) && "created_at" in n.properties;
   const filtered: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(props)) if (!RESPONSE_STRIPPED_NODE_PROPERTIES.has(k) || (ownCreatedAt && k === "created_at")) filtered[k] = v;
   if ("image_url" in filtered && typeof filtered["image_url"] !== "string") filtered["image_url"] = "";
   const created = Number(ownCreatedAt ? props["date_added_to_graph"] : props["created_at"]) || 0;
   const out: NodeEnvelope = {
     ref_id: String(props["ref_id"]),
-    node_type: typeLabelOf(n.labels),
+    node_type: type,
     created_at: created,
     date_added_to_graph: created,
     properties: filtered,
@@ -543,10 +550,13 @@ export function serializeNode(n: HitNode, extra?: Record<string, unknown>): Node
 
 /** `_serialize_edge`: the edge envelope, generic stamps stripped, its
  *  creation stamp under the shared name (a Neo4j edge's
- *  `date_added_to_graph` as `created_at`). */
+ *  `date_added_to_graph` as `created_at`) — unless the edge holds a
+ *  `created_at` of its own (jarvis's Cause -[EVIDENCED_BY]->, EvalSet
+ *  -[HAS_CASE]->): then each keeps its name. */
 export function serializeEdge(type: string, props: Record<string, unknown>, source: string, target: string): EdgeEnvelope {
+  const ownCreatedAt = "created_at" in props;
   const filtered: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(props)) if (!RESPONSE_STRIPPED_EDGE_PROPERTIES.has(k)) filtered[k === "date_added_to_graph" ? "created_at" : k] = v;
+  for (const [k, v] of Object.entries(props)) if (!RESPONSE_STRIPPED_EDGE_PROPERTIES.has(k)) filtered[k === "date_added_to_graph" && !ownCreatedAt ? "created_at" : k] = v;
   const out: EdgeEnvelope = { source, target, ref_id: String(props["ref_id"] ?? ""), edge_type: type, properties: filtered };
   if (props["weight"] !== null && props["weight"] !== undefined) out.weight = Number(props["weight"]);
   return out;
@@ -585,8 +595,7 @@ export function envelope(n: HitNode): NodeEnvelope {
   const fallback = p["name"] ?? p["episode_title"] ?? p["show_title"] ?? p["search_text"] ?? p["Data_Bank"];
   // A Ladybug row's `title` is the writer's (or the type's own, read by its
   // title_key): the title. A Neo4j node's is a field of its type's, if any.
-  const neo4j = "date_added_to_graph" in p || "Data_Bank" in p;
-  const stored = !neo4j && typeof p["title"] === "string" ? p["title"].trim() : "";
+  const stored = !onNeo4j(n) && typeof p["title"] === "string" ? p["title"].trim() : "";
   const name = stored || nodeTitle(p) || (fallback === undefined || fallback === null ? undefined : String(fallback));
   return { name, ...(name ? { title: name } : {}), ...env };
 }

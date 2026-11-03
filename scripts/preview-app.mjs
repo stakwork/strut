@@ -19,6 +19,11 @@
  * never leaves the machine. Nothing it reads is stored. The app's grants
  * are not checked here: the reads go out with the deployment key.
  *
+ * A read step this checkout has and a live strut may not yet (`COMPUTED`:
+ * `run/provenance`) is answered HERE by this checkout's code, over what the
+ * live strut serves (the run's log and its agents' transcripts), kept in
+ * memory a few minutes so a second spot check of the same run is quick.
+ *
  * `--app-dir <dir>`: keep the source there (downloaded when it holds no
  * app.yaml, used as it is when it does — edit it and republish). `--watch`:
  * a change under the app's source republishes it; one under
@@ -57,10 +62,47 @@ export const CORE_READS = [
   "sheets/get-values",
 ];
 
-/** Where an app's `step_run` of `type` goes: its own state stays local, a read on the list goes to the live strut, the rest is refused. */
+/** Read steps answered here, by this checkout's code over the live strut's reads (a live strut may not have them yet). */
+export const COMPUTED = ["run/provenance"];
+
+/** Where an app's `step_run` of `type` goes: its own state stays local, a computed read is answered here, a read on the list goes to the live strut, the rest is refused. */
 export function classify(type, allow) {
   if (type.startsWith("app/")) return "local";
+  if (COMPUTED.includes(type)) return "computed";
   return allow.has(type) ? "remote" : "refuse";
+}
+
+/** A run's RAW log from the live strut: its events, each agent's transcript put back on its step.end (the route hands out links). */
+const rawLogs = new Map();
+async function rawLog(labBase, key, workflow, runId) {
+  const id = `${workflow}/${runId}`;
+  const hit = rawLogs.get(id);
+  if (hit && Date.now() - hit.at < 5 * 60_000) return hit.events;
+  const get = async (path) => {
+    const r = await fetch(`${labBase}${path}`, { headers: { "x-api-token": key, authorization: `Bearer ${key}` } });
+    if (!r.ok) throw new Error(`GET ${path}: ${r.status} ${(await r.text()).slice(0, 200)}`);
+    return r.json();
+  };
+  const events = await get(`/workflows/${encodeURIComponent(workflow)}/runs/${encodeURIComponent(runId)}/events`);
+  for (const e of events) {
+    if (e.type !== "step.end" || typeof e.transcript !== "string") continue;
+    e.messages = await get(e.transcript);
+    delete e.transcript;
+  }
+  rawLogs.set(id, { at: Date.now(), events });
+  return events;
+}
+
+/** A COMPUTED step, answered here. */
+async function runComputed(labBase, key, type, config = {}) {
+  if (type !== "run/provenance") throw new Error(`${type} is not computed here`);
+  const { workflow, runId, ...subject } = config;
+  if (typeof workflow !== "string" || typeof runId !== "string") throw new Error("run/provenance needs `workflow` and `runId`");
+  const { tsImport } = await import("tsx/esm/api");
+  const { buildProvenance } = await tsImport(join(ROOT, "src/provenance.ts"), import.meta.url);
+  const events = await rawLog(labBase, key, workflow, runId);
+  const out = buildProvenance(events, subject);
+  return { ok: true, bytes: JSON.stringify(out).length, call: result(out) };
 }
 
 /** A JSON-RPC body that is one `tools/call` of `step_run` → its id and arguments; anything else null. */
@@ -139,7 +181,7 @@ export function createProxy({ upstream, lab, key, allow, log = () => {} }) {
       }
       const started = Date.now();
       try {
-        const out = await runRemote(lab, key, call.type, call.config, call.input);
+        const out = where === "computed" ? await runComputed(lab, key, call.type, call.config) : await runRemote(lab, key, call.type, call.config, call.input);
         log(`${call.type} ${out.ok ? "ok" : "FAILED"} ${Date.now() - started}ms ${(out.bytes / 1024).toFixed(1)}KB`);
         reply(res, call.id, out.call);
       } catch (e) {

@@ -23,7 +23,7 @@ import type { ArtifactRef } from "./artifact-refs.js";
 import type { SessionTurn } from "./session-store.js";
 import { addUsage, coerceUsage, emptyUsage, type TokenUsage } from "./pricing.js";
 
-export type TurnStatus = "success" | "error" | "cancelled" | "running";
+export type TurnStatus = "success" | "error" | "cancelled" | "running" | "stale";
 
 /** One agent execution — or a peer run, or a run with no agent at all. */
 export interface JobTurn {
@@ -100,6 +100,9 @@ export interface ThreadRun {
   at: string;
   parentRunId?: string;
   summary?: RunSummary | null;
+  /** No summary and not executing: a restart cut it off and it was not
+   *  resumed — its unfinished turns are `stale`, not `running`. */
+  stale?: true;
   events: RunEvent[];
   artifacts?: ArtifactRef[];
 }
@@ -175,10 +178,10 @@ function byPath(events: RunEvent[]): Map<string, PathEvents> {
   return m;
 }
 
-function statusOf(p: PathEvents, summary: RunSummary | null | undefined): TurnStatus {
+function statusOf(p: PathEvents, summary: RunSummary | null | undefined, stale?: true): TurnStatus {
   if (p.last?.type === "step.error") return "error";
   if (p.last) return "success";
-  if (!summary) return "running";
+  if (!summary) return stale ? "stale" : "running";
   return summary.status === "cancelled" ? "cancelled" : "error";
 }
 
@@ -268,7 +271,7 @@ export function foldJobThreads(runs: ThreadRun[], turnLines: SessionTurn[] = [],
         label: leafLabel(path),
         at: p.start?.ts ?? p.last?.ts ?? run.at,
         ...(p.last?.durationMs != null ? { durationMs: p.last.durationMs } : {}),
-        status: statusOf(p, run.summary),
+        status: statusOf(p, run.summary, run.stale),
         ...(turnNo !== undefined ? { turn: turnNo } : {}),
         ...(offset !== undefined ? { offset } : {}),
         ...(sessionId ? { session: sessionId } : {}),
@@ -328,7 +331,7 @@ export function foldJobThreads(runs: ThreadRun[], turnLines: SessionTurn[] = [],
         label: run.workflow,
         at: s?.startedAt ?? run.events[0]?.ts ?? run.at,
         ...(s?.durationMs != null ? { durationMs: s.durationMs } : {}),
-        status: !s ? "running" : s.status === "cancelled" ? "cancelled" : s.status === "error" ? "error" : "success",
+        status: !s ? (run.stale ? "stale" : "running") : s.status === "cancelled" ? "cancelled" : s.status === "error" ? "error" : "success",
         toolCalls: 0,
         nodeCount: nodesUnder(run.events, root).length,
         ...(opts.nodes ? { nodes: nodesUnder(run.events, root) } : {}),

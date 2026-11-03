@@ -37,6 +37,10 @@ export interface JobIndexDeps {
   /** `list` finds the job's threads; `load` reads their turn lines (the
    *  context after each turn) for the thread fold. */
   sessions?: Pick<SessionStore, "list" | "load">;
+  /** Whether a run is executing in this process (a run controller). A run
+   *  with no summary that is not is `stale` — cut off by a restart and not
+   *  resumed. Absent, such a run reads `running`. */
+  isLive?: (workflow: string, runId: string) => boolean;
   /** Which run holds a thread now (`SessionsCapability.holder`), for `busy`. */
   sessionHolder?: (id: string) => unknown;
   /** A workflow the meta surface may not read the runs of (`Flow.sealed`,
@@ -70,8 +74,9 @@ export interface JobListing {
 }
 
 export interface JobRunView extends JobRun {
-  /** From the run's summary; `running` while it has none. */
-  status: "running" | "success" | "error" | "cancelled";
+  /** From the run's summary; without one, `running` while it executes and
+   *  `stale` when a restart cut it off and it was not resumed. */
+  status: "running" | "success" | "error" | "cancelled" | "stale";
   durationMs?: number;
   error?: string;
   /** A sealed workflow's run: nothing of it is read past its status. */
@@ -236,7 +241,8 @@ export function createJobIndex(deps: JobIndexDeps): JobIndex {
       const summary = await deps.store.getRunSummary(line.workflow, line.runId);
       const events = await deps.store.getRunEvents(line.workflow, line.runId);
       const artifacts = summary?.status === "success" ? await resolveArtifactRefs(summary.output, { runId: line.runId, job: rec.name, exists, ...appsAt }) : undefined;
-      runs.push({ ...line, summary, events, ...(artifacts?.length ? { artifacts } : {}) });
+      const stale = !summary && deps.isLive && !deps.isLive(line.workflow, line.runId);
+      runs.push({ ...line, summary, ...(stale ? { stale: true as const } : {}), events, ...(artifacts?.length ? { artifacts } : {}) });
     }
     const turnLines = (await Promise.all(sessions.map((s) => deps.sessions?.load?.(s.id).catch(() => null)))).flatMap((t) => t?.turns ?? []);
     const omitted = lines.length - Math.min(lines.length, limit);
@@ -322,7 +328,10 @@ export function createJobIndex(deps: JobIndexDeps): JobIndex {
       const runs: JobRunView[] = [];
       for (const line of [...(rec.runs ?? [])].reverse()) {
         const summary = await deps.store.getRunSummary(line.workflow, line.runId);
-        const view: JobRunView = { ...line, status: summary?.status ?? "running" };
+        const view: JobRunView = {
+          ...line,
+          status: summary?.status ?? (deps.isLive && !deps.isLive(line.workflow, line.runId) ? "stale" : "running"),
+        };
         if (!(await readable(line.workflow))) view.sealed = true;
         else {
           if (summary?.durationMs != null) view.durationMs = summary.durationMs;

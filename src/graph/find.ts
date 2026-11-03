@@ -6,12 +6,16 @@
  * over it.
  *
  * One statement per page on either engine, written with the dialect
- * helpers (`node`, `live`, `lower`, `project`) and nothing else; property
- * access and comparisons are the same text on both. Every field a filter,
+ * helpers (`node`, `live`, `lower`) and nothing else; property access
+ * (`n.<field>`, on Neo4j under the name it stores: `storedName`) and
+ * comparisons are the same text on both. Every field a filter,
  * an order or the projection names is an attribute of the type's schema
- * (as the resolver merges it, inherited included), `ref_id` or
- * `created_at` (`date_added_to_graph`, its old name, still accepted; Neo4j
- * stores it so) — never text from the caller in the statement, and
+ * (as the resolver merges it, inherited included), `ref_id` or the core
+ * stamp — `created_at` (`date_added_to_graph`, its old name, still
+ * accepted; Neo4j stores it so), or `date_added_to_graph` on a type that
+ * declares its own `created_at` (jarvis's PullRequest, Concept, … on Neo4j),
+ * whose field that name stays: the writer's `stampKey` — never text from
+ * the caller in the statement, and
  * on a LadybugDB file never a column the table does not have. Values are
  * parameters; a `datetime` attribute's value is turned into the epoch
  * seconds the writer stores (an ISO string or a number), and an app's
@@ -24,8 +28,8 @@ import type { GraphBackend } from "./backend.js";
 import { DEFAULT_NAMESPACE } from "./bolt.js";
 import { namespaceName } from "./ladybug/namespaces.js";
 import { boundsOf, hidesType, readsNamespace } from "./scope.js";
-import { neo4jName } from "./neo4j-engine.js";
-import { toEpochSeconds } from "./node-writer.js";
+import { storedName } from "./neo4j-engine.js";
+import { stampKey, toEpochSeconds } from "./node-writer.js";
 import { nodeTitle } from "./title.js";
 
 export const FIND_LIMIT_DEFAULT = 50;
@@ -73,12 +77,6 @@ export class FindError extends Error {
   override name = "FindError";
 }
 
-/** Fields every node has besides its type's attributes. */
-const NODE_FIELDS: Record<string, string> = { ref_id: "string", created_at: "float" };
-/** Old field names a caller may still give: jarvis's for `created_at`. */
-const FIELD_ALIASES: Record<string, string> = { date_added_to_graph: "created_at" };
-const canonicalField = (name: string) => FIELD_ALIASES[name] ?? name;
-
 const baseOf = (t: string) => t.replace(/^\?/, "");
 const isPlain = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 
@@ -107,12 +105,18 @@ export async function findNodes(b: GraphBackend, input: FindInput): Promise<Find
   if (!type || !schema || (bounds && hidesType(bounds.list, schema.domainLabels))) throw new FindError(`unknown node type "${raw}" — graph/get-ontology lists the types`);
   const query = bounds?.query ?? b.query.bind(b);
 
-  const fields: Record<string, string> = { ...schema.attributes, ...NODE_FIELDS };
+  // Fields every node has besides its type's attributes: `ref_id` and the
+  // core stamp, under the name the writer gives it on this type.
+  const stamp = stampKey(schema);
+  const fields: Record<string, string> = { ...schema.attributes, ref_id: "string", [stamp]: "float" };
   const known = Object.keys(fields).sort();
+  // jarvis's name for the stamp, still accepted where it is not the type's own field.
+  const canonicalField = (name: string) => (name === "date_added_to_graph" && stamp === "created_at" ? "created_at" : name);
   const d = b.dialect;
+  const col = (name: string) => `n.\`${d.kind === "neo4j" ? storedName(schema, name) : name}\``;
   const field = (name: string, where: string): string => {
     if (!(name in fields)) throw new FindError(`${where}: ${type} has no field "${name}" — its fields: ${known.join(", ")}`);
-    return `n.\`${d.kind === "neo4j" ? neo4jName(name, type) : name}\``;
+    return col(name);
   };
 
   // On a ladybug file `default` is the backend's own namespace.
@@ -179,12 +183,12 @@ export async function findNodes(b: GraphBackend, input: FindInput): Promise<Find
   const match = `MATCH ${d.node("n", type)} WHERE ${clauses.join(" AND ")}`;
   const limit = Math.min(FIND_LIMIT_MAX, Math.max(1, Math.floor(Number(input.limit ?? FIND_LIMIT_DEFAULT)) || FIND_LIMIT_DEFAULT));
   const offset = input.cursor ? decodeCursor(input.cursor) : 0;
-  const order = field(input.orderBy ? canonicalField(input.orderBy) : "created_at", "orderBy");
+  const order = field(input.orderBy ? canonicalField(input.orderBy) : stamp, "orderBy");
   const dir = (input.orderBy ? input.desc : input.desc ?? true) ? "DESC" : "ASC";
 
   const rows = await query(
     `${match}
-     RETURN ${d.project("n", [...new Set([...known, "title"])])} AS props
+     RETURN {${[...new Set([...known, "title"])].map((f) => `\`${f}\`: ${col(f)}`).join(", ")}} AS props
      ORDER BY ${order} ${dir}, n.\`ref_id\`
      SKIP ${offset} LIMIT ${limit + 1}`,
     params,
@@ -195,6 +199,8 @@ export async function findNodes(b: GraphBackend, input: FindInput): Promise<Find
     for (const [k, v] of Object.entries((r["props"] ?? {}) as Record<string, unknown>)) if (v !== null && v !== undefined) props[k] = v;
     const ref_id = String(props["ref_id"]);
     delete props["ref_id"];
+    // The stamp's old name, kept for a release as the node envelopes keep it.
+    if (stamp === "created_at" && props["created_at"] !== undefined) props["date_added_to_graph"] = props["created_at"];
     const name = nodeTitle(props, schema.title_key) || props["name"];
     // The core title is the node's `name` here; `properties` are the type's fields.
     if (!("title" in fields)) delete props["title"];

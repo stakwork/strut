@@ -8,8 +8,9 @@
  *
  * The raw log stays the store of record (tailing, resume, replay); this is
  * the queryable skeleton on top. Zero coupling to the hot path: `createStrut`
- * projects every top-level run when it ends, DETACHED from the run's
- * teardown (graph workspaces only), and it can be run again at boot, on a
+ * projects every top-level run when it ends, and every builder chat when one
+ * of its turns ends, DETACHED from the run's teardown and the turn's (graph
+ * workspaces only), and it can be run again at boot, on a
  * schedule, as a workflow, or by hand — for runs cut off before their end,
  * and whenever the edge vocabulary grows. Every write is an idempotent
  * `upsert` keyed by the node's identity (`unique_source_id` stamped for
@@ -59,7 +60,7 @@
  */
 import type { AccessedNode, RunEvent, RunSummary } from "../core.js";
 import { stepTypeOfRunKey, type RunStore } from "../store.js";
-import type { ChatStore, StoredMessage } from "../chat-store.js";
+import type { ChatMeta, ChatStore, StoredMessage } from "../chat-store.js";
 import { idProblem, peerSessionId } from "../session-store.js";
 import { artifactEntriesOf } from "../artifact-refs.js";
 import type { JobIndex, JobView } from "../job-index.js";
@@ -732,11 +733,23 @@ export async function runRef(backend: GraphBackend, store: RunStore, workflow: s
   return projectRunOnce(backend, store, workflow, runId);
 }
 
-/** Resolves once nothing started through `projectRunOnce` is in flight —
- *  for a caller about to pull the graph from under it (a test's wipe). */
+/** Resolves once nothing started through `projectRunOnce` or
+ *  `projectChatOnce` is in flight — for a caller about to pull the graph
+ *  from under it (a test's wipe). */
 export async function projectionsSettled(backend: GraphBackend): Promise<void> {
   const runs = projecting.get(backend);
-  while (runs?.size) await Promise.allSettled([...runs.values()]);
+  const chats = chatProjections.get(backend);
+  while (runs?.size || chats?.size) await Promise.allSettled([...(runs?.values() ?? []), ...[...(chats?.values() ?? [])].map((c) => c.tail)]);
+}
+
+/** Resolves once the projections in flight of these runs have — a chat
+ *  links only the runs the graph holds, and a run it launched is projected
+ *  when it ends, as the turn goes on. */
+async function runProjectionsSettled(backend: GraphBackend, runIds: string[]): Promise<void> {
+  const runs = projecting.get(backend);
+  if (!runs?.size || !runIds.length) return;
+  const ids = new Set(runIds);
+  await Promise.allSettled([...runs].filter(([key]) => ids.has(key.slice(key.lastIndexOf("/") + 1))).map(([, p]) => p));
 }
 
 // ── Chats ─────────────────────────────────────────────────────────────────
@@ -786,64 +799,103 @@ export function spawnedRunIds(messages: StoredMessage[]): string[] {
 export async function projectChats(backend: GraphBackend, chatStore: ChatStore): Promise<ProjectReport> {
   const report = emptyReport();
   if (!(await holds(backend, "StrutChat"))) return report;
+  for (const meta of await chatStore.listChats()) await writeChat(backend, chatStore, meta, report);
+  return report;
+}
+
+/** Project ONE chat and its turns. Nothing on a backend that holds no chats,
+ *  or for a chat the store does not have. */
+export async function projectChat(backend: GraphBackend, chatStore: ChatStore, chatId: string): Promise<ProjectReport> {
+  const report = emptyReport();
+  if (!(await holds(backend, "StrutChat"))) return report;
+  const meta = await chatStore.getMeta(chatId);
+  if (meta) await writeChat(backend, chatStore, meta, report);
+  return report;
+}
+
+const chatProjections = new WeakMap<GraphBackend, Map<string, { tail: Promise<ProjectReport>; queued?: Promise<ProjectReport> }>>();
+
+/**
+ * `projectChat`, one at a time per chat: a call while the chat is being
+ * projected queues ONE more projection, which every later call joins, so
+ * what changed during a projection is in the graph after the next. What
+ * createStrut calls at the end of every chat turn.
+ */
+export function projectChatOnce(backend: GraphBackend, chatStore: ChatStore, chatId: string): Promise<ProjectReport> {
+  let chats = chatProjections.get(backend);
+  if (!chats) chatProjections.set(backend, (chats = new Map()));
+  const inFlight = chats;
+  const slot = inFlight.get(chatId);
+  if (slot?.queued) return slot.queued;
+  const next: Promise<ProjectReport> = (slot?.tail ?? Promise.resolve())
+    .catch(() => undefined)
+    .then(() => {
+      if (entry.queued === next) delete entry.queued;
+      return projectChat(backend, chatStore, chatId);
+    });
+  const entry: { tail: Promise<ProjectReport>; queued?: Promise<ProjectReport> } = { tail: next, queued: next };
+  inFlight.set(chatId, entry);
+  void next.catch(() => undefined).finally(() => inFlight.get(chatId) === entry && inFlight.delete(chatId));
+  return next;
+}
+
+async function writeChat(backend: GraphBackend, chatStore: ChatStore, meta: ChatMeta, report: ProjectReport): Promise<void> {
   const { namespace: ns, dialect: d } = backend;
-  for (const meta of await chatStore.listChats()) {
-    const messages = await chatStore.loadMessages(meta.id);
-    const turns: NodeInput[] = [];
-    let turn = -1;
-    for (let i = 0; i < messages.length; i++) {
-      const m = messages[i]!;
-      if (m.role !== "user") continue;
-      turn++;
-      const assistant = messages.slice(i + 1).find((x) => x.role === "assistant" && messageText(x.content));
-      turns.push({
-        type: "StrutTurn",
-        data: compact({
-          chat_id: meta.id,
-          turn,
-          user_text_preview: preview(messageText(m.content)),
-          assistant_text_preview: preview(assistant ? messageText(assistant.content) : undefined),
-          log_ref: `${meta.id}/${turn}`,
-          unique_source_id: `strutturn:${meta.id}:${turn}`,
-        }),
-      });
-    }
-    const chat: NodeInput = {
-      type: "StrutChat",
+  const messages = await chatStore.loadMessages(meta.id);
+  const turns: NodeInput[] = [];
+  let turn = -1;
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i]!;
+    if (m.role !== "user") continue;
+    turn++;
+    const assistant = messages.slice(i + 1).find((x) => x.role === "assistant" && messageText(x.content));
+    turns.push({
+      type: "StrutTurn",
       data: compact({
         chat_id: meta.id,
-        title: meta.title,
-        summary: preview(turns[0] ? (turns[0].data["user_text_preview"] as string) : undefined),
-        status: meta.status,
-        model: meta.model,
-        started_at: meta.createdAt,
-        last_active_at: meta.updatedAt,
-        turn_count: turns.length,
-        log_ref: meta.id,
-        unique_source_id: `strutchat:${meta.id}`,
+        turn,
+        user_text_preview: preview(messageText(m.content)),
+        assistant_text_preview: preview(assistant ? messageText(assistant.content) : undefined),
+        log_ref: `${meta.id}/${turn}`,
+        unique_source_id: `strutturn:${meta.id}:${turn}`,
       }),
-      ...(meta.createdBy ? { created_by: meta.createdBy } : {}),
-    };
-    const written = await backend.nodes.writeMany([chat, ...turns], "upsert");
-    const chatRef = written[0]!.ref_id;
-    report.chats++;
-    report.turns += turns.length;
-
-    const edges: EdgeInput[] = turns.map((_, i) => ({ edge: "IN_CHAT", source_ref_id: written[1 + i]!.ref_id, target_ref_id: chatRef }));
-    const runIds = spawnedRunIds(messages);
-    if (runIds.length) {
-      const rows = await backend.query(
-        `MATCH ${d.node("r", "StrutRun", { namespace: "$ns" })} WHERE r.run_id IN $ids RETURN r.ref_id AS ref_id`,
-        { ns, ids: runIds },
-      );
-      for (const r of rows) edges.push({ edge: "SPAWNED", source_ref_id: chatRef, target_ref_id: r["ref_id"] as string });
-    }
-    if (edges.length) {
-      await backend.edges.writeMany(edges);
-      report.edges += edges.length;
-    }
+    });
   }
-  return report;
+  const chat: NodeInput = {
+    type: "StrutChat",
+    data: compact({
+      chat_id: meta.id,
+      title: meta.title,
+      summary: preview(turns[0] ? (turns[0].data["user_text_preview"] as string) : undefined),
+      status: meta.status,
+      model: meta.model,
+      started_at: meta.createdAt,
+      last_active_at: meta.updatedAt,
+      turn_count: turns.length,
+      log_ref: meta.id,
+      unique_source_id: `strutchat:${meta.id}`,
+    }),
+    ...(meta.createdBy ? { created_by: meta.createdBy } : {}),
+  };
+  const written = await backend.nodes.writeMany([chat, ...turns], "upsert");
+  const chatRef = written[0]!.ref_id;
+  report.chats++;
+  report.turns += turns.length;
+
+  const edges: EdgeInput[] = turns.map((_, i) => ({ edge: "IN_CHAT", source_ref_id: written[1 + i]!.ref_id, target_ref_id: chatRef }));
+  const runIds = spawnedRunIds(messages);
+  if (runIds.length) {
+    await runProjectionsSettled(backend, runIds);
+    const rows = await backend.query(
+      `MATCH ${d.node("r", "StrutRun", { namespace: "$ns" })} WHERE r.run_id IN $ids RETURN r.ref_id AS ref_id`,
+      { ns, ids: runIds },
+    );
+    for (const r of rows) edges.push({ edge: "SPAWNED", source_ref_id: chatRef, target_ref_id: r["ref_id"] as string });
+  }
+  if (edges.length) {
+    await backend.edges.writeMany(edges);
+    report.edges += edges.length;
+  }
 }
 
 /** Runs first (so chats can link to them), then chats. */

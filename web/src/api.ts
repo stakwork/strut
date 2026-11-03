@@ -911,7 +911,7 @@ export interface JobArtifact extends ArtifactRef {
   path?: string;
 }
 
-export type TurnStatus = "success" | "error" | "cancelled" | "running";
+export type TurnStatus = "success" | "error" | "cancelled" | "running" | "stale";
 
 /** One agent execution of a job — or a peer run, or a run with no agent. */
 export interface JobTurn {
@@ -976,7 +976,7 @@ export interface JobRunView {
   runId: string;
   at: string;
   parentRunId?: string;
-  status: "running" | "success" | "error" | "cancelled";
+  status: "running" | "success" | "error" | "cancelled" | "stale";
   durationMs?: number;
   error?: string;
   sealed?: true;

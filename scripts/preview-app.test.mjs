@@ -15,6 +15,7 @@ describe("preview-app: what an app's step_run becomes", () => {
     assert.equal(classify("run/events", allow), "remote");
     assert.equal(classify("graph/graph-get-batched", allow), "remote");
     assert.equal(classify("openlaw/runs", allow), "remote");
+    assert.equal(classify("run/provenance", allow), "computed", "this checkout's own read, over the live strut's log");
     for (const type of ["run/launch", "run/cancel", "graph/create-node", "graph/query", "graph/walk", "openlaw/task-details", "llm"]) {
       assert.equal(classify(type, allow), "refuse", type);
     }

@@ -53,7 +53,11 @@ const release = () => {
 };
 // `npm run test:graph -- src/graph/claims.test.ts` runs just that file, under the same lock.
 const files = process.argv.length > 2 ? process.argv.slice(2) : ["src/graph/*.test.ts", "src/steps/lib/graph/*.test.ts", "src/concept-seed.test.ts", "src/packages/install.test.ts", "src/packages/build.test.ts", "src/apps/graph-types.test.ts"];
-const child = spawn("tsx", ["--test", "--test-concurrency=1", ...files], { stdio: "inherit" });
+// `STRUT_TEST_SHARD=2/3` runs one shard of the files (node's `--test-shard`):
+// CI's graph job runs its shards in parallel, each against a Neo4j of its own.
+const shard = process.env.STRUT_TEST_SHARD;
+if (shard && !/^\d+\/\d+$/.test(shard)) throw new Error(`STRUT_TEST_SHARD must be <index>/<total>, got ${shard}`);
+const child = spawn("tsx", ["--test", "--test-concurrency=1", ...(shard ? [`--test-shard=${shard}`] : []), ...files], { stdio: "inherit" });
 for (const s of ["SIGINT", "SIGTERM"]) process.on(s, () => child.kill(s));
 child.on("exit", (code, signal) => {
   release();

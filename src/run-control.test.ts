@@ -1042,8 +1042,7 @@ describe("run control endpoints", () => {
     return { strut, workspace, store, dir, cleanup };
   }
 
-  /** Poll a run's log until `pred` holds (a resumed run's run.json already
-   *  exists, so completion is observed on the log, not the summary). */
+  /** Poll a run's log until `pred` holds. */
   async function waitForLog(
     store: FileRunStore,
     wf: string,
@@ -1532,7 +1531,73 @@ describe("run control endpoints", () => {
       assert.equal(summary.status, "success");
       const evts = await store.getRunEvents("pausable", runId);
       assert.ok(evts.some((e) => e.type === "run.paused"));
-      assert.ok(evts.some((e) => e.type === "run.resumed"));
+      // An unpause, marked so the crash-loop guard never counts it (§5.3).
+      assert.ok(evts.some((e) => e.type === "run.resumed" && e.live === true));
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("a durably resumed run reads as live, never as the outcome it is resumed from", async () => {
+    const flakey = createFlakeyStep(1);
+    const gate = createGateStep();
+    const { strut, workspace, store, cleanup } = await makeServer({ flakey: flakey.stepDef, gate: gate.stepDef });
+    try {
+      await workspace.publishWorkflowByContent(
+        "again",
+        ["name: again", "steps:", "  - id: one", "    type: flakey", "  - id: two", "    type: gate", "    config: { name: two }"].join("\n"),
+      );
+      const launch = await strut.app.request("/workflows/again/run", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ input: {} }),
+      });
+      const { runId } = (await launch.json()) as { runId: string };
+      assert.equal((await waitForSummary(store, "again", runId)).status, "error");
+
+      const resume = await strut.app.request(`/workflows/again/runs/${runId}/resume`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      assert.equal(resume.status, 202);
+      await gate.waitForStart("two");
+      // The failed attempt's summary is gone: the run, the list and the
+      // store all say it is running again.
+      assert.equal(await store.getRunSummary("again", runId), null);
+      const one = (await (await strut.app.request(`/workflows/again/runs/${runId}`)).json()) as { status: string };
+      assert.equal(one.status, "running");
+      const list = (await (await strut.app.request("/workflows/again/runs")).json()) as Array<{ runId: string; status: string }>;
+      assert.equal(list.find((r) => r.runId === runId)?.status, "running");
+
+      gate.release("two");
+      assert.equal((await waitForSummary(store, "again", runId)).status, "success");
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("a job's run with no summary and no live controller reads as stale, in its runs and its threads", async () => {
+    const { strut, workspace, store, dir, cleanup } = await makeServer({});
+    try {
+      await workspace.publishWorkflow("jobbed", "v1", { steps: [{ id: "a", type: "value", config: { result: 1 } }] });
+      const launch = await strut.app.request("/workflows/jobbed/run", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ input: {}, job: "j-stale" }),
+      });
+      const { runId } = (await launch.json()) as { runId: string };
+      await waitForSummary(store, "jobbed", runId);
+      const deadline = Date.now() + 3000;
+      while ((await (await strut.app.request("/runs/active")).json() as unknown[]).length && Date.now() < deadline) await sleep(10);
+      // What a restart that cut the run off leaves: a log, no summary.
+      await rm(join(dir, "workflows", "jobbed", "runs", runId, "run.json"));
+      const job = (await (await strut.app.request("/jobs/j-stale")).json()) as {
+        runs: Array<{ runId: string; status: string }>;
+        threads: Array<{ turns: Array<{ runId: string; status: string }> }>;
+      };
+      assert.equal(job.runs.find((r) => r.runId === runId)?.status, "stale");
+      assert.equal(job.threads.flatMap((t) => t.turns).find((t) => t.runId === runId)?.status, "stale");
     } finally {
       await cleanup();
     }
@@ -1612,7 +1677,8 @@ describe("run control endpoints", () => {
       while (summary.status !== "success") {
         if (Date.now() > deadline) throw new Error("resume never succeeded");
         await sleep(10);
-        summary = (await store.getRunSummary("resumable", runId))!;
+        // No summary while the resume runs: the failed one was cleared.
+        summary = (await store.getRunSummary("resumable", runId)) ?? summary;
       }
       assert.equal(counter.calls(), 1); // `one` replayed, not re-run
       assert.equal(flakey.attempts(), 2); // `two` re-executed and succeeded
@@ -1776,7 +1842,18 @@ describe("run control endpoints", () => {
       workspace: WorkspaceManager,
       store: RunStore,
       runId: string,
-      extra: { ts?: string; parentRunId?: string; markers?: RunEvent["type"][]; terminal?: RunEvent["type"]; attachments?: RunEvent["attachments"]; pad?: number } = {},
+      extra: {
+        ts?: string;
+        parentRunId?: string;
+        markers?: RunEvent["type"][];
+        /** Pause + unpause pairs of the live run (the unpause marked `live`). */
+        unpauses?: number;
+        terminal?: RunEvent["type"];
+        attachments?: RunEvent["attachments"];
+        pad?: number;
+        /** More of what `run.start` recorded. */
+        start?: Partial<RunEvent>;
+      } = {},
     ) {
       const ts = extra.ts ?? new Date().toISOString();
       const ev = (type: RunEvent["type"], path: string, more: Partial<RunEvent> = {}) =>
@@ -1790,11 +1867,16 @@ describe("run control endpoints", () => {
           workflowHash,
           ...(extra.parentRunId ? { parentRunId: extra.parentRunId } : {}),
           ...(extra.attachments ? { attachments: extra.attachments } : {}),
+          ...extra.start,
         }),
       );
       // `pad`: a step output of that many bytes, for a log over a size cap.
       await store.append("boot", runId, ev("step.end", "boot/one", { stepType: "counter", output: extra.pad ? "x".repeat(extra.pad) : 1 }));
       for (const m of extra.markers ?? []) await store.append("boot", runId, ev(m, "boot"));
+      for (let i = 0; i < (extra.unpauses ?? 0); i++) {
+        await store.append("boot", runId, ev("run.paused", "boot"));
+        await store.append("boot", runId, ev("run.resumed", "boot", { live: true }));
+      }
       await store.append("boot", runId, ev("step.start", "boot/two", { stepType: "flakey" }));
       if (extra.terminal) await store.append("boot", runId, ev(extra.terminal, "boot", { output: { done: true } }));
     }
@@ -2092,6 +2174,145 @@ describe("run control endpoints", () => {
         assert.deepEqual(seen, attachments);
       } finally {
         await made.cleanup();
+      }
+    });
+
+    it("unpauses of a live run never count toward the crash-loop cap", async () => {
+      const { strut, workspace, store, cleanup } = await bootServer();
+      try {
+        await writeCutOffLog(workspace, store, "1000", { unpauses: 6 });
+        const report = await strut.autoResumeStaleRuns();
+        assert.deepEqual(report.map((r) => [r.runId, r.action]), [["1000", "resumed"]]);
+        await waitForSummary(store, "boot", "1000");
+      } finally {
+        await cleanup();
+      }
+    });
+
+    it("with `since`, every root run the last death cut off comes back, not only the newest; an earlier death's are left alone", async () => {
+      const { strut, workspace, store, cleanup } = await bootServer();
+      try {
+        // Run ids sort as text, newest first: 3000, <the launched run>, 1000, 0500.
+        await writeCutOffLog(workspace, store, "0500", { ts: new Date(Date.now() - 2 * 3_600_000).toISOString() });
+        await writeCutOffLog(workspace, store, "1000");
+        const launch = await strut.app.request("/workflows/boot/run", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ input: {} }),
+        });
+        const { runId } = (await launch.json()) as { runId: string };
+        await waitForSummary(store, "boot", runId); // a finished run between the two
+        await writeCutOffLog(workspace, store, "3000");
+
+        const report = await strut.autoResumeStaleRuns({ since: Date.now() - 3_600_000 });
+        assert.deepEqual(report.map((r) => [r.runId, r.action]), [["3000", "resumed"], ["1000", "resumed"]]);
+        assert.equal((await waitForSummary(store, "boot", "3000")).status, "success");
+        assert.equal((await waitForSummary(store, "boot", "1000")).status, "success");
+        assert.equal(await store.getRunSummary("boot", "0500"), null);
+        assert.ok(!(await store.getRunEvents("boot", "0500")).some((e) => e.type === "run.resumed"));
+      } finally {
+        await cleanup();
+      }
+    });
+
+    it("the boot scan reads when the previous process started from boot.json, then records this one's start", async () => {
+      const dir = join(tmpdir(), `strut-test-${randomUUID()}`);
+      await mkdir(dir, { recursive: true });
+      const workspace = new WorkspaceManager(dir);
+      await workspace.publishWorkflowByContent("boot", WF);
+      const store = new FileRunStore(dir);
+      await writeCutOffLog(workspace, store, "0500", { ts: new Date(Date.now() - 2 * 3_600_000).toISOString() });
+      await writeCutOffLog(workspace, store, "1000");
+      await writeCutOffLog(workspace, store, "3000");
+      await writeFile(join(dir, "boot.json"), JSON.stringify({ startedAt: new Date(Date.now() - 3_600_000).toISOString() }));
+      const before = Date.now();
+      await createStrut({
+        workspace,
+        dataDir: dir,
+        store,
+        registry: { value: valueStep, counter: createCounterStep().stepDef, flakey: createFlakeyStep(0).stepDef } as StepRegistry,
+        serveUi: false,
+        enableChat: false,
+        autoResume: { delayMs: 0 },
+      });
+      try {
+        assert.equal((await waitForSummary(store, "boot", "3000")).status, "success");
+        assert.equal((await waitForSummary(store, "boot", "1000")).status, "success");
+        assert.equal(await store.getRunSummary("boot", "0500"), null);
+        const deadline = Date.now() + 3000;
+        let startedAt = NaN;
+        while (!(startedAt >= before) && Date.now() < deadline) {
+          await sleep(10);
+          startedAt = Date.parse((JSON.parse(await readFile(join(dir, "boot.json"), "utf-8")) as { startedAt: string }).startedAt);
+        }
+        assert.ok(startedAt >= before, "this boot's start is recorded for the next one");
+      } finally {
+        await rm(dir, { recursive: true, force: true });
+      }
+    });
+
+    it("a run whose log already ended posts its run.end once boot writes the summary", async () => {
+      const { strut, workspace, store, cleanup } = await bootServer();
+      const posts: Array<Record<string, unknown>> = [];
+      const host = createServer((req, res) => {
+        let body = "";
+        req.on("data", (d) => (body += d));
+        req.on("end", () => {
+          posts.push(JSON.parse(body));
+          res.writeHead(204).end();
+        });
+      });
+      await new Promise<void>((r) => host.listen(0, "127.0.0.1", r));
+      const url = `http://127.0.0.1:${(host.address() as { port: number }).port}/hook?token=s3cret`;
+      try {
+        await writeCutOffLog(workspace, store, "1000", { terminal: "run.end", start: { job: "j1" } });
+        await store.setRunCallback("boot", "1000", url);
+        const report = await strut.autoResumeStaleRuns();
+        assert.equal(report[0]!.action, "finalized");
+        assert.match(report[0]!.reason, /run\.end goes to http:\/\/127\.0\.0\.1:\d+$/);
+        for (let i = 0; i < 200 && posts.length === 0; i++) await sleep(25);
+        assert.equal(posts.length, 1);
+        assert.equal(posts[0]!["runId"], "1000");
+        assert.equal(posts[0]!["status"], "success");
+        assert.deepEqual(posts[0]!["output"], { done: true });
+        assert.equal(posts[0]!["job"], "j1");
+        // The summary carries what run.start stamped, as the runner's does.
+        assert.equal((await store.getRunSummary("boot", "1000"))?.job, "j1");
+      } finally {
+        host.close();
+        await cleanup();
+      }
+    });
+
+    it("a resumed run keeps the app it ran for and the turn that started it", async () => {
+      const { strut, workspace, store, cleanup } = await bootServer();
+      const posts: Array<Record<string, unknown>> = [];
+      const host = createServer((req, res) => {
+        let body = "";
+        req.on("data", (d) => (body += d));
+        req.on("end", () => {
+          posts.push(JSON.parse(body));
+          res.writeHead(204).end();
+        });
+      });
+      await new Promise<void>((r) => host.listen(0, "127.0.0.1", r));
+      const url = `http://127.0.0.1:${(host.address() as { port: number }).port}/hook`;
+      const startedBy = { workflow: "orchestrator", runId: "42", session: "s1" };
+      try {
+        await writeCutOffLog(workspace, store, "1000", {
+          start: { origin: "app", app: { name: "bench", version: "v1" }, startedBy },
+        });
+        await store.setRunCallback("boot", "1000", url);
+        const report = await strut.autoResumeStaleRuns();
+        assert.equal(report[0]!.action, "resumed");
+        const summary = await waitForSummary(store, "boot", "1000");
+        assert.deepEqual(summary.app, { name: "bench", version: "v1" });
+        assert.equal(summary.origin, "app");
+        for (let i = 0; i < 200 && posts.length === 0; i++) await sleep(25);
+        assert.deepEqual(posts[0]!["startedBy"], startedBy);
+      } finally {
+        host.close();
+        await cleanup();
       }
     });
 

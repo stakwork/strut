@@ -10,7 +10,7 @@
  * step on ITS grants — `grants.workflows` for the run views and LaunchForm,
  * `graph/graph-get-batched`, `graph/graph-edges` (RunGraph), `graph/graph-neighbors`
  * and `graph/graph-search` in `grants.steps` for the graph views, `sheets/get-values` for SheetView
- * over a Google sheet. The folds they draw are
+ * over a Google sheet; SpotCheck reads `run/provenance`, on the run's workflow. The folds they draw are
  * `@strut/kit`'s. Its own page is the gallery: every component over fixtures.
  */
 export { RunStatus } from "./components/RunStatus";
@@ -24,6 +24,11 @@ export { RunHealth, type RunHealthProps } from "./components/RunHealth";
 export { WorkProducts, type WorkProductsProps, type WorkProductRenderer, type WorkProductRendererProps } from "./components/WorkProducts";
 export { NodeCard, type NodeCardProps } from "./components/NodeCard";
 export { SheetView, SHEETS_STEP, SHEET_INTERVAL_MS, type SheetViewProps } from "./components/SheetView";
+export { SpotCheck, type SpotCheckProps } from "./components/SpotCheck";
+export {
+  PROVENANCE_STEP, subjectLabel, momentPhrase, landmarks,
+  type Provenance, type ProvenanceMoment, type ProvenanceSubject, type ProvenanceCall,
+} from "./lib/provenance";
 export { NodeSearch, type NodeSearchProps } from "./components/NodeSearch";
 export { NodeGraph, type NodeGraphProps } from "./components/NodeGraph";
 export { RunGraph, type RunGraphSelection } from "./components/run-graph/RunGraph";

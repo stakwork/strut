@@ -578,6 +578,30 @@ for (const tb of testBackends()) {
       assert.equal((await props(a.ref_id))["updated_at"], 1_800_000_001_000);
     });
 
+    it("a type that declares its own created_at keeps it: an edit writes none where the node held none, and removes the field, never the stamp", neoOnly("a Ladybug file refuses the declaration: one created_at, the core"), async () => {
+      // jarvis's Concept, Feature, PullRequest declare it as a string; EvalSet and Cause as a datetime.
+      await createNodeSchema(backend, backend.schemas, { type: "Ticket", attributes: { created_at: "?string" } });
+      await createNodeSchema(backend, backend.schemas, { type: "Batch", attributes: { created_at: "?datetime" } });
+      const bolt = (backend as { bolt: Bolt }).bolt;
+      const stored = async (ref_id: string) => (await bolt.run(`MATCH (n:Data_Bank {ref_id: $r}) RETURN n.created_at AS own, n.date_added_to_graph AS stamp`, { r: ref_id }))[0]!;
+      for (const type of ["Ticket", "Batch"]) {
+        const bare = await writer.write({ type, data: { name: `${type} one` } });
+        const before = await stored(bare.ref_id);
+        assert.equal(before["own"], null);
+        await writer.update(bare.ref_id, { set: { description: "edited" } });
+        const after = await stored(bare.ref_id);
+        assert.equal(after["own"], null, `${type}: the stamp is not the type's created_at`);
+        assert.equal(Number(after["stamp"]), Number(before["stamp"]));
+      }
+      const dated = await writer.write({ type: "Ticket", data: { name: "Ticket two", created_at: "2026-09-30T12:00:00Z" } });
+      await writer.update(dated.ref_id, { set: { description: "edited" } });
+      assert.equal((await stored(dated.ref_id))["own"], "2026-09-30T12:00:00Z");
+      await writer.update(dated.ref_id, { remove: ["created_at"] });
+      const removed = await stored(dated.ref_id);
+      assert.equal(removed["own"], null);
+      assert.ok(Number(removed["stamp"]) > 0, "removing the type's created_at leaves the stamp");
+    });
+
     it("the no-embed mark: an execution record gets Data_Bank and no vector", neoOnly("the no-embed types (tool calls, turns) are not in the file"), async () => {
       const seen: string[] = [];
       const w = new NodeWriter(backend, { embedder: fakeEmbedder(seen), resolver: backend.schemas });

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ExternalLink, Sheet, SquareFunction } from "lucide-react";
+import { ExternalLink, ScanSearch, Sheet, SquareFunction } from "lucide-react";
 import { keepPreviousData, useQuery, type UseQueryResult } from "@tanstack/react-query";
 import { isInFlight, useHost, useRun, useStrutClient } from "@strut/kit";
 import { Button } from "@/components/ui/button";
@@ -7,6 +7,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { errorText } from "../lib/format";
+import type { ProvenanceSubject } from "../lib/provenance";
 import type { GraphNode } from "../lib/graph";
 import type { RunFile } from "../lib/run-file";
 import {
@@ -43,6 +44,8 @@ export interface SheetViewProps {
   sources?: Record<string, string[]>;
   /** A node in a marked cell's card was clicked. */
   onOpenNode?: (node: GraphNode) => void;
+  /** Offer a SPOT CHECK of the selected cell (a button in the formula bar): where the run got it, for SpotCheck. */
+  onSpotCheck?: (subject: ProvenanceSubject) => void;
   /** Over the source's own title. */
   title?: string;
   /** The grid's height before it scrolls (default 28rem). */
@@ -113,7 +116,7 @@ function useBook(p: SheetViewProps, tab: string | undefined, polling: boolean, i
  * is drawn here and "Open in Google Sheets" asks the host to open it.
  */
 export function SheetView(props: SheetViewProps) {
-  const { workflow, runId, live, refresh, sources, onOpenNode, title, className } = props;
+  const { workflow, runId, live, refresh, sources, onOpenNode, onSpotCheck, title, className } = props;
   const intervalMs = props.intervalMs ?? SHEET_INTERVAL_MS;
   const highlightMs = props.highlightMs ?? 2_500;
   const host = useHost();
@@ -181,7 +184,16 @@ export function SheetView(props: SheetViewProps) {
   const withFormulas = !!table && hasFormulas(table);
   const name = title ?? book?.title ?? props.path?.split("/").pop();
   const selected = sel && table?.rows[sel.row]?.[sel.col];
-
+  const address = sel && table ? cellA1({ row: table.origin.row + sel.row, col: table.origin.col + sel.col }) : "";
+  // The selected cell as a spot check names it: the sheet's own address, or the file, or the value.
+  const spot = (): ProvenanceSubject | null => {
+    if (!selected || !address) return null;
+    const value = selected.text ? { value: selected.text } : {};
+    const ref = props.spreadsheet ? spreadsheetRef(props.spreadsheet) : undefined;
+    if (ref) return { cell: shown ? `${/^[A-Za-z_][A-Za-z0-9_]*$/.test(shown) ? shown : `'${shown.replace(/'/g, "''")}'`}!${address}` : address, spreadsheet: ref.id, ...value };
+    if (props.path) return { file: props.path, ...value };
+    return selected.text ? { value: selected.text } : null;
+  };
   const error = q?.isError ? errorText(q.error) : null;
   if (book === undefined && !error) return <Skeleton className={cn("h-48 w-full", className)} />;
 
@@ -208,11 +220,28 @@ export function SheetView(props: SheetViewProps) {
           </Button>
         )}
       </div>
-      {withFormulas && (
+      {(withFormulas || onSpotCheck) && (
         <div className="flex min-h-8 items-center gap-2 border-b bg-muted/30 px-3 py-1 font-mono text-xs" data-testid="formula-bar">
-          <span className="w-12 shrink-0 text-muted-foreground">{sel && table ? cellA1({ row: table.origin.row + sel.row, col: table.origin.col + sel.col }) : ""}</span>
+          <span className="w-12 shrink-0 text-muted-foreground">{address}</span>
           <SquareFunction className="size-3.5 shrink-0 text-muted-foreground" />
-          <span className="min-w-0 flex-1 truncate">{selected ? (selected.formula ?? selected.text) : <span className="font-sans text-muted-foreground">Select a cell to see what it holds</span>}</span>
+          <span className="min-w-0 flex-1 truncate">{selected ? (selected.formula ?? selected.text) : <span className="font-sans text-muted-foreground">{onSpotCheck ? "Select a cell to see what it holds, and spot-check it" : "Select a cell to see what it holds"}</span>}</span>
+          {onSpotCheck && (
+            <Button
+              variant="outline"
+              size="xs"
+              className="shrink-0 font-sans"
+              disabled={!spot()}
+              onClick={() => {
+                const s = spot();
+                if (s) onSpotCheck(s);
+              }}
+              title="Where did the run get this?"
+              data-testid="spot-check-cell"
+            >
+              <ScanSearch />
+              Spot check
+            </Button>
+          )}
         </div>
       )}
       {error && <p className="border-b px-3 py-1.5 text-xs text-destructive">{error}</p>}

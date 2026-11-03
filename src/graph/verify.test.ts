@@ -80,7 +80,9 @@ for (const tb of testBackends()) describe(`verify pass on ${tb.name}`, { skip: t
     await tb.wipe(backend);
     const { seedJarvisOntology } = await import("./ontology-seed.js");
     const { seedStrutDomain } = await import("./schema-seed.js");
-    await seedJarvisOntology(backend);
+    // On Neo4j only: a file seeds Claim / Check / Evidence at open, and the
+    // jarvis ontology there adds ~480 columns that slow every statement.
+    if (tb.kind === "neo4j") await seedJarvisOntology(backend);
     await seedStrutDomain(backend);
     backend.schemas.invalidate();
     for (const k of ["STRUT_VERIFY_BUDGET_USD", "STRUT_VERIFY_BUDGET_USD_PER_DAY"]) savedEnv[k] = process.env[k];

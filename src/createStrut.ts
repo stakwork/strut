@@ -6,7 +6,7 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { serve } from "@hono/node-server";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { access, mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -53,6 +53,7 @@ import {
   isValidSecretName,
 } from "./secret-store.js";
 import { runStep, cassettePath, RUN_STEP_FLOW } from "./run-step.js";
+import { buildProvenance } from "./provenance.js";
 import { RUN_GET_MAX_WAIT_MS, RUN_LIST_DEFAULT_LIMIT, RUN_LIST_MAX_LIMIT, capEvents, capTranscript, fileResult, listEntryOf, matchesRunFilter, type RunCaller, type RunListEntry, type RunTranscript, type RunsCapability } from "./runs.js";
 import type { AppRef, StartedBy } from "./core.js";
 import { createVerifier, type Verifier, type VerifyResult } from "./verify.js";
@@ -108,7 +109,7 @@ import type { CassetteMode } from "./cassette.js";
 // Type-only: the graph backend stays a lazy, opt-in dependency.
 import type { GraphBackend } from "./graph/backend.js";
 import { graphView, mayQueryRaw, readerFor, listFor, type GraphReaders } from "./graph/scope.js";
-import { projectRunOnce } from "./graph/projector.js";
+import { projectChatOnce, projectRunOnce } from "./graph/projector.js";
 import { createGraphChangeFeed, GRAPH_FEED_READ_MAX } from "./graph-writes.js";
 // No runtime graph dependency in here either (type-only imports inside).
 import type { ClaimsReader } from "./graph/claims.js";
@@ -331,8 +332,8 @@ export interface StrutOptions<TServices = unknown> {
    *  (RUN_CONTROL_SPEC §5.3). Defaults to ON whenever the RUN STORE outlives
    *  the process — anything but `MemoryRunStore`, whatever the workspace's
    *  kind — unless `STRUT_AUTO_RESUME=0`; pass `false` to disable, or an
-   *  object to tune the guards. Only the NEWEST root run per workflow is
-   *  considered. */
+   *  object to tune the guards. Every root run the last death cut off is
+   *  considered (`AutoResumeOptions.since`, from `<dataDir>/boot.json`). */
   autoResume?: boolean | AutoResumeOptions;
 
   /** The largest run log a durable resume will READ, in bytes — boot-time
@@ -506,6 +507,12 @@ export interface AutoResumeOptions {
   /** Delay after construction before the scan runs (lets the host finish
    *  booting). Default 3000ms; 0 runs it on the next tick. */
   delayMs?: number;
+  /** Look at EVERY cut-off root run whose last event is at or after this
+   *  time (epoch ms) — the runs one death cut off — instead of only the
+   *  newest root run of each workflow. The boot scan passes when the
+   *  previous process started (`<dataDir>/boot.json`, written once each
+   *  boot scan is done); with no record of it, newest only. */
+  since?: number;
 }
 
 /** One line of the boot-time chat auto-resume report (`autoResumeStaleChats`). */
@@ -563,11 +570,13 @@ export interface Strut<TServices = unknown> {
    *  the instance was constructed with an explicit `registry`. */
   rebuildRegistry: () => Promise<void>;
 
-  /** Resume every run cut off by the previous process (RUN_CONTROL_SPEC
-   *  §5.3): the newest root run of each workflow that has a log but no
-   *  summary, was not paused or cancelling, is younger than `maxAgeMs`,
-   *  and has fewer than `maxResumes` prior resumes. Runs automatically
-   *  after boot when `autoResume` is enabled; callable directly. */
+  /** Resume runs cut off by a dead process (RUN_CONTROL_SPEC §5.3): every
+   *  root run with a log but no summary whose last event is at or after
+   *  `since` — without it, the newest root run of each workflow — that was
+   *  not paused or cancelling, is younger than `maxAgeMs`, and has fewer
+   *  than `maxResumes` prior durable resumes. Runs automatically after boot
+   *  when `autoResume` is enabled, with `since` = the previous process's
+   *  start; callable directly. */
   autoResumeStaleRuns: (opts?: AutoResumeOptions) => Promise<AutoResumeOutcome[]>;
   /** The builder's twin: every chat left `live` by a dead process gets its
    *  cut-off turn finalized and, with a `[restart-notification]` of what was
@@ -844,7 +853,9 @@ export async function createStrut<TServices = unknown>(
       ? { job: controller.job.id, ...(controller.job.title ? { jobTitle: controller.job.title } : {}) }
       : {};
   /** Append a control marker (run.paused / run.resumed) to a run's log so
-   *  the parked gap is visible in the record (§4 observability). */
+   *  the parked gap is visible in the record (§4 observability). A
+   *  `run.resumed` written here is an UNPAUSE of a live run, marked `live`:
+   *  the crash-loop guard counts only the durable resumes the runner writes. */
   const appendControlEvent = async (
     workflow: string,
     runId: string,
@@ -855,6 +866,7 @@ export async function createStrut<TServices = unknown>(
       runId,
       path: workflow,
       type,
+      ...(type === "run.resumed" ? { live: true as const } : {}),
     });
   };
   // Deployment-scoped secret store backing the `secrets` capability + the
@@ -940,6 +952,7 @@ export async function createStrut<TServices = unknown>(
     store,
     sessions: sessionStore,
     sessionHolder: sessions.holder,
+    isLive: (workflow, runId) => controllers.has(`${workflow}/${runId}`),
     sealed: isSealedWorkflow,
     // Called only once the server is up: `appVersionOf` is defined below.
     appVersion: async (name, version) => appVersionOf(name, version),
@@ -1103,6 +1116,9 @@ export async function createStrut<TServices = unknown>(
   const chatStore: ChatStore =
     opts.chatStore ?? (fileBacked ? new FileChatStore(dataDir) : new MemoryChatStore());
   const autoResumeRuns = autoResumeOn(!(store instanceof MemoryRunStore));
+  /** When this process started — what the NEXT boot's scan reads back as
+   *  the previous start (`boot.json`, §5.3). */
+  const bootedAt = Date.now();
   const autoResumeChats = enableChat && autoResumeOn(!(chatStore instanceof MemoryChatStore));
   const chatMaxSteps =
     opts.chatMaxSteps ?? Number(bootEnv()["STRUT_CHAT_MAX_STEPS"] ?? 100);
@@ -1965,6 +1981,10 @@ export async function createStrut<TServices = unknown>(
         ...(p.runStart.automation ? { origin: "schedule" as const, automation: p.runStart.automation } : {}),
         ...(p.runStart.origin === "peer" ? { origin: "peer" as const } : {}),
         ...(p.runStart.origin === "peer" && p.runStart.peerPerson ? { peerPerson: true } : {}),
+        // An app's run stays the app's: its sessions under the app's
+        // namespace (runner.ts `bindApp`), never the ids its page passed.
+        ...(p.runStart.origin === "app" && p.runStart.app ? { origin: "app" as const, app: p.runStart.app } : {}),
+        ...(p.runStart.startedBy ? { startedBy: p.runStart.startedBy } : {}),
         // Billed to whoever the original launch was billed to — never
         // re-derived, the owner may have changed since (§2).
         ...(p.runStart.actor ? { actor: p.runStart.actor } : {}),
@@ -1982,13 +2002,15 @@ export async function createStrut<TServices = unknown>(
   /** Write the summary a dead run never got to write: its log already ends
    *  in a terminal event (crash between the event append and `finalize`),
    *  or it was cancelling when the process died (finalize as cancelled,
-   *  appending the `run.cancelled` the boundary would have emitted). */
+   *  appending the `run.cancelled` the boundary would have emitted). The
+   *  dead process never posted its `run.end` either: the host hears it now.
+   *  Returns the callback URL it posts to, if any. */
   const finalizeDeadRun = async (
     name: string,
     runId: string,
     events: RunEvent[],
     status: "success" | "error" | "cancelled",
-  ) => {
+  ): Promise<string | null> => {
     const last = events[events.length - 1]!;
     const start = events.find((e) => e.type === "run.start");
     if (status === "cancelled" && last.type !== "run.cancelled") {
@@ -1998,36 +2020,130 @@ export async function createStrut<TServices = unknown>(
     const finishedAt = last.type === "run.end" || last.type === "run.error" || last.type === "run.cancelled"
       ? last.ts
       : new Date().toISOString();
+    const durationMs = Math.max(0, Date.parse(finishedAt) - Date.parse(startedAt));
+    const output = status === "success" ? last.output : undefined;
+    const error = status === "error" ? last.error : undefined;
     await store.finalize(name, runId, {
       runId,
       workflow: name,
       startedAt,
       finishedAt,
-      durationMs: Math.max(0, Date.parse(finishedAt) - Date.parse(startedAt)),
+      durationMs,
       status,
       input: start?.input,
-      ...(status === "success" ? { output: last.output } : {}),
-      ...(status === "error" && last.error ? { error: last.error } : {}),
+      ...(output !== undefined ? { output } : {}),
+      ...(error ? { error } : {}),
+      // The stamps the runner's own summary carries, from `run.start`: the
+      // scheduler's cursor, the job index and the run lists read them.
+      ...(start?.automation ? { automation: start.automation } : {}),
+      ...(start?.actor ? { actor: start.actor } : {}),
+      ...(start?.principal ? { principal: start.principal } : {}),
+      ...(start?.job ? { job: start.job } : {}),
+      ...(start?.origin ? { origin: start.origin } : {}),
+      ...(start?.app ? { app: start.app } : {}),
+      ...(start?.workflowHash ? { workflowHash: start.workflowHash } : {}),
       stepCounts: countSteps(events),
     });
+    const url = await store.getRunCallback(name, runId);
+    if (url) {
+      postRunCallback(
+        url,
+        name,
+        { runId, status, ...(output !== undefined ? { output } : {}), ...(error ? { error } : {}) },
+        Date.now() - durationMs,
+        start?.job,
+        start?.startedBy,
+      );
+    }
+    return url;
   };
 
   /** Boot-time auto-resume (RUN_CONTROL_SPEC §5.3). Every run that died
-   *  with the previous process has a log and no summary. For each
-   *  workflow, look only at the NEWEST root run (children are relaunched by
-   *  their parent's re-executed step) and:
+   *  with a process has a log and no summary. Root runs only (children are
+   *  relaunched by their parent's re-executed step), newest first: with
+   *  `since` — the boot scan passes when the previous process started —
+   *  EVERY root run the last death cut off; without it, the newest root run
+   *  of each workflow only. For each:
    *    - log already terminal → just write the missing summary;
    *    - last control marker `run.cancelling` → finalize as cancelled;
    *    - last control marker `run.paused` → leave parked (a human chose that);
    *    - older than `maxAgeMs`, or resumed ≥ `maxResumes` times → skip, loudly;
-   *    - otherwise → durable resume, same path as the endpoint. */
+   *    - otherwise → durable resume, same path as the endpoint.
+   *  A run whose last event is before `since` was cut off by an earlier
+   *  death, which the boot after it already looked at: left alone. */
   const autoResumeStaleRuns = async (o: AutoResumeOptions = {}): Promise<AutoResumeOutcome[]> => {
     const maxAgeMs = o.maxAgeMs ?? 7 * 24 * 60 * 60 * 1000;
     const maxResumes = o.maxResumes ?? 5;
+    const since = o.since;
     const out: AutoResumeOutcome[] = [];
     const report = (workflow: string, runId: string, action: AutoResumeOutcome["action"], reason: string) => {
       out.push({ workflow, runId, action, reason });
       console.warn(`[auto-resume] ${workflow}/${runId}: ${action} — ${reason}`);
+    };
+
+    /** One run: `nested` when it is not a root run (the scan looks past it
+     *  either way), else `seen`. */
+    const consider = async (name: string, runId: string): Promise<"nested" | "seen"> => {
+      if (controllers.has(`${name}/${runId}`)) return "seen"; // live in this process
+      if (await store.getRunSummary(name, runId)) return "seen"; // finished → nothing was cut off
+      await store.repairLog?.(name, runId);
+      // Asked before the read: a log the process cannot hold is what
+      // crashed it, and loading it again at every boot would again.
+      const big = await logTooBig(name, runId);
+      if (big) {
+        report(name, runId, "skipped", big);
+        return "seen";
+      }
+      const events = await store.getRunEvents(name, runId);
+      const runStart = readRunStart(events);
+      if (!runStart) return "seen"; // unreadable / empty — a human's call
+      if (runStart.parentRunId) return "nested"; // its parent relaunches it
+
+      const last = events[events.length - 1]!;
+      if (since !== undefined && !(Date.parse(last.ts) >= since)) return "seen"; // an earlier death's
+      if (isTerminalEvent(last)) {
+        const status = last.type === "run.end" ? "success" : last.type === "run.error" ? "error" : "cancelled";
+        const url = await finalizeDeadRun(name, runId, events, status);
+        report(name, runId, "finalized", `log already ended in ${last.type}; wrote the missing summary${url ? `; run.end goes to ${callbackOrigin(url)}` : ""}`);
+        return "seen";
+      }
+      const marker = [...events].reverse().find(
+        (e) => e.type === "run.paused" || e.type === "run.resumed" || e.type === "run.cancelling",
+      );
+      if (marker?.type === "run.cancelling") {
+        const url = await finalizeDeadRun(name, runId, events, "cancelled");
+        report(name, runId, "finalized", `was cancelling when the process died; finalized as cancelled${url ? `; run.end goes to ${callbackOrigin(url)}` : ""}`);
+        return "seen";
+      }
+      if (marker?.type === "run.paused") {
+        report(name, runId, "skipped", "was paused when the process died — resume it by hand");
+        return "seen";
+      }
+      const ageMs = Date.now() - Date.parse(last.ts);
+      if (!(ageMs <= maxAgeMs)) {
+        report(name, runId, "skipped", `last event ${Math.round(ageMs / 3_600_000)}h ago exceeds the ${Math.round(maxAgeMs / 3_600_000)}h age cap`);
+        return "seen";
+      }
+      // Durable resumes only: an unpause of a live run (`live`) is no restart.
+      const resumes = events.filter((e) => e.type === "run.resumed" && !e.live).length;
+      if (resumes >= maxResumes) {
+        report(name, runId, "skipped", `already resumed ${resumes} times (cap ${maxResumes}) — a step may be crashing the server; resume by hand`);
+        return "seen";
+      }
+      const prepared = await prepareDurableResume(name, runId, {});
+      if (!prepared.ok) {
+        report(name, runId, "skipped", prepared.error);
+        return "seen";
+      }
+      if (controllers.has(`${name}/${runId}`)) return "seen";
+      launchDurableResume(prepared);
+      report(
+        name,
+        runId,
+        "resumed",
+        `replaying ${Object.keys(prepared.journal).length} journaled step(s)${prepared.version ? ` against version ${prepared.version}` : ""}${prepared.callback ? `; run.end goes to ${callbackOrigin(prepared.callback.url)}` : ""}`,
+      );
+      return "seen";
     };
 
     let workflows: Array<{ name: string }>;
@@ -2046,64 +2162,15 @@ export async function createStrut<TServices = unknown>(
         continue;
       }
       for (const runId of runIds) {
-        if (controllers.has(`${name}/${runId}`)) break; // live in this process
-        if (await store.getRunSummary(name, runId)) break; // newest finished → nothing was cut off
-        await store.repairLog?.(name, runId);
-        // Asked before the read: a log the process cannot hold is what
-        // crashed it, and loading it again at every boot would again.
-        const big = await logTooBig(name, runId);
-        if (big) {
-          report(name, runId, "skipped", big);
-          break;
+        let seen: "nested" | "seen";
+        try {
+          seen = await consider(name, runId);
+        } catch (err) {
+          // One run that cannot be read or relaunched never stops the others.
+          console.error(`[auto-resume] ${name}/${runId}:`, err);
+          seen = "seen";
         }
-        const events = await store.getRunEvents(name, runId);
-        const runStart = readRunStart(events);
-        if (!runStart) break; // unreadable / empty — a human's call
-        if (runStart.parentRunId) continue; // nested: its parent relaunches it
-
-        const last = events[events.length - 1]!;
-        if (isTerminalEvent(last)) {
-          const status = last.type === "run.end" ? "success" : last.type === "run.error" ? "error" : "cancelled";
-          await finalizeDeadRun(name, runId, events, status);
-          report(name, runId, "finalized", `log already ended in ${last.type}; wrote the missing summary`);
-          break;
-        }
-        const marker = [...events].reverse().find(
-          (e) => e.type === "run.paused" || e.type === "run.resumed" || e.type === "run.cancelling",
-        );
-        if (marker?.type === "run.cancelling") {
-          await finalizeDeadRun(name, runId, events, "cancelled");
-          report(name, runId, "finalized", "was cancelling when the process died; finalized as cancelled");
-          break;
-        }
-        if (marker?.type === "run.paused") {
-          report(name, runId, "skipped", "was paused when the process died — resume it by hand");
-          break;
-        }
-        const ageMs = Date.now() - Date.parse(last.ts);
-        if (!(ageMs <= maxAgeMs)) {
-          report(name, runId, "skipped", `last event ${Math.round(ageMs / 3_600_000)}h ago exceeds the ${Math.round(maxAgeMs / 3_600_000)}h age cap`);
-          break;
-        }
-        const resumes = events.filter((e) => e.type === "run.resumed").length;
-        if (resumes >= maxResumes) {
-          report(name, runId, "skipped", `already resumed ${resumes} times (cap ${maxResumes}) — a step may be crashing the server; resume by hand`);
-          break;
-        }
-        const prepared = await prepareDurableResume(name, runId, {});
-        if (!prepared.ok) {
-          report(name, runId, "skipped", prepared.error);
-          break;
-        }
-        if (controllers.has(`${name}/${runId}`)) break;
-        launchDurableResume(prepared);
-        report(
-          name,
-          runId,
-          "resumed",
-          `replaying ${Object.keys(prepared.journal).length} journaled step(s)${prepared.version ? ` against version ${prepared.version}` : ""}${prepared.callback ? `; run.end goes to ${callbackOrigin(prepared.callback.url)}` : ""}`,
-        );
-        break;
+        if (seen === "seen" && since === undefined) break;
       }
     }
     return out;
@@ -4544,6 +4611,12 @@ export async function createStrut<TServices = unknown>(
     const callback = extra?.callback;
     const mcp = extra?.mcp?.length ? extra.mcp : undefined;
     void (async () => {
+      // A resume drops the summary of the attempt it resumes FIRST, so the
+      // run reads as live (its controller), never as the outcome it is
+      // resumed from — and a crash from here on leaves a run boot-time
+      // auto-resume picks up. A crash before `run.resumed` leaves the old
+      // terminal event last, which boot finalizes again.
+      if (extra?.resume) await store.clearRunSummary(flow.name, runId);
       // Recorded before the first event, so a run cut off at any point is
       // resumed WITH its callback and its caller's MCP servers. A resume
       // read them from there already.
@@ -5067,6 +5140,11 @@ export async function createStrut<TServices = unknown>(
       if ("error" in t) throw new Error(t.error);
       return { path: q.path, ...capTranscript(t.messages as RunTranscript["messages"]), ...(t.full ? { full: true as const } : {}) };
     },
+    async provenance({ workflow, runId, ...subject }, by) {
+      if (!(await openRun(workflow, runId, by)).visible) return null;
+      const events = await store.getRunEvents(workflow, runId);
+      return events.length ? buildProvenance(events, subject) : null;
+    },
   };
   if (!(services as Record<string, unknown>)["runs"]) (services as Record<string, unknown>)["runs"] = runsCap;
 
@@ -5364,6 +5442,14 @@ export async function createStrut<TServices = unknown>(
     // it. In-process, like the notifier's liveness set.
     const turnAborts = new Map<string, AbortController>();
 
+    // The chat in the graph (projector.ts: its `StrutChat`, turns and the
+    // runs it launched), as every run is at its end: at every turn's end, and
+    // when a detached run it launched settles. Detached: a graph that is
+    // slow or down never holds a turn.
+    const projectChatToGraph = (chatId: string): void => {
+      if (runGraph) void projectChatOnce(runGraph, chatStore, chatId).catch((err) => console.error(`[projector] chat ${chatId} was not projected:`, err));
+    };
+
     /**
      * Run one chat turn detached: build the agent, stream it server-side,
      * persist each fine-grained part to `events.jsonl`, then append the new
@@ -5514,7 +5600,10 @@ export async function createStrut<TServices = unknown>(
                   .catch((err) =>
                     console.error(`[chat ${chatId}] run-notification delivery failed:`, err),
                   )
-                  .finally(delivered);
+                  .finally(() => {
+                    delivered();
+                    projectChatToGraph(chatId);
+                  });
               },
             },
           };
@@ -5782,6 +5871,7 @@ export async function createStrut<TServices = unknown>(
           } catch (err) {
             console.error(`[chat ${chatId}] turn callback failed:`, err);
           }
+          projectChatToGraph(chatId);
         }
       })();
     }
@@ -6631,9 +6721,33 @@ export async function createStrut<TServices = unknown>(
   // the same way, gated on the chat store (`reconcileStaleChat`). Deferred
   // and unref'd so a host that constructs strut and exits (tests, CLIs) is
   // never held open.
+  // The runs scan looks at every run cut off since the PREVIOUS process
+  // started — the runs its death cut off, however many — read from
+  // `<dataDir>/boot.json`; this process's start is written there once the
+  // scan is done, so a process that dies before its scan leaves the record
+  // as it was and the next boot still looks at the same runs. No record
+  // (the first boot): the newest root run of each workflow only.
+  const bootResumeRuns = async () => {
+    const file = join(dataDir, "boot.json");
+    let since: number | undefined;
+    try {
+      const { startedAt } = JSON.parse(await readFile(file, "utf-8")) as { startedAt?: unknown };
+      const t = typeof startedAt === "string" ? Date.parse(startedAt) : NaN;
+      if (Number.isFinite(t)) since = t;
+    } catch {
+      // never written, or unreadable: newest only
+    }
+    await autoResumeStaleRuns({ ...(since !== undefined ? { since } : {}), ...autoResumeOpts });
+    try {
+      await mkdir(dataDir, { recursive: true });
+      await writeFile(file, JSON.stringify({ startedAt: new Date(bootedAt).toISOString() }) + "\n", "utf-8");
+    } catch (err) {
+      console.warn(`[auto-resume] could not record this boot in ${file}:`, err);
+    }
+  };
   if (autoResumeRuns || autoResumeChats) {
     const timer = setTimeout(() => {
-      if (autoResumeRuns) void autoResumeStaleRuns(autoResumeOpts).catch((err) => console.error(`[auto-resume] scan failed:`, err));
+      if (autoResumeRuns) void bootResumeRuns().catch((err) => console.error(`[auto-resume] scan failed:`, err));
       if (autoResumeChats) void autoResumeStaleChats(autoResumeOpts).catch((err) => console.error(`[auto-resume] chat scan failed:`, err));
     }, autoResumeOpts.delayMs ?? 3000);
     timer.unref?.();

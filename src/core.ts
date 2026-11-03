@@ -485,6 +485,10 @@ export interface RunEvent {
    *  per conversation needs nothing. Absent when a host launched the job
    *  itself. */
   startedBy?: StartedBy;
+  /** On a `run.resumed` that UNPAUSED a live run (RUN_CONTROL_SPEC §4) —
+   *  not a durable resume after a crash or a failure, which the boot-time
+   *  crash-loop guard counts (§5.3). */
+  live?: true;
   /** Graph nodes this step reported touching (the provenance convention,
    *  plans/generic-storage.md "v2") — lifted verbatim from the output's
    *  `_nodes` marker on `step.end`, exempt from any truncation. The graph
