@@ -60,9 +60,12 @@ export interface TestBackend {
   close(b: GraphBackend): Promise<void>;
 }
 
-/** Why Ladybug cannot run here, or null: the addon, then an open with the
- *  extensions, tried once per process. */
+/** Why Ladybug cannot run here, or null: switched off
+ *  (`STRUT_TEST_LADYBUG=off`: CI's graph job, whose Ladybug half the unit
+ *  job runs), else the addon, then an open with the extensions, tried once
+ *  per process. */
 const LADYBUG_SKIP: string | null = await (async () => {
+  if (process.env["STRUT_TEST_LADYBUG"] === "off") return "STRUT_TEST_LADYBUG=off";
   try {
     await loadLadybug();
   } catch (e) {
