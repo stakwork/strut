@@ -22,7 +22,7 @@
  * `ALTER TABLE ADD IF NOT EXISTS`, so a new attribute in the seed lands on
  * the next open), the two indexes, the append-only `MIGRATIONS` and the
  * one-time ones (`renameCoreColumns`, `addSchemaRuleColumns`,
- * `moveToNamespaces`), then the
+ * `moveToNamespaces`, `writeEdgeRows`), then the
  * ontology seed (`registry.ts`), add-only, once per version of the seed
  * (its `Migration` stamp).
  *
@@ -39,6 +39,7 @@ import { DEFAULT_NAMESPACE } from "../bolt.js";
 import { bootEnv } from "../../env.js";
 import { ladybugMaxDbSize } from "./max-size.js";
 import { SCHEMA_EDGE, SCHEMA_EDGE_DDL, SCHEMA_EDGE_RULE_COLUMNS, readCatalog, seedOntology } from "./ontology.js";
+import { writeMissingEdgeRows } from "./temporal.js";
 import { SCHEMA_TYPE, ontologySeed } from "./registry.js";
 import { OWN_CREATED_AT } from "../strut-schemas.js";
 import { nodeTitleFor } from "../title.js";
@@ -299,6 +300,21 @@ async function moveToNamespaces(read: Query, write: Query): Promise<void> {
     throw err;
   }
   await write("MERGE (m:Migration {migration_id: $id}) ON CREATE SET m.executed_at = $now", { id: NAMESPACES_MIGRATION, now: Date.now() });
+}
+
+/** The temporal edges' search rows (plans/graph-edge-search.md), once per
+ *  file (its `Migration` stamp): a row for every temporal edge that has
+ *  `text` and none, keyword-only (the vectors are filled after). Rows are
+ *  derived from the edge and its ends, so this only adds: no backup
+ *  (`ONE_WAY_MIGRATIONS`). Guarded, not one transaction: it writes only the
+ *  rows that are missing, so a process that dies part way is finished by
+ *  the next open, and the stamp comes last. */
+export const EDGE_ROWS_MIGRATION = "edge_text_rows_v1";
+
+async function writeEdgeRows(read: Query, write: Query): Promise<void> {
+  if (Number((await read("MATCH (m:Migration {migration_id: $id}) RETURN count(m) AS c", { id: EDGE_ROWS_MIGRATION }))[0]?.["c"]) > 0) return;
+  await writeMissingEdgeRows(write, Date.now());
+  await write("MERGE (m:Migration {migration_id: $id}) ON CREATE SET m.executed_at = $now", { id: EDGE_ROWS_MIGRATION, now: Date.now() });
 }
 
 /** Every data row without a `title` gets the one the writer would give it:
@@ -566,6 +582,7 @@ async function openFresh(path: string, opts: OpenOptions): Promise<LadybugHandle
     await renameCoreColumns(read, write);
     await addSchemaRuleColumns(read, write);
     await moveToNamespaces(read, write);
+    await writeEdgeRows(read, write);
     const have = new Set((await read(`CALL SHOW_INDEXES() RETURN index_name`)).map((r) => String(r["index_name"]))); // `_PK` rows included; harmless
     for (const [name, call] of indexCalls()) if (!have.has(name)) await write(call);
     await rebuildBrokenFts(read, write, unclean);

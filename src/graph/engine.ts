@@ -34,6 +34,7 @@
  * Ladybug engine must not load it either.
  */
 import type { Bolt } from "./bolt.js";
+import type { Embedder } from "./node-writer.js";
 import type { NodeSchema } from "./schema-resolver.js";
 
 export type Params = Record<string, unknown>;
@@ -166,6 +167,15 @@ export interface NodeEngine {
    *  and hard-delete the node's in-scope edges, counted — or keep them
    *  (`keepEdges`, 0 counted). Null when nothing matched. */
   softDelete(ref_id: string, namespace: string, guard: NodeGuard, opts?: SoftDeleteOptions): Promise<SoftDeleteResult | null>;
+  /** Ladybug: did a write since the last call leave search rows to embed
+   *  (a title change recomposed them)? Reading it clears it. */
+  takeUnembedded?(): boolean;
+  /** Ladybug: embed the facts' search rows still without a vector, one run
+   *  at a time per handle (a call during a run asks it to go round again,
+   *  and gets its promise). Never rejects: a failure is logged. */
+  embedPendingRows?(embedder: Embedder): Promise<number>;
+  /** Ladybug: the run in flight, if any (a close waits for it). */
+  idle?(): Promise<void>;
 }
 
 // ── Edges ───────────────────────────────────────────────────────────────────

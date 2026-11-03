@@ -215,9 +215,14 @@ async function openLadybugBackend(cfg: LadybugConfig, opts: GraphBackendOptions)
       seed: undefined,
       embeddings: undefined,
       async close() {
+        await engine.nodeEngine.idle?.();
         await lbug.close();
       },
     };
+    // The facts' search rows a failed embedding or a rename left without a
+    // vector (plans/graph-edge-search.md), filled in the background; a close
+    // waits for the run.
+    if (embedder && !opts.skipBoot) void engine.nodeEngine.embedPendingRows?.(embedder);
     return backend;
   } catch (e) {
     await lbug.close().catch(() => undefined);

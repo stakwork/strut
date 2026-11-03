@@ -271,6 +271,9 @@ describe("assert: killing the process mid-write (plans/graph-memory-plan.md step
     try {
       const es = await edgesOf(b, "LIVES_IN", ids.kate);
       assert.deepEqual(es.map((e) => [e.ref_id, e.target, e.expired_at, e.superseded_by]), [[ids.done, ids.lisbon, null, null]], "the killed write left nothing; the committed one is whole");
+      // Its search row with it: the committed edge has one, live; the killed one none.
+      const rows = await b.query(`MATCH (n:Node {node_type: 'EdgeText'}) RETURN n.edge_ref_id AS e, n.expired_at AS x`);
+      assert.deepEqual(rows.map((r) => [r["e"], r["x"] ?? null]), [[ids.done, null]]);
     } finally {
       await b.close();
     }

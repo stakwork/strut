@@ -21,17 +21,25 @@
  * writes are serialised through one writer, so two asserts on one slot
  * leave one current edge. Neo4j has no `assert`, and is as before.
  *
- * Facts are found by word match over the temporal edges' `text` for v1
- * (`findFacts`), ranked by how many words hit, as `memory/recall` does. No
- * search rows or edge embeddings yet: they are built later from `text`.
+ * Every new edge gets its search row in the same transaction
+ * (plans/graph-edge-search.md; `ladybug/temporal.ts`): an `EdgeText` node
+ * holding the composed fact (both ends' titles, the edge type as words, the
+ * sentence) and its vector, embedded before the transaction. A failed
+ * embedding writes the row keyword-only (`unembedded`), filled in the
+ * background after the commit (`embedPendingEdgeRows`). The
+ * row copies its edge's namespace and clocks, and ends with it.
+ *
+ * Facts are also found by word match over the temporal edges' `text`
+ * (`findFacts`), ranked by how many words hit, as `memory/recall` does;
+ * searching the rows is step 4's.
  */
 import { randomUUID } from "node:crypto";
 import type { EngineLike, GraphTx } from "./engine.js";
 import { edgeKeyFor } from "./edge-writer.js";
 import { writeNamespace } from "./ladybug/namespaces.js";
-import { createTemporalEdge, factRows, setTemporalEdge, slotEdges, temporalEdgeTypes } from "./ladybug/temporal.js";
+import { composeFact, createTemporalEdge, factRows, setTemporalEdge, slotEdges, syncEdgeRow, temporalEdgeTypes, titlesOf, writeEdgeRow } from "./ladybug/temporal.js";
 import { asEngine } from "./neo4j-engine.js";
-import { GraphValidationError } from "./node-writer.js";
+import { GraphValidationError, type Embedder } from "./node-writer.js";
 import type { SchemaResolver } from "./schema-resolver.js";
 import { foldText, worldTime } from "./world-time.js";
 
@@ -66,6 +74,9 @@ export interface AssertResult {
   ended: boolean;
   /** Dates a re-confirm filled on the edge it found. */
   filled?: string[];
+  /** A new edge's search row is still to be embedded (no embedder, or the
+   *  embedding failed): written keyword-only, its vector filled later. */
+  unembedded?: boolean;
 }
 
 export interface AssertOptions {
@@ -73,6 +84,8 @@ export interface AssertOptions {
   tx?: GraphTx;
   /** The writer's clock (epoch ms). */
   now?: () => number;
+  /** Embeds a new edge's search row, before the transaction. */
+  embedder?: Embedder;
 }
 
 const EDGE_TYPE = /^[A-Z][A-Z0-9_]*$/;
@@ -118,6 +131,19 @@ export async function assertEdge(e: EngineLike, resolver: SchemaResolver, input:
   // A fact whose end is given and not in the future is past.
   const past = invalid !== null && invalid <= now;
 
+  // The search row's text and vector, made before the transaction: a failed
+  // embedding leaves the row keyword-only, never the write undone.
+  const titles = await titlesOf((c, p) => engine.query(c, p), [input.source_ref_id, input.target_ref_id]);
+  const composed = composeFact(titles.get(input.source_ref_id), edge, titles.get(input.target_ref_id), text);
+  let vector: number[] | undefined;
+  if (opts.embedder) {
+    try {
+      [vector] = await opts.embedder.embed([composed]);
+    } catch {
+      vector = undefined;
+    }
+  }
+
   const go = async (tx: GraphTx): Promise<AssertResult> => {
     const ends = await engine.edgeEngine.endpoints(tx, [input.source_ref_id, input.target_ref_id]);
     const s = ends.get(input.source_ref_id);
@@ -156,6 +182,13 @@ export async function assertEdge(e: EngineLike, resolver: SchemaResolver, input:
         last_confirmed_at: now,
         updated_at: now,
       });
+      if (filled.length || expire) {
+        await syncEdgeRow(tx, hit.ref_id, {
+          ...(filled.includes("valid_at") ? { valid_at: v } : {}),
+          ...(filled.includes("invalid_at") ? { invalid_at: inv } : {}),
+          ...(expire ? { expired_at: now } : {}),
+        }, now);
+      }
       return { ref_id: hit.ref_id, action: "reconfirmed", superseded: [], ended: hit.expired_at !== null || expire, ...(filled.length ? { filled } : {}) };
     }
 
@@ -169,6 +202,7 @@ export async function assertEdge(e: EngineLike, resolver: SchemaResolver, input:
     const ref_id = randomUUID();
     const own = s.namespace ?? engine.namespace;
     const namespace = input.namespace === undefined ? own : writeNamespace(edge, input.namespace, own);
+    const clocks = { valid_at: valid, invalid_at: history ? Math.min(...later, ...(invalid !== null ? [invalid] : [])) : invalid, expired_at: ended ? now : null };
     await createTemporalEdge(tx, edge, input.source_ref_id, input.target_ref_id, {
       ref_id,
       edge_key: edgeKeyFor(edge),
@@ -179,23 +213,48 @@ export async function assertEdge(e: EngineLike, resolver: SchemaResolver, input:
       weight: 1,
       text,
       sources: source ? [source] : [],
-      valid_at: valid,
-      invalid_at: history ? Math.min(...later, ...(invalid !== null ? [invalid] : [])) : invalid,
-      expired_at: ended ? now : null,
+      ...clocks,
       last_confirmed_at: now,
     });
+    await writeEdgeRow(tx, {
+      edge_ref_id: ref_id,
+      edge_type: edge,
+      source_ref_id: input.source_ref_id,
+      target_ref_id: input.target_ref_id,
+      text,
+      composed,
+      namespace,
+      created_by: input.created_by,
+      vector,
+      ...clocks,
+    }, now);
     const superseded = ended ? [] : replaced;
     for (const o of superseded) {
-      await setTemporalEdge(tx, edge, o.ref_id, { expired_at: now, invalid_at: endOfReplaced(o, valid, now), superseded_by: ref_id, updated_at: now });
+      const end = { expired_at: now, invalid_at: endOfReplaced(o, valid, now) };
+      await setTemporalEdge(tx, edge, o.ref_id, { ...end, superseded_by: ref_id, updated_at: now });
+      await syncEdgeRow(tx, o.ref_id, end, now);
     }
     return {
       ref_id,
       action: superseded.length ? "superseded" : history ? "history" : "created",
       superseded: superseded.map((o) => o.ref_id),
       ended,
+      ...(vector ? {} : { unembedded: true }),
     };
   };
-  return opts.tx ? go(opts.tx) : engine.tx(go);
+  const out = await (opts.tx ? go(opts.tx) : engine.tx(go));
+  // A row written without its vector is filled in the background once the
+  // write has committed (a caller's transaction: at the next open).
+  if (out.unembedded && opts.embedder && !opts.tx) void engine.nodeEngine.embedPendingRows?.(opts.embedder);
+  return out;
+}
+
+/** Embed the facts' search rows still without a vector on a Ladybug
+ *  backend: what a failed embedding or a rename left. One run at a time per
+ *  handle; it runs by itself after open and after such a write, and never
+ *  rejects. How many it embedded; 0 without an embedder or on Neo4j. */
+export async function embedPendingEdgeRows(b: { nodeEngine: { embedPendingRows?(embedder: Embedder): Promise<number> }; embedder: Embedder | undefined }): Promise<number> {
+  return b.embedder && b.nodeEngine.embedPendingRows ? b.nodeEngine.embedPendingRows(b.embedder) : 0;
 }
 
 export interface FactQuery {

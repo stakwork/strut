@@ -50,7 +50,7 @@ export default defineStep({
         ...(cfg.source ? { source: cfg.source } : {}),
         ...(cfg.namespace ? { namespace: cfg.namespace } : {}),
         ...(ctx?.actor ? { created_by: ctx.actor } : {}),
-      });
+      }, { ...(b.embedder ? { embedder: b.embedder } : {}) });
       return withAccessedNodes(
         {
           status: r.action === "unchanged" ? "Warning" : "Success",

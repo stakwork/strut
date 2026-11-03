@@ -5,10 +5,10 @@ import { STRUT_EDGES, STRUT_SCHEMAS } from "../strut-schemas.js";
 import { EDGE_COLUMNS, EDGE_TYPE_COLUMNS, GENERIC_COLUMNS, LADYBUG_EDGES, LADYBUG_EDGE_TYPES, LADYBUG_SCHEMAS, LADYBUG_STRUT_TYPES, SCHEMA_COLUMNS, ladybugEdge, ladybugSchema, nodeColumns, ontologySeed } from "./registry.js";
 
 describe("ladybug registry — the ontology seed (plans/ladybug-backend.md §3, ruling 6 as amended 2026-10-28)", () => {
-  it("holds exactly the fifteen types, and the Strut ones without Thing's vestiges or per-stem vectors", () => {
+  it("holds exactly the sixteen types, and the Strut ones without Thing's vestiges or per-stem vectors", () => {
     assert.deepEqual(
       LADYBUG_SCHEMAS.map((s) => s.type),
-      [...LADYBUG_STRUT_TYPES, "Claim", "Check", "Evidence", "Concept", "Person", "Lingo"],
+      [...LADYBUG_STRUT_TYPES, "Claim", "Check", "Evidence", "Concept", "Person", "Lingo", "EdgeText"],
     );
     for (const t of ["StrutAgentSession", "StrutToolCall", "StrutChat", "StrutTurn", "Self", "Thing", "Document"]) assert.equal(ladybugSchema(t), null, t);
     assert.equal(ladybugSchema("strutrun")?.type, "StrutRun", "case-insensitive");
@@ -89,7 +89,7 @@ describe("ladybug registry — the ontology seed (plans/ladybug-backend.md §3, 
     for (const [k, t] of Object.entries(SCHEMA_COLUMNS)) assert.equal(cols[k], t, `the Schema field ${k}`);
     assert.equal(cols["attributes"], "STRING", "a type's declared attributes are one JSON column");
     assert.equal(cols["aliases"], "STRING[]");
-    assert.ok(Object.keys(cols).length > 80 && Object.keys(cols).length < 110, `${Object.keys(cols).length} columns`);
+    assert.ok(Object.keys(cols).length > 80 && Object.keys(cols).length < 120, `${Object.keys(cols).length} columns`);
     assert.deepEqual(Object.keys(EDGE_COLUMNS), ["ref_id", "edge_key", "namespace", "created_by", "created_at", "updated_at", "deleted_at", "weight", "importance"]);
     assert.deepEqual(EDGE_TYPE_COLUMNS, { EVIDENCED_BY: { strength: "DOUBLE" }, HAS_SOURCE: { context: "STRING", start_time: "INT64", end_time: "INT64", post_url: "STRING" } }, "the claim columns, on the claim edges only");
     assert.ok(!("cardinality" in SCHEMA_COLUMNS), "cardinality is an edge type's rule, never a node type's");
