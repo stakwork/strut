@@ -31,7 +31,7 @@
 import { randomUUID } from "node:crypto";
 import type { EdgeSchemaRow, EdgeSchemaWalk, Params, Row, SchemaRow } from "../engine.js";
 import { GraphValidationError } from "../node-writer.js";
-import { EDGE_COLUMNS, SCHEMA_COLUMNS, SCHEMA_TYPE, columnTypeOf, edgeColumnsOf, ontologySeed, type ColumnType } from "./registry.js";
+import { EDGE_COLUMNS, SCHEMA_COLUMNS, SCHEMA_TYPE, TEMPORAL_EDGE_COLUMNS, columnTypeOf, edgeColumnsOf, ontologySeed, type ColumnType } from "./registry.js";
 
 export type Run = (cypher: string, params?: Params) => Promise<Row[]>;
 
@@ -229,8 +229,10 @@ export async function edgeRule(run: Run, edge: string): Promise<Record<string, u
   return rows[0] ? ruleProps(rows[0]) : null;
 }
 
-/** The edge type's rule on every one of its rules (an unset key cleared). */
+/** The edge type's rule on every one of its rules (an unset key cleared). A
+ *  type made temporal gets the temporal columns on its rel table. */
 export async function setEdgeRule(run: Run, edge: string, rule: { temporal?: boolean; cardinality?: string }): Promise<void> {
+  if (rule.temporal) await addTemporalColumns(run, edge);
   await run(`MATCH ${S("s")}-${SE("r")}->${S("t")} WHERE ${RULE("r")} AND r.edge_type = $e SET r.temporal = $t, r.cardinality = $c`, {
     e: edge,
     t: rule.temporal ?? null,
@@ -342,6 +344,12 @@ export async function ensureRelTable(run: Run, catalog: Catalog, edge: string): 
   catalog.edges.add(edge);
 }
 
+/** A temporal edge type's own columns (`TEMPORAL_EDGE_COLUMNS`) on its rel
+ *  table; each one once. */
+export async function addTemporalColumns(run: Run, edge: string): Promise<void> {
+  for (const [k, t] of Object.entries(TEMPORAL_EDGE_COLUMNS)) await run(`ALTER TABLE ${q(edge)} ADD IF NOT EXISTS ${q(k)} ${t}`);
+}
+
 /** The ontology's own rel table, made at open (`db.ts`); here for a file
  *  an older build made. */
 export async function ensureSchemaEdgeTable(run: Run, catalog: Catalog): Promise<void> {
@@ -433,6 +441,7 @@ export async function ensureEdgeSchema(run: Run, catalog: Catalog, source: strin
   if (have) return { created: false, ref_id: String(have.props["ref_id"] ?? "") };
   const ref_id = typeof props["ref_id"] === "string" ? props["ref_id"] : randomUUID();
   const rule = ruleProps(props);
+  if (rule["temporal"] === true) await addTemporalColumns(run, edge);
   await run(
     `MATCH ${S("s")}, ${S("t")} WHERE s.type = $s AND t.type = $t CREATE (s)-[:${SCHEMA_EDGE} {ref_id: $ref_id, edge_type: $e, temporal: $temporal, cardinality: $cardinality}]->(t)`,
     { s: source, t: target, ref_id, e: edge, temporal: rule["temporal"] ?? null, cardinality: rule["cardinality"] ?? null },

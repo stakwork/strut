@@ -276,8 +276,23 @@ export function edgeColumnsOf(edge: string): Readonly<Record<string, ColumnType>
   return own ? { ...EDGE_COLUMNS, ...own } : EDGE_COLUMNS;
 }
 
+/** The columns of a temporal edge type (plans/graph-memory-plan.md "Core
+ *  attributes"), on its rel table alone: added when the table is made for a
+ *  temporal type or the type becomes temporal (`ontology.ts`). Only
+ *  `assert` writes them (`temporal.ts`). Times are epoch ms; `sources` the
+ *  ref_ids of the nodes the edge was learned from. */
+export const TEMPORAL_EDGE_COLUMNS: Readonly<Record<string, ColumnType>> = {
+  text: "STRING",
+  sources: "STRING[]",
+  valid_at: "INT64",
+  invalid_at: "INT64",
+  expired_at: "INT64",
+  superseded_by: "STRING",
+  last_confirmed_at: "INT64",
+};
+
 /** Every edge column of any type: what an edge struct is read back with. */
-export const ALL_EDGE_COLUMNS: Readonly<Record<string, ColumnType>> = Object.assign({}, EDGE_COLUMNS, ...Object.values(EDGE_TYPE_COLUMNS));
+export const ALL_EDGE_COLUMNS: Readonly<Record<string, ColumnType>> = Object.assign({}, EDGE_COLUMNS, ...Object.values(EDGE_TYPE_COLUMNS), TEMPORAL_EDGE_COLUMNS);
 
 /** The Schema type's own fields (plans/memory-in-workspace-graph.md decision
  *  1), one column each on its rows. The attributes a type declares are one

@@ -9,7 +9,7 @@ The whole graph is memory: things are nodes, relationships are temporal edges, s
 | Phase | Steps | Outcome | What a Peel user sees |
 |---|---|---|---|
 | 1. Foundation | 1 | Dynamic ontology and writer transactions merged | Nothing |
-| 2. Core graph | 2 to 5 | Core attributes, namespaces, temporal edges, `assert`, search rows, reads, `resolve`, `merge` | Nothing |
+| 2. Core graph | 2 to 5 | Core attributes, namespaces, temporal edges, `assert`, reads, `resolve`, `merge`; search rows and edge embeddings in 3b | Nothing |
 | 3. Privacy | 6 | Reader lists enforced under every read tool | Nothing |
 | 4. Peel on top | 7 and 8 | Workflows, sync and Peel moved over, Concepts and Claims confirmed | Better answers about what's current |
 | 5. Prove it | 9 and 10 | Jarvis off Peel's path, live model test passed | Same as phase 4 |
@@ -64,10 +64,10 @@ Core attributes are listed under "Core attributes" below.
 - Keep the hard-coded skip list in `graph-neighbors.ts` and `walk.ts` for v1. A `walkable` schema setting can replace it later.
 - Add a per-type `embed` setting. Source types (dictation, transcripts, messages) default to keyword search only, with no embedding, so they don't crowd vector results. Entities, Concepts and Claims are embedded.
 
-### 3. Add temporal edges, `assert` and search rows
-- Give temporal edge tables the two clocks, a sentence, an embedding and sources.
-- Add `assertEdge` in `src/graph/` and a `graph/assert` step. In one transaction: load the schema, then re-confirm, supersede or create. Move the date handling from `remember.ts` and `supersede()` on C's branch, and take the schema-driven shape from Jarvis's `temporal_edge_helper.py`.
-- Write a hidden search row with every edge sentence, in the same transaction. End it when the edge ends.
+### 3. Add temporal edges and `assert`
+- Give temporal edge tables the two clocks, a sentence (`text`) and sources. The columns go only on edge types marked `temporal`, when the table is made or the type becomes temporal.
+- Add `assertEdge` in `src/graph/` and a `graph/assert` step. In one transaction: load the schema, then re-confirm, supersede or create. Move the date handling from `remember.ts` and `supersede()` on C's branch, and take the schema-driven shape from Jarvis's `temporal_edge_helper.py`. Ladybug only: on Neo4j `assert` says it isn't on that backend, and Neo4j stays as it is.
+- Search rows and edge embeddings are deferred to 3b. Facts are found by word match over edge `text` for v1, ranked by word hits as `memory/recall` does today. Every temporal edge stores its sentence, so 3b backfills rows from `text` with no migration.
 - Refuse plain edge creation on temporal types.
 
 ### 4. Update the reads
@@ -87,6 +87,9 @@ Core attributes are listed under "Core attributes" below.
 - Keep B's reader rule and raw-query refusal, keyed on the list.
 - Every reader gets its own list, including the two outside Peel's chat: apps with graph grants, and peers reading through `/graph/*`. A reader the host hasn't given a list reads nothing.
 - A person can move something to `shared` by hand.
+
+### 3b. Search rows and edge embeddings
+- Hidden search rows for temporal edges, with their embeddings, backfilled from the edges' `text`: see [graph-edge-search.md](graph-edge-search.md).
 
 ### 7. Rebuild the workflows and Peel on top
 
@@ -175,10 +178,13 @@ Each step is done when its tests pass, on top of the end-to-end criteria above. 
 - The same from, type and to re-confirms: it adds the source once, and repeating it with the same source changes nothing.
 - A back-dated assert becomes history and leaves the current edge current.
 - Two simultaneous asserts on one slot leave exactly one current edge. Writes are serialised through one writer.
-- Embeddings are computed before the transaction. If embedding fails, the edge and its keyword row are written anyway, and the existing backfill sweep adds the vector later.
-- An edge and its search row always commit, roll back and end together.
-- Killing the process mid-write leaves both or neither after reopening.
+- Killing the process mid-write leaves the write in full or not at all after reopening.
 - Plain edge creation on a temporal type is refused.
+- A fact is found by word match over its edge's `text`, current facts by default and ended ones when asked.
+- On Neo4j, `assert` is refused as not on that backend, and nothing else changes.
+
+### Step 3b: search rows
+See [graph-edge-search.md](graph-edge-search.md).
 
 ### Step 4: reads
 - Search, neighbors and find hide ended data by default, and `include_ended` shows it.

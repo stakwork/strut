@@ -29,6 +29,8 @@
  * miss is an error, not a silent zero-row no-op. An edge type whose rule is
  * `cardinality: "one"` (`EdgeRule`) holds one live edge per source node: a
  * second target is refused, never a silent replace (that is `assert`'s).
+ * On a Ladybug file an edge type whose rule is `temporal` is refused
+ * outright: `assert` (`temporal.ts`) alone writes its edges.
  *
  * The statements live behind `EdgeEngine` (`engine.ts`): `neo4j-engine.ts`
  * holds the MERGE and the `shortestPath` cycle check, `ladybug/engine.ts`
@@ -369,6 +371,8 @@ export class EdgeWriter {
         if (!match) throw new GraphValidationError("WRONG_TYPE", i.edge, `Invalid edge type: ${i.edge} (no edge schema ${st}-[${i.edge}]->${tt ?? "?"})`);
         const pattern = match.properties["edge_key"];
         if (typeof pattern === "string" && pattern) edge_key = composeEdgeKey(pattern, i.properties ?? {});
+        // A temporal type's edges carry two clocks and a sentence: `assert` alone writes them (`temporal.ts`).
+        if (match.rule.temporal && this.engine.kind === "ladybug") throw new GraphValidationError("WRONG_TYPE", i.edge, `${i.edge} is a temporal edge type: write it with graph/assert`);
         if (match.rule.cardinality === "one") single.push(i);
       }
       out.push({ input: i, edge_key, unique_source_id: s.uid && s.uid === t.uid ? s.uid : undefined, namespace: edgeNamespace(i, s.namespace) });
