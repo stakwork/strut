@@ -169,10 +169,14 @@ prompt cache, then the first clause about 0.15 s later.
   with the member as the actor (`x-strut-actor`). The turn uses the member's
   delegation and their GitHub token, as Hive's call turns run as their speaker
   ([stakwork/hive#5699](https://github.com/stakwork/hive/pull/5699)).
-- **A session of their own:** `<member>/voice`, inside the person-scoped
+- **A session per call:** `<member>/voice/<room>`, inside the person-scoped
   namespace strut already gives a person token (`peerSessionId`,
-  `src/session-store.ts`). The agent remembers what each member said across
-  their calls.
+  `src/session-store.ts`). Ruled 2026-11-03: a fresh session each call, not
+  one per member. A session freezes its system prompt at its first turn, so
+  one long voice thread never heard a change to the orchestrator's text (it
+  kept answering "I'm Claude" after the lab named it Jamie). Earlier calls
+  stay in strut's session store and the graph, where the orchestrator can
+  find them.
 - **One turn at a time per session** (`session_busy:`). Two members talk at
   once on different sessions. The same member on two devices waits a turn.
 - **Sharing with the member's Jamie chat** would put calls and chat in one
@@ -371,7 +375,7 @@ that serves them, and that isn't a small change.
 **Kept easy for later.** Four rules hold from step 1, so that a later read
 filter by actor is enough:
 - Every voice run records the member as its actor (`run.start.actor`).
-- The member's voice session lives in their own namespace, `<member>/voice`.
+- The member's voice sessions live in their own namespace, `<member>/voice/<room>`.
 - A job a voice turn starts carries the member as its actor, so the job's
   record lists them (`actors`, which `GET /jobs?mine=1` already filters on).
 - The ledger keys balances by actor.
@@ -502,7 +506,7 @@ Errors are JSON, `{ error }`:
      dispatch there (Q7).
    - From step 2: it gets tokens from meet (private rooms), and joins with
      `encryption` and the key (§4, step 2).
-5. Every turn of the call runs as `x-strut-actor` on `<member>/voice` (§3.2).
+5. Every turn of the call runs as `x-strut-actor` on `<member>/voice/<room>` (§3.2).
    Speech goes to strut's `/audio/transcribe` and `/audio/speak` with the
    deployment key, inside the home.
 
@@ -806,7 +810,7 @@ Each step ships something usable and builds on the ones before it.
 - One job per call; `AgentSession` on the member's track, with the strut STT
   and TTS plugins, Silero and the turn detector.
 - An `llmNode` that runs the orchestrator turn as the member, on
-  `<member>/voice`, and streams its reply a clause at a time.
+  `<member>/voice/<room>`, and streams its reply a clause at a time.
 - A job's callback becomes `session.say`.
 - `POST /calls`, the handler behind `/voice/calls` (§4.1): mint tokens, get
   the agent in, answer.
@@ -887,5 +891,6 @@ for about 0.8 s (Daily, Pipecat).
     voice service (proposed), or the lab.
 11. **Whose vocabulary.** The org's lexicon only (one memory graph per strut),
     or a member's own on top.
-12. **One thread or two.** A member's voice turns on `<member>/voice`, or on
-    the same session as their Jamie chat, so calls and chat share one memory.
+12. **One thread or two.** A member's voice turns on a session per call
+    (`<member>/voice/<room>`, ruled 2026-11-03), or on the same session as
+    their Jamie chat, so calls and chat share one memory.
