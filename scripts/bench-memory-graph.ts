@@ -15,8 +15,10 @@
 // becomes a Topic"), which a model extracts; VALUES below is that
 // extraction, by hand. A name fact becomes the subject's alt_names and a
 // summary its description, so their labels are the subject node's. Search
-// returns nodes and facts as two ranked lists; one list is made by taking
-// them in turn, node first, or with `--rank score` by score across both.
+// returns nodes and facts as two ranked lists, which on a Ladybug file share
+// one score; one list is made by score across both, or with `--rank turns`
+// by taking them in turn, node first. Each predicate's aliases from the
+// memory ontology go onto its edge type, as graph/import-memory does.
 // `--embed` loads MiniLM (all-MiniLM-L6-v2) for the vector half of search;
 // without it search is keyword only. Lives in scripts/, outside the build.
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -71,6 +73,8 @@ const PLAIN = new Set(LADYBUG_EDGE_TYPES);
 
 const ONE = new Set(SEED.filter((t) => t.kind === "predicate" && t.cardinality === "one").map((t) => t.name));
 const NAMING = new Set(SEED.filter((t) => t.kind === "predicate" && t.role === "alias").map((t) => t.name));
+/** A predicate's aliases, as graph/import-memory carries them onto its edge type. */
+const ALIASES = new Map(SEED.filter((t) => t.kind === "predicate").map((t) => [t.name, t.aliases]));
 const nameIn = (text: string) => /\b(?:name is|named|called)\s+(.+?)\.?$/i.exec(text)?.[1]?.trim();
 
 const call = (step: unknown, input: unknown, ctx: StepContext) => (step as Step).run((step as Step).input.parse(input), ctx);
@@ -177,7 +181,7 @@ async function seed(b: GraphBackend, ctx: StepContext, fixture: Fixture): Promis
     const edge = PLAIN.has(predicate.toUpperCase()) ? `IS_${predicate.toUpperCase()}` : predicate;
     const out = ok(await call(assertStep, {
       source_ref_id: from, edge_type: edge, target_ref_id: to, text,
-      create_schema_if_missing: true, cardinality: one.has(predicate) ? "one" : "many",
+      create_schema_if_missing: true, cardinality: one.has(predicate) ? "one" : "many", aliases: ALIASES.get(predicate) ?? [],
     }, ctx), `assert ${id}`);
     s.tag(out.edge_ref_id, `f:${id}`);
   }
@@ -209,8 +213,8 @@ async function score(queries: Q[], s: Seeded): Promise<Scores> {
     times.push(performance.now() - t0);
     const nodes: { ref_id: string; score?: number }[] = Array.isArray(out) ? out : out.nodes;
     const facts: { ref_id: string; score?: number }[] = Array.isArray(out) ? [] : out.facts;
-    // Two lists, each ranked: by score across both (`--rank score`), or
-    // taken in turn, node first (default), as a reader sees both tops.
+    // Two lists, each ranked: by score across both (default), or taken in
+    // turn, node first (`--rank turns`), as a reader sees both tops.
     const ranked = (RANK === "score"
       ? [...nodes, ...facts].sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
       : Array.from({ length: Math.max(nodes.length, facts.length) }, (_, i) => [nodes[i], facts[i]]).flat().filter((h): h is { ref_id: string } => !!h)
@@ -322,7 +326,7 @@ async function open(dir: string, embedder: Embedder | false) {
 }
 
 const args = process.argv.slice(2);
-const RANK = args.includes("--rank") ? args[args.indexOf("--rank") + 1] : "turns";
+const RANK = args.includes("--rank") ? args[args.indexOf("--rank") + 1] : "score";
 const fixture = JSON.parse(readFileSync(new URL("./bench-memory.json", import.meta.url), "utf8")) as Fixture;
 let embedder: Embedder | false = false;
 if (args.includes("--embed")) {

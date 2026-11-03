@@ -155,6 +155,9 @@ export default defineStep({
           ...(p.end !== undefined ? { end: p.end } : {}),
           ...(p.workflow_id !== undefined ? { workflow_id: p.workflow_id } : {}),
           ...(p.skill_id !== undefined ? { skill_id: p.skill_id } : {}),
+          // On a Ladybug file the two lists share a scale: a node's score
+          // compares with a fact's, so the caller can read them as one list.
+          ...(cfg.facts && b.kind === "ladybug" ? { score: n.score } : {}),
         };
       });
       // No provenance marker: a hit is a node the caller was SHOWN, not one

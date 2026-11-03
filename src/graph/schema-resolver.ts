@@ -346,10 +346,12 @@ export class SchemaResolver {
    * `cardinality: "one"` is refused, changing nothing, while a source node
    * holds two live edges of it.
    */
-  async createEdgeSchema(sourceType: string, edge: string, targetType: string, rule?: EdgeRule): Promise<{ created: boolean; ref_id: string; rule: EdgeRule }> {
+  async createEdgeSchema(sourceType: string, edge: string, targetType: string, rule?: EdgeRule, opts: { aliases?: string[] } = {}): Promise<{ created: boolean; ref_id: string; rule: EdgeRule }> {
     const edgeType = edge.toUpperCase().replace(/ /g, "_");
     if (!/^[A-Z][A-Z0-9_]*$/.test(edgeType)) throw new Error(`invalid edge type ${edge}`);
     const wanted = rule === undefined ? undefined : checkEdgeRule(edgeType, rule);
+    const aliases = (opts.aliases ?? []).map((a) => String(a).trim()).filter(Boolean);
+    if (aliases.length && !this.source.setEdgeAliases) throw new GraphValidationError("UNKNOWN_ATTRIBUTE", edgeType, "edge type aliases are kept on a Ladybug file only", "aliases");
     return this.engine.tx(async (tx) => {
       for (const t of [sourceType, targetType]) {
         if (t === "*") {
@@ -366,6 +368,12 @@ export class SchemaResolver {
       if (wanted && JSON.stringify(wanted) !== JSON.stringify(held)) {
         if (wanted.cardinality === "one" && held.cardinality !== "one") await this.refuseCrowdedSlots(tx, edgeType);
         await this.source.setEdgeRule(edgeType, wanted, tx);
+      }
+      // The type's aliases, added to: a new rule of the type holds them too.
+      if (this.source.setEdgeAliases && this.source.edgeAliases) {
+        const had = (await this.source.edgeAliases(tx)).get(edgeType) ?? [];
+        const all = [...had, ...aliases.filter((a) => !had.some((h) => h.toLowerCase() === a.toLowerCase()))];
+        if (all.length && (r?.created || all.length > had.length)) await this.source.setEdgeAliases(edgeType, all, tx);
       }
       this.edges.clear();
       return { created: r?.created ?? false, ref_id: r?.ref_id ?? ref_id, rule: effective };

@@ -30,6 +30,7 @@ const Fact = z.object({
   said_by: z.string().optional().describe("The ref_id of whoever said it, when not the user: e.g. the Person whose message this was."),
   create_schema_if_missing: z.boolean().optional().describe("Create the edge type as temporal between the two ends' types when the ontology has no such edge. An existing plain edge type is never made temporal."),
   cardinality: z.enum(["one", "many"]).optional().describe("With create_schema_if_missing, for a new edge type: `one` when a subject holds one current value (where someone lives), `many` (default) when several hold at once."),
+  aliases: z.array(z.string()).optional().describe("With create_schema_if_missing, for a new edge type: other words for it, which a search reads as naming it (WORKS_AT: job, employer)."),
 });
 type FactT = z.infer<typeof Fact>;
 
@@ -52,7 +53,7 @@ async function ensureTemporal(b: GraphBackend, f: FactT, edge: string, types: [s
   const query = boundsOf(b)?.query ?? b.query.bind(b);
   const held = await edgeRule((c, p) => query(c, p), edge);
   if (held && held["temporal"] !== true) throw new Error(`${edge} is a plain edge type; a fact needs a temporal one: pick another edge type`);
-  await b.schemas.createEdgeSchema(types[0], edge, types[1], held ? undefined : { temporal: true, cardinality: f.cardinality ?? "many" });
+  await b.schemas.createEdgeSchema(types[0], edge, types[1], held ? undefined : { temporal: true, cardinality: f.cardinality ?? "many" }, { aliases: f.aliases ?? [] });
 }
 
 export default defineStep({

@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { LADYBUG_EDGE_TYPES, nodeColumns, ontologySeed } from "./registry.js";
-import { CORE_RENAME_MIGRATION, MIGRATIONS, NAMESPACES_MIGRATION, SCHEMA_RULES_MIGRATION, backupPath, ddlStatements, indexCalls, openLadybug, type LadybugHandle } from "./db.js";
+import { CORE_RENAME_MIGRATION, MIGRATIONS, NAMESPACES_MIGRATION, ONE_WAY_MIGRATIONS, SCHEMA_RULES_MIGRATION, SEARCH_TEXT_ONE_LINE_MIGRATION, backupPath, ddlStatements, indexCalls, openLadybug, type LadybugHandle } from "./db.js";
 import { openGraphBackend } from "../backend.js";
 import { testBackends } from "../test-util.js";
 
@@ -25,13 +25,13 @@ describe("ladybug DDL (pure)", () => {
     assert.ok(ddl[0]!.startsWith("CREATE NODE TABLE IF NOT EXISTS Node("));
     assert.ok(ddl.some((s) => s.startsWith("CREATE NODE TABLE IF NOT EXISTS Migration(")));
     assert.ok(!ddl.some((s) => /NODE TABLE IF NOT EXISTS (Schema|Meta)\b/.test(s)), "no meta-graph node table: a type is a Node row");
-    assert.ok(ddl.some((s) => s.startsWith("CREATE REL TABLE IF NOT EXISTS SCHEMA_EDGE(FROM Node TO Node, `ref_id` STRING,") && s.endsWith("`edge_type` STRING, `is_parent` BOOL, `temporal` BOOL, `cardinality` STRING)")), "parent links and edge rules, apart from the data's edges");
+    assert.ok(ddl.some((s) => s.startsWith("CREATE REL TABLE IF NOT EXISTS SCHEMA_EDGE(FROM Node TO Node, `ref_id` STRING,") && s.endsWith("`edge_type` STRING, `is_parent` BOOL, `temporal` BOOL, `cardinality` STRING, `aliases` STRING[])")), "parent links and edge rules, apart from the data's edges");
     for (const col of Object.keys(nodeColumns())) if (col !== "ref_id") assert.ok(ddl.includes(`ALTER TABLE Node ADD IF NOT EXISTS \`${col}\` ${nodeColumns()[col]}`), col);
     for (const edge of LADYBUG_EDGE_TYPES) assert.ok(ddl.some((s) => s.startsWith(`CREATE REL TABLE IF NOT EXISTS \`${edge}\`(FROM Node TO Node, `)), edge);
     assert.ok(!ddl.some((s) => /IS_ALIAS|IN_RUN|IN_SESSION/.test(s)));
     assert.ok(ddl.some((s) => s.startsWith("CREATE REL TABLE IF NOT EXISTS `ACCESSED`(")), "a run's reads: the run's own edge, no tool calls");
     assert.deepEqual(indexCalls().map(([n]) => n), ["node_vec", "node_fts"]);
-    assert.deepEqual(MIGRATIONS, [], "nothing has shipped yet");
+    assert.deepEqual(MIGRATIONS, ["ALTER TABLE `SCHEMA_EDGE` ADD IF NOT EXISTS `aliases` STRING[]"], "an edge type's aliases, on a file an older build made");
   });
 });
 
@@ -259,7 +259,7 @@ describe("a file written with the old core column names (plans/graph-memory-plan
       const row = async (id: string) => (await h.query("MATCH (n:Node {ref_id: $id}) RETURN n", { id }))[0]!["n"] as Record<string, unknown>;
       const wf = await row(ref["wf"]!);
       assert.equal(wf["key"], `strutworkflow-${Buffer.from("harvey-deliver").toString("hex")}`);
-      assert.equal(wf["search_text"], "harvey-deliver\nDeliver legal memos");
+      assert.equal(wf["search_text"], "harvey-deliver Deliver legal memos", "carried over, then put on one line (search_text_one_line_v1)");
       assert.equal(wf["title"], "harvey-deliver", "computed from the type's title_key");
       assert.equal(wf["created_at"], 1_790_000_000_000, "the row's ms");
       const v1 = await row(ref["v1"]!);
@@ -350,6 +350,39 @@ describe("a file written with the old core column names (plans/graph-memory-plan
       assert.deepEqual((await b.schemas.edgeSchema("MENTORS", "Person", "Concept"))!.rule, { cardinality: "one" });
     } finally {
       await b.close();
+    }
+  });
+});
+
+describe("a file whose search text an older build joined with newlines", { skip }, () => {
+  let dir: string;
+  before(() => {
+    dir = mkdtempSync(join(tmpdir(), "strut-lbug-oneline-"));
+  });
+  after(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("opens with every node's search text on one line, the full-text index rebuilt, stamped once, no backup", async () => {
+    const file = join(dir, "graph.lbug");
+    const b = await openGraphBackend({ kind: "ladybug", path: file, namespace: "private" }, { embeddings: false, skipBoot: true });
+    const zed = (await b.nodes.write({ type: "Person", data: { name: "Zed Q", description: "Plumber in Bath" } })).ref_id;
+    // As an older build stored it, and before this migration had run.
+    await b.query("MATCH (n:Node {ref_id: $id}) SET n.search_text = $t", { id: zed, t: "Zed Q\nPlumber in Bath" });
+    await b.query("MATCH (m:Migration {migration_id: $id}) DELETE m", { id: SEARCH_TEXT_ONE_LINE_MIGRATION });
+    assert.equal((await b.reader.search({ q: "plumber" })).nodes.length, 0, "the old text hides its second line's first word");
+    await b.close();
+
+    const again = await openGraphBackend({ kind: "ladybug", path: file, namespace: "private" }, { embeddings: false, skipBoot: true });
+    try {
+      const [row] = await again.query("MATCH (n:Node {ref_id: $id}) RETURN n.search_text AS t", { id: zed });
+      assert.equal(row!["t"], "Zed Q Plumber in Bath");
+      assert.deepEqual((await again.reader.search({ q: "plumber" })).nodes.map((n) => n.ref_id), [zed]);
+      assert.equal((await again.query("MATCH (m:Migration {migration_id: $id}) RETURN count(m) AS c", { id: SEARCH_TEXT_ONE_LINE_MIGRATION }))[0]!["c"], 1);
+      assert.ok(!ONE_WAY_MIGRATIONS.includes(SEARCH_TEXT_ONE_LINE_MIGRATION), "derived data: no backup");
+      assert.ok(!existsSync(backupPath(file, SEARCH_TEXT_ONE_LINE_MIGRATION)));
+    } finally {
+      await again.close();
     }
   });
 });

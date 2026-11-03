@@ -358,13 +358,36 @@ export async function ensureSchemaEdgeTable(run: Run, catalog: Catalog): Promise
   catalog.edges.add(SCHEMA_EDGE);
 }
 
+/** An edge type's other names (works_at: job_at, employed_by), held on
+ *  every rule of the type as its rule is: the words a search reads as
+ *  naming the type. A file an older build made gets the column from
+ *  `MIGRATIONS` (`db.ts`). */
+export const EDGE_ALIASES = "aliases";
+
+/** Every edge type's aliases, by edge type: the union over its rules. */
+export async function edgeAliases(run: Run): Promise<Map<string, string[]>> {
+  const rows = await run(`MATCH ${S("s")}-${SE("r")}->${S("t")} WHERE ${RULE("r")} AND r.${EDGE_ALIASES} IS NOT NULL RETURN r.edge_type AS edge, r.${EDGE_ALIASES} AS aliases`);
+  const out = new Map<string, string[]>();
+  for (const r of rows) {
+    const held = out.get(String(r["edge"])) ?? [];
+    for (const a of Array.isArray(r["aliases"]) ? (r["aliases"] as unknown[]).map(String) : []) if (!held.includes(a)) held.push(a);
+    out.set(String(r["edge"]), held);
+  }
+  return out;
+}
+
+/** Set an edge type's aliases on every one of its rules. */
+export async function setEdgeAliases(run: Run, edge: string, aliases: string[]): Promise<void> {
+  await run(`MATCH ${S("s")}-${SE("r")}->${S("t")} WHERE ${RULE("r")} AND r.edge_type = $e SET r.${EDGE_ALIASES} = $a`, { e: edge, a: aliases });
+}
+
 /** An edge rule's own columns: the edge type's rule (`EdgeRule`). A file
  *  an older build made gets them from `SCHEMA_RULES_MIGRATION` (`db.ts`). */
 export const SCHEMA_EDGE_RULE_COLUMNS: Readonly<Record<string, ColumnType>> = { temporal: "BOOL", cardinality: "STRING" };
 
 /** Shaped like every other rel table (the edge columns), plus the type, the
  *  parent mark and the edge type's rule. */
-export const SCHEMA_EDGE_DDL = `CREATE REL TABLE IF NOT EXISTS ${SCHEMA_EDGE}(FROM Node TO Node, ${Object.entries({ ...EDGE_COLUMNS, edge_type: "STRING", is_parent: "BOOL", ...SCHEMA_EDGE_RULE_COLUMNS })
+export const SCHEMA_EDGE_DDL = `CREATE REL TABLE IF NOT EXISTS ${SCHEMA_EDGE}(FROM Node TO Node, ${Object.entries({ ...EDGE_COLUMNS, edge_type: "STRING", is_parent: "BOOL", ...SCHEMA_EDGE_RULE_COLUMNS, [EDGE_ALIASES]: "STRING[]" })
   .map(([k, t]) => `${q(k)} ${t}`)
   .join(", ")})`;
 

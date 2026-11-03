@@ -313,6 +313,10 @@ export interface SchemaSource {
   /** Set `temporal` and `cardinality` (an unset one cleared) on every rule
    *  of edge type `edge`. */
   setEdgeRule(edge: string, rule: { temporal?: boolean; cardinality?: string }, tx?: GraphTx): Promise<void>;
+  /** Every edge type's aliases, by edge type. Present on a Ladybug file only. */
+  edgeAliases?(tx?: GraphTx): Promise<Map<string, string[]>>;
+  /** Set an edge type's aliases on every one of its rules. Ladybug only. */
+  setEdgeAliases?(edge: string, aliases: string[], tx?: GraphTx): Promise<void>;
   /** Live Schemas whose type or an alias is one of `names`, case-blind.
    *  Present where a type's names are one-to-one across the ontology (a
    *  Ladybug file, decision 9 of plans/memory-in-workspace-graph.md); a
