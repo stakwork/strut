@@ -2,6 +2,7 @@
 // fixtures — so every component draws as it would against a strut, with no
 // grant and no run. A launch is remembered by its key, as `run/launch` is.
 import type { StrutClient } from "@strut/kit";
+import type { GraphNeighbor } from "../lib/graph-steps";
 import { FILES, TRANSCRIPT } from "./content";
 import { getBatched, neighbors, search } from "./graph";
 import { CHILD_EVENTS, CHILD_RUN_ID, EXPLORE_PATH, RUNS, RUN_EVENTS, RUN_ID, WORKFLOW_INFO } from "./runs";
@@ -10,10 +11,13 @@ import { TRACE_EVENTS, TRACE_LIVE_RUN_ID, TRACE_RUN_ID, traceTranscript } from "
 import { COVENANT_SHEET, NDA_FRAMES, NDA_SHEET, NDA_WORKFLOW, SHEET_FILES, covenantSheet, ndaFrame, ndaPlaybook, ndaRun } from "./sheets";
 import { MATTER_EVENTS, MATTER_FILES, MATTER_LIVE_EVENTS, MATTER_LIVE_RUN_ID, MATTER_RUN_ID, MATTER_SHEET_DONE, MATTER_WORKFLOW } from "./matter";
 import { AGENT_WALK_EVENTS, AGENT_WALK_PATH, AGENT_WALK_RUN_ID, WALK_EVENTS, WALK_JOIN_RUN_ID, WALK_LIVE_RUN_ID, WALK_RUN_ID, agentWalkTranscript, walkNode } from "./walk";
+import { BIG_WALK_EVENTS, BIG_WALK_RUN_ID, bigWalkNode } from "./walk-large";
+import { LARGE_RUN_EVENTS, LARGE_RUN_ID, largeRunNeighbors, largeRunNode } from "./run-large";
 
 const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-export function createFixtureClient(): StrutClient {
+/** `latencyMs`: how long each call takes, so the gallery reads like a real strut (120 ms); a test passes 0. */
+export function createFixtureClient({ latencyMs = 120 }: { latencyMs?: number } = {}): StrutClient {
   const launched = new Map<string, string>();
   let next = 1790000001000;
   // The live run: each read of its log reveals a little more, as a run in
@@ -83,6 +87,8 @@ export function createFixtureClient(): StrutClient {
         if (c["runId"] === WALK_RUN_ID) return WALK_EVENTS.slice(skip);
         if (c["runId"] === WALK_LIVE_RUN_ID || c["runId"] === WALK_JOIN_RUN_ID) return walkLog(String(c["runId"]), skip).slice(skip);
         if (c["runId"] === AGENT_WALK_RUN_ID) return AGENT_WALK_EVENTS.slice(skip);
+        if (c["runId"] === BIG_WALK_RUN_ID) return BIG_WALK_EVENTS.slice(skip);
+        if (c["runId"] === LARGE_RUN_ID) return LARGE_RUN_EVENTS.slice(skip);
         throw new Error(`no run ${String(c["runId"])}`);
       }
       case "run/workflow":
@@ -111,11 +117,13 @@ export function createFixtureClient(): StrutClient {
       }
       case "graph/graph-get-batched": {
         const found = getBatched((c["ref_ids"] as string[]) ?? []);
-        const nodes = found.nodes.map((n) => ("error" in n ? (walkNode(n.ref_id) ?? n) : n));
+        const nodes = found.nodes.map((n) => ("error" in n ? (walkNode(n.ref_id) ?? bigWalkNode(n.ref_id) ?? largeRunNode(n.ref_id) ?? n) : n));
         return { ...found, nodes, returned: nodes.filter((n) => !("error" in n)).length };
       }
       case "graph/graph-neighbors":
-        return neighbors(String(c["ref_id"]), c["edge_type"] as string[] | undefined);
+        return largeRunNeighbors(String(c["ref_id"]), c["edge_type"] as string[] | undefined) ?? neighbors(String(c["ref_id"]), c["edge_type"] as string[] | undefined);
+      case "graph/graph-edges":
+        return fixtureEdges(c, (ref, types) => largeRunNeighbors(ref, types) ?? neighbors(ref, types));
       case "sheets/get-values":
         return sheet(c);
       case "graph/graph-search":
@@ -126,8 +134,43 @@ export function createFixtureClient(): StrutClient {
   };
   return {
     async run<T>(type: string, config: Record<string, unknown> = {}): Promise<T> {
-      await pause(120);
+      if (latencyMs > 0) await pause(latencyMs);
       return answer(type, config) as T;
     },
   };
+}
+
+/** graph/graph-edges over the fixtures' neighbours: the edges within the set, then the lineage climbed, as the step answers. */
+function fixtureEdges(c: Record<string, unknown>, near: (ref: string, edgeTypes?: string[]) => GraphNeighbor[]) {
+  const ids = (c["ref_ids"] as string[] | undefined) ?? [];
+  const within = new Set([...ids, ...((c["among"] as string[] | undefined) ?? [])]);
+  const edges = new Map<string, { source: string; target: string; edge_type: string }>();
+  const add = (e: { source: string; target: string; edge_type: string }) => edges.set(`${e.source}|${e.edge_type}|${e.target}`, e);
+  for (const id of ids) {
+    for (const n of near(id)) {
+      if (!within.has(n.ref_id) || n.ref_id === id) continue;
+      add(n.direction === "forward" ? { source: id, target: n.ref_id, edge_type: n.edge_type } : { source: n.ref_id, target: id, edge_type: n.edge_type });
+    }
+  }
+  const ancestors: Array<{ ref_id: string; node_type: string; name: string }> = [];
+  const lineage = typeof c["lineage"] === "string" ? c["lineage"] : null;
+  if (lineage) {
+    const known = new Set(within);
+    let level = ids;
+    for (let d = 0; d < (Number(c["depth"]) || 10) && level.length; d++) {
+      const next: string[] = [];
+      for (const id of level) {
+        for (const n of near(id, [lineage])) {
+          if (n.direction !== "reverse") continue;
+          add({ source: n.ref_id, target: id, edge_type: lineage });
+          if (known.has(n.ref_id)) continue;
+          known.add(n.ref_id);
+          ancestors.push({ ref_id: n.ref_id, node_type: n.node_type, name: n.name });
+          next.push(n.ref_id);
+        }
+      }
+      level = next;
+    }
+  }
+  return { edges: [...edges.values()], ancestors, truncated: false };
 }

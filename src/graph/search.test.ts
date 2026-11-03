@@ -348,6 +348,49 @@ for (const tb of testBackends()) {
       assert.deepEqual(await reader.connectionCounts(ids["research"]!), [{ edge_type: "CHILD_OF", target_type: "Concept", direction: "in", count: 1 }]);
     });
 
+    it("edgesAmong: the edges within a set, each once, from either end; capped and said so", async () => {
+      const key = (e: { source: string; edge_type: string; target: string }) => `${e.source}|${e.edge_type}|${e.target}`;
+      const pair = await reader.edgesAmong([ids["wfv"]!, ids["wf1"]!]);
+      assert.deepEqual(pair.edges.map(key).sort(), [`${ids["wf1"]}|ACTIVE_VERSION|${ids["wfv"]}`, `${ids["wfv"]}|VERSION_OF|${ids["wf1"]}`].sort());
+      assert.equal(pair.truncated, false);
+      // `among` widens what an edge may lead to, not what is anchored: run → wfv is found from wfv.
+      const wider = await reader.edgesAmong([ids["wfv"]!], [ids["run"]!, ids["stepEmail"]!]);
+      assert.deepEqual(wider.edges.map(key).sort(), [`${ids["run"]}|EXECUTED|${ids["wfv"]}`, `${ids["wfv"]}|USES_STEP|${ids["stepEmail"]}`].sort());
+      assert.deepEqual((await reader.edgesAmong([ids["run"]!, ids["stepEmail"]!])).edges, [], "no edge between them");
+      const capped = await reader.edgesAmong([ids["wfv"]!], [ids["wf1"]!, ids["run"]!, ids["stepEmail"]!], 2);
+      assert.equal(capped.edges.length, 2);
+      assert.equal(capped.truncated, true);
+      assert.deepEqual(await reader.edgesAmong([]), { edges: [], truncated: false });
+    });
+
+    it("incoming: the nodes with an edge of one type into each; an unknown or unsafe type has none", async () => {
+      const up = await reader.incoming([ids["research"]!, ids["playbook"]!], "CHILD_OF");
+      assert.deepEqual(up.map((x) => [x.target, x.node.ref_id, x.node.node_type, x.node.properties["name"]]), [[ids["research"], ids["playbook"], "Concept", "Webhook research playbook"]]);
+      assert.deepEqual(await reader.incoming([ids["research"]!], "NO_SUCH_EDGE"), []);
+      assert.deepEqual(await reader.incoming([ids["research"]!], "CHILD_OF]->() DETACH DELETE (x"), []);
+      assert.deepEqual(await reader.incoming([], "CHILD_OF"), []);
+    });
+
+    it("graph/graph-edges: the edges, and the lineage climbed along one edge type, in one call", async () => {
+      const { default: step } = await import("../steps/lib/graph/graph-edges.js");
+      const ctx = { services: { graph: b } } as never;
+      const out = (await step.run({ ref_ids: [ids["research"]!], lineage: "CHILD_OF" }, ctx)) as {
+        edges: Array<{ source: string; target: string; edge_type: string }>;
+        ancestors: Array<{ ref_id: string; node_type: string; name: string }>;
+        truncated: boolean;
+      };
+      assert.deepEqual(out.ancestors, [{ ref_id: ids["playbook"], node_type: "Concept", name: "Webhook research playbook" }]);
+      assert.deepEqual(out.edges, [{ source: ids["playbook"], target: ids["research"], edge_type: "CHILD_OF" }]);
+      assert.equal(out.truncated, false);
+      // A parent the view already shows is an edge, not an ancestor.
+      const shown = (await step.run({ ref_ids: [ids["research"]!], among: [ids["playbook"]!], lineage: "CHILD_OF" }, ctx)) as typeof out;
+      assert.deepEqual(shown.ancestors, []);
+      assert.deepEqual(shown.edges, [{ source: ids["playbook"], target: ids["research"], edge_type: "CHILD_OF" }]);
+      const flat = (await step.run({ ref_ids: [ids["wfv"]!, ids["wf1"]!] }, ctx)) as typeof out;
+      assert.equal(flat.edges.length, 2);
+      assert.deepEqual(flat.ancestors, []);
+    });
+
     it("search: fulltext + semantic fusion, title boost, envelope, edge counts, soft-delete exclusion", async () => {
       const r = await reader.search({ q: "harvey", include_edge_counts: true });
       assert.ok(r.total >= 2);

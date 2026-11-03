@@ -2,8 +2,8 @@
 // (src/components/strut-run-graph/index.tsx): the tree of graph calls, the
 // replay, the lanes and lineage, the child runs and peers — unchanged. What
 // moved is the data path: hive fetched a trace its server built; here the
-// page builds it (./reader.ts) from `run/events` and `graph/graph-get-batched`
-// / `graph/graph-neighbors`, through the one client, on the importing app's
+// page builds it (./reader.ts) from `run/events`, `graph/graph-get-batched`
+// and `graph/graph-edges`, through the one client, on the importing app's
 // grants. Hive's Graph Explorer link is gone (strut has no explorer page).
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -12,13 +12,16 @@ import {
   ChevronRight,
   Crosshair,
   Eye,
+  Layers,
   ListTree,
+  AlertTriangle,
   Loader2,
   PenLine,
   X,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 import {
   ancestorsOf,
@@ -31,6 +34,7 @@ import {
   launchSections,
   layoutRunGraph,
   lineageParents,
+  placeKey,
   nodeText,
   parseQualifiedRef,
   projectWithLaunches,
@@ -54,26 +58,68 @@ import {
   type RunGraphNode,
   type RunGraphNodeBody,
   type RunGraphPeer,
+  type RunGraphPlace,
+  type RunGraphQueryValue,
   type RunGraphTrace,
   type RunGraphTreeNode,
 } from "@strut/kit";
 import { isProvenanceType, runGraphColorMap } from "../../lib/colors";
-import { errorText } from "../../lib/format";
+import { errorText, toolLabel } from "../../lib/format";
 import { getNodes } from "../../lib/graph";
 import { ReplayBar } from "../ReplayBar";
 import { RunGraphNodeReader } from "./NodeReader";
 import { RunGraphCanvas, type RunGraphCanvasNode } from "./RunGraphCanvas";
 import { RunGraphReader } from "./reader";
+import type { ReplayClock } from "../../lib/replay-clock";
 
 /** Refresh cadence while the run is still going. */
 const LIVE_POLL_MS = 10_000;
+/** A cell draws this many of one parent's children, or of its loose nodes of one type (fewer when it has many parents), and folds the rest into "+N". */
+const FOLD_CAP = 8;
+/** The arc between two nodes on a ring once folded: only a few are named, so they sit closer than names would need. */
+const FOLD_ARC = 36;
+/** A loop of more iterations than this draws them in one box, one at a time, marked "×N" — a click draws them all. */
+const STACK_AFTER = 3;
+/** Members a click on a "+N" node shows at a time, around it. */
+const REVEAL = 40;
+/** Rings of revealed members around their "+N" node: the first's radius, then the step out and the arc between two. */
+const REVEAL_RING = 46;
+const REVEAL_STEP = 34;
+
+/** The `i`th member revealed around its "+N" node, on rings that fill outward. */
+function revealPoint(i: number): { x: number; y: number } {
+  let ring = 0;
+  let first = 0;
+  for (;;) {
+    const r = REVEAL_RING + ring * REVEAL_STEP;
+    const fits = Math.max(6, Math.floor((2 * Math.PI * r) / REVEAL_STEP));
+    if (i < first + fits) {
+      const a = -Math.PI / 2 + ((i - first) / fits) * 2 * Math.PI;
+      return { x: Math.cos(a) * r, y: Math.sin(a) * r };
+    }
+    first += fits;
+    ring++;
+  }
+}
+
+/** A node as a click hands it on (`onSelectNode`). */
+export interface RunGraphSelection {
+  ref_id: string;
+  node_type: string;
+  name: string;
+}
 /** A run that touched fewer nodes than this opens the runs it launched on its own. */
 const AUTO_OPEN_BELOW = 10;
 
-/** Width the legend takes at the right of the canvas: `w-52` and its margin. */
-const LEGEND_INSET = 232;
-
-const ACCESS_LABEL: Record<RunGraphAccess, string> = { read: "Reads", write: "Writes" };
+/** The calls shown, cycled by one button: all of them, the reads, the writes. */
+type CallFilter = "all" | RunGraphAccess;
+const NEXT_FILTER: Record<CallFilter, CallFilter> = { all: "read", read: "write", write: "all" };
+const FILTER_TITLE: Record<CallFilter, string> = {
+  all: "All calls — click for the reads only",
+  read: "The reads only — click for the writes only",
+  write: "The writes only — click for all calls",
+};
+const FILTER_ICON: Record<CallFilter, typeof Eye> = { all: Layers, read: Eye, write: PenLine };
 
 function AccessIcon({ access, className }: { access: RunGraphAccess; className?: string }) {
   const Icon = access === "write" ? PenLine : Eye;
@@ -447,27 +493,39 @@ function NodeDetail({
   );
 }
 
-function CurrentCall({ call, index, total }: { call: RunGraphCall; index: number; total: number }) {
+/** A query value as a person reads it: a node's id as the node's name, where one is known (`named`: then the field's name is left out); a list of them as its first and how many more. */
+function queryText(value: RunGraphQueryValue, nameOf: (id: string) => string | undefined): { text: string; full: string; named: boolean } {
+  const values = Array.isArray(value) ? value : [value];
+  const named = values.some((v) => typeof v === "string" && nameOf(v) !== undefined);
+  const items = values.map((v) => (typeof v === "string" ? (nameOf(v) ?? v) : String(v)));
+  const text = named && items.length > 1 ? `${items[0]}, +${items.length - 1} more` : items.join(", ");
+  return { text, full: items.join("\n"), named };
+}
+
+function CurrentCall({ call, index, total, nameOf }: { call: RunGraphCall; index: number; total: number; nameOf: (id: string) => string | undefined }) {
   const query = Object.entries(call.query);
   return (
-    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs" data-testid="run-graph-current-call">
+    <div className="flex items-center gap-x-3 overflow-hidden whitespace-nowrap text-xs" data-testid="run-graph-current-call">
       <span className="tabular-nums text-muted-foreground">
         Call {index + 1} of {total}
       </span>
       <Badge variant={call.access === "write" ? "default" : "secondary"}>{call.access}</Badge>
-      <span className="font-mono">{call.tool}</span>
+      <span className="font-mono" title={call.tool}>{toolLabel(call.tool)}</span>
       <span className="text-muted-foreground">by the {call.by}</span>
       {call.hits !== undefined && (
         <span className="text-muted-foreground" data-testid="run-graph-call-hits">
           {answerSummary(call)}, drawn only where the run went on to read them
         </span>
       )}
-      {query.map(([key, value]) => (
-        <span key={key} className="max-w-xs truncate text-muted-foreground">
-          {key}{" "}
-          <span className="font-mono text-foreground">{Array.isArray(value) ? value.join(", ") : String(value)}</span>
-        </span>
-      ))}
+      {query.map(([key, value]) => {
+        const { text, full, named } = queryText(value, nameOf);
+        return (
+          <span key={key} className="max-w-xs truncate text-muted-foreground" title={full}>
+            {!named && <>{key} </>}
+            <span className={named ? "text-foreground" : "font-mono text-foreground"}>{text}</span>
+          </span>
+        );
+      })}
     </div>
   );
 }
@@ -480,9 +538,11 @@ function CurrentCall({ call, index, total }: { call: RunGraphCall; index: number
  *
  * Generic over workflows: give it a run (`workflow` + `runId`). The importing
  * app needs the run's workflow — and the workflow of any child run it opens —
- * in `grants.workflows`, and `graph/graph-get-batched` and
- * `graph/graph-neighbors` in `grants.steps`; without the graph steps the
- * nodes are drawn as the run's log named them.
+ * in `grants.workflows`, and `graph/graph-get-batched`, `graph/graph-edges`
+ * and `graph/graph-neighbors` in `grants.steps` — without `graph-edges` the
+ * edges and lineage are read a node at a time through `graph-neighbors`,
+ * slowly; without the graph steps the nodes are drawn as the run's log
+ * named them.
  *
  * A branch of the tree can be shown on its own — the crosshair on its row,
  * or `scope` — one iteration of a loop, or one subflow of it: its calls
@@ -498,6 +558,14 @@ export function RunGraph({
   live = false,
   fill = false,
   scope: scopeProp = null,
+  highlight: highlightProp,
+  selected: selectedProp,
+  onSelectNode,
+  details = true,
+  calls: callsProp = true,
+  play = "steady",
+  onReplay,
+  clock,
 }: {
   workflow: string;
   runId: string;
@@ -512,15 +580,40 @@ export function RunGraph({
    * reader can climb out of it and into another; a change to it is followed.
    */
   scope?: string | null;
+  /** Ref_ids to stand out (a lens's): the rest dims where it is. A change never moves anything. */
+  highlight?: string[];
+  /** The selected node, held by the app (a lens's panel); omit to let the graph hold it. */
+  selected?: string | null;
+  /** A node was clicked: a lens's panel can answer it, and select a node itself through `selected`. */
+  onSelectNode?: (node: RunGraphSelection) => void;
+  /** Open the selected node's own panel over the graph (default true); false when the app has a panel of its own. */
+  details?: boolean;
+  /** Open with the list of calls beside the graph (default true); closed, a toggle opens it — a lens screen gives the graph the room. */
+  calls?: boolean;
+  /**
+   * How Play moves: "steady" (default) pans across the lanes at one speed and
+   * shows each call as the pan reaches it; "timed" keeps the run's own pace
+   * between calls, the view staying where it is.
+   */
+  play?: "steady" | "timed";
+  /** Where the replay stands, as its call's time (epoch ms) — null on the whole run: another view (an AgentTrace's `cursor`) can follow it. */
+  onReplay?: (at: number | null) => void;
+  /** The same, frame by frame while a steady play moves (./lib/replay-clock.ts): what an AgentTrace scrolls by. */
+  clock?: ReplayClock;
 }) {
   const [trace, setTrace] = useState<RunGraphTrace | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [shown, setShown] = useState<Record<RunGraphAccess, boolean>>({ read: true, write: true });
+  const [filter, setFilter] = useState<CallFilter>("all");
   const [typeOverrides, setTypeOverrides] = useState<Record<string, boolean>>({});
   /** Index of the current call; null = the whole run. */
   const [step, setStep] = useState<number | null>(null);
   const [playing, setPlaying] = useState(false);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [ownSelected, setOwnSelected] = useState<string | null>(null);
+  const [callsOpen, setCallsOpen] = useState(callsProp);
+  /** Loops drawn with every iteration side by side (a click on their "×N"). */
+  const [openLanes, setOpenLanes] = useState<ReadonlySet<string>>(new Set());
+  const selectedId = selectedProp !== undefined ? selectedProp : ownSelected;
+  const highlight = useMemo(() => new Set(highlightProp ?? []), [highlightProp]);
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   /** The branch shown, as its path under the run; null = the whole run. */
   const [scope, setScope] = useState<string | null>(scopeProp);
@@ -586,11 +679,21 @@ export function RunGraph({
   );
   const sections = useMemo(() => launchSections(launches, scope), [launches, scope]);
   const inScope = useMemo(() => scopeCalls(allCalls, scope), [allCalls, scope]);
-  const calls = useMemo(() => inScope.filter((call) => shown[call.access]), [inScope, shown]);
+  const calls = useMemo(() => (filter === "all" ? inScope : inScope.filter((call) => call.access === filter)), [inScope, filter]);
   const current = step !== null && step < calls.length ? step : null;
 
   const tree = useMemo(() => buildRunGraphTree(calls), [calls]);
   const nodeById = useMemo(() => new Map(graph.nodes.map((n) => [n.ref_id, n])), [graph.nodes]);
+  /** A node's name by the id a call's query named it by — the graph's, else what the run's log said. */
+  const nameOf = useCallback(
+    (id: string) => {
+      const n = nodeById.get(id);
+      if (n?.name && n.name !== id) return n.name;
+      const said = calls.flatMap((c) => c.nodes).find((x) => (x.ref_id === id || parseQualifiedRef(x.ref_id).refId === id) && x.name);
+      return said?.name;
+    },
+    [nodeById, calls],
+  );
 
   // A node's body is read when it is first selected and kept, so coming back to it asks nothing.
   const [bodies, setBodies] = useState<Record<string, NodeBodyState>>({});
@@ -655,6 +758,7 @@ export function RunGraph({
     return runGraphLinks(graph.edges, runGraphHops(calls)).filter((l) => ids.has(l.source) && ids.has(l.target));
   }, [graphNodes, graph.edges, calls]);
   const hopCount = useMemo(() => links.filter((l) => l.hops.length > 0).length, [links]);
+  const typeOf = useMemo(() => new Map(drawn.map((n) => [n.ref_id, n.node_type])), [drawn]);
   const layout = useMemo(
     () =>
       layoutRunGraph(
@@ -663,11 +767,80 @@ export function RunGraph({
         links,
         parents,
         sections,
+        1.6,
+        { cap: FOLD_CAP, typeOf, arc: FOLD_ARC },
+        { after: STACK_AFTER, open: openLanes },
       ),
-    [calls, graphNodes, links, parents, sections],
+    [calls, graphNodes, links, parents, sections, typeOf, openLanes],
+  );
+
+  // A "+N" node's members, shown around it a click at a time: laid over the
+  // layout, never into it, so nothing else moves.
+  const [revealed, setRevealed] = useState<ReadonlyMap<string, number>>(new Map());
+  const shownLayout = useMemo(() => {
+    if (revealed.size === 0) return layout;
+    const places = new Map<string, RunGraphPlace>(layout.places);
+    for (const [id, count] of revealed) {
+      const cluster = layout.clusters.get(id);
+      const at = cluster && layout.places.get(placeKey(cluster.cell, id));
+      if (!cluster || !at) continue;
+      cluster.members.slice(0, count).forEach((m, i) => {
+        const p = revealPoint(i);
+        places.set(placeKey(cluster.cell, m.id), { id: m.id, cell: cluster.cell, since: m.since, x: at.x + p.x, y: at.y + p.y });
+      });
+    }
+    return { ...layout, places };
+  }, [layout, revealed]);
+  const canvasNodes = useMemo<RunGraphCanvasNode[]>(
+    () => [
+      ...graphNodes,
+      ...[...layout.clusters.values()].map((c) => {
+        const open = Math.min(revealed.get(c.id) ?? 0, c.members.length);
+        const hidden = c.members.slice(open);
+        return { id: c.id, name: "", type: c.type ?? "", cluster: { hidden: hidden.length, highlighted: hidden.filter((m) => highlight.has(m.id)).length, open: open > 0 } };
+      }),
+    ],
+    [graphNodes, layout.clusters, revealed, highlight],
+  );
+  // A "+N" node under its parent is linked to it like a child.
+  const canvasLinks = useMemo<RunGraphLink[]>(
+    () => [...links, ...[...layout.clusters.values()].flatMap((c) => (c.parent ? [{ source: c.parent, target: c.id, edgeType: "PARENT_OF", hops: [] }] : []))],
+    [links, layout.clusters],
   );
 
   const frame = useMemo(() => replayFrame(calls, current ?? calls.length), [calls, current]);
+  /** The step's nodes, and the "+N" nodes that hold some of them. */
+  const activeIds = useMemo(() => {
+    if (frame.active.size === 0 || layout.clusters.size === 0) return frame.active;
+    const ids = new Set(frame.active);
+    for (const c of layout.clusters.values()) if (c.members.some((m) => frame.active.has(m.id))) ids.add(c.id);
+    return ids;
+  }, [frame.active, layout.clusters]);
+
+  /** Select a node (or none), telling the app; a click on a "+N" node shows more of it, or folds it back. */
+  const select = useCallback(
+    (id: string | null) => {
+      if (selectedProp === undefined) setOwnSelected(id);
+      if (id && onSelectNode) {
+        const n = nodeById.get(id);
+        onSelectNode({ ref_id: id, node_type: n?.node_type ?? "", name: n?.name ?? id });
+      }
+    },
+    [selectedProp, onSelectNode, nodeById],
+  );
+  const clickNode = useCallback(
+    (id: string) => {
+      const cluster = layout.clusters.get(id);
+      if (!cluster) return select(id);
+      setRevealed((prev) => {
+        const next = new Map(prev);
+        const now = next.get(id) ?? 0;
+        next.set(id, now >= cluster.members.length ? 0 : Math.min(cluster.members.length, now + REVEAL));
+        return next;
+      });
+    },
+    [layout.clusters, select],
+  );
 
   // The current call's branch is always open.
   useEffect(() => {
@@ -687,11 +860,16 @@ export function RunGraph({
     setExpanded((prev) => (prev.has(root) ? prev : new Set(prev).add(root)));
   }, [tree]);
 
-  // The replay keeps the run's own pace between calls (the kit's clock: a
-  // readable least, an idle stretch cut short), times the speed picked.
+  // A steady play is the canvas's clock: it moves the view and hands each call
+  // on (`onStep`). A timed one — or one with nothing drawn — keeps the run's
+  // own pace between calls (the kit's clock: a readable least, an idle
+  // stretch cut short), times the speed picked.
   const [speed, setSpeed] = useState(1);
+  /** Bumped by Play, back and forward: the view follows the replay again after the viewer dragged it away. */
+  const [refollow, setRefollow] = useState(0);
+  const steady = play === "steady" && graphNodes.length > 0;
   useEffect(() => {
-    if (!playing || current === null) return;
+    if (!playing || current === null || steady) return;
     const next = calls[current + 1];
     const from = replayTime(calls[current]?.startedAt);
     const to = replayTime(next?.startedAt);
@@ -699,7 +877,14 @@ export function RunGraph({
       setStep((s) => (s === null || s + 1 >= calls.length ? null : s + 1));
     }, replayDelay(from !== null && to !== null ? to - from : null, speed));
     return () => clearTimeout(timer);
-  }, [playing, current, calls, speed]);
+  }, [playing, current, calls, speed, steady]);
+
+  const replayAt = current === null ? null : replayTime(calls[current]?.startedAt);
+  useEffect(() => {
+    onReplay?.(replayAt);
+    clock?.set(replayAt);
+  }, [onReplay, clock, replayAt]);
+  const callTimes = useMemo(() => calls.map((c) => replayTime(c.startedAt)), [calls]);
 
   // Playing starts on a call, so the whole run while playing is the end of the replay.
   useEffect(() => {
@@ -796,7 +981,7 @@ export function RunGraph({
   const focus = useCallback((next: string | null) => {
     setPlaying(false);
     setStep(null);
-    setSelectedId(null);
+    setOwnSelected(null);
     setExpanded(new Set());
     setScope(next);
   }, []);
@@ -856,10 +1041,20 @@ export function RunGraph({
             position={current ?? calls.length}
             total={calls.length}
             playing={playing}
-            onPlay={togglePlay}
+            onPlay={() => {
+              setRefollow((n) => n + 1);
+              togglePlay();
+            }}
             onPause={togglePlay}
-            onStepBack={() => pick(current === null ? last : current - 1)}
-            onStepForward={() => (current === null || current >= last ? showAll() : pick(current + 1))}
+            onStepBack={() => {
+              setRefollow((n) => n + 1);
+              pick(current === null ? last : current - 1);
+            }}
+            onStepForward={() => {
+              setRefollow((n) => n + 1);
+              if (current === null || current >= last) showAll();
+              else pick(current + 1);
+            }}
             canStepBack={current !== 0}
             canStepForward={current !== null}
             onSeek={(value) => (value >= calls.length ? showAll() : pick(value))}
@@ -868,57 +1063,86 @@ export function RunGraph({
             unit="call"
             {...(live && !settled ? { live: { following: current === null, onLive: showAll } } : {})}
           />
-          <div className="flex items-center gap-1">
-            {(Object.keys(ACCESS_LABEL) as RunGraphAccess[]).map((access) => (
+          {(() => {
+            const Icon = FILTER_ICON[filter];
+            return (
               <Button
-                key={access}
-                variant={shown[access] ? "secondary" : "ghost"}
-                size="sm"
-                className="h-7 gap-1.5 text-xs"
-                aria-pressed={shown[access]}
+                variant={filter === "all" ? "ghost" : "secondary"}
+                size="icon"
+                className="h-7 w-7 shrink-0"
+                aria-label={FILTER_TITLE[filter]}
+                title={FILTER_TITLE[filter]}
                 onClick={() => {
                   showAll();
-                  setShown((prev) => ({ ...prev, [access]: !prev[access] }));
+                  setFilter((f) => NEXT_FILTER[f]);
                 }}
+                data-testid="run-graph-filter"
+                data-filter={filter}
               >
-                <AccessIcon access={access} className="h-3 w-3" />
-                {ACCESS_LABEL[access]}
+                <Icon className="h-3.5 w-3.5" />
               </Button>
-            ))}
-          </div>
+            );
+          })()}
         </div>
-        {current !== null ? (
-          <CurrentCall call={calls[current]} index={current} total={calls.length} />
-        ) : scope !== null && inScope.length === 0 ? (
-          <p className="text-xs text-muted-foreground" data-testid="run-graph-summary">
-            Nothing under {scopeLabel} touched the graph.
-          </p>
-        ) : (
-          <p className="text-xs text-muted-foreground" data-testid="run-graph-summary">
-            {calls.length} calls{scope !== null ? ` under ${scopeLabel}` : ""} read or wrote {touched.length} nodes
-            {live && !settled ? " so far" : ""}
-            {lineage.length > 0
-              ? `, under the ${lineage.length === 1 ? "1 node" : `${lineage.length} nodes`} they descend from`
-              : ""}
-            , along {hopCount === 1 ? "1 hop" : `${hopCount} hops`}. Step through them, or pick one in the tree.
-            {trace.truncated ? " The run touched more than are shown." : ""}
-          </p>
-        )}
-        {(trace.nodesRead === false || trace.edgesRead === false || trace.lineageRead === false) && (
-          <p className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground" data-testid="run-graph-unread">
-            {trace.nodesRead === false
-              ? `The graph did not answer${unreadReason}, so the nodes are as the run's log named them and only the hops the run took are drawn.`
-              : trace.edgesRead === false
-                ? `The graph did not answer for the edges among these nodes${unreadReason}, so only the hops the run took are drawn.`
-                : `The graph did not answer for the lineage of these nodes${unreadReason}, so they are drawn without the nodes they descend from.`}
-            <Button variant="outline" size="sm" className="h-6 text-xs" onClick={() => setGeneration((g) => g + 1)}>
-              Ask again
-            </Button>
-          </p>
-        )}
+        {/* One fixed row for the step's call or the run's summary: scrubbing never moves the graph. */}
+        <div className="flex h-8 min-w-0 items-center gap-2" data-testid="run-graph-caption">
+          <Button
+            variant={callsOpen ? "secondary" : "ghost"}
+            size="icon"
+            className="h-7 w-7 shrink-0"
+            aria-label={callsOpen ? "Hide the calls" : "Show the calls"}
+            aria-pressed={callsOpen}
+            title={callsOpen ? "Hide the calls" : "Show the calls"}
+            onClick={() => setCallsOpen((o) => !o)}
+            data-testid="run-graph-calls-toggle"
+          >
+            <ListTree className="h-3.5 w-3.5" />
+          </Button>
+          <div className="min-w-0 flex-1 overflow-hidden">
+            {current !== null ? (
+              <CurrentCall call={calls[current]} index={current} total={calls.length} nameOf={nameOf} />
+            ) : scope !== null && inScope.length === 0 ? (
+              <p className="truncate text-xs text-muted-foreground" data-testid="run-graph-summary">
+                Nothing under {scopeLabel} touched the graph.
+              </p>
+            ) : (
+              <p className="line-clamp-2 text-xs text-muted-foreground" data-testid="run-graph-summary">
+                {calls.length} calls{scope !== null ? ` under ${scopeLabel}` : ""} read or wrote {touched.length} nodes
+                {live && !settled ? " so far" : ""}
+                {lineage.length > 0
+                  ? `, under the ${lineage.length === 1 ? "1 node" : `${lineage.length} nodes`} they descend from`
+                  : ""}
+                {hopCount > 0 ? `, along ${hopCount === 1 ? "1 hop" : `${hopCount} hops`}` : ""}. Step through them{callsOpen ? ", or pick one in the list" : ""}.
+                {trace.truncated ? " The run touched more than are shown." : ""}
+              </p>
+            )}
+          </div>
+          {(trace.nodesRead === false || trace.edgesRead === false || trace.lineageRead === false) && (
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button variant="outline" size="sm" className="h-6 shrink-0 gap-1 px-2 text-xs text-amber-600 dark:text-amber-400" aria-label="Part of the graph did not answer" data-testid="run-graph-unread">
+                  <AlertTriangle className="h-3 w-3" /> partial
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="end" className="w-80 text-xs" data-testid="run-graph-unread-detail">
+                <p className="mb-2 text-muted-foreground">
+                  {trace.nodesRead === false
+                    ? `The graph did not answer${unreadReason}, so the nodes are as the run's log named them and only the hops the run took are drawn.`
+                    : trace.edgesRead === false
+                      ? `The graph did not answer for the edges among these nodes${unreadReason}, so only the hops the run took are drawn.`
+                      : `The graph did not answer for the lineage of these nodes${unreadReason}, so they are drawn without the nodes they descend from.`}
+                </p>
+                <Button variant="outline" size="sm" className="h-6 text-xs" onClick={() => setGeneration((g) => g + 1)}>
+                  Ask again
+                </Button>
+              </PopoverContent>
+            </Popover>
+          )}
+        </div>
       </div>
 
-      <div className={cn("grid grid-cols-[minmax(220px,260px)_1fr]", fill ? "min-h-0 flex-1" : "h-[640px]")}>
+      <div className={cn("grid", callsOpen ? "grid-cols-[minmax(220px,260px)_1fr]" : "grid-cols-1", fill ? "min-h-0 flex-1" : "h-[640px]")}>
+        {callsOpen && (
         <div className="overflow-y-auto border-r py-1" data-testid="run-graph-tree">
           {scope !== null && (
             <nav
@@ -962,22 +1186,32 @@ export function RunGraph({
             />
           )}
         </div>
-        <div className="relative min-w-0 overflow-hidden" data-testid="run-graph-canvas">
+        )}
+        <div className="flex min-h-0 min-w-0 flex-col">
+        <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden" data-testid="run-graph-canvas">
           {graphNodes.length > 0 && (
             <RunGraphCanvas
-              layout={layout}
-              nodes={graphNodes}
-              links={links}
+              layout={shownLayout}
+              nodes={canvasNodes}
+              links={canvasLinks}
               colorMap={colorMap}
-              activeIds={frame.active}
+              activeIds={activeIds}
               selectedId={selectedId}
+              highlight={highlight}
               step={current}
-              insetRight={LEGEND_INSET}
-              onNodeClick={setSelectedId}
+              follow={current ?? (live && !settled ? calls.length - 1 : null)}
+              playing={playing && steady}
+              speed={speed}
+              onStep={setStep}
+              refollow={refollow}
+              times={callTimes}
+              onFrame={clock?.set}
+              onNodeClick={clickNode}
               onFocus={focusLane}
+              onOpenLane={(key) => setOpenLanes((prev) => new Set(prev).add(key))}
             />
           )}
-          {selected && (
+          {selected && details && (
             <NodeDetail
               node={selected}
               color={colorMap[selected.node_type] ?? "#6b7280"}
@@ -994,47 +1228,41 @@ export function RunGraph({
               body={bodies[selected.ref_id]}
               onRead={() => void readNode(selected.ref_id)}
               onPick={pick}
-              onSelect={setSelectedId}
-              onClose={() => setSelectedId(null)}
+              onSelect={select}
+              onClose={() => select(null)}
             />
           )}
-          <ul
-            className="absolute bottom-3 right-3 flex max-h-[60%] w-52 flex-col gap-0.5 overflow-y-auto rounded-lg border bg-card p-2 text-xs"
-            data-testid="run-graph-legend"
-          >
-            {typeCounts.map(([type, count]) => {
-              const visible = typeVisible(type);
-              return (
-                <li key={type}>
-                  <button
-                    type="button"
-                    aria-pressed={visible}
-                    onClick={() => setTypeOverrides((prev) => ({ ...prev, [type]: !visible }))}
-                    className={`flex w-full items-center gap-2 rounded px-1 py-0.5 text-left hover:bg-muted/60 ${
-                      visible ? "" : "text-muted-foreground line-through"
-                    }`}
-                  >
-                    <span
-                      className="inline-block size-2.5 shrink-0 rounded-full"
-                      style={{
-                        backgroundColor: visible ? colorMap[type] : "transparent",
-                        border: `1px solid ${colorMap[type]}`,
-                      }}
-                    />
-                    <span className="min-w-0 flex-1 truncate">{type}</span>
-                    <span className="tabular-nums text-muted-foreground">{count}</span>
-                  </button>
-                </li>
-              );
-            })}
-            <li className="mt-1 flex items-center gap-2 border-t px-1 pt-1.5 text-muted-foreground">
-              <span className="inline-block h-px w-2.5 shrink-0 bg-muted-foreground" />
-              An edge of the graph
-            </li>
-            <li className="flex items-center gap-2 px-1 text-muted-foreground">
-              <ArrowRight className="-mx-px h-3 w-3 shrink-0 text-sky-500" />A hop the run took
-            </li>
-          </ul>
+        </div>
+        {/* The legend, one line under the graph: it never covers it. */}
+        <ul className="flex h-8 shrink-0 items-center gap-3 overflow-x-auto whitespace-nowrap border-t px-3 text-xs" data-testid="run-graph-legend">
+          {typeCounts.map(([type, count]) => {
+            const visible = typeVisible(type);
+            return (
+              <li key={type}>
+                <button
+                  type="button"
+                  aria-pressed={visible}
+                  onClick={() => setTypeOverrides((prev) => ({ ...prev, [type]: !visible }))}
+                  className={`flex items-center gap-1.5 rounded px-1 py-0.5 hover:bg-muted/60 ${visible ? "" : "text-muted-foreground line-through"}`}
+                >
+                  <span
+                    className="inline-block size-2.5 shrink-0 rounded-full"
+                    style={{ backgroundColor: visible ? colorMap[type] : "transparent", border: `1px solid ${colorMap[type]}` }}
+                  />
+                  {type}
+                  <span className="tabular-nums text-muted-foreground">{count.toLocaleString("en-US")}</span>
+                </button>
+              </li>
+            );
+          })}
+          <li className="flex items-center gap-1.5 text-muted-foreground">
+            <span className="inline-block h-px w-2.5 shrink-0 bg-muted-foreground" />
+            an edge
+          </li>
+          <li className="flex items-center gap-1.5 text-muted-foreground">
+            <ArrowRight className="-mx-px h-3 w-3 shrink-0 text-sky-500" />a hop the run took
+          </li>
+        </ul>
         </div>
       </div>
     </div>

@@ -7,7 +7,7 @@ import { StrutProvider, useStrutClient, useStrutHost } from "@strut/kit";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import {
-  AgentTrace, ArtifactView, DocumentView, LaunchForm, RunHealth, NodeCard, NodeGraph, NodeSearch, RunGraph, RunList, RunStatus, RunTimeline, SheetView, SHEETS_STEP, Transcript, WalkView, WorkProducts,
+  AgentTrace, ArtifactView, DocumentView, LaunchForm, RunHealth, NodeCard, NodeGraph, NodeSearch, RunGraph, RunList, RunStatus, RunTimeline, SheetView, SHEETS_STEP, Transcript, WalkView, WorkProducts, type RunGraphSelection,
 } from "./index";
 import { createFixtureClient } from "./fixtures/client";
 import { TRANSCRIPT_MARKS } from "./fixtures/content";
@@ -17,6 +17,8 @@ import { TRACE_LIVE_RUN_ID, TRACE_RUN_ID } from "./fixtures/trace";
 import { COVENANT_RANGE, COVENANT_SHEET, COVENANT_SOURCES, DEVIATIONS_CSV, NDA_RANGE, NDA_SHEET, NDA_SOURCES, NDA_WORKFLOW } from "./fixtures/sheets";
 import { MATTER_LIVE_RUN_ID, MATTER_RUN_ID, MATTER_WORKFLOW } from "./fixtures/matter";
 import { AGENT_WALK_RUN_ID, WALK_JOIN_RUN_ID, WALK_LIVE_RUN_ID, WALK_RUN_ID, WALK_WORKFLOW } from "./fixtures/walk";
+import { BIG_WALK_RUN_ID } from "./fixtures/walk-large";
+import { LARGE_RUN_HIGHLIGHTS, LARGE_RUN_ID, LARGE_RUN_WORKFLOW } from "./fixtures/run-large";
 
 interface Entry {
   name: string;
@@ -132,7 +134,8 @@ function WorkProductsDemo() {
  * A graph/walk step live from its start (its log revealed a hop and a half
  * at each read), joined mid-walk, finished (at its end, the controls to step
  * back), a finished run opened in replay (playing from its start at the pace
- * it ran), or an agent walking the same tree by its own calls.
+ * it ran), an agent walking the same tree by its own calls, or a walk over
+ * a very large graph (2,000 candidates, names past 120 characters).
  */
 function WalkDemo() {
   const demos = [
@@ -141,8 +144,11 @@ function WalkDemo() {
     ["done", "finished"],
     ["replay", "finished, opened in replay"],
     ["agent", "an agent's own graph calls"],
+    ["big", "a very large graph (2,000 candidates)"],
   ] as const;
   const [shown, setShown] = useState<(typeof demos)[number][0]>("live");
+  // The view in a panel of its own width: it sizes by its container, never the window.
+  const [width, setWidth] = useState<number | null>(null);
   return (
     <div className="flex flex-col gap-3">
       <div className="flex flex-wrap gap-1">
@@ -152,11 +158,102 @@ function WalkDemo() {
           </button>
         ))}
       </div>
-      {shown === "live" && <WalkView key="live" workflow={WALK_WORKFLOW} runId={WALK_LIVE_RUN_ID} live intervalMs={1200} />}
-      {shown === "join" && <WalkView key="join" workflow={WALK_WORKFLOW} runId={WALK_JOIN_RUN_ID} live intervalMs={2500} />}
-      {shown === "done" && <WalkView key="done" workflow={WALK_WORKFLOW} runId={WALK_RUN_ID} />}
-      {shown === "replay" && <WalkView key="replay" workflow={WALK_WORKFLOW} runId={WALK_RUN_ID} replay />}
-      {shown === "agent" && <WalkView key="agent" workflow={WALK_WORKFLOW} runId={AGENT_WALK_RUN_ID} />}
+      <div className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground" role="group" aria-label="Panel width">
+        <span className="mr-1">Panel</span>
+        {([null, 480, 900, 1400] as const).map((w) => (
+          <button key={String(w)} type="button" onClick={() => setWidth(w)} aria-pressed={width === w} className={cn("rounded-md border px-2 py-0.5", width === w ? "bg-muted font-medium text-foreground" : "hover:bg-muted/60")} data-testid={`walk-demo-width-${w ?? "fill"}`}>
+            {w ? `${w.toLocaleString("en-US")} px` : "fill"}
+          </button>
+        ))}
+      </div>
+      <div className="overflow-x-auto">
+        <div className={cn(width && "rounded-lg border border-dashed p-3")} style={width ? { width, boxSizing: "content-box" } : undefined} data-testid="walk-demo-panel">
+          {shown === "live" && <WalkView key="live" workflow={WALK_WORKFLOW} runId={WALK_LIVE_RUN_ID} live intervalMs={1200} />}
+          {shown === "join" && <WalkView key="join" workflow={WALK_WORKFLOW} runId={WALK_JOIN_RUN_ID} live intervalMs={2500} />}
+          {shown === "done" && <WalkView key="done" workflow={WALK_WORKFLOW} runId={WALK_RUN_ID} />}
+          {shown === "replay" && <WalkView key="replay" workflow={WALK_WORKFLOW} runId={WALK_RUN_ID} replay />}
+          {shown === "agent" && <WalkView key="agent" workflow={WALK_WORKFLOW} runId={AGENT_WALK_RUN_ID} />}
+          {shown === "big" && <WalkView key="big" workflow={WALK_WORKFLOW} runId={BIG_WALK_RUN_ID} />}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** What a lens would highlight, by run. */
+const LENSES = {
+  normal: { walk: [REF.medicine, REF.cardiology, REF.arrhythmia], sources: [REF.guideline, REF.trial] },
+  large: { walk: LARGE_RUN_HIGHLIGHTS.walk, sources: LARGE_RUN_HIGHLIGHTS.products },
+} as const;
+
+/**
+ * RunGraph as a run screen's master view: a lens highlights part of it (the
+ * rest dims where it is) and a panel beside it answers a click — the app
+ * holds the selection. The large run touches about 3,000 nodes.
+ */
+function RunGraphDemo() {
+  const [run, setRun] = useState<"normal" | "large">("normal");
+  const [lens, setLens] = useState<"none" | "walk" | "sources">("none");
+  const [selected, setSelected] = useState<RunGraphSelection | null>(null);
+  const [width, setWidth] = useState<number | null>(null);
+  const highlight = useMemo(() => (lens === "none" ? undefined : [...LENSES[run][lens]]), [run, lens]);
+  const pick = (r: typeof run) => {
+    setRun(r);
+    setSelected(null);
+  };
+  const lensLabel = { none: "No lens", walk: "Walk", sources: run === "large" ? "Work products" : "Sources" } as const;
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-wrap items-center gap-1 text-xs">
+        {(["normal", "large"] as const).map((r) => (
+          <button key={r} type="button" onClick={() => pick(r)} className={cn("rounded-md border px-2.5 py-1", run === r ? "bg-muted font-medium" : "text-muted-foreground hover:bg-muted/60")} data-testid={`run-graph-demo-${r}`}>
+            {r === "normal" ? "a run" : "a run touching ~3,000 nodes"}
+          </button>
+        ))}
+        <span className="mx-2 text-muted-foreground">Lens</span>
+        {(["none", "walk", "sources"] as const).map((l) => (
+          <button key={l} type="button" onClick={() => setLens(l)} aria-pressed={lens === l} className={cn("rounded-md border px-2.5 py-1", lens === l ? "bg-muted font-medium" : "text-muted-foreground hover:bg-muted/60")} data-testid={`run-graph-lens-${l}`}>
+            {lensLabel[l]}
+          </button>
+        ))}
+      </div>
+      <div className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground" role="group" aria-label="Panel width">
+        <span className="mr-1">Panel</span>
+        {([null, 900, 1400] as const).map((w) => (
+          <button key={String(w)} type="button" onClick={() => setWidth(w)} aria-pressed={width === w} className={cn("rounded-md border px-2 py-0.5", width === w ? "bg-muted font-medium text-foreground" : "hover:bg-muted/60")} data-testid={`run-graph-demo-width-${w ?? "fill"}`}>
+            {w ? `${w.toLocaleString("en-US")} px` : "fill"}
+          </button>
+        ))}
+      </div>
+      <div className="overflow-x-auto">
+        <div className="flex h-[640px] gap-3" style={width ? { width } : undefined} data-testid="run-graph-demo-panel">
+          <div className="min-w-0 flex-1 overflow-hidden rounded-lg border">
+            <RunGraph
+              key={run}
+              workflow={run === "normal" ? WORKFLOW : LARGE_RUN_WORKFLOW}
+              runId={run === "normal" ? RUN_ID : LARGE_RUN_ID}
+              fill
+              {...(highlight ? { highlight } : {})}
+              selected={selected?.ref_id ?? null}
+              onSelectNode={setSelected}
+              details={false}
+              calls={false}
+            />
+          </div>
+          <aside className="flex w-52 shrink-0 flex-col gap-2 rounded-lg border p-3 text-sm" data-testid="run-graph-demo-lens-panel">
+            <p className="font-mono text-[11px] tracking-wide text-muted-foreground uppercase">{lensLabel[lens]}</p>
+            {selected ? (
+              <>
+                <p className="break-words font-medium">{selected.name}</p>
+                <p className="font-mono text-xs text-muted-foreground">{selected.node_type}</p>
+                <button type="button" onClick={() => setSelected(null)} className="self-start text-xs text-muted-foreground hover:text-foreground">clear</button>
+              </>
+            ) : (
+              <p className="text-muted-foreground">{highlight ? `${highlight.length.toLocaleString("en-US")} nodes highlighted. ` : ""}Click a node: the lens's panel answers.</p>
+            )}
+          </aside>
+        </div>
+      </div>
     </div>
   );
 }
@@ -204,14 +301,10 @@ const ENTRIES: Entry[] = [
   },
   {
     name: "RunGraph",
-    what: "Every graph call the run made as a tree, the nodes laid out by stage under their lineage, a replay through the calls, child runs opened in place, a peer's nodes badged.",
-    grants: "grants.workflows: the run's (and its child runs') workflows · grants.steps: graph/graph-get-batched, graph/graph-neighbors",
-    usage: `<RunGraph workflow="research" runId={runId} live />`,
-    demo: () => (
-      <div className="h-[640px] overflow-hidden rounded-lg border">
-        <RunGraph workflow={WORKFLOW} runId={RUN_ID} fill />
-      </div>
-    ),
+    what: "Every graph call the run made as a tree, the nodes laid out by stage under their lineage, a replay through the calls, child runs opened in place, a peer's nodes badged. A run screen's master view: `highlight` (a lens's nodes) dims the rest where it is, `onSelectNode` and `selected` let a lens's panel answer a click. At the scale of a workspace graph a cell folds what it cannot draw into “+N” nodes a click opens, and names only what is highlighted, selected, hovered or folded; the replay never changes its size.",
+    grants: "grants.workflows: the run's (and its child runs') workflows · grants.steps: graph/graph-get-batched, graph/graph-edges, graph/graph-neighbors",
+    usage: `<RunGraph workflow="research" runId={runId} highlight={lens.nodes} selected={picked} onSelectNode={(n) => setPicked(n.ref_id)} details={false} calls={false} />`,
+    demo: () => <RunGraphDemo />,
   },
   {
     name: "AgentTrace",
@@ -222,9 +315,9 @@ const ENTRIES: Entry[] = [
   },
   {
     name: "WalkView",
-    what: "A walk through the graph as it plays out: the path as a trail that grows hop by hop (Law › Corporate / M&A › NDA › …), the node chosen at each hop drawn solid with the candidates it considered beside it — kept ones outlined, dropped ones faded — and the newest hop pulsing. It reads a graph/walk step's hops, or an agent's own graph calls (a listing, then the nodes it read next, one or several at once), and draws them the same way. Live and replay are one view with RunGraph's controls — a hop back, play/pause, a hop on, scrub, speed: joined in flight it shows the hops so far and follows, Live returns to the newest; a finished walk replays from its log alone, at the pace it ran. A click on a node opens its card; Tree draws everything it discovered.",
+    what: "A walk through the graph as it plays out: the path as a trail that grows hop by hop (Law › Corporate / M&A › NDA › …), the node chosen at each hop drawn solid, the candidates it considered behind “+N considered” — kept ones outlined, dropped ones faded — and the newest hop pulsing. It reads a graph/walk step's hops, or an agent's own graph calls (a listing, then the nodes it read next, one or several at once), and draws them the same way. Live and replay are one view with RunGraph's controls above the walk — a hop back, play/pause, a hop on, scrub, speed: joined in flight it shows the hops so far and follows, Live returns to the newest; a finished walk replays from its log alone, at the pace it ran. The walk is laid out whole and the hops shown drawn in place, so scrubbing never changes its height. A click on a node opens it in a drawer over the walk (✕, Esc or a click outside closes it), or hands it to `onOpenNode`; Tree draws everything it discovered, fitted to the width, with pan and zoom. It sizes by its container: try the panel widths.",
     grants: "grants.workflows: the run's workflow · grants.steps: graph/graph-get-batched (a node's card)",
-    usage: `<WalkView workflow="matter-intake" runId={runId} live onOpenNode={(node) => …} />  <WalkView workflow="matter-intake" runId={runId} replay />`,
+    usage: `<WalkView workflow="matter-intake" runId={runId} live />  <WalkView workflow="matter-intake" runId={runId} replay onOpenNode={(node) => …} />`,
     demo: () => <WalkDemo />,
   },
   {

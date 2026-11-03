@@ -33,6 +33,7 @@ import { EventsPanel } from "./components/EventsPanel";
 import { RunOverview } from "./components/RunOverview";
 import { EventsResizer } from "./components/EventsResizer";
 import { SidebarResizer } from "./components/SidebarResizer";
+import { AppRail } from "./components/AppRail";
 import { StepRunFlyout } from "./components/StepRunFlyout";
 import { WorkflowFlyout, claimsTone, type WorkflowTab } from "./components/WorkflowFlyout";
 import { PromoteFlyout } from "./components/PromoteFlyout";
@@ -45,7 +46,7 @@ import { SoloApp } from "./components/SoloApp";
 import { Store } from "./components/Store";
 import { INSTALL_LINK_PARAMS, parseInstallLink, type InstallLink } from "./store-links";
 import { ArtifactViewer } from "./components/ArtifactViewer";
-import { AppGlyph } from "./icons";
+import { AppGlyph, SidebarIcon } from "./icons";
 import { appKey, appMessage, appToolInput } from "./app-links";
 import { RunInputPopover } from "./components/RunInputPopover";
 import { ConfirmButton } from "./components/ConfirmButton";
@@ -208,6 +209,16 @@ function Shell() {
   const [bottomOpen, setBottomOpen] = useState<"tools" | "apps" | null>(
     () => loadPref("sidebarBottom", loadPref("stepsOpen", false) ? "tools" : null),
   );
+  // The sidebar folded down to one tile per app, for an app's page at full
+  // width (persisted). Its sections stay mounted, hidden, so each keeps its
+  // scroll when it comes back.
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => loadPref("sidebarCollapsed", false));
+  const toggleSidebar = useCallback(() => {
+    setSidebarCollapsed((prev) => {
+      savePref("sidebarCollapsed", !prev);
+      return !prev;
+    });
+  }, []);
   const stepsOpen = bottomOpen === "tools";
   const appListOpen = bottomOpen === "apps";
   const [infoStep, setInfoStep] = useState<StepTypeEntry | null>(null);
@@ -1262,10 +1273,22 @@ function Shell() {
     : null;
 
   return (
-    <div class="shell">
+    <div class={`shell${sidebarCollapsed ? " is-sidebar-collapsed" : ""}`}>
       {/* Sidebar */}
       <div class="shell-sidebar">
-        <div class="sidebar-brand"><span class="brand-dot" /> strut</div>
+        <div class="sidebar-brand">
+          {!sidebarCollapsed && <><span class="brand-dot" /> strut</>}
+          <button
+            class="sidebar-toggle"
+            title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+            aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+            aria-expanded={!sidebarCollapsed}
+            onClick={toggleSidebar}
+          >
+            <SidebarIcon />
+          </button>
+        </div>
+        {sidebarCollapsed && <AppRail apps={apps} selected={selectedApp} onSelect={selectApp} />}
 
         <div class="sidebar-section" data-section="workflows">
           <div class="section-title">

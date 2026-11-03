@@ -117,9 +117,39 @@ import { LaunchForm, RunList, RunTimeline, RunGraph } from "strut/views";
 <LaunchForm workflow="score" />            // the input: block, deduped launch, last run
 <RunList workflow="score" onSelect={(r) => setRunId(r.runId)} />
 <RunTimeline workflow="score" runId={runId} />   // status, cost, a row per step (`tree split`: every level, each iteration)
-<RunGraph workflow="score" runId={runId} live />  // the graph calls, replayable
+<RunGraph workflow="score" runId={runId} live />  // the graph calls, replayable; a run screen's master view (below)
 <AgentTrace workflow="score" runId={runId} live /> // the run's agents as a cascade
 <WalkView workflow="score" runId={runId} live />   // a walk through the graph, hop by hop (`replay`: from its start)
+```
+
+`RunGraph` can be a run screen's one master view, with lenses beside it: a
+lens passes `highlight` (the ref_ids it is about: the rest dims where it
+is, nothing moves), and its panel answers a click through `onSelectNode`
+and selects a node itself through `selected`; `details={false}` leaves the
+node's page to that panel, and `calls={false}` starts the call list closed
+behind a toggle, so the graph has the room. It opens zoomed so a stage's
+lane is 62% of its height, at the run's start; the view fits what a lens
+highlights; a button goes back to the whole run. A run that touched
+thousands of nodes draws a few dozen a stage, the rest folded into "+N"
+nodes a click opens, and a loop of many iterations as one box marked "×N"
+that a click lays out side by side. Play pans across the lanes at one
+steady speed, each call's nodes appearing just ahead of the view
+(`play="timed"` keeps the run's own pace instead); a scrub or a step pans
+to the call's lane; a drag stops the following, play or a step resumes it.
+One button cycles the calls shown: all, the reads, the writes.
+
+Other views can follow the graph's replay: `onReplay` hands on the
+current call's time (epoch ms; null on the whole run) — give it to
+`AgentTrace`'s `cursor` to light the rows the replay is on — and `clock`
+(one per screen, `useMemo(createReplayClock, [])`) carries it frame by
+frame while the graph plays, which `AgentTrace`'s `clock` takes to scroll
+to each agent a little before the replay reaches it:
+
+```tsx
+const [at, setAt] = useState<number | null>(null);
+const clock = useMemo(createReplayClock, []);
+<RunGraph workflow="score" runId={runId} onReplay={setAt} clock={clock} />
+<AgentTrace workflow="score" runId={runId} cursor={at} clock={clock} />
 ```
 
 `WorkProducts` is what a run MADE for a person — memos, sheets, redlines,
@@ -139,8 +169,10 @@ plans/work-products.md.
 agents that ran together side by side, their tool calls in pills that open
 into each call and the reasoning before it, the nodes a call read or wrote
 (a click opens one, with `graph/graph-get-batched` granted), sub-agents on
-lanes of their own, and a "Download HTML" of what is on screen. Use it
-rather than folding a run's events into agents yourself.
+lanes of their own, and a "Download HTML" of what is on screen. Nodes
+other than Concepts, two or more in a row, fold into one row a click opens
+("collapse all" folds them again). Use it rather than folding a run's
+events into agents yourself.
 
 `SheetView` draws a spreadsheet work product in the page and fills it in
 as a workflow writes it: a Google Sheet (`spreadsheet`, its id or URL, and
@@ -160,16 +192,17 @@ page may not frame Google Sheets: draw the sheet with SheetView, whose
 
 `WalkView` draws a walk through the graph as it plays out — a `graph/walk`
 step's hops, or an agent reading a Concept tree with its own graph calls,
-drawn the same way: the path as a trail (Law › Corporate / M&A › NDA ›
-…), the candidates each
-hop dropped faded beside the one it chose, the newest hop pulsing. Live and
-replay are one view with RunGraph's controls (a hop back, play/pause, a hop
-on, scrub, speed): joined in flight it shows the hops so far and follows,
-Live returns to the newest; a finished walk replays from the run's log at
-the pace it ran — `replay` opens it playing from the start. Put it at the
-centre of a page that shows a person the harness at work; `path` picks the
-walk when a run took several, `onOpenNode` hears a node opened from its
-card.
+drawn the same way: the path as a trail (Law › Corporate / M&A › NDA › …),
+each hop's other candidates behind "+N considered", the newest hop
+pulsing. Live and replay are one view with RunGraph's controls above the
+walk (a hop back, play/pause, a hop on, scrub, speed): joined in flight it
+shows the hops so far and follows, Live returns to the newest; a finished
+walk replays from the run's log at the pace it ran — `replay` opens it
+playing from the start. Scrubbing never changes its height. A click on a
+node opens it in a drawer over the walk; pass `onOpenNode` to open it your
+own way instead. It sizes by its container, so it works in a half-width
+panel: put it at the centre of a page that shows a person the harness at
+work; `path` picks the walk when a run took several.
 
 Also `RunStatus`, `Transcript` (an agent step's session through
 `run/transcript` — `workflow`, `runId`, `path` — or `messages` you pass),
@@ -180,6 +213,8 @@ from its safe elements, never as HTML — `SafeHtml` for HTML you hold),
 numbers), `NodeCard`, `NodeSearch`, `NodeGraph`. They run on
 YOUR grants: the run views need the workflow (and a child run's) in
 `grants.workflows`; the graph views need `graph/graph-get-batched`,
+`graph/graph-edges` (`RunGraph`'s edges and lineage, a call per thousand
+nodes — without it, it reads them a node at a time, slowly),
 `graph/graph-neighbors` (and `graph/graph-search` for `NodeSearch`) in
 `grants.steps`. Its own page is a gallery of all of them. The pure folds
 under them — `foldRunOverview`, `foldRunHealth`, `foldAgentTrace`,
@@ -364,7 +399,8 @@ query that returns everything, for example), grant it, and call it once.
 Never assemble it in the page: a `graph/graph-neighbors` call per node,
 `graph/graph-get-batched` in a loop, a lineage walked hop by hop. Every
 call is a browser round trip through the host, and a few hundred of them
-make the page slow. A cheap read is a step (`useStep`, fine on a render);
+make the page slow. (The edges among nodes you hold, and their lineage,
+are `graph/graph-edges`: one call per thousand nodes.) A cheap read is a step (`useStep`, fine on a render);
 an analysis too slow for that is a workflow, launched on a click and
 followed with `useRun`. The worked example is `openhealth/run-graph`: one
 call runs three queries and returns the nodes, edges and ancestors that

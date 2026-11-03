@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Download } from "lucide-react";
 import {
   foldAgentTrace, useRunEvents, useStrutClient, useTranscripts,
@@ -12,12 +12,25 @@ import { errorText, fmtCost, fmtDuration } from "../../lib/format";
 import { getNodes } from "../../lib/graph-steps";
 import { RunGraphNodeReader } from "../run-graph/NodeReader";
 import { RunStatus } from "../RunStatus";
+import type { ReplayClock } from "../../lib/replay-clock";
 import { downloadHtml, fileName, snapshotHtml } from "./snapshot";
-import { buildViewRows, Chip, LANE_TEXT, LANE_X, LanesSvg, MIN_W, ROW_H, TOP_PAD, TraceRowItem, pillKey, tokensOf } from "./TraceRows";
+import { atOf, buildViewRows, Chip, foldKeys, LANE_TEXT, LANE_X, LanesSvg, MIN_W, ROW_H, TOP_PAD, TraceRowItem, tokensOf, type ViewRow } from "./TraceRows";
 
 /** How often a live trace reads what its log gained: the server reads the
  *  whole log to answer, and a long run's agents move in minutes. */
 export const AGENT_TRACE_INTERVAL_MS = 10_000;
+/** How long before an agent starts (run time) the scroll goes to its heading, and how long the scroll takes. */
+const HEAD_LEAD_MS = 6_000;
+const HEAD_SCROLL_MS = 900;
+
+/** The element that scrolls the trace: the nearest ancestor that scrolls vertically. */
+function scrollParent(el: HTMLElement): HTMLElement | null {
+  for (let p = el.parentElement; p; p = p.parentElement) {
+    const { overflowY } = getComputedStyle(p);
+    if ((overflowY === "auto" || overflowY === "scroll") && p.scrollHeight > p.clientHeight) return p;
+  }
+  return null;
+}
 
 export interface AgentTraceProps {
   /** Read the run's log (`run/events`) — the importing app's grant. */
@@ -36,6 +49,10 @@ export interface AgentTraceProps {
   readTypes?: readonly string[] | null;
   /** How often a live trace polls (default 10 s). */
   intervalMs?: number;
+  /** Where a replay elsewhere stands (epoch ms, a run graph's call): the rows it is on are marked, and the scroll goes to each agent's heading as the replay reaches it. Null or absent: none. */
+  cursor?: number | null;
+  /** The same replay frame by frame (a RunGraph's `clock`): the scroll goes to the next agent's heading between two calls, as the play nears it. */
+  clock?: ReplayClock;
   className?: string;
 }
 
@@ -50,7 +67,7 @@ type Peek = { node: AccessedNode; state: "reading" } | { node: AccessedNode; sta
  * merging back, the response. Live, it grows as the log does. "Download HTML"
  * saves what is on screen as one file.
  */
-export function AgentTrace({ workflow, runId, live, events: given, transcripts: givenTranscripts, reasoning = true, readTypes, intervalMs, className }: AgentTraceProps) {
+export function AgentTrace({ workflow, runId, live, events: given, transcripts: givenTranscripts, reasoning = true, readTypes, intervalMs, cursor = null, clock, className }: AgentTraceProps) {
   const wf = workflow ?? "";
   const q = useRunEvents(wf, runId, { live, intervalMs: intervalMs ?? AGENT_TRACE_INTERVAL_MS, enabled: !given && !!workflow && !!runId });
   const events = (given ?? q.data) as TraceEvent[] | undefined;
@@ -69,8 +86,19 @@ export function AgentTrace({ workflow, runId, live, events: given, transcripts: 
     if (!next.delete(key)) next.add(key);
     return next;
   }), []);
-  const allPills = useMemo(() => new Set(model?.agents.flatMap((a) => a.rows.flatMap((r) => (r.kind === "pill" ? [`pill:${pillKey(r)}`] : []))) ?? []), [model]);
+  const allPills = useMemo(() => new Set(model?.agents.flatMap((a) => foldKeys(a.rows)) ?? []), [model]);
   const allOpen = allPills.size > 0 && [...allPills].every((k) => open.has(k));
+  const viewRows = useMemo(() => new Map((model?.agents ?? []).map((a) => [a.session.path, buildViewRows(a.rows, open)])), [model, open]);
+  /** The time of the rows a replay is on: the last to happen at or before the cursor. */
+  const current = useMemo(() => {
+    if (cursor === null) return null;
+    let best: number | null = null;
+    for (const rows of viewRows.values()) for (const vr of rows) {
+      const at = atOf(vr);
+      if (at !== null && at <= cursor && (best === null || at > best)) best = at;
+    }
+    return best;
+  }, [cursor, viewRows]);
 
   const [reading, setReading] = useState<{ title: string; text: string } | null>(null);
   const onRead = useCallback((title: string, text: string) => setReading({ title, text }), []);
@@ -95,6 +123,53 @@ export function AgentTrace({ workflow, runId, live, events: given, transcripts: 
   }, [client]);
 
   const root = useRef<HTMLDivElement>(null);
+  // The scroll follows the replay an agent at a time: a little before the
+  // replay (the clock, frame by frame — else the cursor) reaches an agent, or
+  // a batch of them side by side, its heading is scrolled to the top; the
+  // rows in between move nothing.
+  const heads = useMemo(() => {
+    const out: Array<{ key: string; start: number }> = [];
+    for (const a of model?.agents ?? []) {
+      const key = `batch-${a.batch}`;
+      const start = a.session.startedAt;
+      const last = out[out.length - 1];
+      if (last?.key === key) {
+        if (start !== null && start < last.start) last.start = start;
+      } else out.push({ key, start: start ?? last?.start ?? -Infinity });
+    }
+    return out;
+  }, [model]);
+  const headsRef = useRef(heads);
+  headsRef.current = heads;
+  const shownHead = useRef<string | null>(null);
+  const headFrame = useRef(0);
+  const toHead = useCallback((t: number | null) => {
+    if (t === null) return;
+    let key: string | null = null;
+    for (const h of headsRef.current) if (h.start - HEAD_LEAD_MS <= t) key = h.key;
+    if (!key || key === shownHead.current) return;
+    const el = root.current?.querySelector<HTMLElement>(`[data-head="${key}"]`);
+    const box = el ? scrollParent(el) : null;
+    if (!el || !box) return;
+    shownHead.current = key;
+    const from = box.scrollTop;
+    const to = Math.max(0, Math.min(box.scrollHeight - box.clientHeight, el.getBoundingClientRect().top - box.getBoundingClientRect().top + box.scrollTop - 8));
+    const started = performance.now();
+    cancelAnimationFrame(headFrame.current);
+    const frame = (time: number) => {
+      const u = Math.min(1, (time - started) / HEAD_SCROLL_MS);
+      const e = u < 0.5 ? 4 * u * u * u : 1 - (-2 * u + 2) ** 3 / 2;
+      box.scrollTop = from + (to - from) * e;
+      if (u < 1) headFrame.current = requestAnimationFrame(frame);
+    };
+    headFrame.current = requestAnimationFrame(frame);
+  }, []);
+  useEffect(() => () => cancelAnimationFrame(headFrame.current), []);
+  useEffect(() => {
+    if (!clock) return toHead(cursor);
+    toHead(clock.get());
+    return clock.listen(toHead);
+  }, [clock, cursor, toHead]);
 
   if (!model) {
     if (q.isError) return <p className={cn("text-sm text-destructive", className)}>{errorText(q.error)}</p>;
@@ -109,8 +184,8 @@ export function AgentTrace({ workflow, runId, live, events: given, transcripts: 
     if (last && last[0]!.batch === a.batch) last.push(a);
     else batches.push([a]);
   }
-  const section = (a: TraceAgent) => (
-    <AgentSection key={a.session.path} agent={a} startMs={s.startedAt} open={open} onToggle={toggle} onRead={onRead} onPeek={onPeek} peeking={peek?.state === "reading" ? peek.node.ref_id : null} />
+  const section = (a: TraceAgent, head?: string) => (
+    <AgentSection key={a.session.path} head={head} agent={a} rows={viewRows.get(a.session.path) ?? []} current={current} startMs={s.startedAt} open={open} onToggle={toggle} onRead={onRead} onPeek={onPeek} peeking={peek?.state === "reading" ? peek.node.ref_id : null} />
   );
 
   return (
@@ -140,10 +215,10 @@ export function AgentTrace({ workflow, runId, live, events: given, transcripts: 
       <div className="overflow-x-auto pb-2">
         <div className="flex flex-col gap-1" style={{ minWidth: MIN_W }}>
           {batches.map((batch) =>
-            batch.length === 1 ? section(batch[0]!) : (
-              <div key={`batch-${batch[0]!.batch}`} className="border-l-2 border-dashed pl-2" data-batch={batch[0]!.batch}>
+            batch.length === 1 ? section(batch[0]!, `batch-${batch[0]!.batch}`) : (
+              <div key={`batch-${batch[0]!.batch}`} className="border-l-2 border-dashed pl-2" data-batch={batch[0]!.batch} data-head={`batch-${batch[0]!.batch}`}>
                 <div className="px-1 pt-2 font-mono text-[10px] tracking-[0.14em] text-muted-foreground/70 uppercase">∥ parallel ×{batch.length}</div>
-                {batch.map(section)}
+                {batch.map((a) => section(a))}
               </div>
             ),
           )}
@@ -180,8 +255,12 @@ export function AgentTrace({ workflow, runId, live, events: given, transcripts: 
   );
 }
 
-function AgentSection({ agent, startMs, open, onToggle, onRead, onPeek, peeking }: {
+function AgentSection({ head, agent, rows, current, startMs, open, onToggle, onRead, onPeek, peeking }: {
+  /** The heading the scroll goes to, when this agent runs alone. */
+  head?: string;
   agent: TraceAgent;
+  rows: ViewRow[];
+  current: number | null;
   startMs: number | null;
   open: ReadonlySet<string>;
   onToggle: (key: string) => void;
@@ -190,11 +269,10 @@ function AgentSection({ agent, startMs, open, onToggle, onRead, onPeek, peeking 
   peeking: string | null;
 }) {
   const s = agent.session;
-  const rows = useMemo(() => buildViewRows(agent.rows, open), [agent.rows, open]);
   const height = TOP_PAD + rows.length * ROW_H + (agent.live ? 40 : 8);
   const took = s.startedAt !== null && s.endedAt !== null ? fmtDuration(s.endedAt - s.startedAt) : null;
   return (
-    <section data-agent={s.path}>
+    <section data-agent={s.path} data-head={head}>
       <div className="flex flex-wrap items-center gap-2 border-t px-1 pt-3 pb-1">
         <span className={cn("font-mono text-[10.5px] font-bold tracking-[0.1em] uppercase", LANE_TEXT[0])}>{s.label}</span>
         <RunStatus status={s.status} />
@@ -209,7 +287,7 @@ function AgentSection({ agent, startMs, open, onToggle, onRead, onPeek, peeking 
       <div className="relative" style={{ height }}>
         <LanesSvg rows={rows} height={height} live={agent.live} />
         {rows.map((vr, i) => (
-          <TraceRowItem key={vr.key} vr={vr} index={i} startMs={startMs} open={open} onToggle={onToggle} onRead={onRead} onPeek={onPeek} peeking={peeking} />
+          <TraceRowItem key={vr.key} vr={vr} index={i} startMs={startMs} open={open} onToggle={onToggle} onRead={onRead} onPeek={onPeek} peeking={peeking} current={current !== null && atOf(vr) === current} />
         ))}
         {agent.live && (
           <div

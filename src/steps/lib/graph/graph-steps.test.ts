@@ -17,7 +17,7 @@ import { MemoryRunStore } from "../../../store.js";
 const cfg = testGraphConfig();
 const STEP_TYPES = [
   "graph/get-ontology", "graph/get-ontology-type", "graph/graph-search", "graph/graph-get",
-  "graph/graph-get-batched", "graph/graph-neighbors", "graph/register-namespace", "graph/create-node",
+  "graph/graph-get-batched", "graph/graph-neighbors", "graph/graph-edges", "graph/register-namespace", "graph/create-node",
   "graph/edit-node", "graph/create-triplet", "graph/create-batch-triplet", "graph/create-schema", "graph/edit-edge",
   "graph/walk", "graph/move-node", "graph/delete-edge", "graph/delete-node",
 ];
@@ -37,7 +37,7 @@ describe("graph/graph-get marks its `name` field as a node lookup typed by `node
 });
 
 describe("graph/* lib steps are discovered by the registry", () => {
-  it("all seventeen graph steps are present, sourced from lib", async () => {
+  it("all eighteen graph steps are present, sourced from lib", async () => {
     const { registry, sources } = await buildRegistry();
     for (const t of STEP_TYPES) {
       assert.ok(registry[t], `missing ${t}`);

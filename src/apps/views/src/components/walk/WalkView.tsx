@@ -1,18 +1,18 @@
-import { useMemo, useState } from "react";
-import { GitFork, ListTree } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { GitFork, ListTree, X } from "lucide-react";
 import {
-  findWalks, foldWalkGraph, latestWalk, toolResultsByCall, useRunEvents, useTranscripts, walkBeats, walkFrame, walkHopStop, walkTrailSummary,
+  findWalks, foldWalkGraph, foldWalkTrail, latestWalk, toolResultsByCall, useRunEvents, useTranscripts, walkBeats, walkFrame, walkHopStop, walkTrailSummary,
   type RunEvent, type WalkBrief, type WalkLogEvent, type WalkSource,
 } from "@strut/kit";
+import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { nodeColor } from "../../lib/colors";
 import { errorText } from "../../lib/format";
 import { useNode } from "../../lib/graph";
 import { useReplay } from "../../lib/replay";
-import { NodeCard } from "../NodeCard";
 import { ReplayBar } from "../ReplayBar";
-import { RunGraphNodeReader } from "../run-graph/NodeReader";
+import { NodeReaderBody } from "../run-graph/NodeReader";
 import { WALK_CSS, WalkBreadcrumb, WalkTrailSteps } from "./WalkTrail";
 import { WalkTree } from "./WalkTree";
 
@@ -21,6 +21,13 @@ import { WalkTree } from "./WalkTree";
 export const WALK_VIEW_INTERVAL_MS = 3_000;
 
 export type WalkViewMode = "trail" | "tree";
+
+/** The node drawer's height: the walk is at least DRAWER_MIN_H tall while it is open, the drawer never past DRAWER_MAX_H. */
+const DRAWER_MIN_H = 352;
+const DRAWER_MAX_H = 448;
+/** The drawer's width beside the walk. A walk narrower than DRAWER_W + BESIDE_MIN gets a drawer across its whole width instead: nothing is ever half under it. */
+const DRAWER_W = 416;
+const BESIDE_MIN = 340;
 
 export interface WalkViewProps {
   /** Read the run's log (`run/events`) — the importing app's grant. */
@@ -34,7 +41,7 @@ export interface WalkViewProps {
   path?: string;
   /** A person picked another walk (the picker shows when there are several). */
   onPathChange?: (path: string) => void;
-  /** A node opened from its card; by default the view opens it whole, docs and all. */
+  /** A node was clicked. Given, the app shows it its own way and the view opens no drawer. */
   onOpenNode?: (node: WalkBrief) => void;
   /** Start as the trail (default) or the tree. */
   mode?: WalkViewMode;
@@ -52,15 +59,18 @@ export interface WalkViewProps {
 /**
  * A run's graph WALK as it plays out (`findWalks` → `walkFrame`): the path
  * as a trail that grows hop by hop, the node chosen at each hop drawn solid
- * and the candidates it considered beside it — kept ones outlined, dropped
- * ones faded — the newest hop pulsing. Reads a `graph/walk` step's hop
- * events, or an agent's own graph tool calls (a listing, then the node it
- * read next). Live and replay are one view: joined in flight it shows the
- * hops so far and follows, at a readable pace; the controls (RunGraph's:
- * a hop back, play/pause, a hop on, scrub, speed) step back through it, and
- * Live returns. A finished walk replays from its log alone, in its own order
- * and at its own pace. A click on a node shows its card. `mode="tree"` draws
- * the same walk as a tree of everything it discovered.
+ * and the candidates it considered behind "+N considered" — kept ones
+ * outlined, dropped ones faded — the newest hop pulsing. Reads a
+ * `graph/walk` step's hop events, or an agent's own graph tool calls, and
+ * draws both the same. Live and replay are one view: joined in flight it
+ * shows the hops so far and follows, at a readable pace; the controls above
+ * the walk (RunGraph's: a hop back, play/pause, a hop on, scrub, speed) step
+ * back through it, and Live returns. The walk is laid out whole and the
+ * hops shown are drawn in place, so scrubbing never changes the view's
+ * height. A click on a node opens it in a drawer over the walk (Esc, ✕ or a
+ * click outside closes it), unless the app takes it (`onOpenNode`).
+ * `mode="tree"` draws the walk as a tree of everything it discovered,
+ * fitted to the view's width. Sized by its container, never the viewport.
  */
 export function WalkView({ workflow, runId, live, events: given, path, onPathChange, onOpenNode, mode: initialMode = "trail", replay: replayFromStart, speed, intervalMs, transcripts = true, className }: WalkViewProps) {
   const wf = workflow ?? "";
@@ -93,12 +103,31 @@ export function WalkView({ workflow, runId, live, events: given, path, onPathCha
   const moving = replay.moving;
   const frame = useMemo(() => walkFrame(walk?.hops ?? [], replay.at, beats), [walk, replay.at, beats]);
   const trail = frame.trail;
+  // The whole walk (as far as the log goes): what the trail and the tree are laid out from.
+  const fullTrail = useMemo(() => foldWalkTrail(walk?.hops ?? []), [walk]);
   const [mode, setMode] = useState<WalkViewMode>(initialMode);
+  const fullGraph = useMemo(() => (mode === "tree" ? foldWalkGraph(walk?.hops ?? []) : null), [mode, walk]);
   const graph = useMemo(() => (mode === "tree" ? foldWalkGraph(walk?.hops.slice(0, replay.at) ?? []) : null), [mode, walk, replay.at]);
 
-  const [selected, setSelected] = useState<WalkBrief | null>(null);
-  const [reading, setReading] = useState(false);
-  const node = useNode(reading ? selected?.ref_id : undefined);
+  // The node open in the drawer, and where the drawer sits: by the node the
+  // click came from, so it opens in sight however long the walk is (a host
+  // grows the frame to its content, so the page scrolls, not the view).
+  const [opened, setOpened] = useState<{ node: WalkBrief; top: number; height: number; beside: boolean } | null>(null);
+  const selected = opened?.node ?? null;
+  const area = useRef<HTMLDivElement>(null);
+  const clickedAt = useRef(0);
+  const close = useCallback(() => setOpened(null), []);
+  const open = useCallback(
+    (n: WalkBrief) => {
+      if (onOpenNode) return onOpenNode(n);
+      const tall = Math.max(area.current?.clientHeight ?? 0, DRAWER_MIN_H);
+      const height = Math.min(tall, DRAWER_MAX_H);
+      // Room for it beside the walk, which then reflows to its left; else across the whole walk.
+      const beside = (area.current?.clientWidth ?? 0) >= DRAWER_W + BESIDE_MIN;
+      setOpened({ node: n, height, beside, top: Math.max(0, Math.min(clickedAt.current - 24, tall - height)) });
+    },
+    [onOpenNode],
+  );
 
   if (!events) {
     if (q.isError) return <p className={cn("text-sm text-destructive", className)}>{errorText(q.error)}</p>;
@@ -111,7 +140,7 @@ export function WalkView({ workflow, runId, live, events: given, path, onPathCha
 
   const pick = (p: string) => {
     setPicked(p);
-    setSelected(null);
+    setOpened(null);
     onPathChange?.(p);
   };
   const done = replay.at >= replay.total && !running;
@@ -124,17 +153,18 @@ export function WalkView({ workflow, runId, live, events: given, path, onPathCha
   });
 
   return (
-    <div className={cn("flex flex-col gap-3 text-sm", className)} data-testid="walk-view">
+    <div className={cn("flex min-w-0 flex-col gap-3 text-sm", className)} data-testid="walk-view">
       <style>{WALK_CSS}</style>
-      <div className="flex flex-wrap items-center gap-2">
+      {/* One line, whatever the summary says: a replay never wraps it. */}
+      <div className="flex min-w-0 items-center gap-2">
         {running && (
-          <span className={cn("inline-flex items-center gap-1.5 font-mono text-[11px] font-semibold", replay.following ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground")}>
+          <span className={cn("inline-flex shrink-0 items-center gap-1.5 font-mono text-[11px] font-semibold", replay.following ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground")}>
             <span className={cn("size-2 rounded-full", replay.following ? "bg-emerald-500 motion-safe:animate-pulse" : "bg-muted-foreground")} />
             {replay.following ? "live" : replay.playing ? "live · replaying" : "live · paused"}
           </span>
         )}
         {walks.length > 1 ? (
-          <select value={walk.path} onChange={(e) => pick(e.target.value)} title={sourceOf(walk)} className="rounded-md border bg-background px-2 py-1 font-mono text-xs" aria-label="Which walk">
+          <select value={walk.path} onChange={(e) => pick(e.target.value)} title={sourceOf(walk)} className="min-w-0 max-w-[40%] shrink rounded-md border bg-background px-2 py-1 font-mono text-xs" aria-label="Which walk">
             {walks.map((w) => (
               <option key={w.path} value={w.path} title={sourceOf(w)}>
                 {w.label}
@@ -142,10 +172,10 @@ export function WalkView({ workflow, runId, live, events: given, path, onPathCha
             ))}
           </select>
         ) : (
-          <span className="font-mono text-xs font-semibold" title={sourceOf(walk)}>{walk.label}</span>
+          <span className="max-w-[40%] shrink-0 truncate font-mono text-xs font-semibold" title={sourceOf(walk)}>{walk.label}</span>
         )}
-        <span className={cn("font-mono text-xs text-muted-foreground", walk.error && done && "text-destructive")} data-testid="walk-summary">{summary}</span>
-        <span className="ml-auto inline-flex rounded-md border p-0.5" role="group" aria-label="View">
+        <span className={cn("min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground", walk.error && done && "text-destructive")} title={summary} data-testid="walk-summary">{summary}</span>
+        <span className="inline-flex shrink-0 rounded-md border p-0.5" role="group" aria-label="View">
           {([["trail", ListTree, "Trail"], ["tree", GitFork, "Tree"]] as const).map(([m, Icon, label]) => (
             <button key={m} type="button" onClick={() => setMode(m)} aria-pressed={mode === m} className={cn("inline-flex items-center gap-1 rounded px-2 py-0.5 text-xs", mode === m ? "bg-muted font-medium" : "text-muted-foreground hover:text-foreground")}>
               <Icon className="size-3.5" aria-hidden /> {label}
@@ -153,33 +183,10 @@ export function WalkView({ workflow, runId, live, events: given, path, onPathCha
           ))}
         </span>
       </div>
-      {walk.goal && <p className="text-muted-foreground"><span className="font-medium text-foreground">Goal</span> · {walk.goal}</p>}
-
-      <div className="flex flex-col gap-4 lg:flex-row">
-        <div className="flex min-w-0 flex-1 flex-col gap-3">
-          <WalkBreadcrumb steps={trail.steps} moving={moving} selected={selected?.ref_id ?? null} onSelect={setSelected} />
-          {mode === "tree" && graph ? (
-            <WalkTree graph={graph} path={trail.path} moving={moving} selected={selected?.ref_id ?? null} onSelect={setSelected} />
-          ) : trail.steps.length ? (
-            <WalkTrailSteps trail={trail} moving={moving} selected={selected?.ref_id ?? null} onSelect={setSelected} />
-          ) : (
-            <p className="text-muted-foreground">{running ? "Walking…" : "No hop yet."}</p>
-          )}
-        </div>
-        {selected && (
-          <aside className="flex shrink-0 flex-col gap-2 lg:w-80" data-testid="walk-node">
-            <NodeCard
-              key={selected.ref_id}
-              refId={selected.ref_id}
-              onOpen={(n) => (onOpenNode ? onOpenNode({ ref_id: n.ref_id, node_type: n.node_type, name: n.name }) : setReading(true))}
-            />
-            <button type="button" onClick={() => setSelected(null)} className="self-end text-xs text-muted-foreground hover:text-foreground">close</button>
-          </aside>
-        )}
-      </div>
+      {walk.goal && <p className="line-clamp-2 text-muted-foreground" title={walk.goal}><span className="font-medium text-foreground">Goal</span> · {walk.goal}</p>}
 
       {beats.length > 0 && (
-        <div className="flex flex-col gap-1 rounded-md border px-2 py-1.5" data-testid="walk-replay">
+        <div className="flex min-w-0 flex-col gap-1 rounded-md border px-2 py-1.5" data-testid="walk-replay">
           <ReplayBar
             position={replay.at}
             total={replay.total}
@@ -195,20 +202,106 @@ export function WalkView({ workflow, runId, live, events: given, path, onPathCha
             label={`hop ${frame.hop} / ${frame.hops}`}
             {...(running ? { live: { following: replay.following, onLive: replay.live } } : {})}
           />
-          {frame.beat && <p className="truncate px-1 font-mono text-[11px] text-muted-foreground" data-testid="walk-beat">{frame.beat.label}</p>}
+          {/* Always a line, so the first beat never pushes the walk down. */}
+          <p className="truncate px-1 font-mono text-[11px] text-muted-foreground" data-testid="walk-beat">{frame.beat?.label ?? " "}</p>
         </div>
       )}
 
-      {reading && selected && node.data && (
-        <RunGraphNodeReader
-          node={{ ref_id: node.data.ref_id, node_type: node.data.node_type, name: node.data.name || selected.name, namespace: null, found: true }}
-          body={{ ref_id: node.data.ref_id, node_type: node.data.node_type, labels: [], properties: node.data.properties }}
-          color={nodeColor(node.data.node_type)}
-          open
-          onOpenChange={(o) => !o && setReading(false)}
-        />
-      )}
+      {/* The walk, and over it the node a click opened. */}
+      <div
+        ref={area}
+        className="relative min-w-0"
+        style={opened ? { minHeight: DRAWER_MIN_H } : undefined}
+        onClickCapture={(e) => {
+          const box = area.current?.getBoundingClientRect();
+          if (box) clickedAt.current = (e.target as Element).getBoundingClientRect().top - box.top;
+        }}
+        data-testid="walk-area"
+      >
+        <div style={opened?.beside ? { paddingRight: DRAWER_W + 12 } : undefined}>
+          {mode === "tree" && graph && fullGraph ? (
+            <WalkTree
+              graph={graph}
+              full={fullGraph}
+              path={trail.path}
+              fullPath={fullTrail.path}
+              header={<WalkBreadcrumb steps={trail.steps} full={fullTrail.steps} moving={moving} selected={selected?.ref_id ?? null} onSelect={open} />}
+              moving={moving}
+              selected={selected?.ref_id ?? null}
+              onSelect={open}
+            />
+          ) : fullTrail.steps.length ? (
+            <WalkTrailSteps trail={trail} full={fullTrail} moving={moving} selected={selected?.ref_id ?? null} onSelect={open} />
+          ) : (
+            <p className="text-muted-foreground">{running ? "Walking…" : "No hop yet."}</p>
+          )}
+        </div>
+        {/* Across a narrow walk, the rows above and below it are veiled, never cut in half. */}
+        {opened && !opened.beside && <div className="absolute inset-0 z-10 rounded-lg bg-background/90" aria-hidden data-testid="walk-node-scrim" />}
+        {opened && <NodeDrawer node={opened.node} top={opened.top} height={opened.height} width={opened.beside ? DRAWER_W : "100%"} onClose={close} />}
+      </div>
     </div>
+  );
+}
+
+/**
+ * A node's page in a drawer by the node it opened from: beside the walk,
+ * which reflows to its left, when the walk is wide enough, else across the
+ * walk's whole width — so no label is ever half under it. Opaque, its text
+ * scrolling inside. ✕, Esc or a press anywhere outside it closes it; a
+ * press on another node opens that one instead.
+ */
+function NodeDrawer({ node: brief, top, height, width, onClose }: { node: WalkBrief; top: number; height: number; width: number | string; onClose: () => void }) {
+  const q = useNode(brief.ref_id);
+  const node = q.data;
+  const box = useRef<HTMLElement>(null);
+  const closeButton = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    closeButton.current?.focus({ preventScroll: true });
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    const onPress = (e: PointerEvent) => {
+      if (box.current && !box.current.contains(e.target as Node)) onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    document.addEventListener("pointerdown", onPress, true);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("pointerdown", onPress, true);
+    };
+  }, [onClose]);
+  const type = node?.node_type ?? brief.node_type;
+  return (
+    <aside
+      ref={box}
+      role="dialog"
+      aria-label={node?.name || brief.name || brief.ref_id}
+      className="absolute right-0 z-20 flex flex-col overflow-hidden rounded-lg border bg-background text-foreground shadow-xl"
+      style={{ top, height, width }}
+      data-testid="walk-node"
+    >
+      <div className="flex shrink-0 items-start gap-2 border-b bg-background p-3">
+        <span className="mt-1.5 inline-block size-2.5 shrink-0 rounded-full" style={{ backgroundColor: nodeColor(type) }} />
+        <div className="min-w-0 flex-1">
+          <div className="break-words font-medium">{node?.name || brief.name || brief.ref_id.slice(0, 8)}</div>
+          <div className="truncate font-mono text-[11px] text-muted-foreground">{brief.ref_id}</div>
+        </div>
+        <Badge variant="outline" className="shrink-0 font-normal">{type}</Badge>
+        <button ref={closeButton} type="button" onClick={onClose} aria-label="Close" className="-mt-0.5 -mr-1 shrink-0 rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground" data-testid="walk-node-close">
+          <X className="size-4" aria-hidden />
+        </button>
+      </div>
+      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto bg-background p-3">
+        {node ? (
+          <NodeReaderBody properties={node.properties ?? {}} />
+        ) : q.isError ? (
+          <p className="text-sm text-destructive">{errorText(q.error)}</p>
+        ) : (
+          <Skeleton className="h-28 w-full" />
+        )}
+      </div>
+    </aside>
   );
 }
 

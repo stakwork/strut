@@ -290,7 +290,7 @@ function Grid({ table, flash, marks, showFormulas, sel, onSelect, onOpenNode, ma
         title={c.formula && !showFormulas ? c.formula : undefined}
         onClick={() => onSelect({ row, col })}
         className={cn(
-          "relative cursor-default border-r border-b px-2 py-1 align-top transition-colors",
+          "relative cursor-default border-r border-b px-2 py-1 align-top transition-[background-color]",
           lit ? `${LIT} duration-0` : "duration-1000",
           isHead ? "sticky top-0 z-20 text-left text-xs font-semibold" : "",
           isHead && !lit && "bg-muted",
@@ -303,7 +303,7 @@ function Grid({ table, flash, marks, showFormulas, sel, onSelect, onOpenNode, ma
               ? "text-right whitespace-nowrap tabular-nums"
               : cn("max-w-[22rem] break-words whitespace-pre-wrap", kinds[col]!.prose ? "min-w-[11rem]" : "min-w-[4.5rem]"),
           col === 0 && "min-w-[9rem]",
-          sel?.row === row && sel.col === col && "outline-2 -outline-offset-2 outline-primary",
+          sel?.row === row && sel.col === col && "outline-2 -outline-offset-2 outline-sky-500/70 dark:outline-sky-400/50",
         )}
       >
         {asFormula ? c.formula : c.text}
