@@ -390,9 +390,10 @@ export interface RunEvent {
   runId: string;
   path: string;
   type: RunEventType;
-  /** `reply.delta`: the tool call (or `"text"`) the piece belongs to, the
-   *  text new since the last delta of that call, and `reset: true` when a new
-   *  `final_answer` call starts over what was said. */
+  /** `reply.delta`: the tool call (`"text"` in text mode, `answer-<n>` for a
+   *  forced final-answer turn) the piece belongs to, the text new since the
+   *  last delta of that call, and `reset: true` when a new answer starts over
+   *  what was said. */
   call?: string;
   text?: string;
   reset?: true;

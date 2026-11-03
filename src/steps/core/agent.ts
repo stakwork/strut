@@ -660,6 +660,11 @@ export const REPLY_DELTA_MS = 50;
 export interface ReplyTap {
   part(part: { type: string; id?: string; toolName?: string; delta?: string; text?: string }): Promise<void>;
   flush(): Promise<void>;
+  /** The next stream is the structured answer as TEXT (the forced
+   *  final-answer turn's `Output.object`): its `text-delta` parts are the
+   *  object's JSON, read for `text` under a call key of its own. Schema mode
+   *  only; until that stream's end. */
+  object(): void;
 }
 
 /**
@@ -667,24 +672,31 @@ export interface ReplyTap {
  * into `streamFailure`, so every stream the step reads — the loop, the nudge,
  * the forced answer — is tapped. Schema mode: the `tool-input-delta` parts
  * of `final_answer`, the partial JSON parsed for `text` (only what is new is
- * passed on). Text mode (no schema, no finalAnswer): `text-delta`. Each piece
- * is a `reply.delta` run event `{ path, call, text, reset? }`, buffered and
- * written about every REPLY_DELTA_MS and at the stream's end. A new
- * `final_answer` call after text was said (a refused one, a resumed stream)
- * starts with `reset: true`.
+ * passed on), and for the forced final-answer turn (`object()`), which
+ * streams the object as `text-delta` JSON, those parts the same way. Text
+ * mode (no schema, no finalAnswer): `text-delta`. Each piece is a
+ * `reply.delta` run event `{ path, call, text, reset? }`, buffered and
+ * written about every `batchMs` (REPLY_DELTA_MS) and at the stream's end. A
+ * new answer after text was said (a refused `final_answer`, a resumed
+ * stream, the forced turn) starts with `reset: true`.
  */
 export function createReplyTap(opts: {
   emit: (e: Record<string, unknown>) => Promise<void>;
   path: string;
   mode: "schema" | "text" | "none";
   parsePartialJson: (t: string) => Promise<{ value: unknown }>;
+  /** How long text is buffered before it is written; REPLY_DELTA_MS. */
+  batchMs?: number;
 }): ReplyTap {
   const { emit, path, mode } = opts;
+  const batchMs = opts.batchMs ?? REPLY_DELTA_MS;
   let call: string | undefined; // the call being streamed
   let raw = ""; // its input JSON so far
   let sent = 0; // chars of `text` already passed on
   let said = false; // any text emitted for an earlier call
   let resetNext = false;
+  let objects = 0; // forced answers streamed as text so far (`object()`)
+  let inObject = false; // this stream's `text-delta` parts are the answer's JSON
   let buf = "";
   let bufCall = "";
   let bufReset = false;
@@ -708,7 +720,25 @@ export function createReplyTap(opts: {
     }
     buf += text;
     said = true;
-    timer ??= setTimeout(write, REPLY_DELTA_MS);
+    timer ??= setTimeout(write, batchMs);
+  };
+  /** A new answer starts: `c` is its call key. */
+  const begin = (c: string) => {
+    call = c;
+    raw = "";
+    sent = 0;
+    resetNext = said;
+  };
+  /** More of the answer's JSON: pass on what is new of its `text`. */
+  const take = async (c: string, more: string) => {
+    raw += more;
+    const { value } = await opts.parsePartialJson(raw);
+    const t = (value as { text?: unknown } | undefined)?.text;
+    if (typeof t === "string" && t.length > sent) {
+      const piece = t.slice(sent);
+      sent = t.length;
+      push(c, piece);
+    }
   };
 
   return {
@@ -719,25 +749,24 @@ export function createReplyTap(opts: {
       }
       if (mode !== "schema") return;
       if (p.type === "tool-input-start" && p.toolName === "final_answer" && p.id) {
-        call = p.id;
-        raw = "";
-        sent = 0;
-        resetNext = said;
+        inObject = false;
+        begin(p.id);
       } else if (p.type === "tool-input-delta" && call && p.id === call && p.delta) {
-        raw += p.delta;
-        const { value } = await opts.parsePartialJson(raw);
-        const t = (value as { text?: unknown } | undefined)?.text;
-        if (typeof t === "string" && t.length > sent) {
-          const piece = t.slice(sent);
-          sent = t.length;
-          push(call, piece);
-        }
+        await take(call, p.delta);
+      } else if (inObject && call && p.type === "text-delta" && typeof p.text === "string" && p.text) {
+        await take(call, p.text);
       }
     },
     async flush() {
       if (timer) clearTimeout(timer);
       write();
+      inObject = false;
       await chain;
+    },
+    object() {
+      if (mode !== "schema") return;
+      inObject = true;
+      begin(`answer-${++objects}`);
     },
   };
 }
@@ -2134,6 +2163,9 @@ export default defineStep({
           // was one — then the forced prompt: the nudge's shape.
           messages: [...conversation(), forcedPrompt] as any,
         } as any);
+        // Schema mode streams the object as text (`Output.object`), not as a
+        // final_answer call: the tap reads that JSON for `text`.
+        if (useSchema) replyTap?.object();
         await drain(forced);
         const fu = usageFromSteps(await forced.steps);
         usage = addUsage(usage, fu);
