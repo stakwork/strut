@@ -157,8 +157,11 @@ describe("titles (title.ts)", () => {
     assert.equal(nodeTitleFor({ title_key: "name" }, {}, "  search line\nmore"), "search line");
     assert.equal(nodeTitleFor({ title_key: "name" }, {}, null), "");
   });
-  it("a reader prefers the stored title, then the type's title_key over the properties", () => {
-    assert.equal(nodeTitle({ title: "Stored", name: "n" }, "name"), "Stored");
+  it("a reader takes the type's title_key over the properties, then the stored title", () => {
+    assert.equal(nodeTitle({ name: "Alice Smith", title: "CEO" }, "name"), "Alice Smith", "a jarvis Person's title is a job title");
+    assert.equal(nodeTitle({ name: "Alice Smith", title: "CEO" }), "Alice Smith", "title_key defaults to name");
+    assert.equal(nodeTitle({ title: "Plan", name: "plan" }, "title"), "Plan", "a type whose title_key is title");
+    assert.equal(nodeTitle({ title: "First line of the text" }, "name"), "First line of the text", "the writer's fallback when the key is empty");
     assert.equal(nodeTitle({ workflow_name: "wf" }, "workflow_name"), "wf", "a node written before titles");
     assert.equal(nodeTitle({}, "name"), "");
   });
@@ -235,7 +238,7 @@ for (const tb of testBackends()) {
       assert.ok((p["created_at"] as number) >= t0 && (p["created_at"] as number) <= Date.now() + 1);
       assert.equal(p["started_at"], 1788292800);
       assert.equal(p["search_text"], "harvey-deliver\nsuccess\nDelivered 60 of 60");
-      assert.equal(p["title"], "harvey-deliver", "the type's title_key, workflow_name");
+      assert.equal(p["title"], neo ? undefined : "harvey-deliver", "the type's title_key, workflow_name (Neo4j stores no core title)");
       assert.ok(!("log_ref" in p), "empty string never written");
       assert.ok(!("text_embeddings" in p), "no embedder → NULL, not a marker");
       assert.ok(!("is_deleted" in p) && !("deleted_at" in p));
@@ -243,7 +246,7 @@ for (const tb of testBackends()) {
         assert.deepEqual(p["_search_fields_used"], ["workflow_name", "run_status", "summary"]);
         assert.deepEqual(
           Object.keys(p).sort(),
-          ["_search_fields_used", "created_at", "duration_ms", "key", "namespace", "ref_id", "run_id", "run_status", "search_text", "started_at", "summary", "title", "updated_at", "weight", "workflow_name"],
+          ["_search_fields_used", "created_at", "duration_ms", "key", "namespace", "ref_id", "run_id", "run_status", "search_text", "started_at", "summary", "updated_at", "weight", "workflow_name"],
         );
         const bolt = (backend as { bolt: Bolt }).bolt;
         const rows = await bolt.run(
@@ -625,11 +628,14 @@ for (const tb of testBackends()) {
     });
 
     it("fills title from the type's title_key on create and update, and refuses an Entity whose title is empty", async () => {
+      // A Neo4j graph stores no core title (no new data shapes there); the
+      // Entity rule holds on both.
+      const stored = (t: string) => (neo ? undefined : t);
       await seedConceptSchema(backend);
       const run = await writer.write({ type: "StrutRun", data: RUN });
-      assert.equal((await props(run.ref_id))["title"], "harvey-deliver");
+      assert.equal((await props(run.ref_id))["title"], stored("harvey-deliver"));
       await writer.update(run.ref_id, { set: { workflow_name: "renamed" } });
-      assert.equal((await props(run.ref_id))["title"], "renamed", "rebuilt with the attributes");
+      assert.equal((await props(run.ref_id))["title"], stored("renamed"), "rebuilt with the attributes");
       // A type that declares `title` owns it: no computed one in its place.
       const job = await writer.write({ type: "StrutJob", data: { job_id: "j-untitled", started_at: 1 } });
       assert.equal((await props(job.ref_id))["title"], undefined);
@@ -649,10 +655,10 @@ for (const tb of testBackends()) {
       // A template, and a type with no title field (its text's first line).
       await createNodeSchema(backend, backend.schemas, { type: "Contact", attributes: { first: "string", last: "?string" }, key_spec: "first", title_key: "{first} {last}" });
       const ada = await writer.write({ type: "Contact", data: { first: "Ada", last: "Lovelace" } });
-      assert.equal((await props(ada.ref_id))["title"], "Ada Lovelace");
+      assert.equal((await props(ada.ref_id))["title"], stored("Ada Lovelace"));
       await createNodeSchema(backend, backend.schemas, { type: "Utterance", attributes: { said: "string", text: "string" }, key_spec: "said" });
       const said = await writer.write({ type: "Utterance", data: { said: "u1", text: "hello there\nand more" } });
-      assert.equal((await props(said.ref_id))["title"], "hello there");
+      assert.equal((await props(said.ref_id))["title"], stored("hello there"));
     });
 
     it("the file holds one namespace, the registry's types, and none of Thing's vestiges", { skip: neo && "ladybug only" }, async () => {

@@ -323,7 +323,8 @@ for (const tb of testBackends()) {
       const check = (await r.schema("Check"))!;
       assert.equal(check.key_spec, "check-id");
       assert.equal(check.attributes["freshness_days"], "?int");
-      assert.equal(check.attributes["created_at"], undefined, "jarvis declares it; the core stamp is the writer's");
+      // jarvis's Check on Neo4j: its own field (seconds), optional, the writer stamps it.
+      assert.equal(check.attributes["created_at"], neo ? "?datetime" : undefined);
       const concept = (await r.schema("concept"))!;
       assert.equal(concept.key_spec, "concept-name");
       assert.deepEqual(concept.index, ["name", "description", "docs"]);

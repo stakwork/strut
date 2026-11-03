@@ -54,6 +54,11 @@ describe("planNodeSchema (pure)", () => {
     assert.equal(code(() => planNodeSchema({ type: "X", attributes: { ref_id: "string" } })), "UNKNOWN_ATTRIBUTE:ref_id");
     assert.equal(code(() => planNodeSchema({ type: "X", attributes: { node_key: "string" } })), "UNKNOWN_ATTRIBUTE:node_key");
     assert.equal(code(() => planNodeSchema({ type: "X", attributes: { deleted_at: "?int" } })), "UNKNOWN_ATTRIBUTE:deleted_at");
+    // The core key and search text are never a type's own; a created_at is, on Neo4j only.
+    assert.equal(code(() => planNodeSchema({ type: "X", attributes: { key: "string" } })), "UNKNOWN_ATTRIBUTE:key");
+    assert.equal(code(() => planNodeSchema({ type: "X", attributes: { search_text: "?string" } })), "UNKNOWN_ATTRIBUTE:search_text");
+    assert.equal(code(() => planNodeSchema({ type: "X", attributes: { created_at: "?string" } }, "neo4j")), "ok");
+    assert.equal(code(() => planNodeSchema({ type: "X", attributes: { created_at: "?string" } }, "ladybug")), "UNKNOWN_ATTRIBUTE:created_at");
     assert.equal(code(() => planNodeSchema({ type: "X", attributes: { deleted_at_backfilled: "?boolean" } })), "UNKNOWN_ATTRIBUTE:deleted_at_backfilled");
     assert.equal(code(() => planNodeSchema({ type: "X", attributes: { score: "number" } })), "WRONG_TYPE:score");
     assert.equal(code(() => planNodeSchema({ type: "X", attributes: { a: "string" }, key_spec: "b" })), "UNKNOWN_ATTRIBUTE:key_spec");
@@ -156,6 +161,37 @@ describe("createNodeSchema (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4
     // The ontology read surface sees it.
     const listed = await reader.listSchemas();
     assert.ok(listed.schemas.some((s) => s.type === "FieldNote"));
+  });
+
+  // Evan's review of #425: on Neo4j the jarvis types keep what they had.
+  it("a jarvis type's own created_at is its field: written, stored as created_at, read back in properties", async () => {
+    const w = await nodes.write({ type: "Concept", data: { name: "Own date", created_at: "2024-01-01" } }, "create");
+    const [raw] = await bolt.run(`MATCH (n {ref_id: $r}) RETURN n.created_at AS own, n.date_added_to_graph AS stamp, n.title AS title`, { r: w.ref_id });
+    assert.equal(raw!["own"], "2024-01-01");
+    assert.equal(typeof raw!["stamp"], "number", "the core stamp keeps jarvis's name");
+    assert.equal(raw!["title"], null, "no core title on a Neo4j node");
+    const got = await reader.getNode(w.ref_id);
+    assert.equal(got?.properties["created_at"], "2024-01-01");
+    // An update keeps the stamp and may edit the type's own date.
+    await nodes.update(w.ref_id, { set: { created_at: "2024-02-02" } });
+    const [after] = await bolt.run(`MATCH (n {ref_id: $r}) RETURN n.created_at AS own, n.date_added_to_graph AS stamp`, { r: w.ref_id });
+    assert.equal(after!["own"], "2024-02-02");
+    assert.equal(Number(after!["stamp"]), Number(raw!["stamp"]));
+  });
+
+  it("a node jarvis wrote with its own created_at reads back with it", async () => {
+    await bolt.run(
+      `CREATE (:PullRequest:Data_Bank {ref_id: "pr-own", node_key: "pullrequest-fixlogin", namespace: "default", name: "Fix login", created_at: "2024-03-03", date_added_to_graph: 1700000000000})`,
+    );
+    const got = await reader.getNode("pr-own");
+    assert.equal(got?.properties["created_at"], "2024-03-03");
+  });
+
+  it("a Person's title is a job title, not its name", async () => {
+    const w = await nodes.write({ type: "Person", data: { name: "Alice Smith", title: "CEO" } }, "create");
+    const got = await reader.getNode(w.ref_id);
+    assert.equal(got?.name, "Alice Smith");
+    assert.equal(got?.properties["title"], "CEO");
   });
 
   it("an edge schema between a new type and a seeded one lets the edge write through", async () => {

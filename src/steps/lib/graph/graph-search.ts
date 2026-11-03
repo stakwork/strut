@@ -6,8 +6,8 @@ import { nodeTitle } from "../../../graph/title.js";
 import { graphCtx, errText } from "./_shared.js";
 const splitList = (s?: string) => s?.split(",").map((x) => x.trim()).filter(Boolean);
 
-/** A node's human label: its title (the stored one, else the Strut schema's
- *  title_key when it is a Strut type), else the same candidate chain the
+/** A node's human label: its title (the Strut schema's title_key when it is
+ *  a Strut type, else `name`, else the stored one), else the same candidate chain the
  *  jarvis/* step uses. */
 function nameOf(nodeType: string | undefined, p: Record<string, any>): string | undefined {
   const strut = nodeType ? getStrutSchema(nodeType) : undefined;

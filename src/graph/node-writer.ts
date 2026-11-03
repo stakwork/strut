@@ -55,7 +55,7 @@ import { sameStored } from "./engine.js";
 import { asEngine } from "./neo4j-engine.js";
 import { SchemaResolver, fromStrut, type NodeSchema } from "./schema-resolver.js";
 import { nodeTitleFor } from "./title.js";
-import { GENERIC_NODE_PROPERTIES, STRUT_DOMAIN_LABEL, embeddingColumn, getStrutSchema, vectorStem } from "./strut-schemas.js";
+import { STRUT_DOMAIN_LABEL, isGenericProperty, embeddingColumn, getStrutSchema, vectorStem } from "./strut-schemas.js";
 
 export type { PreparedNode, WriteMode, WriteOutcome };
 
@@ -121,7 +121,7 @@ export function validateNode(typeOrSchema: string | NodeSchema, data: Record<str
   // 3. Unknown attributes rejected — this is what makes "unexpected" nodes
   //    impossible, not just invalid ones. Generic/system props included.
   for (const key of Object.keys(data)) {
-    if (!attrs[key] || GENERIC_NODE_PROPERTIES.has(key)) {
+    if (!attrs[key] || isGenericProperty(key)) {
       throw new GraphValidationError("UNKNOWN_ATTRIBUTE", type, "attribute is not declared on the schema", key);
     }
   }
@@ -380,6 +380,9 @@ export interface NodeInput {
 export interface NodeWriteResult {
   ref_id: string;
   key: string;
+  /** @deprecated `key` under its old name, kept for a release so callers
+   *  typed against it (stakgraph's `concept/create`) keep working. */
+  node_key: string;
   /** Canonical type label the node was written under. */
   node_type: string;
   outcome: WriteOutcome;
@@ -426,8 +429,15 @@ export interface NodeUpdateResult {
   rekeyed: boolean;
 }
 
-/** Identity props never touched after create. */
-const PRESERVED = new Set(["ref_id", "key", "namespace", "created_at"]);
+/** Identity props never touched after create. `date_added_to_graph` is
+ *  the core stamp of a type that declares its own `created_at` (`stampKey`). */
+const PRESERVED = new Set(["ref_id", "key", "namespace", "created_at", "date_added_to_graph"]);
+
+/** Where the writer puts a node's core creation stamp: `created_at`, or,
+ *  on a type that declares its own `created_at` (jarvis's Concept, Check,
+ *  … on Neo4j: TYPE_OWNABLE_CORE), jarvis's `date_added_to_graph`, the
+ *  name Neo4j stores the stamp under anyway. */
+export const stampKey = (schema: Pick<NodeSchema, "attributes">): string => ("created_at" in schema.attributes ? "date_added_to_graph" : "created_at");
 
 export class NodeWriter {
   readonly resolver: SchemaResolver;
@@ -476,15 +486,17 @@ export class NodeWriter {
       const { text, fields } = buildSearchText(v.schema, v.values);
       // One clock read for both stamps; `created_at` is identity
       // (PRESERVED), so only a create writes it.
-      const props: Record<string, unknown> = { ...v.values, created_at: now, [UPDATED_AT]: now };
+      const props: Record<string, unknown> = { ...v.values, [stampKey(v.schema)]: now, [UPDATED_AT]: now };
       // A type that declares `title` itself (StrutApp, StrutJob: title_key
       // `title`) owns it: the caller's value is the title, or there is none.
       // So does a jarvis type that breaks the title_key rule (Person, whose
-      // `title` is a job title): its stored `title` is left as it is.
+      // `title` is a job title): its stored `title` is left as it is. A
+      // Neo4j graph stores no core title (no new data shapes there): its
+      // readers compose one from `title_key` (`nodeTitle`).
       if (!("title" in v.schema.attributes)) {
         const title = nodeTitleFor(v.schema, v.values, text);
-        if (title) props["title"] = title;
-        else if (v.schema.requiresTitle) {
+        if (title && this.engine.kind !== "neo4j") props["title"] = title;
+        else if (!title && v.schema.requiresTitle) {
           throw new GraphValidationError("MISSING_REQUIRED", v.schema.type, `an Entity or Concept needs a title: its ${v.schema.title_key} (the type's title_key) is empty and it has no text`, v.schema.title_key);
         }
       }
@@ -538,7 +550,7 @@ export class NodeWriter {
       for (const [type, rows] of byType) {
         const out = await this.engine.nodeEngine.mergeBatch(tx, rows[0]!.p.schema, namespace, rows.map((r) => r.p), mode);
         rows.forEach((r, k) => {
-          results[r.i] = { ...out[k]!, node_type: type };
+          results[r.i] = { ...out[k]!, node_key: out[k]!.key, node_type: type };
         });
       }
     };
@@ -593,7 +605,8 @@ export class NodeWriter {
 
       // Everything the fresh payload would carry, minus identity stamps.
       const setMap: Record<string, unknown> = { key };
-      for (const [k, val] of Object.entries(p!.props)) if (!PRESERVED.has(k)) setMap[k] = val;
+      // A type's own `created_at` (TYPE_OWNABLE_CORE) is a field it may edit.
+      for (const [k, val] of Object.entries(p!.props)) if (!PRESERVED.has(k) || k in attrs) setMap[k] = val;
       const drop = new Set<string>(remove);
       if (!("search_text" in setMap)) for (const k of ["search_text", "_search_fields_used", "text_embeddings"]) drop.add(k);
       else if (!schema.embed) drop.add("text_embeddings"); // a vector an earlier writer left on a no-embed node goes with the update

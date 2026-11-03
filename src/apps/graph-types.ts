@@ -119,7 +119,7 @@ export async function checkAppGraph(manifest: AppManifest, graph: GraphBackend |
       continue;
     }
     try {
-      planNodeSchema(input);
+      planNodeSchema(input, graph?.kind);
     } catch (e) {
       if (!(e instanceof Error) || e.name !== "GraphValidationError") throw e;
       const attribute = (e as Error & { attribute?: string }).attribute;

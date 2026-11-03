@@ -201,13 +201,16 @@ describe("search helpers (pure)", () => {
       { labels: ["Data_Bank", "StrutRun", "Node", "Domain_strut"], properties: { ref_id: "r", node_key: "k", namespace: "default", Data_Bank: "x", text_embeddings: [1], date_added_to_graph: 5, weight: 2, run_id: "1", image_url: 3 } },
       { score: 1 },
     );
-    assert.deepEqual(env, { ref_id: "r", node_type: "StrutRun", created_at: 5, weight: 2, properties: { run_id: "1", image_url: "" }, score: 1 });
+    assert.deepEqual(env, { ref_id: "r", node_type: "StrutRun", created_at: 5, date_added_to_graph: 5, weight: 2, properties: { run_id: "1", image_url: "" }, score: 1 });
     // A Ladybug row carries the shared names; a jarvis type's own created_at on Neo4j is not the stamp.
     assert.deepEqual(
       serializeNode({ labels: ["Concept"], properties: { ref_id: "c", key: "k", search_text: "x", created_at: 7, title: "T", name: "n" } }),
-      { ref_id: "c", node_type: "Concept", created_at: 7, properties: { title: "T", name: "n" } },
+      { ref_id: "c", node_type: "Concept", created_at: 7, date_added_to_graph: 7, properties: { title: "T", name: "n" } },
     );
-    assert.equal(serializeNode({ labels: ["Concept", "Data_Bank"], properties: { ref_id: "c", date_added_to_graph: 9, created_at: "2024-01-01" } }).created_at, 9);
+    // A jarvis Concept on Neo4j: its own created_at is a field, the core stamp is date_added_to_graph.
+    const own = serializeNode({ labels: ["Concept", "Data_Bank"], properties: { ref_id: "c", date_added_to_graph: 9, created_at: "2024-01-01" } });
+    assert.equal(own.created_at, 9);
+    assert.equal(own.properties["created_at"], "2024-01-01");
   });
   it("schema split + inherited attributes", () => {
     const thing = splitSchema({ type: "Thing", ref_id: "t", index: ["name"], name: "string", description: "?string" });

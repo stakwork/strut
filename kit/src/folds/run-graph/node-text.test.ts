@@ -44,9 +44,16 @@ describe("nodeText", () => {
       prose: [],
       rest: [],
     });
-    expect(nodeText({ ref_id: "c-1", name: "Problem List", title: "Problem List", key: "concept-problemlist", search_text: "Problem List", created_at: 1700000000000 })).toEqual({
+    expect(nodeText({ ref_id: "c-1", name: "Problem List", key: "concept-problemlist", search_text: "Problem List" })).toEqual({
       prose: [],
       rest: [],
     });
+  });
+
+  it("shows a title and a created_at, which can be the type's own", () => {
+    expect(nodeText({ ref_id: "pr-1", name: "Fix login", title: "Fix the login redirect", created_at: "2024-01-01" }).rest).toEqual([
+      ["title", "Fix the login redirect"],
+      ["created_at", "2024-01-01"],
+    ]);
   });
 });

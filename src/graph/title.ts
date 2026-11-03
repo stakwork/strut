@@ -1,10 +1,11 @@
 /**
  * A node's `title` (plans/graph-memory-plan.md "Core attributes"): the
- * writer fills it from the schema's `title_key` on every write, as it fills
- * `search_text` from `index`, so a reader shows a node without looking up
- * its schema. `title_key` is a field, or a small template (`{first}
- * {last}`). A reader of a node written before titles falls back to the
- * schema's `title_key` (`nodeTitle`).
+ * writer fills it from the schema's `title_key` on every write to a
+ * Ladybug file, as it fills `search_text` from `index`, so a reader shows a
+ * node without looking up its schema. `title_key` is a field, or a small
+ * template (`{first} {last}`). A Neo4j graph stores no core title (a stored
+ * `title` there is a field of the type's, Person's job title); its readers
+ * compose one from `title_key` (`nodeTitle`).
  *
  * No runtime imports: the step readers load it without the Neo4j driver.
  */
@@ -39,11 +40,15 @@ export function nodeTitleFor(schema: Pick<NodeSchema, "title_key">, values: Reco
   return bounded(source.trim().split("\n")[0]!.trim());
 }
 
-/** A stored node's title for a reader: the `title` the writer stored, else
- *  (a node written before titles) its type's `title_key` over its
- *  properties. "" when neither gives one; callers keep their own fallback. */
+/** A stored node's title for a reader: its type's `title_key` (default
+ *  `name`) over its properties, else the `title` the writer stored (its
+ *  first-line fallback, on Ladybug). A stored `title` is the node's title
+ *  only where `title_key` reads it, or where the key gives nothing: on
+ *  Neo4j a jarvis Person's `title` is a job title, not its name. "" when
+ *  neither gives one; callers keep their own fallback. */
 export function nodeTitle(props: Record<string, unknown>, titleKey?: string): string {
+  const own = composeTitle(titleKey || "name", props);
+  if (own) return own;
   const stored = props["title"];
-  if (typeof stored === "string" && stored.trim()) return stored.trim();
-  return composeTitle(titleKey, props);
+  return typeof stored === "string" ? stored.trim() : "";
 }

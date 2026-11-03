@@ -41,13 +41,13 @@
  * name is already a column of another type.
  */
 import { randomUUID } from "node:crypto";
-import type { EngineLike } from "./engine.js";
+import type { EngineLike, GraphKind } from "./engine.js";
 import { asEngine } from "./neo4j-engine.js";
 import { GraphValidationError } from "./node-writer.js";
 import { searchableAttributesOf } from "./ontology-seed.js";
 import type { SchemaResolver } from "./schema-resolver.js";
 import { schemaStatement } from "./schema-seed.js";
-import { GENERIC_NODE_PROPERTIES, RESERVED_ATTRIBUTE_NAMES, THING_TYPE, isStrutType } from "./strut-schemas.js";
+import { RESERVED_ATTRIBUTE_NAMES, THING_TYPE, TYPE_OWNABLE_CORE, isGenericProperty, isStrutType } from "./strut-schemas.js";
 import { titleFields } from "./title.js";
 
 export interface NodeSchemaInput {
@@ -122,10 +122,15 @@ const titleOwnRule = (titleKey: string) =>
  *  the resolver treats a core-key attribute as optional regardless of its
  *  declared type (`schema-resolver.ts` `fromDb`), so a `description:
  *  "string"` is required only when it is a node_key token. */
-function checkAttribute(type: string, name: string, value: unknown): void {
+function checkAttribute(type: string, name: string, value: unknown, kind?: GraphKind): void {
   if (!IDENT.test(name)) throw new GraphValidationError("UNKNOWN_ATTRIBUTE", type, "attribute name is not a bare identifier", name);
-  if (RESERVED_ATTRIBUTE_NAMES.has(name) || GENERIC_NODE_PROPERTIES.has(name)) {
+  if (RESERVED_ATTRIBUTE_NAMES.has(name) || isGenericProperty(name)) {
     throw new GraphValidationError("UNKNOWN_ATTRIBUTE", type, "attribute name is a reserved schema/system property", name);
+  }
+  // Neo4j keeps a type's own `created_at` beside the core stamp
+  // (`date_added_to_graph`); a Ladybug file has one `created_at`, the core.
+  if (kind === "ladybug" && TYPE_OWNABLE_CORE.has(name)) {
+    throw new GraphValidationError("UNKNOWN_ATTRIBUTE", type, `${name} is the node's own creation time on this graph, set by the writer — name the type's date something else (e.g. published_at, started_at)`, name);
   }
   if (typeof value !== "string" || !TYPE_GRAMMAR.test(value)) {
     throw new GraphValidationError("WRONG_TYPE", type, `attribute type must be one of string|boolean|int|float|complex|datetime|list (optionally ?-prefixed), got ${JSON.stringify(value)}`, name);
@@ -137,7 +142,7 @@ function checkAttribute(type: string, name: string, value: unknown): void {
  * `GraphValidationError` on the first problem. Existence checks (parent,
  * duplicate type) happen in `createNodeSchema`.
  */
-export function planNodeSchema(input: NodeSchemaInput): NodeSchemaPlan {
+export function planNodeSchema(input: NodeSchemaInput, kind?: GraphKind): NodeSchemaPlan {
   const type = String(input.type ?? "").trim();
   if (!TYPE_LABEL.test(type)) throw new GraphValidationError("UNKNOWN_TYPE", type || "?", "type must match ^[A-Za-z][A-Za-z0-9_]*$");
   if (type === "*" || type === THING_TYPE) throw new GraphValidationError("UNKNOWN_TYPE", type, "cannot create the root or wildcard schema");
@@ -147,7 +152,7 @@ export function planNodeSchema(input: NodeSchemaInput): NodeSchemaPlan {
 
   const attributes: Record<string, string> = {};
   for (const [k, v] of Object.entries(input.attributes ?? {})) {
-    checkAttribute(type, k, v);
+    checkAttribute(type, k, v, kind);
     attributes[k] = v as string;
   }
   const declared = new Set(["name", ...Object.keys(attributes)]);
@@ -210,7 +215,7 @@ export function planNodeSchema(input: NodeSchemaInput): NodeSchemaPlan {
 export async function createNodeSchema(e: EngineLike, resolver: SchemaResolver, input: NodeSchemaInput): Promise<NodeSchemaResult> {
   const engine = asEngine(e);
   const src = engine.schemaSource;
-  const plan = planNodeSchema(input);
+  const plan = planNodeSchema(input, engine.kind);
   const managedBy = typeof plan.flat["managed_by"] === "string" ? (plan.flat["managed_by"] as string) : undefined;
 
   // Adopt the live casing of an existing type / parent (jarvis

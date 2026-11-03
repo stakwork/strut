@@ -78,6 +78,8 @@ export default defineStep({
         ref_id: r.ref_id,
         parent: r.parent,
         key_spec: r.key_spec,
+        // Deprecated: key_spec's old name, kept for a release.
+        node_key: r.key_spec,
         ...(r.created ? {} : { added_attributes: r.added, messages: [r.added.length ? `Schema already existed — added ${r.added.join(", ")}` : "Schema already existed — nothing to add"] }),
         attributes: r.attributes,
       };

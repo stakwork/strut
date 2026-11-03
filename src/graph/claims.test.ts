@@ -292,11 +292,15 @@ for (const tb of testBackends()) {
         "id is the identity",
       );
 
-      // When a check was written is the node's core created_at, the writer's: a caller cannot give one.
-      await assert.rejects(
-        nodes.write({ type: "Check", data: { id: "k0", name: "stamped", step_type: "exec", created_at: 1 } }),
-        (e: unknown) => e instanceof GraphValidationError && e.code === "UNKNOWN_ATTRIBUTE" && e.attribute === "created_at",
-      );
+      // On Ladybug when a check was written is the node's core created_at, the
+      // writer's: a caller cannot give one. (jarvis's Check on Neo4j declares
+      // its own, which the writer stamps in seconds.)
+      if (!neo) {
+        await assert.rejects(
+          nodes.write({ type: "Check", data: { id: "k0", name: "stamped", step_type: "exec", created_at: 1 } }),
+          (e: unknown) => e instanceof GraphValidationError && e.code === "UNKNOWN_ATTRIBUTE" && e.attribute === "created_at",
+        );
+      }
       const [k1, kOld, kExt] = await nodes.writeMany([
         { type: "Check", data: { id: "k1", name: "bounds", step_type: "exec", step_config: '{"command":"true"}', run_when: "run", policy: "always", publisher: "ai" } },
         { type: "Check", data: { id: "kold", name: "bounds (old)", step_type: "exec", retired_at: now - 41 } },

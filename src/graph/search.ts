@@ -87,11 +87,14 @@ export interface NodeEnvelope {
   node_type: string | undefined;
   properties: Record<string, unknown>;
   name?: string;
-  /** The node's title (`title.ts`): the stored one, else its type's
-   *  `title_key` field. Set by `envelope`. */
+  /** The node's title (`title.ts`): a Ladybug row's stored one, else its
+   *  type's `title_key` field. Set by `envelope`. */
   title?: string;
   /** When the node was created, epoch ms (Neo4j's `date_added_to_graph`). */
   created_at?: number;
+  /** @deprecated `created_at` under its old name, kept for a release so
+   *  readers of the old envelope (hive) keep working. */
+  date_added_to_graph?: number;
   weight?: number;
   score?: number;
   match_type?: string;
@@ -463,8 +466,8 @@ export function titleMatchMultiplier(qLower: string, valLower: string): number {
 }
 
 /** `_apply_title_key_boost`: multiply by the title's match tier, re-sort,
- *  re-normalize. The title is the node's stored one, else its type's
- *  `title_key` field (`nodeTitle`); `titleKeyFor` resolves a node type's
+ *  re-normalize. The title is the node's type's `title_key` field, else its
+ *  stored one (`nodeTitle`); `titleKeyFor` resolves a node type's
  *  `title_key` (default `name`). */
 export function applyTitleBoost(ranked: RankedEntry[], q: string, titleKeyFor: (type: string | undefined) => string): RankedEntry[] {
   if (!q || ranked.length === 0) return ranked;
@@ -504,13 +507,18 @@ export function applyUsageTiebreak(ranked: RankedEntry[], epsilon = USAGE_TIEBRE
  *  `created_at` and a version's own stored `created_at` its `published_at`. */
 export function serializeNode(n: HitNode, extra?: Record<string, unknown>): NodeEnvelope {
   const props = "date_added_to_graph" in n.properties ? fromNeo4j(n.properties, typeLabelOf(n.labels)) : n.properties;
+  // A jarvis type's own `created_at` (Concept, PullRequest, …) sits beside
+  // the core stamp, which kept its jarvis name (`fromNeo4j`): a field.
+  const ownCreatedAt = "date_added_to_graph" in props;
   const filtered: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(props)) if (!RESPONSE_STRIPPED_NODE_PROPERTIES.has(k)) filtered[k] = v;
+  for (const [k, v] of Object.entries(props)) if (!RESPONSE_STRIPPED_NODE_PROPERTIES.has(k) || (ownCreatedAt && k === "created_at")) filtered[k] = v;
   if ("image_url" in filtered && typeof filtered["image_url"] !== "string") filtered["image_url"] = "";
+  const created = Number(ownCreatedAt ? props["date_added_to_graph"] : props["created_at"]) || 0;
   const out: NodeEnvelope = {
     ref_id: String(props["ref_id"]),
     node_type: typeLabelOf(n.labels),
-    created_at: Number(props["created_at"]) || 0,
+    created_at: created,
+    date_added_to_graph: created,
     properties: filtered,
   };
   if (props["weight"] !== null && props["weight"] !== undefined) out.weight = Number(props["weight"]);
@@ -551,14 +559,20 @@ export const EDGES_AMONG_MAX = 20_000;
 export const EDGE_TYPE_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /** GET /v2/nodes/:ref_id's response shape for one node, with its `title`:
- *  the stored one, else (a node written before titles) jarvis's name chain.
+ *  a Ladybug row's stored one, else (a Neo4j node, or one written before
+ *  titles) `name`, else jarvis's name chain.
  *  `name` is kept, the same, for callers that read it. */
 export function envelope(n: HitNode): NodeEnvelope {
   const p = n.properties;
   const env = serializeNode(n);
   delete env.created_at;
+  delete env.date_added_to_graph;
   const fallback = p["name"] ?? p["episode_title"] ?? p["show_title"] ?? p["search_text"] ?? p["Data_Bank"];
-  const name = nodeTitle(p) || (fallback === undefined || fallback === null ? undefined : String(fallback));
+  // A Ladybug row's `title` is the writer's (or the type's own, read by its
+  // title_key): the title. A Neo4j node's is a field of its type's, if any.
+  const neo4j = "date_added_to_graph" in p || "Data_Bank" in p;
+  const stored = !neo4j && typeof p["title"] === "string" ? p["title"].trim() : "";
+  const name = stored || nodeTitle(p) || (fallback === undefined || fallback === null ? undefined : String(fallback));
   return { name, ...(name ? { title: name } : {}), ...env };
 }
 

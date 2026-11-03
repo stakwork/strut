@@ -36,6 +36,8 @@ import type { EdgeSchemaWalk, EngineLike, GraphEngine, GraphTx } from "./engine.
 import { asEngine } from "./neo4j-engine.js";
 import {
   GENERIC_NODE_PROPERTIES,
+  TYPE_OWNABLE_CORE,
+  isGenericProperty,
   SCHEMA_CORE_PROPERTIES,
   STRUT_DOMAIN,
   STRUT_SCHEMAS,
@@ -87,8 +89,9 @@ export interface NodeSchema {
   embed: boolean;
   /** Attribute name → type string (`?`-prefixed = optional). Includes
    *  everything inherited via CHILD_OF. Never a core attribute the writer
-   *  owns (`GENERIC_NODE_PROPERTIES`): a Schema declaring one (jarvis's
-   *  `Check.created_at`) does not make it the type's. */
+   *  owns (`GENERIC_NODE_PROPERTIES`), except a `created_at` a type outside
+   *  strut declares (`TYPE_OWNABLE_CORE`: jarvis's Concept, Check, …), which
+   *  is the type's own field and optional. */
   attributes: Record<string, string>;
   /** The field the node's `title` comes from, or a `{first} {last}`
    *  template (`composeTitle`, title.ts). Default `name`. A type that
@@ -217,8 +220,10 @@ export class SchemaResolver {
     const isStrut = isStrutType(type);
     const attributes: Record<string, string> = {};
     for (const [k, v] of Object.entries(merged)) {
-      if (typeof v !== "string" || !TYPE_GRAMMAR.test(v) || GENERIC_NODE_PROPERTIES.has(k)) continue;
-      const neverRequired = !isStrut && (k === "name" || SCHEMA_CORE_PROPERTIES.has(k));
+      if (typeof v !== "string" || !TYPE_GRAMMAR.test(v) || (isStrut ? GENERIC_NODE_PROPERTIES.has(k) : isGenericProperty(k))) continue;
+      // A type's own `created_at` (TYPE_OWNABLE_CORE) is optional too: the
+      // writer stamps jarvis's Check one when the caller leaves it out.
+      const neverRequired = !isStrut && (k === "name" || SCHEMA_CORE_PROPERTIES.has(k) || TYPE_OWNABLE_CORE.has(k));
       attributes[k] = neverRequired && !v.startsWith("?") ? `?${v}` : v;
     }
     const domain = typeof own["domain"] === "string" ? (own["domain"] as string) : undefined;

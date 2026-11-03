@@ -156,6 +156,21 @@ export const GENERIC_NODE_PROPERTIES = new Set([
   "is_deleted",
 ]);
 
+/** The core names a type outside strut may still declare as a field of its
+ *  own: 15 jarvis types (Concept, PullRequest, Check, …) and an app on Neo4j
+ *  declare `created_at`. Neo4j keeps the core stamp under
+ *  `date_added_to_graph`, so there the two do not meet: the type's
+ *  `created_at` stays its own (`neo4j-engine.ts`). Ladybug holds one
+ *  `created_at` column, the core one, and refuses the declaration
+ *  (`schema-crud.ts`). Strut's own types never declare it. */
+export const TYPE_OWNABLE_CORE = new Set(["created_at"]);
+
+/** True when `name` is a core or system property a type may not declare
+ *  as its own field. */
+export function isGenericProperty(name: string): boolean {
+  return GENERIC_NODE_PROPERTIES.has(name) && !TYPE_OWNABLE_CORE.has(name);
+}
+
 /** jarvis `SCHEMA_CORE_PROPERTIES` — top-level keys of a Schema node that
  *  are NOT attributes (everything else on the node is one). */
 export const SCHEMA_CORE_PROPERTIES = new Set([

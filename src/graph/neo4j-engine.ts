@@ -47,12 +47,14 @@ import type {
 } from "./engine.js";
 import type { NodeSchema } from "./schema-resolver.js";
 import { CHECK_TYPE } from "./claims.js";
-import { OWN_CREATED_AT, typeLabelOf } from "./strut-schemas.js";
+import { OWN_CREATED_AT, TYPE_OWNABLE_CORE, typeLabelOf } from "./strut-schemas.js";
 
 const MAX_ANCESTOR_WALK_DEPTH = 10;
 
-/** Identity props never touched after create (shared names). */
-const PRESERVED = new Set(["ref_id", "key", "namespace", "created_at"]);
+/** Identity props never touched after create (shared names; the core
+ *  stamp is `date_added_to_graph` on a type that declares its own
+ *  `created_at`, node-writer.ts `stampKey`). */
+const PRESERVED = new Set(["ref_id", "key", "namespace", "created_at", "date_added_to_graph"]);
 
 /** The core attributes a Neo4j graph keeps under jarvis's names: shared
  *  name → stored name, on nodes and edges alike (an edge has `created_at`
@@ -66,24 +68,28 @@ const q = (s: string) => `\`${s}\``;
  *  a version's `published_at` is its stored `created_at`. */
 export const neo4jName = (name: string, type?: string): string => (type && OWN_CREATED_AT[type] === name ? "created_at" : NEO4J_NAMES[name] ?? name);
 
-/** A node's (or edge's) map in shared names as Neo4j stores it. */
+/** A node's (or edge's) map in shared names as Neo4j stores it. A shared
+ *  name whose jarvis name is in the map too is the type's own field
+ *  (`fromNeo4j`'s Concept `created_at` beside `date_added_to_graph`): kept. */
 export function toNeo4j(props: Record<string, unknown>, type?: string): Record<string, unknown> {
   const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(props)) out[neo4jName(k, type)] = v;
+  for (const [k, v] of Object.entries(props)) out[NEO4J_NAMES[k] && NEO4J_NAMES[k] in props ? k : neo4jName(k, type)] = v;
   return out;
 }
 
 /** A stored node's (or edge's) properties under the shared names. A stored
  *  `created_at` is the type's own: a version's `published_at`, a chat's or
- *  a job's `started_at` — and any other type's (jarvis's `Check.created_at`,
- *  seconds) is not the core attribute and is left out. */
+ *  a job's `started_at`. On any other type (jarvis's Concept, PullRequest,
+ *  Check, …: TYPE_OWNABLE_CORE) it stays `created_at`, the type's field,
+ *  and the core stamp keeps jarvis's name, `date_added_to_graph`, beside it. */
 export function fromNeo4j(props: Record<string, unknown>, type?: string): Record<string, unknown> {
   const own = type ? OWN_CREATED_AT[type] : undefined;
+  const typeOwnsCreatedAt = !own && "created_at" in props;
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(props)) {
-    if (k === "created_at") {
-      if (own) out[own] = v;
-    } else if (!(k in NEO4J_NAMES)) out[SHARED_NAMES[k] ?? k] = v;
+    if (k === "created_at") out[own ?? "created_at"] = v;
+    else if (k === "date_added_to_graph" && typeOwnsCreatedAt) out[k] = v;
+    else if (!(k in NEO4J_NAMES)) out[SHARED_NAMES[k] ?? k] = v;
   }
   return out;
 }
@@ -174,7 +180,10 @@ function stored(schema: NodeSchema, map: Record<string, unknown>): Record<string
   for (const [k, v] of Object.entries(map)) {
     const t = schema.attributes[k];
     const base = t ? (t.startsWith("?") ? t.slice(1) : t) : undefined;
-    out[neo4jName(k, schema.type)] = typeof v === "number" && (k === "created_at" || k === "updated_at" || base === "int" || base === "datetime") ? int(v) : v;
+    // A type's own `created_at` (TYPE_OWNABLE_CORE) is stored as itself.
+    const name = t && TYPE_OWNABLE_CORE.has(k) ? k : neo4jName(k, schema.type);
+    const stamp = k === "created_at" || k === "date_added_to_graph" || k === "updated_at";
+    out[name] = typeof v === "number" && (stamp || base === "int" || base === "datetime") ? int(v) : v;
   }
   return out;
 }
@@ -235,7 +244,7 @@ class Neo4jNodes implements NodeEngine {
           const onMatch: Record<string, unknown> = {};
           const attrs: Record<string, unknown> = {};
           for (const [k, v] of Object.entries(n.props)) {
-            if (PRESERVED.has(k) || k === "updated_at") continue;
+            if ((PRESERVED.has(k) && !(k in schema.attributes)) || k === "updated_at") continue;
             onMatch[k] = v;
             if (k in schema.attributes) attrs[k] = v;
           }
@@ -246,7 +255,9 @@ class Neo4jNodes implements NodeEngine {
               ...stored(schema, { ...n.props, ref_id: n.ref_id, key: n.key, namespace }),
               // jarvis's Check declares its own required `created_at`, in
               // seconds: strut has always written it, so jarvis's readers keep it.
-              ...(type === CHECK_TYPE ? { created_at: int(Math.floor(Number(n.props["created_at"]) / 1000)) } : {}),
+              ...(type === CHECK_TYPE && !("created_at" in schema.attributes && n.props["created_at"] !== undefined)
+                ? { created_at: int(Math.floor(Number(n.props["date_added_to_graph"] ?? n.props["created_at"]) / 1000)) }
+                : {}),
             },
             on_match: stored(schema, onMatch),
             attrs: stored(schema, attrs),
