@@ -58,6 +58,7 @@ Core attributes are listed under "Core attributes" below.
 - Add `role`, `temporal`, `cardinality`, `key`, `identifiers` and `domain` to the core schema properties, `schema-crud.ts`, the resolver and the Ladybug Schema columns.
 - Cardinality is a rule on each edge type, never on nodes. An edge type declares `temporal` and `cardinality`, the slot is source node plus edge type, and `assert` reads the rule from the schema. `cardinality: one` means one current edge per source node. One per target isn't in v1 until something needs it.
 - Add namespaces to Ladybug. It refuses anything but `default` today. Writes default to `private`.
+  - A namespace says who may read the data. `private` is the graph owner's, readable only by the readers the host grants it (step 6). On Peel the owner is one person; a company graph would give each person a namespace of their own (see "Open decisions").
 - Seed base types without Jarvis's fixture. The user is an ordinary `Person` marked as the owner, with no separate `Self` type. `Lingo` stays, because dictation reads it.
 - Strut's own records keep the `Strut` domain and live in their writer's namespace; Schema rows are file-wide. A namespace says whose data something is; the domain says what kind of thing it is.
 - Keep the hard-coded skip list in `graph-neighbors.ts` and `walk.ts` for v1. A `walkable` schema setting can replace it later.
