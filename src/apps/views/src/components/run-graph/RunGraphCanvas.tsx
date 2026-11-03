@@ -6,6 +6,7 @@ import { select, zoom as d3Zoom, zoomIdentity, type D3ZoomEvent, type ZoomBehavi
 import { Focus, Maximize } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { clipName } from "../../lib/format";
+import { LABEL_LINE, placeLabels, type LabelBox, type LabelRequest } from "./labels";
 import {
   linkState,
   RUN_GRAPH_NODE_RADIUS,
@@ -60,6 +61,28 @@ const GROUP_NAMES_FROM_ZOOM = 0.6;
 /** Room around the highlight when the view is fitted to it, and the least box it is fitted into, in the layout's units. */
 const FOCUS_PADDING = 90;
 const FOCUS_MIN = 360;
+/** Where a cell's names start under its name: a lane's under the stage, an iteration's under "#n". */
+const LANE_NAME_ROOM = 50;
+const CELL_NAME_ROOM = 28;
+/** Shorter cuts of a name, tried where the 30-character one fits nowhere. */
+const SHORTER_NAMES = [16, 10];
+
+/** A text's width in ems of the names' font, measured once per text. */
+const emWidths = new Map<string, number>();
+let measurer: CanvasRenderingContext2D | null | undefined;
+function emWidth(text: string, fontFamily: string): number {
+  const key = `${fontFamily}\u0000${text}`;
+  let em = emWidths.get(key);
+  if (em === undefined) {
+    if (measurer === undefined) measurer = typeof document === "undefined" ? null : document.createElement("canvas").getContext("2d");
+    if (measurer) {
+      measurer.font = `500 100px ${fontFamily}`;
+      em = measurer.measureText(text).width / 100;
+    } else em = text.length * 0.6;
+    emWidths.set(key, em);
+  }
+  return em;
+}
 
 /** A node's name as drawn: one line, cut at 30 characters; a "+N" node's what it holds. */
 function labelOf(node: RunGraphCanvasNode): string {
@@ -367,20 +390,48 @@ export function RunGraphCanvas({
   /** Stands out under a highlight: highlighted itself, or a "+N" node holding some of it. */
   const lights = (id: string) => highlight?.has(id) === true || (nodeById.get(id)?.cluster?.highlighted ?? 0) > 0;
 
+  /** What each cell's names stay inside: an iteration's box under its header, else the lane under its name. */
+  const cellBounds = useMemo(() => {
+    const bounds = new Map<string, LabelBox>();
+    for (const lane of layout.lanes) {
+      for (const cell of lane.cells) {
+        const key = `${lane.key}#${cell.iteration ?? ""}`;
+        bounds.set(
+          key,
+          cell.iteration === null
+            ? { x0: lane.x + 6, y0: lane.y + LANE_NAME_ROOM, x1: lane.x + lane.width - 6, y1: lane.y + lane.height - 6 }
+            : { x0: cell.x + 4, y0: cell.y + CELL_NAME_ROOM, x1: cell.x + cell.width - 4, y1: cell.y + cell.height - 4 },
+        );
+      }
+    }
+    return bounds;
+  }, [layout.lanes]);
+
+  /** The font the names are drawn in, for measuring them. */
+  const [fontFamily, setFontFamily] = useState("system-ui, sans-serif");
+  useEffect(() => {
+    if (svgRef.current) setFontFamily(getComputedStyle(svgRef.current).fontFamily || "system-ui, sans-serif");
+  }, []);
+
   /**
    * The names drawn: the hovered node's, the selected one's, the step's own
-   * few, what is highlighted, the "+N" nodes — in that order, each only where
-   * it collides with none placed before it at this zoom. A name left out
-   * shows on hover.
+   * few, what is highlighted, the "+N" nodes — in that order, each beside its
+   * node where it stays in its cell and covers no name placed before it and
+   * no node, at this zoom (`placeLabels`). Highlighted names that fit nowhere
+   * are said as one "+N highlighted" per group, listing them on hover; any
+   * other name left out shows on hover.
    */
-  const labelled = useMemo(() => {
+  const labels = useMemo(() => {
     // A name's size in the layout's units: its screen size over the zoom, as NAME_FONT clamps it.
     const font = Math.min(Math.max(11 / zoomK, 11), 26);
-    const candidates: Array<{ key: string; place: RunGraphPlace; text: string; rank: number }> = [];
+    const requests: LabelRequest[] = [];
+    const drawnNodes: Array<{ key: string; x: number; y: number }> = [];
     for (const cell of shown.values()) {
       for (const place of cell.values()) {
         const node = nodeById.get(place.id);
         if (!node) continue;
+        const key = `${place.cell}|${place.id}`;
+        drawnNodes.push({ key, x: place.x, y: place.y });
         const stepNode = activeIds.has(place.id) && (activeCell === null || place.cell === activeCell) && activeIds.size <= MAX_NAMED_ACTIVE;
         const rank =
           place.id === hoverId ? 6
@@ -389,23 +440,33 @@ export function RunGraphCanvas({
           : highlight?.has(place.id) ? 3
           : node.cluster && zoomK >= GROUP_NAMES_FROM_ZOOM ? (node.cluster.highlighted ? 2 : 1)
           : 0;
-        if (rank > 0) candidates.push({ key: `${place.cell}|${place.id}`, place, text: labelOf(node), rank });
+        if (rank === 0) continue;
+        requests.push({
+          key,
+          cell: place.cell,
+          x: place.x,
+          y: place.y,
+          text: labelOf(node),
+          ...(node.cluster ? {} : { variants: SHORTER_NAMES.filter((n) => node.name.length > n).map((n) => clipName(node.name, n)) }),
+          ...(node.peer ? { sub: `@${clipName(node.peer)}` } : {}),
+          rank,
+          ...(rank === 6 ? { forced: true } : {}),
+          ...(highlight?.has(place.id) && !node.cluster ? { fold: node.name } : {}),
+        });
       }
     }
-    candidates.sort((a, b) => b.rank - a.rank);
-    const taken: Array<[number, number, number, number]> = [];
-    const keep = new Set<string>();
-    for (const c of candidates) {
-      const w = c.text.length * font * 0.6;
-      const bottom = c.place.y - (RUN_GRAPH_NODE_RADIUS + 6) + font * 0.25;
-      const box: [number, number, number, number] = [c.place.x - w / 2, bottom - font * 1.1, c.place.x + w / 2, bottom];
-      const hits = taken.some(([x0, y0, x1, y1]) => box[0] < x1 && x0 < box[2] && box[1] < y1 && y0 < box[3]);
-      if (hits && c.rank < 6) continue;
-      taken.push(box);
-      keep.add(c.key);
-    }
-    return keep;
-  }, [shown, nodeById, hoverId, selectedId, activeIds, activeCell, highlight, zoomK]);
+    return placeLabels({
+      requests,
+      nodes: drawnNodes,
+      bounds: cellBounds,
+      radius: RUN_GRAPH_NODE_RADIUS,
+      font,
+      // The name's 3px outline and a pixel of air, on screen.
+      pad: Math.min(2.5 / zoomK, font * 0.3),
+      width: (text) => emWidth(text, fontFamily) * font,
+      foldText: (n) => [`+${n} highlighted`, `+${n}`],
+    });
+  }, [shown, nodeById, hoverId, selectedId, activeIds, activeCell, highlight, zoomK, cellBounds, fontFamily]);
 
   /** The nodes in the order they are painted: what stands out last, on top, where a click finds it. */
   const paintOrder = useMemo(() => {
@@ -440,7 +501,7 @@ export function RunGraphCanvas({
         <g ref={viewRef}>
           <g data-testid="run-graph-lanes">
             {layout.lanes.map((lane) => (
-              <g key={lane.key} data-testid="run-graph-lane" data-stage={lane.stage}>
+              <g key={lane.key} data-testid="run-graph-lane" data-stage={lane.stage} data-key={lane.key}>
                 <title>
                   {lane.stage}: {lane.calls} calls, {lane.nodes} nodes
                 </title>
@@ -468,7 +529,7 @@ export function RunGraphCanvas({
                 {lane.cells
                   .filter((cell) => cell.iteration !== null && !hiddenCells.has(`${lane.key}#${cell.iteration}`))
                   .map((cell) => (
-                    <g key={cell.iteration} data-testid="run-graph-cell">
+                    <g key={cell.iteration} data-testid="run-graph-cell" data-cell={`${lane.key}#${cell.iteration}`}>
                       <rect
                         x={cell.x}
                         y={cell.y}
@@ -604,12 +665,14 @@ export function RunGraphCanvas({
           <g data-testid="run-graph-names" className="pointer-events-none">
             {paintOrder.map((place) => {
               const node = nodeById.get(place.id);
-              if (!node || !labelled.has(`${place.cell}|${place.id}`)) return null;
+              const at = labels.placed.get(`${place.cell}|${place.id}`);
+              if (!node || !at) return null;
               return (
-                <g key={`${place.cell}|${place.id}`} transform={`translate(${place.x},${place.y})`} opacity={opacityOf(place, isActive(place))}>
+                <g key={`${place.cell}|${place.id}`} transform={`translate(${place.x},${place.y})`} opacity={opacityOf(place, isActive(place))} data-cell={place.cell} data-node={place.id}>
                   <text
-                    y={-(RUN_GRAPH_NODE_RADIUS + 6)}
-                    textAnchor="middle"
+                    x={at.dx}
+                    y={at.dy}
+                    textAnchor={at.anchor}
                     className={`stroke-card font-medium ${node.cluster ? "fill-muted-foreground" : "fill-foreground"}`}
                     strokeWidth={3}
                     strokeLinejoin="round"
@@ -619,13 +682,14 @@ export function RunGraphCanvas({
                     data-testid="run-graph-name"
                     data-cluster={node.cluster ? true : undefined}
                   >
-                    {labelOf(node)}
+                    {at.text}
                   </text>
                   {node.peer && (
                     <text
-                      y={RUN_GRAPH_NODE_RADIUS + 4}
-                      dominantBaseline="hanging"
-                      textAnchor="middle"
+                      x={at.dx}
+                      y={at.dy}
+                      dy={`${LABEL_LINE}em`}
+                      textAnchor={at.anchor}
                       className="fill-muted-foreground stroke-card"
                       strokeWidth={3}
                       strokeLinejoin="round"
@@ -640,6 +704,30 @@ export function RunGraphCanvas({
                 </g>
               );
             })}
+          </g>
+
+          {/* Highlighted names that fit nowhere near one another: one "+N" each group, its names on hover. */}
+          <g data-testid="run-graph-folds">
+            {labels.folded.map((f) => (
+              <g key={f.key} transform={`translate(${f.x},${f.y})`} data-cell={f.cell}>
+                <text
+                  x={f.dx}
+                  y={f.dy}
+                  textAnchor={f.anchor}
+                  className="cursor-help stroke-card font-medium fill-foreground"
+                  strokeWidth={3}
+                  strokeLinejoin="round"
+                  paintOrder="stroke"
+                  vectorEffect="non-scaling-stroke"
+                  style={{ fontSize: NAME_FONT }}
+                  data-testid="run-graph-name"
+                  data-fold={f.names.length}
+                >
+                  <title>{f.names.join("\n")}</title>
+                  {f.text}
+                </text>
+              </g>
+            ))}
           </g>
         </g>
       </svg>
