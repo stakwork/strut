@@ -55,10 +55,11 @@ export interface SttEngine {
 }
 
 /** Lazy sherpa import (or another module shaped like it); null when the
- *  optional addon isn't installed. */
-export async function loadSherpaEngine(module = "sherpa-onnx-node"): Promise<SttEngine | null> {
+ *  optional addon isn't installed. `T` is the part a caller uses: the
+ *  recognizers here, `OfflineTts` for speech (synthesizer.ts). */
+export async function loadSherpaEngine<T = SttEngine>(module = "sherpa-onnx-node"): Promise<T | null> {
   try {
-    const mod = (await import(module)) as { default?: SttEngine } & SttEngine;
+    const mod = (await import(module)) as { default?: T } & T;
     return mod.default ?? mod;
   } catch {
     return null;

@@ -1,6 +1,7 @@
 /**
  * STT model catalog — the one list desktop, server, and the dream cycle
- * agree on (plans/local-desktop-and-stt.md §4.5). Every entry is a sherpa-onnx
+ * agree on (plans/local-desktop-and-stt.md §4.5) — and, at the end, the
+ * text-to-speech catalog (`TTS_MODELS`). Every entry is a sherpa-onnx
  * GitHub release asset with its sha256, so a download is verifiable and a
  * server image can pre-bake the same files.
  *
@@ -244,4 +245,75 @@ export function findFixer(id: string): FixerModel | undefined {
 /** Fixer models live under `<dir>/fixer/<id>/`. */
 export function fixerModelPath(modelDir: string, id: string): string {
   return join(modelDir, "fixer", id);
+}
+
+// ── Text-to-speech (plans/private-voice.md §3.3) ───────────────────────────
+
+/**
+ * A speech model for `/audio/speak` (tts.ts): a sherpa-onnx `tts-models`
+ * release asset, pinned by its sha256 like the STT entries.
+ *
+ * Kokoro v1.0 at full precision. Its int8 export is a third of the download
+ * but was about half the speed on CPU (2026-11-03, Docker limited to 4
+ * cores on an M4: real-time factor 0.23 at 4 threads against 0.49 for int8,
+ * which barely gains from threads). The archive is multi-language; `lang`
+ * makes it English: espeak-ng reads the text as en-us whatever the voice.
+ */
+export interface TtsModel {
+  id: string;
+  url: string;
+  /** sha256 of the `.tar.bz2`. */
+  sha256: string;
+  bytes: number;
+  /** Top-level directory inside the archive. */
+  archiveDir: string;
+  /** The ONNX model inside it. */
+  file: string;
+  /** espeak-ng's voice for the text (sherpa's `kokoro.lang`). */
+  lang: string;
+  sampleRate: number;
+  /** The model's voice table: `voices[sid]` is speaker `sid`'s name. */
+  voices: readonly string[];
+  defaultVoice: string;
+  description: string;
+}
+
+const TTS_RELEASE = "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models";
+
+export const TTS_MODELS: readonly TtsModel[] = [
+  {
+    id: "kokoro-en-v1.0",
+    url: `${TTS_RELEASE}/kokoro-multi-lang-v1_0.tar.bz2`,
+    sha256: "60703707bc05ccd48d60e1eb723f38b07d6e474795a0b6a588d7220400e0f7a4",
+    bytes: 349886476,
+    archiveDir: "kokoro-multi-lang-v1_0",
+    file: "model.onnx",
+    lang: "en-us",
+    sampleRate: 24000,
+    // The order of the model's `speaker_names`. a/b = American/British
+    // English, f/m = female/male; the rest are other languages' voices,
+    // which speak the English text in their accent.
+    voices: [
+      "af_alloy", "af_aoede", "af_bella", "af_heart", "af_jessica", "af_kore", "af_nicole", "af_nova", "af_river",
+      "af_sarah", "af_sky", "am_adam", "am_echo", "am_eric", "am_fenrir", "am_liam", "am_michael", "am_onyx",
+      "am_puck", "am_santa", "bf_alice", "bf_emma", "bf_isabella", "bf_lily", "bm_daniel", "bm_fable", "bm_george",
+      "bm_lewis", "ef_dora", "em_alex", "ff_siwis", "hf_alpha", "hf_beta", "hm_omega", "hm_psi", "if_sara",
+      "im_nicola", "jf_alpha", "jf_gongitsune", "jf_nezumi", "jf_tebukuro", "jm_kumo", "pf_dora", "pm_alex",
+      "pm_santa", "zf_xiaobei", "zf_xiaoni", "zf_xiaoxiao", "zf_xiaoyi", "zm_yunjian", "zm_yunxi", "zm_yunxia",
+      "zm_yunyang", "em_santa",
+    ],
+    defaultVoice: "af_heart",
+    description: "Kokoro 82M v1.0 (fp32), English through espeak-ng. 24 kHz, 54 voices; about a quarter of real time on four CPU cores.",
+  },
+];
+
+export const DEFAULT_TTS_MODEL = "kokoro-en-v1.0";
+
+export function findTtsModel(id: string): TtsModel | undefined {
+  return TTS_MODELS.find((m) => m.id === id);
+}
+
+/** TTS models live under `<dir>/tts/<id>/`. */
+export function ttsModelPath(modelDir: string, id: string): string {
+  return join(modelDir, "tts", id);
 }

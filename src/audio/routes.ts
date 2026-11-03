@@ -1,15 +1,17 @@
 /**
- * HTTP surface over the STT service (plans/local-desktop-and-stt.md §4.4).
+ * HTTP surface over the STT service (plans/local-desktop-and-stt.md §4.4)
+ * and, in `speakRoutes`, the TTS service (plans/private-voice.md §3.3).
  * The WebSocket lives in ws.ts. Everything here is gated by `requireApiKey`
  * (permissive in dev, like the rest of strut).
  */
-import type { Hono } from "hono";
-import { streamSSE } from "hono/streaming";
+import type { Context, Hono } from "hono";
+import { stream, streamSSE } from "hono/streaming";
 import { requireApiKey } from "../auth.js";
 import { FIX_TIMEOUT_MS, within } from "./fixer.js";
 import { heardOnly, rewrite, type Lexicon } from "./lingo.js";
 import { findModel } from "./models.js";
 import { SttUnavailableError, type SttService, type SttStreamOptions } from "./stt.js";
+import { SpeakRequestError, TtsUnavailableError, type Speech, type TtsService } from "./tts.js";
 
 export interface AudioRoutesOptions {
   /** Dictation's vocabulary (memory/lexicon), read per transcription; absent or failing: no rewrite. */
@@ -172,4 +174,69 @@ export function audioRoutes(app: Hono, stt: SttService, opts: AudioRoutesOptions
 function errorResponse(c: { json: (b: unknown, s: 400 | 501) => Response }, e: unknown): Response {
   if (e instanceof SttUnavailableError) return c.json({ error: e.message }, 501);
   return c.json({ error: (e as Error).message }, 400);
+}
+
+// ── Speech (text-to-speech) ───────────────────────────────────────────────
+
+export function speakRoutes(app: Hono, tts: TtsService): void {
+  app.use("/audio/speak", requireApiKey);
+
+  // The models and their voices, with whether each is on disk.
+  app.get("/audio/speak", async (c) => {
+    return c.json({ available: await tts.available(), modelDir: tts.modelDir, models: await tts.models() });
+  });
+
+  // Body { text, voice?, speed?, model? } → mono 16-bit little-endian PCM at
+  // `x-sample-rate`, written a sentence at a time as Kokoro finishes each. A
+  // model not on disk is downloaded first. An error before the first
+  // sentence is JSON with a status; after it, the body just ends (logged).
+  // A client that hangs up stops the generation, not only the sending.
+  app.post("/audio/speak", async (c) => {
+    const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
+    const { text, voice, speed, model } = body ?? {};
+    if (
+      typeof text !== "string" ||
+      (voice !== undefined && typeof voice !== "string") ||
+      (speed !== undefined && typeof speed !== "number") ||
+      (model !== undefined && typeof model !== "string")
+    ) {
+      return c.json({ error: "expected { text: string, voice?: string, speed?: number, model?: string }" }, 400);
+    }
+    // Stopped by a hang-up before the first sentence (the request's signal)
+    // or after it (the stream's abort, below).
+    const stop = new AbortController();
+    let speech: Speech;
+    let pieces: AsyncIterator<Uint8Array>;
+    let first: IteratorResult<Uint8Array>;
+    try {
+      speech = await tts.speak(text, { voice, speed, model, signal: AbortSignal.any([stop.signal, c.req.raw.signal]) });
+      pieces = speech.audio[Symbol.asyncIterator]();
+      first = await pieces.next();
+    } catch (e) {
+      stop.abort();
+      return speakError(c, e);
+    }
+    c.header("content-type", "audio/pcm");
+    c.header("x-sample-rate", String(speech.sampleRate));
+    c.header("x-voice", speech.voice);
+    c.header("cache-control", "no-store");
+    return stream(
+      c,
+      async (s) => {
+        s.onAbort(() => stop.abort());
+        try {
+          for (let r = first; !r.done && !s.aborted; r = await pieces.next()) await s.write(r.value);
+        } finally {
+          await pieces.return?.();
+        }
+      },
+      async (e) => console.error(`[audio] speech cut off: ${e.message}`),
+    );
+  });
+}
+
+function speakError(c: Context, e: unknown): Response {
+  if (e instanceof SpeakRequestError) return c.json({ error: e.message }, 400);
+  if (e instanceof TtsUnavailableError) return c.json({ error: e.message }, 501);
+  return c.json({ error: (e as Error).message }, 500);
 }
