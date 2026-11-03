@@ -126,8 +126,12 @@ import { LaunchForm, RunList, RunTimeline, RunGraph } from "strut/views";
 lens passes `highlight` (the ref_ids it is about: the rest dims where it
 is, nothing moves), and its panel answers a click through `onSelectNode`
 and selects a node itself through `selected`; `details={false}` leaves the
-node's page to that panel. A run that touched thousands of nodes draws a
-few dozen a stage, the rest folded into "+N" nodes a click opens.
+node's page to that panel, and `calls={false}` starts the call list closed
+behind a toggle, so the graph has the room. The view fits what a lens
+highlights; a button goes back to the whole run. A run that touched
+thousands of nodes draws a few dozen a stage, the rest folded into "+N"
+nodes a click opens, and a loop of many iterations as one box marked "×N"
+that a click lays out side by side.
 
 `WorkProducts` is what a run MADE for a person — memos, sheets, redlines,
 timelines — as a shelf that fills while the run goes: every `artifacts`

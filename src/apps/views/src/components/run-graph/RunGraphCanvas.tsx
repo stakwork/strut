@@ -3,7 +3,7 @@
 // for what the layout folded, and names only where they are asked for.
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { select, zoom as d3Zoom, zoomIdentity, type D3ZoomEvent, type ZoomBehavior } from "d3";
-import { Maximize } from "lucide-react";
+import { Focus, Maximize } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { clipName } from "../../lib/format";
 import {
@@ -44,6 +44,8 @@ interface RunGraphCanvasProps {
   onNodeClick: (id: string) => void;
   /** Show only one branch of the run, by its segment under the root (`003-produce`, `ingest#3`). */
   onFocus?: (path: string) => void;
+  /** Draw a stacked loop's iterations side by side (its "×N"). */
+  onOpenLane?: (key: string) => void;
 }
 
 const FIT_PADDING = 32;
@@ -53,6 +55,11 @@ const MAX_ZOOM = 4;
 const MAX_NAMED_ACTIVE = 12;
 /** What is not highlighted, while something is. */
 const DIM = 0.18;
+/** Below this zoom a "+N" node is a plain node: its name would be a speck. It shows on hover. */
+const GROUP_NAMES_FROM_ZOOM = 0.6;
+/** Room around the highlight when the view is fitted to it, and the least box it is fitted into, in the layout's units. */
+const FOCUS_PADDING = 90;
+const FOCUS_MIN = 360;
 
 /** A node's name as drawn: one line, cut at 30 characters; a "+N" node's what it holds. */
 function labelOf(node: RunGraphCanvasNode): string {
@@ -159,6 +166,7 @@ export function RunGraphCanvas({
   insetRight = 0,
   onNodeClick,
   onFocus,
+  onOpenLane,
 }: RunGraphCanvasProps) {
   const svgRef = useRef<SVGSVGElement>(null);
   const viewRef = useRef<SVGGElement>(null);
@@ -211,42 +219,105 @@ export function RunGraphCanvas({
     return () => observer.disconnect();
   }, []);
 
+  /** What the view fits: the whole run, or — while there is one — the highlight, with some room around it. */
+  const focusRef = useRef<"all" | "highlight">("all");
+  /** The places drawn now, for the fit to read without refitting at every step of a replay. */
+  const shownRef = useRef<Map<string, Map<string, RunGraphPlace>>>(new Map());
+
   const fit = useCallback(() => {
     const svg = svgRef.current;
     const behavior = zoomRef.current;
     if (!svg || !behavior || !size || layout.width <= 0 || layout.height <= 0) return;
     // Too narrow to give the inset up: the graph is fitted under it.
     const width = size.width - (size.width > 3 * insetRight ? insetRight : 0);
-    const k = Math.max(
-      MIN_ZOOM,
-      Math.min(1, width / (layout.width + 2 * FIT_PADDING), size.height / (layout.height + 2 * FIT_PADDING)),
-    );
+    let box = { x: 0, y: 0, width: layout.width, height: layout.height };
+    if (focusRef.current === "highlight" && highlight?.size) {
+      let x0 = Infinity;
+      let y0 = Infinity;
+      let x1 = -Infinity;
+      let y1 = -Infinity;
+      for (const cell of shownRef.current.values()) {
+        for (const p of cell.values()) {
+          if (!highlight.has(p.id) && !(nodesRef.current.get(p.id)?.cluster?.highlighted ?? 0)) continue;
+          x0 = Math.min(x0, p.x);
+          y0 = Math.min(y0, p.y);
+          x1 = Math.max(x1, p.x);
+          y1 = Math.max(y1, p.y);
+        }
+      }
+      if (x0 <= x1) {
+        const w = Math.max(FOCUS_MIN, x1 - x0 + 2 * FOCUS_PADDING);
+        const h = Math.max(FOCUS_MIN, y1 - y0 + 2 * FOCUS_PADDING);
+        box = { x: (x0 + x1) / 2 - w / 2, y: (y0 + y1) / 2 - h / 2, width: w, height: h };
+      }
+    }
+    const k = Math.max(MIN_ZOOM, Math.min(1, width / (box.width + 2 * FIT_PADDING), size.height / (box.height + 2 * FIT_PADDING)));
+    // Centred on the box, but never past the run's edge: on an axis where the
+    // whole run fits, it is drawn whole; else the view stops at its border.
+    const centre = (at: number, extent: number, view: number) => {
+      const half = view / (2 * k);
+      return extent + 2 * FIT_PADDING <= 2 * half ? extent / 2 : Math.min(Math.max(at, half - FIT_PADDING), extent + FIT_PADDING - half);
+    };
     const transform = zoomIdentity
       .translate(width / 2, size.height / 2)
       .scale(k)
-      .translate(-layout.width / 2, -layout.height / 2);
+      .translate(-centre(box.x + box.width / 2, layout.width, width), -centre(box.y + box.height / 2, layout.height, size.height));
     select(svg).call(behavior.transform, transform);
-  }, [size, insetRight, layout.width, layout.height]);
+  }, [size, insetRight, layout.width, layout.height, highlight]);
+
+  // A lens changed: fit to what it highlights (or, with none, the whole run).
+  const highlightKey = useMemo(() => [...(highlight ?? [])].sort().join("|"), [highlight]);
+  useEffect(() => {
+    focusRef.current = highlightKey ? "highlight" : "all";
+    movedRef.current = false;
+  }, [highlightKey]);
 
   useEffect(() => {
     if (!movedRef.current) fit();
-  }, [fit]);
+  }, [fit, highlightKey]);
 
-  const refit = useCallback(() => {
-    movedRef.current = false;
-    fit();
-  }, [fit]);
+  const refit = useCallback(
+    (focus: "all" | "highlight") => {
+      focusRef.current = focus;
+      movedRef.current = false;
+      fit();
+    },
+    [fit],
+  );
 
   const nodeById = useMemo(() => new Map(nodes.map((n) => [n.id, n])), [nodes]);
+  const nodesRef = useRef(nodeById);
+  nodesRef.current = nodeById;
 
   /** The cell of the step's call, where its nodes are ringed. */
   const activeCell = step === null ? null : (layout.callCells[step] ?? null);
 
   // What is in the picture at this step: a place from the first call that put it there.
+  // A stacked loop shows one iteration: the step's own, when the step is in
+  // it; else the first that holds something highlighted; else its first.
+  // Its other iterations' places are left out.
+  const litCells = useMemo(() => {
+    const cells = new Set<string>();
+    if (!highlight?.size) return cells;
+    for (const place of layout.places.values()) if (highlight.has(place.id)) cells.add(place.cell);
+    return cells;
+  }, [layout.places, highlight]);
+  const hiddenCells = useMemo(() => {
+    const hidden = new Set<string>();
+    for (const lane of layout.lanes) {
+      if (!lane.stacked) continue;
+      const keys = lane.cells.map((c) => `${lane.key}#${c.iteration ?? ""}`);
+      const showing = activeCell !== null && keys.includes(activeCell) ? activeCell : (keys.find((k) => litCells.has(k)) ?? keys[0]);
+      for (const k of keys) if (k !== showing) hidden.add(k);
+    }
+    return hidden;
+  }, [layout.lanes, activeCell, litCells]);
+
   const shown = useMemo(() => {
     const byCell = new Map<string, Map<string, RunGraphPlace>>();
     for (const place of layout.places.values()) {
       if (step !== null && place.since > step) continue;
+      if (hiddenCells.has(place.cell)) continue;
       let cell = byCell.get(place.cell);
       if (!cell) {
         cell = new Map();
@@ -255,7 +326,8 @@ export function RunGraphCanvas({
       cell.set(place.id, place);
     }
     return byCell;
-  }, [layout.places, step]);
+  }, [layout.places, step, hiddenCells]);
+  shownRef.current = shown;
 
   const drawn = useMemo<DrawnLink[]>(() => {
     const list: DrawnLink[] = [];
@@ -315,7 +387,7 @@ export function RunGraphCanvas({
           : place.id === selectedId ? 5
           : stepNode ? 4
           : highlight?.has(place.id) ? 3
-          : node.cluster ? (node.cluster.highlighted ? 2 : 1)
+          : node.cluster && zoomK >= GROUP_NAMES_FROM_ZOOM ? (node.cluster.highlighted ? 2 : 1)
           : 0;
         if (rank > 0) candidates.push({ key: `${place.cell}|${place.id}`, place, text: labelOf(node), rank });
       }
@@ -353,6 +425,11 @@ export function RunGraphCanvas({
     return ids;
   }, [hoverId, drawn]);
 
+  const isActive = (place: RunGraphPlace) =>
+    place.id === selectedId || (activeIds.has(place.id) && (activeCell === null || place.cell === activeCell));
+  const opacityOf = (place: RunGraphPlace, active: boolean) =>
+    beside && !beside.has(place.id) ? 0.25 : highlighting && !lights(place.id) && !active ? DIM : 1;
+
   return (
     <div className="absolute inset-0">
       <svg
@@ -389,7 +466,7 @@ export function RunGraphCanvas({
                   {lane.stage}
                 </BranchLabel>
                 {lane.cells
-                  .filter((cell) => cell.iteration !== null)
+                  .filter((cell) => cell.iteration !== null && !hiddenCells.has(`${lane.key}#${cell.iteration}`))
                   .map((cell) => (
                     <g key={cell.iteration} data-testid="run-graph-cell">
                       <rect
@@ -413,6 +490,28 @@ export function RunGraphCanvas({
                       >
                         #{cell.iteration}
                       </BranchLabel>
+                      {lane.stacked && (
+                        <text
+                          x={cell.x + cell.width - 12}
+                          y={cell.y + 22}
+                          textAnchor="end"
+                          className={`fill-muted-foreground font-mono ${onOpenLane ? "cursor-pointer hover:underline" : ""}`}
+                          style={{ fontSize: CELL_FONT }}
+                          role={onOpenLane ? "button" : undefined}
+                          tabIndex={onOpenLane ? 0 : undefined}
+                          aria-label={`Show all ${lane.cells.length} iterations of ${lane.stage}`}
+                          onClick={() => onOpenLane?.(lane.key)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter" || event.key === " ") {
+                              event.preventDefault();
+                              onOpenLane?.(lane.key);
+                            }
+                          }}
+                          data-testid="run-graph-stack"
+                        >
+                          ×{lane.cells.length}
+                        </text>
+                      )}
                     </g>
                   ))}
               </g>
@@ -460,17 +559,12 @@ export function RunGraphCanvas({
             {paintOrder.map((place) => {
                 const node = nodeById.get(place.id);
                 if (!node) return null;
-                const active =
-                  place.id === selectedId ||
-                  (activeIds.has(place.id) && (activeCell === null || place.cell === activeCell));
-                const named = labelled.has(`${place.cell}|${place.id}`);
-                const opacity = beside && !beside.has(place.id) ? 0.25 : highlighting && !lights(place.id) && !active ? DIM : 1;
-                const name = labelOf(node);
+                const active = isActive(place);
                 return (
                   <g
                     key={`${place.cell}|${place.id}`}
                     transform={`translate(${place.x},${place.y})`}
-                    opacity={opacity}
+                    opacity={opacityOf(place, active)}
                     className="cursor-pointer"
                     data-testid={node.cluster ? "run-graph-cluster" : "run-graph-node"}
                     data-cell={place.cell}
@@ -501,53 +595,64 @@ export function RunGraphCanvas({
                         vectorEffect="non-scaling-stroke"
                       />
                     )}
-                    {named && (
-                      <text
-                        y={-(RUN_GRAPH_NODE_RADIUS + 6)}
-                        textAnchor="middle"
-                        className={`pointer-events-none stroke-card font-medium ${node.cluster ? "fill-muted-foreground" : "fill-foreground"}`}
-                        strokeWidth={3}
-                        strokeLinejoin="round"
-                        paintOrder="stroke"
-                        vectorEffect="non-scaling-stroke"
-                        style={{ fontSize: NAME_FONT }}
-                        data-testid="run-graph-name"
-                      >
-                        {name}
-                      </text>
-                    )}
-                    {node.peer && named && (
-                      <text
-                        y={RUN_GRAPH_NODE_RADIUS + 4}
-                        dominantBaseline="hanging"
-                        textAnchor="middle"
-                        className="pointer-events-none fill-muted-foreground stroke-card"
-                        strokeWidth={3}
-                        strokeLinejoin="round"
-                        paintOrder="stroke"
-                        vectorEffect="non-scaling-stroke"
-                        style={{ fontSize: NAME_FONT }}
-                        data-testid="run-graph-canvas-peer"
-                      >
-                        @{clipName(node.peer)}
-                      </text>
-                    )}
                   </g>
                 );
               })}
           </g>
+
+          {/* The names over every node: a crowded cell never paints a circle across a name. */}
+          <g data-testid="run-graph-names" className="pointer-events-none">
+            {paintOrder.map((place) => {
+              const node = nodeById.get(place.id);
+              if (!node || !labelled.has(`${place.cell}|${place.id}`)) return null;
+              return (
+                <g key={`${place.cell}|${place.id}`} transform={`translate(${place.x},${place.y})`} opacity={opacityOf(place, isActive(place))}>
+                  <text
+                    y={-(RUN_GRAPH_NODE_RADIUS + 6)}
+                    textAnchor="middle"
+                    className={`stroke-card font-medium ${node.cluster ? "fill-muted-foreground" : "fill-foreground"}`}
+                    strokeWidth={3}
+                    strokeLinejoin="round"
+                    paintOrder="stroke"
+                    vectorEffect="non-scaling-stroke"
+                    style={{ fontSize: NAME_FONT }}
+                    data-testid="run-graph-name"
+                    data-cluster={node.cluster ? true : undefined}
+                  >
+                    {labelOf(node)}
+                  </text>
+                  {node.peer && (
+                    <text
+                      y={RUN_GRAPH_NODE_RADIUS + 4}
+                      dominantBaseline="hanging"
+                      textAnchor="middle"
+                      className="fill-muted-foreground stroke-card"
+                      strokeWidth={3}
+                      strokeLinejoin="round"
+                      paintOrder="stroke"
+                      vectorEffect="non-scaling-stroke"
+                      style={{ fontSize: NAME_FONT }}
+                      data-testid="run-graph-canvas-peer"
+                    >
+                      @{clipName(node.peer)}
+                    </text>
+                  )}
+                </g>
+              );
+            })}
+          </g>
         </g>
       </svg>
-      <Button
-        variant="outline"
-        size="icon"
-        className="absolute right-3 top-3 h-7 w-7"
-        aria-label="Show all of it"
-        onClick={refit}
-        data-testid="run-graph-fit"
-      >
-        <Maximize className="h-3.5 w-3.5" />
-      </Button>
+      <div className="absolute right-3 top-3 flex gap-1">
+        {highlightKey && (
+          <Button variant="outline" size="icon" className="h-7 w-7" aria-label="Fit the highlight" title="Fit the highlight" onClick={() => refit("highlight")} data-testid="run-graph-fit-highlight">
+            <Focus className="h-3.5 w-3.5" />
+          </Button>
+        )}
+        <Button variant="outline" size="icon" className="h-7 w-7" aria-label="Show all of it" title="Show the whole run" onClick={() => refit("all")} data-testid="run-graph-fit">
+          <Maximize className="h-3.5 w-3.5" />
+        </Button>
+      </div>
     </div>
   );
 }

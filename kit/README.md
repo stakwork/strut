@@ -147,7 +147,8 @@ the `sideEffects` and `type` rules, and that the recorded versions are
   from hive with its tests (the projection of a run's log into graph calls,
   replay, lineage, walk, peer refs, node text; `layout.ts` needs d3, so it is
   exported from `@strut/kit` and not from `@strut/kit/folds`; its `fold`
-  keeps a cell to a few dozen nodes, the rest in "+N" nodes, `clusters`).
+  keeps a cell to a few dozen nodes, the rest in "+N" nodes, `clusters`;
+  its `stack` draws a loop's iterations in one box, `stacked` lanes).
 - **`src/styles/base.css`** — Tailwind, shadcn's tokens, and the mapping of
   MCP Apps `hostContext.styles.variables` onto them: every token is
   `var(--color-…, <shadcn default>)`, read off the inline variables the

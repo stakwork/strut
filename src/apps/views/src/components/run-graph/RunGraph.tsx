@@ -13,12 +13,14 @@ import {
   Crosshair,
   Eye,
   ListTree,
+  AlertTriangle,
   Loader2,
   PenLine,
   X,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 import {
   ancestorsOf,
@@ -73,6 +75,8 @@ const LIVE_POLL_MS = 10_000;
 const FOLD_CAP = 8;
 /** The arc between two nodes on a ring once folded: only a few are named, so they sit closer than names would need. */
 const FOLD_ARC = 36;
+/** A loop of more iterations than this draws them in one box, one at a time, marked "×N" — a click draws them all. */
+const STACK_AFTER = 3;
 /** Members a click on a "+N" node shows at a time, around it. */
 const REVEAL = 40;
 /** Rings of revealed members around their "+N" node: the first's radius, then the step out and the arc between two. */
@@ -103,9 +107,6 @@ export interface RunGraphSelection {
 }
 /** A run that touched fewer nodes than this opens the runs it launched on its own. */
 const AUTO_OPEN_BELOW = 10;
-
-/** Width the legend takes at the right of the canvas: `w-52` and its margin. */
-const LEGEND_INSET = 232;
 
 const ACCESS_LABEL: Record<RunGraphAccess, string> = { read: "Reads", write: "Writes" };
 
@@ -536,6 +537,7 @@ export function RunGraph({
   selected: selectedProp,
   onSelectNode,
   details = true,
+  calls: callsProp = true,
 }: {
   workflow: string;
   runId: string;
@@ -558,6 +560,8 @@ export function RunGraph({
   onSelectNode?: (node: RunGraphSelection) => void;
   /** Open the selected node's own panel over the graph (default true); false when the app has a panel of its own. */
   details?: boolean;
+  /** Open with the list of calls beside the graph (default true); closed, a toggle opens it — a lens screen gives the graph the room. */
+  calls?: boolean;
 }) {
   const [trace, setTrace] = useState<RunGraphTrace | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -567,6 +571,9 @@ export function RunGraph({
   const [step, setStep] = useState<number | null>(null);
   const [playing, setPlaying] = useState(false);
   const [ownSelected, setOwnSelected] = useState<string | null>(null);
+  const [callsOpen, setCallsOpen] = useState(callsProp);
+  /** Loops drawn with every iteration side by side (a click on their "×N"). */
+  const [openLanes, setOpenLanes] = useState<ReadonlySet<string>>(new Set());
   const selectedId = selectedProp !== undefined ? selectedProp : ownSelected;
   const highlight = useMemo(() => new Set(highlightProp ?? []), [highlightProp]);
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
@@ -714,8 +721,9 @@ export function RunGraph({
         sections,
         1.6,
         { cap: FOLD_CAP, typeOf, arc: FOLD_ARC },
+        { after: STACK_AFTER, open: openLanes },
       ),
-    [calls, graphNodes, links, parents, sections, typeOf],
+    [calls, graphNodes, links, parents, sections, typeOf, openLanes],
   );
 
   // A "+N" node's members, shown around it a click at a time: laid over the
@@ -1004,41 +1012,65 @@ export function RunGraph({
             ))}
           </div>
         </div>
-        {/* One fixed box for the step's call or the run's summary: scrubbing never moves the graph. */}
-        <div className="h-8 overflow-hidden" data-testid="run-graph-caption">
-        {current !== null ? (
-          <CurrentCall call={calls[current]} index={current} total={calls.length} />
-        ) : scope !== null && inScope.length === 0 ? (
-          <p className="text-xs text-muted-foreground" data-testid="run-graph-summary">
-            Nothing under {scopeLabel} touched the graph.
-          </p>
-        ) : (
-          <p className="line-clamp-2 text-xs text-muted-foreground" data-testid="run-graph-summary">
-            {calls.length} calls{scope !== null ? ` under ${scopeLabel}` : ""} read or wrote {touched.length} nodes
-            {live && !settled ? " so far" : ""}
-            {lineage.length > 0
-              ? `, under the ${lineage.length === 1 ? "1 node" : `${lineage.length} nodes`} they descend from`
-              : ""}
-            , along {hopCount === 1 ? "1 hop" : `${hopCount} hops`}. Step through them, or pick one in the tree.
-            {trace.truncated ? " The run touched more than are shown." : ""}
-          </p>
-        )}
+        {/* One fixed row for the step's call or the run's summary: scrubbing never moves the graph. */}
+        <div className="flex h-8 min-w-0 items-center gap-2" data-testid="run-graph-caption">
+          <Button
+            variant={callsOpen ? "secondary" : "ghost"}
+            size="icon"
+            className="h-7 w-7 shrink-0"
+            aria-label={callsOpen ? "Hide the calls" : "Show the calls"}
+            aria-pressed={callsOpen}
+            title={callsOpen ? "Hide the calls" : "Show the calls"}
+            onClick={() => setCallsOpen((o) => !o)}
+            data-testid="run-graph-calls-toggle"
+          >
+            <ListTree className="h-3.5 w-3.5" />
+          </Button>
+          <div className="min-w-0 flex-1 overflow-hidden">
+            {current !== null ? (
+              <CurrentCall call={calls[current]} index={current} total={calls.length} />
+            ) : scope !== null && inScope.length === 0 ? (
+              <p className="truncate text-xs text-muted-foreground" data-testid="run-graph-summary">
+                Nothing under {scopeLabel} touched the graph.
+              </p>
+            ) : (
+              <p className="line-clamp-2 text-xs text-muted-foreground" data-testid="run-graph-summary">
+                {calls.length} calls{scope !== null ? ` under ${scopeLabel}` : ""} read or wrote {touched.length} nodes
+                {live && !settled ? " so far" : ""}
+                {lineage.length > 0
+                  ? `, under the ${lineage.length === 1 ? "1 node" : `${lineage.length} nodes`} they descend from`
+                  : ""}
+                {hopCount > 0 ? `, along ${hopCount === 1 ? "1 hop" : `${hopCount} hops`}` : ""}. Step through them{callsOpen ? ", or pick one in the list" : ""}.
+                {trace.truncated ? " The run touched more than are shown." : ""}
+              </p>
+            )}
+          </div>
+          {(trace.nodesRead === false || trace.edgesRead === false || trace.lineageRead === false) && (
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button variant="outline" size="sm" className="h-6 shrink-0 gap-1 px-2 text-xs text-amber-600 dark:text-amber-400" aria-label="Part of the graph did not answer" data-testid="run-graph-unread">
+                  <AlertTriangle className="h-3 w-3" /> partial
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="end" className="w-80 text-xs" data-testid="run-graph-unread-detail">
+                <p className="mb-2 text-muted-foreground">
+                  {trace.nodesRead === false
+                    ? `The graph did not answer${unreadReason}, so the nodes are as the run's log named them and only the hops the run took are drawn.`
+                    : trace.edgesRead === false
+                      ? `The graph did not answer for the edges among these nodes${unreadReason}, so only the hops the run took are drawn.`
+                      : `The graph did not answer for the lineage of these nodes${unreadReason}, so they are drawn without the nodes they descend from.`}
+                </p>
+                <Button variant="outline" size="sm" className="h-6 text-xs" onClick={() => setGeneration((g) => g + 1)}>
+                  Ask again
+                </Button>
+              </PopoverContent>
+            </Popover>
+          )}
         </div>
-        {(trace.nodesRead === false || trace.edgesRead === false || trace.lineageRead === false) && (
-          <p className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground" data-testid="run-graph-unread">
-            {trace.nodesRead === false
-              ? `The graph did not answer${unreadReason}, so the nodes are as the run's log named them and only the hops the run took are drawn.`
-              : trace.edgesRead === false
-                ? `The graph did not answer for the edges among these nodes${unreadReason}, so only the hops the run took are drawn.`
-                : `The graph did not answer for the lineage of these nodes${unreadReason}, so they are drawn without the nodes they descend from.`}
-            <Button variant="outline" size="sm" className="h-6 text-xs" onClick={() => setGeneration((g) => g + 1)}>
-              Ask again
-            </Button>
-          </p>
-        )}
       </div>
 
-      <div className={cn("grid grid-cols-[minmax(220px,260px)_1fr]", fill ? "min-h-0 flex-1" : "h-[640px]")}>
+      <div className={cn("grid", callsOpen ? "grid-cols-[minmax(220px,260px)_1fr]" : "grid-cols-1", fill ? "min-h-0 flex-1" : "h-[640px]")}>
+        {callsOpen && (
         <div className="overflow-y-auto border-r py-1" data-testid="run-graph-tree">
           {scope !== null && (
             <nav
@@ -1082,7 +1114,9 @@ export function RunGraph({
             />
           )}
         </div>
-        <div className="relative min-w-0 overflow-hidden" data-testid="run-graph-canvas">
+        )}
+        <div className="flex min-h-0 min-w-0 flex-col">
+        <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden" data-testid="run-graph-canvas">
           {graphNodes.length > 0 && (
             <RunGraphCanvas
               layout={shownLayout}
@@ -1093,9 +1127,9 @@ export function RunGraph({
               selectedId={selectedId}
               highlight={highlight}
               step={current}
-              insetRight={LEGEND_INSET}
               onNodeClick={clickNode}
               onFocus={focusLane}
+              onOpenLane={(key) => setOpenLanes((prev) => new Set(prev).add(key))}
             />
           )}
           {selected && details && (
@@ -1119,43 +1153,37 @@ export function RunGraph({
               onClose={() => select(null)}
             />
           )}
-          <ul
-            className="absolute bottom-3 right-3 flex max-h-[60%] w-52 flex-col gap-0.5 overflow-y-auto rounded-lg border bg-card p-2 text-xs"
-            data-testid="run-graph-legend"
-          >
-            {typeCounts.map(([type, count]) => {
-              const visible = typeVisible(type);
-              return (
-                <li key={type}>
-                  <button
-                    type="button"
-                    aria-pressed={visible}
-                    onClick={() => setTypeOverrides((prev) => ({ ...prev, [type]: !visible }))}
-                    className={`flex w-full items-center gap-2 rounded px-1 py-0.5 text-left hover:bg-muted/60 ${
-                      visible ? "" : "text-muted-foreground line-through"
-                    }`}
-                  >
-                    <span
-                      className="inline-block size-2.5 shrink-0 rounded-full"
-                      style={{
-                        backgroundColor: visible ? colorMap[type] : "transparent",
-                        border: `1px solid ${colorMap[type]}`,
-                      }}
-                    />
-                    <span className="min-w-0 flex-1 truncate">{type}</span>
-                    <span className="tabular-nums text-muted-foreground">{count}</span>
-                  </button>
-                </li>
-              );
-            })}
-            <li className="mt-1 flex items-center gap-2 border-t px-1 pt-1.5 text-muted-foreground">
-              <span className="inline-block h-px w-2.5 shrink-0 bg-muted-foreground" />
-              An edge of the graph
-            </li>
-            <li className="flex items-center gap-2 px-1 text-muted-foreground">
-              <ArrowRight className="-mx-px h-3 w-3 shrink-0 text-sky-500" />A hop the run took
-            </li>
-          </ul>
+        </div>
+        {/* The legend, one line under the graph: it never covers it. */}
+        <ul className="flex h-8 shrink-0 items-center gap-3 overflow-x-auto whitespace-nowrap border-t px-3 text-xs" data-testid="run-graph-legend">
+          {typeCounts.map(([type, count]) => {
+            const visible = typeVisible(type);
+            return (
+              <li key={type}>
+                <button
+                  type="button"
+                  aria-pressed={visible}
+                  onClick={() => setTypeOverrides((prev) => ({ ...prev, [type]: !visible }))}
+                  className={`flex items-center gap-1.5 rounded px-1 py-0.5 hover:bg-muted/60 ${visible ? "" : "text-muted-foreground line-through"}`}
+                >
+                  <span
+                    className="inline-block size-2.5 shrink-0 rounded-full"
+                    style={{ backgroundColor: visible ? colorMap[type] : "transparent", border: `1px solid ${colorMap[type]}` }}
+                  />
+                  {type}
+                  <span className="tabular-nums text-muted-foreground">{count.toLocaleString("en-US")}</span>
+                </button>
+              </li>
+            );
+          })}
+          <li className="flex items-center gap-1.5 text-muted-foreground">
+            <span className="inline-block h-px w-2.5 shrink-0 bg-muted-foreground" />
+            an edge
+          </li>
+          <li className="flex items-center gap-1.5 text-muted-foreground">
+            <ArrowRight className="-mx-px h-3 w-3 shrink-0 text-sky-500" />a hop the run took
+          </li>
+        </ul>
         </div>
       </div>
     </div>

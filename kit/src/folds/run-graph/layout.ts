@@ -55,6 +55,15 @@ export interface RunGraphLane extends RunGraphBox {
   /** Nodes drawn in the lane, over its cells. */
   nodes: number;
   cells: RunGraphCell[];
+  /** Its iterations drawn in one box, one at a time (`stack`): every cell has the same box. */
+  stacked?: true;
+}
+
+export interface RunGraphStack {
+  /** A loop with more iterations than this draws them in one box, one at a time. */
+  after: number;
+  /** Lanes (by key) drawn with every iteration side by side all the same. */
+  open?: ReadonlySet<string>;
 }
 
 export interface RunGraphPoint {
@@ -428,6 +437,7 @@ export function layoutRunGraph(
   sections: ReadonlyMap<string, string> = new Map(),
   aspect = 1.6,
   fold?: RunGraphFold,
+  stack?: RunGraphStack,
 ): RunGraphLayout {
   const wanted = new Set(nodeIds);
   const stages = new Map<string, Stage>();
@@ -502,13 +512,33 @@ export function layoutRunGraph(
 
   const footprint = (c: { width: number; height: number; header: number }) =>
     (c.width + CELL_GAP) * (c.height + c.header + CELL_GAP);
-  const area = settled.reduce((sum, s) => sum + s.cells.reduce((a, c) => a + footprint(c), 0), 0);
+  const stacks = (s: (typeof settled)[number]) =>
+    !!stack && s.cells.length > stack.after && !stack.open?.has(s.key) && s.cells.every((c) => c.group.iteration !== null);
+  // A stacked lane takes one box's room.
+  const area = settled.reduce((sum, s) => sum + (stacks(s) ? Math.max(0, ...s.cells.map(footprint)) : s.cells.reduce((a, c) => a + footprint(c), 0)), 0);
   const targetHeight = Math.sqrt(area / aspect) || 1;
 
   const places = new Map<string, RunGraphPlace>();
   const lanes: RunGraphLane[] = [];
   let laneX = 0;
   for (const s of settled) {
+    // A loop of many iterations, drawn in one box: each iteration at the same place, shown one at a time.
+    if (stacks(s)) {
+      const boxWidth = Math.max(0, ...s.cells.map((c) => c.width));
+      const boxHeight = Math.max(0, ...s.cells.map((c) => c.height + c.header));
+      const left = laneX + LANE_PAD;
+      const cells: RunGraphCell[] = s.cells.map((cell) => {
+        const key = cellKey(s.key, cell.group.iteration);
+        for (const [id, point] of cell.points) {
+          places.set(placeKey(key, id), { id, cell: key, since: cell.group.since.get(id) ?? 0, x: left + point.x, y: LANE_HEADER + cell.header + point.y });
+        }
+        return { iteration: cell.group.iteration, path: cell.group.segment, nodes: cell.group.ids.length, x: left, y: LANE_HEADER, width: boxWidth, height: boxHeight };
+      });
+      const width = Math.max(LANE_MIN_WIDTH, boxWidth + 2 * LANE_PAD);
+      lanes.push({ key: s.key, stage: s.stage, path: null, calls: s.calls, nodes: cells.reduce((sum, c) => sum + c.nodes, 0), cells, x: laneX, y: 0, width, height: LANE_HEADER + boxHeight + LANE_PAD, stacked: true });
+      laneX += width + LANE_GAP;
+      continue;
+    }
     const widest = Math.max(0, ...s.cells.map((c) => c.width));
     const rowWidth = Math.max(widest, s.cells.reduce((a, c) => a + footprint(c), 0) / targetHeight);
     const cells: RunGraphCell[] = [];

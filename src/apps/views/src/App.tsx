@@ -237,6 +237,7 @@ function RunGraphDemo() {
               selected={selected?.ref_id ?? null}
               onSelectNode={setSelected}
               details={false}
+              calls={false}
             />
           </div>
           <aside className="flex w-52 shrink-0 flex-col gap-2 rounded-lg border p-3 text-sm" data-testid="run-graph-demo-lens-panel">
@@ -302,7 +303,7 @@ const ENTRIES: Entry[] = [
     name: "RunGraph",
     what: "Every graph call the run made as a tree, the nodes laid out by stage under their lineage, a replay through the calls, child runs opened in place, a peer's nodes badged. A run screen's master view: `highlight` (a lens's nodes) dims the rest where it is, `onSelectNode` and `selected` let a lens's panel answer a click. At the scale of a workspace graph a cell folds what it cannot draw into “+N” nodes a click opens, and names only what is highlighted, selected, hovered or folded; the replay never changes its size.",
     grants: "grants.workflows: the run's (and its child runs') workflows · grants.steps: graph/graph-get-batched, graph/graph-neighbors",
-    usage: `<RunGraph workflow="research" runId={runId} highlight={lens.nodes} selected={picked} onSelectNode={(n) => setPicked(n.ref_id)} details={false} />`,
+    usage: `<RunGraph workflow="research" runId={runId} highlight={lens.nodes} selected={picked} onSelectNode={(n) => setPicked(n.ref_id)} details={false} calls={false} />`,
     demo: () => <RunGraphDemo />,
   },
   {
