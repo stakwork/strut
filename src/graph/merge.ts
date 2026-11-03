@@ -45,7 +45,7 @@ import { EDGE_TEXT_TYPE, MERGE_TYPE, SCHEMA_TYPE } from "./ladybug/registry.js";
 import { composeFact, deleteEdgeRows, setTemporalEdge, slotEdges, syncEdgeRow, titlesOf, writeEdgeRow } from "./ladybug/temporal.js";
 import { named, pairsOf, type Candidate, type Named } from "./name-pairs.js";
 import { refNodeKey } from "./node-writer.js";
-import { boundsOf } from "./scope.js";
+import { boundsOf, hidesType, readsNamespace } from "./scope.js";
 import { ALT_NAMES } from "./resolve.js";
 import { endOfReplaced } from "./temporal.js";
 import { SYSTEM_WRITER } from "../system-workflows.js";
@@ -162,10 +162,18 @@ function newerFirst(a: { valid_at: number | null; created_at: number; ref_id: st
  */
 export async function duplicatePairs(b: GraphBackend, namespace: string, tx?: GraphTx): Promise<Candidate[]> {
   ladybugOnly(b, "graph duplicates");
-  const run = tx ? tx.run.bind(tx) : b.query.bind(b);
+  // Under a reader list (scope.ts) the list applies here, as in resolve: a
+  // namespace it does not read holds nothing, a type it hides is left out,
+  // and the query is the unscoped one (the list refuses raw queries).
+  const bounds = boundsOf(b);
+  if (bounds && !readsNamespace(bounds.list, namespace, b.namespace)) return [];
+  const run = tx ? tx.run.bind(tx) : bounds?.query ?? b.query.bind(b);
   const types = (await run(`MATCH (n:Node {namespace: $ns}) WHERE n.deleted_at IS NULL RETURN DISTINCT n.node_type AS t`, { ns: namespace })).map((r) => String(r["t"]));
   const entityTypes: string[] = [];
-  for (const t of types) if ((await b.schemas.schema(t, tx))?.role === "entity") entityTypes.push(t);
+  for (const t of types) {
+    const schema = await b.schemas.schema(t, tx);
+    if (schema?.role === "entity" && !(bounds && hidesType(bounds.list, schema.domainLabels))) entityTypes.push(t);
+  }
   if (!entityTypes.length) return [];
   const rows = await run(
     `MATCH (n:Node {namespace: $ns}) WHERE n.deleted_at IS NULL AND n.node_type IN $types AND n.title IS NOT NULL

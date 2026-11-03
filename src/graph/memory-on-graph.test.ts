@@ -223,7 +223,8 @@ describe("graph/import-memory from the old memory database (ladybug)", { skip: l
     await run(forget as unknown as Step, { ref_id: gone.entities[0].ref_id, reason: "wrong" }, old);
 
     b = (await lb.open()) as LadybugBackend;
-    ctx = ctxOf({ graph: b, secrets }, { actor: "import" });
+    // As a step run sees the graph on Peel, with the note's lists: as a job.
+    ctx = ctxOf({ graph: graphView(b, parseGraphReaders({ jobs: { namespaces: ["private", "shared"], exclude_domains: ["Strut"] } })), secrets }, { actor: "import" });
   });
   after(async () => {
     await lb.close(b);
@@ -231,7 +232,7 @@ describe("graph/import-memory from the old memory database (ladybug)", { skip: l
   });
 
   let first: any;
-  it("imports entities as nodes, the user as the is_owner Person, all in private", async () => {
+  it("imports entities as nodes, the user as the is_owner Person, all in private, read as a job", async () => {
     first = await run(importMemory, {}, ctx);
     assert.equal(first.status, "Success", JSON.stringify(first));
     const people = await b.query("MATCH (n:Node {node_type: 'Person'}) WHERE n.deleted_at IS NULL RETURN n.ref_id AS id, n.title AS title, n.is_owner AS owner, n.alt_names AS alts, n.namespace AS ns ORDER BY n.title");
