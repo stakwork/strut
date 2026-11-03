@@ -3,7 +3,7 @@ import { AlertTriangle, CheckCircle2, CircleSlash, GitFork, LifeBuoy, RotateCcw,
 import { foldRunHealth, useRunEvents, type HealthEvent, type HealthStep, type RunEvent } from "@strut/kit";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
-import { errorText, fmtCost, fmtDuration, fmtTokens } from "../lib/format";
+import { errorText, fmtCost, fmtDuration, fmtTokens, toolLabel } from "../lib/format";
 
 export interface RunHealthProps {
   /** Read the run's log (`run/events`) — the importing app's grant. */
@@ -74,7 +74,7 @@ export function RunHealth({ workflow, runId, live, events: given, onOpenStep, cl
         <Group icon={Wrench} title={`${h.tools.failed} of ${h.tools.calls} tool calls failed (the agents went on)`}>
           {h.tools.byTool.map((t) => (
             <li key={t.tool} className="grid grid-cols-[minmax(0,12rem)_4rem_1fr] items-baseline gap-2 px-1 py-0.5">
-              <span className="truncate font-mono text-xs">{t.tool}</span>
+              <span className="truncate font-mono text-xs" title={t.tool}>{toolLabel(t.tool)}</span>
               <span className="text-xs tabular-nums text-muted-foreground">{t.failed}/{t.calls}</span>
               <span className="truncate text-xs text-muted-foreground" title={t.last}>{t.last}</span>
             </li>

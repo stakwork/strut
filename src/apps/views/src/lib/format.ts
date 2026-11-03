@@ -49,3 +49,8 @@ export const NAME_CHARS = 30;
 export function clipName(name: string, max = NAME_CHARS): string {
   return name.length > max ? `${name.slice(0, max - 1).trimEnd()}…` : name;
 }
+
+/** A tool's name as shown: a step's folder that its own name repeats, said once (`graph_graph_get_batched` → `graph_get_batched`). The real name — what the agent called — goes in the title. */
+export function toolLabel(name: string): string {
+  return name.replace(/^([a-z0-9]+)_\1_/i, "$1_");
+}
