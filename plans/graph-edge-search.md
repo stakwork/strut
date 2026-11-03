@@ -57,12 +57,13 @@ Every change happens in the same transaction as the edge change, on Ladybug's si
 | edge moved to another namespace | row moves with it |
 | a source or target's `title` changes (rename, merge) | that node's rows recomposed and re-embedded |
 
-Recomposing on a title change touches one node's edges. That's cheap at personal scale. A node with a very large number of edges could instead queue the work for the embedding pass. Decide this if it ever shows up in timing.
+Recomposing on a title change touches one node's edges. That's cheap at personal scale. A node with a very large number of edges could instead leave its rows unembedded for the background row embedder. Decide this if it ever shows up in timing.
 
 ## Embedding
 
 - **The model:** strut's existing local MiniLM, 384 dimensions, the same as node embeddings.
-- **When it runs:** before the transaction. If it throws, the edge and its row are still written, keyword only, and the existing embedding pass fills in the vector later. Rows are ordinary nodes, so the pass already covers them.
+- **When it runs:** before the transaction. If it throws, the edge and its row are still written, keyword only.
+- **Filling vectors later:** strut's embedding pass is Neo4j-only, so Ladybug gets a small background row embedder, `embedPendingEdgeRows`. It embeds every `EdgeText` row that has text and no vector, once after open and again after any write that left a row unembedded (a failed embed, a rename's recompose). One run at a time per handle; a failure is logged and never blocks or fails an open or a write.
 - **Recall:** vector queries raise `efs` to 500, which the main plan's step 4 already asks for.
 
 ## Backfill
@@ -95,7 +96,7 @@ Out of scope. Jarvis has its own edge-text fields on Neo4j (`edge_text`, `edge_t
 - A memory-tool search that leaves out the `Strut` domain still finds facts.
 - A rename of either end re-embeds its facts.
 - A fact in `private` isn't found by a reader limited to `shared`.
-- An embedding failure still writes the edge, and the embedding pass fills the vector later.
+- An embedding failure still writes the edge, and the background row embedder fills the vector later.
 - The backfill gives an older file a row for every temporal edge with `text`, and running it again changes nothing.
 
 ## Order
