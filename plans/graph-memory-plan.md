@@ -51,7 +51,7 @@ Core attributes are listed under "Core attributes" below.
 
 - On Ladybug, rename `date_added_to_graph` to `created_at`, `Data_Bank` to `search_text` and `node_key` to `key`. Add the rename to `MIGRATIONS` in `db.ts`, and rebuild the text index, so existing Peel files carry over.
 - Neo4j keeps Jarvis's names for now: its engine maps them at the boundary, so shared code uses the new names.
-- Add `title` and `created_by` as core node attributes. The writer fills `title` from the schema's `title_key` (see "Core attributes"). `name`, `description` and `aliases` stay ordinary type fields.
+- Add `title` and `created_by` as core node attributes. The writer fills `title` from the schema's `title_key` (see "Core attributes"). `name`, `description` and `alt_names` stay ordinary type fields.
 - Make `title_key` and `description_key` core Schema properties, defaulting to `name` and `description`.
 - Add `namespace`, `created_by`, `updated_at` and `deleted_at` to edges.
 - Move Claim-only columns off the shared edge columns, onto the edge types that use them.
@@ -78,7 +78,7 @@ Core attributes are listed under "Core attributes" below.
 - Raise `efs` to 500 on vector queries, for recall as the graph grows.
 
 ### 5. Add identity
-- `resolve`: key, identifier, name and alias, then candidates.
+- `resolve`: key, identifier, name and alias (`alt_names`), then candidates. Ladybug only; Neo4j refuses it (`src/graph/resolve.ts`).
 - `merge`: move edges, keep old ids working, record it, allow undo.
 
 ### 6. Enforce privacy with namespaces
@@ -137,7 +137,7 @@ Every time is epoch milliseconds. Claims are stored in ms like every other time 
 
 **Every node:** `ref_id`, `node_type`, `namespace`, `key`, `title`, `search_text`, `text_embeddings`, `created_at`, `created_by`, `updated_at`, `deleted_at`.
 
-**Titles come from the schema.** Not every node has a name: a message or a dictation turn is its text. Each Schema row says which field is its title (`title_key`, a field or a small template such as `{first} {last}`) and which is its description (`description_key`). They default to `name` and `description`. The writer fills `title` from `title_key` on every write, as it fills `search_text` from `index`, so reads, search, the UI and `resolve` never look up the schema to show a node. A node with no title field gets a trimmed first line of its text. The writer refuses an Entity or Concept whose title comes out empty. Changing a type's `title_key` needs a one-off recompute. `name`, `description` and `aliases` are ordinary fields that most types declare; `aliases` matters on the types `resolve` matches, such as Person, Organization and Concept.
+**Titles come from the schema.** Not every node has a name: a message or a dictation turn is its text. Each Schema row says which field is its title (`title_key`, a field or a small template such as `{first} {last}`) and which is its description (`description_key`). They default to `name` and `description`. The writer fills `title` from `title_key` on every write, as it fills `search_text` from `index`, so reads, search, the UI and `resolve` never look up the schema to show a node. A node with no title field gets a trimmed first line of its text. The writer refuses an Entity or Concept whose title comes out empty. Changing a type's `title_key` needs a one-off recompute. `name`, `description` and `alt_names` are ordinary fields that most types declare; `alt_names` (a node's other names, not `aliases`, which on Ladybug is the Schema rows' column for a type's aliases) matters on the types `resolve` matches, such as Person, Organization and Concept.
 
 **Every edge:** `ref_id`, `namespace`, `created_at`, `created_by`, `updated_at`, `deleted_at`.
 
