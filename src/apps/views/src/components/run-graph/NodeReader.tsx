@@ -22,10 +22,42 @@ function attribute(value: unknown): string {
 }
 
 /**
- * A node, open to read: its text as markdown, then its other properties.
- * The text is the graph's, written by agents and ingests, so it renders
- * escaped — `SafeMarkdown`, never an HTML sink.
+ * A node's text as markdown, then its other properties — the reader's body,
+ * in this dialog or a drawer (WalkView). The text is the graph's, written by
+ * agents and ingests, so it renders escaped — `SafeMarkdown`, never an HTML
+ * sink.
  */
+export function NodeReaderBody({ properties }: { properties: Record<string, unknown> }) {
+  const text = useMemo(() => nodeText(properties), [properties]);
+  return (
+    <>
+      {text.prose.map(([key, markdown]) => (
+        <section key={key} data-testid="run-graph-node-prose">
+          <p className="mb-1 font-mono text-[10px] uppercase tracking-wider text-muted-foreground">{key}</p>
+          <SafeMarkdown text={markdown} className="text-sm leading-relaxed text-foreground" />
+        </section>
+      ))}
+      {text.prose.length === 0 && (
+        <p className="text-sm italic text-muted-foreground">The graph stores no text on this node.</p>
+      )}
+      {text.rest.length > 0 && (
+        <dl
+          className="grid grid-cols-[minmax(0,160px)_minmax(0,1fr)] gap-x-3 gap-y-1 border-t pt-3 text-xs"
+          data-testid="run-graph-node-attributes"
+        >
+          {text.rest.map(([key, value]) => (
+            <React.Fragment key={key}>
+              <dt className="truncate font-mono text-muted-foreground">{key}</dt>
+              <dd className="break-words">{attribute(value)}</dd>
+            </React.Fragment>
+          ))}
+        </dl>
+      )}
+    </>
+  );
+}
+
+/** A node, open to read, in a dialog. */
 export function RunGraphNodeReader({
   node,
   body,
@@ -39,7 +71,6 @@ export function RunGraphNodeReader({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
-  const text = useMemo(() => nodeText(body.properties), [body]);
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-2xl" data-testid="run-graph-node-reader">
@@ -60,28 +91,7 @@ export function RunGraphNodeReader({
             {parseQualifiedRef(node.ref_id).refId}
           </DialogDescription>
         </DialogHeader>
-        {text.prose.map(([key, markdown]) => (
-          <section key={key} data-testid="run-graph-node-prose">
-            <p className="mb-1 font-mono text-[10px] uppercase tracking-wider text-muted-foreground">{key}</p>
-            <SafeMarkdown text={markdown} className="text-sm leading-relaxed text-foreground" />
-          </section>
-        ))}
-        {text.prose.length === 0 && (
-          <p className="text-sm italic text-muted-foreground">The graph stores no text on this node.</p>
-        )}
-        {text.rest.length > 0 && (
-          <dl
-            className="grid grid-cols-[minmax(0,160px)_minmax(0,1fr)] gap-x-3 gap-y-1 border-t pt-3 text-xs"
-            data-testid="run-graph-node-attributes"
-          >
-            {text.rest.map(([key, value]) => (
-              <React.Fragment key={key}>
-                <dt className="truncate font-mono text-muted-foreground">{key}</dt>
-                <dd className="break-words">{attribute(value)}</dd>
-              </React.Fragment>
-            ))}
-          </dl>
-        )}
+        <NodeReaderBody properties={body.properties} />
       </DialogContent>
     </Dialog>
   );

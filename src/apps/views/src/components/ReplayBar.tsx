@@ -65,7 +65,7 @@ export function ReplayBar({
           <Radio className="h-3.5 w-3.5" /> Live
         </Button>
       )}
-      {label !== undefined && <span className="shrink-0 font-mono text-[11px] text-muted-foreground">{label}</span>}
+      {label !== undefined && <span className="shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground">{label}</span>}
     </div>
   );
 }
