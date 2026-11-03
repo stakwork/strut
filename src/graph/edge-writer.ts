@@ -23,7 +23,9 @@
  * other source type follows jarvis's own rules — the `EDGE_TYPES`
  * allowlist, else an edge schema must exist between the endpoint types or
  * their ancestors (or the `*` wildcard). Both endpoints must resolve — a
- * miss is an error, not a silent zero-row no-op.
+ * miss is an error, not a silent zero-row no-op. An edge type whose rule is
+ * `cardinality: "one"` (`EdgeRule`) holds one live edge per source node: a
+ * second target is refused, never a silent replace (that is `assert`'s).
  *
  * The statements live behind `EdgeEngine` (`engine.ts`): `neo4j-engine.ts`
  * holds the MERGE and the `shortestPath` cycle check, `ladybug/engine.ts`
@@ -305,7 +307,7 @@ export class EdgeWriter {
         ? { edge, source_ref_id: node, target_ref_id: m.to_ref_id, properties: props }
         : { edge, source_ref_id: m.to_ref_id, target_ref_id: node, properties: props };
       validateEdgeShape(input);
-      const resolved = await this.validateEndpoints(tx, [input]);
+      const resolved = await this.validateEndpoints(tx, [input], old.edge_ref_id);
       const [written] = await this.mergeEdges(tx, edge, resolved);
       // `to_ref_id` was an alias of where it already hangs.
       if (written!.ref_id === old.edge_ref_id) return unmoved;
@@ -326,11 +328,14 @@ export class EdgeWriter {
 
   /** Resolve every endpoint's type label and check each triple: Strut
    *  registry for Strut sources, jarvis's allowlist/edge-schema rules for the
-   *  rest. Throws on a missing endpoint or disallowed triple. */
-  private async validateEndpoints(tx: GraphTx, inputs: EdgeInput[]): Promise<ResolvedEdge[]> {
+   *  rest, then the edge type's cardinality. Throws on a missing endpoint, a
+   *  disallowed triple or a full slot. `replacing`: the edge a move deletes
+   *  once this one is written, which holds no slot. */
+  private async validateEndpoints(tx: GraphTx, inputs: EdgeInput[], replacing?: string): Promise<ResolvedEdge[]> {
     const ids = [...new Set(inputs.flatMap((i) => [i.source_ref_id, i.target_ref_id]))];
     const nodes = await this.engine.edgeEngine.endpoints(tx, ids);
     const out: ResolvedEdge[] = [];
+    const single: EdgeInput[] = [];
     for (const i of inputs) {
       const s = nodes.get(i.source_ref_id);
       const t = nodes.get(i.target_ref_id);
@@ -349,10 +354,30 @@ export class EdgeWriter {
         if (!match) throw new GraphValidationError("WRONG_TYPE", i.edge, `Invalid edge type: ${i.edge} (no edge schema ${st}-[${i.edge}]->${tt ?? "?"})`);
         const pattern = match.properties["edge_key"];
         if (typeof pattern === "string" && pattern) edge_key = composeEdgeKey(pattern, i.properties ?? {});
+        if (match.rule.cardinality === "one") single.push(i);
       }
       out.push({ input: i, edge_key, unique_source_id: s.uid && s.uid === t.uid ? s.uid : undefined });
     }
+    await this.refuseFullSlots(tx, single, replacing);
     return out;
+  }
+
+  /** `cardinality: "one"`: one live edge of the type per source node (the
+   *  slot). An edge to another target than the one the slot holds, or two
+   *  in one write, is refused; the same edge again is the existing one. */
+  private async refuseFullSlots(tx: GraphTx, inputs: EdgeInput[], replacing?: string): Promise<void> {
+    const wanted = new Map<string, string>();
+    for (const i of inputs) {
+      const slot = `${i.source_ref_id}\u0000${i.edge}`;
+      const other = wanted.get(slot);
+      if (other !== undefined && other !== i.target_ref_id) throw new GraphValidationError("DUPLICATE_KEY", i.edge, `${i.edge} has cardinality one: this write gives ${i.source_ref_id} two (to ${other} and ${i.target_ref_id})`);
+      wanted.set(slot, i.target_ref_id);
+    }
+    for (const i of inputs) {
+      const held = await this.engine.edgeEngine.liveEdgesOf(tx, i.source_ref_id, i.edge, true);
+      const other = held?.edges.find((e) => e.other !== i.target_ref_id && e.edge_ref_id !== replacing);
+      if (other) throw new GraphValidationError("DUPLICATE_KEY", i.edge, `${i.edge} has cardinality one and ${i.source_ref_id} already has one, to ${other.other}: delete or move it first`);
+    }
   }
 
   /** Stamp every edge (`ref_id`, `edge_key`, `weight` 1 unless given,

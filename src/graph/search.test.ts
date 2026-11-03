@@ -569,9 +569,9 @@ for (const tb of testBackends()) {
       assert.equal(await reader.getSchema("Nope"), null);
     });
 
-    it("ontology: the registry's thirteen types and nineteen edges, in jarvis's shapes", { skip: neo && "ladybug only" }, async () => {
+    it("ontology: the registry's fifteen types and twenty edges, in jarvis's shapes", { skip: neo && "ladybug only" }, async () => {
       const { schemas, edges } = await reader.listSchemas();
-      assert.deepEqual(schemas.map((s) => s.type).sort(), ["Check", "Claim", "Concept", "Evidence", "StrutApp", "StrutAppVersion", "StrutArtifact", "StrutJob", "StrutRun", "StrutStep", "StrutStepVersion", "StrutWorkflow", "StrutWorkflowVersion"]);
+      assert.deepEqual(schemas.map((s) => s.type).sort(), ["Check", "Claim", "Concept", "Evidence", "Lingo", "Person", "StrutApp", "StrutAppVersion", "StrutArtifact", "StrutJob", "StrutRun", "StrutStep", "StrutStepVersion", "StrutWorkflow", "StrutWorkflowVersion"]);
       const run = schemas.find((s) => s.type === "StrutRun")!;
       assert.equal(run["domain"], "Strut");
       assert.equal(run["parent"], "Thing");
@@ -584,7 +584,7 @@ for (const tb of testBackends()) {
       assert.equal(concept["domain"], undefined);
       assert.equal(concept["key_spec"], "concept-name");
       assert.equal(concept.attributes["file"], "?string");
-      assert.equal(new Set(edges.map((e) => e.edge_type)).size, 19);
+      assert.equal(new Set(edges.map((e) => e.edge_type)).size, 20);
       assert.ok(edges.some((e) => e.edge_type === "CHILD_OF" && e.source_type === "Concept" && e.target_type === "Concept"));
       assert.ok(edges.some((e) => e.edge_type === "PARENT_OF" && e.source_type === "Concept" && e.target_type === "Concept"));
       assert.ok(edges.some((e) => e.edge_type === "ABOUT" && e.source_type === "Claim" && e.target_type === "StrutWorkflow"));

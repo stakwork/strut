@@ -290,6 +290,20 @@ class Neo4jNodes implements NodeEngine {
     return rows.length ? String(rows[0]!["ref_id"]) : null;
   }
 
+  async holdersOf(tx: GraphTx, type: string, attribute: string, values: unknown[], namespace: string) {
+    const rows = await tx.run(
+      `MATCH (n:${q(type)} {namespace: $ns}) WHERE n.${q(neo4jName(attribute, type))} IN $values AND ${NODE_LIVE("n")}
+       RETURN n.ref_id AS ref_id, n.node_key AS key, n.${q(neo4jName(attribute, type))} AS value`,
+      { ns: namespace, values },
+    );
+    return rows.map((r) => ({ ref_id: String(r["ref_id"]), key: String(r["key"]), value: r["value"] }));
+  }
+
+  async ofType(tx: GraphTx, type: string): Promise<RawNode[]> {
+    const rows = await tx.run(`MATCH (n:${q(type)}) WHERE NOT n:Schema RETURN n.ref_id AS ref_id, properties(n) AS props`);
+    return rows.map((r) => ({ ref_id: String(r["ref_id"]), type, props: fromNeo4j(r["props"] as Record<string, unknown>, type) }));
+  }
+
   async update(tx: GraphTx, schema: NodeSchema, ref_id: string, set: Record<string, unknown>, remove: string[]): Promise<void> {
     const removeClause = remove.length ? `REMOVE ${remove.map((k) => `n.${q(neo4jName(k, schema.type))}`).join(", ")}` : "";
     await tx.run(`MATCH (n:Data_Bank {ref_id: $ref_id}) SET n += $set ${removeClause}`, { ref_id, set: stored(schema, set) });
@@ -588,6 +602,15 @@ class Neo4jSchemas implements SchemaSource {
 
   async ensureWildcardSchema(ref_id: string, tx?: GraphTx): Promise<void> {
     await on(this.bolt, tx, `MERGE (s:Schema {type: "*"}) ON CREATE SET s.ref_id = $r, s.is_system = true`, { r: ref_id });
+  }
+
+  async edgeRule(edge: string, tx?: GraphTx): Promise<Record<string, unknown> | null> {
+    const rows = await on(this.bolt, tx, `MATCH (:Schema)-[r]->(:Schema) WHERE type(r) = $e RETURN properties(r) AS props ORDER BY r.ref_id LIMIT 1`, { e: edge });
+    return rows.length ? (rows[0]!["props"] as Record<string, unknown>) : null;
+  }
+
+  async setEdgeRule(edge: string, rule: { temporal?: boolean; cardinality?: string }, tx?: GraphTx): Promise<void> {
+    await on(this.bolt, tx, `MATCH (:Schema)-[r]->(:Schema) WHERE type(r) = $e SET r.temporal = $t, r.cardinality = $c`, { e: edge, t: rule.temporal ?? null, c: rule.cardinality ?? null });
   }
 
   async stampMigration(id: string): Promise<void> {

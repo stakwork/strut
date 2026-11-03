@@ -31,7 +31,7 @@
 import { randomUUID } from "node:crypto";
 import type { EdgeSchemaRow, EdgeSchemaWalk, Params, Row, SchemaRow } from "../engine.js";
 import { GraphValidationError } from "../node-writer.js";
-import { EDGE_COLUMNS, SCHEMA_COLUMNS, SCHEMA_TYPE, columnTypeOf, ontologySeed, type ColumnType } from "./registry.js";
+import { EDGE_COLUMNS, SCHEMA_COLUMNS, SCHEMA_TYPE, columnTypeOf, edgeColumnsOf, ontologySeed, type ColumnType } from "./registry.js";
 
 export type Run = (cypher: string, params?: Params) => Promise<Row[]>;
 
@@ -202,11 +202,40 @@ export async function ancestors(run: Run, type: string): Promise<{ chain: string
 async function edgeBetween(run: Run, edge: string, source: string, target: string): Promise<{ edge: string; props: Record<string, unknown> } | null> {
   const rows = await run(
     `MATCH ${S("s")}-${SE("r")}->${S("t")} WHERE s.type = $s AND t.type = $t AND ${RULE("r")} AND lower(r.edge_type) = lower($e)
-     RETURN r.edge_type AS edge, r.ref_id AS ref_id ORDER BY CASE WHEN r.edge_type = $e THEN 0 ELSE 1 END LIMIT 1`,
+     RETURN r.edge_type AS edge, r.ref_id AS ref_id, r.temporal AS temporal, r.cardinality AS cardinality ORDER BY CASE WHEN r.edge_type = $e THEN 0 ELSE 1 END LIMIT 1`,
     { s: source, t: target, e: edge },
   );
   const r = rows[0];
-  return r ? { edge: String(r["edge"]), props: typeof r["ref_id"] === "string" ? { ref_id: r["ref_id"] } : {} } : null;
+  return r ? { edge: String(r["edge"]), props: ruleProps(r) } : null;
+}
+
+/** An edge rule's properties: its ref_id, and the edge type's rule. */
+function ruleProps(r: Row): Record<string, unknown> {
+  const props: Record<string, unknown> = {};
+  if (typeof r["ref_id"] === "string") props["ref_id"] = r["ref_id"];
+  if (typeof r["temporal"] === "boolean") props["temporal"] = r["temporal"];
+  if (typeof r["cardinality"] === "string") props["cardinality"] = r["cardinality"];
+  return props;
+}
+
+/** One rule of edge type `edge` (exact), the type's rule on it; null when
+ *  the type has none. */
+export async function edgeRule(run: Run, edge: string): Promise<Record<string, unknown> | null> {
+  const rows = await run(
+    `MATCH ${S("s")}-${SE("r")}->${S("t")} WHERE ${RULE("r")} AND r.edge_type = $e AND s.deleted_at IS NULL AND t.deleted_at IS NULL
+     RETURN r.ref_id AS ref_id, r.temporal AS temporal, r.cardinality AS cardinality ORDER BY r.ref_id LIMIT 1`,
+    { e: edge },
+  );
+  return rows[0] ? ruleProps(rows[0]) : null;
+}
+
+/** The edge type's rule on every one of its rules (an unset key cleared). */
+export async function setEdgeRule(run: Run, edge: string, rule: { temporal?: boolean; cardinality?: string }): Promise<void> {
+  await run(`MATCH ${S("s")}-${SE("r")}->${S("t")} WHERE ${RULE("r")} AND r.edge_type = $e SET r.temporal = $t, r.cardinality = $c`, {
+    e: edge,
+    t: rule.temporal ?? null,
+    c: rule.cardinality ?? null,
+  });
 }
 
 /** One step of the resolver's edge-schema lookup (jarvis
@@ -308,7 +337,7 @@ export function planColumns(columns: Readonly<Record<string, string>>, type: str
 export async function ensureRelTable(run: Run, catalog: Catalog, edge: string): Promise<void> {
   if (!EDGE_NAME.test(edge) || NODE_TABLES.has(edge)) throw new GraphValidationError("WRONG_TYPE", edge, "an edge type is UPPER_SNAKE (^[A-Z][A-Z0-9_]*$) and not a node table's name");
   if (catalog.edges.has(edge)) return;
-  const cols = Object.entries(EDGE_COLUMNS).map(([k, t]) => `${q(k)} ${t}`).join(", ");
+  const cols = Object.entries(edgeColumnsOf(edge)).map(([k, t]) => `${q(k)} ${t}`).join(", ");
   await run(`CREATE REL TABLE IF NOT EXISTS ${q(edge)}(FROM Node TO Node, ${cols})`);
   catalog.edges.add(edge);
 }
@@ -321,10 +350,15 @@ export async function ensureSchemaEdgeTable(run: Run, catalog: Catalog): Promise
   catalog.edges.add(SCHEMA_EDGE);
 }
 
-/** Shaped like every other rel table (the edge columns), plus the type and the parent mark. */
-export const SCHEMA_EDGE_DDL = `CREATE REL TABLE IF NOT EXISTS ${SCHEMA_EDGE}(FROM Node TO Node, ${Object.entries(EDGE_COLUMNS)
+/** An edge rule's own columns: the edge type's rule (`EdgeRule`). A file
+ *  an older build made gets them from `SCHEMA_RULES_MIGRATION` (`db.ts`). */
+export const SCHEMA_EDGE_RULE_COLUMNS: Readonly<Record<string, ColumnType>> = { temporal: "BOOL", cardinality: "STRING" };
+
+/** Shaped like every other rel table (the edge columns), plus the type, the
+ *  parent mark and the edge type's rule. */
+export const SCHEMA_EDGE_DDL = `CREATE REL TABLE IF NOT EXISTS ${SCHEMA_EDGE}(FROM Node TO Node, ${Object.entries({ ...EDGE_COLUMNS, edge_type: "STRING", is_parent: "BOOL", ...SCHEMA_EDGE_RULE_COLUMNS })
   .map(([k, t]) => `${q(k)} ${t}`)
-  .join(", ")}, ${q("edge_type")} STRING, ${q("is_parent")} BOOL)`;
+  .join(", ")})`;
 
 /** The row's fields as a CREATE / SET list, lists cast (an empty list has no type of its own). */
 function assigns(alias: string, fields: Record<string, unknown>, params: Params, sep: ": " | " = "): string[] {
@@ -386,9 +420,10 @@ export async function ensureChildOf(run: Run, catalog: Catalog, child: string, p
 
 /** `(source)-[:EDGE]->(target)` between two Schemas — the rule that the
  *  edge is allowed — creating EDGE's rel table first when the file lacks
- *  it. Of `props` only `ref_id` is kept: jarvis's edge schemas declare the
- *  edge's attributes there (`importance: "?float"`), which the file's typed
- *  edge columns neither need nor hold. Null when either Schema is missing. */
+ *  it. Of `props` only `ref_id` and the edge type's rule (`temporal`,
+ *  `cardinality`) are kept: jarvis's edge schemas declare the edge's
+ *  attributes there (`importance: "?float"`), which the file's typed edge
+ *  columns neither need nor hold. Null when either Schema is missing. */
 export async function ensureEdgeSchema(run: Run, catalog: Catalog, source: string, edge: string, target: string, props: Record<string, unknown>): Promise<{ created: boolean; ref_id: string } | null> {
   await ensureRelTable(run, catalog, edge);
   await ensureSchemaEdgeTable(run, catalog);
@@ -397,7 +432,11 @@ export async function ensureEdgeSchema(run: Run, catalog: Catalog, source: strin
   const have = await edgeBetween(run, edge, source, target);
   if (have) return { created: false, ref_id: String(have.props["ref_id"] ?? "") };
   const ref_id = typeof props["ref_id"] === "string" ? props["ref_id"] : randomUUID();
-  await run(`MATCH ${S("s")}, ${S("t")} WHERE s.type = $s AND t.type = $t CREATE (s)-[:${SCHEMA_EDGE} {ref_id: $ref_id, edge_type: $e}]->(t)`, { s: source, t: target, ref_id, e: edge });
+  const rule = ruleProps(props);
+  await run(
+    `MATCH ${S("s")}, ${S("t")} WHERE s.type = $s AND t.type = $t CREATE (s)-[:${SCHEMA_EDGE} {ref_id: $ref_id, edge_type: $e, temporal: $temporal, cardinality: $cardinality}]->(t)`,
+    { s: source, t: target, ref_id, e: edge, temporal: rule["temporal"] ?? null, cardinality: rule["cardinality"] ?? null },
+  );
   return { created: true, ref_id };
 }
 

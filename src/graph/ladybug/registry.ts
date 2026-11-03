@@ -1,7 +1,7 @@
 /**
  * The SEED of a Ladybug file's ontology (plans/ladybug-backend.md §3, ruling 6
  * as amended 2026-10-28; plans/memory-in-workspace-graph.md, PR A): the
- * thirteen node types a new file starts with and the nineteen edge types
+ * fifteen node types a new file starts with and the twenty edge types
  * between them. The ontology itself lives in the file, as `Schema` rows of
  * the `Node` table (`ontology.ts`), seeded from this module at open
  * (add-only) and created and edited at runtime like Neo4j's `:Schema` nodes.
@@ -12,6 +12,8 @@
  *     their jarvis names with the SAME key specs, so the ids and
  *     keys a desktop writes match a swarm's — but with exactly the
  *     attributes strut writes and reads (`claims.ts`'s field lists);
+ *   - the base types `Person` (the user is the one marked `is_owner`) and
+ *     `Lingo` (plans/graph-memory-plan.md step 2), with their rules;
  *   - `Thing`, the root, with `name` and `description` only.
  *
  * Pure: no engine, no addon. `nodeColumns()` is the columns a new file is
@@ -28,6 +30,10 @@ import { fromStrut, type NodeSchema } from "../schema-resolver.js";
 import { STRUT_DOMAIN, STRUT_EDGES, THING_TYPE, getStrutSchema, type AttrBase, type AttrType } from "../strut-schemas.js";
 
 export const CONCEPT_TYPE = "Concept";
+/** A person; the user is the one Person marked `is_owner` (no `Self` type). */
+export const PERSON_TYPE = "Person";
+/** A word or phrase dictation learns (src/audio's fixer reads the type). */
+export const LINGO_TYPE = "Lingo";
 
 /** The ontology's own type: one row per type in the `Node` table. */
 export const SCHEMA_TYPE = "Schema";
@@ -38,7 +44,15 @@ export const LADYBUG_STRUT_TYPES: readonly string[] = ["StrutWorkflow", "StrutWo
 /** Thing's attributes nothing on the desktop reads: not in the table. */
 const THING_VESTIGES = ["weight", "is_muted", "unique_source_id", "image_url"];
 
-const jarvisType = (type: string, key_spec: string, index: string[], title_key: string, description_key: string, attributes: Record<string, AttrType>): NodeSchema => ({
+const jarvisType = (
+  type: string,
+  key_spec: string,
+  index: string[],
+  title_key: string,
+  description_key: string,
+  attributes: Record<string, AttrType>,
+  rules: Pick<NodeSchema, "role" | "identifiers"> = {},
+): NodeSchema => ({
   type,
   parent: "Thing",
   key_spec,
@@ -50,6 +64,7 @@ const jarvisType = (type: string, key_spec: string, index: string[], title_key: 
   description_key,
   domainLabels: [],
   isStrut: false,
+  ...rules,
 });
 
 function strutType(type: string): NodeSchema {
@@ -70,7 +85,7 @@ export const LADYBUG_SCHEMAS: readonly NodeSchema[] = [
     speaker_name: "?string",
     belief_valid_from: "?datetime",
     belief_valid_to: "?datetime",
-  }),
+  }, { role: "claim" }),
   jarvisType(CHECK_TYPE, "check-id", ["name", "description"], "name", "description", {
     id: "string",
     name: "?string",
@@ -106,7 +121,21 @@ export const LADYBUG_SCHEMAS: readonly NodeSchema[] = [
     // The source stamp a seeded page carries (src/concept-seed.ts): whose
     // file it came from, and which version of it.
     unique_source_id: "?string",
-  }),
+  }, { role: "concept" }),
+  // The base types (plans/graph-memory-plan.md step 2), without jarvis's
+  // fixture. Two people may share a name, so a Person is keyed by its
+  // ref_id and named by its email; the user is the Person whose `is_owner` is
+  // true. A Lingo word is one node however often it is written.
+  jarvisType(PERSON_TYPE, "ref_id", ["name", "description", "email"], "name", "description", {
+    name: "string",
+    description: "?string",
+    email: "?string",
+    is_owner: "?boolean",
+  }, { role: "entity", identifiers: ["email"] }),
+  jarvisType(LINGO_TYPE, "lingo-name", ["name", "description"], "name", "description", {
+    name: "string",
+    description: "?string",
+  }, { role: "entity" }),
 ];
 
 const BY_TYPE = new Map(LADYBUG_SCHEMAS.map((s) => [s.type.toLowerCase(), s]));
@@ -210,23 +239,33 @@ export const GENERIC_COLUMNS: Readonly<Record<string, ColumnType>> = {
   deleted_reason: "STRING",
 };
 
-/** Every edge has the same columns: the writer's stamps, `importance` (the
- *  one edge property a neighbors read orders by, jarvis's sort key), and
- *  the properties the claim layer writes (`verify.ts`: `strength` on
- *  EVIDENCED_BY, `context` / `start_time` / `end_time` / `post_url` on
- *  HAS_SOURCE). */
+/** The columns every edge has: the writer's stamps and `importance` (the
+ *  one edge property a neighbors read orders by, jarvis's sort key). */
 export const EDGE_COLUMNS: Readonly<Record<string, ColumnType>> = {
   ref_id: "STRING",
   edge_key: "STRING",
   created_at: "INT64",
   weight: "DOUBLE",
   importance: "DOUBLE",
-  strength: "DOUBLE",
-  context: "STRING",
-  start_time: "INT64",
-  end_time: "INT64",
-  post_url: "STRING",
 };
+
+/** The columns only some edge types have: what the claim layer writes
+ *  (`verify.ts`: `strength` on EVIDENCED_BY, `context` / `start_time` /
+ *  `end_time` / `post_url` on HAS_SOURCE). A file an older build made has
+ *  them on every rel table, empty elsewhere: a column is never dropped. */
+export const EDGE_TYPE_COLUMNS: Readonly<Record<string, Readonly<Record<string, ColumnType>>>> = {
+  EVIDENCED_BY: { strength: "DOUBLE" },
+  HAS_SOURCE: { context: "STRING", start_time: "INT64", end_time: "INT64", post_url: "STRING" },
+};
+
+/** The columns of edge type `edge`'s rel table. */
+export function edgeColumnsOf(edge: string): Readonly<Record<string, ColumnType>> {
+  const own = EDGE_TYPE_COLUMNS[edge];
+  return own ? { ...EDGE_COLUMNS, ...own } : EDGE_COLUMNS;
+}
+
+/** Every edge column of any type: what an edge struct is read back with. */
+export const ALL_EDGE_COLUMNS: Readonly<Record<string, ColumnType>> = Object.assign({}, EDGE_COLUMNS, ...Object.values(EDGE_TYPE_COLUMNS));
 
 /** The Schema type's own fields (plans/memory-in-workspace-graph.md decision
  *  1), one column each on its rows. The attributes a type declares are one
@@ -252,8 +291,8 @@ export const SCHEMA_COLUMNS: Readonly<Record<string, ColumnType>> = {
   aliases: "STRING[]",
   status: "STRING",
   role: "STRING",
+  identifiers: "STRING[]",
   naming: "STRING",
-  cardinality: "STRING",
   managed_by: "STRING",
 };
 
@@ -325,6 +364,8 @@ function seedFlat(s: NodeSchema): Record<string, unknown> {
     ...(s.description_key ? { description_key: s.description_key } : {}),
     embed: s.embed,
     ...(s.exact_key ? { exact_key: true } : {}),
+    ...(s.role ? { role: s.role } : {}),
+    ...(s.identifiers?.length ? { identifiers: [...s.identifiers] } : {}),
     ...(strut
       ? { domain: STRUT_DOMAIN, icon: strut.icon, shape: strut.shape, primary_color: strut.primary_color, secondary_color: strut.secondary_color, type_description: strut.type_description }
       : {}),

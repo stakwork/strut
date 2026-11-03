@@ -53,7 +53,7 @@ import type { NodeSchema } from "../schema-resolver.js";
 import type { LadybugHandle } from "./db.js";
 import * as ontology from "./ontology.js";
 import { SCHEMA_EDGE, catalogOf, readCatalog, type Catalog, type LadybugCatalog } from "./ontology.js";
-import { EDGE_COLUMNS, GENERIC_COLUMNS, LADYBUG_STRUT_TYPES, SCHEMA_TYPE } from "./registry.js";
+import { ALL_EDGE_COLUMNS, GENERIC_COLUMNS, LADYBUG_STRUT_TYPES, SCHEMA_TYPE, edgeColumnsOf } from "./registry.js";
 
 const q = (s: string) => `\`${s}\``;
 const lit = (s: string) => `'${s.replace(/'/g, "''")}'`;
@@ -221,6 +221,24 @@ class LadybugNodes implements NodeEngine {
     return rows.length ? String(rows[0]!["ref_id"]) : null;
   }
 
+  async holdersOf(tx: GraphTx, type: string, attribute: string, values: unknown[]) {
+    if (!(attribute in (await this.known(tx, [attribute])))) return [];
+    const rows = await tx.run(
+      `MATCH (n:Node {node_type: $type}) WHERE n.${q(attribute)} IN $values AND n.deleted_at IS NULL RETURN n.ref_id AS ref_id, n.\`key\` AS key, n.${q(attribute)} AS value`,
+      { type, values },
+    );
+    return rows.map((r) => ({ ref_id: String(r["ref_id"]), key: String(r["key"]), value: r["value"] }));
+  }
+
+  async ofType(tx: GraphTx, type: string): Promise<RawNode[]> {
+    const rows = await tx.run(`MATCH (n:Node {node_type: $type}) RETURN n`, { type });
+    return rows.map((r) => {
+      const { node_type: _t, ...props } = r["n"] as Record<string, unknown>;
+      for (const k of Object.keys(props)) if (props[k] === null) delete props[k];
+      return { ref_id: String(props["ref_id"]), type, props };
+    });
+  }
+
   async update(tx: GraphTx, schema: NodeSchema, ref_id: string, set: Record<string, unknown>, remove: string[]): Promise<void> {
     const columns = await this.columns(tx, schema, set);
     const known = await this.known(tx, remove);
@@ -287,17 +305,19 @@ class LadybugNodes implements NodeEngine {
 /** An edge struct (`RETURN r`) as its properties: the columns it has. */
 function edgeProps(rel: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
-  for (const k of Object.keys(EDGE_COLUMNS)) if (rel[k] !== undefined && rel[k] !== null) out[k] = rel[k];
+  for (const k of Object.keys(ALL_EDGE_COLUMNS)) if (rel[k] !== undefined && rel[k] !== null) out[k] = rel[k];
   return out;
 }
 
-/** Caller properties as edge columns; anything else is an error, not a blob. */
+/** Caller properties as edge columns of `edge`'s type (a claim column
+ *  only on the claim edge that has it); anything else is an error, not a blob. */
 function edgeColumns(edge: string, props: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
+  const columns = edgeColumnsOf(edge);
   for (const [k, v] of Object.entries(props)) {
     if (v === undefined) continue;
-    if (!EDGE_COLUMNS[k] || EDGE_STAMPS.has(k)) {
-      throw new GraphValidationError("UNKNOWN_ATTRIBUTE", edge, `not an edge column of the ladybug file (${Object.keys(EDGE_COLUMNS).filter((c) => !EDGE_STAMPS.has(c)).join(", ")})`, k);
+    if (!columns[k] || EDGE_STAMPS.has(k)) {
+      throw new GraphValidationError("UNKNOWN_ATTRIBUTE", edge, `not a column of the ladybug file's ${edge} edges (${Object.keys(columns).filter((c) => !EDGE_STAMPS.has(c)).join(", ")})`, k);
     }
     out[k] = v;
   }
@@ -497,6 +517,12 @@ export class LadybugSchemas implements SchemaSource {
   }
   async ensureWildcardSchema(ref_id: string, tx?: GraphTx): Promise<void> {
     await this.write(tx, (run) => ontology.ensureWildcardSchema(run, ref_id));
+  }
+  async edgeRule(edge: string, tx?: GraphTx): Promise<Record<string, unknown> | null> {
+    return ontology.edgeRule(this.reader(tx), edge);
+  }
+  async setEdgeRule(edge: string, rule: { temporal?: boolean; cardinality?: string }, tx?: GraphTx): Promise<void> {
+    await this.write(tx, (run) => ontology.setEdgeRule(run, edge, rule));
   }
   async stampMigration(id: string): Promise<void> {
     await this.lbug.exclusive((w) => w(`MERGE (m:Migration {migration_id: $id}) ON CREATE SET m.executed_at = CAST($now AS INT64)`, { id, now: Date.now() }));

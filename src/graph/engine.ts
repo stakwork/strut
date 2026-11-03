@@ -153,6 +153,12 @@ export interface NodeEngine {
   readRaw(tx: GraphTx, ref_id: string): Promise<RawNode | null>;
   /** The ref_id of the node of `type` with this identity, or null. */
   refByKey(tx: GraphTx, type: string, key: string, namespace: string): Promise<string | null>;
+  /** The live nodes of `type` in `namespace` whose `attribute` is one of
+   *  `values`: an identifier's holders (`NodeSchema.identifiers`). */
+  holdersOf(tx: GraphTx, type: string, attribute: string, values: unknown[], namespace: string): Promise<Array<{ ref_id: string; key: string; value: unknown }>>;
+  /** Every node of `type`, soft-deleted ones too, in every namespace: what
+   *  a change of the type's key recomposes. */
+  ofType(tx: GraphTx, type: string): Promise<RawNode[]>;
   /** Set `set` (attributes + `key` + search text + title + vectors, plain
    *  values) and remove `remove` on one node. */
   update(tx: GraphTx, schema: NodeSchema, ref_id: string, set: Record<string, unknown>, remove: string[]): Promise<void>;
@@ -279,6 +285,12 @@ export interface SchemaSource {
   ensureEdgeSchema(source: string, edge: string, target: string, props: Record<string, unknown>, tx?: GraphTx): Promise<{ created: boolean; ref_id: string } | null>;
   /** The `*` wildcard Schema sentinel. */
   ensureWildcardSchema(ref_id: string, tx?: GraphTx): Promise<void>;
+  /** The properties of one live rule of edge type `edge` (its `temporal`
+   *  and `cardinality` among them); null when the type has no rule. */
+  edgeRule(edge: string, tx?: GraphTx): Promise<Record<string, unknown> | null>;
+  /** Set `temporal` and `cardinality` (an unset one cleared) on every rule
+   *  of edge type `edge`. */
+  setEdgeRule(edge: string, rule: { temporal?: boolean; cardinality?: string }, tx?: GraphTx): Promise<void>;
   /** Live Schemas whose type or an alias is one of `names`, case-blind.
    *  Present where a type's names are one-to-one across the ontology (a
    *  Ladybug file, decision 9 of plans/memory-in-workspace-graph.md); a

@@ -119,27 +119,34 @@ for (const tb of testBackends()) {
       assert.deepEqual(await graphSnapshot(backend), snap);
     });
 
-    it("the file takes only the edge properties the claim layer writes", { skip: neo && "ladybug only" }, async () => {
-      await assert.rejects(
-        edges.write({ edge: "IN_JOB", source_ref_id: run, target_ref_id: job, properties: { note: "x" } }),
-        (e: unknown) => e instanceof GraphValidationError && e.code === "UNKNOWN_ATTRIBUTE" && e.attribute === "note",
-      );
-      const a = await edges.write({ edge: "IN_JOB", source_ref_id: run, target_ref_id: job, properties: { context: "{}", start_time: 3, strength: 0.5 } });
-      const p = (await rel(a.ref_id)).props;
-      assert.deepEqual([p["context"], p["start_time"], p["strength"]], ["{}", 3, 0.5]);
+    it("the file takes the shared edge columns, and a claim column only on the claim edge that has it", { skip: neo && "ladybug only" }, async () => {
+      for (const [k, v] of [["note", "x"], ["strength", 0.5], ["context", "{}"], ["start_time", 3]] as const) {
+        await assert.rejects(
+          edges.write({ edge: "IN_JOB", source_ref_id: run, target_ref_id: job, properties: { [k]: v } }),
+          (e: unknown) => e instanceof GraphValidationError && e.code === "UNKNOWN_ATTRIBUTE" && e.attribute === k,
+          k,
+        );
+      }
+      const a = await edges.write({ edge: "IN_JOB", source_ref_id: run, target_ref_id: job, properties: { importance: 0.5 } });
+      assert.equal((await rel(a.ref_id)).props["importance"], 0.5);
       assert.equal(await edgeCount(backend), 1);
+      const cols = async (t: string) => new Set((await backend.query(`CALL table_info('${t}') RETURN name`)).map((r) => String(r["name"])));
+      assert.ok(!(await cols("IN_JOB")).has("strength"), "a new file gives the claim columns to the claim edges only");
+      assert.ok((await cols("EVIDENCED_BY")).has("strength"));
+      assert.ok((await cols("HAS_SOURCE")).has("post_url"));
     });
 
     it("update patches an existing edge by ref_id or by triple; stamps stay protected", async () => {
-      const a = await edges.write({ edge: "IN_JOB", source_ref_id: run, target_ref_id: job, properties: { context: "x", strength: 0.5 } });
+      const a = await edges.write({ edge: "IN_JOB", source_ref_id: run, target_ref_id: job, properties: { importance: 0.5 } });
       const stamped = (await rel(a.ref_id)).props;
 
-      const u = await edges.update({ ref_id: a.ref_id }, { set: { strength: -0.75, weight: 3 }, remove: ["context"] });
-      assert.deepEqual(u, { ref_id: a.ref_id, edge: "IN_JOB", source_ref_id: run, target_ref_id: job, updated: ["strength", "weight"], removed: ["context"] });
+      const u = await edges.update({ ref_id: a.ref_id }, { set: { weight: 3 }, remove: ["importance"] });
+      assert.deepEqual(u, { ref_id: a.ref_id, edge: "IN_JOB", source_ref_id: run, target_ref_id: job, updated: ["weight"], removed: ["importance"] });
       let p = (await rel(a.ref_id)).props;
-      assert.equal(p["strength"], -0.75);
       assert.equal(p["weight"], 3);
-      assert.ok(!("context" in p));
+      assert.ok(!("importance" in p));
+      await edges.update({ ref_id: a.ref_id }, { set: { importance: -0.75 } });
+      assert.equal((await rel(a.ref_id)).props["importance"], -0.75);
       for (const k of ["ref_id", "edge_key", "created_at"]) assert.equal(p[k], stamped[k], `${k} untouched`);
       if (neo) {
         const vt = await bolt().run(`MATCH ()-[r {ref_id: $r}]->() RETURN valueType(r.weight) AS w`, { r: a.ref_id });
@@ -147,11 +154,11 @@ for (const tb of testBackends()) {
       }
 
       // By triple (case-insensitive edge type), undefined values skipped.
-      const t = await edges.update({ edge: "in job", source_ref_id: run, target_ref_id: job }, { set: { strength: 0.4, context: undefined } });
+      const t = await edges.update({ edge: "in job", source_ref_id: run, target_ref_id: job }, { set: { importance: 0.4, weight: undefined } });
       assert.equal(t.ref_id, a.ref_id);
-      assert.deepEqual(t.updated, ["strength"]);
+      assert.deepEqual(t.updated, ["importance"]);
       p = (await rel(a.ref_id)).props;
-      assert.equal(p["strength"], 0.4);
+      assert.equal(p["importance"], 0.4);
 
       const cases: Array<[Parameters<EdgeWriter["update"]>, string]> = [
         [[{ ref_id: a.ref_id }, { set: { ref_id: "y" } }], "UNKNOWN_ATTRIBUTE"],
@@ -161,9 +168,9 @@ for (const tb of testBackends()) {
         [[{ ref_id: a.ref_id }, { remove: ["weight"] }], "UNKNOWN_ATTRIBUTE"],
         [[{ ref_id: a.ref_id }, { set: { "bad-name": 1 } }], "UNKNOWN_ATTRIBUTE"],
         [[{ ref_id: a.ref_id }, {}], "MISSING_REQUIRED"],
-        [[{ ref_id: randomUUID() }, { set: { strength: 1 } }], "NOT_FOUND"],
-        [[{ edge: "IN_JOB", source_ref_id: job, target_ref_id: run }, { set: { strength: 1 } }], "NOT_FOUND"],
-        [[{ edge: "in_job!", source_ref_id: run, target_ref_id: job }, { set: { strength: 1 } }], "UNKNOWN_TYPE"],
+        [[{ ref_id: randomUUID() }, { set: { importance: 1 } }], "NOT_FOUND"],
+        [[{ edge: "IN_JOB", source_ref_id: job, target_ref_id: run }, { set: { importance: 1 } }], "NOT_FOUND"],
+        [[{ edge: "in_job!", source_ref_id: run, target_ref_id: job }, { set: { importance: 1 } }], "UNKNOWN_TYPE"],
       ];
       for (const [args, code] of cases) {
         await assert.rejects(edges.update(...args), (e: unknown) => e instanceof GraphValidationError && e.code === code, `${JSON.stringify(args)} → ${code}`);
@@ -212,15 +219,15 @@ for (const tb of testBackends()) {
 
     it("writeMany: mixed edge types in one tx, input-order results; an explicit int stays one", async () => {
       const rs = await edges.writeMany([
-        { edge: "EXECUTED", source_ref_id: run, target_ref_id: wfv, properties: { start_time: neo ? int(3) : 3 } },
+        { edge: "EXECUTED", source_ref_id: run, target_ref_id: wfv, properties: { importance: neo ? int(3) : 3 } },
         { edge: "IN_JOB", source_ref_id: run, target_ref_id: job },
         { edge: "EXECUTED", source_ref_id: run, target_ref_id: wfv },
       ]);
       assert.deepEqual(rs.map((r) => [r.edge_key, r.created]), [["executed", true], ["in_job", true], ["executed", false]]);
       assert.equal(rs[0]!.ref_id, rs[2]!.ref_id);
-      assert.equal((await rel(rs[0]!.ref_id)).props["start_time"], 3);
+      assert.equal((await rel(rs[0]!.ref_id)).props["importance"], 3);
       if (neo) {
-        const vt = await bolt().run(`MATCH ()-[r {ref_id: $r}]->() RETURN valueType(r.start_time) AS t`, { r: rs[0]!.ref_id });
+        const vt = await bolt().run(`MATCH ()-[r {ref_id: $r}]->() RETURN valueType(r.importance) AS t`, { r: rs[0]!.ref_id });
         assert.equal(vt[0]!["t"], "INTEGER NOT NULL");
       }
     });
