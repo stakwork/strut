@@ -161,11 +161,12 @@ describe("schema rules on a ladybug file (plans/graph-memory-plan.md step 2)", {
 
   it("an edge type's cardinality one: one live edge per source node", async () => {
     await createNodeSchema(b, b.schemas, { type: "Place", attributes: {}, role: "entity" });
-    const lives = await b.schemas.createEdgeSchema("Person", "LIVES_IN", "Place", { cardinality: "one", temporal: true });
-    assert.deepEqual(lives.rule, { temporal: true, cardinality: "one" });
-    assert.deepEqual((await b.schemas.edgeSchema("LIVES_IN", "Person", "Place"))!.rule, { temporal: true, cardinality: "one" });
+    // Not temporal: a temporal type's edges are `assert`'s alone (temporal.test.ts).
+    const lives = await b.schemas.createEdgeSchema("Person", "LIVES_IN", "Place", { cardinality: "one", temporal: false });
+    assert.deepEqual(lives.rule, { temporal: false, cardinality: "one" });
+    assert.deepEqual((await b.schemas.edgeSchema("LIVES_IN", "Person", "Place"))!.rule, { temporal: false, cardinality: "one" });
     // A new rule of the edge type takes the type's rule.
-    assert.deepEqual((await b.schemas.createEdgeSchema("Lingo", "LIVES_IN", "Place")).rule, { temporal: true, cardinality: "one" });
+    assert.deepEqual((await b.schemas.createEdgeSchema("Lingo", "LIVES_IN", "Place")).rule, { temporal: false, cardinality: "one" });
 
     const [sam, kim] = (await b.nodes.writeMany([person("Sam"), person("Kim")])).map((r) => r.ref_id) as [string, string];
     const [london, paris] = (await b.nodes.writeMany([{ type: "Place", data: { name: "London" } }, { type: "Place", data: { name: "Paris" } }])).map((r) => r.ref_id) as [string, string];

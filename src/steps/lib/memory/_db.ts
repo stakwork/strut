@@ -27,6 +27,7 @@ import type { StrutCapabilities } from "../../../capabilities.js";
 import { ladybugMaxDbSize } from "../../../graph/ladybug/max-size.js";
 import { ONTOLOGY_DDL, invalidate, seed, wroteOntology } from "./_ontology.js";
 import { SEED } from "./_ontology-seed.js";
+import { foldText } from "../../../graph/world-time.js";
 
 export const EntityRef = z.object({
   ref_id: z.string().optional().describe("An existing entity's ref_id, when you already know it."),
@@ -222,9 +223,7 @@ export function newRefId(): string {
   return Date.now().toString(36).padStart(9, "0") + randomBytes(8).toString("hex");
 }
 
-export function normalize(name: string): string {
-  return name.normalize("NFKD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/\s+/g, " ").trim();
-}
+export const normalize = foldText;
 
 export function iso(ms: unknown): string | undefined {
   return typeof ms === "number" || typeof ms === "bigint" ? new Date(Number(ms)).toISOString() : undefined;
