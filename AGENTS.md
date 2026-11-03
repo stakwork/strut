@@ -407,6 +407,44 @@ GATEWAY_IMAGE=stakgraph-gateway:v1.6.2 docker compose -f docker-compose.yml \
 #    native tool's block in history — the request-path round trip)
 ```
 
+### Previewing an app against a live strut (`scripts/preview-app.mjs`)
+
+To try a change to `strut/views`, the kit or an app on a swarm's real runs
+before it is merged and deployed (merge → stakgraph → the swarms' nightly
+update is a day a round), run that app on THIS checkout with the swarm's
+data:
+
+```bash
+yarn install    # once per checkout: its prepare builds the kit's vendor layer and the UI
+LAB_KEY=<the swarm's API key> node scripts/preview-app.mjs \
+  --lab https://<swarm>.sphinx.chat:3355/lab --app openlaw-benchmarks \
+  --allow openlaw/runs,openlaw/list-tasks,openlaw/task-details --watch
+# → open http://localhost:4317/?app=openlaw-benchmarks
+```
+
+It downloads the app's source (its active version; `--version vN`), boots a
+local strut from this checkout (127.0.0.1:3317, a workspace under
+`<tmp>/strut-preview/<app>/`, the filesystem backend, its log beside it),
+adds a stand-in for each workflow the manifest grants, publishes the app,
+and serves it through a proxy on 127.0.0.1:4317. The page, its build and
+its own state (`app/*`) are local, so `strut/views` and the kit are this
+checkout's. An app's `step_run` of a READ — the run reads, the graph reads,
+`sheets/get-values`, and what `--allow` adds (the app's own read steps: name
+only steps that write nothing) — goes to `POST <lab>/steps/<type>/run` with
+LAB_KEY. Anything else (a launch, a write, an unlisted step) is refused in
+the proxy and never reaches the swarm; nothing it reads is stored; LAB_KEY
+is never passed to the local strut. Not checked: the app's grants (the
+reads go out with the deployment key).
+
+`--watch`: a change to the app's source (`--app-dir`, default
+`<tmp>/strut-preview/<app>/app` — kept across runs, downloaded only when it
+holds no app.yaml) republishes it; a change under `src/apps/views/src`
+restarts the local strut (strut/views is seeded at boot); one under
+`kit/src` rebuilds `kit/vendor` first (an app resolves `@strut/kit`
+through the vendor layer, not kit/src). Every publish carries a
+`preview-stamp.txt`, so it is always a new version and rebuilds. The proxy's
+allow/refuse logic is tested in `scripts/preview-app.test.mjs`.
+
 ## Environment
 
 | Variable            | Default        | Description                          |
