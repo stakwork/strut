@@ -525,6 +525,19 @@ function visibility(alias: string): string {
   ].join(" AND ");
 }
 
+/** An edge as a view draws it: its two ends and its type. */
+export interface EdgeLink {
+  source: string;
+  target: string;
+  edge_type: string;
+}
+
+/** The most edges one `edgesAmong` returns. */
+export const EDGES_AMONG_MAX = 20_000;
+
+/** An edge type spliced into a query (Cypher cannot take one as a parameter): a plain identifier, or nothing. */
+export const EDGE_TYPE_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
 /** GET /v2/nodes/:ref_id's response shape for one node. */
 export function envelope(n: HitNode): NodeEnvelope {
   const p = n.properties;
@@ -587,6 +600,11 @@ export interface GraphReader {
   edgeCounts(ref_ids: string[], namespace: string, pinNamespace?: boolean): Promise<Record<string, Record<string, number>>>;
   /** One hop out, importance first, with the source node in `nodes`. */
   neighbors(ref_id: string, p?: NeighborsParams): Promise<{ nodes: NodeEnvelope[]; edges: EdgeEnvelope[] }>;
+  /** The live edges among a set of nodes: each edge with one end in `ref_ids` and the other in `ref_ids` or `among`, once —
+   *  at most `limit` (default `EDGES_AMONG_MAX`), `truncated` past it. */
+  edgesAmong(ref_ids: string[], among?: string[], limit?: number): Promise<{ edges: EdgeLink[]; truncated: boolean }>;
+  /** The live nodes with an `edge_type` edge INTO each of `ref_ids` (`target`): a node's parents along PARENT_OF. */
+  incoming(ref_ids: string[], edge_type: string): Promise<Array<{ target: string; node: NodeEnvelope }>>;
   /** Hybrid search: keyword + semantic, fused, boosted, paged. */
   search(p: SearchParams): Promise<SearchResult>;
   /** Every schema, split into core keys + attributes, with the edge triples. */
@@ -828,6 +846,36 @@ export class Neo4jReader implements GraphReader {
       for (const n of nodes) n.edges = counts[n.ref_id] ?? {};
     }
     return { nodes, edges };
+  }
+
+  /**
+   * `GraphReader.edgesAmong`: anchored on `ref_ids`, so a hub costs its own
+   * degree and nothing more; an edge between two of them is found from both
+   * ends and kept once.
+   */
+  async edgesAmong(ref_ids: string[], among: string[] = [], limit = EDGES_AMONG_MAX): Promise<{ edges: EdgeLink[]; truncated: boolean }> {
+    if (ref_ids.length === 0) return { edges: [], truncated: false };
+    const rows = await this.bolt.run(
+      `MATCH (a:Data_Bank) WHERE a.ref_id IN $ids AND ${NODE_LIVE("a")}
+       MATCH (a)-[r]-(b:Data_Bank) WHERE b.ref_id IN $within AND a <> b AND ${EDGE_LIVE("r")} AND ${NODE_LIVE("b")}
+       WITH DISTINCT startNode(r).ref_id AS source, type(r) AS edge_type, endNode(r).ref_id AS target
+       RETURN source, edge_type, target LIMIT $cap`,
+      { ids: ref_ids, within: [...new Set([...ref_ids, ...among])], cap: int(limit + 1) },
+    );
+    const edges = rows.slice(0, limit).map((r) => ({ source: String(r["source"]), target: String(r["target"]), edge_type: String(r["edge_type"]) }));
+    return { edges, truncated: rows.length > limit };
+  }
+
+  /** `GraphReader.incoming`. */
+  async incoming(ref_ids: string[], edge_type: string): Promise<Array<{ target: string; node: NodeEnvelope }>> {
+    if (ref_ids.length === 0 || !EDGE_TYPE_NAME.test(edge_type)) return [];
+    const rows = await this.bolt.run(
+      `MATCH (c:Data_Bank) WHERE c.ref_id IN $ids
+       MATCH (p:Data_Bank)-[r:\`${edge_type}\`]->(c) WHERE ${EDGE_LIVE("r")} AND ${NODE_LIVE("p")}
+       RETURN c.ref_id AS target, p AS node`,
+      { ids: ref_ids },
+    );
+    return rows.map((r) => ({ target: String(r["target"]), node: serializeNode(r["node"] as HitNode) }));
   }
 
   // ── search ──────────────────────────────────────────────────────────────

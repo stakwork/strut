@@ -47,6 +47,7 @@ export const CORE_READS = [
   "run/files",
   "graph/graph-get",
   "graph/graph-get-batched",
+  "graph/graph-edges",
   "graph/graph-neighbors",
   "graph/graph-search",
   "graph/find",

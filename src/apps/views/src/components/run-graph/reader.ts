@@ -6,8 +6,10 @@
 //     marker on each `step.end`, @strut/kit);
 //   - the nodes: `graph/graph-get-batched`, 50 refs a call, on either engine;
 //   - the edges among them and their lineage along PARENT_OF:
-//     `graph/graph-neighbors`, one call per node that has edges, and up the
-//     PARENT_OF chain for the ancestors (bounded: `MAX_NEIGHBOR_READS`);
+//     `graph/graph-edges`, a call per 1,000 nodes that have edges; an app
+//     that has not granted it reads them as before, a `graph/graph-neighbors`
+//     per node and up the PARENT_OF chain for the ancestors (bounded:
+//     `MAX_NEIGHBOR_READS`);
 //   - a child run: `run/events` of the run its launching call names (the
 //     `runId` in that call's output), projected under the call's path;
 //   - a peer-tagged ref: never read here — another strut's graph holds it.
@@ -25,12 +27,12 @@ import {
 } from "@strut/kit/folds";
 import type { StrutClient } from "@strut/kit";
 import { errorText } from "../../lib/format";
-import { getNeighbors, getNodes, type GraphNode } from "../../lib/graph-steps";
+import { EDGES_IDS_MAX, getEdges, getNeighbors, getNodes, type GraphNode } from "../../lib/graph-steps";
 
 /** The most nodes a trace resolves: a run of a workspace graph touches thousands, and the
  *  view folds what a cell cannot draw (`layoutRunGraph`'s fold). Hive's `RUN_GRAPH_MAX_NODES` was 1,000. */
 export const MAX_NODES = 5000;
-/** The most `graph-neighbors` calls one trace makes for edges and lineage. */
+/** The most `graph-neighbors` calls one trace makes for edges and lineage, when it reads them that way. */
 export const MAX_NEIGHBOR_READS = 240;
 /** How far up PARENT_OF the lineage climbs. */
 const MAX_LINEAGE_DEPTH = 10;
@@ -38,6 +40,8 @@ const MAX_LINEAGE_DEPTH = 10;
 const CONCURRENCY = 6;
 
 const edgeKey = (e: RunGraphEdge) => `${e.source}|${e.edge_type}|${e.target}`;
+/** A refusal that means the app reads edges the old way: it has not granted graph-edges (or the strut has none). */
+const NO_EDGES_STEP = /not granted to this app|not in the gallery's fixtures|step type .* not found|unknown step/i;
 
 async function pool<T>(items: T[], n: number, fn: (item: T) => Promise<void>): Promise<void> {
   let next = 0;
@@ -56,6 +60,8 @@ export class RunGraphReader {
   private neighborsRead = new Set<string>();
   private peers = new Map<string, RunGraphPeer>();
   private reads = 0;
+  /** Edges and lineage through graph-edges, until a refusal says this app reads them a node at a time. */
+  private batched = true;
   private truncated = false;
   private unread: { nodes?: string; edges?: string; lineage?: string } = {};
 
@@ -106,8 +112,42 @@ export class RunGraphReader {
     await this.readEdges(withEdges);
   }
 
-  /** Each node's neighbours: the edges to other touched nodes, and its parents along PARENT_OF, climbed. */
+  /** Each node's edges to other touched nodes, and its parents along PARENT_OF, climbed. */
   private async readEdges(ids: string[]): Promise<void> {
+    if (this.batched) {
+      try {
+        return await this.readEdgesBatched(ids);
+      } catch (e) {
+        if (!NO_EDGES_STEP.test(errorText(e))) {
+          this.unread.edges = errorText(e);
+          return;
+        }
+        this.batched = false;
+      }
+    }
+    await this.readNeighbors(ids);
+  }
+
+  /** graph-edges, a call per 1,000 nodes: their edges among everything touched so far, and the lineage above them. */
+  private async readEdgesBatched(ids: string[]): Promise<void> {
+    const fresh = ids.filter((id) => !this.neighborsRead.has(id));
+    if (!fresh.length) return;
+    const among = [...this.touched];
+    const chunks: string[][] = [];
+    for (let i = 0; i < fresh.length; i += EDGES_IDS_MAX) chunks.push(fresh.slice(i, i + EDGES_IDS_MAX));
+    await pool(chunks, CONCURRENCY, async (chunk) => {
+      const out = await getEdges(this.client, chunk, { among, lineage: LINEAGE_EDGE_TYPE, depth: MAX_LINEAGE_DEPTH });
+      for (const id of chunk) this.neighborsRead.add(id);
+      for (const a of out.ancestors) {
+        if (!this.nodes.has(a.ref_id)) this.nodes.set(a.ref_id, { ref_id: a.ref_id, node_type: a.node_type, name: a.name || a.ref_id.slice(0, 8), namespace: null, found: true, ancestor: true });
+      }
+      for (const e of out.edges) this.edges.set(edgeKey(e), e);
+      if (out.truncated) this.unread.edges ??= "the run's nodes have more edges among them than one read returns";
+    });
+  }
+
+  /** The old way: a graph-neighbors per node, then up the lineage a node at a time. */
+  private async readNeighbors(ids: string[]): Promise<void> {
     const parents: string[] = [];
     await pool(ids, CONCURRENCY, async (id) => {
       if (this.neighborsRead.has(id)) return;
