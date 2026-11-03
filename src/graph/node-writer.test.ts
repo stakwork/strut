@@ -16,7 +16,9 @@ import {
 } from "./node-writer.js";
 import { getStrutSchema } from "./strut-schemas.js";
 import { fromStrut } from "./schema-resolver.js";
-import { edgeCount, graphSnapshot, nodeCount, rawNode, setNodeProps, testBackends, testGraphConfig } from "./test-util.js";
+import { edgeCount, graphSnapshot, nodeCount, rawNode, seedConceptSchema, setNodeProps, testBackends, testGraphConfig } from "./test-util.js";
+import { composeTitle, nodeTitle, nodeTitleFor } from "./title.js";
+import { createNodeSchema } from "./schema-crud.js";
 
 const fixturesDir = new URL("./fixtures/", import.meta.url);
 
@@ -114,7 +116,7 @@ describe("composeNodeKey (parity with jarvis sanitize_node_key)", () => {
     it(`${c.type} ${JSON.stringify(c.props).slice(0, 60)}`, () => {
       // The fixture's own spec, no `exact_key`: jarvis's algorithm as such,
       // whatever strut keys the type on today.
-      assert.equal(composeNodeKey({ type: c.type, node_key: c.node_key_spec }, c.props), c.expected);
+      assert.equal(composeNodeKey({ type: c.type, key_spec: c.node_key_spec }, c.props), c.expected);
     });
   }
   it("property lookup is case-insensitive", () => {
@@ -141,6 +143,27 @@ describe("composeNodeKey (exact_key — strut's workspace types)", () => {
   it("validates exact-key tokens like any other", () => {
     assert.equal(validateNode("StrutStep", { step_type: "pod/test" }).values["step_type"], "pod/test");
     rejects(() => validateNode("StrutStep", { step_type: "" }), "MISSING_REQUIRED", "step_type");
+  });
+});
+
+describe("titles (title.ts)", () => {
+  it("a title_key is a field or a template, trimmed; else the first line of the text, then of the search text", () => {
+    assert.equal(composeTitle("name", { name: "  Ada  " }), "Ada");
+    assert.equal(composeTitle("{first} {last}", { first: "Ada", last: "Lovelace" }), "Ada Lovelace");
+    assert.equal(composeTitle("{first} {last}", { first: "Ada" }), "Ada");
+    assert.equal(composeTitle(undefined, { name: "n" }), "n", "name by default");
+    assert.equal(composeTitle("name", { name: "x".repeat(300) }).length, 200, "bounded");
+    assert.equal(nodeTitleFor({ title_key: "name" }, { text: "first line\nsecond" }, "ignored"), "first line");
+    assert.equal(nodeTitleFor({ title_key: "name" }, {}, "  search line\nmore"), "search line");
+    assert.equal(nodeTitleFor({ title_key: "name" }, {}, null), "");
+  });
+  it("a reader takes the type's title_key over the properties, then the stored title", () => {
+    assert.equal(nodeTitle({ name: "Alice Smith", title: "CEO" }, "name"), "Alice Smith", "a jarvis Person's title is a job title");
+    assert.equal(nodeTitle({ name: "Alice Smith", title: "CEO" }), "Alice Smith", "title_key defaults to name");
+    assert.equal(nodeTitle({ title: "Plan", name: "plan" }, "title"), "Plan", "a type whose title_key is title");
+    assert.equal(nodeTitle({ title: "First line of the text" }, "name"), "First line of the text", "the writer's fallback when the key is empty");
+    assert.equal(nodeTitle({ workflow_name: "wf" }, "workflow_name"), "wf", "a node written before titles");
+    assert.equal(nodeTitle({}, "name"), "");
   });
 });
 
@@ -198,23 +221,24 @@ for (const tb of testBackends()) {
         return texts.map((t) => Array.from({ length: 384 }, (_, i) => (i === 0 ? t.length : 0)));
       },
     });
-    const JOB = { job_id: "job-1", title: "A job", created_at: 1788292800 };
+    const JOB = { job_id: "job-1", title: "A job", started_at: 1788292800 };
 
-    it("create: the type, the stamps, node_key, Data_Bank — and on Neo4j jarvis's label set and typed ints", async () => {
+    it("create: the type, the stamps, key, search_text, title — and on Neo4j jarvis's label set and typed ints", async () => {
       const t0 = Date.now();
       const r = await writer.write({ type: "StrutRun", data: { ...RUN, log_ref: "", ...(neo ? { weight: 1 } : {}) } });
       assert.equal(r.outcome, "created");
-      assert.equal(r.node_key, "strutrun-1725220000123");
+      assert.equal(r.key, "strutrun-1725220000123");
       assert.match(r.ref_id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
 
       const n = (await node(r.ref_id))!;
       assert.equal(n.type, "StrutRun");
       const p = n.props;
       assert.equal(p["namespace"], "default");
-      assert.equal(p["node_key"], "strutrun-1725220000123");
-      assert.ok((p["date_added_to_graph"] as number) >= t0 && (p["date_added_to_graph"] as number) <= Date.now() + 1);
+      assert.equal(p["key"], "strutrun-1725220000123");
+      assert.ok((p["created_at"] as number) >= t0 && (p["created_at"] as number) <= Date.now() + 1);
       assert.equal(p["started_at"], 1788292800);
-      assert.equal(p["Data_Bank"], "harvey-deliver\nsuccess\nDelivered 60 of 60");
+      assert.equal(p["search_text"], "harvey-deliver\nsuccess\nDelivered 60 of 60");
+      assert.equal(p["title"], neo ? undefined : "harvey-deliver", "the type's title_key, workflow_name (Neo4j stores no core title)");
       assert.ok(!("log_ref" in p), "empty string never written");
       assert.ok(!("text_embeddings" in p), "no embedder → NULL, not a marker");
       assert.ok(!("is_deleted" in p) && !("deleted_at" in p));
@@ -222,7 +246,7 @@ for (const tb of testBackends()) {
         assert.deepEqual(p["_search_fields_used"], ["workflow_name", "run_status", "summary"]);
         assert.deepEqual(
           Object.keys(p).sort(),
-          ["Data_Bank", "_search_fields_used", "date_added_to_graph", "duration_ms", "namespace", "node_key", "ref_id", "run_id", "run_status", "started_at", "summary", "updated_at", "weight", "workflow_name"],
+          ["_search_fields_used", "created_at", "duration_ms", "key", "namespace", "ref_id", "run_id", "run_status", "search_text", "started_at", "summary", "updated_at", "weight", "workflow_name"],
         );
         const bolt = (backend as { bolt: Bolt }).bolt;
         const rows = await bolt.run(
@@ -240,7 +264,7 @@ for (const tb of testBackends()) {
         // The file keeps no jarvis stamps and no `_search_fields_used`.
         assert.deepEqual(
           Object.keys(p).sort(),
-          ["Data_Bank", "date_added_to_graph", "duration_ms", "namespace", "node_key", "ref_id", "run_id", "run_status", "started_at", "summary", "updated_at", "workflow_name"],
+          ["created_at", "duration_ms", "key", "namespace", "ref_id", "run_id", "run_status", "search_text", "started_at", "summary", "title", "updated_at", "workflow_name"],
         );
       }
     });
@@ -261,11 +285,11 @@ for (const tb of testBackends()) {
       assert.equal(b.outcome, "updated");
       assert.equal(b.ref_id, a.ref_id);
       const after = await props(a.ref_id);
-      assert.equal(after["date_added_to_graph"], before["date_added_to_graph"]);
-      assert.equal(after["node_key"], before["node_key"]);
+      assert.equal(after["created_at"], before["created_at"]);
+      assert.equal(after["key"], before["key"]);
       assert.equal(after["run_status"], "error");
       assert.equal(after["error_message"], "x");
-      assert.equal(after["Data_Bank"], "harvey-deliver\nerror\nboom");
+      assert.equal(after["search_text"], "harvey-deliver\nerror\nboom");
       assert.ok(!("is_deleted" in after), "upsert on a live node does not add is_deleted");
     });
 
@@ -294,7 +318,7 @@ for (const tb of testBackends()) {
     it("deleteNode: any type in the namespace, the edges counted; a miss is null; the Strut guard stays on softDelete", async () => {
       const run = await writer.write({ type: "StrutRun", data: RUN });
       const job = await writer.write({ type: "StrutJob", data: JOB });
-      const wf = await writer.write({ type: "StrutWorkflowVersion", data: { name: "wf", content_hash: "h1", created_at: 1 } });
+      const wf = await writer.write({ type: "StrutWorkflowVersion", data: { name: "wf", content_hash: "h1", published_at: 1 } });
       await backend.edges.writeMany([
         { edge: "IN_JOB", source_ref_id: run.ref_id, target_ref_id: job.ref_id },
         { edge: "EXECUTED", source_ref_id: run.ref_id, target_ref_id: wf.ref_id },
@@ -386,9 +410,9 @@ for (const tb of testBackends()) {
         { type: "StrutRun", data: { ...RUN, run_id: "2" } },
       ]);
       assert.deepEqual(rs.map((r) => r.outcome), ["created", "created", "created", "created"]);
-      assert.deepEqual(rs.map((r) => r.node_key), ["strutjob-6a6f622d31", "strutrun-1725220000123", "strutworkflow-7766", "strutrun-2"]);
+      assert.deepEqual(rs.map((r) => r.key), ["strutjob-6a6f622d31", "strutrun-1725220000123", "strutworkflow-7766", "strutrun-2"]);
       assert.equal(await nodeCount(backend), 4);
-      assert.equal((await props(rs[2]!.ref_id))["Data_Bank"], "wf\na workflow");
+      assert.equal((await props(rs[2]!.ref_id))["search_text"], "wf\na workflow");
       const rs2 = await writer.writeMany([
         { type: "StrutRun", data: { ...RUN, summary: "again" } },
         { type: "StrutRun", data: { ...RUN, run_id: "3" } },
@@ -438,18 +462,18 @@ for (const tb of testBackends()) {
       const a = await w.write({ type: "StrutRun", data: { ...RUN, log_ref: "runs/1" } });
       const before = await props(a.ref_id);
       const u = await w.update(a.ref_id, { set: { run_status: "error", error_message: "boom" }, remove: ["log_ref"] });
-      assert.deepEqual(u, { ref_id: a.ref_id, node_key: "strutrun-1725220000123", rekeyed: false });
+      assert.deepEqual(u, { ref_id: a.ref_id, key: "strutrun-1725220000123", rekeyed: false });
       const p = await props(a.ref_id);
       assert.equal(p["run_status"], "error");
       assert.equal(p["error_message"], "boom");
       assert.ok(!("log_ref" in p));
       assert.equal(p["summary"], RUN.summary, "untouched attrs survive");
-      assert.equal(p["date_added_to_graph"], before["date_added_to_graph"]);
-      assert.equal(p["Data_Bank"], "harvey-deliver\nerror\nDelivered 60 of 60");
+      assert.equal(p["created_at"], before["created_at"]);
+      assert.equal(p["search_text"], "harvey-deliver\nerror\nDelivered 60 of 60");
       assert.equal((p["text_embeddings"] as number[])[0], "harvey-deliver\nerror\nDelivered 60 of 60".length);
       // Remove every index field but one → Data_Bank rebuilt; remove all → dropped.
       await w.update(a.ref_id, { remove: ["summary"] });
-      assert.equal((await props(a.ref_id))["Data_Bank"], "harvey-deliver\nerror");
+      assert.equal((await props(a.ref_id))["search_text"], "harvey-deliver\nerror");
       // Validation still applies to the merged payload.
       await assert.rejects(w.update(a.ref_id, { set: { bogus: 1 } }), (e: unknown) => e instanceof GraphValidationError && e.code === "UNKNOWN_ATTRIBUTE");
       await assert.rejects(w.update(a.ref_id, { remove: ["run_status"] }), (e: unknown) => e instanceof GraphValidationError && e.code === "MISSING_REQUIRED");
@@ -459,8 +483,8 @@ for (const tb of testBackends()) {
       const b = await w.write({ type: "StrutRun", data: { ...RUN, run_id: "other" } });
       await assert.rejects(w.update(b.ref_id, { set: { run_id: "1725220000123" } }), (e: unknown) => e instanceof GraphValidationError && e.code === "DUPLICATE_KEY");
       const rk = await w.update(b.ref_id, { set: { run_id: "renamed" } });
-      assert.deepEqual(rk, { ref_id: b.ref_id, node_key: "strutrun-renamed", rekeyed: true });
-      assert.equal((await props(b.ref_id))["node_key"], "strutrun-renamed");
+      assert.deepEqual(rk, { ref_id: b.ref_id, key: "strutrun-renamed", rekeyed: true });
+      assert.equal((await props(b.ref_id))["key"], "strutrun-renamed");
       // Without an embedder, a changed text drops the stale vector so backfill heals it.
       await writer.update(a.ref_id, { set: { run_status: "success" } });
       assert.ok(!("text_embeddings" in (await props(a.ref_id))));
@@ -472,8 +496,7 @@ for (const tb of testBackends()) {
       const a = await w.write({ type: "StrutRun", data: { ...RUN, updated_at: "yesterday" } });
       assert.equal((await props(a.ref_id))["updated_at"], 1_800_000_000_000);
       assert.equal(typeof (await props(a.ref_id))["updated_at"], "number");
-      assert.equal((await props(a.ref_id))["date_added_to_graph"], 1_800_000_000_000, "one stamp: updated_at = date_added_to_graph on create");
-      assert.ok(!("created_at" in (await props(a.ref_id))));
+      assert.equal((await props(a.ref_id))["created_at"], 1_800_000_000_000, "one stamp: updated_at = created_at on create");
       clock += 1000;
       await w.write({ type: "StrutRun", data: RUN });
       assert.equal((await props(a.ref_id))["updated_at"], 1_800_000_000_000);
@@ -521,7 +544,7 @@ for (const tb of testBackends()) {
       const r = await plain.write({ type: "StrutRun", data: RUN });
       assert.equal(r.outcome, "restored");
       assert.equal((await props(a.ref_id))["updated_at"], 1_800_000_002_000);
-      assert.equal((await props(a.ref_id))["date_added_to_graph"], 1_800_000_000_000);
+      assert.equal((await props(a.ref_id))["created_at"], 1_800_000_000_000);
     });
 
     it("update: other generic keys stay refused even when the schema declares them", async () => {
@@ -564,16 +587,16 @@ for (const tb of testBackends()) {
       const turn = await w.write({ type: "StrutTurn", data: { chat_id: "c", turn: 1, user_text_preview: "hello" } });
       assert.deepEqual(seen, [], "nothing embedded");
       const p = await props(tc.ref_id);
-      assert.equal(p["Data_Bank"], "bash\nls");
+      assert.equal(p["search_text"], "bash\nls");
       assert.deepEqual(p["_search_fields_used"], ["tool_name", "input_preview"]);
       assert.ok(!("text_embeddings" in p));
-      assert.equal((await props(turn.ref_id))["Data_Bank"], "hello");
+      assert.equal((await props(turn.ref_id))["search_text"], "hello");
       assert.ok(!("text_embeddings" in (await props(turn.ref_id))));
       // A vector an earlier strut left on one goes with the next update.
       await setNodeProps(backend, tc.ref_id, { text_embeddings: [1.0] });
       await w.update(tc.ref_id, { set: { input_preview: "pwd" } });
       const p2 = await props(tc.ref_id);
-      assert.equal(p2["Data_Bank"], "bash\npwd");
+      assert.equal(p2["search_text"], "bash\npwd");
       assert.ok(!("text_embeddings" in p2));
       assert.deepEqual(seen, []);
       // An embedded type still is.
@@ -604,13 +627,47 @@ for (const tb of testBackends()) {
       }
     });
 
+    it("fills title from the type's title_key on create and update, and refuses an Entity whose title is empty", async () => {
+      // A Neo4j graph stores no core title (no new data shapes there); the
+      // Entity rule holds on both.
+      const stored = (t: string) => (neo ? undefined : t);
+      await seedConceptSchema(backend);
+      const run = await writer.write({ type: "StrutRun", data: RUN });
+      assert.equal((await props(run.ref_id))["title"], stored("harvey-deliver"));
+      await writer.update(run.ref_id, { set: { workflow_name: "renamed" } });
+      assert.equal((await props(run.ref_id))["title"], stored("renamed"), "rebuilt with the attributes");
+      // A type that declares `title` owns it: no computed one in its place.
+      const job = await writer.write({ type: "StrutJob", data: { job_id: "j-untitled", started_at: 1 } });
+      assert.equal((await props(job.ref_id))["title"], undefined);
+      // An Entity (a type under Entity) with nothing to call it is refused;
+      // another type is written without a title.
+      await createNodeSchema(backend, backend.schemas, { type: "Entity", attributes: {} });
+      await createNodeSchema(backend, backend.schemas, { type: "Org", parent: "Entity", attributes: { id: "string" }, key_spec: "id", index: ["name"] });
+      await assert.rejects(
+        writer.write({ type: "Org", data: { id: "o1" } }),
+        (e: unknown) => e instanceof GraphValidationError && e.code === "MISSING_REQUIRED" && e.attribute === "name",
+      );
+      assert.equal((await writer.write({ type: "Org", data: { id: "o2", name: "Acme" } })).outcome, "created");
+      await createNodeSchema(backend, backend.schemas, { type: "Tally", attributes: { id: "string" }, key_spec: "id", index: ["name"] });
+      const tally = await writer.write({ type: "Tally", data: { id: "t1" } });
+      assert.equal((await props(tally.ref_id))["title"], undefined);
+      await assert.rejects(writer.write({ type: "StrutRun", data: { ...RUN, title: "mine" } }), (e: unknown) => e instanceof GraphValidationError && e.code === "UNKNOWN_ATTRIBUTE");
+      // A template, and a type with no title field (its text's first line).
+      await createNodeSchema(backend, backend.schemas, { type: "Contact", attributes: { first: "string", last: "?string" }, key_spec: "first", title_key: "{first} {last}" });
+      const ada = await writer.write({ type: "Contact", data: { first: "Ada", last: "Lovelace" } });
+      assert.equal((await props(ada.ref_id))["title"], stored("Ada Lovelace"));
+      await createNodeSchema(backend, backend.schemas, { type: "Utterance", attributes: { said: "string", text: "string" }, key_spec: "said" });
+      const said = await writer.write({ type: "Utterance", data: { said: "u1", text: "hello there\nand more" } });
+      assert.equal((await props(said.ref_id))["title"], stored("hello there"));
+    });
+
     it("the file holds one namespace, the registry's types, and none of Thing's vestiges", { skip: neo && "ladybug only" }, async () => {
       await assert.rejects(writer.write({ type: "StrutRun", data: RUN }, "create", { namespace: "tenant-z" }), (e: unknown) => e instanceof GraphValidationError && e.code === "UNKNOWN_ATTRIBUTE");
       await assert.rejects(writer.write({ type: "StrutToolCall", data: { run_id: "r", path: "p", seq: 1, tool_name: "bash" } }), (e: unknown) => e instanceof GraphValidationError && e.code === "UNKNOWN_TYPE");
       await assert.rejects(writer.write({ type: "StrutRun", data: { ...RUN, weight: 1 } }), (e: unknown) => e instanceof GraphValidationError && e.code === "UNKNOWN_ATTRIBUTE" && e.attribute === "weight");
       const c = await writer.write({ type: "concept", data: { name: "Job", description: "the root" } });
       assert.equal(c.node_type, "Concept");
-      assert.equal(c.node_key, "concept-job");
+      assert.equal(c.key, "concept-job");
     });
   });
 }

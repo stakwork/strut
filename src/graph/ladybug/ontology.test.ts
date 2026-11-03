@@ -45,7 +45,7 @@ describe("ladybug ontology: the seed", { skip: tb.skip }, () => {
     assert.equal(Number(parents[0]!["n"]), LADYBUG_SCHEMAS.length);
     const run = (await b.schemaSource.schemaRow("strutrun"))!;
     assert.equal(run.type, "StrutRun");
-    assert.equal(run.props["node_key"], "strutrun-run_id");
+    assert.equal(run.props["key_spec"], "strutrun-run_id");
     assert.equal(run.props["run_id"], "string", "the attributes read back flat, as a Neo4j Schema node holds them");
     for (const e of LADYBUG_EDGES) assert.ok(await b.schemas.edgeSchema(e.edge, e.source, e.target), `${e.source}-[${e.edge}]->${e.target}`);
     for (const edge of ["VERSION_OF", "ABOUT", "CHILD_OF"]) {
@@ -128,6 +128,15 @@ describe("ladybug ontology: runtime types", { skip: tb.skip }, () => {
     assert.deepEqual((await b.reader.listSchemas({ domains: ["entity"] })).schemas.map((s) => s.type), ["Invoice"]);
   });
 
+  it("refuses a title attribute on a type whose title_key is another field, on create and on extend", async () => {
+    await assert.rejects(createNodeSchema(b, b.schemas, { type: "Employee", attributes: { title: "?string" }, title_key: "name" }), refusedWith("WRONG_TYPE", /title_key must be "title"/));
+    assert.equal(await b.schemas.resolveType("Employee"), null);
+    await createNodeSchema(b, b.schemas, { type: "Memo", attributes: { body: "?string" } });
+    await assert.rejects(createNodeSchema(b, b.schemas, { type: "Memo", attributes: { title: "?string" } }), refusedWith("WRONG_TYPE", /title_key must be "title"/));
+    const memo = (await b.schemas.schema("Memo"))!;
+    assert.ok(!("title" in memo.attributes), "nothing added");
+  });
+
   it("refuses a column clash: one attribute name keeps one column type, and the refused type writes nothing", async () => {
     await assert.rejects(
       createNodeSchema(b, b.schemas, { type: "Payment", attributes: { reference: "string", amount: "?int" } }),
@@ -136,8 +145,8 @@ describe("ladybug ontology: runtime types", { skip: tb.skip }, () => {
     assert.equal(await b.schemas.resolveType("Payment"), null);
     assert.equal((await readCatalog(b.query))["columns"]["reference"], undefined, "not even the attribute that fit");
     await assert.rejects(
-      createNodeSchema(b, b.schemas, { type: "Receipt", attributes: { created_at: "?string" } }),
-      refusedWith("WRONG_TYPE", /created_at is a INT64 column/),
+      createNodeSchema(b, b.schemas, { type: "Receipt", attributes: { published_at: "?string" } }),
+      refusedWith("WRONG_TYPE", /published_at is a INT64 column/),
       "a seed type's column too",
     );
     await assert.rejects(createNodeSchema(b, b.schemas, { type: "Blob", attributes: { body: "complex" } }), refusedWith("WRONG_TYPE", /complex attribute has no column type/));

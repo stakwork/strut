@@ -10,20 +10,23 @@
  *     (`string | boolean | int | float | complex | datetime | list`, `?` =
  *     optional); names are bare identifiers and may not reuse a core schema
  *     key or a generic node property;
- *   - `node_key` is `-`-joined attribute tokens, stored as
- *     `<type lower>-<tokens>`; every token must be a declared attribute
+ *   - `key_spec` is `-`-joined attribute tokens, stored as
+ *     `<type lower>-<tokens>` (a Neo4j Schema node's `node_key`, a name
+ *     still accepted as input); every token must be a declared attribute
  *     (`name` is inherited from Thing and always available);
- *   - `index` defaults to the node_key tokens and must name attributes;
+ *   - `index` defaults to the key tokens and must name attributes;
+ *   - `title_key` (a field, or a `{first} {last}` template) and
+ *     `description_key` default to `name` and `description`;
  *   - the schema is written flat (core keys + attributes as top-level
  *     properties, like `schema-seed.ts`), linked `CHILD_OF` its parent, and
  *     given the per-type `(node_key, namespace)` uniqueness constraint +
- *     node_key index. The domain's search indexes are created when absent
+ *     node_key index on Neo4j. The domain's search indexes are created when absent
  *     (`ensure_indexes_for_schema`).
  *
  * `createNodeSchema` also EXTENDS an existing non-Strut schema — add-only,
  * the way `seedStrutDomain` reconciles: attributes the schema lacks are
  * added, nothing existing is changed, identity keys (`type`, `parent`,
- * `node_key`, `index`) are never touched. That is what lets a workflow add
+ * `key_spec`, `index`) are never touched. That is what lets a workflow add
  * `verdict` to a jarvis-seeded `Claim` without editing the ontology by hand.
  *
  * On a Ladybug file names are one-to-one across the ontology
@@ -38,13 +41,14 @@
  * name is already a column of another type.
  */
 import { randomUUID } from "node:crypto";
-import type { EngineLike } from "./engine.js";
+import type { EngineLike, GraphKind } from "./engine.js";
 import { asEngine } from "./neo4j-engine.js";
 import { GraphValidationError } from "./node-writer.js";
 import { searchableAttributesOf } from "./ontology-seed.js";
 import type { SchemaResolver } from "./schema-resolver.js";
 import { schemaStatement } from "./schema-seed.js";
-import { GENERIC_NODE_PROPERTIES, RESERVED_ATTRIBUTE_NAMES, THING_TYPE, isStrutType } from "./strut-schemas.js";
+import { RESERVED_ATTRIBUTE_NAMES, THING_TYPE, TYPE_OWNABLE_CORE, isGenericProperty, isStrutType } from "./strut-schemas.js";
+import { titleFields } from "./title.js";
 
 export interface NodeSchemaInput {
   /** New type label, e.g. `Evidence`. */
@@ -56,10 +60,15 @@ export interface NodeSchemaInput {
   /** `-`-joined attribute tokens that identify a node, e.g. `name` or
    *  `claim_text-speaker_name`. Default `name`. A `<type>-` prefix is
    *  accepted and not doubled. */
+  key_spec?: string;
+  /** jarvis's name for `key_spec`, accepted so saved workflows keep working. */
   node_key?: string;
-  /** Searchable attributes; default = the node_key tokens. */
+  /** Searchable attributes; default = the key tokens. */
   index?: string[];
+  /** The field a node's title comes from, or a `{first} {last}` template.
+   *  Default `name`. */
   title_key?: string;
+  /** Default `description`. */
   description_key?: string;
   /** Domain the type belongs to (→ `Domain_<domain>` label). Default `entity`. */
   domain?: string;
@@ -74,7 +83,7 @@ export interface NodeSchemaInput {
 export interface NodeSchemaPlan {
   type: string;
   parent: string;
-  node_key: string;
+  key_spec: string;
   tokens: string[];
   index: string[];
   domain: string;
@@ -91,7 +100,7 @@ export interface NodeSchemaResult {
   ref_id: string;
   type: string;
   parent: string;
-  node_key: string;
+  key_spec: string;
   /** Attributes added to an existing schema (always empty on create). */
   added: string[];
   /** Full effective attribute map after the write (inherited included). */
@@ -103,16 +112,25 @@ const IDENT = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 const TYPE_GRAMMAR = /^\??(string|boolean|int|float|complex|datetime|list)$/;
 const VECTOR_OPTIONS = "OPTIONS { indexConfig: { `vector.dimensions`: 384, `vector.similarity_function`: 'cosine' } }";
 
+/** Why a type that declares `title` must take its title from it. */
+const titleOwnRule = (titleKey: string) =>
+  `a type that declares its own title attribute takes its title from it: title_key must be "title", not ${JSON.stringify(titleKey)} (name the attribute something else, e.g. job_title)`;
+
 /** Validate one attribute declaration. Reserved = jarvis's protected schema
  *  keys + the generic node properties the writer stamps. Dual-use names
  *  (`description`, `source_link`, `name`) are allowed, as in jarvis — note
  *  the resolver treats a core-key attribute as optional regardless of its
  *  declared type (`schema-resolver.ts` `fromDb`), so a `description:
  *  "string"` is required only when it is a node_key token. */
-function checkAttribute(type: string, name: string, value: unknown): void {
+function checkAttribute(type: string, name: string, value: unknown, kind?: GraphKind): void {
   if (!IDENT.test(name)) throw new GraphValidationError("UNKNOWN_ATTRIBUTE", type, "attribute name is not a bare identifier", name);
-  if (RESERVED_ATTRIBUTE_NAMES.has(name) || GENERIC_NODE_PROPERTIES.has(name)) {
+  if (RESERVED_ATTRIBUTE_NAMES.has(name) || isGenericProperty(name)) {
     throw new GraphValidationError("UNKNOWN_ATTRIBUTE", type, "attribute name is a reserved schema/system property", name);
+  }
+  // Neo4j keeps a type's own `created_at` beside the core stamp
+  // (`date_added_to_graph`); a Ladybug file has one `created_at`, the core.
+  if (kind === "ladybug" && TYPE_OWNABLE_CORE.has(name)) {
+    throw new GraphValidationError("UNKNOWN_ATTRIBUTE", type, `${name} is the node's own creation time on this graph, set by the writer — name the type's date something else (e.g. published_at, started_at)`, name);
   }
   if (typeof value !== "string" || !TYPE_GRAMMAR.test(value)) {
     throw new GraphValidationError("WRONG_TYPE", type, `attribute type must be one of string|boolean|int|float|complex|datetime|list (optionally ?-prefixed), got ${JSON.stringify(value)}`, name);
@@ -124,7 +142,7 @@ function checkAttribute(type: string, name: string, value: unknown): void {
  * `GraphValidationError` on the first problem. Existence checks (parent,
  * duplicate type) happen in `createNodeSchema`.
  */
-export function planNodeSchema(input: NodeSchemaInput): NodeSchemaPlan {
+export function planNodeSchema(input: NodeSchemaInput, kind?: GraphKind): NodeSchemaPlan {
   const type = String(input.type ?? "").trim();
   if (!TYPE_LABEL.test(type)) throw new GraphValidationError("UNKNOWN_TYPE", type || "?", "type must match ^[A-Za-z][A-Za-z0-9_]*$");
   if (type === "*" || type === THING_TYPE) throw new GraphValidationError("UNKNOWN_TYPE", type, "cannot create the root or wildcard schema");
@@ -134,27 +152,34 @@ export function planNodeSchema(input: NodeSchemaInput): NodeSchemaPlan {
 
   const attributes: Record<string, string> = {};
   for (const [k, v] of Object.entries(input.attributes ?? {})) {
-    checkAttribute(type, k, v);
+    checkAttribute(type, k, v, kind);
     attributes[k] = v as string;
   }
   const declared = new Set(["name", ...Object.keys(attributes)]);
 
   const prefix = `${type.toLowerCase()}-`;
-  let rawKey = String(input.node_key ?? "name").trim();
+  let rawKey = String(input.key_spec ?? input.node_key ?? "name").trim();
   if (rawKey.toLowerCase().startsWith(prefix)) rawKey = rawKey.slice(prefix.length);
   const tokens = rawKey.split("-").map((t) => t.trim()).filter(Boolean);
-  if (tokens.length === 0) throw new GraphValidationError("MISSING_REQUIRED", type, "node_key needs at least one attribute token", "node_key");
+  if (tokens.length === 0) throw new GraphValidationError("MISSING_REQUIRED", type, "key_spec needs at least one attribute token", "key_spec");
   for (const t of tokens) {
-    if (!declared.has(t)) throw new GraphValidationError("UNKNOWN_ATTRIBUTE", type, `node_key token ${t} is not a declared attribute`, "node_key");
+    if (!declared.has(t)) throw new GraphValidationError("UNKNOWN_ATTRIBUTE", type, `key_spec token ${t} is not a declared attribute`, "key_spec");
   }
-  const node_key = `${prefix}${tokens.join("-")}`;
+  const key_spec = `${prefix}${tokens.join("-")}`;
 
   const index = (input.index ?? tokens).map((f) => String(f).trim()).filter(Boolean);
   for (const f of index) {
     if (!declared.has(f)) throw new GraphValidationError("UNKNOWN_ATTRIBUTE", type, `index field ${f} is not a declared attribute`, "index");
   }
+  // A type with its own `title` field keeps the node's title in it (the
+  // core `title` is that one property or column), so it is its title_key.
+  const titleKey = input.title_key || ("title" in attributes ? "title" : "name");
+  if ("title" in attributes && titleKey !== "title") throw new GraphValidationError("WRONG_TYPE", type, titleOwnRule(titleKey), "title_key");
   for (const [key, val] of [["title_key", input.title_key], ["description_key", input.description_key]] as const) {
-    if (val !== undefined && !declared.has(val)) throw new GraphValidationError("UNKNOWN_ATTRIBUTE", type, `${key} ${val} is not a declared attribute`, key);
+    if (val === undefined) continue;
+    for (const f of key === "title_key" ? titleFields(val) : [val]) {
+      if (!declared.has(f)) throw new GraphValidationError("UNKNOWN_ATTRIBUTE", type, `${key} ${val}: ${f} is not a declared attribute`, key);
+    }
   }
   const domain = String(input.domain ?? "entity").trim() || "entity";
   if (!IDENT.test(domain)) throw new GraphValidationError("WRONG_TYPE", type, "domain must be a bare identifier", "domain");
@@ -170,17 +195,17 @@ export function planNodeSchema(input: NodeSchemaInput): NodeSchemaPlan {
   const flat: Record<string, unknown> = {
     type,
     parent,
-    node_key,
+    key_spec,
     index,
     domain,
-    ...(input.title_key ? { title_key: input.title_key } : {}),
-    ...(input.description_key ? { description_key: input.description_key } : {}),
+    title_key: titleKey,
+    description_key: input.description_key || "description",
     ...(input.type_description ? { type_description: input.type_description } : {}),
     ...(aliases.length ? { aliases } : {}),
     ...(managed_by ? { managed_by } : {}),
     ...attributes,
   };
-  return { type, parent, node_key, tokens, index, domain, attributes, aliases, flat };
+  return { type, parent, key_spec, tokens, index, domain, attributes, aliases, flat };
 }
 
 /**
@@ -190,7 +215,7 @@ export function planNodeSchema(input: NodeSchemaInput): NodeSchemaPlan {
 export async function createNodeSchema(e: EngineLike, resolver: SchemaResolver, input: NodeSchemaInput): Promise<NodeSchemaResult> {
   const engine = asEngine(e);
   const src = engine.schemaSource;
-  const plan = planNodeSchema(input);
+  const plan = planNodeSchema(input, engine.kind);
   const managedBy = typeof plan.flat["managed_by"] === "string" ? (plan.flat["managed_by"] as string) : undefined;
 
   // Adopt the live casing of an existing type / parent (jarvis
@@ -220,6 +245,8 @@ export async function createNodeSchema(e: EngineLike, resolver: SchemaResolver, 
         const have = new Set(Object.keys(live.props));
         const missing: Record<string, string> = {};
         for (const [k, v] of Object.entries(plan.attributes)) if (!have.has(k)) missing[k] = v;
+        const liveTitleKey = typeof live.props["title_key"] === "string" && live.props["title_key"] ? String(live.props["title_key"]) : "name";
+        if ("title" in missing && liveTitleKey !== "title") throw new GraphValidationError("WRONG_TYPE", existingType, titleOwnRule(liveTitleKey), "title");
         if (Object.keys(missing).length) await src.extendSchema(existingType, missing, tx);
         return { created: false, ref_id: String(live.ref_id), type: existingType, added: Object.keys(missing).sort() };
       }
@@ -256,7 +283,7 @@ export async function createNodeSchema(e: EngineLike, resolver: SchemaResolver, 
     ref_id: result.ref_id,
     type: result.type,
     parent: schema?.parent ?? parent,
-    node_key: schema?.node_key ?? plan.node_key,
+    key_spec: schema?.key_spec ?? plan.key_spec,
     added: result.added,
     attributes: schema?.attributes ?? plan.attributes,
   };

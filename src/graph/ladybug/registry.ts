@@ -9,7 +9,7 @@
  *   - the nine Strut types the workspace store and the projector need, from
  *     `strut-schemas.ts` by name, with Thing's unread stamps left off;
  *   - `Claim`, `Check`, `Evidence` (plans/claims.md) and `Concept`, under
- *     their jarvis names with the SAME `node_key` specs, so the ids and
+ *     their jarvis names with the SAME key specs, so the ids and
  *     keys a desktop writes match a swarm's — but with exactly the
  *     attributes strut writes and reads (`claims.ts`'s field lists);
  *   - `Thing`, the root, with `name` and `description` only.
@@ -38,10 +38,10 @@ export const LADYBUG_STRUT_TYPES: readonly string[] = ["StrutWorkflow", "StrutWo
 /** Thing's attributes nothing on the desktop reads: not in the table. */
 const THING_VESTIGES = ["weight", "is_muted", "unique_source_id", "image_url"];
 
-const jarvisType = (type: string, node_key: string, index: string[], title_key: string, description_key: string, attributes: Record<string, AttrType>): NodeSchema => ({
+const jarvisType = (type: string, key_spec: string, index: string[], title_key: string, description_key: string, attributes: Record<string, AttrType>): NodeSchema => ({
   type,
   parent: "Thing",
-  node_key,
+  key_spec,
   index,
   vector_index: [],
   embed: true,
@@ -82,7 +82,7 @@ export const LADYBUG_SCHEMAS: readonly NodeSchema[] = [
     freshness_days: "?int",
     sample_rate: "?float",
     publisher: "?string",
-    created_at: "datetime",
+    // When it was written is the core `created_at` (claims.ts reads it).
     retired_at: "?datetime",
   }),
   jarvisType(EVIDENCE_TYPE, "evidence-id", ["name", "description", "content"], "name", "description", {
@@ -189,16 +189,20 @@ export function columnTypeOf(base: AttrBase | "complex"): ColumnType | null {
   }
 }
 
-/** The columns every row has: identity, type, search text and vector,
- *  the two stamps. `ref_id` is the primary key. */
+/** The columns every row has: identity, type, title, search text and
+ *  vector, the stamps (plans/graph-memory-plan.md "Core attributes"; a
+ *  Neo4j graph keeps jarvis's names for three of them: `node_key`,
+ *  `Data_Bank`, `date_added_to_graph`). `ref_id` is the primary key. */
 export const GENERIC_COLUMNS: Readonly<Record<string, ColumnType>> = {
   ref_id: "STRING",
-  node_key: "STRING",
+  key: "STRING",
   namespace: "STRING",
   node_type: "STRING",
-  Data_Bank: "STRING",
+  title: "STRING",
+  search_text: "STRING",
   text_embeddings: "FLOAT[384]",
-  date_added_to_graph: "INT64",
+  // Epoch ms of the row's creation, set by the writer.
+  created_at: "INT64",
   // System stamp: epoch ms of the last create / change, set by the writer.
   updated_at: "INT64",
   deleted_at: "INT64",
@@ -214,7 +218,7 @@ export const GENERIC_COLUMNS: Readonly<Record<string, ColumnType>> = {
 export const EDGE_COLUMNS: Readonly<Record<string, ColumnType>> = {
   ref_id: "STRING",
   edge_key: "STRING",
-  date_added_to_graph: "INT64",
+  created_at: "INT64",
   weight: "DOUBLE",
   importance: "DOUBLE",
   strength: "DOUBLE",
@@ -226,11 +230,12 @@ export const EDGE_COLUMNS: Readonly<Record<string, ColumnType>> = {
 
 /** The Schema type's own fields (plans/memory-in-workspace-graph.md decision
  *  1), one column each on its rows. The attributes a type declares are one
- *  JSON attribute, `attributes`; the type's `node_key` spec is the row's
- *  `node_key`, as on a Neo4j `:Schema` node. */
+ *  JSON attribute, `attributes`; the type's key spec is `key_spec` (a Neo4j
+ *  `:Schema` node's `node_key`). */
 export const SCHEMA_COLUMNS: Readonly<Record<string, ColumnType>> = {
   type: "STRING",
   parent: "STRING",
+  key_spec: "STRING",
   index: "STRING[]",
   vector_index: "STRING[]",
   title_key: "STRING",
@@ -254,6 +259,11 @@ export const SCHEMA_COLUMNS: Readonly<Record<string, ColumnType>> = {
 
 const baseOf = (t: string) => t.replace(/^\?/, "") as AttrBase | "complex";
 
+/** Core columns a type may also declare as its own attribute, of the same
+ *  column type: a type with a `title` field (StrutApp, StrutJob) keeps the
+ *  node's title in it (node-writer.ts). */
+export const TYPE_OWNED_COLUMNS: ReadonlySet<string> = new Set(["title"]);
+
 function buildColumns(): Record<string, ColumnType> {
   const out: Record<string, ColumnType> = { ...GENERIC_COLUMNS, ...SCHEMA_COLUMNS };
   const by: Record<string, string> = {};
@@ -261,7 +271,9 @@ function buildColumns(): Record<string, ColumnType> {
     for (const [k, t] of Object.entries(s.attributes)) {
       const col = columnTypeOf(baseOf(t));
       if (!col) throw new Error(`ladybug registry: ${s.type}.${k} has type ${t}, which has no column type`);
-      if (k in GENERIC_COLUMNS || k in SCHEMA_COLUMNS) throw new Error(`ladybug registry: ${s.type}.${k} shadows a generic or Schema column`);
+      if ((k in GENERIC_COLUMNS && !(TYPE_OWNED_COLUMNS.has(k) && GENERIC_COLUMNS[k] === col)) || k in SCHEMA_COLUMNS) {
+        throw new Error(`ladybug registry: ${s.type}.${k} shadows a generic or Schema column`);
+      }
       if (out[k] && out[k] !== col) throw new Error(`ladybug registry: ${s.type}.${k} is ${col} but ${by[k]}.${k} is ${out[k]} — one name, one column type`);
       out[k] = col;
       by[k] = s.type;
@@ -287,7 +299,7 @@ nodeColumns();
 /** The root every seed type is CHILD_OF: Thing without its jarvis stamps. */
 const THING_SEED: NodeSchema = {
   type: THING_TYPE,
-  node_key: "thing-name",
+  key_spec: "thing-name",
   index: ["name", "description"],
   vector_index: [],
   embed: true,
@@ -306,7 +318,7 @@ function seedFlat(s: NodeSchema): Record<string, unknown> {
   return {
     type: s.type,
     ...(s.parent ? { parent: s.parent } : {}),
-    node_key: s.node_key,
+    key_spec: s.key_spec,
     index: [...s.index],
     vector_index: [...s.vector_index],
     ...(s.title_key ? { title_key: s.title_key } : {}),

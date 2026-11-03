@@ -12,7 +12,7 @@ const EXAMPLE = `- id: evidence_type
       description: string
       content: "?string"
       evidence_status: "?string"
-    node_key: description
+    key_spec: description
     title_key: description
     description_key: content`;
 
@@ -24,10 +24,11 @@ export default defineStep({
     "does not declare — call this first when the type (or attribute) you need is missing from graph_get_ontology. " +
     "`attributes` maps attribute name → type: string | boolean | int | float | complex | datetime | list, with a `?` prefix " +
     "for OPTIONAL (e.g. '?float'); no prefix = REQUIRED on every node. `name` (string) is inherited from Thing and always " +
-    "available. `node_key` is the identity: `-`-joined attribute names (default 'name') — two nodes with the same node_key " +
-    "values in a namespace are the same node. `index` (default: the node_key attributes) lists the searchable attributes. " +
+    "available. `key_spec` is the identity: `-`-joined attribute names (default 'name') — two nodes with the same key_spec " +
+    "values in a namespace are the same node (`node_key` is accepted as its old name). `index` (default: the key_spec attributes) lists the searchable attributes. " +
+    "`title_key` names the attribute a node's title comes from, or a template like '{first} {last}' (default 'name'). " +
     "If the type ALREADY EXISTS this is add-only: attributes it lacks are added, nothing existing changes, and " +
-    "parent/node_key/index are left alone (status 'Warning' with `added_attributes`). Strut's own types (StrutRun, " +
+    "parent/key_spec/index are left alone (status 'Warning' with `added_attributes`). Strut's own types (StrutRun, " +
     "StrutWorkflow, …) are a closed registry and cannot be created or extended. A type name or alias names ONE type: a name " +
     "that is already another type's name or alias is refused. On a LadybugDB file every attribute is a real column, so an " +
     "attribute name another type already holds with a different type (say `score` as int vs float) is refused. Edge types between node types are NOT " +
@@ -39,13 +40,14 @@ export default defineStep({
     attributes: z
       .record(z.string(), z.string())
       .describe("Attribute name → type string ('string', '?float', 'list', …). '?' prefix = optional. May be {} to only rely on inherited attributes."),
-    node_key: z
+    key_spec: z
       .string()
       .optional()
       .describe("Identity key: '-'-joined attribute names, e.g. 'name' or 'claim_text-speaker_name'. Every token must be a declared (or inherited) attribute. Default 'name'."),
-    index: z.array(z.string()).optional().describe("Searchable attributes (fulltext). Default: the node_key attributes."),
-    title_key: z.string().optional().describe("Attribute shown as a node's title in search results (default: name)."),
-    description_key: z.string().optional().describe("Attribute shown as a node's description in search results."),
+    node_key: z.string().optional().describe("The old name of key_spec, still accepted."),
+    index: z.array(z.string()).optional().describe("Searchable attributes (fulltext). Default: the key_spec attributes."),
+    title_key: z.string().optional().describe("Attribute a node's title comes from, or a template like '{first} {last}' (default: name)."),
+    description_key: z.string().optional().describe("Attribute that describes a node (default: description)."),
     domain: z.string().optional().describe("Domain the type belongs to (a `Domain_<domain>` label on its nodes). Default 'entity'."),
     type_description: z.string().optional().describe("Human/LLM-facing description of what the type represents."),
     aliases: z.array(z.string()).optional().describe("Other names the type answers to (e.g. 'Company' for Organization). Each must not already name another type."),
@@ -59,7 +61,7 @@ export default defineStep({
         type: cfg.type,
         parent: cfg.parent,
         attributes: cfg.attributes ?? {},
-        node_key: cfg.node_key,
+        key_spec: cfg.key_spec ?? cfg.node_key,
         index: cfg.index,
         title_key: cfg.title_key,
         description_key: cfg.description_key,
@@ -68,14 +70,16 @@ export default defineStep({
         aliases: cfg.aliases,
       });
       // No provenance marker: a Schema node is ontology, not data (not a
-      // Data_Bank node), so there is nothing for an ACCESSED edge to land on.
+      // data node), so there is nothing for an ACCESSED edge to land on.
       return {
         status: r.created ? "Success" : "Warning",
         created: r.created,
         type: r.type,
         ref_id: r.ref_id,
         parent: r.parent,
-        node_key: r.node_key,
+        key_spec: r.key_spec,
+        // Deprecated: key_spec's old name, kept for a release.
+        node_key: r.key_spec,
         ...(r.created ? {} : { added_attributes: r.added, messages: [r.added.length ? `Schema already existed — added ${r.added.join(", ")}` : "Schema already existed — nothing to add"] }),
         attributes: r.attributes,
       };

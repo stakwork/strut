@@ -25,6 +25,7 @@ import { openGraphBackend, type GraphBackend } from "./backend.js";
 import { Bolt, type Neo4jConfig } from "./bolt.js";
 import type { GraphKind } from "./engine.js";
 import { loadLadybug, openLadybug } from "./ladybug/db.js";
+import { fromNeo4j, toNeo4j } from "./neo4j-engine.js";
 import type { Embedder } from "./node-writer.js";
 import { typeLabelOf, typeValue } from "./strut-schemas.js";
 
@@ -174,7 +175,9 @@ export async function rawWrite(b: GraphBackend, cypher: string, params: Record<s
 
 export interface RawNodeView {
   type: string | undefined;
-  /** Every stored property, stamps included; nothing engine-internal. */
+  /** Every stored property, stamps included, under the shared names (a
+   *  Neo4j node's `node_key` as `key`, …: `fromNeo4j`); nothing
+   *  engine-internal. */
   props: Record<string, unknown>;
 }
 
@@ -183,7 +186,7 @@ export async function rawNode(b: GraphBackend, ref_id: string): Promise<RawNodeV
   if (b.kind === "neo4j") {
     const rows = await b.query(`MATCH (n:Data_Bank {ref_id: $r}) RETURN labels(n) AS labels, properties(n) AS props`, { r: ref_id });
     if (!rows.length) return null;
-    return { type: typeLabelOf(rows[0]!["labels"] as string[]), props: rows[0]!["props"] as Record<string, unknown> };
+    return { type: typeLabelOf(rows[0]!["labels"] as string[]), props: fromNeo4j(rows[0]!["props"] as Record<string, unknown>, typeLabelOf(rows[0]!["labels"] as string[])) };
   }
   const rows = await b.query(`MATCH (n:Node {ref_id: $r}) RETURN n`, { r: ref_id });
   if (!rows.length) return null;
@@ -203,17 +206,18 @@ export async function rawEdge(b: GraphBackend, ref_id: string): Promise<RawEdgeV
   if (b.kind === "neo4j") {
     const rows = await b.query(`MATCH (a)-[r {ref_id: $r}]->(b) RETURN type(r) AS type, properties(r) AS props, a.ref_id AS src, b.ref_id AS tgt`, { r: ref_id });
     const r = rows[0];
-    return r ? { type: String(r["type"]), props: r["props"] as Record<string, unknown>, src: String(r["src"]), tgt: String(r["tgt"]) } : null;
+    return r ? { type: String(r["type"]), props: fromNeo4j(r["props"] as Record<string, unknown>), src: String(r["src"]), tgt: String(r["tgt"]) } : null;
   }
   const rows = await b.query(`MATCH (a:Node)-[r {ref_id: $r}]->(b:Node) RETURN label(r) AS type, r AS rel, a.ref_id AS src, b.ref_id AS tgt`, { r: ref_id });
   const r = rows[0];
   return r ? { type: String(r["type"]), props: r["rel"] as Record<string, unknown>, src: String(r["src"]), tgt: String(r["tgt"]) } : null;
 }
 
-/** Set raw properties on a node (test setup: a legacy marker, a stale vector). */
+/** Set raw properties on a node (test setup: a legacy marker, a stale
+ *  vector), named by their shared names. */
 export async function setNodeProps(b: GraphBackend, ref_id: string, props: Record<string, unknown>): Promise<void> {
   if (b.kind === "neo4j") {
-    await b.query(`MATCH (n:Data_Bank {ref_id: $r}) SET n += $p`, { r: ref_id, p: props });
+    await b.query(`MATCH (n:Data_Bank {ref_id: $r}) SET n += $p`, { r: ref_id, p: toNeo4j(props) });
     return;
   }
   const assigns = Object.keys(props).map((k, i) => `n.\`${k}\` = $v${i}`);
@@ -296,7 +300,7 @@ export async function graphSnapshot(b: Bolt | GraphBackend): Promise<GraphSnapsh
     const nodes = await b.query(`MATCH (n:Node) RETURN n`);
     const rels = await b.query(
       `MATCH (a:Node)-[r]->(b:Node)
-       RETURN label(r) AS type, r AS rel, {ref_id: a.ref_id, node_key: a.node_key} AS from, {ref_id: b.ref_id, node_key: b.node_key} AS to`,
+       RETURN label(r) AS type, r AS rel, {ref_id: a.ref_id, key: a.key} AS from, {ref_id: b.ref_id, key: b.key} AS to`,
     );
     return {
       nodes: sortByCanon(

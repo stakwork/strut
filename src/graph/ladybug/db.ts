@@ -20,7 +20,8 @@
  * `vector` and `fts` extensions (REQUIRED, ruling 4:
  * an open without them fails with the hint), the DDL (§3.1; every column
  * `ALTER TABLE ADD IF NOT EXISTS`, so a new attribute in the seed lands on
- * the next open), the two indexes, the append-only `MIGRATIONS`, then the
+ * the next open), the two indexes, the append-only `MIGRATIONS` and the
+ * one-time ones (`renameCoreColumns`), then the
  * ontology seed (`registry.ts`), add-only, once per version of the seed
  * (its `Migration` stamp).
  *
@@ -34,8 +35,10 @@ import type { GraphTx, Params, Row } from "../engine.js";
 import { EDGE_COLUMNS, LADYBUG_EDGE_TYPES, nodeColumns, type ColumnType } from "./registry.js";
 import { bootEnv } from "../../env.js";
 import { ladybugMaxDbSize } from "./max-size.js";
-import { SCHEMA_EDGE_DDL, seedOntology } from "./ontology.js";
-import { ontologySeed } from "./registry.js";
+import { SCHEMA_EDGE_DDL, readCatalog, seedOntology } from "./ontology.js";
+import { SCHEMA_TYPE, ontologySeed } from "./registry.js";
+import { OWN_CREATED_AT } from "../strut-schemas.js";
+import { nodeTitleFor } from "../title.js";
 import { EXTENSION_NAMES, LADYBUG_EXTENSION_PINS, pinnedExtensions, type ExtensionName, type PinnedExtensions, type PinnedOptions } from "./extensions.js";
 
 export type Query = (cypher: string, params?: Params) => Promise<Row[]>;
@@ -129,12 +132,127 @@ export function ddlStatements(): string[] {
  *  again, all run on every open. Append, never edit one that has shipped. */
 export const MIGRATIONS: readonly string[] = [];
 
+/** The core attributes' old column names (plans/graph-memory-plan.md "Core
+ *  attributes"): `date_added_to_graph` → `created_at`, `Data_Bank` →
+ *  `search_text`, `node_key` → `key` (a Schema row's → `key_spec`). */
+export const CORE_RENAME_MIGRATION = "core_attribute_names_v1";
+const TITLE_PAGE = 1000;
+
+/**
+ * The rename, once per file (its `Migration` stamp), on a file an older
+ * build wrote: `MIGRATIONS` runs every open after the DDL has added the new
+ * columns, where a RENAME would fail. In order:
+ *
+ *   1. the FTS index over the old columns is dropped (derived data: the
+ *      open's index step builds it again over `search_text` + `title`);
+ *   2. every rel table gets `created_at`;
+ *   3. one transaction copies old → new: `search_text`, `key` (`key_spec` on
+ *      a Schema row), the version / chat / job types' own `created_at` to
+ *      `published_at` / `started_at`, then the row's `created_at` from
+ *      `date_added_to_graph` (a value still in seconds — a Check's own —
+ *      made ms), edges' `created_at`, every data row's `title`
+ *      (`nodeTitleFor`, as the writer fills it), and `created_at` out of
+ *      every Schema's attributes — and the old columns are cleared.
+ *
+ * The old columns stay in the table, empty: Ladybug 0.21 has `ALTER TABLE …
+ * DROP`, but a file that dropped a column before its last one fails its next
+ * open (a segfault while the vector index is there, "Miss cached column"
+ * without it). Nothing reads them. Every copy is guarded (only where the
+ * old value is set and the new one unset), so a process that dies part way
+ * is finished by the next open; the stamp comes last.
+ */
+async function renameCoreColumns(read: Query, write: Query): Promise<void> {
+  if (Number((await read("MATCH (m:Migration {migration_id: $id}) RETURN count(m) AS c", { id: CORE_RENAME_MIGRATION }))[0]?.["c"]) > 0) return;
+  const { columns, edges } = await readCatalog(read);
+  const has = (c: string) => c in columns;
+  const relCols = new Map<string, Set<string>>();
+  for (const e of edges) relCols.set(e, new Set((await read(`CALL table_info('${e}') RETURN name`)).map((r) => String(r["name"]))));
+  const old = has("date_added_to_graph") || has("Data_Bank") || has("node_key") || [...relCols.values()].some((c) => c.has("date_added_to_graph"));
+  if (old) {
+    const indexes = new Set((await read(`CALL SHOW_INDEXES() RETURN index_name`)).map((r) => String(r["index_name"])));
+    if (indexes.has("node_fts")) await write(`CALL DROP_FTS_INDEX('Node', 'node_fts')`);
+    for (const [e, cols] of relCols) if (!cols.has("created_at")) await write(`ALTER TABLE ${q(e)} ADD IF NOT EXISTS ${q("created_at")} INT64`);
+
+    await write("BEGIN TRANSACTION");
+    try {
+      if (has("Data_Bank")) await write("MATCH (n:Node) WHERE n.search_text IS NULL AND n.Data_Bank IS NOT NULL SET n.search_text = n.Data_Bank");
+      if (has("node_key")) {
+        await write(`MATCH (n:Node) WHERE n.node_type = '${SCHEMA_TYPE}' AND n.key_spec IS NULL AND n.node_key IS NOT NULL SET n.key_spec = n.node_key`);
+        await write(`MATCH (n:Node) WHERE n.node_type <> '${SCHEMA_TYPE}' AND n.key IS NULL AND n.node_key IS NOT NULL SET n.key = n.node_key`);
+      }
+      if (has("date_added_to_graph")) {
+        // The types' own seconds move before the row's ms take the column.
+        for (const [type, to] of Object.entries(OWN_CREATED_AT)) {
+          await write(`MATCH (n:Node) WHERE n.node_type = $type AND n.${q(to)} IS NULL AND n.created_at IS NOT NULL AND n.date_added_to_graph IS NOT NULL SET n.${q(to)} = n.created_at`, { type });
+        }
+        await write("MATCH (n:Node) WHERE n.date_added_to_graph IS NOT NULL SET n.created_at = n.date_added_to_graph");
+      }
+      // Below 10^11 a stamp is seconds (ms passed it in 1973).
+      await write("MATCH (n:Node) WHERE n.created_at IS NOT NULL AND n.created_at < 100000000000 SET n.created_at = n.created_at * 1000");
+      for (const [e, cols] of relCols) {
+        if (cols.has("date_added_to_graph")) await write(`MATCH ()-[r:${q(e)}]->() WHERE r.date_added_to_graph IS NOT NULL SET r.created_at = r.date_added_to_graph`);
+      }
+      await fillTitles(write, columns);
+      for (const r of await write(`MATCH (n:Node {node_type: '${SCHEMA_TYPE}'}) WHERE n.attributes CONTAINS '"created_at"' RETURN n.ref_id AS id, n.attributes AS a`)) {
+        const attrs = JSON.parse(String(r["a"])) as Record<string, unknown>;
+        delete attrs["created_at"];
+        await write("MATCH (n:Node {ref_id: $id}) SET n.attributes = $a", { id: r["id"], a: JSON.stringify(attrs) });
+      }
+      const cleared = ["date_added_to_graph", "Data_Bank", "node_key"].filter(has);
+      if (cleared.length) await write(`MATCH (n:Node) SET ${cleared.map((c) => `n.${q(c)} = NULL`).join(", ")}`);
+      for (const [e, cols] of relCols) if (cols.has("date_added_to_graph")) await write(`MATCH ()-[r:${q(e)}]->() SET r.date_added_to_graph = NULL`);
+      await write("COMMIT");
+    } catch (err) {
+      await write("ROLLBACK").catch(() => undefined);
+      throw err;
+    }
+  }
+  await write("MERGE (m:Migration {migration_id: $id}) ON CREATE SET m.executed_at = $now", { id: CORE_RENAME_MIGRATION, now: Date.now() });
+}
+
+/** Every data row without a `title` gets the one the writer would give it:
+ *  its type's `title_key`, else the first line of its text or search text.
+ *  A type that declares `title` itself keeps what it has. By page, on the
+ *  caller's transaction. */
+async function fillTitles(run: Query, columns: Record<string, string>): Promise<void> {
+  const types = new Map<string, { title_key: string; owns: boolean }>();
+  for (const r of await run(`MATCH (n:Node {node_type: '${SCHEMA_TYPE}'}) RETURN n.type AS type, n.title_key AS k, n.attributes AS a`)) {
+    let owns = false;
+    try {
+      owns = "title" in (JSON.parse(String(r["a"] ?? "{}")) as Record<string, unknown>);
+    } catch {
+      // An unreadable declaration: the title comes from the title_key.
+    }
+    types.set(String(r["type"]), { title_key: typeof r["k"] === "string" && r["k"] ? r["k"] : "name", owns });
+  }
+  const fields = Object.keys(columns).filter((c) => c !== "text_embeddings" && columns[c] === "STRING");
+  const projection = `{${[...new Set(["ref_id", "node_type", "search_text", ...fields])].map((c) => `${q(c)}: n.${q(c)}`).join(", ")}}`;
+  let after = "";
+  for (;;) {
+    const page = await run(
+      `MATCH (n:Node) WHERE n.node_type <> '${SCHEMA_TYPE}' AND n.title IS NULL AND n.ref_id > $after RETURN ${projection} AS n ORDER BY n.ref_id LIMIT ${TITLE_PAGE}`,
+      { after },
+    );
+    const rows: Array<{ id: string; title: string }> = [];
+    for (const r of page) {
+      const n = r["n"] as Record<string, unknown>;
+      const t = types.get(String(n["node_type"]));
+      if (t?.owns) continue;
+      const title = nodeTitleFor({ title_key: t?.title_key ?? "name" }, n, typeof n["search_text"] === "string" ? n["search_text"] : null);
+      if (title) rows.push({ id: String(n["ref_id"]), title });
+    }
+    if (rows.length) await run("UNWIND $rows AS r MATCH (n:Node {ref_id: r.id}) SET n.title = r.title", { rows });
+    if (page.length < TITLE_PAGE) return;
+    after = String((page[page.length - 1]!["n"] as Record<string, unknown>)["ref_id"]);
+  }
+}
+
 /** The two indexes, `[name, call]`: one HNSW over `text_embeddings`, one FTS
- *  over the search text and the name. */
+ *  over the search text and the title. */
 export function indexCalls(): Array<[string, string]> {
   return [
     ["node_vec", `CALL CREATE_VECTOR_INDEX('Node', 'node_vec', 'text_embeddings', metric := 'cosine')`],
-    ["node_fts", `CALL CREATE_FTS_INDEX('Node', 'node_fts', ['Data_Bank', 'name'], stemmer := 'porter')`],
+    ["node_fts", `CALL CREATE_FTS_INDEX('Node', 'node_fts', ['search_text', 'title'], stemmer := 'porter')`],
   ];
 }
 
@@ -173,7 +291,7 @@ async function rebuildBrokenFts(read: Query, write: Query, unclean: boolean): Pr
   let broken = false;
   try {
     await write("BEGIN TRANSACTION");
-    await write("MATCH (n:Node) SET n.name = n.name");
+    await write("MATCH (n:Node) SET n.title = n.title");
   } catch (err) {
     const why = err instanceof Error ? err.message : String(err);
     if (!/FTS index '[^']*' is inconsistent/.test(why)) return console.warn(`[graph] full-text index check skipped: ${why.split("\n")[0]}`);
@@ -349,6 +467,7 @@ async function openFresh(path: string, opts: OpenOptions): Promise<LadybugHandle
       }
     }
     for (const ddl of [...ddlStatements(), ...MIGRATIONS]) await write(ddl);
+    await renameCoreColumns(read, write);
     const have = new Set((await read(`CALL SHOW_INDEXES() RETURN index_name`)).map((r) => String(r["index_name"]))); // `_PK` rows included; harmless
     for (const [name, call] of indexCalls()) if (!have.has(name)) await write(call);
     await rebuildBrokenFts(read, write, unclean);

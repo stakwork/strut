@@ -5,10 +5,17 @@
  * live in those callers; this file is the statements.
  *
  * Integers: a plain JS number is sent to Neo4j as a FLOAT, so everything
- * jarvis stores as an Integer — `date_added_to_graph`, every `int` /
- * `datetime` attribute, an integral edge `weight` — is wrapped with `int()`
- * HERE, from the schema the caller hands over. Nothing above this file
- * wraps a number.
+ * jarvis stores as an Integer — `created_at` (`date_added_to_graph`), every
+ * `int` / `datetime` attribute, an integral edge `weight` — is wrapped with
+ * `int()` HERE, from the schema the caller hands over. Nothing above this
+ * file wraps a number.
+ *
+ * Names: a graph jarvis shares keeps jarvis's names for the core
+ * attributes (`NEO4J_NAMES`). Everything above this file uses the shared
+ * ones; the statements here, and the dialect's `node` / `project`, map them.
+ * The Strut types whose own time is now `published_at` / `started_at`
+ * (`OWN_CREATED_AT`) keep it as their stored `created_at`, on their nodes
+ * and their Schema nodes alike: a Neo4j graph gets no new data shapes.
  */
 import type { ManagedTransaction } from "neo4j-driver";
 import { Bolt, int, txRows } from "./bolt.js";
@@ -39,19 +46,84 @@ import type {
   WriteOutcome,
 } from "./engine.js";
 import type { NodeSchema } from "./schema-resolver.js";
-import { typeLabelOf } from "./strut-schemas.js";
+import { CHECK_TYPE } from "./claims.js";
+import { OWN_CREATED_AT, TYPE_OWNABLE_CORE, typeLabelOf } from "./strut-schemas.js";
 
 const MAX_ANCESTOR_WALK_DEPTH = 10;
 
-/** Identity props never touched after create. */
-const PRESERVED = new Set(["ref_id", "node_key", "namespace", "date_added_to_graph"]);
+/** Identity props never touched after create (shared names; the core
+ *  stamp is `date_added_to_graph` on a type that declares its own
+ *  `created_at`, node-writer.ts `stampKey`). */
+const PRESERVED = new Set(["ref_id", "key", "namespace", "created_at", "date_added_to_graph"]);
+
+/** The core attributes a Neo4j graph keeps under jarvis's names: shared
+ *  name → stored name, on nodes and edges alike (an edge has `created_at`
+ *  only). A Schema node keeps its key spec as `node_key` (`schemaToNeo4j`). */
+export const NEO4J_NAMES: Readonly<Record<string, string>> = { key: "node_key", search_text: "Data_Bank", created_at: "date_added_to_graph" };
+const SHARED_NAMES: Readonly<Record<string, string>> = Object.fromEntries(Object.entries(NEO4J_NAMES).map(([a, b]) => [b, a]));
 
 const q = (s: string) => `\`${s}\``;
+
+/** A property's name as Neo4j stores it, on a node of `type` when known:
+ *  a version's `published_at` is its stored `created_at`. */
+export const neo4jName = (name: string, type?: string): string => (type && OWN_CREATED_AT[type] === name ? "created_at" : NEO4J_NAMES[name] ?? name);
+
+/** A node's (or edge's) map in shared names as Neo4j stores it. A shared
+ *  name whose jarvis name is in the map too is the type's own field
+ *  (`fromNeo4j`'s Concept `created_at` beside `date_added_to_graph`): kept. */
+export function toNeo4j(props: Record<string, unknown>, type?: string): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(props)) out[NEO4J_NAMES[k] && NEO4J_NAMES[k] in props ? k : neo4jName(k, type)] = v;
+  return out;
+}
+
+/** A stored node's (or edge's) properties under the shared names. A stored
+ *  `created_at` is the type's own: a version's `published_at`, a chat's or
+ *  a job's `started_at`. On any other type (jarvis's Concept, PullRequest,
+ *  Check, …: TYPE_OWNABLE_CORE) it stays `created_at`, the type's field,
+ *  and the core stamp keeps jarvis's name, `date_added_to_graph`, beside it. */
+export function fromNeo4j(props: Record<string, unknown>, type?: string): Record<string, unknown> {
+  const own = type ? OWN_CREATED_AT[type] : undefined;
+  const typeOwnsCreatedAt = !own && "created_at" in props;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(props)) {
+    if (k === "created_at") out[own ?? "created_at"] = v;
+    else if (k === "date_added_to_graph" && typeOwnsCreatedAt) out[k] = v;
+    else if (!(k in NEO4J_NAMES)) out[SHARED_NAMES[k] ?? k] = v;
+  }
+  return out;
+}
+
+/** A Schema map in shared names as a Neo4j Schema node stores it: the key
+ *  spec as `node_key`, a version's `published_at` attribute as `created_at`. */
+function schemaToNeo4j(props: Record<string, unknown>, type: string): Record<string, unknown> {
+  const own = OWN_CREATED_AT[type];
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(props)) out[k === "key_spec" ? "node_key" : k === own ? "created_at" : k] = v;
+  return out;
+}
+
+/** A Schema node's properties under the shared names. */
+function schemaFromNeo4j(props: Record<string, unknown>): Record<string, unknown> {
+  const own = OWN_CREATED_AT[String(props["type"])];
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(props)) out[k === "node_key" ? "key_spec" : own && k === "created_at" ? own : k] = v;
+  return out;
+}
+
+/** A shared field of a node whose type the statement does not name: a
+ *  `published_at` / `started_at` reads the stored `created_at` on the types
+ *  that keep it there (a run's `started_at` is its own). */
+function projected(alias: string, field: string): string {
+  const types = Object.entries(OWN_CREATED_AT).filter(([, to]) => to === field).map(([t]) => t);
+  if (!types.length) return `${alias}.${q(neo4jName(field))}`;
+  return `CASE WHEN ${types.map((t) => `${alias}:${q(t)}`).join(" OR ")} THEN ${alias}.created_at ELSE ${alias}.${q(field)} END`;
+}
 
 export const NEO4J_DIALECT: Dialect = {
   kind: "neo4j",
   node: (alias, type, props) =>
-    `(${alias}:${q(type)}${props ? ` {${Object.entries(props).map(([k, v]) => `${q(k)}: ${v}`).join(", ")}}` : ""})`,
+    `(${alias}:${q(type)}${props ? ` {${Object.entries(props).map(([k, v]) => `${q(neo4jName(k, type))}: ${v}`).join(", ")}}` : ""})`,
   isType: (alias, types) => `(${types.map((t) => `${alias}:${q(t)}`).join(" OR ")})`,
   typeOf: (alias) => `labels(${alias})`,
   edgeType: (alias) => `type(${alias})`,
@@ -59,7 +131,7 @@ export const NEO4J_DIALECT: Dialect = {
   edgeLive: (alias) => EDGE_LIVE(alias),
   int: (expr) => `toInteger(${expr})`,
   lower: (expr) => `toLower(${expr})`,
-  project: (alias, fields) => `{${fields.map((f) => `${q(f)}: ${alias}.${q(f)}`).join(", ")}}`,
+  project: (alias, fields) => `{${fields.map((f) => `${q(f)}: ${projected(alias, f)}`).join(", ")}}`,
 };
 
 const txOf = (mtx: ManagedTransaction): GraphTx => ({ run: (cypher, params = {}) => txRows(mtx, cypher, params) });
@@ -100,14 +172,18 @@ export function asEngine(e: EngineLike): GraphEngine {
 /** Runs on the transaction when there is one, else auto-commit. */
 const on = (bolt: Bolt, tx: GraphTx | undefined, cypher: string, params: Params = {}) => (tx ? tx.run(cypher, params) : bolt.run(cypher, params));
 
-/** The attribute values jarvis stores as Neo4j Integers (`int` / `datetime`
- *  attributes, `date_added_to_graph`), wrapped; everything else as given. */
-function wrapInts(schema: NodeSchema, map: Record<string, unknown>): Record<string, unknown> {
+/** A writer's map as Neo4j stores it: jarvis's names (`NEO4J_NAMES`), and
+ *  the values jarvis stores as Neo4j Integers (`int` / `datetime`
+ *  attributes, `created_at`, `updated_at`) wrapped; everything else as given. */
+function stored(schema: NodeSchema, map: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(map)) {
     const t = schema.attributes[k];
     const base = t ? (t.startsWith("?") ? t.slice(1) : t) : undefined;
-    out[k] = typeof v === "number" && (k === "date_added_to_graph" || k === "updated_at" || base === "int" || base === "datetime") ? int(v) : v;
+    // A type's own `created_at` (TYPE_OWNABLE_CORE) is stored as itself.
+    const name = t && TYPE_OWNABLE_CORE.has(k) ? k : neo4jName(k, schema.type);
+    const stamp = k === "created_at" || k === "date_added_to_graph" || k === "updated_at";
+    out[name] = typeof v === "number" && (stamp || base === "int" || base === "datetime") ? int(v) : v;
   }
   return out;
 }
@@ -142,7 +218,7 @@ class Neo4jNodes implements NodeEngine {
       `UNWIND $keys AS k
        MATCH (n:${q(type)} {node_key: k, namespace: $ns})
        RETURN k AS node_key, NOT ${NODE_LIVE("n")} AS deleted`,
-      { keys: nodes.map((n) => n.node_key), ns: namespace },
+      { keys: nodes.map((n) => n.key), ns: namespace },
     );
     const deleted = new Set(before.filter((r) => r["deleted"] === true).map((r) => r["node_key"] as string));
 
@@ -163,21 +239,28 @@ class Neo4jNodes implements NodeEngine {
       {
         rows: nodes.map((n) => {
           // The system stamp rides beside the payload: it moves on a restore,
-          // or when an upsert changes an attribute (`attrs`; Data_Bank and the
-          // vectors follow from them).
+          // or when an upsert changes an attribute (`attrs`; the search text,
+          // the title and the vectors follow from them).
           const onMatch: Record<string, unknown> = {};
           const attrs: Record<string, unknown> = {};
           for (const [k, v] of Object.entries(n.props)) {
-            if (PRESERVED.has(k) || k === "updated_at") continue;
+            if ((PRESERVED.has(k) && !(k in schema.attributes)) || k === "updated_at") continue;
             onMatch[k] = v;
             if (k in schema.attributes) attrs[k] = v;
           }
           return {
-            node_key: n.node_key,
+            node_key: n.key,
             stamp: int(n.props["updated_at"] as number),
-            on_create: wrapInts(schema, { ...n.props, ref_id: n.ref_id, node_key: n.node_key, namespace }),
-            on_match: wrapInts(schema, onMatch),
-            attrs: wrapInts(schema, attrs),
+            on_create: {
+              ...stored(schema, { ...n.props, ref_id: n.ref_id, key: n.key, namespace }),
+              // jarvis's Check declares its own required `created_at`, in
+              // seconds: strut has always written it, so jarvis's readers keep it.
+              ...(type === CHECK_TYPE && !("created_at" in schema.attributes && n.props["created_at"] !== undefined)
+                ? { created_at: int(Math.floor(Number(n.props["date_added_to_graph"] ?? n.props["created_at"]) / 1000)) }
+                : {}),
+            },
+            on_match: stored(schema, onMatch),
+            attrs: stored(schema, attrs),
           };
         }),
         ns: namespace,
@@ -186,37 +269,37 @@ class Neo4jNodes implements NodeEngine {
     );
     const byKey = new Map(rows.map((r) => [r["node_key"] as string, r]));
     return nodes.map((n) => {
-      const r = byKey.get(n.node_key)!;
+      const r = byKey.get(n.key)!;
       let outcome: WriteOutcome;
       if (r["created"] as boolean) outcome = "created";
-      else if (deleted.has(n.node_key)) outcome = "restored";
+      else if (deleted.has(n.key)) outcome = "restored";
       else if (mode === "upsert") outcome = "updated";
       else outcome = "existing";
-      return { ref_id: r["ref_id"] as string, node_key: n.node_key, outcome };
+      return { ref_id: r["ref_id"] as string, key: n.key, outcome };
     });
   }
 
   async readRaw(tx: GraphTx, ref_id: string): Promise<RawNode | null> {
     const rows = await tx.run(`MATCH (n:Data_Bank {ref_id: $ref_id}) RETURN labels(n) AS labels, properties(n) AS props`, { ref_id });
     if (rows.length === 0) return null;
-    return { ref_id, type: typeLabelOf(rows[0]!["labels"] as string[]), props: rows[0]!["props"] as Record<string, unknown> };
+    return { ref_id, type: typeLabelOf(rows[0]!["labels"] as string[]), props: fromNeo4j(rows[0]!["props"] as Record<string, unknown>, typeLabelOf(rows[0]!["labels"] as string[])) };
   }
 
-  async refByKey(tx: GraphTx, type: string, node_key: string, namespace: string): Promise<string | null> {
-    const rows = await tx.run(`MATCH (m:${q(type)} {node_key: $k, namespace: $ns}) RETURN m.ref_id AS ref_id LIMIT 1`, { k: node_key, ns: namespace });
+  async refByKey(tx: GraphTx, type: string, key: string, namespace: string): Promise<string | null> {
+    const rows = await tx.run(`MATCH (m:${q(type)} {node_key: $k, namespace: $ns}) RETURN m.ref_id AS ref_id LIMIT 1`, { k: key, ns: namespace });
     return rows.length ? String(rows[0]!["ref_id"]) : null;
   }
 
   async update(tx: GraphTx, schema: NodeSchema, ref_id: string, set: Record<string, unknown>, remove: string[]): Promise<void> {
-    const removeClause = remove.length ? `REMOVE ${remove.map((k) => `n.${q(k)}`).join(", ")}` : "";
-    await tx.run(`MATCH (n:Data_Bank {ref_id: $ref_id}) SET n += $set ${removeClause}`, { ref_id, set: wrapInts(schema, set) });
+    const removeClause = remove.length ? `REMOVE ${remove.map((k) => `n.${q(neo4jName(k, schema.type))}`).join(", ")}` : "";
+    await tx.run(`MATCH (n:Data_Bank {ref_id: $ref_id}) SET n += $set ${removeClause}`, { ref_id, set: stored(schema, set) });
   }
 
   async softDelete(ref_id: string, namespace: string, guard: NodeGuard, opts: SoftDeleteOptions = {}): Promise<SoftDeleteResult | null> {
     // No domain, no type: any content node in the namespace.
     const label = guard.domainLabel ?? guard.type ?? "Data_Bank";
     const extra = Object.keys(guard.props ?? {});
-    const pattern = ["ref_id: $ref_id", "namespace: $ns", ...extra.map((k) => `${q(k)}: $p_${k}`)].join(", ");
+    const pattern = ["ref_id: $ref_id", "namespace: $ns", ...extra.map((k) => `${q(neo4jName(k, guard.type))}: $p_${k}`)].join(", ");
     const params: Params = { ref_id, ns: namespace, now_ms: nowMs() };
     for (const k of extra) params[`p_${k}`] = guard.props![k];
     let reason = "";
@@ -253,7 +336,7 @@ class Neo4jEdges implements EdgeEngine {
         ref_id: e.ref_id,
         edge_key: e.edge_key,
         weight: Number.isInteger(e.weight) ? int(e.weight) : e.weight,
-        date_added_to_graph: int(e.date_added_to_graph),
+        date_added_to_graph: int(e.created_at),
         ...(e.unique_source_id ? { unique_source_id: e.unique_source_id } : {}),
       },
     }));
@@ -285,8 +368,8 @@ class Neo4jEdges implements EdgeEngine {
 
   async setProps(tx: GraphTx, ref_id: string, set: Record<string, unknown>, remove: string[]) {
     const wrapped: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(set)) wrapped[k] = k === "weight" && typeof v === "number" && Number.isInteger(v) ? int(v) : v;
-    const removeClause = remove.length ? `REMOVE ${remove.map((k) => `r.${q(k)}`).join(", ")}` : "";
+    for (const [k, v] of Object.entries(set)) wrapped[neo4jName(k)] = k === "weight" && typeof v === "number" && Number.isInteger(v) ? int(v) : v;
+    const removeClause = remove.length ? `REMOVE ${remove.map((k) => `r.${q(neo4jName(k))}`).join(", ")}` : "";
     const rows = await tx.run(
       `MATCH (s)-[r {ref_id: $ref_id}]->(t) SET r += $set ${removeClause}
        RETURN r.ref_id AS ref_id, type(r) AS edge, s.ref_id AS source_ref_id, t.ref_id AS target_ref_id`,
@@ -342,7 +425,7 @@ class Neo4jEdges implements EdgeEngine {
       node: String(rows[0]!["node"]),
       edges: rows
         .filter((r) => r["other"] != null)
-        .map((r) => ({ other: String(r["other"]), edge_ref_id: String(r["edge_ref_id"]), props: (r["props"] ?? {}) as Record<string, unknown> })),
+        .map((r) => ({ other: String(r["other"]), edge_ref_id: String(r["edge_ref_id"]), props: fromNeo4j((r["props"] ?? {}) as Record<string, unknown>) })),
     };
   }
 
@@ -390,7 +473,7 @@ class Neo4jSchemas implements SchemaSource {
       { t: type },
     );
     if (rows.length === 0) return null;
-    const props = rows[0]!["props"] as Record<string, unknown>;
+    const props = schemaFromNeo4j(rows[0]!["props"] as Record<string, unknown>);
     return { type: String(props["type"]), ref_id: typeof props["ref_id"] === "string" ? props["ref_id"] : undefined, props };
   }
 
@@ -418,7 +501,7 @@ class Neo4jSchemas implements SchemaSource {
     if (rows.length === 0) return { chain: [], rows: [] };
     return {
       chain: ((rows[0]!["chain"] as string[] | null) ?? []).filter(Boolean),
-      rows: (rows[0]!["ancestors"] as Array<Record<string, unknown>> | null) ?? [],
+      rows: ((rows[0]!["ancestors"] as Array<Record<string, unknown>> | null) ?? []).map(schemaFromNeo4j),
     };
   }
 
@@ -461,11 +544,11 @@ class Neo4jSchemas implements SchemaSource {
   }
 
   async createSchema(flat: Record<string, unknown>, tx?: GraphTx): Promise<void> {
-    await on(this.bolt, tx, `MERGE (s:Schema {type: $type}) ON CREATE SET s = $flat`, { type: flat["type"], flat });
+    await on(this.bolt, tx, `MERGE (s:Schema {type: $type}) ON CREATE SET s = $flat`, { type: flat["type"], flat: schemaToNeo4j(flat, String(flat["type"])) });
   }
 
   async extendSchema(type: string, props: Record<string, unknown>, tx?: GraphTx): Promise<void> {
-    await on(this.bolt, tx, `MATCH (s:Schema {type: $t}) SET s += $missing`, { t: type, missing: props });
+    await on(this.bolt, tx, `MATCH (s:Schema {type: $t}) SET s += $missing`, { t: type, missing: schemaToNeo4j(props, type) });
   }
 
   async deleteSchema(type: string, tx?: GraphTx): Promise<void> {

@@ -57,9 +57,9 @@ for (const tb of testBackends()) {
       edges = backend.edges;
       const rs = await nodes.writeMany([
         { type: "StrutRun", data: { run_id: "r1", workflow_name: "wf", run_status: "ok", started_at: 1 } },
-        { type: "StrutJob", data: { job_id: "j1", created_at: 1 } },
+        { type: "StrutJob", data: { job_id: "j1", started_at: 1 } },
         { type: "StrutWorkflow", data: { name: "wf" } },
-        { type: "StrutWorkflowVersion", data: { name: "wf", content_hash: "h1", created_at: 1 } },
+        { type: "StrutWorkflowVersion", data: { name: "wf", content_hash: "h1", published_at: 1 } },
       ]);
       [run, job, wf, wfv] = rs.map((r) => r.ref_id) as [string, string, string, string];
     });
@@ -77,9 +77,9 @@ for (const tb of testBackends()) {
       const r = await rel(a.ref_id);
       assert.equal(r.type, "IN_JOB");
       assert.deepEqual([r.src, r.tgt], [run, job]);
-      assert.deepEqual(Object.keys(r.props).sort(), ["date_added_to_graph", "edge_key", "ref_id", "weight"]);
+      assert.deepEqual(Object.keys(r.props).sort(), ["created_at", "edge_key", "ref_id", "weight"]);
       assert.equal(r.props["weight"], 1);
-      assert.ok((r.props["date_added_to_graph"] as number) >= t0);
+      assert.ok((r.props["created_at"] as number) >= t0);
       if (neo) {
         const vt = await bolt().run(`MATCH ()-[r {ref_id: $r}]->() RETURN valueType(r.weight) AS w, valueType(r.date_added_to_graph) AS d`, { r: a.ref_id });
         assert.deepEqual([vt[0]!["w"], vt[0]!["d"]], ["INTEGER NOT NULL", "INTEGER NOT NULL"]);
@@ -140,7 +140,7 @@ for (const tb of testBackends()) {
       assert.equal(p["strength"], -0.75);
       assert.equal(p["weight"], 3);
       assert.ok(!("context" in p));
-      for (const k of ["ref_id", "edge_key", "date_added_to_graph"]) assert.equal(p[k], stamped[k], `${k} untouched`);
+      for (const k of ["ref_id", "edge_key", "created_at"]) assert.equal(p[k], stamped[k], `${k} untouched`);
       if (neo) {
         const vt = await bolt().run(`MATCH ()-[r {ref_id: $r}]->() RETURN valueType(r.weight) AS w`, { r: a.ref_id });
         assert.equal(vt[0]!["w"], "INTEGER NOT NULL", "integral weight stays an Integer");
@@ -157,6 +157,7 @@ for (const tb of testBackends()) {
         [[{ ref_id: a.ref_id }, { set: { ref_id: "y" } }], "UNKNOWN_ATTRIBUTE"],
         [[{ ref_id: a.ref_id }, { set: { edge_key: "y" } }], "UNKNOWN_ATTRIBUTE"],
         [[{ ref_id: a.ref_id }, { remove: ["date_added_to_graph"] }], "UNKNOWN_ATTRIBUTE"],
+        [[{ ref_id: a.ref_id }, { remove: ["created_at"] }], "UNKNOWN_ATTRIBUTE"],
         [[{ ref_id: a.ref_id }, { remove: ["weight"] }], "UNKNOWN_ATTRIBUTE"],
         [[{ ref_id: a.ref_id }, { set: { "bad-name": 1 } }], "UNKNOWN_ATTRIBUTE"],
         [[{ ref_id: a.ref_id }, {}], "MISSING_REQUIRED"],
@@ -178,7 +179,7 @@ for (const tb of testBackends()) {
       await rawWrite(backend, `MATCH ()-[r {ref_id: $r}]->() SET r.is_muted = true, r.is_deleted = true, r.muted_by_delete_of = "n1"`, { r: a.ref_id });
       const b = await edges.write({ edge: "IN_JOB", source_ref_id: run, target_ref_id: job });
       assert.deepEqual([b.created, b.ref_id], [false, a.ref_id]);
-      assert.deepEqual(Object.keys((await rel(a.ref_id)).props).sort(), ["date_added_to_graph", "edge_key", "note", "ref_id", "weight"], "flags cleared, nothing else touched");
+      assert.deepEqual(Object.keys((await rel(a.ref_id)).props).sort(), ["created_at", "edge_key", "note", "ref_id", "weight"], "flags cleared, nothing else touched");
     });
 
     it("ACCESSED may point at any node, including a jarvis-owned one; source must still be a Strut node", neoOnly("tool calls and ACCESSED are not in the file"), async () => {
@@ -199,7 +200,7 @@ for (const tb of testBackends()) {
     });
 
     it("IS_ALIAS rewrite lands the edge on the canonical node", neoOnly("no alias rewrite in the file"), async () => {
-      const canonical = (await nodes.write({ type: "StrutJob", data: { job_id: "canon", created_at: 1 } })).ref_id;
+      const canonical = (await nodes.write({ type: "StrutJob", data: { job_id: "canon", started_at: 1 } })).ref_id;
       // Park `job` as an alias of `canonical` (what jarvis node-merge does).
       await rawWrite(backend, `MATCH (a:Data_Bank {ref_id: $a}), (c:Data_Bank {ref_id: $c}) CREATE (a)-[:IS_ALIAS {ref_id: $e}]->(c)`, { a: job, c: canonical, e: randomUUID() });
       const r = await edges.write({ edge: "IN_JOB", source_ref_id: run, target_ref_id: job });
@@ -259,7 +260,7 @@ for (const tb of testBackends()) {
       const [claim, check, ev] = (
         await nodes.writeMany([
           { type: "Claim", data: { id: "c1", name: "n", claim_text: "it holds", belief_valid_from: 1 } },
-          { type: "Check", data: { id: "k1", name: "k", created_at: 1, policy: "always" } },
+          { type: "Check", data: { id: "k1", name: "k", policy: "always" } },
           { type: "Evidence", data: { id: "e1", name: "e", evidence_mode: "observed", evidence_status: "collected" } },
         ])
       ).map((r) => r.ref_id) as [string, string, string];

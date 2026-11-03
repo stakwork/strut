@@ -6,7 +6,7 @@ import { join } from "node:path";
 import type { RunEvent, RunSummary } from "../core.js";
 import type { NodeInput } from "./node-writer.js";
 import type { EdgeInput } from "./edge-writer.js";
-import { NEO4J_DIALECT } from "./neo4j-engine.js";
+import { NEO4J_DIALECT, neo4jName } from "./neo4j-engine.js";
 import { MemoryRunStore } from "../store.js";
 import { MemoryChatStore } from "../chat-store.js";
 import type { GraphBackend } from "./backend.js";
@@ -181,12 +181,12 @@ describe("projectRunEvents (pure)", () => {
       type: "StrutJob",
       data: {
         job_id: "j-1", title: "Landing page", summary: "Plan — the landing page\nPod\ndrafted", created_by: "ann",
-        created_at: ts(0), last_used_at: ts(5), run_count: 1, artifact_count: 2, log_ref: "j-1", unique_source_id: "strutjob:j-1",
+        started_at: ts(0), last_used_at: ts(5), run_count: 1, artifact_count: 2, log_ref: "j-1", unique_source_id: "strutjob:j-1",
       },
     });
     // No title: the id names it. No record stamp: the oldest run's time.
     const { title: _t, createdAt: _c, ...nameless } = view;
-    assert.deepEqual([jobNode(nameless).data["title"], jobNode(nameless).data["created_at"]], ["j-1", ts(0)]);
+    assert.deepEqual([jobNode(nameless).data["title"], jobNode(nameless).data["started_at"]], ["j-1", ts(0)]);
   });
 
   it("uses the summary when present, and marks a finalize-less log stale", () => {
@@ -226,6 +226,8 @@ describe("projectRunEvents (pure)", () => {
 });
 
 for (const tb of testBackends()) describe(`projector on ${tb.name}`, { skip: tb.skip }, () => {
+  /** A core property as this engine stores it (Neo4j keeps Jarvis's names). */
+  const neo4jOr = (name: string) => (tb.name === "neo4j" ? neo4jName(name) : name);
   const neo = tb.kind === "neo4j";
   const neoOnly = (why: string) => ({ skip: neo ? false : `neo4j only: ${why}` });
   let backend: GraphBackend;
@@ -572,7 +574,7 @@ for (const tb of testBackends()) describe(`projector on ${tb.name}`, { skip: tb.
     assert.deepEqual([report.runs, report.jobs], [2, 2]);
     assert.equal(await count("StrutJob"), 1, "one node per job, upserted per run");
     assert.equal(await edges("IN_JOB"), 2);
-    const JOB_FIELDS = ["job_id", "title", "summary", "run_count", "artifact_count", "log_ref", "created_at"];
+    const JOB_FIELDS = ["job_id", "title", "summary", "run_count", "artifact_count", "log_ref", "started_at"];
     const [node] = await backend.query(`MATCH ${d().node("j", "StrutJob")} RETURN ${d().project("j", JOB_FIELDS)} AS p`);
     const p = node!["p"] as Record<string, unknown>;
     assert.deepEqual(
@@ -584,8 +586,8 @@ for (const tb of testBackends()) describe(`projector on ${tb.name}`, { skip: tb.
       [{ run: RUN, job: "j-g" }, { run: RUN2, job: "j-g" }],
     );
     // A job's id can hold what the sanitizer would strip: the key is exact.
-    const [key] = await backend.query(`MATCH ${d().node("j", "StrutJob")} RETURN j.node_key AS k`);
-    assert.match(String(key!["k"]), /^strutjob-[0-9a-f]+$/);
+    const [key] = await backend.query(`MATCH ${d().node("j", "StrutJob")} RETURN ${d().project("j", ["key"])} AS p`);
+    assert.match(String((key!["p"] as Record<string, unknown>)["key"]), /^strutjob-[0-9a-f]+$/);
 
     // Without an index nothing is written, and the node stays; a deleted
     // job (no record) likewise.
@@ -657,9 +659,9 @@ for (const tb of testBackends()) describe(`projector on ${tb.name}`, { skip: tb.
     // Filter and search by kind.
     const byKind = await backend.query(`MATCH ${d().node("a", "StrutArtifact", { kind: "$k" })} RETURN a.artifact_id AS id`, { k: "pull-request" });
     assert.deepEqual(byKind.map((r) => r["id"]), ["pr"]);
-    // `kind` and `label` are part of the search text (Data_Bank is what the FTS index
-    // and the embedding read), so a kind finds its artifacts by keyword and by meaning.
-    const [bank] = await backend.query(`MATCH ${d().node("a", "StrutArtifact", { artifact_id: "$id" })} RETURN a.Data_Bank AS b`, { id: "pr" });
+    // `kind` and `label` are part of the search text (what the FTS index and the
+    // embedding read), so a kind finds its artifacts by keyword and by meaning.
+    const [bank] = await backend.query(`MATCH ${d().node("a", "StrutArtifact", { artifact_id: "$id" })} RETURN a.${neo4jOr("search_text")} AS b`, { id: "pr" });
     assert.equal(bank!["b"], "Fix login\nfixes the login redirect\npull-request\nPR");
     const hit = await backend.reader.search({ q: "login", types: ["StrutArtifact"] });
     assert.deepEqual(hit.nodes.map((n) => n.node_type), ["StrutArtifact"]);
@@ -699,14 +701,14 @@ for (const tb of testBackends()) describe(`projector on ${tb.name}`, { skip: tb.
       "name: deliver\nsteps:\n  - id: result\n    type: pack\n    config:\n      text: \"{{ input.text }}\"\n      artifacts:\n        - { id: \"{{ input.id }}\", title: \"{{ input.title }}\", summary: \"{{ input.summary }}\", content: \"x\" }\n",
     );
     const strut = await createStrut({ workspace: ws, store, registry: coreRegistry(), dataDir, serveUi: false, enableChat: false, stt: false, scheduler: false });
-    const jobNodes = () => backend.query(`MATCH ${d().node("j", "StrutJob")} RETURN ${d().project("j", ["job_id", "title", "summary", "run_count", "artifact_count", "created_at"])} AS p`);
+    const jobNodes = () => backend.query(`MATCH ${d().node("j", "StrutJob")} RETURN ${d().project("j", ["job_id", "title", "summary", "run_count", "artifact_count", "started_at"])} AS p`);
     try {
       const first = await strut.run("deliver", { id: "plan", title: "Plan", summary: "the landing page", text: "drafted" }, { job: "j-h", title: "Landing page" });
       assert.equal(first.status, "success");
       await projectRunOnce(backend, store, "deliver", first.runId);
       let [node] = await jobNodes();
       let p = node!["p"] as Record<string, unknown>;
-      assert.deepEqual([p["job_id"], p["title"], p["summary"], p["run_count"], p["artifact_count"], typeof p["created_at"]], ["j-h", "Landing page", "Plan — the landing page\ndrafted", 1, 1, "number"]);
+      assert.deepEqual([p["job_id"], p["title"], p["summary"], p["run_count"], p["artifact_count"], typeof p["started_at"]], ["j-h", "Landing page", "Plan — the landing page\ndrafted", 1, 1, "number"]);
       assert.equal(await edges("IN_JOB"), 1);
 
       // The next turn: a newer deliverable first, the earlier one kept, the title kept.

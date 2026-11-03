@@ -7,7 +7,7 @@ import type { GraphBackend } from "./backend.js";
 import { composeNodeKey } from "./node-writer.js";
 import { seedStrutDomain } from "./schema-seed.js";
 import { getStrutSchema } from "./strut-schemas.js";
-import { anyNode, edgeCount, nodeCount, rawWrite, testBackends, typeFrom } from "./test-util.js";
+import { anyNode, edgeCount, nodeCount, rawNode, rawWrite, testBackends, typeFrom } from "./test-util.js";
 import { GraphWorkspaceStore } from "./workspace-store.js";
 import { manifestSchema } from "../apps/manifest.js";
 import { workspaceConformance } from "../test-util/workspace-conformance.js";
@@ -54,9 +54,11 @@ for (const tb of testBackends()) {
       });
 
       const d = () => backend.dialect;
+      /** A node's key as the engine stores it (Neo4j keeps jarvis's `node_key`). */
+      const keyProp = () => (backend.kind === "neo4j" ? "node_key" : "key");
       // Sorted here: Ladybug reads `ORDER BY a` as the node variable, not the alias.
       const edgesOf = async (edge: string) =>
-        (await backend.query(`MATCH ${anyNode(backend, "a")}-[r:\`${edge}\`]->${anyNode(backend, "b")} RETURN a.node_key AS a, b.node_key AS b`)).sort((x, y) =>
+        (await backend.query(`MATCH ${anyNode(backend, "a")}-[r:\`${edge}\`]->${anyNode(backend, "b")} RETURN a.${keyProp()} AS a, b.${keyProp()} AS b`)).sort((x, y) =>
           `${x["a"]}|${x["b"]}`.localeCompare(`${y["a"]}|${y["b"]}`),
         );
 
@@ -64,7 +66,7 @@ for (const tb of testBackends()) {
         await ws.publishWorkflow("wf", "v1", { steps: [{ id: "a", type: "log", config: { message: "x" } }] }, "first");
         const rows = await backend.query(
           `MATCH ${anyNode(backend, "n")} WHERE ${d().isType("n", ["StrutWorkflow", "StrutWorkflowVersion"])}
-           RETURN ${d().typeOf("n")} AS type, n.node_key AS key, n.namespace AS ns`,
+           RETURN ${d().typeOf("n")} AS type, n.${keyProp()} AS key, n.namespace AS ns`,
         );
         assert.deepEqual(
           rows.map((r) => [typeFrom(r["type"]), r["key"], r["ns"]]).sort((a, b) => String(a[1]).localeCompare(String(b[1]))),
@@ -75,6 +77,21 @@ for (const tb of testBackends()) {
         );
         assert.equal((await edgesOf("VERSION_OF")).length, 1);
         assert.equal((await edgesOf("ACTIVE_VERSION")).length, 1);
+      });
+
+      it("a version keeps its publish time in Neo4j's stored created_at: an old-shape node reads back with that published_at", { skip: tb.kind !== "neo4j" && "neo4j only" }, async () => {
+        await ws.publishWorkflow("wf", "v1", { steps: [{ id: "a", type: "log", config: { message: "x" } }] }, "first");
+        const stored = async () =>
+          (await backend.query(`MATCH (v:StrutWorkflowVersion {name: "wf"}) RETURN v.created_at AS own, v.published_at AS pub, v.date_added_to_graph AS row, v.ref_id AS r`))[0]!;
+        const fresh = await stored();
+        assert.equal(fresh["pub"], null, "no new property on Neo4j");
+        assert.ok(Number(fresh["own"]) < 1e11 && Number(fresh["row"]) > 1e12, "the type's seconds in created_at, the row's ms in date_added_to_graph");
+        // The shape an older strut wrote: the same property, another time.
+        await rawWrite(backend, `MATCH (v:StrutWorkflowVersion {name: "wf"}) SET v.created_at = 1700000000`);
+        assert.equal((await ws.getWorkflowMetadata("wf"))!.versions["v1"]!.createdAt, "2023-11-14T22:13:20.000Z");
+        assert.equal((await rawNode(backend, String(fresh["r"])))!.props["published_at"], 1700000000);
+        const schema = (await backend.query(`MATCH (s:Schema {type: "StrutWorkflowVersion"}) RETURN s.created_at AS own, s.published_at AS pub`))[0]!;
+        assert.deepEqual([schema["own"], schema["pub"]], ["datetime", null], "the Schema node keeps created_at as the attribute's name");
       });
 
       it("swaps the ACTIVE_VERSION edge on activation and never duplicates it", async () => {

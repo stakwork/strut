@@ -45,7 +45,7 @@ export default defineStep({
     source_data: z
       .record(z.string(), z.any())
       .optional()
-      .describe('Properties for an INLINE source node, e.g. {"name": "harvey-deliver"}. Must satisfy the type\'s schema, including its node_key attribute(s).'),
+      .describe('Properties for an INLINE source node, e.g. {"name": "harvey-deliver"}. Must satisfy the type\'s schema, including its key attribute(s) (the type\'s key_spec).'),
     target_ref_id: z
       .string()
       .optional()

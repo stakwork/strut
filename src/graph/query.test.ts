@@ -137,7 +137,7 @@ for (const tb of testBackends()) {
         await backend.lbug.exclusive((w) =>
           w(
             `UNWIND range(1, 250) AS i
-             CREATE (:Node {ref_id: 'w' + CAST(i AS STRING), node_key: 'w' + CAST(i AS STRING), namespace: 'default', node_type: 'Concept',
+             CREATE (:Node {ref_id: 'w' + CAST(i AS STRING), key: 'w' + CAST(i AS STRING), namespace: 'default', node_type: 'Concept',
                      name: 'widget ' + CAST(i AS STRING), description: $blob, text_embeddings: CAST($vec AS FLOAT[384])})`,
             { blob: BLOB, vec: VEC },
           ),

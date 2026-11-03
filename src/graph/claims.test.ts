@@ -164,14 +164,14 @@ describe("claimStatus (pure)", () => {
     assert.equal(status([pass, regression]).status, "refuted");
     assert.equal(status([regression, pass]).status, "refuted");
     // No run at all (publish checks): when the node was written decides.
-    const clean = ev({ observed_at: 500, date_added_to_graph: 1000, version: V1 });
-    const dirty = ev({ observed_at: 500, date_added_to_graph: 2000, strength: -1 });
+    const clean = ev({ observed_at: 500, created_at: 1000, version: V1 });
+    const dirty = ev({ observed_at: 500, created_at: 2000, strength: -1 });
     assert.equal(status([clean, dirty]).status, "refuted");
     assert.equal(status([dirty, clean]).status, "refuted");
   });
 
-  it("orders by observed_at, then date_added_to_graph, then id — deterministically", () => {
-    const a = ev({ observed_at: undefined, date_added_to_graph: 5_000, strength: -1, run: "r1" });
+  it("orders by observed_at, then created_at, then id — deterministically", () => {
+    const a = ev({ observed_at: undefined, created_at: 5_000, strength: -1, run: "r1" });
     const b = ev({ observed_at: 6, run: "r2" }); // 6s = 6000ms, newer than a
     assert.equal(status([a, b]).status, "supported");
     assert.equal(status([b, a]).status, "supported");
@@ -257,8 +257,8 @@ for (const tb of testBackends()) {
       // A step with two versions (v2 active), a workflow, and a run of the step.
       const made = await nodes.writeMany([
         { type: "StrutStep", data: { step_type: "clip/compute-times", active_version: V2 } },
-        { type: "StrutStepVersion", data: { step_type: "clip/compute-times", content_hash: V1, created_at: now - 100 } },
-        { type: "StrutStepVersion", data: { step_type: "clip/compute-times", content_hash: V2, created_at: now - 50 } },
+        { type: "StrutStepVersion", data: { step_type: "clip/compute-times", content_hash: V1, published_at: now - 100 } },
+        { type: "StrutStepVersion", data: { step_type: "clip/compute-times", content_hash: V2, published_at: now - 50 } },
         { type: "StrutWorkflow", data: { name: "youtube-clip", active_version: "wf-hash" } },
         { type: "StrutRun", data: { run_id: "run-1", workflow_name: "step:clip/compute-times", run_status: "success", started_at: now - 10 } },
       ]);
@@ -278,7 +278,7 @@ for (const tb of testBackends()) {
         ],
         "create",
       );
-      assert.deepEqual([c1!.outcome, c2!.outcome, c1!.node_key, c2!.node_key], ["created", "created", "claim-c1", "claim-c2"]);
+      assert.deepEqual([c1!.outcome, c2!.outcome, c1!.key, c2!.key], ["created", "created", "claim-c1", "claim-c2"]);
       ref["c1"] = c1!.ref_id;
       ref["c2"] = c2!.ref_id;
       assert.equal((await rawNode(backend, ref["c1"]))!.type, "Claim");
@@ -292,17 +292,26 @@ for (const tb of testBackends()) {
         "id is the identity",
       );
 
-      // Check.created_at is REQUIRED (a create without it is a 400 in jarvis too).
-      await assert.rejects(
-        nodes.write({ type: "Check", data: { id: "k0", name: "no stamp", step_type: "exec" } }),
-        (e: unknown) => e instanceof GraphValidationError && e.code === "MISSING_REQUIRED" && e.attribute === "created_at",
-      );
+      // On Ladybug when a check was written is the node's core created_at, the
+      // writer's: a caller cannot give one. (jarvis's Check on Neo4j declares
+      // its own, which the writer stamps in seconds.)
+      if (!neo) {
+        await assert.rejects(
+          nodes.write({ type: "Check", data: { id: "k0", name: "stamped", step_type: "exec", created_at: 1 } }),
+          (e: unknown) => e instanceof GraphValidationError && e.code === "UNKNOWN_ATTRIBUTE" && e.attribute === "created_at",
+        );
+      }
       const [k1, kOld, kExt] = await nodes.writeMany([
-        { type: "Check", data: { id: "k1", name: "bounds", step_type: "exec", step_config: '{"command":"true"}', run_when: "run", policy: "always", publisher: "ai", created_at: now - 40 } },
-        { type: "Check", data: { id: "kold", name: "bounds (old)", step_type: "exec", created_at: now - 45, retired_at: now - 41 } },
-        { type: "Check", data: { id: "kext", name: "listen", description: "does the cut sound natural — code cannot hear", policy: "on_change", created_at: now - 39 } },
+        { type: "Check", data: { id: "k1", name: "bounds", step_type: "exec", step_config: '{"command":"true"}', run_when: "run", policy: "always", publisher: "ai" } },
+        { type: "Check", data: { id: "kold", name: "bounds (old)", step_type: "exec", retired_at: now - 41 } },
+        { type: "Check", data: { id: "kext", name: "listen", description: "does the cut sound natural — code cannot hear", policy: "on_change"} },
       ]);
       ref["k1"] = k1!.ref_id;
+      if (neo) {
+        // jarvis's Check keeps its own required created_at, in seconds, beside the row's ms.
+        const [k] = await backend.query(`MATCH (k:Check {id: "k1"}) RETURN k.created_at AS own, k.date_added_to_graph AS row`);
+        assert.equal(Number(k!["own"]), Math.floor(Number(k!["row"]) / 1000));
+      }
       ref["kold"] = kOld!.ref_id;
       ref["kext"] = kExt!.ref_id;
 
@@ -324,6 +333,7 @@ for (const tb of testBackends()) {
       );
     });
 
+    const k1Created = (checks: Array<{ created_at: number }>) => checks[0]!.created_at;
     it("claimsFor / checksFor read active nodes; retired ones only on request", async () => {
       assert.deepEqual((await reader.claimsFor(STEP)).map((c) => c.id), ["c1", "c2"]);
       assert.deepEqual((await reader.claimsFor({ kind: "workflow", name: "youtube-clip" })).map((c) => c.id), ["c1"]);
@@ -334,7 +344,9 @@ for (const tb of testBackends()) {
       assert.equal(c1.ref_id, ref["c1"]);
 
       assert.deepEqual((await reader.checksFor("c1")).map((k) => k.id), ["k1", "kext"]);
-      assert.deepEqual((await reader.checksFor("c1", { includeRetired: true })).map((k) => k.id), ["kold", "k1", "kext"]);
+      // Written in one batch, so one created_at: the id breaks the tie.
+      assert.deepEqual((await reader.checksFor("c1", { includeRetired: true })).map((k) => k.id), ["k1", "kext", "kold"]);
+      assert.ok(Math.abs(k1Created(await reader.checksFor("c1")) - Math.floor(Date.now() / 1000)) < 600, "a check's created_at is the node's, in seconds");
       const [k1, kext] = await reader.checksFor("c1");
       assert.deepEqual([k1!.step_type, k1!.policy, k1!.publisher, isExternalCheck(k1!)], ["exec", "always", "ai", false]);
       assert.ok(isExternalCheck(kext!) && kext!.description);
@@ -360,7 +372,7 @@ for (const tb of testBackends()) {
       // What the verify pass will write: Evidence + EVIDENCED_BY{strength} + PRODUCED_BY + ABOUT + HAS_SOURCE.
       const id = evidenceId("k1", "run-1", "step");
       const e1 = await nodes.write({ type: "Evidence", data: { id, name: "computes start/end…", content: "start=12 end=31 duration=95", evidence_mode: "observed", evidence_status: "collected", observed_at: now - 5 } }, "create");
-      assert.equal(e1.node_key, `evidence-${id}`);
+      assert.equal(e1.key, `evidence-${id}`);
       const context = JSON.stringify({ path: "step", cassette: "replay", checkVersion: "exec" });
       await edges.writeMany([
         { edge: "EVIDENCED_BY", source_ref_id: ref["c1"]!, target_ref_id: e1.ref_id, properties: { strength: 1 } },
@@ -375,11 +387,11 @@ for (const tb of testBackends()) {
       const [row] = await reader.evidenceFor("c1", STEP);
       assert.equal(typeof row!.edge_ref_id, "string", "the EVIDENCED_BY edge — what muting a slot mutes");
       assert.deepEqual(
-        { ...row, date_added_to_graph: undefined, edge_ref_id: undefined },
+        { ...row, created_at: undefined, edge_ref_id: undefined },
         {
           edge_ref_id: undefined,
           ref_id: e1.ref_id, id, name: "computes start/end…", content: "start=12 end=31 duration=95",
-          evidence_mode: "observed", evidence_status: "collected", observed_at: now - 5, date_added_to_graph: undefined,
+          evidence_mode: "observed", evidence_status: "collected", observed_at: now - 5, created_at: undefined,
           claim_id: "c1", strength: 1, check_id: "k1",
           about: { kind: "step", name: "clip/compute-times", content_hash: V2 },
           source: { ref_id: ref["run"], node_type: "StrutRun", run_id: "run-1", run_key: "step:clip/compute-times", context: { path: "step", cassette: "replay", checkVersion: "exec" } },
@@ -462,12 +474,12 @@ for (const tb of testBackends()) {
 
     it("a JOB subject (plans/job-claims.md §1–§2): the claim hangs off StrutJob, the evidence is ABOUT the turn's StrutRun, the active version is the index's newest turn", async () => {
       const [job, turn1, noJob] = await nodes.writeMany([
-        { type: "StrutJob", data: { job_id: "j-1", title: "Settings page", created_at: now - 100 } },
+        { type: "StrutJob", data: { job_id: "j-1", title: "Settings page", started_at: now - 100 } },
         { type: "StrutRun", data: { run_id: "1700", job: "j-1", workflow_name: "job", run_status: "success", started_at: now - 20 } },
         { type: "StrutRun", data: { run_id: "1690", workflow_name: "job", run_status: "success", started_at: now - 30 } },
       ]);
       const [cj] = await nodes.writeMany([{ type: "Claim", data: { id: "cj", name: "the settings page renders", claim_text: "the settings page renders", speaker_name: "ai", belief_valid_from: now - 9 } }], "create");
-      const [kj] = await nodes.writeMany([{ type: "Check", data: { id: "kj", name: "page", step_type: "http/verify", step_config: "{}", policy: "manual", created_at: now - 9 } }]);
+      const [kj] = await nodes.writeMany([{ type: "Check", data: { id: "kj", name: "page", step_type: "http/verify", step_config: "{}", policy: "manual" } }]);
       await edges.writeMany([
         { edge: "ABOUT", source_ref_id: cj!.ref_id, target_ref_id: job!.ref_id },
         { edge: "TESTS", source_ref_id: kj!.ref_id, target_ref_id: cj!.ref_id },

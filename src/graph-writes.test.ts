@@ -14,16 +14,16 @@ class FakeNodes {
   private n = 0;
   async write(input: { type: string }, _mode = "create") {
     this.calls.push("write");
-    return { ref_id: `n${++this.n}`, node_key: "k", node_type: input.type, outcome: "created" };
+    return { ref_id: `n${++this.n}`, key: "k", node_type: input.type, outcome: "created" };
   }
   async writeMany(inputs: Array<{ type: string }>) {
     this.calls.push("writeMany");
     // As the real writer does: the many-write is its own; `write` calls it on the WRITER.
-    return inputs.map((i) => ({ ref_id: `n${++this.n}`, node_key: "k", node_type: i.type, outcome: i.type === "Same" ? "existing" : "created" }));
+    return inputs.map((i) => ({ ref_id: `n${++this.n}`, key: "k", node_type: i.type, outcome: i.type === "Same" ? "existing" : "created" }));
   }
   async update(ref_id: string) {
     this.calls.push("update");
-    return { ref_id, node_key: "k", rekeyed: false };
+    return { ref_id, key: "k", rekeyed: false };
   }
   async deleteNode(ref_id: string) {
     this.calls.push("deleteNode");

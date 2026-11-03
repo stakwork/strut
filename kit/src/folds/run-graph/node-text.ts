@@ -27,6 +27,10 @@ const IDENTITY_KEYS: ReadonlySet<string> = new Set([
   "node_type",
   "name",
   "namespace",
+  // The core key and search text; `title` and `created_at` stay shown, as
+  // they can be the type's own (a Document's title, a PR's date).
+  "key",
+  "search_text",
   "date_added_to_graph",
   "Data_Bank",
 ]);

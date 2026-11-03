@@ -21,7 +21,7 @@ export default defineStep({
     "Locate the edge by `edge_ref_id` (from create-triplet's output) OR by the triple `source_ref_id` + `edge_type` + " +
     "`target_ref_id`. PARTIAL update: `edge_data` properties are set/overwritten over the edge's current properties, " +
     "`properties_to_be_deleted` removes properties; everything else is left untouched. `weight` may be set. " +
-    "The identity stamps (ref_id, edge_key, date_added_to_graph, unique_source_id) cannot be changed, and an edge " +
+    "The identity stamps (ref_id, edge_key, created_at, unique_source_id) cannot be changed, and an edge " +
     "cannot be re-pointed at other nodes — create a new edge instead.\n\n" +
     EXAMPLE,
   input: z.object({

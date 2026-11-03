@@ -2,15 +2,16 @@ import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
 import { getStrutSchema } from "../../../graph/strut-schemas.js";
+import { nodeTitle } from "../../../graph/title.js";
 import { graphCtx, errText } from "./_shared.js";
 const splitList = (s?: string) => s?.split(",").map((x) => x.trim()).filter(Boolean);
 
-/** A node's human label: the Strut schema's title_key when it is a Strut type,
- *  else the same candidate chain the jarvis/* step uses. */
+/** A node's human label: its title (the Strut schema's title_key when it is
+ *  a Strut type, else `name`, else the stored one), else the same candidate chain the
+ *  jarvis/* step uses. */
 function nameOf(nodeType: string | undefined, p: Record<string, any>): string | undefined {
   const strut = nodeType ? getStrutSchema(nodeType) : undefined;
-  if (strut && typeof p[strut.title_key] === "string") return p[strut.title_key];
-  return p.name ?? p.workflow_name ?? p.episode_title ?? p.entity;
+  return nodeTitle(p, strut?.title_key) || (p.name ?? p.workflow_name ?? p.episode_title ?? p.entity);
 }
 
 function descriptionOf(nodeType: string | undefined, p: Record<string, any>): string {

@@ -56,7 +56,10 @@ for (const tb of testBackends()) {
       assert.equal(node.node_type, "Concept");
       assert.equal(node.properties["description"], "Legal knowledge.");
       assert.equal(node.properties["ref_id"], undefined, "the ref_id is the node's, not a property");
-      assert.equal(typeof node.properties["date_added_to_graph"], "number");
+      assert.equal(typeof node.properties["created_at"], "number");
+      // `date_added_to_graph` is still taken, as created_at's old name.
+      const byOld = await findNodes(b, { node_type: "Concept", where: { date_added_to_graph: { gt: 0 } }, orderBy: "date_added_to_graph", limit: 500 });
+      assert.deepEqual(names(byOld).sort(), names(all).sort());
     });
 
     it("pages with a cursor until there is none, and counts every match", async () => {

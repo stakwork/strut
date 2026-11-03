@@ -56,14 +56,14 @@ async function writeApp(dir: string, appYaml: string): Promise<string> {
 }
 
 describe("an app's graph types, as a declaration", () => {
-  it("map the app grammar onto jarvis's: number → float, date and json → string, `x?` → `?x`; key → node_key, search → index, a title when there is no name", () => {
+  it("map the app grammar onto jarvis's: number → float, date and json → string, `x?` → `?x`; key → key_spec, search → index, a title when there is no name", () => {
     assert.deepEqual(["string", "number?", "boolean", "date", "json?"].map(graphAttributeType), ["string", "?float", "boolean", "string", "?string"]);
     const [customer, invoice] = appSchemaInputs(manifest(INVOICES), "invoices");
-    assert.deepEqual(customer, { type: "Customer", attributes: { name: "string", phone: "?string" }, node_key: "name", index: ["name"], type_description: "Declared by the app invoices (app.yaml data.graph)." });
+    assert.deepEqual(customer, { type: "Customer", attributes: { name: "string", phone: "?string" }, key_spec: "name", index: ["name"], type_description: "Declared by the app invoices (app.yaml data.graph)." });
     assert.deepEqual(invoice, {
       type: "Invoice",
       attributes: { number: "string", amount: "float", due: "string", status: "string", meta: "?string" },
-      node_key: "number",
+      key_spec: "number",
       index: ["number", "status"],
       title_key: "number",
       type_description: "Declared by the app invoices (app.yaml data.graph).",
@@ -179,7 +179,7 @@ for (const tb of testBackends()) describe(`an app's graph types on ${tb.name}`, 
       edges: [{ edge: "Invoice-[BILLED_TO]->Customer", created: true }],
     });
     const invoice = (await b.schemas.schema("Invoice"))!;
-    assert.equal(invoice.node_key, "invoice-number");
+    assert.equal(invoice.key_spec, "invoice-number");
     assert.equal(invoice.title_key, "number");
     assert.deepEqual(invoice.index.sort(), ["number", "status"]);
     assert.equal(invoice.attributes["amount"], "float");
@@ -255,6 +255,6 @@ for (const tb of testBackends()) describe(`an app's graph types on ${tb.name}`, 
     // The key is the identity: the same number is the same invoice.
     const same = await call("graph/create-node", { node_type: "Invoice", node_data: { number: "INV-1", amount: 120, due: "2026-10-01", status: "unpaid" } });
     assert.equal(same.status, "Warning");
-    assert.match(same.messages[0], /already exists in the graph with node_key: invoice-inv1/);
+    assert.match(same.messages[0], /already exists in the graph with key: invoice-inv1/);
   });
 });

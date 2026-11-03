@@ -12,7 +12,7 @@
  * wildcard sentinel.
  *
  * A row's columns are the Schema fields (`SCHEMA_COLUMNS`): the type's
- * `node_key` spec is the row's `node_key`, and the attributes it declares
+ * key spec is the row's `key_spec`, and the attributes it declares
  * are one JSON column, `attributes`. Read back, a row is the flat map a
  * Neo4j Schema node holds — core keys and attributes side by side — so the
  * resolver merges and walks it the same way.
@@ -112,8 +112,11 @@ export function catalogOf(lbug: { query: Run }): LadybugCatalog {
 export function splitFlat(flat: Record<string, unknown>): { core: Record<string, unknown>; attributes: Record<string, string> } {
   const core: Record<string, unknown> = {};
   const attributes: Record<string, string> = {};
-  for (const [k, v] of Object.entries(flat)) {
-    if (k === "ref_id" || k === "node_key" || k === "type" || v === undefined || v === null) continue;
+  for (const [name, v] of Object.entries(flat)) {
+    // jarvis's name for the key spec, as a Neo4j Schema node spells it.
+    const k = name === "node_key" ? "key_spec" : name;
+    if (k === "ref_id" || k === "type" || v === undefined || v === null) continue;
+    if (k === "key_spec" && name === "node_key" && "key_spec" in flat) continue;
     if (k === "attributes" && v && typeof v === "object" && !Array.isArray(v)) {
       for (const [a, t] of Object.entries(v as Record<string, unknown>)) if (typeof t === "string") attributes[a] = t;
       continue;
@@ -144,7 +147,7 @@ function parseAttributes(raw: unknown): Record<string, string> {
 /** A Schema row (`RETURN n`) as the flat map: its fields, then its attributes. */
 export function toSchemaRow(n: Record<string, unknown>): SchemaRow {
   const props: Record<string, unknown> = {};
-  for (const k of ["type", "ref_id", "node_key", ...CORE]) if (n[k] !== undefined && n[k] !== null) props[k] = n[k];
+  for (const k of ["type", "ref_id", ...CORE]) if (n[k] !== undefined && n[k] !== null) props[k] = n[k];
   Object.assign(props, parseAttributes(n["attributes"]));
   return { type: String(n["type"]), ref_id: typeof n["ref_id"] === "string" ? n["ref_id"] : undefined, props };
 }
@@ -346,17 +349,13 @@ export async function createSchemaRow(run: Run, catalog: Catalog, flat: Record<s
     attributes: JSON.stringify(attributes),
     now: Date.now(),
   };
-  const fields = ["ref_id: $ref_id", `node_type: '${SCHEMA_TYPE}'`, "type: $type", "attributes: $attributes", "date_added_to_graph: CAST($now AS INT64)"];
-  if (typeof flat["node_key"] === "string") {
-    params["node_key"] = flat["node_key"];
-    fields.push("node_key: $node_key");
-  }
+  const fields = ["ref_id: $ref_id", `node_type: '${SCHEMA_TYPE}'`, "type: $type", "attributes: $attributes", "created_at: CAST($now AS INT64)"];
   fields.push(...assigns("n", core, params, ": "));
   await run(`CREATE (n:Node {${fields.join(", ")}})`, params);
 }
 
 /** Set keys on an existing Schema (exact type): its fields set (its
- *  `node_key` spec too, when given), its attributes merged in (the given
+ *  `key_spec` too, when given), its attributes merged in (the given
  *  ones win), a new attribute's column added. */
 export async function extendSchemaRow(run: Run, catalog: Catalog, type: string, props: Record<string, unknown>): Promise<void> {
   const rows = await run(`MATCH ${S("n")} WHERE n.type = $t RETURN n.attributes AS a`, { t: type });
@@ -365,10 +364,6 @@ export async function extendSchemaRow(run: Run, catalog: Catalog, type: string, 
   await addColumns(run, catalog, type, attributes);
   const params: Params = { t: type, attributes: JSON.stringify({ ...parseAttributes(rows[0]!["a"]), ...attributes }) };
   const sets = ["n.attributes = $attributes", ...assigns("n", core, params, " = ")];
-  if (typeof props["node_key"] === "string") {
-    params["node_key"] = props["node_key"];
-    sets.push("n.node_key = $node_key");
-  }
   await run(`MATCH ${S("n")} WHERE n.type = $t SET ${sets.join(", ")}`, params);
 }
 
@@ -429,7 +424,7 @@ const same = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stri
 
 /**
  * The seed (`registry.ts`) into the file. A missing type is created; an
- * existing seed type is RECONCILED: the seed's own keys (fields, `node_key`
+ * existing seed type is RECONCILED: the seed's own keys (fields, key
  * spec, parent, the attributes it declares) are set back to the seed's, so
  * a change to strut's types reaches files made before it, and anything
  * added at runtime (another attribute, an alias) stays. Edge rules are

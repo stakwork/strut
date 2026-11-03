@@ -23,16 +23,16 @@ describe("ladybug registry — the ontology seed (plans/ladybug-backend.md §3, 
 
   it("declares the claim types with the fields claims.ts reads, and Concept without jarvis's string timestamps", () => {
     const claim = ladybugSchema("Claim")!;
-    assert.equal(claim.node_key, "claim-id");
+    assert.equal(claim.key_spec, "claim-id");
     assert.deepEqual(Object.keys(claim.attributes).sort(), ["belief_valid_from", "belief_valid_to", "claim_text", "id", "name", "speaker_name"]);
     assert.equal(claim.attributes["belief_valid_from"], "?datetime");
     const check = ladybugSchema("Check")!;
-    assert.equal(check.attributes["created_at"], "datetime");
+    assert.equal(check.attributes["created_at"], undefined, "when a check was written is the core created_at");
     assert.equal(check.attributes["freshness_days"], "?int");
     const evidence = ladybugSchema("Evidence")!;
     assert.deepEqual(evidence.index, ["name", "description", "content"]);
     const concept = ladybugSchema("Concept")!;
-    assert.equal(concept.node_key, "concept-name");
+    assert.equal(concept.key_spec, "concept-name");
     assert.equal(concept.attributes["name"], "string");
     for (const k of ["created_at", "last_updated", "documentation"]) assert.ok(!(k in concept.attributes), k);
     for (const s of LADYBUG_SCHEMAS) assert.equal(s.isStrut, s.type.startsWith("Strut"));
@@ -75,7 +75,7 @@ describe("ladybug registry — the ontology seed (plans/ladybug-backend.md §3, 
     assert.equal(cols["attributes"], "STRING", "a type's declared attributes are one JSON column");
     assert.equal(cols["aliases"], "STRING[]");
     assert.ok(Object.keys(cols).length > 80 && Object.keys(cols).length < 110, `${Object.keys(cols).length} columns`);
-    assert.deepEqual(Object.keys(EDGE_COLUMNS), ["ref_id", "edge_key", "date_added_to_graph", "weight", "importance", "strength", "context", "start_time", "end_time", "post_url"]);
+    assert.deepEqual(Object.keys(EDGE_COLUMNS), ["ref_id", "edge_key", "created_at", "weight", "importance", "strength", "context", "start_time", "end_time", "post_url"]);
   });
 
   it("the seed: Thing, then every type as the flat Schema map it is written from, the edges, and a stamp that follows its content", () => {

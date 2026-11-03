@@ -78,8 +78,10 @@ export function boundedName(text: string): string {
   return t.length > NAME_MAX ? `${t.slice(0, NAME_MAX - 1)}…` : t;
 }
 
-function checkNode(id: string, data: CheckData, at: number) {
-  const out: Record<string, unknown> = { id, created_at: at };
+/** A Check's node. When it was written is the node's core `created_at`,
+ *  the writer's. */
+function checkNode(id: string, data: CheckData) {
+  const out: Record<string, unknown> = { id };
   for (const [k, v] of Object.entries(data)) if (v !== undefined && v !== null && v !== "") out[k] = v;
   return { type: CHECK_TYPE, data: out };
 }
@@ -146,7 +148,7 @@ export class ClaimsWriter {
     const written = await this.graph.nodes.writeMany(
       [
         { type: CLAIM_TYPE, data: { id, name: boundedName(text), claim_text: text, belief_valid_from: at, ...(input.speaker ? { speaker_name: input.speaker } : {}) } },
-        ...input.checks.map((c, i) => checkNode(checkIds[i]!, c, at)),
+        ...input.checks.map((c, i) => checkNode(checkIds[i]!, c)),
       ],
       "create",
     );
@@ -220,7 +222,7 @@ export class ClaimsWriter {
   async addCheck(claimId: string, data: CheckData): Promise<{ id: string }> {
     const claim = await this.activeClaim(claimId);
     const id = newEpistemicId();
-    const node = await this.graph.nodes.write(checkNode(id, data, nowSeconds()), "create");
+    const node = await this.graph.nodes.write(checkNode(id, data), "create");
     await this.graph.edges.write({ edge: CLAIM_EDGES.TESTS, source_ref_id: node.ref_id, target_ref_id: claim.ref_id });
     return { id };
   }
@@ -233,7 +235,7 @@ export class ClaimsWriter {
     if (claims.length === 0) throw new ClaimsError("REFUSED", `check "${id}" tests no active claim — add a check to the claim you mean instead`);
     const at = nowSeconds();
     const successor = newEpistemicId();
-    const node = await this.graph.nodes.write(checkNode(successor, data, at), "create");
+    const node = await this.graph.nodes.write(checkNode(successor, data), "create");
     await this.graph.edges.writeMany([
       { edge: CLAIM_EDGES.SUPERSEDES, source_ref_id: node.ref_id, target_ref_id: old.ref_id },
       ...claims.map((c) => ({ edge: CLAIM_EDGES.TESTS, source_ref_id: node.ref_id, target_ref_id: c.ref_id })),

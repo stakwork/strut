@@ -35,13 +35,15 @@ describe("planNodeSchema (pure)", () => {
     const p = planNodeSchema({ type: "Evidence", attributes: { description: "string", content: "?string" }, node_key: "description" });
     assert.equal(p.parent, "Thing");
     assert.equal(p.domain, "entity");
-    assert.equal(p.node_key, "evidence-description");
+    assert.equal(p.key_spec, "evidence-description");
     assert.deepEqual(p.tokens, ["description"]);
     assert.deepEqual(p.index, ["description"]);
-    assert.deepEqual(p.flat, { type: "Evidence", parent: "Thing", node_key: "evidence-description", index: ["description"], domain: "entity", description: "string", content: "?string" });
+    assert.deepEqual(p.flat, { type: "Evidence", parent: "Thing", key_spec: "evidence-description", index: ["description"], domain: "entity", title_key: "name", description_key: "description", description: "string", content: "?string" });
     // An already-prefixed node_key is not doubled; `name` needs no declaration.
-    assert.equal(planNodeSchema({ type: "Claim", attributes: { claim_text: "string" }, node_key: "claim-claim_text-name" }).node_key, "claim-claim_text-name");
-    assert.equal(planNodeSchema({ type: "Note", attributes: {} }).node_key, "note-name");
+    assert.equal(planNodeSchema({ type: "Claim", attributes: { claim_text: "string" }, key_spec: "claim-claim_text-name" }).key_spec, "claim-claim_text-name");
+    assert.equal(planNodeSchema({ type: "Note", attributes: {} }).key_spec, "note-name");
+    assert.equal(planNodeSchema({ type: "Note", attributes: { text: "string" }, node_key: "text" }).key_spec, "note-text", "node_key is still accepted");
+    assert.equal(planNodeSchema({ type: "Person", attributes: { first: "string", last: "?string" }, title_key: "{first} {last}" }).flat["title_key"], "{first} {last}", "a template title_key");
   });
 
   it("rejects bad types, reserved/unknown attribute names, bad type strings, undeclared key tokens", () => {
@@ -52,12 +54,22 @@ describe("planNodeSchema (pure)", () => {
     assert.equal(code(() => planNodeSchema({ type: "X", attributes: { ref_id: "string" } })), "UNKNOWN_ATTRIBUTE:ref_id");
     assert.equal(code(() => planNodeSchema({ type: "X", attributes: { node_key: "string" } })), "UNKNOWN_ATTRIBUTE:node_key");
     assert.equal(code(() => planNodeSchema({ type: "X", attributes: { deleted_at: "?int" } })), "UNKNOWN_ATTRIBUTE:deleted_at");
+    // The core key and search text are never a type's own; a created_at is, on Neo4j only.
+    assert.equal(code(() => planNodeSchema({ type: "X", attributes: { key: "string" } })), "UNKNOWN_ATTRIBUTE:key");
+    assert.equal(code(() => planNodeSchema({ type: "X", attributes: { search_text: "?string" } })), "UNKNOWN_ATTRIBUTE:search_text");
+    assert.equal(code(() => planNodeSchema({ type: "X", attributes: { created_at: "?string" } }, "neo4j")), "ok");
+    assert.equal(code(() => planNodeSchema({ type: "X", attributes: { created_at: "?string" } }, "ladybug")), "UNKNOWN_ATTRIBUTE:created_at");
     assert.equal(code(() => planNodeSchema({ type: "X", attributes: { deleted_at_backfilled: "?boolean" } })), "UNKNOWN_ATTRIBUTE:deleted_at_backfilled");
     assert.equal(code(() => planNodeSchema({ type: "X", attributes: { score: "number" } })), "WRONG_TYPE:score");
-    assert.equal(code(() => planNodeSchema({ type: "X", attributes: { a: "string" }, node_key: "b" })), "UNKNOWN_ATTRIBUTE:node_key");
+    assert.equal(code(() => planNodeSchema({ type: "X", attributes: { a: "string" }, key_spec: "b" })), "UNKNOWN_ATTRIBUTE:key_spec");
+    assert.equal(code(() => planNodeSchema({ type: "X", attributes: { a: "string" }, title_key: "{a} {b}" })), "UNKNOWN_ATTRIBUTE:title_key");
+    // A type with its own title takes its title from it.
+    assert.equal(code(() => planNodeSchema({ type: "X", attributes: { title: "?string" }, title_key: "name" })), "WRONG_TYPE:title_key");
+    assert.throws(() => planNodeSchema({ type: "X", attributes: { title: "?string" }, title_key: "name" }), /title_key must be "title"/);
+    assert.equal(planNodeSchema({ type: "X", attributes: { title: "?string" } }).flat["title_key"], "title", "the default when it declares one");
     assert.equal(code(() => planNodeSchema({ type: "X", attributes: { a: "string" }, index: ["zz"] })), "UNKNOWN_ATTRIBUTE:index");
     assert.equal(code(() => planNodeSchema({ type: "X", attributes: { a: "string" }, title_key: "zz" })), "UNKNOWN_ATTRIBUTE:title_key");
-    assert.equal(code(() => planNodeSchema({ type: "X", attributes: {}, node_key: "-" })), "MISSING_REQUIRED:node_key");
+    assert.equal(code(() => planNodeSchema({ type: "X", attributes: {}, key_spec: "-" })), "MISSING_REQUIRED:key_spec");
     assert.equal(code(() => planNodeSchema({ type: "X", attributes: { a: "?list", b: "datetime", name: "string" } })), "ok");
   });
 
@@ -123,7 +135,7 @@ describe("createNodeSchema (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4
     assert.equal(r.created, true);
     assert.equal(r.type, "FieldNote");
     assert.equal(r.parent, "Thing");
-    assert.equal(r.node_key, "fieldnote-description");
+    assert.equal(r.key_spec, "fieldnote-description");
     assert.deepEqual(r.added, []);
     // `description` is a jarvis dual-use (core) name: the resolver reports it
     // optional, and its presence is enforced through the node_key instead.
@@ -134,7 +146,7 @@ describe("createNodeSchema (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4
 
     const w = await nodes.write({ type: "FieldNote", data: { description: "Falkor docs mention vector indexes", evidence_status: "planned" } }, "create");
     assert.equal(w.outcome, "created");
-    assert.equal(w.node_key, "fieldnote-falkordocsmentionvectorindexes");
+    assert.equal(w.key, "fieldnote-falkordocsmentionvectorindexes");
     const got = await reader.getNode(w.ref_id);
     assert.equal(got?.node_type, "FieldNote");
     await assert.rejects(nodes.write({ type: "FieldNote", data: { description: "x", bogus: 1 } }, "create"), (e: any) => e.code === "UNKNOWN_ATTRIBUTE");
@@ -149,6 +161,37 @@ describe("createNodeSchema (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4
     // The ontology read surface sees it.
     const listed = await reader.listSchemas();
     assert.ok(listed.schemas.some((s) => s.type === "FieldNote"));
+  });
+
+  // Evan's review of #425: on Neo4j the jarvis types keep what they had.
+  it("a jarvis type's own created_at is its field: written, stored as created_at, read back in properties", async () => {
+    const w = await nodes.write({ type: "Concept", data: { name: "Own date", created_at: "2024-01-01" } }, "create");
+    const [raw] = await bolt.run(`MATCH (n {ref_id: $r}) RETURN n.created_at AS own, n.date_added_to_graph AS stamp, n.title AS title`, { r: w.ref_id });
+    assert.equal(raw!["own"], "2024-01-01");
+    assert.equal(typeof raw!["stamp"], "number", "the core stamp keeps jarvis's name");
+    assert.equal(raw!["title"], null, "no core title on a Neo4j node");
+    const got = await reader.getNode(w.ref_id);
+    assert.equal(got?.properties["created_at"], "2024-01-01");
+    // An update keeps the stamp and may edit the type's own date.
+    await nodes.update(w.ref_id, { set: { created_at: "2024-02-02" } });
+    const [after] = await bolt.run(`MATCH (n {ref_id: $r}) RETURN n.created_at AS own, n.date_added_to_graph AS stamp`, { r: w.ref_id });
+    assert.equal(after!["own"], "2024-02-02");
+    assert.equal(Number(after!["stamp"]), Number(raw!["stamp"]));
+  });
+
+  it("a node jarvis wrote with its own created_at reads back with it", async () => {
+    await bolt.run(
+      `CREATE (:PullRequest:Data_Bank {ref_id: "pr-own", node_key: "pullrequest-fixlogin", namespace: "default", name: "Fix login", created_at: "2024-03-03", date_added_to_graph: 1700000000000})`,
+    );
+    const got = await reader.getNode("pr-own");
+    assert.equal(got?.properties["created_at"], "2024-03-03");
+  });
+
+  it("a Person's title is a job title, not its name", async () => {
+    const w = await nodes.write({ type: "Person", data: { name: "Alice Smith", title: "CEO" } }, "create");
+    const got = await reader.getNode(w.ref_id);
+    assert.equal(got?.name, "Alice Smith");
+    assert.equal(got?.properties["title"], "CEO");
   });
 
   it("an edge schema between a new type and a seeded one lets the edge write through", async () => {
@@ -174,7 +217,7 @@ describe("createNodeSchema (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4
     assert.equal(r.type, "Claim");
     assert.equal(r.ref_id, before[0]!["r"]);
     assert.deepEqual(r.added, ["review_note", "review_score"]);
-    assert.equal(r.node_key, before[0]!["k"], "identity untouched");
+    assert.equal(r.key_spec, before[0]!["k"], "identity untouched");
     assert.equal(r.attributes.claim_text, "string", "existing attribute not downgraded to optional");
     assert.equal(r.attributes.review_note, "?string");
     const w = await nodes.write({ type: "Claim", data: { id: "c2", name: "c2", claim_text: "t", review_note: "unknown", review_score: 0.5 } }, "create");
@@ -194,7 +237,7 @@ describe("createNodeSchema (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4
     resolver.invalidate();
     const r = await createNodeSchema(bolt, resolver, { type: "Draft", attributes: { text: "string" }, node_key: "text" });
     assert.equal(r.created, true);
-    assert.equal(r.node_key, "draft-text");
+    assert.equal(r.key_spec, "draft-text");
     const rows = await bolt.run(`MATCH (s:Schema {type: "Draft"}) RETURN count(s) AS c, collect(s.is_deleted) AS d`);
     assert.equal(Number(rows[0]!["c"]), 1);
   });

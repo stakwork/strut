@@ -1383,7 +1383,8 @@ A page writes the declared types with the graph writes (§14.1) and reads a
 list with `graph/find`: `{ node_type, where?, orderBy?, desc?, limit?,
 cursor?, count?, namespace? }` → `{ node_type, nodes: [{ ref_id,
 node_type, name?, properties }], returned, cursor?, total? }`. `where` maps
-a field (an attribute of the type, `ref_id` or `date_added_to_graph`) to a
+a field (an attribute of the type, `ref_id` or `created_at`, whose old name
+`date_added_to_graph` is still accepted) to a
 value (equal; `null` = not set) or to operators that must all hold: `gt`,
 `gte`, `lt`, `lte`, `in`, `contains` (a string field, case-blind). The
 default order is newest first; `limit` is 1–500 (default 50); a `cursor`

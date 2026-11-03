@@ -26,7 +26,7 @@
  * The attribute grammar maps onto jarvis's: `number` → `float`, `string` and
  * `boolean` as they are, `date` → `string` (an ISO date, which compares as
  * text — `graph/find`'s rule), `json` → `string` (JSON text: a Neo4j
- * property cannot hold a map). `x?` → `?x`. `key` is the node_key (default
+ * property cannot hold a map). `x?` → `?x`. `key` is the key spec (default
  * `name`), `search` the index (default the key).
  *
  * `reservedAppType` is also what the app door's write scope reads
@@ -84,7 +84,7 @@ export function appSchemaInputs(manifest: AppManifest, app?: string): NodeSchema
     return {
       type,
       attributes,
-      node_key: key.join("-"),
+      key_spec: key.join("-"),
       index: [...search],
       ...(title ? { title_key: title } : {}),
       ...(app ? { type_description: `Declared by the app ${app} (app.yaml data.graph).` } : {}),
@@ -119,11 +119,11 @@ export async function checkAppGraph(manifest: AppManifest, graph: GraphBackend |
       continue;
     }
     try {
-      planNodeSchema(input);
+      planNodeSchema(input, graph?.kind);
     } catch (e) {
       if (!(e instanceof Error) || e.name !== "GraphValidationError") throw e;
       const attribute = (e as Error & { attribute?: string }).attribute;
-      const attr = attribute === "node_key" ? "key" : attribute === "index" ? "search" : attribute;
+      const attr = attribute === "key_spec" ? "key" : attribute === "index" ? "search" : attribute;
       errors.push(`${at(input.type, attr)}: ${e.message.replace(/^[^:]*: /, "")}`);
     }
   }
@@ -151,7 +151,7 @@ export async function checkAppGraph(manifest: AppManifest, graph: GraphBackend |
         errors.push(`${at(input.type, k)}: ${named} already holds ${k} as ${baseOf(held)}, and this app declares ${baseOf(t)} — declare it as the graph has it, or name another attribute`);
       }
     }
-    const heldKey = schema.node_key.split("-").slice(1);
+    const heldKey = schema.key_spec.split("-").slice(1);
     const key = planNodeSchema(input).tokens;
     if (heldKey.join("-") !== key.join("-")) {
       errors.push(`${at(input.type, "key")}: ${named} is keyed by [${heldKey.join(", ")}] in the graph, and this app declares [${key.join(", ")}] — two keys would make two identities for one type`);

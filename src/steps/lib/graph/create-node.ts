@@ -20,7 +20,7 @@ export default defineStep({
       .describe('Node type (must exist in the ontology — see graph_get_ontology). Never pass the wildcard sentinel "*".'),
     node_data: z
       .record(z.string(), z.any())
-      .describe('Properties for the node, e.g. {"name": "harvey-deliver"}. Must satisfy the type\'s schema, including its node_key attribute(s).'),
+      .describe('Properties for the node, e.g. {"name": "harvey-deliver"}. Must satisfy the type\'s schema, including its key attribute(s) (the type\'s key_spec).'),
     namespace: z
       .string()
       .optional()
@@ -44,7 +44,7 @@ export default defineStep({
           status: existed ? "Warning" : "Success",
           ref_id: r.ref_id,
           node_type: cfg.node_type,
-          ...(existed ? { messages: [`Node already exists in the graph with node_key: ${r.node_key}`] } : {}),
+          ...(existed ? { messages: [`Node already exists in the graph with key: ${r.key}`] } : {}),
           ...(r.outcome === "restored" ? { messages: ["Node restored"] } : {}),
         },
         [{ ref_id: r.ref_id, node_type: cfg.node_type, name: deriveNodeName(undefined, cfg.node_data ?? {}) }],

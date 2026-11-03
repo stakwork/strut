@@ -35,6 +35,9 @@ import { randomUUID } from "node:crypto";
 import type { EdgeSchemaWalk, EngineLike, GraphEngine, GraphTx } from "./engine.js";
 import { asEngine } from "./neo4j-engine.js";
 import {
+  GENERIC_NODE_PROPERTIES,
+  TYPE_OWNABLE_CORE,
+  isGenericProperty,
   SCHEMA_CORE_PROPERTIES,
   STRUT_DOMAIN,
   STRUT_SCHEMAS,
@@ -60,14 +63,19 @@ export const EDGE_TYPES_ALLOWLIST = new Set([
 
 const TYPE_GRAMMAR = /^\??(string|boolean|int|float|complex|datetime|list)$/;
 
+/** The types whose nodes must have a title (`NodeSchema.requiresTitle`). */
+const CONCEPT_TYPE = "Concept";
+const ENTITY_TYPE = "Entity";
+
 /** The schema shape the writers validate against — Strut registry entries
  *  and DB-resolved jarvis schemas both reduce to this. */
 export interface NodeSchema {
   /** Canonical type label. */
   type: string;
   parent?: string;
-  node_key: string;
-  /** Strut's `exact_key` (strut-schemas.ts): node_key tokens are the hex of
+  /** The key spec (`strutrun-run_id`): a node's `key` is composed from it. */
+  key_spec: string;
+  /** Strut's `exact_key` (strut-schemas.ts): key tokens are the hex of
    *  their exact value, not jarvis's sanitized form. */
   exact_key?: boolean;
   /** `get_index_fields`: declared index list (a string becomes a one-item
@@ -80,10 +88,24 @@ export interface NodeSchema {
    *  vector such a node holds. */
   embed: boolean;
   /** Attribute name → type string (`?`-prefixed = optional). Includes
-   *  everything inherited via CHILD_OF. */
+   *  everything inherited via CHILD_OF. Never a core attribute the writer
+   *  owns (`GENERIC_NODE_PROPERTIES`), except a `created_at` a type outside
+   *  strut declares (`TYPE_OWNABLE_CORE`: jarvis's Concept, Check, …), which
+   *  is the type's own field and optional. */
   attributes: Record<string, string>;
-  title_key?: string;
-  description_key?: string;
+  /** The field the node's `title` comes from, or a `{first} {last}`
+   *  template (`composeTitle`, title.ts). Default `name`. A type that
+   *  declares its own `title` must have title_key `title` (schema-crud.ts
+   *  refuses one that does not). A jarvis type on Neo4j that breaks the rule
+   *  (`Person`: `title` is a job title) is not refused: its stored `title`
+   *  stays its own, and the writer computes no core title for it. */
+  title_key: string;
+  /** The field that describes a node. Default `description`. */
+  description_key: string;
+  /** True when the writer refuses a node whose title comes out empty: an
+   *  Entity or a Concept. Until Schema rows carry a `role`, that is the
+   *  `Concept` type and every type with `Entity` in its parent chain. */
+  requiresTitle?: boolean;
   /** `Domain_<x>` labels to stamp on nodes of this type (already filtered
    *  by hidden types/domains). */
   domainLabels: string[];
@@ -198,8 +220,10 @@ export class SchemaResolver {
     const isStrut = isStrutType(type);
     const attributes: Record<string, string> = {};
     for (const [k, v] of Object.entries(merged)) {
-      if (typeof v !== "string" || !TYPE_GRAMMAR.test(v)) continue;
-      const neverRequired = !isStrut && (k === "name" || SCHEMA_CORE_PROPERTIES.has(k));
+      if (typeof v !== "string" || !TYPE_GRAMMAR.test(v) || (isStrut ? GENERIC_NODE_PROPERTIES.has(k) : isGenericProperty(k))) continue;
+      // A type's own `created_at` (TYPE_OWNABLE_CORE) is optional too: the
+      // writer stamps jarvis's Check one when the caller leaves it out.
+      const neverRequired = !isStrut && (k === "name" || SCHEMA_CORE_PROPERTIES.has(k) || TYPE_OWNABLE_CORE.has(k));
       attributes[k] = neverRequired && !v.startsWith("?") ? `?${v}` : v;
     }
     const domain = typeof own["domain"] === "string" ? (own["domain"] as string) : undefined;
@@ -211,14 +235,15 @@ export class SchemaResolver {
     return {
       type,
       parent: typeof merged["parent"] === "string" ? (merged["parent"] as string) : undefined,
-      node_key: String(merged["node_key"] ?? `${type.toLowerCase()}-name`),
+      key_spec: String(merged["key_spec"] ?? `${type.toLowerCase()}-name`),
       ...(merged["exact_key"] === true ? { exact_key: true } : {}),
       index: index.length ? index : ["node_key"],
       vector_index: Array.isArray(rawVi) ? rawVi.map(String) : [],
       embed: merged["embed"] !== false,
       attributes,
-      title_key: typeof merged["title_key"] === "string" ? (merged["title_key"] as string) : undefined,
-      description_key: typeof merged["description_key"] === "string" ? (merged["description_key"] as string) : undefined,
+      title_key: typeof merged["title_key"] === "string" && merged["title_key"] ? (merged["title_key"] as string) : "name",
+      description_key: typeof merged["description_key"] === "string" && merged["description_key"] ? (merged["description_key"] as string) : "description",
+      ...(type === CONCEPT_TYPE || chain.includes(ENTITY_TYPE) ? { requiresTitle: true } : {}),
       domainLabels,
       isStrut,
     };
@@ -299,7 +324,7 @@ export function fromStrut(strut: StrutSchema, hidden?: { domains: Set<string>; t
   return {
     type: strut.type,
     parent: strut.parent,
-    node_key: strut.node_key,
+    key_spec: strut.key_spec,
     ...(strut.exact_key ? { exact_key: true } : {}),
     index: [...strut.index],
     vector_index: [...(strut.vector_index ?? [])],

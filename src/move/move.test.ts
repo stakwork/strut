@@ -395,7 +395,7 @@ function writeIn(file: string, dir: string, ref: string, die: boolean): void {
       `import { openLadybug } from ${JSON.stringify(fileURLToPath(new URL("../graph/ladybug/db.js", import.meta.url)))};
        const h = await openLadybug(${JSON.stringify(file)}, { extensionDir: ${JSON.stringify(dir)} });
        const v = Array.from({ length: 384 }, (_, i) => (i % 11) / 11);
-       await h.withWrite((tx) => tx.run("CREATE (:Node {ref_id: $r, name: $r, Data_Bank: 'remember the lighthouse keeper', text_embeddings: $v})", { r: ${JSON.stringify(ref)}, v }));
+       await h.withWrite((tx) => tx.run("CREATE (:Node {ref_id: $r, name: $r, search_text: 'remember the lighthouse keeper', text_embeddings: $v})", { r: ${JSON.stringify(ref)}, v }));
        ${die ? "process.exit(0);" : "await h.close();"}`,
     ],
     { env: process.env, encoding: "utf-8" },

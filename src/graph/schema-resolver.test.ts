@@ -136,7 +136,7 @@ describe("jarvis ontology + resolver + jarvis-typed writes (live Neo4j)", { skip
     const doc = (await resolver.schema("document"))!;
     assert.equal(doc.type, "Document");
     assert.equal(doc.parent, "Content");
-    assert.equal(doc.node_key, "document-source_link");
+    assert.equal(doc.key_spec, "document-source_link");
     assert.deepEqual(doc.index, ["source_link", "title"]);
     // `source_link` is in jarvis's SCHEMA_KNOWN_PROPERTIES, so its required
     // check skips it (optional here); presence is enforced via node_key.
@@ -195,7 +195,7 @@ describe("jarvis ontology + resolver + jarvis-typed writes (live Neo4j)", { skip
     const r = await nodes.write({ type: "document", data: { source_link: "/tmp/matter/Data Room.pdf", title: "Data Room" } });
     assert.equal(r.outcome, "created");
     assert.equal(r.node_type, "Document");
-    assert.equal(r.node_key, "document-tmpmatterdataroompdf");
+    assert.equal(r.key, "document-tmpmatterdataroompdf");
     docRef = r.ref_id;
     const rows = await bolt.run(`MATCH (n:Data_Bank {ref_id: $r}) RETURN labels(n) AS l, properties(n) AS p`, { r: docRef });
     assert.deepEqual([...(rows[0]!["l"] as string[])].sort(), ["Data_Bank", "Document", "Domain_content", "Node"]);
@@ -321,11 +321,12 @@ for (const tb of testBackends()) {
       assert.equal(await r.resolveType("StrutToolCall"), neo ? "StrutToolCall" : null);
       assert.equal(await r.resolveType("Document"), "Document", "jarvis's types, seeded on both");
       const check = (await r.schema("Check"))!;
-      assert.equal(check.node_key, "check-id");
+      assert.equal(check.key_spec, "check-id");
       assert.equal(check.attributes["freshness_days"], "?int");
-      assert.equal(check.attributes["created_at"], "datetime");
+      // jarvis's Check on Neo4j: its own field (seconds), optional, the writer stamps it.
+      assert.equal(check.attributes["created_at"], neo ? "?datetime" : undefined);
       const concept = (await r.schema("concept"))!;
-      assert.equal(concept.node_key, "concept-name");
+      assert.equal(concept.key_spec, "concept-name");
       assert.deepEqual(concept.index, ["name", "description", "docs"]);
       assert.equal(concept.isStrut, false);
       assert.equal((await r.schema("StrutJob"))!.isStrut, true);
@@ -353,10 +354,10 @@ for (const tb of testBackends()) {
       const [wf, wfv, run, claim, check, ev, root, child] = (
         await nodes.writeMany([
           { type: "StrutWorkflow", data: { name: "wf" } },
-          { type: "StrutWorkflowVersion", data: { name: "wf", content_hash: "h1", created_at: 1 } },
+          { type: "StrutWorkflowVersion", data: { name: "wf", content_hash: "h1", published_at: 1 } },
           { type: "StrutRun", data: { run_id: "r1", workflow_name: "wf", run_status: "success", started_at: 1 } },
           { type: "Claim", data: { id: "c1", name: "it holds", claim_text: "it holds", belief_valid_from: 1 } },
-          { type: "Check", data: { id: "k1", name: "always", created_at: 1, run_when: "run", policy: "always" } },
+          { type: "Check", data: { id: "k1", name: "always", run_when: "run", policy: "always" } },
           { type: "Evidence", data: { id: "e1", name: "it holds", evidence_mode: "observed", evidence_status: "collected", observed_at: 2 } },
           { type: "Concept", data: { name: "Job", description: "the root" } },
           { type: "Concept", data: { name: "Plan Mode", docs: "how a plan is made" } },

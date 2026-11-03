@@ -201,7 +201,16 @@ describe("search helpers (pure)", () => {
       { labels: ["Data_Bank", "StrutRun", "Node", "Domain_strut"], properties: { ref_id: "r", node_key: "k", namespace: "default", Data_Bank: "x", text_embeddings: [1], date_added_to_graph: 5, weight: 2, run_id: "1", image_url: 3 } },
       { score: 1 },
     );
-    assert.deepEqual(env, { ref_id: "r", node_type: "StrutRun", date_added_to_graph: 5, weight: 2, properties: { run_id: "1", image_url: "" }, score: 1 });
+    assert.deepEqual(env, { ref_id: "r", node_type: "StrutRun", created_at: 5, date_added_to_graph: 5, weight: 2, properties: { run_id: "1", image_url: "" }, score: 1 });
+    // A Ladybug row carries the shared names; a jarvis type's own created_at on Neo4j is not the stamp.
+    assert.deepEqual(
+      serializeNode({ labels: ["Concept"], properties: { ref_id: "c", key: "k", search_text: "x", created_at: 7, title: "T", name: "n" } }),
+      { ref_id: "c", node_type: "Concept", created_at: 7, date_added_to_graph: 7, properties: { title: "T", name: "n" } },
+    );
+    // A jarvis Concept on Neo4j: its own created_at is a field, the core stamp is date_added_to_graph.
+    const own = serializeNode({ labels: ["Concept", "Data_Bank"], properties: { ref_id: "c", date_added_to_graph: 9, created_at: "2024-01-01" } });
+    assert.equal(own.created_at, 9);
+    assert.equal(own.properties["created_at"], "2024-01-01");
   });
   it("schema split + inherited attributes", () => {
     const thing = splitSchema({ type: "Thing", ref_id: "t", index: ["name"], name: "string", description: "?string" });
@@ -237,7 +246,7 @@ for (const tb of testBackends()) {
         { type: "StrutRun", data: { run_id: "r1", workflow_name: "harvey-deliver", run_status: "success", summary: "Delivered 60 of 60 memos", started_at: 1 } },
         { type: "StrutStep", data: { step_type: "video/transcribe", description: "Transcribe audio", input_schema: "{ video_url: string }", output_schema: "{ transcript: string, words: [] }" } },
         { type: "StrutStep", data: { step_type: "email/send", description: "Send an email", input_schema: "{ to: string, body: string }", output_schema: "{ message_id: string }" } },
-        { type: "StrutWorkflowVersion", data: { name: "harvey-deliver", content_hash: "c-1", created_at: 1, input_schema: "{ matterId: string }" } },
+        { type: "StrutWorkflowVersion", data: { name: "harvey-deliver", content_hash: "c-1", published_at: 1, input_schema: "{ matterId: string }" } },
         // The Concept tree a desktop keeps: a root, a playbook under it, two
         // summaries of code (one under src/lib, one not), one with no file.
         { type: "Concept", data: { name: "Research", description: "Playbooks for researching a webhook question" } },
@@ -272,13 +281,14 @@ for (const tb of testBackends()) {
       assert.equal(n.name, "harvey-deliver");
       assert.equal(n.ref_id, ids["wf1"]);
       assert.equal(n.properties["description"], "Deliver legal memos to the client portal");
-      for (const k of ["Data_Bank", "node_key", "namespace", "text_embeddings", "ref_id", "date_added_to_graph", "node_type", "deleted_at"]) assert.ok(!(k in n.properties), k);
+      for (const k of ["Data_Bank", "node_key", "namespace", "text_embeddings", "ref_id", "date_added_to_graph", "key", "search_text", "created_at", "node_type", "deleted_at"]) assert.ok(!(k in n.properties), k);
+      assert.equal(n.title, "harvey-deliver", "the stored title");
       assert.equal(await reader.getNode(ids["wfHidden"]!), null);
       assert.equal(await reader.getNode("nope"), null);
     });
 
     it("getNodeByKey: an exact lookup by type + key, never a search", async () => {
-      const key = String((await rawNode(b, ids["summary"]!))!.props["node_key"]);
+      const key = String((await rawNode(b, ids["summary"]!))!.props["key"]);
       const n = await reader.getNodeByKey("Concept", key);
       assert.equal(n?.ref_id, ids["summary"]);
       assert.equal(n?.name, "GitHub webhooks");
@@ -321,7 +331,8 @@ for (const tb of testBackends()) {
       const uses = all.edges.find((e) => e.edge_type === "USES_STEP")!;
       assert.equal(uses.source, ids["wfv"]);
       assert.equal(uses.target, ids["stepEmail"]);
-      assert.deepEqual(uses.properties, { importance: 0.9, date_added_to_graph: uses.properties["date_added_to_graph"] });
+      assert.deepEqual(uses.properties, { importance: 0.9, created_at: uses.properties["created_at"] });
+      assert.equal(typeof uses.properties["created_at"], "number");
       assert.equal(uses.weight, 1);
       const step = all.nodes.find((n) => n.ref_id === ids["stepEmail"])!;
       assert.deepEqual(step.edges, { USES_STEP: 1 });
@@ -571,7 +582,7 @@ for (const tb of testBackends()) {
       assert.equal(run["type_description"], "One strut workflow run — status, timings, params, and a pointer to its log");
       const concept = schemas.find((s) => s.type === "Concept")!;
       assert.equal(concept["domain"], undefined);
-      assert.equal(concept["node_key"], "concept-name");
+      assert.equal(concept["key_spec"], "concept-name");
       assert.equal(concept.attributes["file"], "?string");
       assert.equal(new Set(edges.map((e) => e.edge_type)).size, 19);
       assert.ok(edges.some((e) => e.edge_type === "CHILD_OF" && e.source_type === "Concept" && e.target_type === "Concept"));
