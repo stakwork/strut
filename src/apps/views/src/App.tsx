@@ -7,7 +7,7 @@ import { StrutProvider, useStrutClient, useStrutHost } from "@strut/kit";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import {
-  AgentTrace, ArtifactView, DocumentView, LaunchForm, RunHealth, NodeCard, NodeGraph, NodeSearch, RunGraph, RunList, RunStatus, RunTimeline, SheetView, SHEETS_STEP, Transcript, WalkView, WorkProducts, type RunGraphSelection,
+  AgentTrace, ArtifactView, DocumentView, LaunchForm, RunHealth, NodeCard, NodeGraph, NodeSearch, RunGraph, RunList, RunStatus, RunTimeline, SheetView, SHEETS_STEP, SpotCheck, Transcript, WalkView, WorkProducts, type RunGraphSelection,
 } from "./index";
 import { createFixtureClient } from "./fixtures/client";
 import { TRANSCRIPT_MARKS } from "./fixtures/content";
@@ -19,6 +19,7 @@ import { MATTER_LIVE_RUN_ID, MATTER_RUN_ID, MATTER_WORKFLOW } from "./fixtures/m
 import { AGENT_WALK_RUN_ID, WALK_JOIN_RUN_ID, WALK_LIVE_RUN_ID, WALK_RUN_ID, WALK_WORKFLOW } from "./fixtures/walk";
 import { BIG_WALK_RUN_ID } from "./fixtures/walk-large";
 import { LARGE_RUN_HIGHLIGHTS, LARGE_RUN_ID, LARGE_RUN_WORKFLOW } from "./fixtures/run-large";
+import { SPOT_RUN_ID, SPOT_SUBJECTS, SPOT_WORKFLOW } from "./fixtures/provenance";
 
 interface Entry {
   name: string;
@@ -107,6 +108,25 @@ function SheetDemo() {
       {shown === "nda" && runId && <SheetView key={runId} spreadsheet={NDA_SHEET} range={NDA_RANGE} workflow={NDA_WORKFLOW} runId={runId} sources={NDA_SOURCES} intervalMs={1200} />}
       {shown === "covenant" && <SheetView spreadsheet={`https://docs.google.com/spreadsheets/d/${COVENANT_SHEET}/edit#gid=0`} range={COVENANT_RANGE} sources={COVENANT_SOURCES} />}
       {shown === "csv" && <SheetView workflow={WORKFLOW} runId={RUN_ID} path={DEVIATIONS_CSV} />}
+    </div>
+  );
+}
+
+/** Spot checks of three things a matter run made; each part a formula reads, or a number a passage states, follows on. */
+function SpotCheckDemo() {
+  const [i, setI] = useState(0);
+  const [opened, setOpened] = useState<string | null>(null);
+  return (
+    <div className="flex max-w-2xl flex-col gap-3">
+      <div className="flex flex-wrap gap-1">
+        {SPOT_SUBJECTS.map((s, k) => (
+          <button key={s.label} type="button" onClick={() => setI(k)} className={cn("rounded-md border px-2.5 py-1 text-xs", i === k ? "bg-muted font-medium" : "text-muted-foreground hover:bg-muted/60")}>
+            {s.label}
+          </button>
+        ))}
+      </div>
+      <SpotCheck workflow={SPOT_WORKFLOW} runId={SPOT_RUN_ID} subject={SPOT_SUBJECTS[i]!.subject} onOpenStep={(path) => setOpened(path)} className="rounded-lg border p-3" />
+      {opened && <p className="text-xs text-muted-foreground">onOpenStep: {opened}</p>}
     </div>
   );
 }
@@ -291,6 +311,13 @@ const ENTRIES: Entry[] = [
     grants: "grants.steps: sheets/get-values (a Google sheet), graph/graph-get-batched (sources) · grants.workflows: the run's workflow (run/get while it writes, run/files for a file)",
     usage: `<SheetView spreadsheet={id} range="Matrix!A1:H40" workflow="nda-review" runId={runId} sources={{ "Non-solicit": [conceptRef], C4: [passageRef] }} />`,
     demo: () => <SheetDemo />,
+  },
+  {
+    name: "SpotCheck",
+    what: "Where one thing a run made came from — a sheet cell, a passage of a document, a graph node — read off the run's own log: where the run first saw it, every time an agent wrote it (the agent's words before the write and the calls just before it), every time it was used or read back. A formula's cells, the numbers typed into it, the figures a passage states and the cells a write cites are each a spot check of their own; the back arrow returns. SheetView (a selected cell) and DocumentView (selected text) offer it through onSpotCheck.",
+    grants: "grants.workflows: the run's workflow (run/provenance)",
+    usage: `<SheetView … onSpotCheck={setSubject} />\n<DocumentView … onSpotCheck={setSubject} />\n<SpotCheck workflow="openlaw-run" runId={runId} subject={subject} onOpenStep={(path) => setScope(path)} />`,
+    demo: () => <SpotCheckDemo />,
   },
   {
     name: "WorkProducts",

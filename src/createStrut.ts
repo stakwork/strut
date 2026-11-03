@@ -53,6 +53,7 @@ import {
   isValidSecretName,
 } from "./secret-store.js";
 import { runStep, cassettePath, RUN_STEP_FLOW } from "./run-step.js";
+import { buildProvenance } from "./provenance.js";
 import { RUN_GET_MAX_WAIT_MS, RUN_LIST_DEFAULT_LIMIT, RUN_LIST_MAX_LIMIT, capEvents, capTranscript, fileResult, listEntryOf, matchesRunFilter, type RunCaller, type RunListEntry, type RunTranscript, type RunsCapability } from "./runs.js";
 import type { AppRef, StartedBy } from "./core.js";
 import { createVerifier, type Verifier, type VerifyResult } from "./verify.js";
@@ -5095,6 +5096,11 @@ export async function createStrut<TServices = unknown>(
       const t = await readTranscript(q.workflow, q.runId, q.path, !!q.full);
       if ("error" in t) throw new Error(t.error);
       return { path: q.path, ...capTranscript(t.messages as RunTranscript["messages"]), ...(t.full ? { full: true as const } : {}) };
+    },
+    async provenance({ workflow, runId, ...subject }, by) {
+      if (!(await openRun(workflow, runId, by)).visible) return null;
+      const events = await store.getRunEvents(workflow, runId);
+      return events.length ? buildProvenance(events, subject) : null;
     },
   };
   if (!(services as Record<string, unknown>)["runs"]) (services as Record<string, unknown>)["runs"] = runsCap;

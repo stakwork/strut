@@ -434,6 +434,19 @@ describe("step_run — the app door", () => {
     await refused({ type: "run/transcript", config: { workflow: "grader-run", runId: "1", path: "grader-run/a" }, app: identity }, /sealed/);
   });
 
+  it("run/provenance spot-checks a value through a run's raw log, on the workflow's grant", async () => {
+    const launched = await ok({ type: "run/launch", config: { workflow: "score-wf", input: { value: 2121 } }, app: identity });
+    await ok({ type: "run/get", config: { workflow: "score-wf", runId: launched.runId, wait: 10_000 }, app: identity });
+    const score = await ok({ type: "run/provenance", config: { workflow: "score-wf", runId: launched.runId, value: "4,242" }, app: identity });
+    assert.deepEqual(score.moments.map((m: any) => [m.kind, m.tool, m.where]), [["read", "score", "step s"]], "the step that made it; the pack only repeats it");
+    const input = await ok({ type: "run/provenance", config: { workflow: "score-wf", runId: launched.runId, value: "2121" }, app: identity });
+    assert.deepEqual(input.moments.map((m: any) => [m.kind, m.where]), [["read", "the run's input"], ["used", "step s"]]);
+    await refused({ type: "run/provenance", config: { workflow: "score-wf", runId: launched.runId }, app: identity }, /needs the thing/);
+    await refused({ type: "run/provenance", config: { workflow: "score-wf", runId: "1", value: "4242" }, app: identity }, /not found/);
+    await refused({ type: "run/provenance", config: { workflow: "talk-wf", runId: launched.runId, value: "4242" }, app: appIdentity("strict", "v1") }, /workflow "talk-wf" is not granted/);
+    await refused({ type: "run/provenance", config: { workflow: "grader-run", runId: "1", value: "4242" }, app: identity }, /sealed/);
+  });
+
   it("a page's jobs are the app's: uploads into one, runs launched under it, a read beside a hold, files on a launch", async () => {
     const b64 = (s: string) => Buffer.from(s).toString("base64");
     // The namespace, pure: idempotent, and a page's job/list prefix can only narrow it.

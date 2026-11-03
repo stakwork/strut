@@ -190,6 +190,23 @@ page may not frame Google Sheets: draw the sheet with SheetView, whose
   sources={{ "Non-solicit": [conceptRef], C4: [passageRef] }} />
 ```
 
+`SpotCheck` answers "where did the run get this?" for one thing it made —
+a sheet cell, a passage of a document, a graph node — off the run's own log
+(`run/provenance`, on the run's workflow: nothing to grant past
+`grants.workflows`): where the run first saw it, each time an agent wrote
+it (its words before the write, the calls just before), each time it was
+read back. A formula's cells, the numbers typed into it and the figures a
+passage states are spot checks of their own, a click away. `SheetView` and
+`DocumentView` take `onSpotCheck`: a selected cell gets a Spot check button
+in the formula bar, selected text one under the selection; hand the subject
+they give to SpotCheck. A node: `{ node: refId }`.
+
+```tsx
+const [subject, setSubject] = useState<ProvenanceSubject | null>(null);
+<SheetView spreadsheet={sheetId} range="FACTS" workflow={wf} runId={runId} onSpotCheck={setSubject} />
+{subject && <SpotCheck workflow={wf} runId={runId} subject={subject} onOpenStep={(path) => showInGraph(path)} />}
+```
+
 `WalkView` draws a walk through the graph as it plays out — a `graph/walk`
 step's hops, or an agent reading a Concept tree with its own graph calls,
 drawn the same way: the path as a trail (Law › Corporate / M&A › NDA › …),

@@ -21,6 +21,7 @@ import type { ArtifactRef } from "./artifact-refs.js";
 import type { AttachmentInput } from "./ai/attachments.js";
 import { slimEvent } from "./run-step.js";
 import type { PartialRunSummary } from "./store.js";
+import type { Provenance, ProvenanceSubject } from "./provenance.js";
 
 /** `run/list`'s filter: one workflow's runs, or — `job` alone — a job's
  *  runs across every workflow it ran (its record's run lines). */
@@ -162,6 +163,11 @@ export interface RunsCapability {
    *  `wf/review/003-agent`), capped (`capTranscript`). Throws what the route
    *  answers 404 with: no transcript at the path, or (`full`) a session gone. */
   transcript(q: { workflow: string; runId: string; path: string; full?: boolean }, by?: RunCaller): Promise<RunTranscript>;
+  /** Where a thing in the run's output came from (`run/provenance`, src/provenance.ts):
+   *  read off the RAW log, transcripts and long inputs included — what the
+   *  capped `events` and `transcript` leave out. Null for a run that is not there.
+   *  Optional: an embedder's own capability may not have it. */
+  provenance?(q: { workflow: string; runId: string } & ProvenanceSubject, by?: RunCaller): Promise<Provenance | null>;
 }
 
 /** The most `run/get { wait }` may hold: under a client's request timeout,
