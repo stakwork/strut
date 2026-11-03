@@ -50,8 +50,13 @@ describe("dictation model picks", () => {
     await writeFile(join(dir, ".ok"), "x");
   };
   const finish = (id: string) => gates.get(id)!.resolve();
-  const picker = (o: Partial<ConstructorParameters<typeof DictationModels>[0]> = {}) =>
-    new DictationModels({ dataDir, modelDir, install, defaultSpeech: "zipformer-en-kroko", log: () => {}, ...o });
+  /** Every picker the test made, so cleanup can wait for their downloads. */
+  let made: DictationModels[];
+  const picker = (o: Partial<ConstructorParameters<typeof DictationModels>[0]> = {}) => {
+    const p = new DictationModels({ dataDir, modelDir, install, defaultSpeech: "zipformer-en-kroko", log: () => {}, ...o });
+    made.push(p);
+    return p;
+  };
   const summary = async (p: DictationModels) =>
     Object.fromEntries((await p.list()).map((m) => [m.id, [m.state, m.selected, m.progress ?? null, m.error ?? null]]));
 
@@ -61,8 +66,15 @@ describe("dictation model picks", () => {
     modelDir = join(root, "models");
     gates = new Map();
     installs = [];
+    made = [];
   });
-  afterEach(() => rm(root, { recursive: true, force: true }));
+  afterEach(async () => {
+    // A download a test started and did not wait for still writes into root:
+    // removed under it, root fails with ENOTEMPTY. Let each finish first.
+    for (const g of gates.values()) g.resolve();
+    await Promise.all(made.map((p) => p.idle()));
+    await rm(root, { recursive: true, force: true });
+  });
 
   it("defaults to Kroko and no fixer, nothing installed, nothing stored", async () => {
     const p = picker();
