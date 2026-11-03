@@ -8,7 +8,9 @@
  *
  *   1. `key`: the node's stored key, given or composed from `data` the way
  *      the writer composes it (`composeNodeKey`). A type keyed by `ref_id`
- *      (Person) has no key a caller can know, so this stage skips it;
+ *      (Person) has no key a caller can know, so this stage skips it. A
+ *      key held only by a node merged into another (`merge.ts`) finds the
+ *      node it was merged into;
  *   2. `identifier`: the type's identifiers (`NodeSchema.identifiers`,
  *      Person's `email`), unique per namespace, read from `data`;
  *   3. `name`: the node's stored `title`, case- and space-blind. The name
@@ -40,7 +42,8 @@
 import type { GraphBackend } from "./backend.js";
 import type { Row } from "./engine.js";
 import { namespaceName } from "./ladybug/namespaces.js";
-import { EDGE_TEXT_TYPE, SCHEMA_TYPE } from "./ladybug/registry.js";
+import { mergedInto } from "./ladybug/merge.js";
+import { EDGE_TEXT_TYPE, MERGE_TYPE, SCHEMA_TYPE } from "./ladybug/registry.js";
 import { GraphValidationError, composeNodeKey, keyedByRef } from "./node-writer.js";
 import { ALL_NAMESPACES, boundsOf, hidesType, readsNamespace, type ReaderList } from "./scope.js";
 import type { NodeSchema } from "./schema-resolver.js";
@@ -115,7 +118,7 @@ export async function resolveNode(b: GraphBackend, input: ResolveInput): Promise
   const bounds = boundsOf(b);
   if (!schema || (bounds && hidesType(bounds.list, schema.domainLabels))) throw new GraphValidationError("UNKNOWN_TYPE", String(input.type), "unknown node type");
   // The ontology's Schema rows and the edges' search rows are not data nodes.
-  if (schema.type === SCHEMA_TYPE || schema.type === EDGE_TEXT_TYPE) throw new GraphValidationError("WRONG_TYPE", schema.type, "not a node type resolve reads");
+  if (schema.type === SCHEMA_TYPE || schema.type === EDGE_TEXT_TYPE || schema.type === MERGE_TYPE) throw new GraphValidationError("WRONG_TYPE", schema.type, "not a node type resolve reads");
   const namespaces = scope(input.namespaces, b.namespace, bounds?.list);
   if (!namespaces.length) return { node_type: schema.type, namespaces, match: null, ambiguous: false, candidates: [] };
   const query: GraphBackend["query"] = bounds?.query ?? b.query.bind(b);
@@ -132,7 +135,13 @@ export async function resolveNode(b: GraphBackend, input: ResolveInput): Promise
   const stages: Array<[ResolveStage, () => Promise<string[]>]> = [
     ["key", async () => {
       const key = (input.key ?? "").trim() || composedKey(schema, data);
-      return key ? refs(await run(`MATCH (n:Node {key: $key}) WHERE ${LIVE_IN("n")} RETURN n.ref_id AS ref_id`, { key })) : [];
+      if (!key) return [];
+      const live = refs(await run(`MATCH (n:Node {key: $key}) WHERE ${LIVE_IN("n")} RETURN n.ref_id AS ref_id`, { key }));
+      if (live.length) return live;
+      // A node merged into another (`merge.ts`) is found as the one it went into.
+      const merged = refs(await run(`MATCH (n:Node {key: $key}) WHERE n.node_type = $type AND n.namespace IN $ns AND n.deleted_at IS NOT NULL RETURN n.ref_id AS ref_id`, { key }));
+      const into = await Promise.all(merged.map((id) => mergedInto((c, p) => query(c, p), id)));
+      return [...new Set(into.filter((id): id is string => id !== null))];
     }],
     ["identifier", async () => {
       const found: string[] = [];
