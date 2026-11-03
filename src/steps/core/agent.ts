@@ -845,7 +845,11 @@ export function buildRegistryTools(
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   if (!names?.length || !registry) return out;
+  // A host whose memory is on the graph (`StrutOptions.memory`) keeps the
+  // old memory/* steps from every agent: graph/* is its memory.
+  const graphMemory = (ctx?.services as { memory?: unknown } | undefined)?.memory === "graph";
   for (const stepType of expandAgentTools(names, registry, ctx?.package)) {
+    if (graphMemory && stepType.startsWith("memory/")) continue;
     const def = registry[stepType];
     if (!def) {
       // A system workflow's tools are its guard rails (tidy-memory without

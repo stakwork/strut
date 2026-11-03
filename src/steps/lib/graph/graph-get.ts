@@ -21,9 +21,11 @@ export default defineStep({
     "Pass `children` (an edge type, e.g. \"PARENT_OF\") to also get the nodes this one points to " +
     "along that edge — each { ref_id, node_type, name, description }, sorted by name: a node and its " +
     "table of contents in one call. " +
+    "Pass `owner: true` instead to get the user themself: the person this graph belongs to (marked is_owner). " +
     "To resolve several ref_ids at once, use graph_graph_get_batched instead.",
   input: z.object({
     ref_id: z.string().optional().describe("The ref_id of the node to resolve. Omit to look the node up by node_type + name."),
+    owner: z.boolean().optional().describe("true: the user, the person marked is_owner, instead of a ref_id. A LadybugDB graph only."),
     node_type: z.string().optional().describe('With `name`: the node\'s type, e.g. "Concept".'),
     name: z
       .string()
@@ -69,13 +71,20 @@ export default defineStep({
 });
 
 async function resolve(
-  cfg: { ref_id?: string; node_type?: string; name?: string; namespace?: string; children?: string },
+  cfg: { ref_id?: string; owner?: boolean; node_type?: string; name?: string; namespace?: string; children?: string },
   ctx: unknown,
 ): Promise<unknown> {
   try {
     const b = await graphCtx(ctx as StepContext<StrutCapabilities>);
     let raw;
-    if (cfg.ref_id) {
+    if (cfg.owner) {
+      if (b.kind !== "ladybug") return "graph/graph-get failed: owner needs a LadybugDB graph, where the user is the Person marked is_owner";
+      const { findNodes } = await import("../../../graph/find.js");
+      const { PERSON_TYPE } = await import("../../../graph/ladybug/registry.js");
+      const [hit] = (await findNodes(b, { node_type: PERSON_TYPE, where: { is_owner: true }, limit: 1, ...(cfg.namespace ? { namespace: cfg.namespace } : {}) })).nodes;
+      raw = hit ? await b.reader.getNode(hit.ref_id) : null;
+      if (!raw) return "node not found: no Person is marked is_owner yet — create the user with graph_create_node (is_owner: true) once you know their name";
+    } else if (cfg.ref_id) {
       raw = await b.reader.getNode(cfg.ref_id);
       if (!raw) return `node not found: ${cfg.ref_id}`;
     } else {

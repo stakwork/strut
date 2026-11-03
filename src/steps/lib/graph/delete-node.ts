@@ -17,7 +17,8 @@ export default defineStep({
     "the namespace is deleted for good, so whatever hung under it is cut loose (its children stay, parentless). " +
     "Read the node first (graph/graph-get with its `edges` counts, graph/graph-neighbors) and be sure: a delete is " +
     "the write with the least room for a mistake. To detach one link keep the node and use graph/delete-edge; to " +
-    "re-home it use graph/move-node.\n\n" +
+    "re-home it use graph/move-node. The user (the Person marked is_owner) is never deleted: delete or end their edges instead. " +
+    "To record that a fact stopped being true, end it with graph/assert (`ended` or `invalid_at`) instead of deleting anything.\n\n" +
     EXAMPLE,
   input: z.object({
     ref_id: z.string().describe("The ref_id of the node to delete (from graph_graph_search/graph_graph_get)."),
@@ -25,6 +26,7 @@ export default defineStep({
       .string()
       .optional()
       .describe("Namespace (data partition) the node lives in — must be registered. Not an access-control boundary."),
+    reason: z.string().optional().describe("Why, in a few words ('the user asked', 'wrong person'): kept on the deleted node."),
   }),
   output: z.any(),
   async describe(cfg, ctx) {
@@ -41,8 +43,11 @@ export default defineStep({
       // Described BEFORE the delete: a deleted node is hidden from every read.
       const [node] = await describeNodes(b, [cfg.ref_id]);
       if (!node?.node_type) return `graph/delete-node failed — NOT_FOUND: no live node with ref_id ${cfg.ref_id}`;
+      if ((await b.reader.getNode(cfg.ref_id))?.properties["is_owner"] === true) {
+        return "graph/delete-node failed — REFUSED: this is the user (is_owner), who is never deleted; delete or end their edges instead";
+      }
       const namespace = await b.reader.resolveNamespace(cfg.namespace);
-      const r = await b.nodes.deleteNode(cfg.ref_id, { namespace });
+      const r = await b.nodes.deleteNode(cfg.ref_id, { namespace, ...(cfg.reason ? { reason: cfg.reason } : {}) });
       if (!r) return `graph/delete-node failed — NOT_FOUND: no node with ref_id ${cfg.ref_id} in namespace ${namespace}`;
       return withAccessedNodes(
         {

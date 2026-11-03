@@ -37,6 +37,35 @@ describe("system workflows", () => {
     assert.ok(!isSystemWorkflow("job"));
   });
 
+  it("tidy-memory's graph version is valid: the same shape over graph/duplicates, the reads and graph/merge", async () => {
+    const text = await readFile(join(SYSTEM_DIR, "tidy-memory", "workflow.graph.yaml"), "utf-8");
+    const v = validateWorkflowYaml(text, { registry: await createRegistry([]) });
+    assert.equal(v.ok, true, JSON.stringify(v.errors, null, 2));
+    const flow = flowFromYaml("tidy-memory", "v1", text);
+    assert.deepEqual(flow.steps.map((s) => s.type), ["agent", "pack"]);
+    const cfg = flow.steps[0]!.config as Record<string, unknown>;
+    assert.deepEqual(cfg["agentTools"], ["graph/duplicates", "graph/graph-get", "graph/graph-neighbors", "graph/merge"]);
+    assert.deepEqual(cfg["toolFilter"], ["none"]);
+    assert.equal(cfg["maxSteps"], 60);
+  });
+
+  it('memory: "graph" ships tidy-memory\'s graph version in place, keeping its automation; back to legacy restores the other', async () => {
+    const shipped = (f: string) => readFile(join(SYSTEM_DIR, "tidy-memory", f), "utf-8").then(shippedVersionLabel);
+    await installSystemWorkflows(ws);
+    const [a] = (await ws.getWorkflowMetadata("tidy-memory"))!.automations!;
+    await ws.setWorkflowAutomations("tidy-memory", [{ ...a!, enabled: true }]);
+    assert.equal((await ws.getWorkflowMetadata("tidy-memory"))!.active, await shipped("workflow.yaml"));
+
+    await installSystemWorkflows(ws, { memory: "graph" });
+    let meta = (await ws.getWorkflowMetadata("tidy-memory"))!;
+    assert.equal(meta.active, await shipped("workflow.graph.yaml"));
+    assert.deepEqual(meta.automations, [{ ...a!, enabled: true }], "the same automation, still on");
+
+    await installSystemWorkflows(ws, { memory: "legacy" });
+    meta = (await ws.getWorkflowMetadata("tidy-memory"))!;
+    assert.equal(meta.active, await shipped("workflow.yaml"));
+  });
+
   it("a fresh workspace gets the workflow at its shipped version, category system, with its automation off", async () => {
     const r = await installSystemWorkflow(ws, "sys", yamlV(1), automationJson);
     assert.equal(r.action, "created");
