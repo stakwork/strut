@@ -127,11 +127,30 @@ lens passes `highlight` (the ref_ids it is about: the rest dims where it
 is, nothing moves), and its panel answers a click through `onSelectNode`
 and selects a node itself through `selected`; `details={false}` leaves the
 node's page to that panel, and `calls={false}` starts the call list closed
-behind a toggle, so the graph has the room. The view fits what a lens
+behind a toggle, so the graph has the room. It opens zoomed so a stage's
+lane is half its height, at the run's start; the view fits what a lens
 highlights; a button goes back to the whole run. A run that touched
 thousands of nodes draws a few dozen a stage, the rest folded into "+N"
 nodes a click opens, and a loop of many iterations as one box marked "×N"
-that a click lays out side by side.
+that a click lays out side by side. Play pans across the lanes at one
+steady speed, each call's nodes appearing just ahead of the view
+(`play="timed"` keeps the run's own pace instead); a scrub or a step pans
+to the call's lane; a drag stops the following, play or a step resumes it.
+One button cycles the calls shown: all, the reads, the writes.
+
+Other views can follow the graph's replay: `onReplay` hands on the
+current call's time (epoch ms; null on the whole run) — give it to
+`AgentTrace`'s `cursor` to light the rows the replay is on — and `clock`
+(one per screen, `useMemo(createReplayClock, [])`) carries it frame by
+frame while the graph plays, which `AgentTrace`'s `clock` takes to scroll
+to each agent a little before the replay reaches it:
+
+```tsx
+const [at, setAt] = useState<number | null>(null);
+const clock = useMemo(createReplayClock, []);
+<RunGraph workflow="score" runId={runId} onReplay={setAt} clock={clock} />
+<AgentTrace workflow="score" runId={runId} cursor={at} clock={clock} />
+```
 
 `WorkProducts` is what a run MADE for a person — memos, sheets, redlines,
 timelines — as a shelf that fills while the run goes: every `artifacts`
@@ -150,8 +169,10 @@ plans/work-products.md.
 agents that ran together side by side, their tool calls in pills that open
 into each call and the reasoning before it, the nodes a call read or wrote
 (a click opens one, with `graph/graph-get-batched` granted), sub-agents on
-lanes of their own, and a "Download HTML" of what is on screen. Use it
-rather than folding a run's events into agents yourself.
+lanes of their own, and a "Download HTML" of what is on screen. Nodes
+other than Concepts, two or more in a row, fold into one row a click opens
+("collapse all" folds them again). Use it rather than folding a run's
+events into agents yourself.
 
 `SheetView` draws a spreadsheet work product in the page and fills it in
 as a workflow writes it: a Google Sheet (`spreadsheet`, its id or URL, and

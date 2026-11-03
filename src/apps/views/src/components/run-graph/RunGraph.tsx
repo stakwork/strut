@@ -12,6 +12,7 @@ import {
   ChevronRight,
   Crosshair,
   Eye,
+  Layers,
   ListTree,
   AlertTriangle,
   Loader2,
@@ -68,6 +69,7 @@ import { ReplayBar } from "../ReplayBar";
 import { RunGraphNodeReader } from "./NodeReader";
 import { RunGraphCanvas, type RunGraphCanvasNode } from "./RunGraphCanvas";
 import { RunGraphReader } from "./reader";
+import type { ReplayClock } from "../../lib/replay-clock";
 
 /** Refresh cadence while the run is still going. */
 const LIVE_POLL_MS = 10_000;
@@ -108,7 +110,15 @@ export interface RunGraphSelection {
 /** A run that touched fewer nodes than this opens the runs it launched on its own. */
 const AUTO_OPEN_BELOW = 10;
 
-const ACCESS_LABEL: Record<RunGraphAccess, string> = { read: "Reads", write: "Writes" };
+/** The calls shown, cycled by one button: all of them, the reads, the writes. */
+type CallFilter = "all" | RunGraphAccess;
+const NEXT_FILTER: Record<CallFilter, CallFilter> = { all: "read", read: "write", write: "all" };
+const FILTER_TITLE: Record<CallFilter, string> = {
+  all: "All calls — click for the reads only",
+  read: "The reads only — click for the writes only",
+  write: "The writes only — click for all calls",
+};
+const FILTER_ICON: Record<CallFilter, typeof Eye> = { all: Layers, read: Eye, write: PenLine };
 
 function AccessIcon({ access, className }: { access: RunGraphAccess; className?: string }) {
   const Icon = access === "write" ? PenLine : Eye;
@@ -538,6 +548,9 @@ export function RunGraph({
   onSelectNode,
   details = true,
   calls: callsProp = true,
+  play = "steady",
+  onReplay,
+  clock,
 }: {
   workflow: string;
   runId: string;
@@ -562,10 +575,20 @@ export function RunGraph({
   details?: boolean;
   /** Open with the list of calls beside the graph (default true); closed, a toggle opens it — a lens screen gives the graph the room. */
   calls?: boolean;
+  /**
+   * How Play moves: "steady" (default) pans across the lanes at one speed and
+   * shows each call as the pan reaches it; "timed" keeps the run's own pace
+   * between calls, the view staying where it is.
+   */
+  play?: "steady" | "timed";
+  /** Where the replay stands, as its call's time (epoch ms) — null on the whole run: another view (an AgentTrace's `cursor`) can follow it. */
+  onReplay?: (at: number | null) => void;
+  /** The same, frame by frame while a steady play moves (./lib/replay-clock.ts): what an AgentTrace scrolls by. */
+  clock?: ReplayClock;
 }) {
   const [trace, setTrace] = useState<RunGraphTrace | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [shown, setShown] = useState<Record<RunGraphAccess, boolean>>({ read: true, write: true });
+  const [filter, setFilter] = useState<CallFilter>("all");
   const [typeOverrides, setTypeOverrides] = useState<Record<string, boolean>>({});
   /** Index of the current call; null = the whole run. */
   const [step, setStep] = useState<number | null>(null);
@@ -641,7 +664,7 @@ export function RunGraph({
   );
   const sections = useMemo(() => launchSections(launches, scope), [launches, scope]);
   const inScope = useMemo(() => scopeCalls(allCalls, scope), [allCalls, scope]);
-  const calls = useMemo(() => inScope.filter((call) => shown[call.access]), [inScope, shown]);
+  const calls = useMemo(() => (filter === "all" ? inScope : inScope.filter((call) => call.access === filter)), [inScope, filter]);
   const current = step !== null && step < calls.length ? step : null;
 
   const tree = useMemo(() => buildRunGraphTree(calls), [calls]);
@@ -812,11 +835,16 @@ export function RunGraph({
     setExpanded((prev) => (prev.has(root) ? prev : new Set(prev).add(root)));
   }, [tree]);
 
-  // The replay keeps the run's own pace between calls (the kit's clock: a
-  // readable least, an idle stretch cut short), times the speed picked.
+  // A steady play is the canvas's clock: it moves the view and hands each call
+  // on (`onStep`). A timed one — or one with nothing drawn — keeps the run's
+  // own pace between calls (the kit's clock: a readable least, an idle
+  // stretch cut short), times the speed picked.
   const [speed, setSpeed] = useState(1);
+  /** Bumped by Play, back and forward: the view follows the replay again after the viewer dragged it away. */
+  const [refollow, setRefollow] = useState(0);
+  const steady = play === "steady" && graphNodes.length > 0;
   useEffect(() => {
-    if (!playing || current === null) return;
+    if (!playing || current === null || steady) return;
     const next = calls[current + 1];
     const from = replayTime(calls[current]?.startedAt);
     const to = replayTime(next?.startedAt);
@@ -824,7 +852,14 @@ export function RunGraph({
       setStep((s) => (s === null || s + 1 >= calls.length ? null : s + 1));
     }, replayDelay(from !== null && to !== null ? to - from : null, speed));
     return () => clearTimeout(timer);
-  }, [playing, current, calls, speed]);
+  }, [playing, current, calls, speed, steady]);
+
+  const replayAt = current === null ? null : replayTime(calls[current]?.startedAt);
+  useEffect(() => {
+    onReplay?.(replayAt);
+    clock?.set(replayAt);
+  }, [onReplay, clock, replayAt]);
+  const callTimes = useMemo(() => calls.map((c) => replayTime(c.startedAt)), [calls]);
 
   // Playing starts on a call, so the whole run while playing is the end of the replay.
   useEffect(() => {
@@ -981,10 +1016,20 @@ export function RunGraph({
             position={current ?? calls.length}
             total={calls.length}
             playing={playing}
-            onPlay={togglePlay}
+            onPlay={() => {
+              setRefollow((n) => n + 1);
+              togglePlay();
+            }}
             onPause={togglePlay}
-            onStepBack={() => pick(current === null ? last : current - 1)}
-            onStepForward={() => (current === null || current >= last ? showAll() : pick(current + 1))}
+            onStepBack={() => {
+              setRefollow((n) => n + 1);
+              pick(current === null ? last : current - 1);
+            }}
+            onStepForward={() => {
+              setRefollow((n) => n + 1);
+              if (current === null || current >= last) showAll();
+              else pick(current + 1);
+            }}
             canStepBack={current !== 0}
             canStepForward={current !== null}
             onSeek={(value) => (value >= calls.length ? showAll() : pick(value))}
@@ -993,24 +1038,26 @@ export function RunGraph({
             unit="call"
             {...(live && !settled ? { live: { following: current === null, onLive: showAll } } : {})}
           />
-          <div className="flex items-center gap-1">
-            {(Object.keys(ACCESS_LABEL) as RunGraphAccess[]).map((access) => (
+          {(() => {
+            const Icon = FILTER_ICON[filter];
+            return (
               <Button
-                key={access}
-                variant={shown[access] ? "secondary" : "ghost"}
-                size="sm"
-                className="h-7 gap-1.5 text-xs"
-                aria-pressed={shown[access]}
+                variant={filter === "all" ? "ghost" : "secondary"}
+                size="icon"
+                className="h-7 w-7 shrink-0"
+                aria-label={FILTER_TITLE[filter]}
+                title={FILTER_TITLE[filter]}
                 onClick={() => {
                   showAll();
-                  setShown((prev) => ({ ...prev, [access]: !prev[access] }));
+                  setFilter((f) => NEXT_FILTER[f]);
                 }}
+                data-testid="run-graph-filter"
+                data-filter={filter}
               >
-                <AccessIcon access={access} className="h-3 w-3" />
-                {ACCESS_LABEL[access]}
+                <Icon className="h-3.5 w-3.5" />
               </Button>
-            ))}
-          </div>
+            );
+          })()}
         </div>
         {/* One fixed row for the step's call or the run's summary: scrubbing never moves the graph. */}
         <div className="flex h-8 min-w-0 items-center gap-2" data-testid="run-graph-caption">
@@ -1127,6 +1174,13 @@ export function RunGraph({
               selectedId={selectedId}
               highlight={highlight}
               step={current}
+              follow={current ?? (live && !settled ? calls.length - 1 : null)}
+              playing={playing && steady}
+              speed={speed}
+              onStep={setStep}
+              refollow={refollow}
+              times={callTimes}
+              onFrame={clock?.set}
               onNodeClick={clickNode}
               onFocus={focusLane}
               onOpenLane={(key) => setOpenLanes((prev) => new Set(prev).add(key))}

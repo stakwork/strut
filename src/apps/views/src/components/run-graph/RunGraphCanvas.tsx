@@ -2,8 +2,8 @@
 // own since: a highlight that dims the rest without moving it, "+N" nodes
 // for what the layout folded, and names only where they are asked for.
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { select, zoom as d3Zoom, zoomIdentity, type D3ZoomEvent, type ZoomBehavior } from "d3";
-import { Focus, Maximize } from "lucide-react";
+import { select, zoom as d3Zoom, zoomIdentity, zoomTransform, type D3ZoomEvent, type ZoomBehavior } from "d3";
+import { Focus, LocateFixed, Maximize } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { clipName } from "../../lib/format";
 import { LABEL_LINE, placeLabels, type LabelBox, type LabelRequest } from "./labels";
@@ -40,6 +40,17 @@ interface RunGraphCanvasProps {
   highlight?: ReadonlySet<string>;
   /** The replay's step; null = the whole run. */
   step: number | null;
+  /** The call whose new nodes the view keeps in its middle, at the zoom the viewer chose: the replay's step, or a live run's newest call. Null: nothing to follow. */
+  follow?: number | null;
+  /** A steady play: the view pans across the lanes at one speed, from `step`, and each call is handed on (`onStep`) as the pan reaches its place in its lane; null at the end. */
+  playing?: boolean;
+  speed?: number;
+  onStep?: (step: number | null) => void;
+  /** A count the viewer's replay buttons bump (Play, back, forward): each bump follows the replay again after a drag stopped it. */
+  refollow?: number;
+  /** Each call's time (epoch ms): a steady play hands on where it is between two calls, frame by frame, as a time (`onFrame`). */
+  times?: ReadonlyArray<number | null>;
+  onFrame?: (at: number) => void;
   /** Width at the right of the canvas that something else is drawn over. */
   insetRight?: number;
   onNodeClick: (id: string) => void;
@@ -66,6 +77,22 @@ const LANE_NAME_ROOM = 50;
 const CELL_NAME_ROOM = 28;
 /** Shorter cuts of a name, tried where the 30-character one fits nowhere. */
 const SHORTER_NAMES = [16, 10];
+/** Following, the view pans to a lane in this long. */
+const FOLLOW_MS = 320;
+/** The steady play's pan on screen at 1×, in pixels a second, and how soon the view catches up with it (a start, a follow turned back on). */
+const PLAY_PX_PER_S = 160;
+const PLAY_EASE_S = 0.35;
+/** How far ahead of the view's middle a call is shown, as a share of its width: nodes appear in front of the pan, not behind it. */
+const PLAY_LEAD = 0.2;
+/** The view opens with a lane this share of the canvas's height — never zoomed past LANES_MAX_ZOOM. */
+const LANES_SHARE = 0.5;
+const LANES_MAX_ZOOM = 2;
+
+/** Where the view's middle goes on one axis at zoom `k`: `at`, but never past the run's edge — on an axis where the whole run fits, the run's middle. */
+function centred(at: number, extent: number, view: number, k: number): number {
+  const half = view / (2 * k);
+  return extent + 2 * FIT_PADDING <= 2 * half ? extent / 2 : Math.min(Math.max(at, half - FIT_PADDING), extent + FIT_PADDING - half);
+}
 
 /** A text's width in ems of the names' font, measured once per text. */
 const emWidths = new Map<string, number>();
@@ -186,6 +213,13 @@ export function RunGraphCanvas({
   selectedId = null,
   highlight,
   step,
+  follow = null,
+  playing = false,
+  speed = 1,
+  onStep,
+  refollow = 0,
+  times,
+  onFrame,
   insetRight = 0,
   onNodeClick,
   onFocus,
@@ -202,6 +236,17 @@ export function RunGraphCanvas({
   /** The zoom, as the names are placed for it: a frame after it settles. */
   const [zoomK, setZoomK] = useState(1);
   const zoomFrame = useRef(0);
+  /** The view follows `follow`'s new nodes; the viewer dragging it elsewhere stops that, zooming does not. */
+  const [following, setFollowing] = useState(true);
+  /** The lane the view last panned to: the replay's other calls in it move nothing. */
+  const followedLane = useRef<string | null>(null);
+  useEffect(() => {
+    if (refollow === 0) return;
+    followedLane.current = null;
+    setFollowing(true);
+  }, [refollow]);
+  const panFrame = useRef(0);
+  const lastK = useRef(1);
 
   useEffect(() => {
     const svg = svgRef.current;
@@ -213,7 +258,14 @@ export function RunGraphCanvas({
         [sizeRef.current.width, sizeRef.current.height],
       ])
       .on("zoom", (event: D3ZoomEvent<SVGSVGElement, unknown>) => {
-        if (event.sourceEvent) movedRef.current = true;
+        const source = event.sourceEvent as Event | null;
+        if (source) {
+          movedRef.current = true;
+          cancelAnimationFrame(panFrame.current);
+          // A drag moves the view and keeps the zoom: the viewer went to look elsewhere.
+          if (source.type !== "wheel" && source.type !== "dblclick" && event.transform.k === lastK.current) setFollowing(false);
+        }
+        lastK.current = event.transform.k;
         viewRef.current?.setAttribute("transform", event.transform.toString());
         svg.style.setProperty("--k", String(event.transform.k));
         cancelAnimationFrame(zoomFrame.current);
@@ -242,19 +294,27 @@ export function RunGraphCanvas({
     return () => observer.disconnect();
   }, []);
 
-  /** What the view fits: the whole run, or — while there is one — the highlight, with some room around it. */
-  const focusRef = useRef<"all" | "highlight">("all");
+  /**
+   * What the view fits: the lanes, a lane half its height — at the run's start
+   * the first time (or the highlight's middle), else where the view is; the
+   * whole run; or, while there is one, the highlight with some room around it.
+   */
+  const focusRef = useRef<"lanes" | "all" | "highlight">("lanes");
+  const firstFitRef = useRef(true);
   /** The places drawn now, for the fit to read without refitting at every step of a replay. */
   const shownRef = useRef<Map<string, Map<string, RunGraphPlace>>>(new Map());
+
+  /** The view's width the graph is drawn in: too narrow to give the inset up, under it. */
+  const viewWidth = size ? size.width - (size.width > 3 * insetRight ? insetRight : 0) : 0;
 
   const fit = useCallback(() => {
     const svg = svgRef.current;
     const behavior = zoomRef.current;
     if (!svg || !behavior || !size || layout.width <= 0 || layout.height <= 0) return;
-    // Too narrow to give the inset up: the graph is fitted under it.
-    const width = size.width - (size.width > 3 * insetRight ? insetRight : 0);
+    cancelAnimationFrame(panFrame.current);
+    const width = viewWidth;
     let box = { x: 0, y: 0, width: layout.width, height: layout.height };
-    if (focusRef.current === "highlight" && highlight?.size) {
+    if (highlight?.size && (focusRef.current === "highlight" || (focusRef.current === "lanes" && firstFitRef.current))) {
       let x0 = Infinity;
       let y0 = Infinity;
       let x1 = -Infinity;
@@ -274,24 +334,35 @@ export function RunGraphCanvas({
         box = { x: (x0 + x1) / 2 - w / 2, y: (y0 + y1) / 2 - h / 2, width: w, height: h };
       }
     }
+    if (focusRef.current === "lanes") {
+      const k = Math.max(MIN_ZOOM, Math.min(LANES_MAX_ZOOM, (LANES_SHARE * size.height) / layout.height));
+      const now = zoomTransform(svg);
+      const at = !firstFitRef.current ? (width / 2 - now.x) / now.k : box.width < layout.width ? box.x + box.width / 2 : 0;
+      firstFitRef.current = false;
+      select(svg).call(
+        behavior.transform,
+        zoomIdentity
+          .translate(width / 2, size.height / 2)
+          .scale(k)
+          .translate(-centred(at, layout.width, width, k), -centred(layout.height / 2, layout.height, size.height, k)),
+      );
+      return;
+    }
+    firstFitRef.current = false;
     const k = Math.max(MIN_ZOOM, Math.min(1, width / (box.width + 2 * FIT_PADDING), size.height / (box.height + 2 * FIT_PADDING)));
     // Centred on the box, but never past the run's edge: on an axis where the
     // whole run fits, it is drawn whole; else the view stops at its border.
-    const centre = (at: number, extent: number, view: number) => {
-      const half = view / (2 * k);
-      return extent + 2 * FIT_PADDING <= 2 * half ? extent / 2 : Math.min(Math.max(at, half - FIT_PADDING), extent + FIT_PADDING - half);
-    };
     const transform = zoomIdentity
       .translate(width / 2, size.height / 2)
       .scale(k)
-      .translate(-centre(box.x + box.width / 2, layout.width, width), -centre(box.y + box.height / 2, layout.height, size.height));
+      .translate(-centred(box.x + box.width / 2, layout.width, width, k), -centred(box.y + box.height / 2, layout.height, size.height, k));
     select(svg).call(behavior.transform, transform);
-  }, [size, insetRight, layout.width, layout.height, highlight]);
+  }, [size, viewWidth, layout.width, layout.height, highlight]);
 
   // A lens changed: fit to what it highlights (or, with none, the whole run).
   const highlightKey = useMemo(() => [...(highlight ?? [])].sort().join("|"), [highlight]);
   useEffect(() => {
-    focusRef.current = highlightKey ? "highlight" : "all";
+    focusRef.current = highlightKey && !firstFitRef.current ? "highlight" : "lanes";
     movedRef.current = false;
   }, [highlightKey]);
 
@@ -300,7 +371,7 @@ export function RunGraphCanvas({
   }, [fit, highlightKey]);
 
   const refit = useCallback(
-    (focus: "all" | "highlight") => {
+    (focus: "lanes" | "all" | "highlight") => {
       focusRef.current = focus;
       movedRef.current = false;
       fit();
@@ -351,6 +422,125 @@ export function RunGraphCanvas({
     return byCell;
   }, [layout.places, step, hiddenCells]);
   shownRef.current = shown;
+
+  /** The lane each cell is drawn in, by the cell's key (a call's `layout.callCells`). */
+  const laneOfCell = useMemo(() => {
+    const lanes = new Map<string, RunGraphLayout["lanes"][number]>();
+    for (const lane of layout.lanes) for (const cell of lane.cells) lanes.set(`${lane.key}#${cell.iteration ?? ""}`, lane);
+    return lanes;
+  }, [layout.lanes]);
+
+  // Following: the lane the call is in is panned into the middle, at the
+  // viewer's zoom — once, as the replay enters it; its other calls move
+  // nothing. While the whole run fits, nothing moves.
+  useEffect(() => {
+    const svg = svgRef.current;
+    const behavior = zoomRef.current;
+    if (!following || playing || follow === null || !svg || !behavior || !size) return;
+    const lane = laneOfCell.get(layout.callCells[follow] ?? "");
+    if (!lane || lane.key === followedLane.current) return;
+    followedLane.current = lane.key;
+    const now = zoomTransform(svg);
+    const cx = lane.x + lane.width / 2;
+    const cy = lane.y + lane.height / 2;
+    const k = now.k;
+    const to = zoomIdentity
+      .translate(viewWidth / 2, size.height / 2)
+      .scale(k)
+      .translate(-centred(cx, layout.width, viewWidth, k), -centred(cy, layout.height, size.height, k));
+    if (Math.abs(to.x - now.x) < 1 && Math.abs(to.y - now.y) < 1) return;
+    cancelAnimationFrame(panFrame.current);
+    const started = performance.now();
+    const frame = (time: number) => {
+      const u = Math.min(1, (time - started) / FOLLOW_MS);
+      const e = u * (2 - u);
+      select(svg).call(behavior.transform, zoomIdentity.translate(now.x + (to.x - now.x) * e, now.y + (to.y - now.y) * e).scale(k));
+      if (u < 1) panFrame.current = requestAnimationFrame(frame);
+    };
+    panFrame.current = requestAnimationFrame(frame);
+  }, [following, playing, follow, laneOfCell, layout.callCells, layout.width, layout.height, size, viewWidth]);
+  useEffect(() => () => cancelAnimationFrame(panFrame.current), []);
+
+  /**
+   * Each call's place along the run for the steady play: its lane's left
+   * edge, with the lane's calls spread over its width in their order — never
+   * left of the call before (calls of lanes running side by side stay where
+   * the pan is). `end`: the right edge of the last lane the pan reaches.
+   */
+  const marks = useMemo(() => {
+    const laneOf = laneOfCell;
+    const count = new Map<string, number>();
+    for (const cell of layout.callCells) {
+      const lane = laneOf.get(cell);
+      if (lane) count.set(lane.key, (count.get(lane.key) ?? 0) + 1);
+    }
+    const seen = new Map<string, number>();
+    const at: number[] = [];
+    let last = 0;
+    let end = 0;
+    for (const cell of layout.callCells) {
+      const lane = laneOf.get(cell);
+      if (lane) {
+        const j = seen.get(lane.key) ?? 0;
+        seen.set(lane.key, j + 1);
+        last = Math.max(last, lane.x + ((j + 0.5) / (count.get(lane.key) ?? 1)) * lane.width);
+        end = Math.max(end, lane.x + lane.width);
+      }
+      at.push(last);
+    }
+    return { at, end: Math.max(end, last) };
+  }, [laneOfCell, layout.callCells]);
+
+  // The steady play's clock, read through a ref so a step or a zoom never restarts it.
+  const playRef = useRef({ step, speed, onStep, marks, following, viewWidth, layoutWidth: layout.width, times, onFrame });
+  playRef.current = { step, speed, onStep, marks, following, viewWidth, layoutWidth: layout.width, times, onFrame };
+  useEffect(() => {
+    const svg = svgRef.current;
+    const behavior = zoomRef.current;
+    if (!playing || !svg || !behavior) return;
+    let index = playRef.current.step ?? 0;
+    let head = playRef.current.marks.at[index] ?? 0;
+    let last = performance.now();
+    let frame = 0;
+    const tick = (time: number) => {
+      const p = playRef.current;
+      const dt = Math.min(0.1, (time - last) / 1000);
+      last = time;
+      const now = zoomTransform(svg);
+      // One speed on screen, whatever the zoom.
+      head += (PLAY_PX_PER_S * p.speed * dt) / now.k;
+      const { at, end } = p.marks;
+      const lead = (PLAY_LEAD * p.viewWidth) / now.k;
+      let next = index;
+      while (next + 1 < at.length && at[next + 1] <= head) next++;
+      if (next !== index) {
+        index = next;
+        p.onStep?.(index);
+      }
+      // Where the play is between this call and the next, as a time.
+      const t0 = p.times?.[index];
+      if (p.onFrame && t0 != null) {
+        const t1 = p.times?.[index + 1];
+        const a = at[index] ?? head;
+        const b = at[index + 1];
+        const f = b !== undefined && b > a ? Math.min(1, Math.max(0, (head - a) / (b - a))) : 0;
+        p.onFrame(t1 != null ? t0 + (t1 - t0) * f : t0);
+      }
+      if (index >= at.length - 1 && head >= end) {
+        p.onStep?.(null);
+        return;
+      }
+      if (p.following && p.viewWidth > 0) {
+        const target = centred(head - lead, p.layoutWidth, p.viewWidth, now.k);
+        const from = (p.viewWidth / 2 - now.x) / now.k;
+        const x = from + (target - from) * (1 - Math.exp(-dt / PLAY_EASE_S));
+        select(svg).call(behavior.transform, zoomIdentity.translate(p.viewWidth / 2 - x * now.k, now.y).scale(now.k));
+      }
+      frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [playing]);
 
   const drawn = useMemo<DrawnLink[]>(() => {
     const list: DrawnLink[] = [];
@@ -732,6 +922,23 @@ export function RunGraphCanvas({
         </g>
       </svg>
       <div className="absolute right-3 top-3 flex gap-1">
+        {follow !== null && (
+          <Button
+            variant={following ? "secondary" : "outline"}
+            size="icon"
+            className="h-7 w-7"
+            aria-pressed={following}
+            aria-label={following ? "Stop following the replay" : "Follow the replay"}
+            title={following ? "Following the replay: zoom in to watch it move across the run; drag to look elsewhere" : "Follow the replay"}
+            onClick={() => {
+              followedLane.current = null;
+              setFollowing((f) => !f);
+            }}
+            data-testid="run-graph-follow"
+          >
+            <LocateFixed className="h-3.5 w-3.5" />
+          </Button>
+        )}
         {highlightKey && (
           <Button variant="outline" size="icon" className="h-7 w-7" aria-label="Fit the highlight" title="Fit the highlight" onClick={() => refit("highlight")} data-testid="run-graph-fit-highlight">
             <Focus className="h-3.5 w-3.5" />

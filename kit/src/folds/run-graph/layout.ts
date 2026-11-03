@@ -287,8 +287,8 @@ function placePart(ids: string[], links: Link[], parents: ReadonlyMap<string, st
   return tree.size === ids.length ? boxed(tree) : settle(ids, links, tree);
 }
 
-/** The nodes of one cell: its connected parts side by side, the loose nodes together at the end. */
-function placeCell(ids: string[], links: Link[], parents: ReadonlyMap<string, string[]>, arc?: number): Part {
+/** The nodes of one cell: its connected parts side by side, and the loose nodes together, left to right in the order the run first reached them (`since`). */
+function placeCell(ids: string[], links: Link[], parents: ReadonlyMap<string, string[]>, since: ReadonlyMap<string, number>, arc?: number): Part {
   const within = new Set(ids);
   const inCell = links.filter((l) => l.source !== l.target && within.has(l.source) && within.has(l.target));
 
@@ -324,7 +324,8 @@ function placeCell(ids: string[], links: Link[], parents: ReadonlyMap<string, st
     }
   }
   if (loose.length > 0) parts.push(settle(loose, [], new Map()));
-  parts.sort((a, b) => b.points.size - a.points.size);
+  const first = (part: Part) => Math.min(...[...part.points.keys()].map((id) => since.get(id) ?? 0));
+  parts.sort((a, b) => first(a) - first(b) || b.points.size - a.points.size);
 
   const tallest = Math.max(0, ...parts.map((p) => p.height));
   const points = new Map<string, RunGraphPoint>();
@@ -483,7 +484,7 @@ export function layoutRunGraph(
     const cells = [...s.groups.values()]
       .sort((a, b) => (a.iteration ?? -1) - (b.iteration ?? -1))
       .map((group) => {
-        if (!fold) return { group, ...placeCell(group.ids, links, parents), header: looped ? CELL_HEADER : 0 };
+        if (!fold) return { group, ...placeCell(group.ids, links, parents, group.since), header: looped ? CELL_HEADER : 0 };
         // The cell's nodes with its "+N" nodes for what folded: each placed
         // under its parent, linked where its members were, first seen with
         // the first of them.
@@ -505,7 +506,7 @@ export function layoutRunGraph(
           seen.add(k);
           cellLinks.push({ source, target });
         }
-        return { group, ...placeCell(folded.ids, cellLinks, cellParents, fold.arc), header: looped ? CELL_HEADER : 0 };
+        return { group, ...placeCell(folded.ids, cellLinks, cellParents, group.since, fold.arc), header: looped ? CELL_HEADER : 0 };
       });
     return { ...s, cells };
   });
