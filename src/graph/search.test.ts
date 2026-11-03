@@ -26,6 +26,7 @@ import {
   pyRound,
   rankHits,
   routeIndexes,
+  serializeEdge,
   serializeNode,
   splitSchema,
   titleMatchMultiplier,
@@ -211,6 +212,20 @@ describe("search helpers (pure)", () => {
     const own = serializeNode({ labels: ["Concept", "Data_Bank"], properties: { ref_id: "c", date_added_to_graph: 9, created_at: "2024-01-01" } });
     assert.equal(own.created_at, 9);
     assert.equal(own.properties["created_at"], "2024-01-01");
+    // A Neo4j node another writer left with no stamp (swarm38's Advisor*):
+    // its own created_at is still a field, not the stamp.
+    const stampless = serializeNode({ labels: ["AdvisorAlert", "Data_Bank", "Node"], properties: { ref_id: "a", node_key: "k", name: "alert", created_at: "2026-10-05" } });
+    assert.equal(stampless.properties["created_at"], "2026-10-05");
+    assert.equal(stampless.created_at, 0);
+  });
+  it("serializeEdge: a Neo4j edge's stamp shows as created_at, unless the edge holds a created_at of its own", () => {
+    assert.deepEqual(serializeEdge("IN_JOB", { ref_id: "e", edge_key: "in_job", weight: 1, date_added_to_graph: 5, note: "x" }, "s", "t").properties, { created_at: 5, note: "x" });
+    assert.deepEqual(
+      serializeEdge("EVIDENCED_BY", { ref_id: "e", edge_key: "evidenced_by", date_added_to_graph: 5, created_at: "2026-10-01", created_by: "janitor" }, "s", "t").properties,
+      { date_added_to_graph: 5, created_at: "2026-10-01", created_by: "janitor" },
+    );
+    // A Ladybug edge's created_at is the core stamp, as it is.
+    assert.deepEqual(serializeEdge("IN_JOB", { ref_id: "e", created_at: 7, namespace: "private" }, "s", "t").properties, { created_at: 7, namespace: "private" });
   });
   it("schema split + inherited attributes", () => {
     const thing = splitSchema({ type: "Thing", ref_id: "t", index: ["name"], name: "string", description: "?string" });

@@ -166,7 +166,8 @@ for (const tb of testBackends()) {
         [[{ ref_id: a.ref_id }, { set: { ref_id: "y" } }], "UNKNOWN_ATTRIBUTE"],
         [[{ ref_id: a.ref_id }, { set: { edge_key: "y" } }], "UNKNOWN_ATTRIBUTE"],
         [[{ ref_id: a.ref_id }, { remove: ["date_added_to_graph"] }], "UNKNOWN_ATTRIBUTE"],
-        [[{ ref_id: a.ref_id }, { remove: ["created_at"] }], "UNKNOWN_ATTRIBUTE"],
+        // On Neo4j the stamp is date_added_to_graph alone; a created_at there is the edge's own.
+        ...(neo ? [] : [[[{ ref_id: a.ref_id }, { remove: ["created_at"] }], "UNKNOWN_ATTRIBUTE"] as [Parameters<EdgeWriter["update"]>, string]]),
         [[{ ref_id: a.ref_id }, { remove: ["weight"] }], "UNKNOWN_ATTRIBUTE"],
         [[{ ref_id: a.ref_id }, { set: { "bad-name": 1 } }], "UNKNOWN_ATTRIBUTE"],
         [[{ ref_id: a.ref_id }, {}], "MISSING_REQUIRED"],
@@ -177,6 +178,28 @@ for (const tb of testBackends()) {
       for (const [args, code] of cases) {
         await assert.rejects(edges.update(...args), (e: unknown) => e instanceof GraphValidationError && e.code === code, `${JSON.stringify(args)} → ${code}`);
       }
+    });
+
+    it("an edge's own created_at: a property of it on Neo4j, beside the stamp; on a file, the stamp itself", async () => {
+      if (!neo) {
+        await assert.rejects(edges.write({ edge: "IN_JOB", source_ref_id: run, target_ref_id: job, properties: { created_at: "2026-10-01" } }), (e: unknown) => e instanceof GraphValidationError && e.code === "UNKNOWN_ATTRIBUTE");
+        return;
+      }
+      // jarvis's Cause -[EVIDENCED_BY]-> and EvalSet -[HAS_CASE]-> declare one.
+      const a = await edges.write({ edge: "IN_JOB", source_ref_id: run, target_ref_id: job, properties: { created_at: "2026-10-01T00:00:00Z" } });
+      const stored = async () => (await bolt().run(`MATCH ()-[r {ref_id: $r}]->() RETURN r.created_at AS own, r.date_added_to_graph AS stamp`, { r: a.ref_id }))[0]!;
+      const before = await stored();
+      assert.equal(before["own"], "2026-10-01T00:00:00Z");
+      assert.ok(Number(before["stamp"]) > 0);
+      await edges.update({ ref_id: a.ref_id }, { set: { created_at: "2026-10-02T00:00:00Z" } });
+      const edited = await stored();
+      assert.equal(edited["own"], "2026-10-02T00:00:00Z");
+      assert.equal(Number(edited["stamp"]), Number(before["stamp"]), "the stamp is untouched");
+      await assert.rejects(edges.update({ ref_id: a.ref_id }, { set: { date_added_to_graph: 1 } }), (e: unknown) => e instanceof GraphValidationError && e.code === "UNKNOWN_ATTRIBUTE");
+      await edges.update({ ref_id: a.ref_id }, { remove: ["created_at"] });
+      const removed = await stored();
+      assert.equal(removed["own"], null);
+      assert.equal(Number(removed["stamp"]), Number(before["stamp"]));
     });
 
     it("a legacy flagged edge (muted, or is_deleted) is invisible to the triple lookup, and a write onto it makes it live", neoOnly("the file has no edge flags"), async () => {
