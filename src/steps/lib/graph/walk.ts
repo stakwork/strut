@@ -5,7 +5,7 @@ import type { NodeEnvelope, EdgeEnvelope, NeighborsParams, SearchParams, SearchR
 import { modelEvaluate, type Evaluate, type EvalQuestion, type EvalAnswer } from "../../../evaluate.js";
 import { addUsage, emptyUsage, type TokenUsage } from "../../../pricing.js";
 import { resolveEvaluationModel, stepAuth } from "../../../llm.js";
-import { graphCtx, errText, deriveNodeName, EXCLUDED_NODE_TYPES } from "./_shared.js";
+import { graphCtx, errText, deriveNodeName, isoDates, timeInputs, EXCLUDED_NODE_TYPES } from "./_shared.js";
 import { bootEnv } from "../../../env.js";
 
 /**
@@ -86,6 +86,9 @@ export interface WalkConfig {
   edge_type?: string[];
   node_type?: string[];
   namespace?: string;
+  /** Temporal edges: current ones unless these say otherwise (`NeighborsParams`). */
+  include_ended?: boolean;
+  as_of?: string | number;
   maxHops: number;
   maxNodes: number;
   threshold: number;
@@ -194,11 +197,23 @@ function byPriority(a: Candidate, b: Candidate): number {
   return (b.relevance ?? 0) - (a.relevance ?? 0) || a.hop - b.hop || a.name.localeCompare(b.name);
 }
 
-/** The arriving edge's attributes worth showing, strings clipped; undefined when none. */
+/** A temporal edge's bookkeeping (a Ladybug file's facts): what it was
+ *  learned from and when it was last confirmed say nothing to the decider. */
+const TEMPORAL_STAMPS = new Set(["updated_at", "last_confirmed_at", "edge_key", "created_by", "sources"]);
+
+/** The arriving edge's attributes worth showing, strings clipped; undefined
+ *  when none. A temporal edge (`last_confirmed_at` is its column alone)
+ *  shows its sentence and its dates as ISO. */
 function edgeProperties(p: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
   const out: Record<string, unknown> = {};
+  const temporal = p?.["last_confirmed_at"] !== undefined && p?.["last_confirmed_at"] !== null;
+  const dates = temporal ? isoDates(p!) : {};
   for (const [k, v] of Object.entries(p ?? {})) {
-    if (EDGE_STAMPS.has(k) || v === null || v === undefined) continue;
+    if (EDGE_STAMPS.has(k) || v === null || v === undefined || (temporal && TEMPORAL_STAMPS.has(k))) continue;
+    if (k in dates) {
+      out[k] = dates[k as keyof typeof dates];
+      continue;
+    }
     out[k] = typeof v === "string" && v.length > EDGE_PROPERTY_MAX ? v.slice(0, EDGE_PROPERTY_MAX) + "…" : v;
   }
   return Object.keys(out).length ? out : undefined;
@@ -321,6 +336,8 @@ export async function runWalk(cfg: WalkConfig, deps: WalkDeps): Promise<WalkOutp
     limit: NEIGHBOR_CAP,
     namespace: cfg.namespace,
     include_edge_counts: true,
+    ...(cfg.include_ended ? { include_ended: true } : {}),
+    ...(cfg.as_of !== undefined ? { as_of: cfg.as_of } : {}),
   };
   // Same cast as the agent step's per-tool emit: the runner stamps ts/runId.
   const emit = ctx?.emit && ctx.path ? (ctx.emit as unknown as (e: Record<string, unknown>) => Promise<void>) : undefined;
@@ -518,6 +535,7 @@ export const walkInput = z.object({
   node_type: z.array(z.string()).optional().describe('only visit these node types, e.g. ["StrutStep", "Concept"]'),
   namespace: z.string().optional().describe("the one namespace to walk (seed search, hops and edge counts); default: every one this caller may read"),
   exclude_domains: z.array(z.string()).optional().describe('domains to leave out, e.g. ["strut"] to skip strut\'s own runs and workflows; only narrows what this caller may read'),
+  ...timeInputs,
   maxHops: z.number().int().positive().default(12).describe("decision rounds; each round judges one node's neighbors and expands at most one"),
   maxNodes: z.number().int().positive().default(25).describe("stop once this many nodes are kept"),
   threshold: z.number().min(0).max(1).default(0.7).describe("minimum relevance probability for a node to be kept in the bundle"),

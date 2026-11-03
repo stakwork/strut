@@ -1,3 +1,4 @@
+import { z } from "zod";
 import type { AccessedNode, StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
 import type { GraphBackend } from "../../../graph/backend.js";
@@ -46,6 +47,27 @@ export const excludeDomainsInput = "Comma-separated domains to leave out, e.g. '
 
 /** Node types a traversal (graph-neighbors, walk) leaves out: noise, and the
  *  ontology's own `Schema` nodes (read through get-ontology instead). */
+/** The time inputs of the reads that show temporal edges (graph-search,
+ *  graph-neighbors, walk): current ones by default. A Neo4j graph holds
+ *  none, and ignores both. */
+export const timeInputs = {
+  include_ended: z.boolean().optional().describe("Also show facts (temporal edges) that ended or were replaced. Default: current ones only."),
+  as_of: z
+    .union([z.string(), z.number()])
+    .optional()
+    .describe("Show the facts (temporal edges) that were true at this time: an ISO date ('2024', '2024-06', '2024-06-01T12:00:00Z') or epoch ms. Wins over include_ended."),
+};
+
+/** A temporal edge's dates, epoch ms on the edge, as ISO; the ones it has. */
+export function isoDates(p: Record<string, unknown>): Partial<Record<"valid_at" | "invalid_at" | "expired_at", string>> {
+  const out: Partial<Record<"valid_at" | "invalid_at" | "expired_at", string>> = {};
+  for (const k of ["valid_at", "invalid_at", "expired_at"] as const) {
+    const v = p[k];
+    if (typeof v === "number" || typeof v === "bigint" || (typeof v === "string" && /^\d+$/.test(v))) out[k] = new Date(Number(v)).toISOString();
+  }
+  return out;
+}
+
 export const EXCLUDED_NODE_TYPES = ["Hint", "Memory", "Clip", "Turn", "Schema"];
 
 /**
