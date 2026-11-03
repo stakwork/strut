@@ -83,9 +83,9 @@ const FOLLOW_MS = 320;
 const PLAY_PX_PER_S = 160;
 const PLAY_EASE_S = 0.35;
 /** How far ahead of the view's middle a call is shown, as a share of its width: nodes appear in front of the pan, not behind it. */
-const PLAY_LEAD = 0.2;
+const PLAY_LEAD = 0.15;
 /** The view opens with a lane this share of the canvas's height — never zoomed past LANES_MAX_ZOOM. */
-const LANES_SHARE = 0.5;
+const LANES_SHARE = 0.62;
 const LANES_MAX_ZOOM = 2;
 
 /** Where the view's middle goes on one axis at zoom `k`: `at`, but never past the run's edge — on an axis where the whole run fits, the run's middle. */

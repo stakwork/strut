@@ -6,7 +6,7 @@
 import type { ReactNode } from "react";
 import type { AccessedNode, TraceRow, TraceTurn } from "@strut/kit";
 import { cn } from "@/lib/utils";
-import { fmtTokens } from "../../lib/format";
+import { fmtTokens, toolLabel } from "../../lib/format";
 
 export const ROW_H = 34;
 export const TOP_PAD = 10;
@@ -255,7 +255,7 @@ function RowContent({ vr, lane, open, onToggle, onRead, onPeek, peeking }: RowPr
     }
     return (
       <TextButton x={x + 40} title={title} text={t.text} className={cn("font-mono text-[11.5px] text-muted-foreground", t.error && "text-destructive")} onRead={onRead}>
-        <span className={cn("font-semibold", laneText)}>{t.kind === "result" ? "→ " : ""}{t.tool}</span> {oneLine(cut(t.text, 240))}
+        <span className={cn("font-semibold", laneText)}>{t.kind === "result" ? "→ " : ""}{t.tool && toolLabel(t.tool)}</span> {oneLine(cut(t.text, 240))}
       </TextButton>
     );
   }
@@ -297,7 +297,7 @@ function RowContent({ vr, lane, open, onToggle, onRead, onPeek, peeking }: RowPr
           <button
             type="button"
             onClick={() => onToggle(key)}
-            title={row.mix.map((m) => `${m.tool} ×${m.count}`).join(" · ")}
+            title={row.mix.map((m) => `${toolLabel(m.tool)} ×${m.count}`).join(" · ")}
             className="inline-flex items-center gap-2 rounded-full border bg-muted/30 px-3 py-0.5 font-mono text-[11.5px] text-muted-foreground hover:border-muted-foreground/60 hover:text-foreground"
           >
             <span className="text-[9px] opacity-80">{open.has(key) ? "▾" : "▸"}</span>

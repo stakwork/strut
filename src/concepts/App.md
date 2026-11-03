@@ -128,7 +128,7 @@ is, nothing moves), and its panel answers a click through `onSelectNode`
 and selects a node itself through `selected`; `details={false}` leaves the
 node's page to that panel, and `calls={false}` starts the call list closed
 behind a toggle, so the graph has the room. It opens zoomed so a stage's
-lane is half its height, at the run's start; the view fits what a lens
+lane is 62% of its height, at the run's start; the view fits what a lens
 highlights; a button goes back to the whole run. A run that touched
 thousands of nodes draws a few dozen a stage, the rest folded into "+N"
 nodes a click opens, and a loop of many iterations as one box marked "×N"
