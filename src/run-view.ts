@@ -103,7 +103,9 @@ function segmentsUnder(root: string, path: string): string[] {
 
 /** Fold a log into its tree. The root is the run itself (its `run.*` events
  *  sit on the workflow name). */
-export function foldRun(events: RunEvent[]): RunNode {
+export function foldRun(allEvents: RunEvent[]): RunNode {
+  // `reply.delta` (agent `stream: true`) is not a step: left out of the tree.
+  const events = allEvents.filter((e) => e.type !== "reply.delta");
   const rootAt = rootPath(events);
   const root = newNode(rootAt, rootAt, 0);
   let order = 0;

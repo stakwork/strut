@@ -66,7 +66,9 @@ const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "obj
 const errorText = (e: unknown) => (isRecord(e) && typeof e.message === "string" ? e.message : typeof e === "string" ? e : e === undefined ? "" : JSON.stringify(e));
 const ended = (t: string) => t === "step.end" || t === "step.error" || t === "step.skipped" || t === "step.replayed";
 
-export function foldRunHealth(events: readonly HealthEvent[]): RunHealth {
+export function foldRunHealth(allEvents: readonly HealthEvent[]): RunHealth {
+  // `reply.delta` is a reply as it is written (agent `stream: true`): not an event of the run's health.
+  const events = allEvents.filter((e) => e.type !== "reply.delta");
   const runStart = events.find((e) => e.type === "run.start");
   const root = runStart?.path ?? events.find((e) => e.type.startsWith("run."))?.path ?? "";
   const label = (path: string) => (root && path.startsWith(`${root}/`) ? path.slice(root.length + 1) : path);
