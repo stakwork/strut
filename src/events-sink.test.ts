@@ -61,6 +61,12 @@ describe("slimRunEvent", () => {
     assert.deepEqual(slim.usage, fat.usage);
   });
 
+  it("reply.delta: the spoken text never leaves — the envelope has no `text`, `call` or `reset`", () => {
+    const slim = slimRunEvent("wf", { ts: "t", runId: "1", path: "wf/turn", type: "reply.delta", call: "toolu_SECRET-CALL", text: "SECRET-REPLY the person's words", reset: true });
+    assert.ok(!JSON.stringify(slim).includes("SECRET"), JSON.stringify(slim));
+    assert.deepEqual(slim, { workflow: "wf", ts: "t", runId: "1", path: "wf/turn", type: "reply.delta" });
+  });
+
   it("leaves out what the event does not carry", () => {
     const slim = slimRunEvent("wf", { ts: "t", runId: "1", path: "wf", type: "run.start" });
     assert.deepEqual(slim, { workflow: "wf", ts: "t", runId: "1", path: "wf", type: "run.start" });
