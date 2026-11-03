@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { defineStep } from "../../../core.js";
 import { EntityRef, type EntityRefT, type Query, canonical, editAliases, memoryDb, memoryWrite, newRefId, normalize, supersede } from "./_db.js";
+import { worldTime } from "../../../graph/world-time.js";
 import { fitNote, resolve, termName, vocabulary, type Resolved as Term, type Vocabulary } from "./_ontology.js";
 
 const FactInput = z.object({
@@ -25,22 +26,6 @@ const FactInput = z.object({
     "Only with value: the written form the wrong text stands for when it is not the subject's name, e.g. 'BTC' on Bitcoin.",
   ),
 });
-
-/** An ISO date as epoch ms; a bare year or year-month means its first day, a time with no offset is UTC.
- *  Undefined when it is not a date, or not one on the calendar. */
-function worldTime(given: string): number | undefined {
-  const s = given.trim();
-  const m = /^(\d{4})(?:-(\d{2}))?$/.exec(s);
-  const date = m ? `${m[1]}-${m[2] ?? "01"}-01` : s.length > 10 && !/(Z|[+-]\d{2}(:?\d{2})?)$/i.test(s) ? `${s}Z` : s;
-  if (!/^\d{4}-\d{2}-\d{2}/.test(date)) return undefined;
-  // Date.parse rolls 2026-02-30 over to March: the calendar date, read on its
-  // own, must come back as given. An offset may move the instant to another day.
-  const day = date.slice(0, 10);
-  const check = Date.parse(`${day}T00:00:00Z`);
-  if (Number.isNaN(check) || new Date(check).toISOString().slice(0, 10) !== day) return undefined;
-  const ms = Date.parse(date);
-  return Number.isNaN(ms) ? undefined : ms;
-}
 
 type Resolved = { ref_id: string; type: string; name: string; status: "matched" | "created"; similar?: { ref_id: string; name: string }[] };
 

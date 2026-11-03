@@ -1,7 +1,7 @@
 /**
  * The SEED of a Ladybug file's ontology (plans/ladybug-backend.md §3, ruling 6
  * as amended 2026-10-28; plans/memory-in-workspace-graph.md, PR A): the
- * fifteen node types a new file starts with and the twenty edge types
+ * sixteen node types a new file starts with and the twenty edge types
  * between them. The ontology itself lives in the file, as `Schema` rows of
  * the `Node` table (`ontology.ts`), seeded from this module at open
  * (add-only) and created and edited at runtime like Neo4j's `:Schema` nodes.
@@ -34,6 +34,10 @@ export const CONCEPT_TYPE = "Concept";
 export const PERSON_TYPE = "Person";
 /** A word or phrase dictation learns (src/audio's fixer reads the type). */
 export const LINGO_TYPE = "Lingo";
+/** A temporal edge's search row (plans/graph-edge-search.md): one hidden
+ *  node per fact, holding its composed text and vector, since a rel table
+ *  takes no index. Written by `assert` alone (`ladybug/temporal.ts`). */
+export const EDGE_TEXT_TYPE = "EdgeText";
 
 /** The ontology's own type: one row per type in the `Node` table. */
 export const SCHEMA_TYPE = "Schema";
@@ -136,6 +140,21 @@ export const LADYBUG_SCHEMAS: readonly NodeSchema[] = [
     name: "string",
     description: "?string",
   }, { role: "entity" }),
+  // No domain: these rows are memory, which the memory tools read.
+  jarvisType(EDGE_TEXT_TYPE, "edgetext-edge_ref_id", ["composed"], "text", "text", {
+    edge_ref_id: "string",
+    edge_type: "string",
+    source_ref_id: "string",
+    target_ref_id: "string",
+    /** The edge's sentence, as asserted. */
+    text: "string",
+    /** What is searched and embedded: both ends' titles, the edge type as words, the sentence. */
+    composed: "string",
+    /** The edge's clocks, copied: a row is in its fact's time window. */
+    valid_at: "?int",
+    invalid_at: "?int",
+    expired_at: "?int",
+  }, { role: "record" }),
 ];
 
 const BY_TYPE = new Map(LADYBUG_SCHEMAS.map((s) => [s.type.toLowerCase(), s]));
@@ -279,8 +298,23 @@ export function edgeColumnsOf(edge: string): Readonly<Record<string, ColumnType>
   return own ? { ...EDGE_COLUMNS, ...own } : EDGE_COLUMNS;
 }
 
+/** The columns of a temporal edge type (plans/graph-memory-plan.md "Core
+ *  attributes"), on its rel table alone: added when the table is made for a
+ *  temporal type or the type becomes temporal (`ontology.ts`). Only
+ *  `assert` writes them (`temporal.ts`). Times are epoch ms; `sources` the
+ *  ref_ids of the nodes the edge was learned from. */
+export const TEMPORAL_EDGE_COLUMNS: Readonly<Record<string, ColumnType>> = {
+  text: "STRING",
+  sources: "STRING[]",
+  valid_at: "INT64",
+  invalid_at: "INT64",
+  expired_at: "INT64",
+  superseded_by: "STRING",
+  last_confirmed_at: "INT64",
+};
+
 /** Every edge column of any type: what an edge struct is read back with. */
-export const ALL_EDGE_COLUMNS: Readonly<Record<string, ColumnType>> = Object.assign({}, EDGE_COLUMNS, ...Object.values(EDGE_TYPE_COLUMNS));
+export const ALL_EDGE_COLUMNS: Readonly<Record<string, ColumnType>> = Object.assign({}, EDGE_COLUMNS, ...Object.values(EDGE_TYPE_COLUMNS), TEMPORAL_EDGE_COLUMNS);
 
 /** The Schema type's own fields (plans/memory-in-workspace-graph.md decision
  *  1), one column each on its rows. The attributes a type declares are one

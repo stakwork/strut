@@ -19,7 +19,7 @@ const STEP_TYPES = [
   "graph/get-ontology", "graph/get-ontology-type", "graph/graph-search", "graph/graph-get",
   "graph/graph-get-batched", "graph/graph-neighbors", "graph/graph-edges", "graph/register-namespace", "graph/create-node",
   "graph/edit-node", "graph/create-triplet", "graph/create-batch-triplet", "graph/create-schema", "graph/edit-edge",
-  "graph/walk", "graph/move-node", "graph/delete-edge", "graph/delete-node",
+  "graph/walk", "graph/move-node", "graph/delete-edge", "graph/delete-node", "graph/assert",
 ];
 
 describe("graph/graph-get marks its `name` field as a node lookup typed by `node_type`", () => {
