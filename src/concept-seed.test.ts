@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import http from "node:http";
-import { parseConceptFile, planConceptSeed, seedConcepts, stampOf, STRUT_CONCEPTS, type ConceptSet } from "./concept-seed.js";
+import { PERSONAL_CONCEPTS, parseConceptFile, planConceptSeed, seedConcepts, stampOf, STRUT_CONCEPTS, type ConceptSet } from "./concept-seed.js";
 import { builderSystem, renderBuilderSystem } from "./ai/builder-system.js";
 import conceptStep, { renderConceptSection } from "./steps/lib/context/concept.js";
 import { accessedNodesOf, defineStep } from "./core.js";
@@ -18,6 +18,8 @@ import { MemoryChatStore } from "./chat-store.js";
 import type { GraphBackend } from "./graph/backend.js";
 import { seedStrutDomain } from "./graph/schema-seed.js";
 import { seedConceptSchema, testBackends } from "./graph/test-util.js";
+import { projectRun, runsThatRead } from "./graph/projector.js";
+import { runWorkflow } from "./runner.js";
 
 describe("concept files (pure)", () => {
   it("parses front matter into description + parent, the body into docs, and stamps the file", () => {
@@ -101,6 +103,16 @@ describe("concept files (pure)", () => {
     assert.ok(app.docs!.includes("never hand over an app directory"), "an app is never a file deliverable");
     assert.ok(!app.docs!.includes("## A job's app"), "App stays the builders' manual");
     assert.deepEqual(STRUT_CONCEPTS.legacyPrefixes, ["lab/builder/concepts/", "lab/job/concepts/"]);
+  });
+
+  it("ships Personal as a root of its own set, the person's once edited, and apart from strut's pages", async () => {
+    const file = "Personal.md";
+    const c = parseConceptFile(file, await readFile(join(PERSONAL_CONCEPTS.dir, file), "utf-8"), PERSONAL_CONCEPTS.prefix);
+    assert.equal(c.parent, undefined, "a root");
+    assert.ok(c.description && c.docs?.includes("PARENT_OF"), "says how to walk it");
+    assert.doesNotMatch(c.docs!, /hive|@<slug>|\bpod\b|workspace/i, "names nothing one deployment has");
+    assert.equal(PERSONAL_CONCEPTS.keepEdited, true);
+    assert.notEqual(PERSONAL_CONCEPTS.dir, STRUT_CONCEPTS.dir);
   });
 
   it("renders the builder's section: the page, its kinds, and how to open one", () => {
@@ -372,6 +384,39 @@ describe("createStrut with a graph", { skip: ladybug.skip }, () => {
     assert.deepEqual(await names(), []);
     await make();
     assert.deepEqual(await names(), ["Job", "Workflow Builder"]);
+  });
+
+  it("concepts: { personal: true } seeds Personal; an agent walks it with context/concept and graph_get, and the run records both reads", async () => {
+    const store = new MemoryRunStore();
+    const strut = await make({ concepts: { personal: true }, store });
+    assert.deepEqual(await names(), ["Job", "Personal", "Workflow Builder"]);
+    const root = (await b.reader.namesLike("Concept", "Personal", 1))[0]!.ref_id;
+    // A page the person taught, under the root.
+    const cooking = (await b.nodes.write({ type: "Concept", data: { name: "Cooking", description: "How meals are planned", docs: "Plan on Sundays." } })).ref_id;
+    await b.edges.write({ edge: "PARENT_OF", source_ref_id: root, target_ref_id: cooking });
+
+    const flow = {
+      name: "walk",
+      input: z.any(),
+      steps: [
+        { id: "root", type: "context/concept", config: { name: "Personal", tool: "graph_get" } },
+        { id: "open", type: "graph/graph-get", config: { node_type: "Concept", name: "Cooking", children: "PARENT_OF" }, depends: "root" },
+      ],
+    };
+    const res = await runWorkflow(flow, {}, await createRegistry([]), { store, services: strut.services });
+    assert.equal(res.status, "success", JSON.stringify(res.error));
+    const events = await store.getRunEvents("walk", res.runId);
+    const end = (id: string) => events.find((e) => e.type === "step.end" && e.path === `walk/${id}`)!;
+    const text = (end("root").output as { text: string }).text;
+    assert.ok(text.includes('the "Personal" Concept') && text.includes("- Cooking — How meals are planned"), text);
+    assert.ok(text.includes('graph_get({ node_type: "Concept", name: "<name>", children: "PARENT_OF" })'), "says how to open the next page");
+    assert.equal((end("open").output as { properties: { docs: string } }).properties.docs, "Plan on Sundays.");
+    assert.deepEqual(end("root").nodes?.map((n) => n.ref_id), [root], "the page it rendered, never its children");
+
+    // The run's record: one ACCESSED edge to each page, read back as Concept use.
+    const runRef = await projectRun(b, store, "walk", res.runId);
+    for (const ref of [root, cooking]) assert.deepEqual((await runsThatRead(b, ref)).map((r) => [r.run_ref_id, r.workflow_name]), [[runRef, "walk"]]);
+    await strut.close();
   });
 
   it("puts the Job page at the end of the job agent's system prompt", async () => {

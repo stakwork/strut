@@ -28,7 +28,8 @@ describe("ladybug DDL (pure)", () => {
     assert.ok(ddl.some((s) => s.startsWith("CREATE REL TABLE IF NOT EXISTS SCHEMA_EDGE(FROM Node TO Node, `ref_id` STRING,") && s.endsWith("`edge_type` STRING, `is_parent` BOOL, `temporal` BOOL, `cardinality` STRING)")), "parent links and edge rules, apart from the data's edges");
     for (const col of Object.keys(nodeColumns())) if (col !== "ref_id") assert.ok(ddl.includes(`ALTER TABLE Node ADD IF NOT EXISTS \`${col}\` ${nodeColumns()[col]}`), col);
     for (const edge of LADYBUG_EDGE_TYPES) assert.ok(ddl.some((s) => s.startsWith(`CREATE REL TABLE IF NOT EXISTS \`${edge}\`(FROM Node TO Node, `)), edge);
-    assert.ok(!ddl.some((s) => /IS_ALIAS|ACCESSED|IN_RUN|IN_SESSION/.test(s)));
+    assert.ok(!ddl.some((s) => /IS_ALIAS|IN_RUN|IN_SESSION/.test(s)));
+    assert.ok(ddl.some((s) => s.startsWith("CREATE REL TABLE IF NOT EXISTS `ACCESSED`(")), "a run's reads: the run's own edge, no tool calls");
     assert.deepEqual(indexCalls().map(([n]) => n), ["node_vec", "node_fts"]);
     assert.deepEqual(MIGRATIONS, [], "nothing has shipped yet");
   });

@@ -13,7 +13,7 @@ import type { GraphBackend } from "./backend.js";
 import { seedStrutDomain } from "./schema-seed.js";
 import { edgeCount, nodeCount, rawWrite, seedConceptSchema, testBackends } from "./test-util.js";
 import { GraphWorkspaceStore } from "./workspace-store.js";
-import { jobNode, messageText, preview, projectAll, projectChats, projectRun, projectRunEvents, projectRunOnce, projectRuns, runRef, spawnedRunIds } from "./projector.js";
+import { jobNode, messageText, preview, projectAll, projectChats, projectRun, projectRunEvents, projectRunOnce, projectRuns, runRef, runsThatRead, spawnedRunIds } from "./projector.js";
 import type { JobView } from "../job-index.js";
 import { runStep } from "../run-step.js";
 import { buildRegistry, coreRegistry } from "../steps/registry.js";
@@ -260,7 +260,8 @@ for (const tb of testBackends()) describe(`projector on ${tb.name}`, { skip: tb.
     const report = await projectRuns(backend, store, { workflows: [WF] });
     assert.deepEqual(
       [report.runs, report.sessions, report.toolCalls, report.edges, report.accessed, report.unresolved, report.skipped],
-      [1, 0, 0, 1, 0, 0, 0],
+      [1, 0, 0, 1, 0, 3, 0],
+      "the three refs the tool call reported are not in the file: counted, no edge",
     );
     assert.equal(await count("StrutRun"), 1);
     assert.equal(await edges("EXECUTED"), 1);
@@ -321,6 +322,48 @@ for (const tb of testBackends()) describe(`projector on ${tb.name}`, { skip: tb.
     // Re-projection does not duplicate the edges.
     await projectRuns(backend, store, { workflows: [WF], skipSettled: false });
     assert.equal(await edges("ACCESSED"), 2);
+
+    // Concept use, read up through the tool call: no run edge on Neo4j.
+    assert.deepEqual((await runsThatRead(backend, CONCEPT_A)).map((r) => [r.run_id, r.workflow_name, r.run_status]), [[RUN, WF, "success"]]);
+    assert.deepEqual(await runsThatRead(backend, "not-in-this-graph"), []);
+    assert.equal((await backend.query(`MATCH (:StrutRun)-[e:ACCESSED]->() RETURN count(e) AS n`))[0]!["n"], 0);
+  });
+
+  it("a file records what a run read: StrutRun -ACCESSED-> each node any step reported, in the run's namespace; runsThatRead shows a use only to a reader of all three", { skip: neo && "ladybug only" }, async () => {
+    await seedConceptSchema(backend);
+    const mine = await backend.nodes.write({ type: "Concept", data: { name: "Cooking" } }, "create");
+    const ours = await backend.nodes.write({ type: "Concept", data: { name: "House rules" } }, "create", { namespace: "shared" });
+    const hash = (await ws.getWorkflowHash(WF))!;
+    const events = sampleEvents(hash).map((e) =>
+      e.path === `${WF}/plan/001-search` && e.type === "step.end"
+        ? { ...e, nodes: [{ ref_id: mine.ref_id, node_type: "Concept" }, { ref_id: "not-in-this-graph" }, { ref_id: "elsewhere", peer: "box" }] }
+        : // A workflow step's own report (context/concept's): the run read it too.
+          e.path === `${WF}/ship` && e.type === "step.end"
+          ? { ...e, nodes: [{ ref_id: ours.ref_id }, { ref_id: mine.ref_id }] }
+          : e,
+    );
+    for (const e of events) await store.append(WF, RUN, e);
+    const report = await projectRuns(backend, store, { workflows: [WF] });
+    assert.deepEqual([report.accessed, report.unresolved, report.edges], [2, 1, 3], "two held nodes, one missing ref, the peer's skipped; + EXECUTED");
+
+    const rows = await backend.query(
+      `MATCH ${d().node("r", "StrutRun")}-[e:ACCESSED]->(n:Node) RETURN r.namespace AS run_ns, e.namespace AS edge_ns, n.namespace AS node_ns, n.name AS name ORDER BY name`,
+    );
+    assert.deepEqual(rows, [
+      { run_ns: "private", edge_ns: "private", node_ns: "private", name: "Cooking" },
+      { run_ns: "private", edge_ns: "private", node_ns: "shared", name: "House rules" },
+    ], "the edge is the run's, whatever the node's namespace");
+    await projectRuns(backend, store, { workflows: [WF], skipSettled: false });
+    assert.equal(await edges("ACCESSED"), 2, "idempotent");
+
+    const runRefId = (await backend.query(`MATCH ${d().node("r", "StrutRun")} RETURN r.ref_id AS r`))[0]!["r"];
+    assert.deepEqual(await runsThatRead(backend, mine.ref_id), [{ run_ref_id: runRefId, run_id: RUN, workflow_name: WF, run_status: "success" }]);
+    // The shared page was read by a private run: the run's own reader sees
+    // the use, a reader of `shared` alone sees neither the run nor the edge.
+    assert.deepEqual(await runsThatRead(backend, ours.ref_id), [], "the node is outside the default list");
+    assert.equal((await runsThatRead(backend, ours.ref_id, { namespaces: ["private", "shared"] })).length, 1);
+    assert.deepEqual(await runsThatRead(backend, ours.ref_id, { namespaces: ["shared"] }), []);
+    assert.deepEqual(await runsThatRead(backend, mine.ref_id, { namespaces: ["shared"] }), []);
   });
 
   it("a thread is queryable across runs: which nodes each turn of a session touched", neoOnly("agent sessions are not in the file"), async () => {

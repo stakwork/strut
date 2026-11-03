@@ -65,7 +65,7 @@ import { createVerifyWaker, type VerifyWaker } from "./ai/verify-waker.js";
 import type { RunEndInfo } from "./runner.js";
 import { ACTOR_SECRETS_FILE, actorSecretStore, type ActorSecretStore } from "./actor-secrets.js";
 import { seedJobWorkflow, type JobSeedOptions } from "./job-seed.js";
-import { STRUT_CONCEPTS, seedConcepts } from "./concept-seed.js";
+import { PERSONAL_CONCEPTS, STRUT_CONCEPTS, seedConcepts } from "./concept-seed.js";
 import { builderSystem } from "./ai/builder-system.js";
 import { seedOrchestratorWorkflow, type OrchestratorSeedOptions } from "./orchestrator-seed.js";
 import { seedBuilderWorkflow, type BuilderSeedOptions } from "./builder-seed.js";
@@ -379,8 +379,11 @@ export interface StrutOptions<TServices = unknown> {
    *  reconciled by its source stamp, and like every seed it always matches
    *  git: each boot puts the file's text back over an edit made in the
    *  graph. A host seeds its own pages under them with
-   *  `seedConcepts` once this returned. `false` seeds nothing. */
-  concepts?: false;
+   *  `seedConcepts` once this returned. `false` seeds nothing.
+   *  `{ personal: true }` also seeds `Personal`, the root of a person's
+   *  own knowledge (`PERSONAL_CONCEPTS`), for a host whose graph is one
+   *  person's. */
+  concepts?: false | { personal?: boolean };
   /** The `orchestrator` workflow strut ships (`src/orchestrator-seed.ts`):
    *  one conversation turn that answers with its tools and starts jobs
    *  detached. Seeded as `job` is, with the same host delta (`{ tools,
@@ -1220,7 +1223,7 @@ export async function createStrut<TServices = unknown>(
   // first. On a graph only; a page that will not seed is a warning.
   if (graph && opts.concepts !== false) {
     try {
-      await seedConcepts(graph, [STRUT_CONCEPTS]);
+      await seedConcepts(graph, opts.concepts?.personal ? [STRUT_CONCEPTS, PERSONAL_CONCEPTS] : [STRUT_CONCEPTS]);
     } catch (err) {
       console.warn(`[concepts] could not seed strut's Concept pages:`, err instanceof Error ? err.message : err);
     }

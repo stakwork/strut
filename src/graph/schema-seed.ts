@@ -170,7 +170,7 @@ export async function seedStrutDomain(e: EngineLike): Promise<SeedReport> {
   await ddl(`CREATE CONSTRAINT IF NOT EXISTS FOR (n:Data_Bank) REQUIRE n.ref_id IS UNIQUE`);
 
   // 6. Edge schemas — one relationship per registry row between Schema nodes.
-  for (const e of [...STRUT_EDGES, ...JARVIS_SOURCED_EDGES]) {
+  for (const e of [...STRUT_EDGES.filter((e) => !e.ladybugOnly), ...JARVIS_SOURCED_EDGES]) {
     const r = await seedEdgeSchema(src, e);
     if (r === "created") report.createdEdgeSchemas.push(`${e.source}-[${e.edge}]->${e.target}`);
     else if (r === "skipped") report.skippedEdgeSchemas.push(`${e.source}-[${e.edge}]->${e.target}`);
