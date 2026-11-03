@@ -28,6 +28,7 @@ export { NodeSearch, type NodeSearchProps } from "./components/NodeSearch";
 export { NodeGraph, type NodeGraphProps } from "./components/NodeGraph";
 export { RunGraph, type RunGraphSelection } from "./components/run-graph/RunGraph";
 export { AgentTrace, AGENT_TRACE_INTERVAL_MS, type AgentTraceProps } from "./components/agent-trace/AgentTrace";
+export { createReplayClock, type ReplayClock } from "./lib/replay-clock";
 export { WalkView, WALK_VIEW_INTERVAL_MS, type WalkViewProps, type WalkViewMode } from "./components/walk/WalkView";
 export { RunGraphReader } from "./components/run-graph/reader";
 export { useNode, useNeighbors, useGraphSearch, getNodes, getNeighbors, type GraphNode, type GraphNeighbor, type GraphHit } from "./lib/graph";
