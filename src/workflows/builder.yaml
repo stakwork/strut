@@ -80,6 +80,8 @@ steps:
         {{ params.system }}
         {{ concepts.text }}
       prompt: "{{ input.workspace ? 'Workspace: @' + input.workspace + ', the one this job runs in. ' : '' }}{{ $job ? 'Your job id: ' + $job + '. ' : '' }}{{ input.prompt }}"
+      # The message alone, what the graph keeps as this turn's text.
+      message: "{{ input.prompt }}"
       # The web tools (API documentation while authoring) and the EDITOR
       # family — view, create, str_replace, insert on the job's directory,
       # a tree listing, a grep — for an app's files (plans/apps.md §8). No

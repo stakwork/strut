@@ -4,7 +4,12 @@
  * `StrutRun`, `StrutAgentSession`, `StrutToolCall`, `StrutChat`, `StrutTurn`
  * nodes and the `EXECUTED` / `IN_RUN` / `IN_SESSION` / `SPAWNED` /
  * `IN_CHAT` edges — with summaries and a `log_ref` pointer back to the raw
- * log, never full payloads.
+ * log, never full payloads. The one exception is a conversation turn's
+ * words, kept whole so search reads what was said (`TEXT_MAX_CHARS`): a
+ * builder chat turn's message and reply, and a thread turn's (an agent step
+ * with a `session`) — its `message` (the person's words when its prompt
+ * wraps them, else the prompt) and its reply's text. Never the tool
+ * traffic, the system prompt or attachments.
  *
  * The raw log stays the store of record (tailing, resume, replay); this is
  * the queryable skeleton on top. Zero coupling to the hot path: `createStrut`
@@ -67,7 +72,7 @@ import type { JobIndex, JobView } from "../job-index.js";
 import type { GraphBackend } from "./backend.js";
 import type { NodeInput } from "./node-writer.js";
 import type { EdgeInput } from "./edge-writer.js";
-import { PREVIEW_MAX_CHARS, getStrutSchema } from "./strut-schemas.js";
+import { PREVIEW_MAX_CHARS, TEXT_MAX_CHARS, getStrutSchema } from "./strut-schemas.js";
 
 /** Does this backend's ontology hold nodes of `type`? Every type where
  *  Strut's own types come from code (Neo4j: jarvis's meta-graph is open, and
@@ -127,13 +132,31 @@ export interface ProjectReport {
 
 const emptyReport = (): ProjectReport => ({ runs: 0, sessions: 0, toolCalls: 0, chats: 0, turns: 0, edges: 0, accessed: 0, unresolved: 0, skipped: 0, jobs: 0 });
 
-/** A bounded text preview of any value — the only shape of payload that
- *  reaches the graph. */
+/** A bounded text preview of any value — the shape of payload that reaches
+ *  the graph, but for a conversation turn's words (`wholeText`). */
 export function preview(v: unknown, max = PREVIEW_MAX_CHARS): string | undefined {
   if (v === undefined || v === null) return undefined;
   const s = typeof v === "string" ? v : JSON.stringify(v);
   if (!s) return undefined;
   return s.length > max ? `${s.slice(0, max - 1)}…` : s;
+}
+
+/** A conversation turn's words, whole up to `TEXT_MAX_CHARS`; past it the
+ *  start and the last fifth, the middle left out. Text only. */
+export function wholeText(v: unknown): string | undefined {
+  if (typeof v !== "string" || !v.trim()) return undefined;
+  if (v.length <= TEXT_MAX_CHARS) return v;
+  const tail = TEXT_MAX_CHARS / 5;
+  return `${v.slice(0, TEXT_MAX_CHARS - tail - 3)}\n…\n${v.slice(-tail)}`;
+}
+
+/** What an agent answered, as text: a structured reply's `text` (the job
+ *  and orchestrator reply shape), else its result. */
+export function replyText(output: unknown): string | undefined {
+  if (typeof output === "string") return output;
+  const o = output as { object?: { text?: unknown } | null; result?: unknown } | null | undefined;
+  if (typeof o?.object?.text === "string") return o.object.text;
+  return typeof o?.result === "string" ? o.result : undefined;
 }
 
 function compact(o: Record<string, unknown>): Record<string, unknown> {
@@ -258,6 +281,10 @@ export function projectRunEvents(workflow: string, runId: string, events: RunEve
     // thread.
     const thread = typeof input["session"] === "string" && !idProblem(input["session"]) ? threadOf(input["session"]) : undefined;
     const turn = (end?.output as { session?: { turn?: unknown } } | null | undefined)?.session?.turn;
+    // What the turn answered: the step's `message` (the person's words,
+    // when the prompt wraps them in more), else its prompt.
+    const asked = input["message"] ?? input["prompt"];
+    const reply = replyText(end?.output);
     sessionPaths.push(e.path);
     sessions.push({
       type: "StrutAgentSession",
@@ -267,8 +294,12 @@ export function projectRunEvents(workflow: string, runId: string, events: RunEve
         step_type: e.stepType,
         model: typeof input["model"] === "string" ? input["model"] : undefined,
         iteration: e.iteration,
-        prompt_preview: preview(input["prompt"] ?? input["system"] ?? e.input),
-        result_preview: preview(end?.output),
+        prompt_preview: preview(asked ?? input["system"] ?? e.input),
+        result_preview: preview(reply ?? end?.output),
+        // A turn of a thread keeps its words whole; a one-shot agent's
+        // prompt (a janitor's mandate, a page) stays a preview.
+        message: thread !== undefined ? wholeText(asked) : undefined,
+        reply: thread !== undefined ? wholeText(reply) : undefined,
         started_at: e.ts,
         duration_ms: end?.durationMs,
         error_message: end?.error?.message,
@@ -758,8 +789,13 @@ async function runProjectionsSettled(backend: GraphBackend, runIds: string[]): P
 export function messageText(content: unknown): string | undefined {
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {
+    // Text parts only: a reasoning part carries `text` too, and the model's
+    // thinking is not what it said.
     const texts = content
-      .map((p) => (p && typeof p === "object" && typeof (p as Record<string, unknown>)["text"] === "string" ? (p as Record<string, unknown>)["text"] : ""))
+      .map((p) => {
+        const part = (p && typeof p === "object" ? p : {}) as Record<string, unknown>;
+        return (part["type"] === undefined || part["type"] === "text") && typeof part["text"] === "string" ? part["text"] : "";
+      })
       .filter(Boolean);
     return texts.length ? texts.join("\n") : undefined;
   }
@@ -848,14 +884,26 @@ async function writeChat(backend: GraphBackend, chatStore: ChatStore, meta: Chat
     const m = messages[i]!;
     if (m.role !== "user") continue;
     turn++;
-    const assistant = messages.slice(i + 1).find((x) => x.role === "assistant" && messageText(x.content));
+    // The reply is every assistant text up to the next user message: a turn
+    // narrates across its steps, and the person reads all of it.
+    const next = messages.findIndex((x, j) => j > i && x.role === "user");
+    const said = messageText(m.content);
+    const answered =
+      messages
+        .slice(i + 1, next < 0 ? undefined : next)
+        .filter((x) => x.role === "assistant")
+        .map((x) => messageText(x.content))
+        .filter(Boolean)
+        .join("\n\n") || undefined;
     turns.push({
       type: "StrutTurn",
       data: compact({
         chat_id: meta.id,
         turn,
-        user_text_preview: preview(messageText(m.content)),
-        assistant_text_preview: preview(assistant ? messageText(assistant.content) : undefined),
+        user_text_preview: preview(said),
+        assistant_text_preview: preview(answered),
+        user_text: wholeText(said),
+        assistant_text: wholeText(answered),
         log_ref: `${meta.id}/${turn}`,
         unique_source_id: `strutturn:${meta.id}:${turn}`,
       }),

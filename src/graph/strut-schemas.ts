@@ -206,6 +206,14 @@ export const RESERVED_ATTRIBUTE_NAMES = new Set(["type", "parent", "node_key", "
  *  payloads stay in the run/chat log behind `log_ref`. */
 export const PREVIEW_MAX_CHARS = 500;
 
+/** The one payload kept whole: a conversation turn's words — what was said
+ *  and the reply (`StrutAgentSession.message` / `reply` on a turn of a
+ *  thread, `StrutTurn.user_text` / `assistant_text`), so search reads what
+ *  people said, not its first 500 characters. Past this (a pasted
+ *  document) the start and the end are kept. Never tool traffic, system
+ *  prompts or attachments. */
+export const TEXT_MAX_CHARS = 50_000;
+
 // ── The eleven Strut node types ──────────────────────────────────────────────
 //
 // Keys. The six WORKSPACE types — `StrutWorkflow`, `StrutWorkflowVersion`,
@@ -418,7 +426,11 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
     ...base,
     type: "StrutAgentSession",
     key_spec: "strutagentsession-run_id-path",
-    index: ["prompt_preview", "result_preview"],
+    // `message` + `reply` first: on a turn of a thread they hold the words
+    // whole, and the embedding reads the start of the search text. A node
+    // without them (a one-shot agent, an older turn) composes from the
+    // previews as it always did.
+    index: ["message", "reply", "prompt_preview", "result_preview"],
     title_key: "path",
     description_key: "prompt_preview",
     type_description: "One agent-step execution inside a strut run",
@@ -430,6 +442,12 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
       iteration: "?int",
       prompt_preview: "?string",
       result_preview: "?string",
+      /** A turn of a thread only: the words it answered, whole (the agent
+       *  step's `message`, else its `prompt`) — `TEXT_MAX_CHARS`. */
+      message: "?string",
+      /** A turn of a thread only: its reply, whole — a structured reply's
+       *  `text`, else the result. */
+      reply: "?string",
       started_at: "?datetime",
       duration_ms: "?int",
       error_message: "?string",
@@ -492,7 +510,7 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
     ...base,
     type: "StrutTurn",
     key_spec: "strutturn-chat_id-turn",
-    index: ["user_text_preview"],
+    index: ["user_text", "assistant_text", "user_text_preview"],
     embed: false,
     title_key: "user_text_preview",
     description_key: "assistant_text_preview",
@@ -502,6 +520,10 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
       turn: "int",
       user_text_preview: "?string",
       assistant_text_preview: "?string",
+      /** The user's message and the assistant's text in reply, whole —
+       *  `TEXT_MAX_CHARS`. */
+      user_text: "?string",
+      assistant_text: "?string",
       started_at: "?datetime",
       log_ref: "?string",
     },

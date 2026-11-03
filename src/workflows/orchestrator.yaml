@@ -110,6 +110,8 @@ steps:
       # turn's prompt — never the system prompt, which the session froze at
       # its first turn.
       prompt: "{{ input.context?.line || '' }}{{ peers.peers.length ? (peers.self?.id ? 'This workspace is @' + peers.self?.id + (peers.self?.label ? ' (' + peers.self?.label + ')' : '') + '. Other workspaces' : 'Workspaces') + ' you can ask: ' +peers.peers.map(p => '@' + p.id + (p.label ? ' (' + p.label + ')' : '')).join(', ') + '. ' : '' }}{{ input.prompt }}"
+      # The person's words alone, what the graph keeps as this turn's text.
+      message: "{{ input.prompt }}"
       toolFilter: [none]
       agentTools: "{{ params.tools }}"
       approve: "{{ params.approve }}"

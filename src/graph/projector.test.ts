@@ -27,10 +27,13 @@ import {
   projectRunEvents,
   projectRunOnce,
   projectRuns,
+  replyText,
   runRef,
   runsThatRead,
   spawnedRunIds,
+  wholeText,
 } from "./projector.js";
+import { TEXT_MAX_CHARS } from "./strut-schemas.js";
 import type { JobView } from "../job-index.js";
 import { runStep } from "../run-step.js";
 import { buildRegistry, coreRegistry } from "../steps/registry.js";
@@ -154,6 +157,58 @@ describe("projectRunEvents (pure)", () => {
     );
   });
 
+  it("a turn of a thread keeps its words whole: the step's message, the reply's text", () => {
+    const said = `Can you check the invoice for Acme? ${"Details follow. ".repeat(60)}The total looks wrong.`;
+    const answer = `Checked it. ${"Line by line. ".repeat(60)}The tax was counted twice.`;
+    const p = projectRunEvents(
+      WF,
+      RUN,
+      [
+        ev(0, "run.start", WF),
+        ev(1, "step.start", `${WF}/turn`, {
+          stepType: "agent",
+          input: { prompt: `Workspaces you can ask: @a, @b. ${said}`, message: said, session: "conv-1" },
+        }),
+        ev(2, "step.end", `${WF}/turn`, {
+          stepType: "agent",
+          output: { result: JSON.stringify({ text: answer }), object: { text: answer, artifacts: [] }, session: { id: "conv-1", turn: 3, offset: 0 } },
+        }),
+        // No `message`: the prompt is what the turn answered.
+        ev(3, "step.start", `${WF}/plain`, { stepType: "agent", input: { prompt: said, session: "conv-2" } }),
+        ev(4, "step.end", `${WF}/plain`, { stepType: "agent", output: { result: answer, session: { id: "conv-2", turn: 0, offset: 0 } } }),
+        // A one-shot agent keeps previews only.
+        ev(5, "step.start", `${WF}/janitor`, { stepType: "agent", input: { prompt: said } }),
+        ev(6, "step.end", `${WF}/janitor`, { stepType: "agent", output: { result: answer } }),
+      ],
+      null,
+    )!;
+    const [turn, plain, oneShot] = p.sessions.map((s) => s.data);
+    assert.equal(turn!["message"], said);
+    assert.equal(turn!["reply"], answer);
+    // The previews read the person's words and the reply, not the wrapper or the JSON.
+    assert.equal(turn!["prompt_preview"], preview(said));
+    assert.equal(turn!["result_preview"], preview(answer));
+    assert.equal(plain!["message"], said);
+    assert.equal(plain!["reply"], answer);
+    assert.equal(oneShot!["message"], undefined);
+    assert.equal(oneShot!["reply"], undefined);
+    assert.equal(oneShot!["result_preview"], preview(answer));
+  });
+
+  it("wholeText keeps a long text's start and end; replyText reads a reply's text", () => {
+    const long = `START ${"x".repeat(TEXT_MAX_CHARS)} END`;
+    const kept = wholeText(long)!;
+    assert.equal(kept.length, TEXT_MAX_CHARS);
+    assert.ok(kept.startsWith("START ") && kept.endsWith(" END") && kept.includes("\n…\n"));
+    assert.equal(wholeText("short"), "short");
+    assert.equal(wholeText("  "), undefined);
+    assert.equal(wholeText({ text: "no" }), undefined);
+    assert.equal(replyText("plain"), "plain");
+    assert.equal(replyText({ result: "{}", object: { text: "the reply" } }), "the reply");
+    assert.equal(replyText({ result: "the result", object: { other: 1 } }), "the result");
+    assert.equal(replyText({ steps: 3 }), undefined);
+  });
+
   it("a peer's run opened its threads under peer/ — failed turns included", () => {
     const p = projectRunEvents(
       WF,
@@ -233,6 +288,8 @@ describe("projectRunEvents (pure)", () => {
     assert.equal(preview(undefined), undefined);
     assert.equal(messageText([{ type: "text", text: "hi" }, { type: "text", text: "there" }]), "hi\nthere");
     assert.equal(messageText("plain"), "plain");
+    // The model's thinking is not what it said.
+    assert.equal(messageText([{ type: "reasoning", text: "let me think" }, { type: "text", text: "the answer" }, { type: "tool-call", toolName: "x" }]), "the answer");
     assert.deepEqual(
       spawnedRunIds([
         { role: "user", content: "go" },
@@ -579,6 +636,42 @@ for (const tb of testBackends()) describe(`projector on ${tb.name}`, { skip: tb.
     report = await projectRuns(backend, store, { workflows: [WF], skipSettled: false });
     assert.deepEqual([report.runs, report.skipped], [1, 0]);
     assert.equal(await count("StrutRun"), 1);
+  });
+
+  it("search finds what was said past the first 500 characters: a thread's turn and a chat's", neoOnly("agent sessions and chats are not in the file"), async () => {
+    const filler = "Some context first. ".repeat(40);
+    const events: RunEvent[] = [
+      ev(0, "run.start", WF),
+      ev(1, "step.start", `${WF}/turn`, { stepType: "agent", input: { prompt: `Workspaces you can ask: @a. ${filler}zanzibar`, message: `${filler}zanzibar`, session: "conv-1" } }),
+      ev(2, "step.end", `${WF}/turn`, { stepType: "agent", output: { result: "{}", object: { text: `${filler}kilimanjaro` }, session: { id: "conv-1", turn: 0, offset: 0 } } }),
+      ev(3, "run.end", WF),
+    ];
+    for (const e of events) await store.append(WF, RUN, e);
+    await projectRuns(backend, store, { workflows: [WF] });
+
+    const chats = new MemoryChatStore();
+    await chats.createChat({ id: "c1", title: "Notes" });
+    await chats.appendMessages("c1", [
+      { role: "user", content: `${filler}quixotic` },
+      { role: "assistant", content: [{ type: "reasoning", text: "thinking aloud" }, { type: "text", text: "Looking." }, { type: "tool-call", toolName: "list_steps", input: {} }] },
+      { role: "tool", content: [{ type: "tool-result", toolName: "list_steps", output: { type: "json", value: [] } }] },
+      { role: "assistant", content: [{ type: "text", text: `${filler}marmalade` }] },
+      { role: "user", content: "thanks" },
+      { role: "assistant", content: "Any time." },
+    ]);
+    await projectChats(backend, chats);
+
+    const [turn] = await backend.query(`MATCH (t:StrutTurn {turn: 0}) RETURN t.user_text AS u, t.assistant_text AS a`);
+    assert.equal(turn!["u"], `${filler}quixotic`);
+    // Every text of the turn's steps, its thinking and the next turn left out.
+    assert.equal(turn!["a"], `Looking.\n\n${filler}marmalade`);
+
+    await backend.bolt.run(`CALL db.awaitIndexes(60)`);
+    const found = async (q: string) => (await backend.reader.search({ q })).nodes.map((n) => n.node_type);
+    assert.deepEqual(await found("zanzibar"), ["StrutAgentSession"]);
+    assert.deepEqual(await found("kilimanjaro"), ["StrutAgentSession"]);
+    assert.deepEqual(await found("quixotic"), ["StrutTurn"]);
+    assert.deepEqual(await found("marmalade"), ["StrutTurn"]);
   });
 
   it("projects chats and turns with IN_CHAT edges and SPAWNED edges to runs the chat launched", neoOnly("chats and turns are not in the file"), async () => {
