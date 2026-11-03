@@ -18,8 +18,11 @@ name: tests
 # LadybugDB file, so a Neo4j-only regression (strut#448: editing a jarvis-typed
 # Concept; a type's own created_at in graph/find) was green there. It is
 # neo4j:5.19.0, what the swarms run — a newer 5.x accepts Cypher 5.19 refuses.
-# Its own job and budget (~18 min on a runner: every suite runs on a Ladybug
-# file and on Neo4j), so the unit job's is untouched; same install. The STT
+# It runs the Neo4j half only (`STRUT_TEST_LADYBUG=off`): every graph file's
+# Ladybug half is the unit job's already, and run twice it was 8 of the job's
+# 21 minutes. The rest is split over three jobs (`STRUT_TEST_SHARD`, node's
+# --test-shard: files round-robin), each with a Neo4j of its own since every
+# suite wipes it: ~5 min each where one job took 22. Same install. The STT
 # suite needs a model download and stays opt-in (see AGENTS.md).
 
 on:
@@ -60,8 +63,13 @@ jobs:
         run: npm test
 
   graph:
+    name: graph (${{ matrix.shard }}/3)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     services:
       neo4j:
         image: neo4j:5.19.0
@@ -97,3 +105,5 @@ jobs:
         env:
           STRUT_TEST_NEO4J_URI: bolt://localhost:7687
           STRUT_TEST_NEO4J_PASSWORD: struttest
+          STRUT_TEST_LADYBUG: "off"
+          STRUT_TEST_SHARD: ${{ matrix.shard }}/3
