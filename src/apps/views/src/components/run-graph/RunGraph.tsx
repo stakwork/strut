@@ -2,8 +2,8 @@
 // (src/components/strut-run-graph/index.tsx): the tree of graph calls, the
 // replay, the lanes and lineage, the child runs and peers — unchanged. What
 // moved is the data path: hive fetched a trace its server built; here the
-// page builds it (./reader.ts) from `run/events` and `graph/graph-get-batched`
-// / `graph/graph-neighbors`, through the one client, on the importing app's
+// page builds it (./reader.ts) from `run/events`, `graph/graph-get-batched`
+// and `graph/graph-edges`, through the one client, on the importing app's
 // grants. Hive's Graph Explorer link is gone (strut has no explorer page).
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -538,9 +538,11 @@ function CurrentCall({ call, index, total, nameOf }: { call: RunGraphCall; index
  *
  * Generic over workflows: give it a run (`workflow` + `runId`). The importing
  * app needs the run's workflow — and the workflow of any child run it opens —
- * in `grants.workflows`, and `graph/graph-get-batched` and
- * `graph/graph-neighbors` in `grants.steps`; without the graph steps the
- * nodes are drawn as the run's log named them.
+ * in `grants.workflows`, and `graph/graph-get-batched`, `graph/graph-edges`
+ * and `graph/graph-neighbors` in `grants.steps` — without `graph-edges` the
+ * edges and lineage are read a node at a time through `graph-neighbors`,
+ * slowly; without the graph steps the nodes are drawn as the run's log
+ * named them.
  *
  * A branch of the tree can be shown on its own — the crosshair on its row,
  * or `scope` — one iteration of a loop, or one subflow of it: its calls
