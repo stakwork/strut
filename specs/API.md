@@ -215,7 +215,7 @@ curl -X POST http://localhost:3000/workflows/hello/run \
 the log from its first line, then follows appends until the run's terminal
 event, then sends one `done` frame and closes. The same request serves a
 live run and a finished one (a finished run replays and closes at once), so
-attaching late loses nothing.
+attaching late loses nothing. An append wakes the tail at once (the log is still re-read every 250 ms as the fallback), so a live reader — a voice agent following `reply.delta` events — hears each event within milliseconds.
 
 ```
 data: {"ts":"…","runId":"1790436489808","path":"hello","type":"run.start","input":{"name":"World","pauseMs":3000},"workflowHash":"31054c203d38"}
@@ -375,6 +375,7 @@ One object per line of the run's append-only log. Common fields:
 | `run.cancelled`   | terminal, cancelled |
 | `run.cancelling` / `run.paused` / `run.resumed` | control markers (§6); not terminal. `run.resumed` reopens a log after a terminal event and carries `stepHashes`, `callback: { origin }` and `mcp` like `run.start` |
 | `step.replayed`   | on resume: a finished step's journaled `output`, not re-executed |
+| `reply.delta`     | an `agent` step with `stream: true`: `{ path, call, text, reset? }`, a piece of the reply as the model writes it (schema mode: the answer's `text` field, from the `final_answer` call or the forced final-answer turn; no schema/finalAnswer: the assistant text), batched ~50 ms, `reset: true` when a new answer starts over what was said. Kept in the log; the events sink never sends it; UI panels and folds skip it. The SSE tail delivers an appended event within milliseconds. A consumer's rule: if a run ends with no `reply.delta` for the reply, use `output.text` |
 
 `step.start.stepVersion: { version, hash }` records a pinned custom step's
 version; `step.start.subflow: { workflow, version?, hash? }` the child a

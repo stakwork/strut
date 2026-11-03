@@ -440,11 +440,11 @@ function assistantMessages(run: RunSummary): AssistantMessage[] {
   ];
 }
 
-/** An agent's tool call to `job/start` or `job/continue`, as its event
- *  names it: the tool is `job_start` (a tool name has no `/`), so the
- *  event's `stepType` is `tool:job_start`; the `/` forms are kept for a
- *  log from before. */
-const JOB_TOOL = /^tool:job[_/](start|continue)$/;
+/** A `job/start` or `job/continue`, as its event names it: an agent's tool
+ *  call is `tool:job_start` (a tool name has no `/`; the `/` forms are kept
+ *  for a log from before), and the orchestrator's own step after the turn,
+ *  which starts the job its reply's `start` asked for, is `job/start`. */
+const JOB_TOOL = /^(tool:)?job[_/](start|continue)$/;
 
 /** A tool call's logged `output`: the run log keeps it as the JSON text the
  *  model was handed, an object only when a caller wrote one. */
@@ -461,7 +461,7 @@ function toolOutput(v: unknown): Record<string, unknown> | undefined {
 }
 
 /** The jobs a turn's log shows it started or continued (`job/start`,
- *  `job/continue` tool calls that came back with a job). */
+ *  `job/continue` tool calls or steps that came back with a job). */
 export function assistantJobs(events: readonly RunEvent[] | undefined): AssistantJob[] {
   if (!events) return [];
   const starts = new Map<string, RunEvent>();
@@ -473,7 +473,7 @@ export function assistantJobs(events: readonly RunEvent[] | undefined): Assistan
     const o = toolOutput(e["output"]);
     if (typeof o?.["job"] !== "string" || typeof o["runId"] !== "string") continue;
     const input = toolOutput(starts.get(e.path ?? "")?.["input"]);
-    const started = tool[1] === "start" ? (input?.["workflow"] ?? "job") : undefined;
+    const started = tool[2] === "start" ? (input?.["workflow"] ?? "job") : undefined;
     out.push({ job: o["job"], runId: o["runId"], ...(typeof started === "string" ? { workflow: started } : {}) });
   }
   return out;

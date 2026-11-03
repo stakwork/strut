@@ -636,18 +636,139 @@ export function isTransientStreamError(err: unknown): boolean {
  * stopped. Observed 2026-09-29: a 400 after one tool call was nudged, then
  * answered by a forced turn, and the step returned a result.
  */
-export async function streamFailure(result: {
-  stream: AsyncIterable<{ type: string; error?: unknown }>;
-}): Promise<unknown> {
+export async function streamFailure(
+  result: { stream: AsyncIterable<{ type: string; error?: unknown }> },
+  tap?: ReplyTap,
+): Promise<unknown> {
   let failure: unknown;
   try {
     for await (const part of result.stream) {
       if (part.type === "error") failure ??= part.error ?? new Error("the stream reported an error");
+      else if (tap) await tap.part(part as any);
     }
   } catch (e) {
     failure ??= e ?? new Error("the stream broke");
+  } finally {
+    await tap?.flush();
   }
   return failure;
+}
+
+/** How often buffered reply text is written to the run log. */
+export const REPLY_DELTA_MS = 50;
+
+export interface ReplyTap {
+  part(part: { type: string; id?: string; toolName?: string; delta?: string; text?: string }): Promise<void>;
+  flush(): Promise<void>;
+  /** The next stream is the structured answer as TEXT (the forced
+   *  final-answer turn's `Output.object`): its `text-delta` parts are the
+   *  object's JSON, read for `text` under a call key of its own. Schema mode
+   *  only; until that stream's end. */
+  object(): void;
+}
+
+/**
+ * The reply, as the model writes it (plans/private-voice.md §3.4). Hooked
+ * into `streamFailure`, so every stream the step reads — the loop, the nudge,
+ * the forced answer — is tapped. Schema mode: the `tool-input-delta` parts
+ * of `final_answer`, the partial JSON parsed for `text` (only what is new is
+ * passed on), and for the forced final-answer turn (`object()`), which
+ * streams the object as `text-delta` JSON, those parts the same way. Text
+ * mode (no schema, no finalAnswer): `text-delta`. Each piece is a
+ * `reply.delta` run event `{ path, call, text, reset? }`, buffered and
+ * written about every `batchMs` (REPLY_DELTA_MS) and at the stream's end. A
+ * new answer after text was said (a refused `final_answer`, a resumed
+ * stream, the forced turn) starts with `reset: true`.
+ */
+export function createReplyTap(opts: {
+  emit: (e: Record<string, unknown>) => Promise<void>;
+  path: string;
+  mode: "schema" | "text" | "none";
+  parsePartialJson: (t: string) => Promise<{ value: unknown }>;
+  /** How long text is buffered before it is written; REPLY_DELTA_MS. */
+  batchMs?: number;
+}): ReplyTap {
+  const { emit, path, mode } = opts;
+  const batchMs = opts.batchMs ?? REPLY_DELTA_MS;
+  let call: string | undefined; // the call being streamed
+  let raw = ""; // its input JSON so far
+  let sent = 0; // chars of `text` already passed on
+  let said = false; // any text emitted for an earlier call
+  let resetNext = false;
+  let objects = 0; // forced answers streamed as text so far (`object()`)
+  let inObject = false; // this stream's `text-delta` parts are the answer's JSON
+  let buf = "";
+  let bufCall = "";
+  let bufReset = false;
+  let timer: NodeJS.Timeout | undefined;
+  let chain: Promise<void> = Promise.resolve();
+
+  const write = () => {
+    timer = undefined;
+    if (!buf && !bufReset) return;
+    const event = { type: "reply.delta", path, call: bufCall, text: buf, ...(bufReset ? { reset: true } : {}) };
+    buf = "";
+    bufReset = false;
+    chain = chain.then(() => emit(event)).catch(() => {});
+  };
+  const push = (c: string, text: string) => {
+    if (c !== bufCall && buf) write();
+    bufCall = c;
+    if (resetNext) {
+      bufReset = true;
+      resetNext = false;
+    }
+    buf += text;
+    said = true;
+    timer ??= setTimeout(write, batchMs);
+  };
+  /** A new answer starts: `c` is its call key. */
+  const begin = (c: string) => {
+    call = c;
+    raw = "";
+    sent = 0;
+    resetNext = said;
+  };
+  /** More of the answer's JSON: pass on what is new of its `text`. */
+  const take = async (c: string, more: string) => {
+    raw += more;
+    const { value } = await opts.parsePartialJson(raw);
+    const t = (value as { text?: unknown } | undefined)?.text;
+    if (typeof t === "string" && t.length > sent) {
+      const piece = t.slice(sent);
+      sent = t.length;
+      push(c, piece);
+    }
+  };
+
+  return {
+    async part(p) {
+      if (mode === "text") {
+        if (p.type === "text-delta" && typeof p.text === "string" && p.text) push("text", p.text);
+        return;
+      }
+      if (mode !== "schema") return;
+      if (p.type === "tool-input-start" && p.toolName === "final_answer" && p.id) {
+        inObject = false;
+        begin(p.id);
+      } else if (p.type === "tool-input-delta" && call && p.id === call && p.delta) {
+        await take(call, p.delta);
+      } else if (inObject && call && p.type === "text-delta" && typeof p.text === "string" && p.text) {
+        await take(call, p.text);
+      }
+    },
+    async flush() {
+      if (timer) clearTimeout(timer);
+      write();
+      inObject = false;
+      await chain;
+    },
+    object() {
+      if (mode !== "schema") return;
+      inObject = true;
+      begin(`answer-${++objects}`);
+    },
+  };
 }
 
 /** Thrown when a stream ended in an error that no fallback may paper over. */
@@ -1221,6 +1342,12 @@ export default defineStep({
       .describe(
         "how hard the model thinks before each call (the AI SDK's provider-neutral `reasoning`; anthropic maps it to `effort`). Most of a long agent's time is thinking, so this is the main lever on its latency and cost: `low` for routine research and file work, `high`/`xhigh` for hard problems. `provider-default` sends nothing (anthropic's default is high).",
       ),
+    stream: z
+      .boolean()
+      .default(false)
+      .describe(
+        "emit the reply as it is written: `reply.delta` run events { path, call, text, reset? } (batched ~50 ms, kept in the run log, never sent by the events sink). Schema mode streams the `text` field of the structured answer (put it first in the schema); with no schema and no finalAnswer, the assistant text. Off: a log holds no deltas.",
+      ),
     returnMessages: z
       .boolean()
       .default(false)
@@ -1230,7 +1357,7 @@ export default defineStep({
   }),
   output: z.any(),
   async run(cfg, ctx) {
-    const { ToolLoopAgent, Output, tool, isStepCount, jsonSchema, streamText } = await import("ai");
+    const { ToolLoopAgent, Output, tool, isStepCount, jsonSchema, streamText, parsePartialJson } = await import("ai");
 
     // Model/provider resolution via aieo (shared with mcp) through strut's
     // resolver (src/llm.ts): friendly aliases ("sonnet", "grok"), canonical
@@ -1870,13 +1997,22 @@ export default defineStep({
       // reject, so an unguarded read throws away every tool call the session
       // already made. Resume instead — replay the banked conversation and let the
       // model carry on. Only connection faults qualify; see isTransientStreamError.
+      const replyTap =
+        cfg.stream && ctx?.path
+          ? createReplyTap({
+              emit: ctx.emit as unknown as (e: Record<string, unknown>) => Promise<void>,
+              path: ctx.path,
+              mode: useSchema ? "schema" : cfg.finalAnswer ? "none" : "text",
+              parsePartialJson: parsePartialJson as any,
+            })
+          : undefined;
       let streamErrorContinuations = 0;
       let res!: { text: any };
       for (;;) {
         // Budget already spent by banked steps must not be handed out again.
         const remaining = Math.max(1, cfg.maxSteps - bankedSteps.length);
         const attempt = await makeRunner(remaining).stream({ messages: conversation() as any });
-        const failure = await streamFailure(attempt);
+        const failure = await streamFailure(attempt, replyTap);
         if (failure !== undefined) {
           // A stop tool already ran in the severed step: never resume into
           // the tool loop (it would ask again) — the answer turn follows.
@@ -1925,7 +2061,7 @@ export default defineStep({
       // was refused and the next fallback would send it again, and a cancelled
       // run asks nothing more. Those fail the step, as in the main loop.
       const drain = async (continuation: Parameters<typeof streamFailure>[0]) => {
-        const failure = await streamFailure(continuation);
+        const failure = await streamFailure(continuation, replyTap);
         if (failure === undefined) return;
         throw isTransientStreamError(failure) ? failure : streamError(failure, bankedSteps.length);
       };
@@ -2027,6 +2163,9 @@ export default defineStep({
           // was one — then the forced prompt: the nudge's shape.
           messages: [...conversation(), forcedPrompt] as any,
         } as any);
+        // Schema mode streams the object as text (`Output.object`), not as a
+        // final_answer call: the tap reads that JSON for `text`.
+        if (useSchema) replyTap?.object();
         await drain(forced);
         const fu = usageFromSteps(await forced.steps);
         usage = addUsage(usage, fu);
