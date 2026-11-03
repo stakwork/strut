@@ -68,9 +68,10 @@ describe("ladybug registry — the ontology seed (plans/ladybug-backend.md §3, 
     for (const t of ["StrutRun", "StrutWorkflowVersion", "StrutStepVersion"]) assert.ok(ladybugEdge("HAS_SOURCE", "Evidence", t), `a publish check's evidence has the version as its source: ${t}`);
     assert.equal(ladybugEdge("CHILD_OF", "Concept", "StrutRun"), null);
     assert.equal(ladybugEdge("ACCESSED", "StrutToolCall", "Concept"), null);
+    assert.ok(ladybugEdge("ACCESSED", "StrutRun", "Concept"), "what a run read, from the run itself");
     assert.ok(ladybugEdge("PUBLISHED_BY", "StrutStepVersion", "Person"), "the Strut row to Person, now that the file has Person");
     assert.equal(ladybugEdge("RELATED_TO", "Concept", "Concept"), null, "no jarvis allowlist");
-    assert.deepEqual(LADYBUG_EDGE_TYPES, ["ABOUT", "ACTIVE_VERSION", "CHILD_OF", "DELIVERED", "DEPENDS_ON", "DERIVED_FROM", "EVIDENCED_BY", "EXECUTED", "HAS_ARTIFACT", "HAS_SOURCE", "IN_JOB", "PARENT_OF", "PRODUCED_BY", "PROMOTED_FROM", "PUBLISHED_BY", "SUPERSEDES", "TESTS", "USES_STEP", "USES_WORKFLOW", "VERSION_OF"]);
+    assert.deepEqual(LADYBUG_EDGE_TYPES, ["ABOUT", "ACCESSED", "ACTIVE_VERSION", "CHILD_OF", "DELIVERED", "DEPENDS_ON", "DERIVED_FROM", "EVIDENCED_BY", "EXECUTED", "HAS_ARTIFACT", "HAS_SOURCE", "IN_JOB", "PARENT_OF", "PRODUCED_BY", "PROMOTED_FROM", "PUBLISHED_BY", "SUPERSEDES", "TESTS", "USES_STEP", "USES_WORKFLOW", "VERSION_OF"]);
     // Apps (plans/apps.md §1.3): the version → app pair and the workflows a version's grants name.
     assert.ok(ladybugEdge("VERSION_OF", "StrutAppVersion", "StrutApp") && ladybugEdge("ACTIVE_VERSION", "StrutApp", "StrutAppVersion") && ladybugEdge("USES_WORKFLOW", "StrutAppVersion", "StrutWorkflow"));
   });

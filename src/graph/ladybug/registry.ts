@@ -203,6 +203,9 @@ export const LADYBUG_EDGES: readonly LadybugEdgeDef[] = [
   // Strut registry's wildcard lets it point at any node the file holds (a
   // Concept, an app's excerpt type), as `STRUT_EDGES` declares it.
   { edge: "DERIVED_FROM", source: "StrutArtifact", target: CONCEPT_TYPE },
+  // What a run read (the projector): the registry's wildcard lets it point
+  // at any node the file holds; this row gives the file its rel table.
+  { edge: "ACCESSED", source: "StrutRun", target: CONCEPT_TYPE },
 ];
 
 /** The rel tables, sorted. */

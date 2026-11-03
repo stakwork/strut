@@ -669,6 +669,8 @@ export {
   projectAll,
   projectRunEvents,
   ensureJobNode,
+  runsThatRead,
+  type NodeRead,
   type ProjectRunsOptions,
   type ProjectReport,
 } from "./graph/projector.js";
@@ -681,6 +683,7 @@ export {
   planConceptSeed,
   stampOf,
   STRUT_CONCEPTS,
+  PERSONAL_CONCEPTS,
   type ConceptSet,
   type ConceptFile,
   type ConceptSeedOutcome,

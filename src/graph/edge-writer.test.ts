@@ -22,7 +22,8 @@ describe("edge registry checks (pure)", () => {
     assert.equal(isRegisteredEdge("VERSION_OF", "StrutStepVersion", "StrutWorkflow"), false);
     assert.equal(isRegisteredEdge("ACCESSED", "StrutToolCall", "Concept"), true);
     assert.equal(isRegisteredEdge("ACCESSED", "StrutToolCall", ""), true);
-    assert.equal(isRegisteredEdge("ACCESSED", "StrutRun", "Concept"), false);
+    assert.equal(isRegisteredEdge("ACCESSED", "StrutRun", "Concept"), true, "a file's record of what a run read");
+    assert.equal(isRegisteredEdge("ACCESSED", "StrutJob", "Concept"), false);
     assert.equal(isRegisteredEdge("HAS_TURN", "StrutChat", "StrutTurn"), false);
   });
   it("edge_key is the lowercased type", () => {

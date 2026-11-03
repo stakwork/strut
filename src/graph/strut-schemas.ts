@@ -73,6 +73,9 @@ export interface StrutEdgeDef {
    *  (e.g. `Person`, `Thing`). Seeding skips the edge-schema row when the
    *  target Schema node is absent (standalone mode without that type). */
   note?: string;
+  /** A row only a Ladybug file holds: the registry accepts it on either
+   *  engine, but Neo4j's seed writes no edge schema for it. */
+  ladybugOnly?: true;
 }
 
 // ── Constants shared with jarvis ────────────────────────────────────────────
@@ -615,6 +618,10 @@ export const STRUT_EDGES: readonly StrutEdgeDef[] = [
   // -[:DERIVED_FROM]-> Excerpt), so one query reads both.
   { edge: "DERIVED_FROM", source: "StrutArtifact", target: "Thing", note: "any node" },
   { edge: "ACCESSED", source: "StrutToolCall", target: "Thing", note: "any node" },
+  // What a run read, on a Ladybug file: it holds no tool calls, so the run
+  // itself points at each node its steps reported (projector.ts). Neo4j
+  // keeps the tool-call form above.
+  { edge: "ACCESSED", source: "StrutRun", target: "Thing", note: "any node", ladybugOnly: true },
 ];
 
 /**

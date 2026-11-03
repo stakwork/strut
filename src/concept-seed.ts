@@ -129,6 +129,17 @@ export const STRUT_CONCEPTS: ConceptSet = {
   retired: ["Workflow Build.md", "Job App.md"],
 };
 
+/** The root of a PERSON's own knowledge (`Personal`,
+ *  src/concepts/personal/): the page a personal graph's assistant starts
+ *  from, with every page they teach it under it. A host with a personal
+ *  graph seeds it (`createStrut`'s `concepts: { personal: true }`); a
+ *  company graph's roots are its own. Like strut's pages it always
+ *  matches git: what the person teaches lives in the pages under it. */
+export const PERSONAL_CONCEPTS: ConceptSet = {
+  dir: fileURLToPath(new URL("./concepts/personal/", import.meta.url)),
+  prefix: "strut/concepts/personal/",
+};
+
 export function stampOf(file: string, text: string, prefix: string): string {
   return `${prefix}${file}@${createHash("sha256").update(text).digest("hex").slice(0, 12)}`;
 }

@@ -24,6 +24,16 @@
  * A ref tagged with a `peer` (another strut's graph, plans/federation.md
  * §2.2) is skipped outright: neither an edge nor `unresolved`.
  *
+ * A Ladybug file holds no tool calls, so there the RUN is the record of
+ * what was read: one `StrutRun -ACCESSED->` edge per node any step of the
+ * run reported (a workflow step's `nodes`, like `context/concept`'s, as well
+ * as a tool call's). The edge is in the run's namespace, the writer's rule
+ * for an edge that names none. A run may read a node in another namespace
+ * (a `private` run opening a `shared` Concept); the edge holds the node's
+ * ref and nothing of it, and `runsThatRead` returns a use only when the
+ * reader's namespaces hold the run, the edge and the node, so neither a
+ * private run nor a private node shows through a shared reader.
+ *
  * Threads: a `StrutAgentSession` is ONE execution of an agent step — one
  * turn. An agent that continued a thread (`session`, plans/agent-sessions.md)
  * carries `session_id` + `session_turn`, so a thread is every node with that
@@ -41,8 +51,8 @@
  * Only the types the backend's ontology holds are written: every Strut type
  * on Neo4j; on a LadybugDB file (plans/ladybug-backend.md), whose seed
  * leaves the chat and agent-session types out, `StrutRun`, `StrutJob` and
- * `StrutArtifact` with `EXECUTED`, `IN_JOB`, `HAS_ARTIFACT`, `DELIVERED` and
- * `DERIVED_FROM`; the
+ * `StrutArtifact` with `EXECUTED`, `IN_JOB`, `HAS_ARTIFACT`, `DELIVERED`,
+ * `DERIVED_FROM` and the run's `ACCESSED`; the
  * agent sessions, tool calls, their edges and the whole chat projection are
  * skipped there, and the report counts what was written. The statements
  * are written with the backend's dialect helpers (`engine.ts`).
@@ -155,6 +165,9 @@ export interface RunProjection {
   run: NodeInput;
   sessions: NodeInput[];
   toolCalls: Array<{ node: NodeInput; sessionPath: string; accessed: AccessedNode[] }>;
+  /** Every node any step of the run reported (`step.end` `nodes`: workflow
+   *  steps and tool calls alike), once each, peers' left out. */
+  accessed: AccessedNode[];
   workflowHash?: string;
   stepHashes?: Record<string, string>;
   /** The job the run was launched under (`run.start.job`), if any. */
@@ -326,7 +339,13 @@ export function projectRunEvents(workflow: string, runId: string, events: RunEve
     speaker = { userId, actor, sessionPath: ORCHESTRATOR_TURN_PATH };
   }
 
-  return { run, sessions, toolCalls, workflowHash: start?.workflowHash, stepHashes: start?.stepHashes, job, speaker };
+  const accessed = new Map<string, AccessedNode>();
+  for (const e of events) {
+    if (e.type !== "step.end") continue;
+    for (const n of e.nodes ?? []) if (n && typeof n.ref_id === "string" && n.ref_id && !n.peer && !accessed.has(n.ref_id)) accessed.set(n.ref_id, n);
+  }
+
+  return { run, sessions, toolCalls, accessed: [...accessed.values()], workflowHash: start?.workflowHash, stepHashes: start?.stepHashes, job, speaker };
 }
 
 /** The job's node (plans/job-index.md §6), from the index's view: the
@@ -541,6 +560,18 @@ export async function projectRun(
         } else report.unresolved++;
       }
     });
+  } else if (p.accessed.length && backend.kind !== "neo4j") {
+    // A file: the run → each node it read that the file holds (any
+    // namespace; a Schema row — `ladybug/registry.ts` SCHEMA_TYPE, not
+    // imported: it would load the driver — is the ontology, not a node).
+    const held = await backend.tx((tx) => backend.edgeEngine.endpoints(tx, p.accessed.map((n) => n.ref_id)));
+    for (const n of p.accessed) {
+      const type = held.get(n.ref_id)?.type;
+      if (type && type !== "Schema") {
+        edges.push({ edge: "ACCESSED", source_ref_id: runRef, target_ref_id: n.ref_id });
+        report.accessed++;
+      } else report.unresolved++;
+    }
   }
   const stepType = stepTypeOfRunKey(workflow);
   const stepHash = stepType ? p.stepHashes?.[stepType] : undefined;
@@ -619,6 +650,44 @@ async function writeSpeakerEdges(backend: GraphBackend, userId: string, sessionR
   if (!refs.length) return 0;
   await backend.edges.writeMany(refs.map((ref) => ({ edge: "SENT", source_ref_id: ref, target_ref_id: sessionRef })));
   return refs.length;
+}
+
+/** One run that read a node (`runsThatRead`). */
+export interface NodeRead {
+  run_ref_id: string;
+  run_id: string;
+  workflow_name: string;
+  run_status?: string;
+}
+
+/**
+ * Which runs read this node, newest first: how a Concept's use is read. On
+ * a Ladybug file, the run's own `ACCESSED` edge; on Neo4j, a tool call's,
+ * up through its session to the run. `namespaces` are the reader's (default
+ * the backend's own): a run is returned only when the run, the edge (on a
+ * file) and the node are all in them.
+ */
+export async function runsThatRead(backend: GraphBackend, refId: string, opts: { namespaces?: string[]; limit?: number } = {}): Promise<NodeRead[]> {
+  const d = backend.dialect;
+  const params = { ref: refId, ns: opts.namespaces ?? [backend.namespace] };
+  const limit = Math.max(1, Math.floor(opts.limit ?? 50));
+  const ret = `RETURN DISTINCT r.ref_id AS run_ref_id, r.run_id AS run_id, r.workflow_name AS workflow_name, r.run_status AS run_status, r.started_at AS started_at ORDER BY started_at DESC LIMIT ${limit}`;
+  const rows =
+    backend.kind === "neo4j"
+      ? await backend.query(
+          `MATCH (r:StrutRun)<-[:IN_RUN]-(:StrutAgentSession)<-[:IN_SESSION]-(:StrutToolCall)-[:ACCESSED]->(n:Data_Bank {ref_id: $ref}) WHERE r.namespace IN $ns AND n.namespace IN $ns AND ${d.live("r")} ${ret}`,
+          params,
+        )
+      : await backend.query(
+          `MATCH ${d.node("r", "StrutRun")}-[e:ACCESSED]->(n:Node {ref_id: $ref}) WHERE r.namespace IN $ns AND e.namespace IN $ns AND n.namespace IN $ns AND ${d.live("r")} ${ret}`,
+          params,
+        );
+  return rows.map((r) => ({
+    run_ref_id: r["run_ref_id"] as string,
+    run_id: r["run_id"] as string,
+    workflow_name: r["workflow_name"] as string,
+    ...(typeof r["run_status"] === "string" ? { run_status: r["run_status"] } : {}),
+  }));
 }
 
 const projecting = new WeakMap<GraphBackend, Map<string, Promise<string | null>>>();
