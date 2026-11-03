@@ -52,13 +52,14 @@ import type {
   WriteOutcome,
 } from "../engine.js";
 import { sameStored } from "../engine.js";
-import { GraphValidationError } from "../node-writer.js";
+import { GraphValidationError, type Embedder } from "../node-writer.js";
 import type { NodeSchema } from "../schema-resolver.js";
 import type { LadybugHandle } from "./db.js";
 import * as ontology from "./ontology.js";
 import { SCHEMA_EDGE, catalogOf, readCatalog, type Catalog, type LadybugCatalog } from "./ontology.js";
 import { namespaceName, writeNamespace } from "./namespaces.js";
-import { ALL_EDGE_COLUMNS, GENERIC_COLUMNS, LADYBUG_STRUT_TYPES, SCHEMA_TYPE, edgeColumnsOf } from "./registry.js";
+import { deleteEdgeRows, deleteRowsOf, embedPendingRows, recomposeRowsOf } from "./temporal.js";
+import { ALL_EDGE_COLUMNS, EDGE_TEXT_TYPE, GENERIC_COLUMNS, LADYBUG_STRUT_TYPES, SCHEMA_TYPE, edgeColumnsOf } from "./registry.js";
 
 const q = (s: string) => `\`${s}\``;
 const lit = (s: string) => `'${s.replace(/'/g, "''")}'`;
@@ -156,6 +157,7 @@ class LadybugNodes implements NodeEngine {
   }
 
   async mergeBatch(tx: GraphTx, schema: NodeSchema, asked: string, nodes: PreparedNode[], mode: WriteMode) {
+    if (schema.type === EDGE_TEXT_TYPE) throw new GraphValidationError("WRONG_TYPE", schema.type, "an edge's search row is written with its edge, by graph/assert");
     const namespace = writeNamespace(schema.type, asked, this.ns);
     const found = await tx.run(
       `UNWIND $keys AS k MATCH (n:Node {node_type: $type, namespace: $ns, \`key\`: k}) RETURN k AS k, n.ref_id AS ref_id, n.deleted_at IS NOT NULL AS deleted`,
@@ -194,7 +196,9 @@ class LadybugNodes implements NodeEngine {
         assigns.push(k === "created_by" ? `n.created_by = coalesce(n.created_by, $v${i++})` : `n.${q(k)} = $v${i++}`);
       }
       if (hit.deleted) assigns.push("n.deleted_at = NULL", "n.deleted_reason = NULL");
+      const retitled = await this.retitles(tx, hit.ref_id, set);
       if (assigns.length) await tx.run(`MATCH (n:Node {ref_id: $ref_id}) SET ${assigns.join(", ")}`, params);
+      if (retitled && (await recomposeRowsOf(tx, hit.ref_id, Date.now())).length) this.unembedded = true;
     }
 
     return nodes.map((n) => {
@@ -258,7 +262,59 @@ class LadybugNodes implements NodeEngine {
     }
     // A removed name that was never a column (a per-stem vector) is nothing to clear.
     for (const k of remove) if (known[k] && !(k in columns) && !PRESERVED.has(k)) assigns.push(`n.${q(k)} = NULL`);
+    const retitled = await this.retitles(tx, ref_id, columns);
     if (assigns.length) await tx.run(`MATCH (n:Node {ref_id: $ref_id}) SET ${assigns.join(", ")}`, params);
+    if (retitled && (await recomposeRowsOf(tx, ref_id, Date.now())).length) this.unembedded = true;
+  }
+
+  /** Search rows a title change left without a vector, since the last ask. */
+  private unembedded = false;
+  takeUnembedded(): boolean {
+    const was = this.unembedded;
+    this.unembedded = false;
+    return was;
+  }
+
+  private embedding: Promise<number> | null = null;
+  private again = false;
+  /** One run at a time: a call during a run has it go round once more (rows
+   *  written since are seen) and shares its promise. A failure is logged,
+   *  never thrown, so no open or write waits on it or fails with it. */
+  embedPendingRows(embedder: Embedder): Promise<number> {
+    if (this.embedding) {
+      this.again = true;
+      return this.embedding;
+    }
+    const run = async () => {
+      let n = 0;
+      do {
+        this.again = false;
+        n += await embedPendingRows((c, p) => this.lbug.query(c, p), (fn) => this.lbug.withWrite(fn), embedder);
+      } while (this.again);
+      return n;
+    };
+    const done = run()
+      .catch((err: unknown) => {
+        console.warn(`[graph] embedding the facts' search rows failed: ${String(err).split("\n")[0]}`);
+        return 0;
+      })
+      .finally(() => {
+        this.embedding = null;
+      });
+    this.embedding = done;
+    return done;
+  }
+
+  async idle(): Promise<void> {
+    await this.embedding;
+  }
+
+  /** Does writing `set` change the node's title? Its facts' search rows are
+   *  composed from it (`recomposeRowsOf`). */
+  private async retitles(tx: GraphTx, ref_id: string, set: Record<string, unknown>): Promise<boolean> {
+    if (!("title" in set)) return false;
+    const rows = await tx.run(`MATCH (n:Node {ref_id: $ref_id}) RETURN n.title AS title`, { ref_id });
+    return (rows[0]?.["title"] ?? null) !== (set["title"] ?? null);
   }
 
   /** Three statements in one transaction: stamp `deleted_at` (the first
@@ -300,6 +356,7 @@ class LadybugNodes implements NodeEngine {
       );
       if (hit.length === 0) return null;
       if (opts.keepEdges) return { edges: 0 };
+      await deleteRowsOf(tx, ref_id, params["now"] as number);
       const out = await tx.run(`MATCH (n:Node {ref_id: $ref_id})-[r]->(:Node) DELETE r RETURN count(r) AS n`, { ref_id });
       const inc = await tx.run(`MATCH (n:Node {ref_id: $ref_id})<-[r]-(:Node) DELETE r RETURN count(r) AS n`, { ref_id });
       return { edges: Number(out[0]?.["n"] ?? 0) + Number(inc[0]?.["n"] ?? 0) };
@@ -424,6 +481,7 @@ class LadybugEdges implements EdgeEngine {
       const at = await this.locate(t, ref_id);
       if (!at) return null;
       await t.run(`MATCH ()-[r:${q(at.edge)} {ref_id: $ref_id}]->() DELETE r`, { ref_id });
+      await deleteEdgeRows(t, [ref_id], Date.now());
       return { ref_id, edge: at.edge, source_ref_id: at.src, target_ref_id: at.tgt };
     };
     return tx ? go(tx) : this.lbug.withWrite(go);

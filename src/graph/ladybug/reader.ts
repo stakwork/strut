@@ -76,7 +76,7 @@ import { THING_TYPE } from "../strut-schemas.js";
 import { namespaceName } from "./namespaces.js";
 import type { LadybugSchemas } from "./engine.js";
 import type { LadybugCatalog } from "./ontology.js";
-import { SCHEMA_TYPE } from "./registry.js";
+import { EDGE_TEXT_TYPE, SCHEMA_TYPE } from "./registry.js";
 
 export interface LadybugReaderOptions {
   /** The semantic half; without it search is keyword-only. */
@@ -88,8 +88,8 @@ type Engine = Pick<GraphEngine, "query" | "namespace"> & { readonly catalog: Lad
 const q = (s: string) => `\`${s}\``;
 const lit = (s: string) => `'${s.replace(/'/g, "''")}'`;
 const LIVE = (alias: string) => `${alias}.deleted_at IS NULL`;
-/** A data node: the ontology's Schema rows are not walked or counted. */
-const DATA = (alias: string) => `${alias}.node_type <> '${SCHEMA_TYPE}'`;
+/** A data node: the ontology's Schema rows and the edges' search rows (`EdgeText`) are not read, walked or counted. */
+const DATA = (alias: string) => `NOT ${alias}.node_type IN ['${SCHEMA_TYPE}', '${EDGE_TEXT_TYPE}']`;
 
 /** A node as a struct of every column but the vector: 384 floats on every
  *  row of an over-fetch are weight the response strips anyway. */

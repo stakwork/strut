@@ -563,6 +563,7 @@ export class NodeWriter {
       }
     };
     await (opts.tx ? go(opts.tx) : this.engine.tx(go));
+    this.embedRecomposed(opts.tx);
     return results;
   }
 
@@ -636,7 +637,18 @@ export class NodeWriter {
       await this.engine.nodeEngine.update(tx, schema, ref_id, setMap, [...drop]);
       return { ref_id, key, rekeyed };
     };
-    return opts.tx ? go(opts.tx) : this.engine.tx(go);
+    const out = await (opts.tx ? go(opts.tx) : this.engine.tx(go));
+    this.embedRecomposed(opts.tx);
+    return out;
+  }
+
+  /** A title change recomposed facts' search rows (Ladybug,
+   *  plans/graph-edge-search.md): embed them in the background now it has
+   *  committed; the write never waits. On a caller's transaction, not yet
+   *  committed, they wait for the next open. */
+  private embedRecomposed(tx: GraphTx | undefined): void {
+    if (tx || !this.opts.embedder || !this.engine.nodeEngine.takeUnembedded?.()) return;
+    void this.engine.nodeEngine.embedPendingRows?.(this.opts.embedder);
   }
 
   /**
