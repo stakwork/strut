@@ -59,11 +59,12 @@ import {
   type RunGraphNodeBody,
   type RunGraphPeer,
   type RunGraphPlace,
+  type RunGraphQueryValue,
   type RunGraphTrace,
   type RunGraphTreeNode,
 } from "@strut/kit";
 import { isProvenanceType, runGraphColorMap } from "../../lib/colors";
-import { errorText } from "../../lib/format";
+import { errorText, toolLabel } from "../../lib/format";
 import { getNodes } from "../../lib/graph";
 import { ReplayBar } from "../ReplayBar";
 import { RunGraphNodeReader } from "./NodeReader";
@@ -492,7 +493,16 @@ function NodeDetail({
   );
 }
 
-function CurrentCall({ call, index, total }: { call: RunGraphCall; index: number; total: number }) {
+/** A query value as a person reads it: a node's id as the node's name, where one is known (`named`: then the field's name is left out); a list of them as its first and how many more. */
+function queryText(value: RunGraphQueryValue, nameOf: (id: string) => string | undefined): { text: string; full: string; named: boolean } {
+  const values = Array.isArray(value) ? value : [value];
+  const named = values.some((v) => typeof v === "string" && nameOf(v) !== undefined);
+  const items = values.map((v) => (typeof v === "string" ? (nameOf(v) ?? v) : String(v)));
+  const text = named && items.length > 1 ? `${items[0]}, +${items.length - 1} more` : items.join(", ");
+  return { text, full: items.join("\n"), named };
+}
+
+function CurrentCall({ call, index, total, nameOf }: { call: RunGraphCall; index: number; total: number; nameOf: (id: string) => string | undefined }) {
   const query = Object.entries(call.query);
   return (
     <div className="flex items-center gap-x-3 overflow-hidden whitespace-nowrap text-xs" data-testid="run-graph-current-call">
@@ -500,19 +510,22 @@ function CurrentCall({ call, index, total }: { call: RunGraphCall; index: number
         Call {index + 1} of {total}
       </span>
       <Badge variant={call.access === "write" ? "default" : "secondary"}>{call.access}</Badge>
-      <span className="font-mono">{call.tool}</span>
+      <span className="font-mono" title={call.tool}>{toolLabel(call.tool)}</span>
       <span className="text-muted-foreground">by the {call.by}</span>
       {call.hits !== undefined && (
         <span className="text-muted-foreground" data-testid="run-graph-call-hits">
           {answerSummary(call)}, drawn only where the run went on to read them
         </span>
       )}
-      {query.map(([key, value]) => (
-        <span key={key} className="max-w-xs truncate text-muted-foreground">
-          {key}{" "}
-          <span className="font-mono text-foreground">{Array.isArray(value) ? value.join(", ") : String(value)}</span>
-        </span>
-      ))}
+      {query.map(([key, value]) => {
+        const { text, full, named } = queryText(value, nameOf);
+        return (
+          <span key={key} className="max-w-xs truncate text-muted-foreground" title={full}>
+            {!named && <>{key} </>}
+            <span className={named ? "text-foreground" : "font-mono text-foreground"}>{text}</span>
+          </span>
+        );
+      })}
     </div>
   );
 }
@@ -669,6 +682,16 @@ export function RunGraph({
 
   const tree = useMemo(() => buildRunGraphTree(calls), [calls]);
   const nodeById = useMemo(() => new Map(graph.nodes.map((n) => [n.ref_id, n])), [graph.nodes]);
+  /** A node's name by the id a call's query named it by — the graph's, else what the run's log said. */
+  const nameOf = useCallback(
+    (id: string) => {
+      const n = nodeById.get(id);
+      if (n?.name && n.name !== id) return n.name;
+      const said = calls.flatMap((c) => c.nodes).find((x) => (x.ref_id === id || parseQualifiedRef(x.ref_id).refId === id) && x.name);
+      return said?.name;
+    },
+    [nodeById, calls],
+  );
 
   // A node's body is read when it is first selected and kept, so coming back to it asks nothing.
   const [bodies, setBodies] = useState<Record<string, NodeBodyState>>({});
@@ -1075,7 +1098,7 @@ export function RunGraph({
           </Button>
           <div className="min-w-0 flex-1 overflow-hidden">
             {current !== null ? (
-              <CurrentCall call={calls[current]} index={current} total={calls.length} />
+              <CurrentCall call={calls[current]} index={current} total={calls.length} nameOf={nameOf} />
             ) : scope !== null && inScope.length === 0 ? (
               <p className="truncate text-xs text-muted-foreground" data-testid="run-graph-summary">
                 Nothing under {scopeLabel} touched the graph.
