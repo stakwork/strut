@@ -107,5 +107,20 @@ for (const tb of testBackends()) {
       await assert.rejects(findNodes(b, { node_type: "Bill", where: { due: { lt: "soon" } } }), /due is a datetime/);
       await assert.rejects(findNodes(b, { node_type: "Bill", where: { amount: { contains: "1" } } }), /contains takes a string field/);
     });
+
+    it("a type's own created_at is its field, and its stamp is date_added_to_graph", { skip: tb.kind !== "neo4j" && "a file's types cannot declare created_at" }, async () => {
+      // jarvis's PullRequest: when the PR was opened, not when the node was written.
+      await createNodeSchema(b, b.schemas, { type: "Pr", attributes: { created_at: "?string" } });
+      await b.nodes.write({ type: "Pr", data: { name: "pr-new", created_at: "2026-10-01T00:00:00Z" } });
+      await new Promise((r) => setTimeout(r, 5));
+      await b.nodes.write({ type: "Pr", data: { name: "pr-old", created_at: "2026-08-01T00:00:00Z" } });
+      const recent = await findNodes(b, { node_type: "Pr", where: { created_at: { gte: "2026-09-01" } } });
+      assert.deepEqual(names(recent), ["pr-new"]);
+      assert.equal(recent.nodes[0]!.properties["created_at"], "2026-10-01T00:00:00Z");
+      assert.ok(Number(recent.nodes[0]!.properties["date_added_to_graph"]) > 0);
+      assert.deepEqual(names(await findNodes(b, { node_type: "Pr", orderBy: "created_at", desc: true })), ["pr-new", "pr-old"]);
+      assert.deepEqual(names(await findNodes(b, { node_type: "Pr" })), ["pr-old", "pr-new"], "default: newest written first");
+      assert.deepEqual(names(await findNodes(b, { node_type: "Pr", orderBy: "date_added_to_graph" })), ["pr-new", "pr-old"]);
+    });
   });
 }

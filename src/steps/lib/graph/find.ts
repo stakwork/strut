@@ -19,7 +19,7 @@ export default defineStep({
     "The nodes of ONE type whose properties match, ordered and paged — a property query, not a search: " +
     "`where` maps a field to a value (equal; null = not set) or to operators, all of which must hold: " +
     "gt, gte, lt, lte (a string or a number), in (a list), contains (a substring of a string field, case-blind). " +
-    "Fields are the type's attributes (graph/get-ontology-type lists them), `ref_id` and `created_at` (epoch ms; `date_added_to_graph` is accepted as its old name). " +
+    "Fields are the type's attributes (graph/get-ontology-type lists them), `ref_id` and `created_at` (epoch ms; `date_added_to_graph` is accepted as its old name) — except on a type that declares its own `created_at` (a PullRequest's date), where that is its field and the epoch-ms stamp is `date_added_to_graph`. " +
     "`orderBy` names a field (default: newest first), `desc` reverses it; `limit` is 1–500 (default 50), and when there " +
     "are more the result carries a `cursor` to pass back for the next page; `count: true` adds `total`, every match. " +
     "Dates an app declares are ISO strings and compare as text. Returns `{ node_type, nodes: [{ ref_id, node_type, name?, properties }], returned, cursor?, total? }`. " +
@@ -31,7 +31,7 @@ export default defineStep({
       .record(z.string(), z.any())
       .optional()
       .describe("field → value, or field → { gt | gte | lt | lte | in | contains }. All must hold."),
-    orderBy: z.string().optional().describe("The field to order by. Default: created_at, newest first."),
+    orderBy: z.string().optional().describe("The field to order by. Default: when the node was written, newest first."),
     desc: z.boolean().optional().describe("Order descending."),
     limit: z.number().int().optional().describe("Nodes per page, 1–500 (default 50)."),
     cursor: z.string().optional().describe("The `cursor` the previous page returned."),
