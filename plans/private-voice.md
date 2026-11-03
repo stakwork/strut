@@ -403,27 +403,142 @@ door already does this for a sealed workflow's runs (`ownRun`,
 - Whether this route belongs in strut or in the lab is Q10. org-home keeps
   org code in the lab and gives strut only generic seams.
 
+### 4.1 The contract
+
+Three pieces are built against this at once: Peel, strut's route and the
+voice service. Steps 2 and 4 only add fields.
+
+**Peel → the home**
+
+```
+POST {home}/voice/calls
+Authorization: Bearer <the member's person token>
+Content-Type: application/json
+
+{}                                     step 1
+{ "key": "<base64, 32 bytes>" }        from step 2
+{ "sealed": "<base64 HPKE envelope>" } from step 4, in place of key (§6)
+```
+
+`200`:
+
+```json
+{
+  "url": "ws://127.0.0.1:7880",
+  "room": "sphinx.call.voice.<32 hex>",
+  "token": "<LiveKit JWT for the member>",
+  "identity": "<the member's identity in the room, random>",
+  "agent": "<the agent's identity in the room, random>",
+  "encrypted": false
+}
+```
+
+- **`url`** is the LiveKit server to connect to.
+- **`encrypted`** is true from step 2. Peel then joins with `key` as the shared
+  key and with Opus RED off (§2).
+
+Errors are JSON, `{ error }`:
+
+| Status | When |
+|---|---|
+| 400 | A bad body, e.g. a key that isn't 32 bytes. |
+| 401 | No credential, or one strut can't verify. |
+| 402 | From step 3: the member's balance is below the minimum. Adds `{ balance, minimum }` in sats. |
+| 403 | A credential that isn't a person's, e.g. the plain peer key. A call always runs as a person. |
+| 503 | No voice service configured, or it isn't answering. |
+
+**Rules**
+- **Every call is a fresh room.** Rooms and identities are random and never
+  reused (§2).
+- **Peel connects to `url` as returned.**
+  - It's the member's own home naming it, in answer to the member's own
+    authenticated request. So this path doesn't apply the call-link rule that
+    media must sit on the call server's own host and port
+    (`peel:Sources/PeelCore/CallServer.swift:213-219`).
+  - `ws://` only on loopback, `wss://` everywhere else.
+- **Hanging up is leaving the room.**
+  - The voice service ends the session when the member leaves
+    (`closeOnDisconnect`), and after 30 s if the member never joins.
+  - A new call from the same member ends their previous one, so the newest
+    device wins.
+
+**strut → the voice service**
+- **Who may call the route.**
+  - A person token (`peer:person`), admitted the way the gate admits one to
+    `/mcp`.
+  - The deployment key, for tests. The actor then comes from `x-strut-actor`,
+    as everywhere.
+  - Any other peer scope is a 403.
+- **What it forwards.** strut takes the actor from the credential and sends
+  the body unchanged to `POST {STRUT_VOICE_URL}/calls` with:
+  - `x-strut-actor: <member>`;
+  - `authorization: Bearer <STRUT_VOICE_TOKEN>`, a secret strut and the voice
+    service share, so nothing else on the host starts a call as a member.
+- **What it answers.** The voice service's status and body, unchanged.
+- **What it keeps.** It logs and stores nothing of the body or the answer:
+  they hold the key and the tokens.
+- **Unconfigured.** With `STRUT_VOICE_URL` unset, the route answers 503.
+- **Where it lives.** If the route moves to the lab (Q10), the contract
+  doesn't change.
+
+**The voice service's `POST /calls`**
+1. It checks `STRUT_VOICE_TOKEN`.
+2. It names the room (`sphinx.call.voice.` + 32 random hex) and two random
+   identities.
+3. It mints the member's token: join this room only, publish and subscribe
+   audio, no admin, valid 10 minutes for joining.
+4. It gets the agent into the room before it answers, so a member never talks
+   to an empty room.
+   - Step 1: it joins with its own token on the local server, or by worker
+     dispatch there (Q7).
+   - From step 2: it gets tokens from meet (private rooms), and joins with
+     `encryption` and the key (§4, step 2).
+5. Every turn of the call runs as `x-strut-actor` on `<member>/voice` (§3.2).
+   Speech goes to strut's `/audio/transcribe` and `/audio/speak` with the
+   deployment key, inside the home.
+
+**What Peel reads in the room.** LiveKit Agents (agents-js 1.x) publish all
+of it, so the call screen needs nothing from the home:
+- **The agent's state:** the participant attribute `lk.agent.state`, one of
+  `initializing`, `idle`, `listening`, `thinking`, `speaking`.
+- **Live text from both sides:** text streams on the topic `lk.transcription`,
+  with the attributes `lk.segment_id`, `lk.transcribed_track_id` (whose speech
+  it is) and `lk.transcription_final`.
+- **From step 2, encryption covers these** only because the agent connects
+  with `encryption`, not the legacy `e2ee`.
+
+**Local values (step 1)**
+- **strut:**
+  - `STRUT_API_KEY` set, so person tokens can be signed;
+  - `STRUT_VOICE_URL=http://127.0.0.1:<voice port>`;
+  - `STRUT_VOICE_TOKEN`.
+- **A person token:** `POST /peers/tokens { actor: "dev-member" }`, called with
+  the API key, returns `{ token }`. Paste it into Peel's dev setting with the
+  home's URL, `http://127.0.0.1:3000`.
+- **livekit:** `livekit-server --dev --bind 0.0.0.0`. Its keys are
+  `devkey` / `secret`.
+- **The voice service:** `STRUT_URL`, `STRUT_API_KEY`, `STRUT_VOICE_TOKEN`,
+  `LIVEKIT_URL=ws://127.0.0.1:7880`, `LIVEKIT_API_KEY=devkey`,
+  `LIVEKIT_API_SECRET=secret`.
+- **The iPhone simulator:** it shares the Mac's network and microphone, so
+  the same loopback URLs work there.
+
 ### Step 1, on the LAN
 
-1. Peel's dev profile names the local home and a person token, minted with
-   `POST /peers/tokens` on the local strut.
+1. Peel's dev setting names the local home and a person token (§4.1).
 2. Peel sends `POST /voice/calls`.
-3. The voice service mints both LiveKit tokens with the dev key, joins the
-   room, and returns `{ url, room, token }`.
-4. Peel joins.
-- Peel accepts media only from the call server's own host and port
-  (`peel:Sources/PeelCore/CallServer.swift:213-219`). So the home serves
-  LiveKit's `/rtc` on the same origin, or the dev build relaxes that rule.
-- Room names start with `sphinx.call.` (`peel:Sources/PeelCore/Call.swift:205-209`).
+3. The voice service mints both LiveKit tokens with the dev key, gets the
+   agent into the room, and answers.
+4. Peel joins `url` with `token`.
 
 ### Step 2, the central server
 
-1. Peel makes a 32-byte key and sends `POST /voice/calls { key }`.
+1. Peel makes a 32-byte key and sends `POST /voice/calls { key }` (§4.1).
 2. The voice service:
    - names a room (128 random bits, like `CallLink.new`, `Call.swift:150-156`);
    - asks meet for two tokens, the member's and its own;
    - joins with encryption;
-   - returns the member's token.
+   - returns the member's token, with `encrypted: true`.
 3. meet needs one change: a private room gets no Jamie dispatch and no
    `isHost` admin grant. Today every token dispatches `LIVEKIT_AGENT_NAME`,
    and `?isHost=true` gives anyone room admin
@@ -629,19 +744,37 @@ Each step ships something usable and builds on the ones before it.
 
 ### Step 1 in detail
 
-**peel**
-- **A Talk entry point** for the org's Jamie: on the org's page, where Peel
-  lists an org (Stadeum), and in Jamie's chat. Peel's call menu already has
-  an inline Jamie picker for group calls
-  (`Apps/iOS/Peel/ConversationScreen.swift:113-146`).
-- **A voice call screen.** It shows listening, thinking and speaking, the live
-  text, and lets the member interrupt by speaking. Reuse `IOSCallScreen` /
-  `CallWindow` where it fits. Keep Apple's voice processing on (`.voiceChat`,
-  `IOSCallSession.swift:190-194`).
-- **A dev profile:** the local home and a person token.
-- **iPhone permissions.** The iPhone needs `NSLocalNetworkUsageDescription`,
-  which only the Mac declares today. It also needs a certificate it trusts for
-  the LAN host, or an installed CA.
+**peel:** the Mac first, then the iPhone simulator.
+- **A Talk entry point** for the org's Jamie, on the org's page where Peel
+  lists an org (Stadeum).
+  - Not in the agent DM.
+    [stakwork/peel#468](https://github.com/stakwork/peel/pull/468) puts its own
+    voice mode there: hands-free chat with on-device speech and text over
+    Sphinx. The two shouldn't share one button.
+  - Peel's call menu already has an inline Jamie picker for group calls
+    (`Apps/iOS/Peel/ConversationScreen.swift:113-146`).
+- **A home-call path beside `CallStore`.**
+  - It calls `POST /voice/calls` (§4.1) and joins the room it gets back with
+    the LiveKit SDK Peel already links.
+  - It doesn't go through `CallLink`.
+- **A voice call screen.**
+  - It reads `lk.agent.state` and the `lk.transcription` streams (§4.1) to
+    show listening, thinking and speaking, and the live text.
+  - The member interrupts by speaking.
+  - Reuse `IOSCallScreen` / `CallWindow`, or #468's phase state and panel
+    once #468 builds.
+  - Keep Apple's voice processing on (`.voiceChat`,
+    `IOSCallSession.swift:190-194`).
+- **A dev setting:** the home's URL and a person token (§4.1, "Local values").
+- **Loopback first.**
+  - The Mac and the simulator both reach `127.0.0.1`, so step 1 needs no TLS
+    and no local-network permission.
+  - A real iPhone on the LAN needs `NSLocalNetworkUsageDescription`, which
+    only the Mac declares today, plus a certificate it trusts for the LAN
+    host.
+- **Building for the simulator.** sphinx-rs needs its arm64-simulator slice:
+  `cargo +1.88.0 build --target aarch64-apple-ios-sim --release` in
+  `sphinx-ffi`, then `scripts/build-ffi.sh` with `SPHINX_IOS_SIM_LIB` set.
 
 **compose** (in sphinx-voice, beside the voice service)
 
@@ -657,11 +790,12 @@ Each step ships something usable and builds on the ones before it.
 - An `llmNode` that runs the orchestrator turn as the member, on
   `<member>/voice`, and streams its reply a clause at a time.
 - A job's callback becomes `session.say`.
-- The call handler behind `/voice/calls`: mint tokens, join, answer.
+- `POST /calls`, the handler behind `/voice/calls` (§4.1): mint tokens, get
+  the agent in, answer.
 
 **strut**
-- `/voice/calls`, forwarding to the voice service, open to a person token
-  (Q10).
+- `/voice/calls`, forwarding to `STRUT_VOICE_URL` with the member's actor,
+  open to a person token (§4.1, Q10).
 - The orchestrator's `start` reply and the `job/start` step after it.
 - `params.reasoning`.
 - Reply streaming: the `stream` flag and the tap in the agent step, the
