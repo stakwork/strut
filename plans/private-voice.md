@@ -23,8 +23,8 @@ pays in sats over Sphinx.
 to hear the member in order to answer, so the promise is about everyone else:
 - The operator (Stakwork), the host and any relay in the path never read the
   audio or the words.
-- §11 lists what each of them still sees. Other members of the same org are a
-  separate question (Q9).
+- §11 lists what each of them still sees.
+- Other members of the same org are not part of the promise at first (§3.6).
 
 ## Decided
 
@@ -32,6 +32,7 @@ to hear the member in order to answer, so the promise is about everyone else:
 |---|---|
 | Goal | **agreed.** End-to-end encrypted, Lightning-gated voice, phone → cloud → phone, natural enough to hold a conversation. |
 | Who a TEE serves | **agreed.** One org's members. The TEE is the org's home (`org-home-swarm.md`), not one VM per person. |
+| Privacy between members | **agreed.** Not required at first. Keep it easy to add later (§3.6). |
 | Where speech runs | **agreed.** In the TEE, not on the phone, because there we can customize it, starting with strut's vocabulary (its lexicon). |
 | Who answers | **agreed.** The orchestrator, set up to be quick: it answers at once without tool calls, and starts a job in the background when the request needs work. |
 | Payments | **agreed.** Sphinx's own rails. |
@@ -353,6 +354,33 @@ the agent, so the end of each turn is the cue to answer.
 - The strut STT and TTS plugins, Silero and the turn detector.
 - agents-js 1.9.x (sphinx-voice pins 1.0.25).
 
+### 3.6 Privacy between members: later, kept easy
+
+**Today.** Any member's person token reads every route on the home: run
+logs, transcripts, sessions, job files (`isPeerScope`, `src/auth.ts`). So
+other members can read a member's call turns, through:
+- the prompt on `run.start`;
+- the transcript on `step.end`;
+- the `reply.delta` events;
+- the session record.
+
+**Not now.** Hiding only the sessions would be small, but the same words sit
+in run logs, transcripts and job files. A real fix scopes every read route
+that serves them, and that isn't a small change.
+
+**Kept easy for later.** Four rules hold from step 1, so that a later read
+filter by actor is enough:
+- Every voice run records the member as its actor (`run.start.actor`).
+- The member's voice session lives in their own namespace, `<member>/voice`.
+- A job a voice turn starts carries the member as its actor, so the job's
+  record lists them (`actors`, which `GET /jobs?mine=1` already filters on).
+- The ledger keys balances by actor.
+
+**The later change.** For a person token, filter the routes that serve runs,
+transcripts, sessions, jobs and artifacts down to that actor's own. The app
+door already does this for a sealed workflow's runs (`ownRun`,
+`src/createStrut.ts`), so the pattern exists.
+
 ## 4. Call set-up
 
 **Over HTTPS to the org's home, with the member's person token.**
@@ -364,7 +392,7 @@ the agent, so the end of each turn is the cue to answer.
 
 **A route, not a workflow.**
 - A run records its input on `run.start`, and the run log is readable by
-  every member (Q9). The call key and the room tokens must never be in a run
+  every member (§3.6). The call key and the room tokens must never be in a run
   log.
 - So the call starts at `POST /voice/calls`, a thin strut route:
   - it authenticates the person token, the way the gate already admits a
@@ -559,7 +587,7 @@ member, not the content. We pay by card (Stripe).
 - **Our own GPU enclave**, one H200 at about $4–6k a month, once enough orgs
   share it.
 - **Many unrelated people on one host.** It needs per-actor read isolation in
-  strut (Q9) and a pooled Sphinx account.
+  strut (§3.6) and a pooled Sphinx account.
 - **A media server for private calls** with the audio-level extension off and
   Opus at constant bitrate, perhaps in its own TEE.
 - **Meeting calls on the org's home.** Jamie in group calls moves to the
@@ -671,7 +699,7 @@ for about 0.8 s (Daily, Pipecat).
 | Party | Sees | Doesn't see |
 |---|---|---|
 | The member's phone, the TEE | everything | — |
-| Other members of the org | today, the member's turns in run logs and sessions (Q9) | — once per-member isolation exists |
+| Other members of the org | the member's turns in run logs and sessions, until per-member read isolation exists (§3.6) | — |
 | Network observers | IP addresses, timing, packet sizes | audio, words |
 | The LiveKit server | a room, random identities, timing, packet sizes, a per-packet loudness level | audio, words, the key |
 | The Sphinx broker and mixer | that a member pays the org's Jamie; amounts; times (§5) | content, the call key |
@@ -701,13 +729,8 @@ for about 0.8 s (Daily, Pipecat).
    the worker's inference process.
 8. **What a member sees after a call.** The turns as messages in their Jamie
    chat, or one "call, 4 min" line that opens the transcript.
-9. **Privacy between members.**
-   - Today any member's person token reads every run log, session and job
-     file on the home. So other members can read a member's call turns.
-   - If calls should be private between members, strut needs per-actor read
-     isolation, a route-by-route audit.
-   - For an org this may be acceptable: Hive's Jamie conversations are shared
-     by default. It's the owner's call.
+9. **Privacy between members.** *Decided 2026-11-03:* not required at first.
+   Keep it easy to add later (§3.6).
 10. **Where the call route lives.** A generic strut route that forwards to the
     voice service (proposed), or the lab.
 11. **Whose vocabulary.** The org's lexicon only (one memory graph per strut),
