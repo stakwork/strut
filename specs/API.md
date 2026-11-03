@@ -1504,6 +1504,53 @@ the run's own events, returned to the caller and kept only as §7 says
 (`keep: true`, or claims on the step), so a caller that wants no record of it
 never passes `keep`.
 
+### 15.1 Speaking — text to speech (`src/audio/tts.ts`)
+
+The other direction (plans/private-voice.md §3.3): Kokoro v1.0 through the
+same sherpa addon, on CPU, in a worker thread of its own, one speech at a
+time. 501 on a build without the addon.
+
+| Method | Path | Body / reply |
+| ------ | ---- | ------------ |
+| GET    | `/audio/speak` | `{ available, modelDir, models }` — each `TtsModel` (`src/audio/models.ts`) with `installed` and `default`; `voices` is its voice table, `defaultVoice` the one a request that names none gets, `sampleRate` its rate |
+| POST   | `/audio/speak` | `{ text, voice?, speed?, model? }` → mono 16-bit little-endian PCM, below |
+
+`text` is what to say, not blank, at most 10,000 characters; `voice` a name
+from the model's `voices` (`af_heart` by default; `af_`/`am_` American,
+`bf_`/`bm_` British English, female/male); `speed` 0.5–2, 1 the voice's own
+pace; `model` a `TTS_MODELS` id, `kokoro-en-v1.0` (the one there is).
+
+A 200 is `content-type: audio/pcm`, `x-sample-rate: 24000`, `x-voice: <the
+voice used>`, `cache-control: no-store`, and a body of raw samples with no
+WAV header — the shape of Tinfoil's streaming TTS — written a sentence at a
+time as Kokoro finishes each (sherpa splits where espeak-ng ends a
+sentence), so a client plays the first while the rest is generated:
+
+```bash
+curl -sN -X POST localhost:3000/audio/speak -H "authorization: Bearer $STRUT_API_KEY" \
+  -H 'content-type: application/json' -d '{"text":"Sure. The meeting moved to Thursday."}' \
+  | ffplay -f s16le -ar 24000 -ch_layout mono -nodisp -autoexit -
+```
+
+400 for a body that is not `{ text: string, voice?: string, speed?: number,
+model?: string }`, a blank or too-long text, an unknown voice (the error lists
+the known ones) or model, or a speed out of range; 500 when the model fails
+before the first sentence. Once the first sentence is sent the status is
+too: a later failure ends the body early (logged).
+
+A model not on disk is downloaded on first use (350 MB, sha256-checked, into
+`STRUT_MODEL_DIR/tts/<id>`), and the first speech after a start loads it
+(0.3–0.7 s); the request waits for both. `installed` says which a request
+will meet; one short warm-up request does both ahead of a call.
+
+Hanging up stops the speech: nothing more is sent, and Kokoro stops at a
+sentence boundary — sherpa hears a stop only when a sentence ends, by which
+time it has begun the next, so up to two sentences are generated for nothing
+while the next speech waits its turn (1.7 s, measured with long sentences).
+A client that sends one sentence per request keeps that to the one in
+flight. Measured on four cores of an M4 (Docker, `npm run test:tts`): a
+two-sentence reply's first audio in 0.36 s, all 5.5 s of it in 1.2 s.
+
 ## 16. Packages — sharing workflows, steps, apps and Concepts (`plans/marketplace.md` §1–§5)
 
 A PACKAGE is a directory: `strut.yaml` (`package: publisher/name`,
