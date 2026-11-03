@@ -22,6 +22,7 @@
  */
 import type { GraphBackend } from "./backend.js";
 import { DEFAULT_NAMESPACE } from "./bolt.js";
+import { namespaceName } from "./ladybug/namespaces.js";
 import { neo4jName } from "./neo4j-engine.js";
 import { toEpochSeconds } from "./node-writer.js";
 import { nodeTitle } from "./title.js";
@@ -109,7 +110,10 @@ export async function findNodes(b: GraphBackend, input: FindInput): Promise<Find
     return `n.\`${d.kind === "neo4j" ? neo4jName(name, type) : name}\``;
   };
 
-  const params: Record<string, unknown> = { ns: input.namespace ?? b.namespace ?? DEFAULT_NAMESPACE, default_ns: DEFAULT_NAMESPACE };
+  // On a ladybug file `default` is the backend's own namespace.
+  const ns = b.kind === "ladybug" ? namespaceName(input.namespace, b.namespace) : input.namespace ?? b.namespace ?? DEFAULT_NAMESPACE;
+  if (ns === null) throw new FindError(`namespace ${String(input.namespace)} is not a namespace name`);
+  const params: Record<string, unknown> = { ns, default_ns: DEFAULT_NAMESPACE };
   let p = 0;
   const param = (name: string, value: unknown): string => {
     const base = baseOf(fields[name]!);

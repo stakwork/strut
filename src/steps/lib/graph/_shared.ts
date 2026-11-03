@@ -79,6 +79,8 @@ export interface EdgeWriteArgs {
    *  type) triple has no edge schema, register one between the endpoint
    *  types and retry once. */
   create_schema_if_missing?: boolean;
+  /** The caller's actor, stamped as the edge's `created_by` (Ladybug). */
+  created_by?: string;
 }
 
 /** Write one edge through the backend, honouring `create_schema_if_missing`
@@ -91,6 +93,7 @@ export async function writeEdge(b: GraphBackend, a: EdgeWriteArgs) {
     target_ref_id: a.target_ref_id,
     ...(a.edge_data ? { properties: a.edge_data } : {}),
     ...(a.weight !== undefined ? { weight: a.weight } : {}),
+    ...(a.created_by ? { created_by: a.created_by } : {}),
   };
   try {
     return await b.edges.write(input);

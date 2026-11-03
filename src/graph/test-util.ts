@@ -25,6 +25,7 @@ import { openGraphBackend, type GraphBackend } from "./backend.js";
 import { Bolt, type Neo4jConfig } from "./bolt.js";
 import type { GraphKind } from "./engine.js";
 import { loadLadybug, openLadybug } from "./ladybug/db.js";
+import { PRIVATE_NAMESPACE } from "./ladybug/namespaces.js";
 import { fromNeo4j, toNeo4j } from "./neo4j-engine.js";
 import type { Embedder } from "./node-writer.js";
 import { typeLabelOf, typeValue } from "./strut-schemas.js";
@@ -89,7 +90,7 @@ export function testBackends(): TestBackend[] {
       skip: LADYBUG_SKIP ?? false,
       async open(opts = {}) {
         const dir = await mkdtemp(join(tmpdir(), "strut-lbug-test-"));
-        const b = await openGraphBackend({ kind: "ladybug", path: join(dir, "graph.lbug"), namespace: "default" }, { embeddings: opts.embedder ?? false, skipBoot: true });
+        const b = await openGraphBackend({ kind: "ladybug", path: join(dir, "graph.lbug"), namespace: PRIVATE_NAMESPACE }, { embeddings: opts.embedder ?? false, skipBoot: true });
         dirs.set(b, dir);
         return b;
       },

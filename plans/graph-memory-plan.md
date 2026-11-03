@@ -58,8 +58,9 @@ Core attributes are listed under "Core attributes" below.
 - Add `role`, `temporal`, `cardinality`, `key`, `identifiers` and `domain` to the core schema properties, `schema-crud.ts`, the resolver and the Ladybug Schema columns.
 - Cardinality is a rule on each edge type, never on nodes. An edge type declares `temporal` and `cardinality`, the slot is source node plus edge type, and `assert` reads the rule from the schema. `cardinality: one` means one current edge per source node. One per target isn't in v1 until something needs it.
 - Add namespaces to Ladybug. It refuses anything but `default` today. Writes default to `private`.
+  - A namespace says who may read the data. `private` is the graph owner's, readable only by the readers the host grants it (step 6). On Peel the owner is one person; a company graph would give each person a namespace of their own (see "Open decisions").
 - Seed base types without Jarvis's fixture. The user is an ordinary `Person` marked as the owner, with no separate `Self` type. `Lingo` stays, because dictation reads it.
-- Add a `system` namespace for Schema rows and strut's own records: workflows, steps, apps, runs and jobs. Reads leave it out unless the caller asks for it. Edges from it to real things, such as a run that read a Concept, follow the cross-namespace rule. The assistant and the builder can read it, and jobs can't.
+- Strut's own records keep the `Strut` domain and live in their writer's namespace; Schema rows are file-wide. A namespace says whose data something is; the domain says what kind of thing it is.
 - Keep the hard-coded skip list in `graph-neighbors.ts` and `walk.ts` for v1. A `walkable` schema setting can replace it later.
 - Add a per-type `embed` setting. Source types (dictation, transcripts, messages) default to keyword search only, with no embedding, so they don't crowd vector results. Entities, Concepts and Claims are embedded.
 
@@ -73,6 +74,7 @@ Core attributes are listed under "Core attributes" below.
 - Search returns edges as well as nodes, and hides search rows as nodes.
 - Reads default to current data, with `include_ended` and `as_of`.
 - Search and walk scope by namespace.
+- Strut records are filtered by domain, not namespace. The memory tools leave out domain `Strut` by default; the assistant searches everything, so it can find a run, job or workflow.
 - Raise `efs` to 500 on vector queries, for recall as the graph grows.
 
 ### 5. Add identity
@@ -80,7 +82,7 @@ Core attributes are listed under "Core attributes" below.
 - `merge`: move edges, keep old ids working, record it, allow undo.
 
 ### 6. Enforce privacy with namespaces
-- Replace `managed_by: memory` with one check under every read tool: each reader has a list of namespaces, set by the host.
+- Replace `managed_by: memory` with one check under every read tool: each reader has a list of namespaces, plus an optional domain filter, set by the host. A job's list is `shared` with domain `Strut` left out, so it sees no Strut records.
 - In Peel, everything is written to `private` by default, and public Concepts go in `shared`. The assistant reads both. Jobs read only `shared`, and get anything else through their brief.
 - Keep B's reader rule and raw-query refusal, keyed on the list.
 - Every reader gets its own list, including the two outside Peel's chat: apps with graph grants, and peers reading through `/graph/*`. A reader the host hasn't given a list reads nothing.
@@ -96,6 +98,7 @@ This is the first step a Peel user notices.
 - Rewrite D: grants, prompts, journey test, and re-pinned `strut.lock`.
 - Sync imports are bounded and batched, so a pull never holds the workspace write lock long enough to stall run projections or publishes.
 - Sync and export say how they treat an edge that crosses namespaces: it travels only when both ends and its own namespace travel. Today only the read rule exists.
+- Sync and export leave out domain `Strut` unless asked.
 - Add a small one-off import for current memory: facts linking two nodes become edges, and the rest are reviewed. The new graph otherwise starts fresh, so the assistant doesn't forget everything at the switch.
 
 ### 8. Confirm Concepts and Claims on Peel's path
@@ -145,7 +148,7 @@ Most of the risk sits in steps 2 to 6, because the Neo4j path has features Peel'
 
 | Exists on Ladybug (`main`) | Comes with PR A | New work |
 |---|---|---|
-| Concepts, Claims, Checks, Evidence, soft delete, `StrutRun` and `StrutJob` nodes | Schema nodes, runtime types | Namespaces, temporal edges, `assert`, search rows, `resolve`, `merge`, reader lists, run read records |
+| Concepts, Claims, Checks, Evidence, soft delete, `StrutRun` and `StrutJob` nodes (domain `Strut`) | Schema nodes, runtime types | Namespaces, temporal edges, `assert`, search rows, `resolve`, `merge`, reader lists with a domain filter, run read records |
 
 ## Step pass criteria
 
@@ -159,7 +162,9 @@ Each step is done when its tests pass, on top of the end-to-end criteria above. 
 - A fresh file boots with base types and without the Jarvis fixture.
 - An app that declares types (`data.graph`) still builds on Ladybug (`src/apps/graph-types.test.ts`, already passing).
 - A Source type is found by keyword and has no embedding; an Entity type has both.
-- A search or walk leaves out `system` unless asked.
+- Strut records live in their writer's namespace, and a search with no namespace or type finds a `StrutRun`.
+- Schema rows are file-wide: a type resolves whatever namespace a read or write names.
+- The writer stamps `created_by` from the caller's actor, and a caller can't set it.
 - An existing Peel file migrates to the new names, keeps its nodes and edges, and still searches.
 - Every node and edge has the core attributes, and a caller can't set the writer-owned ones.
 - Every node has a non-empty `title` from its type's `title_key`, and an Entity or Concept with an empty title is refused.
@@ -180,6 +185,7 @@ Each step is done when its tests pass, on top of the end-to-end criteria above. 
 - `as_of` returns what was true at that date, and an ended edge appears only within its dates.
 - Search returns an edge when only its sentence matches, and a search row is never returned as a node.
 - A namespace scope returns nothing from outside it, including through edges.
+- The memory tools leave out domain `Strut` by default, and the assistant's search finds a run.
 - Edge counts don't include hidden edges.
 
 ### Step 5: identity
@@ -200,6 +206,7 @@ The rules:
 
 The tests:
 - A reader gets nothing outside its list through search, find, get, neighbors, walk, `as_of`, edge counts or search rows.
+- A job sees no Strut records, through its domain filter.
 - A raw query is refused unless the reader can read every namespace in the graph.
 - An edge from `shared` into `private` is invisible to a job, and so is the fact that it exists.
 - `resolve` never reveals a node outside the reader's list.
@@ -214,6 +221,7 @@ Today the box owns the data and the Mac holds a read copy, which pushes only dic
 - Which node types travel is listed and tested. Run records stay on the box unless we decide otherwise.
 - An import holds the write lock for at most one batch at a time, and a run projected during a pull isn't delayed by more than one batch. The time held is measured in the test.
 - An edge crossing namespaces travels only with both ends, and the test covers one that doesn't.
+- Strut records don't travel unless asked.
 
 ## Search rows: prototype result
 

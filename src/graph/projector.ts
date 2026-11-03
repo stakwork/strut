@@ -341,7 +341,6 @@ export function jobNode(view: JobView): NodeInput {
       job_id: view.job,
       title: view.title ?? view.job,
       summary: preview(lines.join("\n"), JOB_SUMMARY_MAX_CHARS),
-      created_by: view.createdBy,
       started_at: view.createdAt ?? view.runs[view.runs.length - 1]?.at ?? new Date().toISOString(),
       last_used_at: view.usedAt || undefined,
       run_count: view.runs.length,
@@ -349,6 +348,7 @@ export function jobNode(view: JobView): NodeInput {
       log_ref: view.job,
       unique_source_id: `strutjob:${view.job}`,
     }),
+    ...(view.createdBy ? { created_by: view.createdBy } : {}),
   };
 }
 
@@ -747,13 +747,13 @@ export async function projectChats(backend: GraphBackend, chatStore: ChatStore):
         summary: preview(turns[0] ? (turns[0].data["user_text_preview"] as string) : undefined),
         status: meta.status,
         model: meta.model,
-        created_by: meta.createdBy,
         started_at: meta.createdAt,
         last_active_at: meta.updatedAt,
         turn_count: turns.length,
         log_ref: meta.id,
         unique_source_id: `strutchat:${meta.id}`,
       }),
+      ...(meta.createdBy ? { created_by: meta.createdBy } : {}),
     };
     const written = await backend.nodes.writeMany([chat, ...turns], "upsert");
     const chatRef = written[0]!.ref_id;

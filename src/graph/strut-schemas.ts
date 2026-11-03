@@ -135,6 +135,7 @@ export const GENERIC_NODE_PROPERTIES = new Set([
   "key",
   "search_text",
   "created_at",
+  "created_by",
   "Data_Bank",
   "namespace",
   "spelling_verification",
@@ -160,10 +161,11 @@ export const GENERIC_NODE_PROPERTIES = new Set([
  *  own: 15 jarvis types (Concept, PullRequest, Check, …) and an app on Neo4j
  *  declare `created_at`. Neo4j keeps the core stamp under
  *  `date_added_to_graph`, so there the two do not meet: the type's
- *  `created_at` stays its own (`neo4j-engine.ts`). Ladybug holds one
- *  `created_at` column, the core one, and refuses the declaration
- *  (`schema-crud.ts`). Strut's own types never declare it. */
-export const TYPE_OWNABLE_CORE = new Set(["created_at"]);
+ *  `created_at` stays its own (`neo4j-engine.ts`). `created_by` likewise:
+ *  Neo4j stores no core one outside `OWN_CREATED_BY`. Ladybug holds one
+ *  column of each, the core one, and refuses the declaration
+ *  (`schema-crud.ts`). Strut's own types never declare them. */
+export const TYPE_OWNABLE_CORE = new Set(["created_at", "created_by"]);
 
 /** True when `name` is a core or system property a type may not declare
  *  as its own field. */
@@ -476,7 +478,6 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
       summary: "?string",
       status: "?string",
       model: "?string",
-      created_by: "?string",
       /** When the chat began (epoch seconds). */
       started_at: "datetime",
       last_active_at: "?datetime",
@@ -521,7 +522,6 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
        *  then the latest reply, capped. Built by the projector from the
        *  job index's `get`; as fresh as the job's last finished run. */
       summary: "?string",
-      created_by: "?string",
       /** When the job began (epoch seconds). */
       started_at: "datetime",
       /** The record's `usedAt`. (`updated_at` is a generic node property.) */
@@ -645,6 +645,12 @@ export const OWN_CREATED_AT: Readonly<Record<string, "published_at" | "started_a
   StrutChat: "started_at",
   StrutJob: "started_at",
 };
+
+/** The Strut types that declared their own `created_by` before it was a
+ *  core attribute: who opened the chat, who launched the job. A Neo4j graph
+ *  stores the core one on these types alone (as it stored their own), and
+ *  no other node gets one there; a Ladybug file stores it on every node. */
+export const OWN_CREATED_BY: ReadonlySet<string> = new Set(["StrutChat", "StrutJob"]);
 
 /** Edge types whose declared target is a wildcard (any node label). */
 export const WILDCARD_TARGET_EDGES = new Set(["ACCESSED", "DERIVED_FROM"]);
