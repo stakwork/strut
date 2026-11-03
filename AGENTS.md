@@ -1293,8 +1293,15 @@ the same steps are an agent's tools (`agentTools: ["browser/*"]`), and
   excepted; a kept step run still reaches the graph only with evidence.
   The verify pass does not project it again: `runRef` joins the projection
   in flight (`projectRunOnce` is single-flighted per run), else takes the
-  settled node the graph holds. Chats, and runs cut off before their end,
-  are the `graph/project` step's. **Provenance convention:** a graph-touching step
+  settled node the graph holds. **So is every builder chat, when one of
+  its turns ends** (`projectChatOnce`, from `launchChatTurn`'s `finally`,
+  and again when a detached run it launched settles; one at a time per
+  chat, a call during a projection queuing one more): its `StrutChat`, a
+  `StrutTurn` per user message, `SPAWNED` to each run it launched — the
+  run's projection in flight is waited for. Neo4j only (a Ladybug file
+  holds no chat types), and no `ACCESSED`: a chat's tool calls are not
+  nodes. Runs cut off before their end, and chats older than this, are
+  the `graph/project` step's. **Provenance convention:** a graph-touching step
   marks its output with `withAccessedNodes(output, [{ ref_id, node_type? }])`
   (`core.ts`; a non-enumerable marker — invisible to the model, `{{ }}`
   expressions, and JSON). `wrapToolsWithEmit` lifts it onto the tool call's
