@@ -179,6 +179,7 @@ describe("layoutRunGraph", () => {
       places: new Map(),
       lanes: [],
       callCells: [],
+      clusters: new Map(),
     });
   });
 });
@@ -301,5 +302,81 @@ describe("layoutRunGraph with a launched run", () => {
       ]),
     );
     expect(nested.lanes.map((l) => l.stage)).toEqual(["work", "explore", "deep"]);
+  });
+});
+
+describe("layoutRunGraph with a fold", () => {
+  // One Concept with 400 documents under it, read by one stage; 600 loose
+  // notes read by another; a few documents read twice.
+  const docs = Array.from({ length: 400 }, (_, i) => `doc${i}`);
+  const notes = Array.from({ length: 600 }, (_, i) => `note${i}`);
+  const big = [
+    call("wf/survey/001-graph_graph_get", ["root"]),
+    call("wf/survey/002-graph_graph_get_batched", docs),
+    call("wf/survey/003-graph_graph_get_batched", ["doc7", "doc9"]),
+    call("wf/collect/001-graph_graph_get_batched", notes),
+  ];
+  const parents = new Map(docs.map((d) => [d, ["root"]]));
+  const typeOf = new Map<string, string>([["root", "Concept"], ...docs.map((d) => [d, "Document"] as const), ...notes.map((n) => [n, "Note"] as const)]);
+  const ids = ["root", ...docs, ...notes];
+  const fold = { cap: 12, typeOf };
+
+  it("keeps a parent's most-touched children and folds the rest into one node under it", () => {
+    const layout = layoutRunGraph(big, ids, [], parents, new Map(), 1.6, fold);
+    const survey = idsIn(layout, "survey#");
+    expect(survey).toHaveLength(1 + 12 + 1);
+    expect(survey).toContain("doc7");
+    expect(survey).toContain("doc9");
+    const cluster = layout.clusters.get("+survey#|parent:root")!;
+    expect(cluster.parent).toBe("root");
+    expect(cluster.members).toHaveLength(400 - 12);
+    expect(cluster.members.some((m) => m.id === "doc7")).toBe(false);
+    expect(at(layout, "survey#", cluster.id) !== undefined).toBe(true);
+  });
+
+  it("folds loose nodes of one type past the cap", () => {
+    const layout = layoutRunGraph(big, ids, [], parents, new Map(), 1.6, fold);
+    const collect = idsIn(layout, "collect#");
+    expect(collect).toHaveLength(12 + 1);
+    const cluster = layout.clusters.get("+collect#|type:Note")!;
+    expect(cluster.type).toBe("Note");
+    expect(cluster.parent).toBe(null);
+    expect(cluster.members).toHaveLength(600 - 12);
+  });
+
+  it("stays the size of a few dozen nodes, however many the run touched", () => {
+    const folded = layoutRunGraph(big, ids, [], parents, new Map(), 1.6, fold);
+    expect(folded.width).toBeLessThan(2000);
+    expect(folded.height).toBeLessThan(1500);
+    expect(folded.places.size).toBe(14 + 13);
+  });
+
+  it("is the same layout without a fold when nothing passes the cap", () => {
+    const plain = layoutRunGraph(CALLS, IDS, LINKS, lineageParents([]));
+    const withFold = layoutRunGraph(CALLS, IDS, LINKS, lineageParents([]), new Map(), 1.6, { cap: 12, typeOf: new Map() });
+    expect([...withFold.places]).toEqual([...plain.places]);
+    expect(withFold.clusters.size).toBe(0);
+  });
+});
+
+describe("layoutRunGraph with a stack", () => {
+  const loop = Array.from({ length: 10 }, (_, i) => call(`wf/ingest#${i}/fetch`, [`a${i}`, `b${i}`]));
+  const ids = loop.flatMap((c) => c.nodes.map((n) => n.ref_id));
+
+  it("draws a loop of more iterations than `after` in one box, every iteration at the same place", () => {
+    const layout = layoutRunGraph(loop, ids, [], new Map(), new Map(), 1.6, undefined, { after: 3 });
+    const lane = layout.lanes[0]!;
+    expect(lane.stacked).toBe(true);
+    expect(lane.cells).toHaveLength(10);
+    expect(new Set(lane.cells.map((c) => `${c.x},${c.y},${c.width},${c.height}`)).size).toBe(1);
+    expect(at(layout, "ingest#7", "a7")).toEqual({ ...at(layout, "ingest#0", "a0")!, id: "a7", cell: "ingest#7", since: 7 });
+    const open = layoutRunGraph(loop, ids, [], new Map(), new Map(), 1.6, undefined, { after: 3, open: new Set(["ingest"]) });
+    expect(open.lanes[0]!.stacked).toBe(undefined);
+    expect(open.width).toBeGreaterThan(layout.width);
+  });
+
+  it("leaves a loop of a few iterations side by side", () => {
+    const few = layoutRunGraph(loop.slice(0, 3), ids.slice(0, 6), [], new Map(), new Map(), 1.6, undefined, { after: 3 });
+    expect(few.lanes[0]!.stacked).toBe(undefined);
   });
 });

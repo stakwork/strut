@@ -27,8 +27,9 @@ import type { StrutClient } from "@strut/kit";
 import { errorText } from "../../lib/format";
 import { getNeighbors, getNodes, type GraphNode } from "../../lib/graph-steps";
 
-/** The most nodes a trace resolves (hive's `RUN_GRAPH_MAX_NODES`). */
-export const MAX_NODES = 1000;
+/** The most nodes a trace resolves: a run of a workspace graph touches thousands, and the
+ *  view folds what a cell cannot draw (`layoutRunGraph`'s fold). Hive's `RUN_GRAPH_MAX_NODES` was 1,000. */
+export const MAX_NODES = 5000;
 /** The most `graph-neighbors` calls one trace makes for edges and lineage. */
 export const MAX_NEIGHBOR_READS = 240;
 /** How far up PARENT_OF the lineage climbs. */

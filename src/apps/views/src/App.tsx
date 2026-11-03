@@ -7,7 +7,7 @@ import { StrutProvider, useStrutClient, useStrutHost } from "@strut/kit";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import {
-  AgentTrace, ArtifactView, DocumentView, LaunchForm, RunHealth, NodeCard, NodeGraph, NodeSearch, RunGraph, RunList, RunStatus, RunTimeline, SheetView, SHEETS_STEP, Transcript, WalkView, WorkProducts,
+  AgentTrace, ArtifactView, DocumentView, LaunchForm, RunHealth, NodeCard, NodeGraph, NodeSearch, RunGraph, RunList, RunStatus, RunTimeline, SheetView, SHEETS_STEP, Transcript, WalkView, WorkProducts, type RunGraphSelection,
 } from "./index";
 import { createFixtureClient } from "./fixtures/client";
 import { TRANSCRIPT_MARKS } from "./fixtures/content";
@@ -18,6 +18,7 @@ import { COVENANT_RANGE, COVENANT_SHEET, COVENANT_SOURCES, DEVIATIONS_CSV, NDA_R
 import { MATTER_LIVE_RUN_ID, MATTER_RUN_ID, MATTER_WORKFLOW } from "./fixtures/matter";
 import { AGENT_WALK_RUN_ID, WALK_JOIN_RUN_ID, WALK_LIVE_RUN_ID, WALK_RUN_ID, WALK_WORKFLOW } from "./fixtures/walk";
 import { BIG_WALK_RUN_ID } from "./fixtures/walk-large";
+import { LARGE_RUN_HIGHLIGHTS, LARGE_RUN_ID, LARGE_RUN_WORKFLOW } from "./fixtures/run-large";
 
 interface Entry {
   name: string;
@@ -179,6 +180,84 @@ function WalkDemo() {
   );
 }
 
+/** What a lens would highlight, by run. */
+const LENSES = {
+  normal: { walk: [REF.medicine, REF.cardiology, REF.arrhythmia], sources: [REF.guideline, REF.trial] },
+  large: { walk: LARGE_RUN_HIGHLIGHTS.walk, sources: LARGE_RUN_HIGHLIGHTS.products },
+} as const;
+
+/**
+ * RunGraph as a run screen's master view: a lens highlights part of it (the
+ * rest dims where it is) and a panel beside it answers a click — the app
+ * holds the selection. The large run touches about 3,000 nodes.
+ */
+function RunGraphDemo() {
+  const [run, setRun] = useState<"normal" | "large">("normal");
+  const [lens, setLens] = useState<"none" | "walk" | "sources">("none");
+  const [selected, setSelected] = useState<RunGraphSelection | null>(null);
+  const [width, setWidth] = useState<number | null>(null);
+  const highlight = useMemo(() => (lens === "none" ? undefined : [...LENSES[run][lens]]), [run, lens]);
+  const pick = (r: typeof run) => {
+    setRun(r);
+    setSelected(null);
+  };
+  const lensLabel = { none: "No lens", walk: "Walk", sources: run === "large" ? "Work products" : "Sources" } as const;
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-wrap items-center gap-1 text-xs">
+        {(["normal", "large"] as const).map((r) => (
+          <button key={r} type="button" onClick={() => pick(r)} className={cn("rounded-md border px-2.5 py-1", run === r ? "bg-muted font-medium" : "text-muted-foreground hover:bg-muted/60")} data-testid={`run-graph-demo-${r}`}>
+            {r === "normal" ? "a run" : "a run touching ~3,000 nodes"}
+          </button>
+        ))}
+        <span className="mx-2 text-muted-foreground">Lens</span>
+        {(["none", "walk", "sources"] as const).map((l) => (
+          <button key={l} type="button" onClick={() => setLens(l)} aria-pressed={lens === l} className={cn("rounded-md border px-2.5 py-1", lens === l ? "bg-muted font-medium" : "text-muted-foreground hover:bg-muted/60")} data-testid={`run-graph-lens-${l}`}>
+            {lensLabel[l]}
+          </button>
+        ))}
+      </div>
+      <div className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground" role="group" aria-label="Panel width">
+        <span className="mr-1">Panel</span>
+        {([null, 900, 1400] as const).map((w) => (
+          <button key={String(w)} type="button" onClick={() => setWidth(w)} aria-pressed={width === w} className={cn("rounded-md border px-2 py-0.5", width === w ? "bg-muted font-medium text-foreground" : "hover:bg-muted/60")} data-testid={`run-graph-demo-width-${w ?? "fill"}`}>
+            {w ? `${w.toLocaleString("en-US")} px` : "fill"}
+          </button>
+        ))}
+      </div>
+      <div className="overflow-x-auto">
+        <div className="flex h-[640px] gap-3" style={width ? { width } : undefined} data-testid="run-graph-demo-panel">
+          <div className="min-w-0 flex-1 overflow-hidden rounded-lg border">
+            <RunGraph
+              key={run}
+              workflow={run === "normal" ? WORKFLOW : LARGE_RUN_WORKFLOW}
+              runId={run === "normal" ? RUN_ID : LARGE_RUN_ID}
+              fill
+              {...(highlight ? { highlight } : {})}
+              selected={selected?.ref_id ?? null}
+              onSelectNode={setSelected}
+              details={false}
+              calls={false}
+            />
+          </div>
+          <aside className="flex w-52 shrink-0 flex-col gap-2 rounded-lg border p-3 text-sm" data-testid="run-graph-demo-lens-panel">
+            <p className="font-mono text-[11px] tracking-wide text-muted-foreground uppercase">{lensLabel[lens]}</p>
+            {selected ? (
+              <>
+                <p className="break-words font-medium">{selected.name}</p>
+                <p className="font-mono text-xs text-muted-foreground">{selected.node_type}</p>
+                <button type="button" onClick={() => setSelected(null)} className="self-start text-xs text-muted-foreground hover:text-foreground">clear</button>
+              </>
+            ) : (
+              <p className="text-muted-foreground">{highlight ? `${highlight.length.toLocaleString("en-US")} nodes highlighted. ` : ""}Click a node: the lens's panel answers.</p>
+            )}
+          </aside>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 const ENTRIES: Entry[] = [
   {
     name: "RunTimeline",
@@ -222,14 +301,10 @@ const ENTRIES: Entry[] = [
   },
   {
     name: "RunGraph",
-    what: "Every graph call the run made as a tree, the nodes laid out by stage under their lineage, a replay through the calls, child runs opened in place, a peer's nodes badged.",
+    what: "Every graph call the run made as a tree, the nodes laid out by stage under their lineage, a replay through the calls, child runs opened in place, a peer's nodes badged. A run screen's master view: `highlight` (a lens's nodes) dims the rest where it is, `onSelectNode` and `selected` let a lens's panel answer a click. At the scale of a workspace graph a cell folds what it cannot draw into “+N” nodes a click opens, and names only what is highlighted, selected, hovered or folded; the replay never changes its size.",
     grants: "grants.workflows: the run's (and its child runs') workflows · grants.steps: graph/graph-get-batched, graph/graph-neighbors",
-    usage: `<RunGraph workflow="research" runId={runId} live />`,
-    demo: () => (
-      <div className="h-[640px] overflow-hidden rounded-lg border">
-        <RunGraph workflow={WORKFLOW} runId={RUN_ID} fill />
-      </div>
-    ),
+    usage: `<RunGraph workflow="research" runId={runId} highlight={lens.nodes} selected={picked} onSelectNode={(n) => setPicked(n.ref_id)} details={false} calls={false} />`,
+    demo: () => <RunGraphDemo />,
   },
   {
     name: "AgentTrace",
