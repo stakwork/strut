@@ -85,6 +85,9 @@ export interface Dialect {
 
 // ── Nodes ───────────────────────────────────────────────────────────────────
 
+/** A type's schema, as the resolver merges it (`SchemaResolver.schema`). */
+export type SchemaOf = (type: string) => Promise<Pick<NodeSchema, "attributes"> | null>;
+
 export type WriteMode = "create" | "upsert";
 export type WriteOutcome = "created" | "existing" | "restored" | "updated";
 
@@ -151,7 +154,10 @@ export interface NodeEngine {
    *  soft-deleted (a restore clears both delete markers). Returns the
    *  outcome per row, input order. */
   mergeBatch(tx: GraphTx, schema: NodeSchema, namespace: string, nodes: PreparedNode[], mode: WriteMode): Promise<Array<{ ref_id: string; key: string; outcome: WriteOutcome }>>;
-  readRaw(tx: GraphTx, ref_id: string): Promise<RawNode | null>;
+  /** One node as stored. `schemaOf`, when the caller has the schemas: names
+   *  are mapped by what the node's type declares, not by what the node holds
+   *  (Neo4j: a `created_at` the type declares is its own field, `fromNeo4j`). */
+  readRaw(tx: GraphTx, ref_id: string, schemaOf?: SchemaOf): Promise<RawNode | null>;
   /** The ref_id of the node of `type` with this identity, or null. */
   refByKey(tx: GraphTx, type: string, key: string, namespace: string): Promise<string | null>;
   /** The live nodes of `type` in `namespace` whose `attribute` is one of

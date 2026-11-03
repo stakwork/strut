@@ -40,6 +40,7 @@ import type {
   PreparedNode,
   RawNode,
   Row,
+  SchemaOf,
   SchemaRow,
   SchemaSource,
   WriteMode,
@@ -79,19 +80,33 @@ export function toNeo4j(props: Record<string, unknown>, type?: string): Record<s
 
 /** A stored node's (or edge's) properties under the shared names. A stored
  *  `created_at` is the type's own: a version's `published_at`, a chat's or
- *  a job's `started_at`. On any other type (jarvis's Concept, PullRequest,
- *  Check, …: TYPE_OWNABLE_CORE) it stays `created_at`, the type's field,
- *  and the core stamp keeps jarvis's name, `date_added_to_graph`, beside it. */
-export function fromNeo4j(props: Record<string, unknown>, type?: string): Record<string, unknown> {
+ *  a job's `started_at`. A type that declares `created_at` (jarvis's
+ *  Concept, PullRequest, Check, …: TYPE_OWNABLE_CORE) keeps it as its field,
+ *  and its core stamp keeps jarvis's name, `date_added_to_graph` — the
+ *  writer's rule (`stampKey`). `ownsCreatedAt` is that declaration, from
+ *  the type's schema; a reader with no schema at hand leaves it out and a
+ *  stored `created_at` is taken as one, which reads right except on a node
+ *  of such a type that holds none: its stamp then shows as the field. */
+export function fromNeo4j(props: Record<string, unknown>, type?: string, ownsCreatedAt?: boolean): Record<string, unknown> {
   const own = type ? OWN_CREATED_AT[type] : undefined;
-  const typeOwnsCreatedAt = !own && "created_at" in props;
+  const owns = !own && (ownsCreatedAt ?? "created_at" in props);
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(props)) {
-    if (k === "created_at") out[own ?? "created_at"] = v;
-    else if (k === "date_added_to_graph" && typeOwnsCreatedAt) out[k] = v;
+    // A `created_at` a type does not declare is no field of it: the stamp has the name.
+    if (k === "created_at") {
+      if (own) out[own] = v;
+      else if (owns) out[k] = v;
+    } else if (k === "date_added_to_graph") out[owns ? k : "created_at"] = v;
     else if (!(k in NEO4J_NAMES)) out[SHARED_NAMES[k] ?? k] = v;
   }
   return out;
+}
+
+/** Where a property of a node of `schema`'s type is stored: a core name the
+ *  type declares as its own field (TYPE_OWNABLE_CORE) as itself, anything
+ *  else under `neo4jName`. */
+export function storedName(schema: Pick<NodeSchema, "type" | "attributes">, name: string): string {
+  return schema.attributes[name] && TYPE_OWNABLE_CORE.has(name) ? name : neo4jName(name, schema.type);
 }
 
 /** A Schema map in shared names as a Neo4j Schema node stores it: the key
@@ -180,8 +195,7 @@ function stored(schema: NodeSchema, map: Record<string, unknown>): Record<string
   for (const [k, v] of Object.entries(map)) {
     const t = schema.attributes[k];
     const base = t ? (t.startsWith("?") ? t.slice(1) : t) : undefined;
-    // A type's own `created_at` (TYPE_OWNABLE_CORE) is stored as itself.
-    const name = t && TYPE_OWNABLE_CORE.has(k) ? k : neo4jName(k, schema.type);
+    const name = storedName(schema, k);
     const stamp = k === "created_at" || k === "date_added_to_graph" || k === "updated_at";
     out[name] = typeof v === "number" && (stamp || base === "int" || base === "datetime") ? int(v) : v;
   }
@@ -279,10 +293,12 @@ class Neo4jNodes implements NodeEngine {
     });
   }
 
-  async readRaw(tx: GraphTx, ref_id: string): Promise<RawNode | null> {
+  async readRaw(tx: GraphTx, ref_id: string, schemaOf?: SchemaOf): Promise<RawNode | null> {
     const rows = await tx.run(`MATCH (n:Data_Bank {ref_id: $ref_id}) RETURN labels(n) AS labels, properties(n) AS props`, { ref_id });
     if (rows.length === 0) return null;
-    return { ref_id, type: typeLabelOf(rows[0]!["labels"] as string[]), props: fromNeo4j(rows[0]!["props"] as Record<string, unknown>, typeLabelOf(rows[0]!["labels"] as string[])) };
+    const type = typeLabelOf(rows[0]!["labels"] as string[]);
+    const schema = type && schemaOf ? await schemaOf(type) : null;
+    return { ref_id, type, props: fromNeo4j(rows[0]!["props"] as Record<string, unknown>, type, schema ? "created_at" in schema.attributes : undefined) };
   }
 
   async refByKey(tx: GraphTx, type: string, key: string, namespace: string): Promise<string | null> {
@@ -305,7 +321,7 @@ class Neo4jNodes implements NodeEngine {
   }
 
   async update(tx: GraphTx, schema: NodeSchema, ref_id: string, set: Record<string, unknown>, remove: string[]): Promise<void> {
-    const removeClause = remove.length ? `REMOVE ${remove.map((k) => `n.${q(neo4jName(k, schema.type))}`).join(", ")}` : "";
+    const removeClause = remove.length ? `REMOVE ${remove.map((k) => `n.${q(storedName(schema, k))}`).join(", ")}` : "";
     await tx.run(`MATCH (n:Data_Bank {ref_id: $ref_id}) SET n += $set ${removeClause}`, { ref_id, set: stored(schema, set) });
   }
 

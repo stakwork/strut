@@ -582,7 +582,9 @@ export class NodeWriter {
     const remove = patch.remove ?? [];
     const set = this.callerData(patch.set ?? {});
     const go = async (tx: GraphTx): Promise<NodeUpdateResult> => {
-      const raw = await this.engine.nodeEngine.readRaw(tx, ref_id);
+      // Read by the type's schema: a Concept on Neo4j that holds no
+      // `created_at` of its own must not show its stamp as one.
+      const raw = await this.engine.nodeEngine.readRaw(tx, ref_id, (t) => this.resolver.schema(t, tx));
       if (!raw) throw new GraphValidationError("NOT_FOUND", "?", `no node with ref_id ${ref_id}`);
       const props = raw.props;
       const type = raw.type ?? "?";
