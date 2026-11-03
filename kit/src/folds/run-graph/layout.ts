@@ -13,6 +13,14 @@
  * root, one ring per level; anything else in the cell settles by the links
  * among it. A cell depends on nothing outside itself, so a finished cell
  * stays as it was while the run goes on.
+ *
+ * A run can touch thousands of nodes, and a ring of two thousand siblings
+ * is tens of thousands of pixels round (hive's force layout once sprawled to
+ * ~6,500 px and its fit clamped at 0.1). With `fold`, a cell keeps a
+ * parent's `cap` most-touched children and folds the rest into one "+N"
+ * node under it; loose nodes past `cap` of one type fold the same way. What
+ * folds depends on the run alone — never on a highlight, a selection or the
+ * replay's step — so the drawing holds still under all three.
  */
 
 import { forceCollide, forceLink, forceManyBody, forceSimulation, forceX, forceY, type SimulationNodeDatum } from "d3";
@@ -47,6 +55,15 @@ export interface RunGraphLane extends RunGraphBox {
   /** Nodes drawn in the lane, over its cells. */
   nodes: number;
   cells: RunGraphCell[];
+  /** Its iterations drawn in one box, one at a time (`stack`): every cell has the same box. */
+  stacked?: true;
+}
+
+export interface RunGraphStack {
+  /** A loop with more iterations than this draws them in one box, one at a time. */
+  after: number;
+  /** Lanes (by key) drawn with every iteration side by side all the same. */
+  open?: ReadonlySet<string>;
 }
 
 export interface RunGraphPoint {
@@ -62,6 +79,30 @@ export interface RunGraphPlace extends RunGraphPoint {
   since: number;
 }
 
+/** Nodes of one cell folded into one "+N" node (`fold`): drawn where it is placed, its members hidden. */
+export interface RunGraphCluster {
+  /** Its id among the cell's nodes: `+<cell>|parent:<ref_id>` or `+<cell>|type:<node type>`. */
+  id: string;
+  cell: string;
+  /** The node its members hang from along PARENT_OF; null for loose nodes folded by type. */
+  parent: string | null;
+  /** The members' type, for a fold by type. */
+  type: string | null;
+  /** The members, most touched first, each with the call that first put it in the picture. */
+  members: Array<{ id: string; since: number }>;
+}
+
+export interface RunGraphFold {
+  /** The most children of one parent, or loose nodes of one type, a cell draws before folding the rest. */
+  cap: number;
+  /** The most a cell draws over all its parents and types (default 4 × `cap`): many parents keep fewer each, never under 3. */
+  budget?: number;
+  /** Each node's type, for folding loose nodes by type. */
+  typeOf: ReadonlyMap<string, string>;
+  /** The least arc between two neighbours on a ring (default 80, room for a name): a folded drawing names few nodes, so it can be tighter. */
+  arc?: number;
+}
+
 export interface RunGraphLayout {
   width: number;
   height: number;
@@ -70,6 +111,8 @@ export interface RunGraphLayout {
   lanes: RunGraphLane[];
   /** The cell each call is in, by its index. */
   callCells: string[];
+  /** The "+N" nodes `fold` made, by id. */
+  clusters: Map<string, RunGraphCluster>;
 }
 
 /** Radius a node is drawn with. */
@@ -173,7 +216,7 @@ function settle(ids: string[], links: Link[], pinned: ReadonlyMap<string, RunGra
  * of single children stays on one side. The rings are far enough apart
  * that no two neighbours on one come closer than `MIN_ARC`.
  */
-function radialTree(root: string, children: ReadonlyMap<string, string[]>): Map<string, RunGraphPoint> {
+function radialTree(root: string, children: ReadonlyMap<string, string[]>, arc = MIN_ARC): Map<string, RunGraphPoint> {
   const leaves = new Map<string, number>();
   const countLeaves = (id: string): number => {
     const known = leaves.get(id);
@@ -207,7 +250,7 @@ function radialTree(root: string, children: ReadonlyMap<string, string[]>): Map<
 
   let gap = LINK_DISTANCE;
   for (const [id, spread] of fan) {
-    gap = Math.max(gap, (countLeaves(id) * MIN_ARC) / (spread * ((depth.get(id) ?? 0) + 1)));
+    gap = Math.max(gap, (countLeaves(id) * arc) / (spread * ((depth.get(id) ?? 0) + 1)));
   }
 
   const points = new Map<string, RunGraphPoint>();
@@ -223,7 +266,7 @@ function radialTree(root: string, children: ReadonlyMap<string, string[]>): Map<
  * drawn as rings around its root; whatever else is in the part settles
  * around that.
  */
-function placePart(ids: string[], links: Link[], parents: ReadonlyMap<string, string[]>): Part {
+function placePart(ids: string[], links: Link[], parents: ReadonlyMap<string, string[]>, arc?: number): Part {
   const within = new Set(ids);
   const parentOf = new Map<string, string>();
   const children = new Map<string, string[]>();
@@ -240,12 +283,12 @@ function placePart(ids: string[], links: Link[], parents: ReadonlyMap<string, st
 
   const sizeOf = (id: string): number => 1 + (children.get(id) ?? []).reduce((sum, kid) => sum + sizeOf(kid), 0);
   const root = roots.reduce((best, id) => (sizeOf(id) > sizeOf(best) ? id : best));
-  const tree = radialTree(root, children);
+  const tree = radialTree(root, children, arc);
   return tree.size === ids.length ? boxed(tree) : settle(ids, links, tree);
 }
 
 /** The nodes of one cell: its connected parts side by side, the loose nodes together at the end. */
-function placeCell(ids: string[], links: Link[], parents: ReadonlyMap<string, string[]>): Part {
+function placeCell(ids: string[], links: Link[], parents: ReadonlyMap<string, string[]>, arc?: number): Part {
   const within = new Set(ids);
   const inCell = links.filter((l) => l.source !== l.target && within.has(l.source) && within.has(l.target));
 
@@ -275,6 +318,7 @@ function placeCell(ids: string[], links: Link[], parents: ReadonlyMap<string, st
           group,
           inCell.filter((l) => inGroup.has(l.source)),
           parents,
+          arc,
         ),
       );
     }
@@ -291,6 +335,60 @@ function placeCell(ids: string[], links: Link[], parents: ReadonlyMap<string, st
     x += part.width + PART_GAP;
   }
   return { width: x - PART_GAP + CELL_PAD, height: tallest + 2 * CELL_PAD, points };
+}
+
+/**
+ * Fold a cell's nodes: a parent's children past `cap` (most touched kept,
+ * and any child that is itself a parent), then loose nodes past `cap` of one
+ * type. Returns the ids the cell keeps, the "+N" nodes, and what each hidden
+ * node folded into.
+ */
+function foldCell(
+  cell: string,
+  ids: string[],
+  since: ReadonlyMap<string, number>,
+  parents: ReadonlyMap<string, string[]>,
+  fold: RunGraphFold,
+  touches: ReadonlyMap<string, number>,
+): { ids: string[]; clusters: RunGraphCluster[]; into: Map<string, string> } {
+  const within = new Set(ids);
+  const parentOf = new Map<string, string>();
+  const children = new Map<string, string[]>();
+  for (const id of ids) {
+    const parent = (parents.get(id) ?? []).find((p) => within.has(p) && p !== id);
+    if (parent === undefined) continue;
+    parentOf.set(id, parent);
+    const kids = children.get(parent);
+    if (kids) kids.push(id);
+    else children.set(parent, [id]);
+  }
+  const rank = (a: string, b: string) => (touches.get(b) ?? 0) - (touches.get(a) ?? 0) || (since.get(a) ?? 0) - (since.get(b) ?? 0);
+  const into = new Map<string, string>();
+  const clusters: RunGraphCluster[] = [];
+  const byType = new Map<string, string[]>();
+  for (const id of ids) {
+    if (parentOf.has(id) || children.has(id)) continue;
+    const type = fold.typeOf.get(id) ?? "";
+    const list = byType.get(type);
+    if (list) list.push(id);
+    else byType.set(type, [id]);
+  }
+  // A cell with many parents (or types) keeps fewer of each: its budget is shared.
+  const groups = children.size + byType.size;
+  const cap = Math.max(3, Math.min(fold.cap, Math.floor((fold.budget ?? 4 * fold.cap) / Math.max(1, groups))));
+  const foldGroup = (members: string[], key: string, parent: string | null, type: string | null) => {
+    if (members.length <= cap + 1) return;
+    const structure = members.filter((m) => children.has(m));
+    const rest = members.filter((m) => !children.has(m)).sort(rank);
+    const out = rest.slice(Math.max(0, cap - structure.length));
+    if (out.length < 2) return;
+    const id = `+${cell}|${key}`;
+    for (const m of out) into.set(m, id);
+    clusters.push({ id, cell, parent, type, members: out.map((m) => ({ id: m, since: since.get(m) ?? 0 })) });
+  };
+  for (const [parent, kids] of children) foldGroup(kids, `parent:${parent}`, parent, null);
+  for (const [type, list] of byType) foldGroup(list, `type:${type}`, null, type || null);
+  return { ids: [...ids.filter((id) => !into.has(id)), ...clusters.map((c) => c.id)], clusters, into };
 }
 
 interface Group {
@@ -338,6 +436,8 @@ export function layoutRunGraph(
   parents: ReadonlyMap<string, string[]> = new Map(),
   sections: ReadonlyMap<string, string> = new Map(),
   aspect = 1.6,
+  fold?: RunGraphFold,
+  stack?: RunGraphStack,
 ): RunGraphLayout {
   const wanted = new Set(nodeIds);
   const stages = new Map<string, Stage>();
@@ -373,23 +473,72 @@ export function layoutRunGraph(
     }
   });
 
+  // How many calls touched each node: what a fold keeps first.
+  const touches = new Map<string, number>();
+  if (fold) for (const call of calls) for (const n of call.nodes) touches.set(n.ref_id, (touches.get(n.ref_id) ?? 0) + 1);
+  const clusters = new Map<string, RunGraphCluster>();
+
   const settled = [...stages.values()].map((s) => {
     const looped = [...s.groups.keys()].some((iteration) => iteration !== null);
     const cells = [...s.groups.values()]
       .sort((a, b) => (a.iteration ?? -1) - (b.iteration ?? -1))
-      .map((group) => ({ group, ...placeCell(group.ids, links, parents), header: looped ? CELL_HEADER : 0 }));
+      .map((group) => {
+        if (!fold) return { group, ...placeCell(group.ids, links, parents), header: looped ? CELL_HEADER : 0 };
+        // The cell's nodes with its "+N" nodes for what folded: each placed
+        // under its parent, linked where its members were, first seen with
+        // the first of them.
+        const key = cellKey(s.key, group.iteration);
+        const folded = foldCell(key, group.ids, group.since, parents, fold, touches);
+        const cellParents = new Map(parents);
+        for (const c of folded.clusters) {
+          clusters.set(c.id, c);
+          if (c.parent !== null) cellParents.set(c.id, [c.parent]);
+          group.since.set(c.id, Math.min(...c.members.map((m) => m.since)));
+        }
+        const seen = new Set<string>();
+        const cellLinks: Link[] = [];
+        for (const l of links) {
+          const source = folded.into.get(l.source) ?? l.source;
+          const target = folded.into.get(l.target) ?? l.target;
+          const k = `${source}|${target}`;
+          if (source === target || seen.has(k)) continue;
+          seen.add(k);
+          cellLinks.push({ source, target });
+        }
+        return { group, ...placeCell(folded.ids, cellLinks, cellParents, fold.arc), header: looped ? CELL_HEADER : 0 };
+      });
     return { ...s, cells };
   });
 
   const footprint = (c: { width: number; height: number; header: number }) =>
     (c.width + CELL_GAP) * (c.height + c.header + CELL_GAP);
-  const area = settled.reduce((sum, s) => sum + s.cells.reduce((a, c) => a + footprint(c), 0), 0);
+  const stacks = (s: (typeof settled)[number]) =>
+    !!stack && s.cells.length > stack.after && !stack.open?.has(s.key) && s.cells.every((c) => c.group.iteration !== null);
+  // A stacked lane takes one box's room.
+  const area = settled.reduce((sum, s) => sum + (stacks(s) ? Math.max(0, ...s.cells.map(footprint)) : s.cells.reduce((a, c) => a + footprint(c), 0)), 0);
   const targetHeight = Math.sqrt(area / aspect) || 1;
 
   const places = new Map<string, RunGraphPlace>();
   const lanes: RunGraphLane[] = [];
   let laneX = 0;
   for (const s of settled) {
+    // A loop of many iterations, drawn in one box: each iteration at the same place, shown one at a time.
+    if (stacks(s)) {
+      const boxWidth = Math.max(0, ...s.cells.map((c) => c.width));
+      const boxHeight = Math.max(0, ...s.cells.map((c) => c.height + c.header));
+      const left = laneX + LANE_PAD;
+      const cells: RunGraphCell[] = s.cells.map((cell) => {
+        const key = cellKey(s.key, cell.group.iteration);
+        for (const [id, point] of cell.points) {
+          places.set(placeKey(key, id), { id, cell: key, since: cell.group.since.get(id) ?? 0, x: left + point.x, y: LANE_HEADER + cell.header + point.y });
+        }
+        return { iteration: cell.group.iteration, path: cell.group.segment, nodes: cell.group.ids.length, x: left, y: LANE_HEADER, width: boxWidth, height: boxHeight };
+      });
+      const width = Math.max(LANE_MIN_WIDTH, boxWidth + 2 * LANE_PAD);
+      lanes.push({ key: s.key, stage: s.stage, path: null, calls: s.calls, nodes: cells.reduce((sum, c) => sum + c.nodes, 0), cells, x: laneX, y: 0, width, height: LANE_HEADER + boxHeight + LANE_PAD, stacked: true });
+      laneX += width + LANE_GAP;
+      continue;
+    }
     const widest = Math.max(0, ...s.cells.map((c) => c.width));
     const rowWidth = Math.max(widest, s.cells.reduce((a, c) => a + footprint(c), 0) / targetHeight);
     const cells: RunGraphCell[] = [];
@@ -447,5 +596,5 @@ export function layoutRunGraph(
 
   const height = Math.max(0, ...lanes.map((l) => l.height));
   for (const lane of lanes) lane.height = height;
-  return { width: Math.max(0, laneX - LANE_GAP), height, places, lanes, callCells };
+  return { width: Math.max(0, laneX - LANE_GAP), height, places, lanes, callCells, clusters };
 }
