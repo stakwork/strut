@@ -20,8 +20,8 @@ a run's or a job's files take a scoped read token instead, `?t=`, minted by
 their listing, so the key never sits in a URL a served page could read
 (`/artifacts/:runId` below). Unset (dev mode) everything is open. The only
 things served without the key are the web UI's own files, `GET /health`
-(§8), and `GET /public/*` (§17): what a person made public, and nothing
-when nothing is. The examples below leave the header out for brevity; add
+(§8), and `GET /public/*` with `POST /public/mcp` (§17): what a person put
+in the public view, and nothing when nothing is. The examples below leave the header out for brevity; add
 `-H "Authorization: Bearer $STRUT_API_KEY"`.
 
 `x-strut-actor: <id>` names who a request is from — honored only alongside a
@@ -2039,12 +2039,18 @@ A person chooses what this strut server shows anyone, live and read-only —
 its PUBLIC VIEW (not a publish: nothing is copied or versioned, and the
 Packages dialog's **Make public** is the package catalog's, §16):
 Concept roots (each root and every page under it by `PARENT_OF`),
-workflows (with or without their runs), steps, node types, and apps (the
-app routes come with `plans/public-surface.md` item 2). Everything else
-stays behind the key. The record is one file, `<dataDir>/public.json`
-(`src/public-surface.ts`); nothing public until someone puts it there.
+workflows (with or without their runs), steps, node types, and apps.
+Everything else stays behind the key. The record is one file,
+`<dataDir>/public.json` (`src/public-surface.ts`); nothing public until
+someone puts it there. The UI's door is the topbar's **Public view** dialog.
 
-### 17.1 The record — `PUT /public` (a person, behind the key)
+### 17.1 The record — `/public-view` (a person, behind the key)
+
+| Route | |
+| --- | --- |
+| `GET /public-view` | `{ surface, missing }` — the record as kept, and what it names that this server does not hold |
+| `PUT /public-view` | replace the record (body below); `{ surface, missing, held? }` |
+| `GET /public-view/needs?app=<name>` \| `?workflow=<name>` | what adding it brings along, for the dialog to pre-check (`src/public-view.ts`) |
 
 ```json
 {
@@ -2058,20 +2064,45 @@ stays behind the key. The record is one file, `<dataDir>/public.json`
 
 Every list is optional; the body REPLACES the record. `runs: true` makes a
 workflow's runs public whole: their input, outputs, agents' transcripts
-and files. A peer's request is a `403`, a malformed body a `400`. The answer
-is the record as kept and what it names that this server does not hold —
-reported, never refused:
+and files. An app's `reads` are the granted steps its page may call beyond
+runs and the graph (§17.3). A peer's request is a `403`, a malformed body
+a `400`. What the record names that this server does not hold is reported,
+never refused. An app ADDED by this save that follows latest is HELD at the
+version it shows (`held: [{ app, version, release } | { app, error }]`, as
+pinning holds, §14.5): a later publish is a draft until a person moves the
+release.
 
 ```json
-{ "surface": { … }, "missing": { "workflows": [], "steps": [], "concepts": [], "apps": [] } }
+{ "surface": { … }, "missing": { "workflows": [], "steps": [], "concepts": [], "apps": [] }, "held": [{ "app": "openlaw-benchmarks", "version": "v7", "release": "r3" }] }
 ```
+
+`needs` answers with every line pre-checked or not, each with what it
+shows anyone (`note`):
+
+```json
+{
+  "app": { "name": "bench", "version": "v3", "title": "Bench" },
+  "workflows": [{ "name": "openlaw-run", "runs": true, "checked": true, "note": "…" }],
+  "steps": [{ "name": "openlaw/_shared-user", "checked": true, "note": "…" }],
+  "reads": [{ "name": "sheets/get-values", "checked": false, "note": "calls Google Sheets with this server's credentials: …" }],
+  "concepts": [{ "name": "Law", "pages": 27, "from": ["openlaw-run"], "checked": true, "note": "…" }],
+  "perRun": ["job: a Concept named per run ({{ input.kind }})"]
+}
+```
+
+An app brings the workflows it grants (with their runs: the page reads
+them), the custom steps those workflows and their subflows run, its granted
+reads (pre-checked when the step declares `effect: "read"`), and the
+Concept roots its workflows read with `context/concept { name }` — a
+literal, or `{{ params.X }}` off the flow's params; a name from the input is
+`perRun`. A workflow alone brings its steps and roots, its runs unchecked.
 
 ### 17.2 The reads — `GET /public/*` (anyone)
 
 Served from the record alone, whatever the gate's mode: a host's gate in
 front of an unkeyed strut (mcp's `/lab`) passes the prefix by path. Each
 answer carries `access-control-allow-origin: *` (a preflight is answered
-too) and no cookie; each visitor address may make 600 requests a minute
+too) and no cookie; each visitor address may make 1200 requests a minute
 (the first `x-forwarded-for` hop, else the socket; `429` past it). Paths
 and shapes mirror the private routes, minus what a visitor never reads:
 who launched, owns or changed a thing, schedules, the job and conversation
@@ -2098,8 +2129,44 @@ a `404`, as if it were not there.
 | `GET /public/concepts[?q=]` | `{ concepts: [{ ref_id, name, description?, parent?, root }] }` — every page of every public tree, roots first; `q` words must each hit the name or description |
 | `GET /public/concepts/:name` | `{ ref_id, name, properties, parent?, root, children: [{ name, description? }] }` — `properties.docs` is the page |
 | `GET /public/graph/nodes/:ref_id` | as `/graph/nodes/:ref_id` (§9), for a VISIBLE node |
+| `GET /public/apps` | `[{ name, version, title, description?, icon? }]` — each at the version the public view serves |
+| `GET /public/apps/:name` | one of them |
+| `GET /public/apps/:name/document` | the page: that version's `dist/index.html` with a VISITOR's identity in `<meta name="strut-app-token">` and `<meta name="strut-public-view" content="1">` beside it |
 
 A node is visible when it is a Concept under a public root, a node a run
 of a workflow with public runs NAMED (its steps' `step.end.nodes`; another
 strut's refs never), or a node of a public type. An edge is visible when
 both ends are. The trees are walked live, at most every 30 s.
+
+### 17.3 A public app — `POST /public/mcp` (anyone)
+
+strut's UI hosts a visitor's page at `?app=<name>&solo=1&public=1`: the
+document from §17.2, framed as for any app (§14.3), its tools/call relayed to
+`POST /public/mcp` with no credential. The door serves `step_run` alone
+(app-only, as on `/mcp`, §14.1). Its `app` argument must be the VISITOR's
+identity the public document carries — `app:<name>@<vN>.<token>`, the
+token signed over `public-app:<name>@<vN>` (`publicAppIdentity`, auth.ts),
+which opens this door for that app and nothing else: never `/mcp`, never a
+file route's `?t=`; the private identity opens nothing here. Each call is
+checked against the app's grants as always, then against the public view
+(`visitorRefusal`, src/public-surface.ts), every refusal a sentence a page
+can show:
+
+| Call | |
+| --- | --- |
+| an app not in the public view, or another version than the one it serves | refused |
+| `run/list`, `get`, `events`, `transcript`, `files`, `provenance` | a workflow in the public view WITH its runs; `run/workflow` one in it at all; `run/transcript { full }` refused; a job run's files refused |
+| `graph/graph-get`, `graph-get-batched`, `graph-search`, `graph-neighbors`, `graph-edges` | through a reader that sees only visible nodes (§17.2) |
+| `run/launch`, `run/cancel`, `job/*`, `app/*` (state and error reports included), any other `graph/*` | refused: a visitor starts and keeps nothing |
+| anything else granted | only when the app's `reads` name it |
+
+The step runs with NO actor and a bag of reads alone: `http`, `secrets`
+(the deployment's, for a read a person ticked), the graph's filtered reader
+(no writers, no raw query), and the runs capability held to the public view
+(records without actor, principal, job, `startedBy`, callback or MCP
+origin; a deliverable's link rewritten under `/public`). Nothing else is on
+it, so a step that reaches for a write, a shell or a file fails naming it,
+and nothing is kept as a run. The visitor's address counts against §17.2's
+budget, and the app's usage (§14.6) counts the call under `visitor <address>`.
+In the page, the kit's `useHost().public` is true (it reads the meta), so it
+hides what launches: strut/views' `LaunchForm` says so in place of the form.

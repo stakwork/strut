@@ -43,6 +43,9 @@ export interface AppHostOptions {
    *  peer's app, whose tools/call this strut relays to the peer
    *  (plans/apps.md §7.4). */
   base?: string;
+  /** A VISITOR's page (the public view, plans/public-surface.md §5): the
+   *  relay calls `/public/mcp` with no credential at all. */
+  visitor?: boolean;
 }
 
 export interface AppHostConnection {
@@ -59,10 +62,10 @@ export interface AppHostConnection {
 
 /** The MCP client the relay forwards through: one per frame, over `/mcp`
  *  (or a peer's, `/peers/<id>/mcp`), the UI's credential on every request. */
-export function createRelayClient(base = ""): { client: Client; transport: StreamableHTTPClientTransport } {
+export function createRelayClient(base = "", visitor = false): { client: Client; transport: StreamableHTTPClientTransport } {
   const client = new Client({ name: "strut-ui", version: "0" });
-  const transport = new StreamableHTTPClientTransport(new URL(`${API_BASE}${base}/mcp`, location.href), {
-    requestInit: { headers: apiHeaders() },
+  const transport = new StreamableHTTPClientTransport(new URL(`${API_BASE}${visitor ? "/public" : base}/mcp`, location.href), {
+    requestInit: visitor ? { credentials: "omit" } : { headers: apiHeaders() },
   });
   return { client, transport };
 }
@@ -88,7 +91,7 @@ export function hostContextFor(theme: McpUiTheme): McpUiHostContext {
  * answers in the page are wired here.
  */
 export async function connectAppHost(opts: AppHostOptions): Promise<AppHostConnection> {
-  const { client, transport } = createRelayClient(opts.base);
+  const { client, transport } = createRelayClient(opts.base, opts.visitor);
   await client.connect(transport);
   const bridge = new AppBridge(
     client,

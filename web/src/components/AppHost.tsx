@@ -46,11 +46,16 @@ export function AppHost(props: {
   /** What a link opened the app with (`?input=`): `tool-input` once the
    *  page has initialized, and again, in place, whenever it changes. */
   toolInput?: Record<string, string>;
+  /** A VISITOR's page (plans/public-surface.md §5): the document of the
+   *  public view (`/public/apps/<name>/document`, its visitor's identity
+   *  written in) and calls to `/public/mcp`, with no credential. */
+  visitor?: boolean;
 }) {
   const app = props.app;
-  // The version's token comes from its (cached) listing.
-  const scope = useFileScope(api.appFilesScope(app.name, app.version, app.peer));
-  const ready = !!scope;
+  const visitor = !!props.visitor;
+  // The version's token comes from its (cached) listing; a visitor has none.
+  const scope = useFileScope(visitor ? null : api.appFilesScope(app.name, app.version, app.peer));
+  const ready = visitor || !!scope;
   const frameRef = useRef<HTMLIFrameElement>(null);
   const [state, setState] = useState<{ status: "loading" | "ready" | "error"; error?: string }>({ status: "loading" });
   const connRef = useRef<AppHostConnection | null>(null);
@@ -73,11 +78,12 @@ export function AppHost(props: {
     setState({ status: "loading" });
     void (async () => {
       try {
-        const html = await api.fetchAppDocument(app.name, app.version, scope!.token, app.peer);
+        const html = visitor ? await api.fetchPublicAppDocument(app.name) : await api.fetchAppDocument(app.name, app.version, scope!.token, app.peer);
         if (cancelled) return;
         conn = await connectAppHost({
           frame,
           theme,
+          ...(visitor ? { visitor: true } : {}),
           ...(app.peer ? { base: api.peerBase(app.peer) } : {}),
           handlers: {
             ...(messages ? { onMessage: (text: string) => handlers.current.onMessage?.(text) } : {}),

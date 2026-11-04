@@ -14,7 +14,7 @@
  * `access-control-allow-origin: *` (the store reads a publisher's items
  * from the visitor's browser) and no cookie.
  *
- * Reads only. `PUT /public`, the person's door to the record, is mounted by
+ * Reads, and `POST /public/mcp` (mounted by createStrut). `/public-view`, the person's door to the record, is mounted by
  * createStrut behind the gate like any write.
  */
 import type { Context, Hono } from "hono";
@@ -46,13 +46,32 @@ export interface PublicRouteDeps {
   liveStatus: (workflow: string, runId: string) => string;
   /** Requests per visitor address per minute (`PUBLIC_REQUESTS_PER_MINUTE`). */
   ratePerMinute?: number;
+  /** The apps in the public view, each at the version it serves: what a
+   *  visitor's host lists and frames (plans/public-surface.md §5). */
+  apps?: {
+    info(name: string): Promise<PublicAppInfo | null>;
+    /** The document with the PUBLIC identity written in (`publicAppIdentity`). */
+    document(name: string): Promise<{ version: string; html: string } | null>;
+  };
+  /** The headers an app's document is served with (it runs: it is the app). */
+  documentHeaders?: (path: string) => Record<string, string>;
+}
+
+/** A public app as a visitor's host reads it. */
+export interface PublicAppInfo {
+  name: string;
+  /** The version the public view serves: the held release's. */
+  version: string;
+  title: string;
+  description?: string;
+  icon?: string;
 }
 
 /** Every path this module serves: what the gate opens to anyone. */
 export const PUBLIC_PATH = /^\/public(?:\/|$)/;
 
 /** Requests one visitor address may make to `/public` in a minute. */
-export const PUBLIC_REQUESTS_PER_MINUTE = 600;
+export const PUBLIC_REQUESTS_PER_MINUTE = 1200;
 
 /** The visitor's address: the first `x-forwarded-for` hop when a proxy in
  *  front set one, else the socket's. A budget, not a boundary — a client
@@ -76,7 +95,7 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): void {
   // Before every route below: a browser on another origin may read these
   // (the store draws a publisher's items in the visitor's browser), a
   // preflight is answered here, and each visitor address has a budget per
-  // minute. Reads only: the person's `PUT /public` gets no CORS.
+  // minute. Reads and the visitor door only: a write elsewhere under the prefix gets no CORS.
   const limit = deps.ratePerMinute ?? PUBLIC_REQUESTS_PER_MINUTE;
   const counts = new Map<string, { minute: number; n: number }>();
   const publicMiddleware = async (c: Context, next: () => Promise<void>) => {
@@ -89,7 +108,8 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): void {
         "access-control-max-age": "600",
       });
     }
-    if (method !== "GET" && method !== "HEAD") return next();
+    // Reads, and a visitor's page calling its app (`POST /public/mcp`).
+    if (method !== "GET" && method !== "HEAD" && !(method === "POST" && c.req.path === "/public/mcp")) return next();
     const minute = Math.floor(Date.now() / 60_000);
     const who = visitorAddress(c);
     const at = counts.get(who);
@@ -172,8 +192,41 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): void {
       steps: await listedSteps(),
       concepts: roots.map((r) => ({ name: r.name, ...(r.description ? { description: r.description } : {}), pages: tree!.concepts.filter((x) => x.root === r.root).length })),
       types: s.types,
-      apps: s.apps.map((a) => ({ name: a.name })),
+      apps: await listedApps(),
     });
+  });
+
+  // ── Apps ────────────────────────────────────────────────────────────────
+
+  const listedApps = async (): Promise<PublicAppInfo[]> => {
+    if (!deps.apps) return [];
+    const out: PublicAppInfo[] = [];
+    for (const a of (await surface.get()).apps) {
+      const info = await deps.apps.info(a.name).catch(() => null);
+      if (info) out.push(info);
+    }
+    return out;
+  };
+
+  app.get("/public/apps", async (c) => c.json(await listedApps()));
+
+  // The page itself: the document of the version the public view serves,
+  // carrying the PUBLIC identity (it opens `POST /public/mcp` for this app
+  // and nothing else) and `<meta name="strut-public-view">`, which the kit
+  // reads as `useHost().public`.
+  app.get("/public/apps/:name{.+}/document", async (c) => {
+    const name = c.req.param("name");
+    if (!deps.apps || !(await surface.get()).apps.some((a) => a.name === name)) return notPublic(c, `app "${name}"`);
+    const doc = await deps.apps.document(name).catch(() => null);
+    if (!doc) return notPublic(c, `app "${name}"`);
+    return c.body(doc.html, 200, { ...(deps.documentHeaders?.("dist/index.html") ?? { "content-type": "text/html; charset=utf-8" }), "cache-control": "no-cache" });
+  });
+
+  app.get("/public/apps/:name{.+}", async (c) => {
+    const name = c.req.param("name");
+    if (!deps.apps || !(await surface.get()).apps.some((a) => a.name === name)) return notPublic(c, `app "${name}"`);
+    const info = await deps.apps.info(name).catch(() => null);
+    return info ? c.json(info) : notPublic(c, `app "${name}"`);
   });
 
   // ── Workflows ───────────────────────────────────────────────────────────

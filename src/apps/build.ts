@@ -187,6 +187,16 @@ export function withToken(html: string, token: string): string {
   return html.replace(TOKEN_PLACEHOLDER, `<meta name="${TOKEN_META}" content="${escapeHtml(token)}">`);
 }
 
+/** The `<meta name>` a PUBLIC VIEW document carries (plans/public-surface.md
+ *  §5): the kit reads it as `useHost().public`. */
+export const PUBLIC_VIEW_META = "strut-public-view";
+
+/** The document as the public view serves it: the visitor's identity in the
+ *  token meta, and the public view's mark beside it. */
+export function withPublicIdentity(html: string, identity: string): string {
+  return html.replace(TOKEN_PLACEHOLDER, `<meta name="${PUBLIC_VIEW_META}" content="1"><meta name="${TOKEN_META}" content="${escapeHtml(identity)}">`);
+}
+
 /** The document read with the key instead of a token: no meta at all. */
 export function withoutTokenMeta(html: string): string {
   return html.replace(TOKEN_PLACEHOLDER, "");

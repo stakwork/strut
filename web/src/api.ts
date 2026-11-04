@@ -2427,3 +2427,66 @@ export const storeConcept = (name: string) => storeJSON<StoreConceptPage>(`/inde
  *  card itself says, else this page's own origin. */
 export const storeCatalogUrl = (card: IndexCard | null) => card?.urls?.[0] ?? `${location.origin}${BASE}/index/catalog`;
 
+
+// ── The public view (plans/public-surface.md) ──────────────────────────────
+// What a person shows anyone on this server, live and read-only. The record
+// is the person's (`/public-view`, behind the credential); a visitor reads
+// it under `/public/*` with no credential at all. Never a "publish".
+
+export interface PublicViewRecord {
+  concepts: string[];
+  workflows: Array<{ name: string; runs?: boolean }>;
+  steps: string[];
+  types: string[];
+  apps: Array<{ name: string; reads?: string[]; domains?: string[] }>;
+}
+export interface PublicViewAnswer {
+  surface: PublicViewRecord;
+  /** What the record names that this server does not hold. */
+  missing: { workflows: string[]; steps: string[]; concepts: string[]; apps: string[] };
+  /** Apps this save held at the version they show (a later publish is a draft). */
+  held?: Array<{ app: string; version?: string; release?: string; error?: string }>;
+}
+/** One line of the dialog's cascade (src/public-view.ts). */
+export interface PublicViewNeedLine {
+  name: string;
+  checked: boolean;
+  note: string;
+}
+export interface PublicViewNeeds {
+  app?: { name: string; version: string; title: string };
+  workflow?: string;
+  workflows: Array<PublicViewNeedLine & { runs: boolean }>;
+  steps: PublicViewNeedLine[];
+  reads: PublicViewNeedLine[];
+  concepts: Array<PublicViewNeedLine & { pages: number; from: string[]; missing?: true }>;
+  perRun: string[];
+}
+export const getPublicView = () => fetchJSON<PublicViewAnswer>("/public-view");
+export const putPublicView = (surface: PublicViewRecord) =>
+  fetchJSON<PublicViewAnswer>("/public-view", { method: "PUT", body: JSON.stringify(surface) });
+export const publicViewNeeds = (q: { app?: string; workflow?: string }) =>
+  fetchJSON<PublicViewNeeds>(`/public-view/needs?${new URLSearchParams(q as Record<string, string>)}`);
+
+/** A public app as a visitor's host reads it. */
+export interface PublicAppInfo {
+  name: string;
+  version: string;
+  title: string;
+  description?: string;
+  icon?: string;
+}
+/** A visitor's read: a plain `fetch`, no credential (`credentials: "omit"`). */
+async function publicFetch(path: string): Promise<Response> {
+  return fetch(`${BASE}${path}`, { credentials: "omit", cache: "no-cache" });
+}
+export async function getPublicApp(name: string): Promise<PublicAppInfo | null> {
+  const res = await publicFetch(`/public/apps/${encodeURIComponent(name)}`);
+  return res.ok ? ((await res.json()) as PublicAppInfo) : null;
+}
+/** The public app's document, its visitor's identity written in. */
+export async function fetchPublicAppDocument(name: string): Promise<string> {
+  const res = await publicFetch(`/public/apps/${encodeURIComponent(name)}/document`);
+  if (!res.ok) throw new Error(res.status === 404 ? `"${name}" is not in this server's public view` : `${res.status} ${res.statusText}`);
+  return res.text();
+}

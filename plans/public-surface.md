@@ -25,11 +25,27 @@
 > **Item 1 BUILT 2026-11-04** (uncommitted at writing): `src/public-surface.ts`
 > (the record, the Concept trees, the visible-node rule, the filtered
 > reader), `src/public-routes.ts` (the `/public` reads, CORS, a per-address
-> budget of 600 a minute), `PUT /public` and the gate in `createStrut.ts`,
+> budget of 1200 a minute), the record's door and the gate in `createStrut.ts`,
 > `effect: "read"` on the `run/*` and graph read steps, `specs/API.md` §17.
 > One choice beyond the text: a run id under `/public` must be one path
 > segment, so it cannot name another workflow's run through the file
 > store's directories.
+>
+> **Items 2 and 6 BUILT the same day, in the same PR** (ruled: "keep it
+> in the same PR, it's really part of the same work product"): a public
+> app (`/public/apps[/:name[/document]]`, `POST /public/mcp`, held at the
+> version it shows when it is added), the kit's `useHost().public`,
+> SoloApp's `&public=1`, `LaunchForm` saying it launches nothing there,
+> and the **Public view** dialog with its cascade (`src/public-view.ts`,
+> `GET /public-view/needs`). Choices beyond the text: the record's door
+> moved to `/public-view` (GET, PUT, `needs`), so nothing under `/public`
+> is a person's; a visitor's page carries its OWN identity, signed over
+> `public-app:<name>@<vN>`, which opens `POST /public/mcp` for that app and
+> no private door or file route; `app/state` is refused to a visitor (the
+> kit keeps a refused write on the page, so its state lasts the visit);
+> `graph/find` and `graph/query` are not visitor reads (they read the
+> engine past the filtered reader); a job run's files are closed through
+> `run/files` as through the routes.
 >
 > **Scoped the same day, ruled:** openlaw-1 viewable by anyone through the
 > index comes FIRST. v1 is the public surface on the publisher's server
@@ -155,7 +171,7 @@ secret): `<dataDir>/public.json`, beside `packages/indexes.json`.
 - **One file, not a flag per item.** One place to answer "what does this
   server show anyone", one read for every `/public` request, one door to
   audit. An item deleted or renamed while listed is skipped by every read,
-  and `PUT /public` answers with what the record names that the server
+  and `PUT /public-view` answers with what the record names that the server
   does not hold.
 - **A Concept is public by ROOT**: the root and every page under it by
   `PARENT_OF`, live. A page moved out of the subtree stops being public; a
@@ -177,7 +193,7 @@ secret): `<dataDir>/public.json`, beside `packages/indexes.json`.
   app public holds it at the version shown, as pinning does). A builder's
   later publish is a draft; the public page changes only when a person
   moves the release. `reads` is §5's list. `domains` is §9's.
-- **The door**: `GET`/`PUT /public` (full scope only; a person, never the
+- **The door**: `GET`/`PUT /public-view` (full scope only; a person, never the
   builder or a `meta/*` step: the surface is the owner's decision as a
   sealed grant is, `src/apps/grants.ts`). In the UI, a topbar **Public
   view** dialog like **Packages**: what this server shows anyone, each item
@@ -217,8 +233,9 @@ GET  /public/steps[/:type/schema|/source|/versions|/version/:v]   schemas, effec
 GET  /public/concepts[?q=]                     the public trees: name, description, parent
 GET  /public/concepts/:name                    one page: properties (docs), children, parent; history later (§7)
 GET  /public/graph/nodes/:ref_id               a visible node (§4)
-GET  /public/apps/:name[/files/...]            the held release's listing and document (item 2)
-POST /public/mcp                               an app's step_run (§5, item 2) and the read tools for agents (§6, later)
+GET  /public/apps[/:name[/document]]           the public apps; the held release's document (item 2)
+POST /public/mcp                               an app's step_run (§5, item 2); the read tools for agents later (§6)
+GET|PUT /public-view, GET /public-view/needs   the person's door and the dialog's cascade (behind the key)
 GET  /llms.txt                                 the surface as one markdown page (§6, later)
 ```
 
@@ -485,10 +502,10 @@ merged before the next is opened, never stacked.
    them (a step with its helpers, a run with its input whole), CORS, the
    per-address limit, the gate tests. `effect: "read"` declared on strut's
    own read steps.
-2. **Public apps** (strut). Holding at make-public, `/public/apps`, `POST
-   /public/mcp`'s `step_run` under the read-only view and the app's `reads`,
-   SoloApp's public mode, the kit's `useHost().public` and in-memory app
-   state, `LaunchForm` hidden.
+2. **Public apps** (strut; BUILT, with item 6). Holding when added,
+   `/public/apps`, `POST /public/mcp`'s `step_run` under the read-only view
+   and the app's `reads`, SoloApp's public mode, the kit's
+   `useHost().public`, `LaunchForm` saying it launches nothing.
 3. **The lab gate** (stakgraph, the one host change, §10). Pass `/public/*`
    through, and bump the strut pin to a commit with items 1 and 2.
 4. **The index showing it** (strut). `live` on index rows, the crawl of
@@ -505,8 +522,9 @@ merged before the next is opened, never stacked.
    Law tree. Then the first row on index.sphinx.chat, with `live`; it mints
    the index's key, which goes into `DEFAULT_PACKAGE_INDEXES`
    (`src/packages/indexes.ts:51`).
-6. **The Public view dialog** (strut). The person's door in the UI with its
-   cascade (§2), and the badge on each item's flyout.
+6. **The Public view dialog** (strut; BUILT with item 2). The person's door
+   in the UI with its cascade (§2). Not yet: the badge on each item's
+   flyout.
 
 ### Later
 

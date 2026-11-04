@@ -1,6 +1,6 @@
 import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Hono } from "hono";
@@ -8,7 +8,13 @@ import { z } from "zod";
 import { createStrut } from "./createStrut.js";
 import { WorkspaceManager } from "./workspace.js";
 import { MemoryRunStore } from "./store.js";
-import { defineStep, withMessages, type RunEvent } from "./core.js";
+import { defineStep, withMessages, type RunEvent, type StepContext } from "./core.js";
+import type { StrutCapabilities } from "./capabilities.js";
+import { appIdentity, appOfIdentity, publicAppIdentity, publicAppOfIdentity } from "./auth.js";
+import { kitForTests } from "./test-util/app-kit.js";
+import type { KitLocation } from "./apps/kit.js";
+import { STEP_RUN_TOOL } from "./apps/tools.js";
+import type { PublicViewNeeds } from "./public-view.js";
 import { createRegistry } from "./steps/registry.js";
 import { runWorkflow } from "./runner.js";
 import type { GraphReader, NodeEnvelope } from "./graph/search.js";
@@ -191,7 +197,7 @@ describe("the /public routes", () => {
     });
     assert.equal(res.status, "success");
     const put = (body: unknown, headers: Record<string, string> = auth) =>
-      strut.app.request("/public", { method: "PUT", headers, body: JSON.stringify(body) });
+      strut.app.request("/public-view", { method: "PUT", headers, body: JSON.stringify(body) });
     return { strut, store, runId: res.runId, put };
   };
 
@@ -257,7 +263,8 @@ describe("the /public routes", () => {
     assert.equal(pre.status, 204);
     assert.equal(pre.headers.get("access-control-allow-origin"), "*");
     assert.equal((await strut.app.request("/public/workflows/demo/run", { method: "POST" })).status, 401);
-    assert.equal((await strut.app.request("/public", { method: "DELETE" })).status, 401);
+    assert.equal((await strut.app.request("/public", { method: "PUT" })).status, 401);
+    assert.equal((await strut.app.request("/public-view")).status, 401);
   });
 
   it("a public step shows its schema and its source with the helpers it imports, and only it", async () => {
@@ -335,7 +342,7 @@ for (const tb of testBackends()) describe(`public Concepts and nodes (${tb.name}
     const kitchen = await concept("Kitchen");
     const cooking = await concept("Cooking", kitchen, "Plan on Sundays.");
     const secret = await concept("Secret");
-    await strut.app.request("/public", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ concepts: ["Kitchen"] }) });
+    await strut.app.request("/public-view", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ concepts: ["Kitchen"] }) });
 
     const listing = (await (await strut.app.request("/public")).json()) as { concepts: Array<{ name: string; pages: number }> };
     assert.deepEqual(listing.concepts, [{ name: "Kitchen", description: "About Kitchen", pages: 2 }]);
@@ -358,9 +365,9 @@ for (const tb of testBackends()) describe(`public Concepts and nodes (${tb.name}
     );
     assert.equal(res.status, "success", JSON.stringify(res.error));
     await strut.workspace.createWorkflow("peek", "name: peek\nsteps:\n  - id: get\n    type: log\n    config:\n      message: hi\n");
-    await strut.app.request("/public", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ concepts: ["Kitchen"], workflows: [{ name: "peek" }] }) });
+    await strut.app.request("/public-view", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ concepts: ["Kitchen"], workflows: [{ name: "peek" }] }) });
     assert.equal((await strut.app.request(`/public/graph/nodes/${secret}`)).status, 404, "a workflow without its runs makes nothing visible");
-    await strut.app.request("/public", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ concepts: ["Kitchen"], workflows: [{ name: "peek", runs: true }] }) });
+    await strut.app.request("/public-view", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ concepts: ["Kitchen"], workflows: [{ name: "peek", runs: true }] }) });
     assert.equal((await strut.app.request(`/public/graph/nodes/${secret}`)).status, 200);
     await strut.close();
   });
@@ -375,5 +382,145 @@ for (const tb of testBackends()) describe(`public Concepts and nodes (${tb.name}
     assert.equal(await surface.visible(baking, "Concept"), true);
     const view = surface.reader()!;
     assert.equal((await view.getNode(baking))?.ref_id, baking);
+  });
+});
+
+describe("a public app, for a visitor (plans/public-surface.md §5)", () => {
+  const KEY = "public-app-key";
+  const auth = { authorization: `Bearer ${KEY}` };
+  let kit: KitLocation;
+  let root: string;
+  let strut: Awaited<ReturnType<typeof createStrut>>;
+  let saved: string | undefined;
+  let runId: string;
+  const store = new MemoryRunStore();
+
+  const score = defineStep({
+    type: "score",
+    input: z.object({ value: z.number() }),
+    output: z.any(),
+    async run(cfg) {
+      return { score: cfg.value * 2 };
+    },
+  });
+  const peek = defineStep({ type: "demo/read", effect: "read", input: z.object({}), output: z.any(), async run(_cfg, ctx) {
+    return { app: ctx.app ?? null, actor: ctx.actor ?? null };
+  } });
+  const shellOut = defineStep({ type: "demo/shell", input: z.object({}), output: z.any(), async run(_cfg, ctx: StepContext<StrutCapabilities>) {
+    if (!ctx.services.shell) throw new Error("no shell here");
+    return ctx.services.shell.run({ cmd: "true" });
+  } });
+
+  const rpc = async (path: string, method: string, params: unknown, headers: Record<string, string> = {}) => {
+    const res = await strut.app.request(path, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json, text/event-stream", ...headers },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+    });
+    const text = await res.text();
+    assert.equal(res.status, 200, text);
+    const line = text.split("\n").find((l) => l.startsWith("data: "));
+    return line ? JSON.parse(line.slice(6)) : JSON.parse(text);
+  };
+  const call = async (args: Record<string, unknown>, path = "/public/mcp", headers: Record<string, string> = {}) => {
+    const r = await rpc(path, "tools/call", { name: STEP_RUN_TOOL, arguments: args }, headers);
+    const body = JSON.parse(r.result.content[0].text) as { error?: string };
+    return { error: r.result.isError ? body.error : undefined, result: r.result.isError ? undefined : body };
+  };
+  const putView = (body: unknown) => strut.app.request("/public-view", { method: "PUT", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify(body) });
+
+  before(async () => {
+    saved = process.env["STRUT_API_KEY"];
+    process.env["STRUT_API_KEY"] = KEY;
+    kit = await kitForTests();
+    root = await mkdtemp(join(tmpdir(), "strut-public-app-"));
+    const registry = await createRegistry([score, peek, shellOut]);
+    const workspace = new WorkspaceManager(join(root, "ws"));
+    strut = await createStrut({
+      workspace, store, registry, kit, scheduler: false, serveUi: false, views: false,
+      job: false, orchestrator: false, builder: false, browserWorkflows: false, privacyWorkflows: false,
+    });
+    await workspace.publishWorkflowByContent("score-wf", `name: score-wf\ninput:\n  value: { type: number }\nsteps:\n  - id: s\n    type: score\n    config: { value: "{{ input.value }}" }\n`);
+    await workspace.publishWorkflowByContent("other-wf", `name: other-wf\nsteps:\n  - id: s\n    type: score\n    config: { value: 1 }\n`);
+    await workspace.publishWorkflowByContent(
+      "read-law",
+      `name: read-law\nparams:\n  concept: Law\nsteps:\n  - id: c\n    type: context/concept\n    config: { name: "{{ params.concept }}", tool: "" }\n  - id: k\n    type: context/concept\n    config: { name: "{{ input.kind }}", tool: "" }\n`,
+    );
+    const res = await runWorkflow(await workspace.getWorkflow("score-wf"), { value: 3 }, registry, { store, actor: "tom-1" });
+    assert.equal(res.status, "success");
+    runId = res.runId;
+    const dir = join(root, "apps", "bench");
+    await mkdir(join(dir, "src"), { recursive: true });
+    await writeFile(join(dir, "app.yaml"), "title: Bench\ngrants:\n  workflows: [score-wf, other-wf, read-law]\n  steps: [demo/read, demo/shell, graph/graph-get, run/launch]\n");
+    await writeFile(join(dir, "src", "App.tsx"), 'export default function App() { return <p className="p-2">hi</p>; }\n');
+    const r = await strut.apps.publish(dir, "bench", { surface: "person" });
+    assert.ok(r.ok, r.ok ? "" : r.errors.join("\n"));
+  });
+  after(async () => {
+    await strut?.close?.().catch(() => {});
+    if (saved === undefined) delete process.env["STRUT_API_KEY"];
+    else process.env["STRUT_API_KEY"] = saved;
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("the dialog's cascade: an app brings its workflows with runs, its reads, and the Concept roots its workflows read", async () => {
+    const res = await strut.app.request("/public-view/needs?app=bench", { headers: auth });
+    assert.equal(res.status, 200);
+    const needs = (await res.json()) as PublicViewNeeds;
+    assert.deepEqual(needs.workflows.map((w) => [w.name, w.runs, w.checked]), [["score-wf", true, true], ["other-wf", true, true], ["read-law", true, true]]);
+    assert.deepEqual(needs.reads.map((r) => [r.name, r.checked]), [["demo/read", true], ["demo/shell", false]]);
+    assert.deepEqual(needs.concepts.map((x) => [x.name, x.missing ?? false, x.from]), [["Law", true, ["read-law"]]]);
+    assert.deepEqual(needs.perRun, ["read-law: a Concept named per run ({{ input.kind }})"]);
+    const wf = (await (await strut.app.request("/public-view/needs?workflow=score-wf", { headers: auth })).json()) as PublicViewNeeds;
+    assert.deepEqual(wf.workflows.map((w) => [w.name, w.runs]), [["score-wf", false]], "a workflow alone: its runs only on purpose");
+    assert.equal((await strut.app.request("/public-view/needs?app=bench")).status, 401);
+  });
+
+  it("not in the public view: no page, no door", async () => {
+    assert.equal((await strut.app.request("/public/apps/bench")).status, 404);
+    assert.equal((await strut.app.request("/public/apps/bench/document")).status, 404);
+    const r = await call({ type: "demo/read", config: {}, app: publicAppIdentity("bench", "v1") });
+    assert.match(r.error!, /not in this strut server's public view/);
+  });
+
+  it("in it: the app is held, served with the visitor's identity, and its page may read what the public view opens — nothing else", async () => {
+    const put = (await (await putView({ apps: [{ name: "bench", reads: ["demo/read", "demo/shell"] }], workflows: [{ name: "score-wf", runs: true }] })).json()) as { held?: Array<{ app: string; version?: string; release?: string }> };
+    assert.equal(put.held?.[0]?.app, "bench");
+    assert.equal(put.held?.[0]?.version, "v1");
+    assert.deepEqual(await (await strut.app.request("/public/apps")).json(), [{ name: "bench", version: "v1", title: "Bench" }]);
+
+    const doc = await strut.app.request("/public/apps/bench/document");
+    assert.equal(doc.status, 200);
+    const html = await doc.text();
+    assert.match(html, /<meta name="strut-public-view" content="1">/);
+    const identity = html.match(/<meta name="strut-app-token" content="([^"]+)">/)![1]!.replace(/&amp;/g, "&");
+    assert.deepEqual(publicAppOfIdentity(identity), { name: "bench", version: "v1" });
+    assert.equal(appOfIdentity(identity), undefined, "the visitor's identity opens no private door");
+    assert.equal(publicAppOfIdentity(appIdentity("bench", "v1")), undefined, "nor the private one this door");
+
+    const listed = await call({ type: "run/list", config: { workflow: "score-wf" }, app: identity });
+    assert.equal(listed.error, undefined, listed.error);
+    const runs = listed.result as unknown as Array<Record<string, unknown>>;
+    assert.equal(runs[0]!["runId"], runId);
+    assert.equal(runs[0]!["actor"], undefined);
+    const events = await call({ type: "run/events", config: { workflow: "score-wf", runId }, app: identity });
+    assert.ok(!JSON.stringify(events.result).includes("tom-1"), "no actor in a visitor's events");
+    assert.deepEqual((await call({ type: "demo/read", config: {}, app: identity })).result, { app: { name: "bench", version: "v1" }, actor: null });
+
+    assert.match((await call({ type: "run/launch", config: { workflow: "score-wf" }, app: identity })).error!, /starting or stopping a run is not available/);
+    assert.match((await call({ type: "run/list", config: { workflow: "other-wf" }, app: identity })).error!, /workflow "other-wf" is not in the public view/);
+    assert.match((await call({ type: "app/state", config: {}, app: identity })).error!, /nothing is kept for a visitor/);
+    assert.match((await call({ type: "demo/shell", config: {}, app: identity })).error!, /no shell here/, "a ticked read runs with reads alone");
+    assert.match((await call({ type: "demo/read", config: {}, app: appIdentity("bench", "v1") })).error!, /not a valid app identity/);
+    assert.match((await call({ type: "demo/read", config: {}, app: identity }, "/mcp", auth)).error!, /not a valid app identity/);
+  });
+
+  it("a later publish is a draft: the public view keeps serving the release it held", async () => {
+    const dir = join(root, "apps", "bench");
+    await writeFile(join(dir, "src", "App.tsx"), 'export default function App() { return <p className="p-2">hi again</p>; }\n');
+    const r = await strut.apps.publish(dir, "bench", { surface: "ai" });
+    assert.ok(r.ok && r.version === "v2" && r.live === false, JSON.stringify(r));
+    assert.equal(((await (await strut.app.request("/public/apps/bench")).json()) as { version: string }).version, "v1");
+    assert.match((await call({ type: "demo/read", config: {}, app: publicAppIdentity("bench", "v2") })).error!, /not the version in the public view \(v1\)/);
   });
 });

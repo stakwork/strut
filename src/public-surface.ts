@@ -272,6 +272,9 @@ export interface PublicSurfaceService {
   workflow(name: string): Promise<PublicWorkflow | undefined>;
   step(type: string): Promise<boolean>;
   conceptTree(): Promise<PublicConceptTree>;
+  /** The trees under these roots, whether or not they are public — what
+   *  the Public view dialog shows before a root is added (its page count). */
+  walk(roots: string[]): Promise<PublicConceptTree>;
   /** The ref_ids a run's steps reported (`step.end.nodes`), this graph's only. */
   runNodes(workflow: string, runId: string): Promise<Set<string>>;
   /** Is this node visible to a visitor (§4)? */
@@ -450,6 +453,7 @@ export function createPublicSurface(deps: PublicSurfaceDeps): PublicSurfaceServi
       return (await get()).steps.includes(type);
     },
     conceptTree,
+    walk: walkTrees,
     runNodes,
     visible,
     reader,
@@ -516,4 +520,116 @@ export function publicReader(inner: GraphReader, visible: (ref_id: string, node_
     ...(inner.withScope ? { withScope: (scope) => publicReader(inner.withScope!(scope), visible) } : {}),
   };
   return view;
+}
+
+// ── A visitor's step_run (plans/public-surface.md §5) ─────────────────────
+
+/** The graph reads a visitor's page may call: each reads through the
+ *  backend's reader alone, which the visitor's bag holds to visible nodes.
+ *  (`graph/find` and `graph/query` read the engine directly: not these.) */
+export const VISITOR_GRAPH_READS: ReadonlySet<string> = new Set([
+  "graph/graph-get",
+  "graph/graph-get-batched",
+  "graph/graph-search",
+  "graph/graph-neighbors",
+  "graph/graph-edges",
+]);
+
+/** The run reads a visitor's page may call, on a workflow in the public view
+ *  (its runs public, except `run/workflow`, the definition). */
+export const VISITOR_RUN_READS: ReadonlySet<string> = new Set([
+  "run/list",
+  "run/get",
+  "run/events",
+  "run/transcript",
+  "run/files",
+  "run/workflow",
+  "run/provenance",
+]);
+
+/** Why a visitor's call is refused, or null: checked after the app's own
+ *  grants (`grantRefusal`), so this only ever narrows. `live` is the app's
+ *  version the public view serves. Every reason is a sentence a page can
+ *  show. */
+export function visitorRefusal(
+  surface: PublicSurface,
+  live: string | undefined,
+  app: { name: string; version: string },
+  type: string,
+  config: Record<string, unknown>,
+): string | null {
+  const entry = surface.apps.find((a) => a.name === app.name);
+  if (!entry) return `"${app.name}" is not in this strut server's public view`;
+  if (!live || live !== app.version) return `${app.name}@${app.version} is not the version in the public view${live ? ` (${live})` : ""}`;
+  if (type === "run/launch" || type === "run/cancel") return "starting or stopping a run is not available in the public view";
+  if (VISITOR_RUN_READS.has(type)) {
+    const wf = typeof config["workflow"] === "string" ? config["workflow"] : "";
+    const w = surface.workflows.find((x) => x.name === wf);
+    if (!w) return `workflow "${wf}" is not in the public view`;
+    if (type !== "run/workflow" && !w.runs) return `the runs of "${wf}" are not in the public view`;
+    if (type === "run/transcript" && config["full"]) return "a whole thread (`full`) is not in the public view: one transcript at a time";
+    return null;
+  }
+  if (VISITOR_GRAPH_READS.has(type)) return null;
+  if (type === "app/state" || type === "app/report-error") return "nothing is kept for a visitor: the page keeps its state for the visit";
+  if (type.startsWith("graph/")) return `"${type}" is not available in the public view (the graph reads are ${[...VISITOR_GRAPH_READS].join(", ")})`;
+  if (type.startsWith("job/") || type.startsWith("app/")) return `"${type}" is not available in the public view`;
+  if (entry.reads?.includes(type)) return null;
+  return `"${type}" is not one of this app's public reads — a person adds it in the Public view dialog`;
+}
+
+/** Fields of a run record a visitor never reads (`PRIVATE_RUN_FIELDS`), and
+ *  a deliverable's link rewritten under `/public` — a job's files are not
+ *  public, so a link into them is dropped. */
+export function visitorRunRecord<T>(workflow: string, runId: string, rec: T): T {
+  if (!rec || typeof rec !== "object") return rec;
+  const out = publicSummary(rec as Record<string, unknown>);
+  const arts = out["artifacts"];
+  if (Array.isArray(arts)) {
+    const prefix = `/artifacts/${encodeURIComponent(runId)}/`;
+    out["artifacts"] = arts.map((a: Record<string, unknown>) => {
+      const { url, ...rest } = a ?? {};
+      if (typeof url !== "string") return rest;
+      const path = url.split("?")[0]!;
+      if (path.startsWith(prefix)) return { ...rest, url: `/public/workflows/${encodeURIComponent(workflow)}/runs/${encodeURIComponent(runId)}/files/${path.slice(prefix.length)}` };
+      return /^https?:\/\//.test(url) && !url.includes("?t=") ? { ...rest, url } : rest;
+    });
+  }
+  return out as T;
+}
+
+type RunsReads = {
+  list(q: { workflow: string } & Record<string, unknown>, by?: unknown): Promise<Array<Record<string, unknown>>>;
+  get(q: { workflow: string; runId: string; wait?: number }, by?: unknown): Promise<Record<string, unknown> | null>;
+  events(q: { workflow: string; runId: string; skip?: number }, by?: unknown): Promise<RunEvent[]>;
+  files(q: { workflow: string; runId: string; path: string }, by?: unknown): Promise<unknown>;
+  transcript(q: { workflow: string; runId: string; path: string; full?: boolean }, by?: unknown): Promise<unknown>;
+  workflow(q: { workflow: string }, by?: unknown): Promise<unknown>;
+  provenance?(q: Record<string, unknown> & { workflow: string; runId: string }, by?: unknown): Promise<unknown>;
+};
+
+/** The runs capability as a visitor's page reads it: reads only, every
+ *  record without who launched it, a job run's files closed. */
+export function visitorRuns(inner: RunsReads): Record<string, unknown> {
+  const closed = (what: string) => () => Promise.reject(new Error(`${what} is not available in the public view`));
+  return {
+    list: async (q: { workflow: string } & Record<string, unknown>, by?: unknown) =>
+      (await inner.list(q, by)).map((r) => visitorRunRecord(q.workflow, String(r["runId"] ?? ""), r)),
+    get: async (q: { workflow: string; runId: string; wait?: number }, by?: unknown) => {
+      const r = await inner.get(q, by);
+      return r ? visitorRunRecord(q.workflow, q.runId, r) : r;
+    },
+    events: async (q: { workflow: string; runId: string; skip?: number }, by?: unknown) =>
+      (await inner.events(q, by)).map((e) => visitorRunRecord(q.workflow, q.runId, e)),
+    transcript: (q: { workflow: string; runId: string; path: string; full?: boolean }, by?: unknown) => inner.transcript({ ...q, full: false }, by),
+    files: async (q: { workflow: string; runId: string; path: string }, by?: unknown) => {
+      const r = await inner.get({ workflow: q.workflow, runId: q.runId }, by);
+      if (r && r["job"]) throw new Error("a job's files are not in the public view");
+      return inner.files(q, by);
+    },
+    workflow: (q: { workflow: string }, by?: unknown) => inner.workflow(q, by),
+    ...(inner.provenance ? { provenance: (q: Record<string, unknown> & { workflow: string; runId: string }, by?: unknown) => inner.provenance!(q, by) } : {}),
+    launch: closed("starting a run"),
+    cancel: closed("stopping a run"),
+  };
 }

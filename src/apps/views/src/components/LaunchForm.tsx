@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { Loader2, Play, Square } from "lucide-react";
-import { isInFlight, useCancel, useLaunch, useRuns, useWorkflow, type LaunchResult, type RunSummary } from "@strut/kit";
+import { isInFlight, useCancel, useHost, useLaunch, useRuns, useWorkflow, type LaunchResult, type RunSummary } from "@strut/kit";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -65,6 +65,7 @@ export function LaunchForm({ workflow, fields: given, initial, dedupe, label = "
   const last: RunSummary | undefined = runs.data?.[0];
   const { launch, pending, error, data } = useLaunch(workflow);
   const { cancel, pending: cancelling } = useCancel();
+  const host = useHost();
 
   const [values, setValues] = useState<Record<string, string | boolean>>({});
   const [raw, setRaw] = useState(() => (initial ? JSON.stringify(initial, null, 2) : "{}"));
@@ -126,6 +127,14 @@ export function LaunchForm({ workflow, fields: given, initial, dedupe, label = "
     if (result) onLaunched?.(result, input);
   };
 
+  // A visitor's page (a strut server's public view) launches nothing.
+  if (host.public) {
+    return (
+      <p className={cn("text-sm text-muted-foreground", className)} data-testid="launch-form-public">
+        Runs are started by the people who keep this server. This is a public view: you can read its runs, not start one.
+      </p>
+    );
+  }
   if (!given && info.isPending) return <Skeleton className={cn("h-32 w-full", className)} />;
   const running = last && isInFlight(last) ? last : undefined;
   return (
