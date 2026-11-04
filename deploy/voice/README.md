@@ -73,14 +73,38 @@ and Ubuntu's
 show. It proves the VM runs under SEV-SNP with debug off. Its measurement is
 the firmware's, not the disk with these images.
 
+## 5. A private model: Maple
+
+The orchestrator's turns go to Anthropic. To run the voice turns on a private
+model, Maple's `gemma4-31b`, instead:
+
+1. Wait for a strut image with the `maple` provider. Until then `maple/…`
+   models don't resolve, so leave `VOICE_MODEL` at `haiku`.
+2. In `.env`, set `MAPLE_API_KEY` and `VOICE_MODEL=maple/gemma4-31b`. Also
+   set `MAPLE_CACHE_NAMESPACE_ROOT` (`openssl rand -base64 32`, once), or
+   Maple's prompt cache starts over each time the proxy restarts.
+3. `sudo docker compose up -d`.
+
+The `maple` service is Maple's proxy
+([README](https://github.com/MaplePrivacyLabs/Maple/blob/master/proxy/README.md)).
+- It attests Maple's AWS Nitro enclave and encrypts each request to it.
+  Maple's enclave verifies the model's enclave before forwarding.
+- It reads the prompts in plaintext, so it runs on this box beside strut,
+  with no port and no route.
+- strut reaches it at `MAPLE_BASE_URL` (`http://maple:8080/v1`) and sends
+  `MAPLE_API_KEY` on every request. The proxy holds no key.
+
+Speech stays in strut. Turns outside a call keep their own model.
+
 ## What this demo is not
 
 - **The code isn't attested:** the report doesn't cover the images, and
   whoever has the SSH key reads everything on the box.
 - **Call audio isn't end to end encrypted:** that's step 2. The central
   LiveKit hears it.
-- **The model call leaves the box:** each turn goes to Anthropic until
-  Tinfoil (step 5).
+- **The model call leaves the box:** each turn goes to Anthropic, or with
+  Maple (above) encrypted to Maple's enclave. With Maple, the proxy on this box
+  reads it in plaintext first, and the box's code isn't attested.
 - **Peel shows no "verified":** that's step 4.
 - **The box holds a LiveKit key pair:** make one for it rather than share the
   swarms'.
