@@ -1432,9 +1432,10 @@ A channel is a short in-memory log of JSON messages named by an app and
 shared by every viewer of it (every version; a preview has its own). The
 page connects nowhere: its HOST holds one WebSocket per open page and
 relays it to the page over the MCP Apps bridge. Nothing is kept — no run,
-no log line — and a restart empties every channel. Built so far: the
-service, the ticket and the socket below; the bridge methods, the kit's
-`useChannel`, the steps and the peer relay are later work items.
+no log line — and a restart empties every channel. Built: the service,
+the ticket and the socket below, the bridge methods, the kit's
+`useChannel`, and strut's own UI as a host (for an app that lives on this
+strut). The steps and the peer relay are later work items.
 
 **A ticket** — what a browser host opens the socket with, since a browser
 cannot set a header on an upgrade:
@@ -1486,6 +1487,24 @@ first), 16 keys per sender, 30 messages a second per sender in bursts of
 after 10 minutes. A socket that misses a ping (every 10 s) is closed; a
 clean close (1000 / 1001) or a `leave` sends `left` at once and drops the
 leaver's states.
+
+**The bridge** — what a host and the page say over MCP Apps
+(`@strut/kit/channels`). A host that carries channels says so in its
+`ui/initialize` answer, `hostCapabilities.experimental["strut/channels"] =
+{ v: 1 }`; without it the kit's `useChannel` reports `available: false`.
+
+| Direction | Method | Params |
+| --- | --- | --- |
+| page → host (request) | `strut/channels/join` | `{ channel }` — the host opens its socket on the first one |
+| page → host (request) | `strut/channels/leave` | `{ channel }` |
+| page → host (request) | `strut/channels/send` | `{ channel, messages }` — refused before a join |
+| host → page (notification) | `strut/channels/frame` | one of strut's frames above as it came, or the host's own `{ op: "status", connected: false, error? }` when its socket drops |
+
+A host keeps one socket per framed page, mints a ticket for it, and when
+it drops comes back with `?client=` and each channel's last cursor as
+`since`. `relayChannels` in `@strut/kit/channels` does all of it for a
+browser host, given `open(client?)` (mint the ticket, make the
+`WebSocket`); strut's UI runs it for an app that lives here.
 
 ## 15. Dictation — speech to text, its models and the user's vocabulary
 

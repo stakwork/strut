@@ -18,6 +18,7 @@ import { ErrorBoundary, createErrorReporter, installWindowErrorReporting, type E
 import { BridgeHost } from "./host.js";
 import { StrutProvider } from "./provider.js";
 import { createBridgeWallet, type WalletBridgeApp, type WalletClient } from "./wallet/client.js";
+import { createBridgeChannels, type ChannelsBridgeApp, type ChannelsClient } from "./channels/client.js";
 import { installWebLN } from "./wallet/webln.js";
 
 /** A framed page has no browser storage: every host frames it under
@@ -104,6 +105,9 @@ export interface Mounted {
   /** The host's wallet (specs/WALLET.md): offers nothing unless the host's
    *  `ui/initialize` answer carries `experimental["strut/wallet"]`. */
   wallet: WalletClient;
+  /** The host's channels (plans/app-channels.md): none unless its
+   *  `ui/initialize` answer carries `experimental["strut/channels"]`. */
+  channels: ChannelsClient;
   reactRoot: Root;
   /** Whether the host answered `ui/initialize`; a page opened with no host
    *  mounts anyway, and its calls fail. */
@@ -121,6 +125,7 @@ export async function bootstrap(AppComponent: ComponentType, options: BootstrapO
   const client = createBridgeClient(app, token);
   // Before connect, so no notification of the host's is missed.
   const wallet = createBridgeWallet(app as unknown as WalletBridgeApp);
+  const channels = createBridgeChannels(app as unknown as ChannelsBridgeApp);
   const report = createErrorReporter(client);
   const reporter: ErrorReporter = (error, componentStack) => {
     report(error, componentStack);
@@ -148,13 +153,13 @@ export async function bootstrap(AppComponent: ComponentType, options: BootstrapO
   reactRoot.render(
     createElement(
       StrutProvider,
-      { client, host, wallet, queryClient: options.queryClient },
+      { client, host, wallet, channels, queryClient: options.queryClient },
       createElement(ErrorBoundary, { onError: reporter }, createElement(AppComponent)),
     ),
   );
 
   return {
-    app, client, host, wallet, reactRoot, connected,
+    app, client, host, wallet, channels, reactRoot, connected,
     async unmount() {
       stopSizeReports();
       uninstall();

@@ -28,6 +28,8 @@ export default defineConfig({
       "@strut/kit/folds": fileURLToPath(new URL("../kit/src/folds/index.ts", import.meta.url)),
       // The wallet contract and its relay (specs/WALLET.md): the same, pure TS.
       "@strut/kit/wallet": fileURLToPath(new URL("../kit/src/wallet/index.ts", import.meta.url)),
+      // The channels contract and the relay a browser host runs (plans/app-channels.md).
+      "@strut/kit/channels": fileURLToPath(new URL("../kit/src/channels/index.ts", import.meta.url)),
       react: "preact/compat",
       "react-dom": "preact/compat",
       "react/jsx-runtime": "preact/jsx-runtime",
@@ -63,6 +65,8 @@ export default defineConfig({
       "/index": "http://localhost:3000",
       // Model downloads are SSE; /audio/stream is a WebSocket.
       "/audio": { target: "http://localhost:3000", ws: true, configure: sseConfigure },
+      // An app's channel socket (plans/app-channels.md): a WebSocket.
+      "/channels": { target: "http://localhost:3000", ws: true },
     },
   },
   build: {

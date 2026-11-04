@@ -98,6 +98,8 @@ export function AppHost(props: {
           ...(visitor ? { visitor: true } : {}),
           ...(app.peer ? { base: api.peerBase(app.peer) } : {}),
           ...(wallet ? { wallet } : {}),
+          // Channels for an app that lives here, as the signed-in viewer.
+          ...(!visitor && !app.peer ? { channels: { name: app.name, version: app.version } } : {}),
           handlers: {
             ...(messages ? { onMessage: (text: string) => handlers.current.onMessage?.(text) } : {}),
             ...(handlers.current.onNavigate ? {

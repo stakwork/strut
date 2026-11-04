@@ -19,7 +19,8 @@ import {
   WALLET_CAPABILITY, nativeWalletNotifications, nativeWalletOf, probeNativeWallet, relayNativeWallet,
   type NativeWalletApp, type RelayBridge,
 } from "@strut/kit/wallet";
-import { API_BASE, apiHeaders } from "./api";
+import { CHANNELS_CAPABILITY, relayChannels } from "@strut/kit/channels";
+import { API_BASE, apiHeaders, channelSocketUrl, channelTicket } from "./api";
 import { strutLink } from "./app-links";
 
 // The pure parts — where a link leads, what a message becomes — are
@@ -56,6 +57,12 @@ export interface AppHostOptions {
    *  the host's wallet is offered to the page and its `strut/wallet/*` calls
    *  are relayed there; anywhere else it is unused. */
   wallet?: NativeWalletApp;
+  /** The app as it lives HERE, at the version on screen: the host then
+   *  carries its channels (plans/app-channels.md §3) — one socket to
+   *  `/channels` for the page, opened with a ticket on its first join. Left
+   *  out for a visitor (no viewer to mint for) and a peer's app (its
+   *  channels are the peer's; the relay through this strut is a later item). */
+  channels?: { name: string; version: string };
 }
 
 export interface AppHostConnection {
@@ -114,7 +121,9 @@ export async function connectAppHost(opts: AppHostOptions): Promise<AppHostConne
       serverTools: {},
       openLinks: {},
       ...(opts.handlers.onMessage ? { message: { text: {} } } : {}),
-      ...(capability ? { experimental: { [WALLET_CAPABILITY]: capability } } : {}),
+      ...(capability || opts.channels
+        ? { experimental: { ...(capability ? { [WALLET_CAPABILITY]: capability } : {}), ...(opts.channels ? { [CHANNELS_CAPABILITY]: { v: 1 } } : {}) } }
+        : {}),
     },
     { hostContext: hostContextFor(opts.theme) },
   );
@@ -123,6 +132,16 @@ export async function connectAppHost(opts: AppHostOptions): Promise<AppHostConne
     const relay = relayNativeWallet({ bridge: bridge as unknown as RelayBridge, native, app: opts.wallet, capability });
     stopWallet = nativeWalletNotifications(window).register(opts.wallet, relay.notify);
   }
+  const channels = opts.channels;
+  const channelRelay = channels
+    ? relayChannels({
+        bridge: bridge as unknown as Parameters<typeof relayChannels>[0]["bridge"],
+        async open(client) {
+          const { ticket } = await channelTicket(channels.name, channels.version);
+          return new WebSocket(channelSocketUrl(ticket, client));
+        },
+      })
+    : undefined;
   bridge.onmessage = async (params) => {
     const text = (params.content ?? [])
       .map((c) => (c.type === "text" ? c.text : ""))
@@ -157,6 +176,7 @@ export async function connectAppHost(opts: AppHostOptions): Promise<AppHostConne
     },
     async close() {
       stopWallet();
+      channelRelay?.close();
       await bridge.close().catch(() => undefined);
       await client.close().catch(() => undefined);
     },

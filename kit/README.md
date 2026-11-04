@@ -101,6 +101,28 @@ the `sideEffects` and `type` rules, and that the recorded versions are
   → `{ rev, changes }` (`graph/changes` from now: put `rev` in the
   dependencies of the reads that show those types). Grant the step in
   `grants.steps`. SQL and automation hooks are later work items.
+- **`src/channel-hooks.ts`** — `useChannel(name, { onMessage?, enabled? })`
+  → `{ available, ready, client, members, states, events, error, send(data,
+  { key? }) }`: live messages between the people on the app
+  (`plans/app-channels.md`) — a game's moves, cursors, a lobby. The page's
+  HOST holds the socket; strut stamps every sender (`from.actor`,
+  `from.client`); a message with a `key` is a state that replaces only this
+  page's last one of that key, one without is an event. Every component
+  naming a channel shares one join and one state; `onMessage` gets each new
+  message (`mine` for this page's own) without a re-render. `available` is
+  false in a host that carries no channels. `newChannel()` mints an
+  unguessable name for a private game; `appLink(app, { channel })` is the
+  invite. Nothing is kept: what must last goes through a workflow or the
+  graph. No grant: the host's ticket names the app.
+- **`src/channels/`** (`@strut/kit/channels`) — the contract under it, no
+  React: the `strut/channels/{join,leave,send}` requests and the
+  `strut/channels/frame` notification on the bridge, the frames strut sends,
+  `applyChannelFrame` (the fold every page keeps), the page's client
+  (`createBridgeChannels`, which the bootstrap builds) and `relayChannels`,
+  what a BROWSER HOST runs per framed app: one socket to strut's `GET
+  /channels` opened with a ticket on the first join, frames relayed both
+  ways, a drop told to the page as `{ op: "status", connected: false }` and
+  the socket brought back with its client id and each channel's cursor.
 - **`src/links.ts`** — `appLink(name, input?)`: a deep link to an app,
   `?app=<name>&input=<input as a query string>` (plans/apps.md §7.1). A host
   follows it and hands `input` back as `tool-input`, flat strings.

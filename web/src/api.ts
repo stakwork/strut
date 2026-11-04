@@ -2008,6 +2008,26 @@ export const setAppPinned = (name: string, pinned: boolean) =>
 export const deleteApp = (name: string) =>
   fetchJSON<{ ok: true; name: string }>(`/apps/${encodeURIComponent(name)}`, { method: "DELETE" });
 
+/** A ticket for an app's channel socket (`POST /apps/:name/channel-ticket`,
+ *  plans/app-channels.md §2): what this host opens `GET /channels` with,
+ *  for the signed-in viewer and the version on screen. */
+export const channelTicket = (name: string, version: string) =>
+  fetchJSON<{ ticket: string; exp: number }>(`/apps/${encodeURIComponent(name)}/channel-ticket`, {
+    method: "POST",
+    body: JSON.stringify({ version }),
+  });
+
+/** The channel socket's URL on this origin and mount, with a ticket — never
+ *  the key, which a URL must not carry — and, coming back after a drop, the
+ *  client id the last socket had. */
+export function channelSocketUrl(ticket: string, client?: string): string {
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  const url = new URL(`${proto}//${location.host}${BASE}/channels`);
+  url.searchParams.set("ticket", ticket);
+  if (client) url.searchParams.set("client", client);
+  return url.toString();
+}
+
 // ── A peer's apps (plans/apps.md §7.4) ──────────────────────────────────────
 // An app that lives on a PEER, hosted here: this strut's read-through reads
 // its list, files and document with the token on file for the peer (a

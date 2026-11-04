@@ -1,7 +1,8 @@
 # App channels: live messages between the people on an app
 
-> **Status (2026-11-04): ruled; work items 1 and 2 built (stakwork/strut#487:
-> the service, the ticket, the socket at `GET /channels`).** Written after the question
+> **Status (2026-11-04): ruled; work items 1, 2, 5 and 6 built
+> (stakwork/strut#487: the service, the ticket, the socket at `GET /channels`,
+> strut's UI as a host, the kit's `useChannel`).** Written after the question
 > "could someone build a multiplayer game as a strut app?" A game has few
 > workflows (a scoreboard, a referee) and needs fast messages between the
 > people playing it, which strut does not have. The owner ruled every
@@ -402,10 +403,10 @@ than that server.
 4. **The steps** `channel/send`, `channel/read`, `channel/derive`
    (`src/steps/lib/channel/`), refused without `ctx.app` and in
    `NOT_A_PAGES`. Add the test files to the `npm test` list.
-5. **Strut's UI as a channel host** (`web/src/app-host.ts`): the
+5. **BUILT (#487). Strut's UI as a channel host** (`web/src/app-host.ts`): the
    capability in `ui/initialize`, the ticket, the socket, the relay; the
    pure parts in `app-links.ts` with their tests.
-6. **The kit**: `useChannel`, `newChannel`, the bridge methods; hook tests;
+6. **BUILT (#487). The kit**: `useChannel`, `newChannel`, the bridge methods; hook tests;
    the README with §6's pattern.
 7. **`app/look`**: answer the channel socket in process with Playwright's
    `page.routeWebSocket`, as `page.route` answers the rest, so the builder
