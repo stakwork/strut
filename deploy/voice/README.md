@@ -73,7 +73,25 @@ and Ubuntu's
 show. It proves the VM runs under SEV-SNP with debug off. Its measurement is
 the firmware's, not the disk with these images.
 
-## 5. A private model: Maple
+## 5. End-to-end encrypted calls
+
+Peel makes a fresh key for every call and sends it with `POST /voice/calls`,
+and the voice service and Peel both join the room with it. The central
+LiveKit forwards the audio both ways and the live text without being able to
+read them (plans/private-voice.md §4, "Step 2").
+
+- It needs a voice image that takes the key (sphinx-voice
+  `src/encryption.ts`): with `SPHINX_VOICE_TAG` at `latest`, run
+  `sudo docker compose pull voice && sudo docker compose up -d`. And a Peel
+  that sends one. Such a Peel refuses a call the voice service answers
+  without `encrypted: true`, so update the voice service first.
+- TLS ends at Caddy, on this box, so the key reaches only this VM.
+- To check it on the box: a participant that joins the call's room without
+  the key (anyone with the LiveKit key pair can mint a token for it) hears
+  noise and gets no text. sphinx-voice's `scripts/e2ee-call.ts` does that
+  against a local LiveKit.
+
+## 6. A private model: Maple
 
 The orchestrator's turns go to Anthropic. To run the voice turns on a private
 model, Maple's `gemma4-31b`, instead:
@@ -100,11 +118,13 @@ Speech stays in strut. Turns outside a call keep their own model.
 
 - **The code isn't attested:** the report doesn't cover the images, and
   whoever has the SSH key reads everything on the box.
-- **Call audio isn't end to end encrypted:** that's step 2. The central
-  LiveKit hears it.
+- **The LiveKit signaling isn't encrypted:** the room name, the random
+  identities and the agent's state are LiveKit's to see (§5 covers the audio
+  and the text).
 - **The model call leaves the box:** each turn goes to Anthropic, or with
   Maple (above) encrypted to Maple's enclave. With Maple, the proxy on this box
   reads it in plaintext first, and the box's code isn't attested.
 - **Peel shows no "verified":** that's step 4.
 - **The box holds a LiveKit key pair:** make one for it rather than share the
-  swarms'.
+  swarms'. A key pair is admin over every room on the server, though an
+  encrypted call's room gives it only ciphertext.
