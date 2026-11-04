@@ -227,10 +227,12 @@ async function openLadybugBackend(cfg: LadybugConfig, opts: GraphBackendOptions)
       async close() {
         closed = true;
         await engine.nodeEngine.idle?.();
+        await passWorker?.close();
         await lbug.close();
       },
     };
     let closed = false;
+    let passWorker: WorkerEmbedder | undefined;
     // The facts' search rows a failed embedding or a rename left without a
     // vector (plans/graph-edge-search.md), and the data nodes written while
     // the embedder was off, filled in the background; a close waits for the run.
@@ -240,8 +242,15 @@ async function openLadybugBackend(cfg: LadybugConfig, opts: GraphBackendOptions)
       writerOpts.embedder = embedder;
       (backend as { embedder: Embedder | undefined }).embedder = embedder;
       if (opts.skipBoot) return;
-      void engine.nodeEngine.embedPendingRows?.(embedder);
-      void engine.nodeEngine.embedPendingNodes?.(embedder, async (type) => {
+      // The catch-up embeds in a worker thread, as on Neo4j: onnxruntime runs
+      // a model synchronously, and a sweep of a file's nodes on this thread
+      // would hold every request (and the ready line) until it ended. The
+      // writers and search keep `embedder` (one short text each). An
+      // injected embedder is used as it is.
+      passWorker = given ? undefined : new WorkerEmbedder();
+      const pass = passWorker ?? embedder;
+      void engine.nodeEngine.embedPendingRows?.(pass);
+      void engine.nodeEngine.embedPendingNodes?.(pass, async (type) => {
         if (type === SCHEMA_TYPE || type === MERGE_TYPE) return false;
         const s = await schemas.schema(type).catch(() => null);
         return !!s && s.embed && s.role !== "record";
