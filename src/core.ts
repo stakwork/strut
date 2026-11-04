@@ -24,6 +24,10 @@ export interface StepDef<
 > {
   type: TType;
   description?: string;
+  /** More of the description, shown only to an agent whose workspace graph
+   *  is of that kind (`agent`'s tools): what only that backend has, kept out
+   *  of the tools the other one's agents see. */
+  graphNotes?: { ladybug?: string };
   input: TInput;
   output: TOutput;
   /** Optional source code for this step, surfaced by `GET /steps/:type/source`
@@ -815,6 +819,8 @@ export type StepCounts = Record<string, { success: number; error: number; lastAt
 export interface AnyStepDef {
   type: string;
   description?: string;
+  /** Backend-only description (see `StepDef.graphNotes`). */
+  graphNotes?: { ladybug?: string };
   input: z.ZodTypeAny;
   output: z.ZodTypeAny;
   /** Optional source code for in-code steps (see `StepDef.source`). */

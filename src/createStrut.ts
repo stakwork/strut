@@ -66,7 +66,7 @@ import { createVerifyWaker, type VerifyWaker } from "./ai/verify-waker.js";
 import type { RunEndInfo } from "./runner.js";
 import { ACTOR_SECRETS_FILE, actorSecretStore, type ActorSecretStore } from "./actor-secrets.js";
 import { seedJobWorkflow, type JobSeedOptions } from "./job-seed.js";
-import { PERSONAL_CONCEPTS, STRUT_CONCEPTS, seedConcepts } from "./concept-seed.js";
+import { PERSONAL_CONCEPTS, PERSONAL_ROOT, STRUT_CONCEPTS, seedConcepts } from "./concept-seed.js";
 import { builderSystem } from "./ai/builder-system.js";
 import { seedOrchestratorWorkflow, type OrchestratorSeedOptions } from "./orchestrator-seed.js";
 import { seedBuilderWorkflow, type BuilderSeedOptions } from "./builder-seed.js";
@@ -463,6 +463,15 @@ export interface StrutOptions<TServices = unknown> {
    *  everything, as before. Set: a reader it leaves out reads nothing.
    *  `STRUT_HOST_CONFIG`'s `graphReaders` (src/server.ts). */
   graphReaders?: GraphReaders;
+
+  /** Where the assistant's long-term memory lives (plans/graph-memory-plan.md
+   *  step 7). `"graph"`: on the workspace graph, through the generic
+   *  `graph/*` steps; the old `memory/*` steps are left out of every
+   *  agent's tools (dictation still reads them directly), and the
+   *  `tidy-memory` janitor runs on the graph (`workflow.graph.yaml`).
+   *  Unset or `"legacy"`: the separate memory database and its `memory/*`
+   *  steps, as before. `STRUT_HOST_CONFIG`'s `memory` (src/server.ts). */
+  memory?: "graph" | "legacy";
 
   /** Directory containing the built web UI (the `dist` folder). Defaults
    *  to strut's own bundled UI resolved relative to this module, so it
@@ -1029,6 +1038,8 @@ export async function createStrut<TServices = unknown>(
     // The LLM auth seam, for the model-building call sites (llm.ts).
     ...(opts.llmAuth ? { llmAuth: opts.llmAuth } : {}),
     ...(opts.settings ? { settings: opts.settings } : {}),
+    // Read by the agent step, which then leaves the memory/* steps out of its tools.
+    ...(opts.memory === "graph" ? { memory: "graph" } : {}),
     ...((opts.services ?? {}) as Record<string, unknown>),
   } as TServices;
   // The browser the browser/* steps drive (src/browser/service.ts), unless
@@ -1233,7 +1244,9 @@ export async function createStrut<TServices = unknown>(
   }
   if (opts.orchestrator !== false) {
     try {
-      const { version, changed } = await seedOrchestratorWorkflow(workspace, opts.orchestrator);
+      // A host that keeps the person's own pages: the orchestrator follows them.
+      const personal = opts.concepts !== false && opts.concepts?.personal ? { personalConcept: PERSONAL_ROOT } : {};
+      const { version, changed } = await seedOrchestratorWorkflow(workspace, { ...opts.orchestrator, ...personal });
       if (changed) console.log(`[orchestrator] seeded workflow: orchestrator @ ${version}`);
     } catch (err) {
       console.warn(`[orchestrator] could not seed the orchestrator workflow:`, err instanceof Error ? err.message : err);
@@ -1311,7 +1324,7 @@ export async function createStrut<TServices = unknown>(
   // workflow of category "system" plus its automation, installed off. Before
   // the scheduler's first load, so a new one is scheduled once turned on.
   if (opts.systemWorkflows !== false) {
-    for (const w of await installSystemWorkflows(workspace)) {
+    for (const w of await installSystemWorkflows(workspace, { memory: opts.memory })) {
       if (w.action !== "unchanged" || w.automation) console.log(`[system] ${w.name} @ ${w.version}: ${w.action}${w.automation ? `, automation ${w.automation} (off)` : ""}`);
     }
   }

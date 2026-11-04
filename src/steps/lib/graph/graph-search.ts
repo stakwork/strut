@@ -54,6 +54,7 @@ export default defineStep({
     "the search then also finds facts — sentences on edges, \"Tom works at Stakwork\" — and returns `{ nodes, facts }`, each fact with its sentence, both ends and its dates. " +
     "Only current facts are returned unless `include_ended` (history too) or `as_of` (what was true then) says otherwise. A search with `type`, `domains` or `linked` finds no facts. " +
     "Without `facts: true` the result is the list of nodes alone.",
+  graphNotes: { ladybug: "`include_ended` is what used to be true. A fact's `sources` say where it came from and who said it: a node there that is not the user is someone else's word." },
   input: z.object({
     q: z
       .string()

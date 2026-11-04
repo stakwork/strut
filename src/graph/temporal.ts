@@ -39,9 +39,13 @@ import { edgeKeyFor } from "./edge-writer.js";
 import { writeNamespace } from "./ladybug/namespaces.js";
 import { composeFact, createTemporalEdge, factRows, setTemporalEdge, slotEdges, syncEdgeRow, temporalEdgeTypes, titlesOf, writeEdgeRow } from "./ladybug/temporal.js";
 import { asEngine } from "./neo4j-engine.js";
+import { boundsOf } from "./scope.js";
 import { GraphValidationError, type Embedder } from "./node-writer.js";
 import type { SchemaResolver } from "./schema-resolver.js";
 import { foldText, worldTime } from "./world-time.js";
+
+/** A run as one of a fact's sources: `run:<runId>`, which StrutRun's `run_id` finds. */
+export const runSource = (runId: string): string => `run:${runId}`;
 
 export { foldText, worldTime };
 
@@ -57,6 +61,18 @@ export interface AssertInput {
   invalid_at?: string | number;
   /** The ref_id of the node it was learned from (an episode, a message). */
   source?: string;
+  /** The ref_id of the node that said it, when not the graph's owner (a
+   *  Person who told the user). Kept among the edge's `sources`, like
+   *  `source`; it must resolve to a node. */
+  said_by?: string;
+  /** The run that asserted it, kept among the edge's sources as
+   *  `run:<id>` (`runSource`): stamped by the caller from its own context,
+   *  never the model's to choose, so every fact leads back to the run, and
+   *  from it to the chat and message it came from. */
+  run?: string;
+  /** It is no longer true ("used to …"), even with no `invalid_at`: kept
+   *  as past, ending the same fact held now, with no end date invented. */
+  ended?: boolean;
   /** The edge's namespace; default its source node's. */
   namespace?: string;
   /** Who is asserting it: the host's name for the caller's actor. */
@@ -128,12 +144,17 @@ export async function assertEdge(e: EngineLike, resolver: SchemaResolver, input:
   const invalid = timeOf(edge, "invalid_at", input.invalid_at);
   if (valid !== null && invalid !== null && invalid < valid) throw new GraphValidationError("WRONG_TYPE", edge, "invalid_at is before valid_at: it ends before it starts", "invalid_at");
   const now = (opts.now ?? Date.now)();
-  // A fact whose end is given and not in the future is past.
-  const past = invalid !== null && invalid <= now;
+  // A fact said to be over, or whose end is given and not in the future, is past.
+  const past = input.ended === true || (invalid !== null && invalid <= now);
+  const saidBy = input.said_by?.trim() || undefined;
 
   // The search row's text and vector, made before the transaction: a failed
   // embedding leaves the row keyword-only, never the write undone.
-  const titles = await titlesOf((c, p) => engine.query(c, p), [input.source_ref_id, input.target_ref_id]);
+  // Read on the caller's transaction when there is one: an end it created
+  // is not committed yet. Otherwise unscoped (a reader's list refuses a raw
+  // query): the titles go into the hidden search row alone.
+  const unscoped = boundsOf(e)?.query ?? ((c: string, p?: Record<string, unknown>) => engine.query(c, p));
+  const titles = await titlesOf((c, p) => (opts.tx ? opts.tx.run(c, p) : unscoped(c, p)), [input.source_ref_id, input.target_ref_id]);
   const composed = composeFact(titles.get(input.source_ref_id), edge, titles.get(input.target_ref_id), text);
   let vector: number[] | undefined;
   if (opts.embedder) {
@@ -145,16 +166,18 @@ export async function assertEdge(e: EngineLike, resolver: SchemaResolver, input:
   }
 
   const go = async (tx: GraphTx): Promise<AssertResult> => {
-    const ends = await engine.edgeEngine.endpoints(tx, [input.source_ref_id, input.target_ref_id]);
+    const ends = await engine.edgeEngine.endpoints(tx, [input.source_ref_id, input.target_ref_id, ...(saidBy ? [saidBy] : [])]);
     const s = ends.get(input.source_ref_id);
     const t = ends.get(input.target_ref_id);
     if (!s?.type) throw new GraphValidationError("MISSING_REQUIRED", edge, `source ${input.source_ref_id} does not resolve`, "source_ref_id");
     if (!t?.type) throw new GraphValidationError("MISSING_REQUIRED", edge, `target ${input.target_ref_id} does not resolve`, "target_ref_id");
+    if (saidBy && !ends.get(saidBy)?.type) throw new GraphValidationError("MISSING_REQUIRED", edge, `said_by ${saidBy} does not resolve to a node`, "said_by");
     const match = await resolver.edgeSchema(edge, s.type, t.type, tx);
     if (!match) throw new GraphValidationError("WRONG_TYPE", edge, `no edge schema ${s.type}-[${edge}]->${t.type}`);
     if (!match.rule.temporal) throw new GraphValidationError("WRONG_TYPE", edge, `${edge} is not a temporal edge type: write it with graph/create-triplet`);
     const one = match.rule.cardinality === "one";
-    const source = input.source?.trim() || undefined;
+    // Where it was learned and who said it: each kept once among the edge's sources.
+    const given = [...new Set([input.source?.trim(), saidBy, input.run ? runSource(input.run) : undefined].filter((x): x is string => !!x))];
 
     // The same edge held now, or for a past fact, held before.
     const current = await slotEdges(tx, edge, input.source_ref_id);
@@ -169,16 +192,16 @@ export async function assertEdge(e: EngineLike, resolver: SchemaResolver, input:
       const inv = end !== null && v !== null && end < v ? hit.invalid_at : end;
       const filled = [...(v !== hit.valid_at ? ["valid_at"] : []), ...(inv !== hit.invalid_at ? ["invalid_at"] : [])];
       const expire = !!held && (ending || (inv !== null && inv <= now));
-      const newSource = source !== undefined && !hit.sources.includes(source);
-      // The same source again (or nothing new) changes nothing.
-      if (!filled.length && !expire && source !== undefined && !newSource) {
+      const fresh = given.filter((x) => !hit.sources.includes(x));
+      // The same sources again (or nothing new) change nothing.
+      if (!filled.length && !expire && given.length && !fresh.length) {
         return { ref_id: hit.ref_id, action: "unchanged", superseded: [], ended: hit.expired_at !== null };
       }
       await setTemporalEdge(tx, edge, hit.ref_id, {
         ...(filled.includes("valid_at") ? { valid_at: v } : {}),
         ...(filled.includes("invalid_at") ? { invalid_at: inv } : {}),
         ...(expire ? { expired_at: now } : {}),
-        ...(newSource ? { sources: [...hit.sources, source] } : {}),
+        ...(fresh.length ? { sources: [...hit.sources, ...fresh] } : {}),
         last_confirmed_at: now,
         updated_at: now,
       });
@@ -212,7 +235,7 @@ export async function assertEdge(e: EngineLike, resolver: SchemaResolver, input:
       updated_at: now,
       weight: 1,
       text,
-      sources: source ? [source] : [],
+      sources: given,
       ...clocks,
       last_confirmed_at: now,
     });

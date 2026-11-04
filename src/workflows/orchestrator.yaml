@@ -68,6 +68,17 @@ steps:
       name: "{{ params.buildConcept }}"
       docs: false
       tool: ""
+  # How the PERSON likes things done: a host that keeps their own pages
+  # (`createStrut({ concepts: { personal: true } })`) names the root in
+  # `params.personalConcept`, `Personal`. Unlike the two lists above, these
+  # pages are for THIS agent to follow, so they come with the root's docs and
+  # the tool that opens one (a host that keeps them grants graph/graph-get).
+  # None named (the default): nothing.
+  - id: personal
+    type: context/concept
+    config:
+      name: "{{ params.personalConcept }}"
+      tool: graph_graph_get
   # The other struts this one can ask (strut/list-peers: ids and labels),
   # read every turn and put before the person's message, so "ask acme…"
   # finds @acme-web by its label, and a peer added mid-conversation is
@@ -98,12 +109,13 @@ steps:
       # follows them over the run's SSE stream); off, the log holds none.
       stream: "{{ params.stream }}"
       maxSteps: "{{ params.maxSteps }}"
-      # strut's prompt (with the host's section), then the kinds of job and
-      # the kinds of build.
+      # strut's prompt (with the host's section), then the kinds of job, the
+      # kinds of build, and the person's own pages.
       system: |-
         {{ params.system }}
         {{ concepts.text }}
         {{ builds.text }}
+        {{ personal.text }}
       retain: "{{ params.retain }}"
       # `input.context.line` (the host's per-turn line: the time, the device,
       # "On a voice call: answer in a sentence or two") is the head of THIS
@@ -215,6 +227,9 @@ params:
   # grows the trees under them.
   concept: Job
   buildConcept: Workflow Builder
+  # The root of the person's own pages (the `personal` step), when a host
+  # keeps one: createStrut names `Personal` with `concepts: { personal: true }`.
+  personalConcept: ""
   # THE evolvable surface: registry steps granted to the agent as tools. It
   # has no built-ins (toolFilter: [none]): no bash, no files, no web — work
   # that needs them is a job's. The job launchers (detached: the

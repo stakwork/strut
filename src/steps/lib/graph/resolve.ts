@@ -6,7 +6,8 @@ import { graphCtx, errText } from "./_shared.js";
 export default defineStep({
   type: "graph/resolve",
   description:
-    "Find the ONE existing node a thing is, before creating it: give its type and what you know — its key, " +
+    "Find the ONE existing node a thing is, before creating it: resolve every person, place or thing you are about to write about " +
+    "before graph/create-node or graph/assert, so nothing is saved twice. Give its type and what you know — its key, " +
     "`node_data` as you would write it (its key fields, identifiers such as a Person's email, its name), " +
     "a `name`, or `aliases`. Tries, in order, the key, the type's identifiers, the exact name (case-blind), " +
     "then the node's other names (`alt_names`); the first that finds anything decides. " +
@@ -14,6 +15,8 @@ export default defineStep({
     "(`matched_by` says how). When several were found `ambiguous` is true and they are the `candidates` — do not pick " +
     "one by name alone; two people can share a name. When nothing was found, `candidates` are nodes the search ranks " +
     "close (`matched_by: search`); create a new node only if none of them is the thing. " +
+    "The user themself is never resolved or created again: graph/graph-get with `owner: true` returns them. " +
+    "When something gets another name, add it to its `alt_names` (graph/edit-node) so this finds it by that name too. " +
     "Reads only `namespaces` (default: the workspace's). A LadybugDB graph only.",
   input: z.object({
     node_type: z.string().describe("The node type, e.g. 'Person'."),

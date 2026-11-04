@@ -846,7 +846,13 @@ export function buildRegistryTools(
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   if (!names?.length || !registry) return out;
+  // A host whose memory is on the graph (`StrutOptions.memory`) keeps the
+  // old memory/* steps from every agent: graph/* is its memory.
+  const graphMemory = (ctx?.services as { memory?: unknown } | undefined)?.memory === "graph";
+  // A Ladybug workspace graph adds each step's `graphNotes.ladybug`; a Neo4j one sees the description alone.
+  const ladybug = (ctx?.services as { graph?: { kind?: unknown } } | undefined)?.graph?.kind === "ladybug";
   for (const stepType of expandAgentTools(names, registry, ctx?.package)) {
+    if (graphMemory && stepType.startsWith("memory/")) continue;
     const def = registry[stepType];
     if (!def) {
       // A system workflow's tools are its guard rails (tidy-memory without
@@ -865,7 +871,7 @@ export function buildRegistryTools(
     // A package's own step is shown by its name inside the package, as the
     // strut that published it showed it (src/package-lookup.ts).
     out[toolNameFor(nameInsidePackage(ctx?.package, stepType))] = toolFactory({
-      description: (def.description ?? `Run the "${stepType}" step.`) + (gated ? GATE_NOTE : ""),
+      description: (def.description ?? `Run the "${stepType}" step.`) + (ladybug && def.graphNotes?.ladybug ? ` ${def.graphNotes.ladybug}` : "") + (gated ? GATE_NOTE : ""),
       inputSchema: gated ? gatedSchema(schema) : schema,
       execute: async (input: unknown, options?: { strutToolPath?: string }) => {
         let rationale: string | undefined;
