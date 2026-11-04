@@ -57,7 +57,8 @@ export default defineStep({
   graphNotes: {
     ladybug:
       "`include_ended` is what used to be true. A fact's `sources` say where it came from and who said it: a node there that is not the user is someone else's word. " +
-      "A name finds the names a node holds (its name and `alt_names`), never a short or long form it was not given: when one finds nothing, search its other forms (Katie → Kate, Bob → Robert).",
+      "A name finds the names a node holds (its name and `alt_names`), never a short or long form it was not given: when one finds nothing, search its other forms (Katie → Kate, Bob → Robert). " +
+      "Search reads words, not who they mean: for the user (I, me, my), get them with graph/graph-get owner: true and walk their edges; for who is linked to whom (who works with Kate), walk graph/graph-neighbors from what you found.",
   },
   input: z.object({
     q: z

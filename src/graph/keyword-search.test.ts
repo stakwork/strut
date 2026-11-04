@@ -1,9 +1,10 @@
 /**
- * Keyword search on a Ladybug file (src/graph/text-match.ts): any query
- * word finds a candidate, nodes and facts are ranked together by how rare
- * the words they match are, and a word may meet a typo, a
- * node's `alt_names`, the edge type a fact is of, or the user. Keyword
- * only, as Peel's desktop build searches (no embedder).
+ * Keyword search on a Ladybug file (src/graph/text-match.ts): each query
+ * word is asked of the full-text index, nodes and facts are ranked together
+ * by the index's own scores, and a word may meet a typo, a node's
+ * `alt_names`, or the edge type a fact is of. Nothing in it knows a
+ * language: "I", "my" and "with" are words like any other. Keyword only,
+ * as Peel's desktop build searches (no embedder).
  */
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -74,7 +75,7 @@ describe("keyword search on a ladybug file", { skip: lb.skip }, () => {
     assert.equal((await found("Will"))[0], "Will Grant");
   });
 
-  it("a word naming the edge type, and I, put the user's fact first, above any node", async () => {
+  it("a word of a fact's sentence puts the fact first, above any node, on one scale", async () => {
     const out = await run({ q: "where do I work", facts: true }, b);
     assert.equal(texts(out)[0], "The user works at Acme.");
     assert.ok(out.facts[0].score >= Math.max(0, ...out.nodes.map((n: any) => n.score)), "facts and nodes share a scale");
@@ -87,16 +88,10 @@ describe("keyword search on a ladybug file", { skip: lb.skip }, () => {
     assert.ok(out.facts[0].score > kate.score);
   });
 
-  it("an edge type's alias finds its facts, though no sentence says the word: my job", async () => {
+  it("an edge type's alias finds its facts about the nodes found, though no sentence says the word: Kate's job", async () => {
     assert.deepEqual((await b.schemaSource.edgeAliases()).get("WORKS_AT"), ["job_at", "employed_by"]);
-    const out = await run({ q: "what's my job", facts: true }, b);
-    assert.equal(texts(out)[0], "The user works at Acme.");
     assert.equal(texts(await run({ q: "Kate's job", facts: true }, b))[0], "Kate joined Figma as a design lead.");
-  });
-
-  it("who works with me: the facts sharing the user's employer", async () => {
-    const out = await run({ q: "who works with me", facts: true }, b);
-    assert.equal(texts(out)[0], "Jon works at Acme as an engineer.");
+    assert.ok(!texts(await run({ q: "what's my job", facts: true }, b)).includes("The user works at Acme."), "\"my\" is not the user: the model asks for them (graph-get owner)");
   });
 
   it("a quoted query still requires its words", async () => {

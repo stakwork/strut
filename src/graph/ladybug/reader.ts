@@ -80,7 +80,7 @@ import {
 } from "../search.js";
 import { THING_TYPE } from "../strut-schemas.js";
 import { ALT_NAMES } from "../node-writer.js";
-import { capitalised, corrections, cuedPredicates, namedInText, predicateWords, rankScores, textQuery, unmatched, words, type MatchDoc, type TextQuery } from "../text-match.js";
+import { corrections, cuedPredicates, predicateWords, textQuery, words, type TextQuery } from "../text-match.js";
 import { namespaceName } from "./namespaces.js";
 import type { LadybugSchemas } from "./engine.js";
 import type { LadybugCatalog } from "./ontology.js";
@@ -178,8 +178,6 @@ interface FactQuery {
   fts: (terms: string, conjunctive: boolean) => Promise<Hit[]>;
   /** The rows of the facts with one of `ids` at an end, of `types` when given. */
   of: (ids: string[], types?: string[]) => Promise<Hit[]>;
-  /** The rows of the facts of a predicate to an object. */
-  sharing: (pairs: Array<{ t: string; o: string }>) => Promise<Hit[]>;
 }
 
 /** The reads the keyword half ranks: full-text hits for some words, nodes by ref_id, and the facts of some nodes. */
@@ -188,8 +186,6 @@ interface KeywordReads {
   nodesById: (ids: string[]) => Promise<Hit[]>;
   facts?: (terms: string) => Promise<Hit[]>;
   factsOf?: (ids: string[]) => Promise<Hit[]>;
-  /** The rows of the facts of a predicate (`t`) to an object (`o`). */
-  factsSharing?: (pairs: Array<{ t: string; o: string }>) => Promise<Hit[]>;
   /** The rows of the facts of some edge types with one of `ids` at an end. */
   factsOfTypes?: (types: string[], ids: string[]) => Promise<Hit[]>;
 }
@@ -557,7 +553,7 @@ export class LadybugReader implements GraphReader {
         const kw = await this.keyword(tq, {
           nodes: (terms) => nodeFts(terms, false),
           nodesById,
-          ...(factQuery ? { facts: (terms: string) => factQuery.fts(terms, false), factsOf: (ids: string[]) => factQuery.of(ids), factsOfTypes: (types: string[], ids: string[]) => factQuery.of(ids, types), factsSharing: factQuery.sharing } : {}),
+          ...(factQuery ? { facts: (terms: string) => factQuery.fts(terms, false), factsOf: (ids: string[]) => factQuery.of(ids), factsOfTypes: (types: string[], ids: string[]) => factQuery.of(ids, types) } : {}),
         }, sc);
         factsFulltext = kw.facts;
         keywordOnly = true;
@@ -626,137 +622,76 @@ export class LadybugReader implements GraphReader {
   }
 
   /**
-   * The keyword half for a query of words (src/graph/text-match.ts):
-   *   - the index finds every node and fact row holding any of the query's
-   *     words (a node's `alt_names` among them: its other names);
-   *   - a word in none of them is looked up in the titles and `alt_names`
-   *     of the entity and concept nodes: what it may be a typo or the start
-   *     of (Lisbn → Lisbon) is asked of the index again, and the nodes it
-   *     or those name are taken with their facts (the index drops its stop
-   *     words: "Will", the "c" of C#);
-   *   - nodes and facts are ranked together by the words they match, each
-   *     weighted by how rare it is in the file; a word naming a fact's edge
-   *     type (work → works_at) counts on that fact, I/me favours the user
-   *     (the `is_owner` Person) and their facts, and "with" hops (`withHop`).
-   * Words written with a capital in a title, in other names or inside a
-   * sentence are names, never stemmed (Jones is not Jon).
+   * The keyword half for a query of words (src/graph/text-match.ts). Each
+   * word is asked of the full-text index on its own, so Ladybug's own
+   * analyser does the language work (word endings, possessives, punctuation,
+   * its stop words, which find nothing) and its scores say how well a row
+   * matches; a row's score is the sum over the words it matched, nodes and
+   * facts in one pool, since both are rows of the same index. On top, only
+   * what holds for any data:
+   *   - a word the index finds nothing for is tried as a typo, or the start,
+   *     of a word in the titles and `alt_names` of the entity and concept
+   *     nodes (Lisbn → Lisbon), and a name the index never holds (a stop
+   *     word that is someone's name: "Will") finds the nodes it names;
+   *   - a word naming an edge type or one of its aliases (the schema's data:
+   *     WORKS_AT's "job") finds that type's facts about the nodes found.
    */
   private async keyword(tq: TextQuery, reads: KeywordReads, sc: ScopeSql): Promise<{ nodes: Hit[]; facts: Hit[] }> {
     const { nodes, facts } = reads;
-    const first = ftsWords(tq.terms);
-    let [n, f] = await Promise.all([nodes(first), facts ? facts(first) : Promise.resolve([] as Hit[])]);
-    const props = (h: Hit) => h.node.properties;
-    const altsOf = (h: Hit) => (Array.isArray(props(h)[ALT_NAMES]) ? (props(h)[ALT_NAMES] as unknown[]).map(String) : []);
-    const namesOf = (h: Hit) => [String(props(h)["title"] ?? ""), ...altsOf(h)].join("\n");
-    const names = new Set([...n.flatMap((h) => capitalised(namesOf(h))), ...f.flatMap((h) => namedInText(String(props(h)["search_text"] ?? "")))]);
-    const nodeDoc = (h: Hit): MatchDoc => {
-      const title = String(props(h)["title"] ?? "");
-      return { text: `${namesOf(h)}\n${String(props(h)["search_text"] ?? "")}`, title, self: props(h)["is_owner"] === true };
+    const byWord = async (w: string) => ({ n: await nodes(w), f: facts ? await facts(w) : [] });
+    const scores = new Map<string, { hit: Hit; fact: boolean; score: number }>();
+    const add = (hits: Hit[], fact: boolean, weight: number, floor = 0) => {
+      // A word counts once per row: its best meaning.
+      const best = new Map<string, Hit>();
+      for (const h of hits) if (!best.has(refIdOf(h.node)) || best.get(refIdOf(h.node))!.raw_score < h.raw_score) best.set(refIdOf(h.node), h);
+      return [...best.values()].map((h) => ({ h, fact, s: weight * Math.max(h.raw_score, floor) }));
     };
-    const owner = tq.self && facts ? await this.ownerId(sc) : undefined;
-    const factDoc = (h: Hit): MatchDoc => {
-      const text = String(props(h)["search_text"] ?? "");
-      return { text, predicate: String(props(h)["edge_type"] ?? ""), self: !!owner && (props(h)["source_ref_id"] === owner || props(h)["target_ref_id"] === owner) };
-    };
-
-    let extra: Map<string, Array<{ word: string; weight: number }>> | undefined;
-    const missing = unmatched(tq, [...n.map(nodeDoc), ...f.map(factDoc)], names);
-    if (missing.length) {
-      const vocabulary = await this.vocabulary(sc);
-      extra = new Map(missing.map((t) => [t, corrections(t, vocabulary.keys())]));
-      // The nodes those words name, and their facts: a word the index never
-      // holds (its stop words: "will", "c" of C#) is still found this way.
-      const ids = [...new Set(missing.flatMap((t) => [t, ...(extra!.get(t) ?? []).map((c) => c.word)]).flatMap((w) => [...(vocabulary.get(w) ?? [])]))];
-      const more = ftsWords([...extra.values()].flat().map((c) => c.word));
-      const [n2, f2, n3, f3] = await Promise.all([
-        more ? nodes(more) : [],
-        more && facts ? facts(more) : [],
-        ids.length ? reads.nodesById(ids) : [],
-        ids.length && reads.factsOf ? reads.factsOf(ids) : [],
-      ]);
-      const merge = (a: Hit[], ...more: Hit[][]) => {
-        const seen = new Set(a.map((h) => refIdOf(h.node)));
-        const out = [...a];
-        for (const h of more.flat()) {
-          if (seen.has(refIdOf(h.node))) continue;
-          seen.add(refIdOf(h.node));
-          out.push(h);
+    const top = { score: 0 };
+    const vocabulary = await this.vocabulary(sc);
+    for (const w of tq.terms) {
+      const { n, f } = await byWord(w);
+      let found = [...add(n, false, 1), ...add(f, true, 1)];
+      if (!found.length) {
+        // Nothing for the word itself: a word of the graph's names it may mean, or the nodes it names.
+        const fixes = corrections(w, vocabulary.keys());
+        for (const c of fixes) {
+          const more = await byWord(c.word);
+          found.push(...add(more.n, false, c.weight), ...add(more.f, true, c.weight));
         }
-        return out;
-      };
-      n = merge(n, n2, n3);
-      f = merge(f, f2, f3);
-      for (const h of [...n2, ...n3]) for (const w of capitalised(namesOf(h))) names.add(w);
-      for (const h of [...f2, ...f3]) for (const w of namedInText(String(props(h)["search_text"] ?? ""))) names.add(w);
-    }
-    const predicates = facts ? predicateWords((await this.engine.catalog.get()).edges, await this.engine.schemaSource.edgeAliases()) : undefined;
-    // A word naming an edge type (job → WORKS_AT, by an alias) finds that
-    // type's facts about the nodes found, or the user's for I/me, though
-    // their sentences never say it.
-    const cued = predicates ? [...cuedPredicates(tq, predicates)] : [];
-    const about = [...n.map((h) => refIdOf(h.node)), ...(owner ? [owner] : [])];
-    if (cued.length && about.length && reads.factsOfTypes) {
-      const seen = new Set(f.map((h) => refIdOf(h.node)));
-      for (const h of await reads.factsOfTypes(cued, about)) {
-        if (seen.has(refIdOf(h.node))) continue;
-        seen.add(refIdOf(h.node));
-        f.push(h);
-        for (const w of namedInText(String(props(h)["search_text"] ?? ""))) names.add(w);
+        const ids = [...new Set([w, ...fixes.map((c) => c.word)].flatMap((x) => [...(vocabulary.get(x) ?? [])]))];
+        if (ids.length) {
+          const named = await reads.nodesById(ids);
+          const namedFacts = reads.factsOf ? await reads.factsOf(ids) : [];
+          found.push(...add(named, false, 1, top.score || 1), ...add(namedFacts, true, 0.5, top.score || 1));
+        }
+      }
+      const once = new Map<string, (typeof found)[number]>();
+      for (const x of found) if (!once.has(refIdOf(x.h.node)) || once.get(refIdOf(x.h.node))!.s < x.s) once.set(refIdOf(x.h.node), x);
+      for (const x of once.values()) {
+        const id = refIdOf(x.h.node);
+        const held = scores.get(id);
+        scores.set(id, { hit: held?.hit ?? x.h, fact: x.fact, score: (held?.score ?? 0) + x.s });
+        top.score = Math.max(top.score, scores.get(id)!.score);
       }
     }
-    // One pool, so a word is as rare for a fact as for a node and the two
-    // lists' scores compare; rarity is out of every row of the file, as if
-    // it had all been scanned (the candidates are every row with a query word).
-    const [count] = await this.engine.query("MATCH (n:Node) RETURN count(*) AS c");
-    const total = Number(count?.["c"] ?? 0);
-    const scores = rankScores(tq, [...n.map(nodeDoc), ...f.map(factDoc)], { names, extra, total, ...(predicates ? { predicates } : {}) });
-    const rank = (hits: Hit[], from: number): Hit[] => {
-      // Ties go to the newer: the most recent of two equal answers is more likely current.
-      const at = (h: Hit) => Number(props(h)["created_at"] ?? 0);
-      return hits
-        .map((h, i) => ({ h, s: scores[from + i]! }))
-        .filter((x) => x.s > 0)
-        .sort((a, b) => b.s - a.s || at(b.h) - at(a.h) || cmp(refIdOf(a.h.node), refIdOf(b.h.node)))
-        .map(({ h, s }) => ({ ...h, raw_score: s }));
-    };
-    const ranked = { nodes: rank(n, 0), facts: rank(f, n.length) };
-    if (predicates && reads.factsSharing && tq.words.includes("with")) await this.withHop(tq, ranked, predicates, owner, reads.factsSharing);
-    return ranked;
-  }
-
-  /**
-   * "Who works with Kate": the query says "with" and names a predicate
-   * (work → works_at). The facts of that predicate whose subject is a node
-   * the query found (or the user, for "with me") give their objects; the
-   * other facts of the predicate to the same object are the answer, and
-   * rank above every other fact.
-   */
-  private async withHop(
-    tq: TextQuery,
-    ranked: { nodes: Hit[]; facts: Hit[] },
-    predicates: ReadonlyMap<string, ReadonlySet<string>>,
-    owner: string | undefined,
-    sharing: NonNullable<KeywordReads["factsSharing"]>,
-  ): Promise<void> {
-    const cued = cuedPredicates(tq, predicates);
-    const named = new Set(ranked.nodes.map((h) => refIdOf(h.node)));
-    if (tq.self && owner) named.add(owner);
-    const p = (h: Hit) => h.node.properties;
-    const anchors = ranked.facts.filter((h) => cued.has(String(p(h)["edge_type"])) && named.has(String(p(h)["source_ref_id"])));
-    if (!anchors.length) return;
-    const pairs = [...new Map(anchors.map((h) => [`${p(h)["edge_type"]}\u0000${p(h)["target_ref_id"]}`, { t: String(p(h)["edge_type"]), o: String(p(h)["target_ref_id"]) }])).values()];
-    const top = ranked.facts.reduce((m, h) => Math.max(m, h.raw_score), 0) + 0.1;
-    const hop = (await sharing(pairs)).filter((h) => !named.has(String(p(h)["source_ref_id"])));
-    if (!hop.length) return;
-    const ids = new Set(hop.map((h) => refIdOf(h.node)));
-    ranked.facts = [...hop.map((h) => ({ ...h, raw_score: top })), ...ranked.facts.filter((h) => !ids.has(refIdOf(h.node)))];
-  }
-
-  /** The user: the live Person marked `is_owner` the reader may see. */
-  private async ownerId(sc: ScopeSql): Promise<string | undefined> {
-    if (!("is_owner" in (await this.engine.catalog.get()).columns)) return undefined;
-    const [r] = await this.engine.query(`MATCH (n:Node) WHERE n.is_owner = true AND ${LIVE("n")}${sc.node("n")} RETURN n.ref_id AS id LIMIT 1`, sc.params);
-    return r ? String(r["id"]) : undefined;
+    // A word naming an edge type (job → WORKS_AT, by an alias) finds that
+    // type's facts about the nodes found, though their sentences never say it.
+    const predicates = facts ? predicateWords((await this.engine.catalog.get()).edges, await this.engine.schemaSource.edgeAliases()) : undefined;
+    const cued = predicates ? [...cuedPredicates(tq, predicates)] : [];
+    const about = [...scores.values()].filter((x) => !x.fact).map((x) => refIdOf(x.hit.node));
+    if (cued.length && about.length && reads.factsOfTypes) {
+      for (const h of await reads.factsOfTypes(cued, about)) {
+        const id = refIdOf(h.node);
+        const held = scores.get(id);
+        scores.set(id, { hit: held?.hit ?? h, fact: true, score: (held?.score ?? 0) + (top.score || 1) * 0.8 });
+      }
+    }
+    const props = (h: Hit) => h.node.properties;
+    // Ties go to the newer: the most recent of two equal answers is more likely current.
+    const at = (h: Hit) => Number(props(h)["created_at"] ?? 0);
+    const ranked = [...scores.values()].sort((a, b) => b.score - a.score || at(b.hit) - at(a.hit) || cmp(refIdOf(a.hit.node), refIdOf(b.hit.node)));
+    const out = (fact: boolean) => ranked.filter((x) => x.fact === fact).map((x) => ({ ...x.hit, raw_score: x.score }));
+    return { nodes: out(false), facts: out(true) };
   }
 
   /** The words of the entity and concept nodes' titles and other names, each
@@ -810,13 +745,7 @@ export class LadybugReader implements GraphReader {
          RETURN ${row} AS row, 0.0 AS score LIMIT ${cap}`,
         { ...base, ids, ...(types ? { types } : {}) },
       )).map(asHit);
-    const sharing = async (pairs: Array<{ t: string; o: string }>) =>
-      (await this.engine.query(
-        `UNWIND $pairs AS p MATCH (node:Node) WHERE node.edge_type = p.t AND node.target_ref_id = p.o AND ${filter}
-         RETURN ${row} AS row, 0.0 AS score LIMIT ${cap}`,
-        { ...base, pairs },
-      )).map(asHit);
-    return { filter, base, cap, row, asHit, fts, of, sharing };
+    return { filter, base, cap, row, asHit, fts, of };
   }
 
   /**
