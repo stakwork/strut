@@ -259,7 +259,7 @@ tool (`step_run`) the host relays to the strut server:
 | `useToolInput()` | what the model or a deep link opened the app with; a link's values are strings |
 | `useAppLink()` → `link(input?)`, `appLink(name, input?)` | a deep link to this app (or another) opened with `input`: `openLink(link({ view: "/runs", run: id }))` shows it, and the host's address bar follows, so the person can share it |
 | `useApp()` | which app the page is: `{ name, version }`, or a job's app `{ job, path }` |
-| `useHost()` → `{ theme, sendMessage(text), openLink(url) }` | the host: `sendMessage` reaches the builder chat ("change this app"), `openLink` opens a link to the strut server's UI in place |
+| `useHost()` → `{ theme, public, sendMessage(text), openLink(url) }` | the host: `sendMessage` reaches the builder chat ("change this app"), `openLink` opens a link to the strut server's UI in place; `public` is true when a visitor opened the page in the server's public view (see "The public view") |
 | `useAssistant({ thread? })` → `{ messages, send(text, files?), pending, jobs }` | a chat with the person's ASSISTANT (`orchestrator`), as the viewer — see "The assistant" |
 
 **Deep links.** The page is opened with whatever its link carries
@@ -288,6 +288,22 @@ a click and never on a render:
   `session: "{{ input.session }}"`, one run per turn — or, when the chat
   should do what the person's assistant does (start jobs, follow them),
   the assistant itself (below).
+
+## The public view
+
+A person may put an app in the server's PUBLIC VIEW (the Public view
+dialog): anyone can then open it with no account, read-only, and the store
+can frame it. There `useHost().public` is true, and the server refuses
+whatever the page tries beyond reading: starting or cancelling a run,
+saving state (`useAppState` lasts the visit), uploads, writes. So when
+`public` is true, hide the controls that would only fail — a launch form or
+Run button, a cancel, an upload box, an edit — and say in their place that
+runs are started by the people who keep this server. strut/views'
+`LaunchForm` already does. Everything else works as it does for anyone:
+the runs, the graph and the reads the person allowed. Do it in every app,
+in the view or not yet: a person adds an app later, and it should already
+be right. An app in the public view is held at a release, so a publish is
+a draft until a person moves it: say so when you hand one over.
 
 ## The assistant
 
