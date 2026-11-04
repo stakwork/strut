@@ -1369,7 +1369,10 @@ person's authority over the tools its grants name.
   ```
 
   The page can send data nowhere but through its bridge: no `fetch`, and no
-  image beacon to an arbitrary `https:` host. Hive's frame policy allows
+  image beacon to an arbitrary `https:` host. WebRTC is the exception: no
+  browser applies `connect-src` to it or honors `webrtc 'block'` (tested
+  2026-11-04, app-channels.md item 0), so a hostile page can still reach a
+  STUN or TURN host it names. Hive's frame policy allows
   `img-src https:`, and the document's own policy closes that. A manifest
   may not declare `connectDomains` in v1: an app talks to the world through
   a workflow, whose calls are logged.
