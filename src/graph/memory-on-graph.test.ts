@@ -103,14 +103,23 @@ describe("the generic tools cover remember and forget (ladybug)", { skip: lb.ski
   it("`said_by` is kept among the sources, once, and must be a node", async () => {
     const first = await run(assertStep, { source_ref_id: tom, edge_type: "LIVES_IN", target_ref_id: leeds, text: "Tom lives in Leeds", said_by: kate, source: "msg-1" }, ctx);
     assert.equal(first.action, "created");
-    assert.deepEqual((await edgesOf(b, "LIVES_IN", tom))[0]!.sources, ["msg-1", kate]);
+    assert.deepEqual((await edgesOf(b, "LIVES_IN", tom))[0]!.sources, ["msg-1", kate, "run:r-1"]);
     const again = await run(assertStep, { source_ref_id: tom, edge_type: "LIVES_IN", target_ref_id: leeds, text: "Tom lives in Leeds", said_by: kate, source: "msg-1" }, ctx);
     assert.equal(again.action, "unchanged");
     const third = await run(assertStep, { source_ref_id: tom, edge_type: "LIVES_IN", target_ref_id: leeds, text: "Tom lives in Leeds", said_by: kate, source: "msg-2" }, ctx);
     assert.equal(third.action, "reconfirmed");
-    assert.deepEqual((await edgesOf(b, "LIVES_IN", tom))[0]!.sources, ["msg-1", kate, "msg-2"]);
+    assert.deepEqual((await edgesOf(b, "LIVES_IN", tom))[0]!.sources, ["msg-1", kate, "run:r-1", "msg-2"]);
     const bad = await run(assertStep, { source_ref_id: tom, edge_type: "LIVES_IN", target_ref_id: leeds, text: "Tom lives in Leeds", said_by: "nobody" }, ctx);
     assert.match(String(bad), /MISSING_REQUIRED: .*said_by nobody does not resolve to a node/);
+  });
+
+  it("the run is a fact's source with no source passed: the same run again changes nothing, another run re-confirms it", async () => {
+    const said = (runId: string) => run(assertStep, { source_ref_id: tom, edge_type: "LIVES_IN", target_ref_id: leeds, text: "Tom lives in Leeds" }, ctxOf({ graph: b }, { actor: "agent", runId }));
+    assert.equal((await said("turn-1")).action, "created");
+    assert.deepEqual((await edgesOf(b, "LIVES_IN", tom))[0]!.sources, ["run:turn-1"], "where it was said, though the model passed nothing");
+    assert.equal((await said("turn-1")).action, "unchanged");
+    assert.equal((await said("turn-2")).action, "reconfirmed", "told again in another turn");
+    assert.deepEqual((await edgesOf(b, "LIVES_IN", tom))[0]!.sources, ["run:turn-1", "run:turn-2"]);
   });
 
   it("`facts` saves new nodes and several facts all or nothing", async () => {

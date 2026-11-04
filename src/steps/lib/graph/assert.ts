@@ -26,7 +26,7 @@ const Fact = z.object({
   valid_at: z.string().optional().describe("When it became true, only if the words say."),
   invalid_at: z.string().optional().describe("When it stopped being true, only if the words say."),
   ended: z.boolean().optional().describe("It is over (\"used to …\"), even with no date: kept as past, no end date invented."),
-  source: z.string().optional().describe("Where it was learned: a message, chat or run id, or a node's ref_id."),
+  source: z.string().optional().describe("Only for more than this run says: the ref_id of a message or node it was read from. The run it is asserted in is kept as a source on its own."),
   said_by: z.string().optional().describe("The ref_id of whoever said it, when not the user: e.g. the Person whose message this was."),
   create_schema_if_missing: z.boolean().optional().describe("Create the edge type as temporal between the two ends' types when the ontology has no such edge. An existing plain edge type is never made temporal."),
   cardinality: z.enum(["one", "many"]).optional().describe("With create_schema_if_missing, for a new edge type: `one` when a subject holds one current value (where someone lives), `many` (default) when several hold at once."),
@@ -133,6 +133,8 @@ export default defineStep({
             ...(f.ended ? { ended: true } : {}),
             ...(f.source ? { source: f.source } : {}),
             ...(f.said_by ? { said_by: f.said_by } : {}),
+            // Where it was said is the run's to know, never the model's to pass.
+            ...(ctx?.runId ? { run: ctx.runId } : {}),
             ...(ns ? { namespace } : {}),
             ...by,
           }, tx ? { tx } : { ...(b.embedder ? { embedder: b.embedder } : {}) });

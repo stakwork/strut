@@ -44,6 +44,9 @@ import { GraphValidationError, type Embedder } from "./node-writer.js";
 import type { SchemaResolver } from "./schema-resolver.js";
 import { foldText, worldTime } from "./world-time.js";
 
+/** A run as one of a fact's sources: `run:<runId>`, which StrutRun's `run_id` finds. */
+export const runSource = (runId: string): string => `run:${runId}`;
+
 export { foldText, worldTime };
 
 export interface AssertInput {
@@ -62,6 +65,11 @@ export interface AssertInput {
    *  Person who told the user). Kept among the edge's `sources`, like
    *  `source`; it must resolve to a node. */
   said_by?: string;
+  /** The run that asserted it, kept among the edge's sources as
+   *  `run:<id>` (`runSource`): stamped by the caller from its own context,
+   *  never the model's to choose, so every fact leads back to the run, and
+   *  from it to the chat and message it came from. */
+  run?: string;
   /** It is no longer true ("used to …"), even with no `invalid_at`: kept
    *  as past, ending the same fact held now, with no end date invented. */
   ended?: boolean;
@@ -169,7 +177,7 @@ export async function assertEdge(e: EngineLike, resolver: SchemaResolver, input:
     if (!match.rule.temporal) throw new GraphValidationError("WRONG_TYPE", edge, `${edge} is not a temporal edge type: write it with graph/create-triplet`);
     const one = match.rule.cardinality === "one";
     // Where it was learned and who said it: each kept once among the edge's sources.
-    const given = [...new Set([input.source?.trim(), saidBy].filter((x): x is string => !!x))];
+    const given = [...new Set([input.source?.trim(), saidBy, input.run ? runSource(input.run) : undefined].filter((x): x is string => !!x))];
 
     // The same edge held now, or for a past fact, held before.
     const current = await slotEdges(tx, edge, input.source_ref_id);
