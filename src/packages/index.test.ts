@@ -79,6 +79,7 @@ describe("the package index", () => {
   let publisherWs: WorkspaceManager;
   let indexUrl: string;
   let catalogUrl: string;
+  let publisherUrl: string;
 
   const publish = async (pkg: string, version: string, workflows: string[], body: Record<string, unknown> = {}) => {
     const res = await publisher.app.request("/packages/publish", json({ package: pkg, version, workflows, ...body }));
@@ -110,7 +111,7 @@ describe("the package index", () => {
     indexUrl = `http://127.0.0.1:${await index.listen(0, "127.0.0.1")}`;
     // The publisher knows the index as a peer, so its publish pings it.
     publisher = await boot(publisherWs, { peers: [{ id: "index", baseUrl: indexUrl, token: PEER_KEY }] });
-    const publisherUrl = `http://127.0.0.1:${await publisher.listen(0, "127.0.0.1")}`;
+    publisherUrl = `http://127.0.0.1:${await publisher.listen(0, "127.0.0.1")}`;
     catalogUrl = `${publisherUrl}/packages/catalog?public=1`;
     await publisherWs.publishStep("acme/linear/fetch", STEP("acme/linear/fetch", "issues"));
     await publisherWs.publishWorkflow("acme/linear/sync", "v1", FLOW("acme/linear/sync", "acme/linear/fetch"));
@@ -121,6 +122,44 @@ describe("the package index", () => {
     await publisher.close();
     await index.close();
     await rm(root, { recursive: true, force: true });
+  });
+
+  it("lists a publisher server's PUBLIC VIEW live: a row with no key, read from the server, beside the package rows", async () => {
+    await publisher.rebuildRegistry();
+    const put = await publisher.app.request("/public-view", json({ workflows: [{ name: "acme/linear/sync", runs: true }], steps: ["acme/linear/fetch"] }, "PUT"));
+    assert.equal(put.status, 200, await put.clone().text());
+    // A person's act on the index: no key, no catalog — where the view is served.
+    assert.equal((await index.app.request("/index/live/acme", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ url: publisherUrl }) })).status, 401);
+    assert.equal((await index.app.request("/index/live/acme", json({ url: `${publisherUrl}/?x=1` }, "PUT"))).status, 400);
+    const res = await index.app.request("/index/live/acme", json({ url: `${publisherUrl}/`, description: "Acme's server" }, "PUT"));
+    assert.equal(res.status, 200, await res.clone().text());
+    const got = (await res.json()) as IndexInfo;
+    assert.deepEqual(got.live, { acme: { url: publisherUrl, description: "Acme's server" } });
+    assert.equal(got.liveCrawled[0]!.error, undefined, JSON.stringify(got.liveCrawled));
+    assert.equal(got.liveCrawled[0]!.workflows, 1);
+    assert.deepEqual(got.publishers, {}, "a live row is no package row");
+
+    // The card carries it under the seal, and a reader that knows only `publishers` reads it as before.
+    const { card } = readCard(Buffer.from(await (await fetch(`${indexUrl}/index/catalog`)).arrayBuffer()), { key: got.key, kind: "index" });
+    assert.equal(card.live?.["acme"]?.url, publisherUrl);
+
+    // Anyone lists the items; the store reads each from the publisher's /public.
+    const items = ((await (await fetch(`${indexUrl}/index/live`)).json()) as { items: Array<{ kind: string; name: string; publisher: string; url: string; runs?: boolean }> }).items;
+    assert.deepEqual(items.map((i) => [i.kind, i.name, i.publisher, i.url, i.runs ?? null]), [
+      ["workflow", "acme/linear/sync", "acme", publisherUrl, true],
+      ["step", "acme/linear/fetch", "acme", publisherUrl, null],
+    ]);
+    assert.deepEqual(((await (await fetch(`${indexUrl}/index/live?q=notion`)).json()) as { items: unknown[] }).items, []);
+    const flow = await fetch(`${items[0]!.url}/public/workflows/${encodeURIComponent(items[0]!.name)}/flow`);
+    assert.equal(flow.status, 200, "the item reads from its publisher, with no credential");
+    assert.equal(flow.headers.get("access-control-allow-origin"), "*");
+
+    // Taken out of the publisher's view, gone at the next read.
+    await publisher.app.request("/public-view", json({}, "PUT"));
+    await index.app.request("/index/crawl", { method: "POST", headers: auth });
+    assert.deepEqual(((await (await fetch(`${indexUrl}/index/live`)).json()) as { items: unknown[] }).items, []);
+    assert.equal((await index.app.request("/index/live/acme", { method: "DELETE", headers: auth })).status, 200);
+    assert.deepEqual((await info()).live, {});
   });
 
   it("is off unless asked for", async () => {
@@ -307,6 +346,7 @@ describe("the package index", () => {
       const kept = await ui.app.request("/?wf=job");
       assert.equal(kept.headers.get("location"), "./?wf=job&store=1", "what else the URL carried rides along");
       assert.equal((await ui.app.request("/?store=1")).status, 200, "the store page itself");
+      assert.equal((await ui.app.request("/?app=bench&solo=1&public=1")).status, 200, "a visitor's public app is served as asked: the store frames it");
       assert.equal((await ui.app.request("/", { headers: auth })).status, 200, "the operator's shell, with the key");
       assert.equal((await ui.app.request("/?key=" + KEY)).status, 200);
       assert.equal((await plain.app.request("/")).status, 200, "a strut without the role serves its shell as before");
@@ -335,6 +375,45 @@ describe("the package index", () => {
   });
 });
 
+
+describe("a live row's Concept trees, and a read that fails", () => {
+  let root: string;
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), "strut-index-live-"));
+  });
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("folds a live view's tree into the index's, keeping the view it read when the next read fails", async () => {
+    let up = true;
+    const served: Record<string, unknown> = {
+      "https://pub.example/lab/public": { workflows: [], steps: [], types: [], apps: [{ name: "bench", version: "v2", title: "Bench" }], concepts: [{ name: "Law", pages: 2 }] },
+      "https://pub.example/lab/public/concepts": { concepts: [{ ref_id: "1", name: "Law", description: "The root", root: "Law" }, { ref_id: "2", name: "Civil procedure", parent: "Law", root: "Law" }] },
+    };
+    const fakeFetch = (async (input: string | URL | Request) => {
+      const body = up ? served[String(input)] : undefined;
+      return body === undefined ? new Response("down", { status: 503 }) : new Response(JSON.stringify(body), { status: 200 });
+    }) as typeof fetch;
+    const index = createPackageIndex({ secrets: new MemorySecretStore(), dir: join(root, "index"), cache: new PackageCache(join(root, "cache")), fetch: fakeFetch });
+    const info = await index.setLive("openlaw", { url: "https://pub.example/lab" });
+    assert.deepEqual(info.liveCrawled.map((s) => [s.prefix, s.apps, s.concepts, s.error ?? null]), [["openlaw", 1, 2, null]]);
+    const tree = await index.concepts();
+    assert.deepEqual(tree.map((c) => [c.name, c.parent ?? null, c.packages.length, c.live?.map((l) => l.publisher)]), [["Civil procedure", "Law", 0, ["openlaw"]], ["Law", null, 0, ["openlaw"]]]);
+    const page = (await index.concept("Civil procedure"))!;
+    assert.deepEqual(page.parents.map((p) => p.name), ["Law"]);
+    assert.equal(page.docs, undefined, "a live page's docs are read from its publisher");
+    assert.deepEqual((await index.live("bench")).map((i) => [i.kind, i.name, i.title, i.version]), [["app", "bench", "Bench", "v2"]]);
+
+    up = false;
+    const [again] = await Promise.all([index.crawl(), Promise.resolve()]);
+    assert.deepEqual(again, [], "no package rows to report");
+    const kept = (await index.info())!.liveCrawled[0]!;
+    assert.match(kept.error!, /503/);
+    assert.equal(kept.apps, 1, "the view read before is kept");
+    assert.equal((await index.live()).length, 2);
+  });
+});
 
 describe("the concept tree across the crawled packages", () => {
   let root: string;

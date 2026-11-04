@@ -11,7 +11,13 @@
 export type StoreView =
   | { view: "browse"; q?: string }
   | { view: "package"; pkg: string }
-  | { view: "concept"; concept: string };
+  | { view: "concept"; concept: string }
+  /** A LIVE item (plans/public-surface.md §8): read from its publisher's
+   *  server — `live=<publisher>&app=|workflow=|step=<name>`. */
+  | { view: "live"; publisher: string; kind: LiveKind; name: string };
+
+export type LiveKind = "app" | "workflow" | "step";
+const LIVE_KINDS: LiveKind[] = ["app", "workflow", "step"];
 
 export const PACKAGE_NAME_RE = /^[a-z][a-z0-9-]*\/[a-z][a-z0-9-]*$/;
 
@@ -21,6 +27,13 @@ export function parseStoreView(search: string): StoreView {
   const p = new URLSearchParams(search);
   const pkg = p.get("pkg");
   if (pkg && PACKAGE_NAME_RE.test(pkg)) return { view: "package", pkg };
+  const publisher = p.get("live");
+  if (publisher && /^[a-z][a-z0-9-]{0,63}$/.test(publisher)) {
+    for (const kind of LIVE_KINDS) {
+      const name = p.get(kind);
+      if (name) return { view: "live", publisher, kind, name };
+    }
+  }
   // `concept=` with no name is the tree's index page.
   const concept = p.get("concept");
   if (concept !== null) return { view: "concept", concept: concept.trim() };
@@ -33,7 +46,10 @@ export function storeQuery(v: StoreView): string {
   const p = new URLSearchParams();
   p.set("store", "1");
   if (v.view === "package") p.set("pkg", v.pkg);
-  else if (v.view === "concept") p.set("concept", v.concept);
+  else if (v.view === "live") {
+    p.set("live", v.publisher);
+    p.set(v.kind, v.name);
+  } else if (v.view === "concept") p.set("concept", v.concept);
   else if (v.q) p.set("q", v.q);
   return `?${p.toString()}`;
 }
@@ -157,3 +173,19 @@ export function canWords(can: { spends: boolean; acts: boolean; code: boolean })
 
 /** A key, short: the first 8 and the last 6 characters. */
 export const shortKey = (key: string) => (key.length > 20 ? `${key.slice(0, 8)}…${key.slice(-6)}` : key);
+
+/** A public app's page on its publisher's server: the page alone, as a
+ *  visitor opens it (strut's `?app=&solo=1&public=1`). */
+export function liveAppUrl(base: string, name: string): string {
+  const p = new URLSearchParams();
+  p.set("app", name);
+  p.set("solo", "1");
+  p.set("public", "1");
+  return `${base.replace(/\/+$/, "")}/?${p.toString()}`;
+}
+
+/** The base URL of a publisher's live row, from the card, or undefined. */
+export function liveBase(card: { live?: Record<string, { url: string }> } | null | undefined, publisher: string): string | undefined {
+  const row = card?.live && Object.hasOwn(card.live, publisher) ? card.live[publisher] : undefined;
+  return row?.url.replace(/\/+$/, "");
+}

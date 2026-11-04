@@ -4829,3 +4829,8 @@ input.package-search { width: 100%; margin-bottom: var(--sp-2); }
 .public-need.is-sub { padding-left: var(--sp-4); }
 .public-need-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .public-need-text .package-name { overflow-wrap: anywhere; }
+
+/* ── The store's live items (Store.tsx LivePage) ─────────────────────────── */
+.store-live-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--sp-3); margin-bottom: var(--sp-3); }
+.store-live-frame { display: block; width: 100%; height: 78vh; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface); }
+.store-source { max-height: 480px; overflow: auto; font-family: var(--font-mono); font-size: 12px; padding: var(--sp-3); background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-md); white-space: pre; }
