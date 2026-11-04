@@ -15,6 +15,10 @@
 import { AppBridge, PostMessageTransport } from "@modelcontextprotocol/ext-apps/app-bridge";
 import type { McpUiHostContext, McpUiTheme } from "@modelcontextprotocol/ext-apps/app-bridge";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import {
+  WALLET_CAPABILITY, nativeWalletNotifications, nativeWalletOf, probeNativeWallet, relayNativeWallet,
+  type NativeWalletApp, type RelayBridge,
+} from "@strut/kit/wallet";
 import { API_BASE, apiHeaders } from "./api";
 import { strutLink } from "./app-links";
 
@@ -46,6 +50,12 @@ export interface AppHostOptions {
   /** A VISITOR's page (the public view, plans/public-surface.md §5): the
    *  relay calls `/public/mcp` with no credential at all. */
   visitor?: boolean;
+  /** The app as a native host's wallet names it — its identity, title and
+   *  `wallet:` request (specs/WALLET.md §1.1) — for an app that requests a
+   *  wallet. When this page is a native host's main frame (Peel's web view),
+   *  the host's wallet is offered to the page and its `strut/wallet/*` calls
+   *  are relayed there; anywhere else it is unused. */
+  wallet?: NativeWalletApp;
 }
 
 export interface AppHostConnection {
@@ -93,12 +103,26 @@ export function hostContextFor(theme: McpUiTheme): McpUiHostContext {
 export async function connectAppHost(opts: AppHostOptions): Promise<AppHostConnection> {
   const { client, transport } = createRelayClient(opts.base, opts.visitor);
   await client.connect(transport);
+  // A native host's wallet (Peel's Sphinx account), asked what it offers
+  // this app before the bridge exists: the offer rides in ui/initialize.
+  const native = opts.wallet ? nativeWalletOf(window) : undefined;
+  const capability = native && opts.wallet ? await probeNativeWallet(native, opts.wallet) : undefined;
   const bridge = new AppBridge(
     client,
     { name: "strut-ui", version: "0" },
-    { serverTools: {}, openLinks: {}, ...(opts.handlers.onMessage ? { message: { text: {} } } : {}) },
+    {
+      serverTools: {},
+      openLinks: {},
+      ...(opts.handlers.onMessage ? { message: { text: {} } } : {}),
+      ...(capability ? { experimental: { [WALLET_CAPABILITY]: capability } } : {}),
+    },
     { hostContext: hostContextFor(opts.theme) },
   );
+  let stopWallet = () => {};
+  if (native && capability && opts.wallet) {
+    const relay = relayNativeWallet({ bridge: bridge as unknown as RelayBridge, native, app: opts.wallet, capability });
+    stopWallet = nativeWalletNotifications(window).register(opts.wallet, relay.notify);
+  }
   bridge.onmessage = async (params) => {
     const text = (params.content ?? [])
       .map((c) => (c.type === "text" ? c.text : ""))
@@ -132,6 +156,7 @@ export async function connectAppHost(opts: AppHostOptions): Promise<AppHostConne
       if (initialized) void bridge.sendToolInput({ arguments: args ?? {} });
     },
     async close() {
+      stopWallet();
       await bridge.close().catch(() => undefined);
       await client.close().catch(() => undefined);
     },

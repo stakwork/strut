@@ -6,7 +6,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildApp, cspFor, lintAppSource, readBuildInfo, TOKEN_PLACEHOLDER, withToken, withoutTokenMeta, zodNamespaceImports, type BuildDeps } from "./build.js";
-import { parseManifest } from "./manifest.js";
+import { parseManifest, WALLET_NOTIFICATION_TYPES, WALLET_RENEWAL_PERIODS, WALLET_REQUESTABLE_METHODS } from "./manifest.js";
+import { NOTIFICATION_TYPES, RENEWAL_PERIODS, REQUESTABLE_METHODS } from "@strut/kit/wallet";
 import { loadKit, type KitLocation } from "./kit.js";
 import { treeFiles, treeHash } from "../version.js";
 import { kitForTests } from "../test-util/app-kit.js";
@@ -229,6 +230,22 @@ describe("the app build", () => {
     assert.match(errorsOf(r).join("\n"), /badkit@v1:src\/index\.ts:1: calls eval/);
   });
 
+  it("build.json carries the title and the wallet request, for the host that shows the connect sheet", async () => {
+    const files = minimal();
+    const dir = await writeApp(fresh(), {
+      ...files,
+      "app.yaml": "title: Tip jar\nwallet:\n  request_methods: [pay_keysend]\n  max_amount: 5000000\n  renewal_period: weekly\n",
+    });
+    const r = await build(dir);
+    assert.ok(r.ok, errorsOf(r).join("\n"));
+    const info = (await readBuildInfo(dir))!;
+    assert.equal(info.title, "Tip jar");
+    assert.deepEqual(info.wallet, { request_methods: ["pay_keysend"], max_amount: 5000000, renewal_period: "weekly" });
+    const none = await writeApp(fresh(), minimal());
+    assert.ok((await build(none)).ok);
+    assert.equal((await readBuildInfo(none))!.wallet, undefined, "an app that asks for no wallet says nothing of one");
+  });
+
   it("a grant naming a workflow that does not exist fails the build naming it; the manifest is shape-checked", async () => {
     const r = await build(await writeApp(fresh(), { ...minimal(), "app.yaml": "title: G\ngrants:\n  workflows: [exists, missing-one]\n  automations: [gone]\n" }), {
       workflowExists: async (wf) => wf === "exists",
@@ -290,6 +307,36 @@ csp:
     assert.match(parseManifest("").ok ? "" : (parseManifest("") as { errors: string[] }).errors[0]!, /empty/);
     assert.match((parseManifest("- a\n") as { errors: string[] }).errors[0]!, /must be a mapping/);
     assert.match((parseManifest("title: [\n") as { errors: string[] }).errors[0]!, /not valid YAML/);
+  });
+
+  it("keeps a wallet connection request, and refuses one the wallet contract would", () => {
+    const ok = parseManifest(`title: Tip jar
+wallet:
+  request_methods: [pay_keysend, get_budget]
+  optional_request_methods: [pay_lightning_address]
+  notification_types: [payment_sent, payment_failed]
+  max_amount: 5000000
+  renewal_period: weekly
+`);
+    assert.ok(ok.ok);
+    assert.deepEqual(ok.manifest.wallet, {
+      request_methods: ["pay_keysend", "get_budget"],
+      optional_request_methods: ["pay_lightning_address"],
+      notification_types: ["payment_sent", "payment_failed"],
+      max_amount: 5000000,
+      renewal_period: "weekly",
+    });
+    const errors = (yaml: string) => (parseManifest(`title: X\n${yaml}`) as { errors?: string[] }).errors?.join("\n") ?? "";
+    assert.match(errors("wallet:\n  request_methods: [connect]\n"), /wallet\.request_methods\[0\]/);
+    assert.match(errors("wallet:\n  request_methods: []\n"), /request_methods needs at least one method/);
+    assert.match(errors("wallet:\n  request_methods: [pay_keysend]\n  renewal_period: daily\n"), /renewal_period needs max_amount/);
+    assert.match(errors("wallet:\n  request_methods: [pay_keysend]\n  budget_renewal: weekly\n"), /wallet/);
+  });
+
+  it("names the wallet contract's own lists", () => {
+    assert.deepEqual([...WALLET_REQUESTABLE_METHODS].sort(), [...REQUESTABLE_METHODS].sort());
+    assert.deepEqual([...WALLET_NOTIFICATION_TYPES], [...NOTIFICATION_TYPES]);
+    assert.deepEqual([...WALLET_RENEWAL_PERIODS], [...RENEWAL_PERIODS]);
   });
 });
 

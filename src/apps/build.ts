@@ -82,6 +82,12 @@ export interface BuildInfo {
   /** The document's size. */
   bytes: number;
   warnings: string[];
+  /** The manifest's title, for a host that shows the app by name. */
+  title?: string;
+  /** The wallet connection the version REQUESTS (`app.yaml`'s `wallet:`,
+   *  specs/WALLET.md §5.1), for the host that shows the connect sheet: read
+   *  with the version's file token, here and through a peer's read-through. */
+  wallet?: AppManifest["wallet"];
 }
 
 export type BuildResult =
@@ -616,6 +622,8 @@ export async function buildApp(dir: string, deps: BuildDeps = {}): Promise<Build
     imports,
     bytes,
     warnings,
+    title: manifest.title,
+    ...(manifest.wallet ? { wallet: manifest.wallet } : {}),
   };
   await mkdir(join(root, "dist"), { recursive: true });
   await writeFile(join(root, DOCUMENT_FILE), html, "utf8");

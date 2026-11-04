@@ -1,3 +1,4 @@
+import type { ConnectionRequest } from "@strut/kit/wallet";
 import { fileScopeOf, isPeerPath, type AccessedNode, type RunApp, type TokenUsage } from "@strut/kit/folds";
 
 // Mount-path-agnostic API base. Derived at runtime from the app's own
@@ -2040,6 +2041,21 @@ export function appFilesScope(name: string, version: string, peer?: string): str
 /** The version's document, inside its scope. */
 export function appDocumentPath(name: string, version: string, peer?: string): string {
   return `${appFilesScope(name, version, peer)}/dist/index.html`;
+}
+
+/** What a version's `dist/build.json` tells a host (src/apps/build.ts
+ *  `BuildInfo`): its title and the wallet connection it requests
+ *  (specs/WALLET.md §5.1). Read with the scope's token, here and through a
+ *  peer's read-through; null when the version has none or it cannot be read. */
+export async function fetchAppBuildInfo(
+  name: string, version: string, token: string, peer?: string,
+): Promise<{ title?: string; wallet?: ConnectionRequest } | null> {
+  try {
+    const res = await apiFetch(`${appFilesScope(name, version, peer)}/dist/build.json${token ? `?t=${encodeURIComponent(token)}` : ""}`, { cache: "no-cache" });
+    return res.ok ? ((await res.json()) as { title?: string; wallet?: ConnectionRequest }) : null;
+  } catch {
+    return null;
+  }
 }
 
 /** The document's bytes, read with the scope's token (`?t=`) — the server

@@ -1,0 +1,1349 @@
+{
+  "version": 1,
+  "about": "The wallet contract's conformance vectors (specs/WALLET.md §7). Every implementation passes them: the kit (kit/src/wallet/protocol.test.ts), each host's WalletHost, Peel's Swift. Amounts are msat. `params`: what checkParams answers. `results` / `notifications` / `connection_requests`: shapes, valid or not. `preimages`: sha256(preimage) == payment_hash. `scenarios`: a host's behaviour, step by step, against a scripted wallet.",
+  "params": [
+    {
+      "name": "pay_invoice: an invoice, lower-cased, with metadata kept",
+      "method": "pay_invoice",
+      "params": {
+        "invoice": "LNBC210N1PQPZRY9X8GF2TVDW0S3JN54KHCE6MUA7LQPZRY9X8GF2TVDW0S3JN54KHCE6MUA7L",
+        "metadata": {
+          "comment": "Q3 report"
+        }
+      },
+      "expect": {
+        "params": {
+          "invoice": "lnbc210n1pqpzry9x8gf2tvdw0s3jn54khce6mua7lqpzry9x8gf2tvdw0s3jn54khce6mua7l",
+          "metadata": {
+            "comment": "Q3 report"
+          }
+        }
+      }
+    },
+    {
+      "name": "pay_invoice: a lightning: link is the invoice",
+      "method": "pay_invoice",
+      "params": {
+        "invoice": "lightning:lnbc210n1pqpzry9x8gf2tvdw0s3jn54khce6mua7lqpzry9x8gf2tvdw0s3jn54khce6mua7l"
+      },
+      "expect": {
+        "params": {
+          "invoice": "lnbc210n1pqpzry9x8gf2tvdw0s3jn54khce6mua7lqpzry9x8gf2tvdw0s3jn54khce6mua7l"
+        }
+      }
+    },
+    {
+      "name": "pay_invoice: unknown keys are dropped",
+      "method": "pay_invoice",
+      "params": {
+        "invoice": "lnbc210n1pqpzry9x8gf2tvdw0s3jn54khce6mua7lqpzry9x8gf2tvdw0s3jn54khce6mua7l",
+        "reason": "the app's words"
+      },
+      "expect": {
+        "params": {
+          "invoice": "lnbc210n1pqpzry9x8gf2tvdw0s3jn54khce6mua7lqpzry9x8gf2tvdw0s3jn54khce6mua7l"
+        }
+      }
+    },
+    {
+      "name": "pay_invoice: not an invoice",
+      "method": "pay_invoice",
+      "params": {
+        "invoice": "lnurl1dp68gurn8ghj7um9wfmxjcm99e3k7mf0v9cxj0m385ekvcenxc6r2c35xvukxefcv5mkvv34x5ekzd3ev56nyd3hxqurzepexejxxepnxscrvwfnv9nxzcn9xq6xyefhvgcxxcmyxymnserxfq5fns"
+      },
+      "expect": {
+        "error": "BAD_REQUEST"
+      }
+    },
+    {
+      "name": "pay_invoice: amount must be whole msat above 0",
+      "method": "pay_invoice",
+      "params": {
+        "invoice": "lnbc1pqpzry9x8gf2tvdw0s3jn54khce6mua7lqpzry9x8gf2tvdw0s3jn54khce6mua7l",
+        "amount": 0
+      },
+      "expect": {
+        "error": "BAD_REQUEST"
+      }
+    },
+    {
+      "name": "pay_invoice: an invoice with no amount, and the amount to pay",
+      "method": "pay_invoice",
+      "params": {
+        "invoice": "lnbc1pqpzry9x8gf2tvdw0s3jn54khce6mua7lqpzry9x8gf2tvdw0s3jn54khce6mua7l",
+        "amount": 50000
+      },
+      "expect": {
+        "params": {
+          "invoice": "lnbc1pqpzry9x8gf2tvdw0s3jn54khce6mua7lqpzry9x8gf2tvdw0s3jn54khce6mua7l",
+          "amount": 50000
+        }
+      }
+    },
+    {
+      "name": "pay_invoice: an invoice with no amount, and none given",
+      "method": "pay_invoice",
+      "params": {
+        "invoice": "lnbc1pqpzry9x8gf2tvdw0s3jn54khce6mua7lqpzry9x8gf2tvdw0s3jn54khce6mua7l"
+      },
+      "expect": {
+        "error": "BAD_REQUEST"
+      }
+    },
+    {
+      "name": "pay_invoice: an amount for an invoice that names its own",
+      "method": "pay_invoice",
+      "params": {
+        "invoice": "lnbc210n1pqpzry9x8gf2tvdw0s3jn54khce6mua7lqpzry9x8gf2tvdw0s3jn54khce6mua7l",
+        "amount": 50000
+      },
+      "expect": {
+        "error": "BAD_REQUEST"
+      }
+    },
+    {
+      "name": "pay_keysend: a node pubkey with records and a route hint",
+      "method": "pay_keysend",
+      "params": {
+        "pubkey": "02AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "amount": 21000,
+        "tlv_records": [
+          {
+            "type": 7629169,
+            "value": "7B22616374696F6E223A22626F6F7374227D"
+          }
+        ],
+        "route_hints": [
+          [
+            {
+              "pubkey": "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "short_channel_id": "1099511627776",
+              "cltv_expiry_delta": 40
+            }
+          ]
+        ]
+      },
+      "expect": {
+        "params": {
+          "pubkey": "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "amount": 21000,
+          "route_hints": [
+            [
+              {
+                "pubkey": "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "short_channel_id": "1099511627776",
+                "cltv_expiry_delta": 40
+              }
+            ]
+          ],
+          "tlv_records": [
+            {
+              "type": 7629169,
+              "value": "7b22616374696f6e223a22626f6f7374227d"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "pay_keysend: a Sphinx address is split into the pubkey and a one-hop hint",
+      "method": "pay_keysend",
+      "params": {
+        "pubkey": "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa_03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb_1099511627776",
+        "amount": 5000
+      },
+      "expect": {
+        "params": {
+          "pubkey": "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "amount": 5000,
+          "route_hints": [
+            [
+              {
+                "pubkey": "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "short_channel_id": "1099511627776"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "name": "pay_keysend: a Sphinx address and route_hints together",
+      "method": "pay_keysend",
+      "params": {
+        "pubkey": "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa_03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb_1099511627776",
+        "amount": 5000,
+        "route_hints": [
+          [
+            {
+              "pubkey": "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "short_channel_id": "1099511627776"
+            }
+          ]
+        ]
+      },
+      "expect": {
+        "error": "BAD_REQUEST"
+      }
+    },
+    {
+      "name": "pay_keysend: the keysend preimage record is the wallet's",
+      "method": "pay_keysend",
+      "params": {
+        "pubkey": "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "amount": 1000,
+        "tlv_records": [
+          {
+            "type": 5482373484,
+            "value": "00"
+          }
+        ]
+      },
+      "expect": {
+        "error": "BAD_REQUEST"
+      }
+    },
+    {
+      "name": "pay_keysend: a record below 65536 is not a custom record",
+      "method": "pay_keysend",
+      "params": {
+        "pubkey": "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "amount": 1000,
+        "tlv_records": [
+          {
+            "type": 16,
+            "value": "00"
+          }
+        ]
+      },
+      "expect": {
+        "error": "BAD_REQUEST"
+      }
+    },
+    {
+      "name": "pay_keysend: a record type given twice",
+      "method": "pay_keysend",
+      "params": {
+        "pubkey": "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "amount": 1000,
+        "tlv_records": [
+          {
+            "type": 7629169,
+            "value": "00"
+          },
+          {
+            "type": 7629169,
+            "value": "01"
+          }
+        ]
+      },
+      "expect": {
+        "error": "BAD_REQUEST"
+      }
+    },
+    {
+      "name": "pay_keysend: a pubkey that is not one",
+      "method": "pay_keysend",
+      "params": {
+        "pubkey": "04aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "amount": 1000
+      },
+      "expect": {
+        "error": "BAD_REQUEST"
+      }
+    },
+    {
+      "name": "pay_keysend: odd-length hex in a record",
+      "method": "pay_keysend",
+      "params": {
+        "pubkey": "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "amount": 1000,
+        "tlv_records": [
+          {
+            "type": 7629169,
+            "value": "abc"
+          }
+        ]
+      },
+      "expect": {
+        "error": "BAD_REQUEST"
+      }
+    },
+    {
+      "name": "pay_keysend: a short_channel_id as block x tx x output",
+      "method": "pay_keysend",
+      "params": {
+        "pubkey": "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "amount": 1000,
+        "route_hints": [
+          [
+            {
+              "pubkey": "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "short_channel_id": "800000x12x1"
+            }
+          ]
+        ]
+      },
+      "expect": {
+        "params": {
+          "pubkey": "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "amount": 1000,
+          "route_hints": [
+            [
+              {
+                "pubkey": "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "short_channel_id": "800000x12x1"
+              }
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "name": "make_invoice: amount, description, expiry",
+      "method": "make_invoice",
+      "params": {
+        "amount": 500000,
+        "description": "Q3 report",
+        "expiry": 3600
+      },
+      "expect": {
+        "params": {
+          "amount": 500000,
+          "description": "Q3 report",
+          "expiry": 3600
+        }
+      }
+    },
+    {
+      "name": "make_invoice: a description longer than BOLT11 allows",
+      "method": "make_invoice",
+      "params": {
+        "amount": 1000,
+        "description": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      },
+      "expect": {
+        "error": "BAD_REQUEST"
+      }
+    },
+    {
+      "name": "lookup_payment: by transaction id",
+      "method": "lookup_payment",
+      "params": {
+        "transaction_id": "tx-1"
+      },
+      "expect": {
+        "params": {
+          "transaction_id": "tx-1"
+        }
+      }
+    },
+    {
+      "name": "lookup_payment: by payment hash, lower-cased",
+      "method": "lookup_payment",
+      "params": {
+        "payment_hash": "66687AADF862BD776C8FC18B8E9F8E20089714856EE233B3902A591D0D5F2925"
+      },
+      "expect": {
+        "params": {
+          "payment_hash": "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925"
+        }
+      }
+    },
+    {
+      "name": "lookup_payment: two ways at once",
+      "method": "lookup_payment",
+      "params": {
+        "transaction_id": "tx-1",
+        "payment_hash": "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925"
+      },
+      "expect": {
+        "error": "BAD_REQUEST"
+      }
+    },
+    {
+      "name": "lookup_invoice: by invoice",
+      "method": "lookup_invoice",
+      "params": {
+        "invoice": "lnbc210n1pqpzry9x8gf2tvdw0s3jn54khce6mua7lqpzry9x8gf2tvdw0s3jn54khce6mua7l"
+      },
+      "expect": {
+        "params": {
+          "invoice": "lnbc210n1pqpzry9x8gf2tvdw0s3jn54khce6mua7lqpzry9x8gf2tvdw0s3jn54khce6mua7l"
+        }
+      }
+    },
+    {
+      "name": "list_transactions: a page of outgoing payments",
+      "method": "list_transactions",
+      "params": {
+        "limit": 20,
+        "offset": 0,
+        "type": "outgoing"
+      },
+      "expect": {
+        "params": {
+          "limit": 20,
+          "offset": 0,
+          "type": "outgoing"
+        }
+      }
+    },
+    {
+      "name": "list_transactions: from after until",
+      "method": "list_transactions",
+      "params": {
+        "from": 1800000000,
+        "until": 1700000000
+      },
+      "expect": {
+        "error": "BAD_REQUEST"
+      }
+    },
+    {
+      "name": "list_transactions: a page too large",
+      "method": "list_transactions",
+      "params": {
+        "limit": 1000
+      },
+      "expect": {
+        "error": "BAD_REQUEST"
+      }
+    },
+    {
+      "name": "pay_lightning_address: an address, lower-cased, with a comment",
+      "method": "pay_lightning_address",
+      "params": {
+        "address": "Creator@Example.com",
+        "amount": 100000,
+        "comment": "Great episode"
+      },
+      "expect": {
+        "params": {
+          "address": "creator@example.com",
+          "amount": 100000,
+          "comment": "Great episode"
+        }
+      }
+    },
+    {
+      "name": "pay_lightning_address: an address and an lnurl at once",
+      "method": "pay_lightning_address",
+      "params": {
+        "address": "creator@example.com",
+        "lnurl": "lnurlp://example.com/.well-known/lnurlp/creator",
+        "amount": 1000
+      },
+      "expect": {
+        "error": "BAD_REQUEST"
+      }
+    },
+    {
+      "name": "pay_lightning_address: not an address",
+      "method": "pay_lightning_address",
+      "params": {
+        "address": "creator",
+        "amount": 1000
+      },
+      "expect": {
+        "error": "BAD_REQUEST"
+      }
+    },
+    {
+      "name": "get_info takes no params",
+      "method": "get_info",
+      "params": {},
+      "expect": {
+        "params": {}
+      }
+    },
+    {
+      "name": "params that are not an object",
+      "method": "make_invoice",
+      "params": [
+        1000
+      ],
+      "expect": {
+        "error": "BAD_REQUEST"
+      }
+    }
+  ],
+  "results": [
+    {
+      "name": "pay_invoice settled",
+      "method": "pay_invoice",
+      "result": {
+        "transaction_id": "tx-1",
+        "state": "settled",
+        "payment_hash": "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925",
+        "amount": 21000,
+        "fees_paid": 10,
+        "preimage": "0000000000000000000000000000000000000000000000000000000000000000",
+        "created_at": 1793800000,
+        "settled_at": 1793800002
+      },
+      "valid": true
+    },
+    {
+      "name": "pay_keysend pending: no preimage yet",
+      "method": "pay_keysend",
+      "result": {
+        "transaction_id": "tx-2",
+        "state": "pending",
+        "payment_hash": "72cd6e8422c407fb6d098690f1130b7ded7ec2f7f5e1d30bd9d521f015363793",
+        "amount": 20000,
+        "created_at": 1793800000
+      },
+      "valid": true
+    },
+    {
+      "name": "pay_keysend pending with a preimage",
+      "method": "pay_keysend",
+      "result": {
+        "transaction_id": "tx-2",
+        "state": "pending",
+        "payment_hash": "72cd6e8422c407fb6d098690f1130b7ded7ec2f7f5e1d30bd9d521f015363793",
+        "preimage": "0101010101010101010101010101010101010101010101010101010101010101",
+        "amount": 20000,
+        "created_at": 1793800000
+      },
+      "valid": false
+    },
+    {
+      "name": "pay_invoice settled without its preimage",
+      "method": "pay_invoice",
+      "result": {
+        "transaction_id": "tx-1",
+        "state": "settled",
+        "payment_hash": "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925",
+        "amount": 21000,
+        "created_at": 1793800000,
+        "settled_at": 1793800002
+      },
+      "valid": false
+    },
+    {
+      "name": "pay_keysend failed with a reason",
+      "method": "pay_keysend",
+      "result": {
+        "transaction_id": "tx-3",
+        "state": "failed",
+        "payment_hash": "52fe6094743bfd4f9be4321d98adc7e23c1ab622b0ba830e271d1ee1cbfd7850",
+        "amount": 20000,
+        "created_at": 1793800000,
+        "failure_reason": "no route"
+      },
+      "valid": true
+    },
+    {
+      "name": "make_invoice",
+      "method": "make_invoice",
+      "result": {
+        "type": "incoming",
+        "state": "pending",
+        "invoice": "lnbc5u1pqpzry9x8gf2tvdw0s3jn54khce6mua7lqpzry9x8gf2tvdw0s3jn54khce6mua7l",
+        "description": "Q3 report",
+        "payment_hash": "52fe6094743bfd4f9be4321d98adc7e23c1ab622b0ba830e271d1ee1cbfd7850",
+        "amount": 500000,
+        "created_at": 1793800000,
+        "expires_at": 1793803600
+      },
+      "valid": true
+    },
+    {
+      "name": "make_invoice answered as outgoing",
+      "method": "make_invoice",
+      "result": {
+        "type": "outgoing",
+        "invoice": "lnbc5u1pqpzry9x8gf2tvdw0s3jn54khce6mua7lqpzry9x8gf2tvdw0s3jn54khce6mua7l",
+        "payment_hash": "52fe6094743bfd4f9be4321d98adc7e23c1ab622b0ba830e271d1ee1cbfd7850",
+        "amount": 500000,
+        "created_at": 1793800000
+      },
+      "valid": false
+    },
+    {
+      "name": "lookup_payment of a settled keysend",
+      "method": "lookup_payment",
+      "result": {
+        "transaction_id": "tx-2",
+        "type": "outgoing",
+        "state": "settled",
+        "payment_type": "keysend",
+        "amount": 20000,
+        "fees_paid": 1000,
+        "created_at": 1793800000,
+        "settled_at": 1793803000,
+        "details": {
+          "payment_hash": "72cd6e8422c407fb6d098690f1130b7ded7ec2f7f5e1d30bd9d521f015363793",
+          "pubkey": "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "preimage": "0101010101010101010101010101010101010101010101010101010101010101"
+        }
+      },
+      "valid": true
+    },
+    {
+      "name": "lookup_payment of a keysend without its pubkey",
+      "method": "lookup_payment",
+      "result": {
+        "transaction_id": "tx-2",
+        "type": "outgoing",
+        "state": "pending",
+        "payment_type": "keysend",
+        "amount": 20000,
+        "created_at": 1793800000,
+        "details": {
+          "payment_hash": "72cd6e8422c407fb6d098690f1130b7ded7ec2f7f5e1d30bd9d521f015363793"
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "get_info: the app's own methods, no pubkey",
+      "method": "get_info",
+      "result": {
+        "alias": "Peel",
+        "network": "bitcoin",
+        "methods": [
+          "connect",
+          "get_info",
+          "pay_keysend",
+          "get_budget"
+        ],
+        "notifications": [
+          "payment_sent",
+          "payment_failed"
+        ]
+      },
+      "valid": true
+    },
+    {
+      "name": "get_budget with none set",
+      "method": "get_budget",
+      "result": {},
+      "valid": true
+    },
+    {
+      "name": "get_budget",
+      "method": "get_budget",
+      "result": {
+        "used_budget": 21000,
+        "total_budget": 5000000,
+        "renews_at": 1794000000,
+        "renewal_period": "weekly"
+      },
+      "valid": true
+    },
+    {
+      "name": "connect: what the person granted",
+      "method": "connect",
+      "result": {
+        "connection": {
+          "methods": [
+            "pay_keysend",
+            "get_budget"
+          ],
+          "notification_types": [
+            "payment_sent"
+          ],
+          "max_amount": 5000000,
+          "renewal_period": "weekly",
+          "expires_at": null
+        }
+      },
+      "valid": true
+    },
+    {
+      "name": "list_transactions with one bad entry",
+      "method": "list_transactions",
+      "result": {
+        "transactions": [
+          {
+            "type": "sideways",
+            "payment_hash": "52fe6094743bfd4f9be4321d98adc7e23c1ab622b0ba830e271d1ee1cbfd7850",
+            "amount": 1000,
+            "created_at": 1793800000
+          }
+        ]
+      },
+      "valid": false
+    }
+  ],
+  "notifications": [
+    {
+      "name": "payment_sent: a keysend settled",
+      "notification": {
+        "notification_type": "payment_sent",
+        "notification": {
+          "type": "outgoing",
+          "state": "settled",
+          "transaction_id": "tx-2",
+          "payment_hash": "72cd6e8422c407fb6d098690f1130b7ded7ec2f7f5e1d30bd9d521f015363793",
+          "preimage": "0101010101010101010101010101010101010101010101010101010101010101",
+          "amount": 20000,
+          "fees_paid": 1000,
+          "created_at": 1793800000,
+          "settled_at": 1793803000
+        }
+      },
+      "valid": true
+    },
+    {
+      "name": "payment_failed",
+      "notification": {
+        "notification_type": "payment_failed",
+        "notification": {
+          "type": "outgoing",
+          "state": "failed",
+          "transaction_id": "tx-3",
+          "payment_hash": "52fe6094743bfd4f9be4321d98adc7e23c1ab622b0ba830e271d1ee1cbfd7850",
+          "amount": 20000,
+          "created_at": 1793800000,
+          "failure_reason": "the payee never came online"
+        }
+      },
+      "valid": true
+    },
+    {
+      "name": "payment_received with metadata",
+      "notification": {
+        "notification_type": "payment_received",
+        "notification": {
+          "type": "incoming",
+          "state": "settled",
+          "transaction_id": "tx-4",
+          "invoice": "lnbc5u1pqpzry9x8gf2tvdw0s3jn54khce6mua7lqpzry9x8gf2tvdw0s3jn54khce6mua7l",
+          "payment_hash": "52fe6094743bfd4f9be4321d98adc7e23c1ab622b0ba830e271d1ee1cbfd7850",
+          "amount": 500000,
+          "created_at": 1793800000,
+          "settled_at": 1793800100,
+          "metadata": {
+            "comment": "thanks"
+          }
+        }
+      },
+      "valid": true
+    },
+    {
+      "name": "payment_failed carrying a settled transaction",
+      "notification": {
+        "notification_type": "payment_failed",
+        "notification": {
+          "type": "outgoing",
+          "state": "settled",
+          "transaction_id": "tx-3",
+          "payment_hash": "52fe6094743bfd4f9be4321d98adc7e23c1ab622b0ba830e271d1ee1cbfd7850",
+          "amount": 20000,
+          "created_at": 1793800000
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "payment_sent without a transaction id",
+      "notification": {
+        "notification_type": "payment_sent",
+        "notification": {
+          "type": "outgoing",
+          "state": "settled",
+          "payment_hash": "72cd6e8422c407fb6d098690f1130b7ded7ec2f7f5e1d30bd9d521f015363793",
+          "amount": 20000,
+          "created_at": 1793800000
+        }
+      },
+      "valid": false
+    }
+  ],
+  "connection_requests": [
+    {
+      "name": "a streaming app: keysend inside a weekly budget",
+      "request": {
+        "request_methods": [
+          "pay_keysend",
+          "get_budget"
+        ],
+        "optional_request_methods": [
+          "pay_lightning_address"
+        ],
+        "notification_types": [
+          "payment_sent",
+          "payment_failed"
+        ],
+        "max_amount": 5000000,
+        "renewal_period": "weekly"
+      },
+      "valid": true
+    },
+    {
+      "name": "a shop: pay invoices, no budget, ask each time",
+      "request": {
+        "request_methods": [
+          "pay_invoice",
+          "lookup_payment"
+        ]
+      },
+      "valid": true
+    },
+    {
+      "name": "no request_methods",
+      "request": {
+        "max_amount": 1000
+      },
+      "valid": false
+    },
+    {
+      "name": "connect is not requested, it is the act",
+      "request": {
+        "request_methods": [
+          "connect",
+          "pay_invoice"
+        ]
+      },
+      "valid": false
+    },
+    {
+      "name": "renewal_period without max_amount",
+      "request": {
+        "request_methods": [
+          "pay_keysend"
+        ],
+        "renewal_period": "daily"
+      },
+      "valid": false
+    },
+    {
+      "name": "a field the request does not have",
+      "request": {
+        "request_methods": [
+          "pay_keysend"
+        ],
+        "budget_renewal": "weekly"
+      },
+      "valid": false
+    }
+  ],
+  "preimages": [
+    {
+      "preimage": "0000000000000000000000000000000000000000000000000000000000000000",
+      "payment_hash": "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925",
+      "valid": true
+    },
+    {
+      "preimage": "0101010101010101010101010101010101010101010101010101010101010101",
+      "payment_hash": "72CD6E8422C407FB6D098690F1130B7DED7EC2F7F5E1D30BD9D521F015363793",
+      "valid": true
+    },
+    {
+      "preimage": "0101010101010101010101010101010101010101010101010101010101010101",
+      "payment_hash": "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925",
+      "valid": false
+    },
+    {
+      "preimage": "00",
+      "payment_hash": "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925",
+      "valid": false
+    }
+  ],
+  "scenarios": [
+    {
+      "name": "connect, then a payment inside the budget asks nothing",
+      "request": {
+        "request_methods": [
+          "pay_invoice",
+          "get_budget"
+        ],
+        "max_amount": 100000,
+        "renewal_period": "never"
+      },
+      "connection": null,
+      "steps": [
+        {
+          "call": {
+            "method": "connect"
+          },
+          "sheet": "connect",
+          "person": "approve",
+          "wallet": null,
+          "expect": {
+            "result": {
+              "connection": {
+                "methods": [
+                  "pay_invoice",
+                  "get_budget"
+                ],
+                "notification_types": [],
+                "max_amount": 100000,
+                "renewal_period": "never"
+              }
+            }
+          }
+        },
+        {
+          "call": {
+            "method": "pay_invoice",
+            "params": {
+              "invoice": "lnbc210n1pqpzry9x8gf2tvdw0s3jn54khce6mua7lqpzry9x8gf2tvdw0s3jn54khce6mua7l"
+            }
+          },
+          "decoded": {
+            "amount": 21000
+          },
+          "sheet": null,
+          "wallet": {
+            "result": {
+              "transaction_id": "tx-1",
+              "state": "settled",
+              "payment_hash": "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925",
+              "amount": 21000,
+              "fees_paid": 10,
+              "preimage": "0000000000000000000000000000000000000000000000000000000000000000",
+              "created_at": 1793800000,
+              "settled_at": 1793800002
+            }
+          },
+          "expect": {
+            "result": {
+              "transaction_id": "tx-1",
+              "state": "settled",
+              "payment_hash": "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925",
+              "amount": 21000,
+              "fees_paid": 10,
+              "preimage": "0000000000000000000000000000000000000000000000000000000000000000",
+              "created_at": 1793800000,
+              "settled_at": 1793800002
+            }
+          }
+        },
+        {
+          "call": {
+            "method": "get_budget"
+          },
+          "sheet": null,
+          "wallet": null,
+          "expect": {
+            "result": {
+              "used_budget": 21010,
+              "total_budget": 100000,
+              "renewal_period": "never"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "the person declines to connect",
+      "request": {
+        "request_methods": [
+          "pay_invoice"
+        ]
+      },
+      "connection": null,
+      "steps": [
+        {
+          "call": {
+            "method": "connect"
+          },
+          "sheet": "connect",
+          "person": "decline",
+          "wallet": null,
+          "expect": {
+            "error": "USER_REJECTED"
+          }
+        }
+      ]
+    },
+    {
+      "name": "no connection yet: a payment is refused until connect",
+      "request": {
+        "request_methods": [
+          "pay_keysend"
+        ]
+      },
+      "connection": null,
+      "steps": [
+        {
+          "call": {
+            "method": "pay_keysend",
+            "params": {
+              "pubkey": "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "amount": 1000
+            }
+          },
+          "sheet": null,
+          "wallet": null,
+          "expect": {
+            "error": "UNAUTHORIZED"
+          }
+        },
+        {
+          "call": {
+            "method": "get_info"
+          },
+          "sheet": null,
+          "wallet": null,
+          "expect": {
+            "result": {
+              "network": "bitcoin",
+              "methods": [
+                "connect",
+                "get_info"
+              ],
+              "notifications": []
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "a method the connection does not grant is refused, and the wallet is never asked",
+      "connection": {
+        "methods": [
+          "pay_keysend"
+        ],
+        "notification_types": [],
+        "over_budget": "ask",
+        "used_budget": 0
+      },
+      "steps": [
+        {
+          "call": {
+            "method": "get_balance"
+          },
+          "sheet": null,
+          "wallet": null,
+          "expect": {
+            "error": "RESTRICTED"
+          }
+        }
+      ]
+    },
+    {
+      "name": "a malformed call is refused before anything else",
+      "connection": {
+        "methods": [
+          "pay_keysend"
+        ],
+        "notification_types": [],
+        "over_budget": "ask",
+        "used_budget": 0
+      },
+      "steps": [
+        {
+          "call": {
+            "method": "pay_keysend",
+            "params": {
+              "pubkey": "nobody",
+              "amount": 1000
+            }
+          },
+          "sheet": null,
+          "wallet": null,
+          "expect": {
+            "error": "BAD_REQUEST"
+          }
+        }
+      ]
+    },
+    {
+      "name": "over budget, the person chose refuse",
+      "connection": {
+        "methods": [
+          "pay_keysend"
+        ],
+        "notification_types": [],
+        "max_amount": 10000,
+        "renewal_period": "never",
+        "over_budget": "refuse",
+        "used_budget": 9000
+      },
+      "steps": [
+        {
+          "call": {
+            "method": "pay_keysend",
+            "params": {
+              "pubkey": "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "amount": 2000
+            }
+          },
+          "sheet": null,
+          "wallet": null,
+          "expect": {
+            "error": "QUOTA_EXCEEDED"
+          }
+        }
+      ]
+    },
+    {
+      "name": "over budget, the person is asked and declines; the budget is unchanged",
+      "connection": {
+        "methods": [
+          "pay_keysend",
+          "get_budget"
+        ],
+        "notification_types": [],
+        "max_amount": 10000,
+        "renewal_period": "never",
+        "over_budget": "ask",
+        "used_budget": 9000
+      },
+      "steps": [
+        {
+          "call": {
+            "method": "pay_keysend",
+            "params": {
+              "pubkey": "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "amount": 2000
+            }
+          },
+          "sheet": "payment",
+          "person": "decline",
+          "wallet": null,
+          "expect": {
+            "error": "USER_REJECTED"
+          }
+        },
+        {
+          "call": {
+            "method": "get_budget"
+          },
+          "sheet": null,
+          "wallet": null,
+          "expect": {
+            "result": {
+              "used_budget": 9000,
+              "total_budget": 10000,
+              "renewal_period": "never"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "an async keysend is pending, counts against the budget, then settles",
+      "connection": {
+        "methods": [
+          "pay_keysend",
+          "get_budget",
+          "lookup_payment"
+        ],
+        "notification_types": [
+          "payment_sent",
+          "payment_failed"
+        ],
+        "max_amount": 100000,
+        "renewal_period": "never",
+        "over_budget": "ask",
+        "used_budget": 0
+      },
+      "steps": [
+        {
+          "call": {
+            "method": "pay_keysend",
+            "params": {
+              "pubkey": "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa_03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb_1099511627776",
+              "amount": 20000
+            }
+          },
+          "sheet": null,
+          "wallet": {
+            "result": {
+              "transaction_id": "tx-2",
+              "state": "pending",
+              "payment_hash": "72cd6e8422c407fb6d098690f1130b7ded7ec2f7f5e1d30bd9d521f015363793",
+              "amount": 20000,
+              "created_at": 1793800000
+            }
+          },
+          "expect": {
+            "result": {
+              "transaction_id": "tx-2",
+              "state": "pending",
+              "payment_hash": "72cd6e8422c407fb6d098690f1130b7ded7ec2f7f5e1d30bd9d521f015363793",
+              "amount": 20000,
+              "created_at": 1793800000
+            }
+          }
+        },
+        {
+          "call": {
+            "method": "get_budget"
+          },
+          "sheet": null,
+          "wallet": null,
+          "expect": {
+            "result": {
+              "used_budget": 20000,
+              "total_budget": 100000,
+              "renewal_period": "never"
+            }
+          }
+        },
+        {
+          "wallet_event": {
+            "notification_type": "payment_sent",
+            "notification": {
+              "type": "outgoing",
+              "state": "settled",
+              "transaction_id": "tx-2",
+              "payment_hash": "72cd6e8422c407fb6d098690f1130b7ded7ec2f7f5e1d30bd9d521f015363793",
+              "preimage": "0101010101010101010101010101010101010101010101010101010101010101",
+              "amount": 20000,
+              "fees_paid": 1000,
+              "created_at": 1793800000,
+              "settled_at": 1793803000
+            }
+          },
+          "expect": {
+            "notification": {
+              "notification_type": "payment_sent",
+              "notification": {
+                "type": "outgoing",
+                "state": "settled",
+                "transaction_id": "tx-2",
+                "payment_hash": "72cd6e8422c407fb6d098690f1130b7ded7ec2f7f5e1d30bd9d521f015363793",
+                "preimage": "0101010101010101010101010101010101010101010101010101010101010101",
+                "amount": 20000,
+                "fees_paid": 1000,
+                "created_at": 1793800000,
+                "settled_at": 1793803000
+              }
+            }
+          }
+        },
+        {
+          "call": {
+            "method": "get_budget"
+          },
+          "sheet": null,
+          "wallet": null,
+          "expect": {
+            "result": {
+              "used_budget": 21000,
+              "total_budget": 100000,
+              "renewal_period": "never"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "a pending keysend fails later: the app is told and the budget refunded",
+      "connection": {
+        "methods": [
+          "pay_keysend",
+          "get_budget"
+        ],
+        "notification_types": [
+          "payment_failed"
+        ],
+        "max_amount": 100000,
+        "renewal_period": "never",
+        "over_budget": "ask",
+        "used_budget": 0
+      },
+      "steps": [
+        {
+          "call": {
+            "method": "pay_keysend",
+            "params": {
+              "pubkey": "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa_03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb_1099511627776",
+              "amount": 20000
+            }
+          },
+          "sheet": null,
+          "wallet": {
+            "result": {
+              "transaction_id": "tx-3",
+              "state": "pending",
+              "payment_hash": "52fe6094743bfd4f9be4321d98adc7e23c1ab622b0ba830e271d1ee1cbfd7850",
+              "amount": 20000,
+              "created_at": 1793800000
+            }
+          },
+          "expect": {
+            "result": {
+              "transaction_id": "tx-3",
+              "state": "pending",
+              "payment_hash": "52fe6094743bfd4f9be4321d98adc7e23c1ab622b0ba830e271d1ee1cbfd7850",
+              "amount": 20000,
+              "created_at": 1793800000
+            }
+          }
+        },
+        {
+          "wallet_event": {
+            "notification_type": "payment_failed",
+            "notification": {
+              "type": "outgoing",
+              "state": "failed",
+              "transaction_id": "tx-3",
+              "payment_hash": "52fe6094743bfd4f9be4321d98adc7e23c1ab622b0ba830e271d1ee1cbfd7850",
+              "amount": 20000,
+              "created_at": 1793800000,
+              "failure_reason": "the payee never came online"
+            }
+          },
+          "expect": {
+            "notification": {
+              "notification_type": "payment_failed",
+              "notification": {
+                "type": "outgoing",
+                "state": "failed",
+                "transaction_id": "tx-3",
+                "payment_hash": "52fe6094743bfd4f9be4321d98adc7e23c1ab622b0ba830e271d1ee1cbfd7850",
+                "amount": 20000,
+                "created_at": 1793800000,
+                "failure_reason": "the payee never came online"
+              }
+            }
+          }
+        },
+        {
+          "call": {
+            "method": "get_budget"
+          },
+          "sheet": null,
+          "wallet": null,
+          "expect": {
+            "result": {
+              "used_budget": 0,
+              "total_budget": 100000,
+              "renewal_period": "never"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "a notification type the connection did not ask for is not sent",
+      "connection": {
+        "methods": [
+          "pay_keysend"
+        ],
+        "notification_types": [],
+        "over_budget": "ask",
+        "used_budget": 0
+      },
+      "steps": [
+        {
+          "wallet_event": {
+            "notification_type": "payment_sent",
+            "notification": {
+              "type": "outgoing",
+              "state": "settled",
+              "transaction_id": "tx-9",
+              "payment_hash": "72cd6e8422c407fb6d098690f1130b7ded7ec2f7f5e1d30bd9d521f015363793",
+              "preimage": "0101010101010101010101010101010101010101010101010101010101010101",
+              "amount": 1000,
+              "created_at": 1793800000,
+              "settled_at": 1793800001
+            }
+          },
+          "expect": {
+            "notification": null
+          }
+        }
+      ]
+    }
+  ]
+}

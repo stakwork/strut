@@ -13,7 +13,9 @@ export {
   BridgeHost, StaticHost, createStaticHost, DEFAULT_HOST_STATE,
   type BridgeApp, type DisplayMode, type HostContext, type HostState, type StrutHost, type Theme,
 } from "./host.js";
-export { StrutProvider, createKitQueryClient, useStrutClient, useStrutHost, type StrutProviderProps } from "./provider.js";
+export { StrutProvider, createKitQueryClient, useStrutClient, useStrutHost, useStrutWallet, type StrutProviderProps } from "./provider.js";
+export { useWallet, useTransaction, TRANSACTION_POLL_MS, type UseWallet, type UseTransaction } from "./wallet-hooks.js";
+export * from "./wallet/index.js";
 export {
   RUN_STEPS, JOB_STEPS, LIVE_INTERVAL_MS, RUN_WAIT_MS, RUN_EVENTS_MAX, runKeys, isInFlight, anyInFlight, eventsSettled, fileData,
   useRuns, useRun, useRunEvents, useWorkProducts, useTranscript, useTranscripts, useLaunch, useUpload, useCancel, useWorkflow, useStep, useToolInput, useAppLink, useHost, useApp,

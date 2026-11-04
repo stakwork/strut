@@ -26,6 +26,8 @@ export default defineConfig({
       // The folds live in the kit (plans/apps.md §3): one copy, imported
       // from source — they are pure TS with no dependencies.
       "@strut/kit/folds": fileURLToPath(new URL("../kit/src/folds/index.ts", import.meta.url)),
+      // The wallet contract and its relay (specs/WALLET.md): the same, pure TS.
+      "@strut/kit/wallet": fileURLToPath(new URL("../kit/src/wallet/index.ts", import.meta.url)),
       react: "preact/compat",
       "react-dom": "preact/compat",
       "react/jsx-runtime": "preact/jsx-runtime",

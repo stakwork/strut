@@ -17,6 +17,8 @@ import { createBridgeClient, type StrutClient } from "./client.js";
 import { ErrorBoundary, createErrorReporter, installWindowErrorReporting, type ErrorReporter } from "./error-boundary.js";
 import { BridgeHost } from "./host.js";
 import { StrutProvider } from "./provider.js";
+import { createBridgeWallet, type WalletBridgeApp, type WalletClient } from "./wallet/client.js";
+import { installWebLN } from "./wallet/webln.js";
 
 /** A framed page has no browser storage: every host frames it under
  *  `sandbox="allow-scripts"`, never `allow-same-origin`, so its origin is
@@ -99,6 +101,9 @@ export interface Mounted {
   app: App;
   client: StrutClient;
   host: BridgeHost;
+  /** The host's wallet (specs/WALLET.md): offers nothing unless the host's
+   *  `ui/initialize` answer carries `experimental["strut/wallet"]`. */
+  wallet: WalletClient;
   reactRoot: Root;
   /** Whether the host answered `ui/initialize`; a page opened with no host
    *  mounts anyway, and its calls fail. */
@@ -114,6 +119,8 @@ export async function bootstrap(AppComponent: ComponentType, options: BootstrapO
   const app = new App(options.appInfo ?? { name: "strut-app", version: "0" }, {}, { ...options.appOptions, autoResize: false });
   const host = new BridgeHost(app);
   const client = createBridgeClient(app, token);
+  // Before connect, so no notification of the host's is missed.
+  const wallet = createBridgeWallet(app as unknown as WalletBridgeApp);
   const report = createErrorReporter(client);
   const reporter: ErrorReporter = (error, componentStack) => {
     report(error, componentStack);
@@ -130,6 +137,8 @@ export async function bootstrap(AppComponent: ComponentType, options: BootstrapO
     connected = true;
     // The SDK's observer: `ui/notifications/size-changed` now and on every resize.
     stopSizeReports = app.setupSizeChangedNotifications();
+    // `window.webln` for a host that offers a wallet (Peel's Sphinx account).
+    if (wallet.capability()) installWebLN(doc.defaultView ?? window, wallet);
   } catch (error) {
     console.warn("[strut] no MCP Apps host answered ui/initialize; mounting without one", error);
   }
@@ -139,13 +148,13 @@ export async function bootstrap(AppComponent: ComponentType, options: BootstrapO
   reactRoot.render(
     createElement(
       StrutProvider,
-      { client, host, queryClient: options.queryClient },
+      { client, host, wallet, queryClient: options.queryClient },
       createElement(ErrorBoundary, { onError: reporter }, createElement(AppComponent)),
     ),
   );
 
   return {
-    app, client, host, reactRoot, connected,
+    app, client, host, wallet, reactRoot, connected,
     async unmount() {
       stopSizeReports();
       uninstall();

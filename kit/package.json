@@ -10,7 +10,8 @@
   "files": [
     "dist",
     "vendor",
-    "src/styles"
+    "src/styles",
+    "src/wallet/vectors.json"
   ],
   "exports": {
     ".": {
@@ -25,6 +26,11 @@
       "types": "./dist/folds/index.d.ts",
       "import": "./dist/folds/index.js"
     },
+    "./wallet": {
+      "types": "./dist/wallet/index.d.ts",
+      "import": "./dist/wallet/index.js"
+    },
+    "./wallet/vectors.json": "./src/wallet/vectors.json",
     "./node": {
       "types": "./dist/node.d.ts",
       "import": "./dist/node.js"
@@ -38,7 +44,7 @@
     "build:vendor": "tsx scripts/build-vendor.ts",
     "build:lib": "tsx scripts/build-lib.ts",
     "shadcn": "shadcn add --all --overwrite --yes",
-    "test": "tsx --test src/*.test.ts src/folds/*.test.ts src/folds/run-graph/*.test.ts"
+    "test": "tsx --test src/*.test.ts src/folds/*.test.ts src/folds/run-graph/*.test.ts src/wallet/*.test.ts"
   },
   "peerDependencies": {
     "@tanstack/react-query": "5.104.5",
