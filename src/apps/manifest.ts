@@ -12,7 +12,10 @@
  * against the graph at every build and registered at publish
  * (./graph-types.ts), and the only types a page may write. `csp.resourceDomains` are the only
  * places beyond `data:` and `blob:` the document may load an image, a font
- * or a media file from (§9). Nothing else is declared: an app has no
+ * or a media file from (§9). `wallet` is the Lightning wallet connection
+ * the app asks the person's host for (plans/app-payments.md §4,
+ * specs/WALLET.md §5): a REQUEST the person grants or narrows in their host,
+ * which nothing here grants. Nothing else is declared: an app has no
  * `connectDomains` — it talks to the world through a workflow.
  */
 import { readFile } from "node:fs/promises";
@@ -69,6 +72,37 @@ export const grantsSchema = z
   })
   .strict();
 
+/** The wallet contract's lists (`@strut/kit/wallet`: REQUESTABLE_METHODS,
+ *  NOTIFICATION_TYPES, RENEWAL_PERIODS). Copied, since the engine does not
+ *  load the kit at run time; build.test.ts holds them equal. */
+export const WALLET_REQUESTABLE_METHODS = [
+  "pay_invoice", "pay_keysend", "make_invoice", "lookup_payment", "lookup_invoice", "get_budget",
+  "get_balance", "list_transactions", "pay_lightning_address",
+] as const;
+export const WALLET_NOTIFICATION_TYPES = ["payment_received", "payment_sent", "payment_failed"] as const;
+export const WALLET_RENEWAL_PERIODS = ["never", "daily", "weekly", "monthly", "yearly"] as const;
+
+/** `wallet:` — NWC-08's connection request fields, amounts in msat. */
+export const walletRequestSchema = z
+  .object({
+    /** The methods the app cannot work without: granted all, or the person declines. */
+    request_methods: z.array(z.enum(WALLET_REQUESTABLE_METHODS)).min(1, "request_methods needs at least one method"),
+    /** Methods the person may grant or leave out. */
+    optional_request_methods: z.array(z.enum(WALLET_REQUESTABLE_METHODS)).optional(),
+    notification_types: z.array(z.enum(WALLET_NOTIFICATION_TYPES)).optional(),
+    /** msat per period, fees included. */
+    max_amount: z.number().int().positive().optional(),
+    renewal_period: z.enum(WALLET_RENEWAL_PERIODS).optional(),
+    /** Unix seconds; null for none. */
+    expires_at: z.number().int().positive().nullable().optional(),
+  })
+  .strict()
+  .superRefine((w, ctx) => {
+    if (w.renewal_period !== undefined && w.max_amount === undefined) {
+      ctx.addIssue({ code: "custom", path: ["renewal_period"], message: "renewal_period needs max_amount" });
+    }
+  });
+
 export const manifestSchema = z
   .object({
     title: z.string().min(1),
@@ -91,6 +125,7 @@ export const manifestSchema = z
       })
       .strict()
       .optional(),
+    wallet: walletRequestSchema.optional(),
     csp: z
       .object({
         /** Origins the document may load images, fonts and media from. */
