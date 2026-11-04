@@ -963,6 +963,28 @@ describe("createStrut", () => {
     assert.equal(missing.status, 404);
   });
 
+  it("serves a workflow's runs a page at a time, newest first", async () => {
+    const memStore = new MemoryRunStore();
+    const strut = await createStrut({ workspace: new WorkspaceManager(tempDir), store: memStore, serveUi: false, enableChat: false });
+    // 120 finished runs, and one with a log but no summary (cut off).
+    const ids = Array.from({ length: 120 }, (_, i) => String(1761000000000 + i));
+    for (const runId of ids) {
+      await memStore.finalize("paged", runId, { runId, workflow: "paged", status: "success", startedAt: new Date(Number(runId)).toISOString() } as never);
+    }
+    const stale = "1761000000500";
+    await memStore.append("paged", stale, { ts: new Date().toISOString(), runId: stale, path: "paged", type: "run.start" } as never);
+    const newestFirst = [stale, ...ids.reverse()];
+    const page = async (q: string) => ((await (await strut.app.request(`/workflows/paged/runs${q}`)).json()) as Array<{ runId: string; status: string }>);
+
+    const first = await page("");
+    assert.deepEqual(first.map((r) => r.runId), newestFirst.slice(0, 50), "50 by default");
+    assert.equal(first[0].status, "stale", "a run with no summary is a row of its own");
+    const next = await page(`?limit=30&before=${first[first.length - 1].runId}`);
+    assert.deepEqual(next.map((r) => r.runId), newestFirst.slice(50, 80));
+    assert.deepEqual((await page(`?limit=500&before=${next[next.length - 1].runId}`)).map((r) => r.runId), newestFirst.slice(80));
+    assert.deepEqual(await page(`?before=${newestFirst[newestFirst.length - 1]}`), [], "nothing older than the oldest");
+  });
+
   it("custom steps can `import \"strut\"` from a workspace outside the package tree", async () => {
     // tempDir is under the OS tmpdir — no `strut` package is reachable by
     // walking up from it. The resolve hook (strut-resolver.ts) maps the bare

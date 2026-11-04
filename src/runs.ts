@@ -175,6 +175,19 @@ export interface RunsCapability {
 export const RUN_GET_MAX_WAIT_MS = 55_000;
 export const RUN_LIST_DEFAULT_LIMIT = 50;
 export const RUN_LIST_MAX_LIMIT = 500;
+
+/** One page of a workflow's run ids, as `GET /workflows/:name/runs` serves
+ *  them: `ids` newest first (`RunStore.listRuns`' order), the ones after
+ *  `before` — the last id of the page before — `limit` of them (the default
+ *  when missing or not a number, at most `RUN_LIST_MAX_LIMIT`). The cursor is
+ *  compared, not looked up, so it holds when that run has been deleted. */
+export function runsPage(ids: string[], q: { limit?: string | number; before?: string }): string[] {
+  const n = Number(q.limit);
+  const limit = Number.isFinite(n) && n >= 1 ? Math.min(RUN_LIST_MAX_LIMIT, Math.floor(n)) : RUN_LIST_DEFAULT_LIMIT;
+  const before = q.before;
+  const after = before ? ids.filter((id) => id.localeCompare(before) < 0) : ids;
+  return after.slice(0, limit);
+}
 /** `run/events` keeps this many events: the head, plus the terminal event
  *  when the log has one — so a cut log still reads as settled (the kit's
  *  `eventsSettled`); `skip` pages past the cut. */
