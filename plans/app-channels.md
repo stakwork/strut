@@ -67,7 +67,8 @@ graph. The channel carries what is happening now.
 
 ## 1. A channel
 
-**Where it lives.** One `LiveFeed` (`src/live-feed.ts`, unchanged) per
+**Where it lives.** One `LiveFeed` (`src/live-feed.ts`, which gained
+`evictable`, `remove` and a synchronous `readNow` for it) per
 channel, in this process, plus the sockets joined to it. A channel is
 named by `(app name, channel name)`: every version of the app shares it,
 as it shares `app/state` and the app's jobs, so a publish mid-game never
@@ -124,7 +125,9 @@ idle.
 | | Value | Why |
 | --- | --- | --- |
 | `CHANNEL_MESSAGE_MAX_BYTES` | 8 KB of JSON | a move, not a file; files go in a job (`job/upload`) |
-| `CHANNEL_KEEP` | 256 messages | the feed's `max`: states plus recent events |
+| `CHANNEL_KEEP` | 256 messages | the feed's `max`: states plus recent events; when it is full, events go first |
+| `CHANNEL_STATES_PER_SENDER` | 16 keys | so one sender's states never crowd out the rest |
+| `CHANNEL_KEY_MAX` | 64 characters | a key names a state, it does not carry one |
 | `CHANNEL_SEND_RATE` | 30 messages a second per sender, bursts of 60 | a token bucket per sender |
 | `CHANNEL_REJOIN_MS` | 10 s | a reconnect inside it is no leave |
 | `CHANNEL_IDLE_MS` | 10 minutes | a channel with no socket and no message is dropped |
