@@ -6,6 +6,7 @@ const NEIGHBOR_CAP = 50;
 
 export default defineStep({
   type: "graph/graph-neighbors",
+  effect: "read",
   description:
     "Return all nodes adjacent (one hop) to a node in the knowledge graph, " +
     "with edge_type and direction. Use the ref_id from graph_graph_search or graph_graph_get. " +

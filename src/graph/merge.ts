@@ -41,7 +41,7 @@ import { randomUUID } from "node:crypto";
 import type { GraphBackend } from "./backend.js";
 import type { GraphTx } from "./engine.js";
 import { copyEdge, deleteEdges, edgesOf, hideRows, markUndone, mergesBy, mergesSince, mergedInto, readMergeRow, showRows, storedEdge, writeMergeRow, type StoredEdge } from "./ladybug/merge.js";
-import { EDGE_TEXT_TYPE, MERGE_TYPE, SCHEMA_TYPE } from "./ladybug/registry.js";
+import { HIDDEN_TYPES, MERGE_TYPE } from "./ladybug/registry.js";
 import { composeFact, deleteEdgeRows, setTemporalEdge, slotEdges, syncEdgeRow, titlesOf, writeEdgeRow } from "./ladybug/temporal.js";
 import { named, pairsOf, type Candidate, type Named } from "./name-pairs.js";
 import { refNodeKey } from "./node-writer.js";
@@ -228,7 +228,7 @@ export async function mergeNodes(b: GraphBackend, input: MergeInput, opts: { now
     if (!kept) throw new MergeError("NOT_FOUND", `no node ${keep} (the node kept)`);
     if (!gone) throw new MergeError("NOT_FOUND", `no node ${dup} (the duplicate)`);
     for (const n of [kept, gone]) {
-      if (n.type === SCHEMA_TYPE || n.type === EDGE_TEXT_TYPE || n.type === MERGE_TYPE) throw new MergeError("REFUSED", `${n.ref_id} is a ${n.type}, not a node merge takes`);
+      if (HIDDEN_TYPES.includes(n.type)) throw new MergeError("REFUSED", `${n.ref_id} is a ${n.type}, not a node merge takes`);
     }
     if (gone.is_owner) throw new MergeError("REFUSED", "the user cannot be merged into another node; merge the other one into the user");
     if (kept.type !== gone.type) throw new MergeError("REFUSED", `a ${gone.type} cannot be merged into a ${kept.type}: merge takes two nodes of one type`);

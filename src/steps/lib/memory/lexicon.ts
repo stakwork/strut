@@ -2,6 +2,7 @@ import { z } from "zod";
 import { defineStep } from "../../../core.js";
 import { iso, memoryDb, readAttributes } from "./_db.js";
 import { vocabulary } from "./_ontology.js";
+import { graphLexicon, onGraph } from "../dictation/_graph.js";
 
 /** The forget reason dictation's Undo gives: a mishearing forgotten so is never learned again. */
 export const UNDONE = "undone";
@@ -27,6 +28,8 @@ export default defineStep({
   input: z.object({}),
   output: z.any(),
   async run(_cfg, ctx) {
+    // A host whose memory is the graph keeps dictation's vocabulary there.
+    if (onGraph(ctx)) return graphLexicon(ctx);
     const query = await memoryDb(ctx);
     const vocab = await vocabulary(query);
     const names = vocab.predicatesWithRole("alias");

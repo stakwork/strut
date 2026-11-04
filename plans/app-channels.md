@@ -319,8 +319,9 @@ than that server.
 
 ## 9. Security
 
-- The page still connects nowhere: the CSP and the frame are unchanged.
-  The host holds the socket.
+- The page still opens no `fetch`, XHR or WebSocket: the CSP and the frame
+  are unchanged. The host holds the socket. WebRTC is the exception (the
+  last bullet).
 - A socket is bound to the app its ticket or `?app=` names; a step to its
   `ctx.app`. Nothing reaches another app's channels.
 - The sender is strut's stamp: the socket's actor from its ticket or
@@ -332,18 +333,60 @@ than that server.
   channel goes idle.
 - **Not end to end.** Strut reads the messages, the same trust the app's
   other calls get.
-- **WebRTC (item 0).** Browsers do not apply `connect-src` to WebRTC. If
-  a sandboxed `srcdoc` frame can still construct an `RTCPeerConnection`,
-  two pages could use a channel to exchange connection details and then
-  talk directly, past strut, revealing each other's IP addresses. They
-  could already do that through graph writes, more slowly.
+- **WebRTC (item 0: open, nothing blocks it).** Browsers do not apply
+  `connect-src` to WebRTC, and none of those tested honors `webrtc
+  'block'`. Two pages can swap connection details through a channel (or,
+  more slowly, through graph writes) and talk directly, past strut, each
+  learning the other's public IP address. One page alone can send to any
+  STUN or TURN host it names. The CSP holds an honest app to the bridge;
+  it does not hold in a hostile one.
 
 ## 10. Work items
 
-0. **Probe WebRTC in the app frame** (Chrome, Firefox, Safari, WKWebView
-   for Peel). If a frame can gather candidates, add `webrtc 'block'` to
-   `cspFor` where it is honored, say on the `App` page that a direct
-   connection is not the door, and record what stays open.
+0. **Probe WebRTC in the app frame. Done 2026-11-04: every browser lets
+   the frame connect, and none honors `webrtc 'block'`, so `cspFor` is
+   unchanged.** The probe: two frames framed as AppHost frames an app
+   (`srcdoc` of `<iframe sandbox="allow-scripts allow-downloads"
+   allow="microphone">`, `cspFor()`'s policy in a `<meta>`). Each makes an
+   `RTCPeerConnection` with a public STUN server. The parent relays the
+   offer and the answer, as a channel would, and a data channel carries a
+   message each way. It ran three ways: no CSP, the app's CSP, and the
+   app's CSP plus `webrtc 'block'`. It also ran with `webrtc 'block'` in
+   the parent page's own `<meta>` and in its HTTP header, which a `srcdoc`
+   frame inherits, and on two connections in the parent page itself.
+
+   | Browser | In the app frame | `webrtc 'block'` |
+   | --- | --- | --- |
+   | Chrome 157 (macOS) | candidates gathered, data channel open | no effect: frame meta, page meta, page header |
+   | Chromium 152 (the desktop app's browser pane) | same | no effect: frame meta, page header |
+   | Chromium 153 (Playwright, Linux) | same | no effect: all three |
+   | Firefox 157 (macOS) | same | no effect: frame meta |
+   | Firefox 155 (Playwright, Linux) | same | no effect: all three |
+   | Safari 26.6 (macOS) | same | no effect: frame meta, page header |
+   | WKWebView, macOS 26 (default configuration) | same | no effect: all three |
+   | Mobile Safari, iOS 26.5 simulator | same | no effect: frame meta |
+   | WKWebView, iOS 26.5 simulator (what Peel hosts) | same | no effect: frame meta, page header |
+   | WebKitGTK (Playwright, Linux, in Docker) | candidates gathered; no connection, even with no CSP (the container's network) | no effect on gathering: all three |
+
+   No `securitypolicyviolation` fired anywhere. In every engine the frame
+   got a server-reflexive candidate from the STUN server, so UDP reached a
+   host the page chose. That candidate carries the viewer's public IP. Host
+   candidates were mDNS names (`<uuid>.local`) everywhere, so LAN addresses
+   stayed hidden. Not tested: a real iPhone, Android, Edge, Hive's frame
+   (its own document carries the same `<meta>`), and a frame the viewer
+   granted the microphone (`allow="microphone"`), where browsers expose raw
+   host addresses.
+
+   **What stays open, in all of them:** a hostile app can send data to any
+   STUN or TURN host it names, with no other page involved, and two pages
+   that swap SDP through a channel or the graph can open a direct
+   connection. The limits that hold are the ones that bound an app
+   already: grants checked on every call, who may publish an app, and a
+   package's app being code a person chose to install. Later: add `webrtc
+   'block'` once an engine ships it (run this probe again then); a build
+   warning on `RTCPeerConnection` like the one on `fetch` would catch an
+   honest app, never a hostile one. Item 9 says on the `App` page that a
+   direct connection is not the door.
 1. **BUILT (#487). `src/channels.ts`**: the service (a `LiveFeed` and the sockets per
    channel, previews apart, the stamp, presence and its pings, the
    limits, idle drops). Unit tests: states replace per sender only, a
@@ -372,7 +415,8 @@ than that server.
    the rate limit, with the fix: send fewer messages, or make them states.
 9. **The `App` Concept page**: when a channel is the tool (live, lossy,
    unrecorded) and when a workflow or the graph is; grant `channel/*` to
-   the app's steps; the referee and the gatekeeper patterns.
+   the app's steps; the referee and the gatekeeper patterns; a direct
+   WebRTC connection between pages is not the door (item 0).
 10. **Docs**: `specs/API.md` (the ticket route, the socket and its frames,
     and the bridge methods in the host contract, §14.3), `AGENTS.md`.
 11. **Validation** (§11).

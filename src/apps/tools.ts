@@ -280,6 +280,15 @@ export interface AppToolDeps {
   runStepDeps: RunStepDeps;
   /** Where every call is counted (./monitor.ts): what an app costs the server. */
   monitor?: Pick<AppMonitor, "record">;
+  /** A VISITOR's door (`POST /public/mcp`, plans/public-surface.md §5): the
+   *  identity is the public view's (`publicAppOfIdentity`), every call is
+   *  checked against the public view after the grants, nothing is kept,
+   *  and `viewer` names the visitor for the monitor. */
+  visitor?: {
+    identity: (identity: unknown) => AppRef | undefined;
+    refusal: (app: AppRef, type: string, config: Record<string, unknown>) => Promise<string | null>;
+    viewer?: string;
+  };
 }
 
 /** The app a call names, with its manifest — or why there is none. */
@@ -312,6 +321,8 @@ export function buildAppTools(deps: AppToolDeps): ToolSet {
     const base = baseType(type);
     const refused = grantRefusal(base, cfg, manifest, deps.registry);
     if (refused) return refuse(`step_run refused: ${refused}`);
+    const closed = deps.visitor ? await deps.visitor.refusal(app, base, cfg) : null;
+    if (closed) return refuse(`step_run refused: ${closed}`);
     if (GRAPH_WRITES.has(base)) {
       const bad = await graphWriteRefusal(base, cfg, manifest, reader);
       if (bad) return refuse(`step_run refused: ${bad}`);
@@ -326,7 +337,7 @@ export function buildAppTools(deps: AppToolDeps): ToolSet {
         ...(input !== undefined ? { input } : {}),
         ...(deps.actor ? { actor: deps.actor, principal: deps.actor } : {}),
         app: { name: app.name, version: app.version },
-        keep: keptFromApp(base),
+        keep: !deps.visitor && keptFromApp(base),
         ...(deps.runStepDeps.workspace ? { workspace: deps.runStepDeps.workspace } : {}),
       },
       deps.runStepDeps,
@@ -357,7 +368,7 @@ export function buildAppTools(deps: AppToolDeps): ToolSet {
         app: z.string().describe("The app's identity: the content of the document's <meta name=\"strut-app-token\">."),
       }),
       execute: async ({ type, config, input, app: identity }) => {
-        const app = appOfIdentity(identity);
+        const app = deps.visitor ? deps.visitor.identity(identity) : appOfIdentity(identity);
         if (!app) return { error: "step_run: `app` is not a valid app identity — the token the served document carries in <meta name=\"strut-app-token\">; a token for a run's or a job's files, a forged or unsigned one, opens nothing" };
         const found = await appOf(app, deps);
         if ("error" in found) return found;
@@ -369,7 +380,7 @@ export function buildAppTools(deps: AppToolDeps): ToolSet {
           version: app.version,
           type: baseType(type),
           config,
-          ...(deps.actor ? { viewer: deps.actor } : {}),
+          ...(deps.visitor?.viewer ?? deps.actor ? { viewer: (deps.visitor?.viewer ?? deps.actor)! } : {}),
           status: call.status,
           ms: Date.now() - started,
           bytes: call.bytes,

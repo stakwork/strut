@@ -196,22 +196,22 @@ describe("a write to a merged-away key lands on the kept node", { skip: lb.skip 
   });
   after(() => lb.close(b));
   beforeEach(() => lb.clear(b));
-  const lingo = (name: string, description?: string, mode: "create" | "upsert" = "create") =>
-    b.nodes.write({ type: "Lingo", data: { name, ...(description ? { description } : {}) } }, mode);
+  const concept = (name: string, description?: string, mode: "create" | "upsert" = "create") =>
+    b.nodes.write({ type: "Concept", data: { name, ...(description ? { description } : {}) } }, mode);
   const row = async (ref_id: string) => (await b.query(`MATCH (n:Node {ref_id: $r}) RETURN n AS n`, { r: ref_id }))[0]!["n"] as Record<string, unknown>;
   const live = async (type: string) => (await b.query(`MATCH (n:Node {node_type: $t}) WHERE n.deleted_at IS NULL RETURN n.ref_id AS r`, { t: type })).map((r) => r["r"]);
 
   it("k8s merged into Kubernetes: writing k8s again updates Kubernetes, and k8s stays merged", async () => {
-    const kube = (await lingo("Kubernetes", "container orchestration")).ref_id;
-    const k8s = (await lingo("k8s", "short for it")).ref_id;
+    const kube = (await concept("Kubernetes", "container orchestration")).ref_id;
+    const k8s = (await concept("k8s", "short for it")).ref_id;
     const m = await mergeNodes(b, { keep: kube, duplicate: k8s });
     const kubeKey = (await row(kube))["key"];
 
-    const created = await lingo("k8s");
+    const created = await concept("k8s");
     assert.deepEqual([created.ref_id, created.outcome], [kube, "existing"], "a create finds the kept node");
-    const upserted = await lingo("k8s", "runs containers", "upsert");
+    const upserted = await concept("k8s", "runs containers", "upsert");
     assert.deepEqual([upserted.ref_id, upserted.outcome, upserted.node_key], [kube, "updated", kubeKey]);
-    assert.deepEqual(await live("Lingo"), [kube], "one node: the duplicate was not revived");
+    assert.deepEqual(await live("Concept"), [kube], "one node: the duplicate was not revived");
     const kept = await row(kube);
     assert.deepEqual([kept["name"], kept["title"], kept["key"], kept["description"]], ["Kubernetes", "Kubernetes", kubeKey, "runs containers"], "its own name and key, the written field");
     assert.match(String(kept["search_text"]), /Kubernetes/);
@@ -219,27 +219,27 @@ describe("a write to a merged-away key lands on the kept node", { skip: lb.skip 
 
     // The undo still works: the duplicate comes back as it was, the write stays on the kept node.
     await unmergeNodes(b, { merge: m.merge });
-    assert.deepEqual((await live("Lingo")).sort(), [kube, k8s].sort());
+    assert.deepEqual((await live("Concept")).sort(), [kube, k8s].sort());
     assert.equal((await row(k8s))["description"], "short for it");
     assert.equal((await row(kube))["description"], "runs containers");
     // Once undone, the key is k8s's own again.
-    assert.equal((await lingo("k8s")).ref_id, k8s);
+    assert.equal((await concept("k8s")).ref_id, k8s);
   });
 
   it("follows a chain of merges to the node in force", async () => {
-    const [a, mid, c] = [(await lingo("a")).ref_id, (await lingo("b")).ref_id, (await lingo("c")).ref_id];
+    const [a, mid, c] = [(await concept("a")).ref_id, (await concept("b")).ref_id, (await concept("c")).ref_id];
     await mergeNodes(b, { keep: mid, duplicate: a });
     await mergeNodes(b, { keep: c, duplicate: mid });
-    const w = await lingo("a", "via b", "upsert");
+    const w = await concept("a", "via b", "upsert");
     assert.equal(w.ref_id, c);
-    assert.deepEqual(await live("Lingo"), [c]);
+    assert.deepEqual(await live("Concept"), [c]);
     assert.deepEqual([(await row(c))["name"], (await row(c))["description"]], ["c", "via b"]);
   });
 
   it("a node deleted but never merged is restored, as before", async () => {
-    const helm = (await lingo("Helm")).ref_id;
+    const helm = (await concept("Helm")).ref_id;
     assert.ok(await b.nodes.deleteNode(helm));
-    const w = await lingo("Helm");
+    const w = await concept("Helm");
     assert.deepEqual([w.ref_id, w.outcome], [helm, "restored"]);
     assert.equal((await row(helm))["deleted_at"] ?? null, null);
   });

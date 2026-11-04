@@ -5,10 +5,10 @@ import { STRUT_EDGES, STRUT_SCHEMAS } from "../strut-schemas.js";
 import { EDGE_COLUMNS, EDGE_TYPE_COLUMNS, GENERIC_COLUMNS, LADYBUG_EDGES, LADYBUG_EDGE_TYPES, LADYBUG_SCHEMAS, LADYBUG_STRUT_TYPES, SCHEMA_COLUMNS, ladybugEdge, ladybugSchema, nodeColumns, ontologySeed } from "./registry.js";
 
 describe("ladybug registry — the ontology seed (plans/ladybug-backend.md §3, ruling 6 as amended 2026-10-28)", () => {
-  it("holds exactly the seventeen types, and the Strut ones without Thing's vestiges or per-stem vectors", () => {
+  it("holds exactly the eighteen types, and the Strut ones without Thing's vestiges or per-stem vectors", () => {
     assert.deepEqual(
       LADYBUG_SCHEMAS.map((s) => s.type),
-      [...LADYBUG_STRUT_TYPES, "Claim", "Check", "Evidence", "Concept", "Person", "Lingo", "EdgeText", "Merge"],
+      [...LADYBUG_STRUT_TYPES, "Claim", "Check", "Evidence", "Concept", "Person", "Lingo", "EdgeText", "Merge", "Mishearing"],
     );
     for (const t of ["StrutAgentSession", "StrutToolCall", "StrutChat", "StrutTurn", "Self", "Thing", "Document"]) assert.equal(ladybugSchema(t), null, t);
     assert.equal(ladybugSchema("strutrun")?.type, "StrutRun", "case-insensitive");
@@ -40,14 +40,14 @@ describe("ladybug registry — the ontology seed (plans/ladybug-backend.md §3, 
     assert.equal(concept.role, "concept");
   });
 
-  it("the base types: the user is a Person marked is_owner, keyed by ref_id and named by email; a Lingo word is one node", () => {
+  it("the base types: the user is a Person marked is_owner, keyed by ref_id and named by email; a Lingo word is keyed by ref_id too", () => {
     const person = ladybugSchema("Person")!;
     assert.equal(person.key_spec, "ref_id", "two people may share a name");
     assert.deepEqual(person.identifiers, ["email"]);
     assert.equal(person.role, "entity");
     assert.equal(person.attributes["is_owner"], "?boolean");
     const lingo = ladybugSchema("Lingo")!;
-    assert.equal(lingo.key_spec, "lingo-name");
+    assert.equal(lingo.key_spec, "ref_id", "a word with no Latin letters is a word too");
     assert.equal(lingo.role, "entity");
     const seeded = ontologySeed().schemas.find((f) => f["type"] === "Person")!;
     assert.deepEqual([seeded["role"], seeded["identifiers"], seeded["key_spec"]], ["entity", ["email"], "ref_id"]);

@@ -39,6 +39,7 @@ import { openLadybug, type LadybugHandle } from "./ladybug/db.js";
 import { LadybugEngine } from "./ladybug/engine.js";
 import { PRIVATE_NAMESPACE, namespaceName } from "./ladybug/namespaces.js";
 import { LadybugReader } from "./ladybug/reader.js";
+import { MERGE_TYPE, SCHEMA_TYPE } from "./ladybug/registry.js";
 import { Neo4jEngine } from "./neo4j-engine.js";
 import { NodeWriter, type Embedder } from "./node-writer.js";
 import { seedJarvisOntology, type OntologySeedReport } from "./ontology-seed.js";
@@ -169,7 +170,7 @@ export function openGraphBackend(cfg: GraphConfig, opts: GraphBackendOptions = {
   return held.backend.then(
     (b) => {
       let released = false;
-      return {
+      const out = {
         ...b,
         async close() {
           if (released) return;
@@ -179,6 +180,9 @@ export function openGraphBackend(cfg: GraphConfig, opts: GraphBackendOptions = {
           await b.close();
         },
       };
+      // A Ladybug file's embedder arrives after the open (`attach`): read it from the backend.
+      Object.defineProperty(out, "embedder", { get: () => b.embedder, enumerable: true, configurable: true });
+      return out;
     },
     (e) => {
       held.holders--;
@@ -192,8 +196,14 @@ async function openLadybugBackend(cfg: LadybugConfig, opts: GraphBackendOptions)
   if (namespace === null) throw new Error(`a ladybug file's own namespace must be a namespace name; got ${cfg.namespace}`);
   const lbug = await openLadybug(cfg.path, { extensionDir: cfg.extensionDir });
   try {
-    const embedder: Embedder | undefined =
-      opts.embeddings === false ? undefined : typeof opts.embeddings === "object" ? opts.embeddings : await MiniLMEmbedder.load();
+    // A given embedder is used from the start. MiniLM loads in the
+    // background (its first load downloads the model): the file opens
+    // keyword-only and its search and writers take the embedder once it is
+    // there (`attach`).
+    const given = typeof opts.embeddings === "object" ? opts.embeddings : undefined;
+    const load = opts.embeddings !== false && !given;
+    const readerOpts: { embedder?: Embedder } = {};
+    const writerOpts: { embedder?: Embedder; resolver?: SchemaResolver } = {};
     const engine = new LadybugEngine(lbug, namespace);
     const schemas = new SchemaResolver(engine);
     const backend: LadybugBackend = {
@@ -207,26 +217,64 @@ async function openLadybugBackend(cfg: LadybugConfig, opts: GraphBackendOptions)
       nodeEngine: engine.nodeEngine,
       edgeEngine: engine.edgeEngine,
       schemaSource: engine.schemaSource,
-      nodes: new NodeWriter(engine, { embedder, resolver: schemas }),
+      nodes: new NodeWriter(engine, Object.assign(writerOpts, { resolver: schemas })),
       edges: new EdgeWriter(engine, { resolver: schemas }),
-      reader: new LadybugReader(engine, { embedder }),
+      reader: new LadybugReader(engine, readerOpts),
       schemas,
-      embedder,
+      embedder: undefined,
       seed: undefined,
       embeddings: undefined,
       async close() {
+        closed = true;
         await engine.nodeEngine.idle?.();
+        await passWorker?.close();
         await lbug.close();
       },
     };
+    let closed = false;
+    let passWorker: WorkerEmbedder | undefined;
     // The facts' search rows a failed embedding or a rename left without a
-    // vector (plans/graph-edge-search.md), filled in the background; a close
-    // waits for the run.
-    if (embedder && !opts.skipBoot) void engine.nodeEngine.embedPendingRows?.(embedder);
+    // vector (plans/graph-edge-search.md), and the data nodes written while
+    // the embedder was off, filled in the background; a close waits for the run.
+    const attach = (embedder: Embedder) => {
+      if (closed) return;
+      readerOpts.embedder = embedder;
+      writerOpts.embedder = embedder;
+      (backend as { embedder: Embedder | undefined }).embedder = embedder;
+      if (opts.skipBoot) return;
+      // The catch-up embeds in a worker thread, as on Neo4j: onnxruntime runs
+      // a model synchronously, and a sweep of a file's nodes on this thread
+      // would hold every request (and the ready line) until it ended. The
+      // writers and search keep `embedder` (one short text each). An
+      // injected embedder is used as it is.
+      passWorker = given ? undefined : new WorkerEmbedder();
+      const pass = passWorker ?? embedder;
+      void engine.nodeEngine.embedPendingRows?.(pass);
+      void engine.nodeEngine.embedPendingNodes?.(pass, async (type) => {
+        if (type === SCHEMA_TYPE || type === MERGE_TYPE) return false;
+        const s = await schemas.schema(type).catch(() => null);
+        return !!s && s.embed && s.role !== "record";
+      });
+    };
+    if (given) attach(given);
+    else if (load) void loadLadybugEmbedder(cfg.path).then((e) => e && attach(e));
     return backend;
   } catch (e) {
     await lbug.close().catch(() => undefined);
     throw e;
+  }
+}
+
+/** MiniLM for a Ladybug file, or none: a load that fails (the first
+ *  download with no network, a build without the embeddings stack) leaves
+ *  the file keyword-only, and the next open tries again. Neo4j's open still
+ *  fails instead. */
+async function loadLadybugEmbedder(path: string): Promise<Embedder | undefined> {
+  try {
+    return await MiniLMEmbedder.load();
+  } catch (e) {
+    console.warn(`[graph] ${path}: the embedding model did not load, so search is keyword-only until the next start: ${String(e).split("\n")[0]}`);
+    return undefined;
   }
 }
 

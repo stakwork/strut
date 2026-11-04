@@ -96,8 +96,8 @@ const ladybug =
   ["lbugjs.node", "libvector.lbug_extension", "libfts.lbug_extension"].every((f) => existsSync(join(nativeDir, f)));
 dflt("STRUT_WORKSPACE_BACKEND", ladybug ? "ladybug" : "fs");
 if (ladybug) {
-  // Without the embeddings stack (package:desktop --embeddings) the graph is
-  // fulltext-only; the default would try to load MiniLM and fail the boot.
+  // Without the embeddings stack (package:desktop --no-embeddings) the graph
+  // is fulltext-only; the default would try to load MiniLM for nothing.
   if (!staged.embeddings) dflt("STRUT_GRAPH_EMBEDDINGS", "off");
 }
 // The app build's esbuild: package-desktop.mjs moves its binary into native/

@@ -1368,13 +1368,33 @@ describe("the API key gate", () => {
         .filter((r) => r.method !== "ALL" && r.path !== "*")
         .map((r) => `${r.method} ${r.path.replace(/:[A-Za-z]+(\{[^}]*\})?/g, "x")}`),
     )].filter((r) => r !== "GET /health" && r !== "POST /auth/session" && r !== "DELETE /auth/session");
-    assert.ok(routes.length > 80, `swept ${routes.length} routes`);
-    assert.ok(routes.includes("GET /workflows/x/runs/x/transcripts/x"));
-    assert.ok(routes.includes("GET /host/mounted"));
-    for (const route of routes) {
+    // `GET /public/*` is open by design (src/public-routes.ts): it serves only
+    // what a person made public, and with nothing public it serves nothing.
+    const publicReads = routes.filter((r) => /^GET \/public(?:\/|$)/.test(r));
+    // A visitor's page calls its app here (plans/public-surface.md §5): open,
+    // and with nothing in the public view it opens no app.
+    const visitorDoor = "POST /public/mcp";
+    const gated = routes.filter((r) => !publicReads.includes(r) && r !== visitorDoor);
+    assert.ok(routes.includes(visitorDoor));
+    assert.ok(gated.length > 80, `swept ${gated.length} routes`);
+    assert.ok(gated.includes("GET /workflows/x/runs/x/transcripts/x"));
+    assert.ok(gated.includes("GET /host/mounted"));
+    assert.ok(gated.includes("PUT /public-view") && gated.includes("GET /public-view"), "the record itself is behind the key");
+    for (const route of gated) {
       const [method, path] = route.split(" ") as [string, string];
       assert.equal((await strut.app.request(path, { method })).status, 401, route);
       assert.equal((await strut.app.request(path, { method, headers: { authorization: "Bearer nope" } })).status, 401, route);
+    }
+    assert.ok(publicReads.length >= 15, publicReads.join(", "));
+    for (const route of publicReads) {
+      const path = route.slice(4);
+      const res = await strut.app.request(path);
+      if (path === "/public/mcp") {
+        assert.equal(res.status, 405, "the visitor door takes POST");
+        continue;
+      }
+      assert.ok(res.status === 200 || res.status === 404, `${route} → ${res.status}`);
+      if (!["/public", "/public/workflows", "/public/steps", "/public/concepts", "/public/apps"].includes(path)) assert.equal(res.status, 404, `${route} serves nothing on an empty surface`);
     }
     // A path no route answers is not the UI either.
     assert.equal((await strut.app.request("/nope")).status, 401);
@@ -1392,8 +1412,9 @@ describe("the API key gate", () => {
     )].filter((r) => r !== "POST /auth/session" && r !== "DELETE /auth/session"); // the login, open to anyone
     // A launch, a run's control, and the publisher's ping to sync subscriptions.
     const peerPost = /^POST (?:\/workflows\/x\/(?:x\/run|run|runs\/x\/(?:cancel|pause|resume))|\/packages\/subscriptions\/sync)$/;
-    const allowed = routes.filter((r) => r.startsWith("GET ") || peerPost.test(r));
-    assert.equal(allowed.filter((r) => r.startsWith("POST ")).length, 6, allowed.join(", "));
+    // `POST /public/mcp` is a visitor's door, open to anyone (plans/public-surface.md §5).
+    const allowed = routes.filter((r) => r.startsWith("GET ") || peerPost.test(r) || r === "POST /public/mcp");
+    assert.equal(allowed.filter((r) => r.startsWith("POST ")).length, 7, allowed.join(", "));
     assert.ok(allowed.includes("GET /host/mounted"));
     assert.ok(routes.includes("POST /host/mounted") && !allowed.includes("POST /host/mounted"));
     for (const route of routes) {

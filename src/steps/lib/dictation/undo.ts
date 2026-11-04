@@ -3,6 +3,7 @@ import { defineStep } from "../../../core.js";
 import { memoryDb } from "../memory/_db.js";
 import forget from "../memory/forget.js";
 import { UNDONE } from "./_shared.js";
+import { graphForget, graphOurs, onGraph } from "./_graph.js";
 
 export default defineStep({
   type: "dictation/undo",
@@ -14,6 +15,15 @@ export default defineStep({
   input: z.object({ undo: z.array(z.string().min(1)) }),
   output: z.object({ undone: z.array(z.string()) }),
   async run(cfg, ctx) {
+    if (onGraph(ctx)) {
+      const ours = await graphOurs(ctx, cfg.undo);
+      const other = cfg.undo.filter((id) => !ours.has(id));
+      if (other.length) throw new Error(`dictation/undo: not written by dictation: ${other.join(", ")}`);
+      for (const ref_id of cfg.undo) {
+        await graphForget(ctx, ref_id, UNDONE).catch((err) => { throw new Error(`dictation/undo: ${err instanceof Error ? err.message : err}`); });
+      }
+      return { undone: cfg.undo };
+    }
     const query = await memoryDb(ctx);
     const ours = new Set<string>();
     for (const table of ["Entity", "Fact"]) {

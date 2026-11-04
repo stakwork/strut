@@ -26,7 +26,8 @@ import deleteNode from "../steps/lib/graph/delete-node.js";
 import duplicates from "../steps/lib/graph/duplicates.js";
 import graphGet from "../steps/lib/graph/graph-get.js";
 import graphSearch from "../steps/lib/graph/graph-search.js";
-import importMemory from "../steps/lib/graph/import-memory.js";
+import importMemory, { restates, spelledIn } from "../steps/lib/graph/import-memory.js";
+import { assertEdge } from "./temporal.js";
 import remember from "../steps/lib/memory/remember.js";
 import forget from "../steps/lib/memory/forget.js";
 
@@ -235,6 +236,10 @@ describe("graph/import-memory from the old memory database (ladybug)", { skip: l
     await say({ episode: "I'm vegetarian.", facts: [{ subject: me, predicate: "diet", text: "The user is vegetarian." }] });
     await say({ episode: "Peel says 'peal'.", facts: [{ subject: { type: "Project", name: "Peel" }, predicate: "heard_as", value: "peal", text: "Dictation writes Peel as peal." }] });
     await say({ episode: "Kate's coming over on Sunday.", mentions: [{ type: "Person", name: "Kate" }] });
+    // A name fact that names no one: a sentence about Sam, kept as no name.
+    await say({ episode: "Sam is the Sam in the tribes.", facts: [{ subject: { type: "Person", name: "Sam" }, predicate: "name", text: "Sam, also called Sammy J, is a teammate who shows up in the tribes." }] });
+    // A fact whose sentence is its two ends' names.
+    await say({ episode: "my uncle's company", facts: [{ subject: { type: "Person", name: "Alex's uncle" }, predicate: "uncle_of", object: me, text: "Alex's uncle is Alex's uncle." }] });
     const gone = await say({ episode: "Bob is a plumber.", mentions: [{ type: "Person", name: "Bob" }] });
     await run(forget as unknown as Step, { ref_id: gone.entities[0].ref_id, reason: "wrong" }, old);
 
@@ -248,14 +253,19 @@ describe("graph/import-memory from the old memory database (ladybug)", { skip: l
   });
 
   let first: any;
+  let started = 0;
   it("imports entities as nodes, the user as the is_owner Person, all in private, read as a job", async () => {
+    started = Date.now();
     first = await run(importMemory, {}, ctx);
     assert.equal(first.status, "Success", JSON.stringify(first));
     const people = await b.query("MATCH (n:Node {node_type: 'Person'}) WHERE n.deleted_at IS NULL RETURN n.ref_id AS id, n.title AS title, n.is_owner AS owner, n.alt_names AS alts, n.namespace AS ns ORDER BY n.title");
-    assert.deepEqual(people.map((p) => p["title"]), ["Alex Rivera", "Kate"], "Bob was forgotten; a name is no entity");
+    assert.deepEqual(people.map((p) => p["title"]), ["Alex Rivera", "Alex's uncle", "Kate", "Sam"], "Bob was forgotten; a name is no entity");
     const alex = people.find((p) => p["title"] === "Alex Rivera")!;
     assert.equal(alex["owner"], true);
-    assert.ok((alex["alts"] as string[]).includes("Me"));
+    assert.ok(!((alex["alts"] as string[] | null) ?? []).some((a) => a.toLowerCase() === "me"), "the old memory's \"Me\" is no name of theirs");
+    const sam = people.find((p) => p["title"] === "Sam")!;
+    assert.equal(sam["alts"], null, "a sentence is no name");
+    assert.equal((await b.reader.getNode(String(sam["id"])))!.properties["description"], "Sam, also called Sammy J, is a teammate who shows up in the tribes.");
     assert.deepEqual(people.find((p) => p["title"] === "Kate")!["alts"], ["Katherine Moss"], "one spelling, as written");
     const all = await b.query("MATCH (n:Node) WHERE n.node_type IN ['Person', 'Place', 'Organization', 'Project'] RETURN DISTINCT n.namespace AS ns");
     assert.deepEqual(all.map((r) => r["ns"]), ["private"]);
@@ -286,12 +296,24 @@ describe("graph/import-memory from the old memory database (ladybug)", { skip: l
     assert.ok(knows!.sources.includes(kate!), "about the user, said by Kate");
   });
 
-  it("lists what has no faithful place for review, and counts what it skipped", async () => {
-    const kinds = first.review.map((r: { kind: string; text?: string }) => `${r.kind}: ${r.text}`);
-    assert.ok(kinds.includes("fact: The user is vegetarian."), kinds.join("\n"));
-    assert.ok(kinds.includes("episode: Kate's coming over on Sunday."), kinds.join("\n"));
-    assert.equal(first.for_review, first.review.length);
-    assert.equal(first.skipped_by_reason["a mishearing: dictation keeps reading it from the old memory"], 1);
+  it("keeps when the old memory learned each node and fact", async () => {
+    const [kate] = await b.query("MATCH (n:Node {node_type: 'Person', title: 'Kate'}) RETURN n.ref_id AS id, n.created_at AS at");
+    assert.ok(Number(kate!["at"]) < started, "Kate is as old as the old memory says");
+    const [bath] = await edgesOf(b, "LIVES_IN", String(kate!["id"]));
+    const [row] = await b.query("MATCH ()-[x:LIVES_IN]->() WHERE x.ref_id = $id RETURN x.created_at AS at", { id: bath!.ref_id });
+    assert.ok(Number(row!["at"]) < started, "and so is what it knew of her");
+  });
+
+  it("drops what has no place on the graph, and counts it by reason", async () => {
+    const by = first.skipped_by_reason;
+    assert.equal(by["a fact about one entity alone"], 1, JSON.stringify(by));
+    assert.equal(by["an episode no fact came from"], 2, "Kate coming over, and Bob, forgotten");
+    assert.equal(by["a fact whose sentence only names its two ends"], 1, JSON.stringify(by));
+    assert.equal(Object.keys(by).some((r) => /mishearing/.test(r)), false, "a mishearing is migrated");
+    const heard = await b.query("MATCH (h:Node {node_type: 'Mishearing'}), (p:Node {title: 'Peel'}) WHERE h.entity_ref_id = p.ref_id RETURN h.value AS v");
+    assert.deepEqual(heard.map((r) => r["v"]), ["peal"], "onto Peel, as dictation reads it on the graph");
+    assert.equal(first.review, undefined, "nothing is listed for review");
+    assert.equal(first.skipped, Object.values(by as Record<string, number>).reduce((a, n) => a + n, 0));
     assert.ok(first.imported > 0);
   });
 
@@ -306,8 +328,40 @@ describe("graph/import-memory from the old memory database (ladybug)", { skip: l
     const asJob = ctxOf({ graph: graphView(b, parseGraphReaders({ jobs: { namespaces: ["private", "shared"], exclude_domains: ["Strut"] } })), secrets }, { actor: "import" });
     const again = await run(importMemory, {}, asJob);
     assert.equal(again.imported, 0, JSON.stringify(again));
-    assert.equal(again.for_review, first.for_review);
+    assert.equal(again.skipped, first.skipped);
     assert.deepEqual(await snapshot(), was);
+  });
+
+  it("run again, repairs what an earlier import wrote and this one would not", async () => {
+    const [alex] = (await b.query("MATCH (n:Node {node_type: 'Person'}) WHERE n.is_owner = true RETURN n.ref_id AS id")).map((r) => String(r["id"]));
+    const [sam] = (await b.query("MATCH (n:Node {node_type: 'Person', title: 'Sam'}) RETURN n.ref_id AS id")).map((r) => String(r["id"]));
+    const [uncle] = (await b.query("MATCH (n:Node {node_type: 'Person', title: \"Alex's uncle\"}) RETURN n.ref_id AS id")).map((r) => String(r["id"]));
+    // As the earlier import left them: "Me" and part of a sentence as names, no description, the empty fact written.
+    await b.nodes.update(alex!, { set: { alt_names: ["Me", "Al"] } });
+    await b.nodes.update(sam!, { set: { alt_names: ["Sammy J, is a teammate who shows up in the tribes"], description: null } });
+    if (!(await b.schemas.edgeSchema("UNCLE_OF", "Person", "Person"))) await b.schemas.createEdgeSchema("Person", "UNCLE_OF", "Person", { temporal: true, cardinality: "many" });
+    await assertEdge(b, b.schemas, { edge: "UNCLE_OF", source_ref_id: uncle!, target_ref_id: alex!, text: "Alex's uncle is Alex's uncle.", source: "memory/episode:old" });
+    await b.query("MATCH (n:Node) WHERE n.ref_id = $id SET n.created_at = $at RETURN n.ref_id", { id: sam!, at: Date.now() + 1000 });
+
+    const again = await run(importMemory, {}, ctx);
+    assert.equal(again.status, "Success", JSON.stringify(again));
+    assert.ok(again.counts.repaired >= 4, JSON.stringify(again.counts));
+    assert.deepEqual((await b.reader.getNode(alex!))!.properties["alt_names"], ["Al"], "a name the user was given stays");
+    const s = (await b.reader.getNode(sam!))!.properties;
+    assert.deepEqual(s["alt_names"], []);
+    assert.equal(s["description"], "Sam, also called Sammy J, is a teammate who shows up in the tribes.");
+    const [dated] = await b.query("MATCH (n:Node) WHERE n.ref_id = $id RETURN n.created_at AS at", { id: sam! });
+    assert.ok(Number(dated!["at"]) < started, "dated back to the old memory");
+    assert.deepEqual(await edgesOf(b, "UNCLE_OF", uncle!), []);
+  });
+
+  it("finds names as their sentences spell them, and sentences that only name their ends", () => {
+    assert.equal(spelledIn("Tom's wife is Kate O’Brien.", "kate o’brien"), "Kate O’Brien");
+    assert.equal(spelledIn("The user's name is Tom.", "me"), undefined, "a whole word, not part of one");
+    assert.equal(spelledIn("Je m'appelle Zoë Durand.", "zoe durand"), "Zoë Durand");
+    assert.equal(restates("Tom's uncle is Tom's uncle.", ["Tom's uncle", "Tom", "Me"]), true);
+    assert.equal(restates("Kate is from Leicester.", ["Kate", "Leicester"]), false);
+    assert.equal(restates("凯特住在伦敦。", ["凯特", "伦敦"]), false, "unsplit text is never said to restate");
   });
 
   it("with no old database there is nothing to import", async () => {

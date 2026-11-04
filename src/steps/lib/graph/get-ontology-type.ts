@@ -4,6 +4,7 @@ import type { StrutCapabilities } from "../../../capabilities.js";
 import { graphCtx, errText } from "./_shared.js";
 export default defineStep({
   type: "graph/get-ontology-type",
+  effect: "read",
   description:
     "Fetch the attribute schema for a SINGLE ontology node type. Returns exactly " +
     "one field — `attributes` — and nothing else; for a type's domain, parent or " +

@@ -6,6 +6,7 @@ import { requireRuns, inFrame, callerOf } from "./_shared.js";
 
 export default defineStep({
   type: "run/transcript",
+  effect: "read",
   description:
     "ONE agent's transcript from a run, by its step path (`wf/review`; a sub-agent's `wf/review/003-agent`) — what the `transcript` link on that step's step.end in run/events points at: { path, messages } (AI SDK model messages: system, user, assistant, tool). " +
     "`full` on a session turn (an agent step with `session`) gives the thread up to and including it — the system prompt, every earlier turn, this one — `full: true` on the result when it did. " +

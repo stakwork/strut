@@ -17,6 +17,8 @@ import { assertEdge } from "./temporal.js";
 import { mergeNodes } from "./merge.js";
 import { seedStrutDomain } from "./schema-seed.js";
 import { testBackends } from "./test-util.js";
+import { LadybugEngine } from "./ladybug/engine.js";
+import { LadybugReader } from "./ladybug/reader.js";
 import type { Evaluate, EvalAnswer } from "../evaluate.js";
 import graphSearch from "../steps/lib/graph/graph-search.js";
 import graphNeighbors from "../steps/lib/graph/graph-neighbors.js";
@@ -102,6 +104,14 @@ describe("search returns facts on a ladybug file (plans/graph-memory-plan.md ste
     );
     assert.ok(fact.score > 0);
     assert.equal(fact.match_type, "semantic", "no word of the query is in the fact");
+  });
+
+  it("a vector match below the embedder's floor is no match", async () => {
+    await works(stakwork, "Tom works at Stakwork as an engineer");
+    const reader = (minSimilarity?: number) => new LadybugReader(new LadybugEngine(b.lbug, b.namespace), { embedder: { embed: embedder.embed, minSimilarity } });
+    assert.equal((await reader().search({ q: "where's my job?" })).facts?.length, 1);
+    const res = await reader(0.99).search({ q: "where's my job?" });
+    assert.deepEqual([res.nodes, res.facts ?? []], [[], []]);
   });
 
   it("a name the sentence doesn't use is found through the composed text", async () => {

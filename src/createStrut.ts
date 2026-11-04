@@ -34,7 +34,7 @@ import type { StepSources } from "./steps/registry.js";
 import { runWorkflow } from "./runner.js";
 import { RunController } from "./run-control.js";
 import { buildJournal, invalidateFrom, readRunStart } from "./journal.js";
-import { appIdentity, carriesApiKey, carriesPeerKey, carriesFileToken, carriesBadFileToken, catalogToken, catalogTokenOf, CATALOG_TOKEN_DAYS, publicPackageRead, fileToken, warnIfUnconfigured, channelTicket, channelTicketOf, actorFromHeader, inProcessOf, inProcessRequest, scopeFromKey, isPeerScope, personOf, personToken, PERSON_TOKEN_DAYS, unauthorized, issueSession, sessionCookie, sessionOf, isSecureRequest, type Scope } from "./auth.js";
+import { appIdentity, publicAppIdentity, publicAppOfIdentity, carriesApiKey, carriesPeerKey, carriesFileToken, carriesBadFileToken, catalogToken, catalogTokenOf, CATALOG_TOKEN_DAYS, publicPackageRead, fileToken, warnIfUnconfigured, channelTicket, channelTicketOf, actorFromHeader, inProcessOf, inProcessRequest, scopeFromKey, isPeerScope, personOf, personToken, PERSON_TOKEN_DAYS, unauthorized, issueSession, sessionCookie, sessionOf, isSecureRequest, type Scope } from "./auth.js";
 import { standardServices, fileArtifactsCapability } from "./capabilities.js";
 import type { ArtifactsCapability, SecretsCapability } from "./capabilities.js";
 import type { SecretStore } from "./secret-store.js";
@@ -82,7 +82,7 @@ import { createAppMonitor, type AppMonitor } from "./apps/monitor.js";
 import { seedViewsApp } from "./apps/views-seed.js";
 import type { KitLocation } from "./apps/kit.js";
 import { appsRoot, isPreviewLabel, listAppFiles, readAppFile, validateAppName, writeAppFiles } from "./apps/files.js";
-import { DOCUMENT_FILE, readBuildInfo, withToken, withoutTokenMeta } from "./apps/build.js";
+import { DOCUMENT_FILE, readBuildInfo, withPublicIdentity, withToken, withoutTokenMeta } from "./apps/build.js";
 import { packArchive } from "./packages/archive.js";
 import { buildPackage, type BuildRequest } from "./packages/build.js";
 import { PUBLISHER_FILE, PUBLISHER_NAME, catalogStore, moveChannel, publicCatalogStore, publishRelease, publisherStore } from "./packages/publisher.js";
@@ -151,6 +151,9 @@ import "./privacy/register.js";
 import { seedPrivacyWorkflows } from "./privacy/seed.js";
 import { HOME_POSTS, homeSyncRole, homeSyncRoutes, seedHomeSyncWorkflow, type HomeSyncRole } from "./home-sync.js";
 import { VOICE_CALLS, voiceConfig, voiceRoutes, type VoiceConfig } from "./voice.js";
+import { createPublicSurface, normalizeSurface, surfaceProblem, visitorRefusal, visitorRuns, type PublicSurface } from "./public-surface.js";
+import { PUBLIC_PATH, publicRoutes, visitorAddress } from "./public-routes.js";
+import { publicViewNeeds } from "./public-view.js";
 // Pure (node:crypto only): the ask/answer shapes behind the two elicitation
 // tools and endpoints — plans/elicitation.md.
 import {
@@ -1547,9 +1550,12 @@ export async function createStrut<TServices = unknown>(
   app.use("*", async (c, next) => {
     const path = c.req.path;
     const read = c.req.method === "GET" || c.req.method === "HEAD";
+    // `/public/*` (src/public-routes.ts): what a person made public, served
+    // from the surface alone, so open to anyone — reads and a browser's
+    // preflight for them.
     const open = read
-      ? path === "/health" || (serveUi && UI_FILE.test(path)) || carriesFileToken(c) || !!catalogTokenOf(c) || publicPackageRead(c) || (!!indexConfig && INDEX_READ.test(path)) || !!channelTicketOf(c)
-      : (path === "/auth/session" && (c.req.method === "POST" || c.req.method === "DELETE")) || (!!indexConfig && path === INDEX_MCP && c.req.method === "POST");
+      ? path === "/health" || (serveUi && UI_FILE.test(path)) || carriesFileToken(c) || !!catalogTokenOf(c) || publicPackageRead(c) || (!!indexConfig && INDEX_READ.test(path)) || PUBLIC_PATH.test(path) || !!channelTicketOf(c)
+      : (path === "/auth/session" && (c.req.method === "POST" || c.req.method === "DELETE")) || (!!indexConfig && path === INDEX_MCP && c.req.method === "POST") || (c.req.method === "OPTIONS" && PUBLIC_PATH.test(path)) || (c.req.method === "POST" && path === "/public/mcp");
     if (open) return next();
     if (!carriesApiKey(c) && !carriesPeerKey(c) && !personOf(c)) return unauthorized(c);
     if (!read) {
@@ -2754,6 +2760,116 @@ export async function createStrut<TServices = unknown>(
       }
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
     }
+  });
+
+  // ── The public view (plans/public-surface.md) ────────────────────────────
+  // What a PERSON put in the server's public view, read by anyone under
+  // `/public/*` (src/public-routes.ts), from the record alone whatever the
+  // gate's mode. The record's door is `/public-view` — behind the gate like
+  // every route (a peer's write is a 403), and no step or builder tool
+  // writes it. Never a "publish": nothing is copied or versioned.
+  const publicSurface = createPublicSurface({
+    dataDir,
+    store,
+    ...(graph ? { graph: { reader: graph.reader, schemas: graph.schemas } } : {}),
+  });
+  /** A public app as a visitor's host reads it: the version people open
+   *  (the held release's once the public view holds it). */
+  const publicAppInfo = async (name: string) => {
+    const view = await apps.get(name).catch(() => null);
+    if (!view) return null;
+    return {
+      name,
+      version: view.version,
+      title: view.manifest.title,
+      ...(view.manifest.description ? { description: view.manifest.description } : {}),
+      ...(view.manifest.icon ? { icon: view.manifest.icon } : {}),
+    };
+  };
+  publicRoutes(app, {
+    surface: publicSurface,
+    workspace,
+    store,
+    registry: () => registry,
+    stepSources: () => stepSources,
+    ...(artifacts ? { artifacts } : {}),
+    fileHeaders: (path) => artifactHeaders(path),
+    documentHeaders: (path) => artifactHeaders(path, true),
+    liveStatus,
+    apps: {
+      info: publicAppInfo,
+      async document(name) {
+        const dir = await apps.versionDir(name);
+        if (!dir) return null;
+        const bytes = await readAppFile(dir.path, DOCUMENT_FILE);
+        if (!bytes) return null;
+        return { version: dir.version, html: withPublicIdentity(Buffer.from(bytes).toString("utf8"), publicAppIdentity(name, dir.version)) };
+      },
+    },
+  });
+  /** What the record names that this server does not hold — reported to
+   *  the person, never refused: an item may come later, and one that is
+   *  gone is skipped by every read. */
+  const publicViewMissing = async (s: PublicSurface) => {
+    const workflows = new Set((await workspace.listWorkflows()).map((w) => w.name));
+    const appNames = new Set((await apps.list().catch(() => [])).map((a) => a.name));
+    const tree = s.concepts.length ? await publicSurface.conceptTree().catch(() => undefined) : undefined;
+    return {
+      workflows: s.workflows.map((w) => w.name).filter((n) => !workflows.has(n)),
+      steps: s.steps.filter((t) => !registry[t]),
+      concepts: tree ? tree.missing : s.concepts.length && !graph ? s.concepts : [],
+      apps: s.apps.map((a) => a.name).filter((n) => !appNames.has(n)),
+    };
+  };
+  app.get("/public-view", async (c) => {
+    const s = await publicSurface.get();
+    return c.json({ surface: s, missing: await publicViewMissing(s) });
+  });
+  app.put("/public-view", async (c) => {
+    const body: unknown = await c.req.json().catch(() => undefined);
+    const problem = surfaceProblem(body);
+    if (problem) return c.json({ error: problem }, 400);
+    const before = new Set((await publicSurface.get()).apps.map((a) => a.name));
+    const next = await publicSurface.set(normalizeSurface(body));
+    // An app added to the public view is HELD at the version it shows
+    // (plans/public-surface.md §2, as pinning holds, plans/app-releases.md):
+    // a builder's later publish is a draft until a person moves the release.
+    const actor = await resolveActor(c);
+    const held: Array<{ app: string; version?: string; release?: string; error?: string }> = [];
+    for (const a of next.apps) {
+      if (before.has(a.name)) continue;
+      try {
+        const rel = await apps.releases(a.name);
+        if (!rel || rel.live !== "latest") continue;
+        const dir = await apps.versionDir(a.name);
+        if (!dir) continue;
+        const release = await apps.promote(a.name, dir.version, actor ? { by: actor } : {});
+        held.push({ app: a.name, version: dir.version, release: release.id });
+      } catch (err) {
+        held.push({ app: a.name, error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+    return c.json({ surface: next, missing: await publicViewMissing(next), ...(held.length ? { held } : {}) });
+  });
+  // What adding an app or a workflow brings along, for the dialog to
+  // pre-check (src/public-view.ts): every line with what it exposes.
+  app.get("/public-view/needs", async (c) => {
+    const appName = c.req.query("app");
+    const wf = c.req.query("workflow");
+    const out = await publicViewNeeds(
+      {
+        workspace,
+        registry: () => registry,
+        stepSources: () => stepSources,
+        app: async (name) => {
+          const view = await apps.get(name).catch(() => null);
+          return view ? { version: view.version, title: view.manifest.title, grants: { workflows: view.manifest.grants.workflows, steps: view.manifest.grants.steps } } : null;
+        },
+        walk: (roots) => publicSurface.walk(roots),
+      },
+      { ...(appName ? { app: appName } : {}), ...(wf ? { workflow: wf } : {}) },
+    );
+    return "error" in out ? c.json(out, 404) : c.json(out);
   });
 
   // ── Apps (plans/apps.md §7.2) ────────────────────────────────────────────
@@ -6578,6 +6694,52 @@ export async function createStrut<TServices = unknown>(
       });
       return { appTools, appMeta: APP_TOOL_META };
     };
+    /** A VISITOR's door (plans/public-surface.md §5): a public app's page,
+     *  hosted with no credential, calls `step_run` here. The identity is the
+     *  public view's own (it opens nothing else), every call is held to the
+     *  public view after the app's grants (`visitorRefusal`), nothing is
+     *  kept, and the step runs against a bag of reads alone: `http`,
+     *  `secrets` (for a read a person ticked), the graph's reader held to
+     *  visible nodes, the runs held to the public view. Nothing else is on
+     *  it, so a step reaching for a write, a shell or a file fails naming
+     *  what is missing. */
+    app.post("/public/mcp", async (c) => {
+      const { buildAppTools, APP_TOOL_META } = await import("./apps/tools.js");
+      const { createMcpDoor, toolsetServer } = await import("./ai/mcp.js");
+      const bag = services as Record<string, unknown>;
+      const reader = publicSurface.reader();
+      const visitorBag = {
+        ...(bag["http"] ? { http: bag["http"] } : {}),
+        ...(bag["secrets"] ? { secrets: bag["secrets"] } : {}),
+        ...(graph && reader
+          ? {
+              graph: {
+                kind: graph.kind,
+                namespace: graph.namespace,
+                cfg: graph.cfg,
+                schemas: graph.schemas,
+                reader,
+                query: () => Promise.reject(new Error("raw graph queries are not available in the public view")),
+              },
+            }
+          : {}),
+        ...(bag["runs"] ? { runs: visitorRuns(bag["runs"] as Parameters<typeof visitorRuns>[0]) } : {}),
+      };
+      const tools = buildAppTools({
+        apps,
+        registry,
+        services: visitorBag,
+        runStepDeps: { store, workspace },
+        monitor: appMonitor,
+        visitor: {
+          identity: publicAppOfIdentity,
+          refusal: async (at, type, config) => visitorRefusal(await publicSurface.get(), (await apps.versionDir(at.name).catch(() => null))?.version, at, type, config),
+          viewer: `visitor ${visitorAddress(c)}`,
+        },
+      });
+      const instructions = "A public app's one tool, step_run, for a visitor's page: reads only, held to this strut server's public view.";
+      return createMcpDoor(() => toolsetServer({ tools, instructions, meta: APP_TOOL_META })).handle(c.req.raw);
+    });
     /** The builder deps both doors spread: public links, and a run that
      *  outlives the wait window goes on detached, tracked like any launch —
      *  nothing can notify an MCP client, so it polls get_run. */
@@ -6651,7 +6813,7 @@ export async function createStrut<TServices = unknown>(
     );
     // Stateless: no SSE stream to open, no session to end.
     const notAllowed = (c: Context) => c.json({ error: "method not allowed: /mcp takes POST (JSON-RPC over HTTP, stateless)" }, 405);
-    for (const path of ["/mcp", "/mcp/builder"]) {
+    for (const path of ["/mcp", "/mcp/builder", "/public/mcp"]) {
       app.get(path, notAllowed);
       app.delete(path, notAllowed);
     }

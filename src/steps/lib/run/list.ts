@@ -6,6 +6,7 @@ import { requireRuns, inFrame, callerOf } from "./_shared.js";
 
 export default defineStep({
   type: "run/list",
+  effect: "read",
   description:
     "A workflow's runs, newest first — each run's summary without its payloads: { runId, workflow, status, startedAt, finishedAt, durationMs, error?, actor?, origin?, automation?, job?, app?, totals? (model calls, tokens, cost), artifacts? (the run's deliverables as links) }. " +
     "A run still in flight has a live status (running, paused) and no finishedAt. Filter by status, since (ISO or ms — runs started at or after), automation (an id), job. " +

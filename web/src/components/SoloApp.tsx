@@ -18,14 +18,23 @@ import { AppHost } from "./AppHost";
 // one ending in `@preview-<hex>` an unpublished build `app/look { path }`
 // hosts, which no listing holds (a new app has none), so it is not read.
 // `?input=` is what the page is opened with (its `tool-input`).
+//
+// `&public=1`: a VISITOR's page (plans/public-surface.md §5) — the app as
+// this server's public view serves it, read with no credential: its info
+// and document under `/public/apps/<name>`, its calls to `/public/mcp`.
+// What the store frames from a publisher's server, and what a person with
+// no account opens.
 
-export function SoloApp(props: { app: string; input?: string | null }) {
+export function SoloApp(props: { app: string; input?: string | null; visitor?: boolean }) {
   // undefined: the listing has not answered; null: the app (or the version) is not in it.
   const [entry, setEntry] = useState<api.AppListEntry | null | undefined>(undefined);
+  const [visitorApp, setVisitorApp] = useState<api.PublicAppInfo | null | undefined>(undefined);
   const ref = parseAppKey(props.app);
   const preview = !!ref && !ref.peer && isPreviewVersion(ref.version);
   const hosted = (e: api.AppListEntry) => ({ name: e.name, version: ref?.version ?? e.activeVersion, ...(e.peer ? { peer: e.peer } : {}) });
-  const shown = preview ? { name: ref!.name, version: ref!.version! } : entry ? hosted(entry) : null;
+  const shown = props.visitor
+    ? visitorApp ? { name: visitorApp.name, version: visitorApp.version } : null
+    : preview ? { name: ref!.name, version: ref!.version! } : entry ? hosted(entry) : null;
   const [input, setInput] = useState(props.input ?? null);
   /** A link to this same app (the kit's `appLink`): its input, in place,
    *  with the address bar following (replaced, as the full UI does) — so a
@@ -42,6 +51,17 @@ export function SoloApp(props: { app: string; input?: string | null }) {
   };
   const toolInput = appToolInput(input);
   useEffect(() => {
+    if (!props.visitor) return;
+    let on = true;
+    api.getPublicApp(props.app).catch(() => null).then((info) => {
+      if (on) setVisitorApp(info);
+    });
+    return () => {
+      on = false;
+    };
+  }, [props.app, props.visitor]);
+  useEffect(() => {
+    if (props.visitor) return;
     if (!ref || preview) {
       setEntry(null);
       return;
@@ -64,8 +84,13 @@ export function SoloApp(props: { app: string; input?: string | null }) {
             app={shown}
             onNavigate={onNavigate}
             {...(toolInput ? { toolInput } : {})}
+            {...(props.visitor ? { visitor: true } : {})}
           />
-        : <div class="empty">{entry === null ? `No app "${props.app}"` : "Loading apps…"}</div>}
+        : <div class="empty">
+            {props.visitor
+              ? visitorApp === null ? `"${props.app}" is not in this server's public view` : "Loading the app…"
+              : entry === null ? `No app "${props.app}"` : "Loading apps…"}
+          </div>}
     </div>
   );
 }

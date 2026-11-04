@@ -6,6 +6,7 @@ import { requireRuns, inFrame, callerOf } from "./_shared.js";
 
 export default defineStep({
   type: "run/events",
+  effect: "read",
   description:
     "A run's event log as an array — run.start, every step.start / step.end / step.error (an agent's tool calls nested under its path), run.end or run.error — as GET …/runs/:runId/events serves it: " +
     "an agent transcript is a `transcript` link, never inline; a string field over 64 KB is replaced by its size. " +
