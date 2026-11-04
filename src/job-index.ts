@@ -157,7 +157,7 @@ export interface JobIndex {
    *  filter when one is selected); `actor` the jobs that actor launched a
    *  run of (`GET /jobs?mine=1`); `prefix` the jobs whose id starts with it
    *  (an app's own, `app/<name>/`, plans/apps.md §12). */
-  list(opts?: { q?: string; workflow?: string; actor?: string; prefix?: string; limit?: number }): Promise<JobListing[]>;
+  list(opts?: { q?: string; workflow?: string; actor?: string; since?: string | number; prefix?: string; limit?: number }): Promise<JobListing[]>;
   /** One job; `null` when there is neither a record nor a directory. */
   get(job: string, opts?: GetJobOptions): Promise<JobView | null>;
   /** One file of a job's directory; `null` when it is not there. */
@@ -295,7 +295,16 @@ export function createJobIndex(deps: JobIndexDeps): JobIndex {
     async list(opts = {}) {
       let recs = await records();
       if (opts.workflow) recs = recs.filter((rec) => rec.runs?.some((r) => r.workflow === opts.workflow));
-      if (opts.actor) recs = recs.filter((rec) => actorsOf(rec).includes(opts.actor!));
+      if (opts.actor) {
+        const who = opts.actor.trim().toLowerCase();
+        recs = recs.filter((rec) => actorsOf(rec).some((a) => a === opts.actor || a.toLowerCase().includes(who)));
+      }
+      if (opts.since !== undefined && opts.since !== "") {
+        const n = Number(opts.since);
+        const cut = Number.isFinite(n) ? n : Date.parse(String(opts.since));
+        if (Number.isNaN(cut)) throw new Error(`since: "${opts.since}" is not an ISO date or epoch ms`);
+        recs = recs.filter((rec) => (Date.parse(rec.usedAt) || Date.parse(rec.createdAt ?? "") || 0) >= cut);
+      }
       if (opts.prefix) recs = recs.filter((rec) => rec.name.startsWith(opts.prefix!));
       let rows = recs.map(listing);
       if (opts.q?.trim()) {

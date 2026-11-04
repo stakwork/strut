@@ -62,6 +62,38 @@ for (const tb of testBackends()) {
           `${x["a"]}|${x["b"]}`.localeCompare(`${y["a"]}|${y["b"]}`),
         );
 
+      it("listWorkflows reports the newest version's actor and ISO published time from ONE batched version read; no actor is absent", async () => {
+        const body = (m: string) => ({ steps: [{ id: "a", type: "log", config: { message: m } }] });
+        const reads = async (n: number) => {
+          for (let i = 0; i < n; i++) await ws.publishWorkflow(`bulk-${n}-${i}`, "v1", body(`${n}-${i}`), undefined, undefined, undefined, { source: "install" });
+          let calls = 0;
+          const orig = backend.query.bind(backend);
+          backend.query = ((...a: Parameters<typeof orig>) => {
+            if (/StrutWorkflowVersion/.test(String(a[0]))) calls++;
+            return orig(...a);
+          }) as typeof backend.query;
+          try {
+            await ws.listWorkflows();
+          } finally {
+            backend.query = orig;
+          }
+          return calls;
+        };
+        await ws.publishWorkflow("evans", "v1", body("1"), undefined, undefined, undefined, { actor: "Evanfeenstra-abc" });
+        await ws.publishWorkflow("evans", "v2", body("2"), undefined, undefined, undefined, { actor: "Evanfeenstra-abc" });
+        const few = await reads(2);
+        const many = await reads(8);
+        assert.equal(few, many, "version reads do not grow with the workflow count");
+        assert.equal(many, 1);
+        const list = await ws.listWorkflows();
+        const evans = list.find((w) => w.name === "evans")!;
+        assert.equal(evans.latestActor, "Evanfeenstra-abc");
+        assert.match(evans.latestPublishedAt!, /^\d{4}-\d\d-\d\dT.*Z$/);
+        const seeded = list.find((w) => w.name === "bulk-2-0")!;
+        assert.equal(seeded.latestActor, undefined);
+        assert.match(seeded.latestPublishedAt!, /Z$/);
+      });
+
       it("writes nodes of the Strut types keyed on the exact name, with VERSION_OF / ACTIVE_VERSION edges", async () => {
         await ws.publishWorkflow("wf", "v1", { steps: [{ id: "a", type: "log", config: { message: "x" } }] }, "first");
         const rows = await backend.query(
