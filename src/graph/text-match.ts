@@ -1,5 +1,5 @@
 // Text matching for keyword search: words in any script, a light stemmer,
-// typo distance, English nicknames, and a ranker that scores candidate
+// typo distance, and a ranker that scores candidate
 // texts by how rare the query words they match are. Pure: no index, no
 // model. Taken from stakwork/strut#162's memory matcher
 // (src/steps/lib/memory/_match.ts there), which can import these instead
@@ -73,38 +73,6 @@ export function typo(a: string, b: string): boolean {
   return distance(a, b, n >= 9 ? 2 : 1) <= (n >= 9 ? 2 : 1);
 }
 
-// Common English given names and their short forms. One group per name; a
-// short form of two names (Chris, Pat, Sam) links to both. John and
-// Jonathan are different names.
-const NICKNAMES = [
-  "alexander alex alec", "alexandra alex alexa sandra", "andrew andy drew", "anthony tony", "benjamin ben benny",
-  "catherine katherine kathryn kate katie kathy kat cathy", "charles charlie chuck", "christopher chris kit", "christine chris christina tina",
-  "daniel dan danny", "david dave davey", "edward ed eddie ted ned", "elizabeth liz lizzie beth betty eliza libby",
-  "james jim jimmy jamie", "jennifer jen jenny", "john johnny jack", "jonathan jon jonny", "joseph joe joey", "margaret maggie meg peggy",
-  "matthew matt", "michael mike mikey mick", "nicholas nick nicky", "patrick pat paddy", "patricia pat patty trish",
-  "peter pete", "rebecca becky becca", "richard rick ricky rich", "robert rob bob bobby robbie bert", "samuel sam sammy",
-  "samantha sam sammy", "stephen steve stevie", "steven steve stevie", "susan sue suzy", "thomas tom tommy", "victoria vicky tori",
-  "william will bill billy liam", "henry harry", "abigail abby", "deborah deb debbie", "kimberly kim", "timothy tim timmy",
-  "frederick fred freddie", "gregory greg", "jacqueline jackie", "jessica jess jessie", "joshua josh", "lawrence larry",
-  "nathaniel nathan nate", "theodore theo ted", "zachary zach zack", "olivia liv", "eleanor ellie nora", "isabella izzy bella",
-];
-// Short forms that are also everyday words ("the gas bill", "pat dry"):
-// expanded only when the query writes them with a capital (Bill, Pat).
-export const ORDINARY = new Set(["bill", "will", "rich", "drew", "sue", "rob", "nick", "jack", "pat", "chuck", "kit", "mike"]);
-const nick = new Map<string, Set<string>>();
-for (const group of NICKNAMES) {
-  const names = group.split(" ");
-  for (const n of names) {
-    const set = nick.get(n) ?? new Set<string>();
-    for (const m of names) if (m !== n) set.add(m);
-    nick.set(n, set);
-  }
-}
-/** Other forms of a given name: kate → katherine, katie, …; empty for a word that is not one. */
-export function nicknames(word: string): Set<string> {
-  return nick.get(word) ?? new Set();
-}
-
 /** The words a text writes with a capital, as `words` gives them: in a title, a name. */
 export function capitalised(text: string): string[] {
   return text.split(/[^\p{L}\p{N}'’]+/u).filter((t) => /^\p{Lu}/u.test(t)).flatMap((t) => words(t));
@@ -118,27 +86,20 @@ export function namedInText(text: string): string[] {
 // ---- Ranking ----
 
 /** How much a query word counts when it meets a text's word other than as itself. */
-export const WEIGHTS = { exact: 1, prefix: 0.8, nickname: 0.9, typo: 0.6, predicate: 0.8 } as const;
+export const WEIGHTS = { exact: 1, prefix: 0.8, typo: 0.6, predicate: 0.8 } as const;
 
-/** A search query as words: its terms (no stop words), whether it is about the user, and what a capital marks. */
+/** A search query as words: its terms (no stop words) and whether it is about the user. */
 export interface TextQuery {
   terms: string[];
   /** Every word, stop words included. */
   words: string[];
   /** Says I, me, my, …. */
   self: boolean;
-  /** The words the query writes with a capital. */
-  capitals: Set<string>;
 }
 
 export function textQuery(q: string): TextQuery {
   const all = words(q);
-  return { terms: [...new Set(all.filter((w) => !STOP.has(w)))], words: all, self: all.some((w) => SELF.has(w)), capitals: new Set(capitalised(q)) };
-}
-
-/** A term's nicknames, when it is a name: an everyday word that is also a short name only when written with a capital. */
-export function termNicknames(tq: TextQuery, term: string): string[] {
-  return !ORDINARY.has(term) || tq.capitals.has(term) ? [...nicknames(term)] : [];
+  return { terms: [...new Set(all.filter((w) => !STOP.has(w)))], words: all, self: all.some((w) => SELF.has(w)) };
 }
 
 /** Words of a vocabulary a term may have meant: a typo of it, or a longer word it starts (renovat → renovation). */
@@ -157,8 +118,6 @@ export function corrections(term: string, vocabulary: Iterable<string>): Array<{
 export interface MatchDoc {
   /** Everything it is found by. */
   text: string;
-  /** Its names (a title, other names): a nickname counts only here. */
-  names: string;
   /** Its title, when it is a named thing: more of it matched ranks it above longer names (Lisbon over Lisbon trip). */
   title?: string;
   /** It is the user, or a fact about them. */
@@ -191,11 +150,11 @@ export interface RankOptions {
   predicates?: ReadonlyMap<string, ReadonlySet<string>>;
 }
 
-type Meaning = { key: string; weight: number; how: "word" | "nick" | "sub" };
+type Meaning = { key: string; weight: number; how: "word" | "sub" };
 
 /**
  * Scores each doc, 0 when it matches no term: each term counts its best
- * meaning (the word, a nickname among the doc's names, a correction, or a
+ * meaning (the word, a correction, or a
  * substring for unspaced text) weighted by how rare that meaning is among
  * the docs; a term naming a fact's predicate counts on that fact as a
  * match and half a point more (work → works_at), so the fact that answers
@@ -208,7 +167,7 @@ export function rankScores(tq: TextQuery, docs: MatchDoc[], opts: RankOptions = 
   const names = opts.names ?? new Set<string>();
   const key = (w: string) => (names.has(w) ? w : stem(w));
   const keys = (text: string) => new Set(words(text).map(key));
-  const prepared = docs.map((d) => ({ stems: keys(d.text), names: new Set(words(d.names)), text: fold(d.text), title: d.title ? words(d.title) : [] }));
+  const prepared = docs.map((d) => ({ stems: keys(d.text), text: fold(d.text), title: d.title ? words(d.title) : [] }));
   const df = new Map<string, number>();
   for (const p of prepared) for (const s of p.stems) df.set(s, (df.get(s) ?? 0) + 1);
   const n = Math.max(docs.length, opts.total ?? 0);
@@ -218,24 +177,19 @@ export function rankScores(tq: TextQuery, docs: MatchDoc[], opts: RankOptions = 
   const meanings = tq.terms.map((w) => {
     const out: Meaning[] = [{ key: key(w), weight: WEIGHTS.exact, how: "word" }];
     if (unspaced(w)) out.push({ key: w, weight: WEIGHTS.exact, how: "sub" });
-    const nicks = termNicknames(tq, w);
-    for (const m of nicks) out.push({ key: m, weight: WEIGHTS.nickname, how: "nick" });
     for (const c of opts.extra?.get(w) ?? []) out.push({ key: key(c.word), weight: c.weight, how: "word" });
-    // A name and its other forms are one name: as rare as the docs holding any
-    // of them, so a rare spelling (Katherine) does not outrank the word itself (Kate).
-    const group = nicks.length ? Math.log(1 + n / (prepared.filter((p) => p.stems.has(key(w)) || nicks.some((m) => p.names.has(m))).length || 0.5)) : undefined;
-    return { out, group, cues: opts.predicates?.get(stem(w)), word: w };
+    return { out, cues: opts.predicates?.get(stem(w)), word: w };
   });
 
   return prepared.map((p, i) => {
     let score = 0;
-    for (const { out, group, cues, word } of meanings) {
+    for (const { out, cues, word } of meanings) {
       let best = 0;
       if (docs[i]!.predicate && cues?.has(docs[i]!.predicate!)) best = WEIGHTS.predicate * idf(key(word)) + 0.5;
-      for (const [j, m] of out.entries()) {
-        const hit = m.how === "nick" ? p.names.has(m.key) : m.how === "sub" ? p.text.includes(m.key) : p.stems.has(m.key);
+      for (const m of out) {
+        const hit = m.how === "sub" ? p.text.includes(m.key) : p.stems.has(m.key);
         if (!hit) continue;
-        const rarity = m.how === "sub" ? subIdf(m.key) : group !== undefined && (j === 0 || m.how === "nick") ? group : idf(m.key);
+        const rarity = m.how === "sub" ? subIdf(m.key) : idf(m.key);
         best = Math.max(best, m.weight * rarity);
       }
       score += best;
@@ -243,7 +197,7 @@ export function rankScores(tq: TextQuery, docs: MatchDoc[], opts: RankOptions = 
     if (!score) return 0;
     if (tq.self && docs[i]!.self) score *= 1.5;
     if (p.title.length) {
-      const hit = p.title.filter((w) => meanings.some(({ out }) => out.some((m) => m.how !== "nick" && (m.key === key(w) || m.key === w))));
+      const hit = p.title.filter((w) => meanings.some(({ out }) => out.some((m) => m.key === key(w) || m.key === w)));
       score += 0.5 + hit.length / p.title.length;
     }
     return score;
@@ -255,14 +209,14 @@ export function cuedPredicates(tq: TextQuery, predicates: ReadonlyMap<string, Re
   return new Set(tq.terms.flatMap((t) => [...(predicates.get(stem(t)) ?? [])]));
 }
 
-/** The terms no doc matches as a word, a nickname or a substring: the ones worth a typo lookup. */
+/** The terms no doc matches as a word or a substring: the ones worth a typo lookup. */
 export function unmatched(tq: TextQuery, docs: MatchDoc[], names: ReadonlySet<string> = new Set()): string[] {
   const key = (w: string) => (names.has(w) ? w : stem(w));
   const seen = new Set<string>();
   const texts: string[] = [];
   for (const d of docs) {
-    for (const w of words(`${d.text} ${d.names}`)) seen.add(key(w));
+    for (const w of words(d.text)) seen.add(key(w));
     texts.push(fold(d.text));
   }
-  return tq.terms.filter((t) => !seen.has(key(t)) && !termNicknames(tq, t).some((m) => seen.has(key(m))) && !(unspaced(t) && texts.some((x) => x.includes(t))));
+  return tq.terms.filter((t) => !seen.has(key(t)) && !(unspaced(t) && texts.some((x) => x.includes(t))));
 }

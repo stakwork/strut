@@ -80,7 +80,7 @@ import {
 } from "../search.js";
 import { THING_TYPE } from "../strut-schemas.js";
 import { ALT_NAMES } from "../node-writer.js";
-import { capitalised, corrections, cuedPredicates, namedInText, predicateWords, rankScores, termNicknames, textQuery, unmatched, words, type MatchDoc, type TextQuery } from "../text-match.js";
+import { capitalised, corrections, cuedPredicates, namedInText, predicateWords, rankScores, textQuery, unmatched, words, type MatchDoc, type TextQuery } from "../text-match.js";
 import { namespaceName } from "./namespaces.js";
 import type { LadybugSchemas } from "./engine.js";
 import type { LadybugCatalog } from "./ontology.js";
@@ -628,7 +628,7 @@ export class LadybugReader implements GraphReader {
   /**
    * The keyword half for a query of words (src/graph/text-match.ts):
    *   - the index finds every node and fact row holding any of the query's
-   *     words, or a nickname of one;
+   *     words (a node's `alt_names` among them: its other names);
    *   - a word in none of them is looked up in the titles and `alt_names`
    *     of the entity and concept nodes: what it may be a typo or the start
    *     of (Lisbn → Lisbon) is asked of the index again, and the nodes it
@@ -643,7 +643,7 @@ export class LadybugReader implements GraphReader {
    */
   private async keyword(tq: TextQuery, reads: KeywordReads, sc: ScopeSql): Promise<{ nodes: Hit[]; facts: Hit[] }> {
     const { nodes, facts } = reads;
-    const first = ftsWords(tq.terms.flatMap((t) => [t, ...termNicknames(tq, t)]));
+    const first = ftsWords(tq.terms);
     let [n, f] = await Promise.all([nodes(first), facts ? facts(first) : Promise.resolve([] as Hit[])]);
     const props = (h: Hit) => h.node.properties;
     const altsOf = (h: Hit) => (Array.isArray(props(h)[ALT_NAMES]) ? (props(h)[ALT_NAMES] as unknown[]).map(String) : []);
@@ -651,12 +651,12 @@ export class LadybugReader implements GraphReader {
     const names = new Set([...n.flatMap((h) => capitalised(namesOf(h))), ...f.flatMap((h) => namedInText(String(props(h)["search_text"] ?? "")))]);
     const nodeDoc = (h: Hit): MatchDoc => {
       const title = String(props(h)["title"] ?? "");
-      return { text: `${namesOf(h)}\n${String(props(h)["search_text"] ?? "")}`, names: namesOf(h), title, self: props(h)["is_owner"] === true };
+      return { text: `${namesOf(h)}\n${String(props(h)["search_text"] ?? "")}`, title, self: props(h)["is_owner"] === true };
     };
     const owner = tq.self && facts ? await this.ownerId(sc) : undefined;
     const factDoc = (h: Hit): MatchDoc => {
       const text = String(props(h)["search_text"] ?? "");
-      return { text, names: text, predicate: String(props(h)["edge_type"] ?? ""), self: !!owner && (props(h)["source_ref_id"] === owner || props(h)["target_ref_id"] === owner) };
+      return { text, predicate: String(props(h)["edge_type"] ?? ""), self: !!owner && (props(h)["source_ref_id"] === owner || props(h)["target_ref_id"] === owner) };
     };
 
     let extra: Map<string, Array<{ word: string; weight: number }>> | undefined;

@@ -1,7 +1,7 @@
 /**
  * Keyword search on a Ladybug file (src/graph/text-match.ts): any query
  * word finds a candidate, nodes and facts are ranked together by how rare
- * the words they match are, and a word may meet a nickname, a typo, a
+ * the words they match are, and a word may meet a typo, a
  * node's `alt_names`, the edge type a fact is of, or the user. Keyword
  * only, as Peel's desktop build searches (no embedder).
  */
@@ -55,11 +55,6 @@ describe("keyword search on a ladybug file", { skip: lb.skip }, () => {
   /** The node titles a search without facts returns (a plain list). */
   const found = async (q: string) => ((await run({ q }, b)) as any[]).map((n) => n.name);
   const texts = (out: any) => out.facts.map((f: any) => f.text);
-
-  it("a nickname finds the name: Katie is Kate", async () => {
-    const out = await run({ q: "Katie", facts: true }, b);
-    assert.equal(titles(out)[0], "Kate");
-  });
 
   it("a typo finds the word it misspells, through the entities' names", async () => {
     const out = await run({ q: "Lisbn", facts: true }, b);

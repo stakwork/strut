@@ -6,11 +6,9 @@ import {
   distance,
   fold,
   namedInText,
-  nicknames,
   predicateWords,
   rankScores,
   stem,
-  termNicknames,
   textQuery,
   typo,
   unmatched,
@@ -39,13 +37,6 @@ describe("text matching", () => {
     assert.ok(typo("priyah", "priya"));
     assert.ok(typo("bouldring", "bouldering"));
     assert.ok(!typo("john", "joan"), "four letters must match exactly");
-  });
-
-  it("nicknames go both ways, and an everyday word is a name only with a capital", () => {
-    assert.ok(nicknames("kate").has("katherine") && nicknames("katherine").has("kate"));
-    assert.ok(!nicknames("john").has("jonathan"), "John and Jonathan are different names");
-    assert.deepEqual(termNicknames(textQuery("pay the bill"), "bill"), []);
-    assert.ok(termNicknames(textQuery("Bill"), "bill").includes("william"));
   });
 
   it("a query is its terms, without stop words; I/me makes it about the user", () => {
@@ -81,59 +72,49 @@ describe("text matching", () => {
 
     it("rare words outweigh common ones", () => {
       const docs: MatchDoc[] = [
-        { text: "Kate likes cooking", names: "" },
-        { text: "Jon likes cycling", names: "" },
-        { text: "Sam likes cooking", names: "" },
-        { text: "Mia likes drawing", names: "" },
+        { text: "Kate likes cooking" },
+        { text: "Jon likes cycling" },
+        { text: "Sam likes cooking" },
+        { text: "Mia likes drawing" },
       ];
       assert.deepEqual(rank("Kate likes", docs)[0], "Kate likes cooking");
     });
 
-    it("a nickname meets a doc's names, never outranking the name as written", () => {
-      const docs: MatchDoc[] = [
-        { text: "Kate Katherine Moss", names: "Kate Katherine Moss", title: "Kate" },
-        { text: "Katherine sent the photos", names: "Katherine sent the photos" },
-        { text: "Kate works at Figma", names: "Kate works at Figma" },
-      ];
-      assert.deepEqual(rank("Kathy", docs).sort(), ["Kate", "Kate works at Figma", "Katherine sent the photos"].sort(), "Kathy finds Kate and Katherine");
-      const kate = rankScores(textQuery("Kate"), docs);
-      assert.ok(kate[2]! >= kate[1]!, "the rare spelling Katherine does not outrank Kate");
-    });
-
     it("a word naming a fact's predicate lifts that fact above its subject", () => {
       const docs: MatchDoc[] = [
-        { text: "Kate", names: "Kate", title: "Kate" },
-        { text: "Kate works at Figma. Kate joined Figma.", names: "", predicate: "works_at" },
-        { text: "Kate lives in Bath.", names: "", predicate: "lives_in" },
-        { text: "Jon cycles to work.", names: "", predicate: "prefers" },
+        { text: "Kate", title: "Kate" },
+        { text: "Kate works at Figma. Kate joined Figma.", predicate: "works_at" },
+        { text: "Kate lives in Bath.", predicate: "lives_in" },
+        { text: "Jon cycles to work.", predicate: "prefers" },
       ];
       const ranked = rank("where does Kate work", docs, { predicates: predicateWords(["works_at", "lives_in", "prefers"]), total: 200 });
       assert.equal(ranked[0], "Kate works at Figma. Kate joined Figma.");
     });
 
     it("a name is not stemmed: Jones is not Jon", () => {
-      const docs: MatchDoc[] = [{ text: "Gareth Jones lives in Cardiff", names: "" }, { text: "Jon lives in Bristol", names: "" }];
+      const docs: MatchDoc[] = [{ text: "Gareth Jones lives in Cardiff" }, { text: "Jon lives in Bristol" }];
       assert.deepEqual(rank("Jon", docs, { names: new Set(["jones"]) }), ["Jon lives in Bristol"]);
     });
 
     it("I/me favours the user's docs", () => {
-      const docs: MatchDoc[] = [{ text: "Marcus does not eat pork", names: "" }, { text: "The user does not eat meat", names: "", self: true }];
+      const docs: MatchDoc[] = [{ text: "Marcus does not eat pork" }, { text: "The user does not eat meat", self: true }];
       assert.equal(rank("what do I eat", docs)[0], "The user does not eat meat");
     });
 
     it("a correction counts, below the word itself", () => {
-      const docs: MatchDoc[] = [{ text: "Lisbon", names: "Lisbon", title: "Lisbon" }];
+      const docs: MatchDoc[] = [{ text: "Lisbon", title: "Lisbon" }];
       assert.deepEqual(rank("Lisbn", docs), [], "no correction, no match");
       assert.deepEqual(rank("Lisbn", docs, { extra: new Map([["lisbn", corrections("lisbn", ["lisbon"])]]) }), ["Lisbon"]);
     });
 
     it("unspaced text matches as a substring", () => {
-      assert.deepEqual(rank("北京", [{ text: "李明住在北京", names: "" }]), ["李明住在北京"]);
+      assert.deepEqual(rank("北京", [{ text: "李明住在北京" }]), ["李明住在北京"]);
     });
   });
 
-  it("unmatched: the terms no doc holds as a word, a nickname or a substring", () => {
-    const docs: MatchDoc[] = [{ text: "Katherine Moss", names: "Katherine Moss" }];
-    assert.deepEqual(unmatched(textQuery("Kate Lisbn"), docs), ["lisbn"]);
+  it("unmatched: the terms no doc holds as a word or a substring", () => {
+    const docs: MatchDoc[] = [{ text: "Katherine Moss" }];
+    assert.deepEqual(unmatched(textQuery("Katherine Lisbn"), docs), ["lisbn"]);
+    assert.deepEqual(unmatched(textQuery("Kate"), docs), ["kate"], "no table of short forms: Kate is not Katherine unless the node says so");
   });
 });
