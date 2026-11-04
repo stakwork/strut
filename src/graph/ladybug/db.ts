@@ -38,9 +38,9 @@ import { PRIVATE_NAMESPACE } from "./namespaces.js";
 import { DEFAULT_NAMESPACE } from "../bolt.js";
 import { bootEnv } from "../../env.js";
 import { ladybugMaxDbSize } from "./max-size.js";
-import { SCHEMA_EDGE, SCHEMA_EDGE_DDL, SCHEMA_EDGE_RULE_COLUMNS, readCatalog, seedOntology } from "./ontology.js";
+import { EDGE_ALIASES, SCHEMA_EDGE, SCHEMA_EDGE_DDL, SCHEMA_EDGE_RULE_COLUMNS, readCatalog, seedOntology } from "./ontology.js";
 import { writeMissingEdgeRows } from "./temporal.js";
-import { SCHEMA_TYPE, ontologySeed } from "./registry.js";
+import { EDGE_TEXT_TYPE, SCHEMA_TYPE, ontologySeed } from "./registry.js";
 import { OWN_CREATED_AT } from "../strut-schemas.js";
 import { nodeTitleFor } from "../title.js";
 import { EXTENSION_NAMES, LADYBUG_EXTENSION_PINS, pinnedExtensions, type ExtensionName, type PinnedExtensions, type PinnedOptions } from "./extensions.js";
@@ -134,7 +134,10 @@ export function ddlStatements(): string[] {
 
 /** Changes to what the DDL above once created, in order: each safe to run
  *  again, all run on every open. Append, never edit one that has shipped. */
-export const MIGRATIONS: readonly string[] = [];
+export const MIGRATIONS: readonly string[] = [
+  // An edge type's aliases (`EDGE_ALIASES`), on its rules.
+  `ALTER TABLE ${q(SCHEMA_EDGE)} ADD IF NOT EXISTS ${q(EDGE_ALIASES)} STRING[]`,
+];
 
 /** The core attributes' old column names (plans/graph-memory-plan.md "Core
  *  attributes"): `date_added_to_graph` → `created_at`, `Data_Bank` →
@@ -315,6 +318,36 @@ async function writeEdgeRows(read: Query, write: Query): Promise<void> {
   if (Number((await read("MATCH (m:Migration {migration_id: $id}) RETURN count(m) AS c", { id: EDGE_ROWS_MIGRATION }))[0]?.["c"]) > 0) return;
   await writeMissingEdgeRows(write, Date.now());
   await write("MERGE (m:Migration {migration_id: $id}) ON CREATE SET m.executed_at = $now", { id: EDGE_ROWS_MIGRATION, now: Date.now() });
+}
+
+/** Every node's search text on one line (src/graph/node-writer.ts), once
+ *  per file (its `Migration` stamp): Ladybug's full-text index splits words
+ *  on spaces alone, so an older build's "Kate\nKatherine" hid the first
+ *  word of every field after the first. The full-text index is dropped
+ *  first and the open builds it again. Search text is derived from the
+ *  node's fields and the old text is the new one with newlines, so no
+ *  backup (`ONE_WAY_MIGRATIONS`). A fact's search row (`EdgeText`) keeps
+ *  its composed text, which its edge's writes compare against. Guarded:
+ *  only rows with a newline or tab are rewritten, so a process that dies
+ *  part way is finished by the next open, and the stamp comes last. */
+export const SEARCH_TEXT_ONE_LINE_MIGRATION = "search_text_one_line_v1";
+
+async function searchTextOneLine(read: Query, write: Query): Promise<void> {
+  if (Number((await read("MATCH (m:Migration {migration_id: $id}) RETURN count(m) AS c", { id: SEARCH_TEXT_ONE_LINE_MIGRATION }))[0]?.["c"]) > 0) return;
+  const rows = await read(
+    `MATCH (n:Node) WHERE n.node_type <> '${EDGE_TEXT_TYPE}' AND n.search_text IS NOT NULL
+       AND (n.search_text CONTAINS $nl OR n.search_text CONTAINS $cr OR n.search_text CONTAINS $tab)
+     RETURN n.ref_id AS id, n.search_text AS t`,
+    { nl: "\n", cr: "\r", tab: "\t" },
+  );
+  if (rows.length) {
+    if ((await read("CALL SHOW_INDEXES() RETURN index_name")).some((r) => r["index_name"] === "node_fts")) await write("CALL DROP_FTS_INDEX('Node', 'node_fts')");
+    const fixed = rows.map((r) => ({ id: String(r["id"]), t: String(r["t"]).replace(/\s+/g, " ").trim() }));
+    for (let i = 0; i < fixed.length; i += TITLE_PAGE) {
+      await write("UNWIND $rows AS r MATCH (n:Node {ref_id: r.id}) SET n.search_text = r.t", { rows: fixed.slice(i, i + TITLE_PAGE) });
+    }
+  }
+  await write("MERGE (m:Migration {migration_id: $id}) ON CREATE SET m.executed_at = $now", { id: SEARCH_TEXT_ONE_LINE_MIGRATION, now: Date.now() });
 }
 
 /** Every data row without a `title` gets the one the writer would give it:
@@ -583,6 +616,7 @@ async function openFresh(path: string, opts: OpenOptions): Promise<LadybugHandle
     await addSchemaRuleColumns(read, write);
     await moveToNamespaces(read, write);
     await writeEdgeRows(read, write);
+    await searchTextOneLine(read, write);
     const have = new Set((await read(`CALL SHOW_INDEXES() RETURN index_name`)).map((r) => String(r["index_name"]))); // `_PK` rows included; harmless
     for (const [name, call] of indexCalls()) if (!have.has(name)) await write(call);
     await rebuildBrokenFts(read, write, unclean);

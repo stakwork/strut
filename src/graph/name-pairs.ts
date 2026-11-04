@@ -5,14 +5,6 @@
  */
 import { foldText } from "./world-time.js";
 
-// A few short forms that share no prefix with the full name. Only what the
-// prefix rule misses (Kate/Katie, Jon/Jonathan are already caught).
-const NICKNAMES: Record<string, string[]> = {
-  bob: ["robert"], rob: ["robert"], bill: ["william"], will: ["william"], liz: ["elizabeth"], beth: ["elizabeth"],
-  jim: ["james"], mike: ["michael"], dick: ["richard"], rick: ["richard"], tom: ["thomas"], tony: ["anthony"],
-  peggy: ["margaret"], meg: ["margaret"], jack: ["john"], ted: ["edward"], ned: ["edward"], sasha: ["alexander", "alexandra"],
-};
-
 // Unicode-aware, so "Łukasz", "Søren" and Cyrillic names keep every letter.
 export const words = (s: string) => foldText(s).split(/[^\p{L}\p{N}]+/u).filter(Boolean);
 
@@ -26,13 +18,13 @@ function commonPrefix(a: string, b: string): number {
 const surnamesClash = (a: string[], b: string[]) => a.length > 1 && b.length > 1 && a[a.length - 1] !== b[b.length - 1];
 
 /** Why two names could be one person's: a shared first name, a shared
- *  prefix of at least 3 letters, or a known nickname. Never when both carry
+ *  prefix of at least 3 letters. A short form that shares no prefix (Bob,
+ *  Robert) is the node's own other name, `alt_names`. Never when both carry
  *  a surname and the surnames differ. */
 function firstNameForm(a: string[], b: string[]): { score: number; why: string } | undefined {
   if (!a.length || !b.length || surnamesClash(a, b)) return undefined;
   const [x, y] = [a[0]!, b[0]!];
   if (x === y) return { score: 60, why: `same first name "${x}"` };
-  if ((NICKNAMES[x] ?? []).includes(y) || (NICKNAMES[y] ?? []).includes(x)) return { score: 55, why: `"${x}" is short for "${y}"` };
   if (x.length >= 3 && y.length >= 3 && commonPrefix(x, y) >= 3) return { score: 50, why: `first names "${x}" and "${y}" start alike` };
   return undefined;
 }

@@ -94,22 +94,29 @@ These use the same fixture as stakwork/strut#162 (`scripts/bench-memory.json`): 
 
 The first two columns are from #162's description. #162 is still open, so Peel runs today's main.
 
-| | memory/*, main (Peel today) | memory/*, #162 | graph, keyword only (Peel's desktop build) | graph + MiniLM |
-|---|---:|---:|---:|---:|
-| main recall@1 / @5 / MRR | 0.506 / 0.552 / 0.541 | 0.828 / 0.914 / 0.869 | 0.391 / 0.569 / 0.493 | 0.563 / 0.887 / 0.716 |
-| main negatives with a hit | 3/14 | 1/14 | 1/14 | 14/14 |
-| main non-relevant in top 5 | 1.98 | 2.53 | 1.55 | 3.76 |
-| held-out recall@1 / @5 / MRR | 0.762 / 0.857 / 0.783 | 0.905 / 1.000 / 0.952 | 0.571 / 0.619 / 0.594 | 0.619 / 0.952 / 0.756 |
-| held-out negatives with a hit | 0/3 | 1/3 | 0/3 | 3/3 |
-| search latency p50 / p95 (ms) | ~45 at 3,000 facts | ~62 at 3,000 facts | 32 / 74 | 224 / 251 |
-| duplicates, automatic match P / R | 1.00 / 0.22 | 1.00 / 0.30 | resolve: 1.00 / 0.19 | same |
-| duplicates, candidates P / R | 0.75 / 0.70 | 1.00 / 0.93 | resolve: 0.73 / 0.97; graph/duplicates pairs: 0.80 / 0.53 | same |
+| | memory/*, main (Peel today) | memory/*, #162 | graph, keyword only, before | graph, keyword only, recall matching (by score / in turn) | graph + MiniLM (before) |
+|---|---:|---:|---:|---:|---:|
+| main recall@1 / @5 / MRR | 0.506 / 0.552 / 0.541 | 0.828 / 0.914 / 0.869 | 0.391 / 0.569 / 0.493 | 0.874 / 0.925 / 0.885 · 0.632 / 0.922 / 0.761 | 0.563 / 0.887 / 0.716 |
+| main negatives with a hit | 3/14 | 1/14 | 1/14 | 1/14 | 14/14 |
+| main non-relevant in top 5 | 1.98 | 2.53 | 1.55 | 2.36 · 2.37 | 3.76 |
+| held-out recall@1 / @5 / MRR | 0.762 / 0.857 / 0.783 | 0.905 / 1.000 / 0.952 | 0.571 / 0.619 / 0.594 | 0.952 / 1.000 / 0.976 · 0.762 / 1.000 / 0.873 | 0.619 / 0.952 / 0.756 |
+| held-out negatives with a hit | 0/3 | 1/3 | 0/3 | 1/3 | 3/3 |
+| search latency p50 / p95 (ms) | ~45 at 3,000 facts | ~62 at 3,000 facts | 32 / 74 | 46 / 87 | 224 / 251 |
+| duplicates, automatic match P / R | 1.00 / 0.22 | 1.00 / 0.30 | resolve: 1.00 / 0.19 | same | same |
+| duplicates, candidates P / R | 0.75 / 0.70 | 1.00 / 0.93 | resolve: 0.73 / 0.97; graph/duplicates pairs: 0.80 / 0.53 | resolve: 0.70 / 1.00; pairs: same | same |
 
 How to read it:
-- **Merging the two lists:** search returns nodes and facts as two ranked lists. The table takes them in turn, node first. `--rank score` merges them by score instead, which is worse: keyword 0.425 / 0.580 / 0.483, MiniLM 0.506 / 0.588 / 0.566.
+- **Recall matching** (`src/graph/text-match.ts`, taken from #162's matcher): on a Ladybug file a keyword search finds any query word, then ranks nodes and facts together by how rare the words they match are.
+  - A word also meets a nickname, a typo of an entity's name or its `alt_names`, and the user (I/me).
+  - A word naming an edge type (work → `WORKS_AT`, or job through its alias `job_at`) counts on that type's facts, and finds them about the nodes found or the user.
+  - "Who works with X" returns the facts that share X's employer.
+  - Every type's `alt_names` is in its search text. A Ladybug file stores search text on one line, because its full-text index splits words on spaces only. `search_text_one_line_v1` rewrites older files once.
+- **Edge type aliases:** an edge type keeps aliases on its rules (`createEdgeSchema(…, { aliases })`, `graph/assert`'s `aliases` with `create_schema_if_missing`). `graph/import-memory` copies each predicate's aliases from the old ontology, and the benchmark seeds them the same way.
+- **Merging the two lists:** search returns nodes and facts as two ranked lists. On Ladybug with `facts: true` they share one score, and the table merges them by it (the default). `--rank turns` takes them in turn, node first, as before. That order caps @1 for a question a fact answers, because the subject's node always comes first.
+- **Still missed, keyword only:** paraphrases no alias covers (boss, eat, taxes, married, "do for a living"). John and Johnny don't find Jon (Jonathan), as in #162.
 - **Facts with no object:** the fixture's object-less facts (62 of 151) are seeded the way the PRD says a model writes them. A name fact becomes `alt_names`, and a summary becomes `description`. The rest (51) become an edge to a `Topic` holding the value (`VALUES` in the script, written by hand).
 - **Labelling artefacts:** a shared value node carries every fact that points at it. That causes the "must-not" hits on "am I vegetarian".
-- **Keyword-only misses:** aliases score 0.00, typos 0.27 at @5, and nicknames 0.00. Person's search text has no `alt_names`, and full-text search has no fuzzy matching. Adding `alt_names` to Person's index raises main recall@5 only to 0.603, because most alias queries are nicknames.
+- **Keyword-only misses, before recall matching:** aliases scored 0.00, typos 0.27 at @5, and nicknames 0.00.
 - **With MiniLM:** aliases, typos and paraphrase recover. But every negative returns something (vector search has no cut-off), the top 5 is noisier, and each search embeds the query on the CPU (~200 ms).
 - **Resolve:** only the exact name or an alias is automatic, never a near name. Its candidates catch 97% of true duplicates, at 73% precision.
 - **`graph/duplicates`:** pairs only nodes of one type. It misses organisation and place variants ("Acme" / "Acme Corp", "Cornwal"), because the pair rules were written for names of people.

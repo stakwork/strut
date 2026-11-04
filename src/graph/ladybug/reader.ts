@@ -54,6 +54,7 @@ import {
   isExactQuery,
   overfetch,
   parseLinks,
+  pyRound,
   refIdOf,
   retrieverLayer,
   serializeEdge,
@@ -78,6 +79,8 @@ import {
   type SearchResult,
 } from "../search.js";
 import { THING_TYPE } from "../strut-schemas.js";
+import { ALT_NAMES } from "../node-writer.js";
+import { corrections, cuedPredicates, predicateWords, textQuery, words, type TextQuery } from "../text-match.js";
 import { namespaceName } from "./namespaces.js";
 import type { LadybugSchemas } from "./engine.js";
 import type { LadybugCatalog } from "./ontology.js";
@@ -164,6 +167,31 @@ interface ScopeSql {
   params: Params;
 }
 const UNSCOPED: ScopeSql = { node: () => "", edge: () => "", params: {} };
+
+/** A fact search's filter over the search rows, and its full-text read. */
+interface FactQuery {
+  filter: string;
+  base: Params;
+  cap: number;
+  row: string;
+  asHit: (r: Row) => Hit;
+  fts: (terms: string, conjunctive: boolean) => Promise<Hit[]>;
+  /** The rows of the facts with one of `ids` at an end, of `types` when given. */
+  of: (ids: string[], types?: string[]) => Promise<Hit[]>;
+}
+
+/** The reads the keyword half ranks: full-text hits for some words, nodes by ref_id, and the facts of some nodes. */
+interface KeywordReads {
+  nodes: (terms: string) => Promise<Hit[]>;
+  nodesById: (ids: string[]) => Promise<Hit[]>;
+  facts?: (terms: string) => Promise<Hit[]>;
+  factsOf?: (ids: string[]) => Promise<Hit[]>;
+  /** The rows of the facts of some edge types with one of `ids` at an end. */
+  factsOfTypes?: (types: string[], ids: string[]) => Promise<Hit[]>;
+}
+
+/** The full-text query for a term list: the words, each once. */
+const ftsWords = (list: Iterable<string>) => [...new Set(list)].join(" ");
 
 export class LadybugReader implements GraphReader {
   constructor(
@@ -493,21 +521,46 @@ export class LadybugReader implements GraphReader {
     const asHit = (r: Row): Hit => ({ node: hitNode(r["node"]), raw_score: Number(r["score"]) });
     const pnode = await this.project("node");
 
-    const runFts = async (conjunctive: boolean, k: number): Promise<Hit[]> => {
+    const runFts = async (terms: string, conjunctive: boolean, k: number): Promise<Hit[]> => {
       const rows = await this.engine.query(
         `CALL QUERY_FTS_INDEX('Node', 'node_fts', $q, conjunctive := $conjunctive, top := $k)
          WITH node, score WHERE ${filter}
          RETURN ${pnode} AS node, score`,
-        { ...base, q: ftsTerms(qstr), conjunctive, k },
+        { ...base, q: terms, conjunctive, k },
       );
       return rows.map(asHit);
     };
+    const nodeFts = (terms: string, conjunctive: boolean) => (widen ? overfetch(cap, (k) => runFts(terms, conjunctive, k)) : runFts(terms, conjunctive, cap));
+
+    // Facts, through their search rows, unless the search asks for nodes of
+    // some types (`type`, `domains`, `linked` say what a node is; a fact is none).
+    // A file whose Node table has no search-row columns holds no facts.
+    const columns = (await this.engine.catalog.get()).columns;
+    const rowsHeld = ["edge_ref_id", "valid_at", "invalid_at", "expired_at"].every((c) => c in columns);
+    const factQuery = p.facts === false || types || links.length || !rowsHeld ? undefined : await this.factQuery({ ...p, limit, skip }, sc, timeRow, time);
+
+    // Words, not a quoted span: any word finds a candidate, and the
+    // candidates are ranked by the words they match (`keyword`). A quoted
+    // query keeps every word required, like jarvis's `+` terms; on nothing,
+    // any word — the analogue of the `~` fallback — except for an exact query.
+    const tq = isExactQuery(qstr) ? undefined : textQuery(qstr);
+    let factsFulltext: Hit[] | undefined;
+    let keywordOnly = false;
     const fulltext = await layer("fulltext", async () => {
-      const query = (conjunctive: boolean) => (widen ? overfetch(cap, (k) => runFts(conjunctive, k)) : runFts(conjunctive, cap));
-      // Every word required, like jarvis's `+` terms; on nothing, any word
-      // — the analogue of the `~` fallback — except for an exact query.
-      let hits = await query(true);
-      if (hits.length === 0 && !isExactQuery(qstr) && ftsTerms(qstr).includes(" ")) hits = await query(false);
+      if (tq?.terms.length) {
+        const nodesById = async (ids: string[]) =>
+          (await this.engine.query(`MATCH (node:Node) WHERE node.ref_id IN $ids AND ${filter} RETURN ${pnode} AS node, 0.0 AS score`, { ...base, ids })).map(asHit);
+        const kw = await this.keyword(tq, {
+          nodes: (terms) => nodeFts(terms, false),
+          nodesById,
+          ...(factQuery ? { facts: (terms: string) => factQuery.fts(terms, false), factsOf: (ids: string[]) => factQuery.of(ids), factsOfTypes: (types: string[], ids: string[]) => factQuery.of(ids, types) } : {}),
+        }, sc);
+        factsFulltext = kw.facts;
+        keywordOnly = true;
+        return kw.nodes;
+      }
+      let hits = await nodeFts(ftsTerms(qstr), true);
+      if (hits.length === 0 && !isExactQuery(qstr) && ftsTerms(qstr).includes(" ")) hits = await nodeFts(ftsTerms(qstr), false);
       return hits;
     }, [] as Hit[]);
 
@@ -529,12 +582,7 @@ export class LadybugReader implements GraphReader {
     }
     if (fieldQuery) warnings.push("input_q / output_q: a ladybug file keeps no per-field vectors; only q was searched");
 
-    // Facts, through their search rows, unless the search asks for nodes of
-    // some types (`type`, `domains`, `linked` say what a node is; a fact is none).
-    // A file whose Node table has no search-row columns holds no facts.
-    const columns = (await this.engine.catalog.get()).columns;
-    const rowsHeld = ["edge_ref_id", "valid_at", "invalid_at", "expired_at"].every((c) => c in columns);
-    const facts = p.facts === false || types || links.length || !rowsHeld ? { facts: [], truncated: false } : await this.searchFacts(qstr, { ...p, limit, skip }, sc, timeRow, time, layer);
+    const facts = factQuery ? await this.searchFacts(qstr, factQuery, { ...p, limit, skip }, sc, layer, factsFulltext) : { facts: [], truncated: false };
 
     let ranked = fuseHits(fulltext, semantic, {}, fusionWeights(qstr));
     const titles = new Map<string, string>();
@@ -545,9 +593,21 @@ export class LadybugReader implements GraphReader {
     ranked = applyTitleBoost(ranked, qstr, (t) => (t ? titles.get(t) ?? "name" : "name"));
     ranked = applyUsageTiebreak(ranked);
 
+    // Keyword only, nodes and facts were ranked on one scale (`keyword`):
+    // a hit's score is its keyword score over the best of both lists, so
+    // the lists compare (a fact that answers the question outranks its subject).
+    let rescore: ((ref: string) => number | undefined) | undefined;
+    if (keywordOnly && semantic.length === 0) {
+      const raw = new Map([...fulltext, ...(factsFulltext ?? [])].map((h) => [refIdOf(h.node), h.raw_score]));
+      const top = Math.max(0, ...raw.values());
+      if (top > 0) {
+        rescore = (ref) => (raw.has(ref) ? pyRound(raw.get(ref)! / top, 6) : undefined);
+        for (const f of facts.facts) f.score = rescore(f.ref_id) ?? f.score;
+      }
+    }
     const total = ranked.length;
     const page = ranked.slice(skip, skip + limit);
-    const nodes = page.map((e) => serializeNode(e.node, { score: e.extra.score, match_type: e.extra.match_type }));
+    const nodes = page.map((e) => serializeNode(e.node, { score: rescore?.(refIdOf(e.node)) ?? e.extra.score, match_type: e.extra.match_type }));
     if (p.include_edge_counts && nodes.length) {
       const counts = await this.edgeCounts(nodes.map((n) => n.ref_id), namespace, Boolean(p.namespace));
       for (const n of nodes) n.edges = counts[n.ref_id] ?? {};
@@ -562,22 +622,102 @@ export class LadybugReader implements GraphReader {
   }
 
   /**
-   * The facts a query finds (plans/graph-edge-search.md "Reads"): the
-   * keyword and vector indexes hit the edges' search rows (`EdgeText`),
-   * filtered after their top-k to the reader's namespaces, a namespace
-   * asked for and the time asked for (the row holds its edge's clocks), and
-   * fused as the nodes are. Each hit then fetches its edge and both ends,
-   * which must be live data nodes the reader may see, as must the edge.
-   * Ranked among facts only.
+   * The keyword half for a query of words (src/graph/text-match.ts). Each
+   * word is asked of the full-text index on its own, so Ladybug's own
+   * analyser does the language work (word endings, possessives, punctuation,
+   * its stop words, which find nothing) and its scores say how well a row
+   * matches; a row's score is the sum over the words it matched, nodes and
+   * facts in one pool, since both are rows of the same index. On top, only
+   * what holds for any data:
+   *   - a word the index finds nothing for is tried as a typo, or the start,
+   *     of a word in the titles and `alt_names` of the entity and concept
+   *     nodes (Lisbn → Lisbon), and a name the index never holds (a stop
+   *     word that is someone's name: "Will") finds the nodes it names;
+   *   - a word naming an edge type or one of its aliases (the schema's data:
+   *     WORKS_AT's "job") finds that type's facts about the nodes found.
    */
-  private async searchFacts(
-    qstr: string,
-    p: SearchParams & { limit: number; skip: number },
-    sc: ScopeSql,
-    timeRow: string,
-    time: Params,
-    layer: ReturnType<typeof retrieverLayer>,
-  ): Promise<{ facts: FactEnvelope[]; truncated: boolean }> {
+  private async keyword(tq: TextQuery, reads: KeywordReads, sc: ScopeSql): Promise<{ nodes: Hit[]; facts: Hit[] }> {
+    const { nodes, facts } = reads;
+    const byWord = async (w: string) => ({ n: await nodes(w), f: facts ? await facts(w) : [] });
+    const scores = new Map<string, { hit: Hit; fact: boolean; score: number }>();
+    const add = (hits: Hit[], fact: boolean, weight: number, floor = 0) => {
+      // A word counts once per row: its best meaning.
+      const best = new Map<string, Hit>();
+      for (const h of hits) if (!best.has(refIdOf(h.node)) || best.get(refIdOf(h.node))!.raw_score < h.raw_score) best.set(refIdOf(h.node), h);
+      return [...best.values()].map((h) => ({ h, fact, s: weight * Math.max(h.raw_score, floor) }));
+    };
+    const top = { score: 0 };
+    const vocabulary = await this.vocabulary(sc);
+    for (const w of tq.terms) {
+      const { n, f } = await byWord(w);
+      let found = [...add(n, false, 1), ...add(f, true, 1)];
+      if (!found.length) {
+        // Nothing for the word itself: a word of the graph's names it may mean, or the nodes it names.
+        const fixes = corrections(w, vocabulary.keys());
+        for (const c of fixes) {
+          const more = await byWord(c.word);
+          found.push(...add(more.n, false, c.weight), ...add(more.f, true, c.weight));
+        }
+        const ids = [...new Set([w, ...fixes.map((c) => c.word)].flatMap((x) => [...(vocabulary.get(x) ?? [])]))];
+        if (ids.length) {
+          const named = await reads.nodesById(ids);
+          const namedFacts = reads.factsOf ? await reads.factsOf(ids) : [];
+          found.push(...add(named, false, 1, top.score || 1), ...add(namedFacts, true, 0.5, top.score || 1));
+        }
+      }
+      const once = new Map<string, (typeof found)[number]>();
+      for (const x of found) if (!once.has(refIdOf(x.h.node)) || once.get(refIdOf(x.h.node))!.s < x.s) once.set(refIdOf(x.h.node), x);
+      for (const x of once.values()) {
+        const id = refIdOf(x.h.node);
+        const held = scores.get(id);
+        scores.set(id, { hit: held?.hit ?? x.h, fact: x.fact, score: (held?.score ?? 0) + x.s });
+        top.score = Math.max(top.score, scores.get(id)!.score);
+      }
+    }
+    // A word naming an edge type (job → WORKS_AT, by an alias) finds that
+    // type's facts about the nodes found, though their sentences never say it.
+    const predicates = facts ? predicateWords((await this.engine.catalog.get()).edges, await this.engine.schemaSource.edgeAliases()) : undefined;
+    const cued = predicates ? [...cuedPredicates(tq, predicates)] : [];
+    const about = [...scores.values()].filter((x) => !x.fact).map((x) => refIdOf(x.hit.node));
+    if (cued.length && about.length && reads.factsOfTypes) {
+      for (const h of await reads.factsOfTypes(cued, about)) {
+        const id = refIdOf(h.node);
+        const held = scores.get(id);
+        scores.set(id, { hit: held?.hit ?? h, fact: true, score: (held?.score ?? 0) + (top.score || 1) * 0.8 });
+      }
+    }
+    const props = (h: Hit) => h.node.properties;
+    // Ties go to the newer: the most recent of two equal answers is more likely current.
+    const at = (h: Hit) => Number(props(h)["created_at"] ?? 0);
+    const ranked = [...scores.values()].sort((a, b) => b.score - a.score || at(b.hit) - at(a.hit) || cmp(refIdOf(a.hit.node), refIdOf(b.hit.node)));
+    const out = (fact: boolean) => ranked.filter((x) => x.fact === fact).map((x) => ({ ...x.hit, raw_score: x.score }));
+    return { nodes: out(false), facts: out(true) };
+  }
+
+  /** The words of the entity and concept nodes' titles and other names, each
+   *  with the nodes holding it: what a typo is checked against. */
+  private async vocabulary(sc: ScopeSql): Promise<Map<string, Set<string>>> {
+    const types = (await this.engine.schemaSource.ontology()).schemas
+      .filter((s) => s.props["role"] === "entity" || s.props["role"] === "concept")
+      .map((s) => s.type);
+    if (!types.length) return new Map();
+    const alts = ALT_NAMES in (await this.engine.catalog.get()).columns;
+    const rows = await this.engine.query(
+      `MATCH (n:Node) WHERE n.node_type IN $types AND ${LIVE("n")}${sc.node("n")} RETURN n.ref_id AS id, n.title AS title${alts ? `, n.${q(ALT_NAMES)} AS alts` : ""}`,
+      { ...sc.params, types },
+    );
+    const out = new Map<string, Set<string>>();
+    for (const r of rows) {
+      for (const w of words([r["title"], ...(Array.isArray(r["alts"]) ? r["alts"] : [])].filter((x) => typeof x === "string").join(" "))) {
+        (out.get(w) ?? out.set(w, new Set()).get(w)!).add(String(r["id"]));
+      }
+    }
+    return out;
+  }
+
+  /** A fact search's filter over the search rows (the reader's scope, a
+   *  namespace asked for, the time asked for) and the reads over them. */
+  private async factQuery(p: SearchParams & { limit: number; skip: number }, sc: ScopeSql, timeRow: string, time: Params): Promise<FactQuery> {
     const where = [`node.node_type = '${EDGE_TEXT_TYPE}'`, LIVE("node") + sc.node("node"), timeRow];
     const base: Params = { ...sc.params, ...time };
     if (p.namespace !== undefined) {
@@ -586,21 +726,50 @@ export class LadybugReader implements GraphReader {
     }
     const filter = where.join(" AND ");
     const cap = fetchLimit(p.limit, p.skip);
-    const row = `{ref_id: node.edge_ref_id, edge_type: node.edge_type, source_ref_id: node.source_ref_id, target_ref_id: node.target_ref_id}`;
+    // The row's text and clocks ride along for the keyword ranking.
+    const row = `{ref_id: node.edge_ref_id, edge_type: node.edge_type, source_ref_id: node.source_ref_id, target_ref_id: node.target_ref_id, search_text: node.search_text, created_at: coalesce(node.valid_at, node.created_at)}`;
     const asHit = (r: Row): Hit => ({ node: { labels: [EDGE_TEXT_TYPE], properties: (r["row"] as Record<string, unknown>) ?? {} }, raw_score: Number(r["score"]) });
     // The rows are a filter after the index's top-k, as a typed node search is: always over-fetched.
-    const fts = (conjunctive: boolean) =>
+    const fts = (terms: string, conjunctive: boolean) =>
       overfetch(cap, async (k) =>
         (await this.engine.query(
           `CALL QUERY_FTS_INDEX('Node', 'node_fts', $q, conjunctive := $conjunctive, top := $k)
            WITH node, score WHERE ${filter}
            RETURN ${row} AS row, score`,
-          { ...base, q: ftsTerms(qstr), conjunctive, k },
+          { ...base, q: terms, conjunctive, k },
         )).map(asHit),
       );
-    const fulltext = await layer("facts fulltext", async () => {
-      let hits = await fts(true);
-      if (hits.length === 0 && !isExactQuery(qstr) && ftsTerms(qstr).includes(" ")) hits = await fts(false);
+    const of = async (ids: string[], types?: string[]) =>
+      (await this.engine.query(
+        `MATCH (node:Node) WHERE (node.source_ref_id IN $ids OR node.target_ref_id IN $ids)${types ? " AND node.edge_type IN $types" : ""} AND ${filter}
+         RETURN ${row} AS row, 0.0 AS score LIMIT ${cap}`,
+        { ...base, ids, ...(types ? { types } : {}) },
+      )).map(asHit);
+    return { filter, base, cap, row, asHit, fts, of };
+  }
+
+  /**
+   * The facts a query finds (plans/graph-edge-search.md "Reads"): the
+   * keyword and vector indexes hit the edges' search rows (`EdgeText`),
+   * filtered after their top-k to the reader's namespaces, a namespace
+   * asked for and the time asked for (the row holds its edge's clocks), and
+   * fused as the nodes are. Each hit then fetches its edge and both ends,
+   * which must be live data nodes the reader may see, as must the edge.
+   * Ranked among facts only. `ranked` is the keyword half when the node
+   * search already ran it (`keyword`).
+   */
+  private async searchFacts(
+    qstr: string,
+    fq: FactQuery,
+    p: SearchParams & { limit: number; skip: number },
+    sc: ScopeSql,
+    layer: ReturnType<typeof retrieverLayer>,
+    ranked?: Hit[],
+  ): Promise<{ facts: FactEnvelope[]; truncated: boolean }> {
+    const { filter, base, cap, row, asHit } = fq;
+    const fulltext = ranked ?? await layer("facts fulltext", async () => {
+      let hits = await fq.fts(ftsTerms(qstr), true);
+      if (hits.length === 0 && !isExactQuery(qstr) && ftsTerms(qstr).includes(" ")) hits = await fq.fts(ftsTerms(qstr), false);
       return hits;
     }, [] as Hit[]);
     const semantic = this.opts.embedder
@@ -616,13 +785,13 @@ export class LadybugReader implements GraphReader {
           );
         }, [] as Hit[])
       : [];
-    const ranked = fuseHits(fulltext, semantic, {}, fusionWeights(qstr));
-    if (ranked.length === 0) return { facts: [], truncated: false };
+    const fused = fuseHits(fulltext, semantic, {}, fusionWeights(qstr));
+    if (fused.length === 0) return { facts: [], truncated: false };
 
     // Each hit's edge and ends, one statement per edge type.
     const tables = (await this.engine.catalog.get()).edges;
     const byType = new Map<string, Array<{ e: string; s: string; t: string }>>();
-    for (const r of ranked) {
+    for (const r of fused) {
       const x = r.node.properties;
       const type = String(x["edge_type"] ?? "");
       if (!EDGE_TYPE_NAME.test(type) || !tables.has(type)) continue;
@@ -661,7 +830,7 @@ export class LadybugReader implements GraphReader {
       }
     }
     const facts: FactEnvelope[] = [];
-    for (const r of ranked) {
+    for (const r of fused) {
       const f = found.get(refIdOf(r.node));
       if (f) facts.push({ ...f, score: r.extra.score, match_type: r.extra.match_type });
     }
