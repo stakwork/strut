@@ -274,7 +274,8 @@ async function fulltextSearch(query: string, cwd: string): Promise<string> {
  *  prompt so the agent knows the layout without a first tool call. Any
  *  interpretation of that layout belongs in the caller's `system`/`prompt`.
  *  An empty dir still gets its absolute path: a model told "write report.md
- *  into your working directory" otherwise guesses one (`/work`). */
+ *  into your working directory" otherwise guesses one (`/work`). Only an
+ *  agent with a file built-in gets it (`filesInReach` in `run`). */
 export function buildPreamble(cwd: string): string {
   if (!existsSync(cwd)) return "";
   const entries = readdirSync(cwd, { withFileTypes: true })
@@ -1583,6 +1584,12 @@ export default defineStep({
     for (const [name, t] of Object.entries(allTools)) {
       if (!filter.length || filter.includes(name)) tools[name] = t;
     }
+    // The working directory belongs to the built-ins above: they are what
+    // read and write it. An agent with none of them (`toolFilter: ['none']`)
+    // is told nothing about it. Told "Working directory (…) is empty." with
+    // no way to act on it, a model answers that line instead of the message
+    // (swarm38's voice orchestrator on Haiku, 2026-11-04).
+    const filesInReach = Object.keys(tools).length > 0;
 
     // Registry-backed tools (the "tools are steps" model). Merged ON TOP of the
     // (filtered) built-ins — explicitly requested, so not subject to toolFilter.
@@ -1906,7 +1913,7 @@ export default defineStep({
       // code — never a turn of their own. Stamped told once the turn commits.
       const toTell = session ? await proposalsOf(ctx?.services)?.unreported(session.id).catch(() => []) ?? [] : [];
       const told = proposalResultLines(toTell);
-      const preamble = [buildPreamble(cfg.cwd), ...told].filter(Boolean).join("\n");
+      const preamble = [filesInReach ? buildPreamble(cfg.cwd) : "", ...told].filter(Boolean).join("\n");
       const startTime = Date.now();
       // STREAM, don't generate: a long drafting turn (multi-minute, many
       // thousands of output tokens) produces zero bytes on a non-streaming
