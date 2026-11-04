@@ -13,7 +13,7 @@ import type {
   StepCounts,
 } from "./core.js";
 export type { RunEndInfo } from "./core.js";
-import { accessedNodesOf, messagesOf, takeUsage, type AccessedNode, type ModelUsage, type StartedBy } from "./core.js";
+import { accessedNodesOf, messagesOf, takeUsage, type AccessedNode, type ModelUsage, type StartedBy, type WakeMark } from "./core.js";
 import { resolveConfig } from "./expr.js";
 import { baseType, parseStepRef } from "./step-ref.js";
 import { resolveStep } from "./steps/registry.js";
@@ -128,6 +128,13 @@ export interface RunOptions<TServices = unknown> {
    *  on `run.start` and on the job's record; the job launcher is the one
    *  site that sets it. */
   startedBy?: StartedBy;
+  /** The conversation a host's launch named (`POST …/run { conversation }`):
+   *  recorded on `run.start` (`RunEvent.conversation`). */
+  conversation?: string;
+  /** A WAKE turn (src/wake.ts): the job run(s) it woke on — recorded on
+   *  `run.start`, handed to every step as `ctx.wake`. strut's wake is the
+   *  one site that sets it. */
+  wake?: WakeMark;
   /** The APP the run works for (plans/apps.md §5): set by `run/launch`
    *  under `ctx.app` alone — recorded on `run.start` and the summary,
    *  handed to every step as `ctx.app`, read back by a resume like `job`.
@@ -268,6 +275,7 @@ interface Exec {
   job?: string;
   app?: AppRef;
   automation?: { id: string };
+  wake?: WakeMark;
   mcp?: McpServer[];
   attachments?: RunAttachment[];
   /** This frame is a workflow the AI published, or runs under one
@@ -414,6 +422,8 @@ export async function runWorkflow<TServices = unknown>(
       // auto-resume can tell roots from children (§5.3).
       ...(opts?.controller?.parent ? { parentRunId: opts.controller.parent.runId } : {}),
       ...(opts?.startedBy ? { startedBy: opts.startedBy } : {}),
+      ...(opts?.conversation ? { conversation: opts.conversation } : {}),
+      ...(opts?.wake ? { wake: opts.wake } : {}),
       // Recorded so a durable resume re-executes with the same knob values.
       ...(opts?.params ? { params: opts.params } : {}),
       ...(opts?.paramOverrides ? { paramOverrides: opts.paramOverrides } : {}),
@@ -457,6 +467,7 @@ export async function runWorkflow<TServices = unknown>(
     job: opts?.job,
     app: opts?.app,
     automation: opts?.automation,
+    ...(opts?.wake ? { wake: opts.wake } : {}),
     ...(opts?.mcp?.length ? { mcp: opts.mcp } : {}),
     ...(opts?.attachments?.length ? { attachments: opts.attachments } : {}),
     ...(opts?.aiAuthored || (await aiAuthored(services, wfName)) ? { aiAuthored: true } : {}),
@@ -964,6 +975,7 @@ async function dispatchStep(
         ...(exec.job ? { job: exec.job } : {}),
         ...(exec.app ? { app: exec.app } : {}),
         ...(exec.automation ? { automation: exec.automation } : {}),
+        ...(exec.wake ? { wake: exec.wake } : {}),
         ...(exec.mcp ? { mcp: exec.mcp } : {}),
         ...(exec.attachments ? { attachments: exec.attachments } : {}),
         // One disposer list per run (`Exec.disposers`), whatever frame the

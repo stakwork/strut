@@ -127,6 +127,10 @@ export interface NewTurn {
    *  `runId`'s artifacts: what a later turn's tools may hand on (job/start).
    *  Absent when it carried none. */
   attachments?: RunAttachment[];
+  /** A WAKE turn (src/wake.ts): strut ran it because a job ended, not
+   *  because a person wrote — what the wake's loop cap counts, and how a
+   *  host tells it from a person's message. Absent on a person's turn. */
+  wake?: true;
   provider: string;
   /** Canonical `provider/id`. */
   model: string;

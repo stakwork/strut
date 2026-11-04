@@ -216,6 +216,10 @@ export interface StepContext<TServices = unknown> {
    *  can set it, so a host step that acts on an automation's grant names
    *  the automation from here, never from the input. Absent otherwise. */
   automation?: { id: string };
+  /** The job end(s) this run is the WAKE turn of (src/wake.ts): set by
+   *  strut's wake alone, recorded on `run.start`, read back by a resume. An
+   *  `agent` step with a `session` marks its turn line `wake: true`. */
+  wake?: WakeMark;
   /** Who launched this run — an opaque string the host resolved from the
    *  request (plans/mothership-cost-control.md §2). Strut stores and forwards
    *  it, never interprets it. Absent when nobody is known. */
@@ -386,6 +390,17 @@ export interface StartedBy {
   session?: string;
 }
 
+/** On a WAKE turn (src/wake.ts, plans/jamie-app.md §1): the job run it woke
+ *  on — `peer` when that run was another strut's (`POST
+ *  /conversations/wake`) — and `also` the others when several jobs ended
+ *  while the conversation was busy and went as one turn. */
+export interface WakeMark {
+  job: string;
+  runId: string;
+  peer?: string;
+  also?: Array<{ job: string; runId: string; peer?: string }>;
+}
+
 export type AppRef = WorkspaceAppRef;
 
 export interface WorkspaceAppRef {
@@ -501,6 +516,13 @@ export interface RunEvent {
    *  per conversation needs nothing. Absent when a host launched the job
    *  itself. */
   startedBy?: StartedBy;
+  /** On `run.start`: the conversation (a session id) a HOST's launch named
+   *  (`POST …/run { conversation }`, full scope): read wherever
+   *  `startedBy.session` is, so a job turn the host launched itself wakes
+   *  that conversation when it ends (src/wake.ts). Kept by a resume. */
+  conversation?: string;
+  /** On a WAKE turn's `run.start` (src/wake.ts): the job run it woke on. */
+  wake?: WakeMark;
   /** On a `run.resumed` that UNPAUSED a live run (RUN_CONTROL_SPEC §4) —
    *  not a durable resume after a crash or a failure, which the boot-time
    *  crash-loop guard counts (§5.3). */
