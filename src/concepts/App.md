@@ -296,13 +296,15 @@ dialog): anyone can then open it with no account, read-only, and the store
 can frame it. There `useHost().public` is true, and the server refuses
 whatever the page tries beyond reading: starting or cancelling a run,
 saving state (`useAppState` lasts the visit), uploads, writes. So when
-`public` is true, hide the controls that would only fail — a launch form or
-Run button, a cancel, an upload box, an edit — and say in their place that
-runs are started by the people who keep this server. strut/views'
-`LaunchForm` already does. Everything else works as it does for anyone:
-the runs, the graph and the reads the person allowed. Do it in every app,
-in the view or not yet: a person adds an app later, and it should already
-be right. An app in the public view is held at a release, so a publish is
+`public` is true, keep the page as it is and DISABLE the controls that
+would only fail — a Run button, a launch form's fields, a cancel, an
+upload, an edit — with one line beside them saying runs are started by the
+people who keep this server. Never hide them: a visitor should see what
+the app does. strut/views' `LaunchForm` already does this. Everything else
+works as it does for anyone: the runs, the graph, the reads the person
+allowed, a tab or filter kept for the visit. Do it in every app, in the
+view or not yet: a person adds an app later, and it should already be
+right. An app in the public view is held at a release, so a publish is
 a draft until a person moves it: say so when you hand one over.
 
 ## The assistant

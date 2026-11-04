@@ -35,7 +35,7 @@
 > in the same PR, it's really part of the same work product"): a public
 > app (`/public/apps[/:name[/document]]`, `POST /public/mcp`, held at the
 > version it shows when it is added), the kit's `useHost().public`,
-> SoloApp's `&public=1`, `LaunchForm` saying it launches nothing there,
+> SoloApp's `&public=1`, `LaunchForm` disabled there with a line saying why,
 > and the **Public view** dialog with its cascade (`src/public-view.ts`,
 > `GET /public-view/needs`). Choices beyond the text: the record's door
 > moved to `/public-view` (GET, PUT, `needs`), so nothing under `/public`
@@ -127,6 +127,7 @@ ideas":
 | 18 | Whether actors appear in public version and revision lists is deferred; until it is decided, public views carry no actor. | **ruled** (deferred); the v1 default is mine |
 | 19 | The name: the PUBLIC VIEW (the **Public view** dialog), never "publish" or "make public", which are the copy side's (a version, a package release, the Packages dialog's **Make public**). | **ruled** |
 | 20 | Adding an item to the public view cascades in the dialog, explicitly: an app pre-checks its granted workflows with runs, their custom steps, its reads and the Concept roots its workflows read (`context/concept`); the record lists everything. | *agreed* ("yes that right") |
+| 21 | In the public view, a control a visitor cannot use is DISABLED, never hidden ("we dont need to hide stuff... buttons should be disabled"). | **ruled** |
 
 ## Design in one paragraph
 
@@ -357,8 +358,10 @@ call is handed.
   publisher's own server, its own steps are its own; a ticked outside read
   still sends that server's credential to the outside API.
 - **The kit.** `useHost()` gains `public: boolean` (`kit/src/hooks.ts:1003`)
-  so a page hides its Launch tab; a launch it tries anyway is refused with a
-  sentence the page can show. strut/views' `LaunchForm` hides itself.
+  so a page DISABLES its launch controls (ruled: disable, never hide — a
+  visitor should see what the app does); a launch it tries anyway is refused
+  with a sentence the page can show. strut/views' `LaunchForm` renders with
+  every control off and a line saying why.
 - **Cost.** No model call is reachable (`llm`, `agent`, `exec` are refused
   on the app door already). Server time is the cost: the app monitor
   (`src/apps/monitor.ts`) counts public calls under the app with the
@@ -518,7 +521,7 @@ merged before the next is opened, never stacked.
 2. **Public apps** (strut; BUILT, with item 6). Holding when added,
    `/public/apps`, `POST /public/mcp`'s `step_run` under the read-only view
    and the app's `reads`, SoloApp's public mode, the kit's
-   `useHost().public`, `LaunchForm` saying it launches nothing.
+   `useHost().public`, `LaunchForm` disabled with a line saying why.
 3. **The lab gate** (stakgraph, the one host change, §10). Pass `/public/*`
    through, and bump the strut pin to a commit with items 1 and 2.
 4. **The index showing it** (strut). `live` on index rows, the crawl of
@@ -527,7 +530,7 @@ merged before the next is opened, never stacked.
    JSON) and the framed app, **Install a copy** when a release holds the
    item.
 5. **openlaw-1 goes public** (an operator's acts and one app edit). The
-   app's own source hides its Launch tab when `useHost().public` (through
+   app's own source disables its launch form when `useHost().public` (through
    the builder, or `scripts/preview-app.mjs` and a publish). Then `PUT
    /public`: the app at its release with `reads` ticked
    (`openlaw/list-tasks`, `openlaw/task-details`, `openlaw/runs`,

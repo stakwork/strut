@@ -2172,4 +2172,6 @@ it, so a step that reaches for a write, a shell or a file fails naming it,
 and nothing is kept as a run. The visitor's address counts against §17.2's
 budget, and the app's usage (§14.6) counts the call under `visitor <address>`.
 In the page, the kit's `useHost().public` is true (it reads the meta), so it
-hides what launches: strut/views' `LaunchForm` says so in place of the form.
+disables what would only fail (it never hides it): strut/views' `LaunchForm`
+renders with every control off and a line saying runs are started by the
+people who keep the server.
