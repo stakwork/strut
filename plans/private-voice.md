@@ -1,7 +1,8 @@
 # Private voice: talk to your org's agent, and no one else hears
 
-> **Status (2026-11-03): proposed.**
-> - Built so far: `POST /audio/speak` on `feature/audio-speak` (not merged; §3.3). Nothing else is built.
+> **Status (2026-11-04): step 1 built; step 2's encryption built, not merged.**
+> - Built: step 1 — strut's `/voice/calls` (`src/voice.ts`) and `/audio/speak` (§3.3), sphinx-voice's 1:1 mode, Peel's Talk — and the demo on one box (`deploy/voice`).
+> - Step 2's end-to-end encryption (§4, "Step 2"): stakwork/sphinx-voice#33 and stakwork/peel#501, not merged.
 > - Rows marked **agreed** under "Decided" are the owner's, from the design conversation of 2026-11-03. Everything marked *proposed* is mine and open.
 > - Read against: strut `main` @83e7675, peel `main` @324588a, sphinx `master` @74c12954, sphinx-voice `main` @ebbe0c5, meet `main` @fd63ca1.
 > - Companions:
@@ -104,13 +105,13 @@ call, and the voice service connecting outward. Step 1 runs its own
 livekit-server on the LAN instead, with encryption off. The voice service's
 code is the same either way.
 
-**Metadata hygiene from step 2:**
+**Metadata hygiene from step 2** (built with it):
 - Turn off DTX (silence suppression) on both sides, so packets keep a
   constant rate.
-- Turn off Opus RED on the phone. The Swift SDK leaves it on under
-  encryption (`LocalParticipant.swift` ~L849). The JS and Rust SDKs turn it
-  off.
-- Give each call random participant identities.
+- Turn off Opus RED on both sides. The Swift SDK leaves it on under
+  encryption (`LocalParticipant.swift` L615, `AudioPublishOptions.red`
+  defaults to true). The JS and Rust SDKs turn it off.
+- Give each call random participant identities (step 1 already does).
 
 No SDK exposes Opus constant bitrate, and dropping the audio-level extension
 needs a server patch. Both are later items (§8).
@@ -442,8 +443,11 @@ Content-Type: application/json
 ```
 
 - **`url`** is the LiveKit server to connect to.
-- **`encrypted`** is true from step 2. Peel then joins with `key` as the shared
-  key and with Opus RED off (§2).
+- **`encrypted`** is true exactly when the request carried a `key` and the
+  agent joined with it (step 2). Peel then joins with `key` as the shared key,
+  with DTX and Opus RED off (§2), and refuses any answer without
+  `encrypted: true`. The shared key is the `key` string's UTF-8 bytes on both
+  sides, not its base64 decoding (§4, "Step 2").
 - **`voice`** is the voice in effect for this call.
   - It's the request's `voice` when that is a voice strut's `/audio/speak`
     has (`GET /audio/speak` lists them), otherwise a 400.
@@ -506,8 +510,8 @@ Errors are JSON, `{ error }`:
    to an empty room.
    - Step 1: it joins with its own token on the local server, or by worker
      dispatch there (Q7).
-   - From step 2: it gets tokens from meet (private rooms), and joins with
-     `encryption` and the key (§4, step 2).
+   - From step 2: the same, with `encryption` and the call's key when the
+     request carried one (§4, "Step 2").
 5. Every turn of the call runs as `x-strut-actor` on `<member>/voice/<room>` (§3.2).
    Speech goes to strut's `/audio/transcribe` and `/audio/speak` with the
    deployment key, inside the home.
@@ -555,34 +559,76 @@ of it, so the call screen needs nothing from the home:
    agent into the room, and answers.
 4. Peel joins `url` with `token`.
 
-### Step 2, the central server
+### Step 2, the central server: end-to-end encryption
 
-1. Peel makes a 32-byte key and sends `POST /voice/calls { key }` (§4.1).
-2. The voice service:
-   - names a room (128 random bits, like `CallLink.new`, `Call.swift:150-156`);
-   - asks meet for two tokens, the member's and its own;
-   - joins with encryption;
-   - returns the member's token, with `encrypted: true`.
-3. meet needs one change: a private room gets no Jamie dispatch and no
-   `isHost` admin grant. Today every token dispatches `LIVEKIT_AGENT_NAME`,
-   and `?isHost=true` gives anyone room admin
-   (`meet:app/api/connection-details/route.ts:30-45, 73-83`).
-4. The voice service connects the room itself with `encryption` before it
-   starts the session.
-   - agents-js's `ctx.connect(e2ee)` passes the legacy `e2ee` field, which
-     leaves transcripts and data messages unencrypted (`agents/src/job.ts`
-     L478).
-   - `AgentSession.start` would otherwise connect without options
-     (`voice/agent_session.ts` ~L1002).
-5. Use a shared key: rtc-node's per-participant keys are broken
-   (livekit/node-sdks#741, fix #768 open).
+Built 2026-11-04: sphinx-voice `src/encryption.ts` (stakwork/sphinx-voice#33),
+peel `TalkCall` / `TalkSession` (stakwork/peel#501). The demo box and
+every swarm run the same voice image behind the same route, so this one
+change covers both. strut, Hive, meet and the swarm config don't change.
 
-Until step 4, the key crosses ordinary TLS, which the operator could read on
-the home. Step 4 seals it (§6).
+1. Peel makes 32 random bytes for each call and sends them as base64,
+   `POST /voice/calls { key, voice }` (§4.1). strut forwards the body
+   unchanged and logs nothing of it (`src/voice.ts`).
+2. The voice service names the room and mints both tokens itself with its
+   own LiveKit key pair, as in step 1. It connects the room with
+   `encryption` and the key before it starts the session, and answers
+   `encrypted: true`. A call without a key stays plain, so a Peel from
+   before this keeps working.
+3. Peel joins with `encryptionOptions` and the same key, with DTX and RED
+   off, and refuses an answer without `encrypted: true`. A voice service from
+   before this answers false, and the call is refused rather than made in
+   the clear. So the voice service ships first.
 
-**Why not have the voice service register as a LiveKit worker:** that needs a
-per-home API key for the central server, and a LiveKit API key is admin over
-every room.
+What it depends on, each read in the source and the first three run:
+- **The key's bytes.** The shared key is the `key` STRING's UTF-8 bytes, not
+  its base64 decoding. Swift's `BaseKeyProvider(isSharedKey:sharedKey:)` takes
+  a `String` and keys with `sharedKey.data(using: .utf8)`
+  (client-sdk-swift 2.10.2 `KeyProvider.swift` L114–116), so the agent passes
+  `new TextEncoder().encode(key)`. Both then derive the AES key the same way,
+  in the same libwebrtc (m137 on both): PBKDF2-HMAC-SHA256 with the salt
+  `LKFrameEncryptionKey`, 100,000 iterations.
+- **`encryption`, not `e2ee`, on both sides.** Only `encryption` encrypts what
+  a participant sends on the data channel, the `lk.transcription` text among
+  it (rust-sdks `room/mod.rs` `with_dc_encryption`; rtc-node 0.13.21 on).
+  Swift accepts plaintext packets even with encryption on, so the legacy
+  field would leak the text without anything failing. agents-js's
+  `ctx.connect(e2ee)` passes `e2ee` (`agents/src/job.ts` L478), and
+  `AgentSession.start` connects without options, so the voice service keeps
+  connecting the room itself (Q7).
+- **Every field set.** rtc-node 0.13.24 hands `encryption` to its native layer
+  as given, without its defaults, which it doesn't export: a bare
+  `{ sharedKey }` makes `connect` throw "required field not set" (fixed in
+  0.13.34, node-sdks#708). The salt, AES-GCM, ratchet window 0 (Swift's
+  default) and failure tolerance -1 are written out.
+- **A shared key.** rtc-node's per-participant keys are broken
+  (livekit/node-sdks#741, fix #768 still open). Shared-key mode takes the key
+  at connect and never uses those calls.
+- **The LiveKit server.** Media encryption needs nothing of it. Encrypted
+  data packets are handled from v1.9.2 (livekit#3869); an older server
+  forwards them but logs a warning for each. Check prod's version.
+- **Opus RED off on the phone.** The SFU can't repackage RED for an encrypted
+  track, and before livekit#5117 (merged 2026-11-02, not yet released) it
+  could hand an encrypted RED track to an Opus-only subscriber as garbage.
+
+**Checked.** sphinx-voice `scripts/e2ee-call.ts` runs the real 1:1 path
+against livekit-server 1.13.11: a member keying the room the way Peel does
+hears the agent and gets its text, a participant in the room without the key
+gets noise and no text, and an agent keying with the base64 decoding fails
+it. Not run: Peel against the voice service, Swift to Node, which rests on
+the derivation above.
+
+**What it hides, until step 4.**
+- **The LiveKit server, the network and any relay** carry ciphertext: the
+  audio both ways and the live text. Signaling stays in the clear: the room
+  name, the random identities, the `lk.agent.state` and `voice` attributes.
+- **The home still has the key**, which crosses TLS to it.
+  - On the demo box TLS ends at Caddy inside the SEV-SNP VM, so only that VM
+    has it.
+  - On a swarm, whoever runs the swarm can read it there.
+  - Step 4 seals it to an attested home (§6).
+- **Every swarm holds the central LiveKit's key pair**, and a LiveKit key is
+  admin over every room. Before this, any swarm (or anyone with root on one)
+  could mint a token into any Talk room and listen. Now it gets ciphertext.
 
 ## 5. Paying in sats (step 3)
 
@@ -763,7 +809,7 @@ Each step ships something usable and builds on the ones before it.
 | Step | Ships | Proves |
 |---|---|---|
 | **1. Talk, on one machine** | Talk to Jamie in Peel; the voice call screen; a compose with strut, livekit and the voice service; the voice service's 1:1 mode; the orchestrator changes (§3.1); reply streaming (§3.4); `/audio/speak` (built) | The conversation feels natural; per-stage latency; recognition accuracy; two or three calls at once |
-| **2. Off the LAN** | The central media server with end-to-end encryption; meet's private rooms; the call route on a real org home | It works from anywhere, for several members |
+| **2. Off the LAN** | The central media server with end-to-end encryption (built, §4); the call route on a real org home | It works from anywhere, for several members |
 | **3. Sats** | A price per minute; balance and top-up in Peel; Jamie's invoices; the per-member ledger; aggregate sweeps | Lightning-gated |
 | **4. The home in a TEE** | The org home on a TEE host; a measured image; secrets from the key service; `/attestation`; `dcap-qvl` in sphinx-rs; the call key sealed with HPKE; "verified" in Peel | Neither the operator nor the host can read it |
 | **5. Maple** | The orchestrator's model through Maple's proxy, inside the TEE, to Maple's enclaves; aieo's `maple` provider; metered in strut | Private inference on large models |
@@ -872,7 +918,8 @@ for about 0.8 s (Daily, Pipecat).
    point in sphinx-voice.
 2. **Node or Python.** *Decided 2026-11-03:* Node.
    - Node's encryption works with a shared key only, and only if we connect
-     the room ourselves (§4). Step 2 proves that.
+     the room ourselves. *Proven 2026-11-04* against a real LiveKit server
+     (§4, "Step 2").
    - Python is the fallback if it doesn't hold.
 3. **Kokoro.** *Decided and built:* inside strut (§3.3).
 4. **Streaming the reply.** *Decided 2026-11-03:* `reply.delta` run events

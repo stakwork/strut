@@ -11,8 +11,9 @@
 #
 # One hostname pointed at this box (STRUT_VOICE_HOST): Caddy gets its
 # certificate from Let's Encrypt, so ports 80 and 443 must reach it. Call
-# audio goes through the central LiveKit, which the voice service connects
-# out to, so no UDP port is opened here.
+# audio goes through the central LiveKit, end-to-end encrypted with a key Peel
+# makes per call (README.md §5), which the voice service connects out to, so
+# no UDP port is opened here.
 name: strut-voice
 
 services:
