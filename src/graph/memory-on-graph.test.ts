@@ -304,14 +304,14 @@ describe("graph/import-memory from the old memory database (ladybug)", { skip: l
     assert.ok(Number(row!["at"]) < started, "and so is what it knew of her");
   });
 
-  it("lists what has no faithful place for review, and counts what it skipped", async () => {
-    const kinds = first.review.map((r: { kind: string; text?: string }) => `${r.kind}: ${r.text}`);
-    assert.ok(kinds.includes("fact: The user is vegetarian."), kinds.join("\n"));
-    assert.ok(kinds.includes("episode: Kate's coming over on Sunday."), kinds.join("\n"));
-    assert.equal(first.for_review, first.review.length);
-    assert.equal(first.skipped_by_reason["a mishearing: dictation keeps reading it from the old memory"], 1);
-    const restated = first.review.find((r: { text?: string }) => r.text === "Alex's uncle is Alex's uncle.");
-    assert.match(restated?.reason ?? "", /says nothing its two ends' names do not/);
+  it("drops what has no place on the graph, and counts it by reason", async () => {
+    const by = first.skipped_by_reason;
+    assert.equal(by["a fact about one entity alone"], 1, JSON.stringify(by));
+    assert.equal(by["an episode no fact came from"], 2, "Kate coming over, and Bob, forgotten");
+    assert.equal(by["a fact whose sentence only names its two ends"], 1, JSON.stringify(by));
+    assert.equal(by["a mishearing: dictation keeps reading it from the old memory"], 1);
+    assert.equal(first.review, undefined, "nothing is listed for review");
+    assert.equal(first.skipped, Object.values(by as Record<string, number>).reduce((a, n) => a + n, 0));
     assert.ok(first.imported > 0);
   });
 
@@ -326,7 +326,7 @@ describe("graph/import-memory from the old memory database (ladybug)", { skip: l
     const asJob = ctxOf({ graph: graphView(b, parseGraphReaders({ jobs: { namespaces: ["private", "shared"], exclude_domains: ["Strut"] } })), secrets }, { actor: "import" });
     const again = await run(importMemory, {}, asJob);
     assert.equal(again.imported, 0, JSON.stringify(again));
-    assert.equal(again.for_review, first.for_review);
+    assert.equal(again.skipped, first.skipped);
     assert.deepEqual(await snapshot(), was);
   });
 

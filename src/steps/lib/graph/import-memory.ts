@@ -39,18 +39,18 @@ import { words } from "../../../graph/text-match.js";
  *
  * Run again, it repairs what an earlier import wrote and this one would not:
  * names taken from the old memory that it no longer gives, a description it
- * now gives, a fact it now lists for review, and dates that are later than
- * the old memory's.
+ * now gives, a fact it now drops, and dates that are later than the old
+ * memory's.
  *
- * What has no faithful place is listed for review, never dropped: a fact
- * about one entity alone ("Kate is vegetarian": the thing it is about is
- * not an entity), an entity's free-form attributes, an episode no fact came
- * from, a fact whose sentence says nothing its two ends' names do not
- * ("Tom's uncle is Tom's uncle."), and anything that could not be written. A mishearing stays where
+ * What has no place on the graph as it is, is dropped and counted by reason
+ * (`skipped_by_reason`): a fact about one entity alone ("Kate is
+ * vegetarian": the thing it is about is not an entity), an entity's
+ * free-form attributes, an episode no fact came from, a fact whose sentence
+ * says nothing its two ends' names do not ("Tom's uncle is Tom's uncle."),
+ * and anything that could not be written. A mishearing stays where
  * dictation reads it (memory/lexicon), and is counted as skipped.
  */
 
-const REVIEW_DEFAULT = 200;
 
 /** The old database's file, as `_db.ts` finds it; undefined when there is none. */
 async function oldDatabase(ctx: StepContext<StrutCapabilities> | undefined): Promise<string | undefined> {
@@ -87,7 +87,6 @@ export function restates(text: string, names: string[]): boolean {
   return own.length > 0 && own.every((w) => held.has(w));
 }
 
-type Review = { kind: "fact" | "attributes" | "episode" | "entity"; old_ref_id: string; reason: string } & Record<string, unknown>;
 
 interface Ctx {
   b: GraphBackend;
@@ -100,7 +99,6 @@ interface Ctx {
   /** Writes nodes on the old memory's clock: `at` while an item is written. */
   nodes: NodeWriter;
   clock: { at?: number };
-  review: Review[];
   skipped: Record<string, number>;
   counts: { nodes_created: number; nodes_found: number; facts_created: number; facts_found: number; names_added: number; repaired: number };
 }
@@ -219,17 +217,16 @@ export default defineStep({
     "Move the old memory database (the memory/* steps') onto the workspace graph, once: entities become nodes (the user the Person " +
     "marked is_owner), facts linking two entities become temporal edges with their dates, sources and speaker, names become alt_names, " +
     "all in `private`. Reads the old database and never changes it; safe to run again (what is already there is found, not doubled). " +
-    "Returns counts imported, skipped and for review, and the items for review: facts about one entity alone, attributes, and " +
-    "episodes no fact came from. A LadybugDB graph only.",
+    "Returns counts imported and skipped, by reason: what has no place on the graph (facts about one entity alone, attributes, " +
+    "episodes no fact came from) is dropped. A LadybugDB graph only.",
   input: z.object({
-    review_limit: z.number().int().optional().default(REVIEW_DEFAULT).describe(`Most items for review to list in full (default ${REVIEW_DEFAULT}); the count is always whole.`),
     owner_name: z.string().optional().describe("The user's name, when the host knows it: used when no name fact in the old memory gives one."),
   }),
   output: z.any(),
   async run(cfg, ctx) {
     try {
       const sctx = ctx as StepContext<StrutCapabilities>;
-      if (!(await oldDatabase(sctx))) return { status: "Warning", messages: ["no old memory database here: nothing to import"], imported: 0, skipped: 0, for_review: 0 };
+      if (!(await oldDatabase(sctx))) return { status: "Warning", messages: ["no old memory database here: nothing to import"], imported: 0, skipped: 0 };
       const b = await graphCtx(sctx);
       if (b.kind !== "ladybug") return "graph/import-memory failed — WRONG_TYPE: it imports into a LadybugDB graph only";
       const { assertEdge } = await import("../../../graph/temporal.js");
@@ -246,7 +243,7 @@ export default defineStep({
         by: ctx?.actor ? { created_by: ctx.actor } : {},
         nodes: undefined as unknown as NodeWriter,
         clock: {},
-        review: [], skipped: {},
+        skipped: {},
         counts: { nodes_created: 0, nodes_found: 0, facts_created: 0, facts_found: 0, names_added: 0, repaired: 0 },
       };
       c.nodes = new NodeWriter(b, { ...(b.embedder ? { embedder: b.embedder } : {}), resolver: b.schemas, now: () => c.clock.at ?? Date.now() });
@@ -301,7 +298,7 @@ export default defineStep({
         const spelled = new Map<string, string>();
         for (const a of [...(names.get(id) ?? []), ...(aliasesOf.get(id) ?? [])]) if (!spelled.has(normalize(a))) spelled.set(normalize(a), a);
         const attrs = (() => { try { return JSON.parse(String(e["attributes"] || "{}")) as Record<string, unknown>; } catch { return {}; } })();
-        if (attrs && Object.keys(attrs).length) c.review.push({ kind: "attributes", old_ref_id: id, name: own, attributes: attrs, reason: "free-form attributes: set the ones still true as fields, or assert them as facts" });
+        if (attrs && Object.keys(attrs).length) skip(c, "free-form attributes");
         if (e["type"] === userType) {
           // The user's names are the ones their name facts give: the old
           // memory's own name for them ("Me") and its aliases are none.
@@ -316,7 +313,7 @@ export default defineStep({
         const alts = [...spelled.values()].filter((a) => normalize(a) !== normalize(own));
         const type = await graphType(c, String(e["type"]), made);
         if (!type) {
-          c.review.push({ kind: "entity", old_ref_id: id, name: own, type: e["type"], reason: `the graph's ${e["type"]} type is not an entity type` });
+          skip(c, "an entity of a type that is not an entity type on the graph");
           continue;
         }
         const schema = await b.schemas.schema(type);
@@ -325,7 +322,7 @@ export default defineStep({
         const description = typeof e["summary"] === "string" && e["summary"].trim() ? e["summary"] : said.length ? said.join(" ") : undefined;
         const r = await resolveNode(b, { type, name: own, ...(alts.length ? { aliases: alts } : {}), namespaces: [c.namespace] });
         if (r.ambiguous) {
-          c.review.push({ kind: "entity", old_ref_id: id, name: own, type, candidates: r.candidates.map((x) => ({ ref_id: x.ref_id, title: x.title })), reason: "several nodes already go by this name: pick one, or make a new one" });
+          skip(c, "an entity several nodes already go by the name of");
           continue;
         }
         if (r.match) {
@@ -385,7 +382,6 @@ export default defineStep({
         if (!typeOfNode.has(ref)) typeOfNode.set(ref, (await b.reader.getNode(ref))?.node_type ?? "");
         return typeOfNode.get(ref)!;
       };
-      const iso = (ms: unknown) => (num(ms) === null ? undefined : new Date(num(ms)!).toISOString());
 
       for (const f of facts) {
         const id = String(f["ref_id"]);
@@ -399,19 +395,18 @@ export default defineStep({
           source: String(ep["source"] || `memory/episode:${ep["ref_id"]}`),
           said_by: ep["speaker"] && !userIds.has(ep["speaker"]) ? nodeOf.get(ep["speaker"]) : undefined,
         }));
-        const about = { old_ref_id: id, predicate, text: f["text"], valid_at: iso(f["valid_at"]), invalid_at: iso(f["invalid_at"]), ...(ended ? { ended: true } : {}), sources: said.map((s) => s.source) };
-        if (!subject) { c.review.push({ kind: "fact", ...about, reason: "its subject was not imported (listed above)" }); continue; }
+        if (!subject) { skip(c, "a fact whose subject was not imported"); continue; }
         if (!f["object"] || f["object_deleted"] != null) {
-          c.review.push({ kind: "fact", ...about, subject: { ref_id: subject, name: (await b.reader.getNode(subject))?.title }, reason: "about one entity alone: assert it to the node it is about, or set it as a field" });
+          skip(c, "a fact about one entity alone");
           continue;
         }
         const object = nodeOf.get(f["object"]);
-        if (!object) { c.review.push({ kind: "fact", ...about, reason: "its object was not imported (listed above)" }); continue; }
+        if (!object) { skip(c, "a fact whose object was not imported"); continue; }
         // A past fact the old memory also holds now would end the current one: the current one stands.
         if (ended && held.has(`${f["subject"]}|${predicate}|${f["object"]}`)) { skip(c, "an earlier spell of a fact held now"); continue; }
         const endNames = async (old: string, node: string) => [nameOf.get(old) ?? "", ...(aliasesOf.get(old) ?? []), String((await b.reader.getNode(node))?.title ?? "")];
         if (restates(String(f["text"]), [...(await endNames(f["subject"], subject)), ...(await endNames(f["object"], object))])) {
-          c.review.push({ kind: "fact", ...about, reason: "its sentence says nothing its two ends' names do not: say what it means, or forget it" });
+          skip(c, "a fact whose sentence only names its two ends");
           // What an earlier import wrote of it, from the old memory alone, goes.
           // Either name the edge type may have: a type the graph has not made is no table, and no edge.
           const earlier = (await Promise.all([edgeTypeOf(predicate), `IS_${edgeTypeOf(predicate)}`].map((type) =>
@@ -423,7 +418,7 @@ export default defineStep({
           continue;
         }
         const ready_ = await edgeReady(predicate, await typeOf(subject), await typeOf(object), vocab.term("predicate", predicate)?.cardinality ?? "many", vocab.term("predicate", predicate)?.aliases ?? []);
-        if (typeof ready_ === "string") { c.review.push({ kind: "fact", ...about, reason: ready_ }); continue; }
+        if (typeof ready_ === "string") { skip(c, "a fact whose edge type is a plain one on the graph"); continue; }
         const edge = ready_.edge;
         let wrote = false;
         for (const s of said.length ? said : [{ source: undefined, said_by: undefined }]) {
@@ -458,9 +453,7 @@ export default defineStep({
          WITH ep, count(f) AS n WHERE n = 0
          RETURN ep.ref_id AS ref_id, ep.content AS content, ep.source AS source, ep.speaker AS speaker, ep.occurred_at AS at ORDER BY ep.occurred_at`,
       );
-      for (const ep of lone) {
-        c.review.push({ kind: "episode", old_ref_id: String(ep["ref_id"]), text: ep["content"], at: iso(ep["at"]), ...(ep["source"] ? { source: ep["source"] } : {}), reason: "what was said, with no fact saved from it: save what is worth keeping" });
-      }
+      if (lone.length) c.skipped["an episode no fact came from"] = lone.length;
       const withFacts = Number((await query("MATCH (ep:Episode) WHERE ep.deleted_at IS NULL RETURN count(ep) AS n"))[0]?.["n"] ?? 0) - lone.length;
       if (withFacts > 0) c.skipped["an episode its facts were imported from: their sources name it"] = withFacts;
 
@@ -471,11 +464,8 @@ export default defineStep({
         imported,
         already: c.counts.nodes_found + c.counts.facts_found,
         skipped,
-        for_review: c.review.length,
         counts: c.counts,
         skipped_by_reason: c.skipped,
-        review: c.review.slice(0, Math.max(0, cfg.review_limit)),
-        ...(c.review.length > cfg.review_limit ? { review_truncated: true } : {}),
       };
     } catch (e) {
       return errText("graph/import-memory", e);
