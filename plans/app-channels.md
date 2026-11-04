@@ -1,15 +1,32 @@
 # App channels: live messages between the people on an app
 
-> **Status (2026-11-04): proposed. Nothing is ruled and nothing is built.**
-> Written after the question "could someone build a multiplayer game as a
-> strut app?" A game has few workflows (a scoreboard, a referee) and needs
-> fast messages between the people playing it, which strut does not have.
-> Every row below is mine and open to a ruling; the guesses are listed
-> under "Open questions". Companion to `apps.md` (the app door, its grants,
-> the kit and the hosts) and `live-feeds.md` (the long-poll this builds
-> on). Not the same thing as `chained-orchestrators.md` §3's ROOMS: a room
-> is one person's socket for their own callbacks. A channel is shared by
+> **Status (2026-11-04): ruled, not built.** Written after the question
+> "could someone build a multiplayer game as a strut app?" A game has few
+> workflows (a scoreboard, a referee) and needs fast messages between the
+> people playing it, which strut does not have. The owner ruled every
+> question in one conversation the same day (the table below); the first
+> draft, a long-poll over `step_run`, is under "Rejected". Companion to
+> `apps.md` (the app door, its grants, the kit and the hosts) and
+> `live-feeds.md` (the `LiveFeed` this keeps its messages in). Not the
+> same thing as `chained-orchestrators.md` §3's ROOMS: a room is one
+> person's socket for their own callbacks. A channel is shared by
 > everyone on an app.
+
+## Rulings
+
+| # | Question | Ruled |
+| --- | --- | --- |
+| 1 | Long-poll through `step_run`, or a socket | **A socket held by each host**, relayed to the page over the MCP Apps bridge |
+| 2 | Where Hive's socket ends (Hive runs on Vercel, which cannot hold one) | **At the swarm's strut**: Hive's page connects straight to it with a short-lived **ticket strut mints** |
+| 3 | A host that holds no socket | **No channels there.** The kit reports `unavailable`; no long-poll fallback |
+| 4 | A peer's app (`?app=@<peer>/<name>`, Peel's org apps) | **Relayed through the local strut**, which reaches the peer with the peer record's person token |
+| 5 | Channels by app name or by version | **By name**, shared by every version. Previews keep their own (mine, not objected to) |
+| 6 | Who may join | **Anyone in the app's audience who has the name.** An app builds its own authorized rooms with a gatekeeper step (§6) |
+| 6b | Should strut derive room names for that gatekeeper | **Yes**: `channel/derive { scope }` |
+| 7 | Presence | **On the server, from the sockets** |
+| 8 | Whose state a keyed message replaces | **Only the sender's own** |
+| 9 | May an app's steps and workflows send | **Yes, as themselves** (the step type or workflow name is the sender) |
+| 10 | The word | **Channel** ("room" is taken twice in the same layer: callback rooms and LiveKit call rooms) |
 
 ## Problem
 
@@ -26,300 +43,376 @@ other one reads:
 | `graph/changes` (`useGraphChanges`): a long-poll that answers 1 s after the first write (`FEED_GATHER_MS`) | anything faster than about a second, end to end |
 | `app/state`: one viewer's own JSON | state shared between viewers that nobody needs to keep |
 | Rooms (`src/rooms.ts`): a socket per ACTOR for their callbacks | anything between two people, or anything a page can use |
-| The app monitor (`src/apps/monitor.ts`): `repeat` warns at 120 identical calls a minute, `volume` at 600 calls a minute per app version | a door that is meant to be busy |
+| The app monitor: `repeat` warns at 120 identical calls a minute, `volume` at 600 a minute per app version | a door that is meant to be busy |
 
-What that means for a game today:
-
-- **Turn-based works.** A move is a graph node; the other player sees it
-  1–2 s later through `useGraphChanges`. Chess, cards and trivia work,
-  slowly, and every move is a node forever.
-- **Anything live does not.** Cursors, positions, "typing…", a lobby that
-  fills as people arrive: polling for them trips the monitor in seconds,
-  and each one written to the graph is a record nobody wanted.
+So a turn-based game works today, slowly, with every move a graph node
+forever. Anything live (cursors, positions, a lobby that fills as people
+arrive) does not: polling for it trips the monitor in seconds.
 
 ## Design in one paragraph
 
 A **channel** is a short in-memory log of JSON messages, named by an app
-and shared by every viewer of that app. Two steps, `channel/send` and
-`channel/read`, reach it through the same `step_run` every app already
-uses. A read waits on the server, like `job/updates`, but answers at once,
-not after a second. Strut stamps every message with who sent it. Nothing is
-kept: no run, no log line, no graph node, and a restart empties every
-channel. So it needs no host changes and leaves the page's CSP as it is,
-and the app still reaches strut through one door. The kit wraps it as
-`useChannel`. What must last (scores, results, the board after each turn)
-still goes through a workflow or the graph. The channel carries what is
-happening now.
+and shared by every viewer of that app. The page still connects nowhere:
+its HOST holds one WebSocket to strut while the page is open, and relays
+between the socket and the page over the MCP Apps bridge. A browser host
+opens the socket with a short-lived ticket strut minted for that viewer and
+that app. Strut stamps every message with its sender (the socket's actor
+and a client id strut assigns, or the step or workflow that sent it),
+knows who is present from the sockets that are open, and keeps nothing:
+no run, no log line, no graph node, and a restart empties every channel.
+An app's own steps and workflows reach the same channels in process,
+which is how a referee no player controls, or an AI player, takes part.
+What must last (scores, results) still goes through a workflow or the
+graph. The channel carries what is happening now.
 
 ## 1. A channel
 
 **Where it lives.** One `LiveFeed` (`src/live-feed.ts`, unchanged) per
-`(app name, channel name)`, in this process, built the first time anyone
-sends to it or reads it. The app's NAME, not its version: every version
-shares its channels, as it shares `app/state` and its jobs, so a publish
-mid-game does not split the players. An app that changes its message
-format puts a version in its messages.
+channel, in this process, plus the sockets joined to it. A channel is
+named by `(app name, channel name)`: every version of the app shares it,
+as it shares `app/state` and the app's jobs, so a publish mid-game never
+splits the players. A **preview** (`app/look { path }`, version
+`preview-<hex>`) gets channels of its own, keyed by its label, so the
+builder's test never joins a live game. An app that changes its message
+format puts a format number in its messages.
 
-**A message** as a reader gets it:
+**A message** as a page or a step gets it:
 
 ```ts
 interface ChannelMessage {
   /** The sender, stamped by strut: never what the page wrote. */
   from: {
-    actor?: string;   // the connection's actor: vouched by its credential
-    client: string;   // the page's own id (the kit mints one per page load): not vouched
-    run?: string;     // set when a workflow sent it (§3)
+    actor?: string;    // vouched by the socket's ticket, or the run's actor
+    client?: string;   // a page: the id strut gave its socket
+    code?: string;     // a step or workflow: its type or name (§5)
   };
-  key?: string;       // a STATE: replaces this sender's last message with the same key
-  data: unknown;      // the page's JSON, at most CHANNEL_MESSAGE_MAX_BYTES
-  at: number;         // when strut took it (ms)
+  key?: string;        // a STATE: replaces this sender's last message with the same key
+  data: unknown;       // the sender's JSON, at most CHANNEL_MESSAGE_MAX_BYTES
+  at: number;          // when strut took it (ms)
 }
 ```
 
-**State and events.** A message with a `key` is a state. The newest one
-replaces the last one from the same sender with the same key: a player's
-position, their cursor, "ready". The feed's `keyOf` is `actor + client +
-key`, so a page can overwrite only its own states. A message with no key
-is an event (a chat line, "fired"), which no later message replaces. This is
-`LiveFeed`'s own model ("the newest state of each thing"), so a reader that
-joins late, or falls behind and gets `reset: true`, still gets every
-sender's current state and the most recent events in one answer.
+**States and events.** A message with a `key` is a state. The newest one
+replaces the last one from the SAME SENDER with the same key: a player's
+position, their cursor, "ready", a referee's board. The feed's `keyOf` is
+the sender (actor + client, or actor + code) plus the key, so nobody can
+replace anyone else's state. A message with no key is an event (a chat
+line, a move), which no later message replaces. This is `LiveFeed`'s own
+model ("the newest state of each thing"), so a page that joins late, or
+reconnects after the feed dropped what it missed, gets every sender's
+current state and the most recent events at once.
 
-**Order.** One order per channel, `LiveFeed`'s `seq`. A reader sees every
-message after its cursor in that order, or `reset: true` when the feed has
-dropped some of them.
+**Order.** One order per channel, `LiveFeed`'s `seq`. A socket sees every
+message in that order. A reconnect hands back its cursor and gets what it
+missed, or `reset: true` and the snapshot.
 
-**Limits** (constants, in `src/channels.ts`):
+**Presence** comes from the sockets. A socket that joins makes its sender
+present; strut sends `joined` to the channel and a newcomer gets the
+members first. A socket that closes makes it leave: `left`, and strut drops
+that sender's states, so a departed player's cursor does not linger. A
+channel socket is pinged every 10 s (rooms ping every 30 s), so a dead
+connection leaves within about 10 s. A reconnect within
+`CHANNEL_REJOIN_MS` keeps the same client id and is no leave. "Present"
+means "has the app open": the host holds the socket while the page is
+mounted, even in a hidden tab, and a game that cares whether someone is
+looking sends its own `away` state. A step or workflow that sends is not a
+member, and its states stay until replaced, evicted or the channel goes
+idle.
+
+**Limits** (constants, `src/channels.ts`):
 
 | | Value | Why |
 | --- | --- | --- |
 | `CHANNEL_MESSAGE_MAX_BYTES` | 8 KB of JSON | a move, not a file; files go in a job (`job/upload`) |
 | `CHANNEL_KEEP` | 256 messages | the feed's `max`: states plus recent events |
-| `CHANNEL_SEND_RATE` | 30 messages a second per sender, bursts of 60 | a token bucket per `(app, actor, client)` |
-| `CHANNEL_GATHER_MS` | 20 ms | how long a woken read waits for more before it answers: batches a burst, adds little delay |
-| `CHANNEL_IDLE_MS` | 10 minutes | a channel nobody sent to or read from is dropped |
+| `CHANNEL_SEND_RATE` | 30 messages a second per sender, bursts of 60 | a token bucket per sender |
+| `CHANNEL_REJOIN_MS` | 10 s | a reconnect inside it is no leave |
+| `CHANNEL_IDLE_MS` | 10 minutes | a channel with no socket and no message is dropped |
 | `CHANNELS_PER_APP` | 1 000 | past it a new channel is refused, naming the cap |
+| `CHANNELS_PER_SOCKET` | 8 | one page, a few channels (a lobby and a game) |
 
-## 2. The steps
+## 2. The socket
 
-`src/steps/lib/channel/`, thin over `ctx.services.channels`
-(`src/channels.ts`, built by `createStrut` like the job and graph feeds).
-Both refuse to run without `ctx.app`: a channel always belongs to an app.
+**One per open page.** The host opens it on the page's first join and
+closes it when the frame goes away. It carries every channel the page has
+joined.
 
-- **`channel/send { channel, messages: [{ key?, data }], client }`** →
-  `{ cursor }`. Takes several messages at once, because the kit batches
-  whatever is waiting while a send is in flight (§4). Refused past the
-  size, rate or count limits, with the limit named.
-- **`channel/read { channel, since?, wait?, limit?, client }`** →
-  `{ cursor, reset?, more?, messages }`. `since` absent reads everything
-  the channel keeps (what a newcomer needs); `"now"` reads only what comes
-  after. `wait` holds while there is nothing new, up to
-  `FEED_MAX_WAIT_MS`, and a woken read answers `CHANNEL_GATHER_MS` later.
+**`GET /apps/channels`** (WebSocket), upgraded through the app's own gate
+and hooks like `/rooms` (`strut.upgrade(req, socket, head, { basePath })`,
+so a standalone strut and a host that owns the server, mcp under `/lab`,
+decide it the same way). It takes one of two credentials:
 
-`channel` is a name the app chooses: `lobby`, or a fresh unguessable name
-for a private game (§4). Names follow the session-id format (`idProblem`).
+- **A ticket** as `?ticket=`, from a browser host, since a browser cannot
+  set headers on an upgrade. The request log prints `ticket=…`, as it
+  prints `key=…` for the dictation socket.
+- **A header credential** (the key, a person token), from a server: the
+  peer relay of §4. It names the app as `?app=<name>@<version>`.
 
-## 3. Who may send and read
+**The ticket.** `POST /apps/:name/channel-ticket { version }` → `{ ticket,
+exp }`. It is `strut-channel.<claims>.<hmac>`, signed like a file token
+(`STRUT_API_KEY`, else `STRUT_SECRET_KEY`), with claims `{ actor?, app,
+version, exp }`. It lives a minute, which is long enough to connect, and
+the socket outlives it. Whoever may open the app may mint one: the key or a
+session (with the actor `resolveActor` gives), or a person token for its
+own actor. A plain peer may not. The route refuses an app or version that
+is not there. The host names the app it is showing, and the socket is
+bound to that app, so a page can never reach another app's channels.
 
-- **A page**, through `step_run`, when the app's `grants.steps` names
-  `channel/*`. That uses the grant check that already exists; `app.yaml`
-  gets no new field. The door takes the app from the page's signed
-  identity (`appOfIdentity`), so a page can never name another app's
-  channel. Any viewer of the app may read or send on any of its channels
-  by name. The audience is the people the host already lets open the app
-  (strut's key or session, a Hive workspace member, a person token on a
-  peer), and a channel never adds to it.
-- **A workflow** the app launched (`run/launch`, so `ctx.app` is set) may
-  send and read, stamped `from.run`, with the run's actor. That covers a
-  referee that announces a result, or an AI player whose agent is granted
-  `channel/*`. A run without `ctx.app` is refused. Its own `channel/*`
-  steps are in its run log, like every step a workflow runs.
-- **Who sent it** is strut's stamp. `actor` is as good as the
-  connection's credential (Hive sets the member as `x-strut-actor` on its
-  relay; a person token is its own actor). `client` is the page's word,
-  and only tells apart two tabs of the same person. A display name a page
-  sends in its data is the page's word too. On a strut with no actor (dev,
-  no key) every message is anonymous and only `client` tells senders
-  apart.
+**Frames** are JSON, one per message. Client → strut: `{ op: "join",
+channel, since? }`, `{ op: "leave", channel }`, `{ op: "send", channel,
+messages: [{ key?, data }] }`. Strut → client: `{ op: "joined", channel,
+client, cursor, members, messages, reset? }`, `{ op: "message", channel,
+cursor, message }`, `{ op: "presence", channel, joined | left }`, `{ op:
+"error", channel?, error }`. A refusal (size, rate, count, a bad name)
+is an `error` frame naming the limit; the socket stays open.
 
-## 4. The kit: `useChannel`
+## 3. The hosts
+
+Every host that wants channels does the same three things:
+
+1. **Gets a ticket** from strut for the viewer and the app it is showing.
+2. **Opens the socket** on the page's first join, and reconnects with
+   backoff, rejoining each channel with its last cursor.
+3. **Relays over the bridge.** The page sends `strut/channels/join`,
+   `strut/channels/leave` and `strut/channels/send` as requests on the
+   bridge; the host sends strut's frames to the page, as they came, as
+   `strut/channels/frame` notifications. ext-apps 2.0's `App` and
+   `AppBridge` each take their own request and notification handlers, so
+   no fork of the bridge is needed. The host says it carries channels in
+   its answer to `ui/initialize` (wherever ext-apps lets a host add a
+   capability of its own; item 5 checks the exact field).
+
+A host that does not (Claude Desktop, Goose, any other MCP Apps host)
+gives a page no channels, and `useChannel` reports `unavailable` at once.
+
+- **Strut's UI** (`web/src/app-host.ts`, `AppHost.tsx`, `SoloApp.tsx`):
+  mints its own ticket from its own origin with its session or key, opens
+  `/apps/channels` there. Peel shows apps through this UI, so Peel needs
+  nothing of its own.
+- **Hive**: a Vercel route cannot hold a socket, so Hive's SERVER only
+  mints the ticket (`POST <swarm>/lab/apps/:name/channel-ticket`, with the
+  swarm key and `x-strut-actor`, the credential its relay already sends;
+  the place to put a role floor if Hive wants one), and Hive's PAGE opens
+  `wss://<swarm>/lab/apps/channels?ticket=…` itself. The channel lives on
+  the swarm's strut, so a Hive viewer and a strut-UI viewer of the same
+  app meet there.
+- **mcp (stakgraph)**: routes the `/lab/apps/channels` upgrade to
+  `strut.upgrade` as it routes `/lab/rooms` (stakgraph#1811), and lets a
+  `?ticket=` through `labAuth` for strut to judge, as it lets a file
+  token's `?t=` through.
+
+## 4. A peer's app
+
+Strut's UI shows an app that lives on another strut as
+`?app=@<peer>/<name>`; that is how Peel shows an org's apps. Its channel
+lives on the peer, where the app lives, and the socket gets there through
+the LOCAL strut:
+
+- The UI mints a ticket from its own strut for `@<peer>/<name>` and opens
+  its own `/apps/channels`, as for any app.
+- The local strut sees a peer's app and opens a socket to the peer's
+  `/apps/channels?app=<name>@<version>` with the peer record's token in
+  `Authorization` (a person token, so the peer stamps the person), trusting
+  the record's `ca` and `servername` like every other peer request. It
+  pipes frames both ways.
+- The web view only ever talks to its own strut, and the person token and
+  the peer's URL never reach the page. The extra hop is web view →
+  localhost, so it adds next to nothing.
+
+One hop, as the app read-through is today (`GET /peers/:id/apps`).
+
+## 5. Steps and workflows
+
+Code the app runs (anything with `ctx.app` set: a custom step a page calls
+through `step_run`, a workflow the app launched with `run/launch`) reaches
+the same channels in process, through `ctx.services.channels`:
+
+- **`channel/send { channel, messages: [{ key?, data }] }`**, stamped
+  with the code as the sender: the workflow's name, or the type of the
+  step the page called, plus the actor who set it off. So `game/move`'s
+  `board` state replaces the last `board` from `game/move`, whichever
+  player triggered it, and no page can overwrite it.
+- **`channel/read { channel, since?, wait? }`**, `LiveFeed`'s waiting read
+  (up to `FEED_MAX_WAIT_MS`), for an agent that plays: grant it
+  `channel/*` and it reads the room and sends like anyone else.
+- **`channel/derive { scope }`** → `{ channel }`: a room name only the
+  app's code can work out (§6).
+
+All three refuse to run without `ctx.app`, and a page calling them
+directly through `step_run` is refused (`NOT_A_PAGES` in
+`src/apps/tools.ts`): a page uses its host's socket, and a page that could
+call `channel/derive` could derive any room. A workflow's `channel/*`
+steps are in its run log like every step it runs; a custom step a page
+called keeps no log, as today.
+
+## 6. Who may join, and authorized rooms
+
+**The audience is the gate.** Only someone who may open the app gets a
+ticket: a key or session holder on strut, a workspace member with read
+access in Hive, a person token's person on a peer. Inside that audience,
+anyone with a channel's name may join it.
+
+- **A public room** is a fixed name (`lobby`).
+- **A private game** is a name the kit mints (`newChannel()`, 128 random
+  bits): it cannot be guessed, so it is as strong as a bearer token, and
+  `appLink(app, { channel })` is the invite. Like a bearer token, it is
+  only as secret as where the link travels (chat, history, the host's
+  request logs; on the socket the name travels inside frames, not the
+  URL), and it cannot be revoked.
+
+**An app's own authorized rooms** need no more from strut than this:
+
+1. **A gatekeeper step**, a custom step the app grants, say
+   `game/join { game }`. It runs as the viewer, so `ctx.actor` is who is
+   asking, vouched by the connection. It applies the app's rules (a roster
+   in the graph, the host's say-so) and returns the room name, or refuses.
+   A step, not a workflow: Hive's relay asks the Developer role for
+   `run/launch`, while a step passes on read access.
+2. **The name is derived, never stored**: `channel/derive { scope:
+   "<game>:<epoch>" }`. Strut computes `HMAC(app key, scope)`, the app key
+   being `HMAC(strut's secret, "channel:" + app name)` (the file token's
+   secret; a fixed dev key, with strut's existing warning, when there is
+   none). Nothing is in the graph for a page to read (a page with graph
+   reads granted can read any node by `ref_id`), and the app needs no
+   secret of its own, which a builder could not set. To kick someone, the
+   step moves the epoch and hands the new name only to those still on the
+   roster.
+3. **Pages ignore anyone not on the roster.** Every message carries
+   strut's stamp of its sender, which a page cannot forge, so a page drops
+   what an actor off the roster sends.
+
+The kit's README and the `App` page carry this pattern.
+
+## 7. The kit: `useChannel`
 
 ```ts
-const { states, events, members, send, ready, error } = useChannel(name, {
-  onMessage?: (m: ChannelMessage & { mine: boolean }) => void,   // for a game loop: no React state per message
+const { available, ready, members, states, events, send, error } = useChannel(name, {
+  onMessage?: (m: ChannelMessage & { mine: boolean }) => void,   // a game loop: no React state per message
 });
 send(data);                       // an event
 send({ x, y }, { key: "pos" });   // a state
 ```
 
-- **One read in flight**, as `useFeed` keeps one today: read everything
-  kept, then wait on the cursor; none while the page is hidden.
-- **One send in flight.** What is sent meanwhile waits and goes in the
-  next call, a newer state replacing a waiting one with the same key. So
-  messages leave in order and a page makes at most one send call per
-  round trip, however often it calls `send`.
-- **Presence in the kit, not on the server.** While the page is visible
-  it sends `{ key: "$here" }` every 5 s, and `members` are the senders
-  whose `$here` is under 15 s old. Strut has no presence code, a member
-  is who strut stamped, and someone who closes the tab or hides it drops
-  out on their own.
-- **`newChannel()`** mints an unguessable name, and `appLink(app, {
-  channel })` makes the invite. The link opens the app with the name as
-  `tool-input` (apps.md §7.1). Whoever has the link can join the game,
-  just as a link to the game would let them in.
+`available` is false in a host that carries no channels. The hook joins
+on mount and leaves on unmount, through the bridge methods of §3; `states`
+is the newest state per sender and key, `events` the recent events,
+`members` who is present. Plus `newChannel()` and `appLink`.
 
-## 5. The door's fast path
+## 8. What it is good for
 
-Every `step_run` today reads the app (`apps.get`), resolves the step, and
-goes through `runStep`, which reads the workspace for `stepHashes` and the
-claims layer to decide whether to keep the run. That is fine for a few
-calls a minute and wrong for a game. `channel/*` gets a path of its own in
-`buildAppTools` (`src/apps/tools.ts`):
-
-1. The identity check, as now (an HMAC, no I/O).
-2. The manifest from a cache keyed by `(name, version)`: a version is
-   immutable, and a preview is already in memory. Deleting an app drops
-   its entries.
-3. The grant check, as now.
-4. The input parsed by the step's own schema and handed to
-   `services.channels` with `{ app, actor, client }`. No run, no claims
-   read, no `stepHashes`, no store write.
-
-**The monitor** still counts these calls (calls, bytes, server time) so the
-app's Usage shows the traffic. `repeat`, `fanout` and `volume` leave
-`channel/*` out, because the channel's own limits already bound it. A send
-refused at the rate limit counts as a failure, so `failing` warns with a
-fix: "send fewer messages, or make them states (`key`) so newer ones
-replace older".
-
-## 6. What it costs, and what it is not for
-
-**Delay.** Without measurements (§9 takes them): a message goes page →
-host → strut → the other player's waiting read → their host → their page.
-On strut's own UI that is about one round trip to the server plus the MCP
-door's per-request work. Through Hive each side adds a Hive function
-(auth and a database read per call, `strut/apps/mcp/route.ts`). My guess is
-tens of milliseconds direct, a few hundred through Hive.
+**Delay.** A message goes page → host → strut → the other host → the
+other page, about one round trip to strut. Hive's page talks to the swarm
+directly, so Hive adds no hop of its own.
 
 **Good for:** turn-based games, cards, quizzes with a live lobby, drawing
-together, cursors and "who is here" at a few updates a second, chat in an
-app, a referee workflow, an AI player.
+together, cursors and "who is here", chat in an app, a referee, an AI
+player. A fast action game works as well as a WebSocket game on one
+server does; what strut does not offer is anything closer to the players
+than that server.
 
-**Not for:** a fast action game at 60 updates a second with prediction
-across the internet. That needs a socket, and the only socket a page could
-have is one its HOST holds. If measurements say a socket is needed, it
-becomes a second transport for the same two steps. Strut would serve a
-WebSocket door for channels beside `/rooms`, a host that wants it would
-hold one socket per framed app and relay over the bridge, and the kit
-would pick it up from the host context. No host would be required to; v1
-needs none of this.
-
-**Connections.** Each held read occupies one of the host's connections
-to its own origin. Over HTTP/2 (Hive, a swarm behind TLS) that is free.
-Over HTTP/1.1 (a strut on plain `http://localhost`) the browser allows six
-per origin, shared with the host's own polls and the page's other held
-reads (`useRun({ live })`, `useGraphChanges`). The kit holds one read per
-channel; an app should use one channel at a time.
-
-## 7. Security
+## 9. Security
 
 - The page still connects nowhere: the CSP and the frame are unchanged.
-- A channel is reachable only by its app's pages and the runs the app
-  launched (`ctx.app`, from a signed identity).
-- The sender is strut's stamp; `actor` is vouched by the connection.
-- The channel's name is the only thing that separates two games of the
-  same app. The kit mints unguessable names, and sharing the name is the
-  invite.
-- Nothing is recorded by the door: no run, no log, no store. Messages live
-  in memory until they are replaced, dropped from the 256, or the channel
-  goes idle.
-- **Not end to end.** Strut and any relay host (Hive) can read the
-  messages, the same trust the app's other calls get. A key carried in the
-  invite would not hide them from the host either, because the host sees
-  `tool-input`.
-- **Hive's relay** gates by role only `run/launch` and `run/cancel`; a
-  `channel/*` call passes on read access to the workspace. Hive may put a
-  floor on it; that is Hive's call, and strut works without it.
-- **A gap this makes easier (item 0).** Browsers do not apply
-  `connect-src` to WebRTC. If a sandboxed `srcdoc` frame can still
-  construct an `RTCPeerConnection`, two pages could use a channel to
-  exchange connection details and then talk directly, past strut,
-  revealing each other's IP addresses. They could already do that through
-  graph writes, more slowly. Item 0 checks this, and closes it where the
-  CSP can (`webrtc 'block'`).
+  The host holds the socket.
+- A socket is bound to the app its ticket or `?app=` names; a step to its
+  `ctx.app`. Nothing reaches another app's channels.
+- The sender is strut's stamp: the socket's actor from its ticket or
+  credential, a client id strut assigned, or the code that sent it.
+- The audience gates the ticket; a name gates the room; an app's
+  gatekeeper (§6) gates its own.
+- Nothing is recorded for socket traffic: no run, no log, no store.
+  Messages live in memory until replaced, dropped from the 256, or the
+  channel goes idle.
+- **Not end to end.** Strut reads the messages, the same trust the app's
+  other calls get.
+- **WebRTC (item 0).** Browsers do not apply `connect-src` to WebRTC. If
+  a sandboxed `srcdoc` frame can still construct an `RTCPeerConnection`,
+  two pages could use a channel to exchange connection details and then
+  talk directly, past strut, revealing each other's IP addresses. They
+  could already do that through graph writes, more slowly.
 
-## 8. Work items
+## 10. Work items
 
-0. **Probe WebRTC in the app frame.** Can a page in strut's frame (Chrome,
-   Firefox, Safari, and WKWebView for Peel) construct an
-   `RTCPeerConnection` and gather candidates? If it can, add `webrtc
-   'block'` to `cspFor` where it is honored, say on the `App` page that a
-   direct connection is not the door, and record what stays open.
-1. **`src/channels.ts`**: `ChannelsCapability` (send, read), one
-   `LiveFeed` per `(app, channel)` with `keyOf` and `gatherMs` as in §1,
-   the stamp, the limits, idle drops. Unit tests: states replace per
-   sender, events never do, `reset` after the keep, rate and size refusals,
-   idle eviction, one app never reading another's channel.
-2. **`channel/send` and `channel/read`** (`src/steps/lib/channel/`),
-   refusing without `ctx.app`, and `services.channels` wired in
-   `createStrut`. Add both test files to the `npm test` list.
-3. **The door's fast path** (§5): the manifest cache (invalidated by a
-   delete), `channel/*` dispatched without `runStep`, the monitor's three
-   rules leaving it out. Tests in the app tool suite: refused without the
-   grant, scoped by the identity's app, `from.actor` the connection's, no
-   run kept, no claims read.
-4. **The kit**: `useChannel`, `newChannel`, batched sends, `$here`
-   presence, `onMessage`; hook tests beside `useJobUpdates`'; the kit
-   README.
-5. **The `App` Concept page** (`src/concepts/App.md`): when a channel
-   is the tool (live, lossy, unrecorded) and when a workflow or the graph
-   is (anything that must last); grant `channel/*`; private games through
-   `newChannel` + `appLink`.
-6. **Docs**: `specs/API.md` (the two steps' shapes in the app section),
-   `AGENTS.md` (the layout lines and a Key concepts paragraph).
-7. **Validation** (§9).
+0. **Probe WebRTC in the app frame** (Chrome, Firefox, Safari, WKWebView
+   for Peel). If a frame can gather candidates, add `webrtc 'block'` to
+   `cspFor` where it is honored, say on the `App` page that a direct
+   connection is not the door, and record what stays open.
+1. **`src/channels.ts`**: the service (a `LiveFeed` and the sockets per
+   channel, previews apart, the stamp, presence and its pings, the
+   limits, idle drops). Unit tests: states replace per sender only, a
+   leave drops the leaver's states, a rejoin inside the window keeps the
+   client, a reconnect with a cursor gets what it missed, `reset` past the
+   keep, the refusals, one app never reaching another's channel.
+2. **The ticket and the socket door**: `POST /apps/:name/channel-ticket`
+   (auth.ts beside the file and person tokens), `GET /apps/channels`
+   through `strut.upgrade`, the frames. Tests over a real socket, as the
+   rooms tests do, and the route sweeps.
+3. **The peer relay** (§4) in the same door, with a test against a second
+   strut.
+4. **The steps** `channel/send`, `channel/read`, `channel/derive`
+   (`src/steps/lib/channel/`), refused without `ctx.app` and in
+   `NOT_A_PAGES`. Add the test files to the `npm test` list.
+5. **Strut's UI as a channel host** (`web/src/app-host.ts`): the
+   capability in `ui/initialize`, the ticket, the socket, the relay; the
+   pure parts in `app-links.ts` with their tests.
+6. **The kit**: `useChannel`, `newChannel`, the bridge methods; hook tests;
+   the README with §6's pattern.
+7. **`app/look`**: answer the channel socket in process with Playwright's
+   `page.routeWebSocket`, as `page.route` answers the rest, so the builder
+   can test a multiplayer app.
+8. **The monitor**: channel traffic per app in Usage (messages, bytes,
+   peak members per minute), and a warning when a sender keeps hitting
+   the rate limit, with the fix: send fewer messages, or make them states.
+9. **The `App` Concept page**: when a channel is the tool (live, lossy,
+   unrecorded) and when a workflow or the graph is; grant `channel/*` to
+   the app's steps; the referee and the gatekeeper patterns.
+10. **Docs**: `specs/API.md` (the ticket route, the socket and its frames,
+    and the bridge methods in the host contract, §14.3), `AGENTS.md`.
+11. **Validation** (§11).
 
-**No host changes.** Hive's relay forwards a `step_run` of any type,
-Peel shows apps through strut's own UI, and a peer's app reaches the
-peer's strut through `POST /peers/:id/mcp`. The channel lives on the
-strut where the app lives, whoever hosts the page.
+**Outside strut**: Hive (§3: the ticket on its server, the socket and the
+relay on its page) and mcp (the upgrade route and the ticket through
+`labAuth`). Until they land, Hive's apps report channels unavailable and
+nothing else changes. Peel needs nothing.
 
-## 9. Validation
+## 11. Validation
 
-- A fixture app beside `__fixtures__/hello`: two-player tic-tac-toe,
-  where moves are events, each player's cursor is a state, and a
-  `scoreboard` workflow records the winner in the graph and announces it
-  on the channel.
-- Two frames of it in the browser pane, as two viewers: a move shows in
-  the other frame, a cursor follows, closing one drops it from `members`
-  within 15 s.
-- Send → receive delay, measured at the median and p95, on strut's own UI
-  and through Hive's relay on a swarm. If the numbers rule out the games
-  §6 says are good, revisit the socket transport.
-- Ten messages a second from each of four viewers for ten minutes: no
-  monitor warning, server time per call in Usage, memory flat once the
-  channels go idle.
+- A fixture app beside `__fixtures__/hello`: two-player tic-tac-toe.
+  A `game/move` step checks each move and sends the board as its state; a
+  cursor is each player's own state; a `scoreboard` workflow records the
+  winner in the graph and announces it.
+- Two frames of it in the browser pane as two viewers: a move shows in the
+  other frame, a cursor follows, closing one frame sends `left` at once
+  and killing its connection within about 10 s.
+- The same through a peer: one viewer on the app's strut, one on a second
+  strut showing `@<peer>/<name>`.
+- Send → receive delay at the median and p95, on strut's UI and on a
+  swarm through Hive.
+- Ten messages a second from each of four viewers for ten minutes: memory
+  flat once the channels go idle, the traffic in Usage, no warning.
 
-## Open questions
+## Rejected
 
-1. **Long-poll through `step_run`, or a socket the host holds.** The
-   long-poll needs no host changes and keeps one door. A socket would be
-   faster, but every host would have to relay it. My lean: long-poll now,
-   and a socket as a second transport only if §9 needs one.
-2. **Channels by app name or by version.** My lean: name, like `app/state`
-   and jobs.
-3. **Open by name, or a member list per channel.** My lean: open within
-   the app's audience, with private games behind unguessable names. A
-   list (only these actors) can come later as a field on the first send.
-4. **Presence in the kit or on the server.** My lean: the kit
-   (heartbeat states), so strut has no presence code.
-5. **States keyed per sender or per channel.** My lean: per sender, so a
-   page never overwrites another person's state; shared state that must
-   be right goes through a workflow.
-6. **May a workflow send.** My lean: yes, only with `ctx.app` set, so a
-   referee or an AI player works.
-7. **The word.** "Channel", because "room" already means one person's
-   callback socket (`src/rooms.ts`).
+- **A long-poll over `step_run`** (the first draft): `channel/send` and
+  `channel/read` as a page's steps, the read held on the server like
+  `job/updates` and answered at once, a fast path in the door around
+  `runStep`, the monitor's rules relaxed for it. No host would have
+  changed. Rejected for the socket (ruling 1): one round trip per message
+  instead of two, presence for free, and no busy door.
+- **Hive's Pusher** for Hive's socket: the channel would live in a third
+  party, only Hive viewers would meet, and strut could not stamp senders
+  or let a referee post.
+- **A long-poll fallback** for hosts without a socket: a second transport
+  to keep in step.
+- **Straight from the web view to a peer**: fails for a peer with its own
+  CA, and puts the peer's URL in the page.
+- **Channels per version**: every publish would split a game.
+- **A member list per channel**: an app builds one with a gatekeeper and
+  `channel/derive`.
+- **Presence from heartbeats in the kit**, with page-chosen client ids:
+  slow to notice a leave, traffic all day, and forgeable.
+- **States keyed per channel**: one silent loser in every race, and any
+  member could wipe shared state.
 
 ## Not in v1
 
@@ -327,6 +420,6 @@ strut where the app lives, whoever hosts the page.
   live feeds, a channel is a notification, not a record.
 - Binary messages (JSON only; base64 if a page must).
 - End-to-end encryption.
-- A channel shared by two apps, or one reached by anything that is not an
-  app's page or run.
-- The socket transport (§6).
+- A step or workflow as a member (an AI player is not listed in
+  `members`; a game lists it itself).
+- More than one peer hop for a channel.
