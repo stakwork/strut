@@ -170,7 +170,7 @@ export function openGraphBackend(cfg: GraphConfig, opts: GraphBackendOptions = {
   return held.backend.then(
     (b) => {
       let released = false;
-      return {
+      const out = {
         ...b,
         async close() {
           if (released) return;
@@ -180,6 +180,9 @@ export function openGraphBackend(cfg: GraphConfig, opts: GraphBackendOptions = {
           await b.close();
         },
       };
+      // A Ladybug file's embedder arrives after the open (`attach`): read it from the backend.
+      Object.defineProperty(out, "embedder", { get: () => b.embedder, enumerable: true, configurable: true });
+      return out;
     },
     (e) => {
       held.holders--;
@@ -193,8 +196,14 @@ async function openLadybugBackend(cfg: LadybugConfig, opts: GraphBackendOptions)
   if (namespace === null) throw new Error(`a ladybug file's own namespace must be a namespace name; got ${cfg.namespace}`);
   const lbug = await openLadybug(cfg.path, { extensionDir: cfg.extensionDir });
   try {
-    const embedder: Embedder | undefined =
-      opts.embeddings === false ? undefined : typeof opts.embeddings === "object" ? opts.embeddings : await loadLadybugEmbedder(cfg.path);
+    // A given embedder is used from the start. MiniLM loads in the
+    // background (its first load downloads the model): the file opens
+    // keyword-only and its search and writers take the embedder once it is
+    // there (`attach`).
+    const given = typeof opts.embeddings === "object" ? opts.embeddings : undefined;
+    const load = opts.embeddings !== false && !given;
+    const readerOpts: { embedder?: Embedder } = {};
+    const writerOpts: { embedder?: Embedder; resolver?: SchemaResolver } = {};
     const engine = new LadybugEngine(lbug, namespace);
     const schemas = new SchemaResolver(engine);
     const backend: LadybugBackend = {
@@ -208,29 +217,38 @@ async function openLadybugBackend(cfg: LadybugConfig, opts: GraphBackendOptions)
       nodeEngine: engine.nodeEngine,
       edgeEngine: engine.edgeEngine,
       schemaSource: engine.schemaSource,
-      nodes: new NodeWriter(engine, { embedder, resolver: schemas }),
+      nodes: new NodeWriter(engine, Object.assign(writerOpts, { resolver: schemas })),
       edges: new EdgeWriter(engine, { resolver: schemas }),
-      reader: new LadybugReader(engine, { embedder }),
+      reader: new LadybugReader(engine, readerOpts),
       schemas,
-      embedder,
+      embedder: undefined,
       seed: undefined,
       embeddings: undefined,
       async close() {
+        closed = true;
         await engine.nodeEngine.idle?.();
         await lbug.close();
       },
     };
+    let closed = false;
     // The facts' search rows a failed embedding or a rename left without a
     // vector (plans/graph-edge-search.md), and the data nodes written while
     // the embedder was off, filled in the background; a close waits for the run.
-    if (embedder && !opts.skipBoot) {
+    const attach = (embedder: Embedder) => {
+      if (closed) return;
+      readerOpts.embedder = embedder;
+      writerOpts.embedder = embedder;
+      (backend as { embedder: Embedder | undefined }).embedder = embedder;
+      if (opts.skipBoot) return;
       void engine.nodeEngine.embedPendingRows?.(embedder);
       void engine.nodeEngine.embedPendingNodes?.(embedder, async (type) => {
         if (type === SCHEMA_TYPE || type === MERGE_TYPE) return false;
         const s = await schemas.schema(type).catch(() => null);
         return !!s && s.embed && s.role !== "record";
       });
-    }
+    };
+    if (given) attach(given);
+    else if (load) void loadLadybugEmbedder(cfg.path).then((e) => e && attach(e));
     return backend;
   } catch (e) {
     await lbug.close().catch(() => undefined);

@@ -377,6 +377,8 @@ export interface Embedder {
    *  counts a hit as no match (`LADYBUG_VECTOR_MIN_SIM` for MiniLM). None:
    *  every hit counts. */
   readonly minSimilarity?: number;
+  /** The floor when the keyword search found nothing (`LADYBUG_VECTOR_ALONE_MIN_SIM`). None: `minSimilarity`. */
+  readonly aloneMinSimilarity?: number;
 }
 
 export interface NodeInput {

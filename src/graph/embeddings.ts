@@ -20,7 +20,7 @@ import { modelDirFromEnv } from "../model-dir.js";
 import { ModelWorker, type ModelWorkerSpec } from "../model-worker.js";
 import { int, type Bolt } from "./bolt.js";
 import { buildSearchText, renderVectorField, type Embedder } from "./node-writer.js";
-import { LADYBUG_VECTOR_MIN_SIM } from "./search.js";
+import { LADYBUG_VECTOR_ALONE_MIN_SIM, LADYBUG_VECTOR_MIN_SIM } from "./search.js";
 import type { SchemaResolver } from "./schema-resolver.js";
 import { schemaStatement } from "./schema-seed.js";
 import { STRUT_SCHEMAS, THING_TYPE, embeddingColumn } from "./strut-schemas.js";
@@ -43,6 +43,7 @@ type Transformers = typeof import("@huggingface/transformers");
 
 export class MiniLMEmbedder implements Embedder {
   readonly minSimilarity = LADYBUG_VECTOR_MIN_SIM;
+  readonly aloneMinSimilarity = LADYBUG_VECTOR_ALONE_MIN_SIM;
 
   private constructor(
     private readonly tf: Transformers,
