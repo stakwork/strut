@@ -1,3 +1,4 @@
+import yaml from "js-yaml";
 import type { WorkspaceStore } from "./workspace.js";
 import { templateWithDelta, type JobSeedOptions } from "./job-seed.js";
 import { idProblem } from "./session-store.js";
@@ -25,7 +26,12 @@ import { idProblem } from "./session-store.js";
  * it from the file `STRUT_HOST_CONFIG` names (src/server.ts). Peel is the
  * first host: it adds sphinx/*, calendar/* and its automation steps.
  */
-export type OrchestratorSeedOptions = JobSeedOptions;
+export type OrchestratorSeedOptions = JobSeedOptions & {
+  /** The root of the person's own pages, closing the prompt with the
+   *  pages under it (`params.personalConcept`); createStrut names
+   *  `Personal` when it seeds that root (`concepts: { personal: true }`). */
+  personalConcept?: string;
+};
 
 export const ORCHESTRATOR_WORKFLOW = "orchestrator";
 export const ORCHESTRATOR_CATEGORY = "orchestrator";
@@ -42,7 +48,11 @@ const ORCHESTRATOR_YAML = new URL("./workflows/orchestrator.yaml", import.meta.u
 
 /** The `orchestrator` template with the host's delta applied. */
 export async function orchestratorWorkflowYaml(opts?: OrchestratorSeedOptions): Promise<string> {
-  return templateWithDelta(ORCHESTRATOR_YAML, opts);
+  const text = await templateWithDelta(ORCHESTRATOR_YAML, opts);
+  if (!opts?.personalConcept) return text;
+  const doc = yaml.load(text) as { params: Record<string, unknown> };
+  doc.params["personalConcept"] = opts.personalConcept;
+  return yaml.dump(doc, { lineWidth: -1, noRefs: true });
 }
 
 /**

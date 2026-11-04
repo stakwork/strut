@@ -66,7 +66,7 @@ import { createVerifyWaker, type VerifyWaker } from "./ai/verify-waker.js";
 import type { RunEndInfo } from "./runner.js";
 import { ACTOR_SECRETS_FILE, actorSecretStore, type ActorSecretStore } from "./actor-secrets.js";
 import { seedJobWorkflow, type JobSeedOptions } from "./job-seed.js";
-import { PERSONAL_CONCEPTS, STRUT_CONCEPTS, seedConcepts } from "./concept-seed.js";
+import { PERSONAL_CONCEPTS, PERSONAL_ROOT, STRUT_CONCEPTS, seedConcepts } from "./concept-seed.js";
 import { builderSystem } from "./ai/builder-system.js";
 import { seedOrchestratorWorkflow, type OrchestratorSeedOptions } from "./orchestrator-seed.js";
 import { seedBuilderWorkflow, type BuilderSeedOptions } from "./builder-seed.js";
@@ -1244,7 +1244,9 @@ export async function createStrut<TServices = unknown>(
   }
   if (opts.orchestrator !== false) {
     try {
-      const { version, changed } = await seedOrchestratorWorkflow(workspace, opts.orchestrator);
+      // A host that keeps the person's own pages: the orchestrator follows them.
+      const personal = opts.concepts !== false && opts.concepts?.personal ? { personalConcept: PERSONAL_ROOT } : {};
+      const { version, changed } = await seedOrchestratorWorkflow(workspace, { ...opts.orchestrator, ...personal });
       if (changed) console.log(`[orchestrator] seeded workflow: orchestrator @ ${version}`);
     } catch (err) {
       console.warn(`[orchestrator] could not seed the orchestrator workflow:`, err instanceof Error ? err.message : err);

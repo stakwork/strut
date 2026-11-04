@@ -129,6 +129,9 @@ export const STRUT_CONCEPTS: ConceptSet = {
   retired: ["Workflow Build.md", "Job App.md"],
 };
 
+/** The root page's name (src/concepts/personal/Personal.md). */
+export const PERSONAL_ROOT = "Personal";
+
 /** The root of a PERSON's own knowledge (`Personal`,
  *  src/concepts/personal/): the page a personal graph's assistant starts
  *  from, with every page they teach it under it. A host with a personal

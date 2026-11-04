@@ -441,6 +441,38 @@ describe("createStrut with a graph", { skip: ladybug.skip }, () => {
     assert.ok(!system!.includes("open the `Job` Concept: graph/graph-get"), "no tool call to make for the list");
   });
 
+  it("with Personal, the orchestrator's prompt closes with it and the pages under it, with how to open one; without it, nothing of it", async () => {
+    const systems: string[] = [];
+    const fakeAgent = defineStep({
+      type: "agent",
+      input: z.object({ system: z.string() }).passthrough(),
+      output: z.any(),
+      async run(cfg) {
+        systems.push(cfg.system);
+        return { result: "ok", object: { text: "ok", artifacts: [] }, steps: 1, usage: {}, cost: 0 };
+      },
+    });
+    const strut = await make({ concepts: { personal: true }, registry: await createRegistry([fakeAgent]) });
+    const root = (await b.reader.namesLike("Concept", "Personal", 1))[0]!.ref_id;
+    const style = (await b.nodes.write({ type: "Concept", data: { name: "Communication style", description: "Short, plain replies; start a message sent for me with [peel agent].", docs: "Short." } })).ref_id;
+    await b.edges.write({ edge: "PARENT_OF", source_ref_id: root, target_ref_id: style });
+    let res = await strut.run("orchestrator", { prompt: "send hive a test", session: "s-1" });
+    assert.equal(res.status, "success", JSON.stringify(res.error));
+    const system = systems.at(-1)!;
+    const at = system.indexOf('Workspace knowledge — the "Personal" Concept');
+    assert.ok(at > system.indexOf('the "Job" Concept'), "after the kinds of job");
+    assert.ok(system.includes("write under it, never on it"), "the root's own docs: where to write");
+    assert.ok(system.includes("- Communication style — Short, plain replies; start a message sent for me with [peel agent]."), system.slice(at));
+    assert.ok(system.slice(at).includes('graph_graph_get({ node_type: "Concept", name: "<name>", children: "PARENT_OF" })'), "and how to open one");
+    await strut.close();
+
+    const plain = await make({ registry: await createRegistry([fakeAgent]) });
+    res = await plain.run("orchestrator", { prompt: "send hive a test", session: "s-2" });
+    assert.equal(res.status, "success", JSON.stringify(res.error));
+    assert.ok(!systems.at(-1)!.includes('the "Personal" Concept'), "a host without Personal: not in the prompt, even with the page in the graph");
+    await plain.close();
+  });
+
   it("puts the Workflow Builder page in a chat's system prompt unless the host passes its own", async () => {
     const bodies: Array<{ system: unknown }> = [];
     const server = http.createServer((req, res) => {
