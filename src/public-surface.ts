@@ -1,5 +1,6 @@
 /**
- * The PUBLIC SURFACE (plans/public-surface.md §2, §4): what a person chose
+ * The PUBLIC SURFACE — the server's PUBLIC VIEW in the UI, never a
+ * "publish" (plans/public-surface.md §2, §4, decision 19): what a person chose
  * to show anyone on this strut server, live and read-only — Concept roots
  * (the subtree under each), workflows (with or without their runs), steps,
  * node types, and apps. One record per server, a person's act, kept as

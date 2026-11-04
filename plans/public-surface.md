@@ -11,7 +11,16 @@
 > `federation.md` §2.1 (read-through, which this builds the first half of),
 > `proposals.md` (the suggestion door reuses its records) and
 > `concept-tree.md` (the generated Codebase tree, the first living tree to
-> make public).
+> put in the public view).
+>
+> **Named PUBLIC VIEW (ruled 2026-11-04):** the live, read-only list is the
+> server's public view, and its UI the **Public view** dialog. Nothing in
+> it is PUBLISHED: publishing records a version (a workflow, step or app)
+> or a package release, a copy by digest, and the Packages dialog's **Make
+> public** puts a release in the public catalog. Adding an item to the
+> public view copies nothing; visitors read the live item under `/public`,
+> and taking it out closes it again. The routes keep `/public`, the record
+> `public.json`; "the surface" below is the same thing.
 >
 > **Item 1 BUILT 2026-11-04** (uncommitted at writing): `src/public-surface.ts`
 > (the record, the Concept trees, the visible-node rule, the filtered
@@ -87,6 +96,8 @@ ideas":
 | 16 | A public run shows its input whole. | **ruled** |
 | 17 | A public step shows the helper files it imports, beside its own source. | **ruled** |
 | 18 | Whether actors appear in public version and revision lists is deferred; until it is decided, public views carry no actor. | **ruled** (deferred); the v1 default is mine |
+| 19 | The name: the PUBLIC VIEW (the **Public view** dialog), never "publish" or "make public", which are the copy side's (a version, a package release, the Packages dialog's **Make public**). | **ruled** |
+| 20 | Adding an item to the public view cascades in the dialog, explicitly: an app pre-checks its granted workflows with runs, their custom steps, its reads and the Concept roots its workflows read (`context/concept`); the record lists everything. | *agreed* ("yes that right") |
 
 ## Design in one paragraph
 
@@ -168,10 +179,29 @@ secret): `<dataDir>/public.json`, beside `packages/indexes.json`.
   moves the release. `reads` is §5's list. `domains` is §9's.
 - **The door**: `GET`/`PUT /public` (full scope only; a person, never the
   builder or a `meta/*` step: the surface is the owner's decision as a
-  sealed grant is, `src/apps/grants.ts`). In the UI, a topbar **Public**
-  dialog like **Packages**: what this server shows anyone, each item with
-  its options, and an add box per kind. Each item's own flyout shows a
-  "Public" badge that opens the dialog on it.
+  sealed grant is, `src/apps/grants.ts`). In the UI, a topbar **Public
+  view** dialog like **Packages**: what this server shows anyone, each item
+  with its options, and an add box per kind. Each item's own flyout shows a
+  "Public view" badge that opens the dialog on it.
+- **The dialog cascades, in the open** (agreed 2026-11-04). Adding an item
+  pre-checks what it needs to be read, every line with what it exposes,
+  and Save writes the whole list, so the record stays explicit: a later
+  app release that grants one more workflow never widens the public view
+  by itself. Adding an APP pre-checks the workflows it grants, with their
+  runs (the app reads them); the custom steps those workflows and their
+  subflows run, and the app's own granted reads (§5's `reads`); and the
+  Concept ROOTS those workflows read. A workflow names its root with
+  `context/concept { name }` (`job.yaml`, `orchestrator.yaml` and
+  `builder.yaml` read `"{{ params.concept }}"`), or a `graph/graph-get`
+  with a literal `node_type: Concept` and `name`: a literal or a `{{
+  params.X }}` read off the params' defaults is known up front, the way
+  `closure.ts` reads a `{{ params.tools }}` grant; a name from `{{ input.*
+  }}` is chosen per run (`job.yaml`'s `{{ input.kind }}`, a page under
+  `Job`), and the pages a public run did read are visible through it
+  anyway (§4). A root brings its WHOLE subtree, so each pre-checked root
+  says how many pages it holds (`Codebase` is every repository and feature
+  page). Adding a WORKFLOW pre-checks its custom steps and its roots the
+  same way. A person unticks what they do not mean.
 - **Computed beside each item** in `GET /public`: `can: { spends, acts,
   code }`, the fold the store does over an archive today
   (`src/packages/detail.ts:242`), moved to a module both use, so the store
@@ -262,7 +292,7 @@ call is handed.
     of §4.
   - **The app's other granted steps** (custom ones such as `openlaw/runs`,
     or an outside read such as `sheets/get-values`): only those in the
-    app's `reads`, which the person ticks when making it public. The
+    app's `reads`, which the person ticks when adding it to the public view. The
     dialog pre-ticks what is computable as a read (strut's own steps that
     declare `effect: "read"`) and says, for each one that reaches outside
     the server, what it can reach ("`sheets/get-values`: any spreadsheet
@@ -475,8 +505,8 @@ merged before the next is opened, never stacked.
    Law tree. Then the first row on index.sphinx.chat, with `live`; it mints
    the index's key, which goes into `DEFAULT_PACKAGE_INDEXES`
    (`src/packages/indexes.ts:51`).
-6. **The Public dialog** (strut). The person's door in the UI, and the
-   badge on each item's flyout.
+6. **The Public view dialog** (strut). The person's door in the UI with its
+   cascade (§2), and the badge on each item's flyout.
 
 ### Later
 
@@ -501,7 +531,7 @@ which come with items 9–11.
   answers nothing.
 - A workflow public without runs: its definition and versions read; its
   runs 404; a run of it named on `/public/mcp` is refused.
-- A Concept root made public: a page under it reads anonymously with its
+- A Concept root in the public view: a page under it reads anonymously with its
   history; a sibling under a private root is "not found"; a page moved out
   of the subtree stops reading, one moved in starts.
 - A public app with no credential: its page renders; `run/launch` is

@@ -2033,9 +2033,11 @@ publish and after a channel move.
 }
 ```
 
-## 17. Public — what anyone may read (`plans/public-surface.md`)
+## 17. The public view — what anyone may read (`plans/public-surface.md`)
 
-A person chooses what this strut server shows anyone, live and read-only:
+A person chooses what this strut server shows anyone, live and read-only —
+its PUBLIC VIEW (not a publish: nothing is copied or versioned, and the
+Packages dialog's **Make public** is the package catalog's, §16):
 Concept roots (each root and every page under it by `PARENT_OF`),
 workflows (with or without their runs), steps, node types, and apps (the
 app routes come with `plans/public-surface.md` item 2). Everything else
