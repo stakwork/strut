@@ -1557,6 +1557,11 @@ fourth never load; the rest of each Kit cell is the stack.
   `wait`. This is where "an endpoint is a tool" strains — a tool returns
   once and a UI wants a tail — and the fix is a subscription over the
   bridge, never a streaming route creeping back into §5.
+- **Live messages between viewers** (a multiplayer game, cursors, a
+  lobby): ruled in `app-channels.md` (2026-11-04), not built. The HOST
+  holds a WebSocket to strut, opened with a ticket strut mints, and relays
+  it to the page over the bridge; the page's CSP is unchanged. Strut stamps
+  every sender, knows presence from the sockets, and keeps nothing.
 - **A `tsc` pass at build**, against the kit's types.
 - **`connectDomains`.**
 - **Shared SQLite**, where one app reads another's file. The graph is the
