@@ -55,7 +55,12 @@ export default defineStep({
     "the search then also finds facts — sentences on edges, \"Tom works at Stakwork\" — and returns `{ nodes, facts }`, each fact with its sentence, both ends and its dates. " +
     "Only current facts are returned unless `include_ended` (history too) or `as_of` (what was true then) says otherwise. A search with `type`, `domains` or `linked` finds no facts. " +
     "Without `facts: true` the result is the list of nodes alone.",
-  graphNotes: { ladybug: "`include_ended` is what used to be true. A fact's `sources` say where it came from and who said it: a node there that is not the user is someone else's word." },
+  graphNotes: {
+    ladybug:
+      "`include_ended` is what used to be true. A fact's `sources` say where it came from and who said it: a node there that is not the user is someone else's word. " +
+      "A name finds the names a node holds (its name and `alt_names`), never a short or long form it was not given: when one finds nothing, search its other forms (Katie → Kate, Bob → Robert). " +
+      "Search reads words, not who they mean: for the user (I, me, my), get them with graph/graph-get owner: true and walk their edges; for who is linked to whom (who works with Kate), walk graph/graph-neighbors from what you found.",
+  },
   input: z.object({
     q: z
       .string()
@@ -156,6 +161,9 @@ export default defineStep({
           ...(p.end !== undefined ? { end: p.end } : {}),
           ...(p.workflow_id !== undefined ? { workflow_id: p.workflow_id } : {}),
           ...(p.skill_id !== undefined ? { skill_id: p.skill_id } : {}),
+          // On a Ladybug file the two lists share a scale: a node's score
+          // compares with a fact's, so the caller can read them as one list.
+          ...(cfg.facts && b.kind === "ladybug" ? { score: n.score } : {}),
         };
       });
       // No provenance marker: a hit is a node the caller was SHOWN, not one

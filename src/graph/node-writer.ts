@@ -315,16 +315,21 @@ const PRIORITY_FIELDS = [
 
 const nonBlank = (v: unknown) => v !== null && v !== undefined && String(v).trim().length > 0;
 
+/** A node's other names (`resolve`, `merge`): an ordinary field most named types declare. */
+export const ALT_NAMES = "alt_names";
+
 /**
  * `get_search_fields_for_node`: the schema's explicit `index` fields (in
- * declared order) that are present and non-blank; when the schema has no
- * real index (`["node_key"]`) or none of its index fields are usable, fall
- * through to jarvis's priority list + every other non-excluded property.
+ * declared order) that are present and non-blank, then any of `also` not
+ * among them (a Ladybug node's `alt_names`: its other names are always
+ * searched, whatever its type's `index`); when the schema has no real index
+ * (`["node_key"]`) or none of its index fields are usable, fall through to
+ * jarvis's priority list + every other non-excluded property.
  */
-export function searchFieldsFor(schema: Pick<NodeSchema, "index">, values: Record<string, unknown>): string[] {
+export function searchFieldsFor(schema: Pick<NodeSchema, "index">, values: Record<string, unknown>, also: readonly string[] = []): string[] {
   if (!(schema.index.length === 1 && schema.index[0] === "node_key")) {
     const focused = schema.index.filter((f) => nonBlank(values[f]));
-    if (focused.length) return focused;
+    if (focused.length) return [...focused, ...also.filter((f) => !focused.includes(f) && nonBlank(values[f]))];
   }
   const out: string[] = [];
   const seen = new Set<string>();
@@ -347,8 +352,8 @@ export function searchFieldsFor(schema: Pick<NodeSchema, "index">, values: Recor
  *  composition: the writer, the pass (`embeddings.ts`) and jarvis's
  *  `build_search_text` all produce this text, which is why "stored
  *  search text ≠ composed text" is the pass's stale test. */
-export function buildSearchText(schema: Pick<NodeSchema, "index">, values: Record<string, unknown>): { text: string | null; fields: string[] } {
-  const fields = searchFieldsFor(schema, values);
+export function buildSearchText(schema: Pick<NodeSchema, "index">, values: Record<string, unknown>, also: readonly string[] = []): { text: string | null; fields: string[] } {
+  const fields = searchFieldsFor(schema, values, also);
   const parts = fields.map((f) => String(values[f]).trim()).filter(Boolean);
   return { text: parts.length ? parts.join("\n") : null, fields };
 }
@@ -488,7 +493,8 @@ export class NodeWriter {
     const prepared: PreparedNode[] = validated.map((v, idx) => {
       const ref_id = randomUUID();
       const key = keyedByRef(v.schema) ? refNodeKey(v.schema.type, ref_id) : composeNodeKey(v.schema, v.values);
-      const { text, fields } = buildSearchText(v.schema, v.values);
+      // A Neo4j graph keeps jarvis's composition: its nodes hold no alt_names.
+      const { text, fields } = buildSearchText(v.schema, v.values, this.engine.kind === "neo4j" ? [] : [ALT_NAMES]);
       // One clock read for both stamps; `created_at` is identity
       // (PRESERVED), so only a create writes it.
       const props: Record<string, unknown> = { ...v.values, [stampKey(v.schema)]: now, [UPDATED_AT]: now };
@@ -508,10 +514,13 @@ export class NodeWriter {
         }
       }
       if (text !== null) {
-        props["search_text"] = text;
+        // Ladybug's full-text index splits words on spaces alone ("Kate\nKatherine"
+        // is one word to it), so a Ladybug file stores the text on one line.
+        const stored = this.engine.kind === "neo4j" ? text : text.replace(/\s+/g, " ");
+        props["search_text"] = stored;
         props["_search_fields_used"] = fields;
         // The no-embed mark: keyword text, never a vector.
-        if (v.schema.embed) jobs.push({ idx, column: "text_embeddings", text });
+        if (v.schema.embed) jobs.push({ idx, column: "text_embeddings", text: stored });
       }
       for (const vi of v.schema.vector_index) {
         const raw = v.values[vi];

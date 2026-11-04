@@ -245,7 +245,8 @@ export default defineStep({
         const rule = await edgeRule((q, p) => schemaQuery(q, p), edge);
         return rule ? rule["temporal"] !== true : undefined;
       };
-      const edgeReady = async (predicate: string, s: string, t: string, cardinality: string): Promise<{ edge: string } | string> => {
+      // A predicate's aliases go onto its edge type: what a search reads as naming it.
+      const edgeReady = async (predicate: string, s: string, t: string, cardinality: string, aliases: string[]): Promise<{ edge: string } | string> => {
         const key = `${s}|${predicate}|${t}`;
         if (ready.has(key)) return ready.get(key)!;
         const base = edgeTypeOf(predicate);
@@ -256,7 +257,7 @@ export default defineStep({
         else if (!existing) {
           const held = await plain(edge);
           if (held) out = `${base} and ${edge} are plain edge types on the graph; a fact needs a temporal one`;
-          else await b.schemas.createEdgeSchema(s, edge, t, held === false ? undefined : { temporal: true, cardinality: cardinality === "one" ? "one" : "many" });
+          else await b.schemas.createEdgeSchema(s, edge, t, held === false ? undefined : { temporal: true, cardinality: cardinality === "one" ? "one" : "many" }, { aliases });
         }
         ready.set(key, out);
         return out;
@@ -290,7 +291,7 @@ export default defineStep({
         if (!object) { c.review.push({ kind: "fact", ...about, reason: "its object was not imported (listed above)" }); continue; }
         // A past fact the old memory also holds now would end the current one: the current one stands.
         if (ended && held.has(`${f["subject"]}|${predicate}|${f["object"]}`)) { skip(c, "an earlier spell of a fact held now"); continue; }
-        const ready_ = await edgeReady(predicate, await typeOf(subject), await typeOf(object), vocab.term("predicate", predicate)?.cardinality ?? "many");
+        const ready_ = await edgeReady(predicate, await typeOf(subject), await typeOf(object), vocab.term("predicate", predicate)?.cardinality ?? "many", vocab.term("predicate", predicate)?.aliases ?? []);
         if (typeof ready_ === "string") { c.review.push({ kind: "fact", ...about, reason: ready_ }); continue; }
         const edge = ready_.edge;
         let wrote = false;

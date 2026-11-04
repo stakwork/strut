@@ -198,6 +198,8 @@ describe("buildSearchText (Data_Bank)", () => {
 for (const tb of testBackends()) {
   describe(`NodeWriter on ${tb.name}`, { skip: tb.skip }, () => {
     const neo = tb.kind === "neo4j";
+    /** The stored search text: a Ladybug file keeps it on one line (its full-text index splits on spaces alone). */
+    const st = (text: string) => (neo ? text : text.replace(/\s+/g, " "));
     const neoOnly = (why: string) => ({ skip: neo ? false : `neo4j only: ${why}` });
     let backend: GraphBackend;
     let writer: NodeWriter;
@@ -237,7 +239,7 @@ for (const tb of testBackends()) {
       assert.equal(p["key"], "strutrun-1725220000123");
       assert.ok((p["created_at"] as number) >= t0 && (p["created_at"] as number) <= Date.now() + 1);
       assert.equal(p["started_at"], 1788292800);
-      assert.equal(p["search_text"], "harvey-deliver\nsuccess\nDelivered 60 of 60");
+      assert.equal(p["search_text"], st("harvey-deliver\nsuccess\nDelivered 60 of 60"));
       assert.equal(p["title"], neo ? undefined : "harvey-deliver", "the type's title_key, workflow_name (Neo4j stores no core title)");
       assert.ok(!("log_ref" in p), "empty string never written");
       assert.ok(!("text_embeddings" in p), "no embedder → NULL, not a marker");
@@ -289,7 +291,7 @@ for (const tb of testBackends()) {
       assert.equal(after["key"], before["key"]);
       assert.equal(after["run_status"], "error");
       assert.equal(after["error_message"], "x");
-      assert.equal(after["search_text"], "harvey-deliver\nerror\nboom");
+      assert.equal(after["search_text"], st("harvey-deliver\nerror\nboom"));
       assert.ok(!("is_deleted" in after), "upsert on a live node does not add is_deleted");
     });
 
@@ -410,7 +412,7 @@ for (const tb of testBackends()) {
       assert.deepEqual(rs.map((r) => r.outcome), ["created", "created", "created", "created"]);
       assert.deepEqual(rs.map((r) => r.key), ["strutjob-6a6f622d31", "strutrun-1725220000123", "strutworkflow-7766", "strutrun-2"]);
       assert.equal(await nodeCount(backend), 4);
-      assert.equal((await props(rs[2]!.ref_id))["search_text"], "wf\na workflow");
+      assert.equal((await props(rs[2]!.ref_id))["search_text"], st("wf\na workflow"));
       const rs2 = await writer.writeMany([
         { type: "StrutRun", data: { ...RUN, summary: "again" } },
         { type: "StrutRun", data: { ...RUN, run_id: "3" } },
@@ -445,7 +447,7 @@ for (const tb of testBackends()) {
         const vt = await (backend as { bolt: Bolt }).bolt.run(`MATCH (n:Data_Bank {ref_id: $r}) RETURN valueType(n.text_embeddings) AS t`, { r: r.ref_id });
         assert.equal(vt[0]!["t"], "LIST<FLOAT NOT NULL> NOT NULL");
       } else {
-        assert.deepEqual(seen, ["x/y\nd"], "no per-stem vectors in the file");
+        assert.deepEqual(seen, [st("x/y\nd")], "no per-stem vectors in the file");
         assert.ok(!("input_embeddings" in p));
       }
       await w.write({ type: "StrutStep", data: { step_type: "x/y", description: "dd", input_schema: "{ab}" } }, "upsert");
@@ -467,11 +469,11 @@ for (const tb of testBackends()) {
       assert.ok(!("log_ref" in p));
       assert.equal(p["summary"], RUN.summary, "untouched attrs survive");
       assert.equal(p["created_at"], before["created_at"]);
-      assert.equal(p["search_text"], "harvey-deliver\nerror\nDelivered 60 of 60");
+      assert.equal(p["search_text"], st("harvey-deliver\nerror\nDelivered 60 of 60"));
       assert.equal((p["text_embeddings"] as number[])[0], "harvey-deliver\nerror\nDelivered 60 of 60".length);
       // Remove every index field but one → Data_Bank rebuilt; remove all → dropped.
       await w.update(a.ref_id, { remove: ["summary"] });
-      assert.equal((await props(a.ref_id))["search_text"], "harvey-deliver\nerror");
+      assert.equal((await props(a.ref_id))["search_text"], st("harvey-deliver\nerror"));
       // Validation still applies to the merged payload.
       await assert.rejects(w.update(a.ref_id, { set: { bogus: 1 } }), (e: unknown) => e instanceof GraphValidationError && e.code === "UNKNOWN_ATTRIBUTE");
       await assert.rejects(w.update(a.ref_id, { remove: ["run_status"] }), (e: unknown) => e instanceof GraphValidationError && e.code === "MISSING_REQUIRED");

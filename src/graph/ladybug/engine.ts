@@ -618,6 +618,12 @@ export class LadybugSchemas implements SchemaSource {
   async edgeRule(edge: string, tx?: GraphTx): Promise<Record<string, unknown> | null> {
     return ontology.edgeRule(this.reader(tx), edge);
   }
+  async edgeAliases(tx?: GraphTx): Promise<Map<string, string[]>> {
+    return ontology.edgeAliases(this.reader(tx));
+  }
+  async setEdgeAliases(edge: string, aliases: string[], tx?: GraphTx): Promise<void> {
+    await this.write(tx, (run) => ontology.setEdgeAliases(run, edge, aliases));
+  }
   async setEdgeRule(edge: string, rule: { temporal?: boolean; cardinality?: string }, tx?: GraphTx): Promise<void> {
     await this.write(tx, (run) => ontology.setEdgeRule(run, edge, rule));
   }

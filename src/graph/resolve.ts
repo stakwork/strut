@@ -44,14 +44,14 @@ import type { Row } from "./engine.js";
 import { namespaceName } from "./ladybug/namespaces.js";
 import { mergedInto } from "./ladybug/merge.js";
 import { EDGE_TEXT_TYPE, MERGE_TYPE, SCHEMA_TYPE } from "./ladybug/registry.js";
-import { GraphValidationError, composeNodeKey, keyedByRef } from "./node-writer.js";
+import { ALT_NAMES, GraphValidationError, composeNodeKey, keyedByRef } from "./node-writer.js";
 import { ALL_NAMESPACES, boundsOf, hidesType, readsNamespace, type ReaderList } from "./scope.js";
 import type { NodeSchema } from "./schema-resolver.js";
 import { GraphReadError } from "./search.js";
 import { composeTitle } from "./title.js";
 
 /** The list field a node's other names are kept in. */
-export const ALT_NAMES = "alt_names";
+export { ALT_NAMES };
 
 export type ResolveStage = "key" | "identifier" | "name" | "alias";
 

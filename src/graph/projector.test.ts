@@ -910,7 +910,8 @@ for (const tb of testBackends()) describe(`projector on ${tb.name}`, { skip: tb.
     // `kind` and `label` are part of the search text (what the FTS index and the
     // embedding read), so a kind finds its artifacts by keyword and by meaning.
     const [bank] = await backend.query(`MATCH ${d().node("a", "StrutArtifact", { artifact_id: "$id" })} RETURN a.${neo4jOr("search_text")} AS b`, { id: "pr" });
-    assert.equal(bank!["b"], "Fix login\nfixes the login redirect\npull-request\nPR");
+    // A Ladybug file keeps it on one line: its full-text index splits on spaces alone.
+    assert.equal(bank!["b"], neo ? "Fix login\nfixes the login redirect\npull-request\nPR" : "Fix login fixes the login redirect pull-request PR");
     const hit = await backend.reader.search({ q: "login", types: ["StrutArtifact"] });
     assert.deepEqual(hit.nodes.map((n) => n.node_type), ["StrutArtifact"]);
   });

@@ -703,7 +703,7 @@ describe("memory/duplicates and merge's created_by", { skip: !hasLadybug && "@la
       episode: "Katie Moss lives in Leeds.",
       facts: [{ subject: person("Katie Moss"), predicate: "lives_in", object: { type: "Place", name: "Leeds" }, text: "Katie Moss lives in Leeds." }],
     });
-    await run("memory/remember", { episode: "Kate Brown and Bob Lee called.", mentions: [person("Katie Brown"), person("Bob Lee"), person("Robert Lee")] });
+    await run("memory/remember", { episode: "Kate Brown and Rob Lee called.", mentions: [person("Katie Brown"), person("Rob Lee"), person("Robert Lee"), person("Bill Ash"), person("William Ash")] });
     await run("memory/remember", { episode: "Mercury the planet.", mentions: [{ type: "Topic", name: "Mercury" }, person("Mercury")] });
 
     const pairs = await run("memory/duplicates", {});
@@ -711,7 +711,8 @@ describe("memory/duplicates and merge's created_by", { skip: !hasLadybug && "@la
     assert.equal(names[0], "Me + Tom Smith", "the user, strongest");
     assert.equal(pairs[0].a.node_type, "Self");
     assert.match(pairs[0].reason, /named as the user/);
-    for (const want of ["Kate + Katie Moss", "Bob Lee + Robert Lee", "Mercury + Mercury"]) assert.ok(names.includes(want), `${want} in ${names}`);
+    for (const want of ["Kate + Katie Moss", "Rob Lee + Robert Lee", "Mercury + Mercury"]) assert.ok(names.includes(want), `${want} in ${names}`);
+    assert.ok(!names.includes("Bill Ash + William Ash"), "no table of short forms: one that shares no letters is the node's own other name");
     assert.ok(!names.includes("Katie Brown + Katie Moss"), "different surnames are not offered");
     assert.ok(!names.includes("Me + Tom"), "a Person with only the user's first name is not offered as the user");
     for (const p of pairs) {
@@ -788,7 +789,7 @@ describe("memory/duplicates and merge's created_by", { skip: !hasLadybug && "@la
       await q("CREATE (:Entity {ref_id: 'cap-old', type: 'Person', name: 'x', aliases: [], deleted_at: $old, deleted_reason: 'merged into y by janitor'})", { old: now - 25 * 3600_000 });
       await q("CREATE (:Entity {ref_id: 'cap-agent', type: 'Person', name: 'x', aliases: [], deleted_at: $now, deleted_reason: 'merged into y by agent'})", { now });
     });
-    const pair = (await run("memory/duplicates", {})).find((p: any) => pairOf(p) === "Bob Lee + Robert Lee");
+    const pair = (await run("memory/duplicates", {})).find((p: any) => pairOf(p) === "Rob Lee + Robert Lee");
     const out = await run("memory/merge", { keep: pair.a.ref_id, duplicate: pair.b.ref_id, created_by: "janitor" });
     assert.match(out.error, /^refused: the janitor has already merged 10 pairs in the last 24 hours/);
     // One under the cap merges again.
