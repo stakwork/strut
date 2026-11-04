@@ -230,6 +230,22 @@ describe("the app build", () => {
     assert.match(errorsOf(r).join("\n"), /badkit@v1:src\/index\.ts:1: calls eval/);
   });
 
+  it("build.json carries the title and the wallet request, for the host that shows the connect sheet", async () => {
+    const files = minimal();
+    const dir = await writeApp(fresh(), {
+      ...files,
+      "app.yaml": "title: Tip jar\nwallet:\n  request_methods: [pay_keysend]\n  max_amount: 5000000\n  renewal_period: weekly\n",
+    });
+    const r = await build(dir);
+    assert.ok(r.ok, errorsOf(r).join("\n"));
+    const info = (await readBuildInfo(dir))!;
+    assert.equal(info.title, "Tip jar");
+    assert.deepEqual(info.wallet, { request_methods: ["pay_keysend"], max_amount: 5000000, renewal_period: "weekly" });
+    const none = await writeApp(fresh(), minimal());
+    assert.ok((await build(none)).ok);
+    assert.equal((await readBuildInfo(none))!.wallet, undefined, "an app that asks for no wallet says nothing of one");
+  });
+
   it("a grant naming a workflow that does not exist fails the build naming it; the manifest is shape-checked", async () => {
     const r = await build(await writeApp(fresh(), { ...minimal(), "app.yaml": "title: G\ngrants:\n  workflows: [exists, missing-one]\n  automations: [gone]\n" }), {
       workflowExists: async (wf) => wf === "exists",

@@ -779,3 +779,70 @@ export function notificationProblems(raw: unknown): string[] {
   if (n.notification_type !== "payment_failed" && t.state !== undefined && t.state !== "settled") out.push(`${String(n.notification_type)} carries a settled transaction`);
   return out;
 }
+
+// ── The native bridge (specs/WALLET.md §1.1) ───────────────────────────────
+// A host whose wallet is native (Peel) shows strut's UI in a web view; the
+// UI, as the main frame, relays the app frame's calls to it. These are the
+// two directions of that relay.
+
+/** The handler strut's UI posts to: `window.webkit.messageHandlers.strutWallet`,
+ *  a `WKScriptMessageHandlerWithReply` (or the platform's like), one promise
+ *  per message, answered only for the main frame at the origin it loaded. */
+export const NATIVE_WALLET_HANDLER = "strutWallet";
+/** The page global a native host calls to push a notification in:
+ *  `window.strutWallet.notify(message)`. strut's UI installs it. */
+export const NATIVE_WALLET_GLOBAL = "strutWallet";
+
+/** The app a message is for, as strut's UI hosts it. */
+export interface NativeWalletApp {
+  name: string;
+  version: string;
+  /** The peer (org) the app lives on; absent for this strut's own app. */
+  peer?: string;
+  /** The manifest's title, for the sheets. */
+  title: string;
+  /** The version's `wallet:` request; null when it asks for none. */
+  request: ConnectionRequest | null;
+}
+
+/** UI → native. `capability` asks what the native wallet offers this app
+ *  (answered `{ result: WalletCapability }`); `call` is one method, its
+ *  params already through `checkParams`. */
+export type NativeWalletMessage =
+  | { v: 1; op: "capability"; app: NativeWalletApp }
+  | { v: 1; op: "call"; method: WalletMethod; params: unknown; app: NativeWalletApp };
+
+/** Native → UI, the reply to a message: always resolved, a refusal in
+ *  `error`. A rejected promise is a transport failure, never an answer. */
+export type NativeWalletReply = { result: unknown } | { error: WalletErrorBody };
+
+/** Native → UI, pushed: `window.strutWallet.notify(this)` (an object, or the
+ *  same as a JSON string). */
+export interface NativeWalletNotify {
+  v: 1;
+  app: { name: string; peer?: string };
+  notification: WalletNotification;
+}
+
+/** One key per hosted app: `<peer>/<name>`, `/<name>` for this strut's own. */
+export function nativeAppKey(app: { name: string; peer?: string }): string {
+  return `${app.peer ?? ""}/${app.name}`;
+}
+
+/** A host's capability out of `hostCapabilities`, when it is one this
+ *  contract version reads. */
+export function walletCapabilityOf(hostCapabilities: unknown): WalletCapability | undefined {
+  const c = (hostCapabilities as { experimental?: Record<string, unknown> } | undefined)?.experimental?.[WALLET_CAPABILITY];
+  return isWalletCapability(c) ? c : undefined;
+}
+
+export function isWalletCapability(c: unknown): c is WalletCapability {
+  if (typeof c !== "object" || c === null) return false;
+  const w = c as Record<string, unknown>;
+  return (
+    w.version === WALLET_PROTOCOL_VERSION &&
+    Array.isArray(w.methods) && w.methods.every(isWalletMethod) &&
+    Array.isArray(w.notifications) && w.notifications.every((n) => oneOf(n, NOTIFICATION_TYPES)) &&
+    typeof w.wallet === "string" && typeof w.connected === "boolean"
+  );
+}

@@ -44,16 +44,82 @@ is hand-rolled; ids, timeouts and errors are the SDK's.
 - **Notifications.** The host pushes
   `strut/wallet/notification { notification_type, notification }` to the page
   (§4.4).
-- **A native host.** A host whose wallet is native (Peel) receives the calls
-  from its web view's main frame, which is strut's UI forwarding what the app's
-  frame sent it.
-  - The bridge is a `WKScriptMessageHandlerWithReply` (or the platform's
-    equivalent): a promise per call.
-  - It answers ONLY when `frameInfo.isMainFrame` is true and the frame's
-    security origin is the one the host loaded. WebKit exposes
-    `messageHandlers` to every frame, the app's sandboxed frame included.
-  - The main frame passes, with each call, the app it is hosting:
-    `{ name, version, peer }`.
+- **A native host** (Peel) is reached through its web view's main frame, which
+  is strut's UI relaying what the app's frame sent it (§1.1).
+
+### 1.1 The native bridge
+
+A host whose wallet is native shows strut's UI in a web view (`?app=…&solo=1`).
+Inside it, the app's sandboxed frame talks to strut's UI over the MCP Apps
+bridge, as everywhere. strut's UI then relays to the native host
+(`kit/src/wallet/relay.ts`, wired in `web/src/app-host.ts`). Nothing is decided
+in the page: the connections, budgets, sheets and the wallet are the native
+host's.
+
+```
+app frame ──strut/wallet/*──▶ strut's UI (AppBridge + relay) ──postMessage──▶ native handler (Peel)
+app frame ◀─strut/wallet/notification── strut's UI ◀──window.strutWallet.notify(…)── native host
+```
+
+**UI → native.** strut's UI calls
+`window.webkit.messageHandlers.strutWallet.postMessage(message)`
+(`NATIVE_WALLET_HANDLER`). The handler is a `WKScriptMessageHandlerWithReply`:
+one promise per message, always RESOLVED with a `NativeWalletReply` —
+`{ result }`, or `{ error: { code, message, data: { code } } }` (§4.1). A
+rejected promise means the native host did not answer, and the page reads it as
+`INTERNAL`. The message is a `NativeWalletMessage`:
+
+```
+{ v: 1, op: "capability", app }                     → { result: WalletCapability }  (what this app is offered)
+{ v: 1, op: "call", method, params, app }           → { result: <MethodResults[method]> } | { error }
+
+app: { name, version, peer?, title, request }       // NativeWalletApp: the version hosted, its title,
+                                                    // and its app.yaml `wallet:` request (null: none)
+```
+
+- **Capability first.** strut's UI sends `capability` once per frame, before the
+  bridge exists, because the offer rides in `ui/initialize`. An answer that is
+  not a `WalletCapability` of this version, a refusal, or nothing within 5 s
+  means no wallet for the page.
+- **Only apps that ask.** strut's UI offers a wallet only to an app whose version
+  requests one. It reads the request from the version's `dist/build.json`
+  (`wallet`, beside `title`), with the version's file token, here and through a
+  peer's read-through.
+- **`call` params are already through `checkParams`.** The native host checks
+  them again. On the iPhone the main frame is the org's code, not Peel's, so
+  nothing from the page is trusted there.
+- **A method the capability does not list** is answered `NOT_IMPLEMENTED` in the
+  page, and never sent.
+- **The page's calls wait up to 10 minutes for a sheet** (`connect`, the pay
+  methods) and 60 s for the rest (`SHEET_TIMEOUT_MS`, `CALL_TIMEOUT_MS`).
+
+**Native → UI.** The native host pushes each notification by evaluating
+`window.strutWallet.notify(message)` (`NATIVE_WALLET_GLOBAL`) in the main frame,
+with a `NativeWalletNotify` — an object, or the same as a JSON string:
+
+```
+{ v: 1, app: { name, peer? }, notification: WalletNotification }
+```
+
+strut's UI routes it to the frame hosting that app (`nativeAppKey`:
+`<peer>/<name>`). One that names no hosted app, is not a notification, or is of a
+type the capability does not list is dropped.
+
+**Who may call the handler.** The handler answers ONLY when
+`frameInfo.isMainFrame` is true and the frame's security origin is the one the
+host loaded:
+- the Mac's local strut, `http://127.0.0.1:<port>`;
+- the org's base URL, on the iPhone.
+
+WebKit exposes `messageHandlers` to every frame, the app's sandboxed frame
+included, so the check is what keeps the app from talking to the native host
+directly.
+
+**What the native host trusts.** On the Mac the main frame is strut's UI as Peel
+ships it, so its `app` is the app hosted. On the iPhone it is the org's strut
+UI, which can name any app of that org. There Peel keys connections by org
+(§5.2), and the sheet names the org from Peel's own record of the page it
+opened.
 
 ## 2. Methods
 
@@ -265,6 +331,12 @@ one. A lookup of anything else is `NOT_FOUND`.
     `pay_lightning_address`.
   - `get_info.methods` lists only what that provider's `getInfo().methods` says.
   - It has no notifications: the host follows what it started through lookups.
+  - **Inside the app's frame**, the kit's `window.webln` (`kit/src/wallet/webln.ts`)
+    maps WebLN onto this contract the same way. It is installed by the
+    bootstrap only when the host offers a wallet. A `sendPayment` or `keysend`
+    that may still settle never rejects (a rejection invites a second payment):
+    it resolves `{ preimage }` once settled, else after 60 s
+    `{ preimage: null, pending: true, transactionId }`.
 - **Sphinx (Peel):**
   - **Address.** A Sphinx address is `<pubkey>_<lsp_pubkey>_<scid>`. Its route
     hint is `<lsp_pubkey>_<scid>` (`sphinxRouteHint`), the format the core pays
