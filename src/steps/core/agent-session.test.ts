@@ -833,6 +833,20 @@ describe("agent sessions", () => {
       s.close();
     }
   });
+
+  it("the working directory is named only to an agent with a file built-in: toolFilter: ['none'] gets the prompt alone", async () => {
+    const s = await serve([answer("toolu_1", "ok"), answer("toolu_2", "ok")]);
+    try {
+      await run({ toolFilter: ["bash"] });
+      await run({ toolFilter: ["none"], agentTools: ["dev/recall"] }, { registry });
+      const [withFiles, without] = s.bodies.map((b) => textOf(b.messages[0]));
+      assert.ok(withFiles.includes(`Working directory (${cwd}) is empty.`), withFiles);
+      assert.doesNotMatch(without, /Working directory/);
+      assert.match(without, /look around/);
+    } finally {
+      s.close();
+    }
+  });
   // ── proposals (plans/proposals.md) ───────────────────────────────────────
 
   it("a tool in `approve` records a proposal instead of running; the next turn of the thread is told the decision once", async () => {
