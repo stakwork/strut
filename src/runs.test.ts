@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import type { RunEvent } from "./core.js";
 import { RUN_EVENTS_MAX as KIT_RUN_EVENTS_MAX } from "../kit/src/hooks.js";
-import { RUN_EVENTS_MAX, RUN_FILE_MAX_BYTES, capEvents, capTranscript, fileResult, listEntryOf, matchesRunFilter, mediaTypeOf, sinceMs } from "./runs.js";
+import { RUN_EVENTS_MAX, RUN_FILE_MAX_BYTES, RUN_LIST_DEFAULT_LIMIT, RUN_LIST_MAX_LIMIT, capEvents, capTranscript, fileResult, listEntryOf, matchesRunFilter, mediaTypeOf, runsPage, sinceMs } from "./runs.js";
 
 /**
  * The pure parts of the runs capability (src/runs.ts): the list filter,
@@ -34,6 +34,19 @@ describe("runs — the pure parts", () => {
     assert.ok(matchesRunFilter({ runId: "1761000000000", status: "running" }, { since: 1760999999999 }));
     assert.ok(!matchesRunFilter({ runId: "1761000000000", status: "running" }, { since: 1761000000001 }));
     assert.ok(matchesRunFilter({ runId: "abc", status: "running" }, { since: 1761000000001 }), "an id that is not a moment is not filtered out");
+  });
+
+  it("a page of run ids: `limit` after `before`, the default and the cap", () => {
+    const ids = Array.from({ length: 700 }, (_, i) => String(1761000000000 + i)).reverse(); // newest first
+    assert.deepEqual(runsPage(ids, {}), ids.slice(0, RUN_LIST_DEFAULT_LIMIT));
+    assert.deepEqual(runsPage(ids, { limit: "3" }), ids.slice(0, 3));
+    assert.deepEqual(runsPage(ids, { limit: 3, before: ids[2] }), ids.slice(3, 6));
+    assert.equal(runsPage(ids, { limit: 10_000 }).length, RUN_LIST_MAX_LIMIT);
+    for (const limit of ["0", "-4", "nope", ""]) assert.equal(runsPage(ids, { limit }).length, RUN_LIST_DEFAULT_LIMIT, `limit ${JSON.stringify(limit)}`);
+    assert.deepEqual(runsPage(ids, { limit: 2, before: ids[ids.length - 1] }), [], "nothing after the oldest");
+    // The cursor run was deleted: the page still starts at the next older one.
+    const gone = ids[5];
+    assert.deepEqual(runsPage(ids.filter((id) => id !== gone), { limit: 2, before: gone }), ids.slice(6, 8));
   });
 
   it("a list row is the summary without its payloads", () => {

@@ -837,8 +837,19 @@ export interface GraphNode {
 
 export const getGraphNode = (refId: string) => fetchJSON<GraphNode>(`/graph/nodes/${encodeURIComponent(refId)}`);
 
-export const listRuns = (workflow: string) =>
-  fetchJSON<RunSummary[]>(`${workflowPath(workflow)}/runs`);
+/** How many runs the sidebar reads at a time. */
+export const RUNS_PAGE = 50;
+
+/** A page of a workflow's runs, newest first: `limit` of them after `before`
+ *  (the last run of the page before). One more is asked for than kept, so
+ *  `more` says whether older runs remain. */
+export async function listRuns(workflow: string, opts: { limit?: number; before?: string } = {}): Promise<{ runs: RunSummary[]; more: boolean }> {
+  const limit = opts.limit ?? RUNS_PAGE;
+  const q = new URLSearchParams({ limit: String(limit + 1) });
+  if (opts.before) q.set("before", opts.before);
+  const rows = await fetchJSON<RunSummary[]>(`${workflowPath(workflow)}/runs?${q}`);
+  return { runs: rows.slice(0, limit), more: rows.length > limit };
+}
 
 /** The deliverables a finished run's output declared, resolved to links
  *  (404 until the run has a summary). */

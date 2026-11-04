@@ -199,7 +199,7 @@ function AutomationEditor(props: {
     let cancelled = false;
     (async () => {
       try {
-        const runs = await api.listRuns(props.workflow);
+        const { runs } = await api.listRuns(props.workflow, { limit: 20 });
         const out = runs.find((r) => r.status === "success")?.output;
         if (!cancelled && out && typeof out === "object" && !Array.isArray(out)) setLastKeys(Object.keys(out as object));
       } catch {

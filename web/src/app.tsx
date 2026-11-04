@@ -96,6 +96,11 @@ function activeKey(runs: api.ActiveRun[]): string {
   return runs.map((r) => `${r.workflow}/${r.runId}:${r.state}`).join(",");
 }
 
+/** The selected workflow's runs as loaded, newest first, a page at a time
+ *  (`api.RUNS_PAGE`); `more`: the server holds older ones. */
+interface RunList { rows: api.RunSummary[]; more: boolean }
+const NO_RUNS: RunList = { rows: [], more: false };
+
 export function App() {
   // `?solo=1`: one thing alone in the window, with none of strut's UI around
   // it — what a native host (Peel) opens in a web view of its own. Rendered
@@ -134,7 +139,8 @@ function Shell() {
   // The packages installed here: the sidebar draws each as a group of its
   // own (plans/packages-ux.md §4) — read with the workflows, never written.
   const [installedPkgs, setInstalledPkgs] = useState<api.InstalledPackage[]>([]);
-  const [runs, setRuns] = useState<api.RunSummary[]>([]);
+  const [runList, setRunList] = useState<RunList>(NO_RUNS);
+  const runs = runList.rows;
   const [selectedWf, setSelectedWf] = useState<string | null>(initialUrl.get("wf"));
   const [selectedRun, setSelectedRun] = useState<string | null>(initialUrl.get("run"));
   // Jobs (plans/jobs-sidebar.md): the selected job's timeline takes the
@@ -541,13 +547,50 @@ function Shell() {
   // launch's title: the listing may have been read before the job's record
   // had it.
   const jobTitles = useRef(new Map<string, string>());
+  const noteJobTitles = (rows: api.RunSummary[]) => {
+    for (const r of rows) if (r.job && r.jobTitle) jobTitles.current.set(r.job, r.jobTitle);
+  };
+  // The workflow the Runs list was last asked for: an answer for another one
+  // (the selection moved while it was in flight) is dropped.
+  const runsFor = useRef<string | null>(null);
+  // The newest page of the workflow's runs. Older pages already loaded (Load
+  // more) stay below it, so a refresh — a run started, finished — never cuts
+  // the list back to one page.
   const refreshRuns = useCallback(async (wf?: string) => {
     const name = wf ?? selectedWf;
-    if (!name) { setRuns([]); return; }
-    const rs = await api.listRuns(name);
-    for (const r of rs) if (r.job && r.jobTitle) jobTitles.current.set(r.job, r.jobTitle);
-    setRuns(rs);
+    runsFor.current = name;
+    if (!name) { setRunList(NO_RUNS); return; }
+    const page = await api.listRuns(name);
+    if (runsFor.current !== name) return;
+    noteJobTitles(page.runs);
+    setRunList((prev) => {
+      const last = page.runs[page.runs.length - 1]?.runId;
+      const older = page.more && last ? prev.rows.filter((r) => r.workflow === name && r.runId.localeCompare(last) < 0) : [];
+      return { rows: [...page.runs, ...older], more: older.length > 0 ? prev.more : page.more };
+    });
   }, [selectedWf]);
+  // The next page, after the last run loaded.
+  const [runsLoading, setRunsLoading] = useState(false);
+  const loadMoreRuns = useCallback(async () => {
+    const name = selectedWf;
+    const last = runList.rows[runList.rows.length - 1]?.runId;
+    if (!name || !last) return;
+    setRunsLoading(true);
+    try {
+      const page = await api.listRuns(name, { before: last });
+      if (runsFor.current !== name) return;
+      noteJobTitles(page.runs);
+      setRunList((prev) => {
+        if (prev.rows[prev.rows.length - 1]?.runId !== last) return prev;
+        const have = new Set(prev.rows.map((r) => r.runId));
+        return { rows: [...prev.rows, ...page.runs.filter((r) => !have.has(r.runId))], more: page.more };
+      });
+    } catch {
+      // the button stays, for another try
+    } finally {
+      setRunsLoading(false);
+    }
+  }, [selectedWf, runList]);
 
   const refreshStepTypes = useCallback(async () => {
     try {
@@ -675,7 +718,7 @@ function Shell() {
       setWfParams(null);
       setLocalParams(null);
       setLocalInput(null);
-      setRuns([]);
+      setRunList(NO_RUNS);
       setFlyoutStepId(null);
       setFlyoutStepIndex(null);
       return;
@@ -937,7 +980,19 @@ function Shell() {
   }, [pendingFlyout, localSteps, loadedWf, selectedWf, events.length]);
 
   // ── Run control (RUN_CONTROL_SPEC): cancel / pause / resume ──────────────
-  const selectedRunSummary = selectedRun ? runs.find((r) => r.runId === selectedRun) : undefined;
+  // A selected run older than the pages loaded (a deep link, a job's turn) is
+  // read on its own — again whenever the list refreshes, as a control acts —
+  // so the controls see its status.
+  const [olderRun, setOlderRun] = useState<api.RunSummary | null>(null);
+  useEffect(() => {
+    if (!selectedWf || !selectedRun || runs.some((r) => r.runId === selectedRun)) return;
+    let live = true;
+    api.getRun(selectedWf, selectedRun).then((s) => { if (live) setOlderRun(s); }, () => {});
+    return () => { live = false; };
+  }, [selectedWf, selectedRun, runs]);
+  const selectedRunSummary = selectedRun
+    ? runs.find((r) => r.runId === selectedRun) ?? (olderRun?.runId === selectedRun && olderRun.workflow === selectedWf ? olderRun : undefined)
+    : undefined;
   const runControlStatus = selectedRunSummary?.status;
   // Live states come from the server's controller map; "stale"/"error"/
   // "cancelled" are dead-but-resumable (journal replay).
@@ -1425,6 +1480,11 @@ function Shell() {
                         )}
                       </div>
                     ))}
+                    {runList.more && (
+                      <button type="button" class="list-more" disabled={runsLoading} onClick={() => void loadMoreRuns()}>
+                        {runsLoading ? "Loading…" : "Load more"}
+                      </button>
+                    )}
                   </>
                 )}
               </div>

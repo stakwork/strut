@@ -1585,7 +1585,12 @@ the same steps are an agent's tools (`agentTools: ["browser/*"]`), and
 - **Runs are stored per-workflow** under
   `workflows/<name>/runs/<runId>/`. Run IDs are millisecond
   timestamps (not UUIDs) for natural sort order and easy
-  pagination. Listing runs for a workflow is a single `readdir`.
+  pagination. Listing runs for a workflow is a single `readdir`;
+  `GET /workflows/:name/runs` serves them a PAGE at a time (`?limit=`, 50
+  by default, after `?before=<runId>`; `runsPage` in `src/runs.ts`) and
+  reads only that page's summaries — a swarm's workflow has thousands. The
+  sidebar loads one page and a **Load more** row; a refresh re-reads the
+  newest page and keeps the older ones below it.
 
 - **Runs launch detached; viewing is reattach-by-tail** (the
   background-job model, `EVAL_SPEC.md` §8). `POST /workflows/:name/run`

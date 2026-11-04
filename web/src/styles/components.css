@@ -3886,6 +3886,22 @@ input.package-search { width: 100%; margin-bottom: var(--sp-2); }
   margin-left: 5px;
 }
 .run-row .job-chip { margin: 0; max-width: none; }
+/* The Runs list's next page. */
+.list-more {
+  display: block;
+  width: calc(100% - 2 * var(--sp-4));
+  margin: var(--sp-2) var(--sp-4);
+  padding: 4px 0;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.list-more:hover:not(:disabled) { color: var(--text); background: var(--surface-2); }
+.list-more:disabled { cursor: default; opacity: 0.6; }
 
 /* The timeline takes the canvas area: a scrolling document, not a graph. */
 .job-view {
