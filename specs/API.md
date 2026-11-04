@@ -19,8 +19,9 @@ header cannot be set the key may ride as `?key=` (the dictation socket) — but
 a run's or a job's files take a scoped read token instead, `?t=`, minted by
 their listing, so the key never sits in a URL a served page could read
 (`/artifacts/:runId` below). Unset (dev mode) everything is open. The only
-things served without the key are the web UI's own files and `GET /health`
-(§8). The examples below leave the header out for brevity; add
+things served without the key are the web UI's own files, `GET /health`
+(§8), and `GET /public/*` (§17): what a person made public, and nothing
+when nothing is. The examples below leave the header out for brevity; add
 `-H "Authorization: Bearer $STRUT_API_KEY"`.
 
 `x-strut-actor: <id>` names who a request is from — honored only alongside a
@@ -2031,3 +2032,72 @@ publish and after a channel move.
   "packages": [{ "package": "acme/linear", "version": "1.1.0", "digest": "sha256:…", "diverged": ["acme/linear/report"] }]
 }
 ```
+
+## 17. Public — what anyone may read (`plans/public-surface.md`)
+
+A person chooses what this strut server shows anyone, live and read-only:
+Concept roots (each root and every page under it by `PARENT_OF`),
+workflows (with or without their runs), steps, node types, and apps (the
+app routes come with `plans/public-surface.md` item 2). Everything else
+stays behind the key. The record is one file, `<dataDir>/public.json`
+(`src/public-surface.ts`); nothing public until someone puts it there.
+
+### 17.1 The record — `PUT /public` (a person, behind the key)
+
+```json
+{
+  "concepts": ["Law"],
+  "workflows": [{ "name": "openlaw-run", "runs": true }, { "name": "harvey-lab-run" }],
+  "steps": ["openlaw/list-tasks"],
+  "types": [],
+  "apps": [{ "name": "openlaw-benchmarks", "reads": ["openlaw/runs"], "domains": ["openlaw.ai"] }]
+}
+```
+
+Every list is optional; the body REPLACES the record. `runs: true` makes a
+workflow's runs public whole: their input, outputs, agents' transcripts
+and files. A peer's request is a `403`, a malformed body a `400`. The answer
+is the record as kept and what it names that this server does not hold —
+reported, never refused:
+
+```json
+{ "surface": { … }, "missing": { "workflows": [], "steps": [], "concepts": [], "apps": [] } }
+```
+
+### 17.2 The reads — `GET /public/*` (anyone)
+
+Served from the record alone, whatever the gate's mode: a host's gate in
+front of an unkeyed strut (mcp's `/lab`) passes the prefix by path. Each
+answer carries `access-control-allow-origin: *` (a preflight is answered
+too) and no cookie; each visitor address may make 600 requests a minute
+(the first `x-forwarded-for` hop, else the socket; `429` past it). Paths
+and shapes mirror the private routes, minus what a visitor never reads:
+who launched, owns or changed a thing, schedules, the job and conversation
+a run belonged to, callback and MCP origins. Anything not on the record is
+a `404`, as if it were not there.
+
+| Route | Answer |
+| --- | --- |
+| `GET /public` | `{ workflows: [{ name, activeVersion, versions, description?, category?, runs }], steps: [{ type, source, description?, effect? }], concepts: [{ name, description?, pages }], types, apps: [{ name }] }` — the roots, with how many pages each holds |
+| `GET /public/workflows[?q=]` | the public workflows, as above |
+| `GET /public/workflows/:name` | `{ name, active, category?, runs, versions: { vN: { createdAt, description?, hash, source? } } }` |
+| `GET /public/workflows/:name/versions` | `{ active, versions: [{ version, createdAt, description?, source? }] }` newest first |
+| `GET /public/workflows/:name/flow[?version=]` | `{ name, steps, input?, params?, sealed?, peer? }` (§2) |
+| `GET /public/workflows/:name/:version` | the version's YAML (`text/yaml`) |
+| `GET /public/workflows/:name/runs[?limit=&before=]` | with `runs: true`: a page of summaries (§5.1) |
+| `GET /public/workflows/:name/runs/:runId` | the summary, or the partial one of a run in flight (§5.2) |
+| `GET /public/workflows/:name/runs/:runId/events` | the events (§5.3); an agent session is a `transcript` link under `/public` |
+| `GET /public/workflows/:name/runs/:runId/transcripts/<step path>` | that session's messages (never `?full=1`: a thread's earlier turns may be another run's) |
+| `GET /public/workflows/:name/runs/:runId/files[/<path>]` | the run's own files (its artifacts directory; a job's directory is not public), served sandboxed like `/artifacts/:runId` (§5), no script |
+| `GET /public/steps` | `[{ type, source, description?, effect? }]` |
+| `GET /public/steps/:type/schema` | `{ type, description?, effect?, secrets?, fields, output }` — `secrets` are names |
+| `GET /public/steps/:type/source` | `{ type, source, origin, helpers: [{ name, source }] }` — the `_`-prefixed files its relative imports reach |
+| `GET /public/steps/:type/versions`, `/version/:version` | as `/steps/:type/…` (§8) |
+| `GET /public/concepts[?q=]` | `{ concepts: [{ ref_id, name, description?, parent?, root }] }` — every page of every public tree, roots first; `q` words must each hit the name or description |
+| `GET /public/concepts/:name` | `{ ref_id, name, properties, parent?, root, children: [{ name, description? }] }` — `properties.docs` is the page |
+| `GET /public/graph/nodes/:ref_id` | as `/graph/nodes/:ref_id` (§9), for a VISIBLE node |
+
+A node is visible when it is a Concept under a public root, a node a run
+of a workflow with public runs NAMED (its steps' `step.end.nodes`; another
+strut's refs never), or a node of a public type. An edge is visible when
+both ends are. The trees are walked live, at most every 30 s.

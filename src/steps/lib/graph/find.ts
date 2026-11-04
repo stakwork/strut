@@ -15,6 +15,7 @@ const EXAMPLE = `- id: unpaid
 
 export default defineStep({
   type: "graph/find",
+  effect: "read",
   description:
     "The nodes of ONE type whose properties match, ordered and paged — a property query, not a search: " +
     "`where` maps a field to a value (equal; null = not set) or to operators, all of which must hold: " +

@@ -1368,13 +1368,25 @@ describe("the API key gate", () => {
         .filter((r) => r.method !== "ALL" && r.path !== "*")
         .map((r) => `${r.method} ${r.path.replace(/:[A-Za-z]+(\{[^}]*\})?/g, "x")}`),
     )].filter((r) => r !== "GET /health" && r !== "POST /auth/session" && r !== "DELETE /auth/session");
-    assert.ok(routes.length > 80, `swept ${routes.length} routes`);
-    assert.ok(routes.includes("GET /workflows/x/runs/x/transcripts/x"));
-    assert.ok(routes.includes("GET /host/mounted"));
-    for (const route of routes) {
+    // `GET /public/*` is open by design (src/public-routes.ts): it serves only
+    // what a person made public, and with nothing public it serves nothing.
+    const publicReads = routes.filter((r) => /^GET \/public(?:\/|$)/.test(r));
+    const gated = routes.filter((r) => !publicReads.includes(r));
+    assert.ok(gated.length > 80, `swept ${gated.length} routes`);
+    assert.ok(gated.includes("GET /workflows/x/runs/x/transcripts/x"));
+    assert.ok(gated.includes("GET /host/mounted"));
+    assert.ok(gated.includes("PUT /public"), "the record itself is behind the key");
+    for (const route of gated) {
       const [method, path] = route.split(" ") as [string, string];
       assert.equal((await strut.app.request(path, { method })).status, 401, route);
       assert.equal((await strut.app.request(path, { method, headers: { authorization: "Bearer nope" } })).status, 401, route);
+    }
+    assert.ok(publicReads.length >= 15, publicReads.join(", "));
+    for (const route of publicReads) {
+      const path = route.slice(4);
+      const res = await strut.app.request(path);
+      assert.ok(res.status === 200 || res.status === 404, `${route} → ${res.status}`);
+      if (path !== "/public" && path !== "/public/workflows" && path !== "/public/steps" && path !== "/public/concepts") assert.equal(res.status, 404, `${route} serves nothing on an empty surface`);
     }
     // A path no route answers is not the UI either.
     assert.equal((await strut.app.request("/nope")).status, 401);

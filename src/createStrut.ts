@@ -150,6 +150,8 @@ import "./privacy/register.js";
 import { seedPrivacyWorkflows } from "./privacy/seed.js";
 import { HOME_POSTS, homeSyncRole, homeSyncRoutes, seedHomeSyncWorkflow, type HomeSyncRole } from "./home-sync.js";
 import { VOICE_CALLS, voiceConfig, voiceRoutes, type VoiceConfig } from "./voice.js";
+import { createPublicSurface, normalizeSurface, surfaceProblem } from "./public-surface.js";
+import { PUBLIC_PATH, publicRoutes } from "./public-routes.js";
 // Pure (node:crypto only): the ask/answer shapes behind the two elicitation
 // tools and endpoints — plans/elicitation.md.
 import {
@@ -1535,9 +1537,12 @@ export async function createStrut<TServices = unknown>(
   app.use("*", async (c, next) => {
     const path = c.req.path;
     const read = c.req.method === "GET" || c.req.method === "HEAD";
+    // `/public/*` (src/public-routes.ts): what a person made public, served
+    // from the surface alone, so open to anyone — reads and a browser's
+    // preflight for them.
     const open = read
-      ? path === "/health" || (serveUi && UI_FILE.test(path)) || carriesFileToken(c) || !!catalogTokenOf(c) || publicPackageRead(c) || (!!indexConfig && INDEX_READ.test(path))
-      : (path === "/auth/session" && (c.req.method === "POST" || c.req.method === "DELETE")) || (!!indexConfig && path === INDEX_MCP && c.req.method === "POST");
+      ? path === "/health" || (serveUi && UI_FILE.test(path)) || carriesFileToken(c) || !!catalogTokenOf(c) || publicPackageRead(c) || (!!indexConfig && INDEX_READ.test(path)) || PUBLIC_PATH.test(path)
+      : (path === "/auth/session" && (c.req.method === "POST" || c.req.method === "DELETE")) || (!!indexConfig && path === INDEX_MCP && c.req.method === "POST") || (c.req.method === "OPTIONS" && PUBLIC_PATH.test(path));
     if (open) return next();
     if (!carriesApiKey(c) && !carriesPeerKey(c) && !personOf(c)) return unauthorized(c);
     if (!read) {
@@ -2742,6 +2747,46 @@ export async function createStrut<TServices = unknown>(
       }
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
     }
+  });
+
+  // ── The public surface (plans/public-surface.md) ─────────────────────────
+  // What a PERSON made public on this server, read by anyone under
+  // `/public/*` (src/public-routes.ts), from the surface alone whatever the
+  // gate's mode. The record is `PUT /public` — behind the gate like any
+  // write (a peer's is a 403), and no step or builder tool writes it.
+  const publicSurface = createPublicSurface({
+    dataDir,
+    store,
+    ...(graph ? { graph: { reader: graph.reader, schemas: graph.schemas } } : {}),
+  });
+  publicRoutes(app, {
+    surface: publicSurface,
+    workspace,
+    store,
+    registry: () => registry,
+    stepSources: () => stepSources,
+    ...(artifacts ? { artifacts } : {}),
+    fileHeaders: (path) => artifactHeaders(path),
+    liveStatus,
+  });
+  app.put("/public", async (c) => {
+    const body: unknown = await c.req.json().catch(() => undefined);
+    const problem = surfaceProblem(body);
+    if (problem) return c.json({ error: problem }, 400);
+    const next = await publicSurface.set(normalizeSurface(body));
+    // What it names that this server does not hold — reported to the
+    // person, never refused: an item may come later, and a listed one that
+    // is gone is skipped by every read.
+    const workflows = new Set((await workspace.listWorkflows()).map((w) => w.name));
+    const appNames = new Set((await apps.list().catch(() => [])).map((a) => a.name));
+    const tree = next.concepts.length ? await publicSurface.conceptTree().catch(() => undefined) : undefined;
+    const missing = {
+      workflows: next.workflows.map((w) => w.name).filter((n) => !workflows.has(n)),
+      steps: next.steps.filter((t) => !registry[t]),
+      concepts: tree ? tree.missing : next.concepts.length && !graph ? next.concepts : [],
+      apps: next.apps.map((a) => a.name).filter((n) => !appNames.has(n)),
+    };
+    return c.json({ surface: next, missing });
   });
 
   // ── Apps (plans/apps.md §7.2) ────────────────────────────────────────────
