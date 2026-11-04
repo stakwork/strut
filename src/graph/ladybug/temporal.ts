@@ -241,11 +241,13 @@ export async function recomposeRowsOf(tx: GraphTx, ref_id: string, now: number):
 }
 
 /** The live rows with text and no vector, oldest first: what is still to
- *  embed (a failed embedding, a rename). */
-export async function pendingRows(run: Run, limit: number): Promise<Array<{ ref_id: string; text: string }>> {
+ *  embed (a failed embedding, a rename). `types`: the facts' search rows,
+ *  and any data node types the open's backfill adds (`embedPendingNodes`). */
+export async function pendingRows(run: Run, limit: number, types: string[] = [EDGE_TEXT_TYPE]): Promise<Array<{ ref_id: string; text: string }>> {
   const rows = await run(
-    `MATCH (n:Node {node_type: '${EDGE_TEXT_TYPE}'}) WHERE n.deleted_at IS NULL AND n.search_text IS NOT NULL AND n.text_embeddings IS NULL
+    `MATCH (n:Node) WHERE n.node_type IN $types AND n.deleted_at IS NULL AND n.search_text IS NOT NULL AND n.text_embeddings IS NULL
      RETURN n.ref_id AS ref_id, n.search_text AS text ORDER BY n.created_at LIMIT ${Math.max(1, Math.floor(limit))}`,
+    { types },
   );
   return rows.map((r) => ({ ref_id: String(r["ref_id"]), text: String(r["text"]) }));
 }
@@ -266,10 +268,11 @@ export async function embedPendingRows(
   write: <T>(fn: (tx: GraphTx) => Promise<T>) => Promise<T>,
   embedder: { embed(texts: string[]): Promise<number[][]> },
   batch = 32,
+  types: string[] = [EDGE_TEXT_TYPE],
 ): Promise<number> {
   let n = 0;
   for (;;) {
-    const rows = await pendingRows(read, batch);
+    const rows = await pendingRows(read, batch, types);
     if (!rows.length) return n;
     let vectors: number[][];
     try {

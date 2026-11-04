@@ -577,7 +577,7 @@ export class LadybugReader implements GraphReader {
           );
           return rows.map(asHit);
         };
-        return widen ? overfetch(cap, runVec) : runVec(cap);
+        return (await (widen ? overfetch(cap, runVec) : runVec(cap))).filter((h) => h.raw_score >= (this.opts.embedder!.minSimilarity ?? 0));
       }, [] as Hit[]);
     }
     if (fieldQuery) warnings.push("input_q / output_q: a ladybug file keeps no per-field vectors; only q was searched");
@@ -782,7 +782,7 @@ export class LadybugReader implements GraphReader {
                RETURN ${row} AS row, 1 - distance AS score`,
               { ...base, embedding, k },
             )).map(asHit),
-          );
+          ).then((hits) => hits.filter((h) => h.raw_score >= (this.opts.embedder!.minSimilarity ?? 0)));
         }, [] as Hit[])
       : [];
     const fused = fuseHits(fulltext, semantic, {}, fusionWeights(qstr));

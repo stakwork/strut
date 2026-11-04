@@ -43,6 +43,11 @@ export const RRF_WEIGHTS: Record<string, number> = { fulltext: 1.15, semantic: 1
 export const DEFAULT_VECTOR_WEIGHT = 1.2;
 export const VECTOR_Q_K = 50;
 export const VECTOR_Q_SIM_FLOOR = 0.4;
+/** MiniLM's floor on a Ladybug file's vector search (nodes and facts,
+ *  `Embedder.minSimilarity`): cosine similarity below it is no match, so a
+ *  question the graph cannot answer finds little by meaning. Tuned on `npm
+ *  run bench:memory-graph -- --embed`. Keyword hits are never floored. */
+export const LADYBUG_VECTOR_MIN_SIM = 0.55;
 export const USAGE_TIEBREAK_EPSILON = 0.02;
 export const SEARCH_CANDIDATE_CAP = 5000;
 export const DEFAULT_NAMESPACE = "default";

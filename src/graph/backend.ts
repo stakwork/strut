@@ -39,6 +39,7 @@ import { openLadybug, type LadybugHandle } from "./ladybug/db.js";
 import { LadybugEngine } from "./ladybug/engine.js";
 import { PRIVATE_NAMESPACE, namespaceName } from "./ladybug/namespaces.js";
 import { LadybugReader } from "./ladybug/reader.js";
+import { MERGE_TYPE, SCHEMA_TYPE } from "./ladybug/registry.js";
 import { Neo4jEngine } from "./neo4j-engine.js";
 import { NodeWriter, type Embedder } from "./node-writer.js";
 import { seedJarvisOntology, type OntologySeedReport } from "./ontology-seed.js";
@@ -193,7 +194,7 @@ async function openLadybugBackend(cfg: LadybugConfig, opts: GraphBackendOptions)
   const lbug = await openLadybug(cfg.path, { extensionDir: cfg.extensionDir });
   try {
     const embedder: Embedder | undefined =
-      opts.embeddings === false ? undefined : typeof opts.embeddings === "object" ? opts.embeddings : await MiniLMEmbedder.load();
+      opts.embeddings === false ? undefined : typeof opts.embeddings === "object" ? opts.embeddings : await loadLadybugEmbedder(cfg.path);
     const engine = new LadybugEngine(lbug, namespace);
     const schemas = new SchemaResolver(engine);
     const backend: LadybugBackend = {
@@ -220,13 +221,33 @@ async function openLadybugBackend(cfg: LadybugConfig, opts: GraphBackendOptions)
       },
     };
     // The facts' search rows a failed embedding or a rename left without a
-    // vector (plans/graph-edge-search.md), filled in the background; a close
-    // waits for the run.
-    if (embedder && !opts.skipBoot) void engine.nodeEngine.embedPendingRows?.(embedder);
+    // vector (plans/graph-edge-search.md), and the data nodes written while
+    // the embedder was off, filled in the background; a close waits for the run.
+    if (embedder && !opts.skipBoot) {
+      void engine.nodeEngine.embedPendingRows?.(embedder);
+      void engine.nodeEngine.embedPendingNodes?.(embedder, async (type) => {
+        if (type === SCHEMA_TYPE || type === MERGE_TYPE) return false;
+        const s = await schemas.schema(type).catch(() => null);
+        return !!s && s.embed && s.role !== "record";
+      });
+    }
     return backend;
   } catch (e) {
     await lbug.close().catch(() => undefined);
     throw e;
+  }
+}
+
+/** MiniLM for a Ladybug file, or none: a load that fails (the first
+ *  download with no network, a build without the embeddings stack) leaves
+ *  the file keyword-only, and the next open tries again. Neo4j's open still
+ *  fails instead. */
+async function loadLadybugEmbedder(path: string): Promise<Embedder | undefined> {
+  try {
+    return await MiniLMEmbedder.load();
+  } catch (e) {
+    console.warn(`[graph] ${path}: the embedding model did not load, so search is keyword-only until the next start: ${String(e).split("\n")[0]}`);
+    return undefined;
   }
 }
 
