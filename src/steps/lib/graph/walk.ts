@@ -542,7 +542,7 @@ export const walkInput = z.object({
   provider: z
     .string()
     .optional()
-    .describe("anthropic | openai | google | openrouter | xai — usually omitted (inferred from `model`; not used for jev)"),
+    .describe("anthropic | openai | google | openrouter | xai | maple — usually omitted (inferred from `model`; not used for jev)"),
   model: z
     .string()
     .optional()
