@@ -21,8 +21,8 @@ export default defineStep({
     "Pass `children` (an edge type, e.g. \"PARENT_OF\") to also get the nodes this one points to " +
     "along that edge — each { ref_id, node_type, name, description }, sorted by name: a node and its " +
     "table of contents in one call. " +
-    "Pass `owner: true` instead to get the user themself: the person this graph belongs to (marked is_owner). " +
     "To resolve several ref_ids at once, use graph_graph_get_batched instead.",
+  graphNotes: { ladybug: "Pass `owner: true` instead of a ref_id to get the user themself: the person this graph belongs to (marked is_owner)." },
   input: z.object({
     ref_id: z.string().optional().describe("The ref_id of the node to resolve. Omit to look the node up by node_type + name."),
     owner: z.boolean().optional().describe("true: the user, the person marked is_owner, instead of a ref_id. A LadybugDB graph only."),

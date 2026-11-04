@@ -21,6 +21,7 @@ import { buildRegistryTools } from "../steps/core/agent.js";
 import type { StepRegistry } from "../steps/registry.js";
 import { hostConfigFromEnv } from "../server.js";
 import assertStep from "../steps/lib/graph/assert.js";
+import createNode from "../steps/lib/graph/create-node.js";
 import deleteNode from "../steps/lib/graph/delete-node.js";
 import duplicates from "../steps/lib/graph/duplicates.js";
 import graphGet from "../steps/lib/graph/graph-get.js";
@@ -316,6 +317,23 @@ describe('the host\'s memory switch (`memory: "graph"`)', () => {
     const names = ["memory/*", "graph/graph-search"];
     assert.deepEqual(Object.keys(buildRegistryTools(names, registry, ctxOf({ memory: "graph" }), fakeTool)), ["graph_graph_search"]);
     assert.deepEqual(Object.keys(buildRegistryTools(names, registry, ctxOf({}), fakeTool)).sort(), ["graph_graph_search", "memory_recall"]);
+  });
+
+  it("adds the Ladybug-only wording to a tool's description on a Ladybug graph, and only there", () => {
+    const real = { "graph/delete-node": deleteNode, "graph/graph-get": graphGet, "graph/graph-search": graphSearch, "graph/create-node": createNode } as unknown as StepRegistry;
+    const names = Object.keys(real);
+    const describedOn = (graph: unknown) =>
+      Object.values(buildRegistryTools(names, real, ctxOf(graph ? { graph } : {}), fakeTool) as Record<string, { description: string }>).map((t) => t.description);
+    for (const [i, d] of describedOn({ kind: "neo4j" }).entries()) {
+      assert.equal(d, real[names[i]!]!.description, "a Neo4j graph sees the description alone");
+      assert.doesNotMatch(d, /is_owner|graph_assert|graph\/assert|Personal|sources/);
+    }
+    assert.deepEqual(describedOn(undefined), describedOn({ kind: "neo4j" }), "no wired graph is the same");
+    for (const [i, d] of describedOn({ kind: "ladybug" }).entries()) {
+      const def = real[names[i]!]!;
+      assert.ok(def.graphNotes?.ladybug, `${def.type} has a Ladybug note`);
+      assert.equal(d, `${def.description} ${def.graphNotes.ladybug}`);
+    }
   });
 
   it("is read from STRUT_HOST_CONFIG, graph or legacy only, with concepts beside it", () => {
