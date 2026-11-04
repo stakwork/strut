@@ -127,6 +127,12 @@
 > installs a package files its items under the package's prefix (§1, as
 > here), and inside an installed package a bare name is found in the
 > package first. §8's person's act and the §16 routes stand.
+>
+> **The live side is `plans/public-surface.md`** (proposed 2026-11-04, from
+> the owner's rulings there): a package is a COPY, right for what a server
+> runs; the knowledge base, and every workflow, step and app a publisher
+> shows, is read LIVE from its home's public surface, read-only and with no
+> launches, and the store lists both. This plan's copy side is unchanged.
 
 ## Problem
 
