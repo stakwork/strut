@@ -11,7 +11,11 @@
  * (`POST /conversations/wake`). `jobEnded` answers what strut will do, for
  * the job's own `run.end` (`wake: "launched" | "capped" | "none"`):
  *
- * - **none**: no conversation, the wake is off, the conversation's workflow
+ * - **none**: no conversation, the wake is off, the host did not ask for it
+ *   (`wake: true` on the launch of the person's turn that started the job,
+ *   recorded as `wakeAsked`, or on its own launch of the job — opt-in, so a
+ *   host that still wakes on its own never gets two; the door is a host
+ *   asking), the conversation's workflow
  *   has no `params.wake`, or the conversation is a relay (a turn of it came
  *   from another strut or an app: `origin` peer or app on its `run.start` —
  *   a person token's turns are a peer's; the head of the chain wakes itself).
@@ -74,6 +78,9 @@ export interface WakeEnd {
   source?: string;
   /** The turn of this conversation that started it (job/start). */
   startedBy?: StartedBy;
+  /** The host's own launch of this job asked for the wake (`wake: true`
+   *  beside `conversation`). */
+  asked?: true;
   /** Who asked for the job: the wake runs as them. */
   actor?: string;
   principal?: string;
@@ -436,6 +443,17 @@ export function createWakes(deps: WakeDeps): Wakes {
       const anchor = await anchorOf(session, local);
       const launching = local ? await startOf(local.workflow, local.runId) : undefined;
       if (relay(launching) || relay(anchor.start)) return "none";
+      // Opt-in (plans/jamie-app.md §7): only where the host asked on the
+      // launch it made (`POST …/run { wake: true }`) — the person's turn
+      // that started the job (`wakeAsked` on its run.start; for a job a wake
+      // turn started, the person's latest turn), or the job's own launch for
+      // one the host started itself (`asked`). A host that still wakes on
+      // its own never gets two. An end handed in through the door is a host
+      // asking.
+      if (!end.source) {
+        const person = end.startedBy ? (launching && !launching.wake ? launching : anchor.start) : undefined;
+        if (!end.asked && !person?.wakeAsked) return "none";
+      }
       const workflow = local?.workflow ?? anchor.turns.at(-1)?.workflow ?? "orchestrator";
       const flow = await deps.getWorkflow(workflow).catch(() => null);
       if (!flow || typeof flow.params?.["wake"] !== "string") return "none";

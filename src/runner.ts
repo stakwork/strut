@@ -131,6 +131,9 @@ export interface RunOptions<TServices = unknown> {
   /** The conversation a host's launch named (`POST …/run { conversation }`):
    *  recorded on `run.start` (`RunEvent.conversation`). */
   conversation?: string;
+  /** The host asked for strut's wake on this conversation (`POST …/run
+   *  { wake: true }`): recorded on `run.start` (`RunEvent.wakeAsked`). */
+  wakeAsked?: boolean;
   /** A WAKE turn (src/wake.ts): the job run(s) it woke on — recorded on
    *  `run.start`, handed to every step as `ctx.wake`. strut's wake is the
    *  one site that sets it. */
@@ -423,6 +426,7 @@ export async function runWorkflow<TServices = unknown>(
       ...(opts?.controller?.parent ? { parentRunId: opts.controller.parent.runId } : {}),
       ...(opts?.startedBy ? { startedBy: opts.startedBy } : {}),
       ...(opts?.conversation ? { conversation: opts.conversation } : {}),
+      ...(opts?.wakeAsked ? { wakeAsked: true as const } : {}),
       ...(opts?.wake ? { wake: opts.wake } : {}),
       // Recorded so a durable resume re-executes with the same knob values.
       ...(opts?.params ? { params: opts.params } : {}),

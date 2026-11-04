@@ -190,7 +190,9 @@ agent that never saw the question. **Strut does that** (`CALLBACKS.md` §9,
 orchestrator template's `params.wake` with the job's reply inline. Do not
 write a wake prompt of your own.
 
-- **A job on this machine** (the local room): nothing to do. The local strut
+- **A job on this machine** (the local room): send `"wake": true` on every
+  turn you launch (§4) — strut wakes only the conversations whose host asked.
+  Then nothing to do. The local strut
   wakes the conversation, and the wake turn's `run.end` reaches you as a
   reply does (the turn's own callback — the room), marked `wake: { job,
   runId }`. The job's own `run.end` says `wake: "launched"` (a reply

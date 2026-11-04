@@ -57,7 +57,7 @@ When the run ends, strut sends **one** `POST` to your URL with a JSON body:
 | `runId`      | the id from step 1                                           |
 | `job`        | the job the run was launched under — only for a job run      |
 | `startedBy`  | `{ workflow, runId, session? }` — the TURN that started this job through `job/start` / `job/continue` (§5): the root run you launched, and the `session` your launch named. Only on a job run a turn started; what tells a room (§8) which conversation a job belongs to, since every job of the person arrives on one socket — over a URL, the URL you gave the turn already says |
-| `wake`       | on a JOB turn's `run.end` (`job`, `builder`): what strut did about it for the conversation it belongs to (§9) — `"launched"` (a wake turn's reply follows, even if it waits), `"capped"` (too many wakes in a row: show the job's own words), `"none"` (no conversation, a relay, or the wake is off). On a WAKE turn's `run.end`: `{ job, runId, peer?, also? }`, the job run it woke on |
+| `wake`       | on a JOB turn's `run.end` (`job`, `builder`): what strut did about it for the conversation it belongs to (§9) — `"launched"` (a wake turn's reply follows, even if it waits), `"capped"` (too many wakes in a row: show the job's own words), `"none"` (no conversation, the host did not ask — `wake: true` on its launches, §9 — a relay, or the wake is off). On a WAKE turn's `run.end`: `{ job, runId, peer?, also? }`, the job run it woke on |
 | `status`     | `"success"`, `"error"` or `"cancelled"`                      |
 | `output`     | the workflow's output (its last step's) — on success only    |
 | `error`      | `{ "message": "..." }` — on error only                       |
@@ -495,11 +495,26 @@ on its launch. The peer record's token must be a person's credential.
 ## 9. The wake — the conversation hears its job's reply
 
 When a job turn ends (`job`, `builder`) and it belongs to a conversation on
-this strut, strut runs ONE more turn of that conversation
+this strut, strut can run ONE more turn of that conversation
 (`plans/jamie-app.md` §1, `src/wake.ts`), so the conversation's agent sees the
 job's reply — and its question — before the person's next message. You
 launch nothing and wake nothing: the turn's `run.end` arrives where the
 conversation's own turns go.
+
+**You ask for it.** The wake is opt-in, per launch: send `"wake": true` on
+the launches you make, and only those conversations are woken. A host that
+still wakes on its own never gets a second wake turn it cannot show. Ask on
+every person's turn you launch (the jobs it starts wake the conversation)
+and on every job turn you launch yourself naming a `conversation`:
+
+```json
+{ "input": { "prompt": "flights to Lisbon?", "session": "c-8f2a" }, "callback": { "url": "…" }, "wake": true }
+```
+
+`wake` is `true` or `false` (anything else is a `400`), for the deployment's
+key only (a peer's is dropped: its turns are relays). It is recorded on
+`run.start` as `wakeAsked: true` and kept by a resume. For a job a WAKE turn
+started (its Continue), the person's latest turn's `wake` counts.
 
 **Which conversation.** The `session` of the turn that started the job
 (`startedBy.session`, §2), or, for a job turn you launch yourself, the one
@@ -511,14 +526,18 @@ you name:
 
 `conversation` is a session id, checked like one (`400`), for the
 deployment's key only (`403` to a peer). It is recorded on `run.start` and
-read wherever `startedBy.session` is (a proposal's conversation too). Name
-none and strut wakes nothing for that job: keep waking it yourself.
+read wherever `startedBy.session` is (a proposal's conversation too). Send
+`wake: true` beside it; name none, or do not ask, and strut wakes nothing
+for that job: keep waking it yourself.
 
-**Strut says it wakes.** The `202` of a launch of a conversation workflow
-(one whose template has `params.wake`, the seeded `orchestrator`) on a
-`session` carries `wake: true`, as it carries `callback: true`; and every job
-turn's `run.end` carries `wake` (§2). Turn your own wake off for a job whose
-end says `"launched"`; on `"capped"`, show the job's words as they are.
+**Strut says it wakes.** The `202` of a launch that asked (`wake: true`) —
+of a conversation workflow (one whose template has `params.wake`, the seeded
+`orchestrator`) on a `session`, or of a job turn naming a `conversation` —
+carries `wake: true`, as it carries `callback: true`: this server honors it
+(an older one ignores the field and never wakes). Every job turn's `run.end`
+carries `wake` (§2). Turn your own wake off for a job whose end says
+`"launched"`; on `"capped"`, show the job's words as they are; on `"none"`,
+wake it yourself as before.
 
 **The turn.** One run of the conversation's workflow on its session, `input:
 { prompt, session, context }`, the prompt the template's `params.wake` with

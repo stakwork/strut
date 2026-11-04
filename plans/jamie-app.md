@@ -262,12 +262,22 @@ or vague, and where it differs:
   with no conversation, or the wake off).
 - **The door** answers `200 { wake }`; `source` must be a peer id and
   `end.workflow` a job's; the run is keyed `<source>/<runId>`.
-- **Rollout.** On by default, as asked. Until Hive's half (§6.1) ships, a
-  Hive conversation on a strut with this gets strut's wake turn too: Hive's
-  webhook refuses its `run.end` (`Run mismatch`), and Hive's own wake may
-  meet `session_busy` while strut's runs and drop after its retries. A host
-  that is not ready sets `orchestrator: { wake: false }` (the lab through
-  `createStrut`, Peel through `STRUT_HOST_CONFIG`).
+- **Opt-in per launch** (changed in review, 2026-11-04; §7 as it was
+  written assumed every host would switch its own wake off on the 202's
+  `wake: true`, which an older host never does). Built on by default, the
+  wake would have reached Hive's conversations before Hive could show it:
+  Hive's webhook refuses the wake turn's `run.end` (`Run mismatch`), so the
+  reply sits in the session as if the person had read it, and Hive's own
+  wake then meets `session_busy` and drops, or runs as a second wake turn.
+  So a host ASKS on the launches it makes: `POST …/run { wake: true }`
+  (full scope; a peer's is dropped), recorded on `run.start` as
+  `wakeAsked`. A job job/start started wakes its conversation when the turn
+  that started it asked (a job a wake turn started: the person's latest
+  turn); a job a host launched itself, when that launch asked beside its
+  `conversation`; the door is a host asking. The 202 says `wake: true` only
+  for a launch that asked. Each host switches over when its half is ready,
+  one launch at a time; `orchestrator: { wake: false }` still turns it all
+  off.
 
 ## 2. Conversations (proposed)
 
@@ -427,11 +437,14 @@ question.
 
 ## 7. Turning it on
 
-Two wakes for one job is two replies. Strut announces that it wakes: the
-202 of an orchestrator launch carries `wake: true` (as it carries
-`callback: true`), and every job `run.end` says what strut did (§1.4).
-A host turns its own wake off per conversation on that, never by a
-deploy date, so a swarm on an older strut keeps the host's wake.
+Two wakes for one job is two replies. A host asks for strut's wake on
+each launch it makes (`wake: true`, as built: §1.6), and strut answers
+that it honors it: the 202 carries `wake: true` (as it carries
+`callback: true`; an older strut ignores the field and never wakes), and
+every job `run.end` says what strut did (§1.4). A host turns its own wake
+off for the conversations it asked for, never by a deploy date, so a
+swarm on an older strut keeps the host's wake, and a host that has not
+moved yet is never woken by strut.
 
 Existing conversations need no export to appear in the app: each already
 has its session on the swarm, its turns ran as the person's actor, and

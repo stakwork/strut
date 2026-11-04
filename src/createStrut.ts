@@ -2018,6 +2018,7 @@ export async function createStrut<TServices = unknown>(
         paramOverrides: p.runStart.paramOverrides,
         ...(p.runStart.job ? { job: p.runStart.job } : {}),
         ...(p.runStart.conversation ? { conversation: p.runStart.conversation } : {}),
+        ...(p.runStart.wakeAsked ? { wake: true } : {}),
       },
       {
         journal: p.journal,
@@ -2099,6 +2100,7 @@ export async function createStrut<TServices = unknown>(
       ...(start?.job ? { job: start.job } : {}),
       ...(start?.startedBy ? { startedBy: start.startedBy } : {}),
       ...(start?.conversation ? { conversation: start.conversation } : {}),
+      ...(start?.wakeAsked ? { asked: true } : {}),
       ...(start?.actor ? { actor: start.actor } : {}),
       ...(start?.principal ? { principal: start.principal } : {}),
       ...(typeof session === "string" ? { session } : {}),
@@ -4694,6 +4696,14 @@ export async function createStrut<TServices = unknown>(
      *  conversation as a job/start's does (src/wake.ts). Full scope only;
      *  recorded on `run.start`. */
     conversation?: string;
+    /** `true`: the host asks strut to wake this run's conversation
+     *  (`input.session`) when a job it starts ends (src/wake.ts,
+     *  plans/jamie-app.md §7) — and draws that wake turn's `run.end`, so it
+     *  no longer wakes on its own. Opt-in per launch: a host that does not
+     *  ask never gets a wake turn it cannot show. Full scope only (a peer's
+     *  is dropped: its turns are relays); recorded on `run.start`
+     *  (`wakeAsked`), echoed as the 202's `wake: true`. */
+    wake?: boolean;
     /** The caller's MCP servers (src/mcp-servers.ts): its door back into
      *  itself for this run's agents, the pull-direction twin of `callback`.
      *  Kept beside the log like the callback URL, never in it. */
@@ -4824,6 +4834,7 @@ export async function createStrut<TServices = unknown>(
         ...(body.job && body.title ? { title: body.title } : {}),
         ...(extra?.startedBy ? { startedBy: extra.startedBy } : {}),
         ...(body.conversation ? { conversation: body.conversation } : {}),
+        ...(body.wake === true ? { wakeAsked: true } : {}),
         ...(extra?.wake ? { wake: extra.wake } : {}),
         ...(callback ? { callback: roomActorOf(callback.url) !== undefined ? { room: true as const } : { origin: callbackOrigin(callback.url) } } : {}),
         ...(mcp ? { mcp } : {}),
@@ -4848,6 +4859,7 @@ export async function createStrut<TServices = unknown>(
           ...(body.job ? { job: body.job } : {}),
           ...(extra?.startedBy ? { startedBy: extra.startedBy } : {}),
           ...(body.conversation ? { conversation: body.conversation } : {}),
+          ...(body.wake === true ? { asked: true } : {}),
           ...(extra?.actor ? { actor: extra.actor } : {}),
           ...(principal ? { principal } : {}),
           ...(extra?.wake ? { mark: extra.wake } : {}),
@@ -4905,7 +4917,7 @@ export async function createStrut<TServices = unknown>(
   async function wakeEndOf(
     workflow: string,
     res: RunResult,
-    info: { job: string; startedBy?: StartedBy; actor?: string; principal?: string },
+    info: { job: string; startedBy?: StartedBy; asked?: boolean; actor?: string; principal?: string },
   ): Promise<WakeEnd> {
     const title = (await readJobRecord(jobRoot(dataDir, info.job)))?.title;
     const refs = await artifactRefs(res.runId, res.output, info.job).catch(() => undefined);
@@ -4919,6 +4931,7 @@ export async function createStrut<TServices = unknown>(
       ...(res.error ? { error: res.error.message } : {}),
       artifacts: artifactsOf(refs),
       ...(info.startedBy ? { startedBy: info.startedBy } : {}),
+      ...(info.asked ? { asked: true as const } : {}),
       ...(info.actor ? { actor: info.actor } : {}),
       ...(info.principal ? { principal: info.principal } : {}),
     };
@@ -4933,7 +4946,7 @@ export async function createStrut<TServices = unknown>(
   async function wakeOnEnd(
     workflow: string,
     res: RunResult,
-    info: { job?: string; startedBy?: StartedBy; conversation?: string; actor?: string; principal?: string; mark?: WakeMark; session?: string },
+    info: { job?: string; startedBy?: StartedBy; conversation?: string; asked?: boolean; actor?: string; principal?: string; mark?: WakeMark; session?: string },
   ): Promise<WakeOutcome | WakeMark | undefined> {
     try {
       if (info.mark) {
@@ -5161,15 +5174,22 @@ export async function createStrut<TServices = unknown>(
     if (problem) throw new Error(`conversation "${String(body.conversation)}" ${problem}`);
     return body.conversation;
   };
-  /** Whether strut wakes the conversation a launch of `flow` runs on (the
-   *  202's `wake: true`, plans/jamie-app.md §7): a conversation workflow
-   *  (`params.wake`) on a session, launched with the deployment's rights —
-   *  a peer's turn is a relay, never woken. */
+  /** A run body's `wake`: `true` or absent (`false` / `null` = not asked). */
+  const runWakeOf = (body: RunBody): void => {
+    if (body.wake != null && typeof body.wake !== "boolean") throw new Error("wake must be true or false");
+  };
+  /** Whether strut wakes for a launch of `flow` (the 202's `wake: true`,
+   *  plans/jamie-app.md §7): the host asked (`wake: true`) with the
+   *  deployment's rights — a peer's turn is a relay, never woken, and its
+   *  `wake` is dropped before it launches — on a conversation turn (a
+   *  workflow with `params.wake`, on a session: the jobs it starts wake it)
+   *  or on a job turn it launched itself naming the `conversation`. */
   const announcesWake = (flow: Flow, body: RunBody, scope: Scope): boolean =>
     wakes.enabled &&
+    body.wake === true &&
     scope === "full" &&
-    typeof flow.params?.["wake"] === "string" &&
-    typeof (body.input as Record<string, unknown> | undefined)?.["session"] === "string";
+    ((typeof flow.params?.["wake"] === "string" && typeof (body.input as Record<string, unknown> | undefined)?.["session"] === "string") ||
+      (typeof body.conversation === "string" && (JOB_WORKFLOWS as readonly string[]).includes(flow.name)));
 
   /** A run body's `job`, validated (the session-id format); absent = none.
    *  A `title` names the job, so it needs one. */
@@ -5209,7 +5229,10 @@ export async function createStrut<TServices = unknown>(
   const peerLaunchBody = (body: RunBody): RunBody | { refused: string } => {
     const set = (["params", "paramOverrides", "runId", "settings", "conversation"] as const).filter((k) => body[k] != null);
     if (set.length) return { refused: `forbidden: a peer launches a workflow as published — drop ${set.join(", ")}` };
-    return typeof body.job === "string" ? { ...body, job: `${PEER_NAMESPACE}${body.job}` } : body;
+    // A peer's turn is a relay, never woken here (src/wake.ts): its `wake`
+    // is dropped, not refused, so a relay that passes one through works.
+    const { wake: _wake, ...asPublished } = body;
+    return typeof asPublished.job === "string" ? { ...asPublished, job: `${PEER_NAMESPACE}${asPublished.job}` } : asPublished;
   };
   /** May a peer request of `scope` launch a workflow whose YAML says
    *  `peer: <open>`? `true` takes any peer; `person` only a credential that
@@ -5571,6 +5594,7 @@ export async function createStrut<TServices = unknown>(
       callback = await runCallbackOf(body, c);
       runJobOf(body);
       runConversationOf(body);
+      runWakeOf(body);
       jobCallback = await jobCallbackOf(body, c);
       mcp = parseMcpServers(body.mcp);
       attachments = runAttachmentsOf(body);
@@ -5626,6 +5650,7 @@ export async function createStrut<TServices = unknown>(
       callback = await runCallbackOf(body, c);
       runJobOf(body);
       runConversationOf(body);
+      runWakeOf(body);
       jobCallback = await jobCallbackOf(body, c);
       mcp = parseMcpServers(body.mcp);
       attachments = runAttachmentsOf(body);

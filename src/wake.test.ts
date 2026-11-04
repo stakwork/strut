@@ -232,12 +232,14 @@ describe("the wake through a whole strut", () => {
       const res = await strut.app.request(path, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(body) });
       return { status: res.status, body: (await res.json()) as any };
     };
-    /** A person's turn on `session`, with the host's callback. */
+    /** A person's turn on `session`, with the host's callback, from a host
+     *  that asks for strut's wake (`wake: true`) unless `extra` says not. */
     const say = (input: Record<string, unknown>, extra: Record<string, unknown> = {}, headers: Record<string, string> = { "x-test-actor": "alice" }) =>
-      post(`/workflows/${ORCHESTRATOR_WORKFLOW}/run`, { input, callback: { url: callback }, ...extra }, headers);
-    /** A job turn a host launches itself, naming the conversation. */
+      post(`/workflows/${ORCHESTRATOR_WORKFLOW}/run`, { input, callback: { url: callback }, wake: true, ...extra }, headers);
+    /** A job turn a host launches itself, naming the conversation and
+     *  asking for strut's wake unless `extra` says not. */
     const job = (j: string, prompt: string, conversation: string, extra: Record<string, unknown> = {}) =>
-      post("/workflows/job/run", { job: j, input: { prompt }, conversation, callback: { url: callback }, ...extra }, { "x-test-actor": "bob" });
+      post("/workflows/job/run", { job: j, input: { prompt }, conversation, wake: true, callback: { url: callback }, ...extra }, { "x-test-actor": "bob" });
     const endOf = (runId: string) => until(() => ends.find((e) => e.runId === runId), `run.end of ${runId}`);
     const wakeEnds = () => ends.filter((e) => e.workflow === ORCHESTRATOR_WORKFLOW && e.wake);
     const turns = async (session: string) => (await strut.sessionStore.load(session))?.turns ?? [];
@@ -295,7 +297,7 @@ describe("the wake through a whole strut", () => {
     const a = await job("j-a", "Hotels", "c-2");
     const b = await job("j-b", "Trains", "c-2");
     assert.equal(a.status, 202);
-    assert.equal(a.body.wake, undefined, "only a conversation's own launch announces it");
+    assert.equal(a.body.wake, true, "the host asked on its launch of the job");
     const [endA, endB] = [await endOf(a.body.runId), await endOf(b.body.runId)];
     assert.equal(endA.wake, "launched");
     assert.equal(endB.wake, "launched");
@@ -365,6 +367,42 @@ describe("the wake through a whole strut", () => {
     assert.equal((await endOf(j.body.runId)).wake, "none");
     await idle();
     assert.equal(seen.wake.length, 0);
+  });
+
+  it("opt-in: strut wakes only where the host asked on the launch it made", async () => {
+    const { strut, seen, ends, say, job, endOf, idle } = await boot({
+      reply: (body) =>
+        lastUser(body).includes("start one") ? { text: "On it.", start: { brief: "Do it", title: "It" }, artifacts: [] } : { text: "Hello.", artifacts: [] },
+    });
+    const startOf = (wf: string, runId: string) =>
+      until(async () => (await strut.store.getRunEvents(wf, runId)).find((e) => e.type === "run.start"), `run.start of ${runId}`);
+    const jobOf = (turn: string) => until(() => ends.find((e) => e.workflow === "job" && e.startedBy?.runId === turn), `the job ${turn} started`);
+    // A person's turn whose host did not ask: nothing announced, and the job
+    // it starts wakes nothing — that host still wakes on its own.
+    const quiet = await say({ prompt: "start one", session: "c-9" }, { wake: undefined });
+    assert.equal(quiet.status, 202, JSON.stringify(quiet.body));
+    assert.equal(quiet.body.wake, undefined, "nothing announced");
+    assert.equal((await startOf(ORCHESTRATOR_WORKFLOW, quiet.body.runId)).wakeAsked, undefined);
+    assert.equal((await jobOf(quiet.body.runId)).wake, "none");
+    // A job the host launched itself without asking: the same.
+    const j = await job("j-1", "One", "c-9", { wake: undefined });
+    assert.equal(j.body.wake, undefined);
+    assert.equal((await endOf(j.body.runId)).wake, "none");
+    await idle();
+    assert.equal(seen.wake.length, 0);
+    // A person's turn that asks: the job it starts wakes the conversation.
+    const asked = await say({ prompt: "start one", session: "c-9" });
+    assert.equal(asked.body.wake, true);
+    assert.equal((await startOf(ORCHESTRATOR_WORKFLOW, asked.body.runId)).wakeAsked, true);
+    assert.equal((await jobOf(asked.body.runId)).wake, "launched");
+    await until(() => (seen.wake.length ? true : undefined), "the wake");
+  });
+
+  it("wake on a launch must be a boolean", async () => {
+    const { say } = await boot();
+    const bad = await say({ prompt: "hi", session: "c-10" }, { wake: "yes" });
+    assert.equal(bad.status, 400);
+    assert.match(bad.body.error, /wake must be true or false/);
   });
 
   it("the conversation field is the deployment's: refused to a peer, checked like a session id", async () => {

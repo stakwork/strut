@@ -49,7 +49,7 @@ export const ORCHESTRATOR_DESCRIPTION =
   "A conversation turn: an agent with no coding tools that remembers the conversation (agent with session: {{ input.session }}), answers from what is already known, asks what a request needs answered first, and starts or continues JOBS detached for anything to be found out or made (job/start, job/continue) — the job's run.end goes to this turn's callback. The kinds of work a job can do here (the Job Concept's children) close its prompt. " +
   "Launch it once per message — POST /workflows/orchestrator/run { input: { prompt, session }, callback }; without a session it is a one-shot. " +
   "Input: { prompt, session? (the conversation's thread), context?: { line, where?, timeZone? } (put before the prompt: the time, the person's time zone; where the conversation is read) }. " +
-  "When a job a turn started ends, strut wakes the session with one more turn whose prompt is params.wake (the 202 says wake: true). " +
+  "Launched with wake: true, a turn asks strut to wake the session when a job it started ends: one more turn whose prompt is params.wake (the 202 says wake: true). " +
   "Output: { text, artifacts, ask?: { message }, cost, session }, job's shape. " +
   "params.tools (job/start, continue, list, get, read, strut/list-peers, strut/run-workflow) and params.system are the evolvable surface; the host adds its own through createStrut({ orchestrator }).";
 

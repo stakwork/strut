@@ -521,6 +521,11 @@ export interface RunEvent {
    *  `startedBy.session` is, so a job turn the host launched itself wakes
    *  that conversation when it ends (src/wake.ts). Kept by a resume. */
   conversation?: string;
+  /** On `run.start`: the host asked strut to wake this conversation when a
+   *  job it started ends (`POST …/run { wake: true }`, full scope; src/wake.ts).
+   *  Opt-in, so a host that still wakes on its own never gets two. Kept by a
+   *  resume. */
+  wakeAsked?: true;
   /** On a WAKE turn's `run.start` (src/wake.ts): the job run it woke on. */
   wake?: WakeMark;
   /** On a `run.resumed` that UNPAUSED a live run (RUN_CONTROL_SPEC §4) —

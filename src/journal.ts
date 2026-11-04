@@ -57,6 +57,8 @@ export function readRunStart(
   /** The conversation a host's launch named — a resume keeps it, so the
    *  job run's end still wakes it (src/wake.ts). */
   conversation?: string;
+  /** The host asked for strut's wake — a resume keeps it. */
+  wakeAsked?: true;
   /** A wake turn's mark — a resume keeps it, so its end is still heard. */
   wake?: WakeMark;
 } | null {
@@ -78,6 +80,7 @@ export function readRunStart(
     ...(start.app ? { app: start.app } : {}),
     ...(start.startedBy ? { startedBy: start.startedBy } : {}),
     ...(start.conversation ? { conversation: start.conversation } : {}),
+    ...(start.wakeAsked ? { wakeAsked: true as const } : {}),
     ...(start.wake ? { wake: start.wake } : {}),
   };
 }
