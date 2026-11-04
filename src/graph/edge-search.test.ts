@@ -13,8 +13,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { GraphBackend, LadybugBackend } from "./backend.js";
+import { openGraphBackend, type GraphBackend, type LadybugBackend } from "./backend.js";
 import { EDGE_ROWS_MIGRATION } from "./ladybug/db.js";
+import { PRIVATE_NAMESPACE } from "./ladybug/namespaces.js";
 import { GraphValidationError, type Embedder } from "./node-writer.js";
 import { createNodeSchema } from "./schema-crud.js";
 import { assertEdge, embedPendingEdgeRows } from "./temporal.js";
@@ -226,6 +227,33 @@ describe("edge search rows on a ladybug file (plans/graph-edge-search.md)", { sk
     assert.equal(((await rowOf(b, r.ref_id))!["text_embeddings"] as number[]).length, 384);
     assert.deepEqual((await byMeaning("my job"))[0], "Tom works at Stakwork as an engineer");
     assert.equal(await embedPendingEdgeRows(b), 0, "nothing left");
+  });
+});
+
+describe("the open's backfill of data nodes written with no embedder", { skip: lb.skip }, () => {
+  it("embeds an entity's text at the next open with an embedder, never a no-embed type's", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "strut-node-backfill-"));
+    const cfg = { kind: "ladybug", path: join(dir, "graph.lbug"), namespace: PRIVATE_NAMESPACE } as const;
+    try {
+      let b = await openGraphBackend(cfg, { embeddings: false });
+      await createNodeSchema(b, b.schemas, { type: "Jotting", attributes: {}, embed: false });
+      await b.nodes.writeMany([
+        { type: "Person", data: { name: "Tom" } },
+        { type: "Jotting", data: { name: "keyword only" } },
+      ]);
+      await b.close();
+      const { embedder, state } = testEmbedder();
+      b = await openGraphBackend(cfg, { embeddings: embedder });
+      await b.nodeEngine.idle?.();
+      const missing = async (type: string) =>
+        (await b.query(`MATCH (n:Node {node_type: $t}) RETURN n.text_embeddings IS NULL AS missing`, { t: type }))[0]?.["missing"];
+      assert.equal(await missing("Person"), false);
+      assert.equal(await missing("Jotting"), true);
+      assert.ok(!state.texts.some((t) => t.includes("keyword only")), "a no-embed type's text is never embedded");
+      await b.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

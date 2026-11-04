@@ -373,6 +373,10 @@ export function renderVectorField(prop: string, text: string): string | null {
 export interface Embedder {
   /** One 384-float vector per input text, same order. */
   embed(texts: string[]): Promise<number[][]>;
+  /** The cosine similarity below which a Ladybug file's vector search
+   *  counts a hit as no match (`LADYBUG_VECTOR_MIN_SIM` for MiniLM). None:
+   *  every hit counts. */
+  readonly minSimilarity?: number;
 }
 
 export interface NodeInput {

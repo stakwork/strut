@@ -185,6 +185,9 @@ export interface NodeEngine {
    *  at a time per handle (a call during a run asks it to go round again,
    *  and gets its promise). Never rejects: a failure is logged. */
   embedPendingRows?(embedder: Embedder): Promise<number>;
+  /** Ladybug: also embed the data nodes with text and no vector, in the
+   *  types `embeddable` allows (the open's backfill). Never rejects. */
+  embedPendingNodes?(embedder: Embedder, embeddable: (type: string) => Promise<boolean>): Promise<number>;
   /** Ladybug: the run in flight, if any (a close waits for it). */
   idle?(): Promise<void>;
 }
