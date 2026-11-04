@@ -1425,6 +1425,67 @@ launched (`origin: "app"`):
   shows an app turn's proposals, and a page must not decide them;
 - carries no MCP servers (a page's call has none).
 
+### 14.9 Channels — live messages between an app's viewers (`src/channels.ts`; `plans/app-channels.md`)
+
+A channel is a short in-memory log of JSON messages named by an app and
+shared by every viewer of it (every version; a preview has its own). The
+page connects nowhere: its HOST holds one WebSocket per open page and
+relays it to the page over the MCP Apps bridge. Nothing is kept — no run,
+no log line — and a restart empties every channel. Built so far: the
+service, the ticket and the socket below; the bridge methods, the kit's
+`useChannel`, the steps and the peer relay are later work items.
+
+**A ticket** — what a browser host opens the socket with, since a browser
+cannot set a header on an upgrade:
+
+```
+POST /apps/:name/channel-ticket        { version: "v3" }     (the key or a session; x-strut-actor = the viewer)
+→ 200 { ticket: "strut-channel.<claims>.<hmac>", exp: <ms> }
+```
+
+The host names the app and version it is showing; the viewer is the
+request's actor (Hive: the member, with the swarm key). A ticket lives a
+minute (`CHANNEL_TICKET_MS`) and opens only `GET /channels`; the socket
+outlives it. 400 without `version`, 404 for a version this strut does not
+hold, 403 for any peer credential. With no secret to sign under (dev mode,
+the gate open) the ticket is unsigned and taken at its word.
+
+**The socket** — `GET /channels` (WebSocket; plain HTTP is a 426). Through
+`strut.upgrade` like `/rooms` (§10), so a host that owns the server routes
+`<basePath>/channels` to it (mcp: `/lab/channels`). One credential:
+
+| Who | How | |
+| --- | --- | --- |
+| a browser host | `?ticket=<ticket>` | the ticket's viewer and app; a ticket strut cannot vouch for is a 401 even beside another credential |
+| a server (the peer relay) | its credential in a header + `?app=<name>@<version>` | a person token, or the key with `x-strut-actor`; a plain peer key is a 403 |
+| a host coming back after a drop | either, plus `?client=<the client id it had>` | the same viewer within 10 s keeps its place: no `left`, no `joined` |
+
+A `?ticket=` never reaches the request log (`ticket=…`).
+
+**Frames** are JSON, one per WebSocket message.
+
+| Direction | Frame |
+| --- | --- |
+| host → strut | `{ op: "join", channel, since? }` — `since`: the cursor of the last frame it saw, to get what it missed |
+| host → strut | `{ op: "leave", channel }` |
+| host → strut | `{ op: "send", channel, messages: [{ key?, data }] }` — a batch goes whole or not at all |
+| strut → host | `{ op: "joined", channel, client, cursor, members, messages, reset? }` — `client` is this socket's id; `messages` every state and the recent events (or what came after `since`; `reset` when that is gone) |
+| strut → host | `{ op: "message", channel, cursor, message }` — the sender's own too |
+| strut → host | `{ op: "presence", channel, joined? \| left? }` — a member `{ actor?, client, since }` |
+| strut → host | `{ op: "error", channel?, error }` — a refusal naming its limit; the socket stays open |
+
+A message as strut sends it: `{ from: { actor?, client? | code? }, key?, data, at }`
+— `from` is strut's stamp, never what the page wrote. A message with a
+`key` is a STATE and replaces that sender's last one with the same key
+(no sender can replace another's); without, an EVENT. A channel name
+follows the session-id format. Limits (`CHANNEL_*` in
+`src/channels.ts`): 8 KB of JSON per message, 256 messages kept (events go
+first), 16 keys per sender, 30 messages a second per sender in bursts of
+60, 8 channels per socket, 1 000 per app, a channel with nobody in it gone
+after 10 minutes. A socket that misses a ping (every 10 s) is closed; a
+clean close (1000 / 1001) or a `leave` sends `left` at once and drops the
+leaver's states.
+
 ## 15. Dictation — speech to text, its models and the user's vocabulary
 
 Speech-to-text over sherpa-onnx (`src/audio/`, plans/local-desktop-and-stt.md
