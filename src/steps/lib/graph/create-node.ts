@@ -8,17 +8,20 @@ export default defineStep({
   description:
     "Create (or merge) a SINGLE node in the knowledge graph as DATA, with no edge " +
     "(to assert a relationship at the same time, use graph_create_triplet instead). Writes live to the graph. " +
-    "REUSE existing nodes: graph_resolve first (or graph_graph_search), and only create when the entity genuinely doesn't exist yet — " +
-    "duplicate nodes fragment the graph. A relationship that can change over time (where someone lives, works, who they know) " +
-    "is a fact: write it with graph_assert, which can create a missing end in the same call. " +
-    "A way the user likes something done is a Concept page under the `Personal` root when the graph has one " +
-    "(a Concept with a one-line description and full docs; make it with graph_create_triplet, the page it belongs under -PARENT_OF-> the new one): " +
-    "open the root with graph_graph_get (children PARENT_OF) first, and change a page that already covers it rather than adding another. " +
-    "The node type must already exist in the ontology " +
+    "REUSE existing nodes: graph_graph_search first, and only create when the entity genuinely doesn't exist yet — " +
+    "duplicate nodes fragment the graph. The node type must already exist in the ontology " +
     "(check with graph_get_ontology; graph_get_ontology_type shows its attributes and which are required). " +
     "Every attribute is validated against the type's schema — unknown attributes are rejected. " +
     "Create-or-merge semantics: if a node with the same identity key already exists, its ref_id is " +
     "returned (reported as a Warning) instead of creating a duplicate — so re-running is safe.",
+  graphNotes: {
+    ladybug:
+      "Find an existing node with graph_resolve before creating one. A relationship that can change over time (where someone lives, works, who they know) " +
+      "is a fact: write it with graph_assert, which can create a missing end in the same call. " +
+      "A way the user likes something done is a Concept page under the `Personal` root when the graph has one " +
+      "(a Concept with a one-line description and full docs; make it with graph_create_triplet, the page it belongs under -PARENT_OF-> the new one): " +
+      "open the root with graph_graph_get (children PARENT_OF) first, and change a page that already covers it rather than adding another.",
+  },
   input: z.object({
     node_type: z
       .string()

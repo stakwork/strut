@@ -17,9 +17,13 @@ export default defineStep({
     "the namespace is deleted for good, so whatever hung under it is cut loose (its children stay, parentless). " +
     "Read the node first (graph/graph-get with its `edges` counts, graph/graph-neighbors) and be sure: a delete is " +
     "the write with the least room for a mistake. To detach one link keep the node and use graph/delete-edge; to " +
-    "re-home it use graph/move-node. The user (the Person marked is_owner) is never deleted: delete or end their edges instead. " +
-    "To record that a fact stopped being true, end it with graph/assert (`ended` or `invalid_at`) instead of deleting anything.\n\n" +
+    "re-home it use graph/move-node.\n\n" +
     EXAMPLE,
+  graphNotes: {
+    ladybug:
+      "The user (the Person marked is_owner) is never deleted: delete or end their edges instead. " +
+      "To record that a fact stopped being true, end it with graph/assert (`ended` or `invalid_at`) instead of deleting anything.",
+  },
   input: z.object({
     ref_id: z.string().describe("The ref_id of the node to delete (from graph_graph_search/graph_graph_get)."),
     namespace: z
