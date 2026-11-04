@@ -47,6 +47,19 @@
 > engine past the filtered reader); a job run's files are closed through
 > `run/files` as through the routes.
 >
+> **Item 4 BUILT (the index side), after #483 merged:** a LIVE row is its
+> own map on the index card, `live: { <prefix>: { url, description? } }`
+> beside `publishers` — not a field of a package row, because a reader that
+> knows only `publishers` refuses a row with no key or catalog, and a
+> server needs neither to be listed live. `PUT /index/live/:prefix`, read
+> at the row and with every crawl (`<url>/public`, `<url>/public/concepts`;
+> a failed read keeps the last one), `GET /index/live` open to anyone, the
+> live trees folded into `/index/concepts`, and the store's Live apps,
+> Live workflows and steps, a page per live item read from its publisher in
+> the visitor's browser, and a live Concept's docs read from there. Not
+> yet: a publisher's ping when its view changes (the poll reads it), live
+> items in `llms.txt` and the index's MCP tools.
+>
 > **Scoped the same day, ruled:** openlaw-1 viewable by anyone through the
 > index comes FIRST. v1 is the public surface on the publisher's server
 > (§2–§5), then the index showing it (§8). Contributions and history (§7),

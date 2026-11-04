@@ -45,12 +45,25 @@ export interface IndexRow {
   urls: string[];
 }
 
+/** A LIVE row (plans/public-surface.md §8): where a publisher's server
+ *  serves its PUBLIC VIEW (`<url>/public`), read live by the store — no key,
+ *  no catalog. Kept in its own map, `live`, beside `publishers`, so a
+ *  reader that knows only `publishers` (a strut before it) reads the card as
+ *  before: a member it does not know is ignored and still under the seal. */
+export interface IndexLiveRow {
+  /** The server's base, as its UI is served (`https://<swarm>:3355/lab`). */
+  url: string;
+  description?: string;
+}
+
 export interface UnsignedIndexCatalog {
   v: number;
   key: string;
   seq: number;
   /** Prefix → the row. */
   publishers: Record<string, IndexRow>;
+  /** Prefix → where its public view is served (`IndexLiveRow`). */
+  live?: Record<string, IndexLiveRow>;
   /** Where THIS catalog is served, so a reader that has it follows a move. */
   urls?: string[];
 }

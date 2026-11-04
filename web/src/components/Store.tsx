@@ -3,7 +3,7 @@ import * as api from "../api";
 import { formatBytes } from "../attachments";
 import { errorMessage } from "../helpers";
 import { load, remove, save } from "../storage";
-import { appsOf, canWords, conceptRoots, installLink, normalizeStrutUrl, parseStoreView, shortKey, storeQuery, type InstallLink, type StoreView } from "../store-links";
+import { appsOf, canWords, conceptRoots, installLink, liveAppUrl, liveBase, normalizeStrutUrl, parseStoreView, shortKey, storeQuery, type InstallLink, type LiveKind, type StoreView } from "../store-links";
 import { CopyButton } from "./CopyButton";
 import { Markdown } from "./Markdown";
 import { shortDigest } from "./PackagesDialog";
@@ -22,6 +22,13 @@ import { shortDigest } from "./PackagesDialog";
 // shows the name to paste. On a strut that is not an index the page says
 // so. Rendered alone, in place of the shell (app.tsx), so none of the
 // shell's loads run behind it.
+//
+// LIVE items (plans/public-surface.md §8): an index row may name where a
+// publisher server's PUBLIC VIEW is served. The index lists what each view
+// shows (`/index/live`); the item itself is read from the publisher, in the
+// visitor's browser, with no credential — an app framed from its server
+// (`?app=&solo=1&public=1`), a workflow, step or Concept page drawn here from
+// its `/public` JSON. Nothing to install: it is the publisher's, live.
 
 const TARGET_KEY = "store.strut";
 
@@ -53,7 +60,11 @@ export function Store() {
     });
   }, []);
   useEffect(() => {
-    document.title = view.view === "package" ? `${view.pkg} · strut store` : view.view === "concept" ? `${view.concept || "Concepts"} · strut store` : "strut store";
+    document.title =
+      view.view === "package" ? `${view.pkg} · strut store`
+      : view.view === "concept" ? `${view.concept || "Concepts"} · strut store`
+      : view.view === "live" ? `${view.name} · ${view.publisher} · strut store`
+      : "strut store";
   }, [view]);
   const setStrut = (url: string | null) => {
     if (url) save(TARGET_KEY, url);
@@ -96,6 +107,7 @@ export function Store() {
         {card !== null && view.view === "browse" && <Browse q={view.q} card={card} go={go} />}
         {card !== null && view.view === "package" && <PackagePage pkg={view.pkg} target={target} link={link} go={go} onNeedStrut={setStrut} />}
         {card !== null && view.view === "concept" && <ConceptView name={view.concept} target={target} link={link} go={go} onNeedStrut={setStrut} />}
+        {card !== null && view.view === "live" && <LivePage publisher={view.publisher} kind={view.kind} name={view.name} card={card} go={go} />}
       </main>
 
       <footer class="store-foot">
@@ -194,10 +206,14 @@ function Browse(props: { q?: string; card: api.IndexCard | undefined; go: (v: St
   const [hits, setHits] = useState<api.StoreHit[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [concepts, setConcepts] = useState<api.StoreConcept[] | null>(null);
+  const [live, setLive] = useState<api.StoreLiveItem[]>([]);
   useEffect(() => {
     setHits(null);
     api.storeSearch(props.q ?? "").then(setHits, (err) => setError(errorMessage(err)));
+    api.storeLive(props.q ?? "").then(setLive, () => setLive([]));
   }, [props.q]);
+  const liveApps = live.filter((i) => i.kind === "app");
+  const liveFlows = live.filter((i) => i.kind === "workflow" || i.kind === "step");
   useEffect(() => {
     if (!props.q) api.storeConcepts().then(setConcepts, () => setConcepts([]));
   }, [props.q]);
@@ -224,6 +240,45 @@ function Browse(props: { q?: string; card: api.IndexCard | undefined; go: (v: St
       )}
       {error && <div class="auto-error">{error}</div>}
       {hits === null && !error && <div class="auto-hint">Loading…</div>}
+
+      {liveApps.length > 0 && (
+        <section>
+          <div class="store-section-head"><h2>Live apps</h2><span class="auto-meta">On their publishers' servers, read-only: open one and look around</span></div>
+          <div class="store-grid">
+            {liveApps.map((a) => (
+              <button class="store-card" key={`${a.publisher}/${a.name}`} onClick={() => props.go({ view: "live", publisher: a.publisher, kind: "app", name: a.name })}>
+                <div class="store-card-head">
+                  <AppTile app={{ name: a.name, title: a.title ?? a.name }} />
+                  <div class="store-card-title">
+                    <span class="store-card-name">{a.title ?? a.name}</span>
+                    <span class="auto-meta">{a.publisher} · live {a.version}</span>
+                  </div>
+                </div>
+                {a.description && <div class="store-card-desc">{a.description}</div>}
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {liveFlows.length > 0 && (
+        <section>
+          <div class="store-section-head"><h2>Live workflows and steps</h2><span class="auto-meta">Read from their servers as they are now</span></div>
+          <div class="store-list">
+            {liveFlows.map((i) => (
+              <button class="store-row" key={`${i.publisher}/${i.kind}/${i.name}`} onClick={() => props.go({ view: "live", publisher: i.publisher, kind: i.kind as LiveKind, name: i.name })}>
+                <span class="store-row-main">
+                  <span class="package-name">{i.name}</span>
+                  <span class="badge">{i.kind}</span>
+                  {i.runs && <span class="badge" title="Its runs are public too">with runs</span>}
+                  <span class="auto-meta">{i.publisher}</span>
+                </span>
+                {i.description && <span class="store-row-desc">{i.description}</span>}
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
 
       {hits && apps.length > 0 && (
         <section>
@@ -547,14 +602,26 @@ function ConceptIndex(props: { go: (v: StoreView) => void }) {
 function ConceptPage(props: { name: string; target: string | null; link: (pkg: string) => InstallLink; go: (v: StoreView) => void; onNeedStrut: (url: string | null) => void }) {
   const [page, setPage] = useState<api.StoreConceptPage | null | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
+  // A page only a publisher's public view holds: its docs are read there, live.
+  const [liveDocs, setLiveDocs] = useState<string | null | undefined>(undefined);
   useEffect(() => {
     setPage(undefined);
     setError(null);
+    setLiveDocs(undefined);
     api.storeConcept(props.name).then(setPage, (err) => { setPage(null); setError(errorMessage(err)); });
   }, [props.name]);
+  useEffect(() => {
+    const from = page?.live?.[0];
+    if (!page || page.docs || !from) return;
+    api.liveJSON<api.LiveConceptPage>(from.url, `/public/concepts/${encodeURIComponent(page.name)}`).then(
+      (p) => setLiveDocs(typeof p.properties?.["docs"] === "string" ? (p.properties["docs"] as string) : null),
+      () => setLiveDocs(null),
+    );
+  }, [page]);
   if (page === undefined) return <div class="auto-hint">Loading…</div>;
   if (!page) return <div class="store-empty"><div class="store-empty-title">{props.name}</div><div class="auto-error">{error}</div></div>;
   const first = page.packages[0];
+  const docs = page.docs ?? liveDocs ?? undefined;
   return (
     <article class="store-concept">
       <nav class="store-crumbs">
@@ -569,11 +636,16 @@ function ConceptPage(props: { name: string; target: string | null; link: (pkg: s
         <div class="store-package-main">
           <h1>{page.name}</h1>
           {page.description && <p class="store-package-desc">{page.description}</p>}
-          <div class="auto-meta">
-            From {page.packages.map((p, i) => <span key={p.package}>{i > 0 && ", "}<button class="auto-link" onClick={() => props.go({ view: "package", pkg: p.package })}>{p.package}</button> {p.version}</span>)}
-            {page.packages.length > 1 && " — the first's text is shown; installed side by side, each keeps its own page"}
-          </div>
-          {page.docs ? <Markdown source={page.docs} class="md-view store-readme" /> : <div class="auto-hint">This page has a name and a place in the tree, and no text yet.</div>}
+          {page.packages.length > 0 && (
+            <div class="auto-meta">
+              From {page.packages.map((p, i) => <span key={p.package}>{i > 0 && ", "}<button class="auto-link" onClick={() => props.go({ view: "package", pkg: p.package })}>{p.package}</button> {p.version}</span>)}
+              {page.packages.length > 1 && " — the first's text is shown; installed side by side, each keeps its own page"}
+            </div>
+          )}
+          {page.live?.length ? (
+            <div class="auto-meta">Live on {page.live.map((l) => l.publisher).join(", ")}{!page.docs ? " — read from its server as it is now" : ""}</div>
+          ) : null}
+          {docs ? <Markdown source={docs} class="md-view store-readme" /> : liveDocs === undefined && page.live?.length && !page.docs ? <div class="auto-hint">Reading it from its server…</div> : <div class="auto-hint">This page has a name and a place in the tree, and no text yet.</div>}
           {page.children.length > 0 && (
             <section>
               <h2>Under this page <span class="auto-meta">{page.children.length}</span></h2>
@@ -586,12 +658,20 @@ function ConceptPage(props: { name: string; target: string | null; link: (pkg: s
           )}
         </div>
         <aside class="store-package-aside">
-          <section>
-            <h3>Have it in your graph</h3>
-            <div class="auto-hint">Installing the package puts this page, and the tree it sits in, under your strut server's Concepts — where the builder and the job agents read it.</div>
-            {first && <InstallButton pkg={first.package} target={props.target} link={props.link} onNeedStrut={props.onNeedStrut} />}
-          </section>
-          <section>
+          {first && (
+            <section>
+              <h3>Have it in your graph</h3>
+              <div class="auto-hint">Installing the package puts this page, and the tree it sits in, under your strut server's Concepts — where the builder and the job agents read it.</div>
+              <InstallButton pkg={first.package} target={props.target} link={props.link} onNeedStrut={props.onNeedStrut} />
+            </section>
+          )}
+          {page.live?.length ? (
+            <section>
+              <h3>Live</h3>
+              <div class="auto-hint">Kept on {page.live.map((l) => l.publisher).join(", ")}'s server and edited there: what you read here is the page as it is now.</div>
+            </section>
+          ) : null}
+          {page.packages.length > 0 && <section>
             <h3>In packages</h3>
             <ul class="store-releases">
               {page.packages.map((p) => (
@@ -601,9 +681,175 @@ function ConceptPage(props: { name: string; target: string | null; link: (pkg: s
                 </li>
               ))}
             </ul>
-          </section>
+          </section>}
         </aside>
       </div>
     </article>
+  );
+}
+
+// ── A live item ─────────────────────────────────────────────────────────────
+
+/** One item of a publisher's public view, read from its server now: an app
+ *  framed as a visitor sees it, a workflow's inputs, steps and recent runs,
+ *  a step's fields and source. */
+function LivePage(props: { publisher: string; kind: LiveKind; name: string; card: api.IndexCard | undefined; go: (v: StoreView) => void }) {
+  const base = liveBase(props.card, props.publisher);
+  const crumbs = (
+    <nav class="store-crumbs">
+      <button class="auto-link" onClick={() => props.go({ view: "browse" })}>Store</button>
+      <span>›</span>
+      <span>{props.publisher}</span>
+      <span>›</span>
+      <span>{props.name}</span>
+    </nav>
+  );
+  if (props.card === undefined) return <div class="auto-hint">Loading…</div>;
+  if (!base) {
+    return (
+      <div class="store-empty">
+        <div class="store-empty-title">{props.name}</div>
+        <div class="auto-hint">{props.publisher} has no live row in this index.</div>
+      </div>
+    );
+  }
+  return (
+    <article class="store-live">
+      {crumbs}
+      {props.kind === "app" && <LiveApp base={base} name={props.name} publisher={props.publisher} />}
+      {props.kind === "workflow" && <LiveWorkflow base={base} name={props.name} publisher={props.publisher} />}
+      {props.kind === "step" && <LiveStep base={base} name={props.name} publisher={props.publisher} />}
+    </article>
+  );
+}
+
+function useLive<T>(base: string, path: string): { data?: T; error?: string } {
+  const [state, setState] = useState<{ data?: T; error?: string }>({});
+  useEffect(() => {
+    setState({});
+    api.liveJSON<T>(base, path).then((data) => setState({ data }), (err) => setState({ error: errorMessage(err) }));
+  }, [base, path]);
+  return state;
+}
+
+function LiveApp(props: { base: string; name: string; publisher: string }) {
+  const info = useLive<{ name: string; version: string; title: string; description?: string }>(props.base, `/public/apps/${encodeURIComponent(props.name)}`);
+  const page = liveAppUrl(props.base, props.name);
+  return (
+    <>
+      <div class="store-live-head">
+        <div>
+          <h1>{info.data?.title ?? props.name}</h1>
+          {info.data?.description && <p class="store-package-desc">{info.data.description}</p>}
+          <div class="auto-meta">
+            {props.publisher} · live {info.data?.version ?? ""} · read-only: you can look around, not start a run
+          </div>
+        </div>
+        <a class="btn" href={page} target="_blank" rel="noopener">Open full page</a>
+      </div>
+      {info.error && <div class="auto-error">{info.error}</div>}
+      <iframe
+        class="store-live-frame"
+        src={page}
+        title={info.data?.title ?? props.name}
+        sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-downloads"
+      />
+    </>
+  );
+}
+
+function LiveWorkflow(props: { base: string; name: string; publisher: string }) {
+  const w = encodeURIComponent(props.name);
+  const meta = useLive<{ name: string; active: string; runs: boolean; category?: string }>(props.base, `/public/workflows/${w}`);
+  const flow = useLive<api.LiveWorkflowFlow>(props.base, `/public/workflows/${w}/flow`);
+  const [runs, setRuns] = useState<api.LiveRunRow[] | null>(null);
+  useEffect(() => {
+    if (!meta.data?.runs) return;
+    api.liveJSON<api.LiveRunRow[]>(props.base, `/public/workflows/${w}/runs?limit=10`).then(setRuns, () => setRuns([]));
+  }, [meta.data?.runs, props.base, w]);
+  const inputs = Object.entries(flow.data?.input ?? {});
+  return (
+    <div class="store-package-body">
+      <div class="store-package-main">
+        <h1>{props.name}</h1>
+        <div class="auto-meta">{props.publisher} · {meta.data ? `active ${meta.data.active}` : "…"}{meta.data?.category ? ` · ${meta.data.category}` : ""}</div>
+        {(meta.error || flow.error) && <div class="auto-error">{meta.error ?? flow.error}</div>}
+        {inputs.length > 0 && (
+          <section>
+            <h2>Inputs</h2>
+            <ul class="store-releases">
+              {inputs.map(([k, f]) => (
+                <li key={k}>
+                  <code>{k}</code> <span class="auto-meta">{f.type ?? "string"}{f.required === false || f.default !== undefined ? ", optional" : ""}</span>
+                  {f.description && <span class="auto-hint"> — {f.description}</span>}
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+        {flow.data && (
+          <section>
+            <h2>Steps <span class="auto-meta">{flow.data.steps.length}</span></h2>
+            <ol class="store-releases">
+              {flow.data.steps.map((s) => <li key={s.id}><code>{s.id}</code> <span class="badge">{s.type}</span></li>)}
+            </ol>
+          </section>
+        )}
+      </div>
+      <aside class="store-package-aside">
+        <section>
+          <h3>Runs</h3>
+          {!meta.data?.runs && <div class="auto-hint">Its runs are not public.</div>}
+          {meta.data?.runs && runs === null && <div class="auto-hint">Loading…</div>}
+          {runs?.length === 0 && <div class="auto-hint">No runs yet.</div>}
+          <ul class="store-releases">
+            {runs?.map((r) => (
+              <li key={r.runId}>
+                <span class={`badge${r.status === "error" ? " badge-warning" : ""}`}>{r.status}</span>
+                <span class="auto-meta">{r.startedAt ? new Date(r.startedAt).toLocaleString() : r.runId}</span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      </aside>
+    </div>
+  );
+}
+
+function LiveStep(props: { base: string; name: string; publisher: string }) {
+  const t = props.name.split("/").map(encodeURIComponent).join("/");
+  const schema = useLive<api.LiveStepSchema>(props.base, `/public/steps/${t}/schema`);
+  const source = useLive<api.LiveStepSource>(props.base, `/public/steps/${t}/source`);
+  return (
+    <div class="store-package-main">
+      <h1>{props.name}</h1>
+      {schema.data?.description && <p class="store-package-desc">{schema.data.description}</p>}
+      <div class="auto-meta">
+        {props.publisher}
+        {schema.data?.effect ? ` · ${schema.data.effect === "read" ? "reads" : "acts"}` : ""}
+        {schema.data?.secrets?.length ? ` · reads the secrets ${schema.data.secrets.join(", ")}` : ""}
+      </div>
+      {(schema.error || source.error) && <div class="auto-error">{schema.error ?? source.error}</div>}
+      {schema.data && schema.data.fields.length > 0 && (
+        <section>
+          <h2>Fields</h2>
+          <ul class="store-releases">
+            {schema.data.fields.map((f) => <li key={f.name}><code>{f.name}</code> <span class="auto-meta">{f.type}</span>{f.description && <span class="auto-hint"> — {f.description}</span>}</li>)}
+          </ul>
+        </section>
+      )}
+      {source.data?.source && (
+        <section>
+          <h2>Source</h2>
+          <pre class="store-source">{source.data.source}</pre>
+          {source.data.helpers.map((h) => (
+            <div key={h.name}>
+              <h3><code>{h.name}</code></h3>
+              <pre class="store-source">{h.source}</pre>
+            </div>
+          ))}
+        </section>
+      )}
+    </div>
   );
 }

@@ -87,9 +87,9 @@ import { packArchive } from "./packages/archive.js";
 import { buildPackage, type BuildRequest } from "./packages/build.js";
 import { PUBLISHER_FILE, PUBLISHER_NAME, catalogStore, moveChannel, publicCatalogStore, publishRelease, publisherStore } from "./packages/publisher.js";
 import { SUBSCRIPTIONS_FILE, createSubscriptions, subscriptionProblem, type Subscription, type Subscriptions } from "./packages/subscriptions.js";
-import { createPackageIndex, indexDir, indexRowProblem, type PackageIndex } from "./packages/index.js";
+import { createPackageIndex, indexDir, indexRowProblem, liveRowProblem, type PackageIndex } from "./packages/index.js";
 import { INDEXES_FILE, createIndexes, indexSubscriptionProblem, parseIndexesEnv, type IndexSubscription, type PackageIndexes, type PackagesCapability } from "./packages/indexes.js";
-import type { IndexRow } from "./packages/card.js";
+import type { IndexLiveRow, IndexRow } from "./packages/card.js";
 import { packageCache } from "./packages/cache.js";
 import { workspaceFences } from "./packages/fence.js";
 import { PACKAGE_DIGEST, PACKAGE_NAME } from "./packages/format.js";
@@ -832,7 +832,7 @@ export async function createStrut<TServices = unknown>(
     if (!Array.isArray(urls) || !urls.every((u) => typeof u === "string" && /^https?:\/\/\S+$/.test(u))) throw new Error("STRUT_INDEX_URLS is a JSON list of http(s) URLs");
     return { urls };
   })();
-  const INDEX_READ = /^(?:\/llms\.txt$|\/index\/(?:catalog|packages(?:\/|$)|concepts(?:\/|$)|mcp$))/;
+  const INDEX_READ = /^(?:\/llms\.txt$|\/index\/(?:catalog|packages(?:\/|$)|concepts(?:\/|$)|live$|mcp$))/;
   /** The index's MCP door (src/packages/index-tools.ts): the one POST the
    *  role opens, the three read tools over the same derived pages. */
   const INDEX_MCP = "/index/mcp";
@@ -3657,6 +3657,27 @@ export async function createStrut<TServices = unknown>(
         return indexError(c, err);
       }
     });
+    // A LIVE row (plans/public-surface.md §8): where a publisher server's
+    // public view is served — no key, no catalog — sealed into the card's
+    // `live` map beside `publishers`, and read now. A person's act.
+    app.put("/index/live/:prefix", async (c) => {
+      const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>);
+      const problem = liveRowProblem(c.req.param("prefix"), body);
+      if (problem) return c.json({ error: `index_row_invalid: ${problem}` }, 400);
+      try {
+        return c.json(await oneAtATime(() => index.setLive(c.req.param("prefix"), body as unknown as IndexLiveRow)));
+      } catch (err) {
+        return indexError(c, err);
+      }
+    });
+    app.delete("/index/live/:prefix", async (c) => {
+      try {
+        const removed = await oneAtATime(() => index.removeLive(c.req.param("prefix")));
+        return removed ? c.json({ ok: true, prefix: c.req.param("prefix") }) : c.json({ error: `no live row ${c.req.param("prefix")} in this index` }, 404);
+      } catch (err) {
+        return indexError(c, err);
+      }
+    });
     // Read the listed publishers' catalogs now (full scope; a peer's ping
     // arrives on /packages/subscriptions/sync).
     app.post("/index/crawl", async (c) => c.json({ crawled: await index.crawl() }));
@@ -3671,6 +3692,11 @@ export async function createStrut<TServices = unknown>(
       if (etagMatches(c.req.header("if-none-match"), etag)) return c.body(null, 304, headers);
       return c.body(file.bytes.buffer.slice(file.bytes.byteOffset, file.bytes.byteOffset + file.bytes.byteLength) as ArrayBuffer, 200, headers);
     });
+    // What the live rows' public views show, as last read: apps, workflows,
+    // steps and Concept roots, each with its publisher's base URL — the
+    // store reads the item itself from `<url>/public/...` in the visitor's
+    // browser. Open to anyone.
+    app.get("/index/live", async (c) => c.json({ items: await index.live(c.req.query("q") ?? "") }, 200, { "cache-control": "public, no-cache" }));
     app.get("/index/packages", async (c) => {
       const limit = Number(c.req.query("limit") ?? 100);
       return c.json({ packages: await index.search(c.req.query("q") ?? "", Number.isFinite(limit) ? limit : 100) }, 200, { "cache-control": "public, no-cache" });
@@ -6749,7 +6775,9 @@ export async function createStrut<TServices = unknown>(
     // one `?key=` or a signed-in session away, as before.
     if (index) {
       app.get("/", async (c, next) => {
-        if (c.req.query("store") !== undefined || carriesApiKey(c) || carriesPeerKey(c)) return next();
+        // A page meant alone (`?solo=1`: a visitor's public app, a file) is
+        // served as asked: the store frames this server's own public apps.
+        if (c.req.query("store") !== undefined || c.req.query("solo") === "1" || carriesApiKey(c) || carriesPeerKey(c)) return next();
         const q = new URLSearchParams(c.req.query());
         q.set("store", "1");
         return c.redirect(`./?${q.toString()}`, 302);
