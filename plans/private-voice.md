@@ -36,7 +36,7 @@ to hear the member in order to answer, so the promise is about everyone else:
 | Where speech runs | **agreed.** In the TEE, not on the phone, because there we can customize it, starting with strut's vocabulary (its lexicon). |
 | Who answers | **agreed.** The orchestrator, set up to be quick: it answers at once without tool calls, and starts a job in the background when the request needs work. |
 | Payments | **agreed.** Sphinx's own rails. |
-| Inference provider | **agreed.** Tinfoil directly, once we need attested GPUs, with no reseller in between (PPQ). Not in the first steps. |
+| Inference provider | **ruled 2026-11-03.** Maple, through Maple's proxy (maple-proxy) beside strut. The proxy attests Maple's Nitro enclave, which verifies the model's enclave before forwarding. In the TEE (step 4) the proxy runs inside it, so plaintext never leaves the TEE (§7). Replaces "Tinfoil directly". |
 | Order | **agreed.** UX first: Peel plus a docker-compose with everything on one machine, tested locally. Then one step at a time. This plan is settled before any code. |
 | Voice agent | **agreed.** A second entry point in sphinx-voice, in Node: a 1:1 mode with no wake word (§3.5). |
 | Speech stack | **agreed.** Speech runs on CPU in the TEE, both ways through strut's sherpa: Kroko for recognition, Kokoro for synthesis (`/audio/speak`, built). Only the LLM needs a GPU, and that's a provider's. |
@@ -59,7 +59,8 @@ the org's home   (step 1: a Mac on the same Wi-Fi · step 4: an Intel TDX VM)
   strut          speech both ways on CPU (sherpa: Kroko + the lexicon, Kokoro),
                  orchestrator turns run as the member, jobs, the sats ledger
   Jamie          the org's Sphinx account (sphinx-daemon): invoices, tribes
-  (step 5)       → Tinfoil enclaves for the LLM, body-encrypted (EHBP)
+  maple-proxy    (step 5) attests Maple's Nitro enclave and encrypts each
+                 LLM request to it; Maple's enclave verifies the model's
 ```
 
 A turn:
@@ -143,7 +144,8 @@ Five changes. The first three help text turns too.
    `params.model`, which is a knob, not a grant (`src/closure.ts`
    `grantWidenedBy` guards only tool grants).
    - Steps 1–4: a fast hosted model, e.g. Haiku 5.5.
-   - Step 5: Tinfoil's `gemma4-31b` with thinking off.
+   - Step 5: Maple's `gemma4-31b` (`maple/gemma4-31b`) with thinking off
+     (§7).
 4. **The voice instructions go in the turn.**
    - They ride on `input.context.line`, the per-turn line callers already
      send (`sphinx:runner/src/bridge/turns.rs:41-56`): "On a voice call:
@@ -312,8 +314,8 @@ prompt cache, then the first clause about 0.15 s later.
 - Anthropic called directly: yes. aieo turns eager input streaming on by
   default.
 - Through Bifrost: not verified.
-- Tinfoil's vLLM: not verified. Some vLLM tool parsers hold a call's
-  arguments back until they're complete.
+- Maple: not verified. If a vLLM serves the model behind it, some vLLM tool
+  parsers hold a call's arguments back until they're complete.
 - **If `text` comes in one lump,** voice turns switch to text mode, which
   streams everywhere. The model says the reply as plain text, and a job is a
   `job/start` call after that text, in the same message. A session takes a
@@ -630,6 +632,8 @@ content of the calls is never in it.
 **What goes in.** Everything that reads the member's words:
 - strut: its runs, sessions, the ledger and the speech models;
 - the voice service;
+- Maple's proxy, from step 5: it reads each model request in plaintext
+  before it encrypts it (§7);
 - Jamie's account (the daemon): its seed is the org's money.
 
 Until step 5 the orchestrator's model call still leaves the TEE for a hosted
@@ -682,33 +686,34 @@ not touched by voice turns.
   (under $1,000, forges quotes) and DDRop (about $159, disclosed 2026-09-14).
 - So where the hardware sits matters, and §11 says so.
 
-## 7. Tinfoil (step 5)
+## 7. Maple (step 5)
+
+Ruled 2026-11-03: the model calls go to Maple through Maple's proxy beside
+strut, not to Tinfoil directly.
 
 **The LLM.**
-- The orchestrator's model goes to Tinfoil's OpenAI-compatible chat API, with
-  the body encrypted by EHBP.
-- **Straight from the TEE, not through Bifrost.** Bifrost reads a request's
-  body to route and bill it, and EHBP hides the body. So strut meters these
-  calls itself, from the token counts Tinfoil returns
-  (`X-Tinfoil-Usage-Metrics`).
-- aieo needs a chat-completions provider that speaks EHBP, or tinfoil-js's
-  fetch.
-- tinfoil-js 1.3.0 attests the router, which runs on AMD SEV-SNP. The router
-  verifies the model enclaves, most of which are TDX. TDX support in the JS
-  SDK is an open PR (#215).
+- The orchestrator's model goes to Maple's proxy (`maple-proxy`,
+  [MaplePrivacyLabs/Maple](https://github.com/MaplePrivacyLabs/Maple/blob/master/proxy/README.md)),
+  an OpenAI-compatible API beside strut.
+- The proxy attests Maple's AWS Nitro enclave and encrypts every request to
+  it. Maple's enclave verifies the model's enclave before forwarding.
+- The proxy reads the request in plaintext. In the TEE (step 4) it runs
+  inside the org's TEE, beside strut, so plaintext never leaves the TEE.
+- aieo's `maple` provider: models are `maple/<id>`, strut reaches the proxy at
+  `MAPLE_BASE_URL` and sends `MAPLE_API_KEY` on every request. The proxy
+  holds no key.
+- **Straight from strut to the proxy, not through Bifrost.** Past the proxy
+  the body is encrypted, so Bifrost can't read it to route and bill it. So
+  strut meters these calls itself.
 
-**Speech stays in the TEE.**
-- Tinfoil's realtime speech-to-text has no voice-activity detection and a
-  fixed 480 ms delay, and all three audio models sit on one H200. We don't
-  need it.
-- `voxtral-tts` ($0.002 per request) is an option if Kokoro sounds wrong.
+**Speech stays in strut** (§3.3). None of it goes to Maple.
 
-**What Tinfoil sees:** our API key, model, token counts and timing. Not the
-member, not the content. We pay by card (Stripe).
+**What Maple sees:** our API key, model, token counts and timing, and the
+content only inside its attested enclaves. Not the member.
 
 **Latency risk.**
-- With Tinfoil in the path, from end of speech to first audio, strictly
-  sequential (estimates):
+- The estimates below were made for Tinfoil, from end of speech to first
+  audio, strictly sequential. Maple's enclave adds a hop.
 
   | Optimistic | Expected | Pessimistic |
   |---|---|---|
@@ -716,8 +721,7 @@ member, not the content. We pay by card (Stripe).
 
 - Starting the model on partial transcripts would bring the expected case to
   about 1.3–1.6 s.
-- Tinfoil publishes no first-token latency under confidential computing, and
-  some LLM traffic may be served in Poznań. Measure before switching.
+- Measure before switching.
 
 ## 8. Later
 
@@ -762,7 +766,7 @@ Each step ships something usable and builds on the ones before it.
 | **2. Off the LAN** | The central media server with end-to-end encryption; meet's private rooms; the call route on a real org home | It works from anywhere, for several members |
 | **3. Sats** | A price per minute; balance and top-up in Peel; Jamie's invoices; the per-member ledger; aggregate sweeps | Lightning-gated |
 | **4. The home in a TEE** | The org home on a TEE host; a measured image; secrets from the key service; `/attestation`; `dcap-qvl` in sphinx-rs; the call key sealed with HPKE; "verified" in Peel | Neither the operator nor the host can read it |
-| **5. Tinfoil** | The orchestrator's model in Tinfoil's enclaves, encrypted with EHBP, metered in strut; optionally `voxtral-tts` | Private inference on large models |
+| **5. Maple** | The orchestrator's model through Maple's proxy, inside the TEE, to Maple's enclaves; aieo's `maple` provider; metered in strut | Private inference on large models |
 
 ### Step 1 in detail
 
@@ -831,7 +835,7 @@ Each step ships something usable and builds on the ones before it.
   and the CPU the whole stack uses.
 - Recognition accuracy with Kroko and with Parakeet.
 - Whether `final_answer`'s `text` streams in pieces, for each provider we'd
-  use (Anthropic direct, through Bifrost, a vLLM endpoint like Tinfoil's).
+  use (Anthropic direct, through Bifrost, Maple).
   The answer picks schema or text mode for voice turns (§3.4).
 - Whether an `AgentSession` runs on a room we connected ourselves, without the
   worker (Q7).
@@ -860,7 +864,7 @@ for about 0.8 s (Daily, Pipecat).
 | The LiveKit server | a room, random identities, timing, packet sizes, a per-packet loudness level | audio, words, the key |
 | The Sphinx broker and mixer | that a member pays the org's Jamie; amounts; times (§5) | content, the call key |
 | The cloud host, the operator | that the home runs; aggregate revenue sweeps | anything inside the TEE, unless they have physical access to the server (§6) |
-| Tinfoil (step 5) | our key, model, token counts, timing | the member, the content |
+| Maple (step 5) | our key, model, token counts, timing; the content only inside its attested enclaves | the member |
 
 ## Open questions
 

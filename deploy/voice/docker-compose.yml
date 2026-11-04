@@ -1,5 +1,6 @@
 # A VOICE DEMO (plans/private-voice.md): one org home on one box, strut and
-# the 1:1 voice service (sphinx-voice's member mode), behind Caddy for TLS.
+# the 1:1 voice service (sphinx-voice's member mode), behind Caddy for TLS,
+# and Maple's inference proxy for a private model.
 # For a demo on an AMD SEV-SNP EC2 instance (README.md), not production: no
 # swarm, no Hive pairing (Peel reaches it through its development Talk home
 # setting), no lab, no Neo4j (the workspace is one LadybugDB file).
@@ -37,6 +38,10 @@ services:
       STRUT_HOST_CONFIG: /config/host-config.json
       # The orchestrator's model calls go straight to Anthropic (no gateway).
       ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY}"
+      # maple/<id> models go through the maple service below, with this key
+      # as the bearer on every request. Optional: unset, no maple model.
+      MAPLE_BASE_URL: http://maple:8080/v1
+      MAPLE_API_KEY: "${MAPLE_API_KEY:-}"
     volumes:
       - strut:/data/workspace   # the graph file, runs, sessions, secrets
       - models:/data/models     # Kroko and Kokoro, downloaded on first use
@@ -67,6 +72,29 @@ services:
       LIVEKIT_API_SECRET: "${LIVEKIT_API_SECRET:?set LIVEKIT_API_SECRET}"
       VOICE_MODEL: "${VOICE_MODEL:-haiku}"
       STRUT_TTS_VOICE: "${STRUT_TTS_VOICE:-}"
+
+  maple:
+    # Maple's inference proxy (maple.ai, MaplePrivacyLabs/Maple proxy/): an
+    # OpenAI-compatible endpoint that attests Maple's AWS Nitro enclave and
+    # encrypts every request to it. It reads every prompt in plaintext, so it
+    # stays on this network: no port, no route in the Caddyfile. It holds no
+    # key: strut sends MAPLE_API_KEY on each request.
+    # Pinned: Maple's exact version tags are immutable (amd64 + arm64).
+    image: ghcr.io/mapleprivacylabs/maple-proxy:${MAPLE_PROXY_TAG:-0.4.5}
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 256m
+    environment:
+      # The binary binds loopback unless told otherwise.
+      MAPLE_HOST: 0.0.0.0
+      MAPLE_PORT: "8080"
+      # Nothing in a browser calls it; the image turns CORS on.
+      MAPLE_ENABLE_CORS: "false"
+      # Keeps the provider's prompt cache across proxy restarts. Passed only
+      # when .env sets it: the proxy refuses to start on an empty value.
+      MAPLE_CACHE_NAMESPACE_ROOT:
 
   caddy:
     image: caddy:${CADDY_TAG:-2}
