@@ -7,6 +7,7 @@ const CONCURRENCY = 8;
 
 export default defineStep({
   type: "graph/graph-get-batched",
+  effect: "read",
   description:
     `Resolve up to ${BATCH_MAX} nodes in one call by ref_id — the batched form of graph_graph_get. ` +
     "ALWAYS prefer this over calling graph_graph_get in a loop: it fetches them concurrently in a single call. " +

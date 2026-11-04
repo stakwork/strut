@@ -271,6 +271,35 @@ export function appOfIdentity(identity: unknown): AppRef | undefined {
   return ref;
 }
 
+/** The identity a PUBLIC VIEW document carries (plans/public-surface.md
+ *  §5): the same `app:<name>@<vN>.<token>` shape the kit reads, its token
+ *  signed over `public-app:<name>@<vN>` — so it opens `POST /public/mcp`
+ *  for that app and nothing else: never the private `/mcp` door, never a
+ *  file route's `?t=`. With no secret, the scope alone, as `appIdentity`. */
+export function publicAppIdentity(name: string, version: string): string {
+  return `app:${name}@${version}.${publicAppToken(name, version) ?? ""}`;
+}
+
+function publicAppToken(name: string, version: string): string | undefined {
+  const secret = tokenSecret();
+  return secret ? createHmac("sha256", secret).update(`public-app:${name}@${version}`).digest("base64url") : undefined;
+}
+
+/** The app a public view identity names, once its token holds. */
+export function publicAppOfIdentity(identity: unknown): AppRef | undefined {
+  if (typeof identity !== "string") return undefined;
+  const dot = identity.lastIndexOf(".");
+  if (dot < 0) return undefined;
+  const app = identity.slice(0, dot).match(/^app:(.+)@(v\d+)$/);
+  if (!app) return undefined;
+  const [, name, version] = app as unknown as [string, string, string];
+  const got = identity.slice(dot + 1);
+  const expected = publicAppToken(name, version);
+  if (expected === undefined) return got === "" ? { name, version } : undefined;
+  if (expected.length !== got.length || !timingSafeEqual(Buffer.from(expected), Buffer.from(got))) return undefined;
+  return { name, version };
+}
+
 /** Does this request carry a valid file token (`?t=`) for the scope its
  *  path reads from? A read (GET / HEAD) under a scope only; a token on any
  *  other path, or for another run, job or app, opens nothing. */

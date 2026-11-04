@@ -5,6 +5,7 @@ import { requireRuns, inFrame, callerOf } from "./_shared.js";
 
 export default defineStep({
   type: "run/workflow",
+  effect: "read",
   description:
     "A workflow's contract, for a launch form: { name, description?, category?, activeVersion?, input? (its `input:` block — each field's type, required, default, description), params? (the params defaults), peer? }. Not the YAML.",
   input: z.object({

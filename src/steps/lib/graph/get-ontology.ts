@@ -52,6 +52,7 @@ function buildOntologyPayload(schemaData: any, includeEdges: boolean, includeAtt
 
 export default defineStep({
   type: "graph/get-ontology",
+  effect: "read",
   description:
     "Fetch the ontology of the knowledge graph: node types grouped by domain " +
     "and the canonical list of valid `domains`. " +

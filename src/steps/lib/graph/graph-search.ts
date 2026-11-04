@@ -39,6 +39,7 @@ function factOut(f: FactEnvelope) {
 
 export default defineStep({
   type: "graph/graph-search",
+  effect: "read",
   description:
     "Search the knowledge graph for nodes of any type it holds — what this deployment ingested (on a swarm: the code parsed from its repositories — File, Function, Endpoint, … with written descriptions — plus documents, concepts, tasks, …) and strut's own workflows, steps, runs and chats. " +
     "Narrow with `type` to find one kind (e.g. 'Function,File,Endpoint' for code). " +

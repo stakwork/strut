@@ -6,6 +6,7 @@ import { requireRuns, inFrame, callerOf } from "./_shared.js";
 
 export default defineStep({
   type: "run/files",
+  effect: "read",
   description:
     "ONE file a run produced — from its job's directory when it ran under a job, else its own artifact directory (what its artifact links point at): { path, mediaType, bytes, text } for a text file, { …, base64 } for anything else, " +
     `cut at ${RUN_FILE_MAX_BYTES} bytes (truncated: true). The path is relative to that directory, as the run's artifacts and GET /artifacts/:runId list it, and never leaves it.`,

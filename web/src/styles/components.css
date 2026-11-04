@@ -4798,3 +4798,34 @@ input.package-search { width: 100%; margin-bottom: var(--sp-2); }
 .prop-field dd { margin: 0; white-space: pre-wrap; word-break: break-word; }
 .prop-field-danger dd { color: var(--danger, #c0392b); font-weight: 600; }
 .prop-code { font-family: var(--font-mono, monospace); }
+
+/* ── The Public view dialog (PublicViewDialog.tsx) ───────────────────────── */
+.public-view-dialog .flyout-section { margin-top: var(--sp-3); }
+.public-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-1) 0;
+  border-bottom: 1px solid var(--border);
+}
+.public-row .auto-hint { flex: 1; }
+.public-row .package-name { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.public-runs { display: flex; align-items: center; gap: var(--sp-1); font-size: 12px; color: var(--text-muted); margin-left: auto; white-space: nowrap; }
+.public-add { display: flex; gap: var(--sp-2); align-items: center; }
+.public-add select {
+  font: inherit;
+  font-size: 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  color: var(--text);
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--r-md);
+}
+.public-add input.package-search { flex: 1; width: auto; margin-bottom: 0; }
+.public-cascade { margin-top: var(--sp-3); }
+.public-cascade .flyout-section-title { margin-top: var(--sp-2); }
+.public-need { display: flex; align-items: flex-start; gap: var(--sp-2); padding: var(--sp-1) 0; cursor: pointer; }
+.public-need input { margin-top: 3px; }
+.public-need.is-sub { padding-left: var(--sp-4); }
+.public-need-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.public-need-text .package-name { overflow-wrap: anywhere; }

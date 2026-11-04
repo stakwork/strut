@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient } from "@tanstack/react-query";
-import type { StrutClient } from "./client.js";
+import { PUBLIC_VIEW_META, isPublicView, type StrutClient } from "./client.js";
 import { createStaticHost, type StaticHost } from "./host.js";
 import { StrutProvider } from "./provider.js";
 import {
@@ -334,6 +334,26 @@ describe("the host hooks", () => {
     assert.deepEqual(sent, ["change the chart to a bar chart"]);
     assert.deepEqual(opened, ["https://example.com/run/1"]);
     await h.unmount();
+  });
+
+  it("useHost().public: the page is a visitor's when its document carries the public view's mark", async () => {
+    const { client } = fakeClient();
+    const host = createStaticHost({});
+    const h = await renderHook(() => useHost(), { client, host });
+    assert.equal(h.result().public, false);
+    await h.unmount();
+    const meta = document.createElement("meta");
+    meta.setAttribute("name", PUBLIC_VIEW_META);
+    meta.setAttribute("content", "1");
+    document.head.appendChild(meta);
+    try {
+      assert.equal(isPublicView(), true);
+      const v = await renderHook(() => useHost(), { client, host });
+      assert.equal(v.result().public, true);
+      await v.unmount();
+    } finally {
+      meta.remove();
+    }
   });
 
   it("appLink names the app and carries its input as one param; useAppLink is this app's", async () => {

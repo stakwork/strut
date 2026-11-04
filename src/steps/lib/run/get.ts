@@ -6,6 +6,7 @@ import { requireRuns, inFrame, callerOf } from "./_shared.js";
 
 export default defineStep({
   type: "run/get",
+  effect: "read",
   description:
     "One run: its summary with the WHOLE input and output, its error, who ran it (actor, origin, automation, job, app), what it spent (totals), and `artifacts` — its declared deliverables resolved to links. " +
     "A run still in flight comes as the partial summary its log gives so far (partial: true) with a live status. " +

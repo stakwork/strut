@@ -9,6 +9,7 @@ const CHILD_DESCRIPTION_MAX = 300;
 
 export default defineStep({
   type: "graph/graph-get",
+  effect: "read",
   description:
     "Resolve a single node in the knowledge graph to its full content by ref_id. " +
     "Use the ref_id from graph_graph_search or graph_graph_neighbors results. " +

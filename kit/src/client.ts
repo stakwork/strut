@@ -12,6 +12,16 @@ export interface StrutClient {
   readonly app?: AppIdentity;
 }
 
+/** The `<meta name>` a document carries when it is served in a strut
+ *  server's PUBLIC VIEW (plans/public-surface.md §5): a visitor with no
+ *  account reads it — reads only, no launches. */
+export const PUBLIC_VIEW_META = "strut-public-view";
+
+/** Is this page a visitor's, served in a strut server's public view? */
+export function isPublicView(doc: Document | undefined = typeof document !== "undefined" ? document : undefined): boolean {
+  return !!doc?.querySelector(`meta[name="${PUBLIC_VIEW_META}"]`);
+}
+
 /** Which app a page is (plans/apps.md §7.2): a workspace app at a version. */
 export type AppIdentity = { name: string; version: string };
 

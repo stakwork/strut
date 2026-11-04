@@ -6,7 +6,7 @@ import {
   useMutation, useQueries, useQuery, useQueryClient,
   type QueryKey, type UseQueryResult,
 } from "@tanstack/react-query";
-import type { AppIdentity, StrutClient } from "./client.js";
+import { isPublicView, type AppIdentity, type StrutClient } from "./client.js";
 import type { DisplayMode, HostState, Theme } from "./host.js";
 import { appLink, type AppLinkInput } from "./links.js";
 import { useStrutClient, useStrutHost } from "./provider.js";
@@ -996,6 +996,11 @@ export interface UseHost {
    *  anything else in a new tab (§7.1). */
   openLink: (url: string) => Promise<void>;
   requestDisplayMode: (mode: DisplayMode) => Promise<DisplayMode>;
+  /** The page is a VISITOR's, served in a strut server's public view
+   *  (plans/public-surface.md §5): it may read what that view opens and
+   *  nothing else — launching, cancelling and saving state are refused, so
+   *  hide those controls. */
+  public: boolean;
 }
 
 /** The host behind the page: theme, display mode, locale, and the two
@@ -1014,6 +1019,7 @@ export function useHost(): UseHost {
       sendMessage: (text: string) => host.sendMessage(text),
       openLink: (url: string) => host.openLink(url),
       requestDisplayMode: (mode: DisplayMode) => host.requestDisplayMode(mode),
+      public: isPublicView(),
     }),
     [host, s],
   );
