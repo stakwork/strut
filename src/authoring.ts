@@ -75,14 +75,23 @@ export async function listWorkflowEntries(
   workspace: Pick<WorkspaceStore, "listWorkflows">,
   query = "",
   limit = DEFAULT_WORKFLOW_LIST_LIMIT,
+  opts: { actor?: string; sort?: "recent" } = {},
 ) {
-  const matched = searchWorkflows(await workspace.listWorkflows(), query);
+  let matched = searchWorkflows(await workspace.listWorkflows(), query);
+  const who = opts.actor?.trim().toLowerCase();
+  if (who) matched = matched.filter((w) => (w.latestActor ?? "").toLowerCase().includes(who) || (w.owner ?? "").toLowerCase().includes(who));
+  if (opts.sort === "recent") {
+    matched = [...matched].sort((a, b) => (b.latestPublishedAt ?? "").localeCompare(a.latestPublishedAt ?? ""));
+  }
   const workflows = matched.slice(0, limit).map((w) => ({
     name: w.name,
     activeVersion: w.activeVersion,
     ...(w.description ? { description: w.description } : {}),
     ...(w.category ? { category: w.category } : {}),
     ...(w.publisher ? { publisher: w.publisher } : {}),
+    ...(w.owner ? { owner: w.owner } : {}),
+    ...(w.latestActor ? { actor: w.latestActor } : {}),
+    ...(w.latestPublishedAt ? { published_at: w.latestPublishedAt } : {}),
   }));
   const total = matched.length;
   if (total <= workflows.length) return { workflows, total };
@@ -102,6 +111,14 @@ export async function readWorkflow(
   const meta = await workspace.getWorkflowMetadata(name);
   if (!meta) return { error: `Workflow "${name}" not found` };
   const versions = Object.keys(meta.versions);
+  const history = Object.entries(meta.versions)
+    .map(([v, info]) => ({
+      version: v,
+      createdAt: info.createdAt,
+      ...(info.source ? { source: info.source } : {}),
+      ...(info.actor ? { actor: info.actor } : {}),
+    }))
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   const resolved = version ?? meta.active;
   let yaml: string;
   try {
@@ -114,6 +131,7 @@ export async function readWorkflow(
     version: resolved,
     activeVersion: meta.active,
     versions,
+    versionHistory: history,
     description: meta.versions[meta.active]?.description,
     ...(meta.publisher ? { publisher: meta.publisher } : {}),
     yaml,
@@ -462,7 +480,7 @@ export interface AuthoringCapability {
   runStep(type: string, args?: RunStepArgs): Promise<RunStepResult | { error: string }>;
   /** Slim entries, `query`-filtered and cut at `limit` (default 100) with
    *  `total` + a `hint` when cut — `listWorkflowEntries`. */
-  listWorkflows(query?: string, limit?: number): Promise<unknown>;
+  listWorkflows(query?: string, limit?: number, opts?: { actor?: string; sort?: "recent" }): Promise<unknown>;
   getWorkflow(name: string, version?: string): Promise<unknown>;
   /** Static check of workflow YAML WITHOUT publishing — the chat builder's
    *  `validate_workflow`, for in-run authors (`meta/validate-workflow`). */
@@ -728,8 +746,8 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
       );
     },
 
-    async listWorkflows(query, limit) {
-      return listWorkflowEntries(workspace, query, limit);
+    async listWorkflows(query, limit, opts) {
+      return listWorkflowEntries(workspace, query, limit, opts);
     },
 
     async getWorkflow(name, version) {

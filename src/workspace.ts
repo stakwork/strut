@@ -502,6 +502,10 @@ export interface WorkflowListEntry {
   activeSource?: VersionSource;
   /** The owning actor and run cap, if set (see WorkflowMetadata). */
   owner?: string;
+  /** The newest version's actor (the person; absent for seeds, installs and
+   *  keyless publishes) and when it was published (ISO UTC). */
+  latestActor?: string;
+  latestPublishedAt?: string;
   maxRunCostUsd?: number;
   /** The workflow's schedules, if any (see WorkflowMetadata.automations) —
    *  carried here so the scheduler's boot load is one `listWorkflows()`. */

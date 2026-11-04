@@ -207,8 +207,16 @@ const VERSION_FIELDS = ["ref_id", "name", "content_hash", "version_label", "desc
 const STEP_FIELDS = ["ref_id", "step_type", "description", "publisher", "active_version"] as const;
 const STEP_VERSION_FIELDS = ["ref_id", "step_type", "content_hash", "version_label", "description", "published_at", "source", "publisher", "version_source", "actor", "upstream", "created_at"] as const;
 
-const isoFromSeconds = (s: number | undefined): string =>
-  new Date((s ?? 0) * 1000).toISOString();
+/** `published_at` as ISO UTC. Stored as a datetime, written as an ISO string
+ *  and read back as epoch seconds on some paths: take either (a number past
+ *  1e11 is already ms), a Date, or an ISO string. */
+const isoFromSeconds = (s: number | string | Date | undefined): string => {
+  let ms: number;
+  if (s instanceof Date) ms = s.getTime();
+  else if (typeof s === "string") ms = /^\d+(\.\d+)?$/.test(s) ? Number(s) * (Number(s) > 1e11 ? 1 : 1000) : Date.parse(s);
+  else ms = (s ?? 0) * (( s ?? 0) > 1e11 ? 1 : 1000);
+  return new Date(Number.isFinite(ms) ? ms : 0).toISOString();
+};
 
 /** Versions in publish order: `published_at` (seconds), then the row's
  *  `created_at` (ms), then the ref_id. */
@@ -332,6 +340,7 @@ export class GraphWorkspaceStore implements WorkspaceStore {
     for (const w of workflows.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
       const versions = (byWorkflow.get(w.ref_id) ?? []).filter((v) => v.version_label).sort(byCreation);
       const active = versions.find((v) => v.content_hash === w.active_version);
+      const latest = versions[versions.length - 1];
       out.push({
         name: w.name,
         activeVersion: active?.version_label ?? "",
@@ -341,6 +350,8 @@ export class GraphWorkspaceStore implements WorkspaceStore {
         ...(w.publisher ? { publisher: w.publisher } : {}),
         ...(active?.version_source ? { activeSource: active.version_source } : {}),
         ...(w.owner ? { owner: w.owner } : {}),
+        ...(latest?.actor ? { latestActor: latest.actor } : {}),
+        ...(latest ? { latestPublishedAt: isoFromSeconds(latest.published_at) } : {}),
         ...(w.max_run_cost_usd != null ? { maxRunCostUsd: Number(w.max_run_cost_usd) } : {}),
         ...(automationsOf(w).length ? { automations: automationsOf(w) } : {}),
       });

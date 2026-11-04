@@ -1116,6 +1116,21 @@ describe("jobs — the index (plans/job-index.md)", () => {
     assert.deepEqual(await ids("?mine=1&workflow=turn", "alice"), { ids: ["j-a"], actor: "alice" }, "composes with the workflow filter");
   });
 
+  it("job/list filters by actor (case-insensitive contains) and since (ISO or epoch ms)", async () => {
+    const { strut, turn } = await boot();
+    const jobs = (strut.services as any).jobs;
+    await turn("j-a", { name: "plan.md", text: "v1", reply: "x" }, {}, "Evanfeenstra-cmdhykqh80000");
+    const mid = Date.now();
+    await new Promise((r) => setTimeout(r, 20));
+    await turn("j-b", { name: "plan.md", text: "v1", reply: "x" }, {}, "bob");
+    const ids = async (o: object) => (await jobs.list(o)).map((j: any) => j.job);
+    assert.deepEqual(await ids({ actor: "evan" }), ["j-a"]);
+    assert.deepEqual(await ids({ actor: "BOB" }), ["j-b"]);
+    assert.deepEqual(await ids({ since: mid }), ["j-b"]);
+    assert.deepEqual(await ids({ since: new Date(mid).toISOString() }), ["j-b"]);
+    assert.deepEqual(await ids({ since: 0, actor: "evan" }), ["j-a"]);
+  });
+
   it("GET /jobs/:id: runs with status, threads by the turn line's job and by name, deliverables folded newest-first by id behind one live file", async () => {
     const { api, turn } = await boot();
     const r1 = await turn("j-b", { name: "plan.md", text: "v1", reply: "first", artifacts: [plan("v1"), { id: "pod", kind: "url", title: "Pod", url: "https://pod.example/" }] }, { title: "B" });

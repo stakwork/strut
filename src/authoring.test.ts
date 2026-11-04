@@ -500,3 +500,45 @@ steps:
     assert.ok(!JSON.stringify(res).includes("shh"), "secret values must never surface");
   });
 });
+
+describe("meta workflow reads carry who and when", () => {
+  const entry = (name: string, extra: object) => ({ name, activeVersion: "v1", versions: ["v1"], ...extra });
+  it("listWorkflowEntries returns owner/actor/published_at, filters actor case-insensitively and sorts recent; a version with no actor is fine", async () => {
+    const { listWorkflowEntries } = await import("./authoring.js");
+    const ws = {
+      listWorkflows: async () => [
+        entry("a", { owner: "bob", latestActor: "bob-1", latestPublishedAt: "2026-01-01T00:00:00.000Z" }),
+        entry("b", { latestActor: "Evanfeenstra-cmd", latestPublishedAt: "2026-03-01T00:00:00.000Z" }),
+        entry("c", { latestPublishedAt: "2026-02-01T00:00:00.000Z" }),
+      ],
+    } as any;
+    const recent = (await listWorkflowEntries(ws, "", 100, { sort: "recent" })).workflows as any[];
+    assert.deepEqual(recent.map((w) => w.name), ["b", "c", "a"]);
+    assert.equal(recent[0].actor, "Evanfeenstra-cmd");
+    assert.equal(recent[0].published_at, "2026-03-01T00:00:00.000Z");
+    assert.equal("actor" in recent[1], false);
+    assert.equal(recent[2].owner, "bob");
+    const evan = (await listWorkflowEntries(ws, "", 100, { actor: "EVAN" })).workflows as any[];
+    assert.deepEqual(evan.map((w) => w.name), ["b"]);
+  });
+
+  it("readWorkflow returns versionHistory newest first with source and actor", async () => {
+    const { readWorkflow } = await import("./authoring.js");
+    const ws = {
+      getWorkflowMetadata: async () => ({
+        active: "v2",
+        versions: {
+          v1: { createdAt: "2026-01-01T00:00:00.000Z", hash: "h1", source: "seed" },
+          v2: { createdAt: "2026-02-01T00:00:00.000Z", hash: "h2", actor: "evan-1" },
+        },
+      }),
+      getWorkflowSource: async () => "name: x",
+    } as any;
+    const r = (await readWorkflow(ws, "x")) as any;
+    assert.deepEqual(r.versionHistory, [
+      { version: "v2", createdAt: "2026-02-01T00:00:00.000Z", actor: "evan-1" },
+      { version: "v1", createdAt: "2026-01-01T00:00:00.000Z", source: "seed" },
+    ]);
+    assert.deepEqual(r.versions, ["v1", "v2"]);
+  });
+});
