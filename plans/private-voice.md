@@ -1,7 +1,8 @@
 # Private voice: talk to your org's agent, and no one else hears
 
-> **Status (2026-11-03): proposed.**
-> - Built so far: `POST /audio/speak` on `feature/audio-speak` (not merged; §3.3). Nothing else is built.
+> **Status (2026-11-04): step 1 built; step 2's encryption built, not merged.**
+> - Built: step 1 — strut's `/voice/calls` (`src/voice.ts`) and `/audio/speak` (§3.3), sphinx-voice's 1:1 mode, Peel's Talk — and the demo on one box (`deploy/voice`).
+> - Step 2's end-to-end encryption (§4, "Step 2"): stakwork/sphinx-voice#33 and stakwork/peel#501, not merged.
 > - Rows marked **agreed** under "Decided" are the owner's, from the design conversation of 2026-11-03. Everything marked *proposed* is mine and open.
 > - Read against: strut `main` @83e7675, peel `main` @324588a, sphinx `master` @74c12954, sphinx-voice `main` @ebbe0c5, meet `main` @fd63ca1.
 > - Companions:
@@ -36,7 +37,7 @@ to hear the member in order to answer, so the promise is about everyone else:
 | Where speech runs | **agreed.** In the TEE, not on the phone, because there we can customize it, starting with strut's vocabulary (its lexicon). |
 | Who answers | **agreed.** The orchestrator, set up to be quick: it answers at once without tool calls, and starts a job in the background when the request needs work. |
 | Payments | **agreed.** Sphinx's own rails. |
-| Inference provider | **agreed.** Tinfoil directly, once we need attested GPUs, with no reseller in between (PPQ). Not in the first steps. |
+| Inference provider | **ruled 2026-11-03.** Maple, through Maple's proxy (maple-proxy) beside strut. The proxy attests Maple's Nitro enclave, which verifies the model's enclave before forwarding. In the TEE (step 4) the proxy runs inside it, so plaintext never leaves the TEE (§7). Replaces "Tinfoil directly". |
 | Order | **agreed.** UX first: Peel plus a docker-compose with everything on one machine, tested locally. Then one step at a time. This plan is settled before any code. |
 | Voice agent | **agreed.** A second entry point in sphinx-voice, in Node: a 1:1 mode with no wake word (§3.5). |
 | Speech stack | **agreed.** Speech runs on CPU in the TEE, both ways through strut's sherpa: Kroko for recognition, Kokoro for synthesis (`/audio/speak`, built). Only the LLM needs a GPU, and that's a provider's. |
@@ -59,7 +60,8 @@ the org's home   (step 1: a Mac on the same Wi-Fi · step 4: an Intel TDX VM)
   strut          speech both ways on CPU (sherpa: Kroko + the lexicon, Kokoro),
                  orchestrator turns run as the member, jobs, the sats ledger
   Jamie          the org's Sphinx account (sphinx-daemon): invoices, tribes
-  (step 5)       → Tinfoil enclaves for the LLM, body-encrypted (EHBP)
+  maple-proxy    (step 5) attests Maple's Nitro enclave and encrypts each
+                 LLM request to it; Maple's enclave verifies the model's
 ```
 
 A turn:
@@ -103,13 +105,13 @@ call, and the voice service connecting outward. Step 1 runs its own
 livekit-server on the LAN instead, with encryption off. The voice service's
 code is the same either way.
 
-**Metadata hygiene from step 2:**
+**Metadata hygiene from step 2** (built with it):
 - Turn off DTX (silence suppression) on both sides, so packets keep a
   constant rate.
-- Turn off Opus RED on the phone. The Swift SDK leaves it on under
-  encryption (`LocalParticipant.swift` ~L849). The JS and Rust SDKs turn it
-  off.
-- Give each call random participant identities.
+- Turn off Opus RED on both sides. The Swift SDK leaves it on under
+  encryption (`LocalParticipant.swift` L615, `AudioPublishOptions.red`
+  defaults to true). The JS and Rust SDKs turn it off.
+- Give each call random participant identities (step 1 already does).
 
 No SDK exposes Opus constant bitrate, and dropping the audio-level extension
 needs a server patch. Both are later items (§8).
@@ -143,7 +145,8 @@ Five changes. The first three help text turns too.
    `params.model`, which is a knob, not a grant (`src/closure.ts`
    `grantWidenedBy` guards only tool grants).
    - Steps 1–4: a fast hosted model, e.g. Haiku 5.5.
-   - Step 5: Tinfoil's `gemma4-31b` with thinking off.
+   - Step 5: Maple's `gemma4-31b` (`maple/gemma4-31b`) with thinking off
+     (§7).
 4. **The voice instructions go in the turn.**
    - They ride on `input.context.line`, the per-turn line callers already
      send (`sphinx:runner/src/bridge/turns.rs:41-56`): "On a voice call:
@@ -169,10 +172,14 @@ prompt cache, then the first clause about 0.15 s later.
   with the member as the actor (`x-strut-actor`). The turn uses the member's
   delegation and their GitHub token, as Hive's call turns run as their speaker
   ([stakwork/hive#5699](https://github.com/stakwork/hive/pull/5699)).
-- **A session of their own:** `<member>/voice`, inside the person-scoped
+- **A session per call:** `<member>/voice/<room>`, inside the person-scoped
   namespace strut already gives a person token (`peerSessionId`,
-  `src/session-store.ts`). The agent remembers what each member said across
-  their calls.
+  `src/session-store.ts`). Ruled 2026-11-03: a fresh session each call, not
+  one per member. A session freezes its system prompt at its first turn, so
+  one long voice thread never heard a change to the orchestrator's text (it
+  kept answering "I'm Claude" after the lab named it Jamie). Earlier calls
+  stay in strut's session store and the graph, where the orchestrator can
+  find them.
 - **One turn at a time per session** (`session_busy:`). Two members talk at
   once on different sessions. The same member on two devices waits a turn.
 - **Sharing with the member's Jamie chat** would put calls and chat in one
@@ -308,8 +315,8 @@ prompt cache, then the first clause about 0.15 s later.
 - Anthropic called directly: yes. aieo turns eager input streaming on by
   default.
 - Through Bifrost: not verified.
-- Tinfoil's vLLM: not verified. Some vLLM tool parsers hold a call's
-  arguments back until they're complete.
+- Maple: not verified. If a vLLM serves the model behind it, some vLLM tool
+  parsers hold a call's arguments back until they're complete.
 - **If `text` comes in one lump,** voice turns switch to text mode, which
   streams everywhere. The model says the reply as plain text, and a job is a
   `job/start` call after that text, in the same message. A session takes a
@@ -371,7 +378,7 @@ that serves them, and that isn't a small change.
 **Kept easy for later.** Four rules hold from step 1, so that a later read
 filter by actor is enough:
 - Every voice run records the member as its actor (`run.start.actor`).
-- The member's voice session lives in their own namespace, `<member>/voice`.
+- The member's voice sessions live in their own namespace, `<member>/voice/<room>`.
 - A job a voice turn starts carries the member as its actor, so the job's
   record lists them (`actors`, which `GET /jobs?mine=1` already filters on).
 - The ledger keys balances by actor.
@@ -418,6 +425,7 @@ Content-Type: application/json
 {}                                     step 1
 { "key": "<base64, 32 bytes>" }        from step 2
 { "sealed": "<base64 HPKE envelope>" } from step 4, in place of key (§6)
+{ ..., "voice": "am_michael" }         any step, optional: Jamie's voice
 ```
 
 `200`:
@@ -429,13 +437,23 @@ Content-Type: application/json
   "token": "<LiveKit JWT for the member>",
   "identity": "<the member's identity in the room, random>",
   "agent": "<the agent's identity in the room, random>",
-  "encrypted": false
+  "encrypted": false,
+  "voice": "af_heart"
 }
 ```
 
 - **`url`** is the LiveKit server to connect to.
-- **`encrypted`** is true from step 2. Peel then joins with `key` as the shared
-  key and with Opus RED off (§2).
+- **`encrypted`** is true exactly when the request carried a `key` and the
+  agent joined with it (step 2). Peel then joins with `key` as the shared key,
+  with DTX and Opus RED off (§2), and refuses any answer without
+  `encrypted: true`. The shared key is the `key` string's UTF-8 bytes on both
+  sides, not its base64 decoding (§4, "Step 2").
+- **`voice`** is the voice in effect for this call.
+  - It's the request's `voice` when that is a voice strut's `/audio/speak`
+    has (`GET /audio/speak` lists them), otherwise a 400.
+  - With no `voice` in the request: the service's `STRUT_TTS_VOICE`, else
+    strut's default, `af_heart`.
+  - Peel's Talk screen toggles between `af_heart` ♀ and `am_michael` ♂.
 
 Errors are JSON, `{ error }`:
 
@@ -486,14 +504,15 @@ Errors are JSON, `{ error }`:
 2. It names the room (`sphinx.call.voice.` + 32 random hex) and two random
    identities.
 3. It mints the member's token: join this room only, publish and subscribe
-   audio, no admin, valid 10 minutes for joining.
+   audio, update its own attributes (the `voice` below), no admin, valid 10
+   minutes for joining.
 4. It gets the agent into the room before it answers, so a member never talks
    to an empty room.
    - Step 1: it joins with its own token on the local server, or by worker
      dispatch there (Q7).
-   - From step 2: it gets tokens from meet (private rooms), and joins with
-     `encryption` and the key (§4, step 2).
-5. Every turn of the call runs as `x-strut-actor` on `<member>/voice` (§3.2).
+   - From step 2: the same, with `encryption` and the call's key when the
+     request carried one (§4, "Step 2").
+5. Every turn of the call runs as `x-strut-actor` on `<member>/voice/<room>` (§3.2).
    Speech goes to strut's `/audio/transcribe` and `/audio/speak` with the
    deployment key, inside the home.
 
@@ -506,6 +525,15 @@ of it, so the call screen needs nothing from the home:
   it is) and `lk.transcription_final`.
 - **From step 2, encryption covers these** only because the agent connects
   with `encryption`, not the legacy `e2ee`.
+
+**What Peel sets in the room: the member's participant attribute `voice`.**
+- Peel sets it to change Jamie's voice mid-call. The agent switches from the
+  next sentence it sends to `/audio/speak`; the sentence it is speaking ends
+  in the old voice.
+- An unknown name is ignored.
+- Attributes go over LiveKit's signaling, which end-to-end encryption doesn't
+  cover. A voice name isn't private, so that's fine; nothing private may ride
+  in an attribute.
 
 **Local values (step 1)**
 - **strut:**
@@ -531,34 +559,76 @@ of it, so the call screen needs nothing from the home:
    agent into the room, and answers.
 4. Peel joins `url` with `token`.
 
-### Step 2, the central server
+### Step 2, the central server: end-to-end encryption
 
-1. Peel makes a 32-byte key and sends `POST /voice/calls { key }` (§4.1).
-2. The voice service:
-   - names a room (128 random bits, like `CallLink.new`, `Call.swift:150-156`);
-   - asks meet for two tokens, the member's and its own;
-   - joins with encryption;
-   - returns the member's token, with `encrypted: true`.
-3. meet needs one change: a private room gets no Jamie dispatch and no
-   `isHost` admin grant. Today every token dispatches `LIVEKIT_AGENT_NAME`,
-   and `?isHost=true` gives anyone room admin
-   (`meet:app/api/connection-details/route.ts:30-45, 73-83`).
-4. The voice service connects the room itself with `encryption` before it
-   starts the session.
-   - agents-js's `ctx.connect(e2ee)` passes the legacy `e2ee` field, which
-     leaves transcripts and data messages unencrypted (`agents/src/job.ts`
-     L478).
-   - `AgentSession.start` would otherwise connect without options
-     (`voice/agent_session.ts` ~L1002).
-5. Use a shared key: rtc-node's per-participant keys are broken
-   (livekit/node-sdks#741, fix #768 open).
+Built 2026-11-04: sphinx-voice `src/encryption.ts` (stakwork/sphinx-voice#33),
+peel `TalkCall` / `TalkSession` (stakwork/peel#501). The demo box and
+every swarm run the same voice image behind the same route, so this one
+change covers both. strut, Hive, meet and the swarm config don't change.
 
-Until step 4, the key crosses ordinary TLS, which the operator could read on
-the home. Step 4 seals it (§6).
+1. Peel makes 32 random bytes for each call and sends them as base64,
+   `POST /voice/calls { key, voice }` (§4.1). strut forwards the body
+   unchanged and logs nothing of it (`src/voice.ts`).
+2. The voice service names the room and mints both tokens itself with its
+   own LiveKit key pair, as in step 1. It connects the room with
+   `encryption` and the key before it starts the session, and answers
+   `encrypted: true`. A call without a key stays plain, so a Peel from
+   before this keeps working.
+3. Peel joins with `encryptionOptions` and the same key, with DTX and RED
+   off, and refuses an answer without `encrypted: true`. A voice service from
+   before this answers false, and the call is refused rather than made in
+   the clear. So the voice service ships first.
 
-**Why not have the voice service register as a LiveKit worker:** that needs a
-per-home API key for the central server, and a LiveKit API key is admin over
-every room.
+What it depends on, each read in the source and the first three run:
+- **The key's bytes.** The shared key is the `key` STRING's UTF-8 bytes, not
+  its base64 decoding. Swift's `BaseKeyProvider(isSharedKey:sharedKey:)` takes
+  a `String` and keys with `sharedKey.data(using: .utf8)`
+  (client-sdk-swift 2.10.2 `KeyProvider.swift` L114–116), so the agent passes
+  `new TextEncoder().encode(key)`. Both then derive the AES key the same way,
+  in the same libwebrtc (m137 on both): PBKDF2-HMAC-SHA256 with the salt
+  `LKFrameEncryptionKey`, 100,000 iterations.
+- **`encryption`, not `e2ee`, on both sides.** Only `encryption` encrypts what
+  a participant sends on the data channel, the `lk.transcription` text among
+  it (rust-sdks `room/mod.rs` `with_dc_encryption`; rtc-node 0.13.21 on).
+  Swift accepts plaintext packets even with encryption on, so the legacy
+  field would leak the text without anything failing. agents-js's
+  `ctx.connect(e2ee)` passes `e2ee` (`agents/src/job.ts` L478), and
+  `AgentSession.start` connects without options, so the voice service keeps
+  connecting the room itself (Q7).
+- **Every field set.** rtc-node 0.13.24 hands `encryption` to its native layer
+  as given, without its defaults, which it doesn't export: a bare
+  `{ sharedKey }` makes `connect` throw "required field not set" (fixed in
+  0.13.34, node-sdks#708). The salt, AES-GCM, ratchet window 0 (Swift's
+  default) and failure tolerance -1 are written out.
+- **A shared key.** rtc-node's per-participant keys are broken
+  (livekit/node-sdks#741, fix #768 still open). Shared-key mode takes the key
+  at connect and never uses those calls.
+- **The LiveKit server.** Media encryption needs nothing of it. Encrypted
+  data packets are handled from v1.9.2 (livekit#3869); an older server
+  forwards them but logs a warning for each. Check prod's version.
+- **Opus RED off on the phone.** The SFU can't repackage RED for an encrypted
+  track, and before livekit#5117 (merged 2026-11-02, not yet released) it
+  could hand an encrypted RED track to an Opus-only subscriber as garbage.
+
+**Checked.** sphinx-voice `scripts/e2ee-call.ts` runs the real 1:1 path
+against livekit-server 1.13.11: a member keying the room the way Peel does
+hears the agent and gets its text, a participant in the room without the key
+gets noise and no text, and an agent keying with the base64 decoding fails
+it. Not run: Peel against the voice service, Swift to Node, which rests on
+the derivation above.
+
+**What it hides, until step 4.**
+- **The LiveKit server, the network and any relay** carry ciphertext: the
+  audio both ways and the live text. Signaling stays in the clear: the room
+  name, the random identities, the `lk.agent.state` and `voice` attributes.
+- **The home still has the key**, which crosses TLS to it.
+  - On the demo box TLS ends at Caddy inside the SEV-SNP VM, so only that VM
+    has it.
+  - On a swarm, whoever runs the swarm can read it there.
+  - Step 4 seals it to an attested home (§6).
+- **Every swarm holds the central LiveKit's key pair**, and a LiveKit key is
+  admin over every room. Before this, any swarm (or anyone with root on one)
+  could mint a token into any Talk room and listen. Now it gets ciphertext.
 
 ## 5. Paying in sats (step 3)
 
@@ -608,6 +678,8 @@ content of the calls is never in it.
 **What goes in.** Everything that reads the member's words:
 - strut: its runs, sessions, the ledger and the speech models;
 - the voice service;
+- Maple's proxy, from step 5: it reads each model request in plaintext
+  before it encrypts it (§7);
 - Jamie's account (the daemon): its seed is the org's money.
 
 Until step 5 the orchestrator's model call still leaves the TEE for a hosted
@@ -660,33 +732,34 @@ not touched by voice turns.
   (under $1,000, forges quotes) and DDRop (about $159, disclosed 2026-09-14).
 - So where the hardware sits matters, and §11 says so.
 
-## 7. Tinfoil (step 5)
+## 7. Maple (step 5)
+
+Ruled 2026-11-03: the model calls go to Maple through Maple's proxy beside
+strut, not to Tinfoil directly.
 
 **The LLM.**
-- The orchestrator's model goes to Tinfoil's OpenAI-compatible chat API, with
-  the body encrypted by EHBP.
-- **Straight from the TEE, not through Bifrost.** Bifrost reads a request's
-  body to route and bill it, and EHBP hides the body. So strut meters these
-  calls itself, from the token counts Tinfoil returns
-  (`X-Tinfoil-Usage-Metrics`).
-- aieo needs a chat-completions provider that speaks EHBP, or tinfoil-js's
-  fetch.
-- tinfoil-js 1.3.0 attests the router, which runs on AMD SEV-SNP. The router
-  verifies the model enclaves, most of which are TDX. TDX support in the JS
-  SDK is an open PR (#215).
+- The orchestrator's model goes to Maple's proxy (`maple-proxy`,
+  [MaplePrivacyLabs/Maple](https://github.com/MaplePrivacyLabs/Maple/blob/master/proxy/README.md)),
+  an OpenAI-compatible API beside strut.
+- The proxy attests Maple's AWS Nitro enclave and encrypts every request to
+  it. Maple's enclave verifies the model's enclave before forwarding.
+- The proxy reads the request in plaintext. In the TEE (step 4) it runs
+  inside the org's TEE, beside strut, so plaintext never leaves the TEE.
+- aieo's `maple` provider: models are `maple/<id>`, strut reaches the proxy at
+  `MAPLE_BASE_URL` and sends `MAPLE_API_KEY` on every request. The proxy
+  holds no key.
+- **Straight from strut to the proxy, not through Bifrost.** Past the proxy
+  the body is encrypted, so Bifrost can't read it to route and bill it. So
+  strut meters these calls itself.
 
-**Speech stays in the TEE.**
-- Tinfoil's realtime speech-to-text has no voice-activity detection and a
-  fixed 480 ms delay, and all three audio models sit on one H200. We don't
-  need it.
-- `voxtral-tts` ($0.002 per request) is an option if Kokoro sounds wrong.
+**Speech stays in strut** (§3.3). None of it goes to Maple.
 
-**What Tinfoil sees:** our API key, model, token counts and timing. Not the
-member, not the content. We pay by card (Stripe).
+**What Maple sees:** our API key, model, token counts and timing, and the
+content only inside its attested enclaves. Not the member.
 
 **Latency risk.**
-- With Tinfoil in the path, from end of speech to first audio, strictly
-  sequential (estimates):
+- The estimates below were made for Tinfoil, from end of speech to first
+  audio, strictly sequential. Maple's enclave adds a hop.
 
   | Optimistic | Expected | Pessimistic |
   |---|---|---|
@@ -694,8 +767,7 @@ member, not the content. We pay by card (Stripe).
 
 - Starting the model on partial transcripts would bring the expected case to
   about 1.3–1.6 s.
-- Tinfoil publishes no first-token latency under confidential computing, and
-  some LLM traffic may be served in Poznań. Measure before switching.
+- Measure before switching.
 
 ## 8. Later
 
@@ -737,10 +809,10 @@ Each step ships something usable and builds on the ones before it.
 | Step | Ships | Proves |
 |---|---|---|
 | **1. Talk, on one machine** | Talk to Jamie in Peel; the voice call screen; a compose with strut, livekit and the voice service; the voice service's 1:1 mode; the orchestrator changes (§3.1); reply streaming (§3.4); `/audio/speak` (built) | The conversation feels natural; per-stage latency; recognition accuracy; two or three calls at once |
-| **2. Off the LAN** | The central media server with end-to-end encryption; meet's private rooms; the call route on a real org home | It works from anywhere, for several members |
+| **2. Off the LAN** | The central media server with end-to-end encryption (built, §4); the call route on a real org home | It works from anywhere, for several members |
 | **3. Sats** | A price per minute; balance and top-up in Peel; Jamie's invoices; the per-member ledger; aggregate sweeps | Lightning-gated |
 | **4. The home in a TEE** | The org home on a TEE host; a measured image; secrets from the key service; `/attestation`; `dcap-qvl` in sphinx-rs; the call key sealed with HPKE; "verified" in Peel | Neither the operator nor the host can read it |
-| **5. Tinfoil** | The orchestrator's model in Tinfoil's enclaves, encrypted with EHBP, metered in strut; optionally `voxtral-tts` | Private inference on large models |
+| **5. Maple** | The orchestrator's model through Maple's proxy, inside the TEE, to Maple's enclaves; aieo's `maple` provider; metered in strut | Private inference on large models |
 
 ### Step 1 in detail
 
@@ -788,7 +860,7 @@ Each step ships something usable and builds on the ones before it.
 - One job per call; `AgentSession` on the member's track, with the strut STT
   and TTS plugins, Silero and the turn detector.
 - An `llmNode` that runs the orchestrator turn as the member, on
-  `<member>/voice`, and streams its reply a clause at a time.
+  `<member>/voice/<room>`, and streams its reply a clause at a time.
 - A job's callback becomes `session.say`.
 - `POST /calls`, the handler behind `/voice/calls` (§4.1): mint tokens, get
   the agent in, answer.
@@ -809,7 +881,7 @@ Each step ships something usable and builds on the ones before it.
   and the CPU the whole stack uses.
 - Recognition accuracy with Kroko and with Parakeet.
 - Whether `final_answer`'s `text` streams in pieces, for each provider we'd
-  use (Anthropic direct, through Bifrost, a vLLM endpoint like Tinfoil's).
+  use (Anthropic direct, through Bifrost, Maple).
   The answer picks schema or text mode for voice turns (§3.4).
 - Whether an `AgentSession` runs on a room we connected ourselves, without the
   worker (Q7).
@@ -838,7 +910,7 @@ for about 0.8 s (Daily, Pipecat).
 | The LiveKit server | a room, random identities, timing, packet sizes, a per-packet loudness level | audio, words, the key |
 | The Sphinx broker and mixer | that a member pays the org's Jamie; amounts; times (§5) | content, the call key |
 | The cloud host, the operator | that the home runs; aggregate revenue sweeps | anything inside the TEE, unless they have physical access to the server (§6) |
-| Tinfoil (step 5) | our key, model, token counts, timing | the member, the content |
+| Maple (step 5) | our key, model, token counts, timing; the content only inside its attested enclaves | the member |
 
 ## Open questions
 
@@ -846,7 +918,8 @@ for about 0.8 s (Daily, Pipecat).
    point in sphinx-voice.
 2. **Node or Python.** *Decided 2026-11-03:* Node.
    - Node's encryption works with a shared key only, and only if we connect
-     the room ourselves (§4). Step 2 proves that.
+     the room ourselves. *Proven 2026-11-04* against a real LiveKit server
+     (§4, "Step 2").
    - Python is the fallback if it doesn't hold.
 3. **Kokoro.** *Decided and built:* inside strut (§3.3).
 4. **Streaming the reply.** *Decided 2026-11-03:* `reply.delta` run events
@@ -869,5 +942,6 @@ for about 0.8 s (Daily, Pipecat).
     voice service (proposed), or the lab.
 11. **Whose vocabulary.** The org's lexicon only (one memory graph per strut),
     or a member's own on top.
-12. **One thread or two.** A member's voice turns on `<member>/voice`, or on
-    the same session as their Jamie chat, so calls and chat share one memory.
+12. **One thread or two.** A member's voice turns on a session per call
+    (`<member>/voice/<room>`, ruled 2026-11-03), or on the same session as
+    their Jamie chat, so calls and chat share one memory.

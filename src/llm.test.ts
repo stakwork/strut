@@ -23,6 +23,8 @@ const ENV = [
   "GOOGLE_API_KEY",
   "OPENROUTER_API_KEY",
   "XAI_API_KEY",
+  "MAPLE_API_KEY",
+  "MAPLE_BASE_URL",
   "EXA_API_KEY",
   "STRUT_MAX_OUTPUT_TOKENS",
   "MAX_OUTPUT_TOKENS",
@@ -258,6 +260,46 @@ describe("llm: the llmAuth seam (plans/mothership-cost-control.md §1)", () => {
       });
       await assert.rejects(() => generateText({ model: granted.model, prompt: "hi", maxRetries: 0 }), /recorded/);
       assert.deepEqual(seen, ["wrkspc_01abc", undefined, undefined], "trimmed when set; a workspace key or a grant sends none");
+    } finally {
+      server.close();
+    }
+  });
+
+  it("a maple call never asks the hook: it goes to MAPLE_BASE_URL with MAPLE_API_KEY, never the gateway", async () => {
+    const { createServer } = await import("node:http");
+    const seen: { path?: string; auth?: string; macaroon?: string }[] = [];
+    const server = createServer((req, res) => {
+      seen.push({ path: req.url, auth: req.headers.authorization, macaroon: req.headers["x-macaroon"] as string | undefined });
+      req.resume();
+      req.on("end", () => {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({
+          id: "x", object: "chat.completion", created: 0, model: "gemma4-31b",
+          choices: [{ index: 0, message: { role: "assistant", content: "hello" }, finish_reason: "stop" }],
+          usage: { prompt_tokens: 10, completion_tokens: 2 },
+        }));
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    try {
+      const store = new MemorySecretStore();
+      await store.set("MAPLE_API_KEY", "mk");
+      await store.set("MAPLE_BASE_URL", `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`);
+      let calls = 0;
+      const r = await resolveModel({
+        model: "maple/gemma4-31b",
+        secrets: secretsCapability(store, { envFallback: {} }),
+        // The Mothership's grant: the gateway and the user's virtual key.
+        llmAuth: async () => (calls++, { apiKey: "vk-user", baseUrl: "https://gateway.example", headers: { "x-macaroon": "m" } }),
+        auth: { kind: "step", runId: "r1", principal: "alice" },
+      });
+      assert.equal(calls, 0, "the hook is not asked");
+      assert.deepEqual([r.provider, r.modelId, r.apiKey, r.routed], ["maple", "gemma4-31b", "mk", false]);
+      assert.deepEqual([r.contextLimit, r.maxOutputTokens], [262_144, 24_576]);
+      const { generateText } = await import("ai");
+      const out = await generateText({ model: r.model, prompt: "hi", maxRetries: 0 });
+      assert.equal(out.text, "hello");
+      assert.deepEqual(seen, [{ path: "/v1/chat/completions", auth: "Bearer mk", macaroon: undefined }]);
     } finally {
       server.close();
     }

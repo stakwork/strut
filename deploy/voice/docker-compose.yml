@@ -1,0 +1,120 @@
+# A VOICE DEMO (plans/private-voice.md): one org home on one box, strut and
+# the 1:1 voice service (sphinx-voice's member mode), behind Caddy for TLS,
+# and Maple's inference proxy for a private model.
+# For a demo on an AMD SEV-SNP EC2 instance (README.md), not production: no
+# swarm, no Hive pairing (Peel reaches it through its development Talk home
+# setting), no lab, no Neo4j (the workspace is one LadybugDB file).
+#
+# Run from this folder; compose reads ./.env (gitignored) by itself:
+#   cp env.example .env      # then fill it in
+#   docker compose up -d
+#
+# One hostname pointed at this box (STRUT_VOICE_HOST): Caddy gets its
+# certificate from Let's Encrypt, so ports 80 and 443 must reach it. Call
+# audio goes through the central LiveKit, end-to-end encrypted with a key Peel
+# makes per call (README.md §5), which the voice service connects out to, so
+# no UDP port is opened here.
+name: strut-voice
+
+services:
+  strut:
+    # Published by .github/workflows/publish-image.yml (amd64 + arm64).
+    image: ghcr.io/stakwork/strut:${STRUT_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      STRUT_WORKSPACE_BACKEND: ladybug
+      STRUT_WORKSPACE: /data/workspace
+      STRUT_MODEL_DIR: /data/models
+      STRUT_PUBLIC_URL: "https://${STRUT_VOICE_HOST:?set STRUT_VOICE_HOST}"
+      # The deployment key: the voice service's credential, and the one that
+      # mints Peel's person token (POST /peers/tokens).
+      STRUT_API_KEY: "${STRUT_API_KEY:?set STRUT_API_KEY}"
+      STRUT_SECRET_KEY: "${STRUT_SECRET_KEY:?set STRUT_SECRET_KEY}"
+      # POST /voice/calls hands a member's call to the voice service
+      # (src/voice.ts), with this token as the bearer.
+      STRUT_VOICE_URL: http://voice:8080
+      STRUT_VOICE_TOKEN: "${STRUT_VOICE_TOKEN:?set STRUT_VOICE_TOKEN}"
+      # The orchestrator's prompt section for this home: its name. On a swarm
+      # the lab adds it.
+      STRUT_HOST_CONFIG: /config/host-config.json
+      # The orchestrator's model calls go straight to Anthropic (no gateway).
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY}"
+      # maple/<id> models go through the maple service below, with this key
+      # as the bearer on every request. Optional: unset, no maple model.
+      MAPLE_BASE_URL: http://maple:8080/v1
+      MAPLE_API_KEY: "${MAPLE_API_KEY:-}"
+    volumes:
+      - strut:/data/workspace   # the graph file, runs, sessions, secrets
+      - models:/data/models     # Kroko and Kokoro, downloaded on first use
+      - ./host-config.json:/config/host-config.json:ro
+
+  voice:
+    # sphinx-voice (stakwork/sphinx-voice) in its 1:1 mode: the same image as
+    # meeting-mode Jamie, another entry point. The image is amd64 only.
+    image: sphinxlightning/sphinx-voice:${SPHINX_VOICE_TAG:-latest}
+    platform: linux/amd64
+    restart: unless-stopped
+    command: ["node", "dist/one-to-one.js"]
+    depends_on:
+      strut:
+        condition: service_healthy
+    environment:
+      # Every turn runs strut's orchestrator as the member, and speech goes
+      # through strut's /audio/transcribe and /audio/speak.
+      STRUT_URL: http://strut:3000
+      STRUT_API_KEY: "${STRUT_API_KEY}"
+      STRUT_VOICE_TOKEN: "${STRUT_VOICE_TOKEN}"
+      LISTEN_HOST: 0.0.0.0
+      PORT: "8080"
+      # Where strut posts a turn's run.end, and its jobs'.
+      CALLBACK_URL_BASE: http://voice:8080
+      LIVEKIT_URL: "${LIVEKIT_URL:-wss://livekit.sphinx.chat}"
+      LIVEKIT_API_KEY: "${LIVEKIT_API_KEY:?set LIVEKIT_API_KEY}"
+      LIVEKIT_API_SECRET: "${LIVEKIT_API_SECRET:?set LIVEKIT_API_SECRET}"
+      VOICE_MODEL: "${VOICE_MODEL:-haiku}"
+      STRUT_TTS_VOICE: "${STRUT_TTS_VOICE:-}"
+
+  maple:
+    # Maple's inference proxy (maple.ai, MaplePrivacyLabs/Maple proxy/): an
+    # OpenAI-compatible endpoint that attests Maple's AWS Nitro enclave and
+    # encrypts every request to it. It reads every prompt in plaintext, so it
+    # stays on this network: no port, no route in the Caddyfile. It holds no
+    # key: strut sends MAPLE_API_KEY on each request.
+    # Pinned: Maple's exact version tags are immutable (amd64 + arm64).
+    image: ghcr.io/mapleprivacylabs/maple-proxy:${MAPLE_PROXY_TAG:-0.4.5}
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 256m
+    environment:
+      # The binary binds loopback unless told otherwise.
+      MAPLE_HOST: 0.0.0.0
+      MAPLE_PORT: "8080"
+      # Nothing in a browser calls it; the image turns CORS on.
+      MAPLE_ENABLE_CORS: "false"
+      # Keeps the provider's prompt cache across proxy restarts. Passed only
+      # when .env sets it: the proxy refuses to start on an empty value.
+      MAPLE_CACHE_NAMESPACE_ROOT:
+
+  caddy:
+    image: caddy:${CADDY_TAG:-2}
+    restart: unless-stopped
+    depends_on:
+      strut:
+        condition: service_healthy
+    ports:
+      - "${VOICE_HTTP_PORT:-80}:80"
+      - "${VOICE_HTTPS_PORT:-443}:443"
+    environment:
+      STRUT_VOICE_HOST: "${STRUT_VOICE_HOST}"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data       # certificates and the ACME account
+      - caddy-config:/config
+
+volumes:
+  strut:
+  models:
+  caddy-data:
+  caddy-config:

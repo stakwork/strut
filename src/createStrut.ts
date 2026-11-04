@@ -54,7 +54,7 @@ import {
 } from "./secret-store.js";
 import { runStep, cassettePath, RUN_STEP_FLOW } from "./run-step.js";
 import { buildProvenance } from "./provenance.js";
-import { RUN_GET_MAX_WAIT_MS, RUN_LIST_DEFAULT_LIMIT, RUN_LIST_MAX_LIMIT, capEvents, capTranscript, fileResult, listEntryOf, matchesRunFilter, type RunCaller, type RunListEntry, type RunTranscript, type RunsCapability } from "./runs.js";
+import { RUN_GET_MAX_WAIT_MS, RUN_LIST_DEFAULT_LIMIT, RUN_LIST_MAX_LIMIT, capEvents, capTranscript, fileResult, listEntryOf, matchesRunFilter, runsPage, type RunCaller, type RunListEntry, type RunTranscript, type RunsCapability } from "./runs.js";
 import type { AppRef, StartedBy } from "./core.js";
 import { createVerifier, type Verifier, type VerifyResult } from "./verify.js";
 import { CLAIMS_OFF, type ClaimsBlock } from "./claims-schemas.js";
@@ -1720,18 +1720,16 @@ export async function createStrut<TServices = unknown>(
     }))),
   );
 
+  // A page of the workflow's runs, newest first: `?limit=` (50, at most 500)
+  // after `?before=<runId>`, the last row of the page before (`runsPage`).
+  // A workflow on a swarm has thousands of runs, and each row is a summary
+  // read from its own file, so only the page's are read.
   app.get("/workflows/:name/runs", async (c) => {
     const name = c.req.param("name");
-    const runIds = await store.listRuns(name);
-    const runs = [];
-    for (const runId of runIds) {
-      const summary = await store.getRunSummary(name, runId);
-      if (summary) {
-        runs.push(summary);
-      } else {
-        runs.push({ runId, workflow: name, status: liveStatus(name, runId), ...liveJob(controllers.get(`${name}/${runId}`)) });
-      }
-    }
+    const page = runsPage(await store.listRuns(name), { limit: c.req.query("limit"), before: c.req.query("before") });
+    const runs = await Promise.all(page.map(async (runId) =>
+      (await store.getRunSummary(name, runId)) ??
+        { runId, workflow: name, status: liveStatus(name, runId), ...liveJob(controllers.get(`${name}/${runId}`)) }));
     return c.json(runs);
   });
 

@@ -555,14 +555,15 @@ export class NodeWriter {
     if (inputs.length === 0) return [];
     const namespace = opts.namespace ?? this.engine.namespace;
     const prepared = await this.prepareMany(inputs, { ...opts, namespace });
-    const byType = new Map<string, Array<{ i: number; p: PreparedNode }>>();
-    prepared.forEach((p, i) => {
-      const list = byType.get(p.schema.type) ?? [];
-      list.push({ i, p });
-      byType.set(p.schema.type, list);
-    });
     const results: NodeWriteResult[] = new Array(inputs.length);
     const go = async (tx: GraphTx) => {
+      await this.ontoKept(tx, inputs, prepared, { ...opts, namespace, tx });
+      const byType = new Map<string, Array<{ i: number; p: PreparedNode }>>();
+      prepared.forEach((p, i) => {
+        const list = byType.get(p.schema.type) ?? [];
+        list.push({ i, p });
+        byType.set(p.schema.type, list);
+      });
       await this.refuseSharedIdentifiers(tx, prepared.map((p) => ({ p, key: p.key })), namespace);
       for (const [type, rows] of byType) {
         const out = await this.engine.nodeEngine.mergeBatch(tx, rows[0]!.p.schema, namespace, rows.map((r) => r.p), mode);
@@ -660,6 +661,49 @@ export class NodeWriter {
   private embedRecomposed(tx: GraphTx | undefined): void {
     if (tx || !this.opts.embedder || !this.engine.nodeEngine.takeUnembedded?.()) return;
     void this.engine.nodeEngine.embedPendingRows?.(this.opts.embedder);
+  }
+
+  /**
+   * A write to the key of a node merged away (`merge.ts`) lands on the node
+   * it was merged into, chains followed: its prepared row is composed again
+   * with the kept node's key and title attributes, so the write is an
+   * ordinary one to the kept node (a create finds it, an upsert sets its
+   * other fields), and the kept node keeps its own name. The duplicate stays
+   * as the merge left it, so undo still finds it so. A node deleted but
+   * never merged is restored as before. Ladybug only (`mergedAway`).
+   */
+  private async ontoKept(tx: GraphTx, inputs: NodeInput[], prepared: PreparedNode[], opts: WriteOptions): Promise<void> {
+    const engine = this.engine.nodeEngine;
+    if (!engine.mergedAway) return;
+    const target = new Map<number, string>();
+    const byType = new Map<string, number[]>();
+    prepared.forEach((p, i) => byType.set(p.schema.type, [...(byType.get(p.schema.type) ?? []), i]));
+    for (const [type, idxs] of byType) {
+      const schema = prepared[idxs[0]!]!.schema;
+      // The key first (a type keyed by ref_id never matches on it), then
+      // each identifier, as the identifier rule reads them.
+      const slots: Array<[string, (i: number) => unknown]> = (schema.identifiers ?? []).map((id) => [id, (i) => prepared[i]!.props[id]]);
+      if (!keyedByRef(schema)) slots.unshift(["key", (i) => prepared[i]!.key]);
+      for (const [attribute, valueOf] of slots) {
+        const open = idxs.filter((i) => !target.has(i) && valueOf(i) !== undefined && valueOf(i) !== null && valueOf(i) !== "");
+        if (!open.length) continue;
+        const kept = await engine.mergedAway(tx, type, attribute, open.map(valueOf), opts.namespace!);
+        for (const i of open) {
+          const ref_id = kept.get(String(valueOf(i)));
+          if (ref_id) target.set(i, ref_id);
+        }
+      }
+    }
+    for (const [i, ref_id] of target) {
+      const raw = await engine.readRaw(tx, ref_id);
+      if (!raw) continue;
+      const schema = prepared[i]!.schema;
+      const names = [...schema.key_spec.split("-").slice(1), schema.title_key].filter(Boolean).map((n) => n.toLowerCase());
+      const data = Object.fromEntries(Object.entries(inputs[i]!.data).filter(([k]) => !names.includes(k.toLowerCase())));
+      for (const [k, v] of Object.entries(raw.props)) if (names.includes(k.toLowerCase()) && v !== null && v !== undefined) data[k] = v;
+      const [p] = await this.prepareMany([{ ...inputs[i]!, data }], opts);
+      prepared[i] = { ...p!, key: String(raw.props["key"]) };
+    }
   }
 
   /**

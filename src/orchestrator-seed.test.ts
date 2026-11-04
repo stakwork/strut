@@ -456,6 +456,36 @@ describe("the orchestrator, end to end", () => {
     assert.deepEqual(runStart.attachments, [{ name: "notes.md", mediaType: "text/markdown", size: Buffer.byteLength(notes), path: "attachments/notes.md" }]);
     assert.equal(await (await strut.app.request(`/artifacts/${end.runId}/attachments/notes.md`)).text(), notes);
   });
+  it("`start` with a kind on a builder job drops the kind (job/start refuses it) and the build starts", async () => {
+    const { strut, ends, turn } = await boot(() =>
+      toolUse("toolu_1", "final_answer", {
+        text: "On it.",
+        start: { brief: "Build a digest workflow", title: "Digest", workflow: "builder", kind: "Code Change" },
+        artifacts: [],
+      }),
+    );
+    const first = await turn({ prompt: "build me a digest", session: "peel/agent-1/dm-k" });
+    assert.equal(first.status, "success", JSON.stringify(first));
+    assert.equal(first.output.startError, undefined);
+    const { end, runStart } = await startedJob(strut, ends, "builder");
+    assert.equal(end.runId, first.output.runId);
+    assert.equal(runStart.input.kind, undefined);
+  });
+  it("a `start` job/start refuses never fails the turn: the reply goes out saying the job did not start, with `startError`", async () => {
+    const { turn, seen } = await boot(() =>
+      toolUse("toolu_1", "final_answer", {
+        text: "Looking into it.",
+        start: { brief: "Read my notes", title: "Notes", attachments: ["from-yesterday.md"] },
+        artifacts: [],
+      }),
+    );
+    const ended = await turn({ prompt: "use the notes I sent yesterday", session: "peel/agent-1/dm-e" });
+    assert.equal(ended.status, "success", JSON.stringify(ended));
+    assert.match(ended.output.startError, /from-yesterday\.md/);
+    assert.match(ended.output.text, /^Looking into it\. \(The job did not start: .*from-yesterday\.md/);
+    assert.equal(ended.output.job, undefined);
+    assert.equal(seen.job.length, 0);
+  });
   it("without `start` the job step is skipped and the result carries no job", async () => {
     const { turn, seen } = await boot(() => toolUse("toolu_1", "final_answer", { text: "Kate's birthday is 3 May.", artifacts: [] }));
     const ended = await turn({ prompt: "when is Kate's birthday?", session: "peel/agent-1/dm-n" });
