@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import * as api from "../api";
 import { useFileScope } from "../use-artifact-url";
 import { connectAppHost, type AppHostConnection } from "../app-host";
+import { nativeWalletOf, type NativeWalletApp } from "@strut/kit/wallet";
 import { appToolInput, namesApp, peerAppLink } from "../app-links";
 
 // ── An app's page, hosted (plans/apps.md §7.3) ─────────────────────────────
@@ -75,10 +76,22 @@ export function AppHost(props: {
       try {
         const html = await api.fetchAppDocument(app.name, app.version, scope!.token, app.peer);
         if (cancelled) return;
+        // In a native host's web view (Peel), the version's wallet request,
+        // for its wallet: read only there, and only an app that asks for one
+        // is offered a wallet (specs/WALLET.md §1.1).
+        let wallet: NativeWalletApp | undefined;
+        if (nativeWalletOf(window)) {
+          const info = await api.fetchAppBuildInfo(app.name, app.version, scope!.token, app.peer);
+          if (cancelled) return;
+          if (info?.wallet) {
+            wallet = { name: app.name, version: app.version, ...(app.peer ? { peer: app.peer } : {}), title: info.title ?? app.name, request: info.wallet };
+          }
+        }
         conn = await connectAppHost({
           frame,
           theme,
           ...(app.peer ? { base: api.peerBase(app.peer) } : {}),
+          ...(wallet ? { wallet } : {}),
           handlers: {
             ...(messages ? { onMessage: (text: string) => handlers.current.onMessage?.(text) } : {}),
             ...(handlers.current.onNavigate ? {
