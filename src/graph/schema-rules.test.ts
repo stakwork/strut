@@ -78,11 +78,11 @@ describe("schema rules on a ladybug file (plans/graph-memory-plan.md step 2)", {
   });
 
   it("a type with a key upserts: two writes give one node; a type keyed by ref_id gives two", async () => {
-    const a = await b.nodes.write({ type: "Lingo", data: { name: "Kubernetes" } });
-    const again = await b.nodes.write({ type: "Lingo", data: { name: "kubernetes", description: "the container scheduler" } }, "upsert");
+    const a = await b.nodes.write({ type: "Concept", data: { name: "Kubernetes" } });
+    const again = await b.nodes.write({ type: "Concept", data: { name: "kubernetes", description: "the container scheduler" } }, "upsert");
     assert.deepEqual([again.ref_id, again.outcome], [a.ref_id, "updated"]);
     assert.equal((await props(a.ref_id))["description"], "the container scheduler");
-    assert.equal(await nodeCount(b, "Lingo"), 1);
+    assert.equal(await nodeCount(b, "Concept"), 1);
 
     const s1 = await b.nodes.write(person("Sam Lee"));
     const s2 = await b.nodes.write(person("Sam Lee"));

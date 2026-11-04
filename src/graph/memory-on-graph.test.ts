@@ -309,7 +309,9 @@ describe("graph/import-memory from the old memory database (ladybug)", { skip: l
     assert.equal(by["a fact about one entity alone"], 1, JSON.stringify(by));
     assert.equal(by["an episode no fact came from"], 2, "Kate coming over, and Bob, forgotten");
     assert.equal(by["a fact whose sentence only names its two ends"], 1, JSON.stringify(by));
-    assert.equal(by["a mishearing: dictation keeps reading it from the old memory"], 1);
+    assert.equal(Object.keys(by).some((r) => /mishearing/.test(r)), false, "a mishearing is migrated");
+    const heard = await b.query("MATCH (h:Node {node_type: 'Mishearing'}), (p:Node {title: 'Peel'}) WHERE h.entity_ref_id = p.ref_id RETURN h.value AS v");
+    assert.deepEqual(heard.map((r) => r["v"]), ["peal"], "onto Peel, as dictation reads it on the graph");
     assert.equal(first.review, undefined, "nothing is listed for review");
     assert.equal(first.skipped, Object.values(by as Record<string, number>).reduce((a, n) => a + n, 0));
     assert.ok(first.imported > 0);

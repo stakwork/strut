@@ -85,7 +85,7 @@ import { namespaceName } from "./namespaces.js";
 import type { LadybugSchemas } from "./engine.js";
 import type { LadybugCatalog } from "./ontology.js";
 import { mergedInto } from "./merge.js";
-import { EDGE_TEXT_TYPE, MERGE_TYPE, SCHEMA_TYPE } from "./registry.js";
+import { EDGE_TEXT_TYPE, HIDDEN_TYPES } from "./registry.js";
 import { temporalEdgeTypes } from "./temporal.js";
 
 export interface LadybugReaderOptions {
@@ -102,8 +102,8 @@ const q = (s: string) => `\`${s}\``;
 export const VECTOR_EFS = 500;
 const lit = (s: string) => `'${s.replace(/'/g, "''")}'`;
 const LIVE = (alias: string) => `${alias}.deleted_at IS NULL`;
-/** A data node: the ontology's Schema rows, the edges' search rows (`EdgeText`) and merge records are not read, walked or counted. */
-const DATA = (alias: string) => `NOT ${alias}.node_type IN ['${SCHEMA_TYPE}', '${EDGE_TEXT_TYPE}', '${MERGE_TYPE}']`;
+/** A data node: the ontology's Schema rows, the edges' search rows (`EdgeText`), merge records and dictation's mishearings are not read, walked or counted. */
+const DATA = (alias: string) => `NOT ${alias}.node_type IN [${HIDDEN_TYPES.map(lit).join(", ")}]`;
 
 /** Which temporal edges a read shows, as one condition on an edge or a
  *  search row (both hold the clocks; a plain edge has none, so it always

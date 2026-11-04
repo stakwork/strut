@@ -41,13 +41,13 @@ describe("resolve: an exact match involves no model", { skip: lb.skip }, () => {
   after(() => lb.close(b));
 
   it("an exact key match, given or composed from data, involves no model", async () => {
-    const word = await b.nodes.write({ type: "Lingo", data: { name: "Kubernetes" } });
+    const word = await b.nodes.write({ type: "Concept", data: { name: "Kubernetes" } });
     embedder.calls = 0;
-    const byKey = await resolveNode(b, { type: "lingo", key: word.key });
+    const byKey = await resolveNode(b, { type: "concept", key: word.key });
     assert.equal(byKey.match?.ref_id, word.ref_id);
     assert.equal(byKey.match?.matched_by, "key");
-    assert.equal(byKey.node_type, "Lingo");
-    const byData = await resolveNode(b, { type: "Lingo", data: { name: "kubernetes" } });
+    assert.equal(byKey.node_type, "Concept");
+    const byData = await resolveNode(b, { type: "Concept", data: { name: "kubernetes" } });
     assert.equal(byData.match?.ref_id, word.ref_id);
     assert.equal(byData.match?.matched_by, "key");
     assert.equal(embedder.calls, 0, "no embedding for an exact match");

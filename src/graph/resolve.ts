@@ -43,7 +43,7 @@ import type { GraphBackend } from "./backend.js";
 import type { Row } from "./engine.js";
 import { namespaceName } from "./ladybug/namespaces.js";
 import { mergedInto } from "./ladybug/merge.js";
-import { EDGE_TEXT_TYPE, MERGE_TYPE, SCHEMA_TYPE } from "./ladybug/registry.js";
+import { HIDDEN_TYPES } from "./ladybug/registry.js";
 import { ALT_NAMES, GraphValidationError, composeNodeKey, keyedByRef } from "./node-writer.js";
 import { ALL_NAMESPACES, boundsOf, hidesType, readsNamespace, type ReaderList } from "./scope.js";
 import type { NodeSchema } from "./schema-resolver.js";
@@ -118,7 +118,7 @@ export async function resolveNode(b: GraphBackend, input: ResolveInput): Promise
   const bounds = boundsOf(b);
   if (!schema || (bounds && hidesType(bounds.list, schema.domainLabels))) throw new GraphValidationError("UNKNOWN_TYPE", String(input.type), "unknown node type");
   // The ontology's Schema rows and the edges' search rows are not data nodes.
-  if (schema.type === SCHEMA_TYPE || schema.type === EDGE_TEXT_TYPE || schema.type === MERGE_TYPE) throw new GraphValidationError("WRONG_TYPE", schema.type, "not a node type resolve reads");
+  if (HIDDEN_TYPES.includes(schema.type)) throw new GraphValidationError("WRONG_TYPE", schema.type, "not a node type resolve reads");
   const namespaces = scope(input.namespaces, b.namespace, bounds?.list);
   if (!namespaces.length) return { node_type: schema.type, namespaces, match: null, ambiguous: false, candidates: [] };
   const query: GraphBackend["query"] = bounds?.query ?? b.query.bind(b);

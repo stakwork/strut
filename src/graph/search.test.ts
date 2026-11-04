@@ -597,9 +597,9 @@ for (const tb of testBackends()) {
       assert.equal(await reader.getSchema("Nope"), null);
     });
 
-    it("ontology: the registry's seventeen types and twenty-one edges, in jarvis's shapes", { skip: neo && "ladybug only" }, async () => {
+    it("ontology: the registry's eighteen types and twenty-one edges, in jarvis's shapes", { skip: neo && "ladybug only" }, async () => {
       const { schemas, edges } = await reader.listSchemas();
-      assert.deepEqual(schemas.map((s) => s.type).sort(), ["Check", "Claim", "Concept", "EdgeText", "Evidence", "Lingo", "Merge", "Person", "StrutApp", "StrutAppVersion", "StrutArtifact", "StrutJob", "StrutRun", "StrutStep", "StrutStepVersion", "StrutWorkflow", "StrutWorkflowVersion"]);
+      assert.deepEqual(schemas.map((s) => s.type).sort(), ["Check", "Claim", "Concept", "EdgeText", "Evidence", "Lingo", "Merge", "Mishearing", "Person", "StrutApp", "StrutAppVersion", "StrutArtifact", "StrutJob", "StrutRun", "StrutStep", "StrutStepVersion", "StrutWorkflow", "StrutWorkflowVersion"]);
       const run = schemas.find((s) => s.type === "StrutRun")!;
       assert.equal(run["domain"], "Strut");
       assert.equal(run["parent"], "Thing");

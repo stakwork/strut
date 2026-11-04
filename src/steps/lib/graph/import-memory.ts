@@ -8,6 +8,7 @@ import { type Query, type Row, memoryDb, normalize } from "../memory/_db.js";
 import { vocabulary, type Vocabulary } from "../memory/_ontology.js";
 import { NodeWriter } from "../../../graph/node-writer.js";
 import { words } from "../../../graph/text-match.js";
+import { importMishearings } from "../dictation/_graph.js";
 
 /**
  * The one-off move of the old memory database (`memory/*`, src/steps/lib/memory)
@@ -47,8 +48,9 @@ import { words } from "../../../graph/text-match.js";
  * vegetarian": the thing it is about is not an entity), an entity's
  * free-form attributes, an episode no fact came from, a fact whose sentence
  * says nothing its two ends' names do not ("Tom's uncle is Tom's uncle."),
- * and anything that could not be written. A mishearing stays where
- * dictation reads it (memory/lexicon), and is counted as skipped.
+ * and anything that could not be written. A mishearing becomes a
+ * Mishearing record of its node, where dictation reads it on the graph
+ * (dictation/_graph.ts).
  */
 
 
@@ -388,7 +390,7 @@ export default defineStep({
         const predicate = String(f["predicate"]);
         const kind = role(predicate);
         if (kind === "alias") continue; // its subject's alt_names, above
-        if (kind === "mishearing") { skip(c, "a mishearing: dictation keeps reading it from the old memory"); continue; }
+        if (kind === "mishearing") continue; // dictation's records, below
         const subject = nodeOf.get(f["subject"]);
         const ended = f["expired_at"] != null;
         const said = (episodes.get(id) ?? []).map((ep) => ({
@@ -445,6 +447,11 @@ export default defineStep({
         const node = nodeOf.get(old);
         if (node) c.counts.names_added += await addNames(c, node, ns);
       }
+      // Mishearings: dictation's records of the nodes, undone ones too.
+      const heard = await importMishearings(b, query, nodeOf);
+      c.counts.facts_created += heard.imported;
+      c.counts.facts_found += heard.already;
+      if (heard.skipped) c.skipped["a mishearing of an entity not imported"] = heard.skipped;
 
       // ── Episodes no fact came from ─────────────────────────────────────
       const lone = await query(
