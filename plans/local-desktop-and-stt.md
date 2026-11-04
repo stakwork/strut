@@ -97,8 +97,10 @@ the API key is obtained.
    the bash tool, and `exec` depends on whatever the host has on PATH (no
    python/ffmpeg ships in the bundle). Not blocking for a macOS-first release.
 7. ~~**Native addons** (`onnxruntime-node`, `sharp` via transformers).~~
-   Done: `package:desktop` leaves the whole embeddings stack out by default
-   (§2.3); sherpa ships its own `libonnxruntime` inside its platform package.
+   Done: `package:desktop` ships transformers.js + onnxruntime-node (the
+   binding and its `libonnxruntime` moved into `native/`, onnxruntime-web
+   left out) for graph search on Ladybug; `--no-embeddings` leaves the stack
+   out (§2.3). sherpa ships its own `libonnxruntime` inside its platform package.
 
 ### 2.3 Packaging: phase A (ship this first)
 
@@ -276,8 +278,9 @@ package boots on `STRUT_WORKSPACE_BACKEND=ladybug` — the workspace store,
 claims, run projection and Concept search on one file under the data dir,
 `<dataDir>/graph/graph.lbug` — and imports a filesystem workspace it finds
 there at the first boot (`src/graph/fs-import.ts`). The embeddings stack
-stays a build option (`--embeddings`); without it the file's search is
-fulltext-only. What follows is the original sketch, kept for the reasoning.
+ships by default (MiniLM is downloaded on first use; a load that fails
+leaves the file keyword-only until the next start); `--no-embeddings`
+leaves it out, and the file's search is fulltext-only. What follows is the original sketch, kept for the reasoning.
 
 - **What it is.** [LadybugDB](https://github.com/LadybugDB/ladybug) is the
   maintained fork of Kuzu (Kuzu was acquired by Apple and archived late 2025;

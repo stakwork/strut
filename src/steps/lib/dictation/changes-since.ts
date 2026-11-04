@@ -3,6 +3,7 @@ import { defineStep } from "../../../core.js";
 import { type Query, iso, memoryExclusive } from "../memory/_db.js";
 import { vocabulary } from "../memory/_ontology.js";
 import { Change, UNDONE, type ChangeT } from "./_shared.js";
+import { graphChanges, onGraph } from "./_graph.js";
 
 /** A time as epoch ms: an ISO string, a number of ms, or nothing (the start). */
 function ms(at: string | number | undefined): number {
@@ -91,6 +92,7 @@ export default defineStep({
   output: z.object({ kind: z.literal("dictation"), since: z.string(), until: z.string(), changes: z.array(Change) }),
   async run(cfg, ctx) {
     const since = ms(cfg.since);
+    if (onGraph(ctx)) return graphChanges(ctx, since);
     return memoryExclusive(ctx, ({ read }) => dictationChanges(read, since, Date.now()));
   },
 });

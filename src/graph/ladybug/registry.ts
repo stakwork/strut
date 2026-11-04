@@ -1,7 +1,7 @@
 /**
  * The SEED of a Ladybug file's ontology (plans/ladybug-backend.md §3, ruling 6
  * as amended 2026-10-28; plans/memory-in-workspace-graph.md, PR A): the
- * seventeen node types a new file starts with and the twenty edge types
+ * eighteen node types a new file starts with and the twenty edge types
  * between them. The ontology itself lives in the file, as `Schema` rows of
  * the `Node` table (`ontology.ts`), seeded from this module at open
  * (add-only) and created and edited at runtime like Neo4j's `:Schema` nodes.
@@ -14,6 +14,7 @@
  *     attributes strut writes and reads (`claims.ts`'s field lists);
  *   - the base types `Person` (the user is the one marked `is_owner`) and
  *     `Lingo` (plans/graph-memory-plan.md step 2), with their rules;
+ *   - `Mishearing`, dictation's hidden record of a word it mishears;
  *   - `Thing`, the root, with `name` and `description` only.
  *
  * Pure: no engine, no addon. `nodeColumns()` is the columns a new file is
@@ -43,6 +44,11 @@ export const EDGE_TEXT_TYPE = "EdgeText";
  *  still leads to the kept node and the merge can be undone. Written by
  *  `graph/merge` alone. */
 export const MERGE_TYPE = "Merge";
+/** A mishearing dictation learned (src/steps/lib/dictation/_store.ts): one
+ *  hidden node per pair, saying dictation writes `value` for the node
+ *  `entity_ref_id` (as `form`, null meaning its name). Undo and remove are
+ *  soft deletes with the reason. Not searched, embedded or walked. */
+export const MISHEARING_TYPE = "Mishearing";
 
 /** The ontology's own type: one row per type in the `Node` table. */
 export const SCHEMA_TYPE = "Schema";
@@ -137,7 +143,9 @@ export const LADYBUG_SCHEMAS: readonly NodeSchema[] = [
   // The base types (plans/graph-memory-plan.md step 2), without jarvis's
   // fixture. Two people may share a name, so a Person is keyed by its
   // ref_id and named by its email; the user is the Person whose `is_owner` is
-  // true. A Lingo word is one node however often it is written.
+  // true. A Lingo word is keyed by its ref_id too: a name key keeps only
+  // a-z and digits, so a word with no Latin letters (凯特) could not be one.
+  // `resolve` finds a word by its name or `alt_names`.
   jarvisType(PERSON_TYPE, "ref_id", ["name", "description", "email"], "name", "description", {
     name: "string",
     description: "?string",
@@ -145,9 +153,10 @@ export const LADYBUG_SCHEMAS: readonly NodeSchema[] = [
     is_owner: "?boolean",
     alt_names: "?list",
   }, { role: "entity", identifiers: ["email"] }),
-  jarvisType(LINGO_TYPE, "lingo-name", ["name", "description"], "name", "description", {
+  jarvisType(LINGO_TYPE, "ref_id", ["name", "description"], "name", "description", {
     name: "string",
     description: "?string",
+    alt_names: "?list",
   }, { role: "entity" }),
   // No domain: these rows are memory, which the memory tools read.
   jarvisType(EDGE_TEXT_TYPE, "edgetext-edge_ref_id", ["composed"], "text", "text", {
@@ -173,7 +182,18 @@ export const LADYBUG_SCHEMAS: readonly NodeSchema[] = [
     undone_at: "?int",
     undone_by: "?string",
   }, { role: "record" }), embed: false },
+  // Read by dictation alone, by `entity_ref_id`.
+  { ...jarvisType(MISHEARING_TYPE, "ref_id", [], "value", "value", {
+    entity_ref_id: "string",
+    /** What dictation writes. */
+    value: "string",
+    /** The written form it is heard for; absent: the entity's name. */
+    form: "?string",
+  }, { role: "record" }), embed: false },
 ];
+
+/** The types that are records, not nodes: never searched, walked or resolved. */
+export const HIDDEN_TYPES: readonly string[] = [SCHEMA_TYPE, EDGE_TEXT_TYPE, MERGE_TYPE, MISHEARING_TYPE];
 
 const BY_TYPE = new Map(LADYBUG_SCHEMAS.map((s) => [s.type.toLowerCase(), s]));
 

@@ -5,6 +5,7 @@ import { memoryExclusive } from "../memory/_db.js";
 import { message, openSnapshot } from "../memory/_snapshot.js";
 import { importSnapshot } from "../memory/import.js";
 import { dictationChanges } from "../dictation/changes-since.js";
+import { graphChanges, onGraph } from "../dictation/_graph.js";
 import applyChanges from "../dictation/apply-changes.js";
 import { readState, writeState } from "./_state.js";
 
@@ -79,10 +80,14 @@ async function sync(peer: string, ctx: StepContext<{ peers?: PeersCapability }>)
   const since = Number.isFinite(parsed) ? parsed : 0;
   // In the writes' queue, `until` taken there, as dictation/changes-since reads:
   // no write in flight is missed, and every later one stamps `until` or later.
-  const { changes, until } = await memoryExclusive(ctx, async ({ read }) => {
-    const until = Date.now();
-    return { changes: (await dictationChanges(read, since, until)).changes, until };
-  });
+  // On a graph host the push reads the graph; the pull below still loads the
+  // old memory, which dictation no longer writes there.
+  const { changes, until } = onGraph(ctx)
+    ? await graphChanges(ctx, since).then((r) => ({ changes: r.changes, until: Date.parse(r.until) }))
+    : await memoryExclusive(ctx, async ({ read }) => {
+        const until = Date.now();
+        return { changes: (await dictationChanges(read, since, until)).changes, until };
+      });
   await post(peers, peer, "/home/push", { dictation: changes }, "the push did not land; nothing was pulled, nothing is lost");
   const out = await post(peers, peer, "/home/pull", state.hash ? { hash: state.hash } : {}, "the pull did not land; the memory here is as it was");
   if (typeof out.content_hash !== "string") throw new Error("home-sync: the home's pull returned no content_hash");

@@ -2,6 +2,7 @@ import { z } from "zod";
 import { defineStep } from "../../../core.js";
 import forget from "../memory/forget.js";
 import { readLexicon } from "./_shared.js";
+import { graphForget, onGraph } from "./_graph.js";
 
 export default defineStep({
   type: "dictation/remove",
@@ -27,6 +28,10 @@ export default defineStep({
       id = lingo(owner.type) && owner.heard.length === 1 && owner.facts <= 1 ? owner.refId : cfg.ref_id;
     } else {
       throw new Error(`dictation/remove: no word or mishearing ${cfg.ref_id} in dictation's vocabulary`);
+    }
+    if (onGraph(ctx)) {
+      await graphForget(ctx, id, "removed").catch((err) => { throw new Error(`dictation/remove: ${err instanceof Error ? err.message : err}`); });
+      return { forgotten: id };
     }
     const out = await forget.run({ ref_id: id, reason: "removed" }, ctx);
     if (out?.error) throw new Error(`dictation/remove: ${out.error}`);

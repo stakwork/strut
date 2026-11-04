@@ -3,13 +3,13 @@
  * Stage a self-contained strut directory for embedding in a native desktop
  * app (plans/local-desktop-and-stt.md §2.3, "phase A").
  *
- *   npm run package:desktop -- [--platform darwin-arm64] [--out dist-desktop] [--smoke] [--tar] [--skip-build] [--embeddings] [--no-stt] [--no-fixer]
+ *   npm run package:desktop -- [--platform darwin-arm64] [--out dist-desktop] [--smoke] [--tar] [--skip-build] [--no-embeddings] [--no-stt] [--no-fixer]
  *
  * Output: <out>/strut/ containing package.json, build/ (server + steps as
  * loose files — the registry scans them), web/dist/, a production-only
  * node_modules/ copied from the repo root's — checked to be yarn.lock's
  * install, then package by package against it (see `installDeps`) — stubs for the optional packages a
- * build leaves out, only this platform's onnxruntime-node binaries — native/ — the sherpa addon and the shared
+ * build leaves out — native/ — the sherpa addon and the shared
  * libraries it links, moved out of the sherpa-onnx-<platform> package so the
  * host has one directory of binaries to code-sign and nothing to sign
  * anywhere else (see `relocateNative`) — and two entry points: `desktop.js`
@@ -39,12 +39,17 @@
  * `--tar` also writes <out>/strut-<platform>.tar.gz — the release asset
  * (.github/workflows/strut-desktop.yml).
  *
- * Two size cuts, both on by default:
- *   - the embeddings stack (@huggingface/transformers + onnxruntime-web/-node
- *     + sharp, ~200 MB) is left out — MiniLM only serves graph search,
- *     which needs a Neo4j the desktop build doesn't ship; `--embeddings`
- *     keeps it, and graph/embeddings.ts fails with a clear message without it;
- *   - sourcemaps, typings, and docs are stripped from node_modules (~100 MB).
+ * The embeddings stack (@huggingface/transformers + onnxruntime-node) ships
+ * by default: MiniLM is the vector half of graph search on Ladybug. Only the
+ * target's onnxruntime-node binding and its libonnxruntime come along, moved
+ * into native/ (`relocateOnnx`); onnxruntime-web, which transformers.js's
+ * Node build never imports, is left out. The model itself is downloaded on
+ * first use into the model cache (src/model-dir.ts). `--no-embeddings`
+ * leaves the stack out (graph search is keyword-only, and graph/embeddings.ts
+ * fails with a clear message); a cross-stage needs it, since the addons
+ * come from this machine's tree.
+ *
+ * Sourcemaps, typings, and docs are stripped from node_modules (~100 MB).
  *
  * --smoke boots the staged copy via desktop.js from a temp directory (so
  * nothing can leak in from this checkout) with only STRUT_WORKSPACE and
@@ -57,8 +62,11 @@
  * Ladybug staged, opens and queries a temp database from the copy with
  * DYLD_* cleared, loading both extensions from native/, failing if the
  * images that loads (libssl/libcrypto, the extensions) come from anywhere
- * but native/. Each stub must answer an import with its "not in this
- * build" error.
+ * but native/. With embeddings, transformers.js imports from the copy and
+ * an onnxruntime session runs with the binding and libonnxruntime loaded
+ * from native/ (the boot itself runs with STRUT_GRAPH_EMBEDDINGS=off: the
+ * model is a download). Each stub must answer an import with its "not in
+ * this build" error.
  *
  * Not a single-file build on purpose: the step loader scans directories and
  * the sherpa addon must be a real file beside the binary either way (§2.4).
@@ -106,7 +114,7 @@ const out = resolve(ROOT, String(flag("out", "dist-desktop")));
 const smoke = flag("smoke", false) === true;
 const tar = flag("tar", false) === true;
 const skipBuild = flag("skip-build", false) === true;
-const embeddings = flag("embeddings", false) === true;
+const embeddings = !args.includes("--no-embeddings");
 const stt = !args.includes("--no-stt");
 const stage = join(out, "strut");
 const native = join(stage, "native");
@@ -297,7 +305,9 @@ const esbuildPkg = `@esbuild/${platform.replace(/^win-/, "win32-")}`;
 // @reflink/reflink (an addon) is ipull's optional file-clone fast path, and
 // ipull is node-llama-cpp's model downloader, which strut never uses (the
 // catalog downloads its own GGUFs): left out, with a stub (ipull catches it).
-const LEFT_OUT = (name) => /^@reflink\//.test(name);
+// onnxruntime-web is transformers.js's browser runtime; its Node build
+// (dist/transformers.node.mjs) imports onnxruntime-node and -common only.
+const LEFT_OUT = (name) => /^@reflink\//.test(name) || name === "onnxruntime-web";
 const OTHER_PLATFORM_PKG = (name) =>
   LEFT_OUT(name) ||
   (/^@node-llama-cpp\//.test(name) && name !== llamaPkg) ||
@@ -441,13 +451,17 @@ async function lockMatchesInstall(base = ROOT) {
 const stubs = [];
 async function installDeps() {
   await lockMatchesInstall();
-  if (embeddings && platform !== hostPlatform) throw new Error("--embeddings can't be cross-staged: its sharp/onnxruntime addons come from the root tree, which is this machine's platform");
+  if (embeddings && platform !== hostPlatform) throw new Error("the embeddings stack can't be cross-staged: its onnxruntime addon comes from the root tree, which is this machine's platform; pass --no-embeddings");
   const pkg = JSON.parse(await readFile(join(ROOT, "package.json"), "utf-8"));
   const roots = [
     ...Object.keys(pkg.dependencies ?? {}).filter((n) => embeddings || n !== "@huggingface/transformers"),
     ...Object.keys(pkg.peerDependencies ?? {}),
     ...(stt ? ["sherpa-onnx-node", `sherpa-onnx-${platform}`] : []),
     ...(ladybug ? ["@ladybugdb/core", ladybugPlatformPkg] : []),
+    // transformers.js's Node build imports onnxruntime-common without
+    // declaring it: the root tree's top-level copy (onnxruntime-web's) is
+    // the one it resolves, so the stage keeps that copy.
+    ...(embeddings ? ["onnxruntime-common"] : []),
   ].filter((n) => !OTHER_PLATFORM_PKG(n) || n === `sherpa-onnx-${platform}` || n === ladybugPlatformPkg);
   const targetAddons = [stt && `sherpa-onnx-${platform}`, ladybug && ladybugPlatformPkg].filter(Boolean);
   const fromRoot = [];
@@ -489,6 +503,7 @@ async function installDeps() {
   if (!stt) stubs.push("sherpa-onnx-node");
   if (!ladybug) stubs.push("@ladybugdb/core");
   if (!embeddings) stubs.push("@huggingface/transformers");
+  else stubs.push("onnxruntime-web");
   // The app build's fallback when esbuild's binary cannot run (src/apps/build.ts
   // loadEsbuild); this package carries the binary, so the fallback stops here.
   stubs.push("esbuild-wasm");
@@ -496,7 +511,8 @@ async function installDeps() {
   const why = {
     "sherpa-onnx-node": "built with --no-stt",
     "@ladybugdb/core": ladybugSkip,
-    "@huggingface/transformers": "the embeddings stack is left out; package:desktop --embeddings keeps it",
+    "@huggingface/transformers": "built with --no-embeddings",
+    "onnxruntime-web": "transformers.js's browser runtime; the Node build uses onnxruntime-node",
     "esbuild-wasm": "the package carries esbuild's own binary in native/",
     "@reflink/reflink": "ipull's optional file cloning; strut never downloads through node-llama-cpp",
   };
@@ -796,6 +812,38 @@ async function relocateSharp() {
   log(`moved sharp.node + ${dylibs[0]} → native/ (rpath @loader_path, ad-hoc signed); ${sharpPkgs[0]} loads ../../../native/sharp.node. Minimum macOS: addon ${minos(addon)}, libvips ${minos(vips)}`);
 }
 
+// onnxruntime-node's binding and the libonnxruntime it links go into native/
+// too, side by side: the binding links @rpath/libonnxruntime.<v>.dylib with
+// @loader_path as its only rpath. Its dist/binding.js, the one file that
+// names bin/napi-v6/<os>/<arch>/onnxruntime_binding.node, is rewritten to
+// ../../../native/onnxruntime_binding.node, and the emptied bin/ goes.
+// Neither binary is edited, so upstream's signatures stand.
+const ORT_REQUIRE = "require(`../bin/napi-v6/${process.platform}/${process.arch}/onnxruntime_binding.node`)";
+async function relocateOnnx() {
+  if (!embeddings || !platform.startsWith("darwin-")) return;
+  const pkgDir = join(stage, "node_modules", "onnxruntime-node");
+  const binding = join(pkgDir, "dist", "binding.js");
+  const src = await readFile(binding, "utf-8");
+  if (src.split(ORT_REQUIRE).length !== 2) throw new Error(`onnxruntime-node: dist/binding.js no longer has exactly one \`${ORT_REQUIRE}\`; its addon lookup changed — update relocateOnnx`);
+  const bin = join(pkgDir, "bin", "napi-v6", ortOs, ortArch);
+  const files = await readdir(bin);
+  const dylibs = files.filter((f) => /^libonnxruntime\..*dylib$/.test(f));
+  if (!files.includes("onnxruntime_binding.node") || dylibs.length !== 1 || files.length !== 2) {
+    throw new Error(`onnxruntime-node: expected onnxruntime_binding.node and one libonnxruntime.*.dylib in bin/napi-v6/${ortOs}/${ortArch}, found ${files.join(", ") || "nothing"} — update relocateOnnx`);
+  }
+  for (const f of files) {
+    if (existsSync(join(native, f))) throw new Error(`onnxruntime-node's ${f} would overwrite native/${f}`);
+    await rename(join(bin, f), join(native, f));
+  }
+  await rm(join(pkgDir, "bin"), { recursive: true, force: true });
+  await writeFile(binding, src.replace(ORT_REQUIRE, "require('../../../native/onnxruntime_binding.node') /* strut's package-desktop.mjs (relocateOnnx) */"));
+  const addon = join(native, "onnxruntime_binding.node");
+  if (!linked(addon).includes(`@rpath/${dylibs[0]}`) || rpaths(addon).join() !== "@loader_path") {
+    throw new Error(`onnxruntime_binding.node should link @rpath/${dylibs[0]} with @loader_path as its only rpath: links ${linked(addon).join(", ")}; rpaths ${rpaths(addon).join(", ")}`);
+  }
+  log(`moved onnxruntime-node's ${files.join(" + ")} → native/; dist/binding.js loads ../../../native/onnxruntime_binding.node. Minimum macOS: ${minos(addon)}`);
+}
+
 // esbuild's binary goes into native/ too. esbuild runs it from
 // ESBUILD_BINARY_PATH when that is set — desktop.js sets it to native/esbuild
 // (and src/env.ts keeps it through the env scrub) — so the emptied
@@ -939,11 +987,10 @@ async function report() {
   for (const [name, size] of rows.slice(0, 8)) console.log(`    ${mb(size).padStart(7)}  ${name}`);
   // Everything the host must code-sign, in one place: the addons plus the
   // shared libraries they link (relocateNative, relocateLadybug, relocateSharp,
-  // relocateLlama) and esbuild's executable (relocateEsbuild), all of which
+  // relocateOnnx, relocateLlama) and esbuild's executable (relocateEsbuild), all of which
   // must be signed and notarized inside the app bundle, not just the .node.
   // Nothing else in the package is a binary — enforced here, because the
-  // host's signing step is "sign native/ and its folders". --embeddings is the one exception: onnxruntime-node
-  // keeps its addons in node_modules, where its loader looks.
+  // host's signing step is "sign native/ and its folders".
   // native/ and its folders (native/llama/<folder>), as paths relative to it.
   const inNative = (await readdir(native, { recursive: true })).filter((f) => isNative(basename(f))).sort();
   const stray = [];
@@ -959,11 +1006,7 @@ async function report() {
   log(`native binaries the host must code-sign (${inNative.length}, all in native/ and its folders):`);
   for (const f of inNative) console.log(`    native/${f}`);
   if (platform.startsWith("darwin-") && process.platform === "darwin") checkMachO(inNative);
-  if (stray.length) {
-    if (!embeddings) throw new Error(`binaries outside native/, which the host would not sign: ${stray.join(", ")}`);
-    log(`plus ${stray.length} kept in node_modules by --embeddings (their loaders look there):`);
-    for (const a of stray) console.log(`    ${a}`);
-  }
+  if (stray.length) throw new Error(`binaries outside native/, which the host would not sign: ${stray.join(", ")}`);
 }
 
 async function smokeTest() {
@@ -992,6 +1035,9 @@ export default defineStep({
   const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("STRUT_")));
   env.STRUT_WORKSPACE = workspace;
   env.STRUT_CACHE_DIR = cache;
+  // The one exception: MiniLM is a 90 MB download into that fresh cache, which
+  // the 30 s ready deadline should not wait on (smokeOnnx loads the runtime).
+  if (embeddings) env.STRUT_GRAPH_EMBEDDINGS = "off";
   log(`smoke: node desktop.js from a foreign cwd (workspace + cache under ${tmp})`);
   // A host's stdin pipe, held open until the end, where closing it must stop the process.
   env.STRUT_EXIT_ON_STDIN_EOF = "1";
@@ -1106,6 +1152,7 @@ export default defineStep({
   if (/Warning: failed to load step/.test(output)) failures.push(`step load warning:\n${output}`);
   if (ladybug) failures.push(...(await smokeLadybug(app, tmp)));
   if (sharpPkgs.length) failures.push(...(await smokeSharp(app)));
+  if (embeddings && platform.startsWith("darwin-")) failures.push(...(await smokeOnnx(app)));
   if (manifest.fixer) failures.push(...(await smokeLlama(app)));
   failures.push(...(await smokeStubs(app)));
   await rm(tmp, { recursive: true, force: true });
@@ -1201,6 +1248,48 @@ console.log(JSON.stringify({ width: meta.width, loaded }));
   return failures;
 }
 
+// Import transformers.js from the copy as graph/embeddings.ts does, DYLD_*
+// cleared, and run one onnxruntime session; the images it loads must be in
+// native/ (or the system's) and include the binding and libonnxruntime. The
+// session runs a one-node Identity graph written here: the MiniLM model is a
+// download the smoke does not make (the boot runs with embeddings off).
+async function smokeOnnx(app) {
+  const script = `
+const before = new Set(process.report.getReport().sharedObjects);
+const tf = await import("@huggingface/transformers");
+const ort = await import("onnxruntime-node");
+// ONNX protobuf: ir_version 7; graph g { Identity x -> y; x, y: float[1] }; opset 13.
+const vi = (n) => [0x0a, 1, n.charCodeAt(0), 0x12, 10, 0x0a, 8, 0x08, 1, 0x12, 4, 0x0a, 2, 0x08, 1];
+const node = [0x0a, 1, 0x78, 0x12, 1, 0x79, 0x22, 8, ...Buffer.from("Identity")];
+const graph = [0x0a, node.length, ...node, 0x12, 1, 0x67, 0x5a, 15, ...vi("x"), 0x62, 15, ...vi("y")];
+const model = Uint8Array.from([0x08, 7, 0x3a, graph.length, ...graph, 0x42, 2, 0x10, 13]);
+const s = await ort.InferenceSession.create(model);
+const r = await s.run({ x: new ort.Tensor("float32", Float32Array.from([0.5]), [1]) });
+const loaded = process.report.getReport().sharedObjects.filter((p) => !before.has(p));
+console.log(JSON.stringify({ tf: typeof tf.AutoModel, y: Array.from(r.y.data), loaded }));
+`;
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("DYLD_") && !k.startsWith("STRUT_")));
+  log("smoke: onnxruntime — import transformers.js and run a session from the copy (DYLD_* cleared)");
+  const r = spawnSync(process.execPath, ["--input-type=module", "-e", script], { cwd: app, env, encoding: "utf-8" });
+  if (r.status !== 0) return [`onnxruntime load/run failed (${r.status}):\n${r.stdout}${r.stderr}`];
+  let res;
+  try {
+    res = JSON.parse(r.stdout.trim().split("\n").pop());
+  } catch {
+    return [`onnxruntime smoke printed no result:\n${r.stdout}${r.stderr}`];
+  }
+  const failures = [];
+  if (res.tf !== "function") failures.push(`@huggingface/transformers did not import (AutoModel: ${res.tf})`);
+  if (res.y?.[0] !== 0.5) failures.push(`the Identity session returned ${JSON.stringify(res.y)}, expected [0.5]`);
+  const dirs = [join(app, "native") + "/", (await realpath(join(app, "native"))) + "/"];
+  for (const p of res.loaded) if (!/^\/(System|usr\/lib)\//.test(p) && !dirs.some((d) => p.startsWith(d))) failures.push(`onnxruntime loaded ${p}, outside the copy's native/`);
+  for (const want of ["onnxruntime_binding.node", "libonnxruntime."]) {
+    if (!res.loaded.some((p) => dirs.some((d) => p.startsWith(`${d}${want}`)))) failures.push(`${want} not loaded from native/: ${res.loaded.join(", ") || "none"}`);
+  }
+  if (!failures.length) log(`smoke: onnxruntime OK — session ran; loaded from native/:\n    ${res.loaded.filter((p) => dirs.some((d) => p.startsWith(d))).join("\n    ")}`);
+  return failures;
+}
+
 // Load node-llama-cpp's addon from the copy the way the fixer does (getLlama,
 // build: "never"), DYLD_* cleared, and report the GPU it got. The images it
 // loads must be in native/ (or the system's: Metal, Accelerate) and include the
@@ -1269,6 +1358,7 @@ if (ladybug) {
   await stageLadybugExtensions();
 }
 await relocateSharp();
+await relocateOnnx();
 await relocateEsbuild();
 await relocateLlama();
 await report();

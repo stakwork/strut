@@ -20,6 +20,7 @@ import { modelDirFromEnv } from "../model-dir.js";
 import { ModelWorker, type ModelWorkerSpec } from "../model-worker.js";
 import { int, type Bolt } from "./bolt.js";
 import { buildSearchText, renderVectorField, type Embedder } from "./node-writer.js";
+import { LADYBUG_VECTOR_ALONE_MIN_SIM, LADYBUG_VECTOR_MIN_SIM } from "./search.js";
 import type { SchemaResolver } from "./schema-resolver.js";
 import { schemaStatement } from "./schema-seed.js";
 import { STRUT_SCHEMAS, THING_TYPE, embeddingColumn } from "./strut-schemas.js";
@@ -41,6 +42,9 @@ export interface MiniLMOptions {
 type Transformers = typeof import("@huggingface/transformers");
 
 export class MiniLMEmbedder implements Embedder {
+  readonly minSimilarity = LADYBUG_VECTOR_MIN_SIM;
+  readonly aloneMinSimilarity = LADYBUG_VECTOR_ALONE_MIN_SIM;
+
   private constructor(
     private readonly tf: Transformers,
     private readonly tokenizer: import("@huggingface/transformers").PreTrainedTokenizer,
@@ -57,13 +61,12 @@ export class MiniLMEmbedder implements Embedder {
     try {
       tf = await import("@huggingface/transformers");
     } catch (e) {
-      // The desktop package (scripts/package-desktop.mjs) omits the
-      // embeddings stack: MiniLM only serves graph search, which needs a
-      // Neo4j the desktop build doesn't ship. Say so instead of ENOENT.
+      // A desktop package staged with `--no-embeddings`
+      // (scripts/package-desktop.mjs) has a stub here. Say so instead of ENOENT.
       if ((e as { code?: string }).code === "ERR_MODULE_NOT_FOUND") {
         throw new Error(
           "embeddings are not available in this strut build (@huggingface/transformers is not installed); " +
-            "graph search needs a server build or `package:desktop --embeddings`",
+            "graph search is keyword-only (package:desktop was run with --no-embeddings)",
         );
       }
       throw e;

@@ -293,6 +293,10 @@ class LadybugNodes implements NodeEngine {
 
   private embedding: Promise<number> | null = null;
   private again = false;
+  /** Data node types `embedPendingNodes` found nodes to embed in, embedded
+   *  with the facts' rows from then on. */
+  private nodeTypes: string[] = [];
+  private backfill: Promise<number> | null = null;
   /** One run at a time: a call during a run has it go round once more (rows
    *  written since are seen) and shares its promise. A failure is logged,
    *  never thrown, so no open or write waits on it or fails with it. */
@@ -305,7 +309,7 @@ class LadybugNodes implements NodeEngine {
       let n = 0;
       do {
         this.again = false;
-        n += await embedPendingRows((c, p) => this.lbug.query(c, p), (fn) => this.lbug.withWrite(fn), embedder);
+        n += await embedPendingRows((c, p) => this.lbug.query(c, p), (fn) => this.lbug.withWrite(fn), embedder, 32, [EDGE_TEXT_TYPE, ...this.nodeTypes]);
       } while (this.again);
       return n;
     };
@@ -321,7 +325,35 @@ class LadybugNodes implements NodeEngine {
     return done;
   }
 
+  /** Embed the data nodes with text and no vector — written while the
+   *  embedder was off or failed to load — in the types `embeddable` allows,
+   *  through the same background run as the facts' rows. Never rejects. */
+  embedPendingNodes(embedder: Embedder, embeddable: (type: string) => Promise<boolean>): Promise<number> {
+    const run = async () => {
+      const rows = await this.lbug.query(
+        `MATCH (n:Node) WHERE n.node_type <> '${EDGE_TEXT_TYPE}' AND n.deleted_at IS NULL AND n.search_text IS NOT NULL AND n.text_embeddings IS NULL
+         RETURN DISTINCT n.node_type AS t`,
+      );
+      for (const r of rows) {
+        const t = String(r["t"]);
+        if (!this.nodeTypes.includes(t) && (await embeddable(t))) this.nodeTypes.push(t);
+      }
+      return this.nodeTypes.length ? this.embedPendingRows(embedder) : 0;
+    };
+    const done: Promise<number> = run()
+      .catch((err: unknown) => {
+        console.warn(`[graph] embedding the nodes left without a vector failed: ${String(err).split("\n")[0]}`);
+        return 0;
+      })
+      .finally(() => {
+        if (this.backfill === done) this.backfill = null;
+      });
+    this.backfill = done;
+    return done;
+  }
+
   async idle(): Promise<void> {
+    await this.backfill;
     await this.embedding;
   }
 

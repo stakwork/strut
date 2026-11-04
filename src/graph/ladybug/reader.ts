@@ -85,7 +85,7 @@ import { namespaceName } from "./namespaces.js";
 import type { LadybugSchemas } from "./engine.js";
 import type { LadybugCatalog } from "./ontology.js";
 import { mergedInto } from "./merge.js";
-import { EDGE_TEXT_TYPE, MERGE_TYPE, SCHEMA_TYPE } from "./registry.js";
+import { EDGE_TEXT_TYPE, HIDDEN_TYPES } from "./registry.js";
 import { temporalEdgeTypes } from "./temporal.js";
 
 export interface LadybugReaderOptions {
@@ -102,8 +102,8 @@ const q = (s: string) => `\`${s}\``;
 export const VECTOR_EFS = 500;
 const lit = (s: string) => `'${s.replace(/'/g, "''")}'`;
 const LIVE = (alias: string) => `${alias}.deleted_at IS NULL`;
-/** A data node: the ontology's Schema rows, the edges' search rows (`EdgeText`) and merge records are not read, walked or counted. */
-const DATA = (alias: string) => `NOT ${alias}.node_type IN ['${SCHEMA_TYPE}', '${EDGE_TEXT_TYPE}', '${MERGE_TYPE}']`;
+/** A data node: the ontology's Schema rows, the edges' search rows (`EdgeText`), merge records and dictation's mishearings are not read, walked or counted. */
+const DATA = (alias: string) => `NOT ${alias}.node_type IN [${HIDDEN_TYPES.map(lit).join(", ")}]`;
 
 /** Which temporal edges a read shows, as one condition on an edge or a
  *  search row (both hold the clocks; a plain edge has none, so it always
@@ -577,13 +577,21 @@ export class LadybugReader implements GraphReader {
           );
           return rows.map(asHit);
         };
-        return widen ? overfetch(cap, runVec) : runVec(cap);
+        return (await (widen ? overfetch(cap, runVec) : runVec(cap))).filter((h) => h.raw_score >= (this.opts.embedder!.minSimilarity ?? 0));
       }, [] as Hit[]);
     }
     if (fieldQuery) warnings.push("input_q / output_q: a ladybug file keeps no per-field vectors; only q was searched");
 
-    const facts = factQuery ? await this.searchFacts(qstr, factQuery, { ...p, limit, skip }, sc, layer, factsFulltext) : { facts: [], truncated: false };
+    const facts = factQuery ? await this.searchFacts(qstr, factQuery, { ...p, limit, skip }, sc, layer, factsFulltext) : { facts: [] as FactEnvelope[], truncated: false, fulltext: [] as Hit[], semantic: [] as Hit[] };
 
+    // Nothing found by its words: only a close match by meaning counts.
+    const alone = this.opts.embedder?.aloneMinSimilarity;
+    if (alone !== undefined && fulltext.length === 0 && facts.fulltext.length === 0) {
+      semantic = semantic.filter((h) => h.raw_score >= alone);
+      facts.semantic = facts.semantic.filter((h) => h.raw_score >= alone);
+      const kept = new Set(facts.semantic.map((h) => refIdOf(h.node)));
+      facts.facts = facts.facts.filter((f) => kept.has(f.ref_id));
+    }
     let ranked = fuseHits(fulltext, semantic, {}, fusionWeights(qstr));
     const titles = new Map<string, string>();
     for (const t of new Set(ranked.map((e) => e.node.labels[0]).filter((t): t is string => !!t))) {
@@ -593,21 +601,36 @@ export class LadybugReader implements GraphReader {
     ranked = applyTitleBoost(ranked, qstr, (t) => (t ? titles.get(t) ?? "name" : "name"));
     ranked = applyUsageTiebreak(ranked);
 
-    // Keyword only, nodes and facts were ranked on one scale (`keyword`):
-    // a hit's score is its keyword score over the best of both lists, so
-    // the lists compare (a fact that answers the question outranks its subject).
+    // Nodes and facts on one scale, so the two lists compare (a fact that
+    // answers the question outranks its subject). With vectors: one
+    // reciprocal-rank fusion over all four lists, the keyword list and the
+    // vector list each holding nodes and facts together (both are rows of
+    // the same indexes, so their raw scores compare). Keyword only: a hit's
+    // keyword score over the best of both (`keyword` ranked them as one pool).
     let rescore: ((ref: string) => number | undefined) | undefined;
-    if (keywordOnly && semantic.length === 0) {
+    if (semantic.length || facts.semantic.length) {
+      let pool = fuseHits([...fulltext, ...facts.fulltext], [...semantic, ...facts.semantic], {}, fusionWeights(qstr));
+      pool = applyTitleBoost(pool, qstr, (t) => (t ? titles.get(t) ?? "name" : "name"));
+      const pooled = new Map(pool.map((e) => [refIdOf(e.node), e.extra.score]));
+      rescore = (ref) => pooled.get(ref);
+    } else if (keywordOnly) {
       const raw = new Map([...fulltext, ...(factsFulltext ?? [])].map((h) => [refIdOf(h.node), h.raw_score]));
       const top = Math.max(0, ...raw.values());
-      if (top > 0) {
-        rescore = (ref) => (raw.has(ref) ? pyRound(raw.get(ref)! / top, 6) : undefined);
-        for (const f of facts.facts) f.score = rescore(f.ref_id) ?? f.score;
+      if (top > 0) rescore = (ref) => (raw.has(ref) ? pyRound(raw.get(ref)! / top, 6) : undefined);
+    }
+    if (rescore) {
+      for (const f of facts.facts) f.score = rescore(f.ref_id) ?? f.score;
+      for (const e of ranked) e.extra.score = rescore(refIdOf(e.node)) ?? e.extra.score;
+      // Keyword only, each list is already in its pool's order; fused, it is not.
+      if (semantic.length || facts.semantic.length) {
+        facts.facts.sort((a, b) => (b.score ?? 0) - (a.score ?? 0));
+        ranked.sort((a, b) => b.extra.score - a.extra.score);
       }
     }
+    facts.facts = facts.facts.slice(skip, skip + limit);
     const total = ranked.length;
     const page = ranked.slice(skip, skip + limit);
-    const nodes = page.map((e) => serializeNode(e.node, { score: rescore?.(refIdOf(e.node)) ?? e.extra.score, match_type: e.extra.match_type }));
+    const nodes = page.map((e) => serializeNode(e.node, { score: e.extra.score, match_type: e.extra.match_type }));
     if (p.include_edge_counts && nodes.length) {
       const counts = await this.edgeCounts(nodes.map((n) => n.ref_id), namespace, Boolean(p.namespace));
       for (const n of nodes) n.edges = counts[n.ref_id] ?? {};
@@ -765,7 +788,7 @@ export class LadybugReader implements GraphReader {
     sc: ScopeSql,
     layer: ReturnType<typeof retrieverLayer>,
     ranked?: Hit[],
-  ): Promise<{ facts: FactEnvelope[]; truncated: boolean }> {
+  ): Promise<{ facts: FactEnvelope[]; truncated: boolean; fulltext: Hit[]; semantic: Hit[] }> {
     const { filter, base, cap, row, asHit } = fq;
     const fulltext = ranked ?? await layer("facts fulltext", async () => {
       let hits = await fq.fts(ftsTerms(qstr), true);
@@ -782,11 +805,11 @@ export class LadybugReader implements GraphReader {
                RETURN ${row} AS row, 1 - distance AS score`,
               { ...base, embedding, k },
             )).map(asHit),
-          );
+          ).then((hits) => hits.filter((h) => h.raw_score >= (this.opts.embedder!.minSimilarity ?? 0)));
         }, [] as Hit[])
       : [];
     const fused = fuseHits(fulltext, semantic, {}, fusionWeights(qstr));
-    if (fused.length === 0) return { facts: [], truncated: false };
+    if (fused.length === 0) return { facts: [], truncated: false, fulltext, semantic };
 
     // Each hit's edge and ends, one statement per edge type.
     const tables = (await this.engine.catalog.get()).edges;
@@ -834,7 +857,8 @@ export class LadybugReader implements GraphReader {
       const f = found.get(refIdOf(r.node));
       if (f) facts.push({ ...f, score: r.extra.score, match_type: r.extra.match_type });
     }
-    return { facts: facts.slice(p.skip, p.skip + p.limit), truncated: fulltext.length >= cap || semantic.length >= cap };
+    // Every fact found: the caller ranks them with the nodes, then pages.
+    return { facts, truncated: fulltext.length >= cap || semantic.length >= cap, fulltext, semantic };
   }
 
   // ── ontology: the Schema rows ───────────────────────────────────────────
