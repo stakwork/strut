@@ -19,7 +19,7 @@
  *   them: the input whole (ruled), never who launched it or where its
  *   callbacks go.
  */
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, posix } from "node:path";
 import { randomBytes } from "node:crypto";
 import type { RunEvent, RunSummary } from "./core.js";
@@ -277,6 +277,11 @@ export interface PublicSurfaceService {
   walk(roots: string[]): Promise<PublicConceptTree>;
   /** The ref_ids a run's steps reported (`step.end.nodes`), this graph's only. */
   runNodes(workflow: string, runId: string): Promise<Set<string>>;
+  /** Feed a run event to the visible-refs index (no-op until a workflow's
+   *  index is first used): adds `nodes` as steps end, saves at the run's end. */
+  noteEvent(workflow: string, event: { runId: string; type: string; nodes?: unknown }): void;
+  /** A workflow's runs were deleted: forget what they made visible. */
+  forgetRuns(workflow: string): void;
   /** Is this node visible to a visitor (§4)? */
   visible(ref_id: string, node_type: string | undefined): Promise<boolean>;
   /** The graph as a visitor reads it: only visible nodes, only edges
@@ -301,6 +306,49 @@ export function createPublicSurface(deps: PublicSurfaceDeps): PublicSurfaceServi
    *  loaded from and kept in `<dataDir>/public/run-nodes/`. */
   const runSets = new Map<string, Map<string, Set<string>>>();
   const runSetsLoaded = new Map<string, Promise<void>>();
+
+  /** Per public workflow with `runs: true`: every ref its runs reported,
+   *  built once (persisted sets + logs), then kept current from events. */
+  const index = new Map<string, { refs: Set<string>; ready: Promise<void> }>();
+  const indexFor = (name: string) => {
+    let e = index.get(name);
+    if (!e) {
+      const refs = new Set<string>();
+      const entry = { refs, ready: Promise.resolve() };
+      entry.ready = (async () => {
+        for (const runId of await deps.store.listRuns(name)) for (const r of await runNodes(name, runId)) refs.add(r);
+      })().catch((err) => {
+        if (index.get(name) === entry) index.delete(name);
+        throw err;
+      });
+      index.set(name, entry);
+      e = entry;
+    }
+    return e;
+  };
+  const noteEvent = (workflow: string, event: { runId: string; type: string; nodes?: unknown }): void => {
+    const e = index.get(workflow);
+    if (!e) return;
+    if (Array.isArray(event.nodes)) {
+      const sets = runSets.get(workflow);
+      for (const n of event.nodes as { ref_id?: unknown; peer?: unknown }[]) {
+        if (n?.peer || typeof n?.ref_id !== "string") continue;
+        e.refs.add(n.ref_id);
+        if (sets) {
+          let set = sets.get(event.runId);
+          if (!set) sets.set(event.runId, (set = new Set()));
+          set.add(n.ref_id);
+        }
+      }
+    }
+    if (event.type === "run.end" || event.type === "run.error") void saveRunSets(workflow);
+  };
+  const forgetRuns = (workflow: string): void => {
+    index.delete(workflow);
+    runSets.delete(workflow);
+    runSetsLoaded.delete(workflow);
+    void rm(nodesFile(workflow), { force: true }).catch(() => {});
+  };
 
   const get = async (): Promise<PublicSurface> => (surface ??= await readSurface(deps.dataDir));
 
@@ -430,9 +478,9 @@ export function createPublicSurface(deps: PublicSurfaceDeps): PublicSurfaceServi
     if ((node_type === undefined || node_type === "Concept") && s.concepts.length && (await conceptTree()).byRef.has(ref_id)) return true;
     for (const w of s.workflows) {
       if (!w.runs) continue;
-      for (const runId of await deps.store.listRuns(w.name)) {
-        if ((await runNodes(w.name, runId)).has(ref_id)) return true;
-      }
+      const e = indexFor(w.name);
+      await e.ready;
+      if (e.refs.has(ref_id)) return true;
     }
     return false;
   };
@@ -446,6 +494,7 @@ export function createPublicSurface(deps: PublicSurfaceDeps): PublicSurfaceServi
       await writeSurface(deps.dataDir, s);
       surface = s;
       tree = undefined;
+      for (const name of [...index.keys()]) if (!s.workflows.some((w) => w.name === name && w.runs)) index.delete(name);
       return s;
     },
     workflow,
@@ -455,6 +504,8 @@ export function createPublicSurface(deps: PublicSurfaceDeps): PublicSurfaceServi
     conceptTree,
     walk: walkTrees,
     runNodes,
+    noteEvent,
+    forgetRuns,
     visible,
     reader,
   };
