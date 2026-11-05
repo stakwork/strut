@@ -387,6 +387,41 @@ describe("strut/assistant — its steps, as its viewer", () => {
     assert.match((await plain.call("run/launch", { workflow: "job", job: "j", input: { prompt: "x" }, conversation: "alice/c1" })).error!, /only strut's own app/);
   });
 
+  it("a run launched elsewhere is the viewer's before its first event lands: run/get waits on it, never 'not found'", async () => {
+    const alice = page(ASSISTANT_APP, "alice");
+    // Hold the run's `run.start` until run/get has read the log to decide
+    // whether the run is hers — the window between the launch's 202 and
+    // the first event, which a loaded machine widens.
+    const { append, getRunEvents } = store;
+    let release!: () => void;
+    const released = new Promise<void>((r) => (release = r));
+    let runId = "";
+    store.append = async (workflow, id, event) => {
+      if (workflow === ORCHESTRATOR_WORKFLOW && event.type === "run.start") await released;
+      return append.call(store, workflow, id, event);
+    };
+    store.getRunEvents = async (workflow, id) => {
+      const events = await getRunEvents.call(store, workflow, id);
+      if (runId && id === runId) release();
+      return events;
+    };
+    try {
+      const res = await strut.app.request(`/workflows/${ORCHESTRATOR_WORKFLOW}/run`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${KEY}`, "x-strut-actor": "alice" },
+        body: JSON.stringify({ input: { prompt: "from hive", session: "c-hive-race" } }),
+      });
+      assert.equal(res.status, 202);
+      runId = ((await res.json()) as { runId: string }).runId;
+      assert.equal((await alice.ok("run/get", { workflow: ORCHESTRATOR_WORKFLOW, runId, wait: 20_000 })).status, "success");
+      assert.match((await page(ASSISTANT_APP, "bob").call("run/get", { workflow: ORCHESTRATOR_WORKFLOW, runId })).error!, /not found/, "and never another viewer's");
+    } finally {
+      release();
+      store.append = append;
+      store.getRunEvents = getRunEvents;
+    }
+  });
+
   it("job/verify and job/evidence: a person's acts, from strut's own app, on a job they ran", async () => {
     const dataDir = (strut.services as { dataDir: string }).dataDir;
     await (strut.services as { jobs: JobsCapability }).jobs.recordRun!("alice-jobs", { runId: "r1", workflow: "job", at: new Date().toISOString(), actor: "alice" } as never);

@@ -869,6 +869,11 @@ export async function createStrut<TServices = unknown>(
    *  run it has just launched is never refused. A dead run is judged by its
    *  log. */
   const peerLaunched = new WeakSet<RunController>();
+  /** Who a live run was launched for — its app and actor, as its `run.start`
+   *  will record them — known from the launch, so a run a caller has just
+   *  been handed the id of is theirs before its first event lands (`ownRun`).
+   *  A dead run is judged by its log. */
+  const launchedAs = new WeakMap<RunController, { app?: AppRef; actor?: string }>();
   /** Register a run as in-flight, creating its controller (attached to the
    *  launching run's controller when `parentRunId` resolves — controls apply
    *  to whole subtrees). Every launch path must register: HTTP
@@ -5050,6 +5055,7 @@ export async function createStrut<TServices = unknown>(
       body.job ? { id: body.job, ...(body.title ? { title: body.title } : {}) } : undefined,
     );
     if (extra?.origin === "peer") peerLaunched.add(controller);
+    launchedAs.set(controller, { ...(extra?.app ? { app: extra.app } : {}), ...(extra?.actor ? { actor: extra.actor } : {}) });
     const launchedAt = Date.now();
     const callback = extra?.callback;
     const mcp = extra?.mcp?.length ? extra.mcp : undefined;
@@ -5629,14 +5635,21 @@ export async function createStrut<TServices = unknown>(
    *  for, before the run's `run.start` is in its log. */
   const scopedLaunches = new Map<string, { app: string; actor: string }>();
   /** Was the run launched by `by.app` for `by.actor`? The summary's stamp,
-   *  a live run's `run.start`, or the launch itself. For a first-party page:
-   *  is it the viewer's, from wherever it was launched? */
+   *  a live run's `run.start`, or the launch itself — before `run.start`
+   *  lands, a run launched elsewhere (`POST …/run`) by its controller's
+   *  `launchedAs`. For a first-party page: is it the viewer's, from wherever
+   *  it was launched? */
   const ownRun = async (workflow: string, runId: string, by: RunCaller | undefined): Promise<boolean> => {
     const anyApp = isFirstParty(by?.app);
-    const launched = scopedLaunches.get(`${workflow}/${runId}`);
+    const key = `${workflow}/${runId}`;
+    const launched = scopedLaunches.get(key);
     if (launched) return (anyApp || launched.app === by?.app?.name) && launched.actor === (by?.actor ?? "");
+    const live = controllers.get(key);
     const stamp: { app?: AppRef; actor?: string } | null =
-      (await store.getRunSummary(workflow, runId)) ?? (await store.getRunEvents(workflow, runId)).find((e) => e.type === "run.start") ?? null;
+      (await store.getRunSummary(workflow, runId)) ??
+      (await store.getRunEvents(workflow, runId)).find((e) => e.type === "run.start") ??
+      (live ? launchedAs.get(live) : undefined) ??
+      null;
     return !!stamp && (anyApp || stamp.app?.name === by?.app?.name) && (stamp.actor ?? "") === (by?.actor ?? "");
   };
   /** `openFlow` for one run: a scoped caller's own runs only — any other is
