@@ -38,7 +38,7 @@ import type { ArtifactRef } from "./artifact-refs.js";
 import type { Scope } from "./auth.js";
 import type { Flow, RunAttachment, RunEvent, RunSummary, WakeMark } from "./core.js";
 import { withLock } from "./jobs.js";
-import { briefOf, listProposals, proposalsRoot, visibleTo, type ProposalBrief } from "./proposals.js";
+import { briefOf, listProposals, proposalsRoot, type ProposalBrief } from "./proposals.js";
 import { APP_NAMESPACE, PEER_NAMESPACE, encodeId, idProblem, type SessionStore, type SessionTurn } from "./session-store.js";
 import type { RunStore } from "./store.js";
 import { replyOf } from "./wake.js";
@@ -616,9 +616,12 @@ export function createConversations(deps: ConversationsDeps): Conversations {
       const start = Math.max(0, end - limit);
       const page = rec.turns.slice(start, end);
       const runIds = new Set(page.map((t) => t.runId));
-      const proposals = (await listProposals(proposalsRoot(deps.dataDir)).catch(() => [])).filter(
-        (p) => runIds.has(p.by.runId) && visibleTo((by.person ? "peer:person" : "full") as Scope, by.actor, p),
-      );
+      // Only this page's runs, and only what the reader may see: decided on
+      // the index, so a read never opens another conversation's records.
+      const proposals = await listProposals(proposalsRoot(deps.dataDir), {
+        runId: [...runIds],
+        viewer: { scope: (by.person ? "peer:person" : "full") as Scope, ...(by.actor ? { actor: by.actor } : {}) },
+      }).catch(() => []);
       const turns: ConversationTurn[] = [];
       for (let i = page.length - 1; i >= 0; i--) {
         const t = page[i]!;

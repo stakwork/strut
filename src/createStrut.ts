@@ -1808,7 +1808,7 @@ export async function createStrut<TServices = unknown>(
     const { name, runId } = c.req.param();
     const scope = await scopeOf(c);
     const actor = await resolveActor(c);
-    const proposals = (await listProposals(proposalsRoot(dataDir), { runId })).filter((p) => p.by.workflow === name && visibleTo(scope, actor, p)).map(briefOf);
+    const proposals = (await listProposals(proposalsRoot(dataDir), { runId, viewer: { scope, ...(actor ? { actor } : {}) } })).filter((p) => p.by.workflow === name).map(briefOf);
     return c.json({ workflow: name, runId, proposals });
   });
 
@@ -3992,16 +3992,19 @@ export async function createStrut<TServices = unknown>(
     if (status !== undefined && !STATUSES.has(status)) return c.json({ error: `status must be one of ${[...STATUSES].join(", ")}` }, 400);
     const limitQ = c.req.query("limit");
     if (limitQ !== undefined && !/^[1-9]\d*$/.test(limitQ)) return c.json({ error: "limit must be a positive integer" }, 400);
+    const scope = await scopeOf(c);
+    const actor = await resolveActor(c);
+    // What this request may see is decided on the index, before the limit
+    // and before any file is read: a person token's poll reads its own.
     const proposals = await listProposals(proposalsDir, {
+      viewer: { scope, ...(actor ? { actor } : {}) },
       ...(limitQ !== undefined ? { limit: Number(limitQ) } : {}),
       ...(c.req.query("job") !== undefined ? { job: c.req.query("job") } : {}),
       ...(c.req.query("session") !== undefined ? { session: c.req.query("session") } : {}),
       ...(c.req.query("runId") !== undefined ? { runId: c.req.query("runId") } : {}),
       ...(status !== undefined ? { status: status as ProposalStatus } : {}),
     });
-    const scope = await scopeOf(c);
-    const actor = await resolveActor(c);
-    return c.json({ proposals: proposals.filter((p) => visibleTo(scope, actor, p)) });
+    return c.json({ proposals });
   });
 
   app.get("/proposals/:id", async (c) => {

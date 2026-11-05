@@ -74,6 +74,30 @@ describe("proposals index", () => {
     assert.equal((await readProposal(root, a.id))?.status, "rejected");
   });
 
+  it("runId takes several; reported narrows to what the session was or was not told", async () => {
+    const a = await createProposal(root, mk("a", { runId: "r1", session: "s" }));
+    const b = await createProposal(root, mk("b", { runId: "r2", session: "s" }));
+    await createProposal(root, mk("c", { runId: "r3", session: "s" }));
+    assert.deepEqual((await listProposals(root, { runId: ["r1", "r2"] })).map((p) => p.id), [b.id, a.id]);
+    const cap = proposalsCapability(dir, {});
+    assert.equal((await listProposals(root, { reported: false })).length, 3);
+    await cap.markReported([a.id]);
+    assert.deepEqual((await listProposals(root, { reported: true })).map((p) => p.id), [a.id]);
+    assert.equal((await listProposals(root, { reported: false })).length, 2);
+  });
+
+  it("viewer: a person token's list is decided on the index, before the limit", async () => {
+    // Newest first: two of someone else's, then two of mine.
+    const mine1 = await createProposal(root, mk("m1", { actor: "alice", session: "alice/1" }));
+    const mine2 = await createProposal(root, mk("m2", { actor: "alice", session: "alice/2" }));
+    await createProposal(root, mk("o1", { actor: "bob", session: "bob/1" }));
+    await createProposal(root, mk("o2", { actor: "alice", session: "hive-chat" }));
+    const viewer = { scope: "peer:person" as const, actor: "alice" };
+    assert.deepEqual((await listProposals(root, { viewer, limit: 2 })).map((p) => p.id), [mine2.id, mine1.id]);
+    assert.equal((await listProposals(root, { viewer: { scope: "full" } })).length, 4);
+    assert.deepEqual(await listProposals(root, { viewer: { scope: "peer" } }), []);
+  });
+
   it("concurrent identical lists share one read", async () => {
     await createProposal(root, mk("a"));
     const [x, y] = await Promise.all([listProposals(root, { status: "pending" }), listProposals(root, { status: "pending" })]);

@@ -85,8 +85,14 @@ export type NewProposal = Pick<Proposal, "step" | "input" | "rationale" | "title
 export interface ProposalFilter {
   job?: string;
   session?: string;
-  runId?: string;
+  /** One run's, or any of several (a conversation page's turns). */
+  runId?: string | string[];
   status?: ProposalStatus | ProposalStatus[];
+  /** Whether the proposing session has been told of it (`reportedAt`). */
+  reported?: boolean;
+  /** Only what this request may see in a list (`visibleTo`), applied on
+   *  the index before `limit` and before any file is read. */
+  viewer?: { scope: Scope; actor?: string };
   /** At most this many, newest first; unlimited by default. */
   limit?: number;
 }
@@ -114,7 +120,7 @@ export function proposalUrl(id: string): string {
  *  files by id; the id is 72 random bits and the lists stay own-only, so "by
  *  id" means someone showed it to you, as with a job. Deciding stays the
  *  proposer's (`decideProposal`). */
-export function visibleTo(scope: Scope, actor: string | undefined, p: Proposal, opts: { byId?: boolean } = {}): boolean {
+export function visibleTo(scope: Scope, actor: string | undefined, p: Pick<Proposal, "by">, opts: { byId?: boolean } = {}): boolean {
   if (scope === "full") return true;
   if (scope !== "peer:person") return false;
   if (opts.byId) return true;
@@ -188,13 +194,14 @@ async function mapLimited<T, R>(items: T[], fn: (t: T) => Promise<R>): Promise<R
 
 // ── the index: what a list filters on, in memory, loaded once per root ─────
 
+/** What a list filters on: the record less its payloads (`input`, `card`,
+ *  `summary`, `result`). `by` whole, so `visibleTo` runs on the index. */
 interface IndexEntry {
   id: string;
   status: ProposalStatus;
-  job?: string;
-  session?: string;
-  runId?: string;
   createdAt: string;
+  by: Proposal["by"];
+  reportedAt?: string;
 }
 interface RootIndex {
   entries: Map<string, IndexEntry>;
@@ -207,10 +214,9 @@ const inflight = new Map<string, Promise<Proposal[]>>();
 const entryOf = (p: Proposal): IndexEntry => ({
   id: p.id,
   status: p.status,
-  ...(p.by?.job !== undefined ? { job: p.by.job } : {}),
-  ...(p.by?.session !== undefined ? { session: p.by.session } : {}),
-  ...(p.by?.runId !== undefined ? { runId: p.by.runId } : {}),
   createdAt: p.createdAt,
+  by: p.by ?? ({} as Proposal["by"]),
+  ...(p.reportedAt ? { reportedAt: p.reportedAt } : {}),
 });
 
 function indexOf(root: string): RootIndex {
@@ -270,7 +276,7 @@ async function updateProposal(root: string, id: string, edit: (p: Proposal) => v
 }
 
 export function listProposals(root: string, filter: ProposalFilter = {}): Promise<Proposal[]> {
-  const key = `${root}\0${JSON.stringify([filter.job, filter.session, filter.runId, filter.status, filter.limit])}`;
+  const key = `${root}\0${JSON.stringify([filter.job, filter.session, filter.runId, filter.status, filter.reported, filter.viewer?.scope, filter.viewer?.actor, filter.limit])}`;
   let p = inflight.get(key);
   if (!p) {
     p = runList(root, filter).finally(() => {
@@ -284,12 +290,16 @@ export function listProposals(root: string, filter: ProposalFilter = {}): Promis
 async function runList(root: string, filter: ProposalFilter): Promise<Proposal[]> {
   await loadIndex(root);
   const statuses = filter.status === undefined ? undefined : new Set(Array.isArray(filter.status) ? filter.status : [filter.status]);
+  const runIds = filter.runId === undefined ? undefined : new Set(Array.isArray(filter.runId) ? filter.runId : [filter.runId]);
+  const { viewer } = filter;
   let hits = [...indexOf(root).entries.values()].filter(
     (e) =>
-      (filter.job === undefined || e.job === filter.job) &&
-      (filter.session === undefined || e.session === filter.session) &&
-      (filter.runId === undefined || e.runId === filter.runId) &&
-      (!statuses || statuses.has(e.status)),
+      (filter.job === undefined || e.by.job === filter.job) &&
+      (filter.session === undefined || e.by.session === filter.session) &&
+      (!runIds || runIds.has(e.by.runId)) &&
+      (!statuses || statuses.has(e.status)) &&
+      (filter.reported === undefined || !!e.reportedAt === filter.reported) &&
+      (!viewer || visibleTo(viewer.scope, viewer.actor, e)),
   );
   hits.sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
   if (filter.limit !== undefined) hits = hits.slice(0, filter.limit);
@@ -353,7 +363,7 @@ export function proposalsCapability(
     },
     get: (id) => readProposal(root, id),
     list: (filter) => listProposals(root, filter),
-    unreported: async (session) => (await listProposals(root, { session })).filter((p) => DECIDED.has(p.status) && !p.reportedAt).reverse(),
+    unreported: async (session) => (await listProposals(root, { session, status: [...DECIDED], reported: false })).reverse(),
     async markReported(ids) {
       const at = new Date().toISOString();
       for (const id of ids) await updateProposal(root, id, (p) => void (p.reportedAt ??= at));
