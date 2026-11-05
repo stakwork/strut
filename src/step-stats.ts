@@ -65,7 +65,10 @@ export async function stepStats(
     const summary = await store.getRunSummary(key, id);
     if (summary?.stepCounts) return summary.stepCounts;
     const counts = countSteps(await store.getRunEvents(key, id));
-    if (summary) await store.finalize(key, id, { ...summary, stepCounts: counts });
+    // Re-read before writing: a resume may have cleared the summary while
+    // the log was read, and writing the old one back would end a live run.
+    const current = summary && (await store.getRunSummary(key, id));
+    if (current && !current.stepCounts) await store.finalize(key, id, { ...current, stepCounts: counts });
     return counts;
   };
 

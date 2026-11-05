@@ -2633,27 +2633,28 @@ export async function createStrut<TServices = unknown>(
       }))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
     const hashes = new Map<string, string | null>();
-    for (const v of versions) hashes.set(v.version, await workspace.getWorkflowHash(name, v.version));
+    await Promise.all(versions.map(async (v) => hashes.set(v.version, await workspace.getWorkflowHash(name, v.version))));
     const stats = new Map<string, { runs: number; success: number; error: number; lastRunAt?: string }>();
     let unattributed = 0;
-    for (const runId of await store.listRuns(name)) {
+    // Each run is read and counted as it comes, 32 at a time. A summary
+    // without the hash reads only the log's first line (`getRunStart`).
+    const count = async (runId: string) => {
       const summary = await store.getRunSummary(name, runId);
-      if (!summary) continue; // in flight — counted once it finishes
-      let hash = summary.workflowHash;
-      if (!hash) {
-        const start = (await store.getRunEvents(name, runId)).find((e) => e.type === "run.start");
-        hash = (start as { workflowHash?: string } | undefined)?.workflowHash;
-      }
+      if (!summary) return; // in flight — counted once it finishes
+      const hash =
+        summary.workflowHash ?? ((await store.getRunStart(name, runId)) as { workflowHash?: string } | null)?.workflowHash;
       const twins = hash ? versions.filter((v) => hashes.get(v.version) === hash) : [];
       const v = twins.find((t) => t.createdAt <= summary.startedAt) ?? twins[twins.length - 1];
-      if (!v) { unattributed++; continue; }
+      if (!v) { unattributed++; return; }
       const s = stats.get(v.version) ?? { runs: 0, success: 0, error: 0 };
       s.runs++;
       if (summary.status === "success") s.success++;
       if (summary.status === "error") s.error++;
       if (!s.lastRunAt || summary.startedAt > s.lastRunAt) s.lastRunAt = summary.startedAt;
       stats.set(v.version, s);
-    }
+    };
+    const runIds = await store.listRuns(name);
+    for (let i = 0; i < runIds.length; i += 32) await Promise.all(runIds.slice(i, i + 32).map(count));
     return c.json({
       active: meta.active,
       versions: versions.map((v) => ({ ...v, ...(stats.get(v.version) ?? { runs: 0, success: 0, error: 0 }) })),

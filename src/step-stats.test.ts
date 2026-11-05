@@ -63,6 +63,22 @@ describe("stepStats", () => {
     assert.deepEqual(store.getSummary("child", "7")?.stepCounts, { http: { success: 1, error: 0, lastAt: "2026-09-01T00:00:00Z" } });
   });
 
+  it("never writes back a summary a resume cleared while the log was read", async () => {
+    await store.append("child", "8", ev("step.end", "http", "2026-09-01T00:00:00Z"));
+    await store.finalize("child", "8", { runId: "8", workflow: "child", startedAt: "", finishedAt: "", durationMs: 0, status: "success", input: {} });
+    const resuming = {
+      listRuns: (w: string) => store.listRuns(w),
+      getRunSummary: (w: string, r: string) => store.getRunSummary(w, r),
+      finalize: (w: string, r: string, s: RunSummary) => store.finalize(w, r, s),
+      getRunEvents: async (w: string, r: string) => {
+        if (r === "8") await store.clearRunSummary(w, r); // a durable resume, mid-read
+        return store.getRunEvents(w, r);
+      },
+    };
+    await stepStats(ws, resuming, "http");
+    assert.equal(await store.getRunSummary("child", "8"), null, "the resumed run stays live");
+  });
+
   it("reports nothing for an unused step", async () => {
     const s = await stepStats(ws, store, "wait");
     assert.deepEqual(s, { type: "wait", workflows: [], runs: { total: 0, success: 0, error: 0, lastAt: null } });

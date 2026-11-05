@@ -12,7 +12,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 
 import { createStrut } from "./createStrut.js";
 import { createRegistry } from "./steps/registry.js";
-import { defineStep, flow, step, withAccessedNodes, withMessages, type StepContext } from "./core.js";
+import { defineStep, flow, step, withAccessedNodes, withMessages, type StepContext, type RunEvent, type RunSummary } from "./core.js";
 import { fileToken, inProcessRequest, sessionToken, signInTicket } from "./auth.js";
 import { pathlessWorkspace } from "./test-util/pathless-workspace.js";
 import { WorkspaceManager } from "./workspace.js";
@@ -674,6 +674,35 @@ describe("createStrut", () => {
     assert.equal(by.v2.success, 2);
     assert.equal(by.v1.runs, 1);
     assert.equal(body.unattributed, 0);
+  });
+
+  it("versions: a summary without the hash is attributed from the log's first line, never the whole log", async () => {
+    const ws = new WorkspaceManager(tempDir);
+    await ws.publishWorkflow("start-flow", "v1", { steps: [{ id: "g", type: "log", config: { message: "one" } }] });
+    const hash = await ws.getWorkflowHash("start-flow", "v1");
+    const store = new FileRunStore(tempDir);
+    // 40 runs: two batches. Even ids carry the hash on the summary, odd ones
+    // only on `run.start` (a summary written before it was recorded).
+    for (let i = 1; i <= 40; i++) {
+      const id = String(i);
+      await store.append("start-flow", id, { type: "run.start", workflowHash: hash, ts: "2026-01-01T00:00:00Z" } as unknown as RunEvent);
+      await store.append("start-flow", id, { type: "run.end", ts: "2026-01-01T00:00:01Z" } as unknown as RunEvent);
+      await store.finalize("start-flow", id, {
+        runId: id, workflow: "start-flow", startedAt: "2999-01-01T00:00:00Z", finishedAt: "", durationMs: 0,
+        status: i % 4 === 1 ? "error" : "success", input: {}, ...(i % 2 === 0 ? { workflowHash: hash! } : {}),
+      } as RunSummary);
+    }
+    let fullReads = 0;
+    const getRunEvents = store.getRunEvents.bind(store);
+    store.getRunEvents = async (w: string, r: string) => (fullReads++, getRunEvents(w, r));
+    const strut = await createStrut({ workspace: ws, store, serveUi: false, enableChat: false });
+    const body = (await (await strut.app.request("/workflows/start-flow/versions")).json()) as {
+      versions: Array<{ runs: number; success: number; error: number }>;
+      unattributed: number;
+    };
+    assert.deepEqual([body.versions[0]!.runs, body.versions[0]!.success, body.versions[0]!.error], [40, 30, 10]);
+    assert.equal(body.unattributed, 0);
+    assert.equal(fullReads, 0);
   });
 
   it("records a version's source over HTTP: ui when the UI says so, api otherwise — never seed", async () => {
