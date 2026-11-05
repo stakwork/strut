@@ -230,9 +230,13 @@ The one cost is a package whose source sits outside its folder.
 - **CI** builds the package on every PR (one step in `tests.yml`) and
   imports the bundle once, so a release never finds a broken build.
 - **Publishing stays by hand.** To release:
-  1. bump `aieo/package.json`;
-  2. `npm run build:aieo`;
-  3. `npm publish ./aieo`.
+  1. `yarn install --frozen-lockfile` at strut's root: the bundle inlines
+     the SDKs installed there, and `aieo/check-install.mjs` refuses a
+     build whose install is not the pinned one (0.2.8 was built from a
+     stale checkout and inlined `@ai-sdk/anthropic` 4.0.60);
+  2. bump `aieo/package.json`;
+  3. `npm run build:aieo`;
+  4. `npm publish ./aieo`.
 - **strut has no aieo version.** It runs the source at its own commit,
   and nothing strut does waits on a release. A version moves only when
   mcp, Hive or staklink need a change.
