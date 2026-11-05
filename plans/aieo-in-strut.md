@@ -357,11 +357,12 @@ price rows Stadeum pushes for them come from those same tables.
 The models plan's strut items become one strut PR each, with their
 tests, and no release.
 
-- **Item 2, the catalog.** `/llm/models` lists models with their price
-  and window, read through §6's lookup rather than a new table in aieo.
-  - `listModels()` lists aliases only (`aieo resolve.ts:58-72`).
-  - So item 2 needs a catalog export over the aliases, Maple's and
-    Numes' tables, and whatever `STRUT_MODELS` names.
+- **Item 2, the catalog: landed (strut#542).** `/llm/models` lists the
+  aliases, Maple's and Numes' models, and whatever `STRUT_MODELS` names,
+  each with its window. It shows a price only for Maple and Numes, because
+  aieo has no other per-model rate. Once §6 lands, `listModelOptions`
+  (`src/llm.ts`) reads prices and windows through its lookup, with the
+  same fields.
 - **Item 4, routed OpenAI-compatible providers.**
   - Maple, Numes and any admin-added name go to the gateway's
     `/openai/v1` as `<provider>/<id>`. OpenRouter and xAI already do this
