@@ -35,6 +35,7 @@
     "eval:dictation": "tsx src/audio/dictation-eval/run.ts",
     "check:fixer": "tsc -p fixer/tsconfig.json",
     "test:privacy": "STRUT_PRIVACY_LIVE=1 tsx --test src/privacy/privacy.live.test.ts",
+    "test:memory-live": "STRUT_TEST_LIVE_MEMORY=1 tsx --test src/graph/graph-memory.live.test.ts src/graph/claims.test.ts src/graph/claims-authoring.test.ts",
     "test:browser": "tsx --test src/browser/service.live.test.ts",
     "test:app-look": "STRUT_TEST_APP_LOOK=1 tsx --test src/apps/look.live.test.ts",
     "test:gateway": "tsx scripts/gateway-smoke.ts",
