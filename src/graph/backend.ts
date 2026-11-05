@@ -30,11 +30,11 @@
  */
 import { resolve } from "node:path";
 import { Bolt, graphConfigFromEnv, type Neo4jConfig } from "./bolt.js";
-import { upgradeClaimSchema, type ClaimSchemaUpgradeReport } from "./claim-schema-upgrade.js";
+import type { ClaimSchemaUpgradeReport } from "./claim-schema-upgrade.js";
 import { EdgeWriter } from "./edge-writer.js";
 import { EmbeddingPass, MiniLMEmbedder, WorkerEmbedder, type EmbeddingPassOptions } from "./embeddings.js";
 import type { GraphEngine } from "./engine.js";
-import { reconcileIndexLists, type IndexReconcileReport } from "./index-reconcile.js";
+import type { IndexReconcileReport } from "./index-reconcile.js";
 import { openLadybug, type LadybugHandle } from "./ladybug/db.js";
 import { LadybugEngine } from "./ladybug/engine.js";
 import { PRIVATE_NAMESPACE, namespaceName } from "./ladybug/namespaces.js";
@@ -42,7 +42,7 @@ import { LadybugReader } from "./ladybug/reader.js";
 import { MERGE_TYPE, SCHEMA_TYPE } from "./ladybug/registry.js";
 import { Neo4jEngine } from "./neo4j-engine.js";
 import { NodeWriter, type Embedder } from "./node-writer.js";
-import { seedJarvisOntology, type OntologySeedReport } from "./ontology-seed.js";
+import type { OntologySeedReport } from "./ontology-seed.js";
 import { SchemaResolver } from "./schema-resolver.js";
 import { seedStrutDomain, type SeedReport } from "./schema-seed.js";
 import { Neo4jReader, type GraphReader } from "./search.js";
@@ -323,6 +323,14 @@ async function open(cfg: Neo4jConfig, opts: GraphBackendOptions): Promise<Neo4jB
     let ontologySeed: OntologySeedReport | undefined;
     let indexReconcile: IndexReconcileReport | undefined;
     if (!opts.skipBoot) {
+      // Imported here, not at the top: the three read jarvis's bundled
+      // ontology (fixtures/jarvis-ontology.ts, 150 KB), which a Ladybug
+      // file never uses, so a process on one never loads it.
+      const [{ upgradeClaimSchema }, { seedJarvisOntology }, { reconcileIndexLists }] = await Promise.all([
+        import("./claim-schema-upgrade.js"),
+        import("./ontology-seed.js"),
+        import("./index-reconcile.js"),
+      ]);
       // Legacy names first, so the seed below extends the renamed Schema
       // nodes instead of creating twins beside them.
       veinMigration = await migrateVeinToStrut(bolt);

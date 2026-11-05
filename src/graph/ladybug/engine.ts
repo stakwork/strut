@@ -81,8 +81,6 @@ export const LADYBUG_DIALECT: Dialect = {
 
 /** Identity props never touched after create. */
 const PRESERVED = new Set(["ref_id", "key", "namespace", "node_type", "created_at"]);
-/** What the shared writer composes that the file does not keep. */
-const DROPPED_PROPS = new Set(["_search_fields_used"]);
 /** Edge stamps the writer sets on create and `setProps` never touches
  *  (`updated_at` it moves itself). */
 const EDGE_STAMPS = new Set(["ref_id", "edge_key", "created_at", "namespace", "created_by", "updated_at", "deleted_at"]);
@@ -140,7 +138,7 @@ class LadybugNodes implements NodeEngine {
 
   /** The file's columns, with every one of `names` in it if the file has it. */
   private async known(tx: GraphTx, names: string[]): Promise<Record<string, string>> {
-    return (await catalogFor(this.catalog, tx, (c) => names.every((k) => DROPPED_PROPS.has(k) || k in c.columns))).columns;
+    return (await catalogFor(this.catalog, tx, (c) => names.every((k) => k in c.columns))).columns;
   }
 
   /** The writer's props as columns: every key must be an attribute of the
@@ -149,7 +147,6 @@ class LadybugNodes implements NodeEngine {
     const out: Record<string, unknown> = {};
     const known = await this.known(tx, Object.keys(props));
     for (const [k, v] of Object.entries(props)) {
-      if (DROPPED_PROPS.has(k)) continue;
       if (!(k in schema.attributes) && !(k in GENERIC_COLUMNS)) throw new GraphValidationError("UNKNOWN_ATTRIBUTE", schema.type, "not a column of the ladybug Node table", k);
       if (!known[k]) throw new GraphValidationError("UNKNOWN_ATTRIBUTE", schema.type, "not a column of the ladybug Node table", k);
       out[k] = v;
