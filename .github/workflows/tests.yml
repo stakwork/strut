@@ -41,7 +41,9 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # The suite alone took 9 m 05 s on main at 3e0f23b (3,652 tests), so 10
+    # minutes cut a green run off after its last test and marked it cancelled.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
