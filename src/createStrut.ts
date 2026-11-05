@@ -55,7 +55,8 @@ import {
 import { runStep, cassettePath, RUN_STEP_FLOW } from "./run-step.js";
 import { buildProvenance } from "./provenance.js";
 import { RUN_GET_MAX_WAIT_MS, RUN_LIST_DEFAULT_LIMIT, RUN_LIST_MAX_LIMIT, capEvents, capTranscript, fileResult, listEntryOf, matchesRunFilter, runsPage, type RunCaller, type RunListEntry, type RunTranscript, type RunsCapability } from "./runs.js";
-import type { AppRef, StartedBy } from "./core.js";
+import type { AppRef, StartedBy, WakeMark } from "./core.js";
+import { WAKE_MAX, artifactsOf, createWakes, parseWakeDoor, replyOf, type WakeEnd, type WakeOutcome } from "./wake.js";
 import { createVerifier, type Verifier, type VerifyResult } from "./verify.js";
 import { CLAIMS_OFF, type ClaimsBlock } from "./claims-schemas.js";
 import { PERSON, claimsRoutes } from "./claims-routes.js";
@@ -138,7 +139,7 @@ import { fileMcpRegistry, gatedByDefault, mcpStepDef, parseRegistration, resolve
 import { briefOf, decideProposal, visibleTo, listProposals, proposalsCapability, proposalsRoot, readProposal, type ProposalStatus } from "./proposals.js";
 import type { AssistantChatDoor } from "./ai/assistant-tools.js";
 import { shellCapability, type ShellCapability } from "./capabilities.js";
-import { deleteJob, jobFilePath, jobRoot, jobsCapability, listJobFiles, readJobRecord, releaseWith, setJobCallback, turnOf, wakeJobFeeds, type JobsCapability } from "./jobs.js";
+import { JOB_WORKFLOWS, deleteJob, jobFilePath, jobRoot, jobsCapability, listJobFiles, readJobRecord, releaseWith, setJobCallback, turnOf, wakeJobFeeds, type JobsCapability } from "./jobs.js";
 import { createJobIndex } from "./job-index.js";
 import { transcriptUrl } from "./job-threads.js";
 import { resolveArtifactRefs, type ArtifactRef } from "./artifact-refs.js";
@@ -2016,6 +2017,8 @@ export async function createStrut<TServices = unknown>(
         params: p.runStart.params,
         paramOverrides: p.runStart.paramOverrides,
         ...(p.runStart.job ? { job: p.runStart.job } : {}),
+        ...(p.runStart.conversation ? { conversation: p.runStart.conversation } : {}),
+        ...(p.runStart.wakeAsked ? { wake: true } : {}),
       },
       {
         journal: p.journal,
@@ -2028,6 +2031,7 @@ export async function createStrut<TServices = unknown>(
         // namespace (runner.ts `bindApp`), never the ids its page passed.
         ...(p.runStart.origin === "app" && p.runStart.app ? { origin: "app" as const, app: p.runStart.app } : {}),
         ...(p.runStart.startedBy ? { startedBy: p.runStart.startedBy } : {}),
+        ...(p.runStart.wake ? { wake: p.runStart.wake } : {}),
         // Billed to whoever the original launch was billed to — never
         // re-derived, the owner may have changed since (§2).
         ...(p.runStart.actor ? { actor: p.runStart.actor } : {}),
@@ -2088,16 +2092,20 @@ export async function createStrut<TServices = unknown>(
       stepCounts: countSteps(events),
     });
     const url = await store.getRunCallback(name, runId);
-    if (url) {
-      postRunCallback(
-        url,
-        name,
-        { runId, status, ...(output !== undefined ? { output } : {}), ...(error ? { error } : {}) },
-        Date.now() - durationMs,
-        start?.job,
-        start?.startedBy,
-      );
-    }
+    // A job turn's end the dead process never woke on wakes now; a wake
+    // turn's is the boot reconcile's (src/wake.ts).
+    const res: RunResult = { runId, status, ...(output !== undefined ? { output } : {}), ...(error ? { error } : {}) };
+    const session = (start?.input as Record<string, unknown> | undefined)?.["session"];
+    const wake = start?.wake ?? (await wakeOnEnd(name, res, {
+      ...(start?.job ? { job: start.job } : {}),
+      ...(start?.startedBy ? { startedBy: start.startedBy } : {}),
+      ...(start?.conversation ? { conversation: start.conversation } : {}),
+      ...(start?.wakeAsked ? { asked: true } : {}),
+      ...(start?.actor ? { actor: start.actor } : {}),
+      ...(start?.principal ? { principal: start.principal } : {}),
+      ...(typeof session === "string" ? { session } : {}),
+    }));
+    if (url) postRunCallback(url, name, res, Date.now() - durationMs, start?.job, start?.startedBy, wake);
     return url;
   };
 
@@ -4709,6 +4717,19 @@ export async function createStrut<TServices = unknown>(
      *  turn launched with none of its own hands its host's URL to every
      *  job it starts. Kept by the run store beside the log for that. */
     jobCallback?: { url: string } | { room: true } | null;
+    /** The conversation (a session id) this run belongs to, for a job turn
+     *  a HOST launched itself (plans/jamie-app.md §1.2): its end wakes that
+     *  conversation as a job/start's does (src/wake.ts). Full scope only;
+     *  recorded on `run.start`. */
+    conversation?: string;
+    /** `true`: the host asks strut to wake this run's conversation
+     *  (`input.session`) when a job it starts ends (src/wake.ts,
+     *  plans/jamie-app.md §7) — and draws that wake turn's `run.end`, so it
+     *  no longer wakes on its own. Opt-in per launch: a host that does not
+     *  ask never gets a wake turn it cannot show. Full scope only (a peer's
+     *  is dropped: its turns are relays); recorded on `run.start`
+     *  (`wakeAsked`), echoed as the 202's `wake: true`. */
+    wake?: boolean;
     /** The caller's MCP servers (src/mcp-servers.ts): its door back into
      *  itself for this run's agents, the pull-direction twin of `callback`.
      *  Kept beside the log like the callback URL, never in it. */
@@ -4776,6 +4797,8 @@ export async function createStrut<TServices = unknown>(
        *  the ones `run.start` recorded, already saved. */
       attachments?: Attachment[];
       savedAttachments?: RunAttachment[];
+      /** A wake turn (src/wake.ts): the job run(s) it woke on. */
+      wake?: WakeMark;
     },
   ): string {
     const runId = body.runId ?? generateRunId();
@@ -4789,6 +4812,11 @@ export async function createStrut<TServices = unknown>(
     const launchedAt = Date.now();
     const callback = extra?.callback;
     const mcp = extra?.mcp?.length ? extra.mcp : undefined;
+    // The conversation it runs on: a wake waits while it is in flight.
+    const rawSession = (body.input as Record<string, unknown> | undefined)?.["session"];
+    const session = typeof rawSession === "string" && rawSession ? rawSession : undefined;
+    if (session) liveSessions.set(session, new Set([...(liveSessions.get(session) ?? []), runId]));
+    let principal = extra?.principal;
     void (async () => {
       // A resume drops the summary of the attempt it resumes FIRST, so the
       // run reads as live (its controller), never as the outcome it is
@@ -4808,7 +4836,7 @@ export async function createStrut<TServices = unknown>(
       const workflowHash =
         (await workspace.getWorkflowHash(flow.name, extra?.version)) ?? undefined;
       const stepHashes = await stepHashesFor(workspace, flow);
-      const principal = extra?.principal ?? (await principalFor(flow.name, extra?.actor));
+      principal ??= await principalFor(flow.name, extra?.actor);
       return runWorkflow(flow, body.input ?? {}, registry, {
         runId,
         store,
@@ -4831,35 +4859,149 @@ export async function createStrut<TServices = unknown>(
         ...(body.job ? { job: body.job } : {}),
         ...(body.job && body.title ? { title: body.title } : {}),
         ...(extra?.startedBy ? { startedBy: extra.startedBy } : {}),
+        ...(body.conversation ? { conversation: body.conversation } : {}),
+        ...(body.wake === true ? { wakeAsked: true } : {}),
+        ...(extra?.wake ? { wake: extra.wake } : {}),
         ...(callback ? { callback: roomActorOf(callback.url) !== undefined ? { room: true as const } : { origin: callbackOrigin(callback.url) } } : {}),
         ...(mcp ? { mcp } : {}),
         ...(attachments?.length ? { attachments } : {}),
       });
     })()
       .then(
-        (res) => {
-          if (callback) postRunCallback(callback.url, flow.name, res, launchedAt, body.job, extra?.startedBy);
-        },
+        (res) => res,
         // runWorkflow finalizes its own errors into a resolved result; a
         // rejection is an unexpected throw (e.g. a store write failure).
         // Logged — and the host that asked still hears it, as an error.
-        (err) => {
+        (err): RunResult => {
           console.error(`[run ${runId}] launch failed:`, err);
-          if (callback) {
-            const message = err instanceof Error ? err.message : String(err);
-            postRunCallback(callback.url, flow.name, { runId, status: "error", error: { message } }, launchedAt, body.job, extra?.startedBy);
-          }
+          return { runId, status: "error", error: { message: err instanceof Error ? err.message : String(err) } };
         },
       )
-      .finally(untrack);
+      .then(async (res) => {
+        // What strut does about the end — a job turn's wake, decided before
+        // its run.end goes out, which says so; a wake turn's end — then the
+        // host hears it.
+        const wake = await wakeOnEnd(flow.name, res, {
+          ...(body.job ? { job: body.job } : {}),
+          ...(extra?.startedBy ? { startedBy: extra.startedBy } : {}),
+          ...(body.conversation ? { conversation: body.conversation } : {}),
+          ...(body.wake === true ? { asked: true } : {}),
+          ...(extra?.actor ? { actor: extra.actor } : {}),
+          ...(principal ? { principal } : {}),
+          ...(extra?.wake ? { mark: extra.wake } : {}),
+          ...(session ? { session } : {}),
+        });
+        if (callback) postRunCallback(callback.url, flow.name, res, launchedAt, body.job, extra?.startedBy, wake);
+      })
+      .finally(() => {
+        untrack();
+        if (!session) return;
+        const live = liveSessions.get(session);
+        live?.delete(runId);
+        if (!live?.size) liveSessions.delete(session);
+        wakes.kick(session);
+      });
     return runId;
+  }
+
+  // ── The wake (src/wake.ts, plans/jamie-app.md §1) ─────────────────────
+  // A job turn that ends naming a conversation here wakes it: one more turn
+  // of the conversation's workflow, its prompt the workflow's `params.wake`.
+
+  /** Every run in flight launched on a session (`input.session`), by
+   *  session: a wake waits for them. */
+  const liveSessions = new Map<string, Set<string>>();
+  const orchestratorOpts = opts.orchestrator === false ? undefined : opts.orchestrator;
+  const wakeMax = orchestratorOpts?.wakeMax ?? WAKE_MAX;
+  if (!Number.isInteger(wakeMax) || wakeMax < 0) throw new Error(`orchestrator.wakeMax must be a whole number of turns, not ${wakeMax}`);
+  const wakes = createWakes({
+    dataDir,
+    enabled: orchestratorOpts?.wake !== false,
+    max: wakeMax,
+    store,
+    sessions: sessionStore,
+    holder: (id) => sessions.holder(id),
+    liveOn: (id) => [...(liveSessions.get(id) ?? [])],
+    isLive: (workflow, runId) => controllers.has(`${workflow}/${runId}`),
+    getWorkflow: (name) => workspace.getWorkflow(name),
+    launch: (flow, run) =>
+      launchDetached(
+        flow,
+        { input: run.input, ...(run.params ? { params: run.params } : {}) },
+        {
+          ...(run.actor ? { actor: run.actor } : {}),
+          ...(run.principal ? { principal: run.principal } : {}),
+          ...(run.callback ? { callback: { url: run.callback } } : {}),
+          ...(run.jobCallback ? { jobCallback: { url: run.jobCallback } } : {}),
+          wake: run.wake,
+        },
+      ),
+  });
+
+  /** A job turn's end as the wake keeps it: its reply, its question, what
+   *  it produced, its title (the job's record), who asked for it. */
+  async function wakeEndOf(
+    workflow: string,
+    res: RunResult,
+    info: { job: string; startedBy?: StartedBy; asked?: boolean; actor?: string; principal?: string },
+  ): Promise<WakeEnd> {
+    const title = (await readJobRecord(jobRoot(dataDir, info.job)))?.title;
+    const refs = await artifactRefs(res.runId, res.output, info.job).catch(() => undefined);
+    return {
+      runId: res.runId,
+      workflow,
+      job: info.job,
+      ...(title ? { title } : {}),
+      status: res.status,
+      ...replyOf(res.output),
+      ...(res.error ? { error: res.error.message } : {}),
+      artifacts: artifactsOf(refs),
+      ...(info.startedBy ? { startedBy: info.startedBy } : {}),
+      ...(info.asked ? { asked: true as const } : {}),
+      ...(info.actor ? { actor: info.actor } : {}),
+      ...(info.principal ? { principal: info.principal } : {}),
+    };
+  }
+
+  /** What strut does when a run ends: a job turn's (`JOB_WORKFLOWS`) end
+   *  wakes the conversation it names — `startedBy.session`, else the
+   *  launch's `conversation` — and its run.end carries the outcome; a wake
+   *  turn's end lets the next one go, and its run.end carries its mark.
+   *  Anything else: nothing, no `wake` field. Never throws: a failure is
+   *  `none`, logged. */
+  async function wakeOnEnd(
+    workflow: string,
+    res: RunResult,
+    info: { job?: string; startedBy?: StartedBy; conversation?: string; asked?: boolean; actor?: string; principal?: string; mark?: WakeMark; session?: string },
+  ): Promise<WakeOutcome | WakeMark | undefined> {
+    try {
+      if (info.mark) {
+        if (info.session) await wakes.turnEnded(info.session, res.runId, res.error?.message);
+        return info.mark;
+      }
+      if (!(JOB_WORKFLOWS as readonly string[]).includes(workflow)) return undefined;
+      const session = info.startedBy?.session ?? info.conversation;
+      if (!session || !info.job || !wakes.enabled) return "none";
+      return await wakes.jobEnded(session, await wakeEndOf(workflow, res, { ...info, job: info.job }));
+    } catch (err) {
+      console.error(`[wake] run ${res.runId} of ${workflow}:`, err);
+      return info.mark ?? "none";
+    }
   }
 
   /** Tell the host that asked (`POST …/run { callback }`) how a run ended:
    *  one POST, detached from the run's teardown and never awaited — a slow
    *  or dead host holds nothing up, and `postCallback` retries then warns,
    *  never throws. The payload mirrors the run's summary, minus the stack. */
-  function postRunCallback(url: string, workflow: string, res: RunResult, launchedAt: number, job?: string, startedBy?: StartedBy): void {
+  function postRunCallback(
+    url: string,
+    workflow: string,
+    res: RunResult,
+    launchedAt: number,
+    job?: string,
+    startedBy?: StartedBy,
+    wake?: WakeOutcome | WakeMark,
+  ): void {
     const durationMs = Date.now() - launchedAt;
     void (async () => {
       const transcripts = await transcriptLinks(workflow, res.runId).catch(() => []);
@@ -4875,6 +5017,9 @@ export async function createStrut<TServices = unknown>(
           runId: res.runId,
           ...(job ? { job } : {}),
           ...(startedBy ? { startedBy } : {}),
+          // A job turn's: what strut did about the end (src/wake.ts). A
+          // wake turn's: the job run it woke on.
+          ...(wake ? { wake } : {}),
           status: res.status,
           ...(res.output !== undefined ? { output: res.output } : {}),
           ...(res.error ? { error: { message: res.error.message } } : {}),
@@ -4935,7 +5080,9 @@ export async function createStrut<TServices = unknown>(
     const root = rootRunOf(runId);
     if (!root) return undefined;
     const start = (await store.getRunEvents(root.workflow, root.runId).catch(() => [])).find((e) => e.type === "run.start");
-    const session = start?.startedBy ? start.startedBy.session : (start?.input as Record<string, unknown> | undefined)?.["session"];
+    const session = start?.startedBy
+      ? start.startedBy.session
+      : (start?.conversation ?? (start?.input as Record<string, unknown> | undefined)?.["session"]);
     return typeof session === "string" && session ? session : undefined;
   }
   if (launchCap) {
@@ -5045,6 +5192,31 @@ export async function createStrut<TServices = unknown>(
     return body.jobCallback === null ? null : launchCallbackTarget(body.jobCallback, c);
   };
 
+  /** A run body's `conversation`: a session id (full scope only — a peer's
+   *  launch is refused it by `peerLaunchBody`); absent or `null` = none. */
+  const runConversationOf = (body: RunBody): string | undefined => {
+    if (body.conversation == null) return undefined;
+    const problem = idProblem(body.conversation);
+    if (problem) throw new Error(`conversation "${String(body.conversation)}" ${problem}`);
+    return body.conversation;
+  };
+  /** A run body's `wake`: `true` or absent (`false` / `null` = not asked). */
+  const runWakeOf = (body: RunBody): void => {
+    if (body.wake != null && typeof body.wake !== "boolean") throw new Error("wake must be true or false");
+  };
+  /** Whether strut wakes for a launch of `flow` (the 202's `wake: true`,
+   *  plans/jamie-app.md §7): the host asked (`wake: true`) with the
+   *  deployment's rights — a peer's turn is a relay, never woken, and its
+   *  `wake` is dropped before it launches — on a conversation turn (a
+   *  workflow with `params.wake`, on a session: the jobs it starts wake it)
+   *  or on a job turn it launched itself naming the `conversation`. */
+  const announcesWake = (flow: Flow, body: RunBody, scope: Scope): boolean =>
+    wakes.enabled &&
+    body.wake === true &&
+    scope === "full" &&
+    ((typeof flow.params?.["wake"] === "string" && typeof (body.input as Record<string, unknown> | undefined)?.["session"] === "string") ||
+      (typeof body.conversation === "string" && (JOB_WORKFLOWS as readonly string[]).includes(flow.name)));
+
   /** A run body's `job`, validated (the session-id format); absent = none.
    *  A `title` names the job, so it needs one. */
   const runJobOf = (body: RunBody): string | undefined => {
@@ -5081,9 +5253,12 @@ export async function createStrut<TServices = unknown>(
    *  why not. Which workflows a peer may launch is their YAML's `peer:`
    *  (`opensTo`, `notForPeers`). */
   const peerLaunchBody = (body: RunBody): RunBody | { refused: string } => {
-    const set = (["params", "paramOverrides", "runId", "settings"] as const).filter((k) => body[k] != null);
+    const set = (["params", "paramOverrides", "runId", "settings", "conversation"] as const).filter((k) => body[k] != null);
     if (set.length) return { refused: `forbidden: a peer launches a workflow as published — drop ${set.join(", ")}` };
-    return typeof body.job === "string" ? { ...body, job: `${PEER_NAMESPACE}${body.job}` } : body;
+    // A peer's turn is a relay, never woken here (src/wake.ts): its `wake`
+    // is dropped, not refused, so a relay that passes one through works.
+    const { wake: _wake, ...asPublished } = body;
+    return typeof asPublished.job === "string" ? { ...asPublished, job: `${PEER_NAMESPACE}${asPublished.job}` } : asPublished;
   };
   /** May a peer request of `scope` launch a workflow whose YAML says
    *  `peer: <open>`? `true` takes any peer; `person` only a credential that
@@ -5410,6 +5585,20 @@ export async function createStrut<TServices = unknown>(
     return c.json(result);
   });
 
+  // The wake for a job that ran on ANOTHER strut (plans/jamie-app.md §1.2):
+  // a host that heard the job's run.end on that strut's room (Peel's bridge,
+  // an org's) hands it in, and the local conversation is woken on it as on
+  // a job of its own — its Continue hands the go-ahead to `@<source>`'s
+  // assistant. Full scope only: a peer never wakes this strut's sessions.
+  app.post("/conversations/wake", async (c) => {
+    if ((await scopeOf(c)) !== "full") return c.json({ error: "forbidden: waking a conversation is the deployment's" }, 403);
+    const parsed = parseWakeDoor(await c.req.json().catch(() => null));
+    if ("error" in parsed) return c.json({ error: parsed.error }, 400);
+    const actor = await resolveActor(c);
+    const wake = await wakes.jobEnded(parsed.session, { ...parsed.end, ...(actor ? { actor } : {}) });
+    return c.json({ wake });
+  });
+
   // `callback: { url }` asks for the result to be POSTed there when the run
   // settles (postRunCallback): validated BEFORE anything launches, and the
   // 202 carries `callback: true` — the host's proof this server honors it.
@@ -5430,6 +5619,8 @@ export async function createStrut<TServices = unknown>(
     try {
       callback = await runCallbackOf(body, c);
       runJobOf(body);
+      runConversationOf(body);
+      runWakeOf(body);
       jobCallback = await jobCallbackOf(body, c);
       mcp = parseMcpServers(body.mcp);
       attachments = runAttachmentsOf(body);
@@ -5461,6 +5652,7 @@ export async function createStrut<TServices = unknown>(
         ...(jobCallback ? { jobCallback: true } : {}),
         ...(mcp?.length ? { mcp: true } : {}),
         ...(attachments.length ? { attachments: true } : {}),
+        ...(announcesWake(flow, body, scope) ? { wake: true } : {}),
       },
       202,
     );
@@ -5483,6 +5675,8 @@ export async function createStrut<TServices = unknown>(
     try {
       callback = await runCallbackOf(body, c);
       runJobOf(body);
+      runConversationOf(body);
+      runWakeOf(body);
       jobCallback = await jobCallbackOf(body, c);
       mcp = parseMcpServers(body.mcp);
       attachments = runAttachmentsOf(body);
@@ -5517,6 +5711,7 @@ export async function createStrut<TServices = unknown>(
         ...(jobCallback ? { jobCallback: true } : {}),
         ...(mcp?.length ? { mcp: true } : {}),
         ...(attachments.length ? { attachments: true } : {}),
+        ...(announcesWake(flow, body, scope) ? { wake: true } : {}),
       },
       202,
     );
@@ -6968,6 +7163,9 @@ export async function createStrut<TServices = unknown>(
       // never written, or unreadable: newest only
     }
     await autoResumeStaleRuns({ ...(since !== undefined ? { since } : {}), ...autoResumeOpts });
+    // The wakes a dead process left: after the scan, so a wake turn it
+    // resumed is live and waited on (src/wake.ts).
+    await wakes.reconcile().catch((err) => console.error(`[wake] boot reconcile failed:`, err));
     try {
       await mkdir(dataDir, { recursive: true });
       await writeFile(file, JSON.stringify({ startedAt: new Date(bootedAt).toISOString() }) + "\n", "utf-8");

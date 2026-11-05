@@ -156,8 +156,9 @@ workflow to other struts). A peer's request is refused by the gate.
 
 | Method | Path                            | Body | Response |
 | ------ | ------------------------------- | ---- | -------- |
-| POST   | `/workflows/:name/run`          | `{ input?, params?, paramOverrides?, settings?, runId?, callback?, job?, title?, jobCallback?, mcp?, attachments? }` | 202 `{ runId, callback?: true, jobCallback?: true, mcp?: true, attachments?: true }` |
+| POST   | `/workflows/:name/run`          | `{ input?, params?, paramOverrides?, settings?, runId?, callback?, job?, title?, jobCallback?, mcp?, attachments?, conversation?, wake? }` | 202 `{ runId, callback?: true, jobCallback?: true, mcp?: true, attachments?: true, wake?: true }` |
 | POST   | `/workflows/:name/:version/run` | same | same |
+| POST   | `/conversations/wake`           | `{ session, source, end }` | 200 `{ wake: "launched" \| "capped" \| "none" }` |
 
 | Field            | Meaning |
 | ---------------- | ------- |
@@ -172,6 +173,23 @@ workflow to other struts). A peer's request is refused by the gate.
 | `jobCallback`    | `{ url }` (http/https) — the JOB's live updates (`job.update`: a hold taken or let go, a check's evidence, a verify ended, a step's screenshot or walkthrough frame) are POSTed there as they happen, from every run under the job; see `CALLBACKS.md` §5. Kept on the job, never returned; the latest launch that carries one wins, `null` clears it, absent keeps it. With or without `job`, the jobs THIS run starts (`job/start`, `job/continue`) inherit it — an orchestrator turn's host hears every job it starts at one URL, each event naming its `job` and `runId`. 400 for another scheme. `{ room: true }` as for `callback` |
 | `mcp`            | `[{ name, url, token?, headers?, toolFilter? }]` (`McpServer`, `src/core.ts`; at most 10) — YOUR MCP servers, the way back into you for this run's agents: every `agent` step gets their tools as `<name>_<tool>` unless it says `mcp: false`, and so do the jobs a turn starts (`job/start`, `job/continue`) and the runs it launches (`meta/run-workflow`) — never a peer. `url` is a Streamable HTTP endpoint (http/https); `token` is sent as `Authorization: Bearer <token>`, `headers` for any other scheme; `toolFilter` keeps those tools only (names or globs). `name`: letters, digits, `_`, `-`, unique. A bad entry is a 400 and nothing launches. The log records `mcp: [{ name, origin }]` only; the entries are kept beside it for a resume and returned by nothing. A server that cannot be reached when an agent starts is skipped, the agent going on without its tools |
 | `attachments`    | `[{ name, mediaType?, data }]` (`src/ai/attachments.ts`) — files for the run's agents, the person's message's: `data` is base64 or a data URL, `mediaType` defaults from the data URL, else the extension. At most 10, 10 MB each, 5 MB an image, 15 MB together; a bad one is a 400 and nothing launches. Saved under the run's artifacts as `attachments/<name>` (`GET /artifacts/:runId` lists them) and put on every `agent` step's prompt after its text — an image or a PDF as a file the model sees, text and Word inline, anything else announced by its path — unless the step says `attachments: false`; a sub-agent never gets them. `run.start` records `attachments: [{ name, mediaType, size, path }]`, never the bytes (the agent's transcript keeps what the model saw). An orchestrator turn hands a job the ones it needs by name (`job/start` / `job/continue` `attachments`) — this message's, or one an earlier turn of its session carried (the turn log records them, `/sessions?id=`); not to a builder job on a peer |
+| `conversation`   | a session id (§9; a bad one is a 400) — the conversation this run belongs to, for a job turn you launch yourself: when it ends, strut WAKES that conversation as it does for a job a turn started (`CALLBACKS.md` §9, `src/wake.ts`). Recorded on `run.start`; read wherever `startedBy.session` is (a proposal's conversation). The deployment's only: a peer's launch carrying it is a 403 |
+| `wake`           | `true`: ASK strut to wake this run's conversation when a job ends — on a person's turn (`input.session`), the jobs it starts; on a job turn you launch naming a `conversation`, that job (`CALLBACKS.md` §9, `src/wake.ts`). Opt-in: a launch that does not ask is never woken, so a host that wakes on its own never gets two. `true` or `false` (else a 400); recorded on `run.start` as `wakeAsked`. A peer's is dropped (its turns are relays) |
+
+**The wake.** A launch that asks (`wake: true`, with the deployment's
+rights) of a conversation workflow — one whose template has `params.wake`,
+the seeded `orchestrator` — on an `input.session`, or of a job turn naming a
+`conversation`, answers `wake: true`: when a job of that conversation ends,
+strut runs one more turn of it on its own (`CALLBACKS.md` §9). Every job turn's `run.end` then says what strut did
+(`wake: "launched" | "capped" | "none"`), and the wake turn's carries
+`wake: { job, runId }`. `POST /conversations/wake` is the same wake for a
+job that ran on ANOTHER strut, whose `run.end` you heard on that strut's
+room: `session` the local conversation, `source` the peer's id, `end` the
+`run.end` as it came (a job's: `workflow` `job` or `builder`; anything
+else, or a bad session or source, is a 400). Its Continue hands the
+go-ahead to `@<source>`'s assistant. The deployment's only (403 to a peer).
+`createStrut({ orchestrator: { wake: false } })` turns all of it off: no
+`wake: true`, every job end `"none"`.
 
 **A peer's launch** (the peer key, Auth) is narrower. The workflow — the
 version launched, for `/:version/run` — must say `peer: true` at the top
@@ -367,7 +385,7 @@ One object per line of the run's append-only log. Common fields:
 
 | Type              | Meaning |
 | ----------------- | ------- |
-| `run.start`       | first line; carries `input`, `workflowHash`, `stepHashes` (custom step versions), `params` / `paramOverrides`, `actor` / `principal`, `origin` (`schedule` / `verify` / `peer`), `peerPerson` (a peer run a person's credential launched, §3), `automation`, `callback: { origin }`, `mcp: [{ name, origin }]`, `attachments: [{ name, mediaType, size, path }]`, `parentRunId` when nested |
+| `run.start`       | first line; carries `input`, `workflowHash`, `stepHashes` (custom step versions), `params` / `paramOverrides`, `actor` / `principal`, `origin` (`schedule` / `verify` / `peer`), `peerPerson` (a peer run a person's credential launched, §3), `automation`, `callback: { origin }`, `mcp: [{ name, origin }]`, `attachments: [{ name, mediaType, size, path }]`, `parentRunId` when nested, `startedBy` (a job a turn started), `conversation` (the launch's, §3), `wakeAsked: true` (the launch asked for the wake, §3), `wake: { job, runId, peer?, also? }` (a wake turn: the job run it woke on) |
 | `step.start` / `step.end` / `step.error` | one execution; `step.error` is final, after retries |
 | `step.retry`      | an attempt failed and another follows |
 | `step.skipped`    | not run: its `when` gate did not match, or every step it depends on was skipped |
@@ -650,7 +668,7 @@ error message:
 | Method | Path | Response |
 | ------ | ---- | -------- |
 | GET    | `/sessions` | `{ sessions: [{ id, turns, messages, createdAt, updatedAt, createdBy?, jobs?, provider, model, context?: { used, limit }, busy? }] }`, newest first. `jobs` = the distinct jobs its turns were made under (`plans/job-index.md` §4), present when any turn carried one |
-| GET    | `/sessions?id=<id>` | that summary + `turnLog: [{ turn, at, workflow, runId, path, actor?, principal?, job?, attachments?, provider, model, routed, offset, count, usage, cost, context?, replayFrom }]`; 404. `attachments` = the files the turn's prompt carried, `[{ name, mediaType, size, path }]` under `runId`'s artifacts. `replayFrom` is the thread index the NEXT turn replays from — 0 until a turn compacts the thread, then the index of its `[compaction]` message (plans/compaction.md); offsets stay absolute and the whole thread is still served |
+| GET    | `/sessions?id=<id>` | that summary + `turnLog: [{ turn, at, workflow, runId, path, actor?, principal?, job?, attachments?, wake?, provider, model, routed, offset, count, usage, cost, context?, replayFrom }]`; 404. `attachments` = the files the turn's prompt carried, `[{ name, mediaType, size, path }]` under `runId`'s artifacts. `wake: true` = a turn strut ran because a job ended (`CALLBACKS.md` §9), not a person's. `replayFrom` is the thread index the NEXT turn replays from — 0 until a turn compacts the thread, then the index of its `[compaction]` message (plans/compaction.md); offsets stay absolute and the whole thread is still served |
 | GET    | `/sessions/messages?id=<id>` | the thread, a bare array: the system message, then every message; 404 |
 | DELETE | `/sessions?id=<id>` | `{ ok: true }`; 409 while a turn holds it |
 
