@@ -53,7 +53,7 @@ export interface AssistantChatDoor {
    *  without `chatId`) and launch its turn detached. `at` is the index of the
    *  appended message — the fold reads this turn from there. */
   send(args: { chatId?: string; message: string; title?: string; actor?: string; publicUrl?: string }): Promise<
-    { chatId: string; turn: number; at: number } | { error: string; code: "not_found" | "busy" }
+    { chatId: string; turn: number; at: number } | { error: string; code: "not_found" | "busy" | "draining" }
   >;
   /** A turn is running for this chat (the notifier's view). */
   isLive(chatId: string): boolean;

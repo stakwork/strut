@@ -32,8 +32,13 @@
 services:
   neo4j:
     # Stock community image: the graph backend needs fulltext + vector indexes
-    # (5.13+), no APOC/GDS. Same image test:graph runs against.
-    image: neo4j:5
+    # (5.13+), no APOC/GDS. PINNED, and never moved by an image update: Neo4j
+    # cannot open a store a newer version wrote, and its versions differ in
+    # the Cypher they accept. 5.26 is the last 5.x (the LTS); this is the
+    # patch `neo4j:5` named when the pin was set, so a volume made under the
+    # old floating tag still opens. Move it on purpose, after a backup.
+    # (CI's graph job runs 5.19.0, what the swarms run — the stricter one.)
+    image: neo4j:${STRUT_NEO4J_TAG:-5.26.32}
     restart: unless-stopped
     ports:
       - "${STRUT_NEO4J_HTTP_PORT:-7475}:7474"
@@ -54,7 +59,9 @@ services:
       start_period: 20s
 
   browser:
-    image: ghcr.io/stakwork/strut-browser:1.63.0   # or `build: images/browser`
+    # Moves with strut's tag: `STRUT_BROWSER_TAG=stable` beside
+    # `STRUT_IMAGE_TAG=stable` (promote-image.yml moves the two together).
+    image: ghcr.io/stakwork/strut-browser:${STRUT_BROWSER_TAG:-1.63.0}   # or `build: images/browser`
     restart: unless-stopped
     environment:
       BROWSER_WS_PATH: "${BROWSER_WS_PATH:-strut-browser}"

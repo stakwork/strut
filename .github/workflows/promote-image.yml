@@ -1,0 +1,117 @@
+name: promote strut image
+
+# Points a CHANNEL tag (`stable` by default) at an image publish-image.yml
+# already pushed for a commit on main, and moves strut-browser's tag of the
+# same name to the Playwright version that commit pins — so a box that
+# follows `ghcr.io/stakwork/strut:stable` and `ghcr.io/stakwork/strut-browser:stable`
+# gets a pair that speaks to each other (strut's playwright-core and the
+# browser server must share major.minor). Nothing is rebuilt: the tags are
+# copied by digest. `latest` is every merge to main; a channel moves only when
+# someone runs this.
+#
+# The browser tag moves first, then strut's. The two pushes are seconds apart;
+# a box that updates in between, across a Playwright bump, gets the old strut
+# beside the new browser until its next update.
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: "The commit on main whose image to promote (full or short sha)"
+        required: true
+      channel:
+        description: "The channel tag to move"
+        required: true
+        default: stable
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: promote-image
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve the commit and the Playwright version it pins
+        id: what
+        env:
+          COMMIT: ${{ inputs.commit }}
+          CHANNEL: ${{ inputs.channel }}
+        run: |
+          set -euo pipefail
+          # A channel is a name of its own: never `latest`, a version or a sha.
+          if [[ ! "$CHANNEL" =~ ^[a-z][a-z-]*$ || "$CHANNEL" == "latest" ]]; then
+            echo "::error::channel must be lowercase letters and dashes, and not 'latest' (got '$CHANNEL')"
+            exit 1
+          fi
+          full=$(git rev-parse --verify --quiet "${COMMIT}^{commit}") || {
+            echo "::error::no commit '$COMMIT' in this repository"
+            exit 1
+          }
+          if ! git merge-base --is-ancestor "$full" origin/main; then
+            echo "::error::$full is not on main: only main's images are published"
+            exit 1
+          fi
+          pw=$(git show "$full:package.json" | jq -r '.dependencies["playwright-core"] // .optionalDependencies["playwright-core"] // empty')
+          if [[ ! "$pw" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::package.json at $full pins no exact playwright-core (got '$pw')"
+            exit 1
+          fi
+          echo "full=$full" >> "$GITHUB_OUTPUT"
+          echo "short=${full::7}" >> "$GITHUB_OUTPUT"
+          echo "playwright=$pw" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check both images exist
+        env:
+          SHORT: ${{ steps.what.outputs.short }}
+          PW: ${{ steps.what.outputs.playwright }}
+        run: |
+          set -euo pipefail
+          # publish-image.yml builds only when what goes into the image
+          # changed, so not every commit on main has one.
+          if ! docker buildx imagetools inspect "ghcr.io/stakwork/strut:$SHORT" > /dev/null; then
+            echo "::error::no image ghcr.io/stakwork/strut:$SHORT — publish-image.yml builds only when what goes into the image changes; promote the newest commit before it that has one"
+            exit 1
+          fi
+          if ! docker buildx imagetools inspect "ghcr.io/stakwork/strut-browser:$PW" > /dev/null; then
+            echo "::error::no image ghcr.io/stakwork/strut-browser:$PW, the Playwright version $SHORT pins"
+            exit 1
+          fi
+
+      - name: Move the channel tags
+        env:
+          SHORT: ${{ steps.what.outputs.short }}
+          FULL: ${{ steps.what.outputs.full }}
+          PW: ${{ steps.what.outputs.playwright }}
+          CHANNEL: ${{ inputs.channel }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create -t "ghcr.io/stakwork/strut-browser:$CHANNEL" "ghcr.io/stakwork/strut-browser:$PW"
+          docker buildx imagetools create -t "ghcr.io/stakwork/strut:$CHANNEL" "ghcr.io/stakwork/strut:$SHORT"
+          strut=$(docker buildx imagetools inspect "ghcr.io/stakwork/strut:$CHANNEL" --format '{{json .Manifest.Digest}}' | tr -d '"')
+          browser=$(docker buildx imagetools inspect "ghcr.io/stakwork/strut-browser:$CHANNEL" --format '{{json .Manifest.Digest}}' | tr -d '"')
+          {
+            echo "### \`$CHANNEL\` → $SHORT"
+            echo
+            echo "| Image | From | Digest |"
+            echo "| --- | --- | --- |"
+            echo "| ghcr.io/stakwork/strut:$CHANNEL | \`$SHORT\` ($FULL) | \`$strut\` |"
+            echo "| ghcr.io/stakwork/strut-browser:$CHANNEL | \`$PW\` | \`$browser\` |"
+          } >> "$GITHUB_STEP_SUMMARY"

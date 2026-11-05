@@ -24,6 +24,7 @@ import {
   truncateToolMessages,
 } from "./chat-store.js";
 import { CHAT_RETAIN, cachedSystem, compactAtFromEnv, compactionMessage, overMark, resultCapChars, summarize } from "./compaction.js";
+import { createDrain, DrainingError, parseDrainBody } from "./drain.js";
 import { assertWorkflowEnabled, workflowDisabled, FileWorkspaceStore, claimsBlockOf, readClaimsBlock, type PublishOptions, type WorkspaceStore } from "./workspace.js";
 import type { InputBlock } from "./input-block.js";
 import { buildRegistry, resolveStep } from "./steps/registry.js";
@@ -876,6 +877,17 @@ export async function createStrut<TServices = unknown>(
    *  run it has just launched is never refused. A dead run is judged by its
    *  log. */
   const peerLaunched = new WeakSet<RunController>();
+  /** The deployment's drain (src/drain.ts, `PUT /drain`). Lifting it — by
+   *  hand or at its deadline — launches the wake turns it held back. */
+  const drain = createDrain({ onLift: () => void wakes.reconcile() });
+  /** The builder chats with a turn running in this process (set by the chat
+   *  block; none with the chat off) — what `GET /drain` waits on beside runs. */
+  let liveChats = (): string[] => [];
+  /** A launch route's answer while draining: 503, and when to ask again. */
+  const drainingResponse = (c: Context): Response | undefined => {
+    const refused = drain.refusal();
+    return refused ? c.json({ error: refused }, 503, { "retry-after": "60" }) : undefined;
+  };
   /** Who a live run was launched for — its app and actor, as its `run.start`
    *  will record them — known from the launch, so a run a caller has just
    *  been handed the id of is theirs before its first event lands (`ownRun`).
@@ -891,6 +903,11 @@ export async function createStrut<TServices = unknown>(
   const trackRun = (workflow: string, runId: string, parentRunId?: string, job?: { id: string; title?: string }) => {
     const key = `${workflow}/${runId}`;
     const parent = parentRunId ? controllersByRunId.get(parentRunId) : undefined;
+    // While draining (src/drain.ts) nothing new starts: every launch path
+    // registers here, so this is where a new ROOT run is refused. A run a
+    // run in flight launches is part of that run's work and still starts.
+    const draining = parent ? undefined : drain.refusal();
+    if (draining) throw new DrainingError(draining);
     const controller = new RunController(runId, workflow, parent);
     if (job) controller.job = job;
     controllers.set(key, controller);
@@ -2411,6 +2428,10 @@ export async function createStrut<TServices = unknown>(
     // A durable resume reads the whole log (findRun does too): refuse one
     // past the cap before anything reads it. A live run is in memory already.
     if (!controllers.has(`${name}/${runId}`)) {
+      // A durable resume starts the run again: nothing new while draining.
+      // Unpausing a live run is its own work going on, and is let through.
+      const draining = drainingResponse(c);
+      if (draining) return draining;
       const big = await logTooBig(name, runId);
       if (big) return c.json({ error: big }, 413);
     }
@@ -4890,6 +4911,10 @@ export async function createStrut<TServices = unknown>(
   app.post("/steps/:type{.+}/run", async (c) => {
     const type = c.req.param("type");
     if (!registry[type]) return c.json({ error: `Step type "${type}" not found` }, 404);
+    // A step that only reads keeps answering while draining; anything else
+    // is new work.
+    const draining = registry[type]!.effect === "read" ? undefined : drainingResponse(c);
+    if (draining) return draining;
     const body = await c.req
       .json<{
         config?: Record<string, unknown>;
@@ -5896,6 +5921,7 @@ export async function createStrut<TServices = unknown>(
     launch: (flow, input, automation, callback) =>
       launchDetached(flow, { input }, { origin: "schedule", automation, ...(callback ? { callback } : {}) }),
     isInFlight: (workflow, runId) => controllers.has(`${workflow}/${runId}`),
+    draining: () => drain.refusal(),
   });
   // The `automation/*` steps' door (src/steps/lib/automation/), unless the
   // consumer's bag brought its own: an automation made from a turn reports
@@ -6082,6 +6108,8 @@ export async function createStrut<TServices = unknown>(
   // 202 carries `callback: true` — the host's proof this server honors it.
   app.post("/workflows/:name/run", async (c) => {
     const name = c.req.param("name");
+    const draining = drainingResponse(c);
+    if (draining) return draining;
     const scope = await scopeOf(c);
     const peer = isPeerScope(scope);
     let body = await c.req.json<RunBody>();
@@ -6146,6 +6174,8 @@ export async function createStrut<TServices = unknown>(
 
   app.post("/workflows/:name/:version/run", async (c) => {
     const { name, version } = c.req.param();
+    const draining = drainingResponse(c);
+    if (draining) return draining;
     const scope = await scopeOf(c);
     const peer = isPeerScope(scope);
     let body = await c.req.json<RunBody>();
@@ -6280,6 +6310,7 @@ export async function createStrut<TServices = unknown>(
       startTurn: (chatId, turn, modelMessages, trigger) =>
         launchChatTurn(chatId, turn, modelMessages, trigger),
     });
+    liveChats = () => notifier.liveChats();
 
     // The verify pass settled for a run this chat launched: wake it with the
     // ledger (plans/claims.md §5; ai/verify-waker.ts). Queue-and-drain applies
@@ -6916,7 +6947,10 @@ export async function createStrut<TServices = unknown>(
       /** A chat started over MCP: links in its builder's tool results are
        *  absolute on this base (`ChatMeta.publicUrl`, stamped once). */
       publicUrl?: string;
-    }): Promise<{ chatId: string; turn: number; at: number } | { error: string; code: "not_found" | "busy" }> {
+    }): Promise<{ chatId: string; turn: number; at: number } | { error: string; code: "not_found" | "busy" | "draining" }> {
+      // A person's message is new work: none while draining (src/drain.ts).
+      const draining = drain.refusal();
+      if (draining) return { error: draining, code: "draining" };
       let chatId = args.chatId;
       let meta = chatId ? await chatStore.getMeta(chatId) : null;
       if (chatId && !meta) return { error: `Chat "${chatId}" not found`, code: "not_found" };
@@ -7065,7 +7099,10 @@ export async function createStrut<TServices = unknown>(
         ...(callback !== undefined ? { callback } : {}),
         ...(actor ? { actor } : {}),
       });
-      if ("error" in sent) return c.json({ error: sent.error }, sent.code === "not_found" ? 404 : 409);
+      if ("error" in sent) {
+        if (sent.code === "draining") return c.json({ error: sent.error }, 503, { "retry-after": "60" });
+        return c.json({ error: sent.error }, sent.code === "not_found" ? 404 : 409);
+      }
 
       // `callback: true` is the host's proof this server honors callbacks (an
       // older one ignores the field and would never call back).
@@ -7135,6 +7172,10 @@ export async function createStrut<TServices = unknown>(
 
     /** The chat's open elicitation `:eid`, or the error response. */
     async function openElicitationOf(c: Context): Promise<{ meta: ChatMeta; open: ElicitationRecord } | Response> {
+      // An answer starts the chat's next turn: while draining the question
+      // stays open, to be answered once the server is back.
+      const draining = drainingResponse(c);
+      if (draining) return draining;
       const chatId = c.req.param("chatId") ?? "";
       const eid = c.req.param("eid") ?? "";
       const meta = await chatStore.getMeta(chatId);
@@ -7434,12 +7475,50 @@ export async function createStrut<TServices = unknown>(
   app.get("/health", (c) => {
     if (!carriesApiKey(c)) return c.json({ ok: true });
     const wg = workspace.graph;
+    const draining = drain.current();
     return c.json({
       ok: true,
       dataDir,
       stepCount: Object.keys(registry).length,
       workspace: { backend: wg?.kind ?? "fs", ...(wg?.kind === "ladybug" ? { path: wg.cfg.path } : {}) },
+      ...(draining ? { drain: { ...draining, idle: drainView().idle } } : {}),
     });
+  });
+
+  // ── Drain (src/drain.ts) ─────────────────────────────────────────────────
+
+  // What an updater or a backup turns on before it restarts this process:
+  // nothing new starts, what runs finishes, and `idle` says when nothing is
+  // left. A paused run waits on a person, not on the process, so it is not
+  // waited on (a restart leaves it paused). The writes are a person's or
+  // the deployment's: a peer's credential is refused by the gate.
+  function drainView() {
+    const state = drain.current();
+    const running = [...controllers.values()].filter((ctl) => ctl.state !== "paused");
+    const chats = liveChats();
+    return {
+      draining: !!state,
+      ...(state ?? {}),
+      idle: running.length === 0 && chats.length === 0,
+      active: { runs: running.length, chats: chats.length },
+      // The top-level runs it waits on (the first 50), so a person sees what.
+      runs: running
+        .filter((ctl) => !ctl.parent)
+        .slice(0, 50)
+        .map((ctl) => ({ workflow: ctl.workflow, runId: ctl.runId, state: ctl.state })),
+    };
+  }
+  app.get("/drain", (c) => c.json(drainView()));
+  app.put("/drain", async (c) => {
+    const parsed = parseDrainBody(await c.req.json().catch(() => ({})));
+    if ("error" in parsed) return c.json({ error: parsed.error }, 400);
+    const state = drain.set(parsed);
+    console.log(`[drain] on: ${state.reason}${state.until ? ` (until ${state.until})` : ""}`);
+    return c.json(drainView());
+  });
+  app.delete("/drain", (c) => {
+    if (drain.lift()) console.log("[drain] lifted");
+    return c.json(drainView());
   });
 
   // ── Speech, both ways (src/audio) ──────────────────────────────────────

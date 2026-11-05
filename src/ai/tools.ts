@@ -1016,7 +1016,15 @@ export function buildTools(deps: AiDeps): ToolSet {
         const startedAt = Date.now();
         // Register with the host's controller registry (when wired) so the
         // run is cancellable/pausable and lists as live from launch.
-        const tracked = deps.trackRun?.(name, runId);
+        // Registration refuses a new run while the deployment drains
+        // (src/drain.ts): the model reads why.
+        let tracked: ReturnType<NonNullable<AiDeps["trackRun"]>> | undefined;
+        try {
+          tracked = deps.trackRun?.(name, runId);
+        } catch (err) {
+          yield { ok: false, error: err instanceof Error ? err.message : String(err) };
+          return;
+        }
         // This chat wants the verdict: the verify pass that follows the run
         // wakes it with a [verify-notification].
         if (verifier) deps.watchVerify?.(runId);

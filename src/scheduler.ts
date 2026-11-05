@@ -51,6 +51,10 @@ export interface AutomationsDeps {
   secrets?: Pick<SecretStore, "get" | "set" | "delete">;
   /** Is this run executing in THIS process right now? */
   isInFlight: (workflow: string, runId: string) => boolean;
+  /** The refusal while the deployment drains (src/drain.ts): fires are
+   *  held, like a disabled workflow's — nothing launches, nothing is
+   *  recorded as a failure. */
+  draining?: () => string | undefined;
   /** Injectable clock (tests). */
   now?: () => Date;
   /** Tick period. Default 15 s. */
@@ -243,6 +247,8 @@ export function createAutomations(deps: AutomationsDeps): Automations {
       // is recorded as a failure, so it reads as paused, not broken.
       const disabled = await workflowDisabled(workspace, workflow);
       if (disabled) return { error: disabled };
+      const draining = deps.draining?.();
+      if (draining) return { error: draining };
       const facts = (await runFacts(workflow, [automation.id])).get(automation.id)!;
       if (facts.inFlight) return { error: `skipped: the previous run (${facts.inFlight}) is still in flight` };
       // Nobody to bill → nothing launches (surfaces as `lastFireError`), rather

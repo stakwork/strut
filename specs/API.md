@@ -623,13 +623,58 @@ steps read), so every read shows `callback: { origin }` only.
 | POST   | `/workflows/:name/automations`  | `{ name, trigger, input?, enabled?, callback?, id? }` (`id`: normally minted, `a-<8 hex>`; a taken one is 400). A trigger with no fire to come (a one-off in the past) is 400 here and on PATCH |
 | PATCH  | `/workflows/:name/automations/:id` | any subset; `{ enabled: false }` pauses; `{ callback: null }` clears the callback |
 | DELETE | `/workflows/:name/automations/:id` | remove |
-| POST   | `/workflows/:name/automations/:id/fire` | run now → 202 `{ runId }`; 409 while its previous run is going |
+| POST   | `/workflows/:name/automations/:id/fire` | run now → 202 `{ runId }`; 409 while its previous run is going; 503 while draining (§8.1) |
 
-`GET /health` → `{ ok, dataDir, stepCount, workspace: { backend, path? } }` —
+`GET /health` → `{ ok, dataDir, stepCount, workspace: { backend, path? }, drain? }` —
 `backend` is `fs`, `neo4j` or `ladybug` (where workflows and steps live;
-`STRUT_WORKSPACE_BACKEND`), `path` the LadybugDB file on `ladybug`; without
+`STRUT_WORKSPACE_BACKEND`), `path` the LadybugDB file on `ladybug`, `drain`
+present while draining (`{ since, reason, until?, idle }`, §8.1); without
 the key, `{ ok: true }` and nothing else — the one route a keyless probe may
 call.
+
+### 8.1 Drain — a quiet moment to restart (`src/drain.ts`)
+
+Before restarting strut — a new image, a backup — whoever runs it turns on
+a DRAIN: nothing new starts, what is running finishes, and `idle` says when
+nothing is left. Then it stops the process; the next boot starts undrained.
+
+| Method | Path     | Description |
+| ------ | -------- | ----------- |
+| GET    | `/drain` | `DrainView` (below) |
+| PUT    | `/drain` | `{ reason?, minutes? }` → `DrainView`. `reason` (≤ 200 chars, default `maintenance`) is said in every refusal; `minutes` (> 0, ≤ 1440) lifts the drain by itself, so one whose updater died does not refuse everything forever. A drain already on keeps its `since`. 400 on a bad body. A person's or the deployment's credential: a peer's is 403 |
+| DELETE | `/drain` | lift it → `DrainView`. Wake turns it held back launch now |
+
+```ts
+interface DrainView {
+  draining: boolean;
+  since?: string;      // ISO, when it was turned on
+  reason?: string;
+  until?: string;      // ISO, when it lifts by itself
+  idle: boolean;       // no run executing and no builder chat turn running
+  active: { runs: number; chats: number };
+  runs: { workflow: string; runId: string; state: string }[]; // the top-level runs it waits on (first 50)
+}
+```
+
+While draining:
+
+- **Refused, 503 + `Retry-After: 60`**, body `{ error }` starting
+  `draining:`: `POST /workflows/:name[/:version]/run`, a durable
+  `POST …/runs/:runId/resume` (unpausing a live run is let through), `POST
+  /steps/:type/run` of a step that does not declare `effect: "read"` (a read
+  still answers), `POST /chat`, an elicitation answer (the question stays
+  open), Run now.
+- **Refused in process**: every new top-level run whatever starts it — an
+  agent's `job/start` / `job/continue` or `meta/run-workflow`, the builder's
+  `run_workflow`, an app's `run/launch`, `strut.run()` — reads the same
+  `draining:` error. A run a run IN FLIGHT launches (`parentRunId`, as
+  meta/run-workflow sets) is that run's work and starts.
+- **Held**: a schedule's fire launches nothing and records no failure (a
+  missed fire is skipped, as always). A wake turn (`src/wake.ts`) stays queued
+  on disk and launches when the drain lifts or at the next boot.
+- **Not waited on**: a paused run (it waits on a person; a restart leaves it
+  paused), the verify pass and the graph projection after a run (best
+  effort).
 
 ## 9. Agent sessions
 

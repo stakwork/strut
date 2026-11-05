@@ -843,7 +843,14 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
       // Tree linkage: attach this nested run's controller to the launching
       // run's (opts.parentRunId = the calling step's ctx.runId), so controls
       // on the parent reach it (RUN_CONTROL_SPEC §2.2).
-      const tracked = deps.trackRun?.(flow.name, runId, opts?.parentRunId, opts?.job ? { id: opts.job } : undefined);
+      // Registration refuses a new top-level run while the deployment drains
+      // (src/drain.ts); a child of a run in flight still starts.
+      let tracked: ReturnType<NonNullable<typeof deps.trackRun>> | undefined;
+      try {
+        tracked = deps.trackRun?.(flow.name, runId, opts?.parentRunId, opts?.job ? { id: opts.job } : undefined);
+      } catch (err) {
+        return { error: err instanceof Error ? err.message : String(err) };
+      }
       try {
         const result = await runWorkflow(flow, coerceJsonArg(input) ?? {}, registry, {
           runId,
