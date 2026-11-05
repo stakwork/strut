@@ -120,6 +120,30 @@ describe("FileChatStore", () => {
     assert.ok(events.includes('"text-delta"'));
   });
 
+  it("concurrent setMeta patches all land, and a reader never sees a cut-off meta.json", async () => {
+    const store = new FileChatStore(tempDir);
+    await store.createChat({ id: "c1" });
+    let reading = true;
+    const reader = (async () => {
+      while (reading) assert.ok(await store.getMeta("c1"), "meta.json read back as no chat");
+    })();
+    await Promise.all([
+      store.setMeta("c1", { title: "t" }),
+      store.setMeta("c1", { model: "m" }),
+      store.setMeta("c1", { currentTurn: 3 }),
+      store.setMeta("c1", { autoTurns: 2 }),
+      store.setMeta("c1", { actor: "a" }),
+      store.setMeta("c1", { replayFrom: 7 }),
+    ]);
+    reading = false;
+    await reader;
+    const meta = await new FileChatStore(tempDir).getMeta("c1");
+    assert.deepEqual(
+      [meta?.title, meta?.model, meta?.currentTurn, meta?.autoTurns, meta?.actor, meta?.replayFrom],
+      ["t", "m", 3, 2, "a", 7],
+    );
+  });
+
   it("loadMessages survives a fresh store instance (durable)", async () => {
     const a = new FileChatStore(tempDir);
     await a.createChat({ id: "c1" });

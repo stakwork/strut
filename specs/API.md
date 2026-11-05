@@ -827,7 +827,8 @@ launch and end, not only when the agent's session commits. The
 `conversation/update` and `conversation/fork` steps are the same reads and
 writes, as the step's actor; they are refused to an app's page, except
 strut's own (first-party, §14.10), which reads them as its viewer's
-person token does.
+person token does. `conversation/list` also answers `viewer`, the actor the
+list is for — where a page mints a new conversation, `<viewer>/<id>`.
 
 ### Graph nodes
 
@@ -1287,11 +1288,11 @@ as `agentTools: ["run/*"]`, and the §3 … §7 routes' layers one more way
 
 | Step | Config | Result |
 | ---- | ------ | ------ |
-| `run/list` | `{ workflow, limit? (50, ≤ 500), status?, since? (ISO or ms), automation?, job? }` — or `{ job, … }` with no `workflow`: a job's runs across every workflow it ran, off its record | the summaries newest first, without `input` / `output` / `stepCounts`, each with `artifacts` resolved (§5); a run in flight has a live status |
+| `run/list` | `{ workflow, limit? (50, ≤ 500), status?, since? (ISO or ms), automation?, job? }` — or `{ job, … }` with no `workflow`: a job's runs across every workflow it ran, off its record | the summaries newest first, without `input` / `output` / `stepCounts`, each with `artifacts` resolved (§5); a run in flight has a live status. `since` is when a run was LAUNCHED (its id; a resumed run keeps its first launch), and a workflow's list stops at the first run before it. One call reads at most the newest 1 000 runs (`RUN_LIST_SCAN_MAX`): a filter that matches nothing among them answers `[]` |
 | `run/get` | `{ workflow, runId, wait? (ms, ≤ 55 000) }` | the summary whole + `artifacts`; in flight, the partial summary (`partial: true`) after holding up to `wait` |
 | `run/events` | `{ workflow, runId, skip? }` | the log as `GET …/events` serves it (transcripts as links, long fields replaced by their size), cut at 5 000 keeping the head and the last event |
 | `run/transcript` | `{ workflow, runId, path, full? }` | `{ path, messages, full?, truncated? }` — one agent's session by step path, the bare array `GET …/transcripts/<path>` serves (a page cannot follow that link); `full` = `?full=1`, a session turn's thread (`full: true` when stitched). Cut at 2 MB of JSON: long strings to head + tail (64k, 16k, then 4k chars), then messages left out after the system prompt and the task; `truncated: { chars, strings, stringMax, messages?: { at, count } }` says what went. No transcript at the path, or a session gone, is an error with the route's 404 message |
-| `run/launch` | `{ workflow, input?, params?, job?, title?, key?, attachments? }` | `{ runId }` at once (detached, like `POST …/run`; `params` may narrow a grant, never widen it, and may add to an `approve` list, never take from it); with `key`, the run of this workflow still in flight under the same key: `{ runId, existing: true }`. `attachments`: `POST …/run`'s (§3: `[{ name, mediaType?, data }]`, at most 10, 10 MB each, 5 MB an image, 15 MB together), saved under the run's artifacts as `attachments/<name>` and on each agent's prompt, never in `input` |
+| `run/launch` | `{ workflow, input?, params?, job?, title?, key?, attachments?, conversation? }` | `{ runId }` at once (detached, like `POST …/run`; `params` may narrow a grant, never widen it, and may add to an `approve` list, never take from it); with `key`, the run of this workflow still in flight under the same key: `{ runId, existing: true }`. `attachments`: `POST …/run`'s (§3: `[{ name, mediaType?, data }]`, at most 10, 10 MB each, 5 MB an image, 15 MB together), saved under the run's artifacts as `attachments/<name>` and on each agent's prompt, never in `input`. `conversation`: `POST …/run`'s (§3), the conversation a JOB turn (`job`, `builder`) belongs to, so strut wakes it when the turn ends — strut's own app only, and only a conversation its viewer may continue (their own `<actor>/…`, one they took a turn in, a shared one: §9.1; else `conversation_not_yours:`) |
 | `run/cancel` | `{ workflow, runId, force? }` | `{ ok: true, runId, state }`; a run that is not live is an error. `force: true` is `POST …/cancel { force: true }` (§6.1): it abandons a step that never returns |
 | `run/workflow` | `{ workflow }` | `{ name, description?, category?, activeVersion?, input? (the \`input:\` block), params?, peer? }` |
 | `run/files` | `{ workflow, runId, path }` | `{ path, mediaType, bytes, text }` or `{ …, base64 }`, cut at 2 MB (`truncated: true`) — the job's directory for a job run, else the run's artifacts |
@@ -1763,6 +1764,44 @@ With no actor (the deployment key alone) a `strut/` app is an app like any
 other. An app that imports strut's components compiles them into its own
 document, which runs on its own grants: rights belong to the document's
 identity, never to the code in it.
+
+### 14.11 `strut/assistant` — the person's assistant (`plans/jamie-app.md` §5)
+
+The app strut seeds beside `strut/views` (`src/apps/assistant/`,
+`src/apps/assistant-seed.ts`): the viewer's conversations with the
+`orchestrator` — the list by day, search, show more, rename, archive,
+unread — each turn read back (§9.1), the composer (files, a model picker,
+"/" for a Concept, the viewer's time zone in `context`), the jobs a turn
+started (live while they run, their reply, deliverables, claims and
+captcha), the proposals it made, and what it made. First-party (§14.10).
+Its title is the deployment's: `createStrut({ assistant: { title } })` or
+`STRUT_HOST_CONFIG`'s `assistant: { title }` ("Assistant" by default);
+`assistant: false` seeds nothing. A host opens it as
+`?app=strut/assistant&solo=1`, a conversation as `&input=session%3D<id>`.
+
+What it calls, beyond §9.1, §12 and §14.2:
+
+| Step | Config | Result |
+| ---- | ------ | ------ |
+| `llm/models` | `{}` | what `GET /llm/models` serves: `{ default, models: [{ name, provider, modelId, alias, default, available }], keyNames }` — `available` when the provider has a key here, never the key. The picker sends the choice as the turn's `params.model` |
+| `job/verify` | `{ job, claims?, detach? }` | `POST /jobs/:id/verify` (§5.5) as a person: every check on the job's claims (or `claims`) against its newest turn, `manual` ones too — the pass and the ledger, or with `detach` `{ job, started: true }` at once, the verdicts on `job/updates` (`evidence`, then `verify` done) |
+| `job/evidence` | `{ job, claim, runId, supports, content, slot? }` | `POST /claims/:id/evidence { job, runId }` as a person: `asserted`, `by: person`, about that turn; `slot` answers a check waiting on a person's look. `{ ok, evidence, filled, subject }` |
+
+`job/verify` and `job/evidence` run only as a first-party page's own call
+(never an agent's tool: an agent verifies with `meta/verify-job`) and only
+on a job the viewer launched a run of (the record's `actors`); where the
+claims layer is off they say so. The page's turn into a conversation is
+`run/launch` of `orchestrator` with `input: { prompt, session, context: {
+line, where, timeZone } }`; a new conversation's id is `<viewer>/<12 hex>`.
+The page sends into whatever conversation `conversation/list` shows; a
+person continues one they took a turn in, or a shared one
+(`plans/jamie-app.md` §2.2), and a refused turn
+(`conversation_not_yours: …`, someone who read it while it was shared) is
+a plain notice. A captcha's answer
+is a job turn, `run/launch { workflow: <the job's>, job, input: { prompt:
+"[captcha-answer] {…}" }, conversation }`. A deliverable `strut/views`
+draws shows in the thread; the rest is handed to the host as
+`?artifact=<served path>` or `?app=<key>` (`ui/open-link`, §14.3).
 
 ## 15. Dictation — speech to text, its models and the user's vocabulary
 

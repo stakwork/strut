@@ -160,6 +160,28 @@ function wakeTails(key: string): void {
   for (const wake of set) wake();
 }
 
+// ── One write at a time per file ───────────────────────────────────────────
+// `appendFile` writes a large string in 512 KiB chunks, one `write` each, so
+// two appends to one log at once — parallel branches, a foreach, an agent's
+// parallel tool calls, each `step.end` carrying a transcript — interleave
+// their chunks into lines nothing can parse, and readers drop them. Writes
+// keyed by the same file run one after another, in the order they were
+// asked for. In process only: one process writes a file.
+const fileWrites = new Map<string, Promise<void>>();
+
+export function serially<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const result = (fileWrites.get(key) ?? Promise.resolve()).then(fn);
+  const done = result.then(
+    () => {},
+    () => {},
+  );
+  fileWrites.set(key, done);
+  void done.then(() => {
+    if (fileWrites.get(key) === done) fileWrites.delete(key);
+  });
+  return result;
+}
+
 /** Sleep up to `ms`, or until `wakeTails(key)` (or `signal` aborts). */
 function sleepOrWake(key: string, ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
@@ -239,6 +261,15 @@ export interface RunStore {
    *  without reading it: a resume refuses a log the process cannot hold
    *  (`STRUT_RESUME_MAX_LOG_BYTES`). 0 for an unknown run. */
   logSize(workflow: string, runId: string): Promise<number>;
+  /** When the event log was last written (epoch ms), without reading it —
+   *  never before its last event's `ts`: the boot scan skips a run nothing
+   *  wrote to since the previous boot by this alone. Null for an unknown run. */
+  logWrittenAt(workflow: string, runId: string): Promise<number | null>;
+  /** The run's `run.start` event (its first line), reading only the head of
+   *  the log: who launched it, for what, under which app — what a listing
+   *  needs of a run with no summary yet, whose log may be megabytes. Null
+   *  when the run never started (an input that failed validation). */
+  getRunStart(workflow: string, runId: string): Promise<RunEvent | null>;
   /** History → live tail; see the interface doc for terminality. */
   tailEvents(workflow: string, runId: string, opts?: TailOpts): AsyncGenerator<RunEvent>;
   /** Start time (epoch ms) of the most recent run, or null if never run. */
@@ -556,10 +587,12 @@ export class FileRunStore implements RunStore {
 
   async append(workflow: string, runId: string, event: RunEvent): Promise<void> {
     const dir = this.runDir(workflow, runId);
-    await mkdir(dir, { recursive: true });
     const line = JSON.stringify(event) + "\n";
     const file = join(dir, "events.jsonl");
-    await appendFile(file, line, "utf-8");
+    await serially(file, async () => {
+      await mkdir(dir, { recursive: true });
+      await appendFile(file, line, "utf-8");
+    });
     wakeTails(file);
   }
 
@@ -706,6 +739,45 @@ export class FileRunStore implements RunStore {
     }
   }
 
+  async logWrittenAt(workflow: string, runId: string): Promise<number | null> {
+    try {
+      return (await stat(join(this.runDir(workflow, runId), "events.jsonl"))).mtimeMs;
+    } catch {
+      return null;
+    }
+  }
+
+  /** The first line, read in blocks up to its newline. The runner writes
+   *  `run.start` first; a log that begins otherwise is read whole. */
+  async getRunStart(workflow: string, runId: string): Promise<RunEvent | null> {
+    const file = join(this.runDir(workflow, runId), "events.jsonl");
+    let fh;
+    try {
+      fh = await open(file, "r");
+    } catch {
+      return null;
+    }
+    const chunks: Buffer[] = [];
+    try {
+      const block = Buffer.alloc(64 * 1024);
+      for (let at = 0; ; ) {
+        const { bytesRead } = await fh.read(block, 0, block.length, at);
+        if (bytesRead === 0) break;
+        const nl = block.subarray(0, bytesRead).indexOf(0x0a);
+        chunks.push(Buffer.from(block.subarray(0, nl === -1 ? bytesRead : nl)));
+        if (nl !== -1) break;
+        at += bytesRead;
+      }
+    } finally {
+      await fh.close();
+    }
+    const line = Buffer.concat(chunks).toString("utf-8");
+    if (!line.trim()) return null;
+    const first = parseJsonlLine<RunEvent>(line, file);
+    if (first?.type === "run.start") return first;
+    return (await this.getRunEvents(workflow, runId)).find((e) => e.type === "run.start") ?? null;
+  }
+
   async lastRunAt(workflow: string): Promise<number | null> {
     return lastRunAtFromIds(await this.listRuns(workflow));
   }
@@ -792,6 +864,16 @@ export class MemoryRunStore implements RunStore {
     let size = 0;
     for (const e of this.events.get(this.key(workflow, runId)) ?? []) size += Buffer.byteLength(JSON.stringify(e)) + 1;
     return size;
+  }
+
+  async logWrittenAt(workflow: string, runId: string): Promise<number | null> {
+    const last = this.events.get(this.key(workflow, runId))?.at(-1);
+    const t = last ? Date.parse(last.ts) : NaN;
+    return Number.isFinite(t) ? t : null;
+  }
+
+  async getRunStart(workflow: string, runId: string): Promise<RunEvent | null> {
+    return (this.events.get(this.key(workflow, runId)) ?? []).find((e) => e.type === "run.start") ?? null;
   }
 
   tailEvents(workflow: string, runId: string, opts: TailOpts = {}): AsyncGenerator<RunEvent> {

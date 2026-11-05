@@ -4,10 +4,11 @@ import {
   appendFile,
   readFile,
   readdir,
+  rename,
   rm,
 } from "node:fs/promises";
 import { join } from "node:path";
-import { tailJsonl } from "./store.js";
+import { serially, tailJsonl } from "./store.js";
 import type { ElicitationRecord } from "./ai/elicitation.js";
 import { bootEnv } from "./env.js";
 
@@ -372,6 +373,14 @@ export function truncateToolMessages(
 
 // ── Filesystem implementation ──────────────────────────────────────────────
 
+/** Written beside and renamed into place: a plain writeFile truncates first,
+ *  so a reader (the flyout polls `GET /chat/:id/meta`) could read a cut-off
+ *  file and see no chat. */
+async function writeMeta(file: string, meta: ChatMeta): Promise<void> {
+  await writeFile(`${file}.tmp`, JSON.stringify(meta, null, 2), "utf-8");
+  await rename(`${file}.tmp`, file);
+}
+
 export class FileChatStore implements ChatStore {
   private workspaceRoot: string;
 
@@ -399,7 +408,8 @@ export class FileChatStore implements ChatStore {
       currentTurn: -1,
     };
     await mkdir(this.chatDir(init.id), { recursive: true });
-    await writeFile(this.metaFile(init.id), JSON.stringify(meta, null, 2), "utf-8");
+    const file = this.metaFile(init.id);
+    await serially(file, () => writeMeta(file, meta));
     return meta;
   }
 
@@ -411,12 +421,18 @@ export class FileChatStore implements ChatStore {
     }
   }
 
+  /** One patch at a time per chat (a turn, the notifier and a request all
+   *  patch it), each read after the one before it is written, so none is
+   *  lost. */
   async setMeta(chatId: string, patch: Partial<ChatMeta>): Promise<ChatMeta | null> {
-    const current = await this.getMeta(chatId);
-    if (!current) return null;
-    const next: ChatMeta = { ...current, ...patch, updatedAt: new Date().toISOString() };
-    await writeFile(this.metaFile(chatId), JSON.stringify(next, null, 2), "utf-8");
-    return next;
+    const file = this.metaFile(chatId);
+    return serially(file, async () => {
+      const current = await this.getMeta(chatId);
+      if (!current) return null;
+      const next: ChatMeta = { ...current, ...patch, updatedAt: new Date().toISOString() };
+      await writeMeta(file, next);
+      return next;
+    });
   }
 
   async listChats(): Promise<ChatMeta[]> {

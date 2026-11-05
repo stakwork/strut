@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type { AnyStepDef, Flow, McpServer, PeerOpen, RunAttachment, StepRegistry, RunEvent, RunResult, StepContext } from "./core.js";
+import type { AnyStepDef, Flow, McpServer, PeerOpen, RunAttachment, StepRegistry, RunEvent, RunResult, RunSummary, StepContext } from "./core.js";
 import type { RunStore } from "./store.js";
 import { FileRunStore, MemoryRunStore, countSteps, generateRunId, summarizeFromEvents } from "./store.js";
 import type { ChatStore, ChatEvent, ChatMeta } from "./chat-store.js";
@@ -57,7 +57,7 @@ import {
 } from "./secret-store.js";
 import { runStep, cassettePath, RUN_STEP_FLOW } from "./run-step.js";
 import { buildProvenance } from "./provenance.js";
-import { RUN_GET_MAX_WAIT_MS, RUN_LIST_DEFAULT_LIMIT, RUN_LIST_MAX_LIMIT, capEvents, capTranscript, fileResult, listEntryOf, matchesRunFilter, runsPage, type RunCaller, type RunListEntry, type RunTranscript, type RunsCapability } from "./runs.js";
+import { RUN_GET_MAX_WAIT_MS, RUN_LIST_DEFAULT_LIMIT, RUN_LIST_MAX_LIMIT, RUN_LIST_SCAN_MAX, capEvents, capTranscript, fileResult, launchedAt, listEntryOf, matchesRunFilter, runsPage, sinceMs, type RunCaller, type RunListEntry, type RunTranscript, type RunsCapability } from "./runs.js";
 import { isFirstParty, type AppRef, type StartedBy, type WakeMark } from "./core.js";
 import { WAKE_MAX, artifactsOf, createWakes, parseWakeDoor, replyOf, type WakeEnd, type WakeOutcome } from "./wake.js";
 import { createConversations, isConversationFlow, outsideConversations, type ConversationViewer } from "./conversations.js";
@@ -85,6 +85,7 @@ import { appErrors, createApps, type AppsCapability, type AppPublishResult } fro
 import { fileAppGrants } from "./apps/grants.js";
 import { createAppMonitor, type AppMonitor } from "./apps/monitor.js";
 import { seedViewsApp } from "./apps/views-seed.js";
+import { seedAssistantApp, type AssistantOptions } from "./apps/assistant-seed.js";
 import type { KitLocation } from "./apps/kit.js";
 import { appsRoot, isPreviewLabel, listAppFiles, readAppFile, reservedAppName, validateAppName, writeAppFiles } from "./apps/files.js";
 import { DOCUMENT_FILE, readBuildInfo, withPublicIdentity, withToken, withoutTokenMeta } from "./apps/build.js";
@@ -418,6 +419,13 @@ export interface StrutOptions<TServices = unknown> {
    *  apps import, its page the gallery. Seeded at boot by tree hash, as `job`
    *  is by content hash, when the kit is built. `false` seeds nothing. */
   views?: false;
+  /** `strut/assistant` (`src/apps/assistant-seed.ts`, plans/jamie-app.md
+   *  §5): the person's assistant — the `orchestrator`'s conversations, their
+   *  jobs, proposals and deliverables — as a first-party app, seeded at
+   *  boot after `strut/views` (it imports it; none without it). `title` is what this
+   *  deployment calls its assistant ("Jamie"; "Assistant" when unset).
+   *  `false` seeds nothing. */
+  assistant?: false | AssistantOptions;
   /** The `automation/*` steps (src/steps/lib/automation/), an agent's own
    *  door onto the automations: the one workflow they schedule, and the
    *  registry step that asks the person before one is made, changed,
@@ -530,6 +538,11 @@ export interface StrutOptions<TServices = unknown> {
 /** `STRUT_RESUME_MAX_LOG_BYTES` unset: 64 MB (`StrutOptions.resumeMaxLogBytes`). */
 export const DEFAULT_RESUME_MAX_LOG_BYTES = 64 * 1024 * 1024;
 
+/** How far a log's mtime may lag its last event: some filesystems (HFS+,
+ *  FAT) keep mtimes to the second or two. The boot scan skips a run by its
+ *  mtime only when it is older than `since` by more than this. */
+const LOG_MTIME_SLACK_MS = 2_000;
+
 export interface AutoResumeOptions {
   /** Ignore cut-off runs whose last event is older than this. Default 7 days. */
   maxAgeMs?: number;
@@ -543,7 +556,9 @@ export interface AutoResumeOptions {
    *  time (epoch ms) — the runs one death cut off — instead of only the
    *  newest root run of each workflow. The boot scan passes when the
    *  previous process started (`<dataDir>/boot.json`, written once each
-   *  boot scan is done); with no record of it, newest only. */
+   *  boot scan is done); with no record of it, newest only. A run whose log
+   *  was last written before it (`RunStore.logWrittenAt`) is passed over
+   *  unread, summary and all. */
   since?: number;
 }
 
@@ -873,6 +888,11 @@ export async function createStrut<TServices = unknown>(
     const refused = drain.refusal();
     return refused ? c.json({ error: refused }, 503, { "retry-after": "60" }) : undefined;
   };
+  /** Who a live run was launched for — its app and actor, as its `run.start`
+   *  will record them — known from the launch, so a run a caller has just
+   *  been handed the id of is theirs before its first event lands (`ownRun`).
+   *  A dead run is judged by its log. */
+  const launchedAs = new WeakMap<RunController, { app?: AppRef; actor?: string }>();
   /** Register a run as in-flight, creating its controller (attached to the
    *  launching run's controller when `parentRunId` resolves — controls apply
    *  to whole subtrees). Every launch path must register: HTTP
@@ -1309,6 +1329,16 @@ export async function createStrut<TServices = unknown>(
       console.warn(`[views] could not seed strut/views:`, err instanceof Error ? err.message : err);
     }
   }
+  // `strut/assistant` (src/apps/assistant-seed.ts): the person's assistant
+  // as a first-party app. After strut/views, whose components it imports.
+  if (opts.assistant !== false) {
+    try {
+      const r = await seedAssistantApp({ workspace, ...(opts.kit ? { kit: opts.kit } : {}), ...(opts.assistant?.title ? { title: opts.assistant.title } : {}) });
+      if (r?.changed) console.log(`[assistant] seeded app: strut/assistant @ ${r.version}`);
+    } catch (err) {
+      console.warn(`[assistant] could not seed strut/assistant:`, err instanceof Error ? err.message : err);
+    }
+  }
 
   // Apps' history (src/apps/objects.ts): versions published before it get
   // their sources recorded once per file, and the directories no longer
@@ -1435,7 +1465,23 @@ export async function createStrut<TServices = unknown>(
     : null;
   // A job's ledger rides on the jobs capability (plans/job-claims.md §6), so
   // `GET /jobs/:id` and `job/get` carry the same `claims`.
-  if (verifier && claimsJobs) claimsJobs.claims = (job) => verifier.jobLedger(job);
+  if (verifier && claimsJobs) {
+    claimsJobs.claims = (job) => verifier.jobLedger(job);
+    // A person's two doors onto a job's claims, as steps (`job/verify`,
+    // `job/evidence`: strut's own app): what `POST /jobs/:id/verify` and
+    // `POST /claims/:id/evidence { job }` do.
+    claimsJobs.verify = async (job, o = {}) => {
+      const opts = o.claims ? { claims: o.claims } : {};
+      if (o.detach) {
+        if ((await verifier.jobLedger(job)) === null) return null;
+        void verifier.verifyJob(job, opts).catch((err) => console.error(`[verify] job "${job}" failed:`, err));
+        return { job, started: true };
+      }
+      const result = await verifier.verifyJob(job, opts);
+      return result.skipped === "unknown-job" ? null : result;
+    };
+    claimsJobs.evidence = ({ slot, ...input }) => verifier.addEvidence({ ...input, ...(slot ? { slot } : {}), by: "person", mode: "asserted" });
+  }
   //
   // The same hook PROJECTS the run into the graph (graph/projector.ts: its
   // `StrutRun`, agent sessions, tool calls and the nodes they touched) —
@@ -2187,6 +2233,14 @@ export async function createStrut<TServices = unknown>(
      *  either way), else `seen`. */
     const consider = async (name: string, runId: string): Promise<"nested" | "seen"> => {
       if (controllers.has(`${name}/${runId}`)) return "seen"; // live in this process
+      // Nothing written since the previous boot: an earlier death's, as the
+      // `since` check below would find — known without reading the summary
+      // or the log, so a boot touches only the runs the last process did.
+      // The slack covers a filesystem that keeps mtimes to the second.
+      if (since !== undefined) {
+        const at = await store.logWrittenAt(name, runId);
+        if (at !== null && at < since - LOG_MTIME_SLACK_MS) return "seen";
+      }
       if (await store.getRunSummary(name, runId)) return "seen"; // finished → nothing was cut off
       await store.repairLog?.(name, runId);
       // Asked before the read: a log the process cannot hold is what
@@ -5060,6 +5114,7 @@ export async function createStrut<TServices = unknown>(
       body.job ? { id: body.job, ...(body.title ? { title: body.title } : {}) } : undefined,
     );
     if (extra?.origin === "peer") peerLaunched.add(controller);
+    launchedAs.set(controller, { ...(extra?.app ? { app: extra.app } : {}), ...(extra?.actor ? { actor: extra.actor } : {}) });
     const launchedAt = Date.now();
     const callback = extra?.callback;
     const mcp = extra?.mcp?.length ? extra.mcp : undefined;
@@ -5643,14 +5698,22 @@ export async function createStrut<TServices = unknown>(
    *  for, before the run's `run.start` is in its log. */
   const scopedLaunches = new Map<string, { app: string; actor: string }>();
   /** Was the run launched by `by.app` for `by.actor`? The summary's stamp,
-   *  a live run's `run.start`, or the launch itself. For a first-party page:
-   *  is it the viewer's, from wherever it was launched? */
-  const ownRun = async (workflow: string, runId: string, by: RunCaller | undefined): Promise<boolean> => {
+   *  a live run's `run.start`, or the launch itself — before `run.start`
+   *  lands, a run launched elsewhere (`POST …/run`) by its controller's
+   *  `launchedAs`. For a first-party page: is it the viewer's, from wherever
+   *  it was launched? `summary` is the one a caller already read (null:
+   *  none), so it is not read twice. */
+  const ownRun = async (workflow: string, runId: string, by: RunCaller | undefined, summary?: RunSummary | null): Promise<boolean> => {
     const anyApp = isFirstParty(by?.app);
-    const launched = scopedLaunches.get(`${workflow}/${runId}`);
+    const key = `${workflow}/${runId}`;
+    const launched = scopedLaunches.get(key);
     if (launched) return (anyApp || launched.app === by?.app?.name) && launched.actor === (by?.actor ?? "");
+    const live = controllers.get(key);
     const stamp: { app?: AppRef; actor?: string } | null =
-      (await store.getRunSummary(workflow, runId)) ?? (await store.getRunEvents(workflow, runId)).find((e) => e.type === "run.start") ?? null;
+      (summary === undefined ? await store.getRunSummary(workflow, runId) : summary) ??
+      (await store.getRunStart(workflow, runId)) ??
+      (live ? launchedAs.get(live) : undefined) ??
+      null;
     return !!stamp && (anyApp || stamp.app?.name === by?.app?.name) && (stamp.actor ?? "") === (by?.actor ?? "");
   };
   /** `openFlow` for one run: a scoped caller's own runs only — any other is
@@ -5682,15 +5745,19 @@ export async function createStrut<TServices = unknown>(
       const rows = q.workflow
         ? (await store.listRuns(q.workflow)).map((runId) => ({ workflow: q.workflow!, runId }))
         : await jobRunLines(q.job!);
+      const from = sinceMs(q.since);
       const out: RunListEntry[] = [];
-      for (const { workflow, runId } of rows) {
-        if (out.length >= limit) break;
+      for (const [read, { workflow, runId }] of rows.entries()) {
+        if (out.length >= limit || read >= RUN_LIST_SCAN_MAX) break;
+        // A workflow's ids are newest first: the first launched before
+        // `since` ends the list (a job's lines are in record order).
+        if (q.workflow && from !== undefined && (launchedAt({ runId }) ?? from) < from) break;
         const summary = await store.getRunSummary(workflow, runId);
         const row: RunListEntry & { jobTitle?: string } = summary
           ? listEntryOf(summary)
           : { runId, workflow, status: liveStatus(workflow, runId), ...liveJob(controllers.get(`${workflow}/${runId}`)), ...(q.workflow ? {} : { job: q.job }) } as RunListEntry;
         if (!matchesRunFilter(row, q)) continue;
-        if (scoped && !(await ownRun(workflow, runId, by))) continue;
+        if (scoped && !(await ownRun(workflow, runId, by, summary))) continue;
         const artifacts = summary ? await artifactRefs(runId, summary.output, summary.job).catch(() => undefined) : undefined;
         out.push({ ...row, ...(artifacts ? { artifacts } : {}) });
       }
@@ -5734,6 +5801,21 @@ export async function createStrut<TServices = unknown>(
       }
       const attachments = parseAttachments(q.attachments);
       if (attachments.length) requireRunFiles();
+      // A job turn's conversation (plans/jamie-app.md §5): strut's own app
+      // names one its viewer may continue (§2.2: their own, one they took a
+      // turn in, a shared one) — a captcha's answer, a job continued from a
+      // card — so the wake finds it. Never another person's, never a page
+      // a model wrote.
+      if (q.conversation !== undefined) {
+        if (!isFirstParty(by.app) || !by.actor) throw new Error("conversation: only strut's own app names the conversation a launch belongs to, for its viewer (plans/jamie-app.md §5)");
+        if (!(JOB_WORKFLOWS as readonly string[]).includes(flow.name)) throw new Error(`conversation names the conversation a JOB turn belongs to (${JOB_WORKFLOWS.join(", ")}), not a run of "${q.workflow}"`);
+        const problem = idProblem(q.conversation);
+        if (problem) throw new Error(`conversation "${q.conversation}" ${problem}`);
+        const own = q.conversation === by.actor || q.conversation.startsWith(`${by.actor}/`);
+        if (!own && (await conversations.mayContinue(q.conversation, by.actor)) !== true) {
+          throw new Error(`conversation_not_yours: "${q.conversation}" is not a conversation you may continue — your own (${by.actor}/…), one you took a turn in, or a shared one`);
+        }
+      }
       // A first-party page's turn may continue a conversation the viewer
       // is in (plans/jamie-app.md §2.2).
       const cont = isFirstParty(by.app) ? await continuesFor(flow, q.input, by.actor) : {};
@@ -5752,6 +5834,7 @@ export async function createStrut<TServices = unknown>(
           ...(q.params ? { params: q.params } : {}),
           ...(q.job ? { job: q.job } : {}),
           ...(q.job && q.title ? { title: q.title } : {}),
+          ...(q.conversation ? { conversation: q.conversation } : {}),
           // A first-party page's turn is the person's (plans/jamie-app.md
           // §3): strut is its host, so strut wakes it when its jobs end.
           ...(isFirstParty(by.app) ? { wake: true } : {}),
@@ -5824,6 +5907,10 @@ export async function createStrut<TServices = unknown>(
   };
   if (!(services as Record<string, unknown>)["runs"]) (services as Record<string, unknown>)["runs"] = runsCap;
   (services as Record<string, unknown>)["conversations"] ??= conversations;
+  // The model catalog (`GET /llm/models`), for the `llm/models` step: one
+  // list, one default, whether a route or a page reads it.
+  const llmModels = () => listModelOptions({ default: chatModel, secrets: secretsCap });
+  (services as Record<string, unknown>)["llmModels"] ??= llmModels;
 
   // Automations (plans/automations.md): scheduled launches go through the
   // same detached path as `POST /run`, stamped with their automation.
@@ -7373,7 +7460,7 @@ export async function createStrut<TServices = unknown>(
 
   app.get("/llm/models", async (c) => {
     try {
-      return c.json(await listModelOptions({ default: chatModel, secrets: secretsCap }));
+      return c.json(await llmModels());
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
     }
@@ -7600,7 +7687,15 @@ export async function createStrut<TServices = unknown>(
     return bound;
   }
 
+  /** The boot scan (below): a closed strut neither starts it nor leaves it
+   *  writing into its data dir (`boot.json`) after `close()`. */
+  let bootTimer: ReturnType<typeof setTimeout> | undefined;
+  let bootScan: Promise<unknown> | undefined;
+
   async function close(): Promise<void> {
+    if (bootTimer) clearTimeout(bootTimer);
+    bootTimer = undefined;
+    await bootScan;
     automations.stop();
     // Every feed read still waiting answers now (plans/live-feeds.md).
     graphChanges?.close();
@@ -7668,11 +7763,14 @@ export async function createStrut<TServices = unknown>(
     }
   };
   if (autoResumeRuns || autoResumeChats) {
-    const timer = setTimeout(() => {
-      if (autoResumeRuns) void bootResumeRuns().catch((err) => console.error(`[auto-resume] scan failed:`, err));
-      if (autoResumeChats) void autoResumeStaleChats(autoResumeOpts).catch((err) => console.error(`[auto-resume] chat scan failed:`, err));
+    bootTimer = setTimeout(() => {
+      bootTimer = undefined;
+      bootScan = Promise.all([
+        autoResumeRuns ? bootResumeRuns().catch((err) => console.error(`[auto-resume] scan failed:`, err)) : undefined,
+        autoResumeChats ? autoResumeStaleChats(autoResumeOpts).catch((err) => console.error(`[auto-resume] chat scan failed:`, err)) : undefined,
+      ]);
     }, autoResumeOpts.delayMs ?? 3000);
-    timer.unref?.();
+    bootTimer.unref?.();
   }
 
   return {
