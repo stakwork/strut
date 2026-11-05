@@ -181,11 +181,29 @@ A proposal is immutable but for `status`, `decision`, `result`,
 job?, session?, runId?, status? })`, newest first. `expired` is computed
 on read from `expiresAt` and written on the next touch.
 
-On a graph workspace nothing is projected in v1. When something must
+On a graph workspace nothing was projected in v1. When something must
 point at a proposal — "which proposals did this thread make", a Concept
 page's history — it is one `StrutProposal` node with `IN_RUN`, the
 projector's job, and a schema entry (`strut-schemas.ts`, the Ladybug
 registry). Not before.
+
+**BUILT 2026-11-05.** The trigger came: a person's assistant wants to find
+what it proposed by meaning, and a Concept's history should show the
+proposal that changed it. One `StrutProposal` per record
+(`strutproposal-proposal_id`, `exact_key`), written by
+`projectProposalOnce` (graph/projector.ts) when the call is made, again
+when its run's projection runs (`IN_RUN` the `StrutRun`), and at each
+decision and apply (`ACCESSED` to each node `result.nodes` names that the
+graph holds, a peer's ref skipped) — one at a time per proposal, a change
+during a projection queuing one more. Its fields are the card's words and
+who/when (`title`, `step`, `rationale`, `summary` capped, `proposal_status`
+— never `status`, which the reader hides when failed — the proposing
+workflow, run, job, session, conversation and actor, the decision's who,
+when and reason, a failed apply's error), never the input or the result.
+The record stays the store of record and what every list reads (the
+in-memory index, strut#512): a projection can lag or fail, and the
+desktop and fs backends need the index anyway. `graph/project` backfills
+the proposals of the runs it projects.
 
 ## 3. The doors
 
@@ -452,7 +470,7 @@ with the org key make the question moot for hive.
 - **A step's `describe` hook** (§7) until a card needs it.
 - **MCP tools behind the gate** (§9).
 - **`approveWait`** — a decision awaited inside the turn (§8).
-- **A `StrutProposal` node.**
+- ~~**A `StrutProposal` node.**~~ Built 2026-11-05 (§2).
 - **Strut's UI deciding for a job it does not show** — the Jobs sidebar
   lists a job's proposals; the run overview a run's; nothing lists every
   pending proposal on the server. `GET /proposals?status=pending` does.

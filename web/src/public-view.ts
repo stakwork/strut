@@ -1,4 +1,4 @@
-// The Public view dialog's pure parts (components/PublicViewDialog.tsx;
+// The Publish dialog's Public view tab, its pure parts (components/PublicViewPanel.tsx;
 // plans/public-surface.md §2): the link a visitor opens, and how the
 // cascade's checked lines merge into the record.
 import type { PublicViewNeeds, PublicViewRecord } from "./api";

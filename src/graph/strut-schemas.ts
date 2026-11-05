@@ -605,6 +605,54 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
       delivered_at: "?datetime",
     },
   },
+  {
+    ...base,
+    type: "StrutProposal",
+    // One per proposal (plans/proposals.md §2): a tool call a person approves
+    // before it runs. A PROJECTION of `<dataDir>/proposals/<id>.json`, which
+    // stays the record (the decision is written there under a lock) and what
+    // every list reads; this node is for what points at a proposal — the run
+    // that made it (`IN_RUN`), the nodes its apply wrote (`ACCESSED`) — and
+    // for search. Written when the run ends and at each change. Never the
+    // input: a payload, behind `GET /proposals/:id`. Ids are base64url, so
+    // `-` and `_` matter: hex tokens (`exact_key`).
+    key_spec: "strutproposal-proposal_id",
+    exact_key: true,
+    index: ["title", "rationale", "summary", "step"],
+    title_key: "title",
+    description_key: "rationale",
+    type_description: "A tool call an agent proposed and a person accepts or rejects (plans/proposals.md): the step, why, and what was decided",
+    attributes: {
+      proposal_id: "string",
+      /** The registry step type the proposal runs on accept. */
+      step: "string",
+      title: "string",
+      /** pending | accepted | rejected | applied | failed. NOT `status`:
+       *  the reader hides nodes whose `status` is failed (StrutRun's rule). */
+      proposal_status: "string",
+      /** The model's, for the person. */
+      rationale: "?string",
+      /** What the step read for the card (`describe`), capped. */
+      summary: "?string",
+      /** Who proposed it: the run's workflow, the run, its job and thread. */
+      workflow_name: "?string",
+      run_id: "?string",
+      job_id: "?string",
+      session_id: "?string",
+      conversation_id: "?string",
+      /** The proposing run's actor. */
+      proposed_by: "?string",
+      proposed_at: "datetime",
+      decided_by: "?string",
+      decided_at: "?datetime",
+      /** A rejection's reason. */
+      reason: "?string",
+      /** A failed apply's error. */
+      error_message: "?string",
+      /** The record: `GET /proposals/:id`. */
+      log_ref: "?string",
+    },
+  },
 ];
 
 // ── Edge registry ───────────────────────────────────────────────────────────
@@ -649,6 +697,10 @@ export const STRUT_EDGES: readonly StrutEdgeDef[] = [
   // quotes. jarvis's own name for "computed from" (ComputedFigure
   // -[:DERIVED_FROM]-> Excerpt), so one query reads both.
   { edge: "DERIVED_FROM", source: "StrutArtifact", target: "Thing", note: "any node" },
+  // Proposals (plans/proposals.md §2): the run that made one, and each node
+  // its apply wrote (`result.nodes`, what the step reported).
+  { edge: "IN_RUN", source: "StrutProposal", target: "StrutRun" },
+  { edge: "ACCESSED", source: "StrutProposal", target: "Thing", note: "any node" },
   { edge: "ACCESSED", source: "StrutToolCall", target: "Thing", note: "any node" },
   // What a run read, on a Ladybug file: it holds no tool calls, so the run
   // itself points at each node its steps reported (projector.ts). Neo4j

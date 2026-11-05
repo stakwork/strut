@@ -4,7 +4,7 @@
 // page, `q=` a search — and the DEEP LINK out of it. The store runs on an
 // index strut for anyone, with no credential, so nothing here installs:
 // "Install" is a link INTO the visitor's own strut, `?install=<name>`, which
-// the shell opens in its Packages dialog (parseInstallLink), the index's key
+// the shell opens in its Publish dialog's Packages tab (parseInstallLink), the index's key
 // and catalog URL riding along so a strut that does not follow that index
 // yet can start to. Tested in store-links.test.ts.
 
@@ -79,7 +79,7 @@ export function normalizeStrutUrl(text: string): string | null {
   }
 }
 
-/** The link into a strut's UI that opens its Packages dialog on the package. */
+/** The link into a strut's UI that opens its Publish dialog's Packages tab on the package. */
 export function installLink(strutUrl: string, link: InstallLink): string {
   const p = new URLSearchParams();
   p.set("install", link.pkg);

@@ -113,7 +113,7 @@ import type { CassetteMode } from "./cassette.js";
 // Type-only: the graph backend stays a lazy, opt-in dependency.
 import type { GraphBackend } from "./graph/backend.js";
 import { graphView, mayQueryRaw, readerFor, listFor, type GraphReaders } from "./graph/scope.js";
-import { projectChatOnce, projectRunOnce, type ConversationReader } from "./graph/projector.js";
+import { projectChatOnce, projectProposalOnce, projectRunOnce, type ConversationReader } from "./graph/projector.js";
 import { createGraphChangeFeed, GRAPH_FEED_READ_MAX } from "./graph-writes.js";
 // No runtime graph dependency in here either (type-only imports inside).
 import type { ClaimsReader } from "./graph/claims.js";
@@ -1004,8 +1004,16 @@ export async function createStrut<TServices = unknown>(
     appVersion: async (name, version) => appVersionOf(name, version),
   });
   // Proposals (plans/proposals.md): the bag's capability — its `decide` is
-  // attached with the decide route below, where its deps are.
+  // attached with the decide route below, where its deps are. On a graph
+  // workspace each change is projected (`StrutProposal`, graph/projector.ts),
+  // detached: the record is written first and stays what every list reads.
+  const proposalGraph = workspace.graph;
+  const projectProposal = proposalGraph
+    ? (p: { id: string }) =>
+        void projectProposalOnce(proposalGraph, ownProposals, p.id).catch((err) => console.error(`[projector] proposal ${p.id} was not projected:`, err))
+    : undefined;
   const ownProposals: ProposalsCapability = proposalsCapability(dataDir, {
+    ...(projectProposal ? { changed: projectProposal } : {}),
     // What the host's deltas gate: a step that reaches past this strut
     // checks it whatever the route (proposals.ts `requireApproval`).
     hostApprove: [opts.job, opts.orchestrator, opts.builder].flatMap((d) => (d ? (d.approve ?? []) : [])),
@@ -1436,7 +1444,7 @@ export async function createStrut<TServices = unknown>(
           // refreshes its `StrutChat` (plans/jamie-app.md §2). Its end was
           // recorded from the run's terminal event, before this.
           const convs = (services as Record<string, unknown>)["conversations"] as Partial<ConversationReader> | undefined;
-          void projectRunOnce(runGraph, store, key, runId, jobs, typeof convs?.record === "function" ? (convs as ConversationReader) : undefined).catch((err) =>
+          void projectRunOnce(runGraph, store, key, runId, jobs, typeof convs?.record === "function" ? (convs as ConversationReader) : undefined, ownProposals).catch((err) =>
             console.error(`[projector] run ${key}/${runId} was not projected:`, err),
           );
           verifier?.schedule(key, runId);
@@ -1808,7 +1816,7 @@ export async function createStrut<TServices = unknown>(
     const { name, runId } = c.req.param();
     const scope = await scopeOf(c);
     const actor = await resolveActor(c);
-    const proposals = (await listProposals(proposalsRoot(dataDir), { runId })).filter((p) => p.by.workflow === name && visibleTo(scope, actor, p)).map(briefOf);
+    const proposals = (await listProposals(proposalsRoot(dataDir), { runId, viewer: { scope, ...(actor ? { actor } : {}) } })).filter((p) => p.by.workflow === name).map(briefOf);
     return c.json({ workflow: name, runId, proposals });
   });
 
@@ -3998,21 +4006,28 @@ export async function createStrut<TServices = unknown>(
       mcpOf: (workflow, runId) => store.getRunMcp(workflow, runId),
       stepFor: (type) => mcpStepDef(type, mcpRegistry),
       notify: (job, update) => ((services as Record<string, unknown>)["jobs"] as JobsCapability | undefined)?.notify?.(job, update),
+      ...(projectProposal ? { changed: projectProposal } : {}),
     });
   ownProposals.decide = decide;
 
   app.get("/proposals", async (c) => {
     const status = c.req.query("status");
     if (status !== undefined && !STATUSES.has(status)) return c.json({ error: `status must be one of ${[...STATUSES].join(", ")}` }, 400);
+    const limitQ = c.req.query("limit");
+    if (limitQ !== undefined && !/^[1-9]\d*$/.test(limitQ)) return c.json({ error: "limit must be a positive integer" }, 400);
+    const scope = await scopeOf(c);
+    const actor = await resolveActor(c);
+    // What this request may see is decided on the index, before the limit
+    // and before any file is read: a person token's poll reads its own.
     const proposals = await listProposals(proposalsDir, {
+      viewer: { scope, ...(actor ? { actor } : {}) },
+      ...(limitQ !== undefined ? { limit: Number(limitQ) } : {}),
       ...(c.req.query("job") !== undefined ? { job: c.req.query("job") } : {}),
       ...(c.req.query("session") !== undefined ? { session: c.req.query("session") } : {}),
       ...(c.req.query("runId") !== undefined ? { runId: c.req.query("runId") } : {}),
       ...(status !== undefined ? { status: status as ProposalStatus } : {}),
     });
-    const scope = await scopeOf(c);
-    const actor = await resolveActor(c);
-    return c.json({ proposals: proposals.filter((p) => visibleTo(scope, actor, p)) });
+    return c.json({ proposals });
   });
 
   app.get("/proposals/:id", async (c) => {

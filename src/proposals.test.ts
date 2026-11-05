@@ -263,7 +263,7 @@ describe("proposals", () => {
       assert.equal(rec.status, "applied");
       assert.deepEqual(rec.result?.output, { wrote: "x", n: 3 });
       assert.equal((await decide({ action: "reject" })).status, 409);
-      assert.deepEqual(await readdir(proposalsRoot(dir)), [`${p.id}.json`]);
+      assert.deepEqual(await readdir(join(proposalsRoot(dir), "archive")), [`${p.id}.json`]);
     });
   });
 
