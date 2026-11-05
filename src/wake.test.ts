@@ -105,7 +105,7 @@ describe("the wake's pure parts", () => {
     assert.equal(wakeLine(at, "America/New_York"), "Wed 4 Nov 09:02, America/New_York. ");
     assert.equal(wakeLine(at, "Mars/Olympus"), "Wed 4 Nov 14:02, UTC. ");
     assert.deepEqual(wakeContext({ line: "old", where: " In a tribe. ", timeZone: "Europe/London" }, at), {
-      line: "Wed 4 Nov 14:02, Europe/London. ",
+      line: "Wed 4 Nov 14:02, Europe/London. In a tribe. ",
       where: "In a tribe.",
       timeZone: "Europe/London",
     });
@@ -277,6 +277,11 @@ describe("the wake through a whole strut", () => {
     assert.ok(prompt.includes("Find flights to Lisbon: found 3"), "the job's reply inline");
     assert.ok(prompt.includes(`call job/continue with job \`${jobEnd.job}\``));
     assert.match(prompt, /[A-Z][a-z]{2} \d{1,2} [A-Z][a-z]{2} \d\d:\d\d, Europe\/London\. In a Sphinx tribe: your reply is all they read\. You were invoked/, "the time now in the zone, then where");
+    // A person's turn reads `line` alone: `where` is the wake's, so a host
+    // that keeps its medium in `line` (every template reads it) says it once.
+    const personPrompt = lastUser(seen.person[0]);
+    assert.ok(personPrompt.includes("Europe/London. flights to Lisbon?"), personPrompt);
+    assert.ok(!personPrompt.includes("In a Sphinx tribe"), "where is not rendered on a person's turn");
 
     const start = (await strut.store.getRunEvents(ORCHESTRATOR_WORKFLOW, wakeEnd.runId)).find((e) => e.type === "run.start")!;
     assert.deepEqual(start.wake, wakeEnd.wake);

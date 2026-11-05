@@ -545,9 +545,12 @@ the job's reply inline (6 000 chars at most) and its question. It runs:
 
 - as the person who asked for the job (the job run's actor and principal);
 - on the model the starting turn ran (its `params.model`);
-- with a `context` built from the person's latest turn: the time now in its
-  `context.timeZone`, then its `context.where` (where the conversation is
-  read — send both on every turn, beside `context.line`);
+- with a `context` built from the person's latest turn: its `line` is the
+  time now in that turn's `context.timeZone`, then its `context.where` —
+  where the conversation is read, the medium alone, never who asked. Send
+  both on every turn, beside `context.line`. Only the wake reads them: a
+  person's turn reads `context.line` alone, so keep the medium in `line`
+  as well, and every template, older ones included, says it once;
 - with the `callback` and `jobCallback` of the person's latest turn that
   has them, so its `run.end` reaches you as a reply does — `wake: { job,
   runId }` on it and on its `run.start`, `wake: true` on the session's turn
