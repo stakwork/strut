@@ -31,6 +31,14 @@ export type OrchestratorSeedOptions = JobSeedOptions & {
    *  pages under it (`params.personalConcept`); createStrut names
    *  `Personal` when it seeds that root (`concepts: { personal: true }`). */
   personalConcept?: string;
+  /** Strut wakes a conversation when a job it started ends (src/wake.ts,
+   *  plans/jamie-app.md §1): one more turn whose prompt is the template's
+   *  `params.wake`. `false` turns it off, for a host that still wakes
+   *  itself. Not part of the template: changes nothing that is seeded. */
+  wake?: boolean;
+  /** Wake turns since the person's last turn, at most (`WAKE_MAX`, 4): past
+   *  it the job's `run.end` says `wake: "capped"` and no turn runs. */
+  wakeMax?: number;
 };
 
 export const ORCHESTRATOR_WORKFLOW = "orchestrator";
@@ -40,7 +48,8 @@ export const ORCHESTRATOR_CATEGORY = "orchestrator";
 export const ORCHESTRATOR_DESCRIPTION =
   "A conversation turn: an agent with no coding tools that remembers the conversation (agent with session: {{ input.session }}), answers from what is already known, asks what a request needs answered first, and starts or continues JOBS detached for anything to be found out or made (job/start, job/continue) — the job's run.end goes to this turn's callback. The kinds of work a job can do here (the Job Concept's children) close its prompt. " +
   "Launch it once per message — POST /workflows/orchestrator/run { input: { prompt, session }, callback }; without a session it is a one-shot. " +
-  "Input: { prompt, session? (the conversation's thread), context?: { line } (put before the prompt: the time, the person's time zone) }. " +
+  "Input: { prompt, session? (the conversation's thread), context?: { line, where?, timeZone? } (put before the prompt: the time, the person's time zone; where the conversation is read) }. " +
+  "Launched with wake: true, a turn asks strut to wake the session when a job it started ends: one more turn whose prompt is params.wake (the 202 says wake: true). " +
   "Output: { text, artifacts, ask?: { message }, cost, session }, job's shape. " +
   "params.tools (job/start, continue, list, get, read, strut/list-peers, strut/run-workflow) and params.system are the evolvable surface; the host adds its own through createStrut({ orchestrator }).";
 

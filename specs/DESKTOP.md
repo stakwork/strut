@@ -182,44 +182,37 @@ later. Their events arrive on the room of the strut they ran on:
   check ran. Show it as progress on the job.
 - **`run.end` with a `job`** (`workflow` is `job` or `builder`) when a turn
   of it ends. Its `startedBy` (`CALLBACKS.md` §2) names the turn that
-  started the job and the `session` that turn was launched on: on the local
-  room that session IS the conversation id; on an org's room it is
-  `<person>/<conversation id>`, so strip your actor and the slash. Wake
-  THAT conversation: launch one more local orchestrator turn (§4) on its
-  session, with a WAKE prompt in place of a person's message. Without that
-  turn, the conversation never sees the job's reply, and a later "ok, do
-  it" reaches an agent that never saw the question. A `run.end` with no
-  `startedBy` is a job the person started another way; show it under no
-  conversation.
+  started the job and the `session` that turn was launched on.
 
-The wake mirrors hive's (`src/services/strut-orchestrator-wake.ts` in hive):
-the job's reply goes inline, because the local orchestrator sees only its own
-session. A prompt that works:
+The conversation must hear the job's reply, or a later "ok, do it" reaches an
+agent that never saw the question. **Strut does that** (`CALLBACKS.md` §9,
+`src/wake.ts`): it runs one more turn of the conversation, its prompt the
+orchestrator template's `params.wake` with the job's reply inline. Do not
+write a wake prompt of your own.
 
-```
-You were invoked because job `<job>` on <"this machine" | "@<org id>"> has
-<finished its turn | finished its turn and STOPPED FOR A DECISION | failed | been stopped>.
-What it produced: <each deliverable's title and kind, or "nothing attached">.
-Its reply, verbatim:
-<<<job reply
-<output.text, capped at ~6 000 chars>
->>>
-<Its question for the person: <output.ask.message>, when it asked one>
+- **A job on this machine** (the local room): send `"wake": true` on every
+  turn you launch (§4) — strut wakes only the conversations whose host asked.
+  Then nothing to do. The local strut
+  wakes the conversation, and the wake turn's `run.end` reaches you as a
+  reply does (the turn's own callback — the room), marked `wake: { job,
+  runId }`. The job's own `run.end` says `wake: "launched"` (a reply
+  follows), `"capped"` (too many wakes in a row: send the job's words as
+  they are) or `"none"`.
+- **A job on an org's strut** (that org's room): the org does not wake your
+  conversation — your turn there was a relay, through your person token.
+  Hand the end to the LOCAL strut: `POST /conversations/wake { session,
+  source, end }`, `session` the local conversation id (the `startedBy.session`
+  minus your actor and the slash), `source` the org's peer id, `end` the
+  `run.end` as it came. The local strut wakes the conversation, its Continue
+  handing the go-ahead to `@<org>`'s assistant, and answers `{ wake }` as
+  above. Strut keeps each job run to one wake, so forwarding an end twice
+  (a reconnect's catch-up) is harmless.
 
-Decide one of:
-- Summarize (the default): one short paragraph in your own words: what it
-  produced, its question if it asked one, the next step.
-- Continue, only when the person's request is not met yet and the next step is
-  clearly what they asked for: <this machine: call job/continue with job
-  `<job>`> | <an org: hand the go-ahead to @<org id>'s assistant, naming job
-  `<job>`>. Say in one line that you did.
-- Stay silent: reply with exactly `[silent]` when there is nothing to add.
-```
-
-Hide a reply of `[silent]`. Do not wake for a `run.end` whose `workflow` is
-`orchestrator`: that is a turn's own reply. Queue a wake behind a live turn
-(§4), and stop waking after a few in a row without a message from the person,
-since continue → finish → wake → continue can loop.
+A `run.end` with no `startedBy` is a job the person started another way;
+show it under no conversation. Hide a reply of exactly `[silent]`. Send
+`context.timeZone` and `context.where` (where the conversation is read: "In
+a Sphinx DM: …") on every turn beside `context.line`: a wake builds its
+line from them.
 
 ## 6. Open a deliverable
 

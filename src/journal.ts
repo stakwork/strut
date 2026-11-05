@@ -6,7 +6,7 @@
  * and implements the `from` invalidation ("re-run from this step", §5.2).
  */
 
-import type { AppRef, Flow, RunAttachment, RunEvent, StartedBy, Step } from "./core.js";
+import type { AppRef, Flow, RunAttachment, RunEvent, StartedBy, Step, WakeMark } from "./core.js";
 import type { SubflowResolver } from "./runner.js";
 
 /** Completed units: last `step.end` per path wins — a resumed log may carry
@@ -54,6 +54,13 @@ export function readRunStart(
   /** The turn that started a job run — a resume keeps it, so the run's
    *  `run.end` still names it (CALLBACKS.md §2). */
   startedBy?: StartedBy;
+  /** The conversation a host's launch named — a resume keeps it, so the
+   *  job run's end still wakes it (src/wake.ts). */
+  conversation?: string;
+  /** The host asked for strut's wake — a resume keeps it. */
+  wakeAsked?: true;
+  /** A wake turn's mark — a resume keeps it, so its end is still heard. */
+  wake?: WakeMark;
 } | null {
   const start = events.find((e) => e.type === "run.start");
   if (!start) return null;
@@ -72,6 +79,9 @@ export function readRunStart(
     attachments: start.attachments,
     ...(start.app ? { app: start.app } : {}),
     ...(start.startedBy ? { startedBy: start.startedBy } : {}),
+    ...(start.conversation ? { conversation: start.conversation } : {}),
+    ...(start.wakeAsked ? { wakeAsked: true as const } : {}),
+    ...(start.wake ? { wake: start.wake } : {}),
   };
 }
 

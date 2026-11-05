@@ -1,6 +1,6 @@
 # Jamie as a strut app, and one wake for every host
 
-> **Status (2026-11-04): proposed.** Written after a read of strut `main`
+> **Status (2026-11-04): proposed; §1 (one wake) built — §1.6.** Written after a read of strut `main`
 > @e1c45ad, hive `origin/master` @c692b96bf, sphinx `origin/master`
 > @74c12954 (Peel's bridge) and sphinx-voice `origin/main` @ba18f12. The
 > owner agreed four things in conversation, marked **agreed** below: a
@@ -197,6 +197,88 @@ it from the conversation (§2). Hive's webhook refuses it today: a
 (`src/app/api/strut-runs/webhook/route.ts:131-150`); it needs the
 adoption job runs already get (§6.1).
 
+### 1.6 As built (2026-11-04, branch `feature/one-wake`)
+
+Work item 1 and the strut half of §7 and item 8: `src/wake.ts` (the pure
+prompt, context and door parsers, and the queue), wired in `createStrut`;
+`params.wake` and `context.where` in `src/workflows/orchestrator.yaml`;
+`CALLBACKS.md` §9, `API.md` §3, `DESKTOP.md` §5. Where the plan was open
+or vague, and where it differs:
+
+- **Where the trigger sits.** Not `services.onRunEnd`: in the launcher's
+  settle (`launchDetached`), where the job's `run.end` is posted, so the
+  outcome is decided before it goes out; and in the boot's finalize of a
+  dead run (`finalizeDeadRun`). Every root launch passes through the first.
+  A crash between the job's summary and the wake file loses that wake, as
+  it loses a `run.end` in flight.
+- **A conversation workflow is one with `params.wake`**, not the name
+  `orchestrator`. The wake runs the launching turn's workflow, else the
+  session's latest turn's, else `orchestrator`; one without `params.wake`
+  is `"none"`. The 202's `wake: true` follows the same rule (and needs
+  `input.session` and the deployment's scope).
+- **The relay rule is wider than `peerPerson`**: a launching (or latest
+  person's) turn with `origin: "peer"` or `"app"` is `"none"`. A plain
+  peer's sessions open as `peer/<id>` and an app's as
+  `app/<name>/<viewer>/…`, so `startedBy.session` (the raw input) does not
+  name the thread at all. §3's first-party tier will have to revisit `app`.
+- **Prompt.** Hive's job branch only (event wakes stay Hive's, open question
+  6). One template for one or many jobs: the part between `{each}` and
+  `{/each}` repeats per job; placeholders `{job} {title} {on} {started}
+  {outcome} {produced} {reply} {question} {continue}` and `{silent}`, each
+  piece filled once so a job's words are never read as one. "Hive's entry
+  is COLLAPSED" became the host's `context.where`, and so did the tribe and
+  call sentences: `where` heads EVERY turn's prompt after `line` (the
+  template's `prompt`), so a host sends it on a person's turn too.
+- **The wake's line**: "Wed 4 Nov 14:02, Europe/London. " in the person's
+  latest turn's `context.timeZone`, UTC when it has none or a bad one.
+- **Several ends in one turn** (open question 4: one turn): the mark is the
+  first end's `{ job, runId, peer? }` plus `also: […]` for the rest; the
+  turn runs as the first end's asker and on its starting turn's model.
+- **Who** (open question 3): the job run's actor and principal. For the
+  door, the request's actor, else the person's latest turn's.
+- **Model**: the starting turn's `params.model`, else the person's latest
+  turn's; none, the template's.
+- **Callbacks**: the newest person's turn (up to 20 back) that has a
+  `callback`, with its `jobCallback`; the starting turn last, for one that
+  has not committed.
+- **Busy** is the session held OR any run launched on it (`input.session`)
+  still in flight in this process: a turn's steps before and after its
+  agent hold no lock. A wake turn that still fails `session_busy:` (a
+  person got there between the check and the open) puts its ends back. A
+  busy session that no run of ours will free is looked at again every 2 s.
+- **The cap** counts trailing `wake: true` turn lines plus a wake turn in
+  flight not yet committed; a person's turn in flight starts it over; an
+  end that joins one already waiting never caps (open question 2: strut
+  says `"capped"`, the host shows the job's words).
+- **Durable state** is `<dataDir>/wakes/<session>.json` (`queued`, `turn`,
+  and `seen`, the last 500 job runs woken on), not inside the session
+  store's directory: that store may be in memory. Boot reconciles after the
+  runs scan, behind the run auto-resume gate: a wake turn still live (the
+  scan resumed it) is waited on, one that finished is cleared, one that
+  died unresumed goes again.
+- **`wake` on the log** is on `run.start` (and `ctx.wake`, the turn line's
+  `wake: true`) only; the `run.end` that carries it is the callback's. A
+  job turn's `run.end` always carries `wake`, `"none"` included (a job run
+  with no conversation, or the wake off).
+- **The door** answers `200 { wake }`; `source` must be a peer id and
+  `end.workflow` a job's; the run is keyed `<source>/<runId>`.
+- **Opt-in per launch** (changed in review, 2026-11-04; §7 as it was
+  written assumed every host would switch its own wake off on the 202's
+  `wake: true`, which an older host never does). Built on by default, the
+  wake would have reached Hive's conversations before Hive could show it:
+  Hive's webhook refuses the wake turn's `run.end` (`Run mismatch`), so the
+  reply sits in the session as if the person had read it, and Hive's own
+  wake then meets `session_busy` and drops, or runs as a second wake turn.
+  So a host ASKS on the launches it makes: `POST …/run { wake: true }`
+  (full scope; a peer's is dropped), recorded on `run.start` as
+  `wakeAsked`. A job job/start started wakes its conversation when the turn
+  that started it asked (a job a wake turn started: the person's latest
+  turn); a job a host launched itself, when that launch asked beside its
+  `conversation`; the door is a host asking. The 202 says `wake: true` only
+  for a launch that asked. Each host switches over when its half is ready,
+  one launch at a time; `orchestrator: { wake: false }` still turns it all
+  off.
+
 ## 2. Conversations (proposed)
 
 `useAssistant` (`kit/src/hooks.ts:490`) rebuilds a chat from the last ten
@@ -355,11 +437,14 @@ question.
 
 ## 7. Turning it on
 
-Two wakes for one job is two replies. Strut announces that it wakes: the
-202 of an orchestrator launch carries `wake: true` (as it carries
-`callback: true`), and every job `run.end` says what strut did (§1.4).
-A host turns its own wake off per conversation on that, never by a
-deploy date, so a swarm on an older strut keeps the host's wake.
+Two wakes for one job is two replies. A host asks for strut's wake on
+each launch it makes (`wake: true`, as built: §1.6), and strut answers
+that it honors it: the 202 carries `wake: true` (as it carries
+`callback: true`; an older strut ignores the field and never wakes), and
+every job `run.end` says what strut did (§1.4). A host turns its own wake
+off for the conversations it asked for, never by a deploy date, so a
+swarm on an older strut keeps the host's wake, and a host that has not
+moved yet is never woken by strut.
 
 Existing conversations need no export to appear in the app: each already
 has its session on the swarm, its turns ran as the person's actor, and

@@ -215,6 +215,13 @@ describe("the orchestrator workflow strut ships", () => {
       assert.throws(() => hostConfigFromEnv({ STRUT_HOST_CONFIG: file }), /STRUT_HOST_CONFIG: could not read/);
       await writeFile(file, JSON.stringify({ orchestrator: { tools: "sphinx/*" } }));
       assert.throws(() => hostConfigFromEnv({ STRUT_HOST_CONFIG: file }), /"orchestrator" must be/);
+      // The wake's switch and cap (src/wake.ts) ride on the same delta.
+      await writeFile(file, JSON.stringify({ orchestrator: { wake: false, wakeMax: 2 } }));
+      assert.deepEqual(hostConfigFromEnv({ STRUT_HOST_CONFIG: file }), { orchestrator: { wake: false, wakeMax: 2 } });
+      await writeFile(file, JSON.stringify({ orchestrator: { wake: "no" } }));
+      assert.throws(() => hostConfigFromEnv({ STRUT_HOST_CONFIG: file }), /"orchestrator.wake" must be/);
+      await writeFile(file, JSON.stringify({ orchestrator: { wakeMax: -1 } }));
+      assert.throws(() => hostConfigFromEnv({ STRUT_HOST_CONFIG: file }), /"orchestrator.wakeMax" must be/);
       assert.throws(() => hostConfigFromEnv({ STRUT_HOST_CONFIG: join(dir, "missing.json") }), /could not read/);
     } finally {
       await rm(dir, { recursive: true, force: true });
@@ -315,7 +322,8 @@ describe("the orchestrator, end to end", () => {
       scheduler: false,
       job: false,
       builder: false,
-      orchestrator: { system: "HOSTSECTION: the person's chats are on their Mac." },
+      // The wake (src/wake.ts) is its own test's: these count every request.
+      orchestrator: { system: "HOSTSECTION: the person's chats are on their Mac.", wake: false },
       ...(peers ? { peers } : {}),
       ...(self ? { self } : {}),
     });

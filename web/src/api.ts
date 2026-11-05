@@ -2398,6 +2398,8 @@ export interface IndexCard {
   key: string;
   seq: number;
   publishers: Record<string, { key: string; urls: string[]; description?: string; url?: string }>;
+  /** Where each publisher server's PUBLIC VIEW is served (plans/public-surface.md §8). */
+  live?: Record<string, { url: string; description?: string }>;
   urls?: string[];
   sig: string;
 }
@@ -2432,6 +2434,8 @@ export interface StoreConcept {
   description?: string;
   parent?: string;
   packages: Array<{ package: string; version: string }>;
+  /** The publisher servers whose public view holds this page, live: its docs are read there. */
+  live?: Array<{ publisher: string; url: string }>;
 }
 export interface StoreConceptPage extends StoreConcept {
   docs?: string;
@@ -2525,4 +2529,68 @@ export async function fetchPublicAppDocument(name: string): Promise<string> {
   const res = await publicFetch(`/public/apps/${encodeURIComponent(name)}/document`);
   if (!res.ok) throw new Error(res.status === 404 ? `"${name}" is not in this server's public view` : `${res.status} ${res.statusText}`);
   return res.text();
+}
+
+// ── The store's LIVE items (plans/public-surface.md §8) ─────────────────────
+// What the index's live rows show (`GET /index/live`), and the item itself,
+// read from its publisher's server in the visitor's browser — the
+// publisher's `/public` answers anyone, with CORS open. Never a credential.
+
+export interface StoreLiveItem {
+  publisher: string;
+  /** The publisher server's base: `<url>/public/...` is where to read the item. */
+  url: string;
+  kind: "app" | "workflow" | "step" | "concept";
+  name: string;
+  title?: string;
+  description?: string;
+  version?: string;
+  runs?: boolean;
+  pages?: number;
+}
+export const storeLive = (q = "") => storeJSON<{ items: StoreLiveItem[] }>(`/index/live?q=${encodeURIComponent(q)}`).then((r) => r.items);
+
+/** One read of a publisher server's public view (`<base>/public/...`). */
+export async function liveJSON<T>(base: string, path: string): Promise<T> {
+  const res = await fetch(`${base}${path}`, { headers: { accept: "application/json" }, credentials: "omit" });
+  if (!res.ok) {
+    let msg = `${res.status} ${res.statusText}`;
+    try {
+      const body = await res.json();
+      if (body?.error) msg = body.error;
+    } catch {}
+    throw new Error(msg);
+  }
+  return res.json() as Promise<T>;
+}
+export interface LiveWorkflowFlow {
+  name: string;
+  steps: Array<{ id: string; type: string; depends?: string | string[] }>;
+  input?: Record<string, { type?: string; required?: boolean; description?: string; default?: unknown }>;
+}
+export interface LiveRunRow {
+  runId: string;
+  status: string;
+  startedAt?: string;
+  finishedAt?: string;
+  durationMs?: number;
+}
+export interface LiveStepSchema {
+  type: string;
+  description?: string;
+  effect?: string;
+  secrets?: string[];
+  fields: Array<{ name: string; type?: string; description?: string }>;
+}
+export interface LiveStepSource {
+  type: string;
+  source: string | null;
+  helpers: Array<{ name: string; source: string }>;
+}
+export interface LiveConceptPage {
+  name: string;
+  properties: Record<string, unknown>;
+  parent?: string;
+  root: string;
+  children: Array<{ name: string; description?: string }>;
 }

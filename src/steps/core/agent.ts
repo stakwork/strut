@@ -2122,6 +2122,7 @@ export default defineStep({
               ...(ctx?.principal ? { principal: ctx.principal } : {}),
               ...(ctx?.job ? { job: ctx.job } : {}),
               ...(files.length ? { attachments: ctx!.attachments } : {}),
+              ...(ctx?.wake ? { wake: true as const } : {}),
               provider: resolved.provider,
               model: resolved.name,
               routed: resolved.routed,

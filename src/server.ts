@@ -38,7 +38,8 @@ let strutInstance: Strut | null = null;
 /** The host's delta for the shipped workflows, from the JSON file
  *  `STRUT_HOST_CONFIG` names: `{ job?, orchestrator?, builder? }`, each
  *  `{ tools?, approve?, system?, model? }` (and `peer: false` to close the
- *  builder to other struts — a file may only close one, never open one),
+ *  builder to other struts — a file may only close one, never open one;
+ *  and on `orchestrator`, `wake?` and `wakeMax?`, src/wake.ts),
  *  `automation?: { workflow, approve?, grants? }`, and `graphReaders?`, who
  *  may read which namespaces of the graph (src/graph/scope.ts), and
  *  `memory?: "graph" | "legacy"`, where the assistant's memory lives
@@ -70,7 +71,9 @@ export function hostConfigFromEnv(env: NodeJS.ProcessEnv = bootEnv()): Pick<Stru
       throw new Error(`STRUT_HOST_CONFIG: ${file}: "${key}" must be { tools?: string[], approve?: string[], system?: string, model?: string | null, peer?: false }`);
     }
     const reach = key === "builder" ? reachFromConfig((delta ?? {}) as Record<string, unknown>, file) : undefined;
+    const wake = key === "orchestrator" ? wakeFromConfig((delta ?? {}) as Record<string, unknown>, file) : {};
     out[key] = {
+      ...wake,
       ...(reach ? { reach } : {}),
       ...(tools ? { tools: tools as string[] } : {}),
       ...(approve ? { approve: approve as string[] } : {}),
@@ -110,6 +113,18 @@ export function hostConfigFromEnv(env: NodeJS.ProcessEnv = bootEnv()): Pick<Stru
     };
   }
   return out;
+}
+
+/** `orchestrator.wake` / `orchestrator.wakeMax` (src/wake.ts): whether strut
+ *  wakes a conversation when its job ends, and how many wake turns in a row
+ *  at most. A bad value fails the boot. */
+function wakeFromConfig(orchestrator: Record<string, unknown>, file: string): { wake?: boolean; wakeMax?: number } {
+  const { wake, wakeMax } = orchestrator;
+  if (wake !== undefined && typeof wake !== "boolean") throw new Error(`STRUT_HOST_CONFIG: ${file}: "orchestrator.wake" must be true or false`);
+  if (wakeMax !== undefined && !(typeof wakeMax === "number" && Number.isInteger(wakeMax) && wakeMax >= 0)) {
+    throw new Error(`STRUT_HOST_CONFIG: ${file}: "orchestrator.wakeMax" must be a whole number of turns`);
+  }
+  return { ...(wake !== undefined ? { wake } : {}), ...(wakeMax !== undefined ? { wakeMax: wakeMax as number } : {}) };
 }
 
 /** `builder.reach` (src/reach.ts): `{ tools?, builtins?, secrets? }`, each a

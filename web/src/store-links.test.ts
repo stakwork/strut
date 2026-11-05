@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { appsOf, canWords, conceptRoots, indexIdOf, installLink, normalizeStrutUrl, parseInstallLink, parseStoreView, storeQuery } from "./store-links";
+import { appsOf, canWords, conceptRoots, indexIdOf, installLink, liveAppUrl, liveBase, normalizeStrutUrl, parseInstallLink, parseStoreView, storeQuery } from "./store-links";
 
 const KEY = "y".repeat(52);
 
@@ -17,6 +17,19 @@ test("the store's view is read from the query and written back with store=1 kept
   assert.equal(storeQuery({ view: "package", pkg: "acme/linear" }), "?store=1&pkg=acme%2Flinear");
   assert.equal(storeQuery({ view: "concept", concept: "Law" }), "?store=1&concept=Law");
   assert.deepEqual(parseStoreView(storeQuery({ view: "concept", concept: "Civil procedure" })), { view: "concept", concept: "Civil procedure" });
+});
+
+test("a live item's view: its publisher, its kind and its name, and the page it frames", () => {
+  assert.deepEqual(parseStoreView("?store=1&live=openlaw&app=openlaw-benchmarks"), { view: "live", publisher: "openlaw", kind: "app", name: "openlaw-benchmarks" });
+  assert.deepEqual(parseStoreView("?store=1&live=openlaw&workflow=openlaw-run"), { view: "live", publisher: "openlaw", kind: "workflow", name: "openlaw-run" });
+  assert.deepEqual(parseStoreView("?store=1&live=Not%20A%20Prefix&app=x"), { view: "browse" }, "a publisher that is not a prefix is ignored");
+  assert.deepEqual(parseStoreView("?store=1&live=openlaw"), { view: "browse" }, "a publisher with no item is the browse page");
+  const v = { view: "live" as const, publisher: "acme", kind: "step" as const, name: "acme/linear/fetch" };
+  assert.deepEqual(parseStoreView(storeQuery(v)), v);
+  assert.equal(liveAppUrl("https://swarm.example:3355/lab/", "acme/bench"), "https://swarm.example:3355/lab/?app=acme%2Fbench&solo=1&public=1");
+  assert.equal(liveBase({ live: { openlaw: { url: "https://s.example/lab/" } } }, "openlaw"), "https://s.example/lab");
+  assert.equal(liveBase({ live: {} }, "constructor"), undefined, "own rows only");
+  assert.equal(liveBase(null, "openlaw"), undefined);
 });
 
 test("a strut's address is normalized to its origin and mount", () => {

@@ -117,8 +117,13 @@ export function LaunchForm({ workflow, fields: given, initial, dedupe, label = "
     return out;
   };
 
+  // A visitor's page (a strut server's public view) starts nothing: the
+  // form stays, so the visitor sees what it takes, with every control off.
+  const locked = host.public;
+
   const submit = async (e: FormEvent) => {
     e.preventDefault();
+    if (locked) return;
     const input = read();
     if (typeof input === "string") return setProblem(input);
     setProblem(null);
@@ -127,18 +132,11 @@ export function LaunchForm({ workflow, fields: given, initial, dedupe, label = "
     if (result) onLaunched?.(result, input);
   };
 
-  // A visitor's page (a strut server's public view) launches nothing.
-  if (host.public) {
-    return (
-      <p className={cn("text-sm text-muted-foreground", className)} data-testid="launch-form-public">
-        Runs are started by the people who keep this server. This is a public view: you can read its runs, not start one.
-      </p>
-    );
-  }
   if (!given && info.isPending) return <Skeleton className={cn("h-32 w-full", className)} />;
   const running = last && isInFlight(last) ? last : undefined;
   return (
     <form onSubmit={submit} className={cn("flex flex-col gap-3 text-sm", className)} data-testid="launch-form">
+      <fieldset disabled={locked} className="m-0 flex min-w-0 flex-col gap-3 border-0 p-0">
       {info.data?.description && !given && <p className="text-muted-foreground">{info.data.description}</p>}
       {info.isError && !given && <p className="text-destructive">{errorText(info.error)}</p>}
       {fields ? (
@@ -190,6 +188,12 @@ export function LaunchForm({ workflow, fields: given, initial, dedupe, label = "
         {data?.existing && <span className="text-xs text-muted-foreground" data-testid="launch-joined">Already running — joined run {data.runId}</span>}
         {data && !data.existing && <span className="text-xs text-muted-foreground">Started run {data.runId}</span>}
       </div>
+      </fieldset>
+      {locked && (
+        <p className="text-xs text-muted-foreground" data-testid="launch-form-public">
+          Runs are started by the people who keep this server. This is a public view: you can read its runs, not start one.
+        </p>
+      )}
       {last && (
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <span>Last run</span>
