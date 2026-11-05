@@ -121,3 +121,20 @@ export function when(iso: string, now = Date.now()): string {
     ...(d.getFullYear() !== new Date(now).getFullYear() ? { year: "numeric" } : {}),
   });
 }
+
+/** The chip over an app in the side panel (components/AppWithPanel.tsx):
+ *  the version shown and its state, and — on the live one — how many drafts
+ *  wait. None for an app with one version that follows latest: nothing to
+ *  look at but what is live. */
+export function panelChip(shown: string, app: { activeVersion: string; versions: string[]; live?: string }): { label: string; drafts: number } | null {
+  if (app.versions.length < 2 && !isHeld(app.live)) return null;
+  const state = shown === app.activeVersion ? "live" : isDraft(shown, app.activeVersion, app.live) ? "draft" : "";
+  return {
+    label: state ? `${shown} · ${state}` : shown,
+    drafts: shown === app.activeVersion ? draftCount(app.versions, app.activeVersion, app.live) : 0,
+  };
+}
+
+/** The key the side panel opens a version of a local app at: the bare name
+ *  for the live one (it follows what is live), `name@vN` for any other. */
+export const panelKey = (name: string, version: string, active: string): string => (version === active ? name : `${name}@${version}`);

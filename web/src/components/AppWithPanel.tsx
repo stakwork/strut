@@ -1,5 +1,8 @@
-import { useRef, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
+import * as api from "../api";
 import { appToolInput, namesApp, panelTarget, type PanelTarget } from "../app-links";
+import { STATE_LABEL, appVersionRows, panelChip, panelKey, when, type AppVersionRow } from "../app-versions";
+import { errorMessage } from "../helpers";
 import { CloseIcon } from "../icons";
 import { useListedApp } from "../use-listed-app";
 import { AppHost, type HostedApp } from "./AppHost";
@@ -111,13 +114,43 @@ function PanelApp(props: {
     return props.onNavigate ? props.onNavigate(params) : false;
   };
   const title = entry?.title || app?.name || props.target.app;
+  // A local app's versions, to look at — never to make live: whoever opens
+  // a panel may not be the one who decides what everyone gets
+  // (plans/jamie-app.md §5.2). That is the Versions flyout's, in the full UI.
+  const chip = app && entry && !app.peer ? panelChip(app.version, entry) : null;
+  const [versionsOpen, setVersionsOpen] = useState(false);
+  useEffect(() => setVersionsOpen(false), [props.target.app]);
   return (
     <div class="app-panel-app">
       <div class="app-panel-head">
         <span class="app-panel-title" title={title}>{title}</span>
-        {app && <span class="app-panel-sub">{`${app.peer ? `@${app.peer} · ` : ""}${app.name} ${app.version}`}</span>}
+        {app && chip ? (
+          <span class="app-panel-sub">
+            <button
+              type="button"
+              class={`app-version-chip${versionsOpen ? " is-active" : ""}`}
+              aria-expanded={versionsOpen}
+              title="Look at another version"
+              onClick={() => setVersionsOpen((o) => !o)}
+            >
+              {chip.label}
+              {chip.drafts > 0 && <span class="app-version-drafts">{chip.drafts} draft{chip.drafts === 1 ? "" : "s"}</span>}
+              <span class="app-version-caret" aria-hidden="true">▾</span>
+            </button>
+          </span>
+        ) : app && <span class="app-panel-sub">{`${app.peer ? `@${app.peer} · ` : ""}${app.name} ${app.version}`}</span>}
         <button class="copy-btn" onClick={props.onClose} aria-label="Close" title="Close"><CloseIcon /></button>
       </div>
+      {versionsOpen && app && entry && (
+        <PanelVersions
+          name={app.name}
+          shown={app.version}
+          onView={(version) => {
+            setVersionsOpen(false);
+            props.onTarget({ app: panelKey(app.name, version, entry.activeVersion) });
+          }}
+        />
+      )}
       <div class="app-panel-body">
         {app
           ? <AppHost
@@ -129,6 +162,43 @@ function PanelApp(props: {
             />
           : <div class="empty">{entry === null ? `No app "${props.target.app}"` : "Loading the app…"}</div>}
       </div>
+    </div>
+  );
+}
+
+/** A local app's versions under the panel's bar, newest first, each in its
+ *  state: a click shows that version here. Viewing only — making one live
+ *  is the full UI's Versions flyout (or a host's admin page). */
+function PanelVersions(props: { name: string; shown: string; onView: (version: string) => void }) {
+  const [rows, setRows] = useState<AppVersionRow[] | null>(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let on = true;
+    api.getAppVersions(props.name)
+      .then((data) => on && setRows(appVersionRows(data)))
+      .catch((err) => on && setError(errorMessage(err)));
+    return () => {
+      on = false;
+    };
+  }, [props.name]);
+  return (
+    <div class="app-panel-versions" role="menu" aria-label="Versions">
+      {error && <div class="auto-error">{error}</div>}
+      {!rows && !error && <div class="empty">Loading…</div>}
+      {rows?.map((r) => (
+        <button
+          key={r.version}
+          type="button"
+          role="menuitem"
+          class={`app-panel-version${r.version === props.shown ? " is-current" : ""}`}
+          onClick={() => props.onView(r.version)}
+        >
+          <span class="app-panel-version-name">{r.version}</span>
+          {r.state && <span class={`app-version-state is-${r.state}`}>{STATE_LABEL[r.state]}</span>}
+          <span class="app-panel-version-when">{when(r.createdAt)}</span>
+        </button>
+      ))}
+      {rows && <div class="app-panel-versions-note">Viewing only. Making a version live is done where the apps are managed.</div>}
     </div>
   );
 }
