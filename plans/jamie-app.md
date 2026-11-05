@@ -604,9 +604,10 @@ was open:
   mcp's `createStrut` call, a follow-up there).
 - **New conversations** are `<viewer>/<12 hex>`, the fork's form. The page
   does not know its viewer, so `conversation/list` now answers `viewer`
-  (the step only; the capability is unchanged). With nothing open, the
-  page opens the newest conversation, else a new one; the open one is kept
-  per viewer (`useAppState`), and `?input=session%3D<id>` opens one.
+  (the step only; the capability is unchanged). The page opens on a new
+  conversation (2026-11-05: it used to reopen the last one, or the newest,
+  which read as random); a row in the list or `?input=session%3D<id>`
+  opens an earlier one.
 - **Hive's bare-id conversations** (§3.1 "Not built"; ruled 2026-11-05,
   built apart — §2.2): the page sends into whatever `conversation/list`
   shows, bare ids included, and the server decides. A
