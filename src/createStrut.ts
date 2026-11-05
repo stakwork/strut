@@ -4445,6 +4445,8 @@ export async function createStrut<TServices = unknown>(
   // `?client=`, so its channels never saw it leave.
 
   const channels = createChannels();
+  // What the channel/* steps reach: code an app runs sends and reads here.
+  if (!(services as Record<string, unknown>)["channels"]) (services as Record<string, unknown>)["channels"] = channels;
   // A send batch is at most a burst of messages at their cap (~0.5 MB).
   const channelsWss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
   const CHANNEL_SLOT = Symbol("strut.channel");

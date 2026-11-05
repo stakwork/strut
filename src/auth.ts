@@ -684,6 +684,21 @@ export function verifyChannelTicket(ticket: string, now = Date.now()): ChannelTi
   return { ...(typeof actor === "string" ? { actor } : {}), app: claims["app"], version: claims["version"], exp: claims["exp"] as number };
 }
 
+/** What a channel name is derived under when strut has no secret (dev
+ *  mode, the gate open: anyone may read every channel anyway). */
+const DEV_CHANNEL_KEY = "strut-dev-channel-key";
+
+/** A channel name only an app's own code can work out (`channel/derive`,
+ *  plans/app-channels.md §6): `HMAC(app key, scope)`, the app key being
+ *  `HMAC(secret, "channel:" + app)` under the file token's secret — 128
+ *  bits as hex, a name the channel format takes. Nothing is stored: the same
+ *  app and scope always give the same name, and rotating the secret moves
+ *  every derived room. */
+export function derivedChannelName(app: string, scope: string): string {
+  const appKey = createHmac("sha256", tokenSecret() ?? DEV_CHANNEL_KEY).update(`channel:${app}`).digest();
+  return createHmac("sha256", appKey).update(scope).digest("hex").slice(0, 32);
+}
+
 /** The ticket an upgrade of the channel socket carries as `?ticket=`, verified. */
 export function channelTicketOf(c: Context): ChannelTicket | undefined {
   if (c.req.method !== "GET" || c.req.path !== CHANNEL_SOCKET_PATH) return undefined;

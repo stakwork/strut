@@ -1452,8 +1452,18 @@ page connects nowhere: its HOST holds one WebSocket per open page and
 relays it to the page over the MCP Apps bridge. Nothing is kept — no run,
 no log line — and a restart empties every channel. Built: the service,
 the ticket and the socket below, the bridge methods, the kit's
-`useChannel`, and strut's own UI as a host (for an app that lives on this
-strut). The steps and the peer relay are later work items.
+`useChannel`, strut's own UI as a host (for an app that lives on this
+strut), and the steps below. The peer relay is a later work item.
+
+**The steps** — for code an app runs (`ctx.app`: a step its page called, a
+workflow it launched); refused without it, and refused from a page (a page
+uses its host's socket):
+
+| Step | Config | Output |
+| --- | --- | --- |
+| `channel/send` | `{ channel, data, key? }` | `{ cursor }` — stamped `{ actor?, code }`, `code` the workflow's name or the step the page called |
+| `channel/read` | `{ channel, since?, wait? (≤ 55 000 ms), limit? }` | `{ cursor, reset?, more?, messages, members }` |
+| `channel/derive` | `{ scope }` | `{ channel }` — `HMAC(per-app key, scope)`, 32 hex characters, nothing stored |
 
 **A ticket** — what a browser host opens the socket with, since a browser
 cannot set a header on an upgrade:

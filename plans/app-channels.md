@@ -1,8 +1,8 @@
 # App channels: live messages between the people on an app
 
-> **Status (2026-11-04): ruled; work items 1, 2, 5 and 6 built
+> **Status (2026-11-04): ruled; work items 1, 2, 4, 5, 6 and 9 built
 > (stakwork/strut#487: the service, the ticket, the socket at `GET /channels`,
-> strut's UI as a host, the kit's `useChannel`).** Written after the question
+> the steps, strut's UI as a host, the kit's `useChannel`, the `App` page).** Written after the question
 > "could someone build a multiplayer game as a strut app?" A game has few
 > workflows (a scoreboard, a referee) and needs fast messages between the
 > people playing it, which strut does not have. The owner ruled every
@@ -235,7 +235,7 @@ Code the app runs (anything with `ctx.app` set: a custom step a page calls
 through `step_run`, a workflow the app launched with `run/launch`) reaches
 the same channels in process, through `ctx.services.channels`:
 
-- **`channel/send { channel, messages: [{ key?, data }] }`**, stamped
+- **`channel/send { channel, data, key? }`** (one message: a workflow sends one at a time), stamped
   with the code as the sender: the workflow's name, or the type of the
   step the page called, plus the actor who set it off. So `game/move`'s
   `board` state replaces the last `board` from `game/move`, whichever
@@ -400,7 +400,7 @@ than that server.
    rooms tests do, and the route sweeps.
 3. **The peer relay** (§4) in the same door, with a test against a second
    strut.
-4. **The steps** `channel/send`, `channel/read`, `channel/derive`
+4. **BUILT (#487). The steps** `channel/send`, `channel/read`, `channel/derive`
    (`src/steps/lib/channel/`), refused without `ctx.app` and in
    `NOT_A_PAGES`. Add the test files to the `npm test` list.
 5. **BUILT (#487). Strut's UI as a channel host** (`web/src/app-host.ts`): the
@@ -414,7 +414,7 @@ than that server.
 8. **The monitor**: channel traffic per app in Usage (messages, bytes,
    peak members per minute), and a warning when a sender keeps hitting
    the rate limit, with the fix: send fewer messages, or make them states.
-9. **The `App` Concept page**: when a channel is the tool (live, lossy,
+9. **BUILT (#487). The `App` Concept page**: when a channel is the tool (live, lossy,
    unrecorded) and when a workflow or the graph is; grant `channel/*` to
    the app's steps; the referee and the gatekeeper patterns; a direct
    WebRTC connection between pages is not the door (item 0).
