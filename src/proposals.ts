@@ -349,7 +349,7 @@ export function proposalsCapability(
     hostApprove?: readonly string[];
     /** The thread the run `runId` belongs to (`Proposal.by.conversation`). */
     conversationOf?: (runId: string) => Promise<string | undefined>;
-    /** Told of every new record: its `StrutProposal` (createStrut). */
+    /** Told of every new record: its `StrutProposal` and the proposal feed (createStrut). */
     changed?: (p: Proposal) => void;
   } = {},
 ): ProposalsCapability {
@@ -524,7 +524,7 @@ export interface DecideDeps {
   /** A gated tool that is not a registry step — an MCP server's
    *  (`mcp/<server>/<tool>`, src/mcp-registry.ts) — as a def to apply. */
   stepFor?: (type: string) => Promise<AnyStepDef | undefined>;
-  /** Told of each change the decision makes: its `StrutProposal` (createStrut). */
+  /** Told of each change the decision makes: its `StrutProposal` and the proposal feed (createStrut). */
   changed?: (p: Proposal) => void;
 }
 

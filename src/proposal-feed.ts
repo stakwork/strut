@@ -1,5 +1,5 @@
 /**
- * The PROPOSAL FEED (plans/live-feeds.md §4): what happened to proposals
+ * The PROPOSAL FEED (plans/live-feeds.md, "Proposal feed"): what happened to proposals
  * after a cursor, for a reader that cannot be called (an app's page) and
  * would otherwise poll `proposal/list`. The twin of the graph change feed:
  * a `LiveFeed` (bounded, cursor, `wait`), one entry per EVENT — events are
@@ -11,10 +11,11 @@
  * rationale, the card or the result: a reader that wants more reads the
  * proposal by id, through the reads it already has.
  *
- * proposals.ts calls `emitProposal` and knows nothing else of this file.
- * The feed is per proposals directory (`proposalFeedFor`), so the record's
- * writer and the server that serves the feed meet without a handle passed
- * through every function.
+ * proposals.ts knows nothing of it: createStrut makes one feed and pushes
+ * every record its proposals' `changed` hook is told of (created, and each
+ * decision and apply), the hook the graph projection rides. The event is
+ * the record's status: pending → created, accepted or rejected → decided,
+ * then applied or failed.
  */
 import { LiveFeed, type FeedRead } from "./live-feed.js";
 import { visibleTo, type Proposal } from "./proposals.js";
@@ -58,7 +59,8 @@ interface Entry {
 }
 
 export interface ProposalFeed {
-  push(event: ProposalEventName, p: Proposal): void;
+  /** A record was written: created, decided, applied or failed. */
+  push(p: Proposal): void;
   /** The events after `cursor`, in order. `scope` + `actor` limit them as
    *  `GET /proposals` limits the list (`visibleTo`). */
   read(o: { scope: Scope; actor?: string | undefined; cursor?: string | undefined; wait?: number | undefined; limit?: number | undefined; signal?: AbortSignal | undefined }): Promise<ProposalChangesRead>;
@@ -67,7 +69,16 @@ export interface ProposalFeed {
 
 const cut = (s: string): string => (s.length > TEXT_MAX ? `${s.slice(0, TEXT_MAX - 1)}…` : s);
 
-export function proposalEventOf(event: ProposalEventName, p: Proposal): ProposalEvent {
+const EVENT_OF: Record<Proposal["status"], ProposalEventName> = {
+  pending: "created",
+  accepted: "decided",
+  rejected: "decided",
+  applied: "applied",
+  failed: "failed",
+};
+
+export function proposalEventOf(p: Proposal): ProposalEvent {
+  const event = EVENT_OF[p.status];
   const actor = event === "created" ? p.by.actor : (p.decision?.by ?? p.by.actor);
   return {
     event,
@@ -85,8 +96,8 @@ export function createProposalFeed(opts: { max?: number; gatherMs?: number } = {
   let n = 0;
   const feed = new LiveFeed<Entry>({ max: opts.max ?? PROPOSAL_FEED_MAX, keyOf: () => String(++n), ...(opts.gatherMs !== undefined ? { gatherMs: opts.gatherMs } : {}) });
   return {
-    push(event, p) {
-      feed.push({ ev: proposalEventOf(event, p), seen: { by: { ...p.by } } });
+    push(p) {
+      feed.push({ ev: proposalEventOf(p), seen: { by: { ...p.by } } });
     },
     async read(o) {
       const filter = (e: Entry) => visibleTo(o.scope, o.actor, e.seen as Proposal);
@@ -99,22 +110,4 @@ export function createProposalFeed(opts: { max?: number; gatherMs?: number } = {
       feed.wakeAll();
     },
   };
-}
-
-const feeds = new Map<string, ProposalFeed>();
-
-/** The feed of one proposals directory, made on first use. */
-export function proposalFeedFor(root: string): ProposalFeed {
-  let f = feeds.get(root);
-  if (!f) feeds.set(root, (f = createProposalFeed()));
-  return f;
-}
-
-/** proposals.ts's one call: a proposal was created, decided, applied or failed. Never throws. */
-export function emitProposal(root: string, event: ProposalEventName, p: Proposal): void {
-  try {
-    proposalFeedFor(root).push(event, p);
-  } catch {
-    /* a notification, never the record */
-  }
 }

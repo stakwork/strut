@@ -329,10 +329,12 @@ summary?, actor?, at }` — title and summary cut at 200 chars, **never the
 tool's input**, rationale, card or result (read one by id). `actor` is who
 caused it: the proposer on `created`, the decider after.
 
-- **Emit:** `proposals.ts` calls `emitProposal(root, …)` in `createProposal`
-  and in `decideProposal`'s `tell` (reject, accept, apply and fail all pass
-  through it). The feed is per proposals directory (`proposalFeedFor`), so
-  nothing is threaded through `proposals.ts`.
+- **Emit:** createStrut makes one feed and pushes every record the
+  proposals' `changed` hook is told of — the hook the `StrutProposal`
+  projection rides, called at create and in `decideProposal`'s `tell`
+  (reject, accept, apply and fail all pass through it). The event is the
+  record's status (pending → `created`, accepted or rejected → `decided`,
+  then `applied` or `failed`), so `proposals.ts` knows nothing of the feed.
 - **Read:** `GET /proposals/changes?cursor=&wait=&limit=` (`since` also
   accepted; registered before `/proposals/:id`) and the `proposal/changes`
   step (`cursor`, `wait`, `limit` → `{ cursor, reset?, more?, events }`),
@@ -341,7 +343,7 @@ caused it: the proposer on `created`, the decider after.
 - **Scoping:** the same `visibleTo` as the list — `full` all, a person token
   its own threads' events, a plain peer none; under `ctx.app` the step reads
   as `peer:person` for the viewer.
-- Tests: `src/proposal-feed.test.ts`.
+- Tests: `src/proposal-feed.test.ts` (the feed, and the route over HTTP).
 
 ## Open questions
 

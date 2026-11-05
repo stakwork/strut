@@ -4,7 +4,7 @@ import { FEED_MAX_WAIT_MS } from "../../../live-feed.js";
 import { PROPOSAL_FEED_READ_MAX, type ProposalFeed } from "../../../proposal-feed.js";
 
 /**
- * What happened to proposals after a cursor (plans/live-feeds.md §4), as a
+ * What happened to proposals after a cursor (plans/live-feeds.md, "Proposal feed"), as a
  * step: what an app's page watches instead of polling `proposal/list`.
  * `GET /proposals/changes` is the same read. Under `ctx.app` the viewer's
  * own proposals only, as `proposal/list` shows them.
