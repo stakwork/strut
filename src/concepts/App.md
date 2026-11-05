@@ -368,6 +368,77 @@ and never read them yourself.
 - Grant `job/upload`, `job/delete-upload` and `job/get` (its `files` is
   what the job holds) in `grants.steps`.
 
+## Payments: the viewer's wallet
+
+An app can pay from the Lightning wallet of the PERSON viewing it — a tip,
+a purchase, sats streamed while something plays — when its host has a
+wallet to offer: Peel does, with the person's Sphinx sats. The app never
+holds a key or sees a balance. It asks the host, which shows the person
+what the app asked for and counts what it spends. Ask in `app.yaml`:
+
+```yaml
+wallet:
+  request_methods: [pay_keysend, lookup_payment]     # what the app cannot work without
+  optional_request_methods: [pay_invoice]            # what the person may leave out
+  notification_types: [payment_sent, payment_failed]
+  max_amount: 100000                                 # msat per period, fees included (100 sats)
+  renewal_period: daily                              # never | daily | weekly | monthly | yearly
+```
+
+The methods: `pay_keysend`, `pay_invoice`, `make_invoice`, `lookup_payment`,
+`lookup_invoice`, `get_budget`, and, where a wallet has them, `get_balance`,
+`list_transactions` and `pay_lightning_address`. Peel has no
+`pay_lightning_address`. Put a method only some wallets have in
+`optional_request_methods`: a REQUIRED method the wallet lacks fails the
+connect (`NOT_IMPLEMENTED`). Ask for what the app uses,
+with a limit that fits it: the person sees both and may lower the limit.
+Inside the limit the app pays without asking. Over it, the person approves
+each payment.
+
+```tsx
+import { useWallet, useTransaction, satsToMsat, type Payment } from "@strut/kit";
+const wallet = useWallet();
+const [payment, setPayment] = useState<Payment>();
+const tx = useTransaction(payment);                 // follows it: state, preimage, failureReason
+if (!wallet.available) return <p>Tipping needs a wallet: open this app in Peel.</p>;
+<Button onClick={async () => setPayment(await wallet.payKeysend({ pubkey: author, amount: satsToMsat(21) }))}>
+  Tip 21 sats
+</Button>
+```
+
+- **Amounts are msat**: sats × 1000 (`satsToMsat`, `msatToSats`).
+- **Pay from a click.** The first call asks the person to connect, and a
+  payment over the limit asks them to approve. The host opens those sheets
+  only right after the person clicked or tapped in the page, so a pay from
+  a timer or on mount is refused (`RESTRICTED`). `useWallet` connects by
+  itself on the first call that needs it.
+- **Pending is not failed.** A keysend to a Sphinx address
+  (`<pubkey>_<lsp_pubkey>_<scid>`, given as `pubkey`) waits at the payee's
+  LSP until they come online: minutes, or days. Show it as sent and on its
+  way, and never offer to pay again. `useTransaction` moves it to
+  `settled` or `failed` (a failed payment is refunded). A settled payment may
+  come with no preimage; only a page that needs PROOF checks one
+  (`verifyPreimage`).
+- **A refusal is a `WalletError` with a `code`**:
+  - `USER_REJECTED`: the person said no. Stop, and do not ask again on your
+    own.
+  - `QUOTA_EXCEEDED`: over the limit, and the person chose to refuse those.
+  - `INSUFFICIENT_BALANCE`, `PAYMENT_FAILED`: as they say.
+  - `NOT_IMPLEMENTED`: this wallet does not do that.
+
+  Say each one in a line on the page.
+- **Data with a keysend** goes in `tlv_records` (types 65536 and up, hex
+  values). Peel sends only Sphinx's own record, 13377331, whose value is
+  base64 text; leave it out unless the payee reads it.
+- **`window.webln`** is there too, for a library that expects WebLN.
+- **Where it works:** in a host that carries a wallet, which today is Peel.
+  On the iPhone the org's apps share one connection. Elsewhere — a browser,
+  another host, the strut server's own UI — `available` is false: the app still loads, shows
+  its prices, and says that paying needs Peel. Never hide the button or the
+  price.
+- **No money flows to the app's owner yet**: `make_invoice` makes an invoice
+  that pays the VIEWER.
+
 ## Live between the people on an app: channels
 
 What is happening NOW between the people with the app open — a move, a

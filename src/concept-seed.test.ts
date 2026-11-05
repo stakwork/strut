@@ -89,7 +89,7 @@ describe("concept files (pure)", () => {
     // the grants, routines, the four shapes.
     const app = await read("App.md");
     assert.equal(app.parent, "Workflow Builder");
-    for (const must of ["app.yaml", "grants", "useLaunch", "useRun", "never on a render", "llm", "@/components/ui", "strut/views", "app/build", "app/publish"]) assert.ok(app.docs!.includes(must), must);
+    for (const must of ["app.yaml", "grants", "useLaunch", "useRun", "never on a render", "llm", "@/components/ui", "strut/views", "app/build", "app/publish", "wallet:", "useWallet", "useTransaction", "Pending is not failed"]) assert.ok(app.docs!.includes(must), must);
     assert.doesNotMatch(app.docs!, /hive|@<slug>|\bpod\b/i, "names nothing one deployment has");
     // No job side of an app (retired 2026-10-22, with the `Job App` page):
     // an app is the builder's, handed over by NAME — the job agent passes
