@@ -2186,6 +2186,22 @@ export async function fetchAppDocument(name: string, version: string, token: str
   return res.text();
 }
 
+/** The style variables strut's brand sets for each theme (`GET /brand`,
+ *  src/brand.ts): MCP Apps standard names, handed to every hosted page. */
+export type BrandStyles = Record<"light" | "dark", { variables: Record<string, string> }>;
+
+let brandOnce: Promise<BrandStyles | null> | undefined;
+
+/** The brand every hosted app is shown in, read once per page: it changes
+ *  rarely, and the next load picks a change up. Null when none is set or it
+ *  cannot be read: an app is shown unbranded, never held up. */
+export function getBrandStyles(): Promise<BrandStyles | null> {
+  brandOnce ??= apiFetch("/brand")
+    .then(async (res) => (res.ok ? ((await res.json()) as { styles: BrandStyles | null }).styles : null))
+    .catch(() => null);
+  return brandOnce;
+}
+
 // ── Packages (plans/marketplace.md §12.1, §13; specs/API.md §16) ────────────
 // Publishing is a person's act: the builder edits, a person releases. A
 // package's name rides in a body, never a path; a channel is one segment.

@@ -20,7 +20,7 @@ import {
   type NativeWalletApp, type RelayBridge,
 } from "@strut/kit/wallet";
 import { CHANNELS_CAPABILITY, relayChannels } from "@strut/kit/channels";
-import { API_BASE, apiHeaders, channelSocketUrl, channelTicket } from "./api";
+import { API_BASE, apiHeaders, channelSocketUrl, channelTicket, type BrandStyles } from "./api";
 import { strutLink } from "./app-links";
 
 // The pure parts — where a link leads, what a message becomes — are
@@ -63,6 +63,9 @@ export interface AppHostOptions {
    *  peer's app names its peer, and this strut relays the socket there
    *  (§4). Left out for a visitor: there is no viewer to mint for. */
   channels?: { name: string; version: string; peer?: string };
+  /** This strut's brand (`GET /brand`): each theme's style variables, sent
+   *  in the host context so the kit's tokens take them (src/brand.ts). */
+  brand?: BrandStyles | null;
 }
 
 export interface AppHostConnection {
@@ -87,10 +90,15 @@ export function createRelayClient(base = "", visitor = false): { client: Client;
   return { client, transport };
 }
 
-/** The host context the page is handed at `ui/initialize`. */
-export function hostContextFor(theme: McpUiTheme): McpUiHostContext {
+/** The host context the page is handed at `ui/initialize`, and again on a
+ *  theme change: the brand's variables for that theme with it. */
+export function hostContextFor(theme: McpUiTheme, brand?: BrandStyles | null): McpUiHostContext {
+  // The spec types the variables as every standard name; the brand sets a
+  // few, and the page reads a missing one as unset.
+  const variables = brand?.[theme]?.variables as NonNullable<McpUiHostContext["styles"]>["variables"] | undefined;
   return {
     theme,
+    ...(variables ? { styles: { variables } } : {}),
     displayMode: "fullscreen",
     availableDisplayModes: ["fullscreen"],
     locale: typeof navigator !== "undefined" ? navigator.language : undefined,
@@ -125,7 +133,7 @@ export async function connectAppHost(opts: AppHostOptions): Promise<AppHostConne
         ? { experimental: { ...(capability ? { [WALLET_CAPABILITY]: capability } : {}), ...(opts.channels ? { [CHANNELS_CAPABILITY]: { v: 1 } } : {}) } }
         : {}),
     },
-    { hostContext: hostContextFor(opts.theme) },
+    { hostContext: hostContextFor(opts.theme, opts.brand) },
   );
   let stopWallet = () => {};
   if (native && capability && opts.wallet) {
@@ -169,7 +177,7 @@ export async function connectAppHost(opts: AppHostOptions): Promise<AppHostConne
   await bridge.connect(new PostMessageTransport(win, win));
   return {
     bridge,
-    setTheme: (theme) => bridge.setHostContext({ ...hostContextFor(theme), theme }),
+    setTheme: (theme) => bridge.setHostContext({ ...hostContextFor(theme, opts.brand), theme }),
     setToolInput(args) {
       toolInput = args;
       if (initialized) void bridge.sendToolInput({ arguments: args ?? {} });

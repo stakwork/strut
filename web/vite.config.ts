@@ -56,6 +56,8 @@ export default defineConfig({
       "/llm": "http://localhost:3000",
       "/actor": "http://localhost:3000",
       "/peers": "http://localhost:3000",
+      // The brand hosted apps are shown in (src/brand.ts).
+      "/brand": "http://localhost:3000",
       "/runs": "http://localhost:3000",
       // Packages: the catalog this strut publishes, its channels, and what
       // it installed or follows (specs/API.md §16).
