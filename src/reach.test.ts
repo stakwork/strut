@@ -44,6 +44,8 @@ async function strutWith(dir: string, reach?: BuilderReach) {
     workspace: new WorkspaceManager(dir),
     serveUi: false,
     enableChat: false,
+    // Never closed: no boot scan writing into the folder its cleanup removes.
+    autoResume: false,
     ...(reach ? { builder: { reach } } : {}),
   });
   await strut.secretStore.set("OK_KEY", "ok-value");

@@ -7530,7 +7530,15 @@ export async function createStrut<TServices = unknown>(
     return bound;
   }
 
+  /** The boot scan (below): a closed strut neither starts it nor leaves it
+   *  writing into its data dir (`boot.json`) after `close()`. */
+  let bootTimer: ReturnType<typeof setTimeout> | undefined;
+  let bootScan: Promise<unknown> | undefined;
+
   async function close(): Promise<void> {
+    if (bootTimer) clearTimeout(bootTimer);
+    bootTimer = undefined;
+    await bootScan;
     automations.stop();
     // Every feed read still waiting answers now (plans/live-feeds.md).
     graphChanges?.close();
@@ -7598,11 +7606,14 @@ export async function createStrut<TServices = unknown>(
     }
   };
   if (autoResumeRuns || autoResumeChats) {
-    const timer = setTimeout(() => {
-      if (autoResumeRuns) void bootResumeRuns().catch((err) => console.error(`[auto-resume] scan failed:`, err));
-      if (autoResumeChats) void autoResumeStaleChats(autoResumeOpts).catch((err) => console.error(`[auto-resume] chat scan failed:`, err));
+    bootTimer = setTimeout(() => {
+      bootTimer = undefined;
+      bootScan = Promise.all([
+        autoResumeRuns ? bootResumeRuns().catch((err) => console.error(`[auto-resume] scan failed:`, err)) : undefined,
+        autoResumeChats ? autoResumeStaleChats(autoResumeOpts).catch((err) => console.error(`[auto-resume] chat scan failed:`, err)) : undefined,
+      ]);
     }, autoResumeOpts.delayMs ?? 3000);
-    timer.unref?.();
+    bootTimer.unref?.();
   }
 
   return {
