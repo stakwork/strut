@@ -80,8 +80,8 @@ async function sync(peer: string, ctx: StepContext<{ peers?: PeersCapability }>)
   const since = Number.isFinite(parsed) ? parsed : 0;
   // In the writes' queue, `until` taken there, as dictation/changes-since reads:
   // no write in flight is missed, and every later one stamps `until` or later.
-  // On a graph host the push reads the graph; the pull below still loads the
-  // old memory, which dictation no longer writes there.
+  // On a graph host both read and write the graph: the pull is dictation's
+  // changes, replayed here (home/_graph-pull.ts).
   const { changes, until } = onGraph(ctx)
     ? await graphChanges(ctx, since).then((r) => ({ changes: r.changes, until: Date.parse(r.until) }))
     : await memoryExclusive(ctx, async ({ read }) => {
@@ -95,6 +95,16 @@ async function sync(peer: string, ctx: StepContext<{ peers?: PeersCapability }>)
   if (out.unchanged) {
     record(until);
     return { pushed: changes.length, pulled: false, hash: out.content_hash, kept: 0 };
+  }
+  if (onGraph(ctx)) {
+    if (typeof out.data === "string") throw new Error("home-sync: the home sent its whole memory, which this strut's graph memory does not load; the home's memory must be the graph too");
+    const pulled = applyChanges.input.safeParse({ changes: out.dictation });
+    if (!Array.isArray(out.dictation) || !pulled.success) throw new Error("home-sync: the home's pull carried no dictation changes");
+    // Replayed after the push's `until`: the next sync pushes them back,
+    // and the home skips them as known.
+    await applyChanges.run(pulled.data, ctx);
+    record(until);
+    return { pushed: changes.length, pulled: true, hash: out.content_hash, kept: 0 };
   }
   if (typeof out.data !== "string") throw new Error("home-sync: the home's memory changed and its pull carried no data");
   let snapshot: Awaited<ReturnType<typeof openSnapshot>>;

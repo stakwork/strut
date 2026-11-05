@@ -976,6 +976,16 @@ request with no credential on a box with no `STRUT_API_KEY`:
 | `POST /home/push` | one key per kind of change; today `{ dictation? }`, `dictation/changes-since`'s `changes` (at most 10 000) | `{ dictation: { applied: [{ op, heard?, written, result }] } }` |
 | `POST /home/pull` | `{ hash? }`, the `content_hash` of the copy the caller holds | `{ unchanged: true, content_hash }`, else `memory/export`'s inline reply (`data`, `content_hash`, …) for `memory/import { replace: true }` |
 
+On a box whose memory is the graph (`memory: "graph"`), `/home/pull` carries
+dictation's vocabulary alone: `{ content_hash, dictation }`,
+`dictation/changes-since`'s changes since the copy's last pull, which
+`home/sync` on a graph copy replays with `dictation/apply-changes`. Its
+`content_hash` is a cursor (`graph-dictation:<until>`) that the copy sends
+back as `hash`; any other hash pulls the whole vocabulary, which the copy
+skips as known. What it replays is pushed back once, and the box skips it as
+known. The rest of the graph is not pulled, and a graph copy refuses a
+whole-memory snapshot (`src/steps/lib/home/_graph-pull.ts`).
+
 Routes, not workflows: a run's input and output stay in the run store,
 which every peer scope may read, so a whole-memory export there would
 outlive the pull and reach other credentials. A route answers its caller
