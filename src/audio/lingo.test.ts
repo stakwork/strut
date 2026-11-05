@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
-  assess, fillers, heardOnly, learnInput, lexiconFrom, mishearings, questions, recall, retraction, rewrite, saidAlike, soundsAlike, undoIds,
+  assess, fillers, heardOnly, lexiconFrom, mishearings, questions, recall, retraction, rewrite, saidAlike, soundsAlike,
   type Fixer, type JudgeQuestion, type Lexicon, type NameQuestion, type Retraction, type ScoreSentence,
 } from "./lingo.js";
 
@@ -440,55 +440,5 @@ describe("lingo: strut's memory steps", () => {
     assert.equal(read.mishearing, "heard_as");
     assert.equal(lexiconFrom({ ...reply, person_type: "Person" }).personType, "Person");
     assert.equal(heardOnly("a bit coin", read).text, "a Bitcoin");
-  });
-
-  it("a learn says only the pair, on the right entity", () => {
-    // A known name: on its entity, with the alias as its form.
-    const alias = learnInput("bee see", "BTC", lexicon) as any;
-    assert.equal(alias.episode, "Dictation: corrected “bee see” to “BTC”.");
-    assert.equal(alias.kind, "note");
-    assert.equal(alias.created_by, "dictation");
-    const fact = alias.facts[0];
-    assert.deepEqual(fact.subject, { ref_id: "e2", type: "Lingo", name: "Bitcoin" });
-    assert.equal(fact.predicate, "heard_as");
-    assert.equal(fact.value, "bee see");
-    assert.equal(fact.form, "BTC");
-    // An unknown word: a new Lingo, no form.
-    const made = learnInput("p eight", "P8", lexicon) as any;
-    assert.deepEqual(made.facts[0].subject, { type: "Lingo", name: "P8" });
-    assert.equal("form" in made.facts[0], false);
-  });
-
-  it("a learn inside a full name is kept on that person: made when nothing writes the name, else on the entity that does", () => {
-    const people: Lexicon = { ...lexicon, personType: "Person" };
-    const made = learnInput("Etoy", "Itoi", people, false, "Paul Itoi") as any;
-    assert.equal(made.episode, "Dictation: corrected “Etoy” to “Itoi” in Paul Itoi.");
-    assert.deepEqual(made.facts, [{ subject: { type: "Person", name: "Paul Itoi" }, predicate: "heard_as", text: "Dictation hears Itoi as “Etoy”.", value: "Etoy", form: "Itoi" }]);
-    assert.equal("mentions" in made, false);
-    // The whole name respelled: the name itself, no form.
-    assert.equal("form" in (learnInput("Paula Toy", "Paul Itoi", people, false, "Paul Itoi") as any).facts[0], false);
-    // A person the memory knows by that name: attached, never a second one.
-    const known: Lexicon = { ...people, entries: [...people.entries, entry("p1", "Person", "Paul Itoi", ["Paul Itoi"])] };
-    assert.deepEqual((learnInput("Atoy", "Itoi", known, false, "Paul Itoi") as any).facts[0].subject, { ref_id: "p1", type: "Person", name: "Paul Itoi" });
-    // No person type: a word of dictation's own.
-    assert.deepEqual((learnInput("Etoy", "Itoi", lexicon, false, "Paul Itoi") as any).facts[0].subject, { type: "Lingo", name: "Paul Itoi" });
-  });
-
-  it("a term learn makes the new word alone, and nothing when the vocabulary writes it", () => {
-    assert.deepEqual(learnInput("PH", "P8", lexicon, true), {
-      episode: "Dictation: corrected “PH” to “P8”.", kind: "note", created_by: "dictation", mentions: [{ type: "Lingo", name: "P8" }],
-    });
-    assert.equal(learnInput("PH", "Peel", lexicon, true), null);
-  });
-
-  it("a learn says why it cannot be written when the memory lacks the roles", () => {
-    assert.throws(() => learnInput("p eight", "P8", { ...lexicon, lingoType: undefined }), /role dictation/);
-    assert.throws(() => learnInput("bee see", "BTC", { ...lexicon, mishearing: undefined }), /role mishearing/);
-  });
-
-  it("undo forgets what the learn made", () => {
-    assert.deepEqual(undoIds({ entities: [{ ref_id: "e9", status: "created" }], facts: [{ ref_id: "f9", status: "created" }] }), ["e9"]);
-    assert.deepEqual(undoIds({ entities: [{ ref_id: "e1", status: "matched" }], facts: [{ ref_id: "f9", status: "created" }] }), ["f9"]);
-    assert.deepEqual(undoIds({ entities: [{ ref_id: "e1", status: "matched" }], facts: [{ ref_id: "f1", status: "existing" }] }), []);
   });
 });

@@ -288,7 +288,7 @@ export interface FactQuery {
   /** Ended facts too (default: current only). */
   include_ended?: boolean;
   limit?: number;
-  /** Words not to match on (the language's: `memory/_lang-en.ts`). */
+  /** Words not to match on. */
   stop?: Iterable<string>;
 }
 

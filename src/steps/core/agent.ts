@@ -846,23 +846,19 @@ export function buildRegistryTools(
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   if (!names?.length || !registry) return out;
-  // A host whose memory is on the graph (`StrutOptions.memory`) keeps the
-  // old memory/* steps from every agent: graph/* is its memory.
-  const graphMemory = (ctx?.services as { memory?: unknown } | undefined)?.memory === "graph";
   // A Ladybug workspace graph adds each step's `graphNotes.ladybug`; a Neo4j one sees the description alone.
   const ladybug = (ctx?.services as { graph?: { kind?: unknown } } | undefined)?.graph?.kind === "ladybug";
   for (const stepType of expandAgentTools(names, registry, ctx?.package)) {
-    if (graphMemory && stepType.startsWith("memory/")) continue;
     const def = registry[stepType];
     if (!def) {
       // A system workflow's tools are its guard rails (tidy-memory without
-      // memory/duplicates merges blind): an older strut refuses to run it.
+      // graph/duplicates merges blind): an older strut refuses to run it.
       if (writerOf(ctx) === SYSTEM_WRITER) throw new Error(`agent: agentTools: unknown step type "${stepType}"`);
       console.warn(`[agent] agentTools: unknown step type "${stepType}" — skipping`);
       continue;
     }
     // Who wrote it is the workflow's to say, never the model's: a step that
-    // records `created_by` (memory/remember, memory/merge) loses the field
+    // records `created_by` (graph/merge, graph/unmerge) loses the field
     // from its tool schema and is stamped with the run's workflow instead —
     // "janitor" for a system workflow (src/system-workflows.ts).
     const stamp = def.input instanceof z.ZodObject && "created_by" in def.input.shape ? writerOf(ctx) : undefined;

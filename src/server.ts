@@ -42,12 +42,12 @@ let strutInstance: Strut | null = null;
  *  and on `orchestrator`, `wake?` and `wakeMax?`, src/wake.ts),
  *  `automation?: { workflow, approve?, grants? }`, and `graphReaders?`, who
  *  may read which namespaces of the graph (src/graph/scope.ts), and
- *  `memory?: "graph" | "legacy"`, where the assistant's memory lives
- *  (`StrutOptions.memory`), and `concepts?: false | { personal?: boolean }`,
+ *  `memory?: "graph"`, accepted and ignored (the memory is always the
+ *  graph), and `concepts?: false | { personal?: boolean }`,
  *  the Concept pages seeded (`StrutOptions.concepts`). Nothing when unset.
  *  A file that cannot be read or parsed fails the boot, rather than
  *  seeding the workflows without the host's tools. */
-export function hostConfigFromEnv(env: NodeJS.ProcessEnv = bootEnv()): Pick<StrutOptions, "job" | "orchestrator" | "builder" | "automation" | "settings" | "graphReaders" | "memory" | "concepts"> {
+export function hostConfigFromEnv(env: NodeJS.ProcessEnv = bootEnv()): Pick<StrutOptions, "job" | "orchestrator" | "builder" | "automation" | "settings" | "graphReaders" | "concepts"> {
   const file = env["STRUT_HOST_CONFIG"];
   if (!file) return {};
   let raw: unknown;
@@ -56,7 +56,7 @@ export function hostConfigFromEnv(env: NodeJS.ProcessEnv = bootEnv()): Pick<Stru
   } catch (err) {
     throw new Error(`STRUT_HOST_CONFIG: could not read ${file}: ${err instanceof Error ? err.message : err}`);
   }
-  const out: Pick<StrutOptions, "job" | "orchestrator" | "builder" | "automation" | "settings" | "graphReaders" | "memory" | "concepts"> = {};
+  const out: Pick<StrutOptions, "job" | "orchestrator" | "builder" | "automation" | "settings" | "graphReaders" | "concepts"> = {};
   for (const key of ["job", "orchestrator", "builder"] as const) {
     const delta = (raw as Record<string, unknown> | null)?.[key];
     if (delta === undefined) continue;
@@ -87,9 +87,9 @@ export function hostConfigFromEnv(env: NodeJS.ProcessEnv = bootEnv()): Pick<Stru
   if (settings) out.settings = settings as Record<string, unknown>;
   const readers = (raw as Record<string, unknown> | null)?.["graphReaders"];
   if (readers !== undefined) out.graphReaders = parseGraphReaders(readers, `STRUT_HOST_CONFIG: ${file}: "graphReaders"`);
+  // The memory is always the graph: an older config's `memory` is ignored.
   const memory = (raw as Record<string, unknown> | null)?.["memory"];
-  if (memory !== undefined && memory !== "graph" && memory !== "legacy") throw new Error(`STRUT_HOST_CONFIG: ${file}: "memory" must be "graph" or "legacy"`);
-  if (memory !== undefined) out.memory = memory;
+  if (memory !== undefined && memory !== "graph") console.warn(`STRUT_HOST_CONFIG: ${file}: "memory" is ignored; the memory is the workspace graph`);
   const concepts = (raw as Record<string, unknown> | null)?.["concepts"];
   if (
     concepts !== undefined && concepts !== false &&

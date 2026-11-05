@@ -1,11 +1,10 @@
 import { z } from "zod";
 import { defineStep } from "../../../core.js";
 import { entryWriting, wasUndone, type Lexicon } from "../../../audio/lingo.js";
-import { memoryDb } from "../memory/_db.js";
 import add from "./add.js";
 import undo from "./undo.js";
 import { Change, readLexicon, type ChangeT } from "./_shared.js";
-import { graphOurs, graphTermUndone, onGraph } from "./_graph.js";
+import { graphOurs, graphTermUndone } from "./_graph.js";
 
 const same = (a: string | null | undefined, b: string) => typeof a === "string" && a.toLowerCase() === b.toLowerCase();
 
@@ -78,9 +77,7 @@ export default defineStep({
           done(c, wasUndone(current, c.heard!, c.written) ? "already undone" : "not found");
           continue;
         }
-        const made = onGraph(ctx)
-          ? (await graphOurs(ctx, [hit.entry.refId])).has(hit.entry.refId)
-          : (await (await memoryDb(ctx))("MATCH (e:Entity) WHERE e.ref_id = $id RETURN e.created_by AS by", { id: hit.entry.refId }))[0]?.["by"] === "dictation";
+        const made = (await graphOurs(ctx, [hit.entry.refId])).has(hit.entry.refId);
         id = made && hit.entry.heard.length === 1 && hit.entry.facts <= 1 ? hit.entry.refId : hit.heard.refId;
       }
       try {
@@ -97,12 +94,6 @@ export default defineStep({
 });
 
 /** Whether a term `written` was undone here already. */
-async function termUndone(ctx: Parameters<typeof memoryDb>[0], lexicon: Lexicon, written: string): Promise<boolean> {
-  if (!lexicon.lingoType) return false;
-  if (onGraph(ctx)) return graphTermUndone(ctx!, written);
-  const rows = await (await memoryDb(ctx))(
-    "MATCH (e:Entity) WHERE e.type = $t AND lower(e.name) = $n AND e.deleted_reason = 'undone' RETURN e.ref_id AS id LIMIT 1",
-    { t: lexicon.lingoType, n: written.toLowerCase() },
-  );
-  return rows.length > 0;
+async function termUndone(ctx: Parameters<typeof graphTermUndone>[0], lexicon: Lexicon, written: string): Promise<boolean> {
+  return !!lexicon.lingoType && graphTermUndone(ctx, written);
 }

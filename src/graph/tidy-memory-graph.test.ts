@@ -1,10 +1,9 @@
 /**
  * The graph janitor end to end (plans/graph-step7-peel-interface.md): a
- * whole strut on a Ladybug graph with Peel's host config — `memory: "graph"`
- * and the note's `graphReaders` — runs the shipped `tidy-memory` (its
- * `workflow.graph.yaml`) with a stand-in model. It reads graph/duplicates as
- * a job, merges the pair it offers, is stamped "janitor", and stops at the
- * day's cap.
+ * whole strut on a Ladybug graph with Peel's host config — the note's
+ * `graphReaders` — runs the shipped `tidy-memory` with a stand-in model.
+ * It reads graph/duplicates as a job, merges the pair it offers, is stamped
+ * "janitor", and stops at the day's cap.
  */
 import { after, afterEach, before, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -116,7 +115,6 @@ describe("tidy-memory on the graph, under Peel's reader lists (ladybug)", { skip
       store: new MemoryRunStore(),
       serveUi: false, enableChat: false, scheduler: false, stt: false,
       job: false, orchestrator: false, builder: false, concepts: false,
-      memory: "graph",
       graphReaders: PEEL_READERS,
     });
     await strut.secretStore.set("STRUT_DEFAULT_MODEL", "anthropic/claude-sonnet-4-5");
@@ -142,8 +140,8 @@ describe("tidy-memory on the graph, under Peel's reader lists (ladybug)", { skip
 
   it("finds the pair through graph/duplicates as a job, merges it, stamped janitor", async () => {
     const meta = (await strut!.workspace.getWorkflowMetadata("tidy-memory"))!;
-    const graphYaml = await readFile(join(SYSTEM_DIR, "tidy-memory", "workflow.graph.yaml"), "utf-8");
-    assert.equal(meta.active, shippedVersionLabel(graphYaml), "the graph version is the one shipped");
+    const yaml = await readFile(join(SYSTEM_DIR, "tidy-memory", "workflow.yaml"), "utf-8");
+    assert.equal(meta.active, shippedVersionLabel(yaml), "the shipped version");
     const [, kate, katie] = (await b.nodes.writeMany([
       { type: "Person", data: { name: "Alex Rivera", is_owner: true } },
       { type: "Person", data: { name: "Kate" } },

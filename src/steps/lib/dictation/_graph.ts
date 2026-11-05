@@ -1,6 +1,4 @@
-// Dictation's vocabulary on the workspace graph, for a host whose memory is
-// the graph (`services.memory === "graph"`, createStrut.ts). The steps keep
-// their names, inputs and outputs; only where the words live changes:
+// Dictation's vocabulary on the workspace graph (a Ladybug one):
 //
 //   - a word is a node of an entity type: a Lingo word dictation made, or
 //     any person or thing the graph knows, its `name` and `alt_names` the
@@ -25,30 +23,32 @@ import { createNodeSchema } from "../../../graph/schema-crud.js";
 import { boundsOf } from "../../../graph/scope.js";
 import { iso, type Query } from "../memory/_db.js";
 import { vocabulary } from "../memory/_ontology.js";
-import { UNDONE } from "../memory/lexicon.js";
 import { graphCtx } from "../graph/_shared.js";
 import type { ChangeT } from "./_shared.js";
 
 const BY = "dictation";
 /** The node field that keeps a node out of dictation. */
 const OFF = "dictation_off";
+/** The delete reason dictation/undo gives: a pair undone so is never learned again. */
+export const UNDONE = "undone";
 
-/** Whether this host's memory, dictation's vocabulary with it, is the graph. */
-export function onGraph(ctx: StepContext<unknown> | undefined): boolean {
-  return (ctx?.services as { memory?: unknown } | undefined)?.memory === "graph";
+/** Whether this host's workspace graph is a Ladybug one, where dictation keeps its vocabulary. */
+export function onLadybug(ctx: StepContext<unknown> | undefined): boolean {
+  return (ctx?.services as { graph?: { kind?: unknown } } | undefined)?.graph?.kind === "ladybug";
 }
 
-async function backend(ctx: StepContext<unknown>): Promise<LadybugBackend> {
+export async function dictationGraph(ctx: StepContext<unknown>): Promise<LadybugBackend> {
   const b = await graphCtx(ctx as StepContext<StrutCapabilities>);
   if (b.kind !== "ladybug") throw new Error("dictation: a vocabulary on the graph needs a Ladybug graph");
   return b;
 }
+const backend = dictationGraph;
 
-// One dictation write or changes read at a time per graph file, as the old
-// memory's queue: a write stamps its time before it commits, so a read of
-// the changes beside it could miss it for good.
+// One dictation write or changes read at a time per graph file: a write
+// stamps its time before it commits, so a read of the changes beside it
+// could miss it for good. home/sync replaces the memory inside it too.
 const queues = new Map<string, Promise<unknown>>();
-function exclusive<T>(b: LadybugBackend, fn: () => Promise<T>): Promise<T> {
+export function exclusive<T>(b: LadybugBackend, fn: () => Promise<T>): Promise<T> {
   const key = b.cfg.path;
   const next = (queues.get(key) ?? Promise.resolve()).then(fn, fn);
   queues.set(key, next.catch(() => undefined));
@@ -81,7 +81,7 @@ async function namesOf(b: GraphBackend, ids: string[]): Promise<Map<string, stri
 
 // ── memory/lexicon ──────────────────────────────────────────────────────────
 
-/** memory/lexicon's output, read from the graph: the same shape the old memory gives. */
+/** memory/lexicon's output, read from the graph. */
 export async function graphLexicon(ctx: StepContext<unknown>): Promise<unknown> {
   const b = await backend(ctx);
   const types: string[] = [];
@@ -171,8 +171,7 @@ export async function graphLexicon(ctx: StepContext<unknown>): Promise<unknown> 
 
 // ── Writes ──────────────────────────────────────────────────────────────────
 
-/** dictation/add's and dictation/correction's write, as `learnInput` reads
- *  the old memory's: the pair on the node that writes it (with `name`, the
+/** dictation/add's and dictation/correction's write: the pair on the node that writes it (with `name`, the
  *  node of that full name), else on a new word (with `name`, a new person).
  *  A `term` is the new word alone. Returns what dictation/undo takes back:
  *  the new node, else the new mishearing; nothing when it was known. */
@@ -201,7 +200,7 @@ export async function graphLearn(ctx: StepContext<unknown>, heard: string, writt
   }));
 }
 
-/** memory/forget for dictation: a mishearing alone, or a node with its
+/** Dictation's forget: a mishearing alone, or a node with its
  *  mishearings, soft-deleted with `reason`. The user is never forgotten whole. */
 export async function graphForget(ctx: StepContext<unknown>, ref_id: string, reason: string): Promise<void> {
   const b = await backend(ctx);
@@ -260,42 +259,45 @@ export async function graphEnable(ctx: StepContext<unknown>, ref_id: string, on:
 // ── dictation/changes-since ─────────────────────────────────────────────────
 
 /** What dictation changed on the graph over [since, now), read in the writes'
- *  queue with `until` taken there, as `dictationChanges` reads the old memory. */
+ *  queue with `until` taken there. */
 export async function graphChanges(ctx: StepContext<unknown>, since: number): Promise<{ kind: "dictation"; since: string; until: string; changes: ChangeT[] }> {
   const b = await backend(ctx);
-  return exclusive(b, async () => {
-    const until = Date.now();
-    const all = await mishearings(b);
-    const names = await namesOf(b, all.map((h) => String(h["entity"])));
-    const changes: Array<ChangeT & { ms: number }> = [];
-    const pair = (h: Row) => {
-      const form = str(h["form"]);
-      const name = names.get(String(h["entity"])) ?? "";
-      return { heard: String(h["value"]), written: form ?? name, ...(form ? { name } : {}) };
-    };
-    const within = (t: number | null) => t !== null && t >= since && t < until;
-    for (const h of all) {
-      const created = num(h["created_at"]), deleted = num(h["deleted_at"]);
-      const undone = h["reason"] === UNDONE;
-      if (h["created_by"] === BY && within(created) && (deleted === null || undone)) changes.push({ op: "learn", ...pair(h), ...(undone ? { undone: true } : {}), at: iso(created)!, ms: created! });
-      if (undone && within(deleted)) changes.push({ op: "undo", ...pair(h), at: iso(deleted)!, ms: deleted! });
-    }
-    // Terms: words dictation made with no mishearing ever kept on them.
-    const withPairs = new Set(all.map((h) => String(h["entity"])));
-    for (const w of await raw(b)(
-      `MATCH (n:Node {node_type: $t}) WHERE n.created_by = $by RETURN n.ref_id AS id, n.name AS name, n.created_at AS created_at, n.deleted_at AS deleted_at, n.deleted_reason AS reason`,
-      { t: LINGO_TYPE, by: BY },
-    )) {
-      if (withPairs.has(String(w["id"]))) continue;
-      const created = num(w["created_at"]), deleted = num(w["deleted_at"]);
-      const undone = w["reason"] === UNDONE;
-      const written = String(w["name"]);
-      if (within(created) && (deleted === null || undone)) changes.push({ op: "learn", written, term: true, ...(undone ? { undone: true } : {}), at: iso(created)!, ms: created! });
-      if (undone && within(deleted)) changes.push({ op: "undo", written, term: true, at: iso(deleted)!, ms: deleted! });
-    }
-    changes.sort((x, y) => x.ms - y.ms || (x.op === y.op ? 0 : x.op === "learn" ? -1 : 1));
-    return { kind: "dictation", since: new Date(since).toISOString(), until: new Date(until).toISOString(), changes: changes.map(({ ms: _ms, ...c }) => c) };
-  });
+  return exclusive(b, () => changesBetween(b, since, Date.now()));
+}
+
+/** What dictation changed over [since, until). The caller holds the writes'
+ *  queue (`exclusive`) and took `until` inside it. */
+export async function changesBetween(b: LadybugBackend, since: number, until: number): Promise<{ kind: "dictation"; since: string; until: string; changes: ChangeT[] }> {
+  const all = await mishearings(b);
+  const names = await namesOf(b, all.map((h) => String(h["entity"])));
+  const changes: Array<ChangeT & { ms: number }> = [];
+  const pair = (h: Row) => {
+    const form = str(h["form"]);
+    const name = names.get(String(h["entity"])) ?? "";
+    return { heard: String(h["value"]), written: form ?? name, ...(form ? { name } : {}) };
+  };
+  const within = (t: number | null) => t !== null && t >= since && t < until;
+  for (const h of all) {
+    const created = num(h["created_at"]), deleted = num(h["deleted_at"]);
+    const undone = h["reason"] === UNDONE;
+    if (h["created_by"] === BY && within(created) && (deleted === null || undone)) changes.push({ op: "learn", ...pair(h), ...(undone ? { undone: true } : {}), at: iso(created)!, ms: created! });
+    if (undone && within(deleted)) changes.push({ op: "undo", ...pair(h), at: iso(deleted)!, ms: deleted! });
+  }
+  // Terms: words dictation made with no mishearing ever kept on them.
+  const withPairs = new Set(all.map((h) => String(h["entity"])));
+  for (const w of await raw(b)(
+    `MATCH (n:Node {node_type: $t}) WHERE n.created_by = $by RETURN n.ref_id AS id, n.name AS name, n.created_at AS created_at, n.deleted_at AS deleted_at, n.deleted_reason AS reason`,
+    { t: LINGO_TYPE, by: BY },
+  )) {
+    if (withPairs.has(String(w["id"]))) continue;
+    const created = num(w["created_at"]), deleted = num(w["deleted_at"]);
+    const undone = w["reason"] === UNDONE;
+    const written = String(w["name"]);
+    if (within(created) && (deleted === null || undone)) changes.push({ op: "learn", written, term: true, ...(undone ? { undone: true } : {}), at: iso(created)!, ms: created! });
+    if (undone && within(deleted)) changes.push({ op: "undo", written, term: true, at: iso(deleted)!, ms: deleted! });
+  }
+  changes.sort((x, y) => x.ms - y.ms || (x.op === y.op ? 0 : x.op === "learn" ? -1 : 1));
+  return { kind: "dictation", since: new Date(since).toISOString(), until: new Date(until).toISOString(), changes: changes.map(({ ms: _ms, ...c }) => c) };
 }
 
 // ── From the old memory ─────────────────────────────────────────────────────

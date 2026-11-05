@@ -8,23 +8,19 @@ import { MemoryRunStore } from "../../../store.js";
 import { WorkspaceManager } from "../../../workspace.js";
 import type { SttService, TranscribeResult } from "../../../audio/stt.js";
 import type { LoadedFixer } from "../../../audio/fixer.js";
-import type { StepContext } from "../../../core.js";
-import { memoryDb, memoryWrite } from "../memory/_db.js";
-import { invalidate, seed } from "../memory/_ontology.js";
-import { SEED } from "../memory/_ontology-seed.js";
+import type { LadybugBackend } from "../../../graph/backend.js";
+import { testBackends } from "../../../graph/test-util.js";
+import { createNodeSchema } from "../../../graph/schema-crud.js";
 import { PENDING_DAYS, pendingFile, recordPending } from "./_pending.js";
 
 // Dictation's vocabulary end to end, through strut's own doors: what an edit
 // teaches (POST /steps/dictation/correction/run) and the next transcription
-// putting it right (POST /audio/transcribe), on a real LadybugDB, with a fake
-// fixer: it says yes to a written form with a capital or a digit, and finds a
-// sentence likelier with the vocabulary word in it.
-const hasLadybug = await import("@ladybugdb/core").then(
-  () => true,
-  () => false,
-);
+// putting it right (POST /audio/transcribe), on a Ladybug workspace graph,
+// with a fake fixer: it says yes to a written form with a capital or a
+// digit, and finds a sentence likelier with the vocabulary word in it.
+const lb = testBackends().find((b) => b.kind === "ladybug")!;
 
-describe("dictation: correction and transcription", { skip: !hasLadybug && "@ladybugdb/core is not installed" }, () => {
+describe("dictation: correction and transcription (ladybug)", { skip: lb.skip }, () => {
   const dir = mkdtempSync(join(tmpdir(), "strut-dictation-"));
   const dataDir = join(dir, "data");
   let heard = "";
@@ -45,16 +41,20 @@ describe("dictation: correction and transcription", { skip: !hasLadybug && "@lad
     transcribe: async (): Promise<TranscribeResult> => ({ text: heard, segments: [{ text: heard, words: [] }], model: "fake", hotwords: null, durationMs: 1 }),
   } as unknown as SttService;
   let strut: Awaited<ReturnType<typeof createStrut>>;
-  const ctx = { services: { dataDir } } as unknown as StepContext;
+  let graph: LadybugBackend;
 
   before(async () => {
+    graph = (await lb.open()) as LadybugBackend;
+    // Types the memory ontology would bring: a company, and what a fact is about.
+    for (const type of ["Organization", "Topic"]) await createNodeSchema(graph, graph.schemas, { type, attributes: { name: "string" }, role: "entity" });
     strut = await createStrut({
-      workspace: new WorkspaceManager(join(dir, "ws")), store: new MemoryRunStore(), dataDir, stt,
+      workspace: new WorkspaceManager(join(dir, "ws")), graph, store: new MemoryRunStore(), dataDir, stt,
       serveUi: false, enableChat: false, scheduler: false, systemWorkflows: false, browserWorkflows: false,
     });
   });
   after(async () => {
     await strut.close();
+    await lb.close(graph);
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -72,7 +72,13 @@ describe("dictation: correction and transcription", { skip: !hasLadybug && "@lad
     assert.equal(res.status, 200);
     return (await res.json()) as TranscribeResult & { heard?: string; changes?: { heard: string; written: string; at: number }[]; fixer: string | null };
   };
-  const rows = async (cypher: string) => (await memoryDb(ctx))(cypher);
+  const rows = (cypher: string, params: Record<string, unknown> = {}) => graph.query(cypher, params);
+  /** A node the memory knows of its own, as the assistant would make it. */
+  const node = async (node_type: string, node_data: Record<string, unknown>): Promise<string> => {
+    const out = await step("graph/create-node", { node_type, node_data });
+    assert.equal(out.status, "Success", JSON.stringify(out));
+    return out.ref_id;
+  };
   const pick = (o: { text: string; fixer: string | null }) => ({ text: o.text, fixer: o.fixer });
 
   it("with nothing taught, a transcript goes out as heard, naming the fixer that read it", async () => {
@@ -84,7 +90,7 @@ describe("dictation: correction and transcription", { skip: !hasLadybug && "@lad
     fixer = null;
     try {
       assert.deepEqual(await correct("send p eight now", "send P8 now"), { learned: [] });
-      assert.deepEqual(await rows("MATCH (e:Entity) RETURN e.name AS name"), []);
+      assert.deepEqual(await rows("MATCH (n:Node {node_type: 'Lingo'}) RETURN n.name AS name"), []);
     } finally {
       fixer = fake;
     }
@@ -94,14 +100,13 @@ describe("dictation: correction and transcription", { skip: !hasLadybug && "@lad
     const out = await correct("I need to send p eight now, before the meeting.", "I need to send P8 now, before the meeting.");
     assert.equal(out.learned.length, 1);
     assert.deepEqual({ ...out.learned[0], undo: undefined }, { heard: "p eight", written: "P8", undo: undefined });
-    const [entity] = await rows("MATCH (e:Entity) RETURN e.ref_id AS ref_id, e.type AS type, e.name AS name");
-    assert.deepEqual(out.learned[0]!.undo, [entity!.ref_id]);
-    assert.deepEqual([entity!.type, entity!.name], ["Lingo", "P8"]);
-    const episodes = await rows("MATCH (e:Episode) RETURN e.content AS content, e.kind AS kind, e.created_by AS by");
-    assert.deepEqual(episodes, [{ content: "Dictation: corrected “p eight” to “P8”.", kind: "note", by: "dictation" }]);
-    const texts = (await rows("MATCH (f:Fact) RETURN f.text AS text, f.value AS value, f.form AS form"));
-    assert.deepEqual(texts, [{ text: "Dictation hears P8 as “p eight”.", value: "p eight", form: null }]);
-    for (const r of [...episodes, ...texts]) assert.ok(!JSON.stringify(r).includes("meeting"), "the sentence is never stored");
+    const [word] = await rows("MATCH (n:Node {node_type: 'Lingo'}) RETURN n.ref_id AS ref_id, n.name AS name, n.created_by AS by");
+    assert.deepEqual(out.learned[0]!.undo, [word!.ref_id]);
+    assert.deepEqual([word!.name, word!.by], ["P8", "dictation"]);
+    const heard = await rows("MATCH (h:Node {node_type: 'Mishearing'}) RETURN h.entity_ref_id AS entity, h.value AS value, h.form AS form");
+    assert.deepEqual(heard, [{ entity: word!.ref_id, value: "p eight", form: null }]);
+    const all = await rows("MATCH (n:Node) WHERE n.node_type <> 'Schema' RETURN n");
+    assert.ok(!JSON.stringify(all).includes("meeting"), "the sentence is never stored");
   });
 
   it("the next transcription puts it right and says what it changed", async () => {
@@ -144,12 +149,11 @@ describe("dictation: correction and transcription", { skip: !hasLadybug && "@lad
   });
 
   it("learns on the entity that writes the word, with the alias as its form", async () => {
-    await step("memory/remember", {
-      episode: "Bitcoin, BTC for short.",
-      facts: [{ subject: { type: "Lingo", name: "Bitcoin" }, predicate: "name", text: "Bitcoin is also called BTC.", object: { type: "Lingo", name: "BTC" } }],
-    });
+    await node("Lingo", { name: "Bitcoin", alt_names: ["BTC"] });
     const out = await correct("send it in bee tee see", "send it in BTC");
-    const [fact] = await rows("MATCH (f:Fact)-[:SUBJECT]->(e:Entity) WHERE f.value = 'bee tee see' RETURN f.ref_id AS ref_id, f.form AS form, e.name AS name");
+    const [fact] = await rows(
+      "MATCH (h:Node {node_type: 'Mishearing'}), (e:Node {ref_id: h.entity_ref_id}) WHERE h.value = 'bee tee see' RETURN h.ref_id AS ref_id, h.form AS form, e.name AS name",
+    );
     assert.deepEqual(out.learned, [{ heard: "bee tee see", written: "BTC", undo: [fact!.ref_id] }]);
     assert.deepEqual([fact!.form, fact!.name], ["BTC", "Bitcoin"]);
     assert.equal((await transcribe("send it in bee tee see")).text, "send it in BTC");
@@ -180,7 +184,7 @@ describe("dictation: correction and transcription", { skip: !hasLadybug && "@lad
     assert.deepEqual(await step("dictation/enable", { ref_id: p8.ref_id, on: true }), { ref_id: p8.ref_id, on: true });
     assert.equal((await step("memory/lexicon", {})).entities.find((e: any) => e.name === "P8").dictation_off, false);
     const res = await strut.app.request("/steps/dictation/enable/run", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ config: { ref_id: "nope", on: false } }) });
-    assert.match(JSON.stringify(await res.json()), /not_found/);
+    assert.match(JSON.stringify(await res.json()), /no node nope/);
     await step("dictation/enable", { ref_id: p8.ref_id, on: false });
   });
 
@@ -205,7 +209,7 @@ describe("dictation: correction and transcription", { skip: !hasLadybug && "@lad
     assert.equal((await lexicon()).some((e) => e.name === "LSAT"), false);
     assert.equal((await transcribe("el sat is on")).text, "el sat is on");
     // A company keeps itself; only its mishearing goes.
-    await step("memory/remember", { episode: "Acme is a client.", mentions: [{ type: "Organization", name: "Acme" }] });
+    await node("Organization", { name: "Acme" });
     const added = await step("dictation/add", { written: "Acme", heard: "ack me" });
     const acme = (await lexicon()).find((e) => e.name === "Acme");
     assert.deepEqual(added.undo, [acme.heard[0].ref_id]);
@@ -219,9 +223,9 @@ describe("dictation: correction and transcription", { skip: !hasLadybug && "@lad
   });
 
   it("dictation/remove keeps a word that is known for more than its mishearing", async () => {
-    await step("memory/remember", {
-      episode: "Hive is our product.", facts: [{ subject: { type: "Lingo", name: "Hive" }, predicate: "about", text: "Hive is about agents.", object: { type: "Topic", name: "agents" } }],
-    });
+    const hiveId = await node("Lingo", { name: "Hive" });
+    const about = await step("graph/assert", { source_ref_id: hiveId, edge_type: "covers", target_type: "Topic", target_data: { name: "agents" }, text: "Hive is about agents.", create_schema_if_missing: true });
+    assert.equal(about.status, "Success", JSON.stringify(about));
     await step("dictation/add", { written: "Hive", heard: "hi of" });
     const hive = (await step("memory/lexicon", {})).entities.find((e: any) => e.name === "Hive");
     assert.deepEqual(await step("dictation/remove", { ref_id: hive.heard[0].ref_id }), { forgotten: hive.heard[0].ref_id });
@@ -242,12 +246,12 @@ describe("dictation: correction and transcription", { skip: !hasLadybug && "@lad
     assert.deepEqual(out.learned.map((l) => [l.heard, l.written, l.undo.length]), [["Itoy", "Itoi", 1]]);
     const paul = (await step("memory/lexicon", {})).entities.find((e: any) => e.name === "Paul Itoi");
     assert.deepEqual([paul.type, paul.heard.map((h: any) => [h.value, h.form])], ["Person", [["Itoy", "Itoi"]]]);
-    assert.equal((await rows("MATCH (e:Entity) WHERE e.name = 'Itoi' RETURN e.ref_id AS id")).length, 0);
+    assert.equal((await rows("MATCH (n:Node) WHERE n.name = 'Itoi' RETURN n.ref_id AS id")).length, 0);
     assert.equal((await transcribe("Ask Call itoy about it.")).text, "Ask Paul Itoi about it.");
     // A second fix attaches to the same person.
     const again = await correct("Paul Attoy is out today.", "Paul Itoi is out today.");
     assert.deepEqual(again.learned.map((l) => [l.heard, l.written]), [["Attoy", "Itoi"]]);
-    assert.equal((await rows("MATCH (e:Entity) WHERE e.name = 'Paul Itoi' AND e.deleted_at IS NULL RETURN e.ref_id AS id")).length, 1);
+    assert.equal((await rows("MATCH (n:Node) WHERE n.name = 'Paul Itoi' AND n.deleted_at IS NULL RETURN n.ref_id AS id")).length, 1);
     await step("dictation/undo", { undo: [...again.learned[0]!.undo, ...out.learned[0]!.undo] });
     assert.ok(!(await step("memory/lexicon", {})).entities.some((e: any) => e.name === "Paul Itoi"));
     assert.equal((await transcribe("Ask Call itoy about it.")).text, "Ask Call itoy about it.");
@@ -305,18 +309,8 @@ describe("dictation: correction and transcription", { skip: !hasLadybug && "@lad
     });
   });
 
-  it("memory/lexicon names the lingo type and the mishearing predicate", async () => {
+  it("memory/lexicon names the lingo type and the mishearing's record type", async () => {
     const lexicon = await step("memory/lexicon", {});
-    assert.deepEqual([lexicon.lingo_type, lexicon.mishearing], ["Lingo", "heard_as"]);
-  });
-
-  it("a memory seeded before Lingo had its role gets it on the next open", async () => {
-    await memoryWrite(ctx, async (q) => {
-      await q("MATCH (o:Ontology) WHERE o.key = 'entity_type:Lingo' SET o.role = ''");
-      invalidate(q);
-    });
-    assert.equal((await step("memory/lexicon", {})).lingo_type, null);
-    await memoryWrite(ctx, (q) => seed(q, SEED));
-    assert.equal((await step("memory/lexicon", {})).lingo_type, "Lingo");
+    assert.deepEqual([lexicon.lingo_type, lexicon.person_type, lexicon.mishearing], ["Lingo", "Person", "Mishearing"]);
   });
 });

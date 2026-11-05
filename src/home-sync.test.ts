@@ -1,8 +1,8 @@
 /**
  * What a home box serves a strut that keeps a read copy of its memory
  * (src/home-sync.ts): dictation/changes-since and dictation/apply-changes
- * between two real memories, memory/export's hash short-circuit, and
- * the /home/pull and /home/push routes, open to a person token only.
+ * between two Ladybug graphs, /home/pull's hash short-circuit, and the
+ * /home/pull and /home/push routes, open to a person token only.
  */
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -14,33 +14,37 @@ import { createStrut, type Strut } from "./createStrut.js";
 import { MemoryRunStore, type RunSummary } from "./store.js";
 import { WorkspaceManager } from "./workspace.js";
 import { personToken } from "./auth.js";
-import type { StepContext } from "./core.js";
-import { memoryWrite } from "./steps/lib/memory/_db.js";
+import type { LadybugBackend } from "./graph/backend.js";
+import { testBackends } from "./graph/test-util.js";
+import { exclusive } from "./steps/lib/dictation/_graph.js";
 
-const hasLadybug = await import("@ladybugdb/core").then(
-  () => true,
-  () => false,
-);
+const lb = testBackends().find((b) => b.kind === "ladybug")!;
 
 const KEY = "home-box-api-key";
 const PEER_KEY = "a-strut-peer-key";
 
-describe("home sync: what the box serves", { skip: !hasLadybug && "@ladybugdb/core is not installed" }, () => {
+describe("home sync: what the box serves", { skip: lb.skip }, () => {
   const dir = mkdtempSync(join(tmpdir(), "strut-home-sync-"));
   const saved = { api: process.env["STRUT_API_KEY"], peer: process.env["STRUT_PEER_KEY"] };
   let box: Strut;
   let mac: Strut;
+  let boxGraph: LadybugBackend;
+  let macGraph: LadybugBackend;
   const NO_SEEDS = { serveUi: false, enableChat: false, scheduler: false, systemWorkflows: false, browserWorkflows: false, job: false, orchestrator: false, builder: false } as const;
 
   before(async () => {
     process.env["STRUT_API_KEY"] = KEY;
     process.env["STRUT_PEER_KEY"] = PEER_KEY;
-    box = await createStrut({ workspace: new WorkspaceManager(join(dir, "box-ws")), store: new MemoryRunStore(), dataDir: join(dir, "box"), homeSync: "box", ...NO_SEEDS });
-    mac = await createStrut({ workspace: new WorkspaceManager(join(dir, "mac-ws")), store: new MemoryRunStore(), dataDir: join(dir, "mac"), ...NO_SEEDS });
+    boxGraph = (await lb.open()) as LadybugBackend;
+    macGraph = (await lb.open()) as LadybugBackend;
+    box = await createStrut({ workspace: new WorkspaceManager(join(dir, "box-ws")), graph: boxGraph, store: new MemoryRunStore(), dataDir: join(dir, "box"), homeSync: "box", ...NO_SEEDS });
+    mac = await createStrut({ workspace: new WorkspaceManager(join(dir, "mac-ws")), graph: macGraph, store: new MemoryRunStore(), dataDir: join(dir, "mac"), ...NO_SEEDS });
   });
   after(async () => {
     await box.close();
     await mac.close();
+    await lb.close(boxGraph);
+    await lb.close(macGraph);
     rmSync(dir, { recursive: true, force: true });
     for (const [name, value] of [["STRUT_API_KEY", saved.api], ["STRUT_PEER_KEY", saved.peer]] as const) {
       if (value === undefined) delete process.env[name];
@@ -59,6 +63,8 @@ describe("home sync: what the box serves", { skip: !hasLadybug && "@ladybugdb/co
   const pairs = async (strut: Strut) =>
     (await lexicon(strut)).entities.flatMap((e: any) => e.heard.map((h: any) => `${h.value}→${h.form ?? e.name}`)).sort();
   const undone = async (strut: Strut) => (await lexicon(strut)).undone.map((u: any) => `${u.value}→${u.form ?? u.entity.name}`).sort();
+  /** The box's memory hash, as /home/pull answers a person token. */
+  const boxHash = async (): Promise<string> => ((await (await request(box, "/home/pull", {}, personToken("tom")!.token)).json()) as any).content_hash;
 
   it("changes-since reads what dictation learned and undid, keyed by pair; apply-changes replays it, and again changes nothing", async () => {
     const start = (await step(mac, "dictation/changes-since", {})).until;
@@ -126,10 +132,10 @@ describe("home sync: what the box serves", { skip: !hasLadybug && "@ladybugdb/co
       ["undo", "K8", undefined],
     ]);
     assert.deepEqual((await step(box, "dictation/apply-changes", { changes })).applied.map((a: any) => a.result), ["learned", "learned", "undone", "undone"]);
-    const { content_hash } = await step(box, "memory/export", { inline: true });
+    const hash = await boxHash();
     const again = await step(box, "dictation/apply-changes", { changes });
     assert.deepEqual(again.applied.map((a: any) => a.result), ["already undone", "already undone", "already undone", "already undone"]);
-    assert.deepEqual(await step(box, "memory/export", { inline: true, if_changed: content_hash }), { unchanged: true, content_hash }, "nothing written");
+    assert.equal(await boxHash(), hash, "nothing written");
     // Added again by hand on the copy, not undone: the box learns it again.
     const readded = [{ op: "learn", heard: "dock her", written: "Docker", at: new Date().toISOString() }];
     assert.deepEqual((await step(box, "dictation/apply-changes", { changes: readded })).applied.map((a: any) => a.result), ["learned"]);
@@ -138,12 +144,12 @@ describe("home sync: what the box serves", { skip: !hasLadybug && "@ladybugdb/co
   it("changes-since waits for a write in flight: one that stamped its time and has not committed is in this read or the next", async () => {
     await step(mac, "dictation/add", { heard: "type script", written: "TypeScript" });
     const start = (await step(mac, "dictation/changes-since", {})).until;
-    // remember's transaction stamps created_at when it starts and commits
-    // later; this one stamps the fact again and holds the commit.
+    // A learn stamps created_at when it starts and commits later; this
+    // write, in dictation's queue, stamps the record again and holds on.
     let commit!: () => void;
     const held = new Promise<void>((resolve) => (commit = resolve));
-    const writing = memoryWrite({ services: mac.services } as unknown as StepContext, async (query) => {
-      await query("MATCH (f:Fact) WHERE f.value = 'type script' AND f.created_by = 'dictation' SET f.created_at = $now", { now: Date.now() });
+    const writing = exclusive(macGraph, async () => {
+      await macGraph.tx((tx) => tx.run("MATCH (h:Node {node_type: 'Mishearing'}) WHERE h.value = 'type script' SET h.created_at = $now", { now: Date.now() }));
       await held;
     });
     const reading = step(mac, "dictation/changes-since", { since: start });
@@ -160,15 +166,17 @@ describe("home sync: what the box serves", { skip: !hasLadybug && "@ladybugdb/co
     assert.deepEqual([...first.changes, ...next.changes].map((c: any) => `${c.op} ${c.heard}→${c.written}`), ["learn type script→TypeScript"]);
   });
 
-  it("memory/export with if_changed: the hash the caller holds short-circuits; any change makes a new one", async () => {
-    const full = await step(box, "memory/export", { inline: true });
+  it("/home/pull's hash: the hash the caller holds short-circuits; any change makes a new one", async () => {
+    const tom = personToken("tom")!.token;
+    const pull = async (body: unknown) => (await (await request(box, "/home/pull", body, tom)).json()) as any;
+    const full = await pull({});
     assert.match(full.content_hash, /^[0-9a-f]{64}$/);
-    assert.ok(full.data);
-    assert.deepEqual(await step(box, "memory/export", { inline: true, if_changed: full.content_hash }), { unchanged: true, content_hash: full.content_hash });
+    assert.ok(full.memory.nodes.length);
+    assert.deepEqual(await pull({ hash: full.content_hash }), { unchanged: true, content_hash: full.content_hash });
     await step(box, "dictation/add", { heard: "lady bug", written: "Ladybug" });
-    const changed = await step(box, "memory/export", { inline: true, if_changed: full.content_hash });
+    const changed = await pull({ hash: full.content_hash });
     assert.notEqual(changed.content_hash, full.content_hash);
-    assert.ok(changed.data, "the new export comes back");
+    assert.ok(changed.memory, "the new memory comes back");
   });
 
   it("/home/pull and /home/push answer a person token, refuse the plain peer key, and keep nothing a later read could find", async () => {
@@ -186,7 +194,7 @@ describe("home sync: what the box serves", { skip: !hasLadybug && "@ladybugdb/co
     const pulled = await post("/home/pull", {}, tom);
     assert.equal(pulled.status, 200, JSON.stringify(pulled.body));
     assert.equal(pulled.cache, "no-store");
-    assert.ok(pulled.body.data, "the whole memory");
+    assert.ok(pulled.body.memory, "the whole memory");
     const hash = pulled.body.content_hash;
     assert.deepEqual((await post("/home/pull", { hash }, tom)).body, { unchanged: true, content_hash: hash });
 
@@ -198,7 +206,7 @@ describe("home sync: what the box serves", { skip: !hasLadybug && "@ladybugdb/co
 
     // Nothing was journaled: no run of any kind holds the export or the
     // changes, so neither another token nor the same one later reads them.
-    for (const key of ["home-pull", "home-push", "step:memory/export", "step:dictation/apply-changes"]) {
+    for (const key of ["home-pull", "home-push", "step:dictation/apply-changes"]) {
       assert.deepEqual(await box.store.listRuns(key), [], key);
     }
     const eve = personToken("eve")!.token;
@@ -220,7 +228,7 @@ describe("home sync: what the box serves", { skip: !hasLadybug && "@ladybugdb/co
       assert.equal(await none("/home/push"), 403);
       const pulled = await request(box, "/home/pull", {}, personToken("tom")!.token);
       assert.equal(pulled.status, 200);
-      assert.ok(((await pulled.json()) as any).data);
+      assert.ok(((await pulled.json()) as any).memory);
     } finally {
       for (const [name, value] of [["STRUT_API_KEY", saved.api], ["STRUT_SECRET_KEY", saved.secret]] as const) {
         if (value === undefined) delete process.env[name];
@@ -238,11 +246,13 @@ describe("home sync: what the box serves", { skip: !hasLadybug && "@ladybugdb/co
 
 // ── both sides: a Mac's strut syncing its copy with its home box ──────────
 
-describe("home sync end to end: two struts over peers", { skip: !hasLadybug && "@ladybugdb/core is not installed" }, () => {
+describe("home sync end to end: two struts over peers", { skip: lb.skip }, () => {
   const dir = mkdtempSync(join(tmpdir(), "strut-home-e2e-"));
   const saved = process.env["STRUT_API_KEY"];
   let box: Strut;
   let mac: Strut;
+  let boxGraph: LadybugBackend;
+  let macGraph: LadybugBackend;
   let proxy: http.Server;
   let boxUrl: string;
   /** Runs when the box is asked for its memory, before it answers: the moment a sync is in. */
@@ -253,7 +263,9 @@ describe("home sync end to end: two struts over peers", { skip: !hasLadybug && "
 
   before(async () => {
     process.env["STRUT_API_KEY"] = KEY;
-    box = await createStrut({ workspace: new WorkspaceManager(join(dir, "box-ws")), store: new MemoryRunStore(), dataDir: join(dir, "box"), homeSync: "box", ...NO_SEEDS });
+    boxGraph = (await lb.open()) as LadybugBackend;
+    macGraph = (await lb.open()) as LadybugBackend;
+    box = await createStrut({ workspace: new WorkspaceManager(join(dir, "box-ws")), graph: boxGraph, store: new MemoryRunStore(), dataDir: join(dir, "box"), homeSync: "box", ...NO_SEEDS });
     boxUrl = `http://127.0.0.1:${await box.listen(0, "127.0.0.1")}`;
     // The box's front door, where a test can step in.
     proxy = http.createServer(async (req, res) => {
@@ -267,7 +279,7 @@ describe("home sync end to end: two struts over peers", { skip: !hasLadybug && "
     await new Promise<void>((r) => proxy.listen(0, "127.0.0.1", r));
     // The record `strut move` hands back: the box's address and a person token it signed.
     mac = await createStrut({
-      workspace: new WorkspaceManager(join(dir, "mac-ws")), store: new MemoryRunStore(), dataDir: join(dir, "mac"), homeSync: "copy", ...NO_SEEDS,
+      workspace: new WorkspaceManager(join(dir, "mac-ws")), graph: macGraph, store: new MemoryRunStore(), dataDir: join(dir, "mac"), homeSync: "copy", ...NO_SEEDS,
       peers: [{ id: "home", baseUrl: `http://127.0.0.1:${(proxy.address() as { port: number }).port}`, token: personToken("tom")!.token }],
     });
   });
@@ -275,6 +287,8 @@ describe("home sync end to end: two struts over peers", { skip: !hasLadybug && "
     proxy.close();
     await mac.close();
     await box.close();
+    await lb.close(boxGraph);
+    await lb.close(macGraph);
     rmSync(dir, { recursive: true, force: true });
     if (saved === undefined) delete process.env["STRUT_API_KEY"];
     else process.env["STRUT_API_KEY"] = saved;
@@ -314,9 +328,9 @@ describe("home sync end to end: two struts over peers", { skip: !hasLadybug && "
     assert.deepEqual(await pairs(mac), ["stack work→Stakwork"]);
     assert.equal((await step(mac, "home/state", {})).hash, first.hash);
     const [runId] = await mac.store.listRuns("home-sync");
-    // A gzip stream in base64 starts "H4sI": no event holds the export, under any key.
+    // No event holds the memory, under any key.
     const journal = JSON.stringify(await mac.store.getRunEvents("home-sync", runId!));
-    assert.ok(!journal.includes("H4sI") && journal.length < 20_000, "the memory never passes through the run");
+    assert.ok(!journal.includes("stack work") && journal.length < 20_000, "the memory never passes through the run");
     // Nothing changed on either side: nothing is pulled.
     assert.equal((await synced()).pulled, false);
   });

@@ -1,19 +1,18 @@
-import { existsSync } from "node:fs";
-import { join, resolve as resolvePath } from "node:path";
 import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
 import { graphCtx, errText, type GraphBackend } from "./_shared.js";
-import { type Query, type Row, memoryDb, normalize } from "../memory/_db.js";
+import { type Query, type Row, normalize, oldMemory, oldMemoryPath } from "../memory/_db.js";
 import { vocabulary, type Vocabulary } from "../memory/_ontology.js";
 import { NodeWriter } from "../../../graph/node-writer.js";
 import { words } from "../../../graph/text-match.js";
 import { importMishearings } from "../dictation/_graph.js";
 
 /**
- * The one-off move of the old memory database (`memory/*`, src/steps/lib/memory)
- * onto the workspace graph (plans/graph-memory-plan.md step 7). It reads the
- * old database and writes nothing to it, and it is safe to run again: every
+ * The one-off move of the old memory database (the retired `memory/*` steps'
+ * own file, read through src/steps/lib/memory/_db.ts) onto the workspace
+ * graph (plans/graph-memory-plan.md step 7). It reads a copy of the old
+ * database and writes nothing to it, and it is safe to run again: every
  * node is found by `resolve` before one is made, and every fact goes through
  * `assert`, which re-confirms what the graph already holds.
  *
@@ -53,13 +52,6 @@ import { importMishearings } from "../dictation/_graph.js";
  * (dictation/_graph.ts).
  */
 
-
-/** The old database's file, as `_db.ts` finds it; undefined when there is none. */
-async function oldDatabase(ctx: StepContext<StrutCapabilities> | undefined): Promise<string | undefined> {
-  const explicit = await ctx?.services?.secrets?.get("STRUT_MEMORY_DB");
-  const path = explicit ? resolvePath(explicit) : ctx?.services?.dataDir ? resolvePath(join(ctx.services.dataDir, "memory", "graph.lbug")) : undefined;
-  return path && existsSync(path) ? path : undefined;
-}
 
 const num = (v: unknown): number | null => (v === null || v === undefined ? null : Number(v));
 const edgeTypeOf = (predicate: string) => {
@@ -216,7 +208,7 @@ async function addNames(c: Ctx, ref_id: string, names: string[]): Promise<number
 export default defineStep({
   type: "graph/import-memory",
   description:
-    "Move the old memory database (the memory/* steps') onto the workspace graph, once: entities become nodes (the user the Person " +
+    "Move the old memory database (the retired memory/* steps') onto the workspace graph, once: entities become nodes (the user the Person " +
     "marked is_owner), facts linking two entities become temporal edges with their dates, sources and speaker, names become alt_names, " +
     "all in `private`. Reads the old database and never changes it; safe to run again (what is already there is found, not doubled). " +
     "Returns counts imported and skipped, by reason: what has no place on the graph (facts about one entity alone, attributes, " +
@@ -228,7 +220,8 @@ export default defineStep({
   async run(cfg, ctx) {
     try {
       const sctx = ctx as StepContext<StrutCapabilities>;
-      if (!(await oldDatabase(sctx))) return { status: "Warning", messages: ["no old memory database here: nothing to import"], imported: 0, skipped: 0 };
+      const path = await oldMemoryPath(sctx);
+      if (!path) return { status: "Warning", messages: ["no old memory database here: nothing to import"], imported: 0, skipped: 0 };
       const b = await graphCtx(sctx);
       if (b.kind !== "ladybug") return "graph/import-memory failed — WRONG_TYPE: it imports into a LadybugDB graph only";
       const { assertEdge } = await import("../../../graph/temporal.js");
@@ -236,7 +229,7 @@ export default defineStep({
       const { PRIVATE_NAMESPACE } = await import("../../../graph/ladybug/namespaces.js");
       const { edgeRule } = await import("../../../graph/ladybug/ontology.js");
       const { boundsOf } = await import("../../../graph/scope.js");
-      const query = await memoryDb(ctx);
+      const query = await oldMemory(path);
       const vocab = await vocabulary(query);
       const c: Ctx = {
         b, query, vocab,

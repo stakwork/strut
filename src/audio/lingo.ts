@@ -21,14 +21,14 @@
  * tested with scores injected.
  */
 
-/** memory/lexicon's output, as dictation reads it. */
+/** memory/lexicon's output (dictation/_graph.ts), as dictation reads it. */
 export interface Lexicon {
   entries: LexiconEntry[];
   /** Pairs the user undid: never learned again. */
   undone: { value: string; written: string }[];
   /** The type a new word is made as (the one with role dictation); its entities are taught to dictation. */
   lingoType?: string;
-  /** The predicate a mishearing is written with (the one with role mishearing). */
+  /** The record type a mishearing is kept as. */
   mishearing?: string;
   /** The type a person is (the user type's parent): a full name learned from an edit is made as one. */
   personType?: string;
@@ -872,64 +872,4 @@ function tokens(text: string): Token[] {
 function contiguous(toks: Token[], i: number, n: number): boolean {
   for (let k = i; k < i + n - 1; k++) if (toks[k]!.trail || toks[k + 1]!.lead) return false;
   return true;
-}
-
-// ── Strut's memory steps ────────────────────────────────────────────────────
-
-/** memory/remember's input for one mishearing: `heard` is how dictation
- *  mishears `written`, on the entity that writes it, or on a new word of the
- *  lingo type when none does. Only the pair is said, never the sentence it
- *  was in. A `term` learn writes only the new word, with no mapping; null
- *  when the vocabulary already writes it. */
-export function learnInput(heard: string, written: string, lexicon: Lexicon, term = false, name?: string): Record<string, unknown> | null {
-  if (name && !term) return nameInput(heard, written, name, lexicon);
-  const entry = entryWriting(lexicon, written);
-  if (term) {
-    if (entry) return null;
-    if (!lexicon.lingoType) throw new Error("the memory has no entity type with role dictation for a new word");
-    return { episode: `Dictation: corrected “${heard}” to “${written}”.`, kind: "note", created_by: "dictation", mentions: [{ type: lexicon.lingoType, name: written }] };
-  }
-  if (!lexicon.mishearing) throw new Error("the memory has no predicate with role mishearing");
-  if (!entry && !lexicon.lingoType) throw new Error("the memory has no entity type with role dictation for a new word");
-  const subject = entry ? { ref_id: entry.refId, type: entry.type, name: entry.name } : { type: lexicon.lingoType, name: written };
-  return {
-    episode: `Dictation: corrected “${heard}” to “${written}”.`,
-    kind: "note",
-    created_by: "dictation",
-    facts: [{
-      subject, predicate: lexicon.mishearing, text: `Dictation hears ${written} as “${heard}”.`, value: heard,
-      ...(entry && entry.name !== written ? { form: written } : {}),
-    }],
-  };
-}
-
-/** A mishearing that is part of a full name (`Mishearing.name`): kept on the
- *  entity that writes the name, or on a new person of that name (the lingo
- *  type when the memory has no person type), with `written` as the form
- *  when it is not the whole name ("Etoy" heard for Itoi, on Paul Itoi). One
- *  write, so Undo forgets all of it: the new person (its facts go with it),
- *  else the new fact. */
-function nameInput(heard: string, written: string, name: string, lexicon: Lexicon): Record<string, unknown> {
-  if (!lexicon.mishearing) throw new Error("the memory has no predicate with role mishearing");
-  const entry = entryWriting(lexicon, name);
-  const type = lexicon.personType ?? lexicon.lingoType;
-  if (!entry && !type) throw new Error("the memory has no person type or entity type with role dictation for a new name");
-  const subject = entry ? { ref_id: entry.refId, type: entry.type, name: entry.name } : { type, name };
-  return {
-    episode: `Dictation: corrected “${heard}” to “${written}” in ${name}.`,
-    kind: "note",
-    created_by: "dictation",
-    facts: [{
-      subject, predicate: lexicon.mishearing, text: `Dictation hears ${written} as “${heard}”.`, value: heard,
-      ...(written !== subject.name ? { form: written } : {}),
-    }],
-  };
-}
-
-/** What a learn wrote, to forget on Undo: the new entity when one was made
- *  (its facts go with it), else the new fact; nothing when strut already had it. */
-export function undoIds(output: any): string[] {
-  const created = (rows: any) => (Array.isArray(rows) ? rows : []).filter((r) => r?.status === "created" && typeof r.ref_id === "string").map((r) => r.ref_id as string);
-  const entities = created(output?.entities);
-  return entities.length ? entities : created(output?.facts);
 }
