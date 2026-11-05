@@ -1977,16 +1977,19 @@ export const listApps = () => fetchJSON<{ apps: AppListEntry[] }>("/apps").then(
 export const getApp = (name: string, version?: string) =>
   fetchJSON<AppView>(`/apps/${encodeURIComponent(name)}${version ? `?version=${encodeURIComponent(version)}` : ""}`);
 
-export const getAppVersions = (name: string) =>
-  fetchJSON<{
-    name: string;
-    active: string;
-    versions: Record<string, { createdAt: string; hash: string }>;
-    /** The live release's id, or `latest` while following. */
-    live: string;
-    releases: AppRelease[];
-    behind: AppLockDrift[];
-  }>(`/apps/${encodeURIComponent(name)}/versions`);
+/** `GET /apps/:name/versions`. */
+export interface AppVersionsResponse {
+  name: string;
+  active: string;
+  /** `source: "seed"`: strut makes this version live at every start (it cannot be held). */
+  versions: Record<string, { createdAt: string; hash: string; source?: string; actor?: string; publisher?: string }>;
+  /** The live release's id, or `latest` while following. */
+  live: string;
+  releases: AppRelease[];
+  behind: AppLockDrift[];
+}
+
+export const getAppVersions = (name: string) => fetchJSON<AppVersionsResponse>(`/apps/${encodeURIComponent(name)}/versions`);
 
 /** What people open (`PUT /apps/:name/active`): `{ version: "vN" }` makes a
  *  release of it and holds the app there, `{ release: "rN" }` makes an

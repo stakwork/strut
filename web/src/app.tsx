@@ -42,6 +42,8 @@ import { RunTime } from "./components/RunTime";
 import { ThreadFlyout } from "./components/ThreadFlyout";
 import { AppWithPanel } from "./components/AppWithPanel";
 import { AppUsageFlyout } from "./components/AppUsageFlyout";
+import { AppVersionsFlyout } from "./components/AppVersionsFlyout";
+import { draftCount, draftsOf, isDraft } from "./app-versions";
 import { SoloApp } from "./components/SoloApp";
 import { Store } from "./components/Store";
 import { INSTALL_LINK_PARAMS, parseInstallLink, type InstallLink } from "./store-links";
@@ -160,6 +162,10 @@ function Shell() {
   const [appInput, setAppInput] = useState<string | null>(initialUrl.get("input"));
   const [appQuery, setAppQuery] = useState("");
   const [appReload, setAppReload] = useState(0);
+  // A version this browser views in place of the live one (the Versions
+  // flyout's View): only here, nobody else's page changes.
+  const [appPreview, setAppPreview] = useState<string | null>(null);
+  const [appPreviewError, setAppPreviewError] = useState("");
   // What the host hands the chat: a draft for its composer (Edit with the
   // builder), a message to send (an app's ui/message).
   const [chatDraft, setChatDraft] = useState<{ text: string; id: number } | null>(null);
@@ -263,7 +269,7 @@ function Shell() {
   // claims / automations as tabs) or Promote — so they exclude each other by
   // construction; or, with an app open, its Usage. `wfTab` remembers the tab
   // across open/close.
-  const [panel, setPanel] = useState<"workflow" | "promote" | "usage" | null>(null);
+  const [panel, setPanel] = useState<"workflow" | "promote" | "usage" | "versions" | null>(null);
   const [wfTab, setWfTab] = useState<WorkflowTab>("params");
   // The workflow's contract as last read — null until probed;
   // `enabled: false` (a filesystem workspace) hides the Claims tab.
@@ -409,20 +415,31 @@ function Shell() {
   // peer's (plans/apps.md §7.4).
   const appEntry = selectedApp ? apps.find((a) => appKey(a) === selectedApp) ?? null : null;
   const appTitle = (name: string) => apps.find((a) => !a.peer && a.name === name)?.title ?? name;
-  // The open app's releases (plans/app-releases.md), for the topbar's
-  // select: read again whenever what people open changes.
-  const [appReleases, setAppReleases] = useState<{ live: string; releases: api.AppRelease[]; behind: api.AppLockDrift[] } | null>(null);
+  // The version the frame shows: a preview, while one is open and still
+  // there and not what is live; else the live one.
+  const appShown = appEntry && !appEntry.peer && appPreview && appPreview !== appEntry.activeVersion && appEntry.versions.includes(appPreview)
+    ? appPreview
+    : appEntry?.activeVersion;
+  useEffect(() => { setAppPreview(null); }, [selectedApp]);
+  // The open app's versions and releases (plans/app-releases.md): the
+  // chip's draft count and the Versions flyout. Read again whenever what
+  // people open, or the versions, change.
+  const [appVersions, setAppVersions] = useState<{ name: string; data?: api.AppVersionsResponse; error?: string } | null>(null);
   useEffect(() => {
     if (!appEntry || appEntry.peer) {
-      setAppReleases(null);
+      setAppVersions(null);
       return;
     }
+    const name = appEntry.name;
     let on = true;
-    api.getAppVersions(appEntry.name).then((r) => on && setAppReleases(r)).catch(() => on && setAppReleases(null));
-    return () => {
-      on = false;
-    };
-  }, [appEntry?.name, appEntry?.activeVersion, appEntry?.live]);
+    api.getAppVersions(name).then(
+      (data) => { if (on) setAppVersions({ name, data }); },
+      (err) => { if (on) setAppVersions({ name, error: errorMessage(err) }); },
+    );
+    return () => { on = false; };
+  }, [appEntry?.name, appEntry?.peer, appEntry?.activeVersion, appEntry?.live, appEntry?.versions.length]);
+  const appVersionsData = appEntry && appVersions?.name === appEntry.name ? appVersions : null;
+  useEffect(() => { setAppPreviewError(""); }, [appShown]);
   // An installed package's workflows are a group of its own, drawn from
   // what is installed and labelled with the package's name — never a
   // category, so nothing local mixes into it (plans/packages-ux.md §4).
@@ -548,6 +565,15 @@ function Shell() {
     }
     setAppsLoaded(true);
   }, []);
+  /** Change what people open (plans/app-releases.md, `PUT /apps/:name/active`):
+   *  the app list, the frame and any preview follow. Throws on a refusal. */
+  const setAppLive = useCallback(async (target: { version: string } | { release: string }) => {
+    if (!appEntry || appEntry.peer) return;
+    await api.setAppLive(appEntry.name, target);
+    setAppPreview(null);
+    await refreshApps();
+    setAppReload((n) => n + 1);
+  }, [appEntry?.name, appEntry?.peer]);
 
   // Every job title the UI has seen — the run rows' chips name a job by it.
   // Filled by the jobs listing, and by a run in flight, whose row carries the
@@ -1324,21 +1350,49 @@ function Shell() {
   // serves or an app on that peer opens here (AppHost): the rest are the
   // peer's (plans/apps.md §7.4). Alone (`?solo=1`) it is ./components/SoloApp.
   const appToolArgs = appToolInput(appInput);
+  const appHost = appEntry && appShown
+    ? <AppWithPanel
+        key={`${appKey(appEntry)}@${appShown}`}
+        app={{ name: appEntry.name, version: appShown, ...(appEntry.peer ? { peer: appEntry.peer } : {}) }}
+        reload={appReload}
+        onNavigate={navigateFromApp}
+        {...(appToolArgs ? { toolInput: appToolArgs } : {})}
+        {...(appEntry.peer ? {} : {
+          onMessage: (text: string) => {
+            setShowChat(true);
+            setChatInbound({ text: appMessage({ name: appEntry.name, version: appShown }, text), id: Date.now() });
+          },
+        })}
+      />
+    : null;
+  // A version this browser views in place of the live one: under a banner
+  // that says so, with the way to make it live and the way back.
+  const appPreviewing = appEntry && appShown !== appEntry.activeVersion ? appShown : null;
   const appView = selectedApp
     ? appEntry
-      ? <AppWithPanel
-          key={`${appKey(appEntry)}@${appEntry.activeVersion}`}
-          app={{ name: appEntry.name, version: appEntry.activeVersion, ...(appEntry.peer ? { peer: appEntry.peer } : {}) }}
-          reload={appReload}
-          onNavigate={navigateFromApp}
-          {...(appToolArgs ? { toolInput: appToolArgs } : {})}
-          {...(appEntry.peer ? {} : {
-            onMessage: (text: string) => {
-              setShowChat(true);
-              setChatInbound({ text: appMessage({ name: appEntry.name, version: appEntry.activeVersion }, text), id: Date.now() });
-            },
-          })}
-        />
+      ? appPreviewing
+        ? <div class="app-preview">
+            <div class="app-preview-banner">
+              <span class="app-preview-text">
+                Viewing <strong>{appPreviewing}</strong>
+                {isDraft(appPreviewing, appEntry.activeVersion, appEntry.live) ? " · draft" : ""} — only you see it. It works on the
+                same data as the live app.
+              </span>
+              <ConfirmButton
+                popover
+                class="btn btn-sm btn-primary"
+                label="Make live"
+                note={`Everyone who opens the app gets ${appPreviewing} now${appEntry.live ? "." : ", and it stays there: later publishes wait as drafts until you make one live."}`}
+                confirmLabel={`Make ${appPreviewing} live`}
+                tone="primary"
+                onConfirm={() => { setAppPreviewError(""); setAppLive({ version: appPreviewing }).catch((err) => setAppPreviewError(errorMessage(err))); }}
+              />
+              <button class="btn btn-sm" onClick={() => setAppPreview(null)}>Back to live</button>
+              {appPreviewError && <span class="app-preview-error">{appPreviewError}</span>}
+            </div>
+            <div class="app-preview-frame">{appHost}</div>
+          </div>
+        : appHost
       : <div class="empty">{appsLoaded ? `No app "${selectedApp}"` : "Loading apps…"}</div>
     : null;
 
@@ -1654,54 +1708,31 @@ function Shell() {
             // as you. Its releases and its tab are the peer's to change.
             <span class="badge" title={`Lives on the peer ${appEntry.peer}: what is live there, run there as you`}>@{appEntry.peer} · {appEntry.activeVersion}</span>
           )}
-          {appOpen && appEntry && !appEntry.peer && (
-            // What people open (plans/app-releases.md, PUT /apps/:name/active):
-            // the latest publish, or a release the app is held at. A release
-            // picked here rolls back (or forward); a version picked makes a
-            // release of it and holds the app there. The frame shows what is
-            // live and reloads on a change.
-            <select
-              class="app-version-select"
-              title={appEntry.live
-                ? [
-                    `Held at ${appEntry.live} (${appEntry.activeVersion}): a publish is a draft until it is made live here.`,
-                    ...(appReleases?.behind.length ? ["Moved on since:", ...appReleases.behind.map((d) => `${d.name} ${d.locked} → ${d.current ?? "gone"}`)] : []),
-                  ].join("\n")
-                : "Following latest: every publish is live. Pick a version to hold the app there."}
-              value={appEntry.live ? `release:${appEntry.live}` : "latest"}
-              onChange={async (e) => {
-                const v = (e.target as HTMLSelectElement).value;
-                const target = v === "latest" ? { version: "latest" } : v.startsWith("release:") ? { release: v.slice(8) } : { version: v.slice(8) };
-                try {
-                  await api.setAppLive(appEntry.name, target);
-                  await refreshApps();
-                  setAppReload((n) => n + 1);
-                } catch (err) {
-                  alert(errorMessage(err));
-                  (e.target as HTMLSelectElement).value = appEntry.live ? `release:${appEntry.live}` : "latest";
-                }
-              }}
-            >
-              <option value="latest">{appEntry.live ? "Follow latest" : `Following latest · ${appEntry.activeVersion}`}</option>
-              {!!appReleases?.releases.length && (
-                <optgroup label="Releases">
-                  {[...appReleases.releases].reverse().map((r) => (
-                    <option key={r.id} value={`release:${r.id}`}>{r.id} · {r.version}{r.id === appEntry.live ? " · live" : ""}</option>
-                  ))}
-                </optgroup>
-              )}
-              <optgroup label="Make live and hold">
-                {[...appEntry.versions].sort((a, b) => Number(b.slice(1)) - Number(a.slice(1))).map((v) => (
-                  <option key={v} value={`version:${v}`}>
-                    {v}{appEntry.live && Number(v.slice(1)) > Number(appEntry.activeVersion.slice(1)) ? " · draft" : v === appEntry.activeVersion ? " · live" : ""}
-                  </option>
-                ))}
-              </optgroup>
-            </select>
-          )}
+          {appOpen && appEntry && !appEntry.peer && (() => {
+            // What people open (plans/app-releases.md): the live version, and
+            // the drafts waiting while the app is held. A click opens the
+            // Versions flyout, where every change is made, and asked first.
+            const drafts = appVersionsData?.data
+              ? draftsOf(appVersionsData.data)
+              : draftCount(appEntry.versions, appEntry.activeVersion, appEntry.live);
+            return (
+              <button
+                type="button"
+                class={`app-version-chip${panel === "versions" ? " is-active" : ""}`}
+                title={appEntry.live
+                  ? `Held at ${appEntry.activeVersion}: a publish waits as a draft until it is made live`
+                  : "Every publish goes live"}
+                onClick={() => { setPanel((p) => (p === "versions" ? null : "versions")); closeFlyout(); }}
+              >
+                {appEntry.activeVersion} · live
+                {drafts > 0 && <span class="app-version-drafts">{drafts} draft{drafts === 1 ? "" : "s"}</span>}
+                <span class="app-version-caret" aria-hidden="true">▾</span>
+              </button>
+            );
+          })()}
           {appOpen && appEntry && !appEntry.peer && (
             // A tab where this workspace's apps are listed (hive's sidebar):
-            // the app's record, not a version — the select beside it stays
+            // the app's record, not a version — the Versions flyout stays
             // the rollback.
             <button
               type="button"
@@ -2078,6 +2109,20 @@ function Shell() {
           onActivateVersion={handleActivateVersion}
           dirty={isDirty}
           runs={runs}
+        />
+      )}
+
+      {/* An app's Versions: what people open, and how to change it. */}
+      {panel === "versions" && appOpen && appEntry && !appEntry.peer && (
+        <AppVersionsFlyout
+          key={appKey(appEntry)}
+          app={{ name: appEntry.name, title: appEntry.title }}
+          data={appVersionsData?.data ?? null}
+          loadError={appVersionsData?.error ?? ""}
+          viewing={appShown !== appEntry.activeVersion ? appShown ?? null : null}
+          onView={setAppPreview}
+          onSetLive={setAppLive}
+          onClose={() => setPanel(null)}
         />
       )}
 

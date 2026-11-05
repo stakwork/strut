@@ -283,9 +283,14 @@ Contract only; each host's own repo is adoption.
   rolls back; "Follow latest" releases the hold. Its pin already calls
   `PUT /apps/:name/pin`, so pinning holds there with no change; the bar
   should say so before the click.
-- **Strut's UI** (`AppHost.tsx`). The version select becomes: Following
-  latest, the versions (drafts marked), the releases; picking one is
-  §1.2's door.
+- **Strut's UI** (`AppHost.tsx`). BUILT (2026-11-04) as a chip and a
+  Versions flyout (`AppVersionsFlyout.tsx`): the mode (every publish goes
+  live, or hold a version), the live version, one row per version (live,
+  was live, draft) with View — this browser only, under a banner — Make
+  live, or Restore (the version's newest release); each asks first. A
+  select that wrote on pick, listing the releases and the versions apart,
+  was the first cut. `behind` and `floating` are left out until runs keep
+  to the lock (work item 2): before then an Update would change nothing.
 - **Any MCP Apps host** opens the live page by name and gets its lock;
   nothing for it to know.
 
