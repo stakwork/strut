@@ -441,9 +441,14 @@ await test("maple on the wire: MAPLE_BASE_URL via getSecret, /chat/completions, 
     // gpt-oss takes low | medium | high: none is sent as low
     const oss = await resolveModel({ model: "maple/gpt-oss-120b", getSecret: store({ MAPLE_API_KEY: "mk", MAPLE_BASE_URL: `${root}/v1` }) });
     await generateText({ model: oss.model, prompt: "hi", reasoning: "none", maxRetries: 0 } as any);
-    // providerOptions too, and a caller's baseUrl (a bare root gets /v1) wins over MAPLE_BASE_URL
-    const glm = await resolveModel({ model: "maple/glm-5-3", baseUrl: root, getSecret: store({ MAPLE_API_KEY: "mk", MAPLE_BASE_URL: "http://127.0.0.1:1/v1" }) });
+    // providerOptions too, through a gateway (a caller's baseUrl): its
+    // OpenAI-compatible route, the id naming Maple, the effort still one the
+    // model takes, and MAPLE_BASE_URL not used
+    const glm = await resolveModel({ model: "maple/glm-5-3", baseUrl: root, apiKey: "vk", getSecret: store({ MAPLE_BASE_URL: "http://127.0.0.1:1/v1" }) });
     await generateText({ model: glm.model, prompt: "hi", providerOptions: getProviderOptions("maple", undefined, "glm-5-3") as any, reasoning: "medium", maxRetries: 0 } as any);
+    eq([glm.provider, glm.modelId, glm.maxOutputTokens], ["maple", "glm-5-3", 24_576], "routed: Maple's own limits");
+    // a caller's own endpoint (getModel's `endpoint`; a bare root gets /v1)
+    await generateText({ model: getModel("maple", { modelName: "maple/llama3-3-70b", apiKey: "ek", endpoint: root }), prompt: "hi", maxRetries: 0 });
     // the env-only path (getModel)
     process.env.MAPLE_API_KEY = "env-key";
     process.env.MAPLE_BASE_URL = `${root}/v1`;
@@ -451,7 +456,8 @@ await test("maple on the wire: MAPLE_BASE_URL via getSecret, /chat/completions, 
     eq(seen, [
       { path: "/v1/chat/completions", auth: "Bearer mk", effort: "none", model: "gemma4-31b" },
       { path: "/v1/chat/completions", auth: "Bearer mk", effort: "low", model: "gpt-oss-120b" },
-      { path: "/v1/chat/completions", auth: "Bearer mk", effort: "high", model: "glm-5-3" },
+      { path: "/openai/v1/chat/completions", auth: "Bearer vk", effort: "high", model: "maple/glm-5-3" },
+      { path: "/v1/chat/completions", auth: "Bearer ek", model: "llama3-3-70b" },
       { path: "/v1/chat/completions", auth: "Bearer env-key", model: "kimi-k3" },
     ], "requests");
   } finally {
@@ -530,16 +536,20 @@ await test("numes on the wire: NUMES_BASE_URL via getSecret, /api/v1/chat/comple
     const r = await generateText({ model: glm.model, prompt: "hi", reasoning: "medium", maxRetries: 0 } as any);
     eq(r.text, "pong", "text");
     eq([r.usage.inputTokens, r.usage.outputTokens], [17, 3], "usage");
-    // providerOptions, and a caller's baseUrl (a bare root gets /api/v1) wins over NUMES_BASE_URL
-    const flash = await resolveModel({ model: "numes/z-ai/glm-5.3-flash", baseUrl: root, getSecret: store({ NUMES_API_KEY: "nk", NUMES_BASE_URL: "http://127.0.0.1:1/api/v1" }) });
+    // providerOptions, through a gateway (a caller's baseUrl): its
+    // OpenAI-compatible route, the id naming Numes, NUMES_BASE_URL not used
+    const flash = await resolveModel({ model: "numes/z-ai/glm-5.3-flash", baseUrl: root, apiKey: "vk", getSecret: store({ NUMES_BASE_URL: "http://127.0.0.1:1/api/v1" }) });
     await generateText({ model: flash.model, prompt: "hi", providerOptions: getProviderOptions("numes", "fast") as any, maxRetries: 0 } as any);
+    // a caller's own endpoint (getModel's `endpoint`; a bare root gets /api/v1)
+    await generateText({ model: getModel("numes", { modelName: "numes/z-ai/glm-5.3", apiKey: "ek", endpoint: root }), prompt: "hi", maxRetries: 0 });
     // the env-only path (getModel)
     process.env.NUMES_API_KEY = "env-key";
     process.env.NUMES_BASE_URL = `${root}/api/v1`;
     await generateText({ model: getModel("numes", { modelName: "numes/nvidia/nemotron-3-ultra-550b-a55b" }), prompt: "hi", maxRetries: 0 });
     eq(seen, [
       { path: "/api/v1/chat/completions", auth: "Bearer nk", effort: "medium", model: "z-ai/glm-5.3" },
-      { path: "/api/v1/chat/completions", auth: "Bearer nk", effort: "none", model: "z-ai/glm-5.3-flash" },
+      { path: "/openai/v1/chat/completions", auth: "Bearer vk", effort: "none", model: "numes/z-ai/glm-5.3-flash" },
+      { path: "/api/v1/chat/completions", auth: "Bearer ek", model: "z-ai/glm-5.3" },
       { path: "/api/v1/chat/completions", auth: "Bearer env-key", model: "nvidia/nemotron-3-ultra-550b-a55b" },
     ], "requests");
   } finally {
@@ -547,6 +557,50 @@ await test("numes on the wire: NUMES_BASE_URL via getSecret, /api/v1/chat/comple
     delete process.env.NUMES_API_KEY;
     delete process.env.NUMES_BASE_URL;
   }
+});
+
+// ── a provider only a gateway has ───────────────────────────────────────
+
+await test("a provider aieo does not know, through a gateway: its OpenAI-compatible route, the id naming it", async () => {
+  const seen: { path?: string; auth?: string; model?: unknown }[] = [];
+  const server = createServer((req, res) => {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      const json = JSON.parse(body);
+      seen.push({ path: req.url, auth: req.headers.authorization, model: json.model });
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({
+        id: "x", object: "chat.completion", created: 0, model: json.model,
+        choices: [{ index: 0, message: { role: "assistant", content: "hi" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 5, completion_tokens: 1 },
+      }));
+    });
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const root = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  try {
+    const r = await resolveModel({ model: "acme/llama-4", provider: "acme", baseUrl: root, apiKey: "vk" });
+    eq([r.provider, r.modelId, r.name], ["acme", "llama-4", "acme/llama-4"], "ref");
+    eq([r.contextLimit, r.maxOutputTokens], [128_000, 12_288], "unknown limits: the fallback window, a conservative cap");
+    eq((r.model as { provider?: string }).provider, "openai.chat", "chat completions");
+    eq((await generateText({ model: r.model, prompt: "hi", maxRetries: 0 })).text, "hi", "text");
+    // the bare id with the provider named works too
+    await generateText({ model: (await resolveModel({ model: "llama-4", provider: "acme", baseUrl: root, apiKey: "vk" })).model, prompt: "hi", maxRetries: 0 });
+    eq(seen, [
+      { path: "/openai/v1/chat/completions", auth: "Bearer vk", model: "acme/llama-4" },
+      { path: "/openai/v1/chat/completions", auth: "Bearer vk", model: "acme/llama-4" },
+    ], "requests");
+  } finally {
+    server.close();
+  }
+  // Without a gateway it is unknown, as before; a gateway needs its key and a name it can hold.
+  await throwsWith(() => resolveModel({ model: "acme/llama-4", provider: "acme", apiKey: "k" }), 'Unknown LLM provider: "acme"', "no gateway");
+  await throwsWith(() => resolveModel({ model: "acme/llama-4", apiKey: "k", baseUrl: "http://gw" }), "has no provider prefix", "named only by the model: the trap, as before");
+  await throwsWith(() => resolveModel({ model: "acme/llama-4", provider: "acme", baseUrl: "http://gw" }), "pass the gateway's key", "no key");
+  await throwsWith(() => resolveModel({ model: "x", provider: "Acme Co", apiKey: "k", baseUrl: "http://gw" }), "Unknown LLM provider", "not a name a gateway takes");
+  await throwsWith(() => resolveModel({ provider: "acme", apiKey: "k", baseUrl: "http://gw" }), "A model name is required", "no model");
+  eq(computeSessionCost("acme", { input: 1_000_000, cache_read: 0, cache_write: 0, output: 1_000_000 }, "llama-4"), 0, "no rate here: the gateway bills it");
 });
 
 await test("numes: no NUMES_BASE_URL anywhere → api.numes.ai", async () => {

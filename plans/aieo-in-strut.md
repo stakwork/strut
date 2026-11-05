@@ -383,7 +383,9 @@ tests, and no release.
   aieo has no other per-model rate. Once §6 lands, `listModelOptions`
   (`src/llm.ts`) reads prices and windows through its lookup, with the
   same fields.
-- **Item 4, routed OpenAI-compatible providers.**
+- **Item 4, routed OpenAI-compatible providers.** Built. A name aieo does
+  not know runs only when the host lists it in `STRUT_MODELS`, so the
+  no-prefix trap keeps its error everywhere else.
   - Maple, Numes and any admin-added name go to the gateway's
     `/openai/v1` as `<provider>/<id>`. OpenRouter and xAI already do this
     (`provider.ts:965,982`).

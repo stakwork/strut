@@ -29,7 +29,9 @@ const LLM_GATEWAY_URL = env.LLM_GATEWAY_URL?.replace(/\/$/, "");
  * upstream). If you spawn an agent in a way where the runtime would
  * override the model to an OpenRouter model, you want the OpenAI suffix
  * here too. xAI likewise rides the OpenAI-compat path (model id prefixed
- * `xai/` in getModel), since Bifrost has no dedicated Grok route.
+ * `xai/` in getModel), since Bifrost has no dedicated Grok route. So do
+ * Maple, Numes and any provider aieo does not know (`acme/llama-4`): a
+ * gateway holds each as an OpenAI-compatible custom provider of that name.
  */
 export const GATEWAY_PATHS: Record<Provider, string> = {
   anthropic: "/anthropic/v1",
@@ -37,18 +39,25 @@ export const GATEWAY_PATHS: Record<Provider, string> = {
   openai: "/openai/v1",
   openrouter: "/openai/v1",
   xai: "/openai/v1",
-  // Maple's own proxy path, so a bare proxy root ("http://maple:8080") gets
-  // its /v1. Maple never rides LLM_GATEWAY_URL: its proxy is the endpoint.
+  maple: "/openai/v1",
+  numes: "/openai/v1",
+};
+
+/**
+ * The version path on a provider's OWN endpoint (BASE_URL_ENV), so a bare
+ * root gets it: Maple's proxy ("http://maple:8080" → /v1), Numes' API
+ * ("https://api.numes.ai" → /api/v1).
+ */
+const ENDPOINT_PATHS: Partial<Record<Provider, string>> = {
   maple: "/v1",
-  // Numes' API path, so a bare root ("https://api.numes.ai") gets it. Numes
-  // never rides LLM_GATEWAY_URL either: the gateway has no route to it.
   numes: "/api/v1",
 };
 
-export function getGatewayBaseURL(provider: Provider): string | undefined {
-  // A provider with an endpoint of its own (BASE_URL_ENV) never rides it.
-  if (BASE_URL_ENV[provider]) return undefined;
-  return LLM_GATEWAY_URL ? `${LLM_GATEWAY_URL}${GATEWAY_PATHS[provider]}` : undefined;
+export function getGatewayBaseURL(provider: Provider | string): string | undefined {
+  // A provider with an endpoint of its own (BASE_URL_ENV) never rides the
+  // env gateway: it rides a gateway only when a caller passes one (baseUrl).
+  if (BASE_URL_ENV[provider as Provider]) return undefined;
+  return LLM_GATEWAY_URL ? gatewayUrlFor(provider, LLM_GATEWAY_URL) : undefined;
 }
 
 /**
@@ -85,9 +94,15 @@ export function getGatewayBaseURL(provider: Provider): string | undefined {
  * gatewayUrlFor("openai", "https://api.openai.com/v1")
  *   => "https://api.openai.com/v1"                       (left alone)
  */
-export function gatewayUrlFor(provider: Provider, baseUrl: string): string {
+export function gatewayUrlFor(provider: Provider | string, baseUrl: string): string {
+  // A provider aieo does not know rides the OpenAI-compatible route.
+  return withPath(baseUrl, GATEWAY_PATHS[provider as Provider] ?? GATEWAY_PATHS.openai);
+}
+
+/** `baseUrl` with `providerPath` appended, unless it already ends in it or
+ *  in another provider/version path. */
+function withPath(baseUrl: string, providerPath: string): string {
   const trimmed = baseUrl.replace(/\/$/, "");
-  const providerPath = GATEWAY_PATHS[provider];
   // Already provider-suffixed with the exact path we'd add.
   if (trimmed.endsWith(providerPath)) {
     return trimmed;
@@ -304,7 +319,8 @@ export function mapleReasoningEffort(modelId: string, requested: string): string
  * Maple's fetch: the request's `reasoning_effort` made one the model takes.
  * The AI SDK sends a call's `reasoning` (and `providerOptions.openai.
  * reasoningEffort`) as it is, and every Maple model but gemma4 and llama
- * answers a value outside its own short list with a 400.
+ * answers a value outside its own short list with a 400. Through a gateway
+ * the model id carries its `maple/` prefix.
  */
 function mapleFetch(inner: typeof fetch): typeof fetch {
   return async (input, init) => {
@@ -313,7 +329,7 @@ function mapleFetch(inner: typeof fetch): typeof fetch {
       try {
         const json = JSON.parse(body);
         if (typeof json?.model === "string" && typeof json.reasoning_effort === "string") {
-          const effort = mapleReasoningEffort(json.model, json.reasoning_effort);
+          const effort = mapleReasoningEffort(json.model.replace(/^maple\//, ""), json.reasoning_effort);
           if (effort !== json.reasoning_effort) {
             init = { ...init, body: JSON.stringify({ ...json, reasoning_effort: effort }) };
           }
@@ -380,11 +396,13 @@ export interface TokenUsageForCost {
   output: number;
 }
 
-export function computeSessionCost(provider: Provider, usage: TokenUsageForCost, modelId?: string, actualCost?: number): number {
+/** A provider aieo does not know (one only a gateway has) has no rate here:
+ *  0, and the gateway bills it. */
+export function computeSessionCost(provider: Provider | string, usage: TokenUsageForCost, modelId?: string, actualCost?: number): number {
   if (typeof actualCost === "number" && actualCost >= 0) return actualCost;
   // The model's own price (Maple's or Numes' table, then the datasheet), else
-  // the provider's flat rate.
-  const pricing = (modelId ? getModelPrice(provider, modelId) : undefined) ?? TOKEN_PRICING[provider];
+  // the provider's flat rate; a provider aieo does not know has neither.
+  const pricing = (modelId ? getModelPrice(provider as Provider, modelId) : undefined) ?? TOKEN_PRICING[provider as Provider];
   if (!pricing) return 0;
   const inputCost = (usage.input / 1_000_000) * pricing.inputTokenPrice;
   const cacheReadCost = (usage.cache_read / 1_000_000) * (pricing.cacheReadPrice ?? pricing.inputTokenPrice);
@@ -565,7 +583,19 @@ export function getApiKeyForProvider(provider: Provider | string): string {
 
 export interface GetModelOptions {
   apiKey?: string;
+  /**
+   * A gateway's root (Bifrost), for every provider: each rides its path
+   * there (GATEWAY_PATHS). Maple, Numes and any provider aieo does not know
+   * ride its OpenAI-compatible route with the model id `<provider>/<id>`.
+   */
   baseUrl?: string;
+  /**
+   * A provider's OWN endpoint (BASE_URL_ENV: Maple's proxy, Numes' API), the
+   * version path included (a bare root gets it). Read from MAPLE_BASE_URL /
+   * NUMES_BASE_URL when absent. Ignored with a `baseUrl`: the call then goes
+   * through that gateway.
+   */
+  endpoint?: string;
   modelName?: ModelName | string;
   cwd?: string;
   executablePath?: string;
@@ -793,7 +823,9 @@ export function getModelDetails(
 }
 
 export function getModel(
-  provider: Provider,
+  /** An aieo provider, or (through a gateway, `baseUrl`) any provider the
+   *  gateway holds as an OpenAI-compatible one. */
+  provider: Provider | string,
   opts?: string | GetModelOptions
 ): LanguageModel {
   if (typeof opts === "string") {
@@ -806,7 +838,7 @@ export function getModel(
   let modelId: string;
   if (opts?.modelName && opts.modelName.includes("/")) {
     const parts = opts.modelName.split("/");
-    if (PROVIDERS.includes(parts[0] as Provider)) {
+    if (PROVIDERS.includes(parts[0] as Provider) || parts[0] === provider) {
       modelId = parts.slice(1).join("/");
     } else {
       modelId = opts.modelName;
@@ -824,13 +856,15 @@ export function getModel(
       "maple",
       "numes",
     ];
-    if (knownShortcuts.includes(opts.modelName)) {
-      modelId = getModelForProvider(provider, opts.modelName as ModelName);
+    if (knownShortcuts.includes(opts.modelName) && PROVIDERS.includes(provider as Provider)) {
+      modelId = getModelForProvider(provider as Provider, opts.modelName as ModelName);
     } else {
       modelId = opts.modelName;
     }
+  } else if (PROVIDERS.includes(provider as Provider)) {
+    modelId = DEFAULT_MODELS[provider as Provider];
   } else {
-    modelId = DEFAULT_MODELS[provider];
+    throw new Error(`A model name is required for provider "${provider}"`);
   }
 
   if (opts?.logger) {
@@ -838,22 +872,23 @@ export function getModel(
       `Getting model for provider: ${provider}, model: ${modelId}`
     );
   }
-  // Explicit baseUrl from caller takes precedence over the global LLM gateway.
-  // Normalize caller-supplied URLs so a bare gateway root (e.g. the swarm
-  // host:port) gets the provider's drop-in path appended.
-  // A provider with an endpoint of its own (Maple's proxy, Numes' API) reads
-  // it from env here; resolve.ts asks the host's getSecret first and passes
-  // it in.
-  const ownBaseUrl = BASE_URL_ENV[provider]
-    ? normalizeApiKey(env[BASE_URL_ENV[provider]!]) ?? DEFAULT_BASE_URLS[provider]
+  // Explicit baseUrl from caller (a gateway's root) takes precedence over
+  // the global LLM gateway. Normalize caller-supplied URLs so a bare gateway
+  // root (e.g. the swarm host:port) gets the provider's drop-in path appended.
+  // A provider with an endpoint of its own (Maple's proxy, Numes' API) is
+  // called there unless a caller passed a gateway: the caller's `endpoint`,
+  // else env (resolve.ts asks the host's getSecret first and passes it in).
+  const routed = !!opts?.baseUrl;
+  const ownBaseUrl = !routed && BASE_URL_ENV[provider as Provider]
+    ? normalizeApiKey(opts?.endpoint) ?? normalizeApiKey(env[BASE_URL_ENV[provider as Provider]!]) ?? DEFAULT_BASE_URLS[provider as Provider]
     : undefined;
   const baseURL = opts?.baseUrl
     ? gatewayUrlFor(provider, opts.baseUrl)
     : ownBaseUrl
-      ? gatewayUrlFor(provider, ownBaseUrl)
+      ? withPath(ownBaseUrl, ENDPOINT_PATHS[provider as Provider]!)
       : getGatewayBaseURL(provider);
   if (baseURL) {
-    const source = opts?.baseUrl ? "caller" : ownBaseUrl ? BASE_URL_ENV[provider] : "LLM_GATEWAY";
+    const source = opts?.baseUrl ? "caller" : ownBaseUrl ? BASE_URL_ENV[provider as Provider] : "LLM_GATEWAY";
     console.log(`[${source}] routing ${provider} via ${baseURL}`);
   }
   // The key came from env, so its companion settings do too (KEY_HEADER_ENV).
@@ -986,28 +1021,22 @@ export function getModel(
       });
       return xai(modelId);
     }
-    case "maple": {
-      // Chat Completions (`.chat`): the proxy has no Responses API, which is
-      // what `createOpenAI()(id)` calls. The model's provider stays
-      // "openai.chat", so a host that treats chat-completions models alike
-      // (strut moves tool-result images beside the results) does the same here.
-      const maple = createOpenAI({
-        apiKey,
-        baseURL,
-        ...(extraHeaders && { headers: extraHeaders }),
-        fetch: mapleFetch(timeoutFetch),
-      });
-      return maple.chat(modelId);
-    }
+    case "maple":
     case "numes": {
-      // Chat Completions, as for Maple: Numes speaks no Responses API.
-      const numes = createOpenAI({
+      // Chat Completions (`.chat`): neither Maple's proxy nor Numes speaks
+      // the Responses API, which is what `createOpenAI()(id)` calls. The
+      // model's provider stays "openai.chat", so a host that treats
+      // chat-completions models alike (strut moves tool-result images beside
+      // the results) does the same here. Through a gateway (a caller's
+      // baseUrl) the model id names the provider, as for xai: Bifrost picks
+      // its custom provider of that name.
+      const client = createOpenAI({
         apiKey,
         baseURL,
         ...(extraHeaders && { headers: extraHeaders }),
-        fetch: timeoutFetch,
+        fetch: provider === "maple" ? mapleFetch(timeoutFetch) : timeoutFetch,
       });
-      return numes.chat(modelId);
+      return client.chat(routed ? `${provider}/${modelId}` : modelId);
     }
     // case "claude_code":
     //   try {
@@ -1031,6 +1060,17 @@ export function getModel(
     //     );
     //   }
     default:
+      // A provider aieo does not know (`acme/llama-4`): an OpenAI-compatible
+      // one a gateway holds under that name. Only a gateway reaches it.
+      if (baseURL) {
+        const compat = createOpenAI({
+          apiKey,
+          baseURL,
+          ...(extraHeaders && { headers: extraHeaders }),
+          fetch: timeoutFetch,
+        });
+        return compat.chat(`${provider}/${modelId}`);
+      }
       throw new Error(`Unsupported provider: ${provider}`);
   }
 }
