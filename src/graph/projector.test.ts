@@ -15,6 +15,7 @@ import { seedStrutDomain } from "./schema-seed.js";
 import { edgeCount, nodeCount, rawWrite, seedConceptSchema, testBackends } from "./test-util.js";
 import { GraphWorkspaceStore } from "./workspace-store.js";
 import {
+  conversationNode,
   jobNode,
   messageText,
   preview,
@@ -35,6 +36,7 @@ import {
 } from "./projector.js";
 import { TEXT_MAX_CHARS } from "./strut-schemas.js";
 import type { JobView } from "../job-index.js";
+import type { ConversationRecord } from "../conversations.js";
 import { runStep } from "../run-step.js";
 import { buildRegistry, coreRegistry } from "../steps/registry.js";
 import { createStrut } from "../createStrut.js";
@@ -263,6 +265,29 @@ describe("projectRunEvents (pure)", () => {
     assert.deepEqual([jobNode(nameless).data["title"], jobNode(nameless).data["started_at"]], ["j-1", ts(0)]);
   });
 
+  it("an assistant conversation is a StrutChat of kind assistant: its title, last status, turn count, and who first spoke", () => {
+    const rec: ConversationRecord = {
+      id: "ann/c1", title: "Find the landing page", createdAt: ts(0), updatedAt: ts(9), rev: 4, viewers: ["ann", "bob"],
+      turns: [
+        { runId: "1", workflow: "orchestrator", at: ts(0), wake: true, status: "success" },
+        { runId: "2", workflow: "orchestrator", at: ts(1), by: "ann", status: "success" },
+        { runId: "3", workflow: "orchestrator", at: ts(5), by: "bob", status: "error" },
+        { runId: "4", workflow: "orchestrator", at: ts(9), by: "ann" },
+      ],
+    };
+    assert.deepEqual(conversationNode(rec), {
+      type: "StrutChat",
+      data: {
+        chat_id: "ann/c1", kind: "assistant", title: "Find the landing page",
+        started_at: ts(0), last_active_at: ts(9), turn_count: 4, log_ref: "ann/c1", unique_source_id: "strutchat:ann/c1",
+      },
+      // A wake turn speaks for nobody: the first person who did.
+      created_by: "ann",
+    });
+    rec.turns[3]!.status = "success";
+    assert.equal(conversationNode(rec).data["status"], "success", "the last turn's status, once it ended");
+  });
+
   it("uses the summary when present, and marks a finalize-less log stale", () => {
     const events = sampleEvents("h").slice(0, 3);
     assert.equal(projectRunEvents(WF, RUN, events, null)!.run.data["run_status"], "stale");
@@ -331,10 +356,12 @@ for (const tb of testBackends()) describe(`projector on ${tb.name}`, { skip: tb.
   it("a file holds the run and its edges alone: agent sessions, tool calls and chats are skipped", { skip: neo && "ladybug only" }, async () => {
     const hash = (await ws.getWorkflowHash(WF))!;
     for (const e of sampleEvents(hash)) await store.append(WF, RUN, e);
-    const report = await projectRuns(backend, store, { workflows: [WF] });
+    // A conversation's record changes nothing: its turns' sessions are not here.
+    const conversations = { record: async (id: string) => ({ id, title: "t", createdAt: ts(0), updatedAt: ts(0), rev: 1, viewers: [], turns: [] }) };
+    const report = await projectRuns(backend, store, { workflows: [WF], conversations });
     assert.deepEqual(
-      [report.runs, report.sessions, report.toolCalls, report.edges, report.accessed, report.unresolved, report.skipped],
-      [1, 0, 0, 1, 0, 3, 0],
+      [report.runs, report.sessions, report.toolCalls, report.chats, report.edges, report.accessed, report.unresolved, report.skipped],
+      [1, 0, 0, 0, 1, 0, 3, 0],
       "the three refs the tool call reported are not in the file: counted, no edge",
     );
     assert.equal(await count("StrutRun"), 1);
@@ -474,6 +501,49 @@ for (const tb of testBackends()) describe(`projector on ${tb.name}`, { skip: tb.
     ]);
     const oneShot = await backend.query(`MATCH (s:StrutAgentSession {run_id: "1788307097003"}) RETURN s.session_id AS id, s.session_turn AS turn`);
     assert.deepEqual(oneShot, [{ id: null, turn: null }]);
+  });
+
+  it("a conversation's turns are IN_CHAT one StrutChat of kind assistant, from the index's record; a thread that is no conversation gets none", neoOnly("agent sessions and chats are not in the file"), async () => {
+    const turnRun = (runId: string, session: string, turn: number): RunEvent[] =>
+      [
+        ev(0, "run.start", WF),
+        ev(1, "step.start", `${WF}/plan`, { stepType: "agent", input: { prompt: "go", session } }),
+        ev(2, "step.end", `${WF}/plan`, { stepType: "agent", output: { result: "ok", session: { id: session, turn, offset: 0 } } }),
+        ev(3, "run.end", WF),
+      ].map((e) => ({ ...e, runId }));
+    // Two turns of a conversation, one of a job's thread (no record).
+    const runs: Array<[string, RunEvent[]]> = [
+      ["1788307097001", turnRun("1788307097001", "ann/c1", 0)],
+      ["1788307097002", turnRun("1788307097002", "ann/c1", 1)],
+      ["1788307097003", turnRun("1788307097003", "job-1", 0)],
+    ];
+    for (const [runId, events] of runs) for (const e of events) await store.append(WF, runId, e);
+    const rec: ConversationRecord = {
+      id: "ann/c1", title: "Find the landing page", createdAt: ts(0), updatedAt: ts(3), rev: 2, viewers: ["ann"],
+      turns: runs.slice(0, 2).map(([runId]) => ({ runId, workflow: WF, at: ts(0), by: "ann", status: "success" })),
+    };
+    const asked: string[] = [];
+    const conversations = { record: async (id: string) => (asked.push(id), id === rec.id ? rec : null) };
+
+    const report = await projectRuns(backend, store, { workflows: [WF], conversations });
+    assert.deepEqual([report.runs, report.sessions, report.chats], [3, 3, 2], "the conversation upserted once per turn's run");
+    assert.deepEqual(asked.sort(), ["ann/c1", "ann/c1", "job-1"]);
+    assert.equal(await count("StrutChat"), 1);
+    const chat = await backend.query(
+      `MATCH (s:StrutAgentSession)-[:IN_CHAT]->(c:StrutChat {chat_id: "ann/c1"})
+       RETURN c.kind AS kind, c.title AS title, c.turn_count AS turns, c.created_by AS by, s.session_turn AS turn ORDER BY turn`,
+    );
+    assert.deepEqual(chat, [
+      { kind: "assistant", title: "Find the landing page", turns: 2, by: "ann", turn: 0 },
+      { kind: "assistant", title: "Find the landing page", turns: 2, by: "ann", turn: 1 },
+    ]);
+    assert.equal((await backend.query(`MATCH (s:StrutAgentSession {session_id: "job-1"})-[:IN_CHAT]->() RETURN count(*) AS c`))[0]!["c"], 0);
+
+    // Idempotent; a rename reaches the node at the next projection.
+    rec.title = "Landing page";
+    await projectRuns(backend, store, { workflows: [WF], conversations, skipSettled: false });
+    assert.deepEqual([await count("StrutChat"), await edges("IN_CHAT")], [1, 2]);
+    assert.equal((await backend.query(`MATCH (c:StrutChat) RETURN c.title AS t`))[0]!["t"], "Landing page");
   });
 
   it("createStrut projects every top-level run when it ends — claims or not, success or error; never a check run", async () => {
@@ -703,8 +773,9 @@ for (const tb of testBackends()) describe(`projector on ${tb.name}`, { skip: tb.
     // Idempotent.
     await projectChats(backend, chats);
     assert.equal(await count("StrutChat"), 1);
-    const [chatNode] = await backend.query(`MATCH (c:StrutChat) RETURN c.created_by AS created_by`);
+    const [chatNode] = await backend.query(`MATCH (c:StrutChat) RETURN c.created_by AS created_by, c.kind AS kind`);
     assert.equal(chatNode!["created_by"], "evanfeenstra-s8fhs8efhs8ehf", "who started the chat is projected whole");
+    assert.equal(chatNode!["kind"], "builder");
     assert.equal(await count("StrutTurn"), 2);
     assert.equal(await edges("IN_CHAT"), 2);
   });
@@ -752,6 +823,55 @@ for (const tb of testBackends()) describe(`projector on ${tb.name}`, { skip: tb.
       dead.close();
       env.forEach((k, i) => (saved[i] === undefined ? delete process.env[k] : (process.env[k] = saved[i])));
       await rm(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("createStrut projects an assistant conversation when each of its turns ends: one StrutChat, every turn's session IN_CHAT it", neoOnly("agent sessions and chats are not in the file"), async () => {
+    // The same refusing provider: each turn fails, and still is a turn.
+    const dead = http.createServer((_req, res) => {
+      res.writeHead(400, { "content-type": "application/json" });
+      res.end(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "nope" } }));
+    });
+    await new Promise<void>((r) => dead.listen(0, "127.0.0.1", r));
+    const env = ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"] as const;
+    const saved = env.map((k) => process.env[k]);
+    process.env["ANTHROPIC_API_KEY"] = "test-key";
+    process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${(dead.address() as { port: number }).port}`;
+    const dataDir = await mkdtemp(join(tmpdir(), "strut-project-conversation-"));
+    // A conversation workflow is one with `params.wake` (src/conversations.ts).
+    await ws.publishWorkflowByContent(
+      "assistant",
+      `name: assistant\nparams:\n  wake: "A job ended."\nsteps:\n  - id: turn\n    type: agent\n    config:\n      prompt: "{{ input.prompt }}"\n      session: "{{ input.session }}"\n      model: sonnet\n      toolFilter: [none]\n`,
+    );
+    const strut = await createStrut({ workspace: ws, store, registry: coreRegistry(), dataDir, claims: false, serveUi: false, stt: false, scheduler: false, enableChat: false, job: false, builder: false, orchestrator: false, autoResume: false });
+    const chat = () =>
+      backend.query(`MATCH (s:StrutAgentSession)-[:IN_CHAT]->(c:StrutChat) RETURN c.kind AS kind, c.title AS title, c.status AS status, c.turn_count AS turns, s.run_id AS run ORDER BY run`);
+    const projected = async (n: number) => {
+      for (let i = 0; i < 200 && (await chat()).length < n; i++) await new Promise((r) => setTimeout(r, 25));
+      await projectionsSettled(backend);
+    };
+    try {
+      const say = async (prompt: string) => {
+        const res = await strut.app.request("/workflows/assistant/run", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ input: { prompt, session: "ann/c1" } }) });
+        assert.equal(res.status, 202);
+        return ((await res.json()) as { runId: string }).runId;
+      };
+      const first = await say("find the landing page");
+      await projected(1);
+      assert.deepEqual(await chat(), [{ kind: "assistant", title: "find the landing page", status: "error", turns: 1, run: first }]);
+
+      const second = await say("again");
+      await projected(2);
+      assert.deepEqual(
+        (await chat()).map((r) => [r["run"], r["turns"]]),
+        [[first, 2], [second, 2]],
+      );
+      assert.equal(await count("StrutChat"), 1);
+    } finally {
+      await strut.close();
+      dead.close();
+      env.forEach((k, i) => (saved[i] === undefined ? delete process.env[k] : (process.env[k] = saved[i])));
+      await rm(dataDir, { recursive: true, force: true, maxRetries: 5 });
     }
   });
 

@@ -281,6 +281,9 @@ export interface Conversations extends ConversationsCapability {
   launched(id: string, turn: { runId: string; workflow: string; actor?: string; principal?: string; wake?: boolean; prompt?: unknown }): Promise<void>;
   /** …and ended. */
   ended(id: string, runId: string, status: string): Promise<void>;
+  /** The record on file, or null: never built here, so a session that is
+   *  no conversation costs a file read (the graph projection's reader). */
+  record(id: string): Promise<ConversationRecord | null>;
 }
 
 export interface ConversationsDeps {
@@ -331,11 +334,21 @@ function factsOf(rec: ConversationRecord): Omit<ConversationEntry, "archived" | 
   };
 }
 
+const recordFileIn = (dataDir: string, id: string) => join(dataDir, "conversations", "sessions", `${encodeId(id)}.json`);
+
+/** The index's records alone, read from `dataDir` and never built: what
+ *  the graph projection reads, for a caller without the index (the
+ *  `graph/project` step). A session that is no conversation costs a file
+ *  read. */
+export function conversationRecords(dataDir: string): Pick<Conversations, "record"> {
+  return { record: (id) => (idProblem(id) ? Promise.resolve(null) : readJson<ConversationRecord>(recordFileIn(dataDir, id))) };
+}
+
 // ── the index ──────────────────────────────────────────────────────────────
 
 export function createConversations(deps: ConversationsDeps): Conversations {
   const root = join(deps.dataDir, "conversations");
-  const recordFile = (id: string) => join(root, "sessions", `${encodeId(id)}.json`);
+  const recordFile = (id: string) => recordFileIn(deps.dataDir, id);
   const viewerFile = (key: string) => join(root, "viewers", `${key ? encodeId(key) : NO_ACTOR_FILE}.json`);
   const builtFile = join(root, "built.json");
   /** The rev of each record written in this process: `wait` polls it. */
@@ -558,6 +571,8 @@ export function createConversations(deps: ConversationsDeps): Conversations {
         return rec;
       });
     },
+
+    record: conversationRecords(deps.dataDir).record,
 
     async list(q, by) {
       await ensureBuilt();
