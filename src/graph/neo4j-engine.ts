@@ -40,6 +40,7 @@ import type {
   PreparedNode,
   RawNode,
   Row,
+  EdgeHint,
   SchemaOf,
   SchemaRow,
   SchemaSource,
@@ -64,6 +65,8 @@ export const NEO4J_NAMES: Readonly<Record<string, string>> = { key: "node_key", 
 const SHARED_NAMES: Readonly<Record<string, string>> = Object.fromEntries(Object.entries(NEO4J_NAMES).map(([a, b]) => [b, a]));
 
 const q = (s: string) => `\`${s}\``;
+/** `:TYPE` when the caller knows the edge's type, else nothing (all relationships). */
+const rel = (hint?: EdgeHint) => (hint?.edge ? `:${q(hint.edge)}` : "");
 
 /** A property's name as Neo4j stores it, on a node of `type` when known:
  *  a version's `published_at` is its stored `created_at`. */
@@ -396,14 +399,14 @@ class Neo4jEdges implements EdgeEngine {
     }));
   }
 
-  async setProps(tx: GraphTx, ref_id: string, set: Record<string, unknown>, remove: string[]) {
+  async setProps(tx: GraphTx, ref_id: string, set: Record<string, unknown>, remove: string[], hint?: EdgeHint) {
     // A caller's properties, stored as named: the stamps are not settable
     // (edge-writer.ts), and a `created_at` here is the edge's own.
     const wrapped: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(set)) wrapped[k] = k === "weight" && typeof v === "number" && Number.isInteger(v) ? int(v) : v;
     const removeClause = remove.length ? `REMOVE ${remove.map((k) => `r.${q(k)}`).join(", ")}` : "";
     const rows = await tx.run(
-      `MATCH (s)-[r {ref_id: $ref_id}]->(t) SET r += $set ${removeClause}
+      `MATCH (s)-[r${rel(hint)} {ref_id: $ref_id}]->(t) SET r += $set ${removeClause}
        RETURN r.ref_id AS ref_id, type(r) AS edge, s.ref_id AS source_ref_id, t.ref_id AS target_ref_id`,
       { ref_id, set: wrapped },
     );
@@ -427,11 +430,11 @@ class Neo4jEdges implements EdgeEngine {
     return found.map((r) => String(r["ref_id"]));
   }
 
-  async delete(ref_id: string, tx?: GraphTx): Promise<EdgeDeleteResult | null> {
+  async delete(ref_id: string, tx?: GraphTx, hint?: EdgeHint): Promise<EdgeDeleteResult | null> {
     const rows = await on(
       this.bolt,
       tx,
-      `MATCH (s)-[r {ref_id: $ref_id}]->(t)
+      `MATCH (s)-[r${rel(hint)} {ref_id: $ref_id}]->(t)
        WITH r, r.ref_id AS ref_id, type(r) AS edge, s.ref_id AS source_ref_id, t.ref_id AS target_ref_id
        DELETE r
        RETURN ref_id, edge, source_ref_id, target_ref_id`,
@@ -477,10 +480,10 @@ class Neo4jEdges implements EdgeEngine {
 
   /** The old edge's properties verbatim (Integers stay Integers), the new
    *  edge's own stamps back on top. */
-  async copyProps(tx: GraphTx, fromRef: string, toRef: string, uid: string | null): Promise<void> {
+  async copyProps(tx: GraphTx, fromRef: string, toRef: string, uid: string | null, hint?: EdgeHint): Promise<void> {
     await tx.run(
-      `MATCH ()-[old {ref_id: $old}]->()
-       MATCH ()-[new {ref_id: $new}]->()
+      `MATCH ()-[old${rel(hint)} {ref_id: $old}]->()
+       MATCH ()-[new${rel(hint)} {ref_id: $new}]->()
        WITH old, new, new.edge_key AS edge_key, new.date_added_to_graph AS added
        SET new += properties(old)
        SET new.ref_id = $new, new.edge_key = edge_key, new.date_added_to_graph = added, new.unique_source_id = $uid`,

@@ -75,8 +75,18 @@ export interface EdgeWriteResult {
   target_ref_id: string;
 }
 
-/** How `update` finds its edge: by ref_id, or by the (source, EDGE, target) triple. */
-export type EdgeLocator = { ref_id: string } | { edge: string; source_ref_id: string; target_ref_id: string };
+/**
+ * How `update` finds its edge: by ref_id, or by the (source, EDGE, target) triple.
+ * `edge` on a ref_id locator is a hint (the type the caller knows) that keeps
+ * the engine from scanning every relationship.
+ */
+export type EdgeLocator = { ref_id: string; edge?: string } | { edge: string; source_ref_id: string; target_ref_id: string };
+
+const normEdge = (e: string) => e.toUpperCase().replace(/ /g, "_");
+/** The engine's hint for a locator: the type, when the caller named it. */
+function hintOf(where: EdgeLocator): { edge?: string } | undefined {
+  return where.edge ? { edge: normEdge(where.edge) } : undefined;
+}
 
 export interface EdgeUpdate {
   /** Properties to set/overwrite (`undefined` values are skipped). */
@@ -242,7 +252,7 @@ export class EdgeWriter {
 
     const go = async (tx: GraphTx): Promise<EdgeUpdateResult> => {
       const ref_id = await this.locateEdge(tx, where);
-      const r = await this.engine.edgeEngine.setProps(tx, ref_id, set, remove);
+      const r = await this.engine.edgeEngine.setProps(tx, ref_id, set, remove, hintOf(where));
       if (!r) throw new GraphValidationError("NOT_FOUND", "edge", `no edge with ref_id ${ref_id}`);
       return { ...r, updated: Object.keys(set), removed: remove };
     };
@@ -255,6 +265,7 @@ export class EdgeWriter {
   private async locateEdge(tx: GraphTx, where: EdgeLocator): Promise<string> {
     if ("ref_id" in where) {
       if (!where.ref_id) throw new GraphValidationError("MISSING_REQUIRED", "edge", "ref_id is required");
+      if (where.edge !== undefined && !EDGE_TYPE.test(normEdge(where.edge))) throw new GraphValidationError("UNKNOWN_TYPE", where.edge, "edge type must match ^[A-Z][A-Z0-9_]*$");
       return where.ref_id;
     }
     const edge = where.edge.toUpperCase().replace(/ /g, "_");
@@ -273,7 +284,7 @@ export class EdgeWriter {
    *  transaction. */
   async delete(where: string | EdgeLocator, opts: WriterCallOptions = {}): Promise<EdgeDeleteResult | null> {
     const at: EdgeLocator = typeof where === "string" ? { ref_id: where } : where;
-    const go = async (tx: GraphTx) => this.engine.edgeEngine.delete(await this.locateEdge(tx, at), tx);
+    const go = async (tx: GraphTx) => this.engine.edgeEngine.delete(await this.locateEdge(tx, at), tx, hintOf(at));
     return opts.tx ? go(opts.tx) : this.engine.tx(go);
   }
 
@@ -335,8 +346,8 @@ export class EdgeWriter {
       // `to_ref_id` was an alias of where it already hangs.
       if (written!.ref_id === old.edge_ref_id) return unmoved;
       // The old edge's properties verbatim, its own stamps back on top.
-      if (written!.created) await this.engine.edgeEngine.copyProps(tx, old.edge_ref_id, written!.ref_id, resolved[0]!.unique_source_id ?? null);
-      await this.engine.edgeEngine.delete(old.edge_ref_id, tx);
+      if (written!.created) await this.engine.edgeEngine.copyProps(tx, old.edge_ref_id, written!.ref_id, resolved[0]!.unique_source_id ?? null, { edge });
+      await this.engine.edgeEngine.delete(old.edge_ref_id, tx, { edge });
       return {
         moved: true,
         ref_id: node,
