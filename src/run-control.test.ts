@@ -2217,6 +2217,51 @@ describe("run control endpoints", () => {
       }
     });
 
+    it("a long run started before the previous boot but alive when it died is resumed", async () => {
+      const { strut, workspace, store, cleanup } = await bootServer();
+      try {
+        const id = String(Date.now() - 2 * 3_600_000); // began 2h ago, before `since`
+        await writeCutOffLog(workspace, store, id); // last activity: now
+        const report = await strut.autoResumeStaleRuns({ since: Date.now() - 3_600_000 });
+        assert.deepEqual(report.map((r) => [r.runId, r.action]), [[id, "resumed"]]);
+        await waitForSummary(store, "boot", id);
+      } finally {
+        await cleanup();
+      }
+    });
+
+    it("runs older than the age cap are not read", async () => {
+      const { strut, workspace, store, cleanup } = await bootServer();
+      try {
+        const old = String(Date.now() - 10 * 24 * 3_600_000);
+        await writeCutOffLog(workspace, store, old);
+        const reads: string[] = [];
+        const orig = store.getRunEvents.bind(store);
+        store.getRunEvents = async (w, r) => (reads.push(r), orig(w, r));
+        const report = await strut.autoResumeStaleRuns({ since: Date.now() - 3_600_000 });
+        assert.deepEqual(report, []);
+        assert.deepEqual(reads, []);
+      } finally {
+        await cleanup();
+      }
+    });
+
+    it("old cut-off runs (last activity before `since`) are not re-read", async () => {
+      const { strut, workspace, store, cleanup } = await bootServer();
+      try {
+        const old = new Date(Date.now() - 2 * 3_600_000).toISOString();
+        await writeCutOffLog(workspace, store, "1000", { ts: old });
+        const reads: string[] = [];
+        const orig = store.getRunEvents.bind(store);
+        store.getRunEvents = async (w, r) => (reads.push(r), orig(w, r));
+        const report = await strut.autoResumeStaleRuns({ since: Date.now() - 3_600_000 });
+        assert.deepEqual(report, []);
+        assert.deepEqual(reads, []);
+      } finally {
+        await cleanup();
+      }
+    });
+
     it("the boot scan reads when the previous process started from boot.json, then records this one's start", async () => {
       const dir = join(tmpdir(), `strut-test-${randomUUID()}`);
       await mkdir(dir, { recursive: true });

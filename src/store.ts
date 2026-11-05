@@ -239,6 +239,10 @@ export interface RunStore {
    *  without reading it: a resume refuses a log the process cannot hold
    *  (`STRUT_RESUME_MAX_LOG_BYTES`). 0 for an unknown run. */
   logSize(workflow: string, runId: string): Promise<number>;
+  /** Epoch ms of the run's last activity, WITHOUT reading the log (file
+   *  store: the events file's mtime; memory store: the last event's ts).
+   *  Optional: undefined result / absent method = "can't tell". */
+  lastActivityAt?(workflow: string, runId: string): Promise<number | undefined>;
   /** History → live tail; see the interface doc for terminality. */
   tailEvents(workflow: string, runId: string, opts?: TailOpts): AsyncGenerator<RunEvent>;
   /** Start time (epoch ms) of the most recent run, or null if never run. */
@@ -698,6 +702,14 @@ export class FileRunStore implements RunStore {
     return events;
   }
 
+  async lastActivityAt(workflow: string, runId: string): Promise<number | undefined> {
+    try {
+      return (await stat(join(this.runDir(workflow, runId), "events.jsonl"))).mtimeMs;
+    } catch {
+      return undefined;
+    }
+  }
+
   async logSize(workflow: string, runId: string): Promise<number> {
     try {
       return (await stat(join(this.runDir(workflow, runId), "events.jsonl"))).size;
@@ -785,6 +797,12 @@ export class MemoryRunStore implements RunStore {
 
   async getRunEvents(workflow: string, runId: string): Promise<RunEvent[]> {
     return [...(this.events.get(this.key(workflow, runId)) ?? [])];
+  }
+
+  async lastActivityAt(workflow: string, runId: string): Promise<number | undefined> {
+    const evs = this.events.get(this.key(workflow, runId));
+    const ts = evs?.length ? Date.parse(evs[evs.length - 1]!.ts) : NaN;
+    return Number.isNaN(ts) ? undefined : ts;
   }
 
   /** The bytes the events would take as JSON lines — the file store's measure. */

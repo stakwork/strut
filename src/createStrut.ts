@@ -2167,6 +2167,19 @@ export async function createStrut<TServices = unknown>(
         report(name, runId, "skipped", big);
         return "seen";
       }
+      // Cheap pre-filter: a log untouched since before `since` (an earlier
+      // death's) or beyond the age cap is never resumed — don't read it.
+      // Only when the store can tell; "nested" is not knowable, so such a
+      // run reads as "seen" (the scan continues either way with `since`).
+      const activity = await store.lastActivityAt?.(name, runId);
+      if (activity !== undefined) {
+        if (since !== undefined && activity < since) return "seen";
+        const idle = Date.now() - activity;
+        if (idle > maxAgeMs) {
+          report(name, runId, "skipped", `last activity ${Math.round(idle / 3_600_000)}h ago exceeds the ${Math.round(maxAgeMs / 3_600_000)}h age cap`);
+          return "seen";
+        }
+      }
       const events = await store.getRunEvents(name, runId);
       const runStart = readRunStart(events);
       if (!runStart) return "seen"; // unreadable / empty — a human's call
@@ -2235,6 +2248,11 @@ export async function createStrut<TServices = unknown>(
         continue;
       }
       for (const runId of runIds) {
+        // Ids are ms timestamps, newest first: past the age cap, the rest are
+        // older still. Only 13-digit ms-timestamp ids, where the lexical sort
+        // is the time order — never trust the order of any other id. (Not
+        // `< since`: a run begun before the last boot may have been alive.)
+        if (/^\d{13}$/.test(runId) && Number(runId) < Date.now() - maxAgeMs) break;
         let seen: "nested" | "seen";
         try {
           seen = await consider(name, runId);
