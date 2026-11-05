@@ -411,9 +411,10 @@ export interface StrutCapabilities {
    *  fail naming it). */
   browser?: BrowserService;
   /** The model catalog `GET /llm/models` serves (src/llm.ts
-   *  `listModelOptions`): aieo's aliases, each with whether its provider has
-   *  a key here, and the deployment's default. What `llm/models` reads. Set
-   *  by the standard server; a bare bag falls back to the catalog with no
+   *  `listModelOptions`): every model aieo knows, each with whether people
+   *  may pick it (the host's `STRUT_MODELS`, else a key for its provider
+   *  here), and the deployment's default. What `llm/models` reads. Set by
+   *  the standard server; a bare bag falls back to the catalog with no boot
    *  default. */
   llmModels?: () => Promise<ModelCatalog>;
 }

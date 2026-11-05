@@ -23,10 +23,10 @@ import modelsStep from "../steps/lib/llm/models.js";
 import verifyStep from "../steps/lib/job/verify.js";
 import evidenceStep from "../steps/lib/job/evidence.js";
 import type { JobsCapability } from "../jobs.js";
-import { BUSY_NOTICE, NOT_YOURS_NOTICE, detectSlash, groupByDay, insertSlash, isOwn, newConversationId, sendRefusal, silentReply, timeLine, turnContext } from "./jamie/src/lib/chat.js";
+import { BUSY_NOTICE, NOT_YOURS_NOTICE, detectSlash, groupByDay, insertSlash, isOwn, modelChoices, newConversationId, sendRefusal, sentModel, silentReply, timeLine, turnContext } from "./jamie/src/lib/chat.js";
 import { appKey, placeArtifact, servedFile } from "./jamie/src/lib/artifacts.js";
 import { captchaPrompt, claimPill, jobLook, liveStrip, openSlot, parseCaptcha, sortClaims, tapAt, toggleCell } from "./jamie/src/lib/jobs.js";
-import type { LedgerClaim } from "./jamie/src/lib/types.js";
+import type { LedgerClaim, ModelCatalog } from "./jamie/src/lib/types.js";
 import { canMerge, checksLine, fixPrompt, prKey, prLive, prOf, prPill } from "./jamie/src/lib/pr.js";
 import { attachmentShow } from "./jamie/src/lib/attachments.js";
 
@@ -94,6 +94,28 @@ describe("strut/jamie — the pure parts", () => {
     assert.equal(detectSlash("/Car x", 6), null, "a space after it closed it");
     const t = detectSlash("see /car please", 8)!;
     assert.deepEqual(insertSlash("see /car please", t, "Cardiology"), { text: "see /Cardiology  please", caret: 16 });
+  });
+
+  it("the model picker: Default, then what llm/models lists; a remembered pick no longer listed is Default and sends no model", () => {
+    const catalog: ModelCatalog = {
+      default: "anthropic/claude-opus-5-5",
+      models: [
+        { name: "anthropic/claude-opus-5-5", provider: "anthropic", modelId: "claude-opus-5-5", alias: "opus", default: false, available: true },
+        { name: "numes/z-ai/glm-5.3-flash", provider: "numes", modelId: "z-ai/glm-5.3-flash", default: false, available: true },
+        { name: "xai/grok-4.7", provider: "xai", modelId: "grok-4.7", alias: "grok", default: true, available: false },
+      ],
+    };
+    assert.deepEqual(modelChoices(catalog), [
+      { value: "", name: "Default" },
+      { value: "anthropic/claude-opus-5-5", name: "opus · anthropic" },
+      { value: "numes/z-ai/glm-5.3-flash", name: "numes/z-ai/glm-5.3-flash" },
+    ]);
+    assert.deepEqual(modelChoices(undefined), [{ value: "", name: "Default" }]);
+    assert.equal(sentModel("anthropic/claude-opus-5-5", catalog), "anthropic/claude-opus-5-5", "still listed");
+    assert.equal(sentModel("xai/grok-4.7", catalog), "", "known, but no longer available");
+    assert.equal(sentModel("openai/gpt-5", catalog), "", "gone from the list");
+    assert.equal(sentModel("", catalog), "");
+    assert.equal(sentModel("openai/gpt-5", undefined), "openai/gpt-5", "until the list is read, the pick stands");
   });
 
   it("where a deliverable shows: what strut/views draws inline, the rest handed to the host", () => {
@@ -403,6 +425,27 @@ describe("strut/jamie — its steps, as its viewer", () => {
     assert.equal(typeof viaStep.default, "string");
     const bare = (await modelsStep.run({}, { services: {} } as never)) as { models: unknown[]; default: string };
     assert.ok(bare.models.length > 0, "a bare bag still lists the catalog");
+
+    // A host's list, written as stadeum writes it: the picker offers exactly
+    // it, whatever keys strut holds, and its default is the host's.
+    const put = (name: string, value: string) =>
+      strut.app.request(`/secrets/${name}`, {
+        method: "PUT",
+        headers: { authorization: `Bearer ${KEY}`, "content-type": "application/json" },
+        body: JSON.stringify({ value }),
+      });
+    const drop = (name: string) => strut.app.request(`/secrets/${name}`, { method: "DELETE", headers: { authorization: `Bearer ${KEY}` } });
+    assert.equal((await put("STRUT_MODELS", JSON.stringify(["numes/z-ai/glm-5.3-flash", "anthropic/claude-opus-5-5"]))).status, 200);
+    assert.equal((await put("STRUT_DEFAULT_MODEL", "anthropic/claude-opus-5-5")).status, 200);
+    try {
+      const listed = await alice.ok("llm/models");
+      assert.deepEqual(modelChoices(listed).map((c) => c.value), ["", "anthropic/claude-opus-5-5", "numes/z-ai/glm-5.3-flash"]);
+      assert.equal(listed.default, "anthropic/claude-opus-5-5");
+      assert.equal(sentModel("anthropic/claude-sonnet-5-5", listed), "", "a pick the host took off the list is Default");
+    } finally {
+      await drop("STRUT_MODELS");
+      await drop("STRUT_DEFAULT_MODEL");
+    }
   });
 
   it("Merge is the viewer's own: strut's page reaches github/merge-pr with the viewer's GitHub token, a model-written page never", async () => {

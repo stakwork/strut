@@ -1226,19 +1226,28 @@ export const promote = (workflow: string, runId: string, to: string) =>
 
 export interface LlmModelOption {
   provider: string;
-  alias: string;
+  /** The friendly name (`sonnet`), when the model has one. */
+  alias?: string;
   modelId: string;
   /** Canonical "provider/modelId" — the value to submit. */
   name: string;
   default: boolean;
-  /** The provider has a key configured (secret store or env). */
+  /** People may pick it: listed in STRUT_MODELS when the deployment sets
+   *  it, else the provider has a key configured (secret store or env). */
   available: boolean;
+  /** The context window, tokens. */
+  contextLimit?: number;
+  /** USD per million tokens, only where the model's own rate is known. */
+  pricing?: { inputTokenPrice: number; outputTokenPrice: number; cacheReadPrice?: number; cacheWritePrice?: number };
 }
 
 export interface LlmModelsResponse {
   /** The deployment's default chat model, canonical. */
   default: string;
   models: LlmModelOption[];
+  /** The deployment's STRUT_MODELS says which models are available: show
+   *  only those (a person can do nothing about the rest). */
+  listed?: boolean;
   /** provider → the env var / secret name that holds its key. */
   keyNames: Record<string, string>;
 }

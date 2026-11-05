@@ -44,6 +44,16 @@ describe("the builder chat's prompt, rendered from the one source", () => {
     assert.equal(head, await fixture("chat-system-full.txt"));
   });
 
+  it("with the deployment's model list (STRUT_MODELS), names those models and never asks for a key", async () => {
+    const system = await buildSystem({
+      ...(await deps()),
+      models: { default: "anthropic/claude-opus-5-5", available: ["anthropic"], keyNames: { anthropic: "ANTHROPIC_API_KEY" }, listed: ["anthropic/claude-opus-5-5", "numes/z-ai/glm-5.3"] },
+    });
+    assert.ok(system.includes("LLM models this deployment allows: anthropic/claude-opus-5-5, numes/z-ai/glm-5.3 (default model: anthropic/claude-opus-5-5)."));
+    assert.ok(!system.includes("ANTHROPIC_API_KEY"), "no key to ask for");
+    assert.ok(!system.includes("LLM providers with a key configured"));
+  });
+
   it("is the chat's first line, then builderRules in the chat's names; the MCP door's procedure is its last part", () => {
     assert.equal(SYSTEM, `You are a workflow builder. Users describe what they want and you create workflows. A user may call a workflow a "strut": it means a workflow.\n\n${builderRules(CHAT_TOOLS)}`);
     assert.ok(SYSTEM.endsWith(`\n\n${BUILDER_PROCEDURE}`));

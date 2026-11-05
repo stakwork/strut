@@ -132,7 +132,7 @@ strut/
 │   │   ├── core/          # 11 built-in steps: http, exec, log, if, loop, foreach, subflow, llm, agent, wait, pack (static import)
 │   │   ├── lib/           # built-in domain integrations (github/fetch-pr, github/create-pr — open a PR or return the open one for that head, github/pr-status — a PR's state and checks now, github/merge-pr — a person's merge only: strut's own page or an accepted proposal, at the head they saw, ...) — file dynamic-imported at build; heavy SDKs lazy-imported in run() (see "Lib step dependency convention")
 │   │   │   ├── dictation/ # dictation/models, dictation/use { speech?, fixer? (null: none) }, dictation/remove-model { id } (refused for an active model or the default speech model): the dictation model picker over `ctx.services.stt.dictation` (src/audio/dictation-models.ts), each answering `{ models: [{ id, kind, name, summary, recommended, bytes, description, state, progress?, downloaded?, selected, active, removable, error? }] }`; dictation/enable { ref_id, on } turns dictation off/on for one entity (the `dictation` attribute memory/lexicon reads)
-│   │   │   ├── llm/       # llm/models: the model catalog `GET /llm/models` serves (aieo's aliases, each `available` when its provider has a key here, the deployment's default) over `ctx.services.llmModels`, the one list both read — what strut's own assistant app's model picker reads (plans/jamie-app.md §5). Not the `llm` core step: it calls no model
+│   │   │   ├── llm/       # llm/models: the model catalog `GET /llm/models` serves (every model aieo knows, each `available` when the host's `STRUT_MODELS` lists it or, with no list, when its provider has a key here; the deployment's default) over `ctx.services.llmModels`, the one list both read — what strut's own assistant app's model picker reads (plans/jamie-app.md §5). Not the `llm` core step: it calls no model
 │   │   │   ├── privacy/   # privacy/anonymize, deanonymize, destroy over src/privacy: typed outputs, `warnings` instead of silent drops, ner fail-closed, vault "file" needs the secret. Run files record step inputs and outputs, so original text is in them in plaintext (the handle-only convention in the spec is the mitigation)
 │   │   │   ├── package/   # the package STORE's reads (plans/marketplace.md §7, §8), thin over `ctx.services.packages` (src/packages/indexes.ts) — every one `effect: "read"`, and every description says installing is the PERSON's decision — proposed with package/install where it is held, else their Publish dialog's Packages tab or the store's Install link (`INSTALL_IS_A_PERSONS_ACT`). package/search { query, limit? } (the followed indexes' hits — each with its `detail`, the release's archive as the index read it: apps, counts, secrets, `can` — and the peers' installs); package/get { package, index?, full? } (one package's page from the index whose card lists its publisher, as a MODEL reads it — `briefPackagePage`: the README cut at 12k, the Concept pages' docs left out — or whole with `full`; throws `package_not_listed` / `package_not_found` / `package_index_none`); package/concepts { query?, name?, index? } (the Concept tree across the followed indexes, or one page with its docs, children and parents). Granted BY NAME — never `package/*` — to the builder chat (`BUILDER_REGISTRY_TOOLS`: `package_search`, `package_get`, `package_concepts`) and to the `builder`, `job` and `orchestrator` seeds, so "is there a package for that?" is answered inside a turn; the assistant MCP door's `search_packages` / `get_package` and the index's own `POST /index/mcp` (src/packages/index-tools.ts) are the same reads for an agent outside. package/install { package, index?, digest?, url? }: an AGENT asks, a PERSON accepts (plans/marketplace.md §8, ruled 2026-10-29) — runs ONLY as a proposal a person accepted (`ctx.proposal`, as app/grant), its `describe` reads the package off the index for the card (publisher + key, which index lists it, digest, license, what it brings, what it can spend / act / run, the secrets it needs — or that no followed index lists it), and the door behind it (`services.packages.install`, createStrut) checks the ACCEPTED record on disk for that very ref before calling the in-process install, so no step, authored or installed, pulls code without a yes. Granted and listed in `approve:` by the orchestrator, builder and job seeds; the builder CHAT has no proposals, so no install there (the person has the Publish dialog's Packages tab)
 │   │   │   ├── strut/     # strut/list-peers: `self` (this workspace, when set) and the peers on file as an agent chooses one — { self?, peers: [{ id, label?, description?, repos? }] } (what the host said each workspace holds), never a token or URL. strut/run-workflow: dispatch-through (plans/federation.md §2.2) — run a workflow on a PEER and return { peer, workflow, runId, status, output?, error?, durationMs }; waits on the peer's tail, cancel of this run cancels the peer's, `wait: false` returns the handle, `job` is explicit (never this run's own: no shared directory across struts); grantable to an agent as `agentTools: ["strut/*"]`. Three things ride on the tail it reads anyway: the peer run's `step.end.nodes` are folded onto THIS step's `step.end`, each tagged `peer: <id>` (a ref is only meaningful against the graph that recorded it — the projector skips a tagged ref, the flyout badges it, nothing here opens it); each entry of the peer output's `artifacts` comes back tagged `peer` + `job` — the job the peer's `run.start` recorded (`peer/<job>` on its peer key), so a `path` stays the peer's and artifact-refs.ts leaves it alone (an entry already tagged — the peer got it from a third strut — is re-tagged as the NEXT HOP, `{ peer: <this peer>, via: <the third>, job: <the third's> }`, opened through the peer's read-through, plans/chained-orchestrators.md §5; in the plain output, so the builder's pack carries it); and the handle is journaled at launch as a synthetic `step.end` at `<path>#launch` (no stepType) so a resumed caller REATTACHES to the same peer run instead of launching a second one — the child did not die with the caller. A peer run that died there and was not resumed is `peer_run_stale:` (its tail ends with `done { status: "stale" }`, retried with backoff first)
@@ -500,7 +500,9 @@ allow/refuse logic is tested in `scripts/preview-app.test.mjs`.
 | `STRUT_MOTHERSHIP_REQUIRED` | (unset) | `1` = every LLM call must have someone to bill: a call with no principal, or no delegation on file for it, is a step error instead of a direct provider call, and an enabled automation on an ownerless workflow is refused when scheduled and when it fires (`lastFireError`). Set it wherever the Mothership is mounted. |
 | `STRUT_LLM_PROVIDER` | (inferred from model, else `anthropic`) | Default LLM provider for agent/llm steps (anthropic\|openai\|google\|openrouter\|xai, via aieo) |
 | `STRUT_LLM_MODEL`    | (per-provider) | Override model name                  |
-| `STRUT_CHAT_MODEL`   | `claude-sonnet-5-5` | Default model for the AI-builder chat — any aieo name (alias, id, or `provider/id`; OpenRouter as `openrouter/org/model`). The flyout's picker overrides it per chat |
+| `STRUT_CHAT_MODEL`   | `claude-sonnet-5-5` | Default model for the AI-builder chat — any aieo name (alias, id, or `provider/id`; OpenRouter as `openrouter/org/model`), read once at boot. `STRUT_DEFAULT_MODEL` comes before it, and the flyout's picker overrides both per chat |
+| `STRUT_DEFAULT_MODEL` | (unset)       | The deployment's default model, which a host changes at run time (Peel's connected model, stadeum's org default): the secret store, then env, read per call. An `agent` step with no `model` runs on it (a system workflow fails without it); the builder chat's turns with no pick run on it before `STRUT_CHAT_MODEL`; `GET /llm/models` reports it as `default` |
+| `STRUT_MODELS`       | (unset)        | The models people may pick, as the host lists them: a JSON array of model names, canonical `provider/id` (`["anthropic/claude-opus-5-5","numes/z-ai/glm-5.3"]`), the secret store then env, read per call. Set, `GET /llm/models` (and the `llm/models` step Jamie's picker reads) marks exactly those `available` — a listed name aieo has no row for (an OpenRouter id, a provider aieo does not know) is added — and the builder's prompt names them instead of asking for a provider key. Unset, or not such an array (a warning), a model is available when its provider has a key here. Strut only shows the list: a host that sets it enforces it at its gateway (stadeum narrows each person's virtual key) |
 | `STRUT_CHAT_MAX_STEPS` | `100`        | Max agent tool-call iterations per chat turn |
 | `STRUT_CHAT_RUN_WAIT_MS` | `60000`    | How long the chat's `run_workflow` waits before a run auto-detaches (dispatch mode) |
 | `STRUT_CHAT_TOOL_RESULT_MAX_CHARS` | `50000` | CEILING on one of the builder's tool RESULTS — each string in it, and the result as a whole, as the model reads it (a query's thousands of short rows are cut to their first and last, a `{ omitted, from, to }` gap between: `capToolOutput`) — applied where the result is made — the model reads the capped result in the turn that ran the tool, and later turns replay the same bytes (history stays append-only, so the prompt cache holds). The uncapped output is in the chat's `events.jsonl`. The cap in force is this bounded by the window's headroom below the compaction mark (`STRUT_COMPACT_AT`): 50k on a 1M window, 16k on 200k. `0` removes the ceiling; the window's cap still applies while compaction is on. The builder's DOCUMENT reads — `get_workflow`, `get_step` (`DOCUMENT_TOOLS`, `chat-store.ts`), what `edit_workflow` / `edit_step` work from — are bound by the window's headroom alone, never this ceiling (176k on a 1M window), and are never re-cut on replay. |
@@ -1119,6 +1121,11 @@ verifier — the TS mirror of the gateway's Go one. The default server builds it
 `STRUT_MOTHERSHIP=1`; `docker-compose.gateway.yml` + `npm run test:gateway`
 run the whole path locally (see "Running"). A chat's model pick is validated
 through the same hook, so a strut behind the gateway needs no provider keys.
+The grant explains the gateway's refusals in plain words
+(`explainExhausted`, `explainRefused`): a spent ceiling is "re-authorize",
+and a model or provider the person's virtual key does not allow (Bifrost
+governance: `Model 'X' is not allowed`) is "X is not enabled for this
+workspace: ask an admin".
 A routed call (`ResolvedModel.routed`: the grant carried a `baseUrl`) never
 uses Anthropic's server-executed web tools — `createWebTools` hands out
 aieo's Exa + HTTP shims instead, because Bifrost drops `server_tool_use.input`
@@ -1879,8 +1886,9 @@ the same steps are an agent's tools (`agentTools: ["browser/*"]`), and
   pick never creates a dead chat) and recorded on `ChatMeta.model` in
   canonical `provider/id` form (three segments for OpenRouter:
   `openrouter/moonshotai/kimi-k2.6`). Every later turn — including
-  notification-triggered ones — resolves that; no pick means the chat's
-  recorded model, else `STRUT_CHAT_MODEL`. Keys come through
+  notification-triggered ones — resolves that; a chat with no pick records
+  none, and each of its turns runs on the deployment's default as it is
+  then: `STRUT_DEFAULT_MODEL`, else `STRUT_CHAT_MODEL`. Keys come through
   `ctx.services.secrets` (secret store → env) handed to aieo's
   `resolveModel` as `getSecret`, so a key pasted under **Secrets** works
   for the chat and the `agent`/`llm` steps alike (a store key shadows
@@ -1891,12 +1899,20 @@ the same steps are an agent's tools (`agentTools: ["browser/*"]`), and
   `createWebTools` in `src/llm.ts`, shared with the agent step) and the
   output-token cap. Routed through a gateway (`ResolvedModel.routed`), the
   shims serve every provider — see "Mothership cost control".
-  `GET /llm/models` lists aieo's aliases with per-provider availability
-  (never values) plus the default; the step editor offers the same
-  catalog as a datalist on `model` fields whose Zod schema carries
-  `.meta({ suggest: "llm-models" })` (`FieldDesc.suggest`), and the
-  system prompt names the configured providers so the builder only
-  authors runnable `model:` values.
+  `GET /llm/models` lists every model aieo knows — its aliases and every
+  Maple and Numes model — each with its `contextLimit`, its `pricing` (USD
+  per million tokens) only where strut knows the model's own rate (today
+  Maple's and Numes'; aieo's flat per-provider rate is not a price, and
+  prices and windows are to come from bifrost's datasheet:
+  plans/aieo-in-strut.md §6–7), and whether it is `available`: listed in
+  `STRUT_MODELS` when the host sets it (`listed: true`; the pickers then
+  show only those), else its provider has a key (never values); plus the
+  default. The step editor offers the same catalog as a datalist on
+  `model` fields whose Zod schema carries `.meta({ suggest: "llm-models" })`
+  (`FieldDesc.suggest`), and the system prompt names the configured
+  providers — or the host's listed models — so the builder only authors
+  runnable `model:` values. Jamie's picker drops a remembered pick the
+  list no longer has: the turn then sends no `params.model`.
 
 - **Chat is a detached background job** (`src/chat-store.ts`), NOT a
   connection-bound stream — the same launch+reattach model as runs
