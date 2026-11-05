@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 import { accessedNodesOf, type ProposalDescription, takeUsage, workflowOf, type AnyStepDef, type McpServer, type StepContext, type StepRegistry } from "./core.js";
@@ -87,6 +87,8 @@ export interface ProposalFilter {
   session?: string;
   runId?: string;
   status?: ProposalStatus | ProposalStatus[];
+  /** At most this many, newest first; unlimited by default. */
+  limit?: number;
 }
 
 export const PROPOSAL_RESULT_PREFIX = "[proposal-result]";
@@ -153,21 +155,108 @@ export function proposalUpdate(p: Proposal): JobUpdateInput {
 
 const ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
 
-export async function readProposal(root: string, id: string): Promise<Proposal | null> {
-  if (!ID_RE.test(id)) return null;
+const ARCHIVE = "archive";
+const READ_CONCURRENCY = 16;
+
+async function readFileProposal(file: string): Promise<Proposal | null> {
   try {
-    return JSON.parse(await readFile(join(root, `${id}.json`), "utf-8")) as Proposal;
+    return JSON.parse(await readFile(file, "utf-8")) as Proposal;
   } catch {
     return null;
   }
 }
 
-/** Whole, through a temp file and a rename, as a job record is written. */
+/** The live file, else the archive's (a decided proposal is moved there). */
+export async function readProposal(root: string, id: string): Promise<Proposal | null> {
+  if (!ID_RE.test(id)) return null;
+  return (await readFileProposal(join(root, `${id}.json`))) ?? (await readFileProposal(join(root, ARCHIVE, `${id}.json`)));
+}
+
+/** Run `fn` over `items`, at most `READ_CONCURRENCY` at a time, in order. */
+async function mapLimited<T, R>(items: T[], fn: (t: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i]!);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(READ_CONCURRENCY, items.length) }, worker));
+  return out;
+}
+
+// ── the index: what a list filters on, in memory, loaded once per root ─────
+
+interface IndexEntry {
+  id: string;
+  status: ProposalStatus;
+  job?: string;
+  session?: string;
+  runId?: string;
+  createdAt: string;
+}
+interface RootIndex {
+  entries: Map<string, IndexEntry>;
+  loaded?: Promise<void>;
+}
+
+const indexes = new Map<string, RootIndex>();
+const inflight = new Map<string, Promise<Proposal[]>>();
+
+const entryOf = (p: Proposal): IndexEntry => ({
+  id: p.id,
+  status: p.status,
+  ...(p.by?.job !== undefined ? { job: p.by.job } : {}),
+  ...(p.by?.session !== undefined ? { session: p.by.session } : {}),
+  ...(p.by?.runId !== undefined ? { runId: p.by.runId } : {}),
+  createdAt: p.createdAt,
+});
+
+function indexOf(root: string): RootIndex {
+  let ix = indexes.get(root);
+  if (!ix) indexes.set(root, (ix = { entries: new Map() }));
+  return ix;
+}
+
+/** Single-flight: the first caller reads every file (live first, then the
+ *  archive; corrupt ones skipped); a write that landed meanwhile wins. */
+function loadIndex(root: string): Promise<void> {
+  const ix = indexOf(root);
+  return (ix.loaded ??= (async () => {
+    for (const dir of [root, join(root, ARCHIVE)]) {
+      let names: string[];
+      try {
+        names = (await readdir(dir)).filter((n) => n.endsWith(".json"));
+      } catch {
+        continue;
+      }
+      await mapLimited(names, async (n) => {
+        const id = n.slice(0, -".json".length);
+        if (ix.entries.has(id)) return;
+        const p = await readFileProposal(join(dir, n));
+        if (p && typeof p.createdAt === "string" && !ix.entries.has(id)) ix.entries.set(id, entryOf({ ...p, id }));
+      });
+    }
+  })());
+}
+
+/** Whole, through a temp file and a rename, as a job record is written. A
+ *  decided proposal then moves to `archive/`; one that comes back to life
+ *  (a failed apply accepted again) leaves it. */
 async function writeProposal(root: string, p: Proposal): Promise<void> {
   await mkdir(root, { recursive: true, mode: 0o700 });
   const file = join(root, `${p.id}.json`);
   await writeFile(`${file}.tmp`, JSON.stringify(p, null, 2), { mode: 0o600 });
   await rename(`${file}.tmp`, file);
+  if (DECIDED.has(p.status)) {
+    await mkdir(join(root, ARCHIVE), { recursive: true, mode: 0o700 });
+    await rename(file, join(root, ARCHIVE, `${p.id}.json`));
+  } else {
+    await unlink(join(root, ARCHIVE, `${p.id}.json`)).catch(() => {});
+  }
+  indexOf(root).entries.set(p.id, entryOf(p));
+  for (const k of [...inflight.keys()]) if (k.startsWith(`${root}\0`)) inflight.delete(k);
 }
 
 async function updateProposal(root: string, id: string, edit: (p: Proposal) => void): Promise<Proposal | null> {
@@ -180,25 +269,32 @@ async function updateProposal(root: string, id: string, edit: (p: Proposal) => v
   });
 }
 
-export async function listProposals(root: string, filter: ProposalFilter = {}): Promise<Proposal[]> {
-  let names: string[];
-  try {
-    names = (await readdir(root)).filter((n) => n.endsWith(".json"));
-  } catch {
-    return [];
+export function listProposals(root: string, filter: ProposalFilter = {}): Promise<Proposal[]> {
+  const key = `${root}\0${JSON.stringify([filter.job, filter.session, filter.runId, filter.status, filter.limit])}`;
+  let p = inflight.get(key);
+  if (!p) {
+    p = runList(root, filter).finally(() => {
+      if (inflight.get(key) === p) inflight.delete(key);
+    });
+    inflight.set(key, p);
   }
+  return p.then((r) => r.slice());
+}
+
+async function runList(root: string, filter: ProposalFilter): Promise<Proposal[]> {
+  await loadIndex(root);
   const statuses = filter.status === undefined ? undefined : new Set(Array.isArray(filter.status) ? filter.status : [filter.status]);
-  const out: Proposal[] = [];
-  for (const n of names) {
-    const p = await readProposal(root, n.slice(0, -".json".length));
-    if (!p) continue;
-    if (filter.job !== undefined && p.by.job !== filter.job) continue;
-    if (filter.session !== undefined && p.by.session !== filter.session) continue;
-    if (filter.runId !== undefined && p.by.runId !== filter.runId) continue;
-    if (statuses && !statuses.has(p.status)) continue;
-    out.push(p);
-  }
-  return out.sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
+  let hits = [...indexOf(root).entries.values()].filter(
+    (e) =>
+      (filter.job === undefined || e.job === filter.job) &&
+      (filter.session === undefined || e.session === filter.session) &&
+      (filter.runId === undefined || e.runId === filter.runId) &&
+      (!statuses || statuses.has(e.status)),
+  );
+  hits.sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
+  if (filter.limit !== undefined) hits = hits.slice(0, filter.limit);
+  const read = await mapLimited(hits, (e) => readProposal(root, e.id));
+  return read.filter((p): p is Proposal => p !== null);
 }
 
 /** The last `createdAt` handed out, in ms. The lists order by it, and an

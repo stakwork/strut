@@ -3990,7 +3990,10 @@ export async function createStrut<TServices = unknown>(
   app.get("/proposals", async (c) => {
     const status = c.req.query("status");
     if (status !== undefined && !STATUSES.has(status)) return c.json({ error: `status must be one of ${[...STATUSES].join(", ")}` }, 400);
+    const limitQ = c.req.query("limit");
+    if (limitQ !== undefined && !/^[1-9]\d*$/.test(limitQ)) return c.json({ error: "limit must be a positive integer" }, 400);
     const proposals = await listProposals(proposalsDir, {
+      ...(limitQ !== undefined ? { limit: Number(limitQ) } : {}),
       ...(c.req.query("job") !== undefined ? { job: c.req.query("job") } : {}),
       ...(c.req.query("session") !== undefined ? { session: c.req.query("session") } : {}),
       ...(c.req.query("runId") !== undefined ? { runId: c.req.query("runId") } : {}),
