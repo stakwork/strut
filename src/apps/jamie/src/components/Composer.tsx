@@ -7,7 +7,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { cn } from "@/lib/utils";
 import { useAppState } from "@strut/kit";
-import { detectSlash, insertSlash, type SlashTrigger } from "../lib/chat";
+import { detectSlash, insertSlash, modelChoices, sentModel, type SlashTrigger } from "../lib/chat";
 import { useConcepts, useModels } from "../hooks";
 import { IconButton } from "./bits";
 
@@ -31,7 +31,10 @@ export function Composer({ placeholder, onSend, running, disabled, sending }: Co
   const [text, setText] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [fileError, setFileError] = useState<string | null>(null);
-  const [model, setModel] = useAppState<string>("model", "");
+  const [remembered, setModel] = useAppState<string>("model", "");
+  const models = useModels();
+  // A pick no longer listed is Default: the turn sends no model.
+  const model = sentModel(remembered, models.data);
   const [slash, setSlash] = useState<SlashTrigger | null>(null);
   const [slashAt, setSlashAt] = useState(0);
   const area = useRef<HTMLTextAreaElement>(null);
@@ -193,10 +196,7 @@ export function Composer({ placeholder, onSend, running, disabled, sending }: Co
 function ModelPicker({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   const [open, setOpen] = useState(false);
   const models = useModels();
-  const items = useMemo(
-    () => [{ value: "", name: "Default" }, ...(models.data?.models ?? []).filter((m) => m.available).map((m) => ({ value: m.name, name: m.alias ? `${m.alias} · ${m.provider}` : m.name }))],
-    [models.data],
-  );
+  const items = useMemo(() => modelChoices(models.data), [models.data]);
   const current = items.find((i) => i.value === value);
   return (
     <Popover open={open} onOpenChange={setOpen}>

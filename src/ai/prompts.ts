@@ -92,8 +92,10 @@ export interface AiDeps {
   webTools?: Record<string, unknown>;
   /** Which LLM providers have a key configured (secret store or env), for
    *  the system prompt — so the builder only writes `model:` values a run
-   *  can actually use. Optional: without it the prompt says nothing. */
-  models?: { default: string; available: string[]; keyNames: Record<string, string> };
+   *  can actually use. `listed`: the models the deployment allows
+   *  (`STRUT_MODELS`), which then replace the providers and their keys.
+   *  Optional: without it the prompt says nothing. */
+  models?: { default: string; available: string[]; keyNames: Record<string, string>; listed?: string[] };
   /** The HOST's section of the system prompt (`StrutOptions.chatSystem`),
    *  resolved for this turn: what the deployment knows and strut does not.
    *  Appended verbatim after strut's own rules. Optional: absent → the
@@ -478,6 +480,11 @@ async function renderStepsTree(deps: AiDeps): Promise<string> {
  *  deployment's key configuration (see createStrut / GET /llm/models). */
 function renderModels(m: AiDeps["models"]): string {
   if (!m) return "";
+  // The host's list: its gateway refuses any other model, and a key pasted
+  // here would only go around it.
+  if (m.listed) {
+    return `LLM models this deployment allows: ${m.listed.length ? m.listed.join(", ") : "none"} (default model: ${m.default}). In agent/llm steps only use \`model:\` values from this list, or leave \`model:\` out for the default; any other model is refused. Never ask for a provider key: an admin enables models for the whole workspace.\n\n`;
+  }
   const configured = m.available.length ? m.available.join(", ") : "none";
   const keys = Object.entries(m.keyNames)
     .map(([p, k]) => `${p}: ${k}`)

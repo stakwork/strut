@@ -1226,19 +1226,28 @@ export const promote = (workflow: string, runId: string, to: string) =>
 
 export interface LlmModelOption {
   provider: string;
-  alias: string;
+  /** The friendly name (`sonnet`), when the model has one. */
+  alias?: string;
   modelId: string;
   /** Canonical "provider/modelId" — the value to submit. */
   name: string;
   default: boolean;
-  /** The provider has a key configured (secret store or env). */
+  /** People may pick it: listed in STRUT_MODELS when the deployment sets
+   *  it, else the provider has a key configured (secret store or env). */
   available: boolean;
+  /** The context window, tokens. */
+  contextLimit?: number;
+  /** USD per million tokens, only where the model's own rate is known. */
+  pricing?: { inputTokenPrice: number; outputTokenPrice: number; cacheReadPrice?: number; cacheWritePrice?: number };
 }
 
 export interface LlmModelsResponse {
   /** The deployment's default chat model, canonical. */
   default: string;
   models: LlmModelOption[];
+  /** The deployment's STRUT_MODELS says which models are available: show
+   *  only those (a person can do nothing about the rest). */
+  listed?: boolean;
   /** provider → the env var / secret name that holds its key. */
   keyNames: Record<string, string>;
 }
@@ -2184,6 +2193,22 @@ export async function fetchAppDocument(name: string, version: string, token: str
   const res = await apiFetch(`${path}${token ? `?t=${encodeURIComponent(token)}` : ""}`, { cache: "no-cache" });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   return res.text();
+}
+
+/** The style variables strut's brand sets for each theme (`GET /brand`,
+ *  src/brand.ts): MCP Apps standard names, handed to every hosted page. */
+export type BrandStyles = Record<"light" | "dark", { variables: Record<string, string> }>;
+
+let brandOnce: Promise<BrandStyles | null> | undefined;
+
+/** The brand every hosted app is shown in, read once per page: it changes
+ *  rarely, and the next load picks a change up. Null when none is set or it
+ *  cannot be read: an app is shown unbranded, never held up. */
+export function getBrandStyles(): Promise<BrandStyles | null> {
+  brandOnce ??= apiFetch("/brand")
+    .then(async (res) => (res.ok ? ((await res.json()) as { styles: BrandStyles | null }).styles : null))
+    .catch(() => null);
+  return brandOnce;
 }
 
 // ── Packages (plans/marketplace.md §12.1, §13; specs/API.md §16) ────────────

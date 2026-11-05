@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import type { GraphBackend, Neo4jBackend } from "./backend.js";
 import { Bolt } from "./bolt.js";
+import { createNodeSchema } from "./schema-crud.js";
 import { seedStrutDomain } from "./schema-seed.js";
 import { NodeWriter, type Embedder } from "./node-writer.js";
 import {
@@ -486,10 +487,11 @@ for (const tb of testBackends()) {
     });
 
     it("search: a retriever layer failing (Lucene clause explosion) degrades to the other layers, like jarvis", { skip: neoOnly("Lucene's clause ceiling") }, async () => {
-      // 15-property Strut fulltext index × 150 required terms > Lucene's 1024
-      // clause ceiling → TooManyNestedClauses. The semantic layer still finds
-      // the workflow; the failure is reported, not thrown.
-      const words = Array.from({ length: 150 }, (_, i) => `harvey${i}`).join(" ") + " harvey";
+      // 1,100 distinct required terms > Lucene's 1,024-clause ceiling, even
+      // over the one search-text field → a too-many-clauses error. "harvey"
+      // repeated keeps the bag-of-words query pointing at the workflow, which
+      // the semantic layer still finds; the failure is reported, not thrown.
+      const words = Array.from({ length: 1100 }, (_, i) => `harvey${i}`).join(" ") + " harvey".repeat(3000);
       const r = await reader.search({ q: words });
       assert.ok(r.warnings?.some((w) => /fulltext layer error/.test(w)), JSON.stringify(r.warnings));
       assert.ok(r.nodes.some((n) => n.ref_id === ids["wf2"]), "semantic (bag-of-words) hit survives");
@@ -807,7 +809,10 @@ describe("query shape: a prose question vs an exact string (live Neo4j)", { skip
     bolt = new Bolt(cfg!);
     await bolt.verify();
     await wipeGraph(bolt);
+    // A swarm's code graph: jarvis's library and its About node, so the
+    // reader routes through jarvis's per-domain indexes as on a swarm.
     await seedJarvisOntology(bolt);
+    await bolt.run(`CREATE (:About {hidden_domains: []})`);
     await seedStrutDomain(bolt);
     const resolver = new SchemaResolver(bolt);
     await new NodeWriter(bolt, { embedder: bow, resolver }).writeMany([
@@ -880,7 +885,10 @@ describe("exclude: leaving results out by path (live Neo4j)", { skip: cfg ? fals
     bolt = new Bolt(cfg!);
     await bolt.verify();
     await wipeGraph(bolt);
+    // A swarm's code graph: jarvis's library and its About node, so the
+    // reader routes through jarvis's per-domain indexes as on a swarm.
     await seedJarvisOntology(bolt);
+    await bolt.run(`CREATE (:About {hidden_domains: []})`);
     await seedStrutDomain(bolt);
     const resolver = new SchemaResolver(bolt);
     await new NodeWriter(bolt, { embedder: bow, resolver }).writeMany([
@@ -977,7 +985,10 @@ describe("linked: keeping results tied by an edge (live Neo4j)", { skip: cfg ? f
     bolt = new Bolt(cfg!);
     await bolt.verify();
     await wipeGraph(bolt);
+    // A swarm's code graph: jarvis's library and its About node, so the
+    // reader routes through jarvis's per-domain indexes as on a swarm.
     await seedJarvisOntology(bolt);
+    await bolt.run(`CREATE (:About {hidden_domains: []})`);
     await seedStrutDomain(bolt);
     const resolver = new SchemaResolver(bolt);
     // The Concepts a swarm holds: a summary of code (gitree's, tied to the
@@ -1047,3 +1058,50 @@ describe("linked: keeping results tied by an edge (live Neo4j)", { skip: cfg ? f
     assert.deepEqual(calls, []);
   });
 });
+
+/**
+ * A type made at runtime is keyword-searchable on its own fields, whichever
+ * type came first in its domain (plans/ontology.md §2, item 4): on a graph
+ * strut alone holds, Neo4j reads one index over every node's search text, as
+ * a Ladybug file does. Before, a domain's index held the fields of the first
+ * type created in it, and `Gadget.spec` was found only by its vector.
+ */
+for (const tb of testBackends()) {
+  describe(`runtime types and the keyword index (${tb.name})`, { skip: tb.skip }, () => {
+    let b: GraphBackend;
+    let widget: string;
+    let gadget: string;
+    before(async () => {
+      b = await tb.open(); // no embedder: the keyword half alone
+      await tb.wipe(b);
+      if (b.kind === "neo4j") await seedStrutDomain(b);
+      await createNodeSchema(b, b.schemas, { type: "Widget", attributes: { color: "?string" }, index: ["name", "color"] });
+      await createNodeSchema(b, b.schemas, { type: "Gadget", attributes: { spec: "?string" }, index: ["name", "spec"] });
+      [widget, gadget] = (
+        await b.nodes.writeMany([
+          { type: "Widget", data: { name: "blue gizmo", color: "cerulean" } },
+          { type: "Gadget", data: { name: "flux unit", spec: "titanium capacitor housing" } },
+        ])
+      ).map((r) => r.ref_id) as [string, string];
+      if (b.kind === "neo4j") await b.bolt.run(`CALL db.awaitIndexes(60)`);
+    });
+    after(async () => {
+      await tb.close(b);
+    });
+
+    it("finds the second type in a domain by its own field, untyped, typed and by domain", async () => {
+      for (const p of [{}, { types: ["Gadget"] }, { domains: ["entity"] }]) {
+        assert.deepEqual((await b.reader.search({ q: "titanium", ...p })).nodes.map((n) => n.ref_id), [gadget], JSON.stringify(p));
+      }
+      assert.deepEqual((await b.reader.search({ q: "cerulean" })).nodes.map((n) => n.ref_id), [widget]);
+      assert.deepEqual((await b.reader.search({ q: "titanium", types: ["Widget"] })).nodes, [], "the type filter holds");
+    });
+
+    it("keeps no keyword index per domain on Neo4j: the search-text index serves every type", { skip: tb.kind === "neo4j" ? false : "Neo4j's indexes" }, async () => {
+      if (b.kind !== "neo4j") return;
+      const names = (await b.bolt.run(`SHOW INDEXES YIELD name RETURN name`)).map((r) => String(r["name"]));
+      assert.ok(names.includes("strut_search_text_index"));
+      assert.ok(!names.includes("domain_entity_attribute_index_v2"));
+    });
+  });
+}

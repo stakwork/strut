@@ -30,7 +30,7 @@ import type { InputBlock } from "./input-block.js";
 import { buildRegistry, resolveStep } from "./steps/registry.js";
 import { parseStepRef } from "./step-ref.js";
 import { zodToFields } from "./ai/schemaHelpers.js";
-import { resolveModel, listModelOptions, createWebTools, type LlmAuth } from "./llm.js";
+import { resolveModel, listModelOptions, defaultModel, createWebTools, type LlmAuth } from "./llm.js";
 import type { StepSources } from "./steps/registry.js";
 import { runWorkflow } from "./runner.js";
 import { RunController } from "./run-control.js";
@@ -161,6 +161,7 @@ import { seedPrivacyWorkflows } from "./privacy/seed.js";
 import { HOME_POSTS, homeSyncRole, homeSyncRoutes, seedHomeSyncWorkflow, type HomeSyncRole } from "./home-sync.js";
 import { VOICE_CALLS, voiceConfig, voiceRoutes, type VoiceConfig } from "./voice.js";
 import { createPublicSurface, normalizeSurface, surfaceProblem, visitorRefusal, visitorRuns, type PublicSurface } from "./public-surface.js";
+import { brandProblem, brandStyles, normalizeBrand, readBrand, writeBrand } from "./brand.js";
 import { PUBLIC_PATH, publicRoutes, visitorAddress } from "./public-routes.js";
 import { publicViewNeeds } from "./public-view.js";
 // Pure (node:crypto only): the ask/answer shapes behind the two elicitation
@@ -312,8 +313,9 @@ export interface StrutOptions<TServices = unknown> {
   /** Default model for the chat agent — any aieo model name: an alias
    *  (`sonnet`, `gpt`, `kimi`), a full id, or `provider/id` (OpenRouter as
    *  `openrouter/org/model`). A per-chat pick (`POST /chat { model }`, the
-   *  flyout's picker) overrides it. Defaults to `STRUT_CHAT_MODEL` or
-   *  `claude-sonnet-5-5`. */
+   *  flyout's picker) overrides it, and `STRUT_DEFAULT_MODEL` (secret store,
+   *  then env, read each turn) comes before it. Defaults to
+   *  `STRUT_CHAT_MODEL` or `claude-sonnet-5-5`. */
   chatModel?: string;
 
   /** The host's section of the builder's system prompt: called once per
@@ -4577,6 +4579,22 @@ export async function createStrut<TServices = unknown>(
     return c.json({ ok: true, id });
   });
 
+  // The brand every app here is shown in (src/brand.ts): a person sets it,
+  // strut's app host hands it to each page as MCP Apps style variables.
+  // Every credential reads it; the gate keeps the write to full scope.
+  app.get("/brand", async (c) => {
+    const brand = await readBrand(dataDir);
+    return c.json({ brand, styles: brandStyles(brand) });
+  });
+  app.put("/brand", async (c) => {
+    const body: unknown = await c.req.json().catch(() => undefined);
+    const problem = brandProblem(body);
+    if (problem) return c.json({ error: problem }, 400);
+    const brand = normalizeBrand(body as Record<string, unknown>);
+    await writeBrand(dataDir, brand);
+    return c.json({ brand, styles: brandStyles(brand) });
+  });
+
   // This strut's own workspace (never a peer): what it holds, for agents.
   app.get("/self", async (c) => c.json({ self: (await peerRecords.getSelf()) ?? null }));
 
@@ -6460,7 +6478,9 @@ export async function createStrut<TServices = unknown>(
           const { buildTools, buildSystem } = await import("./ai/index.js");
 
           // The chat's model (`ChatMeta.model`, set by POST /chat) or the
-          // deployment default, key via the secrets boundary. Everything
+          // deployment default, read this turn (`STRUT_DEFAULT_MODEL`, which
+          // a host changes at run time, else `chatModel`), key via the
+          // secrets boundary. Everything
           // provider-shaped keys off the RESOLVED provider: the web tools
           // (web_search + web_fetch — native on anthropic, Exa/HTTP shims
           // elsewhere, and the shims everywhere when the call is routed
@@ -6470,7 +6490,7 @@ export async function createStrut<TServices = unknown>(
           const meta = await chatStore.getMeta(chatId);
           const actor = meta?.actor;
           const llm = await resolveModel({
-            model: meta?.model ?? chatModel,
+            model: meta?.model ?? (await defaultModel(chatModel, secretsCap)),
             secrets: secretsCap,
             // Billed as the assistant, to the chat's actor (plans/mothership-cost-control.md §3).
             ...(opts.llmAuth
@@ -6505,6 +6525,7 @@ export async function createStrut<TServices = unknown>(
               default: catalog.default,
               available: [...new Set(catalog.models.filter((m) => m.available).map((m) => m.provider))],
               keyNames: catalog.keyNames,
+              ...(catalog.listed ? { listed: catalog.models.filter((m) => m.available).map((m) => m.name) } : {}),
             },
             watchVerify: (runId: string) => verifyWaker?.watch(runId, chatId),
             // ask_user / request_secret (plans/elicitation.md): record the
@@ -7043,7 +7064,9 @@ export async function createStrut<TServices = unknown>(
       }
       if (!chatId) {
         chatId = generateChatId();
-        meta = await chatStore.createChat({ id: chatId, ...(args.title ? { title: args.title } : {}), model: args.model ?? chatModel });
+        // Only a pick is recorded: a chat without one runs on the
+        // deployment's default as it is at each turn (launchChatTurn).
+        meta = await chatStore.createChat({ id: chatId, ...(args.title ? { title: args.title } : {}), ...(args.model ? { model: args.model } : {}) });
       }
       // From the chat's compaction boundary (plans/compaction.md §5): the
       // whole history stays on disk; the model replays from the summary.
@@ -7533,10 +7556,13 @@ export async function createStrut<TServices = unknown>(
 
   // ── LLM model catalog ────────────────────────────────────────────────────
   //
-  // Feeds the chat flyout's model picker and the step editor's `model`
-  // suggestions: aieo's aliases with per-provider availability (a key in the
-  // secret store or env — never the values) and the deployment's default
-  // chat model in canonical "provider/id" form.
+  // Feeds the chat flyout's model picker, Jamie's (through `llm/models`)
+  // and the step editor's `model` suggestions: every model aieo knows, each
+  // with its context window, its price and whether people may pick it — the
+  // host's list (`STRUT_MODELS`) when it sets one, else a key in the secret
+  // store or env, never the values — and the deployment's default chat
+  // model (`STRUT_DEFAULT_MODEL`, else `chatModel`) in canonical
+  // "provider/id" form.
 
   app.get("/llm/models", async (c) => {
     try {

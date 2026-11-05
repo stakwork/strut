@@ -186,8 +186,9 @@ export function ChatFlyout(props: {
   const [context, setContext] = useState<api.ChatContext | null>(null);
 
   // ── Model picker ─────────────────────────────────────────────────────
-  // The catalog is the server's (aieo's aliases + which providers have a
-  // key). The pick is browser-local and sticky (storage), sent with each
+  // The catalog is the server's (every model aieo knows + which may be
+  // picked: the deployment's list, else which providers have a key; with a
+  // list, only the listed ones show). The pick is browser-local and sticky (storage), sent with each
   // message and recorded on the chat by the server. null = server default.
   const [catalog, setCatalog] = useState<api.LlmModelsResponse | null>(null);
   const [model, setModel] = useState<string | null>(() => storage.chatModel.get());
@@ -213,6 +214,7 @@ export function ChatFlyout(props: {
   const noKeys = !!catalog && !catalog.models.some((m) => m.available);
   const providerGroups: [string, api.LlmModelOption[]][] = [];
   for (const m of catalog?.models ?? []) {
+    if (catalog?.listed && !m.available) continue;
     const g = providerGroups.find(([p]) => p === m.provider);
     if (g) g[1].push(m);
     else providerGroups.push([m.provider, [m]]);

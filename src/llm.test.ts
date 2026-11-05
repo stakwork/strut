@@ -1,7 +1,8 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 
-import { resolveModel, listModelOptions, canonicalModelName, createWebTools } from "./llm.js";
+import { MAPLE_MODELS, NUMES_MODELS } from "./aieo/index.js";
+import { resolveModel, listModelOptions, canonicalModelName, createWebTools, defaultModel } from "./llm.js";
 import { secretsCapability } from "./capabilities.js";
 import { MemorySecretStore } from "./secret-store.js";
 import { zodToFields } from "./ai/schemaHelpers.js";
@@ -31,6 +32,8 @@ const ENV = [
   "STRUT_MAX_OUTPUT_TOKENS",
   "MAX_OUTPUT_TOKENS",
   "LLM_PROVIDER",
+  "STRUT_MODELS",
+  "STRUT_DEFAULT_MODEL",
 ];
 
 describe("llm: model resolution through the secrets boundary", () => {
@@ -131,6 +134,93 @@ describe("llm: model resolution through the secrets boundary", () => {
     const cat = await listModelOptions({ default: "moonshotai/kimi-k2.6" });
     assert.equal(cat.default, "moonshotai/kimi-k2.6");
     assert.ok(cat.models.length >= 7);
+  });
+
+  it("listModelOptions: every model aieo knows, once each, with its window; a price only where it is the model's own", async () => {
+    const cat = await listModelOptions();
+    const names = cat.models.map((m) => m.name);
+    assert.equal(new Set(names).size, names.length, "no model twice");
+    for (const id of Object.keys(MAPLE_MODELS)) assert.ok(names.includes(`maple/${id}`), `maple/${id}`);
+    for (const id of Object.keys(NUMES_MODELS)) assert.ok(names.includes(`numes/${id}`), `numes/${id}`);
+    const at = (name: string) => cat.models.find((m) => m.name === name)!;
+    // An aliased model keeps its alias; one without has none.
+    assert.equal(at("numes/z-ai/glm-5.3").alias, "numes");
+    assert.equal(at("numes/z-ai/glm-5.3").default, true);
+    assert.equal(at("maple/glm-5-3").alias, undefined);
+    assert.equal(at("maple/glm-5-3").default, false);
+    // Maple and Numes have their own rate per model. Every other model has
+    // none: aieo's flat per-provider rate is not the model's price.
+    assert.equal(at("maple/glm-5-3").contextLimit, 262_144);
+    assert.deepEqual(at("maple/glm-5-3").pricing, { inputTokenPrice: 3.6, outputTokenPrice: 11.5 });
+    assert.deepEqual(at("numes/z-ai/glm-5.3-flash").pricing, { inputTokenPrice: 0, outputTokenPrice: 0 });
+    assert.equal(at("numes/z-ai/glm-5.3-flash").contextLimit, 1_048_576);
+    assert.equal(at("anthropic/claude-sonnet-5-5").pricing, undefined);
+    for (const m of cat.models) {
+      assert.ok((m.contextLimit ?? 0) > 0, `${m.name} has a window`);
+      assert.equal(!!m.pricing, m.provider === "maple" || m.provider === "numes", `${m.name}: a price only from a per-model table`);
+    }
+    assert.equal(cat.listed, false);
+  });
+
+  it("STRUT_MODELS: exactly the host's list is available, whatever keys strut holds; the default is STRUT_DEFAULT_MODEL", async () => {
+    process.env["ANTHROPIC_API_KEY"] = "k"; // a key the list overrides
+    const secrets = await withStore({
+      STRUT_MODELS: JSON.stringify([
+        "anthropic/claude-opus-5-5",
+        "numes/z-ai/glm-5.3-flash",
+        "sonnet", // any name aieo takes, read canonically
+        "openrouter/meta-llama/llama-4-scout", // an OpenRouter id aieo has no row for
+        "acme/llama-4", // a provider aieo does not know
+      ]),
+      STRUT_DEFAULT_MODEL: "anthropic/claude-opus-5-5",
+    });
+    const cat = await listModelOptions({ default: "haiku", secrets });
+    assert.equal(cat.listed, true);
+    assert.equal(cat.default, "anthropic/claude-opus-5-5");
+    assert.deepEqual(
+      cat.models.filter((m) => m.available).map((m) => m.name).sort(),
+      ["acme/llama-4", "anthropic/claude-opus-5-5", "anthropic/claude-sonnet-5-5", "numes/z-ai/glm-5.3-flash", "openrouter/meta-llama/llama-4-scout"],
+    );
+    assert.equal(cat.models.find((m) => m.name === "anthropic/claude-haiku-4-5")!.available, false, "keyed, but not on the list");
+    const llama = cat.models.find((m) => m.name === "openrouter/meta-llama/llama-4-scout")!;
+    assert.deepEqual([llama.provider, llama.modelId, llama.alias, llama.default], ["openrouter", "meta-llama/llama-4-scout", undefined, false]);
+    assert.ok(llama.contextLimit, "a provider aieo knows has its window");
+    assert.equal(llama.pricing, undefined, "and no price of its own");
+    const acme = cat.models.find((m) => m.name === "acme/llama-4")!;
+    assert.deepEqual(acme, { provider: "acme", modelId: "llama-4", name: "acme/llama-4", default: false, available: true });
+  });
+
+  it("STRUT_MODELS from env when the store has none; with none, or one that is not a list, the keys decide", async () => {
+    process.env["XAI_API_KEY"] = "k";
+    process.env["STRUT_MODELS"] = JSON.stringify(["openai/gpt-5.6-luna"]);
+    const fromEnv = await listModelOptions({ secrets: await withStore({}) });
+    assert.deepEqual(fromEnv.models.filter((m) => m.available).map((m) => m.name), ["openai/gpt-5.6-luna"]);
+    // No secrets boundary at all: the boot env.
+    assert.deepEqual((await listModelOptions()).models.filter((m) => m.available).map((m) => m.name), ["openai/gpt-5.6-luna"]);
+
+    for (const bad of ["openai/gpt-5.6-luna", '{"models":[]}', "[1]"]) {
+      process.env["STRUT_MODELS"] = bad;
+      const cat = await listModelOptions();
+      assert.equal(cat.listed, false, bad);
+      assert.deepEqual([...new Set(cat.models.filter((m) => m.available).map((m) => m.provider))], ["xai"], bad);
+    }
+    delete process.env["STRUT_MODELS"];
+    assert.equal((await listModelOptions()).listed, false);
+    // An empty list is a list: nothing may be picked.
+    process.env["STRUT_MODELS"] = "[]";
+    const none = await listModelOptions();
+    assert.equal(none.listed, true);
+    assert.equal(none.models.some((m) => m.available), false);
+  });
+
+  it("defaultModel: STRUT_DEFAULT_MODEL from the store, then env, else the boot default; blank is unset", async () => {
+    assert.equal(await defaultModel("sonnet"), "sonnet");
+    process.env["STRUT_DEFAULT_MODEL"] = "openai/gpt-5";
+    assert.equal(await defaultModel("sonnet"), "openai/gpt-5");
+    assert.equal(await defaultModel("sonnet", await withStore({})), "openai/gpt-5");
+    assert.equal(await defaultModel("sonnet", await withStore({ STRUT_DEFAULT_MODEL: "xai/grok-4.7" })), "xai/grok-4.7");
+    process.env["STRUT_DEFAULT_MODEL"] = "  ";
+    assert.equal(await defaultModel("sonnet"), "sonnet");
   });
 
   it("createWebTools: native pair on anthropic; fetch shim everywhere; search shim only with an Exa key", async () => {
@@ -391,6 +481,38 @@ describe("llm: the llmAuth seam (plans/mothership-cost-control.md §1)", () => {
         auth: { kind: "step", runId: "r1" },
       });
       await assert.rejects(() => generateText({ model: plain.model, prompt: "hi", maxRetries: 0 }), /run dele-1 spent|402/);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("a model the person's virtual key does not allow: the gateway's refusal reaches the caller in plain words", async () => {
+    // A stand-in gateway answering as bifrost's governance does.
+    const { createServer } = await import("node:http");
+    const server = createServer((_req, res) => {
+      res.writeHead(403, { "content-type": "application/json" });
+      res.end(JSON.stringify({ is_bifrost_error: true, status_code: 403, error: { type: "governance", message: "Model 'claude-opus-5-5' is not allowed" } }));
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const port = (server.address() as { port: number }).port;
+    try {
+      const { explainRefused } = await import("./mothership.js");
+      const r = await resolveModel({
+        model: "opus",
+        llmAuth: async () => ({ apiKey: "vk", baseUrl: `http://127.0.0.1:${port}`, explainError: explainRefused }),
+        auth: { kind: "chat", chatId: "c1", principal: "alice" },
+      });
+      const { generateText, streamText } = await import("ai");
+      const plain = /^claude-opus-5-5 is not enabled for this workspace: ask an admin$/;
+      // The SDK's own message is only "Forbidden": the words are in the body.
+      await assert.rejects(
+        () => generateText({ model: r.model, prompt: "hi", maxRetries: 0 }),
+        (err: unknown) => (assert.match((err as Error).message, plain), true),
+      );
+      let streamed: unknown;
+      const s = streamText({ model: r.model, prompt: "hi", maxRetries: 0, onError: ({ error }) => void (streamed = error) });
+      await s.consumeStream();
+      assert.match(String((streamed as Error)?.message), plain);
     } finally {
       server.close();
     }

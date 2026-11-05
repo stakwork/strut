@@ -11,10 +11,12 @@ function loadSuggestions(kind: NonNullable<api.FieldDesc["suggest"]>): Promise<S
   return (catalogs[kind] ??= api
     .listLlmModels()
     .then((r) =>
-      r.models.map((m) => ({
-        value: m.name,
-        label: `${m.alias} · ${m.provider}${m.available ? "" : ` (no ${r.keyNames[m.provider] ?? "key"})`}`,
-      })),
+      r.models
+        .filter((m) => m.available || !r.listed)
+        .map((m) => ({
+          value: m.name,
+          label: `${m.alias ?? m.modelId} · ${m.provider}${m.available ? "" : ` (no ${r.keyNames[m.provider] ?? "key"})`}`,
+        })),
     )
     .catch(() => []));
 }

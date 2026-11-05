@@ -542,7 +542,7 @@ class Neo4jSchemas implements SchemaSource {
 
   async hidden(tx?: GraphTx) {
     const rows = await on(this.bolt, tx, `MATCH (a:About) RETURN a.hidden_domains AS d, a.hidden_types AS t LIMIT 1`);
-    return { domains: rows[0]?.["d"], types: rows[0]?.["t"] };
+    return { domains: rows[0]?.["d"], types: rows[0]?.["t"], about: rows.length > 0 };
   }
 
   async findEdgeSchema(walk: EdgeSchemaWalk, source: string, edge: string, target: string, tx?: GraphTx): Promise<EdgeSchemaRow | null> {

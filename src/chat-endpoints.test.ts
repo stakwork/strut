@@ -426,14 +426,47 @@ describe("chat endpoints", () => {
       await settled(chatId);
       assert.equal((await chatStore.getMeta(chatId))!.model, "anthropic/claude-haiku-4-5");
 
-      // No pick at all → the deployment default, canonical.
+      // No pick at all → nothing recorded: each turn runs on the
+      // deployment's default as it is then.
       const fresh = await post({ message: "default" });
       const { chatId: id2 } = (await fresh.json()) as { chatId: string };
       await settled(id2);
-      assert.equal((await chatStore.getMeta(id2))!.model, "claude-sonnet-5-5");
+      assert.equal((await chatStore.getMeta(id2))!.model, undefined);
     } finally {
       dead.close();
     }
+  });
+
+  it("a chat with no pick runs on STRUT_DEFAULT_MODEL as it is at each turn, before the boot default", async () => {
+    // No provider key anywhere: each turn ends at once in chat.error naming
+    // the key its model needs — which says which model the turn resolved.
+    const secrets = new MemorySecretStore();
+    const strut = await makeStrut({ secretStore: secrets, chatModel: "anthropic/claude-haiku-4-5" });
+    const errorOf = async (chatId: string, turn: number) => {
+      await settled(chatId);
+      return await (await strut.app.request(`/chat/${chatId}/stream?turn=${turn}`)).text();
+    };
+    const post = (body: object) =>
+      strut.app.request("/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+
+    // Unset: the boot default.
+    const first = await post({ message: "one" });
+    const { chatId } = (await first.json()) as { chatId: string };
+    assert.match(await errorOf(chatId, 0), /ANTHROPIC_API_KEY/);
+
+    // Set at run time (a host's PUT /secrets): the next turn reads it.
+    await secrets.set("STRUT_DEFAULT_MODEL", "openai/gpt-5");
+    assert.equal((await post({ chatId, message: "two" })).status, 202);
+    assert.match(await errorOf(chatId, 1), /OPENAI_API_KEY/);
+
+    // Changed again: the same chat follows, since it recorded no pick.
+    await secrets.set("STRUT_DEFAULT_MODEL", "openrouter/moonshotai/kimi-k3");
+    assert.equal((await post({ chatId, message: "three" })).status, 202);
+    assert.match(await errorOf(chatId, 2), /OPENROUTER_API_KEY/);
+    assert.equal((await chatStore.getMeta(chatId))!.model, undefined);
+
+    // The catalog's default is the same one.
+    assert.equal(((await (await strut.app.request("/llm/models")).json()) as { default: string }).default, "openrouter/moonshotai/kimi-k3");
   });
 
   it("a turn on a chat whose model has no key ends in chat.error naming the secret", async () => {

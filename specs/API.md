@@ -1409,6 +1409,7 @@ is one the same way, with no strut change per host:
    prefixed with which app it is about); `ui/open-link` opens a strut deep
    link (`?wf=`, `?run=`, `?job=`, `?app=` with its `input`, `?artifact=`)
    in place and anything else in a new tab. A theme change is a `ui/notifications/host-context-changed`.
+   Strut's UI sends its brand in the host context too (§14.12).
    Strut's UI opens two of them BESIDE the page, in a side panel, rather than
    navigating away from it (below, "The side panel").
 4. **Open it where a link says.** A deep link to an app is
@@ -1844,7 +1845,7 @@ What it calls, beyond §9.1, §12 and §14.2:
 
 | Step | Config | Result |
 | ---- | ------ | ------ |
-| `llm/models` | `{}` | what `GET /llm/models` serves: `{ default, models: [{ name, provider, modelId, alias, default, available }], keyNames }` — `available` when the provider has a key here, never the key. The picker sends the choice as the turn's `params.model` |
+| `llm/models` | `{}` | what `GET /llm/models` serves: `{ default, models: [{ name, provider, modelId, alias?, default, available, contextLimit?, pricing? }], listed, keyNames }` — every model aieo knows; `available` when the deployment's `STRUT_MODELS` lists it (`listed: true`), else when the provider has a key here, never the key; `pricing` is USD per million tokens, present only where the model's own rate is known (today Maple's and Numes'). The picker sends the choice as the turn's `params.model`, and a remembered choice no longer listed as none |
 | `job/verify` | `{ job, claims?, detach? }` | `POST /jobs/:id/verify` (§5.5) as a person: every check on the job's claims (or `claims`) against its newest turn, `manual` ones too — the pass and the ledger, or with `detach` `{ job, started: true }` at once, the verdicts on `job/updates` (`evidence`, then `verify` done) |
 | `job/evidence` | `{ job, claim, runId, supports, content, slot? }` | `POST /claims/:id/evidence { job, runId }` as a person: `asserted`, `by: person`, about that turn; `slot` answers a check waiting on a person's look. `{ ok, evidence, filled, subject }` |
 | `github/pr-status` | `{ repo, number }` | the pull request on GitHub now, read with the viewer's own `GITHUB_TOKEN` (an actor secret, `PUT /actors/:actor/secrets/GITHUB_TOKEN`): `{ url, repo, number, title, state: open \| draft \| merged \| closed, author, head, base, headSha, body, mergeable, checks: [{ name, status: failed \| running \| passed \| skipped, url }], counts }`, checks failed first. Errors `github_unauthorized:`, `github_not_found:`, `github_rate_limited:`, `github_error:` |
@@ -1874,6 +1875,41 @@ whoever took it. Share puts a conversation in everyone's list
 (`conversation/update { shared }`); a reply has Copy. A deliverable `strut/views`
 draws shows in the thread; the rest is handed to the host as
 `?artifact=<served path>` or `?app=<key>` (`ui/open-link`, §14.3).
+
+### 14.12 Branding — the look every app here is shown in (`src/brand.ts`)
+
+A page takes its look from its host: the kit's stylesheet reads the MCP
+Apps style variables a host sends in `hostContext.styles.variables`
+before its own defaults (`kit/src/styles/base.css`). Strut keeps one
+brand per server and its UI sends it to every app it hosts (§14.3), here
+or a peer's, published before the brand or after. No app is rebuilt: a
+change shows the next time a page loads.
+
+```
+GET /brand          any credential
+PUT /brand          full scope: { color?, colorDark?, radius?, font? }
+```
+
+Both answer `{ brand, styles }`. `PUT` replaces the whole brand: a field
+left out (or `""`, `null`) is unset, and `{}` resets it (`styles: null`).
+400 with `error` on a bad field, and nothing changes. Kept in
+`<dataDir>/brand.json`, so it moves and is backed up with the data.
+
+| Field | What | Sent as (light and dark) |
+|---|---|---|
+| `color` | `#rrggbb` (or `#rgb`): primary buttons, the selected item, focus rings | `--color-background-inverse`, `--color-ring-primary`, and `--color-text-inverse`: near-black or white, whichever reads better on it |
+| `colorDark` | the color in the dark theme; `color` when unset (and the reverse) | the same, in the dark theme |
+| `radius` | a length in `px`, `rem` or `em` (`0.5rem`) | `--border-radius-md` |
+| `font` | a font-family list (`"Avenir Next", system-ui, sans-serif`). An app's page loads no font from the network, so only fonts the viewer's machine has render | `--font-sans` |
+
+`styles` is what a host sends: `{ light: { variables }, dark: { variables } }`,
+the standard names only. The MCP Apps client refuses a host context that
+carries a name the spec does not list, so `--primary` or `--chart-1` can
+never be sent this way. In the kit, the color is `bg-primary` /
+`text-primary-foreground`, `ring`, and the sidebar's primary; the radius is
+every `rounded-*`. An app that names a color of its own (`bg-blue-500`)
+keeps it. A visitor's page (§17) is not branded: it has no credential to
+read the brand with.
 
 ## 15. Dictation — speech to text, its models and the user's vocabulary
 

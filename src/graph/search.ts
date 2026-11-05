@@ -33,7 +33,7 @@ import { fromNeo4j } from "./neo4j-engine.js";
 import { nodeTitle } from "./title.js";
 import { worldTime } from "./world-time.js";
 import type { SchemaResolver } from "./schema-resolver.js";
-import { GLOBAL_VECTOR_INDEX } from "./schema-seed.js";
+import { GLOBAL_VECTOR_INDEX, SEARCH_TEXT_INDEX } from "./schema-seed.js";
 import { OWN_CREATED_AT, SCHEMA_CORE_PROPERTIES, getStrutSchema, vectorIndexedPairs, vectorStem } from "./strut-schemas.js";
 
 // ── Constants (jarvis) ──────────────────────────────────────────────────────
@@ -1094,6 +1094,12 @@ export class Neo4jReader implements GraphReader {
       const hidden = new Set(await this.hiddenDomains(tx));
       const visibleDomains = allDomains.filter((d) => !hidden.has(d));
 
+      // Index existence is read once, up front. A graph strut alone holds has
+      // ONE keyword index, over every node's search text (`SEARCH_TEXT_INDEX`,
+      // schema-seed.ts); a graph jarvis shares has one per domain.
+      const existing = new Set((await this.rows(tx, `SHOW INDEXES YIELD name RETURN name`)).map((r) => String(r["name"])));
+      const searchText = existing.has(SEARCH_TEXT_INDEX);
+
       // Filter: namespace + visibility + optional type list; untyped search
       // also excludes types whose domain is hidden.
       const clauses = [`n.namespace = $namespace`, visibility("n") + this.sc("n")];
@@ -1121,14 +1127,25 @@ export class Neo4jReader implements GraphReader {
       if (linked) clauses.push(linked);
       // A scope is a WHERE on the index's rows too.
       const postFilter = Boolean(excludeRe || linked || this.scope);
-      const filter = clauses.join(" AND ");
       const cap = fetchLimit(limit, skip);
 
-      // Index routing — `routeIndexes` above. Existence is read once, up
-      // front; a typed search routes through the types' domain indexes.
-      const existing = new Set((await this.rows(tx, `SHOW INDEXES YIELD name RETURN name`)).map((r) => String(r["name"])));
+      // An explicit `domains` filter picks indexes on a graph jarvis shares;
+      // over the one search-text index it is a WHERE on the domain labels.
+      if (searchText && domains.length) {
+        clauses.push(`ANY(l IN labels(n) WHERE l IN $domain_labels)`);
+        base["domain_labels"] = domains.map((d) => `Domain_${d}`);
+      }
+      const filter = clauses.join(" AND ");
+
+      // Index routing — `routeIndexes` above; a typed search routes through
+      // the types' domain indexes. The keyword half reads the search-text
+      // index where it exists, its type and domain filters a WHERE after the
+      // index's limit, like the vector half's.
       const typeDomains = types?.length ? await this.typeDomains(types) : undefined;
-      const ftIndexes = routeIndexes({ domains, typeDomains, visibleDomains, existing, suffix: "_attribute_index_v2", global: DATA_BANK_FULLTEXT_INDEX_V2 });
+      const ftIndexes = searchText
+        ? [SEARCH_TEXT_INDEX]
+        : routeIndexes({ domains, typeDomains, visibleDomains, existing, suffix: "_attribute_index_v2", global: DATA_BANK_FULLTEXT_INDEX_V2 });
+      const ftFiltered = postFilter || (searchText && Boolean(types?.length || domains.length));
       const vecIndexes = routeIndexes({ domains, typeDomains, visibleDomains, existing, suffix: "_vector_index", global: GLOBAL_VECTOR_INDEX });
 
       let fulltext: Hit[] = [];
@@ -1152,10 +1169,11 @@ export class Neo4jReader implements GraphReader {
 
       if (q && ftIndexes.length) {
         fulltext = await layer("fulltext", async () => {
-          // `exclude` and `linked` are a WHERE after the index's limit, so
-          // they widen the limit the way a typed vector query widens k.
+          // `exclude` and `linked` (and over the search-text index, `type`
+          // and `domains`) are a WHERE after the index's limit, so they widen
+          // the limit the way a typed vector query widens k.
           const query = (lucene: string) =>
-            postFilter ? overfetch(cap, (k) => runFulltext(ftIndexes, lucene, k)) : runFulltext(ftIndexes, lucene, cap);
+            ftFiltered ? overfetch(cap, (k) => runFulltext(ftIndexes, lucene, k)) : runFulltext(ftIndexes, lucene, cap);
           let hits = await query(buildFulltextQuery(q));
           // Fuzzy fallback on zero hits (no gs operators → always eligible),
           // except for an exact query: its fragments ORed back together are

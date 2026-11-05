@@ -196,5 +196,5 @@ export interface RunSummary {
 /** `llm/models`. */
 export interface ModelCatalog {
   default: string;
-  models: Array<{ name: string; provider: string; modelId: string; alias: string; default: boolean; available: boolean }>;
+  models: Array<{ name: string; provider: string; modelId: string; alias?: string; default: boolean; available: boolean }>;
 }

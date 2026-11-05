@@ -1,6 +1,8 @@
 # Ontology: one native seed, runtime types, no Jarvis library in strut
 
-> **Status (2026-11-05): ruled (Evan, the same day; §9).** Written after a read of
+> **Status (2026-11-05): ruled (Evan, the same day; §9).** Built: item 1
+> (#536); items 2 and 4 (#537, item 4 on graphs without jarvis only). Item 3
+> waits on stakgraph (§8). Written after a read of
 > `main` @3e0f23b and three boots of a fresh strut on a throwaway Neo4j
 > 5.26.32 (`STRUT_WORKSPACE_BACKEND=graph`, embeddings on), one per mode:
 > - the Jarvis library seed off;
@@ -220,6 +222,15 @@ the library on.
    - On a swarm, Neo4j builds the index in the background over every node
      (~330k on swarm38). Compare rankings on a copy before switching swarm
      search to it.
+   - **Built for graphs without jarvis only** (no `About` node; the seed
+     creates the index there, and the reader uses it wherever it exists).
+     Swarms keep jarvis's per-domain indexes. Those index every searchable
+     field of every library type, so they also match fields outside a
+     type's own `index`: a `Function`'s `body`, whose words a code search
+     on a swarm finds today. The search text holds only the declared
+     `index` fields, so switching swarms would lose those matches. Doing it
+     would mean adding `body` to the code types' `index` lists, a jarvis
+     change that re-embeds every code node.
 
 ## 7. What changes for Stadeum
 
