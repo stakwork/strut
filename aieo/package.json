@@ -15,7 +15,7 @@
     "directory": "aieo"
   },
   "scripts": {
-    "build": "npx --yes -p tsup@8.5.1 -p typescript@5.9.3 tsup",
+    "build": "node check-install.mjs && npx --yes -p tsup@8.5.1 -p typescript@5.9.3 tsup",
     "try": "tsx --env-file=../.env scripts/try.ts",
     "try-anthropic": "tsx --env-file=../.env scripts/try-anthropic.ts",
     "try-kimi": "tsx --env-file=../.env scripts/try-kimi.ts",
