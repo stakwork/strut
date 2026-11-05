@@ -67,9 +67,8 @@ export interface RunLaunchQuery {
   attachments?: AttachmentInput[];
   /** The conversation a JOB turn belongs to (`POST …/run { conversation }`,
    *  plans/jamie-app.md §1.2): its wake goes there when the turn ends.
-   *  Strut's own app alone names one, and only its viewer's own
-   *  (`<actor>`, `<actor>/…`): a captcha's answer is a job turn the page
-   *  launches. */
+   *  Strut's own app alone names one, and only one its viewer may
+   *  continue (§2.2): a captcha's answer is a job turn the page launches. */
   conversation?: string;
 }
 

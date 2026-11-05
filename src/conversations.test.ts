@@ -331,4 +331,50 @@ describe("conversations through a whole strut", () => {
     assert.equal((await get("bob", "c-2", "", "peer")).status, 404);
     assert.equal((await update("bob", { session: "c-2", seen: true }, "peer")).status, 403);
   });
+
+  it("a person's token continues a conversation it took a turn in, or a shared one, as it is; never another's", async () => {
+    const { say, req, get, update, idle, requests, as } = await boot();
+    // Hive's ids are bare: its turns run with the deployment's key.
+    await say("alice", "c-1", "flights to Lisbon?");
+    await say("bob", "c-2", "bob's plan");
+    const sessionIds = async () => ((await req("/sessions")).body.sessions as Array<{ id: string }>).map((s) => s.id).sort();
+    const turn = (actor: string, session: string, prompt: string) =>
+      req(`/workflows/${ORCHESTRATOR_WORKFLOW}/run`, { method: "POST", body: { input: { prompt, session } }, headers: as(actor, "peer:person") });
+
+    // Alice took a turn in c-1: her token continues it, and the agent remembers.
+    const mine = await turn("alice", "c-1", "and hotels?");
+    assert.equal(mine.status, 202, JSON.stringify(mine.body));
+    await idle();
+    const events = (await req(`/workflows/${ORCHESTRATOR_WORKFLOW}/runs/${mine.body.runId}/events`)).body as any[];
+    assert.equal(events.find((e) => e.type === "run.start").continues, "c-1");
+    assert.ok(JSON.stringify(requests.at(-1).messages).includes("flights to Lisbon?"), "the thread's history was sent");
+    assert.deepEqual((await get("alice", "c-1")).body.turns.map((t: any) => t.prompt), ["and hotels?", "flights to Lisbon?"]);
+    assert.deepEqual(await sessionIds(), ["c-1", "c-2"], "no peer/c-1");
+
+    // Bob's: refused, and nothing launched.
+    const theirs = await turn("alice", "c-2", "let me in");
+    assert.equal(theirs.status, 403);
+    assert.match(theirs.body.error, /^conversation_not_yours: "c-2"/);
+    assert.equal((await get("bob", "c-2")).body.turns.length, 1);
+
+    // Shared, it is hers to join; her turn makes her a participant, so she
+    // keeps it once it is unshared.
+    await update("bob", { session: "c-2", shared: true });
+    assert.equal((await turn("alice", "c-2", "joining")).status, 202);
+    await idle();
+    await update("bob", { session: "c-2", shared: false });
+    assert.equal((await turn("alice", "c-2", "still here")).status, 202);
+    await idle();
+    assert.deepEqual((await get("bob", "c-2")).body.participants, ["bob", "alice"]);
+    // Carol only read it while it was shared: reading is not a turn.
+    await update("bob", { session: "c-2", shared: true });
+    assert.equal((await get("carol", "c-2")).status, 200);
+    await update("bob", { session: "c-2", shared: false });
+    assert.equal((await turn("carol", "c-2", "me too")).status, 403);
+
+    // An id that is no conversation stays in the peer namespace, as before.
+    assert.equal((await turn("alice", "scratch", "hello")).status, 202);
+    await idle();
+    assert.deepEqual(await sessionIds(), ["c-1", "c-2", "peer/scratch"]);
+  });
 });

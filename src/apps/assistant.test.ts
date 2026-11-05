@@ -361,7 +361,19 @@ describe("strut/assistant — its steps, as its viewer", () => {
     const { runId } = await alice.ok("run/launch", { workflow: "job", job: "alice-j1", input: { prompt: "[captcha-answer] {}" }, conversation: "alice/c1" });
     const start = (await alice.ok("run/events", { workflow: "job", runId })).find((e: any) => e.type === "run.start");
     assert.deepEqual([start.conversation, start.job, start.wakeAsked], ["alice/c1", "alice-j1", true]);
-    assert.match((await alice.call("run/launch", { workflow: "job", job: "alice-j2", input: { prompt: "x" }, conversation: "bob/c1" })).error!, /not the viewer's own/);
+    assert.match((await alice.call("run/launch", { workflow: "job", job: "alice-j2", input: { prompt: "x" }, conversation: "bob/c1" })).error!, /conversation_not_yours: "bob\/c1"/);
+    // A conversation she took a turn in under a bare id (a Hive one: launched with the key) is hers to name (plans/jamie-app.md §2.2).
+    const hive = await strut.app.request(`/workflows/${ORCHESTRATOR_WORKFLOW}/run`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${KEY}`, "x-strut-actor": "alice" },
+      body: JSON.stringify({ input: { prompt: "from hive", session: "c-hive-1" } }),
+    });
+    assert.equal(hive.status, 202);
+    const hiveRun = ((await hive.json()) as { runId: string }).runId;
+    assert.equal((await alice.ok("run/get", { workflow: ORCHESTRATOR_WORKFLOW, runId: hiveRun, wait: 20_000 })).status, "success");
+    const named = await alice.ok("run/launch", { workflow: "job", job: "alice-j3", input: { prompt: "x" }, conversation: "c-hive-1" });
+    assert.equal((await alice.ok("run/events", { workflow: "job", runId: named.runId })).find((e: any) => e.type === "run.start").conversation, "c-hive-1");
+    assert.match((await page(ASSISTANT_APP, "bob").call("run/launch", { workflow: "job", job: "bob-j1", input: { prompt: "x" }, conversation: "c-hive-1" })).error!, /conversation_not_yours/, "never one bob had no turn in");
     assert.match((await alice.call("run/launch", { workflow: ORCHESTRATOR_WORKFLOW, input: { prompt: "x", session: "alice/c3" }, conversation: "alice/c1" })).error!, /a JOB turn belongs to/);
 
     // A model-written app may not name one.

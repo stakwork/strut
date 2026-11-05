@@ -41,7 +41,7 @@ import { PromoteFlyout } from "./components/PromoteFlyout";
 import { JobTimeline, fmtTime } from "./components/JobTimeline";
 import { RunTime } from "./components/RunTime";
 import { ThreadFlyout } from "./components/ThreadFlyout";
-import { AppHost } from "./components/AppHost";
+import { AppWithPanel } from "./components/AppWithPanel";
 import { AppUsageFlyout } from "./components/AppUsageFlyout";
 import { SoloApp } from "./components/SoloApp";
 import { Store } from "./components/Store";
@@ -944,7 +944,12 @@ function Shell() {
     setSelectedApp(name);
     setAppInput(input ?? null);
   }, []);
-  /** A strut deep link the app's page asked to open (`ui/open-link`). */
+  /** A strut deep link the app's page asked to open (`ui/open-link`). The
+   *  page in the canvas area sends a file or another app to its side panel
+   *  first (./components/AppWithPanel), so from it this is the page's own
+   *  input, a job or a workflow; an app in the job timeline or the viewer
+   *  sends them all here. False — nothing here opens it in place (a file
+   *  from one of those) — and it opens in a new tab. */
   const navigateFromApp = useCallback((params: Record<string, string>) => {
     if (params["app"]) return selectApp(params["app"], params["input"]);
     if (params["job"]) return selectJob(params["job"]);
@@ -955,7 +960,9 @@ function Shell() {
       setSelectedRun(params["run"] ?? null);
       setEvents([]);
       closeFlyout();
+      return;
     }
+    return false;
   }, [selectApp, selectJob]);
 
   // A run opened from the timeline (or the job's run list): the run canvas
@@ -1308,14 +1315,15 @@ function Shell() {
   }, []);
 
   // The selected app's page (plans/apps.md §7.3), in the canvas area,
-  // opened with `?input=`. A peer's page gets no builder chat, and of its
-  // links only one to an app on that peer opens in place (AppHost): the
-  // rest are the peer's (plans/apps.md §7.4). Alone (`?solo=1`) it is
-  // ./components/SoloApp.
+  // opened with `?input=`. A file or another app it links to opens in the
+  // side panel beside it (./components/AppWithPanel, plans/jamie-app.md §4).
+  // A peer's page gets no builder chat, and of its links only a file it
+  // serves or an app on that peer opens here (AppHost): the rest are the
+  // peer's (plans/apps.md §7.4). Alone (`?solo=1`) it is ./components/SoloApp.
   const appToolArgs = appToolInput(appInput);
   const appView = selectedApp
     ? appEntry
-      ? <AppHost
+      ? <AppWithPanel
           key={`${appKey(appEntry)}@${appEntry.activeVersion}`}
           app={{ name: appEntry.name, version: appEntry.activeVersion, ...(appEntry.peer ? { peer: appEntry.peer } : {}) }}
           reload={appReload}

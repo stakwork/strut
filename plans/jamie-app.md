@@ -1,6 +1,6 @@
 # Jamie as a strut app, and one wake for every host
 
-> **Status (2026-11-05): proposed; §1 (one wake) built — §1.6; §2 (conversations) built — §2.1; §3 (first-party apps) built — §3.1; §5 (the app) built — §5.1; Hive's wake half (§6.1) built — stakwork/hive#5705.** Written after a read of strut `main`
+> **Status (2026-11-05): proposed; §1 (one wake) built — §1.6; §2 (conversations) built — §2.1; §3 (first-party apps) built — §3.1; §4 (the host panel) built — §4.1; §5 (the app) built — §5.1; Hive's wake half (§6.1) built — stakwork/hive#5705.** Written after a read of strut `main`
 > @e1c45ad, hive `origin/master` @c692b96bf, sphinx `origin/master`
 > @74c12954 (Peel's bridge) and sphinx-voice `origin/main` @ba18f12. The
 > owner agreed four things in conversation, marked **agreed** below: a
@@ -57,6 +57,7 @@ drifted (§1.1).
 | Order | **agreed.** Wake and conversation index first (server-side, testable with no UI, Hive can use them before the app exists), then the tier, then the app, then the host panel and Hive's frame. |
 | Canvas, initiatives | Out of scope here. `org-home-swarm.md` makes them apps of their own. |
 | Shared conversations | **Kept** (owner, 2026-11-04; open question 1). A conversation can have several people: it is listed for everyone who took a turn in it (its turns' actor, else principal), and a `shared` flag makes it readable to any actor on this strut before their first turn. Strut cannot check org membership; on a swarm every token holder is an org member. Taking a turn makes you a participant. Calls (one conversation per call, each turn as its speaker), tribe threads and Hive's share links already work this way. |
+| Continuing a conversation | **Ruled** (owner, 2026-11-04). A person's turn — through a person token, or strut's own app — may continue any conversation they took a turn in, or a shared one, under whatever id it has: Hive's bare ids included. Another person's is refused. Reading it while it was shared is not a turn. Built in §2.2. |
 
 ## 1. One wake (proposed)
 
@@ -394,6 +395,36 @@ started (`assistantJobs` over its events), status while in flight.
 - **Not built**: the jobs in a list row (read per turn in `get`), the one-off
   export of Hive's renamed titles and archived flags (§7).
 
+### 2.2 Continuing a conversation (ruled and built 2026-11-04)
+
+A person token's turn and a first-party page's open the person's own ids
+(`<actor>`, `<actor>/…`) as they are, and any other under their own
+namespace (`peer/…`, `app/<name>/<viewer>/…`). Hive's conversations are
+bare ids, so the app could read them and not continue them, and a shared
+conversation could be read by everyone and continued by its starter
+alone. Now the index decides the rest (`continuesFor`, createStrut;
+`Conversations.mayContinue`):
+
+- **Who.** A launch of a conversation workflow (`params.wake`) whose
+  `input.session` is not the person's own id: a person token's (`POST
+  …/run`, either route) or a first-party page's (`run/launch`).
+- **May.** A conversation the person took a turn in (a turn whose `by`
+  is theirs), or a shared one, opens as it is. The launch records
+  `continues: <id>` on `run.start`; `bindPeer` and `bindApp` open that id
+  as it is, a resume reads it back (`readRunStart`), and the projection
+  maps the run's thread to it. Their turn makes them a participant, so
+  unsharing it later leaves it theirs.
+- **May not.** Another person's conversation is refused before anything
+  launches: `403` from the route, a step error from `run/launch`,
+  `conversation_not_yours: "<id>" is another person's conversation …`.
+  Having opened it while it was shared is reading, not a turn.
+- **No conversation** (no record, and none built from the session): as
+  before, the id opens in the caller's namespace. A new conversation's id
+  is the person's own (`<actor>/<id>`).
+- **Unchanged.** The deployment's key (Hive) opens any id as it is; a
+  plain peer's ids stay under `peer/`; a model-written page's under
+  `app/`.
+
 ## 3. First-party apps (built — §3.1)
 
 The app rules assume a model wrote the page. For an app strut ships, five
@@ -463,13 +494,12 @@ host's sandboxed panel (§4), never in its own document.
 - **The reserved name**: `reservedAppName` (`src/apps/files.ts`) in
   `apps.publish` (a source other than `seed`), `apps.preview`, `POST /apps`
   and the package install's checks.
-- Not built: Hive's bare-id conversations (every one it has today) are
-  listed in the app and readable by their participants, but a first-party
-  page cannot CONTINUE one: it is not under `<actor>/`, so its turn opens
-  under the app. Opening a conversation the index lists the viewer in (or
-  a shared one) is the next rule to rule on.
+- Hive's bare-id conversations (every one it has today) are listed in the
+  app and readable by their participants; continuing one was ruled and
+  built after this (§2.2): a participant's turn, or anyone's in a shared
+  one, opens it as it is.
 
-## 4. What the app cannot frame (proposed)
+## 4. What the app cannot frame (built — §4.1)
 
 The app's CSP has `frame-src 'none'` (`src/apps/build.ts:176`), and
 `run/files` returns base64, 2 MB at most. So the app cannot show, in its
@@ -486,6 +516,49 @@ Hive's frame the whole strut page is the frame, so the panel is inside
 it too. The assistant app draws inline what `strut/views` draws
 (markdown, text, sanitized HTML, images, sheets, work products, the run
 graph, spot checks) and hands the rest to the panel.
+
+### 4.1 As built (2026-11-05, branch `feature/app-host-panel`)
+
+- **The contract for the app** (what item 5 builds on): `useHost().openLink`
+  with `?artifact=<encodeURIComponent(served path)>` or `appLink(key,
+  input)`. A served path is what `isServedFilePath` takes: a job's files,
+  a run's artifacts, either behind `/peers/<id>` hops (a peer-tagged
+  deliverable's path is `peerArtifactPath`). Nothing new in the kit.
+- **Which links** (`panelTarget`, `web/src/app-links.ts`, tested in
+  `web/src/app-host.test.ts`): `?artifact=` with a served path, else
+  `?app=` naming an app not on screen. A link to the page itself stays its
+  input in place, and `?wf=`, `?run=`, `?job=` keep today's behavior: the
+  full UI navigates, the page alone opens a new tab. `artifact` joined
+  `strutLink`'s params. A peer's page names files where it lives, so its
+  `?artifact=<path>` becomes `/peers/<peer><path>` (`peerAppLink`), as its
+  `?app=<name>` already became `@<peer>/<name>`.
+- **The panel** (`web/src/components/AppWithPanel.tsx`) wraps `AppHost`
+  in the canvas area (`app.tsx`) and alone (`SoloApp.tsx`). The page's frame
+  is never moved, so it keeps its state. A file opens in `ArtifactViewer`
+  (`solo` with `onClose`), so it gets the viewer's rules: a page strut
+  serves runs under its file token (`?t=`; a strut with no secret to sign
+  one falls back to `?key=`, as the viewer does everywhere), and a peer's
+  file is shown from its bytes, scripts off, with no credential in any URL. An app opens in
+  `AppHost` under a title bar; its version comes from the one listing it is
+  in (`useListedApp`, `web/src/use-listed-app.ts`, now SoloApp's lookup
+  too). A new link replaces the content, and an app's new input goes to it
+  in place. ✕ closes the panel. Its left edge resizes it: `WidthResizer`,
+  which `FlyoutResizer` is now one config of; frames take no pointer
+  events while a drag is on. Below 760 px of container (a container query)
+  the panel lies over the page. The panel's own app routes links the same
+  way.
+- **Left as they were:** the job timeline's app and the viewer's app keep
+  `navigateFromApp`, which now returns false for a link it does not open
+  (a file), so the link opens in a new tab as before. A visitor's page
+  (`&public=1`) has no panel. The panel is not in the address bar, so a
+  reload closes it.
+- **Checked in the browser pane** against a scratch strut and a peer: a job
+  file (markdown), a peer's HTML (static), `strut/views`, `@p2/strut/views`,
+  resize, close, the narrow overlay, the canvas area and the page alone.
+  The pane refuses any sandboxed frame with a `src` (`ERR_BLOCKED_BY_CLIENT`;
+  the modal viewer's frame is refused the same way), so a local HTML page
+  with its scripts was checked only as far as its tokened URL serving `200`
+  with `sandbox allow-scripts`.
 
 ## 5. The app (proposed)
 
@@ -539,9 +612,9 @@ was open:
   shows, bare ids included, and the server decides. A
   `conversation_not_yours:` refusal (someone who read a conversation while
   it was shared, since unshared) is a plain notice. A captcha's answer
-  still names only the viewer's own `<actor>/…` conversation
-  (`run/launch { conversation }`); widening it to any conversation the
-  viewer may continue waits for §2.2's `mayContinue`.
+  names its conversation the same way: `run/launch { conversation }` takes
+  one the viewer may continue (`mayContinue`: their own, one they took a
+  turn in, a shared one).
 - **The model picker** is `llm/models` (new, `src/steps/lib/llm/models.ts`,
   over `ctx.services.llmModels`, the catalog `GET /llm/models` now reads
   too), its choice per viewer (`useAppState`, Hive's per-user preference),
@@ -569,8 +642,8 @@ was open:
   answered). The captcha is drawn from its manifest through `run/files`;
   the answer is a job turn (`run/launch { job, input: { prompt:
   "[captcha-answer] {…}" } }`) that names the conversation — `run/launch`
-  now takes `conversation`, from a first-party page only and only the
-  viewer's own, so the wake finds it. Only a person who ran the job is
+  now takes `conversation`, from a first-party page only and only one
+  the viewer may continue, so the wake finds it. Only a person who ran the job is
   offered the answer.
 - **Deliverables**: inline what `strut/views` draws (`ArtifactView`,
   `SheetView`, `DocumentView`) through `run/files` on the run that made
@@ -651,7 +724,7 @@ are lost.
    `conversation/*` steps and routes, fork, `wait`.
 3. **First-party apps** (strut, §3; built — §3.1): the reserved `strut/`
    name on every door, the tier's rights in `step_run`, `proposal/decide`.
-4. **The host panel** (strut web, §4).
+4. **The host panel** (strut web, §4; built — §4.1).
 5. **`strut/assistant`** (strut, §5; built — §5.1), the `llm/models` step.
 6. **Hive** (§6.1), behind the 202's `wake: true`.
 7. **Peel's bridge, voice** (§6.2, §6.3).

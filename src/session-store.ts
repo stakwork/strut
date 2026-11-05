@@ -68,9 +68,13 @@ export function peerScoped(id: string): string {
  *  scope `peer:person`) and the id is that person's own — `<person>` or
  *  `<person>/…` — which opens as it is: the person's thread with this
  *  strut, the one their host's launches use too
- *  (plans/chained-orchestrators.md §2). */
-export function peerSessionId(id: string, person?: string): string {
+ *  (plans/chained-orchestrators.md §2). So does the conversation the run
+ *  CONTINUES (`continues`, `RunEvent.continues`): one the person took a
+ *  turn in, or a shared one, that the launcher checked against the
+ *  conversation index (plans/jamie-app.md §2.2). */
+export function peerSessionId(id: string, person?: string, continues?: string): string {
   if (person && (id === person || id.startsWith(`${person}/`))) return id;
+  if (person && continues && id === continues) return id;
   return peerScoped(id);
 }
 
@@ -98,10 +102,12 @@ function actorSegment(actor: string): string {
  *  viewer's) opens as it is, as the job agent's thread is its job id. A
  *  FIRST-PARTY app's run (`firstParty`, plans/jamie-app.md §3) opens its
  *  viewer's own sessions — `<actor>`, `<actor>/…` — as they are, as a
- *  person token does (`peerSessionId`): the person's conversations. */
-export function appSessionId(id: string, app: string, actor?: string, job?: string, firstParty?: boolean): string {
+ *  person token does (`peerSessionId`): the person's conversations; and
+ *  the conversation the run CONTINUES (`continues`), as a person token's. */
+export function appSessionId(id: string, app: string, actor?: string, job?: string, firstParty?: boolean, continues?: string): string {
   if (job && id === job) return id;
   if (firstParty && actor && (id === actor || id.startsWith(`${actor}/`))) return id;
+  if (firstParty && actor && continues && id === continues) return id;
   const prefix = `${APP_NAMESPACE}${app}/${actor ? `${actorSegment(actor)}/` : ""}`;
   return id.startsWith(prefix) ? id : `${prefix}${id}`;
 }

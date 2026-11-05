@@ -470,6 +470,14 @@ export interface RunEvent {
    *  open that actor's sessions (plans/chained-orchestrators.md §2). Read
    *  back by a resume. */
   peerPerson?: true;
+  /** On `run.start`: the conversation a PERSON's turn continues
+   *  (plans/jamie-app.md §2.2) — a session outside the person's own ids
+   *  (`<actor>`, `<actor>/…`) that they took a turn in, or a shared one,
+   *  checked against the conversation index at launch. The run opens it as
+   *  it is; a person token's run would open any other id under `peer/`, a
+   *  first-party page's under `app/`. Read back by a resume and the graph
+   *  projection. */
+  continues?: string;
   /** On a scheduled run's `run.start`: the automation that fired it. */
   automation?: { id: string };
   /** On `run.start`: who launched the run (`actor`) and who pays for it

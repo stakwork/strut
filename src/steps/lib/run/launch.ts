@@ -26,7 +26,7 @@ export default defineStep({
     conversation: z
       .string()
       .optional()
-      .describe("For a job turn (`job`, `builder`): the conversation it belongs to, which strut wakes when it ends. Strut's own app only, the viewer's own conversation."),
+      .describe("For a job turn (`job`, `builder`): the conversation it belongs to, which strut wakes when it ends. Strut's own app only, a conversation the viewer may continue (their own, one they took a turn in, a shared one)."),
   }),
   output: z.any(),
   async run(cfg, ctx: StepContext<StrutCapabilities>) {

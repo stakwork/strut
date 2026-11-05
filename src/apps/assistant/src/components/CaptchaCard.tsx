@@ -14,7 +14,7 @@ import { cn } from "@/lib/utils";
 import { captchaPrompt, cellOf, msLeft, parseCaptcha, tapAt, toggleCell, type CaptchaAnswer, type Tap } from "../lib/jobs";
 import type { FileRun } from "../lib/artifacts";
 import { useViewer } from "../viewer";
-import { isOwn, sendRefusal } from "../lib/chat";
+import { sendRefusal } from "../lib/chat";
 import type { JobView } from "../lib/types";
 import { Notice, errorText } from "./bits";
 import { useJobRun } from "./ArtifactCard";
@@ -74,7 +74,8 @@ export function CaptchaCard({ title, job, path, run: given, conversation }: { ti
         workflow,
         job,
         input: { prompt: captchaPrompt(answer) },
-        ...(conversation && isOwn(conversation, viewer) ? { conversation } : {}),
+        // The server takes a conversation the viewer may continue (plans/jamie-app.md §2.2).
+        ...(conversation ? { conversation } : {}),
       });
       setSent({ state: "sent" });
     } catch (err) {

@@ -2087,6 +2087,7 @@ export async function createStrut<TServices = unknown>(
         ...(p.runStart.automation ? { origin: "schedule" as const, automation: p.runStart.automation } : {}),
         ...(p.runStart.origin === "peer" ? { origin: "peer" as const } : {}),
         ...(p.runStart.origin === "peer" && p.runStart.peerPerson ? { peerPerson: true } : {}),
+        ...(p.runStart.continues ? { continues: p.runStart.continues } : {}),
         // An app's run stays the app's: its sessions under the app's
         // namespace (runner.ts `bindApp`), never the ids its page passed.
         ...(p.runStart.origin === "app" && p.runStart.app ? { origin: "app" as const, app: p.runStart.app } : {}),
@@ -4959,6 +4960,25 @@ export async function createStrut<TServices = unknown>(
    * throws (e.g. a store write failure) so they don't become unhandled
    * rejections.
    */
+  /** The conversation a PERSON's turn continues (plans/jamie-app.md §2.2):
+   *  a person token's launch, or a first-party page's, of a conversation
+   *  workflow names `input.session`. Their own id (`<actor>`, `<actor>/…`)
+   *  opens as it is anyway, and an id outside the index (`peer/…`,
+   *  `app/…`) or no conversation stays in the caller's namespace, as
+   *  before. Any other the index decides: a conversation they took a turn
+   *  in, or a shared one, opens as it is; another person's is refused. */
+  async function continuesFor(flow: Flow, input: unknown, actor: string | undefined): Promise<{ continues?: string } | { refused: string }> {
+    const id = (input as Record<string, unknown> | undefined)?.["session"];
+    if (!actor || typeof id !== "string" || !id || !isConversationFlow(flow)) return {};
+    if (id === actor || id.startsWith(`${actor}/`) || outsideConversations(id) || idProblem(id)) return {};
+    const may = await conversations.mayContinue(id, actor);
+    if (may === true) return { continues: id };
+    if (may === false) {
+      return { refused: `conversation_not_yours: "${id}" is another person's conversation — take a turn in it once a participant shares it, or start your own (an id under "${actor}/")` };
+    }
+    return {};
+  }
+
   function launchDetached(
     flow: Flow,
     body: RunBody,
@@ -5007,6 +5027,9 @@ export async function createStrut<TServices = unknown>(
       savedAttachments?: RunAttachment[];
       /** A wake turn (src/wake.ts): the job run(s) it woke on. */
       wake?: WakeMark;
+      /** The conversation a person's turn continues (`continuesFor`,
+       *  plans/jamie-app.md §2.2): opened as it is. */
+      continues?: string;
     },
   ): string {
     const runId = body.runId ?? generateRunId();
@@ -5029,13 +5052,13 @@ export async function createStrut<TServices = unknown>(
     // shows. The session the run's agent opens (runner.ts bindPeer, bindApp):
     // a plain peer's and an app's are their own namespaces, never a
     // conversation; a person's token and a first-party app (plans/jamie-app.md
-    // §3) open the person's own as they are.
+    // §3) open the person's own as they are, and the one it continues (§2.2).
     const opened = !session
       ? undefined
       : extra?.app
-        ? appSessionId(session, extra.app.name, extra.actor, body.job, extra.app.firstParty)
+        ? appSessionId(session, extra.app.name, extra.actor, body.job, extra.app.firstParty, extra.continues)
         : extra?.origin === "peer"
-          ? peerSessionId(session, extra.peerPerson ? extra.actor : undefined)
+          ? peerSessionId(session, extra.peerPerson ? extra.actor : undefined, extra.continues)
           : session;
     const conversation = opened && isConversationFlow(flow) && !outsideConversations(opened) && !idProblem(opened) ? opened : undefined;
     let principal = extra?.principal;
@@ -5088,6 +5111,7 @@ export async function createStrut<TServices = unknown>(
         ...(extra?.resume ? { resume: true } : {}),
         ...(extra?.origin ? { origin: extra.origin } : {}),
         ...(extra?.origin === "peer" && extra.peerPerson ? { peerPerson: true } : {}),
+        ...(extra?.continues ? { continues: extra.continues } : {}),
         ...(extra?.automation ? { automation: extra.automation } : {}),
         ...(extra?.app ? { app: extra.app } : {}),
         ...(extra?.actor ? { actor: extra.actor } : {}),
@@ -5686,16 +5710,24 @@ export async function createStrut<TServices = unknown>(
       const attachments = parseAttachments(q.attachments);
       if (attachments.length) requireRunFiles();
       // A job turn's conversation (plans/jamie-app.md §5): strut's own app
-      // names its viewer's own — a captcha's answer, a job continued from a
+      // names one its viewer may continue (§2.2: their own, one they took a
+      // turn in, a shared one) — a captcha's answer, a job continued from a
       // card — so the wake finds it. Never another person's, never a page
       // a model wrote.
       if (q.conversation !== undefined) {
         if (!isFirstParty(by.app) || !by.actor) throw new Error("conversation: only strut's own app names the conversation a launch belongs to, for its viewer (plans/jamie-app.md §5)");
-        if (q.conversation !== by.actor && !q.conversation.startsWith(`${by.actor}/`)) throw new Error(`conversation "${q.conversation}" is not the viewer's own (${by.actor}/…)`);
         if (!(JOB_WORKFLOWS as readonly string[]).includes(flow.name)) throw new Error(`conversation names the conversation a JOB turn belongs to (${JOB_WORKFLOWS.join(", ")}), not a run of "${q.workflow}"`);
         const problem = idProblem(q.conversation);
         if (problem) throw new Error(`conversation "${q.conversation}" ${problem}`);
+        const own = q.conversation === by.actor || q.conversation.startsWith(`${by.actor}/`);
+        if (!own && (await conversations.mayContinue(q.conversation, by.actor)) !== true) {
+          throw new Error(`conversation_not_yours: "${q.conversation}" is not a conversation you may continue — your own (${by.actor}/…), one you took a turn in, or a shared one`);
+        }
       }
+      // A first-party page's turn may continue a conversation the viewer
+      // is in (plans/jamie-app.md §2.2).
+      const cont = isFirstParty(by.app) ? await continuesFor(flow, q.input, by.actor) : {};
+      if ("refused" in cont) throw new Error(cont.refused);
       // Dedupe in flight (§5.1): the run launched under this key, while it
       // lives. Keys whose runs have ended are let go here.
       for (const [k, id] of launchKeys) if (!liveKey(k.slice(0, k.indexOf("\0")), id)) launchKeys.delete(k);
@@ -5721,6 +5753,7 @@ export async function createStrut<TServices = unknown>(
           ...(by.app ? { origin: "app" as const, app: by.app } : {}),
           ...(by.mcp?.length ? { mcp: by.mcp } : {}),
           ...(attachments.length ? { attachments } : {}),
+          ...(cont.continues ? { continues: cont.continues } : {}),
         },
       );
       if (key) launchKeys.set(key, runId);
@@ -6012,10 +6045,16 @@ export async function createStrut<TServices = unknown>(
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 404);
     }
     if (peer && !opensTo(flow.peer, scope)) return c.json({ error: notForPeers(name, flow.peer) }, 403);
+    const actor = await resolveActor(c);
+    // A person's turn may continue a conversation they are in
+    // (plans/jamie-app.md §2.2).
+    const cont = scope === "peer:person" ? await continuesFor(flow, body.input, actor) : {};
+    if ("refused" in cont) return c.json({ error: cont.refused }, 403);
     // On file before the run starts, so its first update finds it.
     if (jobCallback !== undefined && body.job) await setJobCallback(jobRoot(dataDir, body.job), jobCallback?.url ?? null);
     const runId = launchDetached(flow, body, {
-      actor: await resolveActor(c),
+      actor,
+      ...(cont.continues ? { continues: cont.continues } : {}),
       ...(peer ? { origin: "peer" as const } : {}),
       ...(scope === "peer:person" ? { peerPerson: true } : {}),
       ...(callback ? { callback } : {}),
@@ -6070,11 +6109,15 @@ export async function createStrut<TServices = unknown>(
     // The version launched must say it, not the active one: an older
     // version is not open to peers because a newer one is.
     if (peer && !opensTo(flow.peer, scope)) return c.json({ error: notForPeers(`${name}@${version}`, flow.peer) }, 403);
+    const actor = await resolveActor(c);
+    const cont = scope === "peer:person" ? await continuesFor(flow, body.input, actor) : {};
+    if ("refused" in cont) return c.json({ error: cont.refused }, 403);
     // On file before the run starts, so its first update finds it.
     if (jobCallback !== undefined && body.job) await setJobCallback(jobRoot(dataDir, body.job), jobCallback?.url ?? null);
     const runId = launchDetached(flow, body, {
       version,
-      actor: await resolveActor(c),
+      actor,
+      ...(cont.continues ? { continues: cont.continues } : {}),
       ...(peer ? { origin: "peer" as const } : {}),
       ...(scope === "peer:person" ? { peerPerson: true } : {}),
       ...(callback ? { callback } : {}),

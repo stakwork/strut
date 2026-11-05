@@ -208,9 +208,16 @@ A workflow that says `peer: person` takes only a person's credential
 person's credential only`). `peer: true` takes both. A run a person's
 credential launched records `peerPerson: true` beside `origin: "peer"` on
 `run.start`, and opens the actor's OWN sessions as they are — `<actor>` and
-`<actor>/…`, the thread the actor's host opens for them here too — while
-every other id it names is still `peer/<id>`; its `job` is still
-`peer/<job>`. Only the same person's credential resumes such a run.
+`<actor>/…`, the thread the actor's host opens for them here too — and so
+does a CONVERSATION it continues: a turn of a conversation workflow (one
+with `params.wake`, the orchestrator) whose `input.session` is a
+conversation the actor took a turn in, or a shared one (§9.1), under
+whatever id it has — Hive's are bare. That run records `continues: <id>`
+on `run.start`. Another person's conversation is a `403`
+(`conversation_not_yours: "<id>" is another person's conversation …`),
+and nothing launches. Every other id it names is still `peer/<id>`; its
+`job` is still `peer/<job>`. Only the same person's credential resumes
+such a run.
 
 The run is **detached**: the 202 comes back before anything executes, the
 run keeps going whether or not you stay connected, and every event is
@@ -385,7 +392,7 @@ One object per line of the run's append-only log. Common fields:
 
 | Type              | Meaning |
 | ----------------- | ------- |
-| `run.start`       | first line; carries `input`, `workflowHash`, `stepHashes` (custom step versions), `params` / `paramOverrides`, `actor` / `principal`, `origin` (`schedule` / `verify` / `peer`), `peerPerson` (a peer run a person's credential launched, §3), `automation`, `callback: { origin }`, `mcp: [{ name, origin }]`, `attachments: [{ name, mediaType, size, path }]`, `parentRunId` when nested, `startedBy` (a job a turn started), `conversation` (the launch's, §3), `wakeAsked: true` (the launch asked for the wake, §3), `wake: { job, runId, peer?, also? }` (a wake turn: the job run it woke on) |
+| `run.start`       | first line; carries `input`, `workflowHash`, `stepHashes` (custom step versions), `params` / `paramOverrides`, `actor` / `principal`, `origin` (`schedule` / `verify` / `peer`), `peerPerson` (a peer run a person's credential launched, §3), `continues` (the conversation a person's turn continues under an id not their own, §3), `automation`, `callback: { origin }`, `mcp: [{ name, origin }]`, `attachments: [{ name, mediaType, size, path }]`, `parentRunId` when nested, `startedBy` (a job a turn started), `conversation` (the launch's, §3), `wakeAsked: true` (the launch asked for the wake, §3), `wake: { job, runId, peer?, also? }` (a wake turn: the job run it woke on) |
 | `step.start` / `step.end` / `step.error` | one execution; `step.error` is final, after retries |
 | `step.retry`      | an attempt failed and another follows |
 | `step.skipped`    | not run: its `when` gate did not match, or every step it depends on was skipped |
@@ -691,6 +698,16 @@ its id is under (`<actor>/…`), and for anyone who opened it while it was
 makes you a participant. The key with no actor reads any conversation; a
 plain peer reads the routes and sees none. A person token may also POST the
 two writes.
+
+**Who may continue one.** The key launches a turn on any id. A person's
+token (§3) and strut's own app (§14.10) open the person's own ids
+(`<actor>`, `<actor>/…`) as they are, and also a conversation the person
+took a turn in, or a shared one, under whatever id it has (Hive's are
+bare): the run records `continues: <id>` on `run.start`. Another person's
+conversation is refused with `conversation_not_yours:` (a `403`, or the
+step's error from the app's `run/launch`). Having opened it while it was
+shared is not a turn. An id that is no conversation stays in the caller's
+own namespace (`peer/<id>`, `app/<name>/<viewer>/<id>`), as before.
 
 | Method | Path | Body | Response |
 | ------ | ---- | ---- | -------- |
@@ -1214,7 +1231,7 @@ as `agentTools: ["run/*"]`, and the §3 … §7 routes' layers one more way
 | `run/get` | `{ workflow, runId, wait? (ms, ≤ 55 000) }` | the summary whole + `artifacts`; in flight, the partial summary (`partial: true`) after holding up to `wait` |
 | `run/events` | `{ workflow, runId, skip? }` | the log as `GET …/events` serves it (transcripts as links, long fields replaced by their size), cut at 5 000 keeping the head and the last event |
 | `run/transcript` | `{ workflow, runId, path, full? }` | `{ path, messages, full?, truncated? }` — one agent's session by step path, the bare array `GET …/transcripts/<path>` serves (a page cannot follow that link); `full` = `?full=1`, a session turn's thread (`full: true` when stitched). Cut at 2 MB of JSON: long strings to head + tail (64k, 16k, then 4k chars), then messages left out after the system prompt and the task; `truncated: { chars, strings, stringMax, messages?: { at, count } }` says what went. No transcript at the path, or a session gone, is an error with the route's 404 message |
-| `run/launch` | `{ workflow, input?, params?, job?, title?, key?, attachments?, conversation? }` | `{ runId }` at once (detached, like `POST …/run`; `params` may narrow a grant, never widen it, and may add to an `approve` list, never take from it); with `key`, the run of this workflow still in flight under the same key: `{ runId, existing: true }`. `attachments`: `POST …/run`'s (§3: `[{ name, mediaType?, data }]`, at most 10, 10 MB each, 5 MB an image, 15 MB together), saved under the run's artifacts as `attachments/<name>` and on each agent's prompt, never in `input`. `conversation`: `POST …/run`'s (§3), the conversation a JOB turn (`job`, `builder`) belongs to, so strut wakes it when the turn ends — strut's own app only, and only its viewer's own conversation (`<actor>`, `<actor>/…`, §14.11) |
+| `run/launch` | `{ workflow, input?, params?, job?, title?, key?, attachments?, conversation? }` | `{ runId }` at once (detached, like `POST …/run`; `params` may narrow a grant, never widen it, and may add to an `approve` list, never take from it); with `key`, the run of this workflow still in flight under the same key: `{ runId, existing: true }`. `attachments`: `POST …/run`'s (§3: `[{ name, mediaType?, data }]`, at most 10, 10 MB each, 5 MB an image, 15 MB together), saved under the run's artifacts as `attachments/<name>` and on each agent's prompt, never in `input`. `conversation`: `POST …/run`'s (§3), the conversation a JOB turn (`job`, `builder`) belongs to, so strut wakes it when the turn ends — strut's own app only, and only a conversation its viewer may continue (their own `<actor>/…`, one they took a turn in, a shared one: §9.1; else `conversation_not_yours:`) |
 | `run/cancel` | `{ workflow, runId, force? }` | `{ ok: true, runId, state }`; a run that is not live is an error. `force: true` is `POST …/cancel { force: true }` (§6.1): it abandons a step that never returns |
 | `run/workflow` | `{ workflow }` | `{ name, description?, category?, activeVersion?, input? (the \`input:\` block), params?, peer? }` |
 | `run/files` | `{ workflow, runId, path }` | `{ path, mediaType, bytes, text }` or `{ …, base64 }`, cut at 2 MB (`truncated: true`) — the job's directory for a job run, else the run's artifacts |
@@ -1272,8 +1289,10 @@ is one the same way, with no strut change per host:
 3. **Answer the two requests a page makes of its host:** `ui/message` goes
    to the host's conversation (strut's UI: the builder chat, the text
    prefixed with which app it is about); `ui/open-link` opens a strut deep
-   link (`?wf=`, `?run=`, `?job=`, `?app=` with its `input`) in place and
-   anything else in a new tab. A theme change is a `ui/notifications/host-context-changed`.
+   link (`?wf=`, `?run=`, `?job=`, `?app=` with its `input`, `?artifact=`)
+   in place and anything else in a new tab. A theme change is a `ui/notifications/host-context-changed`.
+   Strut's UI opens two of them BESIDE the page, in a side panel, rather than
+   navigating away from it (below, "The side panel").
 4. **Open it where a link says.** A deep link to an app is
    `?app=<name>&input=<the app's own query string>` (the kit's
    `appLink(name, input)`): read `input` back as flat strings —
@@ -1300,12 +1319,15 @@ launch. Open to every app on the peer; a plain peer key gets none of it.
 Strut's UI lists each peer's apps beside its own as `?app=@<peer>/<name>`;
 for one, it leaves out the version select, the tab toggle and the builder
 button, answers no `ui/message`, and opens in place only a link to an app
-on that peer (`?app=<name>` from its page is `@<peer>/<name>`).
+on that peer (`?app=<name>` from its page is `@<peer>/<name>`) or a file the
+peer serves (`?artifact=<path>` from its page is `/peers/<peer><path>`),
+both in the side panel.
 With `&solo=1` beside `?app=` (any app, here or a peer's) the UI renders the
 page ALONE, nothing of strut's around it — what a native host such as Peel
 opens in a web view of its own: `/?key=<the local strut's key>&app=@<peer>/<name>&solo=1`,
 with `&input=` for a deep link. A link the page opens to itself changes
-`input` in place, the URL following (replaced, as the full UI does); any
+`input` in place, the URL following (replaced, as the full UI does); a
+file or another app opens in the side panel inside the page (below); any
 other link opens in a new window.
 Alone, the page reads only the listing the app is in — `GET /apps`, or that
 one peer's `GET /peers/<id>/apps` — then the app's files and its relay: no
@@ -1322,6 +1344,32 @@ listing holds one, so the page reads none, and its files are served at
 file token and identity `app:<name>@preview-<hex>` with them. `step_run`
 checks its calls against the preview's own manifest and the usage
 monitor does not count them.
+
+**The side panel** (`plans/jamie-app.md` §4; `web/src/components/AppWithPanel.tsx`,
+`panelTarget` in `web/src/app-links.ts`). An app's document frames
+nothing (`frame-src 'none'`) and `run/files` returns 2 MB at most, so an
+HTML page an agent wrote, another app, a PDF or a video cannot show inside
+it. The page hands such a thing to its host with `ui/open-link`, and
+strut's UI — in the canvas area and alone (`&solo=1`, which is how Hive
+and Peel frame an app, so the panel is inside that one page) — opens two
+deep links in a panel BESIDE the page, which stays on screen with its
+state:
+
+| Link | The panel shows |
+|---|---|
+| `?artifact=<path>` | the file through the artifact viewer, as "One file alone" below reads it: `path` must be a served file (`isServedFilePath`: `/jobs/<job>/files/…`, `/artifacts/<runId>/…`, either behind `/peers/<id>` hops), else the link is not the panel's. A page this strut serves runs its scripts under its file token (`?t=`, the one credential a file URL carries; a strut with no secret to sign one falls back to `?key=`, as the viewer does everywhere); a peer's is read with the UI's credential and shown from its bytes, scripts off, no credential in any URL. |
+| `?app=<key>&input=…` | another app (`@<peer>/<name>` a peer's, a key may pin `@vN`) under a bar with its title, opened with `input`. A link to the page on screen is not the panel's: its input goes to it in place, as before. |
+
+A new link replaces what the panel shows (a link to the app already in it
+is its new input, in place); ✕ closes it; its left edge drags its width,
+kept in that browser; in a container narrower than 760 px it lies over the
+page. Links from the app in the panel route the same way — a file or a
+third app replaces it, a link to the page beside it is that page's. Every
+other link (`?wf=`, `?run=`, `?job=`) is followed as before: the full UI
+navigates, the page alone opens a new window. The panel is not in the
+address bar (a reload closes it), and a visitor's page (`&public=1`) has
+none. The kit's `appLink(name, input)` builds the app link; a file's is
+`?artifact=<encodeURIComponent(path)>`.
 
 **The store front** (`plans/marketplace.md` §7; `web/src/components/Store.tsx`,
 `web/src/store-links.ts`). `?store=1` renders a third page alone: an index
@@ -1370,8 +1418,9 @@ peer's file is read with the UI's own credential and shown from its bytes
 (an object URL, or the page's text), because no file token this strut
 mints opens the read-through and the key never goes into an image's or a
 frame's URL; a peer's file nothing renders, and the head's link, download
-instead. `solo` is read once and stays in the URL; without it `artifact`
-is ignored.
+instead. `solo` is read once and stays in the URL; without it a page's
+load ignores `artifact` — what a hosted app's `ui/open-link` to it opens
+is the side panel (above).
 
 ### 14.4 A published app as a deliverable
 
@@ -1641,7 +1690,7 @@ what their person token has, where §14.8's rules hold a model-written page:
 | | A model-written page | A first-party page |
 |---|---|---|
 | A sealed workflow (the orchestrator) | only through a person's grant (§14.8), the runs this app launched for the viewer | no grant: the viewer's runs (`actor`), whoever launched them |
-| Its runs' agent sessions | under `app/<name>/<viewer>/` | the viewer's own as they are (`<actor>`, `<actor>/…`), so they are conversations (§9.1); any other id under the app |
+| Its runs' agent sessions | under `app/<name>/<viewer>/` | the viewer's own as they are (`<actor>`, `<actor>/…`), so they are conversations (§9.1), and a conversation the viewer took a turn in or a shared one (§9.1, "Who may continue one"); any other id under the app |
 | Gated tools (`approve:`) in its runs' agents | left out | kept: the proposals are the viewer's, listed by `proposal/list` and decided by `proposal/decide` |
 | Job ids | under `app/<name>/` | the person's own, as they are |
 | The wake (§3) | none: its turns are a relay | strut's: each turn asks for it (`wakeAsked`), so a job the turn starts wakes the conversation |
