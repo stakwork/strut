@@ -238,8 +238,8 @@ function bindApp<TServices>(services: TServices, app: AppRef | undefined, actor?
   const sessions = (services as { sessions?: SessionsCapability }).sessions;
   if (typeof sessions?.open !== "function") return services;
   const view: SessionsCapability = {
-    open: (id, holder) => sessions.open(appSessionId(id, app.name, actor, job), holder),
-    holder: (id) => sessions.holder(appSessionId(id, app.name, actor, job)),
+    open: (id, holder) => sessions.open(appSessionId(id, app.name, actor, job, app.firstParty), holder),
+    holder: (id) => sessions.holder(appSessionId(id, app.name, actor, job, app.firstParty)),
   };
   return { ...(services as object), sessions: view } as TServices;
 }

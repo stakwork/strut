@@ -200,6 +200,13 @@ describe("installing a package on a filesystem workspace", () => {
     assert.match(r.body.error!, /^package_conflict: the workflow acme\/linear\/mine is a local one under acme\/linear\//);
     await ws.deleteWorkflow("acme/linear/mine");
     await nothing();
+    // An app under strut/ is strut's own (plans/jamie-app.md §3): no package installs one.
+    r = await api.install(
+      `file:${await writeTree({ "strut.yaml": "package: strut/extras\nversion: '1'\n", "apps/panel/app.yaml": "title: Panel\n", "apps/panel/src/App.tsx": "export default function App() { return null; }\n" }, "strut-extras")}`,
+    );
+    assert.equal(r.status, 409);
+    assert.match(r.body.error!, /the app strut\/extras\/panel is under strut\/: those are strut's/);
+    await nothing();
 
     const cases: Array<[Record<string, string>, RegExp]> = [
       [{ ...PACKAGE, "workflows/sync.yaml": WORKFLOW("acme/linear/sync", "nope/missing") }, /names the step nope\/missing, which is neither on this strut server nor in the packages/],

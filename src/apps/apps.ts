@@ -39,7 +39,7 @@ import { treeHash } from "../version.js";
 import { newestVersion, type AppListEntry, type AppRecord, type AppRelease, type AppReleaseSummary, type Upstream, type VersionSource, type WorkspaceStore } from "../workspace.js";
 import type { GraphBackend } from "../graph/backend.js";
 import { buildApp, readBuildInfo, type BuildDeps, type BuildInfo, type BuildResult, type InstalledApp } from "./build.js";
-import { copyAppDir, isEmptyDir, isPreviewLabel, listAppFiles, validateAppName } from "./files.js";
+import { copyAppDir, isEmptyDir, isPreviewLabel, listAppFiles, reservedAppName, validateAppName } from "./files.js";
 import { memoryAppGrants, type AppGrant, type AppGrantStore } from "./grants.js";
 import { removeAppState } from "./state.js";
 import { checkAppGraph, registerAppGraph, type RegisteredGraph } from "./graph-types.js";
@@ -537,6 +537,8 @@ export function createApps(deps: AppsDeps): AppsCapability {
 
     async publish(dir, name, opts) {
       validateAppName(name);
+      const reserved = reservedAppName(name, opts.source);
+      if (reserved) return { ok: false, errors: [reserved], warnings: [] };
       const read = await readManifest(dir);
       if (!read.ok) return { ok: false, errors: read.errors, warnings: [] };
       if (opts.surface === "ai") {
@@ -602,6 +604,8 @@ export function createApps(deps: AppsDeps): AppsCapability {
 
     async preview(dir, name, opts) {
       validateAppName(name);
+      const reserved = reservedAppName(name);
+      if (reserved) return { ok: false, errors: [reserved], warnings: [] };
       const read = await readManifest(dir);
       if (!read.ok) return { ok: false, errors: read.errors, warnings: [] };
       if (opts.surface === "ai") {

@@ -406,7 +406,16 @@ export type AppRef = WorkspaceAppRef;
 export interface WorkspaceAppRef {
   name: string;
   version: string;
+  /** A FIRST-PARTY page (plans/jamie-app.md §3): an app strut ships (a
+   *  `strut/` name, a seeded version) shown to a person. Set by the app
+   *  door alone (src/apps/tools.ts), never from a request, and carried by
+   *  every run the page launches. Such a page acts with its viewer's own
+   *  rights: their sessions, jobs, runs and proposals. */
+  firstParty?: true;
 }
+
+/** Is this a first-party page's call or run (`AppRef.firstParty`)? */
+export const isFirstParty = (app: AppRef | undefined): boolean => app?.firstParty === true;
 
 /** A single event in the run log. */
 export interface RunEvent {

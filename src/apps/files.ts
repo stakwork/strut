@@ -37,6 +37,20 @@ export function validateAppName(name: string): void {
   }
 }
 
+/** The names strut ships its own apps under (plans/jamie-app.md §3): seeded
+ *  at boot (`strut/views`, `strut/assistant`), and FIRST-PARTY — a page of
+ *  one acts with its viewer's rights (src/apps/tools.ts `firstPartyApp`).
+ *  So no door but strut's seed publishes under it. */
+export const FIRST_PARTY_PREFIX = "strut/";
+
+export const isFirstPartyName = (name: string): boolean => name.startsWith(FIRST_PARTY_PREFIX);
+
+/** Why `name` may not be published from this door, or null. */
+export function reservedAppName(name: string, source?: string): string | null {
+  if (!isFirstPartyName(name) || source === "seed") return null;
+  return `"${name}": names under ${FIRST_PARTY_PREFIX} are reserved for the apps strut ships — publish under another name (plans/jamie-app.md §3)`;
+}
+
 /** A PREVIEW's label (`apps.preview`): an unpublished build hosted under a
  *  label of its own, in place of a `vN`, for `app/look { path }`. */
 export const PREVIEW_LABEL_RE = /^preview-[0-9a-f]{12}$/;

@@ -42,7 +42,7 @@ import { APP_NAMESPACE, appScoped } from "../session-store.js";
 import { baseType } from "../step-ref.js";
 import { resolveStep } from "../steps/registry.js";
 import type { AppsCapability } from "./apps.js";
-import { isPreviewLabel } from "./files.js";
+import { isFirstPartyName, isPreviewLabel } from "./files.js";
 import { reservedAppType } from "./graph-types.js";
 import type { AppManifest } from "./manifest.js";
 import type { AppCallStatus, AppMonitor } from "./monitor.js";
@@ -294,14 +294,29 @@ export interface AppToolDeps {
   };
 }
 
-/** The app a call names, with its manifest — or why there is none. */
-async function appOf(app: AppRef, deps: AppToolDeps): Promise<{ manifest: AppManifest } | { error: string }> {
+/** The app a call names, with its manifest and whether the version is
+ *  strut's seed — or why there is none. */
+async function appOf(app: AppRef, deps: AppToolDeps): Promise<{ manifest: AppManifest; seeded: boolean } | { error: string }> {
   if (isPreviewLabel(app.version)) {
     const preview = deps.apps.previewOf(app.name, app.version);
-    return preview ? { manifest: preview.manifest } : { error: `step_run: the preview ${app.name}@${app.version} is no longer hosted — app/look { path } again` };
+    return preview ? { manifest: preview.manifest, seeded: false } : { error: `step_run: the preview ${app.name}@${app.version} is no longer hosted — app/look { path } again` };
   }
   const view = await deps.apps.get(app.name, app.version).catch(() => null);
-  return view ? { manifest: view.manifest } : { error: `step_run: no app ${app.name}@${app.version} on this strut server` };
+  return view ? { manifest: view.manifest, seeded: view.versions[app.version]?.source === "seed" } : { error: `step_run: no app ${app.name}@${app.version} on this strut server` };
+}
+
+/**
+ * Is this call a FIRST-PARTY page's (plans/jamie-app.md §3)? An app strut
+ * ships — a `strut/` name (reserved: no other door publishes one) at a
+ * version strut seeded — shown to a PERSON: a viewer with an actor, never a
+ * visitor. Such a page acts with that person's own rights, what their
+ * person token has: their sessions as they are, their jobs, their runs of
+ * a sealed workflow whoever launched them, their proposals. The page's
+ * grants still apply, and so does everything a page never does (paid or
+ * shell steps, authoring, nothing past the viewer).
+ */
+export function firstPartyApp(app: AppRef, seeded: boolean, actor: string | undefined, visitor: boolean): boolean {
+  return !visitor && !!actor && seeded && isFirstPartyName(app.name);
 }
 
 /** `{ step_run }` — the app tool set a door spreads beside its own. */
@@ -336,10 +351,11 @@ export function buildAppTools(deps: AppToolDeps): ToolSet {
       deps.registry,
       deps.services,
       {
-        config: scopeAppJobs(app.name, base, cfg),
+        // A first-party page's jobs are its viewer's own: never moved.
+        config: app.firstParty ? cfg : scopeAppJobs(app.name, base, cfg),
         ...(input !== undefined ? { input } : {}),
         ...(deps.actor ? { actor: deps.actor, principal: deps.actor } : {}),
-        app: { name: app.name, version: app.version },
+        app,
         keep: !deps.visitor && keptFromApp(base),
         ...(deps.runStepDeps.workspace ? { workspace: deps.runStepDeps.workspace } : {}),
       },
@@ -371,10 +387,11 @@ export function buildAppTools(deps: AppToolDeps): ToolSet {
         app: z.string().describe("The app's identity: the content of the document's <meta name=\"strut-app-token\">."),
       }),
       execute: async ({ type, config, input, app: identity }) => {
-        const app = deps.visitor ? deps.visitor.identity(identity) : appOfIdentity(identity);
-        if (!app) return { error: "step_run: `app` is not a valid app identity — the token the served document carries in <meta name=\"strut-app-token\">; a token for a run's or a job's files, a forged or unsigned one, opens nothing" };
-        const found = await appOf(app, deps);
+        const named = deps.visitor ? deps.visitor.identity(identity) : appOfIdentity(identity);
+        if (!named) return { error: "step_run: `app` is not a valid app identity — the token the served document carries in <meta name=\"strut-app-token\">; a token for a run's or a job's files, a forged or unsigned one, opens nothing" };
+        const found = await appOf(named, deps);
         if ("error" in found) return found;
+        const app: AppRef = { name: named.name, version: named.version, ...(firstPartyApp(named, found.seeded, deps.actor, !!deps.visitor) ? { firstParty: true as const } : {}) };
         const started = Date.now();
         const call = await dispatch(app, found.manifest, type, config, input);
         // A preview is the builder looking: not what the app costs people.

@@ -42,6 +42,7 @@ import {
   FileSessionStore,
   MemorySessionStore,
   PEER_NAMESPACE,
+  appSessionId,
   idProblem,
   peerSessionId,
   sessionInfo,
@@ -56,7 +57,7 @@ import {
 import { runStep, cassettePath, RUN_STEP_FLOW } from "./run-step.js";
 import { buildProvenance } from "./provenance.js";
 import { RUN_GET_MAX_WAIT_MS, RUN_LIST_DEFAULT_LIMIT, RUN_LIST_MAX_LIMIT, capEvents, capTranscript, fileResult, listEntryOf, matchesRunFilter, runsPage, type RunCaller, type RunListEntry, type RunTranscript, type RunsCapability } from "./runs.js";
-import type { AppRef, StartedBy, WakeMark } from "./core.js";
+import { isFirstParty, type AppRef, type StartedBy, type WakeMark } from "./core.js";
 import { WAKE_MAX, artifactsOf, createWakes, parseWakeDoor, replyOf, type WakeEnd, type WakeOutcome } from "./wake.js";
 import { createConversations, isConversationFlow, outsideConversations, type ConversationViewer } from "./conversations.js";
 import { createVerifier, type Verifier, type VerifyResult } from "./verify.js";
@@ -84,7 +85,7 @@ import { fileAppGrants } from "./apps/grants.js";
 import { createAppMonitor, type AppMonitor } from "./apps/monitor.js";
 import { seedViewsApp } from "./apps/views-seed.js";
 import type { KitLocation } from "./apps/kit.js";
-import { appsRoot, isPreviewLabel, listAppFiles, readAppFile, validateAppName, writeAppFiles } from "./apps/files.js";
+import { appsRoot, isPreviewLabel, listAppFiles, readAppFile, reservedAppName, validateAppName, writeAppFiles } from "./apps/files.js";
 import { DOCUMENT_FILE, readBuildInfo, withPublicIdentity, withToken, withoutTokenMeta } from "./apps/build.js";
 import { packArchive } from "./packages/archive.js";
 import { buildPackage, type BuildRequest } from "./packages/build.js";
@@ -140,7 +141,7 @@ import { callbackOrigin, parseCallback, parseLaunchCallback, postCallback, roomA
 import { createEventsSink, parseSinkUrl, type EventsSink } from "./events-sink.js";
 import { listServerTools, parseMcpServers } from "./mcp-servers.js";
 import { fileMcpRegistry, gatedByDefault, mcpStepDef, parseRegistration, resolveRegistration, type McpRegistration } from "./mcp-registry.js";
-import { briefOf, decideProposal, visibleTo, listProposals, proposalsCapability, proposalsRoot, readProposal, type ProposalStatus } from "./proposals.js";
+import { briefOf, decideProposal, visibleTo, listProposals, proposalsCapability, proposalsRoot, readProposal, type Decision, type ProposalsCapability, type ProposalStatus } from "./proposals.js";
 import type { AssistantChatDoor } from "./ai/assistant-tools.js";
 import { shellCapability, type ShellCapability } from "./capabilities.js";
 import { JOB_WORKFLOWS, deleteJob, jobFilePath, jobRoot, jobsCapability, listJobFiles, readJobRecord, releaseWith, setJobCallback, turnOf, wakeJobFeeds, type JobsCapability } from "./jobs.js";
@@ -1005,6 +1006,17 @@ export async function createStrut<TServices = unknown>(
     // Called only once the server is up: `appVersionOf` is defined below.
     appVersion: async (name, version) => appVersionOf(name, version),
   });
+  // Proposals (plans/proposals.md): the bag's capability — its `decide` is
+  // attached with the decide route below, where its deps are.
+  const ownProposals: ProposalsCapability = proposalsCapability(dataDir, {
+    // What the host's deltas gate: a step that reaches past this strut
+    // checks it whatever the route (proposals.ts `requireApproval`).
+    hostApprove: [opts.job, opts.orchestrator, opts.builder].flatMap((d) => (d ? (d.approve ?? []) : [])),
+    notify: (job, update) => ((services as Record<string, unknown>)["jobs"] as JobsCapability | undefined)?.notify?.(job, update),
+    // Where a proposal shows (proposals.ts `visibleTo`); called at
+    // proposal time, long after this function has returned.
+    conversationOf: (runId) => conversationOf(runId),
+  });
   const services = {
     ...(standardServices({ secretStore, actorSecretStore: actorSecrets, dataDir }) as unknown as Record<
       string,
@@ -1032,15 +1044,7 @@ export async function createStrut<TServices = unknown>(
     // The registered MCP servers (src/mcp-registry.ts), which an agent's
     // `agentTools: [mcp/<server>/*]` reaches.
     mcpRegistry,
-    proposals: proposalsCapability(dataDir, {
-      // What the host's deltas gate: a step that reaches past this strut
-      // checks it whatever the route (proposals.ts `requireApproval`).
-      hostApprove: [opts.job, opts.orchestrator, opts.builder].flatMap((d) => (d ? (d.approve ?? []) : [])),
-      notify: (job, update) => ((services as Record<string, unknown>)["jobs"] as JobsCapability | undefined)?.notify?.(job, update),
-      // Where a proposal shows (proposals.ts `visibleTo`); called at
-      // proposal time, long after this function has returned.
-      conversationOf: (runId) => conversationOf(runId),
-    }),
+    proposals: ownProposals,
     // The graph backend the server wired, for the graph/* steps (graphCtx
     // prefers it over opening one from env). Borrowed: a step's `close()`
     // must not close the connection the workspace and claims read through.
@@ -3028,6 +3032,8 @@ export async function createStrut<TServices = unknown>(
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
     }
+    const reserved = reservedAppName(body.name);
+    if (reserved) return c.json({ error: reserved }, 400);
     const scratch = await mkdtemp(join(tmpdir(), "strut-app-publish-"));
     let result: AppPublishResult;
     try {
@@ -3973,6 +3979,17 @@ export async function createStrut<TServices = unknown>(
 
   const proposalsDir = proposalsRoot(dataDir);
   const STATUSES: ReadonlySet<string> = new Set(["pending", "accepted", "rejected", "applied", "failed"]);
+  /** A person's decision, applied in code: the route's, and `proposal/decide`'s
+   *  (a first-party page's, plans/jamie-app.md §3) through the bag. */
+  const decide = (id: string, decision: Decision) =>
+    decideProposal(proposalsDir, id, decision, {
+      registry,
+      services,
+      mcpOf: (workflow, runId) => store.getRunMcp(workflow, runId),
+      stepFor: (type) => mcpStepDef(type, mcpRegistry),
+      notify: (job, update) => ((services as Record<string, unknown>)["jobs"] as JobsCapability | undefined)?.notify?.(job, update),
+    });
+  ownProposals.decide = decide;
 
   app.get("/proposals", async (c) => {
     const status = c.req.query("status");
@@ -4007,24 +4024,13 @@ export async function createStrut<TServices = unknown>(
     }
     if (body.reason !== undefined && typeof body.reason !== "string") return c.json({ error: "reason must be a string" }, 400);
     const actor = await resolveActor(c);
-    const outcome = await decideProposal(
-      proposalsDir,
-      id,
-      {
-        action: body.action,
-        ...(body.input ? { input: body.input as Record<string, unknown> } : {}),
-        ...(body.reason ? { reason: body.reason } : {}),
-        ...(actor ? { by: actor } : {}),
-        scope: await scopeOf(c),
-      },
-      {
-        registry,
-        services,
-        mcpOf: (workflow, runId) => store.getRunMcp(workflow, runId),
-        stepFor: (type) => mcpStepDef(type, mcpRegistry),
-        notify: (job, update) => ((services as Record<string, unknown>)["jobs"] as JobsCapability | undefined)?.notify?.(job, update),
-      },
-    );
+    const outcome = await decide(id, {
+      action: body.action,
+      ...(body.input ? { input: body.input as Record<string, unknown> } : {}),
+      ...(body.reason ? { reason: body.reason } : {}),
+      ...(actor ? { by: actor } : {}),
+      scope: await scopeOf(c),
+    });
     return c.json(outcome.body, outcome.status);
   });
 
@@ -4986,12 +4992,14 @@ export async function createStrut<TServices = unknown>(
     if (session) liveSessions.set(session, new Set([...(liveSessions.get(session) ?? []), runId]));
     // A turn of a conversation (src/conversations.ts): recorded at launch,
     // so a turn that fails — and commits nothing to the session — still
-    // shows. The session the run's agent opens: a plain peer's and an app's
-    // are their own namespaces, never a conversation; a person's token
-    // opens its own as it is.
-    const opened =
-      !session || extra?.origin === "app"
-        ? undefined
+    // shows. The session the run's agent opens (runner.ts bindPeer, bindApp):
+    // a plain peer's and an app's are their own namespaces, never a
+    // conversation; a person's token and a first-party app (plans/jamie-app.md
+    // §3) open the person's own as they are.
+    const opened = !session
+      ? undefined
+      : extra?.app
+        ? appSessionId(session, extra.app.name, extra.actor, body.job, extra.app.firstParty)
         : extra?.origin === "peer"
           ? peerSessionId(session, extra.peerPerson ? extra.actor : undefined)
           : session;
@@ -5536,10 +5544,12 @@ export async function createStrut<TServices = unknown>(
    *  app (src/apps/grants.ts: the assistant, for the app's own chat) opens
    *  to that app's pages, `scoped`: they reach only the runs the app
    *  launched for the same viewer (`ownRun`) — a sealed workflow's runs are
-   *  its people's conversations. */
+   *  its people's conversations. A FIRST-PARTY page (plans/jamie-app.md §3)
+   *  needs no grant: it opens the viewer's own runs, whoever launched them. */
   const openFlow = async (name: string, by?: RunCaller): Promise<{ flow: Flow; scoped: boolean }> => {
     const flow = await workspace.getWorkflow(name);
     if (!flow.sealed) return { flow, scoped: false };
+    if (isFirstParty(by?.app) && by?.actor) return { flow, scoped: true };
     if (by?.app && (await appGrants.has(by.app.name, name))) return { flow, scoped: true };
     throw new Error(
       by?.app
@@ -5551,13 +5561,15 @@ export async function createStrut<TServices = unknown>(
    *  for, before the run's `run.start` is in its log. */
   const scopedLaunches = new Map<string, { app: string; actor: string }>();
   /** Was the run launched by `by.app` for `by.actor`? The summary's stamp,
-   *  a live run's `run.start`, or the launch itself. */
+   *  a live run's `run.start`, or the launch itself. For a first-party page:
+   *  is it the viewer's, from wherever it was launched? */
   const ownRun = async (workflow: string, runId: string, by: RunCaller | undefined): Promise<boolean> => {
+    const anyApp = isFirstParty(by?.app);
     const launched = scopedLaunches.get(`${workflow}/${runId}`);
-    if (launched) return launched.app === by?.app?.name && launched.actor === (by?.actor ?? "");
+    if (launched) return (anyApp || launched.app === by?.app?.name) && launched.actor === (by?.actor ?? "");
     const stamp: { app?: AppRef; actor?: string } | null =
       (await store.getRunSummary(workflow, runId)) ?? (await store.getRunEvents(workflow, runId)).find((e) => e.type === "run.start") ?? null;
-    return !!stamp && stamp.app?.name === by?.app?.name && (stamp.actor ?? "") === (by?.actor ?? "");
+    return !!stamp && (anyApp || stamp.app?.name === by?.app?.name) && (stamp.actor ?? "") === (by?.actor ?? "");
   };
   /** `openFlow` for one run: a scoped caller's own runs only — any other is
    *  not there, as a run that does not exist is not. */
@@ -5648,7 +5660,15 @@ export async function createStrut<TServices = unknown>(
       if (prior) return { runId: prior, existing: true };
       const runId = launchDetached(
         flow,
-        { input: q.input, ...(q.params ? { params: q.params } : {}), ...(q.job ? { job: q.job } : {}), ...(q.job && q.title ? { title: q.title } : {}) },
+        {
+          input: q.input,
+          ...(q.params ? { params: q.params } : {}),
+          ...(q.job ? { job: q.job } : {}),
+          ...(q.job && q.title ? { title: q.title } : {}),
+          // A first-party page's turn is the person's (plans/jamie-app.md
+          // §3): strut is its host, so strut wakes it when its jobs end.
+          ...(isFirstParty(by.app) ? { wake: true } : {}),
+        },
         {
           ...(by.actor ? { actor: by.actor } : {}),
           ...(by.principal ? { principal: by.principal } : {}),

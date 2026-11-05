@@ -95,9 +95,13 @@ function actorSegment(actor: string): string {
  *  thread that is not its viewer's in this app: the person's own
  *  conversation with the assistant elsewhere, or another viewer's here.
  *  The run's own JOB (already `app/<name>/<job>`, the app's library: every
- *  viewer's) opens as it is, as the job agent's thread is its job id. */
-export function appSessionId(id: string, app: string, actor?: string, job?: string): string {
+ *  viewer's) opens as it is, as the job agent's thread is its job id. A
+ *  FIRST-PARTY app's run (`firstParty`, plans/jamie-app.md §3) opens its
+ *  viewer's own sessions — `<actor>`, `<actor>/…` — as they are, as a
+ *  person token does (`peerSessionId`): the person's conversations. */
+export function appSessionId(id: string, app: string, actor?: string, job?: string, firstParty?: boolean): string {
   if (job && id === job) return id;
+  if (firstParty && actor && (id === actor || id.startsWith(`${actor}/`))) return id;
   const prefix = `${APP_NAMESPACE}${app}/${actor ? `${actorSegment(actor)}/` : ""}`;
   return id.startsWith(prefix) ? id : `${prefix}${id}`;
 }

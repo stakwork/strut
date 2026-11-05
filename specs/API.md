@@ -747,7 +747,9 @@ A turn that failed is listed with its error: turns are recorded when they
 launch and end, not only when the agent's session commits. The
 `conversation/list`, `conversation/get` (`wait`, `since`),
 `conversation/update` and `conversation/fork` steps are the same reads and
-writes, as the step's actor; they are refused to an app's page.
+writes, as the step's actor; they are refused to an app's page, except
+strut's own (first-party, §14.10), which reads them as its viewer's
+person token does.
 
 ### Graph nodes
 
@@ -1060,6 +1062,12 @@ agent's ungated tool is refused. No host gate: unchanged.
 
 The steps `proposal/list` ({ job?, session?, status?, limit? } → the briefs)
 and `proposal/get` ({ id } → the record) are the same reads for an agent.
+Called from an app's page, or in a run an app launched, `proposal/list`
+holds the list to the viewer's own, as a person token's. `proposal/decide`
+({ id, action: "accept" | "reject", input?, reason? } → the record after the
+decision) is the decide route for strut's own app (§14.10): it runs only as
+a first-party page's own call, decides only its viewer's proposals, and an
+agent never runs it.
 
 ## 13. Sessions — a browser signs in
 
@@ -1617,6 +1625,33 @@ it drops comes back with `?client=` and each channel's last cursor as
 `since`. `relayChannels` in `@strut/kit/channels` does all of it for a
 browser host, given `open(client?)` (mint the ticket, make the
 `WebSocket`); strut's UI runs it for an app that lives here.
+
+### 14.10 First-party apps — the apps strut ships (`plans/jamie-app.md` §3)
+
+Names under `strut/` are strut's: no door but strut's seed publishes one
+(`app/publish`, `POST /apps`, `app/look { path }`'s preview and a package
+install all refuse it). A page is FIRST-PARTY when it is a `strut/` app at a
+version strut seeded, shown to a person: the connection has an actor, and
+it is not the public door (§17.3). The app door marks the call
+(`AppRef.firstParty`, on `ctx.app` and on every run the page launches —
+`run.start.app` says so), and the page acts with its viewer's own rights,
+what their person token has, where §14.8's rules hold a model-written page:
+
+| | A model-written page | A first-party page |
+|---|---|---|
+| A sealed workflow (the orchestrator) | only through a person's grant (§14.8), the runs this app launched for the viewer | no grant: the viewer's runs (`actor`), whoever launched them |
+| Its runs' agent sessions | under `app/<name>/<viewer>/` | the viewer's own as they are (`<actor>`, `<actor>/…`), so they are conversations (§9.1); any other id under the app |
+| Gated tools (`approve:`) in its runs' agents | left out | kept: the proposals are the viewer's, listed by `proposal/list` and decided by `proposal/decide` |
+| Job ids | under `app/<name>/` | the person's own, as they are |
+| The wake (§3) | none: its turns are a relay | strut's: each turn asks for it (`wakeAsked`), so a job the turn starts wakes the conversation |
+| `conversation/*` (§9.1) | refused | as the viewer's person token |
+
+What stays the same: the manifest's grants, `llm` / `agent` / `exec` /
+`acp/prompt` refused from the page, no authoring, nothing past the viewer.
+With no actor (the deployment key alone) a `strut/` app is an app like any
+other. An app that imports strut's components compiles them into its own
+document, which runs on its own grants: rights belong to the document's
+identity, never to the code in it.
 
 ## 15. Dictation — speech to text, its models and the user's vocabulary
 

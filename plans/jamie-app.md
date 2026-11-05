@@ -1,6 +1,6 @@
 # Jamie as a strut app, and one wake for every host
 
-> **Status (2026-11-04): proposed; §1 (one wake) built — §1.6; §2 (conversations) built — §2.1.** Written after a read of strut `main`
+> **Status (2026-11-05): proposed; §1 (one wake) built — §1.6; §2 (conversations) built — §2.1; §3 (first-party apps) built — §3.1; Hive's wake half (§6.1) built — stakwork/hive#5705.** Written after a read of strut `main`
 > @e1c45ad, hive `origin/master` @c692b96bf, sphinx `origin/master`
 > @74c12954 (Peel's bridge) and sphinx-voice `origin/main` @ba18f12. The
 > owner agreed four things in conversation, marked **agreed** below: a
@@ -394,7 +394,7 @@ started (`assistantJobs` over its events), status while in flight.
 - **Not built**: the jobs in a list row (read per turn in `get`), the one-off
   export of Hive's renamed titles and archived flags (§7).
 
-## 3. First-party apps (proposed)
+## 3. First-party apps (built — §3.1)
 
 The app rules assume a model wrote the page. For an app strut ships, five
 of them are wrong:
@@ -429,6 +429,45 @@ document, which runs on its own grants: rights belong to the document's
 identity (`app:<name>@<vN>`), never to the code in it. Deliverables the
 assistant shows are untrusted content and stay in sanitized views or the
 host's sandboxed panel (§4), never in its own document.
+
+### 3.1 As built (2026-11-05, branch `feature/first-party-apps`)
+
+- **The tier** is a mark on the call: the app door (`src/apps/tools.ts`
+  `firstPartyApp`) sets `ctx.app.firstParty` when the app is a `strut/`
+  name at a version whose `source` is `seed`, the connection has an actor,
+  and it is not the public door. Every run the page launches carries it
+  (`run.start.app`, and so a resume). With no actor, a `strut/` app is an
+  app like any other: the tier is the person's rights, and there is no
+  person.
+- **The five rules**, each where it was:
+  - Sessions: `appSessionId(…, firstParty)` opens `<actor>` and
+    `<actor>/…` as they are, as a person token does; any other id stays
+    under `app/<name>/<viewer>/`. So a first-party turn is recorded in the
+    conversation index (launchDetached reads the same function).
+  - Gated tools: the agent keeps its `approve:` tools when `ctx.app` is
+    first-party.
+  - Proposals: `proposal/decide`, a new step over the capability's
+    `decide` (the decide route's code, `decideProposal`), as a person
+    token: the viewer's own proposals. It runs only as a first-party page's
+    own call (a one-step run), never as an agent's tool: a run the page
+    launched carries the page's app too. `proposal/list` under any
+    `ctx.app` lists the viewer's own.
+  - Jobs: no `app/<name>/` scoping (`scopeAppJobs`, `job/start`,
+    `job/continue`).
+  - Sealed workflows: `openFlow` opens one with no grant, scoped to the
+    viewer's runs whoever launched them (`ownRun`, by actor).
+- **The wake**, which §3 left out: a first-party turn is not a relay
+  (`wake.ts`), and `run/launch` from the page asks for strut's wake
+  (`wakeAsked`), since strut is the page's host.
+- **`conversation/*`** under a first-party page, as a person token.
+- **The reserved name**: `reservedAppName` (`src/apps/files.ts`) in
+  `apps.publish` (a source other than `seed`), `apps.preview`, `POST /apps`
+  and the package install's checks.
+- Not built: Hive's bare-id conversations (every one it has today) are
+  listed in the app and readable by their participants, but a first-party
+  page cannot CONTINUE one: it is not under `<actor>/`, so its turn opens
+  under the app. Opening a conversation the index lists the viewer in (or
+  a shared one) is the next rule to rule on.
 
 ## 4. What the app cannot frame (proposed)
 
@@ -476,6 +515,10 @@ automations from an app (`apps.md` work item 7).
 ## 6. The hosts' halves (proposed)
 
 ### 6.1 Hive
+
+The wake half is built (stakwork/hive#5705, 2026-11-05): Hive asks for
+strut's wake, adopts its wake turn, and skips its own when `run.end` says
+`wake: "launched"`; its own wake stays for a swarm on an older strut.
 
 - Name the conversation on every job turn it launches itself (`POST
   …/run { conversation }`), except event turns while their wake stays
@@ -533,8 +576,8 @@ are lost.
    true` in the 202. Tests with a stand-in provider.
 2. **Conversations** (strut, §2): the per-actor index, the
    `conversation/*` steps and routes, fork, `wait`.
-3. **First-party apps** (strut, §3): the reserved `strut/` name on every
-   door, the tier's rights in `step_run`, `proposal/decide`.
+3. **First-party apps** (strut, §3; built — §3.1): the reserved `strut/`
+   name on every door, the tier's rights in `step_run`, `proposal/decide`.
 4. **The host panel** (strut web, §4).
 5. **`strut/assistant`** (strut, §5), the `llm/models` step.
 6. **Hive** (§6.1), behind the 202's `wake: true`.
