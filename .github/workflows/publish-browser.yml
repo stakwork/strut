@@ -26,6 +26,11 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v4
 
@@ -50,9 +55,17 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - uses: docker/metadata-action@v5
+        id: meta
+        env:
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest
+        with:
+          images: ghcr.io/stakwork/strut-browser
+
       # provenance/sbom off: a plain two-platform index with no attestation
       # manifests, like the mcp and gateway images stakgraph publishes.
       - uses: docker/build-push-action@v6
+        id: build
         with:
           context: images/browser
           platforms: linux/amd64,linux/arm64
@@ -63,3 +76,12 @@ jobs:
             ghcr.io/stakwork/strut-browser:latest
           provenance: false
           sbom: false
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+
+      # gh attestation verify oci://ghcr.io/stakwork/strut-browser@sha256:<digest> --owner stakwork
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ghcr.io/stakwork/strut-browser
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
