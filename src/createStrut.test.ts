@@ -13,7 +13,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { createStrut } from "./createStrut.js";
 import { createRegistry } from "./steps/registry.js";
 import { defineStep, flow, step, withAccessedNodes, withMessages, type StepContext } from "./core.js";
-import { fileToken, inProcessRequest } from "./auth.js";
+import { fileToken, inProcessRequest, sessionToken, signInTicket } from "./auth.js";
 import { pathlessWorkspace } from "./test-util/pathless-workspace.js";
 import { WorkspaceManager } from "./workspace.js";
 import { MemoryRunStore, FileRunStore } from "./store.js";
@@ -1577,6 +1577,91 @@ describe("the API key gate", () => {
     assert.equal((await strut.app.request("/workflows", { headers: { cookie } })).status, 200);
   });
 
+  it("a sign-in ticket: the key mints one for an actor, the page trades it once at POST /auth/session for that actor's session", async () => {
+    const strut = await boot();
+    process.env["STRUT_API_KEY"] = KEY;
+    process.env["STRUT_PEER_KEY"] = PEER;
+    const json = { "content-type": "application/json" };
+    const mint = (body: unknown, headers: Record<string, string> = auth.headers) =>
+      strut.app.request("/auth/ticket", { method: "POST", headers: { ...json, ...headers }, body: JSON.stringify(body) });
+    const trade = (body: unknown) =>
+      strut.app.request("/auth/session", { method: "POST", headers: { ...json, "x-strut-ui": "1" }, body: JSON.stringify(body) });
+    const minted = async (actor: string) => ((await (await mint({ actor })).json()) as { ticket: string }).ticket;
+
+    // Minting is full scope: no credential is 401, a peer or a person 403, a bad actor 400.
+    assert.equal((await mint({ actor: "evan-1" }, {})).status, 401);
+    assert.equal((await mint({ actor: "evan-1" }, { authorization: `Bearer ${PEER}` })).status, 403);
+    const person = (await (await strut.app.request("/peers/tokens", { method: "POST", headers: { ...json, ...auth.headers }, body: JSON.stringify({ actor: "tom-1" }) })).json()) as { token: string };
+    assert.equal((await mint({ actor: "tom-1" }, { authorization: `Bearer ${person.token}` })).status, 403);
+    for (const actor of [undefined, "", "  ", 7, "x".repeat(121), "evan\n1"]) {
+      assert.equal((await mint(actor === undefined ? {} : { actor })).status, 400, JSON.stringify(actor));
+    }
+    const inProcess = await strut.app.fetch(inProcessRequest(new Request("http://strut.invalid/auth/ticket", { method: "POST", headers: json, body: JSON.stringify({ actor: "evan-1" }) })));
+    assert.equal(inProcess.status, 200, "strut's own request is full scope");
+
+    // The ticket: `strut-ticket.<claims>.<hmac>`, `{ actor, exp, jti }`, a minute, never cached.
+    const res = await mint({ actor: " evanfeenstra-cm3k9x " });
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("cache-control"), "no-store");
+    const { ticket, expiresAt } = (await res.json()) as { ticket: string; expiresAt: number };
+    assert.match(ticket, /^strut-ticket\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+    const claims = JSON.parse(Buffer.from(ticket.split(".")[1]!, "base64url").toString()) as Record<string, unknown>;
+    assert.deepEqual(Object.keys(claims).sort(), ["actor", "exp", "jti"]);
+    assert.equal(claims["actor"], "evanfeenstra-cm3k9x");
+    assert.equal(claims["exp"], expiresAt);
+    assert.ok(expiresAt > Date.now() + 55_000 && expiresAt <= Date.now() + 60_000, String(expiresAt - Date.now()));
+    assert.ok(typeof claims["jti"] === "string" && (claims["jti"] as string).length >= 16);
+
+    // The trade needs no credential and sets the key login's cookie, naming the ticket's actor.
+    const traded = await trade({ ticket });
+    assert.equal(traded.status, 200);
+    const session = (await traded.json()) as { actor?: string; exp: number };
+    assert.equal(session.actor, "evanfeenstra-cm3k9x");
+    assert.ok(session.exp > Date.now() + 11 * 3_600_000, "a session's life, not the ticket's");
+    const setCookie = traded.headers.get("set-cookie")!;
+    assert.match(setCookie, /^strut_session=[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+; Path=\/; Max-Age=\d+; HttpOnly; SameSite=Lax$/);
+    const cookie = setCookie.split(";")[0]!;
+    assert.equal((await strut.app.request("/workflows", { headers: { cookie } })).status, 200);
+    assert.deepEqual(await (await strut.app.request("/auth/session", { headers: { cookie } })).json(), session);
+
+    // Once: a second trade of the same ticket is refused.
+    const again = await trade({ ticket });
+    assert.equal(again.status, 401);
+    assert.match(((await again.json()) as { error: string }).error, /already used/);
+    assert.equal(again.headers.get("set-cookie"), null);
+
+    // The ticket names the actor; a field beside it does not.
+    const beside = (await (await trade({ ticket: await minted("evan-1"), actor: "mallory-9" })).json()) as { actor?: string };
+    assert.equal(beside.actor, "evan-1");
+
+    // Forged, malformed, another kind of token: 401, and none of them spends a ticket.
+    const fresh = await minted("evan-1");
+    const [prefix, body, mac] = fresh.split(".") as [string, string, string];
+    const otherActor = Buffer.from(JSON.stringify({ ...JSON.parse(Buffer.from(body, "base64url").toString()), actor: "mallory-9" })).toString("base64url");
+    const sessionAsTicket = `strut-ticket.${sessionToken({ actor: "evan-1", exp: Date.now() + 60_000 })}`;
+    for (const bad of [`${prefix}.${body}.${mac.slice(0, -2)}xx`, `${prefix}.${otherActor}.${mac}`, `${prefix}.${body}`, "nope", "", sessionAsTicket, person.token, 7, null]) {
+      const refused = await trade({ ticket: bad });
+      assert.equal(refused.status, 401, String(bad));
+      assert.ok(((await refused.json()) as { error?: string }).error);
+    }
+    assert.equal((await trade({ ticket: fresh })).status, 200, "the real one still trades");
+
+    // Expired: a ticket past its minute is refused; a rotated key refuses every one.
+    const brief = signInTicket("evan-1", 20)!.ticket;
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal((await trade({ ticket: brief })).status, 401, "expired");
+    const before = await minted("evan-1");
+    process.env["STRUT_API_KEY"] = "rotated";
+    assert.equal((await trade({ ticket: before })).status, 401, "signed under the old key");
+
+    // The key login is as it was.
+    assert.equal((await trade({ key: "rotated", actor: "evan-1" })).status, 200);
+
+    // No key configured: nothing to sign in to, nothing to mint.
+    delete process.env["STRUT_API_KEY"];
+    assert.equal((await mint({ actor: "evan-1" }, {})).status, 400);
+  });
+
   it("the key opens them, as a Bearer header or as ?key=; unset, everything is open", async () => {
     const strut = await boot();
     const reads = ["/workflows", "/steps", "/runs/active", "/artifacts/123", "/host/mounted"];
@@ -1869,6 +1954,16 @@ describe("actors and the principal rule", () => {
     const anon = (await strut.app.request("/auth/session", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ key: "deploy-key" }) })).headers.get("set-cookie")!.split(";")[0]!;
     const nobody = (await call("POST", "/workflows/wf/run", { input: {} }, { cookie: anon, "x-strut-ui": "1" })).json.runId as string;
     assert.deepEqual((await finished("wf", nobody)).output, { actor: null, principal: null });
+  });
+
+  it("a sign-in ticket's session launches as the ticket's actor", async () => {
+    const { strut, call, finished } = await boot();
+    process.env["STRUT_API_KEY"] = "deploy-key";
+    const { ticket } = (await call("POST", "/auth/ticket", { actor: "evanfeenstra-cm3k9x" }, { authorization: "Bearer deploy-key" })).json as { ticket: string };
+    const raw = await strut.app.request("/auth/session", { method: "POST", headers: { "content-type": "application/json", "x-strut-ui": "1" }, body: JSON.stringify({ ticket }) });
+    const cookie = raw.headers.get("set-cookie")!.split(";")[0]!;
+    const run = (await call("POST", "/workflows/wf/run", { input: {} }, { cookie, "x-strut-ui": "1", "x-strut-actor": "mallory-9" })).json.runId as string;
+    assert.deepEqual((await finished("wf", run)).output, { actor: "evanfeenstra-cm3k9x", principal: "evanfeenstra-cm3k9x" });
   });
 
   it("a single-step run is the actor's own; a subflow inherits its parent's principal", async () => {

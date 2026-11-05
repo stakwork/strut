@@ -1,5 +1,6 @@
 import type { ConnectionRequest } from "@strut/kit/wallet";
 import { fileScopeOf, isPeerPath, type AccessedNode, type RunApp, type TokenUsage } from "@strut/kit/folds";
+import { takeTicket } from "./ticket";
 
 // Mount-path-agnostic API base. Derived at runtime from the app's own
 // script URL so the UI works whether strut is served at the root (`/`) or
@@ -216,6 +217,7 @@ export async function signIn(key: string, actor?: string): Promise<SessionInfo> 
   const body = (await res.json().catch(() => null)) as (SessionInfo & { error?: string }) | null;
   if (!res.ok) throw new Error(body?.error ?? `${res.status} ${res.statusText}`);
   setApiKey("");
+  setSignedInByHost(false);
   setSession({ ...(body?.actor ? { actor: body.actor } : {}), exp: body!.exp });
   return getSession()!;
 }
@@ -224,6 +226,7 @@ export async function signIn(key: string, actor?: string): Promise<SessionInfo> 
 export async function signOut(): Promise<void> {
   await fetch(`${BASE}/auth/session`, { method: "DELETE", headers: { "x-strut-ui": "1" } }).catch(() => {});
   setSession(null);
+  setSignedInByHost(false);
   refused = false;
   fileScopes.clear();
 }
@@ -260,7 +263,9 @@ export async function apiFetch(path: string, init: RequestInit = {}): Promise<Re
   if (res.status === 401 && !refused) {
     refused = true;
     setSession(null); // a session the server refused has run out
-    onRefused?.();
+    // A person a host signed in has no key to paste: their host signs them in again.
+    if (signedInByHost()) onHostSignInEnded?.();
+    else onRefused?.();
   }
   return res;
 }
@@ -280,6 +285,78 @@ export async function fetchJSON<T>(path: string, opts?: RequestInit): Promise<T>
   }
   return res.json() as Promise<T>;
 }
+
+// ── Sign-in ticket ─────────────────────────────────────────────────────────
+// A host that frames the UI for ONE person (stadeum) loads it as
+// `?ticket=<a ticket it minted with the key>` (./ticket). The ticket is
+// taken off the address bar as this module loads and traded at `POST
+// /auth/session { ticket }` — the first request the page makes; main.tsx
+// renders nothing until it is answered. It wins over whatever this browser
+// held: a key and an earlier session are dropped either way, so a refused
+// ticket never carries on as someone else. The tab is then the host's
+// (`signedInByHost`): when its session ends, the page says to reload from
+// the host, never asks for a key.
+const HOST_SIGN_IN = "strut/hostSignIn";
+
+/** What the ticket on the URL came to: none was there, its session is set,
+ *  or the server refused it (expired, already used, not this strut's). */
+export type TicketSignIn = "none" | "signed-in" | "refused";
+
+/** Was this tab signed in by a host's ticket? */
+function signedInByHost(): boolean {
+  try {
+    return sessionStorage.getItem(HOST_SIGN_IN) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function setSignedInByHost(on: boolean): void {
+  try {
+    if (on) sessionStorage.setItem(HOST_SIGN_IN, "1");
+    else sessionStorage.removeItem(HOST_SIGN_IN);
+  } catch {}
+}
+
+let onHostSignInEnded: (() => void) | null = null;
+/** Told when a host-signed session is refused later (it ran out). */
+export function onHostSignInEnd(fn: (() => void) | null): void {
+  onHostSignInEnded = fn;
+}
+
+async function tradeTicket(ticket: string): Promise<TicketSignIn> {
+  setApiKey("");
+  setSignedInByHost(true);
+  try {
+    const res = await fetch(`${BASE}/auth/session`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-strut-ui": "1" },
+      body: JSON.stringify({ ticket }),
+    });
+    const body = (await res.json().catch(() => null)) as SessionInfo | null;
+    if (res.ok && typeof body?.exp === "number") {
+      setSession({ ...(body.actor ? { actor: body.actor } : {}), exp: body.exp });
+      return "signed-in";
+    }
+  } catch {}
+  setSession(null);
+  await fetch(`${BASE}/auth/session`, { method: "DELETE", headers: { "x-strut-ui": "1" } }).catch(() => {});
+  return "refused";
+}
+
+function takeTicketFromUrl(): string | null {
+  try {
+    const taken = takeTicket(location.href);
+    if (taken) history.replaceState(history.state, "", taken.url);
+    return taken?.ticket ?? null;
+  } catch {
+    return null;
+  }
+}
+
+const hostTicket = takeTicketFromUrl();
+/** The host's sign-in, started as this module loads. */
+export const ticketSignIn: Promise<TicketSignIn> = hostTicket === null ? Promise.resolve("none") : tradeTicket(hostTicket);
 
 // ── Speech-to-text (src/audio) ─────────────────────────────────────────────
 
