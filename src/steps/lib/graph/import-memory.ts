@@ -405,10 +405,10 @@ export default defineStep({
           // What an earlier import wrote of it, from the old memory alone, goes.
           // Either name the edge type may have: a type the graph has not made is no table, and no edge.
           const earlier = (await Promise.all([edgeTypeOf(predicate), `IS_${edgeTypeOf(predicate)}`].map((type) =>
-            c.raw(`MATCH (s:Node)-[x:${type}]->(t:Node) WHERE s.ref_id = $s AND t.ref_id = $t AND x.text = $text RETURN x.ref_id AS id, x.sources AS sources`, { s: subject, t: object, text: String(f["text"]) }).catch(() => [] as Row[])))).flat();
+            c.raw(`MATCH (s:Node)-[x:${type}]->(t:Node) WHERE s.ref_id = $s AND t.ref_id = $t AND x.text = $text RETURN x.ref_id AS id, x.sources AS sources`, { s: subject, t: object, text: String(f["text"]) }).then((rows) => rows.map((r): Row & { type: string } => ({ ...r, type })), () => [] as Array<Row & { type: string }>)))).flat();
           for (const r of earlier) {
             const src = ((r["sources"] as string[] | null) ?? []).map(String);
-            if (src.every((x) => x.startsWith("memory/episode:"))) { await b.edges.delete(String(r["id"])); c.counts.repaired++; }
+            if (src.every((x) => x.startsWith("memory/episode:"))) { await b.edges.delete({ ref_id: String(r["id"]), edge: String(r["type"]) }); c.counts.repaired++; }
           }
           continue;
         }

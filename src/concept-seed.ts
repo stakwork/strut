@@ -285,7 +285,7 @@ export async function seedConcepts(graph: GraphBackend | undefined, sets: Concep
       const out = await graph.tx((tx) => graph.edgeEngine.liveEdgesOf(tx, parent, EDGE, true));
       for (const e of out?.edges ?? []) {
         if (!names.has(e.other) || declared.has(`${parent}>${e.other}`)) continue;
-        await graph.edges.delete(e.edge_ref_id);
+        await graph.edges.delete({ ref_id: e.edge_ref_id, edge: EDGE });
         console.log(`[concepts] unlinked ${parentName} -${EDGE}-> ${names.get(e.other)} (no file declares it)`);
       }
     } catch (err) {
