@@ -15,6 +15,29 @@ export interface ConversationListItem {
   seenAt?: string;
   unread: boolean;
   running?: true;
+  /** The jobs it started or continued, most recent first. */
+  jobs?: ConversationJob[];
+  /** Jobs past those listed. */
+  moreJobs?: number;
+}
+
+/** A job as a list row shows it. */
+export interface ConversationJob {
+  job: string;
+  title?: string;
+  running?: true;
+  /** The pull requests it delivered, newest first. */
+  prs?: ConversationPr[];
+}
+
+/** A pull request a job delivered, as it reported it. */
+export interface ConversationPr {
+  url: string;
+  title?: string;
+  /** `owner/name`. */
+  repo: string;
+  number: number;
+  state?: string;
 }
 
 /** `conversation/list`. */

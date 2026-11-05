@@ -5,7 +5,7 @@
 // page whose scripts should run, an app, another workspace's file — handed
 // to the HOST as a strut deep link (`?artifact=<served path>`, `?app=<key>`),
 // which opens it beside the app (the host's panel) or in its own page. Pure;
-// tested by src/apps/assistant.test.ts.
+// tested by src/apps/jamie.test.ts.
 
 import { artifactKind, peerArtifactPath } from "@strut/kit/folds";
 import type { ArtifactRef } from "./types";

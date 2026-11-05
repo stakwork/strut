@@ -44,15 +44,15 @@ const until = async <T>(find: () => T | undefined | Promise<T | undefined>, what
 
 describe("first-party apps: the pure parts", () => {
   it("names under strut/ are reserved for the seed", () => {
-    assert.match(reservedAppName("strut/assistant")!, /reserved for the apps strut ships/);
-    assert.match(reservedAppName("strut/assistant", "api")!, /reserved/);
-    assert.equal(reservedAppName("strut/assistant", "seed"), null);
+    assert.match(reservedAppName("strut/jamie")!, /reserved for the apps strut ships/);
+    assert.match(reservedAppName("strut/jamie", "api")!, /reserved/);
+    assert.equal(reservedAppName("strut/jamie", "seed"), null);
     assert.equal(reservedAppName("acme/strut/x"), null);
     assert.equal(reservedAppName("struts"), null);
   });
 
   it("a first-party page: a strut/ name at a seeded version, shown to a person, never a visitor", () => {
-    const app = { name: "strut/assistant", version: "v1" };
+    const app = { name: "strut/jamie", version: "v1" };
     assert.equal(firstPartyApp(app, true, "alice", false), true);
     assert.equal(firstPartyApp(app, false, "alice", false), false, "a version strut did not seed");
     assert.equal(firstPartyApp(app, true, undefined, false), false, "no person");
@@ -61,13 +61,13 @@ describe("first-party apps: the pure parts", () => {
   });
 
   it("its runs open the viewer's own sessions as they are; any other under the app", () => {
-    assert.equal(appSessionId("alice/c1", "strut/assistant", "alice", undefined, true), "alice/c1");
-    assert.equal(appSessionId("alice", "strut/assistant", "alice", undefined, true), "alice");
-    assert.equal(appSessionId("bob/c1", "strut/assistant", "alice", undefined, true), "app/strut/assistant/alice/bob/c1");
+    assert.equal(appSessionId("alice/c1", "strut/jamie", "alice", undefined, true), "alice/c1");
+    assert.equal(appSessionId("alice", "strut/jamie", "alice", undefined, true), "alice");
+    assert.equal(appSessionId("bob/c1", "strut/jamie", "alice", undefined, true), "app/strut/jamie/alice/bob/c1");
     assert.equal(appSessionId("alice/c1", "plain", "alice"), "app/plain/alice/alice/c1", "a model-written page's");
     // The conversation the run continues (plans/jamie-app.md §2.2), as it is.
-    assert.equal(appSessionId("hive-1", "strut/assistant", "alice", undefined, true, "hive-1"), "hive-1");
-    assert.equal(appSessionId("hive-2", "strut/assistant", "alice", undefined, true, "hive-1"), "app/strut/assistant/alice/hive-2");
+    assert.equal(appSessionId("hive-1", "strut/jamie", "alice", undefined, true, "hive-1"), "hive-1");
+    assert.equal(appSessionId("hive-2", "strut/jamie", "alice", undefined, true, "hive-1"), "app/strut/jamie/alice/hive-2");
     assert.equal(appSessionId("hive-1", "plain", "alice", undefined, false, "hive-1"), "app/plain/alice/hive-1", "never a model-written page's");
     assert.equal(peerSessionId("hive-1", "alice", "hive-1"), "hive-1");
     assert.equal(peerSessionId("hive-1", undefined, "hive-1"), "peer/hive-1", "never a plain peer's");
@@ -75,7 +75,7 @@ describe("first-party apps: the pure parts", () => {
 
   it("proposal/decide refuses an agent's tool call, a model-written page and no person", async () => {
     const services = { proposals: { decide: async () => ({ status: 200, body: { id: "p" } }) } };
-    const fp = { name: "strut/assistant", version: "v1", firstParty: true as const };
+    const fp = { name: "strut/jamie", version: "v1", firstParty: true as const };
     const cfg = { id: "p", action: "accept" as const };
     await assert.rejects(() => decideStep.run(cfg, { app: fp, actor: "alice", workflow: ORCHESTRATOR_WORKFLOW, services } as never), /a person's decision/);
     await assert.rejects(() => decideStep.run(cfg, { app: { name: "plain", version: "v1" }, actor: "alice", workflow: "__run_step__", services } as never), /a person's decision/);
@@ -202,15 +202,15 @@ describe("first-party apps through a whole strut", () => {
       privacyWorkflows: false,
       orchestrator: { tools: ["note"], approve: ["note"] },
       // The test publishes its own stand-in for strut's app (below).
-      assistant: false,
+      jamie: false,
     });
     await strut.workspace.publishWorkflow("job", "v1", {
       steps: [{ id: "result", type: "pack", config: { text: "{{ input.prompt }}: found 3", artifacts: [] } }],
     });
     // strut's own app, as the seed publishes it — no grant of anything.
-    assert.ok((await strut.apps.publish(await writeApp(join(root, "apps", "assistant")), "strut/assistant", { surface: "person", source: "seed" })).ok);
-    await strut.apps.revoke("strut/assistant", ORCHESTRATOR_WORKFLOW);
-    assert.deepEqual(await strut.apps.grantsOf("strut/assistant"), []);
+    assert.ok((await strut.apps.publish(await writeApp(join(root, "apps", "jamie")), "strut/jamie", { surface: "person", source: "seed" })).ok);
+    await strut.apps.revoke("strut/jamie", ORCHESTRATOR_WORKFLOW);
+    assert.deepEqual(await strut.apps.grantsOf("strut/jamie"), []);
     // A model-written app a person granted the orchestrator, for contrast.
     assert.ok((await strut.apps.publish(await writeApp(join(root, "apps", "plain")), "plain", { surface: "person" })).ok);
   });
@@ -239,11 +239,11 @@ describe("first-party apps through a whole strut", () => {
   });
 
   it("a turn from strut's own app: the person's session, the gated tools kept, the proposal theirs to decide", async () => {
-    const alice = page("strut/assistant", "alice");
+    const alice = page("strut/jamie", "alice");
     const runId = await alice.turn("alice/c1", "note it");
 
     const start = (await alice.ok("run/events", { workflow: ORCHESTRATOR_WORKFLOW, runId })).find((e: any) => e.type === "run.start");
-    assert.deepEqual(start.app, { name: "strut/assistant", version: "v1", firstParty: true });
+    assert.deepEqual(start.app, { name: "strut/jamie", version: "v1", firstParty: true });
     assert.equal(start.wakeAsked, true, "strut is the page's host: it wakes the conversation");
     assert.ok(requests.some((b) => lastUser(b).includes("note it") && toolsOf(b).includes("note")), "the gated tool was offered");
 
@@ -257,7 +257,7 @@ describe("first-party apps through a whole strut", () => {
     const { proposals } = await alice.ok("proposal/list", { status: "pending" });
     assert.equal(proposals.length, 1);
     assert.equal(proposals[0].step, "note");
-    const bob = page("strut/assistant", "bob");
+    const bob = page("strut/jamie", "bob");
     assert.deepEqual((await bob.ok("proposal/list", { status: "pending" })).proposals, []);
     assert.match((await bob.call("proposal/decide", { id: proposals[0].id, action: "accept" })).error!, /not yours to decide/);
     assert.deepEqual(noted, []);
@@ -270,7 +270,7 @@ describe("first-party apps through a whole strut", () => {
   });
 
   it("the viewer's runs of the sealed orchestrator, whoever launched them; never another's", async () => {
-    const alice = page("strut/assistant", "alice");
+    const alice = page("strut/jamie", "alice");
     const res = await strut.app.request(`/workflows/${ORCHESTRATOR_WORKFLOW}/run`, {
       method: "POST",
       headers: headers("alice"),
@@ -278,7 +278,7 @@ describe("first-party apps through a whole strut", () => {
     });
     assert.equal(res.status, 202);
     const { runId: fromHost } = (await res.json()) as { runId: string };
-    const bobs = await page("strut/assistant", "bob").turn("bob/c1", "hi");
+    const bobs = await page("strut/jamie", "bob").turn("bob/c1", "hi");
     await idle();
 
     const mine = (await alice.ok("run/list", { workflow: ORCHESTRATOR_WORKFLOW })).map((r: any) => r.runId);
@@ -288,11 +288,11 @@ describe("first-party apps through a whole strut", () => {
     assert.equal((await alice.ok("run/get", { workflow: ORCHESTRATOR_WORKFLOW, runId: fromHost })).runId, fromHost);
 
     // With no person, strut's own app is an app like any other: no grant, no orchestrator.
-    assert.match((await page("strut/assistant").call("run/launch", { workflow: ORCHESTRATOR_WORKFLOW, input: { prompt: "x", session: "c" } })).error!, /holds no grant of it/);
+    assert.match((await page("strut/jamie").call("run/launch", { workflow: ORCHESTRATOR_WORKFLOW, input: { prompt: "x", session: "c" } })).error!, /holds no grant of it/);
   });
 
   it("its jobs are the person's, and the wake comes back to the conversation", async () => {
-    const alice = page("strut/assistant", "alice");
+    const alice = page("strut/jamie", "alice");
     await alice.turn("alice/c3", "find flights");
     const wake = await until(async () => {
       const turns = (await alice.ok("conversation/get", { session: "alice/c3" })).turns;
@@ -320,8 +320,8 @@ describe("first-party apps through a whole strut", () => {
       await idle();
     };
     await host("alice", "hive-conv-1", "plan the offsite");
-    const alice = page("strut/assistant", "alice");
-    const bob = page("strut/assistant", "bob");
+    const alice = page("strut/jamie", "alice");
+    const bob = page("strut/jamie", "bob");
 
     const runId = await alice.turn("hive-conv-1", "add a budget");
     const start = (await alice.ok("run/events", { workflow: ORCHESTRATOR_WORKFLOW, runId })).find((e: any) => e.type === "run.start");
@@ -350,7 +350,7 @@ describe("first-party apps through a whole strut", () => {
     assert.match((await plain.call("conversation/list")).error!, /not available to an app's page/);
     assert.match((await plain.call("proposal/decide", { id: "x", action: "reject" })).error!, /a person's decision/);
     // Its session is the app's, never the person's conversation.
-    const ids = (await page("strut/assistant", "alice").ok("conversation/list")).conversations.map((c: any) => c.id);
+    const ids = (await page("strut/jamie", "alice").ok("conversation/list")).conversations.map((c: any) => c.id);
     assert.ok(!ids.includes("alice/c9"), ids.join(", "));
   });
 });

@@ -5,17 +5,18 @@
 // changes it proposes and what it made. The composer under it; Send is Stop
 // while a turn runs. A conversation is followed live
 // (`conversation/get { wait }`) and marked read while it is open.
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { FileText, Loader2, MessageCircle, PanelLeftOpen, Square, Zap } from "lucide-react";
 import { useHost } from "@strut/kit";
 import { Markdown } from "./Markdown";
 import { cn } from "@/lib/utils";
-import { TITLE } from "../deployment";
 import { inFlight, sendRefusal, silentReply, turnContext, type SendRefusal } from "../lib/chat";
 import type { ConversationTurn, WakeMark } from "../lib/types";
 import { useConversation, useSend, useStop, useUpdateConversation } from "../hooks";
 import { ArtifactCard, type TurnRuns } from "./ArtifactCard";
+import { ThreadPrs } from "./PullRequestCard";
+import { prKey, prOf } from "../lib/pr";
 import { Composer } from "./Composer";
 import { JobCard, useJob } from "./JobCard";
 import { ProposalCard } from "./ProposalCard";
@@ -28,9 +29,11 @@ export interface ThreadProps {
   /** The draft's first turn was sent: it is a conversation now. */
   onStarted: (id: string) => void;
   onShowList?: () => void;
+  /** Show this job's newest card (a click on it in the list). */
+  focusJob?: { job: string; at: number };
 }
 
-export function Thread({ session, draft, onStarted, onShowList }: ThreadProps) {
+export function Thread({ session, draft, onStarted, onShowList, focusJob }: ThreadProps) {
   const host = useHost();
   const qc = useQueryClient();
   const conv = useConversation(draft ? null : session);
@@ -45,6 +48,15 @@ export function Thread({ session, draft, onStarted, onShowList }: ThreadProps) {
 
   // Oldest first, as a thread reads.
   const turns = useMemo(() => [...conv.turns].reverse(), [conv.turns]);
+  // One card per pull request: the newest turn that names it shows it.
+  const threadPrs = useMemo(() => {
+    const owner = new Map<string, string>();
+    for (const t of turns) for (const a of t.artifacts ?? []) {
+      const pr = prOf(a);
+      if (pr) owner.set(prKey(pr), t.runId);
+    }
+    return owner;
+  }, [turns]);
   const newest = conv.view?.turns[0];
   const running = newest && inFlight(newest.status) ? newest : undefined;
   const unread = conv.view?.conversation.unread;
@@ -54,11 +66,26 @@ export function Thread({ session, draft, onStarted, onShowList }: ThreadProps) {
     if (session && !draft && unread && !document.hidden) update.mutate({ session, seen: true });
   }, [session, draft, unread, conv.view?.rev]);
 
-  // Follow the bottom unless the person scrolled up.
+  /** The `focusJob` last shown. */
+  const shown = useRef<number | null>(null);
+  // Follow the bottom unless the person scrolled up (or a job asked for
+  // from the list is yet to be shown).
   useEffect(() => {
     const el = scroller.current;
-    if (el && pinned) el.scrollTop = el.scrollHeight;
+    if (el && pinned && !(focusJob && shown.current !== focusJob.at)) el.scrollTop = el.scrollHeight;
   }, [turns.length, newest?.status, pinned]);
+
+  // A job asked for from the list: its newest card, once the turns are in.
+  useEffect(() => {
+    if (!focusJob || shown.current === focusJob.at || !scroller.current) return;
+    const cards = scroller.current.querySelectorAll<HTMLElement>(`[data-testid="job-card"][data-job="${CSS.escape(focusJob.job)}"]`);
+    const card = cards[cards.length - 1];
+    if (!card) return;
+    shown.current = focusJob.at;
+    setPinned(false);
+    card.scrollIntoView({ block: "center" });
+    card.animate([{ boxShadow: "0 0 0 2px var(--ring)" }, { boxShadow: "0 0 0 0 transparent" }], { duration: 1600 });
+  }, [focusJob, turns]);
 
   const onSend = async (text: string, files: File[], model: string): Promise<boolean> => {
     if (!session) return false;
@@ -93,7 +120,7 @@ export function Thread({ session, draft, onStarted, onShowList }: ThreadProps) {
         )}
         <h1 className="min-w-0 flex-1 truncate text-sm font-medium" title={title}>{title}</h1>
         {conv.view?.conversation.shared && <span className="shrink-0 text-xs text-muted-foreground">Shared</span>}
-        <span className="shrink-0 text-xs text-muted-foreground">{TITLE}</span>
+        <span className="shrink-0 text-xs text-muted-foreground">Jamie</span>
       </header>
       <div
         ref={scroller}
@@ -114,16 +141,18 @@ export function Thread({ session, draft, onStarted, onShowList }: ThreadProps) {
               Earlier turns
             </button>
           )}
-          {turns.map((t) => (
-            <Turn key={t.runId} turn={t} conversation={session!} />
-          ))}
+          <ThreadPrs.Provider value={threadPrs}>
+            {turns.map((t) => (
+              <Turn key={t.runId} turn={t} conversation={session!} />
+            ))}
+          </ThreadPrs.Provider>
         </div>
       </div>
       <div className="shrink-0 px-4 pb-4">
         <div className="mx-auto w-full max-w-3xl space-y-2">
           {refusal && <Notice tone={refusal.kind === "error" ? "error" : "warn"}>{refusal.text}</Notice>}
           <Composer
-            placeholder={`Message ${TITLE}`}
+            placeholder="Message Jamie"
             disabled={!session}
             sending={send.isPending}
             onSend={onSend}
@@ -162,6 +191,10 @@ function Turn({ turn, conversation }: { turn: ConversationTurn; conversation: st
   const working = inFlight(turn.status);
   const runs = useMemo(() => turnRuns(turn), [turn]);
   const silent = silentReply(turn.text);
+  const threadPrs = useContext(ThreadPrs);
+  // The job a pull request in the reply came from: the one a wake woke on,
+  // or the only one the turn started.
+  const prJob = turn.wake && turn.wake !== true ? turn.wake.job : turn.jobs.length === 1 ? turn.jobs[0]!.job : undefined;
   return (
     <div className="flex flex-col gap-2" data-testid="turn" data-run-id={turn.runId} data-status={turn.status}>
       {turn.wake ? (
@@ -188,7 +221,7 @@ function Turn({ turn, conversation }: { turn: ConversationTurn; conversation: st
       {working && (
         <div className="flex items-center gap-2 rounded-lg border bg-card px-3 py-2.5" data-testid="working-card">
           <Loader2 className="size-3.5 animate-spin text-sky-600" />
-          <span className="text-sm font-medium">{TITLE} is working on it</span>
+          <span className="text-sm font-medium">Jamie is working on it</span>
         </div>
       )}
       {!working && turn.text && !silent && (
@@ -211,8 +244,11 @@ function Turn({ turn, conversation }: { turn: ConversationTurn; conversation: st
       {turn.proposals.map((p) => (
         <ProposalCard key={p.id} brief={p} />
       ))}
-      {(turn.artifacts ?? []).map((a) => (
-        <ArtifactCard key={a.id} artifact={a} runs={runs} conversation={conversation} />
+      {(turn.artifacts ?? []).filter((a) => {
+        const pr = prOf(a);
+        return !pr || threadPrs.get(prKey(pr)) === turn.runId;
+      }).map((a) => (
+        <ArtifactCard key={a.id} artifact={a} runs={runs} conversation={conversation} {...(prJob ? { job: prJob } : {})} />
       ))}
     </div>
   );

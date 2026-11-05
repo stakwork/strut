@@ -1,6 +1,6 @@
 # Jamie as a strut app, and one wake for every host
 
-> **Status (2026-11-05): proposed; §1 (one wake) built — §1.6; §2 (conversations) built — §2.1; §3 (first-party apps) built — §3.1; §4 (the host panel) built — §4.1; §5 (the app) built — §5.1; Hive's wake half (§6.1) built — stakwork/hive#5705.** Written after a read of strut `main`
+> **Status (2026-11-05): proposed; §1 (one wake) built — §1.6; §2 (conversations) built — §2.1; §3 (first-party apps) built — §3.1; §4 (the host panel) built — §4.1; §5 (the app) built — §5.1, named Jamie with jobs in the list and pull requests — §5.2; Hive's wake half (§6.1) built — stakwork/hive#5705.** Written after a read of strut `main`
 > @e1c45ad, hive `origin/master` @c692b96bf, sphinx `origin/master`
 > @74c12954 (Peel's bridge) and sphinx-voice `origin/main` @ba18f12. The
 > owner agreed four things in conversation, marked **agreed** below: a
@@ -563,7 +563,8 @@ graph, spot checks) and hands the rest to the panel.
 ## 5. The app (proposed)
 
 `strut/assistant`, seeded at boot by tree hash beside `strut/views`; its
-title is the deployment's (Hive's org page says "Jamie"). Ported from
+title is the deployment's (Hive's org page says "Jamie"). (Named
+`strut/jamie`, titled Jamie everywhere, since: §5.2.) Ported from
 Hive's org page (`src/app/org/[githubLogin]/_components/`):
 
 | Part | From Hive | Over |
@@ -654,13 +655,54 @@ was open:
   app; without it they navigate.
 - **Replies** are markdown in the bubble (react-markdown, links through the
   host); a file is DocumentView's box.
-- **Not built**: the jobs under each list row (the index does not keep
-  them, §2.1), pull requests, adding a claim from the card, Hive's attention
-  and recap cards, voice input.
+- **Not built**: adding a claim from the card, Hive's attention and recap
+  cards, voice input. (The jobs under each list row and pull requests were
+  first left out here; built in §5.2.)
+
+### 5.2 Jamie, jobs in the list, pull requests (2026-11-05, branch `feature/jamie-jobs-prs`)
+
+Ruled 2026-11-05: the app is **Jamie** (open question 5), and the list and
+pull requests are Hive's, not later items.
+
+- **The name.** `strut/jamie` (`src/apps/jamie/`, `src/apps/jamie-seed.ts`),
+  titled Jamie everywhere; the deployment's title is gone
+  (`createStrut({ jamie: false })` and `STRUT_HOST_CONFIG`'s `jamie: false`
+  turn it off). `strut/assistant`, its name before, is removed at boot,
+  grants and page state with it: no host linked to it yet.
+- **Jobs in the list** (Hive's `ControlPanelList`): the conversation record
+  keeps the jobs its turns started or continued (`jobs`, least recently
+  first), read once from each turn's log when it ends (`turnJobs`); a
+  record from before is filled in the background at its next list.
+  `conversation/list` answers each row's jobs, newest first, at most 10
+  (`moreJobs` for the rest), each with its record's title, whether a turn
+  of it is live, and the pull requests its turns delivered (artifacts of
+  kind `pull_request` with a GitHub link, settled runs read once). The row
+  shows the newest job, the rest behind "N more", a pulse while one runs,
+  and the conversation's pull requests counted; a job opens the
+  conversation at its card.
+- **Pull requests** (Hive's `pullRequest.tsx`): `github/pr-status` reads one
+  as GitHub has it now — state, branches, checks (check runs and commit
+  statuses, failed first), mergeable — with the viewer's own `GITHUB_TOKEN`
+  (the actor secret a host pushes), again every 30 s while it is open or a
+  draft. **Merge** is `github/merge-pr`: the person's click, never a
+  proposal, squash by default and the first method the repository allows
+  when it refuses squash, at the head the person saw (`pr_head_moved:`
+  otherwise), refused for a closed, draft or conflicting one. It runs only
+  as a first-party page's own call or as an accepted proposal, so an agent
+  can ask for a merge and never make one. **Fix**, when checks failed: the
+  job's next turn, told which checks and the branch, naming the
+  conversation so its end wakes it. One card per pull request per thread,
+  at its newest mention; a collapsed job card keeps its own in sight unless
+  the thread shows them. Without a token the card says GitHub cannot be
+  read, and Merge says why.
 
 ## 6. The hosts' halves (proposed)
 
 ### 6.1 Hive
+
+Ruled 2026-11-05: Hive goes once Jamie is fully in strut. Until then it
+has to keep working, and nothing more: the items below are only what it
+needs to frame the app and not double its replies.
 
 The wake half is built (stakwork/hive#5705, 2026-11-05): Hive asks for
 strut's wake, adopts its wake turn, and skips its own when `run.end` says
@@ -673,10 +715,11 @@ strut's wake, adopts its wake turn, and skips its own when `run.end` says
   rows its own wake writes today (the launch marker with the wake's id,
   the reply), so the tribe outbox and the call feed thread and read it as
   now.
-- Send `context.where` and `context.timeZone` beside `context.line`.
+- Send `context.where` and `context.timeZone` beside `context.line`
+  (done on Hive's master).
 - Stop waking for a job whose `run.end` says `wake: "launched"`;
   `"capped"` shows the job's words.
-- Frame `?app=strut/assistant&solo=1` through the embed URL it already
+- Frame `?app=strut/jamie&solo=1` through the embed URL it already
   mints, behind a flag, then in place of the chat.
 
 ### 6.2 Peel's bridge
@@ -688,7 +731,7 @@ prompt and gates.
 
 ### 6.3 Voice
 
-The 1:1 call moves onto the wake, as group calls already are: the wake
+Deferred (2026-11-05). The 1:1 call moves onto the wake, as group calls already are: the wake
 turn's `run.end` reaches the member's callback and is said like a reply,
 its question last. The instant line from the job's own output may stay
 as a "the job finished" ping before it; it never stands in for the
@@ -725,7 +768,8 @@ are lost.
 3. **First-party apps** (strut, §3; built — §3.1): the reserved `strut/`
    name on every door, the tier's rights in `step_run`, `proposal/decide`.
 4. **The host panel** (strut web, §4; built — §4.1).
-5. **`strut/assistant`** (strut, §5; built — §5.1), the `llm/models` step.
+5. **`strut/jamie`** (strut, §5; built — §5.1, §5.2), the `llm/models`
+   step, jobs in the list, pull requests.
 6. **Hive** (§6.1), behind the 202's `wake: true`.
 7. **Peel's bridge, voice** (§6.2, §6.3).
 8. **`DESKTOP.md` §5** points at the template's prompt.
@@ -740,17 +784,19 @@ their own.
    actor here; built in §2.1.
 2. **The loop cap's fallback**: the host shows the job's words as they
    are (proposed, Peel's), or nothing (Hive's).
-3. **Who a wake runs as**: the person who asked for the job (proposed),
-   or the conversation's owner (Hive's).
+3. ~~**Who a wake runs as**~~: ruled 2026-11-05 as built (§1.6) — the
+   person who asked for the job; for an end from another strut, which
+   names nobody here, the last person who took a turn.
 4. **Queued ends**: one turn for every job that ended meanwhile
    (proposed), or one turn each (Peel).
-5. **The app's name**: `strut/assistant` (proposed).
+5. ~~**The app's name**~~: Jamie, `strut/jamie` (ruled 2026-11-05; §5.2).
 6. **Event wakes** (a job turn started by something that happened to an
    artifact) stay Hive's until artifact events move to strut.
-7. **GitHub tokens.** Hive pushes the person's `GITHUB_TOKEN` (8 hours)
-   before every turn it launches. A wake strut launches that continues a
-   job uses whatever is on file. `org-home-swarm.md` moves the refresh to
-   the home's lab; until then, a continued job may push with an expired
-   token.
+7. **GitHub tokens.** Hive pushes the person's `GITHUB_TOKEN` before
+   every turn it launches; its GitHub App's user tokens do not expire (an
+   earlier draft said 8 hours: wrong), so a wake or a Merge uses the one on
+   file. What is open: a person Hive never launched a turn for has none on
+   the swarm, and once Hive goes nothing pushes one. Strut then needs its
+   own way to connect a person's GitHub (`org-home-swarm.md`).
 8. ~~**Where the conversation index lives**~~: files under `dataDir`, on
    every backend (§2.1).

@@ -10,6 +10,7 @@ export const TONE: Record<Tone, string> = {
   attention: "bg-amber-500/10 text-amber-700 ring-amber-500/20 dark:text-amber-300",
   failed: "bg-rose-500/10 text-rose-700 ring-rose-500/20 dark:text-rose-300",
   muted: "bg-muted text-muted-foreground ring-border",
+  merged: "bg-violet-500/10 text-violet-700 ring-violet-500/20 dark:text-violet-300",
 };
 
 export function Pill({ tone, children, title, spin }: { tone: Tone; children: ReactNode; title?: string; spin?: boolean }) {

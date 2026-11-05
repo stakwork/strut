@@ -13,6 +13,8 @@ import { cn } from "@/lib/utils";
 import { artifactLink, placeArtifact, servedFile, type ArtifactPlace, type FileRun } from "../lib/artifacts";
 import type { ArtifactRef, JobView } from "../lib/types";
 import { CaptchaCard } from "./CaptchaCard";
+import { PullRequestCard } from "./PullRequestCard";
+import { prOf } from "../lib/pr";
 import { Notice } from "./bits";
 
 export interface TurnRuns {
@@ -38,11 +40,14 @@ export function useJobRun(job: string | undefined, url?: string) {
   });
 }
 
-export function ArtifactCard({ artifact, runs, conversation }: { artifact: ArtifactRef; runs: TurnRuns; conversation?: string }) {
+/** `job`: the job it came from, when known (a pull request's Fix asks it). */
+export function ArtifactCard({ artifact, runs, conversation, job }: { artifact: ArtifactRef; runs: TurnRuns; conversation?: string; job?: string }) {
   const place = placeArtifact(artifact, runs);
   const host = useHost();
   const served = artifact.url && servedFile(artifact.url) ? artifact.url.split(/[?#]/, 1)[0]! : undefined;
   const [open, setOpen] = useState(place.show === "captcha");
+  const pr = prOf(artifact);
+  if (pr) return <PullRequestCard pr={pr} title={artifact.title} {...(job ?? artifact.job ? { job: job ?? artifact.job } : {})} {...(conversation ? { conversation } : {})} />;
   if (place.show === "captcha") return <CaptchaCard title={artifact.title} job={place.job} path={place.path} {...(place.run ? { run: place.run } : {})} {...(conversation ? { conversation } : {})} />;
   const inline = place.show === "file" || place.show === "content" || place.show === "sheet";
   const Icon = place.show === "link" && place.what === "app" ? AppWindow : place.show === "sheet" || (place.show === "file" && place.kind === "table") ? Table2 : place.show === "file" && place.kind === "image" ? ImageIcon : FileText;
