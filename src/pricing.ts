@@ -10,7 +10,7 @@
 // adapter into `computeSessionCost`. aieo stays lazy-loaded (it pulls every
 // provider SDK), so this module imports only a TYPE from it.
 
-import type { TokenUsageForCost } from "aieo";
+import type { TokenUsageForCost } from "./aieo/index.js";
 
 /** Normalized, provider-agnostic token counts (flat, addable across calls). */
 export interface TokenUsage {

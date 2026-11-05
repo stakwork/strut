@@ -1,7 +1,7 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 
-import { MAPLE_MODELS, NUMES_MODELS } from "aieo";
+import { MAPLE_MODELS, NUMES_MODELS } from "./aieo/index.js";
 import { resolveModel, listModelOptions, canonicalModelName, createWebTools, defaultModel } from "./llm.js";
 import { secretsCapability } from "./capabilities.js";
 import { MemorySecretStore } from "./secret-store.js";

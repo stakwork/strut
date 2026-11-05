@@ -10,14 +10,6 @@
     "@ai-sdk/provider" "4.0.21"
     "@ai-sdk/provider-utils" "5.0.53"
 
-"@ai-sdk/anthropic@^4.0.57":
-  version "4.0.60"
-  resolved "https://registry.yarnpkg.com/@ai-sdk/anthropic/-/anthropic-4.0.60.tgz#f3b604bf99a2a44e3569b165ba022393d5e38ca8"
-  integrity sha512-7Hb10pUnPRLYQxrWC5OtcYEmrOIGmAez6+meKBePxCO09Jjle5Ke+L2mTOonAVkY/7MEafpY7c55F7DJ9yGeNg==
-  dependencies:
-    "@ai-sdk/provider" "4.0.17"
-    "@ai-sdk/provider-utils" "5.0.45"
-
 "@ai-sdk/gateway@4.0.89":
   version "4.0.89"
   resolved "https://registry.yarnpkg.com/@ai-sdk/gateway/-/gateway-4.0.89.tgz#c89ccd72613cdfa0927d114e560aa90ea969bc17"
@@ -917,17 +909,6 @@ ai@^7.0.106:
     "@ai-sdk/gateway" "4.0.89"
     "@ai-sdk/provider" "4.0.17"
     "@ai-sdk/provider-utils" "5.0.45"
-
-aieo@^0.2.7:
-  version "0.2.7"
-  resolved "https://registry.yarnpkg.com/aieo/-/aieo-0.2.7.tgz#47ea995f33b3bc65264423b637acae21f8a2f0d2"
-  integrity sha512-2bM6zAsmKvD7g67VMh8HeJMFo8fw69XngIofpCAyCai3JnYfzyL62Jm16t6ZQwWRSmgyG2qEIBZ5yhq9NVDXYw==
-  dependencies:
-    "@ai-sdk/anthropic" "4.0.71"
-    "@ai-sdk/google" "4.0.74"
-    "@ai-sdk/openai" "4.0.69"
-    "@ai-sdk/xai" "5.0.2"
-    "@openrouter/ai-sdk-provider" "3.0.0"
 
 ajv-formats@^3.0.1:
   version "3.0.1"

@@ -64,6 +64,14 @@ jobs:
       - name: Test
         run: npm test
 
+      # The npm package `aieo` (aieo/, built from src/aieo for Hive and
+      # staklink; published by hand): built and imported once, so a release
+      # never finds a broken build.
+      - name: Build the aieo package
+        run: |
+          npm run build:aieo
+          node --input-type=module -e "const m = await import('./aieo/dist/index.js'); if (m.canonicalModelName('sonnet').provider !== 'anthropic') process.exit(1)"
+
   graph:
     name: graph (${{ matrix.shard }}/3)
     runs-on: ubuntu-latest

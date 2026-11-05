@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "module": "ESNext",
+    "target": "ES2022",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022"],
+    "types": ["node"],
+    "sourceMap": true,
+    "skipLibCheck": true,
+    "strict": true
+  },
+  "include": ["../src/aieo/**/*.ts"],
+  "exclude": ["../src/aieo/**/*.test.ts"]
+}

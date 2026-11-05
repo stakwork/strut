@@ -1,6 +1,6 @@
 /**
- * One streamed request through aieo's model (with its bundled
- * @ai-sdk/anthropic — the copy that actually parses strut's streams) and
+ * One streamed request through aieo's model (src/aieo, with strut's own
+ * @ai-sdk/anthropic — the copy that parses strut's streams) and
  * strut's real tool wiring, direct or through a gateway. Prints stream part
  * counts, or the full error (a TypeValidationError names the bad frame).
  *
@@ -36,7 +36,7 @@ if (!base || !model || !CASES.includes(kind!)) {
   process.exit(2);
 }
 
-const aieo = await import("aieo");
+const aieo = await import("../src/aieo/index.js");
 const { streamText, tool, isStepCount } = await import("ai");
 const direct = base === "direct";
 if (!direct && !process.env["VK"]) throw new Error("set VK to a gateway virtual key");

@@ -33,7 +33,10 @@ describe("the env boundary (src/env.ts)", () => {
     const handedOn = /\.\.\.process\.env\b|[=?(,:]\s*process\.env\b/;
     const proseOnly = new Set(["ai/prompts.ts"]);
     const offenders = sources()
-      .filter((p) => relative(SRC, p) !== "env.ts")
+      // aieo/env.ts is aieo's one door to the environment: `process.env` until
+      // a host calls its `useEnv`, as the npm package's users (Hive, staklink)
+      // never do. Every other aieo read goes through it.
+      .filter((p) => !["env.ts", "aieo/env.ts"].includes(relative(SRC, p)))
       .flatMap((p) =>
         readFileSync(p, "utf8")
           .split("\n")

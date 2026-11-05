@@ -1,0 +1,48 @@
+{
+  "name": "aieo",
+  "version": "0.2.7",
+  "description": "typescript ai utils",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "author": "evanfeenstra",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/stakwork/strut.git",
+    "directory": "aieo"
+  },
+  "scripts": {
+    "build": "npx --yes -p tsup@8.5.1 -p typescript@5.9.3 tsup",
+    "try": "tsx --env-file=../.env scripts/try.ts",
+    "try-anthropic": "tsx --env-file=../.env scripts/try-anthropic.ts",
+    "try-kimi": "tsx --env-file=../.env scripts/try-kimi.ts",
+    "try-grok": "tsx --env-file=../.env scripts/try-grok.ts",
+    "try-numes": "tsx --env-file=../.env scripts/try-numes.ts",
+    "try-search": "tsx --env-file=../.env scripts/try-search.ts",
+    "try-fetch": "tsx --env-file=../.env scripts/try-fetch.ts",
+    "cite-rate": "tsx --env-file=../.env scripts/cite-rate.ts"
+  },
+  "keywords": [
+    "llm",
+    "ai-sdk",
+    "prompt"
+  ],
+  "license": "ISC",
+  "dependencies": {
+    "@ai-sdk/anthropic": "4.0.71",
+    "@ai-sdk/google": "4.0.74",
+    "@ai-sdk/openai": "4.0.69",
+    "@ai-sdk/xai": "5.0.2",
+    "@openrouter/ai-sdk-provider": "3.0.0"
+  },
+  "peerDependencies": {
+    "ai": "^7.0.105",
+    "zod": "^4.3.6"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
