@@ -12,7 +12,7 @@ describe("strut-schemas (pure)", () => {
   it("library is well-formed", () => {
     assertLibraryWellFormed();
     assert.equal(STRUT_SCHEMAS.length, 13);
-    assert.equal(STRUT_EDGES.length, 23);
+    assert.equal(STRUT_EDGES.length, 24);
     assert.deepEqual(STRUT_EDGES.filter((e) => e.ladybugOnly).map((e) => `${e.source}-[${e.edge}]->${e.target}`), ["StrutRun-[ACCESSED]->Thing"]);
   });
 

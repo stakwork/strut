@@ -384,6 +384,13 @@ started (`assistantJobs` over its events), status while in flight.
   turn line, each with its own messages), so the fork replays the same
   thread and reads the same runs; its finished turns show. Its id is
   `<actor>/<12 hex>` unless named (a person token's must be its own).
+- **In the graph** (a follow-up, on Neo4j): a conversation is a
+  `StrutChat` of `kind: assistant`, the builder chat's type, so a
+  conversation is one node however strut holds it. The run projection
+  upserts it from the record (title, last status, turn count, who first
+  spoke) and draws `IN_CHAT` from each turn's `StrutAgentSession`; a
+  rename reaches it with the next turn. Not on a Ladybug file, which holds
+  neither agent sessions nor chats.
 - **Not built**: the jobs in a list row (read per turn in `get`), the one-off
   export of Hive's renamed titles and archived flags (§7).
 

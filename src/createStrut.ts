@@ -112,7 +112,7 @@ import type { CassetteMode } from "./cassette.js";
 // Type-only: the graph backend stays a lazy, opt-in dependency.
 import type { GraphBackend } from "./graph/backend.js";
 import { graphView, mayQueryRaw, readerFor, listFor, type GraphReaders } from "./graph/scope.js";
-import { projectChatOnce, projectRunOnce } from "./graph/projector.js";
+import { projectChatOnce, projectRunOnce, type ConversationReader } from "./graph/projector.js";
 import { createGraphChangeFeed, GRAPH_FEED_READ_MAX } from "./graph-writes.js";
 // No runtime graph dependency in here either (type-only imports inside).
 import type { ClaimsReader } from "./graph/claims.js";
@@ -1433,7 +1433,13 @@ export async function createStrut<TServices = unknown>(
           // With the job index, so a run launched under a job refreshes
           // its `StrutJob` (plans/job-index.md §6).
           const jobs = (services as Record<string, unknown>)["jobs"] as JobsCapability | undefined;
-          void projectRunOnce(runGraph, store, key, runId, jobs).catch((err) => console.error(`[projector] run ${key}/${runId} was not projected:`, err));
+          // …and with the conversation index, so a turn of a conversation
+          // refreshes its `StrutChat` (plans/jamie-app.md §2). Its end was
+          // recorded from the run's terminal event, before this.
+          const convs = (services as Record<string, unknown>)["conversations"] as Partial<ConversationReader> | undefined;
+          void projectRunOnce(runGraph, store, key, runId, jobs, typeof convs?.record === "function" ? (convs as ConversationReader) : undefined).catch((err) =>
+            console.error(`[projector] run ${key}/${runId} was not projected:`, err),
+          );
           verifier?.schedule(key, runId);
         }
       }

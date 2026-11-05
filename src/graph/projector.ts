@@ -43,7 +43,11 @@
  * Threads: a `StrutAgentSession` is ONE execution of an agent step — one
  * turn. An agent that continued a thread (`session`, plans/agent-sessions.md)
  * carries `session_id` + `session_turn`, so a thread is every node with that
- * id, across runs and workflows.
+ * id, across runs and workflows. A thread that is an assistant CONVERSATION
+ * (the index's record, src/conversations.ts) is also a node: one
+ * `StrutChat` with `kind: assistant`, every turn's session `IN_CHAT` it —
+ * the builder chat's type (`kind: builder`, its turns `StrutTurn`s), so a
+ * conversation is one type in the graph however strut held it.
  *
  * Jobs (plans/job-index.md §6): a run under a job upserts its `StrutJob`
  * (`IN_JOB`) and one `StrutArtifact` per current deliverable of the job
@@ -69,6 +73,7 @@ import type { ChatMeta, ChatStore, StoredMessage } from "../chat-store.js";
 import { idProblem, peerSessionId } from "../session-store.js";
 import { artifactEntriesOf } from "../artifact-refs.js";
 import type { JobIndex, JobView } from "../job-index.js";
+import type { ConversationRecord, Conversations } from "../conversations.js";
 import type { GraphBackend } from "./backend.js";
 import type { NodeInput } from "./node-writer.js";
 import type { EdgeInput } from "./edge-writer.js";
@@ -97,6 +102,11 @@ async function fit(backend: GraphBackend, nodes: NodeInput[]): Promise<NodeInput
  *  `services.jobs`; a bare caller hands nothing and no job node is written. */
 export type JobReader = Pick<Partial<JobIndex>, "get">;
 
+/** What the projector needs of the conversation index (plans/jamie-app.md
+ *  §2): a session's record, to project its conversation as a `StrutChat`.
+ *  `createStrut` hands its index; without one no conversation is written. */
+export type ConversationReader = Pick<Conversations, "record">;
+
 /** The cap on a `StrutJob.summary` — the search text. */
 const JOB_SUMMARY_MAX_CHARS = 2000;
 
@@ -111,6 +121,8 @@ export interface ProjectRunsOptions {
   skipSettled?: boolean;
   /** The job index, for the `StrutJob` of each run launched under a job. */
   jobs?: JobReader;
+  /** The conversation index, for the `StrutChat` of each conversation turn. */
+  conversations?: ConversationReader;
 }
 
 export interface ProjectReport {
@@ -416,6 +428,30 @@ export async function ensureJobNode(backend: GraphBackend, jobs: JobReader | und
   return (await upsertJob(backend, jobs, job))?.jobRef ?? null;
 }
 
+/** An assistant conversation as a `StrutChat` (`kind: assistant`), from the
+ *  index's record: the builder chat's node, so a conversation is one type
+ *  in the graph whoever held it. Who opened it is the first person who
+ *  spoke (a wake turn has no speaker of its own). */
+export function conversationNode(rec: ConversationRecord): NodeInput {
+  const last = rec.turns[rec.turns.length - 1];
+  const by = rec.turns.find((t) => !t.wake && t.by)?.by;
+  return {
+    type: "StrutChat",
+    data: compact({
+      chat_id: rec.id,
+      kind: "assistant",
+      title: rec.title,
+      status: last?.status,
+      started_at: rec.createdAt,
+      last_active_at: rec.updatedAt,
+      turn_count: rec.turns.length,
+      log_ref: rec.id,
+      unique_source_id: `strutchat:${rec.id}`,
+    }),
+    ...(by ? { created_by: by } : {}),
+  };
+}
+
 /** One `StrutArtifact` per (job, artifact id), from the index's fold (the
  *  newest version of each id): a re-delivery in a later turn lands on the
  *  same node (see the schema's key comment). `at` is when the run that
@@ -525,7 +561,7 @@ export async function projectRuns(backend: GraphBackend, store: RunStore, opts: 
         report.skipped++;
         continue;
       }
-      await projectRun(backend, store, workflow, runId, report, opts.jobs);
+      await projectRun(backend, store, workflow, runId, report, opts.jobs, opts.conversations);
     }
   }
   return report;
@@ -547,6 +583,7 @@ export async function projectRun(
   runId: string,
   report: ProjectReport = emptyReport(),
   jobs?: JobReader,
+  conversations?: ConversationReader,
 ): Promise<string | null> {
   const { namespace: ns, dialect: d } = backend;
   const [events, summary] = await Promise.all([store.getRunEvents(workflow, runId), store.getRunSummary(workflow, runId)]);
@@ -641,6 +678,29 @@ export async function projectRun(
       }
     }
   }
+  // The conversation (plans/jamie-app.md §2): each agent session that is a
+  // turn of one is `IN_CHAT` its `StrutChat`, upserted from the index's
+  // record — as fresh as the turn that just ended. A thread that is no
+  // conversation (a job's) has no record: nothing written. Best effort, like
+  // a job's artifacts: a failure never costs the run's projection.
+  if (conversations && p.sessions.length && (await holds(backend, "StrutChat"))) {
+    const threads = new Map<string, string[]>();
+    p.sessions.forEach((s, i) => {
+      const id = s.data["session_id"];
+      if (typeof id === "string") threads.set(id, [...(threads.get(id) ?? []), written[1 + i]!.ref_id]);
+    });
+    for (const [id, refs] of threads) {
+      try {
+        const rec = await conversations.record(id);
+        if (!rec) continue;
+        const [chat] = await backend.nodes.writeMany(await fit(backend, [conversationNode(rec)]), "upsert");
+        for (const ref of refs) edges.push({ edge: "IN_CHAT", source_ref_id: ref, target_ref_id: chat!.ref_id });
+        report.chats++;
+      } catch (e) {
+        console.warn(`[projector] conversation ${id}: not written: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+  }
   if (edges.length) {
     await backend.edges.writeMany(edges);
     report.edges += edges.length;
@@ -730,14 +790,14 @@ const projecting = new WeakMap<GraphBackend, Map<string, Promise<string | null>>
  * written side by side. What the run-end hook calls (`createStrut` projects
  * every top-level run); the verify pass goes through `runRef`.
  */
-export function projectRunOnce(backend: GraphBackend, store: RunStore, workflow: string, runId: string, jobs?: JobReader): Promise<string | null> {
+export function projectRunOnce(backend: GraphBackend, store: RunStore, workflow: string, runId: string, jobs?: JobReader, conversations?: ConversationReader): Promise<string | null> {
   let runs = projecting.get(backend);
   if (!runs) projecting.set(backend, (runs = new Map()));
   const inFlight = runs;
   const key = `${workflow}/${runId}`;
   const running = inFlight.get(key);
   if (running) return running;
-  const p = projectRun(backend, store, workflow, runId, emptyReport(), jobs).finally(() => inFlight.delete(key));
+  const p = projectRun(backend, store, workflow, runId, emptyReport(), jobs, conversations).finally(() => inFlight.delete(key));
   inFlight.set(key, p);
   return p;
 }
@@ -913,6 +973,7 @@ async function writeChat(backend: GraphBackend, chatStore: ChatStore, meta: Chat
     type: "StrutChat",
     data: compact({
       chat_id: meta.id,
+      kind: "builder",
       title: meta.title,
       summary: preview(turns[0] ? (turns[0].data["user_text_preview"] as string) : undefined),
       status: meta.status,
@@ -949,10 +1010,10 @@ async function writeChat(backend: GraphBackend, chatStore: ChatStore, meta: Chat
 /** Runs first (so chats can link to them), then chats. */
 export async function projectAll(
   backend: GraphBackend,
-  src: { store: RunStore; chatStore?: ChatStore; workflows: string[]; jobs?: JobReader },
-  opts: Omit<ProjectRunsOptions, "workflows" | "jobs"> = {},
+  src: { store: RunStore; chatStore?: ChatStore; workflows: string[]; jobs?: JobReader; conversations?: ConversationReader },
+  opts: Omit<ProjectRunsOptions, "workflows" | "jobs" | "conversations"> = {},
 ): Promise<ProjectReport> {
-  const a = await projectRuns(backend, src.store, { ...opts, workflows: src.workflows, jobs: src.jobs });
+  const a = await projectRuns(backend, src.store, { ...opts, workflows: src.workflows, jobs: src.jobs, conversations: src.conversations });
   const b = src.chatStore ? await projectChats(backend, src.chatStore) : emptyReport();
   return {
     runs: a.runs + b.runs,

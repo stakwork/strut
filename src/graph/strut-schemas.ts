@@ -494,7 +494,13 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
     description_key: "summary",
     type_description: "A long-lived strut chat",
     attributes: {
+      /** The builder chat's id, or the assistant conversation's session id. */
       chat_id: "string",
+      /** `builder`: the workflow builder's chat, its turns `StrutTurn`s.
+       *  `assistant`: a conversation with the assistant (src/conversations.ts),
+       *  its turns the `StrutAgentSession`s of its runs. Absent on a builder
+       *  chat projected before the field. */
+      kind: "?string",
       title: "?string",
       summary: "?string",
       status: "?string",
@@ -626,6 +632,8 @@ export const STRUT_EDGES: readonly StrutEdgeDef[] = [
   { edge: "IN_SESSION", source: "StrutToolCall", target: "StrutAgentSession" },
   { edge: "SPAWNED", source: "StrutChat", target: "StrutRun" },
   { edge: "IN_CHAT", source: "StrutTurn", target: "StrutChat" },
+  // A turn of an assistant conversation is its run's agent session.
+  { edge: "IN_CHAT", source: "StrutAgentSession", target: "StrutChat" },
   { edge: "IN_JOB", source: "StrutRun", target: "StrutJob" },
   // Deliverables: the job holds the artifact (one node per job + id, newest
   // version); each run whose output declared it DELIVERED it.

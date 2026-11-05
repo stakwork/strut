@@ -8,7 +8,8 @@ export default defineStep({
   type: "graph/project",
   description:
     "Project this strut server's own run and chat history into the knowledge graph (StrutRun / StrutAgentSession / " +
-    "StrutToolCall / StrutChat / StrutTurn nodes with EXECUTED, IN_RUN, IN_SESSION, SPAWNED, IN_CHAT edges, plus " +
+    "StrutToolCall / StrutChat / StrutTurn nodes with EXECUTED, IN_RUN, IN_SESSION, SPAWNED, IN_CHAT edges — a builder " +
+    "chat and an assistant conversation are both a StrutChat, its `kind` builder or assistant — plus " +
     "ACCESSED edges from each tool call to the graph nodes it reported touching), " +
     "reading the raw logs under the server's data dir. Idempotent — re-run any time; settled runs are " +
     "skipped unless skipSettled is false. This is what makes 'which runs executed this version' and " +
@@ -31,7 +32,7 @@ export default defineStep({
     try {
       const b = await graphCtx(ctx as StepContext<StrutCapabilities>);
       const dataDir = cfg.dataDir ?? bootEnv()["STRUT_WORKSPACE"] ?? "./workspace";
-      const [{ FileRunStore }, { FileChatStore }, { FileWorkspaceStore }, { GraphWorkspaceStore }, { projectAll }, { graphWorkspaceRequested }, { createJobIndex }] =
+      const [{ FileRunStore }, { FileChatStore }, { FileWorkspaceStore }, { GraphWorkspaceStore }, { projectAll }, { graphWorkspaceRequested }, { createJobIndex }, { conversationRecords }] =
         await Promise.all([
           import("../../../store.js"),
           import("../../../chat-store.js"),
@@ -40,6 +41,7 @@ export default defineStep({
           import("../../../graph/projector.js"),
           import("../../../graph/wiring.js"),
           import("../../../job-index.js"),
+          import("../../../conversations.js"),
         ]);
       const workflows =
         cfg.workflows ??
@@ -48,8 +50,15 @@ export default defineStep({
       const report = await projectAll(
         b,
         // The job index over the same data dir, for the `StrutJob` of every
-        // run launched under a job (plans/job-index.md §6).
-        { store, chatStore: cfg.chats === false ? undefined : new FileChatStore(dataDir), workflows, jobs: createJobIndex({ dataDir, store }) },
+        // run launched under a job (plans/job-index.md §6), and the
+        // conversation records, for the `StrutChat` of every turn of one.
+        {
+          store,
+          chatStore: cfg.chats === false ? undefined : new FileChatStore(dataDir),
+          workflows,
+          jobs: createJobIndex({ dataDir, store }),
+          conversations: conversationRecords(dataDir),
+        },
         { limitPerWorkflow: cfg.limitPerWorkflow, skipSettled: cfg.skipSettled },
       );
       return { dataDir, workflows, ...report };
