@@ -335,13 +335,13 @@ for (const tb of testBackends()) {
       assert.deepEqual(rs.map((r) => r.created), [true, true, true, true, true, true]);
       assert.equal((await rel(rs[2]!.ref_id)).props["strength"], 1);
       assert.equal((await rel(rs[5]!.ref_id)).props["context"], JSON.stringify({ path: "wf/step" }));
-      // The registry knows the triples exactly; jarvis's rules are looser (TESTS
-      // is on its allowlist, Claim-[ABOUT]->Thing reaches any type by ancestry).
+      // The rules know the direction on both engines: no About node, so no
+      // jarvis allowlist. jarvis's library (seeded here on Neo4j) is looser
+      // only for ABOUT: Claim-[ABOUT]->Thing reaches any type by ancestry.
+      await assert.rejects(edges.write({ edge: "TESTS", source_ref_id: claim, target_ref_id: check }), (e: unknown) => e instanceof GraphValidationError && e.code === "WRONG_TYPE", "the other way round");
       if (neo) {
-        assert.equal((await edges.write({ edge: "TESTS", source_ref_id: claim, target_ref_id: check })).created, true);
         assert.equal((await edges.write({ edge: "ABOUT", source_ref_id: claim, target_ref_id: run })).created, true);
       } else {
-        await assert.rejects(edges.write({ edge: "TESTS", source_ref_id: claim, target_ref_id: check }), (e: unknown) => e instanceof GraphValidationError && e.code === "WRONG_TYPE", "the other way round");
         await assert.rejects(edges.write({ edge: "ABOUT", source_ref_id: claim, target_ref_id: run }), (e: unknown) => e instanceof GraphValidationError && e.code === "WRONG_TYPE", "a claim is about a workflow or a step");
       }
     });

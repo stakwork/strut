@@ -334,17 +334,31 @@ for (const tb of testBackends()) {
       assert.equal((await r.schema("StrutStep"))!.exact_key, true);
     });
 
-    it("edge rules: the claim edges and the Concept tree on both; jarvis's allowlist on Neo4j only", async () => {
+    it("edge rules: the claim edges and the Concept tree on both; jarvis's allowlist only where jarvis shares the graph", async () => {
       // jarvis's wildcard rules (`*`→`*`) are not seeded by the bundled fixture.
       const r = backend.schemas;
       assert.ok(await r.edgeSchema("TESTS", "Check", "Claim"));
       assert.ok(await r.edgeSchema("EVIDENCED_BY", "Claim", "Evidence"));
       assert.ok(await r.edgeSchema("PRODUCED_BY", "Evidence", "Check"));
       assert.ok(await r.edgeSchema("CHILD_OF", "Concept", "Concept"));
-      // TESTS is on jarvis's allowlist, so Neo4j takes it either way round; the registry knows the direction.
-      assert.equal((await r.edgeSchema("TESTS", "Claim", "Check"))?.via, neo ? "allowlist" : undefined, "the other way round");
-      assert.equal((await r.edgeSchema("RELATED_TO", "Concept", "Concept"))?.via, neo ? "allowlist" : undefined);
+      // No About node: no jarvis here, so no allowlist on either engine. The
+      // rules know the direction.
+      assert.equal(await r.edgeSchema("TESTS", "Claim", "Check"), null, "the other way round");
+      assert.equal(await r.edgeSchema("RELATED_TO", "Concept", "Concept"), null);
       assert.equal(await r.edgeSchema("MAPS_TO", "Concept", "Concept"), null);
+      if (backend.kind === "neo4j") {
+        // jarvis's About node: its allowlist applies, as on a swarm.
+        await backend.bolt.run(`CREATE (:About {hidden_domains: []})`);
+        r.invalidate();
+        try {
+          assert.equal((await r.edgeSchema("TESTS", "Claim", "Check"))?.via, "allowlist");
+          assert.equal((await r.edgeSchema("RELATED_TO", "Concept", "Concept"))?.via, "allowlist");
+          assert.equal(await r.edgeSchema("MAPS_TO", "Concept", "Concept"), null, "an edge type off the list still needs a rule");
+        } finally {
+          await backend.bolt.run(`MATCH (a:About) DELETE a`);
+          r.invalidate();
+        }
+      }
       // ABOUT is not on jarvis's allowlist: the file holds the seed's exact
       // rule; Neo4j finds jarvis's through an ancestor of one end.
       assert.equal((await r.edgeSchema("ABOUT", "Claim", "StrutWorkflow"))?.via, neo ? "ancestor" : "exact");
