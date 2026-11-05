@@ -151,7 +151,8 @@ describe("the wake through a whole strut", () => {
   });
   afterEach(async () => {
     for (const s of servers.splice(0)) s.close();
-    await rm(dir, { recursive: true, force: true });
+    // A run that outlived its test may still be writing into it.
+    await rm(dir, { recursive: true, force: true, maxRetries: 5 });
     for (const k of ENV) {
       if (saved[k] === undefined) delete process.env[k];
       else process.env[k] = saved[k]!;
@@ -401,6 +402,7 @@ describe("the wake through a whole strut", () => {
     assert.equal((await startOf(ORCHESTRATOR_WORKFLOW, asked.body.runId)).wakeAsked, true);
     assert.equal((await jobOf(asked.body.runId)).wake, "launched");
     await until(() => (seen.wake.length ? true : undefined), "the wake");
+    await idle();
   });
 
   it("wake on a launch must be a boolean", async () => {

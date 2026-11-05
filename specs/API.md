@@ -675,6 +675,80 @@ error message:
 400 for a malformed id; 501 when the host
 injected its own `sessions` capability.
 
+### 9.1 Conversations (`src/conversations.ts`; `plans/jamie-app.md` §2)
+
+A conversation is a session whose turns are runs of a workflow with
+`params.wake` (the seeded `orchestrator`). These routes read it as a person
+does: a list, and each conversation's TURNS read back from their runs, never
+the model transcript. Sending a message is still `POST
+/workflows/orchestrator/run { input: { prompt, session } }`.
+
+**Who sees what.** The viewer is the request's actor (`x-strut-actor` with
+the key, or a person token's own). A conversation is listed for everyone who
+took a turn in it (the launch's actor, else its principal), for the actor
+its id is under (`<actor>/…`), and for anyone who opened it while it was
+`shared`. Shared makes it readable to any actor on this strut; taking a turn
+makes you a participant. The key with no actor reads any conversation; a
+plain peer reads the routes and sees none. A person token may also POST the
+two writes.
+
+| Method | Path | Body | Response |
+| ------ | ---- | ---- | -------- |
+| GET    | `/conversations?q=&archived=1&limit=&before=` | | `{ conversations: ConversationListItem[], next? }`, newest first. `q`: every word in the title. `archived=1`: the archived ones alone (default: the rest). `limit` at most 200 (default 50). `next` is the `before` of the next page |
+| GET    | `/conversations/item?id=&limit=&before=&wait=&since=` | | `ConversationView`; 404 when there is none, or it is not the viewer's to read. `limit` at most 100 turns (default 20); `before` a turn number (`next`); `wait` (ms, at most 55 000) holds until the conversation's `rev` moves past `since` (default: its rev now), so a turn launched, or one settling, answers it |
+| POST   | `/conversations/update` | `{ session, title?, archived?, seen?, shared? }` | the viewer's `ConversationListItem`. `title` renames it for everyone (`""` gives back the first message's); `shared` for everyone; `archived` and `seen` the viewer's own. 404 |
+| POST   | `/conversations/fork` | `{ session, id? }` | 201 the new conversation's `ConversationListItem`. A new session with the source's messages copied turn by turn, so the agent remembers, and its finished turns shown; listed for the forker alone. `id` defaults to `<actor>/<12 hex>`; a person token's must be under its own id. 404, 409 when `id` exists |
+
+```ts
+// One row of the list.
+interface ConversationListItem {
+  id: string;            // the session
+  title: string;         // the first message (Hive's leading `@<workspace>` line left out), cut at 80; a rename replaces it
+  createdAt: string;
+  updatedAt: string;     // the last turn launched or ended
+  turns: number;
+  status?: string;       // the last turn's, once it ended
+  shared?: true;
+  forkedFrom?: string;
+  archived?: true;       // the viewer's
+  seenAt?: string;       // the viewer's
+  unread: boolean;       // something happened since seenAt
+  running?: true;        // a turn is in flight in this process
+}
+
+interface ConversationView {
+  conversation: ConversationListItem;
+  participants: string[];   // who took a turn
+  turns: ConversationTurn[]; // newest first
+  next?: number;            // `before` for the older turns
+  rev: number;              // `since` for `wait`
+}
+
+interface ConversationTurn {
+  turn: number;             // 0-based, oldest first
+  runId: string;
+  workflow: string;
+  at: string;               // when it launched
+  by?: string;              // who took it
+  status: string;           // success | error | cancelled; while not settled running | paused, stale when no process runs it
+  prompt?: string;          // the person's words (input.prompt) — absent on a wake
+  wake?: { job: string; runId: string; peer?: string; also?: unknown[] } | true;  // a wake turn: the job run it woke on (run.start.wake)
+  attachments?: Array<{ name: string; mediaType: string; size: number }>;
+  text?: string;            // the reply
+  ask?: string;             // its question
+  artifacts?: ArtifactRef[]; // resolved, as GET …/runs/:runId/artifacts
+  error?: string;
+  proposals: ProposalBrief[]; // as run.end carries them (§12)
+  jobs: Array<{ job: string; runId: string; workflow?: string }>; // what it started (job/start) or continued
+}
+```
+
+A turn that failed is listed with its error: turns are recorded when they
+launch and end, not only when the agent's session commits. The
+`conversation/list`, `conversation/get` (`wait`, `since`),
+`conversation/update` and `conversation/fork` steps are the same reads and
+writes, as the step's actor; they are refused to an app's page.
+
 ### Graph nodes
 
 | Method | Path | Response |
