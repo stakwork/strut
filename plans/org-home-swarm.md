@@ -115,7 +115,7 @@ own token (§1.3): a Stadeum box signs people in itself. What is open:
 - **The data in Hive** (§5): it moves before Hive is retired.
 - **Pods**: a job that must run the app claims a pod from Hive's pool
   manager today. On a Stadeum org they come from a pod box of the org's
-  own, beside the Stadeum box: `pods.md`, proposed.
+  own, beside the Stadeum box, where idle pods sleep: `pods.md`.
 
 ## The shape in one paragraph
 

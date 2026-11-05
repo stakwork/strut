@@ -1,16 +1,17 @@
 # Pods on a pod box: many sleeping pods, few running
 
-> **Status (2026-11-05): proposed. Nothing is built.** The direction was
-> agreed in one design conversation with the owner: rows marked **agreed**
-> in "Decided" are the owner's; everything marked *proposed* is mine and
-> open. The numbers in "Measured" are from Docker 29.6 (Docker Desktop) on
-> 2026-11-05. Read against strut `main` @75a9860, staklink `main`
-> @f17f572, stakgraph `main` @b8f16c5b (the lab's `pod/*` steps,
-> `mcp/src/lab/pods/`), hive `master` @c692b96bf and stadeum `main`
-> @269481d. Companions: `org-home-swarm.md` §0 (a Stadeum box stands alone
-> and Hive goes away), `pod-config.md` (the fix-then-promote loop this
-> keeps), `jobs.md` §6 (holds), `code-change.md` (strut's own path to a
-> pull request, with no pod).
+> **Status (2026-11-05): the design is settled. Nothing is built.** In
+> "Decided", **agreed** rows are the owner's, from the design
+> conversation; **settled** rows had one obvious answer, mine, and stand
+> unless the owner says otherwise. The numbers in "Measured" are from
+> Docker 29.6 (Docker Desktop) on 2026-11-05. Read against strut `main`
+> @75a9860, staklink `main` @f17f572, stakgraph `main` @b8f16c5b (the
+> lab's `pod/*` steps, `mcp/src/lab/pods/`, and `mcp/src/lab/code/`), hive
+> `master` @c692b96bf and stadeum `main` @269481d. Companions:
+> `org-home-swarm.md` §0 (a Stadeum box stands alone and Hive goes away),
+> `pod-config.md` (the fix-then-promote loop this keeps), `jobs.md` §6
+> (holds), `code-change.md` (strut's own path to a pull request, with no
+> pod).
 
 ## Goal
 
@@ -58,7 +59,16 @@ needs the app running with its services.
 | What a pod is | **agreed.** Containers made from the workspace's devcontainer files as Hive keeps them today (`Dockerfile`, `docker-compose.yml`, `pm2.config.js`), with staklink inside. No Kubernetes. |
 | The goal | **agreed.** Efficiency: a pod's state lives on disk, injected into its containers, so a pod sleeps whenever it is idle and wakes within a second, and many jobs keep pods while few run. |
 | One container with a worktree per task, instead | **agreed: no.** That is strut's job directory, kept for changes that do not need the app running. It cannot give jobs that run at the same time their own Postgres, their own ports, or any isolation from each other. |
-| Where the code lives | *proposed.* In strut's repo: `images/pods` (the manager), `deploy/pods` (the pod box's compose file), and the `pod/*` steps as lib steps. This follows the browser: `images/browser` and `browser/*`. |
+| How long a pod lives | **agreed.** Until its job lets it go (`pod/release`, or the job deleted), or 7 days unused: the idle sweep, `STRUT_WORKDIR_TTL_DAYS`, as for a job's checkouts. |
+| The agent in a pod | **agreed.** Goose through staklink, as today. Strut's own agent working in the pod is later work (§9). |
+| The coding pages and workflows | **agreed.** Strut ships the `Code Change`, `Pod` and `Pod Config` pages and the lab's `code-change-pr`, `code-change-propose` and `code-change-land` workflows, and seeds them only when `PODS_URL` is set. The lab's copies retire (§8). |
+| Who may open a pod | **agreed.** Whoever holds a link strut signed (§6). A bare URL shows nothing. |
+| Certificates | **agreed.** One wildcard certificate through a DNS-01 challenge (§6). |
+| Where the code lives | **settled.** In strut's repo: `images/pods` (the manager), `deploy/pods` (the pod box's compose file), and the `pod/*` steps as lib steps. This follows the browser: `images/browser` and `browser/*`. |
+| How many pod boxes | **settled.** One per org: pods hold the org's code, and Stadeum's rule 8 says the data is the customer's. Several per org is later work. |
+| Who sets up a workspace on the pod box | **settled.** Strut, through `pod/workspace`, a step that runs only as a proposal a person accepted. The accepting person's `GITHUB_TOKEN` becomes the token the workspace's templates are cloned with (§7). Not stadeum-ui: by Stadeum's rule 1 it must not know what a workspace is. |
+| A workspace's devcontainer files | **settled.** An existing workspace's come over with Hive's export (`org-home-swarm.md` §5). A new one starts from Hive's defaults (`FROM ghcr.io/stakwork/staklink-js`, an empty compose file, a pm2 config generated from its services), and the job agent makes it run through the `Pod Config` loop (`pod-config.md`), which takes over from Hive's pod-repair cron. |
+| What a wake runs | **settled.** Each app's pre-start command and the apps. Rebuild and install only when what they read changed; post-start (the seeding) never (§3). |
 
 ## Measured
 
@@ -82,7 +92,7 @@ Each pod has a folder on the pod box, `<data>/pods/<id>/`, which holds:
   `~/.local/share/goose`, `goose-session-manager.ts`), mounted into the app
   container, so the agent's sessions survive a container being recreated;
 - the manager's record of the pod: its job, its workspace, its template,
-  its name, its password (encrypted).
+  its password (encrypted).
 
 **Asleep, a pod's containers are stopped**, not removed. Everything
 survives a sleep but the processes: every file, the database, uncommitted
@@ -91,13 +101,19 @@ made again from the folder only when the pod's config or image changes
 (`pod/config-apply`); a change made in a container's own filesystem is
 lost then, as it is today when a pod is recreated.
 
-**A pod is deleted** when its job lets it go (`pod/release`, the job
-deleted, or the idle sweep: `STRUT_WORKDIR_TTL_DAYS`). The folder goes
-with it.
+**A pod is deleted** when its job lets it go: `pod/release`, the job
+deleted, or the idle sweep after 7 days unused. The folder goes with it.
 
 The pod box is not backed up. A pod holds work in progress; what is pushed
 is in GitHub. A pod box that dies loses its pods' unpushed work, as a pool
 does today.
+
+**Disk.** A claim that would make a new pod is refused while the box has
+less than 10% of its disk free. Sleeping pods are never deleted to make
+room: they hold work.
+
+**The manager restarting** leaves the pods as they are. Its state is the
+folders and the workspace files (§5); it reads them again at start.
 
 ## 2. Templates: a new pod in 50 ms
 
@@ -120,12 +136,12 @@ a read-only folder, `<data>/templates/<workspace>/<generation>/`, with the
   mounts overlays by host path.
 - **Remade** when the config changes (a new generation, Hive's
   `generation: new | old`, which `pod/claim { fresh: true }` asks for) and
-  on a schedule, so a pod made weeks later does not start far behind its
-  base branch. A pod starts at its template's commit; `pod/latest` fetches
-  and resets, as today.
+  every night at 03:00 in the box's time zone, so a new pod does not start
+  far behind its base branch. A pod starts at its template's commit;
+  `pod/latest` fetches and resets, as today.
 - **Kept** while any pod sits on it. A pod keeps its template for its whole
   life (its overlay's lower layer cannot change under it), so a job open
-  for a month keeps an older template on disk.
+  for a week keeps an older template on disk.
 - **Shared package caches** (npm, yarn, pnpm's store, cargo, go, uv,
   Playwright's browsers) are volumes in every pod, for the installs a
   builder runs and the ones after a `pod/latest`. npm's cache and pnpm's
@@ -143,25 +159,33 @@ a read-only folder, `<data>/templates/<workspace>/<generation>/`, with the
   `REBUILD_COMMAND` and `INSTALL_COMMAND`, then `PRE_START_COMMAND`, the
   pm2 apps, and `POST_START_COMMAND` (`startup()`, `src/proxy/startup.ts`).
   On a wake that is minutes of work redone, and a post-start command that
-  seeds data would seed it again. staklink gains a **resume** start: it
-  skips rebuild and install when nothing they read changed since this pod
-  last ran them (a stamp in the pod's folder), skips post-start, and starts
-  the apps. The app is then back as fast as its dev server starts:
-  seconds.
-- **Sleep when idle.** A pod sleeps after N minutes (default 10) with no
-  request and no message from a client on an open socket, while staklink
-  reports nothing running (a new `GET /busy`: a request in flight, goose
-  running). An IDE tab left open does not keep a pod awake. A pod is never
-  put to sleep with a request in flight: its result lives in staklink's
-  memory.
-- **A cap on running pods.** `maxRunning`, set from the box's memory. A
-  wake at the cap puts the idle pod used longest ago to sleep. With none
-  idle, the request waits, then answers 503 with `Retry-After`; `pod/claim`
-  already treats a 503 as "try again shortly".
+  seeds data would seed it again. staklink gains a **resume** start:
+  - rebuild and install run only when something they read (the lockfiles,
+    the sources a rebuild compiles) changed since this pod last ran them,
+    recorded by a stamp in the pod's folder;
+  - pre-start runs: it prepares a start, a migration for instance, and is
+    safe to repeat;
+  - post-start does not run: the database came back with the pod.
+
+  The app is then back as fast as its dev server starts: seconds.
+- **Sleep when idle.** A pod sleeps after 10 minutes with no request and
+  no message from a client on an open socket, while staklink reports
+  nothing running (a new `GET /busy`: a request in flight, goose running).
+  An IDE tab left open does not keep a pod awake. A pod is never put to
+  sleep with a request in flight: its result lives in staklink's memory.
+- **A cap on running pods.** `maxRunning` defaults to the box's memory
+  divided by 4 GB, at least 1. A wake at the cap puts the idle pod used
+  longest ago to sleep. With none idle, the request waits up to 60 s, then
+  answers 503 with `Retry-After`; `pod/claim` already treats a 503 as "try
+  again shortly".
+- **Limits per pod.** Each container's memory is capped at half the box's,
+  so one runaway build cannot take the box, and builds still have room.
 - **What a sleep loses:** the processes and their memory. A dev server
   restarts; a goose turn that was running is gone. Saving and restoring
   live processes (CRIU) is experimental in Docker and is left out. Hence
   the rule above: a busy pod never sleeps.
+
+Every number here is a setting of the manager's, with the default given.
 
 ## 4. The compose rewrite: a pod's containers share one localhost
 
@@ -185,8 +209,7 @@ Per service:
   `networks`, `extra_hosts` and `hostname` dropped.
 - **Every service:** `container_name` dropped; each named volume replaced
   by the pod's own overlay volume over the template's copy (§2), declared
-  external; a memory and CPU limit, set generously, since builds need room
-  and the running cap is what protects the box.
+  external; the memory limit of §3.
 - **`app`:** the image built from the workspace's `Dockerfile` (`FROM
   ghcr.io/stakwork/staklink-js` by default, hive's `dockerfileContent`),
   once per content hash; `/workspaces` is the pod's overlay volume; the
@@ -229,8 +252,9 @@ New calls:
 
 - **`PUT /workspaces/:workspace { repositories, githubToken }`**: makes or
   changes a workspace: its repositories (`url`, `branch`) and the token
-  that templates are cloned with (§7). In Hive this is pool creation
-  (`src/app/api/pool-manager/create-pool/route.ts`).
+  its templates are cloned with (§7). In Hive this is pool creation
+  (`src/app/api/pool-manager/create-pool/route.ts`). `pod/workspace` calls
+  it.
 - **`POST /pods/:podId/apply`**: writes the workspace's stored files into
   a pod and makes its compose project again. `pod/config-apply` calls it
   before staklink reloads the apps, because the pod cannot run compose
@@ -239,41 +263,59 @@ New calls:
   caller that knows better than the idle timer. A job turn that ends can
   put its pod to sleep at once; one that starts can wake it ahead of its
   first call.
+- **`GET /.pods/auth?t=&next=`**, on a pod's own names: takes a signed
+  link and sets the cookie that opens the pod (§6).
 
-Every call takes `x-api-token: <key>`, as Hive's do. The manager's state
-is the folders of §1 and §2 plus one JSON file per workspace, the tokens
-encrypted. There is no database.
+Every call but the last takes `x-api-token: <key>`, as Hive's do. The
+manager's state is the folders of §1 and §2 plus one JSON file per
+workspace, the tokens and env values encrypted. There is no database.
 
 ## 6. Reaching a pod
 
 - **Caddy → the manager → the pod.** Caddy terminates TLS; the manager is
-  in the path of every request, since it wakes pods and counts idle time
-  (§3), and proxies to the pod's port, sockets included (HMR,
-  code-server).
-- **Names per pod.** Pods outnumber running pods, and a link must survive
-  a sleep, so each pod keeps its names for its life: `<podId>.<pods host>`
-  (the frontend), `<podId>-ide.<pods host>` and
-  `<podId>-control.<pods host>`. That needs one wildcard DNS record and a
-  wildcard certificate: Caddy with the DNS provider's module (DNS-01) and
-  an API token for the org's DNS in the pod box's env. A certificate per
-  pod name would hit Let's Encrypt's per-domain weekly limits. A pod box
-  Stakwork runs can use a wildcard domain of Stakwork's, as Hive's pods
-  do.
-- **`control` and `ide`** sit behind the pod's password, as today:
-  staklink takes it as a bearer token, and its `/ide-auth` signs
-  short-lived IDE links with it.
-- **`frontend`** is open, as Hive's pods are today (open question 3).
+  in the path of every request, since it wakes pods, counts idle time
+  (§3) and checks who may open a pod, and it proxies to the pod's port,
+  sockets included (HMR, code-server).
+- **Names per pod, as Hive's.** A link must survive a sleep, so a pod keeps
+  its names for its life, in Hive's scheme (`buildPodUrl`,
+  `src/lib/pods/queries.ts`):
+  `<podId>.<pods host>` is the IDE and `<podId>-<port>.<pods host>` is a
+  port: `-15552` the control server, the frontend's port the frontend.
+- **One wildcard certificate**, `*.<pods host>`, through a DNS-01
+  challenge, behind one wildcard DNS record. The pod box runs a Caddy
+  built with the DNS modules of the main providers (Cloudflare, Route 53,
+  Azure DNS, Google Cloud DNS, DigitalOcean), published from `deploy/pods`,
+  and holds an API token for the org's DNS. A certificate per name would
+  hit Let's Encrypt's weekly limit per domain within days.
+- **Signed links.** The manager lets a request through to any of a pod's
+  names except control only with that pod's cookie. Without one it
+  redirects to strut's `GET /pods/open?pod=<podId>&next=<url>`, which is
+  behind strut's own sign-in: any person who may use this strut may open
+  its pods. Strut signs `{ pod, exp }` with `PODS_KEY`, valid 60 s, and
+  redirects to `/.pods/auth` on the pod's name. The manager checks it and
+  sets an HttpOnly, `Secure` cookie for the pods domain, naming the pod and
+  lasting 12 hours (`STRUT_SESSION_HOURS`), so every port of that pod
+  opens with it.
+  - An agent's browser has no strut sign-in: `pod/link { podId?, port? }`
+    mints the same link, and the job agent hands it to `browser-explore`.
+  - The control server takes the pod's password as a bearer token, as
+    today, and is not behind the cookie: only strut's steps call it.
+  - code-server keeps its own password behind the cookie, as today
+    (staklink's `/ide-auth` signs IDE links with it).
+- **The pod box knows strut's URL** (`STRUT_URL` in its env), for the
+  redirect.
 
 ## 7. Credentials
 
 | Credential | Held by | Reaches |
 |---|---|---|
-| The manager's key | the pod box's env; strut as the deployment secret `PODS_KEY` | the manager's API |
+| The manager's key | the pod box's env; strut as the deployment secret `PODS_KEY` | the manager's API, and the signature on a pod link |
 | A pod's password | the manager makes it; `pod/claim` seals it, as today | staklink and code-server in that pod |
-| The token templates are cloned with | the manager, encrypted, per workspace | `git clone` and `fetch` in the manager, never a pod's env. Hive's pool keeps one person's token the same way today (`github_pat`, `create-pool/route.ts`) |
+| The token templates are cloned with | the manager, encrypted, per workspace; set by `pod/workspace` from the accepting person's `GITHUB_TOKEN` | `git clone` and `fetch` in the manager, never a pod's env. Hive's pool keeps one person's token the same way today (`github_pat`, `create-pool/route.ts`) |
 | The person's GitHub token | strut's actor secret `GITHUB_TOKEN` | passed per call by `pod/latest` and `pod/push`, as today (`gitCredentials`) |
 | Model calls | the run's grant, `<vk>.<macaroon>`, passed per `/agent` call, as today | the org's gateway: Stadeum's stack publishes Bifrost at `bifrost.<HOST>` (`stack/stadeum.yml`; the Caddy that replaces Traefik must keep the route) |
 | The DNS token | the pod box's env | the wildcard certificate (§6) |
+| A pod's cookie | the person's browser, or the agent's | that pod's names, for 12 hours |
 
 A pod reaches the internet (installs, the gateway). It reaches the
 manager's API only through Caddy, like anyone else, and holds no key for
@@ -283,12 +325,12 @@ it.
 
 **strut**
 
-- **`images/pods`**: the manager, a small Node service with the Docker CLI
-  and compose, and the host's Docker socket. It is the only thing on the
-  pod box that has the socket.
-- **`deploy/pods`**: the pod box's compose file (the manager, Caddy, the
-  cache volumes) and an `env.example`, run from its folder like
-  `deploy/index` and `deploy/voice`.
+- **`images/pods`**: the manager, a small TypeScript service on Hono with
+  the Docker CLI and compose, and the host's Docker socket. It is the only
+  thing on the pod box that has the socket.
+- **`deploy/pods`**: the pod box's compose file (the manager, Caddy with
+  the DNS modules, the cache volumes) and an `env.example`, run from its
+  folder like `deploy/index` and `deploy/voice`.
 - **`src/steps/lib/pod/`**: the lab's thirteen `pod/*` steps moved into
   strut with the same names, inputs and outputs. They read `PODS_URL` and
   `PODS_KEY`, else `HIVE_URL` and `HIVE_API_KEY`, so they run on a Stadeum
@@ -298,30 +340,47 @@ it.
   - `pod/claim` takes an idle job's pod (`takeIdlePod`) only from Hive. A
     pod box does not run out of pods the way a pool does, only of running
     room, and it waits for that (§3).
+  - Two new steps: `pod/workspace` (§5; it refuses unless it runs as an
+    accepted proposal, `ctx.proposal`, as `package/install` does) and
+    `pod/link` (§6).
 
   A custom step never shadows a lib step (`buildRegistry`, registry.ts:
   the collision is skipped with a warning). So once the lab's strut pin
   includes these, its seeded copies are skipped and the lab deletes them in
   the same change.
-- **The `Pod` page**, wherever it lives (open question 1), says what a pod
-  box gives: the pod is the job's until the job lets it go; uncommitted
-  work survives a sleep; processes do not, so a turn lets its pod's agent
-  finish before it ends.
+- **`GET /pods/open`** (§6), mounted only when `PODS_URL` is set.
+- **The coding track**, seeded only when `PODS_URL` is set:
+  - the pages `Code Change` (under `Job`), `Pod` (under `Code Change`) and
+    `Pod Config` (under `Pod`), moved from the lab (`mcp/src/lab/code/`,
+    `mcp/src/lab/pods/concepts/`);
+  - the workflows `code-change-pr`, `code-change-propose` and
+    `code-change-land`, which use only strut's own steps (`git/*`, `agent`,
+    `github/create-pr`);
+  - `pod/*` in the `job` seed's tools and `pod/workspace` in its
+    `approve:` list.
+
+  The `Pod` page says what a pod box gives: the pod is the job's until the
+  job lets it go or 7 days pass unused; uncommitted work survives a sleep;
+  processes do not, so a turn lets its pod's agent finish before it ends.
 - **`specs/PODS.md`**: the manager's API, for anyone who runs a pod box.
 
 **staklink**
 
-- The resume start (§3): rebuild and install skipped when unchanged,
-  post-start skipped, on a wake.
+- The resume start (§3): rebuild and install only when changed, pre-start
+  always, post-start never, on a wake.
 - `GET /busy` (§3).
 - `PUT /pod-config` without a Docker socket: it writes the files and
   reloads the apps, and leaves compose to the manager.
 
+**stakgraph (the lab)**
+
+- Deletes its `pod/*` steps, the three pages and the three code-change
+  workflows when it moves to the strut pin that ships them.
+
 **stadeum**
 
 - Nothing in its stack: the pod box is a deployment of its own. Strut on
-  the Stadeum box needs the two secrets and `pod/*` in the job's tools
-  (`STRUT_HOST_CONFIG`: `job.tools`).
+  the Stadeum box needs `PODS_URL` and `PODS_KEY` as deployment secrets.
 
 ## 9. Order
 
@@ -330,37 +389,15 @@ it.
    Postgres, two pods at once.
 2. **Sleep and wake:** the manager as the proxy, wake on request, the idle
    timer, `maxRunning`; staklink's resume start and `GET /busy`.
-3. **Caddy and `deploy/pods`:** per-pod names, the wildcard certificate.
-4. **The `pod/*` steps into strut:** config read and write against the
-   manager, `apply`.
+3. **Caddy and `deploy/pods`:** per-pod names, the wildcard certificate,
+   signed links and `GET /pods/open`.
+4. **The coding track into strut:** the `pod/*` steps (config read and
+   write against the manager, `apply`, `pod/workspace`, `pod/link`), the
+   pages and the workflows, seeded with `PODS_URL`.
 5. **A live run**: a Stadeum box and a pod box. A job claims a pod for a
    workspace with Postgres, runs its tests, leaves it uncommitted; the pod
    sleeps; hours later a second turn finds it as it was and opens a pull
    request. Then twenty jobs with pods and a `maxRunning` of four.
-6. **Later:** an exec seam, so strut's own `agent` runs its bash and
-   editor in the pod and goose becomes optional; pods that move between
-   pod boxes.
-
-## Open questions
-
-1. **The `Pod` and `Pod Config` pages** (and `Code Change`, their parent in
-   the lab): strut seeds them when `PODS_URL` is set, or a package carries
-   them. *Mine: strut, only with a pod box.* A page about a tool the box
-   does not have would mislead the job agent.
-2. **Who sets up a workspace on the pod box**, that is, its repositories
-   and the token its templates are cloned with: a person in stadeum-ui, or
-   a strut step run as a proposal the person accepts, with their
-   `GITHUB_TOKEN`.
-3. **A pod's frontend**: open as today, or behind sign-in.
-4. **A workspace's devcontainer files**: today they are Hive's stored pool
-   config. They move to the pod box with the rest of Hive's export
-   (`org-home-swarm.md` §5).
-5. **One pod box per org**, or one Stakwork runs for several orgs. Pods
-   hold the org's code, which argues for per org.
-6. **How long a pod may sleep.** Today the idle sweep deletes a job's pod
-   after `STRUT_WORKDIR_TTL_DAYS` (7) unused. A sleeping pod costs only its
-   layers, so a longer life may be worth the disk.
-7. **Which pre-start commands a wake must run**: some only set up what
-   the start needs (a migration), others do work the folder already holds.
-   The resume start skips rebuild, install and post-start; pre-start is
-   open.
+6. **Later:** strut's own agent working in the pod (its bash and editor
+   run there through the manager, and goose becomes optional); several pod
+   boxes per org; pods that move between pod boxes.
