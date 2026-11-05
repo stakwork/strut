@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { ArtifactsCapability, SecretsCapability } from "../../capabilities.js";
 import { attachmentParts, loadRunAttachments } from "../../ai/attachments.js";
 import { applyToolWrappers } from "../../extensions.js";
-import { loadAieo, resolveModel, createWebTools, stepAuth, type ResolvedModel } from "../../llm.js";
+import { loadAieo, resolveModel, createWebTools, modelProvider, stepAuth, type ResolvedModel } from "../../llm.js";
 import { idProblem, type OpenSession, type SessionTurn, type SessionsCapability } from "../../session-store.js";
 import type { ToolResultOutput } from "@ai-sdk/provider-utils";
 import { accessedNodesOf, defineStep, isFirstParty, mediaOf, messagesOf, stopOf, takeUsage, usageOf, type McpServer, type RunAttachment, type StepContext, type StepRegistry, withAccessedNodes, withMedia, withMessages, withUsage, workflowOf } from "../../core.js";
@@ -1374,7 +1374,7 @@ export default defineStep({
     // the secrets boundary (secret store → env), LLM gateway routing and a
     // timeout-wrapped fetch. The PROVIDER is needed now (provider-specific
     // tools below) and is keyless; the key + client are resolved LAST.
-    const { canonicalModelName, computeSessionCost } = await loadAieo();
+    const { computeSessionCost } = await loadAieo();
     if (cfg.session !== undefined) {
       const problem = idProblem(cfg.session);
       if (problem) throw new Error(`agent: session "${cfg.session}" ${problem}`);
@@ -1394,7 +1394,9 @@ export default defineStep({
     const modelName = cfg.model ?? defaultModel ?? bootEnv()["STRUT_LLM_MODEL"];
     // STRUT_LLM_PROVIDER goes with STRUT_LLM_MODEL; a default model names its own provider.
     const providerHint = defaultModel ? undefined : (cfg.provider ?? bootEnv()["STRUT_LLM_PROVIDER"]);
-    const { provider } = canonicalModelName(modelName, providerHint);
+    // A provider only the deployment's gateway has (`modelProvider`) counts:
+    // resolveModel below says so when this call goes to no gateway.
+    const { provider } = await modelProvider(modelName, providerHint, (ctx?.services as { secrets?: SecretsCapability } | undefined)?.secrets);
 
     // Anthropic-only extras: the provider-defined text
     // editor (the model is specially trained on its schema; we supply the

@@ -2,7 +2,7 @@ import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 
 import { MAPLE_MODELS, NUMES_MODELS } from "./aieo/index.js";
-import { resolveModel, listModelOptions, canonicalModelName, createWebTools, defaultModel } from "./llm.js";
+import { resolveModel, listModelOptions, canonicalModelName, createWebTools, defaultModel, modelProvider } from "./llm.js";
 import { secretsCapability } from "./capabilities.js";
 import { MemorySecretStore } from "./secret-store.js";
 import { zodToFields } from "./ai/schemaHelpers.js";
@@ -95,13 +95,14 @@ describe("llm: model resolution through the secrets boundary", () => {
   });
 
   it("the no-prefix OpenRouter name is rejected with the fix, before any key lookup", async () => {
-    let asked = 0;
-    const secrets = { get: async () => (asked++, "k") };
+    const asked: string[] = [];
+    const secrets = { get: async (name: string) => (asked.push(name), "k") };
     await assert.rejects(
       () => resolveModel({ model: "moonshotai/kimi-k2.6", secrets }),
       /openrouter\/moonshotai\/kimi-k2\.6/,
     );
-    assert.equal(asked, 0);
+    // Only the host's model list is read (is it a provider only its gateway has?), never a key.
+    assert.deepEqual(asked, ["STRUT_MODELS"]);
     await assert.rejects(() => canonicalModelName("x-ai/grok-4"), /"x-ai" is not a provider/);
     assert.equal(await canonicalModelName("kimi"), "openrouter/moonshotai/kimi-k3");
   });
@@ -357,83 +358,128 @@ describe("llm: the llmAuth seam (plans/mothership-cost-control.md §1)", () => {
     }
   });
 
-  it("a maple call never asks the hook: it goes to MAPLE_BASE_URL with MAPLE_API_KEY, never the gateway", async () => {
+  /** One stand-in for both the gateway (`/openai/v1/…`) and a provider's
+   *  own endpoint: records each request's path, key, macaroon and model. */
+  async function chatServer() {
     const { createServer } = await import("node:http");
-    const seen: { path?: string; auth?: string; macaroon?: string }[] = [];
+    const seen: { path?: string; auth?: string; macaroon?: string; model?: string }[] = [];
     const server = createServer((req, res) => {
-      seen.push({ path: req.url, auth: req.headers.authorization, macaroon: req.headers["x-macaroon"] as string | undefined });
-      req.resume();
+      let body = "";
+      req.on("data", (c) => (body += c));
       req.on("end", () => {
+        const model = JSON.parse(body).model;
+        seen.push({ path: req.url, auth: req.headers.authorization, macaroon: req.headers["x-macaroon"] as string | undefined, model });
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({
-          id: "x", object: "chat.completion", created: 0, model: "gemma4-31b",
+          id: "x", object: "chat.completion", created: 0, model,
           choices: [{ index: 0, message: { role: "assistant", content: "hello" }, finish_reason: "stop" }],
           usage: { prompt_tokens: 10, completion_tokens: 2 },
         }));
       });
     });
     await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    return { root: `http://127.0.0.1:${(server.address() as { port: number }).port}`, seen, close: () => server.close() };
+  }
+
+  it("a maple call asks the hook: a grant sends it through the gateway, billed to the person; no grant, to MAPLE_BASE_URL with MAPLE_API_KEY", async () => {
+    const srv = await chatServer();
     try {
       const store = new MemorySecretStore();
       await store.set("MAPLE_API_KEY", "mk");
-      await store.set("MAPLE_BASE_URL", `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`);
-      let calls = 0;
-      const r = await resolveModel({
-        model: "maple/gemma4-31b",
-        secrets: secretsCapability(store, { envFallback: {} }),
-        // The Mothership's grant: the gateway and the user's virtual key.
-        llmAuth: async () => (calls++, { apiKey: "vk-user", baseUrl: "https://gateway.example", headers: { "x-macaroon": "m" } }),
-        auth: { kind: "step", runId: "r1", principal: "alice" },
-      });
-      assert.equal(calls, 0, "the hook is not asked");
-      assert.deepEqual([r.provider, r.modelId, r.apiKey, r.routed], ["maple", "gemma4-31b", "mk", false]);
-      assert.deepEqual([r.contextLimit, r.maxOutputTokens], [262_144, 24_576]);
+      await store.set("MAPLE_BASE_URL", `${srv.root}/v1`);
+      const secrets = secretsCapability(store, { envFallback: {} });
+      const asked: string[] = [];
+      const auth = { kind: "step" as const, runId: "r1", principal: "alice" };
       const { generateText } = await import("ai");
-      const out = await generateText({ model: r.model, prompt: "hi", maxRetries: 0 });
-      assert.equal(out.text, "hello");
-      assert.deepEqual(seen, [{ path: "/v1/chat/completions", auth: "Bearer mk", macaroon: undefined }]);
+      // The Mothership's grant: the gateway and the person's virtual key.
+      const routed = await resolveModel({
+        model: "maple/gemma4-31b",
+        secrets,
+        llmAuth: async (c) => (asked.push(c.provider), { apiKey: "vk-user", baseUrl: srv.root, headers: { "x-macaroon": "m" } }),
+        auth,
+      });
+      assert.deepEqual(asked, ["maple"], "the hook is asked, with the provider");
+      assert.deepEqual([routed.provider, routed.modelId, routed.name, routed.apiKey, routed.routed], ["maple", "gemma4-31b", "maple/gemma4-31b", "vk-user", true]);
+      assert.deepEqual([routed.contextLimit, routed.maxOutputTokens], [262_144, 24_576], "Maple's own limits, routed or not");
+      assert.equal((await generateText({ model: routed.model, prompt: "hi", maxRetries: 0 })).text, "hello");
+      // No delegation for the person (and none required): Maple's own proxy, as before.
+      const direct = await resolveModel({ model: "maple/gemma4-31b", secrets, llmAuth: async () => undefined, auth });
+      assert.deepEqual([direct.apiKey, direct.routed], ["mk", false]);
+      await generateText({ model: direct.model, prompt: "hi", maxRetries: 0 });
+      assert.deepEqual(srv.seen, [
+        { path: "/openai/v1/chat/completions", auth: "Bearer vk-user", macaroon: "m", model: "maple/gemma4-31b" },
+        { path: "/v1/chat/completions", auth: "Bearer mk", macaroon: undefined, model: "gemma4-31b" },
+      ]);
+      // STRUT_MOTHERSHIP_REQUIRED: the hook refuses a call it cannot bill, Maple's now too.
+      await assert.rejects(
+        () => resolveModel({ model: "maple/gemma4-31b", secrets, llmAuth: async () => { throw new Error("no delegation for alice"); }, auth }),
+        /no delegation for alice/,
+      );
     } finally {
-      server.close();
+      srv.close();
     }
   });
 
-  it("a numes call never asks the hook either: NUMES_API_KEY to Numes' API, never the gateway", async () => {
-    const { createServer } = await import("node:http");
-    const seen: { path?: string; auth?: string; macaroon?: string }[] = [];
-    const server = createServer((req, res) => {
-      seen.push({ path: req.url, auth: req.headers.authorization, macaroon: req.headers["x-macaroon"] as string | undefined });
-      req.resume();
-      req.on("end", () => {
-        res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify({
-          id: "x", object: "chat.completion", created: 0, model: "z-ai/glm-5.3",
-          choices: [{ index: 0, message: { role: "assistant", content: "hello" }, finish_reason: "stop" }],
-          usage: { prompt_tokens: 10, completion_tokens: 2, cost: 0 },
-        }));
-      });
-    });
-    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  it("a numes call asks the hook too: through the gateway as numes/<author>/<model>, else to Numes' API with NUMES_API_KEY", async () => {
+    const srv = await chatServer();
     try {
       const store = new MemorySecretStore();
       await store.set("NUMES_API_KEY", "nk");
       // Numes' own endpoint by default; a stand-in here, as a deployment may point it.
-      await store.set("NUMES_BASE_URL", `http://127.0.0.1:${(server.address() as { port: number }).port}/api/v1`);
-      let calls = 0;
-      const r = await resolveModel({
-        model: "numes/z-ai/glm-5.3",
-        secrets: secretsCapability(store, { envFallback: {} }),
-        llmAuth: async () => (calls++, { apiKey: "vk-user", baseUrl: "https://gateway.example", headers: { "x-macaroon": "m" } }),
-        auth: { kind: "step", runId: "r1", principal: "alice" },
-      });
-      assert.equal(calls, 0, "the hook is not asked");
-      assert.deepEqual([r.provider, r.modelId, r.apiKey, r.routed], ["numes", "z-ai/glm-5.3", "nk", false]);
-      assert.deepEqual([r.contextLimit, r.maxOutputTokens], [262_144, 24_576]);
+      await store.set("NUMES_BASE_URL", `${srv.root}/api/v1`);
+      const secrets = secretsCapability(store, { envFallback: {} });
+      const auth = { kind: "chat" as const, chatId: "c1", principal: "alice" };
       const { generateText } = await import("ai");
-      const out = await generateText({ model: r.model, prompt: "hi", maxRetries: 0 });
-      assert.equal(out.text, "hello");
-      assert.deepEqual(seen, [{ path: "/api/v1/chat/completions", auth: "Bearer nk", macaroon: undefined }]);
+      const routed = await resolveModel({
+        model: "numes/z-ai/glm-5.3",
+        secrets,
+        llmAuth: async () => ({ apiKey: "vk-user", baseUrl: srv.root, headers: { "x-macaroon": "m" } }),
+        auth,
+      });
+      assert.deepEqual([routed.provider, routed.modelId, routed.routed], ["numes", "z-ai/glm-5.3", true]);
+      await generateText({ model: routed.model, prompt: "hi", maxRetries: 0 });
+      const direct = await resolveModel({ model: "numes/z-ai/glm-5.3", secrets, llmAuth: async () => undefined, auth });
+      await generateText({ model: direct.model, prompt: "hi", maxRetries: 0 });
+      assert.deepEqual(srv.seen, [
+        { path: "/openai/v1/chat/completions", auth: "Bearer vk-user", macaroon: "m", model: "numes/z-ai/glm-5.3" },
+        { path: "/api/v1/chat/completions", auth: "Bearer nk", macaroon: undefined, model: "z-ai/glm-5.3" },
+      ]);
     } finally {
-      server.close();
+      srv.close();
+    }
+  });
+
+  it("a provider only the gateway has: runs through a grant when the host lists the model, never directly, and an unlisted name is the trap as before", async () => {
+    const srv = await chatServer();
+    try {
+      const store = new MemorySecretStore();
+      await store.set("STRUT_MODELS", JSON.stringify(["anthropic/claude-opus-5-5", "acme/llama-4"]));
+      const secrets = secretsCapability(store, { envFallback: {} });
+      const auth = { kind: "step" as const, runId: "r1", principal: "alice" };
+      const asked: string[] = [];
+      const grant = async (c: { provider: string }) => (asked.push(c.provider), { apiKey: "vk-user", baseUrl: srv.root, headers: { "x-macaroon": "m" } });
+      const r = await resolveModel({ model: "acme/llama-4", secrets, llmAuth: grant, auth });
+      assert.deepEqual(asked, ["acme"]);
+      assert.deepEqual([r.provider, r.modelId, r.name, r.routed], ["acme", "llama-4", "acme/llama-4", true]);
+      const { generateText } = await import("ai");
+      assert.equal((await generateText({ model: r.model, prompt: "hi", maxRetries: 0 })).text, "hello");
+      assert.deepEqual(srv.seen, [{ path: "/openai/v1/chat/completions", auth: "Bearer vk-user", macaroon: "m", model: "acme/llama-4" }]);
+      // No grant: nowhere to send it.
+      await assert.rejects(
+        () => resolveModel({ model: "acme/llama-4", secrets, llmAuth: async () => undefined, auth }),
+        /"acme", a provider only this deployment's gateway has/,
+      );
+      await assert.rejects(() => resolveModel({ model: "acme/llama-4", secrets }), /only this deployment's gateway has/);
+      // Not on the host's list: aieo's own error, which says how to write a hosted model.
+      await assert.rejects(() => resolveModel({ model: "moonshotai/kimi-k2.6", secrets, llmAuth: grant, auth }), /openrouter\/moonshotai\/kimi-k2\.6/);
+      assert.deepEqual(asked, ["acme"], "the hook is not asked for a name nobody listed");
+      assert.deepEqual(await modelProvider("acme/llama-4", undefined, secrets), { provider: "acme", gatewayOnly: true });
+      assert.deepEqual(await modelProvider("acme/llama-4", "acme", secrets), { provider: "acme", gatewayOnly: true });
+      assert.deepEqual(await modelProvider("maple/gemma4-31b", undefined, secrets), { provider: "maple", gatewayOnly: false });
+      // An explicit aieo provider places any name, as aieo always has.
+      assert.deepEqual(await modelProvider("acme/llama-4", "openai", secrets), { provider: "openai", gatewayOnly: false });
+    } finally {
+      srv.close();
     }
   });
 

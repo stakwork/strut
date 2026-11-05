@@ -40,7 +40,8 @@ export function loadAieo(): Promise<typeof import("./aieo/index.js")> {
 /** What a call site tells the hook about the call it is about to make. */
 export interface LlmAuthContext {
   kind: "step" | "chat";
-  provider: Provider;
+  /** aieo's provider, or one only a gateway has (`modelProvider`). */
+  provider: string;
   runId?: string;
   chatId?: string;
   turn?: number;
@@ -81,7 +82,8 @@ export interface ResolveModelOptions {
 }
 
 export interface ResolvedModel {
-  provider: Provider;
+  /** aieo's provider, or one only a gateway has (`modelProvider`). */
+  provider: string;
   /** Concrete id as the provider knows it (alias resolved, prefix stripped). */
   modelId: string;
   /** Canonical "<provider>/<modelId>" — what `ChatMeta.model` records. */
@@ -112,16 +114,18 @@ export async function resolveModel(opts: ResolveModelOptions = {}): Promise<Reso
   const secrets = opts.secrets;
   // The hook needs the provider before the model is built (the gateway path
   // is per provider), and aieo only resolves it inside resolveModel — so ask
-  // the keyless canonicalizer first. Same errors as the resolve below.
+  // the keyless placement first. Same errors as the resolve below.
+  const placed = await modelProvider(opts.model, opts.provider, secrets);
+  // Every provider is the hook's to route, Maple's and Numes' included: with
+  // a grant the call goes through the gateway, billed and capped per person;
+  // without one Maple and Numes go to their own endpoint, as on a host with
+  // no gateway (Peel), unless the hook refuses (STRUT_MOTHERSHIP_REQUIRED).
   let grant: LlmAuthResult | undefined;
-  if (opts.llmAuth && opts.auth) {
-    const provider = aieo.canonicalModelName(opts.model, opts.provider).provider;
-    // A provider with an endpoint of its own (aieo's BASE_URL_ENV: Maple's
-    // proxy, Numes' API) is never the gateway's: its key is ours (MAPLE_API_KEY,
-    // NUMES_API_KEY) and billed by that service. The hook is not asked, so a
-    // Mothership grant never sends such a call to the gateway, and the
-    // per-user gateway cap does not apply to it.
-    if (!aieo.BASE_URL_ENV[provider]) grant = await opts.llmAuth({ ...opts.auth, provider });
+  if (opts.llmAuth && opts.auth) grant = await opts.llmAuth({ ...opts.auth, provider: placed.provider });
+  if (placed.gatewayOnly && !grant?.baseUrl) {
+    throw new Error(
+      `Model "${opts.model}" is on "${placed.provider}", a provider only this deployment's gateway has, and this call goes to no gateway`,
+    );
   }
   // aieo looks up a key's companion settings where it looked up the key —
   // an organization-wide Anthropic key's ANTHROPIC_WORKSPACE_ID, sent as
@@ -129,7 +133,7 @@ export async function resolveModel(opts: ResolveModelOptions = {}): Promise<Reso
   // grant's own key.
   const r = await aieo.resolveModel({
     model: opts.model,
-    provider: opts.provider,
+    provider: placed.gatewayOnly ? placed.provider : opts.provider,
     getSecret: secrets ? (name) => secrets.get(name) : undefined,
     ...(grant?.apiKey ? { apiKey: grant.apiKey } : {}),
     ...(grant?.baseUrl ? { baseUrl: grant.baseUrl } : {}),
@@ -137,7 +141,7 @@ export async function resolveModel(opts: ResolveModelOptions = {}): Promise<Reso
   });
   let model: any = r.model;
   // Every chat-completions model aieo builds: xai and google through a
-  // gateway, and maple and numes always.
+  // gateway, maple and numes always, and a provider only a gateway has.
   if (model?.provider === "openai.chat") model = await imagesBesideToolResults(model);
   if (grant?.explainError) model = await explaining(model, grant.explainError);
   model = await applyModelWrappers(model, { provider: r.provider, modelId: r.modelId, baseUrl: grant?.baseUrl, routed: !!grant?.baseUrl, ctx: opts.ctx, session: opts.session });
@@ -340,7 +344,9 @@ export interface WebTools {
  * shape regardless of which model is driving.
  */
 export async function createWebTools(opts: {
-  provider: Provider;
+  /** The resolved provider. One only a gateway has is always `routed`, so
+   *  it gets the shims, as every provider but a direct anthropic does. */
+  provider: string;
   /** The resolved LLM key (`ResolvedModel.apiKey`). */
   apiKey?: string;
   /** The secrets boundary — the Exa key (`EXA_API_KEY`) is read through it. */
@@ -365,15 +371,16 @@ export async function createWebTools(opts: {
   routed?: boolean;
 }): Promise<WebTools> {
   const aieo = await loadAieo();
+  const provider = opts.provider as Provider;
   // The Exa key only matters where the search shim runs (routed, or
   // everything but anthropic, whose tool is native) — don't touch the secret
   // store otherwise.
   const searchApiKey =
-    opts.routed || aieo.resolveSearchBackend(opts.provider) === "exa"
+    opts.routed || aieo.resolveSearchBackend(provider) === "exa"
       ? await opts.secrets?.get("EXA_API_KEY")
       : undefined;
   const ws = aieo.createWebSearch({
-    provider: opts.provider,
+    provider,
     apiKey: opts.apiKey,
     searchApiKey,
     ...(opts.routed ? { backend: "exa" as const } : {}),
@@ -381,7 +388,7 @@ export async function createWebTools(opts: {
     abortSignal: opts.abortSignal,
   });
   const wf = aieo.createWebFetch({
-    provider: opts.provider,
+    provider,
     apiKey: opts.apiKey,
     ...(opts.routed ? { backend: "http" as const } : {}),
     maxUses: opts.fetchMaxUses,
@@ -410,6 +417,32 @@ function strutOutputCap(): number | undefined {
 export async function canonicalModelName(model?: string, provider?: string): Promise<string> {
   const aieo = await loadAieo();
   return aieo.canonicalModelName(model, provider).name;
+}
+
+/**
+ * Keyless: the provider a model name runs on. aieo's rule, or — for a name
+ * the host lists in `STRUT_MODELS` that aieo cannot place (`acme/llama-4`)
+ * — its first segment, `gatewayOnly`: an OpenAI-compatible provider the
+ * host's gateway holds (stadeum's "Other"), which a call reaches only
+ * through a grant. Any other name aieo cannot place throws aieo's error, so
+ * the no-prefix trap ("moonshotai/kimi-k2.6") still says how to write it.
+ */
+export async function modelProvider(
+  model: string | undefined,
+  provider: string | undefined,
+  secrets?: SecretsCapability,
+): Promise<{ provider: string; gatewayOnly: boolean }> {
+  const aieo = await loadAieo();
+  try {
+    return { provider: aieo.canonicalModelName(model, provider).provider, gatewayOnly: false };
+  } catch (err) {
+    const name = model?.trim() ?? "";
+    const head = name.slice(0, Math.max(name.indexOf("/"), 0));
+    if (head && (!provider || provider === head) && (await hostModels(secrets))?.includes(name)) {
+      return { provider: head, gatewayOnly: true };
+    }
+    throw err;
+  }
 }
 
 /** A deployment setting a host changes at run time (Peel, stadeum): read

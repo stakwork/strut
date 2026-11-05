@@ -81,6 +81,39 @@ const cases: Case[] = [
     baseUrl: GATEWAY,
     expectModelId: "gpt-4o-mini",
   },
+  {
+    label: "maple via gateway → maple/ prefix (a custom provider of that name)",
+    provider: "maple",
+    modelName: "maple/gemma4-31b",
+    baseUrl: GATEWAY,
+    expectModelId: "maple/gemma4-31b",
+  },
+  {
+    label: "maple at its own endpoint → bare id",
+    provider: "maple",
+    modelName: "maple/gemma4-31b",
+    expectModelId: "gemma4-31b",
+  },
+  {
+    label: "numes via gateway → numes/ prefix, its three segments kept",
+    provider: "numes",
+    modelName: "numes/z-ai/glm-5.3",
+    baseUrl: GATEWAY,
+    expectModelId: "numes/z-ai/glm-5.3",
+  },
+  {
+    label: "numes at its own endpoint → bare id",
+    provider: "numes",
+    modelName: "numes/z-ai/glm-5.3",
+    expectModelId: "z-ai/glm-5.3",
+  },
+  {
+    label: "a provider aieo does not know, via gateway → its own prefix",
+    provider: "acme",
+    modelName: "acme/llama-4",
+    baseUrl: GATEWAY,
+    expectModelId: "acme/llama-4",
+  },
 ];
 
 let passed = 0;
