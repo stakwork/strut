@@ -156,6 +156,19 @@ export function coerceUsage(usage: unknown): TokenUsage {
   };
 }
 
+/** The dollars a provider reported for ONE model call, when it reports them:
+ *  Numes and OpenRouter return `cost` in the usage of every response (the
+ *  step's raw usage), and the OpenRouter provider also lifts it into
+ *  `providerMetadata.openrouter.usage.cost`. Only a step's usage keeps `raw`,
+ *  so pass a step's `usage` and `providerMetadata`. Undefined: none reported
+ *  — price the tokens instead (aieo's `computeSessionCost`). */
+export function reportedCost(usage: unknown, providerMetadata?: unknown): number | undefined {
+  const fromRaw = (usage as { raw?: { cost?: unknown } } | undefined)?.raw?.cost;
+  const fromMeta = (providerMetadata as { openrouter?: { usage?: { cost?: unknown } } } | undefined)?.openrouter?.usage?.cost;
+  for (const v of [fromRaw, fromMeta]) if (typeof v === "number" && Number.isFinite(v) && v >= 0) return v;
+  return undefined;
+}
+
 /** The shape aieo's `computeSessionCost(provider, usage, modelId?)` prices —
  *  `computeSessionCost(provider, usageForCost(u))` is the whole cost calc. */
 export function usageForCost(u: TokenUsage): TokenUsageForCost {

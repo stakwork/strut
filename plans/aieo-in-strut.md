@@ -287,7 +287,8 @@ stakgraph's half, one PR after 0.2.8 is published.
 
 ## 6. Prices and limits from bifrost's datasheet
 
-One strut PR after the move. aieo stops hand-keeping prices and limits
+**Built** (`feature/aieo-datasheet`), with the two changes marked
+*as built* below. One strut PR after the move. aieo stops hand-keeping prices and limits
 and reads them from the file the gateway bills from.
 
 **The datasheet.**
@@ -326,12 +327,18 @@ Fetched 2026-11-05:
   - aieo's provider `google` maps to bifrost's `gemini`; the others share
     names.
   - The cases are copied from `pricing_test.go`.
-- **Where a cost comes from**, in order (the gateway's order, plus
-  aieo's tables at the end):
+- **Where a cost comes from**, in order:
   1. the cost the provider reported (`actualCost`);
-  2. the datasheet;
-  3. `MAPLE_MODELS` / `NUMES_MODELS`;
+  2. `MAPLE_MODELS` / `NUMES_MODELS`;
+  3. the datasheet;
   4. the provider's flat rate, kept as it is.
+  - *As built:* Maple's and Numes' own tables come BEFORE the datasheet,
+    as the gateway's runtime price rows do. The key rule's last-segment
+    form would otherwise price a free Numes model, or an unlisted Maple
+    one, at another vendor's rate. Maple never reads the datasheet. A
+    Numes model reads it as the OpenRouter slug it is, which is how an
+    unlisted one was priced before (`loadModelPricing`'s OpenRouter list).
+  - Maple and Numes keep their own windows and output caps too.
 - **Context window:** the datasheet's `max_input_tokens`, else aieo's
   table, as today.
 - **Output cap:** the lower of `max_output_tokens` and aieo's
@@ -341,8 +348,17 @@ Fetched 2026-11-05:
 - At boot, it calls `loadModelCatalog({ cachePath:
   <dataDir>/models/datasheet.json })`, detached. The first minutes of a
   fresh install price from the tables.
-- `agent` and `llm` pass the provider's reported cost when the usage
-  carries one: Numes' `usage.cost` and OpenRouter's.
+- `agent` and `llm` price each model call on its own: the provider's
+  reported cost when there is one, else that call's tokens.
+  - *As built:* only OpenRouter's reaches strut, as
+    `providerMetadata.openrouter.usage.cost`. Numes returns `usage.cost`
+    too, but the OpenAI chat client aieo calls it with keeps only the
+    usage fields it knows, so it never reaches `usage.raw`. A Numes call
+    is priced from Numes' table: its free models are 0.
+- `STRUT_MODEL_CATALOG`: `off` loads nothing, an http(s) URL is a mirror.
+- `startModelCatalog(dataDir)` is on the barrel for a host that embeds
+  createStrut. mcp calls it for its strut's copy in a one-line stakgraph
+  change.
 
 **What it buys:**
 - On routed calls, strut's run costs and verify budget match the
@@ -432,8 +448,9 @@ Each step is one PR, and every consumer keeps working after each.
    bumped to step 1's merge. *Validation:*
    - mcp's `tsc` and tests, and the e2e workflows;
    - then `/lab/health` and one agent run on a scratch mcp.
-4. **strut: prices and limits from the datasheet** (§6). Publish 0.2.9
-   when mcp, Hive or staklink want it.
+4. **strut: prices and limits from the datasheet** (§6). Publish 0.2.10
+   when mcp, Hive or staklink want it. (0.2.8 inlined a stale
+   `@ai-sdk/anthropic`; 0.2.9 is 0.2.7 republished from strut.)
 5. **The models plan's strut items** (stadeum#7 items 2 and 4, §7), on
    `src/aieo/`.
 

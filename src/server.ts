@@ -30,6 +30,7 @@ import { FileSecretStore } from "./secret-store.js";
 import { workspaceBackendFromEnv } from "./graph/wiring.js";
 import { parseGraphReaders } from "./graph/scope.js";
 import { bootEnv, scrubProcessEnv, scrubRequested } from "./env.js";
+import { startModelCatalog } from "./llm.js";
 import { applyMove } from "./moved.js";
 import type { BuilderReach } from "./reach.js";
 
@@ -244,6 +245,9 @@ export async function startServer(port?: number, host?: string): Promise<number>
     if (gone.length) console.log(`[env] ${gone.length} variable(s) taken out of process.env (kept in the boot snapshot): ${gone.join(", ")}`);
   }
   const strut = await getDefault();
+  // Prices, windows and output caps from bifrost's datasheet (llm.ts);
+  // detached, so a slow or failed fetch never holds the boot.
+  void startModelCatalog(strut.dataDir);
   return strut.listen(port, host);
 }
 
