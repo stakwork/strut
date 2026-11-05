@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, rm, writeFile, appendFile, readFile } from "node:fs/promises";
+import { mkdir, rm, writeFile, appendFile, readFile, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -2247,10 +2247,13 @@ describe("run control endpoints", () => {
     });
 
     it("old cut-off runs (last activity before `since`) are not re-read", async () => {
-      const { strut, workspace, store, cleanup } = await bootServer();
+      const { strut, workspace, store, dir, cleanup } = await bootServer();
       try {
         const old = new Date(Date.now() - 2 * 3_600_000).toISOString();
         await writeCutOffLog(workspace, store, "1000", { ts: old });
+        // The file store's activity is the log's mtime, which the write just set to now.
+        const when = new Date(old);
+        await utimes(join(dir, "workflows", "boot", "runs", "1000", "events.jsonl"), when, when);
         const reads: string[] = [];
         const orig = store.getRunEvents.bind(store);
         store.getRunEvents = async (w, r) => (reads.push(r), orig(w, r));
