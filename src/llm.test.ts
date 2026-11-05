@@ -25,6 +25,8 @@ const ENV = [
   "XAI_API_KEY",
   "MAPLE_API_KEY",
   "MAPLE_BASE_URL",
+  "NUMES_API_KEY",
+  "NUMES_BASE_URL",
   "EXA_API_KEY",
   "STRUT_MAX_OUTPUT_TOKENS",
   "MAX_OUTPUT_TOKENS",
@@ -300,6 +302,46 @@ describe("llm: the llmAuth seam (plans/mothership-cost-control.md §1)", () => {
       const out = await generateText({ model: r.model, prompt: "hi", maxRetries: 0 });
       assert.equal(out.text, "hello");
       assert.deepEqual(seen, [{ path: "/v1/chat/completions", auth: "Bearer mk", macaroon: undefined }]);
+    } finally {
+      server.close();
+    }
+  });
+
+  it("a numes call never asks the hook either: NUMES_API_KEY to Numes' API, never the gateway", async () => {
+    const { createServer } = await import("node:http");
+    const seen: { path?: string; auth?: string; macaroon?: string }[] = [];
+    const server = createServer((req, res) => {
+      seen.push({ path: req.url, auth: req.headers.authorization, macaroon: req.headers["x-macaroon"] as string | undefined });
+      req.resume();
+      req.on("end", () => {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({
+          id: "x", object: "chat.completion", created: 0, model: "z-ai/glm-5.3",
+          choices: [{ index: 0, message: { role: "assistant", content: "hello" }, finish_reason: "stop" }],
+          usage: { prompt_tokens: 10, completion_tokens: 2, cost: 0 },
+        }));
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    try {
+      const store = new MemorySecretStore();
+      await store.set("NUMES_API_KEY", "nk");
+      // Numes' own endpoint by default; a stand-in here, as a deployment may point it.
+      await store.set("NUMES_BASE_URL", `http://127.0.0.1:${(server.address() as { port: number }).port}/api/v1`);
+      let calls = 0;
+      const r = await resolveModel({
+        model: "numes/z-ai/glm-5.3",
+        secrets: secretsCapability(store, { envFallback: {} }),
+        llmAuth: async () => (calls++, { apiKey: "vk-user", baseUrl: "https://gateway.example", headers: { "x-macaroon": "m" } }),
+        auth: { kind: "step", runId: "r1", principal: "alice" },
+      });
+      assert.equal(calls, 0, "the hook is not asked");
+      assert.deepEqual([r.provider, r.modelId, r.apiKey, r.routed], ["numes", "z-ai/glm-5.3", "nk", false]);
+      assert.deepEqual([r.contextLimit, r.maxOutputTokens], [262_144, 24_576]);
+      const { generateText } = await import("ai");
+      const out = await generateText({ model: r.model, prompt: "hi", maxRetries: 0 });
+      assert.equal(out.text, "hello");
+      assert.deepEqual(seen, [{ path: "/api/v1/chat/completions", auth: "Bearer nk", macaroon: undefined }]);
     } finally {
       server.close();
     }
