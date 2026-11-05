@@ -153,6 +153,29 @@ describe("assert on a ladybug file (plans/graph-memory-plan.md step 3)", { skip:
     assert.deepEqual(current(await edgesOf(b, "LIVES_IN", kate)).map((e) => e.ref_id), [now.ref_id]);
   });
 
+  it("observed_at: older evidence becomes history and never replaces newer; last_confirmed_at only moves forward", async () => {
+    // Kate said Porto on 1 Sep 2026; an old message of hers, from 3 Mar 2025, says Lisbon.
+    const porto1 = await assertEdge(b, b.schemas, lives(porto, { valid_at: "2026-09", observed_at: "2026-09-01", source: "msg-porto" }));
+    const late = await assertEdge(b, b.schemas, lives(lisbon, { observed_at: "2025-03-03", source: "msg-lisbon" }));
+    assert.deepEqual([late.action, late.ended, late.superseded], ["history", true, []]);
+    let es = await edgesOf(b, "LIVES_IN", kate);
+    assert.deepEqual(current(es).map((e) => e.ref_id), [porto1.ref_id], "Porto stays current");
+    const old = es.find((e) => e.ref_id === late.ref_id)!;
+    assert.deepEqual([old.last_confirmed_at, old.invalid_at], [Date.parse("2025-03-03"), Date.parse("2026-09-01")], "observed when the message was sent; ended when Porto began");
+    assert.equal(es.find((e) => e.ref_id === porto1.ref_id)!.last_confirmed_at, Date.parse("2026-09-01"));
+    // Porto again, from an older message: a source more, its last confirmation kept.
+    await assertEdge(b, b.schemas, lives(porto, { observed_at: "2026-08-20", source: "msg-older" }));
+    es = await edgesOf(b, "LIVES_IN", kate);
+    const p = es.find((e) => e.ref_id === porto1.ref_id)!;
+    assert.deepEqual([p.sources, p.last_confirmed_at], [["msg-porto", "msg-older"], Date.parse("2026-09-01")]);
+    // Newer evidence of a different place replaces it, as before; a time to come is now.
+    const faro1 = await assertEdge(b, b.schemas, lives(faro, { observed_at: "2099-01-01" }));
+    assert.deepEqual([faro1.action, faro1.superseded], ["superseded", [porto1.ref_id]]);
+    const f = (await edgesOf(b, "LIVES_IN", kate)).find((e) => e.ref_id === faro1.ref_id)!;
+    assert.ok(f.last_confirmed_at! <= Date.now(), "never confirmed in the future");
+    await assert.rejects(assertEdge(b, b.schemas, lives(lisbon, { observed_at: "last spring" })), refused("WRONG_TYPE", "observed_at"));
+  });
+
   it("many-valued: a different target is another current edge; ending a held one by its end date", async () => {
     await assertEdge(b, b.schemas, { edge: "KNOWS", source_ref_id: kate, target_ref_id: sam, text: "Kate knows Sam" });
     await assertEdge(b, b.schemas, { edge: "KNOWS", source_ref_id: kate, target_ref_id: kate, text: "Kate knows herself" });
@@ -203,6 +226,8 @@ describe("assert on a ladybug file (plans/graph-memory-plan.md step 3)", { skip:
     const again = (await assertStep.run({ source_ref_id: kate, edge_type: "LIVES_IN", target_ref_id: lisbon, text: "Kate lives in Lisbon" } as never, ctx)) as Record<string, unknown>;
     assert.equal(again["action"], "reconfirmed");
     assert.match(String(await assertStep.run({ source_ref_id: kate, edge_type: "LIVES_IN", target_ref_id: "nope", text: "x" } as never, ctx)), /MISSING_REQUIRED/);
+    const read = (await assertStep.run({ source_ref_id: kate, edge_type: "LIVES_IN", target_ref_id: porto, text: "Kate lives in Porto", observed_at: "2020-05-01" } as never, ctx)) as Record<string, unknown>;
+    assert.equal(read["action"], "history", "an old message read late does not replace what is held");
   });
 });
 

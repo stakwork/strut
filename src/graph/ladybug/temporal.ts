@@ -27,6 +27,8 @@ export interface TemporalEdge {
   valid_at: number | null;
   invalid_at: number | null;
   expired_at: number | null;
+  /** The latest evidence for it: when it was last observed. */
+  last_confirmed_at: number | null;
 }
 
 const num = (v: unknown): number | null => (v === null || v === undefined ? null : Number(v));
@@ -40,6 +42,7 @@ function temporalEdge(r: Row): TemporalEdge {
     valid_at: num(r["valid_at"]),
     invalid_at: num(r["invalid_at"]),
     expired_at: num(r["expired_at"]),
+    last_confirmed_at: num(r["last_confirmed_at"]),
   };
 }
 
@@ -48,7 +51,8 @@ function temporalEdge(r: Row): TemporalEdge {
 export async function slotEdges(tx: GraphTx, edge: string, source: string, ended = false): Promise<TemporalEdge[]> {
   const rows = await tx.run(
     `MATCH (s:Node {ref_id: $s})-[r:${q(edge)}]->(t:Node) WHERE r.expired_at IS ${ended ? "NOT NULL" : "NULL"}
-     RETURN r.ref_id AS ref_id, t.ref_id AS target, r.text AS text, r.sources AS sources, r.valid_at AS valid_at, r.invalid_at AS invalid_at, r.expired_at AS expired_at
+     RETURN r.ref_id AS ref_id, t.ref_id AS target, r.text AS text, r.sources AS sources, r.valid_at AS valid_at, r.invalid_at AS invalid_at, r.expired_at AS expired_at,
+            r.last_confirmed_at AS last_confirmed_at
      ORDER BY r.created_at`,
     { s: source },
   );

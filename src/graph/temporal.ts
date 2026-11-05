@@ -16,6 +16,13 @@
  *   - creates: a back-dated assert (begun before the current edge did)
  *     becomes history, ended when the current one began, which stays.
  *
+ * `observed_at` is when the evidence is from (the message, email, event or
+ * document it was read from), when that is not now. It sets
+ * `last_confirmed_at`, which only moves forward, and older evidence never
+ * replaces newer: a different value observed before the current one was
+ * last confirmed is history, and the current one stays. The graph's own
+ * clock (`created_at`, `expired_at`) stays the writer's.
+ *
  * The rules are `remember.ts`'s and its `supersede()` (C's branch), on the
  * shape of jarvis's `temporal_edge_helper.py`. A Ladybug file only: its
  * writes are serialised through one writer, so two asserts on one slot
@@ -59,6 +66,10 @@ export interface AssertInput {
    *  for a year or month) or epoch ms. Unknown when left out. */
   valid_at?: string | number;
   invalid_at?: string | number;
+  /** When the evidence is from: the time of the message, email, event or
+   *  document it was read from, as for `valid_at`. Now when left out; a time
+   *  to come is taken as now. */
+  observed_at?: string | number;
   /** The ref_id of the node it was learned from (an episode, a message). */
   source?: string;
   /** The ref_id of the node that said it, when not the graph's owner (a
@@ -144,6 +155,12 @@ export async function assertEdge(e: EngineLike, resolver: SchemaResolver, input:
   const invalid = timeOf(edge, "invalid_at", input.invalid_at);
   if (valid !== null && invalid !== null && invalid < valid) throw new GraphValidationError("WRONG_TYPE", edge, "invalid_at is before valid_at: it ends before it starts", "invalid_at");
   const now = (opts.now ?? Date.now)();
+  // Given, the evidence's own time; left out, now, and no older-evidence rule: two writes at
+  // once read their clocks before the writer orders them.
+  const seen = timeOf(edge, "observed_at", input.observed_at);
+  const observed = Math.min(seen ?? now, now);
+  // When each edge was last confirmed: an edge from before the column, when it was made.
+  const confirmed = (x: { last_confirmed_at: number | null }) => x.last_confirmed_at ?? 0;
   // A fact said to be over, or whose end is given and not in the future, is past.
   const past = input.ended === true || (invalid !== null && invalid <= now);
   const saidBy = input.said_by?.trim() || undefined;
@@ -193,7 +210,8 @@ export async function assertEdge(e: EngineLike, resolver: SchemaResolver, input:
       const filled = [...(v !== hit.valid_at ? ["valid_at"] : []), ...(inv !== hit.invalid_at ? ["invalid_at"] : [])];
       const expire = !!held && (ending || (inv !== null && inv <= now));
       const fresh = given.filter((x) => !hit.sources.includes(x));
-      // The same sources again (or nothing new) change nothing.
+      const later = observed > confirmed(hit);
+      // The same sources again (or nothing new) change nothing: the same evidence confirms nothing.
       if (!filled.length && !expire && given.length && !fresh.length) {
         return { ref_id: hit.ref_id, action: "unchanged", superseded: [], ended: hit.expired_at !== null };
       }
@@ -202,7 +220,7 @@ export async function assertEdge(e: EngineLike, resolver: SchemaResolver, input:
         ...(filled.includes("invalid_at") ? { invalid_at: inv } : {}),
         ...(expire ? { expired_at: now } : {}),
         ...(fresh.length ? { sources: [...hit.sources, ...fresh] } : {}),
-        last_confirmed_at: now,
+        ...(later ? { last_confirmed_at: observed } : {}),
         updated_at: now,
       });
       if (filled.length || expire) {
@@ -216,16 +234,20 @@ export async function assertEdge(e: EngineLike, resolver: SchemaResolver, input:
     }
 
     // A current fact on a one-value slot replaces the slot's current edges,
-    // unless it began before one of them: then it is history, ended when
-    // the earliest of those began.
+    // unless it began before one of them, or was observed before one was
+    // last confirmed: then it is history, ended when the earliest of those
+    // began (unknown when none says).
     const replaced = one && !past ? current : [];
     const later = valid === null ? [] : replaced.map((x) => x.valid_at).filter((v): v is number => v !== null && v > valid);
-    const history = later.length > 0;
+    const newer = seen === null ? [] : replaced.filter((x) => confirmed(x) > observed);
+    const after = newer.map((x) => x.valid_at).filter((v): v is number => v !== null && (valid === null || v > valid));
+    const history = later.length > 0 || newer.length > 0;
+    const until = [...later, ...after, ...(invalid !== null ? [invalid] : [])];
     const ended = past || history;
     const ref_id = randomUUID();
     const own = s.namespace ?? engine.namespace;
     const namespace = input.namespace === undefined ? own : writeNamespace(edge, input.namespace, own);
-    const clocks = { valid_at: valid, invalid_at: history ? Math.min(...later, ...(invalid !== null ? [invalid] : [])) : invalid, expired_at: ended ? now : null };
+    const clocks = { valid_at: valid, invalid_at: history ? (until.length ? Math.min(...until) : null) : invalid, expired_at: ended ? now : null };
     await createTemporalEdge(tx, edge, input.source_ref_id, input.target_ref_id, {
       ref_id,
       edge_key: edgeKeyFor(edge),
@@ -237,7 +259,7 @@ export async function assertEdge(e: EngineLike, resolver: SchemaResolver, input:
       text,
       sources: given,
       ...clocks,
-      last_confirmed_at: now,
+      last_confirmed_at: observed,
     });
     await writeEdgeRow(tx, {
       edge_ref_id: ref_id,
