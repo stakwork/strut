@@ -612,7 +612,11 @@ export async function launchWorkflow(
       ...(params && Object.keys(params).length > 0 ? { params } : {}),
     }),
   });
-  return (await res.json()) as { runId: string };
+  const body = (await res.json().catch(() => null)) as { runId?: string; error?: string } | null;
+  // A refused launch (a disabled workflow, a bad input, nobody to bill) has
+  // no run: say why, rather than follow `runs/undefined`.
+  if (!res.ok || !body?.runId) throw new Error(body?.error ?? `${res.status} ${res.statusText}`);
+  return { runId: body.runId };
 }
 
 /**

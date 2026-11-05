@@ -24,7 +24,7 @@ import {
   truncateToolMessages,
 } from "./chat-store.js";
 import { CHAT_RETAIN, cachedSystem, compactAtFromEnv, compactionMessage, overMark, resultCapChars, summarize } from "./compaction.js";
-import { assertWorkflowEnabled, disabledMessage, FileWorkspaceStore, claimsBlockOf, readClaimsBlock, type PublishOptions, type WorkspaceStore } from "./workspace.js";
+import { assertWorkflowEnabled, workflowDisabled, FileWorkspaceStore, claimsBlockOf, readClaimsBlock, type PublishOptions, type WorkspaceStore } from "./workspace.js";
 import type { InputBlock } from "./input-block.js";
 import { buildRegistry, resolveStep } from "./steps/registry.js";
 import { parseStepRef } from "./step-ref.js";
@@ -1978,6 +1978,10 @@ export async function createStrut<TServices = unknown>(
     } catch (err) {
       return { ok: false, status: 404, error: err instanceof Error ? err.message : String(err) };
     }
+    // A disabled workflow refuses a resume like any launch; boot's auto-resume
+    // reports it skipped, and a person resumes it once it is enabled again.
+    const disabled = await workflowDisabled(workspace, name);
+    if (disabled) return { ok: false, status: 409, error: disabled };
 
     // Validity guard (§5): replaying outputs into a DIFFERENT DAG is
     // undefined. When the active version's hash differs from the one
@@ -2690,8 +2694,9 @@ export async function createStrut<TServices = unknown>(
     }
   });
 
-  // Disable or re-enable a workflow: a disabled one refuses every run and
-  // fires no schedule. Metadata-only like the category — no version.
+  // Disable or re-enable a workflow: a disabled one refuses every new run
+  // (`workflowDisabled`, src/workspace.ts) and holds its schedules.
+  // Metadata-only like the category — no version.
   app.put("/workflows/:name/disabled", async (c) => {
     const name = c.req.param("name");
     const body = await c.req.json<{ disabled?: boolean }>().catch(() => ({}) as { disabled?: boolean });
@@ -6020,7 +6025,8 @@ export async function createStrut<TServices = unknown>(
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 404);
     }
     if (peer && !opensTo(flow.peer, scope)) return c.json({ error: notForPeers(name, flow.peer) }, 403);
-    if ((await workspace.getWorkflowMetadata(name))?.disabled) return c.json({ error: disabledMessage(name) }, 409);
+    const disabled = await workflowDisabled(workspace, name);
+    if (disabled) return c.json({ error: disabled }, 409);
     const actor = await resolveActor(c);
     // A person's turn may continue a conversation they are in
     // (plans/jamie-app.md §2.2).
@@ -6085,7 +6091,8 @@ export async function createStrut<TServices = unknown>(
     // The version launched must say it, not the active one: an older
     // version is not open to peers because a newer one is.
     if (peer && !opensTo(flow.peer, scope)) return c.json({ error: notForPeers(`${name}@${version}`, flow.peer) }, 403);
-    if ((await workspace.getWorkflowMetadata(name))?.disabled) return c.json({ error: disabledMessage(name) }, 409);
+    const disabled = await workflowDisabled(workspace, name);
+    if (disabled) return c.json({ error: disabled }, 409);
     const actor = await resolveActor(c);
     const cont = scope === "peer:person" ? await continuesFor(flow, body.input, actor) : {};
     if ("refused" in cont) return c.json({ error: cont.refused }, 403);

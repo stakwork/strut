@@ -123,13 +123,14 @@ reads.
 
 | Method | Path                            | Response |
 | ------ | ------------------------------- | -------- |
-| GET    | `/workflows[?q=]`               | `[{ name, activeVersion, versions: ["v1", …], description?, category?, publisher?, owner?, maxRunCostUsd?, automations?, lastRunAt? }]` |
-| GET    | `/workflows/:name`              | `{ active, versions: { "v1": { createdAt, description?, hash?, source?, actor?, upstream? }, … }, category?, publisher?, owner?, maxRunCostUsd?, automations? }` (`WorkflowMetadata`; `upstream` = `{ package, version, digest, source: { ref }, secrets }`, the package a version was installed from or forked off — every publish carries the active version's forward) |
+| GET    | `/workflows[?q=]`               | `[{ name, activeVersion, versions: ["v1", …], description?, category?, publisher?, owner?, maxRunCostUsd?, disabled?, automations?, lastRunAt? }]` |
+| GET    | `/workflows/:name`              | `{ active, versions: { "v1": { createdAt, description?, hash?, source?, actor?, upstream? }, … }, category?, publisher?, owner?, maxRunCostUsd?, disabled?, automations? }` (`WorkflowMetadata`; `upstream` = `{ package, version, digest, source: { ref }, secrets }`, the package a version was installed from or forked off — every publish carries the active version's forward) |
 | GET    | `/workflows/:name/flow[?version=]` | `{ name, steps, input?, params?, promotes? }` — the parsed active (or named) version |
 | GET    | `/workflows/:name/versions`     | `{ active, versions: [{ version, createdAt, description?, source?, actor?, runs, success, error, lastRunAt? }], unattributed }` newest first; counts by the run's recorded `workflowHash` |
 | GET    | `/workflows/:name/:version`     | the YAML source, `text/yaml` |
 | PUT    | `/workflows/:name/active`       | `{ version }` → `{ ok, workflow, active }` — rollback; publishes nothing |
 | PUT    | `/workflows/:name/publisher`    | `{ publisher: "ai" \| null }` → `{ ok, workflow, publisher }` — hand the workflow to the builder, or take it back (below); publishes nothing |
+| PUT    | `/workflows/:name/disabled`     | `{ disabled: boolean }` → `{ ok, workflow, disabled }` — disable the workflow, or enable it again (below); publishes nothing |
 | DELETE | `/workflows/:name`    | `{ ok, workflow }` — every version, metadata, schedules and run records; 409 while a run is in flight |
 
 `?q=` is the sidebar's filter: the query is split into words and every word
@@ -151,6 +152,21 @@ over, when its active version is a seed (every boot puts the committed
 version back), says `sealed: true` (a grading harness) or `peer:` (the
 builder may not publish that key, so its next version would close the
 workflow to other struts). A peer's request is refused by the gate.
+
+`disabled: true` (`PUT /workflows/:name/disabled`, the Workflow flyout's
+Disable) makes the workflow refuse every NEW run until a person enables it
+again: `POST …/run` and `…/:version/run` answer `409` with `workflow '<name>'
+is disabled: …`, and the same refusal is what `strut.run`, a `subflow` step
+that calls it, `job/start` / `job/continue`, `run/launch`, `meta/run-workflow`,
+the builder's `run_workflow` and the conversation wake get. A durable resume
+(`POST …/resume`, boot's auto-resume) is refused too (`409`; auto-resume
+reports the run skipped). Its schedules are HELD, not failed: a due fire
+launches nothing and records no `lastFireError`, and `POST
+…/automations/:id/fire` answers with the refusal. A run already in flight
+finishes. Like `category`, it is workflow metadata: no version is published,
+a publish keeps it, and a rollback does not change it. `400` when `disabled`
+is not a boolean, `404` for an unknown workflow; a peer's request is refused
+by the gate.
 
 ## 3. Run
 

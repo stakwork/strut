@@ -2032,14 +2032,23 @@ export function pinnedStepFileOf(file: string): string | null {
 }
 
 /** The refusal a disabled workflow gives every launch path. */
-export const disabledMessage = (name: string) => `workflow '${name}' is disabled`;
+export const disabledMessage = (name: string) =>
+  `workflow '${name}' is disabled: it refuses runs until a person enables it again`;
 
-/** Throws `workflow 'X' is disabled` when the workflow is disabled. A store
- *  that cannot say (no metadata) counts as enabled. */
-export async function assertWorkflowEnabled(
-  ws: { getWorkflowMetadata?: (name: string) => Promise<WorkflowMetadata | null> } | undefined,
-  name: string,
-): Promise<void> {
+type MetadataReader = { getWorkflowMetadata?: (name: string) => Promise<WorkflowMetadata | null> } | undefined;
+
+/** The refusal when the workflow is disabled, else null. A store that cannot
+ *  say (no metadata) counts as enabled. Every launch path asks: the run
+ *  routes, `strut.run`, a subflow, a schedule, job/start, run/launch, the
+ *  wake, a durable resume, `meta/run-workflow` and the builder's
+ *  `run_workflow`. A run already in flight is left to finish. */
+export async function workflowDisabled(ws: MetadataReader, name: string): Promise<string | null> {
   const meta = ws?.getWorkflowMetadata ? await ws.getWorkflowMetadata(name).catch(() => null) : null;
-  if (meta?.disabled) throw new Error(disabledMessage(name));
+  return meta?.disabled ? disabledMessage(name) : null;
+}
+
+/** Throws the refusal when the workflow is disabled. */
+export async function assertWorkflowEnabled(ws: MetadataReader, name: string): Promise<void> {
+  const refused = await workflowDisabled(ws, name);
+  if (refused) throw new Error(refused);
 }

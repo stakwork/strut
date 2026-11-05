@@ -467,6 +467,10 @@ body.is-resizing-rows * {
   flex: none;
   animation: chat-live-pulse 1.4s ease-in-out infinite;
 }
+/* A disabled workflow (PUT /workflows/:name/disabled): dimmed, its clock
+   hidden — the topbar says Disabled and offers Enable once it is selected. */
+.list-item.is-disabled .list-item-name,
+.list-item.is-disabled .badge { opacity: 0.45; }
 .list-item .live-dot { margin: 0 6px 0 auto; }
 .list-item .live-dot + .list-item-clock { margin-left: 0; }
 .cat-header .live-dot { margin-left: auto; }
@@ -2848,6 +2852,11 @@ body.is-resizing-flyout iframe { pointer-events: none !important; }
   position: relative;
   display: inline-block;
 }
+.wf-disabled {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
 .run-popover {
   position: absolute;
   top: calc(100% + var(--sp-2));
@@ -3603,6 +3612,15 @@ body.is-resizing-flyout iframe { pointer-events: none !important; }
 
 .auto-hint { font-size: 12px; color: var(--text-muted); line-height: 1.5; }
 .auto-empty { font-size: 12px; color: var(--text-dim); padding: var(--sp-3) 0; }
+.auto-held {
+  font-size: 12px;
+  color: var(--warning);
+  background: rgba(251, 191, 36, 0.08);
+  border: 1px solid rgba(251, 191, 36, 0.25);
+  border-radius: var(--r-md);
+  padding: var(--sp-2) var(--sp-3);
+  margin-bottom: var(--sp-3);
+}
 .auto-error {
   font-size: 12px;
   color: var(--danger);

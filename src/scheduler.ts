@@ -35,7 +35,7 @@ import { callbackOrigin } from "./callback.js";
 import type { Flow } from "./core.js";
 import type { SecretStore } from "./secret-store.js";
 import type { RunStore } from "./store.js";
-import { assertWorkflowEnabled, type WorkspaceStore } from "./workspace.js";
+import { workflowDisabled, type WorkspaceStore } from "./workspace.js";
 import { principalRequired } from "./auth.js";
 
 export interface AutomationsDeps {
@@ -239,13 +239,16 @@ export function createAutomations(deps: AutomationsDeps): Automations {
     if (firing.has(k)) return { error: "skipped: a fire of it is already launching" };
     firing.add(k);
     try {
+      // A disabled workflow holds its schedules: nothing launches and nothing
+      // is recorded as a failure, so it reads as paused, not broken.
+      const disabled = await workflowDisabled(workspace, workflow);
+      if (disabled) return { error: disabled };
       const facts = (await runFacts(workflow, [automation.id])).get(automation.id)!;
       if (facts.inFlight) return { error: `skipped: the previous run (${facts.inFlight}) is still in flight` };
       // Nobody to bill → nothing launches (surfaces as `lastFireError`), rather
       // than a run that dies at its first LLM step.
       const unowned = await ownerGate(workflow, true);
       if (unowned) throw new Error(unowned);
-      await assertWorkflowEnabled(workspace, workflow);
       const flow = await workspace.getWorkflow(workflow);
       const input = resolveAutomationInput(automation, at, facts.last);
       const callback = await callbackOf(automation);
