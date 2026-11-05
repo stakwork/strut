@@ -45,6 +45,9 @@ export function readRunStart(
   /** A peer's run a person's credential launched — a resume keeps it, so
    *  the run opens the same person's sessions (plans/chained-orchestrators.md §2). */
   peerPerson?: true;
+  /** The conversation a person's turn continues — a resume opens it again
+   *  (plans/jamie-app.md §2.2). */
+  continues?: string;
   /** The files the launch attached, saved under the run's artifacts — a
    *  resume hands them to its steps again. */
   attachments?: RunAttachment[];
@@ -76,6 +79,7 @@ export function readRunStart(
     job: start.job,
     origin: start.origin,
     ...(start.peerPerson ? { peerPerson: true as const } : {}),
+    ...(start.continues ? { continues: start.continues } : {}),
     attachments: start.attachments,
     ...(start.app ? { app: start.app } : {}),
     ...(start.startedBy ? { startedBy: start.startedBy } : {}),

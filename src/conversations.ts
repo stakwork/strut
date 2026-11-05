@@ -284,6 +284,13 @@ export interface Conversations extends ConversationsCapability {
   /** The record on file, or null: never built here, so a session that is
    *  no conversation costs a file read (the graph projection's reader). */
   record(id: string): Promise<ConversationRecord | null>;
+  /** May `actor` take a turn in `id`, a session that is not under their own
+   *  id (plans/jamie-app.md §2.2)? `true` when it is a conversation they
+   *  took a turn in, or a shared one; `false` when it is a conversation
+   *  they may not continue; `null` when it is no conversation (never one,
+   *  or outside the index: `peer/…`, `app/…`). Built from the session the
+   *  first time, as a read is. */
+  mayContinue(id: string, actor: string): Promise<boolean | null>;
 }
 
 export interface ConversationsDeps {
@@ -542,6 +549,11 @@ export function createConversations(deps: ConversationsDeps): Conversations {
   const notFound = (id: string) => new Error(`No conversation "${id}" (or not yours to read)`);
 
   return {
+    async mayContinue(id, actor) {
+      const rec = await recordOf(id);
+      if (!rec) return null;
+      return !!rec.shared || rec.turns.some((t) => t.by === actor);
+    },
     async launched(id, t) {
       const by = t.actor ?? t.principal;
       await mutate(

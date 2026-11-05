@@ -208,9 +208,16 @@ A workflow that says `peer: person` takes only a person's credential
 person's credential only`). `peer: true` takes both. A run a person's
 credential launched records `peerPerson: true` beside `origin: "peer"` on
 `run.start`, and opens the actor's OWN sessions as they are — `<actor>` and
-`<actor>/…`, the thread the actor's host opens for them here too — while
-every other id it names is still `peer/<id>`; its `job` is still
-`peer/<job>`. Only the same person's credential resumes such a run.
+`<actor>/…`, the thread the actor's host opens for them here too — and so
+does a CONVERSATION it continues: a turn of a conversation workflow (one
+with `params.wake`, the orchestrator) whose `input.session` is a
+conversation the actor took a turn in, or a shared one (§9.1), under
+whatever id it has — Hive's are bare. That run records `continues: <id>`
+on `run.start`. Another person's conversation is a `403`
+(`conversation_not_yours: "<id>" is another person's conversation …`),
+and nothing launches. Every other id it names is still `peer/<id>`; its
+`job` is still `peer/<job>`. Only the same person's credential resumes
+such a run.
 
 The run is **detached**: the 202 comes back before anything executes, the
 run keeps going whether or not you stay connected, and every event is
@@ -385,7 +392,7 @@ One object per line of the run's append-only log. Common fields:
 
 | Type              | Meaning |
 | ----------------- | ------- |
-| `run.start`       | first line; carries `input`, `workflowHash`, `stepHashes` (custom step versions), `params` / `paramOverrides`, `actor` / `principal`, `origin` (`schedule` / `verify` / `peer`), `peerPerson` (a peer run a person's credential launched, §3), `automation`, `callback: { origin }`, `mcp: [{ name, origin }]`, `attachments: [{ name, mediaType, size, path }]`, `parentRunId` when nested, `startedBy` (a job a turn started), `conversation` (the launch's, §3), `wakeAsked: true` (the launch asked for the wake, §3), `wake: { job, runId, peer?, also? }` (a wake turn: the job run it woke on) |
+| `run.start`       | first line; carries `input`, `workflowHash`, `stepHashes` (custom step versions), `params` / `paramOverrides`, `actor` / `principal`, `origin` (`schedule` / `verify` / `peer`), `peerPerson` (a peer run a person's credential launched, §3), `continues` (the conversation a person's turn continues under an id not their own, §3), `automation`, `callback: { origin }`, `mcp: [{ name, origin }]`, `attachments: [{ name, mediaType, size, path }]`, `parentRunId` when nested, `startedBy` (a job a turn started), `conversation` (the launch's, §3), `wakeAsked: true` (the launch asked for the wake, §3), `wake: { job, runId, peer?, also? }` (a wake turn: the job run it woke on) |
 | `step.start` / `step.end` / `step.error` | one execution; `step.error` is final, after retries |
 | `step.retry`      | an attempt failed and another follows |
 | `step.skipped`    | not run: its `when` gate did not match, or every step it depends on was skipped |
@@ -691,6 +698,16 @@ its id is under (`<actor>/…`), and for anyone who opened it while it was
 makes you a participant. The key with no actor reads any conversation; a
 plain peer reads the routes and sees none. A person token may also POST the
 two writes.
+
+**Who may continue one.** The key launches a turn on any id. A person's
+token (§3) and strut's own app (§14.10) open the person's own ids
+(`<actor>`, `<actor>/…`) as they are, and also a conversation the person
+took a turn in, or a shared one, under whatever id it has (Hive's are
+bare): the run records `continues: <id>` on `run.start`. Another person's
+conversation is refused with `conversation_not_yours:` (a `403`, or the
+step's error from the app's `run/launch`). Having opened it while it was
+shared is not a turn. An id that is no conversation stays in the caller's
+own namespace (`peer/<id>`, `app/<name>/<viewer>/<id>`), as before.
 
 | Method | Path | Body | Response |
 | ------ | ---- | ---- | -------- |
@@ -1640,7 +1657,7 @@ what their person token has, where §14.8's rules hold a model-written page:
 | | A model-written page | A first-party page |
 |---|---|---|
 | A sealed workflow (the orchestrator) | only through a person's grant (§14.8), the runs this app launched for the viewer | no grant: the viewer's runs (`actor`), whoever launched them |
-| Its runs' agent sessions | under `app/<name>/<viewer>/` | the viewer's own as they are (`<actor>`, `<actor>/…`), so they are conversations (§9.1); any other id under the app |
+| Its runs' agent sessions | under `app/<name>/<viewer>/` | the viewer's own as they are (`<actor>`, `<actor>/…`), so they are conversations (§9.1), and a conversation the viewer took a turn in or a shared one (§9.1, "Who may continue one"); any other id under the app |
 | Gated tools (`approve:`) in its runs' agents | left out | kept: the proposals are the viewer's, listed by `proposal/list` and decided by `proposal/decide` |
 | Job ids | under `app/<name>/` | the person's own, as they are |
 | The wake (§3) | none: its turns are a relay | strut's: each turn asks for it (`wakeAsked`), so a job the turn starts wakes the conversation |

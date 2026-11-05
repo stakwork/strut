@@ -57,6 +57,7 @@ drifted (§1.1).
 | Order | **agreed.** Wake and conversation index first (server-side, testable with no UI, Hive can use them before the app exists), then the tier, then the app, then the host panel and Hive's frame. |
 | Canvas, initiatives | Out of scope here. `org-home-swarm.md` makes them apps of their own. |
 | Shared conversations | **Kept** (owner, 2026-11-04; open question 1). A conversation can have several people: it is listed for everyone who took a turn in it (its turns' actor, else principal), and a `shared` flag makes it readable to any actor on this strut before their first turn. Strut cannot check org membership; on a swarm every token holder is an org member. Taking a turn makes you a participant. Calls (one conversation per call, each turn as its speaker), tribe threads and Hive's share links already work this way. |
+| Continuing a conversation | **Ruled** (owner, 2026-11-04). A person's turn — through a person token, or strut's own app — may continue any conversation they took a turn in, or a shared one, under whatever id it has: Hive's bare ids included. Another person's is refused. Reading it while it was shared is not a turn. Built in §2.2. |
 
 ## 1. One wake (proposed)
 
@@ -394,6 +395,36 @@ started (`assistantJobs` over its events), status while in flight.
 - **Not built**: the jobs in a list row (read per turn in `get`), the one-off
   export of Hive's renamed titles and archived flags (§7).
 
+### 2.2 Continuing a conversation (ruled and built 2026-11-04)
+
+A person token's turn and a first-party page's open the person's own ids
+(`<actor>`, `<actor>/…`) as they are, and any other under their own
+namespace (`peer/…`, `app/<name>/<viewer>/…`). Hive's conversations are
+bare ids, so the app could read them and not continue them, and a shared
+conversation could be read by everyone and continued by its starter
+alone. Now the index decides the rest (`continuesFor`, createStrut;
+`Conversations.mayContinue`):
+
+- **Who.** A launch of a conversation workflow (`params.wake`) whose
+  `input.session` is not the person's own id: a person token's (`POST
+  …/run`, either route) or a first-party page's (`run/launch`).
+- **May.** A conversation the person took a turn in (a turn whose `by`
+  is theirs), or a shared one, opens as it is. The launch records
+  `continues: <id>` on `run.start`; `bindPeer` and `bindApp` open that id
+  as it is, a resume reads it back (`readRunStart`), and the projection
+  maps the run's thread to it. Their turn makes them a participant, so
+  unsharing it later leaves it theirs.
+- **May not.** Another person's conversation is refused before anything
+  launches: `403` from the route, a step error from `run/launch`,
+  `conversation_not_yours: "<id>" is another person's conversation …`.
+  Having opened it while it was shared is reading, not a turn.
+- **No conversation** (no record, and none built from the session): as
+  before, the id opens in the caller's namespace. A new conversation's id
+  is the person's own (`<actor>/<id>`).
+- **Unchanged.** The deployment's key (Hive) opens any id as it is; a
+  plain peer's ids stay under `peer/`; a model-written page's under
+  `app/`.
+
 ## 3. First-party apps (built — §3.1)
 
 The app rules assume a model wrote the page. For an app strut ships, five
@@ -463,11 +494,10 @@ host's sandboxed panel (§4), never in its own document.
 - **The reserved name**: `reservedAppName` (`src/apps/files.ts`) in
   `apps.publish` (a source other than `seed`), `apps.preview`, `POST /apps`
   and the package install's checks.
-- Not built: Hive's bare-id conversations (every one it has today) are
-  listed in the app and readable by their participants, but a first-party
-  page cannot CONTINUE one: it is not under `<actor>/`, so its turn opens
-  under the app. Opening a conversation the index lists the viewer in (or
-  a shared one) is the next rule to rule on.
+- Hive's bare-id conversations (every one it has today) are listed in the
+  app and readable by their participants; continuing one was ruled and
+  built after this (§2.2): a participant's turn, or anyone's in a shared
+  one, opens it as it is.
 
 ## 4. What the app cannot frame (proposed)
 

@@ -551,12 +551,14 @@ describe("journal", () => {
         input: { x: 1 },
         workflowHash: "abc",
         params: { knob: 2 },
+        continues: "hive-1",
       },
     ] as RunEvent[];
     const rs = readRunStart(events);
     assert.deepEqual(rs?.input, { x: 1 });
     assert.equal(rs?.workflowHash, "abc");
     assert.deepEqual(rs?.params, { knob: 2 });
+    assert.equal(rs?.continues, "hive-1", "a resume opens the conversation it continues again");
   });
 
   it("transitiveDependents follows explicit and implicit deps", () => {

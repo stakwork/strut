@@ -134,6 +134,12 @@ export interface RunOptions<TServices = unknown> {
   /** The host asked for strut's wake on this conversation (`POST …/run
    *  { wake: true }`): recorded on `run.start` (`RunEvent.wakeAsked`). */
   wakeAsked?: boolean;
+  /** The conversation a person's turn continues (plans/jamie-app.md §2.2):
+   *  a session not under the person's own id that the launcher let them
+   *  open as it is — a person token's run (`peerPerson`) or a first-party
+   *  page's (`app.firstParty`). Recorded on `run.start`
+   *  (`RunEvent.continues`), read by `bindPeer` / `bindApp`. */
+  continues?: string;
   /** A WAKE turn (src/wake.ts): the job run(s) it woke on — recorded on
    *  `run.start`, handed to every step as `ctx.wake`. strut's wake is the
    *  one site that sets it. */
@@ -218,13 +224,13 @@ function bindPrincipal<TServices>(services: TServices, principal: string | undef
  *  exception: a run a PERSON's credential launched (`person`, its actor)
  *  opens that person's own ids as they are (`peerSessionId`). A per-run
  *  view like `bindPrincipal`'s; the consumer's bag is not mutated. */
-function bindPeer<TServices>(services: TServices, origin: RunOrigin | undefined, person?: string): TServices {
+function bindPeer<TServices>(services: TServices, origin: RunOrigin | undefined, person?: string, continues?: string): TServices {
   if (origin !== "peer" || services == null || typeof services !== "object") return services;
   const sessions = (services as { sessions?: SessionsCapability }).sessions;
   if (typeof sessions?.open !== "function") return services;
   const view: SessionsCapability = {
-    open: (id, holder) => sessions.open(peerSessionId(id, person), holder),
-    holder: (id) => sessions.holder(peerSessionId(id, person)),
+    open: (id, holder) => sessions.open(peerSessionId(id, person, continues), holder),
+    holder: (id) => sessions.holder(peerSessionId(id, person, continues)),
   };
   return { ...(services as object), sessions: view } as TServices;
 }
@@ -233,13 +239,13 @@ function bindPeer<TServices>(services: TServices, origin: RunOrigin | undefined,
  *  (`appSessionId`): the assistant's thread for a page is that viewer's in
  *  that app, never a conversation a page names. A per-run view like
  *  `bindPeer`'s. */
-function bindApp<TServices>(services: TServices, app: AppRef | undefined, actor?: string, job?: string): TServices {
+function bindApp<TServices>(services: TServices, app: AppRef | undefined, actor?: string, job?: string, continues?: string): TServices {
   if (!app || services == null || typeof services !== "object") return services;
   const sessions = (services as { sessions?: SessionsCapability }).sessions;
   if (typeof sessions?.open !== "function") return services;
   const view: SessionsCapability = {
-    open: (id, holder) => sessions.open(appSessionId(id, app.name, actor, job, app.firstParty), holder),
-    holder: (id) => sessions.holder(appSessionId(id, app.name, actor, job, app.firstParty)),
+    open: (id, holder) => sessions.open(appSessionId(id, app.name, actor, job, app.firstParty, continues), holder),
+    holder: (id) => sessions.holder(appSessionId(id, app.name, actor, job, app.firstParty, continues)),
   };
   return { ...(services as object), sessions: view } as TServices;
 }
@@ -324,10 +330,12 @@ export async function runWorkflow<TServices = unknown>(
         bindPrincipal((opts?.services ?? ({} as TServices)) as TServices, opts?.principal),
         opts?.origin,
         opts?.peerPerson ? opts.actor : undefined,
+        opts?.continues,
       ),
       opts?.app,
       opts?.actor,
       opts?.job,
+      opts?.continues,
     ),
     { runId, ...(opts?.job ? { job: opts.job } : {}) },
   );
@@ -412,6 +420,7 @@ export async function runWorkflow<TServices = unknown>(
       ...(opts?.cassette ? { cassette: opts.cassette } : {}),
       ...(opts?.origin ? { origin: opts.origin } : {}),
       ...(opts?.origin === "peer" && opts.peerPerson ? { peerPerson: true as const } : {}),
+      ...(opts?.continues ? { continues: opts.continues } : {}),
       ...(opts?.automation ? { automation: opts.automation } : {}),
       ...(opts?.verify ? { verify: opts.verify } : {}),
       ...(opts?.actor ? { actor: opts.actor } : {}),
