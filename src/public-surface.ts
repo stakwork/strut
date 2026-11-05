@@ -278,8 +278,8 @@ export interface PublicSurfaceService {
   /** The ref_ids a run's steps reported (`step.end.nodes`), this graph's only. */
   runNodes(workflow: string, runId: string): Promise<Set<string>>;
   /** Feed a run event to the visible-refs index (no-op until a workflow's
-   *  index is first used): adds `nodes` as steps end, saves at the run's end. */
-  noteEvent(workflow: string, event: { runId: string; type: string; nodes?: unknown }): void;
+   *  index is first used): adds `nodes` as steps end. */
+  noteEvent(workflow: string, event: { nodes?: unknown }): void;
   /** A workflow's runs were deleted: forget what they made visible. */
   forgetRuns(workflow: string): void;
   /** Is this node visible to a visitor (§4)? */
@@ -326,28 +326,23 @@ export function createPublicSurface(deps: PublicSurfaceDeps): PublicSurfaceServi
     }
     return e;
   };
-  const noteEvent = (workflow: string, event: { runId: string; type: string; nodes?: unknown }): void => {
+  // The index only. `runSets` stays `runNodes`' alone: a run's set there is
+  // read as COMPLETE, and an event stream joined mid-run is not — the index
+  // is built on the first visitor read, so a run already going would keep
+  // only the steps that ended after it, and lose the rest on disk.
+  const noteEvent = (workflow: string, event: { nodes?: unknown }): void => {
     const e = index.get(workflow);
-    if (!e) return;
-    if (Array.isArray(event.nodes)) {
-      const sets = runSets.get(workflow);
-      for (const n of event.nodes as { ref_id?: unknown; peer?: unknown }[]) {
-        if (n?.peer || typeof n?.ref_id !== "string") continue;
-        e.refs.add(n.ref_id);
-        if (sets) {
-          let set = sets.get(event.runId);
-          if (!set) sets.set(event.runId, (set = new Set()));
-          set.add(n.ref_id);
-        }
-      }
+    if (!e || !Array.isArray(event.nodes)) return;
+    for (const n of event.nodes as { ref_id?: unknown; peer?: unknown }[]) {
+      if (!n?.peer && typeof n?.ref_id === "string") e.refs.add(n.ref_id);
     }
-    if (event.type === "run.end" || event.type === "run.error") void saveRunSets(workflow);
   };
   const forgetRuns = (workflow: string): void => {
     index.delete(workflow);
     runSets.delete(workflow);
     runSetsLoaded.delete(workflow);
-    void rm(nodesFile(workflow), { force: true }).catch(() => {});
+    // After any save in flight, so it cannot write the file back.
+    saving = saving.then(() => rm(nodesFile(workflow), { force: true })).catch(() => {});
   };
 
   const get = async (): Promise<PublicSurface> => (surface ??= await readSurface(deps.dataDir));
