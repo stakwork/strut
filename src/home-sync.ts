@@ -5,7 +5,9 @@
 //
 //   POST /home/pull { hash? }       the whole memory (memory/export, inline),
 //                                   or { unchanged, content_hash } when the
-//                                   caller's copy is still current
+//                                   caller's copy is still current; on a
+//                                   graph host, dictation's changes since
+//                                   the last pull (home/_graph-pull.ts)
 //   POST /home/push { dictation? }  what the copy changed, replayed here
 //                                   (dictation/apply-changes); one key per kind
 //
@@ -23,6 +25,8 @@ import type { StepContext } from "./core.js";
 import type { WorkspaceStore } from "./workspace.js";
 import exportStep from "./steps/lib/memory/export.js";
 import applyChanges from "./steps/lib/dictation/apply-changes.js";
+import { onGraph } from "./steps/lib/dictation/_graph.js";
+import { graphPull } from "./steps/lib/home/_graph-pull.js";
 
 export type HomeSyncRole = "box" | "copy";
 
@@ -51,6 +55,15 @@ export function homeSyncRoutes(app: Hono, deps: { services: unknown; scopeOf: (c
     if (refused) return refused;
     const body = await c.req.json<{ hash?: unknown }>().catch(() => ({}) as { hash?: unknown });
     if (body.hash !== undefined && typeof body.hash !== "string") return c.json({ error: "hash must be a string" }, 400);
+    if (onGraph(ctx)) {
+      try {
+        const out = await graphPull(ctx, body.hash);
+        noStore(c);
+        return c.json(out);
+      } catch (err) {
+        return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+      }
+    }
     const out = await exportStep.run({ inline: true, ...(body.hash ? { if_changed: body.hash } : {}) }, ctx);
     noStore(c);
     return c.json(out, out?.error ? 500 : 200);
