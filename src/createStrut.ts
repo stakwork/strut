@@ -113,7 +113,7 @@ import type { CassetteMode } from "./cassette.js";
 // Type-only: the graph backend stays a lazy, opt-in dependency.
 import type { GraphBackend } from "./graph/backend.js";
 import { graphView, mayQueryRaw, readerFor, listFor, type GraphReaders } from "./graph/scope.js";
-import { projectChatOnce, projectRunOnce, type ConversationReader } from "./graph/projector.js";
+import { projectChatOnce, projectProposalOnce, projectRunOnce, type ConversationReader } from "./graph/projector.js";
 import { createGraphChangeFeed, GRAPH_FEED_READ_MAX } from "./graph-writes.js";
 // No runtime graph dependency in here either (type-only imports inside).
 import type { ClaimsReader } from "./graph/claims.js";
@@ -1004,8 +1004,16 @@ export async function createStrut<TServices = unknown>(
     appVersion: async (name, version) => appVersionOf(name, version),
   });
   // Proposals (plans/proposals.md): the bag's capability — its `decide` is
-  // attached with the decide route below, where its deps are.
+  // attached with the decide route below, where its deps are. On a graph
+  // workspace each change is projected (`StrutProposal`, graph/projector.ts),
+  // detached: the record is written first and stays what every list reads.
+  const proposalGraph = workspace.graph;
+  const projectProposal = proposalGraph
+    ? (p: { id: string }) =>
+        void projectProposalOnce(proposalGraph, ownProposals, p.id).catch((err) => console.error(`[projector] proposal ${p.id} was not projected:`, err))
+    : undefined;
   const ownProposals: ProposalsCapability = proposalsCapability(dataDir, {
+    ...(projectProposal ? { changed: projectProposal } : {}),
     // What the host's deltas gate: a step that reaches past this strut
     // checks it whatever the route (proposals.ts `requireApproval`).
     hostApprove: [opts.job, opts.orchestrator, opts.builder].flatMap((d) => (d ? (d.approve ?? []) : [])),
@@ -1436,7 +1444,7 @@ export async function createStrut<TServices = unknown>(
           // refreshes its `StrutChat` (plans/jamie-app.md §2). Its end was
           // recorded from the run's terminal event, before this.
           const convs = (services as Record<string, unknown>)["conversations"] as Partial<ConversationReader> | undefined;
-          void projectRunOnce(runGraph, store, key, runId, jobs, typeof convs?.record === "function" ? (convs as ConversationReader) : undefined).catch((err) =>
+          void projectRunOnce(runGraph, store, key, runId, jobs, typeof convs?.record === "function" ? (convs as ConversationReader) : undefined, ownProposals).catch((err) =>
             console.error(`[projector] run ${key}/${runId} was not projected:`, err),
           );
           verifier?.schedule(key, runId);
@@ -3984,6 +3992,7 @@ export async function createStrut<TServices = unknown>(
       mcpOf: (workflow, runId) => store.getRunMcp(workflow, runId),
       stepFor: (type) => mcpStepDef(type, mcpRegistry),
       notify: (job, update) => ((services as Record<string, unknown>)["jobs"] as JobsCapability | undefined)?.notify?.(job, update),
+      ...(projectProposal ? { changed: projectProposal } : {}),
     });
   ownProposals.decide = decide;
 

@@ -55,14 +55,21 @@
  * output declares. An artifact's `from` (plans/work-products.md §2) is a
  * `DERIVED_FROM` edge to each of those nodes the graph holds.
  *
+ * Proposals (plans/proposals.md §2): a run's gated tool calls are one
+ * `StrutProposal` each, `IN_RUN` the run, with an `ACCESSED` edge to each
+ * node its apply wrote. The record (`<dataDir>/proposals/`) stays the store
+ * of record and what every list reads; the node is written with the run and
+ * again at each change (`projectProposalOnce`: proposed, decided, applied).
+ *
  * Not projected: `PROMOTED_FROM` — promotions publish a new version without
  * recording the source run.
  *
  * Only the types the backend's ontology holds are written: every Strut type
  * on Neo4j; on a LadybugDB file (plans/ladybug-backend.md), whose seed
  * leaves the chat and agent-session types out, `StrutRun`, `StrutJob` and
- * `StrutArtifact` with `EXECUTED`, `IN_JOB`, `HAS_ARTIFACT`, `DELIVERED`,
- * `DERIVED_FROM` and the run's `ACCESSED`; the
+ * `StrutArtifact` and `StrutProposal` with `EXECUTED`, `IN_JOB`,
+ * `HAS_ARTIFACT`, `DELIVERED`, `DERIVED_FROM`, `IN_RUN` (a proposal's) and
+ * `ACCESSED` (the run's and a proposal's); the
  * agent sessions, tool calls, their edges and the whole chat projection are
  * skipped there, and the report counts what was written. The statements
  * are written with the backend's dialect helpers (`engine.ts`).
@@ -74,6 +81,7 @@ import { idProblem, peerSessionId } from "../session-store.js";
 import { artifactEntriesOf } from "../artifact-refs.js";
 import type { JobIndex, JobView } from "../job-index.js";
 import type { ConversationRecord, Conversations } from "../conversations.js";
+import type { Proposal, ProposalsCapability } from "../proposals.js";
 import type { GraphBackend } from "./backend.js";
 import type { NodeInput } from "./node-writer.js";
 import type { EdgeInput } from "./edge-writer.js";
@@ -107,6 +115,11 @@ export type JobReader = Pick<Partial<JobIndex>, "get">;
  *  `createStrut` hands its index; without one no conversation is written. */
 export type ConversationReader = Pick<Conversations, "record">;
 
+/** What the projector needs of the proposals (plans/proposals.md §2): a
+ *  run's, to project with it, and one by id, when it changes. `createStrut`
+ *  hands its `services.proposals`; without one no proposal is written. */
+export type ProposalReader = Pick<ProposalsCapability, "get" | "list">;
+
 /** The cap on a `StrutJob.summary` — the search text. */
 const JOB_SUMMARY_MAX_CHARS = 2000;
 
@@ -123,6 +136,8 @@ export interface ProjectRunsOptions {
   jobs?: JobReader;
   /** The conversation index, for the `StrutChat` of each conversation turn. */
   conversations?: ConversationReader;
+  /** The proposals, for the `StrutProposal` of each gated call a run made. */
+  proposals?: ProposalReader;
 }
 
 export interface ProjectReport {
@@ -140,9 +155,11 @@ export interface ProjectReport {
   skipped: number;
   /** `StrutJob` nodes upserted (one per run of a job, from the index). */
   jobs: number;
+  /** `StrutProposal` nodes upserted. */
+  proposals: number;
 }
 
-const emptyReport = (): ProjectReport => ({ runs: 0, sessions: 0, toolCalls: 0, chats: 0, turns: 0, edges: 0, accessed: 0, unresolved: 0, skipped: 0, jobs: 0 });
+const emptyReport = (): ProjectReport => ({ runs: 0, sessions: 0, toolCalls: 0, chats: 0, turns: 0, edges: 0, accessed: 0, unresolved: 0, skipped: 0, jobs: 0, proposals: 0 });
 
 /** A bounded text preview of any value — the shape of payload that reaches
  *  the graph, but for a conversation turn's words (`wholeText`). */
@@ -538,6 +555,132 @@ async function writeDerivedFrom(backend: GraphBackend, artifacts: { ref: string;
   if (edges.length) await backend.edges.writeMany(edges);
 }
 
+/** One `StrutProposal` per proposal, from its record: what it is, why, who
+ *  proposed it and what was decided — never its input or its result, which
+ *  stay behind `GET /proposals/:id`. A later apply that succeeds keeps the
+ *  last failed one's `error_message` (an upsert leaves what it does not set). */
+export function proposalNode(p: Proposal): NodeInput {
+  return {
+    type: "StrutProposal",
+    data: compact({
+      proposal_id: p.id,
+      step: p.step,
+      title: p.title,
+      proposal_status: p.status,
+      rationale: preview(p.rationale),
+      summary: preview(p.summary, JOB_SUMMARY_MAX_CHARS),
+      workflow_name: p.by?.workflow,
+      run_id: p.by?.runId,
+      job_id: p.by?.job,
+      session_id: p.by?.session,
+      conversation_id: p.by?.conversation,
+      proposed_by: p.by?.actor,
+      proposed_at: p.createdAt,
+      decided_by: p.decision?.by,
+      decided_at: p.decision?.at,
+      reason: preview(p.decision?.reason),
+      error_message: p.status === "failed" ? preview(p.result?.error) : undefined,
+      log_ref: p.id,
+      unique_source_id: `strutproposal:${p.id}`,
+    }),
+  };
+}
+
+/** The refs this graph holds as nodes. A ref may point at another
+ *  database or a since-deleted node, and the edge writer refuses a missing
+ *  end. Neo4j's `:Data_Bank` is every data node; on a file, any node but a
+ *  Schema row (`ladybug/registry.ts` SCHEMA_TYPE, not imported: it would
+ *  load the driver), in any namespace. */
+async function heldNodes(backend: GraphBackend, ids: string[]): Promise<Set<string>> {
+  const want = [...new Set(ids)];
+  if (!want.length) return new Set();
+  if (backend.kind === "neo4j") {
+    const rows = await backend.query(`MATCH (n:Data_Bank) WHERE n.ref_id IN $ids RETURN DISTINCT n.ref_id AS ref_id`, { ids: want });
+    return new Set(rows.map((r) => r["ref_id"] as string));
+  }
+  const held = await backend.tx((tx) => backend.edgeEngine.endpoints(tx, want));
+  return new Set(
+    want.filter((id) => {
+      const type = held.get(id)?.type;
+      return !!type && type !== "Schema";
+    }),
+  );
+}
+
+/** The `StrutRun` the graph holds for a run, with its status; null when the
+ *  run is not projected (yet). Never projects. */
+async function heldRun(backend: GraphBackend, workflow: string, runId: string): Promise<{ ref: string; status: unknown } | null> {
+  // Lazy: the writer loads the driver, and this module is imported by hosts
+  // that have no graph.
+  const { composeNodeKey } = await import("./node-writer.js");
+  const rows = await backend.query(
+    `MATCH ${backend.dialect.node("r", "StrutRun", { key: "$key", namespace: "$ns" })} WHERE r.workflow_name = $wf RETURN r.ref_id AS ref_id, r.run_status AS status`,
+    { key: composeNodeKey(getStrutSchema("StrutRun")!, { run_id: runId }), ns: backend.namespace, wf: workflow },
+  );
+  const row = rows[0];
+  return row && typeof row["ref_id"] === "string" ? { ref: row["ref_id"], status: row["status"] } : null;
+}
+
+/** One proposal's node, `IN_RUN` its run when the graph holds it, and
+ *  `ACCESSED` to each node its apply wrote (`result.nodes`, what the step
+ *  reported) that the graph holds; a peer's ref is skipped outright. Every
+ *  write is an upsert or an add-only edge, so writing it again moves the
+ *  node to its record's state and adds nothing twice. */
+async function projectProposal(backend: GraphBackend, proposals: ProposalReader, id: string): Promise<ProjectReport> {
+  const report = emptyReport();
+  const p = await proposals.get(id);
+  if (!p || !(await holds(backend, "StrutProposal"))) return report;
+  const [node] = await backend.nodes.writeMany(await fit(backend, [proposalNode(p)]), "upsert");
+  const ref = node!.ref_id;
+  report.proposals++;
+  const edges: EdgeInput[] = [];
+  const run = p.by?.workflow && p.by.runId ? await heldRun(backend, p.by.workflow, p.by.runId) : null;
+  if (run) edges.push({ edge: "IN_RUN", source_ref_id: ref, target_ref_id: run.ref });
+  const wrote = (p.result?.nodes ?? []).flatMap((n) => {
+    const a = n as AccessedNode | null;
+    return a && typeof a.ref_id === "string" && !a.peer ? [a.ref_id] : [];
+  });
+  const held = await heldNodes(backend, wrote);
+  for (const target of new Set(wrote)) {
+    if (held.has(target)) {
+      edges.push({ edge: "ACCESSED", source_ref_id: ref, target_ref_id: target });
+      report.accessed++;
+    } else report.unresolved++;
+  }
+  if (edges.length) {
+    await backend.edges.writeMany(edges);
+    report.edges += edges.length;
+  }
+  return report;
+}
+
+const proposalProjections = new WeakMap<GraphBackend, Map<string, { tail: Promise<ProjectReport>; queued?: Promise<ProjectReport> }>>();
+
+/**
+ * `projectProposal`, one at a time per proposal: a call while it is being
+ * projected queues ONE more, which every later call joins and which reads
+ * the record when it starts — so the last change (a decision, then its
+ * apply) is in the graph after it. What createStrut calls at each change,
+ * and the run's projection for each proposal the run made.
+ */
+export function projectProposalOnce(backend: GraphBackend, proposals: ProposalReader, id: string): Promise<ProjectReport> {
+  let all = proposalProjections.get(backend);
+  if (!all) proposalProjections.set(backend, (all = new Map()));
+  const inFlight = all;
+  const slot = inFlight.get(id);
+  if (slot?.queued) return slot.queued;
+  const next: Promise<ProjectReport> = (slot?.tail ?? Promise.resolve())
+    .catch(() => undefined)
+    .then(() => {
+      if (entry.queued === next) delete entry.queued;
+      return projectProposal(backend, proposals, id);
+    });
+  const entry: { tail: Promise<ProjectReport>; queued?: Promise<ProjectReport> } = { tail: next, queued: next };
+  inFlight.set(id, entry);
+  void next.catch(() => undefined).finally(() => inFlight.get(id) === entry && inFlight.delete(id));
+  return next;
+}
+
 /** Project runs from a `RunStore` into the graph. */
 export async function projectRuns(backend: GraphBackend, store: RunStore, opts: ProjectRunsOptions): Promise<ProjectReport> {
   const report = emptyReport();
@@ -562,7 +705,7 @@ export async function projectRuns(backend: GraphBackend, store: RunStore, opts: 
         report.skipped++;
         continue;
       }
-      await projectRun(backend, store, workflow, runId, report, opts.jobs, opts.conversations);
+      await projectRun(backend, store, workflow, runId, report, opts.jobs, opts.conversations, opts.proposals);
     }
   }
   return report;
@@ -585,6 +728,7 @@ export async function projectRun(
   report: ProjectReport = emptyReport(),
   jobs?: JobReader,
   conversations?: ConversationReader,
+  proposals?: ProposalReader,
 ): Promise<string | null> {
   const { namespace: ns, dialect: d } = backend;
   const [events, summary] = await Promise.all([store.getRunEvents(workflow, runId), store.getRunSummary(workflow, runId)]);
@@ -620,8 +764,7 @@ export async function projectRun(
   // every data node; tool calls exist nowhere else.
   const wanted = new Set(p.toolCalls.flatMap((t) => t.accessed.map((n) => n.ref_id)));
   if (wanted.size && backend.kind === "neo4j") {
-    const rows = await backend.query(`MATCH (n:Data_Bank) WHERE n.ref_id IN $ids RETURN DISTINCT n.ref_id AS ref_id`, { ids: [...wanted] });
-    const present = new Set(rows.map((r) => r["ref_id"] as string));
+    const present = await heldNodes(backend, [...wanted]);
     p.toolCalls.forEach((t, i) => {
       for (const n of t.accessed) {
         if (present.has(n.ref_id)) {
@@ -631,13 +774,10 @@ export async function projectRun(
       }
     });
   } else if (p.accessed.length && backend.kind !== "neo4j") {
-    // A file: the run → each node it read that the file holds (any
-    // namespace; a Schema row — `ladybug/registry.ts` SCHEMA_TYPE, not
-    // imported: it would load the driver — is the ontology, not a node).
-    const held = await backend.tx((tx) => backend.edgeEngine.endpoints(tx, p.accessed.map((n) => n.ref_id)));
+    // A file: the run → each node it read that the file holds.
+    const held = await heldNodes(backend, p.accessed.map((n) => n.ref_id));
     for (const n of p.accessed) {
-      const type = held.get(n.ref_id)?.type;
-      if (type && type !== "Schema") {
+      if (held.has(n.ref_id)) {
         edges.push({ edge: "ACCESSED", source_ref_id: runRef, target_ref_id: n.ref_id });
         report.accessed++;
       } else report.unresolved++;
@@ -705,6 +845,23 @@ export async function projectRun(
   if (edges.length) {
     await backend.edges.writeMany(edges);
     report.edges += edges.length;
+  }
+  // The proposals the run made (plans/proposals.md §2), after the run's own
+  // node, so each is `IN_RUN` it. Through the per-proposal queue, so a
+  // decision landing now never writes beside this. Best effort, like a
+  // conversation: a failure never costs the run's projection.
+  if (proposals) {
+    try {
+      for (const q of (await proposals.list({ runId })).filter((q) => q.by?.workflow === workflow)) {
+        const r = await projectProposalOnce(backend, proposals, q.id);
+        report.proposals += r.proposals;
+        report.edges += r.edges;
+        report.accessed += r.accessed;
+        report.unresolved += r.unresolved;
+      }
+    } catch (e) {
+      console.warn(`[projector] run ${workflow}/${runId}: proposals not written: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
   // WHO SENT the turn — optional, and never allowed to fail the projection.
   if (p.speaker && sessionRef.has(p.speaker.sessionPath)) {
@@ -791,14 +948,22 @@ const projecting = new WeakMap<GraphBackend, Map<string, Promise<string | null>>
  * written side by side. What the run-end hook calls (`createStrut` projects
  * every top-level run); the verify pass goes through `runRef`.
  */
-export function projectRunOnce(backend: GraphBackend, store: RunStore, workflow: string, runId: string, jobs?: JobReader, conversations?: ConversationReader): Promise<string | null> {
+export function projectRunOnce(
+  backend: GraphBackend,
+  store: RunStore,
+  workflow: string,
+  runId: string,
+  jobs?: JobReader,
+  conversations?: ConversationReader,
+  proposals?: ProposalReader,
+): Promise<string | null> {
   let runs = projecting.get(backend);
   if (!runs) projecting.set(backend, (runs = new Map()));
   const inFlight = runs;
   const key = `${workflow}/${runId}`;
   const running = inFlight.get(key);
   if (running) return running;
-  const p = projectRun(backend, store, workflow, runId, emptyReport(), jobs, conversations).finally(() => inFlight.delete(key));
+  const p = projectRun(backend, store, workflow, runId, emptyReport(), jobs, conversations, proposals).finally(() => inFlight.delete(key));
   inFlight.set(key, p);
   return p;
 }
@@ -813,25 +978,20 @@ export function projectRunOnce(backend: GraphBackend, store: RunStore, workflow:
 export async function runRef(backend: GraphBackend, store: RunStore, workflow: string, runId: string): Promise<string | null> {
   const running = projecting.get(backend)?.get(`${workflow}/${runId}`);
   if (running) return running;
-  // Lazy: the writer loads the driver, and this module is imported by hosts
-  // that have no graph.
-  const { composeNodeKey } = await import("./node-writer.js");
-  const rows = await backend.query(
-    `MATCH ${backend.dialect.node("r", "StrutRun", { key: "$key", namespace: "$ns" })} WHERE r.workflow_name = $wf RETURN r.ref_id AS ref_id, r.run_status AS status`,
-    { key: composeNodeKey(getStrutSchema("StrutRun")!, { run_id: runId }), ns: backend.namespace, wf: workflow },
-  );
-  const held = rows[0];
-  if (held && isTerminalStatus(held["status"])) return held["ref_id"] as string;
+  const held = await heldRun(backend, workflow, runId);
+  if (held && isTerminalStatus(held.status)) return held.ref;
   return projectRunOnce(backend, store, workflow, runId);
 }
 
-/** Resolves once nothing started through `projectRunOnce` or
- *  `projectChatOnce` is in flight — for a caller about to pull the graph
- *  from under it (a test's wipe). */
+/** Resolves once nothing started through `projectRunOnce`,
+ *  `projectChatOnce` or `projectProposalOnce` is in flight — for a caller
+ *  about to pull the graph from under it (a test's wipe). */
 export async function projectionsSettled(backend: GraphBackend): Promise<void> {
   const runs = projecting.get(backend);
   const chats = chatProjections.get(backend);
-  while (runs?.size || chats?.size) await Promise.allSettled([...(runs?.values() ?? []), ...[...(chats?.values() ?? [])].map((c) => c.tail)]);
+  const props = proposalProjections.get(backend);
+  while (runs?.size || chats?.size || props?.size)
+    await Promise.allSettled([...(runs?.values() ?? []), ...[...(chats?.values() ?? [])].map((c) => c.tail), ...[...(props?.values() ?? [])].map((c) => c.tail)]);
 }
 
 /** Resolves once the projections in flight of these runs have — a chat
@@ -1011,10 +1171,10 @@ async function writeChat(backend: GraphBackend, chatStore: ChatStore, meta: Chat
 /** Runs first (so chats can link to them), then chats. */
 export async function projectAll(
   backend: GraphBackend,
-  src: { store: RunStore; chatStore?: ChatStore; workflows: string[]; jobs?: JobReader; conversations?: ConversationReader },
-  opts: Omit<ProjectRunsOptions, "workflows" | "jobs" | "conversations"> = {},
+  src: { store: RunStore; chatStore?: ChatStore; workflows: string[]; jobs?: JobReader; conversations?: ConversationReader; proposals?: ProposalReader },
+  opts: Omit<ProjectRunsOptions, "workflows" | "jobs" | "conversations" | "proposals"> = {},
 ): Promise<ProjectReport> {
-  const a = await projectRuns(backend, src.store, { ...opts, workflows: src.workflows, jobs: src.jobs, conversations: src.conversations });
+  const a = await projectRuns(backend, src.store, { ...opts, workflows: src.workflows, jobs: src.jobs, conversations: src.conversations, proposals: src.proposals });
   const b = src.chatStore ? await projectChats(backend, src.chatStore) : emptyReport();
   return {
     runs: a.runs + b.runs,
@@ -1027,5 +1187,6 @@ export async function projectAll(
     unresolved: a.unresolved + b.unresolved,
     skipped: a.skipped + b.skipped,
     jobs: a.jobs + b.jobs,
+    proposals: a.proposals + b.proposals,
   };
 }

@@ -29,7 +29,9 @@ import { buildCard, type ProposalCard } from "./proposal-card.js";
  * the validation, its `run` the apply. There are no proposal types.
  *
  * The record lives at `<dataDir>/proposals/<id>.json`, like a job's; an
- * index is a readdir. No graph node until something must point at one.
+ * index is a readdir. On a graph workspace each record is also PROJECTED,
+ * a `StrutProposal` node (graph/projector.ts `projectProposalOnce`, told
+ * through `changed`): the record stays what every list here reads.
  */
 
 export type ProposalStatus = "pending" | "accepted" | "rejected" | "applied" | "failed";
@@ -241,12 +243,15 @@ export function proposalsCapability(
     hostApprove?: readonly string[];
     /** The thread the run `runId` belongs to (`Proposal.by.conversation`). */
     conversationOf?: (runId: string) => Promise<string | undefined>;
+    /** Told of every new record: its `StrutProposal` (createStrut). */
+    changed?: (p: Proposal) => void;
   } = {},
 ): ProposalsCapability {
   const hostApprove = (deps.hostApprove ?? []).map(globToRegExp);
   const root = proposalsRoot(dataDir);
   const tell = (p: Proposal) => {
     if (p.by.job) deps.notify?.(p.by.job, proposalUpdate(p));
+    deps.changed?.(p);
   };
   return {
     async propose(p) {
@@ -413,6 +418,8 @@ export interface DecideDeps {
   /** A gated tool that is not a registry step — an MCP server's
    *  (`mcp/<server>/<tool>`, src/mcp-registry.ts) — as a def to apply. */
   stepFor?: (type: string) => Promise<AnyStepDef | undefined>;
+  /** Told of each change the decision makes: its `StrutProposal` (createStrut). */
+  changed?: (p: Proposal) => void;
 }
 
 export type DecideOutcome = { status: 200 | 400 | 403 | 404 | 409; body: Proposal | { error: string; proposal?: Proposal } };
@@ -435,6 +442,7 @@ export async function decideProposal(root: string, id: string, decision: Decisio
   }
   const tell = (p: Proposal) => {
     if (p.by.job) deps.notify?.(p.by.job, proposalUpdate(p));
+    deps.changed?.(p);
   };
 
   if (decision.action === "reject") {
