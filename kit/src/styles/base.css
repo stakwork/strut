@@ -11,7 +11,17 @@
  * the host's wherever a host spoke.
  *
  * Dark is `data-theme="dark"` on `<html>` (what the bridge sets, the MCP Apps
- * SDK's convention) or a `dark` class (a host's own page). */
+ * SDK's convention) or a `dark` class (a host's own page).
+ *
+ * Four names are strut's own, not MCP Apps': the server's brand
+ * (src/instance-theme.ts, `GET /instance/theme`), which strut's host page
+ * sends per colour scheme beside the MCP names it fills (`--color-background-primary`,
+ * `--color-text-primary`, `--color-border-primary`, `--font-sans`, …).
+ * `--color-brand-primary` and `-foreground` win over the host's neutral
+ * `--color-background-inverse` for buttons, focus rings and the sidebar's
+ * selected item; `--color-brand-surface` is cards and popovers, before the
+ * page colour; `--font-heading` is h1–h3, before the body's. Absent, nothing
+ * changes. */
 @import "tailwindcss";
 
 @custom-variant dark (&:where(.dark, .dark *, [data-theme="dark"], [data-theme="dark"] *));
@@ -20,12 +30,12 @@
   --radius: var(--border-radius-md, 0.625rem);
   --background: var(--color-background-primary, oklch(1 0 0));
   --foreground: var(--color-text-primary, oklch(0.145 0 0));
-  --card: var(--color-background-primary, oklch(1 0 0));
+  --card: var(--color-brand-surface, var(--color-background-primary, oklch(1 0 0)));
   --card-foreground: var(--color-text-primary, oklch(0.145 0 0));
-  --popover: var(--color-background-primary, oklch(1 0 0));
+  --popover: var(--color-brand-surface, var(--color-background-primary, oklch(1 0 0)));
   --popover-foreground: var(--color-text-primary, oklch(0.145 0 0));
-  --primary: var(--color-background-inverse, oklch(0.205 0 0));
-  --primary-foreground: var(--color-text-inverse, oklch(0.985 0 0));
+  --primary: var(--color-brand-primary, var(--color-background-inverse, oklch(0.205 0 0)));
+  --primary-foreground: var(--color-brand-primary-foreground, var(--color-text-inverse, oklch(0.985 0 0)));
   --secondary: var(--color-background-secondary, oklch(0.97 0 0));
   --secondary-foreground: var(--color-text-primary, oklch(0.205 0 0));
   --muted: var(--color-background-secondary, oklch(0.97 0 0));
@@ -35,7 +45,7 @@
   --destructive: var(--color-text-danger, oklch(0.577 0.245 27.325));
   --border: var(--color-border-primary, oklch(0.922 0 0));
   --input: var(--color-border-primary, oklch(0.922 0 0));
-  --ring: var(--color-ring-primary, oklch(0.708 0 0));
+  --ring: var(--color-brand-primary, var(--color-ring-primary, oklch(0.708 0 0)));
   --chart-1: oklch(0.646 0.222 41.116);
   --chart-2: oklch(0.6 0.118 184.704);
   --chart-3: oklch(0.398 0.07 227.392);
@@ -43,8 +53,8 @@
   --chart-5: oklch(0.769 0.188 70.08);
   --sidebar: var(--color-background-secondary, oklch(0.985 0 0));
   --sidebar-foreground: var(--color-text-primary, oklch(0.145 0 0));
-  --sidebar-primary: var(--color-background-inverse, oklch(0.205 0 0));
-  --sidebar-primary-foreground: var(--color-text-inverse, oklch(0.985 0 0));
+  --sidebar-primary: var(--color-brand-primary, var(--color-background-inverse, oklch(0.205 0 0)));
+  --sidebar-primary-foreground: var(--color-brand-primary-foreground, var(--color-text-inverse, oklch(0.985 0 0)));
   --sidebar-accent: var(--color-background-tertiary, oklch(0.97 0 0));
   --sidebar-accent-foreground: var(--color-text-primary, oklch(0.205 0 0));
   --sidebar-border: var(--color-border-primary, oklch(0.922 0 0));
@@ -55,12 +65,12 @@
 [data-theme="dark"] {
   --background: var(--color-background-primary, oklch(0.145 0 0));
   --foreground: var(--color-text-primary, oklch(0.985 0 0));
-  --card: var(--color-background-primary, oklch(0.205 0 0));
+  --card: var(--color-brand-surface, var(--color-background-primary, oklch(0.205 0 0)));
   --card-foreground: var(--color-text-primary, oklch(0.985 0 0));
-  --popover: var(--color-background-primary, oklch(0.205 0 0));
+  --popover: var(--color-brand-surface, var(--color-background-primary, oklch(0.205 0 0)));
   --popover-foreground: var(--color-text-primary, oklch(0.985 0 0));
-  --primary: var(--color-background-inverse, oklch(0.922 0 0));
-  --primary-foreground: var(--color-text-inverse, oklch(0.205 0 0));
+  --primary: var(--color-brand-primary, var(--color-background-inverse, oklch(0.922 0 0)));
+  --primary-foreground: var(--color-brand-primary-foreground, var(--color-text-inverse, oklch(0.205 0 0)));
   --secondary: var(--color-background-secondary, oklch(0.269 0 0));
   --secondary-foreground: var(--color-text-primary, oklch(0.985 0 0));
   --muted: var(--color-background-secondary, oklch(0.269 0 0));
@@ -70,7 +80,7 @@
   --destructive: var(--color-text-danger, oklch(0.704 0.191 22.216));
   --border: var(--color-border-primary, oklch(1 0 0 / 10%));
   --input: var(--color-border-primary, oklch(1 0 0 / 15%));
-  --ring: var(--color-ring-primary, oklch(0.556 0 0));
+  --ring: var(--color-brand-primary, var(--color-ring-primary, oklch(0.556 0 0)));
   --chart-1: oklch(0.488 0.243 264.376);
   --chart-2: oklch(0.696 0.17 162.48);
   --chart-3: oklch(0.769 0.188 70.08);
@@ -78,8 +88,8 @@
   --chart-5: oklch(0.645 0.246 16.439);
   --sidebar: var(--color-background-secondary, oklch(0.205 0 0));
   --sidebar-foreground: var(--color-text-primary, oklch(0.985 0 0));
-  --sidebar-primary: var(--color-background-inverse, oklch(0.488 0.243 264.376));
-  --sidebar-primary-foreground: var(--color-text-inverse, oklch(0.985 0 0));
+  --sidebar-primary: var(--color-brand-primary, var(--color-background-inverse, oklch(0.488 0.243 264.376)));
+  --sidebar-primary-foreground: var(--color-brand-primary-foreground, var(--color-text-inverse, oklch(0.985 0 0)));
   --sidebar-accent: var(--color-background-tertiary, oklch(0.269 0 0));
   --sidebar-accent-foreground: var(--color-text-primary, oklch(0.985 0 0));
   --sidebar-border: var(--color-border-primary, oklch(1 0 0 / 10%));
@@ -147,5 +157,10 @@
   body {
     @apply bg-background text-foreground;
     margin: 0;
+  }
+  h1,
+  h2,
+  h3 {
+    font-family: var(--font-heading, inherit);
   }
 }

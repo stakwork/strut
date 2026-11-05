@@ -13,7 +13,7 @@
 // a theme change to `host-context-changed`, and what a link opened the app
 // with (`?input=`) to `ui/notifications/tool-input`.
 import { AppBridge, PostMessageTransport } from "@modelcontextprotocol/ext-apps/app-bridge";
-import type { McpUiHostContext, McpUiTheme } from "@modelcontextprotocol/ext-apps/app-bridge";
+import type { McpUiHostContext, McpUiStyles, McpUiTheme } from "@modelcontextprotocol/ext-apps/app-bridge";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import {
   WALLET_CAPABILITY, nativeWalletNotifications, nativeWalletOf, probeNativeWallet, relayNativeWallet,
@@ -22,6 +22,7 @@ import {
 import { CHANNELS_CAPABILITY, relayChannels } from "@strut/kit/channels";
 import { API_BASE, apiHeaders, channelSocketUrl, channelTicket } from "./api";
 import { strutLink } from "./app-links";
+import { variablesFor as brandVariablesFor } from "./instance-theme";
 
 // The pure parts — where a link leads, what a message becomes — are
 // ./app-links (tested there; this module's imports need web/node_modules).
@@ -87,10 +88,16 @@ export function createRelayClient(base = "", visitor = false): { client: Client;
   return { client, transport };
 }
 
-/** The host context the page is handed at `ui/initialize`. */
+/** The host context the page is handed at `ui/initialize` — and again at
+ *  `host-context-changed`: the theme, and the server's brand for that theme
+ *  as style variables (./instance-theme), which the kit's base stylesheet
+ *  reads. Strut's two brand names are not in MCP Apps' list of variables;
+ *  the kit applies any `--` name the host sends. */
 export function hostContextFor(theme: McpUiTheme): McpUiHostContext {
+  const variables = brandVariablesFor(theme);
   return {
     theme,
+    ...(variables ? { styles: { variables: variables as unknown as McpUiStyles } } : {}),
     displayMode: "fullscreen",
     availableDisplayModes: ["fullscreen"],
     locale: typeof navigator !== "undefined" ? navigator.language : undefined,

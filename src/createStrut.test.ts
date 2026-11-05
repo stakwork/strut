@@ -1370,7 +1370,9 @@ describe("the API key gate", () => {
     )].filter((r) => r !== "GET /health" && r !== "POST /auth/session" && r !== "DELETE /auth/session");
     // `GET /public/*` is open by design (src/public-routes.ts): it serves only
     // what a person made public, and with nothing public it serves nothing.
-    const publicReads = routes.filter((r) => /^GET \/public(?:\/|$)/.test(r));
+    // So is the server's brand (src/instance-theme.ts), which a host's
+    // sign-in page shows before anyone has signed in.
+    const publicReads = routes.filter((r) => /^GET \/public(?:\/|$)/.test(r) || r === "GET /instance/theme");
     // A visitor's page calls its app here (plans/public-surface.md §5): open,
     // and with nothing in the public view it opens no app.
     const visitorDoor = "POST /public/mcp";
@@ -1393,12 +1395,90 @@ describe("the API key gate", () => {
         assert.equal(res.status, 405, "the visitor door takes POST");
         continue;
       }
+      if (path === "/instance/theme") {
+        assert.equal(res.status, 200, "the brand is read with no credential");
+        continue;
+      }
       assert.ok(res.status === 200 || res.status === 404, `${route} → ${res.status}`);
       if (!["/public", "/public/workflows", "/public/steps", "/public/concepts", "/public/apps"].includes(path)) assert.equal(res.status, 404, `${route} serves nothing on an empty surface`);
     }
     // A path no route answers is not the UI either.
     assert.equal((await strut.app.request("/nope")).status, 401);
     assert.equal((await strut.app.request("/", { method: "POST" })).status, 401);
+  });
+
+  it("the instance theme: anyone reads it, the key sets it, a peer may not, and a theme that would not read is refused", async () => {
+    const strut = await boot();
+    process.env["STRUT_API_KEY"] = KEY;
+    process.env["STRUT_PEER_KEY"] = PEER;
+    const json = { "content-type": "application/json" };
+    const put = (body: unknown, headers: Record<string, string> = auth.headers) =>
+      strut.app.request("/instance/theme", { method: "PUT", headers: { ...json, ...headers }, body: JSON.stringify(body) });
+
+    // Nothing set: the defaults, open to anyone, with an ETag to revalidate on.
+    const empty = await strut.app.request("/instance/theme");
+    assert.equal(empty.status, 200);
+    assert.equal(empty.headers.get("cache-control"), "no-cache");
+    assert.equal(empty.headers.get("etag"), '"0"');
+    assert.deepEqual(await empty.json(), { version: 0, tokens: null, variables: { light: {}, dark: {} } });
+    assert.equal((await strut.app.request("/instance/theme", { headers: { "if-none-match": '"0"' } })).status, 304);
+
+    // A write: the key (or its session), never a peer, a person or nobody.
+    assert.equal((await put({ primary: "#6d28d9" }, {})).status, 401);
+    assert.equal((await put({ primary: "#6d28d9" }, { authorization: `Bearer ${PEER}` })).status, 403);
+    const person = (await (await strut.app.request("/peers/tokens", { method: "POST", headers: { ...json, ...auth.headers }, body: JSON.stringify({ actor: "tom-1" }) })).json()) as { token: string };
+    assert.equal((await put({ primary: "#6d28d9" }, { authorization: `Bearer ${person.token}` })).status, 403);
+    assert.equal((await strut.app.request("/instance/theme", { method: "DELETE", headers: { authorization: `Bearer ${PEER}` } })).status, 403);
+
+    // Not a theme, or one no text reads on: 400 naming why; nothing kept.
+    assert.equal((await put({ primary: "purple" })).status, 400);
+    assert.equal((await put({ primary: "#6d28d9", logo: "x.png" })).status, 400, "no other tokens yet");
+    const grey = await put({ primary: "#777777" });
+    assert.equal(grey.status, 400);
+    assert.match(((await grey.json()) as { error: string }).error, /primary #777777 reaches/);
+    assert.equal(((await (await strut.app.request("/instance/theme")).json()) as { version: number }).version, 0);
+
+    // Set: the derived variables come back, and the ETag moves on.
+    const saved = await put({ primary: "#6D28D9", radius: "round" });
+    assert.equal(saved.status, 200);
+    const body = (await saved.json()) as { version: number; tokens: unknown; variables: { light: Record<string, string>; dark: Record<string, string> } };
+    assert.equal(body.version, 1);
+    assert.deepEqual(body.tokens, { primary: "#6D28D9", radius: "round" });
+    assert.equal(body.variables.light["--color-brand-primary"], "#6d28d9");
+    assert.equal(body.variables.light["--color-brand-primary-foreground"], "#ffffff");
+    assert.equal(body.variables.dark["--border-radius-md"], "1rem");
+    const etag = saved.headers.get("etag")!;
+    assert.notEqual(etag, '"0"');
+    assert.equal((await strut.app.request("/instance/theme", { headers: { "if-none-match": '"0"' } })).status, 200, "a stale tag is answered in full");
+    assert.equal((await strut.app.request("/instance/theme", { headers: { "if-none-match": etag } })).status, 304);
+
+    // A host's whole palette (stadeum's): surfaces, text, borders and fonts,
+    // each scheme's own, onto the names the kit's stylesheet reads.
+    const whole = await put({
+      primary: "#23436b", background: "#f6f4ee", surface: "#ffffff", foreground: "#1b1a17", muted: "#5f5b52", border: "#e4e0d6",
+      fontSans: "Inter, system-ui, sans-serif", fontHeading: "Newsreader, Georgia, serif",
+      dark: { primary: "#9db7d9", background: "#161513", surface: "#1f1e1b", foreground: "#eeebe4", muted: "#a19b8f", border: "#34322d" },
+    });
+    assert.equal(whole.status, 200);
+    const palette = (await whole.json()) as { version: number; variables: { light: Record<string, string>; dark: Record<string, string> } };
+    assert.equal(palette.version, 2);
+    assert.equal(palette.variables.light["--color-background-primary"], "#f6f4ee");
+    assert.equal(palette.variables.light["--font-heading"], "Newsreader, Georgia, serif");
+    assert.equal(palette.variables.dark["--color-brand-primary-foreground"], "#0a0a0a");
+    assert.equal(palette.variables.dark["--color-border-primary"], "#34322d");
+    const faint = await put({ primary: "#23436b", background: "#f6f4ee", muted: "#c8c4b8" });
+    assert.equal(faint.status, 400);
+    assert.match(((await faint.json()) as { error: string }).error, /^muted #c8c4b8 on background #f6f4ee reaches/);
+
+    // A session is the key's equal here too, with the UI header a write needs.
+    const login = await strut.app.request("/auth/session", { method: "POST", headers: { ...json, "x-strut-ui": "1" }, body: JSON.stringify({ key: KEY }) });
+    const cookie = login.headers.get("set-cookie")!.split(";")[0]!;
+    assert.equal((await put({ primary: "#1e40af" }, { cookie, "x-strut-ui": "1" })).status, 200);
+    assert.equal((await put({ primary: "#1e40af" }, { cookie })).status, 401, "a cross-site PUT has no header");
+
+    // Cleared: back to the defaults.
+    assert.equal((await strut.app.request("/instance/theme", { method: "DELETE", headers: auth.headers })).status, 204);
+    assert.equal(((await (await strut.app.request("/instance/theme")).json()) as { version: number }).version, 0);
   });
 
   it("the peer key reads every route, launches, and reaches a run's control — every other route is 403", async () => {

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import * as api from "../api";
 import { useFileScope } from "../use-artifact-url";
 import { connectAppHost, type AppHostConnection } from "../app-host";
+import * as brand from "../instance-theme";
 import { nativeWalletOf, type NativeWalletApp } from "@strut/kit/wallet";
 import { appToolInput, namesApp, peerAppLink } from "../app-links";
 
@@ -93,6 +94,10 @@ export function AppHost(props: {
             wallet = { name: app.name, version: app.version, ...(app.peer ? { peer: app.peer } : {}), title: info.title ?? app.name, request: info.wallet };
           }
         }
+        // The server's brand rides in `ui/initialize`, so the page's first
+        // paint is branded: wait for it (once per page; ./instance-theme).
+        await brand.ready();
+        if (cancelled) return;
         conn = await connectAppHost({
           frame,
           theme,
@@ -143,8 +148,11 @@ export function AppHost(props: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [app.name, app.version, app.peer, props.reload, scope?.token, ready]);
 
+  // The theme, and the brand under it, change in place: the host context is
+  // sent again (`host-context-changed`), which re-reads the brand's variables.
   useEffect(() => {
     connRef.current?.setTheme(theme);
+    return brand.subscribe(() => connRef.current?.setTheme(theme));
   }, [theme]);
 
   // A new input for the page already open: sent in place, no reload.

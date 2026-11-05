@@ -144,6 +144,7 @@ import { callbackOrigin, parseCallback, parseLaunchCallback, postCallback, roomA
 import { createEventsSink, parseSinkUrl, type EventsSink } from "./events-sink.js";
 import { listServerTools, parseMcpServers } from "./mcp-servers.js";
 import { fileMcpRegistry, gatedByDefault, mcpStepDef, parseRegistration, resolveRegistration, type McpRegistration } from "./mcp-registry.js";
+import { deriveTheme, instanceThemeSchema, instanceThemeStore, themeResponse } from "./instance-theme.js";
 import { briefOf, decideProposal, visibleTo, listProposals, proposalsCapability, proposalsRoot, readProposal, type Decision, type ProposalsCapability, type ProposalStatus } from "./proposals.js";
 import type { AssistantChatDoor } from "./ai/assistant-tools.js";
 import { shellCapability, type ShellCapability } from "./capabilities.js";
@@ -1638,9 +1639,11 @@ export async function createStrut<TServices = unknown>(
     const read = c.req.method === "GET" || c.req.method === "HEAD";
     // `/public/*` (src/public-routes.ts): what a person made public, served
     // from the surface alone, so open to anyone — reads and a browser's
-    // preflight for them.
+    // preflight for them. `/instance/theme` (src/instance-theme.ts): the
+    // server's brand, which a host's sign-in page shows before anyone has
+    // signed in.
     const open = read
-      ? path === "/health" || (serveUi && UI_FILE.test(path)) || carriesFileToken(c) || !!catalogTokenOf(c) || publicPackageRead(c) || (!!indexConfig && INDEX_READ.test(path)) || PUBLIC_PATH.test(path) || !!channelTicketOf(c)
+      ? path === "/health" || path === "/instance/theme" || (serveUi && UI_FILE.test(path)) || carriesFileToken(c) || !!catalogTokenOf(c) || publicPackageRead(c) || (!!indexConfig && INDEX_READ.test(path)) || PUBLIC_PATH.test(path) || !!channelTicketOf(c)
       : (path === "/auth/session" && (c.req.method === "POST" || c.req.method === "DELETE")) || (!!indexConfig && path === INDEX_MCP && c.req.method === "POST") || (c.req.method === "OPTIONS" && PUBLIC_PATH.test(path)) || (c.req.method === "POST" && path === "/public/mcp");
     if (open) return next();
     if (!carriesApiKey(c) && !carriesPeerKey(c) && !personOf(c)) return unauthorized(c);
@@ -1716,6 +1719,33 @@ export async function createStrut<TServices = unknown>(
     const minted = signInTicket(actor)!;
     c.header("cache-control", "no-store");
     return c.json({ ticket: minted.ticket, expiresAt: minted.exp });
+  });
+
+  // ── Instance theme (src/instance-theme.ts) ───────────────────────────────
+  // One brand per strut server, in `<dataDir>/instance-theme.json`. The
+  // read is open (the gate) and cheap: `no-cache` with an ETag, so a reader
+  // revalidates for a 304. A write is the key's or its session's — the gate
+  // keeps a peer and a person token off a PUT and a DELETE — and a theme
+  // whose text would not read is refused before it is kept.
+  const instanceTheme = instanceThemeStore(dataDir);
+  const serveTheme = async (c: Context) => {
+    const { body, etag } = themeResponse(await instanceTheme.get());
+    const headers = { etag, "cache-control": "no-cache" };
+    if (etagMatches(c.req.header("if-none-match"), etag)) return c.body(null, 304, headers);
+    return c.json(body, 200, headers);
+  };
+  app.get("/instance/theme", serveTheme);
+  app.put("/instance/theme", async (c) => {
+    const parsed = instanceThemeSchema.safeParse(await c.req.json().catch(() => undefined));
+    if (!parsed.success) return c.json({ error: `not a theme: ${parsed.error.issues.map((i) => `${i.path.join(".") || "body"}: ${i.message}`).join("; ")}` }, 400);
+    const derived = deriveTheme(parsed.data);
+    if (!derived.ok) return c.json({ error: derived.error }, 400);
+    await instanceTheme.set(parsed.data);
+    return serveTheme(c);
+  });
+  app.delete("/instance/theme", async (c) => {
+    await instanceTheme.clear();
+    return c.body(null, 204);
   });
 
   // ── Workflows ────────────────────────────────────────────────────────────

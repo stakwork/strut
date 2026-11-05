@@ -1,7 +1,11 @@
 import { render } from "preact";
 import { useEffect, useState } from "preact/hooks";
 import * as api from "./api";
+import * as brand from "./instance-theme";
 import { App } from "./app";
+
+// The server's brand, fetched beside the ticket trade: a frame waits for it.
+void brand.ready();
 
 /** A host signed this tab in with a ticket (./api `ticketSignIn`) that was
  *  refused, or whose session has since ended: only the host can sign the

@@ -2624,3 +2624,54 @@ In the page, the kit's `useHost().public` is true (it reads the meta), so it
 disables what would only fail (it never hides it): strut/views' `LaunchForm`
 renders with every control off and a line saying runs are started by the
 people who keep the server.
+
+## 18. Instance theme — one brand per strut server (`src/instance-theme.ts`)
+
+A strut server has one brand: the tokens a person sets, kept as
+`<dataDir>/instance-theme.json`, derived into the host-context variables the
+kit's base stylesheet reads (kit/src/styles/base.css) and handed by strut's
+own host page to every app it frames as `hostContext.styles.variables`, per
+colour scheme — so an app is branded with no edit, and a host that frames
+strut's page (stadeum) passes nothing on. A host that wants the brand for its
+own shell reads the same route.
+
+| Method | Path              | Description |
+| ------ | ----------------- | ----------- |
+| GET    | `/instance/theme` | `{ version, tokens, variables: { light, dark } }` — `tokens` null and `version` 0 with none set, the variables then `{}`. Open to anyone (a host's sign-in page shows it before anyone has signed in); `etag` + `cache-control: no-cache`, a matching `if-none-match` → `304` |
+| PUT    | `/instance/theme` | the tokens below → 200 as the GET. The key or its session (with `x-strut-ui: 1`); a peer key or a person token `403`. `400 { error }` for anything but a theme, and for a text/fill pair under WCAG AA (4.5:1): the derived text on `primary`, and `foreground` and `muted` each on `background` and on `surface` — the kit's neutral standing in for a colour left out |
+| DELETE | `/instance/theme` | back to the kit's defaults → `204`; the same callers |
+
+| Token | | Becomes |
+| --- | --- | --- |
+| `primary` | `#rrggbb`, required | `--color-brand-primary` and its derived `-foreground` (white or near black): shadcn's `primary` (buttons, the selected item), `ring`, `sidebar-primary` |
+| `background` | `#rrggbb` | `--color-background-primary`: the page |
+| `surface` | `#rrggbb` | `--color-brand-surface`: `card`, `popover` |
+| `foreground` | `#rrggbb` | `--color-text-primary`: text |
+| `muted` | `#rrggbb` | `--color-text-secondary`: `muted-foreground` |
+| `border` | `#rrggbb` | `--color-border-primary`: `border`, `input`, `sidebar-border`. With `background` too, the muted fills are derived from the pair: `--color-background-secondary` (`secondary`, `muted`, `accent`, `sidebar`) halfway between them, `--color-background-tertiary` (`sidebar-accent`) the border |
+| `radius` | `sharp` \| `default` \| `round` | `--border-radius-md`: shadcn's `--radius` (0.25 / 0.625 / 1 rem) |
+| `fontSans` | a `font-family` stack | `--font-sans`: body text |
+| `fontHeading` | a `font-family` stack | `--font-heading`: `h1`–`h3` (absent, the body's) |
+| `dark` | the colours above, `primary` optional | under `[data-theme=dark]`. `primary` absent: the light one with its text re-derived; any other colour absent: the kit's dark neutral, never a light colour |
+
+Fonts are stacks, not files: strut loads nothing, and the page uses the first
+family its browser has (`Newsreader, Georgia, serif` falls to Georgia where
+Newsreader is not installed). A web font would need the host to send
+`@font-face` CSS (`hostContext.styles.css.fonts`, which the kit applies);
+nothing here does yet.
+
+```bash
+curl -s -X PUT localhost:3000/instance/theme -H "authorization: Bearer $STRUT_API_KEY" \
+  -H 'content-type: application/json' -d '{
+    "primary": "#23436b", "background": "#f6f4ee", "surface": "#ffffff",
+    "foreground": "#1b1a17", "muted": "#5f5b52", "border": "#e4e0d6",
+    "fontSans": "Inter, system-ui, sans-serif", "fontHeading": "Newsreader, Georgia, serif",
+    "dark": { "primary": "#9db7d9", "background": "#161513", "surface": "#1f1e1b",
+              "foreground": "#eeebe4", "muted": "#a19b8f", "border": "#34322d" }
+  }'
+# → {"version":1,"tokens":{…},"variables":{"light":{"--color-brand-primary":"#23436b","--color-brand-primary-foreground":"#ffffff","--color-background-primary":"#f6f4ee",…},"dark":{…}}}
+```
+
+Open apps change in place: the host page refetches when the tab comes back
+and resends the host context (`host-context-changed`). Status colours
+(success, warning, danger) are not brand colours and stay the kit's.
