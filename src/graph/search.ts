@@ -559,6 +559,53 @@ export function applyTitleBoost(ranked: RankedEntry[], q: string, titleKeyFor: (
   return ranked;
 }
 
+/** How far above its end a lifted fact lands (`liftFactsOverEnds`). */
+export const FACT_LIFT = 1e-3;
+
+const wordCount = (s: string) => s.trim().split(/\s+/).filter(Boolean).length;
+
+/**
+ * A fact takes its end's place when the query says more than the end's
+ * title. A node that holds little more than a name matches any question
+ * naming it, by its words and its meaning, about as well as a fact about it
+ * does, so it would rank first though the fact is the answer. Each node hit
+ * whose title holds at most half the query's words, and does not match it
+ * (no title boost), lifts its best-ranked fact hit (one it is an end of) to
+ * just above itself. A query that is the name, or a rewording of it
+ * ("renovating the kitchen" for "Kitchen renovation"), keeps the node first.
+ * Fact hits are the rows with `source_ref_id` / `target_ref_id`. Re-sorts
+ * and re-normalizes, as `applyTitleBoost` does. Measured on
+ * scripts/bench-memory-graph.ts with `--embed`.
+ */
+export function liftFactsOverEnds(ranked: RankedEntry[], q: string, titleKeyFor: (type: string | undefined) => string): RankedEntry[] {
+  if (!q || ranked.length === 0) return ranked;
+  const ql = q.toLowerCase();
+  const qWords = wordCount(q);
+  const isFact = (e: RankedEntry) => typeof e.node.properties["source_ref_id"] === "string";
+  // Best fact per end: `ranked` is in score order.
+  const bestFact = new Map<string, RankedEntry>();
+  for (const e of ranked) {
+    if (!isFact(e)) continue;
+    for (const end of [e.node.properties["source_ref_id"], e.node.properties["target_ref_id"]] as string[]) if (end && !bestFact.has(end)) bestFact.set(end, e);
+  }
+  if (bestFact.size === 0) return ranked;
+  let lifted = false;
+  for (const e of ranked) {
+    if (isFact(e)) continue;
+    const fact = bestFact.get(refIdOf(e.node));
+    if (!fact || fact.score > e.score) continue;
+    const title = nodeTitle(e.node.properties, titleKeyFor(typeLabelOf(e.node.labels)) || "name");
+    if (!title || wordCount(title) * 2 > qWords || titleMatchMultiplier(ql, title.toLowerCase()) > 1) continue;
+    fact.score = e.score * (1 + FACT_LIFT);
+    lifted = true;
+  }
+  if (!lifted) return ranked;
+  ranked.sort((a, b) => b.score - a.score || a.best_rank - b.best_rank || cmp(refIdOf(a.node), refIdOf(b.node)));
+  const max = ranked[0]!.score || 1;
+  for (const e of ranked) e.extra.score = pyRound(e.score / max, 6);
+  return ranked;
+}
+
 /** `_apply_usage_tiebreak`: bucket normalized score by epsilon, then
  *  usage_count_30d desc → usage_count desc → best rank → ref_id. */
 export function applyUsageTiebreak(ranked: RankedEntry[], epsilon = USAGE_TIEBREAK_EPSILON): RankedEntry[] {
