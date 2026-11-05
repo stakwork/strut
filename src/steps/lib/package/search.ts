@@ -8,7 +8,7 @@ import { INSTALL_IS_A_PERSONS_ACT } from "../../../packages/indexes.js";
  * this strut follows and what its peers have installed, over
  * `ctx.services.packages` (src/packages/indexes.ts). Reads only — installing
  * is a person's yes: package/install proposes one (a card they approve), or
- * they install by name from the Packages dialog. package/get reads a hit's
+ * they install by name from the Publish dialog's Packages tab. package/get reads a hit's
  * whole page, package/concepts the Concept tree.
  */
 export default defineStep({

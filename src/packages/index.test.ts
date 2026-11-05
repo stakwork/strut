@@ -250,7 +250,7 @@ describe("the package index", () => {
       assert.deepEqual(tools.map((t) => t.name).sort(), ["get_concept", "get_package", "search_packages"]);
       for (const t of tools) assert.match(t.description!, /Installing is a PERSON's decision/, t.name);
       const instructions = agent.getInstructions()!;
-      for (const said of ["PACKAGE INDEX", "DERIVED", "re-verifies the package against its publisher", "Packages dialog"]) assert.ok(instructions.includes(said), said);
+      for (const said of ["PACKAGE INDEX", "DERIVED", "re-verifies the package against its publisher", "Packages tab"]) assert.ok(instructions.includes(said), said);
       assert.ok(!instructions.includes("?store=1"), "no UI served here, so no store link");
       const found = mcpJson(await agent.callTool({ name: "search_packages", arguments: {} }));
       assert.deepEqual(found.packages.map((h: IndexHit) => h.package), ["acme/linear"]);

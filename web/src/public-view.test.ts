@@ -21,7 +21,7 @@ const needs: PublicViewNeeds = {
   perRun: [],
 };
 
-describe("the Public view dialog's cascade", () => {
+describe("the Public view tab's cascade", () => {
   it("starts from what the server pre-checked, runs with their workflow", () => {
     assert.deepEqual([...checkedOf(needs)].sort(), ["concept:Law", "read:bench/read", "runs:score-wf", "step:bench/_shared-user", "workflow:score-wf"]);
   });

@@ -491,7 +491,7 @@ export function buildAssistantTools(deps: AssistantDeps): ToolSet {
         `${README_BRIEF_CHARS} chars), the \`secrets\` the whole package needs, and \`can: { spends, acts, code }\` — whether running it reaches a model call (spends money), a step that acts on the world (effect: write), or code (exec, or the package's own TypeScript). ` +
         "`can` is a READING off the files — regexes over step sources, the YAML's step types — never a check or a sandbox; an install re-reads everything through the real parsers and re-verifies the package against its publisher's signed catalog. `detailError` says why there is no detail yet. " +
         INSTALL_IS_A_PERSONS_ACT +
-        " `ui` is that door on this strut: the link opens its Packages dialog on the name.",
+        " `ui` is that door on this strut: the link opens its Publish dialog on the Packages tab, on the name.",
       inputSchema: z.object({
         package: z.string().describe("The package name, publisher/name (a hit's `package`)."),
         index: z.string().optional().describe("Read it from this followed index alone (its id, a hit's `index`)."),
