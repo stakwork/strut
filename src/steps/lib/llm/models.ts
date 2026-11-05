@@ -18,7 +18,7 @@ export default defineStep({
   description:
     "The models this strut server can call, as GET /llm/models lists them: { default, models: [{ name, provider, modelId, alias?, default, available, contextLimit?, pricing? }], keyNames }. " +
     "`name` is the canonical `provider/id` an agent's or a workflow's `model` takes; `available` says whether people may pick it: the deployment's list (STRUT_MODELS) when it has one, else whether the provider has a key configured here (never the key). " +
-    "`contextLimit` is the window in tokens, `pricing` USD per million tokens. `default` is the deployment's default chat model.",
+    "`contextLimit` is the window in tokens; `pricing` is USD per million tokens, only where the model's own rate is known. `default` is the deployment's default chat model.",
   input: z.object({}),
   output: z.any(),
   async run(_cfg, ctx: StepContext<StrutCapabilities>) {

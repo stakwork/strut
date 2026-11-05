@@ -456,9 +456,11 @@ export interface ModelOption {
   available: boolean;
   /** The context window, tokens. Absent when aieo does not know the provider. */
   contextLimit?: number;
-  /** USD per million tokens, what aieo counts a call at: Maple's and Numes'
-   *  own rates per model, else the provider's flat rate. Absent when aieo
-   *  does not know the provider. */
+  /** USD per million tokens, where strut knows the model's own rate: today
+   *  Maple's and Numes' (aieo's tables). Absent for every other model: aieo
+   *  bills those at a flat per-provider rate, which is not the model's
+   *  price. Prices and windows are to come from bifrost's datasheet, the
+   *  file the gateway bills from (plans/aieo-in-strut.md §6–7). */
   pricing?: TokenPricing;
 }
 
@@ -507,6 +509,7 @@ export async function listModelOptions(
   const add = (provider: Provider, modelId: string, alias?: string) => {
     const name = `${provider}/${modelId}`;
     if (models.has(name)) return;
+    const pricing = tables[provider]?.[modelId]?.pricing;
     models.set(name, {
       provider,
       ...(alias ? { alias } : {}),
@@ -515,7 +518,7 @@ export async function listModelOptions(
       default: aieo.DEFAULT_MODELS[provider] === modelId,
       available: allowed ? allowed.has(name) : (keyed[provider] ?? false),
       contextLimit: aieo.getContextLimit(modelId, provider),
-      pricing: tables[provider]?.[modelId]?.pricing ?? aieo.getTokenPricing(provider),
+      ...(pricing ? { pricing } : {}),
     });
   };
   const aliased = aieo.listModels();

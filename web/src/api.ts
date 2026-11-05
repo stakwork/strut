@@ -1237,7 +1237,7 @@ export interface LlmModelOption {
   available: boolean;
   /** The context window, tokens. */
   contextLimit?: number;
-  /** USD per million tokens. */
+  /** USD per million tokens, only where the model's own rate is known. */
   pricing?: { inputTokenPrice: number; outputTokenPrice: number; cacheReadPrice?: number; cacheWritePrice?: number };
 }
 

@@ -136,7 +136,7 @@ describe("llm: model resolution through the secrets boundary", () => {
     assert.ok(cat.models.length >= 7);
   });
 
-  it("listModelOptions: every model aieo knows, once each, with its window and its price", async () => {
+  it("listModelOptions: every model aieo knows, once each, with its window; a price only where it is the model's own", async () => {
     const cat = await listModelOptions();
     const names = cat.models.map((m) => m.name);
     assert.equal(new Set(names).size, names.length, "no model twice");
@@ -148,15 +148,16 @@ describe("llm: model resolution through the secrets boundary", () => {
     assert.equal(at("numes/z-ai/glm-5.3").default, true);
     assert.equal(at("maple/glm-5-3").alias, undefined);
     assert.equal(at("maple/glm-5-3").default, false);
-    // Maple and Numes are priced per model; the rest at the provider's rate.
+    // Maple and Numes have their own rate per model. Every other model has
+    // none: aieo's flat per-provider rate is not the model's price.
     assert.equal(at("maple/glm-5-3").contextLimit, 262_144);
     assert.deepEqual(at("maple/glm-5-3").pricing, { inputTokenPrice: 3.6, outputTokenPrice: 11.5 });
     assert.deepEqual(at("numes/z-ai/glm-5.3-flash").pricing, { inputTokenPrice: 0, outputTokenPrice: 0 });
     assert.equal(at("numes/z-ai/glm-5.3-flash").contextLimit, 1_048_576);
-    assert.equal(at("anthropic/claude-sonnet-5-5").pricing?.inputTokenPrice, 3);
+    assert.equal(at("anthropic/claude-sonnet-5-5").pricing, undefined);
     for (const m of cat.models) {
       assert.ok((m.contextLimit ?? 0) > 0, `${m.name} has a window`);
-      assert.ok(m.pricing, `${m.name} has a price`);
+      assert.equal(!!m.pricing, m.provider === "maple" || m.provider === "numes", `${m.name}: a price only from a per-model table`);
     }
     assert.equal(cat.listed, false);
   });
@@ -183,7 +184,8 @@ describe("llm: model resolution through the secrets boundary", () => {
     assert.equal(cat.models.find((m) => m.name === "anthropic/claude-haiku-4-5")!.available, false, "keyed, but not on the list");
     const llama = cat.models.find((m) => m.name === "openrouter/meta-llama/llama-4-scout")!;
     assert.deepEqual([llama.provider, llama.modelId, llama.alias, llama.default], ["openrouter", "meta-llama/llama-4-scout", undefined, false]);
-    assert.ok(llama.contextLimit && llama.pricing, "a provider aieo knows has its window and rate");
+    assert.ok(llama.contextLimit, "a provider aieo knows has its window");
+    assert.equal(llama.pricing, undefined, "and no price of its own");
     const acme = cat.models.find((m) => m.name === "acme/llama-4")!;
     assert.deepEqual(acme, { provider: "acme", modelId: "llama-4", name: "acme/llama-4", default: false, available: true });
   });

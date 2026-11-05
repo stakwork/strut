@@ -1899,9 +1899,11 @@ the same steps are an agent's tools (`agentTools: ["browser/*"]`), and
   output-token cap. Routed through a gateway (`ResolvedModel.routed`), the
   shims serve every provider — see "Mothership cost control".
   `GET /llm/models` lists every model aieo knows — its aliases and every
-  Maple and Numes model — each with its `contextLimit` and `pricing` (USD
-  per million tokens: Maple's and Numes' own per model, else the
-  provider's flat rate) and whether it is `available`: listed in
+  Maple and Numes model — each with its `contextLimit`, its `pricing` (USD
+  per million tokens) only where strut knows the model's own rate (today
+  Maple's and Numes'; aieo's flat per-provider rate is not a price, and
+  prices and windows are to come from bifrost's datasheet:
+  plans/aieo-in-strut.md §6–7), and whether it is `available`: listed in
   `STRUT_MODELS` when the host sets it (`listed: true`; the pickers then
   show only those), else its provider has a key (never values); plus the
   default. The step editor offers the same catalog as a datalist on
