@@ -4,7 +4,9 @@ import http from "node:http";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { RunEvent, RunSummary } from "../core.js";
+import { z } from "zod";
+import { withAccessedNodes, type AnyStepDef, type RunEvent, type RunSummary } from "../core.js";
+import { decideProposal, proposalsCapability, proposalsRoot } from "../proposals.js";
 import type { NodeInput } from "./node-writer.js";
 import type { EdgeInput } from "./edge-writer.js";
 import { NEO4J_DIALECT, neo4jName } from "./neo4j-engine.js";
@@ -24,6 +26,7 @@ import {
   projectChatOnce,
   projectChats,
   projectionsSettled,
+  projectProposalOnce,
   projectRun,
   projectRunEvents,
   projectRunOnce,
@@ -1063,6 +1066,73 @@ for (const tb of testBackends()) describe(`projector on ${tb.name}`, { skip: tb.
     assert.equal(await edges("DERIVED_FROM"), 1);
   });
 
+  it("proposals: a StrutProposal per gated call — written when made, IN_RUN once the run is projected, moved by each decision; an applied one is ACCESSED to the nodes it wrote the graph holds", async () => {
+    await seedConceptSchema(backend);
+    const [rule] = await backend.nodes.writeMany([{ type: "Concept", data: { name: "Rate limits", description: "How the API limits callers" } }], "create");
+    const elsewhere = "00000000-0000-4000-8000-00000000dead";
+    const dir = await mkdtemp(join(tmpdir(), "strut-project-proposal-"));
+    try {
+      // What createStrut wires: every change of a record projects it.
+      const cap = proposalsCapability(dir, { changed: (p) => void projectProposalOnce(backend, cap, p.id) });
+      const by = { workflow: WF, runId: RUN, path: `${WF}/plan/003-graph-create-node`, job: "j-p", session: "alice/1", actor: "alice" };
+      const a = await cap.propose({ step: "dev/write", input: { name: "Rate limits" }, rationale: "The API docs say callers are throttled", title: "Write the rate-limit page", by });
+      const b = await cap.propose({ step: "dev/write", input: { name: "Retries" }, title: "Write the retry page", by });
+      await projectionsSettled(backend);
+      assert.equal(await count("StrutProposal"), 2);
+      assert.equal(await edges("IN_RUN"), 0, "the run is not in the graph yet");
+
+      // The run ends: its projection links each of its proposals.
+      const hash = (await ws.getWorkflowHash(WF))!;
+      for (const e of sampleEvents(hash)) await store.append(WF, RUN, e);
+      const report = { runs: 0, sessions: 0, toolCalls: 0, chats: 0, turns: 0, edges: 0, accessed: 0, unresolved: 0, skipped: 0, jobs: 0, proposals: 0 };
+      assert.ok(await projectRun(backend, store, WF, RUN, report, undefined, undefined, cap));
+      assert.equal(report.proposals, 2);
+      const inRun = async () =>
+        (await backend.query(`MATCH ${d().node("p", "StrutProposal")}-[:IN_RUN]->${d().node("r", "StrutRun", { run_id: "$r" })} RETURN p.proposal_id AS id ORDER BY id`, { r: RUN })).map((r) => r["id"]);
+      assert.deepEqual(await inRun(), [a.id, b.id].sort());
+
+      // A person rejects one and accepts the other; its apply wrote a node
+      // this graph holds, one it does not, and one on a peer's graph.
+      const step: AnyStepDef = {
+        type: "dev/write",
+        input: z.object({ name: z.string() }),
+        output: z.any(),
+        run: async () => withAccessedNodes({ ok: true }, [{ ref_id: rule!.ref_id, node_type: "Concept" }, { ref_id: elsewhere }, { ref_id: "peer-ref", peer: "acme" }]),
+      } as AnyStepDef;
+      const deps = { registry: { "dev/write": step }, services: {}, changed: (p: { id: string }) => void projectProposalOnce(backend, cap, p.id) };
+      assert.equal((await decideProposal(proposalsRoot(dir), b.id, { action: "reject", by: "alice", reason: "not now" }, deps)).status, 200);
+      assert.equal((await decideProposal(proposalsRoot(dir), a.id, { action: "accept", by: "alice" }, deps)).status, 200);
+      await projectionsSettled(backend);
+
+      const FIELDS = ["proposal_id", "step", "title", "proposal_status", "rationale", "workflow_name", "run_id", "job_id", "session_id", "proposed_by", "decided_by", "reason"];
+      const props = async (id: string) =>
+        ((await backend.query(`MATCH ${d().node("p", "StrutProposal", { proposal_id: "$id" })} RETURN ${d().project("p", FIELDS)} AS p`, { id }))[0]?.["p"] ?? null) as Record<string, unknown> | null;
+      const accepted = await props(a.id);
+      assert.deepEqual(
+        FIELDS.map((f) => accepted?.[f] ?? null),
+        [a.id, "dev/write", "Write the rate-limit page", "applied", "The API docs say callers are throttled", WF, RUN, "j-p", "alice/1", "alice", "alice", null],
+      );
+      const rejected = await props(b.id);
+      assert.deepEqual([rejected?.["proposal_status"], rejected?.["reason"], rejected?.["decided_by"]], ["rejected", "not now", "alice"]);
+      assert.equal(await count("StrutProposal"), 2, "each change updated its node");
+      const wrote = await backend.query(`MATCH ${d().node("p", "StrutProposal")}-[:ACCESSED]->${d().node("c", "Concept")} RETURN p.proposal_id AS id, c.name AS name`);
+      assert.deepEqual(wrote.map((r) => [r["id"], r["name"]]), [[a.id, "Rate limits"]]);
+      assert.equal(await edges("ACCESSED"), 1, "the missing ref and the peer's get no edge");
+
+      // Writing them again adds nothing.
+      await projectRun(backend, store, WF, RUN, undefined, undefined, undefined, cap);
+      await projectProposalOnce(backend, cap, a.id);
+      assert.deepEqual([await count("StrutProposal"), (await inRun()).length, await edges("ACCESSED")], [2, 2, 1]);
+
+      // Found by why it was proposed.
+      const hit = await backend.reader.search({ q: "throttled", types: ["StrutProposal"] });
+      assert.deepEqual(hit.nodes.map((n) => n.node_type), ["StrutProposal"]);
+    } finally {
+      await projectionsSettled(backend);
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("createStrut: a run launched under a job refreshes its StrutJob through the run-end hook — title from the launch, summary from the fold; a plain run touches no job", async () => {
     const dataDir = await mkdtemp(join(tmpdir(), "strut-project-job-"));
     await ws.publishWorkflowByContent(
@@ -1190,7 +1260,7 @@ describe("orchestrator speaker (SENT edge)", () => {
   it("projectRun: SENT from the existing member to the turn's session; reprojecting adds none and creates no nodes", async () => {
     const f = fake([{ ref_id: "member-1", user_id: UID }, { ref_id: "member-2", user_id: UID }, { ref_id: "other", user_id: "c99999999999999999999999999" }]);
     const store = await seedRun(turnEvents({ actor: ACTOR }, "@someone"));
-    const report = { runs: 0, sessions: 0, toolCalls: 0, chats: 0, turns: 0, edges: 0, accessed: 0, unresolved: 0, skipped: 0, jobs: 0 };
+    const report = { runs: 0, sessions: 0, toolCalls: 0, chats: 0, turns: 0, edges: 0, accessed: 0, unresolved: 0, skipped: 0, jobs: 0, proposals: 0 };
     await projectRun(f.backend, store, "orchestrator", "1", report);
     const session = "ref:StrutAgentSession:strutagentsession:1:orchestrator/turn";
     assert.deepEqual(sent(f.edges).map((e) => [e.source_ref_id, e.target_ref_id]).sort(), [["member-1", session], ["member-2", session]]);
