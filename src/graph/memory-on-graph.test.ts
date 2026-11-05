@@ -42,7 +42,7 @@ const ctxOf = (services: object, extra: Record<string, unknown> = {}) =>
 type Edge = { ref_id: string; target: string; text: string; sources: string[]; valid_at: number | null; invalid_at: number | null; expired_at: number | null; namespace: string };
 async function edgesOf(b: GraphBackend, edge: string, source: string): Promise<Edge[]> {
   const rows = await b.query(
-    `MATCH (s:Node {ref_id: $s})-[r:\`${edge}\`]->(t:Node) RETURN r.ref_id AS ref_id, t.ref_id AS target, r.text AS text, r.sources AS sources,
+    `MATCH (s:Node {ref_id: $s})-[r:\`${edge}\`]->(t:Node) WHERE r.deleted_at IS NULL RETURN r.ref_id AS ref_id, t.ref_id AS target, r.text AS text, r.sources AS sources,
        r.valid_at AS valid_at, r.invalid_at AS invalid_at, r.expired_at AS expired_at, r.namespace AS namespace ORDER BY r.created_at`,
     { s: source },
   );

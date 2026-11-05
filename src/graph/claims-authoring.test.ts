@@ -346,7 +346,7 @@ for (const tb of testBackends()) describe(`claims authoring on ${tb.name}`, { sk
     assert.deepEqual((await listed(CANDIDATE)).map((r) => r.id), [id]);
     assert.equal(Number((await backend.query(`MATCH ${d().node("c", "Claim")} RETURN count(c) AS c`))[0]!["c"]), 1, "attached, never copied");
 
-    const about = `MATCH ${d().node("c", "Claim", { id: "$id" })}-[r:ABOUT]->${d().node("s", "StrutWorkflow", { name: "$name" })} RETURN r.ref_id AS r`;
+    const about = `MATCH ${d().node("c", "Claim", { id: "$id" })}-[r:ABOUT]->${d().node("s", "StrutWorkflow", { name: "$name" })} ${neo ? "" : `WHERE ${d().edgeLive("r")} `}RETURN r.ref_id AS r`;
     const [before] = await backend.query(about, { id, name: CANDIDATE.name });
     assert.deepEqual(await claims.detachClaim(id, CANDIDATE, chat), { ok: true, id, detached: true });
     assert.deepEqual(await backend.query(about, { id, name: CANDIDATE.name }), [], "detach deletes the ABOUT edge");
@@ -355,7 +355,9 @@ for (const tb of testBackends()) describe(`claims authoring on ${tb.name}`, { sk
     assert.match(errOf(await claims.detachClaim(id, SEEDED, chat)), /only subject — retire the claim/);
     assert.deepEqual(await claims.attachClaim(id, CANDIDATE, chat), { ok: true, id, attached: true }, "re-attaching writes a fresh edge");
     const [fresh] = await backend.query(about, { id, name: CANDIDATE.name });
-    assert.notEqual(fresh!["r"], before!["r"]);
+    // Neo4j writes a new edge; a Ladybug file brings the hidden one back.
+    if (neo) assert.notEqual(fresh!["r"], before!["r"]);
+    else assert.equal(fresh!["r"], before!["r"]);
     assert.deepEqual((await listed(CANDIDATE)).map((r) => r.id), [id]);
 
     if (neo) {

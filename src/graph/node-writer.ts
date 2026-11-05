@@ -762,12 +762,21 @@ export class NodeWriter {
 
   /** `softDelete` for a node of ANY type in the namespace, on a caller's
    *  say-so (`graph/delete-node`, the twin of hive's graphNodeDelete):
-   *  `deleted_at` stamped, its in-scope edges hard-deleted and counted.
+   *  `deleted_at` stamped, its in-scope edges hard-deleted and counted (on
+   *  a Ladybug file kept, hidden, and none counted).
    *  Null when there is no such node there. The `Domain_strut` guard stays
    *  on `softDelete` for strut's own rows. Takes `softDelete`'s options. */
   async deleteNode(ref_id: string, opts: SoftDeleteOptions & { namespace?: string } = {}): Promise<SoftDeleteResult | null> {
     const { namespace, ...how } = opts;
     return this.engine.nodeEngine.softDelete(ref_id, namespace ?? this.engine.namespace, {}, how);
+  }
+
+  /** Undo `deleteNode` on a Ladybug file, where a delete hides: the node and
+   *  the edges it kept show again (`NodeEngine.restore`). Throws on Neo4j,
+   *  whose delete took the edges. */
+  async restoreNode(ref_id: string, opts: { namespace?: string } = {}): Promise<"restored" | "live" | { merged: string } | null> {
+    if (!this.engine.nodeEngine.restore) throw new GraphValidationError("WRONG_TYPE", "?", "a restore works on a LadybugDB graph only: a Neo4j delete takes the node's edges");
+    return this.engine.nodeEngine.restore(ref_id, opts.namespace ?? this.engine.namespace);
   }
 
   /** `softDelete` for the one non-Strut node strut retires: a stale

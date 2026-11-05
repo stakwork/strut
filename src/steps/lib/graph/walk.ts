@@ -5,7 +5,7 @@ import type { NodeEnvelope, EdgeEnvelope, NeighborsParams, SearchParams, SearchR
 import { modelEvaluate, type Evaluate, type EvalQuestion, type EvalAnswer } from "../../../evaluate.js";
 import { addUsage, emptyUsage, type TokenUsage } from "../../../pricing.js";
 import { resolveEvaluationModel, stepAuth } from "../../../llm.js";
-import { graphCtx, errText, deriveNodeName, isoDates, timeInputs, EXCLUDED_NODE_TYPES } from "./_shared.js";
+import { graphCtx, errText, deriveNodeName, isoDates, timeInputs, deletedOut, EXCLUDED_NODE_TYPES } from "./_shared.js";
 import { bootEnv } from "../../../env.js";
 
 /**
@@ -74,7 +74,7 @@ function isClosed(n: NodeEnvelope): boolean {
 
 /** The slice of `GraphReader` the walk needs (structural, so tests inject a fake). */
 export interface WalkReader {
-  getNode(ref_id: string): Promise<NodeEnvelope | null>;
+  getNode(ref_id: string, opts?: { include_deleted?: boolean }): Promise<NodeEnvelope | null>;
   neighbors(ref_id: string, p?: NeighborsParams): Promise<{ nodes: NodeEnvelope[]; edges: EdgeEnvelope[] }>;
   search(p: SearchParams): Promise<SearchResult>;
 }
@@ -89,6 +89,8 @@ export interface WalkConfig {
   /** Temporal edges: current ones unless these say otherwise (`NeighborsParams`). */
   include_ended?: boolean;
   as_of?: string | number;
+  /** Deleted nodes and edges too (`NeighborsParams`). */
+  include_deleted?: boolean;
   maxHops: number;
   maxNodes: number;
   threshold: number;
@@ -214,6 +216,10 @@ function edgeProperties(p: Record<string, unknown> | undefined): Record<string, 
       out[k] = dates[k as keyof typeof dates];
       continue;
     }
+    if (k === "deleted_at") {
+      out[k] = deletedOut(v).deleted_at ?? v;
+      continue;
+    }
     out[k] = typeof v === "string" && v.length > EDGE_PROPERTY_MAX ? v.slice(0, EDGE_PROPERTY_MAX) + "…" : v;
   }
   return Object.keys(out).length ? out : undefined;
@@ -287,7 +293,7 @@ async function seedCandidates(cfg: WalkConfig, reader: WalkReader): Promise<Cand
   if (cfg.start?.length) {
     const out: Candidate[] = [];
     for (const ref_id of cfg.start) {
-      const n = await reader.getNode(ref_id);
+      const n = await reader.getNode(ref_id, cfg.include_deleted ? { include_deleted: true } : undefined);
       if (n) out.push(candidateOf(n, 0));
     }
     return out;
@@ -299,6 +305,7 @@ async function seedCandidates(cfg: WalkConfig, reader: WalkReader): Promise<Cand
       namespace: cfg.namespace,
       limit: SEED_LIMIT,
       include_edge_counts: true,
+      ...(cfg.include_deleted ? { include_deleted: true } : {}),
     });
     return r.nodes.filter((n) => !isClosed(n)).map((n) => candidateOf(n, 0));
   }
@@ -338,6 +345,7 @@ export async function runWalk(cfg: WalkConfig, deps: WalkDeps): Promise<WalkOutp
     include_edge_counts: true,
     ...(cfg.include_ended ? { include_ended: true } : {}),
     ...(cfg.as_of !== undefined ? { as_of: cfg.as_of } : {}),
+    ...(cfg.include_deleted ? { include_deleted: true } : {}),
   };
   // Same cast as the agent step's per-tool emit: the runner stamps ts/runId.
   const emit = ctx?.emit && ctx.path ? (ctx.emit as unknown as (e: Record<string, unknown>) => Promise<void>) : undefined;

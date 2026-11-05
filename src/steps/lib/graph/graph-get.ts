@@ -2,7 +2,7 @@ import { z } from "zod";
 import { defineStep, type StepContext, withAccessedNodes } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
 import { nodeTitle } from "../../../graph/title.js";
-import { graphCtx, errText, deriveNodeName, edgeCountMap } from "./_shared.js";
+import { graphCtx, errText, deriveNodeName, edgeCountMap, deletedOut } from "./_shared.js";
 
 const CHILD_CAP = 50;
 const CHILD_DESCRIPTION_MAX = 300;
@@ -52,6 +52,10 @@ export default defineStep({
         'An edge type, e.g. "PARENT_OF": also return the nodes this one points to along it (outgoing edges only) as `children`, ' +
           `each { ref_id, node_type, name, description }, sorted by name. At most ${CHILD_CAP}; \`children_truncated: true\` when there are more.`,
       ),
+    include_deleted: z
+      .boolean()
+      .optional()
+      .describe("Also resolve a deleted node (and, with `children`, deleted children and links), marked `deleted_at`. Default: a deleted node is not found. A LadybugDB graph only."),
     required: z
       .boolean()
       .default(false)
@@ -72,7 +76,7 @@ export default defineStep({
 });
 
 async function resolve(
-  cfg: { ref_id?: string; owner?: boolean; node_type?: string; name?: string; namespace?: string; children?: string },
+  cfg: { ref_id?: string; owner?: boolean; node_type?: string; name?: string; namespace?: string; children?: string; include_deleted?: boolean },
   ctx: unknown,
 ): Promise<unknown> {
   try {
@@ -86,7 +90,7 @@ async function resolve(
       raw = hit ? await b.reader.getNode(hit.ref_id) : null;
       if (!raw) return "node not found: no Person is marked is_owner yet — create the user with graph_create_node (is_owner: true) once you know their name";
     } else if (cfg.ref_id) {
-      raw = await b.reader.getNode(cfg.ref_id);
+      raw = await b.reader.getNode(cfg.ref_id, cfg.include_deleted ? { include_deleted: true } : undefined);
       if (!raw) return `node not found: ${cfg.ref_id}`;
     } else {
       if (!cfg.node_type || !cfg.name) return "graph/graph-get failed: pass ref_id, or node_type + name";
@@ -114,6 +118,7 @@ async function resolve(
       name: deriveNodeName(raw, properties),
       properties: raw.properties,
       edges,
+      ...deletedOut((raw.properties ?? {})["deleted_at"]),
     };
     // Provenance: the node that was asked for — never its table of contents.
     const read = [{ ref_id: raw.ref_id, node_type: raw.node_type, name: out.name }];
@@ -125,6 +130,7 @@ async function resolve(
       direction: "forward",
       limit: CHILD_CAP + 1,
       namespace: cfg.namespace,
+      ...(cfg.include_deleted ? { include_deleted: true } : {}),
     });
     // A child's name and description are its type's title and description
     // fields (a StrutStep's title is its step_type, not its description).

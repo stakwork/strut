@@ -13,7 +13,7 @@ export default defineStep({
   type: "graph/delete-node",
   description:
     "Delete a node from the knowledge graph (writes live to the graph). Any node type. The node is soft-deleted " +
-    "— hidden from every read, restored in place by a later create of the same identity — and EVERY edge it had in " +
+    "— hidden from every read, restored in place by a later create of the same identity — and on Neo4j EVERY edge it had in " +
     "the namespace is deleted for good, so whatever hung under it is cut loose (its children stay, parentless). " +
     "Read the node first (graph/graph-get with its `edges` counts, graph/graph-neighbors) and be sure: a delete is " +
     "the write with the least room for a mistake. To detach one link keep the node and use graph/delete-edge; to " +
@@ -21,6 +21,9 @@ export default defineStep({
     EXAMPLE,
   graphNotes: {
     ladybug:
+      "On this graph a delete hides, never erases: the node's edges and facts are kept, hidden while it is deleted " +
+      "(`include_deleted` on graph/graph-search, graph/graph-get, graph/graph-neighbors and graph/walk shows them), and " +
+      "graph/restore-node (or a later create of the same identity) brings the node back with its edges. " +
       "The user (the Person marked is_owner) is never deleted: delete or end their edges instead. " +
       "To record that a fact stopped being true, end it with graph/assert (`ended` or `invalid_at`) instead of deleting anything.",
   },
@@ -37,7 +40,13 @@ export default defineStep({
     const name = (await namesOf(ctx, [cfg.ref_id])).get(cfg.ref_id) ?? cfg.ref_id;
     return {
       title: `Delete node ${name}`,
-      fields: [{ label: "Node", value: name, kind: "ref", danger: true }, { label: "Edges", value: "Every edge it has is deleted too", danger: true }],
+      // A Ladybug file hides the node and keeps its edges; Neo4j deletes them.
+      fields: [
+        { label: "Node", value: name, kind: "ref", danger: true },
+        (ctx as StepContext<StrutCapabilities> | undefined)?.services?.graph?.kind === "ladybug"
+          ? { label: "Edges", value: "Kept, hidden while it is deleted", danger: true }
+          : { label: "Edges", value: "Every edge it has is deleted too", danger: true },
+      ],
       actions: { accept: "Delete", reject: "Keep" },
     };
   },

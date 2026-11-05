@@ -295,7 +295,7 @@ for (const tb of testBackends()) {
       assert.ok(!("is_deleted" in after), "upsert on a live node does not add is_deleted");
     });
 
-    it("soft delete stamps deleted_at (ms, first time kept) and deletes the node's edges", async () => {
+    it("soft delete stamps deleted_at (ms, first time kept) and deletes the node's edges (on a Ladybug file, hides them)", async () => {
       const run = await writer.write({ type: "StrutRun", data: RUN });
       const job = await writer.write({ type: "StrutJob", data: JOB });
       await backend.edges.write({ edge: "IN_JOB", source_ref_id: run.ref_id, target_ref_id: job.ref_id });
@@ -305,7 +305,8 @@ for (const tb of testBackends()) {
       const p = await props(run.ref_id);
       assert.ok(typeof p["deleted_at"] === "number" && p["deleted_at"] >= t0 && p["deleted_at"] <= Date.now(), `deleted_at in ms, got ${p["deleted_at"]}`);
       if (neo) assert.equal(p["is_deleted"], true);
-      assert.equal(await edgeCount(backend, "IN_JOB"), 0, "the edge is gone");
+      assert.equal(await edgeCount(backend, "IN_JOB"), neo ? 0 : 1, "the edge is gone (Neo4j) or kept (Ladybug)");
+      assert.deepEqual((await backend.reader.neighbors(job.ref_id)).edges, [], "no read shows it");
       assert.equal(await nodeCount(backend, "StrutRun"), 0, "hidden from live reads");
       assert.equal(await nodeCount(backend, "StrutJob"), 1, "the other end stays");
 
@@ -326,10 +327,11 @@ for (const tb of testBackends()) {
         { edge: "EXECUTED", source_ref_id: run.ref_id, target_ref_id: wf.ref_id },
       ]);
       const t0 = Date.now();
-      assert.deepEqual(await writer.deleteNode(run.ref_id), { edges: 2 }, "both edges went with it, counted");
+      // Neo4j deletes both edges, counted; a Ladybug file keeps them, hidden.
+      assert.deepEqual(await writer.deleteNode(run.ref_id), { edges: neo ? 2 : 0 }, "both edges went with it, counted");
       const p = await props(run.ref_id);
       assert.ok(typeof p["deleted_at"] === "number" && p["deleted_at"] >= t0, `deleted_at in ms, got ${p["deleted_at"]}`);
-      assert.equal(await edgeCount(backend), 0);
+      assert.equal(await edgeCount(backend), neo ? 0 : 2);
       assert.equal(await nodeCount(backend, "StrutRun"), 0, "hidden from live reads");
       assert.equal(await nodeCount(backend, "StrutJob"), 1, "the other ends stay");
       assert.equal(await writer.deleteNode("not-a-ref"), null);
@@ -368,7 +370,7 @@ for (const tb of testBackends()) {
       assert.deepEqual(left.map((r) => r["r"]), ["e-ns", "e-schema"], "the in-scope edge is gone; Schema and other-namespace edges stay");
     });
 
-    it("soft delete + create restores in place (markers cleared, no edges back)", async () => {
+    it("soft delete + create restores in place (markers cleared; its edges back on a Ladybug file only)", async () => {
       const run = await writer.write({ type: "StrutRun", data: RUN });
       const job = await writer.write({ type: "StrutJob", data: JOB });
       await backend.edges.write({ edge: "IN_JOB", source_ref_id: run.ref_id, target_ref_id: job.ref_id });
@@ -379,7 +381,8 @@ for (const tb of testBackends()) {
       const p = await props(run.ref_id);
       assert.ok(!("is_deleted" in p) && !("deleted_at" in p), "a restore clears the markers");
       assert.equal(p["summary"], "back");
-      assert.equal(await edgeCount(backend, "IN_JOB"), 0, "a restore brings back no edges");
+      assert.equal(await edgeCount(backend, "IN_JOB"), neo ? 0 : 1, "a restore brings back no edges (Neo4j) or the ones it kept (Ladybug)");
+      assert.equal((await backend.reader.neighbors(job.ref_id)).edges.length, neo ? 0 : 1);
 
       // A node with only deleted_at set is deleted, and restored.
       await setNodeProps(backend, run.ref_id, { deleted_at: 5 });

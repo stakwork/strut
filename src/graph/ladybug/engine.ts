@@ -9,11 +9,10 @@
  *     write transaction (MERGE needs the primary key): the misses are
  *     CREATEd in one UNWIND with their `ref_id`s, the hits SET one by one
  *     with explicit column lists;
- *   - a soft delete is `deleted_at` alone, then the node's edges go
- *     (outgoing, incoming) in the same transaction;
- *   - no alias rewrite, no edge flags: an edge is live or gone, and
- *     `edgeLive` is `true` (its `deleted_at` column is there for the core
- *     attributes, and nothing sets it yet);
+ *   - a delete hides, never erases: a node's delete is its `deleted_at`
+ *     alone, its edges and their search rows kept, hidden because an end is
+ *     deleted and back when it is restored; an edge's delete is the edge's
+ *     `deleted_at` (and its search row's). `edgeLive` is that column unset;
  *   - identity is per namespace (`namespaces.ts`): `(node_type, namespace,
  *     key)`, so one key in two namespaces is two nodes. An edge is in one
  *     namespace too: the writer's, else its source node's;
@@ -59,7 +58,7 @@ import * as ontology from "./ontology.js";
 import { SCHEMA_EDGE, catalogOf, readCatalog, type Catalog, type LadybugCatalog } from "./ontology.js";
 import { mergedInto } from "./merge.js";
 import { namespaceName, writeNamespace } from "./namespaces.js";
-import { deleteEdgeRows, deleteRowsOf, embedPendingRows, recomposeRowsOf } from "./temporal.js";
+import { deleteEdgeRows, embedPendingRows, recomposeRowsOf } from "./temporal.js";
 import { ALL_EDGE_COLUMNS, EDGE_TEXT_TYPE, GENERIC_COLUMNS, LADYBUG_STRUT_TYPES, MERGE_TYPE, SCHEMA_TYPE, edgeColumnsOf } from "./registry.js";
 
 const q = (s: string) => `\`${s}\``;
@@ -73,7 +72,7 @@ export const LADYBUG_DIALECT: Dialect = {
   typeOf: (alias) => `${alias}.node_type`,
   edgeType: (alias) => `label(${alias})`,
   live: (alias) => `${alias}.deleted_at IS NULL`,
-  edgeLive: () => `true`,
+  edgeLive: (alias) => `${alias}.deleted_at IS NULL`,
   int: (expr) => `CAST(${expr} AS INT64)`,
   lower: (expr) => `lower(${expr})`,
   project: (alias, fields) => `{${fields.map((f) => `${q(f)}: ${alias}.${q(f)}`).join(", ")}}`,
@@ -362,10 +361,10 @@ class LadybugNodes implements NodeEngine {
     return (rows[0]?.["title"] ?? null) !== (set["title"] ?? null);
   }
 
-  /** Three statements in one transaction: stamp `deleted_at` (the first
-   *  delete time and reason kept), delete the node's outgoing edges, then its
-   *  incoming ones — or leave them (`keepEdges`). In scope: a node in
-   *  `namespace`. */
+  /** Stamp `deleted_at` (the first delete time and reason kept). The
+   *  node's edges and their search rows stay: hidden while it is deleted,
+   *  back when it is restored. `keepEdges` changes nothing here, every
+   *  delete keeps them. In scope: a node in `namespace`. */
   async softDelete(ref_id: string, namespace: string, guard: NodeGuard, opts: SoftDeleteOptions = {}): Promise<SoftDeleteResult | null> {
     const ns = namespaceName(namespace, this.ns);
     if (ns === null) return null;
@@ -399,14 +398,29 @@ class LadybugNodes implements NodeEngine {
          SET ${sets.join(", ")} RETURN n.ref_id AS ref_id`,
         params,
       );
-      if (hit.length === 0) return null;
-      if (opts.keepEdges) return { edges: 0 };
-      await deleteRowsOf(tx, ref_id, params["now"] as number);
-      const out = await tx.run(`MATCH (n:Node {ref_id: $ref_id})-[r]->(:Node) DELETE r RETURN count(r) AS n`, { ref_id });
-      const inc = await tx.run(`MATCH (n:Node {ref_id: $ref_id})<-[r]-(:Node) DELETE r RETURN count(r) AS n`, { ref_id });
-      return { edges: Number(out[0]?.["n"] ?? 0) + Number(inc[0]?.["n"] ?? 0) };
+      return hit.length === 0 ? null : { edges: 0 };
     };
     return opts.tx ? go(opts.tx) : this.lbug.withWrite(go);
+  }
+
+  /** Clear a delete: the node and the edges it kept show again. A node a
+   *  merge deleted stays: its edges were moved, so unmerge brings it back. */
+  async restore(ref_id: string, namespace: string): Promise<"restored" | "live" | { merged: string } | null> {
+    const ns = namespaceName(namespace, this.ns);
+    if (ns === null) return null;
+    return this.lbug.withWrite(async (tx) => {
+      const [hit] = await tx.run(
+        `MATCH (n:Node {ref_id: $ref_id}) WHERE n.namespace = $ns AND NOT n.node_type IN [${[SCHEMA_TYPE, EDGE_TEXT_TYPE, MERGE_TYPE].map(lit).join(", ")}]
+         RETURN n.deleted_at IS NOT NULL AS deleted`,
+        { ref_id, ns },
+      );
+      if (!hit) return null;
+      if (hit["deleted"] !== true) return "live";
+      const kept = await mergedInto(tx.run.bind(tx), ref_id);
+      if (kept) return { merged: kept };
+      await tx.run(`MATCH (n:Node {ref_id: $ref_id}) SET n.deleted_at = NULL, n.deleted_reason = NULL, n.updated_at = CAST($now AS INT64)`, { ref_id, now: Date.now() });
+      return "restored";
+    });
   }
 }
 
@@ -473,6 +487,12 @@ class LadybugEdges implements EdgeEngine {
         params[`p${i}`] = v;
         sets.push(`r.${q(k)} = $p${i++}`);
       }
+      // A deleted edge of the same identity is brought back, as a node is.
+      const revived = await tx.run(
+        `MATCH (s:Node {ref_id: $src})-[r:${q(edge)} {edge_key: $edge_key}]->(t:Node {ref_id: $tgt}) WHERE r.deleted_at IS NOT NULL
+         SET r.deleted_at = NULL, r.updated_at = CAST($added AS INT64) RETURN r.ref_id AS ref_id`,
+        { src: e.src, tgt: e.tgt, edge_key: e.edge_key, added: e.created_at },
+      );
       const r = await tx.run(
         `MATCH (s:Node {ref_id: $src}), (t:Node {ref_id: $tgt})
          MERGE (s)-[r:${q(edge)} {edge_key: $edge_key}]->(t)
@@ -482,21 +502,21 @@ class LadybugEdges implements EdgeEngine {
       );
       const row = r[0];
       if (!row) throw new Error(`edge MERGE for ${edge} matched no endpoints (${e.src} → ${e.tgt})`);
-      out.push({ k: e.k, ref_id: String(row["ref_id"]), created: row["created"] === true, source_ref_id: String(row["source_ref_id"]), target_ref_id: String(row["target_ref_id"]) });
+      out.push({ k: e.k, ref_id: String(row["ref_id"]), created: row["created"] === true || revived.length > 0, source_ref_id: String(row["source_ref_id"]), target_ref_id: String(row["target_ref_id"]) });
     }
     return out;
   }
 
   private async locate(tx: GraphTx, ref_id: string, hint?: EdgeHint): Promise<{ edge: string; src: string; tgt: string } | null> {
-    // A known type reads one rel table; the ontology's edge is never one.
+    // A known type reads one rel table; the ontology's edge is never one, nor a deleted edge.
     if (hint?.edge) {
       if (hint.edge === SCHEMA_EDGE || !(await this.table(tx, hint.edge))) return null;
-      const typed = await tx.run(`MATCH (s:Node)-[r:${q(hint.edge)} {ref_id: $ref_id}]->(t:Node) RETURN s.ref_id AS src, t.ref_id AS tgt LIMIT 1`, { ref_id });
+      const typed = await tx.run(`MATCH (s:Node)-[r:${q(hint.edge)} {ref_id: $ref_id}]->(t:Node) WHERE r.deleted_at IS NULL RETURN s.ref_id AS src, t.ref_id AS tgt LIMIT 1`, { ref_id });
       const t = typed[0];
       return t ? { edge: hint.edge, src: String(t["src"]), tgt: String(t["tgt"]) } : null;
     }
-    // The ontology's own edges are not edges a writer may touch.
-    const rows = await tx.run(`MATCH (s:Node)-[r {ref_id: $ref_id}]->(t:Node) WHERE label(r) <> '${SCHEMA_EDGE}' RETURN label(r) AS edge, s.ref_id AS src, t.ref_id AS tgt LIMIT 1`, { ref_id });
+    // The ontology's own edges are not edges a writer may touch, nor a deleted one.
+    const rows = await tx.run(`MATCH (s:Node)-[r {ref_id: $ref_id}]->(t:Node) WHERE label(r) <> '${SCHEMA_EDGE}' AND r.deleted_at IS NULL RETURN label(r) AS edge, s.ref_id AS src, t.ref_id AS tgt LIMIT 1`, { ref_id });
     const r = rows[0];
     return r ? { edge: String(r["edge"]), src: String(r["src"]), tgt: String(r["tgt"]) } : null;
   }
@@ -524,7 +544,7 @@ class LadybugEdges implements EdgeEngine {
 
   async findByTriple(tx: GraphTx, edge: string, src: string, tgt: string): Promise<string[]> {
     if (!(await this.table(tx, edge))) return [];
-    const rows = await tx.run(`MATCH (s:Node {ref_id: $src})-[r:${q(edge)}]->(t:Node {ref_id: $tgt}) RETURN r.ref_id AS ref_id`, { src, tgt });
+    const rows = await tx.run(`MATCH (s:Node {ref_id: $src})-[r:${q(edge)}]->(t:Node {ref_id: $tgt}) WHERE r.deleted_at IS NULL RETURN r.ref_id AS ref_id`, { src, tgt });
     return rows.map((r) => String(r["ref_id"]));
   }
 
@@ -532,8 +552,10 @@ class LadybugEdges implements EdgeEngine {
     const go = async (t: GraphTx): Promise<EdgeDeleteResult | null> => {
       const at = await this.locate(t, ref_id, hint);
       if (!at) return null;
-      await t.run(`MATCH ()-[r:${q(at.edge)} {ref_id: $ref_id}]->() DELETE r`, { ref_id });
-      await deleteEdgeRows(t, [ref_id], Date.now());
+      // Hidden, never erased: the edge and its search row are stamped.
+      const now = Date.now();
+      await t.run(`MATCH ()-[r:${q(at.edge)} {ref_id: $ref_id}]->() SET r.deleted_at = CAST($now AS INT64), r.updated_at = CAST($now AS INT64)`, { ref_id, now });
+      await deleteEdgeRows(t, [ref_id], now);
       return { ref_id, edge: at.edge, source_ref_id: at.src, target_ref_id: at.tgt };
     };
     return tx ? go(tx) : this.lbug.withWrite(go);
@@ -544,8 +566,8 @@ class LadybugEdges implements EdgeEngine {
     if (node.length === 0) return null;
     if (!(await this.table(tx, edge))) return { node: ref_id, edges: [] };
     const hop = forward ? `-[r:${q(edge)}]->` : `<-[r:${q(edge)}]-`;
-    // Both ends live: a soft delete may have kept its edges (`keepEdges`).
-    const rows = await tx.run(`MATCH (n:Node {ref_id: $ref_id})${hop}(p:Node) WHERE n.deleted_at IS NULL AND p.deleted_at IS NULL RETURN p.ref_id AS other, r.ref_id AS edge_ref_id, r AS rel`, { ref_id });
+    // The edge and both ends live: a deleted node keeps its edges.
+    const rows = await tx.run(`MATCH (n:Node {ref_id: $ref_id})${hop}(p:Node) WHERE n.deleted_at IS NULL AND p.deleted_at IS NULL AND r.deleted_at IS NULL RETURN p.ref_id AS other, r.ref_id AS edge_ref_id, r AS rel`, { ref_id });
     return {
       node: ref_id,
       edges: rows.map((r) => ({ other: String(r["other"]), edge_ref_id: String(r["edge_ref_id"]), props: edgeProps(r["rel"] as Record<string, unknown>) })),
@@ -556,7 +578,7 @@ class LadybugEdges implements EdgeEngine {
     if (!(await this.table(tx, edge))) return false;
     const [a, b] = forward ? [to, node] : [node, to];
     const rows = await tx.run(
-      `MATCH (a:Node {ref_id: $a}), (b:Node {ref_id: $b}) MATCH p = (a)-[:${q(edge)}* SHORTEST 1..30]->(b) RETURN count(p) AS c`,
+      `MATCH (a:Node {ref_id: $a}), (b:Node {ref_id: $b}) MATCH p = (a)-[:${q(edge)}* SHORTEST 1..30 (r, _n | WHERE r.deleted_at IS NULL)]->(b) RETURN count(p) AS c`,
       { a, b },
     );
     return Number(rows[0]?.["c"] ?? 0) > 0;

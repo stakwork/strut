@@ -414,12 +414,14 @@ for (const tb of testBackends()) describe(`verify pass on ${tb.name}`, { skip: t
     const r4 = await strut.run("clipper", { start: 8, len: 19 });
     const s4 = ((await verify("clipper", r4.runId)).checks[0]!.lastVerify as { planned: string }).planned;
     assert.notEqual(s3, s4);
-    const open = await rows(`MATCH ${n("c", "Claim", { id: "$c" })}-[:EVIDENCED_BY]->${n("e", "Evidence", { evidence_status: "'planned'" })} RETURN e.id AS id`, { c: c.id });
+    const open = await rows(`MATCH ${n("c", "Claim", { id: "$c" })}-[:EVIDENCED_BY]->${n("e", "Evidence", { evidence_status: "'planned'" })} WHERE ${backend.dialect.live("e")} RETURN e.id AS id`, { c: c.id });
     assert.deepEqual(open, [{ id: s4 }]);
     const retired = await rows(`MATCH ${n("e", "Evidence", { id: "$id" })} RETURN e.deleted_at IS NOT NULL AS stamped${neo ? ", e.is_deleted AS deleted" : ""}`, { id: s3 });
     assert.deepEqual(retired, [neo ? { stamped: true, deleted: true } : { stamped: true }], "the stale slot is soft-deleted");
     const left = await rows(`MATCH ${n("e", "Evidence", { id: "$id" })}-[r]-() RETURN count(r) AS c`, { id: s3 });
-    assert.equal(Number(left[0]!["c"]), 0, "and its edges are gone");
+    // Neo4j deletes its edges; a Ladybug file keeps them, hidden by the deleted slot.
+    if (neo) assert.equal(Number(left[0]!["c"]), 0, "and its edges are gone");
+    else assert.ok(Number(left[0]!["c"]) > 0, "and its edges are kept, hidden");
     assert.deepEqual((await statusOf(STEP))[0]!.slice(1), ["stale", true, 1, true], "at most one open slot per external check");
     const refused = await tools["add_evidence"]!.execute({ claim: c.id, name: "clipper", runId: r4.runId, supports: true, content: "x", slot: slotId });
     assert.match(String(refused["error"]), /not an open slot/);

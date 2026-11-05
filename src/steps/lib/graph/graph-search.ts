@@ -4,7 +4,7 @@ import type { StrutCapabilities } from "../../../capabilities.js";
 import { getStrutSchema } from "../../../graph/strut-schemas.js";
 import { nodeTitle } from "../../../graph/title.js";
 import type { FactEnvelope } from "../../../graph/search.js";
-import { graphCtx, errText, excludeDomainsInput, isoDates, timeInputs } from "./_shared.js";
+import { graphCtx, errText, excludeDomainsInput, isoDates, timeInputs, deletedOut } from "./_shared.js";
 const splitList = (s?: string) => s?.split(",").map((x) => x.trim()).filter(Boolean);
 
 /** A node's human label: its title (the Strut schema's title_key when it is
@@ -21,18 +21,20 @@ function descriptionOf(nodeType: string | undefined, p: Record<string, any>): st
   return p.description ?? p.summary ?? p.text ?? "";
 }
 
-/** A fact as the caller reads it: its dates as ISO. */
+/** A fact as the caller reads it: its dates as ISO, and `deleted_at` when it or an end is deleted. */
 function factOut(f: FactEnvelope) {
+  const end = ({ deleted_at, ...e }: FactEnvelope["source"]) => ({ ...e, ...deletedOut(deleted_at) });
   return {
     ref_id: f.ref_id,
     edge_type: f.edge_type,
     text: f.text,
-    source: f.source,
-    target: f.target,
+    source: end(f.source),
+    target: end(f.target),
     ...isoDates({ ...f }),
     ...(f.superseded_by ? { superseded_by: f.superseded_by } : {}),
     sources: f.sources,
     ...(f.namespace ? { namespace: f.namespace } : {}),
+    ...deletedOut(f.deleted_at),
     score: f.score,
   };
 }
@@ -140,6 +142,7 @@ export default defineStep({
         facts: Boolean(cfg.facts),
         include_ended: cfg.include_ended,
         as_of: cfg.as_of,
+        include_deleted: cfg.include_deleted,
         // Per-node {EDGE_TYPE: count} map inline, so connectivity + hop
         // targets come back in one call.
         include_edge_counts: true,
@@ -161,6 +164,7 @@ export default defineStep({
           ...(p.end !== undefined ? { end: p.end } : {}),
           ...(p.workflow_id !== undefined ? { workflow_id: p.workflow_id } : {}),
           ...(p.skill_id !== undefined ? { skill_id: p.skill_id } : {}),
+          ...deletedOut(p.deleted_at),
           // On a Ladybug file the two lists share a scale: a node's score
           // compares with a fact's, so the caller can read them as one list.
           ...(cfg.facts && b.kind === "ladybug" ? { score: n.score } : {}),

@@ -193,7 +193,7 @@ for (const tb of testBackends()) {
         assert.equal(await nodeCount(backend, "StrutWorkflowVersion"), 1);
       });
 
-      it("deleteStep is a soft delete: nodes stay, stamped, edges go, and a republish restores the identity with its edges", async () => {
+      it("deleteStep is a soft delete: nodes stay, stamped, edges go (hidden on a Ladybug file), and a republish restores the identity with its edges", async () => {
         await ws.publishStep("s", STEP("s"), "one");
         const liveSteps = () => backend.query(`MATCH ${d().node("n", "StrutStep")} WHERE ${d().live("n")} RETURN n.ref_id AS ref_id`);
         const before = await liveSteps();
@@ -202,7 +202,9 @@ for (const tb of testBackends()) {
           `MATCH ${anyNode(backend, "n")} WHERE ${d().isType("n", ["StrutStep", "StrutStepVersion"])} RETURN n.deleted_at IS NOT NULL AS stamped, ${d().live("n")} AS live`,
         );
         assert.deepEqual(flagged, [{ stamped: true, live: false }, { stamped: true, live: false }]);
-        assert.deepEqual([(await edgesOf("VERSION_OF")).length, (await edgesOf("ACTIVE_VERSION")).length], [0, 0], "a delete removes the edges");
+        // Neo4j removes the edges; a Ladybug file keeps them, hidden by the deleted ends.
+        const kept = backend.kind === "ladybug" ? 1 : 0;
+        assert.deepEqual([(await edgesOf("VERSION_OF")).length, (await edgesOf("ACTIVE_VERSION")).length], [kept, kept], "a delete removes (Neo4j) or hides (Ladybug) the edges");
         assert.deepEqual(await ws.listSteps(), []);
         assert.equal(await ws.getStepSource("s"), null);
 
@@ -214,7 +216,7 @@ for (const tb of testBackends()) {
         assert.deepEqual(await ws.listStepVersions("s"), { active: "v1", versions: ["v1"] });
       });
 
-      it("deleteWorkflow: a re-publish of the same content comes back with its own edges, not the ones other nodes had to it", async () => {
+      it("deleteWorkflow: a re-publish of the same content comes back with its own edges (and, on a Ladybug file, the ones other nodes had to it)", async () => {
         await ws.publishStep("my/tool", STEP("my/tool"));
         const content = { steps: [{ id: "t", type: "my/tool", config: {} }] };
         await ws.publishWorkflow("child", "v1", content);
@@ -226,7 +228,9 @@ for (const tb of testBackends()) {
         const childEdges = await backend.query(
           `MATCH ${anyNode(backend, "n")}-[r]-() WHERE ${d().isType("n", ["StrutWorkflow", "StrutWorkflowVersion"])} AND n.name = "child" RETURN count(r) AS c`,
         );
-        assert.equal(Number(childEdges[0]!["c"]), 0, "every edge of the deleted workflow is gone");
+        // Neo4j erases them; a Ladybug file keeps them, hidden by the deleted ends.
+        const ladybug = backend.kind === "ladybug";
+        assert.equal(Number(childEdges[0]!["c"]), ladybug ? 6 : 0, "every edge of the deleted workflow is gone (Neo4j) or kept hidden (Ladybug)");
 
         await ws.publishWorkflow("child", "v1", content);
         assert.equal((await ws.getWorkflowMetadata("child"))!.active, "v1");
@@ -236,8 +240,9 @@ for (const tb of testBackends()) {
         assert.deepEqual((await edgesOf("VERSION_OF")).filter((r) => r["b"] === w).map((r) => r["a"]), [v]);
         assert.deepEqual((await edgesOf("ACTIVE_VERSION")).filter((r) => r["a"] === w).map((r) => r["b"]), [v]);
         assert.deepEqual((await edgesOf("USES_STEP")).filter((r) => r["a"] === v).length, 1);
-        assert.equal((await edgesOf("DEPENDS_ON")).length, 0, "parent's DEPENDS_ON to it does not come back");
-        assert.equal(await edgeCount(backend, "DEPENDS_ON"), 0);
+        // On a Ladybug file the restore brings back parent's link to it: parent still depends on it.
+        assert.equal((await edgesOf("DEPENDS_ON")).length, ladybug ? 1 : 0, "parent's DEPENDS_ON to it comes back only where a delete hides");
+        assert.equal(await edgeCount(backend, "DEPENDS_ON"), ladybug ? 1 : 0);
       });
 
       it("a node with deleted_at set is hidden", async () => {

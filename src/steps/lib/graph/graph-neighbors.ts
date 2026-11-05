@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { defineStep, type StepContext, withAccessedNodes } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
-import { graphCtx, errText, deriveNodeName, describeNodes, isoDates, timeInputs, EXCLUDED_NODE_TYPES } from "./_shared.js";
+import { graphCtx, errText, deriveNodeName, describeNodes, isoDates, timeInputs, deletedOut, EXCLUDED_NODE_TYPES } from "./_shared.js";
 const NEIGHBOR_CAP = 50;
 
 export default defineStep({
@@ -46,17 +46,19 @@ export default defineStep({
         include_edge_counts: true,
         include_ended: cfg.include_ended,
         as_of: cfg.as_of,
+        include_deleted: cfg.include_deleted,
       });
 
       // Node details by ref_id (excluding the queried node) so each neighbor
       // carries a label and its own connectivity map alongside its ref_id.
-      const nodeMap = new Map<string, { node_type: string; name: string; edges: Record<string, number> }>();
+      const nodeMap = new Map<string, { node_type: string; name: string; edges: Record<string, number>; deleted_at?: unknown }>();
       for (const node of data.nodes ?? []) {
         if (node.ref_id !== cfg.ref_id) {
           nodeMap.set(node.ref_id, {
             node_type: node.node_type ?? "unknown",
             name: deriveNodeName(node, (node.properties ?? {}) as Record<string, any>),
             edges: (node.edges ?? {}) as Record<string, number>,
+            deleted_at: (node.properties ?? {})["deleted_at"],
           });
         }
       }
@@ -84,6 +86,9 @@ export default defineStep({
           // A temporal edge's sentence and dates (a Ladybug file's facts).
           ...(typeof props["text"] === "string" ? { text: props["text"], ...isoDates(props) } : {}),
           ...(typeof props["superseded_by"] === "string" ? { superseded_by: props["superseded_by"] } : {}),
+          // Deleted (an `include_deleted` read): the edge, or the node.
+          ...deletedOut(props["deleted_at"]),
+          ...(detail && deletedOut(detail.deleted_at).deleted_at ? { node_deleted_at: deletedOut(detail.deleted_at).deleted_at } : {}),
         });
         if (neighbors.length >= NEIGHBOR_CAP) break;
       }

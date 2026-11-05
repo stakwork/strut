@@ -176,8 +176,14 @@ export interface NodeEngine {
   update(tx: GraphTx, schema: NodeSchema, ref_id: string, set: Record<string, unknown>, remove: string[]): Promise<void>;
   /** `deletion.ts`: stamp `deleted_at` (first delete kept) + `is_deleted`
    *  and hard-delete the node's in-scope edges, counted — or keep them
-   *  (`keepEdges`, 0 counted). Null when nothing matched. */
+   *  (`keepEdges`, 0 counted). A Ladybug file always keeps them, hidden
+   *  (plans/graph-temporal.md). Null when nothing matched. */
   softDelete(ref_id: string, namespace: string, guard: NodeGuard, opts?: SoftDeleteOptions): Promise<SoftDeleteResult | null>;
+  /** Ladybug: undo a delete — `deleted_at` cleared, so the edges it kept
+   *  show again. What it found: `restored`, `live` (not deleted), `merged`
+   *  (deleted by a merge: unmerge it instead); null when no such node is
+   *  in `namespace`. */
+  restore?(ref_id: string, namespace: string): Promise<"restored" | "live" | { merged: string } | null>;
   /** Ladybug: did a write since the last call leave search rows to embed
    *  (a title change recomposed them)? Reading it clears it. */
   takeUnembedded?(): boolean;
