@@ -279,9 +279,10 @@ export function projectRunEvents(workflow: string, runId: string, events: RunEve
   for (const e of events) if ((e.type === "step.end" || e.type === "step.error") && e.stepType === "agent") ends.set(keyOf(e), e);
   // A peer's run opened its sessions under PEER_NAMESPACE (runner.ts
   // `bindPeer`), not under the id its config names — but for a person's
-  // own ids, when a person's credential launched it.
+  // own ids, when a person's credential launched it, and the conversation
+  // it continues.
   const person = start?.peerPerson ? start.actor : undefined;
-  const threadOf = start?.origin === "peer" ? (id: string) => peerSessionId(id, person) : (id: string) => id;
+  const threadOf = start?.origin === "peer" ? (id: string) => peerSessionId(id, person, start?.continues) : (id: string) => id;
   for (const e of events) {
     if (e.type !== "step.start" || e.stepType !== "agent") continue;
     const end = ends.get(keyOf(e));

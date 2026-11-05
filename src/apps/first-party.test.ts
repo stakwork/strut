@@ -12,7 +12,7 @@ import { defineStep, type StepRegistry } from "../core.js";
 import { WorkspaceManager } from "../workspace.js";
 import { MemoryRunStore } from "../store.js";
 import { appIdentity } from "../auth.js";
-import { appSessionId } from "../session-store.js";
+import { appSessionId, peerSessionId } from "../session-store.js";
 import { kitForTests } from "../test-util/app-kit.js";
 import { ORCHESTRATOR_WORKFLOW } from "../orchestrator-seed.js";
 import { reservedAppName } from "./files.js";
@@ -65,6 +65,12 @@ describe("first-party apps: the pure parts", () => {
     assert.equal(appSessionId("alice", "strut/assistant", "alice", undefined, true), "alice");
     assert.equal(appSessionId("bob/c1", "strut/assistant", "alice", undefined, true), "app/strut/assistant/alice/bob/c1");
     assert.equal(appSessionId("alice/c1", "plain", "alice"), "app/plain/alice/alice/c1", "a model-written page's");
+    // The conversation the run continues (plans/jamie-app.md §2.2), as it is.
+    assert.equal(appSessionId("hive-1", "strut/assistant", "alice", undefined, true, "hive-1"), "hive-1");
+    assert.equal(appSessionId("hive-2", "strut/assistant", "alice", undefined, true, "hive-1"), "app/strut/assistant/alice/hive-2");
+    assert.equal(appSessionId("hive-1", "plain", "alice", undefined, false, "hive-1"), "app/plain/alice/hive-1", "never a model-written page's");
+    assert.equal(peerSessionId("hive-1", "alice", "hive-1"), "hive-1");
+    assert.equal(peerSessionId("hive-1", undefined, "hive-1"), "peer/hive-1", "never a plain peer's");
   });
 
   it("proposal/decide refuses an agent's tool call, a model-written page and no person", async () => {
@@ -298,6 +304,36 @@ describe("first-party apps through a whole strut", () => {
     assert.deepEqual(woke.wake, { job: person.jobs[0].job, runId: person.jobs[0].runId });
     assert.equal(woke.text, "Summary.");
     assert.ok((await alice.ok("job/get", { job: person.jobs[0].job })).job, "the page reads the person's job");
+  });
+
+  it("a conversation Hive started: the viewer continues it once they took a turn in it, or it is shared; never another's", async () => {
+    // Hive's ids are bare; its turns run with the deployment's key.
+    const host = async (actor: string, session: string, prompt: string) => {
+      const res = await strut.app.request(`/workflows/${ORCHESTRATOR_WORKFLOW}/run`, {
+        method: "POST",
+        headers: headers(actor),
+        body: JSON.stringify({ input: { prompt, session } }),
+      });
+      assert.equal(res.status, 202);
+      await idle();
+    };
+    await host("alice", "hive-conv-1", "plan the offsite");
+    const alice = page("strut/assistant", "alice");
+    const bob = page("strut/assistant", "bob");
+
+    const runId = await alice.turn("hive-conv-1", "add a budget");
+    const start = (await alice.ok("run/events", { workflow: ORCHESTRATOR_WORKFLOW, runId })).find((e: any) => e.type === "run.start");
+    assert.equal(start.continues, "hive-conv-1");
+    assert.ok(JSON.stringify(requests.at(-1).messages).includes("plan the offsite"), "the thread's history was sent");
+    assert.deepEqual((await alice.ok("conversation/get", { session: "hive-conv-1" })).turns.map((t: any) => t.prompt), ["add a budget", "plan the offsite"]);
+    const sessions = ((await (await strut.app.request("/sessions", { headers: headers() })).json()) as { sessions: Array<{ id: string }> }).sessions.map((s) => s.id);
+    assert.ok(!sessions.some((id) => id.endsWith("hive-conv-1") && id !== "hive-conv-1"), sessions.join(", "));
+
+    const refused = await bob.call("run/launch", { workflow: ORCHESTRATOR_WORKFLOW, input: { prompt: "me too", session: "hive-conv-1" } });
+    assert.match(refused.error!, /conversation_not_yours/);
+    await alice.ok("conversation/update", { session: "hive-conv-1", shared: true });
+    await bob.turn("hive-conv-1", "me too");
+    assert.deepEqual((await bob.ok("conversation/get", { session: "hive-conv-1" })).participants, ["alice", "bob"]);
   });
 
   it("a model-written page gets none of it", async () => {
