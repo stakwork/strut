@@ -184,6 +184,7 @@ export {
   resolveModel,
   listModelOptions,
   canonicalModelName,
+  startModelCatalog,
   stepAuth,
   type ResolveModelOptions,
   type ResolvedModel,

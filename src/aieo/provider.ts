@@ -400,11 +400,9 @@ export interface TokenUsageForCost {
  *  0, and the gateway bills it. */
 export function computeSessionCost(provider: Provider | string, usage: TokenUsageForCost, modelId?: string, actualCost?: number): number {
   if (typeof actualCost === "number" && actualCost >= 0) return actualCost;
-  const pricing =
-    (provider === "maple" && modelId ? MAPLE_MODELS[modelId]?.pricing : undefined) ??
-    (provider === "numes" && modelId ? NUMES_MODELS[modelId]?.pricing : undefined) ??
-    (modelId ? getModelPricing(modelId) : undefined) ??
-    TOKEN_PRICING[provider as Provider];
+  // The model's own price (Maple's or Numes' table, then the datasheet), else
+  // the provider's flat rate; a provider aieo does not know has neither.
+  const pricing = (modelId ? getModelPrice(provider as Provider, modelId) : undefined) ?? TOKEN_PRICING[provider as Provider];
   if (!pricing) return 0;
   const inputCost = (usage.input / 1_000_000) * pricing.inputTokenPrice;
   const cacheReadCost = (usage.cache_read / 1_000_000) * (pricing.cacheReadPrice ?? pricing.inputTokenPrice);
@@ -1159,12 +1157,18 @@ const DEFAULT_CONTEXT_LIMITS: Record<Provider, number> = {
 const FALLBACK_CONTEXT_LIMIT = 128_000;
 
 /**
- * Get the context window size (max input tokens) for a given model.
+ * Get the context window size (max input tokens) for a given model: Maple's
+ * or Numes' table, else the datasheet (`loadModelCatalog`), else this file's.
  */
 export function getContextLimit(modelId: string, provider: Provider): number {
   if (provider === "maple") return MAPLE_MODELS[modelId]?.context ?? DEFAULT_CONTEXT_LIMITS.maple;
   if (provider === "numes") return NUMES_MODELS[modelId]?.context ?? DEFAULT_CONTEXT_LIMITS.numes;
-  return MODEL_CONTEXT_LIMITS[modelId] ?? DEFAULT_CONTEXT_LIMITS[provider] ?? FALLBACK_CONTEXT_LIMIT;
+  return (
+    getCatalogEntry(provider, modelId)?.maxInputTokens ??
+    MODEL_CONTEXT_LIMITS[modelId] ??
+    DEFAULT_CONTEXT_LIMITS[provider] ??
+    FALLBACK_CONTEXT_LIMIT
+  );
 }
 
 const TOKEN_PRICING: Record<Provider, TokenPricing> = {
@@ -1214,38 +1218,182 @@ export function getTokenPricing(provider: Provider): TokenPricing {
   return TOKEN_PRICING[provider];
 }
 
-const modelPricing: Record<string, TokenPricing> = {};
+// ── The model catalog: prices and limits as data ────────────────────────────
+//
+// bifrost's datasheet — the file the LLM gateway prices every call from
+// (stakgraph gateway/internal/pricing) and bifrost prices its logs from —
+// keyed by model as bifrost names it ("claude-sonnet-5-5",
+// "gemini/gemini-3.8-flash", "openrouter/moonshotai/kimi-k3"), each with its
+// per-token prices and input and output limits. `loadModelCatalog` loads it;
+// until then, and for a model it does not hold, the tables in this file
+// answer. Maple's and Numes' own tables answer before it (the gateway's
+// runtime price rows do the same there): the key rule's last-segment form
+// would otherwise price a free Numes model, or an unlisted Maple one, at
+// another vendor's rate.
 
-export async function loadModelPricing(): Promise<void> {
-  try {
-    const res = await fetch("https://openrouter.ai/api/v1/models");
-    const { data } = (await res.json()) as { data: any[] };
-    for (const m of data) {
-      const p = m.pricing || {};
-      const inputTokenPrice = parseFloat(p.prompt) * 1_000_000;
-      const outputTokenPrice = parseFloat(p.completion) * 1_000_000;
-      if (!inputTokenPrice && !outputTokenPrice) continue;
-      modelPricing[m.id] = {
-        inputTokenPrice,
-        outputTokenPrice,
-        ...(parseFloat(p.input_cache_read) > 0 && {
-          cacheReadPrice: parseFloat(p.input_cache_read) * 1_000_000,
-        }),
-        ...(parseFloat(p.input_cache_write) > 0 && {
-          cacheWritePrice: parseFloat(p.input_cache_write) * 1_000_000,
-        }),
-      };
-    }
-  } catch {
-    console.warn("Failed to load model pricing; using provider defaults");
-  }
+export const MODEL_CATALOG_URL = "https://getbifrost.ai/datasheet";
+
+export interface CatalogEntry {
+  pricing?: TokenPricing;
+  maxInputTokens?: number;
+  maxOutputTokens?: number;
 }
 
-function getModelPricing(modelId: string): TokenPricing | undefined {
-  const key = modelId.startsWith("openrouter/")
-    ? modelId.slice("openrouter/".length)
-    : modelId;
-  return modelPricing[key];
+let catalog: Map<string, CatalogEntry> | undefined;
+let catalogTimer: ReturnType<typeof setInterval> | undefined;
+
+/** bifrost's provider name for each of aieo's. Maple has none: its models are
+ *  priced by its own table only. A Numes model is looked up as the OpenRouter
+ *  slug it is, as its unlisted models were priced before. */
+const CATALOG_PROVIDER: Partial<Record<Provider, string>> = {
+  anthropic: "anthropic",
+  google: "gemini",
+  openai: "openai",
+  openrouter: "openrouter",
+  xai: "xai",
+  numes: "openrouter",
+};
+
+// Per token → per million, rounded to 12 significant digits so 1e-7 is 0.1,
+// not 0.09999999999999999.
+const perMillion = (v: unknown): number | undefined =>
+  typeof v === "number" && Number.isFinite(v) && v >= 0 ? Number((v * 1_000_000).toPrecision(12)) : undefined;
+const positive = (v: unknown): number | undefined =>
+  typeof v === "number" && Number.isFinite(v) && v > 0 ? v : undefined;
+
+/** The datasheet's JSON → entries. Throws when nothing in it is priced. */
+export function parseModelCatalog(raw: string): Map<string, CatalogEntry> {
+  const sheet = JSON.parse(raw) as Record<string, Record<string, unknown>>;
+  const out = new Map<string, CatalogEntry>();
+  let priced = 0;
+  for (const [key, row] of Object.entries(sheet ?? {})) {
+    if (!row || typeof row !== "object") continue;
+    const input = perMillion(row.input_cost_per_token);
+    const output = perMillion(row.output_cost_per_token);
+    const entry: CatalogEntry = {};
+    if (input !== undefined && output !== undefined) {
+      const cacheRead = perMillion(row.cache_read_input_token_cost);
+      const cacheWrite = perMillion(row.cache_creation_input_token_cost);
+      entry.pricing = {
+        inputTokenPrice: input,
+        outputTokenPrice: output,
+        ...(cacheRead ? { cacheReadPrice: cacheRead } : {}),
+        ...(cacheWrite ? { cacheWritePrice: cacheWrite } : {}),
+      };
+      priced++;
+    }
+    const maxIn = positive(row.max_input_tokens);
+    const maxOut = positive(row.max_output_tokens);
+    if (maxIn) entry.maxInputTokens = maxIn;
+    if (maxOut) entry.maxOutputTokens = maxOut;
+    if (entry.pricing || maxIn || maxOut) out.set(key, entry);
+  }
+  if (!priced) throw new Error("the model catalog prices no model");
+  return out;
+}
+
+/** Use these entries from now on (`undefined`: none). A host that has the
+ *  sheet already, and tests, set it here; `loadModelCatalog` does it too. */
+export function setModelCatalog(next: Map<string, CatalogEntry> | undefined): void {
+  catalog = next;
+}
+
+/** The gateway's key rule (`pricing.Keys`): the model as given, then
+ *  "<provider>/<model>", then the name after its last "/". */
+function catalogKeys(provider: string, model: string): string[] {
+  const keys = [model];
+  if (!model.startsWith(`${provider}/`)) keys.push(`${provider}/${model}`);
+  const i = model.lastIndexOf("/");
+  if (i >= 0 && i + 1 < model.length) keys.push(model.slice(i + 1));
+  return keys;
+}
+
+/** The datasheet's entry for a model: undefined when no catalog is loaded,
+ *  the provider is Maple, or the sheet does not hold the model. */
+export function getCatalogEntry(provider: Provider, modelId: string): CatalogEntry | undefined {
+  const name = CATALOG_PROVIDER[provider];
+  if (!catalog || !name || !modelId) return undefined;
+  for (const key of catalogKeys(name, modelId)) {
+    const entry = catalog.get(key);
+    if (entry) return entry;
+  }
+  return undefined;
+}
+
+/** A model's own price per million tokens: Maple's or Numes' table, then the
+ *  datasheet. Undefined when neither knows it — never the provider's flat
+ *  rate, which `computeSessionCost` falls back to. */
+export function getModelPrice(provider: Provider, modelId: string): TokenPricing | undefined {
+  if (provider === "maple") return MAPLE_MODELS[modelId]?.pricing;
+  if (provider === "numes") return NUMES_MODELS[modelId]?.pricing ?? getCatalogEntry(provider, modelId)?.pricing;
+  return getCatalogEntry(provider, modelId)?.pricing;
+}
+
+export interface LoadModelCatalogOptions {
+  /** Where the last good sheet is kept: read at once (a restart prices from
+   *  it before the first fetch), written after each fetch. Omit: memory only. */
+  cachePath?: string;
+  /** Default `MODEL_CATALOG_URL`. */
+  url?: string;
+  /** How often to fetch it again; default 24 h (the gateway's cadence), 0 never. */
+  refreshMs?: number;
+  /** For tests. */
+  fetch?: typeof fetch;
+}
+
+/** Load bifrost's datasheet: the copy at `cachePath` first, then a fetch,
+ *  then a fetch every `refreshMs`. A fetch that fails keeps the last good
+ *  sheet and says so; it never throws. Resolves once the first fetch is done
+ *  with what is in use: how many models, and where they came from. */
+export async function loadModelCatalog(
+  opts: LoadModelCatalogOptions = {},
+): Promise<{ models: number; source: "fetch" | "cache" | "none" }> {
+  const { readFile, writeFile, rename, mkdir } = await import("node:fs/promises");
+  const { dirname } = await import("node:path");
+  const url = opts.url ?? MODEL_CATALOG_URL;
+  const get = opts.fetch ?? fetch;
+  let source: "fetch" | "cache" | "none" = catalog ? "cache" : "none";
+  if (opts.cachePath) {
+    try {
+      catalog = parseModelCatalog(await readFile(opts.cachePath, "utf8"));
+      source = "cache";
+    } catch (err: any) {
+      if (err?.code !== "ENOENT") console.warn(`[aieo] model catalog at ${opts.cachePath} unreadable (${err?.message ?? err}); waiting for a fetch`);
+    }
+  }
+  const fetchOnce = async (): Promise<boolean> => {
+    try {
+      const res = await get(url, { signal: AbortSignal.timeout(30_000) });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const raw = await res.text();
+      catalog = parseModelCatalog(raw);
+      if (opts.cachePath) {
+        const tmp = `${opts.cachePath}.tmp`;
+        await mkdir(dirname(opts.cachePath), { recursive: true });
+        await writeFile(tmp, raw);
+        await rename(tmp, opts.cachePath);
+      }
+      return true;
+    } catch (err: any) {
+      console.warn(`[aieo] model catalog fetch from ${url} failed (${err?.message ?? err}); ${catalog ? "keeping the last good one" : "using aieo's own tables"}`);
+      return false;
+    }
+  };
+  if (await fetchOnce()) source = "fetch";
+  const every = opts.refreshMs ?? 24 * 60 * 60 * 1000;
+  if (catalogTimer) clearInterval(catalogTimer);
+  catalogTimer = undefined;
+  if (every > 0) {
+    catalogTimer = setInterval(() => void fetchOnce(), every);
+    catalogTimer.unref?.();
+  }
+  return { models: catalog?.size ?? 0, source: catalog ? source : "none" };
+}
+
+/** The datasheet with no saved copy — kept so an older caller (mcp's boot)
+ *  works. It loaded OpenRouter's price list before the datasheet held it. */
+export async function loadModelPricing(): Promise<void> {
+  await loadModelCatalog();
 }
 
 export type ThinkingSpeed = "thinking" | "fast";

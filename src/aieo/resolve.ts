@@ -32,6 +32,7 @@ import {
   MODELS,
   NUMES_MODELS,
   PROVIDERS,
+  getCatalogEntry,
   getContextLimit,
   getModel,
   getProviderForModel,
@@ -168,7 +169,8 @@ export function canonicalModelName(model?: string, provider?: Provider | string)
  * OpenAI-compatible hosts (OpenRouter et al) reject max_tokens above the
  * model limit rather than clamping, so they keep the conservative 64k
  * default. An explicit MAX_OUTPUT_TOKENS env wins, within an Anthropic
- * model's limit.
+ * model's limit. With the model catalog loaded (`loadModelCatalog`), a
+ * model's own `max_output_tokens` lowers either cap, never raises it.
  */
 export function maxOutputTokensFor(
   provider?: string,
@@ -176,8 +178,13 @@ export function maxOutputTokensFor(
   providerOptions?: unknown,
 ): number {
   const fromEnv = Number(env.MAX_OUTPUT_TOKENS);
+  const sheet =
+    modelId && provider && provider !== "maple" && provider !== "numes" && PROVIDERS.includes(provider as Provider)
+      ? getCatalogEntry(provider as Provider, modelId)?.maxOutputTokens
+      : undefined;
+  const capped = (n: number) => (sheet ? Math.min(n, sheet) : n);
   if (provider === "anthropic") {
-    const limit = anthropicMaxOutput(modelId) - thinkingBudget(providerOptions);
+    const limit = capped(anthropicMaxOutput(modelId)) - thinkingBudget(providerOptions);
     return fromEnv > 0 ? Math.min(fromEnv, limit) : limit;
   }
   if (fromEnv > 0) return fromEnv;
@@ -192,7 +199,7 @@ export function maxOutputTokensFor(
   // max_tokens past the model's own limit. An unlisted model: under a tenth
   // of its catalogue's common 131k window.
   if (provider === "numes") return (modelId && NUMES_MODELS[modelId]?.maxOutput) || 12_288;
-  return 64_000;
+  return capped(64_000);
 }
 
 /** An Anthropic model's output limit, matched by substring as

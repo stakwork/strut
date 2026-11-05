@@ -2,7 +2,7 @@ import { z } from "zod";
 import { defineStep, withUsage, type StepContext } from "../../core.js";
 import type { StrutCapabilities } from "../../capabilities.js";
 import { loadAieo, resolveModel, stepAuth } from "../../llm.js";
-import { usageFromSteps, usageForCost } from "../../pricing.js";
+import { usageFromResult, usageFromSteps, usageForCost, reportedCost } from "../../pricing.js";
 import { bootEnv } from "../../env.js";
 
 const EXAMPLE = `- id: summarize
@@ -73,10 +73,15 @@ export default defineStep({
       ...(cfg.schema ? { output: Output.object({ schema: (await toSdkSchema(cfg.schema)) as any }) } : {}),
       maxOutputTokens,
     });
-    // Token usage + dollar cost at aieo's rates, like the agent step's output.
+    // Token usage + dollar cost, like the agent step's output: per model call,
+    // what the provider reported, else the tokens at the model's price.
     const { computeSessionCost } = await loadAieo();
     const usage = usageFromSteps(result.steps);
-    const cost = computeSessionCost(provider, usageForCost(usage), modelId);
+    const cost = (result.steps ?? []).reduce(
+      (sum: number, s: any) =>
+        sum + (reportedCost(s?.usage, s?.providerMetadata) ?? computeSessionCost(provider, usageForCost(usageFromResult(s?.usage, s?.providerMetadata)), modelId)),
+      0,
+    );
     // Structured: the object's own fields win a name clash with usage/cost.
     const out = cfg.schema ? { usage, cost, ...(result.output as object) } : { text: result.text, usage, cost };
     return withUsage(out, { modelCalls: result.steps.length || 1, usage, cost });

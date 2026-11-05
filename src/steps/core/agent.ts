@@ -20,7 +20,7 @@ import { capToolOutput } from "../../chat-store.js";
 import { gatedByDefault, grantsTool, mcpGrantName, MCP_GRANT_PREFIX, resolveRegistration, type McpRegistry } from "../../mcp-registry.js";
 import { isSystemWorkflow, SYSTEM_WRITER } from "../../system-workflows.js";
 import { resolveStep } from "../registry.js";
-import { usageFromResult, usageFromSteps, usageForCost, addUsage, emptyUsage, type TokenUsage } from "../../pricing.js";
+import { usageFromResult, usageFromSteps, usageForCost, addUsage, emptyUsage, reportedCost, type TokenUsage } from "../../pricing.js";
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, statSync } from "node:fs";
 import { join, resolve, dirname, isAbsolute, sep } from "node:path";
 import os from "node:os";
@@ -1731,9 +1731,12 @@ export default defineStep({
     // keeps one step's results inside the room above it.
     const compactAt = compactAtFromEnv();
     resultCap = resultCapChars(BASH_MAX_CHARS, resolved.contextLimit, compactAt);
-    // Dollar cost at aieo's rates (per-model OpenRouter rates once
-    // loadModelPricing() has run; provider defaults otherwise).
+    // Dollar cost: per model call, what the provider reported (Numes,
+    // OpenRouter), else the call's tokens at the model's own price (the model
+    // catalog, once loaded — aieo's loadModelCatalog) or its provider's rate.
     const costOf = (u: TokenUsage) => computeSessionCost(resolved.provider, usageForCost(u), resolved.modelId);
+    const stepCost = (s: any) => reportedCost(s?.usage, s?.providerMetadata) ?? costOf(usageFromResult(s?.usage, s?.providerMetadata));
+    const stepsCost = (steps: any[] | undefined) => (steps ?? []).reduce((sum: number, s: any) => sum + stepCost(s), 0);
 
     // A session is held from here to the commit (or the failure): one turn at
     // a time per thread. Its system prompt is the first turn's, replayed
@@ -1850,6 +1853,7 @@ export default defineStep({
       const bankedSteps: any[] = [];
       const bankedMessages: any[] = [];
       let bankedUsage = emptyUsage();
+      let bankedCost = 0;
       // The context after the latest model call: what it read plus what it wrote.
       let contextUsed = 0;
       // Shared by the main loop and the premature-stop nudge continuation.
@@ -1859,6 +1863,7 @@ export default defineStep({
         bankedMessages.push(...((sf.response?.messages ?? []) as any[]));
         const stepUsage = usageFromResult(sf.usage, sf.providerMetadata);
         bankedUsage = addUsage(bankedUsage, stepUsage);
+        bankedCost += stepCost(sf);
         contextUsed = stepUsage.inputTokens + stepUsage.cacheReadTokens + stepUsage.cacheWriteTokens + stepUsage.outputTokens;
         // A length finish means the generation was TRUNCATED at the output
         // cap — a cut-off tool call never executes, so the loop dies with no
@@ -1973,6 +1978,7 @@ export default defineStep({
         try {
           const got = await summarize({ streamText, model, system: instructions, tools, ...callSettings, messages: before, retain: cfg.retain ?? AGENT_RETAIN });
           bankedUsage = addUsage(bankedUsage, got.usage);
+          bankedCost += costOf(got.usage);
           if (got.summary === undefined) throw new Error(`the summary ended with finishReason "${got.finishReason}"`);
           const text = compactionMessage(got.summary, { messages: before.length, tokens });
           const message = { role: "user" as const, content: preamble ? `${text}\n\n${preamble}` : text };
@@ -2144,7 +2150,7 @@ export default defineStep({
       // usage keeps the provider's raw counts — pricing.ts). `provider` drives
       // the rate table. Mutable so a forced final-answer turn (below) can be folded in.
       let usage = bankedUsage;
-      let cost = costOf(usage);
+      let cost = bankedCost;
       console.log(
         `[agent] tokens in:${usage.inputTokens} cacheRead:${usage.cacheReadTokens} cacheWrite:${usage.cacheWriteTokens} out:${usage.outputTokens} → $${cost.toFixed(4)}`,
       );
@@ -2187,9 +2193,10 @@ export default defineStep({
         // final_answer call: the tap reads that JSON for `text`.
         if (useSchema) replyTap?.object();
         await drain(forced);
-        const fu = usageFromSteps(await forced.steps);
+        const forcedSteps = await forced.steps;
+        const fu = usageFromSteps(forcedSteps);
         usage = addUsage(usage, fu);
-        cost += costOf(fu);
+        cost += stepsCost(forcedSteps);
         if (((await forced.toolCalls) as unknown[]).length) {
           // A tool call despite the instruction: it ran nothing and answers
           // nothing, and it is not recorded — a call without its result in
@@ -2253,7 +2260,7 @@ export default defineStep({
         noteText(nudgedSteps);
         const nu = usageFromSteps(nudgedSteps);
         usage = addUsage(usage, nu);
-        cost += costOf(nu);
+        cost += stepsCost(nudgedSteps);
         return nudgedSteps;
       };
 

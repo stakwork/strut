@@ -29,6 +29,32 @@ export function loadAieo(): Promise<typeof import("./aieo/index.js")> {
   return import("./aieo/index.js");
 }
 
+/** Start aieo's model catalog: bifrost's datasheet, the file the LLM gateway
+ *  prices every call from, with each model's price, context window and
+ *  output cap (aieo `loadModelCatalog`). Kept at
+ *  `<dataDir>/models/datasheet.json`, read at once and fetched again every
+ *  24 h; a fetch that fails keeps the last good copy, and without any, aieo's
+ *  own tables answer. `STRUT_MODEL_CATALOG`: `off` loads nothing, an http(s)
+ *  URL is fetched instead of bifrost's. The default server calls this at
+ *  boot (server.ts); a host that embeds createStrut calls it itself. Never
+ *  throws, and nothing waits on it. */
+export async function startModelCatalog(dataDir: string): Promise<void> {
+  const setting = bootEnv()["STRUT_MODEL_CATALOG"]?.trim();
+  if (setting === "off") return;
+  if (setting && !/^https?:\/\//.test(setting)) {
+    console.warn(`[models] STRUT_MODEL_CATALOG is neither "off" nor an http(s) URL; the catalog is not loaded`);
+    return;
+  }
+  try {
+    const aieo = await loadAieo();
+    const { join } = await import("node:path");
+    const got = await aieo.loadModelCatalog({ cachePath: join(dataDir, "models", "datasheet.json"), ...(setting ? { url: setting } : {}) });
+    console.log(`[models] catalog: ${got.models} models (${got.source})`);
+  } catch (err) {
+    console.warn(`[models] catalog not loaded: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
 // ── The auth seam (plans/mothership-cost-control.md §1) ────────────────────
 //
 // Core knows one hook: `llmAuth(ctx)` → where to send the call and what to
@@ -498,11 +524,11 @@ export interface ModelOption {
   available: boolean;
   /** The context window, tokens. Absent when aieo does not know the provider. */
   contextLimit?: number;
-  /** USD per million tokens, where strut knows the model's own rate: today
-   *  Maple's and Numes' (aieo's tables). Absent for every other model: aieo
-   *  bills those at a flat per-provider rate, which is not the model's
-   *  price. Prices and windows are to come from bifrost's datasheet, the
-   *  file the gateway bills from (plans/aieo-in-strut.md §6–7). */
+  /** USD per million tokens, where strut knows the model's own rate:
+   *  Maple's and Numes' (aieo's tables), and every model bifrost's datasheet
+   *  holds once `startModelCatalog` has loaded it (the file the gateway bills
+   *  from). Absent otherwise: aieo then bills at a flat per-provider rate,
+   *  which is not the model's price. */
   pricing?: TokenPricing;
 }
 
@@ -551,7 +577,10 @@ export async function listModelOptions(
   const add = (provider: Provider, modelId: string, alias?: string) => {
     const name = `${provider}/${modelId}`;
     if (models.has(name)) return;
-    const pricing = tables[provider]?.[modelId]?.pricing;
+    // The model's own price: Maple's or Numes' table, else bifrost's
+    // datasheet once `startModelCatalog` has loaded it. Never a provider's
+    // flat rate, which is not a price.
+    const pricing = aieo.getModelPrice(provider, modelId);
     models.set(name, {
       provider,
       ...(alias ? { alias } : {}),

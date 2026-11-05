@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { usageFromResult, usageFromSteps, coerceUsage, addUsage, emptyUsage, usageForCost } from "./pricing.js";
+import { usageFromResult, usageFromSteps, coerceUsage, addUsage, emptyUsage, usageForCost, reportedCost } from "./pricing.js";
 
 test("usageFromResult prefers the v6 inputTokenDetails breakdown", () => {
   const u = usageFromResult({
@@ -102,4 +102,14 @@ test("usageFromSteps sums each step with its own raw usage", () => {
   ]);
   assert.deepEqual([u.cacheReadTokens, u.inputTokens, u.outputTokens], [1200, 800, 100]);
   assert.deepEqual(usageFromSteps(undefined), emptyUsage());
+});
+
+test("reportedCost: what Numes or OpenRouter reported for one call, else nothing", () => {
+  assert.equal(reportedCost({ inputTokens: 3, raw: { prompt_tokens: 3, cost: 0.0042 } }), 0.0042, "the raw usage's cost");
+  assert.equal(reportedCost({ raw: { cost: 0 } }), 0, "a free call is a reported 0");
+  assert.equal(reportedCost({ raw: {} }, { openrouter: { usage: { cost: 0.5 } } }), 0.5, "OpenRouter's provider metadata");
+  assert.equal(reportedCost({ raw: { cost: "0.1" } }), undefined, "not a number");
+  assert.equal(reportedCost({ raw: { cost: -1 } }), undefined, "negative");
+  assert.equal(reportedCost({ inputTokens: 3 }), undefined, "an Anthropic call reports none");
+  assert.equal(reportedCost(undefined), undefined);
 });
