@@ -57,12 +57,12 @@ export interface AppHostOptions {
    *  the host's wallet is offered to the page and its `strut/wallet/*` calls
    *  are relayed there; anywhere else it is unused. */
   wallet?: NativeWalletApp;
-  /** The app as it lives HERE, at the version on screen: the host then
-   *  carries its channels (plans/app-channels.md §3) — one socket to
-   *  `/channels` for the page, opened with a ticket on its first join. Left
-   *  out for a visitor (no viewer to mint for) and a peer's app (its
-   *  channels are the peer's; the relay through this strut is a later item). */
-  channels?: { name: string; version: string };
+  /** The app, at the version on screen: the host then carries its
+   *  channels (plans/app-channels.md §3) — one socket to this strut's
+   *  `/channels` for the page, opened with a ticket on its first join. A
+   *  peer's app names its peer, and this strut relays the socket there
+   *  (§4). Left out for a visitor: there is no viewer to mint for. */
+  channels?: { name: string; version: string; peer?: string };
 }
 
 export interface AppHostConnection {
@@ -137,7 +137,7 @@ export async function connectAppHost(opts: AppHostOptions): Promise<AppHostConne
     ? relayChannels({
         bridge: bridge as unknown as Parameters<typeof relayChannels>[0]["bridge"],
         async open(client) {
-          const { ticket } = await channelTicket(channels.name, channels.version);
+          const { ticket } = await channelTicket(channels.name, channels.version, channels.peer);
           return new WebSocket(channelSocketUrl(ticket, client));
         },
       })

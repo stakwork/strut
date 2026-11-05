@@ -650,13 +650,22 @@ export interface ChannelTicket {
   /** The app the host is showing, at the version it shows. */
   app: string;
   version: string;
+  /** The peer the app lives on (plans/app-channels.md §4): this strut relays
+   *  the socket there. Absent: an app of this strut's own. */
+  peer?: string;
   exp: number;
 }
 
 /** A ticket for `claims`, living `ttlMs`. */
-export function channelTicket(claims: { actor?: string; app: string; version: string }, ttlMs = CHANNEL_TICKET_MS): { ticket: string; exp: number } {
+export function channelTicket(claims: { actor?: string; app: string; version: string; peer?: string }, ttlMs = CHANNEL_TICKET_MS): { ticket: string; exp: number } {
   const exp = Date.now() + ttlMs;
-  const body = { ...(claims.actor !== undefined ? { actor: claims.actor } : {}), app: claims.app, version: claims.version, exp };
+  const body = {
+    ...(claims.actor !== undefined ? { actor: claims.actor } : {}),
+    app: claims.app,
+    version: claims.version,
+    ...(claims.peer !== undefined ? { peer: claims.peer } : {}),
+    exp,
+  };
   const signed = signClaims("channel", body);
   return { ticket: `${CHANNEL_PREFIX}${signed ?? `${Buffer.from(JSON.stringify(body)).toString("base64url")}.`}`, exp };
 }
@@ -681,7 +690,15 @@ export function verifyChannelTicket(ticket: string, now = Date.now()): ChannelTi
   if (!claims || typeof claims["app"] !== "string" || !claims["app"] || typeof claims["version"] !== "string" || !claims["version"]) return undefined;
   const actor = claims["actor"];
   if (actor !== undefined && (typeof actor !== "string" || !actor)) return undefined;
-  return { ...(typeof actor === "string" ? { actor } : {}), app: claims["app"], version: claims["version"], exp: claims["exp"] as number };
+  const peer = claims["peer"];
+  if (peer !== undefined && (typeof peer !== "string" || !peer)) return undefined;
+  return {
+    ...(typeof actor === "string" ? { actor } : {}),
+    app: claims["app"],
+    version: claims["version"],
+    ...(typeof peer === "string" ? { peer } : {}),
+    exp: claims["exp"] as number,
+  };
 }
 
 /** What a channel name is derived under when strut has no secret (dev

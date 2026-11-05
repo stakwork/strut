@@ -2010,11 +2010,12 @@ export const deleteApp = (name: string) =>
 
 /** A ticket for an app's channel socket (`POST /apps/:name/channel-ticket`,
  *  plans/app-channels.md §2): what this host opens `GET /channels` with,
- *  for the signed-in viewer and the version on screen. */
-export const channelTicket = (name: string, version: string) =>
+ *  for the signed-in viewer and the version on screen. A peer's app names
+ *  its peer: this strut relays the socket there (§4). */
+export const channelTicket = (name: string, version: string, peer?: string) =>
   fetchJSON<{ ticket: string; exp: number }>(`/apps/${encodeURIComponent(name)}/channel-ticket`, {
     method: "POST",
-    body: JSON.stringify({ version }),
+    body: JSON.stringify({ version, ...(peer ? { peer } : {}) }),
   });
 
 /** The channel socket's URL on this origin and mount, with a ticket — never

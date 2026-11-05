@@ -1452,8 +1452,8 @@ page connects nowhere: its HOST holds one WebSocket per open page and
 relays it to the page over the MCP Apps bridge. Nothing is kept — no run,
 no log line — and a restart empties every channel. Built: the service,
 the ticket and the socket below, the bridge methods, the kit's
-`useChannel`, strut's own UI as a host (for an app that lives on this
-strut), and the steps below. The peer relay is a later work item.
+`useChannel`, strut's own UI as a host, the steps below, and the peer
+relay.
 
 **The steps** — for code an app runs (`ctx.app`: a step its page called, a
 workflow it launched); refused without it, and refused from a page (a page
@@ -1469,7 +1469,7 @@ uses its host's socket):
 cannot set a header on an upgrade:
 
 ```
-POST /apps/:name/channel-ticket        { version: "v3" }     (the key or a session; x-strut-actor = the viewer)
+POST /apps/:name/channel-ticket        { version: "v3", peer? }     (the key or a session; x-strut-actor = the viewer)
 → 200 { ticket: "strut-channel.<claims>.<hmac>", exp: <ms> }
 ```
 
@@ -1479,6 +1479,16 @@ minute (`CHANNEL_TICKET_MS`) and opens only `GET /channels`; the socket
 outlives it. 400 without `version`, 404 for a version this strut does not
 hold, 403 for any peer credential. With no secret to sign under (dev mode,
 the gate open) the ticket is unsigned and taken at its word.
+
+**A peer's app** (`?app=@<peer>/<name>` in strut's UI): the ticket names
+`peer`, a peer on file (404 otherwise; the version is the peer's to check),
+and the socket it opens HERE is piped to the peer's `/channels?app=<name>@<version>`
+with the peer record's token — a person token, so the peer stamps the
+person — and its CA. A clean close is passed on as clean; anything else
+ends the peer's side abruptly, so it keeps the place while the host comes
+back (`?client=` rides along). What the peer refuses (a version it does
+not hold, a strut's credential) reaches the page as an `error` frame and a
+1011 close. One hop.
 
 **The socket** — `GET /channels` (WebSocket; plain HTTP is a 426). Through
 `strut.upgrade` like `/rooms` (§10), so a host that owns the server routes

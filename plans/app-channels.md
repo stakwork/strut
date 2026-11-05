@@ -1,8 +1,9 @@
 # App channels: live messages between the people on an app
 
-> **Status (2026-11-04): ruled; work items 1, 2, 4, 5, 6 and 9 built
+> **Status (2026-11-04): ruled; work items 1–6 and 9 built
 > (stakwork/strut#487: the service, the ticket, the socket at `GET /channels`,
-> the steps, strut's UI as a host, the kit's `useChannel`, the `App` page).** Written after the question
+> the peer relay, the steps, strut's UI as a host, the kit's `useChannel`, the
+> `App` page).** Written after the question
 > "could someone build a multiplayer game as a strut app?" A game has few
 > workflows (a scoreboard, a referee) and needs fast messages between the
 > people playing it, which strut does not have. The owner ruled every
@@ -216,8 +217,9 @@ Strut's UI shows an app that lives on another strut as
 lives on the peer, where the app lives, and the socket gets there through
 the LOCAL strut:
 
-- The UI mints a ticket from its own strut for `@<peer>/<name>` and opens
-  its own `/channels`, as for any app.
+- The UI mints a ticket from its own strut for `@<peer>/<name>` (`POST
+  /apps/<name>/channel-ticket { version, peer }`) and opens its own
+  `/channels`, as for any app.
 - The local strut sees a peer's app and opens a socket to the peer's
   `/channels?app=<name>@<version>` with the peer record's token in
   `Authorization` (a person token, so the peer stamps the person), trusting
@@ -398,7 +400,7 @@ than that server.
    (auth.ts beside the file and person tokens), `GET /channels`
    through `strut.upgrade`, the frames. Tests over a real socket, as the
    rooms tests do, and the route sweeps.
-3. **The peer relay** (§4) in the same door, with a test against a second
+3. **BUILT (#487). The peer relay** (§4) in the same door, with a test against a second
    strut.
 4. **BUILT (#487). The steps** `channel/send`, `channel/read`, `channel/derive`
    (`src/steps/lib/channel/`), refused without `ctx.app` and in

@@ -122,6 +122,7 @@ import { readLexicon } from "./steps/lib/dictation/_shared.js";
 import { createAudioUpgradeHandler } from "./audio/ws.js";
 import { roomsFor } from "./rooms.js";
 import { createChannels, type ChannelApp, type Channels } from "./channels.js";
+import { pipeChannelToPeer } from "./channels-peer.js";
 import { WebSocketServer, type WebSocket as WsSocket } from "ws";
 import { STATUS_CODES, type IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
@@ -3135,12 +3136,22 @@ export async function createStrut<TServices = unknown>(
   app.post("/apps/:name/channel-ticket", async (c) => {
     const at = appRoute(c);
     if (at instanceof Response) return at;
-    const body = (await c.req.json().catch(() => ({}))) as { version?: unknown };
+    const body = (await c.req.json().catch(() => ({}))) as { version?: unknown; peer?: unknown };
     const version = typeof body.version === "string" ? body.version : "";
     if (!version) return c.json({ error: "version is required: the version the host is showing (v1, v2, … or a preview's label)" }, 400);
-    if (!(await channelAppOf(at.name, version))) return c.json({ error: `App "${at.name}" has no version ${version}` }, 404);
+    // A PEER's app (plans/app-channels.md §4): its channels are the peer's,
+    // and this strut relays the socket there — the peer says whether it
+    // holds the version when the relay connects.
+    const peer = typeof body.peer === "string" && body.peer ? body.peer : undefined;
+    if (body.peer !== undefined && !peer) return c.json({ error: "peer: a peer id" }, 400);
+    if (peer) {
+      if (!(await peerRecords.get(peer))) return c.json({ error: `no peer "${peer}" on file` }, 404);
+      if (!/^v\d+$/.test(version) && !isPreviewLabel(version)) return c.json({ error: `"${version}" is not a version label` }, 404);
+    } else if (!(await channelAppOf(at.name, version))) {
+      return c.json({ error: `App "${at.name}" has no version ${version}` }, 404);
+    }
     const actor = await resolveActor(c);
-    return c.json(channelTicket({ ...(actor ? { actor } : {}), app: at.name, version }));
+    return c.json(channelTicket({ ...(actor ? { actor } : {}), app: at.name, version, ...(peer ? { peer } : {}) }));
   });
 
   app.delete("/apps/:name", async (c) => {
@@ -4450,13 +4461,18 @@ export async function createStrut<TServices = unknown>(
   // A send batch is at most a burst of messages at their cap (~0.5 MB).
   const channelsWss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
   const CHANNEL_SLOT = Symbol("strut.channel");
-  type ChannelSlot = { app?: ChannelApp; actor?: string };
+  type ChannelSlot = { app?: ChannelApp; actor?: string; peer?: Peer };
 
   /** The app and viewer an upgrade of the channel socket is admitted for. */
-  const channelViewerFor = async (c: Context): Promise<{ app: ChannelApp; actor?: string } | { status: 401 | 403 | 404 | 400; error: string }> => {
+  const channelViewerFor = async (c: Context): Promise<{ app: ChannelApp; actor?: string; peer?: Peer } | { status: 401 | 403 | 404 | 400; error: string }> => {
     if (c.req.query("ticket") !== undefined) {
       const ticket = channelTicketOf(c);
       if (!ticket) return { status: 401, error: "unauthorized: a channel ticket strut cannot vouch for, or one that has expired — mint another (POST /apps/:name/channel-ticket)" };
+      if (ticket.peer) {
+        const peer = await peerRecords.get(ticket.peer);
+        if (!peer) return { status: 404, error: `no peer "${ticket.peer}" on file` };
+        return { app: { name: ticket.app, version: ticket.version }, peer, ...(ticket.actor ? { actor: ticket.actor } : {}) };
+      }
       const app = await channelAppOf(ticket.app, ticket.version);
       if (!app) return { status: 404, error: `App "${ticket.app}" has no version ${ticket.version}` };
       return { app, ...(ticket.actor ? { actor: ticket.actor } : {}) };
@@ -4479,6 +4495,7 @@ export async function createStrut<TServices = unknown>(
     if ("error" in viewer) return c.json({ error: viewer.error }, viewer.status);
     slot.app = viewer.app;
     if (viewer.actor) slot.actor = viewer.actor;
+    if (viewer.peer) slot.peer = viewer.peer;
     return c.body(null, 204);
   });
 
@@ -4549,7 +4566,11 @@ export async function createStrut<TServices = unknown>(
       if (!(await admitUpgrade(req, socket, "/channels", url.search, { [CHANNEL_SLOT]: slot }))) return;
       const admitted = slot.app;
       if (!admitted) return failed();
-      channelsWss.handleUpgrade(req, socket, head, (ws) => attachChannelSocket(ws, { ...slot, app: admitted }, url.searchParams.get("client")));
+      const client = url.searchParams.get("client") ?? undefined;
+      const peer = slot.peer;
+      channelsWss.handleUpgrade(req, socket, head, (ws) =>
+        peer ? pipeChannelToPeer(ws, peer, admitted, client ? { client } : {}) : attachChannelSocket(ws, { ...slot, app: admitted }, client ?? null),
+      );
     })().catch((err: unknown) => {
       console.error(`[${which}] upgrade failed:`, err);
       failed();
