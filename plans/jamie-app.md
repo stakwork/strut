@@ -144,7 +144,8 @@ waking its own relay thread would answer into a conversation nobody reads.
   of carrying a copy.
 - **Where it is read.** Each host already says, every turn, where the
   conversation is read, in free text inside `context.line`, mixed with the
-  time. Split it: `context: { line, where?, timeZone? }`. A wake builds
+  time. Add it alone beside `line`, which keeps it too (§1.6): `context:
+  { line, where?, timeZone? }`. A wake builds
   its line from the latest human turn's `context` (it is on that run's
   `run.start` input): the current time in `timeZone`, then `where`. Hive
   sends its web, tribe and call sentences as `where` (today's
@@ -227,8 +228,12 @@ or vague, and where it differs:
   {outcome} {produced} {reply} {question} {continue}` and `{silent}`, each
   piece filled once so a job's words are never read as one. "Hive's entry
   is COLLAPSED" became the host's `context.where`, and so did the tribe and
-  call sentences: `where` heads EVERY turn's prompt after `line` (the
-  template's `prompt`), so a host sends it on a person's turn too.
+  call sentences. `where` is read by the WAKE alone, which puts it in its
+  own `context.line` after the time; a person's turn reads `line` only, so
+  a host keeps the medium in `line` too (changed 2026-11-04, after hive#5705
+  moved the tribe and call postures out of `line`: an orchestrator template
+  from before #490 reads `line` alone, so those turns would have lost them
+  on every swarm not yet bumped).
 - **The wake's line**: "Wed 4 Nov 14:02, Europe/London. " in the person's
   latest turn's `context.timeZone`, UTC when it has none or a bad one.
 - **Several ends in one turn** (open question 4: one turn): the mark is the

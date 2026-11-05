@@ -214,13 +214,16 @@ export function wakeLine(now: Date, timeZone?: string): string {
   return `${parts["weekday"]} ${parts["day"]} ${parts["month"]} ${parts["hour"]}:${parts["minute"]}, ${tz ?? "UTC"}. `;
 }
 
-/** A wake's `context`: the time now, and the `where` and `timeZone` of the
- *  person's latest turn's context. */
+/** A wake's `context`: its `line` is the time now in the person's latest
+ *  turn's `timeZone`, then that turn's `where` — the medium sentence a host
+ *  sends for the wake alone. A person's turn reads `line` only, so a host
+ *  keeps its medium there too and every orchestrator template, old or new,
+ *  says it once. `where` and `timeZone` ride along as they came. */
 export function wakeContext(prev: unknown, now: Date): { line: string; where?: string; timeZone?: string } {
   const c = prev && typeof prev === "object" ? (prev as Record<string, unknown>) : {};
   const timeZone = typeof c["timeZone"] === "string" && validZone(c["timeZone"]) ? c["timeZone"] : undefined;
   const where = typeof c["where"] === "string" && c["where"].trim() ? c["where"].trim() : undefined;
-  return { line: wakeLine(now, timeZone), ...(where ? { where } : {}), ...(timeZone ? { timeZone } : {}) };
+  return { line: wakeLine(now, timeZone) + (where ? `${where} ` : ""), ...(where ? { where } : {}), ...(timeZone ? { timeZone } : {}) };
 }
 
 /** The mark a wake turn carries for its ends. */

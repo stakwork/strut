@@ -212,7 +212,8 @@ A `run.end` with no `startedBy` is a job the person started another way;
 show it under no conversation. Hide a reply of exactly `[silent]`. Send
 `context.timeZone` and `context.where` (where the conversation is read: "In
 a Sphinx DM: …") on every turn beside `context.line`: a wake builds its
-line from them.
+line from them. A person's turn reads `context.line` alone, so the medium
+stays in `line` too.
 
 ## 6. Open a deliverable
 
