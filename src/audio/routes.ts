@@ -14,8 +14,9 @@ import { SttUnavailableError, type SttService, type SttStreamOptions } from "./s
 import { SpeakRequestError, TtsUnavailableError, type Speech, type TtsService } from "./tts.js";
 
 export interface AudioRoutesOptions {
-  /** Dictation's vocabulary (memory/lexicon), read per transcription; absent or failing: no rewrite. */
-  lexicon?: () => Promise<Lexicon>;
+  /** Dictation's vocabulary (memory/lexicon), read per transcription; absent, undefined (a host that
+   *  keeps none) or failing: no rewrite, no fixer run. */
+  lexicon?: () => Promise<Lexicon | undefined>;
 }
 
 /** The longest a rewrite that missed its time keeps the fixer out of the next transcripts. */

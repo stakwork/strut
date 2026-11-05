@@ -13,12 +13,9 @@ import type { Installer } from "../../../audio/download.js";
 // steps (POST /steps/<type>/run) and the next POST /audio/transcribe using
 // the pick. A fake installer stands in for the network; a fake engine for
 // sherpa, each recognizer saying which model it is.
-// The fixer runs only on a vocabulary read from memory, which needs Ladybug;
-// without it (CI) the transcript goes out as heard, no fixer named.
-const hasLadybug = await import("@ladybugdb/core").then(
-  () => true,
-  () => false,
-);
+// The fixer runs only on a vocabulary read from a Ladybug workspace graph;
+// this strut has no graph, so the transcript goes out as heard, no fixer
+// named (dictation-correction.test.ts runs it on one).
 
 const FAKE_FIXER = `data:text/javascript,${encodeURIComponent(`
 export function make() {
@@ -126,7 +123,7 @@ describe("dictation models: steps and transcription", () => {
     await stt.dictation.idle();
     assert.deepEqual(brief((await step("dictation/models", {})) as Listed), ["zipformer-en-kroko:installed", "parakeet-tdt-en-0.6b-v2:installed*", "qwen3-0.6b-q4:installed*", "qwen3-1.7b-q4:available"]);
     const out = await transcribe();
-    assert.deepEqual({ ...out, durationMs: 0 }, { text: "Decoded by parakeet-tdt-en-0.6b-v2.", segments: [{ text: "Decoded by parakeet-tdt-en-0.6b-v2.", words: [] }], model: "parakeet-tdt-en-0.6b-v2", hotwords: null, durationMs: 0, fixer: hasLadybug ? "qwen3-0.6b-q4" : null });
+    assert.deepEqual({ ...out, durationMs: 0 }, { text: "Decoded by parakeet-tdt-en-0.6b-v2.", segments: [{ text: "Decoded by parakeet-tdt-en-0.6b-v2.", words: [] }], model: "parakeet-tdt-en-0.6b-v2", hotwords: null, durationMs: 0, fixer: null });
     assert.equal((await transcribe("?model=zipformer-en-kroko")).model, "zipformer-en-kroko");
   });
 

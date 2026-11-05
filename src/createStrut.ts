@@ -122,6 +122,7 @@ import { createStt, type SttService } from "./audio/stt.js";
 import { createTts, type TtsService } from "./audio/tts.js";
 import { audioRoutes, speakRoutes } from "./audio/routes.js";
 import { readLexicon } from "./steps/lib/dictation/_shared.js";
+import { onLadybug } from "./steps/lib/dictation/_graph.js";
 import { createAudioUpgradeHandler } from "./audio/ws.js";
 import { roomsFor } from "./rooms.js";
 import { createChannels, type ChannelApp, type Channels, type ChannelTransport } from "./channels.js";
@@ -7313,8 +7314,12 @@ export async function createStrut<TServices = unknown>(
 
   // ── Speech, both ways (src/audio) ──────────────────────────────────────
 
-  // Dictation's vocabulary, from the memory graph the memory/* steps keep.
-  if (stt) audioRoutes(app, stt, { lexicon: () => readLexicon({ services } as unknown as StepContext) });
+  // Dictation's vocabulary, from the workspace graph. A graph that is not a
+  // Ladybug one keeps none: the transcript goes out as heard, no fixer run.
+  if (stt) {
+    const ctx = { services } as unknown as StepContext;
+    audioRoutes(app, stt, { lexicon: async () => (onLadybug(ctx) ? readLexicon(ctx) : undefined) });
+  }
   if (tts) speakRoutes(app, tts);
   if (homeRole === "box") homeSyncRoutes(app, { services, scopeOf });
   voiceRoutes(app, { voice, resolveActor });
