@@ -67,6 +67,11 @@ export interface RunLaunchQuery {
    *  src/ai/attachments.ts): saved under the run's artifacts, never in
    *  `input`, which `run.start` keeps for good. */
   attachments?: AttachmentInput[];
+  /** The conversation a JOB turn belongs to (`POST …/run { conversation }`,
+   *  plans/jamie-app.md §1.2): its wake goes there when the turn ends.
+   *  Strut's own app alone names one, and only one its viewer may
+   *  continue (§2.2): a captcha's answer is a job turn the page launches. */
+  conversation?: string;
 }
 
 /** Who is launching, and for what — from the calling step's context. */
