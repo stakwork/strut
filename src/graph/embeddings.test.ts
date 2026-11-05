@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Bolt, int } from "./bolt.js";
 import { seedStrutDomain } from "./schema-seed.js";
-import { seedJarvisOntology } from "./ontology-seed.js";
+import { seedJarvisOntology } from "./__fixtures__/jarvis-seed.js";
 import { NodeWriter, buildSearchText, type Embedder } from "./node-writer.js";
 import { EMBEDDING_DIM, EmbeddingPass, MiniLMEmbedder, WorkerEmbedder, cosine, decideRow, meanPoolNormalize } from "./embeddings.js";
 import { SchemaResolver, fromStrut } from "./schema-resolver.js";
@@ -401,13 +401,12 @@ describe("EmbeddingPass (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_U
 
   it("GET /graph/embeddings reports the sweep and the skipped types; { enabled: false } with embeddings off", async () => {
     const dataDir = await mkdtemp(join(tmpdir(), "strut-emb-"));
-    const backend = await openGraphBackend(cfg!, { embeddings: fake, seedOntology: true, pass: { autoStart: false, sweepEveryMs: 1e12, log: () => undefined } });
+    const backend = await openGraphBackend(cfg!, { embeddings: fake, pass: { autoStart: false, sweepEveryMs: 1e12, log: () => undefined } });
     const off = await openGraphBackend(cfg!, { embeddings: false });
     const mk = (b: typeof backend) => createStrut({ workspace: new Neo4jWorkspaceStore(b), store: new MemoryRunStore(), registry: coreRegistry(), dataDir, serveUi: false, enableChat: false, stt: false, scheduler: false });
     const strut = await mk(backend);
     const strutOff = await mk(off);
     try {
-      assert.equal(backend.indexReconcile!.status, "nothing_to_do", "the fixture's lists are the library's");
       assert.ok(backend.embeddings);
       let res = await strut.app.request("/graph/embeddings");
       assert.equal(res.status, 200);

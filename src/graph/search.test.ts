@@ -37,7 +37,7 @@ import {
   type SearchResult,
 } from "./search.js";
 import { EMBEDDING_DIM } from "./embeddings.js";
-import { seedJarvisOntology } from "./ontology-seed.js";
+import { seedJarvisOntology } from "./__fixtures__/jarvis-seed.js";
 import { SchemaResolver } from "./schema-resolver.js";
 import { rawNode, seedConceptSchema, setNodeProps, testBackends, testGraphConfig, wipeGraph } from "./test-util.js";
 

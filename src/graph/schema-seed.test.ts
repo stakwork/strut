@@ -5,7 +5,7 @@ import { Bolt } from "./bolt.js";
 import { seedStrutDomain, flattenSchema, STRUT_MIGRATION_ID, DOMAIN_VECTOR_INDEX, DOMAIN_FULLTEXT_INDEX_V2, GLOBAL_VECTOR_INDEX, SEARCH_TEXT_INDEX } from "./schema-seed.js";
 import { SchemaResolver } from "./schema-resolver.js";
 import { SEED_EDGES, SEED_TYPES } from "./seed-types.js";
-import { seedJarvisOntology } from "./ontology-seed.js";
+import { seedJarvisOntology } from "./__fixtures__/jarvis-seed.js";
 import { THING_SCHEMA, STRUT_EDGES, STRUT_SCHEMAS, assertLibraryWellFormed, searchableAttributes, vectorIndexName } from "./strut-schemas.js";
 import { graphSnapshot, schemaObjectNames, testGraphConfig, wipeGraph } from "./test-util.js";
 

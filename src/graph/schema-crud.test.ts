@@ -11,7 +11,7 @@ import { Bolt } from "./bolt.js";
 import type { GraphEngine } from "./engine.js";
 import { EdgeWriter } from "./edge-writer.js";
 import { GraphValidationError, NodeWriter } from "./node-writer.js";
-import { seedJarvisOntology } from "./ontology-seed.js";
+import { seedJarvisOntology } from "./__fixtures__/jarvis-seed.js";
 import { createNodeSchema, planNodeSchema } from "./schema-crud.js";
 import { SchemaResolver } from "./schema-resolver.js";
 import { seedStrutDomain } from "./schema-seed.js";

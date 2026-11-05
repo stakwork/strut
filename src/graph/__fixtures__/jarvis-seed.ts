@@ -1,28 +1,29 @@
 /**
- * Seed the bundled jarvis ontology (`fixtures/jarvis-ontology.ts`) into a
- * database — so a STANDALONE strut Neo4j can host the jarvis-typed data the
- * lab pipelines write (Document, EvalSet, Concept, …) without a jarvis
- * process. Same add-only discipline as `seedStrutDomain`: guarded creates,
- * `IF NOT EXISTS` schema objects, zero diff on re-run, and a jarvis-seeded
- * database is left untouched (every schema already exists → nothing
- * written).
+ * TEST FIXTURE: seed jarvis's ontology library (`./jarvis-ontology.ts`)
+ * into a graph, as jarvis's own seeder and migrations would — so a suite can
+ * model a graph jarvis shares (a swarm). strut itself never seeds it: its
+ * own types are its native seed (`../seed-types.ts`) and every other type is
+ * made at runtime (plans/ontology.md). Only `*.test.ts` files import this
+ * folder, and `tsc` leaves it out of the build.
  *
- * What jarvis's own seeder + migrations produce for these types and what
- * we reproduce: the flattened `:Schema` nodes (jarvis's ref_ids kept),
- * `CHILD_OF` to each parent, per-type `(node_key, namespace)` constraints
- * and `node_key` indexes, the Schema→Schema edge schemas with their
- * properties, per-domain fulltext (`_v2`, english) and vector indexes, the
- * global `data_bank_attribute_index_v2` + `text_embeddings_vector_index`,
- * and the `*` wildcard sentinel.
+ * Add-only like `seedStrutDomain`: guarded creates, `IF NOT EXISTS` schema
+ * objects, zero diff on re-run. It writes the flattened `:Schema` nodes
+ * (jarvis's ref_ids kept), `CHILD_OF` to each parent, per-type
+ * `(node_key, namespace)` constraints and `node_key` indexes, the
+ * Schema→Schema edge schemas with their properties, per-domain fulltext
+ * (`_v2`, english) and vector indexes, the global
+ * `data_bank_attribute_index_v2` + `text_embeddings_vector_index`, and the
+ * `*` wildcard sentinel. It writes no `About` node: a suite modelling a swarm
+ * creates one (jarvis's migrations do).
  */
 import { randomUUID } from "node:crypto";
-import type { EngineLike } from "./engine.js";
-import { JARVIS_ONTOLOGY, type OntologyFixture } from "./fixtures/jarvis-ontology.js";
-import { asEngine } from "./neo4j-engine.js";
-import { GraphValidationError } from "./node-writer.js";
-import { searchableAttributesOf } from "./schema-crud.js";
-import { schemaStatement } from "./schema-seed.js";
-import { SCHEMA_CORE_PROPERTIES } from "./strut-schemas.js";
+import type { EngineLike } from "../engine.js";
+import { JARVIS_ONTOLOGY, type OntologyFixture } from "./jarvis-ontology.js";
+import { asEngine } from "../neo4j-engine.js";
+import { GraphValidationError } from "../node-writer.js";
+import { searchableAttributesOf } from "../schema-crud.js";
+import { schemaStatement } from "../schema-seed.js";
+import { SCHEMA_CORE_PROPERTIES } from "../strut-schemas.js";
 
 export interface OntologySeedReport {
   createdSchemas: string[];

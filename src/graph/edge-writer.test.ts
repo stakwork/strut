@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import type { GraphBackend } from "./backend.js";
 import { Bolt, int } from "./bolt.js";
-import { seedJarvisOntology } from "./ontology-seed.js";
+import { seedJarvisOntology } from "./__fixtures__/jarvis-seed.js";
 import { seedStrutDomain } from "./schema-seed.js";
 import { GraphValidationError, NodeWriter } from "./node-writer.js";
 import { EdgeWriter, edgeKeyFor, isRegisteredEdge, typeLabelOf } from "./edge-writer.js";

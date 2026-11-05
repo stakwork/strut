@@ -67,7 +67,7 @@ const stripComments = (t: string) => t.replace(/\/\*[\s\S]*?\*\//g, "").replace(
 /** Rule 3 */
 export function wordInCode(files: Record<string, string>): string[] {
   const free = (f: string) =>
-    inside(PRIVACY, f) || inside(LIB_PRIVACY, f) || isTest(f) || inside(join(SRC, "graph", "fixtures"), f) ||
+    inside(PRIVACY, f) || inside(LIB_PRIVACY, f) || isTest(f) || inside(join(SRC, "graph", "fixtures"), f) || inside(join(SRC, "graph", "__fixtures__"), f) ||
     f === join(SRC, "createStrut.ts") || f === join(SRC, "index.ts") || f === join(SRC, "moved.ts");
   return Object.entries(files).filter(([f, text]) => !free(f) && /privacy/.test(stripComments(text))).map(([f]) => relative(SRC, f));
 }

@@ -1,8 +1,10 @@
 # Ontology: one native seed, runtime types, no Jarvis library in strut
 
 > **Status (2026-11-05): ruled (Evan, the same day; §9).** Built: item 1
-> (#536); items 2 and 4 (#537, item 4 on graphs without jarvis only). Item 3
-> waits on stakgraph (§8). Written after a read of
+> (#536); items 2 and 4 (#537, item 4 on graphs without jarvis only); item 3
+> after stakwork/stakgraph#1845, its prerequisite. Its checks: the reconcile
+> stamp and Jarvis's About node are on swarm38, swarmGcVVgq and swarmkuRuIN;
+> the other swarms are unchecked. Written after a read of
 > `main` @3e0f23b and three boots of a fresh strut on a throwaway Neo4j
 > 5.26.32 (`STRUT_WORKSPACE_BACKEND=graph`, embeddings on), one per mode:
 > - the Jarvis library seed off;

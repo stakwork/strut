@@ -8,7 +8,7 @@ import type { GraphBackend } from "./backend.js";
 import { EdgeWriter } from "./edge-writer.js";
 import type { GraphTx } from "./engine.js";
 import { NodeWriter } from "./node-writer.js";
-import { seedJarvisOntology } from "./ontology-seed.js";
+import { seedJarvisOntology } from "./__fixtures__/jarvis-seed.js";
 import { SchemaResolver, type NodeSchema } from "./schema-resolver.js";
 import { seedStrutDomain } from "./schema-seed.js";
 import { edgeCount, rawNode, testBackends } from "./test-util.js";
