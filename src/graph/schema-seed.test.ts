@@ -3,6 +3,10 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { Bolt } from "./bolt.js";
 import { seedStrutDomain, flattenSchema, STRUT_MIGRATION_ID, DOMAIN_VECTOR_INDEX, DOMAIN_FULLTEXT_INDEX_V2, GLOBAL_VECTOR_INDEX } from "./schema-seed.js";
+import { SchemaResolver } from "./schema-resolver.js";
+import { SEED_EDGES, SEED_TYPES } from "./seed-types.js";
+import { seedJarvisOntology } from "./ontology-seed.js";
+import { EDGE_TYPES_ALLOWLIST } from "./schema-resolver.js";
 import { THING_SCHEMA, STRUT_EDGES, STRUT_SCHEMAS, assertLibraryWellFormed, searchableAttributes, vectorIndexName } from "./strut-schemas.js";
 import { graphSnapshot, schemaObjectNames, testGraphConfig, wipeGraph } from "./test-util.js";
 
@@ -51,14 +55,17 @@ describe("seedStrutDomain (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J
     await wipeGraph(bolt);
   });
 
-  it("standalone: seeds Thing + 12 schemas + edges + indexes, and is idempotent", async () => {
+  it("standalone: seeds Thing + the Strut and seed types + edges + indexes, and is idempotent", async () => {
     const r1 = await seedStrutDomain(bolt);
     assert.equal(r1.mode, "standalone");
-    assert.deepEqual(r1.createdSchemas.sort(), STRUT_SCHEMAS.map((s) => s.type).sort());
+    assert.deepEqual(r1.createdSchemas.sort(), [...STRUT_SCHEMAS, ...SEED_TYPES].map((s) => s.type).sort());
     // PUBLISHED_BY → Person is skipped (no Person schema in standalone).
     assert.deepEqual(r1.skippedEdgeSchemas, ["StrutStepVersion-[PUBLISHED_BY]->Person", "HiveWorkspaceMember-[SENT]->StrutAgentSession", "Person-[SENT]->StrutAgentSession"]);
-    // Every row but PUBLISHED_BY's and the Ladybug-only one: Neo4j's seed as before.
-    assert.equal(r1.createdEdgeSchemas.length, STRUT_EDGES.length - 2);
+    // Every row but PUBLISHED_BY's and the Ladybug-only one: Neo4j's seed as
+    // before. Then the seed types' rules jarvis's allowlist does not cover.
+    const seedRows = SEED_EDGES.filter((e) => !EDGE_TYPES_ALLOWLIST.has(e.edge)).map((e) => `${e.source}-[${e.edge}]->${e.target}`);
+    assert.equal(seedRows.length, 12);
+    assert.deepEqual(r1.createdEdgeSchemas, [...STRUT_EDGES.filter((e) => !e.ladybugOnly && e.target !== "Person").map((e) => `${e.source}-[${e.edge}]->${e.target}`), ...seedRows]);
     assert.ok(!r1.createdEdgeSchemas.includes("StrutRun-[ACCESSED]->Thing"));
 
     const snap1 = await graphSnapshot(bolt);
@@ -70,7 +77,7 @@ describe("seedStrutDomain (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J
     assert.equal(thing[0]!.properties["node_key"], "thing-name");
     assert.ok(typeof thing[0]!.properties["ref_id"] === "string");
     const schemas = snap1.nodes.filter((n) => n.labels.includes("Schema"));
-    assert.equal(schemas.length, 15);
+    assert.equal(schemas.length, 19);
     for (const s of schemas) {
       assert.deepEqual(s.labels, ["Schema"], "Schema nodes carry no other label");
       assert.equal(s.properties["attributes"], undefined);
@@ -81,8 +88,16 @@ describe("seedStrutDomain (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J
     assert.equal(run.properties["parent"], "Thing");
     assert.equal(run.properties["run_id"], "string");
     assert.deepEqual(run.properties["index"], ["workflow_name", "run_status", "summary"]);
+    const claim = schemas.find((s) => s.properties["type"] === "Claim")!;
+    assert.equal(claim.properties["node_key"], "claim-id");
+    assert.equal(claim.properties["domain"], "Epistemic");
+    assert.equal(claim.properties["role"], "claim");
+    assert.equal(claim.properties["claim_text"], "string");
+    const concept = schemas.find((s) => s.properties["type"] === "Concept")!;
+    assert.equal(concept.properties["node_key"], "concept-name");
+    assert.equal(concept.properties["domain"], "General");
     const childOf = snap1.rels.filter((r) => r.type === "CHILD_OF");
-    assert.equal(childOf.length, 14);
+    assert.equal(childOf.length, 18);
     for (const r of childOf) {
       assert.equal((r.to as { type: string }).type, "Thing");
       assert.ok(typeof r.properties["ref_id"] === "string");
@@ -98,11 +113,11 @@ describe("seedStrutDomain (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J
 
     // Domain registered by existence.
     const domains = await bolt.run(`MATCH (s:Schema) WHERE s.domain IS NOT NULL RETURN DISTINCT toLower(s.domain) AS d`);
-    assert.deepEqual(domains.map((d) => d["d"]), ["strut"]);
+    assert.deepEqual(domains.map((d) => d["d"]).sort(), ["epistemic", "general", "strut"]);
 
     // Constraints + indexes.
     const names = await schemaObjectNames(bolt);
-    for (const s of STRUT_SCHEMAS) assert.ok(names.constraints.includes(`unique_${s.type.toLowerCase()}_node_key`), s.type);
+    for (const s of [...STRUT_SCHEMAS, ...SEED_TYPES]) assert.ok(names.constraints.includes(`unique_${s.type.toLowerCase()}_node_key`), s.type);
     assert.ok(names.constraints.includes("unique_node_key_global"));
     assert.ok(names.constraints.includes("migration_id_unique"));
     assert.ok(names.indexes.includes(DOMAIN_VECTOR_INDEX));
@@ -120,6 +135,10 @@ describe("seedStrutDomain (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J
       (c) => JSON.stringify(c["labelsOrTypes"]) === '["Data_Bank"]' && JSON.stringify(c["properties"]) === '["ref_id"]',
     );
     assert.ok(dataBankRefId, "Data_Bank ref_id uniqueness");
+
+    // Every edge the claim layer and the Concept tree write is allowed.
+    const resolver = new SchemaResolver(bolt);
+    for (const e of SEED_EDGES) assert.ok(await resolver.edgeSchema(e.edge, e.source, e.target), `${e.source}-[${e.edge}]->${e.target}`);
 
     // Idempotence: second run → nothing created, graph byte-identical.
     const r2 = await seedStrutDomain(bolt);
@@ -168,7 +187,7 @@ describe("seedStrutDomain (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J
     const before = await graphSnapshot(bolt);
     const r = await seedStrutDomain(bolt);
     assert.equal(r.mode, "shared");
-    assert.equal(r.createdSchemas.length, 13);
+    assert.equal(r.createdSchemas.length, 13 + SEED_TYPES.length);
     assert.ok(!r.createdSchemas.includes("StrutRun"));
     assert.deepEqual(r.reconciled, { StrutRun: ["summary"] });
     assert.deepEqual(r.skippedEdgeSchemas, ["HiveWorkspaceMember-[SENT]->StrutAgentSession"], "no member type in this jarvis");
@@ -199,5 +218,23 @@ describe("seedStrutDomain (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J
     assert.deepEqual(r2.createdSchemas, []);
     assert.deepEqual(r2.reconciled, {});
     assert.deepEqual(await graphSnapshot(bolt), after);
+  });
+
+  it("shared: a graph jarvis seeded keeps its Claim, Check, Evidence and Concept, and gets no rule of ours beside theirs", async () => {
+    await seedJarvisOntology(bolt);
+    const touching = (snap: Awaited<ReturnType<typeof graphSnapshot>>) => {
+      const seed = new Set(SEED_TYPES.map((t) => t.type));
+      return {
+        nodes: snap.nodes.filter((n) => n.labels.includes("Schema") && seed.has(String(n.properties["type"]))),
+        rels: snap.rels.filter((r) => seed.has(String((r.from as { type?: string }).type)) || seed.has(String((r.to as { type?: string }).type))),
+      };
+    };
+    const before = touching(await graphSnapshot(bolt));
+    assert.equal(before.nodes.length, SEED_TYPES.length);
+    const r = await seedStrutDomain(bolt);
+    for (const t of SEED_TYPES) assert.ok(!r.createdSchemas.includes(t.type), t.type);
+    const seedRows = new Set(SEED_EDGES.map((e) => `${e.source}-[${e.edge}]->${e.target}`));
+    assert.deepEqual(r.createdEdgeSchemas.filter((e) => seedRows.has(e)), [], "jarvis's rules already allow every seed edge");
+    assert.deepEqual(touching(await graphSnapshot(bolt)), before);
   });
 });

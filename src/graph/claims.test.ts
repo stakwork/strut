@@ -7,7 +7,6 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { seedStrutDomain } from "./schema-seed.js";
-import { seedJarvisOntology } from "./ontology-seed.js";
 import { SchemaResolver } from "./schema-resolver.js";
 import { GraphValidationError, NodeWriter } from "./node-writer.js";
 import { EdgeWriter } from "./edge-writer.js";
@@ -248,7 +247,6 @@ for (const tb of testBackends()) {
     before(async () => {
       backend = await tb.open();
       await tb.wipe(backend);
-      if (tb.kind === "neo4j") await seedJarvisOntology(backend);
       await seedStrutDomain(backend);
       nodes = backend.nodes;
       edges = backend.edges;

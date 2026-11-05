@@ -76,8 +76,10 @@ export interface GraphBackendOptions {
   skipBoot?: boolean;
   /** Also seed the bundled jarvis ontology (`fixtures/jarvis-ontology.ts`)
    *  — add-only, a no-op on a jarvis-seeded DB — so a standalone Neo4j can
-   *  host jarvis-typed data (Document, EvalSet, Concept, …) with no jarvis
-   *  process. Env: `STRUT_GRAPH_SEED_ONTOLOGY=1`. */
+   *  host jarvis-typed data (Document, EvalSet, HiveWorkspace, …) with no
+   *  jarvis process. strut's own types never need it: Claim, Check, Evidence
+   *  and Concept are in the native seed (`seed-types.ts`). Env:
+   *  `STRUT_GRAPH_SEED_ONTOLOGY=1`. */
   seedOntology?: boolean;
   /** Tuning for the embedding pass (page sizes, the tick, `autoStart`) —
    *  tests. Not part of the cache key. */

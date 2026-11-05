@@ -138,7 +138,9 @@ describe("upgradeClaimSchema (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NE
 
       const standalone = await openGraphBackend(cfg!, { embeddings: false, seedOntology: true });
       assert.equal(standalone.claimSchemaUpgrade?.status, "upgraded");
-      assert.ok(standalone.ontologySeed!.createdSchemas.includes("Check") && standalone.ontologySeed!.createdSchemas.includes("Evidence"));
+      // Check and Evidence are there: the hosted boot's native seed made them
+      // (seed-types.ts), so the library's seed leaves them as they are.
+      for (const t of ["Check", "Evidence"]) assert.ok(await standalone.schemas.schema(t), t);
       // The whole layer is writable on the upgraded, re-seeded database.
       const c = await standalone.nodes.write({ type: "Claim", data: { id: "c1", name: "n", claim_text: "t" } });
       const k = await standalone.nodes.write({ type: "Check", data: { id: "k1", name: "k"} });

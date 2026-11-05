@@ -308,9 +308,9 @@ describe("graph/* lib steps (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO
   });
 
   it("create-schema: registers a type create-node can then write, extends it add-only, refuses Strut types and bad input", async () => {
-    assert.match(await run("graph/create-node", { node_type: "Evidence", namespace: NS, node_data: { description: "d" } }), /UNKNOWN_TYPE/);
+    assert.match(await run("graph/create-node", { node_type: "Observation", namespace: NS, node_data: { description: "d" } }), /UNKNOWN_TYPE/);
     let out = await run("graph/create-schema", {
-      type: "Evidence",
+      type: "Observation",
       attributes: { description: "string", content: "?string", evidence_status: "?string" },
       node_key: "description",
       title_key: "description",
@@ -318,25 +318,25 @@ describe("graph/* lib steps (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO
     });
     assert.equal(out.status, "Success", JSON.stringify(out));
     assert.equal(out.created, true);
-    assert.deepEqual([out.type, out.parent, out.key_spec], ["Evidence", "Thing", "evidence-description"], "node_key accepted as key_spec's old name");
+    assert.deepEqual([out.type, out.parent, out.key_spec], ["Observation", "Thing", "observation-description"], "node_key accepted as key_spec's old name");
     assert.equal(out.attributes.description, "?string", "core-name attribute reads optional; required via node_key");
     assert.equal(out.attributes.content, "?string");
     assert.equal(accessedNodesOf(out), undefined, "a Schema node is not data — no provenance marker");
 
-    const node = await run("graph/create-node", { node_type: "Evidence", namespace: NS, node_data: { description: "release notes mention vectors", evidence_status: "planned" } });
+    const node = await run("graph/create-node", { node_type: "Observation", namespace: NS, node_data: { description: "release notes mention vectors", evidence_status: "planned" } });
     assert.equal(node.status, "Success", JSON.stringify(node));
-    assert.match(await run("graph/create-node", { node_type: "Evidence", namespace: NS, node_data: { description: "x", strength: 1 } }), /UNKNOWN_ATTRIBUTE/);
+    assert.match(await run("graph/create-node", { node_type: "Observation", namespace: NS, node_data: { description: "x", strength: 1 } }), /UNKNOWN_ATTRIBUTE/);
 
     // Extend: add-only.
-    out = await run("graph/create-schema", { type: "evidence", attributes: { strength: "?float", description: "?string" } });
+    out = await run("graph/create-schema", { type: "observation", attributes: { strength: "?float", description: "?string" } });
     assert.equal(out.status, "Warning");
     assert.equal(out.created, false);
     assert.deepEqual(out.added_attributes, ["strength"]);
     assert.equal(out.attributes.strength, "?float");
-    assert.equal(out.key_spec, "evidence-description");
+    assert.equal(out.key_spec, "observation-description");
     const edited = await run("graph/edit-node", { ref_id: node.ref_id, node_data: { strength: 0.75, evidence_status: "collected" } });
     assert.equal(edited.status, "Success", JSON.stringify(edited));
-    const single = await run("graph/get-ontology-type", { type: "Evidence" });
+    const single = await run("graph/get-ontology-type", { type: "Observation" });
     assert.equal(single.attributes.strength, "?float");
 
     // Edge between the new type and a Strut type is still gated by the closed Strut registry (source is Strut)…

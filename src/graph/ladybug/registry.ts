@@ -8,10 +8,9 @@
  *
  *   - the ten Strut types the workspace store and the projector need, from
  *     `strut-schemas.ts` by name, with Thing's unread stamps left off;
- *   - `Claim`, `Check`, `Evidence` (plans/claims.md) and `Concept`, under
- *     their jarvis names with the SAME key specs, so the ids and
- *     keys a desktop writes match a swarm's — but with exactly the
- *     attributes strut writes and reads (`claims.ts`'s field lists);
+ *   - `Claim`, `Check`, `Evidence` (plans/claims.md) and `Concept` with
+ *     their edge rules, the seed both engines share (`../seed-types.ts`,
+ *     plans/ontology.md);
  *   - the base types `Person` (the user is the one marked `is_owner`) and
  *     `Lingo` (plans/graph-memory-plan.md step 2), with their rules;
  *   - `Mishearing`, dictation's hidden record of a word it mishears;
@@ -25,12 +24,12 @@
  * runtime adds its columns then (`ontology.ts`), under the same rule.
  */
 import { createHash } from "node:crypto";
-import { CHECK_TYPE, CLAIM_TYPE, EVIDENCE_TYPE } from "../claims.js";
 import type { EdgeSchemaRow } from "../engine.js";
 import { fromStrut, type NodeSchema } from "../schema-resolver.js";
-import { STRUT_DOMAIN, STRUT_EDGES, THING_TYPE, getStrutSchema, type AttrBase, type AttrType } from "../strut-schemas.js";
+import { CONCEPT_TYPE, SEED_EDGES, SEED_TYPES, seedType } from "../seed-types.js";
+import { STRUT_DOMAIN, STRUT_EDGES, THING_TYPE, getStrutSchema, type AttrBase } from "../strut-schemas.js";
 
-export const CONCEPT_TYPE = "Concept";
+export { CONCEPT_TYPE };
 /** A person; the user is the one Person marked `is_owner` (no `Self` type). */
 export const PERSON_TYPE = "Person";
 /** A word or phrase dictation learns (src/audio's fixer reads the type). */
@@ -59,29 +58,6 @@ export const LADYBUG_STRUT_TYPES: readonly string[] = ["StrutWorkflow", "StrutWo
 /** Thing's attributes nothing on the desktop reads: not in the table. */
 const THING_VESTIGES = ["weight", "is_muted", "unique_source_id", "image_url"];
 
-const jarvisType = (
-  type: string,
-  key_spec: string,
-  index: string[],
-  title_key: string,
-  description_key: string,
-  attributes: Record<string, AttrType>,
-  rules: Pick<NodeSchema, "role" | "identifiers"> = {},
-): NodeSchema => ({
-  type,
-  parent: "Thing",
-  key_spec,
-  index,
-  vector_index: [],
-  embed: true,
-  attributes,
-  title_key,
-  description_key,
-  domainLabels: [],
-  isStrut: false,
-  ...rules,
-});
-
 function strutType(type: string): NodeSchema {
   const s = fromStrut(getStrutSchema(type)!);
   const attributes = { ...s.attributes };
@@ -93,73 +69,27 @@ function strutType(type: string): NodeSchema {
 /** Every node type, canonical name → schema. */
 export const LADYBUG_SCHEMAS: readonly NodeSchema[] = [
   ...LADYBUG_STRUT_TYPES.map(strutType),
-  jarvisType(CLAIM_TYPE, "claim-id", ["name", "claim_text", "speaker_name"], "name", "claim_text", {
-    id: "string",
-    name: "?string",
-    claim_text: "string",
-    speaker_name: "?string",
-    belief_valid_from: "?datetime",
-    belief_valid_to: "?datetime",
-  }, { role: "claim" }),
-  jarvisType(CHECK_TYPE, "check-id", ["name", "description"], "name", "description", {
-    id: "string",
-    name: "?string",
-    description: "?string",
-    step_type: "?string",
-    step_config: "?string",
-    run_when: "?string",
-    policy: "?string",
-    freshness_days: "?int",
-    sample_rate: "?float",
-    publisher: "?string",
-    // When it was written is the core `created_at` (claims.ts reads it).
-    retired_at: "?datetime",
-  }),
-  jarvisType(EVIDENCE_TYPE, "evidence-id", ["name", "description", "content"], "name", "description", {
-    id: "string",
-    name: "?string",
-    description: "?string",
-    content: "?string",
-    evidence_mode: "?string",
-    evidence_status: "?string",
-    observed_at: "?datetime",
-  }),
-  jarvisType(CONCEPT_TYPE, "concept-name", ["name", "description", "docs"], "name", "description", {
-    name: "string",
-    description: "?string",
-    docs: "?string",
-    id: "?string",
-    repo: "?string",
-    file: "?string",
-    pr_numbers: "?string",
-    commit_shas: "?string",
-    // The source stamp a seeded page carries (src/concept-seed.ts): whose
-    // file it came from, and which version of it.
-    unique_source_id: "?string",
-    // Its other names, for `resolve` (`resolve.ts`): `aliases` is the
-    // Schema rows' column.
-    alt_names: "?list",
-  }, { role: "concept" }),
+  ...SEED_TYPES,
   // The base types (plans/graph-memory-plan.md step 2), without jarvis's
   // fixture. Two people may share a name, so a Person is keyed by its
   // ref_id and named by its email; the user is the Person whose `is_owner` is
   // true. A Lingo word is keyed by its ref_id too: a name key keeps only
   // a-z and digits, so a word with no Latin letters (凯特) could not be one.
   // `resolve` finds a word by its name or `alt_names`.
-  jarvisType(PERSON_TYPE, "ref_id", ["name", "description", "email"], "name", "description", {
+  seedType(PERSON_TYPE, "ref_id", ["name", "description", "email"], "name", "description", {
     name: "string",
     description: "?string",
     email: "?string",
     is_owner: "?boolean",
     alt_names: "?list",
   }, { role: "entity", identifiers: ["email"] }),
-  jarvisType(LINGO_TYPE, "ref_id", ["name", "description"], "name", "description", {
+  seedType(LINGO_TYPE, "ref_id", ["name", "description"], "name", "description", {
     name: "string",
     description: "?string",
     alt_names: "?list",
   }, { role: "entity" }),
   // No domain: these rows are memory, which the memory tools read.
-  jarvisType(EDGE_TEXT_TYPE, "edgetext-edge_ref_id", ["composed"], "text", "text", {
+  seedType(EDGE_TEXT_TYPE, "edgetext-edge_ref_id", ["composed"], "text", "text", {
     edge_ref_id: "string",
     edge_type: "string",
     source_ref_id: "string",
@@ -174,7 +104,7 @@ export const LADYBUG_SCHEMAS: readonly NodeSchema[] = [
     expired_at: "?int",
   }, { role: "record" }),
   // Not searched or embedded: read by ref_id and by `duplicate_ref_id`.
-  { ...jarvisType(MERGE_TYPE, "ref_id", [], "title", "title", {
+  { ...seedType(MERGE_TYPE, "ref_id", [], "title", "title", {
     kept_ref_id: "string",
     duplicate_ref_id: "string",
     /** What the merge did, as JSON (`MergeMoves`): what the undo reads. */
@@ -183,7 +113,7 @@ export const LADYBUG_SCHEMAS: readonly NodeSchema[] = [
     undone_by: "?string",
   }, { role: "record" }), embed: false },
   // Read by dictation alone, by `entity_ref_id`.
-  { ...jarvisType(MISHEARING_TYPE, "ref_id", [], "value", "value", {
+  { ...seedType(MISHEARING_TYPE, "ref_id", [], "value", "value", {
     entity_ref_id: "string",
     /** What dictation writes. */
     value: "string",
@@ -214,29 +144,7 @@ export interface LadybugEdgeDef {
  *  Concept tree. */
 export const LADYBUG_EDGES: readonly LadybugEdgeDef[] = [
   ...STRUT_EDGES.filter((e) => BY_TYPE.has(e.source.toLowerCase()) && BY_TYPE.has(e.target.toLowerCase())).map(({ edge, source, target }) => ({ edge, source, target })),
-  { edge: "ABOUT", source: CLAIM_TYPE, target: "StrutWorkflow" },
-  { edge: "ABOUT", source: CLAIM_TYPE, target: "StrutStep" },
-  // A job's claim hangs off the job; its evidence is about the TURN — the
-  // run (plans/job-claims.md §1–§2).
-  { edge: "ABOUT", source: CLAIM_TYPE, target: "StrutJob" },
-  { edge: "ABOUT", source: EVIDENCE_TYPE, target: "StrutWorkflowVersion" },
-  { edge: "ABOUT", source: EVIDENCE_TYPE, target: "StrutStepVersion" },
-  { edge: "ABOUT", source: EVIDENCE_TYPE, target: "StrutRun" },
-  { edge: "TESTS", source: CHECK_TYPE, target: CLAIM_TYPE },
-  { edge: "EVIDENCED_BY", source: CLAIM_TYPE, target: EVIDENCE_TYPE },
-  { edge: "PRODUCED_BY", source: EVIDENCE_TYPE, target: CHECK_TYPE },
-  // A run check's evidence has the run as its source; a publish check's has
-  // the version it read (verify.ts).
-  { edge: "HAS_SOURCE", source: EVIDENCE_TYPE, target: "StrutRun" },
-  { edge: "HAS_SOURCE", source: EVIDENCE_TYPE, target: "StrutWorkflowVersion" },
-  { edge: "HAS_SOURCE", source: EVIDENCE_TYPE, target: "StrutStepVersion" },
-  { edge: "SUPERSEDES", source: CLAIM_TYPE, target: CLAIM_TYPE },
-  { edge: "SUPERSEDES", source: CHECK_TYPE, target: CHECK_TYPE },
-  { edge: "CHILD_OF", source: CONCEPT_TYPE, target: CONCEPT_TYPE },
-  // The tree as jarvis keeps it and every reader walks it — a parent points
-  // at its children (graph/graph-get `children: "PARENT_OF"`, the seeded
-  // pages).
-  { edge: "PARENT_OF", source: CONCEPT_TYPE, target: CONCEPT_TYPE },
+  ...SEED_EDGES,
   // What a work product was made from: on the file, its rel table. The
   // Strut registry's wildcard lets it point at any node the file holds (a
   // Concept, an app's excerpt type), as `STRUT_EDGES` declares it.

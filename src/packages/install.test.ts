@@ -10,7 +10,6 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createStrut, type Strut } from "../createStrut.js";
 import type { GraphBackend } from "../graph/backend.js";
-import { seedJarvisOntology } from "../graph/ontology-seed.js";
 import { seedStrutDomain } from "../graph/schema-seed.js";
 import { testBackends } from "../graph/test-util.js";
 import { GraphWorkspaceStore } from "../graph/workspace-store.js";
@@ -461,11 +460,10 @@ for (const tb of testBackends()) {
     let api: ReturnType<typeof client>;
     before(async () => {
       backend = await tb.open();
-      // The schemas once, as a booted backend has them: the Strut domain, and
-      // on Neo4j the jarvis ontology (Concept, Claim, Check, Evidence); a
-      // Ladybug file holds them in its registry. Each case clears the data.
+      // The schemas once, as a booted backend has them: the Strut domain and
+      // the seed types (Concept, Claim, Check, Evidence), which a Ladybug
+      // file holds from its open. Each case clears the data.
       await tb.wipe(backend);
-      if (tb.kind === "neo4j") await seedJarvisOntology(backend);
       await seedStrutDomain(backend);
       backend.schemas.invalidate();
     });
