@@ -257,6 +257,15 @@ function Shell() {
     new URLSearchParams(location.search).has("chat"),
   );
   const [runBindings, setRunBindings] = useState<InputBinding[] | null>(null);
+  // A launch the server refused (a disabled workflow, a bad input, nobody to
+  // bill) or a failed Enable shows under the Run button until dismissed or the
+  // next attempt. Stored with its workflow, so it drops away when the
+  // selection moves on.
+  const [launchFailure, setLaunchFailure] = useState<{ wf: string; msg: string } | null>(null);
+  const launchError = launchFailure && launchFailure.wf === selectedWf ? launchFailure.msg : null;
+  const launchErrorRef = useRef<HTMLDivElement>(null);
+  const dismissLaunchError = useCallback(() => setLaunchFailure(null), []);
+  useDismiss(launchErrorRef, launchError != null, dismissLaunchError);
   // The selected workflow's `params` defaults (tunable knobs). `wfParams` is
   // the published baseline; `localParams` is the editable working copy. Editing
   // a param and publishing = a new workflow version (params live in the YAML).
@@ -890,6 +899,7 @@ function Shell() {
     const accumulated: RunEventData[] = [];
 
     setRunBindings(null);
+    setLaunchFailure(null);
     setRunDrill([]);
     setRunning(true);
     // Empty events + running → pending status overlay on all nodes immediately.
@@ -901,7 +911,13 @@ function Shell() {
       // in the sidebar as "running" while it's still executing. We don't select
       // it yet — selecting fires an effect that refetches (and would clobber)
       // the live events; we select on completion, as before.
-      const { runId } = await api.launchWorkflow(wf, input, params);
+      let runId: string;
+      try {
+        ({ runId } = await api.launchWorkflow(wf, input, params));
+      } catch (e) {
+        setLaunchFailure({ wf, msg: `The run did not start: ${errorMessage(e)}` });
+        return;
+      }
       let listedRunning = false;
       await api.streamRun(wf, runId, (event) => {
         // If the user navigated into another run mid-stream (e.g. opened a
@@ -1112,6 +1128,19 @@ function Shell() {
     if (localInput) return applyLookups(bindingsFromInputBlock(localInput), nodeLookups(localSteps, schemaFor, localParams));
     return deriveInputBindings(localSteps, schemaFor, localParams);
   }, [localSteps, localInput, localParams]);
+
+  // The topbar's Enable on a disabled workflow (the flyout's footer disables).
+  const handleEnable = useCallback(async () => {
+    if (!selectedWf) return;
+    const wf = selectedWf;
+    setLaunchFailure(null);
+    try {
+      await api.setWorkflowDisabled(wf, false);
+      await refreshWorkflows();
+    } catch (e) {
+      setLaunchFailure({ wf, msg: `Enable failed: ${errorMessage(e)}` });
+    }
+  }, [selectedWf, refreshWorkflows]);
 
   const handleRun = useCallback(async () => {
     if (!selectedWf || !localSteps || localSteps.length === 0) return;
@@ -1458,13 +1487,14 @@ function Shell() {
                     </div>
                   )}
                   {!collapsed && g.wfs.map((wf) => (
-                    <div key={wf.name} class={`list-item ${selectedWf === wf.name && !appOpen ? "is-active" : ""}`}
+                    <div key={wf.name} class={`list-item ${selectedWf === wf.name && !appOpen ? "is-active" : ""}${wf.disabled ? " is-disabled" : ""}`}
+                      title={wf.disabled ? "Disabled: refuses runs until enabled" : undefined}
                       onClick={() => { setSelectedApp(null); setSelectedJob(null); setSelectedWf(wf.name); setSelectedRun(null); setEvents([]); closeFlyout(); }}>
                       <span class="list-item-name" title={g.installed ? wf.name : undefined}>{nameInGroup(wf.name, g)}</span>
                       {runningByWf.has(wf.name) && (
                         <span class="live-dot" title={`${runningByWf.get(wf.name)} run${runningByWf.get(wf.name) === 1 ? "" : "s"} in progress`} />
                       )}
-                      {wf.automations?.some((a) => a.enabled) && (
+                      {!wf.disabled && wf.automations?.some((a) => a.enabled) && (
                         <span class="list-item-clock" title="Runs on a schedule"><ClockIcon size={11} /></span>
                       )}
                       <span class="badge badge-accent">{wf.activeVersion}</span>
@@ -1805,7 +1835,20 @@ function Shell() {
         <div class="topbar-actions">
           {wf && !viewingOld && (
             <div class="run-anchor">
-              <button class="btn btn-primary" onClick={handleRun}>Run</button>
+              {selectedEntry?.disabled ? (
+                <span class="wf-disabled">
+                  <span class="badge badge-warning" title="This workflow refuses every new run, and its schedules are held, until it is enabled">Disabled</span>
+                  <button class="btn" onClick={() => void handleEnable()}>Enable</button>
+                </span>
+              ) : (
+                <button class="btn btn-primary" onClick={handleRun}>Run</button>
+              )}
+              {launchError && (
+                <div class="anchored-popover" role="alert" ref={launchErrorRef}>
+                  <span class="confirm-note run-control-error">{launchError}</span>
+                  <button class="btn" onClick={dismissLaunchError}>Dismiss</button>
+                </div>
+              )}
               {runBindings && wf && (
                 <RunInputPopover
                   workflow={wf}
@@ -2093,6 +2136,8 @@ function Shell() {
           onTab={setWfTab}
           onClose={() => setPanel(null)}
           onDelete={handleDeleteWorkflow}
+          disabled={!!selectedEntry?.disabled}
+          onSetDisabled={async (d: boolean) => { await api.setWorkflowDisabled(selectedWf, d); await refreshWorkflows(); }}
           params={localParams ?? {}}
           onParamsChange={setLocalParams}
           onParamsValidChange={setParamsValid}
