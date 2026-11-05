@@ -160,6 +160,28 @@ function wakeTails(key: string): void {
   for (const wake of set) wake();
 }
 
+// ── One write at a time per file ───────────────────────────────────────────
+// `appendFile` writes a large string in 512 KiB chunks, one `write` each, so
+// two appends to one log at once — parallel branches, a foreach, an agent's
+// parallel tool calls, each `step.end` carrying a transcript — interleave
+// their chunks into lines nothing can parse, and readers drop them. Writes
+// keyed by the same file run one after another, in the order they were
+// asked for. In process only: one process writes a file.
+const fileWrites = new Map<string, Promise<void>>();
+
+export function serially<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const result = (fileWrites.get(key) ?? Promise.resolve()).then(fn);
+  const done = result.then(
+    () => {},
+    () => {},
+  );
+  fileWrites.set(key, done);
+  void done.then(() => {
+    if (fileWrites.get(key) === done) fileWrites.delete(key);
+  });
+  return result;
+}
+
 /** Sleep up to `ms`, or until `wakeTails(key)` (or `signal` aborts). */
 function sleepOrWake(key: string, ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
@@ -556,10 +578,12 @@ export class FileRunStore implements RunStore {
 
   async append(workflow: string, runId: string, event: RunEvent): Promise<void> {
     const dir = this.runDir(workflow, runId);
-    await mkdir(dir, { recursive: true });
     const line = JSON.stringify(event) + "\n";
     const file = join(dir, "events.jsonl");
-    await appendFile(file, line, "utf-8");
+    await serially(file, async () => {
+      await mkdir(dir, { recursive: true });
+      await appendFile(file, line, "utf-8");
+    });
     wakeTails(file);
   }
 
