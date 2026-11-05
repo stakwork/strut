@@ -1,5 +1,17 @@
 # Org home: an org's content on its own swarm
 
+> **Update (2026-11-05): the home is a Stadeum box, and Hive goes away.**
+> [stakwork/stadeum](https://github.com/stakwork/stadeum) wraps strut the
+> way Hive does today: sign-in, members, the org's signing key and each
+> person's delegation, the box's updates, backups and TLS. Hive is not part
+> of it. Once the Jamie chat runs fully in strut (`jamie-app.md`), Hive is
+> retired, not kept as a front. Until then it only has to keep working.
+> §0 is that direction and what strut owes it. It replaces the
+> hive.sphinx.chat front of §1 and §3.1–3.2, the mcp lab as the home's
+> server code, and the sequencing of §6. §4's tribes and Jamie per home are
+> not yet placed in Stadeum's order. The rest stands, with the changes
+> marked where they are.
+>
 > **Status (2026-11-01): the direction agreed in one design conversation
 > with the owner; the implementation and the order are open, for the
 > team.** Rows in "Decided" marked **agreed** are the owner's, from that
@@ -44,17 +56,67 @@ Stakwork runs, where Stakwork has root, is an accepted step on the way.
 | Question | Decision |
 |---|---|
 | Goal | **agreed.** An org's content lives on the org's own swarm, its **home**. Stakwork-hosted swarms, where Stakwork has root, are a step; self-hosted is the goal. |
-| Central | **agreed.** Only what must be central stays central. Realtime is not (rooms, or a service on the swarm, instead of Pusher). Bifrost keys are not: the Bifrost is the org's. The org's multi-swarm logic (which swarm is its default, its other swarms as peers) is not. What remains is §1, *proposed*. |
-| GitHub | **agreed.** One GitHub App for everyone. No org admin ever creates an app; every step stays as smooth as today. |
-| URL and UX | **agreed.** hive.sphinx.chat stays the one URL and the UX stays mostly as it is; the org's pages are served into it as frames from the org's home. Canvas, initiatives and the Jamie chat become strut apps. |
+| Central | **Superseded (2026-11-05):** a Stadeum box stands alone, with no runtime call to Hive, mcp or sphinx-swarm (Stadeum's rule 9). What, if anything, stays central (a directory for Peel's pairing, provisioning) is open, §0. *Was:* **agreed.** Only what must be central stays central. Realtime is not (rooms, or a service on the swarm, instead of Pusher). Bifrost keys are not: the Bifrost is the org's. The org's multi-swarm logic (which swarm is its default, its other swarms as peers) is not. What remains is §1, *proposed*. |
+| GitHub | **agreed.** One GitHub App for everyone. No org admin ever creates an app; every step stays as smooth as today. *2026-11-05:* in Stadeum this is GitHub sign-in handing each person's token to strut as their `GITHUB_TOKEN` (its step 7, low priority). How a self-hosted box uses the one App is open (§1.1). |
+| URL and UX | **Superseded (2026-11-05):** stadeum-ui is the shell, at the org's own host (a custom domain is Stadeum's step 6), and frames strut's own app host page signed in as the person. Hive is retired once the Jamie chat runs in strut. Canvas, initiatives and the Jamie chat still become strut apps. *Was:* **agreed.** hive.sphinx.chat stays the one URL and the UX stays mostly as it is; the org's pages are served into it as frames from the org's home. |
 | Tribes | **agreed.** A tribe server and the Jamie daemon run on each org's home. |
-| Tribe conversations | **agreed.** They appear in Hive, at every step. |
-| Home code | **agreed.** Org-level server code on the home (members, GitHub token exchange, Bifrost key custody, the Jamie daemon's service) lives in mcp's lab host, beside `labAuth` and `/mint-token`. Strut gains only generic seams (§3.3). |
+| Tribe conversations | **agreed.** They appear in Hive, at every step. *2026-11-05:* until Hive goes; after, in the Jamie app (§4.3). |
+| Home code | **Superseded (2026-11-05):** members, sign-in and key custody live in stadeum-ui, which reaches strut only through its HTTP API; strut runs from its own image, not inside mcp's lab (Stadeum's step 2). Strut still gains only generic seams (§0, §3.3). Where the Jamie daemon's service goes is open (§4.2). *Was:* **agreed.** Org-level server code on the home lives in mcp's lab host, beside `labAuth` and `/mint-token`. |
 | Old data | **agreed.** An org's existing Hive data moves to its home, and Hive's copy is deleted (§5). |
 | Where this lives | **agreed.** This file, one cross-repo plan. |
-| Order | **open** (§6): all at once, or two plans. The owner's first pick, if split, was tribes and Jamie first. |
+| Order | **Stadeum's (2026-11-05)**, §0. *Was:* **open** (§6): all at once, or two plans. |
+
+## 0. The home is a Stadeum box (2026-11-05)
+
+Stadeum (`stakwork/stadeum`, its `AGENTS.md`) is one compose stack on a
+box in the org's own cloud: strut, Neo4j, the gateway (Bifrost + Redis),
+stadeum-ui, an `ops` service for updates and backups, Caddy for TLS, and
+a one-shot `bootstrap` that makes the org's signing key. Its rule: Stadeum
+is the box, strut is the product. Stadeum owns only what strut must not:
+who people are, the org's signing key and each person's delegation, and
+the box itself. Everything a kind of team uses is a strut app or package.
+It reaches strut only through strut's HTTP API, and it never draws an app.
+
+Who owns each piece:
+
+| Piece | Owner |
+|---|---|
+| Sign-in (Microsoft Entra ID, Google), members, invites, roles | stadeum-ui |
+| The org's signing key, each person's virtual key and delegation, renewed every 6 hours | stadeum-ui (the Mothership code ported from Hive), pushed to strut as `PUT /llm/delegations/:actor` |
+| A person's GitHub token | stadeum-ui's GitHub sign-in (its step 7), pushed as the person's `GITHUB_TOKEN` actor secret |
+| The Jamie chat, canvas, initiatives, the graph | strut apps, framed by stadeum-ui from strut's `GET /apps`; `strut/jamie` first |
+| Image updates, backups | `ops`, around strut's drain |
+| TLS, a custom domain | Caddy |
+
+What Stadeum needs from strut, in its order:
+
+| Stadeum step | Strut | Status |
+|---|---|---|
+| 1. A per-person sign-in for strut's framed UI, the standalone twin of mcp's `/mint-token` | a strut PR (§3.2's question, answered for Stadeum: stadeum-ui hands the frame a short-lived credential for the person) | not started |
+| 2. Strut's own image in place of repo2graph; a pinned stock Neo4j | the image (`ghcr.io/stakwork/strut`), `STRUT_NEO4J_TAG` | built, stakwork/strut#527 |
+| 3. Updates: follow `strut:stable`, drain, restart, roll back | `PUT /drain`, `GET /drain` until `idle`; the `stable` channel (`promote-image.yml`) | built, stakwork/strut#527 |
+| 4. Backups around the same drain | the drain | built |
+| 5. Apps from strut's `GET /apps`, Jamie first | `strut/jamie` (`jamie-app.md` §5) | built, stakwork/strut#501, #528 |
+| 7. GitHub tokens | actor secrets (`PUT /actors/:actor/secrets/GITHUB_TOKEN`) | built |
+| 8. Calls | sphinx-voice beside strut (`deploy/voice`, `POST /voice/calls`) | built for one-to-one calls |
+
+Two things this plan proposed that Stadeum replaces: hive.sphinx.chat as
+the shell (§1.5, §3.1), and the sign-in statement a home exchanges for its
+own token (§1.3): a Stadeum box signs people in itself. What is open:
+
+- **Tribes and the Jamie daemon** (§4): not in Stadeum's order yet. The
+  daemon's service (Hive's tribes routes today) needs a home: strut
+  (a workflow or a few routes) or stadeum-ui. By Stadeum's rule 1, strut,
+  unless it needs the org key.
+- **The directory and Peel's pairing** (§1.2): how Peel finds a person's
+  org boxes once Hive's device flow is gone.
+- **Provisioning and payment** (§1.4): a box in the org's own cloud needs
+  none of Stakwork's; a box Stakwork runs for an org still does.
+- **The data in Hive** (§5): it moves before Hive is retired.
 
 ## The shape in one paragraph
+
+*Superseded (2026-11-05) by §0; kept for the history of the idea.*
 
 hive.sphinx.chat becomes a thin front. It signs people in, knows which org
 lives at which host, relays the one GitHub App's callbacks, provisions and
@@ -68,14 +130,18 @@ server and its own Jamie, whose turns run on the strut beside it.
 
 ## 1. What stays central (proposed)
 
+*2026-11-05: a Stadeum box signs people in and holds its own keys (§0);
+§1.2 and §1.4 are still open, §1.3 and §1.5 are replaced.*
+
 ### 1.1 The GitHub App relay
 
 Hive has two GitHub registrations: a sign-in OAuth app (`GITHUB_CLIENT_ID`,
 `src/lib/auth/nextauth.ts`) and the GitHub App (`GITHUB_APP_SLUG`,
 `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET`, `src/config/env.ts`).
-Repo access uses the App's user tokens, which expire every 8 hours and are
-refreshed with the client secret (`refreshUserToken`,
-`src/lib/githubApp.ts`). Hive holds no app private key and mints no
+Repo access uses the App's user tokens. *Corrected 2026-11-05:* this
+App's user tokens do not expire. Hive has refresh code
+(`refreshAndUpdateAccessTokens`, `src/lib/githubApp.ts`), but nothing
+calls it. Hive holds no app private key and mints no
 installation tokens.
 
 An app has a fixed address: GitHub takes up to ten callback URLs per app,
@@ -135,6 +201,9 @@ notifications across orgs, and the frame (§3).
 
 ## 2. What moves to the home (proposed)
 
+*2026-11-05: where the table says "the lab", read stadeum-ui for members,
+GitHub tokens and spend authority (§0), and strut for the rest.*
+
 | Piece | Today, in Hive | On the home |
 |---|---|---|
 | Members | `User`, `WorkspaceMember`, `SourceControlOrg` | the lab: who is in the org (from GitHub), and their Sphinx keys (Peel already reports one at pairing, `src/app/api/strut-devices/sphinx/route.ts`) |
@@ -151,6 +220,10 @@ notifications across orgs, and the frame (§3).
 ## 3. Serving the UX into hive.sphinx.chat
 
 ### 3.1 The frame is the org's strut page
+
+*2026-11-05: the same frame, with stadeum-ui as the page that frames it in
+place of hive.sphinx.chat (§0). Stadeum's rule 2 settles the choice
+below: it never draws an app.*
 
 There are two ways to put an app on hive.sphinx.chat:
 
@@ -173,6 +246,8 @@ There are two ways to put an app on hive.sphinx.chat:
 
 ### 3.2 Signing in to the frame
 
+*2026-11-05: this is Stadeum's step 1, a strut PR not yet started (§0).*
+
 Strut's browser session is an HttpOnly `SameSite=Lax` cookie
 (`src/auth.ts`), which a browser never sends to a cross-site frame. So the
 shell hands the frame a token for that org: the home's own, minted against
@@ -185,13 +260,10 @@ org gets a scope of its own (a member is not a peer) is open.
 
 Generic strut seams, each an item of its own:
 
-- **Proposals in an app turn.** An orchestrator turn launched from an app
-  leaves out every tool its `approve:` list gates
-  (`src/steps/core/agent.ts`, `appGated`), on the rule that a page must
-  not decide them. Hive's Jamie chat shows proposal cards that a person
-  decides (`src/app/org/[githubLogin]/_components/ProposalCard.tsx`). A
-  Jamie app needs a way for the viewer to see and decide the proposals
-  their own turns made.
+- ~~**Proposals in an app turn.**~~ Built for strut's own apps
+  (`jamie-app.md` §3.1): a first-party page's turns keep their gated tools,
+  and the viewer decides their own proposals (`proposal/decide`). A
+  model-written app's turns still leave them out.
 - **MCP servers.** A page's call carries no caller MCP servers, and an
   app turn leaves out registered MCP tools that need approval
   (`src/steps/core/agent.ts`). If the Jamie chat should reach the org's
@@ -307,6 +379,8 @@ host, never its content.
 
 ## 6. Ways to sequence it (open)
 
+*Superseded (2026-11-05) by Stadeum's order (§0).*
+
 One coupling decides the order: tribes on the home need the Jamie app, or
 a copy in Hive, to keep tribe conversations in Hive (§4.3). Nothing else in
 §4 needs §1–§3.
@@ -330,23 +404,28 @@ a copy in Hive, to keep tribe conversations in Hive (§4.3). Nothing else in
 |---|---|
 | sphinx-swarm | the tribes image with an external broker and its own seed; the daemon image; both in the second-brain stack and its backups |
 | sphinx | nothing required (#416 and #419 are built); the end-to-end runs `docs/sovereign-tribes.md` §8 lists as not yet run |
-| stakgraph (mcp's lab) | the home code: members, the sign-in statement exchanged for a token, GitHub exchange and refresh, key custody and delegation fan-out, the tribes service, importing an org's Hive data |
-| strut | the seams of §3.3; a member scope if §3.2 needs one; the Jamie, canvas and initiatives apps |
-| Hive | the relay, the directory, the sign-in statement, the shell framing the home; the export; then deleting what moved |
+| stadeum | *2026-11-05:* the box: sign-in, members, key custody and delegations, GitHub sign-in, updates, backups, TLS (§0) |
+| stakgraph (mcp's lab) | *2026-11-05: none for a Stadeum box,* which runs strut's own image. Was: the home code |
+| strut | the seams of §3.3; the per-person sign-in for the framed UI (§0, Stadeum's step 1); the Jamie, canvas and initiatives apps |
+| Hive | *2026-11-05:* kept working until the Jamie app replaces it, then retired; the export of its data first. Was: the relay, the directory, the sign-in statement, the shell framing the home |
 | Peel | pairing through the directory; linking a tribe at the home; creating a tribe on the home's tribe server (#416's onion commands) |
 
 ## Open questions
 
-1. The order, A, B or C (§6), and what the team wants first.
+1. ~~The order, A, B or C (§6)~~: Stadeum's (§0).
 2. Where canvas and initiatives data lives on the home: graph nodes
    (`apps.md` §4) or an app's own store (SQLite, `apps.md` work item 3,
    not built).
-3. A member scope for the frame (§3.2), or the person token as it is.
+3. A member scope for the frame (§3.2), or the person token as it is:
+   now Stadeum's step 1.
 4. Keep the sign-in OAuth app, or sign in through the GitHub App's own
    user authorization (§1.1).
 5. Which tribe conversations a person sees in the Jamie app: the linker's
    (as today), each sender's own turns, or the whole org's.
-6. The directory: a table at hive.sphinx.chat, or DNS (§1.2).
+6. The directory: a table at hive.sphinx.chat, or DNS (§1.2). With Hive
+   gone, how Peel finds a person's boxes.
+9. Where the Jamie daemon's service lives on a Stadeum box: strut or
+   stadeum-ui (§0, §4.2).
 7. For a self-hosted home, when the relay starts exchanging and
    refreshing GitHub tokens on its behalf (§1.1).
 8. The migration's mechanics: an export Hive pushes, or one the lab pulls
