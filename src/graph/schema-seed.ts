@@ -54,6 +54,11 @@ export const STRUT_MIGRATION_ID = "strut_domain_seed_v1";
 export const DOMAIN_VECTOR_INDEX = `${STRUT_DOMAIN_LABEL.toLowerCase()}_vector_index`; // domain_strut_vector_index
 export const DOMAIN_FULLTEXT_INDEX_V2 = `${STRUT_DOMAIN_LABEL.toLowerCase()}_attribute_index_v2`;
 export const GLOBAL_VECTOR_INDEX = "text_embeddings_vector_index";
+/** The one keyword index of a Neo4j graph strut alone holds: every node's
+ *  composed search text (`Data_Bank`, the writer's `search_text`), as a
+ *  Ladybug file's one FTS index (plans/ontology.md item 4). A graph jarvis
+ *  shares keeps jarvis's per-domain attribute indexes instead. */
+export const SEARCH_TEXT_INDEX = "strut_search_text_index";
 
 const VECTOR_OPTIONS =
   "OPTIONS { indexConfig: { `vector.dimensions`: 384, `vector.similarity_function`: 'cosine' } }";
@@ -173,10 +178,21 @@ export async function seedStrutDomain(e: EngineLike): Promise<SeedReport> {
     await ddl(`CREATE INDEX IF NOT EXISTS FOR (n:\`${schema.type}\`) ON (n.node_key)`);
   }
 
+  // 4a. The search-text keyword index, on a graph strut alone holds (no
+  //     jarvis `About` node): every type's searchable fields, whoever made
+  //     the type and whenever, with no index per domain. Before 4b, so the
+  //     seed types get no per-domain fulltext index (`createNodeSchema`).
+  const resolver = new SchemaResolver(engine);
+  if (!(await resolver.hiddenSets()).jarvis) {
+    await ddl(
+      `CREATE FULLTEXT INDEX \`${SEARCH_TEXT_INDEX}\` IF NOT EXISTS FOR (n:Data_Bank) ON EACH [n.Data_Bank]
+       OPTIONS { indexConfig: { \`fulltext.analyzer\`: 'english' } }`,
+    );
+  }
+
   // 4b. The types both engines seed (Claim, Check, Evidence, Concept): each
   //     created only when no Schema has its name — a soft-deleted one too, as
   //     above. One already there (jarvis's) is left exactly as it is.
-  const resolver = new SchemaResolver(engine);
   for (const t of SEED_TYPES) {
     if (await src.schemaRow(t.type)) continue;
     await createNodeSchema(engine, resolver, seedTypeInput(t));
