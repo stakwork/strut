@@ -1,6 +1,6 @@
 # Jamie as a strut app, and one wake for every host
 
-> **Status (2026-11-04): proposed; §1 (one wake) built — §1.6.** Written after a read of strut `main`
+> **Status (2026-11-04): proposed; §1 (one wake) built — §1.6; §2 (conversations) built — §2.1.** Written after a read of strut `main`
 > @e1c45ad, hive `origin/master` @c692b96bf, sphinx `origin/master`
 > @74c12954 (Peel's bridge) and sphinx-voice `origin/main` @ba18f12. The
 > owner agreed four things in conversation, marked **agreed** below: a
@@ -56,6 +56,7 @@ drifted (§1.1).
 | Session names | **agreed.** A conversation is the person's own session, `<actor>/<conversation>`, the namespace Peel's hand-offs already use (`peerSessionId`, `src/session-store.ts`), never `app/<name>/<viewer>/…`. |
 | Order | **agreed.** Wake and conversation index first (server-side, testable with no UI, Hive can use them before the app exists), then the tier, then the app, then the host panel and Hive's frame. |
 | Canvas, initiatives | Out of scope here. `org-home-swarm.md` makes them apps of their own. |
+| Shared conversations | **Kept** (owner, 2026-11-04; open question 1). A conversation can have several people: it is listed for everyone who took a turn in it (its turns' actor, else principal), and a `shared` flag makes it readable to any actor on this strut before their first turn. Strut cannot check org membership; on a swarm every token holder is an org member. Taking a turn makes you a participant. Calls (one conversation per call, each turn as its speaker), tribe threads and Hive's share links already work this way. |
 
 ## 1. One wake (proposed)
 
@@ -284,7 +285,7 @@ or vague, and where it differs:
   one launch at a time; `orchestrator: { wake: false }` still turns it all
   off.
 
-## 2. Conversations (proposed)
+## 2. Conversations (built — §2.1)
 
 `useAssistant` (`kit/src/hooks.ts:490`) rebuilds a chat from the last ten
 (at most twenty) orchestrator runs, and to find the viewer's it reads the
@@ -328,6 +329,63 @@ started (`assistantJobs` over its events), status while in flight.
 - **Live.** `conversation/get` takes `wait`, held until a turn of it
   lands or settles, as `run/get` waits; the page asks again on each
   answer, at most once a second. Job progress stays `job/updates`.
+
+### 2.1 As built (2026-11-04, branch `feature/conversation-index`)
+
+`src/conversations.ts`, the `conversation/*` steps, the routes in
+`createStrut` (`API.md` §9.1). Where it differs from the text above:
+
+- **Four steps, not seven**: `conversation/list`, `conversation/get`,
+  `conversation/update { title?, archived?, seen?, shared? }` (rename,
+  archive, seen and share are one write of flags), `conversation/fork`.
+  Refused under `ctx.app` until the first-party tier (§3).
+- **Routes**: `GET /conversations`, `GET /conversations/item?id=` (the id
+  may hold `/`, as `/sessions` takes it), `POST /conversations/update`,
+  `POST /conversations/fork` (POST, so a person token may make them: the
+  gate lets it POST these two). A plain peer reads the routes like any
+  peer and sees no conversation.
+- **Written when a turn launches and when it ends**, not when it commits:
+  a turn that fails commits nothing to the session, and its message would
+  vanish from the chat. The launcher (`launchDetached`) records every run
+  of a `params.wake` workflow with an `input.session` that opens as itself
+  (not a plain peer's `peer/…`, not an app's `app/…`; a person token's own
+  session yes) — every host launch, `run/launch`, a wake, an automation.
+  The launch is on record before the run starts; the end is recorded from
+  the run's terminal event (`RunOptions.onEvent`), before its summary is
+  written, so whoever sees the run done sees the conversation say so.
+- **Who it is listed for**: who took a turn (the launch's actor, else its
+  principal), the first segment of an id with a `/` (`<actor>/…`), and
+  whoever opened it while shared. The deployment's key with no actor reads
+  any conversation; its list is the no-actor viewer's.
+- **Files**: `<dataDir>/conversations/sessions/<id>.json` (the record:
+  title, `renamed`, `shared`, `forkedFrom`, viewers, the turns as run ids
+  with who, when and status, `rev`) and `viewers/<actor>.json` (a person's
+  list: the record's facts copied onto each row, plus their own `archived`
+  and `seenAt`), so a list reads one file (open question 8: files).
+- **The lazy build** reads turn lines (`SessionStore.turns`, new): a
+  session is built when it is first read, and every session at the first
+  list (once, stamped `built.json`). Its viewers have read its history
+  (no unread). A failed turn from before the index is not there: the
+  session never recorded it.
+- **A turn** is read from its run: summary and log, settled ones once per
+  process. The person's words are `input.prompt` as sent (Hive's
+  `@<workspace>` line included; only the title leaves it out); a wake has
+  no `prompt` and carries `run.start.wake`. Jobs are `turnJobs`, the
+  kit's `assistantJobs` logic copied (the server cannot import the kit).
+  Proposals are listed per page, as a person token sees them in a list
+  (`visibleTo`).
+- **Unread** is `seenAt < updatedAt`, `updatedAt` the last turn's launch
+  or end; launching a turn marks it seen for its launcher, so the reply is
+  what is new. `running` is the launcher's in-process set.
+- **`wait` takes `since`**: `get` answers `rev`, and `wait` holds until it
+  moves past `since` (default: the rev now), so a change between two
+  polls is never missed.
+- **Fork** copies the source's session turn by turn (`appendTurn` per
+  turn line, each with its own messages), so the fork replays the same
+  thread and reads the same runs; its finished turns show. Its id is
+  `<actor>/<12 hex>` unless named (a person token's must be its own).
+- **Not built**: the jobs in a list row (read per turn in `get`), the one-off
+  export of Hive's renamed titles and archived flags (§7).
 
 ## 3. First-party apps (proposed)
 
@@ -481,11 +539,9 @@ their own.
 
 ## Open questions
 
-1. **Shared conversations.** In Hive any org member who opens a shared
-   link adds turns to the same conversation, as themselves. Keep that (a
-   conversation readable by several actors: the index and the tier must
-   say who may open it) or drop it (each person's own; a share is a
-   fork)?
+1. ~~**Shared conversations.**~~ Kept (2026-11-04, Decided): several
+   people, listed for each participant, a `shared` flag readable to any
+   actor here; built in §2.1.
 2. **The loop cap's fallback**: the host shows the job's words as they
    are (proposed, Peel's), or nothing (Hive's).
 3. **Who a wake runs as**: the person who asked for the job (proposed),
@@ -500,6 +556,5 @@ their own.
    job uses whatever is on file. `org-home-swarm.md` moves the refresh to
    the home's lab; until then, a continued job may push with an expired
    token.
-8. **Where the conversation index lives** on a graph workspace: a file
-   under `dataDir` beside the sessions (proposed: they are files on every
-   backend), or nodes.
+8. ~~**Where the conversation index lives**~~: files under `dataDir`, on
+   every backend (§2.1).

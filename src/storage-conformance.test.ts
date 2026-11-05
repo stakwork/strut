@@ -383,6 +383,8 @@ for (const impl of sessionImpls) {
       assert.equal(s?.system, "first");
       assert.deepEqual(s?.messages, [user("a"), reply("b"), user("c"), reply("d"), reply("e")]);
       assert.deepEqual(s?.turns.map((t) => [t.turn, t.runId, t.principal, t.job]), [[0, "1", "ann", "j-1"], [1, "2", "bob", undefined]]);
+      assert.deepEqual(await store.turns("s1"), s?.turns);
+      assert.deepEqual(await store.turns("nobody"), []);
 
       const [info] = await store.list();
       assert.deepEqual(

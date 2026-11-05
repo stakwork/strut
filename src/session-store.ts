@@ -208,6 +208,9 @@ export function sessionInfo(id: string, turns: SessionTurn[]): SessionInfo | nul
 export interface SessionStore {
   /** The thread, or `null` when no turn was ever committed under `id`. */
   load(id: string): Promise<Session | null>;
+  /** The turn lines alone, oldest first (`[]` for none): what reads a
+   *  thread's history without its messages (src/conversations.ts). */
+  turns(id: string): Promise<SessionTurn[]>;
   /** Commit one turn. `system` is stored by turn 0 and ignored after. */
   appendTurn(id: string, turn: { system: string; messages: unknown[]; record: NewTurn }): Promise<SessionTurn>;
   /** Newest first. */
@@ -260,7 +263,7 @@ export class FileSessionStore implements SessionStore {
     return join(this.root, "sessions", encodeId(checked(id)));
   }
 
-  private async turns(id: string): Promise<SessionTurn[]> {
+  async turns(id: string): Promise<SessionTurn[]> {
     return (await readLines(join(this.dir(id), "turns.jsonl"))).map((l) => JSON.parse(l) as SessionTurn);
   }
 
@@ -330,6 +333,10 @@ export class MemorySessionStore implements SessionStore {
     const s = this.sessions.get(checked(id));
     // Copies: the caller may hold them across a later append.
     return s ? { ...s, messages: [...s.messages], turns: [...s.turns], replayFrom: replayFromOf(s.turns) } : null;
+  }
+
+  async turns(id: string): Promise<SessionTurn[]> {
+    return [...(this.sessions.get(checked(id))?.turns ?? [])];
   }
 
   async appendTurn(id: string, turn: { system: string; messages: unknown[]; record: NewTurn }): Promise<SessionTurn> {

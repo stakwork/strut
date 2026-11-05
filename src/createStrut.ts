@@ -43,6 +43,7 @@ import {
   MemorySessionStore,
   PEER_NAMESPACE,
   idProblem,
+  peerSessionId,
   sessionInfo,
   sessionsCapability,
   type SessionStore,
@@ -57,6 +58,7 @@ import { buildProvenance } from "./provenance.js";
 import { RUN_GET_MAX_WAIT_MS, RUN_LIST_DEFAULT_LIMIT, RUN_LIST_MAX_LIMIT, capEvents, capTranscript, fileResult, listEntryOf, matchesRunFilter, runsPage, type RunCaller, type RunListEntry, type RunTranscript, type RunsCapability } from "./runs.js";
 import type { AppRef, StartedBy, WakeMark } from "./core.js";
 import { WAKE_MAX, artifactsOf, createWakes, parseWakeDoor, replyOf, type WakeEnd, type WakeOutcome } from "./wake.js";
+import { createConversations, isConversationFlow, outsideConversations, type ConversationViewer } from "./conversations.js";
 import { createVerifier, type Verifier, type VerifyResult } from "./verify.js";
 import { CLAIMS_OFF, type ClaimsBlock } from "./claims-schemas.js";
 import { PERSON, claimsRoutes } from "./claims-routes.js";
@@ -1548,6 +1550,7 @@ export async function createStrut<TServices = unknown>(
   // other credential: Hive's page has none.
   const UI_FILE = /^\/($|index\.html$|favicon\.ico$|assets\/)/;
   const PROPOSAL_DECIDE = /^\/proposals\/[^/]+\/decide$/;
+  const CONVERSATION_POSTS = new Set(["/conversations/update", "/conversations/fork"]);
   const PEER_POST = /^\/workflows\/[^/]+\/(?:[^/]+\/run|run|runs\/[^/]+\/(?:cancel|pause|resume))$/;
   app.use("*", async (c, next) => {
     const path = c.req.path;
@@ -1563,9 +1566,9 @@ export async function createStrut<TServices = unknown>(
     if (!read) {
       const scope = await scopeOf(c);
       const post = c.req.method === "POST";
-      const personPost = scope === "peer:person" && (path === "/mcp" || path === VOICE_CALLS || (homeRole === "box" && HOME_POSTS.has(path)) || PROPOSAL_DECIDE.test(path));
+      const personPost = scope === "peer:person" && (path === "/mcp" || path === VOICE_CALLS || (homeRole === "box" && HOME_POSTS.has(path)) || PROPOSAL_DECIDE.test(path) || CONVERSATION_POSTS.has(path));
       if (isPeerScope(scope) && !(post && (PEER_POST.test(path) || path === "/packages/subscriptions/sync" || personPost))) {
-        return c.json({ error: "forbidden: a peer may read, launch a run, control a run a peer launched, and ask this strut server to sync its subscriptions; a person's token may also call an app's step_run on /mcp, start a voice call and decide the proposals it made" }, 403);
+        return c.json({ error: "forbidden: a peer may read, launch a run, control a run a peer launched, and ask this strut server to sync its subscriptions; a person's token may also call an app's step_run on /mcp, start a voice call, decide the proposals it made and change or fork its conversations" }, 403);
       }
     }
     return next();
@@ -4975,6 +4978,18 @@ export async function createStrut<TServices = unknown>(
     const rawSession = (body.input as Record<string, unknown> | undefined)?.["session"];
     const session = typeof rawSession === "string" && rawSession ? rawSession : undefined;
     if (session) liveSessions.set(session, new Set([...(liveSessions.get(session) ?? []), runId]));
+    // A turn of a conversation (src/conversations.ts): recorded at launch,
+    // so a turn that fails — and commits nothing to the session — still
+    // shows. The session the run's agent opens: a plain peer's and an app's
+    // are their own namespaces, never a conversation; a person's token
+    // opens its own as it is.
+    const opened =
+      !session || extra?.origin === "app"
+        ? undefined
+        : extra?.origin === "peer"
+          ? peerSessionId(session, extra.peerPerson ? extra.actor : undefined)
+          : session;
+    const conversation = opened && isConversationFlow(flow) && !outsideConversations(opened) && !idProblem(opened) ? opened : undefined;
     let principal = extra?.principal;
     void (async () => {
       // A resume drops the summary of the attempt it resumes FIRST, so the
@@ -4996,6 +5011,20 @@ export async function createStrut<TServices = unknown>(
         (await workspace.getWorkflowHash(flow.name, extra?.version)) ?? undefined;
       const stepHashes = await stepHashesFor(workspace, flow);
       principal ??= await principalFor(flow.name, extra?.actor);
+      // Once who pays is known: an automation's turn is its owner's. On
+      // record before the run starts.
+      if (conversation) {
+        await conversations
+          .launched(conversation, {
+            runId,
+            workflow: flow.name,
+            ...(extra?.actor ? { actor: extra.actor } : {}),
+            ...(principal ? { principal } : {}),
+            ...(extra?.wake ? { wake: true } : {}),
+            prompt: (body.input as Record<string, unknown> | undefined)?.["prompt"],
+          })
+          .catch((err) => console.error(`[conversations] ${conversation}: recording run ${runId} failed:`, err));
+      }
       return runWorkflow(flow, body.input ?? {}, registry, {
         runId,
         store,
@@ -5024,6 +5053,9 @@ export async function createStrut<TServices = unknown>(
         ...(callback ? { callback: roomActorOf(callback.url) !== undefined ? { room: true as const } : { origin: callbackOrigin(callback.url) } } : {}),
         ...(mcp ? { mcp } : {}),
         ...(attachments?.length ? { attachments } : {}),
+        // Its end, recorded from the terminal event — before the summary is
+        // written, so whoever sees the run done sees the conversation say so.
+        ...(conversation ? { onEvent: (e: RunEvent) => conversationEnd(conversation, runId, e) } : {}),
       });
     })()
       .then(
@@ -5070,6 +5102,23 @@ export async function createStrut<TServices = unknown>(
   /** Every run in flight launched on a session (`input.session`), by
    *  session: a wake waits for them. */
   const liveSessions = new Map<string, Set<string>>();
+  // The conversation index (src/conversations.ts, plans/jamie-app.md §2):
+  // what `conversation/*` and `/conversations` read, written by the
+  // launcher above when a turn launches and ends.
+  /** A conversation turn's terminal event → its end on the index. */
+  const conversationEnd = async (id: string, runId: string, e: RunEvent): Promise<void> => {
+    const status = e.type === "run.end" ? "success" : e.type === "run.error" ? "error" : e.type === "run.cancelled" ? "cancelled" : undefined;
+    if (status) await conversations.ended(id, runId, status).catch((err) => console.error(`[conversations] ${id}: run ${runId}'s end:`, err));
+  };
+  const conversations = createConversations({
+    dataDir,
+    store,
+    sessions: sessionStore,
+    getWorkflow: (name) => workspace.getWorkflow(name),
+    running: (id) => liveSessions.has(id) || !!sessions.holder(id),
+    liveState: (workflow, runId) => controllers.get(`${workflow}/${runId}`)?.state,
+    artifactRefs: (runId, output, job) => artifactRefs(runId, output, job),
+  });
   const orchestratorOpts = opts.orchestrator === false ? undefined : opts.orchestrator;
   const wakeMax = orchestratorOpts?.wakeMax ?? WAKE_MAX;
   if (!Number.isInteger(wakeMax) || wakeMax < 0) throw new Error(`orchestrator.wakeMax must be a whole number of turns, not ${wakeMax}`);
@@ -5660,6 +5709,7 @@ export async function createStrut<TServices = unknown>(
     },
   };
   if (!(services as Record<string, unknown>)["runs"]) (services as Record<string, unknown>)["runs"] = runsCap;
+  (services as Record<string, unknown>)["conversations"] ??= conversations;
 
   // Automations (plans/automations.md): scheduled launches go through the
   // same detached path as `POST /run`, stamped with their automation.
@@ -5756,6 +5806,99 @@ export async function createStrut<TServices = unknown>(
     const actor = await resolveActor(c);
     const wake = await wakes.jobEnded(parsed.session, { ...parsed.end, ...(actor ? { actor } : {}) });
     return c.json({ wake });
+  });
+
+  // ── Conversations (src/conversations.ts, plans/jamie-app.md §2) ────────
+  // The assistant's chats as a person reads them, for a host (its key, the
+  // person as `x-strut-actor`) and for a person's own token: its own and
+  // the shared ones. A plain peer reads like any peer, and sees none: its
+  // actor is a header any strut sets (the gate refuses it the writes). The
+  // id is a query parameter or a body field: it may hold slashes.
+  /** `null`: a viewer who has none here. */
+  const conversationViewer = async (c: Context): Promise<ConversationViewer | null> => {
+    const scope = await scopeOf(c);
+    const actor = await resolveActor(c);
+    if (scope === "peer:person") return actor ? { actor, person: true } : null;
+    if (scope !== "full") return null;
+    return actor ? { actor } : { all: true };
+  };
+  const conversationError = (c: Context, err: unknown) => {
+    const message = err instanceof Error ? err.message : String(err);
+    return c.json({ error: message }, message.startsWith("No conversation") ? 404 : message.includes("already exists") ? 409 : 400);
+  };
+  const intParam = (v: string | undefined) => (v !== undefined && /^\d+$/.test(v) ? Number(v) : undefined);
+
+  app.get("/conversations", async (c) => {
+    const by = await conversationViewer(c);
+    if (!by) return c.json({ conversations: [] });
+    const q = c.req.query();
+    const limit = intParam(q["limit"]);
+    return c.json(
+      await conversations.list(
+        {
+          ...(q["q"] ? { q: q["q"] } : {}),
+          ...(q["archived"] === "1" || q["archived"] === "true" ? { archived: true } : {}),
+          ...(limit ? { limit } : {}),
+          ...(q["before"] ? { before: q["before"] } : {}),
+        },
+        by,
+      ),
+    );
+  });
+
+  app.get("/conversations/item", async (c) => {
+    const by = await conversationViewer(c);
+    const q = c.req.query();
+    const session = q["id"] ?? "";
+    const problem = idProblem(session);
+    if (problem) return c.json({ error: `conversation id "${session}" ${problem}` }, 400);
+    const [limit, before, wait, since] = [intParam(q["limit"]), intParam(q["before"]), intParam(q["wait"]), intParam(q["since"])];
+    const view = by && (await conversations.get(
+      { session, ...(limit ? { limit } : {}), ...(before !== undefined ? { before } : {}), ...(wait ? { wait } : {}), ...(since !== undefined ? { since } : {}) },
+      by,
+    ));
+    return view ? c.json(view) : c.json({ error: `No conversation "${session}" (or not yours to read)` }, 404);
+  });
+
+  app.post("/conversations/update", async (c) => {
+    const by = await conversationViewer(c);
+    if (!by) return c.json({ error: "forbidden: no conversations here" }, 403);
+    const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
+    if (!body || typeof body["session"] !== "string") return c.json({ error: "body must be { session, title?, archived?, seen?, shared? }" }, 400);
+    for (const k of ["archived", "seen", "shared"]) {
+      if (body[k] !== undefined && typeof body[k] !== "boolean") return c.json({ error: `${k} must be true or false` }, 400);
+    }
+    if (body["title"] !== undefined && typeof body["title"] !== "string") return c.json({ error: "title must be a string" }, 400);
+    try {
+      return c.json(
+        await conversations.update(
+          {
+            session: body["session"],
+            ...(typeof body["title"] === "string" ? { title: body["title"] } : {}),
+            ...(typeof body["archived"] === "boolean" ? { archived: body["archived"] } : {}),
+            ...(typeof body["seen"] === "boolean" ? { seen: body["seen"] } : {}),
+            ...(typeof body["shared"] === "boolean" ? { shared: body["shared"] } : {}),
+          },
+          by,
+        ),
+      );
+    } catch (err) {
+      return conversationError(c, err);
+    }
+  });
+
+  app.post("/conversations/fork", async (c) => {
+    const by = await conversationViewer(c);
+    if (!by) return c.json({ error: "forbidden: no conversations here" }, 403);
+    const body = (await c.req.json().catch(() => null)) as Record<string, unknown> | null;
+    if (!body || typeof body["session"] !== "string" || (body["id"] !== undefined && typeof body["id"] !== "string")) {
+      return c.json({ error: "body must be { session, id? }" }, 400);
+    }
+    try {
+      return c.json(await conversations.fork({ session: body["session"], ...(typeof body["id"] === "string" ? { id: body["id"] } : {}) }, by), 201);
+    } catch (err) {
+      return conversationError(c, err);
+    }
   });
 
   // `callback: { url }` asks for the result to be POSTed there when the run
