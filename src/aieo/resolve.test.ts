@@ -30,7 +30,7 @@ const {
   canonicalModelName,
   maxOutputTokensFor,
   resolveModel,
-} = await import("../resolve.js");
+} = await import("./resolve.js");
 const {
   API_KEY_ENV,
   KEY_HEADER_ENV,
@@ -40,7 +40,7 @@ const {
   getProviderOptions,
   computeSessionCost,
   mapleReasoningEffort,
-} = await import("../provider.js");
+} = await import("./provider.js");
 const { generateText } = await import("ai");
 const { createServer } = await import("node:http");
 

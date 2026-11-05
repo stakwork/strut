@@ -23,6 +23,7 @@
     "build": "npm run build:engine && npm run build:kit",
     "build:engine": "tsc && node -e \"fs.cpSync('src/workflows', 'build/workflows', { recursive: true }); fs.cpSync('src/concepts', 'build/concepts', { recursive: true }); fs.cpSync('src/apps/templates', 'build/apps/templates', { recursive: true }); fs.cpSync('src/apps/views', 'build/apps/views', { recursive: true }); fs.cpSync('src/apps/jamie', 'build/apps/jamie', { recursive: true })\"",
     "build:kit": "node scripts/build-kit.mjs",
+    "build:aieo": "npm --prefix aieo run build",
     "prepare": "npm run build && npm --prefix web install && npm --prefix web run build",
     "build:web": "npm --prefix web run build",
     "package:desktop": "node scripts/package-desktop.mjs",
@@ -43,14 +44,17 @@
     "test:app-build": "node scripts/check-app-build.mjs"
   },
   "dependencies": {
+    "@ai-sdk/google": "4.0.74",
+    "@ai-sdk/openai": "4.0.69",
     "@ai-sdk/provider-utils": "^5.0.44",
     "@ai-sdk/typesafe-ai": "^3.0.3",
+    "@ai-sdk/xai": "5.0.2",
     "@googleapis/drive": "^20.2.0",
     "@hono/node-server": "^2.0.4",
     "@huggingface/transformers": "^4.1.0",
     "@modelcontextprotocol/sdk": "^1.32.1",
     "@octokit/rest": "^22.0.1",
-    "aieo": "^0.2.7",
+    "@openrouter/ai-sdk-provider": "3.0.0",
     "esbuild": "0.28.2",
     "gatekey": "^0.1.1",
     "hono": "^4.12.23",
@@ -69,7 +73,7 @@
     "ws": "^8.21.3"
   },
   "devDependencies": {
-    "@ai-sdk/anthropic": "^4.0.57",
+    "@ai-sdk/anthropic": "4.0.71",
     "@types/html-to-text": "^9.0.4",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.19.0",
@@ -82,7 +86,7 @@
     "zod": "^4.6.5"
   },
   "peerDependencies": {
-    "@ai-sdk/anthropic": "^4.0.57",
+    "@ai-sdk/anthropic": "^4.0.71",
     "ai": "^7.0.106",
     "zod": "^4.3.6"
   },

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { defineStep, withUsage, type StepContext } from "../../core.js";
 import type { StrutCapabilities } from "../../capabilities.js";
-import { resolveModel, stepAuth } from "../../llm.js";
+import { loadAieo, resolveModel, stepAuth } from "../../llm.js";
 import { usageFromSteps, usageForCost } from "../../pricing.js";
 import { bootEnv } from "../../env.js";
 
@@ -74,7 +74,7 @@ export default defineStep({
       maxOutputTokens,
     });
     // Token usage + dollar cost at aieo's rates, like the agent step's output.
-    const { computeSessionCost } = await import("aieo");
+    const { computeSessionCost } = await loadAieo();
     const usage = usageFromSteps(result.steps);
     const cost = computeSessionCost(provider, usageForCost(usage), modelId);
     // Structured: the object's own fields win a name clash with usage/cost.

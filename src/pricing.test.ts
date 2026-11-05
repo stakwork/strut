@@ -48,7 +48,7 @@ test("usageForCost is the exact shape aieo's computeSessionCost prices", async (
   assert.deepEqual(usageForCost(u), { input: 120_000, cache_read: 800_000, cache_write: 50_000, output: 30_000 });
   // Pricing itself is aieo's — pin the anthropic figure so a table change
   // there is noticed here: 0.12*3 + 0.8*0.3 + 0.05*3.75 + 0.03*15 = 1.2375.
-  const { computeSessionCost } = await import("aieo");
+  const { computeSessionCost } = await import("./aieo/index.js");
   assert.ok(Math.abs(computeSessionCost("anthropic", usageForCost(u)) - 1.2375) < 1e-9);
 });
 

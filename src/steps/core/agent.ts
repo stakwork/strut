@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { ArtifactsCapability, SecretsCapability } from "../../capabilities.js";
 import { attachmentParts, loadRunAttachments } from "../../ai/attachments.js";
 import { applyToolWrappers } from "../../extensions.js";
-import { resolveModel, createWebTools, stepAuth, type ResolvedModel } from "../../llm.js";
+import { loadAieo, resolveModel, createWebTools, stepAuth, type ResolvedModel } from "../../llm.js";
 import { idProblem, type OpenSession, type SessionTurn, type SessionsCapability } from "../../session-store.js";
 import type { ToolResultOutput } from "@ai-sdk/provider-utils";
 import { accessedNodesOf, defineStep, isFirstParty, mediaOf, messagesOf, stopOf, takeUsage, usageOf, type McpServer, type RunAttachment, type StepContext, type StepRegistry, withAccessedNodes, withMedia, withMessages, withUsage, workflowOf } from "../../core.js";
@@ -1374,7 +1374,7 @@ export default defineStep({
     // the secrets boundary (secret store → env), LLM gateway routing and a
     // timeout-wrapped fetch. The PROVIDER is needed now (provider-specific
     // tools below) and is keyless; the key + client are resolved LAST.
-    const { canonicalModelName, computeSessionCost } = await import("aieo");
+    const { canonicalModelName, computeSessionCost } = await loadAieo();
     if (cfg.session !== undefined) {
       const problem = idProblem(cfg.session);
       if (problem) throw new Error(`agent: session "${cfg.session}" ${problem}`);

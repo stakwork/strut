@@ -1,11 +1,9 @@
 import { generateText, stepCountIs, streamText, tool } from "ai";
-import * as dotenv from "dotenv";
 import { z } from "zod";
-import { computeSessionCost, getProviderOptions } from "../provider.js";
-import { resolveModel } from "../resolve.js";
-import { normalizeUsage } from "../usage.js";
+import { computeSessionCost, getProviderOptions } from "../../src/aieo/provider.js";
+import { resolveModel } from "../../src/aieo/resolve.js";
+import { normalizeUsage } from "../../src/aieo/usage.js";
 
-dotenv.config({ path: "../../.env" });
 
 // Numes against the real API: a tool round trip (the model calls the tool,
 // then answers from its result) and a streamed reply, for each model named

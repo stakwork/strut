@@ -6,7 +6,7 @@ import {
   captureNativeResults,
   WEB_SEARCH_TOOL_NAME,
   type WebSearchResult,
-} from "../search.js";
+} from "./search.js";
 
 type TestCase = { label: string; run: () => Promise<void> | void };
 

@@ -120,7 +120,7 @@ Checked for this plan:
 | **ruled** | aieo's git history comes along only if that is easy (step 1) |
 | *proposed* | The package is `aieo/` (manifest, build config, README). Its source is `src/aieo/` (§1) |
 | *proposed* | strut imports the provider SDKs itself, at aieo's exact pins (§2) |
-| *proposed* | strut points aieo at the boot snapshot before aieo loads (§2) |
+| *later* | strut points aieo at the boot snapshot (§2): not in the move, since swarms set `LLM_PROVIDER` |
 
 ## 1. Layout
 
@@ -163,14 +163,16 @@ The one cost is a package whose source sits outside its folder.
 - **The imports.** Every `import("aieo")` above becomes the source.
   `import()` stays dynamic, so the provider SDKs load on the first model
   call, never at registry build (the lib step convention).
-- **One loader, `loadAieo()` in `src/llm.ts`.**
-  - It imports `./aieo/env.js`, calls `useEnv(bootEnv())`, then imports
-    `./aieo/index.js`. Every call site goes through it.
-  - The order matters: `provider.ts` reads `LLM_GATEWAY_URL` when it
-    loads.
-  - This closes the env gap wherever strut runs. No stack sets those
-    variables for strut today (stadeum's `stack/` and strut's compose
-    files do not), so nothing changes in behavior.
+- **One loader, `loadAieo()` in `src/llm.ts`.** Every call site imports
+  `./aieo/index.js` through it.
+  - **It does not hand aieo the boot snapshot in the move.** Swarms set
+    `LLM_PROVIDER` on mcp's container (`sphinx-swarm
+    src/images/repo2graph.rs:121-123`). Today strut's copy never sees it,
+    because it loads after the scrub. Handing it `bootEnv()` would move a
+    swarm's model-less calls to that provider.
+  - So closing the env gap is its own later change: a `useEnv(bootEnv())`
+    in `loadAieo()`, before the index loads, since `provider.ts` reads
+    `LLM_GATEWAY_URL` at load.
 - **The env boundary.** `src/aieo/env.ts` keeps `process.env` as its
   default, because Hive and staklink call no `useEnv`. `env.test.ts`'s
   read check skips that one file, as it skips `src/env.ts`.
@@ -207,8 +209,9 @@ The one cost is a package whose source sits outside its folder.
   - A test fails when a pin there differs from strut's, so the package
     ships what strut's tests ran.
 - **The build.**
-  - `npm run build:aieo` runs `npx tsup@8.5.1` in `aieo/` and writes
-    `aieo/dist/` (gitignored).
+  - `npm run build:aieo` runs `npx -p tsup@8.5.1 -p typescript@5.9.3
+    tsup` in `aieo/` and writes `aieo/dist/` (gitignored). The config is a
+    plain object, since it cannot import `tsup` from npx's cache.
   - It is not a devDependency: the image keeps strut's dev dependencies,
     and tsup would add its own esbuild and rollup to it.
   - The inlined SDKs come from strut's install, so the copies bundled
@@ -249,10 +252,7 @@ The one cost is a package whose source sits outside its folder.
   - Each file gets its own process, which their env clearing at the top
     relies on.
   - Moving them to `describe` / `it` is later work.
-- **New.**
-  - One `llm.test.ts` case for the loader: a value in the boot snapshot
-    (`MAX_OUTPUT_TOKENS`) still reaches aieo after the scrub.
-  - The pin test from §3.
+- **New:** the pin test from §3 (`src/aieo/pins.test.ts`).
 - **For the first time, aieo's tests run in CI** on every PR.
 
 ## 5. mcp: the npm package

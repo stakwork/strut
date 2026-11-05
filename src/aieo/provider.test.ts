@@ -1,4 +1,4 @@
-import { getProviderOptions } from "../provider.js";
+import { getProviderOptions } from "./provider.js";
 
 type TestCase = {
   label: string;

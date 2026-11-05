@@ -7,7 +7,7 @@ import {
   captureNativeFetchResults,
   WEB_FETCH_TOOL_NAME,
   type WebFetchResult,
-} from "../fetch.js";
+} from "./fetch.js";
 
 type TestCase = { label: string; run: () => Promise<void> | void };
 

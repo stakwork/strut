@@ -1,9 +1,7 @@
 import { generateText, stepCountIs } from "ai";
-import * as dotenv from "dotenv";
-import { getModelDetails, getProviderOptions } from "../provider.js";
-import { createWebSearch, linkifyCitations, WEB_SEARCH_TOOL_NAME } from "../search.js";
+import { getModelDetails, getProviderOptions } from "../../src/aieo/provider.js";
+import { createWebSearch, linkifyCitations, WEB_SEARCH_TOOL_NAME } from "../../src/aieo/search.js";
 
-dotenv.config({ path: "../../.env" });
 
 const PROMPT =
   "Search the web for what the Sphinx Chat project is and who builds it. " +

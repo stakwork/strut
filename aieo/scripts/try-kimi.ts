@@ -1,10 +1,8 @@
 import { type ModelMessage } from "ai";
 
-import * as aieo from "../../dist/index.js";
+import * as aieo from "../dist/index.js";
 
-import * as dotenv from "dotenv";
 
-dotenv.config({ path: "../../.env" });
 
 async function doTheThing() {
   const apiKey = process.env.OPENROUTER_API_KEY;

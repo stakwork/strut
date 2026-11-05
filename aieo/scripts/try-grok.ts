@@ -1,9 +1,7 @@
 import { generateText } from "ai";
-import * as dotenv from "dotenv";
-import { getModelDetails, getProviderOptions } from "../provider.js";
-import { normalizeUsage, withProviderCacheUsage } from "../usage.js";
+import { getModelDetails, getProviderOptions } from "../../src/aieo/provider.js";
+import { normalizeUsage, withProviderCacheUsage } from "../../src/aieo/usage.js";
 
-dotenv.config({ path: "../../.env" });
 
 // Two identical calls with a >1k-token shared prefix: the first is a plain
 // smoke test of the xai provider path, the second should surface Grok's

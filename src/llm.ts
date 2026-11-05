@@ -12,13 +12,22 @@
 // by the provider's env-var NAME (ANTHROPIC_API_KEY, OPENAI_API_KEY, …). So a
 // key pasted under Secrets in the UI works, and one in env keeps working.
 //
-// aieo stays lazy-imported: its index pulls every provider SDK at load.
+// aieo is strut's own source (src/aieo/; the npm package `aieo` is built
+// from it, aieo/). It stays lazy-imported through `loadAieo()`: its index
+// pulls every provider SDK at load.
 
-import type { Provider } from "aieo";
+import type { Provider } from "./aieo/index.js";
 import type { SecretsCapability } from "./capabilities.js";
 import { workflowOf, type StepContext } from "./core.js";
 import { bootEnv } from "./env.js";
 import { applyModelWrappers } from "./extensions.js";
+
+/** aieo, loaded on first use: its index imports every provider SDK, so a
+ *  process that never calls a model never loads one (the lib step
+ *  convention). Every strut call site goes through here. */
+export function loadAieo(): Promise<typeof import("./aieo/index.js")> {
+  return import("./aieo/index.js");
+}
 
 // ── The auth seam (plans/mothership-cost-control.md §1) ────────────────────
 //
@@ -99,7 +108,7 @@ export interface ResolvedModel {
  *  "openrouter/moonshotai/kimi-k2.6"), or a missing key (the error names
  *  the env var / secret to set). */
 export async function resolveModel(opts: ResolveModelOptions = {}): Promise<ResolvedModel> {
-  const aieo = await import("aieo");
+  const aieo = await loadAieo();
   const secrets = opts.secrets;
   // The hook needs the provider before the model is built (the gateway path
   // is per provider), and aieo only resolves it inside resolveModel — so ask
@@ -355,7 +364,7 @@ export async function createWebTools(opts: {
    *  (`websearch-tool`, `webfetch`); lift this once it passes. */
   routed?: boolean;
 }): Promise<WebTools> {
-  const aieo = await import("aieo");
+  const aieo = await loadAieo();
   // The Exa key only matters where the search shim runs (routed, or
   // everything but anthropic, whose tool is native) — don't touch the secret
   // store otherwise.
@@ -399,7 +408,7 @@ function strutOutputCap(): number | undefined {
 /** Keyless: the canonical "<provider>/<modelId>" a name resolves to. Same
  *  errors as `resolveModel` minus the key check. */
 export async function canonicalModelName(model?: string, provider?: string): Promise<string> {
-  const aieo = await import("aieo");
+  const aieo = await loadAieo();
   return aieo.canonicalModelName(model, provider).name;
 }
 
@@ -428,7 +437,7 @@ export interface ModelCatalog {
 export async function listModelOptions(
   opts: { default?: string; secrets?: SecretsCapability } = {},
 ): Promise<ModelCatalog> {
-  const aieo = await import("aieo");
+  const aieo = await loadAieo();
   const available: Record<string, boolean> = {};
   for (const p of aieo.PROVIDERS) {
     const fromSecrets = opts.secrets ? await opts.secrets.get(aieo.API_KEY_ENV[p]) : undefined;

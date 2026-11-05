@@ -1,9 +1,7 @@
 import { generateText, stepCountIs } from "ai";
-import * as dotenv from "dotenv";
-import { getModelDetails, getProviderOptions } from "../provider.js";
-import { createWebFetch, WEB_FETCH_TOOL_NAME } from "../fetch.js";
+import { getModelDetails, getProviderOptions } from "../../src/aieo/provider.js";
+import { createWebFetch, WEB_FETCH_TOOL_NAME } from "../../src/aieo/fetch.js";
 
-dotenv.config({ path: "../../.env" });
 
 // `npm run try-fetch -- https://some.url` to point both backends at a page.
 const URL_TO_FETCH = process.argv.find((a) => /^https?:\/\//.test(a)) ?? "https://sphinx.chat";

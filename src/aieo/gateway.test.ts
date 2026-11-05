@@ -7,7 +7,7 @@ export {};
 
 delete process.env.LLM_GATEWAY_URL;
 
-const { getModel } = await import("../provider.js");
+const { getModel } = await import("./provider.js");
 
 type Case = {
   label: string;
