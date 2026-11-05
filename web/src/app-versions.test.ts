@@ -1,16 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import {
-  appVersionRows,
-  draftCount,
-  followNote,
-  holdNote,
-  isSeeded,
-  liveRelease,
-  makeLiveNote,
-  when,
-  type AppVersionsData,
-} from "./app-versions";
+import { appVersionRows, draftCount, followNote, holdNote, isSeeded, liveRelease, makeLiveNote, when, type AppVersionsData, panelChip, panelKey } from "./app-versions";
 
 const at = (day: number) => `2026-11-0${day}T12:00:00.000Z`;
 
@@ -96,4 +86,16 @@ test("when: relative within a day, then the date", () => {
   assert.equal(when("2026-11-04T07:00:00.000Z", now), "5h ago");
   assert.match(when("2026-11-01T12:00:00.000Z", now), /Nov/);
   assert.equal(when("not a date", now), "");
+});
+
+test("the side panel's chip: the version shown and its state, drafts on the live one; none for a lone version following latest", () => {
+  const held = { activeVersion: "v3", versions: ["v1", "v2", "v3", "v4", "v5"], live: "r2" };
+  assert.deepEqual(panelChip("v3", held), { label: "v3 · live", drafts: 2 });
+  assert.deepEqual(panelChip("v5", held), { label: "v5 · draft", drafts: 0 });
+  assert.deepEqual(panelChip("v1", held), { label: "v1", drafts: 0 }, "an older one: the rows say if it was live");
+  assert.deepEqual(panelChip("v2", { activeVersion: "v2", versions: ["v1", "v2"] }), { label: "v2 · live", drafts: 0 }, "following latest, two versions");
+  assert.equal(panelChip("v1", { activeVersion: "v1", versions: ["v1"] }), null);
+  assert.deepEqual(panelChip("v1", { activeVersion: "v1", versions: ["v1"], live: "r1" }), { label: "v1 · live", drafts: 0 }, "held, even alone");
+  assert.equal(panelKey("acme/crm", "v3", "v3"), "acme/crm", "the live one follows what is live");
+  assert.equal(panelKey("acme/crm", "v5", "v3"), "acme/crm@v5");
 });

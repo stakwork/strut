@@ -214,7 +214,7 @@ export class ClaimsWriter {
     if (attached.length === 1) {
       throw new ClaimsError("REFUSED", `${describeSubject(subject)} is this claim's only subject — retire the claim instead of detaching it`);
     }
-    await this.graph.edges.delete(hit.edge_ref_id);
+    await this.graph.edges.delete({ ref_id: hit.edge_ref_id, edge: CLAIM_EDGES.ABOUT });
     return { id, detached: true };
   }
 

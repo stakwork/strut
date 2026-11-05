@@ -1479,7 +1479,7 @@ state:
 | Link | The panel shows |
 |---|---|
 | `?artifact=<path>` | the file through the artifact viewer, as "One file alone" below reads it: `path` must be a served file (`isServedFilePath`: `/jobs/<job>/files/…`, `/artifacts/<runId>/…`, either behind `/peers/<id>` hops), else the link is not the panel's. A page this strut serves runs its scripts under its file token (`?t=`, the one credential a file URL carries; a strut with no secret to sign one falls back to `?key=`, as the viewer does everywhere); a peer's is read with the UI's credential and shown from its bytes, scripts off, no credential in any URL. |
-| `?app=<key>&input=…` | another app (`@<peer>/<name>` a peer's, a key may pin `@vN`) under a bar with its title, opened with `input`. A link to the page on screen is not the panel's: its input goes to it in place, as before. |
+| `?app=<key>&input=…` | another app (`@<peer>/<name>` a peer's, a key may pin `@vN`) under a bar with its title, opened with `input`. A link to the page on screen is not the panel's: its input goes to it in place, as before. An app of this strut with more than one version, or held at a release, gets a chip on that bar (`v3 · draft`, `v1 · live · 2 drafts`) listing its versions (`GET /apps/:name/versions`): a click shows that one in the panel. Viewing only: making a version live is the full UI's Versions flyout, or a host's own admin page over `PUT /apps/:name/active`. |
 
 A new link replaces what the panel shows (a link to the app already in it
 is its new input, in place); ✕ closes it; its left edge drags its width,

@@ -288,6 +288,34 @@ for (const tb of testBackends()) {
       assert.equal((await backend.reader.getNode(run))?.ref_id, run, "the endpoints are untouched");
     });
 
+    it("a type hint addresses one edge type; a bare ref_id still works (no hint, untyped lookup)", async () => {
+      const a = await edges.write({ edge: "IN_JOB", source_ref_id: run, target_ref_id: job });
+      const seen: string[] = [];
+      const spy = (tx: { run: (c: string, p?: Record<string, unknown>) => Promise<unknown[]> }) => ({ run: (c: string, p?: Record<string, unknown>) => (seen.push(c), tx.run(c, p)) });
+      const ee = backend.edgeEngine;
+      // Typed: every statement that looks the edge up names the type; none is an untyped scan.
+      const typed = await backend.tx((tx) => ee.setProps(spy(tx) as typeof tx, a.ref_id, { importance: 0.2 }, [], { edge: "IN_JOB" }));
+      assert.equal(typed?.edge, "IN_JOB");
+      assert.ok(seen.length > 0 && seen.every((c) => c.includes("`IN_JOB`")), seen.join("\n"));
+      assert.ok(!seen.some((c) => /\[\w*\s*\{ref_id/.test(c) || /\[r \{ref_id/.test(c)), "no untyped rel match");
+      // A wrong hint finds nothing (and does not fall back to a scan).
+      assert.equal(await backend.tx((tx) => ee.setProps(tx, a.ref_id, { importance: 0.3 }, [], { edge: "HAS_TURN" })), null);
+      // Through the writer: locator with a hint, and with ref_id alone.
+      await edges.update({ ref_id: a.ref_id, edge: "in_job" }, { set: { importance: 0.4 } });
+      assert.equal((await rel(a.ref_id)).props["importance"], 0.4);
+      await edges.update({ ref_id: a.ref_id }, { set: { importance: 0.5 } });
+      assert.equal((await rel(a.ref_id)).props["importance"], 0.5);
+      seen.length = 0;
+      const d = await backend.tx((tx) => ee.delete(a.ref_id, spy(tx) as typeof tx, { edge: "IN_JOB" }));
+      assert.equal(d?.edge, "IN_JOB");
+      const lookups = seen.filter((c) => c.includes("{ref_id: $ref_id}")); // other statements (Ladybug's edge-text cleanup) are not lookups
+      assert.ok(lookups.length > 0 && lookups.every((c) => c.includes("`IN_JOB`")), `typed delete: ${seen.join("\n")}`);
+      assert.ok(!seen.some((c) => /\[\w+ \{ref_id/.test(c)), "no untyped rel match");
+      const b = await edges.write({ edge: "IN_JOB", source_ref_id: run, target_ref_id: job });
+      assert.equal((await edges.delete(b.ref_id))?.edge, "IN_JOB");
+      assert.equal(await edges.delete({ ref_id: b.ref_id, edge: "IN_JOB" }), null);
+    });
+
     it("the claim edges: TESTS, ABOUT, EVIDENCED_BY with strength, HAS_SOURCE with context", async () => {
       const [claim, check, ev] = (
         await nodes.writeMany([
