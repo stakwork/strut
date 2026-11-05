@@ -369,6 +369,8 @@ export interface WorkflowEntry {
    *  (plans/mothership-cost-control.md). */
   owner?: string;
   maxRunCostUsd?: number;
+  /** Disabled: refuses every run until re-enabled. */
+  disabled?: boolean;
   /** The workflow's schedules, if any — the sidebar's clock badge. */
   automations?: Automation[];
   /** Start time (epoch ms) of the most recent run, if any. */
@@ -507,6 +509,13 @@ export const setWorkflowRunCap = (name: string, maxRunCostUsd: number | null) =>
   fetchJSON<{ ok: boolean }>(`${workflowPath(name)}/run-cap`, {
     method: "PUT",
     body: JSON.stringify({ maxRunCostUsd }),
+  });
+
+/** Disable or re-enable a workflow (metadata-only, no new version). */
+export const setWorkflowDisabled = (name: string, disabled: boolean) =>
+  fetchJSON<{ ok: boolean }>(`${workflowPath(name)}/disabled`, {
+    method: "PUT",
+    body: JSON.stringify({ disabled }),
   });
 
 /** Hand a workflow to the builder (`"ai"`: Jamie's builder may publish over

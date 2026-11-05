@@ -1924,6 +1924,25 @@ describe("actors and the principal rule", () => {
     assert.equal((await call("PUT", "/workflows/nope/run-cap", { maxRunCostUsd: 1 })).status, 404);
   });
 
+  it("PUT /disabled toggles a workflow; a disabled one refuses runs (409), strut.run and subflows", async () => {
+    const { strut, call } = await boot();
+    assert.equal((await call("PUT", "/workflows/wf/disabled", { disabled: "yes" })).status, 400);
+    assert.equal((await call("PUT", "/workflows/nope/disabled", { disabled: true })).status, 404);
+    assert.equal((await call("PUT", "/workflows/wf/disabled", { disabled: true })).status, 200);
+    assert.equal((await call("GET", "/workflows")).json.find((w: any) => w.name === "wf").disabled, true);
+    const r = await call("POST", "/workflows/wf/run", { input: {} });
+    assert.equal(r.status, 409);
+    assert.match(r.json.error, /workflow 'wf' is disabled/);
+    assert.equal((await call("POST", "/workflows/wf/v1/run", { input: {} })).status, 409);
+    await assert.rejects(() => strut.run("wf", {}), /workflow 'wf' is disabled/);
+    await strut.workspace.publishWorkflow("parent", "v1", { steps: [{ id: "c", type: "subflow", config: { workflow: "wf" } }] });
+    const sub = await strut.run("parent", {});
+    assert.equal(sub.status, "error");
+    assert.match(JSON.stringify(sub), /workflow 'wf' is disabled/);
+    assert.equal((await call("PUT", "/workflows/wf/disabled", { disabled: false })).status, 200);
+    assert.equal((await call("POST", "/workflows/wf/run", { input: {} })).status, 202);
+  });
+
   it("PUT /publisher hands a workflow to the builder and takes it back; a seed, a sealed or peer workflow and a service's stamp are refused", async () => {
     const { strut, call } = await boot();
     const authoring = (strut.services as { authoring: { publishWorkflow: (name: string, yaml: string) => Promise<{ ok?: boolean; error?: string }> } }).authoring;

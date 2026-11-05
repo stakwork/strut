@@ -103,6 +103,7 @@ interface WorkflowRow {
   /** The owning actor and per-run cap (plans/mothership-cost-control.md). */
   owner?: string;
   max_run_cost_usd?: number;
+  disabled?: boolean;
 }
 
 /** A workflow row's automations; a blob that fails to parse reads as none. */
@@ -202,7 +203,7 @@ function parseJson<T>(text: string | undefined): T | undefined {
   }
 }
 
-const WORKFLOW_FIELDS = ["ref_id", "name", "description", "category", "publisher", "active_version", "automations", "owner", "max_run_cost_usd"] as const;
+const WORKFLOW_FIELDS = ["ref_id", "name", "description", "category", "publisher", "active_version", "automations", "owner", "max_run_cost_usd", "disabled"] as const;
 const VERSION_FIELDS = ["ref_id", "name", "content_hash", "version_label", "description", "published_at", "source", "publisher", "version_source", "actor", "upstream", "created_at"] as const;
 const STEP_FIELDS = ["ref_id", "step_type", "description", "publisher", "active_version"] as const;
 const STEP_VERSION_FIELDS = ["ref_id", "step_type", "content_hash", "version_label", "description", "published_at", "source", "publisher", "version_source", "actor", "upstream", "created_at"] as const;
@@ -342,6 +343,7 @@ export class GraphWorkspaceStore implements WorkspaceStore {
         ...(active?.version_source ? { activeSource: active.version_source } : {}),
         ...(w.owner ? { owner: w.owner } : {}),
         ...(w.max_run_cost_usd != null ? { maxRunCostUsd: Number(w.max_run_cost_usd) } : {}),
+        ...(w.disabled ? { disabled: true } : {}),
         ...(automationsOf(w).length ? { automations: automationsOf(w) } : {}),
       });
     }
@@ -369,6 +371,7 @@ export class GraphWorkspaceStore implements WorkspaceStore {
     if (w.publisher) meta.publisher = w.publisher;
     if (w.owner) meta.owner = w.owner;
     if (w.max_run_cost_usd != null) meta.maxRunCostUsd = Number(w.max_run_cost_usd);
+    if (w.disabled) meta.disabled = true;
     if (automationsOf(w).length) meta.automations = automationsOf(w);
     return meta;
   }
@@ -652,6 +655,13 @@ export class GraphWorkspaceStore implements WorkspaceStore {
     if (patch) await this.backend.nodes.update(w.ref_id, patch);
   }
 
+  async setWorkflowDisabled(name: string, disabled: boolean): Promise<void> {
+    const w = await this.workflowRow(name);
+    if (!w) throw new Error(`Workflow "${name}" not found`);
+    const patch = patchFor(w as unknown as Record<string, unknown>, { disabled: disabled || undefined });
+    if (patch) await this.backend.nodes.update(w.ref_id, patch);
+  }
+
   async setWorkflowPublisher(name: string, publisher: string | null): Promise<void> {
     const w = await this.workflowRow(name);
     if (!w) throw new Error(`Workflow "${name}" not found`);
@@ -676,7 +686,7 @@ export class GraphWorkspaceStore implements WorkspaceStore {
   async deleteWorkflow(name: string): Promise<boolean> {
     const w = await this.workflowRow(name);
     if (!w) return false;
-    const remove = (["automations", "owner", "max_run_cost_usd", "category", "publisher"] as const).filter((k) => w[k] != null);
+    const remove = (["automations", "owner", "max_run_cost_usd", "disabled", "category", "publisher"] as const).filter((k) => w[k] != null);
     if (remove.length) await this.backend.nodes.update(w.ref_id, { remove: [...remove] });
     for (const v of await this.versionRows(name)) await this.backend.nodes.softDelete(v.ref_id);
     await this.backend.nodes.softDelete(w.ref_id);

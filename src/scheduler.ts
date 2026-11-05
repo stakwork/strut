@@ -35,7 +35,7 @@ import { callbackOrigin } from "./callback.js";
 import type { Flow } from "./core.js";
 import type { SecretStore } from "./secret-store.js";
 import type { RunStore } from "./store.js";
-import type { WorkspaceStore } from "./workspace.js";
+import { assertWorkflowEnabled, type WorkspaceStore } from "./workspace.js";
 import { principalRequired } from "./auth.js";
 
 export interface AutomationsDeps {
@@ -245,6 +245,7 @@ export function createAutomations(deps: AutomationsDeps): Automations {
       // than a run that dies at its first LLM step.
       const unowned = await ownerGate(workflow, true);
       if (unowned) throw new Error(unowned);
+      await assertWorkflowEnabled(workspace, workflow);
       const flow = await workspace.getWorkflow(workflow);
       const input = resolveAutomationInput(automation, at, facts.last);
       const callback = await callbackOf(automation);

@@ -1410,6 +1410,7 @@ function Shell() {
                       {wf.automations?.some((a) => a.enabled) && (
                         <span class="list-item-clock" title="Runs on a schedule"><ClockIcon size={11} /></span>
                       )}
+                      {wf.disabled && <span class="badge badge-warning" title="Disabled: refuses runs">Disabled</span>}
                       <span class="badge badge-accent">{wf.activeVersion}</span>
                     </div>
                   ))}
@@ -2050,6 +2051,8 @@ function Shell() {
           onTab={setWfTab}
           onClose={() => setPanel(null)}
           onDelete={handleDeleteWorkflow}
+          disabled={!!selectedEntry?.disabled}
+          onSetDisabled={async (d: boolean) => { await api.setWorkflowDisabled(selectedWf, d); await refreshWorkflows(); }}
           params={localParams ?? {}}
           onParamsChange={setLocalParams}
           onParamsValidChange={setParamsValid}
