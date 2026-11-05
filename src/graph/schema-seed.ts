@@ -48,6 +48,32 @@ const VECTOR_OPTIONS =
   "OPTIONS { indexConfig: { `vector.dimensions`: 384, `vector.similarity_function`: 'cosine' } }";
 
 /**
+ * Plain (range) property indexes behind strut's hot Cypher lookups, by
+ * STORED property names (`ref_id`, `id`, … — not the shared `key` /
+ * `created_at` aliases). Name = `strut_<label>_<props>`, stable. Neo4j only.
+ */
+export const STRUT_PROPERTY_INDEXES: ReadonlyArray<{ name: string; label: string; properties: readonly string[] }> = [
+  { name: "strut_evidence_ref_id", label: "Evidence", properties: ["ref_id"] },
+  { name: "strut_evidence_id", label: "Evidence", properties: ["id"] },
+  { name: "strut_claim_id", label: "Claim", properties: ["id"] },
+  { name: "strut_check_id", label: "Check", properties: ["id"] },
+  { name: "strut_run_job_run_id", label: "StrutRun", properties: ["job", "run_id"] },
+  { name: "strut_run_workflow_name_run_id", label: "StrutRun", properties: ["workflow_name", "run_id"] },
+  { name: "strut_run_run_id", label: "StrutRun", properties: ["run_id"] },
+  { name: "strut_run_ref_id", label: "StrutRun", properties: ["ref_id"] },
+  { name: "strut_workflow_ref_id", label: "StrutWorkflow", properties: ["ref_id"] },
+  { name: "strut_step_ref_id", label: "StrutStep", properties: ["ref_id"] },
+  { name: "strut_app_ref_id", label: "StrutApp", properties: ["ref_id"] },
+  { name: "strut_workflow_name", label: "StrutWorkflow", properties: ["name"] },
+  { name: "strut_workflow_version_name_hash", label: "StrutWorkflowVersion", properties: ["name", "content_hash"] },
+  { name: "strut_step_step_type", label: "StrutStep", properties: ["step_type"] },
+  { name: "strut_step_version_type_hash", label: "StrutStepVersion", properties: ["step_type", "content_hash"] },
+  { name: "strut_app_name", label: "StrutApp", properties: ["name"] },
+  { name: "strut_app_version_name", label: "StrutAppVersion", properties: ["name"] },
+  { name: "strut_job_job_id", label: "StrutJob", properties: ["job_id"] },
+];
+
+/**
  * Run one schema statement (CREATE CONSTRAINT / INDEX … IF NOT EXISTS),
  * tolerating a pre-existing EQUIVALENT object under a different shape: a
  * jarvis database may carry a plain index on `Data_Bank(ref_id)` where we
@@ -160,6 +186,12 @@ export async function seedStrutDomain(e: EngineLike): Promise<SeedReport> {
        FOR (n:\`${schema.type}\`) REQUIRE (n.node_key, n.namespace) IS UNIQUE`,
     );
     await ddl(`CREATE INDEX IF NOT EXISTS FOR (n:\`${schema.type}\`) ON (n.node_key)`);
+  }
+
+  // 4b. Property indexes for the hot lookups (Evidence/Claim/Check scans, runs, subjects).
+  for (const i of STRUT_PROPERTY_INDEXES) {
+    const on = i.properties.map((p) => `n.\`${p}\``).join(", ");
+    await ddl(`CREATE INDEX ${i.name} IF NOT EXISTS FOR (n:\`${i.label}\`) ON (${on})`);
   }
 
   // 5. Global objects (jarvis-owned in shared mode; IF NOT EXISTS is a no-op).
