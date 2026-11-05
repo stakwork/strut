@@ -28,6 +28,7 @@ import { appKey, placeArtifact, servedFile } from "./jamie/src/lib/artifacts.js"
 import { captchaPrompt, claimPill, jobLook, liveStrip, openSlot, parseCaptcha, sortClaims, tapAt, toggleCell } from "./jamie/src/lib/jobs.js";
 import type { LedgerClaim } from "./jamie/src/lib/types.js";
 import { canMerge, checksLine, fixPrompt, prKey, prLive, prOf, prPill } from "./jamie/src/lib/pr.js";
+import { attachmentShow } from "./jamie/src/lib/attachments.js";
 
 /**
  * `strut/jamie` (plans/jamie-app.md §5): the person's assistant as a
@@ -189,6 +190,16 @@ describe("strut/jamie — the pure parts", () => {
       fixPrompt({ repo: "a/b", number: 5, head: "fix/login", checks: [{ name: "lint", status: "failed" }, { name: "test", status: "passed" }, { name: "e2e", status: "failed" }] }),
       "The checks on a/b#5 failed: lint, e2e. Find out why, fix it, and push the fix to fix/login — the same pull request.",
     );
+  });
+
+  it("an attached file: an image a thumbnail, text to read, the rest a chip; nothing without a path", () => {
+    const at = (name: string, mediaType: string, path: string | null = `attachments/${name}`) => attachmentShow({ name, mediaType, ...(path ? { path } : {}) });
+    assert.equal(at("a.png", "image/png"), "image");
+    assert.equal(at("a.svg", "image/svg+xml"), "file", "an SVG is a document, never drawn as an image here");
+    assert.equal(at("notes.md", "application/octet-stream"), "text", "by its name");
+    assert.equal(at("data.json", "application/json"), "text");
+    assert.equal(at("brief.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"), "file");
+    assert.equal(at("a.png", "image/png", null), "file", "a turn read before strut said where");
   });
 
   it("STRUT_HOST_CONFIG's `jamie`: false or nothing", async () => {
@@ -357,6 +368,30 @@ describe("strut/jamie — its steps, as its viewer", () => {
     const archived = await alice.ok("conversation/list", { archived: true });
     assert.deepEqual(archived.conversations.map((c: any) => [c.id, c.title, c.archived]), [["alice/c1", "Greetings", true]]);
     assert.deepEqual((await page(JAMIE_APP, "bob").ok("conversation/list", { archived: true })).conversations, [], "never another person's");
+  });
+
+  it("an attached file is read from its turn: the viewer's own, and a teammate's once the conversation is shared", async () => {
+    const alice = page(JAMIE_APP, "alice");
+    const bob = page(JAMIE_APP, "bob");
+    const png = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex").toString("base64");
+    const { runId } = await alice.ok("run/launch", {
+      workflow: ORCHESTRATOR_WORKFLOW,
+      input: { prompt: "what is this?", session: "alice/c-pic" },
+      attachments: [{ name: "pic.png", mediaType: "image/png", data: png }],
+    });
+    assert.equal((await alice.ok("run/get", { workflow: ORCHESTRATOR_WORKFLOW, runId, wait: 20_000 })).status, "success");
+    const [turn] = (await alice.ok("conversation/get", { session: "alice/c-pic" })).turns;
+    assert.deepEqual(turn.attachments, [{ name: "pic.png", mediaType: "image/png", size: 16, path: "attachments/pic.png" }]);
+    const read = { workflow: ORCHESTRATOR_WORKFLOW, runId, path: turn.attachments[0].path };
+    assert.equal((await alice.ok("run/files", read)).base64, png);
+    assert.match((await bob.call("run/files", read)).error!, /No file/, "not bob's to read");
+
+    await alice.ok("conversation/update", { session: "alice/c-pic", shared: true });
+    const row = (await bob.ok("conversation/list")).conversations.find((c: any) => c.id === "alice/c-pic");
+    assert.deepEqual([row.team, row.startedBy], [true, "alice"], "in bob's list as the team's");
+    assert.equal((await bob.ok("run/files", read)).base64, png, "shared: a teammate reads its turns' files");
+    await alice.ok("conversation/update", { session: "alice/c-pic", shared: false });
+    assert.match((await bob.call("run/files", read)).error!, /No file/, "unshared, and bob never opened it");
   });
 
   it("the model picker's list: llm/models is GET /llm/models", async () => {

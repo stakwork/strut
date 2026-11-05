@@ -208,7 +208,7 @@ describe("conversations through a whole strut", () => {
     assert.equal((await get("carol", "c-1")).status, 404);
   });
 
-  it("a share opens it to another actor, and opening it lists it for them; their turn makes them a participant", async () => {
+  it("a share puts it in everyone's list until they open it, which makes it theirs; their turn makes them a participant", async () => {
     const { say, list, get, update } = await boot();
     await say("alice", "c-1", "plan the offsite");
     assert.equal((await get("carol", "c-1")).status, 404);
@@ -217,17 +217,21 @@ describe("conversations through a whole strut", () => {
     const shared = await update("alice", { session: "c-1", shared: true });
     assert.equal(shared.status, 200);
     assert.equal(shared.body.shared, true);
-    assert.equal((await list("carol")).body.conversations.length, 0, "readable, not yet opened");
+    const row = (actor: string) => list(actor).then((r) => r.body.conversations.map((c: any) => [c.id, c.shared, c.team, c.unread, c.startedBy]));
+    assert.deepEqual(await row("carol"), [["c-1", true, true, false, "alice"]], "in carol's list, not hers yet, never unread");
+    assert.deepEqual(await row("dave"), [["c-1", true, true, false, "alice"]], "and dave's");
+    assert.deepEqual((await list("carol", "?archived=1")).body.conversations, [], "never among the archived");
     const opened = await get("carol", "c-1");
     assert.equal(opened.status, 200);
     assert.deepEqual(opened.body.participants, ["alice"]);
-    assert.deepEqual((await list("carol")).body.conversations.map((c: any) => [c.id, c.shared]), [["c-1", true]], "listed once opened");
+    assert.deepEqual((await row("carol"))[0]!.slice(0, 3), ["c-1", true, undefined], "opened: hers");
 
     await say("carol", "c-1", "add a budget");
     assert.deepEqual((await get("alice", "c-1")).body.participants, ["alice", "carol"]);
     const unshared = await update("alice", { session: "c-1", shared: false });
     assert.equal(unshared.body.shared, undefined);
     assert.equal((await get("carol", "c-1")).status, 200, "a participant reads it unshared");
+    assert.deepEqual(await row("dave"), [], "out of the list of whoever never opened it");
   });
 
   it("rename for everyone; archived and seen per viewer; a turn is unread until seen", async () => {

@@ -22,6 +22,8 @@
  *   viewers/<encoded actor>.json — one person's list: a row per conversation
  *                                 (the record's facts, copied) and their own
  *                                 archived + seen
+ *   shared.json                 — the ids of the shared ones: every viewer's
+ *                                 list shows them (`team`) until they open one
  *   built.json                  — the stamp of the one-off build below
  *
  * Written when a turn LAUNCHES and when it ENDS (createStrut's launcher), so
@@ -187,6 +189,8 @@ export interface ConversationEntry {
   seenAt?: string;
   /** The record's job ids, as it keeps them. */
   jobs?: string[];
+  /** Who took its first turn. */
+  startedBy?: string;
 }
 
 /** A row of `conversation/list`. */
@@ -199,6 +203,9 @@ export interface ConversationListItem extends Omit<ConversationEntry, "jobs"> {
    *  `CONVERSATION_ROW_JOBS`; `moreJobs` counts the rest). */
   jobs?: ConversationJob[];
   moreJobs?: number;
+  /** Listed because it is SHARED, not the viewer's yet: opening it makes it
+   *  theirs. Never unread. */
+  team?: true;
 }
 
 /** A job as a list row shows it. */
@@ -282,7 +289,9 @@ export interface ConversationTurn {
    *  log has no mark). */
   wake?: WakeMark | true;
   /** The files the person attached. */
-  attachments?: Array<Pick<RunAttachment, "name" | "mediaType" | "size">>;
+  /** The files the person attached, each where the turn's run keeps it
+   *  (`path`, read with `run/files` on the turn's run). */
+  attachments?: Array<Pick<RunAttachment, "name" | "mediaType" | "size" | "path">>;
   text?: string;
   ask?: string;
   artifacts?: ArtifactRef[];
@@ -420,6 +429,7 @@ function factsOf(rec: ConversationRecord): Omit<ConversationEntry, "archived" | 
     ...(rec.shared ? { shared: true as const } : {}),
     ...(rec.forkedFrom ? { forkedFrom: rec.forkedFrom } : {}),
     ...(rec.jobs ? { jobs: rec.jobs } : {}),
+    ...(rec.turns[0]?.by ? { startedBy: rec.turns[0].by } : {}),
   };
 }
 
@@ -440,6 +450,15 @@ export function createConversations(deps: ConversationsDeps): Conversations {
   const recordFile = (id: string) => recordFileIn(deps.dataDir, id);
   const viewerFile = (key: string) => join(root, "viewers", `${key ? encodeId(key) : NO_ACTOR_FILE}.json`);
   const builtFile = join(root, "built.json");
+  const sharedFile = join(root, "shared.json");
+  const readShared = async () => (await readJson<{ ids: string[] }>(sharedFile))?.ids ?? [];
+  /** A conversation in or out of the shared index. */
+  const markShared = (id: string, on: boolean) =>
+    withLock(sharedFile, async () => {
+      const ids = await readShared();
+      const next = on ? (ids.includes(id) ? ids : [...ids, id]) : ids.filter((x) => x !== id);
+      if (next !== ids) await writeJson(sharedFile, { ids: next });
+    });
   /** The rev of each record written in this process: `wait` polls it. */
   const revs = new Map<string, number>();
   /** Settled turns, read once: a settled run never changes. Proposals are
@@ -672,7 +691,7 @@ export function createConversations(deps: ConversationsDeps): Conversations {
     const error = summary?.error?.message ?? (terminal?.["error"] as { message?: string } | undefined)?.message;
     const input = (summary?.input ?? start?.["input"]) as Record<string, unknown> | undefined;
     const mark = start?.["wake"] as WakeMark | undefined;
-    const attachments = (start?.["attachments"] as RunAttachment[] | undefined)?.map((a) => ({ name: a.name, mediaType: a.mediaType, size: a.size }));
+    const attachments = (start?.["attachments"] as RunAttachment[] | undefined)?.map((a) => ({ name: a.name, mediaType: a.mediaType, size: a.size, path: a.path }));
     const reply = ended ? replyOf(output) : {};
     const job = summary?.job ?? (start?.["job"] as string | undefined);
     const artifacts = ended === "success" ? await deps.artifactRefs(t.runId, output, job).catch(() => undefined) : undefined;
@@ -747,7 +766,18 @@ export function createConversations(deps: ConversationsDeps): Conversations {
       const idx = await readJson<{ conversations: Record<string, ConversationEntry> }>(viewerFile(keyOf(by)));
       const words = (q.q ?? "").toLowerCase().split(/\s+/).filter(Boolean);
       const cursor = (e: ConversationEntry) => `${e.updatedAt}|${e.id}`;
-      const rows = Object.values(idx?.conversations ?? {})
+      // The shared ones that are not the viewer's yet: listed for everyone.
+      const mine = idx?.conversations ?? {};
+      const team: ConversationEntry[] = [];
+      if (!q.archived) {
+        for (const id of await readShared()) {
+          if (mine[id]) continue;
+          const rec = await readRecord(id);
+          if (rec?.shared) team.push(factsOf(rec));
+        }
+      }
+      const isTeam = new Set(team.map((e) => e.id));
+      const rows = [...Object.values(mine), ...team]
         .filter((e) => (q.archived ? e.archived : !e.archived))
         .filter((e) => words.every((w) => e.title.toLowerCase().includes(w)))
         .sort((a, b) => cursor(b).localeCompare(cursor(a)))
@@ -755,7 +785,9 @@ export function createConversations(deps: ConversationsDeps): Conversations {
       const limit = Math.min(CONVERSATION_LIST_MAX, Math.max(1, q.limit ?? CONVERSATION_LIST_DEFAULT));
       const page = rows.slice(0, limit);
       for (const e of page) if (!e.jobs) backfillJobs(e.id);
-      const conversations = await Promise.all(page.map(async (e) => withJobBriefs(itemOf(e), e.jobs)));
+      const conversations = await Promise.all(
+        page.map(async (e) => withJobBriefs(isTeam.has(e.id) ? { ...itemOf(e), unread: false, team: true as const } : itemOf(e), e.jobs)),
+      );
       return { conversations, ...(rows.length > limit ? { next: cursor(page[page.length - 1]!) } : {}) };
     },
 
@@ -814,6 +846,7 @@ export function createConversations(deps: ConversationsDeps): Conversations {
             if (q.shared === false) delete r.shared;
             return r;
           })) ?? rec;
+        if (q.shared !== undefined) await markShared(rec.id, q.shared);
       }
       const item = await entryOf(rec, by);
       if (q.archived === undefined && q.seen === undefined) return item;

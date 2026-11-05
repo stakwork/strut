@@ -85,6 +85,8 @@ describe("github/pr-status", () => {
       repos: { getCombinedStatusForRef: async () => ({ data: { statuses: [] } }) },
     };
     await assert.rejects(readPullRequest(hidden, "a", "b", 5), /^Error: github_not_found: GitHub would not let this token read a\/b#5/);
+    const limited: PrStatusApi = { ...hidden, pulls: { get: async () => Promise.reject(httpError(403, "API rate limit exceeded for 1.2.3.4. (But here's the good news: …)")) } };
+    await assert.rejects(readPullRequest(limited, "a", "b", 5), /^Error: github_rate_limited: GitHub's rate limit for this token is used up, so it could not read a\/b#5 — try again in a while$/);
     const noChecks: PrStatusApi = { ...hidden, pulls: { get: async () => ({ data: pull() }) }, checks: { listForRef: async () => Promise.reject(httpError(403, "no")) } };
     assert.deepEqual((await readPullRequest(noChecks, "a", "b", 5)).checks, []);
   });

@@ -19,6 +19,10 @@ export interface ConversationListItem {
   jobs?: ConversationJob[];
   /** Jobs past those listed. */
   moreJobs?: number;
+  /** Shared, and not the viewer's yet: opening it makes it theirs. */
+  team?: true;
+  /** Who took its first turn. */
+  startedBy?: string;
 }
 
 /** A job as a list row shows it. */
@@ -127,7 +131,7 @@ export interface ConversationTurn {
   status: string;
   prompt?: string;
   wake?: WakeMark | true;
-  attachments?: Array<{ name: string; mediaType: string; size: number }>;
+  attachments?: Array<{ name: string; mediaType: string; size: number; path?: string }>;
   text?: string;
   ask?: string;
   artifacts?: ArtifactRef[];

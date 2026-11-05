@@ -7,7 +7,7 @@
 // (`conversation/get { wait }`) and marked read while it is open.
 import { useContext, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { FileText, Loader2, MessageCircle, PanelLeftOpen, Square, Zap } from "lucide-react";
+import { Loader2, MessageCircle, PanelLeftOpen, Square, Zap } from "lucide-react";
 import { useHost } from "@strut/kit";
 import { Markdown } from "./Markdown";
 import { cn } from "@/lib/utils";
@@ -20,7 +20,8 @@ import { prKey, prOf } from "../lib/pr";
 import { Composer } from "./Composer";
 import { JobCard, useJob } from "./JobCard";
 import { ProposalCard } from "./ProposalCard";
-import { IconButton, Notice, errorText } from "./bits";
+import { CopyButton, IconButton, Notice, errorText } from "./bits";
+import { TurnAttachments } from "./Attachments";
 
 export interface ThreadProps {
   /** The conversation, or a new one's id before its first turn (`draft`). */
@@ -206,16 +207,7 @@ function Turn({ turn, conversation }: { turn: ConversationTurn; conversation: st
               {turn.prompt}
             </div>
           )}
-          {turn.attachments?.length ? (
-            <div className="flex max-w-[85%] flex-wrap justify-end gap-1.5">
-              {turn.attachments.map((a) => (
-                <span key={a.name} className="inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-xs text-muted-foreground">
-                  <FileText className="size-3" />
-                  {a.name}
-                </span>
-              ))}
-            </div>
-          ) : null}
+          {turn.attachments?.length ? <TurnAttachments files={turn.attachments} workflow={turn.workflow} runId={turn.runId} /> : null}
         </div>
       )}
       {working && (
@@ -225,8 +217,9 @@ function Turn({ turn, conversation }: { turn: ConversationTurn; conversation: st
         </div>
       )}
       {!working && turn.text && !silent && (
-        <div data-chat-bubble="assistant" className="rounded-2xl bg-muted/40 px-3 py-2 shadow-sm">
+        <div data-chat-bubble="assistant" className="group/reply relative rounded-2xl bg-muted/40 py-2 pl-3 pr-8 shadow-sm">
           <Markdown text={turn.text} />
+          <CopyButton text={turn.text} label="Copy reply" className="absolute right-1 top-1 opacity-0 transition-opacity focus-visible:opacity-100 group-hover/reply:opacity-100" />
         </div>
       )}
       {!working && turn.ask && <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm">{turn.ask}</div>}

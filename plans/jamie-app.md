@@ -696,6 +696,24 @@ pull requests are Hive's, not later items.
   at its newest mention; a collapsed job card keeps its own in sight unless
   the thread shows them. Without a token the card says GitHub cannot be
   read, and Merge says why.
+- **Share** (ruled 2026-11-05: not Hive's read-only link). A shared
+  conversation is the team's: it goes in every person's list ("Shared",
+  `team: true`, with who started it) until they open it, which makes it
+  theirs; anyone reads it and replies as themselves. The ids are kept in
+  `conversations/shared.json`. Stop sharing takes it out of the lists of
+  those who never opened it. A first-party page reads every turn of a
+  conversation its viewer may read, whoever took it, so a teammate sees
+  the files and deliverables too. No link to copy: the app does not know
+  its host's address.
+- **Attachments and Copy.** A person's files show under their message —
+  an image as a thumbnail that opens large, a text file to read, the rest
+  by name — read with `run/files` on the turn's run (a turn's attachments
+  now carry their `path`). A reply has Copy (the clipboard API, which
+  strut's frame now allows, else `execCommand`).
+- **Not to port** (ruled 2026-11-05): the rest of Hive's chat — the daily
+  recap card, its per-step proposal bodies, Hive-only kinds (stored HTML
+  pages, research docs, task pills, the brainstorm tree) and the canvas
+  focus. The app need not match Hive exactly.
 
 ## 6. The hosts' halves (proposed)
 

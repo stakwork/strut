@@ -108,6 +108,7 @@ export function githubError(err: unknown, what: string): Error {
   const status = typeof e?.status === "number" ? e.status : undefined;
   const text = (e?.message ?? String(err)).split("\n")[0]!.slice(0, 300);
   if (status === 401) return new Error(`github_unauthorized: GitHub did not accept the token to ${what} — connect GitHub again`);
+  if ((status === 403 || status === 429) && /rate limit/i.test(text)) return new Error(`github_rate_limited: GitHub's rate limit for this token is used up, so it could not ${what} — try again in a while`);
   if (status === 403 || status === 404) return new Error(`github_not_found: GitHub would not let this token ${what} (HTTP ${status}: ${text})`);
   return new Error(`github_error: could not ${what} (${status ?? "error"}: ${text})`);
 }
@@ -168,7 +169,7 @@ export default defineStep({
   description:
     `A GitHub pull request as it is now: { url, repo, number, title, state (open | draft | merged | closed), author, head, base, headSha, body, mergeable, checks: [{ name, status (failed | running | passed | skipped), url }], counts }. ` +
     `Checks are the head commit's check runs and commit statuses, failed first. Auth: token, else the GITHUB_TOKEN secret. ` +
-    `Fails with "github_unauthorized: …", "github_not_found: …" (the token cannot see it) or "github_error: …".\n\n${EXAMPLE}`,
+    `Fails with "github_unauthorized: …", "github_not_found: …" (the token cannot see it), "github_rate_limited: …" or "github_error: …".\n\n${EXAMPLE}`,
   input: z.object({
     repo: z.string().min(1).describe('"owner/repo" or https://github.com/owner/repo'),
     number: z.coerce.number().int().positive().describe("pull request number"),

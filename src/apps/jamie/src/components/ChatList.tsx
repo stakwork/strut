@@ -4,9 +4,11 @@
 // is bold with a dot, a running one pulses, and its pull requests are
 // counted. Under it its jobs — the newest, the rest behind "N more" — each
 // with a pulse while it runs and its pull requests; a click opens the
-// conversation at that job's card.
+// conversation at that job's card. Share puts a conversation in everyone's
+// list ("Shared"): anyone can read it and reply, as themselves; opening it
+// makes it theirs.
 import { useEffect, useRef, useState } from "react";
-import { Archive, ArchiveRestore, Bot, ChevronDown, ChevronRight, GitPullRequest, MoreHorizontal, PanelLeftClose, Pencil, Search, SquarePen, X } from "lucide-react";
+import { Archive, ArchiveRestore, Bot, ChevronDown, ChevronRight, GitPullRequest, MoreHorizontal, PanelLeftClose, Pencil, Search, SquarePen, Users, X } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import { groupByDay } from "../lib/chat";
@@ -34,7 +36,9 @@ export function ChatList({ active, onOpen, onNewChat, onHide }: ChatListProps) {
   const archivedCount = useConversationList({ archived: true, limit: 1, enabled: !archivedOpen });
   const update = useUpdateConversation();
   const rows = open.data?.conversations ?? [];
-  const groups = groupByDay(rows, new Date());
+  // Shared by someone else, not opened yet: a group of their own, first.
+  const team = rows.filter((r) => r.team);
+  const groups = groupByDay(rows.filter((r) => !r.team), new Date());
   const closeSearch = () => {
     setQuery("");
     setSearching(false);
@@ -83,7 +87,22 @@ export function ChatList({ active, onOpen, onNewChat, onHide }: ChatListProps) {
 
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-4" data-testid="chat-list">
         {open.isError && <Notice tone="error">{errorText(open.error)}</Notice>}
-        {groups.length === 0 && !open.isError && (
+        {team.length > 0 && (
+          <Group label="Shared">
+            {team.map((item) => (
+              <Row
+                key={item.id}
+                item={item}
+                active={item.id === active}
+                onOpen={(job) => onOpen(item.id, job)}
+                onRename={(title) => update.mutate({ session: item.id, title })}
+                onShare={(shared) => update.mutate({ session: item.id, shared })}
+                action={{ label: "Archive", Icon: Archive, run: () => update.mutate({ session: item.id, archived: true }) }}
+              />
+            ))}
+          </Group>
+        )}
+        {groups.length === 0 && team.length === 0 && !open.isError && (
           <div className="px-2 py-6 text-sm text-muted-foreground">{open.isPending ? "Loading…" : query ? "No chats match." : hasArchived ? "No open chats." : "No chats yet."}</div>
         )}
         {groups.map((g) => (
@@ -95,6 +114,7 @@ export function ChatList({ active, onOpen, onNewChat, onHide }: ChatListProps) {
                 active={item.id === active}
                 onOpen={(job) => onOpen(item.id, job)}
                 onRename={(title) => update.mutate({ session: item.id, title })}
+                onShare={(shared) => update.mutate({ session: item.id, shared })}
                 action={{ label: "Archive", Icon: Archive, run: () => update.mutate({ session: item.id, archived: true }) }}
               />
             ))}
@@ -114,6 +134,7 @@ export function ChatList({ active, onOpen, onNewChat, onHide }: ChatListProps) {
                 active={item.id === active}
                 onOpen={(job) => onOpen(item.id, job)}
                 onRename={(title) => update.mutate({ session: item.id, title })}
+                onShare={(shared) => update.mutate({ session: item.id, shared })}
                 action={{ label: "Restore", Icon: ArchiveRestore, run: () => update.mutate({ session: item.id, archived: false }) }}
               />
             ))}
@@ -149,12 +170,14 @@ function Row({
   active,
   onOpen,
   onRename,
+  onShare,
   action,
 }: {
   item: ConversationListItem;
   active: boolean;
   onOpen: (job?: string) => void;
   onRename: (title: string) => void;
+  onShare: (shared: boolean) => void;
   action: { label: string; Icon: typeof Archive; run: () => void };
 }) {
   const [editing, setEditing] = useState(false);
@@ -183,7 +206,7 @@ function Row({
       ) : (
         <button
           type="button"
-          title={item.title}
+          title={item.shared && item.startedBy ? `${item.title} — shared, started by ${item.startedBy}` : item.title}
           onClick={() => onOpen()}
           aria-current={active ? "page" : undefined}
           className={cn(
@@ -194,6 +217,7 @@ function Row({
           {item.title || "Untitled"}
         </button>
       )}
+      {item.shared && !editing && <Users className="relative z-10 size-3 shrink-0 text-muted-foreground" aria-label="Shared" />}
       {prs.length > 0 && !editing && <PrCount prs={prs} />}
       <span className="relative z-10 flex size-5 shrink-0 items-center justify-center">
         {(item.running || unread) && (
@@ -232,6 +256,10 @@ function Row({
               >
                 <Pencil />
                 Rename
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => onShare(!item.shared)}>
+                <Users />
+                {item.shared ? "Stop sharing" : "Share with the team"}
               </DropdownMenuItem>
               <DropdownMenuItem onSelect={action.run}>
                 <action.Icon />

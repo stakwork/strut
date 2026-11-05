@@ -41,7 +41,7 @@ export function useUpdateConversation() {
   const client = useStrutClient();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (v: { session: string; title?: string; archived?: boolean; seen?: boolean }) => client.run<ConversationListItem>("conversation/update", v),
+    mutationFn: (v: { session: string; title?: string; archived?: boolean; seen?: boolean; shared?: boolean }) => client.run<ConversationListItem>("conversation/update", v),
     onSettled: () => qc.invalidateQueries({ queryKey: ["assistant", "list"] }),
   });
 }

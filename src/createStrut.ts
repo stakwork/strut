@@ -5685,14 +5685,21 @@ export async function createStrut<TServices = unknown>(
     const anyApp = isFirstParty(by?.app);
     const key = `${workflow}/${runId}`;
     const launched = scopedLaunches.get(key);
-    if (launched) return (anyApp || launched.app === by?.app?.name) && launched.actor === (by?.actor ?? "");
+    if (launched && (anyApp || launched.app === by?.app?.name) && launched.actor === (by?.actor ?? "")) return true;
     const live = controllers.get(key);
-    const stamp: { app?: AppRef; actor?: string } | null =
+    const stamp: { app?: AppRef; actor?: string; input?: unknown } | null =
       (summary === undefined ? await store.getRunSummary(workflow, runId) : summary) ??
       (await store.getRunStart(workflow, runId)) ??
       (live ? launchedAs.get(live) : undefined) ??
       null;
-    return !!stamp && (anyApp || stamp.app?.name === by?.app?.name) && (stamp.actor ?? "") === (by?.actor ?? "");
+    if (!launched && stamp && (anyApp || stamp.app?.name === by?.app?.name) && (stamp.actor ?? "") === (by?.actor ?? "")) return true;
+    // A first-party page also reads a turn of a conversation its viewer
+    // may read (one they are in, or a shared one: plans/jamie-app.md §5.2),
+    // whoever took the turn — its files, its reply.
+    const session = (stamp?.input as { session?: unknown } | undefined)?.session;
+    if (!anyApp || !by?.actor || typeof session !== "string") return false;
+    const rec = await conversations.record(session).catch(() => null);
+    return !!rec && (!!rec.shared || rec.viewers.includes(by.actor)) && rec.turns.some((t) => t.runId === runId);
   };
   /** `openFlow` for one run: a scoped caller's own runs only — any other is
    *  not there, as a run that does not exist is not. */
