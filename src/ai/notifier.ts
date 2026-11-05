@@ -138,6 +138,8 @@ export interface ChatNotifier {
    *  liveness check — `meta.status === "live"` on disk can be stale after a
    *  crash/restart (see `createStrut`'s `reconcileStaleChat`). */
   isLive(chatId: string): boolean;
+  /** Every chat with a turn running in this process (what a drain waits on). */
+  liveChats(): string[];
 }
 
 export function createChatNotifier(opts: {
@@ -206,6 +208,10 @@ export function createChatNotifier(opts: {
   return {
     isLive(chatId) {
       return live.has(chatId);
+    },
+
+    liveChats() {
+      return [...live];
     },
 
     turnStarted(chatId) {
