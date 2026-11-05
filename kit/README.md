@@ -52,7 +52,7 @@ app is now ~0.6 MB (react-dom 210 KB, the MCP Apps SDK and its zod schemas
 ~250 KB of it). Maps and 3D are in the set since 0.2: an app that does not
 import them carries none of them.
 
-Tests run with the repo's `npm test` (they are in the root `test` list) or
+Tests run with the repo's `npm test` (its glob takes `kit/src`) or
 `yarn test` here; either needs this directory's install. The vendor test builds
 the whole layer into a temp dir and checks every import-map entry is a module
 of the tree, every recorded link points into it, each shared module (React,
