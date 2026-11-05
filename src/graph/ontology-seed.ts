@@ -20,6 +20,7 @@ import type { EngineLike } from "./engine.js";
 import { JARVIS_ONTOLOGY, type OntologyFixture } from "./fixtures/jarvis-ontology.js";
 import { asEngine } from "./neo4j-engine.js";
 import { GraphValidationError } from "./node-writer.js";
+import { searchableAttributesOf } from "./schema-crud.js";
 import { schemaStatement } from "./schema-seed.js";
 import { SCHEMA_CORE_PROPERTIES } from "./strut-schemas.js";
 
@@ -37,34 +38,6 @@ export interface OntologySeedReport {
 
 const VECTOR_OPTIONS =
   "OPTIONS { indexConfig: { `vector.dimensions`: 384, `vector.similarity_function`: 'cosine' } }";
-
-/**
- * `get_searchable_attributes_from_schema`: with an explicit index → index
- * fields + title_key + description_key; otherwise every string-typed
- * non-core attribute (plus index/title/description keys).
- */
-export function searchableAttributesOf(schema: Record<string, unknown>): Set<string> {
-  const out = new Set<string>();
-  const rawIndex = schema["index"];
-  const indexFields = Array.isArray(rawIndex) ? rawIndex.map(String).filter(Boolean) : typeof rawIndex === "string" && rawIndex ? [rawIndex] : [];
-  const add = (k: unknown) => {
-    if (typeof k === "string" && k.trim()) out.add(k.trim());
-  };
-  if (indexFields.length) {
-    for (const f of indexFields) add(f);
-    add(schema["title_key"]);
-    add(schema["description_key"]);
-    return out;
-  }
-  for (const [k, v] of Object.entries(schema)) {
-    if (SCHEMA_CORE_PROPERTIES.has(k)) continue;
-    if (v === "string" || v === "?string") out.add(k);
-  }
-  out.add("node_key");
-  add(schema["title_key"]);
-  add(schema["description_key"]);
-  return out;
-}
 
 export async function seedJarvisOntology(e: EngineLike, fixture: OntologyFixture = JARVIS_ONTOLOGY): Promise<OntologySeedReport> {
   const engine = asEngine(e);

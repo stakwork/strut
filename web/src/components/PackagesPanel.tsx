@@ -7,7 +7,7 @@ import { canWords, indexIdOf, type InstallLink } from "../store-links";
 import { ConfirmButton } from "./ConfirmButton";
 import { CopyButton } from "./CopyButton";
 
-// ── Packages dialog ─────────────────────────────────────────────────────────
+// ── Packages (the Publish dialog's Packages tab) ────────────────────────────
 //
 // Packages live here and nowhere else (plans/packages-ux.md): names stay
 // bare where they are made, the sidebar knows nothing of packages, and a
@@ -645,7 +645,7 @@ function FindPackages(props: { installed: string[]; initial?: InstallLink | null
   );
 }
 
-export function PackagesDialog(props: { install?: InstallLink | null; onClose: () => void }) {
+export function PackagesPanel(props: { install?: InstallLink | null }) {
   const [catalog, setCatalog] = useState<api.Catalog | null | undefined>(undefined);
   const [publisher, setPublisher] = useState<api.PublisherInfo | null | undefined>(undefined);
   const [workflows, setWorkflows] = useState<api.WorkflowEntry[]>([]);
@@ -676,111 +676,103 @@ export function PackagesDialog(props: { install?: InstallLink | null; onClose: (
   const newest = (pkg: string) => catalog?.packages[pkg]?.releases[0]?.version;
 
   return (
-    <div class="dialog-backdrop" onClick={(e) => { if (e.target === e.currentTarget) props.onClose(); }}>
-      <div class="dialog packages-dialog">
-        <div class="dialog-title">Packages</div>
+    <>
+      {open ? (
+        <PackagePage key={open} pkg={open} publisher={publisher?.name} catalog={catalog ?? null} publicChannels={publisher?.publicChannels ?? []}
+          workflows={workflows} apps={apps} installed={installedNames} concepts={hasConcepts} peers={peers}
+          onBack={() => setOpen(null)} onChanged={() => { void loadCatalog(); api.getPublisher().then(setPublisher, failed("catalog")); }} />
+      ) : (
+        <>
+          <div class="flyout-section">
+            <PublisherHead publisher={publisher} onChanged={setPublisher} />
+            {errors.catalog && <div class="auto-error">{errors.catalog}</div>}
+            <div class="flyout-section-title">Here</div>
+            {catalog === undefined && !errors.catalog && <div class="auto-hint">Loading…</div>}
+            {catalog !== undefined && here.length === 0 && (
+              <div class="auto-hint">Nothing published from here yet. Name a package, then pick the workflows it holds.</div>
+            )}
+            {here.map((pkg) => (
+              <button class="package-row" key={pkg} onClick={() => setOpen(pkg)} title={pkg}>
+                <span class="package-name">{packageLabel(pkg, publisher?.name)}</span>
+                {newest(pkg) && <span class="package-version">{newest(pkg)}</span>}
+              </button>
+            ))}
+            <NewPackage publisher={publisher?.name} onOpen={setOpen} />
+            {catalog && <div class="auto-meta package-signed">Catalog signed {ago(catalog.seq / 1e6)}</div>}
+          </div>
 
-        {open ? (
-          <PackagePage key={open} pkg={open} publisher={publisher?.name} catalog={catalog ?? null} publicChannels={publisher?.publicChannels ?? []}
-            workflows={workflows} apps={apps} installed={installedNames} concepts={hasConcepts} peers={peers}
-            onBack={() => setOpen(null)} onChanged={() => { void loadCatalog(); api.getPublisher().then(setPublisher, failed("catalog")); }} />
-        ) : (
-          <>
-            <div class="flyout-section">
-              <PublisherHead publisher={publisher} onChanged={setPublisher} />
-              {errors.catalog && <div class="auto-error">{errors.catalog}</div>}
-              <div class="flyout-section-title">Here</div>
-              {catalog === undefined && !errors.catalog && <div class="auto-hint">Loading…</div>}
-              {catalog !== undefined && here.length === 0 && (
-                <div class="auto-hint">Nothing published from here yet. Name a package, then pick the workflows it holds.</div>
-              )}
-              {here.map((pkg) => (
-                <button class="package-row" key={pkg} onClick={() => setOpen(pkg)} title={pkg}>
-                  <span class="package-name">{packageLabel(pkg, publisher?.name)}</span>
-                  {newest(pkg) && <span class="package-version">{newest(pkg)}</span>}
-                </button>
-              ))}
-              <NewPackage publisher={publisher?.name} onOpen={setOpen} />
-              {catalog && <div class="auto-meta package-signed">Catalog signed {ago(catalog.seq / 1e6)}</div>}
-            </div>
+          <FindPackages installed={installedNames} initial={props.install} onInstalled={() => api.listInstalledPackages().then(setInstalled, failed("installed"))} />
 
-            <FindPackages installed={installedNames} initial={props.install} onInstalled={() => api.listInstalledPackages().then(setInstalled, failed("installed"))} />
-
-            <div class="flyout-section">
-              <div class="flyout-section-title">Following</div>
-              {errors.subs && <div class="auto-error">{errors.subs}</div>}
-              {subs === null && !errors.subs && <div class="auto-hint">Loading…</div>}
-              {subs?.length === 0 && <div class="auto-hint">This strut follows no catalog.</div>}
-              {subs?.map((s) => (
-                <div class="auto-card" key={s.id}>
-                  <div class="auto-card-head">
-                    <span class="package-name">{s.id}</span>
-                    <span class="badge">{s.channel ?? "newest releases"}</span>
-                  </div>
-                  <div class="auto-meta">
-                    <span class="package-url">{s.url}</span>
-                    {s.checkedAt && <span title={new Date(s.checkedAt).toLocaleString()}>checked {ago(secs(s.checkedAt))}</span>}
-                    {s.applied && <span title={new Date(s.applied.at).toLocaleString()}>applied {ago(secs(s.applied.at))}</span>}
-                  </div>
-                  {s.error && <div class="auto-error">{s.error}</div>}
-                  {s.warnings?.map((w, i) => <div class="auto-hint" key={i}>{w}</div>)}
-                  {s.packages.length === 0 && <div class="auto-hint">Nothing installed from it yet.</div>}
-                  {s.packages.map((p) => (
-                    <div class="package-release-head" key={p.package}>
-                      <span class="package-version">{p.package}</span>
-                      {p.version && <span>{p.version}</span>}
-                      {p.digest && <code class="package-digest" title={p.digest}>{shortDigest(p.digest)}</code>}
-                      {p.diverged.length > 0 && (
-                        <span class="badge badge-warning" title={`Edited here, so the release's version sits beside it: ${p.diverged.join(", ")}`}>
-                          {p.diverged.length} edited here
-                        </span>
-                      )}
-                    </div>
-                  ))}
+          <div class="flyout-section">
+            <div class="flyout-section-title">Following</div>
+            {errors.subs && <div class="auto-error">{errors.subs}</div>}
+            {subs === null && !errors.subs && <div class="auto-hint">Loading…</div>}
+            {subs?.length === 0 && <div class="auto-hint">This strut follows no catalog.</div>}
+            {subs?.map((s) => (
+              <div class="auto-card" key={s.id}>
+                <div class="auto-card-head">
+                  <span class="package-name">{s.id}</span>
+                  <span class="badge">{s.channel ?? "newest releases"}</span>
                 </div>
-              ))}
-            </div>
-
-            <div class="flyout-section">
-              <div class="flyout-section-title">Installed</div>
-              {errors.installed && <div class="auto-error">{errors.installed}</div>}
-              {installed === null && !errors.installed && <div class="auto-hint">Loading…</div>}
-              {installed?.length === 0 && <div class="auto-hint">No packages installed.</div>}
-              {installed?.map((p) => (
-                <div class="auto-card" key={p.package}>
-                  <div class="auto-card-head">
-                    <span class="package-name">{p.package} {p.version && <span class="package-version">{p.version}</span>}</span>
-                    {p.door && (
-                      <span class="badge" title={p.door === "distro" ? "A subscription installed it: only the distro updates or removes it" : "A person installed it"}>
-                        {p.door}
+                <div class="auto-meta">
+                  <span class="package-url">{s.url}</span>
+                  {s.checkedAt && <span title={new Date(s.checkedAt).toLocaleString()}>checked {ago(secs(s.checkedAt))}</span>}
+                  {s.applied && <span title={new Date(s.applied.at).toLocaleString()}>applied {ago(secs(s.applied.at))}</span>}
+                </div>
+                {s.error && <div class="auto-error">{s.error}</div>}
+                {s.warnings?.map((w, i) => <div class="auto-hint" key={i}>{w}</div>)}
+                {s.packages.length === 0 && <div class="auto-hint">Nothing installed from it yet.</div>}
+                {s.packages.map((p) => (
+                  <div class="package-release-head" key={p.package}>
+                    <span class="package-version">{p.package}</span>
+                    {p.version && <span>{p.version}</span>}
+                    {p.digest && <code class="package-digest" title={p.digest}>{shortDigest(p.digest)}</code>}
+                    {p.diverged.length > 0 && (
+                      <span class="badge badge-warning" title={`Edited here, so the release's version sits beside it: ${p.diverged.join(", ")}`}>
+                        {p.diverged.length} edited here
                       </span>
                     )}
                   </div>
-                  <div class="auto-meta">
-                    {p.source && <span class="package-url">{p.source.ref}</span>}
-                    {p.digest && <code class="package-digest" title={p.digest}>{shortDigest(p.digest)}</code>}
-                    {p.secrets?.length ? <span>reads {p.secrets.join(", ")}</span> : null}
-                  </div>
-                  <ul class="package-items">
-                    {p.items.map((it) => (
-                      <li key={`${it.kind}:${it.name}`}>
-                        <span class="package-item-kind">{it.helper ? "helper" : it.kind}</span>
-                        <span class="package-item-name">{it.name}</span>
-                        {it.active && <span class="auto-meta">{it.active}</span>}
-                        {it.modified && <span class="badge badge-warning" title={`Edited here: installed ${it.installed ?? "?"}, active ${it.active ?? "?"}`}>edited here</span>}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              ))}
-            </div>
-          </>
-        )}
+                ))}
+              </div>
+            ))}
+          </div>
 
-        <div class="dialog-actions">
-          <button class="btn" onClick={props.onClose}>Close</button>
-        </div>
-      </div>
-    </div>
+          <div class="flyout-section">
+            <div class="flyout-section-title">Installed</div>
+            {errors.installed && <div class="auto-error">{errors.installed}</div>}
+            {installed === null && !errors.installed && <div class="auto-hint">Loading…</div>}
+            {installed?.length === 0 && <div class="auto-hint">No packages installed.</div>}
+            {installed?.map((p) => (
+              <div class="auto-card" key={p.package}>
+                <div class="auto-card-head">
+                  <span class="package-name">{p.package} {p.version && <span class="package-version">{p.version}</span>}</span>
+                  {p.door && (
+                    <span class="badge" title={p.door === "distro" ? "A subscription installed it: only the distro updates or removes it" : "A person installed it"}>
+                      {p.door}
+                    </span>
+                  )}
+                </div>
+                <div class="auto-meta">
+                  {p.source && <span class="package-url">{p.source.ref}</span>}
+                  {p.digest && <code class="package-digest" title={p.digest}>{shortDigest(p.digest)}</code>}
+                  {p.secrets?.length ? <span>reads {p.secrets.join(", ")}</span> : null}
+                </div>
+                <ul class="package-items">
+                  {p.items.map((it) => (
+                    <li key={`${it.kind}:${it.name}`}>
+                      <span class="package-item-kind">{it.helper ? "helper" : it.kind}</span>
+                      <span class="package-item-name">{it.name}</span>
+                      {it.active && <span class="auto-meta">{it.active}</span>}
+                      {it.modified && <span class="badge badge-warning" title={`Edited here: installed ${it.installed ?? "?"}, active ${it.active ?? "?"}`}>edited here</span>}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </>
   );
 }

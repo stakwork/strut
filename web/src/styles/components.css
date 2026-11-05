@@ -3742,8 +3742,24 @@ body.is-resizing-flyout iframe { pointer-events: none !important; }
 .version-yaml-head .flyout-toggle { width: auto; flex: 1; }
 .auto-card.is-active-version { border-color: var(--accent); }
 
-/* ─── packages (the Packages dialog, plans/packages-ux.md) ───── */
+/* ─── the Publish dialog (PublishDialog.tsx): Packages | Public view ─── */
 .packages-dialog { width: min(680px, 92vw); }
+/* One height for both tabs, so switching never moves the dialog: the title,
+   tabs and Close stay put and the tab's body scrolls between them. */
+.publish-dialog {
+  display: flex;
+  flex-direction: column;
+  height: min(80vh, 820px);
+  overflow: hidden;
+  padding-bottom: var(--sp-4);
+}
+.publish-dialog .dialog-title { margin-bottom: var(--sp-2); }
+.publish-tabs { padding: 0; flex: none; }
+.publish-body { flex: 1; min-height: 0; overflow-y: auto; padding-top: var(--sp-3); }
+.publish-dialog > .dialog-actions { flex: none; margin-top: var(--sp-3); }
+.publish-dirty-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--warning); }
+
+/* ─── packages (the Publish dialog's Packages tab, plans/packages-ux.md) ── */
 /* The publisher's name beside its key, at the head of the dialog. */
 .publisher-head { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; margin-bottom: var(--sp-3); }
 .publisher-head input,
@@ -4878,8 +4894,22 @@ input.package-search { width: 100%; margin-bottom: var(--sp-2); }
 .prop-field-danger dd { color: var(--danger, #c0392b); font-weight: 600; }
 .prop-code { font-family: var(--font-mono, monospace); }
 
-/* ── The Public view dialog (PublicViewDialog.tsx) ───────────────────────── */
-.public-view-dialog .flyout-section { margin-top: var(--sp-3); }
+/* ── The Publish dialog's Public view tab (PublicViewPanel.tsx) ──────────── */
+.public-view-panel .flyout-section { margin-top: var(--sp-3); }
+/* Unsaved changes: Discard / Save, held at the bottom of the scrolling tab. */
+.public-view-save {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
+  padding: var(--sp-2) 0;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+}
+.public-view-save .auto-hint { flex: 1; margin: 0; }
 .public-row {
   display: flex;
   align-items: center;

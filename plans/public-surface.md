@@ -125,7 +125,7 @@ ideas":
 | 16 | A public run shows its input whole. | **ruled** |
 | 17 | A public step shows the helper files it imports, beside its own source. | **ruled** |
 | 18 | Whether actors appear in public version and revision lists is deferred; until it is decided, public views carry no actor. | **ruled** (deferred); the v1 default is mine |
-| 19 | The name: the PUBLIC VIEW (the **Public view** dialog), never "publish" or "make public", which are the copy side's (a version, a package release, the Packages dialog's **Make public**). | **ruled** |
+| 19 | The name: the PUBLIC VIEW (the **Public view** tab), never "publish" or "make public", which are the copy side's (a version, a package release, the Packages tab's **Make public**). | **ruled**; 2026-11-04: the topbar's **Packages** and **Public view** are one **Publish** button, a dialog with those two tabs — the umbrella is the topbar's way out of the server, and the thing keeps its name |
 | 20 | Adding an item to the public view cascades in the dialog, explicitly: an app pre-checks its granted workflows with runs, their custom steps, its reads and the Concept roots its workflows read (`context/concept`); the record lists everything. | *agreed* ("yes that right") |
 | 21 | In the public view, a control a visitor cannot use is DISABLED, never hidden ("we dont need to hide stuff... buttons should be disabled"). | **ruled** |
 
@@ -209,8 +209,8 @@ secret): `<dataDir>/public.json`, beside `packages/indexes.json`.
   moves the release. `reads` is §5's list. `domains` is §9's.
 - **The door**: `GET`/`PUT /public-view` (full scope only; a person, never the
   builder or a `meta/*` step: the surface is the owner's decision as a
-  sealed grant is, `src/apps/grants.ts`). In the UI, a topbar **Public
-  view** dialog like **Packages**: what this server shows anyone, each item
+  sealed grant is, `src/apps/grants.ts`). In the UI, the **Public view**
+  tab of the topbar's **Publish** dialog, beside **Packages**: what this server shows anyone, each item
   with its options, and an add box per kind. Each item's own flyout shows a
   "Public view" badge that opens the dialog on it.
 - **The dialog cascades, in the open** (agreed 2026-11-04). Adding an item

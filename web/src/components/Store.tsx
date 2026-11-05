@@ -6,7 +6,7 @@ import { load, remove, save } from "../storage";
 import { appsOf, canWords, conceptRoots, installLink, liveAppUrl, liveBase, normalizeStrutUrl, parseStoreView, shortKey, storeQuery, type InstallLink, type LiveKind, type StoreView } from "../store-links";
 import { CopyButton } from "./CopyButton";
 import { Markdown } from "./Markdown";
-import { shortDigest } from "./PackagesDialog";
+import { shortDigest } from "./PackagesPanel";
 
 // ── The store front (plans/marketplace.md §7) ───────────────────────────────
 //
@@ -16,7 +16,7 @@ import { shortDigest } from "./PackagesDialog";
 // card. Everything on it is DERIVED (src/packages/index.ts reads each
 // release's archive at the crawl, src/packages/detail.ts) and nothing on it
 // is trusted by an install: "Install" is a link into the visitor's OWN strut
-// (`?install=<name>`, store-links.ts), whose Packages dialog re-verifies
+// (`?install=<name>`, store-links.ts), whose Publish dialog (Packages tab) re-verifies
 // the package against the publisher's own catalog. The visitor names their
 // strut once ("Your strut", kept in this browser); without one the button
 // shows the name to paste. On a strut that is not an index the page says
@@ -181,7 +181,7 @@ function InstallButton(props: { pkg: string; target: string | null; link: (pkg: 
         </form>
       )}
       <div class="store-paste">
-        Or, in your strut server's Packages dialog, find <code>{props.pkg}</code> <CopyButton value={props.pkg} label="Copy the package name" />
+        Or, in your strut server's Publish dialog, on the Packages tab, find <code>{props.pkg}</code> <CopyButton value={props.pkg} label="Copy the package name" />
       </div>
     </div>
   );

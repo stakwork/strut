@@ -115,7 +115,7 @@ export default defineStep({
     const door = ctx.services?.packages?.install;
     if (!door) throw new Error("package/install needs strut's package door (ctx.services.packages.install); the standard strut server provides it.");
     if (!PACKAGE_NAME.test(cfg.package) && !PK_REF.test(cfg.package)) {
-      throw new Error(`package_source_invalid: ${cfg.package} is neither a name (publisher/name) nor a pk:<key>/<publisher>/<name> ref — a person installs from a file or a repository through the Packages dialog`);
+      throw new Error(`package_source_invalid: ${cfg.package} is neither a name (publisher/name) nor a pk:<key>/<publisher>/<name> ref — a person installs from a file or a repository through the Publish dialog's Packages tab`);
     }
     return door(cfg.package, {
       proposal: ctx.proposal.id,

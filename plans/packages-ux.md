@@ -81,7 +81,8 @@ finds its own files first.
 **Making things: unchanged.** The builder names workflows; categories
 group them. Nobody chooses a package to make anything.
 
-**Publishing**, from the topbar's **Packages**. The head is the publisher
+**Publishing**, from the topbar's **Publish** (its **Packages** tab;
+2026-11-04, beside **Public view**). The head is the publisher
 name (asked for once, the first time) and the key. Below, one row per
 package published here, its name and newest version; **New package** takes
 a name, one segment (`tools`), and opens the package page.
