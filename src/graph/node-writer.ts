@@ -524,7 +524,8 @@ export class NodeWriter {
         // is one word to it), so a Ladybug file stores the text on one line.
         const stored = this.engine.kind === "neo4j" ? text : text.replace(/\s+/g, " ");
         props["search_text"] = stored;
-        props["_search_fields_used"] = fields;
+        // Jarvis's record of which fields made the text; a Ladybug file has no column for it.
+        if (this.engine.kind === "neo4j") props["_search_fields_used"] = fields;
         // The no-embed mark: keyword text, never a vector.
         if (v.schema.embed) jobs.push({ idx, column: "text_embeddings", text: stored });
       }
@@ -636,8 +637,10 @@ export class NodeWriter {
       // A type's own `created_at` (TYPE_OWNABLE_CORE) is a field it may edit.
       for (const [k, val] of Object.entries(p!.props)) if (!PRESERVED.has(k) || k in attrs) setMap[k] = val;
       const drop = new Set<string>(remove);
-      if (!("search_text" in setMap)) for (const k of ["search_text", "_search_fields_used", "text_embeddings"]) drop.add(k);
-      else if (!schema.embed) drop.add("text_embeddings"); // a vector an earlier writer left on a no-embed node goes with the update
+      if (!("search_text" in setMap)) {
+        for (const k of ["search_text", "text_embeddings"]) drop.add(k);
+        if (this.engine.kind === "neo4j") drop.add("_search_fields_used");
+      } else if (!schema.embed) drop.add("text_embeddings"); // a vector an earlier writer left on a no-embed node goes with the update
       else if (!this.opts.embedder && setMap["search_text"] !== props["search_text"]) drop.add("text_embeddings");
       if (!("title" in setMap) && !("title" in attrs)) drop.add("title");
       for (const vi of schema.vector_index) {
