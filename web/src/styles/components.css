@@ -4645,6 +4645,36 @@ input.package-search { width: 100%; margin-bottom: var(--sp-2); }
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* The versions of the app in the panel, under its bar: a click views one
+   there. Viewing only (components/AppWithPanel.tsx `PanelVersions`). */
+.app-panel-versions {
+  display: flex;
+  flex-direction: column;
+  max-height: 40%;
+  overflow-y: auto;
+  padding: var(--sp-1) var(--sp-3);
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+}
+.app-panel-version {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 30px;
+  padding: 2px var(--sp-1);
+  font: inherit;
+  text-align: left;
+  color: var(--text-muted);
+  background: none;
+  border: 0;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+}
+.app-panel-version:hover { color: var(--text); background: rgba(110, 168, 255, 0.06); }
+.app-panel-version.is-current { color: var(--text); background: rgba(110, 168, 255, 0.1); }
+.app-panel-version-name { font-size: 13px; font-weight: 600; min-width: 32px; }
+.app-panel-version-when { margin-left: auto; font-size: 11px; color: var(--text-dim); white-space: nowrap; }
+.app-panel-versions-note { padding: var(--sp-1) var(--sp-1) var(--sp-2); font-size: 11px; color: var(--text-dim); }
 .app-panel-body {
   flex: 1;
   min-height: 0;

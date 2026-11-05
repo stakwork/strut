@@ -710,6 +710,13 @@ pull requests are Hive's, not later items.
   by name — read with `run/files` on the turn's run (a turn's attachments
   now carry their `path`). A reply has Copy (the clipboard API, which
   strut's frame now allows, else `execCommand`).
+- **Versions in the side panel** (2026-11-05). An app Jamie hands over
+  (often a held app's draft, `name@vN`) opens in the panel under a version
+  chip that lists its versions, each viewable in place. Viewing only, by
+  ruling: strut has no roles, and a ticket session is full scope, so
+  making a version live stays with the full UI's Versions flyout and a
+  host's admin page (Stadeum's Apps page, over `PUT /apps/:name/active`,
+  where Stadeum checks the role).
 - **Not to port** (ruled 2026-11-05): the rest of Hive's chat — the daily
   recap card, its per-step proposal bodies, Hive-only kinds (stored HTML
   pages, research docs, task pills, the brainstorm tree) and the canvas
