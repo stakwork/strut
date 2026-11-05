@@ -91,20 +91,18 @@ describe("DictationFixer", () => {
     };
     let loads = 0;
     const ok = new DictationFixer({ model: async () => ({ id: "qwen3-1.7b-q4", path: "/m/large.gguf" }), spec: spec("ready: async () => {}") });
-    assert.equal(ok.warm(), undefined);
-    assert.equal(ok.active, null); // not waited on: the pick is still being read
-    await sleep(100);
+    const warming = ok.warm();
+    assert.equal(ok.active, null); // returned before loading: the pick is still being read
+    await warming;
     assert.deepEqual([loads, ok.active], [1, "qwen3-1.7b-q4"]);
     await ok.close();
 
     const none = new DictationFixer({ model: async () => null, spec: spec("ready: async () => {}") });
-    none.warm();
-    await sleep(20);
+    await none.warm();
     assert.deepEqual([loads, none.active], [1, null]);
 
     const bad = new DictationFixer({ model: async () => ({ id: "qwen3-1.7b-q4", path: "/m/x.gguf" }), spec: spec("ready: async () => { throw new Error('no metal') }") });
-    bad.warm();
-    await sleep(100);
+    await bad.warm();
     assert.equal(warns.mock.callCount(), 1);
     assert.match(String(warns.mock.calls[0]!.arguments[0]), /did not preload: .*no metal/);
     await bad.close();
