@@ -3,10 +3,12 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { StrutClient } from "./client.js";
 import { createStaticHost, type StrutHost } from "./host.js";
 import { NO_WALLET, type WalletClient } from "./wallet/client.js";
+import { NO_CHANNELS, type ChannelsClient } from "./channels/client.js";
 
 const ClientContext = createContext<StrutClient | null>(null);
 const HostContext = createContext<StrutHost | null>(null);
 const WalletContext = createContext<WalletClient>(NO_WALLET);
+const ChannelsContext = createContext<ChannelsClient>(NO_CHANNELS);
 
 /** The query defaults every hook runs under: a step result is deterministic
  *  (no retry), an iframe gets focus events it should not refetch on, and a
@@ -28,6 +30,8 @@ export interface StrutProviderProps {
   host?: StrutHost;
   /** The host's wallet (specs/WALLET.md); a page with none gets `NO_WALLET`. */
   wallet?: WalletClient;
+  /** The host's channels (plans/app-channels.md); a page with none gets `NO_CHANNELS`. */
+  channels?: ChannelsClient;
   queryClient?: QueryClient;
   children?: ReactNode;
 }
@@ -35,7 +39,7 @@ export interface StrutProviderProps {
 /** What an app is mounted under (§2.4): the client, the host and a
  *  react-query client. A host's own page wraps kit components in it with its
  *  own client. */
-export function StrutProvider({ client, host, wallet, queryClient, children }: StrutProviderProps) {
+export function StrutProvider({ client, host, wallet, channels, queryClient, children }: StrutProviderProps) {
   const qc = useMemo(() => queryClient ?? createKitQueryClient(), [queryClient]);
   const h = useMemo(() => host ?? createStaticHost(), [host]);
   return createElement(
@@ -44,7 +48,11 @@ export function StrutProvider({ client, host, wallet, queryClient, children }: S
     createElement(
       HostContext.Provider,
       { value: h },
-      createElement(WalletContext.Provider, { value: wallet ?? NO_WALLET }, createElement(QueryClientProvider, { client: qc }, children)),
+      createElement(
+        WalletContext.Provider,
+        { value: wallet ?? NO_WALLET },
+        createElement(ChannelsContext.Provider, { value: channels ?? NO_CHANNELS }, createElement(QueryClientProvider, { client: qc }, children)),
+      ),
     ),
   );
 }
@@ -53,6 +61,12 @@ export function StrutProvider({ client, host, wallet, queryClient, children }: S
  *  host offers none) — what `useWallet` is over. */
 export function useStrutWallet(): WalletClient {
   return useContext(WalletContext);
+}
+
+/** The channels client of the nearest `StrutProvider` (`NO_CHANNELS` when
+ *  the host carries none) — what `useChannel` is over. */
+export function useStrutChannels(): ChannelsClient {
+  return useContext(ChannelsContext);
 }
 
 /** The client of the nearest `StrutProvider` — for a component that calls a

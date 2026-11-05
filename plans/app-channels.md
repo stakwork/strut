@@ -1,6 +1,10 @@
 # App channels: live messages between the people on an app
 
-> **Status (2026-11-04): ruled, not built.** Written after the question
+> **Status (2026-11-04): ruled; work items 1–7 and 9 built
+> (stakwork/strut#487: the service, the ticket, the socket at `GET /channels`,
+> the peer relay, the steps, strut's UI as a host, the kit's `useChannel`,
+> `app/look`, the `App` page). The monitor (item 8) waits until an app
+> misbehaves: the limits already hold without it.** Written after the question
 > "could someone build a multiplayer game as a strut app?" A game has few
 > workflows (a scoreboard, a referee) and needs fast messages between the
 > people playing it, which strut does not have. The owner ruled every
@@ -67,7 +71,8 @@ graph. The channel carries what is happening now.
 
 ## 1. A channel
 
-**Where it lives.** One `LiveFeed` (`src/live-feed.ts`, unchanged) per
+**Where it lives.** One `LiveFeed` (`src/live-feed.ts`, which gained
+`evictable`, `remove` and a synchronous `readNow` for it) per
 channel, in this process, plus the sockets joined to it. A channel is
 named by `(app name, channel name)`: every version of the app shares it,
 as it shares `app/state` and the app's jobs, so a publish mid-game never
@@ -124,7 +129,9 @@ idle.
 | | Value | Why |
 | --- | --- | --- |
 | `CHANNEL_MESSAGE_MAX_BYTES` | 8 KB of JSON | a move, not a file; files go in a job (`job/upload`) |
-| `CHANNEL_KEEP` | 256 messages | the feed's `max`: states plus recent events |
+| `CHANNEL_KEEP` | 256 messages | the feed's `max`: states plus recent events; when it is full, events go first |
+| `CHANNEL_STATES_PER_SENDER` | 16 keys | so one sender's states never crowd out the rest |
+| `CHANNEL_KEY_MAX` | 64 characters | a key names a state, it does not carry one |
 | `CHANNEL_SEND_RATE` | 30 messages a second per sender, bursts of 60 | a token bucket per sender |
 | `CHANNEL_REJOIN_MS` | 10 s | a reconnect inside it is no leave |
 | `CHANNEL_IDLE_MS` | 10 minutes | a channel with no socket and no message is dropped |
@@ -137,10 +144,12 @@ idle.
 closes it when the frame goes away. It carries every channel the page has
 joined.
 
-**`GET /apps/channels`** (WebSocket), upgraded through the app's own gate
-and hooks like `/rooms` (`strut.upgrade(req, socket, head, { basePath })`,
-so a standalone strut and a host that owns the server, mcp under `/lab`,
-decide it the same way). It takes one of two credentials:
+**`GET /channels`** (WebSocket; top-level like `/rooms`, since
+`/apps/channels` would shadow an app named `channels`), upgraded through
+the app's own gate and hooks like `/rooms` (`strut.upgrade(req, socket,
+head, { basePath })`, so a standalone strut and a host that owns the
+server, mcp under `/lab`, decide it the same way). It takes one of two
+credentials:
 
 - **A ticket** as `?ticket=`, from a browser host, since a browser cannot
   set headers on an upgrade. The request log prints `ticket=…`, as it
@@ -152,9 +161,10 @@ decide it the same way). It takes one of two credentials:
 exp }`. It is `strut-channel.<claims>.<hmac>`, signed like a file token
 (`STRUT_API_KEY`, else `STRUT_SECRET_KEY`), with claims `{ actor?, app,
 version, exp }`. It lives a minute, which is long enough to connect, and
-the socket outlives it. Whoever may open the app may mint one: the key or a
-session (with the actor `resolveActor` gives), or a person token for its
-own actor. A plain peer may not. The route refuses an app or version that
+the socket outlives it. The key or a session mints one, for the actor
+`resolveActor` gives (none: a viewer stamped by its client id alone).
+No peer credential may: a person token connects with its own header
+instead (§4). The route refuses an app or version that
 is not there. The host names the app it is showing, and the socket is
 bound to that app, so a page can never reach another app's channels.
 
@@ -187,16 +197,16 @@ gives a page no channels, and `useChannel` reports `unavailable` at once.
 
 - **Strut's UI** (`web/src/app-host.ts`, `AppHost.tsx`, `SoloApp.tsx`):
   mints its own ticket from its own origin with its session or key, opens
-  `/apps/channels` there. Peel shows apps through this UI, so Peel needs
+  `/channels` there. Peel shows apps through this UI, so Peel needs
   nothing of its own.
 - **Hive**: a Vercel route cannot hold a socket, so Hive's SERVER only
   mints the ticket (`POST <swarm>/lab/apps/:name/channel-ticket`, with the
   swarm key and `x-strut-actor`, the credential its relay already sends;
   the place to put a role floor if Hive wants one), and Hive's PAGE opens
-  `wss://<swarm>/lab/apps/channels?ticket=…` itself. The channel lives on
+  `wss://<swarm>/lab/channels?ticket=…` itself. The channel lives on
   the swarm's strut, so a Hive viewer and a strut-UI viewer of the same
   app meet there.
-- **mcp (stakgraph)**: routes the `/lab/apps/channels` upgrade to
+- **mcp (stakgraph)**: routes the `/lab/channels` upgrade to
   `strut.upgrade` as it routes `/lab/rooms` (stakgraph#1811), and lets a
   `?ticket=` through `labAuth` for strut to judge, as it lets a file
   token's `?t=` through.
@@ -208,10 +218,11 @@ Strut's UI shows an app that lives on another strut as
 lives on the peer, where the app lives, and the socket gets there through
 the LOCAL strut:
 
-- The UI mints a ticket from its own strut for `@<peer>/<name>` and opens
-  its own `/apps/channels`, as for any app.
+- The UI mints a ticket from its own strut for `@<peer>/<name>` (`POST
+  /apps/<name>/channel-ticket { version, peer }`) and opens its own
+  `/channels`, as for any app.
 - The local strut sees a peer's app and opens a socket to the peer's
-  `/apps/channels?app=<name>@<version>` with the peer record's token in
+  `/channels?app=<name>@<version>` with the peer record's token in
   `Authorization` (a person token, so the peer stamps the person), trusting
   the record's `ca` and `servername` like every other peer request. It
   pipes frames both ways.
@@ -227,7 +238,7 @@ Code the app runs (anything with `ctx.app` set: a custom step a page calls
 through `step_run`, a workflow the app launched with `run/launch`) reaches
 the same channels in process, through `ctx.services.channels`:
 
-- **`channel/send { channel, messages: [{ key?, data }] }`**, stamped
+- **`channel/send { channel, data, key? }`** (one message: a workflow sends one at a time), stamped
   with the code as the sender: the workflow's name, or the type of the
   step the page called, plus the actor who set it off. So `game/move`'s
   `board` state replaces the last `board` from `game/move`, whichever
@@ -380,33 +391,33 @@ than that server.
    warning on `RTCPeerConnection` like the one on `fetch` would catch an
    honest app, never a hostile one. Item 9 says on the `App` page that a
    direct connection is not the door.
-1. **`src/channels.ts`**: the service (a `LiveFeed` and the sockets per
+1. **BUILT (#487). `src/channels.ts`**: the service (a `LiveFeed` and the sockets per
    channel, previews apart, the stamp, presence and its pings, the
    limits, idle drops). Unit tests: states replace per sender only, a
    leave drops the leaver's states, a rejoin inside the window keeps the
    client, a reconnect with a cursor gets what it missed, `reset` past the
    keep, the refusals, one app never reaching another's channel.
-2. **The ticket and the socket door**: `POST /apps/:name/channel-ticket`
-   (auth.ts beside the file and person tokens), `GET /apps/channels`
+2. **BUILT (#487). The ticket and the socket door**: `POST /apps/:name/channel-ticket`
+   (auth.ts beside the file and person tokens), `GET /channels`
    through `strut.upgrade`, the frames. Tests over a real socket, as the
    rooms tests do, and the route sweeps.
-3. **The peer relay** (§4) in the same door, with a test against a second
+3. **BUILT (#487). The peer relay** (§4) in the same door, with a test against a second
    strut.
-4. **The steps** `channel/send`, `channel/read`, `channel/derive`
+4. **BUILT (#487). The steps** `channel/send`, `channel/read`, `channel/derive`
    (`src/steps/lib/channel/`), refused without `ctx.app` and in
    `NOT_A_PAGES`. Add the test files to the `npm test` list.
-5. **Strut's UI as a channel host** (`web/src/app-host.ts`): the
+5. **BUILT (#487). Strut's UI as a channel host** (`web/src/app-host.ts`): the
    capability in `ui/initialize`, the ticket, the socket, the relay; the
    pure parts in `app-links.ts` with their tests.
-6. **The kit**: `useChannel`, `newChannel`, the bridge methods; hook tests;
+6. **BUILT (#487). The kit**: `useChannel`, `newChannel`, the bridge methods; hook tests;
    the README with §6's pattern.
-7. **`app/look`**: answer the channel socket in process with Playwright's
+7. **BUILT (#487). `app/look`**: answer the channel socket in process with Playwright's
    `page.routeWebSocket`, as `page.route` answers the rest, so the builder
    can test a multiplayer app.
 8. **The monitor**: channel traffic per app in Usage (messages, bytes,
    peak members per minute), and a warning when a sender keeps hitting
    the rate limit, with the fix: send fewer messages, or make them states.
-9. **The `App` Concept page**: when a channel is the tool (live, lossy,
+9. **BUILT (#487). The `App` Concept page**: when a channel is the tool (live, lossy,
    unrecorded) and when a workflow or the graph is; grant `channel/*` to
    the app's steps; the referee and the gatekeeper patterns; a direct
    WebRTC connection between pages is not the door (item 0).

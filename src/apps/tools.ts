@@ -90,6 +90,9 @@ const NOT_A_PAGES: Record<string, string> = {
   "job/dir": "a job's directory belongs to a run of the job",
   "job/start": "a page runs a workflow in its own job with run/launch { job } (plans/apps.md §12); job/start is an agent's door",
   "job/continue": "a page runs a workflow in its own job with run/launch { job } (plans/apps.md §12); job/continue is an agent's door",
+  "channel/send": "a page sends with useChannel, over its host's socket (plans/app-channels.md); channel/send is for the app's own steps and workflows, which strut stamps as themselves",
+  "channel/read": "a page reads with useChannel, over its host's socket (plans/app-channels.md); channel/read is for the app's own steps and workflows",
+  "channel/derive": "a page that could derive a room's name could derive any room's: a gatekeeper step the app grants calls channel/derive and hands the name to the players it lets in (plans/app-channels.md §6)",
 };
 
 /** Families this strut does not serve to an app yet, by work item. */

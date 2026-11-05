@@ -396,7 +396,7 @@ export function sessionTtlMs(): number {
 /** A signed token's kinds: a session cookie, a person token, a catalog
  *  read token. The kind is in the HMAC input, so one is never accepted as
  *  another. */
-type ClaimsKind = "session" | "person" | "catalog";
+type ClaimsKind = "session" | "person" | "catalog" | "channel";
 
 function sign(kind: ClaimsKind, payload: string, secret: string): string {
   return createHmac("sha256", secret).update(`${kind}:${payload}`).digest("base64url");
@@ -622,6 +622,105 @@ export function publicPackageRead(c: Context): boolean {
   if (c.req.method !== "GET" && c.req.method !== "HEAD") return false;
   if (!CATALOG_TOKEN_PATH.test(c.req.path)) return false;
   return c.req.query("public") !== undefined;
+}
+
+// ── Channel tickets ──────────────────────────────────────────────────────
+//
+// What a BROWSER host opens an app's channel socket with
+// (plans/app-channels.md §2): `GET /channels?ticket=…`, since a browser
+// cannot set a header on an upgrade, and Hive's page has no strut
+// credential at all — its server mints the ticket with the swarm key and
+// the member as `x-strut-actor`. `strut-channel.<claims>.<hmac>`: the
+// viewer, the app and version the host is showing, and an end a minute
+// out — long enough to connect, and the socket outlives it. Signed like a
+// person token and as stateless. It opens that one socket and nothing
+// else. With no secret to sign under (dev mode, where the gate is open)
+// the ticket is the claims alone, `strut-channel.<claims>.`, taken at its
+// word — the posture an app's identity has there.
+
+const CHANNEL_PREFIX = "strut-channel.";
+/** A ticket's life: to connect, not to stay connected. */
+export const CHANNEL_TICKET_MS = 60_000;
+/** The one route a ticket opens. */
+export const CHANNEL_SOCKET_PATH = "/channels";
+
+export interface ChannelTicket {
+  /** The viewer the host vouched for. */
+  actor?: string;
+  /** The app the host is showing, at the version it shows. */
+  app: string;
+  version: string;
+  /** The peer the app lives on (plans/app-channels.md §4): this strut relays
+   *  the socket there. Absent: an app of this strut's own. */
+  peer?: string;
+  exp: number;
+}
+
+/** A ticket for `claims`, living `ttlMs`. */
+export function channelTicket(claims: { actor?: string; app: string; version: string; peer?: string }, ttlMs = CHANNEL_TICKET_MS): { ticket: string; exp: number } {
+  const exp = Date.now() + ttlMs;
+  const body = {
+    ...(claims.actor !== undefined ? { actor: claims.actor } : {}),
+    app: claims.app,
+    version: claims.version,
+    ...(claims.peer !== undefined ? { peer: claims.peer } : {}),
+    exp,
+  };
+  const signed = signClaims("channel", body);
+  return { ticket: `${CHANNEL_PREFIX}${signed ?? `${Buffer.from(JSON.stringify(body)).toString("base64url")}.`}`, exp };
+}
+
+/** The ticket's claims, if strut can vouch for it and it has not expired. */
+export function verifyChannelTicket(ticket: string, now = Date.now()): ChannelTicket | undefined {
+  if (!ticket.startsWith(CHANNEL_PREFIX)) return undefined;
+  const rest = ticket.slice(CHANNEL_PREFIX.length);
+  let claims: Record<string, unknown> | undefined;
+  if (tokenSecret()) {
+    claims = readClaims("channel", rest, now);
+  } else if (rest.endsWith(".") && rest.indexOf(".") === rest.length - 1) {
+    try {
+      const parsed = JSON.parse(Buffer.from(rest.slice(0, -1), "base64url").toString("utf8")) as unknown;
+      if (parsed && typeof parsed === "object" && typeof (parsed as { exp?: unknown }).exp === "number" && (parsed as { exp: number }).exp > now) {
+        claims = parsed as Record<string, unknown>;
+      }
+    } catch {
+      claims = undefined;
+    }
+  }
+  if (!claims || typeof claims["app"] !== "string" || !claims["app"] || typeof claims["version"] !== "string" || !claims["version"]) return undefined;
+  const actor = claims["actor"];
+  if (actor !== undefined && (typeof actor !== "string" || !actor)) return undefined;
+  const peer = claims["peer"];
+  if (peer !== undefined && (typeof peer !== "string" || !peer)) return undefined;
+  return {
+    ...(typeof actor === "string" ? { actor } : {}),
+    app: claims["app"],
+    version: claims["version"],
+    ...(typeof peer === "string" ? { peer } : {}),
+    exp: claims["exp"] as number,
+  };
+}
+
+/** What a channel name is derived under when strut has no secret (dev
+ *  mode, the gate open: anyone may read every channel anyway). */
+const DEV_CHANNEL_KEY = "strut-dev-channel-key";
+
+/** A channel name only an app's own code can work out (`channel/derive`,
+ *  plans/app-channels.md §6): `HMAC(app key, scope)`, the app key being
+ *  `HMAC(secret, "channel:" + app)` under the file token's secret — 128
+ *  bits as hex, a name the channel format takes. Nothing is stored: the same
+ *  app and scope always give the same name, and rotating the secret moves
+ *  every derived room. */
+export function derivedChannelName(app: string, scope: string): string {
+  const appKey = createHmac("sha256", tokenSecret() ?? DEV_CHANNEL_KEY).update(`channel:${app}`).digest();
+  return createHmac("sha256", appKey).update(scope).digest("hex").slice(0, 32);
+}
+
+/** The ticket an upgrade of the channel socket carries as `?ticket=`, verified. */
+export function channelTicketOf(c: Context): ChannelTicket | undefined {
+  if (c.req.method !== "GET" || c.req.path !== CHANNEL_SOCKET_PATH) return undefined;
+  const t = c.req.query("ticket")?.trim();
+  return t ? verifyChannelTicket(t) : undefined;
 }
 
 /**

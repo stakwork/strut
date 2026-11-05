@@ -2,6 +2,7 @@ import type { SttService } from "./audio/stt.js";
 import type { SessionsCapability } from "./session-store.js";
 import { jobsCapability, type JobsCapability } from "./jobs.js";
 import type { PeersCapability } from "./peers.js";
+import type { Channels } from "./channels.js";
 import type { PackagesCapability } from "./packages/indexes.js";
 // Type-only: the graph backend stays a lazy, opt-in dependency.
 import type { GraphBackend } from "./graph/backend.js";
@@ -384,6 +385,10 @@ export interface StrutCapabilities {
    *  bare in-code bag may not carry one (`strut/run-workflow` then fails
    *  naming it). */
   peers?: PeersCapability;
+  /** App CHANNELS (src/channels.ts; plans/app-channels.md): live messages
+   *  between the people on an app. What the `channel/*` steps reach, for code
+   *  an app runs (`ctx.app`). Set by the standard server. */
+  channels?: Channels;
   /** The package STORE (src/packages/indexes.ts): the reads — `search`
    *  over the indexes this strut follows and the peers' installed packages,
    *  `get` a package's page, `concepts` / `concept` the Concept tree — what

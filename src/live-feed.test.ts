@@ -87,4 +87,36 @@ describe("live feed (plans/live-feeds.md)", () => {
     ctl.abort();
     assert.deepEqual((await b).items, []);
   });
+
+  it("evictable things go first when the feed is full, the oldest of them; past them the oldest of all", async () => {
+    const f = new LiveFeed<Thing>({ max: 3, keyOf: (t) => t.id, evictable: (t) => t.kind === "event" });
+    f.push({ id: "s1", v: 1 });
+    f.push({ id: "e1", v: 1, kind: "event" });
+    f.push({ id: "s2", v: 1 });
+    f.push({ id: "e2", v: 1, kind: "event" }); // drops e1 (seq 2), not the older s1
+    assert.deepEqual((await f.read()).items.map((t) => t.id), ["s1", "s2", "e2"]);
+    assert.equal((await f.read({ since: `${FEED_EPOCH}.1` })).reset, true, "a cursor before the dropped event missed it");
+    f.push({ id: "s3", v: 1 }); // drops e2: still an event to drop
+    f.push({ id: "s4", v: 1 }); // nothing evictable left: the oldest of all, s1
+    assert.deepEqual((await f.read()).items.map((t) => t.id), ["s2", "s3", "s4"]);
+  });
+
+  it("remove takes things out without a change: no reset, no wake, the cursor where it was", async () => {
+    const f = feed();
+    f.push({ id: "a", v: 1 });
+    f.push({ id: "b", v: 1 });
+    const before = f.cursor();
+    assert.equal(f.remove((t) => t.id === "a"), 1);
+    assert.equal(f.cursor(), before);
+    assert.deepEqual(await f.read(), { cursor: before, items: [{ id: "b", v: 1 }] });
+    assert.deepEqual(await f.read({ since: `${FEED_EPOCH}.0` }), { cursor: before, items: [{ id: "b", v: 1 }] });
+  });
+
+  it("readNow answers what read would at once, in the same tick", () => {
+    const f = feed();
+    f.push({ id: "a", v: 1 });
+    assert.deepEqual(f.readNow(), { cursor: `${FEED_EPOCH}.1`, items: [{ id: "a", v: 1 }] });
+    assert.deepEqual(f.readNow({ since: f.cursor() }).items, []);
+    assert.equal(f.readNow({ since: "junk" }).reset, true);
+  });
 });

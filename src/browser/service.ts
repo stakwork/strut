@@ -63,6 +63,7 @@
  * that never opens a browser never loads it (the lib step convention).
  */
 import type { Browser, BrowserContext, BrowserContextOptions, Page, Locator, Route } from "playwright-core";
+import type { ChannelConnection, ChannelTransport } from "../channels.js";
 import type { ArtifactsCapability } from "../capabilities.js";
 import { settle as settlePage, sleep } from "./settle.js";
 import { saveShot, type Shot, type ShotSink } from "./shot.js";
@@ -182,6 +183,58 @@ export const STRUT_ORIGIN = "https://strut.invalid";
  *  (createStrut: `app.fetch` on a request marked in-process). */
 export type StrutFetch = (req: Request, actor: string | undefined) => Promise<Response>;
 
+/** An app's channel socket answered in this process (plans/app-channels.md
+ *  item 7): the page's `wss://strut.invalid/channels?ticket=…` URL, admitted
+ *  as strut admits an upgrade, then handed to its channels — or why not. */
+export type StrutChannelSocket = (url: string, actor: string | undefined, transport: ChannelTransport) => Promise<ChannelConnection | { error: string }>;
+
+/** The page's channel socket, as `lookAtApp` sees it: strut's UI at
+ *  `STRUT_ORIGIN` opens it on the same host. */
+export const STRUT_CHANNEL_SOCKET = /^wss:\/\/strut\.invalid\/channels(?:\?|$)/;
+
+/** What `answerChannelSocket` needs of Playwright's `WebSocketRoute`. */
+export interface ChannelSocketRoute {
+  url(): string;
+  send(message: string): void;
+  close(options?: { code?: number; reason?: string }): Promise<void>;
+  onMessage(handler: (message: string | Buffer) => unknown): void;
+  onClose(handler: (code: number | undefined, reason: string | undefined) => unknown): void;
+}
+
+/** Answer the page's channel socket in this process: no server behind it,
+ *  every frame to strut's channels and back. Frames the page sends before
+ *  the channels have taken the socket wait for it. */
+export async function answerChannelSocket(ws: ChannelSocketRoute, open: StrutChannelSocket, actor: string | undefined): Promise<void> {
+  let conn: ChannelConnection | undefined;
+  let closed: number | undefined | null = null;
+  const early: unknown[] = [];
+  const parse = (m: string | Buffer): unknown => {
+    try {
+      return JSON.parse(String(m));
+    } catch {
+      return undefined;
+    }
+  };
+  ws.onMessage((m) => {
+    const frame = parse(m);
+    if (conn) conn.receive(frame);
+    else early.push(frame);
+  });
+  ws.onClose((code) => {
+    closed = code;
+    conn?.close(code === 1000 || code === 1001);
+  });
+  const opened = await open(ws.url(), actor, { send: (text) => ws.send(text), terminate: () => void ws.close({ code: 1011 }).catch(() => undefined) });
+  if ("error" in opened) {
+    ws.send(JSON.stringify({ op: "error", error: opened.error }));
+    await ws.close({ code: 1011 }).catch(() => undefined);
+    return;
+  }
+  conn = opened;
+  for (const frame of early.splice(0)) conn.receive(frame);
+  if (closed !== null) conn.close(closed === 1000 || closed === 1001);
+}
+
 /** What `lookAtApp` saw: the shot of the app in its host, the page's
  *  text, and what went wrong on the way. */
 export type AppLooked = Shot & {
@@ -295,6 +348,8 @@ export class BrowserService {
   private checkSeq = 0;
   /** Strut's own app, for `lookAtApp` (`serveStrut`). */
   private strut?: StrutFetch;
+  /** Strut's channel socket, answered in process for `lookAtApp`. */
+  private channelSocket?: StrutChannelSocket;
 
   constructor(opts: BrowserServiceOptions = {}) {
     if (opts.wsUrl && opts.cdpUrl) throw new Error("browser: set BROWSER_WS_URL (a Playwright server) or BROWSER_CDP_URL (a real Chrome), not both");
@@ -334,9 +389,11 @@ export class BrowserService {
   }
 
   /** Hand the service strut's own app, which answers the pages `lookAtApp`
-   *  opens. createStrut calls it when it serves a UI. */
-  serveStrut(fetch: StrutFetch): void {
+   *  opens — and its channel socket, which `page.route` cannot answer.
+   *  createStrut calls it when it serves a UI. */
+  serveStrut(fetch: StrutFetch, channelSocket?: StrutChannelSocket): void {
     this.strut = fetch;
+    if (channelSocket) this.channelSocket = channelSocket;
   }
 
   /** The run's page — context + page created on first use. `viewport` and
@@ -1082,6 +1139,11 @@ export class BrowserService {
     return this.inOwnSession(runId, async (key) => {
       const page = await this.page(key, { viewport: input.viewport });
       await page.route(`${STRUT_ORIGIN}/**`, (route) => answerFromStrut(route, strut, input.actor));
+      // The app's channel socket: `page.route` sees no WebSocket, and the
+      // origin resolves nowhere. Answered here, so a multiplayer app looks
+      // connected (plans/app-channels.md item 7).
+      const channelSocket = this.channelSocket;
+      if (channelSocket) await page.routeWebSocket(STRUT_CHANNEL_SOCKET, (ws) => answerChannelSocket(ws, channelSocket, input.actor));
       const url = `${STRUT_ORIGIN}/?app=${encodeURIComponent(`${input.name}@${input.version}`)}&solo=1`;
       const { status } = await this.goto(key, { url, timeoutMs: input.timeoutMs });
       if (status >= 400) {

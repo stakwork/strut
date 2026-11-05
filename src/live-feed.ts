@@ -57,6 +57,10 @@ export interface LiveFeedOptions<T> {
   max: number;
   /** What a thing is: a newer item with the same key replaces the older. */
   keyOf: (item: T) => string;
+  /** Which things go first when the feed is full: the oldest of these, and
+   *  only past them the oldest of all. A channel keeps its senders' states
+   *  through a burst of events (src/channels.ts). Default: any. */
+  evictable?: (item: T) => boolean;
   /** Tests shorten it. */
   gatherMs?: number;
 }
@@ -84,7 +88,7 @@ export class LiveFeed<T> {
     this.items.delete(key);
     this.items.set(key, { seq: ++this.seq, item });
     while (this.items.size > this.opts.max) {
-      const [oldest, kept] = this.items.entries().next().value!;
+      const [oldest, kept] = this.evictee();
       this.items.delete(oldest);
       this.dropped = Math.max(this.dropped, kept.seq);
     }
@@ -92,9 +96,38 @@ export class LiveFeed<T> {
     for (const w of [...this.waiters]) w.wake(item);
   }
 
+  /** Take things out without a change: a reader with a cursor past them
+   *  never sees them, and nothing is `reset`. A channel drops a leaver's
+   *  states this way; its `left` frame says so. */
+  remove(match: (item: T) => boolean): number {
+    let n = 0;
+    for (const [key, { item }] of this.items) {
+      if (match(item)) {
+        this.items.delete(key);
+        n++;
+      }
+    }
+    return n;
+  }
+
+  /** The oldest evictable thing, else the oldest. */
+  private evictee(): [string, { seq: number; item: T }] {
+    const evictable = this.opts.evictable;
+    if (evictable) for (const entry of this.items) if (evictable(entry[1].item)) return entry;
+    return this.items.entries().next().value!;
+  }
+
   /** The feed's position: what `since: "now"` reads from. */
   cursor(): string {
     return `${FEED_EPOCH}.${this.seq}`;
+  }
+
+  /** What `read` answers at once, without waiting, in the same tick: a
+   *  reader that must see nothing pushed between its snapshot and its next
+   *  step (a channel's join) reads this way. */
+  readNow(o: Omit<FeedReadOptions<T>, "wait" | "signal"> = {}): FeedRead<T> {
+    const { from, reset } = this.from(o.since);
+    return this.collect(from, reset, o);
   }
 
   async read(o: FeedReadOptions<T> = {}): Promise<FeedRead<T>> {

@@ -113,7 +113,7 @@ const REFUSED: Array<[RegExp, string]> = [
 const WARNED: Array<[RegExp, string]> = [
   [/(?<![.\w$])fetch\s*\(/, "calls the global fetch — the page's CSP has connect-src 'none', so it fails at runtime; call a granted step with useStep, or launch a workflow with useLaunch"],
   [/\bXMLHttpRequest\b/, "uses XMLHttpRequest — the page can connect nowhere (connect-src 'none'); call a granted step with useStep, or launch a workflow with useLaunch"],
-  [/\bnew\s+WebSocket\s*\(/, "opens a WebSocket — the page can connect nowhere (connect-src 'none'); read a run live with useRun({ live })"],
+  [/\bnew\s+WebSocket\s*\(/, "opens a WebSocket — the page can connect nowhere (connect-src 'none'); read a run live with useRun({ live }), or talk to the app's other viewers with useChannel"],
 ];
 
 /** The source checks over one file's text: refusals and warnings, each

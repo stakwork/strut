@@ -34,7 +34,7 @@ import type { StepSources } from "./steps/registry.js";
 import { runWorkflow } from "./runner.js";
 import { RunController } from "./run-control.js";
 import { buildJournal, invalidateFrom, readRunStart } from "./journal.js";
-import { appIdentity, publicAppIdentity, publicAppOfIdentity, carriesApiKey, carriesPeerKey, carriesFileToken, carriesBadFileToken, catalogToken, catalogTokenOf, CATALOG_TOKEN_DAYS, publicPackageRead, fileToken, warnIfUnconfigured, actorFromHeader, inProcessOf, inProcessRequest, scopeFromKey, isPeerScope, personOf, personToken, PERSON_TOKEN_DAYS, unauthorized, issueSession, sessionCookie, sessionOf, isSecureRequest, type Scope } from "./auth.js";
+import { appIdentity, publicAppIdentity, publicAppOfIdentity, carriesApiKey, carriesPeerKey, carriesFileToken, carriesBadFileToken, catalogToken, catalogTokenOf, CATALOG_TOKEN_DAYS, publicPackageRead, fileToken, warnIfUnconfigured, channelTicket, channelTicketOf, actorFromHeader, inProcessOf, inProcessRequest, scopeFromKey, isPeerScope, personOf, personToken, PERSON_TOKEN_DAYS, unauthorized, issueSession, sessionCookie, sessionOf, isSecureRequest, type Scope } from "./auth.js";
 import { standardServices, fileArtifactsCapability } from "./capabilities.js";
 import type { ArtifactsCapability, SecretsCapability } from "./capabilities.js";
 import type { SecretStore } from "./secret-store.js";
@@ -121,7 +121,9 @@ import { audioRoutes, speakRoutes } from "./audio/routes.js";
 import { readLexicon } from "./steps/lib/dictation/_shared.js";
 import { createAudioUpgradeHandler } from "./audio/ws.js";
 import { roomsFor } from "./rooms.js";
-import { WebSocketServer } from "ws";
+import { createChannels, type ChannelApp, type Channels, type ChannelTransport } from "./channels.js";
+import { pipeChannelToPeer } from "./channels-peer.js";
+import { WebSocketServer, type WebSocket as WsSocket } from "ws";
 import { STATUS_CODES, type IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { bootEnv } from "./env.js";
@@ -639,14 +641,20 @@ export interface Strut<TServices = unknown> {
   tts: TtsService | null;
 
   /** Strut's WebSocket paths for a Node server's `upgrade` event: `/rooms`
-   *  (plans/chained-orchestrators.md §3, src/rooms.ts). The upgrade request
-   *  runs through `app`'s own gate and hooks — `resolveScope` and
-   *  `resolveActor` see `c.env.incoming`, the Node request, as on HTTP — and
-   *  the socket joins the actor's room, or is refused with the gate's status.
-   *  False (nothing touched) for a path that is not strut's. `listen()`
-   *  hooks it; a host that owns the server routes its upgrades here, with
-   *  its mount prefix as `basePath` (mcp: `/lab`). */
+   *  (plans/chained-orchestrators.md §3, src/rooms.ts) and `/channels`
+   *  (plans/app-channels.md §2, src/channels.ts). The upgrade request runs
+   *  through `app`'s own gate and hooks — `resolveScope` and `resolveActor`
+   *  see `c.env.incoming`, the Node request, as on HTTP — and the socket
+   *  joins the actor's room or the app's channels, or is refused with the
+   *  gate's status. False (nothing touched) for a path that is not strut's.
+   *  `listen()` hooks it; a host that owns the server routes its upgrades
+   *  here, with its mount prefix as `basePath` (mcp: `/lab`). */
   upgrade: (req: IncomingMessage, socket: Duplex, head: Buffer, opts?: { basePath?: string }) => boolean;
+
+  /** App channels (plans/app-channels.md): live messages between the
+   *  people on an app. The `/channels` socket hands every host's socket to
+   *  it; code an app runs reaches it through `send` / `read`. */
+  channels: Channels;
 
   /** Automations (plans/automations.md): the policy layer behind the
    *  `/automations` routes and the chat tools — list / create / update /
@@ -1471,8 +1479,8 @@ export async function createStrut<TServices = unknown>(
   }
 
   const app = new Hono();
-  // `?key=` (below) never reaches the log.
-  app.use(logger((line, ...rest) => console.log(line.replace(/([?&]key=)[^&\s]*/g, "$1…"), ...rest)));
+  // `?key=` (below) and a channel socket's `?ticket=` never reach the log.
+  app.use(logger((line, ...rest) => console.log(line.replace(/([?&](?:key|ticket)=)[^&\s]*/g, "$1…"), ...rest)));
   // gzip/br for a client that accepts it. A chat transcript is megabytes of
   // JSON, and nothing in front of strut compresses: over a 400 KB/s link
   // 2.8 MB took 7 s raw (swarm38, 2026-09-30). SSE is skipped by content
@@ -1533,6 +1541,11 @@ export async function createStrut<TServices = unknown>(
   // and a plain peer's actor is a header any strut sets. On a home box
   // (`homeSync: "box"`), home sync's `/home/pull` and `/home/push` too.
   // And `/voice/calls`, a call set up as that person (src/voice.ts).
+  //
+  // A sixth: a CHANNEL TICKET (`channelTicketOf`, auth.ts) opens the one
+  // read it was minted for, `GET /channels` — a browser host's upgrade of
+  // an app's channel socket (plans/app-channels.md §2), which carries no
+  // other credential: Hive's page has none.
   const UI_FILE = /^\/($|index\.html$|favicon\.ico$|assets\/)/;
   const PROPOSAL_DECIDE = /^\/proposals\/[^/]+\/decide$/;
   const PEER_POST = /^\/workflows\/[^/]+\/(?:[^/]+\/run|run|runs\/[^/]+\/(?:cancel|pause|resume))$/;
@@ -1543,7 +1556,7 @@ export async function createStrut<TServices = unknown>(
     // from the surface alone, so open to anyone — reads and a browser's
     // preflight for them.
     const open = read
-      ? path === "/health" || (serveUi && UI_FILE.test(path)) || carriesFileToken(c) || !!catalogTokenOf(c) || publicPackageRead(c) || (!!indexConfig && INDEX_READ.test(path)) || PUBLIC_PATH.test(path)
+      ? path === "/health" || (serveUi && UI_FILE.test(path)) || carriesFileToken(c) || !!catalogTokenOf(c) || publicPackageRead(c) || (!!indexConfig && INDEX_READ.test(path)) || PUBLIC_PATH.test(path) || !!channelTicketOf(c)
       : (path === "/auth/session" && (c.req.method === "POST" || c.req.method === "DELETE")) || (!!indexConfig && path === INDEX_MCP && c.req.method === "POST") || (c.req.method === "OPTIONS" && PUBLIC_PATH.test(path)) || (c.req.method === "POST" && path === "/public/mcp");
     if (open) return next();
     if (!carriesApiKey(c) && !carriesPeerKey(c) && !personOf(c)) return unauthorized(c);
@@ -3110,6 +3123,37 @@ export async function createStrut<TServices = unknown>(
     return c.json({ ok: true, name: at.name, workflow });
   });
 
+  // A CHANNEL TICKET (plans/app-channels.md §2; auth.ts): what a browser
+  // host opens the app's channel socket with, `GET /channels?ticket=…`. The
+  // host names the app and version it is showing; the viewer is the
+  // request's actor (Hive: the member, as `x-strut-actor` with the swarm
+  // key). A `full` caller only: the gate keeps every peer off this POST.
+  /** The app a ticket or a socket may name: a version (or a preview) this strut holds. */
+  const channelAppOf = async (name: string, version: string): Promise<ChannelApp | undefined> => {
+    if (!/^v\d+$/.test(version) && !isPreviewLabel(version)) return undefined;
+    return (await apps.versionDir(name, version)) ? { name, version } : undefined;
+  };
+  app.post("/apps/:name/channel-ticket", async (c) => {
+    const at = appRoute(c);
+    if (at instanceof Response) return at;
+    const body = (await c.req.json().catch(() => ({}))) as { version?: unknown; peer?: unknown };
+    const version = typeof body.version === "string" ? body.version : "";
+    if (!version) return c.json({ error: "version is required: the version the host is showing (v1, v2, … or a preview's label)" }, 400);
+    // A PEER's app (plans/app-channels.md §4): its channels are the peer's,
+    // and this strut relays the socket there — the peer says whether it
+    // holds the version when the relay connects.
+    const peer = typeof body.peer === "string" && body.peer ? body.peer : undefined;
+    if (body.peer !== undefined && !peer) return c.json({ error: "peer: a peer id" }, 400);
+    if (peer) {
+      if (!(await peerRecords.get(peer))) return c.json({ error: `no peer "${peer}" on file` }, 404);
+      if (!/^v\d+$/.test(version) && !isPreviewLabel(version)) return c.json({ error: `"${version}" is not a version label` }, 404);
+    } else if (!(await channelAppOf(at.name, version))) {
+      return c.json({ error: `App "${at.name}" has no version ${version}` }, 404);
+    }
+    const actor = await resolveActor(c);
+    return c.json(channelTicket({ ...(actor ? { actor } : {}), app: at.name, version, ...(peer ? { peer } : {}) }));
+  });
+
   app.delete("/apps/:name", async (c) => {
     const at = appRoute(c);
     if (at instanceof Response) return at;
@@ -4401,34 +4445,149 @@ export async function createStrut<TServices = unknown>(
     return c.body(null, 204);
   });
 
+  // ── Channels (src/channels.ts; plans/app-channels.md) ───────────────────
+  //
+  // A HOST holds one socket per open app page and relays it to the page
+  // over the MCP Apps bridge; the page itself connects nowhere. `GET
+  // /channels` upgrades into the app's channels, through this app like a
+  // room: a browser host with a ticket (`POST /apps/:name/channel-ticket`),
+  // a server (the peer relay) with its own credential and `?app=<name>@<vN>`.
+  // A host coming back after a drop names its last client id as
+  // `?client=`, so its channels never saw it leave.
+
+  const channels = createChannels();
+  // What the channel/* steps reach: code an app runs sends and reads here.
+  if (!(services as Record<string, unknown>)["channels"]) (services as Record<string, unknown>)["channels"] = channels;
+  // A send batch is at most a burst of messages at their cap (~0.5 MB).
+  const channelsWss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
+  const CHANNEL_SLOT = Symbol("strut.channel");
+  type ChannelSlot = { app?: ChannelApp; actor?: string; peer?: Peer };
+
+  /** The app and viewer an upgrade of the channel socket is admitted for. */
+  const channelViewerFor = async (c: Context): Promise<{ app: ChannelApp; actor?: string; peer?: Peer } | { status: 401 | 403 | 404 | 400; error: string }> => {
+    if (c.req.query("ticket") !== undefined) {
+      const ticket = channelTicketOf(c);
+      if (!ticket) return { status: 401, error: "unauthorized: a channel ticket strut cannot vouch for, or one that has expired — mint another (POST /apps/:name/channel-ticket)" };
+      if (ticket.peer) {
+        const peer = await peerRecords.get(ticket.peer);
+        if (!peer) return { status: 404, error: `no peer "${ticket.peer}" on file` };
+        return { app: { name: ticket.app, version: ticket.version }, peer, ...(ticket.actor ? { actor: ticket.actor } : {}) };
+      }
+      const app = await channelAppOf(ticket.app, ticket.version);
+      if (!app) return { status: 404, error: `App "${ticket.app}" has no version ${ticket.version}` };
+      return { app, ...(ticket.actor ? { actor: ticket.actor } : {}) };
+    }
+    if ((await scopeOf(c)) === "peer") {
+      return { status: 403, error: "forbidden: a strut server's credential names its actor by header; a channel's members are people — use a person's credential, or a ticket" };
+    }
+    const named = (c.req.query("app") ?? "").match(/^(.+)@(v\d+|preview-[0-9a-f]{12})$/);
+    if (!named) return { status: 400, error: "app=<name>@<version> is required with a credential (a browser host uses ?ticket=)" };
+    const app = await channelAppOf(named[1]!, named[2]!);
+    if (!app) return { status: 404, error: `App "${named[1]}" has no version ${named[2]}` };
+    const actor = await resolveActor(c);
+    return { app, ...(actor ? { actor } : {}) };
+  };
+
+  app.get("/channels", async (c) => {
+    const slot = (c.env as Record<symbol, ChannelSlot | undefined> | undefined)?.[CHANNEL_SLOT];
+    if (!slot) return c.json({ error: "upgrade required: GET /channels is a WebSocket" }, 426);
+    const viewer = await channelViewerFor(c);
+    if ("error" in viewer) return c.json({ error: viewer.error }, viewer.status);
+    slot.app = viewer.app;
+    if (viewer.actor) slot.actor = viewer.actor;
+    if (viewer.peer) slot.peer = viewer.peer;
+    return c.body(null, 204);
+  });
+
+  /** A channel socket answered in this process — app/look's page
+   *  (src/browser/service.ts), whose socket no server sees: admitted by the
+   *  same route as an upgrade, as the run's person, then handed to the
+   *  channels. A peer's app is not relayed there. */
+  const channelSocketInProcess = async (url: string, actor: string | undefined, transport: ChannelTransport) => {
+    const search = new URL(url).search;
+    const slot: ChannelSlot = {};
+    const res = await app.fetch(inProcessRequest(new Request(`http://localhost/channels${search}`), actor), { [CHANNEL_SLOT]: slot });
+    if (res.status !== 204 || !slot.app) return { error: `the channel socket was refused: ${res.status} ${await res.text()}` };
+    if (slot.peer) return { error: "a peer's app's channels are not relayed in app/look" };
+    const rejoin = new URL(url).searchParams.get("client");
+    return channels.connect(slot.app, { ...(slot.actor ? { actor: slot.actor } : {}), transport, ...(rejoin ? { rejoin } : {}) });
+  };
+
+  /** A socket the upgrade admitted, handed to the channels. */
+  const attachChannelSocket = (ws: WsSocket, slot: Required<Pick<ChannelSlot, "app">> & ChannelSlot, rejoin: string | null) => {
+    const conn = channels.connect(slot.app, {
+      ...(slot.actor ? { actor: slot.actor } : {}),
+      transport: { send: (text) => ws.send(text), ping: () => ws.ping(), terminate: () => ws.terminate() },
+      ...(rejoin ? { rejoin } : {}),
+    });
+    ws.on("message", (data) => {
+      let frame: unknown;
+      try {
+        frame = JSON.parse(String(data));
+      } catch {
+        frame = undefined;
+      }
+      conn.receive(frame);
+    });
+    ws.on("pong", () => conn.pong());
+    // 1000 / 1001: the host closed it (the frame went away). Anything else may come back.
+    ws.on("close", (code) => conn.close(code === 1000 || code === 1001));
+    ws.on("error", () => conn.close(false));
+  };
+
+  /** A refusal written on a socket the upgrade did not take. */
+  const refuseUpgrade = (socket: Duplex, status: number, body: string) => {
+    if (socket.destroyed) return;
+    socket.write(
+      `HTTP/1.1 ${status} ${STATUS_CODES[status] ?? ""}\r\nContent-Type: application/json\r\n` +
+        `Content-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`,
+    );
+    socket.destroy();
+  };
+
+  /** An upgrade run through this app — the one gate, the hooks, the Node
+   *  request as `env.incoming` — to the route at `path`, which answers 204
+   *  having filled its slot in `env`. False once it has refused. */
+  const admitUpgrade = async (req: IncomingMessage, socket: Duplex, path: string, search: string, env: Record<symbol, unknown>): Promise<boolean> => {
+    const headers = new Headers();
+    for (const [name, value] of Object.entries(req.headers)) {
+      for (const v of Array.isArray(value) ? value : value === undefined ? [] : [value]) headers.append(name, v);
+    }
+    const res = await app.fetch(new Request(`http://localhost${path}${search}`, { headers }), { incoming: req, ...env });
+    if (res.status !== 204) {
+      refuseUpgrade(socket, res.status, await res.text());
+      return false;
+    }
+    return !socket.destroyed;
+  };
+
   function upgrade(req: IncomingMessage, socket: Duplex, head: Buffer, opts: { basePath?: string } = {}): boolean {
     const url = new URL(req.url ?? "/", "http://localhost");
-    if (url.pathname !== `${opts.basePath ?? ""}/rooms`) return false;
-    const refuse = (status: number, body: string) => {
-      if (socket.destroyed) return;
-      socket.write(
-        `HTTP/1.1 ${status} ${STATUS_CODES[status] ?? ""}\r\nContent-Type: application/json\r\n` +
-          `Content-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`,
-      );
-      socket.destroy();
-    };
+    const base = opts.basePath ?? "";
+    const which = url.pathname === `${base}/rooms` ? "rooms" : url.pathname === `${base}/channels` ? "channels" : undefined;
+    if (!which) return false;
+    const failed = () => refuseUpgrade(socket, 500, JSON.stringify({ error: "the upgrade failed" }));
     void (async () => {
-      const headers = new Headers();
-      for (const [name, value] of Object.entries(req.headers)) {
-        for (const v of Array.isArray(value) ? value : value === undefined ? [] : [value]) headers.append(name, v);
+      if (which === "rooms") {
+        const slot: RoomSlot = {};
+        if (!(await admitUpgrade(req, socket, "/rooms", url.search, { [ROOM_SLOT]: slot }))) return;
+        const actor = slot.actor;
+        if (!actor) return failed();
+        roomsWss.handleUpgrade(req, socket, head, (ws) => rooms.join(actor, ws));
+        return;
       }
-      const slot: RoomSlot = {};
-      const res = await app.fetch(new Request(`http://localhost/rooms${url.search}`, { headers }), {
-        incoming: req,
-        [ROOM_SLOT]: slot,
-      });
-      const actor = slot.actor;
-      if (res.status !== 204 || !actor) return refuse(res.status === 204 ? 500 : res.status, await res.text());
-      if (socket.destroyed) return;
-      roomsWss.handleUpgrade(req, socket, head, (ws) => rooms.join(actor, ws));
+      const slot: ChannelSlot = {};
+      if (!(await admitUpgrade(req, socket, "/channels", url.search, { [CHANNEL_SLOT]: slot }))) return;
+      const admitted = slot.app;
+      if (!admitted) return failed();
+      const client = url.searchParams.get("client") ?? undefined;
+      const peer = slot.peer;
+      channelsWss.handleUpgrade(req, socket, head, (ws) =>
+        peer ? pipeChannelToPeer(ws, peer, admitted, client ? { client } : {}) : attachChannelSocket(ws, { ...slot, app: admitted }, client ?? null),
+      );
     })().catch((err: unknown) => {
-      console.error("[rooms] upgrade failed:", err);
-      refuse(500, JSON.stringify({ error: "the upgrade failed" }));
+      console.error(`[${which}] upgrade failed:`, err);
+      failed();
     });
     return true;
   }
@@ -7005,7 +7164,7 @@ export async function createStrut<TServices = unknown>(
     // app, every request it makes answered here, in process, as the run's
     // actor — the browser needs no address for strut and holds no key.
     const browser = (services as Record<string, unknown>)["browser"];
-    if (browser instanceof BrowserService) browser.serveStrut(async (req, actor) => app.fetch(inProcessRequest(req, actor)));
+    if (browser instanceof BrowserService) browser.serveStrut(async (req, actor) => app.fetch(inProcessRequest(req, actor)), channelSocketInProcess);
   }
 
   // ── Programmatic run helper ──────────────────────────────────────────────
@@ -7125,6 +7284,9 @@ export async function createStrut<TServices = unknown>(
     await appMonitor.close();
     // A room's sockets close with the server; their rooms queue what follows.
     for (const ws of roomsWss.clients) ws.terminate();
+    // A channel's sockets too; the channels are memory, and go with the process.
+    for (const ws of channelsWss.clients) ws.terminate();
+    channels.close();
     const s = httpServer;
     if (!s) return;
     httpServer = null;
@@ -7200,6 +7362,7 @@ export async function createStrut<TServices = unknown>(
     stt,
     tts,
     upgrade,
+    channels,
     automations,
     packages,
     subscriptions,

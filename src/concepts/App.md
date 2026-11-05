@@ -1,5 +1,5 @@
 ---
-description: An APP — a front-end project over this workspace's workflows, built against a fixed kit and rendered by any MCP Apps host; how to lay one out, what it may call, renaming one (its title), pinning one as a tab of the workspace, and the rules that keep it cheap and safe.
+description: An APP — a front-end project over this workspace's workflows, built against a fixed kit and rendered by any MCP Apps host; how to lay one out, what it may call, live channels between its viewers (a multiplayer game), renaming one (its title), pinning one as a tab of the workspace, and the rules that keep it cheap and safe.
 parent: Workflow Builder
 ---
 An APP is interactive software the builder writes on top of this
@@ -368,6 +368,52 @@ and never read them yourself.
 - Grant `job/upload`, `job/delete-upload` and `job/get` (its `files` is
   what the job holds) in `grants.steps`.
 
+## Live between the people on an app: channels
+
+What is happening NOW between the people with the app open — a move, a
+cursor, who is here, a lobby filling up, a chat line — goes over a CHANNEL,
+never the graph and never a poll. The page's host holds the socket; the page
+uses one hook, with no grant:
+
+```tsx
+import { useChannel, newChannel, appLink } from "@strut/kit";
+const lobby = useChannel("lobby");
+lobby.members                                  // who has it open, as the strut server sees their sockets
+lobby.send({ x, y }, { key: "cursor" });        // a STATE: replaces this page's last "cursor"
+lobby.send({ text: "gg" });                    // an EVENT
+lobby.states; lobby.events;                     // every sender's current states; the recent events
+useChannel(game, { onMessage: (m) => draw(m) }) // per message, no re-render: a game loop
+```
+
+Every message carries the strut server's stamp of who sent it
+(`from.actor`, `from.client` — `m.from.client === lobby.client` is this
+page's own), never what the page wrote. A channel is lossy and unrecorded:
+the last 256 messages, gone on a restart. What must last — a score, a
+result, the board at the end — goes through a workflow or the graph. A
+host that carries no channels (some MCP Apps hosts) gives
+`available: false`: say so on the page rather than failing quietly.
+
+- **A public room** is a fixed name (`lobby`). **A private game** is
+  `newChannel()` — unguessable — and `appLink(app, { channel })` is the
+  invite; read it back with `useToolInput()`.
+- **The rules run in code no player controls.** A page can lie about a
+  move; a REFEREE cannot: a custom step the app grants (`game/move`) that
+  checks the move and sends the result with `channel/send` (`key: "board"`)
+  is stamped as `game/move`, whoever called it, and no page can replace its
+  states. A workflow the app launches sends as the workflow — the place to
+  record the winner and announce it. An AI player is a workflow whose
+  agent has `channel/*` among its tools.
+- **Rooms the app authorizes itself.** Anyone who can open the app may join
+  a channel whose name they know. To decide who gets in, grant a
+  GATEKEEPER step: it checks its own rules (a roster in the graph, an
+  invite) as the viewer (`ctx.actor`) and returns `channel/derive { scope:
+  "<game>:<epoch>" }` — a name only the app's code can work out, stored
+  nowhere. Move the epoch to shut someone out. Pages drop messages whose
+  `from.actor` is not on the roster.
+- A page never calls `channel/send`, `channel/read` or `channel/derive`
+  itself — they are refused from a page; they are for the app's own steps
+  and workflows.
+
 ## Where data lives
 
 | Data | Where | Why |
@@ -377,6 +423,7 @@ and never read them yourself.
 | The app's own tables: line items, a big import, settings | The app's SQLite (`sqlite/*`) | A later release; until then keep state in runs or the graph |
 | Files a person uploads: photos, PDFs, a CSV to work from | A job of the app's (`useUpload`) | Every run under the job reads them; an agent's thread on it remembers them |
 | What one viewer's page remembers: a tab, a filter, a draft | `useAppState` | Kept by the strut server per app and viewer, on every host and device; 256 KB a viewer |
+| What is happening now between the people on it: moves, cursors, who is here | A channel (`useChannel`) | Live, stamped by the strut server, never kept |
 
 A page has no browser storage: it is framed with an opaque origin, so
 `localStorage` and `sessionStorage` last only the page's life (the kit
@@ -457,7 +504,7 @@ leaves the directory; `http(s):` imports; `dangerouslySetInnerHTML`,
 `eval`, `new Function`. A call to the global `fetch`, `XMLHttpRequest` or a
 `WebSocket` is a warning: the page's CSP is `connect-src 'none'`, so it
 fails at runtime — call a granted step with `useStep`, launch a workflow
-with `useLaunch`. The document's size over 6 MB is a warning.
+with `useLaunch`, talk to the app's other viewers with `useChannel`. The document's size over 6 MB is a warning.
 
 ## Four shapes
 

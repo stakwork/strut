@@ -2,7 +2,7 @@ import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { Hono } from "hono";
 import type { Context } from "hono";
-import { requireApiKey, fileToken, fileScopeOf, carriesFileToken, carriesBadFileToken, scopeFromKey, actorFromHeader, _resetAuthState, sessionToken, verifySessionToken, personToken, verifyPersonToken, issueSession, sessionCookie, sessionOf, sessionFromCookie, sessionTtlMs, apiKeyMatches, carriesApiKey } from "./auth.js";
+import { requireApiKey, fileToken, fileScopeOf, carriesFileToken, carriesBadFileToken, scopeFromKey, actorFromHeader, _resetAuthState, sessionToken, verifySessionToken, personToken, verifyPersonToken, channelTicket, verifyChannelTicket, issueSession, sessionCookie, sessionOf, sessionFromCookie, sessionTtlMs, apiKeyMatches, carriesApiKey } from "./auth.js";
 
 /**
  * Tests for the deployment-scoped shared-secret middleware.
@@ -500,5 +500,49 @@ describe("sessions (the login)", () => {
     assert.equal(await (await scope.request("/x", { headers: { cookie, authorization: "Bearer peer" } })).text(), "full");
     assert.equal(await (await scope.request("/x", { headers: { authorization: "Bearer peer" } })).text(), "peer");
     delete process.env["STRUT_PEER_KEY"];
+  });
+});
+
+describe("channel tickets (plans/app-channels.md §2)", () => {
+  const saved: Record<string, string | undefined> = {};
+  beforeEach(() => {
+    for (const k of ["STRUT_API_KEY", "STRUT_SECRET_KEY"]) {
+      saved[k] = process.env[k];
+      delete process.env[k];
+    }
+    process.env["STRUT_API_KEY"] = "deploy-key";
+  });
+  afterEach(() => {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
+  it("names the viewer, the app and its version for a minute; expiry, tampering, another kind and another secret refuse it", () => {
+    const { ticket, exp } = channelTicket({ actor: "alice", app: "chess", version: "v3" });
+    assert.match(ticket, /^strut-channel\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+    assert.ok(exp > Date.now() && exp <= Date.now() + 60_000);
+    assert.deepEqual(verifyChannelTicket(ticket), { actor: "alice", app: "chess", version: "v3", exp });
+    assert.deepEqual(verifyChannelTicket(channelTicket({ app: "chess", version: "v3" }).ticket)?.actor, undefined, "no actor");
+    assert.equal(verifyChannelTicket(ticket, exp), undefined, "expired");
+    const [, payload, sig] = ticket.split(".") as [string, string, string];
+    const forged = Buffer.from(JSON.stringify({ actor: "bob", app: "chess", version: "v3", exp })).toString("base64url");
+    assert.equal(verifyChannelTicket(`strut-channel.${forged}.${sig}`), undefined);
+    assert.equal(verifyChannelTicket(`strut-channel.${payload}.`), undefined, "unsigned, on a strut that signs");
+    // A person token's claims are no ticket: the kind is in the signature.
+    const person = personToken("alice")!.token.slice("strut-person.".length);
+    assert.equal(verifyChannelTicket(`strut-channel.${person}`), undefined);
+    process.env["STRUT_API_KEY"] = "rotated";
+    assert.equal(verifyChannelTicket(ticket), undefined);
+  });
+
+  it("with no secret to sign under (dev mode, the gate open) the claims ride alone and are taken at their word", () => {
+    delete process.env["STRUT_API_KEY"];
+    const { ticket, exp } = channelTicket({ actor: "alice", app: "chess", version: "v1" });
+    assert.match(ticket, /^strut-channel\.[A-Za-z0-9_-]+\.$/);
+    assert.deepEqual(verifyChannelTicket(ticket), { actor: "alice", app: "chess", version: "v1", exp });
+    assert.equal(verifyChannelTicket(ticket, exp), undefined, "still expires");
+    assert.equal(verifyChannelTicket("strut-channel.not-json."), undefined);
   });
 });
