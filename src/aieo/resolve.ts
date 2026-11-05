@@ -181,6 +181,10 @@ export function maxOutputTokensFor(
     return fromEnv > 0 ? Math.min(fromEnv, limit) : limit;
   }
   if (fromEnv > 0) return fromEnv;
+  // A provider aieo does not know (an OpenAI-compatible one behind a
+  // gateway): its limits are unknown, and such hosts refuse max_tokens past
+  // the model's own, so the cap of an unlisted Maple or Numes model.
+  if (provider && !PROVIDERS.includes(provider as Provider)) return 12_288;
   // Maple's backends refuse prompt + max_tokens past the window, so each
   // model has its own cap (MAPLE_MODELS); an unlisted one the smallest.
   if (provider === "maple") return (modelId && MAPLE_MODELS[modelId]?.maxOutput) || 12_288;
@@ -209,7 +213,9 @@ function thinkingBudget(providerOptions: unknown): number {
 export interface ResolveOptions {
   /** alias | id | "provider/id" | "openrouter/org/id". Omit for the provider's default. */
   model?: string;
-  /** Explicit provider; otherwise inferred from `model`. */
+  /** Explicit provider; otherwise inferred from `model`. With a `baseUrl`,
+   *  any provider the gateway holds as an OpenAI-compatible one, aieo's or
+   *  not (`acme` for `acme/llama-4`). */
   provider?: Provider | string;
   apiKey?: string;
   /**
@@ -219,13 +225,17 @@ export interface ResolveOptions {
    * NUMES_BASE_URL) when `baseUrl` is.
    */
   getSecret?: (envName: string) => Promise<string | undefined>;
+  /** A gateway's root (Bifrost), for every provider, Maple and Numes
+   *  included: see GetModelOptions.baseUrl. */
   baseUrl?: string;
   headers?: Record<string, string>;
   abortSignal?: AbortSignal;
   timeoutMs?: number;
 }
 
-export interface ResolvedModel extends ModelRef {
+export interface ResolvedModel extends Omit<ModelRef, "provider"> {
+  /** An aieo provider; through a gateway, possibly one aieo does not know. */
+  provider: Provider | (string & {});
   model: LanguageModel;
   apiKey: string;
   contextLimit: number;
@@ -239,18 +249,25 @@ export interface ResolvedModel extends ModelRef {
  * → process.env; none → an error that names the env var. A looked-up key's
  * KEY_HEADER_ENV settings (Anthropic's workspace) are looked up the same way
  * and sent as headers, and so is a BASE_URL_ENV endpoint (Maple's proxy,
- * MAPLE_BASE_URL; Numes, NUMES_BASE_URL) unless the caller passed `baseUrl`.
+ * MAPLE_BASE_URL; Numes, NUMES_BASE_URL) unless the caller passed a gateway
+ * (`baseUrl`), which every provider then rides.
  */
 export async function resolveModel(opts: ResolveOptions = {}): Promise<ResolvedModel> {
-  const ref = canonicalModelName(opts.model, opts.provider);
-  const envName = API_KEY_ENV[ref.provider];
+  const baseUrl = normalizeApiKey(opts.baseUrl);
+  const ref: ResolvedModelRef =
+    baseUrl && opts.provider && !PROVIDERS.includes(opts.provider as Provider)
+      ? compatibleRef(opts.model, opts.provider)
+      : canonicalModelName(opts.model, opts.provider);
+  const envName = API_KEY_ENV[ref.provider as Provider] as string | undefined;
   const lookup = async (name: string) =>
     normalizeApiKey(await opts.getSecret?.(name)) ?? normalizeApiKey(env[name]);
   const callerKey = normalizeApiKey(opts.apiKey);
-  const apiKey = callerKey ?? (await lookup(envName));
+  const apiKey = callerKey ?? (envName ? await lookup(envName) : undefined);
   if (!apiKey) {
     throw new Error(
-      `No API key for provider "${ref.provider}": set ${envName} (or pass apiKey / getSecret)`,
+      envName
+        ? `No API key for provider "${ref.provider}": set ${envName} (or pass apiKey / getSecret)`
+        : `No API key for provider "${ref.provider}": pass the gateway's key (apiKey)`,
     );
   }
   // The key's companion settings (KEY_HEADER_ENV) come from where the key
@@ -258,23 +275,22 @@ export async function resolveModel(opts: ResolveOptions = {}): Promise<ResolvedM
   let headers = opts.headers;
   if (!callerKey) {
     const found: Record<string, string | undefined> = {};
-    for (const name of Object.keys(KEY_HEADER_ENV[ref.provider] ?? {})) found[name] = await lookup(name);
+    for (const name of Object.keys(KEY_HEADER_ENV[ref.provider as Provider] ?? {})) found[name] = await lookup(name);
     const fromKey = keyHeaders(ref.provider, (name) => found[name]);
     if (fromKey) headers = { ...fromKey, ...opts.headers };
   }
   // A provider with an endpoint of its own (Maple's proxy, Numes' API): its
-  // URL where its key would be (getSecret → env), else the default. A
-  // caller's baseUrl wins.
-  const baseUrlEnv = BASE_URL_ENV[ref.provider];
-  const baseUrl =
-    normalizeApiKey(opts.baseUrl) ??
-    (baseUrlEnv ? (await lookup(baseUrlEnv)) ?? DEFAULT_BASE_URLS[ref.provider] : undefined);
+  // URL where its key would be (getSecret → env), else the default — unless
+  // the call goes through a gateway.
+  const endpointEnv = baseUrl ? undefined : BASE_URL_ENV[ref.provider as Provider];
+  const endpoint = endpointEnv ? ((await lookup(endpointEnv)) ?? DEFAULT_BASE_URLS[ref.provider as Provider]) : undefined;
   // The canonical name carries exactly one provider prefix, which getModel
   // strips — so an OpenRouter id like "openrouter/auto" survives intact.
   const model = getModel(ref.provider, {
     modelName: ref.name,
     apiKey,
     baseUrl,
+    endpoint,
     headers,
     abortSignal: opts.abortSignal,
     timeoutMs: opts.timeoutMs,
@@ -283,7 +299,24 @@ export async function resolveModel(opts: ResolveOptions = {}): Promise<ResolvedM
     ...ref,
     model,
     apiKey,
-    contextLimit: getContextLimit(ref.modelId, ref.provider),
+    contextLimit: getContextLimit(ref.modelId, ref.provider as Provider),
     maxOutputTokens: maxOutputTokensFor(ref.provider, ref.modelId),
   };
+}
+
+type ResolvedModelRef = Omit<ModelRef, "provider"> & { provider: Provider | (string & {}) };
+
+/** Bifrost's rule for a custom provider's name. */
+const PROVIDER_NAME = /^[a-z0-9]+([._-][a-z0-9]+)*$/;
+
+/**
+ * A provider aieo does not know, named by a caller that routes through a
+ * gateway: an OpenAI-compatible provider the gateway holds under that name
+ * (`acme`, with `acme/llama-4` or `llama-4`). A model name is required.
+ */
+function compatibleRef(model: string | undefined, provider: string): ResolvedModelRef {
+  if (!PROVIDER_NAME.test(provider)) throw new Error(`Unknown LLM provider: "${provider}"`);
+  const modelId = model?.startsWith(`${provider}/`) ? model.slice(provider.length + 1) : model;
+  if (!modelId) throw new Error(`A model name is required for provider "${provider}"`);
+  return { provider, modelId, name: `${provider}/${modelId}` };
 }
