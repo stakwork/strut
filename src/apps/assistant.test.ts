@@ -390,9 +390,10 @@ describe("strut/assistant — its steps, as its viewer", () => {
   it("a run launched elsewhere is the viewer's before its first event lands: run/get waits on it, never 'not found'", async () => {
     const alice = page(ASSISTANT_APP, "alice");
     // Hold the run's `run.start` until run/get has read the log to decide
-    // whether the run is hers — the window between the launch's 202 and
-    // the first event, which a loaded machine widens.
-    const { append, getRunEvents } = store;
+    // whether the run is hers (ownRun reads its head, `getRunStart`) — the
+    // window between the launch's 202 and the first event, which a loaded
+    // machine widens.
+    const { append, getRunStart } = store;
     let release!: () => void;
     const released = new Promise<void>((r) => (release = r));
     let runId = "";
@@ -400,10 +401,10 @@ describe("strut/assistant — its steps, as its viewer", () => {
       if (workflow === ORCHESTRATOR_WORKFLOW && event.type === "run.start") await released;
       return append.call(store, workflow, id, event);
     };
-    store.getRunEvents = async (workflow, id) => {
-      const events = await getRunEvents.call(store, workflow, id);
+    store.getRunStart = async (workflow, id) => {
+      const start = await getRunStart.call(store, workflow, id);
       if (runId && id === runId) release();
-      return events;
+      return start;
     };
     try {
       const res = await strut.app.request(`/workflows/${ORCHESTRATOR_WORKFLOW}/run`, {
@@ -418,7 +419,7 @@ describe("strut/assistant — its steps, as its viewer", () => {
     } finally {
       release();
       store.append = append;
-      store.getRunEvents = getRunEvents;
+      store.getRunStart = getRunStart;
     }
   });
 
