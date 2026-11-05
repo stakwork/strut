@@ -80,6 +80,9 @@ export function AppHost(props: {
     setState({ status: "loading" });
     void (async () => {
       try {
+        // This strut's brand, read beside the document (once per page): a
+        // visitor's page has no credential to read it with.
+        const brand = visitor ? Promise.resolve(null) : api.getBrandStyles();
         const html = visitor ? await api.fetchPublicAppDocument(app.name) : await api.fetchAppDocument(app.name, app.version, scope!.token, app.peer);
         if (cancelled) return;
         // In a native host's web view (Peel), the version's wallet request,
@@ -96,6 +99,7 @@ export function AppHost(props: {
         conn = await connectAppHost({
           frame,
           theme,
+          brand: await brand,
           ...(visitor ? { visitor: true } : {}),
           ...(app.peer ? { base: api.peerBase(app.peer) } : {}),
           ...(wallet ? { wallet } : {}),

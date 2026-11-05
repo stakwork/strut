@@ -103,6 +103,13 @@ a kit stylesheet (`@xyflow/react/dist/style.css`, `leaflet/dist/leaflet.css`)
 is appended raw. Each app keeps only what it uses: three icons are three
 icons, not the library — import what you draw.
 
+**The look is the server's.** A person sets a brand on the server (a color,
+a corner radius, a font) and the host hands it to every page, so draw the
+app's own look with the theme's tokens — `bg-primary`,
+`text-primary-foreground`, `ring`, `bg-muted`, `text-muted-foreground`,
+`border`, `rounded-md` — which follow it. A fixed color (`bg-blue-500`) never
+changes: keep those for what a color means, such as a status.
+
 **Installed kits** (`app/list` shows them): another app's `src/` imports by
 name — `import { X } from "acme/ui"` resolves to the installed app
 `acme/ui`'s `src/index.ts`, `"acme/ui@v3"` pins a version — and is compiled

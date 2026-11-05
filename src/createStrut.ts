@@ -160,6 +160,7 @@ import { seedPrivacyWorkflows } from "./privacy/seed.js";
 import { HOME_POSTS, homeSyncRole, homeSyncRoutes, seedHomeSyncWorkflow, type HomeSyncRole } from "./home-sync.js";
 import { VOICE_CALLS, voiceConfig, voiceRoutes, type VoiceConfig } from "./voice.js";
 import { createPublicSurface, normalizeSurface, surfaceProblem, visitorRefusal, visitorRuns, type PublicSurface } from "./public-surface.js";
+import { brandProblem, brandStyles, normalizeBrand, readBrand, writeBrand } from "./brand.js";
 import { PUBLIC_PATH, publicRoutes, visitorAddress } from "./public-routes.js";
 import { publicViewNeeds } from "./public-view.js";
 // Pure (node:crypto only): the ask/answer shapes behind the two elicitation
@@ -4534,6 +4535,22 @@ export async function createStrut<TServices = unknown>(
     if (problem) return c.json({ error: `peer id ${problem}` }, 400);
     if (!(await peerRecords.delete(id))) return c.json({ error: `peer "${id}" not found` }, 404);
     return c.json({ ok: true, id });
+  });
+
+  // The brand every app here is shown in (src/brand.ts): a person sets it,
+  // strut's app host hands it to each page as MCP Apps style variables.
+  // Every credential reads it; the gate keeps the write to full scope.
+  app.get("/brand", async (c) => {
+    const brand = await readBrand(dataDir);
+    return c.json({ brand, styles: brandStyles(brand) });
+  });
+  app.put("/brand", async (c) => {
+    const body: unknown = await c.req.json().catch(() => undefined);
+    const problem = brandProblem(body);
+    if (problem) return c.json({ error: problem }, 400);
+    const brand = normalizeBrand(body as Record<string, unknown>);
+    await writeBrand(dataDir, brand);
+    return c.json({ brand, styles: brandStyles(brand) });
   });
 
   // This strut's own workspace (never a peer): what it holds, for agents.
