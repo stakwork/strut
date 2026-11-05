@@ -39,7 +39,7 @@ import { access, constants, mkdir, readFile, rm, writeFile } from "node:fs/promi
 import { delimiter, dirname, join } from "node:path";
 import type { AppsCapability } from "../apps/apps.js";
 import { buildApp, type BuildDeps as AppBuildDeps } from "../apps/build.js";
-import { copyAppDir } from "../apps/files.js";
+import { copyAppDir, FIRST_PARTY_PREFIX, isFirstPartyName } from "../apps/files.js";
 import { readManifest } from "../apps/manifest.js";
 import type { ClaimsAuthoring } from "../claims-authoring.js";
 import { walkSteps } from "../closure.js";
@@ -532,6 +532,7 @@ async function checkSet(
         out.plan.set(item.name, at ? await planItem(deps, m, item, at, door) : { action: "new" });
         if (item.kind === "step" && isSealedStep(item.name, undefined, sealed)) problems.push(`${item.name} is in a sealed namespace (${sealed.join(", ")}): those are strut's`);
         if (item.kind === "step" && !at && registry[item.name] && !workspaceSteps.includes(item.name)) problems.push(`${item.name} is a step strut ships`);
+        if (item.kind === "app" && isFirstPartyName(item.name)) problems.push(`the app ${item.name} is under ${FIRST_PARTY_PREFIX}: those are strut's`);
       }
       if (item.kind === "concept") {
         const other = concepts.get(item.name);

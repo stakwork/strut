@@ -228,6 +228,10 @@ export interface ProposalsCapability {
   /** Does the HOST gate this step type: is it in an `approve:` list of its
    *  delta (`createStrut({ job, orchestrator, builder })`)? */
   hostGates?(type: string): boolean;
+  /** A person's decision (`decideProposal`), as `POST /proposals/:id/decide`
+   *  applies it: what `proposal/decide` calls for a first-party page
+   *  (plans/jamie-app.md §3). Set by the standard server. */
+  decide?(id: string, decision: Decision): Promise<DecideOutcome>;
 }
 
 export function proposalsCapability(

@@ -41,7 +41,7 @@
 
 import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { Flow, RunEvent, StartedBy, WakeMark } from "./core.js";
+import { isFirstParty, type Flow, type RunEvent, type StartedBy, type WakeMark } from "./core.js";
 import { JOB_WORKFLOWS, withLock } from "./jobs.js";
 import { peerIdProblem } from "./peers.js";
 import { encodeId, idProblem, type SessionStore, type SessionTurn } from "./session-store.js";
@@ -346,8 +346,10 @@ export function createWakes(deps: WakeDeps): Wakes {
   const startOf = async (workflow: string, runId: string): Promise<RunEvent | undefined> =>
     (await deps.store.getRunEvents(workflow, runId).catch(() => [])).find((e) => e.type === "run.start");
   /** A turn that came from another strut or an app: the conversation is a
-   *  relay, or a namespace the raw session id does not name. */
-  const relay = (start: RunEvent | undefined) => start?.origin === "peer" || start?.origin === "app";
+   *  relay, or a namespace the raw session id does not name. A first-party
+   *  app's turn is neither (plans/jamie-app.md §3): the person's own, on
+   *  their own session, and strut is its host. */
+  const relay = (start: RunEvent | undefined) => start?.origin === "peer" || (start?.origin === "app" && !isFirstParty(start.app));
 
   /** The session's turns, and the person's latest turn: its `run.start`
    *  (context, model, origin) and the callbacks of the newest person's turn

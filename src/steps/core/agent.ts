@@ -5,7 +5,7 @@ import { applyToolWrappers } from "../../extensions.js";
 import { resolveModel, createWebTools, stepAuth, type ResolvedModel } from "../../llm.js";
 import { idProblem, type OpenSession, type SessionTurn, type SessionsCapability } from "../../session-store.js";
 import type { ToolResultOutput } from "@ai-sdk/provider-utils";
-import { accessedNodesOf, defineStep, mediaOf, messagesOf, stopOf, takeUsage, usageOf, type McpServer, type RunAttachment, type StepContext, type StepRegistry, withAccessedNodes, withMedia, withMessages, withUsage, workflowOf } from "../../core.js";
+import { accessedNodesOf, defineStep, isFirstParty, mediaOf, messagesOf, stopOf, takeUsage, usageOf, type McpServer, type RunAttachment, type StepContext, type StepRegistry, withAccessedNodes, withMedia, withMessages, withUsage, workflowOf } from "../../core.js";
 import { GATE_NOTE, gatedSchema, proposalResultLines, proposalsOf, proposeCall } from "../../proposals.js";
 import { isCancelledError } from "../../run-control.js";
 import { AGENT_RETAIN, cachedSystem, compactAtFromEnv, compactionMessage, overMark, resultCapChars, stripExecute, summarize } from "../../compaction.js";
@@ -1631,8 +1631,10 @@ export default defineStep({
     }
     // A run an APP launched holds no gated tool: nothing shows its proposals
     // to the person — the hosts draw the ones their own turns made — and a
-    // page, code a model wrote, must not decide them. They are left out.
-    const appGated = !!ctx?.app && approve.size > 0;
+    // page, code a model wrote, must not decide them. They are left out. A
+    // FIRST-PARTY page's run keeps them (plans/jamie-app.md §3): strut's own
+    // app shows the cards, and its viewer decides them (proposal/decide).
+    const appGated = !!ctx?.app && !isFirstParty(ctx.app) && approve.size > 0;
     const registryTools = buildRegistryTools(
       appGated ? expandAgentTools(stepGrants, ctx!.registry!, ctx!.package).filter((t) => !approve.has(t)) : stepGrants,
       ctx?.registry,

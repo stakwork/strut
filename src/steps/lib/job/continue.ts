@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { defineStep, type StepContext } from "../../../core.js";
+import { defineStep, isFirstParty, type StepContext } from "../../../core.js";
 import type { JobsCapability } from "../../../jobs.js";
 import { appScoped } from "../../../session-store.js";
 import { attachmentsField, handedOn, launchOnce, requireJobLaunch } from "./_shared.js";
@@ -35,8 +35,9 @@ export default defineStep({
   output: z.object({ job: z.string(), runId: z.string(), callback: z.boolean() }),
   async run(cfg, ctx: StepContext) {
     const launch = requireJobLaunch(ctx.services);
-    // A turn an APP launched continues only the app's jobs (plans/apps.md §12).
-    const job = ctx.app ? appScoped(ctx.app.name, cfg.job) : cfg.job;
+    // A turn an APP launched continues only the app's jobs (plans/apps.md
+    // §12); a first-party app's, its person's own (plans/jamie-app.md §3).
+    const job = ctx.app && !isFirstParty(ctx.app) ? appScoped(ctx.app.name, cfg.job) : cfg.job;
     const index = (ctx.services as { jobs?: JobsCapability } | undefined)?.jobs;
     if (index?.get && !(await index.get(job, { threads: false }))) throw new Error(`No job "${job}"`);
     const attachments = await handedOn(ctx, cfg.attachments);
