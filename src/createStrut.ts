@@ -7473,7 +7473,7 @@ export async function createStrut<TServices = unknown>(
     const readyKey = bootEnv()["STRUT_READY_KEY"] ? bootEnv()["STRUT_API_KEY"] : undefined;
     console.log(JSON.stringify({ event: "ready", port: bound, host: hostname ?? "0.0.0.0", ...(readyKey ? { key: readyKey } : {}) }));
     // Dictation's fixer loads now, in its worker, so the first transcript is fixed too.
-    stt?.fixer.warm();
+    void stt?.fixer.warm();
     return bound;
   }
 
