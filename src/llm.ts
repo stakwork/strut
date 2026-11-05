@@ -107,11 +107,12 @@ export async function resolveModel(opts: ResolveModelOptions = {}): Promise<Reso
   let grant: LlmAuthResult | undefined;
   if (opts.llmAuth && opts.auth) {
     const provider = aieo.canonicalModelName(opts.model, opts.provider).provider;
-    // Maple is never the gateway's: its proxy is the deployment's own and
-    // its key ours (MAPLE_API_KEY, MAPLE_BASE_URL), billed by Maple. The hook
-    // is not asked, so a Mothership grant never sends a maple call to the
-    // gateway, and the per-user gateway cap does not apply to it.
-    if (provider !== "maple") grant = await opts.llmAuth({ ...opts.auth, provider });
+    // A provider with an endpoint of its own (aieo's BASE_URL_ENV: Maple's
+    // proxy, Numes' API) is never the gateway's: its key is ours (MAPLE_API_KEY,
+    // NUMES_API_KEY) and billed by that service. The hook is not asked, so a
+    // Mothership grant never sends such a call to the gateway, and the
+    // per-user gateway cap does not apply to it.
+    if (!aieo.BASE_URL_ENV[provider]) grant = await opts.llmAuth({ ...opts.auth, provider });
   }
   // aieo looks up a key's companion settings where it looked up the key —
   // an organization-wide Anthropic key's ANTHROPIC_WORKSPACE_ID, sent as
@@ -127,7 +128,7 @@ export async function resolveModel(opts: ResolveModelOptions = {}): Promise<Reso
   });
   let model: any = r.model;
   // Every chat-completions model aieo builds: xai and google through a
-  // gateway, and maple always.
+  // gateway, and maple and numes always.
   if (model?.provider === "openai.chat") model = await imagesBesideToolResults(model);
   if (grant?.explainError) model = await explaining(model, grant.explainError);
   model = await applyModelWrappers(model, { provider: r.provider, modelId: r.modelId, baseUrl: grant?.baseUrl, routed: !!grant?.baseUrl, ctx: opts.ctx, session: opts.session });
@@ -261,7 +262,7 @@ async function explaining(model: any, explain: (err: unknown) => string | undefi
 /**
  * Images a TOOL returned (`withMedia`), moved to where a chat-completions
  * API can see them. The AI SDK's `openai.chat` converter — what aieo builds
- * for xai and google routed through a gateway, and for maple — sends a tool result
+ * for xai and google routed through a gateway, and for maple and numes — sends a tool result
  * as one string, so an image in it reached the model as base64 TEXT (a
  * screenshot is ~300k characters). Each one now goes to a user message right
  * after the tool results, which that API reads as an image, and the result
