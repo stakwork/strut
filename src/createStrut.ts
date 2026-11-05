@@ -5696,19 +5696,6 @@ export async function createStrut<TServices = unknown>(
         const problem = idProblem(q.conversation);
         if (problem) throw new Error(`conversation "${q.conversation}" ${problem}`);
       }
-      // A conversation turn from strut's own app opens its session as it is
-      // only where the session rules let it (`appSessionId`: the viewer's
-      // own, `<actor>/…`); anywhere else it would land in a thread of the
-      // app's that no conversation lists. So that turn is refused, saying so
-      // (plans/jamie-app.md §3.1 "Not built": a Hive conversation's bare id).
-      if (isFirstParty(by.app) && isConversationFlow(flow)) {
-        const session = (q.input as Record<string, unknown> | undefined)?.["session"];
-        if (typeof session === "string" && appSessionId(session, by.app!.name, by.actor, q.job, true) !== session) {
-          throw new Error(
-            `conversation_elsewhere: "${session}" is not one of your own conversations here (${by.actor ?? "no viewer"}/…), so a turn from this app cannot continue it — read it here, continue it where it started`,
-          );
-        }
-      }
       // Dedupe in flight (§5.1): the run launched under this key, while it
       // lives. Keys whose runs have ended are let go here.
       for (const [k, id] of launchKeys) if (!liveKey(k.slice(0, k.indexOf("\0")), id)) launchKeys.delete(k);

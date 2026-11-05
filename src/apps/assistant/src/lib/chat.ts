@@ -85,14 +85,17 @@ export function isOwn(id: string, viewer: string | undefined): boolean {
 }
 
 /** What a refused send means to the person. */
-export type SendRefusal = { kind: "busy"; text: string } | { kind: "elsewhere"; text: string } | { kind: "error"; text: string };
+export type SendRefusal = { kind: "busy"; text: string } | { kind: "not-yours"; text: string } | { kind: "error"; text: string };
 
 export const BUSY_NOTICE = "Still on your last message — send this once the reply is in.";
-export const ELSEWHERE_NOTICE = "This conversation started somewhere else (Hive). You can read it here, but continuing it from this app isn't open yet — continue it where it started, or start a new chat here.";
+/** A person may continue a conversation they took a turn in, or a shared
+ *  one (plans/jamie-app.md §2.2): someone who only read one while it was
+ *  shared, and it has since been unshared, is refused. */
+export const NOT_YOURS_NOTICE = "This is someone else's conversation, and it is no longer shared: you can't add to it. Start a new chat to carry on.";
 
 export function sendRefusal(message: string): SendRefusal {
   if (/\bsession_busy:/.test(message) || /\bjob_busy:/.test(message)) return { kind: "busy", text: BUSY_NOTICE };
-  if (/\bconversation_elsewhere:/.test(message)) return { kind: "elsewhere", text: ELSEWHERE_NOTICE };
+  if (/\bconversation_not_yours:/.test(message)) return { kind: "not-yours", text: NOT_YOURS_NOTICE };
   return { kind: "error", text: message };
 }
 

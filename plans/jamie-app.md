@@ -534,15 +534,14 @@ was open:
   (the step only; the capability is unchanged). With nothing open, the
   page opens the newest conversation, else a new one; the open one is kept
   per viewer (`useAppState`), and `?input=session%3D<id>` opens one.
-- **Hive's bare-id conversations** (§3.1 "Not built"; the ruling is
-  pending, and the session rules are unchanged): the page reads them and
-  sends into them as into any other, and the server refuses the turn —
-  `run/launch` of a conversation workflow from a first-party page whose
-  `input.session` would not open as itself under `appSessionId` throws
-  `conversation_elsewhere:` — so it never lands in an `app/…` thread no
-  conversation lists, which is what the rules would have done silently.
-  The page shows a plain notice. When the ruling opens them, the same check
-  passes and the page continues them with no change.
+- **Hive's bare-id conversations** (§3.1 "Not built"; ruled 2026-11-05,
+  built apart — §2.2): the page sends into whatever `conversation/list`
+  shows, bare ids included, and the server decides. A
+  `conversation_not_yours:` refusal (someone who read a conversation while
+  it was shared, since unshared) is a plain notice. A captcha's answer
+  still names only the viewer's own `<actor>/…` conversation
+  (`run/launch { conversation }`); widening it to any conversation the
+  viewer may continue waits for §2.2's `mayContinue`.
 - **The model picker** is `llm/models` (new, `src/steps/lib/llm/models.ts`,
   over `ctx.services.llmModels`, the catalog `GET /llm/models` now reads
   too), its choice per viewer (`useAppState`, Hive's per-user preference),

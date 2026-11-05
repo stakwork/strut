@@ -23,7 +23,7 @@ import modelsStep from "../steps/lib/llm/models.js";
 import verifyStep from "../steps/lib/job/verify.js";
 import evidenceStep from "../steps/lib/job/evidence.js";
 import type { JobsCapability } from "../jobs.js";
-import { BUSY_NOTICE, ELSEWHERE_NOTICE, detectSlash, groupByDay, insertSlash, isOwn, newConversationId, sendRefusal, silentReply, timeLine, turnContext } from "./assistant/src/lib/chat.js";
+import { BUSY_NOTICE, NOT_YOURS_NOTICE, detectSlash, groupByDay, insertSlash, isOwn, newConversationId, sendRefusal, silentReply, timeLine, turnContext } from "./assistant/src/lib/chat.js";
 import { appKey, placeArtifact, servedFile } from "./assistant/src/lib/artifacts.js";
 import { captchaPrompt, claimPill, jobLook, liveStrip, openSlot, parseCaptcha, sortClaims, tapAt, toggleCell } from "./assistant/src/lib/jobs.js";
 import type { LedgerClaim } from "./assistant/src/lib/types.js";
@@ -76,9 +76,9 @@ describe("strut/assistant — the pure parts", () => {
     assert.ok(!isOwn("alice/1", undefined));
   });
 
-  it("what a refused send means: busy, a conversation that started elsewhere, else the error", () => {
+  it("what a refused send means: busy, another person's conversation, else the error", () => {
     assert.deepEqual(sendRefusal("step_run: session_busy: alice/c1 is mid-turn"), { kind: "busy", text: BUSY_NOTICE });
-    assert.deepEqual(sendRefusal('conversation_elsewhere: "c-1" is not one of your own'), { kind: "elsewhere", text: ELSEWHERE_NOTICE });
+    assert.deepEqual(sendRefusal('step_run: conversation_not_yours: "c-1" is another person\'s conversation'), { kind: "not-yours", text: NOT_YOURS_NOTICE });
     assert.deepEqual(sendRefusal("boom"), { kind: "error", text: "boom" });
     assert.ok(silentReply(" [silent]\n"));
     assert.ok(!silentReply("Done."));
@@ -343,14 +343,6 @@ describe("strut/assistant — its steps, as its viewer", () => {
     const archived = await alice.ok("conversation/list", { archived: true });
     assert.deepEqual(archived.conversations.map((c: any) => [c.id, c.title, c.archived]), [["alice/c1", "Greetings", true]]);
     assert.deepEqual((await page(ASSISTANT_APP, "bob").ok("conversation/list", { archived: true })).conversations, [], "never another person's");
-  });
-
-  it("a turn into a conversation the viewer cannot continue from here is refused, saying so — never a thread of the app's", async () => {
-    const alice = page(ASSISTANT_APP, "alice");
-    for (const session of ["c-hive-1", "bob/c9"]) {
-      const r = await alice.call("run/launch", { workflow: ORCHESTRATOR_WORKFLOW, input: { prompt: "go on", session } });
-      assert.match(r.error ?? "", /conversation_elsewhere: ".*" is not one of your own conversations here \(alice\/…\)/, session);
-    }
   });
 
   it("the model picker's list: llm/models is GET /llm/models", async () => {

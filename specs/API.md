@@ -1682,10 +1682,11 @@ on a job the viewer launched a run of (the record's `actors`); where the
 claims layer is off they say so. The page's turn into a conversation is
 `run/launch` of `orchestrator` with `input: { prompt, session, context: {
 line, where, timeZone } }`; a new conversation's id is `<viewer>/<12 hex>`.
-A turn into a conversation the viewer cannot open as itself from the app —
-a Hive conversation's bare id, someone else's `<actor>/…` — is refused
-(`conversation_elsewhere: …`), where the session rules would otherwise
-open a thread of the app's that no conversation lists. A captcha's answer
+The page sends into whatever conversation `conversation/list` shows; a
+person continues one they took a turn in, or a shared one
+(`plans/jamie-app.md` §2.2), and a refused turn
+(`conversation_not_yours: …`, someone who read it while it was shared) is
+a plain notice. A captcha's answer
 is a job turn, `run/launch { workflow: <the job's>, job, input: { prompt:
 "[captcha-answer] {…}" }, conversation }`. A deliverable `strut/views`
 draws shows in the thread; the rest is handed to the host as
