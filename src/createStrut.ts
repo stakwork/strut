@@ -814,7 +814,7 @@ export async function createStrut<TServices = unknown>(
   // The ONE graph backend everything here reads: the host's, else the
   // workspace's own (Neo4j or a LadybugDB file). The claims gate below is
   // deliberately `workspace.graph`: claims hang off the workspace's nodes.
-  const graph: GraphBackend | undefined = opts.graph ?? workspace.graph;
+  const graph: GraphBackend | undefined = opts.graph ?? rawWorkspace.graph;
   // The graph writes made through strut, for a reader that shows what the
   // graph holds (plans/live-feeds.md §3): every run's writes land here
   // (bindGraph, src/graph-writes.ts), `graph/changes` and
