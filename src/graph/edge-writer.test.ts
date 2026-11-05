@@ -308,7 +308,9 @@ for (const tb of testBackends()) {
       seen.length = 0;
       const d = await backend.tx((tx) => ee.delete(a.ref_id, spy(tx) as typeof tx, { edge: "IN_JOB" }));
       assert.equal(d?.edge, "IN_JOB");
-      assert.ok(seen.every((c) => !/\{ref_id: \$ref_id\}\]->\(t\)|\[r \{ref_id/.test(c)), "typed delete");
+      const lookups = seen.filter((c) => c.includes("{ref_id: $ref_id}")); // other statements (Ladybug's edge-text cleanup) are not lookups
+      assert.ok(lookups.length > 0 && lookups.every((c) => c.includes("`IN_JOB`")), `typed delete: ${seen.join("\n")}`);
+      assert.ok(!seen.some((c) => /\[\w+ \{ref_id/.test(c)), "no untyped rel match");
       const b = await edges.write({ edge: "IN_JOB", source_ref_id: run, target_ref_id: job });
       assert.equal((await edges.delete(b.ref_id))?.edge, "IN_JOB");
       assert.equal(await edges.delete({ ref_id: b.ref_id, edge: "IN_JOB" }), null);
