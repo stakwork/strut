@@ -258,6 +258,8 @@ export const STRUT_SCHEMAS: readonly StrutSchema[] = [
       owner: "?string",
       /** Per-run LLM spend cap in dollars, enforced by the Mothership. */
       max_run_cost_usd: "?float",
+      /** Disabled workflows refuse every run. */
+      disabled: "?boolean",
       ...USAGE_ATTRIBUTES,
     },
   },

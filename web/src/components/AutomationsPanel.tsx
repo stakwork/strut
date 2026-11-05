@@ -56,6 +56,8 @@ const when = (iso: string) =>
 
 export function AutomationsPanel(props: {
   workflow: string;
+  /** The workflow is disabled: its schedules are held, Run now refused. */
+  workflowDisabled?: boolean;
   /** Resolve the workflow's run inputs (same inference as the Run popover). */
   loadBindings: () => Promise<InputBinding[]>;
   onOpenRun: (workflow: string, runId: string) => void;
@@ -122,6 +124,9 @@ export function AutomationsPanel(props: {
               publishes the workflow. They only fire while strut is running.
             </span>
           </div>
+          {props.workflowDisabled && (
+            <div class="auto-held">This workflow is disabled, so its schedules are held: nothing fires until it is enabled again.</div>
+          )}
           {error && <div class="auto-error">{error}</div>}
           {list === null && !error && <div class="auto-hint">Loading…</div>}
           {list?.length === 0 && <div class="auto-empty">No automations yet.</div>}
@@ -140,8 +145,9 @@ export function AutomationsPanel(props: {
               </div>
               <div class="auto-summary"><ClockIcon size={12} /> {a.summary}</div>
               <div class="auto-meta">
-                {a.enabled && a.nextRunAt && <span title={when(a.nextRunAt)}>Next run {relativeTime(a.nextRunAt)}</span>}
-                {a.enabled && !a.nextRunAt && <span>No more runs scheduled</span>}
+                {a.enabled && props.workflowDisabled && <span>Held: the workflow is disabled</span>}
+                {a.enabled && !props.workflowDisabled && a.nextRunAt && <span title={when(a.nextRunAt)}>Next run {relativeTime(a.nextRunAt)}</span>}
+                {a.enabled && !props.workflowDisabled && !a.nextRunAt && <span>No more runs scheduled</span>}
                 {a.lastRun && (
                   <button class="auto-link" onClick={() => props.onOpenRun(props.workflow, a.lastRun!.runId)}>
                     Last run <span class={`badge badge-${a.lastRun.status === "success" ? "ok" : a.lastRun.status === "running" ? "accent" : a.lastRun.status === "error" ? "danger" : "warning"}`}>{a.lastRun.status}</span>
@@ -150,7 +156,8 @@ export function AutomationsPanel(props: {
               </div>
               {a.lastFireError && <div class="auto-error">The last scheduled run could not start: {a.lastFireError}</div>}
               <div class="auto-card-actions">
-                <button class="btn" disabled={a.running} title={a.running ? "Its previous run is still going" : "Run once, right now"}
+                <button class="btn" disabled={a.running || props.workflowDisabled}
+                  title={props.workflowDisabled ? "The workflow is disabled" : a.running ? "Its previous run is still going" : "Run once, right now"}
                   onClick={() => act(() => api.fireAutomation(props.workflow, a.id))}>Run now</button>
                 <button class="btn" onClick={() => setEditing(a)}>Edit</button>
                 <ConfirmButton label="Delete" note={`Delete "${a.name}"? It won't run again.`} confirmLabel="Delete"

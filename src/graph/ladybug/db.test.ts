@@ -10,6 +10,9 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { setTimeout as delay } from "node:timers/promises";
+import { setFlagsFromString } from "node:v8";
+import { runInNewContext } from "node:vm";
 import { LADYBUG_EDGE_TYPES, nodeColumns, ontologySeed } from "./registry.js";
 import { CORE_RENAME_MIGRATION, MIGRATIONS, NAMESPACES_MIGRATION, ONE_WAY_MIGRATIONS, SCHEMA_RULES_MIGRATION, SEARCH_TEXT_ONE_LINE_MIGRATION, backupPath, ddlStatements, indexCalls, openLadybug, type LadybugHandle } from "./db.js";
 import { openGraphBackend } from "../backend.js";
@@ -190,6 +193,28 @@ describe("ladybug handle", { skip }, () => {
     const again = await openLadybug(file);
     await again.close();
     assert.equal(existsSync(backupPath(file, CORE_RENAME_MIGRATION)), false, "a file this build made needs no backup");
+  });
+
+  it("close() frees the native database: a GC during the next open of the file leaves that open's WAL alone", async () => {
+    const file = join(dir, "gc", "graph.lbug");
+    const first = await openLadybug(file);
+    await first.withWrite((tx) => tx.run("CREATE (:Node {ref_id: 'a', name: 'one'})"));
+    await first.close();
+    const second = await openLadybug(file);
+    try {
+      await second.withWrite((tx) => tx.run("CREATE (:Node {ref_id: 'b', name: 'two'})"));
+      assert.ok(existsSync(`${file}.wal`));
+      // What a GC does at any moment of a busy process: a database still held
+      // by an unclosed result is freed now, and its destructor removes the WAL.
+      setFlagsFromString("--expose-gc");
+      (runInNewContext("gc") as () => void)();
+      await delay(100);
+      assert.ok(existsSync(`${file}.wal`), "the first database's destructor removed the second's WAL");
+      await second.exclusive((w) => w("CHECKPOINT"));
+      assert.deepEqual((await second.query("MATCH (n:Node) WHERE n.node_type IS NULL RETURN n.ref_id AS id ORDER BY id")).map((r) => r["id"]), ["a", "b"]);
+    } finally {
+      await second.close();
+    }
   });
 });
 

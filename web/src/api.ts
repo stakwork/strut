@@ -369,6 +369,8 @@ export interface WorkflowEntry {
    *  (plans/mothership-cost-control.md). */
   owner?: string;
   maxRunCostUsd?: number;
+  /** Disabled: refuses every run until re-enabled. */
+  disabled?: boolean;
   /** The workflow's schedules, if any — the sidebar's clock badge. */
   automations?: Automation[];
   /** Start time (epoch ms) of the most recent run, if any. */
@@ -509,6 +511,13 @@ export const setWorkflowRunCap = (name: string, maxRunCostUsd: number | null) =>
     body: JSON.stringify({ maxRunCostUsd }),
   });
 
+/** Disable or re-enable a workflow (metadata-only, no new version). */
+export const setWorkflowDisabled = (name: string, disabled: boolean) =>
+  fetchJSON<{ ok: boolean }>(`${workflowPath(name)}/disabled`, {
+    method: "PUT",
+    body: JSON.stringify({ disabled }),
+  });
+
 /** Hand a workflow to the builder (`"ai"`: Jamie's builder may publish over
  *  it) or take it back (`null`). 409 for a seed, a sealed workflow, one open
  *  to peers, or one a service stamped. */
@@ -603,7 +612,11 @@ export async function launchWorkflow(
       ...(params && Object.keys(params).length > 0 ? { params } : {}),
     }),
   });
-  return (await res.json()) as { runId: string };
+  const body = (await res.json().catch(() => null)) as { runId?: string; error?: string } | null;
+  // A refused launch (a disabled workflow, a bad input, nobody to bill) has
+  // no run: say why, rather than follow `runs/undefined`.
+  if (!res.ok || !body?.runId) throw new Error(body?.error ?? `${res.status} ${res.statusText}`);
+  return { runId: body.runId };
 }
 
 /**
@@ -1977,16 +1990,19 @@ export const listApps = () => fetchJSON<{ apps: AppListEntry[] }>("/apps").then(
 export const getApp = (name: string, version?: string) =>
   fetchJSON<AppView>(`/apps/${encodeURIComponent(name)}${version ? `?version=${encodeURIComponent(version)}` : ""}`);
 
-export const getAppVersions = (name: string) =>
-  fetchJSON<{
-    name: string;
-    active: string;
-    versions: Record<string, { createdAt: string; hash: string }>;
-    /** The live release's id, or `latest` while following. */
-    live: string;
-    releases: AppRelease[];
-    behind: AppLockDrift[];
-  }>(`/apps/${encodeURIComponent(name)}/versions`);
+/** `GET /apps/:name/versions`. */
+export interface AppVersionsResponse {
+  name: string;
+  active: string;
+  /** `source: "seed"`: strut makes this version live at every start (it cannot be held). */
+  versions: Record<string, { createdAt: string; hash: string; source?: string; actor?: string; publisher?: string }>;
+  /** The live release's id, or `latest` while following. */
+  live: string;
+  releases: AppRelease[];
+  behind: AppLockDrift[];
+}
+
+export const getAppVersions = (name: string) => fetchJSON<AppVersionsResponse>(`/apps/${encodeURIComponent(name)}/versions`);
 
 /** What people open (`PUT /apps/:name/active`): `{ version: "vN" }` makes a
  *  release of it and holds the app there, `{ release: "rN" }` makes an
