@@ -195,6 +195,8 @@ describe("first-party apps through a whole strut", () => {
       browserWorkflows: false,
       privacyWorkflows: false,
       orchestrator: { tools: ["note"], approve: ["note"] },
+      // The test publishes its own stand-in for strut's app (below).
+      assistant: false,
     });
     await strut.workspace.publishWorkflow("job", "v1", {
       steps: [{ id: "result", type: "pack", config: { text: "{{ input.prompt }}: found 3", artifacts: [] } }],

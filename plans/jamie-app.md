@@ -1,6 +1,6 @@
 # Jamie as a strut app, and one wake for every host
 
-> **Status (2026-11-05): proposed; §1 (one wake) built — §1.6; §2 (conversations) built — §2.1; §3 (first-party apps) built — §3.1; Hive's wake half (§6.1) built — stakwork/hive#5705.** Written after a read of strut `main`
+> **Status (2026-11-05): proposed; §1 (one wake) built — §1.6; §2 (conversations) built — §2.1; §3 (first-party apps) built — §3.1; §5 (the app) built — §5.1; Hive's wake half (§6.1) built — stakwork/hive#5705.** Written after a read of strut `main`
 > @e1c45ad, hive `origin/master` @c692b96bf, sphinx `origin/master`
 > @74c12954 (Peel's bridge) and sphinx-voice `origin/main` @ba18f12. The
 > owner agreed four things in conversation, marked **agreed** below: a
@@ -512,6 +512,80 @@ over stakgraph's Cypher). Later: pull requests' live state and Merge (the
 viewer's GitHub token; a `github/*` read step, Merge as a proposal),
 automations from an app (`apps.md` work item 7).
 
+### 5.1 As built (2026-11-05, branch `feature/assistant-app`)
+
+`src/apps/assistant/` (`API.md` §14.11), seeded by
+`src/apps/assistant-seed.ts` after `strut/views`; `createStrut({ assistant:
+false | { title } })` and `STRUT_HOST_CONFIG`'s `assistant`. Every part of
+the table, in one app. Where it differs from the text above, or the text
+was open:
+
+- **The seed** is `strut/views`' generalized (`seedBundledApp`,
+  `src/apps/views-seed.ts`): the build is cached per (sources, kit, the
+  hashes of the installed apps it imports), and a known version whose
+  `strut/views` moved is rebuilt in place (the document carries it
+  compiled in), never a new version; without `strut/views` (`views:
+  false`) there is nothing to build it against and nothing is seeded. **The title** is staged into
+  `app.yaml` and `src/deployment.ts` before hashing, so another title is
+  another version; "Assistant" by default (Hive's "Jamie" is Hive's to set:
+  mcp's `createStrut` call, a follow-up there).
+- **New conversations** are `<viewer>/<12 hex>`, the fork's form. The page
+  does not know its viewer, so `conversation/list` now answers `viewer`
+  (the step only; the capability is unchanged). With nothing open, the
+  page opens the newest conversation, else a new one; the open one is kept
+  per viewer (`useAppState`), and `?input=session%3D<id>` opens one.
+- **Hive's bare-id conversations** (§3.1 "Not built"; the ruling is
+  pending, and the session rules are unchanged): the page reads them and
+  sends into them as into any other, and the server refuses the turn —
+  `run/launch` of a conversation workflow from a first-party page whose
+  `input.session` would not open as itself under `appSessionId` throws
+  `conversation_elsewhere:` — so it never lands in an `app/…` thread no
+  conversation lists, which is what the rules would have done silently.
+  The page shows a plain notice. When the ruling opens them, the same check
+  passes and the page continues them with no change.
+- **The model picker** is `llm/models` (new, `src/steps/lib/llm/models.ts`,
+  over `ctx.services.llmModels`, the catalog `GET /llm/models` now reads
+  too), its choice per viewer (`useAppState`, Hive's per-user preference),
+  sent as `params.model`; "Default" sends none, so the turn runs on the
+  template's model.
+- **The context**: `{ line, where, timeZone }` — `line` Hive's time format
+  (`Wed 4 Nov 2026, 14:02, Europe/London. `; ICU may add a comma after the
+  weekday) then `where`, which says the reply is read in full with each job
+  as a card; the zone is the host's (`ui/initialize`'s `timeZone`).
+- **Live**: the list is read every 5 s; the open conversation is held with
+  `conversation/get { wait: 25 s, since: rev }` (the kit feeds' 25 s), a
+  call a second at most, none while hidden, and marked seen while open.
+  A job card follows its run with the kit's `useRun { live }` and, while it
+  runs, `job/updates` for the strip (the job's line, then shots,
+  recordings, holds and verdicts counted).
+- **A wake** is a quiet line ("hello.md finished") over the reply; a
+  `[silent]` reply shows nothing. The job's own card stays under the turn
+  that started it, Done once it is.
+- **Claims and captcha**: `job/verify` and `job/evidence` (new) are what
+  `POST /jobs/:id/verify` and `POST /claims/:id/evidence { job }` do, over
+  `ctx.services.jobs.verify` / `.evidence` (createStrut, where the claims
+  layer is on); a first-party page's own call only, on a job the viewer ran
+  (`actors`). Verify goes detached and ends on the job's `verify` update. A
+  claim waiting on a person's look gets "It does" / "It doesn't" (its slot
+  answered). The captcha is drawn from its manifest through `run/files`;
+  the answer is a job turn (`run/launch { job, input: { prompt:
+  "[captcha-answer] {…}" } }`) that names the conversation — `run/launch`
+  now takes `conversation`, from a first-party page only and only the
+  viewer's own, so the wake finds it. Only a person who ran the job is
+  offered the answer.
+- **Deliverables**: inline what `strut/views` draws (`ArtifactView`,
+  `SheetView`, `DocumentView`) through `run/files` on the run that made
+  them — the turn's own, a job's from the turn's jobs, else the job's newest
+  (`job/get`); "Open" hands any served file to the host (`?artifact=`), and
+  a PDF, a video, an app (`?app=<name>@<vN>`) or a peer's file (the kit's
+  `peerArtifactPath`) go there only. Item 4's panel opens them beside the
+  app; without it they navigate.
+- **Replies** are markdown in the bubble (react-markdown, links through the
+  host); a file is DocumentView's box.
+- **Not built**: the jobs under each list row (the index does not keep
+  them, §2.1), pull requests, adding a claim from the card, Hive's attention
+  and recap cards, voice input.
+
 ## 6. The hosts' halves (proposed)
 
 ### 6.1 Hive
@@ -579,7 +653,7 @@ are lost.
 3. **First-party apps** (strut, §3; built — §3.1): the reserved `strut/`
    name on every door, the tier's rights in `step_run`, `proposal/decide`.
 4. **The host panel** (strut web, §4).
-5. **`strut/assistant`** (strut, §5), the `llm/models` step.
+5. **`strut/assistant`** (strut, §5; built — §5.1), the `llm/models` step.
 6. **Hive** (§6.1), behind the 202's `wake: true`.
 7. **Peel's bridge, voice** (§6.2, §6.3).
 8. **`DESKTOP.md` §5** points at the template's prompt.

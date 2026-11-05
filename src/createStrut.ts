@@ -84,6 +84,7 @@ import { appErrors, createApps, type AppsCapability, type AppPublishResult } fro
 import { fileAppGrants } from "./apps/grants.js";
 import { createAppMonitor, type AppMonitor } from "./apps/monitor.js";
 import { seedViewsApp } from "./apps/views-seed.js";
+import { seedAssistantApp, type AssistantOptions } from "./apps/assistant-seed.js";
 import type { KitLocation } from "./apps/kit.js";
 import { appsRoot, isPreviewLabel, listAppFiles, readAppFile, reservedAppName, validateAppName, writeAppFiles } from "./apps/files.js";
 import { DOCUMENT_FILE, readBuildInfo, withPublicIdentity, withToken, withoutTokenMeta } from "./apps/build.js";
@@ -416,6 +417,13 @@ export interface StrutOptions<TServices = unknown> {
    *  apps import, its page the gallery. Seeded at boot by tree hash, as `job`
    *  is by content hash, when the kit is built. `false` seeds nothing. */
   views?: false;
+  /** `strut/assistant` (`src/apps/assistant-seed.ts`, plans/jamie-app.md
+   *  §5): the person's assistant — the `orchestrator`'s conversations, their
+   *  jobs, proposals and deliverables — as a first-party app, seeded at
+   *  boot after `strut/views` (it imports it; none without it). `title` is what this
+   *  deployment calls its assistant ("Jamie"; "Assistant" when unset).
+   *  `false` seeds nothing. */
+  assistant?: false | AssistantOptions;
   /** The `automation/*` steps (src/steps/lib/automation/), an agent's own
    *  door onto the automations: the one workflow they schedule, and the
    *  registry step that asks the person before one is made, changed,
@@ -1289,6 +1297,16 @@ export async function createStrut<TServices = unknown>(
       console.warn(`[views] could not seed strut/views:`, err instanceof Error ? err.message : err);
     }
   }
+  // `strut/assistant` (src/apps/assistant-seed.ts): the person's assistant
+  // as a first-party app. After strut/views, whose components it imports.
+  if (opts.assistant !== false) {
+    try {
+      const r = await seedAssistantApp({ workspace, ...(opts.kit ? { kit: opts.kit } : {}), ...(opts.assistant?.title ? { title: opts.assistant.title } : {}) });
+      if (r?.changed) console.log(`[assistant] seeded app: strut/assistant @ ${r.version}`);
+    } catch (err) {
+      console.warn(`[assistant] could not seed strut/assistant:`, err instanceof Error ? err.message : err);
+    }
+  }
 
   // Apps' history (src/apps/objects.ts): versions published before it get
   // their sources recorded once per file, and the directories no longer
@@ -1415,7 +1433,23 @@ export async function createStrut<TServices = unknown>(
     : null;
   // A job's ledger rides on the jobs capability (plans/job-claims.md §6), so
   // `GET /jobs/:id` and `job/get` carry the same `claims`.
-  if (verifier && claimsJobs) claimsJobs.claims = (job) => verifier.jobLedger(job);
+  if (verifier && claimsJobs) {
+    claimsJobs.claims = (job) => verifier.jobLedger(job);
+    // A person's two doors onto a job's claims, as steps (`job/verify`,
+    // `job/evidence`: strut's own app): what `POST /jobs/:id/verify` and
+    // `POST /claims/:id/evidence { job }` do.
+    claimsJobs.verify = async (job, o = {}) => {
+      const opts = o.claims ? { claims: o.claims } : {};
+      if (o.detach) {
+        if ((await verifier.jobLedger(job)) === null) return null;
+        void verifier.verifyJob(job, opts).catch((err) => console.error(`[verify] job "${job}" failed:`, err));
+        return { job, started: true };
+      }
+      const result = await verifier.verifyJob(job, opts);
+      return result.skipped === "unknown-job" ? null : result;
+    };
+    claimsJobs.evidence = ({ slot, ...input }) => verifier.addEvidence({ ...input, ...(slot ? { slot } : {}), by: "person", mode: "asserted" });
+  }
   //
   // The same hook PROJECTS the run into the graph (graph/projector.ts: its
   // `StrutRun`, agent sessions, tool calls and the nodes they touched) —
@@ -5651,6 +5685,30 @@ export async function createStrut<TServices = unknown>(
       }
       const attachments = parseAttachments(q.attachments);
       if (attachments.length) requireRunFiles();
+      // A job turn's conversation (plans/jamie-app.md §5): strut's own app
+      // names its viewer's own — a captcha's answer, a job continued from a
+      // card — so the wake finds it. Never another person's, never a page
+      // a model wrote.
+      if (q.conversation !== undefined) {
+        if (!isFirstParty(by.app) || !by.actor) throw new Error("conversation: only strut's own app names the conversation a launch belongs to, for its viewer (plans/jamie-app.md §5)");
+        if (q.conversation !== by.actor && !q.conversation.startsWith(`${by.actor}/`)) throw new Error(`conversation "${q.conversation}" is not the viewer's own (${by.actor}/…)`);
+        if (!(JOB_WORKFLOWS as readonly string[]).includes(flow.name)) throw new Error(`conversation names the conversation a JOB turn belongs to (${JOB_WORKFLOWS.join(", ")}), not a run of "${q.workflow}"`);
+        const problem = idProblem(q.conversation);
+        if (problem) throw new Error(`conversation "${q.conversation}" ${problem}`);
+      }
+      // A conversation turn from strut's own app opens its session as it is
+      // only where the session rules let it (`appSessionId`: the viewer's
+      // own, `<actor>/…`); anywhere else it would land in a thread of the
+      // app's that no conversation lists. So that turn is refused, saying so
+      // (plans/jamie-app.md §3.1 "Not built": a Hive conversation's bare id).
+      if (isFirstParty(by.app) && isConversationFlow(flow)) {
+        const session = (q.input as Record<string, unknown> | undefined)?.["session"];
+        if (typeof session === "string" && appSessionId(session, by.app!.name, by.actor, q.job, true) !== session) {
+          throw new Error(
+            `conversation_elsewhere: "${session}" is not one of your own conversations here (${by.actor ?? "no viewer"}/…), so a turn from this app cannot continue it — read it here, continue it where it started`,
+          );
+        }
+      }
       // Dedupe in flight (§5.1): the run launched under this key, while it
       // lives. Keys whose runs have ended are let go here.
       for (const [k, id] of launchKeys) if (!liveKey(k.slice(0, k.indexOf("\0")), id)) launchKeys.delete(k);
@@ -5665,6 +5723,7 @@ export async function createStrut<TServices = unknown>(
           ...(q.params ? { params: q.params } : {}),
           ...(q.job ? { job: q.job } : {}),
           ...(q.job && q.title ? { title: q.title } : {}),
+          ...(q.conversation ? { conversation: q.conversation } : {}),
           // A first-party page's turn is the person's (plans/jamie-app.md
           // §3): strut is its host, so strut wakes it when its jobs end.
           ...(isFirstParty(by.app) ? { wake: true } : {}),
@@ -5736,6 +5795,10 @@ export async function createStrut<TServices = unknown>(
   };
   if (!(services as Record<string, unknown>)["runs"]) (services as Record<string, unknown>)["runs"] = runsCap;
   (services as Record<string, unknown>)["conversations"] ??= conversations;
+  // The model catalog (`GET /llm/models`), for the `llm/models` step: one
+  // list, one default, whether a route or a page reads it.
+  const llmModels = () => listModelOptions({ default: chatModel, secrets: secretsCap });
+  (services as Record<string, unknown>)["llmModels"] ??= llmModels;
 
   // Automations (plans/automations.md): scheduled launches go through the
   // same detached path as `POST /run`, stamped with their automation.
@@ -7255,7 +7318,7 @@ export async function createStrut<TServices = unknown>(
 
   app.get("/llm/models", async (c) => {
     try {
-      return c.json(await listModelOptions({ default: chatModel, secrets: secretsCap }));
+      return c.json(await llmModels());
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
     }
