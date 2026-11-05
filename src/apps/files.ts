@@ -38,7 +38,7 @@ export function validateAppName(name: string): void {
 }
 
 /** The names strut ships its own apps under (plans/jamie-app.md §3): seeded
- *  at boot (`strut/views`, `strut/assistant`), and FIRST-PARTY — a page of
+ *  at boot (`strut/views`, `strut/jamie`), and FIRST-PARTY — a page of
  *  one acts with its viewer's rights (src/apps/tools.ts `firstPartyApp`).
  *  So no door but strut's seed publishes under it. */
 export const FIRST_PARTY_PREFIX = "strut/";

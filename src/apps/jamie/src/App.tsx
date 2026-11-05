@@ -1,8 +1,8 @@
-// strut/assistant (plans/jamie-app.md §5): the person's assistant — their
+// strut/jamie (plans/jamie-app.md §5): the person's assistant — their
 // conversations with the workspace's `orchestrator`, as Hive's org page
 // draws them (`ChatsLayout`): the chat list beside the thread. The page
 // opens on a new conversation; a row in the list or a deep link
-// (`?app=strut/assistant&input=session%3D…`) opens an earlier one. A
+// (`?app=strut/jamie&input=session%3D…`) opens an earlier one. A
 // first-party app (src/apps/tools.ts `firstPartyApp`): it acts with its
 // viewer's own rights.
 import { useEffect, useState } from "react";
@@ -53,9 +53,12 @@ export default function App() {
     setDraft(newConversationId(viewer));
   }, [active, draft, viewer]);
 
-  const open = (id: string) => {
+  /** A job to show in the open conversation: a click on it in the list. */
+  const [focusJob, setFocusJob] = useState<{ job: string; at: number } | null>(null);
+  const open = (id: string, job?: string) => {
     setDraft(null);
     setActive(id);
+    setFocusJob(job ? { job, at: Date.now() } : null);
     if (narrow) setListShown(false);
   };
   const newChat = () => {
@@ -85,6 +88,7 @@ export default function App() {
               <Thread
                 session={session}
                 draft={!!draft}
+                {...(focusJob ? { focusJob } : {})}
                 onStarted={(id) => {
                   setDraft(null);
                   setActive(id);

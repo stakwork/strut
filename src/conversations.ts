@@ -22,11 +22,16 @@
  *   viewers/<encoded actor>.json — one person's list: a row per conversation
  *                                 (the record's facts, copied) and their own
  *                                 archived + seen
+ *   shared.json                 — the ids of the shared ones: every viewer's
+ *                                 list shows them (`team`) until they open one
  *   built.json                  — the stamp of the one-off build below
  *
  * Written when a turn LAUNCHES and when it ENDS (createStrut's launcher), so
  * a turn that failed — which commits nothing to the session — still shows,
- * with its error. A session from before the index is built from its turn
+ * with its error. At its end the record also takes the JOBS the turn started
+ * or continued (read once from its log), so a list row shows them — each
+ * with its title, whether it runs, and the pull requests it delivered, read
+ * from the job's record at list time. A session from before the index is built from its turn
  * lines (`SessionStore.turns`): one by one when it is read, and all of them
  * once, at the first list. Never from the runs.
  */
@@ -37,7 +42,7 @@ import { dirname, join } from "node:path";
 import type { ArtifactRef } from "./artifact-refs.js";
 import type { Scope } from "./auth.js";
 import type { Flow, RunAttachment, RunEvent, RunSummary, WakeMark } from "./core.js";
-import { withLock } from "./jobs.js";
+import { jobRoot, readJobRecord, withLock, type JobRun } from "./jobs.js";
 import { briefOf, listProposals, proposalsRoot, type ProposalBrief } from "./proposals.js";
 import { APP_NAMESPACE, PEER_NAMESPACE, encodeId, idProblem, type SessionStore, type SessionTurn } from "./session-store.js";
 import type { RunStore } from "./store.js";
@@ -55,6 +60,10 @@ export const CONVERSATION_TURNS_MAX = 100;
 export const CONVERSATION_WAIT_MAX_MS = 55_000;
 /** Settled turns kept read, per process. */
 const TURN_CACHE_MAX = 2_000;
+/** A list row's jobs, at most: the newest. */
+export const CONVERSATION_ROW_JOBS = 10;
+/** Settled job runs' pull requests kept read, per process. */
+const PR_CACHE_MAX = 5_000;
 /** The file of the viewer with no actor (a strut with none keeps one list
  *  for everyone): `encodeURIComponent` never writes an `@`. */
 const NO_ACTOR_FILE = "@none";
@@ -157,6 +166,10 @@ export interface ConversationRecord {
   viewers: string[];
   /** Oldest first. */
   turns: ConversationRun[];
+  /** The jobs its turns started or continued, least recently first (a job
+   *  continued again moves to the end). Absent on a record from before
+   *  they were kept: filled in when it is next listed. */
+  jobs?: string[];
 }
 
 /** One person's row for a conversation: the record's facts and their own
@@ -174,14 +187,89 @@ export interface ConversationEntry {
   archived?: true;
   /** When this viewer last read it. */
   seenAt?: string;
+  /** The record's job ids, as it keeps them. */
+  jobs?: string[];
+  /** Who took its first turn. */
+  startedBy?: string;
 }
 
 /** A row of `conversation/list`. */
-export interface ConversationListItem extends ConversationEntry {
+export interface ConversationListItem extends Omit<ConversationEntry, "jobs"> {
   /** Something happened since `seenAt`. */
   unread: boolean;
   /** A turn of it is in flight in this process. */
   running?: true;
+  /** The jobs it started or continued, most recent first (at most
+   *  `CONVERSATION_ROW_JOBS`; `moreJobs` counts the rest). */
+  jobs?: ConversationJob[];
+  moreJobs?: number;
+  /** Listed because it is SHARED, not the viewer's yet: opening it makes it
+   *  theirs. Never unread. */
+  team?: true;
+}
+
+/** A job as a list row shows it. */
+export interface ConversationJob {
+  job: string;
+  /** The job's title (its record's). */
+  title?: string;
+  /** A turn of it is in flight in this process. */
+  running?: true;
+  /** The pull requests its turns delivered, the newest first, each once. */
+  prs?: ConversationPr[];
+}
+
+/** A pull request a job delivered (an artifact of kind `pull_request`), as
+ *  the job reported it; its live state is the PR card's (`github/pr-status`). */
+export interface ConversationPr {
+  url: string;
+  title?: string;
+  /** `owner/name`. */
+  repo: string;
+  number: number;
+  /** As reported: `open`, `draft`, `merged`, `closed`. */
+  state?: string;
+}
+
+/** A GitHub pull request's address in a URL. */
+const PR_URL = /^https:\/\/github\.com\/([^/\s]+\/[^/\s]+)\/pull\/(\d+)/;
+
+/** The pull requests among a run output's `artifacts` — `kind:
+ *  "pull_request"` with a GitHub link — each once. */
+export function pullRequestsOf(output: unknown): ConversationPr[] {
+  const list = (output as { artifacts?: unknown } | null | undefined)?.artifacts;
+  if (!Array.isArray(list)) return [];
+  const out: ConversationPr[] = [];
+  for (const a of list as Array<Record<string, unknown>>) {
+    if (a?.["kind"] !== "pull_request") continue;
+    const content = objectOf(a["content"]);
+    const url = typeof a["url"] === "string" ? a["url"] : typeof content?.["url"] === "string" ? content["url"] : "";
+    const m = PR_URL.exec(url);
+    if (!m || out.some((p) => p.repo === m[1] && p.number === Number(m[2]))) continue;
+    const state = content?.["state"];
+    out.push({
+      url: `https://github.com/${m[1]}/pull/${m[2]}`,
+      ...(typeof a["title"] === "string" && a["title"] ? { title: a["title"] } : {}),
+      repo: m[1]!,
+      number: Number(m[2]),
+      ...(typeof state === "string" ? { state } : {}),
+    });
+  }
+  return out;
+}
+
+/** A conversation's jobs after more turns: each turn's jobs, a job seen
+ *  again moved to the end. */
+export function withJobs(prev: readonly string[], turns: readonly (readonly TurnJob[])[]): string[] {
+  const out = [...prev];
+  for (const t of turns) {
+    for (const j of t) {
+      const i = out.indexOf(j.job);
+      if (i >= 0) out.splice(i, 1);
+      out.push(j.job);
+    }
+  }
+  return out;
 }
 
 /** One turn as a person reads it. */
@@ -201,7 +289,9 @@ export interface ConversationTurn {
    *  log has no mark). */
   wake?: WakeMark | true;
   /** The files the person attached. */
-  attachments?: Array<Pick<RunAttachment, "name" | "mediaType" | "size">>;
+  /** The files the person attached, each where the turn's run keeps it
+   *  (`path`, read with `run/files` on the turn's run). */
+  attachments?: Array<Pick<RunAttachment, "name" | "mediaType" | "size" | "path">>;
   text?: string;
   ask?: string;
   artifacts?: ArtifactRef[];
@@ -338,6 +428,8 @@ function factsOf(rec: ConversationRecord): Omit<ConversationEntry, "archived" | 
     ...(last?.status ? { status: last.status } : {}),
     ...(rec.shared ? { shared: true as const } : {}),
     ...(rec.forkedFrom ? { forkedFrom: rec.forkedFrom } : {}),
+    ...(rec.jobs ? { jobs: rec.jobs } : {}),
+    ...(rec.turns[0]?.by ? { startedBy: rec.turns[0].by } : {}),
   };
 }
 
@@ -358,6 +450,15 @@ export function createConversations(deps: ConversationsDeps): Conversations {
   const recordFile = (id: string) => recordFileIn(deps.dataDir, id);
   const viewerFile = (key: string) => join(root, "viewers", `${key ? encodeId(key) : NO_ACTOR_FILE}.json`);
   const builtFile = join(root, "built.json");
+  const sharedFile = join(root, "shared.json");
+  const readShared = async () => (await readJson<{ ids: string[] }>(sharedFile))?.ids ?? [];
+  /** A conversation in or out of the shared index. */
+  const markShared = (id: string, on: boolean) =>
+    withLock(sharedFile, async () => {
+      const ids = await readShared();
+      const next = on ? (ids.includes(id) ? ids : [...ids, id]) : ids.filter((x) => x !== id);
+      if (next !== ids) await writeJson(sharedFile, { ids: next });
+    });
   /** The rev of each record written in this process: `wait` polls it. */
   const revs = new Map<string, number>();
   /** Settled turns, read once: a settled run never changes. Proposals are
@@ -498,11 +599,79 @@ export function createConversations(deps: ConversationsDeps): Conversations {
     return itemOf(idx?.conversations[rec.id] ?? factsOf(rec));
   };
 
-  const itemOf = (e: ConversationEntry): ConversationListItem => ({
+  const itemOf = ({ jobs: _jobs, ...e }: ConversationEntry): ConversationListItem => ({
     ...e,
     unread: !e.seenAt || e.seenAt < e.updatedAt,
     ...(deps.running(e.id) ? { running: true as const } : {}),
   });
+
+  /** The jobs a conversation's turns started or continued, in turn order. */
+  const jobsOfTurns = async (turns: readonly ConversationRun[]): Promise<TurnJob[]> => {
+    const out: TurnJob[] = [];
+    for (const t of turns) out.push(...turnJobs(await deps.store.getRunEvents(t.workflow, t.runId).catch(() => [] as RunEvent[])));
+    return out;
+  };
+
+  /** A record from before its jobs were kept: read them from its turns,
+   *  once, in the background (the next list shows them). */
+  const backfilling = new Set<string>();
+  const backfillJobs = (id: string) => {
+    if (backfilling.has(id)) return;
+    backfilling.add(id);
+    void (async () => {
+      const rec = await readRecord(id);
+      if (!rec || rec.jobs) return;
+      const jobs = await jobsOfTurns(rec.turns.filter((t) => t.status));
+      // Never `mutate`: a record gone meanwhile is not built again here.
+      await withLock(recordFile(id), async () => {
+        const r = await readRecord(id);
+        if (!r || r.jobs) return;
+        r.jobs = withJobs([], [jobs]);
+        r.rev += 1;
+        await writeJson(recordFile(id), r);
+        revs.set(id, r.rev);
+        await refreshViewers(r);
+      });
+    })()
+      .catch((err) => console.error(`[conversations] ${id}: its jobs:`, err))
+      .finally(() => backfilling.delete(id));
+  };
+
+  /** A settled job run's pull requests, read once. */
+  const prsByRun = new Map<string, ConversationPr[]>();
+  const prsOfRun = async (r: JobRun): Promise<ConversationPr[]> => {
+    const hit = prsByRun.get(r.runId);
+    if (hit) return hit;
+    const summary = await deps.store.getRunSummary(r.workflow, r.runId).catch(() => null);
+    if (!summary) return [];
+    const prs = summary.status === "success" ? pullRequestsOf(summary.output) : [];
+    if (prsByRun.size >= PR_CACHE_MAX) prsByRun.delete(prsByRun.keys().next().value!);
+    prsByRun.set(r.runId, prs);
+    return prs;
+  };
+
+  /** A job as a row shows it: its record's title, whether a turn of it is
+   *  live here, and the pull requests its turns delivered. */
+  const jobBrief = async (job: string): Promise<ConversationJob> => {
+    const rec = await readJobRecord(jobRoot(deps.dataDir, job)).catch(() => null);
+    const turns = (rec?.runs ?? []).filter((r) => !r.parentRunId);
+    const running = turns.slice(-3).some((r) => deps.liveState(r.workflow, r.runId) !== undefined);
+    const prs: ConversationPr[] = [];
+    for (let i = turns.length - 1; i >= 0; i--) {
+      for (const p of await prsOfRun(turns[i]!)) if (!prs.some((q) => q.url === p.url)) prs.push(p);
+    }
+    return { job, ...(rec?.title ? { title: rec.title } : {}), ...(running ? { running: true as const } : {}), ...(prs.length ? { prs } : {}) };
+  };
+
+  const withJobBriefs = async (item: ConversationListItem, ids: readonly string[] | undefined): Promise<ConversationListItem> => {
+    if (!ids?.length) return item;
+    const newest = ids.slice(-CONVERSATION_ROW_JOBS).reverse();
+    return {
+      ...item,
+      jobs: await Promise.all(newest.map(jobBrief)),
+      ...(ids.length > newest.length ? { moreJobs: ids.length - newest.length } : {}),
+    };
+  };
 
   /** One turn, read from its run. */
   const readTurn = async (t: ConversationRun): Promise<Omit<ConversationTurn, "turn" | "proposals">> => {
@@ -522,7 +691,7 @@ export function createConversations(deps: ConversationsDeps): Conversations {
     const error = summary?.error?.message ?? (terminal?.["error"] as { message?: string } | undefined)?.message;
     const input = (summary?.input ?? start?.["input"]) as Record<string, unknown> | undefined;
     const mark = start?.["wake"] as WakeMark | undefined;
-    const attachments = (start?.["attachments"] as RunAttachment[] | undefined)?.map((a) => ({ name: a.name, mediaType: a.mediaType, size: a.size }));
+    const attachments = (start?.["attachments"] as RunAttachment[] | undefined)?.map((a) => ({ name: a.name, mediaType: a.mediaType, size: a.size, path: a.path }));
     const reply = ended ? replyOf(output) : {};
     const job = summary?.job ?? (start?.["job"] as string | undefined);
     const artifacts = ended === "success" ? await deps.artifactRefs(t.runId, output, job).catch(() => undefined) : undefined;
@@ -562,7 +731,7 @@ export function createConversations(deps: ConversationsDeps): Conversations {
           if (rec?.turns.some((r) => r.runId === t.runId)) return false; // a resume
           const now = new Date().toISOString();
           const owner = ownerOf(id);
-          const next: ConversationRecord = rec ?? { id, title: "", createdAt: now, updatedAt: now, rev: 0, viewers: owner ? [owner] : [], turns: [] };
+          const next: ConversationRecord = rec ?? { id, title: "", createdAt: now, updatedAt: now, rev: 0, viewers: owner ? [owner] : [], turns: [], jobs: [] };
           next.turns.push({ runId: t.runId, workflow: t.workflow, at: now, ...(by ? { by } : {}), ...(t.wake ? { wake: true as const } : {}) });
           next.updatedAt = now;
           if (!next.title && !next.renamed && !t.wake) next.title = titleOf(t.prompt);
@@ -575,11 +744,17 @@ export function createConversations(deps: ConversationsDeps): Conversations {
     },
 
     async ended(id, runId, status) {
+      // The jobs it started, read from its log before the lock (a record
+      // from before they were kept reads every turn's).
+      const before = await readRecord(id);
+      const turn = before?.turns.find((r) => r.runId === runId);
+      const jobs = turn ? (before!.jobs ? await jobsOfTurns([turn]) : await jobsOfTurns(before!.turns)) : [];
       await mutate(id, (rec) => {
         const turn = rec?.turns.find((r) => r.runId === runId);
         if (!rec || !turn) return false;
         turn.status = status;
         rec.updatedAt = new Date().toISOString();
+        rec.jobs = withJobs(rec.jobs ?? [], [jobs]);
         return rec;
       });
     },
@@ -591,14 +766,29 @@ export function createConversations(deps: ConversationsDeps): Conversations {
       const idx = await readJson<{ conversations: Record<string, ConversationEntry> }>(viewerFile(keyOf(by)));
       const words = (q.q ?? "").toLowerCase().split(/\s+/).filter(Boolean);
       const cursor = (e: ConversationEntry) => `${e.updatedAt}|${e.id}`;
-      const rows = Object.values(idx?.conversations ?? {})
+      // The shared ones that are not the viewer's yet: listed for everyone.
+      const mine = idx?.conversations ?? {};
+      const team: ConversationEntry[] = [];
+      if (!q.archived) {
+        for (const id of await readShared()) {
+          if (mine[id]) continue;
+          const rec = await readRecord(id);
+          if (rec?.shared) team.push(factsOf(rec));
+        }
+      }
+      const isTeam = new Set(team.map((e) => e.id));
+      const rows = [...Object.values(mine), ...team]
         .filter((e) => (q.archived ? e.archived : !e.archived))
         .filter((e) => words.every((w) => e.title.toLowerCase().includes(w)))
         .sort((a, b) => cursor(b).localeCompare(cursor(a)))
         .filter((e) => !q.before || cursor(e) < q.before);
       const limit = Math.min(CONVERSATION_LIST_MAX, Math.max(1, q.limit ?? CONVERSATION_LIST_DEFAULT));
       const page = rows.slice(0, limit);
-      return { conversations: page.map(itemOf), ...(rows.length > limit ? { next: cursor(page[page.length - 1]!) } : {}) };
+      for (const e of page) if (!e.jobs) backfillJobs(e.id);
+      const conversations = await Promise.all(
+        page.map(async (e) => withJobBriefs(isTeam.has(e.id) ? { ...itemOf(e), unread: false, team: true as const } : itemOf(e), e.jobs)),
+      );
+      return { conversations, ...(rows.length > limit ? { next: cursor(page[page.length - 1]!) } : {}) };
     },
 
     async get(q, by) {
@@ -656,6 +846,7 @@ export function createConversations(deps: ConversationsDeps): Conversations {
             if (q.shared === false) delete r.shared;
             return r;
           })) ?? rec;
+        if (q.shared !== undefined) await markShared(rec.id, q.shared);
       }
       const item = await entryOf(rec, by);
       if (q.archived === undefined && q.seen === undefined) return item;
@@ -705,6 +896,7 @@ export function createConversations(deps: ConversationsDeps): Conversations {
           forkedFrom: src.id,
           viewers: [key],
           turns: src.turns.filter((t) => t.status),
+          ...(src.jobs ? { jobs: src.jobs } : {}),
         }),
         () => [key],
       );

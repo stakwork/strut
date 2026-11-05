@@ -4,7 +4,7 @@
 // (`job/updates`); open, its reply, what it made (artifact cards) and its
 // claims. What asks something of the person stays visible collapsed: the
 // job's question, why it failed, a captcha.
-import { useState } from "react";
+import { useContext, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Bot, ChevronRight } from "lucide-react";
 import { useJobUpdates, useRun, useStrutClient } from "@strut/kit";
@@ -15,6 +15,8 @@ import { inFlight } from "../lib/chat";
 import type { ArtifactRef, JobView } from "../lib/types";
 import { ArtifactCard, type TurnRuns } from "./ArtifactCard";
 import { ClaimsPanel } from "./ClaimsPanel";
+import { ThreadPrs } from "./PullRequestCard";
+import { prKey, prOf } from "../lib/pr";
 import { Pill } from "./bits";
 
 export function useJob(job: string, live: boolean) {
@@ -47,6 +49,12 @@ export function JobCard({ job, runId, workflow, conversation }: { job: string; r
   const artifacts = (run.data?.artifacts ?? []) as ArtifactRef[];
   const runs: TurnRuns = { byJob: new Map([[job, { workflow: run.data?.workflow ?? workflow ?? "job", runId }]]), byRun: new Map([[runId, { workflow: workflow ?? "job", runId }]]) };
   const captchas = artifacts.filter((a) => a.kind === "captcha");
+  // Its pull requests stay in sight collapsed, unless the thread shows them.
+  const threadPrs = useContext(ThreadPrs);
+  const prs = artifacts.filter((a) => {
+    const pr = prOf(a);
+    return pr && !threadPrs.has(prKey(pr));
+  });
   const error = run.data?.error?.message;
   return (
     <div className="rounded-lg border bg-card text-card-foreground" data-testid="job-card" data-job={job} data-status={status}>
@@ -60,9 +68,9 @@ export function JobCard({ job, runId, workflow, conversation }: { job: string; r
       {running && <LiveStrip job={job} runId={runId} />}
       {!open && ask && <p className="border-t px-3 py-2 text-sm"><span className="font-medium">Asks: </span>{ask}</p>}
       {!open && error && status === "error" && <p className="border-t px-3 py-2 text-xs text-rose-700 dark:text-rose-300">{error}</p>}
-      {!open && captchas.map((a) => (
+      {!open && [...prs, ...captchas].map((a) => (
         <div key={a.id} className="border-t px-3 py-2">
-          <ArtifactCard artifact={a} runs={runs} {...(conversation ? { conversation } : {})} />
+          <ArtifactCard artifact={a} runs={runs} job={job} {...(conversation ? { conversation } : {})} />
         </div>
       ))}
       {open && (
@@ -71,7 +79,7 @@ export function JobCard({ job, runId, workflow, conversation }: { job: string; r
           {ask && <p className="rounded-md bg-amber-500/10 px-2 py-1.5 text-sm"><span className="font-medium">Asks: </span>{ask}</p>}
           {error && <p className="text-xs text-rose-700 dark:text-rose-300">{error}</p>}
           {artifacts.map((a) => (
-            <ArtifactCard key={a.id} artifact={a} runs={runs} {...(conversation ? { conversation } : {})} />
+            <ArtifactCard key={a.id} artifact={a} runs={runs} job={job} {...(conversation ? { conversation } : {})} />
           ))}
           {view.data?.claims && view.data.claims.length > 0 && <ClaimsPanel job={job} claims={view.data.claims} runId={view.data.runs.find((r) => !r.parentRunId)?.runId ?? runId} />}
         </div>

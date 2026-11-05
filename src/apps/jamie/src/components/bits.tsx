@@ -1,6 +1,7 @@
 // Small pieces every card shares: a status pill, an icon button with its
-// label as a tooltip, a quiet notice line.
-import type { ReactNode } from "react";
+// label as a tooltip, a quiet notice line, a copy button.
+import { useState, type ReactNode } from "react";
+import { Check, Copy } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { Tone } from "../lib/jobs";
 
@@ -10,6 +11,7 @@ export const TONE: Record<Tone, string> = {
   attention: "bg-amber-500/10 text-amber-700 ring-amber-500/20 dark:text-amber-300",
   failed: "bg-rose-500/10 text-rose-700 ring-rose-500/20 dark:text-rose-300",
   muted: "bg-muted text-muted-foreground ring-border",
+  merged: "bg-violet-500/10 text-violet-700 ring-violet-500/20 dark:text-violet-300",
 };
 
 export function Pill({ tone, children, title, spin }: { tone: Tone; children: ReactNode; title?: string; spin?: boolean }) {
@@ -72,3 +74,48 @@ export function Notice({ tone = "muted", children }: { tone?: "muted" | "warn" |
 
 /** A thrown step's message, as a person reads it. */
 export const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err)).replace(/^step_run refused: /, "");
+
+/** Text onto the clipboard. A framed page may be denied the clipboard API
+ *  (its frame's `allow` decides), so a selected textarea and `copy` is the
+ *  fallback, which a click allows. */
+export async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    const area = document.createElement("textarea");
+    area.value = text;
+    area.setAttribute("readonly", "");
+    area.style.position = "fixed";
+    area.style.opacity = "0";
+    document.body.appendChild(area);
+    area.select();
+    try {
+      return document.execCommand("copy");
+    } catch {
+      return false;
+    } finally {
+      area.remove();
+    }
+  }
+}
+
+/** Copies `text`; a check for a moment once it did. */
+export function CopyButton({ text, label = "Copy", className }: { text: string; label?: string; className?: string }) {
+  const [done, setDone] = useState(false);
+  return (
+    <IconButton
+      label={done ? "Copied" : label}
+      className={cn("size-6 [&_svg]:size-3.5", className)}
+      onClick={() =>
+        void copyText(text).then((ok) => {
+          if (!ok) return;
+          setDone(true);
+          setTimeout(() => setDone(false), 1500);
+        })
+      }
+    >
+      {done ? <Check /> : <Copy />}
+    </IconButton>
+  );
+}

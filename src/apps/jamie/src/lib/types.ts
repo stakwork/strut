@@ -15,6 +15,33 @@ export interface ConversationListItem {
   seenAt?: string;
   unread: boolean;
   running?: true;
+  /** The jobs it started or continued, most recent first. */
+  jobs?: ConversationJob[];
+  /** Jobs past those listed. */
+  moreJobs?: number;
+  /** Shared, and not the viewer's yet: opening it makes it theirs. */
+  team?: true;
+  /** Who took its first turn. */
+  startedBy?: string;
+}
+
+/** A job as a list row shows it. */
+export interface ConversationJob {
+  job: string;
+  title?: string;
+  running?: true;
+  /** The pull requests it delivered, newest first. */
+  prs?: ConversationPr[];
+}
+
+/** A pull request a job delivered, as it reported it. */
+export interface ConversationPr {
+  url: string;
+  title?: string;
+  /** `owner/name`. */
+  repo: string;
+  number: number;
+  state?: string;
 }
 
 /** `conversation/list`. */
@@ -104,7 +131,7 @@ export interface ConversationTurn {
   status: string;
   prompt?: string;
   wake?: WakeMark | true;
-  attachments?: Array<{ name: string; mediaType: string; size: number }>;
+  attachments?: Array<{ name: string; mediaType: string; size: number; path?: string }>;
   text?: string;
   ask?: string;
   artifacts?: ArtifactRef[];

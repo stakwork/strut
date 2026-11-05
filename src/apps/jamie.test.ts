@@ -1,7 +1,7 @@
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -17,19 +17,21 @@ import { createRegistry } from "../steps/registry.js";
 import type { StepRegistry } from "../core.js";
 import type { KitLocation } from "./kit.js";
 import { STEP_RUN_TOOL, buildAppTools } from "./tools.js";
-import { ASSISTANT_APP, ASSISTANT_DIR, assistantTitle, deploymentSource, seedAssistantApp } from "./assistant-seed.js";
+import { JAMIE_APP, JAMIE_DIR, RETIRED_APP, seedJamieApp } from "./jamie-seed.js";
 import { VIEWS_APP } from "./views-seed.js";
 import modelsStep from "../steps/lib/llm/models.js";
 import verifyStep from "../steps/lib/job/verify.js";
 import evidenceStep from "../steps/lib/job/evidence.js";
 import type { JobsCapability } from "../jobs.js";
-import { BUSY_NOTICE, NOT_YOURS_NOTICE, detectSlash, groupByDay, insertSlash, isOwn, newConversationId, sendRefusal, silentReply, timeLine, turnContext } from "./assistant/src/lib/chat.js";
-import { appKey, placeArtifact, servedFile } from "./assistant/src/lib/artifacts.js";
-import { captchaPrompt, claimPill, jobLook, liveStrip, openSlot, parseCaptcha, sortClaims, tapAt, toggleCell } from "./assistant/src/lib/jobs.js";
-import type { LedgerClaim } from "./assistant/src/lib/types.js";
+import { BUSY_NOTICE, NOT_YOURS_NOTICE, detectSlash, groupByDay, insertSlash, isOwn, newConversationId, sendRefusal, silentReply, timeLine, turnContext } from "./jamie/src/lib/chat.js";
+import { appKey, placeArtifact, servedFile } from "./jamie/src/lib/artifacts.js";
+import { captchaPrompt, claimPill, jobLook, liveStrip, openSlot, parseCaptcha, sortClaims, tapAt, toggleCell } from "./jamie/src/lib/jobs.js";
+import type { LedgerClaim } from "./jamie/src/lib/types.js";
+import { canMerge, checksLine, fixPrompt, prKey, prLive, prOf, prPill } from "./jamie/src/lib/pr.js";
+import { attachmentShow } from "./jamie/src/lib/attachments.js";
 
 /**
- * `strut/assistant` (plans/jamie-app.md §5): the person's assistant as a
+ * `strut/jamie` (plans/jamie-app.md §5): the person's assistant as a
  * first-party app strut ships — its pure parts (the turn's context, the
  * list's days, new ids, what a refused send means, "/" for a Concept, where
  * a deliverable shows, a job's card and captcha), its seed beside
@@ -38,7 +40,7 @@ import type { LedgerClaim } from "./assistant/src/lib/types.js";
 
 const runs = { byJob: new Map([["j1", { workflow: "job", runId: "r-job" }]]), byRun: new Map([["r-turn", { workflow: "orchestrator", runId: "r-turn" }]]) };
 
-describe("strut/assistant — the pure parts", () => {
+describe("strut/jamie — the pure parts", () => {
   it("a turn's context: the time where the person is, then where the reply is read; UTC for a bad zone", () => {
     const now = new Date("2026-11-04T14:02:00Z");
     // Hive's format (`orchestratorContextLine`); ICU puts a comma after the weekday or not.
@@ -167,30 +169,54 @@ describe("strut/assistant — the pure parts", () => {
     assert.equal(captchaPrompt({ round: 2, site: "x.com", taps: once }), '[captcha-answer] {"round":2,"site":"x.com","taps":[{"nx":0.16666666666666666,"ny":0.16666666666666666}]}');
   });
 
-  it("STRUT_HOST_CONFIG's `assistant`: false or { title }", async () => {
-    const dir = await mkdtemp(join(tmpdir(), "strut-assistant-host-"));
+  it("a pull request: which artifact is one, its pill, its checks in a line, Merge and Fix", () => {
+    const at = { repo: "a/b", number: 5, url: "https://github.com/a/b/pull/5" };
+    assert.deepEqual(prOf({ kind: "pull_request", url: "https://github.com/a/b/pull/5/files" }), at);
+    assert.deepEqual(prOf({ kind: "pull_request", content: '{"url":"https://github.com/a/b/pull/5","state":"open"}' }), at);
+    assert.deepEqual(prOf({ kind: "pull_request", content: "https://github.com/a/b/pull/5" }), at, "a bare link");
+    assert.equal(prOf({ kind: "markdown", url: "https://github.com/a/b/pull/5" }), null);
+    assert.equal(prOf({ kind: "pull_request", url: "https://gitlab.com/a/b/-/merge_requests/5" }), null);
+    assert.equal(prKey({ repo: "A/B", number: 5 }), prKey(at), "one card per pull request, whatever the case");
+    assert.deepEqual(prPill("merged"), { label: "Merged", tone: "merged" });
+    assert.deepEqual(prPill("draft"), { label: "Draft", tone: "muted" });
+    assert.equal(checksLine({ passed: 2, failed: 1, running: 1, skipped: 0, total: 4 }), "2 of 4 checks passed · 1 failed · 1 running");
+    assert.equal(checksLine({ passed: 0, failed: 0, running: 0, skipped: 0, total: 0 }), "");
+    assert.equal(canMerge({ state: "open", mergeable: null }), true, "GitHub still checking: offered, it refuses a conflict itself");
+    assert.equal(canMerge({ state: "open", mergeable: false }), false);
+    assert.equal(canMerge({ state: "draft", mergeable: true }), false);
+    assert.equal(prLive("open"), true);
+    assert.equal(prLive("merged"), false);
+    assert.equal(
+      fixPrompt({ repo: "a/b", number: 5, head: "fix/login", checks: [{ name: "lint", status: "failed" }, { name: "test", status: "passed" }, { name: "e2e", status: "failed" }] }),
+      "The checks on a/b#5 failed: lint, e2e. Find out why, fix it, and push the fix to fix/login — the same pull request.",
+    );
+  });
+
+  it("an attached file: an image a thumbnail, text to read, the rest a chip; nothing without a path", () => {
+    const at = (name: string, mediaType: string, path: string | null = `attachments/${name}`) => attachmentShow({ name, mediaType, ...(path ? { path } : {}) });
+    assert.equal(at("a.png", "image/png"), "image");
+    assert.equal(at("a.svg", "image/svg+xml"), "file", "an SVG is a document, never drawn as an image here");
+    assert.equal(at("notes.md", "application/octet-stream"), "text", "by its name");
+    assert.equal(at("data.json", "application/json"), "text");
+    assert.equal(at("brief.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"), "file");
+    assert.equal(at("a.png", "image/png", null), "file", "a turn read before strut said where");
+  });
+
+  it("STRUT_HOST_CONFIG's `jamie`: false or nothing", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "strut-jamie-host-"));
     const file = join(dir, "host.json");
     try {
-      await writeFile(file, JSON.stringify({ assistant: { title: "Jamie" } }));
-      assert.deepEqual(hostConfigFromEnv({ STRUT_HOST_CONFIG: file }), { assistant: { title: "Jamie" } });
-      await writeFile(file, JSON.stringify({ assistant: false }));
-      assert.deepEqual(hostConfigFromEnv({ STRUT_HOST_CONFIG: file }), { assistant: false });
-      await writeFile(file, JSON.stringify({ assistant: { name: "x" } }));
-      assert.throws(() => hostConfigFromEnv({ STRUT_HOST_CONFIG: file }), /"assistant" must be false or \{ title\?: string \}/);
+      await writeFile(file, JSON.stringify({ jamie: false }));
+      assert.deepEqual(hostConfigFromEnv({ STRUT_HOST_CONFIG: file }), { jamie: false });
+      await writeFile(file, JSON.stringify({ jamie: { title: "x" } }));
+      assert.throws(() => hostConfigFromEnv({ STRUT_HOST_CONFIG: file }), /"jamie" must be false/);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
   });
-
-  it("the deployment's title: one line, cut, a default when none", () => {
-    assert.equal(assistantTitle(undefined), "Assistant");
-    assert.equal(assistantTitle("  Jamie \n"), "Jamie");
-    assert.equal(assistantTitle("x".repeat(100)).length, 60);
-    assert.equal(deploymentSource("Ja\"mie"), '// What this deployment calls its assistant: written by the seed\n// (src/apps/assistant-seed.ts) from createStrut({ assistant: { title } }).\nexport const TITLE = "Ja\\"mie";\n');
-  });
 });
 
-describe("strut/assistant — seeded at boot beside strut/views", () => {
+describe("strut/jamie — seeded at boot beside strut/views", () => {
   let kit: KitLocation;
   const dirs: string[] = [];
   const tmp = async (p: string) => {
@@ -206,14 +232,14 @@ describe("strut/assistant — seeded at boot beside strut/views", () => {
     for (const d of dirs) await rm(d, { recursive: true, force: true });
   });
 
-  it("publishes strut/assistant built against the kit with strut/views compiled in; a reboot is a no-op; a title is another version; `assistant: false` seeds nothing", async () => {
-    const dataDir = await tmp("strut-assistant-seed-");
+  it("publishes strut/jamie built against the kit with strut/views compiled in; a reboot is a no-op; `jamie: false` seeds nothing; strut/assistant, its old name, goes", async () => {
+    const dataDir = await tmp("strut-jamie-seed-");
     const first = await createStrut({ ...quiet, workspace: new FileWorkspaceStore(dataDir), store: new MemoryRunStore(), kit });
-    const app = await first.apps.get(ASSISTANT_APP);
+    const app = await first.apps.get(JAMIE_APP);
     assert.ok(app, "seeded");
     assert.deepEqual([app.version, app.publisher, app.versions[app.version]?.source, app.stale], ["v1", "strut", "seed", false]);
-    assert.equal(app.hash, await treeHash(ASSISTANT_DIR));
-    assert.equal(app.manifest.title, "Assistant");
+    assert.equal(app.hash, await treeHash(JAMIE_DIR));
+    assert.equal(app.manifest.title, "Jamie");
     assert.deepEqual(app.manifest.grants.workflows, ["orchestrator", "job", "builder"]);
     const info = JSON.parse(await readFile(join(app.dir, "dist", "build.json"), "utf8"));
     const views = (await first.apps.get(VIEWS_APP))!;
@@ -225,25 +251,25 @@ describe("strut/assistant — seeded at boot beside strut/views", () => {
     assert.ok(info.bytes < 2_000_000, `${info.bytes} bytes`);
 
     const again = await createStrut({ ...quiet, workspace: new FileWorkspaceStore(dataDir), store: new MemoryRunStore(), kit });
-    assert.deepEqual(Object.keys((await again.apps.get(ASSISTANT_APP))!.versions), ["v1"], "no second version");
-    assert.deepEqual(await seedAssistantApp({ workspace: again.workspace, kit }), { version: "v1", changed: false });
+    assert.deepEqual(Object.keys((await again.apps.get(JAMIE_APP))!.versions), ["v1"], "no second version");
+    assert.deepEqual(await seedJamieApp({ workspace: again.workspace, kit }), { version: "v1", changed: false });
 
-    // The deployment's title is written into the version.
-    assert.deepEqual(await seedAssistantApp({ workspace: again.workspace, kit, title: "Jamie" }), { version: "v2", changed: true });
-    const jamie = (await again.apps.get(ASSISTANT_APP))!;
-    assert.equal(jamie.manifest.title, "Jamie");
-    assert.match(await readFile(join(jamie.dir, "src", "deployment.ts"), "utf8"), /TITLE = "Jamie"/);
-    assert.match(await readFile(join(jamie.dir, "dist", "index.html"), "utf8"), /Jamie/);
-    assert.deepEqual(await seedAssistantApp({ workspace: again.workspace, kit }), { version: "v1", changed: true }, "back to the default: v1 again");
+    const off = await createStrut({ ...quiet, workspace: new FileWorkspaceStore(await tmp("strut-jamie-off-")), store: new MemoryRunStore(), kit, jamie: false });
+    assert.equal(await off.apps.get(JAMIE_APP), null);
+    const noViews = await createStrut({ ...quiet, workspace: new FileWorkspaceStore(await tmp("strut-jamie-noviews-")), store: new MemoryRunStore(), kit, views: false });
+    assert.equal(await noViews.apps.get(JAMIE_APP), null, "nothing to build it against: none, and no warning");
 
-    const off = await createStrut({ ...quiet, workspace: new FileWorkspaceStore(await tmp("strut-assistant-off-")), store: new MemoryRunStore(), kit, assistant: false });
-    assert.equal(await off.apps.get(ASSISTANT_APP), null);
-    const noViews = await createStrut({ ...quiet, workspace: new FileWorkspaceStore(await tmp("strut-assistant-noviews-")), store: new MemoryRunStore(), kit, views: false });
-    assert.equal(await noViews.apps.get(ASSISTANT_APP), null, "nothing to build it against: none, and no warning");
+    // The app it was before it was Jamie: the next boot takes it out.
+    const old = join(await tmp("strut-jamie-old-"), "app");
+    await cp(JAMIE_DIR, old, { recursive: true });
+    assert.ok((await again.apps.publish(old, RETIRED_APP, { surface: "person", source: "seed" })).ok);
+    await createStrut({ ...quiet, workspace: new FileWorkspaceStore(dataDir), store: new MemoryRunStore(), kit });
+    assert.equal(await again.apps.get(RETIRED_APP), null, "strut/assistant is gone");
+    assert.ok(await again.apps.get(JAMIE_APP), "strut/jamie stays");
   });
 });
 
-describe("strut/assistant — its steps, as its viewer", () => {
+describe("strut/jamie — its steps, as its viewer", () => {
   const KEY = "assistant-key";
   const ENV = ["ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "STRUT_API_KEY", "AI_SDK_LOG_WARNINGS"];
   let saved: Record<string, string | undefined> = {};
@@ -282,7 +308,7 @@ describe("strut/assistant — its steps, as its viewer", () => {
     process.env["STRUT_API_KEY"] = KEY;
     process.env["ANTHROPIC_API_KEY"] = "test-key";
     process.env["AI_SDK_LOG_WARNINGS"] = "false";
-    root = await mkdtemp(join(tmpdir(), "strut-assistant-steps-"));
+    root = await mkdtemp(join(tmpdir(), "strut-jamie-steps-"));
     server = http.createServer((req, res) => {
       let raw = "";
       req.on("data", (c) => (raw += c));
@@ -307,7 +333,6 @@ describe("strut/assistant — its steps, as its viewer", () => {
       autoResume: false,
       browserWorkflows: false,
       privacyWorkflows: false,
-      assistant: { title: "Jamie" },
     });
     await strut.workspace.publishWorkflow("job", "v-test", { steps: [{ id: "result", type: "pack", config: { text: "{{ input.prompt }}: done", artifacts: [] } }] });
   });
@@ -322,7 +347,7 @@ describe("strut/assistant — its steps, as its viewer", () => {
   });
 
   it("the seeded app is first-party: the list says who it is for, a turn opens the viewer's own conversation, rename and archive are theirs", async () => {
-    const alice = page(ASSISTANT_APP, "alice");
+    const alice = page(JAMIE_APP, "alice");
     const empty = await alice.ok("conversation/list");
     assert.deepEqual([empty.conversations, empty.viewer], [[], "alice"], "who the list is for: a new chat is <viewer>/<id>");
 
@@ -342,11 +367,35 @@ describe("strut/assistant — its steps, as its viewer", () => {
     assert.deepEqual((await alice.ok("conversation/list")).conversations, []);
     const archived = await alice.ok("conversation/list", { archived: true });
     assert.deepEqual(archived.conversations.map((c: any) => [c.id, c.title, c.archived]), [["alice/c1", "Greetings", true]]);
-    assert.deepEqual((await page(ASSISTANT_APP, "bob").ok("conversation/list", { archived: true })).conversations, [], "never another person's");
+    assert.deepEqual((await page(JAMIE_APP, "bob").ok("conversation/list", { archived: true })).conversations, [], "never another person's");
+  });
+
+  it("an attached file is read from its turn: the viewer's own, and a teammate's once the conversation is shared", async () => {
+    const alice = page(JAMIE_APP, "alice");
+    const bob = page(JAMIE_APP, "bob");
+    const png = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex").toString("base64");
+    const { runId } = await alice.ok("run/launch", {
+      workflow: ORCHESTRATOR_WORKFLOW,
+      input: { prompt: "what is this?", session: "alice/c-pic" },
+      attachments: [{ name: "pic.png", mediaType: "image/png", data: png }],
+    });
+    assert.equal((await alice.ok("run/get", { workflow: ORCHESTRATOR_WORKFLOW, runId, wait: 20_000 })).status, "success");
+    const [turn] = (await alice.ok("conversation/get", { session: "alice/c-pic" })).turns;
+    assert.deepEqual(turn.attachments, [{ name: "pic.png", mediaType: "image/png", size: 16, path: "attachments/pic.png" }]);
+    const read = { workflow: ORCHESTRATOR_WORKFLOW, runId, path: turn.attachments[0].path };
+    assert.equal((await alice.ok("run/files", read)).base64, png);
+    assert.match((await bob.call("run/files", read)).error!, /No file/, "not bob's to read");
+
+    await alice.ok("conversation/update", { session: "alice/c-pic", shared: true });
+    const row = (await bob.ok("conversation/list")).conversations.find((c: any) => c.id === "alice/c-pic");
+    assert.deepEqual([row.team, row.startedBy], [true, "alice"], "in bob's list as the team's");
+    assert.equal((await bob.ok("run/files", read)).base64, png, "shared: a teammate reads its turns' files");
+    await alice.ok("conversation/update", { session: "alice/c-pic", shared: false });
+    assert.match((await bob.call("run/files", read)).error!, /No file/, "unshared, and bob never opened it");
   });
 
   it("the model picker's list: llm/models is GET /llm/models", async () => {
-    const alice = page(ASSISTANT_APP, "alice");
+    const alice = page(JAMIE_APP, "alice");
     const viaStep = await alice.ok("llm/models");
     const viaRoute = await (await strut.app.request("/llm/models", { headers: { authorization: `Bearer ${KEY}` } })).json();
     assert.deepEqual(viaStep, viaRoute);
@@ -356,8 +405,14 @@ describe("strut/assistant — its steps, as its viewer", () => {
     assert.ok(bare.models.length > 0, "a bare bag still lists the catalog");
   });
 
+  it("Merge is the viewer's own: strut's page reaches github/merge-pr with the viewer's GitHub token, a model-written page never", async () => {
+    // No token on file for alice: the step's own refusal, past the app's grant and the person gate.
+    assert.match((await page(JAMIE_APP, "alice").call("github/merge-pr", { repo: "a/b", number: 5 })).error!, /no GitHub token for you|github_/, "a GITHUB_TOKEN in this env reaches GitHub, which knows no a/b");
+    assert.match((await page("acme/other", "alice").call("github/merge-pr", { repo: "a/b", number: 5 })).error!, /not|no app/i, "another app holds no grant of it");
+  });
+
   it("a job turn names the viewer's own conversation (a captcha's answer): strut's own app only, never another's", async () => {
-    const alice = page(ASSISTANT_APP, "alice");
+    const alice = page(JAMIE_APP, "alice");
     const { runId } = await alice.ok("run/launch", { workflow: "job", job: "alice-j1", input: { prompt: "[captcha-answer] {}" }, conversation: "alice/c1" });
     const start = (await alice.ok("run/events", { workflow: "job", runId })).find((e: any) => e.type === "run.start");
     assert.deepEqual([start.conversation, start.job, start.wakeAsked], ["alice/c1", "alice-j1", true]);
@@ -373,7 +428,7 @@ describe("strut/assistant — its steps, as its viewer", () => {
     assert.equal((await alice.ok("run/get", { workflow: ORCHESTRATOR_WORKFLOW, runId: hiveRun, wait: 20_000 })).status, "success");
     const named = await alice.ok("run/launch", { workflow: "job", job: "alice-j3", input: { prompt: "x" }, conversation: "c-hive-1" });
     assert.equal((await alice.ok("run/events", { workflow: "job", runId: named.runId })).find((e: any) => e.type === "run.start").conversation, "c-hive-1");
-    assert.match((await page(ASSISTANT_APP, "bob").call("run/launch", { workflow: "job", job: "bob-j1", input: { prompt: "x" }, conversation: "c-hive-1" })).error!, /conversation_not_yours/, "never one bob had no turn in");
+    assert.match((await page(JAMIE_APP, "bob").call("run/launch", { workflow: "job", job: "bob-j1", input: { prompt: "x" }, conversation: "c-hive-1" })).error!, /conversation_not_yours/, "never one bob had no turn in");
     assert.match((await alice.call("run/launch", { workflow: ORCHESTRATOR_WORKFLOW, input: { prompt: "x", session: "alice/c3" }, conversation: "alice/c1" })).error!, /a JOB turn belongs to/);
 
     // A model-written app may not name one.
@@ -388,7 +443,7 @@ describe("strut/assistant — its steps, as its viewer", () => {
   });
 
   it("a run launched elsewhere is the viewer's before its first event lands: run/get waits on it, never 'not found'", async () => {
-    const alice = page(ASSISTANT_APP, "alice");
+    const alice = page(JAMIE_APP, "alice");
     // Hold the run's `run.start` until run/get has read the log to decide
     // whether the run is hers (ownRun reads its head, `getRunStart`) — the
     // window between the launch's 202 and the first event, which a loaded
@@ -415,7 +470,7 @@ describe("strut/assistant — its steps, as its viewer", () => {
       assert.equal(res.status, 202);
       runId = ((await res.json()) as { runId: string }).runId;
       assert.equal((await alice.ok("run/get", { workflow: ORCHESTRATOR_WORKFLOW, runId, wait: 20_000 })).status, "success");
-      assert.match((await page(ASSISTANT_APP, "bob").call("run/get", { workflow: ORCHESTRATOR_WORKFLOW, runId })).error!, /not found/, "and never another viewer's");
+      assert.match((await page(JAMIE_APP, "bob").call("run/get", { workflow: ORCHESTRATOR_WORKFLOW, runId })).error!, /not found/, "and never another viewer's");
     } finally {
       release();
       store.append = append;
@@ -426,7 +481,7 @@ describe("strut/assistant — its steps, as its viewer", () => {
   it("job/verify and job/evidence: a person's acts, from strut's own app, on a job they ran", async () => {
     const dataDir = (strut.services as { dataDir: string }).dataDir;
     await (strut.services as { jobs: JobsCapability }).jobs.recordRun!("alice-jobs", { runId: "r1", workflow: "job", at: new Date().toISOString(), actor: "alice" } as never);
-    const fp = { name: ASSISTANT_APP, version: "v1", firstParty: true as const };
+    const fp = { name: JAMIE_APP, version: "v1", firstParty: true as const };
     const calls: unknown[] = [];
     const services = {
       dataDir,
@@ -448,8 +503,8 @@ describe("strut/assistant — its steps, as its viewer", () => {
     // A filesystem workspace keeps no claims: the step says so.
     await assert.rejects(() => verifyStep.run(cfg, ctx({ services: { dataDir, jobs: {} } })), /Claims need the graph-backed workspace/);
     // And through the page's door, on this (filesystem) strut.
-    const alice = page(ASSISTANT_APP, "alice");
+    const alice = page(JAMIE_APP, "alice");
     assert.match((await alice.call("job/verify", { job: "alice-jobs", detach: true })).error!, /Claims need the graph-backed workspace/);
-    assert.match((await page(ASSISTANT_APP, "bob").call("job/verify", { job: "alice-jobs" })).error!, /not one you started/);
+    assert.match((await page(JAMIE_APP, "bob").call("job/verify", { job: "alice-jobs" })).error!, /not one you started/);
   });
 });

@@ -85,7 +85,7 @@ import { appErrors, createApps, type AppsCapability, type AppPublishResult } fro
 import { fileAppGrants } from "./apps/grants.js";
 import { createAppMonitor, type AppMonitor } from "./apps/monitor.js";
 import { seedViewsApp } from "./apps/views-seed.js";
-import { seedAssistantApp, type AssistantOptions } from "./apps/assistant-seed.js";
+import { RETIRED_APP, seedJamieApp } from "./apps/jamie-seed.js";
 import type { KitLocation } from "./apps/kit.js";
 import { appsRoot, isPreviewLabel, listAppFiles, readAppFile, reservedAppName, validateAppName, writeAppFiles } from "./apps/files.js";
 import { DOCUMENT_FILE, readBuildInfo, withPublicIdentity, withToken, withoutTokenMeta } from "./apps/build.js";
@@ -419,13 +419,12 @@ export interface StrutOptions<TServices = unknown> {
    *  apps import, its page the gallery. Seeded at boot by tree hash, as `job`
    *  is by content hash, when the kit is built. `false` seeds nothing. */
   views?: false;
-  /** `strut/assistant` (`src/apps/assistant-seed.ts`, plans/jamie-app.md
-   *  §5): the person's assistant — the `orchestrator`'s conversations, their
-   *  jobs, proposals and deliverables — as a first-party app, seeded at
-   *  boot after `strut/views` (it imports it; none without it). `title` is what this
-   *  deployment calls its assistant ("Jamie"; "Assistant" when unset).
+  /** `strut/jamie` (`src/apps/jamie-seed.ts`, plans/jamie-app.md §5): Jamie,
+   *  the person's assistant — the `orchestrator`'s conversations, their jobs,
+   *  proposals, pull requests and deliverables — as a first-party app,
+   *  seeded at boot after `strut/views` (it imports it; none without it).
    *  `false` seeds nothing. */
-  assistant?: false | AssistantOptions;
+  jamie?: false;
   /** The `automation/*` steps (src/steps/lib/automation/), an agent's own
    *  door onto the automations: the one workflow they schedule, and the
    *  registry step that asks the person before one is made, changed,
@@ -1329,15 +1328,19 @@ export async function createStrut<TServices = unknown>(
       console.warn(`[views] could not seed strut/views:`, err instanceof Error ? err.message : err);
     }
   }
-  // `strut/assistant` (src/apps/assistant-seed.ts): the person's assistant
-  // as a first-party app. After strut/views, whose components it imports.
-  if (opts.assistant !== false) {
+  // `strut/jamie` (src/apps/jamie-seed.ts): the person's assistant as a
+  // first-party app. After strut/views, whose components it imports. The
+  // app it was before it was Jamie goes.
+  if (opts.jamie !== false) {
     try {
-      const r = await seedAssistantApp({ workspace, ...(opts.kit ? { kit: opts.kit } : {}), ...(opts.assistant?.title ? { title: opts.assistant.title } : {}) });
-      if (r?.changed) console.log(`[assistant] seeded app: strut/assistant @ ${r.version}`);
+      const r = await seedJamieApp({ workspace, ...(opts.kit ? { kit: opts.kit } : {}) });
+      if (r?.changed) console.log(`[jamie] seeded app: strut/jamie @ ${r.version}`);
     } catch (err) {
-      console.warn(`[assistant] could not seed strut/assistant:`, err instanceof Error ? err.message : err);
+      console.warn(`[jamie] could not seed strut/jamie:`, err instanceof Error ? err.message : err);
     }
+  }
+  if (await workspace.getApp(RETIRED_APP).catch(() => null)) {
+    await apps.delete(RETIRED_APP).catch((err) => console.warn(`[jamie] could not remove ${RETIRED_APP}:`, err instanceof Error ? err.message : err));
   }
 
   // Apps' history (src/apps/objects.ts): versions published before it get
@@ -5735,14 +5738,21 @@ export async function createStrut<TServices = unknown>(
     const anyApp = isFirstParty(by?.app);
     const key = `${workflow}/${runId}`;
     const launched = scopedLaunches.get(key);
-    if (launched) return (anyApp || launched.app === by?.app?.name) && launched.actor === (by?.actor ?? "");
+    if (launched && (anyApp || launched.app === by?.app?.name) && launched.actor === (by?.actor ?? "")) return true;
     const live = controllers.get(key);
-    const stamp: { app?: AppRef; actor?: string } | null =
+    const stamp: { app?: AppRef; actor?: string; input?: unknown } | null =
       (summary === undefined ? await store.getRunSummary(workflow, runId) : summary) ??
       (await store.getRunStart(workflow, runId)) ??
       (live ? launchedAs.get(live) : undefined) ??
       null;
-    return !!stamp && (anyApp || stamp.app?.name === by?.app?.name) && (stamp.actor ?? "") === (by?.actor ?? "");
+    if (!launched && stamp && (anyApp || stamp.app?.name === by?.app?.name) && (stamp.actor ?? "") === (by?.actor ?? "")) return true;
+    // A first-party page also reads a turn of a conversation its viewer
+    // may read (one they are in, or a shared one: plans/jamie-app.md §5.2),
+    // whoever took the turn — its files, its reply.
+    const session = (stamp?.input as { session?: unknown } | undefined)?.session;
+    if (!anyApp || !by?.actor || typeof session !== "string") return false;
+    const rec = await conversations.record(session).catch(() => null);
+    return !!rec && (!!rec.shared || rec.viewers.includes(by.actor)) && rec.turns.some((t) => t.runId === runId);
   };
   /** `openFlow` for one run: a scoped caller's own runs only — any other is
    *  not there, as a run that does not exist is not. */

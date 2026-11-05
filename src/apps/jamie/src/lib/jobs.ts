@@ -1,4 +1,4 @@
-// A job's card, its pure parts — tested by src/apps/assistant.test.ts: how a
+// A job's card, its pure parts — tested by src/apps/jamie.test.ts: how a
 // turn ended in a pill, the live strip's tally (Hive's `JobLiveStrip`), a
 // claim's pill and its open slot (Hive's claims viewer), and a captcha's
 // manifest, taps and answer (strut's src/browser/captcha.ts, the job's
@@ -6,7 +6,7 @@
 
 import type { LastVerify, LedgerClaim } from "./types";
 
-export type Tone = "running" | "ok" | "attention" | "failed" | "muted";
+export type Tone = "running" | "ok" | "attention" | "failed" | "muted" | "merged";
 
 export interface Look {
   label: string;

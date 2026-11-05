@@ -1,13 +1,13 @@
 /**
  * The apps strut SHIPS — `strut/views` (plans/apps.md §3.3), strut's
- * components as an app other apps import, and `strut/assistant`
- * (plans/jamie-app.md §5, ./assistant-seed.ts), the person's assistant —
+ * components as an app other apps import, and `strut/jamie`
+ * (plans/jamie-app.md §5, ./jamie-seed.ts), the person's assistant —
  * seeded into the workspace when `createStrut` boots, by TREE HASH the way
  * `job.yaml` is seeded by content hash (src/job-seed.ts): a changed source
  * directory publishes the next version and activates it; a known one is
  * made active again — a seed always matches git, so a version a person made
  * active lasts until the next boot. `createStrut({ views: false })` (and
- * `assistant: false`) seeds nothing, and nothing in strut's core depends on
+ * `jamie: false`) seeds nothing, and nothing in strut's core depends on
  * either.
  *
  * A publish builds, and an app build is esbuild + Tailwind over the kit — a

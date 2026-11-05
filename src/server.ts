@@ -49,7 +49,7 @@ let strutInstance: Strut | null = null;
  *  Nothing when unset.
  *  A file that cannot be read or parsed fails the boot, rather than
  *  seeding the workflows without the host's tools. */
-export function hostConfigFromEnv(env: NodeJS.ProcessEnv = bootEnv()): Pick<StrutOptions, "job" | "orchestrator" | "builder" | "automation" | "settings" | "graphReaders" | "concepts" | "assistant"> {
+export function hostConfigFromEnv(env: NodeJS.ProcessEnv = bootEnv()): Pick<StrutOptions, "job" | "orchestrator" | "builder" | "automation" | "settings" | "graphReaders" | "concepts" | "jamie"> {
   const file = env["STRUT_HOST_CONFIG"];
   if (!file) return {};
   let raw: unknown;
@@ -58,7 +58,7 @@ export function hostConfigFromEnv(env: NodeJS.ProcessEnv = bootEnv()): Pick<Stru
   } catch (err) {
     throw new Error(`STRUT_HOST_CONFIG: could not read ${file}: ${err instanceof Error ? err.message : err}`);
   }
-  const out: Pick<StrutOptions, "job" | "orchestrator" | "builder" | "automation" | "settings" | "graphReaders" | "concepts" | "assistant"> = {};
+  const out: Pick<StrutOptions, "job" | "orchestrator" | "builder" | "automation" | "settings" | "graphReaders" | "concepts" | "jamie"> = {};
   for (const key of ["job", "orchestrator", "builder"] as const) {
     const delta = (raw as Record<string, unknown> | null)?.[key];
     if (delta === undefined) continue;
@@ -98,12 +98,9 @@ export function hostConfigFromEnv(env: NodeJS.ProcessEnv = bootEnv()): Pick<Stru
     !(concepts && typeof concepts === "object" && !Array.isArray(concepts) && Object.entries(concepts).every(([k, v]) => k === "personal" && typeof v === "boolean"))
   ) throw new Error(`STRUT_HOST_CONFIG: ${file}: "concepts" must be false or { personal?: boolean }`);
   if (concepts !== undefined) out.concepts = concepts as StrutOptions["concepts"];
-  const assistant = (raw as Record<string, unknown> | null)?.["assistant"];
-  if (
-    assistant !== undefined && assistant !== false &&
-    !(assistant && typeof assistant === "object" && !Array.isArray(assistant) && Object.entries(assistant).every(([k, v]) => k === "title" && typeof v === "string"))
-  ) throw new Error(`STRUT_HOST_CONFIG: ${file}: "assistant" must be false or { title?: string }`);
-  if (assistant !== undefined) out.assistant = assistant as StrutOptions["assistant"];
+  const jamie = (raw as Record<string, unknown> | null)?.["jamie"];
+  if (jamie !== undefined && jamie !== false) throw new Error(`STRUT_HOST_CONFIG: ${file}: "jamie" must be false`);
+  if (jamie === false) out.jamie = false;
   const automation = (raw as Record<string, unknown> | null)?.["automation"];
   if (automation !== undefined) {
     const { workflow, approve, grants } = (automation ?? {}) as { workflow?: unknown; approve?: unknown; grants?: unknown };

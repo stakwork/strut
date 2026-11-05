@@ -755,8 +755,9 @@ the model transcript. Sending a message is still `POST
 the key, or a person token's own). A conversation is listed for everyone who
 took a turn in it (the launch's actor, else its principal), for the actor
 its id is under (`<actor>/…`), and for anyone who opened it while it was
-`shared`. Shared makes it readable to any actor on this strut; taking a turn
-makes you a participant. The key with no actor reads any conversation; a
+`shared`. Shared makes it readable to any actor on this strut, and puts it in
+every actor's list (`team: true`, never unread) until they open it; taking a
+turn makes you a participant. The key with no actor reads any conversation; a
 plain peer reads the routes and sees none. A person token may also POST the
 two writes.
 
@@ -792,6 +793,23 @@ interface ConversationListItem {
   seenAt?: string;       // the viewer's
   unread: boolean;       // something happened since seenAt
   running?: true;        // a turn is in flight in this process
+  jobs?: ConversationJob[]; // the jobs its turns started or continued, most recent first, at most 10
+  moreJobs?: number;     // jobs past those listed
+  team?: true;           // listed because it is shared, not the viewer's yet; opening it makes it theirs
+  startedBy?: string;    // who took its first turn
+}
+
+// A job as a row shows it. A conversation keeps its job ids, read from each
+// turn's log when the turn ends; one kept from before that has none until
+// a list reads them, in the background (the next list shows them).
+interface ConversationJob {
+  job: string;
+  title?: string;        // the job's record's
+  running?: true;        // a turn of it is in flight in this process
+  prs?: Array<{          // the pull requests its turns delivered (artifacts of kind `pull_request` with a GitHub link), newest first, each once
+    url: string; title?: string; repo: string; number: number;
+    state?: string;      // as the job reported it; the live state is `github/pr-status`'s (§14.11)
+  }>;
 }
 
 interface ConversationView {
@@ -811,7 +829,7 @@ interface ConversationTurn {
   status: string;           // success | error | cancelled; while not settled running | paused, stale when no process runs it
   prompt?: string;          // the person's words (input.prompt) — absent on a wake
   wake?: { job: string; runId: string; peer?: string; also?: unknown[] } | true;  // a wake turn: the job run it woke on (run.start.wake)
-  attachments?: Array<{ name: string; mediaType: string; size: number }>;
+  attachments?: Array<{ name: string; mediaType: string; size: number; path: string }>; // `path`: read with `run/files` on the turn's run
   text?: string;            // the reply
   ask?: string;             // its question
   artifacts?: ArtifactRef[]; // resolved, as GET …/runs/:runId/artifacts
@@ -1789,7 +1807,7 @@ what their person token has, where §14.8's rules hold a model-written page:
 
 | | A model-written page | A first-party page |
 |---|---|---|
-| A sealed workflow (the orchestrator) | only through a person's grant (§14.8), the runs this app launched for the viewer | no grant: the viewer's runs (`actor`), whoever launched them |
+| A sealed workflow (the orchestrator) | only through a person's grant (§14.8), the runs this app launched for the viewer | no grant: the viewer's runs (`actor`), whoever launched them, and every turn of a conversation the viewer may read (one they are in, or a shared one) |
 | Its runs' agent sessions | under `app/<name>/<viewer>/` | the viewer's own as they are (`<actor>`, `<actor>/…`), so they are conversations (§9.1), and a conversation the viewer took a turn in or a shared one (§9.1, "Who may continue one"); any other id under the app |
 | Gated tools (`approve:`) in its runs' agents | left out | kept: the proposals are the viewer's, listed by `proposal/list` and decided by `proposal/decide` |
 | Job ids | under `app/<name>/` | the person's own, as they are |
@@ -1803,19 +1821,20 @@ other. An app that imports strut's components compiles them into its own
 document, which runs on its own grants: rights belong to the document's
 identity, never to the code in it.
 
-### 14.11 `strut/assistant` — the person's assistant (`plans/jamie-app.md` §5)
+### 14.11 `strut/jamie` — Jamie, the person's assistant (`plans/jamie-app.md` §5)
 
-The app strut seeds beside `strut/views` (`src/apps/assistant/`,
-`src/apps/assistant-seed.ts`): the viewer's conversations with the
+The app strut seeds beside `strut/views` (`src/apps/jamie/`,
+`src/apps/jamie-seed.ts`): the viewer's conversations with the
 `orchestrator` — the list by day, search, show more, rename, archive,
-unread — each turn read back (§9.1), the composer (files, a model picker,
-"/" for a Concept, the viewer's time zone in `context`), the jobs a turn
-started (live while they run, their reply, deliverables, claims and
-captcha), the proposals it made, and what it made. First-party (§14.10).
-Its title is the deployment's: `createStrut({ assistant: { title } })` or
-`STRUT_HOST_CONFIG`'s `assistant: { title }` ("Assistant" by default);
-`assistant: false` seeds nothing. A host opens it as
-`?app=strut/assistant&solo=1`, a conversation as `&input=session%3D<id>`.
+unread, and under each conversation its jobs and their pull requests —
+each turn read back (§9.1), the composer (files, a model picker, "/" for a
+Concept, the viewer's time zone in `context`), the jobs a turn started
+(live while they run, their reply, deliverables, claims, captcha and pull
+requests), the proposals it made, and what it made. First-party (§14.10).
+`createStrut({ jamie: false })` or `STRUT_HOST_CONFIG`'s `jamie: false`
+seeds nothing; `strut/assistant`, its name before, is removed at boot. A
+host opens it as `?app=strut/jamie&solo=1`, a conversation as
+`&input=session%3D<id>`.
 
 What it calls, beyond §9.1, §12 and §14.2:
 
@@ -1824,6 +1843,8 @@ What it calls, beyond §9.1, §12 and §14.2:
 | `llm/models` | `{}` | what `GET /llm/models` serves: `{ default, models: [{ name, provider, modelId, alias, default, available }], keyNames }` — `available` when the provider has a key here, never the key. The picker sends the choice as the turn's `params.model` |
 | `job/verify` | `{ job, claims?, detach? }` | `POST /jobs/:id/verify` (§5.5) as a person: every check on the job's claims (or `claims`) against its newest turn, `manual` ones too — the pass and the ledger, or with `detach` `{ job, started: true }` at once, the verdicts on `job/updates` (`evidence`, then `verify` done) |
 | `job/evidence` | `{ job, claim, runId, supports, content, slot? }` | `POST /claims/:id/evidence { job, runId }` as a person: `asserted`, `by: person`, about that turn; `slot` answers a check waiting on a person's look. `{ ok, evidence, filled, subject }` |
+| `github/pr-status` | `{ repo, number }` | the pull request on GitHub now, read with the viewer's own `GITHUB_TOKEN` (an actor secret, `PUT /actors/:actor/secrets/GITHUB_TOKEN`): `{ url, repo, number, title, state: open \| draft \| merged \| closed, author, head, base, headSha, body, mergeable, checks: [{ name, status: failed \| running \| passed \| skipped, url }], counts }`, checks failed first. Errors `github_unauthorized:`, `github_not_found:`, `github_rate_limited:`, `github_error:` |
+| `github/merge-pr` | `{ repo, number, sha?, method? }` | merges it as the viewer — squash by default, else the first method the repository allows — at `sha`, the head the viewer saw: `{ merged: true, url, sha, method }`. Refused before merging when it is not open, is a draft, has conflicts (`pr_not_mergeable:`) or has commits past `sha` (`pr_head_moved:`); `github_unauthorized:` with no token for the viewer. Runs only as a first-party page's own call, or as a proposal a person accepted |
 
 `job/verify` and `job/evidence` run only as a first-party page's own call
 (never an agent's tool: an agent verifies with `meta/verify-job`) and only
@@ -1837,7 +1858,16 @@ person continues one they took a turn in, or a shared one
 (`conversation_not_yours: …`, someone who read it while it was shared) is
 a plain notice. A captcha's answer
 is a job turn, `run/launch { workflow: <the job's>, job, input: { prompt:
-"[captcha-answer] {…}" }, conversation }`. A deliverable `strut/views`
+"[captcha-answer] {…}" }, conversation }`; so is a pull request's Fix, when
+its checks failed (`prompt`: which checks, and the branch to push the fix
+to). A pull request is one card per thread, at its newest mention; a job's
+own card keeps its pull requests in sight while it is collapsed, unless the
+thread shows them. A person's attached files show under their message: an
+image as a thumbnail that opens large, a text file to read, the rest by
+name, each read with `run/files` on the turn's run. The page reads any turn
+of a conversation its viewer may read (one they are in, or a shared one),
+whoever took it. Share puts a conversation in everyone's list
+(`conversation/update { shared }`); a reply has Copy. A deliverable `strut/views`
 draws shows in the thread; the rest is handed to the host as
 `?artifact=<served path>` or `?app=<key>` (`ui/open-link`, §14.3).
 

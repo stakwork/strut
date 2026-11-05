@@ -1,4 +1,4 @@
-// The chat's pure parts — tested by src/apps/assistant.test.ts: the turn's
+// The chat's pure parts — tested by src/apps/jamie.test.ts: the turn's
 // context (the time where the person is, where the reply is read), the
 // list's day groups, new conversation ids, what a refused send means, and
 // the composer's "/Concept" trigger. Nothing here imports React or the kit.

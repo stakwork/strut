@@ -1,13 +1,18 @@
 // The chat list (Hive's `ControlPanelList`): one row per conversation, its
-// title alone, under its day; search, show more, the archived ones folded
-// at the end. A row's menu renames (inline) and archives or restores; an
-// unread one is bold with a dot, a running one pulses.
+// title, under its day; search, show more, the archived ones folded at the
+// end. A row's menu renames (inline) and archives or restores; an unread one
+// is bold with a dot, a running one pulses, and its pull requests are
+// counted. Under it its jobs — the newest, the rest behind "N more" — each
+// with a pulse while it runs and its pull requests; a click opens the
+// conversation at that job's card. Share puts a conversation in everyone's
+// list ("Shared"): anyone can read it and reply, as themselves; opening it
+// makes it theirs.
 import { useEffect, useRef, useState } from "react";
-import { Archive, ArchiveRestore, ChevronDown, ChevronRight, MoreHorizontal, PanelLeftClose, Pencil, Search, SquarePen, X } from "lucide-react";
+import { Archive, ArchiveRestore, Bot, ChevronDown, ChevronRight, GitPullRequest, MoreHorizontal, PanelLeftClose, Pencil, Search, SquarePen, Users, X } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import { groupByDay } from "../lib/chat";
-import type { ConversationListItem } from "../lib/types";
+import type { ConversationJob, ConversationListItem, ConversationPr } from "../lib/types";
 import { PAGE, useConversationList, useUpdateConversation } from "../hooks";
 import { IconButton, Notice, errorText } from "./bits";
 
@@ -15,7 +20,8 @@ const TITLE_MAX = 200;
 
 export interface ChatListProps {
   active: string | null;
-  onOpen: (id: string) => void;
+  /** Open a conversation; `job`: at that job's card. */
+  onOpen: (id: string, job?: string) => void;
   onNewChat: () => void;
   onHide?: () => void;
 }
@@ -30,7 +36,9 @@ export function ChatList({ active, onOpen, onNewChat, onHide }: ChatListProps) {
   const archivedCount = useConversationList({ archived: true, limit: 1, enabled: !archivedOpen });
   const update = useUpdateConversation();
   const rows = open.data?.conversations ?? [];
-  const groups = groupByDay(rows, new Date());
+  // Shared by someone else, not opened yet: a group of their own, first.
+  const team = rows.filter((r) => r.team);
+  const groups = groupByDay(rows.filter((r) => !r.team), new Date());
   const closeSearch = () => {
     setQuery("");
     setSearching(false);
@@ -79,7 +87,22 @@ export function ChatList({ active, onOpen, onNewChat, onHide }: ChatListProps) {
 
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-4" data-testid="chat-list">
         {open.isError && <Notice tone="error">{errorText(open.error)}</Notice>}
-        {groups.length === 0 && !open.isError && (
+        {team.length > 0 && (
+          <Group label="Shared">
+            {team.map((item) => (
+              <Row
+                key={item.id}
+                item={item}
+                active={item.id === active}
+                onOpen={(job) => onOpen(item.id, job)}
+                onRename={(title) => update.mutate({ session: item.id, title })}
+                onShare={(shared) => update.mutate({ session: item.id, shared })}
+                action={{ label: "Archive", Icon: Archive, run: () => update.mutate({ session: item.id, archived: true }) }}
+              />
+            ))}
+          </Group>
+        )}
+        {groups.length === 0 && team.length === 0 && !open.isError && (
           <div className="px-2 py-6 text-sm text-muted-foreground">{open.isPending ? "Loading…" : query ? "No chats match." : hasArchived ? "No open chats." : "No chats yet."}</div>
         )}
         {groups.map((g) => (
@@ -89,8 +112,9 @@ export function ChatList({ active, onOpen, onNewChat, onHide }: ChatListProps) {
                 key={item.id}
                 item={item}
                 active={item.id === active}
-                onOpen={() => onOpen(item.id)}
+                onOpen={(job) => onOpen(item.id, job)}
                 onRename={(title) => update.mutate({ session: item.id, title })}
+                onShare={(shared) => update.mutate({ session: item.id, shared })}
                 action={{ label: "Archive", Icon: Archive, run: () => update.mutate({ session: item.id, archived: true }) }}
               />
             ))}
@@ -108,8 +132,9 @@ export function ChatList({ active, onOpen, onNewChat, onHide }: ChatListProps) {
                 key={item.id}
                 item={item}
                 active={item.id === active}
-                onOpen={() => onOpen(item.id)}
+                onOpen={(job) => onOpen(item.id, job)}
                 onRename={(title) => update.mutate({ session: item.id, title })}
+                onShare={(shared) => update.mutate({ session: item.id, shared })}
                 action={{ label: "Restore", Icon: ArchiveRestore, run: () => update.mutate({ session: item.id, archived: false }) }}
               />
             ))}
@@ -145,19 +170,23 @@ function Row({
   active,
   onOpen,
   onRename,
+  onShare,
   action,
 }: {
   item: ConversationListItem;
   active: boolean;
-  onOpen: () => void;
+  onOpen: (job?: string) => void;
   onRename: (title: string) => void;
+  onShare: (shared: boolean) => void;
   action: { label: string; Icon: typeof Archive; run: () => void };
 }) {
   const [editing, setEditing] = useState(false);
   // The menu hands focus back to its trigger on close, which would blur the input.
   const renaming = useRef(false);
   const unread = item.unread && !active;
+  const prs = (item.jobs ?? []).flatMap((j) => j.prs ?? []);
   return (
+    <>
     <div
       data-testid="chat-row"
       data-chat-id={item.id}
@@ -177,8 +206,8 @@ function Row({
       ) : (
         <button
           type="button"
-          title={item.title}
-          onClick={onOpen}
+          title={item.shared && item.startedBy ? `${item.title} — shared, started by ${item.startedBy}` : item.title}
+          onClick={() => onOpen()}
           aria-current={active ? "page" : undefined}
           className={cn(
             "min-w-0 flex-1 truncate text-left outline-none after:absolute after:inset-0 after:rounded-md focus-visible:after:ring-1 focus-visible:after:ring-ring",
@@ -188,6 +217,8 @@ function Row({
           {item.title || "Untitled"}
         </button>
       )}
+      {item.shared && !editing && <Users className="relative z-10 size-3 shrink-0 text-muted-foreground" aria-label="Shared" />}
+      {prs.length > 0 && !editing && <PrCount prs={prs} />}
       <span className="relative z-10 flex size-5 shrink-0 items-center justify-center">
         {(item.running || unread) && (
           <span
@@ -226,6 +257,10 @@ function Row({
                 <Pencil />
                 Rename
               </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => onShare(!item.shared)}>
+                <Users />
+                {item.shared ? "Stop sharing" : "Share with the team"}
+              </DropdownMenuItem>
               <DropdownMenuItem onSelect={action.run}>
                 <action.Icon />
                 {action.label}
@@ -234,6 +269,51 @@ function Row({
           </DropdownMenu>
         </span>
       </span>
+    </div>
+    {item.jobs && item.jobs.length > 0 && <Jobs jobs={item.jobs} more={item.moreJobs ?? 0} onOpen={onOpen} />}
+    </>
+  );
+}
+
+/** A conversation's pull requests, counted; each named in the tooltip. */
+function PrCount({ prs }: { prs: readonly ConversationPr[] }) {
+  const tip = prs.map((p) => `${p.title ?? "Pull request"} — ${p.repo} #${p.number}${p.state ? ` (${p.state})` : ""}`).join("\n");
+  return (
+    <span title={tip} aria-label={`${prs.length} pull request${prs.length === 1 ? "" : "s"}`} className="relative z-10 flex shrink-0 items-center gap-0.5 text-xs text-muted-foreground">
+      <GitPullRequest className="size-3" />
+      {prs.length}
+    </span>
+  );
+}
+
+/** A conversation's jobs under its row: the newest, the rest behind "N more". */
+function Jobs({ jobs, more, onOpen }: { jobs: readonly ConversationJob[]; more: number; onOpen: (job: string) => void }) {
+  const [all, setAll] = useState(false);
+  const shown = all ? jobs : jobs.slice(0, 1);
+  const hidden = jobs.length - shown.length + (all ? 0 : more);
+  return (
+    <div className="mb-0.5 ml-4 border-l pl-2" data-testid="chat-jobs">
+      {shown.map((j) => (
+        <button
+          key={j.job}
+          type="button"
+          onClick={() => onOpen(j.job)}
+          title={j.title ?? j.job}
+          data-testid="chat-job"
+          data-job={j.job}
+          className="flex h-6 w-full items-center gap-1.5 rounded-md px-1.5 text-left text-xs text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+        >
+          <Bot className="size-3 shrink-0" />
+          <span className="min-w-0 flex-1 truncate">{j.title ?? "Job"}</span>
+          {j.prs && j.prs.length > 0 && <GitPullRequest className="size-3 shrink-0" aria-label="Pull request" />}
+          {j.running && <span role="status" aria-label="Working" className="size-1.5 shrink-0 animate-pulse rounded-full bg-amber-500" />}
+        </button>
+      ))}
+      {hidden > 0 && (
+        <button type="button" onClick={() => setAll(true)} className="h-6 px-1.5 text-xs text-muted-foreground hover:text-foreground" disabled={all}>
+          {hidden} more
+        </button>
+      )}
     </div>
   );
 }
