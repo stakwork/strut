@@ -1158,9 +1158,10 @@ and rotating that secret ends every session.
 
 | Method | Path            | Description |
 | ------ | --------------- | ----------- |
-| POST   | `/auth/session` | `{ key, actor? }` → 200 `{ actor?, exp }` + `Set-Cookie: strut_session=…; Path=/; Max-Age=…; HttpOnly; SameSite=Lax[; Secure]`. Open to anyone (it IS the login); a wrong key is a `401` after half a second; `400` with no key configured. `actor`: who is signing in, ≤ 120 chars |
+| POST   | `/auth/session` | `{ key, actor? }` or `{ ticket }` → 200 `{ actor?, exp }` + `Set-Cookie: strut_session=…; Path=/; Max-Age=…; HttpOnly; SameSite=Lax[; Secure]`. Open to anyone (it IS the login); a wrong key is a `401` after half a second; `400` with no key configured. `actor`: who is signing in, ≤ 120 chars. A `ticket` (below) sets the same cookie naming the ticket's actor — an `actor` beside it is ignored; one expired, already used, forged or malformed is a `401 { error }` |
 | GET    | `/auth/session` | `{ actor?, exp }` of the session the request carries; `404` for a request the key authenticated |
 | DELETE | `/auth/session` | clears the cookie → `204`; needs no credential |
+| POST   | `/auth/ticket`  | `{ actor }` → 200 `{ ticket, expiresAt }` (`cache-control: no-store`): a SIGN-IN TICKET for that person. `full` scope only — the deployment key, its session, or strut's own in-process request; a peer key or a person token is `403`, no credential `401`. `actor` required, ≤ 120 chars, no line break (`/peers/tokens`'s rule); `400` otherwise, and with no key configured. `expiresAt`: ms since the epoch, a minute out |
 
 `exp` is the session's end in ms since the epoch — `STRUT_SESSION_HOURS`
 (default 12) from the login. `Secure` is set when the request came over
@@ -1184,6 +1185,43 @@ curl -s -b jar.txt localhost:3000/workflows                       # a read: the 
 curl -s -b jar.txt -H 'x-strut-ui: 1' -X POST localhost:3000/workflows/hello/run -d '{}'
 curl -s -b jar.txt -X DELETE localhost:3000/auth/session           # → 204, cookie cleared
 ```
+
+### 13.1 A host signs one person into the UI it frames
+
+The standalone twin of mcp's `/mint-token` JWT handed to `/lab/?key=`: a
+host that frames strut's own UI for its people (stadeum) never puts the key
+in a browser. Its SERVER, holding the key, mints a ticket for the person —
+the actor is the host's to name, an opaque string strut stamps on what the
+session does — and frames the UI with it:
+
+```bash
+curl -s -X POST https://strut.acme.com/auth/ticket \
+  -H "authorization: Bearer $STRUT_API_KEY" -H 'content-type: application/json' \
+  -d '{"actor":"evanfeenstra-cm3k9x"}'
+# → { "ticket": "strut-ticket.eyJhY3Rvci….3q2…", "expiresAt": 1793813291223 }
+# frame: https://strut.acme.com/?ticket=strut-ticket.…&app=strut%2Fassistant&solo=1
+```
+
+The ticket is `strut-ticket.<base64url claims>.<hmac>`, claims `{ actor,
+exp, jti }`, signed under the session's secret. It lives 60 s and trades
+ONCE: a redeemed `jti` is remembered in memory until it expires (a restart
+forgets them). Mint one per page load.
+
+The UI, loaded with `?ticket=`, posts it to `POST /auth/session { ticket }`
+(with `x-strut-ui: 1`) before any other request, takes `ticket` off the
+address bar with `history.replaceState` — every other param (`app`, `solo`,
+`wf`, `run`, `embed_origin`, `input`) kept as written — and carries on
+signed in as that person. The ticket wins: a key or a session the browser
+held before is dropped either way. Refused, the page says the sign-in link
+expired and to reload from the host — never the Settings → Connection key
+prompt — and so it does when that session later ends.
+
+**Same site only.** The cookie is `SameSite=Lax`, so a framed page gets it
+only when strut and the page framing it are SAME-SITE — `strut.acme.com`
+framed by `acme.com` (or `app.acme.com`). Framed by another site, the
+browser neither stores nor sends the cookie: the trade spends the ticket,
+and the next request is a 401. Serve strut from a subdomain of the host's
+own site.
 
 ## 14. Apps — a front-end project over workflows
 

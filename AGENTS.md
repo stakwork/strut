@@ -631,6 +631,24 @@ container in the compose (strut and any service that registers steps).
   artifact page (an opaque origin) cannot reach another run's files
   through the person's session. `createStrut.test.ts` ("a session") runs
   the whole flow; the route sweeps leave out the two open login routes.
+  **A host signs one person in** (auth.ts "Sign-in tickets", specs/API.md
+  §13.1) — the standalone twin of mcp's `/mint-token` JWT handed to
+  `/lab/?key=`: the host's SERVER mints `POST /auth/ticket { actor }`
+  (full scope; the actor the host's to name, checked like `/peers/tokens`'
+  — 120 chars, no line break) → `{ ticket, expiresAt }`,
+  `strut-ticket.<claims>.<hmac>` with `{ actor, exp, jti }` signed like a
+  session, 60 s, good ONCE (redeemed `jti`s kept in memory until they
+  expire), and frames `<strut>/?ticket=…`. The UI trades it at `POST
+  /auth/session { ticket }` before any other request (`api.ts`
+  `ticketSignIn`; main.tsx renders nothing until it is answered), takes
+  `ticket` off the address bar keeping every other param as written
+  (`web/src/ticket.ts`), and is that person's session — the same cookie
+  the key login sets. The ticket wins over a key or session the browser
+  held; refused, or once that session ends, the page says to reload from
+  the host, never the key prompt. **Same site only:** `SameSite=Lax` (kept)
+  sends the cookie to a framed page only when strut and its framer are
+  same-site — `strut.acme.com` in `acme.com`; framed by another site, no
+  cookie is stored and the next request is a 401.
 - **Scope — what another strut may do** (plans/federation.md §3). Past the
   credential, the gate asks `createStrut({ resolveScope(c) })` — the twin of
   `resolveActor`, the host's call (mcp maps its JWT's scope) — whether the

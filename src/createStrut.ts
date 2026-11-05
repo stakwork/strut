@@ -35,7 +35,7 @@ import type { StepSources } from "./steps/registry.js";
 import { runWorkflow } from "./runner.js";
 import { RunController } from "./run-control.js";
 import { buildJournal, invalidateFrom, readRunStart } from "./journal.js";
-import { appIdentity, publicAppIdentity, publicAppOfIdentity, carriesApiKey, carriesPeerKey, carriesFileToken, carriesBadFileToken, catalogToken, catalogTokenOf, CATALOG_TOKEN_DAYS, publicPackageRead, fileToken, warnIfUnconfigured, channelTicket, channelTicketOf, actorFromHeader, inProcessOf, inProcessRequest, scopeFromKey, isPeerScope, personOf, personToken, PERSON_TOKEN_DAYS, unauthorized, issueSession, sessionCookie, sessionOf, isSecureRequest, type Scope } from "./auth.js";
+import { appIdentity, publicAppIdentity, publicAppOfIdentity, carriesApiKey, carriesPeerKey, carriesFileToken, carriesBadFileToken, catalogToken, catalogTokenOf, CATALOG_TOKEN_DAYS, publicPackageRead, fileToken, warnIfUnconfigured, channelTicket, channelTicketOf, actorFromHeader, inProcessOf, inProcessRequest, scopeFromKey, isPeerScope, personOf, personToken, PERSON_TOKEN_DAYS, unauthorized, issueSession, redeemSignInTicket, signInTicket, sessionCookie, sessionOf, isSecureRequest, type Scope } from "./auth.js";
 import { standardServices, fileArtifactsCapability } from "./capabilities.js";
 import type { ArtifactsCapability, SecretsCapability } from "./capabilities.js";
 import type { SecretStore } from "./secret-store.js";
@@ -1593,7 +1593,9 @@ export async function createStrut<TServices = unknown>(
   // session cookie (auth.ts "Sessions") — the browser's credential from
   // then on, the key's equal to this gate (`carriesApiKey`) under the CSRF
   // rules `sessionOf` keeps — and `DELETE /auth/session` ends one; neither
-  // needs a credential to be called.
+  // needs a credential to be called. The login also takes a host's
+  // sign-in ticket in place of the key; minting one (`POST /auth/ticket`)
+  // is behind the key like any other route.
   //
   // A fifth: a CATALOG token (`catalogTokenOf`, auth.ts), a subscriber's
   // read of the catalog this strut published and of the archives it names
@@ -1658,7 +1660,16 @@ export async function createStrut<TServices = unknown>(
   // key configured there is nothing to sign in to.
   app.post("/auth/session", async (c) => {
     if (!bootEnv()["STRUT_API_KEY"]) return c.json({ error: "STRUT_API_KEY is not set: nothing to sign in to" }, 400);
-    const body = (await c.req.json().catch(() => ({}))) as { key?: unknown; actor?: unknown };
+    const body = (await c.req.json().catch(() => ({}))) as { key?: unknown; actor?: unknown; ticket?: unknown };
+    // A host's sign-in ticket (auth.ts "Sign-in tickets"): the same cookie,
+    // naming the ticket's actor — never a field beside it. No pause: a
+    // ticket is signed, so there is nothing to guess.
+    if (body.ticket !== undefined) {
+      const redeemed = typeof body.ticket === "string" ? redeemSignInTicket(body.ticket.trim()) : undefined;
+      if (!redeemed) return c.json({ error: "unauthorized: this sign-in ticket has expired, was already used, or is not this strut's" }, 401);
+      c.header("set-cookie", sessionCookie(redeemed.token, redeemed.session.exp, isSecureRequest(c)));
+      return c.json(redeemed.session);
+    }
     const key = typeof body.key === "string" ? body.key : "";
     const actor = typeof body.actor === "string" ? body.actor.trim() : "";
     if (body.actor !== undefined && (typeof body.actor !== "string" || actor.length > 120 || /[\r\n]/.test(actor))) {
@@ -1685,6 +1696,23 @@ export async function createStrut<TServices = unknown>(
   app.delete("/auth/session", (c) => {
     c.header("set-cookie", sessionCookie(undefined, 0, isSecureRequest(c)));
     return c.body(null, 204);
+  });
+
+  // A SIGN-IN TICKET (auth.ts "Sign-in tickets"): a host's server, holding
+  // the key, signs one person into the UI it frames as `?ticket=` — good
+  // once, for a minute. A `full` caller mints it (the gate keeps a peer and
+  // a person token off every POST but theirs); the actor is the host's to
+  // name, as with `x-strut-actor` beside the key.
+  app.post("/auth/ticket", async (c) => {
+    if (!bootEnv()["STRUT_API_KEY"]) return c.json({ error: "STRUT_API_KEY is not set: nothing to sign in to" }, 400);
+    const body = await c.req.json<{ actor?: unknown }>().catch(() => ({}) as { actor?: unknown });
+    const actor = typeof body.actor === "string" ? body.actor.trim() : "";
+    if (!actor || actor.length > 120 || /[\r\n]/.test(actor)) {
+      return c.json({ error: "actor is required: a short string, the person the ticket signs in" }, 400);
+    }
+    const minted = signInTicket(actor)!;
+    c.header("cache-control", "no-store");
+    return c.json({ ticket: minted.ticket, expiresAt: minted.exp });
   });
 
   // ── Workflows ────────────────────────────────────────────────────────────
