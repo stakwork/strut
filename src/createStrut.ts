@@ -473,14 +473,10 @@ export interface StrutOptions<TServices = unknown> {
    *  `STRUT_HOST_CONFIG`'s `graphReaders` (src/server.ts). */
   graphReaders?: GraphReaders;
 
-  /** Where the assistant's long-term memory lives (plans/graph-memory-plan.md
-   *  step 7). `"graph"`: on the workspace graph, through the generic
-   *  `graph/*` steps; the old `memory/*` steps are left out of every
-   *  agent's tools (dictation still reads them directly), and the
-   *  `tidy-memory` janitor runs on the graph (`workflow.graph.yaml`).
-   *  Unset or `"legacy"`: the separate memory database and its `memory/*`
-   *  steps, as before. `STRUT_HOST_CONFIG`'s `memory` (src/server.ts). */
-  memory?: "graph" | "legacy";
+  /** Accepted and ignored: the assistant's memory is always the workspace
+   *  graph (plans/graph-memory-plan.md step 7). Kept so a host config that
+   *  still says `memory: "graph"` starts. */
+  memory?: "graph";
 
   /** Directory containing the built web UI (the `dist` folder). Defaults
    *  to strut's own bundled UI resolved relative to this module, so it
@@ -1056,8 +1052,6 @@ export async function createStrut<TServices = unknown>(
     // The LLM auth seam, for the model-building call sites (llm.ts).
     ...(opts.llmAuth ? { llmAuth: opts.llmAuth } : {}),
     ...(opts.settings ? { settings: opts.settings } : {}),
-    // Read by the agent step, which then leaves the memory/* steps out of its tools.
-    ...(opts.memory === "graph" ? { memory: "graph" } : {}),
     ...((opts.services ?? {}) as Record<string, unknown>),
   } as TServices;
   // The browser the browser/* steps drive (src/browser/service.ts), unless
@@ -1342,7 +1336,7 @@ export async function createStrut<TServices = unknown>(
   // workflow of category "system" plus its automation, installed off. Before
   // the scheduler's first load, so a new one is scheduled once turned on.
   if (opts.systemWorkflows !== false) {
-    for (const w of await installSystemWorkflows(workspace, { memory: opts.memory })) {
+    for (const w of await installSystemWorkflows(workspace)) {
       if (w.action !== "unchanged" || w.automation) console.log(`[system] ${w.name} @ ${w.version}: ${w.action}${w.automation ? `, automation ${w.automation} (off)` : ""}`);
     }
   }

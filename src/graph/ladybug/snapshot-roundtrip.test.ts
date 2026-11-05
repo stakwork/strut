@@ -2,8 +2,7 @@
  * EXPORT DATABASE → IMPORT DATABASE on the workspace graph (the Node table
  * with its FLOAT[384] vectors, the rel tables, the HNSW and FTS indexes): the
  * check a whole-brain snapshot rests on (peel docs/memory-backup.md, phase 0).
- * memory/export covers the memory graph; this is the other half, raw, because
- * no step exports the workspace yet. Skipped where Ladybug or its extensions
+ * Raw, because no step exports the workspace yet. Skipped where Ladybug or its extensions
  * are missing, as the other graph suites are.
  */
 import { after, before, describe, it } from "node:test";

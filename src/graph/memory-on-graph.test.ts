@@ -3,20 +3,20 @@
  * what the generic tools gained to cover memory/remember and memory/forget
  * (`ended`, `said_by`, an all-or-nothing `facts` batch with new nodes and a
  * new temporal edge type, the user never deleted), `graph/duplicates`, the
- * host's `memory: "graph"` switch, and `graph/import-memory` from a
- * database the old memory/* steps wrote. Neo4j keeps refusing `assert`.
+ * host config's `memory` kept as a no-op, and `graph/import-memory` from a
+ * database the old memory/* steps wrote (fixtures/old-memory.json, dumped
+ * from one they wrote). Neo4j keeps refusing `assert`.
  */
 import { after, before, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { z } from "zod";
 import type { GraphBackend, LadybugBackend } from "./backend.js";
 import { createNodeSchema } from "./schema-crud.js";
 import { graphView, parseGraphReaders } from "./scope.js";
 import { testBackends } from "./test-util.js";
-import { defineStep, type StepContext } from "../core.js";
+import type { StepContext } from "../core.js";
 import { buildRegistryTools } from "../steps/core/agent.js";
 import type { StepRegistry } from "../steps/registry.js";
 import { hostConfigFromEnv } from "../server.js";
@@ -28,16 +28,10 @@ import graphGet from "../steps/lib/graph/graph-get.js";
 import graphSearch from "../steps/lib/graph/graph-search.js";
 import importMemory, { restates, spelledIn } from "../steps/lib/graph/import-memory.js";
 import { assertEdge } from "./temporal.js";
-import remember from "../steps/lib/memory/remember.js";
-import forget from "../steps/lib/memory/forget.js";
+import { loadLadybug } from "./ladybug/db.js";
+import { createTables } from "../steps/lib/memory/_db.js";
 
 const lb = testBackends().find((b) => b.kind === "ladybug")!;
-// The old memory database loads @ladybugdb/core on its own (steps/lib/memory/_db.ts),
-// which can fail where the graph's Ladybug loads; the import suite needs both.
-const hasMemoryDb = await import("@ladybugdb/core").then(
-  () => true,
-  () => false,
-);
 const neo4j = testBackends().find((b) => b.kind === "neo4j");
 
 type Step = { input: { parse(v: unknown): unknown }; run: (cfg: any, ctx: any) => Promise<unknown> };
@@ -210,40 +204,53 @@ describe("the generic tools cover remember and forget (ladybug)", { skip: lb.ski
   });
 });
 
-describe("graph/import-memory from the old memory database (ladybug)", { skip: lb.skip || (!hasMemoryDb && "@ladybugdb/core is not installed") }, () => {
+/** Writes the old memory database `fixtures/old-memory.json` holds at
+ *  `path`: every row and edge the old memory/* steps wrote for a short
+ *  history (a name, a move, a past job, a mishearing, a forgotten entity). */
+async function writeOldMemory(path: string): Promise<void> {
+  const dump = JSON.parse(readFileSync(new URL("./fixtures/old-memory.json", import.meta.url), "utf8")) as Record<string, any>;
+  mkdirSync(join(path, ".."), { recursive: true });
+  const lbug = await loadLadybug();
+  const db = new lbug.Database(path);
+  const conn = new lbug.Connection(db);
+  const q = async (cypher: string, params: Record<string, unknown> = {}) => {
+    const r = Object.keys(params).length ? await conn.execute(await conn.prepare(cypher), params) : await conn.query(cypher);
+    return (await (Array.isArray(r) ? r[r.length - 1]! : r).getAll()) as Record<string, unknown>[];
+  };
+  await createTables(q);
+  for (const table of ["Entity", "Fact", "Episode", "Ontology"]) {
+    const types = new Map((await q(`CALL table_info('${table}') RETURN name, type`)).map((c) => [String(c["name"]), String(c["type"])]));
+    for (const row of dump[table] as Record<string, unknown>[]) {
+      const keys = Object.keys(row);
+      await q(`CREATE (:${table} {${keys.map((k, i) => `${k}: CAST($p${i} AS ${types.get(k)})`).join(", ")}})`, Object.fromEntries(keys.map((k, i) => [`p${i}`, row[k]])));
+    }
+  }
+  const ends: Record<string, [string, string]> = {
+    MENTIONS: ["Episode", "Entity"], SUBJECT: ["Fact", "Entity"], OBJECT: ["Fact", "Entity"], FROM_EPISODE: ["Fact", "Episode"],
+    SUPERSEDES: ["Fact", "Fact"], CONTRADICTS: ["Fact", "Fact"], ALIAS_OF: ["Entity", "Entity"],
+  };
+  for (const [rel, pairs] of Object.entries(dump["rels"] as Record<string, [string, string][]>)) {
+    const [from, to] = ends[rel]!;
+    for (const [x, y] of pairs) await q(`MATCH (a:${from} {ref_id: $x}), (b:${to} {ref_id: $y}) CREATE (a)-[:${rel}]->(b)`, { x, y });
+  }
+  await q("CHECKPOINT"); // all of it in the file, none left in a WAL
+  await conn.close();
+  await db.close();
+}
+
+describe("graph/import-memory from the old memory database (ladybug)", { skip: lb.skip }, () => {
   const dir = mkdtempSync(join(tmpdir(), "strut-import-memory-"));
-  const secrets = { get: async (n: string) => (n === "STRUT_MEMORY_DB" ? join(dir, "memory", "graph.lbug") : undefined) };
-  const old = ctxOf({ secrets });
+  const oldFile = join(dir, "memory", "graph.lbug");
+  const secrets = { get: async (n: string) => (n === "STRUT_MEMORY_DB" ? oldFile : undefined) };
   let b: LadybugBackend;
   let ctx: StepContext;
-  const me = { type: "Self", name: "Me" };
+  let oldBytes: Buffer;
   before(async () => {
-    // The old memory, written by its own steps.
-    const say = async (input: Record<string, unknown>) => {
-      const out = await run(remember as unknown as Step, input, old);
-      assert.equal(out.error, undefined, JSON.stringify(out));
-      return out;
-    };
-    await say({ episode: "My name is Alex Rivera.", facts: [{ subject: me, predicate: "name", text: "The user's name is Alex Rivera.", object: { type: "Person", name: "Alex Rivera" } }] });
-    await say({ episode: "I live in London.", facts: [{ subject: me, predicate: "lives_in", object: { type: "Place", name: "London" }, text: "The user lives in London." }] });
-    await say({ episode: "We moved to Bristol in 2026.", facts: [{ subject: me, predicate: "lives_in", object: { type: "Place", name: "Bristol" }, text: "The user moved to Bristol.", valid_at: "2026" }] });
-    await say({ episode: "I used to work at Northwind.", facts: [{ subject: me, predicate: "works_at", object: { type: "Organization", name: "Northwind" }, text: "The user worked at Northwind.", ended: true }] });
-    await say({ episode: "Kate's real name is Katherine Moss.", facts: [{ subject: { type: "Person", name: "Kate" }, predicate: "name", object: { type: "Person", name: "Katherine Moss" }, text: "Kate's full name is Katherine Moss." }] });
-    await say({ episode: "I moved to Bath!", source: "msg-42", speaker: { type: "Person", name: "Kate" },
-      facts: [{ subject: { type: "Person", name: "Kate" }, predicate: "lives_in", object: { type: "Place", name: "Bath" }, text: "Kate moved to Bath." }] });
-    await say({ episode: "Alex knows Kate from uni, Kate says.", speaker: { type: "Person", name: "Kate" },
-      facts: [{ subject: me, predicate: "knows", object: { type: "Person", name: "Kate" }, text: "The user has known Kate since university." }] });
-    await say({ episode: "I'm vegetarian.", facts: [{ subject: me, predicate: "diet", text: "The user is vegetarian." }] });
-    await say({ episode: "Peel says 'peal'.", facts: [{ subject: { type: "Project", name: "Peel" }, predicate: "heard_as", value: "peal", text: "Dictation writes Peel as peal." }] });
-    await say({ episode: "Kate's coming over on Sunday.", mentions: [{ type: "Person", name: "Kate" }] });
-    // A name fact that names no one: a sentence about Sam, kept as no name.
-    await say({ episode: "Sam is the Sam in the tribes.", facts: [{ subject: { type: "Person", name: "Sam" }, predicate: "name", text: "Sam, also called Sammy J, is a teammate who shows up in the tribes." }] });
-    // A fact whose sentence is its two ends' names.
-    await say({ episode: "my uncle's company", facts: [{ subject: { type: "Person", name: "Alex's uncle" }, predicate: "uncle_of", object: me, text: "Alex's uncle is Alex's uncle." }] });
-    const gone = await say({ episode: "Bob is a plumber.", mentions: [{ type: "Person", name: "Bob" }] });
-    await run(forget as unknown as Step, { ref_id: gone.entities[0].ref_id, reason: "wrong" }, old);
-
+    await writeOldMemory(oldFile);
     b = (await lb.open()) as LadybugBackend;
+    // Taken after the next open: Ladybug finishes writing a closed file's
+    // header only when another database opens in the process.
+    oldBytes = readFileSync(oldFile);
     // As a step run sees the graph on Peel, with the note's lists: as a job.
     ctx = ctxOf({ graph: graphView(b, parseGraphReaders({ jobs: { namespaces: ["private", "shared"], exclude_domains: ["Strut"] } })), secrets }, { actor: "import" });
   });
@@ -364,6 +371,11 @@ describe("graph/import-memory from the old memory database (ladybug)", { skip: l
     assert.equal(restates("凯特住在伦敦。", ["凯特", "伦敦"]), false, "unsplit text is never said to restate");
   });
 
+  it("never changes the old database: it reads a copy", () => {
+    const now = readFileSync(oldFile);
+    assert.ok(now.equals(oldBytes));
+  });
+
   it("with no old database there is nothing to import", async () => {
     const none = await run(importMemory, {}, ctxOf({ graph: b, secrets: { get: async () => join(dir, "nowhere.lbug") } }));
     assert.equal(none.status, "Warning");
@@ -371,16 +383,8 @@ describe("graph/import-memory from the old memory database (ladybug)", { skip: l
   });
 });
 
-describe('the host\'s memory switch (`memory: "graph"`)', () => {
-  const echo = (type: string) => defineStep({ type, description: type, input: z.object({}), output: z.any(), async run() { return "ok"; } });
-  const registry = { "memory/recall": echo("memory/recall"), "graph/graph-search": echo("graph/graph-search") } as unknown as StepRegistry;
+describe("agent tools on the graph", () => {
   const fakeTool = (def: unknown) => def;
-
-  it("leaves the old memory/* steps out of an agent's tools, and only then", () => {
-    const names = ["memory/*", "graph/graph-search"];
-    assert.deepEqual(Object.keys(buildRegistryTools(names, registry, ctxOf({ memory: "graph" }), fakeTool)), ["graph_graph_search"]);
-    assert.deepEqual(Object.keys(buildRegistryTools(names, registry, ctxOf({}), fakeTool)).sort(), ["graph_graph_search", "memory_recall"]);
-  });
 
   it("adds the Ladybug-only wording to a tool's description on a Ladybug graph, and only there", () => {
     const real = { "graph/delete-node": deleteNode, "graph/graph-get": graphGet, "graph/graph-search": graphSearch, "graph/create-node": createNode } as unknown as StepRegistry;
@@ -399,17 +403,17 @@ describe('the host\'s memory switch (`memory: "graph"`)', () => {
     }
   });
 
-  it("is read from STRUT_HOST_CONFIG, graph or legacy only, with concepts beside it", () => {
+  it("a host config's `memory` is accepted and ignored; concepts are read beside it", () => {
     const dir = mkdtempSync(join(tmpdir(), "strut-host-memory-"));
     try {
       const file = join(dir, "host.json");
       writeFileSync(file, JSON.stringify({ memory: "graph" }));
-      assert.deepEqual(hostConfigFromEnv({ STRUT_HOST_CONFIG: file }), { memory: "graph" });
-      writeFileSync(file, JSON.stringify({ memory: "neo4j" }));
-      assert.throws(() => hostConfigFromEnv({ STRUT_HOST_CONFIG: file }), /"memory" must be "graph" or "legacy"/);
+      assert.deepEqual(hostConfigFromEnv({ STRUT_HOST_CONFIG: file }), {}, "an older Peel's config still starts");
+      writeFileSync(file, JSON.stringify({ memory: "legacy" }));
+      assert.deepEqual(hostConfigFromEnv({ STRUT_HOST_CONFIG: file }), {});
       // The Personal root, for a host whose graph is one person's.
       writeFileSync(file, JSON.stringify({ memory: "graph", concepts: { personal: true } }));
-      assert.deepEqual(hostConfigFromEnv({ STRUT_HOST_CONFIG: file }), { memory: "graph", concepts: { personal: true } });
+      assert.deepEqual(hostConfigFromEnv({ STRUT_HOST_CONFIG: file }), { concepts: { personal: true } });
       writeFileSync(file, JSON.stringify({ concepts: { personal: "yes" } }));
       assert.throws(() => hostConfigFromEnv({ STRUT_HOST_CONFIG: file }), /"concepts" must be false or/);
     } finally {

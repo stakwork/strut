@@ -1,7 +1,7 @@
 /**
  * `merge` (plans/graph-memory-plan.md step 5): two nodes that are one thing
- * become one. Ported from memory/merge (`src/steps/lib/memory/merge.ts`)
- * onto the workspace graph, its rules kept:
+ * become one. Ported from the retired memory/merge onto the workspace
+ * graph, its rules kept:
  *
  *   - the duplicate's edges, both directions, move to the kept node. An edge
  *     the kept node already holds (same type, direction and other end) is

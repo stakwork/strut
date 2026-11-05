@@ -170,8 +170,7 @@ const EVENT_FIELD_MAX = 64 * 1024;
 
 /** A copy of `e` for runStep's caller: input / output, or their top-level
  *  fields, longer than EVENT_FIELD_MAX replaced by their size, so a step that
- *  takes or returns a file as base64 (memory/import's `data`, memory/export's
- *  inline `data`) does not come back in the events too. The result's `output`
+ *  takes or returns a file as base64 does not come back in the events too. The result's `output`
  *  and the events a kept run stores (what verify reads) stay whole. */
 export function slimEvent(e: RunEvent): RunEvent {
   const long = (f: unknown) => (typeof f === "string" && f.length > EVENT_FIELD_MAX ? `[${f.length} chars not logged]` : f);

@@ -1,14 +1,9 @@
 import { after, before, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import type { StepContext } from "../../../core.js";
 import type { LoadedFixer } from "../../../audio/fixer.js";
 import type { LadybugBackend } from "../../../graph/backend.js";
 import { testBackends } from "../../../graph/test-util.js";
-import { importMishearings } from "./_graph.js";
-import { memoryDb } from "../memory/_db.js";
 import graphSearch from "../graph/graph-search.js";
 import lexiconStep from "../memory/lexicon.js";
 import add from "./add.js";
@@ -19,10 +14,9 @@ import enable from "./enable.js";
 import remove from "./remove.js";
 import undo from "./undo.js";
 
-// Dictation's vocabulary on the workspace graph (`memory: "graph"`): the
-// same steps, the same outputs, its words and mishearings on Ladybug.
+// Dictation's vocabulary on the workspace graph: its words and
+// mishearings on Ladybug.
 const lb = testBackends().find((b) => b.kind === "ladybug")!;
-const hasMemoryDb = await import("@ladybugdb/core").then(() => true, () => false);
 
 type Step = { input: { parse(v: unknown): unknown }; run: (cfg: any, ctx: any) => Promise<any> };
 const run = (step: Step, cfg: Record<string, unknown>, ctx: unknown): Promise<any> => step.run(step.input.parse(cfg), ctx);
@@ -51,8 +45,8 @@ describe("dictation on the graph (ladybug)", { skip: lb.skip }, () => {
   before(async () => {
     b = (await lb.open()) as LadybugBackend;
     b2 = (await lb.open()) as LadybugBackend;
-    ctx = ctxOf({ graph: b, memory: "graph", stt });
-    ctx2 = ctxOf({ graph: b2, memory: "graph", stt });
+    ctx = ctxOf({ graph: b, stt });
+    ctx2 = ctxOf({ graph: b2, stt });
   });
   after(async () => {
     await lb.close(b);
@@ -103,32 +97,6 @@ describe("dictation on the graph (ladybug)", { skip: lb.skip }, () => {
     const paul = await entry("Paul Itoi");
     assert.equal(paul.type, "Person");
     assert.deepEqual(paul.heard.map((h: any) => [h.value, h.form]), [["etoy", "Itoi"]]);
-  });
-
-  it("reads the same shape as the old memory's memory/lexicon", { skip: !hasMemoryDb && "@ladybugdb/core is not installed" }, async () => {
-    const dir = mkdtempSync(join(tmpdir(), "strut-dictation-legacy-"));
-    try {
-      const legacy = ctxOf({ secrets: { get: async (n: string) => (n === "STRUT_MEMORY_DB" ? join(dir, "graph.lbug") : undefined) } });
-      for (const c of [legacy, ctx]) {
-        const out = await run(add, { heard: "stack work", written: "Stakwork" }, c);
-        await run(undo, { undo: out.undo }, c);
-        await run(add, { heard: "bit coin", written: "Bitcoin" }, c);
-      }
-      const [old, now] = [await lexicon(legacy), await lexicon()];
-      assert.deepEqual(keys(now), keys(old));
-      const [o, n] = [old.entities.find((e) => e.name === "Bitcoin"), now.entities.find((e) => e.name === "Bitcoin")];
-      assert.deepEqual(keys(n), keys(o));
-      assert.deepEqual(keys(n.heard[0]), keys(o.heard[0]));
-      assert.deepEqual({ ...n, ref_id: 0, heard: n.heard.map((h: any) => ({ ...h, ref_id: 0, created_at: 0 })), updated_at: 0, type: 0 },
-        { ...o, ref_id: 0, heard: o.heard.map((h: any) => ({ ...h, ref_id: 0, created_at: 0 })), updated_at: 0, type: 0 });
-      assert.equal(now.undone.length, 1);
-      assert.equal(old.undone.length, 1);
-      assert.deepEqual(keys(now.undone[0]), keys(old.undone[0]));
-      assert.deepEqual(keys(now.undone[0].entity), keys(old.undone[0].entity));
-      assert.deepEqual([now.undone[0].value, now.undone[0].entity.name], [old.undone[0].value, old.undone[0].entity.name]);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
   });
 
   it("undoes what dictation wrote, never learns it again, and refuses anything else", async () => {
@@ -225,28 +193,5 @@ describe("dictation on the graph (ladybug)", { skip: lb.skip }, () => {
     await run(add, { heard: "stack work", written: "Stakwork" }, ctx);
     const out = await run(graphSearch, { query: "stack work" }, ctxOf({ graph: b }));
     assert.ok(!JSON.stringify(out).includes("Mishearing"), JSON.stringify(out).slice(0, 400));
-  });
-
-  it("imports the old memory's mishearings onto the nodes their subjects became", { skip: !hasMemoryDb && "@ladybugdb/core is not installed" }, async () => {
-    const dir = mkdtempSync(join(tmpdir(), "strut-dictation-import-"));
-    try {
-      const legacy = ctxOf({ secrets: { get: async (n: string) => (n === "STRUT_MEMORY_DB" ? join(dir, "graph.lbug") : undefined) } });
-      await run(add, { heard: "cate", written: "Kate" }, legacy);
-      const kait = await run(add, { heard: "kait", written: "Kate" }, legacy);
-      await run(undo, { undo: kait.undo }, legacy);
-      await run(add, { heard: "nobody", written: "Gone" }, legacy);
-      const old = await lexicon(legacy);
-      const oldKate = old.entities.find((e) => e.name === "Kate").ref_id;
-      const kate = (await b.nodes.write({ type: "Person", data: { name: "Kate" } })).ref_id;
-      const nodeOf = new Map([[oldKate, kate]]);
-      const oldQuery = await memoryDb(legacy);
-      assert.deepEqual(await importMishearings(b, oldQuery, nodeOf), { imported: 2, already: 0, skipped: 1 });
-      const lex = await lexicon();
-      assert.deepEqual(lex.entities.find((e) => e.name === "Kate").heard.map((h: any) => h.value), ["cate"]);
-      assert.deepEqual(lex.undone.map((u) => [u.value, u.entity.name]), [["kait", "Kate"]]);
-      assert.deepEqual(await importMishearings(b, oldQuery, nodeOf), { imported: 0, already: 2, skipped: 1 }, "run again, nothing new");
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
   });
 });
