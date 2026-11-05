@@ -7,6 +7,7 @@ import { withLock } from "./jobs.js";
 import { globToRegExp } from "./closure.js";
 import { reachPolicyOf, withinReach } from "./reach.js";
 import type { JobUpdateInput } from "./jobs.js";
+import { emitProposal } from "./proposal-feed.js";
 import { bindGraph } from "./graph-writes.js";
 import type { Scope } from "./auth.js";
 import { buildCard, type ProposalCard } from "./proposal-card.js";
@@ -211,6 +212,7 @@ export async function createProposal(root: string, p: NewProposal): Promise<Prop
   lastCreatedMs = Math.max(Date.now(), lastCreatedMs + 1);
   const rec: Proposal = { id: randomBytes(9).toString("base64url"), status: "pending", createdAt: new Date(lastCreatedMs).toISOString(), ...p };
   await writeProposal(root, rec);
+  emitProposal(root, "created", rec);
   return rec;
 }
 
@@ -434,6 +436,7 @@ export async function decideProposal(root: string, id: string, decision: Decisio
     return { status: 403, body: { error: `forbidden: proposal "${id}" is not yours to decide` } };
   }
   const tell = (p: Proposal) => {
+    emitProposal(root, p.status === "applied" ? "applied" : p.status === "failed" ? "failed" : "decided", p);
     if (p.by.job) deps.notify?.(p.by.job, proposalUpdate(p));
   };
 
