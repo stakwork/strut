@@ -121,7 +121,7 @@ import { audioRoutes, speakRoutes } from "./audio/routes.js";
 import { readLexicon } from "./steps/lib/dictation/_shared.js";
 import { createAudioUpgradeHandler } from "./audio/ws.js";
 import { roomsFor } from "./rooms.js";
-import { createChannels, type ChannelApp, type Channels } from "./channels.js";
+import { createChannels, type ChannelApp, type Channels, type ChannelTransport } from "./channels.js";
 import { pipeChannelToPeer } from "./channels-peer.js";
 import { WebSocketServer, type WebSocket as WsSocket } from "ws";
 import { STATUS_CODES, type IncomingMessage } from "node:http";
@@ -4499,6 +4499,20 @@ export async function createStrut<TServices = unknown>(
     return c.body(null, 204);
   });
 
+  /** A channel socket answered in this process — app/look's page
+   *  (src/browser/service.ts), whose socket no server sees: admitted by the
+   *  same route as an upgrade, as the run's person, then handed to the
+   *  channels. A peer's app is not relayed there. */
+  const channelSocketInProcess = async (url: string, actor: string | undefined, transport: ChannelTransport) => {
+    const search = new URL(url).search;
+    const slot: ChannelSlot = {};
+    const res = await app.fetch(inProcessRequest(new Request(`http://localhost/channels${search}`), actor), { [CHANNEL_SLOT]: slot });
+    if (res.status !== 204 || !slot.app) return { error: `the channel socket was refused: ${res.status} ${await res.text()}` };
+    if (slot.peer) return { error: "a peer's app's channels are not relayed in app/look" };
+    const rejoin = new URL(url).searchParams.get("client");
+    return channels.connect(slot.app, { ...(slot.actor ? { actor: slot.actor } : {}), transport, ...(rejoin ? { rejoin } : {}) });
+  };
+
   /** A socket the upgrade admitted, handed to the channels. */
   const attachChannelSocket = (ws: WsSocket, slot: Required<Pick<ChannelSlot, "app">> & ChannelSlot, rejoin: string | null) => {
     const conn = channels.connect(slot.app, {
@@ -7150,7 +7164,7 @@ export async function createStrut<TServices = unknown>(
     // app, every request it makes answered here, in process, as the run's
     // actor — the browser needs no address for strut and holds no key.
     const browser = (services as Record<string, unknown>)["browser"];
-    if (browser instanceof BrowserService) browser.serveStrut(async (req, actor) => app.fetch(inProcessRequest(req, actor)));
+    if (browser instanceof BrowserService) browser.serveStrut(async (req, actor) => app.fetch(inProcessRequest(req, actor)), channelSocketInProcess);
   }
 
   // ── Programmatic run helper ──────────────────────────────────────────────

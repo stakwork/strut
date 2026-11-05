@@ -1,9 +1,10 @@
 # App channels: live messages between the people on an app
 
-> **Status (2026-11-04): ruled; work items 1–6 and 9 built
+> **Status (2026-11-04): ruled; work items 1–7 and 9 built
 > (stakwork/strut#487: the service, the ticket, the socket at `GET /channels`,
-> the peer relay, the steps, strut's UI as a host, the kit's `useChannel`, the
-> `App` page).** Written after the question
+> the peer relay, the steps, strut's UI as a host, the kit's `useChannel`,
+> `app/look`, the `App` page). The monitor (item 8) waits until an app
+> misbehaves: the limits already hold without it.** Written after the question
 > "could someone build a multiplayer game as a strut app?" A game has few
 > workflows (a scoreboard, a referee) and needs fast messages between the
 > people playing it, which strut does not have. The owner ruled every
@@ -410,7 +411,7 @@ than that server.
    pure parts in `app-links.ts` with their tests.
 6. **BUILT (#487). The kit**: `useChannel`, `newChannel`, the bridge methods; hook tests;
    the README with §6's pattern.
-7. **`app/look`**: answer the channel socket in process with Playwright's
+7. **BUILT (#487). `app/look`**: answer the channel socket in process with Playwright's
    `page.routeWebSocket`, as `page.route` answers the rest, so the builder
    can test a multiplayer app.
 8. **The monitor**: channel traffic per app in Usage (messages, bytes,
