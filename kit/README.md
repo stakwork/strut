@@ -123,6 +123,27 @@ the `sideEffects` and `type` rules, and that the recorded versions are
   /channels` opened with a ticket on the first join, frames relayed both
   ways, a drop told to the page as `{ op: "status", connected: false }` and
   the socket brought back with its client id and each channel's cursor.
+- **`src/wallet-hooks.ts`** — `useWallet()` → `{ available, wallet,
+  connected, info, connect, payKeysend, payInvoice, makeInvoice,
+  lookupPayment, lookupInvoice, getBudget, getBalance, listTransactions,
+  payLightningAddress, on }`: the viewer's Lightning wallet through the host
+  (`specs/WALLET.md`), for an app whose `app.yaml` has a `wallet:` request.
+  Amounts are msat. A call made with no connection yet connects first, once.
+  Pay from a click, since the host opens a sheet only right after the
+  person acted. `available` is false in a host with no wallet (anything but
+  Peel today). `useTransaction(payment)` → `{ state, preimage, feesPaid,
+  settledAt, failureReason }` follows a payment from `pending` to `settled`
+  or `failed`, on the host's notifications, looking it up every
+  `TRANSACTION_POLL_MS` while the page is visible. A Sphinx keysend can stay
+  pending for days, and a settled payment may carry no preimage. No grant:
+  the person's connection is the grant.
+- **`src/wallet/`** (`@strut/kit/wallet`) — the contract under it, no React:
+  the `strut/wallet/*` methods and their checks (`checkParams`,
+  `resultProblems`, `notificationProblems`), `WalletError`, `verifyPreimage`,
+  `satsToMsat`, the Sphinx address split, the conformance vectors
+  (`@strut/kit/wallet/vectors.json`), the page's client
+  (`createBridgeWallet`, which the bootstrap builds, with `window.webln` over
+  it), and the relay a native host's main frame runs (`relayNativeWallet`).
 - **`src/links.ts`** — `appLink(name, input?)`: a deep link to an app,
   `?app=<name>&input=<input as a query string>` (plans/apps.md §7.1). A host
   follows it and hands `input` back as `tool-input`, flat strings.

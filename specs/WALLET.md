@@ -92,6 +92,11 @@ app: { name, version, peer?, title, request }       // NativeWalletApp: the vers
   page, and never sent.
 - **The page's calls wait up to 10 minutes for a sheet** (`connect`, the pay
   methods) and 60 s for the rest (`SHEET_TIMEOUT_MS`, `CALL_TIMEOUT_MS`).
+- **The relay sets no timeout of its own** on the native call: the page's
+  timeouts are the only ones in strut. So the native host answers every call,
+  and takes down a sheet nobody answered BEFORE the page's 10 minutes run out
+  (Peel: at 9), answering `RESTRICTED`. Otherwise a yes given after the page
+  stopped waiting would pay for a page that no longer hears the answer.
 
 **Native → UI.** The native host pushes each notification by evaluating
 `window.strutWallet.notify(message)` (`NATIVE_WALLET_GLOBAL`) in the main frame,
@@ -173,8 +178,16 @@ Payment { transaction_id, state: "pending" | "settled" | "failed", payment_hash,
           amount, fees_paid?, preimage?, created_at, settled_at?, failure_reason? }
 ```
 
-- **`preimage` only once `settled`, and always when `settled`.** A keysend's
-  preimage is made by the sender, so before settlement it proves nothing.
+- **`preimage` only once `settled`.** A keysend's preimage is made by the
+  sender, so before settlement it proves nothing.
+- **A pay method's answer that says `settled` carries the preimage.** A host
+  that knows the payment settled but has no preimage answers `pending`, and the
+  page hears the settlement as a lookup or a notification.
+- **A lookup, a listed transaction or a notification may say `settled` with no
+  preimage.** Some wallets learn that a payment settled without learning its
+  preimage. Sphinx is one: the mixer's tag records and its payment history carry
+  none, so a payment that settled while Peel was not listening has none. A page
+  that needs PROOF checks the preimage (`verifyPreimage`), not the state.
 - **`settled` only on the wallet's word.** Never report a failure as success, and
   never a payment that may still settle as failed. A payment whose fate the host
   does not know stays `pending`.
@@ -226,7 +239,8 @@ given: route hints, a TLV record type it cannot send, a `preimage`.
   notification: Transaction & { transaction_id, failure_reason? } }
 ```
 
-- `payment_sent` carries a settled outgoing transaction with its preimage.
+- `payment_sent` carries a settled outgoing transaction, with its preimage when
+  the host has it (§3).
 - `payment_failed` carries a failed outgoing one.
 - `payment_received` carries an incoming one, for an invoice made through this
   connection.
@@ -274,7 +288,8 @@ On approve, the host keeps a connection record and answers
 version asks for more than it holds, in which case the sheet shows again.
 
 Where the record is kept, keyed by (viewer, host strut or org, app name):
-- Peel's preferences;
+- Peel: a table on the device, not its synced preferences, because the budget
+  is counted in the same database write as the payment;
 - a browser host's own storage;
 - Hive's server.
 
@@ -343,12 +358,25 @@ one. A lookup of anything else is `NOT_FOUND`.
     ASYNC; a legacy `:` hint never is.
   - **Keysend** is the core's
     `keysend(seed, time, to, state, amt_msat, data?, route_hint?)`. `data` rides
-    in TLV **13377331** (`SPHINX_TLV_TYPE`), base64. Until the core takes a list of
-    records, any other record type is `NOT_IMPLEMENTED`.
+    in TLV **13377331** (`SPHINX_TLV_TYPE`), which the core sends as the base64
+    text of `data`.
+    - **That record's value.** As for every record, its `value` is the hex of the
+      bytes on the wire. On the wire this record is base64 text, so its value
+      must be the hex of base64 text. The host decodes it and hands the core the
+      bytes; any other value is `NOT_IMPLEMENTED`.
+    - **Other record types** are `NOT_IMPLEMENTED` until the core takes a list of
+      records.
+    - **Route hints.** The core takes only `<lsp_pubkey>_<scid>`, so a hop's fee
+      and CLTV fields are ignored.
   - **States.** The mixer's `PENDING` / `COMPLETE` (with the preimage) / `FAILED`
     are `pending` / `settled` / `failed`. A payee who is away leaves the payment
     `pending` at the LSP until they return. Peel's reconciliation settles or fails
     it later, and the page hears it as `payment_sent` or `payment_failed`.
+    - A settlement Peel learns later, from the mixer's tag records or its history,
+      carries no preimage (§3).
+  - **Fees.** The core's send status does not say what was paid. `fees_paid`
+    comes from the payment history row (plus the 1-sat ping of an async
+    keysend), and is absent until Peel has read that row.
   - **Invoices.** `make_invoice` is the mixer-made invoice, which settles while
     Peel is closed.
 
