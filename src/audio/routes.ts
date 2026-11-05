@@ -93,7 +93,7 @@ export function audioRoutes(app: Hono, stt: SttService, opts: AudioRoutesOptions
     try {
       const f = late ? null : await stt.fixer?.current();
       if (f) {
-        // A cold model starts loading here; until it answers in time, the next ones are fixed without it.
+        // `listen()` starts the model loading (`warm`); one still cold answers late, and the next ones are fixed without it.
         const p = rewrite(result.text, lexicon, f);
         out = await within(p, FIX_TIMEOUT_MS);
         if (out) fixer = f.id;
