@@ -35,8 +35,9 @@ import { AppHost, type HostedApp } from "./AppHost";
 // UI's own credential and shown from the bytes — an image, video, audio or
 // PDF from an object URL, an HTML page as the text of a frame that runs
 // nothing (the read-through never serves a peer's page with scripts) — and
-// a file nothing renders downloads. `solo`: the viewer alone in the window,
-// no backdrop and nothing to close (`?artifact=…&solo=1`).
+// a file nothing renders downloads. `solo`: in normal flow, no backdrop —
+// the viewer alone in the window with nothing to close (`?artifact=…&solo=1`),
+// or the app host's side panel (./AppWithPanel), which passes `onClose`.
 
 export function ArtifactViewer(props: {
   path: string;

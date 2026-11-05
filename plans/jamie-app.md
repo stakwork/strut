@@ -1,6 +1,6 @@
 # Jamie as a strut app, and one wake for every host
 
-> **Status (2026-11-05): proposed; §1 (one wake) built — §1.6; §2 (conversations) built — §2.1; §3 (first-party apps) built — §3.1; Hive's wake half (§6.1) built — stakwork/hive#5705.** Written after a read of strut `main`
+> **Status (2026-11-05): proposed; §1 (one wake) built — §1.6; §2 (conversations) built — §2.1; §3 (first-party apps) built — §3.1; §4 (the host panel) built — §4.1; Hive's wake half (§6.1) built — stakwork/hive#5705.** Written after a read of strut `main`
 > @e1c45ad, hive `origin/master` @c692b96bf, sphinx `origin/master`
 > @74c12954 (Peel's bridge) and sphinx-voice `origin/main` @ba18f12. The
 > owner agreed four things in conversation, marked **agreed** below: a
@@ -469,7 +469,7 @@ host's sandboxed panel (§4), never in its own document.
   under the app. Opening a conversation the index lists the viewer in (or
   a shared one) is the next rule to rule on.
 
-## 4. What the app cannot frame (proposed)
+## 4. What the app cannot frame (built — §4.1)
 
 The app's CSP has `frame-src 'none'` (`src/apps/build.ts:176`), and
 `run/files` returns base64, 2 MB at most. So the app cannot show, in its
@@ -486,6 +486,49 @@ Hive's frame the whole strut page is the frame, so the panel is inside
 it too. The assistant app draws inline what `strut/views` draws
 (markdown, text, sanitized HTML, images, sheets, work products, the run
 graph, spot checks) and hands the rest to the panel.
+
+### 4.1 As built (2026-11-05, branch `feature/app-host-panel`)
+
+- **The contract for the app** (what item 5 builds on): `useHost().openLink`
+  with `?artifact=<encodeURIComponent(served path)>` or `appLink(key,
+  input)`. A served path is what `isServedFilePath` takes: a job's files,
+  a run's artifacts, either behind `/peers/<id>` hops (a peer-tagged
+  deliverable's path is `peerArtifactPath`). Nothing new in the kit.
+- **Which links** (`panelTarget`, `web/src/app-links.ts`, tested in
+  `web/src/app-host.test.ts`): `?artifact=` with a served path, else
+  `?app=` naming an app not on screen. A link to the page itself stays its
+  input in place, and `?wf=`, `?run=`, `?job=` keep today's behavior: the
+  full UI navigates, the page alone opens a new tab. `artifact` joined
+  `strutLink`'s params. A peer's page names files where it lives, so its
+  `?artifact=<path>` becomes `/peers/<peer><path>` (`peerAppLink`), as its
+  `?app=<name>` already became `@<peer>/<name>`.
+- **The panel** (`web/src/components/AppWithPanel.tsx`) wraps `AppHost`
+  in the canvas area (`app.tsx`) and alone (`SoloApp.tsx`). The page's frame
+  is never moved, so it keeps its state. A file opens in `ArtifactViewer`
+  (`solo` with `onClose`), so it gets the viewer's rules: a page strut
+  serves runs under its file token (`?t=`; a strut with no secret to sign
+  one falls back to `?key=`, as the viewer does everywhere), and a peer's
+  file is shown from its bytes, scripts off, with no credential in any URL. An app opens in
+  `AppHost` under a title bar; its version comes from the one listing it is
+  in (`useListedApp`, `web/src/use-listed-app.ts`, now SoloApp's lookup
+  too). A new link replaces the content, and an app's new input goes to it
+  in place. ✕ closes the panel. Its left edge resizes it: `WidthResizer`,
+  which `FlyoutResizer` is now one config of; frames take no pointer
+  events while a drag is on. Below 760 px of container (a container query)
+  the panel lies over the page. The panel's own app routes links the same
+  way.
+- **Left as they were:** the job timeline's app and the viewer's app keep
+  `navigateFromApp`, which now returns false for a link it does not open
+  (a file), so the link opens in a new tab as before. A visitor's page
+  (`&public=1`) has no panel. The panel is not in the address bar, so a
+  reload closes it.
+- **Checked in the browser pane** against a scratch strut and a peer: a job
+  file (markdown), a peer's HTML (static), `strut/views`, `@p2/strut/views`,
+  resize, close, the narrow overlay, the canvas area and the page alone.
+  The pane refuses any sandboxed frame with a `src` (`ERR_BLOCKED_BY_CLIENT`;
+  the modal viewer's frame is refused the same way), so a local HTML page
+  with its scripts was checked only as far as its tokened URL serving `200`
+  with `sandbox allow-scripts`.
 
 ## 5. The app (proposed)
 
@@ -578,7 +621,7 @@ are lost.
    `conversation/*` steps and routes, fork, `wait`.
 3. **First-party apps** (strut, §3; built — §3.1): the reserved `strut/`
    name on every door, the tier's rights in `step_run`, `proposal/decide`.
-4. **The host panel** (strut web, §4).
+4. **The host panel** (strut web, §4; built — §4.1).
 5. **`strut/assistant`** (strut, §5), the `llm/models` step.
 6. **Hive** (§6.1), behind the 202's `wake: true`.
 7. **Peel's bridge, voice** (§6.2, §6.3).

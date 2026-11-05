@@ -1271,8 +1271,10 @@ is one the same way, with no strut change per host:
 3. **Answer the two requests a page makes of its host:** `ui/message` goes
    to the host's conversation (strut's UI: the builder chat, the text
    prefixed with which app it is about); `ui/open-link` opens a strut deep
-   link (`?wf=`, `?run=`, `?job=`, `?app=` with its `input`) in place and
-   anything else in a new tab. A theme change is a `ui/notifications/host-context-changed`.
+   link (`?wf=`, `?run=`, `?job=`, `?app=` with its `input`, `?artifact=`)
+   in place and anything else in a new tab. A theme change is a `ui/notifications/host-context-changed`.
+   Strut's UI opens two of them BESIDE the page, in a side panel, rather than
+   navigating away from it (below, "The side panel").
 4. **Open it where a link says.** A deep link to an app is
    `?app=<name>&input=<the app's own query string>` (the kit's
    `appLink(name, input)`): read `input` back as flat strings —
@@ -1299,12 +1301,15 @@ launch. Open to every app on the peer; a plain peer key gets none of it.
 Strut's UI lists each peer's apps beside its own as `?app=@<peer>/<name>`;
 for one, it leaves out the version select, the tab toggle and the builder
 button, answers no `ui/message`, and opens in place only a link to an app
-on that peer (`?app=<name>` from its page is `@<peer>/<name>`).
+on that peer (`?app=<name>` from its page is `@<peer>/<name>`) or a file the
+peer serves (`?artifact=<path>` from its page is `/peers/<peer><path>`),
+both in the side panel.
 With `&solo=1` beside `?app=` (any app, here or a peer's) the UI renders the
 page ALONE, nothing of strut's around it — what a native host such as Peel
 opens in a web view of its own: `/?key=<the local strut's key>&app=@<peer>/<name>&solo=1`,
 with `&input=` for a deep link. A link the page opens to itself changes
-`input` in place, the URL following (replaced, as the full UI does); any
+`input` in place, the URL following (replaced, as the full UI does); a
+file or another app opens in the side panel inside the page (below); any
 other link opens in a new window.
 Alone, the page reads only the listing the app is in — `GET /apps`, or that
 one peer's `GET /peers/<id>/apps` — then the app's files and its relay: no
@@ -1321,6 +1326,32 @@ listing holds one, so the page reads none, and its files are served at
 file token and identity `app:<name>@preview-<hex>` with them. `step_run`
 checks its calls against the preview's own manifest and the usage
 monitor does not count them.
+
+**The side panel** (`plans/jamie-app.md` §4; `web/src/components/AppWithPanel.tsx`,
+`panelTarget` in `web/src/app-links.ts`). An app's document frames
+nothing (`frame-src 'none'`) and `run/files` returns 2 MB at most, so an
+HTML page an agent wrote, another app, a PDF or a video cannot show inside
+it. The page hands such a thing to its host with `ui/open-link`, and
+strut's UI — in the canvas area and alone (`&solo=1`, which is how Hive
+and Peel frame an app, so the panel is inside that one page) — opens two
+deep links in a panel BESIDE the page, which stays on screen with its
+state:
+
+| Link | The panel shows |
+|---|---|
+| `?artifact=<path>` | the file through the artifact viewer, as "One file alone" below reads it: `path` must be a served file (`isServedFilePath`: `/jobs/<job>/files/…`, `/artifacts/<runId>/…`, either behind `/peers/<id>` hops), else the link is not the panel's. A page this strut serves runs its scripts under its file token (`?t=`, the one credential a file URL carries; a strut with no secret to sign one falls back to `?key=`, as the viewer does everywhere); a peer's is read with the UI's credential and shown from its bytes, scripts off, no credential in any URL. |
+| `?app=<key>&input=…` | another app (`@<peer>/<name>` a peer's, a key may pin `@vN`) under a bar with its title, opened with `input`. A link to the page on screen is not the panel's: its input goes to it in place, as before. |
+
+A new link replaces what the panel shows (a link to the app already in it
+is its new input, in place); ✕ closes it; its left edge drags its width,
+kept in that browser; in a container narrower than 760 px it lies over the
+page. Links from the app in the panel route the same way — a file or a
+third app replaces it, a link to the page beside it is that page's. Every
+other link (`?wf=`, `?run=`, `?job=`) is followed as before: the full UI
+navigates, the page alone opens a new window. The panel is not in the
+address bar (a reload closes it), and a visitor's page (`&public=1`) has
+none. The kit's `appLink(name, input)` builds the app link; a file's is
+`?artifact=<encodeURIComponent(path)>`.
 
 **The store front** (`plans/marketplace.md` §7; `web/src/components/Store.tsx`,
 `web/src/store-links.ts`). `?store=1` renders a third page alone: an index
@@ -1369,8 +1400,9 @@ peer's file is read with the UI's own credential and shown from its bytes
 (an object URL, or the page's text), because no file token this strut
 mints opens the read-through and the key never goes into an image's or a
 frame's URL; a peer's file nothing renders, and the head's link, download
-instead. `solo` is read once and stays in the URL; without it `artifact`
-is ignored.
+instead. `solo` is read once and stays in the URL; without it a page's
+load ignores `artifact` — what a hosted app's `ui/open-link` to it opens
+is the side panel (above).
 
 ### 14.4 A published app as a deliverable
 
