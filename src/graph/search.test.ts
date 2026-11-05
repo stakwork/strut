@@ -581,7 +581,7 @@ for (const tb of testBackends()) {
 
     it("ontology: listSchemas and getSchema mirror jarvis's shapes", { skip: neoOnly("the Schema meta-graph with Thing") }, async () => {
       const { schemas, edges } = await reader.listSchemas();
-      assert.equal(schemas.length, 16, "the Strut domain, Thing, and the Concept the suite seeded");
+      assert.equal(schemas.length, 19, "the Strut domain, Thing, and the seed types (Claim, Check, Evidence, Concept)");
       const run = schemas.find((s) => s.type === "StrutRun")!;
       assert.equal(run["domain"], "Strut");
       assert.equal(run["parent"], "Thing");

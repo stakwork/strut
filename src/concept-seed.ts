@@ -55,8 +55,9 @@ import { composeNodeKey } from "./graph/node-writer.js";
  * name still carrying that file's stamp is soft-deleted (`deleted_at`, its
  * edges removed); one whose stamp was cleared or replaced is left alone.
  *
- * No graph, or a Neo4j with no `Concept` schema (seed the ontology:
- * `STRUT_GRAPH_SEED_ONTOLOGY=1`): nothing seeded, one log line.
+ * No graph, or one with no `Concept` schema (both engines seed it,
+ * `graph/seed-types.ts`; a backend opened with `skipBoot` may not have it):
+ * nothing seeded, one log line.
  */
 
 const TYPE = "Concept";
@@ -208,7 +209,7 @@ export async function seedConcepts(graph: GraphBackend | undefined, sets: Concep
   }
   const schema = await graph.schemas.schema(TYPE);
   if (!schema) {
-    console.log(`[concepts] no "${TYPE}" schema in the graph (seed the ontology: STRUT_GRAPH_SEED_ONTOLOGY=1): Concept files not seeded`);
+    console.log(`[concepts] no "${TYPE}" schema in the graph: Concept files not seeded`);
     return [];
   }
   const outcomes: ConceptSeedOutcome[] = [];

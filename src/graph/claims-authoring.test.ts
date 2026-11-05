@@ -104,13 +104,11 @@ for (const tb of testBackends()) describe(`claims authoring on ${tb.name}`, { sk
   before(async () => {
     backend = await tb.open();
     dir = await mkdtemp(join(tmpdir(), "strut-claims-"));
-    // Boot obligations by hand (skipBoot), ONCE: the ontology (Claim / Check /
-    // Evidence) + the Strut domain on Neo4j; a file has them in its registry.
+    // Boot obligations by hand (skipBoot), ONCE: the Strut domain and the seed
+    // types (Claim / Check / Evidence) on Neo4j; a file seeds them at open.
     // Each test then clears data, not schemas.
     await tb.wipe(backend);
-    const { seedJarvisOntology } = await import("./ontology-seed.js");
     const { seedStrutDomain } = await import("./schema-seed.js");
-    if (tb.kind === "neo4j") await seedJarvisOntology(backend);
     await seedStrutDomain(backend);
     backend.schemas.invalidate();
   });

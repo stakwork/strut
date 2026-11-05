@@ -14,6 +14,14 @@
  * vector index too) and **shared** (jarvis already seeded those; our
  * `IF NOT EXISTS` forms are no-ops).
  *
+ * Beside the Strut types it seeds the types both engines share
+ * (`seed-types.ts`: Claim, Check, Evidence, Concept), each only when the
+ * graph has no Schema of that name, through `createNodeSchema` — the call
+ * an agent makes — and each of their edge rules only where the graph does
+ * not already allow that edge. On a swarm (or a graph seeded with jarvis's
+ * library) jarvis's own rows are there and allow every one of them, so
+ * nothing is written (plans/ontology.md §8).
+ *
  * The Schema rows go through `SchemaSource` (`engine.ts`). A Ladybug file
  * seeds its own Strut types at open (`ladybug/registry.ts`, without the
  * agent-session and chat types it does not keep), so there this has nothing
@@ -24,6 +32,9 @@ import { randomUUID } from "node:crypto";
 import type { Bolt } from "./bolt.js";
 import type { EngineLike, SchemaSource } from "./engine.js";
 import { asEngine } from "./neo4j-engine.js";
+import { createNodeSchema, type NodeSchemaInput } from "./schema-crud.js";
+import { SchemaResolver, type NodeSchema } from "./schema-resolver.js";
+import { SEED_DOMAINS, SEED_EDGES, SEED_TYPES } from "./seed-types.js";
 import {
   THING_SCHEMA,
   THING_TYPE,
@@ -162,6 +173,16 @@ export async function seedStrutDomain(e: EngineLike): Promise<SeedReport> {
     await ddl(`CREATE INDEX IF NOT EXISTS FOR (n:\`${schema.type}\`) ON (n.node_key)`);
   }
 
+  // 4b. The types both engines seed (Claim, Check, Evidence, Concept): each
+  //     created only when no Schema has its name — a soft-deleted one too, as
+  //     above. One already there (jarvis's) is left exactly as it is.
+  const resolver = new SchemaResolver(engine);
+  for (const t of SEED_TYPES) {
+    if (await src.schemaRow(t.type)) continue;
+    await createNodeSchema(engine, resolver, seedTypeInput(t));
+    report.createdSchemas.push(t.type);
+  }
+
   // 5. Global objects (jarvis-owned in shared mode; IF NOT EXISTS is a no-op).
   await ddl(
     `CREATE CONSTRAINT unique_node_key_global IF NOT EXISTS
@@ -174,6 +195,16 @@ export async function seedStrutDomain(e: EngineLike): Promise<SeedReport> {
     const r = await seedEdgeSchema(src, e);
     if (r === "created") report.createdEdgeSchemas.push(`${e.source}-[${e.edge}]->${e.target}`);
     else if (r === "skipped") report.skippedEdgeSchemas.push(`${e.source}-[${e.edge}]->${e.target}`);
+  }
+  //    The seed types' edge rules: only where the graph does not already
+  //    allow the edge (jarvis's `Claim -[ABOUT]-> Thing`, its allowlist), so
+  //    a graph jarvis seeded gets no rows of ours beside its own.
+  resolver.invalidate();
+  for (const e of SEED_EDGES) {
+    if (await resolver.edgeSchema(e.edge, e.source, e.target)) continue;
+    if ((await src.ensureEdgeSchema(e.source, e.edge, e.target, { ref_id: randomUUID() }))?.created) {
+      report.createdEdgeSchemas.push(`${e.source}-[${e.edge}]->${e.target}`);
+    }
   }
 
   // 7. Vector indexes — the one thing jarvis does NOT auto-create for a new
@@ -211,6 +242,22 @@ export async function seedStrutDomain(e: EngineLike): Promise<SeedReport> {
   await src.stampMigration(STRUT_MIGRATION_ID);
 
   return report;
+}
+
+/** A seed type as `createNodeSchema` takes it, with its Neo4j domain. */
+function seedTypeInput(t: NodeSchema): NodeSchemaInput {
+  return {
+    type: t.type,
+    parent: t.parent,
+    attributes: { ...t.attributes },
+    key_spec: t.key_spec,
+    index: [...t.index],
+    title_key: t.title_key,
+    description_key: t.description_key,
+    domain: SEED_DOMAINS[t.type],
+    ...(t.role ? { role: t.role } : {}),
+    ...(t.identifiers?.length ? { identifiers: [...t.identifiers] } : {}),
+  };
 }
 
 /**

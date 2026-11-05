@@ -17,7 +17,6 @@ import type { KitLocation } from "../apps/kit.js";
 import { readBuildInfo } from "../apps/build.js";
 import { createStrut, type Strut } from "../createStrut.js";
 import type { GraphBackend } from "../graph/backend.js";
-import { seedJarvisOntology } from "../graph/ontology-seed.js";
 import { seedStrutDomain } from "../graph/schema-seed.js";
 import { testBackends } from "../graph/test-util.js";
 import { GraphWorkspaceStore } from "../graph/workspace-store.js";
@@ -617,7 +616,6 @@ for (const tb of testBackends()) {
     before(async () => {
       backend = await tb.open();
       await tb.wipe(backend);
-      if (tb.kind === "neo4j") await seedJarvisOntology(backend);
       await seedStrutDomain(backend);
       backend.schemas.invalidate();
     });

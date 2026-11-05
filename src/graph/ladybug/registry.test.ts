@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { CLAIM_EDGES } from "../claims.js";
+import { SEED_EDGES, SEED_TYPES } from "../seed-types.js";
 import { STRUT_EDGES, STRUT_SCHEMAS } from "../strut-schemas.js";
 import { EDGE_COLUMNS, EDGE_TYPE_COLUMNS, GENERIC_COLUMNS, LADYBUG_EDGES, LADYBUG_EDGE_TYPES, LADYBUG_SCHEMAS, LADYBUG_STRUT_TYPES, SCHEMA_COLUMNS, ladybugEdge, ladybugSchema, nodeColumns, ontologySeed } from "./registry.js";
 
@@ -114,5 +115,17 @@ describe("ladybug registry — the ontology seed (plans/ladybug-backend.md §3, 
     assert.equal(seed.edges, LADYBUG_EDGES);
     assert.match(seed.id, /^ladybug_ontology_seed:[0-9a-f]{16}$/);
     assert.equal(ontologySeed().id, seed.id, "the same content, the same stamp");
+  });
+
+  it("the seed's stamp is pinned: a new stamp re-seeds every file's Schema rows at its next open", () => {
+    // Change this only with a change to the seed's content you mean to ship.
+    assert.equal(ontologySeed().id, "ladybug_ontology_seed:e18d83de40b0f0d6");
+  });
+
+  it("holds the types and edge rules both engines seed (seed-types.ts), in place", () => {
+    const at = LADYBUG_SCHEMAS.findIndex((s) => s.type === SEED_TYPES[0]!.type);
+    assert.deepEqual(LADYBUG_SCHEMAS.slice(at, at + SEED_TYPES.length), SEED_TYPES);
+    const e = LADYBUG_EDGES.findIndex((x) => x === SEED_EDGES[0]);
+    assert.deepEqual(LADYBUG_EDGES.slice(e, e + SEED_EDGES.length), SEED_EDGES);
   });
 });

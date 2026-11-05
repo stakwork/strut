@@ -35,6 +35,7 @@ export type { GraphBackend };
  *   - `STRUT_GRAPH_SEED_ONTOLOGY` — "1" also seeds the bundled jarvis
  *     ontology on first open (add-only), so a STANDALONE Neo4j can host
  *     jarvis-typed data (Document, EvalSet, …) with no jarvis process.
+ *     strut's own types (Claim, Check, Evidence, Concept) never need it.
  *
  * The backend is opened once per config and cached process-wide; the first
  * open runs the boot obligations (domain seeding + embedding backfill).

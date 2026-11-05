@@ -17,7 +17,7 @@ import { MemoryRunStore } from "./store.js";
 import { MemoryChatStore } from "./chat-store.js";
 import type { GraphBackend } from "./graph/backend.js";
 import { seedStrutDomain } from "./graph/schema-seed.js";
-import { seedConceptSchema, testBackends } from "./graph/test-util.js";
+import { testBackends } from "./graph/test-util.js";
 import { projectRun, runsThatRead } from "./graph/projector.js";
 import { runWorkflow } from "./runner.js";
 
@@ -173,7 +173,6 @@ for (const tb of testBackends()) {
     beforeEach(async () => {
       await tb.wipe(b);
       if (b.kind === "neo4j") await seedStrutDomain(b);
-      await seedConceptSchema(b);
       dir = await mkdtemp(join(tmpdir(), "strut-concepts-"));
     });
     afterEach(async () => {
