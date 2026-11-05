@@ -2,7 +2,7 @@ import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { Bolt } from "./bolt.js";
-import { seedStrutDomain, flattenSchema, STRUT_MIGRATION_ID, DOMAIN_VECTOR_INDEX, DOMAIN_FULLTEXT_INDEX_V2, GLOBAL_VECTOR_INDEX } from "./schema-seed.js";
+import { seedStrutDomain, flattenSchema, STRUT_MIGRATION_ID, DOMAIN_VECTOR_INDEX, DOMAIN_FULLTEXT_INDEX_V2, GLOBAL_VECTOR_INDEX, STRUT_PROPERTY_INDEXES } from "./schema-seed.js";
 import { THING_SCHEMA, STRUT_EDGES, STRUT_SCHEMAS, assertLibraryWellFormed, searchableAttributes, vectorIndexName } from "./strut-schemas.js";
 import { graphSnapshot, schemaObjectNames, testGraphConfig, wipeGraph } from "./test-util.js";
 
@@ -106,6 +106,7 @@ describe("seedStrutDomain (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J
     assert.ok(names.constraints.includes("unique_node_key_global"));
     assert.ok(names.constraints.includes("migration_id_unique"));
     assert.ok(names.indexes.includes(DOMAIN_VECTOR_INDEX));
+    for (const i of STRUT_PROPERTY_INDEXES) assert.ok(names.indexes.includes(i.name), i.name);
     assert.ok(names.indexes.includes(GLOBAL_VECTOR_INDEX));
     assert.ok(names.indexes.includes(DOMAIN_FULLTEXT_INDEX_V2));
     assert.ok(names.indexes.includes(vectorIndexName("StrutWorkflowVersion", "input_schema")));
@@ -199,5 +200,29 @@ describe("seedStrutDomain (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J
     assert.deepEqual(r2.createdSchemas, []);
     assert.deepEqual(r2.reconciled, {});
     assert.deepEqual(await graphSnapshot(bolt), after);
+  });
+});
+
+describe("STRUT_PROPERTY_INDEXES", () => {
+  it("seedStrutDomain issues one idempotent IF NOT EXISTS index per entry", async () => {
+    const stmts: string[] = [];
+    const bolt = { run: async (c: string) => { stmts.push(c); return []; } };
+    const schemaSource = {
+      holdsStrutTypes: false,
+      schemaRow: async () => ({ type: "x", props: {} }),
+      extendSchema: async () => {},
+      createSchema: async () => {},
+      ensureChildOf: async () => true,
+      ensureEdgeSchema: async () => ({ created: false, ref_id: "r" }),
+      stampMigration: async () => {},
+    };
+    const fake = { kind: "neo4j", bolt, schemaSource } as unknown as Parameters<typeof seedStrutDomain>[0];
+    await seedStrutDomain(fake);
+    const idx = stmts.filter((c) => /^CREATE INDEX strut_/.test(c));
+    assert.equal(idx.length, STRUT_PROPERTY_INDEXES.length);
+    assert.ok(idx.every((c) => c.includes("IF NOT EXISTS")));
+    for (const i of STRUT_PROPERTY_INDEXES) assert.ok(idx.some((c) => c.startsWith(`CREATE INDEX ${i.name} IF NOT EXISTS FOR (n:\`${i.label}\`)`)), i.name);
+    assert.ok(idx.some((c) => c.includes("ON (n.`job`, n.`run_id`)")));
+    assert.equal(new Set(STRUT_PROPERTY_INDEXES.map((i) => i.name)).size, STRUT_PROPERTY_INDEXES.length);
   });
 });
