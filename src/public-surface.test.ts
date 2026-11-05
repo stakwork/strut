@@ -369,6 +369,18 @@ for (const tb of testBackends()) describe(`public Concepts and nodes (${tb.name}
     assert.equal((await strut.app.request(`/public/graph/nodes/${secret}`)).status, 404, "a workflow without its runs makes nothing visible");
     await strut.app.request("/public-view", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ concepts: ["Kitchen"], workflows: [{ name: "peek", runs: true }] }) });
     assert.equal((await strut.app.request(`/public/graph/nodes/${secret}`)).status, 200);
+
+    // A run after the index was built reaches it through the run-event hook.
+    const later = await concept("Later");
+    assert.equal((await strut.app.request(`/public/graph/nodes/${later}`)).status, 404);
+    const again = await runWorkflow(
+      { name: "peek", input: z.any(), steps: [{ id: "get", type: "graph/graph-get", config: { ref_id: later } }] },
+      {},
+      await createRegistry([]),
+      { store, services: strut.services },
+    );
+    assert.equal(again.status, "success", JSON.stringify(again.error));
+    assert.equal((await strut.app.request(`/public/graph/nodes/${later}`)).status, 200);
     await strut.close();
   });
 
@@ -522,5 +534,117 @@ describe("a public app, for a visitor (plans/public-surface.md §5)", () => {
     assert.ok(r.ok && r.version === "v2" && r.live === false, JSON.stringify(r));
     assert.equal(((await (await strut.app.request("/public/apps/bench")).json()) as { version: string }).version, "v1");
     assert.match((await call({ type: "demo/read", config: {}, app: publicAppIdentity("bench", "v2") })).error!, /not the version in the public view \(v1\)/);
+  });
+});
+
+describe("the visible-refs index", () => {
+  let dir: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "strut-public-idx-"));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+  const ev = (runId: string, type: string, refs: string[] = []): RunEvent =>
+    ({ ts: new Date().toISOString(), runId, path: "w", type, ...(refs.length ? { nodes: refs.map((ref_id) => ({ ref_id })) } : {}) }) as RunEvent;
+  const counting = (store: MemoryRunStore) => {
+    const c = { reads: 0 };
+    return {
+      c,
+      store: {
+        listRuns: (w: string) => store.listRuns(w),
+        getRunSummary: (w: string, r: string) => store.getRunSummary(w, r),
+        getRunEvents: (w: string, r: string) => {
+          c.reads++;
+          return store.getRunEvents(w, r);
+        },
+      },
+    };
+  };
+
+  it("finished runs: found, and a miss scans no logs", async () => {
+    const store = new MemoryRunStore();
+    await store.append("w", "r1", ev("r1", "step.end", ["a"]));
+    await store.finalize("w", "r1", { status: "success" } as never);
+    const { c, store: s } = counting(store);
+    const surface = createPublicSurface({ dataDir: dir, store: s });
+    await surface.set(normalizeSurface({ workflows: [{ name: "w", runs: true }] }));
+    assert.equal(await surface.visible("a", undefined), true);
+    const reads = c.reads;
+    assert.equal(await surface.visible("nope", undefined), false);
+    assert.equal(await surface.visible("nope", undefined), false);
+    assert.equal(c.reads, reads);
+  });
+
+  it("in-flight runs: nodes appear as steps end, with no log re-read", async () => {
+    const store = new MemoryRunStore();
+    await store.append("w", "r1", ev("r1", "run.start"));
+    const { c, store: s } = counting(store);
+    const surface = createPublicSurface({ dataDir: dir, store: s });
+    await surface.set(normalizeSurface({ workflows: [{ name: "w", runs: true }] }));
+    assert.equal(await surface.visible("x", undefined), false);
+    const reads = c.reads;
+    surface.noteEvent("w", ev("r1", "step.end", ["x"]));
+    assert.equal(await surface.visible("x", undefined), true);
+    assert.equal(c.reads, reads);
+  });
+
+  it("built while a run is going: what it reported before keeps visible after it ends, and after a restart", async () => {
+    const store = new MemoryRunStore();
+    await store.append("w", "r1", ev("r1", "run.start"));
+    await store.append("w", "r1", ev("r1", "step.end", ["a"]));
+    const first = createPublicSurface({ dataDir: dir, store });
+    await first.set(normalizeSurface({ workflows: [{ name: "w", runs: true }] }));
+    assert.equal(await first.visible("a", undefined), true);
+    for (const e of [ev("r1", "step.end", ["b"]), ev("r1", "run.end")]) {
+      await store.append("w", "r1", e);
+      first.noteEvent("w", e);
+    }
+    await store.finalize("w", "r1", { status: "success" } as never);
+    assert.deepEqual([...(await first.runNodes("w", "r1"))].sort(), ["a", "b"]);
+    const second = createPublicSurface({ dataDir: dir, store });
+    assert.equal(await second.visible("a", undefined), true);
+    assert.equal(await second.visible("b", undefined), true);
+  });
+
+  it("deleted runs and a workflow with runs turned off lose their refs", async () => {
+    const store = new MemoryRunStore();
+    await store.append("w", "r1", ev("r1", "step.end", ["a"]));
+    const surface = createPublicSurface({ dataDir: dir, store });
+    await surface.set(normalizeSurface({ workflows: [{ name: "w", runs: true }] }));
+    assert.equal(await surface.visible("a", undefined), true);
+    await store.deleteRuns("w");
+    surface.forgetRuns("w");
+    assert.equal(await surface.visible("a", undefined), false);
+    await store.append("w", "r2", ev("r2", "step.end", ["b"]));
+    surface.noteEvent("w", ev("r2", "step.end", ["b"]));
+    assert.equal(await surface.visible("b", undefined), true);
+    await surface.set(normalizeSurface({ workflows: [{ name: "w" }] }));
+    assert.equal(await surface.visible("b", undefined), false);
+  });
+
+  it("a non-public workflow's runs make nothing visible, events included", async () => {
+    const store = new MemoryRunStore();
+    await store.append("p", "r1", ev("r1", "step.end", ["a"]));
+    const surface = createPublicSurface({ dataDir: dir, store });
+    await surface.set(normalizeSurface({ workflows: [{ name: "w", runs: true }] }));
+    assert.equal(await surface.visible("a", undefined), false);
+    surface.noteEvent("p", ev("r1", "step.end", ["z"]));
+    assert.equal(await surface.visible("z", undefined), false);
+  });
+
+  it("restart: a new instance rebuilds from the persisted sets and the logs", async () => {
+    const store = new MemoryRunStore();
+    await store.append("w", "r1", ev("r1", "step.end", ["a"]));
+    await store.finalize("w", "r1", { status: "success" } as never);
+    await store.append("w", "r2", ev("r2", "step.end", ["live"]));
+    const first = createPublicSurface({ dataDir: dir, store });
+    await first.set(normalizeSurface({ workflows: [{ name: "w", runs: true }] }));
+    assert.equal(await first.visible("a", undefined), true);
+    const { c, store: s } = counting(store);
+    const second = createPublicSurface({ dataDir: dir, store: s });
+    assert.equal(await second.visible("a", undefined), true);
+    assert.equal(await second.visible("live", undefined), true);
+    assert.equal(c.reads, 1, "only the in-flight run's log is read; the finished set came from the file");
   });
 });

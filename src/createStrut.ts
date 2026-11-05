@@ -2925,6 +2925,18 @@ export async function createStrut<TServices = unknown>(
     store,
     ...(graph ? { graph: { reader: graph.reader, schemas: graph.schemas } } : {}),
   });
+  {
+    // Keep the public view's visible-refs index current as steps end.
+    const bag = services as Record<string, unknown>;
+    const prior = (bag["onRunEvent"] as ((workflow: string, event: RunEvent) => unknown) | undefined)?.bind(bag);
+    bag["onRunEvent"] = async (workflow: string, event: RunEvent) => {
+      try {
+        await prior?.(workflow, event);
+      } finally {
+        publicSurface.noteEvent(workflow, event);
+      }
+    };
+  }
   /** A public app as a visitor's host reads it: the version people open
    *  (the held release's once the public view holds it). */
   const publicAppInfo = async (name: string) => {
@@ -5992,6 +6004,7 @@ export async function createStrut<TServices = unknown>(
     if (!(await workspace.getWorkflowMetadata(name))) return c.json({ error: `Workflow "${name}" not found` }, 404);
     await automations.forget(name);
     await store.deleteRuns(name);
+    publicSurface.forgetRuns(name);
     await workspace.deleteWorkflow(name);
     return c.json({ ok: true, workflow: name });
   });
