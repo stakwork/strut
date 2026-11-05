@@ -4574,6 +4574,11 @@ input.package-search { width: 100%; margin-bottom: var(--sp-2); }
   height: 100vh;
   background: var(--surface);
 }
+/* `&theme=light`: the page behind a light app, so it never flashes dark. */
+.app-solo.light {
+  background: #ffffff;
+  color: #3f3f46;
+}
 .app-solo > .empty {
   flex: 1;
   display: flex;
