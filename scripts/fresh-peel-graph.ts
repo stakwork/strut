@@ -1,7 +1,7 @@
 // Boots the default server on a fresh LadybugDB workspace graph, as Peel's
 // desktop.js does (STRUT_WORKSPACE_BACKEND=ladybug, a host config that says
 // `memory: "graph"`), with a module hook that refuses to load jarvis's
-// bundled ontology (src/graph/fixtures/jarvis-ontology.ts). Then remembers a
+// ontology library (src/graph/__fixtures__/jarvis-*.ts, a test fixture now). Then remembers a
 // fact, recalls it and resolves its subject through the graph/* steps the
 // assistant uses, and prints one JSON line with what it saw.
 // `tsx scripts/fresh-peel-graph.ts <dataDir>`; jarvis-free-boot.test.ts runs
@@ -10,7 +10,7 @@ import { register } from "node:module";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-const FIXTURE = /\/src\/graph\/fixtures\/jarvis-ontology\.[jt]s$/;
+const FIXTURE = /\/src\/graph\/__fixtures__\/jarvis-[a-z]+\.[jt]s$/;
 const hook = `
 export async function resolve(specifier, context, next) {
   const r = await next(specifier, context);

@@ -1,20 +1,21 @@
 /**
  * Pass criterion 13 of plans/graph-memory-plan.md: a fresh Peel graph boots
- * without jarvis's bundled ontology. scripts/fresh-peel-graph.ts boots the
+ * without jarvis's ontology library. scripts/fresh-peel-graph.ts boots the
  * default server on a new LadybugDB workspace graph as Peel's desktop.js
  * does, in a child process whose module hook fails any load of
- * fixtures/jarvis-ontology.ts, then remembers, recalls and resolves through
- * the graph/* steps. Neo4j still seeds that ontology (backend.ts); its
- * suites cover it.
+ * __fixtures__/jarvis-*.ts, then remembers, recalls and resolves through
+ * the graph/* steps. Neither engine seeds jarvis's library any more
+ * (plans/ontology.md item 3): it is a test fixture, which no module outside
+ * a test imports — checked below.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { JARVIS_ONTOLOGY } from "./fixtures/jarvis-ontology.js";
+import { JARVIS_ONTOLOGY } from "./__fixtures__/jarvis-ontology.js";
 import { LADYBUG_SCHEMAS } from "./ladybug/registry.js";
 import { THING_TYPE } from "./strut-schemas.js";
 import { testBackends } from "./test-util.js";
@@ -48,5 +49,22 @@ describe("a fresh Peel graph (ladybug)", { skip: lb.skip }, () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("jarvis's ontology library is a test fixture", () => {
+  it("no module outside a test imports src/graph/__fixtures__", () => {
+    const src = fileURLToPath(new URL("..", import.meta.url));
+    const offenders: string[] = [];
+    const walk = (dir: string) => {
+      for (const name of readdirSync(dir)) {
+        const p = join(dir, name);
+        if (statSync(p).isDirectory()) {
+          if (name !== "__fixtures__" && name !== "node_modules") walk(p);
+        } else if (/\.tsx?$/.test(name) && !/\.test\.tsx?$/.test(name) && /__fixtures__\/jarvis-/.test(readFileSync(p, "utf8"))) offenders.push(p);
+      }
+    };
+    walk(src);
+    assert.deepEqual(offenders, []);
   });
 });

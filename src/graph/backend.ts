@@ -4,14 +4,13 @@
  * config and cached, with the boot-time obligations run on open:
  *
  *   1. `migrateVeinToStrut` — one-shot rename of pre-#1664 `Vein*` names;
- *   2. with `seedOntology`: `upgradeClaimSchema` (one-shot, the standalone
- *      mirror of jarvis migration 124), then `seedJarvisOntology`;
- *   2b. `migrateRunStatus` — one-shot `StrutRun.status` → `run_status`;
- *   2c. `migrateExactKeys` — one-shot re-key of the workspace nodes from the
+ *   2. `migrateRunStatus` — one-shot `StrutRun.status` → `run_status`;
+ *   2b. `migrateExactKeys` — one-shot re-key of the workspace nodes from the
  *       sanitized name to the exact one (hex);
- *   3. `seedStrutDomain` — schema meta-graph, constraints, indexes (§4);
- *   3b. `reconcileIndexLists` — stale Schema `index` lists widened to the
- *       bundled library's, once per fixture version (semantic-search.md §2);
+ *   3. `seedStrutDomain` — schema meta-graph, the native seed types,
+ *      constraints, indexes (§4). strut bundles no jarvis library: a graph
+ *      jarvis shares has jarvis's own types, and any other type is made at
+ *      runtime (plans/ontology.md);
  *   4. the `EmbeddingPass` is STARTED (semantic-search.md §1): a timer in
  *      this process that embeds every marked node whoever wrote it, strips
  *      the no-embed types, and keeps up with newcomers. Nothing waits on it.
@@ -30,11 +29,9 @@
  */
 import { resolve } from "node:path";
 import { Bolt, graphConfigFromEnv, type Neo4jConfig } from "./bolt.js";
-import type { ClaimSchemaUpgradeReport } from "./claim-schema-upgrade.js";
 import { EdgeWriter } from "./edge-writer.js";
 import { EmbeddingPass, MiniLMEmbedder, WorkerEmbedder, type EmbeddingPassOptions } from "./embeddings.js";
 import type { GraphEngine } from "./engine.js";
-import type { IndexReconcileReport } from "./index-reconcile.js";
 import { openLadybug, type LadybugHandle } from "./ladybug/db.js";
 import { LadybugEngine } from "./ladybug/engine.js";
 import { PRIVATE_NAMESPACE, namespaceName } from "./ladybug/namespaces.js";
@@ -42,7 +39,6 @@ import { LadybugReader } from "./ladybug/reader.js";
 import { MERGE_TYPE, SCHEMA_TYPE } from "./ladybug/registry.js";
 import { Neo4jEngine } from "./neo4j-engine.js";
 import { NodeWriter, type Embedder } from "./node-writer.js";
-import type { OntologySeedReport } from "./ontology-seed.js";
 import { SchemaResolver } from "./schema-resolver.js";
 import { seedStrutDomain, type SeedReport } from "./schema-seed.js";
 import { Neo4jReader, type GraphReader } from "./search.js";
@@ -74,13 +70,6 @@ export interface GraphBackendOptions {
   embeddings?: boolean | Embedder;
   /** Skip the boot-time seed + backfill (tests that manage the DB). */
   skipBoot?: boolean;
-  /** Also seed the bundled jarvis ontology (`fixtures/jarvis-ontology.ts`)
-   *  — add-only, a no-op on a jarvis-seeded DB — so a standalone Neo4j can
-   *  host jarvis-typed data (Document, EvalSet, HiveWorkspace, …) with no
-   *  jarvis process. strut's own types never need it: Claim, Check, Evidence
-   *  and Concept are in the native seed (`seed-types.ts`). Env:
-   *  `STRUT_GRAPH_SEED_ONTOLOGY=1`. */
-  seedOntology?: boolean;
   /** Tuning for the embedding pass (page sizes, the tick, `autoStart`) —
    *  tests. Not part of the cache key. */
   pass?: EmbeddingPassOptions;
@@ -118,9 +107,6 @@ export interface Neo4jBackend extends GraphBackendBase {
   readonly veinMigration: VeinMigrationReport | undefined;
   readonly runStatusMigration: RunStatusMigrationReport | undefined;
   readonly exactKeyMigration: ExactKeyMigrationReport | undefined;
-  readonly claimSchemaUpgrade: ClaimSchemaUpgradeReport | undefined;
-  readonly ontologySeed: OntologySeedReport | undefined;
-  readonly indexReconcile: IndexReconcileReport | undefined;
 }
 
 /** The Ladybug backend: one file, its ontology in the file as Schema rows. */
@@ -143,7 +129,7 @@ const cache = new Map<string, Entry>();
 function keyOf(cfg: GraphConfig, opts: GraphBackendOptions): string {
   const emb = opts.embeddings === false ? "off" : typeof opts.embeddings === "object" ? "custom" : "minilm";
   if (isLadybug(cfg)) return ["ladybug", resolve(cfg.path), cfg.namespace, emb].join("|");
-  return [cfg.uri, cfg.user, cfg.database ?? "", cfg.namespace, emb, opts.seedOntology ? "ont" : ""].join("|");
+  return [cfg.uri, cfg.user, cfg.database ?? "", cfg.namespace, emb].join("|");
 }
 
 /**
@@ -295,11 +281,9 @@ export function openGraphBackendFromEnv(
 ): Promise<GraphBackend> | null {
   const cfg = graphConfigFromEnv(env);
   if (!cfg) return null;
-  const ont = env["STRUT_GRAPH_SEED_ONTOLOGY"];
   return openGraphBackend(cfg, {
     ...opts,
     embeddings: opts.embeddings ?? embeddingsOn(env),
-    seedOntology: opts.seedOntology ?? (ont === "1" || ont === "true" || ont === "on"),
   });
 }
 
@@ -321,18 +305,7 @@ async function open(cfg: Neo4jConfig, opts: GraphBackendOptions): Promise<Neo4jB
     let veinMigration: VeinMigrationReport | undefined;
     let runStatusMigration: RunStatusMigrationReport | undefined;
     let exactKeyMigration: ExactKeyMigrationReport | undefined;
-    let claimSchemaUpgrade: ClaimSchemaUpgradeReport | undefined;
-    let ontologySeed: OntologySeedReport | undefined;
-    let indexReconcile: IndexReconcileReport | undefined;
     if (!opts.skipBoot) {
-      // Imported here, not at the top: the three read jarvis's bundled
-      // ontology (fixtures/jarvis-ontology.ts, 150 KB), which a Ladybug
-      // file never uses, so a process on one never loads it.
-      const [{ upgradeClaimSchema }, { seedJarvisOntology }, { reconcileIndexLists }] = await Promise.all([
-        import("./claim-schema-upgrade.js"),
-        import("./ontology-seed.js"),
-        import("./index-reconcile.js"),
-      ]);
       // Legacy names first, so the seed below extends the renamed Schema
       // nodes instead of creating twins beside them.
       veinMigration = await migrateVeinToStrut(bolt);
@@ -340,19 +313,6 @@ async function open(cfg: Neo4jConfig, opts: GraphBackendOptions): Promise<Neo4jB
         console.warn(`[graph] renamed legacy Vein* graph data to Strut*: ${JSON.stringify(veinMigration)}`);
       } else if (veinMigration.strays > 0) {
         console.warn(`[graph] ${veinMigration.strays} Domain_vein node(s) carry no Vein type label and were left alone`);
-      }
-      // Ontology first so a standalone DB gets jarvis's own Thing (with its
-      // ref_id) before the Strut domain hangs off it.
-      if (opts.seedOntology) {
-        // The seed is add-only, so an already-seeded DB keeps its pre-124
-        // `Claim` schema unless this runs first (plans/claims.md §1).
-        claimSchemaUpgrade = await upgradeClaimSchema(bolt);
-        if (claimSchemaUpgrade.status === "upgraded") {
-          console.warn(`[graph] upgraded the Claim schema to claim-id: ${JSON.stringify(claimSchemaUpgrade)}`);
-        } else if (claimSchemaUpgrade.status === "skipped_duplicates") {
-          console.warn(`[graph] more than one Claim schema node — left alone; claims cannot be written until that is resolved by hand`);
-        }
-        ontologySeed = await seedJarvisOntology(engine);
       }
       // Before the seed, which is add-only: it would keep the old `status`
       // attribute and the fulltext index built over it.
@@ -367,12 +327,6 @@ async function open(cfg: Neo4jConfig, opts: GraphBackendOptions): Promise<Neo4jB
         console.warn(`[graph] re-keyed workspace nodes on their exact names: ${JSON.stringify(exactKeyMigration)}`);
       }
       seed = await seedStrutDomain(engine);
-      // Not gated on `seedOntology`: a jarvis-hosted graph is the one that
-      // needs it (its Schemas predate jarvis's own widening).
-      indexReconcile = await reconcileIndexLists(bolt);
-      if (indexReconcile.status === "reconciled") {
-        console.warn(`[graph] widened stale Schema index lists to the bundled library's: ${JSON.stringify(indexReconcile.widened)}`);
-      }
     }
     const schemas = new SchemaResolver(engine);
     // The pass starts now and runs in the background; the old awaited
@@ -403,9 +357,6 @@ async function open(cfg: Neo4jConfig, opts: GraphBackendOptions): Promise<Neo4jB
       veinMigration,
       runStatusMigration,
       exactKeyMigration,
-      claimSchemaUpgrade,
-      ontologySeed,
-      indexReconcile,
       embeddings,
       async close() {
         await embeddings?.stop();

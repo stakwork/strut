@@ -499,7 +499,6 @@ export {
 } from "./graph/strut-schemas.js";
 export { seedStrutDomain, type SeedReport } from "./graph/schema-seed.js";
 export { migrateVeinToStrut, VeinMigrationCollision, type VeinMigrationReport } from "./graph/vein-migration.js";
-export { upgradeClaimSchema, CLAIM_SCHEMA_UPGRADE_ID, type ClaimSchemaUpgradeReport } from "./graph/claim-schema-upgrade.js";
 // The truth layer — claims, checks, evidence (plans/claims.md).
 export {
   ClaimsReader,
@@ -629,10 +628,7 @@ export {
 } from "./graph/node-writer.js";
 export { EdgeWriter, type EdgeInput, type EdgeWriteResult } from "./graph/edge-writer.js";
 export { SchemaResolver, EDGE_TYPES_ALLOWLIST, type NodeSchema, type EdgeSchemaMatch } from "./graph/schema-resolver.js";
-export { seedJarvisOntology, type OntologySeedReport } from "./graph/ontology-seed.js";
-export { JARVIS_ONTOLOGY, type OntologyFixture } from "./graph/fixtures/jarvis-ontology.js";
 export { MiniLMEmbedder, EmbeddingPass, EMBEDDING_DIM, type EmbeddingPassOptions, type EmbeddingPassStatus } from "./graph/embeddings.js";
-export { reconcileIndexLists, widenedIndex, type IndexReconcileReport } from "./graph/index-reconcile.js";
 export {
   type GraphReader,
   Neo4jReader,
