@@ -300,8 +300,11 @@ export interface SchemaSource {
   /** The CHILD_OF ancestors of `type` (exact), nearest first, along the
    *  longest chain: their types and flat property maps. */
   ancestors(type: string, tx?: GraphTx): Promise<{ chain: string[]; rows: Array<Record<string, unknown>> }>;
-  /** `About.hidden_domains` / `hidden_types`, as stored (unknown shape). */
-  hidden(tx?: GraphTx): Promise<{ domains: unknown; types: unknown }>;
+  /** jarvis's `About` node: `hidden_domains` / `hidden_types` as stored
+   *  (unknown shape), and `about` — whether the graph holds one at all,
+   *  which says jarvis shares it (jarvis's migrations create it; strut never
+   *  does). */
+  hidden(tx?: GraphTx): Promise<{ domains: unknown; types: unknown; about?: boolean }>;
   findEdgeSchema(walk: EdgeSchemaWalk, source: string, edge: string, target: string, tx?: GraphTx): Promise<EdgeSchemaRow | null>;
 
   /** Write a new Schema from its flat map (`ref_id` included). */

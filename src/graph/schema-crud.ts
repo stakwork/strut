@@ -58,7 +58,7 @@ import type { EngineLike, GraphEngine, GraphKind } from "./engine.js";
 import { asEngine } from "./neo4j-engine.js";
 import { GraphValidationError, composeNodeKey, keyedByRef, refNodeKey } from "./node-writer.js";
 import { NODE_ROLES, isNodeRole, type NodeSchema, type SchemaResolver } from "./schema-resolver.js";
-import { schemaStatement } from "./schema-seed.js";
+import { SEARCH_TEXT_INDEX, schemaStatement } from "./schema-seed.js";
 import { RESERVED_ATTRIBUTE_NAMES, SCHEMA_CORE_PROPERTIES, THING_TYPE, TYPE_OWNABLE_CORE, isGenericProperty, isStrutType } from "./strut-schemas.js";
 import { titleFields } from "./title.js";
 
@@ -376,12 +376,17 @@ export async function createNodeSchema(e: EngineLike, resolver: SchemaResolver, 
     await schemaStatement(bolt, `CREATE CONSTRAINT ${`unique_${t.toLowerCase()}_node_key`} IF NOT EXISTS FOR (n:\`${t}\`) REQUIRE (n.node_key, n.namespace) IS UNIQUE`);
     await schemaStatement(bolt, `CREATE INDEX IF NOT EXISTS FOR (n:\`${t}\`) ON (n.node_key)`);
     const d = plan.domain.toLowerCase();
-    const props = [...new Set([...searchableAttributesOf(plan.flat), "node_key"])].sort().map((p) => `n.\`${p}\``).join(", ");
-    await schemaStatement(
-      bolt,
-      `CREATE FULLTEXT INDEX \`domain_${d}_attribute_index_v2\` IF NOT EXISTS FOR (n:\`Domain_${d}\`) ON EACH [${props}]
-       OPTIONS { indexConfig: { \`fulltext.analyzer\`: 'english' } }`,
-    );
+    // A graph with the search-text index keyword-searches every type through
+    // it; only a graph jarvis shares keeps an index per domain, as jarvis does.
+    const searchText = await bolt.run(`SHOW INDEXES YIELD name WHERE name = $name RETURN count(*) AS c`, { name: SEARCH_TEXT_INDEX });
+    if (Number(searchText[0]?.["c"] ?? 0) === 0) {
+      const props = [...new Set([...searchableAttributesOf(plan.flat), "node_key"])].sort().map((p) => `n.\`${p}\``).join(", ");
+      await schemaStatement(
+        bolt,
+        `CREATE FULLTEXT INDEX \`domain_${d}_attribute_index_v2\` IF NOT EXISTS FOR (n:\`Domain_${d}\`) ON EACH [${props}]
+         OPTIONS { indexConfig: { \`fulltext.analyzer\`: 'english' } }`,
+      );
+    }
     await schemaStatement(bolt, `CREATE VECTOR INDEX \`domain_${d}_vector_index\` IF NOT EXISTS FOR (n:\`Domain_${d}\`) ON n.text_embeddings ${VECTOR_OPTIONS}`);
   }
 

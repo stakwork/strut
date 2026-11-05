@@ -49,7 +49,9 @@ import {
 } from "./strut-schemas.js";
 
 /** jarvis `ApplicationConstant.EDGE_TYPES` — edge types accepted WITHOUT an
- *  edge schema. */
+ *  edge schema, on a graph jarvis shares (it holds jarvis's `About` node) and
+ *  nowhere else (plans/ontology.md ruling 1): there an edge needs a rule, as
+ *  on a Ladybug file, and strut's own have theirs from the seed. */
 export const EDGE_TYPES_ALLOWLIST = new Set([
   "RELATED_TO", "CREATED_BY", "PARENT_OF", "CHILD_OF", "ALIAS_OF", "TYPE_OF", "PART_OF", "MENTIONS",
   "ORGANIZES", "BELONGS_TO", "OPINION", "USES", "FEATURES", "MEMBER_OF", "SUMMARIZED_AS", "CONTRIBUTES_TO",
@@ -166,7 +168,7 @@ export class SchemaResolver {
   private readonly types = new Map<string, Cached<string | null>>();
   private readonly schemas = new Map<string, Cached<NodeSchema | null>>();
   private readonly edges = new Map<string, Cached<EdgeSchemaMatch | null>>();
-  private hidden: Cached<{ domains: Set<string>; types: Set<string> }> | undefined;
+  private hidden: Cached<{ domains: Set<string>; types: Set<string>; jarvis: boolean }> | undefined;
 
   private readonly engine: GraphEngine;
 
@@ -292,26 +294,32 @@ export class SchemaResolver {
     };
   }
 
-  /** `About.hidden_domains` (lowercased) and `hidden_types`. */
-  async hiddenSets(tx?: GraphTx): Promise<{ domains: Set<string>; types: Set<string> }> {
+  /** `About.hidden_domains` (lowercased) and `hidden_types`, and whether
+   *  jarvis shares the graph (it holds an `About` node). */
+  async hiddenSets(tx?: GraphTx): Promise<{ domains: Set<string>; types: Set<string>; jarvis: boolean }> {
     if (this.fresh(this.hidden)) return this.hidden.value;
-    const { domains: d, types: t } = await this.source.hidden(tx);
+    const { domains: d, types: t, about } = await this.source.hidden(tx);
     const value = {
       domains: new Set(Array.isArray(d) ? d.map((x) => String(x).toLowerCase()) : []),
       types: new Set(Array.isArray(t) ? t.map(String) : []),
+      jarvis: about === true,
     };
     this.hidden = { at: Date.now(), value };
     return value;
   }
 
   /**
-   * Is `source -[edge]-> target` allowed? jarvis's allowlist first, then
-   * the edge-schema lookup (exact → ancestor walks → wildcard). Types are
-   * canonical labels. Returns the match, or null.
+   * Is `source -[edge]-> target` allowed? jarvis's allowlist first, on a
+   * graph jarvis shares; then the edge-schema lookup (exact → ancestor
+   * walks → wildcard). Types are canonical labels. Returns the match, or null.
    */
   async edgeSchema(edge: string, sourceType: string, targetType: string, tx?: GraphTx): Promise<EdgeSchemaMatch | null> {
-    // jarvis's allowlist is jarvis's: a Ladybug file allows only the edges its ontology holds.
-    if (!this.source.holdsStrutTypes && EDGE_TYPES_ALLOWLIST.has(edge)) return { source: sourceType, target: targetType, edge_type: edge, properties: {}, rule: {}, via: "allowlist" };
+    // jarvis's allowlist is jarvis's: it applies where jarvis is. A graph
+    // strut alone holds (a Ladybug file, a Neo4j with no `About` node)
+    // allows only the edges its ontology holds.
+    if (!this.source.holdsStrutTypes && EDGE_TYPES_ALLOWLIST.has(edge) && (await this.hiddenSets(tx)).jarvis) {
+      return { source: sourceType, target: targetType, edge_type: edge, properties: {}, rule: {}, via: "allowlist" };
+    }
     const key = `${sourceType}|${edge}|${targetType}`;
     const c = this.edges.get(key);
     if (this.fresh(c)) return c.value;

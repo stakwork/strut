@@ -2,11 +2,10 @@ import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { Bolt } from "./bolt.js";
-import { seedStrutDomain, flattenSchema, STRUT_MIGRATION_ID, DOMAIN_VECTOR_INDEX, DOMAIN_FULLTEXT_INDEX_V2, GLOBAL_VECTOR_INDEX } from "./schema-seed.js";
+import { seedStrutDomain, flattenSchema, STRUT_MIGRATION_ID, DOMAIN_VECTOR_INDEX, DOMAIN_FULLTEXT_INDEX_V2, GLOBAL_VECTOR_INDEX, SEARCH_TEXT_INDEX } from "./schema-seed.js";
 import { SchemaResolver } from "./schema-resolver.js";
 import { SEED_EDGES, SEED_TYPES } from "./seed-types.js";
 import { seedJarvisOntology } from "./ontology-seed.js";
-import { EDGE_TYPES_ALLOWLIST } from "./schema-resolver.js";
 import { THING_SCHEMA, STRUT_EDGES, STRUT_SCHEMAS, assertLibraryWellFormed, searchableAttributes, vectorIndexName } from "./strut-schemas.js";
 import { graphSnapshot, schemaObjectNames, testGraphConfig, wipeGraph } from "./test-util.js";
 
@@ -62,9 +61,11 @@ describe("seedStrutDomain (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J
     // PUBLISHED_BY → Person is skipped (no Person schema in standalone).
     assert.deepEqual(r1.skippedEdgeSchemas, ["StrutStepVersion-[PUBLISHED_BY]->Person", "HiveWorkspaceMember-[SENT]->StrutAgentSession", "Person-[SENT]->StrutAgentSession"]);
     // Every row but PUBLISHED_BY's and the Ladybug-only one: Neo4j's seed as
-    // before. Then the seed types' rules jarvis's allowlist does not cover.
-    const seedRows = SEED_EDGES.filter((e) => !EDGE_TYPES_ALLOWLIST.has(e.edge)).map((e) => `${e.source}-[${e.edge}]->${e.target}`);
-    assert.equal(seedRows.length, 12);
+    // before. Then every seed type's rule (no jarvis here, so no allowlist)
+    // but CHILD_OF's: on Neo4j the type tree's own CHILD_OF links (Concept to
+    // Thing) already allow it, through the ancestor walk.
+    const seedRows = SEED_EDGES.filter((e) => e.edge !== "CHILD_OF").map((e) => `${e.source}-[${e.edge}]->${e.target}`);
+    assert.equal(seedRows.length, 15);
     assert.deepEqual(r1.createdEdgeSchemas, [...STRUT_EDGES.filter((e) => !e.ladybugOnly && e.target !== "Person").map((e) => `${e.source}-[${e.edge}]->${e.target}`), ...seedRows]);
     assert.ok(!r1.createdEdgeSchemas.includes("StrutRun-[ACCESSED]->Thing"));
 
@@ -123,6 +124,10 @@ describe("seedStrutDomain (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J
     assert.ok(names.indexes.includes(DOMAIN_VECTOR_INDEX));
     assert.ok(names.indexes.includes(GLOBAL_VECTOR_INDEX));
     assert.ok(names.indexes.includes(DOMAIN_FULLTEXT_INDEX_V2));
+    // No jarvis here: one keyword index over every node's search text, and
+    // none per domain for the seed types.
+    assert.ok(names.indexes.includes(SEARCH_TEXT_INDEX));
+    assert.ok(!names.indexes.includes("domain_epistemic_attribute_index_v2") && !names.indexes.includes("domain_general_attribute_index_v2"));
     assert.ok(names.indexes.includes(vectorIndexName("StrutWorkflowVersion", "input_schema")));
     assert.ok(names.indexes.includes(vectorIndexName("StrutStep", "output_schema")));
     const ft = (snap1.indexes as Array<Record<string, unknown>>).find((i) => i["name"] === DOMAIN_FULLTEXT_INDEX_V2)!;
@@ -221,7 +226,9 @@ describe("seedStrutDomain (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J
   });
 
   it("shared: a graph jarvis seeded keeps its Claim, Check, Evidence and Concept, and gets no rule of ours beside theirs", async () => {
+    // A swarm: jarvis's library, and its About node (its migrations make one).
     await seedJarvisOntology(bolt);
+    await bolt.run(`CREATE (:About {hidden_domains: []})`);
     const touching = (snap: Awaited<ReturnType<typeof graphSnapshot>>) => {
       const seed = new Set(SEED_TYPES.map((t) => t.type));
       return {
@@ -236,5 +243,6 @@ describe("seedStrutDomain (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J
     const seedRows = new Set(SEED_EDGES.map((e) => `${e.source}-[${e.edge}]->${e.target}`));
     assert.deepEqual(r.createdEdgeSchemas.filter((e) => seedRows.has(e)), [], "jarvis's rules already allow every seed edge");
     assert.deepEqual(touching(await graphSnapshot(bolt)), before);
+    assert.ok(!(await schemaObjectNames(bolt)).indexes.includes(SEARCH_TEXT_INDEX), "jarvis's per-domain keyword indexes stay the ones read");
   });
 });
