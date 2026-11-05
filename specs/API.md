@@ -126,7 +126,7 @@ reads.
 | GET    | `/workflows[?q=]`               | `[{ name, activeVersion, versions: ["v1", …], description?, category?, publisher?, owner?, maxRunCostUsd?, disabled?, automations?, lastRunAt? }]` |
 | GET    | `/workflows/:name`              | `{ active, versions: { "v1": { createdAt, description?, hash?, source?, actor?, upstream? }, … }, category?, publisher?, owner?, maxRunCostUsd?, disabled?, automations? }` (`WorkflowMetadata`; `upstream` = `{ package, version, digest, source: { ref }, secrets }`, the package a version was installed from or forked off — every publish carries the active version's forward) |
 | GET    | `/workflows/:name/flow[?version=]` | `{ name, steps, input?, params?, promotes? }` — the parsed active (or named) version |
-| GET    | `/workflows/:name/versions`     | `{ active, versions: [{ version, createdAt, description?, source?, actor?, runs, success, error, lastRunAt? }], unattributed }` newest first; counts by the run's recorded `workflowHash`; cached ~30 s per workflow, dropped on a publish, an active flip or a run finishing |
+| GET    | `/workflows/:name/versions`     | `{ active, versions: [{ version, createdAt, description?, source?, actor?, runs, success, error, lastRunAt? }], unattributed }` newest first; counts by the run's recorded `workflowHash` |
 | GET    | `/workflows/:name/:version`     | the YAML source, `text/yaml` |
 | PUT    | `/workflows/:name/active`       | `{ version }` → `{ ok, workflow, active }` — rollback; publishes nothing |
 | PUT    | `/workflows/:name/publisher`    | `{ publisher: "ai" \| null }` → `{ ok, workflow, publisher }` — hand the workflow to the builder, or take it back (below); publishes nothing |

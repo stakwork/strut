@@ -13,7 +13,6 @@ import { fileURLToPath } from "node:url";
 
 import type { AnyStepDef, Flow, McpServer, PeerOpen, RunAttachment, StepRegistry, RunEvent, RunResult, RunSummary, StepContext } from "./core.js";
 import type { RunStore } from "./store.js";
-import { TtlCache } from "./ttl-cache.js";
 import { FileRunStore, MemoryRunStore, countSteps, generateRunId, summarizeFromEvents } from "./store.js";
 import type { ChatStore, ChatEvent, ChatMeta } from "./chat-store.js";
 import {
@@ -79,7 +78,7 @@ import { seedBuilderWorkflow, type BuilderSeedOptions } from "./builder-seed.js"
 import { installSystemWorkflows } from "./system-workflows.js";
 import { PEERS_FILE, checkPeer, checkSelf, parsePeersEnv, parseSelfEnv, peerIdProblem, peerInfo, peerStore, peersCapability, type Peer, type SelfInfo } from "./peers.js";
 import { globToRegExp, grantWidenedBy, stepHashesFor } from "./closure.js";
-import { stepStats, type StepStats } from "./step-stats.js";
+import { stepStats } from "./step-stats.js";
 import { AI_PUBLISHER, buildAuthoringCapability } from "./authoring.js";
 import type { ReachPolicy } from "./reach.js";
 import { appErrors, createApps, type AppsCapability, type AppPublishResult } from "./apps/apps.js";
@@ -186,9 +185,6 @@ import {
  * nothing for the default "filesystem-backed server" behavior, or supply
  * any subset to embed strut in your own app.
  */
-/** How long the versions / step-stats responses are reused (see `invalidateUsage`). */
-const USAGE_CACHE_TTL_MS = 30_000;
-
 export interface StrutOptions<TServices = unknown> {
   /** Persistent store for workflows and steps. Defaults to a new
    *  `FileWorkspaceStore()` (reads `STRUT_WORKSPACE` env, falls back to
@@ -362,11 +358,6 @@ export interface StrutOptions<TServices = unknown> {
    *  log replayed at every boot crashed the process each time). Default
    *  `STRUT_RESUME_MAX_LOG_BYTES` or 64 MB. */
   resumeMaxLogBytes?: number;
-
-  /** The clock (epoch ms) behind the short-lived caches of
-   *  `GET /workflows/:name/versions` and `GET /steps/:type/stats`. Default
-   *  `Date.now`; tests inject their own. */
-  clock?: () => number;
 
   /** The automations tick loop (plans/automations.md §6): fires scheduled
    *  workflows from inside this process. Defaults to ON unless
@@ -825,11 +816,11 @@ function parsePromoteTarget(to: string): { workflow: string; param: string } | n
 export async function createStrut<TServices = unknown>(
   opts: StrutOptions<TServices> = {},
 ): Promise<Strut<TServices>> {
-  const rawWorkspace: WorkspaceStore = opts.workspace ?? new FileWorkspaceStore();
+  const workspace: WorkspaceStore = opts.workspace ?? new FileWorkspaceStore();
   // The ONE graph backend everything here reads: the host's, else the
   // workspace's own (Neo4j or a LadybugDB file). The claims gate below is
   // deliberately `workspace.graph`: claims hang off the workspace's nodes.
-  const graph: GraphBackend | undefined = opts.graph ?? rawWorkspace.graph;
+  const graph: GraphBackend | undefined = opts.graph ?? workspace.graph;
   // The graph writes made through strut, for a reader that shows what the
   // graph holds (plans/live-feeds.md §3): every run's writes land here
   // (bindGraph, src/graph-writes.ts), `graph/changes` and
@@ -839,47 +830,11 @@ export async function createStrut<TServices = unknown>(
   // stores follow the workspace's kind (file-backed → file stores under
   // dataDir; anything else → in-memory). No capability is gated on it —
   // every store is the full interface. An explicitly passed store always wins.
-  const fileBacked = rawWorkspace instanceof FileWorkspaceStore;
+  const fileBacked = workspace instanceof FileWorkspaceStore;
   const dataDir =
     opts.dataDir ??
-    (fileBacked ? rawWorkspace.path : (bootEnv()["STRUT_WORKSPACE"] ?? "./workspace"));
-  const rawStore: RunStore = opts.store ?? (fileBacked ? new FileRunStore(dataDir) : new MemoryRunStore());
-  // Short-lived caches for the two usage routes that otherwise read every
-  // past run (`GET /workflows/:name/versions`, `GET /steps/:type/stats`).
-  // Any write through the workspace (a publish, an active flip, a delete…)
-  // or a run finishing/resuming drops them — hooked once, here, around the
-  // two stores, rather than at each call site.
-  const usageClock = opts.clock ?? Date.now;
-  const versionsCache = new TtlCache<unknown>(USAGE_CACHE_TTL_MS, usageClock);
-  const stepStatsCache = new TtlCache<StepStats>(USAGE_CACHE_TTL_MS, usageClock);
-  const invalidateUsage = () => {
-    versionsCache.clear();
-    stepStatsCache.clear();
-  };
-  const readOnly = /^(get|list|has|is|read|find|search|resolve|load|lookup|count)/;
-  const workspace: WorkspaceStore = new Proxy(rawWorkspace, {
-    get(target, prop) {
-      const v = Reflect.get(target, prop, target);
-      if (typeof v !== "function" || typeof prop !== "string") return v;
-      const bound = v.bind(target);
-      if (readOnly.test(prop)) return bound;
-      return (...args: unknown[]) => {
-        const out = bound(...args);
-        // Drop on both edges: a read racing the write can't re-cache stale data.
-        invalidateUsage();
-        return out instanceof Promise ? out.finally(invalidateUsage) : out;
-      };
-    },
-  });
-  const store: RunStore = new Proxy(rawStore, {
-    get(target, prop) {
-      const v = Reflect.get(target, prop, target);
-      if (typeof v !== "function") return v;
-      const bound = v.bind(target);
-      if (prop !== "finalize" && prop !== "clearRunSummary" && prop !== "deleteRuns") return bound;
-      return (...args: unknown[]) => (bound(...args) as Promise<void>).finally(invalidateUsage);
-    },
-  });
+    (fileBacked ? workspace.path : (bootEnv()["STRUT_WORKSPACE"] ?? "./workspace"));
+  const store: RunStore = opts.store ?? (fileBacked ? new FileRunStore(dataDir) : new MemoryRunStore());
   // Home sync's role here (src/home-sync.ts): a box serves it, a copy runs it.
   const homeRole = opts.homeSync ?? homeSyncRole(bootEnv()["STRUT_HOME_SYNC"]);
   // The voice service a person's call is handed to (src/voice.ts); half a
@@ -2677,51 +2632,34 @@ export async function createStrut<TServices = unknown>(
         ...(info.actor ? { actor: info.actor } : {}),
       }))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-    return c.json(await versionsCache.get(name, async () => {
     const hashes = new Map<string, string | null>();
-    await Promise.all(
-      versions.map(async (v) => hashes.set(v.version, await workspace.getWorkflowHash(name, v.version))),
-    );
+    await Promise.all(versions.map(async (v) => hashes.set(v.version, await workspace.getWorkflowHash(name, v.version))));
     const stats = new Map<string, { runs: number; success: number; error: number; lastRunAt?: string }>();
     let unattributed = 0;
-    // Runs are read in bounded batches; attribution is applied in listRuns
-    // order, so the result is the same as a sequential pass.
+    // Each run is read and counted as it comes, 32 at a time. A summary
+    // without the hash reads only the log's first line (`getRunStart`).
+    const count = async (runId: string) => {
+      const summary = await store.getRunSummary(name, runId);
+      if (!summary) return; // in flight — counted once it finishes
+      const hash =
+        summary.workflowHash ?? ((await store.getRunStart(name, runId)) as { workflowHash?: string } | null)?.workflowHash;
+      const twins = hash ? versions.filter((v) => hashes.get(v.version) === hash) : [];
+      const v = twins.find((t) => t.createdAt <= summary.startedAt) ?? twins[twins.length - 1];
+      if (!v) { unattributed++; return; }
+      const s = stats.get(v.version) ?? { runs: 0, success: 0, error: 0 };
+      s.runs++;
+      if (summary.status === "success") s.success++;
+      if (summary.status === "error") s.error++;
+      if (!s.lastRunAt || summary.startedAt > s.lastRunAt) s.lastRunAt = summary.startedAt;
+      stats.set(v.version, s);
+    };
     const runIds = await store.listRuns(name);
-    for (let i = 0; i < runIds.length; i += 32) {
-      const batch = await Promise.all(
-        runIds.slice(i, i + 32).map(async (runId) => {
-          const summary = await store.getRunSummary(name, runId);
-          if (!summary) return null; // in flight — counted once it finishes
-          let hash = summary.workflowHash;
-          if (!hash) {
-            const start =
-              (await store.getRunStart?.(name, runId)) ??
-              (await store.getRunEvents(name, runId)).find((e) => e.type === "run.start");
-            hash = (start as { workflowHash?: string } | undefined)?.workflowHash;
-          }
-          return { summary, hash };
-        }),
-      );
-      for (const r of batch) {
-        if (!r) continue;
-        const { summary, hash } = r;
-        const twins = hash ? versions.filter((v) => hashes.get(v.version) === hash) : [];
-        const v = twins.find((t) => t.createdAt <= summary.startedAt) ?? twins[twins.length - 1];
-        if (!v) { unattributed++; continue; }
-        const s = stats.get(v.version) ?? { runs: 0, success: 0, error: 0 };
-        s.runs++;
-        if (summary.status === "success") s.success++;
-        if (summary.status === "error") s.error++;
-        if (!s.lastRunAt || summary.startedAt > s.lastRunAt) s.lastRunAt = summary.startedAt;
-        stats.set(v.version, s);
-      }
-    }
-    return {
+    for (let i = 0; i < runIds.length; i += 32) await Promise.all(runIds.slice(i, i + 32).map(count));
+    return c.json({
       active: meta.active,
       versions: versions.map((v) => ({ ...v, ...(stats.get(v.version) ?? { runs: 0, success: 0, error: 0 }) })),
       unattributed,
-    };
-    }));
+    });
   });
 
   app.get("/workflows/:name/flow", async (c) => {
@@ -4891,7 +4829,7 @@ export async function createStrut<TServices = unknown>(
   app.get("/steps/:type{.+}/stats", async (c) => {
     const type = c.req.param("type");
     if (!registry[type]) return c.json({ error: `Step type "${type}" not found` }, 404);
-    return c.json(await stepStatsCache.get(type, () => stepStats(workspace, store, type)));
+    return c.json(await stepStats(workspace, store, type));
   });
 
   // Source code for a step. In-code steps (injected via createRegistry) carry
