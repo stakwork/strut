@@ -52,6 +52,7 @@ import {
   fuseHits,
   fusionWeights,
   isExactQuery,
+  liftFactsOverEnds,
   overfetch,
   parseLinks,
   pyRound,
@@ -611,6 +612,7 @@ export class LadybugReader implements GraphReader {
     if (semantic.length || facts.semantic.length) {
       let pool = fuseHits([...fulltext, ...facts.fulltext], [...semantic, ...facts.semantic], {}, fusionWeights(qstr));
       pool = applyTitleBoost(pool, qstr, (t) => (t ? titles.get(t) ?? "name" : "name"));
+      pool = liftFactsOverEnds(pool, qstr, (t) => (t ? titles.get(t) ?? "name" : "name"));
       const pooled = new Map(pool.map((e) => [refIdOf(e.node), e.extra.score]));
       rescore = (ref) => pooled.get(ref);
     } else if (keywordOnly) {
