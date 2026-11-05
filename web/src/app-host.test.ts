@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { appKey, appMessage, appToolInput, isPreviewVersion, namesApp, parseAppKey, peerAppLink, strutLink } from "./app-links";
+import { appKey, appMessage, appToolInput, isPreviewVersion, namesApp, panelTarget, parseAppKey, peerAppLink, strutLink } from "./app-links";
 import { appLink } from "../../kit/src/links";
 
 /** The pure parts of the app host's relay (./app-links, what ./app-host
@@ -40,7 +40,41 @@ describe("the app host", () => {
     assert.deepEqual(peerAppLink({ app: "hive/ui" }, "acme"), { app: "@acme/hive/ui" });
     assert.equal(peerAppLink({ wf: "clip", run: "1" }, "acme"), null);
     assert.equal(peerAppLink({ app: "@other/bench" }, "acme"), null, "the peer's own peer");
+    // A file the peer serves is read through it, a hop further when it is
+    // already behind the peer's own.
+    assert.deepEqual(peerAppLink({ artifact: "/jobs/j1/files/report.html" }, "acme"), { artifact: "/peers/acme/jobs/j1/files/report.html" });
+    assert.deepEqual(peerAppLink({ artifact: "/artifacts/17/out.pdf" }, "acme"), { artifact: "/peers/acme/artifacts/17/out.pdf" });
+    assert.deepEqual(peerAppLink({ artifact: "/peers/web/jobs/j1/files/a.png" }, "acme"), { artifact: "/peers/acme/peers/web/jobs/j1/files/a.png" });
+    assert.equal(peerAppLink({ artifact: "/secrets" }, "acme"), null, "not a served file");
+    assert.equal(peerAppLink({ artifact: "https://elsewhere.test/x.html" }, "acme"), null);
   });
+
+  it("a file or another app opens in the side panel; the app on screen and everything else are the host's", () => {
+    const bench = { name: "bench", version: "v3" };
+    const here = { origin: "https://strut.test", pathname: "/" };
+    const link = (url: string) => strutLink(url, here)!;
+    // A served file: a job's, a run's, a peer's through the read-through.
+    assert.deepEqual(panelTarget(link("?artifact=%2Fjobs%2Fj1%2Ffiles%2Freport.html"), [bench]), { artifact: "/jobs/j1/files/report.html" });
+    assert.deepEqual(panelTarget(link("?artifact=/artifacts/17/clip.mp4"), [bench]), { artifact: "/artifacts/17/clip.mp4" });
+    assert.deepEqual(panelTarget(link("?artifact=/peers/acme/jobs/j1/files/a.pdf"), [bench]), { artifact: "/peers/acme/jobs/j1/files/a.pdf" });
+    // Another app, here or a peer's, with what it is opened with.
+    assert.deepEqual(panelTarget(link("?app=strut%2Fviews&input=view%3Dgallery"), [bench]), { app: "strut/views", input: "view=gallery" });
+    assert.deepEqual(panelTarget(link("?app=@acme/hive/ui"), [bench]), { app: "@acme/hive/ui" });
+    // The app on screen: its input, in place — the host's, not the panel's.
+    assert.equal(panelTarget(link("?app=bench&input=run%3D1"), [bench]), null);
+    assert.equal(panelTarget({ app: "bench@v3" }, [bench]), null);
+    assert.deepEqual(panelTarget({ app: "bench@v2" }, [bench]), { app: "bench@v2" }, "another version is another page");
+    // From the panel, its own app is on screen too.
+    assert.equal(panelTarget({ app: "strut/views" }, [{ name: "strut/views", version: "v1" }, bench]), null);
+    // Workflows, runs, jobs: as before the panel.
+    for (const url of ["?wf=clip", "?wf=clip&run=12", "?job=j1"]) assert.equal(panelTarget(link(url), [bench]), null, url);
+    // Nothing strut serves as a file.
+    for (const path of ["/secrets", "/jobs/j1", "/jobs/j1/files/../../secrets", "https://elsewhere.test/a.html", "/artifacts/1/a?key=k"]) {
+      assert.equal(panelTarget({ artifact: path }, [bench]), null, path);
+    }
+    assert.equal(panelTarget({ app: "@acme" }, [bench]), null, "a key that names nothing");
+  });
+
 
   it("a link to the app on screen is told apart from one to another app", () => {
     const bench = { name: "bench", version: "v3" };

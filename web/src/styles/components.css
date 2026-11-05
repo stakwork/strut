@@ -1103,6 +1103,8 @@ body.is-resizing-flyout * {
   cursor: ew-resize !important;
   user-select: none !important;
 }
+/* A frame under the pointer would take the drag's moves for its own page. */
+body.is-resizing-flyout iframe { pointer-events: none !important; }
 .flyout-header {
   flex: none;
   display: flex;
@@ -4435,6 +4437,83 @@ input.package-search { width: 100%; margin-bottom: var(--sp-2); }
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+/* An app's page with a side panel beside it (components/AppWithPanel.tsx,
+   plans/jamie-app.md §4): what the app hands its host with `ui/open-link`
+   — a served file through the viewer, another app through the host. The
+   page keeps its frame (and its state) as the panel opens and closes; the
+   panel's width is `--app-panel-width` on the split, dragged on its left
+   edge. In a narrow container it lies over the page instead. */
+.app-split {
+  container-type: inline-size;
+  position: relative;
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  overflow: hidden;
+}
+.app-split-main {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 100%;
+}
+.app-panel {
+  position: relative;
+  flex: 0 0 auto;
+  width: min(var(--app-panel-width, 520px), calc(100% - 360px));
+  min-width: 320px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--border-strong);
+  background: var(--surface);
+}
+.app-panel > .artifact-solo,
+.app-panel > .app-panel-app {
+  flex: 1;
+  min-height: 0;
+  height: auto;
+}
+.app-panel-app {
+  display: flex;
+  flex-direction: column;
+}
+.app-panel-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: 1px solid var(--border);
+}
+.app-panel-title { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.app-panel-sub {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.app-panel-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+.app-panel-body > .empty { flex: 1; display: flex; align-items: center; justify-content: center; }
+@container (max-width: 760px) {
+  .app-panel {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    width: auto;
+    min-width: 0;
+    border-left: 0;
+  }
+  .app-panel > .flyout-resizer { display: none; }
 }
 
 /* One served file alone (`?artifact=…&solo=1`): the viewer's head and body
