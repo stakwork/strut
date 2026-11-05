@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 import { accessedNodesOf, type ProposalDescription, takeUsage, workflowOf, type AnyStepDef, type McpServer, type StepContext, type StepRegistry } from "./core.js";
@@ -7,7 +7,6 @@ import { withLock } from "./jobs.js";
 import { globToRegExp } from "./closure.js";
 import { reachPolicyOf, withinReach } from "./reach.js";
 import type { JobUpdateInput } from "./jobs.js";
-import { emitProposal } from "./proposal-feed.js";
 import { bindGraph } from "./graph-writes.js";
 import type { Scope } from "./auth.js";
 import { buildCard, type ProposalCard } from "./proposal-card.js";
@@ -30,7 +29,9 @@ import { buildCard, type ProposalCard } from "./proposal-card.js";
  * the validation, its `run` the apply. There are no proposal types.
  *
  * The record lives at `<dataDir>/proposals/<id>.json`, like a job's; an
- * index is a readdir. No graph node until something must point at one.
+ * index is a readdir. On a graph workspace each record is also PROJECTED,
+ * a `StrutProposal` node (graph/projector.ts `projectProposalOnce`, told
+ * through `changed`): the record stays what every list here reads.
  */
 
 export type ProposalStatus = "pending" | "accepted" | "rejected" | "applied" | "failed";
@@ -86,8 +87,16 @@ export type NewProposal = Pick<Proposal, "step" | "input" | "rationale" | "title
 export interface ProposalFilter {
   job?: string;
   session?: string;
-  runId?: string;
+  /** One run's, or any of several (a conversation page's turns). */
+  runId?: string | string[];
   status?: ProposalStatus | ProposalStatus[];
+  /** Whether the proposing session has been told of it (`reportedAt`). */
+  reported?: boolean;
+  /** Only what this request may see in a list (`visibleTo`), applied on
+   *  the index before `limit` and before any file is read. */
+  viewer?: { scope: Scope; actor?: string };
+  /** At most this many, newest first; unlimited by default. */
+  limit?: number;
 }
 
 export const PROPOSAL_RESULT_PREFIX = "[proposal-result]";
@@ -113,7 +122,7 @@ export function proposalUrl(id: string): string {
  *  files by id; the id is 72 random bits and the lists stay own-only, so "by
  *  id" means someone showed it to you, as with a job. Deciding stays the
  *  proposer's (`decideProposal`). */
-export function visibleTo(scope: Scope, actor: string | undefined, p: Proposal, opts: { byId?: boolean } = {}): boolean {
+export function visibleTo(scope: Scope, actor: string | undefined, p: Pick<Proposal, "by">, opts: { byId?: boolean } = {}): boolean {
   if (scope === "full") return true;
   if (scope !== "peer:person") return false;
   if (opts.byId) return true;
@@ -154,21 +163,108 @@ export function proposalUpdate(p: Proposal): JobUpdateInput {
 
 const ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
 
-export async function readProposal(root: string, id: string): Promise<Proposal | null> {
-  if (!ID_RE.test(id)) return null;
+const ARCHIVE = "archive";
+const READ_CONCURRENCY = 16;
+
+async function readFileProposal(file: string): Promise<Proposal | null> {
   try {
-    return JSON.parse(await readFile(join(root, `${id}.json`), "utf-8")) as Proposal;
+    return JSON.parse(await readFile(file, "utf-8")) as Proposal;
   } catch {
     return null;
   }
 }
 
-/** Whole, through a temp file and a rename, as a job record is written. */
+/** The live file, else the archive's (a decided proposal is moved there). */
+export async function readProposal(root: string, id: string): Promise<Proposal | null> {
+  if (!ID_RE.test(id)) return null;
+  return (await readFileProposal(join(root, `${id}.json`))) ?? (await readFileProposal(join(root, ARCHIVE, `${id}.json`)));
+}
+
+/** Run `fn` over `items`, at most `READ_CONCURRENCY` at a time, in order. */
+async function mapLimited<T, R>(items: T[], fn: (t: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i]!);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(READ_CONCURRENCY, items.length) }, worker));
+  return out;
+}
+
+// ── the index: what a list filters on, in memory, loaded once per root ─────
+
+/** What a list filters on: the record less its payloads (`input`, `card`,
+ *  `summary`, `result`). `by` whole, so `visibleTo` runs on the index. */
+interface IndexEntry {
+  id: string;
+  status: ProposalStatus;
+  createdAt: string;
+  by: Proposal["by"];
+  reportedAt?: string;
+}
+interface RootIndex {
+  entries: Map<string, IndexEntry>;
+  loaded?: Promise<void>;
+}
+
+const indexes = new Map<string, RootIndex>();
+const inflight = new Map<string, Promise<Proposal[]>>();
+
+const entryOf = (p: Proposal): IndexEntry => ({
+  id: p.id,
+  status: p.status,
+  createdAt: p.createdAt,
+  by: p.by ?? ({} as Proposal["by"]),
+  ...(p.reportedAt ? { reportedAt: p.reportedAt } : {}),
+});
+
+function indexOf(root: string): RootIndex {
+  let ix = indexes.get(root);
+  if (!ix) indexes.set(root, (ix = { entries: new Map() }));
+  return ix;
+}
+
+/** Single-flight: the first caller reads every file (live first, then the
+ *  archive; corrupt ones skipped); a write that landed meanwhile wins. */
+function loadIndex(root: string): Promise<void> {
+  const ix = indexOf(root);
+  return (ix.loaded ??= (async () => {
+    for (const dir of [root, join(root, ARCHIVE)]) {
+      let names: string[];
+      try {
+        names = (await readdir(dir)).filter((n) => n.endsWith(".json"));
+      } catch {
+        continue;
+      }
+      await mapLimited(names, async (n) => {
+        const id = n.slice(0, -".json".length);
+        if (ix.entries.has(id)) return;
+        const p = await readFileProposal(join(dir, n));
+        if (p && typeof p.createdAt === "string" && !ix.entries.has(id)) ix.entries.set(id, entryOf({ ...p, id }));
+      });
+    }
+  })());
+}
+
+/** Whole, through a temp file and a rename, as a job record is written. A
+ *  decided proposal then moves to `archive/`; one that comes back to life
+ *  (a failed apply accepted again) leaves it. */
 async function writeProposal(root: string, p: Proposal): Promise<void> {
   await mkdir(root, { recursive: true, mode: 0o700 });
   const file = join(root, `${p.id}.json`);
   await writeFile(`${file}.tmp`, JSON.stringify(p, null, 2), { mode: 0o600 });
   await rename(`${file}.tmp`, file);
+  if (DECIDED.has(p.status)) {
+    await mkdir(join(root, ARCHIVE), { recursive: true, mode: 0o700 });
+    await rename(file, join(root, ARCHIVE, `${p.id}.json`));
+  } else {
+    await unlink(join(root, ARCHIVE, `${p.id}.json`)).catch(() => {});
+  }
+  indexOf(root).entries.set(p.id, entryOf(p));
+  for (const k of [...inflight.keys()]) if (k.startsWith(`${root}\0`)) inflight.delete(k);
 }
 
 async function updateProposal(root: string, id: string, edit: (p: Proposal) => void): Promise<Proposal | null> {
@@ -181,25 +277,36 @@ async function updateProposal(root: string, id: string, edit: (p: Proposal) => v
   });
 }
 
-export async function listProposals(root: string, filter: ProposalFilter = {}): Promise<Proposal[]> {
-  let names: string[];
-  try {
-    names = (await readdir(root)).filter((n) => n.endsWith(".json"));
-  } catch {
-    return [];
+export function listProposals(root: string, filter: ProposalFilter = {}): Promise<Proposal[]> {
+  const key = `${root}\0${JSON.stringify([filter.job, filter.session, filter.runId, filter.status, filter.reported, filter.viewer?.scope, filter.viewer?.actor, filter.limit])}`;
+  let p = inflight.get(key);
+  if (!p) {
+    p = runList(root, filter).finally(() => {
+      if (inflight.get(key) === p) inflight.delete(key);
+    });
+    inflight.set(key, p);
   }
+  return p.then((r) => r.slice());
+}
+
+async function runList(root: string, filter: ProposalFilter): Promise<Proposal[]> {
+  await loadIndex(root);
   const statuses = filter.status === undefined ? undefined : new Set(Array.isArray(filter.status) ? filter.status : [filter.status]);
-  const out: Proposal[] = [];
-  for (const n of names) {
-    const p = await readProposal(root, n.slice(0, -".json".length));
-    if (!p) continue;
-    if (filter.job !== undefined && p.by.job !== filter.job) continue;
-    if (filter.session !== undefined && p.by.session !== filter.session) continue;
-    if (filter.runId !== undefined && p.by.runId !== filter.runId) continue;
-    if (statuses && !statuses.has(p.status)) continue;
-    out.push(p);
-  }
-  return out.sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
+  const runIds = filter.runId === undefined ? undefined : new Set(Array.isArray(filter.runId) ? filter.runId : [filter.runId]);
+  const { viewer } = filter;
+  let hits = [...indexOf(root).entries.values()].filter(
+    (e) =>
+      (filter.job === undefined || e.by.job === filter.job) &&
+      (filter.session === undefined || e.by.session === filter.session) &&
+      (!runIds || runIds.has(e.by.runId)) &&
+      (!statuses || statuses.has(e.status)) &&
+      (filter.reported === undefined || !!e.reportedAt === filter.reported) &&
+      (!viewer || visibleTo(viewer.scope, viewer.actor, e)),
+  );
+  hits.sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
+  if (filter.limit !== undefined) hits = hits.slice(0, filter.limit);
+  const read = await mapLimited(hits, (e) => readProposal(root, e.id));
+  return read.filter((p): p is Proposal => p !== null);
 }
 
 /** The last `createdAt` handed out, in ms. The lists order by it, and an
@@ -212,7 +319,6 @@ export async function createProposal(root: string, p: NewProposal): Promise<Prop
   lastCreatedMs = Math.max(Date.now(), lastCreatedMs + 1);
   const rec: Proposal = { id: randomBytes(9).toString("base64url"), status: "pending", createdAt: new Date(lastCreatedMs).toISOString(), ...p };
   await writeProposal(root, rec);
-  emitProposal(root, "created", rec);
   return rec;
 }
 
@@ -243,12 +349,15 @@ export function proposalsCapability(
     hostApprove?: readonly string[];
     /** The thread the run `runId` belongs to (`Proposal.by.conversation`). */
     conversationOf?: (runId: string) => Promise<string | undefined>;
+    /** Told of every new record: its `StrutProposal` (createStrut). */
+    changed?: (p: Proposal) => void;
   } = {},
 ): ProposalsCapability {
   const hostApprove = (deps.hostApprove ?? []).map(globToRegExp);
   const root = proposalsRoot(dataDir);
   const tell = (p: Proposal) => {
     if (p.by.job) deps.notify?.(p.by.job, proposalUpdate(p));
+    deps.changed?.(p);
   };
   return {
     async propose(p) {
@@ -259,7 +368,7 @@ export function proposalsCapability(
     },
     get: (id) => readProposal(root, id),
     list: (filter) => listProposals(root, filter),
-    unreported: async (session) => (await listProposals(root, { session })).filter((p) => DECIDED.has(p.status) && !p.reportedAt).reverse(),
+    unreported: async (session) => (await listProposals(root, { session, status: [...DECIDED], reported: false })).reverse(),
     async markReported(ids) {
       const at = new Date().toISOString();
       for (const id of ids) await updateProposal(root, id, (p) => void (p.reportedAt ??= at));
@@ -415,6 +524,8 @@ export interface DecideDeps {
   /** A gated tool that is not a registry step — an MCP server's
    *  (`mcp/<server>/<tool>`, src/mcp-registry.ts) — as a def to apply. */
   stepFor?: (type: string) => Promise<AnyStepDef | undefined>;
+  /** Told of each change the decision makes: its `StrutProposal` (createStrut). */
+  changed?: (p: Proposal) => void;
 }
 
 export type DecideOutcome = { status: 200 | 400 | 403 | 404 | 409; body: Proposal | { error: string; proposal?: Proposal } };
@@ -436,8 +547,8 @@ export async function decideProposal(root: string, id: string, decision: Decisio
     return { status: 403, body: { error: `forbidden: proposal "${id}" is not yours to decide` } };
   }
   const tell = (p: Proposal) => {
-    emitProposal(root, p.status === "applied" ? "applied" : p.status === "failed" ? "failed" : "decided", p);
     if (p.by.job) deps.notify?.(p.by.job, proposalUpdate(p));
+    deps.changed?.(p);
   };
 
   if (decision.action === "reject") {

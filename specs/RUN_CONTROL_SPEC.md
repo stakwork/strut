@@ -322,7 +322,11 @@ of one workflow were in flight (a `job` or `orchestrator` runs many at
 once). It writes this process's start there once it is done, so a
 process that dies before its scan leaves the record as it was. A run
 whose last event is older was cut off by an earlier death, which the
-boot after it already looked at: left alone, unreported. With no record
+boot after it already looked at: left alone, unreported. Such a run is
+known by its log's mtime (`RunStore.logWrittenAt`, never earlier than
+the last event; 2 s of slack for a filesystem that keeps seconds), so
+neither its summary nor its log is read: a boot reads only the runs the
+last process wrote to, however many a workspace holds. With no record
 (the first boot), only the newest root run of each workflow is looked at,
 newest-first by run id: if it has a summary, nothing was cut off. No
 dedupe is needed by job or automation — one job, and one automation,

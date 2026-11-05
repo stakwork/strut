@@ -27,11 +27,13 @@ import type { Provenance, ProvenanceSubject } from "./provenance.js";
  *  runs across every workflow it ran (its record's run lines). */
 export interface RunListQuery {
   workflow?: string;
-  /** Newest first; default 50, at most 500. */
+  /** Newest first; default 50, at most 500. A filter looks through the
+   *  newest `RUN_LIST_SCAN_MAX` runs, no further. */
   limit?: number;
   /** `success | error | cancelled`, or a live state (`running`, `paused`). */
   status?: string;
-  /** Runs started at or after this moment (ISO, or ms since the epoch). */
+  /** Runs launched at or after this moment (ISO, or ms since the epoch) —
+   *  a resumed run by its first launch (`launchedAt`). */
   since?: string | number;
   /** Runs an automation fired, by its id. */
   automation?: string;
@@ -65,6 +67,11 @@ export interface RunLaunchQuery {
    *  src/ai/attachments.ts): saved under the run's artifacts, never in
    *  `input`, which `run.start` keeps for good. */
   attachments?: AttachmentInput[];
+  /** The conversation a JOB turn belongs to (`POST …/run { conversation }`,
+   *  plans/jamie-app.md §1.2): its wake goes there when the turn ends.
+   *  Strut's own app alone names one, and only one its viewer may
+   *  continue (§2.2): a captcha's answer is a job turn the page launches. */
+  conversation?: string;
 }
 
 /** Who is launching, and for what — from the calling step's context. */
@@ -175,6 +182,11 @@ export interface RunsCapability {
 export const RUN_GET_MAX_WAIT_MS = 55_000;
 export const RUN_LIST_DEFAULT_LIMIT = 50;
 export const RUN_LIST_MAX_LIMIT = 500;
+/** The most runs one `run/list` reads: a filter that matches few runs (a
+ *  status, an automation, a scoped caller's own) would otherwise read every
+ *  summary of a workflow at each call, and a page polls it. Above
+ *  `RUN_LIST_MAX_LIMIT`, so an unfiltered list is never cut. */
+export const RUN_LIST_SCAN_MAX = 1_000;
 
 /** One page of a workflow's run ids, as `GET /workflows/:name/runs` serves
  *  them: `ids` newest first (`RunStore.listRuns`' order), the ones after
@@ -226,11 +238,20 @@ export function matchesRunFilter(run: Partial<RunSummary> & { runId: string; sta
   if (q.job && run.job !== q.job) return false;
   const from = sinceMs(q.since);
   if (from !== undefined) {
-    // A run id is its launch moment (ms); the summary's startedAt agrees.
-    const started = run.startedAt ? Date.parse(run.startedAt) : Number(run.runId);
-    if (Number.isFinite(started) && started < from) return false;
+    const launched = launchedAt(run);
+    if (launched !== undefined && launched < from) return false;
   }
   return true;
+}
+
+/** When a run was LAUNCHED (ms since the epoch): its id, which is that
+ *  moment (`generateRunId`) — the order `listRuns` keeps, so a newest-first
+ *  scan for `since` stops at the first id before it. A summary's
+ *  `startedAt` is read only for an id that is no moment: it is the latest
+ *  attempt's, which a durable resume restarts. Undefined when neither says. */
+export function launchedAt(run: { runId: string; startedAt?: string | undefined }): number | undefined {
+  const t = /^\d+$/.test(run.runId) ? Number(run.runId) : run.startedAt ? Date.parse(run.startedAt) : NaN;
+  return Number.isFinite(t) ? t : undefined;
 }
 
 /** A summary as a list row: its payloads dropped. */

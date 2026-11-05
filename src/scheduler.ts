@@ -35,7 +35,7 @@ import { callbackOrigin } from "./callback.js";
 import type { Flow } from "./core.js";
 import type { SecretStore } from "./secret-store.js";
 import type { RunStore } from "./store.js";
-import type { WorkspaceStore } from "./workspace.js";
+import { workflowDisabled, type WorkspaceStore } from "./workspace.js";
 import { principalRequired } from "./auth.js";
 
 export interface AutomationsDeps {
@@ -51,6 +51,10 @@ export interface AutomationsDeps {
   secrets?: Pick<SecretStore, "get" | "set" | "delete">;
   /** Is this run executing in THIS process right now? */
   isInFlight: (workflow: string, runId: string) => boolean;
+  /** The refusal while the deployment drains (src/drain.ts): fires are
+   *  held, like a disabled workflow's — nothing launches, nothing is
+   *  recorded as a failure. */
+  draining?: () => string | undefined;
   /** Injectable clock (tests). */
   now?: () => Date;
   /** Tick period. Default 15 s. */
@@ -239,6 +243,12 @@ export function createAutomations(deps: AutomationsDeps): Automations {
     if (firing.has(k)) return { error: "skipped: a fire of it is already launching" };
     firing.add(k);
     try {
+      // A disabled workflow holds its schedules: nothing launches and nothing
+      // is recorded as a failure, so it reads as paused, not broken.
+      const disabled = await workflowDisabled(workspace, workflow);
+      if (disabled) return { error: disabled };
+      const draining = deps.draining?.();
+      if (draining) return { error: draining };
       const facts = (await runFacts(workflow, [automation.id])).get(automation.id)!;
       if (facts.inFlight) return { error: `skipped: the previous run (${facts.inFlight}) is still in flight` };
       // Nobody to bill → nothing launches (surfaces as `lastFireError`), rather

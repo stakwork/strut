@@ -1,6 +1,6 @@
 # Jamie as a strut app, and one wake for every host
 
-> **Status (2026-11-05): proposed; §1 (one wake) built — §1.6; §2 (conversations) built — §2.1; §3 (first-party apps) built — §3.1; §4 (the host panel) built — §4.1; Hive's wake half (§6.1) built — stakwork/hive#5705.** Written after a read of strut `main`
+> **Status (2026-11-05): proposed; §1 (one wake) built — §1.6; §2 (conversations) built — §2.1; §3 (first-party apps) built — §3.1; §4 (the host panel) built — §4.1; §5 (the app) built — §5.1, named Jamie with jobs in the list and pull requests — §5.2; Hive's wake half (§6.1) built — stakwork/hive#5705.** Written after a read of strut `main`
 > @e1c45ad, hive `origin/master` @c692b96bf, sphinx `origin/master`
 > @74c12954 (Peel's bridge) and sphinx-voice `origin/main` @ba18f12. The
 > owner agreed four things in conversation, marked **agreed** below: a
@@ -563,7 +563,8 @@ graph, spot checks) and hands the rest to the panel.
 ## 5. The app (proposed)
 
 `strut/assistant`, seeded at boot by tree hash beside `strut/views`; its
-title is the deployment's (Hive's org page says "Jamie"). Ported from
+title is the deployment's (Hive's org page says "Jamie"). (Named
+`strut/jamie`, titled Jamie everywhere, since: §5.2.) Ported from
 Hive's org page (`src/app/org/[githubLogin]/_components/`):
 
 | Part | From Hive | Over |
@@ -585,9 +586,142 @@ over stakgraph's Cypher). Later: pull requests' live state and Merge (the
 viewer's GitHub token; a `github/*` read step, Merge as a proposal),
 automations from an app (`apps.md` work item 7).
 
+### 5.1 As built (2026-11-05, branch `feature/assistant-app`)
+
+`src/apps/assistant/` (`API.md` §14.11), seeded by
+`src/apps/assistant-seed.ts` after `strut/views`; `createStrut({ assistant:
+false | { title } })` and `STRUT_HOST_CONFIG`'s `assistant`. Every part of
+the table, in one app. Where it differs from the text above, or the text
+was open:
+
+- **The seed** is `strut/views`' generalized (`seedBundledApp`,
+  `src/apps/views-seed.ts`): the build is cached per (sources, kit, the
+  hashes of the installed apps it imports), and a known version whose
+  `strut/views` moved is rebuilt in place (the document carries it
+  compiled in), never a new version; without `strut/views` (`views:
+  false`) there is nothing to build it against and nothing is seeded. **The title** is staged into
+  `app.yaml` and `src/deployment.ts` before hashing, so another title is
+  another version; "Assistant" by default (Hive's "Jamie" is Hive's to set:
+  mcp's `createStrut` call, a follow-up there).
+- **New conversations** are `<viewer>/<12 hex>`, the fork's form. The page
+  does not know its viewer, so `conversation/list` now answers `viewer`
+  (the step only; the capability is unchanged). The page opens on a new
+  conversation (2026-11-05: it used to reopen the last one, or the newest,
+  which read as random); a row in the list or `?input=session%3D<id>`
+  opens an earlier one.
+- **Hive's bare-id conversations** (§3.1 "Not built"; ruled 2026-11-05,
+  built apart — §2.2): the page sends into whatever `conversation/list`
+  shows, bare ids included, and the server decides. A
+  `conversation_not_yours:` refusal (someone who read a conversation while
+  it was shared, since unshared) is a plain notice. A captcha's answer
+  names its conversation the same way: `run/launch { conversation }` takes
+  one the viewer may continue (`mayContinue`: their own, one they took a
+  turn in, a shared one).
+- **The model picker** is `llm/models` (new, `src/steps/lib/llm/models.ts`,
+  over `ctx.services.llmModels`, the catalog `GET /llm/models` now reads
+  too), its choice per viewer (`useAppState`, Hive's per-user preference),
+  sent as `params.model`; "Default" sends none, so the turn runs on the
+  template's model.
+- **The context**: `{ line, where, timeZone }` — `line` Hive's time format
+  (`Wed 4 Nov 2026, 14:02, Europe/London. `; ICU may add a comma after the
+  weekday) then `where`, which says the reply is read in full with each job
+  as a card; the zone is the host's (`ui/initialize`'s `timeZone`).
+- **Live**: the list is read every 5 s; the open conversation is held with
+  `conversation/get { wait: 25 s, since: rev }` (the kit feeds' 25 s), a
+  call a second at most, none while hidden, and marked seen while open.
+  A job card follows its run with the kit's `useRun { live }` and, while it
+  runs, `job/updates` for the strip (the job's line, then shots,
+  recordings, holds and verdicts counted).
+- **A wake** is a quiet line ("hello.md finished") over the reply; a
+  `[silent]` reply shows nothing. The job's own card stays under the turn
+  that started it, Done once it is.
+- **Claims and captcha**: `job/verify` and `job/evidence` (new) are what
+  `POST /jobs/:id/verify` and `POST /claims/:id/evidence { job }` do, over
+  `ctx.services.jobs.verify` / `.evidence` (createStrut, where the claims
+  layer is on); a first-party page's own call only, on a job the viewer ran
+  (`actors`). Verify goes detached and ends on the job's `verify` update. A
+  claim waiting on a person's look gets "It does" / "It doesn't" (its slot
+  answered). The captcha is drawn from its manifest through `run/files`;
+  the answer is a job turn (`run/launch { job, input: { prompt:
+  "[captcha-answer] {…}" } }`) that names the conversation — `run/launch`
+  now takes `conversation`, from a first-party page only and only one
+  the viewer may continue, so the wake finds it. Only a person who ran the job is
+  offered the answer.
+- **Deliverables**: inline what `strut/views` draws (`ArtifactView`,
+  `SheetView`, `DocumentView`) through `run/files` on the run that made
+  them — the turn's own, a job's from the turn's jobs, else the job's newest
+  (`job/get`); "Open" hands any served file to the host (`?artifact=`), and
+  a PDF, a video, an app (`?app=<name>@<vN>`) or a peer's file (the kit's
+  `peerArtifactPath`) go there only. Item 4's panel opens them beside the
+  app; without it they navigate.
+- **Replies** are markdown in the bubble (react-markdown, links through the
+  host); a file is DocumentView's box.
+- **Not built**: adding a claim from the card, Hive's attention and recap
+  cards, voice input. (The jobs under each list row and pull requests were
+  first left out here; built in §5.2.)
+
+### 5.2 Jamie, jobs in the list, pull requests (2026-11-05, branch `feature/jamie-jobs-prs`)
+
+Ruled 2026-11-05: the app is **Jamie** (open question 5), and the list and
+pull requests are Hive's, not later items.
+
+- **The name.** `strut/jamie` (`src/apps/jamie/`, `src/apps/jamie-seed.ts`),
+  titled Jamie everywhere; the deployment's title is gone
+  (`createStrut({ jamie: false })` and `STRUT_HOST_CONFIG`'s `jamie: false`
+  turn it off). `strut/assistant`, its name before, is removed at boot,
+  grants and page state with it: no host linked to it yet.
+- **Jobs in the list** (Hive's `ControlPanelList`): the conversation record
+  keeps the jobs its turns started or continued (`jobs`, least recently
+  first), read once from each turn's log when it ends (`turnJobs`); a
+  record from before is filled in the background at its next list.
+  `conversation/list` answers each row's jobs, newest first, at most 10
+  (`moreJobs` for the rest), each with its record's title, whether a turn
+  of it is live, and the pull requests its turns delivered (artifacts of
+  kind `pull_request` with a GitHub link, settled runs read once). The row
+  shows the newest job, the rest behind "N more", a pulse while one runs,
+  and the conversation's pull requests counted; a job opens the
+  conversation at its card.
+- **Pull requests** (Hive's `pullRequest.tsx`): `github/pr-status` reads one
+  as GitHub has it now — state, branches, checks (check runs and commit
+  statuses, failed first), mergeable — with the viewer's own `GITHUB_TOKEN`
+  (the actor secret a host pushes), again every 30 s while it is open or a
+  draft. **Merge** is `github/merge-pr`: the person's click, never a
+  proposal, squash by default and the first method the repository allows
+  when it refuses squash, at the head the person saw (`pr_head_moved:`
+  otherwise), refused for a closed, draft or conflicting one. It runs only
+  as a first-party page's own call or as an accepted proposal, so an agent
+  can ask for a merge and never make one. **Fix**, when checks failed: the
+  job's next turn, told which checks and the branch, naming the
+  conversation so its end wakes it. One card per pull request per thread,
+  at its newest mention; a collapsed job card keeps its own in sight unless
+  the thread shows them. Without a token the card says GitHub cannot be
+  read, and Merge says why.
+- **Share** (ruled 2026-11-05: not Hive's read-only link). A shared
+  conversation is the team's: it goes in every person's list ("Shared",
+  `team: true`, with who started it) until they open it, which makes it
+  theirs; anyone reads it and replies as themselves. The ids are kept in
+  `conversations/shared.json`. Stop sharing takes it out of the lists of
+  those who never opened it. A first-party page reads every turn of a
+  conversation its viewer may read, whoever took it, so a teammate sees
+  the files and deliverables too. No link to copy: the app does not know
+  its host's address.
+- **Attachments and Copy.** A person's files show under their message —
+  an image as a thumbnail that opens large, a text file to read, the rest
+  by name — read with `run/files` on the turn's run (a turn's attachments
+  now carry their `path`). A reply has Copy (the clipboard API, which
+  strut's frame now allows, else `execCommand`).
+- **Not to port** (ruled 2026-11-05): the rest of Hive's chat — the daily
+  recap card, its per-step proposal bodies, Hive-only kinds (stored HTML
+  pages, research docs, task pills, the brainstorm tree) and the canvas
+  focus. The app need not match Hive exactly.
+
 ## 6. The hosts' halves (proposed)
 
 ### 6.1 Hive
+
+Ruled 2026-11-05: Hive goes once Jamie is fully in strut. Until then it
+has to keep working, and nothing more: the items below are only what it
+needs to frame the app and not double its replies.
 
 The wake half is built (stakwork/hive#5705, 2026-11-05): Hive asks for
 strut's wake, adopts its wake turn, and skips its own when `run.end` says
@@ -600,10 +734,11 @@ strut's wake, adopts its wake turn, and skips its own when `run.end` says
   rows its own wake writes today (the launch marker with the wake's id,
   the reply), so the tribe outbox and the call feed thread and read it as
   now.
-- Send `context.where` and `context.timeZone` beside `context.line`.
+- Send `context.where` and `context.timeZone` beside `context.line`
+  (done on Hive's master).
 - Stop waking for a job whose `run.end` says `wake: "launched"`;
   `"capped"` shows the job's words.
-- Frame `?app=strut/assistant&solo=1` through the embed URL it already
+- Frame `?app=strut/jamie&solo=1` through the embed URL it already
   mints, behind a flag, then in place of the chat.
 
 ### 6.2 Peel's bridge
@@ -615,7 +750,7 @@ prompt and gates.
 
 ### 6.3 Voice
 
-The 1:1 call moves onto the wake, as group calls already are: the wake
+Deferred (2026-11-05). The 1:1 call moves onto the wake, as group calls already are: the wake
 turn's `run.end` reaches the member's callback and is said like a reply,
 its question last. The instant line from the job's own output may stay
 as a "the job finished" ping before it; it never stands in for the
@@ -652,7 +787,8 @@ are lost.
 3. **First-party apps** (strut, §3; built — §3.1): the reserved `strut/`
    name on every door, the tier's rights in `step_run`, `proposal/decide`.
 4. **The host panel** (strut web, §4; built — §4.1).
-5. **`strut/assistant`** (strut, §5), the `llm/models` step.
+5. **`strut/jamie`** (strut, §5; built — §5.1, §5.2), the `llm/models`
+   step, jobs in the list, pull requests.
 6. **Hive** (§6.1), behind the 202's `wake: true`.
 7. **Peel's bridge, voice** (§6.2, §6.3).
 8. **`DESKTOP.md` §5** points at the template's prompt.
@@ -667,17 +803,19 @@ their own.
    actor here; built in §2.1.
 2. **The loop cap's fallback**: the host shows the job's words as they
    are (proposed, Peel's), or nothing (Hive's).
-3. **Who a wake runs as**: the person who asked for the job (proposed),
-   or the conversation's owner (Hive's).
+3. ~~**Who a wake runs as**~~: ruled 2026-11-05 as built (§1.6) — the
+   person who asked for the job; for an end from another strut, which
+   names nobody here, the last person who took a turn.
 4. **Queued ends**: one turn for every job that ended meanwhile
    (proposed), or one turn each (Peel).
-5. **The app's name**: `strut/assistant` (proposed).
+5. ~~**The app's name**~~: Jamie, `strut/jamie` (ruled 2026-11-05; §5.2).
 6. **Event wakes** (a job turn started by something that happened to an
    artifact) stay Hive's until artifact events move to strut.
-7. **GitHub tokens.** Hive pushes the person's `GITHUB_TOKEN` (8 hours)
-   before every turn it launches. A wake strut launches that continues a
-   job uses whatever is on file. `org-home-swarm.md` moves the refresh to
-   the home's lab; until then, a continued job may push with an expired
-   token.
+7. **GitHub tokens.** Hive pushes the person's `GITHUB_TOKEN` before
+   every turn it launches; its GitHub App's user tokens do not expire (an
+   earlier draft said 8 hours: wrong), so a wake or a Merge uses the one on
+   file. What is open: a person Hive never launched a turn for has none on
+   the swarm, and once Hive goes nothing pushes one. Strut then needs its
+   own way to connect a person's GitHub (`org-home-swarm.md`).
 8. ~~**Where the conversation index lives**~~: files under `dataDir`, on
    every backend (§2.1).

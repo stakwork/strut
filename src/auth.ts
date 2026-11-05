@@ -1,5 +1,5 @@
 import type { Context, Next } from "hono";
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { AppRef } from "./core.js";
 import { bootEnv } from "./env.js";
 
@@ -356,7 +356,14 @@ export function actorFromHeader(c: Context): string | undefined {
 // every session. A session is the key's equal (`carriesApiKey`, scope
 // `full`), never more; its actor is who signed in (`actorFromHeader`).
 // `DELETE /auth/session` clears the cookie. `STRUT_SESSION_HOURS` (12) is
-// its life.
+// its life. `POST /auth/session { ticket }` buys the same cookie with a
+// host's sign-in ticket instead of the key ("Sign-in tickets" below).
+//
+// In a frame. `SameSite=Lax` sends the cookie to a framed page only when
+// strut and the page framing it are SAME-SITE (`strut.acme.com` in
+// `acme.com`): a frame of another site is a cross-site context, where the
+// browser neither stores nor sends it. A host that frames the UI serves it
+// from a subdomain of its own site; `Lax` stays.
 //
 // CSRF. The browser attaches the cookie to every request it makes to this
 // origin, so a page on another site must not be able to spend it.
@@ -394,9 +401,9 @@ export function sessionTtlMs(): number {
 }
 
 /** A signed token's kinds: a session cookie, a person token, a catalog
- *  read token. The kind is in the HMAC input, so one is never accepted as
- *  another. */
-type ClaimsKind = "session" | "person" | "catalog" | "channel";
+ *  read token, a channel ticket, a sign-in ticket. The kind is in the HMAC
+ *  input, so one is never accepted as another. */
+type ClaimsKind = "session" | "person" | "catalog" | "channel" | "ticket";
 
 function sign(kind: ClaimsKind, payload: string, secret: string): string {
   return createHmac("sha256", secret).update(`${kind}:${payload}`).digest("base64url");
@@ -459,9 +466,61 @@ export function verifySessionToken(token: string, now = Date.now()): Session | u
 export function issueSession(key: string, actor?: string, ttlMs = sessionTtlMs()): { token: string; session: Session } | undefined {
   const expected = configuredKey();
   if (!expected || key.length !== expected.length || !timingSafeEqual(Buffer.from(key), Buffer.from(expected))) return undefined;
+  return startSession(actor, ttlMs);
+}
+
+/** A session for `actor` from now, as the cookie value and what it names. */
+function startSession(actor: string | undefined, ttlMs: number): { token: string; session: Session } | undefined {
   const session: Session = { ...(actor ? { actor } : {}), exp: Date.now() + ttlMs };
   const token = sessionToken(session);
   return token ? { token, session } : undefined;
+}
+
+// ── Sign-in tickets ──────────────────────────────────────────────────────
+//
+// How a HOST signs one person into strut's own UI in a frame, with no key
+// in the browser — the standalone twin of mcp's `/mint-token` JWT handed to
+// `/lab/?key=`. The host's server, holding the key, mints a ticket for the
+// person (`POST /auth/ticket { actor }`, full scope) and frames
+// `<strut>/?ticket=…`; the page trades it ONCE at `POST /auth/session
+// { ticket }` for the session cookie the key login sets, naming the
+// ticket's actor. `strut-ticket.<claims>.<hmac>`, claims `{ actor, exp,
+// jti }`, signed like a session. A URL can be logged, cached or read by a
+// page, so the ticket lives a minute and is good once: a redeemed `jti` is
+// remembered, in memory, until its `exp` (a restart forgets them, and a
+// ticket from before it may be traded once more within its minute).
+// Identity stays the host's: strut takes the actor as the host named it.
+
+const TICKET_PREFIX = "strut-ticket.";
+/** A sign-in ticket's life: to load the page, not to keep it. */
+export const SIGN_IN_TICKET_MS = 60_000;
+/** The `jti`s redeemed, each until its ticket's `exp`. */
+const redeemedTickets = new Map<string, number>();
+
+/** A sign-in ticket for `actor`, living `ttlMs` — or undefined with no
+ *  secret to sign it. */
+export function signInTicket(actor: string, ttlMs = SIGN_IN_TICKET_MS): { ticket: string; exp: number } | undefined {
+  const exp = Date.now() + ttlMs;
+  const signed = signClaims("ticket", { actor, exp, jti: randomBytes(16).toString("base64url") });
+  return signed ? { ticket: `${TICKET_PREFIX}${signed}`, exp } : undefined;
+}
+
+/**
+ * Trade a sign-in ticket for a session naming its actor, living `ttlMs`
+ * (default `sessionTtlMs()`). Undefined — and nothing remembered — for a
+ * ticket that is not one, not strut's, or expired; undefined for one
+ * already traded. A ticket that redeems is spent.
+ */
+export function redeemSignInTicket(ticket: string, ttlMs = sessionTtlMs(), now = Date.now()): { token: string; session: Session } | undefined {
+  if (!ticket.startsWith(TICKET_PREFIX)) return undefined;
+  const claims = readClaims("ticket", ticket.slice(TICKET_PREFIX.length), now);
+  const actor = claims?.["actor"];
+  const jti = claims?.["jti"];
+  if (!claims || typeof actor !== "string" || !actor || typeof jti !== "string" || !jti) return undefined;
+  for (const [id, exp] of redeemedTickets) if (exp <= now) redeemedTickets.delete(id);
+  if (redeemedTickets.has(jti)) return undefined;
+  redeemedTickets.set(jti, claims.exp);
+  return startSession(actor, ttlMs);
 }
 
 /** The `Set-Cookie` value that stores a session token, or clears it

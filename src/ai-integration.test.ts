@@ -653,6 +653,13 @@ describe("AI list_runs / get_run tools", () => {
     );
     const tools = buildTools(deps) as any;
 
+    // A disabled workflow refuses the builder's run_workflow as it does every launch.
+    await ws.setWorkflowDisabled("greeter", true);
+    const refused = await lastYield(tools.run_workflow.execute({ name: "greeter", input: {} }));
+    assert.equal(refused.ok, false);
+    assert.match(refused.error, /workflow 'greeter' is disabled/);
+    await ws.setWorkflowDisabled("greeter", false);
+
     const run = await lastYield(tools.run_workflow.execute({ name: "greeter", input: {} }));
     assert.equal(run.status, "success");
 

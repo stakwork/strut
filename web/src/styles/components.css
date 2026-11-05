@@ -467,6 +467,10 @@ body.is-resizing-rows * {
   flex: none;
   animation: chat-live-pulse 1.4s ease-in-out infinite;
 }
+/* A disabled workflow (PUT /workflows/:name/disabled): dimmed, its clock
+   hidden — the topbar says Disabled and offers Enable once it is selected. */
+.list-item.is-disabled .list-item-name,
+.list-item.is-disabled .badge { opacity: 0.45; }
 .list-item .live-dot { margin: 0 6px 0 auto; }
 .list-item .live-dot + .list-item-clock { margin-left: 0; }
 .cat-header .live-dot { margin-left: auto; }
@@ -2848,6 +2852,11 @@ body.is-resizing-flyout iframe { pointer-events: none !important; }
   position: relative;
   display: inline-block;
 }
+.wf-disabled {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
 .run-popover {
   position: absolute;
   top: calc(100% + var(--sp-2));
@@ -3603,6 +3612,15 @@ body.is-resizing-flyout iframe { pointer-events: none !important; }
 
 .auto-hint { font-size: 12px; color: var(--text-muted); line-height: 1.5; }
 .auto-empty { font-size: 12px; color: var(--text-dim); padding: var(--sp-3) 0; }
+.auto-held {
+  font-size: 12px;
+  color: var(--warning);
+  background: rgba(251, 191, 36, 0.08);
+  border: 1px solid rgba(251, 191, 36, 0.25);
+  border-radius: var(--r-md);
+  padding: var(--sp-2) var(--sp-3);
+  margin-bottom: var(--sp-3);
+}
 .auto-error {
   font-size: 12px;
   color: var(--danger);
@@ -4344,18 +4362,126 @@ input.package-search { width: 100%; margin-bottom: var(--sp-2); }
 .flyout-builder-note { color: var(--text-dim); }
 .flyout-builder-error { color: var(--danger); }
 
-/* The topbar's select for an app: following latest, or the release it is
-   held at — a release picked rolls back, a version picked is made live. */
-.app-version-select {
+/* The topbar's chip for an app: the live version and the drafts waiting.
+   It opens the Versions flyout (components/AppVersionsFlyout.tsx). */
+.app-version-chip {
   margin-left: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font: inherit;
   font-size: 11px;
+  font-weight: 500;
   color: var(--text-muted);
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: var(--r-sm);
-  padding: 1px 4px;
+  padding: 1px 6px;
+  cursor: pointer;
 }
+.app-version-chip:hover,
+.app-version-chip.is-active { color: var(--text); border-color: var(--border-strong); }
+.app-version-drafts {
+  color: var(--accent);
+  background: rgba(110, 168, 255, 0.12);
+  border-radius: 999px;
+  padding: 0 6px;
+}
+.app-version-caret { font-size: 9px; color: var(--text-dim); }
+
+/* The Versions flyout: the mode, the live version, one row per version. */
+.app-mode { margin-bottom: var(--sp-4); }
+.app-mode-seg {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  overflow: hidden;
+}
+.app-mode-btn {
+  flex: 1;
+  font: inherit;
+  font-size: 12px;
+  padding: 6px 8px;
+  color: var(--text-muted);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+.app-mode-btn + .app-mode-btn { border-left: 1px solid var(--border); }
+.app-mode-btn:hover:not(.is-on):not(:disabled) { color: var(--text); background: var(--surface-2); }
+.app-mode-btn.is-on { color: var(--text); background: var(--surface-2); font-weight: 600; cursor: default; }
+.app-mode-btn.is-pending { color: var(--accent); }
+.app-mode-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--sp-2);
+  margin-top: var(--sp-2);
+}
+.app-live-card {
+  border: 1px solid var(--accent);
+  border-radius: var(--r-lg);
+  padding: var(--sp-3);
+  margin-bottom: var(--sp-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+.app-live-head { display: flex; align-items: center; gap: var(--sp-2); }
+.app-live-version { font-size: 16px; font-weight: 600; color: var(--text); }
+.app-live-view { margin-left: auto; }
+.app-versions-instead { margin-top: var(--sp-2); }
+.app-versions .auto-error { margin-bottom: var(--sp-3); }
+.app-version-list { display: flex; flex-direction: column; }
+.app-version-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 34px;
+  padding: 2px var(--sp-1);
+  border-bottom: 1px solid var(--border);
+}
+.app-version-row:last-child { border-bottom: 0; }
+.app-version-row.is-viewing { background: rgba(110, 168, 255, 0.06); }
+.app-version-name { font-size: 13px; font-weight: 600; color: var(--text); min-width: 32px; }
+.app-version-state { font-size: 11px; color: var(--text-dim); }
+.app-version-state.is-draft { color: var(--accent); }
+.app-version-when { font-size: 11px; color: var(--text-dim); margin-left: auto; white-space: nowrap; }
+.app-version-actions { display: inline-flex; gap: var(--sp-1); min-width: 128px; justify-content: flex-end; }
+.app-version-actions .btn { padding: 2px 8px; font-size: 11px; }
+.app-versions-history { margin-top: var(--sp-4); }
+.app-history-list {
+  list-style: none;
+  margin: var(--sp-2) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.app-history-list li { display: flex; align-items: center; gap: var(--sp-2); }
+.app-history-list .app-version-name { font-size: 12px; min-width: 0; }
+
+/* A version this browser views in place of the live one: a banner over
+   the frame, the frame below it. */
+.app-preview { display: flex; flex-direction: column; width: 100%; height: 100%; }
+.app-preview-banner {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  padding: 6px var(--sp-3);
+  font-size: 12px;
+  color: var(--text);
+  background: rgba(110, 168, 255, 0.12);
+  border-bottom: 1px solid rgba(110, 168, 255, 0.3);
+}
+/* The buttons follow the words, so an open flyout never covers them. */
+.app-preview-text { color: var(--text-muted); }
+.app-preview-text strong { color: var(--text); }
+.app-preview-error { flex: 1 1 100%; color: var(--danger); }
+.app-preview-frame { flex: 1; min-height: 0; }
 
 /* Beside it, the app as a TAB where this workspace's apps are listed: dim
    off, lit on — the record's flag, not a version. */
@@ -4447,6 +4573,11 @@ input.package-search { width: 100%; margin-bottom: var(--sp-2); }
   width: 100%;
   height: 100vh;
   background: var(--surface);
+}
+/* `&theme=light`: the page behind a light app, so it never flashes dark. */
+.app-solo.light {
+  background: #ffffff;
+  color: #3f3f46;
 }
 .app-solo > .empty {
   flex: 1;

@@ -1,0 +1,26 @@
+title: Jamie
+description: >-
+  Jamie, the person's assistant (plans/jamie-app.md §5): their conversations
+  with the workspace's orchestrator — by day, searched, renamed, archived —
+  each turn's reply, the jobs it started (live while they run, with their
+  claims, captchas and pull requests, merged from here), the changes it
+  proposes for a yes or no, and what it made. Strut ships it and seeds it on
+  every server; it acts as its viewer.
+icon: message-circle
+grants:
+  workflows: [orchestrator, job, builder]
+  steps:
+    - conversation/list
+    - conversation/get
+    - conversation/update
+    - llm/models
+    - graph/find
+    - job/get
+    - job/updates
+    - job/verify
+    - job/evidence
+    - proposal/get
+    - proposal/decide
+    - sheets/get-values
+    - github/pr-status
+    - github/merge-pr

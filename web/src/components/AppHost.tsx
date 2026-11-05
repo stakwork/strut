@@ -14,8 +14,9 @@ import { appToolInput, namesApp, peerAppLink } from "../app-links";
 // `srcdoc` of `<iframe sandbox="allow-scripts allow-downloads">` — an
 // `about:srcdoc` document with an opaque origin (`location.origin` is
 // "null"), never `allow-same-origin`, no `src` that carries a credential.
-// It may save a file it was handed and use the microphone
-// (`allow="microphone"`); neither sends anything off the page. Not a `blob:`
+// It may save a file it was handed, use the microphone and write to the
+// clipboard (`allow="microphone; clipboard-write"`, a Copy button); none of
+// them sends anything off the page. Not a `blob:`
 // URL: a blob document's `location.origin` is its creator's while its
 // pathname is the whole blob URL, and a JSON-schema validator bundled into
 // the MCP SDK does `new URL(location.origin + location.pathname)` at module
@@ -155,7 +156,7 @@ export function AppHost(props: {
 
   return (
     <div class="app-host">
-      <iframe ref={frameRef} class="app-frame" sandbox="allow-scripts allow-downloads" allow="microphone" title={app.name} />
+      <iframe ref={frameRef} class="app-frame" sandbox="allow-scripts allow-downloads" allow="microphone; clipboard-write" title={app.name} />
       {state.status !== "ready" && (
         <div class={`app-host-overlay${state.status === "error" ? " is-error" : ""}`}>
           {state.status === "loading" ? "Loading the app…" : `The app could not be loaded: ${state.error}`}

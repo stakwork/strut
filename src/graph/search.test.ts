@@ -581,7 +581,7 @@ for (const tb of testBackends()) {
 
     it("ontology: listSchemas and getSchema mirror jarvis's shapes", { skip: neoOnly("the Schema meta-graph with Thing") }, async () => {
       const { schemas, edges } = await reader.listSchemas();
-      assert.equal(schemas.length, 15, "the Strut domain, Thing, and the Concept the suite seeded");
+      assert.equal(schemas.length, 16, "the Strut domain, Thing, and the Concept the suite seeded");
       const run = schemas.find((s) => s.type === "StrutRun")!;
       assert.equal(run["domain"], "Strut");
       assert.equal(run["parent"], "Thing");
@@ -596,7 +596,7 @@ for (const tb of testBackends()) {
       assert.ok(edges.some((e) => e.edge_type === "ACCESSED" && e.target_type === "Thing"));
 
       const only = await reader.listSchemas({ domains: ["STRUT"] });
-      assert.equal(only.schemas.length, 13);
+      assert.equal(only.schemas.length, 14);
       assert.ok(only.edges.every((e) => e.source_type !== "Thing" && e.target_type !== "Thing"), "Thing is outside the domain and not a wildcard");
       assert.ok(!only.edges.some((e) => e.edge_type === "ACCESSED" || e.edge_type === "CHILD_OF"));
       assert.ok(only.edges.some((e) => e.edge_type === "IN_RUN"));
@@ -614,9 +614,9 @@ for (const tb of testBackends()) {
       assert.equal(await reader.getSchema("Nope"), null);
     });
 
-    it("ontology: the registry's eighteen types and twenty-one edges, in jarvis's shapes", { skip: neo && "ladybug only" }, async () => {
+    it("ontology: the registry's nineteen types and twenty-two edges, in jarvis's shapes", { skip: neo && "ladybug only" }, async () => {
       const { schemas, edges } = await reader.listSchemas();
-      assert.deepEqual(schemas.map((s) => s.type).sort(), ["Check", "Claim", "Concept", "EdgeText", "Evidence", "Lingo", "Merge", "Mishearing", "Person", "StrutApp", "StrutAppVersion", "StrutArtifact", "StrutJob", "StrutRun", "StrutStep", "StrutStepVersion", "StrutWorkflow", "StrutWorkflowVersion"]);
+      assert.deepEqual(schemas.map((s) => s.type).sort(), ["Check", "Claim", "Concept", "EdgeText", "Evidence", "Lingo", "Merge", "Mishearing", "Person", "StrutApp", "StrutAppVersion", "StrutArtifact", "StrutJob", "StrutProposal", "StrutRun", "StrutStep", "StrutStepVersion", "StrutWorkflow", "StrutWorkflowVersion"]);
       const run = schemas.find((s) => s.type === "StrutRun")!;
       assert.equal(run["domain"], "Strut");
       assert.equal(run["parent"], "Thing");
@@ -629,14 +629,15 @@ for (const tb of testBackends()) {
       assert.equal(concept["domain"], undefined);
       assert.equal(concept["key_spec"], "concept-name");
       assert.equal(concept.attributes["file"], "?string");
-      assert.equal(new Set(edges.map((e) => e.edge_type)).size, 21);
+      assert.equal(new Set(edges.map((e) => e.edge_type)).size, 22);
       assert.ok(edges.some((e) => e.edge_type === "CHILD_OF" && e.source_type === "Concept" && e.target_type === "Concept"));
       assert.ok(edges.some((e) => e.edge_type === "PARENT_OF" && e.source_type === "Concept" && e.target_type === "Concept"));
       assert.ok(edges.some((e) => e.edge_type === "ABOUT" && e.source_type === "Claim" && e.target_type === "StrutWorkflow"));
-      assert.ok(!edges.some((e) => e.target_type === "Thing" || e.edge_type === "IN_RUN" || (e.edge_type === "ACCESSED" && e.source_type !== "StrutRun")));
+      assert.ok(!edges.some((e) => e.target_type === "Thing" || (e.edge_type === "IN_RUN" && e.source_type !== "StrutProposal") || (e.edge_type === "ACCESSED" && e.source_type !== "StrutRun")));
+      assert.ok(edges.some((e) => e.edge_type === "IN_RUN" && e.source_type === "StrutProposal" && e.target_type === "StrutRun"));
 
       const only = await reader.listSchemas({ domains: ["STRUT"] });
-      assert.equal(only.schemas.length, 9);
+      assert.equal(only.schemas.length, 10);
       assert.ok(only.edges.every((e) => e.source_type.startsWith("Strut") && e.target_type.startsWith("Strut")));
 
       const single = await reader.getSchema("strutrun");

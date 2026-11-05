@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type { AnyStepDef, Flow, McpServer, PeerOpen, RunAttachment, StepRegistry, RunEvent, RunResult, StepContext } from "./core.js";
+import type { AnyStepDef, Flow, McpServer, PeerOpen, RunAttachment, StepRegistry, RunEvent, RunResult, RunSummary, StepContext } from "./core.js";
 import type { RunStore } from "./store.js";
 import { FileRunStore, MemoryRunStore, countSteps, generateRunId, summarizeFromEvents } from "./store.js";
 import type { ChatStore, ChatEvent, ChatMeta } from "./chat-store.js";
@@ -24,7 +24,8 @@ import {
   truncateToolMessages,
 } from "./chat-store.js";
 import { CHAT_RETAIN, cachedSystem, compactAtFromEnv, compactionMessage, overMark, resultCapChars, summarize } from "./compaction.js";
-import { FileWorkspaceStore, claimsBlockOf, readClaimsBlock, type PublishOptions, type WorkspaceStore } from "./workspace.js";
+import { createDrain, DrainingError, parseDrainBody } from "./drain.js";
+import { assertWorkflowEnabled, workflowDisabled, FileWorkspaceStore, claimsBlockOf, readClaimsBlock, type PublishOptions, type WorkspaceStore } from "./workspace.js";
 import type { InputBlock } from "./input-block.js";
 import { buildRegistry, resolveStep } from "./steps/registry.js";
 import { parseStepRef } from "./step-ref.js";
@@ -34,7 +35,7 @@ import type { StepSources } from "./steps/registry.js";
 import { runWorkflow } from "./runner.js";
 import { RunController } from "./run-control.js";
 import { buildJournal, invalidateFrom, readRunStart } from "./journal.js";
-import { appIdentity, publicAppIdentity, publicAppOfIdentity, carriesApiKey, carriesPeerKey, carriesFileToken, carriesBadFileToken, catalogToken, catalogTokenOf, CATALOG_TOKEN_DAYS, publicPackageRead, fileToken, warnIfUnconfigured, channelTicket, channelTicketOf, actorFromHeader, inProcessOf, inProcessRequest, scopeFromKey, isPeerScope, personOf, personToken, PERSON_TOKEN_DAYS, unauthorized, issueSession, sessionCookie, sessionOf, isSecureRequest, type Scope } from "./auth.js";
+import { appIdentity, publicAppIdentity, publicAppOfIdentity, carriesApiKey, carriesPeerKey, carriesFileToken, carriesBadFileToken, catalogToken, catalogTokenOf, CATALOG_TOKEN_DAYS, publicPackageRead, fileToken, warnIfUnconfigured, channelTicket, channelTicketOf, actorFromHeader, inProcessOf, inProcessRequest, scopeFromKey, isPeerScope, personOf, personToken, PERSON_TOKEN_DAYS, unauthorized, issueSession, redeemSignInTicket, signInTicket, sessionCookie, sessionOf, isSecureRequest, type Scope } from "./auth.js";
 import { standardServices, fileArtifactsCapability } from "./capabilities.js";
 import type { ArtifactsCapability, SecretsCapability } from "./capabilities.js";
 import type { SecretStore } from "./secret-store.js";
@@ -56,7 +57,7 @@ import {
 } from "./secret-store.js";
 import { runStep, cassettePath, RUN_STEP_FLOW } from "./run-step.js";
 import { buildProvenance } from "./provenance.js";
-import { RUN_GET_MAX_WAIT_MS, RUN_LIST_DEFAULT_LIMIT, RUN_LIST_MAX_LIMIT, capEvents, capTranscript, fileResult, listEntryOf, matchesRunFilter, runsPage, type RunCaller, type RunListEntry, type RunTranscript, type RunsCapability } from "./runs.js";
+import { RUN_GET_MAX_WAIT_MS, RUN_LIST_DEFAULT_LIMIT, RUN_LIST_MAX_LIMIT, RUN_LIST_SCAN_MAX, capEvents, capTranscript, fileResult, launchedAt, listEntryOf, matchesRunFilter, runsPage, sinceMs, type RunCaller, type RunListEntry, type RunTranscript, type RunsCapability } from "./runs.js";
 import { isFirstParty, type AppRef, type StartedBy, type WakeMark } from "./core.js";
 import { WAKE_MAX, artifactsOf, createWakes, parseWakeDoor, replyOf, type WakeEnd, type WakeOutcome } from "./wake.js";
 import { createConversations, isConversationFlow, outsideConversations, type ConversationViewer } from "./conversations.js";
@@ -84,6 +85,7 @@ import { appErrors, createApps, type AppsCapability, type AppPublishResult } fro
 import { fileAppGrants } from "./apps/grants.js";
 import { createAppMonitor, type AppMonitor } from "./apps/monitor.js";
 import { seedViewsApp } from "./apps/views-seed.js";
+import { RETIRED_APP, seedJamieApp } from "./apps/jamie-seed.js";
 import type { KitLocation } from "./apps/kit.js";
 import { appsRoot, isPreviewLabel, listAppFiles, readAppFile, reservedAppName, validateAppName, writeAppFiles } from "./apps/files.js";
 import { DOCUMENT_FILE, readBuildInfo, withPublicIdentity, withToken, withoutTokenMeta } from "./apps/build.js";
@@ -113,7 +115,7 @@ import type { CassetteMode } from "./cassette.js";
 // Type-only: the graph backend stays a lazy, opt-in dependency.
 import type { GraphBackend } from "./graph/backend.js";
 import { graphView, mayQueryRaw, readerFor, listFor, type GraphReaders } from "./graph/scope.js";
-import { projectChatOnce, projectRunOnce, type ConversationReader } from "./graph/projector.js";
+import { projectChatOnce, projectProposalOnce, projectRunOnce, type ConversationReader } from "./graph/projector.js";
 import { createGraphChangeFeed, GRAPH_FEED_READ_MAX } from "./graph-writes.js";
 // No runtime graph dependency in here either (type-only imports inside).
 import type { ClaimsReader } from "./graph/claims.js";
@@ -418,6 +420,12 @@ export interface StrutOptions<TServices = unknown> {
    *  apps import, its page the gallery. Seeded at boot by tree hash, as `job`
    *  is by content hash, when the kit is built. `false` seeds nothing. */
   views?: false;
+  /** `strut/jamie` (`src/apps/jamie-seed.ts`, plans/jamie-app.md §5): Jamie,
+   *  the person's assistant — the `orchestrator`'s conversations, their jobs,
+   *  proposals, pull requests and deliverables — as a first-party app,
+   *  seeded at boot after `strut/views` (it imports it; none without it).
+   *  `false` seeds nothing. */
+  jamie?: false;
   /** The `automation/*` steps (src/steps/lib/automation/), an agent's own
    *  door onto the automations: the one workflow they schedule, and the
    *  registry step that asks the person before one is made, changed,
@@ -530,6 +538,11 @@ export interface StrutOptions<TServices = unknown> {
 /** `STRUT_RESUME_MAX_LOG_BYTES` unset: 64 MB (`StrutOptions.resumeMaxLogBytes`). */
 export const DEFAULT_RESUME_MAX_LOG_BYTES = 64 * 1024 * 1024;
 
+/** How far a log's mtime may lag its last event: some filesystems (HFS+,
+ *  FAT) keep mtimes to the second or two. The boot scan skips a run by its
+ *  mtime only when it is older than `since` by more than this. */
+const LOG_MTIME_SLACK_MS = 2_000;
+
 export interface AutoResumeOptions {
   /** Ignore cut-off runs whose last event is older than this. Default 7 days. */
   maxAgeMs?: number;
@@ -543,7 +556,9 @@ export interface AutoResumeOptions {
    *  time (epoch ms) — the runs one death cut off — instead of only the
    *  newest root run of each workflow. The boot scan passes when the
    *  previous process started (`<dataDir>/boot.json`, written once each
-   *  boot scan is done); with no record of it, newest only. */
+   *  boot scan is done); with no record of it, newest only. A run whose log
+   *  was last written before it (`RunStore.logWrittenAt`) is passed over
+   *  unread, summary and all. */
   since?: number;
 }
 
@@ -862,6 +877,22 @@ export async function createStrut<TServices = unknown>(
    *  run it has just launched is never refused. A dead run is judged by its
    *  log. */
   const peerLaunched = new WeakSet<RunController>();
+  /** The deployment's drain (src/drain.ts, `PUT /drain`). Lifting it — by
+   *  hand or at its deadline — launches the wake turns it held back. */
+  const drain = createDrain({ onLift: () => void wakes.reconcile() });
+  /** The builder chats with a turn running in this process (set by the chat
+   *  block; none with the chat off) — what `GET /drain` waits on beside runs. */
+  let liveChats = (): string[] => [];
+  /** A launch route's answer while draining: 503, and when to ask again. */
+  const drainingResponse = (c: Context): Response | undefined => {
+    const refused = drain.refusal();
+    return refused ? c.json({ error: refused }, 503, { "retry-after": "60" }) : undefined;
+  };
+  /** Who a live run was launched for — its app and actor, as its `run.start`
+   *  will record them — known from the launch, so a run a caller has just
+   *  been handed the id of is theirs before its first event lands (`ownRun`).
+   *  A dead run is judged by its log. */
+  const launchedAs = new WeakMap<RunController, { app?: AppRef; actor?: string }>();
   /** Register a run as in-flight, creating its controller (attached to the
    *  launching run's controller when `parentRunId` resolves — controls apply
    *  to whole subtrees). Every launch path must register: HTTP
@@ -872,6 +903,11 @@ export async function createStrut<TServices = unknown>(
   const trackRun = (workflow: string, runId: string, parentRunId?: string, job?: { id: string; title?: string }) => {
     const key = `${workflow}/${runId}`;
     const parent = parentRunId ? controllersByRunId.get(parentRunId) : undefined;
+    // While draining (src/drain.ts) nothing new starts: every launch path
+    // registers here, so this is where a new ROOT run is refused. A run a
+    // run in flight launches is part of that run's work and still starts.
+    const draining = parent ? undefined : drain.refusal();
+    if (draining) throw new DrainingError(draining);
     const controller = new RunController(runId, workflow, parent);
     if (job) controller.job = job;
     controllers.set(key, controller);
@@ -1005,8 +1041,16 @@ export async function createStrut<TServices = unknown>(
     appVersion: async (name, version) => appVersionOf(name, version),
   });
   // Proposals (plans/proposals.md): the bag's capability — its `decide` is
-  // attached with the decide route below, where its deps are.
+  // attached with the decide route below, where its deps are. On a graph
+  // workspace each change is projected (`StrutProposal`, graph/projector.ts),
+  // detached: the record is written first and stays what every list reads.
+  const proposalGraph = workspace.graph;
+  const projectProposal = proposalGraph
+    ? (p: { id: string }) =>
+        void projectProposalOnce(proposalGraph, ownProposals, p.id).catch((err) => console.error(`[projector] proposal ${p.id} was not projected:`, err))
+    : undefined;
   const ownProposals: ProposalsCapability = proposalsCapability(dataDir, {
+    ...(projectProposal ? { changed: projectProposal } : {}),
     // What the host's deltas gate: a step that reaches past this strut
     // checks it whatever the route (proposals.ts `requireApproval`).
     hostApprove: [opts.job, opts.orchestrator, opts.builder].flatMap((d) => (d ? (d.approve ?? []) : [])),
@@ -1286,6 +1330,20 @@ export async function createStrut<TServices = unknown>(
       console.warn(`[views] could not seed strut/views:`, err instanceof Error ? err.message : err);
     }
   }
+  // `strut/jamie` (src/apps/jamie-seed.ts): the person's assistant as a
+  // first-party app. After strut/views, whose components it imports. The
+  // app it was before it was Jamie goes.
+  if (opts.jamie !== false) {
+    try {
+      const r = await seedJamieApp({ workspace, ...(opts.kit ? { kit: opts.kit } : {}) });
+      if (r?.changed) console.log(`[jamie] seeded app: strut/jamie @ ${r.version}`);
+    } catch (err) {
+      console.warn(`[jamie] could not seed strut/jamie:`, err instanceof Error ? err.message : err);
+    }
+  }
+  if (await workspace.getApp(RETIRED_APP).catch(() => null)) {
+    await apps.delete(RETIRED_APP).catch((err) => console.warn(`[jamie] could not remove ${RETIRED_APP}:`, err instanceof Error ? err.message : err));
+  }
 
   // Apps' history (src/apps/objects.ts): versions published before it get
   // their sources recorded once per file, and the directories no longer
@@ -1412,7 +1470,23 @@ export async function createStrut<TServices = unknown>(
     : null;
   // A job's ledger rides on the jobs capability (plans/job-claims.md §6), so
   // `GET /jobs/:id` and `job/get` carry the same `claims`.
-  if (verifier && claimsJobs) claimsJobs.claims = (job) => verifier.jobLedger(job);
+  if (verifier && claimsJobs) {
+    claimsJobs.claims = (job) => verifier.jobLedger(job);
+    // A person's two doors onto a job's claims, as steps (`job/verify`,
+    // `job/evidence`: strut's own app): what `POST /jobs/:id/verify` and
+    // `POST /claims/:id/evidence { job }` do.
+    claimsJobs.verify = async (job, o = {}) => {
+      const opts = o.claims ? { claims: o.claims } : {};
+      if (o.detach) {
+        if ((await verifier.jobLedger(job)) === null) return null;
+        void verifier.verifyJob(job, opts).catch((err) => console.error(`[verify] job "${job}" failed:`, err));
+        return { job, started: true };
+      }
+      const result = await verifier.verifyJob(job, opts);
+      return result.skipped === "unknown-job" ? null : result;
+    };
+    claimsJobs.evidence = ({ slot, ...input }) => verifier.addEvidence({ ...input, ...(slot ? { slot } : {}), by: "person", mode: "asserted" });
+  }
   //
   // The same hook PROJECTS the run into the graph (graph/projector.ts: its
   // `StrutRun`, agent sessions, tool calls and the nodes they touched) —
@@ -1438,7 +1512,7 @@ export async function createStrut<TServices = unknown>(
           // refreshes its `StrutChat` (plans/jamie-app.md §2). Its end was
           // recorded from the run's terminal event, before this.
           const convs = (services as Record<string, unknown>)["conversations"] as Partial<ConversationReader> | undefined;
-          void projectRunOnce(runGraph, store, key, runId, jobs, typeof convs?.record === "function" ? (convs as ConversationReader) : undefined).catch((err) =>
+          void projectRunOnce(runGraph, store, key, runId, jobs, typeof convs?.record === "function" ? (convs as ConversationReader) : undefined, ownProposals).catch((err) =>
             console.error(`[projector] run ${key}/${runId} was not projected:`, err),
           );
           verifier?.schedule(key, runId);
@@ -1524,7 +1598,9 @@ export async function createStrut<TServices = unknown>(
   // session cookie (auth.ts "Sessions") — the browser's credential from
   // then on, the key's equal to this gate (`carriesApiKey`) under the CSRF
   // rules `sessionOf` keeps — and `DELETE /auth/session` ends one; neither
-  // needs a credential to be called.
+  // needs a credential to be called. The login also takes a host's
+  // sign-in ticket in place of the key; minting one (`POST /auth/ticket`)
+  // is behind the key like any other route.
   //
   // A fifth: a CATALOG token (`catalogTokenOf`, auth.ts), a subscriber's
   // read of the catalog this strut published and of the archives it names
@@ -1589,7 +1665,16 @@ export async function createStrut<TServices = unknown>(
   // key configured there is nothing to sign in to.
   app.post("/auth/session", async (c) => {
     if (!bootEnv()["STRUT_API_KEY"]) return c.json({ error: "STRUT_API_KEY is not set: nothing to sign in to" }, 400);
-    const body = (await c.req.json().catch(() => ({}))) as { key?: unknown; actor?: unknown };
+    const body = (await c.req.json().catch(() => ({}))) as { key?: unknown; actor?: unknown; ticket?: unknown };
+    // A host's sign-in ticket (auth.ts "Sign-in tickets"): the same cookie,
+    // naming the ticket's actor — never a field beside it. No pause: a
+    // ticket is signed, so there is nothing to guess.
+    if (body.ticket !== undefined) {
+      const redeemed = typeof body.ticket === "string" ? redeemSignInTicket(body.ticket.trim()) : undefined;
+      if (!redeemed) return c.json({ error: "unauthorized: this sign-in ticket has expired, was already used, or is not this strut's" }, 401);
+      c.header("set-cookie", sessionCookie(redeemed.token, redeemed.session.exp, isSecureRequest(c)));
+      return c.json(redeemed.session);
+    }
     const key = typeof body.key === "string" ? body.key : "";
     const actor = typeof body.actor === "string" ? body.actor.trim() : "";
     if (body.actor !== undefined && (typeof body.actor !== "string" || actor.length > 120 || /[\r\n]/.test(actor))) {
@@ -1616,6 +1701,23 @@ export async function createStrut<TServices = unknown>(
   app.delete("/auth/session", (c) => {
     c.header("set-cookie", sessionCookie(undefined, 0, isSecureRequest(c)));
     return c.body(null, 204);
+  });
+
+  // A SIGN-IN TICKET (auth.ts "Sign-in tickets"): a host's server, holding
+  // the key, signs one person into the UI it frames as `?ticket=` — good
+  // once, for a minute. A `full` caller mints it (the gate keeps a peer and
+  // a person token off every POST but theirs); the actor is the host's to
+  // name, as with `x-strut-actor` beside the key.
+  app.post("/auth/ticket", async (c) => {
+    if (!bootEnv()["STRUT_API_KEY"]) return c.json({ error: "STRUT_API_KEY is not set: nothing to sign in to" }, 400);
+    const body = await c.req.json<{ actor?: unknown }>().catch(() => ({}) as { actor?: unknown });
+    const actor = typeof body.actor === "string" ? body.actor.trim() : "";
+    if (!actor || actor.length > 120 || /[\r\n]/.test(actor)) {
+      return c.json({ error: "actor is required: a short string, the person the ticket signs in" }, 400);
+    }
+    const minted = signInTicket(actor)!;
+    c.header("cache-control", "no-store");
+    return c.json({ ticket: minted.ticket, expiresAt: minted.exp });
   });
 
   // ── Workflows ────────────────────────────────────────────────────────────
@@ -1810,7 +1912,7 @@ export async function createStrut<TServices = unknown>(
     const { name, runId } = c.req.param();
     const scope = await scopeOf(c);
     const actor = await resolveActor(c);
-    const proposals = (await listProposals(proposalsRoot(dataDir), { runId })).filter((p) => p.by.workflow === name && visibleTo(scope, actor, p)).map(briefOf);
+    const proposals = (await listProposals(proposalsRoot(dataDir), { runId, viewer: { scope, ...(actor ? { actor } : {}) } })).filter((p) => p.by.workflow === name).map(briefOf);
     return c.json({ workflow: name, runId, proposals });
   });
 
@@ -1972,6 +2074,10 @@ export async function createStrut<TServices = unknown>(
     } catch (err) {
       return { ok: false, status: 404, error: err instanceof Error ? err.message : String(err) };
     }
+    // A disabled workflow refuses a resume like any launch; boot's auto-resume
+    // reports it skipped, and a person resumes it once it is enabled again.
+    const disabled = await workflowDisabled(workspace, name);
+    if (disabled) return { ok: false, status: 409, error: disabled };
 
     // Validity guard (§5): replaying outputs into a DIFFERENT DAG is
     // undefined. When the active version's hash differs from the one
@@ -2160,6 +2266,14 @@ export async function createStrut<TServices = unknown>(
      *  either way), else `seen`. */
     const consider = async (name: string, runId: string): Promise<"nested" | "seen"> => {
       if (controllers.has(`${name}/${runId}`)) return "seen"; // live in this process
+      // Nothing written since the previous boot: an earlier death's, as the
+      // `since` check below would find — known without reading the summary
+      // or the log, so a boot touches only the runs the last process did.
+      // The slack covers a filesystem that keeps mtimes to the second.
+      if (since !== undefined) {
+        const at = await store.logWrittenAt(name, runId);
+        if (at !== null && at < since - LOG_MTIME_SLACK_MS) return "seen";
+      }
       if (await store.getRunSummary(name, runId)) return "seen"; // finished → nothing was cut off
       await store.repairLog?.(name, runId);
       // Asked before the read: a log the process cannot hold is what
@@ -2347,6 +2461,10 @@ export async function createStrut<TServices = unknown>(
     // A durable resume reads the whole log (findRun does too): refuse one
     // past the cap before anything reads it. A live run is in memory already.
     if (!controllers.has(`${name}/${runId}`)) {
+      // A durable resume starts the run again: nothing new while draining.
+      // Unpausing a live run is its own work going on, and is let through.
+      const draining = drainingResponse(c);
+      if (draining) return draining;
       const big = await logTooBig(name, runId);
       if (big) return c.json({ error: big }, 413);
     }
@@ -2679,6 +2797,21 @@ export async function createStrut<TServices = unknown>(
     try {
       await workspace.setWorkflowRunCap(name, cap);
       return c.json({ ok: true, workflow: name, maxRunCostUsd: cap });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 404);
+    }
+  });
+
+  // Disable or re-enable a workflow: a disabled one refuses every new run
+  // (`workflowDisabled`, src/workspace.ts) and holds its schedules.
+  // Metadata-only like the category — no version.
+  app.put("/workflows/:name/disabled", async (c) => {
+    const name = c.req.param("name");
+    const body = await c.req.json<{ disabled?: boolean }>().catch(() => ({}) as { disabled?: boolean });
+    if (typeof body.disabled !== "boolean") return c.json({ error: "disabled must be a boolean" }, 400);
+    try {
+      await workspace.setWorkflowDisabled(name, body.disabled);
+      return c.json({ ok: true, workflow: name, disabled: body.disabled });
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 404);
     }
@@ -3986,21 +4119,28 @@ export async function createStrut<TServices = unknown>(
       mcpOf: (workflow, runId) => store.getRunMcp(workflow, runId),
       stepFor: (type) => mcpStepDef(type, mcpRegistry),
       notify: (job, update) => ((services as Record<string, unknown>)["jobs"] as JobsCapability | undefined)?.notify?.(job, update),
+      ...(projectProposal ? { changed: projectProposal } : {}),
     });
   ownProposals.decide = decide;
 
   app.get("/proposals", async (c) => {
     const status = c.req.query("status");
     if (status !== undefined && !STATUSES.has(status)) return c.json({ error: `status must be one of ${[...STATUSES].join(", ")}` }, 400);
+    const limitQ = c.req.query("limit");
+    if (limitQ !== undefined && !/^[1-9]\d*$/.test(limitQ)) return c.json({ error: "limit must be a positive integer" }, 400);
+    const scope = await scopeOf(c);
+    const actor = await resolveActor(c);
+    // What this request may see is decided on the index, before the limit
+    // and before any file is read: a person token's poll reads its own.
     const proposals = await listProposals(proposalsDir, {
+      viewer: { scope, ...(actor ? { actor } : {}) },
+      ...(limitQ !== undefined ? { limit: Number(limitQ) } : {}),
       ...(c.req.query("job") !== undefined ? { job: c.req.query("job") } : {}),
       ...(c.req.query("session") !== undefined ? { session: c.req.query("session") } : {}),
       ...(c.req.query("runId") !== undefined ? { runId: c.req.query("runId") } : {}),
       ...(status !== undefined ? { status: status as ProposalStatus } : {}),
     });
-    const scope = await scopeOf(c);
-    const actor = await resolveActor(c);
-    return c.json({ proposals: proposals.filter((p) => visibleTo(scope, actor, p)) });
+    return c.json({ proposals });
   });
 
   // What happened to proposals after a cursor (plans/live-feeds.md §4):
@@ -4823,6 +4963,10 @@ export async function createStrut<TServices = unknown>(
   app.post("/steps/:type{.+}/run", async (c) => {
     const type = c.req.param("type");
     if (!registry[type]) return c.json({ error: `Step type "${type}" not found` }, 404);
+    // A step that only reads keeps answering while draining; anything else
+    // is new work.
+    const draining = registry[type]!.effect === "read" ? undefined : drainingResponse(c);
+    if (draining) return draining;
     const body = await c.req
       .json<{
         config?: Record<string, unknown>;
@@ -5022,6 +5166,7 @@ export async function createStrut<TServices = unknown>(
       body.job ? { id: body.job, ...(body.title ? { title: body.title } : {}) } : undefined,
     );
     if (extra?.origin === "peer") peerLaunched.add(controller);
+    launchedAs.set(controller, { ...(extra?.app ? { app: extra.app } : {}), ...(extra?.actor ? { actor: extra.actor } : {}) });
     const launchedAt = Date.now();
     const callback = extra?.callback;
     const mcp = extra?.mcp?.length ? extra.mcp : undefined;
@@ -5185,7 +5330,10 @@ export async function createStrut<TServices = unknown>(
     holder: (id) => sessions.holder(id),
     liveOn: (id) => [...(liveSessions.get(id) ?? [])],
     isLive: (workflow, runId) => controllers.has(`${workflow}/${runId}`),
-    getWorkflow: (name) => workspace.getWorkflow(name),
+    getWorkflow: async (name) => {
+      await assertWorkflowEnabled(workspace, name);
+      return workspace.getWorkflow(name);
+    },
     launch: (flow, run) =>
       launchDetached(
         flow,
@@ -5380,6 +5528,7 @@ export async function createStrut<TServices = unknown>(
       const flow = await workspace.getWorkflow(workflow).catch((e: unknown) => {
         throw new Error(`no_workflow: this strut server has no "${workflow}" workflow to run the job on (${(e as Error).message})`);
       });
+      await assertWorkflowEnabled(workspace, workflow);
       const url = await rootCallbackOf(from);
       const live = await rootJobCallbackOf(from);
       // The TURN this job belongs to (CALLBACKS.md §5): the root run the host
@@ -5601,15 +5750,30 @@ export async function createStrut<TServices = unknown>(
    *  for, before the run's `run.start` is in its log. */
   const scopedLaunches = new Map<string, { app: string; actor: string }>();
   /** Was the run launched by `by.app` for `by.actor`? The summary's stamp,
-   *  a live run's `run.start`, or the launch itself. For a first-party page:
-   *  is it the viewer's, from wherever it was launched? */
-  const ownRun = async (workflow: string, runId: string, by: RunCaller | undefined): Promise<boolean> => {
+   *  a live run's `run.start`, or the launch itself — before `run.start`
+   *  lands, a run launched elsewhere (`POST …/run`) by its controller's
+   *  `launchedAs`. For a first-party page: is it the viewer's, from wherever
+   *  it was launched? `summary` is the one a caller already read (null:
+   *  none), so it is not read twice. */
+  const ownRun = async (workflow: string, runId: string, by: RunCaller | undefined, summary?: RunSummary | null): Promise<boolean> => {
     const anyApp = isFirstParty(by?.app);
-    const launched = scopedLaunches.get(`${workflow}/${runId}`);
-    if (launched) return (anyApp || launched.app === by?.app?.name) && launched.actor === (by?.actor ?? "");
-    const stamp: { app?: AppRef; actor?: string } | null =
-      (await store.getRunSummary(workflow, runId)) ?? (await store.getRunEvents(workflow, runId)).find((e) => e.type === "run.start") ?? null;
-    return !!stamp && (anyApp || stamp.app?.name === by?.app?.name) && (stamp.actor ?? "") === (by?.actor ?? "");
+    const key = `${workflow}/${runId}`;
+    const launched = scopedLaunches.get(key);
+    if (launched && (anyApp || launched.app === by?.app?.name) && launched.actor === (by?.actor ?? "")) return true;
+    const live = controllers.get(key);
+    const stamp: { app?: AppRef; actor?: string; input?: unknown } | null =
+      (summary === undefined ? await store.getRunSummary(workflow, runId) : summary) ??
+      (await store.getRunStart(workflow, runId)) ??
+      (live ? launchedAs.get(live) : undefined) ??
+      null;
+    if (!launched && stamp && (anyApp || stamp.app?.name === by?.app?.name) && (stamp.actor ?? "") === (by?.actor ?? "")) return true;
+    // A first-party page also reads a turn of a conversation its viewer
+    // may read (one they are in, or a shared one: plans/jamie-app.md §5.2),
+    // whoever took the turn — its files, its reply.
+    const session = (stamp?.input as { session?: unknown } | undefined)?.session;
+    if (!anyApp || !by?.actor || typeof session !== "string") return false;
+    const rec = await conversations.record(session).catch(() => null);
+    return !!rec && (!!rec.shared || rec.viewers.includes(by.actor)) && rec.turns.some((t) => t.runId === runId);
   };
   /** `openFlow` for one run: a scoped caller's own runs only — any other is
    *  not there, as a run that does not exist is not. */
@@ -5640,15 +5804,19 @@ export async function createStrut<TServices = unknown>(
       const rows = q.workflow
         ? (await store.listRuns(q.workflow)).map((runId) => ({ workflow: q.workflow!, runId }))
         : await jobRunLines(q.job!);
+      const from = sinceMs(q.since);
       const out: RunListEntry[] = [];
-      for (const { workflow, runId } of rows) {
-        if (out.length >= limit) break;
+      for (const [read, { workflow, runId }] of rows.entries()) {
+        if (out.length >= limit || read >= RUN_LIST_SCAN_MAX) break;
+        // A workflow's ids are newest first: the first launched before
+        // `since` ends the list (a job's lines are in record order).
+        if (q.workflow && from !== undefined && (launchedAt({ runId }) ?? from) < from) break;
         const summary = await store.getRunSummary(workflow, runId);
         const row: RunListEntry & { jobTitle?: string } = summary
           ? listEntryOf(summary)
           : { runId, workflow, status: liveStatus(workflow, runId), ...liveJob(controllers.get(`${workflow}/${runId}`)), ...(q.workflow ? {} : { job: q.job }) } as RunListEntry;
         if (!matchesRunFilter(row, q)) continue;
-        if (scoped && !(await ownRun(workflow, runId, by))) continue;
+        if (scoped && !(await ownRun(workflow, runId, by, summary))) continue;
         const artifacts = summary ? await artifactRefs(runId, summary.output, summary.job).catch(() => undefined) : undefined;
         out.push({ ...row, ...(artifacts ? { artifacts } : {}) });
       }
@@ -5681,6 +5849,7 @@ export async function createStrut<TServices = unknown>(
     },
     async launch(q, by) {
       const { flow, scoped } = await openFlow(q.workflow, by);
+      await assertWorkflowEnabled(workspace, q.workflow);
       // Its params may narrow what its agents are granted, never widen it
       // (the meta/run-workflow rule).
       const widened = grantWidenedBy(flow, q.params ?? {}, registry);
@@ -5691,6 +5860,21 @@ export async function createStrut<TServices = unknown>(
       }
       const attachments = parseAttachments(q.attachments);
       if (attachments.length) requireRunFiles();
+      // A job turn's conversation (plans/jamie-app.md §5): strut's own app
+      // names one its viewer may continue (§2.2: their own, one they took a
+      // turn in, a shared one) — a captcha's answer, a job continued from a
+      // card — so the wake finds it. Never another person's, never a page
+      // a model wrote.
+      if (q.conversation !== undefined) {
+        if (!isFirstParty(by.app) || !by.actor) throw new Error("conversation: only strut's own app names the conversation a launch belongs to, for its viewer (plans/jamie-app.md §5)");
+        if (!(JOB_WORKFLOWS as readonly string[]).includes(flow.name)) throw new Error(`conversation names the conversation a JOB turn belongs to (${JOB_WORKFLOWS.join(", ")}), not a run of "${q.workflow}"`);
+        const problem = idProblem(q.conversation);
+        if (problem) throw new Error(`conversation "${q.conversation}" ${problem}`);
+        const own = q.conversation === by.actor || q.conversation.startsWith(`${by.actor}/`);
+        if (!own && (await conversations.mayContinue(q.conversation, by.actor)) !== true) {
+          throw new Error(`conversation_not_yours: "${q.conversation}" is not a conversation you may continue — your own (${by.actor}/…), one you took a turn in, or a shared one`);
+        }
+      }
       // A first-party page's turn may continue a conversation the viewer
       // is in (plans/jamie-app.md §2.2).
       const cont = isFirstParty(by.app) ? await continuesFor(flow, q.input, by.actor) : {};
@@ -5709,6 +5893,7 @@ export async function createStrut<TServices = unknown>(
           ...(q.params ? { params: q.params } : {}),
           ...(q.job ? { job: q.job } : {}),
           ...(q.job && q.title ? { title: q.title } : {}),
+          ...(q.conversation ? { conversation: q.conversation } : {}),
           // A first-party page's turn is the person's (plans/jamie-app.md
           // §3): strut is its host, so strut wakes it when its jobs end.
           ...(isFirstParty(by.app) ? { wake: true } : {}),
@@ -5781,6 +5966,10 @@ export async function createStrut<TServices = unknown>(
   };
   if (!(services as Record<string, unknown>)["runs"]) (services as Record<string, unknown>)["runs"] = runsCap;
   (services as Record<string, unknown>)["conversations"] ??= conversations;
+  // The model catalog (`GET /llm/models`), for the `llm/models` step: one
+  // list, one default, whether a route or a page reads it.
+  const llmModels = () => listModelOptions({ default: chatModel, secrets: secretsCap });
+  (services as Record<string, unknown>)["llmModels"] ??= llmModels;
 
   // Automations (plans/automations.md): scheduled launches go through the
   // same detached path as `POST /run`, stamped with their automation.
@@ -5791,6 +5980,7 @@ export async function createStrut<TServices = unknown>(
     launch: (flow, input, automation, callback) =>
       launchDetached(flow, { input }, { origin: "schedule", automation, ...(callback ? { callback } : {}) }),
     isInFlight: (workflow, runId) => controllers.has(`${workflow}/${runId}`),
+    draining: () => drain.refusal(),
   });
   // The `automation/*` steps' door (src/steps/lib/automation/), unless the
   // consumer's bag brought its own: an automation made from a turn reports
@@ -5977,6 +6167,8 @@ export async function createStrut<TServices = unknown>(
   // 202 carries `callback: true` — the host's proof this server honors it.
   app.post("/workflows/:name/run", async (c) => {
     const name = c.req.param("name");
+    const draining = drainingResponse(c);
+    if (draining) return draining;
     const scope = await scopeOf(c);
     const peer = isPeerScope(scope);
     let body = await c.req.json<RunBody>();
@@ -6007,6 +6199,8 @@ export async function createStrut<TServices = unknown>(
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 404);
     }
     if (peer && !opensTo(flow.peer, scope)) return c.json({ error: notForPeers(name, flow.peer) }, 403);
+    const disabled = await workflowDisabled(workspace, name);
+    if (disabled) return c.json({ error: disabled }, 409);
     const actor = await resolveActor(c);
     // A person's turn may continue a conversation they are in
     // (plans/jamie-app.md §2.2).
@@ -6039,6 +6233,8 @@ export async function createStrut<TServices = unknown>(
 
   app.post("/workflows/:name/:version/run", async (c) => {
     const { name, version } = c.req.param();
+    const draining = drainingResponse(c);
+    if (draining) return draining;
     const scope = await scopeOf(c);
     const peer = isPeerScope(scope);
     let body = await c.req.json<RunBody>();
@@ -6071,6 +6267,8 @@ export async function createStrut<TServices = unknown>(
     // The version launched must say it, not the active one: an older
     // version is not open to peers because a newer one is.
     if (peer && !opensTo(flow.peer, scope)) return c.json({ error: notForPeers(`${name}@${version}`, flow.peer) }, 403);
+    const disabled = await workflowDisabled(workspace, name);
+    if (disabled) return c.json({ error: disabled }, 409);
     const actor = await resolveActor(c);
     const cont = scope === "peer:person" ? await continuesFor(flow, body.input, actor) : {};
     if ("refused" in cont) return c.json({ error: cont.refused }, 403);
@@ -6171,6 +6369,7 @@ export async function createStrut<TServices = unknown>(
       startTurn: (chatId, turn, modelMessages, trigger) =>
         launchChatTurn(chatId, turn, modelMessages, trigger),
     });
+    liveChats = () => notifier.liveChats();
 
     // The verify pass settled for a run this chat launched: wake it with the
     // ledger (plans/claims.md §5; ai/verify-waker.ts). Queue-and-drain applies
@@ -6807,7 +7006,10 @@ export async function createStrut<TServices = unknown>(
       /** A chat started over MCP: links in its builder's tool results are
        *  absolute on this base (`ChatMeta.publicUrl`, stamped once). */
       publicUrl?: string;
-    }): Promise<{ chatId: string; turn: number; at: number } | { error: string; code: "not_found" | "busy" }> {
+    }): Promise<{ chatId: string; turn: number; at: number } | { error: string; code: "not_found" | "busy" | "draining" }> {
+      // A person's message is new work: none while draining (src/drain.ts).
+      const draining = drain.refusal();
+      if (draining) return { error: draining, code: "draining" };
       let chatId = args.chatId;
       let meta = chatId ? await chatStore.getMeta(chatId) : null;
       if (chatId && !meta) return { error: `Chat "${chatId}" not found`, code: "not_found" };
@@ -6956,7 +7158,10 @@ export async function createStrut<TServices = unknown>(
         ...(callback !== undefined ? { callback } : {}),
         ...(actor ? { actor } : {}),
       });
-      if ("error" in sent) return c.json({ error: sent.error }, sent.code === "not_found" ? 404 : 409);
+      if ("error" in sent) {
+        if (sent.code === "draining") return c.json({ error: sent.error }, 503, { "retry-after": "60" });
+        return c.json({ error: sent.error }, sent.code === "not_found" ? 404 : 409);
+      }
 
       // `callback: true` is the host's proof this server honors callbacks (an
       // older one ignores the field and would never call back).
@@ -7026,6 +7231,10 @@ export async function createStrut<TServices = unknown>(
 
     /** The chat's open elicitation `:eid`, or the error response. */
     async function openElicitationOf(c: Context): Promise<{ meta: ChatMeta; open: ElicitationRecord } | Response> {
+      // An answer starts the chat's next turn: while draining the question
+      // stays open, to be answered once the server is back.
+      const draining = drainingResponse(c);
+      if (draining) return draining;
       const chatId = c.req.param("chatId") ?? "";
       const eid = c.req.param("eid") ?? "";
       const meta = await chatStore.getMeta(chatId);
@@ -7310,7 +7519,7 @@ export async function createStrut<TServices = unknown>(
 
   app.get("/llm/models", async (c) => {
     try {
-      return c.json(await listModelOptions({ default: chatModel, secrets: secretsCap }));
+      return c.json(await llmModels());
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
     }
@@ -7325,12 +7534,50 @@ export async function createStrut<TServices = unknown>(
   app.get("/health", (c) => {
     if (!carriesApiKey(c)) return c.json({ ok: true });
     const wg = workspace.graph;
+    const draining = drain.current();
     return c.json({
       ok: true,
       dataDir,
       stepCount: Object.keys(registry).length,
       workspace: { backend: wg?.kind ?? "fs", ...(wg?.kind === "ladybug" ? { path: wg.cfg.path } : {}) },
+      ...(draining ? { drain: { ...draining, idle: drainView().idle } } : {}),
     });
+  });
+
+  // ── Drain (src/drain.ts) ─────────────────────────────────────────────────
+
+  // What an updater or a backup turns on before it restarts this process:
+  // nothing new starts, what runs finishes, and `idle` says when nothing is
+  // left. A paused run waits on a person, not on the process, so it is not
+  // waited on (a restart leaves it paused). The writes are a person's or
+  // the deployment's: a peer's credential is refused by the gate.
+  function drainView() {
+    const state = drain.current();
+    const running = [...controllers.values()].filter((ctl) => ctl.state !== "paused");
+    const chats = liveChats();
+    return {
+      draining: !!state,
+      ...(state ?? {}),
+      idle: running.length === 0 && chats.length === 0,
+      active: { runs: running.length, chats: chats.length },
+      // The top-level runs it waits on (the first 50), so a person sees what.
+      runs: running
+        .filter((ctl) => !ctl.parent)
+        .slice(0, 50)
+        .map((ctl) => ({ workflow: ctl.workflow, runId: ctl.runId, state: ctl.state })),
+    };
+  }
+  app.get("/drain", (c) => c.json(drainView()));
+  app.put("/drain", async (c) => {
+    const parsed = parseDrainBody(await c.req.json().catch(() => ({})));
+    if ("error" in parsed) return c.json({ error: parsed.error }, 400);
+    const state = drain.set(parsed);
+    console.log(`[drain] on: ${state.reason}${state.until ? ` (until ${state.until})` : ""}`);
+    return c.json(drainView());
+  });
+  app.delete("/drain", (c) => {
+    if (drain.lift()) console.log("[drain] lifted");
+    return c.json(drainView());
   });
 
   // ── Speech, both ways (src/audio) ──────────────────────────────────────
@@ -7408,6 +7655,7 @@ export async function createStrut<TServices = unknown>(
           ? await workspace.getWorkflowVersion(workflow, runOpts.version)
           : await workspace.getWorkflow(workflow)
         : workflow;
+    await assertWorkflowEnabled(workspace, flow.name);
 
     // Generate the runId here (rather than letting runWorkflow default it) so
     // the run can be registered as in-flight — otherwise nested runs (e.g. the
@@ -7498,7 +7746,15 @@ export async function createStrut<TServices = unknown>(
     return bound;
   }
 
+  /** The boot scan (below): a closed strut neither starts it nor leaves it
+   *  writing into its data dir (`boot.json`) after `close()`. */
+  let bootTimer: ReturnType<typeof setTimeout> | undefined;
+  let bootScan: Promise<unknown> | undefined;
+
   async function close(): Promise<void> {
+    if (bootTimer) clearTimeout(bootTimer);
+    bootTimer = undefined;
+    await bootScan;
     automations.stop();
     // Every feed read still waiting answers now (plans/live-feeds.md).
     graphChanges?.close();
@@ -7567,11 +7823,14 @@ export async function createStrut<TServices = unknown>(
     }
   };
   if (autoResumeRuns || autoResumeChats) {
-    const timer = setTimeout(() => {
-      if (autoResumeRuns) void bootResumeRuns().catch((err) => console.error(`[auto-resume] scan failed:`, err));
-      if (autoResumeChats) void autoResumeStaleChats(autoResumeOpts).catch((err) => console.error(`[auto-resume] chat scan failed:`, err));
+    bootTimer = setTimeout(() => {
+      bootTimer = undefined;
+      bootScan = Promise.all([
+        autoResumeRuns ? bootResumeRuns().catch((err) => console.error(`[auto-resume] scan failed:`, err)) : undefined,
+        autoResumeChats ? autoResumeStaleChats(autoResumeOpts).catch((err) => console.error(`[auto-resume] chat scan failed:`, err)) : undefined,
+      ]);
     }, autoResumeOpts.delayMs ?? 3000);
-    timer.unref?.();
+    bootTimer.unref?.();
   }
 
   return {

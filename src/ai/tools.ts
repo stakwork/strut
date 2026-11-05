@@ -8,7 +8,7 @@ import { runStep, runStepId, cassettePath } from "../run-step.js";
 import { stepHashesFor } from "../closure.js";
 import { mergeClaimSpecs, toSubjectRef, type ClaimActor } from "../claims-authoring.js";
 import { checkSpecSchema, claimsArgSchema, subjectSchema } from "../claims-schemas.js";
-import { claimsBlockOf, type PublishOptions } from "../workspace.js";
+import { claimsBlockOf, workflowDisabled, type PublishOptions } from "../workspace.js";
 import { automationDraftSchema, automationInputSchema, triggerSchema } from "../automations.js";
 import { ledgerIsEmpty, subjectsOfFlow } from "../ledger.js";
 import { generateRunId, stepRunKey } from "../store.js";
@@ -1004,6 +1004,11 @@ export function buildTools(deps: AiDeps): ToolSet {
           };
           return;
         }
+        const disabled = await workflowDisabled(deps.workspace, name);
+        if (disabled) {
+          yield { ok: false, error: disabled };
+          return;
+        }
 
         // Generate the runId here (not in the runner) so the detached stub
         // can report it before the run finishes.
@@ -1011,7 +1016,15 @@ export function buildTools(deps: AiDeps): ToolSet {
         const startedAt = Date.now();
         // Register with the host's controller registry (when wired) so the
         // run is cancellable/pausable and lists as live from launch.
-        const tracked = deps.trackRun?.(name, runId);
+        // Registration refuses a new run while the deployment drains
+        // (src/drain.ts): the model reads why.
+        let tracked: ReturnType<NonNullable<AiDeps["trackRun"]>> | undefined;
+        try {
+          tracked = deps.trackRun?.(name, runId);
+        } catch (err) {
+          yield { ok: false, error: err instanceof Error ? err.message : String(err) };
+          return;
+        }
         // This chat wants the verdict: the verify pass that follows the run
         // wakes it with a [verify-notification].
         if (verifier) deps.watchVerify?.(runId);

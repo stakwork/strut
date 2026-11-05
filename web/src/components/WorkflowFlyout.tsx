@@ -52,6 +52,10 @@ export function WorkflowFlyout(props: {
   /** Delete the workflow — the caller owns selection + refresh. Rejects with
    *  the server's reason (a run still in flight), shown in the footer. */
   onDelete: () => Promise<void>;
+  /** Disabled state + toggle: a disabled workflow refuses every new run and
+   *  holds its schedules. The toggle rejects with the server's reason. */
+  disabled?: boolean;
+  onSetDisabled?: (disabled: boolean) => Promise<void>;
   // Params
   params: Record<string, unknown>;
   onParamsChange: (next: Record<string, unknown>) => void;
@@ -86,6 +90,8 @@ export function WorkflowFlyout(props: {
 }) {
   const [editing, setEditing] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [toggling, setToggling] = useState(false);
+  const [toggleError, setToggleError] = useState<string | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [stamping, setStamping] = useState(false);
   const [stampError, setStampError] = useState<string | null>(null);
@@ -112,6 +118,17 @@ export function WorkflowFlyout(props: {
   const ok = props.runs.filter((r) => r.status === "success").length;
   const failed = props.runs.filter((r) => r.status === "error").length;
 
+  const toggle = async () => {
+    setToggling(true);
+    setToggleError(null);
+    try {
+      await props.onSetDisabled!(!props.disabled);
+    } catch (err) {
+      setToggleError(errorMessage(err));
+    } finally {
+      setToggling(false);
+    }
+  };
   const del = async () => {
     setDeleting(true);
     setDeleteError(null);
@@ -194,6 +211,7 @@ export function WorkflowFlyout(props: {
       {props.tab === "automations" && (
         <AutomationsPanel
           workflow={props.workflow}
+          workflowDisabled={props.disabled}
           loadBindings={props.loadBindings}
           onOpenRun={props.onOpenRun}
           onChanged={props.onAutomationsChanged}
@@ -220,7 +238,13 @@ export function WorkflowFlyout(props: {
             {ok > 0 && <span class="badge badge-ok">{ok} ok</span>}
             {failed > 0 && <span class="badge badge-danger">{failed} failed</span>}
           </span>
-          {deleteError && <span class="flyout-footer-error">{deleteError}</span>}
+          {(deleteError ?? toggleError) && <span class="flyout-footer-error">{deleteError ?? toggleError}</span>}
+          {props.onSetDisabled && (
+            <ConfirmButton class="btn" tone="primary" ask={!props.disabled} disabled={toggling}
+              label={props.disabled ? "Enable" : "Disable"}
+              note={`Disable "${props.workflow}"? Every new run is refused, from Run, its schedules, jobs, agents and workflows that call it, until you enable it. Runs already going finish.`}
+              confirmLabel="Disable" onConfirm={() => void toggle()} />
+          )}
           <ConfirmButton label="Delete workflow" note={`Delete "${props.workflow}"? Every version, schedule and run goes with it.`}
             confirmLabel="Delete" disabled={deleting} onConfirm={del} />
         </div>
