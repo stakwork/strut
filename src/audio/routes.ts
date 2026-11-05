@@ -14,8 +14,9 @@ import { SttUnavailableError, type SttService, type SttStreamOptions } from "./s
 import { SpeakRequestError, TtsUnavailableError, type Speech, type TtsService } from "./tts.js";
 
 export interface AudioRoutesOptions {
-  /** Dictation's vocabulary (memory/lexicon), read per transcription; absent or failing: no rewrite. */
-  lexicon?: () => Promise<Lexicon>;
+  /** Dictation's vocabulary (memory/lexicon), read per transcription; absent, undefined (a host that
+   *  keeps none) or failing: no rewrite, no fixer run. */
+  lexicon?: () => Promise<Lexicon | undefined>;
 }
 
 /** The longest a rewrite that missed its time keeps the fixer out of the next transcripts. */
@@ -93,7 +94,7 @@ export function audioRoutes(app: Hono, stt: SttService, opts: AudioRoutesOptions
     try {
       const f = late ? null : await stt.fixer?.current();
       if (f) {
-        // A cold model starts loading here; until it answers in time, the next ones are fixed without it.
+        // `listen()` starts the model loading (`warm`); one still cold answers late, and the next ones are fixed without it.
         const p = rewrite(result.text, lexicon, f);
         out = await within(p, FIX_TIMEOUT_MS);
         if (out) fixer = f.id;

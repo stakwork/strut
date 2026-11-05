@@ -273,7 +273,7 @@ export interface PublicSurfaceService {
   step(type: string): Promise<boolean>;
   conceptTree(): Promise<PublicConceptTree>;
   /** The trees under these roots, whether or not they are public — what
-   *  the Public view dialog shows before a root is added (its page count). */
+   *  the Publish dialog's Public view tab shows before a root is added (its page count). */
   walk(roots: string[]): Promise<PublicConceptTree>;
   /** The ref_ids a run's steps reported (`step.end.nodes`), this graph's only. */
   runNodes(workflow: string, runId: string): Promise<Set<string>>;
@@ -575,7 +575,7 @@ export function visitorRefusal(
   if (type.startsWith("graph/")) return `"${type}" is not available in the public view (the graph reads are ${[...VISITOR_GRAPH_READS].join(", ")})`;
   if (type.startsWith("job/") || type.startsWith("app/")) return `"${type}" is not available in the public view`;
   if (entry.reads?.includes(type)) return null;
-  return `"${type}" is not one of this app's public reads — a person adds it in the Public view dialog`;
+  return `"${type}" is not one of this app's public reads — a person adds it in the Publish dialog's Public view tab`;
 }
 
 /** Fields of a run record a visitor never reads (`PRIVATE_RUN_FIELDS`), and

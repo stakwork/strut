@@ -43,6 +43,11 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v4
 
@@ -60,11 +65,19 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - uses: docker/metadata-action@v5
+        id: meta
+        env:
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest
+        with:
+          images: ghcr.io/stakwork/strut
+
       # provenance/sbom off: a plain two-platform index with no attestation
       # manifests, like the browser image and stakgraph's images. The arm64
       # half builds under QEMU, hence the longer timeout; the gha cache keeps
       # the apt/pip/yarn layers between pushes.
       - uses: docker/build-push-action@v6
+        id: build
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -79,3 +92,12 @@ jobs:
           cache-to: type=gha,mode=max
           provenance: false
           sbom: false
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
+
+      # gh attestation verify oci://ghcr.io/stakwork/strut@sha256:<digest> --owner stakwork
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ghcr.io/stakwork/strut
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true

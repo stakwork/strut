@@ -1,12 +1,8 @@
-// The memory's vocabulary: entity types and fact predicates, kept as rows
-// in the Ontology table so it grows without code changes. The core set is
-// seeded once (_ontology-seed.ts); anything new arrives as `proposed` for a
-// janitor or the user to merge or promote. Edge tables never change: a new
-// kind of relationship is a new predicate.
-//
-// Behaviour is data too: a type's `parent`, `naming` and `role` decide how
-// its entities are matched and protected, read through `vocabulary()`. No
-// step names a type or predicate.
+// The old memory's vocabulary (_db.ts): entity types and fact predicates,
+// rows of its Ontology table. Read by graph/import-memory. A file an older
+// strut wrote is seeded up to the last core set (_ontology-seed.ts) on the
+// copy that is read, so its roles (the user type, the mishearing and name
+// predicates) are there to read. No code names a type or predicate.
 import type { Query } from "./_db.js";
 
 type Kind = "entity_type" | "predicate";
@@ -63,19 +59,11 @@ export async function seed(query: Query, terms: (Term & { previous?: string; pre
   }
   invalidate(query);
   const users = (await vocabulary(query)).terms.filter((t) => t.kind === "entity_type" && t.role === "user");
-  if (users.length > 1) console.warn(`memory: more than one type has role user (${users.map((t) => t.name).join(", ")}); ${users[0]!.name} is the user`);
+  if (users.length > 1) console.warn(`old memory: more than one type has role user (${users.map((t) => t.name).join(", ")}); ${users[0]!.name} is the user`);
 }
 
-export const snake = (s: string) =>
+const snake = (s: string) =>
   s.trim().replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
-const pascal = (s: string) => snake(s).split("_").filter(Boolean).map((w) => w[0]!.toUpperCase() + w.slice(1)).join("");
-
-export type Resolved = { term: Term; given: string; proposed: boolean };
-
-/** The name a new term of this kind would be stored under; "" when `given` has no letters or digits. */
-export function termName(kind: Kind, given: string): string {
-  return kind === "entity_type" ? pascal(given) : snake(given);
-}
 
 export type Vocabulary = {
   /** Every row, active before proposed, then by name. */
@@ -121,19 +109,11 @@ function vocabularyOf(terms: Term[]): Vocabulary {
   };
 }
 
-// One read of every row (tens of them) per query function, kept until an
-// Ontology write through it. The database's read connection keeps its copy
-// until a transaction that wrote Ontology commits (memoryWrite); a
-// transaction loads its own, so it sees its own proposals and no reader sees
-// them before they commit. Kept on globalThis like the handle, so a
-// re-imported module shares it.
-const cache = ((globalThis as Record<symbol, unknown>)[Symbol.for("strut.memory.vocabulary")] ??= {
-  loaded: new WeakMap<Query, Promise<Vocabulary>>(),
-  written: new WeakSet<Query>(),
-}) as { loaded: WeakMap<Query, Promise<Vocabulary>>; written: WeakSet<Query> };
+// One read of every row (tens of them) per query function, until a seed.
+const cache = new WeakMap<Query, Promise<Vocabulary>>();
 
 export function vocabulary(query: Query): Promise<Vocabulary> {
-  let v = cache.loaded.get(query);
+  let v = cache.get(query);
   if (!v) {
     v = query(
       `MATCH (o:Ontology)
@@ -145,55 +125,14 @@ export function vocabulary(query: Query): Promise<Vocabulary> {
       ...r, subject_types: r.subject_types ?? [], object_types: r.object_types ?? [], aliases: r.aliases ?? [],
       parent: r.parent ?? "", naming: r.naming ?? "", role: r.role ?? "",
     }) as Term)));
-    cache.loaded.set(query, v);
+    cache.set(query, v);
     const loaded = v;
-    v.catch(() => { if (cache.loaded.get(query) === loaded) cache.loaded.delete(query); });
+    v.catch(() => { if (cache.get(query) === loaded) cache.delete(query); });
   }
   return v;
 }
 
-/** Drops the vocabulary cached for `query`; call after any Ontology write made through it. */
-export function invalidate(query: Query): void {
-  cache.loaded.delete(query);
-  cache.written.add(query);
-}
-
-/** Whether an Ontology write was made through `query`: memoryWrite asks of its transaction. */
-export const wroteOntology = (query: Query): boolean => cache.written.has(query);
-
-export async function lookup(query: Query, kind: Kind, given: string): Promise<Term | undefined> {
-  return (await vocabulary(query)).term(kind, given);
-}
-
-/**
- * As `lookup`, else a new `proposed` term, written now so the next use
- * finds it. `context` fills a proposed predicate's subject and object types.
- * A proposed term's parent, naming and role are left unset (NULL), so it
- * behaves as the defaults and a later seed of the same name can fill them.
- */
-export async function resolve(
-  query: Query, kind: Kind, given: string, by: string,
-  context: { subject?: string; object?: string } = {},
-): Promise<Resolved> {
-  const found = await lookup(query, kind, given);
-  if (found) return { term: found, given, proposed: false };
-  const name = termName(kind, given);
-  if (!name) throw new Error(`invalid_input: ${kind === "entity_type" ? "type" : "predicate"} ${JSON.stringify(given)} has no letters or digits`);
-  const base = { kind, name, description: "", status: "proposed" as const, aliases: [], parent: "", naming: "", role: "" };
-  const term: Term = kind === "entity_type"
-    ? { ...base, cardinality: "", subject_types: [], object_types: [] }
-    : { ...base, cardinality: "many", subject_types: context.subject ? [context.subject] : [], object_types: context.object ? [context.object] : [] };
-  await query(MERGE, { key: `${kind}:${term.name}`, ...term, parent: null, naming: null, role: null, previous: null, previousRole: null, by, now: Date.now() });
-  invalidate(query);
-  return { term, given, proposed: true };
-}
-
-/** A predicate's declared types, as a note when a fact does not fit them. A type fits when it or an ancestor is listed. */
-export function fitNote(vocab: Vocabulary, predicate: Term, subject: string, object?: string): string | undefined {
-  const fits = (allowed: string[], type?: string) =>
-    !type || allowed.length === 0 || allowed.includes("*") || [type, ...vocab.ancestors(type)].some((t) => allowed.includes(t));
-  if (predicate.status !== "active") return undefined;
-  if (!fits(predicate.subject_types, subject)) return `${predicate.name} usually starts from ${predicate.subject_types.join(" or ")}, not ${subject}.`;
-  if (!fits(predicate.object_types, object)) return `${predicate.name} usually points at ${predicate.object_types.join(" or ")}, not ${object}.`;
-  return undefined;
+/** Drops the vocabulary cached for `query`. */
+function invalidate(query: Query): void {
+  cache.delete(query);
 }

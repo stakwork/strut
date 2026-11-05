@@ -83,6 +83,31 @@ describe("DictationFixer", () => {
     assert.equal(fixers.active, null);
   });
 
+  it("warm: starts the picked model loading once without waiting, and a failed load is one log line", async (t) => {
+    const warns = t.mock.method(console, "warn", () => {});
+    const spec = (ready: string) => (m: { path: string }) => {
+      loads++;
+      return { module: FAKE.replace(encodeURIComponent("ready: async () => {}"), encodeURIComponent(ready)), factory: "make", options: { path: m.path, yes: 1 } };
+    };
+    let loads = 0;
+    const ok = new DictationFixer({ model: async () => ({ id: "qwen3-1.7b-q4", path: "/m/large.gguf" }), spec: spec("ready: async () => {}") });
+    const warming = ok.warm();
+    assert.equal(ok.active, null); // returned before loading: the pick is still being read
+    await warming;
+    assert.deepEqual([loads, ok.active], [1, "qwen3-1.7b-q4"]);
+    await ok.close();
+
+    const none = new DictationFixer({ model: async () => null, spec: spec("ready: async () => {}") });
+    await none.warm();
+    assert.deepEqual([loads, none.active], [1, null]);
+
+    const bad = new DictationFixer({ model: async () => ({ id: "qwen3-1.7b-q4", path: "/m/x.gguf" }), spec: spec("ready: async () => { throw new Error('no metal') }") });
+    await bad.warm();
+    assert.equal(warns.mock.callCount(), 1);
+    assert.match(String(warns.mock.calls[0]!.arguments[0]), /did not preload: .*no metal/);
+    await bad.close();
+  });
+
   it("within: the value in time, else undefined while the work goes on", async () => {
     assert.equal(await within(Promise.resolve(1), 50), 1);
     assert.equal(await within(sleep(200).then(() => 1), 20), undefined);

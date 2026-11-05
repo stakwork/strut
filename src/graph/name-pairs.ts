@@ -1,7 +1,7 @@
 /**
  * Which two named nodes may be one thing saved twice: the pair rules
- * memory/duplicates offers (`src/steps/lib/memory/duplicates.ts`) and the
- * graph's merge holds the janitor to (`merge.ts`). Pure: names in, pairs out.
+ * graph/duplicates offers and the graph's merge holds the janitor to
+ * (`merge.ts`). Ported from the retired memory/duplicates. Pure: names in, pairs out.
  */
 import { foldText } from "./world-time.js";
 
@@ -51,7 +51,7 @@ export function named(side: Side, aliases: readonly string[]): Named {
  *  person holding one of `userNames` that is a full name (score 100, the
  *  only pair with the user in it), then every other pair by shared name
  *  (90, 80 across types) or, between people, by first-name form. Shared by
- *  memory/duplicates and the graph's merge (`src/graph/merge.ts`). */
+ *  graph/duplicates and the graph's merge (`src/graph/merge.ts`). */
 export function pairsOf(entities: Named[], isUser: (e: Named) => boolean, userNames: Iterable<string>, isPerson: (e: Named) => boolean): Candidate[] {
   const pairs = new Map<string, Candidate>();
   const offer = (a: Side, b: Side, score: number, reason: string) => {

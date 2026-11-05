@@ -936,8 +936,8 @@ carry absolute links too.
 | `list_runs` | `workflow`, `limit?`, `status?`, `since?` (ISO) | `{ workflow, runs: [{ runId, status, startedAt, durationMs?, cost?, modelCalls?, origin? \| actor?, error?, job?, artifacts?, ui }], total }` — `artifacts` on a successful run, as absolute links |
 | `get_run` | `workflow`, `runId`, `fields?`, `files?`, `wait?` | `{ workflow, runId, status, startedAt, finishedAt, durationMs, cost?, error?, artifacts?, input, output, omitted?, files?, hint?, ui }`. Every top-level `output` field over 2 000 chars is HELD BACK in place as `{ $omitted: { chars, kind, preview } }` and named in `omitted`; `fields` includes the named ones whole (cut at 50 000 with a note; a non-object output is the one field `output`). `files: true` lists every file under the run's artifact directory (or its job's) with a tokened link. A run still going is `{ status: "running", hint }` — `wait` holds for it. No step tree: a failing run is debugged by asking the builder |
 | `run_workflow` | `name`, `input?`, `params?`, `version?` | the builder's own `run_workflow` — its launch, detach and links — with `output` trimmed like `get_run`'s (+ `omitted`, `hint`). A run still going after the wait window (`STRUT_CHAT_RUN_WAIT_MS`) is `{ status: "running", detached: true, runId }`: poll `get_run` with `wait` |
-| `search_packages` | `query?` (empty lists everything), `limit?` (30, ≤ 200) | §16's `PackageSearch` — `{ packages: [IndexHit & { index }], peers, errors }`, each hit with its `detail` (the apps, counts, secrets, `can`) — plus `install`: where a PERSON installs (the UI's Packages dialog, or `<base>/?install=<name>`). The indexes this strut follows; none followed → empty lists, no error |
-| `get_package` | `package` (publisher/name), `index?` | the package's page from the index that lists its publisher (§16's `IndexPackage` + `index`), as a model reads it: `detail.readme` cut at 12 000 chars, the Concept pages' `docs` left out; plus `ui` (`<base>/?install=<name>`, the Packages dialog on the name) and `install`. `{ error }` with the code first: `package_not_listed` (no followed index lists the publisher), `package_not_found` (listed, but no public catalog has it), `package_index_none` (this strut follows no index), `package_index_unknown` / `package_index_unreachable` |
+| `search_packages` | `query?` (empty lists everything), `limit?` (30, ≤ 200) | §16's `PackageSearch` — `{ packages: [IndexHit & { index }], peers, errors }`, each hit with its `detail` (the apps, counts, secrets, `can`) — plus `install`: where a PERSON installs (the UI's Publish dialog, its Packages tab, or `<base>/?install=<name>`). The indexes this strut follows; none followed → empty lists, no error |
+| `get_package` | `package` (publisher/name), `index?` | the package's page from the index that lists its publisher (§16's `IndexPackage` + `index`), as a model reads it: `detail.readme` cut at 12 000 chars, the Concept pages' `docs` left out; plus `ui` (`<base>/?install=<name>`, the Publish dialog's Packages tab on the name) and `install`. `{ error }` with the code first: `package_not_listed` (no followed index lists the publisher), `package_not_found` (listed, but no public catalog has it), `package_index_none` (this strut follows no index), `package_index_unknown` / `package_index_unreachable` |
 
 `did` — what a turn changed, folded from the builder's tool calls by tool
 name (`src/chat-view.ts`; never inferred from prose): `workflows: [{ name,
@@ -1386,7 +1386,8 @@ the releases and channels). It reads only `/index/catalog`,
 without the index role it says so. Nothing on it installs: **Install into
 your strut** is a link INTO the visitor's own strut —
 `<their strut>/?install=<publisher/name>&index=<the index key>&index_url=<its catalog URL>`
-— where the shell opens the Packages dialog's Find on that name, offers
+— where the shell opens the Publish dialog's Packages tab, Find, on that
+name, offers
 to FOLLOW the index first when the strut does not yet (`PUT
 /packages/indexes/:id` with the link's key, the id the index's host), and
 installs on a tap through the followed card, so the key pinned is the
@@ -1966,7 +1967,7 @@ and `POST /mcp` serves `search_packages` / `get_package` over the same
 capability (§11.1). Every one is `effect: "read"`, and every description
 says installing is the PERSON's decision: an agent that holds
 `package/install` (the row above) proposes it, any other tells them the
-name — the Packages dialog, or the store's Install link:
+name — the Publish dialog's Packages tab, or the store's Install link:
 
 | Step | Input | Output |
 | ---- | ----- | ------ |
@@ -2354,13 +2355,14 @@ publish and after a channel move.
 ## 17. The public view — what anyone may read (`plans/public-surface.md`)
 
 A person chooses what this strut server shows anyone, live and read-only —
-its PUBLIC VIEW (not a publish: nothing is copied or versioned, and the
-Packages dialog's **Make public** is the package catalog's, §16):
+its PUBLIC VIEW (not a copy: nothing is copied or versioned, and the
+Packages tab's **Make public** is the package catalog's, §16):
 Concept roots (each root and every page under it by `PARENT_OF`),
 workflows (with or without their runs), steps, node types, and apps.
 Everything else stays behind the key. The record is one file,
 `<dataDir>/public.json` (`src/public-surface.ts`); nothing public until
-someone puts it there. The UI's door is the topbar's **Public view** dialog.
+someone puts it there. The UI's door is the topbar's **Publish** dialog, its
+**Public view** tab (beside **Packages**).
 
 ### 17.1 The record — `/public-view` (a person, behind the key)
 

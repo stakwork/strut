@@ -1,7 +1,6 @@
-// A plain ustar archive of regular files: what a memory snapshot
-// (steps/lib/memory/_snapshot.ts) and a package archive (packages/archive.ts)
-// are. Readable with `tar xzf`, and read back here with nothing but regular
-// files, each named once. The reader checks the format only: which names are
+// A plain ustar archive of regular files: what a package archive
+// (packages/archive.ts) is. Readable with `tar xzf`, and read back here with
+// nothing but regular files, each named once. The reader checks the format only: which names are
 // allowed, and where they may land, is the caller's.
 
 /** Where ustar splits a name too long for its 100-byte field: a prefix of up

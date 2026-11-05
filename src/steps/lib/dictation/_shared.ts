@@ -3,16 +3,16 @@
 // discovery. A client only sends what it saw; every judgement is strut's.
 import { z } from "zod";
 import type { StepContext } from "../../../core.js";
-import { learnInput, lexiconFrom, undoIds, type Lexicon } from "../../../audio/lingo.js";
-import lexiconStep from "../memory/lexicon.js";
-import remember from "../memory/remember.js";
-import { graphLearn, onGraph } from "./_graph.js";
+import { lexiconFrom, type Lexicon } from "../../../audio/lingo.js";
+import { graphLearn, graphLexicon, onLadybug } from "./_graph.js";
 
-export { UNDONE } from "../memory/lexicon.js";
+export { UNDONE } from "./_graph.js";
 
-/** Dictation's vocabulary as memory/lexicon reads it now. */
+/** Dictation's vocabulary as memory/lexicon reads it now: none on a graph
+ *  that is not a Ladybug one (a Neo4j deployment keeps no vocabulary). */
 export async function readLexicon(ctx: StepContext<unknown>): Promise<Lexicon> {
-  return lexiconFrom(await lexiconStep.run({}, ctx));
+  if (!onLadybug(ctx)) return { entries: [], undone: [] };
+  return lexiconFrom(await graphLexicon(ctx));
 }
 
 export const Learned = z.object({
@@ -26,12 +26,7 @@ export type LearnedT = z.infer<typeof Learned>;
  *  entity that writes it or a new word; with `term`, the new word alone; with
  *  `name`, on the person of that full name (made when nothing writes it). */
 export async function learn(heard: string, written: string, lexicon: Lexicon, ctx: StepContext<unknown>, term = false, name?: string): Promise<LearnedT> {
-  if (onGraph(ctx)) return { heard, written, undo: await graphLearn(ctx, heard, written, lexicon, term, name) };
-  const input = learnInput(heard, written, lexicon, term, name);
-  if (!input) return { heard, written, undo: [] };
-  const out = await remember.run(remember.input.parse(input), ctx);
-  if (out?.error) throw new Error(`dictation: ${out.error}`);
-  return { heard, written, undo: undoIds(out) };
+  return { heard, written, undo: await graphLearn(ctx, heard, written, lexicon, term, name) };
 }
 
 /** One thing dictation changed, as dictation/changes-since reports it and

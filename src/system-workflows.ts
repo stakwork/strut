@@ -101,17 +101,13 @@ export async function installSystemWorkflow(
   return { version: label, action, automation: automation.id };
 }
 
-/** Install every system workflow strut ships: the boot step `createStrut` runs.
- *  With `memory: "graph"` a folder's `workflow.graph.yaml`, when it has one,
- *  is shipped in place of its `workflow.yaml` (tidy-memory on the workspace
- *  graph): the same workflow and automation, a different version. */
-export async function installSystemWorkflows(workspace: WorkspaceStore, opts: { memory?: "graph" | "legacy" } = {}): Promise<Array<Installed & { name: string }>> {
+/** Install every system workflow strut ships: the boot step `createStrut` runs. */
+export async function installSystemWorkflows(workspace: WorkspaceStore): Promise<Array<Installed & { name: string }>> {
   const out = [];
   for (const name of SHIPPED) {
     // One broken folder never keeps the others from installing.
     try {
-      const graphYaml = join(SYSTEM_DIR, name, "workflow.graph.yaml");
-      const yamlText = await readFile(opts.memory === "graph" && existsSync(graphYaml) ? graphYaml : join(SYSTEM_DIR, name, "workflow.yaml"), "utf-8");
+      const yamlText = await readFile(join(SYSTEM_DIR, name, "workflow.yaml"), "utf-8");
       const automationJson = JSON.parse(await readFile(join(SYSTEM_DIR, name, "automation.json"), "utf-8"));
       out.push({ name, ...(await installSystemWorkflow(workspace, name, yamlText, automationJson)) });
     } catch (err) {

@@ -20,6 +20,7 @@ import {
   fusionWeights,
   inheritedAttributes,
   isExactQuery,
+  liftFactsOverEnds,
   linkedClause,
   overfetch,
   parseLinks,
@@ -189,6 +190,22 @@ describe("search helpers (pure)", () => {
     const boosted = applyTitleBoost(ranked, "harvey", () => "name");
     assert.deepEqual(boosted.map((e) => e.node.properties["ref_id"]), ["b", "a"]);
     assert.equal(boosted[0]!.extra.score, 1);
+  });
+  it("a fact takes its end's place when the query says more than the end's title", () => {
+    const pool = () =>
+      fuseHits(
+        [hit("mia", 3, { name: "Mia" }), hit("other", 2.5, { name: "Lisbon" }), hit("f1", 2, { source_ref_id: "mia", target_ref_id: "x" }), hit("f2", 1, { source_ref_id: "y", target_ref_id: "mia" })],
+        [hit("mia", 0.6, { name: "Mia" }), hit("f1", 0.55, { source_ref_id: "mia", target_ref_id: "x" })],
+      );
+    const ids = (r: ReturnType<typeof fuseHits>) => r.map((e) => e.node.properties["ref_id"]);
+    assert.deepEqual(ids(pool()), ["mia", "f1", "other", "f2"]);
+    // A question naming Mia: her best fact lifts to just above her; the rest stay.
+    const lifted = liftFactsOverEnds(pool(), "what can't Mia eat", () => "name");
+    assert.deepEqual(ids(lifted), ["f1", "mia", "other", "f2"]);
+    assert.equal(lifted[0]!.extra.score, 1);
+    // Her name alone, or a query not much longer than it, keeps the node first.
+    assert.deepEqual(ids(liftFactsOverEnds(pool(), "Mia", () => "name")), ["mia", "f1", "other", "f2"]);
+    assert.deepEqual(ids(liftFactsOverEnds(pool(), "Mia's", () => "name")), ["mia", "f1", "other", "f2"]);
   });
   it("usage tiebreak reorders only within an epsilon bucket", () => {
     const ranked = fuseHits([hit("a", 3, { usage_count_30d: 1 }), hit("b", 2, { usage_count_30d: 9 })], [hit("a", 1), hit("b", 0.9)]);

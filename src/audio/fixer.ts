@@ -122,6 +122,16 @@ export class DictationFixer {
     };
   }
 
+  /** Start loading the picked fixer in the background, when one is installed
+   *  (never a download), so the first transcript is not the one that waits.
+   *  Never rejects: a failure is one line in the log. Callers need not wait
+   *  on it (tests do). */
+  warm(): Promise<void> {
+    return this.current()
+      .then((f) => f?.ready())
+      .catch((e: unknown) => console.warn(`[audio] dictation fixer did not preload: ${(e as Error).message}`));
+  }
+
   /** Whether a model is loaded or loading now (tests, status). */
   get active(): string | null {
     return this.loaded?.id ?? null;

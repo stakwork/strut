@@ -1,7 +1,6 @@
 import { z } from "zod";
 import { defineStep } from "../../../core.js";
-import attributes from "../memory/attributes.js";
-import { graphEnable, onGraph } from "./_graph.js";
+import { graphEnable } from "./_graph.js";
 
 export default defineStep({
   type: "dictation/enable",
@@ -17,10 +16,6 @@ export default defineStep({
   }),
   output: z.object({ ref_id: z.string(), on: z.boolean() }),
   async run(cfg, ctx) {
-    if (onGraph(ctx)) return { ref_id: await graphEnable(ctx, cfg.ref_id, cfg.on), on: cfg.on };
-    // The attribute memory/lexicon reads; only this step writes it for a client.
-    const out = await attributes.run({ ref_id: cfg.ref_id, set: { dictation: cfg.on ? null : "off" } }, ctx);
-    if (out?.error) throw new Error(`dictation/enable: ${out.error}`);
-    return { ref_id: out.ref_id as string, on: cfg.on };
+    return { ref_id: await graphEnable(ctx, cfg.ref_id, cfg.on), on: cfg.on };
   },
 });
