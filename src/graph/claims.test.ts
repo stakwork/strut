@@ -408,6 +408,14 @@ for (const tb of testBackends()) {
       const byRun = await reader.evidenceForRuns("step:clip/compute-times");
       assert.deepEqual(byRun.map((e) => [e.claim_id, e.claim_text.slice(0, 8), e.source?.run_id, e.strength]), [["c1", "computes", "run-1", 1]]);
       assert.deepEqual(await reader.evidenceForRuns("step:clip/compute-times", { runId: "nope" }), []);
+      // A check that tests two claims writes one node both reach: two rows,
+      // each joined to the node's check, version and source.
+      const shared = await edges.write({ edge: "EVIDENCED_BY", source_ref_id: ref["c2"]!, target_ref_id: e1.ref_id, properties: { strength: 1 } });
+      assert.deepEqual(
+        (await reader.evidenceForRuns("step:clip/compute-times")).map((e) => [e.claim_id, e.check_id, e.about?.content_hash, e.source?.run_id]),
+        [["c1", "k1", V2, "run-1"], ["c2", "k1", V2, "run-1"]],
+      );
+      await edges.delete(shared.ref_id);
 
       // Publish v3 → the evidence is about an older version.
       await nodes.update(ref["step"]!, { set: { active_version: "hash-v3" } });

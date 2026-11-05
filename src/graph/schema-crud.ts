@@ -57,11 +57,38 @@ import { randomUUID } from "node:crypto";
 import type { EngineLike, GraphEngine, GraphKind } from "./engine.js";
 import { asEngine } from "./neo4j-engine.js";
 import { GraphValidationError, composeNodeKey, keyedByRef, refNodeKey } from "./node-writer.js";
-import { searchableAttributesOf } from "./ontology-seed.js";
 import { NODE_ROLES, isNodeRole, type NodeSchema, type SchemaResolver } from "./schema-resolver.js";
 import { schemaStatement } from "./schema-seed.js";
-import { RESERVED_ATTRIBUTE_NAMES, THING_TYPE, TYPE_OWNABLE_CORE, isGenericProperty, isStrutType } from "./strut-schemas.js";
+import { RESERVED_ATTRIBUTE_NAMES, SCHEMA_CORE_PROPERTIES, THING_TYPE, TYPE_OWNABLE_CORE, isGenericProperty, isStrutType } from "./strut-schemas.js";
 import { titleFields } from "./title.js";
+
+/**
+ * `get_searchable_attributes_from_schema`: with an explicit index → index
+ * fields + title_key + description_key; otherwise every string-typed
+ * non-core attribute (plus index/title/description keys).
+ */
+export function searchableAttributesOf(schema: Record<string, unknown>): Set<string> {
+  const out = new Set<string>();
+  const rawIndex = schema["index"];
+  const indexFields = Array.isArray(rawIndex) ? rawIndex.map(String).filter(Boolean) : typeof rawIndex === "string" && rawIndex ? [rawIndex] : [];
+  const add = (k: unknown) => {
+    if (typeof k === "string" && k.trim()) out.add(k.trim());
+  };
+  if (indexFields.length) {
+    for (const f of indexFields) add(f);
+    add(schema["title_key"]);
+    add(schema["description_key"]);
+    return out;
+  }
+  for (const [k, v] of Object.entries(schema)) {
+    if (SCHEMA_CORE_PROPERTIES.has(k)) continue;
+    if (v === "string" || v === "?string") out.add(k);
+  }
+  out.add("node_key");
+  add(schema["title_key"]);
+  add(schema["description_key"]);
+  return out;
+}
 
 export interface NodeSchemaInput {
   /** New type label, e.g. `Evidence`. */
