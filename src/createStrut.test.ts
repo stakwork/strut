@@ -12,7 +12,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 
 import { createStrut } from "./createStrut.js";
 import { createRegistry } from "./steps/registry.js";
-import { defineStep, flow, step, withAccessedNodes, withMessages, type StepContext } from "./core.js";
+import { defineStep, flow, step, withAccessedNodes, withMessages, type StepContext, type RunEvent, type RunSummary } from "./core.js";
 import { fileToken, inProcessRequest } from "./auth.js";
 import { pathlessWorkspace } from "./test-util/pathless-workspace.js";
 import { WorkspaceManager } from "./workspace.js";
@@ -674,6 +674,96 @@ describe("createStrut", () => {
     assert.equal(by.v2.success, 2);
     assert.equal(by.v1.runs, 1);
     assert.equal(body.unattributed, 0);
+  });
+
+  describe("usage caches (versions + step stats)", () => {
+    const json = { "content-type": "application/json" };
+    const setup = async () => {
+      const ws = new WorkspaceManager(tempDir);
+      await ws.publishWorkflow("cache-flow", "v1", { steps: [{ id: "g", type: "log", config: { message: "one" } }] });
+      const store = new MemoryRunStore();
+      const calls = { listRuns: 0 };
+      const origList = store.listRuns.bind(store);
+      store.listRuns = async (w: string) => (calls.listRuns++, origList(w));
+      let now = 1_000_000;
+      const strut = await createStrut({ workspace: ws, store, serveUi: false, enableChat: false, clock: () => now });
+      const get = async (path: string) => (await strut.app.request(path)).text();
+      return { strut, calls, get, tick: (ms: number) => (now += ms) };
+    };
+
+    it("serves a repeat GET from cache within the TTL and recomputes after it", async () => {
+      const { strut, calls, get, tick } = await setup();
+      await strut.run("cache-flow", {}, { runId: "1" });
+      const first = await get("/workflows/cache-flow/versions");
+      const base = calls.listRuns;
+      assert.equal(await get("/workflows/cache-flow/versions"), first);
+      assert.equal(calls.listRuns, base);
+      tick(31_000);
+      assert.equal(await get("/workflows/cache-flow/versions"), first);
+      assert.equal(calls.listRuns, base + 1);
+
+      const stats = await get("/steps/log/stats");
+      const afterStats = calls.listRuns;
+      assert.equal(await get("/steps/log/stats"), stats);
+      assert.equal(calls.listRuns, afterStats);
+      tick(31_000);
+      assert.equal(await get("/steps/log/stats"), stats);
+      assert.ok(calls.listRuns > afterStats);
+    });
+
+    it("drops both caches when a run finishes", async () => {
+      const { strut, get } = await setup();
+      await strut.run("cache-flow", {}, { runId: "1" });
+      const v1 = JSON.parse(await get("/workflows/cache-flow/versions"));
+      const s1 = JSON.parse(await get("/steps/log/stats"));
+      await strut.run("cache-flow", {}, { runId: "2" });
+      const v2 = JSON.parse(await get("/workflows/cache-flow/versions"));
+      const s2 = JSON.parse(await get("/steps/log/stats"));
+      assert.equal(v2.versions[0].runs, v1.versions[0].runs + 1);
+      assert.equal(s2.runs.total, s1.runs.total + 1);
+    });
+
+    it("drops both caches on a publish and on PUT /active", async () => {
+      const { strut, get } = await setup();
+      await strut.run("cache-flow", {}, { runId: "1" });
+      const v1 = JSON.parse(await get("/workflows/cache-flow/versions"));
+      assert.equal(v1.versions.length, 1);
+      await get("/steps/http/stats");
+      const pub = await strut.app.request("/workflows/cache-flow", {
+        method: "POST",
+        headers: json,
+        body: JSON.stringify({ version: "v2", steps: [{ id: "h", type: "http", config: { url: "x" } }] }),
+      });
+      assert.equal(pub.status, 201);
+      const v2 = JSON.parse(await get("/workflows/cache-flow/versions"));
+      assert.deepEqual(v2.versions.map((v: { version: string }) => v.version).sort(), ["v1", "v2"]);
+      assert.deepEqual(JSON.parse(await get("/steps/http/stats")).workflows, [{ name: "cache-flow", direct: true }]);
+
+      const act = await strut.app.request("/workflows/cache-flow/active", { method: "PUT", headers: json, body: JSON.stringify({ version: "v1" }) });
+      assert.equal(act.status, 200);
+      assert.equal(JSON.parse(await get("/workflows/cache-flow/versions")).active, "v1");
+      assert.deepEqual(JSON.parse(await get("/steps/http/stats")).workflows, []);
+    });
+
+    it("attributes a run whose summary lacks workflowHash via the bounded run.start read", async () => {
+      const ws = new WorkspaceManager(tempDir);
+      await ws.publishWorkflow("start-flow", "v1", { steps: [{ id: "g", type: "log", config: { message: "one" } }] });
+      const hash = await ws.getWorkflowHash("start-flow", "v1");
+      const store = new MemoryRunStore();
+      let fullReads = 0;
+      const origEvents = store.getRunEvents.bind(store);
+      store.getRunEvents = async (w: string, r: string) => (fullReads++, origEvents(w, r));
+      await store.append("start-flow", "1", { type: "run.start", workflowHash: hash, ts: "2026-01-01T00:00:00Z" } as unknown as RunEvent);
+      await store.finalize("start-flow", "1", { runId: "1", workflow: "start-flow", startedAt: "2999-01-01T00:00:00Z", finishedAt: "", durationMs: 0, status: "success", input: {} } as RunSummary);
+      const strut = await createStrut({ workspace: ws, store, serveUi: false, enableChat: false });
+      const body = (await (await strut.app.request("/workflows/start-flow/versions")).json()) as {
+        versions: Array<{ runs: number }>;
+        unattributed: number;
+      };
+      assert.equal(body.versions[0].runs, 1);
+      assert.equal(body.unattributed, 0);
+      assert.equal(fullReads, 0);
+    });
   });
 
   it("records a version's source over HTTP: ui when the UI says so, api otherwise — never seed", async () => {

@@ -35,6 +35,11 @@ function parseJsonlLine<T>(line: string, file: string): T | undefined {
   }
 }
 
+/** The event when it is a `run.start`, else undefined (`getRunStart`). */
+function eventIfStart(e: RunEvent | undefined): RunEvent | undefined {
+  return e?.type === "run.start" ? e : undefined;
+}
+
 /**
  * Generic tail of an append-only JSONL file: yield every parsed line from the
  * start of the file (history), then follow appends (live) until `isTerminal`
@@ -235,6 +240,11 @@ export interface RunStore {
   clearRunSummary(workflow: string, runId: string): Promise<void>;
   /** The full event log (empty for an unknown run). */
   getRunEvents(workflow: string, runId: string): Promise<RunEvent[]>;
+  /** Optional bounded read: the log's `run.start` event when it is the FIRST
+   *  event (always, for a run that started normally), without reading the
+   *  rest of the log. `undefined` = not found this way — callers fall back
+   *  to `getRunEvents(...).find(run.start)`, so a store may omit it. */
+  getRunStart?(workflow: string, runId: string): Promise<RunEvent | undefined>;
   /** The size of the event log in bytes — what `getRunEvents` would read —
    *  without reading it: a resume refuses a log the process cannot hold
    *  (`STRUT_RESUME_MAX_LOG_BYTES`). 0 for an unknown run. */
@@ -681,6 +691,37 @@ export class FileRunStore implements RunStore {
    *  parse — by skipping them with a warning: an unreadable log would leave
    *  the run stuck (unresumable, unlistable), and a corrupt line never
    *  belongs to a completed unit. */
+  async getRunStart(workflow: string, runId: string): Promise<RunEvent | undefined> {
+    const file = join(this.runDir(workflow, runId), "events.jsonl");
+    let fh;
+    try {
+      fh = await open(file, "r");
+    } catch {
+      return undefined;
+    }
+    try {
+      // Read chunks until the first non-blank line is complete.
+      const chunks: Buffer[] = [];
+      const buf = Buffer.alloc(64 * 1024);
+      let pos = 0;
+      for (;;) {
+        const { bytesRead } = await fh.read(buf, 0, buf.length, pos);
+        if (bytesRead === 0) break;
+        pos += bytesRead;
+        chunks.push(Buffer.from(buf.subarray(0, bytesRead)));
+        const text = Buffer.concat(chunks).toString("utf-8");
+        const lines = text.split("\n");
+        // Every line but the last is complete; the last is, only at EOF.
+        const first = lines.slice(0, -1).find((l) => l.trim());
+        if (first !== undefined) return eventIfStart(parseJsonlLine<RunEvent>(first, file));
+      }
+      const line = Buffer.concat(chunks).toString("utf-8").split("\n").find((l) => l.trim());
+      return line === undefined ? undefined : eventIfStart(parseJsonlLine<RunEvent>(line, file));
+    } finally {
+      await fh.close();
+    }
+  }
+
   async getRunEvents(workflow: string, runId: string): Promise<RunEvent[]> {
     const file = join(this.runDir(workflow, runId), "events.jsonl");
     let raw: string;
@@ -781,6 +822,10 @@ export class MemoryRunStore implements RunStore {
 
   async getRunJobCallback(workflow: string, runId: string): Promise<string | null> {
     return this.jobCallbacks.get(this.key(workflow, runId)) ?? null;
+  }
+
+  async getRunStart(workflow: string, runId: string): Promise<RunEvent | undefined> {
+    return eventIfStart(this.events.get(this.key(workflow, runId))?.[0]);
   }
 
   async getRunEvents(workflow: string, runId: string): Promise<RunEvent[]> {

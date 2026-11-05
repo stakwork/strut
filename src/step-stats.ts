@@ -28,6 +28,9 @@ export interface StepStats {
   runs: { total: number; success: number; error: number; lastAt: string | null };
 }
 
+// Runs being backfilled right now, so concurrent calls read a log once.
+const backfilling = new Map<string, Promise<StepCounts>>();
+
 export async function stepStats(
   workspace: Pick<WorkspaceStore, "listWorkflows" | "getWorkflow" | "getWorkflowVersion">,
   store: Pick<RunStore, "listRuns" | "getRunSummary" | "getRunEvents" | "finalize">,
@@ -64,9 +67,21 @@ export async function stepStats(
   const countsOf = async (key: string, id: string): Promise<StepCounts> => {
     const summary = await store.getRunSummary(key, id);
     if (summary?.stepCounts) return summary.stepCounts;
-    const counts = countSteps(await store.getRunEvents(key, id));
-    if (summary) await store.finalize(key, id, { ...summary, stepCounts: counts });
-    return counts;
+    if (!summary) return countSteps(await store.getRunEvents(key, id));
+    const flightKey = `${key}/${id}`;
+    let flight = backfilling.get(flightKey);
+    if (!flight) {
+      flight = (async () => {
+        const counts = countSteps(await store.getRunEvents(key, id));
+        // Another writer may have backfilled (or resumed) it meanwhile: only
+        // write when the stored summary still lacks the counts.
+        const current = await store.getRunSummary(key, id);
+        if (current && !current.stepCounts) await store.finalize(key, id, { ...current, stepCounts: counts });
+        return counts;
+      })().finally(() => backfilling.delete(flightKey));
+      backfilling.set(flightKey, flight);
+    }
+    return flight;
   };
 
   for (const key of [...workflows.map((w) => w.name), stepRunKey(type)]) {
