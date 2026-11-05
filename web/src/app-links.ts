@@ -124,3 +124,10 @@ export const isPreviewVersion = (version: string | undefined): boolean => !!vers
 export function appMessage(app: { name: string; version: string }, text: string): string {
   return `About the app "${app.name}" (${app.version}, open in front of me): ${text.trim()}`;
 }
+
+/** The standalone page's `&theme=`: what it hands the app (`light` or
+ *  `dark`), for a host whose own page is light. Anything else: none, and
+ *  the app is shown dark, as strut's UI is. */
+export function soloTheme(param: string | null | undefined): "light" | "dark" | undefined {
+  return param === "light" || param === "dark" ? param : undefined;
+}

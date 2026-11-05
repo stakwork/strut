@@ -25,8 +25,13 @@ import { AppWithPanel } from "./AppWithPanel";
 // and document under `/public/apps/<name>`, its calls to `/public/mcp`.
 // What the store frames from a publisher's server, and what a person with
 // no account opens.
+//
+// `&theme=light` (or `dark`): the theme the app is handed, for a host whose
+// own page is light; strut's UI is dark, the default. The page around it
+// matches while the app loads; what strut draws in the side panel's bar and
+// its file viewer stays strut's own.
 
-export function SoloApp(props: { app: string; input?: string | null; visitor?: boolean }) {
+export function SoloApp(props: { app: string; input?: string | null; visitor?: boolean; theme?: "light" | "dark" }) {
   const listed = useListedApp(props.visitor ? null : props.app);
   // undefined: the public view has not answered; null: the app is not in it.
   const [visitorApp, setVisitorApp] = useState<api.PublicAppInfo | null | undefined>(undefined);
@@ -60,13 +65,14 @@ export function SoloApp(props: { app: string; input?: string | null; visitor?: b
     };
   }, [props.app, props.visitor]);
   return (
-    <div class="app-solo">
+    <div class={`app-solo${props.theme === "light" ? " light" : ""}`}>
       {shown
         ? <AppWithPanel
             app={shown}
             onNavigate={onNavigate}
             {...(toolInput ? { toolInput } : {})}
             {...(props.visitor ? { visitor: true } : {})}
+            {...(props.theme ? { theme: props.theme } : {})}
           />
         : <div class="empty">
             {props.visitor

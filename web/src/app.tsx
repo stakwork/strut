@@ -49,7 +49,7 @@ import { Store } from "./components/Store";
 import { INSTALL_LINK_PARAMS, parseInstallLink, type InstallLink } from "./store-links";
 import { ArtifactViewer } from "./components/ArtifactViewer";
 import { AppGlyph, SidebarIcon } from "./icons";
-import { appKey, appMessage, appToolInput } from "./app-links";
+import { appKey, appMessage, appToolInput, soloTheme } from "./app-links";
 import { RunInputPopover } from "./components/RunInputPopover";
 import { ConfirmButton } from "./components/ConfirmButton";
 import { useDismiss } from "./use-dismiss";
@@ -112,18 +112,20 @@ export function App() {
   //  - beside `?artifact=<path>`: one served file — a job's file or a run's
   //    artifact, here or a peer's through the read-through — for a
   //    deliverable. Only a path of that shape (`isServedFilePath`).
+  //  - `&theme=light` beside `?app=`: the app shown light, for a host whose
+  //    own page is (strut's UI is dark; `soloTheme`).
   //  - `?store=1`: the STORE FRONT (plans/marketplace.md §7) — an index
   //    strut's public page over its open reads, where a visitor with no
   //    credential lands (the server redirects `/` there on an index).
   const [solo] = useState(() => {
     const p = new URLSearchParams(location.search);
     if (p.get("store") === "1") return { store: true as const };
-    return p.get("solo") === "1" ? { app: p.get("app"), input: p.get("input"), artifact: p.get("artifact"), visitor: p.get("public") === "1" } : null;
+    return p.get("solo") === "1" ? { app: p.get("app"), input: p.get("input"), artifact: p.get("artifact"), visitor: p.get("public") === "1", theme: soloTheme(p.get("theme")) } : null;
   });
   if (solo && "store" in solo) return <Store />;
   //  - `&public=1` beside `?app=`: a VISITOR's page, the app as this
   //    server's public view serves it, with no credential (SoloApp).
-  if (solo?.app) return <SoloApp app={solo.app} input={solo.input} visitor={solo.visitor} />;
+  if (solo?.app) return <SoloApp app={solo.app} input={solo.input} visitor={solo.visitor} {...(solo.theme ? { theme: solo.theme } : {})} />;
   if (solo?.artifact) {
     return isServedFilePath(solo.artifact)
       ? <ArtifactViewer path={solo.artifact} solo />

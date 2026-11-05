@@ -4,10 +4,10 @@ import { takeTicket } from "./ticket";
 
 describe("takeTicket", () => {
   it("takes the ticket and keeps every other param as written", () => {
-    const href = "https://strut.acme.com/lab/?app=strut%2Fassistant&ticket=strut-ticket.abc.def&solo=1&wf=job&run=17&embed_origin=https%3A%2F%2Facme.com&input=session%3Devan-1%2Fa+b#top";
+    const href = "https://strut.acme.com/lab/?app=strut%2Fjamie&ticket=strut-ticket.abc.def&solo=1&wf=job&run=17&embed_origin=https%3A%2F%2Facme.com&input=session%3Devan-1%2Fa+b#top";
     assert.deepEqual(takeTicket(href), {
       ticket: "strut-ticket.abc.def",
-      url: "/lab/?app=strut%2Fassistant&solo=1&wf=job&run=17&embed_origin=https%3A%2F%2Facme.com&input=session%3Devan-1%2Fa+b#top",
+      url: "/lab/?app=strut%2Fjamie&solo=1&wf=job&run=17&embed_origin=https%3A%2F%2Facme.com&input=session%3Devan-1%2Fa+b#top",
     });
   });
 

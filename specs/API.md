@@ -1217,7 +1217,7 @@ curl -s -X POST https://strut.acme.com/auth/ticket \
   -H "authorization: Bearer $STRUT_API_KEY" -H 'content-type: application/json' \
   -d '{"actor":"evanfeenstra-cm3k9x"}'
 # → { "ticket": "strut-ticket.eyJhY3Rvci….3q2…", "expiresAt": 1793813291223 }
-# frame: https://strut.acme.com/?ticket=strut-ticket.…&app=strut%2Fassistant&solo=1
+# frame: https://strut.acme.com/?ticket=strut-ticket.…&app=strut%2Fjamie&solo=1&theme=light
 ```
 
 The ticket is `strut-ticket.<base64url claims>.<hmac>`, claims `{ actor,
@@ -1442,7 +1442,10 @@ both in the side panel.
 With `&solo=1` beside `?app=` (any app, here or a peer's) the UI renders the
 page ALONE, nothing of strut's around it — what a native host such as Peel
 opens in a web view of its own: `/?key=<the local strut's key>&app=@<peer>/<name>&solo=1`,
-with `&input=` for a deep link. A link the page opens to itself changes
+with `&input=` for a deep link. `&theme=light` (or `dark`) is the theme the
+page hands the app, for a host whose own page is light; without it the app
+is shown dark, as strut's UI is. The page behind it matches while it loads;
+strut's own bar over the side panel and its file viewer stay dark. A link the page opens to itself changes
 `input` in place, the URL following (replaced, as the full UI does); a
 file or another app opens in the side panel inside the page (below); any
 other link opens in a new window.
