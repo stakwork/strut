@@ -212,6 +212,19 @@ export function workspaceConformance(impl: WorkspaceImpl): void {
       assert.equal((await meta())?.maxRunCostUsd, undefined);
     });
 
+    it("disabled is workflow-level metadata: set, survives a publish, clears", async () => {
+      await ws.publishWorkflow("wf", "v1", { steps });
+      assert.equal((await ws.getWorkflowMetadata("wf"))?.disabled, undefined);
+      await ws.setWorkflowDisabled("wf", true);
+      assert.equal((await ws.getWorkflowMetadata("wf"))?.disabled, true);
+      assert.equal((await ws.listWorkflows()).find((w) => w.name === "wf")?.disabled, true);
+      await ws.publishWorkflow("wf", "v2", { steps, params: { greeting: "other" } });
+      assert.equal((await ws.getWorkflowMetadata("wf"))?.disabled, true, "survives a publish");
+      await ws.setWorkflowDisabled("wf", false);
+      assert.equal((await ws.getWorkflowMetadata("wf"))?.disabled, undefined);
+      await assert.rejects(() => ws.setWorkflowDisabled("missing", true), /not found/);
+    });
+
     it("reactivateKnown: false keeps a workspace edit active across a reseed", async () => {
       await ws.publishWorkflow("wf", "v1", { steps, params: { greeting: "old" } });
       const seed = await ws.getWorkflowSource("wf", "v1");

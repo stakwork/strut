@@ -7,6 +7,7 @@ import type { PackagesCapability } from "./packages/indexes.js";
 // Type-only: the graph backend stays a lazy, opt-in dependency.
 import type { GraphBackend } from "./graph/backend.js";
 import type { BrowserService } from "./browser/service.js";
+import type { ModelCatalog } from "./llm.js";
 /**
  * Standard "capabilities" — the small, generic, host-owned services that
  * LLM-authored adapter STEPS build on (see AGENTS.md "step vs service").
@@ -409,6 +410,12 @@ export interface StrutCapabilities {
    *  Optional because a bare in-code bag may not carry one (the steps then
    *  fail naming it). */
   browser?: BrowserService;
+  /** The model catalog `GET /llm/models` serves (src/llm.ts
+   *  `listModelOptions`): aieo's aliases, each with whether its provider has
+   *  a key here, and the deployment's default. What `llm/models` reads. Set
+   *  by the standard server; a bare bag falls back to the catalog with no
+   *  default. */
+  llmModels?: () => Promise<ModelCatalog>;
 }
 
 /** The default standard services bag: global-fetch http + secrets + a local

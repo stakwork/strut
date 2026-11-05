@@ -311,6 +311,9 @@ export interface WorkflowMetadata {
    *  deployment routes through it (§3) — otherwise nothing reads it.
    *  Operating policy like `category`: metadata-only, no version. */
   maxRunCostUsd?: number;
+  /** Disabled: refuses every run (API, subflow, schedule) until re-enabled.
+   *  Operating policy like `category`: metadata-only, no version. */
+  disabled?: boolean;
 }
 
 export interface StepVersionInfo {
@@ -503,6 +506,8 @@ export interface WorkflowListEntry {
   /** The owning actor and run cap, if set (see WorkflowMetadata). */
   owner?: string;
   maxRunCostUsd?: number;
+  /** See WorkflowMetadata.disabled. */
+  disabled?: boolean;
   /** The workflow's schedules, if any (see WorkflowMetadata.automations) —
    *  carried here so the scheduler's boot load is one `listWorkflows()`. */
   automations?: Automation[];
@@ -615,6 +620,8 @@ export interface WorkspaceStore extends SubflowResolver {
   setWorkflowOwner(name: string, owner: string | null): Promise<void>;
   /** Set (or clear) the per-run spend cap — metadata-only. */
   setWorkflowRunCap(name: string, maxRunCostUsd: number | null): Promise<void>;
+  /** Disable or re-enable a workflow — metadata-only. */
+  setWorkflowDisabled(name: string, disabled: boolean): Promise<void>;
   /** Set (or clear) the `publisher` stamp — metadata-only. A publish never
    *  re-stamps a workflow; this is the one way to move it, and who may is
    *  the caller's rule (`PUT /workflows/:name/publisher`: a person handing a
@@ -747,6 +754,7 @@ export class FileWorkspaceStore implements WorkspaceStore {
           ...(meta.versions[meta.active]?.source ? { activeSource: meta.versions[meta.active]!.source } : {}),
           ...(meta.owner ? { owner: meta.owner } : {}),
           ...(meta.maxRunCostUsd != null ? { maxRunCostUsd: meta.maxRunCostUsd } : {}),
+          ...(meta.disabled ? { disabled: true } : {}),
           ...(meta.automations?.length ? { automations: meta.automations } : {}),
         });
       }
@@ -949,6 +957,13 @@ export class FileWorkspaceStore implements WorkspaceStore {
     await this.patchWorkflowMetadata(name, (meta) => {
       if (maxRunCostUsd != null) meta.maxRunCostUsd = maxRunCostUsd;
       else delete meta.maxRunCostUsd;
+    });
+  }
+
+  async setWorkflowDisabled(name: string, disabled: boolean): Promise<void> {
+    await this.patchWorkflowMetadata(name, (meta) => {
+      if (disabled) meta.disabled = true;
+      else delete meta.disabled;
     });
   }
 
@@ -2014,4 +2029,26 @@ export async function materializePinnedStep(dir: string, name: string, version: 
 export function pinnedStepFileOf(file: string): string | null {
   const m = /^_([^@]+)@.+\.ts$/.exec(basename(file));
   return m ? join(dirname(file), `${m[1]}.ts`) : null;
+}
+
+/** The refusal a disabled workflow gives every launch path. */
+export const disabledMessage = (name: string) =>
+  `workflow '${name}' is disabled: it refuses runs until a person enables it again`;
+
+type MetadataReader = { getWorkflowMetadata?: (name: string) => Promise<WorkflowMetadata | null> } | undefined;
+
+/** The refusal when the workflow is disabled, else null. A store that cannot
+ *  say (no metadata) counts as enabled. Every launch path asks: the run
+ *  routes, `strut.run`, a subflow, a schedule, job/start, run/launch, the
+ *  wake, a durable resume, `meta/run-workflow` and the builder's
+ *  `run_workflow`. A run already in flight is left to finish. */
+export async function workflowDisabled(ws: MetadataReader, name: string): Promise<string | null> {
+  const meta = ws?.getWorkflowMetadata ? await ws.getWorkflowMetadata(name).catch(() => null) : null;
+  return meta?.disabled ? disabledMessage(name) : null;
+}
+
+/** Throws the refusal when the workflow is disabled. */
+export async function assertWorkflowEnabled(ws: MetadataReader, name: string): Promise<void> {
+  const refused = await workflowDisabled(ws, name);
+  if (refused) throw new Error(refused);
 }

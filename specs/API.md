@@ -123,13 +123,14 @@ reads.
 
 | Method | Path                            | Response |
 | ------ | ------------------------------- | -------- |
-| GET    | `/workflows[?q=]`               | `[{ name, activeVersion, versions: ["v1", …], description?, category?, publisher?, owner?, maxRunCostUsd?, automations?, lastRunAt? }]` |
-| GET    | `/workflows/:name`              | `{ active, versions: { "v1": { createdAt, description?, hash?, source?, actor?, upstream? }, … }, category?, publisher?, owner?, maxRunCostUsd?, automations? }` (`WorkflowMetadata`; `upstream` = `{ package, version, digest, source: { ref }, secrets }`, the package a version was installed from or forked off — every publish carries the active version's forward) |
+| GET    | `/workflows[?q=]`               | `[{ name, activeVersion, versions: ["v1", …], description?, category?, publisher?, owner?, maxRunCostUsd?, disabled?, automations?, lastRunAt? }]` |
+| GET    | `/workflows/:name`              | `{ active, versions: { "v1": { createdAt, description?, hash?, source?, actor?, upstream? }, … }, category?, publisher?, owner?, maxRunCostUsd?, disabled?, automations? }` (`WorkflowMetadata`; `upstream` = `{ package, version, digest, source: { ref }, secrets }`, the package a version was installed from or forked off — every publish carries the active version's forward) |
 | GET    | `/workflows/:name/flow[?version=]` | `{ name, steps, input?, params?, promotes? }` — the parsed active (or named) version |
 | GET    | `/workflows/:name/versions`     | `{ active, versions: [{ version, createdAt, description?, source?, actor?, runs, success, error, lastRunAt? }], unattributed }` newest first; counts by the run's recorded `workflowHash`; cached ~30 s per workflow, dropped on a publish, an active flip or a run finishing |
 | GET    | `/workflows/:name/:version`     | the YAML source, `text/yaml` |
 | PUT    | `/workflows/:name/active`       | `{ version }` → `{ ok, workflow, active }` — rollback; publishes nothing |
 | PUT    | `/workflows/:name/publisher`    | `{ publisher: "ai" \| null }` → `{ ok, workflow, publisher }` — hand the workflow to the builder, or take it back (below); publishes nothing |
+| PUT    | `/workflows/:name/disabled`     | `{ disabled: boolean }` → `{ ok, workflow, disabled }` — disable the workflow, or enable it again (below); publishes nothing |
 | DELETE | `/workflows/:name`    | `{ ok, workflow }` — every version, metadata, schedules and run records; 409 while a run is in flight |
 
 `?q=` is the sidebar's filter: the query is split into words and every word
@@ -151,6 +152,21 @@ over, when its active version is a seed (every boot puts the committed
 version back), says `sealed: true` (a grading harness) or `peer:` (the
 builder may not publish that key, so its next version would close the
 workflow to other struts). A peer's request is refused by the gate.
+
+`disabled: true` (`PUT /workflows/:name/disabled`, the Workflow flyout's
+Disable) makes the workflow refuse every NEW run until a person enables it
+again: `POST …/run` and `…/:version/run` answer `409` with `workflow '<name>'
+is disabled: …`, and the same refusal is what `strut.run`, a `subflow` step
+that calls it, `job/start` / `job/continue`, `run/launch`, `meta/run-workflow`,
+the builder's `run_workflow` and the conversation wake get. A durable resume
+(`POST …/resume`, boot's auto-resume) is refused too (`409`; auto-resume
+reports the run skipped). Its schedules are HELD, not failed: a due fire
+launches nothing and records no `lastFireError`, and `POST
+…/automations/:id/fire` answers with the refusal. A run already in flight
+finishes. Like `category`, it is workflow metadata: no version is published,
+a publish keeps it, and a rollback does not change it. `400` when `disabled`
+is not a boolean, `404` for an unknown workflow; a peer's request is refused
+by the gate.
 
 ## 3. Run
 
@@ -607,13 +623,58 @@ steps read), so every read shows `callback: { origin }` only.
 | POST   | `/workflows/:name/automations`  | `{ name, trigger, input?, enabled?, callback?, id? }` (`id`: normally minted, `a-<8 hex>`; a taken one is 400). A trigger with no fire to come (a one-off in the past) is 400 here and on PATCH |
 | PATCH  | `/workflows/:name/automations/:id` | any subset; `{ enabled: false }` pauses; `{ callback: null }` clears the callback |
 | DELETE | `/workflows/:name/automations/:id` | remove |
-| POST   | `/workflows/:name/automations/:id/fire` | run now → 202 `{ runId }`; 409 while its previous run is going |
+| POST   | `/workflows/:name/automations/:id/fire` | run now → 202 `{ runId }`; 409 while its previous run is going; 503 while draining (§8.1) |
 
-`GET /health` → `{ ok, dataDir, stepCount, workspace: { backend, path? } }` —
+`GET /health` → `{ ok, dataDir, stepCount, workspace: { backend, path? }, drain? }` —
 `backend` is `fs`, `neo4j` or `ladybug` (where workflows and steps live;
-`STRUT_WORKSPACE_BACKEND`), `path` the LadybugDB file on `ladybug`; without
+`STRUT_WORKSPACE_BACKEND`), `path` the LadybugDB file on `ladybug`, `drain`
+present while draining (`{ since, reason, until?, idle }`, §8.1); without
 the key, `{ ok: true }` and nothing else — the one route a keyless probe may
 call.
+
+### 8.1 Drain — a quiet moment to restart (`src/drain.ts`)
+
+Before restarting strut — a new image, a backup — whoever runs it turns on
+a DRAIN: nothing new starts, what is running finishes, and `idle` says when
+nothing is left. Then it stops the process; the next boot starts undrained.
+
+| Method | Path     | Description |
+| ------ | -------- | ----------- |
+| GET    | `/drain` | `DrainView` (below) |
+| PUT    | `/drain` | `{ reason?, minutes? }` → `DrainView`. `reason` (≤ 200 chars, default `maintenance`) is said in every refusal; `minutes` (> 0, ≤ 1440) lifts the drain by itself, so one whose updater died does not refuse everything forever. A drain already on keeps its `since`. 400 on a bad body. A person's or the deployment's credential: a peer's is 403 |
+| DELETE | `/drain` | lift it → `DrainView`. Wake turns it held back launch now |
+
+```ts
+interface DrainView {
+  draining: boolean;
+  since?: string;      // ISO, when it was turned on
+  reason?: string;
+  until?: string;      // ISO, when it lifts by itself
+  idle: boolean;       // no run executing and no builder chat turn running
+  active: { runs: number; chats: number };
+  runs: { workflow: string; runId: string; state: string }[]; // the top-level runs it waits on (first 50)
+}
+```
+
+While draining:
+
+- **Refused, 503 + `Retry-After: 60`**, body `{ error }` starting
+  `draining:`: `POST /workflows/:name[/:version]/run`, a durable
+  `POST …/runs/:runId/resume` (unpausing a live run is let through), `POST
+  /steps/:type/run` of a step that does not declare `effect: "read"` (a read
+  still answers), `POST /chat`, an elicitation answer (the question stays
+  open), Run now.
+- **Refused in process**: every new top-level run whatever starts it — an
+  agent's `job/start` / `job/continue` or `meta/run-workflow`, the builder's
+  `run_workflow`, an app's `run/launch`, `strut.run()` — reads the same
+  `draining:` error. A run a run IN FLIGHT launches (`parentRunId`, as
+  meta/run-workflow sets) is that run's work and starts.
+- **Held**: a schedule's fire launches nothing and records no failure (a
+  missed fire is skipped, as always). A wake turn (`src/wake.ts`) stays queued
+  on disk and launches when the drain lifts or at the next boot.
+- **Not waited on**: a paused run (it waits on a person; a restart leaves it
+  paused), the verify pass and the graph projection after a run (best
+  effort).
 
 ## 9. Agent sessions
 
@@ -694,8 +755,9 @@ the model transcript. Sending a message is still `POST
 the key, or a person token's own). A conversation is listed for everyone who
 took a turn in it (the launch's actor, else its principal), for the actor
 its id is under (`<actor>/…`), and for anyone who opened it while it was
-`shared`. Shared makes it readable to any actor on this strut; taking a turn
-makes you a participant. The key with no actor reads any conversation; a
+`shared`. Shared makes it readable to any actor on this strut, and puts it in
+every actor's list (`team: true`, never unread) until they open it; taking a
+turn makes you a participant. The key with no actor reads any conversation; a
 plain peer reads the routes and sees none. A person token may also POST the
 two writes.
 
@@ -731,6 +793,23 @@ interface ConversationListItem {
   seenAt?: string;       // the viewer's
   unread: boolean;       // something happened since seenAt
   running?: true;        // a turn is in flight in this process
+  jobs?: ConversationJob[]; // the jobs its turns started or continued, most recent first, at most 10
+  moreJobs?: number;     // jobs past those listed
+  team?: true;           // listed because it is shared, not the viewer's yet; opening it makes it theirs
+  startedBy?: string;    // who took its first turn
+}
+
+// A job as a row shows it. A conversation keeps its job ids, read from each
+// turn's log when the turn ends; one kept from before that has none until
+// a list reads them, in the background (the next list shows them).
+interface ConversationJob {
+  job: string;
+  title?: string;        // the job's record's
+  running?: true;        // a turn of it is in flight in this process
+  prs?: Array<{          // the pull requests its turns delivered (artifacts of kind `pull_request` with a GitHub link), newest first, each once
+    url: string; title?: string; repo: string; number: number;
+    state?: string;      // as the job reported it; the live state is `github/pr-status`'s (§14.11)
+  }>;
 }
 
 interface ConversationView {
@@ -750,7 +829,7 @@ interface ConversationTurn {
   status: string;           // success | error | cancelled; while not settled running | paused, stale when no process runs it
   prompt?: string;          // the person's words (input.prompt) — absent on a wake
   wake?: { job: string; runId: string; peer?: string; also?: unknown[] } | true;  // a wake turn: the job run it woke on (run.start.wake)
-  attachments?: Array<{ name: string; mediaType: string; size: number }>;
+  attachments?: Array<{ name: string; mediaType: string; size: number; path: string }>; // `path`: read with `run/files` on the turn's run
   text?: string;            // the reply
   ask?: string;             // its question
   artifacts?: ArtifactRef[]; // resolved, as GET …/runs/:runId/artifacts
@@ -766,7 +845,8 @@ launch and end, not only when the agent's session commits. The
 `conversation/update` and `conversation/fork` steps are the same reads and
 writes, as the step's actor; they are refused to an app's page, except
 strut's own (first-party, §14.10), which reads them as its viewer's
-person token does.
+person token does. `conversation/list` also answers `viewer`, the actor the
+list is for — where a page mints a new conversation, `<viewer>/<id>`.
 
 ### Graph nodes
 
@@ -1064,7 +1144,7 @@ lines).
 
 | Method | Path | Description |
 | ------ | ---- | ----------- |
-| GET    | `/proposals?job=&session=&runId=&status=` | `{ proposals: Proposal[] }`, newest first; `status` one of the five |
+| GET    | `/proposals?job=&session=&runId=&status=&limit=` | `{ proposals: Proposal[] }`, newest first; `status` one of the five; `limit` a positive integer, applied after what the caller may see (a person token: its own) |
 | GET    | `/proposals/:id` | one record (a person token: any, by its id); 404 |
 | GET    | `/workflows/:name/runs/:runId/proposals` | `{ workflow, runId, proposals: [{ id, step, title, summary?, card?, status, url, rationale?, createdAt, decidedAt? }] }` — what the run proposed, the `run.end` field's twin (`CALLBACKS.md` §6) |
 | POST   | `/proposals/:id/decide` | `{ action: "accept" \| "reject", input?: object, reason?: string }` → the record after the decision. `accept` merges `input` (one level) onto the proposal's, re-parses with the step's schema (400, still pending, when it does not fit), records the decision, runs the step under a minimal context (the decider — the request's actor — as `ctx.actor`, the proposing run's principal binding its secrets, its job, the registry), and records `result`. `reject` records `reason`, runs nothing. 409 with the record once decided (`failed` may be accepted again); 409 too, still pending, while a proposal its step waits for (`StepDef.after`: `meta/set-automation` waits for a pending `meta/publish-workflow` of its workflow) is pending; 400 for a step no longer in the registry; 404 |
@@ -1096,9 +1176,10 @@ and rotating that secret ends every session.
 
 | Method | Path            | Description |
 | ------ | --------------- | ----------- |
-| POST   | `/auth/session` | `{ key, actor? }` → 200 `{ actor?, exp }` + `Set-Cookie: strut_session=…; Path=/; Max-Age=…; HttpOnly; SameSite=Lax[; Secure]`. Open to anyone (it IS the login); a wrong key is a `401` after half a second; `400` with no key configured. `actor`: who is signing in, ≤ 120 chars |
+| POST   | `/auth/session` | `{ key, actor? }` or `{ ticket }` → 200 `{ actor?, exp }` + `Set-Cookie: strut_session=…; Path=/; Max-Age=…; HttpOnly; SameSite=Lax[; Secure]`. Open to anyone (it IS the login); a wrong key is a `401` after half a second; `400` with no key configured. `actor`: who is signing in, ≤ 120 chars. A `ticket` (below) sets the same cookie naming the ticket's actor — an `actor` beside it is ignored; one expired, already used, forged or malformed is a `401 { error }` |
 | GET    | `/auth/session` | `{ actor?, exp }` of the session the request carries; `404` for a request the key authenticated |
 | DELETE | `/auth/session` | clears the cookie → `204`; needs no credential |
+| POST   | `/auth/ticket`  | `{ actor }` → 200 `{ ticket, expiresAt }` (`cache-control: no-store`): a SIGN-IN TICKET for that person. `full` scope only — the deployment key, its session, or strut's own in-process request; a peer key or a person token is `403`, no credential `401`. `actor` required, ≤ 120 chars, no line break (`/peers/tokens`'s rule); `400` otherwise, and with no key configured. `expiresAt`: ms since the epoch, a minute out |
 
 `exp` is the session's end in ms since the epoch — `STRUT_SESSION_HOURS`
 (default 12) from the login. `Secure` is set when the request came over
@@ -1122,6 +1203,43 @@ curl -s -b jar.txt localhost:3000/workflows                       # a read: the 
 curl -s -b jar.txt -H 'x-strut-ui: 1' -X POST localhost:3000/workflows/hello/run -d '{}'
 curl -s -b jar.txt -X DELETE localhost:3000/auth/session           # → 204, cookie cleared
 ```
+
+### 13.1 A host signs one person into the UI it frames
+
+The standalone twin of mcp's `/mint-token` JWT handed to `/lab/?key=`: a
+host that frames strut's own UI for its people (stadeum) never puts the key
+in a browser. Its SERVER, holding the key, mints a ticket for the person —
+the actor is the host's to name, an opaque string strut stamps on what the
+session does — and frames the UI with it:
+
+```bash
+curl -s -X POST https://strut.acme.com/auth/ticket \
+  -H "authorization: Bearer $STRUT_API_KEY" -H 'content-type: application/json' \
+  -d '{"actor":"evanfeenstra-cm3k9x"}'
+# → { "ticket": "strut-ticket.eyJhY3Rvci….3q2…", "expiresAt": 1793813291223 }
+# frame: https://strut.acme.com/?ticket=strut-ticket.…&app=strut%2Fjamie&solo=1&theme=light
+```
+
+The ticket is `strut-ticket.<base64url claims>.<hmac>`, claims `{ actor,
+exp, jti }`, signed under the session's secret. It lives 60 s and trades
+ONCE: a redeemed `jti` is remembered in memory until it expires (a restart
+forgets them). Mint one per page load.
+
+The UI, loaded with `?ticket=`, posts it to `POST /auth/session { ticket }`
+(with `x-strut-ui: 1`) before any other request, takes `ticket` off the
+address bar with `history.replaceState` — every other param (`app`, `solo`,
+`wf`, `run`, `embed_origin`, `input`) kept as written — and carries on
+signed in as that person. The ticket wins: a key or a session the browser
+held before is dropped either way. Refused, the page says the sign-in link
+expired and to reload from the host — never the Settings → Connection key
+prompt — and so it does when that session later ends.
+
+**Same site only.** The cookie is `SameSite=Lax`, so a framed page gets it
+only when strut and the page framing it are SAME-SITE — `strut.acme.com`
+framed by `acme.com` (or `app.acme.com`). Framed by another site, the
+browser neither stores nor sends the cookie: the trade spends the ticket,
+and the next request is a 401. Serve strut from a subdomain of the host's
+own site.
 
 ## 14. Apps — a front-end project over workflows
 
@@ -1226,11 +1344,11 @@ as `agentTools: ["run/*"]`, and the §3 … §7 routes' layers one more way
 
 | Step | Config | Result |
 | ---- | ------ | ------ |
-| `run/list` | `{ workflow, limit? (50, ≤ 500), status?, since? (ISO or ms), automation?, job? }` — or `{ job, … }` with no `workflow`: a job's runs across every workflow it ran, off its record | the summaries newest first, without `input` / `output` / `stepCounts`, each with `artifacts` resolved (§5); a run in flight has a live status |
+| `run/list` | `{ workflow, limit? (50, ≤ 500), status?, since? (ISO or ms), automation?, job? }` — or `{ job, … }` with no `workflow`: a job's runs across every workflow it ran, off its record | the summaries newest first, without `input` / `output` / `stepCounts`, each with `artifacts` resolved (§5); a run in flight has a live status. `since` is when a run was LAUNCHED (its id; a resumed run keeps its first launch), and a workflow's list stops at the first run before it. One call reads at most the newest 1 000 runs (`RUN_LIST_SCAN_MAX`): a filter that matches nothing among them answers `[]` |
 | `run/get` | `{ workflow, runId, wait? (ms, ≤ 55 000) }` | the summary whole + `artifacts`; in flight, the partial summary (`partial: true`) after holding up to `wait` |
 | `run/events` | `{ workflow, runId, skip? }` | the log as `GET …/events` serves it (transcripts as links, long fields replaced by their size), cut at 5 000 keeping the head and the last event |
 | `run/transcript` | `{ workflow, runId, path, full? }` | `{ path, messages, full?, truncated? }` — one agent's session by step path, the bare array `GET …/transcripts/<path>` serves (a page cannot follow that link); `full` = `?full=1`, a session turn's thread (`full: true` when stitched). Cut at 2 MB of JSON: long strings to head + tail (64k, 16k, then 4k chars), then messages left out after the system prompt and the task; `truncated: { chars, strings, stringMax, messages?: { at, count } }` says what went. No transcript at the path, or a session gone, is an error with the route's 404 message |
-| `run/launch` | `{ workflow, input?, params?, job?, title?, key?, attachments? }` | `{ runId }` at once (detached, like `POST …/run`; `params` may narrow a grant, never widen it, and may add to an `approve` list, never take from it); with `key`, the run of this workflow still in flight under the same key: `{ runId, existing: true }`. `attachments`: `POST …/run`'s (§3: `[{ name, mediaType?, data }]`, at most 10, 10 MB each, 5 MB an image, 15 MB together), saved under the run's artifacts as `attachments/<name>` and on each agent's prompt, never in `input` |
+| `run/launch` | `{ workflow, input?, params?, job?, title?, key?, attachments?, conversation? }` | `{ runId }` at once (detached, like `POST …/run`; `params` may narrow a grant, never widen it, and may add to an `approve` list, never take from it); with `key`, the run of this workflow still in flight under the same key: `{ runId, existing: true }`. `attachments`: `POST …/run`'s (§3: `[{ name, mediaType?, data }]`, at most 10, 10 MB each, 5 MB an image, 15 MB together), saved under the run's artifacts as `attachments/<name>` and on each agent's prompt, never in `input`. `conversation`: `POST …/run`'s (§3), the conversation a JOB turn (`job`, `builder`) belongs to, so strut wakes it when the turn ends — strut's own app only, and only a conversation its viewer may continue (their own `<actor>/…`, one they took a turn in, a shared one: §9.1; else `conversation_not_yours:`) |
 | `run/cancel` | `{ workflow, runId, force? }` | `{ ok: true, runId, state }`; a run that is not live is an error. `force: true` is `POST …/cancel { force: true }` (§6.1): it abandons a step that never returns |
 | `run/workflow` | `{ workflow }` | `{ name, description?, category?, activeVersion?, input? (the \`input:\` block), params?, peer? }` |
 | `run/files` | `{ workflow, runId, path }` | `{ path, mediaType, bytes, text }` or `{ …, base64 }`, cut at 2 MB (`truncated: true`) — the job's directory for a job run, else the run's artifacts |
@@ -1324,7 +1442,10 @@ both in the side panel.
 With `&solo=1` beside `?app=` (any app, here or a peer's) the UI renders the
 page ALONE, nothing of strut's around it — what a native host such as Peel
 opens in a web view of its own: `/?key=<the local strut's key>&app=@<peer>/<name>&solo=1`,
-with `&input=` for a deep link. A link the page opens to itself changes
+with `&input=` for a deep link. `&theme=light` (or `dark`) is the theme the
+page hands the app, for a host whose own page is light; without it the app
+is shown dark, as strut's UI is. The page behind it matches while it loads;
+strut's own bar over the side panel and its file viewer stay dark. A link the page opens to itself changes
 `input` in place, the URL following (replaced, as the full UI does); a
 file or another app opens in the side panel inside the page (below); any
 other link opens in a new window.
@@ -1689,7 +1810,7 @@ what their person token has, where §14.8's rules hold a model-written page:
 
 | | A model-written page | A first-party page |
 |---|---|---|
-| A sealed workflow (the orchestrator) | only through a person's grant (§14.8), the runs this app launched for the viewer | no grant: the viewer's runs (`actor`), whoever launched them |
+| A sealed workflow (the orchestrator) | only through a person's grant (§14.8), the runs this app launched for the viewer | no grant: the viewer's runs (`actor`), whoever launched them, and every turn of a conversation the viewer may read (one they are in, or a shared one) |
 | Its runs' agent sessions | under `app/<name>/<viewer>/` | the viewer's own as they are (`<actor>`, `<actor>/…`), so they are conversations (§9.1), and a conversation the viewer took a turn in or a shared one (§9.1, "Who may continue one"); any other id under the app |
 | Gated tools (`approve:`) in its runs' agents | left out | kept: the proposals are the viewer's, listed by `proposal/list` and decided by `proposal/decide` |
 | Job ids | under `app/<name>/` | the person's own, as they are |
@@ -1702,6 +1823,56 @@ With no actor (the deployment key alone) a `strut/` app is an app like any
 other. An app that imports strut's components compiles them into its own
 document, which runs on its own grants: rights belong to the document's
 identity, never to the code in it.
+
+### 14.11 `strut/jamie` — Jamie, the person's assistant (`plans/jamie-app.md` §5)
+
+The app strut seeds beside `strut/views` (`src/apps/jamie/`,
+`src/apps/jamie-seed.ts`): the viewer's conversations with the
+`orchestrator` — the list by day, search, show more, rename, archive,
+unread, and under each conversation its jobs and their pull requests —
+each turn read back (§9.1), the composer (files, a model picker, "/" for a
+Concept, the viewer's time zone in `context`), the jobs a turn started
+(live while they run, their reply, deliverables, claims, captcha and pull
+requests), the proposals it made, and what it made. First-party (§14.10).
+`createStrut({ jamie: false })` or `STRUT_HOST_CONFIG`'s `jamie: false`
+seeds nothing; `strut/assistant`, its name before, is removed at boot. A
+host opens it as `?app=strut/jamie&solo=1`, a conversation as
+`&input=session%3D<id>`.
+
+What it calls, beyond §9.1, §12 and §14.2:
+
+| Step | Config | Result |
+| ---- | ------ | ------ |
+| `llm/models` | `{}` | what `GET /llm/models` serves: `{ default, models: [{ name, provider, modelId, alias, default, available }], keyNames }` — `available` when the provider has a key here, never the key. The picker sends the choice as the turn's `params.model` |
+| `job/verify` | `{ job, claims?, detach? }` | `POST /jobs/:id/verify` (§5.5) as a person: every check on the job's claims (or `claims`) against its newest turn, `manual` ones too — the pass and the ledger, or with `detach` `{ job, started: true }` at once, the verdicts on `job/updates` (`evidence`, then `verify` done) |
+| `job/evidence` | `{ job, claim, runId, supports, content, slot? }` | `POST /claims/:id/evidence { job, runId }` as a person: `asserted`, `by: person`, about that turn; `slot` answers a check waiting on a person's look. `{ ok, evidence, filled, subject }` |
+| `github/pr-status` | `{ repo, number }` | the pull request on GitHub now, read with the viewer's own `GITHUB_TOKEN` (an actor secret, `PUT /actors/:actor/secrets/GITHUB_TOKEN`): `{ url, repo, number, title, state: open \| draft \| merged \| closed, author, head, base, headSha, body, mergeable, checks: [{ name, status: failed \| running \| passed \| skipped, url }], counts }`, checks failed first. Errors `github_unauthorized:`, `github_not_found:`, `github_rate_limited:`, `github_error:` |
+| `github/merge-pr` | `{ repo, number, sha?, method? }` | merges it as the viewer — squash by default, else the first method the repository allows — at `sha`, the head the viewer saw: `{ merged: true, url, sha, method }`. Refused before merging when it is not open, is a draft, has conflicts (`pr_not_mergeable:`) or has commits past `sha` (`pr_head_moved:`); `github_unauthorized:` with no token for the viewer. Runs only as a first-party page's own call, or as a proposal a person accepted |
+
+`job/verify` and `job/evidence` run only as a first-party page's own call
+(never an agent's tool: an agent verifies with `meta/verify-job`) and only
+on a job the viewer launched a run of (the record's `actors`); where the
+claims layer is off they say so. The page's turn into a conversation is
+`run/launch` of `orchestrator` with `input: { prompt, session, context: {
+line, where, timeZone } }`; a new conversation's id is `<viewer>/<12 hex>`.
+The page sends into whatever conversation `conversation/list` shows; a
+person continues one they took a turn in, or a shared one
+(`plans/jamie-app.md` §2.2), and a refused turn
+(`conversation_not_yours: …`, someone who read it while it was shared) is
+a plain notice. A captcha's answer
+is a job turn, `run/launch { workflow: <the job's>, job, input: { prompt:
+"[captcha-answer] {…}" }, conversation }`; so is a pull request's Fix, when
+its checks failed (`prompt`: which checks, and the branch to push the fix
+to). A pull request is one card per thread, at its newest mention; a job's
+own card keeps its pull requests in sight while it is collapsed, unless the
+thread shows them. A person's attached files show under their message: an
+image as a thumbnail that opens large, a text file to read, the rest by
+name, each read with `run/files` on the turn's run. The page reads any turn
+of a conversation its viewer may read (one they are in, or a shared one),
+whoever took it. Share puts a conversation in everyone's list
+(`conversation/update { shared }`); a reply has Copy. A deliverable `strut/views`
+draws shows in the thread; the rest is handed to the host as
+`?artifact=<served path>` or `?app=<key>` (`ui/open-link`, §14.3).
 
 ## 15. Dictation — speech to text, its models and the user's vocabulary
 

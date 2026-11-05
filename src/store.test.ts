@@ -147,6 +147,34 @@ describe("FileRunStore", () => {
     assert.equal(JSON.parse(lines[1]!).type, "step.end");
   });
 
+  it("concurrent appends of events over 512 KiB stay whole lines, each writer's in order", async () => {
+    // appendFile writes a big string in 512 KiB chunks: two at once used to
+    // interleave into lines nothing could parse (8 writers of 600 KiB events
+    // left 17 of 80 readable).
+    const store = new FileRunStore(tempDir);
+    const big = "x".repeat(600 * 1024);
+    await Promise.all(
+      Array.from({ length: 8 }, (_, w) =>
+        (async () => {
+          for (let i = 0; i < 5; i++) {
+            await store.append(WF, "200", { ts: "", runId: "200", path: `w${w}`, type: "step.end", output: { i, big } });
+          }
+        })(),
+      ),
+    );
+    const lines = (await readFile(join(tempDir, "workflows", WF, "runs", "200", "events.jsonl"), "utf-8"))
+      .trim()
+      .split("\n");
+    assert.equal(lines.length, 40);
+    const events = lines.map((l) => JSON.parse(l) as RunEvent & { output: { i: number } });
+    for (let w = 0; w < 8; w++) {
+      assert.deepEqual(
+        events.filter((e) => e.path === `w${w}`).map((e) => e.output.i),
+        [0, 1, 2, 3, 4],
+      );
+    }
+  });
+
   it("writes run.json on finalize", async () => {
     const store = new FileRunStore(tempDir);
     const summary: RunSummary = {

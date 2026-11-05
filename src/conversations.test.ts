@@ -1,7 +1,7 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -11,7 +11,8 @@ import { MemoryRunStore } from "./store.js";
 import { ORCHESTRATOR_WORKFLOW } from "./orchestrator-seed.js";
 import type { Scope } from "./auth.js";
 import type { RunEvent } from "./core.js";
-import { isConversationFlow, titleOf, turnJobs } from "./conversations.js";
+import { isConversationFlow, pullRequestsOf, titleOf, turnJobs, withJobs } from "./conversations.js";
+import { encodeId } from "./session-store.js";
 import listStep from "./steps/lib/conversation/list.js";
 
 describe("conversations: the pure parts", () => {
@@ -43,6 +44,30 @@ describe("conversations: the pure parts", () => {
       { job: "j-2", runId: "12" },
       { job: "j-3", runId: "13", workflow: "job" },
     ]);
+  });
+
+  it("pullRequestsOf: a run output's pull_request artifacts with a GitHub link, each once", () => {
+    assert.deepEqual(
+      pullRequestsOf({
+        artifacts: [
+          { id: "pr", kind: "pull_request", title: "Fix login", url: "https://github.com/a/b/pull/5" },
+          { id: "pr2", kind: "pull_request", title: "Again", url: "https://github.com/a/b/pull/5/files" },
+          { id: "c", kind: "pull_request", content: '{"url":"https://github.com/a/c/pull/7","state":"merged"}' },
+          { id: "x", kind: "pull_request", url: "https://example.com/pull/1" },
+          { id: "m", kind: "markdown", url: "https://github.com/a/b/pull/9" },
+        ],
+      }),
+      [
+        { url: "https://github.com/a/b/pull/5", title: "Fix login", repo: "a/b", number: 5 },
+        { url: "https://github.com/a/c/pull/7", repo: "a/c", number: 7, state: "merged" },
+      ],
+    );
+    assert.deepEqual(pullRequestsOf(undefined), []);
+  });
+
+  it("withJobs: each turn's jobs, a job seen again moved to the end", () => {
+    assert.deepEqual(withJobs(["a", "b"], [[{ job: "c", runId: "1" }], [{ job: "a", runId: "2" }]]), ["b", "c", "a"]);
+    assert.deepEqual(withJobs([], []), []);
   });
 
   it("the steps are refused to an app's page", async () => {
@@ -183,7 +208,7 @@ describe("conversations through a whole strut", () => {
     assert.equal((await get("carol", "c-1")).status, 404);
   });
 
-  it("a share opens it to another actor, and opening it lists it for them; their turn makes them a participant", async () => {
+  it("a share puts it in everyone's list until they open it, which makes it theirs; their turn makes them a participant", async () => {
     const { say, list, get, update } = await boot();
     await say("alice", "c-1", "plan the offsite");
     assert.equal((await get("carol", "c-1")).status, 404);
@@ -192,17 +217,21 @@ describe("conversations through a whole strut", () => {
     const shared = await update("alice", { session: "c-1", shared: true });
     assert.equal(shared.status, 200);
     assert.equal(shared.body.shared, true);
-    assert.equal((await list("carol")).body.conversations.length, 0, "readable, not yet opened");
+    const row = (actor: string) => list(actor).then((r) => r.body.conversations.map((c: any) => [c.id, c.shared, c.team, c.unread, c.startedBy]));
+    assert.deepEqual(await row("carol"), [["c-1", true, true, false, "alice"]], "in carol's list, not hers yet, never unread");
+    assert.deepEqual(await row("dave"), [["c-1", true, true, false, "alice"]], "and dave's");
+    assert.deepEqual((await list("carol", "?archived=1")).body.conversations, [], "never among the archived");
     const opened = await get("carol", "c-1");
     assert.equal(opened.status, 200);
     assert.deepEqual(opened.body.participants, ["alice"]);
-    assert.deepEqual((await list("carol")).body.conversations.map((c: any) => [c.id, c.shared]), [["c-1", true]], "listed once opened");
+    assert.deepEqual((await row("carol"))[0]!.slice(0, 3), ["c-1", true, undefined], "opened: hers");
 
     await say("carol", "c-1", "add a budget");
     assert.deepEqual((await get("alice", "c-1")).body.participants, ["alice", "carol"]);
     const unshared = await update("alice", { session: "c-1", shared: false });
     assert.equal(unshared.body.shared, undefined);
     assert.equal((await get("carol", "c-1")).status, 200, "a participant reads it unshared");
+    assert.deepEqual(await row("dave"), [], "out of the list of whoever never opened it");
   });
 
   it("rename for everyone; archived and seen per viewer; a turn is unread until seen", async () => {
@@ -243,6 +272,35 @@ describe("conversations through a whole strut", () => {
     assert.equal(wake.text, "Summary.");
   });
 
+  it("a list row shows the jobs its turns started — title, running, the pull requests they delivered — and an older record gets them on its next list", async () => {
+    const { strut, say, list, idle } = await boot({
+      reply: () => ({ text: "On it.", start: { brief: "Fix the login", title: "Login fix" }, artifacts: [] }),
+    });
+    await strut.workspace.publishWorkflow("job", "v2", {
+      steps: [{ id: "result", type: "pack", config: { text: "done", artifacts: [{ id: "pr", kind: "pull_request", title: "Fix login", url: "https://github.com/a/b/pull/5" }] } }],
+    });
+    await say("alice", "c-1", "fix the login");
+    await idle();
+    const row = async () => (await list("alice")).body.conversations.find((c: any) => c.id === "c-1");
+    const r = await row();
+    assert.equal(r.jobs.length, 1);
+    assert.deepEqual({ ...r.jobs[0], job: "<id>" }, { job: "<id>", title: "Login fix", prs: [{ url: "https://github.com/a/b/pull/5", title: "Fix login", repo: "a/b", number: 5 }] });
+    assert.equal(r.moreJobs, undefined);
+
+    // A record from before jobs were kept: the next list reads them from its turns.
+    const file = join(dir, "conversations", "sessions", `${encodeId("c-1")}.json`);
+    const rec = JSON.parse(await readFile(file, "utf8"));
+    delete rec.jobs;
+    await writeFile(file, JSON.stringify(rec));
+    const viewer = join(dir, "conversations", "viewers", `${encodeId("alice")}.json`);
+    const idx = JSON.parse(await readFile(viewer, "utf8"));
+    delete idx.conversations["c-1"].jobs;
+    await writeFile(viewer, JSON.stringify(idx));
+    assert.equal((await row()).jobs, undefined, "not yet");
+    const again = await until(async () => ((await row()).jobs ? await row() : undefined), "the backfill");
+    assert.equal(again.jobs[0].title, "Login fix");
+  });
+
   it("a failed turn shows, with its error", async () => {
     const { say, get } = await boot();
     await say("alice", "c-1", "hello");
@@ -257,7 +315,7 @@ describe("conversations through a whole strut", () => {
     await say("alice", "old-1", "@acme\nthe old chat");
     await say("alice", "old-2", "another old one");
     // As if the index never was.
-    await rm(join(dir, "conversations"), { recursive: true, force: true });
+    await rm(join(dir, "conversations"), { recursive: true, force: true, maxRetries: 5 });
 
     const { body } = await list("alice");
     assert.deepEqual(
@@ -266,7 +324,7 @@ describe("conversations through a whole strut", () => {
       "built from the sessions, its history read",
     );
 
-    await rm(join(dir, "conversations"), { recursive: true, force: true });
+    await rm(join(dir, "conversations"), { recursive: true, force: true, maxRetries: 5 });
     const read = await get("alice", "old-1");
     assert.equal(read.status, 200);
     assert.equal(read.body.turns[0].prompt, "@acme\nthe old chat");

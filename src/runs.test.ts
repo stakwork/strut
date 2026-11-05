@@ -1,28 +1,36 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import type { RunEvent } from "./core.js";
+import { mkdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { randomUUID } from "node:crypto";
+import type { RunEvent, StepRegistry } from "./core.js";
 import { RUN_EVENTS_MAX as KIT_RUN_EVENTS_MAX } from "../kit/src/hooks.js";
-import { RUN_EVENTS_MAX, RUN_FILE_MAX_BYTES, RUN_LIST_DEFAULT_LIMIT, RUN_LIST_MAX_LIMIT, capEvents, capTranscript, fileResult, listEntryOf, matchesRunFilter, mediaTypeOf, runsPage, sinceMs } from "./runs.js";
+import { RUN_EVENTS_MAX, RUN_FILE_MAX_BYTES, RUN_LIST_DEFAULT_LIMIT, RUN_LIST_MAX_LIMIT, RUN_LIST_SCAN_MAX, capEvents, capTranscript, fileResult, launchedAt, listEntryOf, matchesRunFilter, mediaTypeOf, runsPage, sinceMs, type RunsCapability } from "./runs.js";
+import { MemoryRunStore } from "./store.js";
+import { FileWorkspaceStore } from "./workspace.js";
+import { createStrut } from "./createStrut.js";
 
 /**
  * The pure parts of the runs capability (src/runs.ts): the list filter,
  * the event cap, the file result, the transcript cap. The capability itself
  * — list / get / events / launch / cancel / workflow / files / transcript
  * over a strut — is driven through `step_run` in src/apps/tools.test.ts;
- * `transcript { full }` on a session thread in src/sessions.test.ts.
+ * `transcript { full }` on a session thread in src/sessions.test.ts. What
+ * one `list` reads of a big workflow is at the end, against a strut.
  */
 
 const ev = (type: RunEvent["type"], path = "wf", extra: Partial<RunEvent> = {}): RunEvent => ({ ts: "2026-10-21T00:00:00.000Z", runId: "1", path, type, ...extra });
 
 describe("runs — the pure parts", () => {
-  it("since reads ISO or ms; the filter matches status, automation, job and since (startedAt, else the run id's moment)", () => {
+  it("since reads ISO or ms; the filter matches status, automation, job and since (the run id's moment, else startedAt)", () => {
     assert.equal(sinceMs(undefined), undefined);
     assert.equal(sinceMs(""), undefined);
     assert.equal(sinceMs("garbage"), undefined);
     assert.equal(sinceMs(1700000000000), 1700000000000);
     assert.equal(sinceMs("1700000000000"), 1700000000000);
     assert.equal(sinceMs("2026-10-21T00:00:00.000Z"), Date.parse("2026-10-21T00:00:00.000Z"));
-    const run = { runId: "1761000000000", status: "success", startedAt: "2026-10-21T00:00:00.000Z", automation: { id: "a1" }, job: "j1" };
+    const run = { runId: String(Date.parse("2026-10-21T00:00:00.000Z")), status: "success", startedAt: "2026-10-21T00:00:00.000Z", automation: { id: "a1" }, job: "j1" };
     assert.ok(matchesRunFilter(run, {}));
     assert.ok(matchesRunFilter(run, { status: "success", automation: "a1", job: "j1" }));
     assert.ok(!matchesRunFilter(run, { status: "error" }));
@@ -34,6 +42,13 @@ describe("runs — the pure parts", () => {
     assert.ok(matchesRunFilter({ runId: "1761000000000", status: "running" }, { since: 1760999999999 }));
     assert.ok(!matchesRunFilter({ runId: "1761000000000", status: "running" }, { since: 1761000000001 }));
     assert.ok(matchesRunFilter({ runId: "abc", status: "running" }, { since: 1761000000001 }), "an id that is not a moment is not filtered out");
+    // A durable resume restarts `startedAt`: the run is still when it was launched.
+    const resumed = { runId: "1761000000000", status: "success", startedAt: "2026-11-01T00:00:00.000Z" };
+    assert.equal(launchedAt(resumed), 1761000000000);
+    assert.ok(!matchesRunFilter(resumed, { since: "2026-10-25T00:00:00Z" }));
+    assert.equal(launchedAt({ runId: "abc", startedAt: "2026-11-01T00:00:00.000Z" }), Date.parse("2026-11-01T00:00:00.000Z"), "an id that is no moment: its startedAt");
+    assert.ok(!matchesRunFilter({ runId: "abc", status: "success", startedAt: "2026-10-20T00:00:00.000Z" }, { since: "2026-10-25T00:00:00Z" }));
+    assert.equal(launchedAt({ runId: "abc" }), undefined);
   });
 
   it("a page of run ids: `limit` after `before`, the default and the cap", () => {
@@ -127,5 +142,53 @@ describe("runs — the pure parts", () => {
     assert.equal(t.messages!.at, 2);
     assert.equal(out.messages.length, msgs.length - t.messages!.count);
     assert.ok(t.messages!.count > 0 && t.messages!.count % 2 === 0, "whole call + result pairs left out");
+  });
+});
+
+describe("run/list — what one call reads of a big workflow", () => {
+  it("stops at the first run launched before `since`, and a filter reads the newest RUN_LIST_SCAN_MAX runs, no further", async () => {
+    const dir = join(tmpdir(), `strut-runs-${randomUUID()}`);
+    await mkdir(dir, { recursive: true });
+    const workspace = new FileWorkspaceStore(dir);
+    await workspace.publishWorkflowByContent("wf", ["name: wf", "steps:", "  - id: a", "    type: log", "    config:", "      message: hi"].join("\n"));
+    const store = new MemoryRunStore();
+    const strut = await createStrut({ workspace, store, dataDir: dir, registry: {} as StepRegistry, serveUi: false, enableChat: false, autoResume: false, scheduler: false });
+    try {
+      const runs = (strut.services as { runs: RunsCapability }).runs;
+      const base = 1_761_000_000_000;
+      const total = RUN_LIST_SCAN_MAX + 500;
+      const ids: string[] = [];
+      for (let i = 0; i < total; i++) {
+        const runId = String(base + i * 1000);
+        ids.push(runId);
+        const at = new Date(base + i * 1000).toISOString();
+        await store.append("wf", runId, { ts: at, runId, path: "wf", type: "run.start", input: {} });
+        // The oldest run is the one error; the rest succeeded.
+        await store.finalize("wf", runId, { runId, workflow: "wf", startedAt: at, finishedAt: at, durationMs: 1, status: i === 0 ? "error" : "success", input: {} });
+      }
+      ids.reverse(); // newest first
+      let reads = 0;
+      const getRunSummary = store.getRunSummary.bind(store);
+      store.getRunSummary = async (wf, id) => (reads++, getRunSummary(wf, id));
+
+      // `since`: the newest 100, and nothing older is read.
+      const since = Number(ids[99]);
+      const recent = await runs.list({ workflow: "wf", since, limit: RUN_LIST_MAX_LIMIT });
+      assert.deepEqual(recent.map((r) => r.runId), ids.slice(0, 100));
+      assert.equal(reads, 100);
+
+      // A filter that matches only a run past the newest RUN_LIST_SCAN_MAX: not found, and no more read.
+      reads = 0;
+      assert.deepEqual(await runs.list({ workflow: "wf", status: "error" }), []);
+      assert.equal(reads, RUN_LIST_SCAN_MAX);
+
+      // Unfiltered, the limit is reached first.
+      reads = 0;
+      assert.equal((await runs.list({ workflow: "wf", limit: RUN_LIST_MAX_LIMIT })).length, RUN_LIST_MAX_LIMIT);
+      assert.equal(reads, RUN_LIST_MAX_LIMIT);
+    } finally {
+      await strut.close();
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { coerceJsonArg, foldAccessedNodes, withAccessedNodes, withUsage, type AccessedNode, type ModelUsage, type AnyStepDef, type Flow, type McpServer, type RunEvent, type RunResult, type RunSummary, type StepRegistry } from "./core.js";
 import { buildRunView, type RunViewOptions } from "./run-view.js";
-import { claimsBlockOf, flowFromYaml, type WorkspaceStore } from "./workspace.js";
+import { claimsBlockOf, flowFromYaml, workflowDisabled, type WorkspaceStore } from "./workspace.js";
 import type { RunStore } from "./store.js";
 import { countUsage, generateRunId, stepRunKey, stepTypeOfRunKey } from "./store.js";
 import { runWorkflow } from "./runner.js";
@@ -829,6 +829,8 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
       }
       // The seal is read off the version that would run, too.
       if (flow.sealed) return { error: sealedWorkflow(name, "run it") };
+      const disabled = await workflowDisabled(workspace, name);
+      if (disabled) return { error: disabled };
       // FRESH registry, same reason as runStep: steps published mid-run are
       // invisible to the enclosing run's registry snapshot.
       const registry = await deps.getRegistry();
@@ -841,7 +843,14 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
       // Tree linkage: attach this nested run's controller to the launching
       // run's (opts.parentRunId = the calling step's ctx.runId), so controls
       // on the parent reach it (RUN_CONTROL_SPEC §2.2).
-      const tracked = deps.trackRun?.(flow.name, runId, opts?.parentRunId, opts?.job ? { id: opts.job } : undefined);
+      // Registration refuses a new top-level run while the deployment drains
+      // (src/drain.ts); a child of a run in flight still starts.
+      let tracked: ReturnType<NonNullable<typeof deps.trackRun>> | undefined;
+      try {
+        tracked = deps.trackRun?.(flow.name, runId, opts?.parentRunId, opts?.job ? { id: opts.job } : undefined);
+      } catch (err) {
+        return { error: err instanceof Error ? err.message : String(err) };
+      }
       try {
         const result = await runWorkflow(flow, coerceJsonArg(input) ?? {}, registry, {
           runId,

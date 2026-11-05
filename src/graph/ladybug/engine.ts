@@ -51,7 +51,7 @@ import type {
   WriteMode,
   WriteOutcome,
 } from "../engine.js";
-import { sameStored } from "../engine.js";
+import { sameStored, type EdgeHint } from "../engine.js";
 import { GraphValidationError, type Embedder } from "../node-writer.js";
 import type { NodeSchema } from "../schema-resolver.js";
 import type { LadybugHandle } from "./db.js";
@@ -81,8 +81,6 @@ export const LADYBUG_DIALECT: Dialect = {
 
 /** Identity props never touched after create. */
 const PRESERVED = new Set(["ref_id", "key", "namespace", "node_type", "created_at"]);
-/** What the shared writer composes that the file does not keep. */
-const DROPPED_PROPS = new Set(["_search_fields_used"]);
 /** Edge stamps the writer sets on create and `setProps` never touches
  *  (`updated_at` it moves itself). */
 const EDGE_STAMPS = new Set(["ref_id", "edge_key", "created_at", "namespace", "created_by", "updated_at", "deleted_at"]);
@@ -140,7 +138,7 @@ class LadybugNodes implements NodeEngine {
 
   /** The file's columns, with every one of `names` in it if the file has it. */
   private async known(tx: GraphTx, names: string[]): Promise<Record<string, string>> {
-    return (await catalogFor(this.catalog, tx, (c) => names.every((k) => DROPPED_PROPS.has(k) || k in c.columns))).columns;
+    return (await catalogFor(this.catalog, tx, (c) => names.every((k) => k in c.columns))).columns;
   }
 
   /** The writer's props as columns: every key must be an attribute of the
@@ -149,7 +147,6 @@ class LadybugNodes implements NodeEngine {
     const out: Record<string, unknown> = {};
     const known = await this.known(tx, Object.keys(props));
     for (const [k, v] of Object.entries(props)) {
-      if (DROPPED_PROPS.has(k)) continue;
       if (!(k in schema.attributes) && !(k in GENERIC_COLUMNS)) throw new GraphValidationError("UNKNOWN_ATTRIBUTE", schema.type, "not a column of the ladybug Node table", k);
       if (!known[k]) throw new GraphValidationError("UNKNOWN_ATTRIBUTE", schema.type, "not a column of the ladybug Node table", k);
       out[k] = v;
@@ -490,15 +487,22 @@ class LadybugEdges implements EdgeEngine {
     return out;
   }
 
-  private async locate(tx: GraphTx, ref_id: string): Promise<{ edge: string; src: string; tgt: string } | null> {
+  private async locate(tx: GraphTx, ref_id: string, hint?: EdgeHint): Promise<{ edge: string; src: string; tgt: string } | null> {
+    // A known type reads one rel table; the ontology's edge is never one.
+    if (hint?.edge) {
+      if (hint.edge === SCHEMA_EDGE || !(await this.table(tx, hint.edge))) return null;
+      const typed = await tx.run(`MATCH (s:Node)-[r:${q(hint.edge)} {ref_id: $ref_id}]->(t:Node) RETURN s.ref_id AS src, t.ref_id AS tgt LIMIT 1`, { ref_id });
+      const t = typed[0];
+      return t ? { edge: hint.edge, src: String(t["src"]), tgt: String(t["tgt"]) } : null;
+    }
     // The ontology's own edges are not edges a writer may touch.
     const rows = await tx.run(`MATCH (s:Node)-[r {ref_id: $ref_id}]->(t:Node) WHERE label(r) <> '${SCHEMA_EDGE}' RETURN label(r) AS edge, s.ref_id AS src, t.ref_id AS tgt LIMIT 1`, { ref_id });
     const r = rows[0];
     return r ? { edge: String(r["edge"]), src: String(r["src"]), tgt: String(r["tgt"]) } : null;
   }
 
-  async setProps(tx: GraphTx, ref_id: string, set: Record<string, unknown>, remove: string[]) {
-    const at = await this.locate(tx, ref_id);
+  async setProps(tx: GraphTx, ref_id: string, set: Record<string, unknown>, remove: string[], hint?: EdgeHint) {
+    const at = await this.locate(tx, ref_id, hint);
     if (!at) return null;
     const columns = edgeColumns(at.edge, set);
     for (const k of remove) edgeColumns(at.edge, { [k]: true });
@@ -524,9 +528,9 @@ class LadybugEdges implements EdgeEngine {
     return rows.map((r) => String(r["ref_id"]));
   }
 
-  async delete(ref_id: string, tx?: GraphTx): Promise<EdgeDeleteResult | null> {
+  async delete(ref_id: string, tx?: GraphTx, hint?: EdgeHint): Promise<EdgeDeleteResult | null> {
     const go = async (t: GraphTx): Promise<EdgeDeleteResult | null> => {
-      const at = await this.locate(t, ref_id);
+      const at = await this.locate(t, ref_id, hint);
       if (!at) return null;
       await t.run(`MATCH ()-[r:${q(at.edge)} {ref_id: $ref_id}]->() DELETE r`, { ref_id });
       await deleteEdgeRows(t, [ref_id], Date.now());
@@ -558,9 +562,11 @@ class LadybugEdges implements EdgeEngine {
     return Number(rows[0]?.["c"] ?? 0) > 0;
   }
 
-  async copyProps(tx: GraphTx, fromRef: string, toRef: string): Promise<void> {
-    const old = await tx.run(`MATCH ()-[r {ref_id: $ref_id}]->() WHERE label(r) <> '${SCHEMA_EDGE}' RETURN r AS rel LIMIT 1`, { ref_id: fromRef });
-    const at = await this.locate(tx, toRef);
+  async copyProps(tx: GraphTx, fromRef: string, toRef: string, _uid?: string | null, hint?: EdgeHint): Promise<void> {
+    const old = hint?.edge && hint.edge !== SCHEMA_EDGE
+      ? (await this.table(tx, hint.edge)) ? await tx.run(`MATCH ()-[r:${q(hint.edge)} {ref_id: $ref_id}]->() RETURN r AS rel LIMIT 1`, { ref_id: fromRef }) : []
+      : await tx.run(`MATCH ()-[r {ref_id: $ref_id}]->() WHERE label(r) <> '${SCHEMA_EDGE}' RETURN r AS rel LIMIT 1`, { ref_id: fromRef });
+    const at = await this.locate(tx, toRef, hint);
     if (!old[0] || !at) return;
     const props = edgeProps(old[0]["rel"] as Record<string, unknown>);
     const params: Params = { ref_id: toRef };

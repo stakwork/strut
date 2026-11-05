@@ -13,6 +13,7 @@ import type {
   StepCounts,
 } from "./core.js";
 export type { RunEndInfo } from "./core.js";
+import { assertWorkflowEnabled } from "./workspace.js";
 import { accessedNodesOf, messagesOf, takeUsage, type AccessedNode, type ModelUsage, type StartedBy, type WakeMark } from "./core.js";
 import { resolveConfig } from "./expr.js";
 import { baseType, parseStepRef } from "./step-ref.js";
@@ -1323,6 +1324,7 @@ async function executeSubflow(
   // The child as this frame means it — its package's own first — and its
   // steps then look names up in the CHILD's package.
   const childName = await workflowOfFrame(exec, wfName);
+  await assertWorkflowEnabled(exec.workspace as Parameters<typeof assertWorkflowEnabled>[0], childName);
   const childFlow = version
     ? await exec.workspace.getWorkflowVersion(childName, version)
     : await exec.workspace.getWorkflow(childName);

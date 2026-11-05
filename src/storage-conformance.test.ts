@@ -83,6 +83,29 @@ for (const impl of runImpls) {
       assert.equal(await store.logSize(WF, "1000"), 0);
     });
 
+    it("logWrittenAt is when the log was last written, never before its last event; null for an unknown run", async () => {
+      assert.equal(await store.logWrittenAt(WF, "1000"), null);
+      const before = Date.now();
+      await store.append(WF, "1000", ev("1000", "run.start"));
+      const last = ev("1000", "step.end", { path: "wf/a", stepType: "value", output: 1 });
+      await store.append(WF, "1000", last);
+      const at = await store.logWrittenAt(WF, "1000");
+      // A filesystem may keep mtimes to the second (the boot scan's slack).
+      assert.ok(at !== null && at >= Date.parse(last.ts) - 2_000 && at <= Date.now() + 1_000, `at ${at}`);
+      assert.ok(at! >= before - 2_000);
+    });
+
+    it("getRunStart is the run.start event alone, whatever follows it; null for a run that never started", async () => {
+      assert.equal(await store.getRunStart(WF, "1000"), null);
+      const start = ev("1000", "run.start", { input: { q: "x".repeat(100_000) }, actor: "alice", app: { name: "bench", version: "v2" } });
+      await store.append(WF, "1000", start);
+      await store.append(WF, "1000", ev("1000", "step.end", { path: "wf/big", stepType: "value", output: "y".repeat(200_000) }));
+      assert.deepEqual(await store.getRunStart(WF, "1000"), start);
+      // An input that failed validation: a log with no run.start.
+      await store.append(WF, "2000", ev("2000", "run.error", { error: { message: "Input validation failed" } }));
+      assert.equal(await store.getRunStart(WF, "2000"), null);
+    });
+
     it("listRuns is per-workflow, newest first; lastRunAt is the newest run's start", async () => {
       await store.append(WF, "1000", ev("1000", "run.start"));
       await store.append(WF, "3000", ev("3000", "run.start"));

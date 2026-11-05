@@ -1,12 +1,19 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { appKey, appMessage, appToolInput, isPreviewVersion, namesApp, panelTarget, parseAppKey, peerAppLink, strutLink } from "./app-links";
+import { appKey, appMessage, appToolInput, isPreviewVersion, namesApp, panelTarget, parseAppKey, peerAppLink, soloTheme, strutLink } from "./app-links";
 import { appLink } from "../../kit/src/links";
 
 /** The pure parts of the app host's relay (./app-links, what ./app-host
  *  decides without the bridge): where a link leads, what a page's message
  *  becomes. The bridge itself is ext-apps'. */
 describe("the app host", () => {
+  it("the standalone page's &theme= is light or dark, else none (strut's UI is dark)", () => {
+    assert.equal(soloTheme("light"), "light");
+    assert.equal(soloTheme("dark"), "dark");
+    assert.equal(soloTheme("Light"), undefined);
+    assert.equal(soloTheme(null), undefined);
+  });
+
   const here = { origin: "https://strut.test", pathname: "/" };
   const lab = { origin: "https://swarm.test", pathname: "/lab/" };
 

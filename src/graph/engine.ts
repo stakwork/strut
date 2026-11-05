@@ -227,6 +227,10 @@ export interface EdgeMergeResult {
   target_ref_id: string;
 }
 
+/** What a caller already knows of an edge it addresses by ref_id: its type
+ *  lets an engine match one relationship table / type instead of all. */
+export interface EdgeHint { edge?: string }
+
 export interface EdgeEngine {
   /** Type and `unique_source_id` of every resolvable id. */
   endpoints(tx: GraphTx, ids: string[]): Promise<Map<string, EdgeEndpoint>>;
@@ -236,11 +240,11 @@ export interface EdgeEngine {
   mergeBatch(tx: GraphTx, edge: string, rows: EdgeMergeRow[]): Promise<EdgeMergeResult[]>;
   /** Set / remove properties on the edge with this ref_id; null when there
    *  is none. */
-  setProps(tx: GraphTx, ref_id: string, set: Record<string, unknown>, remove: string[]): Promise<{ ref_id: string; edge: string; source_ref_id: string; target_ref_id: string } | null>;
+  setProps(tx: GraphTx, ref_id: string, set: Record<string, unknown>, remove: string[], hint?: EdgeHint): Promise<{ ref_id: string; edge: string; source_ref_id: string; target_ref_id: string } | null>;
   /** The live `edge` edges from `src` to `tgt` (alias-rewritten), by ref_id. */
   findByTriple(tx: GraphTx, edge: string, src: string, tgt: string): Promise<string[]>;
   /** `DELETE r` by ref_id: the edge as it was, or null when there is none. */
-  delete(ref_id: string, tx?: GraphTx): Promise<EdgeDeleteResult | null>;
+  delete(ref_id: string, tx?: GraphTx, hint?: EdgeHint): Promise<EdgeDeleteResult | null>;
   /** The node `ref_id` names (its canonical ref after the alias rewrite)
    *  and its live `edge` edges that way — `forward` = `(node)-[edge]->(other)`.
    *  Null when there is no such node. */
@@ -250,7 +254,7 @@ export interface EdgeEngine {
   wouldCycle(tx: GraphTx, edge: string, node: string, to: string, forward: boolean): Promise<boolean>;
   /** Copy every property of the old edge onto the new one, then put the new
    *  one's own stamps back, with `uid` as its `unique_source_id`. */
-  copyProps(tx: GraphTx, fromRef: string, toRef: string, uid: string | null): Promise<void>;
+  copyProps(tx: GraphTx, fromRef: string, toRef: string, uid: string | null, hint?: EdgeHint): Promise<void>;
 }
 
 // ── The Schema meta-graph ───────────────────────────────────────────────────

@@ -334,6 +334,26 @@ describe("step_run — the app door", () => {
     // Each viewer lists and reads only their own; another's is not found.
     assert.deepEqual((await ok({ type: "run/list", config: { workflow: "assistant" }, app: identity })).map((r: any) => r.runId), [mine.runId]);
     assert.deepEqual((await asOther({ type: "run/list", config: { workflow: "assistant" }, app: identity })).result.map((r: any) => r.runId), [theirs.runId]);
+    // A run with no summary (cut off by a restart): whose it is comes off its
+    // run.start alone — never the whole log, which a page's poll would read
+    // again each time — and each summary is read once.
+    const cutOff = String(Number(theirs.runId) + 1);
+    const at = new Date().toISOString();
+    await store.append("assistant", cutOff, { ts: at, runId: cutOff, path: "assistant", type: "run.start", input: { session: "assistant" }, actor: "viewer", origin: "app", app: { name: "bench", version: "v1" } });
+    await store.append("assistant", cutOff, { ts: at, runId: cutOff, path: "assistant/s", type: "step.start", stepType: "value" });
+    const reads: string[] = [];
+    const { getRunEvents, getRunSummary } = store;
+    store.getRunEvents = async (wf, id) => (reads.push(`events ${id}`), getRunEvents.call(store, wf, id));
+    store.getRunSummary = async (wf, id) => (reads.push(`summary ${id}`), getRunSummary.call(store, wf, id));
+    try {
+      assert.deepEqual((await ok({ type: "run/list", config: { workflow: "assistant" }, app: identity })).map((r: any) => [r.runId, r.status]), [[cutOff, "stale"], [mine.runId, "success"]]);
+      assert.deepEqual((await asOther({ type: "run/list", config: { workflow: "assistant" }, app: identity })).result.map((r: any) => r.runId), [theirs.runId]);
+      assert.ok(!reads.some((r) => r.startsWith("events ")), reads.join(", "));
+      assert.equal(reads.filter((r) => r === `summary ${theirs.runId}`).length, 2, "once per list");
+    } finally {
+      store.getRunEvents = getRunEvents;
+      store.getRunSummary = getRunSummary;
+    }
     assert.match((await asOther({ type: "run/get", config: { workflow: "assistant", runId: mine.runId }, app: identity })).error!, /not found/);
     assert.deepEqual((await asOther({ type: "run/events", config: { workflow: "assistant", runId: mine.runId }, app: identity })).result, []);
     assert.match((await asOther({ type: "run/transcript", config: { workflow: "assistant", runId: mine.runId, path: "assistant/s" }, app: identity })).error!, /not found/);

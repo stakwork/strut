@@ -7,7 +7,9 @@
  */
 import type { Context, Hono } from "hono";
 import { requireApiKey } from "./auth.js";
+import { DRAINING } from "./drain.js";
 import type { Automations } from "./scheduler.js";
+import { disabledMessage } from "./workspace.js";
 
 export interface AutomationsRoutesOptions {
   /** Scheduling is an edit: an ownerless workflow is adopted by the actor
@@ -43,10 +45,12 @@ export function automationsRoutes(app: Hono, automations: Automations, opts: Aut
   });
   app.delete("/workflows/:name/automations/:id", requireApiKey, async (c) => reply(c, await automations.remove(wf(c), id(c))));
 
-  // Run now. A skip (previous run still in flight) is a 409, not a bad request.
+  // Run now. A skip (previous run still in flight) or a disabled workflow is
+  // a 409, not a bad request.
   app.post("/workflows/:name/automations/:id/fire", requireApiKey, async (c) => {
     const result = await automations.fire(wf(c), id(c));
-    if ("error" in result && result.error.startsWith("skipped:")) return c.json(result, 409);
+    if ("error" in result && result.error.startsWith(DRAINING)) return c.json(result, 503, { "retry-after": "60" });
+    if ("error" in result && (result.error.startsWith("skipped:") || result.error === disabledMessage(wf(c)))) return c.json(result, 409);
     return reply(c, result, 202);
   });
 }
