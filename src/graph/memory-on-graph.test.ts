@@ -9,9 +9,11 @@
  */
 import { after, before, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { GraphBackend, LadybugBackend } from "./backend.js";
 import { createNodeSchema } from "./schema-crud.js";
 import { graphView, parseGraphReaders } from "./scope.js";
@@ -28,8 +30,6 @@ import graphGet from "../steps/lib/graph/graph-get.js";
 import graphSearch from "../steps/lib/graph/graph-search.js";
 import importMemory, { restates, spelledIn } from "../steps/lib/graph/import-memory.js";
 import { assertEdge } from "./temporal.js";
-import { loadLadybug } from "./ladybug/db.js";
-import { createTables } from "../steps/lib/memory/_db.js";
 
 const lb = testBackends().find((b) => b.kind === "ladybug")!;
 const neo4j = testBackends().find((b) => b.kind === "neo4j");
@@ -205,37 +205,12 @@ describe("the generic tools cover remember and forget (ladybug)", { skip: lb.ski
 });
 
 /** Writes the old memory database `fixtures/old-memory.json` holds at
- *  `path`: every row and edge the old memory/* steps wrote for a short
- *  history (a name, a move, a past job, a mishearing, a forgotten entity). */
-async function writeOldMemory(path: string): Promise<void> {
-  const dump = JSON.parse(readFileSync(new URL("./fixtures/old-memory.json", import.meta.url), "utf8")) as Record<string, any>;
-  mkdirSync(join(path, ".."), { recursive: true });
-  const lbug = await loadLadybug();
-  const db = new lbug.Database(path);
-  const conn = new lbug.Connection(db);
-  const q = async (cypher: string, params: Record<string, unknown> = {}) => {
-    const r = Object.keys(params).length ? await conn.execute(await conn.prepare(cypher), params) : await conn.query(cypher);
-    return (await (Array.isArray(r) ? r[r.length - 1]! : r).getAll()) as Record<string, unknown>[];
-  };
-  await createTables(q);
-  for (const table of ["Entity", "Fact", "Episode", "Ontology"]) {
-    const types = new Map((await q(`CALL table_info('${table}') RETURN name, type`)).map((c) => [String(c["name"]), String(c["type"])]));
-    for (const row of dump[table] as Record<string, unknown>[]) {
-      const keys = Object.keys(row);
-      await q(`CREATE (:${table} {${keys.map((k, i) => `${k}: CAST($p${i} AS ${types.get(k)})`).join(", ")}})`, Object.fromEntries(keys.map((k, i) => [`p${i}`, row[k]])));
-    }
-  }
-  const ends: Record<string, [string, string]> = {
-    MENTIONS: ["Episode", "Entity"], SUBJECT: ["Fact", "Entity"], OBJECT: ["Fact", "Entity"], FROM_EPISODE: ["Fact", "Episode"],
-    SUPERSEDES: ["Fact", "Fact"], CONTRADICTS: ["Fact", "Fact"], ALIAS_OF: ["Entity", "Entity"],
-  };
-  for (const [rel, pairs] of Object.entries(dump["rels"] as Record<string, [string, string][]>)) {
-    const [from, to] = ends[rel]!;
-    for (const [x, y] of pairs) await q(`MATCH (a:${from} {ref_id: $x}), (b:${to} {ref_id: $y}) CREATE (a)-[:${rel}]->(b)`, { x, y });
-  }
-  await q("CHECKPOINT"); // all of it in the file, none left in a WAL
-  await conn.close();
-  await db.close();
+ *  `path` (scripts/write-old-memory.ts), in a process of its own: Ladybug
+ *  finishes writing a closed file later, so a file this process opened
+ *  could change under the test that says nothing here writes it. */
+function writeOldMemory(path: string): void {
+  const out = spawnSync(process.execPath, [fileURLToPath(import.meta.resolve("tsx/cli")), fileURLToPath(new URL("../../scripts/write-old-memory.ts", import.meta.url)), path], { encoding: "utf8" });
+  assert.equal(out.status, 0, out.stderr);
 }
 
 describe("graph/import-memory from the old memory database (ladybug)", { skip: lb.skip }, () => {
@@ -246,11 +221,9 @@ describe("graph/import-memory from the old memory database (ladybug)", { skip: l
   let ctx: StepContext;
   let oldBytes: Buffer;
   before(async () => {
-    await writeOldMemory(oldFile);
-    b = (await lb.open()) as LadybugBackend;
-    // Taken after the next open: Ladybug finishes writing a closed file's
-    // header only when another database opens in the process.
+    writeOldMemory(oldFile);
     oldBytes = readFileSync(oldFile);
+    b = (await lb.open()) as LadybugBackend;
     // As a step run sees the graph on Peel, with the note's lists: as a job.
     ctx = ctxOf({ graph: graphView(b, parseGraphReaders({ jobs: { namespaces: ["private", "shared"], exclude_domains: ["Strut"] } })), secrets }, { actor: "import" });
   });
