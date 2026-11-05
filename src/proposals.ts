@@ -1,5 +1,4 @@
 import { randomBytes } from "node:crypto";
-import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 import { accessedNodesOf, type ProposalDescription, takeUsage, workflowOf, type AnyStepDef, type McpServer, type StepContext, type StepRegistry } from "./core.js";
@@ -10,6 +9,7 @@ import type { JobUpdateInput } from "./jobs.js";
 import { bindGraph } from "./graph-writes.js";
 import type { Scope } from "./auth.js";
 import { buildCard, type ProposalCard } from "./proposal-card.js";
+import { proposalIndex, readProposalFile, type ProposalPage } from "./proposals-index.js";
 
 /**
  * Proposals (plans/proposals.md): a tool call a person approves before it
@@ -28,8 +28,10 @@ import { buildCard, type ProposalCard } from "./proposal-card.js";
  * Nothing here knows what is proposed: the step is the contract, its schema
  * the validation, its `run` the apply. There are no proposal types.
  *
- * The record lives at `<dataDir>/proposals/<id>.json`, like a job's; an
- * index is a readdir. No graph node until something must point at one.
+ * The record lives at `<dataDir>/proposals/<id>.json`, like a job's; lists
+ * answer from an in-memory index (proposals-index.ts), never a readdir. A
+ * decided record is compacted (its `input` becomes a marker) once applied or
+ * rejected. No graph node until something must point at one.
  */
 
 export type ProposalStatus = "pending" | "accepted" | "rejected" | "applied" | "failed";
@@ -151,55 +153,34 @@ export function proposalUpdate(p: Proposal): JobUpdateInput {
 
 // ── the record ─────────────────────────────────────────────────────────────
 
-const ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
+/** One record from disk (the archive too), with its full payload if it still has one. */
+export const readProposal = readProposalFile;
 
-export async function readProposal(root: string, id: string): Promise<Proposal | null> {
-  if (!ID_RE.test(id)) return null;
-  try {
-    return JSON.parse(await readFile(join(root, `${id}.json`), "utf-8")) as Proposal;
-  } catch {
-    return null;
-  }
-}
-
-/** Whole, through a temp file and a rename, as a job record is written. */
-async function writeProposal(root: string, p: Proposal): Promise<void> {
-  await mkdir(root, { recursive: true, mode: 0o700 });
-  const file = join(root, `${p.id}.json`);
-  await writeFile(`${file}.tmp`, JSON.stringify(p, null, 2), { mode: 0o600 });
-  await rename(`${file}.tmp`, file);
-}
-
+/** Read, edit under the record's lock, write — the file and the index. The
+ *  caller gets the record WHOLE (the person's answer still shows its
+ *  input); what is stored is the compacted form once it is over. */
 async function updateProposal(root: string, id: string, edit: (p: Proposal) => void): Promise<Proposal | null> {
   return withLock(join(root, `${id}.json`), async () => {
     const p = await readProposal(root, id);
     if (!p) return null;
     edit(p);
-    await writeProposal(root, p);
+    await proposalIndex(root).write(p);
     return p;
   });
 }
 
+/** Every match, newest first, from the index. */
 export async function listProposals(root: string, filter: ProposalFilter = {}): Promise<Proposal[]> {
-  let names: string[];
-  try {
-    names = (await readdir(root)).filter((n) => n.endsWith(".json"));
-  } catch {
-    return [];
-  }
-  const statuses = filter.status === undefined ? undefined : new Set(Array.isArray(filter.status) ? filter.status : [filter.status]);
-  const out: Proposal[] = [];
-  for (const n of names) {
-    const p = await readProposal(root, n.slice(0, -".json".length));
-    if (!p) continue;
-    if (filter.job !== undefined && p.by.job !== filter.job) continue;
-    if (filter.session !== undefined && p.by.session !== filter.session) continue;
-    if (filter.runId !== undefined && p.by.runId !== filter.runId) continue;
-    if (statuses && !statuses.has(p.status)) continue;
-    out.push(p);
-  }
-  return out.sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
+  return (await proposalIndex(root).query(filter)).proposals;
 }
+
+/** A page of matches (`limit`, `offset`; `where` is applied before the cut). */
+export function queryProposals(root: string, filter: ProposalFilter, opts: { offset?: number; limit?: number; where?: (p: Proposal) => boolean } = {}): Promise<ProposalPage> {
+  return proposalIndex(root).query(filter, opts);
+}
+
+/** Warm the root's index (the build is streamed and bounded; boot need not wait). */
+export const warmProposals = (root: string): Promise<void> => proposalIndex(root).ready;
 
 /** The last `createdAt` handed out, in ms. The lists order by it, and an
  *  agent's parallel tool calls propose within one millisecond: each new
@@ -210,7 +191,7 @@ let lastCreatedMs = 0;
 export async function createProposal(root: string, p: NewProposal): Promise<Proposal> {
   lastCreatedMs = Math.max(Date.now(), lastCreatedMs + 1);
   const rec: Proposal = { id: randomBytes(9).toString("base64url"), status: "pending", createdAt: new Date(lastCreatedMs).toISOString(), ...p };
-  await writeProposal(root, rec);
+  await proposalIndex(root).write(rec);
   return rec;
 }
 

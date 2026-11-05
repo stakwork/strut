@@ -142,7 +142,8 @@ import { callbackOrigin, parseCallback, parseLaunchCallback, postCallback, roomA
 import { createEventsSink, parseSinkUrl, type EventsSink } from "./events-sink.js";
 import { listServerTools, parseMcpServers } from "./mcp-servers.js";
 import { fileMcpRegistry, gatedByDefault, mcpStepDef, parseRegistration, resolveRegistration, type McpRegistration } from "./mcp-registry.js";
-import { briefOf, decideProposal, visibleTo, listProposals, proposalsCapability, proposalsRoot, readProposal, type Decision, type ProposalsCapability, type ProposalStatus } from "./proposals.js";
+import { proposalIndex } from "./proposals-index.js";
+import { briefOf, decideProposal, visibleTo, listProposals, proposalsCapability, proposalsRoot, queryProposals, readProposal, warmProposals, type Decision, type ProposalsCapability, type ProposalStatus } from "./proposals.js";
 import type { AssistantChatDoor } from "./ai/assistant-tools.js";
 import { shellCapability, type ShellCapability } from "./capabilities.js";
 import { JOB_WORKFLOWS, deleteJob, jobFilePath, jobRoot, jobsCapability, listJobFiles, readJobRecord, releaseWith, setJobCallback, turnOf, wakeJobFeeds, type JobsCapability } from "./jobs.js";
@@ -3987,18 +3988,41 @@ export async function createStrut<TServices = unknown>(
     });
   ownProposals.decide = decide;
 
+  void warmProposals(proposalsDir);
+
+  // A list answers from the in-memory index (src/proposals-index.ts); the
+  // answer is single-flighted and cached for a moment per (scope, actor,
+  // query), and any write drops it. `limit` (default 100, max 500) and
+  // `offset` page it; `total` and `next` say what is beyond.
   app.get("/proposals", async (c) => {
     const status = c.req.query("status");
     if (status !== undefined && !STATUSES.has(status)) return c.json({ error: `status must be one of ${[...STATUSES].join(", ")}` }, 400);
-    const proposals = await listProposals(proposalsDir, {
-      ...(c.req.query("job") !== undefined ? { job: c.req.query("job") } : {}),
-      ...(c.req.query("session") !== undefined ? { session: c.req.query("session") } : {}),
-      ...(c.req.query("runId") !== undefined ? { runId: c.req.query("runId") } : {}),
-      ...(status !== undefined ? { status: status as ProposalStatus } : {}),
-    });
+    const num = (name: string, min: number, max: number, dflt: number): number | string => {
+      const raw = c.req.query(name);
+      if (raw === undefined) return dflt;
+      const n = Number(raw);
+      return /^\d+$/.test(raw) && n >= min && n <= max ? n : `${name} must be an integer from ${min} to ${max}`;
+    };
+    const limit = num("limit", 1, 500, 100);
+    const offset = num("offset", 0, Number.MAX_SAFE_INTEGER, 0);
+    if (typeof limit === "string") return c.json({ error: limit }, 400);
+    if (typeof offset === "string") return c.json({ error: offset }, 400);
+    const job = c.req.query("job");
+    const session = c.req.query("session");
+    const runId = c.req.query("runId");
     const scope = await scopeOf(c);
     const actor = await resolveActor(c);
-    return c.json({ proposals: proposals.filter((p) => visibleTo(scope, actor, p)) });
+    const key = JSON.stringify([scope, actor, job, session, runId, status, limit, offset]);
+    const body = await proposalIndex(proposalsDir).memo(key, async () =>
+      JSON.stringify(
+        await queryProposals(
+          proposalsDir,
+          { ...(job !== undefined ? { job } : {}), ...(session !== undefined ? { session } : {}), ...(runId !== undefined ? { runId } : {}), ...(status !== undefined ? { status: status as ProposalStatus } : {}) },
+          { limit, offset, where: (p) => visibleTo(scope, actor, p) },
+        ),
+      ),
+    );
+    return c.body(body, 200, { "content-type": "application/json" });
   });
 
   app.get("/proposals/:id", async (c) => {

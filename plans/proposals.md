@@ -177,9 +177,20 @@ interface Proposal {
 ```
 
 A proposal is immutable but for `status`, `decision`, `result`,
-`reportedAt`. An index is a `readdir`, as `GET /jobs` is: `listProposals({
-job?, session?, runId?, status? })`, newest first. `expired` is computed
-on read from `expiresAt` and written on the next touch.
+`reportedAt`. The index is IN MEMORY (`src/proposals-index.ts`, one per
+root, streamed from the directory once at first use, updated by every
+write): `listProposals({ job?, session?, runId?, status? })`, newest
+first, never reads a file. It holds the FULL record of what is in play
+(pending — a list still carries the `input` a person decides on —
+accepted, failed: a retry and a step's `after` read the input) and the
+COMPACTED record of what is over (applied, rejected): `input`,
+`decision.input` and a `result.output` over 4 KB become
+`{ _compacted: true, bytes }`, and the file is stored that way too, in the
+very write that records the outcome — after the step ran. `GET
+/proposals/:id` reads the file (and `archive/`); the decide answer is whole.
+Decided records older than `STRUT_PROPOSALS_RETENTION_DAYS` (30) move to
+`<root>/archive/` and leave the lists. See `plans/proposals-index-perf.md`.
+`expired` is computed on read from `expiresAt` and written on the next touch.
 
 On a graph workspace nothing is projected in v1. When something must
 point at a proposal — "which proposals did this thread make", a Concept
