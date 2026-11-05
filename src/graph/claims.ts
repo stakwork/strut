@@ -700,9 +700,15 @@ export class ClaimsReader {
     const out = [...byId.values()];
     const ids = [...new Set(out.map((e) => e.ref_id))];
     if (ids.length === 0) return out;
-    const each = (ref: string, fn: (row: RunEvidenceRow) => void) => {
-      for (const row of out) if (row.ref_id === ref) fn(row);
-    };
+    // A node both claims reach is two rows: index them by the node, so
+    // joining the statements below is linear in the evidence, not quadratic.
+    const byRef = new Map<string, RunEvidenceRow[]>();
+    for (const row of out) {
+      const rows = byRef.get(row.ref_id);
+      if (rows) rows.push(row);
+      else byRef.set(row.ref_id, [row]);
+    }
+    const each = (ref: string, fn: (row: RunEvidenceRow) => void) => byRef.get(ref)?.forEach(fn);
 
     const checks = await this.graph.query(
       `MATCH ${d.node("e", EVIDENCE_TYPE)}-[pb:\`${CLAIM_EDGES.PRODUCED_BY}\`]->${d.node("k", CHECK_TYPE)}
@@ -756,13 +762,29 @@ export class ClaimsReader {
    *  status — the rows the ledger is built from. */
   async statusFor(subject: SubjectRef): Promise<SubjectLedgerRow[]> {
     const [claims, activeVersion] = await Promise.all([this.claimsFor(subject), this.activeVersion(subject)]);
-    return Promise.all(
-      claims.map(async (claim) => {
-        const [checks, evidence] = await Promise.all([this.checksFor(claim.id), this.evidenceFor(claim.id, subject)]);
-        return { claim, checks, status: claimStatus({ claim, checks, subject, evidence, activeVersion }), evidence };
-      }),
-    );
+    return mapLimit(claims, STATUS_CONCURRENCY, async (claim) => {
+      const [checks, evidence] = await Promise.all([this.checksFor(claim.id), this.evidenceFor(claim.id, subject)]);
+      return { claim, checks, status: claimStatus({ claim, checks, subject, evidence, activeVersion }), evidence };
+    });
   }
+}
+
+/** Claims `statusFor` reads at once: each is about seven statements, and a
+ *  subject with dozens of claims would otherwise send them all together. */
+const STATUS_CONCURRENCY = 4;
+
+/** `Promise.all(items.map(fn))` with at most `limit` in flight, in order. */
+async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i]!);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
 }
 
 /** Claims in belief order, then by id. */
