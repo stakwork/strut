@@ -537,18 +537,34 @@ function plainRow(r: Record<string, unknown>): Row {
 }
 
 /** The last result of a statement (a multi-statement string yields one per
- *  statement). */
+ *  statement; the earlier ones are closed here). The caller closes the one
+ *  it gets.
+ *
+ *  Every result is closed, never left to the garbage collector: an open
+ *  result holds the native database, so the database outlives `close()`,
+ *  and when a later GC frees it, its destructor removes `<path>.wal` —
+ *  by then the WAL of the next open of the same file. That open's next
+ *  checkpoint then fails ("Error renaming file graph.lbug.wal to
+ *  graph.lbug.wal.checkpoint … No such file or directory"; CREATE_FTS_INDEX
+ *  checkpoints when it commits), and a crash before it loses what the WAL
+ *  held. */
 async function execute(conn: Conn, cypher: string, params: Params): Promise<QueryResult> {
   const result = Object.keys(params).length
     ? await conn.execute(await conn.prepare(cypher), clean(params) as Record<string, never>)
     : await conn.query(cypher);
-  return Array.isArray(result) ? result[result.length - 1]! : result;
+  if (!Array.isArray(result)) return result;
+  for (const r of result.slice(0, -1)) r.close();
+  return result[result.length - 1]!;
 }
 
 function queryOn(conn: Conn): Query {
   return async (cypher, params = {}) => {
-    const rows = (await (await execute(conn, cypher, params)).getAll()) as Row[];
-    return rows.map(plainRow);
+    const result = await execute(conn, cypher, params);
+    try {
+      return ((await result.getAll()) as Row[]).map(plainRow);
+    } finally {
+      result.close();
+    }
   };
 }
 

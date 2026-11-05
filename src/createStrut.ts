@@ -24,7 +24,7 @@ import {
   truncateToolMessages,
 } from "./chat-store.js";
 import { CHAT_RETAIN, cachedSystem, compactAtFromEnv, compactionMessage, overMark, resultCapChars, summarize } from "./compaction.js";
-import { FileWorkspaceStore, claimsBlockOf, readClaimsBlock, type PublishOptions, type WorkspaceStore } from "./workspace.js";
+import { assertWorkflowEnabled, workflowDisabled, FileWorkspaceStore, claimsBlockOf, readClaimsBlock, type PublishOptions, type WorkspaceStore } from "./workspace.js";
 import type { InputBlock } from "./input-block.js";
 import { buildRegistry, resolveStep } from "./steps/registry.js";
 import { parseStepRef } from "./step-ref.js";
@@ -1985,6 +1985,10 @@ export async function createStrut<TServices = unknown>(
     } catch (err) {
       return { ok: false, status: 404, error: err instanceof Error ? err.message : String(err) };
     }
+    // A disabled workflow refuses a resume like any launch; boot's auto-resume
+    // reports it skipped, and a person resumes it once it is enabled again.
+    const disabled = await workflowDisabled(workspace, name);
+    if (disabled) return { ok: false, status: 409, error: disabled };
 
     // Validity guard (§5): replaying outputs into a DIFFERENT DAG is
     // undefined. When the active version's hash differs from the one
@@ -2700,6 +2704,21 @@ export async function createStrut<TServices = unknown>(
     try {
       await workspace.setWorkflowRunCap(name, cap);
       return c.json({ ok: true, workflow: name, maxRunCostUsd: cap });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 404);
+    }
+  });
+
+  // Disable or re-enable a workflow: a disabled one refuses every new run
+  // (`workflowDisabled`, src/workspace.ts) and holds its schedules.
+  // Metadata-only like the category — no version.
+  app.put("/workflows/:name/disabled", async (c) => {
+    const name = c.req.param("name");
+    const body = await c.req.json<{ disabled?: boolean }>().catch(() => ({}) as { disabled?: boolean });
+    if (typeof body.disabled !== "boolean") return c.json({ error: "disabled must be a boolean" }, 400);
+    try {
+      await workspace.setWorkflowDisabled(name, body.disabled);
+      return c.json({ ok: true, workflow: name, disabled: body.disabled });
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 404);
     }
@@ -5194,7 +5213,10 @@ export async function createStrut<TServices = unknown>(
     holder: (id) => sessions.holder(id),
     liveOn: (id) => [...(liveSessions.get(id) ?? [])],
     isLive: (workflow, runId) => controllers.has(`${workflow}/${runId}`),
-    getWorkflow: (name) => workspace.getWorkflow(name),
+    getWorkflow: async (name) => {
+      await assertWorkflowEnabled(workspace, name);
+      return workspace.getWorkflow(name);
+    },
     launch: (flow, run) =>
       launchDetached(
         flow,
@@ -5389,6 +5411,7 @@ export async function createStrut<TServices = unknown>(
       const flow = await workspace.getWorkflow(workflow).catch((e: unknown) => {
         throw new Error(`no_workflow: this strut server has no "${workflow}" workflow to run the job on (${(e as Error).message})`);
       });
+      await assertWorkflowEnabled(workspace, workflow);
       const url = await rootCallbackOf(from);
       const live = await rootJobCallbackOf(from);
       // The TURN this job belongs to (CALLBACKS.md §5): the root run the host
@@ -5695,6 +5718,7 @@ export async function createStrut<TServices = unknown>(
     },
     async launch(q, by) {
       const { flow, scoped } = await openFlow(q.workflow, by);
+      await assertWorkflowEnabled(workspace, q.workflow);
       // Its params may narrow what its agents are granted, never widen it
       // (the meta/run-workflow rule).
       const widened = grantWidenedBy(flow, q.params ?? {}, registry);
@@ -6021,6 +6045,8 @@ export async function createStrut<TServices = unknown>(
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 404);
     }
     if (peer && !opensTo(flow.peer, scope)) return c.json({ error: notForPeers(name, flow.peer) }, 403);
+    const disabled = await workflowDisabled(workspace, name);
+    if (disabled) return c.json({ error: disabled }, 409);
     const actor = await resolveActor(c);
     // A person's turn may continue a conversation they are in
     // (plans/jamie-app.md §2.2).
@@ -6085,6 +6111,8 @@ export async function createStrut<TServices = unknown>(
     // The version launched must say it, not the active one: an older
     // version is not open to peers because a newer one is.
     if (peer && !opensTo(flow.peer, scope)) return c.json({ error: notForPeers(`${name}@${version}`, flow.peer) }, 403);
+    const disabled = await workflowDisabled(workspace, name);
+    if (disabled) return c.json({ error: disabled }, 409);
     const actor = await resolveActor(c);
     const cont = scope === "peer:person" ? await continuesFor(flow, body.input, actor) : {};
     if ("refused" in cont) return c.json({ error: cont.refused }, 403);
@@ -7422,6 +7450,7 @@ export async function createStrut<TServices = unknown>(
           ? await workspace.getWorkflowVersion(workflow, runOpts.version)
           : await workspace.getWorkflow(workflow)
         : workflow;
+    await assertWorkflowEnabled(workspace, flow.name);
 
     // Generate the runId here (rather than letting runWorkflow default it) so
     // the run can be registered as in-flight — otherwise nested runs (e.g. the

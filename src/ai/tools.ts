@@ -8,7 +8,7 @@ import { runStep, runStepId, cassettePath } from "../run-step.js";
 import { stepHashesFor } from "../closure.js";
 import { mergeClaimSpecs, toSubjectRef, type ClaimActor } from "../claims-authoring.js";
 import { checkSpecSchema, claimsArgSchema, subjectSchema } from "../claims-schemas.js";
-import { claimsBlockOf, type PublishOptions } from "../workspace.js";
+import { claimsBlockOf, workflowDisabled, type PublishOptions } from "../workspace.js";
 import { automationDraftSchema, automationInputSchema, triggerSchema } from "../automations.js";
 import { ledgerIsEmpty, subjectsOfFlow } from "../ledger.js";
 import { generateRunId, stepRunKey } from "../store.js";
@@ -1002,6 +1002,11 @@ export function buildTools(deps: AiDeps): ToolSet {
             ok: false,
             error: `Workflow not found: ${err instanceof Error ? err.message : String(err)}`,
           };
+          return;
+        }
+        const disabled = await workflowDisabled(deps.workspace, name);
+        if (disabled) {
+          yield { ok: false, error: disabled };
           return;
         }
 
