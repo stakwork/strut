@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import type { AnyStepDef, Flow, McpServer, PeerOpen, RunAttachment, StepRegistry, RunEvent, RunResult, StepContext } from "./core.js";
+import type { AnyStepDef, Flow, McpServer, PeerOpen, RunAttachment, StepRegistry, RunEvent, RunResult, RunSummary, StepContext } from "./core.js";
 import type { RunStore } from "./store.js";
 import { FileRunStore, MemoryRunStore, countSteps, generateRunId, summarizeFromEvents } from "./store.js";
 import type { ChatStore, ChatEvent, ChatMeta } from "./chat-store.js";
@@ -56,7 +56,7 @@ import {
 } from "./secret-store.js";
 import { runStep, cassettePath, RUN_STEP_FLOW } from "./run-step.js";
 import { buildProvenance } from "./provenance.js";
-import { RUN_GET_MAX_WAIT_MS, RUN_LIST_DEFAULT_LIMIT, RUN_LIST_MAX_LIMIT, capEvents, capTranscript, fileResult, listEntryOf, matchesRunFilter, runsPage, type RunCaller, type RunListEntry, type RunTranscript, type RunsCapability } from "./runs.js";
+import { RUN_GET_MAX_WAIT_MS, RUN_LIST_DEFAULT_LIMIT, RUN_LIST_MAX_LIMIT, RUN_LIST_SCAN_MAX, capEvents, capTranscript, fileResult, launchedAt, listEntryOf, matchesRunFilter, runsPage, sinceMs, type RunCaller, type RunListEntry, type RunTranscript, type RunsCapability } from "./runs.js";
 import { isFirstParty, type AppRef, type StartedBy, type WakeMark } from "./core.js";
 import { WAKE_MAX, artifactsOf, createWakes, parseWakeDoor, replyOf, type WakeEnd, type WakeOutcome } from "./wake.js";
 import { createConversations, isConversationFlow, outsideConversations, type ConversationViewer } from "./conversations.js";
@@ -529,6 +529,11 @@ export interface StrutOptions<TServices = unknown> {
 /** `STRUT_RESUME_MAX_LOG_BYTES` unset: 64 MB (`StrutOptions.resumeMaxLogBytes`). */
 export const DEFAULT_RESUME_MAX_LOG_BYTES = 64 * 1024 * 1024;
 
+/** How far a log's mtime may lag its last event: some filesystems (HFS+,
+ *  FAT) keep mtimes to the second or two. The boot scan skips a run by its
+ *  mtime only when it is older than `since` by more than this. */
+const LOG_MTIME_SLACK_MS = 2_000;
+
 export interface AutoResumeOptions {
   /** Ignore cut-off runs whose last event is older than this. Default 7 days. */
   maxAgeMs?: number;
@@ -542,7 +547,9 @@ export interface AutoResumeOptions {
    *  time (epoch ms) — the runs one death cut off — instead of only the
    *  newest root run of each workflow. The boot scan passes when the
    *  previous process started (`<dataDir>/boot.json`, written once each
-   *  boot scan is done); with no record of it, newest only. */
+   *  boot scan is done); with no record of it, newest only. A run whose log
+   *  was last written before it (`RunStore.logWrittenAt`) is passed over
+   *  unread, summary and all. */
   since?: number;
 }
 
@@ -2166,6 +2173,14 @@ export async function createStrut<TServices = unknown>(
      *  either way), else `seen`. */
     const consider = async (name: string, runId: string): Promise<"nested" | "seen"> => {
       if (controllers.has(`${name}/${runId}`)) return "seen"; // live in this process
+      // Nothing written since the previous boot: an earlier death's, as the
+      // `since` check below would find — known without reading the summary
+      // or the log, so a boot touches only the runs the last process did.
+      // The slack covers a filesystem that keeps mtimes to the second.
+      if (since !== undefined) {
+        const at = await store.logWrittenAt(name, runId);
+        if (at !== null && at < since - LOG_MTIME_SLACK_MS) return "seen";
+      }
       if (await store.getRunSummary(name, runId)) return "seen"; // finished → nothing was cut off
       await store.repairLog?.(name, runId);
       // Asked before the read: a log the process cannot hold is what
@@ -5596,13 +5611,14 @@ export async function createStrut<TServices = unknown>(
   const scopedLaunches = new Map<string, { app: string; actor: string }>();
   /** Was the run launched by `by.app` for `by.actor`? The summary's stamp,
    *  a live run's `run.start`, or the launch itself. For a first-party page:
-   *  is it the viewer's, from wherever it was launched? */
-  const ownRun = async (workflow: string, runId: string, by: RunCaller | undefined): Promise<boolean> => {
+   *  is it the viewer's, from wherever it was launched? `summary` is the
+   *  one a caller already read (null: none), so it is not read twice. */
+  const ownRun = async (workflow: string, runId: string, by: RunCaller | undefined, summary?: RunSummary | null): Promise<boolean> => {
     const anyApp = isFirstParty(by?.app);
     const launched = scopedLaunches.get(`${workflow}/${runId}`);
     if (launched) return (anyApp || launched.app === by?.app?.name) && launched.actor === (by?.actor ?? "");
     const stamp: { app?: AppRef; actor?: string } | null =
-      (await store.getRunSummary(workflow, runId)) ?? (await store.getRunEvents(workflow, runId)).find((e) => e.type === "run.start") ?? null;
+      (summary === undefined ? await store.getRunSummary(workflow, runId) : summary) ?? (await store.getRunStart(workflow, runId));
     return !!stamp && (anyApp || stamp.app?.name === by?.app?.name) && (stamp.actor ?? "") === (by?.actor ?? "");
   };
   /** `openFlow` for one run: a scoped caller's own runs only — any other is
@@ -5634,15 +5650,19 @@ export async function createStrut<TServices = unknown>(
       const rows = q.workflow
         ? (await store.listRuns(q.workflow)).map((runId) => ({ workflow: q.workflow!, runId }))
         : await jobRunLines(q.job!);
+      const from = sinceMs(q.since);
       const out: RunListEntry[] = [];
-      for (const { workflow, runId } of rows) {
-        if (out.length >= limit) break;
+      for (const [read, { workflow, runId }] of rows.entries()) {
+        if (out.length >= limit || read >= RUN_LIST_SCAN_MAX) break;
+        // A workflow's ids are newest first: the first launched before
+        // `since` ends the list (a job's lines are in record order).
+        if (q.workflow && from !== undefined && (launchedAt({ runId }) ?? from) < from) break;
         const summary = await store.getRunSummary(workflow, runId);
         const row: RunListEntry & { jobTitle?: string } = summary
           ? listEntryOf(summary)
           : { runId, workflow, status: liveStatus(workflow, runId), ...liveJob(controllers.get(`${workflow}/${runId}`)), ...(q.workflow ? {} : { job: q.job }) } as RunListEntry;
         if (!matchesRunFilter(row, q)) continue;
-        if (scoped && !(await ownRun(workflow, runId, by))) continue;
+        if (scoped && !(await ownRun(workflow, runId, by, summary))) continue;
         const artifacts = summary ? await artifactRefs(runId, summary.output, summary.job).catch(() => undefined) : undefined;
         out.push({ ...row, ...(artifacts ? { artifacts } : {}) });
       }

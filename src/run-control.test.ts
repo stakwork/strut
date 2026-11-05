@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, rm, writeFile, appendFile, readFile } from "node:fs/promises";
+import { mkdir, rm, writeFile, appendFile, readFile, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -2212,6 +2212,37 @@ describe("run control endpoints", () => {
         assert.equal((await waitForSummary(store, "boot", "1000")).status, "success");
         assert.equal(await store.getRunSummary("boot", "0500"), null);
         assert.ok(!(await store.getRunEvents("boot", "0500")).some((e) => e.type === "run.resumed"));
+      } finally {
+        await cleanup();
+      }
+    });
+
+    it("with `since`, a run whose log nothing wrote since is passed over unread — summary and log alike", async () => {
+      const { strut, workspace, store, dir, cleanup } = await bootServer();
+      try {
+        const old = new Date(Date.now() - 2 * 3_600_000);
+        // An earlier death's run and one that finished long ago, as a busy
+        // workspace holds thousands of: their logs last written 2 h back.
+        await writeCutOffLog(workspace, store, "0500", { ts: old.toISOString() });
+        await writeCutOffLog(workspace, store, "0800", { ts: old.toISOString(), terminal: "run.end" });
+        await store.finalize("boot", "0800", { runId: "0800", workflow: "boot", startedAt: old.toISOString(), finishedAt: old.toISOString(), durationMs: 1, status: "success", input: {} });
+        for (const id of ["0500", "0800"]) {
+          const log = join(dir, "workflows", "boot", "runs", id, "events.jsonl");
+          await utimes(log, old, old);
+          assert.ok((await store.logWrittenAt("boot", id))! < Date.now() - 3_600_000);
+        }
+        await writeCutOffLog(workspace, store, "1000");
+        const read: string[] = [];
+        const getRunSummary = store.getRunSummary.bind(store);
+        const getRunEvents = store.getRunEvents.bind(store);
+        store.getRunSummary = async (wf, id) => (read.push(`summary ${id}`), getRunSummary(wf, id));
+        store.getRunEvents = async (wf, id) => (read.push(`events ${id}`), getRunEvents(wf, id));
+
+        const report = await strut.autoResumeStaleRuns({ since: Date.now() - 3_600_000 });
+        assert.deepEqual(report.map((r) => [r.runId, r.action]), [["1000", "resumed"]]);
+        assert.deepEqual(read.filter((r) => !r.endsWith(" 1000")), [], "the runs nothing touched since `since` are never read");
+        assert.equal((await waitForSummary(store, "boot", "1000")).status, "success");
+        assert.equal(await getRunSummary("boot", "0500"), null);
       } finally {
         await cleanup();
       }
