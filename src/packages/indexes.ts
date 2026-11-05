@@ -157,7 +157,7 @@ export interface ConceptSearch {
  *  `package/install` proposes (a card they approve), any other tells them
  *  the name. No read installs. */
 export const INSTALL_IS_A_PERSONS_ACT =
-  "Installing is a PERSON's decision, never yours: if you hold package/install, propose it with that tool (the call becomes a card the person approves — say why in `rationale`); otherwise tell the person its name (publisher/name) — it installs from the Packages dialog of their strut's UI (Find the name, then Install) or from the store's Install link, which opens that dialog on the name. Either way the install re-verifies the package against its publisher's signed catalog.";
+  "Installing is a PERSON's decision, never yours: if you hold package/install, propose it with that tool (the call becomes a card the person approves — say why in `rationale`); otherwise tell the person its name (publisher/name) — it installs from their strut's UI, the Publish dialog's Packages tab (Find the name, then Install), or from the store's Install link, which opens that tab on the name. Either way the install re-verifies the package against its publisher's signed catalog.";
 
 /** How much of a README a model-facing page keeps. */
 export const README_BRIEF_CHARS = 12_000;

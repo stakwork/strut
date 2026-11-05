@@ -1,6 +1,6 @@
 // ── Packages in the UI, the pure parts ──────────────────────────────────────
 //
-// What the Packages dialog works out (plans/packages-ux.md). Names stay
+// What the Publish dialog's Packages tab works out (plans/packages-ux.md). Names stay
 // bare where they are made, and a package is what a person PICKS on its
 // page: so the page groups the workflows here by category, leaves out what
 // an installed package or the host brought, reads off a dry build what
