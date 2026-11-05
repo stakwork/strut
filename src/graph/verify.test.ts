@@ -826,6 +826,13 @@ for (const tb of testBackends()) describe(`verify pass on ${tb.name}`, { skip: t
     assert.deepEqual([fresh.job, fresh.runId, fresh.claims[0]!.status, kinds(fresh as VerifyResult)], ["j-1", t2.runId, "refuted", ["ran", "ran", "planned"]]);
     assert.equal((await post("/jobs/nope/verify", {})).status, 404);
     assert.equal((await strut.app.request("/jobs/j-1/verify", { method: "POST" })).status, 200, "no body is every claim");
+    // The same two doors as strut's own app reaches them (`job/verify`,
+    // `job/evidence`, plans/jamie-app.md §5): ctx.services.jobs.
+    const viaApp = (await jobsCap.verify!("j-1")) as VerifyResult;
+    assert.deepEqual([viaApp.runId, viaApp.claims[0]!.status], [t2.runId, "refuted"]);
+    assert.equal(await jobsCap.verify!("nope"), null);
+    const word = (await jobsCap.evidence!({ job: "j-1", claim: claim.id, runId: t2.runId, supports: false, content: "still 404s" })) as { ok?: true; subject?: unknown };
+    assert.deepEqual([word.ok, word.subject], [true, { kind: "job", id: "j-1" }]);
   });
 
   it("door one — meta/verify-job from inside a turn verifies the job at THIS run, in flight; the evidence hangs off the run node the run-end projection settles", async () => {

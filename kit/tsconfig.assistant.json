@@ -1,0 +1,16 @@
+{
+  "//": "Type-checks strut/assistant (src/apps/assistant, plans/jamie-app.md §5) against the kit and strut/views: its own src first for @/, then the kit's; `strut/views` from its sources; bare packages from the kit's install. `npx tsc -p kit/tsconfig.assistant.json`.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": [],
+    "paths": {
+      "@strut/kit": ["./src/index.ts"],
+      "@strut/kit/folds": ["./src/folds/index.ts"],
+      "strut/views": ["../src/apps/views/src/index.ts"],
+      "@/*": ["../src/apps/assistant/src/*", "../src/apps/views/src/*", "./src/*"],
+      "*": ["./node_modules/@types/*", "./node_modules/*"]
+    }
+  },
+  "include": ["../src/apps/assistant/src/**/*"]
+}

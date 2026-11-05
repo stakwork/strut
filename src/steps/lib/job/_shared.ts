@@ -1,9 +1,10 @@
 import { basename } from "node:path";
 import { z } from "zod";
 import type { JobIndex } from "../../../job-index.js";
-import type { RunEvent, StepContext } from "../../../core.js";
+import { isFirstParty, workflowOf, type RunEvent, type StepContext } from "../../../core.js";
 import type { ArtifactsCapability } from "../../../capabilities.js";
-import type { JobLaunch, JobsCapability } from "../../../jobs.js";
+import { jobRoot, readJobRecord, type JobLaunch, type JobsCapability } from "../../../jobs.js";
+import { RUN_STEP_FLOW } from "../../../run-step.js";
 import { loadRunAttachments, type Attachment } from "../../../ai/attachments.js";
 
 /**
@@ -133,4 +134,31 @@ export async function journal(ctx: StepContext, key: string | undefined, record:
   if (!key || !ctx.emit) return;
   // The runner stamps ts/runId (strut/run-workflow's cast).
   await (ctx.emit as unknown as (e: Partial<RunEvent> & { type: RunEvent["type"] }) => Promise<void>)({ type: "step.end", path: key, output: record });
+}
+
+/**
+ * A PERSON's act on a job's claims (`job/verify`, `job/evidence`): what a
+ * person does at `POST /jobs/:id/verify` and `POST /claims/:id/evidence`,
+ * from strut's own app (plans/jamie-app.md §5). Like `proposal/decide`, it
+ * runs only as a FIRST-PARTY page's own call (a one-step run) — never from
+ * a page a model wrote, never as an agent's tool (an agent verifies with
+ * `meta/verify-job`, and what it says is never a person's word) — and only
+ * on a job the viewer launched a run of (the record's `actors`).
+ */
+export async function requirePersonOnJob(
+  ctx: StepContext,
+  type: string,
+  job: string,
+): Promise<JobsCapability> {
+  if (!isFirstParty(ctx.app) || !ctx.actor || workflowOf(ctx) !== RUN_STEP_FLOW) {
+    throw new Error(`${type} is a person's act: it runs only as strut's own app's call, for its viewer (plans/jamie-app.md §5). An agent verifies with meta/verify-job.`);
+  }
+  const jobs = (ctx.services as { jobs?: JobsCapability; dataDir?: string } | undefined)?.jobs;
+  const dataDir = (ctx.services as { dataDir?: string } | undefined)?.dataDir;
+  if (!jobs || !dataDir) throw new Error(`${type} needs the job index (ctx.services.jobs); the standard strut server provides it.`);
+  const rec = await readJobRecord(jobRoot(dataDir, job)).catch(() => null);
+  if (!rec) throw new Error(`No job "${job}"`);
+  const actors = rec.actors ?? (rec.createdBy ? [rec.createdBy] : []);
+  if (!actors.includes(ctx.actor)) throw new Error(`${type}: job "${job}" is not one you started — only the people who ran it act on its claims`);
+  return jobs;
 }

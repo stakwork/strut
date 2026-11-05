@@ -406,6 +406,17 @@ export interface JobsCapability extends Partial<JobIndex> {
    *  and `job/get` carry the same `claims`; absent on a filesystem
    *  workspace. Null for a job not on file. */
   claims?(job: string): Promise<LedgerClaim[] | null>;
+  /** A PERSON verifies the job now, against its newest turn (`POST
+   *  /jobs/:id/verify`, plans/job-claims.md §5): `manual` checks fire. With
+   *  `detach`, `{ job, started: true }` at once — the verdicts arrive as
+   *  `job.update`s (`evidence`, then `verify` done) — else the pass and the
+   *  ledger. Null for a job not on file. Set where the claims layer is on. */
+  verify?(job: string, o?: { claims?: string[]; detach?: boolean }): Promise<unknown | null>;
+  /** A PERSON's verdict on a claim about the job, on one of its turns
+   *  (`POST /claims/:id/evidence { job, runId }`): `asserted`, `by:
+   *  person` — and how an open slot (an external check waiting on a look)
+   *  is answered. Set where the claims layer is on. */
+  evidence?(input: { job: string; claim: string; runId: string; supports: boolean; content: string; slot?: string }): Promise<unknown>;
   /** Launch the `job` workflow DETACHED under `job` (`job/start`,
    *  `job/continue`): returns once the run is launched, never waits for
    *  it. The run's `run.end` goes to the launching run's own `callback`
