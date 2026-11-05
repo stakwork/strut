@@ -348,7 +348,7 @@ export function createMothership(opts: MothershipOptions): Mothership {
         // Mothership UI can fold strut's steps under one node from day one.
         "x-bf-dim-root-agent": STRUT_AGENT,
       },
-      explainError: (err) => explainExhausted(err, d, principal, m.invocation.max_cost_usd),
+      explainError: (err) => explainExhausted(err, d, principal, m.invocation.max_cost_usd) ?? explainRefused(err),
     };
   };
 
@@ -397,9 +397,25 @@ export function createMothership(opts: MothershipOptions): Mothership {
  * so — "re-authorize", not "run over cap". Any other error is left alone.
  */
 export function explainExhausted(err: unknown, d: Pick<Delegation, "delegationId">, actor: string, ceilingUsd?: number): string | undefined {
-  const e = err as { message?: unknown; responseBody?: unknown } | null;
-  const text = [e?.message, e?.responseBody].filter((s): s is string => typeof s === "string").join(" ");
-  if (!text.includes(d.delegationId)) return undefined;
+  if (!errorText(err).includes(d.delegationId)) return undefined;
   const ceiling = ceilingUsd != null ? ` ($${ceilingUsd})` : "";
-  return `Mothership authorization for ${actor} is exhausted — its ceiling${ceiling} is spent; re-authorize from hive. (delegation ${d.delegationId}: ${String(e?.message ?? "")})`;
+  return `Mothership authorization for ${actor} is exhausted — its ceiling${ceiling} is spent; re-authorize from hive. (delegation ${d.delegationId}: ${String((err as { message?: unknown } | null)?.message ?? "")})`;
+}
+
+/**
+ * The gateway refuses a model the person's virtual key does not allow —
+ * bifrost's governance says "Model 'X' is not allowed", or "Provider 'P' is
+ * not allowed" for a provider the key has none of. A host that narrows
+ * every key to its list (stadeum's allowed models) means "not enabled
+ * here": say so, and who can change it. Any other error is left alone.
+ */
+export function explainRefused(err: unknown): string | undefined {
+  const m = /\b(?:Model|Provider) '([^']+)' is not allowed/.exec(errorText(err));
+  return m ? `${m[1]} is not enabled for this workspace: ask an admin` : undefined;
+}
+
+/** An AI SDK error's message and the provider's response body, as one string. */
+function errorText(err: unknown): string {
+  const e = err as { message?: unknown; responseBody?: unknown } | null;
+  return [e?.message, e?.responseBody].filter((s): s is string => typeof s === "string").join(" ");
 }

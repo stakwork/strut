@@ -1,9 +1,10 @@
 // The chat's pure parts — tested by src/apps/jamie.test.ts: the turn's
 // context (the time where the person is, where the reply is read), the
-// list's day groups, new conversation ids, what a refused send means, and
-// the composer's "/Concept" trigger. Nothing here imports React or the kit.
+// list's day groups, new conversation ids, what a refused send means, the
+// composer's "/Concept" trigger and its model picker. Nothing here imports
+// React or the kit.
 
-import type { ConversationListItem } from "./types";
+import type { ConversationListItem, ModelCatalog } from "./types";
 
 /** Where this conversation is read, as the orchestrator's `context.where`
  *  says it (plans/jamie-app.md §1.3): what the person sees beside the reply. */
@@ -134,4 +135,24 @@ export function insertSlash(text: string, trigger: SlashTrigger, name: string): 
   const before = text.slice(0, trigger.start);
   const inserted = `/${name} `;
   return { text: before + inserted + text.slice(end), caret: before.length + inserted.length };
+}
+
+// ── the composer's model picker ────────────────────────────────────────────
+
+/** The picker's choices: "Default" (`""`: no `params.model`, so the turn
+ *  runs on the deployment's default), then each model `llm/models` says
+ *  people may pick — the deployment's own list, when it has one. */
+export function modelChoices(catalog: ModelCatalog | undefined): Array<{ value: string; name: string }> {
+  const listed = (catalog?.models ?? []).filter((m) => m.available);
+  return [{ value: "", name: "Default" }, ...listed.map((m) => ({ value: m.name, name: m.alias ? `${m.alias} · ${m.provider}` : m.name }))];
+}
+
+/** The model a turn sends: the remembered pick while `llm/models` still
+ *  lists it, else `""` — Default, no `params.model` (an admin took it off
+ *  the list, or its key went). The pick is kept, so it comes back if the
+ *  model does. Until the list is read the pick stands: the gateway still
+ *  refuses a model it does not allow. */
+export function sentModel(pick: string, catalog: ModelCatalog | undefined): string {
+  if (!pick || !catalog) return pick;
+  return catalog.models.some((m) => m.available && m.name === pick) ? pick : "";
 }

@@ -14,7 +14,7 @@
 //
 // aieo stays lazy-imported: its index pulls every provider SDK at load.
 
-import type { Provider } from "aieo";
+import type { Provider, TokenPricing } from "aieo";
 import type { SecretsCapability } from "./capabilities.js";
 import { workflowOf, type StepContext } from "./core.js";
 import { bootEnv } from "./env.js";
@@ -403,50 +403,145 @@ export async function canonicalModelName(model?: string, provider?: string): Pro
   return aieo.canonicalModelName(model, provider).name;
 }
 
+/** A deployment setting a host changes at run time (Peel, stadeum): read
+ *  through the secrets boundary, so the secret store first, then env; the
+ *  boot env without one. Blank is unset. */
+async function deploymentSetting(name: string, secrets?: SecretsCapability): Promise<string | undefined> {
+  const v = secrets ? await secrets.get(name) : bootEnv()[name];
+  return v?.trim() || undefined;
+}
+
+/** The model a call that names none runs on: `STRUT_DEFAULT_MODEL`, read
+ *  per call, else the host's boot default (`fallback`). */
+export async function defaultModel(fallback: string, secrets?: SecretsCapability): Promise<string> {
+  return (await deploymentSetting("STRUT_DEFAULT_MODEL", secrets)) ?? fallback;
+}
+
+/** `STRUT_MODELS`: the models the host lets people use, a JSON array of
+ *  model names (canonical `provider/id`). `undefined` when it is unset, and
+ *  when it is not such an array (with a warning, once per value): then a
+ *  model is available when strut holds its provider's key. The gateway,
+ *  not strut, enforces the list; strut only shows it. */
+async function hostModels(secrets?: SecretsCapability): Promise<string[] | undefined> {
+  const raw = await deploymentSetting("STRUT_MODELS", secrets);
+  if (raw === undefined) return undefined;
+  let list: unknown;
+  try {
+    list = JSON.parse(raw);
+  } catch {
+    list = undefined;
+  }
+  if (!Array.isArray(list) || !list.every((n) => typeof n === "string")) {
+    if (raw !== warnedModels) console.warn("[llm] STRUT_MODELS is not a JSON array of model names; ignored");
+    warnedModels = raw;
+    return undefined;
+  }
+  return list.map((n: string) => n.trim()).filter(Boolean);
+}
+let warnedModels: string | undefined;
+
 export interface ModelOption {
-  provider: Provider;
-  alias: string;
+  /** aieo's provider; for a host-listed name aieo does not know
+   *  (`acme/llama-4`), the name's first segment. */
+  provider: string;
+  /** The friendly name (`sonnet`), when the model has one. */
+  alias?: string;
   modelId: string;
   /** Canonical name — the value a picker submits. */
   name: string;
   /** The provider's default model. */
   default: boolean;
-  /** A key for this provider is configured (secret store or env). */
+  /** People may pick it: listed in `STRUT_MODELS` when the host sets it,
+   *  else a key for its provider is configured (secret store or env). */
   available: boolean;
+  /** The context window, tokens. Absent when aieo does not know the provider. */
+  contextLimit?: number;
+  /** USD per million tokens, what aieo counts a call at: Maple's and Numes'
+   *  own rates per model, else the provider's flat rate. Absent when aieo
+   *  does not know the provider. */
+  pricing?: TokenPricing;
 }
 
 export interface ModelCatalog {
   /** The deployment's default chat model, canonical. */
   default: string;
   models: ModelOption[];
+  /** The host's `STRUT_MODELS` says which models are available; false when
+   *  a provider's key does. A page then shows only the available ones: a
+   *  person can do nothing about the others. */
+  listed: boolean;
   /** provider → the env var / secret NAME that holds its key. */
   keyNames: Record<string, string>;
 }
 
-/** aieo's alias catalog with per-provider availability. Never returns key
- *  values — only whether one exists. */
+/** Every model aieo knows — its aliases, and every Maple and Numes model
+ *  it lists — plus any name the host lists in `STRUT_MODELS` that aieo does
+ *  not, each with whether people may pick it. The default is
+ *  `STRUT_DEFAULT_MODEL`, else `opts.default`. Never returns key values,
+ *  only whether one exists. */
 export async function listModelOptions(
   opts: { default?: string; secrets?: SecretsCapability } = {},
 ): Promise<ModelCatalog> {
   const aieo = await import("aieo");
-  const available: Record<string, boolean> = {};
-  for (const p of aieo.PROVIDERS) {
-    const fromSecrets = opts.secrets ? await opts.secrets.get(aieo.API_KEY_ENV[p]) : undefined;
-    available[p] = !!fromSecrets?.trim() || aieo.hasApiKeyForProvider(p);
+  const canonical = (name: string): string => {
+    try {
+      return aieo.canonicalModelName(name).name;
+    } catch {
+      return name; // a name aieo cannot place is kept as the host wrote it
+    }
+  };
+  const listed = await hostModels(opts.secrets);
+  const allowed = listed ? new Set(listed.map(canonical)) : undefined;
+  const keyed: Record<string, boolean> = {};
+  if (!allowed) {
+    for (const p of aieo.PROVIDERS) {
+      const fromSecrets = opts.secrets ? await opts.secrets.get(aieo.API_KEY_ENV[p]) : undefined;
+      keyed[p] = !!fromSecrets?.trim() || aieo.hasApiKeyForProvider(p);
+    }
   }
+  const tables: Partial<Record<Provider, Record<string, { pricing: TokenPricing }>>> = {
+    maple: aieo.MAPLE_MODELS,
+    numes: aieo.NUMES_MODELS,
+  };
+  const models = new Map<string, ModelOption>();
+  const add = (provider: Provider, modelId: string, alias?: string) => {
+    const name = `${provider}/${modelId}`;
+    if (models.has(name)) return;
+    models.set(name, {
+      provider,
+      ...(alias ? { alias } : {}),
+      modelId,
+      name,
+      default: aieo.DEFAULT_MODELS[provider] === modelId,
+      available: allowed ? allowed.has(name) : (keyed[provider] ?? false),
+      contextLimit: aieo.getContextLimit(modelId, provider),
+      pricing: tables[provider]?.[modelId]?.pricing ?? aieo.getTokenPricing(provider),
+    });
+  };
+  const aliased = aieo.listModels();
+  for (const p of aieo.PROVIDERS) {
+    for (const m of aliased) if (m.provider === p) add(p, m.modelId, m.alias);
+    for (const id of Object.keys(tables[p] ?? {})) add(p, id);
+  }
+  // A listed name aieo has no row for: an OpenRouter id an admin typed in,
+  // or a provider aieo does not know at all.
+  for (const name of allowed ?? []) {
+    if (models.has(name)) continue;
+    const parsed = aieo.parseModelName(name);
+    if (parsed.provider && parsed.modelId) {
+      add(parsed.provider, parsed.modelId);
+      continue;
+    }
+    const slash = name.indexOf("/");
+    const provider = slash > 0 ? name.slice(0, slash) : "";
+    models.set(name, { provider, modelId: slash > 0 ? name.slice(slash + 1) : name, name, default: false, available: true });
+  }
+  const want = (await deploymentSetting("STRUT_DEFAULT_MODEL", opts.secrets)) ?? opts.default;
   let def: string;
   try {
-    def = aieo.canonicalModelName(opts.default).name;
+    def = aieo.canonicalModelName(want).name;
   } catch {
-    def = opts.default ?? ""; // a misconfigured default still lists the catalog
+    def = want ?? ""; // a misconfigured default still lists the catalog
   }
-  return {
-    default: def,
-    models: aieo.listModels().map((m) => ({
-      ...m,
-      name: `${m.provider}/${m.modelId}`,
-      available: available[m.provider] ?? false,
-    })),
-    keyNames: { ...aieo.API_KEY_ENV },
-  };
+  return { default: def, models: [...models.values()], listed: !!allowed, keyNames: { ...aieo.API_KEY_ENV } };
 }

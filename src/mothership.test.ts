@@ -30,6 +30,7 @@ import {
   createMothership,
   checkDelegationMacaroon,
   explainExhausted,
+  explainRefused,
   resolveRunCap,
   stepAgentName,
   STRUT_AGENT,
@@ -270,6 +271,26 @@ describe("mothership: the llmAuth hook", () => {
     const grant = (await ms.llmAuth(stepCtx()))!;
     assert.match(grant.explainError!({ message: `run ${d.delegationId} spent $10000.0000 of its $10000.00 cap` })!, /exhausted/);
     assert.equal(grant.explainError!({ message: "run 1700000000000 spent $5.0000 of its $5.00 cap" }), undefined);
+  });
+
+  it("the grant's explainError says in plain words that a model the person's key refuses is not enabled here", async () => {
+    const { ms } = await build();
+    const grant = (await ms.llmAuth(stepCtx()))!;
+    // Bifrost governance's refusal, as the AI SDK carries it: in the message,
+    // or only in the response body.
+    assert.equal(grant.explainError!({ message: "Model 'claude-opus-5-5' is not allowed" }), "claude-opus-5-5 is not enabled for this workspace: ask an admin");
+    assert.equal(
+      grant.explainError!({ message: "Forbidden", responseBody: JSON.stringify({ error: { message: "Provider 'xai' is not allowed" } }) }),
+      "xai is not enabled for this workspace: ask an admin",
+    );
+  });
+
+  it("explainRefused: the gateway's model and provider refusals only", () => {
+    assert.equal(explainRefused({ message: "Model 'openrouter/moonshotai/kimi-k3' is not allowed" }), "openrouter/moonshotai/kimi-k3 is not enabled for this workspace: ask an admin");
+    assert.equal(explainRefused({ message: "MCP tool 'bash' is not allowed" }), undefined);
+    assert.equal(explainRefused({ message: "connection to private IP 10.0.0.1 is not allowed" }), undefined);
+    assert.equal(explainRefused(new Error("nope")), undefined);
+    assert.equal(explainRefused(null), undefined);
   });
 });
 
