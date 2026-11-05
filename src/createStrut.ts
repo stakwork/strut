@@ -144,7 +144,8 @@ import { callbackOrigin, parseCallback, parseLaunchCallback, postCallback, roomA
 import { createEventsSink, parseSinkUrl, type EventsSink } from "./events-sink.js";
 import { listServerTools, parseMcpServers } from "./mcp-servers.js";
 import { fileMcpRegistry, gatedByDefault, mcpStepDef, parseRegistration, resolveRegistration, type McpRegistration } from "./mcp-registry.js";
-import { briefOf, decideProposal, visibleTo, listProposals, proposalsCapability, proposalsRoot, readProposal, type Decision, type ProposalsCapability, type ProposalStatus } from "./proposals.js";
+import { PROPOSAL_FEED_READ_MAX, createProposalFeed } from "./proposal-feed.js";
+import { briefOf, decideProposal, visibleTo, listProposals, proposalsCapability, proposalsRoot, readProposal, type Decision, type Proposal, type ProposalsCapability, type ProposalStatus } from "./proposals.js";
 import type { AssistantChatDoor } from "./ai/assistant-tools.js";
 import { shellCapability, type ShellCapability } from "./capabilities.js";
 import { JOB_WORKFLOWS, deleteJob, jobFilePath, jobRoot, jobsCapability, listJobFiles, readJobRecord, releaseWith, setJobCallback, turnOf, wakeJobFeeds, type JobsCapability } from "./jobs.js";
@@ -1048,8 +1049,15 @@ export async function createStrut<TServices = unknown>(
     ? (p: { id: string }) =>
         void projectProposalOnce(proposalGraph, ownProposals, p.id).catch((err) => console.error(`[projector] proposal ${p.id} was not projected:`, err))
     : undefined;
+  // Each change is also an event on the proposal feed (plans/live-feeds.md,
+  // "Proposal feed"): `proposal/changes` and `GET /proposals/changes` read it.
+  const proposalChanges = createProposalFeed();
+  const proposalChanged = (p: Proposal) => {
+    proposalChanges.push(p);
+    projectProposal?.(p);
+  };
   const ownProposals: ProposalsCapability = proposalsCapability(dataDir, {
-    ...(projectProposal ? { changed: projectProposal } : {}),
+    changed: proposalChanged,
     // What the host's deltas gate: a step that reaches past this strut
     // checks it whatever the route (proposals.ts `requireApproval`).
     hostApprove: [opts.job, opts.orchestrator, opts.builder].flatMap((d) => (d ? (d.approve ?? []) : [])),
@@ -1093,6 +1101,7 @@ export async function createStrut<TServices = unknown>(
     // step to its caller's list (src/graph/scope.ts).
     ...(graph ? { graph: graphView({ ...graph, close: async () => undefined }, opts.graphReaders) } : {}),
     ...(graphChanges ? { graphChanges } : {}),
+    proposalChanges,
     ...(stt ? { stt } : {}),
     // The LLM auth seam, for the model-building call sites (llm.ts).
     ...(opts.llmAuth ? { llmAuth: opts.llmAuth } : {}),
@@ -4130,7 +4139,7 @@ export async function createStrut<TServices = unknown>(
       mcpOf: (workflow, runId) => store.getRunMcp(workflow, runId),
       stepFor: (type) => mcpStepDef(type, mcpRegistry),
       notify: (job, update) => ((services as Record<string, unknown>)["jobs"] as JobsCapability | undefined)?.notify?.(job, update),
-      ...(projectProposal ? { changed: projectProposal } : {}),
+      changed: proposalChanged,
     });
   ownProposals.decide = decide;
 
@@ -4152,6 +4161,25 @@ export async function createStrut<TServices = unknown>(
       ...(status !== undefined ? { status: status as ProposalStatus } : {}),
     });
     return c.json({ proposals });
+  });
+
+  // What happened to proposals after a cursor (plans/live-feeds.md, "Proposal
+  // feed"): created / decided / applied / failed, ids and a short title, never
+  // the input. `?cursor=` (or `since`), `?wait=` ms, `?limit=`. Scoped like the
+  // list above. Registered BEFORE /proposals/:id, which would take "changes".
+  app.get("/proposals/changes", async (c) => {
+    const wait = Number(c.req.query("wait"));
+    const limit = Number(c.req.query("limit"));
+    return c.json(
+      await proposalChanges.read({
+        scope: await scopeOf(c),
+        actor: await resolveActor(c),
+        cursor: c.req.query("cursor") ?? c.req.query("since"),
+        ...(wait > 0 ? { wait } : {}),
+        ...(limit > 0 ? { limit: Math.min(limit, PROPOSAL_FEED_READ_MAX) } : {}),
+        signal: c.req.raw.signal,
+      }),
+    );
   });
 
   app.get("/proposals/:id", async (c) => {
@@ -7751,6 +7779,7 @@ export async function createStrut<TServices = unknown>(
     automations.stop();
     // Every feed read still waiting answers now (plans/live-feeds.md).
     graphChanges?.close();
+    proposalChanges.close();
     wakeJobFeeds(dataDir);
     for (const t of subscriptionTimers) clearTimeout(t);
     // The browser connection, when strut built it: every run's context goes with it.

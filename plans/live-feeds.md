@@ -319,6 +319,32 @@ and a deploy. A kit change reaches an app when the app is published again
   granted `graph/changes` sees ids and types of every write (2), 1 s / 5 s
   (3), `job/status` not in the `job` seed's grants (4).
 
+## Proposal feed (built 2026-11-05)
+
+Proposals were on no feed, so an app polled `proposal/list`. `src/proposal-feed.ts`
+is a `LiveFeed` of EVENTS (one entry each, never folded, 1,000 kept, reads
+≤ 200): `created`, `decided` (status `accepted` or `rejected`), `applied`,
+`failed`. An event is `{ event, id, status, kind: tool | step, title,
+summary?, actor?, at }` — title and summary cut at 200 chars, **never the
+tool's input**, rationale, card or result (read one by id). `actor` is who
+caused it: the proposer on `created`, the decider after.
+
+- **Emit:** createStrut makes one feed and pushes every record the
+  proposals' `changed` hook is told of — the hook the `StrutProposal`
+  projection rides, called at create and in `decideProposal`'s `tell`
+  (reject, accept, apply and fail all pass through it). The event is the
+  record's status (pending → `created`, accepted or rejected → `decided`,
+  then `applied` or `failed`), so `proposals.ts` knows nothing of the feed.
+- **Read:** `GET /proposals/changes?cursor=&wait=&limit=` (`since` also
+  accepted; registered before `/proposals/:id`) and the `proposal/changes`
+  step (`cursor`, `wait`, `limit` → `{ cursor, reset?, more?, events }`),
+  over `ctx.services.proposalChanges`. Cursors and `reset` as for the graph
+  feed (a restart or a wrapped buffer resets: list again).
+- **Scoping:** the same `visibleTo` as the list — `full` all, a person token
+  its own threads' events, a plain peer none; under `ctx.app` the step reads
+  as `peer:person` for the viewer.
+- Tests: `src/proposal-feed.test.ts` (the feed, and the route over HTTP).
+
 ## Open questions
 
 1. Item 1's memory-only record: enough, or should updates survive a
