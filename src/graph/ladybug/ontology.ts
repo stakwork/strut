@@ -202,7 +202,7 @@ export async function ancestors(run: Run, type: string): Promise<{ chain: string
 async function edgeBetween(run: Run, edge: string, source: string, target: string): Promise<{ edge: string; props: Record<string, unknown> } | null> {
   const rows = await run(
     `MATCH ${S("s")}-${SE("r")}->${S("t")} WHERE s.type = $s AND t.type = $t AND ${RULE("r")} AND lower(r.edge_type) = lower($e)
-     RETURN r.edge_type AS edge, r.ref_id AS ref_id, r.temporal AS temporal, r.cardinality AS cardinality ORDER BY CASE WHEN r.edge_type = $e THEN 0 ELSE 1 END LIMIT 1`,
+     RETURN r.edge_type AS edge, r.ref_id AS ref_id, r.temporal AS temporal, r.cardinality AS cardinality, r.volatility AS volatility ORDER BY CASE WHEN r.edge_type = $e THEN 0 ELSE 1 END LIMIT 1`,
     { s: source, t: target, e: edge },
   );
   const r = rows[0];
@@ -215,6 +215,7 @@ function ruleProps(r: Row): Record<string, unknown> {
   if (typeof r["ref_id"] === "string") props["ref_id"] = r["ref_id"];
   if (typeof r["temporal"] === "boolean") props["temporal"] = r["temporal"];
   if (typeof r["cardinality"] === "string") props["cardinality"] = r["cardinality"];
+  if (typeof r["volatility"] === "string") props["volatility"] = r["volatility"];
   return props;
 }
 
@@ -223,7 +224,7 @@ function ruleProps(r: Row): Record<string, unknown> {
 export async function edgeRule(run: Run, edge: string): Promise<Record<string, unknown> | null> {
   const rows = await run(
     `MATCH ${S("s")}-${SE("r")}->${S("t")} WHERE ${RULE("r")} AND r.edge_type = $e AND s.deleted_at IS NULL AND t.deleted_at IS NULL
-     RETURN r.ref_id AS ref_id, r.temporal AS temporal, r.cardinality AS cardinality ORDER BY r.ref_id LIMIT 1`,
+     RETURN r.ref_id AS ref_id, r.temporal AS temporal, r.cardinality AS cardinality, r.volatility AS volatility ORDER BY r.ref_id LIMIT 1`,
     { e: edge },
   );
   return rows[0] ? ruleProps(rows[0]) : null;
@@ -231,12 +232,13 @@ export async function edgeRule(run: Run, edge: string): Promise<Record<string, u
 
 /** The edge type's rule on every one of its rules (an unset key cleared). A
  *  type made temporal gets the temporal columns on its rel table. */
-export async function setEdgeRule(run: Run, edge: string, rule: { temporal?: boolean; cardinality?: string }): Promise<void> {
+export async function setEdgeRule(run: Run, edge: string, rule: { temporal?: boolean; cardinality?: string; volatility?: string }): Promise<void> {
   if (rule.temporal) await addTemporalColumns(run, edge);
-  await run(`MATCH ${S("s")}-${SE("r")}->${S("t")} WHERE ${RULE("r")} AND r.edge_type = $e SET r.temporal = $t, r.cardinality = $c`, {
+  await run(`MATCH ${S("s")}-${SE("r")}->${S("t")} WHERE ${RULE("r")} AND r.edge_type = $e SET r.temporal = $t, r.cardinality = $c, r.volatility = $v`, {
     e: edge,
     t: rule.temporal ?? null,
     c: rule.cardinality ?? null,
+    v: rule.volatility ?? null,
   });
 }
 
@@ -384,10 +386,13 @@ export async function setEdgeAliases(run: Run, edge: string, aliases: string[]):
 /** An edge rule's own columns: the edge type's rule (`EdgeRule`). A file
  *  an older build made gets them from `SCHEMA_RULES_MIGRATION` (`db.ts`). */
 export const SCHEMA_EDGE_RULE_COLUMNS: Readonly<Record<string, ColumnType>> = { temporal: "BOOL", cardinality: "STRING" };
+/** The rule columns added later (`MIGRATIONS` in `db.ts`): how fast a
+ *  type's facts change (`fact-score.ts`). */
+export const SCHEMA_EDGE_RULE_V2_COLUMNS: Readonly<Record<string, ColumnType>> = { volatility: "STRING" };
 
 /** Shaped like every other rel table (the edge columns), plus the type, the
  *  parent mark and the edge type's rule. */
-export const SCHEMA_EDGE_DDL = `CREATE REL TABLE IF NOT EXISTS ${SCHEMA_EDGE}(FROM Node TO Node, ${Object.entries({ ...EDGE_COLUMNS, edge_type: "STRING", is_parent: "BOOL", ...SCHEMA_EDGE_RULE_COLUMNS, [EDGE_ALIASES]: "STRING[]" })
+export const SCHEMA_EDGE_DDL = `CREATE REL TABLE IF NOT EXISTS ${SCHEMA_EDGE}(FROM Node TO Node, ${Object.entries({ ...EDGE_COLUMNS, edge_type: "STRING", is_parent: "BOOL", ...SCHEMA_EDGE_RULE_COLUMNS, ...SCHEMA_EDGE_RULE_V2_COLUMNS, [EDGE_ALIASES]: "STRING[]" })
   .map(([k, t]) => `${q(k)} ${t}`)
   .join(", ")})`;
 
@@ -466,8 +471,9 @@ export async function ensureEdgeSchema(run: Run, catalog: Catalog, source: strin
   const rule = ruleProps(props);
   if (rule["temporal"] === true) await addTemporalColumns(run, edge);
   await run(
-    `MATCH ${S("s")}, ${S("t")} WHERE s.type = $s AND t.type = $t CREATE (s)-[:${SCHEMA_EDGE} {ref_id: $ref_id, edge_type: $e, temporal: $temporal, cardinality: $cardinality}]->(t)`,
-    { s: source, t: target, ref_id, e: edge, temporal: rule["temporal"] ?? null, cardinality: rule["cardinality"] ?? null },
+    `MATCH ${S("s")}, ${S("t")} WHERE s.type = $s AND t.type = $t
+     CREATE (s)-[:${SCHEMA_EDGE} {ref_id: $ref_id, edge_type: $e, temporal: $temporal, cardinality: $cardinality, volatility: $volatility}]->(t)`,
+    { s: source, t: target, ref_id, e: edge, temporal: rule["temporal"] ?? null, cardinality: rule["cardinality"] ?? null, volatility: rule["volatility"] ?? null },
   );
   return { created: true, ref_id };
 }

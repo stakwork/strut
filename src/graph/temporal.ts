@@ -44,6 +44,7 @@ import { randomUUID } from "node:crypto";
 import type { EngineLike, GraphTx } from "./engine.js";
 import { edgeKeyFor } from "./edge-writer.js";
 import { writeNamespace } from "./ladybug/namespaces.js";
+import { recordFactEvidence } from "./ladybug/fact-claims.js";
 import { composeFact, createTemporalEdge, factRows, setTemporalEdge, slotEdges, syncEdgeRow, temporalEdgeTypes, titlesOf, writeEdgeRow } from "./ladybug/temporal.js";
 import { asEngine } from "./neo4j-engine.js";
 import { boundsOf } from "./scope.js";
@@ -84,13 +85,18 @@ export interface AssertInput {
   /** It is no longer true ("used to …"), even with no `invalid_at`: kept
    *  as past, ending the same fact held now, with no end date invented. */
   ended?: boolean;
+  /** The speaker says it is false (\"that's wrong\"): the fact held now is
+   *  ended, and its claim gets evidence against it from the speaker
+   *  (plans/memory-truth-layer.md). A fact the graph does not hold is not
+   *  made: the refutation is kept on its claim alone. */
+  refuted?: boolean;
   /** The edge's namespace; default its source node's. */
   namespace?: string;
   /** Who is asserting it: the host's name for the caller's actor. */
   created_by?: string;
 }
 
-export type AssertAction = "created" | "superseded" | "history" | "reconfirmed" | "unchanged";
+export type AssertAction = "created" | "superseded" | "history" | "reconfirmed" | "unchanged" | "refuted";
 
 export interface AssertResult {
   ref_id: string;
@@ -162,7 +168,8 @@ export async function assertEdge(e: EngineLike, resolver: SchemaResolver, input:
   // When each edge was last confirmed: an edge from before the column, when it was made.
   const confirmed = (x: { last_confirmed_at: number | null }) => x.last_confirmed_at ?? 0;
   // A fact said to be over, or whose end is given and not in the future, is past.
-  const past = input.ended === true || (invalid !== null && invalid <= now);
+  const refuted = input.refuted === true;
+  const past = refuted || input.ended === true || (invalid !== null && invalid <= now);
   const saidBy = input.said_by?.trim() || undefined;
 
   // The search row's text and vector, made before the transaction: a failed
@@ -195,11 +202,32 @@ export async function assertEdge(e: EngineLike, resolver: SchemaResolver, input:
     const one = match.rule.cardinality === "one";
     // Where it was learned and who said it: each kept once among the edge's sources.
     const given = [...new Set([input.source?.trim(), saidBy, input.run ? runSource(input.run) : undefined].filter((x): x is string => !!x))];
+    // This mention as evidence for the fact's claim (plans/memory-truth-layer.md), in the same transaction.
+    const evidence = (namespace: string | undefined, strength = 1) =>
+      recordFactEvidence(tx, {
+        subject: input.source_ref_id,
+        edge,
+        target: input.target_ref_id,
+        text,
+        namespace,
+        ...(saidBy ? { said_by: saidBy } : {}),
+        ...(input.source?.trim() ? { message: input.source.trim() } : {}),
+        ...(input.run ? { run: input.run } : {}),
+        observed_at: observed,
+        strength,
+        ...(input.created_by ? { created_by: input.created_by } : {}),
+        now,
+      });
 
     // The same edge held now, or for a past fact, held before.
     const current = await slotEdges(tx, edge, input.source_ref_id);
     const held = current.find((x) => x.target === input.target_ref_id);
     const hit = held ?? (past ? (await slotEdges(tx, edge, input.source_ref_id, true)).find((x) => x.target === input.target_ref_id) : undefined);
+    // Said to be false, and not held now: kept as evidence against it, no fact made.
+    if (refuted && !held) {
+      await evidence(s.namespace ?? engine.namespace, -1);
+      return { ref_id: hit?.ref_id ?? "", action: "refuted", superseded: [], ended: true };
+    }
     if (hit) {
       // A date it was missing is filled, never one that would end it before
       // it began. Said to be past while held now, it stops being held.
@@ -210,9 +238,10 @@ export async function assertEdge(e: EngineLike, resolver: SchemaResolver, input:
       const filled = [...(v !== hit.valid_at ? ["valid_at"] : []), ...(inv !== hit.invalid_at ? ["invalid_at"] : [])];
       const expire = !!held && (ending || (inv !== null && inv <= now));
       const fresh = given.filter((x) => !hit.sources.includes(x));
-      const later = observed > confirmed(hit);
+      // Ending or refuting it backs nothing: its last confirmation stays.
+      const later = !ending && observed > confirmed(hit);
       // The same sources again (or nothing new) change nothing: the same evidence confirms nothing.
-      if (!filled.length && !expire && given.length && !fresh.length) {
+      if (!refuted && !filled.length && !expire && given.length && !fresh.length) {
         return { ref_id: hit.ref_id, action: "unchanged", superseded: [], ended: hit.expired_at !== null };
       }
       await setTemporalEdge(tx, edge, hit.ref_id, {
@@ -230,6 +259,10 @@ export async function assertEdge(e: EngineLike, resolver: SchemaResolver, input:
           ...(expire ? { expired_at: now } : {}),
         }, now);
       }
+      // Saying it is over is world time, not support; saying it is false is evidence against it.
+      if (refuted) await evidence(s.namespace ?? engine.namespace, -1);
+      else if (!ending) await evidence(s.namespace ?? engine.namespace);
+      if (refuted) return { ref_id: hit.ref_id, action: "refuted", superseded: [], ended: true };
       return { ref_id: hit.ref_id, action: "reconfirmed", superseded: [], ended: hit.expired_at !== null || expire, ...(filled.length ? { filled } : {}) };
     }
 
@@ -279,6 +312,7 @@ export async function assertEdge(e: EngineLike, resolver: SchemaResolver, input:
       await setTemporalEdge(tx, edge, o.ref_id, { ...end, superseded_by: ref_id, updated_at: now });
       await syncEdgeRow(tx, o.ref_id, end, now);
     }
+    await evidence(namespace);
     return {
       ref_id,
       action: superseded.length ? "superseded" : history ? "history" : "created",

@@ -230,11 +230,13 @@ export const EDGE_COLUMNS: Readonly<Record<string, ColumnType>> = {
 export const EDGE_CORE_COLUMNS: readonly string[] = ["namespace", "created_by", "updated_at", "deleted_at"];
 
 /** The columns only some edge types have: what the claim layer writes
- *  (`verify.ts`: `strength` on EVIDENCED_BY, `context` / `start_time` /
+ *  (`verify.ts`: `strength` on EVIDENCED_BY, and `context` there for a
+ *  memory fact's evidence, `fact-claims.ts`; `context` / `start_time` /
  *  `end_time` / `post_url` on HAS_SOURCE). A file an older build made has
  *  them on every rel table, empty elsewhere: a column is never dropped. */
 export const EDGE_TYPE_COLUMNS: Readonly<Record<string, Readonly<Record<string, ColumnType>>>> = {
-  EVIDENCED_BY: { strength: "DOUBLE" },
+  // `context`: who said a memory fact, its message and run (fact-claims.ts).
+  EVIDENCED_BY: { strength: "DOUBLE", context: "STRING" },
   HAS_SOURCE: { context: "STRING", start_time: "INT64", end_time: "INT64", post_url: "STRING" },
 };
 

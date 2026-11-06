@@ -38,7 +38,7 @@ import { PRIVATE_NAMESPACE } from "./namespaces.js";
 import { DEFAULT_NAMESPACE } from "../bolt.js";
 import { bootEnv } from "../../env.js";
 import { ladybugMaxDbSize } from "./max-size.js";
-import { EDGE_ALIASES, SCHEMA_EDGE, SCHEMA_EDGE_DDL, SCHEMA_EDGE_RULE_COLUMNS, readCatalog, seedOntology } from "./ontology.js";
+import { EDGE_ALIASES, SCHEMA_EDGE, SCHEMA_EDGE_DDL, SCHEMA_EDGE_RULE_COLUMNS, SCHEMA_EDGE_RULE_V2_COLUMNS, readCatalog, seedOntology } from "./ontology.js";
 import { writeMissingEdgeRows } from "./temporal.js";
 import { EDGE_TEXT_TYPE, SCHEMA_TYPE, ontologySeed } from "./registry.js";
 import { OWN_CREATED_AT } from "../strut-schemas.js";
@@ -137,6 +137,8 @@ export function ddlStatements(): string[] {
 export const MIGRATIONS: readonly string[] = [
   // An edge type's aliases (`EDGE_ALIASES`), on its rules.
   `ALTER TABLE ${q(SCHEMA_EDGE)} ADD IF NOT EXISTS ${q(EDGE_ALIASES)} STRING[]`,
+  // How fast an edge type's facts change, and the types they change with (`fact-score.ts`).
+  ...Object.entries(SCHEMA_EDGE_RULE_V2_COLUMNS).map(([k, t]) => `ALTER TABLE ${q(SCHEMA_EDGE)} ADD IF NOT EXISTS ${q(k)} ${t}`),
 ];
 
 /** The core attributes' old column names (plans/graph-memory-plan.md "Core
