@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { PACKAGE_NAME, PACKAGE_SEGMENT, comesAlong, installedTitle, isInstalledName, nameInGroup, nextVersion, packageLabel, packageOf, pickerGroups, picksFromRelease, sidebarGroups } from "./package-release";
+import { PACKAGE_NAME, PACKAGE_SEGMENT, byNamespace, comesAlong, installedTitle, isInstalledName, nameInGroup, nextVersion, packageLabel, packageOf, pickerGroups, picksFromRelease, sidebarGroups } from "./package-release";
 
 test("packageOf reads the package off a name with a prefix", () => {
   assert.equal(packageOf("stakwork/tools/summarize"), "stakwork/tools");
@@ -50,15 +50,25 @@ test("pickerGroups groups the workflows here by category, an installed package's
 });
 
 test("comesAlong reads what a dry build adds to the picks, and the picks it does not carry", () => {
-  const files = ["strut.yaml", "workflows/summarize.yaml", "workflows/tidy.yaml", "steps/clip/shout.ts", "steps/clip/_shared.ts", "steps/clip/shout.claims.yaml", "apps/board/app.yaml", "apps/board/src/App.tsx", "graph/Clip.yaml", "graph/Media.yaml"];
-  assert.deepEqual(comesAlong("acme/tools", files, { workflows: ["summarize", "job"], apps: [], types: ["clip"] }), {
+  const files = ["strut.yaml", "workflows/summarize.yaml", "workflows/tidy.yaml", "steps/clip/shout.ts", "steps/clip/_shared.ts", "steps/clip/shout.claims.yaml", "apps/board/app.yaml", "apps/board/src/App.tsx", "graph/Clip.yaml", "graph/Media.yaml", "concepts/Clips.md", "concepts/Short Clips.md", "concepts/Long Clips.md"];
+  assert.deepEqual(comesAlong("acme/tools", files, { workflows: ["summarize", "job"], apps: [], concepts: ["Clips"], types: ["clip"] }), {
     workflows: ["tidy"],
     steps: ["clip/shout"],
     apps: ["board"],
+    concepts: { roots: ["Clips"], pages: 2 },
     types: ["Media"],
     leftOut: ["job"],
   });
   assert.deepEqual(comesAlong("acme/tools", files, { workflows: ["acme/tools/summarize", "tidy"], apps: ["board"] }).workflows, [], "a name under the prefix is its path");
+});
+
+test("byNamespace puts a namespace's names on one line, bare names last", () => {
+  assert.deepEqual(byNamespace(["openlaw/runs", "tidy", "harvey-lab/prepare-task", "openlaw/climbs", "a/b/c"]), [
+    { ns: "a/b", names: ["c"] },
+    { ns: "harvey-lab", names: ["prepare-task"] },
+    { ns: "openlaw", names: ["climbs", "runs"] },
+    { ns: "", names: ["tidy"] },
+  ]);
 });
 
 test("picksFromRelease maps what a release held back to the names here", () => {
