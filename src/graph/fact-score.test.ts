@@ -3,8 +3,8 @@
  * who backed it, each sayer once; how long since it was last backed, by the
  * edge type's volatility; an ended value kept in the running when a less
  * trusted sayer replaced it; a message read again that brings nothing back;
- * a change in a slot it depends on; the user saying it is false; and the
- * status and stance that follow. Evidence rows, and sources for a fact
+ * a check finding the expected activity, or not; the user saying it is
+ * false; an open question; and the status and stance that follow. Evidence rows, and sources for a fact
  * written before claims, give the same answer.
  */
 import { describe, it } from "node:test";
@@ -102,18 +102,33 @@ describe("fact-score", () => {
     assert.equal(back.get("e1")!.status, "supported");
   });
 
-  it("a change in a slot it depends on, since it was last backed, makes it stale", () => {
-    const gym = edge("g1", "PureGym", [], 300);
-    const moved = [edge("h1", "Bristol", [], 0, { expired_at: at(400), superseded_by: "h2" }), edge("h2", "London", [], 400, { valid_at: at(395) })];
-    assert.deepEqual(view(slot("me", [gym], 420, { parents: [moved] }), "g1"), ["stale", "cite"]);
-    assert.deepEqual(view(slot("me", [gym], 420), "g1"), ["supported", "state"], "without the link it is stated");
-    assert.deepEqual(view(slot("me", [{ ...gym, last_confirmed_at: at(430) }], 440, { parents: [moved] }), "g1"), ["supported", "state"], "backed after the move");
+  it("a check that finds the expected activity backs it, as its own kind of source; a quiet one makes it stale, ask", () => {
+    const found = said("c1", undefined, 1500);
+    const e = edge("w1", "Stakwork", ["chat:1"], 0, { evidence: [said("a", undefined, 0), { ...found, check: "hive/activity" }] });
+    const s = slot("me", [e], 1510);
+    assert.deepEqual(view(s, "w1"), ["supported", "state"], "nobody restated it, but the activity is there");
+    assert.ok(s.get("w1")!.evidence.sayers.some((x) => x.kind === "check" && x.name === "hive/activity"));
+    const quiet = slot("me", [{ ...e, evidence: [said("a", undefined, 1490), { id: "c2", observed_at: at(1500), strength: -0.5, check: "hive/activity" }] }], 1505);
+    assert.deepEqual(view(quiet, "w1"), ["stale", "ask"], "said lately, but the expected activity is missing");
   });
 
-  it("an unanswered ask stays ask: nothing records the question yet (plans/memory-truth-layer.md, planned slots)", () => {
+  it("the user ending a fact, then saying it is false: refuted, whoever else backed it (the vegan story)", () => {
+    const sams = [said("a", "sam", 0), said("b", "sam", 1)];
+    const e = edge("v1", "vegan", ["sam"], 0, { evidence: [...sams, said("c", undefined, 2, -1)] });
+    assert.deepEqual(view(slot("me", [e], 3, { volatility: "evolving" }), "v1"), ["refuted", "ask"]);
+    assert.deepEqual(slot("me", [e], 3).get("v1")!.evidence.sayers, [{ ref_id: "sam", name: "Sam", kind: "other" }], "the refutation is not a sayer of it");
+  });
+
+  it("an open question is reported, so it is not asked twice", () => {
+    const e = edge("e1", "Porto", ["kate"], 0);
+    assert.equal(slot("kate", [e], 2600, { open: new Set(["e1"]) }).get("e1")!.open_check, true);
+    assert.equal(slot("kate", [e], 2600).get("e1")!.open_check, undefined);
+  });
+
+  it("an unanswered ask stays ask until it is answered: the read alone records nothing", () => {
     const e = edge("e1", "Porto", ["kate"], 0);
     assert.equal(slot("kate", [e], 2600).get("e1")!.stance, "ask");
-    assert.equal(slot("kate", [e], 2601).get("e1")!.stance, "ask", "asked again the next day: the gap a planned slot closes");
+    assert.equal(slot("kate", [e], 2601).get("e1")!.stance, "ask", "the question is opened by graph/verify-facts, not the read");
   });
 
   it("a fact that begins later is planned; an ended one has a status but no stance", () => {

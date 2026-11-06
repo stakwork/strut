@@ -27,14 +27,23 @@ const Fact = z.object({
   valid_at: z.string().optional().describe("When it became true, only if the words say."),
   invalid_at: z.string().optional().describe("When it stopped being true, only if the words say."),
   observed_at: z.string().optional().describe("When the evidence is from, when not now: the time of the message, email, calendar event or document it was read from (ISO). Left out for what is said in this conversation."),
-  ended: z.boolean().optional().describe("It is over (\"used to …\"), even with no date: kept as past, no end date invented."),
+  ended: z.boolean().optional().describe("It is over (\"used to …\", \"I left\"), even with no date: kept as past, no end date invented. It was true; it is not now."),
+  refuted: z.boolean().optional().describe("The speaker says it is false (\"that's wrong\", \"I'm not vegan\"): it was never true. The fact held now ends, and its record keeps the speaker's word against it, so it is not stated again. Not for something that is merely over: that is `ended`."),
   source: z.string().optional().describe("Only for more than this run says: the ref_id of a message or node it was read from. The run it is asserted in is kept as a source on its own."),
   said_by: z.string().optional().describe("The ref_id of whoever said it, when not the user: e.g. the Person whose message this was."),
   create_schema_if_missing: z.boolean().optional().describe("Create the edge type as temporal between the two ends' types when the ontology has no such edge. An existing plain edge type is never made temporal."),
   cardinality: z.enum(["one", "many"]).optional().describe("With create_schema_if_missing, for a new edge type: `one` when a subject holds one current value (where someone lives), `many` (default) when several hold at once."),
   aliases: z.array(z.string()).optional().describe("With create_schema_if_missing, for a new edge type: other words for it, which a search reads as naming it (WORKS_AT: job, employer)."),
   volatility: z.enum(VOLATILITIES).optional().describe("How fast this kind of fact changes: `static` never (a birthday), `stable` over years (where someone lives), `evolving` within a year or so (a diet), `volatile` within weeks (what someone is working on). Kept on the edge type the first time it is given; reads lower trust in a fact as it goes unconfirmed for longer than that."),
-  depends_on: z.array(z.string()).optional().describe("Edge types this kind of fact usually changes with, for the same subject (a gym with where someone lives). Kept on the edge type the first time it is given; reads lower trust in a fact when one of them changed since it was last confirmed."),
+  expects: z
+    .object({
+      step: z.string().describe("The check: a step type that looks for the evidence (e.g. activity at an organisation)."),
+      every_days: z.number().positive().describe("How often to run it."),
+      window_days: z.number().positive().optional().describe("How far back it looks."),
+      config: z.record(z.string(), z.any()).optional().describe("Extra config for the step."),
+    })
+    .optional()
+    .describe("The evidence this kind of fact should keep producing while it holds, and the check that looks for it (memory/verify runs it). Kept on the edge type the first time it is given. Rarely needed: only with a check step that exists."),
 });
 type FactT = z.infer<typeof Fact>;
 
@@ -48,7 +57,7 @@ const sideOf = (f: FactT, side: "source" | "target"): string | null => {
 };
 
 /** One fact's edge schema: made temporal when asked and missing, and a
- *  `volatility` or `depends_on` the type does not have yet kept on it. Before
+ *  `volatility` or `expects` the type does not have yet kept on it. Before
  *  the transaction: a rel table is DDL. A plain edge type stays plain. */
 async function ensureTemporal(b: GraphBackend, f: FactT, edge: string, types: [string, string]): Promise<void> {
   const { edgeRule } = await import("../../../graph/ladybug/ontology.js");
@@ -59,8 +68,7 @@ async function ensureTemporal(b: GraphBackend, f: FactT, edge: string, types: [s
   const held = await edgeRule((c, p) => query(c, p), edge);
   if (held && held["temporal"] !== true) throw new Error(`${edge} is a plain edge type; a fact needs a temporal one: pick another edge type`);
   const rule = held ? edgeRuleOf(held) : undefined;
-  const depends = f.depends_on?.map((d) => d.toUpperCase().replace(/ /g, "_"));
-  const fill = { ...(f.volatility && !rule?.volatility ? { volatility: f.volatility } : {}), ...(depends?.length && !rule?.depends_on ? { depends_on: depends } : {}) };
+  const fill = { ...(f.volatility && !rule?.volatility ? { volatility: f.volatility } : {}), ...(f.expects && !rule?.expects ? { expects: f.expects } : {}) };
   const exists = await b.schemas.edgeSchema(edge, ...types);
   if (exists && !Object.keys(fill).length) return;
   if (!exists && !f.create_schema_if_missing) return;
@@ -77,7 +85,7 @@ export default defineStep({
     "Asserting what the graph already holds RE-CONFIRMS it: `source` and `said_by` are added once, a missing date is filled, nothing else changes (the same sources again change nothing). " +
     "On a one-value edge type (cardinality one) a different target ENDS the current edge and creates the new one — unless `valid_at` is before the current one began: " +
     "then the new one is HISTORY, ended when the current one began, and the current one stays. `ended` (or an `invalid_at` already past) records something no longer true; " +
-    "asserting the current fact with `ended` ends it. " +
+    "asserting the current fact with `ended` ends it. When the user says a fact is wrong (\"that's wrong\", \"I'm not vegan\"), assert it with `refuted`, said by whoever said so: it ends, and is kept as false, not as something they backed. " +
     "Dates are ISO ('2026-09-14'), a year-month ('2026-09') or a year ('2026'), only when the words say. " +
     "First-person words mean the speaker: what someone else said is theirs, with `said_by` naming them. " +
     "Pass several in `facts` to save them all or nothing: one failure writes none of them, nodes included.\n\n" +
@@ -111,7 +119,7 @@ export default defineStep({
       };
       // On Neo4j assertEdge refuses before reading anything: let it, before a node is made.
       if (b.kind !== "ladybug") await assertEdge(b, b.schemas, { edge: edgeOf(facts[0]!), source_ref_id: "", target_ref_id: "", text: "" });
-      for (const f of facts) if (f.create_schema_if_missing || f.volatility || f.depends_on?.length) await ensureTemporal(b, f, edgeOf(f), [await typeOf(f, "source"), await typeOf(f, "target")]);
+      for (const f of facts) if (f.create_schema_if_missing || f.volatility || f.expects) await ensureTemporal(b, f, edgeOf(f), [await typeOf(f, "source"), await typeOf(f, "target")]);
 
       // One transaction: the new nodes (each distinct one once) and every
       // fact. A lone fact between known nodes runs as its own, embedded first.
@@ -145,6 +153,7 @@ export default defineStep({
             ...(f.invalid_at ? { invalid_at: f.invalid_at } : {}),
             ...(f.observed_at ? { observed_at: f.observed_at } : {}),
             ...(f.ended ? { ended: true } : {}),
+            ...(f.refuted ? { refuted: true } : {}),
             ...(f.source ? { source: f.source } : {}),
             ...(f.said_by ? { said_by: f.said_by } : {}),
             // Where it was said is the run's to know, never the model's to pass.

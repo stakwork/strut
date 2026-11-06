@@ -92,13 +92,14 @@ export function trustOut(t: FactTrust | undefined): Record<string, unknown> {
 
 /** What a step that scores facts tells the model about the scores, and how to use them (a Ladybug file only). */
 export const TRUST_NOTE =
-  "Each fact carries how far to trust it now, worked out when it is read. `evidence` is who backed it — `kind` owner is the user, self is the fact's subject, other is someone else — when it was last backed, and each piece for or against. " +
+  "Each fact carries how far to trust it now, worked out when it is read. `evidence` is who backed it — `kind` owner is the user, self is the fact's subject, other is someone else, check is a check that found the expected activity — when it was last backed, and each piece for or against. " +
   "`status` is what the evidence says: supported, disputed (another value is close: `rival`), stale (old for that kind of fact), hearsay (only someone else said it), unknown (too little to go on) or refuted (the user said it is false). " +
   "`stance` is what to do with it: `state` it as fact; `cite` it with who said it and when (\"Kate told me in September…\", \"Sam said…\"); or `ask` before relying on it. " +
   "Use them this way: (1) asked about a fact whose stance is ask, answer with what is known, then check (\"Last I heard Porto, but that was two years ago. Still there?\"); never refuse to answer. " +
   "(2) In a general answer, build it from state and cite facts; leave ask facts out or flag them briefly as possibly out of date. " +
   "(3) Before acting on a fact (sending, booking, updating), check any fact that is not state. " +
   "(4) Never hold an answer back waiting on questions, and ask at most one question per reply; the answer is new evidence, so remember it. " +
+  "`open_check` means a question about it is already waiting on the user: cite it, don't ask it again. When the user says a fact is wrong, assert it with `refuted`; when it is merely over, with `ended`. " +
   "`planned` is a fact that begins later.";
 
 export const EXCLUDED_NODE_TYPES = ["Hint", "Memory", "Clip", "Turn", "Schema"];

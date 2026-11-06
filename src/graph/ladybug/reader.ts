@@ -890,11 +890,16 @@ export class LadybugReader implements GraphReader {
     return { facts, truncated: fulltext.length >= cap || semantic.length >= cap, fulltext, semantic };
   }
 
+  /** How far to trust each fact now (`trustOf`), unscoped: for `memory-verify.ts`. */
+  async factTrust(facts: Array<{ ref_id: string; edge_type: string; subject: string }>): Promise<Map<string, FactTrust>> {
+    return this.trustOf(facts, await this.sql());
+  }
+
   /**
    * How far to trust each fact now (`fact-score.ts`), from its whole slot:
-   * every edge of its type from its subject, current and ended, the slots
-   * its type depends on, and the Persons among their sources. Nothing is
-   * stored. A fact whose type is not temporal is left out.
+   * every edge of its type from its subject, current and ended, its claim's
+   * evidence and open question, and the Persons among their sources.
+   * Nothing is stored. A fact whose type is not temporal is left out.
    */
   private async trustOf(facts: Array<{ ref_id: string; edge_type: string; subject: string }>, sc: ScopeSql): Promise<Map<string, FactTrust>> {
     const out = new Map<string, FactTrust>();
@@ -933,21 +938,23 @@ export class LadybugReader implements GraphReader {
       }
       return bySubject;
     };
-    const held: Array<{ type: string; subject: string; edges: SlotEdge[]; parents: SlotEdge[][] }> = [];
-    for (const [type, rule] of rules) {
+    const held: Array<{ type: string; subject: string; edges: SlotEdge[] }> = [];
+    for (const type of rules.keys()) {
       const subjects = [...new Set(facts.filter((f) => f.edge_type === type).map((f) => f.subject))];
       const mine = await slots(type, subjects);
-      const parents = await Promise.all((rule.depends_on ?? []).filter((d) => d !== type).map((d) => slots(d, subjects)));
-      for (const s of subjects) held.push({ type, subject: s, edges: mine.get(s) ?? [], parents: parents.map((p) => p.get(s) ?? []) });
+      for (const s of subjects) held.push({ type, subject: s, edges: mine.get(s) ?? [] });
     }
     // Each edge's claim evidence (plans/memory-truth-layer.md); an edge written
     // before claims has none, and is read from its sources.
     const claimOf = (type: string, subject: string, e: SlotEdge) => factClaimId(subject, type, e.target);
-    const evidence = await factEvidence(run, [...new Set(held.flatMap((h) => h.edges.map((e) => claimOf(h.type, h.subject, e))))]);
+    const { evidence, open: asked } = await factEvidence(run, [...new Set(held.flatMap((h) => h.edges.map((e) => claimOf(h.type, h.subject, e))))]);
+    const open = new Set<string>();
     for (const h of held) {
       for (const e of h.edges) {
-        const ev = evidence.get(claimOf(h.type, h.subject, e));
+        const claim = claimOf(h.type, h.subject, e);
+        const ev = evidence.get(claim);
         if (ev?.length) e.evidence = ev;
+        if (asked.has(claim)) open.add(e.ref_id);
       }
     }
     // The Persons among the sources and the evidence, and the user, for a fact no Person backs.
@@ -976,7 +983,7 @@ export class LadybugReader implements GraphReader {
     const wanted = new Set(facts.map((f) => f.ref_id));
     for (const h of held) {
       const rule = rules.get(h.type)!;
-      const scored = scoreSlot({ subject: h.subject, edges: h.edges, one: rule.cardinality === "one", volatility: rule.volatility, parents: h.parents, people, user, now });
+      const scored = scoreSlot({ subject: h.subject, edges: h.edges, one: rule.cardinality === "one", volatility: rule.volatility, open, people, user, now });
       for (const [id, t] of scored) if (wanted.has(id)) out.set(id, t);
     }
     return out;
