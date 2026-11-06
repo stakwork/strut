@@ -214,8 +214,10 @@ describe("search returns facts on a ladybug file (plans/graph-memory-plan.md ste
       const out = await run(graphSearch, { q: "where's my job?", facts: true, ...cfg }, ctx);
       assert.ok(Array.isArray(out.nodes), JSON.stringify(out));
       assert.equal(out.facts.length, 1, JSON.stringify(out));
-      const { score, ...fact } = out.facts[0];
+      const { score, evidence, belief, currency, hedge, ...fact } = out.facts[0];
       assert.ok(score > 0);
+      // How far to trust it, on read: the user's word (no Person among its sources), just said.
+      assert.deepEqual([evidence.sayers[0].kind, belief, currency, hedge], ["owner", 0.95, 1, false]);
       assert.deepEqual(fact, {
         ref_id: r.ref_id,
         edge_type: "WORKS_AT",

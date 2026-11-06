@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { defineStep, type StepContext, withAccessedNodes } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
-import { graphCtx, errText, deriveNodeName, describeNodes, isoDates, timeInputs, EXCLUDED_NODE_TYPES } from "./_shared.js";
+import { graphCtx, errText, deriveNodeName, describeNodes, isoDates, timeInputs, trustOut, TRUST_NOTE, EXCLUDED_NODE_TYPES } from "./_shared.js";
 const NEIGHBOR_CAP = 50;
 
 export default defineStep({
@@ -15,6 +15,7 @@ export default defineStep({
     "Optionally filter by edge_type and/or node_type. " +
     "Use this to traverse relationships between workflows, versions, steps, runs, sessions, tool calls, chats, and concepts. " +
     "A fact's edge (a sentence on an edge, \"Tom works at Stakwork\") carries its `text` and dates, and only current facts are shown unless `include_ended` or `as_of` says otherwise.",
+  graphNotes: { ladybug: TRUST_NOTE },
   input: z.object({
     ref_id: z.string().describe("The ref_id of the node to expand."),
     edge_type: z
@@ -46,6 +47,7 @@ export default defineStep({
         include_edge_counts: true,
         include_ended: cfg.include_ended,
         as_of: cfg.as_of,
+        trust: true,
       });
 
       // Node details by ref_id (excluding the queried node) so each neighbor
@@ -82,7 +84,7 @@ export default defineStep({
           edges: detail?.edges ?? {},
           ...(importance !== undefined ? { importance } : {}),
           // A temporal edge's sentence and dates (a Ladybug file's facts).
-          ...(typeof props["text"] === "string" ? { text: props["text"], ...isoDates(props) } : {}),
+          ...(typeof props["text"] === "string" ? { text: props["text"], ...isoDates(props), ...trustOut(edge.trust) } : {}),
           ...(typeof props["superseded_by"] === "string" ? { superseded_by: props["superseded_by"] } : {}),
         });
         if (neighbors.length >= NEIGHBOR_CAP) break;

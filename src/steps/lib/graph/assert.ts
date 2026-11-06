@@ -3,6 +3,7 @@ import { defineStep, type StepContext, withAccessedNodes } from "../../../core.j
 import type { StrutCapabilities } from "../../../capabilities.js";
 import { graphCtx, errText, describeNodes, type GraphBackend } from "./_shared.js";
 import type { GraphTx } from "../../../graph/engine.js";
+import { VOLATILITIES } from "../../../graph/fact-score.js";
 
 const EXAMPLE = `- id: moved
   type: graph/assert
@@ -31,6 +32,8 @@ const Fact = z.object({
   create_schema_if_missing: z.boolean().optional().describe("Create the edge type as temporal between the two ends' types when the ontology has no such edge. An existing plain edge type is never made temporal."),
   cardinality: z.enum(["one", "many"]).optional().describe("With create_schema_if_missing, for a new edge type: `one` when a subject holds one current value (where someone lives), `many` (default) when several hold at once."),
   aliases: z.array(z.string()).optional().describe("With create_schema_if_missing, for a new edge type: other words for it, which a search reads as naming it (WORKS_AT: job, employer)."),
+  volatility: z.enum(VOLATILITIES).optional().describe("How fast this kind of fact changes: `static` never (a birthday), `stable` over years (where someone lives), `evolving` within a year or so (a diet), `volatile` within weeks (what someone is working on). Kept on the edge type the first time it is given; reads lower trust in a fact as it goes unconfirmed for longer than that."),
+  depends_on: z.array(z.string()).optional().describe("Edge types this kind of fact usually changes with, for the same subject (a gym with where someone lives). Kept on the edge type the first time it is given; reads lower trust in a fact when one of them changed since it was last confirmed."),
 });
 type FactT = z.infer<typeof Fact>;
 
@@ -43,17 +46,25 @@ const sideOf = (f: FactT, side: "source" | "target"): string | null => {
   return null;
 };
 
-/** One fact's edge schema, made temporal when asked and missing. Before the
- *  transaction: a rel table is DDL. A plain edge type stays plain. */
+/** One fact's edge schema: made temporal when asked and missing, and a
+ *  `volatility` or `depends_on` the type does not have yet kept on it. Before
+ *  the transaction: a rel table is DDL. A plain edge type stays plain. */
 async function ensureTemporal(b: GraphBackend, f: FactT, edge: string, types: [string, string]): Promise<void> {
-  if (await b.schemas.edgeSchema(edge, ...types)) return;
   const { edgeRule } = await import("../../../graph/ladybug/ontology.js");
   const { boundsOf } = await import("../../../graph/scope.js");
+  const { edgeRuleOf } = await import("../../../graph/schema-resolver.js");
   // Schema rows are the file's: read unscoped, as a reader's list refuses a raw query.
   const query = boundsOf(b)?.query ?? b.query.bind(b);
   const held = await edgeRule((c, p) => query(c, p), edge);
   if (held && held["temporal"] !== true) throw new Error(`${edge} is a plain edge type; a fact needs a temporal one: pick another edge type`);
-  await b.schemas.createEdgeSchema(types[0], edge, types[1], held ? undefined : { temporal: true, cardinality: f.cardinality ?? "many" }, { aliases: f.aliases ?? [] });
+  const rule = held ? edgeRuleOf(held) : undefined;
+  const depends = f.depends_on?.map((d) => d.toUpperCase().replace(/ /g, "_"));
+  const fill = { ...(f.volatility && !rule?.volatility ? { volatility: f.volatility } : {}), ...(depends?.length && !rule?.depends_on ? { depends_on: depends } : {}) };
+  const exists = await b.schemas.edgeSchema(edge, ...types);
+  if (exists && !Object.keys(fill).length) return;
+  if (!exists && !f.create_schema_if_missing) return;
+  const wanted = rule ? (Object.keys(fill).length ? { ...rule, ...fill } : undefined) : { temporal: true, cardinality: f.cardinality ?? "many", ...fill };
+  await b.schemas.createEdgeSchema(types[0], edge, types[1], wanted, { aliases: exists ? [] : f.aliases ?? [] });
 }
 
 export default defineStep({
@@ -99,7 +110,7 @@ export default defineStep({
       };
       // On Neo4j assertEdge refuses before reading anything: let it, before a node is made.
       if (b.kind !== "ladybug") await assertEdge(b, b.schemas, { edge: edgeOf(facts[0]!), source_ref_id: "", target_ref_id: "", text: "" });
-      for (const f of facts) if (f.create_schema_if_missing) await ensureTemporal(b, f, edgeOf(f), [await typeOf(f, "source"), await typeOf(f, "target")]);
+      for (const f of facts) if (f.create_schema_if_missing || f.volatility || f.depends_on?.length) await ensureTemporal(b, f, edgeOf(f), [await typeOf(f, "source"), await typeOf(f, "target")]);
 
       // One transaction: the new nodes (each distinct one once) and every
       // fact. A lone fact between known nodes runs as its own, embedded first.

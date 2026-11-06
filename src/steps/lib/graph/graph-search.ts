@@ -4,7 +4,7 @@ import type { StrutCapabilities } from "../../../capabilities.js";
 import { getStrutSchema } from "../../../graph/strut-schemas.js";
 import { nodeTitle } from "../../../graph/title.js";
 import type { FactEnvelope } from "../../../graph/search.js";
-import { graphCtx, errText, excludeDomainsInput, isoDates, timeInputs } from "./_shared.js";
+import { graphCtx, errText, excludeDomainsInput, isoDates, timeInputs, trustOut, TRUST_NOTE } from "./_shared.js";
 const splitList = (s?: string) => s?.split(",").map((x) => x.trim()).filter(Boolean);
 
 /** A node's human label: its title (the Strut schema's title_key when it is
@@ -21,7 +21,7 @@ function descriptionOf(nodeType: string | undefined, p: Record<string, any>): st
   return p.description ?? p.summary ?? p.text ?? "";
 }
 
-/** A fact as the caller reads it: its dates as ISO. */
+/** A fact as the caller reads it: its dates as ISO, and how far to trust it now. */
 function factOut(f: FactEnvelope) {
   return {
     ref_id: f.ref_id,
@@ -32,6 +32,7 @@ function factOut(f: FactEnvelope) {
     ...isoDates({ ...f }),
     ...(f.superseded_by ? { superseded_by: f.superseded_by } : {}),
     sources: f.sources,
+    ...trustOut(f.trust),
     ...(f.namespace ? { namespace: f.namespace } : {}),
     score: f.score,
   };
@@ -59,7 +60,8 @@ export default defineStep({
     ladybug:
       "`include_ended` is what used to be true. A fact's `sources` say where it came from and who said it: a node there that is not the user is someone else's word. " +
       "A name finds the names a node holds (its name and `alt_names`), never a short or long form it was not given: when one finds nothing, search its other forms (Katie → Kate, Bob → Robert). " +
-      "Search reads words, not who they mean: for the user (I, me, my), get them with graph/graph-get owner: true and walk their edges; for who is linked to whom (who works with Kate), walk graph/graph-neighbors from what you found.",
+      "Search reads words, not who they mean: for the user (I, me, my), get them with graph/graph-get owner: true and walk their edges; for who is linked to whom (who works with Kate), walk graph/graph-neighbors from what you found. " +
+      TRUST_NOTE,
   },
   input: z.object({
     q: z
@@ -138,6 +140,7 @@ export default defineStep({
         namespace: cfg.namespace,
         limit: cfg.limit ?? 10,
         facts: Boolean(cfg.facts),
+        trust: Boolean(cfg.facts),
         include_ended: cfg.include_ended,
         as_of: cfg.as_of,
         // Per-node {EDGE_TYPE: count} map inline, so connectivity + hop

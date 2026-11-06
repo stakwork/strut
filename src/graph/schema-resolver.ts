@@ -34,6 +34,7 @@
 import { randomUUID } from "node:crypto";
 import type { EdgeSchemaWalk, EngineLike, GraphEngine, GraphTx } from "./engine.js";
 import { asEngine } from "./neo4j-engine.js";
+import { VOLATILITIES, isVolatility, type Volatility } from "./fact-score.js";
 import { GraphValidationError } from "./node-writer.js";
 import {
   GENERIC_NODE_PROPERTIES,
@@ -87,6 +88,10 @@ export const isNodeRole = (v: unknown): v is NodeRole => typeof v === "string" &
 export interface EdgeRule {
   temporal?: boolean;
   cardinality?: "one" | "many";
+  /** How fast the type's facts change (`fact-score.ts`); unset reads as `stable`. A Ladybug file only. */
+  volatility?: Volatility;
+  /** Edge types its facts usually change with, for the same subject (a gym with where someone lives). A Ladybug file only. */
+  depends_on?: string[];
 }
 
 /** The rule an edge rule's properties carry. */
@@ -94,6 +99,8 @@ export function edgeRuleOf(props: Record<string, unknown>): EdgeRule {
   const out: EdgeRule = {};
   if (typeof props["temporal"] === "boolean") out.temporal = props["temporal"];
   if (props["cardinality"] === "one" || props["cardinality"] === "many") out.cardinality = props["cardinality"];
+  if (isVolatility(props["volatility"])) out.volatility = props["volatility"];
+  if (Array.isArray(props["depends_on"]) && props["depends_on"].length) out.depends_on = props["depends_on"].map(String);
   return out;
 }
 
@@ -401,11 +408,17 @@ export class SchemaResolver {
   }
 }
 
-/** A caller's edge rule, checked: only `temporal` (boolean) and
- *  `cardinality` (`one` | `many`). */
+const RULE_KEYS = ["temporal", "cardinality", "volatility", "depends_on"];
+
+/** A caller's edge rule, checked: `temporal` (boolean), `cardinality`
+ *  (`one` | `many`), `volatility` (`VOLATILITIES`) and `depends_on` (edge types). */
 export function checkEdgeRule(edge: string, rule: EdgeRule): EdgeRule {
   const raw = rule as Record<string, unknown>;
-  for (const k of Object.keys(raw)) if (k !== "temporal" && k !== "cardinality") throw new GraphValidationError("UNKNOWN_ATTRIBUTE", edge, "an edge rule has temporal and cardinality only", k);
+  for (const k of Object.keys(raw)) if (!RULE_KEYS.includes(k)) throw new GraphValidationError("UNKNOWN_ATTRIBUTE", edge, `an edge rule has ${RULE_KEYS.join(", ")} only`, k);
+  if (raw["volatility"] !== undefined && !isVolatility(raw["volatility"])) throw new GraphValidationError("WRONG_TYPE", edge, `volatility is one of ${VOLATILITIES.join(", ")}`, "volatility");
+  if (raw["depends_on"] !== undefined && (!Array.isArray(raw["depends_on"]) || raw["depends_on"].some((x) => typeof x !== "string" || !/^[A-Z][A-Z0-9_]*$/.test(x) || x === edge))) {
+    throw new GraphValidationError("WRONG_TYPE", edge, "depends_on is a list of other edge types (uppercased)", "depends_on");
+  }
   if (raw["temporal"] !== undefined && typeof raw["temporal"] !== "boolean") throw new GraphValidationError("WRONG_TYPE", edge, "temporal is true or false", "temporal");
   if (raw["cardinality"] !== undefined && raw["cardinality"] !== "one" && raw["cardinality"] !== "many") throw new GraphValidationError("WRONG_TYPE", edge, 'cardinality is "one" or "many"', "cardinality");
   return edgeRuleOf(raw);

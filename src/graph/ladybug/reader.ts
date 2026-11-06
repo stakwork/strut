@@ -84,9 +84,11 @@ import { ALT_NAMES } from "../node-writer.js";
 import { corrections, cuedPredicates, predicateWords, textQuery, words, type TextQuery } from "../text-match.js";
 import { namespaceName } from "./namespaces.js";
 import type { LadybugSchemas } from "./engine.js";
-import type { LadybugCatalog } from "./ontology.js";
+import { edgeRule, type LadybugCatalog } from "./ontology.js";
+import { edgeRuleOf } from "../schema-resolver.js";
+import { scoreSlot, type FactTrust, type Person, type SlotEdge } from "../fact-score.js";
 import { mergedInto } from "./merge.js";
-import { EDGE_TEXT_TYPE, HIDDEN_TYPES } from "./registry.js";
+import { EDGE_TEXT_TYPE, HIDDEN_TYPES, PERSON_TYPE } from "./registry.js";
 import { temporalEdgeTypes } from "./temporal.js";
 
 export interface LadybugReaderOptions {
@@ -412,6 +414,11 @@ export class LadybugReader implements GraphReader {
       if (seenEdges.has(id)) continue;
       seenEdges.add(id);
       edges.push(serializeEdge(e.type, e.props, e.src, e.tgt));
+    }
+    if (p.trust) {
+      const facts = edges.filter((e) => typeof e.properties["text"] === "string" && e.ref_id);
+      const trust = await this.trustOf(facts.map((e) => ({ ref_id: e.ref_id!, edge_type: e.edge_type, subject: e.source })), sc);
+      for (const e of facts) if (trust.has(e.ref_id!)) e.trust = trust.get(e.ref_id!)!;
     }
     if (p.include_edge_counts && nodes.length) {
       const counts = await this.edgeCounts(nodes.map((n) => n.ref_id), p.namespace ?? this.engine.namespace, Boolean(p.namespace));
@@ -854,13 +861,94 @@ export class LadybugReader implements GraphReader {
         });
       }
     }
+    const trust = p.trust ? await this.trustOf([...found.values()].map((f) => ({ ref_id: f.ref_id, edge_type: f.edge_type, subject: f.source.ref_id })), sc) : undefined;
     const facts: FactEnvelope[] = [];
     for (const r of fused) {
       const f = found.get(refIdOf(r.node));
-      if (f) facts.push({ ...f, score: r.extra.score, match_type: r.extra.match_type });
+      if (f) facts.push({ ...f, ...(trust?.has(f.ref_id) ? { trust: trust.get(f.ref_id)! } : {}), score: r.extra.score, match_type: r.extra.match_type });
     }
     // Every fact found: the caller ranks them with the nodes, then pages.
     return { facts, truncated: fulltext.length >= cap || semantic.length >= cap, fulltext, semantic };
+  }
+
+  /**
+   * How far to trust each fact now (`fact-score.ts`), from its whole slot:
+   * every edge of its type from its subject, current and ended, the slots
+   * its type depends on, and the Persons among their sources. Nothing is
+   * stored. A fact whose type is not temporal is left out.
+   */
+  private async trustOf(facts: Array<{ ref_id: string; edge_type: string; subject: string }>, sc: ScopeSql): Promise<Map<string, FactTrust>> {
+    const out = new Map<string, FactTrust>();
+    if (!facts.length) return out;
+    const run = (c: string, x?: Params) => this.engine.query(c, x);
+    const tables = (await this.engine.catalog.get()).edges;
+    const rules = new Map<string, ReturnType<typeof edgeRuleOf>>();
+    for (const t of new Set(facts.map((f) => f.edge_type))) {
+      const rule = edgeRuleOf((await edgeRule(run, t)) ?? {});
+      if (rule.temporal) rules.set(t, rule);
+    }
+    // Every edge of a type from these subjects, by subject.
+    const slots = async (type: string, subjects: string[]): Promise<Map<string, SlotEdge[]>> => {
+      const bySubject = new Map<string, SlotEdge[]>();
+      if (!tables.has(type) || !EDGE_TYPE_NAME.test(type)) return bySubject;
+      const rows = await this.engine.query(
+        `UNWIND $ids AS id MATCH (s:Node {ref_id: id})-[r:${q(type)}]->(t:Node) WHERE ${LIVE("t")}${sc.node("t")}${sc.edge("r")}
+         RETURN id AS subject, r.ref_id AS ref_id, t.ref_id AS target, r.sources AS sources, r.valid_at AS valid_at, r.expired_at AS expired_at,
+                r.superseded_by AS superseded_by, r.last_confirmed_at AS last_confirmed_at, r.created_at AS created_at`,
+        { ids: subjects, ...sc.params },
+      );
+      const n = (v: unknown) => msOf(v) ?? null;
+      for (const r of rows) {
+        const list = bySubject.get(String(r["subject"])) ?? [];
+        list.push({
+          ref_id: String(r["ref_id"]),
+          target: String(r["target"]),
+          sources: Array.isArray(r["sources"]) ? (r["sources"] as unknown[]).map(String) : [],
+          valid_at: n(r["valid_at"]),
+          expired_at: n(r["expired_at"]),
+          superseded_by: typeof r["superseded_by"] === "string" ? r["superseded_by"] : null,
+          last_confirmed_at: n(r["last_confirmed_at"]),
+          created_at: n(r["created_at"]),
+        });
+        bySubject.set(String(r["subject"]), list);
+      }
+      return bySubject;
+    };
+    const held: Array<{ type: string; subject: string; edges: SlotEdge[]; parents: SlotEdge[][] }> = [];
+    for (const [type, rule] of rules) {
+      const subjects = [...new Set(facts.filter((f) => f.edge_type === type).map((f) => f.subject))];
+      const mine = await slots(type, subjects);
+      const parents = await Promise.all((rule.depends_on ?? []).filter((d) => d !== type).map((d) => slots(d, subjects)));
+      for (const s of subjects) held.push({ type, subject: s, edges: mine.get(s) ?? [], parents: parents.map((p) => p.get(s) ?? []) });
+    }
+    // The Persons among the sources, and the user, for a fact no Person is a source of.
+    const refs = [...new Set(held.flatMap((h) => h.edges.flatMap((e) => e.sources)).filter((x) => !x.startsWith("run:")))];
+    const owned = "is_owner" in (await this.engine.catalog.get()).columns;
+    const people = new Map<string, Person>();
+    if (refs.length) {
+      const rows = await this.engine.query(
+        `UNWIND $ids AS id MATCH (n:Node {ref_id: id}) WHERE n.node_type = '${PERSON_TYPE}'${sc.node("n")}
+         RETURN id, coalesce(n.title, n.name) AS name, ${owned ? "n.is_owner = true" : "false"} AS owner`,
+        { ids: refs, ...sc.params },
+      );
+      for (const r of rows) people.set(String(r["id"]), { ...(typeof r["name"] === "string" ? { name: r["name"] } : {}), owner: r["owner"] === true });
+    }
+    let user: { ref_id: string; name?: string } | undefined;
+    if (owned) {
+      const [r] = await this.engine.query(
+        `MATCH (n:Node {node_type: '${PERSON_TYPE}'}) WHERE n.is_owner = true AND ${LIVE("n")}${sc.node("n")} RETURN n.ref_id AS ref_id, coalesce(n.title, n.name) AS name LIMIT 1`,
+        sc.params,
+      );
+      if (r) user = { ref_id: String(r["ref_id"]), ...(typeof r["name"] === "string" ? { name: r["name"] } : {}) };
+    }
+    const now = Date.now();
+    const wanted = new Set(facts.map((f) => f.ref_id));
+    for (const h of held) {
+      const rule = rules.get(h.type)!;
+      const scored = scoreSlot({ subject: h.subject, edges: h.edges, one: rule.cardinality === "one", volatility: rule.volatility, parents: h.parents, people, user, now });
+      for (const [id, t] of scored) if (wanted.has(id)) out.set(id, t);
+    }
+    return out;
   }
 
   // ── ontology: the Schema rows ───────────────────────────────────────────

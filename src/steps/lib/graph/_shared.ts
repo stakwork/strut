@@ -1,3 +1,4 @@
+import type { FactTrust } from "../../../graph/fact-score.js";
 import { z } from "zod";
 import type { AccessedNode, StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
@@ -64,6 +65,20 @@ export function isoDates(p: Record<string, unknown>): Partial<Record<"valid_at" 
   }
   return out;
 }
+
+/** A fact's trust as a step returns it (`FactTrust`), its last confirmation as ISO. */
+export function trustOut(t: FactTrust | undefined): Record<string, unknown> {
+  if (!t) return {};
+  const { evidence, ...rest } = t;
+  return { evidence: { sayers: evidence.sayers, ...(evidence.last_confirmed !== undefined ? { last_confirmed: new Date(evidence.last_confirmed).toISOString() } : {}) }, ...rest };
+}
+
+/** What a step that scores facts tells the model about the scores (a Ladybug file only). */
+export const TRUST_NOTE =
+  "Each fact carries how far to trust it now, worked out when it is read: `evidence` (who said it — `kind` owner is the user, self is the fact's subject, other is someone else — and when it was last confirmed), " +
+  "`belief` (0–1, from who said it) and `currency` (0–1, from how long since it was last confirmed for that kind of fact). " +
+  "When `hedge` is true, do not state it as plain fact: say who said it and when (\"you told me in March that…\", \"Sam said…\") and, when it matters, check it is still so; `rival` is the other value it competes with. " +
+  "`planned` is a fact that begins later; `hearsay` is one only someone other than the user and its subject said.";
 
 export const EXCLUDED_NODE_TYPES = ["Hint", "Memory", "Clip", "Turn", "Schema"];
 
