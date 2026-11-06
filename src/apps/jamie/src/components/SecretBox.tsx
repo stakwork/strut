@@ -11,13 +11,15 @@ import { useStrutClient } from "@strut/kit";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { secretAlreadySet, secretPrompt } from "../lib/jobs";
-import { sendRefusal } from "../lib/chat";
+import { modelParams, sendRefusal } from "../lib/chat";
+import { useModelPick } from "../hooks";
 import { Notice, errorText } from "./bits";
 
 type State = { kind: "idle" | "busy" | "sent" } | { kind: "failed"; error: string; already?: boolean };
 
 export function SecretBox({ name, job, workflow, conversation }: { name: string; job: string; workflow: string; conversation?: string }) {
   const client = useStrutClient();
+  const { sent: model } = useModelPick();
   const [value, setValue] = useState("");
   const [state, setState] = useState<State>({ kind: "idle" });
 
@@ -27,6 +29,8 @@ export function SecretBox({ name, job, workflow, conversation }: { name: string;
         workflow,
         job,
         input: { prompt: secretPrompt(name, already) },
+        // On the viewer's model, as their message would be.
+        ...modelParams(model),
         // The server takes a conversation the viewer may continue (plans/jamie-app.md §2.2).
         ...(conversation ? { conversation } : {}),
       });

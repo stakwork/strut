@@ -254,7 +254,9 @@ run's callback, so your URL gets a second `run.end` when the job ends:
 resolved in the job's directory. Tell the two apart by `workflow` and
 `job`: a `run.end` carrying `job` is a job turn whatever its workflow. A
 run launched with no callback starts
-jobs with none. The same goes for live updates: the jobs a run starts
+jobs with none. A run launched with `params.model` (the model the person
+picked) starts and continues its jobs on that model; with none, a job runs
+on its own. The same goes for live updates: the jobs a run starts
 inherit its `jobCallback` (§5).
 
 ## 5. Live updates — a job tells you what changed, as it changes

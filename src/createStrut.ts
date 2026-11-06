@@ -5637,15 +5637,21 @@ export async function createStrut<TServices = unknown>(
     const root = rootRunOf(runId);
     return root ? store.getRunJobCallback(root.workflow, root.runId) : null;
   }
-  /** The TURN the run `runId` belongs to, for the jobs it starts
-   *  (`RunEvent.startedBy`): the root run and the `session` its launch
-   *  named — read off its `run.start`, the one record of the input. */
-  async function startedByOf(runId: string): Promise<StartedBy | undefined> {
+  /** The TURN the run `runId` belongs to, for the jobs it starts: the root
+   *  run and the `session` its launch named (`RunEvent.startedBy`), and the
+   *  model its launch picked (`params.model`, a person's pick in their
+   *  assistant; absent on the template's own) — read off its `run.start`,
+   *  the one record of both. */
+  async function launchingTurnOf(runId: string): Promise<{ startedBy?: StartedBy; model?: string }> {
     const root = rootRunOf(runId);
-    if (!root) return undefined;
+    if (!root) return {};
     const start = (await store.getRunEvents(root.workflow, root.runId).catch(() => [])).find((e) => e.type === "run.start");
     const session = (start?.input as Record<string, unknown> | undefined)?.["session"];
-    return { workflow: root.workflow, runId: root.runId, ...(typeof session === "string" && session ? { session } : {}) };
+    const model = start?.params?.["model"];
+    return {
+      startedBy: { workflow: root.workflow, runId: root.runId, ...(typeof session === "string" && session ? { session } : {}) },
+      ...(typeof model === "string" && model ? { model } : {}),
+    };
   }
   /** The thread the run `runId` belongs to, for its proposals
    *  (`Proposal.by.conversation`): a job's run belongs to the turn that
@@ -5699,8 +5705,11 @@ export async function createStrut<TServices = unknown>(
       // The TURN this job belongs to (CALLBACKS.md §5): the root run the host
       // launched and the conversation it named, so a host that hears the
       // job's run.end on a per-person channel (a room) finds the
-      // conversation — a URL per conversation carries that by itself.
-      const startedBy = await startedByOf(from);
+      // conversation — a URL per conversation carries that by itself. The
+      // job runs on the turn's model when the turn picked one, so a
+      // conversation and its jobs run on one model; job/continue reads the
+      // turn that continues it, so a new pick reaches the job's next turn.
+      const { startedBy, model } = await launchingTurnOf(from);
       // The job INHERITS the launching run's job callback: on file before
       // the run starts, so its first update finds it — the latest launch
       // that carries one wins, as over HTTP; a run launched with none
@@ -5713,7 +5722,7 @@ export async function createStrut<TServices = unknown>(
       if (running) {
         throw new Error(`job_busy: job "${job}" has a run in flight (${running.workflow} ${running.runId}); its result comes when it ends — continue it then`);
       }
-      const runId = launchDetached(flow, { input, job, ...(title ? { title } : {}) }, {
+      const runId = launchDetached(flow, { input, job, ...(title ? { title } : {}), ...(model ? { params: { model } } : {}) }, {
         ...(actor ? { actor } : {}),
         ...(principal ? { principal } : {}),
         ...(startedBy ? { startedBy } : {}),

@@ -23,7 +23,7 @@ import modelsStep from "../steps/lib/llm/models.js";
 import verifyStep from "../steps/lib/job/verify.js";
 import evidenceStep from "../steps/lib/job/evidence.js";
 import type { JobsCapability } from "../jobs.js";
-import { BUSY_NOTICE, NOT_YOURS_NOTICE, detectSlash, groupByDay, insertSlash, isOwn, modelChoices, newConversationId, sendRefusal, sentModel, silentReply, timeLine, turnContext } from "./jamie/src/lib/chat.js";
+import { BUSY_NOTICE, NOT_YOURS_NOTICE, detectSlash, groupByDay, insertSlash, isOwn, modelChoices, modelParams, newConversationId, sendRefusal, sentModel, silentReply, timeLine, turnContext } from "./jamie/src/lib/chat.js";
 import { appKey, openable, placeArtifact, servedFile, turnDeliverables } from "./jamie/src/lib/artifacts.js";
 import { answeredSince, askedSecret, captchaPrompt, claimPill, jobLook, jobRunWorkflow, liveStrip, openSlot, parseCaptcha, secretAlreadySet, secretPrompt, sortClaims, tapAt, toggleCell } from "./jamie/src/lib/jobs.js";
 import type { LedgerClaim, ModelCatalog } from "./jamie/src/lib/types.js";
@@ -116,6 +116,9 @@ describe("strut/jamie — the pure parts", () => {
     assert.equal(sentModel("openai/gpt-5", catalog), "", "gone from the list");
     assert.equal(sentModel("", catalog), "");
     assert.equal(sentModel("openai/gpt-5", undefined), "openai/gpt-5", "until the list is read, the pick stands");
+    // What a message and a card's job turn carry: the pick, or nothing.
+    assert.deepEqual(modelParams("anthropic/claude-opus-5-5"), { params: { model: "anthropic/claude-opus-5-5" } });
+    assert.deepEqual(modelParams(""), {}, "Default: the workflow's own model");
   });
 
   it("where a deliverable shows: what strut/views draws inline, the rest handed to the host", () => {

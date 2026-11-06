@@ -182,11 +182,13 @@ describe("job/start and job/continue", () => {
       ...(opts.self ? { self: opts.self } : {}),
     });
     await strut.workspace.publishWorkflow("job", "v1", {
+      // Its model a knob, as strut's own job's.
+      params: { model: "claude-sonnet-4-5" },
       steps: [
         { id: "dir", type: "job/dir", config: {} },
         { id: "report", type: "test/write", config: { path: "{{ dir.path }}/report.md", text: "# Flights" } },
         { id: "tell", type: "test/tell", config: { path: "report.md" } },
-        agent("JOBAGENT", { session: "{{ input.session || $job }}" }),
+        agent("JOBAGENT", { session: "{{ input.session || $job }}", model: "{{ params.model }}" }),
         // The job's pack also reports the workspace and the kind its launch carried.
         { ...pack, config: { ...pack.config, workspace: "{{ input.workspace }}", kind: "{{ input.kind }}" } },
       ],
@@ -408,6 +410,41 @@ describe("job/start and job/continue", () => {
     await settle("orch", fourth);
     assert.ok(seen.orch.at(-1)!.includes("a builder job reads its own page"), seen.orch.at(-1));
     assert.equal(posts.filter((p) => p.workflow === "builder").length, 0, "nothing launched");
+  });
+
+  it("model: a job runs on the model its turn picked — start and continue alike, a new pick reaching the job's next turn; a turn with no pick leaves the job on its own", async () => {
+    const { launch, settle, until, toolOutput, store } = await boot();
+    const ends = async (n: number) =>
+      until(() => {
+        const e = posts.filter((p) => p.workflow === "job");
+        return e.length === n ? e : undefined;
+      });
+    /** The model the job's agent asked the provider for, and its run's params. */
+    const ran = async (i: number, runId: string) => ({
+      model: JSON.parse(seen.job[i]!).model,
+      params: (await store.getRunEvents("job", runId)).find((e) => e.type === "run.start")?.params,
+    });
+
+    orchTool = { name: "job_start", input: { prompt: "Research flights", title: "Flights" } };
+    const first = await launch({ prompt: "research flights" }, true, { params: { model: "claude-opus-4-5" } });
+    await settle("orch", first);
+    const started = await toolOutput(first);
+    await ends(1);
+    assert.deepEqual(await ran(0, started.runId), { model: "claude-opus-4-5", params: { model: "claude-opus-4-5" } });
+
+    orchTool = { name: "job_continue", input: { job: started.job, prompt: "Only direct flights" } };
+    const second = await launch({ prompt: "only direct ones" }, true, { params: { model: "claude-haiku-4-5" } });
+    await settle("orch", second);
+    const continued = await toolOutput(second);
+    await ends(2);
+    assert.deepEqual(await ran(1, continued.runId), { model: "claude-haiku-4-5", params: { model: "claude-haiku-4-5" } }, "the turn that continues it decides");
+
+    orchTool = { name: "job_start", input: { prompt: "Research trains", title: "Trains" } };
+    const third = await launch({ prompt: "research trains" });
+    await settle("orch", third);
+    const plain = await toolOutput(third);
+    await ends(3);
+    assert.deepEqual(await ran(2, plain.runId), { model: "claude-sonnet-4-5", params: undefined }, "no pick: the job's own model");
   });
 
   it("start { workflow: builder, peer }: the builder workflow runs the turn with the peer; the job says which it is; continue names only the job and follows the record, peer included; peer and repos are refused on a code job", async () => {

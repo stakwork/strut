@@ -156,3 +156,12 @@ export function sentModel(pick: string, catalog: ModelCatalog | undefined): stri
   if (!pick || !catalog) return pick;
   return catalog.models.some((m) => m.available && m.name === pick) ? pick : "";
 }
+
+/** What a turn the page launches carries for its model: `{ params: { model }
+ *  }`, or nothing for Default. A person's message and the job turns the cards
+ *  send (Fix, a captcha's answer, a stored secret) alike — and the jobs a
+ *  message starts get its model from strut — so a conversation and its jobs
+ *  run on one model. */
+export function modelParams(model: string): { params?: { model: string } } {
+  return model ? { params: { model } } : {};
+}
