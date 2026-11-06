@@ -87,6 +87,7 @@ import { fileAppGrants } from "./apps/grants.js";
 import { createAppMonitor, type AppMonitor } from "./apps/monitor.js";
 import { seedViewsApp } from "./apps/views-seed.js";
 import { RETIRED_APP, seedJamieApp } from "./apps/jamie-seed.js";
+import { seedKnowledgeApp } from "./apps/knowledge-seed.js";
 import type { KitLocation } from "./apps/kit.js";
 import { appsRoot, isPreviewLabel, listAppFiles, readAppFile, reservedAppName, validateAppName, writeAppFiles } from "./apps/files.js";
 import { DOCUMENT_FILE, readBuildInfo, withPublicIdentity, withToken, withoutTokenMeta } from "./apps/build.js";
@@ -440,6 +441,11 @@ export interface StrutOptions<TServices = unknown> {
    *  seeded at boot after `strut/views` (it imports it; none without it).
    *  `false` seeds nothing. */
   jamie?: false;
+  /** `strut/knowledge` (`src/apps/knowledge-seed.ts`, plans/knowledge-app.md):
+   *  the organisation's Concept tree and graph, as a first-party app, seeded
+   *  at boot after `strut/views` (it imports it; none without it). `false`
+   *  seeds nothing. */
+  knowledge?: false;
   /** The `automation/*` steps (src/steps/lib/automation/), an agent's own
    *  door onto the automations: the one workflow they schedule, and the
    *  registry step that asks the person before one is made, changed,
@@ -1369,6 +1375,16 @@ export async function createStrut<TServices = unknown>(
       if (r?.changed) console.log(`[jamie] seeded app: strut/jamie @ ${r.version}`);
     } catch (err) {
       console.warn(`[jamie] could not seed strut/jamie:`, err instanceof Error ? err.message : err);
+    }
+  }
+  // `strut/knowledge` (src/apps/knowledge-seed.ts): the Concept tree as a
+  // first-party app. After strut/views, whose components it imports.
+  if (opts.knowledge !== false) {
+    try {
+      const r = await seedKnowledgeApp({ workspace, ...(opts.kit ? { kit: opts.kit } : {}) });
+      if (r?.changed) console.log(`[knowledge] seeded app: strut/knowledge @ ${r.version}`);
+    } catch (err) {
+      console.warn(`[knowledge] could not seed strut/knowledge:`, err instanceof Error ? err.message : err);
     }
   }
   if (await workspace.getApp(RETIRED_APP).catch(() => null)) {
