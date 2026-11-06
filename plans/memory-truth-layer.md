@@ -108,6 +108,23 @@ about to do. A fact that is fine to mention with its source in chat is not
 fine to act on: sending a gift to an address that is `cite` means asking
 first. The agent's prompt carries this rule, not the read.
 
+### How an agent uses stance
+
+The same rules go in Peel's prompt and in the strut tool notes, so any
+agent reading facts follows them:
+
+1. **A specific question whose fact is `ask`**: answer with what is known,
+   then check. "Where does Kate live?" → "Last I heard Porto, but that was
+   two years ago. Still there?" Never refuse to answer.
+2. **A general question**: build the answer from `state` and `cite` facts.
+   Leave `ask` facts out, or flag them briefly as possibly out of date.
+   "What's going on with Kate?" gets what is current, and at most one
+   question at the end, only if it matters to the answer.
+3. **About to act** (send, book, update): `ask` blocks. Check that one fact
+   before acting.
+4. **Never hold an answer back** waiting on questions, and ask at most one
+   question per reply.
+
 Also returned, as #552 does now: `belief` (0–1, from who backed it),
 `currency` (0–1, from how fresh the newest backing is), `evidence` (each
 piece: source, kind, mode, strength, time) and `rival` (the competing
@@ -188,7 +205,7 @@ fields from the end of step 1 on, so nothing breaks along the way.
 | 6 | Reads from evidence | strut | `trustOf` reads Evidence rows instead of `sources`, adds each piece of evidence to the result, and `refuted` | 4, 5 |
 | 7 | Ask as a planned slot | strut | One external check per claim whose stance is `ask`, as a planned slot; the user's answer, through `graph/assert` re-confirming or ending the fact, fills it, so an answered question is not asked again | 6 |
 | 8 | Home sync | strut | Sync carries memory's claims and evidence (roles `claim` and none today), only those whose subject is a fact: strut's own claims about its workflows stay out | 4 |
-| 9 | Peel | peel | Prompt: pass `observed_at`, `volatility` and `depends_on`; follow `stance`, and move `cite` up to `ask` before acting; the panel's "why I believe this" (the evidence list); re-pin strut | 1, then again after 6 |
+| 9 | Peel | peel | Prompt: pass `observed_at`, `volatility` and `depends_on`; follow `stance` by the four rules in "How an agent uses stance" (answer then check, drop or flag `ask` facts in a general answer, check before acting, one question per reply at most); the panel's "why I believe this" (the evidence list); re-pin strut | 1, then again after 6 |
 | 10 | Live-model check | strut | The benchmark stories through the real model: does it pass the inputs, pick sensible volatility, follow the stance | 9; needs an API key |
 | 11 | Instrument checks | strut, peel | With Peel's connectors: calendar, contacts, email. A check is a step returning `{ supports, content }`; `freshness_days` says when to run it again, `policy` and the cost caps how often | 7, connectors |
 
@@ -211,6 +228,16 @@ and again after step 6.
   `factStatus` gives a graded result over time. Both share the evidence
   rows, `newestFirst`, the per-check streams and refutation-wins, and should
   not be forced into one function.
+- **A question nobody answered is asked again.** Until step 7 (planned
+  slots), nothing records that the agent asked, so a user who ignores
+  "still in Porto?" can be asked it on the next read. A benchmark story
+  covers it; the planned slot is the fix.
+- **Decay only works on what it can see.** A fact has to be a temporal
+  edge (not a note or a Concept page) to be scored at all, and its edge
+  type needs the right volatility. A type with none reads as `stable` (a
+  three-year half-life), so something that changes in weeks, said on
+  1 January, would not look stale by November. The prompt has to ask the
+  model to set volatility when it makes an edge type.
 - **Thresholds are guesses.** The 0.6 and 0.25 cut-offs and the trust
   weights come from the synthetic benchmark; the live-model check (step 10)
   and real use will move them.
