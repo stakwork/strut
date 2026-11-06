@@ -159,6 +159,57 @@ subject kind, `{ kind: "fact", ref_id }`, with its own pure rule,
   share under 0.6 is `disputed`; currency under 0.6 is `stale`, and under
   0.25 it asks.
 
+## Expectations: the evidence we'd expect
+
+A claim says what is true; an expectation says what evidence should keep
+appearing while it is. The gap between the two is the strongest signal of
+all: expected activity present is support, even if nobody restates the fact;
+expected activity gone quiet is evidence against, long before time decay
+would notice. Volatility becomes the fallback for claims nothing can check.
+
+An expectation is a `Check`, declared once on the type and applied to every
+claim of it, which is how strut already tests its own work:
+
+```json
+{ "edge_type": "WORKS_AT", "cardinality": "one", "volatility": "stable",
+  "expects": { "step": "hive/activity", "every_days": 7, "window_days": 30 } }
+```
+
+- **The step** is an ordinary strut step given the fact's subject and value.
+  It returns `{ supports: true, content }` (the expected activity is there:
+  +1 observed evidence), `{ supports: false, content }` (the source is
+  readable and quiet: −1, weaker), or `unavailable` (we cannot see that
+  source: no evidence, so silence we could not have heard means nothing).
+  That last case is the claim layer's "a check that cannot run writes
+  nothing, never a fail".
+- **A scheduled pass** (an automation, like the verify pass) runs the
+  expectations whose last result is older than `every_days`. Reads stay pure
+  and fast; they just see more evidence.
+- **Asking is the same machinery.** `stance: ask` opens an external check on
+  the claim (a check with no step: the user is the source), as a planned
+  slot, so an answered question is not asked again and an unanswered one is
+  not asked twice.
+
+| Claim | Expects | Present | Quiet |
+|---|---|---|---|
+| Tom works at Stakwork (Hive) | `hive/activity`: his commits, PRs and messages there over 30 days, weekly | "14 PRs, 120 messages" → `supported`, `state`, though nobody has said it since 2025 | "No activity in 30 days" → `stale`, `ask`, within weeks, not years |
+| Kate is working on Atlas | `github/mentions` of Atlas by Kate over 14 days, weekly | supported | `ask` after two weeks |
+| Tom lives in Leeds (Peel) | `calendar/places`: events near Leeds over 90 days | supported | only with a calendar connected; without one, `unavailable`, and decay carries it |
+| A birthday | nothing | — | silence is neutral: static |
+
+| Strut verifying its own work | Memory with expectations |
+|---|---|
+| A Claim about a step or workflow | A Claim about a fact |
+| A Check: a step that tests it | An expectation: a step that looks for the expected activity |
+| `policy`, `freshness_days` | `every_days`, `window_days` |
+| The verify pass writes `observed` Evidence | A scheduled pass writes `observed` Evidence |
+| A check that cannot run writes nothing | `unavailable` writes nothing |
+| Status on read, never stored | Status and stance on read, never stored |
+
+Expectations also replace `depends_on` (a gym on where someone lives): that
+was one narrow case of "something related changed, so doubt this", which an
+expectation states directly ("expect gym check-ins near home").
+
 ## Examples
 
 **Kate's address**
@@ -192,26 +243,22 @@ matters, its age does not.
 
 ## The work
 
-Each step is one PR and leaves the system working. Peel reads the same
-fields from the end of step 1 on, so nothing breaks along the way.
+Each step is one PR and leaves the system working.
 
 | # | PR | Repo | What | Needs |
 |---|---|---|---|---|
-| 1 | Status and stance on fact reads | strut | #552 returns `status` and `stance` instead of `hedge`; `hearsay` moves from a flag to a status; the thresholds above; the tool notes say what each stance means | — |
-| 2 | Soft delete | strut | #523, rebased onto main, with its deleted-edge filter added to #552's slot and people reads | 1 merged, Evan's review |
-| 3 | Fact subject and `factStatus` | strut | `SubjectRef` gains `{ kind: "fact", ref_id }`; the seed gains `Claim -ABOUT-> *` for memory entities and `fact_ref_id` on Claim; `factStatus` as a pure function next to `claimStatus`, tested with `fact-score.test.ts`'s cases and the benchmark stories | 1 |
-| 4 | Claims and evidence on write | strut | `assertEdge` creates the fact's Claim on its first assert and one Evidence per new source, with a deterministic id (claim, message, sayer); a retraction writes refuting evidence; `sources` and `last_confirmed_at` stay, written in the same transaction; memory Evidence is not embedded | 3 |
-| 5 | Backfill | strut | Once per file (a `Migration` stamp): a Claim per existing fact edge, an Evidence per source in its `sources`, the first at `created_at`, the newest at `last_confirmed_at` | 4 |
-| 6 | Reads from evidence | strut | `trustOf` reads Evidence rows instead of `sources`, adds each piece of evidence to the result, and `refuted` | 4, 5 |
-| 7 | Ask as a planned slot | strut | One external check per claim whose stance is `ask`, as a planned slot; the user's answer, through `graph/assert` re-confirming or ending the fact, fills it, so an answered question is not asked again | 6 |
-| 8 | Home sync | strut | Sync carries memory's claims and evidence (roles `claim` and none today), only those whose subject is a fact: strut's own claims about its workflows stay out | 4 |
-| 9 | Peel | peel | Prompt: pass `observed_at`, `volatility` and `depends_on`; follow `stance` by the four rules in "How an agent uses stance" (answer then check, drop or flag `ask` facts in a general answer, check before acting, one question per reply at most); the panel's "why I believe this" (the evidence list); re-pin strut | 1, then again after 6 |
-| 10 | Live-model check | strut | The benchmark stories through the real model: does it pass the inputs, pick sensible volatility, follow the stance | 9; needs an API key |
-| 11 | Instrument checks | strut, peel | With Peel's connectors: calendar, contacts, email. A check is a step returning `{ supports, content }`; `freshness_days` says when to run it again, `policy` and the cost caps how often | 7, connectors |
+| 1 | Facts on claims and evidence | strut | #557: a Claim per fact (its id a hash of subject, edge type and value) and an Evidence per mention, written by `assert`; reads return `status`, `stance` and the evidence, falling back to `sources` for older facts; volatility on the edge rule; the four stance rules in the tool notes. Before merge: an `ended` assert writes no supporting evidence; `refuted` on `graph/assert` writes −1 from the speaker; deleting a fact clears its claim's evidence; `depends_on` dropped (expectations replace it) | — |
+| 2 | Soft delete | strut | #523, with its deleted-edge filter added to #557's slot read | Evan's review |
+| 3 | Peel | peel | Prompt: pass `observed_at` and `volatility`, follow `stance` by the four rules, "that's wrong" is `refuted` and "I used to" is `ended`; the panel's "why I believe this" (the evidence list); re-pin strut | 1 |
+| 4 | Expectations as checks | strut | `expects` on the type, the check step contract (supports, quiet, unavailable), a scheduled pass that writes observed evidence, and `ask` as an external check's planned slot | 1 |
+| 5 | First real checks | strut, peel | `hive/activity` for Hive; calendar, contacts and email once Peel has the connectors | 4, connectors |
+| 6 | Home sync and backfill | strut | Sync carries memory's claims and evidence (only those for facts; strut's own claims stay out); facts from before claims gain them | 1 |
 
-Steps 1 and 2 finish the current stretch. Steps 3 to 8 move trust onto the
-truth layer without changing what Peel reads. Step 9 can ship after step 1
-and again after step 6.
+A live-model check (the benchmark stories through the real model) runs
+after step 3, with an API key. A test in Peel on a throwaway profile
+(6 Nov) passed every story but one: a correction ("that's wrong, I'm not
+vegan") was written as an `ended` assert and read as the user backing the
+fact, which step 1's fixes close.
 
 ## Costs and risks
 
@@ -222,13 +269,13 @@ and again after step 6.
   same thing until every reader reads Evidence. Writing both in one
   transaction keeps them in step; dropping `sources` is a later cleanup.
 - **Home sync** copies the `entity` and `record` roles only, so memory's
-  claims would not reach Home without step 8. Strut's own workflow claims
+  claims would not reach Home without step 6. Strut's own workflow claims
   live in the same graph and must stay out.
 - **Two status rules.** `claimStatus` gives a verdict on versions;
   `factStatus` gives a graded result over time. Both share the evidence
   rows, `newestFirst`, the per-check streams and refutation-wins, and should
   not be forced into one function.
-- **A question nobody answered is asked again.** Until step 7 (planned
+- **A question nobody answered is asked again.** Until step 4 (planned
   slots), nothing records that the agent asked, so a user who ignores
   "still in Porto?" can be asked it on the next read. A benchmark story
   covers it; the planned slot is the fix.
@@ -239,7 +286,7 @@ and again after step 6.
   1 January, would not look stale by November. The prompt has to ask the
   model to set volatility when it makes an edge type.
 - **Thresholds are guesses.** The 0.6 and 0.25 cut-offs and the trust
-  weights come from the synthetic benchmark; the live-model check (step 10)
+  weights come from the synthetic benchmark; the live-model check (after step 3)
   and real use will move them.
 
 ## Open questions
