@@ -202,8 +202,6 @@ function PackagePage(props: {
   apps: api.AppListEntry[];
   /** The installed packages' names: their items are someone else's. */
   installed: string[];
-  /** Whether this strut has Concepts to offer (a graph). */
-  concepts: boolean;
   peers: string[] | null;
   onBack: () => void;
   onChanged: () => void;
@@ -217,6 +215,10 @@ function PackagePage(props: {
   const [conceptHits, setConceptHits] = useState<string[]>([]);
   const [types, setTypes] = useState<string[]>([]);
   const [typeDraft, setTypeDraft] = useState("");
+  const [graphTypes, setGraphTypes] = useState<api.GraphType[]>([]);
+  useEffect(() => {
+    void api.listGraphTypes().then(setGraphTypes);
+  }, []);
   const [q, setQ] = useState("");
   const [preview, setPreview] = useState<{ result?: api.BuildPreview; error?: string; busy?: boolean } | null>(null);
   const [version, setVersion] = useState(() => nextVersion(newest?.version));
@@ -281,7 +283,7 @@ function PackagePage(props: {
 
   // Concept names, as typed: the graph's own names offered as they match.
   useEffect(() => {
-    if (!props.concepts || !conceptDraft.trim()) {
+    if (!conceptDraft.trim()) {
       setConceptHits([]);
       return;
     }
@@ -290,19 +292,24 @@ function PackagePage(props: {
     return () => {
       live = false;
     };
-  }, [conceptDraft, props.concepts]);
+  }, [conceptDraft]);
   const addConcept = () => {
     const name = conceptDraft.trim();
     if (name && !concepts.includes(name)) setConcepts([...concepts, name]);
     setConceptDraft("");
   };
 
-  const addTypes = () => {
+  const addTypes = (draft = typeDraft) => {
     // One name or several, as typed: `Document, Section Excerpt`.
-    const names = typeDraft.split(/[\s,]+/).filter(Boolean);
-    setTypes([...types, ...names.filter((n) => !types.includes(n))]);
+    const names = draft.split(/[\s,]+/).filter(Boolean);
+    setTypes((was) => [...was, ...names.filter((n) => !was.some((t) => t.toLowerCase() === n.toLowerCase()))]);
     setTypeDraft("");
   };
+  const addConcepts = (names: string[]) => setConcepts((was) => [...was, ...names.filter((n) => !was.includes(n))]);
+  // What the picked workflows' runs wrote and read, not picked yet.
+  const suggested = preview?.result?.suggested;
+  const typeIdeas = (suggested?.types ?? []).filter((t) => !types.some((x) => x.toLowerCase() === t.toLowerCase()));
+  const conceptIdeas = (suggested?.concepts ?? []).filter((c) => !concepts.includes(c));
 
   const toggle = (set: Set<string>, put: (s: Set<string>) => void, name: string) => {
     const next = new Set(set);
@@ -372,45 +379,51 @@ function PackagePage(props: {
           ))}
         </div>
       )}
-      {props.concepts && (
-        <div class="dialog-field">
-          <label>Concepts</label>
-          {concepts.length > 0 && (
-            <div class="package-chips">
-              {concepts.map((c) => (
-                <span class="badge package-chip" key={c}>
-                  {c}
-                  <button class="auto-link" aria-label={`Remove ${c}`} onClick={() => setConcepts(concepts.filter((x) => x !== c))}>×</button>
-                </span>
-              ))}
-            </div>
-          )}
-          <input type="text" value={conceptDraft} list="package-concepts" placeholder="A Concept page, with the pages under it"
-            onInput={(e) => setConceptDraft((e.target as HTMLInputElement).value)}
-            onKeyDown={(e) => { if (e.key === "Enter") addConcept(); }} />
-          <datalist id="package-concepts">
-            {conceptHits.map((h) => <option key={h} value={h} />)}
-          </datalist>
-        </div>
-      )}
-      {props.concepts && (
-        <div class="dialog-field">
-          <label>Graph types</label>
-          {types.length > 0 && (
-            <div class="package-chips">
-              {types.map((t) => (
-                <span class="badge package-chip" key={t}>
-                  {t}
-                  <button class="auto-link" aria-label={`Remove ${t}`} onClick={() => setTypes(types.filter((x) => x !== t))}>×</button>
-                </span>
-              ))}
-            </div>
-          )}
-          <input type="text" value={typeDraft} placeholder="A node type the workflows write, with its parents and edges"
-            onInput={(e) => setTypeDraft((e.target as HTMLInputElement).value)}
-            onKeyDown={(e) => { if (e.key === "Enter") addTypes(); }} />
-        </div>
-      )}
+      <div class="dialog-field">
+        <label>Concepts</label>
+        {concepts.length > 0 && (
+          <div class="package-chips">
+            {concepts.map((c) => (
+              <span class="badge package-chip" key={c}>
+                {c}
+                <button class="auto-link" aria-label={`Remove ${c}`} onClick={() => setConcepts(concepts.filter((x) => x !== c))}>×</button>
+              </span>
+            ))}
+          </div>
+        )}
+        <input type="text" value={conceptDraft} list="package-concepts" placeholder="A Concept page, with the pages under it"
+          onInput={(e) => setConceptDraft((e.target as HTMLInputElement).value)}
+          onKeyDown={(e) => { if (e.key === "Enter") addConcept(); }} />
+        <datalist id="package-concepts">
+          {conceptHits.map((h) => <option key={h} value={h} />)}
+        </datalist>
+        <Ideas label="Read by these workflows' runs (each with its whole tree)" names={conceptIdeas} add={addConcepts} />
+      </div>
+      <div class="dialog-field">
+        <label>Graph types</label>
+        {types.length > 0 && (
+          <div class="package-chips">
+            {types.map((t) => (
+              <span class="badge package-chip" key={t}>
+                {t}
+                <button class="auto-link" aria-label={`Remove ${t}`} onClick={() => setTypes(types.filter((x) => x !== t))}>×</button>
+              </span>
+            ))}
+          </div>
+        )}
+        <input type="text" value={typeDraft} list="package-types" placeholder="A node type the workflows write, with its parents and edges"
+          onInput={(e) => {
+            const v = (e.target as HTMLInputElement).value;
+            // A pick from the list is a whole name: add it at once.
+            if (graphTypes.some((g) => g.type === v)) addTypes(v);
+            else setTypeDraft(v);
+          }}
+          onKeyDown={(e) => { if (e.key === "Enter") addTypes(); }} />
+        <datalist id="package-types">
+          {graphTypes.filter((g) => !STRUTS_OWN_TYPES.has(g.type) && !types.includes(g.type)).map((g) => <option key={g.type} value={g.type}>{g.description ?? g.domain ?? ""}</option>)}
+        </datalist>
+        <Ideas label="Written by these workflows' runs" names={typeIdeas} add={(names) => addTypes(names.join(" "))} />
+      </div>
       {!empty && (
         <div class="package-along">
           {preview?.error ? (
@@ -669,7 +682,6 @@ export function PackagesPanel(props: { install?: InstallLink | null }) {
   const [publisher, setPublisher] = useState<api.PublisherInfo | null | undefined>(undefined);
   const [workflows, setWorkflows] = useState<api.WorkflowEntry[]>([]);
   const [apps, setApps] = useState<api.AppListEntry[]>([]);
-  const [hasConcepts, setHasConcepts] = useState(false);
   const [peers, setPeers] = useState<string[] | null>(null);
   const [subs, setSubs] = useState<api.SubscriptionInfo[] | null>(null);
   const [installed, setInstalled] = useState<api.InstalledPackage[] | null>(null);
@@ -683,7 +695,6 @@ export function PackagesPanel(props: { install?: InstallLink | null }) {
     api.getPublisher().then(setPublisher, failed("catalog"));
     api.listWorkflows().then(setWorkflows, failed("catalog"));
     api.listApps().then(setApps, () => setApps([]));
-    void api.searchNodes("Concept", "", 1).then((hits) => setHasConcepts(hits.length > 0));
     api.listPeers().then((p) => setPeers(p.map((x) => x.id)), () => setPeers([]));
     api.listSubscriptions().then(setSubs, failed("subs"));
     api.listInstalledPackages().then(setInstalled, failed("installed"));
@@ -698,7 +709,7 @@ export function PackagesPanel(props: { install?: InstallLink | null }) {
     <>
       {open ? (
         <PackagePage key={open} pkg={open} publisher={publisher?.name} catalog={catalog ?? null} publicChannels={publisher?.publicChannels ?? []}
-          workflows={workflows} apps={apps} installed={installedNames} concepts={hasConcepts} peers={peers}
+          workflows={workflows} apps={apps} installed={installedNames} peers={peers}
           onBack={() => setOpen(null)} onChanged={() => { void loadCatalog(); api.getPublisher().then(setPublisher, failed("catalog")); }} />
       ) : (
         <>
@@ -793,6 +804,24 @@ export function PackagesPanel(props: { install?: InstallLink | null }) {
         </>
       )}
     </>
+  );
+}
+
+/** Types every strut has, which no package carries (the build refuses them). */
+const STRUTS_OWN_TYPES = new Set(["Concept", "Claim", "Check", "Evidence"]);
+
+/** Names to add with one click each, or all at once: what the picked
+ *  workflows' runs wrote or read. Nothing when there are none. */
+function Ideas(props: { label: string; names: string[]; add: (names: string[]) => void }) {
+  if (!props.names.length) return null;
+  return (
+    <div class="package-ideas">
+      <span class="auto-hint">{props.label}:</span>
+      {props.names.map((n) => (
+        <button class="badge package-chip package-idea" key={n} title={`Add ${n}`} onClick={() => props.add([n])}>+ {n}</button>
+      ))}
+      {props.names.length > 1 && <button class="auto-link" onClick={() => props.add(props.names)}>Add all</button>}
+    </div>
   );
 }
 

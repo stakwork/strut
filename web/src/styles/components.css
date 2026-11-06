@@ -3873,6 +3873,8 @@ input.package-search { width: 100%; margin-bottom: var(--sp-2); }
 .package-along-chip { font-family: var(--font-mono); font-size: 11px; padding: 1px 6px; border-radius: 4px; background: var(--surface-2); color: var(--text-muted); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .package-chips { display: flex; flex-wrap: wrap; gap: var(--sp-1); margin-bottom: var(--sp-1); }
 .package-chip { display: inline-flex; align-items: center; gap: 4px; }
+.package-ideas { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-1); margin-top: var(--sp-1); }
+.package-idea { cursor: pointer; border-style: dashed; }
 .package-new { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); margin-top: var(--sp-3); }
 .package-new input { flex: 1 1 140px; width: auto; min-width: 0; }
 .package-new .auto-hint { flex-basis: 100%; }

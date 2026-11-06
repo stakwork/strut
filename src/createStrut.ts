@@ -118,6 +118,7 @@ import type { CassetteMode } from "./cassette.js";
 // Type-only: the graph backend stays a lazy, opt-in dependency.
 import type { GraphBackend } from "./graph/backend.js";
 import { graphView, mayQueryRaw, readerFor, listFor, type GraphReaders } from "./graph/scope.js";
+import { isStrutType } from "./graph/strut-schemas.js";
 import { projectChatOnce, projectProposalOnce, projectRunOnce, type ConversationReader } from "./graph/projector.js";
 import { createGraphChangeFeed, GRAPH_FEED_READ_MAX } from "./graph-writes.js";
 // No runtime graph dependency in here either (type-only imports inside).
@@ -3687,15 +3688,18 @@ export async function createStrut<TServices = unknown>(
     files: built.files,
     requires: built.manifest.requires ?? {},
     warnings: built.warnings,
+    suggested: built.suggested,
   });
+  /** A build reads the runs too, for what the workflows wrote and read (`suggested`). */
+  const buildDeps = { ...packageDeps, runs: store };
   app.post("/packages/build", async (c) => {
     const { dryRun, ...body } = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>);
     if (dryRun !== undefined && typeof dryRun !== "boolean") return c.json({ error: "dryRun is true or false" }, 400);
     const req = buildRequestOf(body);
     if (typeof req === "string") return c.json({ error: req }, 400);
     try {
-      if (dryRun) return c.json(builtBody(await oneAtATime(() => buildPackage(packageDeps, req, { dryRun: true }))), 200);
-      return c.json(builtBody(await oneAtATime(() => buildPackage(packageDeps, req))), 201);
+      if (dryRun) return c.json(builtBody(await oneAtATime(() => buildPackage(buildDeps, req, { dryRun: true }))), 200);
+      return c.json(builtBody(await oneAtATime(() => buildPackage(buildDeps, req))), 201);
     } catch (err) {
       return packageError(c, err);
     }
@@ -3781,7 +3785,7 @@ export async function createStrut<TServices = unknown>(
         if (info.name && req.package.split("/")[0] !== info.name) {
           throw new Error(`package_build_refused: ${req.package} is not under this strut server's publisher ${info.name}: a package published here is named ${info.name}/<name>`);
         }
-        const built = await buildPackage(packageDeps, req);
+        const built = await buildPackage(buildDeps, req);
         const publicBefore = (await catalogDeps.publicCatalogs.current())?.digest;
         const catalog = await publishRelease(catalogDeps, { manifest: built.manifest, digest: built.digest, ...(channel ? { channel } : {}), ...(pub !== undefined ? { public: pub as boolean } : {}) });
         return { built, catalog, publicBefore };
@@ -4422,6 +4426,25 @@ export async function createStrut<TServices = unknown>(
   // what it calls. `?type=Concept&q=med&limit=8` → { nodes: [{ ref_id,
   // node_type, name, description? }] }, names starting with the fragment
   // first. Read-only. 501 without a graph, 400 without a type.
+  // The graph's node types, for a typeahead (the package page's Graph
+  // types): `{ types: [{ type, parent?, domain?, description? }] }`, sorted,
+  // strut's own and the root left out. Read-only. 501 without a graph.
+  app.get("/graph/types", async (c) => {
+    if (!graph) return c.json({ error: "this deployment has no graph" }, 501);
+    const { schemas } = await (await graphReaderOf(c)).listSchemas();
+    const str = (v: unknown) => (typeof v === "string" && v ? v : undefined);
+    const types = schemas
+      .filter((s) => s.type !== "*" && s.type !== "Thing" && s.type !== "Schema" && !isStrutType(s.type))
+      .map((s) => ({
+        type: s.type,
+        ...(str(s["parent"]) ? { parent: str(s["parent"]) } : {}),
+        ...(str(s["domain"]) ? { domain: str(s["domain"]) } : {}),
+        ...(str(s["type_description"]) ? { description: str(s["type_description"]) } : {}),
+      }))
+      .sort((a, b) => a.type.localeCompare(b.type));
+    return c.json({ types });
+  });
+
   app.get("/graph/names", async (c) => {
     if (!graph) return c.json({ error: "this deployment has no graph" }, 501);
     const type = (c.req.query("type") ?? "").trim();
