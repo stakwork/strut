@@ -2105,7 +2105,10 @@ too: a later failure ends the body early (logged).
 A model not on disk is downloaded on first use (350 MB, sha256-checked, into
 `STRUT_MODEL_DIR/tts/<id>`), and the first speech after a start loads it
 (0.3–0.7 s); the request waits for both. `installed` says which a request
-will meet; one short warm-up request does both ahead of a call.
+will meet; one short warm-up request does both ahead of a call. A strut
+with a voice service (`STRUT_VOICE_URL`, §15.2) makes that request itself,
+and the recognizer's, when it starts listening, in the background: the
+first call after a start meets both loaded.
 
 Hanging up stops the speech: nothing more is sent, and Kokoro stops at a
 sentence boundary — sherpa hears a stop only when a sentence ends, by which
