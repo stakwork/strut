@@ -163,7 +163,7 @@ import { seedBrowserWorkflows } from "./browser/seed.js";
 import "./privacy/register.js";
 import { seedPrivacyWorkflows } from "./privacy/seed.js";
 import { HOME_POSTS, homeSyncRole, homeSyncRoutes, seedHomeSyncWorkflow, type HomeSyncRole } from "./home-sync.js";
-import { VOICE_CALLS, voiceConfig, voiceRoutes, type VoiceConfig } from "./voice.js";
+import { VOICE_CALLS, voiceConfig, voiceRoutes, warmSpeech, type VoiceConfig } from "./voice.js";
 import { createPublicSurface, normalizeSurface, surfaceProblem, visitorRefusal, visitorRuns, type PublicSurface } from "./public-surface.js";
 import { brandProblem, brandStyles, normalizeBrand, readBrand, writeBrand } from "./brand.js";
 import { PUBLIC_PATH, publicRoutes, visitorAddress } from "./public-routes.js";
@@ -7949,6 +7949,9 @@ export async function createStrut<TServices = unknown>(
     console.log(JSON.stringify({ event: "ready", port: bound, host: hostname ?? "0.0.0.0", ...(readyKey ? { key: readyKey } : {}) }));
     // Dictation's fixer loads now, in its worker, so the first transcript is fixed too.
     void stt?.fixer.warm();
+    // A strut with a voice service fetches and loads the speech its calls
+    // use now, so the first call does not wait for a download (src/voice.ts).
+    if (voice) void warmSpeech({ stt, tts });
     return bound;
   }
 

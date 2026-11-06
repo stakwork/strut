@@ -11,7 +11,9 @@ import { createStrut, type Strut } from "./createStrut.js";
 import { MemoryRunStore } from "./store.js";
 import { WorkspaceManager } from "./workspace.js";
 import { personToken } from "./auth.js";
-import { VOICE_BODY_MAX, voiceConfig } from "./voice.js";
+import { VOICE_BODY_MAX, silentWav, voiceConfig, warmSpeech } from "./voice.js";
+import type { SttService } from "./audio/stt.js";
+import type { TtsService } from "./audio/tts.js";
 
 const KEY = "voice-api-key";
 const PEER_KEY = "voice-peer-key";
@@ -149,6 +151,84 @@ describe("POST /voice/calls", () => {
       await assert.rejects(boot(), /STRUT_VOICE_TOKEN/);
     } finally {
       delete process.env["STRUT_VOICE_URL"];
+    }
+  });
+});
+
+describe("the speech a call uses is warmed when strut starts", () => {
+  /** Stand-in speech services: what each was asked, and how it answers. */
+  const fakes = (o: { sttFails?: boolean } = {}) => {
+    const seen = { wavs: [] as Uint8Array[], said: [] as string[], drained: 0 };
+    let warmed!: () => void;
+    const done = new Promise<void>((r) => (warmed = r));
+    let left = 2;
+    const tick = () => void (--left === 0 && warmed());
+    const stt = {
+      fixer: { warm: async () => {} },
+      async transcribe(wav: Uint8Array) {
+        seen.wavs.push(wav);
+        tick();
+        if (o.sttFails) throw new Error("no recognizer here");
+        return { text: "", segments: [], model: "zipformer-en-kroko", hotwords: null, durationMs: 1 };
+      },
+    };
+    const tts = {
+      async speak(text: string) {
+        seen.said.push(text);
+        return {
+          model: "kokoro-en-v1.0",
+          voice: "af_heart",
+          sampleRate: 24000,
+          audio: (async function* () {
+            yield new Uint8Array(4);
+            seen.drained++;
+            tick();
+          })(),
+        };
+      },
+    };
+    return { seen, done, stt: stt as unknown as SttService, tts: tts as unknown as TtsService };
+  };
+
+  it("transcribes half a second of 16 kHz silence and drains one short speech, and a failure is a log line", async () => {
+    const f = fakes({ sttFails: true });
+    const lines: string[] = [];
+    await warmSpeech({ stt: f.stt, tts: f.tts, log: (m) => lines.push(m) });
+    const wav = f.seen.wavs[0]!;
+    assert.equal(new TextDecoder().decode(wav.subarray(0, 4)), "RIFF");
+    assert.equal(new DataView(wav.buffer).getUint32(24, true), 16000);
+    assert.equal(wav.length, 44 + 16000);
+    assert.deepEqual(wav, silentWav());
+    assert.deepEqual(f.seen.said, ["Hello."]);
+    assert.equal(f.seen.drained, 1);
+    assert.ok(lines.some((l) => /speech recognition did not warm up: no recognizer here/.test(l)), lines.join("\n"));
+    assert.ok(lines.some((l) => /^speech ready for calls/.test(l)), lines.join("\n"));
+    await warmSpeech({ stt: null, tts: null, log: () => {} });
+  });
+
+  it("listen() warms them with a voice service configured, and not without one", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "strut-voice-warm-"));
+    const savedKey = process.env["STRUT_API_KEY"];
+    process.env["STRUT_API_KEY"] = KEY;
+    const boot = (voice: { url: string; token: string } | false, f: ReturnType<typeof fakes>) =>
+      createStrut({ workspace: new WorkspaceManager(join(dir, voice ? "on" : "off")), store: new MemoryRunStore(), ...NO_SEEDS, voice, stt: f.stt, tts: f.tts });
+    const on = fakes();
+    const off = fakes();
+    const withVoice = await boot({ url: "http://127.0.0.1:1", token: SHARED }, on);
+    const without = await boot(false, off);
+    try {
+      await withVoice.listen(0, "127.0.0.1");
+      await without.listen(0, "127.0.0.1");
+      await on.done;
+      assert.equal(on.seen.wavs.length, 1);
+      assert.deepEqual(on.seen.said, ["Hello."]);
+      assert.deepEqual([off.seen.wavs.length, off.seen.said.length], [0, 0]);
+    } finally {
+      await withVoice.close();
+      await without.close();
+      if (savedKey === undefined) delete process.env["STRUT_API_KEY"];
+      else process.env["STRUT_API_KEY"] = savedKey;
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });
