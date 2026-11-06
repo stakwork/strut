@@ -112,6 +112,7 @@ import {
   type UninstallResult,
 } from "./packages/install.js";
 import { listInstalledPackages } from "./packages/installed.js";
+import { checkBootPackages, installBootPackages, parseBootPackagesEnv, type BootPackage, type BootPackageOutcome } from "./packages/boot.js";
 import type { AppRelease, Upstream } from "./workspace.js";
 import type { CassetteMode } from "./cassette.js";
 // Type-only: the graph backend stays a lazy, opt-in dependency.
@@ -296,6 +297,13 @@ export interface StrutOptions<TServices = unknown> {
    *  built-in defaults) — each `{ id, key, urls, label? }` replaces the
    *  record of the same id. A bare package name installs through them. */
   packageIndexes?: IndexSubscription[];
+  /** Packages installed at FIRST BOOT (src/packages/boot.ts), after
+   *  `STRUT_PACKAGES` — each `{ ref, url?, digest? }`, what `POST
+   *  /packages/install` takes. A listed package not installed here is
+   *  installed in the background once the boot is done; one already here,
+   *  at any digest, is left alone. A bad entry fails the boot; a failed
+   *  install is a warning, tried again next boot. */
+  packages?: BootPackage[];
   /** This strut's OWN workspace — `{ id?, label?, description?, repos? }`,
    *  what `strut/list-peers` reports as `self` so an agent knows which repos
    *  are here. Seeded at boot after `STRUT_SELF` (this wins); `PUT /self` is
@@ -708,6 +716,10 @@ export interface Strut<TServices = unknown> {
      *  or the one `index` names. */
     install(ref: string, opts?: Pick<InstallOptions, "digest" | "url" | "actor" | "door"> & { index?: string }): Promise<InstallResult>;
     uninstall(pkg: string, opts?: { door?: PackageDoor }): Promise<UninstallResult>;
+    /** The first-boot installs (`STRUT_PACKAGES`, `StrutOptions.packages`;
+     *  src/packages/boot.ts): settles once each listed package was installed,
+     *  found here, or failed. `[]` when none are listed. */
+    booted: Promise<BootPackageOutcome[]>;
   };
 
   /** Package subscriptions (plans/marketplace.md §12.1): this strut
@@ -837,6 +849,10 @@ function parsePromoteTarget(to: string): { workflow: string; param: string } | n
 export async function createStrut<TServices = unknown>(
   opts: StrutOptions<TServices> = {},
 ): Promise<Strut<TServices>> {
+  // The packages to install at first boot (src/packages/boot.ts): checked
+  // first, so a bad value fails the boot before anything opens; installed
+  // once the boot is done.
+  const bootPackages = [...parseBootPackagesEnv(bootEnv()["STRUT_PACKAGES"]), ...checkBootPackages(opts.packages ?? [])];
   if (opts.escapeGuard !== false) installEscapeGuard();
   const workspace: WorkspaceStore = opts.workspace ?? new FileWorkspaceStore();
   // The ONE graph backend everything here reads: the host's, else the
@@ -3578,6 +3594,7 @@ export async function createStrut<TServices = unknown>(
     throw last;
   };
   const packages: Strut["packages"] = {
+    booted: Promise.resolve([]),
     install: (ref, opts = {}) => {
       if (registryWasInjected) return Promise.reject(new Error("package_unsupported: installing is disabled when the registry is provided at construction time"));
       return installByName(ref, opts);
@@ -7944,6 +7961,7 @@ export async function createStrut<TServices = unknown>(
     if (bootTimer) clearTimeout(bootTimer);
     bootTimer = undefined;
     await bootScan;
+    await packages.booted;
     automations.stop();
     // Every feed read still waiting answers now (plans/live-feeds.md).
     graphChanges?.close();
@@ -8011,6 +8029,19 @@ export async function createStrut<TServices = unknown>(
       console.warn(`[auto-resume] could not record this boot in ${file}:`, err);
     }
   };
+  // The first-boot installs (src/packages/boot.ts), last: after the seeds
+  // (strut/views an app may import, the Concept roots a page may hang
+  // under) and in the background, so a catalog that does not answer never
+  // holds or fails the boot. `close()` waits for them.
+  if (bootPackages.length) {
+    if (registryWasInjected) console.warn(`[packages] not installing ${bootPackages.map((p) => p.ref).join(", ")} at boot: installing is disabled when the registry is provided at construction time`);
+    else
+      packages.booted = installBootPackages(bootPackages, {
+        installed: async () => (await listInstalledPackages(packageDeps)).map((p) => p.package),
+        install: (ref, o) => packages.install(ref, o),
+      });
+  }
+
   if (autoResumeRuns || autoResumeChats) {
     bootTimer = setTimeout(() => {
       bootTimer = undefined;
