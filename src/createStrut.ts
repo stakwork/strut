@@ -5640,7 +5640,7 @@ export async function createStrut<TServices = unknown>(
         ...(mcp?.length ? { mcp } : {}),
         ...(attachments?.length ? { attachments } : {}),
       });
-      return { runId, callback: !!url };
+      return { runId, callback: !!url, workflow };
     };
   }
 

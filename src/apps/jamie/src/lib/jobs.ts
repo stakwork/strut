@@ -4,7 +4,7 @@
 // manifest, taps and answer (strut's src/browser/captcha.ts, the job's
 // `[captcha-answer]` turn).
 
-import type { LastVerify, LedgerClaim } from "./types";
+import type { JobView, LastVerify, LedgerClaim } from "./types";
 
 export type Tone = "running" | "ok" | "attention" | "failed" | "muted" | "merged";
 
@@ -31,6 +31,20 @@ export function jobLook(status: string | undefined, ask?: unknown): Look {
     default:
       return { label: "Ended", tone: "muted" };
   }
+}
+
+/**
+ * The workflow a job's run is, for `run/get`: the turn's word for it, else
+ * the job's record — the run's own line in `job/get`, else the job's newest
+ * turn — and `job` only when the job is not on file (`view` null). A turn
+ * saved before job/continue returned the workflow names none, and a
+ * builder job's run read as `job` is "Run not found". Undefined while the
+ * record is read.
+ */
+export function jobRunWorkflow(runId: string, given: string | undefined, view: Pick<JobView, "runs" | "workflow"> | null | undefined): string | undefined {
+  if (given) return given;
+  if (view === undefined) return undefined;
+  return view?.runs.find((r) => r.runId === runId)?.workflow ?? view?.workflow ?? "job";
 }
 
 /** One job update as `job/updates` returns it (the kit's `JobUpdate`). */

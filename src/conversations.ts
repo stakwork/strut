@@ -7,7 +7,8 @@
  * workflow: one with `params.wake` (the seeded `orchestrator`). Its turns are
  * not the session's model transcript but its RUNS, each read back from its
  * log: the person's words (`input.prompt`) or a wake, the reply (`text`,
- * `ask`, the artifacts resolved), the proposals it made, the jobs it started.
+ * `ask`, the artifacts resolved), the proposals it made, the jobs it started
+ * — and on a wake, what the job run it woke on delivered (`delivered`).
  *
  * Several people may share one (ruled 2026-11-04): it is listed for everyone
  * who took a turn in it (the launch's actor, else its principal), for the
@@ -94,8 +95,17 @@ export function titleOf(prompt: unknown, max = TITLE_MAX): string {
 export interface TurnJob {
   job: string;
   runId: string;
-  /** The job-shaped workflow, when the turn started a new job. */
+  /** The job-shaped workflow the run is (`job`, `builder`): what the launch
+   *  returned, else, for a start, what it asked for. Absent on a continue
+   *  logged before job/continue returned it — the job's record has it. */
   workflow?: string;
+}
+
+/** A job run a wake woke on, and what it delivered: its output's
+ *  `artifacts`, resolved as its `run.end` carried them. */
+export interface Delivery extends TurnJob {
+  workflow: string;
+  artifacts: ArtifactRef[];
 }
 
 /** `job/start` / `job/continue` as an event names them: an agent's tool call
@@ -126,8 +136,8 @@ export function turnJobs(events: readonly RunEvent[]): TurnJob[] {
     if (!tool) continue;
     const o = objectOf(e["output"]);
     if (typeof o?.["job"] !== "string" || typeof o["runId"] !== "string") continue;
-    const started = tool[2] === "start" ? (objectOf(starts.get(e.path ?? "")?.["input"])?.["workflow"] ?? "job") : undefined;
-    out.push({ job: o["job"], runId: o["runId"], ...(typeof started === "string" ? { workflow: started } : {}) });
+    const workflow = o["workflow"] ?? (tool[2] === "start" ? (objectOf(starts.get(e.path ?? "")?.["input"])?.["workflow"] ?? "job") : undefined);
+    out.push({ job: o["job"], runId: o["runId"], ...(typeof workflow === "string" ? { workflow } : {}) });
   }
   return out;
 }
@@ -288,7 +298,9 @@ export interface ConversationTurn {
   /** A WAKE: the job run(s) it woke on (`run.start.wake`; `true` when the
    *  log has no mark). */
   wake?: WakeMark | true;
-  /** The files the person attached. */
+  /** A wake's job run(s) on this strut, each with what it delivered: what
+   *  the person sees under the reply, so the reply need not list it. */
+  delivered?: Delivery[];
   /** The files the person attached, each where the turn's run keeps it
    *  (`path`, read with `run/files` on the turn's run). */
   attachments?: Array<Pick<RunAttachment, "name" | "mediaType" | "size" | "path">>;
@@ -673,6 +685,25 @@ export function createConversations(deps: ConversationsDeps): Conversations {
     };
   };
 
+  /** What the job runs a wake woke on delivered, each read from its own
+   *  run (the workflow from the job's record). Another strut's is not here. */
+  const deliveredBy = async (mark: WakeMark): Promise<Delivery[]> => {
+    const out: Delivery[] = [];
+    for (const w of [mark, ...(mark.also ?? [])]) {
+      if (w.peer) continue;
+      const rec = await readJobRecord(jobRoot(deps.dataDir, w.job)).catch(() => null);
+      const workflow = rec?.runs?.find((r) => r.runId === w.runId)?.workflow;
+      if (!workflow) continue;
+      const summary = await deps.store.getRunSummary(workflow, w.runId).catch(() => null);
+      const output = summary
+        ? summary.status === "success" ? summary.output : undefined
+        : (await deps.store.getRunEvents(workflow, w.runId).catch(() => [] as RunEvent[])).find((e) => e.type === "run.end")?.["output"];
+      const artifacts = output === undefined ? undefined : await deps.artifactRefs(w.runId, output, w.job).catch(() => undefined);
+      if (artifacts?.length) out.push({ job: w.job, runId: w.runId, workflow, artifacts });
+    }
+    return out;
+  };
+
   /** One turn, read from its run. */
   const readTurn = async (t: ConversationRun): Promise<Omit<ConversationTurn, "turn" | "proposals">> => {
     const key = `${t.workflow}/${t.runId}`;
@@ -695,6 +726,7 @@ export function createConversations(deps: ConversationsDeps): Conversations {
     const reply = ended ? replyOf(output) : {};
     const job = summary?.job ?? (start?.["job"] as string | undefined);
     const artifacts = ended === "success" ? await deps.artifactRefs(t.runId, output, job).catch(() => undefined) : undefined;
+    const delivered = mark && ended ? await deliveredBy(mark) : undefined;
     const turn: Omit<ConversationTurn, "turn" | "proposals"> = {
       runId: t.runId,
       workflow: t.workflow,
@@ -702,6 +734,7 @@ export function createConversations(deps: ConversationsDeps): Conversations {
       ...(t.by ? { by: t.by } : {}),
       status: ended ?? deps.liveState(t.workflow, t.runId) ?? t.status ?? "stale",
       ...(t.wake || mark ? { wake: mark ?? (true as const) } : typeof input?.["prompt"] === "string" ? { prompt: input["prompt"] } : {}),
+      ...(delivered?.length ? { delivered } : {}),
       ...(attachments?.length ? { attachments } : {}),
       ...reply,
       ...(artifacts?.length ? { artifacts } : {}),

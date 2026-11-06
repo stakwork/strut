@@ -153,7 +153,7 @@ function jobValues(e: WakeEnd): Record<string, string> {
         ? "which you started"
         : "which was started from this conversation",
     outcome: outcomeOf(e),
-    produced: produced.length ? `What it produced, which the person can open: ${produced.join(", ")}.` : "Nothing is attached to it.",
+    produced: produced.length ? `What it produced, which the person sees under your reply: ${produced.join(", ")}.` : "Nothing is attached to it.",
     reply: unmarked(cap(reply, WAKE_REPLY_MAX)),
     question: e.ask ? `Its question for the person: ${unmarked(cap(e.ask, 1_000))}\n` : "",
     continue: e.source ? `hand the go-ahead to @${e.source}'s assistant, naming job \`${job}\`` : `call job/continue with job \`${job}\``,

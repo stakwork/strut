@@ -8,7 +8,7 @@
 // tested by src/apps/jamie.test.ts.
 
 import { artifactKind, peerArtifactPath } from "@strut/kit/folds";
-import type { ArtifactRef } from "./types";
+import type { ArtifactRef, ConversationTurn } from "./types";
 
 /** A run whose files a served path is read through (`run/files`). */
 export interface FileRun {
@@ -65,11 +65,48 @@ export function inlineKind(path: string, kind?: string): InlineKind | null {
   }
 }
 
-/** An app deliverable's host key: `name`, `name@vN`; `@<peer>/name` for another workspace's. */
+/** An app version's document as strut serves it: `/apps/<name>/<vN>/files/…`. */
+const APP_DOCUMENT = /^\/apps\/(.+)\/(v\d+)\/files\//;
+
+/** An app deliverable's host key: `name`, `name@vN`; `@<peer>/name` for
+ *  another workspace's. An app named only by its document's link (a reply
+ *  that copied the url) is read off the link. */
 export function appKey(ref: ArtifactRef): string | null {
-  if (!ref.app?.name) return null;
-  const name = ref.peer ? `@${ref.peer}/${ref.app.name}` : ref.app.name;
-  return ref.app.version && !ref.peer ? `${name}@${ref.app.version}` : name;
+  const doc = !ref.app && !ref.peer && ref.url ? APP_DOCUMENT.exec(pathOf(ref.url)) : null;
+  const app = ref.app ?? (doc ? { name: decodeURIComponent(doc[1]!), version: doc[2]! } : undefined);
+  if (!app?.name) return null;
+  const name = ref.peer ? `@${ref.peer}/${app.name}` : app.name;
+  return app.version && !ref.peer ? `${name}@${app.version}` : name;
+}
+
+/** A deliverable that opens something: a link, words, an app, or another
+ *  workspace's file. One with none of them — a copy that kept only a title,
+ *  a file that is not there — is no card. */
+export function openable(ref: ArtifactRef): boolean {
+  return !!ref.url || ref.content !== undefined || !!ref.app || !!(ref.peer && ref.path);
+}
+
+/** Two entries for the same thing: one id, one link, or one app. */
+function same(a: ArtifactRef, b: ArtifactRef): boolean {
+  return a.id === b.id || (!!a.url && !!b.url && pathOf(a.url) === pathOf(b.url)) || (!!a.app && !!b.app && a.app.name === b.app.name);
+}
+
+/** A card, and the job it came from when known (a pull request's Fix asks it). */
+export interface Shown {
+  artifact: ArtifactRef;
+  job?: string;
+}
+
+/**
+ * What a turn shows: under a wake's reply, what the job run(s) it woke on
+ * delivered (`delivered`); then the reply's own deliverables, less any of
+ * those again — the reply's copy of a deliverable shows once, as the job
+ * made it. Only entries that open something.
+ */
+export function turnDeliverables(turn: Pick<ConversationTurn, "artifacts" | "delivered">): { delivered: Shown[]; own: Shown[] } {
+  const delivered = (turn.delivered ?? []).flatMap((d) => d.artifacts.filter(openable).map((artifact) => ({ artifact, job: d.job })));
+  const own = (turn.artifacts ?? []).filter((a) => openable(a) && !delivered.some((d) => same(a, d.artifact))).map((artifact) => ({ artifact }));
+  return { delivered, own };
 }
 
 /** A deep link the host follows (`ui/open-link`), relative to strut's UI. */

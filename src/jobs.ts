@@ -422,8 +422,10 @@ export interface JobsCapability extends Partial<JobIndex> {
    *  it. The run's `run.end` goes to the launching run's own `callback`
    *  (`from`), so the host that asked for the turn hears the job end; no
    *  callback there, none here. `job_busy:` while a run of the job is in
-   *  flight. Set by the server; absent on a bare bag. */
-  launch?(opts: JobLaunch): Promise<{ runId: string; callback: boolean }>;
+   *  flight. Set by the server; absent on a bare bag. `workflow` is the
+   *  job-shaped workflow the turn runs: the launch's, or the record's for a
+   *  continue. */
+  launch?(opts: JobLaunch): Promise<{ runId: string; callback: boolean; workflow: string }>;
 }
 
 /** What `JobsCapability.launch` takes. */
