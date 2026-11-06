@@ -20,6 +20,16 @@ export default defineStep({
     "the two nodes is refused — pass the edge ref_id. To re-home a node under a different parent use graph/move-node " +
     "instead, which deletes and re-creates the placing edge in one transaction.\n\n" +
     EXAMPLE,
+  graphNotes: {
+    ladybugDescription:
+      "Delete ONE edge from the knowledge graph (writes live to the graph; both nodes stay). On this graph the edge is hidden, " +
+      "never erased: it is marked `deleted_at`, no read shows it unless asked (`include_deleted`), and it never counts as a " +
+      "current value; creating the same link again brings it back. Locate it by `edge_ref_id` (from create-triplet's output) OR " +
+      "by the triple `source_ref_id` + `edge_type` + `target_ref_id`, as graph/edit-edge does. Several edges of that type between " +
+      "the two nodes is refused — pass the edge ref_id. To record that a fact stopped being true, end it with graph/assert " +
+      "(`ended` or `invalid_at`) instead of deleting it. To re-home a node under a different parent use graph/move-node.\n\n" +
+      EXAMPLE,
+  },
   input: z.object({
     edge_ref_id: z.string().optional().describe("ref_id of the edge (create-triplet returns it as edge_ref_id). Preferred when you have it."),
     source_ref_id: z.string().optional().describe("With edge_type + target_ref_id: locate the edge by its endpoints instead of edge_ref_id."),

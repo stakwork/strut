@@ -7,7 +7,7 @@ import { seedJarvisOntology } from "./__fixtures__/jarvis-seed.js";
 import { seedStrutDomain } from "./schema-seed.js";
 import { GraphValidationError, NodeWriter } from "./node-writer.js";
 import { EdgeWriter, edgeKeyFor, isRegisteredEdge, typeLabelOf } from "./edge-writer.js";
-import { edgeCount, graphSnapshot, rawEdge, rawWrite, testBackends } from "./test-util.js";
+import { edgeCount, edgeDeleted, graphSnapshot, rawEdge, rawWrite, testBackends } from "./test-util.js";
 
 describe("edge registry checks (pure)", () => {
   it("resolves the type label from jarvis's label set", () => {
@@ -272,11 +272,12 @@ for (const tb of testBackends()) {
     it("delete removes the edge by ref_id or by triple, returning it as it was; an unknown ref_id is a miss", async () => {
       const a = await edges.write({ edge: "IN_JOB", source_ref_id: run, target_ref_id: job });
       assert.deepEqual(await edges.delete(a.ref_id), { ref_id: a.ref_id, edge: "IN_JOB", source_ref_id: run, target_ref_id: job });
-      assert.equal(await rawEdge(backend, a.ref_id), null);
+      assert.ok(await edgeDeleted(backend, a.ref_id));
       assert.equal(await edges.delete(a.ref_id), null);
       assert.equal(await edges.delete("nope"), null);
       const again = await edges.write({ edge: "IN_JOB", source_ref_id: run, target_ref_id: job });
-      assert.equal(again.created, true, "a re-write after a delete is a new edge");
+      assert.equal(again.created, true, "a re-write after a delete is a new edge (on a Ladybug file, the hidden one back)");
+      if (!neo) assert.equal(again.ref_id, a.ref_id, "a delete hides, never erases");
       // By the triple, like update: the type is normalized; none is NOT_FOUND; the nodes stay.
       assert.deepEqual(await edges.delete({ edge: "in job", source_ref_id: run, target_ref_id: job }), { ref_id: again.ref_id, edge: "IN_JOB", source_ref_id: run, target_ref_id: job });
       assert.equal(await edgeCount(backend, "IN_JOB"), 0);
@@ -373,7 +374,7 @@ for (const tb of testBackends()) {
       // c under root: the old edge goes, the new one carries the properties.
       const moved = await edges.move({ ref_id: c, edge: "CHILD_OF", direction: "forward", to_ref_id: root });
       assert.deepEqual([moved.moved, moved.ref_id, moved.from_ref_id, moved.to_ref_id], [true, c, b, root]);
-      assert.equal(await rawEdge(backend, moved.previous_edge_ref_id), null, "the old edge is gone");
+      assert.ok(await edgeDeleted(backend, moved.previous_edge_ref_id), "the old edge is gone");
       const now = (await rel(moved.edge_ref_id));
       assert.deepEqual([now.src, now.tgt], [c, root]);
       // b is below a, so a under b is still a cycle; c is not any more.
@@ -381,7 +382,7 @@ for (const tb of testBackends()) {
       const again = await edges.move({ ref_id: a, edge: "CHILD_OF", direction: "forward", to_ref_id: c });
       assert.equal(again.moved, true);
       assert.equal((await rel(again.edge_ref_id)).props["weight"], 2, "the moved edge keeps its properties");
-      assert.equal(await rawEdge(backend, ar!.ref_id), null);
+      assert.ok(await edgeDeleted(backend, ar!.ref_id));
       await assert.rejects(edges.move({ ref_id: randomUUID(), edge: "CHILD_OF", direction: "forward", to_ref_id: root }), (e: unknown) => e instanceof GraphValidationError && e.code === "NOT_FOUND");
       await assert.rejects(edges.move({ ref_id: root, edge: "CHILD_OF", direction: "forward", to_ref_id: a }), (e: unknown) => e instanceof GraphValidationError && e.code === "NOT_FOUND", "root hangs under nothing");
     });

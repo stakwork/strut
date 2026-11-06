@@ -864,11 +864,18 @@ export function buildRegistryTools(
     // "janitor" for a system workflow (src/system-workflows.ts).
     const stamp = def.input instanceof z.ZodObject && "created_by" in def.input.shape ? writerOf(ctx) : undefined;
     const gated = !!gate?.approve.has(stepType);
-    const schema = stamp ? (def.input as z.ZodObject).omit({ created_by: true }) : def.input;
+    // What only a Ladybug graph has stays out of another backend's tools: the step, or its fields.
+    if (!ladybug && def.graphNotes?.ladybugOnly) continue;
+    const hidden = [...(stamp ? ["created_by"] : []), ...(!ladybug ? (def.graphNotes?.ladybugInputs ?? []) : [])];
+    const own = def.input instanceof z.ZodObject ? hidden.filter((k) => k in (def.input as z.ZodObject).shape) : [];
+    const schema = own.length ? (def.input as z.ZodObject).omit(Object.fromEntries(own.map((k) => [k, true])) as Record<string, true> & Record<number, never>) : def.input;
     // A package's own step is shown by its name inside the package, as the
     // strut that published it showed it (src/package-lookup.ts).
     out[toolNameFor(nameInsidePackage(ctx?.package, stepType))] = toolFactory({
-      description: (def.description ?? `Run the "${stepType}" step.`) + (ladybug && def.graphNotes?.ladybug ? ` ${def.graphNotes.ladybug}` : "") + (gated ? GATE_NOTE : ""),
+      description:
+        ((ladybug && def.graphNotes?.ladybugDescription) || def.description || `Run the "${stepType}" step.`) +
+        (ladybug && def.graphNotes?.ladybug ? ` ${def.graphNotes.ladybug}` : "") +
+        (gated ? GATE_NOTE : ""),
       inputSchema: gated ? gatedSchema(schema) : schema,
       execute: async (input: unknown, options?: { strutToolPath?: string }) => {
         let rationale: string | undefined;

@@ -103,6 +103,10 @@ const q = (s: string) => `\`${s}\``;
 export const VECTOR_EFS = 500;
 const lit = (s: string) => `'${s.replace(/'/g, "''")}'`;
 const LIVE = (alias: string) => `${alias}.deleted_at IS NULL`;
+/** An edge not deleted: a delete hides an edge (its `deleted_at`), never erases it. */
+const EDGE_LIVE = (alias: string) => `${alias}.deleted_at IS NULL`;
+/** `LIVE` unless the read asks for deleted things too (`include_deleted`). */
+const live = (alias: string, all?: boolean) => (all ? "true" : LIVE(alias));
 /** A data node: the ontology's Schema rows, the edges' search rows (`EdgeText`), merge records and dictation's mishearings are not read, walked or counted. */
 const DATA = (alias: string) => `NOT ${alias}.node_type IN [${HIDDEN_TYPES.map(lit).join(", ")}]`;
 
@@ -149,7 +153,7 @@ export function ladybugLinkedClause(links: Link[], tables: ReadonlySet<string>):
   const alts = links.map(({ edge, direction, type }) => {
     if (!tables.has(edge)) return "false";
     const rel = direction === ">" ? `-[e:${q(edge)}]->` : `<-[e:${q(edge)}]-`;
-    return `EXISTS { MATCH (node)${rel}(x:Node) WHERE x.node_type = ${lit(type)} AND ${LIVE("x")} }`;
+    return `EXISTS { MATCH (node)${rel}(x:Node) WHERE x.node_type = ${lit(type)} AND ${LIVE("x")} AND ${EDGE_LIVE("e")} }`;
   });
   return alts.length ? `(${alts.join(" OR ")})` : null;
 }
@@ -273,11 +277,11 @@ export class LadybugReader implements GraphReader {
 
   /** A node merged into another (`../merge.ts`) is read as the node it
    *  was merged into: an old ref_id keeps working in every tool. */
-  async getNode(ref_id: string): Promise<NodeEnvelope | null> {
+  async getNode(ref_id: string, opts: { include_deleted?: boolean } = {}): Promise<NodeEnvelope | null> {
     // A Schema row is read through the ontology views, never as a node.
     const sc = await this.sql();
     const read = async (id: string) =>
-      this.engine.query(`MATCH (n:Node {ref_id: $ref_id}) WHERE ${LIVE("n")} AND ${DATA("n")}${sc.node("n")} RETURN ${await this.project("n")} AS n LIMIT 1`, { ref_id: id, ...sc.params });
+      this.engine.query(`MATCH (n:Node {ref_id: $ref_id}) WHERE ${live("n", opts.include_deleted)} AND ${DATA("n")}${sc.node("n")} RETURN ${await this.project("n")} AS n LIMIT 1`, { ref_id: id, ...sc.params });
     let rows = await read(ref_id);
     if (rows.length === 0) {
       const kept = await mergedInto((c, p) => this.engine.query(c, p), ref_id);
@@ -326,7 +330,7 @@ export class LadybugReader implements GraphReader {
     const time = await this.edgeTime("r", {}, params);
     const half = (dir: "out" | "in") =>
       this.engine.query(
-        `MATCH (n:Node {ref_id: $ref_id})${dir === "out" ? "-[r]->" : "<-[r]-"}(m:Node) WHERE ${LIVE("m")} AND ${DATA("m")}${sc.node("n")}${sc.node("m")}${sc.edge("r")} AND ${time}
+        `MATCH (n:Node {ref_id: $ref_id})${dir === "out" ? "-[r]->" : "<-[r]-"}(m:Node) WHERE ${LIVE("m")} AND ${EDGE_LIVE("r")} AND ${DATA("m")}${sc.node("n")}${sc.node("m")}${sc.edge("r")} AND ${time}
          RETURN label(r) AS edge_type, m.node_type AS target_type, count(*) AS cnt`,
         params,
       );
@@ -346,7 +350,7 @@ export class LadybugReader implements GraphReader {
     const params: Params = { ids: ref_ids, ...sc.params };
     const time = await this.edgeTime("r", {}, params);
     const rows = await this.engine.query(
-      `UNWIND $ids AS id MATCH (n:Node {ref_id: id})-[r]-(m:Node) WHERE ${LIVE("m")} AND ${DATA("m")}${sc.node("n")}${sc.node("m")}${sc.edge("r")} AND ${time}
+      `UNWIND $ids AS id MATCH (n:Node {ref_id: id})-[r]-(m:Node) WHERE ${LIVE("m")} AND ${EDGE_LIVE("r")} AND ${DATA("m")}${sc.node("n")}${sc.node("m")}${sc.edge("r")} AND ${time}
        RETURN id AS ref_id, label(r) AS edge_type, count(*) AS cnt`,
       params,
     );
@@ -356,9 +360,11 @@ export class LadybugReader implements GraphReader {
   }
 
   async neighbors(ref_id: string, p: NeighborsParams = {}): Promise<{ nodes: NodeEnvelope[]; edges: EdgeEnvelope[] }> {
-    // A deleted source shows nothing, though its soft delete may have kept its edges.
+    // A deleted source shows nothing, though it keeps its edges; deleted
+    // edges are hidden. `include_deleted` shows them all.
     const sc = await this.sql();
-    const where = [LIVE("source"), LIVE("node"), DATA("node") + sc.node("source") + sc.node("node") + sc.edge("r")];
+    const all = p.include_deleted;
+    const where = [live("source", all), live("node", all), live("r", all), DATA("node") + sc.node("source") + sc.node("node") + sc.edge("r")];
     const params: Params = { ref_id, ...sc.params };
     where.push(await this.edgeTime("r", p, params));
     if (p.node_types?.length) {
@@ -429,13 +435,13 @@ export class LadybugReader implements GraphReader {
     const rows = [
       ...(await this.engine.query(
         `UNWIND $ids AS id MATCH (a:Node {ref_id: id})-[r]->(b:Node)
-         WHERE b.ref_id IN $within AND b.ref_id <> id AND ${LIVE("a")} AND ${LIVE("b")} AND ${DATA("b")}${scoped}
+         WHERE b.ref_id IN $within AND b.ref_id <> id AND ${LIVE("a")} AND ${LIVE("b")} AND ${EDGE_LIVE("r")} AND ${DATA("b")}${scoped}
          RETURN id AS source, label(r) AS edge_type, b.ref_id AS target`,
         { ids: ref_ids, within: all, ...sc.params },
       )),
       ...(await this.engine.query(
         `UNWIND $ids AS id MATCH (a:Node {ref_id: id})<-[r]-(b:Node)
-         WHERE b.ref_id IN $within AND NOT b.ref_id IN $ids AND ${LIVE("a")} AND ${LIVE("b")} AND ${DATA("b")}${scoped}
+         WHERE b.ref_id IN $within AND NOT b.ref_id IN $ids AND ${LIVE("a")} AND ${LIVE("b")} AND ${EDGE_LIVE("r")} AND ${DATA("b")}${scoped}
          RETURN b.ref_id AS source, label(r) AS edge_type, id AS target`,
         { ids: ref_ids, within: all, ...sc.params },
       )),
@@ -458,7 +464,7 @@ export class LadybugReader implements GraphReader {
     const sc = await this.sql();
     const rows = await this.engine.query(
       `UNWIND $ids AS id MATCH (p:Node)-[r:${q(edge_type)}]->(c:Node {ref_id: id})
-       WHERE ${LIVE("p")} AND ${DATA("p")}${sc.node("p")}${sc.node("c")}${sc.edge("r")}
+       WHERE ${LIVE("p")} AND ${EDGE_LIVE("r")} AND ${DATA("p")}${sc.node("p")}${sc.node("c")}${sc.edge("r")}
        RETURN id AS target, ${await this.project("p")} AS node`,
       { ids: ref_ids, ...sc.params },
     );
@@ -495,7 +501,7 @@ export class LadybugReader implements GraphReader {
     // A Schema row has no search text, so no index returns it; said anyway.
     // A namespace asked for narrows the reader's scope; none reads them all.
     const sc = await this.sql();
-    const clauses = [LIVE("node"), DATA("node") + sc.node("node")];
+    const clauses = [live("node", p.include_deleted), DATA("node") + sc.node("node")];
     const base: Params = { ...sc.params };
     if (p.namespace !== undefined) {
       clauses.push("node.namespace = $namespace");
@@ -743,7 +749,7 @@ export class LadybugReader implements GraphReader {
   /** A fact search's filter over the search rows (the reader's scope, a
    *  namespace asked for, the time asked for) and the reads over them. */
   private async factQuery(p: SearchParams & { limit: number; skip: number }, sc: ScopeSql, timeRow: string, time: Params): Promise<FactQuery> {
-    const where = [`node.node_type = '${EDGE_TEXT_TYPE}'`, LIVE("node") + sc.node("node"), timeRow];
+    const where = [`node.node_type = '${EDGE_TEXT_TYPE}'`, live("node", p.include_deleted) + sc.node("node"), timeRow];
     const base: Params = { ...sc.params, ...time };
     if (p.namespace !== undefined) {
       where.push("node.namespace = $namespace");
@@ -824,12 +830,14 @@ export class LadybugReader implements GraphReader {
       list.push({ e: String(x["ref_id"]), s: String(x["source_ref_id"]), t: String(x["target_ref_id"]) });
       byType.set(type, list);
     }
-    const end = (a: string) => `{ref_id: ${a}.ref_id, node_type: ${a}.node_type, title: coalesce(${a}.title, ${a}.name)}`;
+    const end = (a: string) => `{ref_id: ${a}.ref_id, node_type: ${a}.node_type, title: coalesce(${a}.title, ${a}.name), deleted_at: ${a}.deleted_at}`;
+    // A deleted fact, or one with a deleted end, shows only to `include_deleted`.
+    const all = p.include_deleted;
     const found = new Map<string, Omit<FactEnvelope, "score" | "match_type">>();
     for (const [type, pairs] of byType) {
       const rows = await this.engine.query(
         `UNWIND $pairs AS p MATCH (s:Node {ref_id: p.s})-[r:${q(type)}]->(t:Node {ref_id: p.t})
-         WHERE r.ref_id = p.e AND ${LIVE("s")} AND ${LIVE("t")} AND ${DATA("s")} AND ${DATA("t")}${sc.node("s")}${sc.node("t")}${sc.edge("r")}
+         WHERE r.ref_id = p.e AND ${live("s", all)} AND ${live("t", all)} AND ${live("r", all)} AND ${DATA("s")} AND ${DATA("t")}${sc.node("s")}${sc.node("t")}${sc.edge("r")}
          RETURN r AS rel, ${end("s")} AS source, ${end("t")} AS target`,
         { pairs, ...sc.params },
       );
@@ -837,20 +845,30 @@ export class LadybugReader implements GraphReader {
         const rel = (r["rel"] as Record<string, unknown>) ?? {};
         const asEnd = (v: unknown): FactEnd => {
           const o = (v ?? {}) as Record<string, unknown>;
-          return { ref_id: String(o["ref_id"]), node_type: typeof o["node_type"] === "string" ? o["node_type"] : undefined, ...(typeof o["title"] === "string" ? { title: o["title"] } : {}) };
+          return {
+            ref_id: String(o["ref_id"]),
+            node_type: typeof o["node_type"] === "string" ? o["node_type"] : undefined,
+            ...(typeof o["title"] === "string" ? { title: o["title"] } : {}),
+            ...(msOf(o["deleted_at"]) !== undefined ? { deleted_at: msOf(o["deleted_at"])! } : {}),
+          };
         };
+        const source = asEnd(r["source"]);
+        const target = asEnd(r["target"]);
+        // Hidden by its own delete, else by an end's.
+        const deleted = msOf(rel["deleted_at"]) ?? source.deleted_at ?? target.deleted_at;
         const times: Partial<Record<"valid_at" | "invalid_at" | "expired_at", number>> = {};
         for (const k of ["valid_at", "invalid_at", "expired_at"] as const) if (msOf(rel[k]) !== undefined) times[k] = msOf(rel[k])!;
         found.set(String(rel["ref_id"]), {
           ref_id: String(rel["ref_id"]),
           edge_type: type,
           text: String(rel["text"] ?? ""),
-          source: asEnd(r["source"]),
-          target: asEnd(r["target"]),
+          source,
+          target,
           ...times,
           ...(typeof rel["superseded_by"] === "string" ? { superseded_by: rel["superseded_by"] } : {}),
           sources: Array.isArray(rel["sources"]) ? (rel["sources"] as unknown[]).map(String) : [],
           ...(typeof rel["namespace"] === "string" ? { namespace: rel["namespace"] } : {}),
+          ...(deleted !== undefined ? { deleted_at: deleted } : {}),
         });
       }
     }

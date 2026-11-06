@@ -119,7 +119,7 @@ for (const tb of testBackends()) {
 
     // ── Soft delete ───────────────────────────────────────────────────────
 
-    it("a soft delete keeps the edges and records the reason when asked; the default still takes them", async () => {
+    it("a soft delete keeps the edges and records the reason when asked; the default takes them on Neo4j only", async () => {
       const c = (await b.nodes.write(claim("c1"))).ref_id;
       await b.edges.write({ edge: "ABOUT", source_ref_id: c, target_ref_id: wf });
       assert.deepEqual(await b.nodes.deleteNode(c, { keepEdges: true, reason: "forgotten" }), { edges: 0 });
@@ -133,8 +133,10 @@ for (const tb of testBackends()) {
 
       const c2 = (await b.nodes.write(claim("c2"))).ref_id;
       await b.edges.write({ edge: "ABOUT", source_ref_id: c2, target_ref_id: wf });
-      assert.equal((await b.nodes.deleteNode(c2))?.edges, 1, "the default delete takes the node's edges");
-      assert.equal(await edgeCount(b, "ABOUT"), 1);
+      // Neo4j's default delete takes the node's edges; a Ladybug file hides, never erases.
+      const neo = tb.kind === "neo4j";
+      assert.equal((await b.nodes.deleteNode(c2))?.edges, neo ? 1 : 0, neo ? "the default delete takes the node's edges" : "the node's edges stay");
+      assert.equal(await edgeCount(b, "ABOUT"), neo ? 1 : 2);
       assert.equal((await rawNode(b, c2))!.props["deleted_reason"] ?? null, null, "no reason given, none stored");
 
       assert.equal(await b.nodes.softDelete(wf, { reason: "retired" }), true);

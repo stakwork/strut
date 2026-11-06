@@ -164,6 +164,9 @@ export interface SearchParams {
   /** `false` leaves facts out (no fact queries run). Default: a Ladybug
    *  search finds them too. Neo4j holds none. */
   facts?: boolean;
+  /** Deleted nodes and facts too, each marked `deleted_at`. A Ladybug file
+   *  only: Neo4j ignores it. */
+  include_deleted?: boolean;
 }
 
 /** One end of a fact. */
@@ -171,6 +174,8 @@ export interface FactEnd {
   ref_id: string;
   node_type: string | undefined;
   title?: string;
+  /** Set when the end is deleted (an `include_deleted` read): epoch ms. */
+  deleted_at?: number;
 }
 
 /**
@@ -190,6 +195,8 @@ export interface FactEnvelope {
   superseded_by?: string;
   sources: string[];
   namespace?: string;
+  /** Set on a deleted fact (an `include_deleted` read): epoch ms. */
+  deleted_at?: number;
   score: number;
   match_type?: string;
 }
@@ -220,6 +227,8 @@ export interface NeighborsParams {
   /** As `SearchParams`: ended temporal edges too, or the ones true at a time. Ignored on Neo4j. */
   include_ended?: boolean;
   as_of?: string | number;
+  /** As `SearchParams`: deleted nodes and edges too. Ignored on Neo4j. */
+  include_deleted?: boolean;
 }
 
 /** `as_of` as epoch ms: an ISO date (a bare year or year-month is its first
@@ -751,7 +760,7 @@ export interface GraphReader {
   /** `default` always resolves; anything else must be registered. */
   resolveNamespace(namespace: string | undefined): Promise<string>;
   /** GET /v2/nodes/:ref_id — null when absent or hidden. */
-  getNode(ref_id: string): Promise<NodeEnvelope | null>;
+  getNode(ref_id: string, opts?: { include_deleted?: boolean }): Promise<NodeEnvelope | null>;
   /** The node of `type` under `key` — an exact lookup, never a search. */
   getNodeByKey(type: string, key: string, namespace?: string): Promise<NodeEnvelope | null>;
   /** The nodes of `type` whose name contains a fragment — the typeahead. */

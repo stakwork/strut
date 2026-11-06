@@ -47,10 +47,11 @@ function temporalEdge(r: Row): TemporalEdge {
 }
 
 /** `source`'s `edge` edges: the current ones (not expired), or with
- *  `ended`, the ones that are. */
+ *  `ended`, the ones that are. A deleted edge is neither: it never holds a
+ *  slot. */
 export async function slotEdges(tx: GraphTx, edge: string, source: string, ended = false): Promise<TemporalEdge[]> {
   const rows = await tx.run(
-    `MATCH (s:Node {ref_id: $s})-[r:${q(edge)}]->(t:Node) WHERE r.expired_at IS ${ended ? "NOT NULL" : "NULL"}
+    `MATCH (s:Node {ref_id: $s})-[r:${q(edge)}]->(t:Node) WHERE r.deleted_at IS NULL AND r.expired_at IS ${ended ? "NOT NULL" : "NULL"}
      RETURN r.ref_id AS ref_id, t.ref_id AS target, r.text AS text, r.sources AS sources, r.valid_at AS valid_at, r.invalid_at AS invalid_at, r.expired_at AS expired_at,
             r.last_confirmed_at AS last_confirmed_at
      ORDER BY r.created_at`,
@@ -96,11 +97,11 @@ export async function temporalEdgeTypes(run: (cypher: string, params?: Params) =
   return rows.map((r) => String(r["e"])).sort();
 }
 
-/** Every temporal edge of `edge` between live nodes, its ends' titles with
+/** Every live temporal edge of `edge` between live nodes, its ends' titles with
  *  it: what the word match scores. Current ones only unless `ended`. */
 export async function factRows(run: (cypher: string, params?: Params) => Promise<Row[]>, edge: string, ended: boolean): Promise<Row[]> {
   return run(
-    `MATCH (s:Node)-[r:${q(edge)}]->(t:Node) WHERE s.deleted_at IS NULL AND t.deleted_at IS NULL AND r.text IS NOT NULL ${ended ? "" : "AND r.expired_at IS NULL"}
+    `MATCH (s:Node)-[r:${q(edge)}]->(t:Node) WHERE s.deleted_at IS NULL AND t.deleted_at IS NULL AND r.deleted_at IS NULL AND r.text IS NOT NULL ${ended ? "" : "AND r.expired_at IS NULL"}
      RETURN r.ref_id AS ref_id, r.text AS text, r.namespace AS namespace, r.valid_at AS valid_at, r.invalid_at AS invalid_at, r.expired_at AS expired_at,
             s.ref_id AS source_ref_id, s.title AS source_title, t.ref_id AS target_ref_id, t.title AS target_title`,
   );
@@ -211,16 +212,6 @@ export async function deleteEdgeRows(tx: GraphTx, edge_ref_ids: string[], now: n
   );
 }
 
-/** The rows of every fact `ref_id` is an end of, as its edges are deleted
- *  with it (a node's soft delete). */
-export async function deleteRowsOf(tx: GraphTx, ref_id: string, now: number): Promise<void> {
-  await tx.run(
-    `MATCH (n:Node {node_type: '${EDGE_TEXT_TYPE}'}) WHERE (n.source_ref_id = $r OR n.target_ref_id = $r) AND n.deleted_at IS NULL
-     SET n.deleted_at = CAST($now AS INT64), n.updated_at = CAST($now AS INT64)`,
-    { r: ref_id, now },
-  );
-}
-
 /** The live rows of every fact `ref_id` is an end of, composed again from
  *  the ends' titles now: a row whose text changes loses its vector until it
  *  is embedded again. Returns the rows whose text changed. */
@@ -291,7 +282,7 @@ export async function embedPendingRows(
   }
 }
 
-/** A row for every temporal edge with `text` and none (keyword only: the
+/** A row for every live temporal edge with `text` and none (keyword only: the
  *  vectors come after). Returns how many it wrote. */
 export async function writeMissingEdgeRows(run: Run, now: number): Promise<number> {
   const have = new Set((await run(`MATCH (n:Node {node_type: '${EDGE_TEXT_TYPE}'}) RETURN n.edge_ref_id AS e`)).map((r) => String(r["e"])));
@@ -299,7 +290,7 @@ export async function writeMissingEdgeRows(run: Run, now: number): Promise<numbe
   let n = 0;
   for (const edge of await temporalEdgeTypes(run)) {
     const rows = await run(
-      `MATCH (s:Node)-[r:${q(edge)}]->(t:Node) WHERE r.text IS NOT NULL
+      `MATCH (s:Node)-[r:${q(edge)}]->(t:Node) WHERE r.text IS NOT NULL AND r.deleted_at IS NULL
        RETURN r.ref_id AS ref_id, r.text AS text, r.namespace AS ns, r.created_by AS by, r.valid_at AS valid_at, r.invalid_at AS invalid_at, r.expired_at AS expired_at,
               s.ref_id AS s, s.title AS st, t.ref_id AS t, t.title AS tt`,
     );

@@ -11,9 +11,10 @@
  *
  * These are the NEO4J fragments (the Neo4j engine and the Neo4j reader use
  * them). A statement that runs on both engines says `dialect.live(n)` /
- * `dialect.edgeLive(r)` instead (`engine.ts`): on a Ladybug file a node is
- * deleted when `deleted_at` is set and an edge is live or gone. No runtime
- * imports: `claims.ts` must not load neo4j-driver.
+ * `dialect.edgeLive(r)` instead (`engine.ts`): on a Ladybug file a delete
+ * hides and never erases (plans/graph-temporal.md) — a node or an edge is
+ * deleted when its `deleted_at` is set, and a node's delete keeps its edges.
+ * No runtime imports: `claims.ts` must not load neo4j-driver.
  */
 
 /** A node that is not deleted: R2, either marker (`is_deleted` until the

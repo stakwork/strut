@@ -181,14 +181,14 @@ describe("edge search rows on a ladybug file (plans/graph-edge-search.md)", { sk
     assert.deepEqual(await byWords("Lisbon", "node.namespace IN ['shared']"), ["Kate lives in Lisbon"]);
   });
 
-  it("a deleted edge deletes its row; a node's soft delete deletes the rows of the edges it takes", async () => {
+  it("a deleted edge deletes its row; a node's soft delete keeps its edges' rows, its facts hidden by the deleted end", async () => {
     const r = await works();
     await b.edges.delete(r.ref_id);
     assert.ok((await rowOf(b, r.ref_id))!["deleted_at"] !== undefined);
     const l = await assertEdge(b, b.schemas, { edge: "LIVES_IN", source_ref_id: kate, target_ref_id: lisbon, text: "Kate lives in Lisbon" }, { embedder });
     await b.nodes.deleteNode(lisbon);
-    assert.ok((await rowOf(b, l.ref_id))!["deleted_at"] !== undefined);
-    assert.deepEqual(await byWords("Lisbon"), []);
+    assert.equal((await rowOf(b, l.ref_id))!["deleted_at"], undefined, "kept: the node may be restored");
+    assert.equal((await b.reader.search({ q: "Lisbon" })).facts, undefined, "no read shows it");
   });
 
   it("a rename of either end recomposes its facts' rows and embeds them again", async () => {

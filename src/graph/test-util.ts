@@ -217,6 +217,13 @@ export async function rawEdge(b: GraphBackend, ref_id: string): Promise<RawEdgeV
   return r ? { type: String(r["type"]), props: r["rel"] as Record<string, unknown>, src: String(r["src"]), tgt: String(r["tgt"]) } : null;
 }
 
+/** Is the edge `ref_id` deleted: gone on Neo4j, hidden (`deleted_at`) on a
+ *  Ladybug file, where a delete never erases. */
+export async function edgeDeleted(b: GraphBackend, ref_id: string): Promise<boolean> {
+  const e = await rawEdge(b, ref_id);
+  return b.kind === "neo4j" ? e === null : e !== null && e.props["deleted_at"] !== null && e.props["deleted_at"] !== undefined;
+}
+
 /** Set raw properties on a node (test setup: a legacy marker, a stale
  *  vector), named by their shared names. */
 export async function setNodeProps(b: GraphBackend, ref_id: string, props: Record<string, unknown>): Promise<void> {
@@ -236,7 +243,9 @@ export async function setNodeProps(b: GraphBackend, ref_id: string, props: Recor
  *  not count. */
 export async function edgeCount(b: GraphBackend, edge?: string): Promise<number> {
   const rel = edge ? `[r:\`${edge}\`]` : "[r]";
-  const rows = await b.query(`MATCH ${anyNode(b, "a")}-${rel}->${anyNode(b, "b")} WHERE ${dataOnly(b, "a", "b")} RETURN count(r) AS c`);
+  // A Ladybug file keeps a deleted edge, hidden: counted as gone.
+  const live = b.kind === "ladybug" ? " AND r.deleted_at IS NULL" : "";
+  const rows = await b.query(`MATCH ${anyNode(b, "a")}-${rel}->${anyNode(b, "b")} WHERE ${dataOnly(b, "a", "b")}${live} RETURN count(r) AS c`);
   return Number(rows[0]?.["c"] ?? 0);
 }
 

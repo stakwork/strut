@@ -34,11 +34,12 @@ function columns(rel: Record<string, unknown>): Record<string, unknown> {
   return out;
 }
 
-/** Every edge of `ref_id`, both directions, the ontology's own left out. */
+/** Every live edge of `ref_id`, both directions, the ontology's own left
+ *  out: a deleted edge stays where it is. */
 export async function edgesOf(tx: GraphTx, ref_id: string): Promise<StoredEdge[]> {
   const half = async (dir: "out" | "in") =>
     (await tx.run(
-      `MATCH (n:Node {ref_id: $r})${dir === "out" ? "-[e]->" : "<-[e]-"}(o:Node) WHERE label(e) <> '${SCHEMA_EDGE}'
+      `MATCH (n:Node {ref_id: $r})${dir === "out" ? "-[e]->" : "<-[e]-"}(o:Node) WHERE label(e) <> '${SCHEMA_EDGE}' AND e.deleted_at IS NULL
        RETURN label(e) AS edge, e AS rel, o.ref_id AS other ORDER BY e.created_at, e.ref_id`,
       { r: ref_id },
     )).map((r): StoredEdge => {

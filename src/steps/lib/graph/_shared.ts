@@ -53,7 +53,16 @@ export const timeInputs = {
     .union([z.string(), z.number()])
     .optional()
     .describe("Show the facts (temporal edges) that were true at this time: an ISO date ('2024', '2024-06', '2024-06-01T12:00:00Z') or epoch ms. Wins over include_ended."),
+  include_deleted: z
+    .boolean()
+    .optional()
+    .describe("Also show deleted nodes and facts, each marked `deleted_at`. A delete hides, never erases. Default: hidden. A LadybugDB graph only."),
 };
+
+/** `deleted_at` (epoch ms) as ISO, when set: what an `include_deleted` read marks. */
+export function deletedOut(v: unknown): { deleted_at?: string } {
+  return typeof v === "number" || (typeof v === "string" && /^\d+$/.test(v)) ? { deleted_at: new Date(Number(v)).toISOString() } : {};
+}
 
 /** A temporal edge's dates, epoch ms on the edge, as ISO; the ones it has. */
 export function isoDates(p: Record<string, unknown>): Partial<Record<"valid_at" | "invalid_at" | "expired_at", string>> {
