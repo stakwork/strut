@@ -15,11 +15,9 @@
  * holds a run check's. An Evidence id is a hash of (claim, message or run,
  * sayer), so a message read again writes nothing.
  *
- * A check (its type's `expects`, `../memory-verify.ts`) writes `observed`
- * evidence named by its step. An `ask` is an external check: a `planned`
- * Evidence with no strength (a question waiting on the user), closed when
- * the claim's next evidence arrives. Deleting a fact clears its claim's
- * evidence, so saving it again starts from nothing.
+ * Deleting a fact clears its claim's evidence, so saving it again starts
+ * from nothing. Checks, which add `observed` evidence of their own, come
+ * next (plans/memory-checks.md).
  *
  * The vocabulary is the claim layer's (`../claims.ts`, `../seed-types.ts`);
  * times on the nodes are epoch SECONDS, as every jarvis datetime is.
@@ -60,22 +58,13 @@ export interface FactEvidence {
   run?: string;
   /** When the evidence is from (epoch ms). */
   observed_at: number;
-  /** 1 backs it; −1 says it is false; a check's quiet result is weaker. */
+  /** 1 backs it; −1 says it is false. */
   strength: number;
-  /** The check step that observed it (`observed` evidence); absent for something said. */
-  check?: string;
-  /** What was observed, when not the fact's sentence (a check's finding). */
-  content?: string;
   created_by?: string;
   now: number;
 }
 
 const claimRow = (claim: string) => `MATCH (c:Node {node_type: '${CLAIM_TYPE}'}) WHERE c.id = $claim`;
-
-/** The claim's open question, if any: a planned slot waits on the user. */
-async function closeSlots(tx: GraphTx, claim: string): Promise<void> {
-  await tx.run(`${claimRow(claim)} MATCH (c)-[r:${q(CLAIM_EDGES.EVIDENCED_BY)}]->(e:Node) WHERE e.evidence_status = 'planned' DETACH DELETE e`, { claim });
-}
 
 /** The fact's claim, made the first time it is backed. */
 async function ensureClaim(tx: GraphTx, claim: string, f: Pick<FactEvidence, "text" | "namespace" | "created_by" | "now" | "observed_at">): Promise<void> {
@@ -89,14 +78,13 @@ async function ensureClaim(tx: GraphTx, claim: string, f: Pick<FactEvidence, "te
 }
 
 /** Evidence node `id` under the claim, with its edge. */
-async function writeEvidence(tx: GraphTx, claim: string, id: string, f: FactEvidence, status: "collected" | "planned"): Promise<void> {
+async function writeEvidence(tx: GraphTx, claim: string, id: string, f: FactEvidence): Promise<void> {
   const base = { namespace: f.namespace, created_by: f.created_by, created_at: f.now, updated_at: f.now };
   const p: Params = { claim };
-  const mode = f.check ? "observed" : "asserted";
-  const ev = { ref_id: randomUUID(), node_type: EVIDENCE_TYPE, key: `evidence-${id}`, id, name: boundedName(f.content ?? f.text), content: f.content ?? f.text, evidence_mode: mode, evidence_status: status, observed_at: Math.floor(f.observed_at / 1000), ...base };
+  const ev = { ref_id: randomUUID(), node_type: EVIDENCE_TYPE, key: `evidence-${id}`, id, name: boundedName(f.text), content: f.text, evidence_mode: "asserted", evidence_status: "collected", observed_at: Math.floor(f.observed_at / 1000), ...base };
   await tx.run(`CREATE (:Node {${fields(ev, p, "e")}})`, p);
-  const context = JSON.stringify({ ...(f.said_by ? { said_by: f.said_by } : {}), ...(f.message ? { message: f.message } : {}), ...(f.run ? { run: f.run } : {}), ...(f.check ? { check: f.check } : {}) });
-  const rel = { ref_id: randomUUID(), edge_key: edgeKeyFor(CLAIM_EDGES.EVIDENCED_BY), ...(status === "collected" ? { strength: f.strength } : {}), context, ...base };
+  const context = JSON.stringify({ ...(f.said_by ? { said_by: f.said_by } : {}), ...(f.message ? { message: f.message } : {}), ...(f.run ? { run: f.run } : {}) });
+  const rel = { ref_id: randomUUID(), edge_key: edgeKeyFor(CLAIM_EDGES.EVIDENCED_BY), strength: f.strength, context, ...base };
   await tx.run(
     `MATCH (c:Node {node_type: '${CLAIM_TYPE}'}), (e:Node {node_type: '${EVIDENCE_TYPE}'}) WHERE c.id = $claim AND e.id = $eid
      CREATE (c)-[:${q(CLAIM_EDGES.EVIDENCED_BY)} {${fields(rel, p, "r")}}]->(e)`,
@@ -105,29 +93,17 @@ async function writeEvidence(tx: GraphTx, claim: string, id: string, f: FactEvid
 }
 
 /**
- * The fact's claim (made the first time) and this piece of evidence, on the
- * caller's transaction; an open question on the claim is closed by it. The
- * same piece again (the same message or run from the same sayer, or the
- * same check on the same day) writes nothing. Returns whether it wrote.
+ * The fact's claim (made the first time) and this mention's evidence, on the
+ * caller's transaction. The same mention again (the same message or run,
+ * from the same sayer) writes nothing. Returns whether it wrote.
  */
 export async function recordFactEvidence(tx: GraphTx, f: FactEvidence): Promise<boolean> {
   const claim = factClaimId(f.subject, f.edge, f.target);
-  const where = f.check ? `check:${f.check}:${Math.floor(f.observed_at / 86_400_000)}` : (f.message ?? f.run ?? `at:${f.observed_at}`);
+  const where = f.message ?? f.run ?? `at:${f.observed_at}`;
   const id = hash(`${claim}|${where}|${f.said_by ?? ""}|${Math.sign(f.strength)}`);
   if ((await tx.run(`MATCH (e:Node {node_type: '${EVIDENCE_TYPE}'}) WHERE e.id = $id RETURN e.ref_id AS r LIMIT 1`, { id })).length) return false;
   await ensureClaim(tx, claim, f);
-  await closeSlots(tx, claim);
-  await writeEvidence(tx, claim, id, f, "collected");
-  return true;
-}
-
-/** An open question on the fact's claim (an `ask`), unless one is open already. Returns whether it opened one. */
-export async function openFactQuestion(tx: GraphTx, f: Omit<FactEvidence, "strength">): Promise<boolean> {
-  const claim = factClaimId(f.subject, f.edge, f.target);
-  const open = await tx.run(`${claimRow(claim)} MATCH (c)-[:${q(CLAIM_EDGES.EVIDENCED_BY)}]->(e:Node) WHERE e.evidence_status = 'planned' RETURN e.id AS id LIMIT 1`, { claim });
-  if (open.length) return false;
-  await ensureClaim(tx, claim, f);
-  await writeEvidence(tx, claim, hash(`${claim}|ask|${f.observed_at}`), { ...f, strength: 0 }, "planned");
+  await writeEvidence(tx, claim, id, f);
   return true;
 }
 
@@ -137,25 +113,17 @@ export async function clearFactEvidence(tx: GraphTx, subject: string, edge: stri
   await tx.run(`${claimRow(claim)} MATCH (c)-[:${q(CLAIM_EDGES.EVIDENCED_BY)}]->(e:Node {node_type: '${EVIDENCE_TYPE}'}) DETACH DELETE e`, { claim });
 }
 
-/** Each claim's collected evidence (by claim id), and the claims with an open question, for the trust read. */
-export async function factEvidence(
-  run: (cypher: string, params?: Params) => Promise<Array<Record<string, unknown>>>,
-  claims: string[],
-): Promise<{ evidence: Map<string, EvidenceIn[]>; open: Set<string> }> {
+/** Each claim's live evidence (by claim id), for the trust read. */
+export async function factEvidence(run: (cypher: string, params?: Params) => Promise<Array<Record<string, unknown>>>, claims: string[]): Promise<Map<string, EvidenceIn[]>> {
   const out = new Map<string, EvidenceIn[]>();
-  const open = new Set<string>();
-  if (!claims.length) return { evidence: out, open };
+  if (!claims.length) return out;
   const rows = await run(
     `UNWIND $ids AS id MATCH (c:Node {node_type: '${CLAIM_TYPE}'})-[r:${q(CLAIM_EDGES.EVIDENCED_BY)}]->(e:Node {node_type: '${EVIDENCE_TYPE}'})
      WHERE c.id = id AND c.deleted_at IS NULL AND e.deleted_at IS NULL
-     RETURN id AS claim, e.id AS id, e.observed_at AS at, e.created_at AS made, e.evidence_status AS status, r.strength AS strength, r.context AS context`,
+     RETURN id AS claim, e.id AS id, e.observed_at AS at, e.created_at AS made, r.strength AS strength, r.context AS context`,
     { ids: claims },
   );
   for (const r of rows) {
-    if (r["status"] === "planned") {
-      open.add(String(r["claim"]));
-      continue;
-    }
     let context: Record<string, unknown> = {};
     try {
       context = JSON.parse(String(r["context"] ?? "{}")) as Record<string, unknown>;
@@ -167,11 +135,10 @@ export async function factEvidence(
     list.push({
       id: String(r["id"]),
       ...(typeof context["said_by"] === "string" ? { said_by: context["said_by"] } : {}),
-      ...(typeof context["check"] === "string" ? { check: context["check"] } : {}),
       observed_at: at,
       strength: Number(r["strength"] ?? 0),
     });
     out.set(String(r["claim"]), list);
   }
-  return { evidence: out, open };
+  return out;
 }

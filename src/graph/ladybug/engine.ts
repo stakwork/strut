@@ -684,7 +684,7 @@ export class LadybugSchemas implements SchemaSource {
   async setEdgeAliases(edge: string, aliases: string[], tx?: GraphTx): Promise<void> {
     await this.write(tx, (run) => ontology.setEdgeAliases(run, edge, aliases));
   }
-  async setEdgeRule(edge: string, rule: { temporal?: boolean; cardinality?: string; volatility?: string; expects?: string }, tx?: GraphTx): Promise<void> {
+  async setEdgeRule(edge: string, rule: { temporal?: boolean; cardinality?: string; volatility?: string }, tx?: GraphTx): Promise<void> {
     await this.write(tx, (run) => ontology.setEdgeRule(run, edge, rule));
   }
   async stampMigration(id: string): Promise<void> {

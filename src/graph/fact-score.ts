@@ -18,10 +18,9 @@
  *     less stays in the running;
  *   - a message read again: an edge whose only messages already backed an
  *     ended edge to the same value is not new evidence;
- *   - an expectation (its type's `expects`, plans/memory-truth-layer.md)
- *     whose newest check found the expected activity missing: stale, ask.
  *
- * A check's observed evidence counts like a sayer of its own kind, `check`.
+ * Checks that look for the evidence a fact should keep producing come next
+ * (plans/memory-checks.md); this rule reads what people said.
  *
  * From those, `status` (what the evidence says) and `stance` (what to do
  * with it): `state` it, `cite` its source, or `ask` before using it. Pure:
@@ -37,43 +36,9 @@ export const isVolatility = (v: unknown): v is Volatility => typeof v === "strin
  *  `stable`. */
 export const HALF_LIFE_DAYS: Readonly<Record<Volatility, number>> = { static: Infinity, stable: 3 * 365, evolving: 365, volatile: 60 };
 
-/**
- * What evidence a type's facts should keep producing while they hold, and
- * the check that looks for it (plans/memory-truth-layer.md, "Expectations"):
- * a strut step, given the fact, run every `every_days` over the last
- * `window_days` by `memory/verify` (`memory-verify.ts`).
- */
-export interface Expectation {
-  /** The check: a registry step type. */
-  step: string;
-  every_days: number;
-  window_days?: number;
-  /** Extra config the step is run with. */
-  config?: Record<string, unknown>;
-}
-
-/** An expectation as stored (JSON) or given, checked; null when it is not one. */
-export function expectationOf(v: unknown): Expectation | null {
-  let o: unknown = v;
-  if (typeof v === "string") {
-    try {
-      o = JSON.parse(v);
-    } catch {
-      return null;
-    }
-  }
-  if (!o || typeof o !== "object") return null;
-  const x = o as Record<string, unknown>;
-  if (typeof x["step"] !== "string" || !x["step"] || typeof x["every_days"] !== "number" || !(x["every_days"] > 0)) return null;
-  if (x["window_days"] !== undefined && !(typeof x["window_days"] === "number" && x["window_days"] > 0)) return null;
-  if (x["config"] !== undefined && (typeof x["config"] !== "object" || x["config"] === null || Array.isArray(x["config"]))) return null;
-  return { step: x["step"], every_days: x["every_days"], ...(typeof x["window_days"] === "number" ? { window_days: x["window_days"] } : {}), ...(x["config"] ? { config: x["config"] as Record<string, unknown> } : {}) };
-}
-
-export type SayerKind = "owner" | "self" | "other" | "check";
-/** How far one sayer of each kind is believed. Fixed, not learned. A check
- *  that found the expected activity is as good as the subject's own word. */
-export const TRUST: Readonly<Record<SayerKind, number>> = { owner: 0.95, self: 0.9, other: 0.7, check: 0.9 };
+export type SayerKind = "owner" | "self" | "other";
+/** How far one sayer of each kind is believed. Fixed, not learned. */
+export const TRUST: Readonly<Record<SayerKind, number>> = { owner: 0.95, self: 0.9, other: 0.7 };
 /** How much each sayer after the first adds (under 1: sayers are not fully independent). */
 const GAMMA = 0.5;
 /** Days of no decay after a mention, and the floor currency stops at. */
@@ -98,11 +63,8 @@ export interface EvidenceIn {
   said_by?: string;
   /** Epoch ms. */
   observed_at: number;
-  /** Above 0 backs it, below 0 says it is false (or, from a check, that
-   *  the expected activity is missing). */
+  /** Above 0 backs it, below 0 says it is false. */
   strength: number;
-  /** The check step that observed it; absent for something someone said. */
-  check?: string;
 }
 
 /** An edge of a slot, as the graph holds it (epoch ms). */
@@ -138,8 +100,6 @@ export interface SlotInput {
   /** `cardinality: one`: one value at a time, so values compete. */
   one: boolean;
   volatility?: Volatility;
-  /** Claims with an open question (an `ask` check's planned slot), by edge ref_id. */
-  open?: ReadonlySet<string>;
   /** The Persons among the sources and evidence (ref_id → person). */
   people: ReadonlyMap<string, Person>;
   /** The user, when the graph has one: who said a fact no Person backs. */
@@ -165,8 +125,6 @@ export interface FactTrust {
   rival?: { ref_id: string; target_ref_id: string; belief: number };
   /** It begins later than now. */
   planned?: true;
-  /** A question about it is open, waiting on the user: do not ask it again. */
-  open_check?: true;
 }
 
 const logit = (p: number) => Math.log(p / (1 - p));
@@ -179,14 +137,11 @@ const sayerOf = (ref_id: string | undefined, s: Pick<SlotInput, "subject" | "peo
   return { ref_id, ...(p.name ? { name: p.name } : {}), kind: p.owner ? "owner" : ref_id === s.subject ? "self" : "other" };
 };
 
-/** Who or what observed one piece of evidence. */
-const sourceOf = (x: EvidenceIn, s: Pick<SlotInput, "subject" | "people" | "user">): Sayer => (x.check ? { name: x.check, kind: "check" } : sayerOf(x.said_by, s));
-
-/** Who backed an edge: each source of its supporting evidence once (a check
- *  by its step), or each Person among its sources; none, the user. */
+/** Who backed an edge: each sayer of its supporting evidence once, or each
+ *  Person among its sources; none, the user. */
 export function sayersOf(e: SlotEdge, s: Pick<SlotInput, "subject" | "people" | "user">): Sayer[] {
   const who = e.evidence
-    ? e.evidence.filter((x) => x.strength > 0).map((x) => sourceOf(x, s))
+    ? e.evidence.filter((x) => x.strength > 0).map((x) => sayerOf(x.said_by, s))
     : e.sources.filter((x) => s.people.has(x)).map((x) => sayerOf(x, s));
   if (!who.length) return [sayerOf(undefined, s)];
   return [...new Map(who.map((w) => [`${w.kind}|${w.ref_id ?? w.name ?? ""}`, w])).values()];
@@ -223,11 +178,8 @@ function newestOf(xs: EvidenceIn[] | undefined): EvidenceIn[] {
 
 /** The newest word on it is the user saying it is false; at the same time as support, the refutation wins. */
 function refutedBy(e: SlotEdge, s: Pick<SlotInput, "subject" | "people" | "user">): boolean {
-  return newestOf(e.evidence?.filter((x) => !x.check)).some((x) => x.strength < 0 && sayerOf(x.said_by, s).kind === "owner");
+  return newestOf(e.evidence).some((x) => x.strength < 0 && sayerOf(x.said_by, s).kind === "owner");
 }
-
-/** Its newest check found the expected activity missing. */
-const quietBy = (e: SlotEdge) => newestOf(e.evidence?.filter((x) => x.check)).some((x) => x.strength < 0);
 
 /** The sources that are messages (not a Person, not a run). */
 const messagesOf = (e: SlotEdge, people: ReadonlyMap<string, Person>) => e.sources.filter((x) => !people.has(x) && !x.startsWith("run:"));
@@ -250,7 +202,6 @@ export function scoreSlot(s: SlotInput): Map<string, FactTrust> {
     s.edges.map((e) => [e.ref_id, refuted.get(e.ref_id) || rereadOnly(e, s.edges, s.people) ? 0 : combine(sayers.get(e.ref_id)!.map((x) => x.kind))]),
   );
   const currency = new Map(s.edges.map((e) => [e.ref_id, currencyOf(e, s.volatility, s.now)]));
-  const quiet = new Map(s.edges.map((e) => [e.ref_id, quietBy(e)]));
   const score = (e: SlotEdge) => belief.get(e.ref_id)! * currency.get(e.ref_id)!;
 
   // The values in the running on a one-value slot: the current edges, and an
@@ -285,7 +236,7 @@ export function scoreSlot(s: SlotInput): Map<string, FactTrust> {
         ? "unknown"
         : behind || contested
           ? "disputed"
-          : cur < STALE_BELOW || quiet.get(e.ref_id)
+          : cur < STALE_BELOW
             ? "stale"
             : who.every((x) => x.kind === "other")
               ? "hearsay"
@@ -293,9 +244,9 @@ export function scoreSlot(s: SlotInput): Map<string, FactTrust> {
                 ? "unknown"
                 : "supported";
     const current = e.expired_at === null;
-    const stance = !current ? undefined : status === "stale" && (cur < ASK_BELOW || quiet.get(e.ref_id)) ? "ask" : STANCE[status];
+    const stance = !current ? undefined : status === "stale" && cur < ASK_BELOW ? "ask" : STANCE[status];
     const items = e.evidence
-      ? [...e.evidence].sort((a, b) => b.observed_at - a.observed_at).map((x) => ({ sayer: sourceOf(x, s), observed_at: x.observed_at, strength: x.strength }))
+      ? [...e.evidence].sort((a, b) => b.observed_at - a.observed_at).map((x) => ({ sayer: sayerOf(x.said_by, s), observed_at: x.observed_at, strength: x.strength }))
       : undefined;
     out.set(e.ref_id, {
       status,
@@ -305,7 +256,6 @@ export function scoreSlot(s: SlotInput): Map<string, FactTrust> {
       currency: round(cur),
       ...(rival && current && status === "disputed" ? { rival: { ref_id: rival.ref_id, target_ref_id: rival.target, belief: round(belief.get(rival.ref_id)!) } } : {}),
       ...(current && e.valid_at !== null && e.valid_at > s.now ? { planned: true as const } : {}),
-      ...(current && s.open?.has(e.ref_id) ? { open_check: true as const } : {}),
     });
   }
   return out;

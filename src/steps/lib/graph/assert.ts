@@ -35,15 +35,6 @@ const Fact = z.object({
   cardinality: z.enum(["one", "many"]).optional().describe("With create_schema_if_missing, for a new edge type: `one` when a subject holds one current value (where someone lives), `many` (default) when several hold at once."),
   aliases: z.array(z.string()).optional().describe("With create_schema_if_missing, for a new edge type: other words for it, which a search reads as naming it (WORKS_AT: job, employer)."),
   volatility: z.enum(VOLATILITIES).optional().describe("How fast this kind of fact changes: `static` never (a birthday), `stable` over years (where someone lives), `evolving` within a year or so (a diet), `volatile` within weeks (what someone is working on). Kept on the edge type the first time it is given; reads lower trust in a fact as it goes unconfirmed for longer than that."),
-  expects: z
-    .object({
-      step: z.string().describe("The check: a step type that looks for the evidence (e.g. activity at an organisation)."),
-      every_days: z.number().positive().describe("How often to run it."),
-      window_days: z.number().positive().optional().describe("How far back it looks."),
-      config: z.record(z.string(), z.any()).optional().describe("Extra config for the step."),
-    })
-    .optional()
-    .describe("The evidence this kind of fact should keep producing while it holds, and the check that looks for it (memory/verify runs it). Kept on the edge type the first time it is given. Rarely needed: only with a check step that exists."),
 });
 type FactT = z.infer<typeof Fact>;
 
@@ -57,7 +48,7 @@ const sideOf = (f: FactT, side: "source" | "target"): string | null => {
 };
 
 /** One fact's edge schema: made temporal when asked and missing, and a
- *  `volatility` or `expects` the type does not have yet kept on it. Before
+ *  `volatility` the type does not have yet kept on it. Before
  *  the transaction: a rel table is DDL. A plain edge type stays plain. */
 async function ensureTemporal(b: GraphBackend, f: FactT, edge: string, types: [string, string]): Promise<void> {
   const { edgeRule } = await import("../../../graph/ladybug/ontology.js");
@@ -68,7 +59,7 @@ async function ensureTemporal(b: GraphBackend, f: FactT, edge: string, types: [s
   const held = await edgeRule((c, p) => query(c, p), edge);
   if (held && held["temporal"] !== true) throw new Error(`${edge} is a plain edge type; a fact needs a temporal one: pick another edge type`);
   const rule = held ? edgeRuleOf(held) : undefined;
-  const fill = { ...(f.volatility && !rule?.volatility ? { volatility: f.volatility } : {}), ...(f.expects && !rule?.expects ? { expects: f.expects } : {}) };
+  const fill = { ...(f.volatility && !rule?.volatility ? { volatility: f.volatility } : {}) };
   const exists = await b.schemas.edgeSchema(edge, ...types);
   if (exists && !Object.keys(fill).length) return;
   if (!exists && !f.create_schema_if_missing) return;
@@ -119,7 +110,7 @@ export default defineStep({
       };
       // On Neo4j assertEdge refuses before reading anything: let it, before a node is made.
       if (b.kind !== "ladybug") await assertEdge(b, b.schemas, { edge: edgeOf(facts[0]!), source_ref_id: "", target_ref_id: "", text: "" });
-      for (const f of facts) if (f.create_schema_if_missing || f.volatility || f.expects) await ensureTemporal(b, f, edgeOf(f), [await typeOf(f, "source"), await typeOf(f, "target")]);
+      for (const f of facts) if (f.create_schema_if_missing || f.volatility) await ensureTemporal(b, f, edgeOf(f), [await typeOf(f, "source"), await typeOf(f, "target")]);
 
       // One transaction: the new nodes (each distinct one once) and every
       // fact. A lone fact between known nodes runs as its own, embedded first.

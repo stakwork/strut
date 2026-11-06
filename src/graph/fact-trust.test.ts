@@ -1,7 +1,7 @@
 /**
  * Fact trust on a Ladybug file, through the steps the model calls:
- * `graph/assert` keeps an edge type's `volatility` and `expects` the first
- * time they are given and never overwrites them; `graph/graph-search` (with
+ * `graph/assert` keeps an edge type's `volatility` the first time it is
+ * given and never overwrites them; `graph/graph-search` (with
  * facts) and `graph/graph-neighbors` return each fact's evidence, status,
  * stance, belief and currency, worked out on read and never stored. Each
  * assert records the mention as evidence on the fact's claim, once; ending a
@@ -51,7 +51,7 @@ describe("fact trust on a ladybug file", { skip: lb.skip }, () => {
     source_ref_id: kate, edge_type: "LIVES_IN", target_ref_id: target, text: "Kate lives there", create_schema_if_missing: true, cardinality: "one", ...extra,
   });
 
-  it("volatility and expects are kept the first time they are given, and never overwritten", async () => {
+  it("volatility is kept the first time it is given, and never overwritten", async () => {
     await run(assertStep, lives(lisbon, { said_by: kate }), b);
     assert.equal((await rule("LIVES_IN"))?.["volatility"], undefined, "none given: unset, read as stable");
     await run(assertStep, lives(lisbon, { volatility: "stable", create_schema_if_missing: false }), b);
@@ -59,11 +59,6 @@ describe("fact trust on a ladybug file", { skip: lb.skip }, () => {
     await run(assertStep, lives(lisbon, { volatility: "volatile" }), b);
     assert.equal((await rule("LIVES_IN"))?.["volatility"], "stable", "never overwritten");
     assert.equal((await rule("LIVES_IN"))?.["cardinality"], "one", "the rest of the rule kept");
-    const expects = { step: "hive/activity", every_days: 7, window_days: 30 };
-    await run(assertStep, { source_ref_id: tom, edge_type: "works at", target_ref_id: gym, text: "Tom works at PureGym", create_schema_if_missing: true, cardinality: "one", expects }, b);
-    assert.deepEqual(JSON.parse(String((await rule("WORKS_AT"))?.["expects"])), expects);
-    await run(assertStep, { source_ref_id: tom, edge_type: "WORKS_AT", target_ref_id: gym, text: "Tom works at PureGym", expects: { step: "other/check", every_days: 1 } }, b);
-    assert.equal(JSON.parse(String((await rule("WORKS_AT"))?.["expects"])).step, "hive/activity", "never overwritten");
     await assert.rejects(async () => run(assertStep, lives(lisbon, { volatility: "sometimes" }), b), /volatility/);
   });
 

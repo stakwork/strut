@@ -34,7 +34,7 @@
 import { randomUUID } from "node:crypto";
 import type { EdgeSchemaWalk, EngineLike, GraphEngine, GraphTx } from "./engine.js";
 import { asEngine } from "./neo4j-engine.js";
-import { VOLATILITIES, expectationOf, isVolatility, type Expectation, type Volatility } from "./fact-score.js";
+import { VOLATILITIES, isVolatility, type Volatility } from "./fact-score.js";
 import { GraphValidationError } from "./node-writer.js";
 import {
   GENERIC_NODE_PROPERTIES,
@@ -90,14 +90,6 @@ export interface EdgeRule {
   cardinality?: "one" | "many";
   /** How fast the type's facts change (`fact-score.ts`); unset reads as `stable`. A Ladybug file only. */
   volatility?: Volatility;
-  /** The evidence its facts should keep producing, and the check that looks for it (`fact-score.ts`). A Ladybug file only. */
-  expects?: Expectation;
-}
-
-/** A rule as an engine stores it: `expects` as JSON. */
-export function ruleRow(rule: EdgeRule): { temporal?: boolean; cardinality?: string; volatility?: string; expects?: string } {
-  const { expects, ...rest } = rule;
-  return { ...rest, ...(expects ? { expects: JSON.stringify(expects) } : {}) };
 }
 
 /** The rule an edge rule's properties carry. */
@@ -106,8 +98,6 @@ export function edgeRuleOf(props: Record<string, unknown>): EdgeRule {
   if (typeof props["temporal"] === "boolean") out.temporal = props["temporal"];
   if (props["cardinality"] === "one" || props["cardinality"] === "many") out.cardinality = props["cardinality"];
   if (isVolatility(props["volatility"])) out.volatility = props["volatility"];
-  const expects = expectationOf(props["expects"]);
-  if (expects) out.expects = expects;
   return out;
 }
 
@@ -386,10 +376,10 @@ export class SchemaResolver {
       const held = edgeRuleOf((await this.source.edgeRule(edgeType, tx)) ?? {});
       const effective = wanted ?? held;
       const ref_id = randomUUID();
-      const r = await this.source.ensureEdgeSchema(sourceType, edgeType, targetType, { ref_id, ...ruleRow(effective) }, tx);
+      const r = await this.source.ensureEdgeSchema(sourceType, edgeType, targetType, { ref_id, ...effective }, tx);
       if (wanted && JSON.stringify(wanted) !== JSON.stringify(held)) {
         if (wanted.cardinality === "one" && held.cardinality !== "one") await this.refuseCrowdedSlots(tx, edgeType);
-        await this.source.setEdgeRule(edgeType, ruleRow(wanted), tx);
+        await this.source.setEdgeRule(edgeType, wanted, tx);
       }
       // The type's aliases, added to: a new rule of the type holds them too.
       if (this.source.setEdgeAliases && this.source.edgeAliases) {
@@ -415,17 +405,14 @@ export class SchemaResolver {
   }
 }
 
-const RULE_KEYS = ["temporal", "cardinality", "volatility", "expects"];
+const RULE_KEYS = ["temporal", "cardinality", "volatility"];
 
 /** A caller's edge rule, checked: `temporal` (boolean), `cardinality`
- *  (`one` | `many`), `volatility` (`VOLATILITIES`) and `expects` (an `Expectation`). */
+ *  (`one` | `many`) and `volatility` (`VOLATILITIES`). */
 export function checkEdgeRule(edge: string, rule: EdgeRule): EdgeRule {
   const raw = rule as Record<string, unknown>;
   for (const k of Object.keys(raw)) if (!RULE_KEYS.includes(k)) throw new GraphValidationError("UNKNOWN_ATTRIBUTE", edge, `an edge rule has ${RULE_KEYS.join(", ")} only`, k);
   if (raw["volatility"] !== undefined && !isVolatility(raw["volatility"])) throw new GraphValidationError("WRONG_TYPE", edge, `volatility is one of ${VOLATILITIES.join(", ")}`, "volatility");
-  if (raw["expects"] !== undefined && !expectationOf(raw["expects"])) {
-    throw new GraphValidationError("WRONG_TYPE", edge, "expects is { step, every_days, window_days?, config? }: a check step and how often to run it", "expects");
-  }
   if (raw["temporal"] !== undefined && typeof raw["temporal"] !== "boolean") throw new GraphValidationError("WRONG_TYPE", edge, "temporal is true or false", "temporal");
   if (raw["cardinality"] !== undefined && raw["cardinality"] !== "one" && raw["cardinality"] !== "many") throw new GraphValidationError("WRONG_TYPE", edge, 'cardinality is "one" or "many"', "cardinality");
   return edgeRuleOf(raw);
