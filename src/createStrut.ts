@@ -32,9 +32,9 @@ import { parseStepRef } from "./step-ref.js";
 import { zodToFields } from "./ai/schemaHelpers.js";
 import { resolveModel, listModelOptions, defaultModel, createWebTools, type LlmAuth } from "./llm.js";
 import type { StepSources } from "./steps/registry.js";
-import { runWorkflow } from "./runner.js";
+import { runWorkflow, settleUnfinishedRun, summaryFromLog } from "./runner.js";
 import { RunController } from "./run-control.js";
-import { buildJournal, invalidateFrom, readRunStart } from "./journal.js";
+import { buildJournal, changedSteps, invalidateFrom, invalidateSteps, readRunStart } from "./journal.js";
 import { appIdentity, publicAppIdentity, publicAppOfIdentity, carriesApiKey, carriesPeerKey, carriesFileToken, carriesBadFileToken, catalogToken, catalogTokenOf, CATALOG_TOKEN_DAYS, publicPackageRead, fileToken, warnIfUnconfigured, channelTicket, channelTicketOf, actorFromHeader, inProcessOf, inProcessRequest, scopeFromKey, isPeerScope, personOf, personToken, PERSON_TOKEN_DAYS, unauthorized, issueSession, redeemSignInTicket, signInTicket, sessionCookie, sessionOf, isSecureRequest, type Scope } from "./auth.js";
 import { standardServices, fileArtifactsCapability } from "./capabilities.js";
 import type { ArtifactsCapability, SecretsCapability } from "./capabilities.js";
@@ -134,6 +134,7 @@ import { STATUS_CODES, type IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { bootEnv } from "./env.js";
 import { fmtBytes, positiveBytes } from "./output-cap.js";
+import { installEscapeGuard } from "./escaped-errors.js";
 import { lintStepSource } from "./step-lint.js";
 // Static import is safe: notifier depends only on chat-store, never the AI
 // SDK (which stays lazy-loaded inside launchChatTurn).
@@ -361,6 +362,16 @@ export interface StrutOptions<TServices = unknown> {
    *  log replayed at every boot crashed the process each time). Default
    *  `STRUT_RESUME_MAX_LOG_BYTES` or 64 MB. */
   resumeMaxLogBytes?: number;
+
+  /** Listen for uncaught exceptions and unhandled rejections in this
+   *  process (src/escaped-errors.ts): an error a step lets escape — thrown in
+   *  a callback, or from a promise it never awaits — fails that step instead
+   *  of ending the process, and one no step owns is logged. Without it Node
+   *  exits, every run in flight is cut off, and boot's auto-resume replays
+   *  the run into the same crash. Default on; `false` for a host that keeps
+   *  its own handlers and wants nothing added (an escaped error then ends
+   *  the process as before, unless the host's handler says otherwise). */
+  escapeGuard?: boolean;
 
   /** The automations tick loop (plans/automations.md §6): fires scheduled
    *  workflows from inside this process. Defaults to ON unless
@@ -819,6 +830,7 @@ function parsePromoteTarget(to: string): { workflow: string; param: string } | n
 export async function createStrut<TServices = unknown>(
   opts: StrutOptions<TServices> = {},
 ): Promise<Strut<TServices>> {
+  if (opts.escapeGuard !== false) installEscapeGuard();
   const workspace: WorkspaceStore = opts.workspace ?? new FileWorkspaceStore();
   // The ONE graph backend everything here reads: the host's, else the
   // workspace's own (Neo4j or a LadybugDB file). The claims gate below is
@@ -1567,6 +1579,8 @@ export async function createStrut<TServices = unknown>(
       },
       ...(secretsInjected ? {} : { secrets: secretStore }),
       ...(reach ? { reach } : {}),
+      // Defined further down; called only once a run is going.
+      resumeRun: (name, runId, body) => resumeRun(name, runId, body),
     });
   }
 
@@ -2031,6 +2045,9 @@ export async function createStrut<TServices = unknown>(
     runId: string;
     flow: Flow;
     version?: string;
+    /** Top-level steps that re-run because the resume moved the run onto
+     *  another version and they changed (`changedSteps`). */
+    changed?: string[];
     journal: Record<string, unknown>;
     runStart: NonNullable<ReturnType<typeof readRunStart>>;
     events: RunEvent[];
@@ -2060,7 +2077,7 @@ export async function createStrut<TServices = unknown>(
   const prepareDurableResume = async (
     name: string,
     runId: string,
-    body: { from?: string; force?: boolean },
+    body: { from?: string; force?: boolean; version?: string },
   ): Promise<PreparedResume | ResumeRefusal> => {
     // Crash hardening (§5.1): a kill mid-append leaves a torn final line.
     // Heal it BEFORE reading, or the resumed run's first append would be
@@ -2088,13 +2105,45 @@ export async function createStrut<TServices = unknown>(
     const disabled = await workflowDisabled(workspace, name);
     if (disabled) return { ok: false, status: 409, error: disabled };
 
+    let changed: string[] | undefined;
+    let journal = buildJournal(events);
+    if (body.version !== undefined) {
+      // §5.4: onto ANOTHER version — "active" or a label — so a fix to the
+      // workflow reaches a run that failed. The two versions are compared
+      // step by step: what changed re-runs with everything downstream of
+      // it, the rest replays.
+      const meta = await workspace.getWorkflowMetadata(name);
+      const label = body.version === "active" ? meta?.active : body.version;
+      if (!label || !meta?.versions[label]) {
+        return { ok: false, status: 404, error: `Workflow "${name}" has no version "${body.version}"` };
+      }
+      const target = await workspace.getWorkflowVersion(name, label);
+      const targetHash = await workspace.getWorkflowHash(name, label);
+      const ran = runStart.workflowHash ? await findWorkflowVersionByHash(name, runStart.workflowHash) : null;
+      if (ran && targetHash !== runStart.workflowHash) {
+        changed = changedSteps(await workspace.getWorkflowVersion(name, ran), target);
+        journal = invalidateSteps(journal, changed, target).journal;
+      } else if (!ran && targetHash !== runStart.workflowHash && !body.force) {
+        return {
+          ok: false,
+          status: 409,
+          error:
+            `The version this run executed is no longer on record, so which of its steps changed in ${label} ` +
+            `cannot be told — pass { force: true } to replay its journal into ${label} as it is, or { from } to ` +
+            `re-run from a step.`,
+        };
+      }
+      flow = target;
+      version = label;
+    }
     // Validity guard (§5): replaying outputs into a DIFFERENT DAG is
     // undefined. When the active version's hash differs from the one
-    // recorded at run.start, resume against the version the run actually
-    // executed if it is still on record (a run of a pinned or since-
-    // superseded version must not dead-end on "content changed"); refuse
-    // only when no stored version matches, unless forced.
-    const currentHash = await workspace.getWorkflowHash(name);
+    // the run executed, resume against that version if it is still on
+    // record (a run of a pinned or since-superseded version must not
+    // dead-end on "content changed"); refuse only when no stored version
+    // matches, unless forced. A resume that names a `version` (above)
+    // decided already.
+    const currentHash = body.version !== undefined ? undefined : await workspace.getWorkflowHash(name);
     if (runStart.workflowHash && currentHash && runStart.workflowHash !== currentHash) {
       const pinned = await findWorkflowVersionByHash(name, runStart.workflowHash);
       if (pinned) {
@@ -2117,7 +2166,6 @@ export async function createStrut<TServices = unknown>(
       );
     }
 
-    let journal = buildJournal(events);
     if (body.from) {
       try {
         const inv = await invalidateFrom(journal, body.from, flow, workspace);
@@ -2137,6 +2185,7 @@ export async function createStrut<TServices = unknown>(
       runId,
       flow,
       version,
+      ...(changed ? { changed } : {}),
       journal,
       runStart,
       events,
@@ -2162,6 +2211,7 @@ export async function createStrut<TServices = unknown>(
         journal: p.journal,
         resume: true,
         ...(p.version ? { version: p.version } : {}),
+        ...(p.changed ? { resumeChanged: p.changed } : {}),
         ...(p.runStart.automation ? { origin: "schedule" as const, automation: p.runStart.automation } : {}),
         ...(p.runStart.origin === "peer" ? { origin: "peer" as const } : {}),
         ...(p.runStart.origin === "peer" && p.runStart.peerPerson ? { peerPerson: true } : {}),
@@ -2202,34 +2252,9 @@ export async function createStrut<TServices = unknown>(
     if (status === "cancelled" && last.type !== "run.cancelled") {
       await store.append(name, runId, { ts: new Date().toISOString(), runId, path: name, type: "run.cancelled" });
     }
-    const startedAt = start?.ts ?? events[0]!.ts;
-    const finishedAt = last.type === "run.end" || last.type === "run.error" || last.type === "run.cancelled"
-      ? last.ts
-      : new Date().toISOString();
-    const durationMs = Math.max(0, Date.parse(finishedAt) - Date.parse(startedAt));
-    const output = status === "success" ? last.output : undefined;
-    const error = status === "error" ? last.error : undefined;
-    await store.finalize(name, runId, {
-      runId,
-      workflow: name,
-      startedAt,
-      finishedAt,
-      durationMs,
-      status,
-      input: start?.input,
-      ...(output !== undefined ? { output } : {}),
-      ...(error ? { error } : {}),
-      // The stamps the runner's own summary carries, from `run.start`: the
-      // scheduler's cursor, the job index and the run lists read them.
-      ...(start?.automation ? { automation: start.automation } : {}),
-      ...(start?.actor ? { actor: start.actor } : {}),
-      ...(start?.principal ? { principal: start.principal } : {}),
-      ...(start?.job ? { job: start.job } : {}),
-      ...(start?.origin ? { origin: start.origin } : {}),
-      ...(start?.app ? { app: start.app } : {}),
-      ...(start?.workflowHash ? { workflowHash: start.workflowHash } : {}),
-      stepCounts: countSteps(events),
-    });
+    const summary = summaryFromLog(name, runId, events, status);
+    const { output, error, durationMs } = summary;
+    await store.finalize(name, runId, summary);
     const url = await store.getRunCallback(name, runId);
     // A job turn's end the dead process never woke on wakes now; a wake
     // turn's is the boot reconcile's (src/wake.ts).
@@ -2461,75 +2486,109 @@ export async function createStrut<TServices = unknown>(
     return c.json(body, status);
   });
 
-  app.post("/workflows/:name/runs/:runId/resume", async (c) => {
-    const { name, runId } = c.req.param();
-    const body = await c.req
-      .json<{ from?: string; force?: boolean }>()
-      .catch(() => ({}) as { from?: string; force?: boolean });
+  type ResumeBody = { from?: string; force?: boolean; version?: string };
+  type ResumeOutcome =
+    | { ok: true; runId: string; resumed: "in-memory"; state: string; status: 202 }
+    | { ok: true; runId: string; resumed: "journal"; replaying: number; version?: string; changed?: string[]; status: 202 }
+    | { ok: false; error: string; status: 400 | 403 | 404 | 409 | 413 | 503 };
 
+  /** Resume a run — the shared core of `POST …/resume`, the builder chat's
+   *  `resume_run` and `meta/resume-run`. A LIVE run is unpaused (§4); a dead
+   *  one (stale, error, cancelled — or a success, with `from`) is durably
+   *  resumed under its own id (§5): its journal replays and the rest runs,
+   *  on the version it executed or, with `version`, on another one with what
+   *  changed re-run (§5.4). `peer` = the caller is another strut; `admit`
+   *  may refuse a prepared resume before it launches. */
+  const resumeRun = async (
+    name: string,
+    runId: string,
+    body: ResumeBody,
+    opts: { peer?: boolean; admit?: (p: PreparedResume) => Promise<string | null> } = {},
+  ): Promise<ResumeOutcome> => {
+    if (body.version !== undefined && (typeof body.version !== "string" || !body.version)) {
+      return { ok: false, error: '`version` is "active" or a version label like "v5"', status: 400 };
+    }
     // A durable resume reads the whole log (findRun does too): refuse one
     // past the cap before anything reads it. A live run is in memory already.
     if (!controllers.has(`${name}/${runId}`)) {
       // A durable resume starts the run again: nothing new while draining.
       // Unpausing a live run is its own work going on, and is let through.
-      const draining = drainingResponse(c);
-      if (draining) return draining;
+      const draining = drain.refusal();
+      if (draining) return { ok: false, error: draining, status: 503 };
       const big = await logTooBig(name, runId);
-      if (big) return c.json({ error: big }, 413);
+      if (big) return { ok: false, error: big, status: 413 };
     }
     const { controller, summary, exists, byPeer } = await findRun(name, runId);
-    if (exists && !byPeer && (await isPeer(c))) return c.json({ error: NOT_A_PEER_RUN }, 403);
+    if (exists && !byPeer && opts.peer) return { ok: false, error: NOT_A_PEER_RUN, status: 403 };
 
     // Live controller → in-memory resume of a paused run (§4).
     if (controller) {
-      if (body.from) {
-        return c.json(
-          { error: "Run is live — `from` applies to durable resume of a dead run. Pause/cancel it first." },
-          409,
-        );
+      if (body.from || body.version !== undefined) {
+        return {
+          ok: false,
+          error: "Run is live — `from` and `version` apply to durable resume of a dead run. Pause/cancel it first.",
+          status: 409,
+        };
       }
       controller.resume();
       await appendControlEvent(name, runId, "run.resumed");
-      return c.json({ ok: true, runId, state: controller.state, resumed: "in-memory" }, 202);
+      return { ok: true, runId, state: controller.state, resumed: "in-memory", status: 202 };
     }
 
     // No controller → durable resume: journal replay (§5).
-    if (!exists) return c.json({ error: `Run "${runId}" not found` }, 404);
+    if (!exists) return { ok: false, error: `Run "${runId}" not found`, status: 404 };
     if (summary?.status === "success" && !body.from) {
-      return c.json(
-        { error: "Run completed successfully — nothing to resume (pass `from` to force re-execution from a step)" },
-        400,
-      );
+      return {
+        ok: false,
+        error: "Run completed successfully — nothing to resume (pass `from` to force re-execution from a step)",
+        status: 400,
+      };
     }
 
     const prepared = await prepareDurableResume(name, runId, body);
-    if (!prepared.ok) return c.json({ error: prepared.error }, prepared.status);
-    // A forced resume runs the ACTIVE version when none matches the run's:
-    // a peer resumes only into one that is open to it. A run a person's
-    // credential launched opens that person's sessions, so only the same
-    // person's credential resumes it.
-    const scope = await scopeOf(c);
-    if (isPeerScope(scope)) {
-      if (!opensTo(prepared.flow.peer, scope)) return c.json({ error: notForPeers(name, prepared.flow.peer) }, 403);
-      if (prepared.runStart.peerPerson && (scope !== "peer:person" || (await resolveActor(c)) !== prepared.runStart.actor)) {
-        return c.json({ error: "forbidden: a person's credential launched this run — only the same person's resumes it" }, 403);
-      }
-    }
+    if (!prepared.ok) return prepared;
+    const refused = await opts.admit?.(prepared);
+    if (refused) return { ok: false, error: refused, status: 403 };
 
     // Re-check liveness after the awaits above: two concurrent resume
     // requests must not both launch onto the same log.
     if (controllers.has(`${name}/${runId}`)) {
-      return c.json({ error: "Resume already in flight for this run" }, 409);
+      return { ok: false, error: "Resume already in flight for this run", status: 409 };
     }
-    const { version, journal } = prepared;
+    const { version, journal, changed } = prepared;
     launchDurableResume(prepared);
-    return c.json({
+    return {
       ok: true,
       runId,
       resumed: "journal",
       replaying: Object.keys(journal).length,
       ...(version ? { version } : {}),
-    }, 202);
+      ...(changed ? { changed } : {}),
+      status: 202,
+    };
+  };
+
+  app.post("/workflows/:name/runs/:runId/resume", async (c) => {
+    const { name, runId } = c.req.param();
+    const body = await c.req.json<ResumeBody>().catch(() => ({}) as ResumeBody);
+    const scope = await scopeOf(c);
+    const { status, ...out } = await resumeRun(name, runId, body, {
+      peer: isPeerScope(scope),
+      // A forced resume runs the ACTIVE version when none matches the run's:
+      // a peer resumes only into one that is open to it. A run a person's
+      // credential launched opens that person's sessions, so only the same
+      // person's credential resumes it.
+      admit: async (prepared) => {
+        if (!isPeerScope(scope)) return null;
+        if (!opensTo(prepared.flow.peer, scope)) return notForPeers(name, prepared.flow.peer);
+        if (prepared.runStart.peerPerson && (scope !== "peer:person" || (await resolveActor(c)) !== prepared.runStart.actor)) {
+          return "forbidden: a person's credential launched this run — only the same person's resumes it";
+        }
+        return null;
+      },
+    });
+    // An error answers `{ error }` alone, as this route always has.
+    return c.json(out.ok ? out : { error: out.error }, status, status === 503 ? { "retry-after": "60" } : undefined);
   });
 
   // Resolve this workflow's declared `promotes` against a run's OUTPUT — the
@@ -5194,6 +5253,9 @@ export async function createStrut<TServices = unknown>(
       /** The conversation a person's turn continues (`continuesFor`,
        *  plans/jamie-app.md §2.2): opened as it is. */
       continues?: string;
+      /** A durable resume onto another version: the top-level steps that
+       *  re-run because they changed — recorded on `run.resumed`. */
+      resumeChanged?: string[];
     },
   ): string {
     const runId = body.runId ?? generateRunId();
@@ -5274,6 +5336,7 @@ export async function createStrut<TServices = unknown>(
         ...(stepHashes ? { stepHashes } : {}),
         ...(extra?.journal ? { journal: extra.journal } : {}),
         ...(extra?.resume ? { resume: true } : {}),
+        ...(extra?.resumeChanged ? { resumeChanged: extra.resumeChanged } : {}),
         ...(extra?.origin ? { origin: extra.origin } : {}),
         ...(extra?.origin === "peer" && extra.peerPerson ? { peerPerson: true } : {}),
         ...(extra?.continues ? { continues: extra.continues } : {}),
@@ -5298,10 +5361,14 @@ export async function createStrut<TServices = unknown>(
       .then(
         (res) => res,
         // runWorkflow finalizes its own errors into a resolved result; a
-        // rejection is an unexpected throw (e.g. a store write failure).
-        // Logged — and the host that asked still hears it, as an error.
-        (err): RunResult => {
+        // rejection is an unexpected throw (e.g. a store write failure), or
+        // a launch that failed before it ran. Logged, and the run's log gets
+        // the end it is missing (a resume that cleared its summary gets it
+        // back), so it never lists as stale — and the host that asked still
+        // hears it, as an error.
+        async (err): Promise<RunResult> => {
           console.error(`[run ${runId}] launch failed:`, err);
+          await settleUnfinishedRun(store, flow.name, runId, err);
           return { runId, status: "error", error: { message: err instanceof Error ? err.message : String(err) } };
         },
       )
@@ -6368,6 +6435,10 @@ export async function createStrut<TServices = unknown>(
     automations,
     // cancel_run / pause_run / resume_run over the live controllers.
     controlRun: controlRunForChat,
+    resumeRun: async (name: string, runId: string, body: { from?: string; version?: string }) => {
+      const { status: _status, ...out } = await resumeRun(name, runId, body);
+      return out;
+    },
     publishingEnabled: !registryWasInjected,
     getRegistry: async () => {
       if (registryWasInjected) return registry;

@@ -93,6 +93,7 @@ describe("authoring capability (the meta surface)", () => {
       "meta/list-runs",
       "meta/get-run",
       "meta/search-runs",
+      "meta/resume-run",
       "meta/list-secrets",
       // the claims surface (plans/claims.md §2)
       "meta/add-claim",
@@ -280,6 +281,30 @@ describe("authoring capability (the meta surface)", () => {
     assert.ok(invalid.error && /Invalid pattern/.test(invalid.error), invalid.error);
   });
 
+  it("resumeRun heals a failed run onto the fixed version; a run billed to someone else is theirs to resume", async () => {
+    const yaml = (cmd: string) => `name: heal-me\nsteps:\n  - id: ok\n    type: log\n    config:\n      message: "fine"\n  - id: work\n    type: exec\n    config:\n      cmd: "${cmd}"\n`;
+    await strut.workspace.createWorkflow("heal-me", yaml("false"));
+    const failed = await strut.run("heal-me", {});
+    assert.equal(failed.status, "error");
+    await strut.workspace.publishWorkflowByContent("heal-me", yaml("true"));
+
+    const r = (await authoring.resumeRun("heal-me", failed.runId, { version: "active" })) as any;
+    assert.equal(r.ok, true, JSON.stringify(r));
+    assert.deepEqual(r.changed, ["work"]);
+    assert.equal(r.replaying, 1, "`ok` replays");
+    const deadline = Date.now() + 10_000;
+    for (;;) {
+      const summary = await strut.store.getRunSummary("heal-me", failed.runId);
+      if (summary?.status === "success") break;
+      assert.ok(Date.now() < deadline, `never healed: ${JSON.stringify(summary)}`);
+      await new Promise((res) => setTimeout(res, 20));
+    }
+
+    const theirs = await strut.run("heal-me", {}, { actor: "alice" });
+    const refused = (await authoring.resumeRun("heal-me", theirs.runId, { from: "heal-me/work" }, { principal: "bob" })) as any;
+    assert.match(refused.error, /billed to alice/);
+  });
+
   it("sealed (EVOLVE_SPEC §6): a grading harness and a grader step are refused by name; a publish that reaches one is refused", async () => {
     // A seeded grading harness: `sealed: true` at the top of its YAML.
     await strut.workspace.createWorkflow("grader-flow", `name: grader-flow\nsealed: true\nsteps:\n  - id: say\n    type: log\n    config:\n      message: "gold"\n`);
@@ -294,6 +319,7 @@ describe("authoring capability (the meta surface)", () => {
       () => authoring.listRuns("grader-flow"),
       () => authoring.getRun("grader-flow", "whatever"),
       () => authoring.searchRuns("grader-flow", "gold"),
+      () => authoring.resumeRun("grader-flow", "whatever", {}),
     ]) {
       const r = (await call()) as any;
       assert.ok(r.error && /is sealed \(a grading harness/.test(r.error), JSON.stringify(r));

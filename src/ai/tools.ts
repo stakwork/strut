@@ -114,7 +114,31 @@ function cancelRunTool(controlRun: ControlRun, description: string) {
   });
 }
 
-function runControlTools(controlRun: ControlRun) {
+/** What resume_run says on a durable resume: the same words as the HTTP
+ *  route, run notification included. */
+export const RESUME_RUN_DESCRIPTION =
+  "Resume a run. A run you PAUSED continues where it parked. A run that FAILED, was cancelled, or was cut off by a restart is HEALED: it runs again under the same id, replaying every step that succeeded (no cost, no side effects) and running the rest. By default it runs on the workflow's ACTIVE version, so a fix you just published reaches it: steps that changed since the run started re-run, with everything downstream of them (the result lists them as `changed`). `version` picks another (\"v4\"), or \"run\" for the version the run started on. `from: \"<step path>\"` (a path from get_run, e.g. \"wf/result\") re-runs from that step even where it succeeded — also on a successful run. The run continues in the background; check it with get_run.";
+
+const resumeRunTool = (resume: NonNullable<AiDeps["resumeRun"]>) =>
+  tool({
+    description: RESUME_RUN_DESCRIPTION,
+    inputSchema: z.object({
+      name: z.string().describe("Workflow name"),
+      runId: z.string().describe("Run id (from run_workflow's response or list_runs)"),
+      from: z.string().optional().describe('A step path to re-run from (e.g. "wf/result"), even where it succeeded.'),
+      version: z
+        .string()
+        .optional()
+        .describe('"active" (default), a version label ("v4"), or "run" — the version the run started on.'),
+    }),
+    execute: async ({ name, runId, from, version }) =>
+      resume(name, runId, {
+        ...(from ? { from } : {}),
+        ...(version === "run" ? {} : { version: version || "active" }),
+      }),
+  });
+
+function runControlTools(controlRun: ControlRun, resume?: AiDeps["resumeRun"]) {
   return {
     cancel_run: cancelRunTool(
       controlRun,
@@ -125,11 +149,13 @@ function runControlTools(controlRun: ControlRun) {
       "pause",
       "Pause a LIVE run at its next step boundary (in-flight steps finish; no new ones start) so you or the user can inspect it with get_run before deciding to resume_run or cancel_run. Only live runs can be paused.",
     ),
-    resume_run: runControlTool(
-      controlRun,
-      "resume",
-      "Resume a run you paused with pause_run (in-memory; the run continues from where it parked). For a run cut off by a crash/restart, tell the user to use the UI's durable resume instead.",
-    ),
+    resume_run: resume
+      ? resumeRunTool(resume)
+      : runControlTool(
+          controlRun,
+          "resume",
+          "Resume a run you paused with pause_run (in-memory; the run continues from where it parked). For a run cut off by a crash/restart, tell the user to use the UI's durable resume instead.",
+        ),
   };
 }
 
@@ -1249,7 +1275,7 @@ export function buildTools(deps: AiDeps): ToolSet {
     // Run control — only when the host wires `deps.controlRun` (the standard
     // server does): the builder can stop/park a live run it launched, not
     // just launch it. Same code path as the HTTP control endpoints.
-    ...(deps.controlRun ? runControlTools(deps.controlRun) : {}),
+    ...(deps.controlRun ? runControlTools(deps.controlRun, deps.resumeRun) : {}),
 
     // Elicitation — only when the host wires `deps.openElicitation` (the
     // chat does; embedders/tests without it get neither tool).

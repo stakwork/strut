@@ -55,7 +55,8 @@ strut/
 │   ├── runner.ts          # execution engine: DAG (topological), retry, onError, control flow, journal replay; each run's view of the services bag (`bindPrincipal`, `bindPeer`, `bindApp`, and `bindGraph` from graph-writes.ts, flushed at the run's end)
 │   ├── output-cap.ts      # the step OUTPUT cap (`STRUT_STEP_OUTPUT_MAX_BYTES`, 8 MB as JSON): `outputTooBig` — the error the runner throws for a step, loop or foreach iteration output over it and `wrapToolsWithEmit` for a tool result, naming the size, the cap and the artifacts convention; `fmtBytes` / `positiveBytes`, shared with the resume log cap (`STRUT_RESUME_MAX_LOG_BYTES`, createStrut.ts)
 │   ├── run-control.ts     # RunController: cooperative cancel/pause/resume for run TREES (RUN_CONTROL_SPEC.md); isAncestorRun reads the tree through a step's `ctx.control` (what lets a child run share its parent's job directory)
-│   ├── journal.ts         # resume journal: step.end outputs → {path→output}; `from` invalidation
+│   ├── escaped-errors.ts  # an error a step lets ESCAPE (a callback's throw, a promise it never awaits) fails that step instead of ending the process: `guardEscapes` runs a step's `run()` (and each tool-step an agent calls) in an AsyncLocalStorage scope, `installEscapeGuard` (createStrut, `escapeGuard: false` to opt out) adds the process's uncaughtException / unhandledRejection handlers that find the scope and fail it; an escape no step owns is logged, the server keeps serving (RUN_CONTROL_SPEC §5.5)
+│   ├── journal.ts         # resume journal: step.end outputs → {path→output}; `from` invalidation; `changedSteps` / `invalidateSteps` — a resume onto another version re-runs what changed (§5.4); `executedWorkflowHash` — the version a run executes now (the newest durable `run.resumed`'s, else `run.start`'s)
 │   ├── store.ts           # RunStore interface (writes + reads + tail) + FileRunStore + MemoryRunStore + tailJsonl / tailFromPolling. Keys are workflow names, plus two non-workflow buckets no workflow listing can see: `step:<type>` → steps/<type>/runs/ (kept run_step runs), `check:<id>` → checks/<id>/runs/ (paid check runs)
 │   ├── claims-authoring.ts # the policy layer behind BOTH claim doors (chat tools + meta/* twins): check-spec validation + write-time defaults (presumed-paid → on_change; on a JOB subject `manual`, `sample` refused), the additive `claims` publish arg, publisher scoping (fixed point 1; a job is nobody's template, so any author may claim about it, and on a job an `ai` author may add a check to a PERSON's claim — plans/job-claims.md §1, ruled), the sealed check over the check closure (fixed point 2; sealed.ts), `ensureJobNode` before a claim about a job is written
 │   ├── claims-schemas.ts  # zod shapes + model-facing docs for subjects / check specs / the `claims` arg, shared by ai/tools.ts and the meta/* claim steps
@@ -169,7 +170,7 @@ strut/
 │   │   │                  #                   graph_get (the graph/graph-get STEP as a chat tool — its schema, its run(); one node by ref_id or type + name, with `children`; same gate),
 │   │   │                  #                   graph_walk (graph/walk as a chat tool; same gate),
 │   │   │                  #                   list_runs / get_run (a run as a TREE — src/run-view.ts) / search_runs (grep across recent runs' logs → (runId, path, snippet); then get_run on a hit's path),
-│   │   │                  #                   set_active_version (rollback), cancel_run/pause_run/resume_run (when deps.controlRun is wired),
+│   │   │                  #                   set_active_version (rollback), cancel_run/pause_run/resume_run (when deps.controlRun is wired; resume_run also HEALS a dead run onto the active version with deps.resumeRun),
 │   │   │                  #                   validate_workflow (static YAML check, no publish — src/validate.ts),
 │   │   │                  #                   list_automations / set_automation / delete_automation (schedules; when deps.automations is wired),
 │   │   │                  #                   ask_user / request_secret (the builder asks the user — plans/elicitation.md; when deps.openElicitation is wired)
@@ -1778,7 +1779,19 @@ the same steps are an agent's tools (`agentTools: ["browser/*"]`), and
   a successful run needs `from: <stepPath>` ("re-run from here", which
   drops the target + transitive dependents + later loop iterations).
   `run.start` records the workflow content hash (resume refuses a changed
-  DAG unless forced) and per-run params. Iterative code steps consume
+  DAG unless forced) and per-run params. `{ version: "active" | "vN" }`
+  resumes onto that version instead (§5.4): the top-level steps that
+  changed re-run with everything downstream, the rest replays, and
+  `run.resumed` records the new `workflowHash` + `changed` — the run's
+  version from then on (`executedWorkflowHash`). The UI's Resume and
+  Re-run from here, the builder's `resume_run` and `meta/resume-run` (a
+  run of an unsealed workflow billed to the calling run's principal) send
+  `"active"`; boot's auto-resume never moves a run. One function behind
+  all of them (`resumeRun` in createStrut). Nothing leaves a run stale
+  short of the process dying (§5.5): an error a step lets escape fails
+  that step (`src/escaped-errors.ts`), and a throw past the runner's own
+  handling or a failed launch settles the run as an error
+  (`settleUnfinishedRun`, runner.ts). Iterative code steps consume
   `ctx.journal` to resume completed iterations (harvey/evolve-loop does).
   A durable resume drops the attempt's `run.json` first
   (`RunStore.clearRunSummary`), so a summary always means the latest

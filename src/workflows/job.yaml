@@ -186,6 +186,7 @@ params:
     - meta/get-workflow
     - meta/run-workflow
     - meta/get-run
+    - meta/resume-run
     - meta/list-claims
     - meta/add-claim
     - meta/add-check

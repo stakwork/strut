@@ -494,6 +494,17 @@ export interface AuthoringCapability {
   listRuns(name: string, limit?: number): Promise<unknown>;
   getRun(name: string, runId: string, opts?: RunViewOptions): Promise<unknown>;
   searchRuns(name: string, pattern: string, opts?: RunSearchOptions): Promise<unknown>;
+  /** Resume a run (RUN_CONTROL_SPEC §5): unpause a live one, or heal a dead
+   *  one — failed, cancelled, cut off — under its own id, replaying what
+   *  succeeded, on `version` ("active", "vN"; omitted = the version it
+   *  executed), re-running from `from`. Refused for a sealed workflow, and
+   *  for a run billed to someone other than `caller.principal`. */
+  resumeRun(
+    name: string,
+    runId: string,
+    body: { from?: string; version?: string },
+    caller?: { principal?: string },
+  ): Promise<unknown>;
   listSecrets(): Promise<unknown>;
 
   // ── Claims (plans/claims.md §2, door two) ──
@@ -567,6 +578,13 @@ export interface AuthoringDeps extends StepPublishDeps {
    *  test run outside it is refused, and so is every step publish. Absent:
    *  no limit beyond the sealed gate. */
   reach?: BuilderReach;
+  /** createStrut's resume (the `POST …/resume` route's core). Optional:
+   *  without it `resumeRun` answers that this host cannot resume. */
+  resumeRun?: (
+    name: string,
+    runId: string,
+    body: { from?: string; version?: string },
+  ) => Promise<{ ok: boolean; status?: number; [key: string]: unknown }>;
 }
 
 export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapability {
@@ -908,6 +926,21 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
       const gate = await sealedGate(name, "read its runs");
       if (gate) return { error: gate };
       return searchRunEvents(store, name, pattern, opts);
+    },
+
+    async resumeRun(name, runId, body, caller = {}) {
+      if (!deps.resumeRun) return { error: "this server cannot resume runs" };
+      const gate = await sealedGate(name, "resume its runs");
+      if (gate) return { error: gate };
+      // A resumed run is billed to whoever its launch was billed to: a run
+      // someone else pays for is theirs to resume.
+      const start = await store.getRunStart(name, runId);
+      const payer = start?.principal ?? start?.actor;
+      if (payer && payer !== caller.principal) {
+        return { error: `run ${runId} is billed to ${payer}, not to this run's principal — only they resume it` };
+      }
+      const { status: _status, ...out } = await deps.resumeRun(name, runId, body);
+      return out;
     },
 
     async listSecrets() {

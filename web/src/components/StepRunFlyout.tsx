@@ -89,7 +89,7 @@ export function StepRunFlyout(props: {
               <div class="flyout-meta-row">
                 <span class="flyout-meta-label">Resume</span>
                 <ConfirmButton popover class="btn btn-sm" label="Re-run from here" tone="primary"
-                  note={`Re-run from "${step.id}"? This tool, everything downstream of it, and later iterations of an enclosing loop re-execute. Completed work upstream replays from the journal at zero cost.`}
+                  note={`Re-run from "${step.id}"? This tool, everything downstream of it, and later iterations of an enclosing loop re-execute, on the workflow's active version — with any other tool that changed since this run started. Completed work upstream replays from the journal at zero cost.`}
                   confirmLabel="Re-run" onConfirm={rerun} />
               </div>
             )}

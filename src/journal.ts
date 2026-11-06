@@ -19,8 +19,9 @@ export function buildJournal(events: RunEvent[]): Record<string, unknown> {
   return journal;
 }
 
-/** The run's original input, params, and recorded workflow hash, from
- *  `run.start` — a durable resume re-invokes with exactly these. */
+/** The run's original input and params, from `run.start` — a durable
+ *  resume re-invokes with exactly these — and the workflow version it runs
+ *  on now (`executedWorkflowHash`). */
 export function readRunStart(
   events: RunEvent[],
 ): {
@@ -69,7 +70,7 @@ export function readRunStart(
   if (!start) return null;
   return {
     input: start.input,
-    workflowHash: start.workflowHash,
+    workflowHash: executedWorkflowHash(events),
     params: start.params,
     paramOverrides: start.paramOverrides,
     parentRunId: start.parentRunId,
@@ -87,6 +88,91 @@ export function readRunStart(
     ...(start.wakeAsked ? { wakeAsked: true as const } : {}),
     ...(start.wake ? { wake: start.wake } : {}),
   };
+}
+
+/** The workflow version a run executes NOW: the hash its newest durable
+ *  `run.resumed` recorded — a resume may move a run onto another version
+ *  (`changedSteps`) — else `run.start`'s. */
+export function executedWorkflowHash(events: readonly RunEvent[]): string | undefined {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i]!;
+    if (e.type === "run.resumed" && !e.live && e.workflowHash) return e.workflowHash;
+    if (e.type === "run.start") return e.workflowHash;
+  }
+  return undefined;
+}
+
+/** JSON with object keys sorted, so two loads of the same YAML compare
+ *  equal whatever order their keys came in. */
+function stable(value: unknown): string {
+  return JSON.stringify(value, (_key, v: unknown) =>
+    v && typeof v === "object" && !Array.isArray(v)
+      ? Object.fromEntries(Object.entries(v as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
+      : v,
+  );
+}
+
+/** A step's dependencies as the runner reads them: `depends`, else the
+ *  step before it. */
+function effectiveDeps(steps: Step[], i: number): string[] {
+  const s = steps[i]!;
+  if (s.depends != null) return Array.isArray(s.depends) ? s.depends : [s.depends];
+  return i > 0 ? [steps[i - 1]!.id] : [];
+}
+
+/** The top-level steps of `next` that would not do what they did in `prev`:
+ *  new, or changed in any part of their definition — type, config,
+ *  dependencies (implicit ones included, so a reorder counts), `when`,
+ *  options — or reading a `params` default that changed. A change of the
+ *  workflow's `settings` changes every step. What a resume onto another
+ *  version re-runs, with everything downstream (`invalidateSteps`); the
+ *  rest replays. A subflow's child is not compared: it runs whatever
+ *  version it names, as on any resume. */
+export function changedSteps(prev: Flow, next: Flow): string[] {
+  if (stable(prev.settings ?? {}) !== stable(next.settings ?? {})) return next.steps.map((s) => s.id);
+  const before = new Map(prev.steps.map((s, i) => [s.id, stable({ ...s, depends: effectiveDeps(prev.steps, i) })]));
+  const prevParams = prev.params ?? {};
+  const nextParams = next.params ?? {};
+  const params = [...new Set([...Object.keys(prevParams), ...Object.keys(nextParams)])].filter(
+    (k) => stable(prevParams[k]) !== stable(nextParams[k]),
+  );
+  const escape = (k: string) => k.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const readsChanged = params.length
+    ? new RegExp(
+        // `params.k`, `params["k"]` (its quotes escaped in the JSON), or
+        // `params` whole: `{{ params }}`, `toJson(params)`.
+        `\\bparams\\s*(?:\\.\\s*(?:${params.map(escape).join("|")})\\b|\\[\\s*\\\\?["'](?:${params.map(escape).join("|")})\\\\?["']\\s*\\]|(?=\\}\\}|\\)))`,
+      )
+    : null;
+  const changed: string[] = [];
+  next.steps.forEach((s, i) => {
+    const now = stable({ ...s, depends: effectiveDeps(next.steps, i) });
+    if (before.get(s.id) !== now || readsChanged?.test(now)) changed.push(s.id);
+  });
+  return changed;
+}
+
+/** Drop every top-level step in `ids`, and everything downstream of each in
+ *  `flow`, from the journal — so they re-run while the rest replays. */
+export function invalidateSteps(
+  journal: Record<string, unknown>,
+  ids: string[],
+  flow: Flow,
+): { journal: Record<string, unknown>; dropped: string[] } {
+  const kept: Record<string, unknown> = { ...journal };
+  const dropped = new Set<string>();
+  const targets = new Set(ids);
+  for (const id of ids) for (const dep of transitiveDependents(flow.steps, id)) targets.add(dep);
+  for (const id of targets) {
+    const prefix = `${flow.name}/${id}`;
+    for (const key of Object.keys(kept)) {
+      if (key === prefix || key.startsWith(`${prefix}/`) || key.startsWith(`${prefix}#`)) {
+        delete kept[key];
+        dropped.add(key);
+      }
+    }
+  }
+  return { journal: kept, dropped: [...dropped].sort() };
 }
 
 export interface InvalidateResult {
