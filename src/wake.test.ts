@@ -52,7 +52,7 @@ describe("wakePrompt on the template strut ships", () => {
   it("one job: its reply inline between the markers, its question, how to continue, the silent marker, no placeholder left", () => {
     const p = wakePrompt(TEMPLATE, [end({ ask: "Book the TAP one?" })]);
     assert.ok(p.startsWith('You were invoked because job `j-1` ("Flights to Lisbon") — which you started — has finished its turn and STOPPED FOR A DECISION'), p.slice(0, 200));
-    assert.ok(p.includes("What it produced, which the person can open: Flights (markdown)."));
+    assert.ok(p.includes("What it produced, which the person sees under your reply: Flights (markdown)."));
     assert.ok(p.includes("<<<job reply\nFound three flights; the cheapest is TAP on 2 May.\n>>>"));
     assert.ok(p.includes("Its question for the person: Book the TAP one?\n"));
     assert.ok(p.includes("To continue it: call job/continue with job `j-1`."));

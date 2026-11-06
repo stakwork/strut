@@ -180,6 +180,14 @@ export interface SessionInfo {
   actor?: string;
   /** When the session ends (ms since the epoch). */
   exp: number;
+  /** What a host's ticket signed the person in as (plans/member-rights.md):
+   *  an admin gets the shell, a member their apps. None for the key login. */
+  role?: "admin" | "member";
+}
+
+/** The marker kept for a session the server answered with. */
+function markerOf(s: SessionInfo): SessionInfo {
+  return { ...(s.actor ? { actor: s.actor } : {}), exp: s.exp, ...(s.role === "admin" || s.role === "member" ? { role: s.role } : {}) };
 }
 
 /** The session this browser signed into, if it has not run out. */
@@ -218,7 +226,7 @@ export async function signIn(key: string, actor?: string): Promise<SessionInfo> 
   if (!res.ok) throw new Error(body?.error ?? `${res.status} ${res.statusText}`);
   setApiKey("");
   setSignedInByHost(false);
-  setSession({ ...(body?.actor ? { actor: body.actor } : {}), exp: body!.exp });
+  setSession(markerOf(body!));
   return getSession()!;
 }
 
@@ -335,7 +343,7 @@ async function tradeTicket(ticket: string): Promise<TicketSignIn> {
     });
     const body = (await res.json().catch(() => null)) as SessionInfo | null;
     if (res.ok && typeof body?.exp === "number") {
-      setSession({ ...(body.actor ? { actor: body.actor } : {}), exp: body.exp });
+      setSession(markerOf(body));
       return "signed-in";
     }
   } catch {}
@@ -357,6 +365,28 @@ function takeTicketFromUrl(): string | null {
 const hostTicket = takeTicketFromUrl();
 /** The host's sign-in, started as this module loads. */
 export const ticketSignIn: Promise<TicketSignIn> = hostTicket === null ? Promise.resolve("none") : tradeTicket(hostTicket);
+
+/**
+ * The session this page runs under, asked of the server once the ticket
+ * (if any) is traded: `GET /auth/session` — the cookie is HttpOnly, so the
+ * server is the one that knows whether it is a member's (./page
+ * `pickPage`). Null for a browser that holds the key (the operator's), or
+ * with no session; the marker follows the answer.
+ */
+export const pageSession: Promise<SessionInfo | null> = ticketSignIn.then(async (signedIn) => {
+  if (signedIn === "refused") return null;
+  if (!getSession() && getApiKey()) return null;
+  try {
+    const res = await fetch(`${BASE}/auth/session`, { headers: { "x-strut-ui": "1" } });
+    if (!res.ok) return null;
+    const body = (await res.json().catch(() => null)) as SessionInfo | null;
+    if (typeof body?.exp !== "number") return null;
+    setSession(markerOf(body));
+    return getSession();
+  } catch {
+    return null;
+  }
+});
 
 // ── Speech-to-text (src/audio) ─────────────────────────────────────────────
 

@@ -4538,6 +4538,10 @@ input.package-search { width: 100%; margin-bottom: var(--sp-2); }
   background: var(--surface);
 }
 .app-host-overlay.is-error { color: var(--danger); }
+/* An app handed the light theme: what shows behind it while it loads. */
+.app-host.light,
+.app-host.light .app-host-overlay { background: #ffffff; }
+.app-host.light .app-host-overlay:not(.is-error) { color: #71717a; }
 
 /* An app a job delivered (the builder's, by name): its page in the job
    timeline, under a bar with Reload (components/JobAppPanel.tsx); large,
@@ -4573,11 +4577,6 @@ input.package-search { width: 100%; margin-bottom: var(--sp-2); }
   width: 100%;
   height: 100vh;
   background: var(--surface);
-}
-/* `&theme=light`: the page behind a light app, so it never flashes dark. */
-.app-solo.light {
-  background: #ffffff;
-  color: #3f3f46;
 }
 .app-solo > .empty {
   flex: 1;
@@ -5104,3 +5103,75 @@ input.package-search { width: 100%; margin-bottom: var(--sp-2); }
 .store-live-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--sp-3); margin-bottom: var(--sp-3); }
 .store-live-frame { display: block; width: 100%; height: 78vh; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface); }
 .store-source { max-height: 480px; overflow: auto; font-family: var(--font-mono); font-size: 12px; padding: var(--sp-3); background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-md); white-space: pre; }
+
+/* A member's apps (components/MemberApps.tsx, plans/member-rights.md): the
+   page a member who opens strut directly gets instead of the shell — one
+   row per app, each opening it alone. */
+.member-apps {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: var(--sp-6) var(--sp-4);
+  min-height: 100vh;
+  box-sizing: border-box;
+}
+.member-apps-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-4);
+}
+.member-apps-head h1 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+}
+.member-apps-who {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.member-apps-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+.member-apps-list a {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: var(--sp-3);
+  row-gap: 2px;
+  align-items: center;
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  background: var(--surface);
+  color: var(--text);
+  text-decoration: none;
+}
+.member-apps-list a:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-2);
+}
+.member-apps-list svg {
+  grid-row: span 2;
+  color: var(--accent);
+}
+.member-apps-title {
+  font-weight: 500;
+}
+.member-apps-desc {
+  grid-column: 2;
+  color: var(--text-muted);
+  font-size: 13px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.member-apps > .empty {
+  color: var(--text-muted);
+  padding: var(--sp-5) 0;
+}

@@ -4,7 +4,7 @@
 // manifest, taps and answer (strut's src/browser/captcha.ts, the job's
 // `[captcha-answer]` turn).
 
-import type { LastVerify, LedgerClaim } from "./types";
+import type { JobView, LastVerify, LedgerClaim } from "./types";
 
 export type Tone = "running" | "ok" | "attention" | "failed" | "muted" | "merged";
 
@@ -31,6 +31,20 @@ export function jobLook(status: string | undefined, ask?: unknown): Look {
     default:
       return { label: "Ended", tone: "muted" };
   }
+}
+
+/**
+ * The workflow a job's run is, for `run/get`: the turn's word for it, else
+ * the job's record — the run's own line in `job/get`, else the job's newest
+ * turn — and `job` only when the job is not on file (`view` null). A turn
+ * saved before job/continue returned the workflow names none, and a
+ * builder job's run read as `job` is "Run not found". Undefined while the
+ * record is read.
+ */
+export function jobRunWorkflow(runId: string, given: string | undefined, view: Pick<JobView, "runs" | "workflow"> | null | undefined): string | undefined {
+  if (given) return given;
+  if (view === undefined) return undefined;
+  return view?.runs.find((r) => r.runId === runId)?.workflow ?? view?.workflow ?? "job";
 }
 
 /** One job update as `job/updates` returns it (the kit's `JobUpdate`). */
@@ -212,4 +226,35 @@ export function msLeft(expiresAt: string | undefined, now: number): number | nul
   if (!expiresAt) return null;
   const t = Date.parse(expiresAt);
   return Number.isNaN(t) ? null : t - now;
+}
+
+// ── A secret the build asks for (plans/member-rights.md) ─────────────────
+// The builder's reply names a secret it needs in `ask.secret`; Jamie shows a
+// password box under the question, stores what the person types with
+// `secret/add` (fill a blank, never overwrite), and sends the job its next
+// turn naming the secret — never the value.
+
+const SECRET_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/** The secret a job's question asks the person for: its NAME, or null. */
+export function askedSecret(ask: unknown): string | null {
+  const name = ask && typeof ask === "object" ? (ask as { secret?: unknown }).secret : undefined;
+  return typeof name === "string" && SECRET_NAME.test(name.trim()) ? name.trim() : null;
+}
+
+/** The job's next turn once the secret is stored — or found already set
+ *  here (`secret/add` refuses to overwrite one). */
+export function secretPrompt(name: string, already = false): string {
+  return already ? `[secret] ${name} is already set here` : `[secret] ${name} stored`;
+}
+
+/** Did `secret/add` refuse because the name already has a value? */
+export function secretAlreadySet(message: string): boolean {
+  return /\bsecret_set:/.test(message);
+}
+
+/** Has the job taken a turn since `runId` — the question answered? Run ids
+ *  are millisecond timestamps. */
+export function answeredSince(runs: Array<{ runId: string; parentRunId?: string }> | undefined, runId: string): boolean {
+  return !!runs?.some((r) => !r.parentRunId && r.runId !== runId && Number(r.runId) > Number(runId));
 }

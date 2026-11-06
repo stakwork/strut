@@ -413,15 +413,17 @@ describe("useAssistant: a chat with the person's assistant", () => {
     await h.unmount();
   });
 
-  it("assistantJobs reads job/start and job/continue calls that came back with a job; a continue names no workflow", () => {
+  it("assistantJobs reads job/start and job/continue calls that came back with a job, each with the workflow the launch returned", () => {
     assert.deepEqual(assistantJobs(undefined), []);
     assert.deepEqual(
       assistantJobs([
         { type: "step.end", path: "o/t/001-job_continue", stepType: "tool:job_continue", output: JSON.stringify({ job: "app/c/j", runId: "5" }) },
         { type: "step.end", path: "o/t/002-job_start", stepType: "tool:job_start", output: "Error: job_busy: job \"x\" has a run in flight" },
         { type: "step.end", path: "o/t/003-job_start", stepType: "tool:job_start", output: JSON.stringify({ job: "app/c/k", runId: "6", callback: false }) },
+        { type: "step.end", path: "o/t/004-job_continue", stepType: "tool:job_continue", output: JSON.stringify({ job: "app/c/b", runId: "8", callback: true, workflow: "builder" }) },
       ]),
-      [{ job: "app/c/j", runId: "5" }, { job: "app/c/k", runId: "6", workflow: "job" }],
+      // A continue logged before job/continue returned its workflow names none.
+      [{ job: "app/c/j", runId: "5" }, { job: "app/c/k", runId: "6", workflow: "job" }, { job: "app/c/b", runId: "8", workflow: "builder" }],
     );
   });
 

@@ -159,7 +159,7 @@ export function AppHost(props: {
   }, [inputKey]);
 
   return (
-    <div class="app-host">
+    <div class={`app-host${theme === "light" ? " light" : ""}`}>
       <iframe ref={frameRef} class="app-frame" sandbox="allow-scripts allow-downloads" allow="microphone; clipboard-write" title={app.name} />
       {state.status !== "ready" && (
         <div class={`app-host-overlay${state.status === "error" ? " is-error" : ""}`}>

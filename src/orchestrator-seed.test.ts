@@ -15,6 +15,7 @@ import { MemoryRunStore } from "./store.js";
 import { hostConfigFromEnv } from "./server.js";
 import { JOB_WORKFLOW } from "./job-seed.js";
 import { ORCHESTRATOR_WORKFLOW, orchestratorWorkflowYaml, personalOrchestratorSystem, seedOrchestratorWorkflow } from "./orchestrator-seed.js";
+import { resolveArtifactRefs } from "./artifact-refs.js";
 
 type Params = { tools: string[]; system: string };
 const paramsOf = (text: string) => (yaml.load(text) as { params: Params }).params;
@@ -110,6 +111,21 @@ describe("the orchestrator workflow strut ships", () => {
     assert.ok(
       String(p["system"]).replace(/\s+/g, " ").includes("or to hand the job a file from an earlier message: `start` carries only this message's files."),
     );
+  });
+  it("the reply's artifacts take an app by name, which strut resolves as it does the builder's; a wake says what the job made shows under the reply", async () => {
+    const text = await orchestratorWorkflowYaml();
+    const turn = flowFromYaml(ORCHESTRATOR_WORKFLOW, "v1", text).steps.find((st) => st.id === "turn")!.config as any;
+    const item = turn.schema.properties.artifacts.items;
+    assert.equal(item.additionalProperties, false);
+    const entry = { id: "ask-x", kind: "app", title: "Ask X", app: "x-research", version: "v2" };
+    for (const k of Object.keys(entry)) assert.ok(item.properties[k], `the reply's schema takes \`${k}\``);
+    const appVersion = async (name: string, version?: string) => (name === "x-research" ? { version: version ?? "v2", hash: "h" } : null);
+    assert.deepEqual(await resolveArtifactRefs({ artifacts: [entry] }, { runId: "r", exists: async () => false, appVersion }), [
+      { id: "ask-x", kind: "app", title: "Ask X", url: "/apps/x-research/v2/files/dist/index.html", app: { name: "x-research", version: "v2", hash: "h" } },
+    ]);
+    const p = (yaml.load(text) as { params: Record<string, string> }).params;
+    assert.ok(p["system"]!.replace(/\s+/g, " ").includes('an app by its name, `{ kind: "app", app: "<name>" }`'));
+    assert.ok(p["wake"]!.includes("do not describe or list in `artifacts` what it produced — the person sees it under your reply"));
   });
   it("the host's delta is appended after strut's tools and prompt, and changes the hash; an empty one does not", async () => {
     const plain = await orchestratorWorkflowYaml();

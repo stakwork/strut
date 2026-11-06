@@ -14,17 +14,19 @@ function SignInExpired() {
   );
 }
 
-function Root({ refused }: { refused: boolean }) {
+function Root({ refused, session }: { refused: boolean; session: api.SessionInfo | null }) {
   const [expired, setExpired] = useState(refused);
   useEffect(() => {
     api.onHostSignInEnd(() => setExpired(true));
     return () => api.onHostSignInEnd(null);
   }, []);
-  return expired ? <SignInExpired /> : <App />;
+  return expired ? <SignInExpired /> : <App session={session} />;
 }
 
 // A host's ticket is traded before anything renders, so it is the page's
-// first request and every later one is signed in as its person.
-void api.ticketSignIn.then((result) => {
-  render(<Root refused={result === "refused"} />, document.getElementById("app")!);
+// first request and every later one is signed in as its person. Then the
+// session says which page this is: a member's is their apps, never the
+// shell (./page `pickPage`).
+void Promise.all([api.ticketSignIn, api.pageSession]).then(([result, session]) => {
+  render(<Root refused={result === "refused"} session={session} />, document.getElementById("app")!);
 });

@@ -24,8 +24,8 @@ import verifyStep from "../steps/lib/job/verify.js";
 import evidenceStep from "../steps/lib/job/evidence.js";
 import type { JobsCapability } from "../jobs.js";
 import { BUSY_NOTICE, NOT_YOURS_NOTICE, detectSlash, groupByDay, insertSlash, isOwn, modelChoices, newConversationId, sendRefusal, sentModel, silentReply, timeLine, turnContext } from "./jamie/src/lib/chat.js";
-import { appKey, placeArtifact, servedFile } from "./jamie/src/lib/artifacts.js";
-import { captchaPrompt, claimPill, jobLook, liveStrip, openSlot, parseCaptcha, sortClaims, tapAt, toggleCell } from "./jamie/src/lib/jobs.js";
+import { appKey, openable, placeArtifact, servedFile, turnDeliverables } from "./jamie/src/lib/artifacts.js";
+import { answeredSince, askedSecret, captchaPrompt, claimPill, jobLook, jobRunWorkflow, liveStrip, openSlot, parseCaptcha, secretAlreadySet, secretPrompt, sortClaims, tapAt, toggleCell } from "./jamie/src/lib/jobs.js";
 import type { LedgerClaim, ModelCatalog } from "./jamie/src/lib/types.js";
 import { canMerge, checksLine, fixPrompt, prKey, prLive, prOf, prPill } from "./jamie/src/lib/pr.js";
 import { attachmentShow } from "./jamie/src/lib/attachments.js";
@@ -135,6 +135,61 @@ describe("strut/jamie — the pure parts", () => {
     assert.deepEqual(place({ id: "n", kind: "markdown", title: "Note", content: "# Hi" }), { show: "content", kind: "markdown", text: "# Hi" });
     assert.deepEqual(place({ id: "k", kind: "captcha", title: "Captcha", url: "/jobs/j1/files/shots/captcha-1.json" }), { show: "captcha", job: "j1", path: "shots/captcha-1.json", run: { workflow: "job", runId: "r-job" } });
     assert.deepEqual(place({ id: "m", kind: "markdown", title: "Gone", error: "not found: x.md" }), { show: "missing", text: "not found: x.md" });
+  });
+
+  it("an app named only by its document's link is still an app; an entry that opens nothing is no card", () => {
+    assert.equal(appKey({ id: "a", kind: "app", title: "Ask X", url: "/apps/x-research/v2/files/dist/index.html?t=tok" }), "x-research@v2");
+    assert.equal(appKey({ id: "a", kind: "app", title: "Dash", url: "/apps/acme%2Fdash/v3/files/dist/index.html" }), "acme/dash@v3");
+    assert.deepEqual(placeArtifact({ id: "a", kind: "app", title: "Ask X", url: "/apps/x-research/v2/files/dist/index.html" }, runs), { show: "link", href: "?app=x-research%40v2", external: false, what: "app" });
+    assert.equal(openable({ id: "x", kind: "url", title: "Ask X", summary: "The app" }), false, "a copy that kept only its title and summary");
+    assert.equal(openable({ id: "m", kind: "markdown", title: "Gone", error: "not found" }), false);
+    assert.equal(openable({ id: "a", kind: "app", title: "Ask X", app: { name: "x-research", version: "v2" } }), true);
+    assert.equal(openable({ id: "n", kind: "markdown", title: "Note", content: "# Hi" }), true);
+    assert.equal(openable({ id: "f", kind: "markdown", title: "Far", peer: "acme-web", job: "j7", path: "report.md" }), true);
+  });
+
+  it("a turn's deliverables: under a wake's reply what the job delivered; the reply's copy of one, or an entry that opens nothing, never shows", () => {
+    const app = { id: "ask-x", kind: "app", title: "Ask X", url: "/apps/x-research/v2/files/dist/index.html", app: { name: "x-research", version: "v2" } };
+    const plan = { id: "plan", kind: "markdown", title: "Plan", url: "/jobs/j1/files/plan.md" };
+    const { delivered, own } = turnDeliverables({
+      delivered: [{ job: "j1", runId: "r-b", workflow: "builder", artifacts: [app, plan, { id: "gone", kind: "markdown", title: "Gone", error: "not found" }] }],
+      artifacts: [
+        { id: "app", kind: "url", title: "Ask X", summary: "The app" }, // the copy the wake's reply made: nothing to open
+        { id: "x", kind: "app", title: "Ask X again", app: { name: "x-research", version: "v2" } }, // the same app
+        { id: "p2", kind: "markdown", title: "The plan", url: "/jobs/j1/files/plan.md?t=tok" }, // the same file
+        { id: "plan", kind: "markdown", title: "Plan", content: "# Plan" }, // the same id
+        { id: "pr", kind: "pull_request", title: "PR", url: "https://github.com/a/b/pull/1" },
+      ],
+    });
+    assert.deepEqual(delivered, [{ artifact: app, job: "j1" }, { artifact: plan, job: "j1" }]);
+    assert.deepEqual(own.map((s) => s.artifact.id), ["pr"]);
+    assert.deepEqual(turnDeliverables({}), { delivered: [], own: [] });
+  });
+
+  it("a job card reads its run as the workflow it is: the turn's word, else the job's record; `job` only for a job not on file", () => {
+    const view = { workflow: "builder", runs: [{ workflow: "builder", runId: "r1", status: "success" }, { workflow: "browser-captcha", runId: "r2", status: "success" }] };
+    assert.equal(jobRunWorkflow("r1", "builder", undefined), "builder", "the turn's word, no read");
+    assert.equal(jobRunWorkflow("r3", undefined, undefined), undefined, "the record is being read");
+    assert.equal(jobRunWorkflow("r3", undefined, view), "builder", "a continue saved before job/continue returned its workflow");
+    assert.equal(jobRunWorkflow("r2", undefined, view), "browser-captcha", "the run's own line");
+    assert.equal(jobRunWorkflow("r9", undefined, { runs: [] }), "job");
+    assert.equal(jobRunWorkflow("r9", undefined, null), "job", "no record");
+  });
+
+  it("a build that asks for a secret: its NAME, the turn that says it is stored, and when the question is answered", () => {
+    assert.equal(askedSecret({ message: "I need your Acme token.", secret: "ACME_TOKEN" }), "ACME_TOKEN");
+    assert.equal(askedSecret({ message: "x", secret: " ACME_TOKEN " }), "ACME_TOKEN");
+    for (const ask of [undefined, null, "Which repo?", { message: "x" }, { secret: "not a name" }, { secret: "1ABC" }, { secret: 7 }]) assert.equal(askedSecret(ask), null, JSON.stringify(ask));
+    // The job's next turn names the secret, never a value.
+    assert.equal(secretPrompt("ACME_TOKEN"), "[secret] ACME_TOKEN stored");
+    assert.equal(secretPrompt("ACME_TOKEN", true), "[secret] ACME_TOKEN is already set here");
+    assert.equal(secretAlreadySet("step_run: secret_set: ACME_TOKEN already has a value here"), true);
+    assert.equal(secretAlreadySet("secret_name: bad"), false);
+    // A later top-level turn of the job answered it; a child run did not.
+    const runs = [{ runId: "1793900000000" }, { runId: "1793900005000", parentRunId: "1793900000000" }];
+    assert.equal(answeredSince(runs, "1793900000000"), false);
+    assert.equal(answeredSince([...runs, { runId: "1793900009000" }], "1793900000000"), true);
+    assert.equal(answeredSince(undefined, "1793900000000"), false);
   });
 
   it("a job's card: its pill, and the live strip's line and tally for the run in flight", () => {

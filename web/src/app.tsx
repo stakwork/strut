@@ -49,7 +49,9 @@ import { Store } from "./components/Store";
 import { INSTALL_LINK_PARAMS, parseInstallLink, type InstallLink } from "./store-links";
 import { ArtifactViewer } from "./components/ArtifactViewer";
 import { AppGlyph, SidebarIcon } from "./icons";
-import { appKey, appMessage, appToolInput, soloTheme } from "./app-links";
+import { appKey, appMessage, appToolInput } from "./app-links";
+import { pickPage, type PageSession } from "./page";
+import { MemberApps } from "./components/MemberApps";
 import { RunInputPopover } from "./components/RunInputPopover";
 import { ConfirmButton } from "./components/ConfirmButton";
 import { useDismiss } from "./use-dismiss";
@@ -103,34 +105,34 @@ function activeKey(runs: api.ActiveRun[]): string {
 interface RunList { rows: api.RunSummary[]; more: boolean }
 const NO_RUNS: RunList = { rows: [], more: false };
 
-export function App() {
-  // `?solo=1`: one thing alone in the window, with none of strut's UI around
-  // it — what a native host (Peel) opens in a web view of its own. Rendered
-  // in place of the shell, so none of its loads and polls run behind it.
-  // Read once.
-  //  - beside `?app=`: the app's page, here or a peer's (plans/apps.md §7.4).
-  //  - beside `?artifact=<path>`: one served file — a job's file or a run's
+export function App({ session = null }: { session?: PageSession | null } = {}) {
+  // What this page is (./page `pickPage`), read once from the address and
+  // the session:
+  //  - `?solo=1`: one thing alone in the window, with none of strut's UI
+  //    around it — what a native host (Peel) opens in a web view of its
+  //    own. Rendered in place of the shell, so none of its loads and polls
+  //    run behind it. Beside `?app=`: the app's page, here or a peer's
+  //    (plans/apps.md §7.4); `&theme=light` hands it a light theme
+  //    (`soloTheme`); `&public=1` makes it a VISITOR's page, the app as this
+  //    server's public view serves it, with no credential (SoloApp). Beside
+  //    `?artifact=<path>`: one served file — a job's file or a run's
   //    artifact, here or a peer's through the read-through — for a
   //    deliverable. Only a path of that shape (`isServedFilePath`).
-  //  - `&theme=light` beside `?app=`: the app shown light, for a host whose
-  //    own page is (strut's UI is dark; `soloTheme`).
   //  - `?store=1`: the STORE FRONT (plans/marketplace.md §7) — an index
   //    strut's public page over its open reads, where a visitor with no
   //    credential lands (the server redirects `/` there on an index).
-  const [solo] = useState(() => {
-    const p = new URLSearchParams(location.search);
-    if (p.get("store") === "1") return { store: true as const };
-    return p.get("solo") === "1" ? { app: p.get("app"), input: p.get("input"), artifact: p.get("artifact"), visitor: p.get("public") === "1", theme: soloTheme(p.get("theme")) } : null;
-  });
-  if (solo && "store" in solo) return <Store />;
-  //  - `&public=1` beside `?app=`: a VISITOR's page, the app as this
-  //    server's public view serves it, with no credential (SoloApp).
-  if (solo?.app) return <SoloApp app={solo.app} input={solo.input} visitor={solo.visitor} {...(solo.theme ? { theme: solo.theme } : {})} />;
-  if (solo?.artifact) {
-    return isServedFilePath(solo.artifact)
-      ? <ArtifactViewer path={solo.artifact} solo />
-      : <div class="app-solo"><div class="empty">Not a file strut serves: {solo.artifact}</div></div>;
+  //  - A MEMBER (plans/member-rights.md): the apps here, or the one app or
+  //    file a link names, alone — never the shell, whose every read the
+  //    server refuses a member.
+  const [page] = useState(() => pickPage(location.search, session));
+  if (page.kind === "store") return <Store />;
+  if (page.kind === "app") return <SoloApp app={page.app} input={page.input} visitor={page.visitor} {...(page.theme ? { theme: page.theme } : {})} />;
+  if (page.kind === "artifact") {
+    return isServedFilePath(page.artifact)
+      ? <ArtifactViewer path={page.artifact} solo />
+      : <div class="app-solo"><div class="empty">Not a file strut serves: {page.artifact}</div></div>;
   }
+  if (page.kind === "member-apps") return <MemberApps {...(session?.actor ? { actor: session.actor } : {})} />;
   return <Shell />;
 }
 

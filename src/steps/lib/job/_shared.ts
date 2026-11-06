@@ -38,6 +38,14 @@ export function requireJobLaunch(services: unknown): NonNullable<JobsCapability[
   return launch;
 }
 
+/** What job/start and job/continue return. */
+export const launchOutput = z.object({
+  job: z.string(),
+  runId: z.string(),
+  callback: z.boolean(),
+  workflow: z.string().optional().describe("The workflow the job's run is (job, builder): for a continue, the one the job's newest turn ran."),
+});
+
 /** job/start's and job/continue's `attachments`: the files of this
  *  conversation to hand the job, by name. */
 export const attachmentsField = z
@@ -75,11 +83,13 @@ export async function handedOn(ctx: StepContext, names: string[] | undefined): P
   return loaded.flat().map(({ name, mediaType, bytes }) => ({ name, mediaType, bytes }));
 }
 
-/** What a launch journals: the job and run it started. */
+/** What a launch journals: the job and run it started, and the workflow
+ *  the run is (absent in a journal from before it was kept). */
 interface LaunchRecord {
   job: string;
   runId: string;
   callback: boolean;
+  workflow?: string;
 }
 
 /**
@@ -100,9 +110,9 @@ export async function launchOnce(
   const key = journalKey(ctx, "launch");
   const prior = key ? (ctx.journal?.[key] as Partial<LaunchRecord> | undefined) : undefined;
   if (prior && typeof prior.job === "string" && typeof prior.runId === "string" && (!match || prior.job === match)) {
-    return { job: prior.job, runId: prior.runId, callback: !!prior.callback };
+    return { job: prior.job, runId: prior.runId, callback: !!prior.callback, ...(typeof prior.workflow === "string" ? { workflow: prior.workflow } : {}) };
   }
-  const { runId, callback } = await launch({
+  const { runId, callback, workflow } = await launch({
     ...opts,
     from: ctx.runId,
     ...(ctx.actor ? { actor: ctx.actor } : {}),
@@ -111,7 +121,7 @@ export async function launchOnce(
     // that called this has `mcp: false` (its tools' ctx has none).
     ...(ctx.mcp?.length ? { mcp: ctx.mcp } : {}),
   });
-  const record: LaunchRecord = { job: opts.job, runId, callback };
+  const record: LaunchRecord = { job: opts.job, runId, callback, ...(workflow ? { workflow } : {}) };
   await journal(ctx, key, record);
   return record;
 }

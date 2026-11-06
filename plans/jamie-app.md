@@ -371,8 +371,11 @@ started (`assistantJobs` over its events), status while in flight.
 - **A turn** is read from its run: summary and log, settled ones once per
   process. The person's words are `input.prompt` as sent (Hive's
   `@<workspace>` line included; only the title leaves it out); a wake has
-  no `prompt` and carries `run.start.wake`. Jobs are `turnJobs`, the
-  kit's `assistantJobs` logic copied (the server cannot import the kit).
+  no `prompt` and carries `run.start.wake`, and `delivered`: what each job
+  run it woke on (on this strut) delivered, read from that run, which
+  Jamie shows under the reply. Jobs are `turnJobs`, the kit's
+  `assistantJobs` logic copied (the server cannot import the kit), each
+  with the workflow job/start or job/continue returned.
   Proposals are listed per page, as a person token sees them in a list
   (`visibleTo`).
 - **Unread** is `seenAt < updatedAt`, `updatedAt` the last turn's launch

@@ -945,7 +945,7 @@ async function executeStep(
         type: "step.start",
         path,
         stepType: baseType(step.type),
-        input: startInput,
+        input: redactInput(exec, step.type, startInput),
         ...(subflow ? { subflow } : {}),
         ...(stepVersion ? { stepVersion } : {}),
       });
@@ -1172,7 +1172,7 @@ async function executeLoop(
       path: iterPath,
       stepType: baseType(rawBody.type),
       iteration: i,
-      input: resolvedBodyConfig,
+      input: redactInput(exec, rawBody.type, resolvedBodyConfig),
       ...(stepVersion ? { stepVersion } : {}),
     });
 
@@ -1311,7 +1311,7 @@ async function executeForeach(
       path: iterPath,
       stepType: baseType(rawBody.type),
       iteration: i,
-      input: resolvedBodyConfig,
+      input: redactInput(exec, rawBody.type, resolvedBodyConfig),
       ...(stepVersion ? { stepVersion } : {}),
     });
 
@@ -1371,6 +1371,16 @@ async function executeForeach(
   }
 
   return results;
+}
+
+/** A step's input as its run events keep it: the fields its def names in
+ *  `redact` (a value a person typed — `secret/add`'s) as `"[redacted]"`. */
+function redactInput(exec: Exec, type: string, input: unknown): unknown {
+  const fields = exec.registry[baseType(type)]?.redact;
+  if (!fields?.length || !input || typeof input !== "object" || Array.isArray(input)) return input;
+  const out: Record<string, unknown> = { ...(input as Record<string, unknown>) };
+  for (const f of fields) if (f in out) out[f] = "[redacted]";
+  return out;
 }
 
 /** Which child a `subflow` step is about to run (`RunEvent.subflow`). Never

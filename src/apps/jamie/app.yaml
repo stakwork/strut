@@ -24,3 +24,4 @@ grants:
     - sheets/get-values
     - github/pr-status
     - github/merge-pr
+    - secret/add

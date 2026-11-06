@@ -69,5 +69,13 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
+/* `?app=…&solo=1&theme=light`: index.html sets the class before anything
+   paints, so a light host's frame never shows strut's dark page. */
+html.solo-light body,
+html.solo-light .app-solo {
+  background: #ffffff;
+  color: #3f3f46;
+}
+
 button { font: inherit; cursor: pointer; }
 code, pre, .mono { font-family: var(--font-mono); }
