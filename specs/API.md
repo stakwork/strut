@@ -182,7 +182,7 @@ by the gate.
 | Field            | Meaning |
 | ---------------- | ------- |
 | `input`          | the run payload, validated against the workflow's `input:` block (unknown keys dropped); `{}` when omitted |
-| `params`         | shallow-merged over the workflow's `params:` defaults for this run only |
+| `params`         | shallow-merged over the workflow's `params:` defaults for this run only. A `model` among them also reaches the jobs the run starts or continues (`job/start`, `job/continue`), so a conversation and its jobs run on one model |
 | `paramOverrides` | `{ "<workflow name>": { … } }` — the same, per workflow, reaching subflows |
 | `settings`       | `{ "<setting>": value }` — this run's level of the registered settings (`privacy`: `PRIVACY_SPEC.md` §10): over the workflow's `settings:` and the deployment's, under a step's `options.settings`. Not validated at launch (a bad value fails the step that reads it), not recorded on `run.start` (a durable resume runs without it), not handed to runs this run starts |
 | `runId`          | your own id (unique within the workflow); default a millisecond timestamp, e.g. `"1790436489808"` |

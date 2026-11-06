@@ -11,7 +11,8 @@ import { ChevronDown, ChevronRight, CircleCheck, CircleDashed, CircleMinus, Circ
 import { useHost, useStrutClient } from "@strut/kit";
 import { cn } from "@/lib/utils";
 import { canMerge, checksLine, fixPrompt, prLive, prPill, type PrRef, type PrStatus } from "../lib/pr";
-import { sendRefusal } from "../lib/chat";
+import { modelParams, sendRefusal } from "../lib/chat";
+import { useModelPick } from "../hooks";
 import type { JobView } from "../lib/types";
 import { Markdown } from "./Markdown";
 import { Notice, Pill, errorText } from "./bits";
@@ -47,6 +48,7 @@ const CHECK_ICON = {
 export function PullRequestCard({ pr, title, job, conversation }: { pr: PrRef; title?: string; job?: string; conversation?: string }) {
   const host = useHost();
   const client = useStrutClient();
+  const { sent: model } = useModelPick();
   const qc = useQueryClient();
   const status = usePullRequest(pr);
   const s = status.data;
@@ -68,6 +70,8 @@ export function PullRequestCard({ pr, title, job, conversation }: { pr: PrRef; t
         workflow: jobView.data?.workflow ?? "job",
         job,
         input: { prompt: fixPrompt(s!) },
+        // On the viewer's model, as their message would be.
+        ...modelParams(model),
         // Its end wakes this conversation (plans/jamie-app.md §2.2).
         ...(conversation ? { conversation } : {}),
       }),

@@ -624,7 +624,10 @@ was open:
   over `ctx.services.llmModels`, the catalog `GET /llm/models` now reads
   too), its choice per viewer (`useAppState`, Hive's per-user preference),
   sent as `params.model`; "Default" sends none, so the turn runs on the
-  template's model.
+  template's model. The jobs a turn starts or continues run on its
+  `params.model` too (the job launcher, src/createStrut.ts), and so do the
+  job turns the cards send (`modelParams`), so a conversation and its jobs
+  run on one model.
 - **The context**: `{ line, where, timeZone }` — `line` Hive's time format
   (`Wed 4 Nov 2026, 14:02, Europe/London. `; ICU may add a comma after the
   weekday) then `where`, which says the reply is read in full with each job

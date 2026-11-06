@@ -14,7 +14,8 @@ import { cn } from "@/lib/utils";
 import { captchaPrompt, cellOf, msLeft, parseCaptcha, tapAt, toggleCell, type CaptchaAnswer, type Tap } from "../lib/jobs";
 import type { FileRun } from "../lib/artifacts";
 import { useViewer } from "../viewer";
-import { sendRefusal } from "../lib/chat";
+import { modelParams, sendRefusal } from "../lib/chat";
+import { useModelPick } from "../hooks";
 import type { JobView } from "../lib/types";
 import { Notice, errorText } from "./bits";
 import { useJobRun } from "./ArtifactCard";
@@ -27,6 +28,7 @@ interface RunFile {
 
 export function CaptchaCard({ title, job, path, run: given, conversation }: { title: string; job: string; path: string; run?: FileRun; conversation?: string }) {
   const client = useStrutClient();
+  const { sent: model } = useModelPick();
   const viewer = useViewer();
   const found = useJobRun(given ? undefined : job);
   const run = given ?? found.data;
@@ -74,6 +76,8 @@ export function CaptchaCard({ title, job, path, run: given, conversation }: { ti
         workflow,
         job,
         input: { prompt: captchaPrompt(answer) },
+        // On the viewer's model, as their message would be.
+        ...modelParams(model),
         // The server takes a conversation the viewer may continue (plans/jamie-app.md §2.2).
         ...(conversation ? { conversation } : {}),
       });

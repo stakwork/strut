@@ -6,9 +6,8 @@ import { ArrowUp, Check, ChevronDown, FileText, Paperclip, Square, X } from "luc
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { cn } from "@/lib/utils";
-import { useAppState } from "@strut/kit";
-import { detectSlash, insertSlash, modelChoices, sentModel, type SlashTrigger } from "../lib/chat";
-import { useConcepts, useModels } from "../hooks";
+import { detectSlash, insertSlash, modelChoices, type SlashTrigger } from "../lib/chat";
+import { useConcepts, useModelPick, useModels } from "../hooks";
 import { IconButton } from "./bits";
 
 /** The server's caps on a run's files (src/ai/attachments.ts): checked here
@@ -31,10 +30,8 @@ export function Composer({ placeholder, onSend, running, disabled, sending }: Co
   const [text, setText] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [fileError, setFileError] = useState<string | null>(null);
-  const [remembered, setModel] = useAppState<string>("model", "");
-  const models = useModels();
   // A pick no longer listed is Default: the turn sends no model.
-  const model = sentModel(remembered, models.data);
+  const { sent: model, set: setModel } = useModelPick();
   const [slash, setSlash] = useState<SlashTrigger | null>(null);
   const [slashAt, setSlashAt] = useState(0);
   const area = useRef<HTMLTextAreaElement>(null);

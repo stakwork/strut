@@ -5,7 +5,8 @@
 // (`run/launch` of `orchestrator`) or stopped (`run/cancel`).
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { fileData, useStrutClient } from "@strut/kit";
+import { fileData, useAppState, useStrutClient } from "@strut/kit";
+import { modelParams, sentModel } from "./lib/chat";
 import type { ConversationList, ConversationListItem, ConversationTurn, ConversationView, ModelCatalog } from "./lib/types";
 
 export const ASSISTANT = "orchestrator";
@@ -132,6 +133,16 @@ export function useModels() {
   });
 }
 
+/** The viewer's model pick, remembered across their conversations
+ *  (`useAppState`), and the model a turn sends with it now (`sentModel`).
+ *  The composer's picker sets it; every turn the page launches — a message,
+ *  and a job turn a card sends — runs on `sent`. */
+export function useModelPick(): { pick: string; set: (v: string) => void; sent: string } {
+  const [pick, set] = useAppState<string>("model", "");
+  const models = useModels();
+  return { pick, set, sent: sentModel(pick, models.data) };
+}
+
 export interface ConceptHit {
   ref_id: string;
   name: string;
@@ -169,7 +180,7 @@ export function useSend() {
       return client.run<{ runId: string }>("run/launch", {
         workflow: ASSISTANT,
         input: { prompt: v.prompt, session: v.session, context: v.context },
-        ...(v.model ? { params: { model: v.model } } : {}),
+        ...modelParams(v.model ?? ""),
         ...(attachments ? { attachments } : {}),
       });
     },

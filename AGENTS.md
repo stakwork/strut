@@ -1963,7 +1963,11 @@ the same steps are an agent's tools (`agentTools: ["browser/*"]`), and
   (`FieldDesc.suggest`), and the system prompt names the configured
   providers — or the host's listed models — so the builder only authors
   runnable `model:` values. Jamie's picker drops a remembered pick the
-  list no longer has: the turn then sends no `params.model`.
+  list no longer has: the turn then sends no `params.model`. A job a turn
+  starts or continues runs on the turn's `params.model` (the job launcher
+  reads it off the turn's `run.start`; no pick, the job's own), and Jamie's
+  cards send their job turns (Fix, a captcha's answer, a stored secret) on
+  the viewer's pick, so a conversation and its jobs run on one model.
 
 - **Chat is a detached background job** (`src/chat-store.ts`), NOT a
   connection-bound stream — the same launch+reattach model as runs
