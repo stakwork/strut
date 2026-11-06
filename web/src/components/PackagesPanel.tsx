@@ -214,6 +214,8 @@ function PackagePage(props: {
   const [concepts, setConcepts] = useState<string[]>([]);
   const [conceptDraft, setConceptDraft] = useState("");
   const [conceptHits, setConceptHits] = useState<string[]>([]);
+  const [types, setTypes] = useState<string[]>([]);
+  const [typeDraft, setTypeDraft] = useState("");
   const [q, setQ] = useState("");
   const [preview, setPreview] = useState<{ result?: api.BuildPreview; error?: string; busy?: boolean } | null>(null);
   const [version, setVersion] = useState(() => nextVersion(newest?.version));
@@ -244,6 +246,7 @@ function PackagePage(props: {
         setWorkflows(new Set(picks.workflows));
         setApps(new Set(picks.apps));
         setConcepts(picks.concepts);
+        setTypes(picks.types);
       },
       () => {},
     );
@@ -251,10 +254,10 @@ function PackagePage(props: {
 
   // What a build of the picks carries, refused as a publish would be.
   const picks = useMemo(
-    () => ({ workflows: [...workflows].sort(), apps: [...apps].sort(), concepts: [...concepts].sort() }),
-    [workflows, apps, concepts],
+    () => ({ workflows: [...workflows].sort(), apps: [...apps].sort(), concepts: [...concepts].sort(), types: [...types].sort() }),
+    [workflows, apps, concepts, types],
   );
-  const empty = picks.workflows.length + picks.apps.length + picks.concepts.length === 0;
+  const empty = picks.workflows.length + picks.apps.length + picks.concepts.length + picks.types.length === 0;
   useEffect(() => {
     if (empty) {
       setPreview(null);
@@ -293,6 +296,13 @@ function PackagePage(props: {
     setConceptDraft("");
   };
 
+  const addTypes = () => {
+    // One name or several, as typed: `Document, Section Excerpt`.
+    const names = typeDraft.split(/[\s,]+/).filter(Boolean);
+    setTypes([...types, ...names.filter((n) => !types.includes(n))]);
+    setTypeDraft("");
+  };
+
   const toggle = (set: Set<string>, put: (s: Set<string>) => void, name: string) => {
     const next = new Set(set);
     if (next.has(name)) next.delete(name);
@@ -310,6 +320,7 @@ function PackagePage(props: {
         workflows: picks.workflows,
         ...(picks.apps.length ? { apps: picks.apps } : {}),
         ...(picks.concepts.length ? { concepts: picks.concepts } : {}),
+        ...(picks.types.length ? { types: picks.types } : {}),
         ...(channel.trim() ? { channel: channel.trim() } : {}),
         ...(description.trim() ? { description: description.trim() } : {}),
       });
@@ -381,18 +392,37 @@ function PackagePage(props: {
           </datalist>
         </div>
       )}
+      {props.concepts && (
+        <div class="dialog-field">
+          <label>Graph types</label>
+          {types.length > 0 && (
+            <div class="package-chips">
+              {types.map((t) => (
+                <span class="badge package-chip" key={t}>
+                  {t}
+                  <button class="auto-link" aria-label={`Remove ${t}`} onClick={() => setTypes(types.filter((x) => x !== t))}>×</button>
+                </span>
+              ))}
+            </div>
+          )}
+          <input type="text" value={typeDraft} placeholder="A node type the workflows write, with its parents and edges"
+            onInput={(e) => setTypeDraft((e.target as HTMLInputElement).value)}
+            onKeyDown={(e) => { if (e.key === "Enter") addTypes(); }} />
+        </div>
+      )}
       {!empty && (
         <div class="package-along">
           {preview?.error ? (
             <div class="auto-error package-refusal">{preview.error}</div>
           ) : along ? (
             <>
-              {along.steps.length + along.workflows.length + along.apps.length > 0 && (
+              {along.steps.length + along.workflows.length + along.apps.length + along.types.length > 0 && (
                 <div class="auto-hint">
                   Comes along: {[
                     ...along.workflows.map((w) => `the workflow ${w}`),
                     ...along.steps.map((x) => `the step ${x}`),
                     ...along.apps.map((x) => `the app ${x}`),
+                    ...along.types.map((x) => `the graph type ${x}`),
                   ].join(", ")}.
                 </div>
               )}

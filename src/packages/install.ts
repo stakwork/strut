@@ -28,6 +28,11 @@
  * it is. A package the distro wrote is the distro's: a person's door
  * refuses to write or remove it.
  *
+ * GRAPH TYPES (`graph/`, ./graph-types.ts) are checked with everything
+ * else and registered before the first other write, parents first, so a
+ * workflow's first run finds them. They are add-only and the graph's: no
+ * take-back and no uninstall removes one.
+ *
  * Every step the install makes active is LOADED before the first write,
  * beside the helpers as they will be (§12 step 6), so an update is not
  * written and then taken back: no store deletes one version. What still
@@ -57,6 +62,7 @@ import { assertValidWorkflowYaml, ensureEsmScope, readClaimsBlock, type Upstream
 import { loadYaml } from "../yaml.js";
 import { fileRefPath, resolvePackage, type CachedPackage } from "./cache.js";
 import type { PackageItem } from "./format.js";
+import { checkPackageTypes, registerPackageTypes, type CheckedTypes } from "./graph-types.js";
 import {
   conceptHash,
   conceptPrefix,
@@ -235,6 +241,14 @@ async function installSet(
   };
   const writes = (plan: ItemPlan) => plan.action !== "present" && plan.action !== "modified";
 
+  // Graph types before anything that writes them. Add-only, so nothing to take back.
+  if (checked.types.types.length) {
+    const status = await registerPackageTypes(deps.graph!, checked.types);
+    for (const [pkg, names] of checked.types.byPackage) {
+      for (const name of names) reports.get(pkg)!.push({ kind: "type", name, status: status.get(name) ?? "present" });
+    }
+  }
+
   try {
     // Steps first, every package's, so one registry rebuild loads them all.
     for (const m of members) {
@@ -388,7 +402,7 @@ async function installSet(
   }
 
   const root = members.at(-1)!;
-  const kinds = ["step", "workflow", "app", "concept"];
+  const kinds = ["type", "step", "workflow", "app", "concept"];
   for (const items of reports.values()) items.sort((a, b) => kinds.indexOf(a.kind) - kinds.indexOf(b.kind) || a.name.localeCompare(b.name));
   return {
     package: root.info.manifest.package,
@@ -470,6 +484,8 @@ interface Checked {
   /** The apps to publish, built once in their staged directory, in the
    *  order they can be published: each after the set's apps it imports. */
   apps: Array<{ name: string; dir: string; member: Member }>;
+  /** The set's graph types, checked, parents first. */
+  types: CheckedTypes;
 }
 
 interface MemberClaims {
@@ -487,7 +503,7 @@ async function checkSet(
   scratch: string,
   door: PackageDoor,
 ): Promise<Checked & { members: Array<Member & { claims: MemberClaims[] }> }> {
-  const out: Checked = { plan: new Map(), dropped: new Map(), conceptsOn: false, warnings: [], apps: [] };
+  const out: Checked = { plan: new Map(), dropped: new Map(), conceptsOn: false, warnings: [], apps: [], types: { types: [], byPackage: new Map() } };
   const sealed = deps.sealed ?? sealedStepPatterns();
   const problems: string[] = [];
 
@@ -679,6 +695,15 @@ async function checkSet(
       if (problems.length) throw conflict(problems.join("; "));
     }
   }
+  // Graph types: each file read, and the set checked against the graph.
+  const typeProblems: string[] = [];
+  out.types = await checkPackageTypes(
+    deps.graph,
+    members.map((m) => ({ pkg: m.info.manifest.package, dir: m.info.dir, items: m.info.items, read: (path: string) => readFile(join(m.info.dir, path), "utf-8") })),
+    typeProblems,
+    out.warnings,
+  );
+  if (typeProblems.length) throw conflict(typeProblems.join("; "));
   return { ...out, members: withClaims };
 }
 

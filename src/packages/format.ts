@@ -8,6 +8,7 @@
  *   steps/<path>.claims.yaml     → that step's claims
  *   concepts/<Name>.md           → the Concept page <Name>
  *   apps/<name>/                 → the app <package>/<name>, a directory with app.yaml
+ *   graph/<Type>.yaml            → the graph type <Type> and its edges (./graph-types.ts)
  *
  * Its DIGEST is the tree hash over every file in it, `strut.yaml` included
  * (`hashTree`, src/version.ts — an app's version hash is the same function
@@ -30,6 +31,9 @@ import { validateStepName, validateWorkflowName } from "../workspace.js";
 import { loadYaml } from "../yaml.js";
 
 export const MANIFEST_FILE = "strut.yaml";
+
+/** A graph type's name: `graph/<Type>.yaml`. */
+export const GRAPH_TYPE_NAME = /^[A-Za-z][A-Za-z0-9_]*$/;
 
 /** `sha256:<64 hex>` — how a package is pinned. */
 export const PACKAGE_DIGEST = /^sha256:[0-9a-f]{64}$/;
@@ -67,9 +71,10 @@ export type PackageManifest = z.infer<typeof manifestSchema>;
 
 /** One item: what the install publishes. A workflow, step or app is named
  *  `<package>/<path>`; a Concept by its page name (its stamp carries the
- *  package, `seedConcepts`). `path` is the file, or the app's directory. */
+ *  package, `seedConcepts`); a graph type by its type name, since a type is
+ *  the graph's, not the package's. `path` is the file, or the app's directory. */
 export interface PackageItem {
-  kind: "workflow" | "step" | "concept" | "app";
+  kind: "workflow" | "step" | "concept" | "app" | "type";
   name: string;
   path: string;
   /** A `_` step file: published with its namespace, never registered. */
@@ -173,6 +178,11 @@ export async function readPackage(dir: string): Promise<PackageInfo> {
       } else if (top === "concepts") {
         if (rest.includes("/") || !rest.endsWith(".md")) throw new Error("a Concept is a page, concepts/<Name>.md, with no folders");
         items.push({ kind: "concept", name: rest.slice(0, -3), path: file });
+      } else if (top === "graph") {
+        if (rest.includes("/") || !rest.endsWith(".yaml") || !GRAPH_TYPE_NAME.test(rest.slice(0, -5))) {
+          throw new Error("a graph type is graph/<Type>.yaml, the type's name a letter then letters, digits or _, with no folders");
+        }
+        items.push({ kind: "type", name: rest.slice(0, -5), path: file });
       } else if (top === "apps") {
         const at = rest.indexOf("/");
         if (at < 0) throw new Error("an app is a folder, apps/<name>/");
@@ -185,7 +195,7 @@ export async function readPackage(dir: string): Promise<PackageInfo> {
         if (rest.slice(at + 1) === "app.yaml") apps.set(app, true);
       } else if (!unknown.has(top)) {
         unknown.add(top);
-        problems.push(`${top}/ is not a folder this strut server knows (workflows, steps, concepts, apps) — a package from a newer strut release?`);
+        problems.push(`${top}/ is not a folder this strut server knows (workflows, steps, concepts, apps, graph) — a package from a newer strut release?`);
       }
     } catch (err) {
       problems.push(`${file}: ${err instanceof Error ? err.message : String(err)}`);
@@ -198,7 +208,7 @@ export async function readPackage(dir: string): Promise<PackageInfo> {
     else step.claims = file;
   }
   for (const [app, hasManifest] of apps) if (!hasManifest) problems.push(`apps/${app}/: an app's folder holds its app.yaml`);
-  if (!problems.length && !items.length) problems.push("no items — a package holds at least one workflow, step, Concept or app");
+  if (!problems.length && !items.length) problems.push("no items — a package holds at least one workflow, step, Concept, app or graph type");
   if (problems.length) throw new Error(`bad_package: ${problems.join("; ")}`);
   return { manifest, digest: `sha256:${await hashTree(dir, files)}`, files, items };
 }

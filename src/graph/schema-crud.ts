@@ -180,7 +180,7 @@ const titleOwnRule = (titleKey: string) =>
  *  the resolver treats a core-key attribute as optional regardless of its
  *  declared type (`schema-resolver.ts` `fromDb`), so a `description:
  *  "string"` is required only when it is a node_key token. */
-function checkAttribute(type: string, name: string, value: unknown, kind?: GraphKind): void {
+export function checkAttribute(type: string, name: string, value: unknown, kind?: GraphKind): void {
   if (!IDENT.test(name)) throw new GraphValidationError("UNKNOWN_ATTRIBUTE", type, "attribute name is not a bare identifier", name);
   if (RESERVED_ATTRIBUTE_NAMES.has(name) || isGenericProperty(name)) {
     throw new GraphValidationError("UNKNOWN_ATTRIBUTE", type, "attribute name is a reserved schema/system property", name);

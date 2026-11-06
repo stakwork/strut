@@ -23,7 +23,8 @@
  *      nowhere.
  *   2. The helpers: every file a carried step imports by a relative path,
  *      at the same place beside it, and every `_` step under the prefix.
- *   3. The named Concepts and the pages under each (`PARENT_OF`).
+ *   3. The named Concepts and the pages under each (`PARENT_OF`), and the
+ *      named graph types with their parents and edges (./graph-types.ts).
  *   4. Each step's live claims, as its `.claims.yaml` — a claim with a
  *      check that reaches outside the package and its requirements is left
  *      out, said.
@@ -67,6 +68,7 @@ import { packagePrefixOf, type Upstream, type VersionSource, type WorkspaceStore
 import { dumpYaml, loadYaml } from "../yaml.js";
 import type { CachedPackage, PackageCache } from "./cache.js";
 import { MANIFEST_FILE, PACKAGE_DIGEST, PACKAGE_NAME, readPackage, type PackageManifest } from "./format.js";
+import { exportTypes } from "./graph-types.js";
 import { conceptPrefix } from "./installed.js";
 
 export interface BuildDeps {
@@ -100,6 +102,9 @@ export interface BuildRequest {
   steps?: string[];
   /** Concept pages, each with the pages under it. */
   concepts?: string[];
+  /** Graph types by name, each read off this graph's ontology with its
+   *  parents and the edges among them, as `graph/<Type>.yaml`. */
+  types?: string[];
   /** Apps, each with what its grants can execute and the apps it imports.
    *  One the package carries is `apps/<name>/`, so its path in the package
    *  is one segment; an installed one is a pin. */
@@ -160,7 +165,7 @@ export async function buildPackage(deps: BuildDeps, req: BuildRequest, opts: { d
   const pkg = req.package;
   if (typeof pkg !== "string" || !PACKAGE_NAME.test(pkg)) throw refused(["a package is named publisher/name: two lowercase segments, [a-z][a-z0-9-]*"]);
   if (typeof req.version !== "string" || !req.version) throw refused(["a package has a version, the publisher's label (1.4.0)"]);
-  if (!req.workflows?.length && !req.steps?.length && !req.concepts?.length && !req.apps?.length) throw refused(["name at least one workflow, step, Concept or app"]);
+  if (!req.workflows?.length && !req.steps?.length && !req.concepts?.length && !req.apps?.length && !req.types?.length) throw refused(["name at least one workflow, step, Concept, app or graph type"]);
 
   const prefix = `${pkg}/`;
   const under = (name: string) => name.startsWith(prefix);
@@ -516,6 +521,10 @@ export async function buildPackage(deps: BuildDeps, req: BuildRequest, opts: { d
   if (req.concepts?.length) {
     const siblingPages = new Set([...siblings.values()].flatMap((p) => p.items.filter((i) => i.kind === "concept").map((i) => i.name)));
     for (const [file, text] of await conceptFiles(deps.graph, req.concepts, pkg, [...pins.keys()], siblingPages, problems, warnings)) files.set(file, text);
+  }
+  if (req.types?.length) {
+    const required = new Set([...siblings.values()].flatMap((p) => p.items.filter((i) => i.kind === "type").map((i) => i.name)));
+    for (const [file, text] of await exportTypes(deps.graph, req.types, required, problems, warnings)) files.set(file, text);
   }
   if (deps.claims) {
     const inside = insideCheck(deps, { registry, custom, under, workflows, steps, pins: [...pins.keys()] });

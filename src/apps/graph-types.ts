@@ -134,12 +134,34 @@ export async function checkAppGraph(manifest: AppManifest, graph: GraphBackend |
     return { errors, warnings };
   }
 
+  await checkAgainstGraph(inputs, graph, { at, noun: "app" }, errors, warnings);
+  return { errors, warnings };
+}
+
+export interface GraphCheckOptions {
+  /** Where a problem is, for the message: the file and field. */
+  at(type: string, attr?: string): string;
+  /** Who declares the types: "app" or "package". */
+  noun: string;
+  /** The attributes a declared type inherits from declared parents, which
+   *  satisfy a required attribute the graph holds. */
+  inherited?(type: string): Record<string, string>;
+}
+
+/**
+ * Do these declared types fit the graph as it is? A type the graph already
+ * holds must keep its attribute types and its key, and the declaration must
+ * cover what it requires; on a LadybugDB file every attribute name keeps one
+ * column type. Reads only. An app's build and a package's install both run it.
+ */
+export async function checkAgainstGraph(inputs: NodeSchemaInput[], graph: GraphBackend, o: GraphCheckOptions, errors: string[], warnings: string[]): Promise<void> {
+  const { planNodeSchema } = await import("../graph/schema-crud.js");
   for (const input of inputs) {
     const live = await graph.schemas.resolveType(input.type);
     if (!live) continue;
     const reserved = reservedAppType(live);
     if (reserved) {
-      errors.push(`${at(input.type)}: the graph holds this type as ${live}, which ${reserved}`);
+      errors.push(`${o.at(input.type)}: the graph holds this type as ${live}, which ${reserved}`);
       continue;
     }
     const schema = await graph.schemas.schema(live);
@@ -148,26 +170,27 @@ export async function checkAppGraph(manifest: AppManifest, graph: GraphBackend |
     for (const [k, t] of Object.entries(input.attributes)) {
       const held = schema.attributes[k];
       if (held && baseOf(held) !== baseOf(t)) {
-        errors.push(`${at(input.type, k)}: ${named} already holds ${k} as ${baseOf(held)}, and this app declares ${baseOf(t)} — declare it as the graph has it, or name another attribute`);
+        errors.push(`${o.at(input.type, k)}: ${named} already holds ${k} as ${baseOf(held)}, and this ${o.noun} declares ${baseOf(t)} — declare it as the graph has it, or name another attribute`);
       }
     }
     const heldKey = schema.key_spec.split("-").slice(1);
-    const key = planNodeSchema(input).tokens;
+    const key = planNodeSchema(input, undefined, schema.attributes).tokens;
     if (heldKey.join("-") !== key.join("-")) {
-      errors.push(`${at(input.type, "key")}: ${named} is keyed by [${heldKey.join(", ")}] in the graph, and this app declares [${key.join(", ")}] — two keys would make two identities for one type`);
+      errors.push(`${o.at(input.type, "key")}: ${named} is keyed by [${heldKey.join(", ")}] in the graph, and this ${o.noun} declares [${key.join(", ")}] — two keys would make two identities for one type`);
     }
+    const inherited = o.inherited?.(input.type) ?? {};
     for (const [k, t] of Object.entries(schema.attributes)) {
-      if (t.startsWith("?") || k in input.attributes || k === "name") continue;
-      errors.push(`${at(input.type)}: ${named} requires ${k} (${baseOf(t)}) on every node, and this app does not declare it — the app's writes would be refused`);
+      if (t.startsWith("?") || k in input.attributes || k in inherited || k === "name") continue;
+      errors.push(`${o.at(input.type)}: ${named} requires ${k} (${baseOf(t)}) on every node, and this ${o.noun} does not declare it — the ${o.noun}'s writes would be refused`);
     }
-    const index = [...(input.index ?? [])].sort().join(",");
+    const index = [...(input.index ?? key)].sort().join(",");
     if (index !== [...schema.index].sort().join(",")) {
-      warnings.push(`${at(input.type, "search")}: ${named} is indexed on [${schema.index.join(", ")}] in the graph — an existing type keeps its index, so this app's search list does not apply`);
+      warnings.push(`${o.at(input.type, "search")}: ${named} is indexed on [${schema.index.join(", ")}] in the graph — an existing type keeps its index, so this ${o.noun}'s search list does not apply`);
     }
   }
   // On a LadybugDB file every attribute is a column of one table: a name
-  // another type (or another of this app's types) holds as another column
-  // type is refused here, at build, rather than part-way through a publish.
+  // another type (or another declared one) holds as another column type is
+  // refused here, before anything is registered.
   if (!errors.length && graph.kind === "ladybug") {
     const { catalogOf, planColumns } = await import("../graph/ladybug/ontology.js");
     const columns: Record<string, string> = { ...(await catalogOf(graph.lbug).get()).columns };
@@ -177,11 +200,10 @@ export async function checkAppGraph(manifest: AppManifest, graph: GraphBackend |
       } catch (e) {
         if (!(e instanceof Error) || e.name !== "GraphValidationError") throw e;
         const attribute = (e as Error & { attribute?: string }).attribute;
-        errors.push(`${at(input.type, attribute)}: ${e.message.replace(/^[^:]*: /, "")} — name the attribute something else`);
+        errors.push(`${o.at(input.type, attribute)}: ${e.message.replace(/^[^:]*: /, "")} — name the attribute something else`);
       }
     }
   }
-  return { errors, warnings };
 }
 
 export interface RegisteredGraph {
@@ -196,9 +218,20 @@ export interface RegisteredGraph {
  * after `checkAppGraph` passed; one registration at a time per process.
  */
 export async function registerAppGraph(manifest: AppManifest, graph: GraphBackend, app?: string): Promise<RegisteredGraph> {
-  const out: RegisteredGraph = { types: [], edges: [] };
   const inputs = appSchemaInputs(manifest, app);
-  if (!inputs.length) return out;
+  if (!inputs.length) return { types: [], edges: [] };
+  return registerTypes(graph, inputs, manifest.data?.graph?.edges ?? []);
+}
+
+/**
+ * Register declared types, each through `createNodeSchema` (a new one, or
+ * an existing one extended add-only), then each edge `[source, EDGE,
+ * target]` through `createEdgeSchema` with no rule: a new edge type takes
+ * the default, an existing one keeps its own. `inputs` come parent first.
+ * Nothing is ever removed. One registration at a time per process.
+ */
+export async function registerTypes(graph: GraphBackend, inputs: NodeSchemaInput[], edges: ReadonlyArray<readonly [string, string, string]>): Promise<RegisteredGraph> {
+  const out: RegisteredGraph = { types: [], edges: [] };
   const { createNodeSchema } = await import("../graph/schema-crud.js");
   return withLock("app-graph-types", async () => {
     const live = new Map<string, string>();
@@ -207,7 +240,7 @@ export async function registerAppGraph(manifest: AppManifest, graph: GraphBacken
       live.set(input.type, r.type);
       out.types.push({ type: r.type, created: r.created, added: r.added });
     }
-    for (const [s, edge, t] of manifest.data?.graph?.edges ?? []) {
+    for (const [s, edge, t] of edges) {
       const source = live.get(s) ?? s;
       const target = live.get(t) ?? t;
       const r = await graph.schemas.createEdgeSchema(source, edge, target);

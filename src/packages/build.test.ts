@@ -310,7 +310,7 @@ describe("building a package on a filesystem workspace", () => {
     assert.match(await refusal(build(src, { workflows: ["acme/linear/sync"], apps: ["acme/linear/issues"] })), /the request names the app acme\/linear\/issues, which is not here/);
     assert.match(await refusal(build(src, { workflows: ["acme/linear/missing"] })), /no workflow acme\/linear\/missing here/);
     assert.match(await refusal(build(src, { steps: ["log"] })), /log is a step strut ships, not one a package carries/);
-    assert.match(await refusal(build(src, {})), /name at least one workflow, step, Concept or app/);
+    assert.match(await refusal(build(src, {})), /name at least one workflow, step, Concept, app or graph type/);
     assert.match(await refusal(build(src, { package: "Acme", workflows: ["acme/linear/sync"] })), /publisher\/name/);
     assert.match(await refusal(build(src, { concepts: ["Linear"] })), /there are no Concepts to package: this workspace has no graph/);
   });
