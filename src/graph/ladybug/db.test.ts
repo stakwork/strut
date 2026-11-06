@@ -28,14 +28,18 @@ describe("ladybug DDL (pure)", () => {
     assert.ok(ddl[0]!.startsWith("CREATE NODE TABLE IF NOT EXISTS Node("));
     assert.ok(ddl.some((s) => s.startsWith("CREATE NODE TABLE IF NOT EXISTS Migration(")));
     assert.ok(!ddl.some((s) => /NODE TABLE IF NOT EXISTS (Schema|Meta)\b/.test(s)), "no meta-graph node table: a type is a Node row");
-    assert.ok(ddl.some((s) => s.startsWith("CREATE REL TABLE IF NOT EXISTS SCHEMA_EDGE(FROM Node TO Node, `ref_id` STRING,") && s.endsWith("`edge_type` STRING, `is_parent` BOOL, `temporal` BOOL, `cardinality` STRING, `aliases` STRING[])")), "parent links and edge rules, apart from the data's edges");
+    assert.ok(ddl.some((s) => s.startsWith("CREATE REL TABLE IF NOT EXISTS SCHEMA_EDGE(FROM Node TO Node, `ref_id` STRING,") && s.endsWith("`edge_type` STRING, `is_parent` BOOL, `temporal` BOOL, `cardinality` STRING, `volatility` STRING, `depends_on` STRING[], `aliases` STRING[])")), "parent links and edge rules, apart from the data's edges");
     for (const col of Object.keys(nodeColumns())) if (col !== "ref_id") assert.ok(ddl.includes(`ALTER TABLE Node ADD IF NOT EXISTS \`${col}\` ${nodeColumns()[col]}`), col);
     for (const edge of LADYBUG_EDGE_TYPES) assert.ok(ddl.some((s) => s.startsWith(`CREATE REL TABLE IF NOT EXISTS \`${edge}\`(FROM Node TO Node, `)), edge);
     assert.ok(!ddl.some((s) => /IS_ALIAS|IN_SESSION/.test(s)));
     assert.ok(ddl.some((s) => s.startsWith("CREATE REL TABLE IF NOT EXISTS `IN_RUN`(")), "a proposal's run");
     assert.ok(ddl.some((s) => s.startsWith("CREATE REL TABLE IF NOT EXISTS `ACCESSED`(")), "a run's reads: the run's own edge, no tool calls");
     assert.deepEqual(indexCalls().map(([n]) => n), ["node_vec", "node_fts"]);
-    assert.deepEqual(MIGRATIONS, ["ALTER TABLE `SCHEMA_EDGE` ADD IF NOT EXISTS `aliases` STRING[]"], "an edge type's aliases, on a file an older build made");
+    assert.deepEqual(
+      MIGRATIONS,
+      ["ALTER TABLE `SCHEMA_EDGE` ADD IF NOT EXISTS `aliases` STRING[]", "ALTER TABLE `SCHEMA_EDGE` ADD IF NOT EXISTS `volatility` STRING", "ALTER TABLE `SCHEMA_EDGE` ADD IF NOT EXISTS `depends_on` STRING[]"],
+      "an edge type's aliases, volatility and depends_on, on a file an older build made",
+    );
   });
 });
 

@@ -333,7 +333,7 @@ export interface SchemaSource {
   edgeRule(edge: string, tx?: GraphTx): Promise<Record<string, unknown> | null>;
   /** Set `temporal` and `cardinality` (an unset one cleared) on every rule
    *  of edge type `edge`. */
-  setEdgeRule(edge: string, rule: { temporal?: boolean; cardinality?: string }, tx?: GraphTx): Promise<void>;
+  setEdgeRule(edge: string, rule: { temporal?: boolean; cardinality?: string; volatility?: string; depends_on?: string[] }, tx?: GraphTx): Promise<void>;
   /** Every edge type's aliases, by edge type. Present on a Ladybug file only. */
   edgeAliases?(tx?: GraphTx): Promise<Map<string, string[]>>;
   /** Set an edge type's aliases on every one of its rules. Ladybug only. */

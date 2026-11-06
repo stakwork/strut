@@ -44,6 +44,7 @@ import { randomUUID } from "node:crypto";
 import type { EngineLike, GraphTx } from "./engine.js";
 import { edgeKeyFor } from "./edge-writer.js";
 import { writeNamespace } from "./ladybug/namespaces.js";
+import { recordFactEvidence } from "./ladybug/fact-claims.js";
 import { composeFact, createTemporalEdge, factRows, setTemporalEdge, slotEdges, syncEdgeRow, temporalEdgeTypes, titlesOf, writeEdgeRow } from "./ladybug/temporal.js";
 import { asEngine } from "./neo4j-engine.js";
 import { boundsOf } from "./scope.js";
@@ -195,6 +196,22 @@ export async function assertEdge(e: EngineLike, resolver: SchemaResolver, input:
     const one = match.rule.cardinality === "one";
     // Where it was learned and who said it: each kept once among the edge's sources.
     const given = [...new Set([input.source?.trim(), saidBy, input.run ? runSource(input.run) : undefined].filter((x): x is string => !!x))];
+    // This mention as evidence for the fact's claim (plans/memory-truth-layer.md), in the same transaction.
+    const evidence = (namespace: string | undefined) =>
+      recordFactEvidence(tx, {
+        subject: input.source_ref_id,
+        edge,
+        target: input.target_ref_id,
+        text,
+        namespace,
+        ...(saidBy ? { said_by: saidBy } : {}),
+        ...(input.source?.trim() ? { message: input.source.trim() } : {}),
+        ...(input.run ? { run: input.run } : {}),
+        observed_at: observed,
+        strength: 1,
+        ...(input.created_by ? { created_by: input.created_by } : {}),
+        now,
+      });
 
     // The same edge held now, or for a past fact, held before.
     const current = await slotEdges(tx, edge, input.source_ref_id);
@@ -230,6 +247,7 @@ export async function assertEdge(e: EngineLike, resolver: SchemaResolver, input:
           ...(expire ? { expired_at: now } : {}),
         }, now);
       }
+      await evidence(s.namespace ?? engine.namespace);
       return { ref_id: hit.ref_id, action: "reconfirmed", superseded: [], ended: hit.expired_at !== null || expire, ...(filled.length ? { filled } : {}) };
     }
 
@@ -279,6 +297,7 @@ export async function assertEdge(e: EngineLike, resolver: SchemaResolver, input:
       await setTemporalEdge(tx, edge, o.ref_id, { ...end, superseded_by: ref_id, updated_at: now });
       await syncEdgeRow(tx, o.ref_id, end, now);
     }
+    await evidence(namespace);
     return {
       ref_id,
       action: superseded.length ? "superseded" : history ? "history" : "created",
