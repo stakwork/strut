@@ -3,14 +3,15 @@
 // own line of what it is doing, the newest shot, a tally of the rest
 // (`job/updates`); open, its reply, what it made (artifact cards) and its
 // claims. What asks something of the person stays visible collapsed: the
-// job's question, why it failed, a captcha.
+// job's question (with a password box when it asks for a secret), why it
+// failed, a captcha.
 import { useContext, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Bot, ChevronRight } from "lucide-react";
 import { useJobUpdates, useRun, useStrutClient } from "@strut/kit";
 import { Markdown } from "./Markdown";
 import { cn } from "@/lib/utils";
-import { jobLook, jobRunWorkflow, liveStrip } from "../lib/jobs";
+import { answeredSince, askedSecret, jobLook, jobRunWorkflow, liveStrip } from "../lib/jobs";
 import { inFlight } from "../lib/chat";
 import { openable } from "../lib/artifacts";
 import type { ArtifactRef, JobView } from "../lib/types";
@@ -19,6 +20,8 @@ import { ClaimsPanel } from "./ClaimsPanel";
 import { ThreadPrs } from "./PullRequestCard";
 import { prKey, prOf } from "../lib/pr";
 import { Pill } from "./bits";
+import { SecretBox } from "./SecretBox";
+import { useViewer } from "../viewer";
 
 export function useJob(job: string, live: boolean) {
   const client = useStrutClient();
@@ -34,6 +37,8 @@ export function useJob(job: string, live: boolean) {
 interface JobOutput {
   text?: unknown;
   ask?: unknown;
+  /** A build that ran on another strut (builder.yaml's `remote`): its secrets are that strut's. */
+  peer?: unknown;
 }
 
 interface JobCardProps {
@@ -74,6 +79,16 @@ function JobRunCard({ job, runId, workflow, conversation }: JobCardProps) {
     return pr && !threadPrs.has(prKey(pr));
   });
   const error = run.data?.error?.message;
+  // A secret the build asks for (`ask.secret`): a box under the question,
+  // for the person who started the job, until the job takes another turn —
+  // never for a build that ran on another strut, whose secret is there.
+  const viewer = useViewer();
+  const actors = view.data?.actors;
+  const secret = status === "success" && !out.peer ? askedSecret(out.ask) : null;
+  const secretBox =
+    secret && (!actors || (!!viewer && actors.includes(viewer))) && !answeredSince(view.data?.runs, runId) ? (
+      <SecretBox name={secret} job={job} workflow={view.data?.workflow ?? workflow ?? "job"} {...(conversation ? { conversation } : {})} />
+    ) : null;
   return (
     <div className="rounded-lg border bg-card text-card-foreground" data-testid="job-card" data-job={job} data-status={status}>
       <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} className="flex w-full items-center gap-2 px-3 py-2.5 text-left">
@@ -85,6 +100,7 @@ function JobRunCard({ job, runId, workflow, conversation }: JobCardProps) {
       </button>
       {running && <LiveStrip job={job} runId={runId} />}
       {!open && ask && <p className="border-t px-3 py-2 text-sm"><span className="font-medium">Asks: </span>{ask}</p>}
+      {!open && secretBox && <div className="px-3 pb-2">{secretBox}</div>}
       {!open && error && status === "error" && <p className="border-t px-3 py-2 text-xs text-rose-700 dark:text-rose-300">{error}</p>}
       {!open && [...prs, ...captchas].map((a) => (
         <div key={a.id} className="border-t px-3 py-2">
@@ -95,6 +111,7 @@ function JobRunCard({ job, runId, workflow, conversation }: JobCardProps) {
         <div className="space-y-2 border-t px-3 py-2">
           {text ? <Markdown text={text} /> : <p className="text-xs text-muted-foreground">{running ? "Working…" : "No reply."}</p>}
           {ask && <p className="rounded-md bg-amber-500/10 px-2 py-1.5 text-sm"><span className="font-medium">Asks: </span>{ask}</p>}
+          {secretBox}
           {error && <p className="text-xs text-rose-700 dark:text-rose-300">{error}</p>}
           {artifacts.map((a) => (
             <ArtifactCard key={a.id} artifact={a} runs={runs} job={job} {...(conversation ? { conversation } : {})} />

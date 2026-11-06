@@ -102,7 +102,8 @@ describe("the builder workflow strut ships", () => {
       "- meta/publish-workflow(name, yaml, description?, category?)",
       "No shell here",
       "app/init scaffolds one at apps/<name> in the job's directory",
-      "say in your reply's `ask` which NAME the person should add under Secrets",
+      "name it in your reply's `ask.secret` (the NAME alone)",
+      "your next turn begins `[secret] NAME stored`",
     ]) assert.ok(system.includes(said), said);
 
     // Never the chat's: no tool of its, no bash, no mechanics it alone has.

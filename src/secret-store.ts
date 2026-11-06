@@ -63,6 +63,45 @@ export function isValidSecretName(name: string): boolean {
   return NAME_RE.test(name);
 }
 
+// ── filling a blank ──────────────────────────────────────────────────────
+
+/** The one write a person makes from an app (plans/member-rights.md
+ *  "Adding a secret"; `secret/add`): a secret this deployment has no value
+ *  for, never one it has. `ctx.services.secretBlanks`, set by createStrut
+ *  when strut owns the store. */
+export interface SecretBlanks {
+  /** Store `value` under `name` → the name alone. Throws `secret_name:` for
+   *  a name that is not one, `secret_empty:` for an empty value, and
+   *  `secret_set:` when the name has a value in the store or in the
+   *  environment — never naming the value. */
+  fill(name: string, value: string): Promise<{ name: string }>;
+}
+
+/** Fill-a-blank over `store`, with `env` (the boot environment, which the
+ *  secrets capability falls back to) counted as set. A store value would
+ *  shadow the env's, so either refuses: a person never replaces the team's
+ *  model or GitHub key with their own. One fill at a time, so two never
+ *  both find the name blank. */
+export function secretBlanks(store: SecretStore, env: () => Record<string, string | undefined> = bootEnv): SecretBlanks {
+  let last: Promise<unknown> = Promise.resolve();
+  return {
+    fill(name, value) {
+      const run = last.then(async () => {
+        if (!isValidSecretName(name)) throw new Error(`secret_name: "${name.slice(0, 80)}" is not a secret name — letters, digits and _, not starting with a digit`);
+        if (!value.trim()) throw new Error(`secret_empty: no value for ${name}`);
+        const fromEnv = env()[name];
+        if ((await store.get(name)) !== undefined || (fromEnv !== undefined && fromEnv !== "")) {
+          throw new Error(`secret_set: ${name} already has a value here — an admin changes or removes it`);
+        }
+        await store.set(name, value);
+        return { name };
+      });
+      last = run.catch(() => {});
+      return run;
+    },
+  };
+}
+
 export function assertValidSecretName(name: string): void {
   if (!isValidSecretName(name)) {
     throw new Error(
