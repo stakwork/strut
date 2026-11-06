@@ -23,6 +23,14 @@ export interface LocationMessage {
   params: Record<string, string>;
 }
 
+/** Posted to the host once, when what the page shows alone (`solo=1`) is
+ *  on screen: the app's page has started, or the page says why it cannot.
+ *  A host keeps its frame hidden until then and fades it in, so strut's
+ *  own page behind the app never flashes. */
+export interface ReadyMessage {
+  type: "strut:ready";
+}
+
 /** The deep-link subset of a query string, empty values dropped. */
 export function deepLinkParams(search: string): Record<string, string> {
   const p = new URLSearchParams(search);
@@ -49,15 +57,27 @@ function captureEmbedOrigin(): void {
 }
 if (typeof window !== "undefined") captureEmbedOrigin();
 
-function reportLocation(): void {
+/** Post to the embedding host, if there is one that asked (`embed_origin`). */
+function postToHost(msg: LocationMessage | ReadyMessage): void {
   if (window.parent === window) return;
   let origin: string | null = null;
   try {
     origin = sessionStorage.getItem(ORIGIN_STORAGE);
   } catch {}
   if (!origin) return;
-  const msg: LocationMessage = { type: "strut:location", params: deepLinkParams(location.search) };
   window.parent.postMessage(msg, origin);
+}
+
+function reportLocation(): void {
+  postToHost({ type: "strut:location", params: deepLinkParams(location.search) });
+}
+
+let readyReported = false;
+/** Tell the embedding host the page is on screen (`ReadyMessage`). Once. */
+export function reportReady(): void {
+  if (readyReported) return;
+  readyReported = true;
+  postToHost({ type: "strut:ready" });
 }
 
 /** `history.replaceState` + tell the embedding host, if there is one. The

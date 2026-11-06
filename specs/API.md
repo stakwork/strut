@@ -1490,7 +1490,12 @@ with `&input=` for a deep link. `&theme=light` (or `dark`) is the theme the
 page hands the app, for a host whose own page is light; without it the app
 is shown dark, as strut's UI is. The page behind it matches from its first
 paint, before a `ticket` is traded, and so does the app's loading screen;
-strut's own bar over the side panel and its file viewer stay dark. A link the page opens to itself changes
+strut's own bar over the side panel and its file viewer stay dark. A host
+that passed `&embed_origin=` is posted `{type: "strut:ready"}` once, when
+the app's page is on screen (it initialized, or loaded without the apps
+SDK) or the page says why it cannot be (no such app, a refused ticket): a
+host keeps its frame hidden until then and fades it in, so strut's page
+behind the app never flashes. A link the page opens to itself changes
 `input` in place, the URL following (replaced, as the full UI does); a
 file or another app opens in the side panel inside the page (below); any
 other link opens in a new window.

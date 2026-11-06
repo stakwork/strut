@@ -1,7 +1,7 @@
 import { useEffect, useState } from "preact/hooks";
 import * as api from "../api";
 import { appToolInput, namesApp } from "../app-links";
-import { replaceUrl } from "../embed";
+import { replaceUrl, reportReady } from "../embed";
 import { useListedApp } from "../use-listed-app";
 import { AppWithPanel } from "./AppWithPanel";
 
@@ -64,6 +64,11 @@ export function SoloApp(props: { app: string; input?: string | null; visitor?: b
       on = false;
     };
   }, [props.app, props.visitor]);
+  // Nothing to wait for: the page says why there is no app.
+  const missing = props.visitor ? visitorApp === null : listed.entry === null;
+  useEffect(() => {
+    if (missing) reportReady();
+  }, [missing]);
   return (
     <div class="app-solo">
       {shown
@@ -73,6 +78,7 @@ export function SoloApp(props: { app: string; input?: string | null; visitor?: b
             {...(toolInput ? { toolInput } : {})}
             {...(props.visitor ? { visitor: true } : {})}
             {...(props.theme ? { theme: props.theme } : {})}
+            onReady={reportReady}
           />
         : <div class="empty">
             {props.visitor

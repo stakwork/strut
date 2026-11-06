@@ -52,6 +52,10 @@ export function AppHost(props: {
    *  public view (`/public/apps/<name>/document`, its visitor's identity
    *  written in) and calls to `/public/mcp`, with no credential. */
   visitor?: boolean;
+  /** The page is on screen: it initialized, or it loaded and never will
+   *  (a page without the apps SDK), or it could not be loaded. Once per
+   *  load. A host that frames strut fades in on it (../embed `reportReady`). */
+  onReady?: () => void;
 }) {
   const app = props.app;
   const visitor = !!props.visitor;
@@ -61,8 +65,8 @@ export function AppHost(props: {
   const frameRef = useRef<HTMLIFrameElement>(null);
   const [state, setState] = useState<{ status: "loading" | "ready" | "error"; error?: string }>({ status: "loading" });
   const connRef = useRef<AppHostConnection | null>(null);
-  const handlers = useRef({ onMessage: props.onMessage, onNavigate: props.onNavigate });
-  handlers.current = { onMessage: props.onMessage, onNavigate: props.onNavigate };
+  const handlers = useRef({ onMessage: props.onMessage, onNavigate: props.onNavigate, onReady: props.onReady });
+  handlers.current = { onMessage: props.onMessage, onNavigate: props.onNavigate, onReady: props.onReady };
   const inputKey = props.toolInput ? JSON.stringify(props.toolInput) : "";
   const toolInput = useRef(props.toolInput);
   toolInput.current = props.toolInput;
@@ -77,6 +81,16 @@ export function AppHost(props: {
     if (!frame) return;
     let cancelled = false;
     let conn: AppHostConnection | null = null;
+    let readyTimer: ReturnType<typeof setTimeout> | undefined;
+    const markReady = () => {
+      clearTimeout(readyTimer);
+      if (!cancelled) handlers.current.onReady?.();
+    };
+    // A page that never initializes is on screen a moment after it loads.
+    const onLoad = () => {
+      if (frame.getAttribute("srcdoc")) readyTimer = setTimeout(markReady, 1000);
+    };
+    frame.addEventListener("load", onLoad);
     setState({ status: "loading" });
     void (async () => {
       try {
@@ -106,6 +120,7 @@ export function AppHost(props: {
           // Channels as the signed-in viewer: a peer's app's are relayed to the peer.
           ...(!visitor ? { channels: { name: app.name, version: app.version, ...(app.peer ? { peer: app.peer } : {}) } } : {}),
           handlers: {
+            onInitialized: markReady,
             ...(messages ? { onMessage: (text: string) => handlers.current.onMessage?.(text) } : {}),
             ...(handlers.current.onNavigate ? {
               onNavigate: (params: Record<string, string>) => {
@@ -134,10 +149,13 @@ export function AppHost(props: {
         setState({ status: "ready" });
       } catch (err) {
         if (!cancelled) setState({ status: "error", error: err instanceof Error ? err.message : String(err) });
+        markReady();
       }
     })();
     return () => {
       cancelled = true;
+      clearTimeout(readyTimer);
+      frame.removeEventListener("load", onLoad);
       connRef.current = null;
       void conn?.close();
       if (frame) frame.removeAttribute("srcdoc");

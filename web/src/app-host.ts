@@ -36,6 +36,8 @@ export interface AppHostHandlers {
    *  returning false (not a link this host opens in place), it opens in a
    *  new tab like any other. */
   onNavigate?: (params: Record<string, string>) => boolean | void;
+  /** The page's `ui/notifications/initialized`: it has started. */
+  onInitialized?: () => void;
 }
 
 export interface AppHostOptions {
@@ -170,6 +172,7 @@ export async function connectAppHost(opts: AppHostOptions): Promise<AppHostConne
   let toolInput: Record<string, string> | undefined;
   bridge.oninitialized = () => {
     initialized = true;
+    opts.handlers.onInitialized?.();
     if (toolInput) void bridge.sendToolInput({ arguments: toolInput });
   };
   const win = opts.frame.contentWindow;
