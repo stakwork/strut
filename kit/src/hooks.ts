@@ -388,7 +388,8 @@ export interface AssistantMessage {
 export interface AssistantJob {
   job: string;
   runId: string;
-  /** The job-shaped workflow it runs, when the turn named one (a new job). */
+  /** The job-shaped workflow it runs: what the launch returned, else, for
+   *  a new job, what the turn named. */
   workflow?: string;
 }
 
@@ -473,8 +474,8 @@ export function assistantJobs(events: readonly RunEvent[] | undefined): Assistan
     const o = toolOutput(e["output"]);
     if (typeof o?.["job"] !== "string" || typeof o["runId"] !== "string") continue;
     const input = toolOutput(starts.get(e.path ?? "")?.["input"]);
-    const started = tool[2] === "start" ? (input?.["workflow"] ?? "job") : undefined;
-    out.push({ job: o["job"], runId: o["runId"], ...(typeof started === "string" ? { workflow: started } : {}) });
+    const workflow = o["workflow"] ?? (tool[2] === "start" ? (input?.["workflow"] ?? "job") : undefined);
+    out.push({ job: o["job"], runId: o["runId"], ...(typeof workflow === "string" ? { workflow } : {}) });
   }
   return out;
 }

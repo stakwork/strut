@@ -2,7 +2,7 @@ import { z } from "zod";
 import { defineStep, isFirstParty, type StepContext } from "../../../core.js";
 import type { JobsCapability } from "../../../jobs.js";
 import { appScoped } from "../../../session-store.js";
-import { attachmentsField, handedOn, launchOnce, requireJobLaunch } from "./_shared.js";
+import { attachmentsField, handedOn, launchOnce, launchOutput, requireJobLaunch } from "./_shared.js";
 
 /**
  * The next message of an existing JOB (the orchestrator's `continue_job`):
@@ -19,7 +19,7 @@ import { attachmentsField, handedOn, launchOnce, requireJobLaunch } from "./_sha
 export default defineStep({
   type: "job/continue",
   description:
-    "Send an existing JOB its next message — the answer to its question, a change, \"go on\" — and return at once: { job, runId, callback }. " +
+    "Send an existing JOB its next message — the answer to its question, a change, \"go on\" — and return at once: { job, runId, callback, workflow }. " +
     "It continues in the job's own directory and thread, remembering its earlier turns, with the same hands it had (a builder job goes on building, where it builds); this call does not wait for it, and its result reaches the person when it ends. " +
     "Refused while the job is still working (job_busy: its result is on the way). The `job` id is the one job/start returned, or one job/list finds.",
   input: z.object({
@@ -32,7 +32,7 @@ export default defineStep({
       .describe("Only when the work has become another kind (a plan the person approved, now a code change): its name in the list of the kinds of work a job does here. Left out, the job keeps the kind it has."),
     attachments: attachmentsField,
   }),
-  output: z.object({ job: z.string(), runId: z.string(), callback: z.boolean() }),
+  output: launchOutput,
   async run(cfg, ctx: StepContext) {
     const launch = requireJobLaunch(ctx.services);
     // A turn an APP launched continues only the app's jobs (plans/apps.md

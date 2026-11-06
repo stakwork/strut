@@ -10,8 +10,9 @@ import { Bot, ChevronRight } from "lucide-react";
 import { useJobUpdates, useRun, useStrutClient } from "@strut/kit";
 import { Markdown } from "./Markdown";
 import { cn } from "@/lib/utils";
-import { jobLook, liveStrip } from "../lib/jobs";
+import { jobLook, jobRunWorkflow, liveStrip } from "../lib/jobs";
 import { inFlight } from "../lib/chat";
+import { openable } from "../lib/artifacts";
 import type { ArtifactRef, JobView } from "../lib/types";
 import { ArtifactCard, type TurnRuns } from "./ArtifactCard";
 import { ClaimsPanel } from "./ClaimsPanel";
@@ -35,9 +36,25 @@ interface JobOutput {
   ask?: unknown;
 }
 
-export function JobCard({ job, runId, workflow, conversation }: { job: string; runId: string; workflow?: string; conversation?: string }) {
-  const run = useRun(workflow ?? "job", runId, { live: true });
-  const status = run.data?.status ?? "running";
+interface JobCardProps {
+  job: string;
+  runId: string;
+  /** The workflow the run is, as the turn recorded it. */
+  workflow?: string;
+  conversation?: string;
+}
+
+/** A turn that names no workflow for its job run (saved before
+ *  job/continue returned one) reads it from the job's record first. */
+export function JobCard(props: JobCardProps) {
+  const record = useJob(props.workflow ? "" : props.job, false);
+  const workflow = jobRunWorkflow(props.runId, props.workflow, record.isError ? null : record.data);
+  return <JobRunCard {...props} {...(workflow ? { workflow } : {})} />;
+}
+
+function JobRunCard({ job, runId, workflow, conversation }: JobCardProps) {
+  const run = useRun(workflow ?? "", runId, { live: true });
+  const status = run.data?.status ?? (run.isError ? "unreadable" : "running");
   const running = inFlight(status);
   const view = useJob(job, running);
   const [open, setOpen] = useState(false);
@@ -46,8 +63,9 @@ export function JobCard({ job, runId, workflow, conversation }: { job: string; r
   const ask = typeof out.ask === "string" ? out.ask : (out.ask as { message?: string } | undefined)?.message;
   const look = run.isError ? { label: "Unreadable", tone: "muted" as const } : jobLook(status, ask);
   const title = view.data?.title ?? (typeof run.data?.["title"] === "string" ? run.data["title"] : job);
-  const artifacts = (run.data?.artifacts ?? []) as ArtifactRef[];
-  const runs: TurnRuns = { byJob: new Map([[job, { workflow: run.data?.workflow ?? workflow ?? "job", runId }]]), byRun: new Map([[runId, { workflow: workflow ?? "job", runId }]]) };
+  const artifacts = ((run.data?.artifacts ?? []) as ArtifactRef[]).filter(openable);
+  const file = workflow ? { workflow, runId } : undefined;
+  const runs: TurnRuns = { byJob: new Map(file ? [[job, file]] : []), byRun: new Map(file ? [[runId, file]] : []) };
   const captchas = artifacts.filter((a) => a.kind === "captcha");
   // Its pull requests stay in sight collapsed, unless the thread shows them.
   const threadPrs = useContext(ThreadPrs);

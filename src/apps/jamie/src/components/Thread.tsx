@@ -1,8 +1,8 @@
 // The thread (Hive's `SidebarChat` + `SidebarChatMessage` +
 // `OrchestratorTurnCard`): each turn oldest first — the person's words with
 // their files, or a wake (a job it started ended); the working card while
-// the turn runs; then the reply, its question, the jobs it started, the
-// changes it proposes and what it made. The composer under it; Send is Stop
+// the turn runs; then the reply, its question, on a wake what the job
+// delivered, the jobs it started, the changes it proposes and what it made. The composer under it; Send is Stop
 // while a turn runs. A conversation is followed live
 // (`conversation/get { wait }`) and marked read while it is open.
 import { useContext, useEffect, useMemo, useRef, useState } from "react";
@@ -12,6 +12,7 @@ import { useHost } from "@strut/kit";
 import { Markdown } from "./Markdown";
 import { cn } from "@/lib/utils";
 import { inFlight, sendRefusal, silentReply, turnContext, type SendRefusal } from "../lib/chat";
+import { turnDeliverables, type Shown } from "../lib/artifacts";
 import type { ConversationTurn, WakeMark } from "../lib/types";
 import { useConversation, useSend, useStop, useUpdateConversation } from "../hooks";
 import { ArtifactCard, type TurnRuns } from "./ArtifactCard";
@@ -52,9 +53,12 @@ export function Thread({ session, draft, onStarted, onShowList, focusJob }: Thre
   // One card per pull request: the newest turn that names it shows it.
   const threadPrs = useMemo(() => {
     const owner = new Map<string, string>();
-    for (const t of turns) for (const a of t.artifacts ?? []) {
-      const pr = prOf(a);
-      if (pr) owner.set(prKey(pr), t.runId);
+    for (const t of turns) {
+      const { delivered, own } = turnDeliverables(t);
+      for (const { artifact } of [...delivered, ...own]) {
+        const pr = prOf(artifact);
+        if (pr) owner.set(prKey(pr), t.runId);
+      }
     }
     return owner;
   }, [turns]);
@@ -176,12 +180,15 @@ function Empty() {
   );
 }
 
-/** The runs a turn knows, for its files: its own, the jobs it started, the job run a wake woke on. */
+/** The runs a turn knows, for its files: its own, the job runs a wake woke
+ *  on, the jobs it started or continued. A job run whose workflow the turn
+ *  does not know is left out: its card finds the run (`job/get`). */
 function turnRuns(turn: ConversationTurn): TurnRuns {
   const byJob = new Map<string, { workflow: string; runId: string }>();
   const byRun = new Map<string, { workflow: string; runId: string }>([[turn.runId, { workflow: turn.workflow, runId: turn.runId }]]);
-  for (const j of turn.jobs) {
-    const r = { workflow: j.workflow ?? "job", runId: j.runId };
+  for (const j of [...(turn.delivered ?? []), ...turn.jobs]) {
+    if (!j.workflow) continue;
+    const r = { workflow: j.workflow, runId: j.runId };
     byJob.set(j.job, r);
     byRun.set(j.runId, r);
   }
@@ -196,6 +203,14 @@ function Turn({ turn, conversation }: { turn: ConversationTurn; conversation: st
   // The job a pull request in the reply came from: the one a wake woke on,
   // or the only one the turn started.
   const prJob = turn.wake && turn.wake !== true ? turn.wake.job : turn.jobs.length === 1 ? turn.jobs[0]!.job : undefined;
+  const { delivered, own } = useMemo(() => turnDeliverables(turn), [turn]);
+  // A pull request shows once in the thread, in the newest turn naming it.
+  const card = ({ artifact, job }: Shown) => {
+    const pr = prOf(artifact);
+    if (pr && threadPrs.get(prKey(pr)) !== turn.runId) return null;
+    const from = job ?? prJob;
+    return <ArtifactCard key={`${job ?? ""}:${artifact.id}`} artifact={artifact} runs={runs} conversation={conversation} {...(from ? { job: from } : {})} />;
+  };
   return (
     <div className="flex flex-col gap-2" data-testid="turn" data-run-id={turn.runId} data-status={turn.status}>
       {turn.wake ? (
@@ -223,6 +238,7 @@ function Turn({ turn, conversation }: { turn: ConversationTurn; conversation: st
         </div>
       )}
       {!working && turn.ask && <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm">{turn.ask}</div>}
+      {!working && delivered.map(card)}
       {turn.status === "error" && <Notice tone="error">{turn.error ?? "This turn failed."}</Notice>}
       {turn.status === "cancelled" && (
         <div className="flex items-center gap-1.5 px-1 text-xs text-muted-foreground">
@@ -237,12 +253,7 @@ function Turn({ turn, conversation }: { turn: ConversationTurn; conversation: st
       {turn.proposals.map((p) => (
         <ProposalCard key={p.id} brief={p} />
       ))}
-      {(turn.artifacts ?? []).filter((a) => {
-        const pr = prOf(a);
-        return !pr || threadPrs.get(prKey(pr)) === turn.runId;
-      }).map((a) => (
-        <ArtifactCard key={a.id} artifact={a} runs={runs} conversation={conversation} {...(prJob ? { job: prJob } : {})} />
-      ))}
+      {own.map(card)}
     </div>
   );
 }

@@ -3,7 +3,7 @@ import { z } from "zod";
 import { defineStep, isFirstParty, type StepContext } from "../../../core.js";
 import { JOB_WORKFLOWS } from "../../../jobs.js";
 import { appScoped } from "../../../session-store.js";
-import { attachmentsField, handedOn, launchOnce, requireJobLaunch } from "./_shared.js";
+import { attachmentsField, handedOn, launchOnce, launchOutput, requireJobLaunch } from "./_shared.js";
 
 /**
  * Hand work to a new JOB and return at once (the orchestrator's
@@ -39,7 +39,7 @@ import { attachmentsField, handedOn, launchOnce, requireJobLaunch } from "./_sha
 export default defineStep({
   type: "job/start",
   description:
-    "Start a JOB for bigger work (research, a page, a plan, a code change, a workflow or an app to build — anything that needs files, the web, tools or many steps) and return at once: { job, runId, callback }. " +
+    "Start a JOB for bigger work (research, a page, a plan, a code change, a workflow or an app to build — anything that needs files, the web, tools or many steps) and return at once: { job, runId, callback, workflow }. " +
     "The job runs ON ITS OWN in its own directory, with its own tools; this call does not wait for it. Its result (a reply, files, or a question) reaches the person when it ends — " +
     "so tell them in one line what you started and stop; do not wait, poll or guess its result. " +
     "To send the same job a follow-up (an answer to its question, a change), use job/continue with the `job` id this returns.",
@@ -74,7 +74,7 @@ export default defineStep({
       ),
     attachments: attachmentsField,
   }),
-  output: z.object({ job: z.string(), runId: z.string(), callback: z.boolean() }),
+  output: launchOutput,
   async run(cfg, ctx: StepContext) {
     const launch = requireJobLaunch(ctx.services);
     const workflow = cfg.workflow ?? "job";

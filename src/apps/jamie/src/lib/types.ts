@@ -122,6 +122,14 @@ export interface ArtifactRef {
   app?: { name: string; version?: string; hash?: string };
 }
 
+/** A job run a wake woke on, and what it delivered. */
+export interface Delivery {
+  job: string;
+  runId: string;
+  workflow: string;
+  artifacts: ArtifactRef[];
+}
+
 export interface ConversationTurn {
   turn: number;
   runId: string;
@@ -131,6 +139,8 @@ export interface ConversationTurn {
   status: string;
   prompt?: string;
   wake?: WakeMark | true;
+  /** A wake's job runs here, each with what it delivered. */
+  delivered?: Delivery[];
   attachments?: Array<{ name: string; mediaType: string; size: number; path?: string }>;
   text?: string;
   ask?: string;

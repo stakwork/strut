@@ -150,19 +150,21 @@ steps:
               attachments: { type: array, items: { type: string }, description: "Files attached to THIS message that the job needs, by name as the message shows them. A file from an earlier message: call job/start instead." }
           artifacts:
             type: array
-            description: "Usually none. A job's deliverable you point the person to, by the url job/get gave it, or a small piece of inline content. You write no files: anything that is one is a job's."
+            description: "Usually none: what a job just delivered is shown under your reply already. An earlier deliverable you point the person to — by the url job/get gave it, or an app by its name — or a small piece of inline content. You write no files: anything that is one is a job's."
             items:
               type: object
               additionalProperties: false
               required: [id, title]
               properties:
                 id: { type: string, description: "Stable across turns: the same id next turn means a newer version of the same thing." }
-                kind: { type: string, description: "Only when the link would mislead: markdown | html | image | video | audio | pdf | url | diff | pull_request | code | log | json" }
+                kind: { type: string, description: "app for an app (with `app`); else only when the link would mislead: markdown | html | image | video | audio | pdf | url | diff | pull_request | code | log | json" }
                 title: { type: string }
                 label: { type: string, description: "What it is to the reader: Plan, Page, Screenshot" }
                 summary: { type: string, description: "One sentence about what is in it" }
                 url: { type: string, description: "The url job/get gave a job's deliverable, or an absolute link" }
                 content: { type: string, description: "Small inline content, instead of a url" }
+                app: { type: string, description: "An app published here, by its name as job/get gives it (kind: app), instead of a url" }
+                version: { type: string, description: "With app: the version (v3), when not the one people open now" }
           ask:
             type: object
             description: "Only when you need a decision from the person before going on: the question, in prose. The answer comes as the next turn's message."
@@ -212,7 +214,7 @@ steps:
       startError: "{{ started?.error }}"
       artifacts: "{{ turn.object.artifacts }}"
       ask: "{{ turn.object.ask }}"
-      # The job the reply started: { job, runId, callback }; undefined when none.
+      # The job the reply started: { job, runId, callback, workflow }; undefined when none.
       job: "{{ started?.job }}"
       runId: "{{ started?.runId }}"
       cost: "{{ turn.cost }}"
@@ -295,7 +297,7 @@ params:
     {question}To continue it: {continue}.
 
     {/each}Follow the person's standing instructions in this conversation. Decide one of:
-    - **Summarize** (the default): the job's reply is its note to YOU, not a draft of your message — never shorten it line by line or keep its sections. Say what is NEW against what you already told the person — a line when the result confirms it, what it adds when it adds — in your own words, as a message in this conversation, never the whole story again; the detail is in what it produced. Leave out how the job worked: where it looked, what it could not reach, what it did not open or verify — unless one of those changes the answer, and then in a clause. Do not restate its reply, do not list files, functions or line numbers, and do not describe what it produced — the person sees it. Ask only what the job asked the person, if it asked; otherwise stop when the answer stops, offering no next step — the person asks for one.
+    - **Summarize** (the default): the job's reply is its note to YOU, not a draft of your message — never shorten it line by line or keep its sections. Say what is NEW against what you already told the person — a line when the result confirms it, what it adds when it adds — in your own words, as a message in this conversation, never the whole story again; the detail is in what it produced. Leave out how the job worked: where it looked, what it could not reach, what it did not open or verify — unless one of those changes the answer, and then in a clause. Do not restate its reply, do not list files, functions or line numbers, and do not describe or list in `artifacts` what it produced — the person sees it under your reply. Ask only what the job asked the person, if it asked; otherwise stop when the answer stops, offering no next step — the person asks for one.
     - **Continue**, as its section says — ONLY when the person's request is not yet met and the next step is clearly within what they asked for (the job's question is one their instructions already answer, or they asked for a result this turn did not reach). Say in one line that you did.
     - **Stay silent:** reply with exactly `{silent}` and nothing else when there is nothing to add — the person stopped the job themselves, or its reply is one line that says it all.
 
@@ -406,6 +408,7 @@ params:
     earlier message: `start` carries only this message's files.
 
     Answer with `text`, your reply to the person. Point them to a job's
-    deliverable in `artifacts`, by the `url` job/get gave it, never as a
-    path in `text`. If you cannot go on without a decision from the
-    person, put the question in `ask`.
+    deliverable in `artifacts`, by the `url` job/get gave it — an app by
+    its name, `{ kind: "app", app: "<name>" }` — never as a path in
+    `text`. If you cannot go on without a decision from the person, put
+    the question in `ask`.

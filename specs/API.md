@@ -829,13 +829,14 @@ interface ConversationTurn {
   status: string;           // success | error | cancelled; while not settled running | paused, stale when no process runs it
   prompt?: string;          // the person's words (input.prompt) — absent on a wake
   wake?: { job: string; runId: string; peer?: string; also?: unknown[] } | true;  // a wake turn: the job run it woke on (run.start.wake)
+  delivered?: Array<{ job: string; runId: string; workflow: string; artifacts: ArtifactRef[] }>; // a wake turn: what each job run it woke on (on this strut) delivered, resolved as its run.end carried it
   attachments?: Array<{ name: string; mediaType: string; size: number; path: string }>; // `path`: read with `run/files` on the turn's run
   text?: string;            // the reply
   ask?: string;             // its question
   artifacts?: ArtifactRef[]; // resolved, as GET …/runs/:runId/artifacts
   error?: string;
   proposals: ProposalBrief[]; // as run.end carries them (§12)
-  jobs: Array<{ job: string; runId: string; workflow?: string }>; // what it started (job/start) or continued
+  jobs: Array<{ job: string; runId: string; workflow?: string }>; // what it started (job/start) or continued; `workflow` the run's (job, builder), absent on a continue logged before job/continue returned it
 }
 ```
 

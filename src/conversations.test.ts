@@ -38,11 +38,15 @@ describe("conversations: the pure parts", () => {
       ev({ type: "step.end", path: "o/agent/002-job_continue", stepType: "tool:job_continue", output: { job: "j-2", runId: "12" } }),
       ev({ type: "step.end", path: "o/start", stepType: "job/start", output: { job: "j-3", runId: "13" } }),
       ev({ type: "step.end", path: "o/agent/003-job_get", stepType: "tool:job_get", output: { job: "j-4", runId: "14" } }),
+      // A continue returns the workflow the job's record runs it on.
+      ev({ type: "step.end", path: "o/agent/004-job_continue", stepType: "tool:job_continue", output: JSON.stringify({ job: "j-1", runId: "15", callback: true, workflow: "builder" }) }),
     ]);
     assert.deepEqual(jobs, [
       { job: "j-1", runId: "11", workflow: "builder" },
+      // Logged before job/continue returned it: the job's record has it.
       { job: "j-2", runId: "12" },
       { job: "j-3", runId: "13", workflow: "job" },
+      { job: "j-1", runId: "15", workflow: "builder" },
     ]);
   });
 
@@ -270,6 +274,33 @@ describe("conversations through a whole strut", () => {
     assert.equal(wake.prompt, undefined, "a wake has no person's words");
     assert.deepEqual(wake.wake, { job: person.jobs[0].job, runId: person.jobs[0].runId });
     assert.equal(wake.text, "Summary.");
+    assert.equal(wake.delivered, undefined, "the job delivered nothing");
+  });
+
+  it("a wake turn carries what the job run it woke on delivered, resolved, with the run's workflow", async () => {
+    const { strut, say, get, idle } = await boot({
+      reply: () => ({ text: "Looking into it.", start: { brief: "Find flights", title: "Flights" }, artifacts: [] }),
+    });
+    await strut.workspace.publishWorkflow("job", "v2", {
+      steps: [{ id: "result", type: "pack", config: { text: "found 3", artifacts: [
+        { id: "flights", kind: "markdown", title: "Flights", content: "# 3 flights" },
+        { id: "fares", title: "Fares", url: "https://example.com/fares" },
+      ] } }],
+    });
+    await say("alice", "c-1", "flights?", { wake: true });
+    await until(async () => ((await get("alice", "c-1")).body.turns.length === 2 ? true : undefined), "the wake turn");
+    await idle();
+    const [wake, person] = (await get("alice", "c-1")).body.turns;
+    assert.deepEqual(wake.delivered, [{
+      job: person.jobs[0].job,
+      runId: person.jobs[0].runId,
+      workflow: "job",
+      artifacts: [
+        { id: "flights", kind: "markdown", title: "Flights", content: "# 3 flights" },
+        { id: "fares", kind: "url", title: "Fares", url: "https://example.com/fares" },
+      ],
+    }]);
+    assert.equal(person.delivered, undefined, "a person's turn woke on nothing");
   });
 
   it("a list row shows the jobs its turns started — title, running, the pull requests they delivered — and an older record gets them on its next list", async () => {

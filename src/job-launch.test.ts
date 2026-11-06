@@ -417,6 +417,7 @@ describe("job/start and job/continue", () => {
     await settle("orch", first);
     const started = await toolOutput(first);
     assert.ok(started.job && started.runId, JSON.stringify(started));
+    assert.equal(started.workflow, "builder", "the start says which workflow the job's run is");
     const end = await until(() => posts.find((p) => p.workflow === "builder"));
     assert.equal(end.runId, started.runId);
     assert.equal(end.job, started.job);
@@ -435,6 +436,7 @@ describe("job/start and job/continue", () => {
     orchTool = { name: "job_continue", input: { job: started.job, prompt: "Also post it to Slack" } };
     const second = await launch({ prompt: "also slack" });
     await settle("orch", second);
+    assert.equal((await toolOutput(second)).workflow, "builder", "…and so does the continue: the record's");
     const ends = await until(() => {
       const e = posts.filter((p) => p.workflow === "builder");
       return e.length === 2 ? e : undefined;
