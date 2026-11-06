@@ -73,16 +73,19 @@ export function pickerGroups(
 export function comesAlong(
   pkg: string,
   files: readonly string[],
-  picked: { workflows: readonly string[]; apps: readonly string[] },
-): { workflows: string[]; steps: string[]; apps: string[]; leftOut: string[] } {
+  picked: { workflows: readonly string[]; apps: readonly string[]; types?: readonly string[] },
+): { workflows: string[]; steps: string[]; apps: string[]; types: string[]; leftOut: string[] } {
   const workflows = new Set<string>();
   const steps = new Set<string>();
   const apps = new Set<string>();
+  const types = new Set<string>();
   for (const f of files) {
     const wf = /^workflows\/(.+)\.yaml$/.exec(f);
     const step = /^steps\/(.+)\.ts$/.exec(f);
     const app = /^apps\/([^/]+)\//.exec(f);
-    if (wf) workflows.add(wf[1]!);
+    const type = /^graph\/(.+)\.yaml$/.exec(f);
+    if (type) types.add(type[1]!);
+    else if (wf) workflows.add(wf[1]!);
     else if (step && !step[1]!.split("/").pop()!.startsWith("_")) steps.add(step[1]!);
     else if (app) apps.add(app[1]!);
   }
@@ -92,6 +95,8 @@ export function comesAlong(
     workflows: [...workflows].filter((p) => !pickedWf.has(p)).sort(),
     steps: [...steps].sort(),
     apps: [...apps].filter((p) => !pickedApps.has(p)).sort(),
+    // A parent of a named type comes along; the names match case-blind, as the graph's do.
+    types: [...types].filter((t) => !(picked.types ?? []).some((n) => n.toLowerCase() === t.toLowerCase())).sort(),
     leftOut: [...picked.workflows.filter((n) => !workflows.has(pathIn(pkg, n))), ...picked.apps.filter((n) => !apps.has(pathIn(pkg, n)))].sort(),
   };
 }
@@ -104,11 +109,12 @@ export function picksFromRelease(
   pkg: string,
   items: ReadonlyArray<{ kind: string; name: string }>,
   here: { workflows: ReadonlySet<string>; apps: ReadonlySet<string> },
-): { workflows: string[]; apps: string[]; concepts: string[] } {
+): { workflows: string[]; apps: string[]; concepts: string[]; types: string[] } {
   const local = (set: ReadonlySet<string>, name: string) => (set.has(name) ? name : set.has(`${pkg}/${name}`) ? `${pkg}/${name}` : null);
-  const out = { workflows: [] as string[], apps: [] as string[], concepts: [] as string[] };
+  const out = { workflows: [] as string[], apps: [] as string[], concepts: [] as string[], types: [] as string[] };
   for (const item of items) {
     if (item.kind === "concept") out.concepts.push(item.name);
+    else if (item.kind === "type") out.types.push(item.name);
     else if (item.kind === "workflow") {
       const n = local(here.workflows, item.name);
       if (n) out.workflows.push(n);
@@ -117,7 +123,7 @@ export function picksFromRelease(
       if (n) out.apps.push(n);
     }
   }
-  return { workflows: out.workflows.sort(), apps: out.apps.sort(), concepts: out.concepts.sort() };
+  return { workflows: out.workflows.sort(), apps: out.apps.sort(), concepts: out.concepts.sort(), types: out.types.sort() };
 }
 
 /** An installed package as the sidebar shows it: its name, version and

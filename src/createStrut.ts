@@ -3503,7 +3503,7 @@ export async function createStrut<TServices = unknown>(
     if (!info || info.manifest.package !== pkg) return c.json({ error: `no package ${pkg} at ${digest} here` }, 404);
     const items = info.items
       .filter((i) => !i.helper)
-      .map((i) => ({ kind: i.kind, name: i.kind === "concept" ? i.name : i.name.slice(pkg.length + 1) }));
+      .map((i) => ({ kind: i.kind, name: i.kind === "concept" || i.kind === "type" ? i.name : i.name.slice(pkg.length + 1) }));
     return c.json({ package: pkg, version: info.manifest.version, digest, items });
   });
 
@@ -3655,7 +3655,7 @@ export async function createStrut<TServices = unknown>(
     if (typeof body["package"] !== "string" || typeof body["version"] !== "string" || !str("description") || !str("license")) {
       return "package and version are required strings (publisher/name, 1.4.0); description and license are strings";
     }
-    if (!["workflows", "steps", "concepts", "apps"].every(list)) return "workflows, steps, concepts and apps are lists of names";
+    if (!["workflows", "steps", "concepts", "apps", "types"].every(list)) return "workflows, steps, concepts, apps and types are lists of names";
     const requires = body["requires"] as { packages?: unknown } | undefined;
     const pinsOk = (p: unknown) => Array.isArray(p) && p.every((r) => r && typeof r === "object" && typeof (r as { package?: unknown }).package === "string" && typeof (r as { digest?: unknown }).digest === "string");
     if (requires !== undefined && (!requires || typeof requires !== "object" || (requires.packages !== undefined && !pinsOk(requires.packages)))) {

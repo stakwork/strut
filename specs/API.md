@@ -2146,7 +2146,7 @@ does not answer within 15 s. A route, not a workflow: the body and the
 answer hold the call's key and room tokens, so nothing of either is logged,
 kept or recorded as a run.
 
-## 16. Packages — sharing workflows, steps, apps and Concepts (`plans/marketplace.md` §1–§5)
+## 16. Packages — sharing workflows, steps, apps, Concepts and graph types (`plans/marketplace.md` §1–§5)
 
 A PACKAGE is a directory: `strut.yaml` (`package: publisher/name`,
 `version`, `description?`, `license?` — an SPDX expression, never
@@ -2155,7 +2155,8 @@ enforced — `requires?`) and the folders `workflows/`,
 package's prefix (`steps/create-issue.ts` is the step
 `acme/linear/create-issue`, `workflows/sync.yaml` the workflow
 `acme/linear/sync`, the folder `apps/issues/` the app
-`acme/linear/issues`). It is pinned by its DIGEST, `sha256:<hex>` over every
+`acme/linear/issues`), and `graph/`, one `<Type>.yaml` per graph type,
+named by its type (`src/packages/graph-types.ts`). It is pinned by its DIGEST, `sha256:<hex>` over every
 file in it (`readPackage`, `src/packages/format.ts`). A strut keeps every
 package it resolved under `<dataDir>/packages/`, one directory per digest,
 and serves any of them by digest — whether it built the package or
@@ -2169,7 +2170,7 @@ and `pk:` are refused by name (`package_source_unsupported`).
 | POST   | `/packages/install` | `{ ref, digest?, url?, index? }` → 201 `InstallResult` (`src/packages/install.ts`). `ref` is `file:/path/to/package`, `pk:<key>/<publisher>/<name>[@sha256:<hex>]` with `url`, where the publisher's catalog is served (a strut's `…/packages/catalog?public=1`, or the file it uploaded) — see "Installing by key" below — or a bare NAME, `publisher/name`, looked up in the indexes this strut follows (the first whose card lists the publisher, or the one `index` names) and installed as `pk:` with the row's key and catalog URLs, tried in order. A name with `url` is 400; 404 `package_not_listed` when no index lists the publisher, `package_index_unknown` for an `index` not followed; 502 `package_index_unreachable` when no index card could be read; 400 when this strut follows none. A person's act: behind the key at full scope (a peer is 403), one at a time |
 | DELETE | `/packages/:publisher/:name` | Uninstall → `{ ok: true, package, removed, kept }` (`UninstallResult`) |
 | GET    | `/packages/:publisher/:name/archive?digest=sha256:<hex>` | The package at that digest as a `.tar.gz` of its files (`content-type: application/gzip`, `ETag: "<digest>"`, `cache-control: private, max-age=31536000, immutable`; `If-None-Match` → 304). 400 without a well-formed `digest`; 404 when this strut holds no package `publisher/name` at that digest. Behind the key like every route; with `?t=` a subscriber's read of a digest the fleet catalog names; with `?public=1` anyone's read of a digest the PUBLIC catalog names (404 for any other, whatever the gate's mode) |
-| GET    | `/packages/:publisher/:name/items?digest=sha256:<hex>` | `{ package, version, digest, items: [{ kind: "workflow" \| "step" \| "app" \| "concept", name }] }`: what the package at that digest holds, each by its name INSIDE the package (`summarize` for `acme/tools/summarize`; a Concept by its page name), helpers left out — what the package page ticks from a release (`plans/packages-ux.md` §3). 400 without a well-formed `digest`; 404 when this strut's cache holds no package `publisher/name` at that digest |
+| GET    | `/packages/:publisher/:name/items?digest=sha256:<hex>` | `{ package, version, digest, items: [{ kind: "workflow" \| "step" \| "app" \| "concept" \| "type", name }] }`: what the package at that digest holds, each by its name INSIDE the package (`summarize` for `acme/tools/summarize`; a Concept by its page name, a graph type by its type), helpers left out — what the package page ticks from a release (`plans/packages-ux.md` §3). 400 without a well-formed `digest`; 404 when this strut's cache holds no package `publisher/name` at that digest |
 | GET    | `/publisher` | This strut's publisher → `{ key, name?, host: "self", createdAt, public?, publicChannels }` (`src/packages/publisher.ts`); 404 before a key is minted. `key` is the FLEET key, what a subscribing strut follows; `public` the PUBLIC key, once a channel was made public — the only key the world sees; `publicChannels` the channels in the public catalog ("One publisher, two keys" below). `name` is the publisher's prefix segment (`stakwork` in `stakwork/tools`), when set. Any credential may read it (a subscriber's, hive's) |
 | POST   | `/publisher` | Mint the key → 201 `PublisherInfo`, or 200 with the one already here. 409 `publisher_unsafe_key` on a file store with `STRUT_SECRET_KEY` unset |
 | PUT    | `/publisher` | `{ name }` → `PublisherInfo`: the publisher's NAME, `[a-z][a-z0-9-]*` — the first segment of every package published here (`plans/packages-ux.md`). The web UI composes package names from it, so nobody types the prefix. Mints the key first when there is none (409 `publisher_unsafe_key` as above); 400 `publisher_name` for a name that is not one |
@@ -2233,6 +2234,7 @@ takes it from `file:<the cache directory>` (`<dataDir>/packages/sha256-<hex>/`).
   "steps": ["acme/linear/create-issue"],  // beyond what the workflows reach
   "concepts": ["Linear"],              // each with the pages under it (PARENT_OF)
   "apps": ["acme/linear/issues"],      // each with what its grants execute and the apps it imports
+  "types": ["LegalParty", "Agreement"], // graph types, each with its parents and the edges among them
   "requires": {                        // packages BUILT on this strut that this one needs
     "packages": [{ "package": "acme/util", "digest": "sha256:…" }]  // the digest their build returned
   }
@@ -2285,6 +2287,20 @@ What goes in:
 - **The Concepts** named, with every page under each, as
   `concepts/<Name>.md` (front matter `description`, `parent`; the body is
   `docs`). A top page keeps its parent.
+- **The graph types** named, each read off this graph's ontology as
+  `graph/<Type>.yaml` in `graph/create-schema`'s grammar (`parent`,
+  `domain`, `type_description`, `attributes`, `key_spec`, `index`,
+  `title_key`, `description_key`, `role`, `identifiers`, `embed`) plus
+  `edges: [[EDGE, Target]]`, the edges whose source it is. Its parents
+  come along up to a type every strut has (`Thing`, strut's own, the
+  seed's Claim / Check / Evidence / Concept) or one a required package
+  carries. The edges are the ontology's rules among the carried types and
+  every edge the graph HOLDS between two of them — so an edge a Jarvis
+  graph let through on its allowlist, with no rule, travels as a rule.
+  Rules carry no `temporal`, `cardinality` or aliases yet. An edge the
+  graph holds between a carried type and one the package does not carry
+  is a warning. A type no package carries (strut's own, the seed's) or
+  that the graph does not hold refuses the build.
 - **Each step's claims**, as `steps/<name>.claims.yaml`. A claim with a
   check that reaches outside the package and what it requires is left out,
   with a warning.
@@ -2325,7 +2341,15 @@ writes records `source: "install"`, the installing actor, and
 show); a workflow's and an app's `owner` is the installing actor. A Concept is written stamped
 `pkg/<package>/<file>@<hash>` (skipped, with a warning, without a graph).
 A step's `<name>.claims.yaml` and a workflow's `claims:` block are recorded
-with the package as their speaker, and `publish` checks fire.
+with the package as their speaker, and `publish` checks fire. GRAPH TYPES
+are checked with everything else — the grammar, a parent and edge ends in
+the set or the graph, and the graph as it is: a type it holds keeps its
+key and attribute types, and the declaration covers what it requires (the
+checks an app's `data.graph` gets) — then registered before any other
+write, parents first, add-only; an edge with no rule, so a new edge type
+takes the default and an existing one keeps its own. A type is the
+graph's: no take-back or uninstall removes one. Without a graph a package
+with types is refused (409).
 
 ```jsonc
 // InstallResult
@@ -2340,6 +2364,8 @@ with the package as their speaker, and `publish` checks fire.
       "from": { "version": "1.3.0", "digest": "sha256:…" },  // an update only (the distro's door, below)
       "items": [                      // installed | present | modified (here and forked, left as it is) |
                                       // updated | diverged | retired | kept (+ "reason") — an update only
+                                      // (a graph type: installed | updated, extended | present)
+        { "kind": "type", "name": "Issue", "status": "installed" },
         { "kind": "step", "name": "acme/linear/create-issue", "status": "installed", "version": "v1" },
         { "kind": "workflow", "name": "acme/linear/sync", "status": "installed", "version": "v1" },
         { "kind": "app", "name": "acme/linear/issues", "status": "installed", "version": "v1" },

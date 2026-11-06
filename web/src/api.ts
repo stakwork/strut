@@ -2325,6 +2325,8 @@ export interface PublishRequest {
   apps?: string[];
   /** Concept pages, each with the pages under it. */
   concepts?: string[];
+  /** Graph types, each with its parents and the edges among them. */
+  types?: string[];
   channel?: string;
   /** With a channel: mark it public first (private → public only). */
   public?: boolean;
@@ -2349,7 +2351,7 @@ export interface PackageItems {
   package: string;
   version: string;
   digest: string;
-  items: Array<{ kind: "workflow" | "step" | "app" | "concept"; name: string }>;
+  items: Array<{ kind: "workflow" | "step" | "app" | "concept" | "type"; name: string }>;
 }
 export const getPackageItems = (pkg: string, digest: string) =>
   fetchJSON<PackageItems>(`/packages/${pkg.split("/").map(encodeURIComponent).join("/")}/items?digest=${encodeURIComponent(digest)}`);

@@ -50,11 +50,12 @@ test("pickerGroups groups the workflows here by category, an installed package's
 });
 
 test("comesAlong reads what a dry build adds to the picks, and the picks it does not carry", () => {
-  const files = ["strut.yaml", "workflows/summarize.yaml", "workflows/tidy.yaml", "steps/clip/shout.ts", "steps/clip/_shared.ts", "steps/clip/shout.claims.yaml", "apps/board/app.yaml", "apps/board/src/App.tsx"];
-  assert.deepEqual(comesAlong("acme/tools", files, { workflows: ["summarize", "job"], apps: [] }), {
+  const files = ["strut.yaml", "workflows/summarize.yaml", "workflows/tidy.yaml", "steps/clip/shout.ts", "steps/clip/_shared.ts", "steps/clip/shout.claims.yaml", "apps/board/app.yaml", "apps/board/src/App.tsx", "graph/Clip.yaml", "graph/Media.yaml"];
+  assert.deepEqual(comesAlong("acme/tools", files, { workflows: ["summarize", "job"], apps: [], types: ["clip"] }), {
     workflows: ["tidy"],
     steps: ["clip/shout"],
     apps: ["board"],
+    types: ["Media"],
     leftOut: ["job"],
   });
   assert.deepEqual(comesAlong("acme/tools", files, { workflows: ["acme/tools/summarize", "tidy"], apps: ["board"] }).workflows, [], "a name under the prefix is its path");
@@ -68,11 +69,13 @@ test("picksFromRelease maps what a release held back to the names here", () => {
     { kind: "step", name: "clip/shout" },
     { kind: "app", name: "board" },
     { kind: "concept", name: "Clips" },
+    { kind: "type", name: "Clip" },
   ];
   assert.deepEqual(picksFromRelease("acme/tools", items, { workflows: new Set(["summarize", "acme/tools/tidy"]), apps: new Set(["board"]) }), {
     workflows: ["acme/tools/tidy", "summarize"],
     apps: ["board"],
     concepts: ["Clips"],
+    types: ["Clip"],
   });
 });
 
