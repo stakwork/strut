@@ -441,9 +441,14 @@ export interface RunEvent {
   durationMs?: number;
   iteration?: number;
   /** Content hash of the workflow version this run executes, recorded on
-   *  `run.start` — resume refuses to replay a journal into a DIFFERENT DAG
-   *  (RUN_CONTROL_SPEC §5, validity guards). */
+   *  `run.start` and again on a durable `run.resumed` — the version it runs
+   *  on from there, another one when the resume moved it (§5.4; the newest
+   *  wins, `executedWorkflowHash`). Resume refuses to replay a journal into
+   *  a DIFFERENT DAG unless it compared the two (RUN_CONTROL_SPEC §5). */
   workflowHash?: string;
+  /** On a `run.resumed` that moved the run onto another version (§5.4): the
+   *  top-level steps that re-run because they changed in it. */
+  changed?: string[];
   /** Content hash of the ACTIVE version of every workspace (custom) step
    *  this run can execute, keyed by step type — recorded on `run.start`, and
    *  again on `run.resumed` (a resume loads whatever is active THEN). A bare

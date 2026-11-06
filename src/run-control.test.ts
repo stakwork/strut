@@ -8,14 +8,14 @@ import { createServer } from "node:http";
 import { z } from "zod";
 
 import { flow, step, defineStep, type StepRegistry, type RunEvent } from "./core.js";
-import { runWorkflow } from "./runner.js";
+import { runWorkflow, settleUnfinishedRun } from "./runner.js";
 import { MemoryRunStore, FileRunStore, type RunStore } from "./store.js";
 import runCancelStep from "./steps/lib/run/cancel.js";
 import { createStrut } from "./createStrut.js";
 import { WorkspaceManager } from "./workspace.js";
 import { pathlessWorkspace } from "./test-util/pathless-workspace.js";
 import { RunController, CancelledError, isCancelledError } from "./run-control.js";
-import { buildJournal, invalidateFrom, readRunStart, transitiveDependents } from "./journal.js";
+import { buildJournal, changedSteps, invalidateFrom, invalidateSteps, readRunStart, transitiveDependents } from "./journal.js";
 import type { SessionsCapability } from "./session-store.js";
 
 // ── Test helpers ───────────────────────────────────────────────────────────
@@ -561,6 +561,62 @@ describe("journal", () => {
     assert.equal(rs?.continues, "hive-1", "a resume opens the conversation it continues again");
   });
 
+  it("readRunStart reads the version a durable resume moved the run onto", () => {
+    const events = [
+      { type: "run.start", path: "wf", input: {}, workflowHash: "v1" },
+      { type: "run.resumed", path: "wf", live: true },
+      { type: "run.resumed", path: "wf", workflowHash: "v2" },
+    ] as RunEvent[];
+    assert.equal(readRunStart(events)?.workflowHash, "v2");
+    assert.equal(readRunStart(events.slice(0, 2))?.workflowHash, "v1", "an unpause moves nothing");
+  });
+
+  it("changedSteps names what a new version changed: config, deps (implicit ones too), params read, new steps", () => {
+    const prev = flow("wf", {
+      input: z.any(),
+      params: { prompt: "old", size: 3 },
+      steps: [
+        step("a", "value", { result: 1 }),
+        step("b", "value", { result: "{{ params.prompt }}" }),
+        step("c", "value", { result: "{{ params.size }}" }, { depends: [] }),
+        step("d", "value", { result: 4 }, { depends: ["a"] }),
+      ],
+    });
+    assert.deepEqual(changedSteps(prev, prev), []);
+    const next = flow("wf", {
+      input: z.any(),
+      params: { prompt: "new", size: 3 },
+      steps: [
+        step("a", "value", { result: 1 }),
+        step("d", "value", { result: 4 }, { depends: ["a"] }), // moved, same deps
+        step("b", "value", { result: "{{ params.prompt }}" }), // reads a changed param; now after d
+        step("c", "value", { result: "{{ params.size }}" }, { depends: [] }),
+        step("e", "value", { result: 5 }, { depends: [] }),
+      ],
+    });
+    assert.deepEqual(changedSteps(prev, next), ["b", "e"]);
+    const retried = flow("wf", { input: z.any(), params: prev.params!, steps: prev.steps.map((s) => (s.id === "c" ? { ...s, options: { retry: { max: 2 } } } : s)) });
+    assert.deepEqual(changedSteps(prev, retried), ["c"]);
+    const settled = { ...prev, settings: { privacy: "strict" } };
+    assert.deepEqual(changedSteps(prev, settled), ["a", "b", "c", "d"], "a settings change reaches every step");
+  });
+
+  it("invalidateSteps drops the changed steps and everything downstream, iterations included", () => {
+    const wf = flow("wf", {
+      input: z.any(),
+      steps: [
+        step("a", "value", { result: 1 }),
+        step("b", "value", { result: 2 }),
+        step("c", "value", { result: 3 }),
+        step("side", "value", { result: 4 }, { depends: [] }),
+      ],
+    });
+    const journal = { "wf/a": 1, "wf/b": 2, "wf/b#0": 2, "wf/c": 3, "wf/c/inner": 3, "wf/side": 4 };
+    const inv = invalidateSteps(journal, ["b"], wf);
+    assert.deepEqual(Object.keys(inv.journal).sort(), ["wf/a", "wf/side"]);
+    assert.deepEqual(inv.dropped, ["wf/b", "wf/b#0", "wf/c", "wf/c/inner"]);
+  });
+
   it("transitiveDependents follows explicit and implicit deps", () => {
     const steps = [
       step("a", "value", { result: 1 }),
@@ -877,6 +933,52 @@ describe("durable resume", () => {
 });
 
 // ── Crash hardening: torn tail + tail reopening ────────────────────────────
+
+describe("a run that would not end by itself", () => {
+  const failing = defineStep({ type: "failing", input: z.any(), output: z.any(), async run() { throw new Error("the step broke"); } });
+
+  it("a store write that fails while the run records its end: the run still ends, as an error, never stale", async () => {
+    let refused = false;
+    const store = new (class extends MemoryRunStore {
+      override async append(workflow: string, runId: string, event: RunEvent) {
+        if (event.type === "run.error" && !refused) {
+          refused = true;
+          throw new Error("disk full");
+        }
+        return super.append(workflow, runId, event);
+      }
+    })();
+    const wf = flow("ends", { input: z.any(), steps: [step("a", "failing", {})] });
+    const quiet = console.error;
+    console.error = () => {};
+    try {
+      await assert.rejects(runWorkflow(wf, {}, reg({ failing }), { store, runId: "r1" }), /disk full/);
+    } finally {
+      console.error = quiet;
+    }
+    const events = store.getEvents("ends", "r1");
+    assert.deepEqual(events.map((e) => e.type), ["run.start", "step.start", "step.error", "run.error"]);
+    assert.equal(events[3]!.error?.message, "disk full");
+    assert.equal(store.getSummary("ends", "r1")?.status, "error");
+  });
+
+  it("a resume whose launch failed after clearing the summary gets its old end back; a run never started gets nothing", async () => {
+    const store = new MemoryRunStore();
+    const at = new Date().toISOString();
+    await store.append("wf", "r2", { ts: at, runId: "r2", path: "wf", type: "run.start", input: { x: 1 }, actor: "ann" });
+    await store.append("wf", "r2", { ts: at, runId: "r2", path: "wf", type: "run.error", error: { message: "first failure" } });
+    await settleUnfinishedRun(store, "wf", "r2", new Error("the resume's launch failed"));
+    const summary = store.getSummary("wf", "r2");
+    assert.equal(summary?.status, "error");
+    assert.equal(summary?.error?.message, "first failure");
+    assert.equal(summary?.actor, "ann");
+    assert.equal(store.getEvents("wf", "r2").length, 2, "nothing appended to a log that already ends");
+
+    await settleUnfinishedRun(store, "wf", "r3", new Error("never started"));
+    assert.equal(store.getEvents("wf", "r3").length, 0);
+    assert.equal(store.getSummary("wf", "r3"), undefined);
+  });
+});
 
 describe("tree linkage on disk", () => {
   it("run.start records parentRunId for a nested run, nothing for a root", async () => {
@@ -1730,7 +1832,9 @@ describe("run control endpoints", () => {
       // No stored version matches the recorded hash → refused without force.
       const file = join(dir, "workflows", "resumable", "runs", runId, "events.jsonl");
       const raw = await readFile(file, "utf-8");
-      await writeFile(file, raw.replace(/"workflowHash":"[^"]+"/, '"workflowHash":"deadbeef"'), "utf-8");
+      // Every hash the log records: each durable resume records the version
+      // it ran on (§5.4), and the newest one is what a resume reads.
+      await writeFile(file, raw.replace(/"workflowHash":"[^"]+"/g, '"workflowHash":"deadbeef"'), "utf-8");
       const mismatch = await strut.app.request(`/workflows/resumable/runs/${runId}/resume`, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -1746,6 +1850,90 @@ describe("run control endpoints", () => {
       assert.equal(forced.status, 202);
       await waitForRefinalize(store, "resumable", runId, beforeForced);
       assert.equal(flakey.attempts(), 4);
+    } finally {
+      await cleanup();
+    }
+  });
+
+  it("POST resume { version } moves a failed run onto the fixed version: what changed re-runs, the rest replays", async () => {
+    const one = createCounterStep();
+    let sideCalls = 0;
+    let afterCalls = 0;
+    const side = defineStep({ type: "side", input: z.any(), output: z.any(), async run() { return ++sideCalls; } });
+    const after = defineStep({ type: "after", input: z.any(), output: z.any(), async run() { return ++afterCalls; } });
+    const check = defineStep({
+      type: "check",
+      input: z.object({ broken: z.boolean() }),
+      output: z.any(),
+      async run({ broken }) {
+        if (broken) throw new Error("the bug");
+        return "fixed";
+      },
+    });
+    const { strut, workspace, store, cleanup } = await makeServer({ counter: one.stepDef, side, after, check });
+    const yaml = (broken: boolean) =>
+      [
+        "name: healing",
+        "steps:",
+        "  - id: one",
+        "    type: counter",
+        "  - id: side",
+        "    type: side",
+        "    depends: []",
+        "  - id: two",
+        "    type: check",
+        `    config: { broken: ${broken} }`,
+        "    depends: [one]",
+        "  - id: three",
+        "    type: after",
+        "    depends: [two]",
+      ].join("\n");
+    const resume = (runId: string, body: Record<string, unknown>) =>
+      strut.app.request(`/workflows/healing/runs/${runId}/resume`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    try {
+      await workspace.publishWorkflowByContent("healing", yaml(true));
+      const v1 = (await workspace.getWorkflowMetadata("healing"))!.active;
+      const launch = await strut.app.request("/workflows/healing/run", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ input: {} }),
+      });
+      const { runId } = (await launch.json()) as { runId: string };
+      const failed = await waitForSummary(store, "healing", runId);
+      assert.equal(failed.status, "error");
+
+      // The fix lands as v2. A resume that names no version still goes back
+      // to v1, the version the run executed — and fails the same way.
+      await workspace.publishWorkflowByContent("healing", yaml(false));
+      const v2 = (await workspace.getWorkflowMetadata("healing"))!.active;
+      assert.notEqual(v1, v2);
+      const same = await resume(runId, {});
+      assert.equal(((await same.json()) as { version?: string }).version, v1);
+      const again = await waitForRefinalize(store, "healing", runId, failed.finishedAt);
+      assert.equal(again.status, "error");
+
+      // Onto the active version: `two` changed, so it and `three` run; `one`
+      // and `side` replay.
+      assert.equal((await resume(runId, { version: "nope" })).status, 404);
+      const moved = await resume(runId, { version: "active" });
+      assert.equal(moved.status, 202);
+      assert.deepEqual(await moved.json(), { ok: true, runId, resumed: "journal", replaying: 2, version: v2, changed: ["two"] });
+      const healed = await waitForRefinalize(store, "healing", runId, again.finishedAt);
+      assert.equal(healed.status, "success");
+      assert.equal(one.calls(), 1);
+      assert.equal(sideCalls, 1);
+      assert.equal(afterCalls, 1);
+      const v2Hash = await workspace.getWorkflowHash("healing", v2);
+      assert.equal(healed.workflowHash, v2Hash);
+      const events = await store.getRunEvents("healing", runId);
+      const resumed = events.filter((e) => e.type === "run.resumed");
+      assert.deepEqual(resumed[resumed.length - 1]!.changed, ["two"]);
+      // A later resume reads the version the run moved onto.
+      assert.equal(readRunStart(events)!.workflowHash, v2Hash);
     } finally {
       await cleanup();
     }
@@ -2093,7 +2281,7 @@ describe("run control endpoints", () => {
         await writeCutOffLog(workspace, store, "1000");
         const file = join(dir, "workflows", "boot", "runs", "1000", "events.jsonl");
         const raw = await readFile(file, "utf-8");
-        await writeFile(file, raw.replace(/"workflowHash":"[^"]+"/, '"workflowHash":"deadbeef"'), "utf-8");
+        await writeFile(file, raw.replace(/"workflowHash":"[^"]+"/g, '"workflowHash":"deadbeef"'), "utf-8");
         const report = await strut.autoResumeStaleRuns();
         assert.equal(report[0]!.action, "skipped");
         assert.match(report[0]!.reason, /no stored version matches/);

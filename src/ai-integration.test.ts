@@ -1012,6 +1012,24 @@ describe("run control tools", () => {
     await tools.cancel_run.execute({ name: "wf", runId: "r1", force: true });
     assert.deepEqual(calls, [["wf", "r1", "cancel", true]]);
   });
+
+  it("with resumeRun, resume_run heals a dead run — on the active version unless it names one", async () => {
+    const calls: unknown[] = [];
+    const controlRun = async (_w: string, runId: string) => ({ ok: true, runId, state: "running" }) as const;
+    const resumeRun = async (workflow: string, runId: string, body: { from?: string; version?: string }) => {
+      calls.push([workflow, runId, body]);
+      return { ok: true, runId, resumed: "journal" } as const;
+    };
+    const tools = buildTools({ ...baseDeps(), controlRun, resumeRun }) as any;
+    await tools.resume_run.execute({ name: "wf", runId: "r1" });
+    await tools.resume_run.execute({ name: "wf", runId: "r2", version: "v4", from: "wf/result" });
+    await tools.resume_run.execute({ name: "wf", runId: "r3", version: "run" });
+    assert.deepEqual(calls, [
+      ["wf", "r1", { version: "active" }],
+      ["wf", "r2", { from: "wf/result", version: "v4" }],
+      ["wf", "r3", {}],
+    ]);
+  });
 });
 
 // ── peers: list_peers + `peer` on list_workflows / get_workflow / run_workflow ──

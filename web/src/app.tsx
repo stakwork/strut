@@ -1087,21 +1087,24 @@ function Shell() {
   }, [selectedWf, selectedRun, refreshRuns]);
 
   // Dual-purpose: releases a paused run, or durably resumes a dead one
-  // (stale / error / cancelled) by replaying its journal.
+  // (stale / error / cancelled) by replaying its journal — on the ACTIVE
+  // version, so a fix published since reaches it (§5.4).
   const handleResumeRun = useCallback(async () => {
     if (!selectedWf || !selectedRun) return;
     setRunFailure(null);
-    try { await api.resumeRun(selectedWf, selectedRun); } catch (e) { setRunFailure({ run: selectedRun, msg: `Resume failed: ${errorMessage(e)}` }); return; }
+    const live = runControlStatus === "paused" || runControlStatus === "pausing";
+    try { await api.resumeRun(selectedWf, selectedRun, live ? {} : { version: "active" }); } catch (e) { setRunFailure({ run: selectedRun, msg: `Resume failed: ${errorMessage(e)}` }); return; }
     await refreshRuns(selectedWf);
     setRunEpoch((n) => n + 1); // re-tail: the log continues past its old terminal
-  }, [selectedWf, selectedRun, refreshRuns]);
+  }, [selectedWf, selectedRun, refreshRuns, runControlStatus]);
 
   // "Re-run from here" (§5.2 `from` invalidation): the chosen step, its
-  // dependents, and later loop iterations re-execute; upstream replays free.
-  // The flyout confirms, and shows why when this rejects.
+  // dependents, and later loop iterations re-execute — on the active
+  // version, with any other step that changed since the run started; upstream
+  // replays free. The flyout confirms, and shows why when this rejects.
   const handleRerunFrom = useCallback(async (path: string) => {
     if (!selectedWf || !selectedRun) return;
-    await api.resumeRun(selectedWf, selectedRun, path);
+    await api.resumeRun(selectedWf, selectedRun, { from: path, version: "active" });
     setFlyoutStepId(null);
     setFlyoutStepIndex(null);
     await refreshRuns(selectedWf);

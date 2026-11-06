@@ -418,7 +418,7 @@ One object per line of the run's append-only log. Common fields:
 | `run.end`         | terminal, success; `output` |
 | `run.error`       | terminal, failure; `error` |
 | `run.cancelled`   | terminal, cancelled |
-| `run.cancelling` / `run.paused` / `run.resumed` | control markers (§6); not terminal. `run.resumed` reopens a log after a terminal event and carries `stepHashes`, `callback: { origin }` and `mcp` like `run.start` |
+| `run.cancelling` / `run.paused` / `run.resumed` | control markers (§6); not terminal. `run.resumed` reopens a log after a terminal event and carries `stepHashes`, `callback: { origin }` and `mcp` like `run.start`; a durable one also `workflowHash` (the version the run continues on) and, when it moved the run onto another version, `changed` |
 | `step.replayed`   | on resume: a finished step's journaled `output`, not re-executed |
 | `reply.delta`     | an `agent` step with `stream: true`: `{ path, call, text, reset? }`, a piece of the reply as the model writes it (schema mode: the answer's `text` field, from the `final_answer` call or the forced final-answer turn; no schema/finalAnswer: the assistant text), batched ~50 ms, `reset: true` when a new answer starts over what was said. Kept in the log; the events sink never sends it; UI panels and folds skip it. The SSE tail delivers an appended event within milliseconds. A consumer's rule: if a run ends with no `reply.delta` for the reply, use `output.text` |
 
@@ -572,15 +572,22 @@ to the **same** log under the same id.
 
 | Body                  | Effect |
 | --------------------- | ------ |
-| `{}`                  | resume a `stale`, `error` or `cancelled` run |
+| `{}`                  | resume a `stale`, `error` or `cancelled` run, on the version it executed |
 | `{ "from": "<path>" }` | re-run a **successful** run from that step (it, its dependents and later iterations are dropped from the journal); `from` on a live run is a 409 |
-| `{ "force": true }`   | resume even though the workflow's content changed since the run started |
+| `{ "version": "active" }` or `{ "version": "v5" }` | resume onto THAT version, so a fix to the workflow reaches the run: every top-level step that changed between the run's version and this one (config, type, dependencies, `when`, options, a `params` default it reads; all of them when `settings` changed) re-runs with everything downstream, the rest replays. Combines with `from`. On a live run, a 409 |
+| `{ "force": true }`   | resume even though the workflow's content changed since the run started and no stored version matches (with `version`: replay into it without comparing) |
 
-Response: 202 `{ ok, runId, resumed: "journal", replaying: <n>, version? }`
-(`version` when a stored version matches the run's hash and is what runs).
-400 for a successful run without `from`; 404 unknown; 409 when the log has
-no `run.start`, when a resume is already in flight, or when the workflow
-changed and no stored version matches its hash (pass `force`); 413 when the
+Response: 202 `{ ok, runId, resumed: "journal", replaying: <n>, version?,
+changed? }` (`version` when a stored version is what runs — the run's own
+by its hash, or the one named; `changed` the top-level steps that re-run
+because they changed in it). The log's `run.resumed` records the same
+`changed` and the version's `workflowHash`, which a later resume goes back
+to. 400 for a successful run without `from`, or a `version` that is not a
+non-empty string; 404 unknown run or version; 409 when the log has no
+`run.start`, when a resume is already in flight, when the workflow changed
+and no stored version matches the run's hash (pass `force`), or when a
+`version` is named and the run's own version is no longer on record (pass
+`force`, or `from`); 413 when the
 run's log is over `STRUT_RESUME_MAX_LOG_BYTES` (64 MB) — refused by its
 size, never read (`{ error: "run log is 139.0 MB (…), over the 64.0 MB (…)
 resume cap (STRUT_RESUME_MAX_LOG_BYTES) — not loaded" }`); boot-time

@@ -76,6 +76,7 @@ import { RUN_STEP_FLOW, persistRunUnder, runSingleStep, type RunStepResult } fro
 import { checkRunKey, stepTypeOfRunKey, type RunStore } from "./store.js";
 import type { WorkspaceStore } from "./workspace.js";
 import { bootEnv } from "./env.js";
+import { executedWorkflowHash } from "./journal.js";
 
 // ── What a run observed ─────────────────────────────────────────────────────
 
@@ -181,10 +182,12 @@ export function subjectsOfRun(key: string, events: readonly RunEvent[]): Observe
   // is the ad-hoc wrapper.
   if (!key.includes(":") && launch.path !== RUN_STEP_FLOW) {
     const end = [...events].reverse().find((e) => e.type === "run.end" || e.type === "run.error");
+    const finishedOn = executedWorkflowHash(events);
     if (end) {
       out.push({
         subject: { kind: "workflow", name: key },
-        ...(launch.workflowHash ? { version: launch.workflowHash } : {}),
+        // The version that finished it: a resume may have moved it (§5.4).
+        ...(finishedOn ? { version: finishedOn } : {}),
         path: launch.path,
         at: end.ts,
         check: {

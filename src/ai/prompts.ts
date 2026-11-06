@@ -153,6 +153,15 @@ export interface AiDeps {
     action: "cancel" | "pause" | "resume",
     force?: boolean,
   ) => Promise<{ ok: true; runId: string; state: string } | { ok: false; error: string }>;
+  /** Resume a run: unpause a live one, or durably resume a dead one (failed,
+   *  cancelled, cut off) under its own id — on `version` ("active", "vN";
+   *  omitted = the version it executed), re-running from `from`. Enables
+   *  resume_run's durable form; without it resume_run only unpauses. */
+  resumeRun?: (
+    workflow: string,
+    runId: string,
+    body: { from?: string; version?: string },
+  ) => Promise<{ ok: true; runId: string; [key: string]: unknown } | { ok: false; error: string }>;
   /** Elicitation (plans/elicitation.md): record a question on the chat —
    *  `ask_user` (a form) or `request_secret` (a link to strut's secret page;
    *  the value never reaches a model). The host keeps ONE open elicitation
@@ -201,6 +210,8 @@ export interface BuilderTools {
   listRuns: string;
   getRun: string;
   searchRuns: string;
+  /** Heals a failed run in place (RUN_CONTROL_SPEC §5.4). */
+  resumeRun: string;
   graphGet: string;
   /** The app/* steps as this surface names them, by prefix: `app_build`, `app/build`. */
   app: string;
@@ -223,6 +234,7 @@ export const CHAT_TOOLS: BuilderTools = {
   listRuns: "list_runs",
   getRun: "get_run",
   searchRuns: "search_runs",
+  resumeRun: "resume_run",
   graphGet: "graph_get",
   app: "app_",
 };
@@ -244,6 +256,7 @@ export const JOB_TOOLS: BuilderTools = {
   listRuns: "meta/list-runs",
   getRun: "meta/get-run",
   searchRuns: "meta/search-runs",
+  resumeRun: "meta/resume-run",
   graphGet: "graph/graph-get",
   app: "app/",
 };
@@ -259,7 +272,7 @@ function builderProcedure(t: BuilderTools): string {
 4. If a needed step doesn't exist, author it with ${t.createStep} (or ${t.editStep} to revise one), then it's available by its type. For a step that hits an external API, test it in isolation with ${t.runStep} BEFORE wiring it into a workflow: ${t.runStep}(type, config, cassette:"record") once to capture a fixture, then ${t.runStep}(..., cassette:"replay") + ${t.editStep} to iterate offline until the output is right.
 5. Call ${t.validateWorkflow} on the YAML and fix every error (warnings are judgment calls) — ${t.chat ? "create_workflow / edit_workflow refuse" : `${t.createWorkflow} refuses`} to publish while errors remain. Then call ${t.createWorkflow} with the final YAML (${t.chat ? "or edit_workflow to publish a new version of an existing workflow — get_workflow to read it first" : `a name you published before gets the next version — ${t.getWorkflow} to read it first`}).
 6. Call ${t.runWorkflow} with a sample input to test it — pass "input" as a JSON OBJECT (e.g. { "owner": "vercel", "repo": "next.js", "pull_number": 1 }), NOT a JSON string. Report the result (success/error, output, or which step failed) to the user.${t.chat ? " If the run auto-detaches (see run_workflow above), report the launch and end your turn — the [run-notification] will bring you back." : ""}
-7. To debug a failure or inspect prior behavior, use ${t.listRuns} + ${t.getRun}. After running a workflow that writes to the graph (graph/create-node, graph/create-triplet, …), ${t.chat ? "verify the result with graph_query (when offered) — count the nodes/edges you expected and read back a sample's properties —" : "count what it wrote and read a sample back with graph/query"} rather than trusting the step's status alone.
+7. To debug a failure or inspect prior behavior, use ${t.listRuns} + ${t.getRun}. Once you have fixed what a run failed on, ${t.resumeRun} that run rather than starting it over: what succeeded replays, and the steps you changed re-run on the version you published. After running a workflow that writes to the graph (graph/create-node, graph/create-triplet, …), ${t.chat ? "verify the result with graph_query (when offered) — count the nodes/edges you expected and read back a sample's properties —" : "count what it wrote and read a sample back with graph/query"} rather than trusting the step's status alone.
 
 Be concise. Don't over-explain.`;
 }
@@ -424,7 +437,7 @@ ${t.chat && GRAPH_WALK_TOOL_ENABLED ? `- graph_walk(goal, query) (when offered):
 - ${t.validateWorkflow}(yaml): STATIC check of workflow YAML without publishing — unknown step types, bad/duplicate ids, depends on unknown ids or cycles, template refs to unknown roots, config that fails the step schema (template-valued fields are skipped), missing subflow targets. Returns errors (would fail/hang at run time) + warnings. ${t.chat ? "create_workflow / edit_workflow run the SAME check and REFUSE" : `${t.createWorkflow} runs the SAME check and REFUSES`} to publish on errors (returning them), so use ${t.validateWorkflow} to iterate on a draft; warnings never block but come back with the publish result — consider them.
 ${t.chat ? `- create_workflow / edit_workflow: publish a NEW workflow, or a new VERSION of an existing one. edit_workflow takes the full yaml OR \`edits\` (exact-string replacements over the ACTIVE version's YAML, each matching once): use edits for a small change to a big workflow — one params default, one config value — and never work around a long YAML by other means. edit_workflow is for STRUCTURAL changes (add/remove steps, rewire depends, promote a winning params default). To merely try a different prompt/threshold value, do NOT publish a version — pass params to run_workflow (those are runs, not versions). Both accept an optional category (a sidebar grouping label, e.g. an experiment name) — set it when the user asks or when the workflow clearly belongs with an existing group (list_workflows shows categories in use).
 - set_active_version(kind, "<name>", "<version>"): ROLLBACK — make a prior version of a workflow or custom step the active one (the one runs and the registry use). No new version is published; history is kept. Use this when a new version turns out worse ("go back to v2") instead of republishing old source as a fresh version.
-- cancel_run / pause_run / resume_run("<name>", "<runId>") (when offered; cancel_run takes force: true for a run stuck cancelling on a step that never returns — it abandons the step): control a run that is LIVE in this process — e.g. a detached run_workflow you launched with the wrong input, or one you want to stop after seeing partial output in get_run. Only live runs; a finished run reports its terminal status instead. resume_run continues a run you paused.
+- cancel_run / pause_run / resume_run("<name>", "<runId>") (when offered; cancel_run takes force: true for a run stuck cancelling on a step that never returns — it abandons the step): control a run that is LIVE in this process — e.g. a detached run_workflow you launched with the wrong input, or one you want to stop after seeing partial output in get_run. cancel_run and pause_run take only live runs; a finished run reports its terminal status instead. resume_run continues a run you paused, and HEALS one that failed or was cut off: it runs it again under the same id, replaying what succeeded, on the active version by default — so after you fix a workflow, resume the failed run instead of starting it over.
 - set_workflow_category("<name>", category|null): set or clear a workflow's sidebar category without publishing a version. Use for "categorize/group these workflows" requests.
 - list_automations / set_automation / delete_automation (when offered): SCHEDULES — "run this every weekday at 9", "check mentions every 15 minutes", "pause the nightly sync". An automation is workflow METADATA: { name, trigger, input, enabled }. NEVER publish a workflow version to add, change or pause a schedule, and never write a cron string — the trigger is a closed grammar by \`every\`: interval { minutes, on?, between? } · day { at } · week { on, at } · month { day: 1–28 | "last" | { nth, weekday }, at } · once { at: "YYYY-MM-DDTHH:MM" }; days are mon…sun, times 24-hour "HH:MM", \`tz\` an IANA zone (omitted = the SERVER's zone — if the user named no zone, say which one you assumed). You translate the request into that object; the tool computes every date. Its RESULT carries \`summary\` (the schedule as a sentence) and \`next\` (the next five fires): confirm to the user from THOSE, not from your own arguments. \`input\` is the run's input and may use three fire-time roots: {{ now }} (ISO instant), {{ today }} (YYYY-MM-DD in the trigger's zone), {{ last.output.x }} (output of this automation's latest SUCCESSFUL run — the cursor idiom for polling: have the workflow RETURN the newest id/timestamp it saw, and feed it back as the next run's input). On the first fire last.output is {} and a key that resolves to undefined is dropped, so the workflow must tolerate the missing key (\`input.since_id || ""\`); defaults use \`||\` — \`??\` is not supported. A failed run does not advance \`last\`, and a fire is skipped while the automation's previous run is still going. Run the workflow once with run_workflow BEFORE scheduling it.
 - run_workflow("<name>", input?, params?, version?): run a published workflow and return its result. LONG RUNS AUTO-DETACH: if the run is still executing after the wait window (~a minute), the call returns { status: "running", detached: true, runId } and the run continues in the background. When it finishes, a "[run-notification]" user message will automatically start your next turn with the outcome (several runs finishing while you work arrive batched in one message). Do NOT poll get_run in a loop while waiting — finish your turn normally, stating what you launched and what you plan to do when the result arrives.

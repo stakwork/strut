@@ -10,6 +10,7 @@ import type {
   RunEvent,
   RunOrigin,
   RunResult,
+  RunSummary,
   StepCounts,
 } from "./core.js";
 export type { RunEndInfo } from "./core.js";
@@ -21,6 +22,7 @@ import { resolveStep } from "./steps/registry.js";
 import { nameInPackageAsync, packagePrefixOf, stepInPackage } from "./package-lookup.js";
 import type { RunStore } from "./store.js";
 import { MemoryRunStore, countSteps, countUsage, generateRunId, tallyStep, tallyUsage } from "./store.js";
+import { executedWorkflowHash } from "./journal.js";
 import { RunController, isCancelledError } from "./run-control.js";
 import type { JobsCapability } from "./jobs.js";
 import { mcpOrigins } from "./mcp-servers.js";
@@ -29,6 +31,7 @@ import { reachPolicyOf, withinReach } from "./reach.js";
 import { appSessionId, peerSessionId, type SessionsCapability } from "./session-store.js";
 import { bindGraph } from "./graph-writes.js";
 import { outputTooBig } from "./output-cap.js";
+import { guardEscapes } from "./escaped-errors.js";
 
 type JobsRecordRun = JobsCapability["recordRun"];
 
@@ -85,8 +88,12 @@ export interface RunOptions<TServices = unknown> {
    *  `run.resumed` marker instead of a fresh `run.start`, appending to the
    *  same log under the same runId. */
   resume?: boolean;
+  /** A resume onto another version (§5.4): the top-level steps that re-run
+   *  because they changed — recorded on `run.resumed` as `changed`. */
+  resumeChanged?: string[];
   /** Content hash of the workflow version being run, recorded on `run.start`
-   *  so resume can refuse to replay a journal into a different DAG (§5). */
+   *  (and on `run.resumed`) so resume can refuse to replay a journal into a
+   *  different DAG (§5). */
   workflowHash?: string;
   /** Active content hash of every workspace step the flow can execute
    *  (`stepHashesFor`), recorded on `run.start` / `run.resumed`. */
@@ -305,6 +312,97 @@ export async function runWorkflow<TServices = unknown>(
 ): Promise<RunResult> {
   const runId = opts?.runId ?? generateRunId();
   const store = opts?.store ?? new MemoryRunStore();
+  try {
+    return await executeRun(workflow, input, registry, { ...opts, runId, store });
+  } catch (err) {
+    // The runner turns a run's own failures into its `run.error`; a throw
+    // that gets here came from past that — a store write, a hook — and would
+    // leave a log with no end, listed as stale. Recorded as the error it is.
+    await settleUnfinishedRun(store, workflow.name, runId, err);
+    throw err;
+  }
+}
+
+const isTerminal = (e: RunEvent) => e.type === "run.end" || e.type === "run.error" || e.type === "run.cancelled";
+
+/** The summary a run's log says it ended with, for a run whose process
+ *  never wrote one: `status` is the end's (its `run.end` output, its
+ *  `run.error` error), the stamps are `run.start`'s, the version the one it
+ *  finished on. */
+export function summaryFromLog(
+  workflow: string,
+  runId: string,
+  events: RunEvent[],
+  status: "success" | "error" | "cancelled",
+): RunSummary {
+  const start = events.find((e) => e.type === "run.start");
+  const last = events[events.length - 1]!;
+  const startedAt = start?.ts ?? events[0]!.ts;
+  const finishedAt = isTerminal(last) ? last.ts : new Date().toISOString();
+  const totals = countUsage(events);
+  const workflowHash = executedWorkflowHash(events);
+  return {
+    runId,
+    workflow,
+    startedAt,
+    finishedAt,
+    durationMs: Math.max(0, Date.parse(finishedAt) - Date.parse(startedAt)),
+    status,
+    input: start?.input,
+    ...(status === "success" && last.output !== undefined ? { output: last.output } : {}),
+    ...(status === "error" && last.error ? { error: last.error } : {}),
+    // The stamps the runner's own summary carries: the scheduler's cursor,
+    // the job index and the run lists read them.
+    ...(start?.automation ? { automation: start.automation } : {}),
+    ...(start?.actor ? { actor: start.actor } : {}),
+    ...(start?.principal ? { principal: start.principal } : {}),
+    ...(start?.job ? { job: start.job } : {}),
+    ...(start?.origin ? { origin: start.origin } : {}),
+    ...(start?.app ? { app: start.app } : {}),
+    ...(workflowHash ? { workflowHash } : {}),
+    stepCounts: countSteps(events),
+    ...(totals.modelCalls || totals.cost ? { totals } : {}),
+  };
+}
+
+/** A run that will not end by itself — its runner threw past its own
+ *  handling, or its launch failed before the runner wrote anything for a
+ *  resume — gets the end its log is missing: a `run.error` with `err`
+ *  unless the log already ends, then the summary. Nothing when the run has
+ *  no `run.start` (nothing was ever written) or a summary. Best effort: it
+ *  logs, never throws. */
+export async function settleUnfinishedRun(store: RunStore, workflow: string, runId: string, err: unknown): Promise<void> {
+  try {
+    if (await store.getRunSummary(workflow, runId)) return;
+    const events = await store.getRunEvents(workflow, runId);
+    if (!events.some((e) => e.type === "run.start")) return;
+    let last = events[events.length - 1]!;
+    if (!isTerminal(last)) {
+      last = {
+        ts: new Date().toISOString(),
+        runId,
+        path: workflow,
+        type: "run.error",
+        error: { message: err instanceof Error ? err.message : String(err), ...(err instanceof Error && err.stack ? { stack: err.stack } : {}) },
+      };
+      await store.append(workflow, runId, last);
+      events.push(last);
+    }
+    const status = last.type === "run.end" ? "success" : last.type === "run.cancelled" ? "cancelled" : "error";
+    await store.finalize(workflow, runId, summaryFromLog(workflow, runId, events, status));
+  } catch (recordErr) {
+    console.error(`[run ${runId}] its end could not be recorded:`, recordErr);
+  }
+}
+
+async function executeRun<TServices = unknown>(
+  workflow: Flow,
+  input: unknown,
+  registry: StepRegistry,
+  opts: RunOptions<TServices> & { runId: string; store: RunStore },
+): Promise<RunResult> {
+  const runId = opts.runId;
+  const store = opts.store;
   const wfName = workflow.name;
   const startedAt = new Date().toISOString();
   // On every summary this run can write (see `RunSummary.automation`).
@@ -408,6 +506,11 @@ export async function runWorkflow<TServices = unknown>(
       path: wfName,
       // Steps load at (re)launch: what runs from here on is what is active NOW.
       ...(opts.stepHashes ? { stepHashes: opts.stepHashes } : {}),
+      // The version it runs on from here (another one when the resume moved
+      // it, RUN_CONTROL_SPEC §5.4), and the steps that re-run because they
+      // changed.
+      ...(opts.workflowHash ? { workflowHash: opts.workflowHash } : {}),
+      ...(opts.resumeChanged ? { changed: opts.resumeChanged } : {}),
       ...(opts.callback ? { callback: opts.callback } : {}),
       ...(opts.mcp?.length ? { mcp: mcpOrigins(opts.mcp) } : {}),
     });
@@ -1005,7 +1108,9 @@ async function dispatchStep(
         exec.controller.beginUnit();
       }
       try {
-        const running = def.run(validConfig, ctx);
+        // An error the step lets escape (a callback's throw, a promise it
+        // never awaits) fails the step, not the process (src/escaped-errors.ts).
+        const running = guardEscapes(`step "${path}"`, () => def.run(validConfig, ctx));
         // A force-cancel stops waiting on a step that never returns.
         return await (exec.controller ? exec.controller.raceForce(Promise.resolve(running)) : running);
       } finally {

@@ -15,6 +15,7 @@ import { nameInsidePackage, stepInPackage } from "../../package-lookup.js";
 import { connectMcpTools } from "../../mcp-servers.js";
 import { withinReach } from "../../reach.js";
 import { outputTooBig } from "../../output-cap.js";
+import { guardEscapes } from "../../escaped-errors.js";
 import { liftedArtifacts } from "../../artifact-refs.js";
 import { capToolOutput } from "../../chat-store.js";
 import { gatedByDefault, grantsTool, mcpGrantName, MCP_GRANT_PREFIX, resolveRegistration, type McpRegistry } from "../../mcp-registry.js";
@@ -900,7 +901,10 @@ export function buildRegistryTools(
           ? { ...base, agentTool: true, path: options.strutToolPath }
           : { ...base, agentTool: true };
         if (gated) return proposeCall(stepType, def, parsed, rationale, childCtx, { session: gate?.session });
-        return def.run(parsed, withinReach(stepType, parsed, childCtx));
+        // An error the tool-step lets escape fails this call, which the model
+        // reads, rather than the whole agent (src/escaped-errors.ts).
+        const checked = withinReach(stepType, parsed, childCtx);
+        return guardEscapes(`tool "${childCtx.path || stepType}"`, () => def.run(parsed, checked));
       },
       toModelOutput: ({ output }: { output: unknown }) => registryToolModelOutput(output),
     });

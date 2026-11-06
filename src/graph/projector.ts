@@ -75,6 +75,7 @@
  * are written with the backend's dialect helpers (`engine.ts`).
  */
 import type { AccessedNode, RunEvent, RunSummary } from "../core.js";
+import { executedWorkflowHash } from "../journal.js";
 import { stepTypeOfRunKey, type RunStore } from "../store.js";
 import type { ChatMeta, ChatStore, StoredMessage } from "../chat-store.js";
 import { idProblem, peerSessionId } from "../session-store.js";
@@ -277,7 +278,7 @@ export function projectRunEvents(workflow: string, runId: string, events: RunEve
       started_at: summary?.startedAt ?? start?.ts ?? events[0]?.ts ?? new Date(Number(runId) || Date.now()).toISOString(),
       finished_at: summary?.finishedAt,
       duration_ms: durationMs,
-      workflow_hash: start?.workflowHash,
+      workflow_hash: executedWorkflowHash(events),
       params_json: start?.params ? JSON.stringify(start.params) : undefined,
       input_preview: preview(summary?.input ?? start?.input),
       output_preview: preview(summary?.output),
@@ -407,7 +408,7 @@ export function projectRunEvents(workflow: string, runId: string, events: RunEve
     for (const n of e.nodes ?? []) if (n && typeof n.ref_id === "string" && n.ref_id && !n.peer && !accessed.has(n.ref_id)) accessed.set(n.ref_id, n);
   }
 
-  return { run, sessions, toolCalls, accessed: [...accessed.values()], workflowHash: start?.workflowHash, stepHashes: start?.stepHashes, job, speaker };
+  return { run, sessions, toolCalls, accessed: [...accessed.values()], workflowHash: executedWorkflowHash(events), stepHashes: start?.stepHashes, job, speaker };
 }
 
 /** The job's node (plans/job-index.md §6), from the index's view: the

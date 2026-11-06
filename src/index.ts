@@ -49,6 +49,8 @@ export {
 
 // Runner
 export { runWorkflow, type RunOptions } from "./runner.js";
+// Errors a step lets escape fail the step, not the process (createStrut installs it).
+export { guardEscapes, installEscapeGuard } from "./escaped-errors.js";
 
 // Run control — cancel / pause / resume for run trees (RUN_CONTROL_SPEC.md)
 export {

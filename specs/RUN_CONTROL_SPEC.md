@@ -384,9 +384,9 @@ adds is lifecycle bookkeeping:
   With `from`, even a successful run is resumable — "re-grade from
   candeval onward" costs the grades, not the memo.
 
-UI: a failed run's view offers **Resume** (retry the failed step); a
-step node's flyout offers **Re-run from here** (resume with
-`from: <path>`). Both show what will replay vs re-execute before
+UI: a failed run's view offers **Resume** (retry the failed step, on the
+active version — §5.4); a step node's flyout offers **Re-run from here**
+(resume with `from: <path>`, on the active version too). Both show what will replay vs re-execute before
 confirming — the journal makes that computable upfront. Resume CONTINUES the original run: it
 appends to the same JSONL (after a `run.resumed` marker event) and keeps
 the runId — critical because artifact directories are keyed by runId
@@ -418,9 +418,11 @@ v1, it drags in provider-state questions the rungs below don't need.
 
 **Validity guards.** Resume refuses when: a live controller exists for
 the runId (it's not dead, pause it instead); no stored version of the
-workflow matches the content hash recorded at `run.start` (the runner
-must record it there — replaying outputs into a DIFFERENT DAG is
-undefined; power users may override with an explicit flag). When the
+workflow matches the content hash the run executed (recorded at
+`run.start`, and again on every durable `run.resumed` — replaying
+outputs into a DIFFERENT DAG is undefined; power users may override with
+an explicit flag, and a resume that names a `version` compares the two
+DAGs instead, §5.4). When the
 ACTIVE version's hash differs but an older or pinned version still
 matches, resume runs against that version — a long run must not
 dead-end on "content changed" just because someone published since; or the run
@@ -438,6 +440,67 @@ resumable runs.
 
 ---
 
+### 5.4 Resume onto another version — a fix reaches the run
+
+IMPLEMENTED (2026-11-05). Without it a durable resume always goes back to
+the version the run executed, so a run that failed on a bug in the
+workflow's YAML fails the same way on every resume, after replaying
+however many hours of steps came before it. Fixing a custom step's code or
+a subflow's workflow already reached the run (both load fresh at
+relaunch); fixing the workflow itself did not.
+
+`POST …/resume { version: "active" | "vN" }` resumes onto that version.
+The two versions are compared step by step (`changedSteps`,
+`src/journal.ts`): a top-level step of the target that is new, or differs
+in any part of its definition — type, config, its dependencies as the
+runner reads them (implicit ones too, so a reorder counts), `when`,
+options — or reads a `params` default that changed, is CHANGED; a change
+of the workflow's `settings` changes every step. The changed steps and
+everything downstream of each are dropped from the journal
+(`invalidateSteps`); everything else replays. `from` still applies, on
+top. A subflow's child is not compared: it runs whatever version it
+names, as on any resume. When the version the run executed is no longer
+on record, nothing can be compared: refused (409) unless `force`, which
+replays the journal into the target as it is.
+
+The resumed run's `run.resumed` records the version it continues on
+(`workflowHash`) and the steps that re-run because they changed
+(`changed`); the newest durable `run.resumed`'s hash is the run's version
+from then on (`executedWorkflowHash`): what a later resume — boot's
+included — goes back to, what the summary, the verify pass and the
+graph's `StrutRun` record. Boot's auto-resume never moves a run: it names
+no version. A person does: the UI's Resume and Re-run from here send
+`version: "active"`, and so do the builder's `resume_run` and
+`meta/resume-run` unless told otherwise (`version: "run"` there keeps the
+run's own).
+
+### 5.5 What used to leave a run stale
+
+A run with no summary and no controller lists as `stale`. Three ways a
+run got there without a crash of the machine, and what happens now:
+
+- **An error a step lets escape** — thrown inside a callback (a timer, an
+  event listener, an emitter's `error` with no listener) or from a
+  promise the step never awaits. Nothing the runner awaits sees it, and
+  Node's default is to end the process: every run in flight was cut off,
+  and boot's auto-resume replayed the run into the same crash until its
+  cap (5) left it stale. Now each step's `run()` — and each tool-step an
+  agent calls — runs inside an AsyncLocalStorage scope
+  (`guardEscapes`, `src/escaped-errors.ts`), and createStrut installs
+  process handlers (`installEscapeGuard`; `escapeGuard: false` to leave a
+  host's process alone) that find the scope of the work that failed and
+  fail THAT step with the error: retry and onError apply, the run ends as
+  an error, the process keeps serving. A tool-step's escape fails the
+  tool call, which the model reads. An escape after its step finished,
+  or with no step behind it, is logged.
+- **A throw past the runner's own handling** — a store write that fails
+  while the run records its end. `runWorkflow` now settles the run before
+  rethrowing (`settleUnfinishedRun`): a `run.error` with the error unless
+  the log already ends, then the summary.
+- **A launch that failed before the runner ran** — for a resume, after it
+  cleared the run's summary. The launcher settles it the same way, which
+  puts back the end the log already had.
+
 ## 6. Step-author contract (additions)
 
 - `ctx.control?: RunController` — await `checkpoint()` inside long
@@ -453,9 +516,14 @@ resumable runs.
 ## 7. Invariants
 
 - **Measurement discipline untouched.** Control flows through the
-  runner, not the workflow surface: authors/candidates cannot pause,
-  cancel, or resume anything (no meta/* exposure; the grader and the
-  §6-EVOLVE_SPEC firewalls are unaffected).
+  runner, not the workflow surface: authors/candidates cannot pause or
+  cancel anything. The one door the meta surface has is
+  `meta/resume-run` (2026-11-05, §5.4): it resumes a run of a workflow
+  the surface could run anyway — never a sealed one (a grading
+  harness), and only a run billed to the calling run's principal — so
+  a builder that fixed what a run failed on finishes that run instead of
+  starting it over. The grader and the §6-EVOLVE_SPEC firewalls are
+  unaffected.
 - **Terminal statuses are honest.** `cancelled` is never conflated with
   `error`; replayed steps are `step.replayed`, never fake `step.end`
   timings; paused gaps are visible in the log.
