@@ -54,6 +54,7 @@ import {
   FileSecretStore,
   MemorySecretStore,
   isValidSecretName,
+  secretBlanks,
 } from "./secret-store.js";
 import { runStep, cassettePath, RUN_STEP_FLOW } from "./run-step.js";
 import { buildProvenance } from "./provenance.js";
@@ -1076,6 +1077,10 @@ export async function createStrut<TServices = unknown>(
     // Per-run artifact files, rooted in the local data dir. A consumer bag
     // can override with its own ArtifactsCapability (spread below wins).
     artifacts: fileArtifactsCapability(join(dataDir, "artifacts")),
+    // A person's one write to the deployment's secrets, from an app: fill
+    // a blank, never overwrite (`secret/add`, plans/member-rights.md). Only
+    // when strut owns the store.
+    ...(secretsInjected ? {} : { secretBlanks: secretBlanks(secretStore) }),
     sessions,
     // The job record's writer (standardServices gives a bare one) plus the
     // INDEX that reads it back (plans/job-index.md): the run store for
