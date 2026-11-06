@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
+import type { ComponentChildren } from "preact";
 import * as api from "../api";
 import { ago } from "./ClaimsPanel";
 import { errorMessage } from "../helpers";
-import { PACKAGE_SEGMENT, comesAlong, isHostsStamp, isInstalledName, nextVersion, packageLabel, pickerGroups, picksFromRelease } from "../package-release";
+import { PACKAGE_SEGMENT, byNamespace, comesAlong, isHostsStamp, isInstalledName, nextVersion, packageLabel, pickerGroups, picksFromRelease } from "../package-release";
 import { canWords, indexIdOf, type InstallLink } from "../store-links";
 import { ConfirmButton } from "./ConfirmButton";
 import { CopyButton } from "./CopyButton";
@@ -416,24 +417,12 @@ function PackagePage(props: {
             <div class="auto-error package-refusal">{preview.error}</div>
           ) : along ? (
             <>
-              {along.steps.length + along.workflows.length + along.apps.length + along.types.length > 0 && (
-                <div class="auto-hint">
-                  Comes along: {[
-                    ...along.workflows.map((w) => `the workflow ${w}`),
-                    ...along.steps.map((x) => `the step ${x}`),
-                    ...along.apps.map((x) => `the app ${x}`),
-                    ...along.types.map((x) => `the graph type ${x}`),
-                  ].join(", ")}.
-                </div>
-              )}
+              <ComesAlong along={along} secrets={preview?.result?.requires.secrets ?? []} />
               {along.leftOut.length > 0 && (
                 <div class="auto-hint">
                   Not carried, since every strut has its own: {along.leftOut.join(", ")}.
                 </div>
               )}
-              {preview?.result?.requires.secrets?.length ? (
-                <div class="auto-hint">Needs the secret{preview.result.requires.secrets.length === 1 ? "" : "s"} {preview.result.requires.secrets.join(", ")}.</div>
-              ) : null}
               {preview?.result?.warnings.map((w, i) => <div class="auto-hint package-warning" key={i}>{w}</div>)}
             </>
           ) : (
@@ -804,5 +793,64 @@ export function PackagesPanel(props: { install?: InstallLink | null }) {
         </>
       )}
     </>
+  );
+}
+
+/** What a build of the picks carries beyond them, by kind: each kind a
+ *  heading with its count, its names as chips — a namespace's names on one
+ *  line under it — the Concept roots with the pages under them, and the
+ *  secrets an installing strut must set. */
+function ComesAlong(props: { along: ReturnType<typeof comesAlong>; secrets: readonly string[] }) {
+  const { along } = props;
+  const sections: Array<{ title: string; count: number; body: ComponentChildren }> = [];
+  const chips = (names: string[]) => (
+    <div class="package-along-chips">{names.map((n) => <span class="package-along-chip" key={n} title={n}>{n}</span>)}</div>
+  );
+  const spaced = (names: string[]) =>
+    byNamespace(names).map((g) => (
+      <div class="package-along-ns" key={g.ns}>
+        {g.ns && <span class="package-along-ns-name">{g.ns}/</span>}
+        {chips(g.names)}
+      </div>
+    ));
+  if (along.workflows.length) sections.push({ title: "Workflows", count: along.workflows.length, body: spaced(along.workflows) });
+  if (along.steps.length) sections.push({ title: "Steps", count: along.steps.length, body: spaced(along.steps) });
+  if (along.apps.length) sections.push({ title: "Apps", count: along.apps.length, body: chips(along.apps) });
+  if (along.concepts.pages > 0)
+    sections.push({
+      title: "Concepts",
+      count: along.concepts.pages,
+      body: (
+        <div class="package-along-ns">
+          <span class="package-along-note">
+            {along.concepts.pages === 1 ? "1 page" : `${along.concepts.pages} pages`}{along.concepts.roots.length ? " under" : ""}
+          </span>
+          {chips(along.concepts.roots)}
+        </div>
+      ),
+    });
+  if (along.types.length)
+    sections.push({
+      title: "Ontology",
+      count: along.types.length,
+      body: (
+        <div class="package-along-ns">
+          <span class="package-along-note">parent types</span>
+          {chips(along.types)}
+        </div>
+      ),
+    });
+  if (props.secrets.length) sections.push({ title: "Needs secrets", count: props.secrets.length, body: chips([...props.secrets]) });
+  if (!sections.length) return null;
+  return (
+    <div class="package-along-box">
+      <div class="package-along-head">Comes along</div>
+      {sections.map((sec) => (
+        <div class="package-along-section" key={sec.title}>
+          <div class="package-group-title">{sec.title} <span class="package-along-count">{sec.count}</span></div>
+          {sec.body}
+        </div>
+      ))}
+    </div>
   );
 }

@@ -66,39 +66,71 @@ export function pickerGroups(
     .sort((a, b) => (a.category === null ? 1 : b.category === null ? -1 : a.category.localeCompare(b.category)));
 }
 
-/** What a dry build carries beyond the picks, read off its files: the
- *  workflows, steps (helpers left out) and apps it adds, each by its path in
- *  the package, and the picks it does NOT carry — the host's own, which the
- *  installing strut has. */
+/** What a dry build carries beyond the picks, read off its files and
+ *  sorted by kind: the workflows and apps it adds, every step (helpers left
+ *  out), the Concept pages under each root named, and the graph types it
+ *  adds — the parents of the types named — each by its path in the package;
+ *  and the picks it does NOT carry — the host's own, which the installing
+ *  strut has. */
 export function comesAlong(
   pkg: string,
   files: readonly string[],
-  picked: { workflows: readonly string[]; apps: readonly string[]; types?: readonly string[] },
-): { workflows: string[]; steps: string[]; apps: string[]; types: string[]; leftOut: string[] } {
+  picked: { workflows: readonly string[]; apps: readonly string[]; concepts?: readonly string[]; types?: readonly string[] },
+): {
+  workflows: string[];
+  steps: string[];
+  apps: string[];
+  concepts: { roots: string[]; pages: number };
+  types: string[];
+  leftOut: string[];
+} {
   const workflows = new Set<string>();
   const steps = new Set<string>();
   const apps = new Set<string>();
   const types = new Set<string>();
+  const pages = new Set<string>();
   for (const f of files) {
     const wf = /^workflows\/(.+)\.yaml$/.exec(f);
     const step = /^steps\/(.+)\.ts$/.exec(f);
     const app = /^apps\/([^/]+)\//.exec(f);
     const type = /^graph\/(.+)\.yaml$/.exec(f);
+    const page = /^concepts\/(.+)\.md$/.exec(f);
     if (type) types.add(type[1]!);
+    else if (page) pages.add(page[1]!);
     else if (wf) workflows.add(wf[1]!);
     else if (step && !step[1]!.split("/").pop()!.startsWith("_")) steps.add(step[1]!);
     else if (app) apps.add(app[1]!);
   }
   const pickedWf = new Set(picked.workflows.map((n) => pathIn(pkg, n)));
   const pickedApps = new Set(picked.apps.map((n) => pathIn(pkg, n)));
+  const roots = (picked.concepts ?? []).filter((c) => pages.has(c)).sort();
   return {
     workflows: [...workflows].filter((p) => !pickedWf.has(p)).sort(),
     steps: [...steps].sort(),
     apps: [...apps].filter((p) => !pickedApps.has(p)).sort(),
+    concepts: { roots, pages: pages.size - roots.length },
     // A parent of a named type comes along; the names match case-blind, as the graph's do.
     types: [...types].filter((t) => !(picked.types ?? []).some((n) => n.toLowerCase() === t.toLowerCase())).sort(),
     leftOut: [...picked.workflows.filter((n) => !workflows.has(pathIn(pkg, n))), ...picked.apps.filter((n) => !apps.has(pathIn(pkg, n)))].sort(),
   };
+}
+
+/** Names grouped by their namespace — everything before the last `/` —
+ *  so twenty `openlaw/*` steps read as one line: `[{ ns: "openlaw", names:
+ *  ["climbs", "runs"] }]`; a bare name's namespace is "". Namespaces sorted,
+ *  the bare ones last. */
+export function byNamespace(names: readonly string[]): Array<{ ns: string; names: string[] }> {
+  const groups = new Map<string, string[]>();
+  for (const n of names) {
+    const cut = n.lastIndexOf("/");
+    const ns = cut < 0 ? "" : n.slice(0, cut);
+    const list = groups.get(ns) ?? [];
+    list.push(cut < 0 ? n : n.slice(cut + 1));
+    groups.set(ns, list);
+  }
+  return [...groups]
+    .map(([ns, list]) => ({ ns, names: list.sort() }))
+    .sort((a, b) => (a.ns === "" ? 1 : b.ns === "" ? -1 : a.ns.localeCompare(b.ns)));
 }
 
 /** The picks a release held, as the names they have HERE: an item's name
