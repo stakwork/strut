@@ -5,6 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" href="./favicon.ico" />
     <title>strut</title>
+    <script>
+      // `?app=…&solo=1&theme=light` (SoloApp, for a light host's frame): light
+      // from the first paint, before the bundle loads and a ticket is traded.
+      (function () {
+        var p = new URLSearchParams(location.search);
+        if (p.get("solo") === "1" && p.get("app") && p.get("theme") === "light") document.documentElement.classList.add("solo-light");
+      })();
+    </script>
   </head>
   <body>
     <div id="app"></div>

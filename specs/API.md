@@ -1481,7 +1481,8 @@ page ALONE, nothing of strut's around it — what a native host such as Peel
 opens in a web view of its own: `/?key=<the local strut's key>&app=@<peer>/<name>&solo=1`,
 with `&input=` for a deep link. `&theme=light` (or `dark`) is the theme the
 page hands the app, for a host whose own page is light; without it the app
-is shown dark, as strut's UI is. The page behind it matches while it loads;
+is shown dark, as strut's UI is. The page behind it matches from its first
+paint, before a `ticket` is traded, and so does the app's loading screen;
 strut's own bar over the side panel and its file viewer stay dark. A link the page opens to itself changes
 `input` in place, the URL following (replaced, as the full UI does); a
 file or another app opens in the side panel inside the page (below); any
