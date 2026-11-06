@@ -1919,6 +1919,34 @@ whoever took it. Share puts a conversation in everyone's list
 draws shows in the thread; the rest is handed to the host as
 `?artifact=<served path>` or `?app=<key>` (`ui/open-link`, §14.3).
 
+### 14.13 `strut/knowledge` — the Concept tree (`plans/knowledge-app.md`)
+
+The app strut seeds after `strut/views` (`src/apps/knowledge/`,
+`src/apps/knowledge-seed.ts`), in place of Hive's org graph view: the
+organisation's Concepts as an outline beside their graph, read-only. Roots are the Concepts
+with `PARENT_OF` children and no parent, biggest tree first; a Concept in no
+tree is listed under "Not in any tree"; a Concept with two parents is a row
+under each. The main view is the graph (`NodeGraph` on `PARENT_OF` only, so every node
+in it is a Concept) round the concept
+picked in the outline, search or a link: each node's chip expands its
+neighbours or collapses them again, and a click opens the concept in a panel — its
+path, description, `docs` as markdown (`DocumentView`), parents and
+children, `repo` and `file`. Search is
+`NodeSearch` on `Concept`.
+First-party (§14.10), so it reads as its viewer. `createStrut({ knowledge:
+false })` or `STRUT_HOST_CONFIG`'s `knowledge: false` seeds nothing. A host
+lists it from `GET /apps` (title `Knowledge`) and opens it as
+`?app=strut/knowledge&solo=1`, a concept as `&input=concept%3D<ref_id>`;
+each selection is reported back the same way (`ui/open-link` to the app
+itself), so the host's address bar follows it.
+
+Its grants are reads only: `graph/find` (every Concept, 200 a page),
+`graph/graph-edges` (the edges among them, 1,000 `ref_ids` a call with every
+Concept as `among`; past 5,000 Concepts the page says it read part of the
+graph), `graph/graph-get-batched` (the selected concept, fresh),
+`graph/graph-neighbors` and `graph/graph-search`. The same calls on a Neo4j
+and a Ladybug file.
+
 ### 14.12 Branding — the look every app here is shown in (`src/brand.ts`)
 
 A page takes its look from its host: the kit's stylesheet reads the MCP

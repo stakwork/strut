@@ -1,0 +1,16 @@
+{
+  "//": "Type-checks strut/knowledge (src/apps/knowledge, plans/knowledge-app.md) against the kit and strut/views: its own src first for @/, then the kit's; `strut/views` from its sources; bare packages from the kit's install. `npx tsc -p kit/tsconfig.knowledge.json`.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": [],
+    "paths": {
+      "@strut/kit": ["./src/index.ts"],
+      "@strut/kit/folds": ["./src/folds/index.ts"],
+      "strut/views": ["../src/apps/views/src/index.ts"],
+      "@/*": ["../src/apps/knowledge/src/*", "../src/apps/views/src/*", "./src/*"],
+      "*": ["./node_modules/@types/*", "./node_modules/*"]
+    }
+  },
+  "include": ["../src/apps/knowledge/src/**/*"]
+}

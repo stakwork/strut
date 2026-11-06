@@ -406,7 +406,7 @@ const ENTRIES: Entry[] = [
   },
   {
     name: "NodeGraph",
-    what: "A node's neighbourhood in React Flow; a click opens a neighbour's outward.",
+    what: "A node's neighbourhood in React Flow; a node's chip opens its neighbours or folds them; a click selects.",
     grants: "grants.steps: graph/graph-get-batched, graph/graph-neighbors",
     usage: `<NodeGraph refId={refId} onSelect={(n) => …} />`,
     demo: () => <NodeGraph refId={REF.cardiology} />,
