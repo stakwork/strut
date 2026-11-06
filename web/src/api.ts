@@ -1299,6 +1299,22 @@ export interface NodeHit {
  *  name (`FieldDesc.nodeType`). A read route of the server's own, never a
  *  step the workflow names. `[]` when the deployment has no graph (501) or
  *  the call fails. */
+/** `GET /graph/types`: the graph's node types, for a typeahead; `[]` without a graph. */
+export interface GraphType {
+  type: string;
+  parent?: string;
+  domain?: string;
+  description?: string;
+}
+export async function listGraphTypes(): Promise<GraphType[]> {
+  try {
+    const r = await fetchJSON<{ types?: GraphType[] }>("/graph/types");
+    return Array.isArray(r.types) ? r.types : [];
+  } catch {
+    return [];
+  }
+}
+
 export async function searchNodes(type: string, q: string, limit = 8): Promise<NodeHit[]> {
   try {
     const r = await fetchJSON<{ nodes?: NodeHit[] }>(
@@ -2341,6 +2357,9 @@ export interface BuildPreview {
   files: string[];
   requires: PackageRequires;
   warnings: string[];
+  /** Graph types and Concept roots the workflows' runs wrote and read, not
+   *  in the package yet: what the page offers to add. */
+  suggested?: { types: string[]; concepts: string[] };
 }
 export const previewPackage = (req: Omit<PublishRequest, "channel">) =>
   fetchJSON<BuildPreview>("/packages/build", { method: "POST", body: JSON.stringify({ ...req, dryRun: true }) });

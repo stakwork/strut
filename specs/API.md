@@ -863,6 +863,7 @@ list is for — where a page mints a new conversation, `<viewer>/<id>`.
 
 | Method | Path | Response |
 | ------ | ---- | -------- |
+| GET    | `/graph/types` | `{ types: [{ type, parent?, domain?, description? }] }` — the graph's node types, sorted, strut's own (`Strut*`), `Thing` and `Schema` left out: the package page's typeahead for Graph types. 501 on a deployment with no graph |
 | GET    | `/graph/nodes/:ref_id` | `{ ref_id, node_type, name, properties }` — the node as the graph holds it NOW (vectors and internal stamps stripped); 404 when it is gone; 501 on a deployment with no graph |
 | GET    | `/graph/changes?types=&since=&wait=&limit=` | `{ cursor, reset?, more?, changes: [{ kind: "node" \| "edge", op: "created" \| "updated" \| "deleted", ref_id, at, node_type?, edge_type?, source?, target?, types? }] }` — the graph writes made THROUGH STRUT after a cursor (`plans/live-feeds.md` §3; the `graph/changes` step is the same read): every run's, a proposal's apply, an app's — the latest per node or edge, the deployment's last 5 000, in memory. Ids, types and time only; read what changed with the reads you already make. `types` (comma-separated, case-blind) keeps nodes of those types and edges with an end of one (an edge's `types` are its ends', where strut could read them; an edge with none passes). Strut's own types (`Strut*`, `Claim`, `Check`, `Evidence`, `Thing`, `Schema`) are never in it; neither is a write through raw Cypher or by another process. `since`, `wait`, `limit` (at most 500), `reset` and `more` as `GET /jobs/:id/updates`. 501 on a deployment with no graph |
 | GET    | `/graph/embeddings` | the embedding pass's status (`plans/semantic-search.md` §1; a debugging read): `{ enabled: true, sweep: { n, startedAt, finishedAt, phase, type, cursor }, current, last, skipped, newcomers: { since, embedded }, lastError, ticks }` — `current` / `last` are per type `{ seen, stale, embedded, removed, errors }` for the sweep in flight / the last complete one; `skipped` is `[{ type, reason: "no_schema" \| "no_index" \| "no_embed" \| "invalid_label" }]`. `{ enabled: false }` with `STRUT_GRAPH_EMBEDDINGS=off`; 501 on a deployment with no graph |
@@ -2261,7 +2262,8 @@ takes it from `file:<the cache directory>` (`<dataDir>/packages/sha256-<hex>/`).
     "secrets": ["LINEAR_API_KEY"], "binaries": ["sh"],
     "packages": [{ "package": "acme/util", "digest": "sha256:…", "source": "file:/…/packages/sha256-…" }]
   },
-  "warnings": []                       // a claim left out, a closure read only in part, a parent outside the package
+  "warnings": [],                      // a claim left out, a closure read only in part, a parent outside the package
+  "suggested": { "types": [], "concepts": [] }  // not carried yet, what the package page offers to add (below)
 }
 ```
 
@@ -2322,6 +2324,17 @@ What goes in:
   (`secretsEnv`, `tokenSecret` and the other secret-name fields, a step's
   own `secrets` and schema defaults), literal `secrets.get("…")` calls in
   step source, literal `exec` commands, literal `runtime:` fields.
+
+**Suggested** (`src/packages/suggest.ts`): what the package's workflows
+wrote and read that it does not carry, for the package page to offer — never
+added by itself. `types`: the node types the write steps (`graph/create-*`,
+`edit-*`, `assert`, `merge`, `move-node`, `restore-node`; an agent's tool
+calls included) reported on their `step.end` `nodes`, in the last five
+successful runs of each workflow; strut's own, the seed's and the carried
+left out. `concepts`: the pages `context/concept` read in those runs, and
+the literal `name` of each `context/concept` step the workflows hold, each
+climbed `PARENT_OF` to the top of its tree — naming a page brings every page
+under it — stopping below a page another seeder or package stamped.
 
 Building twice from the same workspace gives the same digest. Refusals are
 400 `{ error }`, one `package_build_refused: …` naming every problem: one

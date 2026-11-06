@@ -254,7 +254,7 @@ describe("building a package on a filesystem workspace", () => {
 
     const util = await post({ package: "acme/util", version: "1", steps: ["acme/util/fmt"] });
     assert.equal(util.status, 201, JSON.stringify(util.body));
-    assert.deepEqual(util.body, { package: "acme/util", version: "1", digest: util.body.digest, files: ["steps/fmt.ts", "strut.yaml"], requires: {}, warnings: [] });
+    assert.deepEqual(util.body, { package: "acme/util", version: "1", digest: util.body.digest, files: ["steps/fmt.ts", "strut.yaml"], requires: {}, warnings: [], suggested: { types: [], concepts: [] } });
     r = await linear({ packages: [{ package: "acme/util", digest: util.body.digest }] });
     assert.equal(r.status, 201, JSON.stringify(r.body));
     assert.deepEqual(r.body.files, ["steps/_shared.ts", "strut.yaml", "workflows/fmt.yaml"]);

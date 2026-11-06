@@ -69,6 +69,7 @@ import { dumpYaml, loadYaml } from "../yaml.js";
 import type { CachedPackage, PackageCache } from "./cache.js";
 import { MANIFEST_FILE, PACKAGE_DIGEST, PACKAGE_NAME, readPackage, type PackageManifest } from "./format.js";
 import { exportTypes } from "./graph-types.js";
+import { suggest, type SuggestDeps, type Suggested } from "./suggest.js";
 import { conceptPrefix } from "./installed.js";
 
 export interface BuildDeps {
@@ -85,6 +86,9 @@ export interface BuildDeps {
   /** An app version's directory, restored when it is not kept; without it
    *  the directory is the store's path as it is. */
   apps?: Pick<AppsCapability, "versionDir">;
+  /** The runs, read for what the package's workflows wrote and read
+   *  (`suggested`); without them only the workflows' text is read. */
+  runs?: SuggestDeps["runs"];
 }
 
 export interface BuildRequest {
@@ -127,6 +131,9 @@ export interface BuildResult {
    *  nothing. */
   dir: string;
   warnings: string[];
+  /** Graph types and Concept roots the workflows' runs wrote and read, not
+   *  named (./suggest.ts): what the package page offers to add. */
+  suggested: Suggested;
 }
 
 const refused = (problems: string[]) => new Error(`package_build_refused: ${problems.join("; ")}`);
@@ -537,6 +544,21 @@ export async function buildPackage(deps: BuildDeps, req: BuildRequest, opts: { d
   if (problems.length) throw refused([...new Set(problems)]);
   if (!files.size) throw refused([`nothing to package`]);
 
+  // What the workflows' runs wrote and read that the package does not carry yet.
+  const carried = (re: RegExp, kind: "type" | "concept") => {
+    const out = new Set([...files.keys()].map((f) => re.exec(f)?.[1]).filter((n): n is string => !!n));
+    for (const p of siblings.values()) for (const i of p.items) if (i.kind === kind) out.add(i.name);
+    return out;
+  };
+  const carriedTypes = carried(/^graph\/(.+)\.yaml$/, "type");
+  const carriedPages = carried(/^concepts\/(.+)\.md$/, "concept");
+  const suggested = await suggest(
+    { ...(deps.runs ? { runs: deps.runs } : {}), ...(deps.graph ? { graph: deps.graph } : {}) },
+    [...new Set([...(req.workflows ?? []), ...workflows])],
+    walked.map((st) => ({ type: baseType(st.type), ...(st.config !== undefined ? { config: st.config } : {}) })),
+    { types: carriedTypes, concepts: carriedPages, conceptStamp: (stamp) => stamp.startsWith(conceptPrefix(pkg)) },
+  );
+
   // 5. What it needs.
   const secrets = new Set<string>();
   const binaries = new Set<string>();
@@ -584,10 +606,10 @@ export async function buildPackage(deps: BuildDeps, req: BuildRequest, opts: { d
     }
     if (opts.dryRun) {
       const info = await readPackage(scratch);
-      return { package: pkg, version: req.version, digest: info.digest, files: info.files, manifest, dir: "", warnings: [...warnings] };
+      return { package: pkg, version: req.version, digest: info.digest, files: info.files, manifest, dir: "", warnings: [...warnings], suggested };
     }
     const info = await deps.cache.putDir(scratch);
-    return { package: pkg, version: req.version, digest: info.digest, files: info.files, manifest, dir: info.dir, warnings: [...warnings] };
+    return { package: pkg, version: req.version, digest: info.digest, files: info.files, manifest, dir: info.dir, warnings: [...warnings], suggested };
   } finally {
     await rm(scratch, { recursive: true, force: true });
   }
