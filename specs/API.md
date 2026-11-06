@@ -2160,8 +2160,8 @@ named by its type (`src/packages/graph-types.ts`). It is pinned by its DIGEST, `
 file in it (`readPackage`, `src/packages/format.ts`). A strut keeps every
 package it resolved under `<dataDir>/packages/`, one directory per digest,
 and serves any of them by digest — whether it built the package or
-installed it, it can be a mirror. Only `file:` refs resolve today; `git+`
-and `pk:` are refused by name (`package_source_unsupported`).
+installed it, it can be a mirror. `file:` and `pk:` refs resolve; `git+`
+is refused by name (`package_source_unsupported`).
 
 | Method | Path | Description |
 | ------ | ---- | ----------- |
@@ -2203,6 +2203,17 @@ and `pk:` are refused by name (`package_source_unsupported`).
 | GET    | `/llms.txt` | **Index role only.** The store as ONE markdown page for an agent that fetches URLs (llmstxt.org; `llmsTxt`, `src/packages/index-tools.ts`), `text/markdown`: an H1 naming the index, a blockquote saying what it is (derived, unsigned past the card, an install re-verifies against the publisher), how an agent reaches it (the `claude mcp add` line for `/index/mcp`) and that a PERSON installs; then `## Reads` (the five open routes above, each a link), `## Packages` (every listed package at its newest release — `- [publisher/name](…/index/packages/publisher/name): description — version; N workflows, M steps, K apps; needs SECRET; spends (model calls), acts on the world, runs code`), `## Concepts` (every page the packages carry, each a link to `/index/concepts/<name>`, its parent and packages) and `## Optional` (the store page `?store=1` when the index serves the UI). **Open to anyone**; 401 (no such page, the gate answers) on a strut without the role |
 | POST   | `/index/mcp` | **Index role only.** The store for an AGENT (§11; `src/packages/index-tools.ts`): the three reads above as MCP tools over the same derived pages — `search_packages { query?, limit? }` → `{ packages: IndexHit[], total, store?, install }`; `get_package { package }` → the `IndexPackage` as a model reads it (`detail.readme` cut at 12 000 chars, the Concept pages' `docs` left out) + `store?` + `install`, or `{ error }`; `get_concept { name?, query? }` → one `IndexConceptPage` (+ `store?`) or `{ concepts: IndexConcept[], total }`. `store` links the store page (`?store=1&pkg=`, `&concept=`, `&q=`) when the index serves the UI; `install` says a PERSON installs, and where. The `instructions` say what the index is, that everything is derived and an install re-verifies against the publisher, and how a person installs. **Open to anyone** — the one POST the gate opens with the role; GET and DELETE are 405 |
 | GET    | `/` | **Index role, with the UI served:** a request for the UI's root with NO credential (no key, no session cookie, no `?key=`) is a 302 to `./?store=1` — the STORE FRONT (§14.3), the index's public face over the four open reads above; what else the URL carried rides along. With a credential, the shell as always |
+
+**Installed at first boot.** `STRUT_PACKAGES` (and `createStrut({
+packages })`) lists packages a box should come up with: a JSON list of `{
+ref, url?, digest? }`, the fields `POST /packages/install` takes. Once the
+boot is done, each listed package not installed here (by its name, at any
+digest) is installed through the person's door, one at a time, in order,
+in the background (`src/packages/boot.ts`); one already here is left alone,
+so a change to the list never updates anything. A source that does not
+answer, or any other failure, is a warning and the next boot tries again;
+the server is up meanwhile. A malformed value fails the boot. `GET
+/packages` shows what landed.
 
 **The store's reads as steps** (`src/steps/lib/package/`; `ctx.services.packages`,
 `src/packages/indexes.ts`) — what an agent on a strut that FOLLOWS an index
