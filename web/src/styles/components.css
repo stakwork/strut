@@ -4538,6 +4538,10 @@ input.package-search { width: 100%; margin-bottom: var(--sp-2); }
   background: var(--surface);
 }
 .app-host-overlay.is-error { color: var(--danger); }
+/* An app handed the light theme: what shows behind it while it loads. */
+.app-host.light,
+.app-host.light .app-host-overlay { background: #ffffff; }
+.app-host.light .app-host-overlay:not(.is-error) { color: #71717a; }
 
 /* An app a job delivered (the builder's, by name): its page in the job
    timeline, under a bar with Reload (components/JobAppPanel.tsx); large,
@@ -4573,11 +4577,6 @@ input.package-search { width: 100%; margin-bottom: var(--sp-2); }
   width: 100%;
   height: 100vh;
   background: var(--surface);
-}
-/* `&theme=light`: the page behind a light app, so it never flashes dark. */
-.app-solo.light {
-  background: #ffffff;
-  color: #3f3f46;
 }
 .app-solo > .empty {
   flex: 1;

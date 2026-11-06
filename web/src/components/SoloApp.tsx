@@ -65,7 +65,7 @@ export function SoloApp(props: { app: string; input?: string | null; visitor?: b
     };
   }, [props.app, props.visitor]);
   return (
-    <div class={`app-solo${props.theme === "light" ? " light" : ""}`}>
+    <div class="app-solo">
       {shown
         ? <AppWithPanel
             app={shown}
