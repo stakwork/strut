@@ -121,6 +121,7 @@ steps:
             required: [message]
             properties:
               message: { type: string }
+              secret: { type: string, description: "A secret this server lacks and the work needs, by NAME (letters, digits, _): the person types its value into a box under your question — never into a reply — and your next turn begins `[secret] NAME stored`. One per turn; `message` says what it is for." }
   # The build happens on the peer (plans/builder-job.md §3): its `builder`,
   # under this job id (kept there as `peer/<job>`), as the forwarded person.
   # The step waits on the peer's event stream, reattaches after a drop or a

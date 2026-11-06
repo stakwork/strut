@@ -25,7 +25,7 @@ import evidenceStep from "../steps/lib/job/evidence.js";
 import type { JobsCapability } from "../jobs.js";
 import { BUSY_NOTICE, NOT_YOURS_NOTICE, detectSlash, groupByDay, insertSlash, isOwn, modelChoices, newConversationId, sendRefusal, sentModel, silentReply, timeLine, turnContext } from "./jamie/src/lib/chat.js";
 import { appKey, placeArtifact, servedFile } from "./jamie/src/lib/artifacts.js";
-import { captchaPrompt, claimPill, jobLook, liveStrip, openSlot, parseCaptcha, sortClaims, tapAt, toggleCell } from "./jamie/src/lib/jobs.js";
+import { answeredSince, askedSecret, captchaPrompt, claimPill, jobLook, liveStrip, openSlot, parseCaptcha, secretAlreadySet, secretPrompt, sortClaims, tapAt, toggleCell } from "./jamie/src/lib/jobs.js";
 import type { LedgerClaim, ModelCatalog } from "./jamie/src/lib/types.js";
 import { canMerge, checksLine, fixPrompt, prKey, prLive, prOf, prPill } from "./jamie/src/lib/pr.js";
 import { attachmentShow } from "./jamie/src/lib/attachments.js";
@@ -135,6 +135,22 @@ describe("strut/jamie — the pure parts", () => {
     assert.deepEqual(place({ id: "n", kind: "markdown", title: "Note", content: "# Hi" }), { show: "content", kind: "markdown", text: "# Hi" });
     assert.deepEqual(place({ id: "k", kind: "captcha", title: "Captcha", url: "/jobs/j1/files/shots/captcha-1.json" }), { show: "captcha", job: "j1", path: "shots/captcha-1.json", run: { workflow: "job", runId: "r-job" } });
     assert.deepEqual(place({ id: "m", kind: "markdown", title: "Gone", error: "not found: x.md" }), { show: "missing", text: "not found: x.md" });
+  });
+
+  it("a build that asks for a secret: its NAME, the turn that says it is stored, and when the question is answered", () => {
+    assert.equal(askedSecret({ message: "I need your Acme token.", secret: "ACME_TOKEN" }), "ACME_TOKEN");
+    assert.equal(askedSecret({ message: "x", secret: " ACME_TOKEN " }), "ACME_TOKEN");
+    for (const ask of [undefined, null, "Which repo?", { message: "x" }, { secret: "not a name" }, { secret: "1ABC" }, { secret: 7 }]) assert.equal(askedSecret(ask), null, JSON.stringify(ask));
+    // The job's next turn names the secret, never a value.
+    assert.equal(secretPrompt("ACME_TOKEN"), "[secret] ACME_TOKEN stored");
+    assert.equal(secretPrompt("ACME_TOKEN", true), "[secret] ACME_TOKEN is already set here");
+    assert.equal(secretAlreadySet("step_run: secret_set: ACME_TOKEN already has a value here"), true);
+    assert.equal(secretAlreadySet("secret_name: bad"), false);
+    // A later top-level turn of the job answered it; a child run did not.
+    const runs = [{ runId: "1793900000000" }, { runId: "1793900005000", parentRunId: "1793900000000" }];
+    assert.equal(answeredSince(runs, "1793900000000"), false);
+    assert.equal(answeredSince([...runs, { runId: "1793900009000" }], "1793900000000"), true);
+    assert.equal(answeredSince(undefined, "1793900000000"), false);
   });
 
   it("a job's card: its pill, and the live strip's line and tally for the run in flight", () => {

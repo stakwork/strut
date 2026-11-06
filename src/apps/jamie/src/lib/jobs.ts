@@ -213,3 +213,34 @@ export function msLeft(expiresAt: string | undefined, now: number): number | nul
   const t = Date.parse(expiresAt);
   return Number.isNaN(t) ? null : t - now;
 }
+
+// ── A secret the build asks for (plans/member-rights.md) ─────────────────
+// The builder's reply names a secret it needs in `ask.secret`; Jamie shows a
+// password box under the question, stores what the person types with
+// `secret/add` (fill a blank, never overwrite), and sends the job its next
+// turn naming the secret — never the value.
+
+const SECRET_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/** The secret a job's question asks the person for: its NAME, or null. */
+export function askedSecret(ask: unknown): string | null {
+  const name = ask && typeof ask === "object" ? (ask as { secret?: unknown }).secret : undefined;
+  return typeof name === "string" && SECRET_NAME.test(name.trim()) ? name.trim() : null;
+}
+
+/** The job's next turn once the secret is stored — or found already set
+ *  here (`secret/add` refuses to overwrite one). */
+export function secretPrompt(name: string, already = false): string {
+  return already ? `[secret] ${name} is already set here` : `[secret] ${name} stored`;
+}
+
+/** Did `secret/add` refuse because the name already has a value? */
+export function secretAlreadySet(message: string): boolean {
+  return /\bsecret_set:/.test(message);
+}
+
+/** Has the job taken a turn since `runId` — the question answered? Run ids
+ *  are millisecond timestamps. */
+export function answeredSince(runs: Array<{ runId: string; parentRunId?: string }> | undefined, runId: string): boolean {
+  return !!runs?.some((r) => !r.parentRunId && r.runId !== runId && Number(r.runId) > Number(runId));
+}

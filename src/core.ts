@@ -50,6 +50,10 @@ export interface StepDef<
    *  Listed by `GET /steps`, so a host can fill its `approve:` lists. Absent
    *  (or any other value): not declared, which a host treats as `write`. */
   effect?: StepEffect;
+  /** Config fields a run's events never keep: `step.start.input` carries
+   *  `"[redacted]"` in their place (src/runner.ts). For a value a person
+   *  typed that no log may hold — `secret/add`'s `value`. */
+  redact?: readonly string[];
   /** For a step an agent's `approve:` gates (src/proposals.ts): a proposal
    *  of it waits for every PENDING proposal this returns true for — accepting
    *  it first is refused (409), so it applies after them. `meta/set-automation`
@@ -875,6 +879,8 @@ export interface AnyStepDef {
   secrets?: string[];
   /** Read or write (see `StepDef.effect`). */
   effect?: StepEffect;
+  /** Config fields its run events never keep (see `StepDef.redact`). */
+  redact?: readonly string[];
   /** Which pending proposals one of its own waits for (see `StepDef.after`). */
   after?: (cfg: any, pending: { step: string; input: unknown }) => boolean;
   /** The person's card's title and summary (see `StepDef.describe`). */
