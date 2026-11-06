@@ -2,8 +2,9 @@
 // opens in place to what `strut/views` draws — markdown, text, an HTML page
 // from its safe elements, an image, a table, a recording, a Google Sheet —
 // and hands the rest to the HOST (`ui/open-link` to `?artifact=` or `?app=`),
-// which opens it beside the app, or in its own page. "Open" hands any served
-// file over the same way, for a page whose scripts should run.
+// which opens it beside the app, or in its own page. The whole card is the
+// click: open (or fold) in place, or hand over. An inline served file also
+// opens beside the chat from under it, for a page whose scripts should run.
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { AppWindow, ChevronDown, ChevronRight, ExternalLink, FileText, Image as ImageIcon, Table2 } from "lucide-react";
@@ -51,37 +52,53 @@ export function ArtifactCard({ artifact, runs, conversation, job }: { artifact: 
   if (place.show === "captcha") return <CaptchaCard title={artifact.title} job={place.job} path={place.path} {...(place.run ? { run: place.run } : {})} {...(conversation ? { conversation } : {})} />;
   const inline = place.show === "file" || place.show === "content" || place.show === "sheet";
   const Icon = place.show === "link" && place.what === "app" ? AppWindow : place.show === "sheet" || (place.show === "file" && place.kind === "table") ? Table2 : place.show === "file" && place.kind === "image" ? ImageIcon : FileText;
-  const handOff = place.show === "link" ? place : served ? { href: artifactLink(served), external: false } : undefined;
+  // A served file drawn inline also opens beside the chat, where its scripts run.
+  const beside = inline && served ? artifactLink(served) : undefined;
+  const toggle = inline ? () => setOpen((o) => !o) : place.show === "link" ? () => void host.openLink(place.href) : undefined;
+  const head = (
+    <>
+      <span className="flex items-center gap-2">
+        <Icon className="size-3.5 shrink-0 text-muted-foreground" />
+        {inline && (open ? <ChevronDown className="size-3.5 shrink-0" /> : <ChevronRight className="size-3.5 shrink-0" />)}
+        <span className="min-w-0 flex-1 truncate text-sm font-medium">{artifact.title}</span>
+        {place.show === "link" && <span className="shrink-0 text-xs text-muted-foreground">{place.what}</span>}
+        {place.show === "link" && place.external && <ExternalLink className="size-3 shrink-0 text-muted-foreground" />}
+      </span>
+      {artifact.summary && !open && <span className="mt-1 block text-xs text-muted-foreground">{artifact.summary}</span>}
+      {place.show === "missing" && <span className="mt-1 block text-xs text-muted-foreground">{place.text}</span>}
+    </>
+  );
   return (
     <div className="rounded-lg border bg-card text-card-foreground" data-testid="artifact-card" data-show={place.show}>
-      <div className="flex items-center gap-2 px-3 py-2">
-        <Icon className="size-3.5 shrink-0 text-muted-foreground" />
-        {inline ? (
-          <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} className="flex min-w-0 flex-1 items-center gap-1 text-left text-sm font-medium">
-            {open ? <ChevronDown className="size-3.5 shrink-0" /> : <ChevronRight className="size-3.5 shrink-0" />}
-            <span className="truncate">{artifact.title}</span>
-          </button>
-        ) : (
-          <span className="min-w-0 flex-1 truncate text-sm font-medium">{artifact.title}</span>
-        )}
-        {place.show === "link" && <span className="shrink-0 text-xs text-muted-foreground">{place.what}</span>}
-        {handOff && (
-          <button
-            type="button"
-            onClick={() => void host.openLink(handOff.href)}
-            className="inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
-            title={handOff.external ? "Open in a new tab" : "Open beside the chat"}
-          >
-            <ExternalLink className="size-3" />
-            Open
-          </button>
-        )}
-      </div>
-      {artifact.summary && !open && <p className="px-3 pb-2 text-xs text-muted-foreground">{artifact.summary}</p>}
-      {place.show === "missing" && <p className="px-3 pb-2 text-xs text-muted-foreground">{place.text}</p>}
+      {toggle ? (
+        <button
+          type="button"
+          onClick={toggle}
+          {...(inline ? { "aria-expanded": open } : {})}
+          title={place.show === "link" ? (place.external ? "Open in a new tab" : "Open beside the chat") : undefined}
+          className={cn(
+            "block w-full cursor-pointer px-3 py-2 text-left transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+            open ? "rounded-t-lg" : "rounded-lg",
+          )}
+        >
+          {head}
+        </button>
+      ) : (
+        <div className="px-3 py-2">{head}</div>
+      )}
       {open && inline && (
-        <div className={cn("border-t px-3 py-2")}>
+        <div className="border-t px-3 py-2">
           <Inline place={place} url={artifact.url} />
+          {beside && (
+            <button
+              type="button"
+              onClick={() => void host.openLink(beside)}
+              className="mt-2 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"
+            >
+              <ExternalLink className="size-3" />
+              Open beside the chat
+            </button>
+          )}
         </div>
       )}
     </div>

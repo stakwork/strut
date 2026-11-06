@@ -62,6 +62,8 @@ export function Thread({ session, draft, onStarted, onShowList, focusJob }: Thre
     }
     return owner;
   }, [turns]);
+  // The jobs whose cards the thread shows: a wake on one of them needs no line.
+  const carded = useMemo(() => new Set(turns.flatMap((t) => t.jobs.map((j) => j.job))), [turns]);
   const newest = conv.view?.turns[0];
   const running = newest && inFlight(newest.status) ? newest : undefined;
   const unread = conv.view?.conversation.unread;
@@ -148,7 +150,7 @@ export function Thread({ session, draft, onStarted, onShowList, focusJob }: Thre
           )}
           <ThreadPrs.Provider value={threadPrs}>
             {turns.map((t) => (
-              <Turn key={t.runId} turn={t} conversation={session!} />
+              <Turn key={t.runId} turn={t} conversation={session!} carded={carded} />
             ))}
           </ThreadPrs.Provider>
         </div>
@@ -195,7 +197,7 @@ function turnRuns(turn: ConversationTurn): TurnRuns {
   return { byJob, byRun };
 }
 
-function Turn({ turn, conversation }: { turn: ConversationTurn; conversation: string }) {
+function Turn({ turn, conversation, carded }: { turn: ConversationTurn; conversation: string; carded: ReadonlySet<string> }) {
   const working = inFlight(turn.status);
   const runs = useMemo(() => turnRuns(turn), [turn]);
   const silent = silentReply(turn.text);
@@ -214,7 +216,7 @@ function Turn({ turn, conversation }: { turn: ConversationTurn; conversation: st
   return (
     <div className="flex flex-col gap-2" data-testid="turn" data-run-id={turn.runId} data-status={turn.status}>
       {turn.wake ? (
-        <WakeLine wake={turn.wake} />
+        !wakeCarded(turn.wake, carded) && <WakeLine wake={turn.wake} />
       ) : (
         <div className="flex flex-col items-end gap-1.5">
           {turn.prompt && (
@@ -258,7 +260,14 @@ function Turn({ turn, conversation }: { turn: ConversationTurn; conversation: st
   );
 }
 
-/** A wake: a job this conversation started ended, and the assistant says what came of it. */
+/** Every job a wake woke on has its card in the thread, whose pill already
+ *  says it ended. */
+function wakeCarded(wake: WakeMark | true, carded: ReadonlySet<string>): boolean {
+  return wake !== true && [wake, ...(wake.also ?? [])].every((j) => carded.has(j.job));
+}
+
+/** A wake on a job the thread has no card for (a host's, another strut's):
+ *  it ended, and the assistant says what came of it. */
 function WakeLine({ wake }: { wake: WakeMark | true }) {
   const first = wake === true ? undefined : wake;
   const job = useJob(first?.job ?? "", false);
