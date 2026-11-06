@@ -4,9 +4,11 @@
 // opens on a new conversation; a row in the list or a deep link
 // (`?app=strut/jamie&input=session%3D…`) opens an earlier one. A
 // first-party app (src/apps/tools.ts `firstPartyApp`): it acts with its
-// viewer's own rights.
+// viewer's own rights. The thread always shows: wide, the list is docked
+// beside it and folds away (remembered per viewer); narrow — a phone, or a
+// host's side panel open beside the page — it is a drawer over the thread.
 import { useEffect, useState } from "react";
-import { useToolInput } from "@strut/kit";
+import { useAppState, useToolInput } from "@strut/kit";
 import { cn } from "@/lib/utils";
 import { newConversationId } from "./lib/chat";
 import { useConversationList } from "./hooks";
@@ -15,7 +17,7 @@ import { ChatList } from "./components/ChatList";
 import { Thread } from "./components/Thread";
 import { Notice, errorText } from "./components/bits";
 
-/** Narrower than this, the list and the thread take turns. */
+/** Narrower than this, the list is a drawer over the thread. */
 const NARROW = 768;
 
 function useNarrow() {
@@ -36,7 +38,14 @@ export default function App() {
   /** A new conversation's id, before its first turn makes it one. */
   const [draft, setDraft] = useState<string | null>(null);
   const narrow = useNarrow();
-  const [listShown, setListShown] = useState(true);
+  /** Wide: the person folded the list away. */
+  const [listHidden, setListHidden] = useAppState<boolean>("chatsHidden", false);
+  /** Narrow: the drawer is open. */
+  const [drawer, setDrawer] = useState(false);
+  // Turning narrow (a panel opened beside the page) never covers the thread.
+  useEffect(() => {
+    if (narrow) setDrawer(false);
+  }, [narrow]);
 
   // A deep link opens its conversation.
   useEffect(() => {
@@ -59,45 +68,47 @@ export default function App() {
     setDraft(null);
     setActive(id);
     setFocusJob(job ? { job, at: Date.now() } : null);
-    if (narrow) setListShown(false);
+    setDrawer(false);
   };
   const newChat = () => {
     if (!viewer) return;
     setDraft(newConversationId(viewer));
-    if (narrow) setListShown(false);
+    setDrawer(false);
   };
   const session = draft ?? (active || null);
-  const showList = !narrow || listShown;
-  const showThread = !narrow || !listShown;
+  const showList = narrow ? drawer : !listHidden;
+  const hideList = () => (narrow ? setDrawer(false) : setListHidden(true));
+  const showListAgain = () => (narrow ? setDrawer(true) : setListHidden(false));
 
   return (
     <ViewerContext.Provider value={viewer}>
-      <div className="flex h-screen w-full overflow-hidden bg-background text-foreground" data-testid="assistant">
+      <div className="relative flex h-screen w-full overflow-hidden bg-background text-foreground" data-testid="assistant">
+        {showList && narrow && (
+          <button type="button" aria-label="Hide chats" onClick={hideList} className="absolute inset-0 z-10 bg-black/40" data-testid="chats-scrim" />
+        )}
         {showList && (
-          <aside className={cn("shrink-0 border-r", narrow ? "w-full" : "w-72")}>
-            <ChatList active={draft ? null : active || null} onOpen={open} onNewChat={newChat} />
+          <aside className={cn("w-72 shrink-0 border-r", narrow && "absolute inset-y-0 left-0 z-20 max-w-[85%] shadow-xl")} data-testid="chats">
+            <ChatList active={draft ? null : active || null} onOpen={open} onNewChat={newChat} onHide={hideList} />
           </aside>
         )}
-        {showThread && (
-          <main className="flex min-w-0 flex-1 flex-col">
-            {list.isError && !list.data ? (
-              <div className="p-6">
-                <Notice tone="error">{errorText(list.error)}</Notice>
-              </div>
-            ) : (
-              <Thread
-                session={session}
-                draft={!!draft}
-                {...(focusJob ? { focusJob } : {})}
-                onStarted={(id) => {
-                  setDraft(null);
-                  setActive(id);
-                }}
-                {...(narrow ? { onShowList: () => setListShown(true) } : {})}
-              />
-            )}
-          </main>
-        )}
+        <main className="flex min-w-0 flex-1 flex-col">
+          {list.isError && !list.data ? (
+            <div className="p-6">
+              <Notice tone="error">{errorText(list.error)}</Notice>
+            </div>
+          ) : (
+            <Thread
+              session={session}
+              draft={!!draft}
+              {...(focusJob ? { focusJob } : {})}
+              onStarted={(id) => {
+                setDraft(null);
+                setActive(id);
+              }}
+              {...(showList ? {} : { onShowList: showListAgain })}
+            />
+          )}
+        </main>
       </div>
     </ViewerContext.Provider>
   );
