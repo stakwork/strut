@@ -236,6 +236,7 @@ strut/
         ├── helpers.ts     # normalizeSteps, formatJson, etc.
         ├── step-colors.ts # the step palette: PALETTE + paletteKey(type) — the ONE place a step's color is decided; the canvas nodes and the run overview's bars both read it
         ├── actor.ts       # displayActor: an actor id's first `-` segment for the UI (storage keeps the whole id)
+        ├── page.ts        # pickPage: which page the UI shows from the address and the session (`api.pageSession`, `GET /auth/session`) — the store front, an app or a file alone, a MEMBER's apps list (plans/member-rights.md), or the shell; memberApps orders that list (pure; tested)
         ├── context-meter.ts # the chat header's "351k / 1M": formatTokens + contextMeter (warns from 80%) over `ChatMeta.context` (pure; tested)
         ├── attachments.ts # the chat composer's files read for `POST /chat` (a PNG/JPEG past 1568 px scaled down first; the server's limits checked early)
         ├── automation-form.ts # the Automations editor's flat form state ⇄ trigger draft (pure; no calendar math — the server owns that)
@@ -262,6 +263,7 @@ strut/
         │   ├── Store.tsx             # the STORE FRONT (`?store=1`, plans/marketplace.md §7; specs/API.md §14.3): an index strut's public page, rendered ALONE in place of the shell for anyone with no credential, over the open reads alone (`api.storeCatalog` / `storeSearch` / `storePackage` / `storeConcepts` / `storeConcept`: a plain fetch, never the key) — Browse (the apps across the hits first, each a package's face off `detail`; the packages; the Concept roots; the publishers off the signed card; a footer saying it is all derived), a package's page (apps, the workflows table with inputs and what each reaches — the `spends` / `acts` / `code` chips, `CanChips` — the steps with secrets and lint, the Concepts, the README; the aside: needs, the publisher's key, releases and channels), the Concept pages as a wiki (tree, docs, children, in which packages). Nothing installs here: **Install into your strut** is `installLink` into the visitor's own strut ("Your strut", kept in localStorage; else asked, the name to paste beside it). On a strut without the role: "Not a store". LIVE items (plans/public-surface.md §8): the index's live rows (`PUT /index/live/:prefix { url }`, the card's `live` map beside `publishers`, read at the row and every crawl; `GET /index/live`) show as **Live apps** and **Live workflows and steps** on Browse, each a page read from its publisher's `/public` in the visitor's browser (an app framed from `?app=&solo=1&public=1` with "Open full page"; a workflow's inputs, steps and recent runs; a step's fields and source), and a Concept only a live view holds reads its docs from there
         │   ├── AppRail.tsx           # the COLLAPSED sidebar (the toggle beside "strut", `sidebarCollapsed` in localStorage): one tile per app — two letters, a hue from its key, pinned first, the usage dot — its title in a tooltip fixed to the window; a click opens the app. The sections stay mounted, hidden, so each keeps its scroll
         │   ├── AppWithPanel.tsx      # an app's page with a SIDE PANEL beside it (plans/jamie-app.md §4, §4.1): what the app cannot show in its own document (`frame-src 'none'`, `run/files` 2 MB) it hands over as a strut deep link through `ui/open-link`, and this host opens `?artifact=<served path>` (`isServedFilePath`: a job's files, a run's artifacts, a peer's read-through) through ArtifactViewer (`solo` + `onClose`) and `?app=<key>` (another app, a peer's too) through AppHost under a title bar, instead of navigating away — the page keeps its frame and its state. `panelTarget` (app-links.ts) decides; a new link replaces the panel's content (an app's new input in place), ✕ closes it, its left edge resizes it (`WidthResizer`, `--app-panel-width` on `.app-split`, `strut.appPanelWidth` in localStorage), and in a container under 760 px it lies over the page (a container query). The panel's own app links the same way. A link to the page itself, a workflow, a run or a job goes to the caller's `onNavigate` as before. Not in the address bar: a reload closes it. No panel for a visitor's page. Used by the canvas-area host (app.tsx) and SoloApp.tsx, not by the job timeline's or the viewer's app
+        │   ├── MemberApps.tsx        # a MEMBER's page (plans/member-rights.md): the apps here (`GET /apps`, strut/views left out, strut/jamie first, then pinned, then by title), each opening alone as `?app=<name>&solo=1` — what a member who opens strut directly gets instead of the shell
         │   ├── SoloApp.tsx           # `?app=<key>&solo=1`: the page ALONE, nothing of strut's around it, for a native host's web view (plans/apps.md §7.4) — `App` renders it in place of the shell, so it reads only the listing the app is in (`GET /apps`, or that one peer's `GET /peers/<id>/apps`; `parseAppKey`) and the app's files: no workflows, step types, other peers or `/runs/active` poll. A key ending in `@vN` (`bench@v3`, an import's pin) shows that version instead of the live one — a held app's draft, for `app/look`; one ending in `@preview-<hex>` an unpublished build `app/look { path }` hosts, no listing read (the lookup is `useListedApp`, web/src/use-listed-app.ts, which the side panel shares). `&theme=light` (or `dark`): the theme it hands the app (`soloTheme`, app-links.ts), for a host whose own page is light; dark without it. No `ui/message`; a link to itself is its input in place (the address bar follows), a file or another app opens in the SIDE PANEL inside this one page (AppWithPanel.tsx) — how Hive and Peel, which frame this page, show what the app cannot frame — and anything else a new tab. `&public=1`: a VISITOR's page (plans/public-surface.md §5) — `GET /public/apps/<name>` and its document, AppHost's `visitor` relaying to `POST /public/mcp` with no credential; what the store frames from a publisher's server
         │   ├── PublishDialog.tsx     # the topbar's **Publish**: one dialog, two tabs — **Packages** (PackagesPanel.tsx, the copies other struts install) and **Public view** (PublicViewPanel.tsx, what anyone reads here live). A tab mounts when first shown and stays mounted, so a Public view draft survives a look at Packages (the tab carries a dot while it has one); one height for both, the tab's body scrolling between the tabs and Close; the button opens on the tab used last (`publishTab` in localStorage), `?install=` on Packages
         │   ├── PublicViewPanel.tsx   # the Publish dialog's **Public view** tab (plans/public-surface.md §2, decisions 19–20): what anyone can read on this server, live and read-only — the record (`GET`/`PUT /public-view`) as rows per kind (an app with its reads, "Open as a visitor" and its link; a workflow with a "with its runs" box; steps; Concept roots), an Add bar whose app or workflow asks `GET /public-view/needs` and shows the cascade pre-checked, every line with what it exposes, Save (a bar held at the bottom of the tab while there are unsaved changes) writing the whole list and saying which apps it held; its pure parts in web/src/public-view.ts (tested)
@@ -639,10 +641,11 @@ container in the compose (strut and any service that registers steps).
   the whole flow; the route sweeps leave out the two open login routes.
   **A host signs one person in** (auth.ts "Sign-in tickets", specs/API.md
   §13.1) — the standalone twin of mcp's `/mint-token` JWT handed to
-  `/lab/?key=`: the host's SERVER mints `POST /auth/ticket { actor }`
+  `/lab/?key=`: the host's SERVER mints `POST /auth/ticket { actor, role? }`
   (full scope; the actor the host's to name, checked like `/peers/tokens`'
-  — 120 chars, no line break) → `{ ticket, expiresAt }`,
-  `strut-ticket.<claims>.<hmac>` with `{ actor, exp, jti }` signed like a
+  — 120 chars, no line break; `role` `admin` | `member`, a member when left
+  out, anything else 400) → `{ ticket, expiresAt }`,
+  `strut-ticket.<claims>.<hmac>` with `{ actor, role, exp, jti }` signed like a
   session, 60 s, good ONCE (redeemed `jti`s kept in memory until they
   expire), and frames `<strut>/?ticket=…`. The UI trades it at `POST
   /auth/session { ticket }` before any other request (`api.ts`
@@ -655,10 +658,30 @@ container in the compose (strut and any service that registers steps).
   sends the cookie to a framed page only when strut and its framer are
   same-site — `strut.acme.com` in `acme.com`; framed by another site, no
   cookie is stored and the next request is a 401.
+  **Admins run the box, members use apps** (plans/member-rights.md;
+  specs/API.md §13.1 "Admins and members"). The session keeps the
+  ticket's `role` (`GET /auth/session` says it; the key login has none).
+  An admin's session is the key's equal, as before. A MEMBER's is not:
+  `carriesApiKey` / `apiKeyMatches` do not count it (so no route's own
+  key check and not the dictation socket), its scope is `member`
+  (`scopeFromKey`; createStrut's `memberOnly` decides it before a host's
+  `resolveScope`), and the gate passes it only `MEMBER_ROUTES` — what
+  strut's page calls to show an app alone: `GET /auth/session`, `GET
+  /apps`, `/apps/:name/versions`, `/apps/:name/:version/files[/…]`, `GET
+  /brand`, `/mcp` (`step_run` alone, as `personAppHandler` serves a
+  person token; GET / DELETE its 405), `POST
+  /apps/:name/channel-ticket`, `GET /artifacts/:runId[/…]` and `GET
+  /jobs/:id/files[/…]`. Everything else is 403, reads and a host's later
+  routes included; `createStrut.test.ts` ("a member's session") sweeps
+  them and counts the allowed. The UI asks `GET /auth/session` before it
+  renders (`api.pageSession`) and picks the page (`web/src/page.ts`
+  `pickPage`): a member gets their apps (`MemberApps.tsx`, Jamie first,
+  each `?app=<name>&solo=1`), never the shell. Not a sandbox: a member
+  reaches the builder through Jamie.
 - **Scope — what another strut may do** (plans/federation.md §3). Past the
   credential, the gate asks `createStrut({ resolveScope(c) })` — the twin of
   `resolveActor`, the host's call (mcp maps its JWT's scope) — whether the
-  request is `full` or `peer`. The default (`scopeFromKey`) says `peer` for
+  request is `full` or `peer` (or `member`, above). The default (`scopeFromKey`) says `peer` for
   a request carrying `STRUT_PEER_KEY`, the key a peer record on another
   strut holds for this one. A `peer` may read every route (`GET`/`HEAD`;
   `requireApiKey` lets the peer key read too), launch a run (`POST

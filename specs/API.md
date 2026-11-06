@@ -30,7 +30,10 @@ workflow it publishes (`owner`). AGENTS.md "Auth" has the whole model.
 
 **A browser signs in instead.** The web UI trades the key for a short-lived
 session cookie at `POST /auth/session` (§13), so the key is never kept in a
-browser; a client that is a program keeps using the header.
+browser; a client that is a program keeps using the header. A host that
+signs its people in (§13.1) names each one's role: an admin's session is
+the key's equal, a MEMBER's opens the apps here and nothing else (scope
+`member`, §13.1 "Admins and members").
 
 **A peer's key.** `STRUT_PEER_KEY` is the key another strut holds for this
 one (§10). It is presented like `STRUT_API_KEY` (Bearer or `?key=`) but is
@@ -1177,17 +1180,18 @@ and rotating that secret ends every session.
 
 | Method | Path            | Description |
 | ------ | --------------- | ----------- |
-| POST   | `/auth/session` | `{ key, actor? }` or `{ ticket }` → 200 `{ actor?, exp }` + `Set-Cookie: strut_session=…; Path=/; Max-Age=…; HttpOnly; SameSite=Lax[; Secure]`. Open to anyone (it IS the login); a wrong key is a `401` after half a second; `400` with no key configured. `actor`: who is signing in, ≤ 120 chars. A `ticket` (below) sets the same cookie naming the ticket's actor — an `actor` beside it is ignored; one expired, already used, forged or malformed is a `401 { error }` |
-| GET    | `/auth/session` | `{ actor?, exp }` of the session the request carries; `404` for a request the key authenticated |
+| POST   | `/auth/session` | `{ key, actor? }` or `{ ticket }` → 200 `{ actor?, exp, role? }` + `Set-Cookie: strut_session=…; Path=/; Max-Age=…; HttpOnly; SameSite=Lax[; Secure]`. Open to anyone (it IS the login); a wrong key is a `401` after half a second; `400` with no key configured. `actor`: who is signing in, ≤ 120 chars. A `ticket` (below) sets the same cookie naming the ticket's actor and `role` — an `actor` beside it is ignored; one expired, already used, forged or malformed is a `401 { error }`. The key login names no role |
+| GET    | `/auth/session` | `{ actor?, exp, role? }` of the session the request carries — `role` the ticket's (`admin` \| `member`), none for the key login; `404` for a request the key authenticated |
 | DELETE | `/auth/session` | clears the cookie → `204`; needs no credential |
-| POST   | `/auth/ticket`  | `{ actor }` → 200 `{ ticket, expiresAt }` (`cache-control: no-store`): a SIGN-IN TICKET for that person. `full` scope only — the deployment key, its session, or strut's own in-process request; a peer key or a person token is `403`, no credential `401`. `actor` required, ≤ 120 chars, no line break (`/peers/tokens`'s rule); `400` otherwise, and with no key configured. `expiresAt`: ms since the epoch, a minute out |
+| POST   | `/auth/ticket`  | `{ actor, role? }` → 200 `{ ticket, expiresAt }` (`cache-control: no-store`): a SIGN-IN TICKET for that person. `full` scope only — the deployment key, its session or an admin's, or strut's own in-process request; a peer key, a person token or a member's session is `403`, no credential `401`. `actor` required, ≤ 120 chars, no line break (`/peers/tokens`'s rule); `role` `"admin"` or `"member"`, **a member when left out** (§13.1); `400` otherwise, and with no key configured. `expiresAt`: ms since the epoch, a minute out |
 
 `exp` is the session's end in ms since the epoch — `STRUT_SESSION_HOURS`
 (default 12) from the login. `Secure` is set when the request came over
 https (directly, or `x-forwarded-proto: https`).
 
-A request carrying a valid cookie is the key's equal — every route, `full`
-scope, never more — and its `actor` is stamped on what it launches and
+A request carrying a valid cookie from the key login, or an admin's ticket,
+is the key's equal — every route, `full` scope, never more — and its
+`actor` is stamped on what it launches and
 publishes (`x-strut-actor` beside it is ignored). Two CSRF rules: a request
 that is not a `GET`/`HEAD` is honored only with the header `x-strut-ui: 1`
 (the UI sends it on every call; a cross-site form cannot), and a file read
@@ -1216,13 +1220,13 @@ session does — and frames the UI with it:
 ```bash
 curl -s -X POST https://strut.acme.com/auth/ticket \
   -H "authorization: Bearer $STRUT_API_KEY" -H 'content-type: application/json' \
-  -d '{"actor":"evanfeenstra-cm3k9x"}'
+  -d '{"actor":"evanfeenstra-cm3k9x","role":"member"}'
 # → { "ticket": "strut-ticket.eyJhY3Rvci….3q2…", "expiresAt": 1793813291223 }
 # frame: https://strut.acme.com/?ticket=strut-ticket.…&app=strut%2Fjamie&solo=1&theme=light
 ```
 
 The ticket is `strut-ticket.<base64url claims>.<hmac>`, claims `{ actor,
-exp, jti }`, signed under the session's secret. It lives 60 s and trades
+role, exp, jti }`, signed under the session's secret. It lives 60 s and trades
 ONCE: a redeemed `jti` is remembered in memory until it expires (a restart
 forgets them). Mint one per page load.
 
@@ -1234,6 +1238,36 @@ signed in as that person. The ticket wins: a key or a session the browser
 held before is dropped either way. Refused, the page says the sign-in link
 expired and to reload from the host — never the Settings → Connection key
 prompt — and so it does when that session later ends.
+
+**Admins and members** (`plans/member-rights.md`). The ticket's `role` is
+the host's own word for the person: an **admin** runs the box, a
+**member** uses its apps. The session keeps it (`GET /auth/session` says
+`role`). An admin's session is the key's equal, the operator console
+included. A member's is scope `member`: it is not the key's equal
+anywhere — not at the gate, not on a route's own key check, not on the
+dictation socket — and the gate passes it exactly what strut's page calls
+to show an app alone (`?app=<name>&solo=1`):
+
+| Route | For |
+| ----- | --- |
+| `GET /auth/session` | who is signed in, and as what |
+| `GET /apps`, `GET /apps/:name/versions` | finding the app; the side panel's versions |
+| `GET /apps/:name/:version/files[/…]` | the document; the listing mints the app's identity |
+| `GET /brand` | the style the app is shown in (§14.12) |
+| `POST /mcp` | the page's calls: `step_run` alone, run as the member under the app's grants, as a person token gets (§14.3); `GET` / `DELETE /mcp` answer 405 |
+| `POST /apps/:name/channel-ticket` | the app's channels (§14.11) |
+| `GET /artifacts/:runId[/…]`, `GET /jobs/:id/files[/…]` | a file the app hands the side panel, under §13's file rule |
+
+Every other route is `403` — reads included, and a route a host mounts
+later. What is open to anyone stays open (`GET /health`, which tells a
+member `{ ok: true }` alone; `/auth/session`; a `?t=` file token; a
+channel ticket; `/public/*`). A member who opens strut directly gets the
+list of the apps here, strut's assistant first, each opening alone — never
+the console; `?app=…` and `?artifact=…` open alone for a member with or
+without `solo=1`. A ticket with no role, including one minted before
+roles, signs in a member: a host that does not say signs nobody in with
+the console. It is not a sandbox: what a member's apps can do (Jamie
+starts a builder job as them), the member can.
 
 **Same site only.** The cookie is `SameSite=Lax`, so a framed page gets it
 only when strut and the page framing it are SAME-SITE — `strut.acme.com`

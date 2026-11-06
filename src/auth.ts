@@ -68,7 +68,7 @@ export function warnIfUnconfigured(): void {
  * `<img>` / `<video>` / new tab). Permissive when the env var is unset.
  */
 export function carriesApiKey(c: Context): boolean {
-  return inProcessOf(c) !== undefined || apiKeyMatches(c.req.header("authorization"), c.req.query("key")) || sessionOf(c) !== undefined;
+  return inProcessOf(c) !== undefined || apiKeyMatches(c.req.header("authorization"), c.req.query("key")) || fullSession(sessionOf(c));
 }
 
 // ── In-process requests ──────────────────────────────────────────────────
@@ -125,15 +125,16 @@ export async function requireApiKey(c: Context, next: Next) {
  * dictation WebSocket's upgrade, where the key rides as `?key=` because a
  * browser's WebSocket cannot set headers — or, signed in, as the session
  * cookie (`cookie`): an upgrade is a GET, and a cross-site page's WebSocket
- * never carries a SameSite cookie. Permissive (true) when `STRUT_API_KEY`
- * is unset.
+ * never carries a SameSite cookie. A MEMBER's session is not the key's
+ * equal ("Sessions" below), so it is not counted. Permissive (true) when
+ * `STRUT_API_KEY` is unset.
  */
 export function apiKeyMatches(authorization: string | undefined, queryKey?: string | null, cookie?: string): boolean {
   const expected = configuredKey();
   if (!expected) return true;
   const got = presentedKey(authorization, queryKey);
   if (!!got && got === expected) return true;
-  return cookie !== undefined && sessionFromCookie(cookie) !== undefined;
+  return cookie !== undefined && fullSession(sessionFromCookie(cookie));
 }
 
 // ── Scope ────────────────────────────────────────────────────────────────
@@ -155,8 +156,13 @@ export function apiKeyMatches(authorization: string | undefined, queryKey?: stri
  * a `peer:person` may (`isPeerScope`), and more: launch a workflow that
  * says `peer: person`, open its own actor's sessions (runner.ts
  * `bindPeer`), and — once rooms land (§3) — join its actor's room.
+ *
+ * `member` (plans/member-rights.md): a MEMBER's session, a person a host
+ * signed in with `role: "member"` ("Sessions" below). A member uses apps:
+ * the gate passes the few routes strut's page calls to show one, and
+ * `/mcp` gives it an app's `step_run` alone, as the viewer.
  */
-export type Scope = "full" | "peer" | "peer:person";
+export type Scope = "full" | "peer" | "peer:person" | "member";
 
 /** Is this a peer's request — a strut server's, or a person's through one? */
 export function isPeerScope(scope: Scope | undefined): boolean {
@@ -164,13 +170,15 @@ export function isPeerScope(scope: Scope | undefined): boolean {
 }
 
 /** The default `resolveScope`: `full` for the deployment key (or its
- *  session), else `peer:person` for a person token, `peer` for the peer
- *  key, and `full` for the rest (dev mode). */
+ *  session, an admin's included), else `peer:person` for a person token,
+ *  `peer` for the peer key, `member` for a member's session, and `full`
+ *  for the rest (dev mode). */
 export function scopeFromKey(c: Context): Scope {
   if (inProcessOf(c)) return "full";
   if (configuredKey() && carriesApiKey(c)) return "full";
   if (personOf(c)) return "peer:person";
-  return carriesPeerKey(c) ? "peer" : "full";
+  if (carriesPeerKey(c)) return "peer";
+  return configuredKey() && memberOf(c) ? "member" : "full";
 }
 
 // ── File read tokens ─────────────────────────────────────────────────────
@@ -359,6 +367,14 @@ export function actorFromHeader(c: Context): string | undefined {
 // its life. `POST /auth/session { ticket }` buys the same cookie with a
 // host's sign-in ticket instead of the key ("Sign-in tickets" below).
 //
+// Roles (plans/member-rights.md). A ticket names the person's ROLE, which
+// the session keeps: `admin` or `member`, the host's own words. An admin's
+// session is the key's equal, as the key login's (no role) is. A MEMBER's
+// is not: `carriesApiKey` does not count it, its scope is `member`, and
+// the gate passes it only the routes strut's page calls to show an app
+// alone (createStrut's `MEMBER_ROUTES`) — admins run the box, members use
+// apps.
+//
 // In a frame. `SameSite=Lax` sends the cookie to a framed page only when
 // strut and the page framing it are SAME-SITE (`strut.acme.com` in
 // `acme.com`): a frame of another site is a cross-site context, where the
@@ -388,10 +404,24 @@ const SESSION_HOURS_ENV = "STRUT_SESSION_HOURS";
 const DEFAULT_SESSION_HOURS = 12;
 const UI_HEADER = "x-strut-ui";
 
-/** What a session cookie holds: who signed in, and when it ends (ms). */
+/** A person's role, as a host names it on a sign-in ticket: an admin runs
+ *  the box, a member uses its apps (plans/member-rights.md). */
+export type Role = "admin" | "member";
+export const ROLES: readonly Role[] = ["admin", "member"];
+export const isRole = (r: unknown): r is Role => r === "admin" || r === "member";
+
+/** What a session cookie holds: who signed in, when it ends (ms), and the
+ *  role a host's ticket named — none for the key login. */
 export interface Session {
   actor?: string;
   exp: number;
+  role?: Role;
+}
+
+/** Is this session the key's equal? The key login's (no role) and an
+ *  admin's are; a member's is not. False with no session. */
+function fullSession(session: Session | undefined): boolean {
+  return session !== undefined && session.role !== "member";
 }
 
 /** A session's life: `STRUT_SESSION_HOURS`, default 12. */
@@ -444,7 +474,7 @@ function readClaims(kind: ClaimsKind, token: string, now: number): { exp: number
 /** The signed token for a session — `base64url(json).hmac` — or undefined
  *  with no secret to sign it. */
 export function sessionToken(session: Session): string | undefined {
-  return signClaims("session", { ...(session.actor ? { actor: session.actor } : {}), exp: session.exp });
+  return signClaims("session", { ...(session.actor ? { actor: session.actor } : {}), exp: session.exp, ...(session.role ? { role: session.role } : {}) });
 }
 
 /** The session a token names, if the signature holds and it has not
@@ -452,9 +482,10 @@ export function sessionToken(session: Session): string | undefined {
 export function verifySessionToken(token: string, now = Date.now()): Session | undefined {
   const claims = readClaims("session", token, now);
   if (!claims) return undefined;
-  const { actor, exp } = claims;
+  const { actor, exp, role } = claims;
   if (actor !== undefined && typeof actor !== "string") return undefined;
-  return actor ? { actor, exp } : { exp };
+  if (role !== undefined && !isRole(role)) return undefined;
+  return { ...(actor ? { actor } : {}), exp, ...(role ? { role } : {}) };
 }
 
 /**
@@ -470,8 +501,8 @@ export function issueSession(key: string, actor?: string, ttlMs = sessionTtlMs()
 }
 
 /** A session for `actor` from now, as the cookie value and what it names. */
-function startSession(actor: string | undefined, ttlMs: number): { token: string; session: Session } | undefined {
-  const session: Session = { ...(actor ? { actor } : {}), exp: Date.now() + ttlMs };
+function startSession(actor: string | undefined, ttlMs: number, role?: Role): { token: string; session: Session } | undefined {
+  const session: Session = { ...(actor ? { actor } : {}), exp: Date.now() + ttlMs, ...(role ? { role } : {}) };
   const token = sessionToken(session);
   return token ? { token, session } : undefined;
 }
@@ -481,11 +512,12 @@ function startSession(actor: string | undefined, ttlMs: number): { token: string
 // How a HOST signs one person into strut's own UI in a frame, with no key
 // in the browser — the standalone twin of mcp's `/mint-token` JWT handed to
 // `/lab/?key=`. The host's server, holding the key, mints a ticket for the
-// person (`POST /auth/ticket { actor }`, full scope) and frames
+// person (`POST /auth/ticket { actor, role? }`, full scope) and frames
 // `<strut>/?ticket=…`; the page trades it ONCE at `POST /auth/session
 // { ticket }` for the session cookie the key login sets, naming the
-// ticket's actor. `strut-ticket.<claims>.<hmac>`, claims `{ actor, exp,
-// jti }`, signed like a session. A URL can be logged, cached or read by a
+// ticket's actor and role — a member's unless the host said `admin`.
+// `strut-ticket.<claims>.<hmac>`, claims `{ actor, role, exp, jti }`,
+// signed like a session. A URL can be logged, cached or read by a
 // page, so the ticket lives a minute and is good once: a redeemed `jti` is
 // remembered, in memory, until its `exp` (a restart forgets them, and a
 // ticket from before it may be traded once more within its minute).
@@ -497,30 +529,32 @@ export const SIGN_IN_TICKET_MS = 60_000;
 /** The `jti`s redeemed, each until its ticket's `exp`. */
 const redeemedTickets = new Map<string, number>();
 
-/** A sign-in ticket for `actor`, living `ttlMs` — or undefined with no
- *  secret to sign it. */
-export function signInTicket(actor: string, ttlMs = SIGN_IN_TICKET_MS): { ticket: string; exp: number } | undefined {
+/** A sign-in ticket for `actor` as `role` (a member unless said),
+ *  living `ttlMs` — or undefined with no secret to sign it. */
+export function signInTicket(actor: string, role: Role = "member", ttlMs = SIGN_IN_TICKET_MS): { ticket: string; exp: number } | undefined {
   const exp = Date.now() + ttlMs;
-  const signed = signClaims("ticket", { actor, exp, jti: randomBytes(16).toString("base64url") });
+  const signed = signClaims("ticket", { actor, role, exp, jti: randomBytes(16).toString("base64url") });
   return signed ? { ticket: `${TICKET_PREFIX}${signed}`, exp } : undefined;
 }
 
 /**
- * Trade a sign-in ticket for a session naming its actor, living `ttlMs`
- * (default `sessionTtlMs()`). Undefined — and nothing remembered — for a
- * ticket that is not one, not strut's, or expired; undefined for one
- * already traded. A ticket that redeems is spent.
+ * Trade a sign-in ticket for a session naming its actor and role, living
+ * `ttlMs` (default `sessionTtlMs()`). Undefined — and nothing remembered —
+ * for a ticket that is not one, not strut's, or expired; undefined for one
+ * already traded. A ticket that redeems is spent. One that names no role
+ * (minted before roles) signs a member in.
  */
 export function redeemSignInTicket(ticket: string, ttlMs = sessionTtlMs(), now = Date.now()): { token: string; session: Session } | undefined {
   if (!ticket.startsWith(TICKET_PREFIX)) return undefined;
   const claims = readClaims("ticket", ticket.slice(TICKET_PREFIX.length), now);
   const actor = claims?.["actor"];
   const jti = claims?.["jti"];
-  if (!claims || typeof actor !== "string" || !actor || typeof jti !== "string" || !jti) return undefined;
+  const role = claims?.["role"] ?? "member";
+  if (!claims || typeof actor !== "string" || !actor || typeof jti !== "string" || !jti || !isRole(role)) return undefined;
   for (const [id, exp] of redeemedTickets) if (exp <= now) redeemedTickets.delete(id);
   if (redeemedTickets.has(jti)) return undefined;
   redeemedTickets.set(jti, claims.exp);
-  return startSession(actor, ttlMs);
+  return startSession(actor, ttlMs, role);
 }
 
 /** The `Set-Cookie` value that stores a session token, or clears it
@@ -564,6 +598,13 @@ export function sessionOf(c: Context): Session | undefined {
   const read = c.req.method === "GET" || c.req.method === "HEAD";
   const fileRead = fileScopeOf(c.req.path) || /^\/peers\/[^/]+\/./.test(c.req.path);
   return read && !fileRead ? session : undefined;
+}
+
+/** The MEMBER's session this request may spend (`sessionOf`'s rules), if
+ *  that is what it carries: a person a host signed in as `member`. */
+export function memberOf(c: Context): Session | undefined {
+  const session = sessionOf(c);
+  return session?.role === "member" ? session : undefined;
 }
 
 // ── Person tokens ────────────────────────────────────────────────────────
