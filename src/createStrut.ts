@@ -35,7 +35,7 @@ import type { StepSources } from "./steps/registry.js";
 import { runWorkflow } from "./runner.js";
 import { RunController } from "./run-control.js";
 import { buildJournal, invalidateFrom, readRunStart } from "./journal.js";
-import { appIdentity, publicAppIdentity, publicAppOfIdentity, carriesApiKey, carriesPeerKey, carriesFileToken, carriesBadFileToken, catalogToken, catalogTokenOf, CATALOG_TOKEN_DAYS, publicPackageRead, fileToken, warnIfUnconfigured, channelTicket, channelTicketOf, actorFromHeader, inProcessOf, inProcessRequest, scopeFromKey, isPeerScope, personOf, personToken, PERSON_TOKEN_DAYS, unauthorized, issueSession, redeemSignInTicket, signInTicket, sessionCookie, sessionOf, isSecureRequest, type Scope } from "./auth.js";
+import { appIdentity, publicAppIdentity, publicAppOfIdentity, carriesApiKey, carriesPeerKey, carriesFileToken, carriesBadFileToken, catalogToken, catalogTokenOf, CATALOG_TOKEN_DAYS, publicPackageRead, fileToken, warnIfUnconfigured, channelTicket, channelTicketOf, actorFromHeader, inProcessOf, inProcessRequest, scopeFromKey, isPeerScope, isRole, memberOf, personOf, personToken, PERSON_TOKEN_DAYS, unauthorized, issueSession, redeemSignInTicket, signInTicket, sessionCookie, sessionOf, isSecureRequest, type Scope } from "./auth.js";
 import { standardServices, fileArtifactsCapability } from "./capabilities.js";
 import type { ArtifactsCapability, SecretsCapability } from "./capabilities.js";
 import type { SecretStore } from "./secret-store.js";
@@ -1182,7 +1182,11 @@ export async function createStrut<TServices = unknown>(
   // `peer:person` (a person's credential through one) the same, and more
   // (auth.ts `Scope`).
   const hostScope = opts.resolveScope ?? scopeFromKey;
-  const resolveScope = (c: Context) => (inProcessOf(c) ? ("full" as const) : hostScope(c));
+  // A member's session is strut's own credential, whatever a host's hook
+  // maps (plans/member-rights.md): one that carries nothing else is
+  // `member`, before the hook is asked.
+  const memberOnly = (c: Context) => !carriesApiKey(c) && !carriesPeerKey(c) && !personOf(c) && memberOf(c) !== undefined;
+  const resolveScope = (c: Context) => (inProcessOf(c) ? ("full" as const) : memberOnly(c) ? ("member" as const) : hostScope(c));
   const scopeOf = async (c: Context): Promise<Scope> => (await resolveScope(c)) ?? "full";
   const isPeer = async (c: Context) => isPeerScope(await scopeOf(c));
   const principalFor = async (workflow: string, actor?: string): Promise<string | undefined> => {
@@ -1640,10 +1644,36 @@ export async function createStrut<TServices = unknown>(
   // read it was minted for, `GET /channels` — a browser host's upgrade of
   // an app's channel socket (plans/app-channels.md §2), which carries no
   // other credential: Hive's page has none.
+  //
+  // And a MEMBER's session (plans/member-rights.md; auth.ts "Sessions"):
+  // a person a host signed in as `member` uses apps and nothing else. It
+  // passes exactly the routes strut's page calls to show an app alone
+  // (`?app=<name>&solo=1`), `MEMBER_ROUTES`, and every other route is 403 —
+  // reads included, and a route a host mounts later. On `/mcp` it gets an
+  // app's `step_run` alone, as itself, the way a person token does.
   const UI_FILE = /^\/($|index\.html$|favicon\.ico$|assets\/)/;
   const PROPOSAL_DECIDE = /^\/proposals\/[^/]+\/decide$/;
   const CONVERSATION_POSTS = new Set(["/conversations/update", "/conversations/fork"]);
   const PEER_POST = /^\/workflows\/[^/]+\/(?:[^/]+\/run|run|runs\/[^/]+\/(?:cancel|pause|resume))$/;
+  /** What a member's session may call: the page of one app, its calls, its
+   *  channels, and a file it hands the side panel. `GET /brand` is the
+   *  style the app is shown in; `GET` and `DELETE /mcp` answer 405 (the
+   *  page's MCP client asks for a stream once). */
+  const MEMBER_ROUTES: Array<[method: string, path: RegExp]> = [
+    ["GET", /^\/auth\/session$/],
+    ["GET", /^\/apps$/],
+    ["GET", /^\/apps\/[^/]+\/versions$/],
+    ["GET", /^\/apps\/[^/]+\/[^/]+\/files(?:\/.+)?$/],
+    ["GET", /^\/brand$/],
+    ["POST", /^\/mcp$/],
+    ["GET", /^\/mcp$/],
+    ["DELETE", /^\/mcp$/],
+    ["POST", /^\/apps\/[^/]+\/channel-ticket$/],
+    ["GET", /^\/artifacts\/[^/]+(?:\/.+)?$/],
+    ["GET", /^\/jobs\/[^/]+\/files(?:\/.+)?$/],
+  ];
+  const memberMay = (method: string, path: string) =>
+    MEMBER_ROUTES.some(([m, re]) => (m === method || (m === "GET" && method === "HEAD")) && re.test(path));
   app.use("*", async (c, next) => {
     const path = c.req.path;
     const read = c.req.method === "GET" || c.req.method === "HEAD";
@@ -1654,6 +1684,10 @@ export async function createStrut<TServices = unknown>(
       ? path === "/health" || (serveUi && UI_FILE.test(path)) || carriesFileToken(c) || !!catalogTokenOf(c) || publicPackageRead(c) || (!!indexConfig && INDEX_READ.test(path)) || PUBLIC_PATH.test(path) || !!channelTicketOf(c)
       : (path === "/auth/session" && (c.req.method === "POST" || c.req.method === "DELETE")) || (!!indexConfig && path === INDEX_MCP && c.req.method === "POST") || (c.req.method === "OPTIONS" && PUBLIC_PATH.test(path)) || (c.req.method === "POST" && path === "/public/mcp");
     if (open) return next();
+    if (memberOnly(c)) {
+      if (memberMay(c.req.method, path)) return next();
+      return c.json({ error: "forbidden: a member's session opens the apps here and nothing else; ask an admin for the rest" }, 403);
+    }
     if (!carriesApiKey(c) && !carriesPeerKey(c) && !personOf(c)) return unauthorized(c);
     if (!read) {
       const scope = await scopeOf(c);
@@ -1698,8 +1732,9 @@ export async function createStrut<TServices = unknown>(
     return c.json(issued.session);
   });
 
-  // The session this request spends, for the UI to show who is signed in;
-  // 404 for a request the key or nothing authenticated.
+  // The session this request spends, for the UI to show who is signed in
+  // and as what (`role`: a host's ticket's; none for the key login); 404
+  // for a request the key or nothing authenticated.
   app.get("/auth/session", (c) => {
     const session = sessionOf(c);
     return session ? c.json(session) : c.json({ error: "no session" }, 404);
@@ -1714,17 +1749,21 @@ export async function createStrut<TServices = unknown>(
 
   // A SIGN-IN TICKET (auth.ts "Sign-in tickets"): a host's server, holding
   // the key, signs one person into the UI it frames as `?ticket=` — good
-  // once, for a minute. A `full` caller mints it (the gate keeps a peer and
-  // a person token off every POST but theirs); the actor is the host's to
-  // name, as with `x-strut-actor` beside the key.
+  // once, for a minute. A `full` caller mints it (the gate keeps a peer, a
+  // person token and a member off every POST but theirs); the actor and
+  // the role are the host's to name, as with `x-strut-actor` beside the
+  // key. No role is a member's (plans/member-rights.md): a host that does
+  // not say signs nobody in with the console.
   app.post("/auth/ticket", async (c) => {
     if (!bootEnv()["STRUT_API_KEY"]) return c.json({ error: "STRUT_API_KEY is not set: nothing to sign in to" }, 400);
-    const body = await c.req.json<{ actor?: unknown }>().catch(() => ({}) as { actor?: unknown });
+    const body = await c.req.json<{ actor?: unknown; role?: unknown }>().catch(() => ({}) as { actor?: unknown; role?: unknown });
     const actor = typeof body.actor === "string" ? body.actor.trim() : "";
     if (!actor || actor.length > 120 || /[\r\n]/.test(actor)) {
       return c.json({ error: "actor is required: a short string, the person the ticket signs in" }, 400);
     }
-    const minted = signInTicket(actor)!;
+    const role = body.role ?? "member";
+    if (!isRole(role)) return c.json({ error: 'role must be "admin" or "member": an admin runs this strut server, a member uses its apps' }, 400);
+    const minted = signInTicket(actor, role)!;
     c.header("cache-control", "no-store");
     return c.json({ ticket: minted.ticket, expiresAt: minted.exp });
   });
@@ -7493,7 +7532,9 @@ export async function createStrut<TServices = unknown>(
     /** A PERSON's token on `/mcp` (scope `peer:person`, plans/apps.md §7.4):
      *  `step_run` and nothing else — a person's own strut hosting an app
      *  that lives here relays its page's tools/call through the token it
-     *  holds for this strut. The viewer is the token's own subject. */
+     *  holds for this strut. The viewer is the token's own subject. A
+     *  MEMBER's session gets the same (scope `member`,
+     *  plans/member-rights.md): strut's own page relays its app's calls. */
     const personAppHandler = async (c: Context) => {
       const { createMcpDoor, toolsetServer } = await import("./ai/mcp.js");
       const { appTools, appMeta } = await appDoor(await resolveActor(c));
@@ -7544,7 +7585,7 @@ export async function createStrut<TServices = unknown>(
     };
     app.post("/mcp/builder", builderHandler);
     app.post("/mcp", async (c) =>
-      (await scopeOf(c)) === "peer:person" ? personAppHandler(c) : assistantDoor ? assistantHandler(c) : builderHandler(c),
+      ["peer:person", "member"].includes(await scopeOf(c)) ? personAppHandler(c) : assistantDoor ? assistantHandler(c) : builderHandler(c),
     );
     // Stateless: no SSE stream to open, no session to end.
     const notAllowed = (c: Context) => c.json({ error: "method not allowed: /mcp takes POST (JSON-RPC over HTTP, stateless)" }, 405);

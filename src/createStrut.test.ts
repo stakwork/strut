@@ -13,7 +13,8 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { createStrut } from "./createStrut.js";
 import { createRegistry } from "./steps/registry.js";
 import { defineStep, flow, step, withAccessedNodes, withMessages, type StepContext, type RunEvent, type RunSummary } from "./core.js";
-import { fileToken, inProcessRequest, sessionToken, signInTicket } from "./auth.js";
+import { apiKeyMatches, fileToken, inProcessRequest, sessionToken, signInTicket } from "./auth.js";
+import { createHmac } from "node:crypto";
 import { pathlessWorkspace } from "./test-util/pathless-workspace.js";
 import { WorkspaceManager } from "./workspace.js";
 import { MemoryRunStore, FileRunStore } from "./store.js";
@@ -1628,15 +1629,16 @@ describe("the API key gate", () => {
     const inProcess = await strut.app.fetch(inProcessRequest(new Request("http://strut.invalid/auth/ticket", { method: "POST", headers: json, body: JSON.stringify({ actor: "evan-1" }) })));
     assert.equal(inProcess.status, 200, "strut's own request is full scope");
 
-    // The ticket: `strut-ticket.<claims>.<hmac>`, `{ actor, exp, jti }`, a minute, never cached.
-    const res = await mint({ actor: " evanfeenstra-cm3k9x " });
+    // The ticket: `strut-ticket.<claims>.<hmac>`, `{ actor, role, exp, jti }`, a minute, never cached.
+    const res = await mint({ actor: " evanfeenstra-cm3k9x ", role: "admin" });
     assert.equal(res.status, 200);
     assert.equal(res.headers.get("cache-control"), "no-store");
     const { ticket, expiresAt } = (await res.json()) as { ticket: string; expiresAt: number };
     assert.match(ticket, /^strut-ticket\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
     const claims = JSON.parse(Buffer.from(ticket.split(".")[1]!, "base64url").toString()) as Record<string, unknown>;
-    assert.deepEqual(Object.keys(claims).sort(), ["actor", "exp", "jti"]);
+    assert.deepEqual(Object.keys(claims).sort(), ["actor", "exp", "jti", "role"]);
     assert.equal(claims["actor"], "evanfeenstra-cm3k9x");
+    assert.equal(claims["role"], "admin");
     assert.equal(claims["exp"], expiresAt);
     assert.ok(expiresAt > Date.now() + 55_000 && expiresAt <= Date.now() + 60_000, String(expiresAt - Date.now()));
     assert.ok(typeof claims["jti"] === "string" && (claims["jti"] as string).length >= 16);
@@ -1644,8 +1646,9 @@ describe("the API key gate", () => {
     // The trade needs no credential and sets the key login's cookie, naming the ticket's actor.
     const traded = await trade({ ticket });
     assert.equal(traded.status, 200);
-    const session = (await traded.json()) as { actor?: string; exp: number };
+    const session = (await traded.json()) as { actor?: string; exp: number; role?: string };
     assert.equal(session.actor, "evanfeenstra-cm3k9x");
+    assert.equal(session.role, "admin");
     assert.ok(session.exp > Date.now() + 11 * 3_600_000, "a session's life, not the ticket's");
     const setCookie = traded.headers.get("set-cookie")!;
     assert.match(setCookie, /^strut_session=[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+; Path=\/; Max-Age=\d+; HttpOnly; SameSite=Lax$/);
@@ -1676,7 +1679,7 @@ describe("the API key gate", () => {
     assert.equal((await trade({ ticket: fresh })).status, 200, "the real one still trades");
 
     // Expired: a ticket past its minute is refused; a rotated key refuses every one.
-    const brief = signInTicket("evan-1", 20)!.ticket;
+    const brief = signInTicket("evan-1", "admin", 20)!.ticket;
     await new Promise((r) => setTimeout(r, 30));
     assert.equal((await trade({ ticket: brief })).status, 401, "expired");
     const before = await minted("evan-1");
@@ -1689,6 +1692,152 @@ describe("the API key gate", () => {
     // No key configured: nothing to sign in to, nothing to mint.
     delete process.env["STRUT_API_KEY"];
     assert.equal((await mint({ actor: "evan-1" }, {})).status, 400);
+  });
+
+  /** A host's ticket for `actor` (as `role`, or none), traded: the cookie it sets. */
+  const signInAs = async (strut: Awaited<ReturnType<typeof boot>>, actor: string, role?: unknown) => {
+    const json = { "content-type": "application/json" };
+    const minted = await strut.app.request("/auth/ticket", { method: "POST", headers: { ...json, ...auth.headers }, body: JSON.stringify({ actor, ...(role !== undefined ? { role } : {}) }) });
+    assert.equal(minted.status, 200, await minted.clone().text());
+    const { ticket } = (await minted.json()) as { ticket: string };
+    const traded = await strut.app.request("/auth/session", { method: "POST", headers: { ...json, "x-strut-ui": "1" }, body: JSON.stringify({ ticket }) });
+    assert.equal(traded.status, 200);
+    return { cookie: traded.headers.get("set-cookie")!.split(";")[0]!, session: (await traded.json()) as { actor?: string; exp: number; role?: string } };
+  };
+  const everyRoute = (strut: Awaited<ReturnType<typeof boot>>) => [...new Set(
+    strut.app.routes
+      .filter((r) => r.method !== "ALL" && r.path !== "*")
+      .map((r) => `${r.method} ${r.path.replace(/:[A-Za-z]+(\{[^}]*\})?/g, "x")}`),
+  )];
+
+  it("a member's session (a ticket with no role) passes the routes strut's page calls to show an app, and every other route is 403 — reads included", async () => {
+    const strut = await boot();
+    process.env["STRUT_API_KEY"] = KEY;
+    const { cookie, session } = await signInAs(strut, "ada-1");
+    assert.equal(session.role, "member", "no role is a member");
+    // Open to anyone, a member included, as they are today.
+    const open = (r: string) => r === "GET /health" || r === "POST /auth/session" || r === "DELETE /auth/session" || r === "POST /public/mcp" || /^GET \/public(?:\/|$)/.test(r);
+    const routes = everyRoute(strut).filter((r) => !open(r));
+    // plans/member-rights.md "What a member's session opens", and the brand
+    // the app is shown in.
+    const allowed = [
+      "GET /auth/session",
+      "GET /apps",
+      "GET /apps/x/versions",
+      "GET /apps/x/x/files",
+      "GET /apps/x/x/files/x",
+      "GET /brand",
+      "POST /mcp",
+      "GET /mcp", // 405: the page's MCP client asks for a stream once
+      "DELETE /mcp",
+      "POST /apps/x/channel-ticket",
+      "GET /artifacts/x",
+      "GET /artifacts/x/x",
+      "GET /jobs/x/files",
+      "GET /jobs/x/files/x",
+    ];
+    for (const r of allowed) assert.ok(routes.includes(r), r);
+    assert.equal(routes.filter((r) => allowed.includes(r)).length, 14);
+    assert.ok(routes.length > 100, `swept ${routes.length} routes`);
+    assert.ok(routes.includes("GET /host/mounted") && routes.includes("POST /host/mounted"));
+    for (const route of routes) {
+      const [method, path] = route.split(" ") as [string, string];
+      const write = method !== "GET" && method !== "HEAD";
+      const res = await strut.app.request(path, {
+        method,
+        headers: { cookie, "x-strut-ui": "1", "content-type": "application/json", accept: "application/json, text/event-stream" },
+        ...(write ? { body: "{}" } : {}),
+      });
+      await res.body?.cancel(); // a stream route answers at once and tails
+      if (allowed.includes(route)) assert.ok(res.status !== 401 && res.status !== 403, `${route} → ${res.status}`);
+      else assert.equal(res.status, 403, route);
+    }
+    // An app's name is one segment, `/` encoded: it is still the app's route.
+    assert.equal((await strut.app.request("/apps/acme%2Fnone/versions", { headers: { cookie } })).status, 404, "past the gate: no such app");
+    assert.equal((await strut.app.request("/apps/acme%2Fnone", { headers: { cookie } })).status, 403);
+    // The CSRF rules hold for a member as for anyone: a write, or a file
+    // read, on the cookie alone is no session at all.
+    assert.equal((await strut.app.request("/mcp", { method: "POST", headers: { cookie } })).status, 401);
+    assert.equal((await strut.app.request("/artifacts/r1", { headers: { cookie } })).status, 401);
+    // /health tells a member nothing, the dictation socket does not take its cookie.
+    assert.deepEqual(await (await strut.app.request("/health", { headers: { cookie } })).json(), { ok: true });
+    assert.equal(apiKeyMatches(undefined, undefined, cookie), false);
+    // Beside a member's cookie, the key is the key and the peer key a peer.
+    assert.equal((await strut.app.request("/workflows", { headers: { cookie, ...auth.headers } })).status, 200);
+    assert.equal((await strut.app.request("/host/mounted", { method: "POST", headers: { cookie, "x-strut-ui": "1", ...auth.headers } })).status, 200);
+    process.env["STRUT_PEER_KEY"] = PEER;
+    assert.equal((await strut.app.request("/workflows", { headers: { cookie, authorization: `Bearer ${PEER}` } })).status, 200, "a peer reads");
+    assert.equal((await strut.app.request("/secrets/X", { method: "PUT", headers: { cookie, "x-strut-ui": "1", authorization: `Bearer ${PEER}`, "content-type": "application/json" }, body: "{}" })).status, 403);
+  });
+
+  it("roles: an admin's session is the key's equal, a bad role is a 400, a member cannot mint a ticket, and /mcp gives a member step_run alone", async () => {
+    const strut = await boot();
+    process.env["STRUT_API_KEY"] = KEY;
+    const json = { "content-type": "application/json" };
+
+    // A bad role is refused; nothing is minted.
+    for (const role of ["owner", "Admin", "", 7, true, ["admin"]]) {
+      const res = await strut.app.request("/auth/ticket", { method: "POST", headers: { ...json, ...auth.headers }, body: JSON.stringify({ actor: "ada-1", role }) });
+      assert.equal(res.status, 400, JSON.stringify(role));
+      assert.match(((await res.json()) as { error: string }).error, /role must be "admin" or "member"/);
+    }
+
+    // An admin: GET /auth/session says so, and every route the key opens it opens.
+    const admin = await signInAs(strut, "eve-1", "admin");
+    assert.equal(admin.session.role, "admin");
+    assert.deepEqual(await (await strut.app.request("/auth/session", { headers: { cookie: admin.cookie } })).json(), admin.session);
+    assert.ok("dataDir" in ((await (await strut.app.request("/health", { headers: { cookie: admin.cookie } })).json()) as object));
+    assert.equal(apiKeyMatches(undefined, undefined, admin.cookie), true, "the dictation socket takes an admin's cookie");
+    const swept = everyRoute(strut).filter((r) => !/^(?:GET|POST|DELETE) \/auth\/session$/.test(r) && r !== "POST /drain" && r !== "PUT /drain");
+    for (const route of swept) {
+      const [method, path] = route.split(" ") as [string, string];
+      const write = method !== "GET" && method !== "HEAD";
+      const ask = async (headers: Record<string, string>) => {
+        const res = await strut.app.request(path, { method, headers: { ...json, accept: "application/json, text/event-stream", ...headers }, ...(write ? { body: "{}" } : {}) });
+        await res.body?.cancel();
+        return res.status;
+      };
+      const asAdmin = await ask({ cookie: admin.cookie, "x-strut-ui": "1" });
+      if (asAdmin === 401 || asAdmin === 403) assert.equal(await ask(auth.headers), asAdmin, `${route}: the key is refused too`);
+    }
+    // The key login names no role and stays full.
+    const keyLogin = await strut.app.request("/auth/session", { method: "POST", headers: json, body: JSON.stringify({ key: KEY, actor: "op-1" }) });
+    assert.equal(((await keyLogin.json()) as { role?: string }).role, undefined);
+    assert.equal((await strut.app.request("/secrets", { headers: { cookie: keyLogin.headers.get("set-cookie")!.split(";")[0]! } })).status, 200);
+
+    // A member: `member` said outright is the same as none.
+    const member = await signInAs(strut, "ada-1", "member");
+    assert.equal(member.session.role, "member");
+    const ui = { cookie: member.cookie, "x-strut-ui": "1" };
+    assert.equal((await strut.app.request("/auth/ticket", { method: "POST", headers: { ...json, ...ui }, body: JSON.stringify({ actor: "ada-1", role: "admin" }) })).status, 403, "a member never mints an admin");
+    assert.equal((await strut.app.request("/peers/tokens", { method: "POST", headers: { ...json, ...ui }, body: JSON.stringify({ actor: "ada-1" }) })).status, 403);
+    assert.deepEqual(await (await strut.app.request("/auth/session", { headers: { cookie: member.cookie } })).json(), member.session);
+
+    // /mcp: an admin gets the assistant set, a member step_run alone.
+    const tools = async (headers: Record<string, string>) => {
+      const res = await strut.app.request("/mcp", {
+        method: "POST",
+        headers: { ...json, accept: "application/json, text/event-stream", ...headers },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      });
+      assert.equal(res.status, 200);
+      const text = await res.text();
+      return [...text.matchAll(/"name":"([a-z_]+)"/g)].map((m) => m[1]!);
+    };
+    const memberTools = new Set(await tools(ui));
+    assert.ok(memberTools.has("step_run"));
+    for (const name of ["ask_workflow_builder", "list_workflows", "run_workflow", "create_workflow"]) assert.ok(!memberTools.has(name), name);
+    assert.ok((await tools({ cookie: admin.cookie, "x-strut-ui": "1" })).includes("ask_workflow_builder"));
+
+    // A ticket from before roles (no `role` claim) signs a member in.
+    const payload = Buffer.from(JSON.stringify({ actor: "old-1", exp: Date.now() + 60_000, jti: randomUUID() })).toString("base64url");
+    const mac = createHmac("sha256", KEY).update(`ticket:${payload}`).digest("base64url");
+    const old = await strut.app.request("/auth/session", { method: "POST", headers: { ...json, "x-strut-ui": "1" }, body: JSON.stringify({ ticket: `strut-ticket.${payload}.${mac}` }) });
+    assert.equal(old.status, 200);
+    assert.equal(((await old.json()) as { role?: string }).role, "member");
+    // A session cookie claiming a role strut does not know is no session.
+    const forged = sessionToken({ actor: "x", exp: Date.now() + 60_000, role: "owner" as never })!;
+    assert.equal((await strut.app.request("/apps", { headers: { cookie: `strut_session=${forged}` } })).status, 401);
   });
 
   it("the key opens them, as a Bearer header or as ?key=; unset, everything is open", async () => {
@@ -1988,7 +2137,7 @@ describe("actors and the principal rule", () => {
   it("a sign-in ticket's session launches as the ticket's actor", async () => {
     const { strut, call, finished } = await boot();
     process.env["STRUT_API_KEY"] = "deploy-key";
-    const { ticket } = (await call("POST", "/auth/ticket", { actor: "evanfeenstra-cm3k9x" }, { authorization: "Bearer deploy-key" })).json as { ticket: string };
+    const { ticket } = (await call("POST", "/auth/ticket", { actor: "evanfeenstra-cm3k9x", role: "admin" }, { authorization: "Bearer deploy-key" })).json as { ticket: string };
     const raw = await strut.app.request("/auth/session", { method: "POST", headers: { "content-type": "application/json", "x-strut-ui": "1" }, body: JSON.stringify({ ticket }) });
     const cookie = raw.headers.get("set-cookie")!.split(";")[0]!;
     const run = (await call("POST", "/workflows/wf/run", { input: {} }, { cookie, "x-strut-ui": "1", "x-strut-actor": "mallory-9" })).json.runId as string;
