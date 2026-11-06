@@ -13,17 +13,23 @@ export default defineStep({
   type: "graph/delete-node",
   description:
     "Delete a node from the knowledge graph (writes live to the graph). Any node type. The node is soft-deleted " +
-    "— hidden from every read, restored in place by a later create of the same identity — and on Neo4j EVERY edge it had in " +
+    "— hidden from every read, restored in place by a later create of the same identity — and EVERY edge it had in " +
     "the namespace is deleted for good, so whatever hung under it is cut loose (its children stay, parentless). " +
     "Read the node first (graph/graph-get with its `edges` counts, graph/graph-neighbors) and be sure: a delete is " +
     "the write with the least room for a mistake. To detach one link keep the node and use graph/delete-edge; to " +
     "re-home it use graph/move-node.\n\n" +
     EXAMPLE,
   graphNotes: {
+    ladybugDescription:
+      "Delete a node from the knowledge graph (writes live to the graph). Any node type. The node is soft-deleted " +
+      "— hidden from every read — and on this graph its edges and facts are kept, hidden while it is deleted " +
+      "(`include_deleted` on graph/graph-search, graph/graph-get, graph/graph-neighbors and graph/walk shows them); " +
+      "graph/restore-node (or a later create of the same identity) brings it back with its edges. " +
+      "Read the node first (graph/graph-get with its `edges` counts, graph/graph-neighbors) and be sure: a delete is " +
+      "the write with the least room for a mistake. To detach one link keep the node and use graph/delete-edge; to " +
+      "re-home it use graph/move-node.\n\n" +
+      EXAMPLE,
     ladybug:
-      "On this graph a delete hides, never erases: the node's edges and facts are kept, hidden while it is deleted " +
-      "(`include_deleted` on graph/graph-search, graph/graph-get, graph/graph-neighbors and graph/walk shows them), and " +
-      "graph/restore-node (or a later create of the same identity) brings the node back with its edges. " +
       "The user (the Person marked is_owner) is never deleted: delete or end their edges instead. " +
       "To record that a fact stopped being true, end it with graph/assert (`ended` or `invalid_at`) instead of deleting anything.",
   },

@@ -16,6 +16,14 @@ import type { TokenUsage } from "./pricing.js";
  * "strut") — kept opt-in so it doesn't collide with consumer `ctx.services`
  * casts (the standard server always provides `http`/`secrets` regardless).
  */
+/** A step's backend-only parts (`StepDef.graphNotes`). */
+export interface GraphNotes {
+  ladybug?: string;
+  ladybugDescription?: string;
+  ladybugInputs?: readonly string[];
+  ladybugOnly?: boolean;
+}
+
 export interface StepDef<
   TType extends string = string,
   TInput extends z.ZodTypeAny = z.ZodTypeAny,
@@ -24,10 +32,13 @@ export interface StepDef<
 > {
   type: TType;
   description?: string;
-  /** More of the description, shown only to an agent whose workspace graph
-   *  is of that kind (`agent`'s tools): what only that backend has, kept out
-   *  of the tools the other one's agents see. */
-  graphNotes?: { ladybug?: string };
+  /** What an agent sees only when its workspace graph is of that kind
+   *  (`agent`'s tools): what only that backend has, kept out of the tools
+   *  the other one's agents see. `ladybug` is more of the description;
+   *  `ladybugDescription` replaces it; `ladybugInputs` are input fields the
+   *  other backend's agents do not see; `ladybugOnly` keeps the step off
+   *  their tool lists. */
+  graphNotes?: GraphNotes;
   input: TInput;
   output: TOutput;
   /** Optional source code for this step, surfaced by `GET /steps/:type/source`
@@ -872,8 +883,8 @@ export type StepCounts = Record<string, { success: number; error: number; lastAt
 export interface AnyStepDef {
   type: string;
   description?: string;
-  /** Backend-only description (see `StepDef.graphNotes`). */
-  graphNotes?: { ladybug?: string };
+  /** Backend-only description, inputs and steps (see `StepDef.graphNotes`). */
+  graphNotes?: GraphNotes;
   input: z.ZodTypeAny;
   output: z.ZodTypeAny;
   /** Optional source code for in-code steps (see `StepDef.source`). */

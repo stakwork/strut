@@ -9,6 +9,7 @@ export default defineStep({
     "Bring back a node graph/delete-node deleted (a LadybugDB graph only, where a delete hides and never erases): the node shows " +
     "again with every edge and fact it had. Find its ref_id with `include_deleted` on graph/graph-search or graph/graph-get. " +
     "A node a merge deleted is refused: undo the merge with graph/unmerge.",
+  graphNotes: { ladybugOnly: true },
   input: z.object({
     ref_id: z.string().describe("The ref_id of the deleted node."),
     namespace: z.string().optional().describe("Namespace (data partition) the node lives in. Default: the deployment's."),

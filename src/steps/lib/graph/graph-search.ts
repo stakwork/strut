@@ -58,6 +58,7 @@ export default defineStep({
     "Only current facts are returned unless `include_ended` (history too) or `as_of` (what was true then) says otherwise. A search with `type`, `domains` or `linked` finds no facts. " +
     "Without `facts: true` the result is the list of nodes alone.",
   graphNotes: {
+    ladybugInputs: ["include_deleted"],
     ladybug:
       "`include_ended` is what used to be true. A fact's `sources` say where it came from and who said it: a node there that is not the user is someone else's word. " +
       "A name finds the names a node holds (its name and `alt_names`), never a short or long form it was not given: when one finds nothing, search its other forms (Katie → Kate, Bob → Robert). " +

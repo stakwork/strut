@@ -25,6 +25,8 @@ import { hostConfigFromEnv } from "../server.js";
 import assertStep from "../steps/lib/graph/assert.js";
 import createNode from "../steps/lib/graph/create-node.js";
 import deleteNode from "../steps/lib/graph/delete-node.js";
+import deleteEdge from "../steps/lib/graph/delete-edge.js";
+import restoreNode from "../steps/lib/graph/restore-node.js";
 import duplicates from "../steps/lib/graph/duplicates.js";
 import graphGet from "../steps/lib/graph/graph-get.js";
 import graphSearch from "../steps/lib/graph/graph-search.js";
@@ -372,8 +374,25 @@ describe("agent tools on the graph", () => {
     for (const [i, d] of describedOn({ kind: "ladybug" }).entries()) {
       const def = real[names[i]!]!;
       assert.ok(def.graphNotes?.ladybug, `${def.type} has a Ladybug note`);
-      assert.equal(d, `${def.description} ${def.graphNotes.ladybug}`);
+      assert.equal(d, `${def.graphNotes.ladybugDescription ?? def.description} ${def.graphNotes.ladybug}`);
     }
+  });
+
+  it("what only a Ladybug graph has stays out of a Neo4j agent's tools: the step, its fields, its wording", () => {
+    const real = { "graph/delete-node": deleteNode, "graph/delete-edge": deleteEdge, "graph/graph-search": graphSearch, "graph/restore-node": restoreNode } as unknown as StepRegistry;
+    type Built = Record<string, { description: string; inputSchema: { shape: Record<string, unknown> } }>;
+    const on = (kind: string) => buildRegistryTools(["graph/*"], real, ctxOf({ graph: { kind } }), fakeTool) as Built;
+    const neo = on("neo4j");
+    assert.deepEqual(Object.keys(neo).sort(), ["graph_delete_edge", "graph_delete_node", "graph_graph_search"], "no restore: a Neo4j delete takes the edges");
+    assert.ok(!("include_deleted" in neo["graph_graph_search"]!.inputSchema.shape));
+    assert.equal(neo["graph_delete_edge"]!.description, deleteEdge.description, "the description as before");
+    assert.equal(neo["graph_delete_node"]!.description, deleteNode.description);
+    assert.match(deleteEdge.description!, /removed for good, never hidden/);
+    const lb = on("ladybug");
+    assert.ok("graph_restore_node" in lb);
+    assert.ok("include_deleted" in lb["graph_graph_search"]!.inputSchema.shape);
+    assert.match(lb["graph_delete_edge"]!.description, /hidden, never erased/);
+    assert.doesNotMatch(lb["graph_delete_edge"]!.description, /removed for good/, "never both");
   });
 
   it("a host config's `memory` is accepted and ignored; concepts are read beside it", () => {

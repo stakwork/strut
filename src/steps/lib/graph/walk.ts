@@ -585,6 +585,7 @@ export default defineStep({
     "ordered by relevance, hops (the trace), stopped: sufficient|plateau|hops|nodes|exhausted, usage } — hand nodes to an llm or agent step to " +
     "synthesize an answer. Each hop emits a nested run event. Needs the graph backend (NEO4J_*) and the decision model's provider key.\n\n" +
     EXAMPLE,
+  graphNotes: { ladybugInputs: ["include_deleted"] },
   input: walkInput,
   output: z.any(),
   async run(cfg, ctx?: StepContext<StrutCapabilities>) {

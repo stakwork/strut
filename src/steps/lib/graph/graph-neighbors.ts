@@ -15,6 +15,7 @@ export default defineStep({
     "Optionally filter by edge_type and/or node_type. " +
     "Use this to traverse relationships between workflows, versions, steps, runs, sessions, tool calls, chats, and concepts. " +
     "A fact's edge (a sentence on an edge, \"Tom works at Stakwork\") carries its `text` and dates, and only current facts are shown unless `include_ended` or `as_of` says otherwise.",
+  graphNotes: { ladybugInputs: ["include_deleted"] },
   input: z.object({
     ref_id: z.string().describe("The ref_id of the node to expand."),
     edge_type: z
