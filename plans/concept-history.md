@@ -1,6 +1,6 @@
 # Concept history: the Concept tree and the ontology, in git
 
-> **Status (2026-11-07): proposed, five rulings in (Evan, the same day;
+> **Status (2026-11-07): proposed, six rulings in (Evan, the same day;
 > "Rulings" below).** Written after a read of `main` @8db356c.
 > Companions: `concept-tree.md` (what the tree holds), `knowledge-app.md`
 > (the app that draws it), `package-examples.md` (§2's markers and its
@@ -15,13 +15,18 @@
 - The graph stays the source and stays writable. Agents, apps, workflows
   and people write Concepts as they do now. Git only records: nothing
   reads it to serve the graph.
-- A page's history, a diff, the whole tree at any commit, and a restore
-  are one step, `graph/history`, which agents, apps and workflows call
-  alike. The Knowledge app (`strut/knowledge`) shows a page's history
-  with it.
+- Three steps use the history, for agents, apps and workflows alike:
+  - `graph/history` reads a page's changes, a diff, and the tree at any
+    commit;
+  - `graph/snapshot` names a commit;
+  - `graph/revert` puts a page back, or undoes everything one run did.
+- The Knowledge app (`strut/knowledge`) shows it: a page's History, a
+  timeline with one row per run, and a picker of snapshots that draws
+  the tree as it was.
 - A tree at a commit is a frozen tree, at the cost of the pages that
-  changed. That is what a Concept or ontology eval will stand on later.
-  The evals are not in this plan (ruling 5).
+  changed, and a snapshot is a frozen tree with a name. That is what a
+  Concept or ontology eval will stand on later. The evals are not in
+  this plan (ruling 5).
 
 ## 1. Why
 
@@ -108,8 +113,30 @@ makes is a step: a run's step, an agent's tool call, an app's
 - **It never holds the run up.** Commits go on one in-process queue, in
   order. A commit that fails is logged and never fails the step; the
   next full pass catches up.
-- **Read-your-writes.** `graph/history` waits for the queue to empty
-  before it reads, so a step sees its own writes.
+- **Read-your-writes.** The history steps wait for the queue to empty
+  before they read, so a step sees its own writes.
+
+So a workflow or agent run commits as it goes, one commit per write
+step while the run is still going, and an app's `step_run` commits
+right after its one step.
+
+**Why per step, not per run** (ruling 6). A commit records how a page
+looks when the commit is taken, not what a run wrote. Taken at the end
+of each run:
+- **Overlapping runs take each other's credit.** Run A edits a page,
+  run B edits it after, and A ends first: A's commit holds B's edit
+  under A's name, and B's finds nothing left to commit.
+- **Long runs leave gaps.** A sweep of hours, or a job waiting days on a
+  person, keeps writes the graph already has out of the history. A
+  process that dies mid-run leaves them to the next boot's pass,
+  credited to `strut`.
+- **Edits within a run collapse.** Two edits to one page keep only the
+  last.
+
+Per step, the same race is only the milliseconds between a step's end
+and the read. A run as a unit still comes from the `Run:` trailer: one
+row per run in the timeline (§5), and `graph/revert` of a whole run
+(§4).
 
 **The full pass** writes the whole tree and every type, then commits
 whatever differs. It runs at boot (after the seeds), after a package
@@ -128,27 +155,74 @@ item 1). Today `set-namespace` and `import-memory` write nodes and mark
 none, and `create-schema` declares no effect. A test holds every
 `graph/*` step to the rule.
 
-## 4. Reading and restoring: `graph/history`
+## 4. Three steps: history, snapshot, revert
 
-One lib step. Agents call it as a tool, apps through `step_run`,
-workflows as a step. It is held to the caller's reader list
-(`scope.ts`): a page in a namespace the caller cannot read is in none
-of its answers.
+Agents call them as tools, apps through `step_run`, workflows as steps.
+They are three steps, not one, because an app is granted steps by type
+(`grantRefusal`, `apps/tools.ts`): an app that may read the history is
+not thereby allowed to change the graph. Each is held to the caller's
+reader list (`scope.ts`): a page in a namespace the caller cannot read
+is in none of its answers. Wherever a commit is taken, a snapshot's
+name works too.
+
+**`graph/history`** (`effect: "read"`):
 
 | `action` | Input | Output |
 | --- | --- | --- |
-| `log` | a page (name or key), a type, or nothing for all; `limit` | commits, newest first: id, time, author, run, step, what changed |
+| `log` | a page (name or key), a type, a run, or nothing for all; `limit` | commits, newest first: id, time, author, run, step, app, what changed |
 | `show` | a page or a type, and a commit | the file at that commit, parsed |
-| `diff` | a page, a type or nothing, and two commits | what changed between them |
+| `diff` | a page, a type or nothing, and two commits | what changed between them: pages added, removed and changed, each with its text before and after |
 | `tree` | a commit | every page's name, key and parents at that commit: the tree as it was |
-| `restore` | a page and a commit | writes the page's attributes, `docs` and parents at that commit back through the node and edge writers, as the caller. That write is committed like any other |
+| `snapshots` | `limit` | the snapshots, newest first: name, commit, time, who, note |
 | `sync` | nothing | runs the full pass |
 
-`restore` is a write: an app needs the grant, an agent the step among
-its tools. It never brings back a type, because the ontology is
-add-only (`graph-types.ts`).
+**`graph/snapshot`** names a commit, the newest by default: a name of
+lowercase letters, digits and dashes (up to 64), and an optional note.
+It is a git tag, annotated with the caller and the note. A name already
+taken is refused, so a snapshot never moves. It writes nothing to the
+graph. An automation can take one weekly; an eval will name its
+baseline.
 
-## 5. Review
+**`graph/revert`** (`effect: "write"`) puts the graph back, writing
+through the node and edge writers as the caller. Its own writes are
+committed like any other, with its own run in the trailer.
+- **A page to a commit:** the page's attributes, `docs` and parents as
+  they were there. A page absent at that commit is deleted, and one
+  deleted since is restored.
+- **A run:** every page the run's commits changed goes back to how it
+  was just before the run's first commit that touched it. Pages the run
+  made are deleted, and pages it deleted are restored. A page that
+  another commit changed after the run's last one is left as it is and
+  reported: that later edit is someone else's.
+- **Never a type.** The ontology is add-only (`graph-types.ts`), so a
+  type the run made stays, and is reported.
+
+## 5. What a person sees: the Knowledge app
+
+`strut/knowledge` (`knowledge-app.md`, specs/API.md §14.13) draws the
+tree: the outline on the left, the graph in the middle, a page's panel
+on the right. It reads the history through the steps above.
+
+- **A page's History**, a tab in its panel: each change with its time,
+  who made it, and its run (a link to the run). A click shows the diff.
+- **The timeline**: the whole tree's changes, one row per run (the
+  `Run:` trailer), newest first. A row expands to the pages the run
+  changed. A sweep that made a few hundred commits is one row.
+- **Snapshots**: a picker in the top bar, `Live` by default, listing the
+  snapshots newest first, and **Save snapshot…** to name the commit
+  now.
+- **The tree as it was**: picking a snapshot, or any timeline row, draws
+  the tree at that commit, read-only, under a banner ("Viewing
+  before-ontology-v2 · Back to live"). Only the Concept layer has a
+  past, so the graph shows the pages and their parents, nothing else.
+  **Compare with live** marks the pages added, removed and changed, in
+  the outline and on the graph.
+- **The address carries the commit or the snapshot**, as it carries the
+  selection today, so a view of the past is a link.
+- **Revert** on a page's change and **Undo this run** on a timeline row
+  come when the app edits. It is read-only today.
+
+## 6. Review
 
 Review is optional, and it is a strut proposal, never a GitHub PR
 (ruling 4). Proposals already cover every graph and Concept write
@@ -156,13 +230,15 @@ Review is optional, and it is a strut proposal, never a GitHub PR
 `graph/*` call instead of making it, and an accepted proposal's write
 is committed like any other. This plan changes nothing about proposals.
 
-## 6. Where it runs
+## 7. Where it runs
 
 - **On by default** wherever strut has a graph and `git`.
   `STRUT_CONCEPT_HISTORY=0` turns it off. The desktop package sets it
   off (ruling 3). Without `git` it is off, and boot says so in one line.
 - **What it covers:** every Concept and every type, in every namespace
   (ruling 3).
+- **Nothing is dropped.** Every commit stays on `main`, so git's
+  clean-up never removes one. A snapshot only gives a commit a name.
 - **Backups:** the repository lives under `dataDir`, so a box's backup
   carries it, and a restore brings the history back with the graph it
   describes. Stadeum backs up every volume.
@@ -170,7 +246,7 @@ is committed like any other. This plan changes nothing about proposals.
   Concepts, each rendered at up to 6k chars. A sweep that rewrites
   fifty pages a day adds about 100 MB a year before git compresses it.
 
-## 7. Work items (one PR each, in this order)
+## 8. Work items (one PR each, in this order)
 
 1. **Write steps say so.** `effect: "write"` on every graph write step,
    the `nodes` marker on `set-namespace` and `import-memory`, and the
@@ -185,20 +261,30 @@ is committed like any other. This plan changes nothing about proposals.
    - rewriting a node unchanged makes none;
    - a raw write is caught by the full pass;
    - with the setting off, no repository exists.
-3. **`graph/history`.** The six actions, the reader list,
-   read-your-writes. Tests:
+3. **The three steps**: `graph/history`, `graph/snapshot` and
+   `graph/revert`, with the reader list and read-your-writes. Tests:
    - a namespace the caller cannot read is absent from `log`, `tree`
      and `diff`;
-   - `restore` of an edited page puts back its text and parents, and
-     commits.
-4. **The Knowledge app shows a page's history** (`strut/knowledge`,
-   `knowledge-app.md`, specs/API.md §14.13): the list and a diff now,
-   and Restore once the app edits. It is read-only today.
+   - a snapshot's name works wherever a commit does, and a name already
+     taken is refused;
+   - reverting an edited page puts back its text and parents, and
+     commits;
+   - undoing a run puts back every page it changed, deletes the pages it
+     made, and leaves and reports a page another run changed since.
+4. **The Knowledge app** (§5): a page's History, the timeline, the
+   snapshot picker, the tree as it was, and Compare with live. Revert
+   and Undo this run once the app edits.
 
 ## Later (not this plan)
 
-- **A frozen tree by name:** a tag on a commit, for an eval's baseline
-  or a release.
+- **A snapshot loaded for a run.** A run names a snapshot. Strut builds
+  a child Ladybug file from its commit (cached by the commit id), points
+  that run's `ctx.services.graph` at it, and records the commit on the
+  run, so every score says which tree it ran on. To decide in the eval
+  plan: a snapshot holds only the Concept layer and the types, not the
+  data under them. So the child is probably the live data with the
+  snapshot's Concepts in place: cheap from a Ladybug file (copy it, swap
+  the layer), an export of what the tasks touch from Neo4j.
 - **Branches:** a candidate graph (a child Ladybug file) whose writes
   commit to a branch of its own. Applying it writes its files into the
   graph, or proposes them. This is where Concept and ontology evals
@@ -218,16 +304,18 @@ is committed like any other. This plan changes nothing about proposals.
    PR.
 5. **Evals come later.** This plan builds the history they will stand
    on, and none of the evals.
+6. **A commit per write step, not per run** (§3). A run as a unit comes
+   from the `Run:` trailer.
 
 ## Open
 
-- **A sweep's commit count.** One commit per write step is a few hundred
-  per sweep. If the history reads badly, a run's commits can be squashed
-  into one at its end. Not before it does.
-- **Reader lists and the repository.** Where `graphReaders` is set,
-  `graph/history` applies it, but the repository itself holds every
-  namespace, as the graph's own file does: anything that can read
-  `dataDir` can read it.
+- **A sweep's commit count.** A few hundred commits per sweep. The
+  timeline shows a run as one row, so the count matters only if git's
+  size or speed suffers, which is not expected at this scale.
+- **Reader lists and the repository.** Where `graphReaders` is set, the
+  steps apply it, but the repository itself holds every namespace, as
+  the graph's own file does: anything that can read `dataDir` can read
+  it.
 - **Edge rules' other fields.** The type grammar carries no `temporal`,
   `cardinality` or aliases yet (`graph-types.ts`), so a type's history
   misses them until it does.
