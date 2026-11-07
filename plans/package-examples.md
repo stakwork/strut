@@ -1,8 +1,9 @@
 # Package examples: real runs, copied in with the package
 
-> **Status (2026-11-06): proposed, four rulings in (Evan, the same day;
-> "Rulings" below).** Builds on stakwork/strut#559 (a package's graph
-> types, `graph/<Type>.yaml`). Written after a read of `main` @dabd868.
+> **Status (2026-11-07): proposed, five rulings in (Evan, 2026-11-06 and
+> 2026-11-07; "Rulings" below).** Builds on stakwork/strut#559 (a
+> package's graph types, `graph/<Type>.yaml`). Written after a read of
+> `main` @dabd868.
 
 ## In brief
 
@@ -99,6 +100,19 @@ is named as it is HERE.
   - a workflow the package does not carry;
   - a run that is not finished, or did not succeed;
   - a run that cannot be read whole;
+  - **a run of another version than the one packed.** The build packs
+    each item's ACTIVE version, so a run made before an edit would land
+    labelled as a version that never ran it. Every workflow, subflow and
+    custom step the run EXECUTED must be at the version active here,
+    which is what the build packs or pins. `subjectsOfRun` (`verify.ts`)
+    already lists them with the version each ran: the workflow at its
+    `executedWorkflowHash`, a subflow at its `step.start.subflow.hash`, a
+    step at the hash in force when it started (a resume reloads steps).
+    The refusal names the run, the item and both versions ("ran
+    openlaw-run at v3; the package carries v4"). A step the run could
+    reach but never executed is not compared, and neither is the host's
+    own item (a seed's), which the box runs as its own. A run resumed
+    onto the active version is a run of it (RUN_CONTROL_SPEC §5.4);
   - a graph type outside the package and what it requires;
   - **a secret:** the log, the summary and the files are scanned for
     every value in this strut's secret store, and one found refuses the
@@ -108,9 +122,13 @@ is named as it is HERE.
   - `summary.workflow` and the first segment of every event's `path`
     become the workflow's path in the package (`openlaw-run`; the install
     puts the prefix back);
-  - `workflowHash` on `run.start`, `run.resumed` and the summary becomes
-    the packaged version's hash, so "runs of this version" holds on the
-    box;
+  - every hash the version check matched becomes the packed item's
+    hash: `workflowHash` on `run.start`, `run.resumed` and the summary, a
+    subflow's `step.start.subflow.hash`, and a carried step's entry in
+    `stepHashes`. Stamping an item's name under the prefix changes its
+    bytes, so this renames the same content, and "runs of this version"
+    holds on the box. A carried step the run never executed loses its
+    `stepHashes` entry: it has no version to claim;
   - the summary's and `run.start`'s `app` become the app's path in the
     package, its `version` dropped.
 - **What it removes**, since it names the publisher's people and plumbing:
@@ -118,7 +136,7 @@ is named as it is HERE.
   `continues`, `conversation`, `wake`, `wakeAsked`, `peerPerson`, and an
   `origin` other than `app`.
 - **What it keeps:** step references as written (the install finds them
-  in the package first, plans/packages-ux.md §2), `stepHashes`, `totals`
+  in the package first, plans/packages-ux.md §2), `totals`
   (what the run cost is worth showing), timestamps.
 - **The size:** an archive is capped at 64 MB packed and 256 MB unpacked
   (`archive.ts`). The build result reports each example's bytes, and the
@@ -159,7 +177,8 @@ Then:
   a run without reading its log (`core.ts:829`). The UI's run lists and
   the kit's `useRuns` show "Example". An app filters on it if it wants.
 - **The package page** gets an Examples field beside the workflows: a
-  workflow's recent successful runs, ticked.
+  workflow's recent successful runs of the version it packs, ticked
+  (§4's version check, so a ticked run never refuses the build).
 - **The store's derived page** (`detail.ts`) counts a release's examples.
 
 ## 7. Work items (one PR each, in this order)
@@ -175,7 +194,9 @@ Then:
    `graph.jsonl`), the build's export, rewrites and secret scan, and the
    install, uninstall and take-back. Tests: a run built on one strut and
    installed on another reads back through `run/get`, `run/events` and
-   `run/transcript` with its files; a secret refuses the build.
+   `run/transcript` with its files; a secret refuses the build, and so
+   does a run of a workflow, subflow or step edited since it ran, while a
+   run resumed onto the active version is packed.
 4. **Examples' graph data.** The slice from the log's write steps (item
    1) and named namespaces, `graph.jsonl`, the type check at build and
    install, and the writes by key at install. Tests on both engines: the
@@ -195,6 +216,9 @@ item 2, item 4 needs items 1 and 3 and #559.
 3. **A namespace is a good way to collect a run's graph data**, and the
    run's own log is read for its writes as well (§2).
 4. **No app SQLite data** in an example yet.
+5. **An example is a run of the version packed** (2026-11-07). A run of
+   any other version refuses the build (§4), so the version an example
+   names on the box is the one it ran.
 
 ## Open
 
