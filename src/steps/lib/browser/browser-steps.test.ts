@@ -16,8 +16,8 @@ import { deleteJob, jobRoot, jobsCapability, readJobRecord, releaseWith } from "
 import { captchaManifest, writeCaptcha } from "../../../browser/captcha.js";
 import { mapCheckResult } from "../../../verify.js";
 import { buildRegistry } from "../../registry.js";
-import { CAPTURE_VERBS as SERVICE_VERBS } from "../../../browser/service.js";
-import { CAPTURE_VERBS, type Ctx } from "./_shared.js";
+import { CAPTURE_VERBS as SERVICE_VERBS, LOOK_VERBS as SERVICE_LOOK_VERBS } from "../../../browser/service.js";
+import { CAPTURE_VERBS, LOOK_VERBS, type Ctx } from "./_shared.js";
 
 const STEPS_DIR = dirname(fileURLToPath(import.meta.url));
 
@@ -150,6 +150,7 @@ test("every step is browser/<file> and has a description written for a model", a
     assert.ok((def.description ?? "").length > 40, `${def.type} needs a real description`);
   }
   assert.deepEqual([...CAPTURE_VERBS], [...SERVICE_VERBS], "the step's verb list must match the service's");
+  assert.deepEqual([...LOOK_VERBS], [...SERVICE_LOOK_VERBS], "app/look's verb list must match the service's");
 });
 
 test("each verb step forwards its validated input to the service under the run id", async () => {

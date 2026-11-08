@@ -58,11 +58,14 @@
  * this process (`serveStrut`, wired by createStrut) as the run's actor. So
  * the browser needs no address for strut and holds no credential, and the
  * app's calls go through the host and `step_run` exactly as a person's do.
+ * A look opens the app at a deep link (`input`, as a person's link does)
+ * and runs a declared list (`LOOK_VERBS`) through the same verbs as
+ * `capture`, which look inside the app's frame, not the host around it.
  *
  * `playwright-core` is imported lazily, on the first connection, so a strut
  * that never opens a browser never loads it (the lib step convention).
  */
-import type { Browser, BrowserContext, BrowserContextOptions, Page, Locator, Route } from "playwright-core";
+import type { Browser, BrowserContext, BrowserContextOptions, FrameLocator, Page, Locator, Route } from "playwright-core";
 import type { ChannelConnection, ChannelTransport } from "../channels.js";
 import type { ArtifactsCapability } from "../capabilities.js";
 import { settle as settlePage, sleep } from "./settle.js";
@@ -247,22 +250,52 @@ export type AppLooked = Shot & {
   text: string;
   /** Console errors, page errors, failed requests, HTTP errors — the host's and the app's. */
   errors: string[];
+  /** The step of the look's list that failed, and why: the shot and the
+   *  text are of where the page got to. */
+  stopped?: StoppedAt;
 };
 
 /** How much of the app's text `lookAtApp` returns: a page's gist, not a table dump. */
 export const LOOK_TEXT_CAP = 8_000;
 /** How long `lookAtApp` gives the host and the app to draw. */
 export const LOOK_READY_MS = 30_000;
-/** The host's MCP client asks `/mcp` for a stream strut's stateless door
- *  never opens: its 405 is the protocol, not a fault of the app. */
-const MCP_GET = /^http: 405 GET https:\/\/strut\.invalid\/mcp$/;
-const MCP_GET_CONSOLE = "console: Failed to load resource: the server responded with a status of 405 (Method Not Allowed)";
+/** What the host asks and is told no by design, not a fault of the app,
+ *  each with the line Chrome logs once more in the console: its MCP client's
+ *  GET for a stream strut's stateless door never opens (405), and the
+ *  page's `GET /auth/session` on boot — a look is no browser session (404),
+ *  which the page reads as "none". */
+const HOST_REFUSALS: ReadonlyArray<{ http: RegExp; console: string }> = [
+  { http: /^http: 405 GET https:\/\/strut\.invalid\/mcp$/, console: "console: Failed to load resource: the server responded with a status of 405 (Method Not Allowed)" },
+  { http: /^http: 404 GET https:\/\/strut\.invalid\/auth\/session$/, console: "console: Failed to load resource: the server responded with a status of 404 (Not Found)" },
+];
+
+/** `seen` without the host's refusals: each one's request, and as many of
+ *  its console lines as there were requests — an app's own 404 keeps its
+ *  console line, and its request line besides. */
+function withoutHostRefusals(seen: string[]): string[] {
+  const owed = new Map<string, number>();
+  const rest = seen.filter((e) => {
+    const refusal = HOST_REFUSALS.find((r) => r.http.test(e));
+    if (refusal) owed.set(refusal.console, (owed.get(refusal.console) ?? 0) + 1);
+    return !refusal;
+  });
+  return rest.filter((e) => {
+    const n = owed.get(e) ?? 0;
+    if (n > 0) owed.set(e, n - 1);
+    return n === 0;
+  });
+}
 
 /** The verbs a `capture` list may name — everything that drives the page
  *  the run already has; `open`/`close`/`screenshot` are the compound's own. */
 export const CAPTURE_VERBS = ["goto", "click", "fill", "type", "press", "select", "hover", "scroll", "wait", "text", "evaluate", "back"] as const;
 
 type CaptureVerb = (typeof CAPTURE_VERBS)[number];
+
+/** The verbs a look's list may name: what a person does on the app's page.
+ *  Not `goto` or `back` (they would take the host off the app), nor
+ *  `evaluate` or `text` (the look returns the page's text itself). */
+export const LOOK_VERBS = ["click", "fill", "type", "press", "select", "hover", "scroll", "wait"] as const satisfies readonly CaptureVerb[];
 
 /** What each verb in a declared list needs: the rules its `browser/*`
  *  step's input schema enforces, which a list — run through the verbs
@@ -285,11 +318,16 @@ const STEP_NEEDS: Record<CaptureVerb, { required?: string[]; oneOf?: string[]; a
 /** The key a check's own session is kept under: `<runId><CHECK_KEY><n>`. */
 const CHECK_KEY = "\u0000check:";
 
-/** A `wait` step in a `verify` list with no `timeoutMs` of its own gives up
- *  after this long, not the run's whole budget (what `capture` allows): a
- *  page that never shows the text is a refutation, and it should not take
- *  ten minutes to say so. */
+/** A `wait` step in a `verify`, `walkthrough` or look list with no
+ *  `timeoutMs` of its own gives up after this long, not the run's whole
+ *  budget (what `capture` allows): a page that never shows the text is a
+ *  result, and it should not take ten minutes to say so. */
 export const VERIFY_WAIT_MS = 30_000;
+
+/** The step, its `wait` capped at `VERIFY_WAIT_MS` unless it names its own. */
+function capWait(s: CaptureStep): CaptureStep {
+  return s.do === "wait" && s["timeoutMs"] === undefined ? { ...s, timeoutMs: VERIFY_WAIT_MS } : s;
+}
 
 export const TEXT_CAP = 50_000;
 export const TREE_CAP = 100_000;
@@ -311,6 +349,9 @@ interface Session {
   /** A popup / new tab became the page since the last snapshot. */
   replaced: boolean;
   obs: Observations;
+  /** Where the verbs find an element: an app look's frame (`lookAtApp`),
+   *  else the page itself (`scopeOf`). */
+  scope?: FrameLocator;
 }
 
 interface Run {
@@ -673,7 +714,7 @@ export class BrowserService {
       }
       return s.page.locator(`aria-ref=${ref}`);
     }
-    if (target.selector) return s.page.locator(target.selector);
+    if (target.selector) return scopeOf(s).locator(target.selector);
     throw new Error("browser: give exactly one of ref or selector");
   }
 
@@ -864,6 +905,7 @@ export class BrowserService {
   async scroll(runId: string, input: Target & { y?: number; timeoutMs?: number }): Promise<{ ok: true }> {
     return this.call(runId, "scroll", input.timeoutMs, async (s, ms) => {
       if (input.ref || input.selector) await this.locate(runId, input).scrollIntoViewIfNeeded({ timeout: ms });
+      else if (typeof input.y === "number" && s.scope) await s.scope.locator(":root").evaluate((el, y) => el.ownerDocument.defaultView?.scrollBy(0, y), input.y, { timeout: ms });
       else if (typeof input.y === "number") await s.page.evaluate((y) => window.scrollBy(0, y), input.y);
       else throw new Error("give ref, selector, or y");
       await settlePage(s.page);
@@ -879,7 +921,7 @@ export class BrowserService {
     return this.call(runId, "wait", budget, async (s, ms) => {
       const t0 = Date.now();
       if (typeof input.ms === "number") await sleep(Math.min(input.ms, ms));
-      else if (input.text) await anyVisible(s.page.locator(`text=${input.text}`)).waitFor({ state: "visible", timeout: ms });
+      else if (input.text) await anyVisible(scopeOf(s).locator(`text=${input.text}`)).waitFor({ state: "visible", timeout: ms });
       else if (input.url) {
         const want = input.url;
         await s.page.waitForURL(want.includes("*") ? want : (u) => u.href.includes(want), { timeout: ms });
@@ -891,7 +933,7 @@ export class BrowserService {
 
   async text(runId: string, input: Target & { timeoutMs?: number } = {}): Promise<{ text: string }> {
     return this.call(runId, "text", input.timeoutMs, async (s, ms) => {
-      const loc = input.ref || input.selector ? this.locate(runId, input) : s.page.locator("body");
+      const loc = input.ref || input.selector ? this.locate(runId, input) : scopeOf(s).locator("body");
       return { text: cap(await loc.innerText({ timeout: ms }), TEXT_CAP) };
     });
   }
@@ -1033,7 +1075,7 @@ export class BrowserService {
     input: { url: string; steps?: CaptureStep[]; wait?: number; expect?: VerifyExpect; viewport?: Viewport; timeoutMs?: number },
     sink: ShotSink,
   ): Promise<Verified> {
-    const steps = (input.steps ?? []).map((s) => (s.do === "wait" && s["timeoutMs"] === undefined ? { ...s, timeoutMs: VERIFY_WAIT_MS } : s));
+    const steps = (input.steps ?? []).map(capWait);
     checkSteps(steps, "verify");
     return this.inOwnSession(runId, async (key) => {
       const { status } = await this.open(key, { url: input.url, viewport: input.viewport, timeoutMs: input.timeoutMs });
@@ -1088,7 +1130,7 @@ export class BrowserService {
       let framedLast = steps.length === 0;
       for (const [i, raw] of steps.entries()) {
         const { caption, ...step } = raw;
-        const s = (step.do === "wait" && step["timeoutMs"] === undefined ? { ...step, timeoutMs: VERIFY_WAIT_MS } : step) as CaptureStep;
+        const s = capWait(step as CaptureStep);
         const r = await this.drive(key, [s], "walkthrough");
         if (r.stopped) {
           stopped = { ...r.stopped, step: i + 1 };
@@ -1121,21 +1163,37 @@ export class BrowserService {
    * Look at an app as a person opening it would see it: strut's own UI
    * hosting the version alone (`?app=<name>@<version>&solo=1`), loaded from
    * `STRUT_ORIGIN` with every request answered by strut in this process as
-   * `actor` (the file comment). Waits for the host to fill its frame and for
-   * the app to draw, settles (the app's first calls answered), shoots the
+   * `actor` (the file comment). `link` is what a deep link to the app
+   * carries (`&input=…`, as the kit's `appLink` writes it): the app opens
+   * where that link takes a person. Waits for the host to fill its frame
+   * and for the app to draw, runs `steps` in the app's frame (`drive`, the
+   * verbs `capture` uses), settles (the app's calls answered), shoots the
    * page, and drains what went wrong — the host's errors and the app's, its
    * frame being part of the page. A host that shows no app (none by that
    * name and version, a document that would not load) is a result,
-   * `hostError`; only the instrument failing throws. A session of its own,
+   * `hostError`, and so is a step that fails, `stopped`, shot where the
+   * page got to; only the instrument failing throws. A session of its own,
    * closed after, like a check.
    */
   async lookAtApp(
     runId: string,
-    input: { name: string; version: string; actor?: string; wait?: number; fullPage?: boolean; viewport?: Viewport; timeoutMs?: number },
+    input: {
+      name: string;
+      version: string;
+      actor?: string;
+      link?: Record<string, string>;
+      steps?: CaptureStep[];
+      wait?: number;
+      fullPage?: boolean;
+      viewport?: Viewport;
+      timeoutMs?: number;
+    },
     sink: ShotSink,
   ): Promise<AppLooked> {
     const strut = this.strut;
     if (!strut) throw new Error("browser: this strut server serves no UI to host an app in (createStrut hands it one when serveUi is on)");
+    const steps = (input.steps ?? []).map(capWait);
+    checkLookSteps(steps);
     return this.inOwnSession(runId, async (key) => {
       const page = await this.page(key, { viewport: input.viewport });
       await page.route(`${STRUT_ORIGIN}/**`, (route) => answerFromStrut(route, strut, input.actor));
@@ -1144,22 +1202,25 @@ export class BrowserService {
       // connected (plans/app-channels.md item 7).
       const channelSocket = this.channelSocket;
       if (channelSocket) await page.routeWebSocket(STRUT_CHANNEL_SOCKET, (ws) => answerChannelSocket(ws, channelSocket, input.actor));
-      const url = `${STRUT_ORIGIN}/?app=${encodeURIComponent(`${input.name}@${input.version}`)}&solo=1`;
-      const { status } = await this.goto(key, { url, timeoutMs: input.timeoutMs });
+      const q = new URLSearchParams({ app: `${input.name}@${input.version}`, solo: "1" });
+      const link = new URLSearchParams(input.link ?? {}).toString();
+      if (link) q.set("input", link);
+      const { status } = await this.goto(key, { url: `${STRUT_ORIGIN}/?${q}`, timeoutMs: input.timeoutMs });
       if (status >= 400) {
         const said = await page.locator("body").innerText().catch(() => "");
         throw new Error(`browser: strut's UI did not load (HTTP ${status}${said ? `: ${said.slice(0, 200)}` : ""})`);
       }
       const shown = await this.call(key, "app", LOOK_READY_MS, (s, ms) => appShown(s.page, ms));
+      let stopped: StoppedAt | undefined;
+      if (shown.rendered && steps.length) {
+        this.live(key).scope = appFrame(page);
+        ({ stopped } = await this.drive(key, steps, "app/look"));
+      }
       await settlePage(page, input.wait);
       const shot = await this.screenshot(key, { fullPage: input.fullPage, timeoutMs: input.timeoutMs }, sink);
       const text = shown.rendered ? await this.call(key, "app", input.timeoutMs, (_s, ms) => appFrame(page).locator("body").innerText({ timeout: ms })) : "";
-      // The host's GET for an MCP stream is answered 405 by design (MCP_GET),
-      // and Chrome logs each such response once more in the console.
-      const seen = flattenObs(this.observe(key));
-      let expected = seen.filter((e) => MCP_GET.test(e)).length;
-      const errors = seen.filter((e) => !MCP_GET.test(e) && !(e === MCP_GET_CONSOLE && expected-- > 0));
-      return { ...shot, ...shown, text: cap(text, LOOK_TEXT_CAP), errors };
+      const errors = withoutHostRefusals(flattenObs(this.observe(key)));
+      return { ...shot, ...shown, text: cap(text, LOOK_TEXT_CAP), errors, ...(stopped ? { stopped } : {}) };
     });
   }
 
@@ -1343,6 +1404,11 @@ function appFrame(page: Page) {
   return page.frameLocator("iframe.app-frame");
 }
 
+/** Where a verb finds an element: an app look's frame, else the page. */
+function scopeOf(s: Session): Page | FrameLocator {
+  return s.scope ?? s.page;
+}
+
 /** Wait for strut's UI to show the app: the host fills its frame (or says
  *  why it cannot — no such app, a document that would not load), then the
  *  app draws into its root. A host that never settles is a `hostError`; an
@@ -1445,6 +1511,19 @@ export function checkSteps(steps: readonly CaptureStep[], label: string): void {
     }
     if (needs.atMostOne && needs.atMostOne.filter(given).length > 1) throw new Error(`${at}: give ${either(needs.atMostOne)}, not both`);
   }
+}
+
+/**
+ * A look's list (`lookAtApp`), checked before anything opens: each verb one
+ * of `LOOK_VERBS`, each target a selector — a ref comes from
+ * browser/snapshot, which a look has none of — then `checkSteps`.
+ */
+export function checkLookSteps(steps: readonly CaptureStep[]): void {
+  for (const [i, s] of steps.entries()) {
+    if (!(LOOK_VERBS as readonly string[]).includes(s.do)) throw new Error(`app/look: step ${i + 1}: unknown verb "${s.do}" (one of ${LOOK_VERBS.join(", ")})`);
+    if (s["ref"] !== undefined) throw new Error(`app/look: step ${i + 1} (${s.do}): give a selector (text=Agents, role=button[name="Agents"]), not a ref`);
+  }
+  checkSteps(steps, "app/look");
 }
 
 /** `ref, selector, or y`. */

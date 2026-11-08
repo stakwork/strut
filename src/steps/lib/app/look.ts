@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { defineStep, withMedia, type StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
-import { browserOf, shotSinkOf } from "../browser/_shared.js";
+import { browserOf, LOOK_VERBS, shotSinkOf } from "../browser/_shared.js";
 import { requireApps, resolveAppPath } from "./_shared.js";
 
 /**
@@ -19,6 +19,11 @@ import { requireApps, resolveAppPath } from "./_shared.js";
  * fix-and-look loop publishes once, at the end, instead of leaving a
  * version (or, on a held app, a draft) behind each round.
  *
+ * With `input`, the app opens where a deep link carrying it takes a person
+ * (`?app=…&input=…`); with `steps`, a person's clicks and typing then run
+ * in the app's frame, through the verbs `browser/capture` runs. So a page
+ * past the first one, or a tab of it, is looked at the way it is reached.
+ *
  * Under `app/*`, so the builders, which hold that grant, have it with no
  * browser grant of their own. The chat builder's tools run under no run:
  * the look then takes a browser session and an artifact directory of its
@@ -30,7 +35,10 @@ export default defineStep({
     "LOOK at an app as a person opening it sees it: the strut server's own UI hosts it in a browser, as you, and its page makes its calls through the real host under the app's grants. " +
     "With `path`: the app DIRECTORY you are working on — built (a failing build returns { ok: false, errors } and nothing opens) and looked at WITHOUT publishing anything, so look, fix and look again from the directory, and app/publish once it shows what was asked for. " +
     "With `version` (or neither): a published version — the active one by default; name a held app's draft to see it. " +
-    "Returns { name, version, rendered, hostError?, text, errors, appErrors, path, url, width, height } — `version` a `preview-…` label for a directory; `rendered`: the page drew something; `hostError`: why the host shows no app; `text`: the page's visible text (capped); " +
+    "It opens on the app's first page; `input` opens it where a deep link carrying that input takes a person (the app's own keys, what its useToolInput() reads: { view: \"/runs\" } in the starter template, { run: \"12\" } where the app reads a run). " +
+    "`steps` then does what a person would, in the app, in order: { do: click | fill | type | press | select | hover | scroll | wait, ...that browser/* step's input }, each target a `selector`, e.g. { do: \"click\", selector: \"text=Agents\" }, { do: \"wait\", text: \"drafter\" }. " +
+    "Returns { name, version, rendered, hostError?, stopped?, text, errors, appErrors, path, url, width, height } — `version` a `preview-…` label for a directory; `rendered`: the page drew something; `hostError`: why the host shows no app; " +
+    "`stopped`: the step that failed ({ step, verb, args, message }) — the shot and the text are of where the page got to; `text`: the page's visible text (capped); " +
     "`errors`: console errors, page errors, failed or 4xx/5xx requests; `appErrors`: what the app's error boundary reported during the look — and, when you are an agent, you SEE the screenshot. " +
     "It runs the page: its reads and writes are real calls, as when a person opens it.",
   input: z.object({
@@ -38,6 +46,14 @@ export default defineStep({
     version: z.string().optional().describe("A published version to look at (v1, v2, …). The active (live) version when omitted. Not with `path`."),
     path: z.string().optional().describe("The app directory you are working on, relative to the job's (or run's) directory: built and looked at as `name` without publishing a version."),
     job: z.string().optional().describe("With `path`: another job whose directory it is relative to."),
+    input: z
+      .record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
+      .optional()
+      .describe("What a deep link to the app carries, e.g. { run: \"12\" }: the app opens where that link takes a person. Its values reach the page as strings."),
+    steps: z
+      .array(z.looseObject({ do: z.enum(LOOK_VERBS) }))
+      .optional()
+      .describe("What a person does on the app's page before the shot, in order: each the input of the browser/* step it names plus `do`, a target by `selector`."),
     wait: z.number().int().min(0).max(30_000).optional().describe("Extra ms to let the page settle before the shot (a chart animating in, a slow first read)."),
     fullPage: z.boolean().optional().describe("The whole scrollable page, not just the 1280×800 viewport."),
     viewport: z
@@ -71,6 +87,8 @@ export default defineStep({
           name: app.name,
           version: app.version,
           ...(ctx.principal ?? ctx.actor ? { actor: ctx.principal ?? ctx.actor } : {}),
+          ...(cfg.input ? { link: Object.fromEntries(Object.entries(cfg.input).map(([k, v]) => [k, String(v)])) } : {}),
+          ...(cfg.steps?.length ? { steps: cfg.steps } : {}),
           ...(cfg.wait !== undefined ? { wait: cfg.wait } : {}),
           ...(cfg.fullPage ? { fullPage: true } : {}),
           ...(cfg.viewport ? { viewport: cfg.viewport } : {}),

@@ -92,7 +92,29 @@ before(async () => {
     "app.yaml": "title: Broken\nicon: bug\ngrants:\n  workflows: []\n  steps: []\n",
     "src/App.tsx": 'export default function App() { throw new Error("kaboom on render"); }',
   });
+  await publish("look-deep", { "app.yaml": "title: Deep\nicon: link\ngrants:\n  workflows: []\n  steps: []\n", "src/App.tsx": DEEP });
 });
+
+/** An app with a page only a link reaches (`{ run }`), tabs only a click
+ *  shows, and a filter only typing moves. */
+const DEEP = `import { useToolInput } from "@strut/kit";
+import { useState } from "react";
+const AGENTS = ["drafter", "critic", "aggregator"];
+export default function App() {
+  const input = useToolInput<{ run?: string }>();
+  const [tab, setTab] = useState("documents");
+  const [filter, setFilter] = useState("");
+  if (!input?.run) return <main className="p-6"><h1>Home page</h1></main>;
+  const shown = AGENTS.filter((a) => a.includes(filter));
+  return <main className="p-6"><h1>Run {input.run}</h1>
+    <button onClick={() => setTab("documents")}>Documents</button>
+    <button onClick={() => setTab("agents")}>Agents</button>
+    {tab === "agents"
+      ? <section><input placeholder="Filter" value={filter} onChange={(e) => setFilter(e.target.value)} />
+          <p>{shown.length} of {AGENTS.length} agents</p><ul>{shown.map((a) => <li key={a}>{a}</li>)}</ul></section>
+      : <p>contract.pdf</p>}
+  </main>;
+}`;
 
 after(async () => {
   if (skip) return;
@@ -178,4 +200,55 @@ test("a directory that throws: the error boundary's report, on the preview's lab
   const bad = await look({ name: "look-bb", path: "apps/broken-build", job: "look-job" });
   assert.equal(bad.ok, false);
   assert.match(bad.errors[0], /calls eval/);
+});
+
+test("a deep link opens the page a person's link would, and the steps click, type and wait inside the app", { skip }, async () => {
+  const home = await look({ name: "look-deep" });
+  assert.match(home.text, /Home page/, "no link: the app's first page");
+  const out = await look({
+    name: "look-deep",
+    input: { run: 12 },
+    steps: [
+      { do: "click", selector: "text=Agents" },
+      { do: "fill", selector: "input[placeholder=Filter]", value: "agg" },
+      { do: "scroll", y: 200 },
+      { do: "wait", text: "1 of 3 agents" },
+    ],
+  });
+  assert.equal(out.stopped, undefined, JSON.stringify(out.stopped));
+  assert.match(out.text, /Run 12/, "the link's input reached the app, as a string");
+  assert.match(out.text, /aggregator/);
+  assert.doesNotMatch(out.text, /drafter|contract\.pdf/, "the click and the typing happened in the app's frame");
+  assert.deepEqual(out.errors, []);
+  assert.equal(mediaOf(out)?.[0]?.mediaType, "image/png");
+});
+
+test("a step that matches nothing is a result: stopped, named, and shot where the page got to", { skip }, async () => {
+  const out = await look({
+    name: "look-deep",
+    input: { run: "7" },
+    steps: [
+      { do: "click", selector: "text=Agents" },
+      { do: "click", selector: "text=Timeline", timeoutMs: 1_000 },
+      { do: "click", selector: "text=Documents" },
+    ],
+  });
+  assert.equal(out.stopped?.step, 2);
+  assert.equal(out.stopped?.verb, "click");
+  assert.match(out.stopped?.message ?? "", /Timeline/);
+  assert.match(out.text, /drafter/, "the page as step 1 left it; step 3 never ran");
+  const png = await readFile(join(out.dir, out.path));
+  assert.equal(png.subarray(1, 4).toString(), "PNG");
+});
+
+test("a list a look cannot run fails the step before a page opens: a verb off the app, a ref", { skip }, async () => {
+  for (const [steps, said] of [
+    [[{ do: "goto", url: "https://example.com" }], /invalid|goto/i],
+    [[{ do: "click", ref: "e3" }], /selector/],
+    [[{ do: "click" }], /exactly one of ref or selector/],
+  ] as const) {
+    const res = await runSingleStep("app/look", strut.getRegistry(), strut.services, { config: { name: "look-deep", steps } });
+    assert.equal(res.status, "error", JSON.stringify(steps));
+    assert.match(res.error?.message ?? "", said);
+  }
 });

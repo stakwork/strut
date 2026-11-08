@@ -61,6 +61,17 @@ its version. `viewport` looks at another size, a phone's `{ width: 390,
 height: 844 }`; `wait` gives a slow page longer. A look runs the page as a
 person opening it would: its reads and writes are real calls.
 
+A look opens on the app's first page. To see another, open it the way a
+person's link does: `input` is what the link carries (`{ view: "/runs" }`
+in the starter template, or your own keys, such as `{ run: "12" }`; see
+"Deep links"). `steps` then does what a person would, in order:
+`{ do: "click", selector: "text=Agents" }`, `{ do: "fill", selector:
+"input[placeholder=Filter]", value: "draft" }`, `{ do: "wait", text:
+"3 agents" }` (click, fill, type, press, select, hover, scroll, wait). A
+step that fails comes back as `stopped`, with the shot of where the page
+got to. A view no link reaches is one a person cannot share either: give
+it a key in the link.
+
 ## The manifest
 
 ```yaml
