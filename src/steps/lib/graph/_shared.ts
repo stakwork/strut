@@ -1,4 +1,5 @@
 import type { FactTrust } from "../../../graph/fact-score.js";
+import type { RunStep } from "../../../graph/memory-checks.js";
 import { z } from "zod";
 import type { AccessedNode, StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
@@ -91,14 +92,29 @@ export function trustOut(t: FactTrust | undefined): Record<string, unknown> {
 }
 
 /** What a step that scores facts tells the model about the scores, and how to use them (a Ladybug file only). */
+/** Runs a memory fact's check step through strut's own runner, as the verify
+ *  pass runs a check (`origin: verify`): the fact is the step's config, over
+ *  the check's own. Undefined outside the runner (no registry). */
+export function checkRunner(ctx: StepContext<StrutCapabilities>): RunStep | undefined {
+  const registry = ctx.registry;
+  if (!registry) return undefined;
+  return async (step, input, config) => {
+    // Lazy: the runner loads the registry's steps.
+    const { runSingleStep } = await import("../../../run-step.js");
+    const run = await runSingleStep(step, registry, ctx.services, { config: { ...config, ...(input as Record<string, unknown>) }, input, origin: "verify" });
+    return { status: run.status, ...(run.output !== undefined ? { output: run.output } : {}) };
+  };
+}
+
 export const TRUST_NOTE =
-  "Each fact carries how far to trust it now, worked out when it is read. `evidence` is who backed it — `kind` owner is the user, self is the fact's subject, other is someone else — when it was last backed, and each piece for or against. " +
+  "Each fact carries how far to trust it now, worked out when it is read. `evidence` is who backed it — `kind` owner is the user, self is the fact's subject, other is someone else, check is a check that found it (in the user's chats, say) — when it was last backed, and each piece for or against. " +
   "`status` is what the evidence says: supported, disputed (another value is close: `rival`), stale (old for that kind of fact), hearsay (only someone else said it), unknown (too little to go on) or refuted (the user said it is false). " +
   "`stance` is what to do with it: `state` it as fact; `cite` it with who said it and when (\"Kate told me in September…\", \"Sam said…\"); or `ask` before relying on it. " +
   "Use them this way: (1) asked about a fact whose stance is ask, answer with what is known, then check (\"Last I heard Porto, but that was two years ago. Still there?\"); never refuse to answer. " +
   "(2) In a general answer, build it from state and cite facts; leave ask facts out or flag them briefly as possibly out of date. " +
   "(3) Before acting on a fact (sending, booking, updating), check any fact that is not state. " +
   "(4) Never hold an answer back waiting on questions, and ask at most one question per reply; the answer is new evidence, so remember it. " +
+  "`open_check` means a question about it is already waiting on the user: cite it, don't ask it again. " +
   "When the user says a fact is wrong, assert it with `refuted`; when it is merely over, with `ended`. " +
   "`planned` is a fact that begins later.";
 

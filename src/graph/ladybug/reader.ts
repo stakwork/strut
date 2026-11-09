@@ -942,11 +942,15 @@ export class LadybugReader implements GraphReader {
     // Each edge's claim evidence (plans/memory-truth-layer.md); an edge written
     // before claims has none, and is read from its sources.
     const claimOf = (type: string, subject: string, e: SlotEdge) => factClaimId(subject, type, e.target);
-    const evidence = await factEvidence(run, [...new Set(held.flatMap((h) => h.edges.map((e) => claimOf(h.type, h.subject, e))))]);
+    const { evidence, open: asked } = await factEvidence(run, [...new Set(held.flatMap((h) => h.edges.map((e) => claimOf(h.type, h.subject, e))))]);
+    // Edges whose claim has a question waiting on the user (plans/memory-checks.md).
+    const open = new Set<string>();
     for (const h of held) {
       for (const e of h.edges) {
-        const ev = evidence.get(claimOf(h.type, h.subject, e));
+        const claim = claimOf(h.type, h.subject, e);
+        const ev = evidence.get(claim);
         if (ev?.length) e.evidence = ev;
+        if (asked.has(claim)) open.add(e.ref_id);
       }
     }
     // The Persons among the sources and the evidence, and the user, for a fact no Person backs.
@@ -975,7 +979,7 @@ export class LadybugReader implements GraphReader {
     const wanted = new Set(facts.map((f) => f.ref_id));
     for (const h of held) {
       const rule = rules.get(h.type)!;
-      const scored = scoreSlot({ subject: h.subject, edges: h.edges, one: rule.cardinality === "one", volatility: rule.volatility, people, user, now });
+      const scored = scoreSlot({ subject: h.subject, edges: h.edges, one: rule.cardinality === "one", volatility: rule.volatility, open, people, user, now });
       for (const [id, t] of scored) if (wanted.has(id)) out.set(id, t);
     }
     return out;

@@ -109,10 +109,36 @@ describe("fact-score", () => {
     assert.deepEqual(slot("me", [e], 3).get("v1")!.evidence.sayers, [{ ref_id: "sam", name: "Sam", kind: "other" }], "the refutation is not a sayer of it");
   });
 
-  it("an unanswered ask stays ask: nothing records the question yet (plans/memory-checks.md)", () => {
+  it("a check's finding backs a fact as its own, weaker source: indirect less than direct, and both keep it fresh", () => {
+    const told = said("a", "kate", 0);
+    const old = slot("kate", [edge("e1", "Porto", ["kate"], 0, { evidence: [told] })], 2600);
+    assert.equal(old.get("e1")!.stance, "ask", "years quiet");
+    const indirect = slot("kate", [edge("e1", "Porto", ["kate"], 0, { evidence: [told, { id: "c", observed_at: at(2590), strength: 0.5, check: "graph/check-chats" }] })], 2600);
+    assert.deepEqual(view(indirect, "e1"), ["supported", "state"], "her chats still mention Porto");
+    assert.ok(indirect.get("e1")!.evidence.sayers.some((x) => x.kind === "check" && x.name === "graph/check-chats" && !x.direct));
+    const direct = slot("kate", [edge("e1", "Porto", ["kate"], 0, { evidence: [told, { id: "c", observed_at: at(2590), strength: 1, check: "calendar/places", direct: true }] })], 2600);
+    assert.ok(direct.get("e1")!.belief > indirect.get("e1")!.belief, "a source that states it counts more");
+    const onlyCheck = slot("kate", [edge("e1", "Porto", [], 0, { evidence: [{ id: "c", observed_at: at(1), strength: 0.5, check: "graph/check-chats" }] })], 2);
+    assert.ok(onlyCheck.get("e1")!.belief < combine(["other"]), "an indirect finding alone is weaker than anyone's word");
+  });
+
+  it("a quiet check is weakly against: stale and cited, not refuted", () => {
+    const e = edge("w1", "Stakwork", ["chat:1"], 0, { evidence: [said("a", undefined, 100), { id: "q", observed_at: at(110), strength: -0.5, check: "graph/check-chats" }] });
+    const s = slot("me", [e], 112);
+    assert.deepEqual(view(s, "w1"), ["stale", "cite"]);
+    assert.ok(s.get("w1")!.belief > 0.9, "the user's word still stands");
+  });
+
+  it("an open question is reported, so it is not asked twice", () => {
+    const e = edge("e1", "Porto", ["kate"], 0);
+    assert.equal(slot("kate", [e], 2600, { open: new Set(["e1"]) }).get("e1")!.open_check, true);
+    assert.equal(slot("kate", [e], 2600).get("e1")!.open_check, undefined);
+  });
+
+  it("an unanswered ask stays ask: the read records nothing, the step after it opens the question", () => {
     const e = edge("e1", "Porto", ["kate"], 0);
     assert.equal(slot("kate", [e], 2600).get("e1")!.stance, "ask");
-    assert.equal(slot("kate", [e], 2601).get("e1")!.stance, "ask", "asked again the next day, until checks record an open question");
+    assert.equal(slot("kate", [e], 2601).get("e1")!.stance, "ask", "the read alone changes nothing");
   });
 
   it("a fact that begins later is planned; an ended one has a status but no stance", () => {
