@@ -3869,10 +3869,12 @@ input.package-search { width: 100%; margin-bottom: var(--sp-2); }
 .package-along-ns { display: flex; align-items: baseline; gap: var(--sp-2); margin-bottom: 4px; }
 .package-along-ns-name, .package-along-note { flex: 0 0 auto; font-size: 11px; color: var(--text-dim); font-family: var(--font-mono); white-space: nowrap; }
 .package-along-note { font-family: inherit; }
+.package-along-say { font-size: 11px; color: var(--text-dim); margin-bottom: 4px; }
 .package-along-chips { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
 .package-along-chip { font-family: var(--font-mono); font-size: 11px; padding: 1px 6px; border-radius: 4px; background: var(--surface-2); color: var(--text-muted); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .package-chips { display: flex; flex-wrap: wrap; gap: var(--sp-1); margin-bottom: var(--sp-1); }
 .package-chip { display: inline-flex; align-items: center; gap: 4px; }
+.package-chip-mode { font-size: 10px; color: var(--text-dim); }
 .package-ideas { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-1); margin-top: var(--sp-1); }
 .package-idea { cursor: pointer; border-style: dashed; }
 .package-new { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); margin-top: var(--sp-3); }

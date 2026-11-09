@@ -72,7 +72,7 @@ import { createVerifyWaker, type VerifyWaker } from "./ai/verify-waker.js";
 import type { RunEndInfo } from "./runner.js";
 import { ACTOR_SECRETS_FILE, actorSecretStore, type ActorSecretStore } from "./actor-secrets.js";
 import { seedJobWorkflow, type JobSeedOptions } from "./job-seed.js";
-import { PERSONAL_CONCEPTS, PERSONAL_ROOT, STRUT_CONCEPTS, seedConcepts } from "./concept-seed.js";
+import { findConcept, PERSONAL_CONCEPTS, PERSONAL_ROOT, STRUT_CONCEPTS, seedConcepts } from "./concept-seed.js";
 import { builderSystem } from "./ai/builder-system.js";
 import { seedOrchestratorWorkflow, type OrchestratorSeedOptions } from "./orchestrator-seed.js";
 import { seedBuilderWorkflow, type BuilderSeedOptions } from "./builder-seed.js";
@@ -3564,9 +3564,25 @@ export async function createStrut<TServices = unknown>(
     if (!PACKAGE_DIGEST.test(digest)) return c.json({ error: "digest=sha256:<64 hex> is required" }, 400);
     const info = await packageStore.get(digest);
     if (!info || info.manifest.package !== pkg) return c.json({ error: `no package ${pkg} at ${digest} here` }, 404);
-    const items = info.items
+    const items: Array<{ kind: string; name: string; alone?: true }> = info.items
       .filter((i) => !i.helper)
       .map((i) => ({ kind: i.kind, name: i.kind === "concept" || i.kind === "type" ? i.name : i.name.slice(pkg.length + 1) }));
+    // A page the release carried ALONE (`conceptsAlone`): it has pages under
+    // it here and the release holds none of them — so the package page starts
+    // it alone again, and its pages here never go along by accident.
+    const shipped = new Set(items.filter((i) => i.kind === "concept").map((i) => i.name));
+    const schema = graph && shipped.size ? await graph.schemas.schema("Concept") : null;
+    if (graph && schema) {
+      for (const item of items.filter((i) => i.kind === "concept")) {
+        const node = await findConcept(graph, schema, item.name);
+        if (!node || node.deleted) continue;
+        const under = await graph.tx(async (tx) => {
+          const edges = (await graph.edgeEngine.liveEdgesOf(tx, node.ref_id, "PARENT_OF", true))?.edges ?? [];
+          return (await Promise.all(edges.map((e) => graph.nodeEngine.readRaw(tx, e.other)))).map((r) => r?.props["name"]);
+        });
+        if (under.length && !under.some((n) => typeof n === "string" && shipped.has(n))) item.alone = true;
+      }
+    }
     return c.json({ package: pkg, version: info.manifest.version, digest, items });
   });
 
@@ -3730,7 +3746,7 @@ export async function createStrut<TServices = unknown>(
     if (typeof body["package"] !== "string" || typeof body["version"] !== "string" || !str("description") || !str("license")) {
       return "package and version are required strings (publisher/name, 1.4.0); description and license are strings";
     }
-    if (!["workflows", "steps", "concepts", "apps", "types"].every(list)) return "workflows, steps, concepts, apps and types are lists of names";
+    if (!["workflows", "steps", "concepts", "conceptsAlone", "apps", "types"].every(list)) return "workflows, steps, concepts, conceptsAlone, apps and types are lists of names";
     const requires = body["requires"] as { packages?: unknown } | undefined;
     const pinsOk = (p: unknown) => Array.isArray(p) && p.every((r) => r && typeof r === "object" && typeof (r as { package?: unknown }).package === "string" && typeof (r as { digest?: unknown }).digest === "string");
     if (requires !== undefined && (!requires || typeof requires !== "object" || (requires.packages !== undefined && !pinsOk(requires.packages)))) {
@@ -3745,6 +3761,7 @@ export async function createStrut<TServices = unknown>(
     files: built.files,
     requires: built.manifest.requires ?? {},
     warnings: built.warnings,
+    leftToInstaller: built.leftToInstaller,
     suggested: built.suggested,
   });
   /** A build reads the runs too, for what the workflows wrote and read (`suggested`). */

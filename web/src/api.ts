@@ -2343,6 +2343,8 @@ export interface PublishRequest {
   apps?: string[];
   /** Concept pages, each with the pages under it. */
   concepts?: string[];
+  /** Concept pages alone, without the pages under them. */
+  conceptsAlone?: string[];
   /** Graph types, each with its parents and the edges among them. */
   types?: string[];
   channel?: string;
@@ -2359,6 +2361,10 @@ export interface BuildPreview {
   files: string[];
   requires: PackageRequires;
   warnings: string[];
+  /** What the closure reaches that the installing strut must already
+   *  have: a seed of this strut's host, a service's item (never strut's
+   *  own). Each is also a warning. */
+  leftToInstaller?: Array<{ kind: "workflow" | "step" | "app"; name: string; publisher?: string }>;
   /** Graph types and Concept roots the workflows' runs wrote and read, not
    *  in the package yet: what the page offers to add. */
   suggested?: { types: string[]; concepts: string[] };
@@ -2372,7 +2378,8 @@ export interface PackageItems {
   package: string;
   version: string;
   digest: string;
-  items: Array<{ kind: "workflow" | "step" | "app" | "concept" | "type"; name: string }>;
+  /** `alone`: a Concept page the release carried without the pages it has here. */
+  items: Array<{ kind: "workflow" | "step" | "app" | "concept" | "type"; name: string; alone?: true }>;
 }
 export const getPackageItems = (pkg: string, digest: string) =>
   fetchJSON<PackageItems>(`/packages/${pkg.split("/").map(encodeURIComponent).join("/")}/items?digest=${encodeURIComponent(digest)}`);

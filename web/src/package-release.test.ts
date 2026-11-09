@@ -58,8 +58,20 @@ test("comesAlong reads what a dry build adds to the picks, and the picks it does
     concepts: { roots: ["Clips"], pages: 2 },
     types: ["Media"],
     leftOut: ["job"],
+    needs: [],
+    warnings: [],
   });
   assert.deepEqual(comesAlong("acme/tools", files, { workflows: ["acme/tools/summarize", "tidy"], apps: ["board"] }).workflows, [], "a name under the prefix is its path");
+  // What the build leaves to the installing strut is said once, as `needs`, not again as a warning.
+  const left = comesAlong("acme/tools", files, { workflows: ["summarize"], apps: [] }, {
+    leftToInstaller: [{ kind: "step", name: "artifacts/dir" }],
+    warnings: [
+      "the step artifacts/dir is left to the installing strut (published here by artifacts-seed): a strut without it cannot install or run what reaches it",
+      "the graph holds Clip -[CUT_FROM]-> Video, and Video is not in the package",
+    ],
+  });
+  assert.deepEqual(left.needs, ["artifacts/dir"]);
+  assert.deepEqual(left.warnings, ["the graph holds Clip -[CUT_FROM]-> Video, and Video is not in the package"]);
 });
 
 test("byNamespace puts a namespace's names on one line, bare names last", () => {
@@ -79,12 +91,14 @@ test("picksFromRelease maps what a release held back to the names here", () => {
     { kind: "step", name: "clip/shout" },
     { kind: "app", name: "board" },
     { kind: "concept", name: "Clips" },
+    { kind: "concept", name: "Firm", alone: true },
     { kind: "type", name: "Clip" },
   ];
   assert.deepEqual(picksFromRelease("acme/tools", items, { workflows: new Set(["summarize", "acme/tools/tidy"]), apps: new Set(["board"]) }), {
     workflows: ["acme/tools/tidy", "summarize"],
     apps: ["board"],
     concepts: ["Clips"],
+    conceptsAlone: ["Firm"],
     types: ["Clip"],
   });
 });

@@ -273,8 +273,12 @@ async function typeFile(
       warnings.add(`${file}: ${type}.${k} is left out — the writer keeps that name for itself`);
     }
   }
-  const prefix = `${type.toLowerCase()}-`;
-  const key = live?.key_spec.toLowerCase().startsWith(prefix) ? live.key_spec.slice(prefix.length) : live?.key_spec;
+  // A key spec's first token is the type prefix, which the writer replaces
+  // with the node's own type (`composeNodeKey`) whoever declared it: a type
+  // with no key of its own inherits its parent's (jarvis's `Content` and
+  // `Legal` hold Thing's `thing-name`), so only the tokens after it are
+  // attributes. `ref_id` is no key at all.
+  const key = !live ? undefined : live.key_spec === "ref_id" ? "ref_id" : live.key_spec.split("-").slice(1).join("-") || undefined;
   const index = live?.index.filter((f) => f !== "node_key");
   const role = str(env["role"]) && NODE_ROLES.includes(str(env["role"])!) ? str(env["role"]) : undefined;
   const embed = env["embed"];

@@ -217,21 +217,61 @@ describe("building a package on a filesystem workspace", () => {
     ]);
   });
 
+  it("carries a workflow's category in its YAML, and the install sets it", async () => {
+    await ws.publishWorkflow("tidy", "v1", flow("tidy", "type: log, config: { message: hi }"), undefined, "legal-library");
+    const built = await build(src, { workflows: ["tidy"] });
+    assert.equal(await readFile(join(built.dir, "workflows/tidy.yaml"), "utf-8"), "name: acme/linear/tidy\ncategory: legal-library\nsteps:\n  - { id: s0, type: log, config: { message: hi } }\n");
+    const buyer = await fresh("buyer");
+    const r = await install(buyer, `file:${built.dir}`);
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    assert.equal((await buyer.workspace.getWorkflowMetadata("acme/linear/tidy"))?.category, "legal-library");
+    assert.equal((await build(src, { workflows: ["tidy"] })).digest, built.digest, "the same bytes again");
+  });
+
   it("pins a package it reaches at the digest it was installed at, and installs it first", async () => {
     const util = await writeTree({ "strut.yaml": "package: bob/util\nversion: 2.1.0\n", "steps/fmt.ts": PLAIN("bob/util/fmt", "fmt") }, "util");
     const { digest } = await readPackage(util);
     assert.equal((await install(src, `file:${util}`)).status, 201);
     await ws.publishWorkflow("acme/linear/fmt", "v1", flow("acme/linear/fmt", "type: bob/util/fmt"));
-    // A seed's workflow is strut's own (or the host's): recorded nowhere, like a core step.
+    // A seed's workflow, a service's step, strut's own `job`: recorded nowhere,
+    // like a core step. The host's and the service's are said; strut's is every strut's.
     await ws.publishWorkflowByContent("seeded", flow("seeded", "type: log, config: { message: hi }"), undefined, undefined, undefined, { source: "seed" });
-    await ws.publishWorkflow("acme/linear/both", "v1", flow("acme/linear/both", "type: subflow, config: { workflow: acme/linear/fmt }", "type: subflow, config: { workflow: seeded }"));
+    await ws.publishWorkflowByContent("job", flow("job", "type: log, config: { message: hi }"), undefined, undefined, undefined, { source: "seed" });
+    await ws.publishStep("artifacts/dir", PLAIN("artifacts/dir", "dir"), undefined, "artifacts-seed");
+    await ws.publishWorkflow(
+      "acme/linear/both",
+      "v1",
+      flow("acme/linear/both", "type: subflow, config: { workflow: acme/linear/fmt }", "type: subflow, config: { workflow: seeded }", "type: subflow, config: { workflow: job }", "type: artifacts/dir"),
+    );
 
     const built = await build(src, { workflows: ["acme/linear/both"] });
     assert.deepEqual(built.files, ["steps/_shared.ts", "strut.yaml", "workflows/both.yaml", "workflows/fmt.yaml"]);
     assert.deepEqual(built.manifest.requires, { packages: [{ package: "bob/util", digest, source: `file:${util}` }] });
+    assert.deepEqual(built.leftToInstaller, [
+      { kind: "step", name: "artifacts/dir", publisher: "artifacts-seed" },
+      { kind: "workflow", name: "seeded" },
+    ]);
+    assert.deepEqual(
+      built.warnings.filter((w) => /left to the installing strut/.test(w)),
+      [
+        "the step artifacts/dir is left to the installing strut (published here by artifacts-seed): a strut without it cannot install or run what reaches it",
+        "the workflow seeded is left to the installing strut (seeded here by this strut's host): a strut without it cannot install or run what reaches it",
+      ],
+    );
+
+    // Without the service's step the install is refused, naming it.
+    const bare = await fresh("bare");
+    await bare.workspace.publishWorkflowByContent("seeded", flow("seeded", "type: log, config: { message: hi }"), undefined, undefined, undefined, { source: "seed" });
+    await bare.workspace.publishWorkflowByContent("job", flow("job", "type: log, config: { message: hi }"), undefined, undefined, undefined, { source: "seed" });
+    const refusedInstall = await install(bare, `file:${built.dir}`);
+    assert.equal(refusedInstall.status, 400, JSON.stringify(refusedInstall.body));
+    assert.match(String(refusedInstall.body.error), /names the step artifacts\/dir, which is neither on this strut server nor in the packages/);
 
     const buyer = await fresh("buyer");
     await buyer.workspace.publishWorkflowByContent("seeded", flow("seeded", "type: log, config: { message: hi }"), undefined, undefined, undefined, { source: "seed" });
+    await buyer.workspace.publishWorkflowByContent("job", flow("job", "type: log, config: { message: hi }"), undefined, undefined, undefined, { source: "seed" });
+    await buyer.workspace.publishStep("artifacts/dir", PLAIN("artifacts/dir", "dir"), undefined, "artifacts-seed");
+    await buyer.rebuildRegistry();
     const r = await install(buyer, `file:${built.dir}`);
     assert.equal(r.status, 201, JSON.stringify(r.body));
     assert.deepEqual(r.body.packages.map((p) => p.package), ["bob/util", "acme/linear"]);
@@ -254,7 +294,7 @@ describe("building a package on a filesystem workspace", () => {
 
     const util = await post({ package: "acme/util", version: "1", steps: ["acme/util/fmt"] });
     assert.equal(util.status, 201, JSON.stringify(util.body));
-    assert.deepEqual(util.body, { package: "acme/util", version: "1", digest: util.body.digest, files: ["steps/fmt.ts", "strut.yaml"], requires: {}, warnings: [], suggested: { types: [], concepts: [] } });
+    assert.deepEqual(util.body, { package: "acme/util", version: "1", digest: util.body.digest, files: ["steps/fmt.ts", "strut.yaml"], requires: {}, warnings: [], leftToInstaller: [], suggested: { types: [], concepts: [] } });
     r = await linear({ packages: [{ package: "acme/util", digest: util.body.digest }] });
     assert.equal(r.status, 201, JSON.stringify(r.body));
     assert.deepEqual(r.body.files, ["steps/_shared.ts", "strut.yaml", "workflows/fmt.yaml"]);
@@ -644,9 +684,59 @@ for (const tb of testBackends()) {
       if (parent) await backend.edges.write({ edge: "PARENT_OF", source_ref_id: (await conceptRef(parent))!, target_ref_id: ref_id });
     };
 
+    it("names the carried workflows and steps in its pages as packaged, and says one it does not carry", async () => {
+      const src = await graphStrut("source");
+      await src.workspace.publishStep("legal-core/concept-context", PLAIN("legal-core/concept-context"));
+      await src.workspace.publishStep("artifacts/dir", PLAIN("artifacts/dir"), undefined, "artifacts-seed");
+      await src.workspace.publishWorkflow("legal-task-run", "v1", flow("legal-task-run", "type: legal-core/concept-context"));
+      await src.workspace.publishWorkflow("other-flow", "v1", flow("other-flow", "type: log, config: { message: hi }"));
+      await src.rebuildRegistry();
+      await page(
+        "Legal Task",
+        {
+          description: "Run legal-task-run for a legal task",
+          docs: "Run `legal-task-run` through meta/run-workflow; legal-core/concept-context reads the Firm root. Not legal-task-run-v2, nor openlaw/legal-desk/legal-task-run. other-flow and `artifacts/dir` are this strut's.",
+        },
+        "Job",
+      );
+
+      const built = await build(src, { package: "openlaw/legal-desk", workflows: ["legal-task-run"], concepts: ["Legal Task"] });
+      const [file] = built.files.filter((x) => x.startsWith("concepts/"));
+      assert.equal(
+        await readFile(join(built.dir, file!), "utf-8"),
+        "---\nname: Legal Task\ndescription: Run openlaw/legal-desk/legal-task-run for a legal task\nparents:\n  - Job\n---\n" +
+          "Run `openlaw/legal-desk/legal-task-run` through meta/run-workflow; openlaw/legal-desk/legal-core/concept-context reads the Firm root. Not legal-task-run-v2, nor openlaw/legal-desk/legal-task-run. other-flow and `artifacts/dir` are this strut's.\n",
+      );
+      const said = built.warnings.join("\n");
+      assert.match(said, /the Concept Legal Task names the workflow other-flow, which the package does not carry and strut does not ship/);
+      assert.match(said, /the Concept Legal Task names the step artifacts\/dir, which the package does not carry/);
+    });
+
+    it("carries a page alone, without the pages under it, and the release's items say so", async () => {
+      const src = await graphStrut("source");
+      await page("Law", { description: "The law" });
+      await page("Contracts", { docs: "About contracts." }, "Law");
+      await page("Firm", { description: "The firm's own lessons" });
+      await page("House Rule", { docs: "Ours alone." }, "Firm");
+
+      const res = await src.app.request("/packages/build", json({ package: "openlaw/legal-desk", version: "1", concepts: ["Law"], conceptsAlone: ["Firm"] }));
+      const body = await res.text();
+      assert.equal(res.status, 201, body);
+      const built = JSON.parse(body) as { digest: string; files: string[] };
+      assert.deepEqual(built.files, ["concepts/concept-contracts.md", "concepts/concept-firm.md", "concepts/concept-law.md", "strut.yaml"], "Firm without House Rule");
+      // Firm's page here has a page the release does not: the package page starts it alone again.
+      const items = (await (await src.app.request(`/packages/openlaw/legal-desk/items?digest=${built.digest}`)).json()) as { items: Array<{ kind: string; name: string; alone?: true }> };
+      assert.deepEqual(items.items, [
+        { kind: "concept", name: "Contracts" },
+        { kind: "concept", name: "Firm", alone: true },
+        { kind: "concept", name: "Law" },
+      ]);
+    });
+
     it("writes the pages under a Concept and the step's claims that stay inside, and installs on a cleared graph and on a filesystem", async () => {
       const src = await graphStrut("source");
       await publishLinear(src.workspace);
+      await src.workspace.setWorkflowCategory("acme/linear/sync", "linear");
       await src.workspace.publishStep("local/judge", PLAIN("local/judge"));
       await src.rebuildRegistry();
       await page("Linear", { description: "The tracker", docs: "How Linear works here." }, "Job");
@@ -689,6 +779,7 @@ for (const tb of testBackends()) {
       const buyer = await graphStrut("buyer");
       const onGraph = await roundTrip(buyer, built.dir);
       assert.deepEqual(onGraph.warnings, []);
+      assert.equal((await buyer.workspace.getWorkflowMetadata("acme/linear/sync"))?.category, "linear", "the StrutWorkflow node's category");
       const linear = await conceptRef("Linear");
       const parents = await backend.tx((tx) => backend.edgeEngine.liveEdgesOf(tx, linear!, "PARENT_OF", false));
       assert.deepEqual(parents?.edges.map((e) => e.other), [await conceptRef("Job")]);

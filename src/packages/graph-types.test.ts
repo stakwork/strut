@@ -10,6 +10,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createStrut, type Strut } from "../createStrut.js";
+import { seedJarvisOntology } from "../graph/__fixtures__/jarvis-seed.js";
 import type { GraphBackend } from "../graph/backend.js";
 import { createNodeSchema } from "../graph/schema-crud.js";
 import { seedStrutDomain } from "../graph/schema-seed.js";
@@ -205,6 +206,57 @@ for (const tb of testBackends()) {
       const again = await install(buyer, `file:${built.dir}`);
       assert.equal(again.status, 201, JSON.stringify(again.body));
       assert.deepEqual(again.body.packages[0]!.items.map((i) => i.status), ["present", "present", "present"]);
+    });
+
+    // openlaw1's legal desk: types a jarvis graph holds under jarvis's domain
+    // anchors (`Content`, `Legal`), which declare no key of their own and
+    // inherit Thing's `thing-name`, installed on a graph strut alone holds
+    // (a self-hosted box on Neo4j, no jarvis).
+    it("exports types under jarvis's keyless parents, and installs them on a graph without jarvis", { skip: tb.kind === "neo4j" ? false : "jarvis's ontology is a Neo4j graph's" }, async () => {
+      await tb.wipe(source);
+      await seedJarvisOntology(source);
+      await seedStrutDomain(source);
+      source.schemas.invalidate();
+      const legal = ["Figure", "ContractClause", "DefinedTerm", "Excerpt", "Deadline", "DataAnomalyRecord", "Document", "LegalParty", "TimelineEntry", "Agreement", "Jurisdiction", "Regulation"];
+      const fig = { label: "Fee", matter_slug: "m1", source_ref: "msa.pdf", locator: "p1§2", value_as_stated: "$10" };
+      const writeDesk = async (g: GraphBackend) => {
+        const doc = (await g.nodes.write({ type: "Document", data: { source_link: "file://msa.pdf", title: "MSA" } }, "create")).ref_id;
+        const figure = (await g.nodes.write({ type: "Figure", data: fig }, "create")).ref_id;
+        const fees = (await g.nodes.write({ type: "Concept", data: { name: "Fees" } }, "create")).ref_id;
+        const flag = (await g.nodes.write({ type: "DataAnomalyRecord", data: { anomaly_type: "stale", field_name: "fee", source_doc_ref: "msa.pdf", detected_at: "2026-11-09T00:00:00Z", resolved: false } }, "create")).ref_id;
+        await g.edges.write({ edge: "EXTRACTED_FROM", source_ref_id: figure, target_ref_id: doc });
+        await g.edges.write({ edge: "FLAGS", source_ref_id: flag, target_ref_id: fees });
+        return { doc, figure };
+      };
+      await writeDesk(source);
+
+      const src = await strutOn(source, "source");
+      const built = await build(src, source, { types: legal });
+      assert.deepEqual(
+        built.files.filter((f) => f.startsWith("graph/")),
+        [...legal, "Content", "Legal"].sort().map((t) => `graph/${t}.yaml`),
+      );
+      // The anchors carry no key: Thing's prefix is not an attribute.
+      for (const anchor of ["Content", "Legal"]) {
+        const doc = loadYaml(await readFile(join(built.dir, `graph/${anchor}.yaml`), "utf-8")) as Record<string, unknown>;
+        assert.equal(doc["key_spec"], undefined, anchor);
+      }
+      assert.equal((loadYaml(await readFile(join(built.dir, "graph/Figure.yaml"), "utf-8")) as Record<string, unknown>)["key_spec"], "matter_slug-source_ref-locator");
+      assert.deepEqual((loadYaml(await readFile(join(built.dir, "graph/DataAnomalyRecord.yaml"), "utf-8")) as { edges: string[][] }).edges.filter(([, t]) => t === "Concept"), [["FLAGS", "Concept"]]);
+
+      // A graph strut alone holds: no jarvis ontology, strut's seed only.
+      const buyerGraph = await freshGraph();
+      assert.equal(await buyerGraph.schemas.resolveType("Legal"), null);
+      const buyer = await strutOn(buyerGraph, "buyer");
+      const r = await install(buyer, `file:${built.dir}`);
+      assert.equal(r.status, 201, JSON.stringify(r.body));
+      assert.equal(r.body.packages[0]!.items.filter((i) => i.kind === "type" && i.status === "installed").length, legal.length + 2);
+      assert.equal((await buyerGraph.schemas.schema("Document"))?.parent, "Content");
+      assert.equal((await buyerGraph.schemas.schema("Figure"))?.parent, "Legal");
+      // The children write, with their edges among them and to a Concept, and keep their keys.
+      const { figure } = await writeDesk(buyerGraph);
+      const again = await buyerGraph.nodes.write({ type: "Figure", data: { ...fig, label: "Fee (restated)" } }, "upsert");
+      assert.equal(again.ref_id, figure);
     });
 
     it("refuses a type the graph holds with another key, before anything is written", async () => {

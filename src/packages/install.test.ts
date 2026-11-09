@@ -512,7 +512,8 @@ for (const tb of testBackends()) {
       assert.deepEqual(await claims("step", "acme/linear/create-issue"), [["it reads its key", "acme/linear"]]);
       assert.deepEqual(await claims("workflow", "acme/linear/sync"), [["the sync creates an issue", "acme/linear"]]);
 
-      // An edit to one page in the graph is the person's: listed as modified, kept on uninstall.
+      // An edit to one page in the graph is the person's: listed as modified, kept on uninstall —
+      // and so is the page it hangs under, which would otherwise leave it with no parent.
       await backend.nodes.update((await conceptNode("Issues"))!.ref_id, { set: { docs: "Edited here." } });
       const [p] = await api.list();
       assert.deepEqual(p!.items.filter((i) => i.kind === "concept"), [
@@ -521,10 +522,14 @@ for (const tb of testBackends()) {
       ]);
       const out = await api.uninstall("acme/linear");
       assert.equal(out.status, 200, JSON.stringify(out.body));
-      assert.ok(out.body.removed.some((i) => i.kind === "concept" && i.name === "Linear"));
-      assert.deepEqual(out.body.kept, [{ kind: "concept", name: "Issues", reason: "edited here" }]);
-      assert.equal(await conceptNode("Linear"), undefined, "retired");
+      assert.ok(!out.body.removed.some((i) => i.kind === "concept"));
+      assert.deepEqual(out.body.kept, [
+        { kind: "concept", name: "Issues", reason: "edited here" },
+        { kind: "concept", name: "Linear", reason: "Issues hangs under it and stays, so it stays too" },
+      ]);
       assert.equal((await conceptNode("Issues"))?.docs, "Edited here.");
+      const under = await backend.tx(async (tx) => backend.edgeEngine.liveEdgesOf(tx, (await conceptNode("Linear"))!.ref_id, "PARENT_OF", true));
+      assert.deepEqual(under?.edges.map((e) => e.other), [(await conceptNode("Issues"))!.ref_id], "still under Linear");
     });
 
     it("installs a package of Concepts alone, lists it with its digest, and refuses a page someone else holds", async () => {
@@ -584,8 +589,12 @@ for (const tb of testBackends()) {
       await backend.nodes.update(task.ref_id, { set: { repo: "acme/other" } });
       assert.deepEqual((await api.list())[0]!.items.find((i) => i.name === "acme/linear"), { kind: "concept", name: "acme/linear", modified: true });
       const out = await api.uninstall("acme/code");
-      assert.deepEqual(out.body.kept, [{ kind: "concept", name: "acme/linear", reason: "edited here" }]);
-      assert.equal(await conceptNode("Linear"), undefined, "the untouched page is retired by its name, from its file's stamp");
+      assert.deepEqual(out.body.kept, [
+        { kind: "concept", name: "acme/linear", reason: "edited here" },
+        { kind: "concept", name: "Linear", reason: "acme/linear hangs under it and stays, so it stays too" },
+      ]);
+      assert.ok(await conceptNode("Linear"), "the untouched page stays: the edited one still hangs under it");
+      assert.deepEqual(await parents(), both);
     });
 
     it("updates a page the distro installed in the old form to the new one, under another file", async () => {
@@ -603,6 +612,56 @@ for (const tb of testBackends()) {
       assert.equal(after.ref_id, before.ref_id, "the same node");
       assert.match(after.unique_source_id, /^pkg\/acme\/ontology\/concept-issues\.md@/);
       assert.deepEqual((await api.list())[0]!.items, [{ kind: "concept", name: "Issues", modified: false }, { kind: "concept", name: "Linear", modified: false }]);
+    });
+
+    it("keeps a page this strut added pages under, and every page above it, through an update that drops it and an uninstall", async () => {
+      const v1 = {
+        "strut.yaml": "package: acme/legal\nversion: '1'\n",
+        "concepts/Firm.md": "---\ndescription: The firm's own lessons\n---\n",
+        "concepts/Law.md": "---\ndescription: The law\n---\nAbout the law.\n",
+        "concepts/Contracts.md": "---\ndescription: Contracts\nparent: Law\n---\nAbout contracts.\n",
+        "concepts/Old.md": "---\nparent: Law\n---\nGoing away.\n",
+      };
+      assert.equal((await strut.packages.install(`file:${await writeTree(v1)}`, { door: "distro" })).packages[0]!.status, "installed");
+      // This strut's own pages, under the package's root and under one of its pages.
+      const own = async (name: string, parent: string) => {
+        const { ref_id } = await backend.nodes.write({ type: "Concept", data: { name } }, "create");
+        await backend.edges.write({ edge: "PARENT_OF", source_ref_id: (await conceptNode(parent))!.ref_id, target_ref_id: ref_id });
+      };
+      await own("Our Rule", "Firm");
+      await own("Our Clause Note", "Contracts");
+      const parentOf = async (name: string) => {
+        const node = (await conceptNode(name))!;
+        const edges = await backend.tx((tx) => backend.edgeEngine.liveEdgesOf(tx, node.ref_id, "PARENT_OF", false));
+        return (edges?.edges ?? []).map((e) => e.other);
+      };
+
+      // A release that drops Contracts and Old: Old goes, Contracts stays with this strut's page under it.
+      const v2 = {
+        "strut.yaml": "package: acme/legal\nversion: '2'\n",
+        "concepts/Firm.md": v1["concepts/Firm.md"],
+        "concepts/Law.md": "---\ndescription: The law\n---\nAbout the law, now.\n",
+      };
+      const r = await strut.packages.install(`file:${await writeTree(v2)}`, { door: "distro" });
+      assert.deepEqual(r.packages[0]!.items.map((i) => [i.name, i.status, i.reason]), [
+        ["Contracts", "kept", "Our Clause Note hangs under it and stays, so it stays too"],
+        ["Firm", "present", undefined],
+        ["Law", "updated", undefined],
+        ["Old", "retired", undefined],
+      ]);
+      assert.equal(await conceptNode("Old"), undefined);
+      assert.deepEqual(await parentOf("Our Clause Note"), [(await conceptNode("Contracts"))!.ref_id]);
+      assert.deepEqual(await parentOf("Our Rule"), [(await conceptNode("Firm"))!.ref_id], "the root this strut added a page under is as it was");
+
+      // The uninstall: every page with this strut's pages under it stays, and Law above Contracts.
+      const out = await strut.packages.uninstall("acme/legal", { door: "distro" });
+      assert.deepEqual(out.removed.filter((i) => i.kind === "concept"), []);
+      const kept = out.kept.filter((i) => i.kind === "concept");
+      assert.deepEqual(kept.map((i) => i.name).sort(), ["Contracts", "Firm", "Law"]);
+      assert.equal(kept.find((i) => i.name === "Firm")?.reason, "Our Rule hangs under it and stays, so it stays too");
+      assert.deepEqual(await parentOf("Our Rule"), [(await conceptNode("Firm"))!.ref_id]);
+      assert.deepEqual(await parentOf("Our Clause Note"), [(await conceptNode("Contracts"))!.ref_id]);
+      assert.deepEqual(await parentOf("Contracts"), [(await conceptNode("Law"))!.ref_id]);
     });
 
     it("updates Concepts through the distro's door: an untouched page follows, an edited one is left, a dropped one is retired", async () => {

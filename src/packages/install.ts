@@ -52,7 +52,9 @@ import { declaredAttributes, findConcept, parseConceptFile, retireConcepts, seed
 import type { SecretsCapability } from "../capabilities.js";
 import type { Step, StepRegistry } from "../core.js";
 import { hasTemplates } from "../expr.js";
+import type { GraphBackend } from "../graph/backend.js";
 import type { SubjectRef } from "../graph/claims.js";
+import type { NodeSchema } from "../graph/schema-resolver.js";
 import { isSealedStep, sealedStepPatterns } from "../sealed.js";
 import { formatStepLint, lintStepSource } from "../step-lint.js";
 import { baseType } from "../step-ref.js";
@@ -282,12 +284,16 @@ async function installSet(
           continue;
         }
         const text = await readFile(join(m.info.dir, item.path), "utf-8");
-        const description = (loadYaml(text) as { description?: unknown } | null)?.description;
+        const head = loadYaml(text) as { description?: unknown; category?: unknown } | null;
+        // The category the package's workflows may be found by (a planner's
+        // `category:` query): set with a version the package makes active,
+        // never on a fork beside which the release is only recorded.
+        const category = typeof head?.category === "string" && head.category && plan.action !== "diverge" ? head.category : undefined;
         const { version } = await deps.workspace.publishWorkflowByContent(
           item.name,
           text,
-          typeof description === "string" ? description : undefined,
-          undefined,
+          typeof head?.description === "string" ? head.description : undefined,
+          category,
           undefined,
           options(m, plan),
         );
@@ -372,7 +378,10 @@ async function installSet(
     const pages = retiring.filter((r) => r.go && r.item.kind === "concept");
     if (pages.length && deps.graph) {
       const schema = await deps.graph.schemas.schema("Concept");
-      for (const [pkg, names] of groupBy(pages)) {
+      for (const [pkg, all] of groupBy(pages)) {
+        const held = schema ? await heldPages(deps.graph, schema, all) : new Map<string, string>();
+        for (const [name, under] of held) reports.get(pkg)!.push({ kind: "concept", name, status: "kept", reason: keptFor(under) });
+        const names = all.filter((n) => !held.has(n));
         const files = new Map((await packageConcepts(deps.graph, pkg)).map((c) => [c.name, c.file]));
         const gone = schema ? new Set(await retireConcepts(deps.graph, schema, { dir: "", prefix: conceptPrefix(pkg) }, names.flatMap((name) => (files.has(name) ? [{ name, file: files.get(name)! }] : [])))) : new Set<string>();
         for (const name of names) {
@@ -962,8 +971,51 @@ export async function uninstallPackage(
       if (i.modified === false && files.has(i.name)) retire.push({ name: i.name, file: files.get(i.name)! });
       else result.kept.push({ kind: "concept", name: i.name, reason: i.modified ? "edited here" : "its file is not in the package cache, so an edit cannot be told apart" });
     }
+    const held = schema ? await heldPages(deps.graph, schema, retire.map((r) => r.name)) : new Map<string, string>();
+    for (const [name, under] of held) result.kept.push({ kind: "concept", name, reason: keptFor(under) });
+    retire.splice(0, retire.length, ...retire.filter((r) => !held.has(r.name)));
     const retired = schema ? new Set(await retireConcepts(deps.graph, schema, { dir: "", prefix: conceptPrefix(pkg) }, retire)) : new Set<string>();
     for (const name of pages.map((i) => i.name).filter((n) => retired.has(n))) result.removed.push({ kind: "concept", name });
   }
   return result;
+}
+
+/** Why a page that would go stays: a page that is not going hangs under it. */
+const keptFor = (under: string) => `${under} hangs under it and stays, so it stays too`;
+
+/**
+ * The pages among `names` that must stay although they would go: one with a
+ * page under it (`PARENT_OF`) that is not going — a page this strut added
+ * under the package's root, a page of the package kept as edited — and,
+ * through it, every page above one that stays. Retiring a page deletes its
+ * edges, which would leave those pages with no parent. Name → the page
+ * under it that holds it.
+ */
+async function heldPages(graph: GraphBackend, schema: NodeSchema, names: readonly string[]): Promise<Map<string, string>> {
+  const children = new Map<string, string[]>();
+  for (const name of names) {
+    const node = await findConcept(graph, schema, name);
+    if (!node || node.deleted) continue;
+    children.set(
+      name,
+      await graph.tx(async (tx) => {
+        const edges = (await graph.edgeEngine.liveEdgesOf(tx, node.ref_id, "PARENT_OF", true))?.edges ?? [];
+        const raws = await Promise.all(edges.map((e) => graph.nodeEngine.readRaw(tx, e.other)));
+        return raws.flatMap((r) => (r && r.props["deleted_at"] == null && r.props["is_deleted"] !== true ? [typeof r.props["name"] === "string" ? r.props["name"] : r.ref_id] : []));
+      }),
+    );
+  }
+  const going = new Set(children.keys());
+  const held = new Map<string, string>();
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const name of going) {
+      const stays = children.get(name)!.find((c) => !going.has(c));
+      if (stays === undefined) continue;
+      going.delete(name);
+      held.set(name, stays);
+      changed = true;
+    }
+  }
+  return held;
 }

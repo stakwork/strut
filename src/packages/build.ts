@@ -17,13 +17,16 @@
  *      `upstream`, recorded nowhere when it is the host's (a seed's,
  *      `source: "seed"` — strut's own `job` or `strut/views` — or one a
  *      service published, a `publisher` stamp other than the builder's
- *      `ai`: the installing strut must have it, and the install checks) —
+ *      `ai`: the installing strut must have it, and the install checks;
+ *      one strut itself does not seed everywhere — a host's seed, a
+ *      service's item — is a warning and `leftToInstaller`) —
  *      or under a SIBLING the request requires, a package built here whose
  *      cached copy holds it as it is now. Core and lib types are recorded
  *      nowhere.
  *   2. The helpers: every file a carried step imports by a relative path,
  *      at the same place beside it, and every `_` step under the prefix.
- *   3. The named Concepts and the pages under each (`PARENT_OF`), each a
+ *   3. The named Concepts and the pages under each (`PARENT_OF`) — or a
+ *      page named alone (`conceptsAlone`) without them — each a
  *      new-form page under its node key (`concepts/<key>.md`: its name,
  *      every attribute, every parent — plans/concept-history.md §2.1), and
  *      the named graph types with their parents and edges (./graph-types.ts).
@@ -49,10 +52,13 @@
  * the same workspace gives the same digest.
  */
 import { randomBytes } from "node:crypto";
+import { existsSync, readdirSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, posix } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { AppsCapability } from "../apps/apps.js";
 import { readBuildInfo } from "../apps/build.js";
+import { isFirstPartyName } from "../apps/files.js";
 import type { ClaimsAuthoring } from "../claims-authoring.js";
 import { claimSpecSchema, type ClaimsBlock } from "../claims-schemas.js";
 import { flowClosure, globToRegExp, type FlowClosure } from "../closure.js";
@@ -67,6 +73,7 @@ import { secretNamesIn } from "../reach.js";
 import type { SubflowResolver } from "../runner.js";
 import { isSealedStep, sealedStepPatterns } from "../sealed.js";
 import { baseType } from "../step-ref.js";
+import { isSystemWorkflow } from "../system-workflows.js";
 import { hashTree, treeFiles } from "../version.js";
 import { packagePrefixOf, type Upstream, type VersionSource, type WorkspaceStore } from "../workspace.js";
 import { dumpYaml, loadYaml } from "../yaml.js";
@@ -110,6 +117,9 @@ export interface BuildRequest {
   steps?: string[];
   /** Concept pages, each with the pages under it. */
   concepts?: string[];
+  /** Concept pages carried ALONE, without the pages under them: a root a
+   *  package's steps need (`Firm`) whose pages here are this strut's own. */
+  conceptsAlone?: string[];
   /** Graph types by name, each read off this graph's ontology with its
    *  parents and the edges among them, as `graph/<Type>.yaml`. */
   types?: string[];
@@ -135,6 +145,10 @@ export interface BuildResult {
    *  nothing. */
   dir: string;
   warnings: string[];
+  /** The workflows, steps and apps the closure reaches that the installing
+   *  strut must already have — a seed of this strut's host or a service's
+   *  item, never strut's own — each also a warning. */
+  leftToInstaller: LeftToInstaller[];
   /** Graph types and Concept roots the workflows' runs wrote and read, not
    *  named (./suggest.ts): what the package page offers to add. */
   suggested: Suggested;
@@ -169,11 +183,31 @@ interface Origin {
  *  one a service published. */
 const hosts = (o: Origin) => o.source === "seed" || (o.publisher !== undefined && o.publisher !== BUILDER_STAMP);
 
+/** What strut itself seeds on every server: the workflows it ships as
+ *  files (`src/workflows/<name>.yaml` — job, orchestrator, builder, the
+ *  browser, privacy and home-sync ones — and the system workflows) and the
+ *  apps under `strut/`. A host's seed (the mcp lab's) and a service's item
+ *  are not on every strut, so the build says so (`leftToInstaller`). */
+const STRUT_WORKFLOWS = (() => {
+  const dir = fileURLToPath(new URL("../workflows/", import.meta.url));
+  return new Set(existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith(".yaml")).map((f) => f.slice(0, -".yaml".length)) : []);
+})();
+const strutShips = (kind: Kind, name: string) =>
+  kind === "workflow" ? STRUT_WORKFLOWS.has(name) || isSystemWorkflow(name) : kind === "app" ? isFirstPartyName(name) : false;
+
+/** An item the closure reaches that this strut's host or a service put here. */
+export interface LeftToInstaller {
+  kind: Kind;
+  name: string;
+  /** The service stamp on it; none for a host's seed. */
+  publisher?: string;
+}
+
 /** `dryRun`: everything a build does — the closure, the refusals, the
  *  files and their digest — with nothing kept in the cache: what the
  *  package page shows as "comes along" while a person picks. */
 export async function buildPackage(deps: BuildDeps, req: BuildRequest, opts: { dryRun?: boolean } = {}): Promise<BuildResult> {
-  const { files, manifest, warnings, suggested } = await packageFiles(deps, req);
+  const { files, manifest, warnings, suggested, leftToInstaller = [] } = await packageFiles(deps, req);
   const pkg = manifest.package;
   // Written beside the cache, then in through it: the cache re-reads and hashes it.
   const scratch = join(deps.cache.root, ".build", randomBytes(8).toString("hex"));
@@ -185,10 +219,10 @@ export async function buildPackage(deps: BuildDeps, req: BuildRequest, opts: { d
     }
     if (opts.dryRun) {
       const info = await readPackage(scratch);
-      return { package: pkg, version: req.version, digest: info.digest, files: info.files, manifest, dir: "", warnings, suggested: suggested! };
+      return { package: pkg, version: req.version, digest: info.digest, files: info.files, manifest, dir: "", warnings, leftToInstaller, suggested: suggested! };
     }
     const info = await deps.cache.putDir(scratch);
-    return { package: pkg, version: req.version, digest: info.digest, files: info.files, manifest, dir: info.dir, warnings, suggested: suggested! };
+    return { package: pkg, version: req.version, digest: info.digest, files: info.files, manifest, dir: info.dir, warnings, leftToInstaller, suggested: suggested! };
   } finally {
     await rm(scratch, { recursive: true, force: true });
   }
@@ -206,6 +240,8 @@ export interface PackageFiles {
   warnings: string[];
   /** A build's: what the picked workflows' runs reach that it does not carry. */
   suggested?: Suggested;
+  /** A build's: what it leaves to the installing strut (`BuildResult`). */
+  leftToInstaller?: LeftToInstaller[];
 }
 
 /**
@@ -227,7 +263,7 @@ async function pickedFiles(deps: BuildDeps, req: BuildRequest): Promise<PackageF
   const pkg = req.package;
   if (typeof pkg !== "string" || !PACKAGE_NAME.test(pkg)) throw refused(["a package is named publisher/name: two lowercase segments, [a-z][a-z0-9-]*"]);
   if (typeof req.version !== "string" || !req.version) throw refused(["a package has a version, the publisher's label (1.4.0)"]);
-  if (!req.workflows?.length && !req.steps?.length && !req.concepts?.length && !req.apps?.length && !req.types?.length) throw refused(["name at least one workflow, step, Concept, app or graph type"]);
+  if (!req.workflows?.length && !req.steps?.length && !req.concepts?.length && !req.conceptsAlone?.length && !req.apps?.length && !req.types?.length) throw refused(["name at least one workflow, step, Concept, app or graph type"]);
 
   const prefix = `${pkg}/`;
   const under = (name: string) => name.startsWith(prefix);
@@ -239,6 +275,7 @@ async function pickedFiles(deps: BuildDeps, req: BuildRequest): Promise<PackageF
   const custom = new Set(Object.keys(await deps.workspace.getActiveStepHashes()));
   const problems: string[] = [];
   const warnings = new Set<string>();
+  const left = new Map<string, LeftToInstaller>();
 
   const workflows = new Set<string>();
   const steps = new Set<string>();
@@ -300,7 +337,10 @@ async function pickedFiles(deps: BuildDeps, req: BuildRequest): Promise<PackageF
   // package's is a pin at the digest it was installed at, anything else is
   // refused — a package carries its own prefix and nobody else's items.
   const outside = async (kind: Kind, name: string, o: Origin, by: string) => {
-    if (hosts(o)) return;
+    if (hosts(o)) {
+      if (!strutShips(kind, name)) left.set(`${kind} ${name}`, { kind, name, ...(o.publisher ? { publisher: o.publisher } : {}) });
+      return;
+    }
     const up = o.upstream;
     const sibling = siblings.get(packagePrefixOf(name) ?? "");
     if (sibling && (!up || up.package !== sibling.manifest.package)) {
@@ -554,7 +594,11 @@ async function pickedFiles(deps: BuildDeps, req: BuildRequest): Promise<PackageF
       problems.push(`the workflow ${name}'s name: line could not be written as ${prefix}${rel(name)} — give it a plain top-level name: line`);
       continue;
     }
-    files.set(`workflows/${rel(name)}.yaml`, stamped);
+    // Its category travels in its YAML, where the install reads it as it
+    // reads `description:` (a strut that does not read it ignores the key).
+    const categorized = meta.category ? stampWorkflowCategory(stamped, meta.category) : stamped;
+    if (categorized === null) warnings.add(`the workflow ${name}'s category ${meta.category} could not be written into its YAML: it installs with none`);
+    files.set(`workflows/${rel(name)}.yaml`, categorized ?? stamped);
   }
   for (const type of [...steps].sort()) {
     const src = await deps.workspace.getStepSource(type);
@@ -577,9 +621,22 @@ async function pickedFiles(deps: BuildDeps, req: BuildRequest): Promise<PackageF
 
   // 3. Concepts, and 4. the steps' claims.
   const pageNames = new Set<string>(); // the Concepts carried, by name (a file is named by its key)
-  if (req.concepts?.length) {
+  if (req.concepts?.length || req.conceptsAlone?.length) {
     const siblingPages = new Set([...siblings.values()].flatMap((p) => p.items.filter((i) => i.kind === "concept").map((i) => i.name)));
-    for (const [file, page] of await conceptFiles(deps.graph, req.concepts, pkg, [...pins.keys()], siblingPages, problems, warnings)) {
+    // A page that tells an agent to run a carried workflow or step names it
+    // as the installing strut will have it, under the prefix: `job` and the
+    // orchestrator run under no package, so a bare name finds nothing there.
+    const carriedNames = new Map<string, string>();
+    for (const name of [...workflows, ...[...steps].filter((t) => !isHelperName(t))]) if (!under(name)) carriedNames.set(name, `${prefix}${rel(name)}`);
+    const pinned = [...pins.keys()];
+    const others = new Map<string, "workflow" | "step">();
+    for (const w of await deps.workspace.listWorkflows()) {
+      if (!workflows.has(w.name) && !strutShips("workflow", w.name) && !pinned.some((p) => w.name.startsWith(`${p}/`))) others.set(w.name, "workflow");
+    }
+    for (const t of custom) if (!steps.has(t) && !isHelperName(t) && !pinned.some((p) => t.startsWith(`${p}/`))) others.set(t, "step");
+    const names: PageNames = { rename: renamer(carriedNames), others: (text) => [...namesIn(text, [...others.keys()])].map((n) => ({ kind: others.get(n)!, name: n })) };
+    const named = { subtree: req.concepts ?? [], alone: req.conceptsAlone ?? [] };
+    for (const [file, page] of await conceptFiles(deps.graph, named, pkg, [...pins.keys()], siblingPages, problems, warnings, names)) {
       files.set(file, page.text);
       pageNames.add(page.name);
     }
@@ -650,7 +707,12 @@ async function pickedFiles(deps: BuildDeps, req: BuildRequest): Promise<PackageF
     ...(Object.keys(requires).length ? { requires } : {}),
   };
   files.set(MANIFEST_FILE, dumpYaml(manifest));
-  return { files, manifest, warnings: [...warnings], suggested };
+  // What the package leaves to the installing strut beyond strut's own: said, never refused.
+  const leftToInstaller = [...left.values()].sort((a, b) => a.name.localeCompare(b.name) || a.kind.localeCompare(b.kind));
+  for (const l of leftToInstaller) {
+    warnings.add(`the ${l.kind} ${l.name} is left to the installing strut (${l.publisher ? `published here by ${l.publisher}` : "seeded here by this strut's host"}): a strut without it cannot install or run what reaches it`);
+  }
+  return { files, manifest, warnings: [...warnings], suggested, leftToInstaller };
 }
 
 /** Is a check inside the package and its requirements? The reason it is
@@ -753,12 +815,13 @@ async function stepClaims(claims: Pick<ClaimsAuthoring, "reader">, type: string,
  *  package. */
 async function conceptFiles(
   graph: GraphBackend | undefined,
-  names: string[],
+  named: { subtree: readonly string[]; alone: readonly string[] },
   pkg: string,
   pins: string[],
   siblingPages: Set<string>,
   problems: string[],
   warnings: Set<string>,
+  said: PageNames = { rename: (t) => t, others: () => [] },
 ): Promise<Map<string, { name: string; text: string }>> {
   const out = new Map<string, { name: string; text: string }>();
   const schema = graph ? await graph.schemas.schema("Concept") : undefined;
@@ -769,10 +832,15 @@ async function conceptFiles(
   const known = [STRUT_CONCEPTS.prefix, ...(STRUT_CONCEPTS.legacyPrefixes ?? []), ...pins.map(conceptPrefix)];
   const pages = new Map<string, { props: Record<string, unknown>; parents: Array<{ name: string; stamp: unknown }> }>();
   const queue: string[] = [];
-  for (const name of names) {
+  // A page named alone brings none of the pages under it, whichever way it is reached.
+  const alone = new Set<string>();
+  for (const name of [...named.subtree, ...named.alone]) {
     const node = await findConcept(graph, schema, name);
     if (!node || node.deleted) problems.push(`no Concept ${name} in the graph`);
-    else queue.push(node.ref_id);
+    else {
+      queue.push(node.ref_id);
+      if (named.alone.includes(name)) alone.add(node.ref_id);
+    }
   }
   const seen = new Set<string>();
   while (queue.length) {
@@ -798,14 +866,20 @@ async function conceptFiles(
     }
     if (pages.has(name)) continue;
     pages.set(name, { props: p, parents });
-    for (const child of children) queue.push(child);
+    if (!alone.has(ref)) for (const child of children) queue.push(child);
   }
   for (const [name, page] of pages) {
     for (const parent of page.parents) {
       if (pages.has(parent.name) || siblingPages.has(parent.name) || (typeof parent.stamp === "string" && known.some((k) => (parent.stamp as string).startsWith(k)))) continue;
       warnings.add(`the Concept ${name} hangs under ${parent.name}, which is not in the package: the strut that installs it must have a Concept ${parent.name}`);
     }
-    const file = conceptPageFile(schema, page.props, page.parents.map((x) => x.name));
+    // Its docs and description name the carried workflows and steps as packaged.
+    const props = { ...page.props };
+    for (const k of ["description", "docs"]) if (typeof props[k] === "string") props[k] = said.rename(props[k] as string);
+    for (const o of said.others(`${typeof props["description"] === "string" ? props["description"] : ""}\n${typeof props["docs"] === "string" ? props["docs"] : ""}`)) {
+      warnings.add(`the Concept ${name} names the ${o.kind} ${o.name}, which the package does not carry and strut does not ship: a strut without it finds nothing by that name`);
+    }
+    const file = conceptPageFile(schema, props, page.parents.map((x) => x.name));
     if (file) out.set(`concepts/${file.key}.md`, { name, text: file.text });
   }
   return out;
@@ -1018,6 +1092,46 @@ async function appSources(
   return { dir, files };
 }
 
+/** How a carried page speaks of workflows and steps: `rename` writes each
+ *  carried one under the prefix, `others` lists the ones it names that the
+ *  package does not carry. */
+interface PageNames {
+  rename(text: string): string;
+  others(text: string): Array<{ kind: "workflow" | "step"; name: string }>;
+}
+
+/** A character a workflow or step name holds around its own: a name in
+ *  text is one only where neither neighbour is one of these. */
+const NAME_CHAR = "A-Za-z0-9_/\\-";
+
+/** Where `names` stand in text as names: a name with a `-`, `_` or `/` as a
+ *  whole token (`legal-task-run`, not `legal-task-run-v2` nor
+ *  `acme/legal-task-run`); a one-word name (`tidy`) only as a whole code
+ *  span, `` `tidy` ``, so prose keeps its words. Longest first. */
+function namePattern(names: readonly string[]): RegExp | null {
+  const sorted = [...new Set(names)].filter(Boolean).sort((a, b) => b.length - a.length || a.localeCompare(b));
+  const word = (n: string) => /^[A-Za-z0-9]+$/.test(n);
+  const compound = sorted.filter((n) => !word(n)).map(escapeRe);
+  const plain = sorted.filter(word).map(escapeRe);
+  const alts = [
+    ...(compound.length ? [`(?<![${NAME_CHAR}])(?:${compound.join("|")})(?![${NAME_CHAR}])`] : []),
+    ...(plain.length ? [`(?<=\`)(?:${plain.join("|")})(?=\`)`] : []),
+  ];
+  return alts.length ? new RegExp(alts.join("|"), "g") : null;
+}
+
+/** Rewrites each name in `to`'s keys as its value, where it stands as a name. */
+export function renamer(to: ReadonlyMap<string, string>): (text: string) => string {
+  const re = namePattern([...to.keys()]);
+  return (text) => (re ? text.replace(re, (m) => to.get(m) ?? m) : text);
+}
+
+/** The names among `names` that stand in `text` as names. */
+export function namesIn(text: string, names: readonly string[]): Set<string> {
+  const re = namePattern(names);
+  return new Set(re ? text.match(re) ?? [] : []);
+}
+
 /** A workflow's text with its top-level `name:` line written as `full`, or
  *  null when there is no plain one to write (the rest of the text as it is). */
 export function stampWorkflowName(text: string, full: string): string | null {
@@ -1025,6 +1139,30 @@ export function stampWorkflowName(text: string, full: string): string | null {
   if (!line.test(text)) return null;
   const out = text.replace(line, `name: ${full}`);
   return (loadYaml(out) as { name?: unknown } | null)?.name === full ? out : null;
+}
+
+/** A workflow's text with a top-level `category:` line saying `category`
+ *  — the one it has, rewritten, else one after its `name:` line (or first)
+ *  — or null when the text would read as anything else besides. */
+export function stampWorkflowCategory(text: string, category: string): string | null {
+  const line = dumpYaml({ category }).trimEnd();
+  if (line.includes("\n")) return null;
+  const own = /^category:[^\n]*$/m;
+  const name = /^name:[^\n]*$/m.exec(text);
+  const out = own.test(text)
+    ? text.replace(own, line)
+    : name
+      ? `${text.slice(0, name.index + name[0].length)}\n${line}${text.slice(name.index + name[0].length)}`
+      : `${line}\n${text}`;
+  try {
+    const before = loadYaml(text) as Record<string, unknown> | null;
+    const after = loadYaml(out) as Record<string, unknown> | null;
+    if (!before || !after || after["category"] !== category) return null;
+    const rest = (o: Record<string, unknown>) => JSON.stringify(Object.entries(o).filter(([k]) => k !== "category"));
+    return rest(before) === rest(after) ? out : null;
+  } catch {
+    return null;
+  }
 }
 
 /** A step's source with each `type: "<from>"` literal written as `to`, or
