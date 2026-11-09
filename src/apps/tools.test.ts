@@ -10,7 +10,7 @@ import { defineStep, withMessages, type StepContext, type StepRegistry } from ".
 import type { StrutCapabilities } from "../capabilities.js";
 import { FileWorkspaceStore } from "../workspace.js";
 import { MemoryRunStore } from "../store.js";
-import { appIdentity, appOfIdentity, fileToken } from "../auth.js";
+import { appIdentity, appOfIdentity, fileToken, personToken } from "../auth.js";
 import { kitForTests } from "../test-util/app-kit.js";
 import { testBackends } from "../graph/test-util.js";
 import type { GraphBackend } from "../graph/backend.js";
@@ -607,7 +607,8 @@ describe("step_run — the app door", () => {
     }
     const called = await rpc("/mcp", "tools/call", { name: STEP_RUN_TOOL, arguments: { type: "whoami", config: {}, app: identity } });
     assert.equal(called.result.isError, undefined, JSON.stringify(called));
-    assert.deepEqual(called.result.structuredContent, { app: { name: "bench", version: "v1" }, actor: "viewer", principal: "viewer" });
+    // The key is an admin's scope: the page's viewer is an admin here (`AppRef.admin`).
+    assert.deepEqual(called.result.structuredContent, { app: { name: "bench", version: "v1", admin: true }, actor: "viewer", principal: "viewer" });
     assert.deepEqual(JSON.parse(called.result.content[0].text), called.result.structuredContent);
     const list = await rpc("/mcp/builder", "tools/call", { name: STEP_RUN_TOOL, arguments: { type: "run/list", config: { workflow: "echo-app" }, app: identity } });
     assert.ok(Array.isArray(JSON.parse(list.result.content[0].text)), "an array result rides as text");
@@ -617,6 +618,40 @@ describe("step_run — the app door", () => {
     const failed = await rpc("/mcp", "tools/call", { name: STEP_RUN_TOOL, arguments: { type: "run/get", config: { workflow: "score-wf", runId: "nope" }, app: identity } });
     assert.equal(failed.result.isError, true);
     assert.match(JSON.parse(failed.result.content[0].text).error, /not found/);
+  });
+
+  it("the viewer is an admin only on full scope: an admin's session is, a member's session and a person token are not (plans/member-rights.md)", async () => {
+    const json = { "content-type": "application/json" };
+    const appOn = async (headers: Record<string, string>) => {
+      const res = await strut.app.request("/mcp", {
+        method: "POST",
+        headers: { ...json, accept: "application/json, text/event-stream", ...headers },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: STEP_RUN_TOOL, arguments: { type: "whoami", config: {}, app: identity } } }),
+      });
+      const text = await res.text();
+      assert.equal(res.status, 200, text);
+      return sseResult(text).result.structuredContent as { app: Record<string, unknown>; actor: string };
+    };
+    const session = async (actor: string, role: "admin" | "member") => {
+      const minted = await strut.app.request("/auth/ticket", { method: "POST", headers: { ...json, ...auth }, body: JSON.stringify({ actor, role }) });
+      const { ticket } = (await minted.json()) as { ticket: string };
+      const traded = await strut.app.request("/auth/session", { method: "POST", headers: { ...json, "x-strut-ui": "1" }, body: JSON.stringify({ ticket }) });
+      assert.equal(traded.status, 200);
+      return { cookie: traded.headers.get("set-cookie")!.split(";")[0]!, "x-strut-ui": "1" };
+    };
+    const admin = await appOn(await session("ada", "admin"));
+    assert.deepEqual([admin.actor, admin.app["admin"]], ["ada", true]);
+    const member = await appOn(await session("mo", "member"));
+    assert.deepEqual([member.actor, member.app["admin"]], ["mo", undefined]);
+    const peerKey = process.env["STRUT_PEER_KEY"];
+    process.env["STRUT_PEER_KEY"] = "apps-door-peer";
+    try {
+      const person = await appOn({ authorization: `Bearer ${personToken("pat")!.token}` });
+      assert.deepEqual([person.actor, person.app["admin"]], ["pat", undefined]);
+    } finally {
+      if (peerKey === undefined) delete process.env["STRUT_PEER_KEY"];
+      else process.env["STRUT_PEER_KEY"] = peerKey;
+    }
   });
 
   it("every call is counted per app: GET /apps/:name/usage, a warning on the version that caused it, its count on GET /apps, the brief on app/get", async () => {

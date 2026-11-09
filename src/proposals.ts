@@ -55,6 +55,11 @@ export interface Proposal {
   /** What the person decides on, as data (src/proposal-card.ts), computed
    *  once at proposal time. Records from before it have none. */
   card?: ProposalCard;
+  /** Who may accept it, copied from the step at proposal time
+   *  (`StepDef.approver`): `admin` — only an admin of this strut server, so
+   *  a host draws "an admin must approve this" in place of Accept for
+   *  anyone else. Absent: whoever may decide it. */
+  approver?: "admin";
   status: ProposalStatus;
   createdAt: string;
   /** Who proposed it. `conversation` is the thread the work belongs to,
@@ -75,6 +80,7 @@ export interface ProposalBrief {
   title: string;
   summary?: string;
   card?: ProposalCard;
+  approver?: "admin";
   status: ProposalStatus;
   url: string;
   rationale?: string;
@@ -82,7 +88,7 @@ export interface ProposalBrief {
   decidedAt?: string;
 }
 
-export type NewProposal = Pick<Proposal, "step" | "input" | "rationale" | "title" | "summary" | "card" | "by">;
+export type NewProposal = Pick<Proposal, "step" | "input" | "rationale" | "title" | "summary" | "card" | "approver" | "by">;
 
 export interface ProposalFilter {
   job?: string;
@@ -137,6 +143,7 @@ export function briefOf(p: Proposal): ProposalBrief {
     title: p.title,
     ...(p.summary ? { summary: p.summary } : {}),
     ...(p.card ? { card: p.card } : {}),
+    ...(p.approver ? { approver: p.approver } : {}),
     status: p.status,
     url: proposalUrl(p.id),
     ...(p.rationale ? { rationale: p.rationale } : {}),
@@ -340,6 +347,9 @@ export interface ProposalsCapability {
    *  applies it: what `proposal/decide` calls for a first-party page
    *  (plans/jamie-app.md §3). Set by the standard server. */
   decide?(id: string, decision: Decision): Promise<DecideOutcome>;
+  /** Is the person the run `runId` is for an ADMIN here, as its records
+   *  say (`adminStanding`)? Undefined when they do not say. */
+  personIsAdmin?(runId: string): Promise<boolean | undefined>;
 }
 
 export function proposalsCapability(
@@ -351,6 +361,9 @@ export function proposalsCapability(
     conversationOf?: (runId: string) => Promise<string | undefined>;
     /** Told of every new record: its `StrutProposal` and the proposal feed (createStrut). */
     changed?: (p: Proposal) => void;
+    /** Whether the person the run `runId` is for is an admin, read off its
+     *  records (createStrut): what a proposal only an admin accepts asks. */
+    personIsAdmin?: (runId: string) => Promise<boolean | undefined>;
   } = {},
 ): ProposalsCapability {
   const hostApprove = (deps.hostApprove ?? []).map(globToRegExp);
@@ -374,6 +387,7 @@ export function proposalsCapability(
       for (const id of ids) await updateProposal(root, id, (p) => void (p.reportedAt ??= at));
     },
     hostGates: (type) => hostApprove.some((re) => re.test(type)),
+    ...(deps.personIsAdmin ? { personIsAdmin: deps.personIsAdmin } : {}),
   };
 }
 
@@ -448,6 +462,16 @@ export async function proposeCall(
     const was = await cap.get(prior.proposal);
     if (was) return result(was);
   }
+  // Only an admin accepts it (`StepDef.approver`): a turn whose person is
+  // known not to be one proposes nothing — the person they would ask never
+  // sees it (`visibleTo`: a proposal shows where it was made), so it would
+  // wait forever. The model reads why and tells them to ask an admin.
+  if (def.approver === "admin" && (await adminStanding(ctx, cap)) === false) {
+    throw new Error(
+      `admin_required: ${stepType} is an admin's decision on this strut server, and the person this turn is for is not an admin here, so nothing was proposed. ` +
+        `Tell them in their words that an admin of this workspace does it, and to ask one.`,
+    );
+  }
   // The step's own words for the card (§7), read now, best effort.
   let described: ProposalDescription | undefined;
   if (def.describe) {
@@ -472,6 +496,7 @@ export async function proposeCall(
     title,
     ...(summary ? { summary } : {}),
     ...(card ? { card } : {}),
+    ...(def.approver ? { approver: def.approver } : {}),
     by: {
       workflow: workflowOf(ctx),
       runId: ctx.runId,
@@ -490,6 +515,17 @@ export async function proposeCall(
 }
 
 const result = (p: Proposal) => ({ proposal: p.id, status: p.status, step: p.step, title: p.title, url: proposalUrl(p.id) });
+
+/** Is the person the turn `ctx` is for an ADMIN of this strut server
+ *  (plans/member-rights.md)? A page's turn says (`ctx.app.admin`, the app
+ *  door's); any other asks the records (`personIsAdmin`: a peer's launch is
+ *  not one, a job's run asks the turn that started it). Undefined when
+ *  nothing says — a host's launch with the key, an automation — and the
+ *  decision decides. */
+export async function adminStanding(ctx: StepContext, cap: ProposalsCapability | undefined): Promise<boolean | undefined> {
+  if (ctx.app) return ctx.app.admin === true;
+  return cap?.personIsAdmin ? cap.personIsAdmin(ctx.runId).catch(() => undefined) : undefined;
+}
 
 /** `<agent path>#<call>` for a tool call (the agent's journal slice), else
  *  `<path>#propose`; undefined outside a run. */
@@ -512,6 +548,21 @@ export interface Decision {
    *  proposal its actor made; a plain `peer` decides none. Absent or `full`:
    *  unchanged. */
   scope?: Scope;
+  /** Is the decider an ADMIN of this strut server (plans/member-rights.md)?
+   *  Only an admin accepts a proposal of a step with `approver: "admin"`.
+   *  Default: the scope is `full` (or absent) — the deployment key, an
+   *  admin's session, a host's server with the key. A person token is not
+   *  one: it names a person, never their role here. `proposal/decide` says
+   *  it from the page's viewer (`AppRef.admin`), since it decides as
+   *  `peer:person` — the viewer's own proposals — whatever their role. */
+  admin?: boolean;
+}
+
+/** Why the decider may not ACCEPT `p` — only an admin accepts it, and they
+ *  are not one — or undefined. Rejecting is never refused for it. */
+export function acceptRefusal(p: Pick<Proposal, "step" | "title" | "approver">, def: Pick<AnyStepDef, "approver"> | undefined, admin: boolean): string | undefined {
+  if (admin || (def?.approver ?? p.approver) !== "admin") return undefined;
+  return `admin_required: only an admin of this strut server accepts "${p.title}" (${p.step}) — ask an admin of this workspace to accept it. You may still reject it.`;
 }
 
 export interface DecideDeps {
@@ -564,6 +615,12 @@ export async function decideProposal(root: string, id: string, decision: Decisio
   if (rec.status !== "pending" && rec.status !== "failed") return { status: 409, body: { error: `Proposal "${id}" is ${rec.status}`, proposal: rec } };
   // `stepFor` first: a name it answers for is never a registry step's.
   const def = (await deps.stepFor?.(rec.step)) ?? deps.registry[rec.step];
+  // Only an admin accepts it (`StepDef.approver`): the step's word now, else
+  // the record's, so neither a step that lost it nor a record from before
+  // it opens the door. Before anything is written: it stays as it was.
+  const admin = decision.admin ?? (decision.scope === undefined || decision.scope === "full");
+  const refused = acceptRefusal(rec, def, admin);
+  if (refused) return { status: 403, body: { error: refused, proposal: rec } };
   if (!def) return { status: 400, body: { error: `The step "${rec.step}" is not in this strut server's registry; the proposal cannot be applied.`, proposal: rec } };
   const merged = decision.input && typeof rec.input === "object" && rec.input !== null ? { ...(rec.input as object), ...decision.input } : decision.input ?? rec.input;
   let input: unknown;

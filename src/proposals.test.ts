@@ -430,6 +430,57 @@ describe("proposals", () => {
       for (const p of made) assert.ok(listed.includes(p.id), `${p.by.workflow}'s proposal is listed to ann's device`);
     });
 
+    it("a proposal only an admin accepts: a person token's own accept is refused (admin_required), the full key's applies", async () => {
+      let installed = 0;
+      const install = defineStep({ type: "dev/install", approver: "admin", input: z.object({ name: z.string() }), output: z.any(), async run() { return { installed: ++installed }; } });
+      await boot({ registry: await createRegistry([write, install]) });
+      const bag = strut.services as unknown as { proposals: ReturnType<typeof proposalsCapability> };
+      const p = await bag.proposals.propose({ step: "dev/install", input: { name: "pkg" }, title: "Install pkg.", approver: "admin", by: { workflow: "wf", runId: "r1", path: "wf/t", actor: "ann", session: "ann/c1" } });
+      const refused = await decide(p.id, personToken("ann")!.token);
+      assert.equal(refused.status, 403);
+      assert.match(((await refused.json()) as { error: string }).error, /^admin_required: /);
+      assert.equal((await readProposal(root(), p.id))!.status, "pending");
+      assert.equal(installed, 0);
+      // The record says so wherever a host reads it: whole, and in the run's briefs.
+      assert.equal(((await (await req(`/proposals/${p.id}`, "api")).json()) as Proposal).approver, "admin");
+      const briefs = (await (await req("/workflows/wf/runs/r1/proposals", "api")).json()) as { proposals: Array<{ id: string; approver?: string }> };
+      assert.equal(briefs.proposals.find((b) => b.id === p.id)?.approver, "admin");
+      const applied = await decide(p.id, "api", "evan");
+      assert.equal(applied.status, 200);
+      assert.equal(((await applied.json()) as Proposal).status, "applied");
+      assert.equal(installed, 1);
+    });
+
+    it("a turn's records say whether its person is an admin: a peer's launch and a job it started are not; a launch with the key says nothing", async () => {
+      const seen: Array<[string, boolean | undefined]> = [];
+      const standing = defineStep({
+        type: "dev/standing",
+        input: z.object({ startJob: z.boolean().default(false) }),
+        output: z.any(),
+        async run(cfg, c) {
+          const bag = c.services as { proposals: ReturnType<typeof proposalsCapability>; jobs: { launch(o: unknown): Promise<unknown> } };
+          seen.push([c.workflow ?? "", await bag.proposals.personIsAdmin!(c.runId)]);
+          if (cfg.startJob) await bag.jobs.launch({ job: `j-${c.runId}`, workflow: "job", input: {}, from: c.runId, ...(c.actor ? { actor: c.actor } : {}) });
+          return {};
+        },
+      });
+      await boot({ registry: await createRegistry([write, standing]) });
+      await strut.workspace.publishWorkflow("turn", "v1", "name: turn\npeer: true\nsteps:\n  - id: s\n    type: dev/standing\n    config: { startJob: true }\n");
+      await strut.workspace.publishWorkflow("job", "v1", { steps: [{ id: "s", type: "dev/standing", config: {} }] });
+      const wait = async (n: number) => {
+        for (let i = 0; i < 200 && seen.length < n; i++) await new Promise((r) => setTimeout(r, 20));
+        assert.equal(seen.length, n, JSON.stringify(seen));
+      };
+      const launched = await req("/workflows/turn/run", "peer", { actor: "ann", body: { input: {} } });
+      assert.equal(launched.status, 202, await launched.clone().text());
+      await wait(2);
+      assert.deepEqual(seen.splice(0), [["turn", false], ["job", false]]);
+      const keyed = await req("/workflows/turn/run", "api", { actor: "evan", body: { input: {} } });
+      assert.equal(keyed.status, 202);
+      await wait(2);
+      assert.deepEqual(seen.splice(0), [["turn", undefined], ["job", undefined]]);
+    });
+
     it("a proposal with no creator can be decided by no person token", async () => {
       await boot();
       const bag = strut.services as unknown as { proposals: ReturnType<typeof proposalsCapability> };
@@ -456,6 +507,100 @@ describe("proposals", () => {
       assert.deepEqual(await idsOf("/workflows/wf/runs/r1/proposals", "lab-jwt:ann"), [ids.ann]);
       assert.equal((await decide(ids.ann, "lab-jwt:ann")).status, 200);
       assert.equal((await decide(ids.ann, "lab-jwt:ann")).status, 409);
+    });
+  });
+
+  describe("only an admin accepts (`approver: admin`, plans/member-rights.md)", () => {
+    /** A step only an admin of this strut accepts — what package/install is. */
+    let installed: string[] = [];
+    const install = defineStep({
+      type: "dev/install",
+      description: "Install a thing.",
+      approver: "admin",
+      input: z.object({ name: z.string() }),
+      output: z.any(),
+      async run(cfg) {
+        installed.push(cfg.name);
+        return { installed: cfg.name };
+      },
+    });
+    const both = { ...registry, "dev/install": install };
+    const deps = () => ({ registry: both, services: {} });
+    const by = { workflow: "wf", runId: "r1", path: "wf/turn/001-dev_install", actor: "ann", session: "ann/c1" };
+    beforeEach(() => void (installed = []));
+
+    it("a member's or a person token's accept is refused, the proposal left as it was; their reject goes through", async () => {
+      const p = await cap().propose({ step: "dev/install", input: { name: "pkg" }, title: "Install pkg.", approver: "admin", by });
+      for (const decision of [
+        { scope: "member" as const },
+        { scope: "peer:person" as const },
+        { scope: "full" as const, admin: false },
+      ]) {
+        const out = await decideProposal(root(), p.id, { action: "accept", by: "ann", ...decision }, deps());
+        assert.equal(out.status, 403, JSON.stringify(decision));
+        assert.match((out.body as { error: string }).error, /^admin_required: only an admin of this strut server accepts "Install pkg\." \(dev\/install\)/);
+      }
+      const rec = (await readProposal(root(), p.id))!;
+      assert.equal(rec.status, "pending");
+      assert.equal(rec.decision, undefined);
+      assert.deepEqual(installed, []);
+      const rejected = await decideProposal(root(), p.id, { action: "reject", by: "ann", scope: "peer:person", reason: "not now" }, deps());
+      assert.equal((rejected.body as Proposal).status, "rejected");
+    });
+
+    it("an admin accepts: the full scope, no scope (in process), or a page whose viewer is one deciding their own", async () => {
+      for (const decision of [{ scope: "full" as const }, {}, { scope: "peer:person" as const, admin: true }]) {
+        const p = await cap().propose({ step: "dev/install", input: { name: JSON.stringify(decision) }, title: "Install.", by });
+        const out = await decideProposal(root(), p.id, { action: "accept", by: "ann", ...decision }, deps());
+        assert.equal((out.body as Proposal).status, "applied", JSON.stringify(decision));
+      }
+      assert.equal(installed.length, 3);
+    });
+
+    it("the step's word or the record's: a record from before the step said it, or a step that no longer says it, still needs an admin", async () => {
+      const older = await cap().propose({ step: "dev/install", input: { name: "a" }, title: "Install a.", by });
+      assert.equal(older.approver, undefined);
+      assert.equal((await decideProposal(root(), older.id, { action: "accept", by: "ann", scope: "peer:person" }, deps())).status, 403);
+      const marked = await cap().propose({ step: "dev/write", input: { name: "b" }, title: "Write b.", approver: "admin", by });
+      assert.equal((await decideProposal(root(), marked.id, { action: "accept", by: "ann", scope: "peer:person" }, deps())).status, 403);
+    });
+
+    it("any other gated step is unchanged: a member's page or a person token accepts its own", async () => {
+      const p = await cap().propose({ step: "dev/write", input: { name: "x" }, title: "Write.", by });
+      const out = await decideProposal(root(), p.id, { action: "accept", by: "ann", scope: "peer:person", admin: false }, deps());
+      assert.equal((out.body as Proposal).status, "applied");
+    });
+
+    it("a turn whose person is not an admin proposes nothing; an admin's records the step's approver for the card", async () => {
+      const gatedInstall = (c: StepContext) =>
+        buildRegistryTools(["dev/install"], both, c, (d: unknown) => d, { approve: new Set(["dev/install"]), session: "ann/c1" })["dev_install"] as Tool;
+      const page = { name: "strut/jamie", version: "v1", firstParty: true as const };
+      // A member's page (no `admin` on the app the door stamped).
+      const events: RunEvent[] = [];
+      await assert.rejects(
+        gatedInstall(ctx({ app: page, registry: both }, events)).execute({ name: "pkg" }, { strutToolPath: "wf/turn/001-dev_install" }),
+        /^Error: admin_required: dev\/install is an admin's decision on this strut server, and the person this turn is for is not an admin here, so nothing was proposed/,
+      );
+      assert.deepEqual(await listProposals(root()), []);
+      assert.deepEqual(events, [], "nothing journaled");
+      // An admin's page: proposed, and the record says who accepts it.
+      const out = (await gatedInstall(ctx({ app: { ...page, admin: true }, registry: both })).execute({ name: "pkg" }, { strutToolPath: "wf/turn/002-dev_install" })) as { proposal: string };
+      assert.equal((await readProposal(root(), out.proposal))!.approver, "admin");
+      // No page: the records say (createStrut's `personIsAdmin`) — a peer's launch is not one; nothing known, the decision decides.
+      for (const [standing, made] of [[false, false], [undefined, true], [true, true]] as const) {
+        const asked: string[] = [];
+        const c = ctx({ registry: both, services: { proposals: proposalsCapability(dir, { personIsAdmin: async (runId) => (asked.push(runId), standing) }) } });
+        const tool = gatedInstall(c);
+        const call = tool.execute({ name: `p-${standing}` }, { strutToolPath: `wf/turn/00${3 + Number(made)}-dev_install` });
+        if (made) assert.equal(((await call) as { status: string }).status, "pending");
+        else await assert.rejects(call, /admin_required:/);
+        assert.deepEqual(asked, ["r1"]);
+      }
+      // A step any person accepts never asks.
+      const asked: string[] = [];
+      const c = ctx({ services: { proposals: proposalsCapability(dir, { personIsAdmin: async (runId) => (asked.push(runId), false) }) } });
+      assert.equal(((await gated(c).execute({ name: "w" }, { strutToolPath: "wf/turn/009-dev_write" })) as { status: string }).status, "pending");
+      assert.deepEqual(asked, []);
     });
   });
 });

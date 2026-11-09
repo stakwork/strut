@@ -65,6 +65,21 @@ A member may **add** a secret, but never list, read, change or delete one.
 
 The same box serves admins too, so nobody needs the console for this.
 
+## Installing a package is an admin's
+
+Built 2026-11-09. A member may ask Jamie for a package, but only an admin installs one. A member's accept through Jamie used to install it, because `proposal/decide` decided as a person token whatever the viewer's role.
+
+- **The step says it.** `StepDef.approver: "admin"` (`src/core.ts`): only an admin accepts a proposal of the step. `package/install` sets it. The record and its brief copy it (`approver`), so a host can draw the card right.
+- **Who is an admin.** A decider with full scope: the deployment key, a key login, an admin's session, or a host's server with the key (Hive decides with the swarm key). A member's session is not. Neither is a person token (`peer:person`), which names a person but never their role here. The safe default is "not an admin".
+- **The decision.** `decideProposal` refuses an accept from anyone else with `403 admin_required: …`, and the proposal stays pending. A reject is still open to the proposer. The HTTP route takes it from its scope. The app door stamps `AppRef.admin` when the connection holds full scope, and `proposal/decide` passes it on.
+- **Before anyone clicks.** A turn whose person is known not to be an admin proposes nothing: the gated call fails with `admin_required:`, so the model tells them to ask an admin. A proposal shows only where it was made (`visibleTo`), so in a member's thread it would wait for an admin who never sees it. Known means:
+  - a turn strut's own app launched for a viewer who is not an admin;
+  - a peer's launch, such as a Peel hand-off;
+  - a job's run or a wake that one of those started.
+
+  Any other turn proposes as before, and the decision decides. Jamie's card reads `viewer.admin` from `proposal/get`. A viewer who is not an admin sees "An admin must approve this" in place of Accept, and the pill reads "Waiting on an admin".
+- **Peel.** Peel decides an org's proposals with a person token (`HivePeer.decide`). It reads a 403 as "You can't decide this one here". Its hand-offs now propose no install, so that card never shows there.
+
 ## The contract
 
 - **The ticket.** `POST /auth/ticket { actor, role?: "admin" | "member" }`, using stadeum's own words. With no role, the person is a member. Stadeum is the only caller, so its one-line change lands the same day.
@@ -103,5 +118,6 @@ It is not a sandbox. The builder runs code on the box (`src/workflows/builder.ya
 - **Holding apps for an admin's yes.** A change goes live as today, and an admin can make an older version live from Organisation → Apps.
 - **Admin-only apps.** Admin tasks belong on stadeum's admin pages.
 - **Blocking strut's own keys by name.** A custom step reads them from memory anyway.
-- **Peel and Hive's person tokens.** A separate system.
+- **Peel and Hive's person tokens.** A separate system. They count as no admin for what only an admin accepts (above).
+- **Other admin-level proposals.** `package/install` is the only step marked so far. `app/grant`, `meta/set-automation` and `graph/set-namespace` are candidates waiting on a ruling.
 - **A shorter session.** A box that wants one sets `STRUT_SESSION_HOURS`.
