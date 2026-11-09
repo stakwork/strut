@@ -733,6 +733,32 @@ for (const tb of testBackends()) {
       ]);
     });
 
+    it("builds a page whose node key no ustar header holds, and its archive comes back as the same digest", async () => {
+      // The Law page that made openlaw/legal-desk's archive a 500 (2026-11-09).
+      const name = "Rating Taxonomy Compliance: Unauthorized Severity Tiers Displace Client-Mandated Ratings Even When Negotiating Priority Labels Are Correct";
+      const src = await graphStrut("source");
+      await page("Law", { description: "The law" });
+      await page(name, { docs: "Keep the client's ratings." }, "Law");
+
+      const req = { package: "openlaw/legal-desk", version: "1", concepts: ["Law"] };
+      const dry = await src.app.request("/packages/build", json({ ...req, dryRun: true }));
+      assert.equal(dry.status, 200, await dry.clone().text());
+      const res = await src.app.request("/packages/build", json(req));
+      assert.equal(res.status, 201, await res.clone().text());
+      const built = (await res.json()) as { digest: string; files: string[] };
+      assert.equal(((await dry.json()) as { digest: string }).digest, built.digest);
+      const long = built.files.find((f) => f.startsWith("concepts/concept-rating"))!;
+      assert.equal(long, "concepts/concept-ratingtaxonomycomplianceunauthorizedseveritytiersdisplaceclientmandatedratingsevenwhennegotiatingprioritylabelsarecorrect.md");
+
+      const archive = await src.app.request(`/packages/openlaw/legal-desk/archive?digest=${built.digest}`);
+      assert.equal(archive.status, 200, "the archive route serves it");
+      const elsewhere = packageCache(join(scratch, "elsewhere"));
+      const got = await elsewhere.putArchive(Buffer.from(await archive.arrayBuffer()), built.digest);
+      assert.equal(got.digest, built.digest);
+      assert.deepEqual(got.files, built.files);
+      assert.equal(await readFile(join(got.dir, long), "utf-8"), await readFile(join(packageCache(src.dataDir).dirOf(built.digest), long), "utf-8"));
+    });
+
     it("writes the pages under a Concept and the step's claims that stay inside, and installs on a cleared graph and on a filesystem", async () => {
       const src = await graphStrut("source");
       await publishLinear(src.workspace);
