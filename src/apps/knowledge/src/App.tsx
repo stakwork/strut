@@ -8,7 +8,7 @@
 // every pick is reported back so the host's address bar follows it. Narrow
 // (a phone, a side panel), the sidebar and the graph take the page in turn.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertCircle, ArrowLeft, ChevronRight, Loader2, PanelLeftClose, PanelLeftOpen, Search } from "lucide-react";
+import { AlertCircle, ArrowLeft, ChevronRight, History, Loader2, PanelLeftClose, PanelLeftOpen, Search } from "lucide-react";
 import { useAppLink, useAppState, useHost, useToolInput } from "@strut/kit";
 import { NodeGraph } from "strut/views";
 import { Input } from "@/components/ui/input";
@@ -20,6 +20,7 @@ import { Tree } from "./components/Tree";
 import { TypeList } from "./components/TypeList";
 import { TypesMenu } from "./components/TypesMenu";
 import { NodeDetail } from "./components/NodeDetail";
+import { Changes } from "./components/Changes";
 import { Dot, NodeRow, type Picked } from "./components/bits";
 
 /** Narrower than this, the sidebar and the graph take the page in turn. */
@@ -108,6 +109,8 @@ export default function App() {
   const [wide, setWide] = useState(false);
   /** The card is open (closing it keeps the pick marked on the graph). */
   const [card, setCard] = useState(false);
+  /** The changes view in place of the graph: the tree between two moments, from the history. */
+  const [changes, setChanges] = useState(false);
   /** The type open in the sidebar. */
   const [openType, setOpenType] = useState<string | null>(TREE_TYPE);
   /** The open tree rows, remembered per viewer; null until the viewer first folds or opens one. */
@@ -131,6 +134,7 @@ export default function App() {
   const pick = useCallback(
     (n: Picked, opts: { from?: "graph" | "link"; quiet?: boolean } = {}) => {
       setSel(n);
+      setChanges(false);
       if (!opts.quiet) setCard(true);
       if (opts.from !== "graph") setCentre(n.ref_id);
       setTrail((t) => (t[t.length - 1]?.ref_id === n.ref_id ? t : [...t.filter((x) => x.ref_id !== n.ref_id), n].slice(-TRAIL)));
@@ -256,8 +260,16 @@ export default function App() {
     </aside>
   );
 
+  const showRail = !railOpen && (
+    <button type="button" aria-label="Show the sidebar" onClick={() => setRailOpen(true)} className="flex h-9 items-center rounded-md border bg-background/95 px-2 text-muted-foreground shadow hover:text-foreground">
+      <PanelLeftOpen className="size-4" />
+    </button>
+  );
+
   let canvas: React.ReactNode;
-  if (q.isPending) {
+  if (changes) {
+    canvas = <Changes tree={tree} narrow={narrow} onClose={() => setChanges(false)} lead={showRail} />;
+  } else if (q.isPending) {
     canvas = (
       <Centered>
         <Loader2 className="size-4 animate-spin" />
@@ -295,16 +307,24 @@ export default function App() {
           <main ref={graphRef} className="relative min-h-0 min-w-0 flex-1" data-testid="graph-pane">
             {canvas}
 
-            <div className="absolute left-3 top-3 z-20 flex items-center gap-2">
-              {!railOpen && (
-                <button type="button" aria-label="Show the sidebar" onClick={() => setRailOpen(true)} className="flex h-9 items-center rounded-md border bg-background/95 px-2 text-muted-foreground shadow hover:text-foreground">
-                  <PanelLeftOpen className="size-4" />
+            {!changes && (
+              <div className="absolute left-3 top-3 z-20 flex items-center gap-2">
+                {showRail}
+                {types.length > 1 && centre && <TypesMenu types={types} hidden={hidden} onHidden={setHidden} />}
+                <button
+                  type="button"
+                  onClick={() => setChanges(true)}
+                  className="flex h-9 items-center gap-1.5 rounded-md border bg-background/95 px-2.5 text-sm text-muted-foreground shadow hover:text-foreground"
+                  title="What changed in the Concept tree, between two moments"
+                  data-testid="open-changes"
+                >
+                  <History className="size-4" />
+                  Changes
                 </button>
-              )}
-              {types.length > 1 && centre && <TypesMenu types={types} hidden={hidden} onHidden={setHidden} />}
-            </div>
+              </div>
+            )}
 
-            {trail.length > 1 && (
+            {!changes && trail.length > 1 && (
               <div className="absolute bottom-3 left-1/2 z-10 flex max-w-[70%] -translate-x-1/2 items-center gap-2 rounded-lg border bg-background/95 px-2 py-1.5 text-xs shadow-lg backdrop-blur" data-testid="trail">
                 <button
                   type="button"
@@ -333,7 +353,7 @@ export default function App() {
               </div>
             )}
 
-            {sel && card && (
+            {!changes && sel && card && (
               <section
                 className={cn(
                   "absolute z-30 flex flex-col overflow-hidden bg-background",

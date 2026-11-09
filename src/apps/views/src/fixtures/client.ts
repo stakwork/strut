@@ -14,6 +14,7 @@ import { AGENT_WALK_EVENTS, AGENT_WALK_PATH, AGENT_WALK_RUN_ID, WALK_EVENTS, WAL
 import { BIG_WALK_EVENTS, BIG_WALK_RUN_ID, bigWalkNode } from "./walk-large";
 import { LARGE_RUN_EVENTS, LARGE_RUN_ID, largeRunNeighbors, largeRunNode } from "./run-large";
 import { provenanceFixture } from "./provenance";
+import { PROPOSALS, historyFixture, historyNode } from "./history";
 
 const pause = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -118,9 +119,16 @@ export function createFixtureClient({ latencyMs = 120 }: { latencyMs?: number } 
       }
       case "run/provenance":
         return provenanceFixture(c);
+      case "history/read":
+        return historyFixture(c);
+      case "proposal/get": {
+        const p = PROPOSALS[String(c["id"])];
+        if (!p) throw new Error(`No proposal "${String(c["id"])}"`);
+        return p.record;
+      }
       case "graph/graph-get-batched": {
         const found = getBatched((c["ref_ids"] as string[]) ?? []);
-        const nodes = found.nodes.map((n) => ("error" in n ? (walkNode(n.ref_id) ?? bigWalkNode(n.ref_id) ?? largeRunNode(n.ref_id) ?? n) : n));
+        const nodes = found.nodes.map((n) => ("error" in n ? (walkNode(n.ref_id) ?? bigWalkNode(n.ref_id) ?? largeRunNode(n.ref_id) ?? historyNode(n.ref_id) ?? n) : n));
         return { ...found, nodes, returned: nodes.filter((n) => !("error" in n)).length };
       }
       case "graph/graph-neighbors":

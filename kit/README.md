@@ -185,7 +185,11 @@ the `sideEffects` and `type` rules, and that the recorded versions are
   (`foldAccessedNodes`), `artifact-view.ts` (`artifactKind`,
   `parseWalkthrough`, …), `work-products.ts` (`foldWorkProducts`: the
   artifacts a run's steps and output declared, latest per id, the output
-  winning; `productView`, `isGoogleSheet`, `parseTimeline`, `sourcesOf`), and
+  winning; `productView`, `isGoogleSheet`, `parseTimeline`, `sourcesOf`),
+  `concept-diff.ts` (`foldConceptDiff`: two states of the Concept tree's
+  pages — from the history, a proposal laid over a page, an unsaved edit —
+  as the tree with each page added, removed, renamed, moved or edited;
+  `lineDiff` / `foldDiffLines`, the docs line by line), and
   `run-graph/` — the run graph's model ported
   from hive with its tests (the projection of a run's log into graph calls,
   replay, lineage, walk, peer refs, node text; `layout.ts` needs d3, so it is

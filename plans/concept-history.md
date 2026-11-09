@@ -1,8 +1,8 @@
 # History: the workspace as a package, in git
 
-> **Status (2026-11-09): items 1–3 built (strut#577, strut#579); item 4,
-> the diff view, next. Thirteen rulings in (Evan, 2026-11-07 and
-> 2026-11-08; "Rulings" below).** Written after a read of `main`
+> **Status (2026-11-09): all four items built (strut#577, strut#579,
+> strut#PR4); revert in the Knowledge app is not (Open). Thirteen
+> rulings in (Evan, 2026-11-07 and 2026-11-08; "Rulings" below).** Written after a read of `main`
 > @8db356c, revised on 2026-11-07 after a read of openlaw-1's climbs
 > (§1), and rewritten on 2026-11-08: a snapshot is a package build, and
 > the history tracks no write (ruling 11). Revised on 2026-11-09 after a
@@ -527,6 +527,50 @@ not lost.
    restart. A benchmark's app imports the same component:
    openlaw-benchmarks' climb page would pass the start of one
    iteration's run and the next.
+   **BUILT 2026-11-09, strut#PR4** (`kit/src/folds/concept-diff.ts`,
+   `src/apps/views/src/components/ConceptDiff.tsx` + `lib/history.ts`,
+   the Knowledge app's History and Changes). Decided in the build:
+   - **The fold is the kit's**, pure, over ENTRIES in `history/read`'s
+     `diff` shape (`{ path, from?, before?, after? }`, pages parsed), so
+     the three sources are three small functions into one shape:
+     `historyEntries`, `proposalEntry`, `editEntry`. A page's `status` is
+     the first of everything it earned (`marks`: renamed, moved, edited,
+     in that order), so a page renamed and moved at once says both.
+   - **Pairing what git did not:** a removed and an added page with the
+     SAME parents and prose (description and docs) alike by words — Dice
+     over the word multisets ≥ 0.5, best pairs first, one to one — are one
+     page renamed, marked `paired`. A page moved as well as renamed and
+     rewritten over a range stays a delete and an add (its parents
+     differ); in the commit that renamed it, it pairs. Both are tested.
+   - **The tree** puts a page under each of its parents (a removed one
+     under the ones it had, a moved one under its new ones; its detail
+     strikes the old), and a parent the diff does not hold as a hollow
+     context row, climbing through the caller's live tree (`parentsOf`)
+     when given; cycle-safe. Children never show a parent's move: a page
+     lists its parents, not its children (`history/read`'s notes).
+   - **A page's file from its name**: `concept-` and the name's letters
+     and digits, the node writer's key; past 200 characters its hash,
+     through WebCrypto (`conceptPagePath`; null where there is none). The
+     Knowledge app reads the backend's own namespace, so `concepts/`.
+   - **A commit's change** to a page is the page after it against the
+     page after the commit before it in the page's own log (one commit
+     more is read than shown, so the oldest row draws too); "Recent
+     changes" does the same over `concepts`.
+   - **A proposal** changes a page only through the four steps:
+     `graph/edit-node` without `node_type` (a `name` in `node_data` renames
+     it and moves its file; `null` or `""` removes an attribute), a
+     `graph/move-node` along `PARENT_OF` with `direction: reverse`, a
+     `graph/create-node` of a Concept (no parents yet), a
+     `graph/delete-node`. Anything else, `null`: "changes no Concept page".
+     A person's edits in `decision.input` are laid over the input.
+   - **The docs diff** is an LCS over lines, the common ends trimmed first;
+     past 4M cells the middle is all deleted and added. No library: the
+     kit's set has none.
+   - **No revert.** `graphWriteRefusal` refuses every page write on a
+     Concept (`reservedAppType`), first-party included, and a page cannot
+     record a proposal. Left out; Open says what it would need.
+   - **The Knowledge app's proposal view** is not wired: the component
+     takes `proposal`, the app has no list (its Later item).
 
 ## Later (not this plan)
 
@@ -593,6 +637,22 @@ Evan, 2026-11-08:
     `git` runs without a history and says so.
 
 ## Open
+
+- **Revert in the Knowledge app** (ruling 12, item 4) is not built: the
+  app door refuses a page's write on a Concept (`graphWriteRefusal` →
+  `reservedAppType`: agents read Concepts as instructions), whoever the
+  page is, and nothing lets a page record a proposal — proposals are made
+  only by an agent's gated tool call. Either door would do: (a) an
+  exception in `src/apps/tools.ts` for a FIRST-PARTY page (`app.firstParty`)
+  with a signed-in viewer, `graph/edit-node` by `ref_id` + `node_data`
+  only, on a Concept, the fields a page holds (`name`, `description`,
+  `docs`, the other declared attributes), with a decision on whether
+  members or only admins may — the Knowledge plan's Editing item asks the
+  same; or (b) a first-party page's door to RECORD a proposal (the step
+  and its input, the viewer as proposer), so the write waits for a yes.
+  Then revert is `show { path, at }`, the page's fields as `node_data`,
+  and a parent restored by `graph/move-node`; a removed page comes back
+  through `graph/create-node`, its ref_id new.
 
 - **A run's tree is the tree when it started.** A write during a long
   run changes what it reads later. `log { from, to }` over its start

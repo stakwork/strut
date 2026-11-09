@@ -1,6 +1,6 @@
 # Knowledge: the org's knowledge as a strut app
 
-> **Status (2026-11-09): v2 built — every type, not only Concepts (see v2).** Before that, (2026-11-06): v1 built, then reshaped on the owner's review — the outline tree (option A) on the left; the GRAPH is the main view (no Concept | Graph toggle), each node's chip expands or collapses its neighbours, a click opens the concept in a panel on the right. Read-only: editing was built and then taken out to keep v1 simple (see Later). As built, Copy link is left out: the address bar follows the selection, and a framed page's clipboard is not reliable. Written after a read of strut `main`
+> **Status (2026-11-09): v2 built — every type, not only Concepts (see v2); v2.1 adds a Concept's history and the tree between two moments (see v2.1).** Before that, (2026-11-06): v1 built, then reshaped on the owner's review — the outline tree (option A) on the left; the GRAPH is the main view (no Concept | Graph toggle), each node's chip expands or collapses its neighbours, a click opens the concept in a panel on the right. Read-only: editing was built and then taken out to keep v1 simple (see Later). As built, Copy link is left out: the address bar follows the selection, and a framed page's clipboard is not reliable. Written after a read of strut `main`
 > @e2acbb5, Hive's `src/components/graph-workbench/` and stadeum `main`.
 > Companions: `apps.md` (apps, grants, `strut/views`), `jamie-app.md` §3, §5
 > (first-party apps, how Jamie is seeded), `concept-tree.md` (what the tree
@@ -183,6 +183,33 @@ Known gaps: the ⇕ count on a node includes neighbours of hidden types; the
 card can cover nodes at the right edge of the graph; search is keyword-only
 on a graph with no embeddings.
 
+## v2.1 (2026-11-09): history (`concept-history.md` §8 item 4)
+
+What the Concept tree WAS, read from the history (`history/read`, one more
+grant, a read), drawn by `strut/views`' `ConceptDiff`:
+
+- **A concept's History.** The card's **History** button (Concepts only)
+  widens it to every commit that changed the page, newest first, followed
+  through renames: time, who, the commit's first line, the runs that wrote.
+  A click draws what that commit did against the one before it; two ticked
+  are compared; "The page then" shows the page as it was. The page's file is
+  found from its name (`concepts/concept-<letters and digits>.md`, as the
+  node writer keys it), so it is the backend's own namespace's.
+- **Changes.** A button over the graph swaps it for the tree between two
+  moments: `diff { from, to, path: "concepts" }`, with each page marked
+  added, removed, renamed, moved or edited on the tree (a parent that did
+  not change drawn hollow, climbing through the live tree), a page opening
+  to its name, parents, attributes and docs line by line. From and to are
+  typed — `now`, `3 hours ago`, a date, a commit — and open on the last
+  day. Beside it, **Recent changes**: the history's last commits on
+  `concepts`, each a click into what it did. Never the live change feed,
+  which is a notification and empties on a restart. Picking a node in the
+  sidebar returns to the graph.
+- **No revert.** The plan asked for one (`show` at a commit, then
+  `graph/edit-node`), but the app door refuses every page write on a
+  Concept, first-party included — the same refusal Editing below meets.
+  Recorded in `concept-history.md`'s Open section.
+
 ## Later (not built now)
 
 - **Editing** a concept's name, description and docs from the panel. Built
@@ -192,9 +219,14 @@ on a graph with no embeddings.
   three fields only, as strings, by `graph/edit-node`) and a decision on
   whether members or only admins may edit. Note for the editor: the app's
   frame is sandboxed without `allow-forms`, so it must not be a `<form>`.
+- **Revert** a page to a commit (`concept-history.md` ruling 12): the same
+  door as Editing, plus `history/read show` for the text.
 - **Proposals** drawn as dashed changes (green added, red removed) from
   `proposal/list`, with accept/reject through `proposal/decide`
-  (first-party only).
+  (first-party only). `ConceptDiff` already takes a proposal
+  (`<ConceptDiff proposal={id} />`: `proposal/get`, the nodes it names,
+  the page now, laid over); what is left is the list, and the grants
+  `proposal/list`, `proposal/get` and `proposal/decide`.
 - **"Ask Jamie about this concept"**: `ui/open-link` to
   `?app=strut/jamie&input=…` with the concept as the draft's `/` mention.
 - **Live refresh** through `graph/changes` (`useGraphChanges(["Concept"])`):
