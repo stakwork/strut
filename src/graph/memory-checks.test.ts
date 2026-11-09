@@ -4,9 +4,10 @@
  * it is given. A check that finds the evidence backs a fact nobody restated,
  * as `observed` evidence `PRODUCED_BY` the Check, and is not run again until
  * its freshness runs out; a quiet one makes the fact stale; one that cannot
- * see its source, or fails, keeps nothing. A read whose stance is ask opens
- * one question, once, and the answer closes it. Through the steps, the chat
- * check runs a stand-in chat search through strut's own runner.
+ * see its source, or fails, keeps nothing. Only memory's read-only check
+ * steps can be a check, and only the user's own agent's reads look again.
+ * Through the steps, the chat check runs a stand-in chat search through
+ * strut's own runner.
  */
 import { after, before, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -20,6 +21,7 @@ import assertStep from "../steps/lib/graph/assert.js";
 import graphSearch from "../steps/lib/graph/graph-search.js";
 import verifyStep from "../steps/lib/graph/verify-facts.js";
 import checkChats from "../steps/lib/graph/check-chats.js";
+import { ownAgentRead } from "../steps/lib/graph/_shared.js";
 
 const lb = testBackends().find((b) => b.kind === "ladybug")!;
 const DAY = 86_400_000;
@@ -47,12 +49,12 @@ describe("checks for memory facts on a ladybug file", { skip: lb.skip }, () => {
     // Said once, two years ago, on a fast-changing kind of fact: decay alone says ask.
     await run(assertStep, {
       source_ref_id: tom, edge_type: "WORKS_AT", target_ref_id: stakwork, text: "Tom works at Stakwork", create_schema_if_missing: true, cardinality: "one",
-      volatility: "volatile", check: { expects: "the organisation comes up in chats", step: "test/check", freshness_days: 7 }, observed_at: new Date(Date.now() - 730 * DAY).toISOString(),
+      volatility: "volatile", check: { expects: "the organisation comes up in chats", step: "graph/check-test", freshness_days: 7 }, observed_at: new Date(Date.now() - 730 * DAY).toISOString(),
     }, b);
   });
   const fact = async () => (await run(graphSearch, { q: "Tom works at Stakwork", facts: true }, b)).facts[0];
   const runner = (output: unknown): RunStep => async (step) => {
-    assert.equal(step, "test/check");
+    assert.equal(step, "graph/check-test");
     return { status: "success", output };
   };
   const readFact = async (): Promise<ReadFact> => {
@@ -61,11 +63,29 @@ describe("checks for memory facts on a ladybug file", { skip: lb.skip }, () => {
   };
 
   it("a kind of fact's Check is made the first time it is given, and never changed", async () => {
-    const rows = async () => b.query(`MATCH (k:Node {node_type: 'Check'}) RETURN k.description AS d, k.step_type AS s, k.freshness_days AS f`);
-    assert.deepEqual((await rows()).map((r) => [r["d"], r["s"], Number(r["f"])]), [["the organisation comes up in chats", "test/check", 7]]);
+    const rows = async () => b.query(`MATCH (k:Node {node_type: 'Check'}) RETURN k.description AS d, k.step_type AS s, k.freshness_days AS f, k.namespace AS ns, k.created_by AS by`);
+    assert.deepEqual((await rows()).map((r) => [r["d"], r["s"], Number(r["f"])]), [["the organisation comes up in chats", "graph/check-test", 7]]);
     await run(assertStep, { source_ref_id: tom, edge_type: "WORKS_AT", target_ref_id: stakwork, text: "Tom works at Stakwork", check: { expects: "something else" } }, b);
     assert.equal((await rows()).length, 1);
     assert.equal((await rows())[0]!["d"], "the organisation comes up in chats");
+    assert.deepEqual([(await rows())[0]!["ns"], (await rows())[0]!["by"]], ["private", "tom"], "in the facts' namespace, with who made it");
+  });
+
+  it("only memory's read-only check steps can be a check: refused when made, and when a stored one runs", async () => {
+    await assert.rejects(async () => run(assertStep, { source_ref_id: tom, edge_type: "KNOWS", target_ref_id: tom, text: "x", check: { expects: "y", step: "sphinx/send" } }, b), /graph\/check-/);
+    await b.query(`MATCH (k:Node {node_type: 'Check'}) SET k.step_type = 'sphinx/send'`);
+    let ran = false;
+    const report = await verifyFacts(b, async () => ((ran = true), { status: "success", output: { supports: true } }), { force: true });
+    assert.deepEqual([ran, report.failed], [false, 1], "never run");
+    const registry = { "graph/check-sneaky": { ...checkChats, type: "graph/check-sneaky", effect: "write" } } as never;
+    await b.query(`MATCH (k:Node {node_type: 'Check'}) SET k.step_type = 'graph/check-sneaky'`);
+    assert.equal((await run(verifyStep, { force: true }, b, { registry })).failed, 1, "a check step that is not read-only is refused by the runner");
+  });
+
+  it("only the user's own agent's reads look again: not a job's, not an app's", () => {
+    assert.equal(ownAgentRead({}), true);
+    assert.equal(ownAgentRead({ job: "j1" }), false);
+    assert.equal(ownAgentRead({ app: { name: "notes", version: "1" } as never }), false);
   });
 
   it("a check that finds the evidence backs a fact nobody restated, and is not run again until due", async () => {
@@ -75,7 +95,7 @@ describe("checks for memory facts on a ladybug file", { skip: lb.skip }, () => {
     assert.deepEqual([report.checked, report.supported], [1, 1]);
     const f = await fact();
     assert.deepEqual([f.status, f.stance], ["supported", "state"]);
-    assert.ok(f.evidence.sayers.some((x: { kind: string; name?: string }) => x.kind === "check" && x.name === "test/check"));
+    assert.ok(f.evidence.sayers.some((x: { kind: string; name?: string }) => x.kind === "check" && x.name === "graph/check-test"));
     const produced = await b.query(`MATCH (e:Node {node_type: 'Evidence'})-[:PRODUCED_BY]->(k:Node {node_type: 'Check'}) RETURN e.evidence_mode AS m, e.content AS c`);
     assert.deepEqual(produced.map((r) => [r["m"], r["c"]]), [["observed", "12 messages mention Stakwork"]]);
     assert.equal((await verifyFacts(b, runner({ supports: true }), { now: now + DAY })).checked, 0, "fresh for a week");
@@ -92,16 +112,6 @@ describe("checks for memory facts on a ladybug file", { skip: lb.skip }, () => {
     assert.equal((await verifyFacts(b, async () => ({ status: "error" }), { force: true })).failed, 1);
     assert.equal((await verifyFacts(b, runner({ nonsense: 1 }), { force: true })).failed, 1);
     assert.equal(await observed(), before);
-  });
-
-  it("a read whose stance is ask opens one question, once, and the answer closes it", async () => {
-    const first = await queueFactChecks(b, [await readFact()], undefined);
-    assert.equal(first.asked, 1);
-    assert.equal((await fact()).open_check, true);
-    assert.equal((await queueFactChecks(b, [await readFact()], undefined)).asked, 0, "not asked twice");
-    await run(assertStep, { source_ref_id: tom, edge_type: "WORKS_AT", target_ref_id: stakwork, text: "Tom works at Stakwork", source: "msg-yes" }, b);
-    const f = await fact();
-    assert.deepEqual([f.open_check, f.stance], [undefined, "state"], "answered");
   });
 
   it("a read runs the due check after it answers, through the check runner", async () => {

@@ -38,10 +38,9 @@ export const HALF_LIFE_DAYS: Readonly<Record<Volatility, number>> = { static: In
 
 export type SayerKind = "owner" | "self" | "other" | "check";
 /** How far one sayer of each kind is believed. Fixed, not learned. A check
- *  (plans/memory-checks.md) is weaker than a person: what it finds is
- *  usually indirect (`CHECK_DIRECT` when its source states the fact). */
+ *  (plans/memory-checks.md) is weaker than a person: what it finds only fits
+ *  the fact, it does not state it. */
 export const TRUST: Readonly<Record<SayerKind, number>> = { owner: 0.95, self: 0.9, other: 0.7, check: 0.6 };
-export const CHECK_DIRECT = 0.8;
 /** How much each sayer after the first adds (under 1: sayers are not fully independent). */
 const GAMMA = 0.5;
 /** Days of no decay after a mention, and the floor currency stops at. */
@@ -71,8 +70,6 @@ export interface EvidenceIn {
   strength: number;
   /** The check step that observed it (`observed` evidence); absent for something someone said. */
   check?: string;
-  /** A check's source stated the fact, rather than only fitting it. */
-  direct?: boolean;
 }
 
 /** An edge of a slot, as the graph holds it (epoch ms). */
@@ -99,8 +96,6 @@ export interface Sayer {
   ref_id?: string;
   name?: string;
   kind: SayerKind;
-  /** A check whose source stated the fact. */
-  direct?: true;
 }
 
 export interface SlotInput {
@@ -114,8 +109,6 @@ export interface SlotInput {
   people: ReadonlyMap<string, Person>;
   /** The user, when the graph has one: who said a fact no Person backs. */
   user?: { ref_id: string; name?: string };
-  /** Edges whose claim has an open question (an `ask` waiting on the user). */
-  open?: ReadonlySet<string>;
   now: number;
 }
 
@@ -137,8 +130,6 @@ export interface FactTrust {
   rival?: { ref_id: string; target_ref_id: string; belief: number };
   /** It begins later than now. */
   planned?: true;
-  /** A question about it is already waiting on the user: do not ask it again. */
-  open_check?: true;
 }
 
 const logit = (p: number) => Math.log(p / (1 - p));
@@ -153,7 +144,7 @@ const sayerOf = (ref_id: string | undefined, s: Pick<SlotInput, "subject" | "peo
 
 /** Who or what one piece of evidence came from: a person, or a check by its step. */
 const sourceOf = (x: EvidenceIn, s: Pick<SlotInput, "subject" | "people" | "user">): Sayer =>
-  x.check ? { name: x.check, kind: "check", ...(x.direct ? { direct: true as const } : {}) } : sayerOf(x.said_by, s);
+  x.check ? { name: x.check, kind: "check" } : sayerOf(x.said_by, s);
 
 /** Who backed an edge: each source of its supporting evidence once, or each
  *  Person among its sources; none, the user. */
@@ -162,16 +153,10 @@ export function sayersOf(e: SlotEdge, s: Pick<SlotInput, "subject" | "people" | 
     ? e.evidence.filter((x) => x.strength > 0).map((x) => sourceOf(x, s))
     : e.sources.filter((x) => s.people.has(x)).map((x) => sayerOf(x, s));
   if (!who.length) return [sayerOf(undefined, s)];
-  // One per source; a check's direct finding outranks its indirect ones.
-  const out = new Map<string, Sayer>();
-  for (const w of who) {
-    const key = `${w.kind}|${w.ref_id ?? w.name ?? ""}`;
-    if (!out.has(key) || w.direct) out.set(key, w);
-  }
-  return [...out.values()];
+  return [...new Map(who.map((w) => [`${w.kind}|${w.ref_id ?? w.name ?? ""}`, w])).values()];
 }
 
-const trustOf = (w: Sayer) => (w.kind === "check" && w.direct ? CHECK_DIRECT : TRUST[w.kind]);
+const trustOf = (w: Sayer) => TRUST[w.kind];
 
 /** Trusts combined: the most trusted, and each other one adding a little. */
 function combineTrust(trusts: number[]): number {
@@ -290,7 +275,6 @@ export function scoreSlot(s: SlotInput): Map<string, FactTrust> {
       currency: round(cur),
       ...(rival && current && status === "disputed" ? { rival: { ref_id: rival.ref_id, target_ref_id: rival.target, belief: round(belief.get(rival.ref_id)!) } } : {}),
       ...(current && e.valid_at !== null && e.valid_at > s.now ? { planned: true as const } : {}),
-      ...(current && s.open?.has(e.ref_id) ? { open_check: true as const } : {}),
     });
   }
   return out;

@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { defineStep, type StepContext, withAccessedNodes } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
-import { graphCtx, errText, deriveNodeName, describeNodes, isoDates, timeInputs, deletedOut, trustOut, checkRunner, TRUST_NOTE, EXCLUDED_NODE_TYPES } from "./_shared.js";
+import { graphCtx, errText, deriveNodeName, describeNodes, isoDates, timeInputs, deletedOut, trustOut, TRUST_NOTE, EXCLUDED_NODE_TYPES } from "./_shared.js";
 const NEIGHBOR_CAP = 50;
 
 export default defineStep({
@@ -97,19 +97,6 @@ export default defineStep({
 
       // Provenance: the node the caller expanded. Its neighbors were shown,
       // not chosen.
-      if (b.kind === "ladybug") {
-        // Checks due on the facts read run after the answer, never holding it up (plans/memory-checks.md).
-        const facts = (data.edges ?? []).filter((e) => e.trust && typeof e.properties?.["text"] === "string" && e.ref_id);
-        if (facts.length) {
-          const end = (id: string) => ({ ref_id: id, ...(nodeMap.get(id)?.name ? { name: nodeMap.get(id)!.name } : {}), ...(nodeMap.get(id)?.node_type ? { type: nodeMap.get(id)!.node_type } : {}) });
-          void import("../../../graph/memory-checks.js").then(({ queueFactChecks }) =>
-            queueFactChecks(b as never, facts.map((e) => ({
-              ref_id: e.ref_id!, edge_type: e.edge_type, text: String(e.properties["text"]), trust: e.trust!, subject: end(e.source), target: end(e.target),
-              ...(typeof e.properties["namespace"] === "string" ? { namespace: e.properties["namespace"] } : {}),
-            })), checkRunner(ctx as StepContext<StrutCapabilities>)),
-          ).catch(() => {});
-        }
-      }
       return withAccessedNodes(neighbors, await describeNodes(b, [cfg.ref_id]));
     } catch (e) {
       return errText("graph/graph-neighbors", e);

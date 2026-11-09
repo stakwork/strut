@@ -4,7 +4,7 @@ import type { StrutCapabilities } from "../../../capabilities.js";
 import { getStrutSchema } from "../../../graph/strut-schemas.js";
 import { nodeTitle } from "../../../graph/title.js";
 import type { FactEnvelope } from "../../../graph/search.js";
-import { graphCtx, errText, excludeDomainsInput, isoDates, timeInputs, deletedOut, trustOut, checkRunner, TRUST_NOTE } from "./_shared.js";
+import { graphCtx, errText, excludeDomainsInput, isoDates, timeInputs, deletedOut, trustOut, checkRunner, ownAgentRead, TRUST_NOTE } from "./_shared.js";
 const splitList = (s?: string) => s?.split(",").map((x) => x.trim()).filter(Boolean);
 
 /** A node's human label: its title (the Strut schema's title_key when it is
@@ -177,15 +177,17 @@ export default defineStep({
       // No provenance marker: a hit is a node the caller was SHOWN, not one
       // it chose to read (`withAccessedNodes`). Facts only when asked, so the
       // shape never depends on the data; a graph holding none (Neo4j) has `[]`.
-      if (cfg.facts && b.kind === "ladybug" && res.facts?.length) {
-        // Checks due on what was read run after the answer, never holding it up (plans/memory-checks.md).
+      const c = ctx as StepContext<StrutCapabilities>;
+      const runStep = checkRunner(c);
+      if (cfg.facts && b.kind === "ladybug" && res.facts?.length && runStep && ownAgentRead(c)) {
+        // Checks due on what the user's own agent read run after the answer, never holding it up (plans/memory-checks.md).
         const found = res.facts;
         void import("../../../graph/memory-checks.js").then(({ queueFactChecks }) =>
           queueFactChecks(b as never, found.map((f) => ({
             ref_id: f.ref_id, edge_type: f.edge_type, text: f.text, ...(f.namespace ? { namespace: f.namespace } : {}), ...(f.trust ? { trust: f.trust } : {}),
             subject: { ref_id: f.source.ref_id, ...(f.source.title ? { name: f.source.title } : {}), ...(f.source.node_type ? { type: f.source.node_type } : {}) },
             target: { ref_id: f.target.ref_id, ...(f.target.title ? { name: f.target.title } : {}), ...(f.target.node_type ? { type: f.target.node_type } : {}) },
-          })), checkRunner(ctx as StepContext<StrutCapabilities>)),
+          })), runStep),
         ).catch(() => {});
       }
       return cfg.facts ? { nodes: hits, facts: (res.facts ?? []).map(factOut) } : hits;

@@ -37,7 +37,7 @@ const Fact = z.object({
   check: z
     .object({
       expects: z.string().describe("What this kind of fact should keep producing while it is true, in plain words (\"the organisation comes up in chats\"). Leave out a check for a kind of fact that produces nothing ongoing, like a birthday."),
-      step: z.string().optional().describe("The check step: default graph/check-chats, the user's chats."),
+      step: z.string().regex(/^graph\/check-[a-z0-9-]+$/, "a check runs one of memory's read-only graph/check-* steps").optional().describe("The check step, one of memory's read-only graph/check-* steps: default graph/check-chats, the user's chats."),
       freshness_days: z.number().positive().optional().describe("How old its last finding may be before a read looks again (default 14)."),
       window_days: z.number().positive().optional().describe("How far back it looks (default 30)."),
     })
@@ -123,7 +123,7 @@ export default defineStep({
       // A kind of fact's check, made the first time it is given (plans/memory-checks.md).
       if (facts.some((f) => f.check)) {
         const { ensureFactCheck } = await import("../../../graph/ladybug/fact-claims.js");
-        for (const f of facts) if (f.check) await b.tx((tx) => ensureFactCheck(tx, edgeOf(f), f.check!, Date.now()));
+        for (const f of facts) if (f.check) await b.tx((tx) => ensureFactCheck(tx, edgeOf(f), f.check!, Date.now(), { namespace, ...by }));
       }
 
       // One transaction: the new nodes (each distinct one once) and every

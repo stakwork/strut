@@ -8,32 +8,32 @@
  * contract:
  *
  *   input:  { subject, edge_type, target, text, since, window_days }
- *   output: { supports: true | false, direct?, content } | { unavailable: true }
+ *   output: { supports: true | false, content } | { unavailable: true }
  *
- * Found is `observed` evidence for it (a direct finding counts more than an
- * indirect one); quiet is weakly against it; unavailable, or a check that
- * fails, writes nothing, as a check that cannot run never fails a claim.
+ * Found is `observed` evidence for it, weaker than a person's word; quiet is
+ * weakly against it; unavailable, or a check that fails, writes nothing, as
+ * a check that cannot run never fails a claim. Only memory's read-only
+ * `graph/check-*` steps can be a check.
  *
  * No janitor. As strut runs a check when its subject runs and the evidence is
  * older than `freshness_days` (`policyFires`, `../verify.ts`), a fact's check
- * runs when the fact is read and its check evidence is that old
- * (`queueFactChecks`, after `graph/graph-search` and `graph/graph-neighbors`
- * answer, never holding them up). A read whose stance is `ask` opens one
- * question on the claim, so it is not asked twice. `verifyFacts` runs the
- * checks on demand (`graph/verify-facts`).
+ * runs when the fact is read by the user's own agent and its check evidence
+ * is that old (`queueFactChecks`, after `graph/graph-search` answers, never
+ * holding it up). `verifyFacts` runs the checks on demand
+ * (`graph/verify-facts`).
  */
 import type { LadybugBackend } from "./backend.js";
 import type { Row } from "./engine.js";
 import type { FactTrust } from "./fact-score.js";
 import { temporalEdgeTypes } from "./ladybug/temporal.js";
-import { factCheckOf, factClaimId, factEvidence, openFactQuestion, recordFactEvidence, type FactCheck } from "./ladybug/fact-claims.js";
+import { factCheckOf, factClaimId, factEvidence, isCheckStep, recordFactEvidence, type FactCheck } from "./ladybug/fact-claims.js";
 
 const DAY = 86_400_000;
 const q = (s: string) => `\`${s}\``;
 const EDGE_TYPE = /^[A-Z][A-Z0-9_]*$/;
-/** What a quiet source counts against a fact, and an indirect finding for it. */
+/** What a finding counts for a fact, and a quiet source against it. */
+export const FOUND = 0.5;
 export const QUIET = -0.5;
-export const INDIRECT = 0.5;
 /** At most this many checks start from one read. */
 const PER_READ = 3;
 
@@ -78,19 +78,17 @@ export interface CheckReport {
   quiet: number;
   unavailable: number;
   failed: number;
-  asked: number;
 }
 
-const emptyReport = (): CheckReport => ({ checked: 0, supported: 0, quiet: 0, unavailable: 0, failed: 0, asked: 0 });
+const emptyReport = (): CheckReport => ({ checked: 0, supported: 0, quiet: 0, unavailable: 0, failed: 0 });
 
 /** A check's output as evidence: its strength and finding, or none. */
-export function checkResultOf(run: { status: string; output?: unknown }): { strength: number; direct: boolean; content?: string } | "unavailable" | "failed" {
+export function checkResultOf(run: { status: string; output?: unknown }): { strength: number; content?: string } | "unavailable" | "failed" {
   if (run.status !== "success" || !run.output || typeof run.output !== "object") return "failed";
   const o = run.output as Record<string, unknown>;
   if (o["unavailable"] === true) return "unavailable";
   if (typeof o["supports"] !== "boolean") return "failed";
-  const direct = o["supports"] === true && o["direct"] === true;
-  return { strength: o["supports"] ? (direct ? 1 : INDIRECT) : QUIET, direct, ...(typeof o["content"] === "string" && o["content"] ? { content: o["content"] } : {}) };
+  return { strength: o["supports"] ? FOUND : QUIET, ...(typeof o["content"] === "string" && o["content"] ? { content: o["content"] } : {}) };
 }
 
 /** The user among these nodes. */
@@ -107,7 +105,8 @@ async function runCheck(b: LadybugBackend, check: FactCheck, f: ReadFact, runSte
     subject: f.subject, edge_type: f.edge_type, target: f.target, text: f.text, expects: check.expects,
     since: new Date(now - check.window_days * DAY).toISOString(), window_days: check.window_days,
   };
-  const result = checkResultOf(await runStep(check.step, input, check.config).catch(() => ({ status: "error" })));
+  // Only memory's own check steps run: a stored check naming anything else is refused here too.
+  const result = isCheckStep(check.step) ? checkResultOf(await runStep(check.step, input, check.config).catch(() => ({ status: "error" }))) : "failed";
   report.checked++;
   if (result === "unavailable" || result === "failed") {
     report[result]++;
@@ -118,7 +117,7 @@ async function runCheck(b: LadybugBackend, check: FactCheck, f: ReadFact, runSte
     recordFactEvidence(tx, {
       subject: f.subject.ref_id, edge: f.edge_type, target: f.target.ref_id, text: f.text,
       ...(result.content ? { content: result.content } : {}), ...(f.namespace ? { namespace: f.namespace } : {}),
-      check: { id: check.id, step: check.step, ...(result.direct ? { direct: true } : {}) },
+      check: { id: check.id, step: check.step },
       observed_at: now, strength: result.strength, now,
     }),
   );
@@ -131,7 +130,7 @@ async function dueChecks(b: LadybugBackend, facts: ReadFact[], now: number): Pro
   for (const t of new Set(facts.map((f) => f.edge_type))) checks.set(t, await factCheckOf(run, t));
   const withCheck = facts.filter((f) => checks.get(f.edge_type));
   if (!withCheck.length) return [];
-  const { evidence } = await factEvidence(run, withCheck.map((f) => factClaimId(f.subject.ref_id, f.edge_type, f.target.ref_id)));
+  const evidence = await factEvidence(run, withCheck.map((f) => factClaimId(f.subject.ref_id, f.edge_type, f.target.ref_id)));
   return withCheck.flatMap((f) => {
     const check = checks.get(f.edge_type)!;
     const mine = (evidence.get(factClaimId(f.subject.ref_id, f.edge_type, f.target.ref_id)) ?? []).filter((x) => x.check === check.step);
@@ -144,11 +143,11 @@ async function dueChecks(b: LadybugBackend, facts: ReadFact[], now: number): Pro
 const inFlight = new Set<string>();
 
 /**
- * After a read: the due checks of the current facts it returned (a few,
- * one per fact at a time), and a question opened on each it says to ask
- * about. Never throws; the read does not wait for it. Resolves when done.
+ * After a read by the user's own agent: the due checks of the current facts
+ * it returned (a few, one per fact at a time). Never throws; the read does
+ * not wait for it. Resolves when done.
  */
-export async function queueFactChecks(b: LadybugBackend, facts: ReadFact[], runStep: RunStep | undefined, opts: { now?: number } = {}): Promise<CheckReport> {
+export async function queueFactChecks(b: LadybugBackend, facts: ReadFact[], runStep: RunStep, opts: { now?: number } = {}): Promise<CheckReport> {
   const report = emptyReport();
   try {
     const now = opts.now ?? Date.now();
@@ -156,14 +155,6 @@ export async function queueFactChecks(b: LadybugBackend, facts: ReadFact[], runS
     if (!current.length) return report;
     const owners = await ownersOf(b, [...new Set(current.flatMap((f) => [f.subject.ref_id, f.target.ref_id]))]);
     const mark = (e: FactEnd): FactEnd => (owners.has(e.ref_id) ? { ...e, owner: true } : e);
-    for (const f of current) {
-      if (f.trust?.stance !== "ask" || f.trust.open_check) continue;
-      const opened = await b.tx((tx) =>
-        openFactQuestion(tx, { subject: f.subject.ref_id, edge: f.edge_type, target: f.target.ref_id, text: f.text, ...(f.namespace ? { namespace: f.namespace } : {}), observed_at: now, now }),
-      );
-      if (opened) report.asked++;
-    }
-    if (!runStep) return report;
     const due = (await dueChecks(b, current, now)).filter(({ fact }) => !inFlight.has(factClaimId(fact.subject.ref_id, fact.edge_type, fact.target.ref_id))).slice(0, PER_READ);
     for (const { fact, check } of due) {
       const claim = factClaimId(fact.subject.ref_id, fact.edge_type, fact.target.ref_id);

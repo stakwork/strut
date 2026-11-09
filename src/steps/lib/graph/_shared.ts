@@ -94,17 +94,24 @@ export function trustOut(t: FactTrust | undefined): Record<string, unknown> {
 /** What a step that scores facts tells the model about the scores, and how to use them (a Ladybug file only). */
 /** Runs a memory fact's check step through strut's own runner, as the verify
  *  pass runs a check (`origin: verify`): the fact is the step's config, over
- *  the check's own. Undefined outside the runner (no registry). */
+ *  the check's own. Only a read-only `graph/check-*` step runs; any other is
+ *  refused. Undefined outside the runner (no registry). */
 export function checkRunner(ctx: StepContext<StrutCapabilities>): RunStep | undefined {
   const registry = ctx.registry;
   if (!registry) return undefined;
   return async (step, input, config) => {
+    const def = registry[step] as { effect?: string } | undefined;
+    if (!/^graph\/check-[a-z0-9-]+$/.test(step) || def?.effect !== "read") return { status: "error" };
     // Lazy: the runner loads the registry's steps.
     const { runSingleStep } = await import("../../../run-step.js");
     const run = await runSingleStep(step, registry, ctx.services, { config: { ...config, ...(input as Record<string, unknown>) }, input, origin: "verify" });
     return { status: run.status, ...(run.output !== undefined ? { output: run.output } : {}) };
   };
 }
+
+/** A read by the user's own agent: not a job's, not an app's. Only its reads look again at a fact
+ *  (plans/memory-checks.md): a check may search the user's chats on their Mac. */
+export const ownAgentRead = (ctx: Pick<StepContext<StrutCapabilities>, "job" | "app">): boolean => !ctx.job && !ctx.app;
 
 export const TRUST_NOTE =
   "Each fact carries how far to trust it now, worked out when it is read. `evidence` is who backed it — `kind` owner is the user, self is the fact's subject, other is someone else, check is a check that found it (in the user's chats, say) — when it was last backed, and each piece for or against. " +
@@ -114,7 +121,6 @@ export const TRUST_NOTE =
   "(2) In a general answer, build it from state and cite facts; leave ask facts out or flag them briefly as possibly out of date. " +
   "(3) Before acting on a fact (sending, booking, updating), check any fact that is not state. " +
   "(4) Never hold an answer back waiting on questions, and ask at most one question per reply; the answer is new evidence, so remember it. " +
-  "`open_check` means a question about it is already waiting on the user: cite it, don't ask it again. " +
   "When the user says a fact is wrong, assert it with `refuted`; when it is merely over, with `ended`. " +
   "`planned` is a fact that begins later.";
 

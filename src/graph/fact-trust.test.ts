@@ -95,8 +95,7 @@ describe("fact trust on a ladybug file", { skip: lb.skip }, () => {
   });
 
   it("each mention is evidence on the fact's claim, once; a message read again writes nothing", async () => {
-    // Evidence that was said: a read may also open a question (a planned slot) after it answers.
-    const count = async (type: string) => Number((await b.query(`MATCH (n:Node {node_type: '${type}'}) WHERE n.evidence_status IS NULL OR n.evidence_status = 'collected' RETURN count(n) AS c`))[0]!["c"]);
+    const count = async (type: string) => Number((await b.query(`MATCH (n:Node {node_type: '${type}'}) RETURN count(n) AS c`))[0]!["c"]);
     await run(assertStep, lives(lisbon, { said_by: kate, source: "msg-1" }), b);
     assert.deepEqual([await count("Claim"), await count("Evidence")], [1, 1]);
     await run(assertStep, lives(lisbon, { said_by: kate, source: "msg-1" }), b);
@@ -166,8 +165,7 @@ describe("fact trust on a ladybug file", { skip: lb.skip }, () => {
   });
 
   it("deleting a fact clears its evidence: saved again, it starts from nothing", async () => {
-    // What was said (a read may also open a question, a planned slot, after it answers).
-    const count = async () => Number((await b.query(`MATCH (n:Node {node_type: 'Evidence'}) WHERE n.evidence_status = 'collected' RETURN count(n) AS c`))[0]!["c"]);
+    const count = async () => Number((await b.query(`MATCH (n:Node {node_type: 'Evidence'}) RETURN count(n) AS c`))[0]!["c"]);
     await run(assertStep, lives(lisbon, { said_by: sam, source: "msg-1" }), b);
     assert.equal(await count(), 1);
     await run(deleteEdge, { source_ref_id: kate, edge_type: "LIVES_IN", target_ref_id: lisbon }, b);

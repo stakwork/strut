@@ -72,7 +72,7 @@ export default defineStep({
     const { recent } = countMatches(text, since, cfg.exclude_chats ?? []);
     const day = new Date(since).toISOString().slice(0, 10);
     return recent > 0
-      ? { supports: true, direct: false, content: `${recent} message${recent === 1 ? "" : "s"} mention ${q} since ${day}` }
+      ? { supports: true, content: `${recent} message${recent === 1 ? "" : "s"} mention ${q} since ${day}` }
       : { supports: false, content: `No messages mention ${q} since ${day}` };
   },
 });
