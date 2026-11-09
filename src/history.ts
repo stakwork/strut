@@ -111,9 +111,9 @@ export interface History extends HistoryCapability {
   /** `fn`, its writes one commit under the cause `touchOf` gives once it
    *  returned (or threw: `undefined`). */
   hold<T>(fn: () => Promise<T>, touchOf: (r: T | undefined) => HistoryTouch): Promise<T>;
-  /** Boot is done: the first snapshot, cause `boot`, and every touch from
-   *  now on. Before it, touches wait. */
-  start(): void;
+  /** Boot is done: the first snapshot, cause `boot`, taken now and
+   *  awaited, and every touch from now on. Before it, touches wait. */
+  start(): Promise<void>;
   /** Commit what is waiting, then stop. */
   close(): Promise<void>;
 }
@@ -183,6 +183,36 @@ const GIT_FLAGS = [
 
 const NULL_DEVICE = process.platform === "win32" ? "NUL" : "/dev/null";
 
+/** One chain per repository in this process: two struts over one data
+ *  directory (a test, a host that builds a second) never run git on it at
+ *  once — git's own locks would fail the second. */
+const repoChains = new Map<string, Promise<unknown>>();
+function onRepo<T>(dir: string, fn: () => Promise<T>): Promise<T> {
+  const next = (repoChains.get(dir) ?? Promise.resolve()).then(fn);
+  const settled = next.catch(() => undefined);
+  repoChains.set(dir, settled);
+  void settled.then(() => {
+    if (repoChains.get(dir) === settled) repoChains.delete(dir);
+  });
+  return next;
+}
+
+interface RepoState {
+  onDisk?: Map<string, string>;
+  /** No snapshot staged since this process opened the repository. */
+  first: boolean;
+  head?: string | null;
+  headTree?: string | null;
+  commits: number;
+}
+const freshState = (): RepoState => ({ onDisk: undefined, first: true, head: undefined, headTree: undefined, commits: 0 });
+const repoStates = new Map<string, RepoState>();
+const repoState = (dir: string): RepoState => {
+  let s = repoStates.get(dir);
+  if (!s) repoStates.set(dir, (s = freshState()));
+  return s;
+};
+
 /** The commands `git()` runs for a reader: they read, nothing else. */
 const READ_COMMANDS = new Set(["log", "show", "diff", "rev-list", "rev-parse", "ls-tree", "cat-file"]);
 
@@ -221,26 +251,25 @@ export function createHistory(deps: HistoryDeps): History {
     return r.stdout;
   };
 
-  let ready: Promise<void> | undefined;
-  const ensureRepo = () =>
-    (ready ??= (async () => {
-      if (!(await stat(join(dir, "HEAD")).catch(() => null))) {
-        await mkdir(dirname(dir), { recursive: true });
-        await runProcess({ cmd: deps.git, args: [...GIT_FLAGS, "init", "--bare", "-q", dir], cwd: deps.dataDir, env: { GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: NULL_DEVICE } }).then((r) => {
-          if (r.code !== 0) throw new Error(`git init: ${r.stderr.trim()}`);
-        });
-        await git(["symbolic-ref", "HEAD", `refs/heads/${HISTORY_BRANCH}`]);
-      }
-      await mkdir(work, { recursive: true });
-    })().catch((err) => {
-      ready = undefined;
-      throw err;
-    }));
+  // What this process knows of the repository, shared by every history
+  // over it: the work tree by path → sha1 of its bytes (a file is written
+  // only when its bytes change, so git's stat cache stays good; read from
+  // disk on the first snapshot), and the commit and tree `main` is at.
+  const state = repoState(dir);
+  /** The repository, made when it is not there (run on the repo's chain). */
+  const ensureRepo = async () => {
+    if (!(await stat(join(dir, "HEAD")).catch(() => null))) {
+      // A data directory that is gone (a host or a test removed it) is not
+      // made again here.
+      if (!(await stat(deps.dataDir).catch(() => null))) throw new Error(`the data directory ${deps.dataDir} is gone`);
+      Object.assign(state, freshState());
+      const r = await runProcess({ cmd: deps.git, args: [...GIT_FLAGS, "init", "--bare", "-q", "--template=", dir], cwd: deps.dataDir, env: { GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: NULL_DEVICE } });
+      if (r.code !== 0) throw new Error(`git init: ${r.stderr.trim()}`);
+      await git(["symbolic-ref", "HEAD", `refs/heads/${HISTORY_BRANCH}`]);
+    }
+    await mkdir(work, { recursive: true });
+  };
 
-  // What the work tree holds, by path → sha1 of its bytes: a file is written
-  // only when its bytes change, so git's stat cache stays good. Read from
-  // disk on the first snapshot.
-  let onDisk: Map<string, string> | undefined;
   const sum = (b: Buffer) => createHash("sha1").update(b).digest("hex");
   const walk = async (): Promise<Map<string, string>> => {
     const out = new Map<string, string>();
@@ -254,11 +283,6 @@ export function createHistory(deps: HistoryDeps): History {
     await go("");
     return out;
   };
-  /** The tree `main` points at, once read. */
-  let headTree: string | null | undefined;
-  let head: string | null | undefined;
-  let first = true;
-
   async function snapshot(take: Pending): Promise<SnapshotResult> {
     const started = Date.now();
     await ensureRepo();
@@ -273,7 +297,7 @@ export function createHistory(deps: HistoryDeps): History {
       },
       EVERYTHING,
     );
-    onDisk ??= await walk();
+    const onDisk = (state.onDisk ??= await walk());
     let written = 0;
     let removed = 0;
     for (const [path, content] of out.files) {
@@ -296,15 +320,16 @@ export function createHistory(deps: HistoryDeps): History {
     const result: SnapshotResult = { changed: false, written, removed, files: out.files.size, ms: 0, warnings: out.warnings };
     // Nothing on disk changed and the index was read once since boot: the
     // tree is the one committed.
-    if (!written && !removed && !first) return { ...result, ms: Date.now() - started };
-    first = false;
+    if (!written && !removed && !state.first) return { ...result, ms: Date.now() - started };
+    state.first = false;
     await git(["add", "-A"], { workTree: true });
     const tree = (await git(["write-tree"])).trim();
-    if (headTree === undefined) {
-      head = (await run(["rev-parse", "-q", "--verify", `refs/heads/${HISTORY_BRANCH}`])).stdout.trim() || null;
-      headTree = head ? (await git(["rev-parse", `${head}^{tree}`])).trim() : null;
+    if (state.headTree === undefined) {
+      state.head = (await run(["rev-parse", "-q", "--verify", `refs/heads/${HISTORY_BRANCH}`])).stdout.trim() || null;
+      state.headTree = state.head ? (await git(["rev-parse", `${state.head}^{tree}`])).trim() : null;
     }
-    if (tree === headTree) return { ...result, ms: Date.now() - started };
+    const head = state.head;
+    if (tree === state.headTree) return { ...result, ms: Date.now() - started };
     const when = `${Math.floor(Date.now() / 1000)} +0000`;
     const author = take.actor || HISTORY_ACTOR;
     const commit = (
@@ -321,12 +346,11 @@ export function createHistory(deps: HistoryDeps): History {
       })
     ).trim();
     await git(["update-ref", `refs/heads/${HISTORY_BRANCH}`, commit, ...(head ? [head] : [])]);
-    head = commit;
-    headTree = tree;
-    if (++commits % 500 === 0) await run(["gc", "--auto", "--quiet"]).catch(() => undefined);
+    state.head = commit;
+    state.headTree = tree;
+    if (++state.commits % 500 === 0) await run(["gc", "--auto", "--quiet"]).catch(() => undefined);
     return { ...result, commit, changed: true, ms: Date.now() - started };
   }
-  let commits = 0;
 
   // ── the queue ──
   let pending: Pending | null = null;
@@ -362,7 +386,7 @@ export function createHistory(deps: HistoryDeps): History {
       pending = null;
       if (!take) return undefined;
       try {
-        return (last = await snapshot(take));
+        return (last = await onRepo(dir, () => snapshot(take)));
       } catch (err) {
         console.warn(`[history] snapshot (${take.causes[0] ?? "sync"}) failed: ${err instanceof Error ? err.message : String(err)}`);
         return undefined;
@@ -402,7 +426,7 @@ export function createHistory(deps: HistoryDeps): History {
     },
     async git(args) {
       if (!READ_COMMANDS.has(args[0] ?? "") || args.some((a) => a.startsWith("--output"))) throw new Error(`history: git ${args.join(" ")} is not a read`);
-      await ensureRepo();
+      await onRepo(dir, ensureRepo);
       return git(args);
     },
     watch(ws) {
@@ -429,12 +453,13 @@ export function createHistory(deps: HistoryDeps): History {
         schedule();
       }
     },
-    start() {
+    async start() {
       if (started || closed) return;
       started = true;
       // What the seeds published is the boot's.
       pending = { causes: ["boot"], actor: HISTORY_ACTOR, runs: pending?.runs ?? [], firstAt: Date.now() };
-      schedule(true);
+      await mkdir(deps.dataDir, { recursive: true }).catch(() => undefined);
+      await drain();
     },
     async close() {
       if (closed) return;

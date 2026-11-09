@@ -456,7 +456,9 @@ not lost.
    build's `exportTypes` adds and which are facts and a scan of every
    edge; the manifest is `strut/workspace` at version `snapshot`; reads
    are kept between snapshots by version label and content hash, so a
-   quiet workspace costs three listings plus the Concept and type reads.
+   quiet workspace costs three listings plus the Concept and type reads;
+   createStrut awaits the boot snapshot, so a strut that answers has its
+   boot commit.
    Measured on 300 Concepts of ~3 KB each (a test logs it): ~250–290 ms
    for the first snapshot, ~25 ms for one that changes nothing, ~90 ms
    for one page changed, on Ladybug and Neo4j alike. As planned:

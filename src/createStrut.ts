@@ -8119,8 +8119,9 @@ export async function createStrut<TServices = unknown>(
       console.warn(`[auto-resume] could not record this boot in ${file}:`, err);
     }
   };
-  // The history's first snapshot, cause `boot`: every seed is in.
-  history?.start();
+  // The history's first snapshot, cause `boot`: every seed is in. Awaited,
+  // so a strut that answers has its boot commit (a failed one is a warning).
+  await history?.start();
 
   // The first-boot installs (src/packages/boot.ts), last: after the seeds
   // (strut/views an app may import, the Concept roots a page may hang
