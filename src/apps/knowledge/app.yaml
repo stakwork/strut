@@ -1,13 +1,15 @@
 title: Knowledge
 description: >-
-  The organisation's knowledge (plans/knowledge-app.md): the Concept tree
-  and its graph, each concept's description and docs, searched. Read-only.
-  Strut ships it and seeds it on every server; it acts as its viewer.
+  The organisation's knowledge (plans/knowledge-app.md): the ontology, every
+  type's nodes (Concepts as the tree), one search over all of them, and the
+  graph round whatever is picked, filtered by type. Read-only. Strut ships
+  it and seeds it on every server; it acts as its viewer.
 icon: network
 grants:
   workflows: []
   steps:
     - graph/find
+    - graph/get-ontology
     - graph/graph-edges
     - graph/graph-get-batched
     - graph/graph-neighbors

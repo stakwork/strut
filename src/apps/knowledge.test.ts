@@ -20,11 +20,13 @@ import { STEP_RUN_TOOL, buildAppTools } from "./tools.js";
 import { KNOWLEDGE_APP, KNOWLEDGE_DIR, seedKnowledgeApp } from "./knowledge-seed.js";
 import { VIEWS_APP } from "./views-seed.js";
 import { buildTree, conceptOf, hasDocs, opening, pathToRoot, reach, rowKey, visibleRows, type Concept } from "./knowledge/src/lib/tree.js";
+import { groupLinks, isSystemType, linkLabel, orderTypes, textOf, typeDescription, typePlural } from "./knowledge/src/lib/ontology.js";
 
 /**
- * `strut/knowledge` (plans/knowledge-app.md): the Concept tree as a
+ * `strut/knowledge` (plans/knowledge-app.md): the org's knowledge as a
  * first-party app strut ships — the tree it draws (roots, the unplaced,
- * several parents, cycles, paths, open rows), its seed beside strut/views,
+ * several parents, cycles, paths, open rows), the ontology and links it
+ * lists (which types, how a link reads), its seed beside strut/views,
  * its place in `GET /apps`, and the graph steps its page calls on a real
  * (Ladybug) graph through the app door.
  */
@@ -88,6 +90,49 @@ describe("strut/knowledge: the tree", () => {
   });
 });
 
+describe("strut/knowledge: the ontology and a node's links", () => {
+  it("lists the domain's types holding a node, Concept first then the biggest; strut's own and the graph's plumbing never", () => {
+    const t = (type: string, count: number) => ({ type, description: "", count });
+    assert.deepEqual(
+      orderTypes([t("Person", 4), t("StrutRun", 90), t("Concept", 12), t("Document", 43), t("Claim", 7), t("Decision", 0), t("Feature", 4)]).map((x) => x.type),
+      ["Concept", "Document", "Feature", "Person"],
+    );
+    assert.equal(isSystemType("StrutWorkflowVersion"), true);
+    assert.equal(isSystemType("EdgeText"), true);
+    assert.equal(isSystemType("Person"), false);
+    assert.equal(typeDescription("?string"), "", "an attribute spec says nothing to a reader");
+    assert.equal(typeDescription("Declared by the app strut/canvas (app.yaml data.graph)."), "");
+    assert.equal(typeDescription("A written document"), "A written document");
+    assert.deepEqual(["Concept", "Person", "Process", "Policy", "Day"].map(typePlural), ["Concepts", "People", "Processes", "Policies", "Days"]);
+  });
+
+  it("groups a node's neighbours by edge and direction, each read from this node; strut's own nodes left out, a node once per group", () => {
+    const n = (ref_id: string, node_type: string, edge_type: string, direction: "forward" | "reverse") => ({ ref_id, node_type, name: ref_id, edge_type, direction });
+    const groups = groupLinks([
+      n("auth", "Concept", "OWNS", "forward"),
+      n("billing", "Concept", "OWNS", "forward"),
+      n("billing", "Concept", "OWNS", "forward"),
+      n("rfc", "Document", "AUTHORED", "forward"),
+      n("run1", "StrutRun", "TOUCHED", "reverse"),
+      n("x", "Thing", "CITES", "reverse"),
+    ]);
+    assert.deepEqual(groups.map((g) => [g.label, g.nodes.map((m) => m.ref_id)]), [
+      ["Owns", ["auth", "billing"]],
+      ["Cites (from)", ["x"]],
+      ["Wrote", ["rfc"]],
+    ]);
+    assert.equal(linkLabel("PARENT_OF", "forward"), "Children");
+    assert.equal(linkLabel("PARENT_OF", "reverse"), "Parents");
+    assert.equal(linkLabel("WORKS_AT", "forward"), "Works at");
+  });
+
+  it("a node's text: description (or summary) and docs (or body), blank as none", () => {
+    assert.deepEqual(textOf({ summary: "Short", body: "# Long" }), { description: "Short", docs: "# Long" });
+    assert.deepEqual(textOf({ description: " ", docs: "" }), { description: null, docs: null });
+    assert.deepEqual(textOf(undefined), { description: null, docs: null });
+  });
+});
+
 describe("strut/knowledge — seeded at boot beside strut/views", () => {
   let kit: KitLocation;
   const dirs: string[] = [];
@@ -113,7 +158,7 @@ describe("strut/knowledge — seeded at boot beside strut/views", () => {
     assert.equal(app.hash, await treeHash(KNOWLEDGE_DIR));
     assert.equal(app.manifest.title, "Knowledge");
     assert.deepEqual(app.manifest.grants.workflows, []);
-    assert.deepEqual(app.manifest.grants.steps, ["graph/find", "graph/graph-edges", "graph/graph-get-batched", "graph/graph-neighbors", "graph/graph-search"]);
+    assert.deepEqual(app.manifest.grants.steps, ["graph/find", "graph/get-ontology", "graph/graph-edges", "graph/graph-get-batched", "graph/graph-neighbors", "graph/graph-search"]);
     const info = JSON.parse(await readFile(join(app.dir, "dist", "build.json"), "utf8"));
     const views = (await first.apps.get(VIEWS_APP))!;
     assert.deepEqual(info.imports, [{ name: VIEWS_APP, version: views.version, hash: views.hash }], "strut/views compiled in");
@@ -187,7 +232,7 @@ describe("strut/knowledge — its page reads the tree on a graph", { skip: ladyb
     await rm(root, { recursive: true, force: true, maxRetries: 5 });
   });
 
-  it("pages the Concepts, reads PARENT_OF among them and builds the tree; searches and neighbours pass; a graph write is refused", async () => {
+  it("pages the Concepts, reads PARENT_OF among them and builds the tree; the ontology, counts, searches and neighbours pass; a graph write is refused", async () => {
     const write = async (name: string, docs?: string) => (await b.nodes.write({ type: "Concept", data: { name, description: `About ${name}`, ...(docs ? { docs } : {}) } })).ref_id;
     const cb = await write("Codebase", "# Codebase\n\nEvery repository the team builds.");
     const st = await write("strut");
@@ -214,14 +259,25 @@ describe("strut/knowledge — its page reads the tree on a graph", { skip: ladyb
     assert.deepEqual(tree.unplaced, [lo]);
     assert.deepEqual(pathToRoot(tree, ap), [cb, st, ap]);
 
+    // The ontology the sidebar lists, and a type's count.
+    const onto = await call("graph/get-ontology", {});
+    assert.equal(onto.error, undefined, onto.error);
+    assert.ok(Object.values(onto.result.node_types as Record<string, Array<{ type: string }>>).flat().some((t) => t.type === "Concept"));
+    const counted = await call("graph/find", { node_type: "Concept", limit: 1, count: true });
+    assert.equal(counted.result.total, 4);
+
     for (const [type, config] of [
       ["graph/graph-get-batched", { ref_ids: [ap] }],
+      ["graph/graph-search", { q: "Apps", exclude_domains: "strut" }],
       ["graph/graph-neighbors", { ref_id: st }],
       ["graph/graph-search", { q: "Apps", type: "Concept" }],
     ] as const) assert.equal((await call(type, config)).error, undefined, type);
     // The graph view's call: a concept's PARENT_OF neighbours, both ways.
     const around = await call("graph/graph-neighbors", { ref_id: st, edge_type: ["PARENT_OF"] });
     assert.deepEqual(around.result.map((n: any) => `${n.direction}:${n.name}`).sort(), ["forward:Apps", "reverse:Codebase"]);
+    // The card's links: every edge, grouped and read from this node.
+    const all = await call("graph/graph-neighbors", { ref_id: st });
+    assert.deepEqual(groupLinks(all.result).map((g) => g.label).sort(), ["Children", "Parents"]);
 
     for (const [type, config] of [
       ["graph/edit-node", { ref_id: ap, node_data: { docs: "x" } }],

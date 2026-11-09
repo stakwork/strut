@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Background, Controls, MarkerType, ReactFlow, type Edge, type EdgeTypes, type Node, type ReactFlowInstance } from "@xyflow/react";
+import { Background, Controls, MarkerType, ReactFlow, useStore, type Edge, type EdgeTypes, type Node, type ReactFlowInstance } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { ChevronsDownUp, ChevronsUpDown, Loader2 } from "lucide-react";
 import { useHost, useStrutClient } from "@strut/kit";
@@ -20,6 +20,8 @@ export interface NodeGraphProps {
   onSelect?: (node: { ref_id: string; node_type: string; name: string }) => void;
   /** The node to mark as picked (beyond `refId`'s bold border). */
   selected?: string | null;
+  /** Node types not drawn (the centre always is); toggling one refits, it reads nothing again. */
+  hiddenTypes?: ReadonlySet<string>;
   /** The canvas's height in px. */
   height?: number;
   className?: string;
@@ -65,6 +67,17 @@ function placedUnder(placed: Map<string, Placed>, id: string): Set<string> {
   return out;
 }
 
+/** Refit whenever the canvas changes size: a page drawn while hidden (a frame shown once it loads,
+ *  a panel opened) is fitted to nothing until then. Inside <ReactFlow>, where its size is known. */
+function FitOnResize({ fit }: { fit: () => void }) {
+  const width = useStore((s) => s.width);
+  const height = useStore((s) => s.height);
+  useEffect(() => {
+    if (width && height) fit();
+  }, [width, height, fit]);
+  return null;
+}
+
 /**
  * A node's neighbourhood in React Flow: the node in the middle, its
  * neighbours around it (`graph/graph-neighbors`). Each node's + opens its
@@ -73,7 +86,7 @@ function placedUnder(placed: Map<string, Placed>, id: string): Set<string> {
  * through the importing app's grants (`graph/graph-get-batched` for the
  * first node, `graph/graph-neighbors`).
  */
-export function NodeGraph({ refId, edgeTypes, onSelect, selected, height = 480, className }: NodeGraphProps) {
+export function NodeGraph({ refId, edgeTypes, hiddenTypes, onSelect, selected, height = 480, className }: NodeGraphProps) {
   const client = useStrutClient();
   const { theme } = useHost();
   const [placed, setPlaced] = useState<Map<string, Placed>>(new Map());
@@ -123,6 +136,7 @@ export function NodeGraph({ refId, edgeTypes, onSelect, selected, height = 480, 
         });
         setExpanded((prev) => new Set(prev).add(id));
         if (fresh.length) fitPending.current = true;
+        else fit();
         setError(null);
       } catch (e) {
         setError(errorText(e));
@@ -168,16 +182,26 @@ export function NodeGraph({ refId, edgeTypes, onSelect, selected, height = 480, 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client, refId, expand]);
 
-  /** The edges both of whose ends are on the canvas. */
-  const shown = useMemo(() => [...links.entries()].filter(([, e]) => placed.has(e.source) && placed.has(e.target)), [links, placed]);
+  /** What is drawn: the centre, and every placed node of a type not hidden. */
+  const visible = useMemo(() => new Map([...placed].filter(([id, p]) => id === refId || !hiddenTypes?.has(p.node_type))), [placed, hiddenTypes, refId]);
+  /** Edges among placed nodes, drawn or not: what an opening would add is counted against these. */
+  const known = useMemo(() => [...links.values()].filter((e) => placed.has(e.source) && placed.has(e.target)), [links, placed]);
+  /** The edges both of whose ends are drawn. */
+  const shown = useMemo(() => [...links.entries()].filter(([, e]) => visible.has(e.source) && visible.has(e.target)), [links, visible]);
+  // A filter change moves what is drawn: refit to it.
+  useEffect(() => {
+    fit();
+  }, [hiddenTypes, fit]);
 
   const flowNodes = useMemo<Node[]>(() => {
     const drawn = new Map<string, number>();
-    for (const [, e] of shown) {
+    for (const e of known) {
       drawn.set(e.source, (drawn.get(e.source) ?? 0) + 1);
       drawn.set(e.target, (drawn.get(e.target) ?? 0) + 1);
     }
-    return [...placed.values()].map((p) => {
+    const linked = new Set(shown.flatMap(([, e]) => [e.source, e.target]));
+    // A node whose only way back runs through a hidden one is not drawn either.
+    return [...visible.values()].filter((p) => p.ref_id === refId || linked.has(p.ref_id)).map((p) => {
       const open = expanded.has(p.ref_id);
       const more = p.degree - (drawn.get(p.ref_id) ?? 0);
       const canFold = open && [...placed.values()].some((q) => q.from === p.ref_id);
@@ -226,7 +250,7 @@ export function NodeGraph({ refId, edgeTypes, onSelect, selected, height = 480, 
         },
       };
     });
-  }, [placed, shown, expanded, refId, loading, selected, collapse, expand]);
+  }, [placed, visible, known, shown, expanded, refId, loading, selected, collapse, expand]);
 
   const flowEdges = useMemo<Edge[]>(() => {
     // One edge type throughout says nothing per edge: no labels.
@@ -273,6 +297,7 @@ export function NodeGraph({ refId, edgeTypes, onSelect, selected, height = 480, 
       >
         <Background />
         <Controls showInteractive={false} />
+        <FitOnResize fit={fit} />
       </ReactFlow>
     </div>
   );
