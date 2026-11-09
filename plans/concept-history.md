@@ -1,6 +1,6 @@
 # History: the workspace as a package, in git
 
-> **Status (2026-11-09): items 1–3 built (strut#577, strut#PRNUM); item 4,
+> **Status (2026-11-09): items 1–3 built (strut#577, strut#579); item 4,
 > the diff view, next. Thirteen rulings in (Evan, 2026-11-07 and
 > 2026-11-08; "Rulings" below).** Written after a read of `main`
 > @8db356c, revised on 2026-11-07 after a read of openlaw-1's climbs
@@ -446,7 +446,7 @@ not lost.
      next boot seed leaves the edge;
    - an attribute the installing graph does not declare is left out,
      with a warning.
-2. **The history. BUILT 2026-11-09, strut#PRNUM** (`src/history.ts`,
+2. **The history. BUILT 2026-11-09, strut#579** (`src/history.ts`,
    `packageFiles` in `src/packages/build.ts`). Decided in the build:
    the work tree is `history.git/work/`; the author email is
    `history@strut.invalid`; a commit is made with `commit-tree`, so no
@@ -488,7 +488,7 @@ not lost.
    - rewriting a node unchanged makes none;
    - a raw write is caught at the next touch, or by `sync`;
    - with the setting off, no repository exists.
-3. **`history/read`. BUILT 2026-11-09, strut#PRNUM**
+3. **`history/read`. BUILT 2026-11-09, strut#579**
    (`src/steps/lib/history/read.ts`). A time is ISO 8601 or epoch
    milliseconds; `show` of `""` is the root's listing. Under a reader
    list, `concepts/` is hidden when the caller cannot read the backend's
