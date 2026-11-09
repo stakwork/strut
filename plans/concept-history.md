@@ -1,7 +1,8 @@
 # History: the workspace as a package, in git
 
-> **Status (2026-11-08): proposed, thirteen rulings in (Evan, 2026-11-07
-> and 2026-11-08; "Rulings" below).** Written after a read of `main`
+> **Status (2026-11-09): items 1–3 built (strut#577, strut#579); item 4,
+> the diff view, next. Thirteen rulings in (Evan, 2026-11-07 and
+> 2026-11-08; "Rulings" below).** Written after a read of `main`
 > @8db356c, revised on 2026-11-07 after a read of openlaw-1's climbs
 > (§1), and rewritten on 2026-11-08: a snapshot is a package build, and
 > the history tracks no write (ruling 11). Revised on 2026-11-09 after a
@@ -102,15 +103,18 @@
 
 ## 2. What a snapshot holds
 
-One bare repository per strut, `<dataDir>/history.git`, branch `main`.
-Its tree is a package directory (`marketplace.md` §1, `format.ts`):
+One bare repository per strut, `<dataDir>/history.git`, branch `main`,
+its work tree inside it (`history.git/work/`, so it moves and is backed up
+with the repository; any snapshot rebuilds it). Its tree is a package
+directory (`marketplace.md` §1, `format.ts`):
 
 ```
 strut.yaml                           the manifest: this workspace, and the installed packages it pins
 workflows/<path>.yaml                every workflow's active version, as published
 steps/<path>.ts                      every step's active version; `_` helpers; <path>.claims.yaml beside it
 concepts/<key>.md                    every live Concept in the backend's own namespace (§2.1)
-namespaces/<ns>/concepts/<key>.md    every live Concept in any other namespace
+namespaces/<ns>/concepts/<key>.md    every live Concept in any other namespace (a Ladybug file has
+                                     them too: `private` is its own, any other is made by writing into it)
 graph/<Type>.yaml                    every type in the ontology, the Strut types excepted
 apps/<name>/                         every app's active version, its sources; never dist/
 ```
@@ -217,14 +221,20 @@ apps/<name>/                         every app's active version, its sources; ne
 - **Boot**, once, after the seeds; and **`sync`** (§4).
 
 **A touch becomes a snapshot.** Touches go on one in-process queue with a
-one-second debounce, so an install's hundred writes make one commit. A
-snapshot writes every file, stages everything, and commits when anything
-differs:
+one-second debounce (five seconds at most after the first touch waiting,
+as the view's flush), and an install or uninstall HOLDS the queue, so its
+hundred writes make one commit under its own cause. A snapshot writes
+every file whose bytes changed, stages everything, and commits when the
+tree differs:
 
 - authored by the actor who wrote (the run's, the person who published
-  or installed; `strut` for boot and sync);
+  or installed; `strut` for boot and sync), email `history@strut.invalid`
+  for every author, committer `strut`;
 - its first line the cause (`run <id>`, `proposal <id>`, `publish
-  acme/sync v3`, `install acme/linear@sha256:…`, `boot`, `sync`);
+  acme/sync v3`, `activate acme/sync v2` for a rollback, `delete <name>`,
+  `release <app> <version>`, `install acme/linear@sha256:…`, `uninstall
+  acme/linear`, `boot`, `sync`); touches that land in one window list
+  their other causes below it, and what an install published is its own;
 - one trailer, **`Run:`**, for each run whose flush touched since the
   last commit. A subflow shares its root run's id, so a climb's improve
   step is the climb's run. No step: the run's log already says which
@@ -436,7 +446,23 @@ not lost.
      next boot seed leaves the edge;
    - an attribute the installing graph does not declare is left out,
      with a warning.
-2. **The history.** `packageFiles` factored out of `buildPackage` and
+2. **The history. BUILT 2026-11-09, strut#579** (`src/history.ts`,
+   `packageFiles` in `src/packages/build.ts`). Decided in the build:
+   the work tree is `history.git/work/`; the author email is
+   `history@strut.invalid`; a commit is made with `commit-tree`, so no
+   hook, signing or user config applies, and a snapshot whose files are
+   unchanged spawns no git at all; a snapshot's types carry the
+   ontology's RULES only — never the edges the graph holds, which a
+   build's `exportTypes` adds and which are facts and a scan of every
+   edge; the manifest is `strut/workspace` at version `snapshot`; reads
+   are kept between snapshots by version label and content hash, so a
+   quiet workspace costs three listings plus the Concept and type reads;
+   createStrut awaits the boot snapshot, so a strut that answers has its
+   boot commit.
+   Measured on 300 Concepts of ~3 KB each (a test logs it): ~250–290 ms
+   for the first snapshot, ~25 ms for one that changes nothing, ~90 ms
+   for one page changed, on Ladybug and Neo4j alike. As planned:
+   `packageFiles` factored out of `buildPackage` and
    given "everything" as a pick, in a WHOLE mode: `conceptFiles` refuses
    a page stamped by another seeder and a name with `/`, and `exportTypes`
    warns on an edge to a type left out — a build's rules, which a snapshot
@@ -462,8 +488,13 @@ not lost.
    - rewriting a node unchanged makes none;
    - a raw write is caught at the next touch, or by `sync`;
    - with the setting off, no repository exists.
-3. **`history/read`.** The actions, times, the reader list,
-   read-your-writes. Tests:
+3. **`history/read`. BUILT 2026-11-09, strut#579**
+   (`src/steps/lib/history/read.ts`). A time is ISO 8601 or epoch
+   milliseconds; `show` of `""` is the root's listing. Under a reader
+   list, `concepts/` is hidden when the caller cannot read the backend's
+   own namespace, a commit that changed only hidden paths is not in its
+   log, and `namespaces/` is not listed when none in it is readable. The
+   actions, times, the reader list, read-your-writes. Tests:
    - a time between two commits reads the earlier one;
    - `log { run }` lists exactly that run's commits;
    - `log { path }` of a renamed page reaches back past the rename;
@@ -580,6 +611,14 @@ Evan, 2026-11-08:
   step applies it, but the repository itself holds every namespace, as
   the graph's own file does: anything that can read `dataDir` can read
   it.
+- **A reader list's `exclude_domains`** hides no file: the step applies
+  namespaces only, so a page or a type of an excluded domain is read.
+- **A commit is not yet a package `readPackage` takes**: it refuses the
+  `namespaces/` folder, as a package from a newer strut. An install from a
+  commit (Later) decides what that folder means there.
+- **`settle` during an install** runs the queue though the install holds
+  it, so a step that reads the history while an install runs may commit
+  part of it, under `sync`. No step does today.
 - **Edge rules' other fields.** The type grammar carries no `temporal`,
   `cardinality` or aliases yet (`graph-types.ts`), so a type's history
   misses them until it does.

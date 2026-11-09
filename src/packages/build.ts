@@ -62,6 +62,7 @@ import { hasTemplates } from "../expr.js";
 import type { GraphBackend } from "../graph/backend.js";
 import type { CheckRow } from "../graph/claims.js";
 import { composeNodeKey } from "../graph/node-writer.js";
+import type { NodeSchema } from "../graph/schema-resolver.js";
 import { secretNamesIn } from "../reach.js";
 import type { SubflowResolver } from "../runner.js";
 import { isSealedStep, sealedStepPatterns } from "../sealed.js";
@@ -71,9 +72,9 @@ import { packagePrefixOf, type Upstream, type VersionSource, type WorkspaceStore
 import { dumpYaml, loadYaml } from "../yaml.js";
 import type { CachedPackage, PackageCache } from "./cache.js";
 import { MANIFEST_FILE, PACKAGE_DIGEST, PACKAGE_NAME, readPackage, type PackageManifest } from "./format.js";
-import { exportTypes } from "./graph-types.js";
+import { allTypeFiles, exportTypes } from "./graph-types.js";
 import { suggest, type SuggestDeps, type Suggested } from "./suggest.js";
-import { conceptPrefix } from "./installed.js";
+import { conceptPrefix, listInstalledPackages } from "./installed.js";
 
 export interface BuildDeps {
   workspace: WorkspaceStore;
@@ -172,6 +173,57 @@ const hosts = (o: Origin) => o.source === "seed" || (o.publisher !== undefined &
  *  files and their digest — with nothing kept in the cache: what the
  *  package page shows as "comes along" while a person picks. */
 export async function buildPackage(deps: BuildDeps, req: BuildRequest, opts: { dryRun?: boolean } = {}): Promise<BuildResult> {
+  const { files, manifest, warnings, suggested } = await packageFiles(deps, req);
+  const pkg = manifest.package;
+  // Written beside the cache, then in through it: the cache re-reads and hashes it.
+  const scratch = join(deps.cache.root, ".build", randomBytes(8).toString("hex"));
+  try {
+    for (const [file, text] of files) {
+      const to = join(scratch, ...file.split("/"));
+      await mkdir(dirname(to), { recursive: true });
+      await writeFile(to, text);
+    }
+    if (opts.dryRun) {
+      const info = await readPackage(scratch);
+      return { package: pkg, version: req.version, digest: info.digest, files: info.files, manifest, dir: "", warnings, suggested: suggested! };
+    }
+    const info = await deps.cache.putDir(scratch);
+    return { package: pkg, version: req.version, digest: info.digest, files: info.files, manifest, dir: info.dir, warnings, suggested: suggested! };
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+}
+
+/** `packageFiles`' pick for a SNAPSHOT (plans/concept-history.md §2): the
+ *  whole workspace, in the whole mode `wholeFiles` describes. */
+export const EVERYTHING = "everything";
+
+/** A package directory as files: path → text or bytes, `strut.yaml` among
+ *  them. */
+export interface PackageFiles {
+  files: Map<string, string | Buffer>;
+  manifest: PackageManifest;
+  warnings: string[];
+  /** A build's: what the picked workflows' runs reach that it does not carry. */
+  suggested?: Suggested;
+}
+
+/**
+ * The ONE place a package's files are written (plans/concept-history.md
+ * §2): a build passes its picks and gets what they reach (the closure, the
+ * module comment's six rules); a snapshot passes `EVERYTHING` and gets the
+ * whole workspace (`wholeFiles`). The writers are shared — a Concept page
+ * (`conceptPageFile`), a graph type (`typeFile`), an app's sources, a step's
+ * claims — so the same item is the same bytes in a package and in the
+ * history.
+ */
+export async function packageFiles(deps: BuildDeps, picks: BuildRequest): Promise<PackageFiles>;
+export async function packageFiles(deps: WholeDeps, picks: typeof EVERYTHING): Promise<PackageFiles>;
+export async function packageFiles(deps: BuildDeps | WholeDeps, picks: BuildRequest | typeof EVERYTHING): Promise<PackageFiles> {
+  return picks === EVERYTHING ? wholeFiles(deps) : pickedFiles(deps as BuildDeps, picks);
+}
+
+async function pickedFiles(deps: BuildDeps, req: BuildRequest): Promise<PackageFiles> {
   const pkg = req.package;
   if (typeof pkg !== "string" || !PACKAGE_NAME.test(pkg)) throw refused(["a package is named publisher/name: two lowercase segments, [a-z][a-z0-9-]*"]);
   if (typeof req.version !== "string" || !req.version) throw refused(["a package has a version, the publisher's label (1.4.0)"]);
@@ -400,17 +452,13 @@ export async function buildPackage(deps: BuildDeps, req: BuildRequest, opts: { d
     const name = appQueue.shift()!;
     const rec = (await deps.workspace.getApp(name))!;
     const at = `${name}@${rec.version}`;
-    const dir = (await deps.apps?.versionDir(name))?.path ?? (await deps.workspace.materializeAppVersion(name, rec.version)).path;
-    const files = await treeFiles(dir);
-    if (!files.length) {
-      problems.push(`the files of ${at} are not on this host (${dir})`);
+    const read = await appSources(deps, name, rec.version, rec.hash);
+    if ("problem" in read) {
+      problems.push(read.problem);
       continue;
     }
-    if ((await hashTree(dir, files)) !== rec.hash) {
-      problems.push(`the files of ${at} are not its version: its directory was edited in place — publish it again`);
-      continue;
-    }
-    for (const f of files) apps.get(name)!.set(f, await readFile(join(dir, f)));
+    apps.set(name, read.files);
+    const dir = read.dir;
     const built = await readBuildInfo(dir);
     if (!built || built.hash !== rec.hash) problems.push(`${at} has no build of its sources, so the apps it imports cannot be read — build and publish it again`);
     for (const imp of built?.hash === rec.hash ? built.imports : []) {
@@ -602,24 +650,7 @@ export async function buildPackage(deps: BuildDeps, req: BuildRequest, opts: { d
     ...(Object.keys(requires).length ? { requires } : {}),
   };
   files.set(MANIFEST_FILE, dumpYaml(manifest));
-
-  // Written beside the cache, then in through it: the cache re-reads and hashes it.
-  const scratch = join(deps.cache.root, ".build", randomBytes(8).toString("hex"));
-  try {
-    for (const [file, text] of files) {
-      const to = join(scratch, ...file.split("/"));
-      await mkdir(dirname(to), { recursive: true });
-      await writeFile(to, text);
-    }
-    if (opts.dryRun) {
-      const info = await readPackage(scratch);
-      return { package: pkg, version: req.version, digest: info.digest, files: info.files, manifest, dir: "", warnings: [...warnings], suggested };
-    }
-    const info = await deps.cache.putDir(scratch);
-    return { package: pkg, version: req.version, digest: info.digest, files: info.files, manifest, dir: info.dir, warnings: [...warnings], suggested };
-  } finally {
-    await rm(scratch, { recursive: true, force: true });
-  }
+  return { files, manifest, warnings: [...warnings], suggested };
 }
 
 /** Is a check inside the package and its requirements? The reason it is
@@ -736,8 +767,7 @@ async function conceptFiles(
     return out;
   }
   const known = [STRUT_CONCEPTS.prefix, ...(STRUT_CONCEPTS.legacyPrefixes ?? []), ...pins.map(conceptPrefix)];
-  const attributes = Object.keys(schema.attributes).filter((a) => !NOT_ATTRIBUTES.has(a));
-  const pages = new Map<string, { attributes: Record<string, unknown>; parents: Array<{ name: string; stamp: unknown }>; docs?: string }>();
+  const pages = new Map<string, { props: Record<string, unknown>; parents: Array<{ name: string; stamp: unknown }> }>();
   const queue: string[] = [];
   for (const name of names) {
     const node = await findConcept(graph, schema, name);
@@ -767,9 +797,7 @@ async function conceptFiles(
       continue;
     }
     if (pages.has(name)) continue;
-    const held = Object.fromEntries(attributes.map((a) => [a, p[a]]).filter(([, v]) => v !== null && v !== undefined && v !== ""));
-    const docs = typeof p["docs"] === "string" && p["docs"].trim() ? p["docs"].trim() : undefined;
-    pages.set(name, { attributes: held, parents, ...(docs ? { docs } : {}) });
+    pages.set(name, { props: p, parents });
     for (const child of children) queue.push(child);
   }
   for (const [name, page] of pages) {
@@ -777,10 +805,217 @@ async function conceptFiles(
       if (pages.has(parent.name) || siblingPages.has(parent.name) || (typeof parent.stamp === "string" && known.some((k) => (parent.stamp as string).startsWith(k)))) continue;
       warnings.add(`the Concept ${name} hangs under ${parent.name}, which is not in the package: the strut that installs it must have a Concept ${parent.name}`);
     }
-    const text = renderConceptPage({ name, attributes: page.attributes, parents: page.parents.map((x) => x.name), ...(page.docs ? { docs: page.docs } : {}) });
-    out.set(`concepts/${composeNodeKey(schema, { name })}.md`, { name, text });
+    const file = conceptPageFile(schema, page.props, page.parents.map((x) => x.name));
+    if (file) out.set(`concepts/${file.key}.md`, { name, text: file.text });
   }
   return out;
+}
+
+/** One Concept as its page (`renderConceptPage`): the node's name, every
+ *  attribute the Concept schema declares that it holds (but what
+ *  `NOT_ATTRIBUTES` names), its parents by name, its docs — and the node
+ *  key the file is named by. The one writer of a page, for a build and a
+ *  snapshot alike. Null for a node with no name. */
+function conceptPageFile(schema: NodeSchema, props: Record<string, unknown>, parents: readonly string[]): { key: string; name: string; text: string } | null {
+  const name = props["name"];
+  if (typeof name !== "string" || !name) return null;
+  const attributes = Object.fromEntries(
+    Object.keys(schema.attributes)
+      .filter((a) => !NOT_ATTRIBUTES.has(a))
+      .map((a) => [a, props[a]])
+      .filter(([, v]) => v !== null && v !== undefined && v !== ""),
+  );
+  const docs = typeof props["docs"] === "string" && props["docs"].trim() ? props["docs"].trim() : undefined;
+  return { key: composeNodeKey(schema, { name }), name, text: renderConceptPage({ name, attributes, parents, ...(docs ? { docs } : {}) }) };
+}
+
+// ── the whole workspace (a snapshot) ─────────────────────────────────────
+
+/** What `packageFiles(…, EVERYTHING)` reads. */
+export interface WholeDeps {
+  workspace: WorkspaceStore;
+  /** For the installed packages a manifest pins (`listInstalledPackages`). */
+  cache: PackageCache;
+  graph?: GraphBackend;
+  claims?: Pick<ClaimsAuthoring, "reader"> | null;
+  apps?: Pick<AppsCapability, "versionDir">;
+  /** What a snapshot taken again need not read again (src/history.ts). */
+  memo?: WholeMemo;
+}
+
+/** Reads kept between snapshots, each by what it is a read of: a version
+ *  label, a content hash. The installed pins are kept until the history
+ *  drops them (a publish, an install). */
+export interface WholeMemo {
+  /** `<name>@<version>` → the workflow's text. */
+  workflows: Map<string, string>;
+  /** `<name>#<hash>` → the step's code. */
+  steps: Map<string, string>;
+  /** `<name>@<version>` → the app's sources. */
+  apps: Map<string, Map<string, Buffer>>;
+  pins?: NonNullable<NonNullable<PackageManifest["requires"]>["packages"]>;
+}
+
+export const newWholeMemo = (): WholeMemo => ({ workflows: new Map(), steps: new Map(), apps: new Map() });
+
+/** The manifest of a snapshot: no package is published under it. */
+export const WORKSPACE_PACKAGE = { package: "strut/workspace", version: "snapshot" } as const;
+
+/**
+ * Every item the workspace holds, as a package directory — the snapshot
+ * the history commits (plans/concept-history.md §2). A build's rules are
+ * lifted: nothing is refused (what cannot be read is a warning and is left
+ * out), nothing is renamed, nothing is walked from a pick.
+ *
+ *   workflows/<name>.yaml        every workflow's active version, as published
+ *   steps/<name>.ts              every custom step's, helpers included;
+ *   steps/<name>.claims.yaml     its live claims beside it
+ *   apps/<name>/…                every app's active version, its sources
+ *   concepts/<key>.md            every live Concept in the backend's own namespace
+ *   namespaces/<ns>/concepts/…   every live Concept in any other
+ *   graph/<Type>.yaml            every type in the ontology but strut's own,
+ *                                with its rules (`allTypeFiles`)
+ *   strut.yaml                   `WORKSPACE_PACKAGE`, pinning every installed package
+ */
+async function wholeFiles(deps: WholeDeps): Promise<PackageFiles> {
+  const memo = deps.memo ?? newWholeMemo();
+  const files = new Map<string, string | Buffer>();
+  const warnings: string[] = [];
+  const keep = (m: Map<string, unknown>, keys: Set<string>) => {
+    for (const k of m.keys()) if (!keys.has(k)) m.delete(k);
+  };
+
+  const wfKeys = new Set<string>();
+  for (const w of await deps.workspace.listWorkflows()) {
+    const key = `${w.name}@${w.activeVersion}`;
+    wfKeys.add(key);
+    let text = memo.workflows.get(key);
+    if (text === undefined) {
+      text = await deps.workspace.getWorkflowSource(w.name, w.activeVersion).catch(() => undefined);
+      if (text === undefined) {
+        warnings.push(`the workflow ${w.name} ${w.activeVersion} could not be read`);
+        continue;
+      }
+      memo.workflows.set(key, text);
+    }
+    files.set(`workflows/${w.name}.yaml`, text);
+  }
+  keep(memo.workflows, wfKeys);
+
+  const stepKeys = new Set<string>();
+  const hashes = await deps.workspace.getActiveStepHashes();
+  for (const [type, hash] of Object.entries(hashes)) {
+    const key = `${type}#${hash}`;
+    stepKeys.add(key);
+    let code = memo.steps.get(key);
+    if (code === undefined) {
+      const src = await deps.workspace.getStepSource(type).catch(() => null);
+      if (!src || src.origin !== "custom") {
+        warnings.push(`the step ${type} could not be read`);
+        continue;
+      }
+      code = src.code;
+      memo.steps.set(key, code);
+    }
+    files.set(`steps/${type}.ts`, code);
+  }
+  keep(memo.steps, stepKeys);
+  if (deps.claims) {
+    const always: InsideCheck = async () => ({ outside: null, steps: [] });
+    const claimWarnings = new Set<string>();
+    for (const type of await deps.claims.reader.claimedSubjects("step")) {
+      if (!(type in hashes) || isHelperName(type)) continue;
+      const kept = await stepClaims(deps.claims, type, always, claimWarnings);
+      if (kept.claims.length) files.set(`steps/${type}.claims.yaml`, dumpYaml(kept.claims));
+    }
+    warnings.push(...claimWarnings);
+  }
+
+  const appKeys = new Set<string>();
+  for (const a of await deps.workspace.listApps()) {
+    const key = `${a.name}@${a.activeVersion}`;
+    let sources = memo.apps.get(key);
+    if (!sources) {
+      const rec = await deps.workspace.getApp(a.name);
+      const read = rec ? await appSources(deps, a.name, rec.version, rec.hash) : { problem: `the app ${a.name} could not be read` };
+      if ("problem" in read) {
+        warnings.push(read.problem);
+        continue;
+      }
+      sources = read.files;
+      memo.apps.set(key, sources);
+    }
+    appKeys.add(key);
+    for (const [file, bytes] of sources) files.set(`apps/${a.name}/${file}`, bytes);
+  }
+  keep(memo.apps, appKeys);
+
+  if (deps.graph) {
+    for (const [file, text] of await allConceptFiles(deps.graph, warnings)) files.set(file, text);
+    for (const [file, text] of await allTypeFiles(deps.graph, warnings)) files.set(file, text);
+  }
+
+  memo.pins ??= (await listInstalledPackages({ workspace: deps.workspace, cache: deps.cache, ...(deps.graph ? { graph: deps.graph } : {}) }))
+    .filter((p): p is typeof p & { digest: string } => typeof p.digest === "string" && PACKAGE_DIGEST.test(p.digest))
+    .map((p) => ({ package: p.package, digest: p.digest, source: p.source?.ref || `sha256:${p.digest.slice(7)}` }));
+  const manifest: PackageManifest = { ...WORKSPACE_PACKAGE, ...(memo.pins.length ? { requires: { packages: memo.pins } } : {}) };
+  files.set(MANIFEST_FILE, dumpYaml(manifest));
+  return { files, manifest, warnings };
+}
+
+/**
+ * Every live Concept in every namespace as its page, in two reads: the
+ * nodes, and every live `PARENT_OF` into one with its parent's name — never
+ * a read per node. A page in the backend's own namespace is
+ * `concepts/<key>.md`, one in any other `namespaces/<ns>/concepts/<key>.md`.
+ * The page is `conceptPageFile`'s, the writer a build uses.
+ */
+async function allConceptFiles(graph: GraphBackend, warnings: string[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const schema = await graph.schemas.schema("Concept");
+  if (!schema) return out;
+  const d = graph.dialect;
+  const fields = [...new Set(["ref_id", "name", "docs", "namespace", ...Object.keys(schema.attributes).filter((a) => !NOT_ATTRIBUTES.has(a))])];
+  const nodes = await graph.query(`MATCH (n) WHERE ${d.isType("n", ["Concept"])} AND ${d.live("n")} RETURN ${d.project("n", fields)} AS p`);
+  const ups = await graph.query(
+    `MATCH (p)-[r:PARENT_OF]->(c) WHERE ${d.isType("c", ["Concept"])} AND ${d.live("c")} AND ${d.live("p")} AND ${d.edgeLive("r")}
+     RETURN c.ref_id AS child, p.name AS parent`,
+  );
+  const parents = new Map<string, string[]>();
+  for (const r of ups) {
+    if (typeof r["child"] !== "string" || typeof r["parent"] !== "string") continue;
+    const list = parents.get(r["child"]) ?? [];
+    list.push(r["parent"]);
+    parents.set(r["child"], list);
+  }
+  for (const row of nodes) {
+    const props = row["p"] as Record<string, unknown>;
+    const page = conceptPageFile(schema, props, parents.get(String(props["ref_id"])) ?? []);
+    if (!page) continue;
+    const ns = typeof props["namespace"] === "string" && props["namespace"] ? props["namespace"] : graph.namespace;
+    const file = ns === graph.namespace ? `concepts/${page.key}.md` : `namespaces/${ns}/concepts/${page.key}.md`;
+    if (out.has(file)) warnings.push(`two Concepts are ${file}: only one is in the snapshot`);
+    else out.set(file, page.text);
+  }
+  return out;
+}
+
+/** An app version's sources (what its version hash covers: never `dist/`
+ *  or `data.db`), checked against that hash — or why they cannot be read. */
+async function appSources(
+  deps: Pick<BuildDeps, "workspace" | "apps">,
+  name: string,
+  version: string,
+  hash: string,
+): Promise<{ dir: string; files: Map<string, Buffer> } | { problem: string }> {
+  const at = `${name}@${version}`;
+  const dir = (await deps.apps?.versionDir(name, version))?.path ?? (await deps.workspace.materializeAppVersion(name, version)).path;
+  const list = await treeFiles(dir);
+  if (!list.length) return { problem: `the files of ${at} are not on this host (${dir})` };
+  if ((await hashTree(dir, list)) !== hash) return { problem: `the files of ${at} are not its version: its directory was edited in place — publish it again` };
+  const files = new Map<string, Buffer>();
+  for (const f of list) files.set(f, await readFile(join(dir, f)));
+  return { dir, files };
 }
 
 /** A workflow's text with its top-level `name:` line written as `full`, or

@@ -22,6 +22,12 @@
  *     `graph/changes` and `GET /graph/changes` read: ids, types and time
  *     only, the latest per node or edge.
  *
+ *   - to the HISTORY (src/history.ts, plans/concept-history.md §3), when
+ *     the bag has one: told that the run (or the proposal) flushed — never
+ *     what — before anything is left out as strut's own, so a type or an
+ *     edge rule written through the view's `schemaSource` or `schemas`
+ *     (`createNodeSchema`, `createEdgeSchema`) is heard like a node.
+ *
  * Not heard: a write through raw Cypher (`graph.query`), a write by another
  * process (jarvis, an ingest, a host writing the database itself), and
  * strut's own bookkeeping (`QUIET`). A transaction that rolls back after a
@@ -29,6 +35,7 @@
  * graph as it was.
  */
 
+import type { HistoryCapability } from "./history.js";
 import type { JobUpdateInput } from "./jobs.js";
 import { LiveFeed, type FeedRead } from "./live-feed.js";
 import { fullReaderOf } from "./graph/scope.js";
@@ -137,6 +144,9 @@ export function graphReporter(o: {
   notify?: (job: string, update: JobUpdateInput) => void;
   feed?: GraphChangeFeed;
   reader?: TypeReader;
+  /** The history, told when this run or proposal flushed (and by whom). */
+  history?: Pick<HistoryCapability, "waiting" | "touch">;
+  actor?: string;
   debounceMs?: number;
   maxDelayMs?: number;
 }): GraphReporter {
@@ -159,6 +169,11 @@ export function graphReporter(o: {
     const batch = pending;
     pending = [];
     if (batch.length === 0) return;
+    if (o.history) {
+      const proposal = o.id?.startsWith("proposal:") ? o.id.slice("proposal:".length) : undefined;
+      const cause = o.runId ? `run ${o.runId}` : proposal ? `proposal ${proposal}` : (o.id ?? "graph");
+      o.history.touch({ cause, ...(o.actor ? { actor: o.actor } : {}), ...(o.runId ? { run: o.runId } : {}) }, flush);
+    }
     let lookups = 0;
     const resolve = async (ref: string | undefined): Promise<string | undefined> => {
       if (!ref) return undefined;
@@ -215,6 +230,7 @@ export function graphReporter(o: {
     note(change) {
       const at = new Date().toISOString();
       if (change.kind === "node" && change.node_type) typeOf.set(change.ref_id, change.node_type);
+      if (pending.length === 0) o.history?.waiting(flush);
       pending.push({ ...change, at });
       const now = Date.now();
       if (!timer) firstAt = now;
@@ -347,37 +363,67 @@ function watchEdges<W extends object>(writer: W, r: GraphReporter): W {
   });
 }
 
+/** The ontology's writers: a `SchemaSource`'s that change it, and the
+ *  resolver's `createEdgeSchema`. */
+const SCHEMA_WRITES = new Set([
+  "createSchema", "extendSchema", "deleteSchema", "ensureChildOf", "ensureEdgeSchema", "ensureWildcardSchema", "setEdgeRule", "setEdgeAliases",
+  "createEdgeSchema",
+]);
+
+/** A schema writer (the engine's `schemaSource`, the backend's `schemas`
+ *  resolver), each write reported as a change to a `Schema` — strut's own
+ *  type, so the job and the feed never hear it; the history does. */
+function watchSchemas<W extends object>(writer: W, r: GraphReporter): W {
+  return new Proxy(writer, {
+    get(target, prop) {
+      const v = Reflect.get(target, prop, target) as unknown;
+      if (typeof v !== "function") return v;
+      const fn = v as (...args: unknown[]) => Promise<unknown>;
+      if (typeof prop !== "string" || !SCHEMA_WRITES.has(prop)) return fn.bind(target);
+      return async (...args: unknown[]) => {
+        const res = await fn.apply(target, args);
+        r.note({ kind: "node", op: "updated", ref_id: `schema:${String(args[0])}`, node_type: "Schema" });
+        return res;
+      };
+    },
+  });
+}
+
 /** A graph backend whose writers report to `r`; everything else is the
  *  backend's own. */
 export function reportingGraph<G extends object>(graph: G, r: GraphReporter): G {
-  const g = graph as { nodes?: object; edges?: object; reader?: TypeReader };
+  const g = graph as { nodes?: object; edges?: object; reader?: TypeReader; schemaSource?: object; schemas?: object };
   return {
     ...graph,
     ...(g.nodes ? { nodes: watchNodes(g.nodes, r, (fullReaderOf(graph) as TypeReader | undefined) ?? g.reader) } : {}),
     ...(g.edges ? { edges: watchEdges(g.edges, r) } : {}),
+    ...(g.schemaSource ? { schemaSource: watchSchemas(g.schemaSource, r) } : {}),
+    ...(g.schemas ? { schemas: watchSchemas(g.schemas, r) } : {}),
   } as G;
 }
 
 /**
  * The run's view of `services.graph` (plans/live-feeds.md §2): its writes
- * reported to the run's job (through `services.jobs.notify`) and to the
- * deployment's feed (`services.graphChanges`). The bag as it is when there
- * is no graph, or nobody to tell. The consumer's bag is never mutated.
+ * reported to the run's job (through `services.jobs.notify`), to the
+ * deployment's feed (`services.graphChanges`) and to the history
+ * (`services.history`). The bag as it is when there is no graph, or nobody
+ * to tell. The consumer's bag is never mutated.
  */
 export function bindGraph<TServices>(
   services: TServices,
-  o: { runId?: string; id?: string; job?: string; debounceMs?: number; maxDelayMs?: number },
+  o: { runId?: string; id?: string; job?: string; actor?: string; debounceMs?: number; maxDelayMs?: number },
 ): { services: TServices; reporter?: GraphReporter } {
   if (services == null || typeof services !== "object") return { services };
   const bag = services as {
     graph?: object & { nodes?: object; edges?: object; reader?: TypeReader };
     graphChanges?: GraphChangeFeed;
     jobs?: { notify?: (job: string, update: JobUpdateInput) => void };
+    history?: Pick<HistoryCapability, "waiting" | "touch">;
   };
   const graph = bag.graph;
   if (!graph || (!graph.nodes && !graph.edges)) return { services };
   const notify = bag.jobs?.notify ? (job: string, update: JobUpdateInput) => bag.jobs!.notify!(job, update) : undefined;
-  if (!bag.graphChanges && !(o.job && notify)) return { services };
+  if (!bag.graphChanges && !bag.history && !(o.job && notify)) return { services };
   // The change feed's types come from the whole graph, whoever wrote
   // (a view's reader is held to the jobs list, src/graph/scope.ts).
   const typeReader = (fullReaderOf(graph) as TypeReader | undefined) ?? graph.reader;
@@ -388,6 +434,8 @@ export function bindGraph<TServices>(
     ...(notify ? { notify } : {}),
     ...(bag.graphChanges ? { feed: bag.graphChanges } : {}),
     ...(typeReader ? { reader: typeReader } : {}),
+    ...(bag.history ? { history: bag.history } : {}),
+    ...(o.actor ? { actor: o.actor } : {}),
     ...(o.debounceMs !== undefined ? { debounceMs: o.debounceMs } : {}),
     ...(o.maxDelayMs !== undefined ? { maxDelayMs: o.maxDelayMs } : {}),
   });

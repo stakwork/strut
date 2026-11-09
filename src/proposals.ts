@@ -618,7 +618,7 @@ async function applyProposal(p: Proposal, def: AnyStepDef, input: unknown, by: s
   // proposing job's host reads the canvas again when a person's yes lands.
   const { services: bound, reporter } = bindGraph(
     p.by.principal && secrets?.forPrincipal ? { ...bag, secrets: secrets.forPrincipal(p.by.principal) } : bag,
-    { id: `proposal:${p.id}`, ...(p.by.job ? { job: p.by.job } : {}) },
+    { id: `proposal:${p.id}`, ...(p.by.job ? { job: p.by.job } : {}), ...(by ? { actor: by } : {}) },
   );
   const mcp = deps.mcpOf ? await deps.mcpOf(p.by.workflow, p.by.runId).catch(() => null) : null;
   const ctx: StepContext<unknown> = {
