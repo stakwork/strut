@@ -39,7 +39,7 @@ export default defineStep({
     provider: z
       .string()
       .optional()
-      .describe("anthropic | openai | google | openrouter | xai | maple | numes — usually omitted (inferred from `model`)"),
+      .describe("anthropic | openai | google | openrouter | xai | maple | numes | tokenfactory — usually omitted (inferred from `model`)"),
     model: z
       .string()
       .optional()

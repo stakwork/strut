@@ -42,7 +42,7 @@ describe("llm step: toSdkSchema", () => {
 });
 
 // The cost on the step's output: what the provider reported for each call
-// (OpenRouter's provider metadata), else the call's tokens at the model's
+// (OpenRouter's provider metadata, Numes' or Token Factory's raw usage), else the call's tokens at the model's
 // price. The model is a stub put in through the model-wrapper extension point
 // (every model resolveModel builds passes it), so no provider is called.
 describe("llm step: cost", () => {
