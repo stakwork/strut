@@ -486,6 +486,76 @@ describe("llm: the llmAuth seam (plans/mothership-cost-control.md §1)", () => {
     }
   });
 
+  it("a gateway with no route to the provider: the call goes straight to it when the grant allows, else the gateway's error stands", async () => {
+    // A stand-in for both: the gateway's route refuses as Bifrost does with
+    // no `tokenfactory` provider; Token Factory's own route answers.
+    const { createServer } = await import("node:http");
+    const seen: string[] = [];
+    const server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (c) => (body += c));
+      req.on("end", () => {
+        const { model, stream } = JSON.parse(body);
+        seen.push(`${req.url} ${req.headers.authorization} ${stream ? "stream" : "generate"}`);
+        if (req.url!.startsWith("/openai/")) {
+          res.writeHead(400, { "content-type": "application/json" });
+          res.end(JSON.stringify({ is_bifrost_error: true, error: { message: "could not auto resolve a provider for the request" } }));
+          return;
+        }
+        if (stream) {
+          res.writeHead(200, { "content-type": "text/event-stream" });
+          const chunk = (o: unknown) => res.write(`data: ${JSON.stringify(o)}\n\n`);
+          chunk({ id: "x", object: "chat.completion.chunk", created: 0, model, choices: [{ index: 0, delta: { role: "assistant", content: "hello" }, finish_reason: null }] });
+          chunk({ id: "x", object: "chat.completion.chunk", created: 0, model, choices: [{ index: 0, delta: {}, finish_reason: "stop" }], usage: { prompt_tokens: 10, completion_tokens: 2 } });
+          res.end("data: [DONE]\n\n");
+          return;
+        }
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({
+          id: "x", object: "chat.completion", created: 0, model,
+          choices: [{ index: 0, message: { role: "assistant", content: "hello" }, finish_reason: "stop" }],
+          usage: { prompt_tokens: 10, completion_tokens: 2 },
+        }));
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    const root = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    try {
+      const store = new MemorySecretStore();
+      await store.set("TOKENFACTORY_API_KEY", "tk");
+      await store.set("TOKENFACTORY_BASE_URL", `${root}/v1`);
+      const secrets = secretsCapability(store, { envFallback: {} });
+      const auth = { kind: "step" as const, runId: "r1", principal: "alice" };
+      const { generateText, streamText } = await import("ai");
+      const r = await resolveModel({
+        model: "tokenfactory/glm-5.3",
+        secrets,
+        llmAuth: async () => ({ apiKey: "vk-user", baseUrl: root, direct: true }),
+        auth,
+      });
+      assert.equal((await generateText({ model: r.model, prompt: "hi", maxRetries: 0 })).text, "hello");
+      assert.equal(await streamText({ model: r.model, prompt: "hi", maxRetries: 0 }).text, "hello");
+      assert.deepEqual(seen, [
+        "/openai/v1/chat/completions Bearer vk-user generate",
+        "/v1/chat/completions Bearer tk generate",
+        "/openai/v1/chat/completions Bearer vk-user stream",
+        "/v1/chat/completions Bearer tk stream",
+      ]);
+      // Required: no `direct`, so the gateway's refusal is the error.
+      seen.length = 0;
+      const held = await resolveModel({
+        model: "tokenfactory/glm-5.3",
+        secrets,
+        llmAuth: async () => ({ apiKey: "vk-user", baseUrl: root, explainError: () => "tokenfactory is not set up" }),
+        auth,
+      });
+      await assert.rejects(() => generateText({ model: held.model, prompt: "hi", maxRetries: 0 }), /tokenfactory is not set up/);
+      assert.deepEqual(seen, ["/openai/v1/chat/completions Bearer vk-user generate"]);
+    } finally {
+      server.close();
+    }
+  });
+
   it("the llm step bills a Token Factory call at the cost the gateway reported, not the table's", async () => {
     const { createServer } = await import("node:http");
     const server = createServer((req, res) => {

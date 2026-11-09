@@ -506,7 +506,7 @@ allow/refuse logic is tested in `scripts/preview-app.test.mjs`.
 | `STRUT_SECRET_KEY`   | (unset)        | Encryption key for the secret store (AES-256-GCM). Unset → a default dev key + one-time warning (obfuscated, not secure). See "Secrets". |
 | `STRUT_RUN_MAX_COST_USD` | `100`      | Per-run LLM spend cap in dollars when the workflow sets no `maxRunCostUsd` — enforced only through the Mothership (see "Mothership cost control"). Must be a positive number: `0` would read as "uncapped" to the gateway, so a bad value is an error, never a fallback. |
 | `STRUT_MOTHERSHIP` | (unset) | `1` = the default server (`src/server.ts`) builds `createMothership({ dataDir })`, passes its `llmAuth` to `createStrut` and mounts `/llm/delegations` — every LLM call of an actor with a delegation goes through the gateway. See "Mothership cost control". |
-| `STRUT_MOTHERSHIP_REQUIRED` | (unset) | `1` = every LLM call must have someone to bill: a call with no principal, or no delegation on file for it, is a step error instead of a direct provider call, and an enabled automation on an ownerless workflow is refused when scheduled and when it fires (`lastFireError`). Set it wherever the Mothership is mounted. |
+| `STRUT_MOTHERSHIP_REQUIRED` | (unset) | `1` = every LLM call must have someone to bill: a call with no principal, or no delegation on file for it, is a step error instead of a direct provider call, and an enabled automation on an ownerless workflow is refused when scheduled and when it fires (`lastFireError`), and a call the gateway cannot route (a `numes/…` on a gateway with no `numes` provider) fails saying to add it, instead of going to the provider directly. Set it wherever the Mothership is mounted. |
 | `STRUT_LLM_PROVIDER` | (inferred from model, else `anthropic`) | Default LLM provider for agent/llm steps (anthropic\|openai\|google\|openrouter\|xai, via aieo) |
 | `STRUT_LLM_MODEL`    | (per-provider) | Override model name                  |
 | `STRUT_CHAT_MODEL`   | `claude-sonnet-5-5` | Default model for the AI-builder chat — any aieo name (alias, id, or `provider/id`; OpenRouter as `openrouter/org/model`), read once at boot. `STRUT_DEFAULT_MODEL` comes before it, and the flyout's picker overrides both per chat |
@@ -1175,6 +1175,13 @@ Token Factory included (`src/llm.ts` `resolveModel`): aieo sends a grant's
 call to the gateway's route for that provider, and Maple, Numes, Token
 Factory and a provider only the gateway has (`modelProvider`) ride its OpenAI-compatible route as
 `<provider>/<id>`.
+A provider that gateway does not hold — Bifrost's 400 "could not auto
+resolve a provider", a Numes or Token Factory nobody added as a custom
+provider there — is sent again straight to the provider with the
+deployment's key (`LlmAuthResult.direct`, `directWhenGatewayLacks` in
+src/llm.ts; one warn line per provider), unbilled by the gateway; under
+`STRUT_MOTHERSHIP_REQUIRED=1` it is an error naming the provider to add
+(`explainUnrouted`).
 A routed call (`ResolvedModel.routed`: the grant carried a `baseUrl`) never
 uses Anthropic's server-executed web tools — `createWebTools` hands out
 aieo's Exa + HTTP shims instead, because Bifrost drops `server_tool_use.input`
