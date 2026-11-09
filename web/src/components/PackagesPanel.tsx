@@ -211,6 +211,8 @@ function PackagePage(props: {
   const [workflows, setWorkflows] = useState<Set<string>>(() => new Set());
   const [apps, setApps] = useState<Set<string>>(() => new Set());
   const [concepts, setConcepts] = useState<string[]>([]);
+  /** The Concepts picked ALONE, without the pages under them (a subset of `concepts`). */
+  const [alone, setAlone] = useState<Set<string>>(() => new Set());
   const [conceptDraft, setConceptDraft] = useState("");
   const [conceptHits, setConceptHits] = useState<string[]>([]);
   const [types, setTypes] = useState<string[]>([]);
@@ -248,7 +250,8 @@ function PackagePage(props: {
         });
         setWorkflows(new Set(picks.workflows));
         setApps(new Set(picks.apps));
-        setConcepts(picks.concepts);
+        setConcepts([...picks.concepts, ...picks.conceptsAlone].sort());
+        setAlone(new Set(picks.conceptsAlone));
         setTypes(picks.types);
       },
       () => {},
@@ -257,10 +260,16 @@ function PackagePage(props: {
 
   // What a build of the picks carries, refused as a publish would be.
   const picks = useMemo(
-    () => ({ workflows: [...workflows].sort(), apps: [...apps].sort(), concepts: [...concepts].sort(), types: [...types].sort() }),
-    [workflows, apps, concepts, types],
+    () => ({
+      workflows: [...workflows].sort(),
+      apps: [...apps].sort(),
+      concepts: concepts.filter((c) => !alone.has(c)).sort(),
+      conceptsAlone: concepts.filter((c) => alone.has(c)).sort(),
+      types: [...types].sort(),
+    }),
+    [workflows, apps, concepts, alone, types],
   );
-  const empty = picks.workflows.length + picks.apps.length + picks.concepts.length + picks.types.length === 0;
+  const empty = picks.workflows.length + picks.apps.length + picks.concepts.length + picks.conceptsAlone.length + picks.types.length === 0;
   useEffect(() => {
     if (empty) {
       setPreview(null);
@@ -328,6 +337,7 @@ function PackagePage(props: {
         workflows: picks.workflows,
         ...(picks.apps.length ? { apps: picks.apps } : {}),
         ...(picks.concepts.length ? { concepts: picks.concepts } : {}),
+        ...(picks.conceptsAlone.length ? { conceptsAlone: picks.conceptsAlone } : {}),
         ...(picks.types.length ? { types: picks.types } : {}),
         ...(channel.trim() ? { channel: channel.trim() } : {}),
         ...(description.trim() ? { description: description.trim() } : {}),
@@ -386,7 +396,14 @@ function PackagePage(props: {
             {concepts.map((c) => (
               <span class="badge package-chip" key={c}>
                 {c}
-                <button class="auto-link" aria-label={`Remove ${c}`} onClick={() => setConcepts(concepts.filter((x) => x !== c))}>×</button>
+                <button
+                  class="auto-link package-chip-mode"
+                  title={alone.has(c) ? "This page alone: the pages under it here stay here. Click to bring them too" : "With every page under it. Click to carry this page alone"}
+                  onClick={() => setAlone((was) => { const next = new Set(was); if (next.has(c)) next.delete(c); else next.add(c); return next; })}
+                >
+                  {alone.has(c) ? "alone" : "with its pages"}
+                </button>
+                <button class="auto-link" aria-label={`Remove ${c}`} onClick={() => { setConcepts(concepts.filter((x) => x !== c)); setAlone((was) => { const next = new Set(was); next.delete(c); return next; }); }}>×</button>
               </span>
             ))}
           </div>

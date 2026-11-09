@@ -25,7 +25,8 @@
  *      nowhere.
  *   2. The helpers: every file a carried step imports by a relative path,
  *      at the same place beside it, and every `_` step under the prefix.
- *   3. The named Concepts and the pages under each (`PARENT_OF`), each a
+ *   3. The named Concepts and the pages under each (`PARENT_OF`) — or a
+ *      page named alone (`conceptsAlone`) without them — each a
  *      new-form page under its node key (`concepts/<key>.md`: its name,
  *      every attribute, every parent — plans/concept-history.md §2.1), and
  *      the named graph types with their parents and edges (./graph-types.ts).
@@ -115,6 +116,9 @@ export interface BuildRequest {
   steps?: string[];
   /** Concept pages, each with the pages under it. */
   concepts?: string[];
+  /** Concept pages carried ALONE, without the pages under them: a root a
+   *  package's steps need (`Firm`) whose pages here are this strut's own. */
+  conceptsAlone?: string[];
   /** Graph types by name, each read off this graph's ontology with its
    *  parents and the edges among them, as `graph/<Type>.yaml`. */
   types?: string[];
@@ -205,7 +209,7 @@ export async function buildPackage(deps: BuildDeps, req: BuildRequest, opts: { d
   const pkg = req.package;
   if (typeof pkg !== "string" || !PACKAGE_NAME.test(pkg)) throw refused(["a package is named publisher/name: two lowercase segments, [a-z][a-z0-9-]*"]);
   if (typeof req.version !== "string" || !req.version) throw refused(["a package has a version, the publisher's label (1.4.0)"]);
-  if (!req.workflows?.length && !req.steps?.length && !req.concepts?.length && !req.apps?.length && !req.types?.length) throw refused(["name at least one workflow, step, Concept, app or graph type"]);
+  if (!req.workflows?.length && !req.steps?.length && !req.concepts?.length && !req.conceptsAlone?.length && !req.apps?.length && !req.types?.length) throw refused(["name at least one workflow, step, Concept, app or graph type"]);
 
   const prefix = `${pkg}/`;
   const under = (name: string) => name.startsWith(prefix);
@@ -567,7 +571,7 @@ export async function buildPackage(deps: BuildDeps, req: BuildRequest, opts: { d
 
   // 3. Concepts, and 4. the steps' claims.
   const pageNames = new Set<string>(); // the Concepts carried, by name (a file is named by its key)
-  if (req.concepts?.length) {
+  if (req.concepts?.length || req.conceptsAlone?.length) {
     const siblingPages = new Set([...siblings.values()].flatMap((p) => p.items.filter((i) => i.kind === "concept").map((i) => i.name)));
     // A page that tells an agent to run a carried workflow or step names it
     // as the installing strut will have it, under the prefix: `job` and the
@@ -581,7 +585,8 @@ export async function buildPackage(deps: BuildDeps, req: BuildRequest, opts: { d
     }
     for (const t of custom) if (!steps.has(t) && !isHelperName(t) && !pinned.some((p) => t.startsWith(`${p}/`))) others.set(t, "step");
     const names: PageNames = { rename: renamer(carriedNames), others: (text) => [...namesIn(text, [...others.keys()])].map((n) => ({ kind: others.get(n)!, name: n })) };
-    for (const [file, page] of await conceptFiles(deps.graph, req.concepts, pkg, [...pins.keys()], siblingPages, problems, warnings, names)) {
+    const named = { subtree: req.concepts ?? [], alone: req.conceptsAlone ?? [] };
+    for (const [file, page] of await conceptFiles(deps.graph, named, pkg, [...pins.keys()], siblingPages, problems, warnings, names)) {
       files.set(file, page.text);
       pageNames.add(page.name);
     }
@@ -778,7 +783,7 @@ async function stepClaims(claims: Pick<ClaimsAuthoring, "reader">, type: string,
  *  package. */
 async function conceptFiles(
   graph: GraphBackend | undefined,
-  names: string[],
+  named: { subtree: readonly string[]; alone: readonly string[] },
   pkg: string,
   pins: string[],
   siblingPages: Set<string>,
@@ -796,10 +801,15 @@ async function conceptFiles(
   const attributes = Object.keys(schema.attributes).filter((a) => !NOT_ATTRIBUTES.has(a));
   const pages = new Map<string, { attributes: Record<string, unknown>; parents: Array<{ name: string; stamp: unknown }>; docs?: string }>();
   const queue: string[] = [];
-  for (const name of names) {
+  // A page named alone brings none of the pages under it, whichever way it is reached.
+  const alone = new Set<string>();
+  for (const name of [...named.subtree, ...named.alone]) {
     const node = await findConcept(graph, schema, name);
     if (!node || node.deleted) problems.push(`no Concept ${name} in the graph`);
-    else queue.push(node.ref_id);
+    else {
+      queue.push(node.ref_id);
+      if (named.alone.includes(name)) alone.add(node.ref_id);
+    }
   }
   const seen = new Set<string>();
   while (queue.length) {
@@ -827,7 +837,7 @@ async function conceptFiles(
     const held = Object.fromEntries(attributes.map((a) => [a, p[a]]).filter(([, v]) => v !== null && v !== undefined && v !== ""));
     const docs = typeof p["docs"] === "string" && p["docs"].trim() ? p["docs"].trim() : undefined;
     pages.set(name, { attributes: held, parents, ...(docs ? { docs } : {}) });
-    for (const child of children) queue.push(child);
+    if (!alone.has(ref)) for (const child of children) queue.push(child);
   }
   for (const [name, page] of pages) {
     for (const parent of page.parents) {

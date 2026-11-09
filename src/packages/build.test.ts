@@ -712,6 +712,27 @@ for (const tb of testBackends()) {
       assert.match(said, /the Concept Legal Task names the step artifacts\/dir, which the package does not carry/);
     });
 
+    it("carries a page alone, without the pages under it, and the release's items say so", async () => {
+      const src = await graphStrut("source");
+      await page("Law", { description: "The law" });
+      await page("Contracts", { docs: "About contracts." }, "Law");
+      await page("Firm", { description: "The firm's own lessons" });
+      await page("House Rule", { docs: "Ours alone." }, "Firm");
+
+      const res = await src.app.request("/packages/build", json({ package: "openlaw/legal-desk", version: "1", concepts: ["Law"], conceptsAlone: ["Firm"] }));
+      const body = await res.text();
+      assert.equal(res.status, 201, body);
+      const built = JSON.parse(body) as { digest: string; files: string[] };
+      assert.deepEqual(built.files, ["concepts/concept-contracts.md", "concepts/concept-firm.md", "concepts/concept-law.md", "strut.yaml"], "Firm without House Rule");
+      // Firm's page here has a page the release does not: the package page starts it alone again.
+      const items = (await (await src.app.request(`/packages/openlaw/legal-desk/items?digest=${built.digest}`)).json()) as { items: Array<{ kind: string; name: string; alone?: true }> };
+      assert.deepEqual(items.items, [
+        { kind: "concept", name: "Contracts" },
+        { kind: "concept", name: "Firm", alone: true },
+        { kind: "concept", name: "Law" },
+      ]);
+    });
+
     it("writes the pages under a Concept and the step's claims that stay inside, and installs on a cleared graph and on a filesystem", async () => {
       const src = await graphStrut("source");
       await publishLinear(src.workspace);

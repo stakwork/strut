@@ -91,12 +91,14 @@ test("picksFromRelease maps what a release held back to the names here", () => {
     { kind: "step", name: "clip/shout" },
     { kind: "app", name: "board" },
     { kind: "concept", name: "Clips" },
+    { kind: "concept", name: "Firm", alone: true },
     { kind: "type", name: "Clip" },
   ];
   assert.deepEqual(picksFromRelease("acme/tools", items, { workflows: new Set(["summarize", "acme/tools/tidy"]), apps: new Set(["board"]) }), {
     workflows: ["acme/tools/tidy", "summarize"],
     apps: ["board"],
     concepts: ["Clips"],
+    conceptsAlone: ["Firm"],
     types: ["Clip"],
   });
 });
