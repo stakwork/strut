@@ -44,8 +44,8 @@ export default defineStep({
   effect: "read",
   description:
     "A memory fact's check (plans/memory-checks.md): does the fact come up in the user's chats lately? Searches them for the fact's value " +
-    "(and, for a fact about someone else, what they wrote), and counts the messages since `since`. Found is indirect support; none is the " +
-    "expected evidence missing; a search it cannot run (no Mac answering, no chat search here, a name too short) is unavailable. " +
+    "(and, for a fact about someone else, what they wrote), and counts the messages since `since`. Found is kept as evidence but backs nothing (a mention is not a judgement); none is the " +
+    "expected evidence missing, weakly against a fact that changes; a search it cannot run (no Mac answering, no chat search here, a name too short) is unavailable. " +
     "Run by memory's checks, given the fact; `exclude_chats` leaves chats out (the agent's own, where what the user tells it is already evidence).",
   input: z.object({
     subject: END,

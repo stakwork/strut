@@ -88,14 +88,14 @@ describe("checks for memory facts on a ladybug file", { skip: lb.skip }, () => {
     assert.equal(ownAgentRead({ app: { name: "notes", version: "1" } as never }), false);
   });
 
-  it("a check that finds the evidence backs a fact nobody restated, and is not run again until due", async () => {
+  it("a check that finds the evidence keeps it, backing nothing, and is not run again until due", async () => {
     assert.equal((await fact()).stance, "ask");
     const now = Date.now();
     const report = await verifyFacts(b, runner({ supports: true, content: "12 messages mention Stakwork" }), { now });
     assert.deepEqual([report.checked, report.supported], [1, 1]);
     const f = await fact();
-    assert.deepEqual([f.status, f.stance], ["supported", "state"]);
-    assert.ok(f.evidence.sayers.some((x: { kind: string; name?: string }) => x.kind === "check" && x.name === "graph/check-test"));
+    assert.equal(f.stance, "ask", "a mention is not a judgement: still two years since anyone said it");
+    assert.ok(!f.evidence.sayers.some((x: { kind: string }) => x.kind === "check"));
     const produced = await b.query(`MATCH (e:Node {node_type: 'Evidence'})-[:PRODUCED_BY]->(k:Node {node_type: 'Check'}) RETURN e.evidence_mode AS m, e.content AS c`);
     assert.deepEqual(produced.map((r) => [r["m"], r["c"]]), [["observed", "12 messages mention Stakwork"]]);
     assert.equal((await verifyFacts(b, runner({ supports: true }), { now: now + DAY })).checked, 0, "fresh for a week");
@@ -115,9 +115,9 @@ describe("checks for memory facts on a ladybug file", { skip: lb.skip }, () => {
   });
 
   it("a read runs the due check after it answers, through the check runner", async () => {
-    const report = await queueFactChecks(b, [await readFact()], runner({ supports: true }));
-    assert.equal(report.supported, 1);
-    assert.equal((await fact()).stance, "state");
+    const report = await queueFactChecks(b, [await readFact()], runner({ supports: false }));
+    assert.equal(report.quiet, 1);
+    assert.equal((await fact()).status, "stale");
   });
 
   it("through the steps: graph/verify-facts runs the chat check, which runs the chat search through strut's runner", async () => {
@@ -136,9 +136,14 @@ describe("checks for memory facts on a ladybug file", { skip: lb.skip }, () => {
     const out = await run(verifyStep, {}, b, { registry });
     assert.deepEqual([out.checked, out.supported], [1, 1], JSON.stringify(out));
     assert.equal(asked, "Stakwork", "the user's own fact: no from:");
-    assert.equal((await fact()).stance, "state");
     // Without a chat search here (a server strut, say): unavailable, nothing kept.
     const none = await run(verifyStep, { force: true }, b, { registry: { "graph/check-chats": checkChats } as never });
     assert.equal(none.unavailable, 1);
+  });
+
+  it("an on-demand run checks at most 25 facts, even with force", async () => {
+    const orgs = await b.nodes.writeMany(Array.from({ length: 30 }, (_, i) => ({ type: "Organization", data: { name: `Org ${i}` } })));
+    for (const o of orgs) await run(assertStep, { source_ref_id: tom, edge_type: "FOLLOWS", target_ref_id: o!.ref_id, text: `Tom follows ${o!.ref_id}`, create_schema_if_missing: true, cardinality: "many", check: { expects: "y", step: "graph/check-test" } }, b);
+    assert.equal((await verifyFacts(b, runner({ supports: false }), { force: true })).checked, 25);
   });
 });

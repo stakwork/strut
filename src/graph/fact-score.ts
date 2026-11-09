@@ -70,6 +70,8 @@ export interface EvidenceIn {
   strength: number;
   /** The check step that observed it (`observed` evidence); absent for something someone said. */
   check?: string;
+  /** The Check that observed it. */
+  check_id?: string;
 }
 
 /** An edge of a slot, as the graph holds it (epoch ms). */
@@ -197,8 +199,10 @@ function refutedBy(e: SlotEdge, s: Pick<SlotInput, "subject" | "people" | "user"
   return newestOf(e.evidence?.filter((x) => !x.check)).some((x) => x.strength < 0 && sayerOf(x.said_by, s).kind === "owner");
 }
 
-/** Its newest check found the expected evidence missing: weakly against it. */
-const quietBy = (e: SlotEdge) => newestOf(e.evidence?.filter((x) => x.check)).some((x) => x.strength < 0);
+/** Its newest check found the expected evidence missing: weakly against it.
+ *  Only for kinds of fact that change: silence says nothing about a static or stable one. */
+const quietBy = (e: SlotEdge, volatility: Volatility | undefined) =>
+  (volatility === "evolving" || volatility === "volatile") && newestOf(e.evidence?.filter((x) => x.check)).some((x) => x.strength < 0);
 
 /** The sources that are messages (not a Person, not a run). */
 const messagesOf = (e: SlotEdge, people: ReadonlyMap<string, Person>) => e.sources.filter((x) => !people.has(x) && !x.startsWith("run:"));
@@ -255,7 +259,7 @@ export function scoreSlot(s: SlotInput): Map<string, FactTrust> {
         ? "unknown"
         : behind || contested
           ? "disputed"
-          : cur < STALE_BELOW || quietBy(e)
+          : cur < STALE_BELOW || quietBy(e, s.volatility)
             ? "stale"
             : who.every((x) => x.kind === "other")
               ? "hearsay"

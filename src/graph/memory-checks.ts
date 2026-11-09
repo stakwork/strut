@@ -31,11 +31,17 @@ import { factCheckOf, factClaimId, factEvidence, isCheckStep, recordFactEvidence
 const DAY = 86_400_000;
 const q = (s: string) => `\`${s}\``;
 const EDGE_TYPE = /^[A-Z][A-Z0-9_]*$/;
-/** What a finding counts for a fact, and a quiet source against it. */
-export const FOUND = 0.5;
+/** What a finding counts for a fact, and a quiet source against it. A
+ *  keyword hit cannot tell "lives in Porto" from "moved out of Porto", nor an
+ *  old mention from a new one, so a finding is kept as evidence but backs
+ *  nothing (no sayer, no reset of currency); only quiet counts, weakly against.
+ *  A check that judges what it found can give findings weight later. */
+export const FOUND = 0;
 export const QUIET = -0.5;
 /** At most this many checks start from one read. */
 const PER_READ = 3;
+/** At most this many checks from one on-demand run, `force` or not. */
+const PER_VERIFY = 25;
 
 export interface FactEnd {
   ref_id: string;
@@ -112,7 +118,7 @@ async function runCheck(b: LadybugBackend, check: FactCheck, f: ReadFact, runSte
     report[result]++;
     return;
   }
-  report[result.strength > 0 ? "supported" : "quiet"]++;
+  report[result.strength < 0 ? "quiet" : "supported"]++;
   await b.tx((tx) =>
     recordFactEvidence(tx, {
       subject: f.subject.ref_id, edge: f.edge_type, target: f.target.ref_id, text: f.text,
@@ -133,7 +139,7 @@ async function dueChecks(b: LadybugBackend, facts: ReadFact[], now: number): Pro
   const evidence = await factEvidence(run, withCheck.map((f) => factClaimId(f.subject.ref_id, f.edge_type, f.target.ref_id)));
   return withCheck.flatMap((f) => {
     const check = checks.get(f.edge_type)!;
-    const mine = (evidence.get(factClaimId(f.subject.ref_id, f.edge_type, f.target.ref_id)) ?? []).filter((x) => x.check === check.step);
+    const mine = (evidence.get(factClaimId(f.subject.ref_id, f.edge_type, f.target.ref_id)) ?? []).filter((x) => x.check_id === check.id);
     const last = Math.max(0, ...mine.map((x) => x.observed_at));
     return now - last >= check.freshness_days * DAY ? [{ fact: f, check }] : [];
   });
@@ -191,6 +197,8 @@ async function currentFacts(b: LadybugBackend, edge: string): Promise<ReadFact[]
 export async function verifyFacts(b: LadybugBackend, runStep: RunStep, opts: { now?: number; force?: boolean } = {}): Promise<CheckReport> {
   const report = emptyReport();
   const now = opts.now ?? Date.now();
+  // The scoped view's raw query: right while memory holds one namespace per
+  // file (Peel's `private`); a graph with more would need the scope applied here.
   const run = (c: string, p?: Record<string, unknown>) => b.query(c, p);
   for (const edge of await temporalEdgeTypes(run)) {
     const check = await factCheckOf(run, edge);
@@ -199,7 +207,10 @@ export async function verifyFacts(b: LadybugBackend, runStep: RunStep, opts: { n
     const due = opts.force ? facts.map((fact) => ({ fact, check })) : await dueChecks(b, facts, now);
     const owners = await ownersOf(b, [...new Set(facts.flatMap((f) => [f.subject.ref_id, f.target.ref_id]))]);
     const mark = (e: FactEnd): FactEnd => (owners.has(e.ref_id) ? { ...e, owner: true } : e);
-    for (const { fact } of due) await runCheck(b, check, { ...fact, subject: mark(fact.subject), target: mark(fact.target) }, runStep, now, report);
+    for (const { fact } of due) {
+      if (report.checked >= PER_VERIFY) return report;
+      await runCheck(b, check, { ...fact, subject: mark(fact.subject), target: mark(fact.target) }, runStep, now, report);
+    }
   }
   return report;
 }

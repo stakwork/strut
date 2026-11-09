@@ -109,22 +109,22 @@ describe("fact-score", () => {
     assert.deepEqual(slot("me", [e], 3).get("v1")!.evidence.sayers, [{ ref_id: "sam", name: "Sam", kind: "other" }], "the refutation is not a sayer of it");
   });
 
-  it("a check's finding backs a fact as its own, weaker source, and keeps it fresh", () => {
+  it("a check's finding is kept but backs nothing: a mention is not a judgement, nor a fresh one", () => {
     const told = said("a", "kate", 0);
-    const old = slot("kate", [edge("e1", "Porto", ["kate"], 0, { evidence: [told] })], 2600);
-    assert.equal(old.get("e1")!.stance, "ask", "years quiet");
-    const found = slot("kate", [edge("e1", "Porto", ["kate"], 0, { evidence: [told, { id: "c", observed_at: at(2590), strength: 0.5, check: "graph/check-chats" }] })], 2600);
-    assert.deepEqual(view(found, "e1"), ["supported", "state"], "her chats still mention Porto");
-    assert.ok(found.get("e1")!.evidence.sayers.some((x) => x.kind === "check" && x.name === "graph/check-chats"));
-    const onlyCheck = slot("kate", [edge("e1", "Porto", [], 0, { evidence: [{ id: "c", observed_at: at(1), strength: 0.5, check: "graph/check-chats" }] })], 2);
-    assert.ok(onlyCheck.get("e1")!.belief < combine(["other"]), "a finding alone is weaker than anyone's word");
+    const found = slot("kate", [edge("e1", "Porto", ["kate"], 0, { evidence: [told, { id: "c", observed_at: at(2590), strength: 0, check: "graph/check-chats" }] })], 2600);
+    assert.equal(found.get("e1")!.stance, "ask", "\"moved out of Porto\" would match too: still years since anyone said it");
+    assert.ok(!found.get("e1")!.evidence.sayers.some((x) => x.kind === "check"), "not a sayer");
+    assert.ok(found.get("e1")!.evidence.items!.some((x) => x.sayer.kind === "check"), "but on the list");
   });
 
-  it("a quiet check is weakly against: stale and cited, not refuted", () => {
+  it("a quiet check is weakly against a fact that changes: stale and cited, not refuted; silent on a stable one", () => {
     const e = edge("w1", "Stakwork", ["chat:1"], 0, { evidence: [said("a", undefined, 100), { id: "q", observed_at: at(110), strength: -0.5, check: "graph/check-chats" }] });
-    const s = slot("me", [e], 112);
+    const s = slot("me", [e], 112, { volatility: "evolving" });
     assert.deepEqual(view(s, "w1"), ["stale", "cite"]);
     assert.ok(s.get("w1")!.belief > 0.9, "the user's word still stands");
+    assert.deepEqual(view(slot("me", [e], 112, { volatility: "static" }), "w1"), ["supported", "state"], "silence says nothing about a birthplace");
+    const cleared = edge("w1", "Stakwork", ["chat:1"], 0, { evidence: [...e.evidence!, { id: "f", observed_at: at(111), strength: 0, check: "graph/check-chats" }] });
+    assert.deepEqual(view(slot("me", [cleared], 112, { volatility: "evolving" }), "w1"), ["supported", "state"], "a later finding lifts the quiet");
   });
 
   it("an unanswered ask stays ask: nothing records the question", () => {

@@ -166,7 +166,7 @@ async function writeEvidence(tx: GraphTx, claim: string, id: string, f: FactEvid
   await tx.run(`CREATE (:Node {${fields(ev, p, "e")}})`, p);
   const context = JSON.stringify({
     ...(f.said_by ? { said_by: f.said_by } : {}), ...(f.message ? { message: f.message } : {}), ...(f.run ? { run: f.run } : {}),
-    ...(f.check ? { check: f.check.step } : {}),
+    ...(f.check ? { check: f.check.step, check_id: f.check.id } : {}),
   });
   const rel = { ref_id: randomUUID(), edge_key: edgeKeyFor(CLAIM_EDGES.EVIDENCED_BY), strength: f.strength, context, ...base };
   await tx.run(
@@ -230,6 +230,7 @@ export async function factEvidence(run: (cypher: string, params?: Params) => Pro
       id: String(r["id"]),
       ...(typeof context["said_by"] === "string" ? { said_by: context["said_by"] } : {}),
       ...(typeof context["check"] === "string" ? { check: context["check"] } : {}),
+      ...(typeof context["check_id"] === "string" ? { check_id: context["check_id"] } : {}),
       observed_at: at,
       strength: Number(r["strength"] ?? 0),
     });
