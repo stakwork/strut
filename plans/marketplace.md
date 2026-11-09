@@ -2143,8 +2143,54 @@ production until install (step 2) calls the resolver.
        does not have it, and its install refuses the package. strut's own
        seeds (`job`, `orchestrator`, `builder`, the browser, privacy,
        system and home-sync workflows, the `strut/` apps) stay silent: every
-       strut has them. The Packages tab shows the list in **Comes along**
-       as "Needs on the installing strut".
+       strut has them — read off the files strut ships, `src/workflows/`,
+       since the privacy boundary keeps core from importing its seeder. The
+       Packages tab shows the list in **Comes along** as "Needs on the
+       installing strut".
+   - **Fixed 2026-11-09, the rest of the legal desk** (`openlaw/legal-desk`:
+     an app, a task runner that finds its library by category, the `Law`
+     tree, an empty `Firm` root, and kind pages under `Job` and `Workflow
+     Builder`). These choices are mine, proposed:
+     - **A workflow's category travels in its YAML**, a top-level
+       `category:` line the build writes after `name:` (or rewrites), which
+       the install reads as it reads `description:` and sets through the
+       workspace store — the `StrutWorkflow` node's `category` on a graph.
+       Not in `strut.yaml`: its schema is strict, so a new member there
+       would make the package unreadable to a strut from before it (the
+       index runs `latest`, a box `stable`); a workflow's YAML loader
+       ignores keys it does not know, so an older strut installs the
+       package as before, uncategorized. Set with a version the release
+       makes active — new, or an update through the distro door — never on
+       a fork beside which the release is only recorded.
+     - **A carried page names the carried workflows and steps as
+       packaged** (`concept-history.md` §6.1). Its docs and description
+       (routing reads the description alone) get each carried workflow
+       name and custom step type under the prefix. A name matches as a
+       whole token — neither neighbour is `[A-Za-z0-9_/-]`, so
+       `legal-task-run-v2` and an already prefixed name stay — and a
+       one-word name only as a whole code span, `` `tidy` ``, so prose
+       keeps its words. A page naming a workflow or custom step this strut
+       has, which the package neither carries nor requires and strut does
+       not ship, is a warning.
+     - **A page carried alone**: `conceptsAlone` beside `concepts`, the
+       page without the pages under it, whichever way it is reached.
+       `GET /packages/:publisher/:name/items` marks a release's page
+       `alone` when its page here has pages under it and the release holds
+       none of them, so the Packages tab, which starts from the newest
+       release, picks it alone again; each Concept chip there toggles.
+     - **A page with someone's page under it stays.** Uninstall and a
+       release that drops pages soft-delete a page with its edges, which
+       left a page under it with no parent — a page the box added under
+       the root, or a package page kept as edited (the case the tests had
+       pinned). Now a page stays when anything under it stays, and so does
+       every page above it (`heldPages`, install.ts), reported as kept with
+       the page that holds it. An update that still ships the root leaves
+       the box's pages under it as they are: the seeder reconciles only the
+       edges between pages it owns.
+     - **Seen, not changed:** after an update through the distro door, the
+       installed-packages fold could not tell an updated page from an
+       edited one at uninstall ("its file is not in the package cache"), so
+       it keeps it. Safe, but the fold reads the earlier release's files.
 3. **`git+` source + export to git**, the §2.3 export over the package
    layout.
 4. **Updates:** the ask, each re-point classified `silent` / `named` by

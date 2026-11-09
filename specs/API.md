@@ -2174,7 +2174,7 @@ is refused by name (`package_source_unsupported`).
 | POST   | `/packages/install` | `{ ref, digest?, url?, index? }` → 201 `InstallResult` (`src/packages/install.ts`). `ref` is `file:/path/to/package`, `pk:<key>/<publisher>/<name>[@sha256:<hex>]` with `url`, where the publisher's catalog is served (a strut's `…/packages/catalog?public=1`, or the file it uploaded) — see "Installing by key" below — or a bare NAME, `publisher/name`, looked up in the indexes this strut follows (the first whose card lists the publisher, or the one `index` names) and installed as `pk:` with the row's key and catalog URLs, tried in order. A name with `url` is 400; 404 `package_not_listed` when no index lists the publisher, `package_index_unknown` for an `index` not followed; 502 `package_index_unreachable` when no index card could be read; 400 when this strut follows none. A person's act: behind the key at full scope (a peer is 403), one at a time |
 | DELETE | `/packages/:publisher/:name` | Uninstall → `{ ok: true, package, removed, kept }` (`UninstallResult`) |
 | GET    | `/packages/:publisher/:name/archive?digest=sha256:<hex>` | The package at that digest as a `.tar.gz` of its files (`content-type: application/gzip`, `ETag: "<digest>"`, `cache-control: private, max-age=31536000, immutable`; `If-None-Match` → 304). 400 without a well-formed `digest`; 404 when this strut holds no package `publisher/name` at that digest. Behind the key like every route; with `?t=` a subscriber's read of a digest the fleet catalog names; with `?public=1` anyone's read of a digest the PUBLIC catalog names (404 for any other, whatever the gate's mode) |
-| GET    | `/packages/:publisher/:name/items?digest=sha256:<hex>` | `{ package, version, digest, items: [{ kind: "workflow" \| "step" \| "app" \| "concept" \| "type", name }] }`: what the package at that digest holds, each by its name INSIDE the package (`summarize` for `acme/tools/summarize`; a Concept by its page name, a graph type by its type), helpers left out — what the package page ticks from a release (`plans/packages-ux.md` §3). 400 without a well-formed `digest`; 404 when this strut's cache holds no package `publisher/name` at that digest |
+| GET    | `/packages/:publisher/:name/items?digest=sha256:<hex>` | `{ package, version, digest, items: [{ kind: "workflow" \| "step" \| "app" \| "concept" \| "type", name, alone? }] }`: what the package at that digest holds, each by its name INSIDE the package (`summarize` for `acme/tools/summarize`; a Concept by its page name, a graph type by its type), helpers left out — what the package page ticks from a release (`plans/packages-ux.md` §3). `alone: true` on a Concept page that has pages under it in this graph none of which the release holds: it went alone (`conceptsAlone`), and the page picks it alone again. 400 without a well-formed `digest`; 404 when this strut's cache holds no package `publisher/name` at that digest |
 | GET    | `/publisher` | This strut's publisher → `{ key, name?, host: "self", createdAt, public?, publicChannels }` (`src/packages/publisher.ts`); 404 before a key is minted. `key` is the FLEET key, what a subscribing strut follows; `public` the PUBLIC key, once a channel was made public — the only key the world sees; `publicChannels` the channels in the public catalog ("One publisher, two keys" below). `name` is the publisher's prefix segment (`stakwork` in `stakwork/tools`), when set. Any credential may read it (a subscriber's, hive's) |
 | POST   | `/publisher` | Mint the key → 201 `PublisherInfo`, or 200 with the one already here. 409 `publisher_unsafe_key` on a file store with `STRUT_SECRET_KEY` unset |
 | PUT    | `/publisher` | `{ name }` → `PublisherInfo`: the publisher's NAME, `[a-z][a-z0-9-]*` — the first segment of every package published here (`plans/packages-ux.md`). The web UI composes package names from it, so nobody types the prefix. Mints the key first when there is none (409 `publisher_unsafe_key` as above); 400 `publisher_name` for a name that is not one |
@@ -2248,6 +2248,7 @@ takes it from `file:<the cache directory>` (`<dataDir>/packages/sha256-<hex>/`).
   "workflows": ["acme/linear/sync"],   // each with everything it can execute
   "steps": ["acme/linear/create-issue"],  // beyond what the workflows reach
   "concepts": ["Linear"],              // each with the pages under it (PARENT_OF)
+  "conceptsAlone": ["Firm"],           // a page WITHOUT the pages under it (a root the package's steps need)
   "apps": ["acme/linear/issues"],      // each with what its grants execute and the apps it imports
   "types": ["LegalParty", "Agreement"], // graph types, each with its parents and the edges among them
   "requires": {                        // packages BUILT on this strut that this one needs
@@ -2309,7 +2310,18 @@ What goes in:
   app the package carries has one segment as its path (`apps/<name>/`).
 - **The Concepts** named, with every page under each, as
   `concepts/<Name>.md` (front matter `description`, `parent`; the body is
-  `docs`). A top page keeps its parent.
+  `docs`). A top page keeps its parent. A page in `conceptsAlone` comes
+  without the pages under it, whichever way it is reached. In every
+  carried page's docs and description, each carried workflow name and
+  custom step type is written as packaged (`legal-task-run` →
+  `openlaw/legal-desk/legal-task-run`): a name with a `-`, `_` or `/` where
+  neither neighbour is `[A-Za-z0-9_/-]`, a one-word name only as a whole
+  code span. A page naming a workflow or custom step this strut has, which
+  the package neither carries nor requires and strut does not ship, is a
+  warning.
+- **A workflow's category** as a top-level `category:` line in its YAML
+  (after `name:`), which the install sets as the workflow's category; a
+  strut that does not read it ignores the key.
 - **The graph types** named, each read off this graph's ontology as
   `graph/<Type>.yaml` in `graph/create-schema`'s grammar (`parent`,
   `domain`, `type_description`, `attributes`, `key_spec`, `index`,
@@ -2433,6 +2445,7 @@ the release requires first:
 | Not in the release, untouched | removed (the runs stay) | `retired` |
 | Not in the release, a fork — or a helper while a step of the package stays forked | kept | `kept` |
 | A Concept edited here (or whose edit cannot be told) | left as it is | `modified` |
+| A Concept not in the release with a page under it that stays (this strut's own, or one kept) | kept, and every page above it | `kept` |
 
 Versions it writes record `source: "distro"`, and `GET /packages` says
 `door: "distro"`: such a package is the distro's, and a person's install
@@ -2476,7 +2489,10 @@ only …` (`src/packages/fence.ts`).
 versions (soft on a graph), never the runs, evidence or jobs, so history
 keeps the name it ran under — and retires each untouched Concept. A fork,
 an edited page, and the helpers while a forked step of the package stays
-are kept and listed in `kept: [{ kind, name, reason }]`. 404
+are kept and listed in `kept: [{ kind, name, reason }]`; so is a page with a
+page under it that stays — one this strut added under the package's root,
+an edited page — and every page above it, since retiring a page deletes
+its edges. 404
 `package_not_installed`; 409 `package_busy` while one of its workflows has
 a run in flight; 409 `package_distro_owned` for a package the distro
 installed.

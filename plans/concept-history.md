@@ -371,13 +371,18 @@ not lost.
     repository's author writes the full name; a build from a workspace
     breaks the page silently. `marketplace.md`'s item: rewrite workflow
     names in Concept docs as `name:` lines are rewritten, or warn.
+    *Built 2026-11-09 (`marketplace.md`, step 2's notes): both — the
+    build rewrites a carried workflow or step's name in a carried page's
+    docs and description, and warns on one it neither carries nor
+    requires.*
   - **Routing reads the description alone** (`docs: false`): a kind's one
     line is what the assistant routes by.
   - **A conversation's system prompt is its first turn's**, so an
     installed kind reaches new conversations only.
 - **A package's Concepts are the ones NAMED** in the build (`concepts` on
   `POST /packages/build`, the Packages tab's picker), each with its whole
-  subtree (`conceptFiles`). The roots the picked workflows'
+  subtree (`conceptFiles`) — or, since 2026-11-09, ALONE (`conceptsAlone`:
+  a root the package's steps need, whose pages here are this strut's own). The roots the picked workflows'
   `context/concept` steps read are SUGGESTED, never taken
   (`src/packages/suggest.ts`): the literal names in those steps and the
   pages read in the last five successful runs, each climbed to a root the
