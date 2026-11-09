@@ -1,6 +1,6 @@
 # History: the workspace as a package, in git
 
-> **Status (2026-11-08): proposed, eleven rulings in (Evan, 2026-11-07
+> **Status (2026-11-08): proposed, thirteen rulings in (Evan, 2026-11-07
 > and 2026-11-08; "Rulings" below).** Written after a read of `main`
 > @8db356c, revised on 2026-11-07 after a read of openlaw-1's climbs
 > (§1), and rewritten on 2026-11-08: a snapshot is a package build, and
@@ -37,6 +37,9 @@
 - No restore step. A page is put back by reading it and writing it with
   the tools every caller has; later, a whole commit is installed as a
   package.
+- One diff view draws a past commit and a pending proposal alike. The
+  two are never joined in storage: a proposal is the change before the
+  write, a commit the change after it.
 - The evals themselves are not in this plan (ruling 5).
 
 ## 1. Why
@@ -89,8 +92,8 @@
     no binary to depend on. Git is kept for what comes free with it:
     log, diff, rename detection, tags, branches, and that anyone can
     clone the result and read it with ordinary tools. `git` is in the
-    image (`Dockerfile`); the desktop package turns the history off
-    (ruling 3).
+    image (`Dockerfile`), and the desktop package needs it on the
+    machine (ruling 13).
 
 ## 2. What a snapshot holds
 
@@ -328,10 +331,12 @@ in two:
 
 ## 7. Where it runs
 
-- **On by default** wherever strut has a graph and `git`.
-  `STRUT_HISTORY=0` turns it off (`createStrut({ history: false })`).
-  The desktop package sets it off (ruling 3). Without `git` it is off,
-  and boot says so in one line.
+- **On by default** wherever strut has a graph and `git`, the desktop
+  package included (ruling 13): Peel needs `git` on the machine for the
+  Knowledge app's history. `STRUT_HISTORY=0` turns it off
+  (`createStrut({ history: false })`). Without `git` it is off, boot
+  says so in one line, and `history/read` answers that there is no
+  history, so the app's history view can say so too.
 - **What it covers:** every Concept in every namespace, every type,
   every workflow, step and app (ruling 3, widened by ruling 11).
 - **Backups:** the repository lives under `dataDir`, so a box's backup
@@ -382,13 +387,24 @@ in two:
      type's changed rule as modified, with `before` and `after` parsed;
    - a namespace the caller cannot read is absent from `log`, `show`
      and `diff`.
-4. **`ConceptDiff` in strut/views** (ruling 7): given two commits or
-   times, the tree with its pages added, edited, moved, renamed and
-   removed marked (moved and renamed read off `parents` and `name` in
-   `before` and `after`), a page opening to its text diff; given a
-   page, its history. The Knowledge app (`strut/knowledge`,
-   `knowledge-app.md`) uses it for a page's history and for the tree
-   between two moments. A benchmark's app imports it:
+4. **`ConceptDiff` in strut/views** (rulings 7 and 12): one component
+   over two states of the tree's pages, whatever produced them: a
+   commit pair or a time pair from `history/read`; a PENDING PROPOSAL,
+   its input laid over the current page (`proposal/get`); a person's
+   unsaved edit. It draws the tree with its pages added, edited, moved,
+   renamed and removed marked (moved and renamed read off `parents` and
+   `name` in `before` and `after`), a page opening to its text diff;
+   given a page, its history. The sources never meet in storage: a
+   proposal is the change before the write, waiting for a yes, and a
+   commit the change after it. The Knowledge app (`strut/knowledge`,
+   `knowledge-app.md`) uses it three ways: a page's history and the
+   tree between two moments, from the history; the pending proposals
+   its Later item draws as green and red changes, from the proposals;
+   and REVERT, which is `show` at a commit and a write with
+   `graph/edit-node`, as a proposal when review is wanted, so no restore
+   primitive is needed. Its "recent changes" reads the history, never
+   the live change feed, which is a notification and empties on a
+   restart. A benchmark's app imports the same component:
    openlaw-benchmarks' climb page would pass the start of one
    iteration's run and the next.
 
@@ -418,7 +434,8 @@ Evan, 2026-11-07:
 2. **A commit follows the write, never a timer.** An app's edit is in
    the history within seconds of the write.
 3. **Every Concept and every graph type, in every namespace.** Off on
-   desktop.
+   desktop (revised by ruling 13: on wherever `git` is, desktop
+   included).
 4. **Review is optional, and it is a strut proposal**, never a GitHub
    PR. Proposals already cover every graph and Concept write
    (`proposals.md`); an accepted one's write is heard like any other.
@@ -445,6 +462,15 @@ Evan, 2026-11-08:
     What the package format carries is what the history records,
     workflows, steps and apps included; git computes what changed. A
     run is its own record and is never in it.
+12. **One diff view, two sources.** Proposals and the history stay apart
+    in storage: a proposal is generic over any step, and git fits files.
+    They meet in the view alone, which draws a pending proposal and a
+    past commit the same way. Revert in the Knowledge app is a read and
+    an edit, as a proposal when review is wanted; there is no restore
+    primitive.
+13. **The history runs on desktop too.** Peel needs `git` installed for
+    the Knowledge app's history, and that is accepted. A strut with no
+    `git` runs without a history and says so.
 
 ## Open
 
