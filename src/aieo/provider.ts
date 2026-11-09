@@ -389,7 +389,9 @@ function takeCostCall(init: RequestInit | undefined): [string | undefined, Reque
   const hit = entries.find(([k]) => k.toLowerCase() === COST_CALL_HEADER);
   if (!hit) return [undefined, init];
   const rest = entries.filter(([k]) => k.toLowerCase() !== COST_CALL_HEADER);
-  return [hit[1], { ...init, headers: Array.isArray(h) ? rest : Object.fromEntries(rest) }];
+  // Node's header records may hold a list per name; aieo sets one value.
+  const id = typeof hit[1] === "string" ? hit[1] : hit[1][0];
+  return [id, { ...init, headers: Array.isArray(h) ? rest : Object.fromEntries(rest) }];
 }
 
 /** A stream passed on as it came, each `data:` line that carries a usage
@@ -437,7 +439,8 @@ function reportedCostFetch(inner: typeof fetch, costs: Map<string, number>): typ
       });
     }
     try {
-      const cost = costOf((await res.clone().json())?.usage?.cost);
+      const body = (await res.clone().json()) as { usage?: { cost?: unknown } } | null;
+      const cost = costOf(body?.usage?.cost);
       if (cost !== undefined) costs.set(id, cost);
     } catch {
       // Not JSON: nothing reported.
