@@ -124,9 +124,10 @@ describe("strut/knowledge — seeded at boot beside strut/views", () => {
     assert.ok(info.bytes < 2_000_000, `${info.bytes} bytes`);
 
     // What a host's sidebar reads (stadeum's launcher: every app but strut/views, by title).
-    const listed = (await (await first.app.request("/apps")).json()) as { apps: Array<{ name: string; title: string; activeVersion: string; publisher?: string }> };
+    const listed = (await (await first.app.request("/apps")).json()) as { apps: Array<{ name: string; title: string; activeVersion: string; publisher?: string; source?: string }> };
     const row = listed.apps.find((a) => a.name === KNOWLEDGE_APP);
     assert.deepEqual(row && [row.title, row.activeVersion, row.publisher], ["Knowledge", "v1", "strut"]);
+    assert.equal(row?.source, "seed", "the listing says strut shipped it");
 
     const again = await createStrut({ ...quiet, workspace: new FileWorkspaceStore(dataDir), store: new MemoryRunStore(), kit });
     assert.deepEqual(Object.keys((await again.apps.get(KNOWLEDGE_APP))!.versions), ["v1"], "no second version");

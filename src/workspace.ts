@@ -435,6 +435,9 @@ export interface AppListEntry {
   pinned?: boolean;
   /** The live release's id, only while the app is held. */
   live?: string;
+  /** Which door wrote the active version, the one everyone opens. `"seed"`
+   *  marks an app strut ships and seeds on every server. */
+  source?: VersionSource;
 }
 
 /** `getApp`: one version (the active one by default) with the app's record around it. */
@@ -1813,6 +1816,7 @@ export function appListEntry(name: string, meta: Pick<AppMetadata, "active" | "v
     ...(meta.owner ? { owner: meta.owner } : {}),
     ...(meta.pinned ? { pinned: true } : {}),
     ...(meta.live ? { live: meta.live } : {}),
+    ...(active.source ? { source: active.source } : {}),
   };
 }
 

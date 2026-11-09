@@ -441,6 +441,14 @@ export function workspaceConformance(impl: WorkspaceImpl): void {
       assert.equal(fresh.publisher, undefined);
     });
 
+    it("listApps: `source` is the active version's door — seed for what strut ships, absent when none was recorded", async () => {
+      await ws.publishApp("strut/shipped", "s1", APP("Shipped"), { publisher: "strut", source: "seed" });
+      await ws.publishApp("mine", "m1", APP("Mine"), { source: "ui", actor: "alice" });
+      await ws.publishApp("bare", "b1", APP("Bare"));
+      const by = Object.fromEntries((await ws.listApps()).map((a) => [a.name, a.source]));
+      assert.deepEqual(by, { bare: undefined, mine: "ui", "strut/shipped": "seed" });
+    });
+
     it("setAppPinned: the record's flag — listed and read back, kept by a publish and a rollback, cleared by unpin and by a delete", async () => {
       await ws.publishApp("tabbed", "p1", APP("One"));
       await ws.publishApp("plain", "q1", APP("Plain"));
