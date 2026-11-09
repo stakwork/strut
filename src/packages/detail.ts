@@ -97,7 +97,8 @@ export interface StepDetail {
 export interface ConceptDetail {
   name: string;
   description?: string;
-  parent?: string;
+  /** Every parent, by name (a page of the old form has one). */
+  parents?: string[];
   docs?: string;
 }
 
@@ -382,7 +383,7 @@ export async function derivePackageDetail(info: CachedPackage, deps: DetailDeps 
     concepts.push({
       name: page.name,
       ...(page.description ? { description: page.description } : {}),
-      ...(page.parent ? { parent: page.parent } : {}),
+      ...(page.parents.length ? { parents: page.parents } : {}),
       ...(page.docs ? { docs: page.docs.length > DOCS_MAX_CHARS ? `${page.docs.slice(0, DOCS_MAX_CHARS)}\n\n…` : page.docs } : {}),
     });
   }

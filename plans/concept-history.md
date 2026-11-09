@@ -4,7 +4,12 @@
 > and 2026-11-08; "Rulings" below).** Written after a read of `main`
 > @8db356c, revised on 2026-11-07 after a read of openlaw-1's climbs
 > (§1), and rewritten on 2026-11-08: a snapshot is a package build, and
-> the history tracks no write (ruling 11). Companions: `marketplace.md`
+> the history tracks no write (ruling 11). Revised on 2026-11-09 after a
+> read of the package code against two questions — can a package ship a
+> kind under `Job`, and how are a package's Concepts chosen (§6.1): the
+> reader takes a page under any file name (§2.1), the snapshot's writers
+> carry everything (item 2), and `git` is checked without the macOS shim
+> (§7). Companions: `marketplace.md`
 > (the package format, the `git+` source, export), `package-examples.md`
 > (runs copied into a package; §6 here says where the two meet),
 > `concept-tree.md` (what the tree holds), `knowledge-app.md` (the app
@@ -159,10 +164,20 @@ apps/<name>/                         every app's active version, its sources; ne
   names of every live `PARENT_OF` parent, sorted. The body is `docs`.
   Names in `parents`, not keys: they are what a person reads, and the
   key follows from the name.
-- The reader (`format.ts`) tells the two forms apart by `name` in the
-  front matter, and refuses a page whose file name is not its key
-  (`bad_package:`). The old form stays readable: strut's own pages
-  (`src/concepts/`) and every package already published use it.
+- **The reader** (`format.ts`) tells the two forms apart by `name` in
+  the front matter. A new-form page's IDENTITY is its `name`, under
+  whatever file name it has (revised 2026-11-09; the first draft refused a
+  file not named by its key): a source repository is written by hand —
+  the lab's `job/concepts/Explore.md` — and nobody computes
+  `concept-explore` to name a file. Two pages with one `name` are refused
+  (`bad_package:`). The key-named file is what a BUILD and a snapshot
+  write, so the record and the cache hold a page under one path and git
+  stores it once; a source may hold it under another, and its digest
+  differs, as a source's does anyway. The old form stays readable: strut's
+  own pages (`src/concepts/`) and every package already published use it.
+- **A parent the package does not own** — strut's `Job`, a required
+  package's page — is named in `parents` like any other and found in the
+  graph at install, as a top page's `parent` is today (§6.1).
 - **A build** writes the new form, every parent included. A package
   rebuilt this way has a new digest, a new release like any other.
 - **An install** (`seedConcepts`) writes the page's attributes and a
@@ -170,9 +185,9 @@ apps/<name>/                         every app's active version, its sources; ne
   graph as today. An attribute the installing graph's `Concept` does not
   declare is left out, with a warning naming it. `keepEdited` compares
   every attribute the file carries, not only `description` and `docs`.
-- **So** a page means the same bytes in a source repository, in the
-  history and in the cache, and the one decision to take before anything
-  else is built is this one.
+- **So** a page means the same bytes wherever it lies — under its key in
+  the history and the cache, under any name in a source — and the one
+  decision to take before anything else is built is this one.
 
 ## 3. When
 
@@ -329,6 +344,57 @@ in two:
   the history's item 2 and the examples' item 3 lands first factors
   `packageFiles` out of `buildPackage`; the other uses it.
 
+### 6.1 Packages, kinds, and where a package's Concepts come from
+
+Read on 2026-11-09 against two questions. Nothing in this plan changes
+for either; two items belong to neighbours and are named here so they are
+not lost.
+
+- **A package may ship a kind under `Job`** — a `Legal Task` page, so
+  the assistant routes legal work to the package's workflow and the job
+  agent starts from its convention. The format carries it today: a page
+  with `parent: Job` builds with no warning (strut's stamp is among the
+  parents a build accepts, `conceptFiles`), the install finds `Job` in the
+  graph and writes the `PARENT_OF` (`install.ts`'s parent check), strut's
+  boot reseed leaves the edge alone (it removes only an undeclared edge
+  between two pages it owns, `concept-seed.ts`), the orchestrator's
+  `context/concept` on `Job` lists the kind on its next turn, and
+  `job/start { kind }` puts the page at the head of the job's prompt
+  (`job.yaml`'s `kindPage`). Under §2.1 it is `parents: [Job]`. No new
+  mechanism: the kind's docs name the workflow, and the job agent runs it
+  through `meta/run-workflow`, the door every kind uses. Three facts for
+  a package's author, none this plan's:
+  - **Docs are copied verbatim; workflows are renamed.** A build stamps a
+    workflow's `name:` to `<package>/<path>` and leaves a Concept's docs as
+    they are, and the `job` workflow runs under no package, so a kind page
+    that says "run `legal-task`" names nothing after install. A source
+    repository's author writes the full name; a build from a workspace
+    breaks the page silently. `marketplace.md`'s item: rewrite workflow
+    names in Concept docs as `name:` lines are rewritten, or warn.
+  - **Routing reads the description alone** (`docs: false`): a kind's one
+    line is what the assistant routes by.
+  - **A conversation's system prompt is its first turn's**, so an
+    installed kind reaches new conversations only.
+- **A package's Concepts are the ones NAMED** in the build (`concepts` on
+  `POST /packages/build`, the Packages tab's picker), each with its whole
+  subtree (`conceptFiles`). The roots the picked workflows'
+  `context/concept` steps read are SUGGESTED, never taken
+  (`src/packages/suggest.ts`): the literal names in those steps and the
+  pages read in the last five successful runs, each climbed to a root the
+  package could carry, offered on the package page as one click. A kind
+  under `Job` is read by strut's `job` workflow, not the package's, so it
+  is never suggested: the author picks it.
+- **Nothing a builder reads names `context/concept` as the way a workflow
+  gets its knowledge.** The rules in `src/ai/prompts.ts`, the `Workflow
+  Builder` page and the `Job` page are silent; the builder finds the step
+  through `list_steps` (its description says what it is for) or by reading
+  a seed as an example. One sentence in the dialect rules closes it: an
+  agent's domain knowledge comes from a Concept page through
+  `context/concept` into its system prompt, never pasted into
+  `params.system`. The text is pinned byte for byte by `prompts.test.ts`:
+  a fixture update, and one cache miss for every live chat. Not this
+  plan's PR.
+
 ## 7. Where it runs
 
 - **On by default** wherever strut has a graph and `git`, the desktop
@@ -336,7 +402,11 @@ in two:
   Knowledge app's history. `STRUT_HISTORY=0` turns it off
   (`createStrut({ history: false })`). Without `git` it is off, boot
   says so in one line, and `history/read` answers that there is no
-  history, so the app's history view can say so too.
+  history, so the app's history view can say so too. On macOS
+  `/usr/bin/git` is a shim that opens the Command Line Tools install
+  dialog when they are missing, so the check there is `xcode-select -p`
+  first, never `git --version` alone: a boot must not raise a system
+  dialog.
 - **What it covers:** every Concept in every namespace, every type,
   every workflow, step and app (ruling 3, widened by ruling 11).
 - **Backups:** the repository lives under `dataDir`, so a box's backup
@@ -350,20 +420,34 @@ in two:
 
 ## 8. Work items (one PR each, in this order)
 
-1. **The page format** (§2.1). The package reader takes both forms, a
-   build writes the new one, an install writes the attributes and every
-   parent, `keepEdited` compares every attribute. Tests:
+1. **The page format** (§2.1). **BUILT 2026-11-09, strut#577.** The
+   package reader takes both forms (a new-form page under any file name,
+   its `name` its identity), a build writes the new one under the key, an
+   install writes the attributes and every parent, `keepEdited` compares
+   every attribute. Beyond this list, a package's page that a release
+   moved to another file (the old form rebuilt under its key) is the same
+   page, so a distro update across the two forms goes through. Tests:
    - a page with two parents and a `/` in its name goes through build
      and install with both parents and its attributes;
    - an old-form package installs as before;
-   - a page whose file name is not its key is refused;
+   - a new-form page under a file name that is not its key installs by
+     its `name`; two pages with one `name` are refused;
+   - a page whose parent is strut's `Job` installs under it, and strut's
+     next boot seed leaves the edge;
    - an attribute the installing graph does not declare is left out,
      with a warning.
 2. **The history.** `packageFiles` factored out of `buildPackage` and
-   given "everything" as a pick; the repository; the queue; the view's
-   flush as a touch, with `createNodeSchema` and `createEdgeSchema`
-   wrapped; the store and apps wrappers; boot; the setting. Tests on
-   both engines:
+   given "everything" as a pick, in a WHOLE mode: `conceptFiles` refuses
+   a page stamped by another seeder and a name with `/`, and `exportTypes`
+   warns on an edge to a type left out — a build's rules, which a snapshot
+   of this strut's whole graph must not apply (strut's own `Job` is the
+   first page it meets); the repository; the queue; the view's flush as a
+   touch, with `createNodeSchema` and `createEdgeSchema` wrapped (they are
+   `graph.schemas`', not the node and edge writers `bindGraph` wraps
+   today); the store and apps wrappers; boot; the setting; the `git`
+   check (§7). Tests on both engines:
+   - a page strut seeded and a page with `/` in its name are both in the
+     snapshot;
    - creating, editing, reparenting and deleting a Concept in a run each
      make one commit with the right file and `Run:`;
    - renaming a page shows in `git log --follow` as a rename;

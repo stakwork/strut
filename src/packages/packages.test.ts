@@ -106,10 +106,24 @@ describe("readPackage", () => {
     await bad({ ...PACKAGE, "steps/create.test.ts": "x" }, /Invalid step name "acme\/linear\/create\.test"/);
     await bad({ ...PACKAGE, "steps/orphan.claims.yaml": "[]", "steps/_shared.claims.yaml": "[]" }, /_shared\.claims\.yaml: a `_` file is a helper, not a step.*orphan\.claims\.yaml: claims belong beside the step they are about, steps\/orphan\.ts/);
     await bad({ ...PACKAGE, "concepts/sub/A.md": "x" }, /a Concept is a page/);
+    await bad({ ...PACKAGE, "concepts/linear-again.md": "---\nname: Linear\n---\nAgain.\n" }, /concepts\/linear-again\.md: the Concept Linear is concepts\/Linear\.md too/);
+    await bad({ ...PACKAGE, "concepts/a.md": "---\nname: Law\n---\nx\n", "concepts/b.md": "---\nname: Law\n---\ny\n" }, /the Concept Law is concepts\/a\.md too/);
+    await bad({ ...PACKAGE, "concepts/n.md": "---\nname: 2024\n---\nx\n" }, /concepts\/n\.md: a page's name is a string/);
+    await bad({ ...PACKAGE, "concepts/p.md": "---\nname: P\nparents: [{ a: 1 }]\n---\nx\n" }, /parents is a list of Concept names/);
     await bad({ ...PACKAGE, "apps/loose.txt": "x" }, /an app is a folder/);
     await bad({ ...PACKAGE, "apps/empty/src/a.ts": "x" }, /apps\/empty\/: an app's folder holds its app\.yaml/);
     await bad({ ...PACKAGE, "apps/v2/app.yaml": "title: x" }, /version label/);
     await bad({ "strut.yaml": PACKAGE["strut.yaml"]!, "README.md": "x" }, /no items/);
+  });
+
+  it("names a Concept page by the name in its front matter whatever its file (the new form), and by its file in the old form", async () => {
+    const info = await readPackage(
+      await pkgDir({ ...PACKAGE, "concepts/Explore.md": "---\nname: acme/linear\nparents: [Linear]\n---\nIts code.\n", "concepts/concept-law.md": "---\nname: Law\n---\nAll of it.\n" }),
+    );
+    assert.deepEqual(
+      info.items.filter((i) => i.kind === "concept").map((i) => [i.name, i.path]),
+      [["acme/linear", "concepts/Explore.md"], ["Linear", "concepts/Linear.md"], ["Law", "concepts/concept-law.md"]],
+    );
   });
 
   it("refuses a manifest it does not know, line by line", async () => {

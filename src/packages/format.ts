@@ -6,9 +6,17 @@
  *   workflows/<path>.yaml        → the workflow <package>/<path>
  *   steps/<path>.ts              → the step <package>/<path> (`_` files: helpers)
  *   steps/<path>.claims.yaml     → that step's claims
- *   concepts/<Name>.md           → the Concept page <Name>
+ *   concepts/<file>.md           → a Concept page, named by its `name`
  *   apps/<name>/                 → the app <package>/<name>, a directory with app.yaml
  *   graph/<Type>.yaml            → the graph type <Type> and its edges (./graph-types.ts)
+ *
+ * A Concept page comes in two forms (plans/concept-history.md §2.1, read by
+ * `parseConceptFile`, src/concept-seed.ts): the old `concepts/<Name>.md`,
+ * named by its file, with a `description` and one `parent`; and the new
+ * one, named by the `name` in its front matter under whatever file name it
+ * has — a build writes `concepts/<key>.md`, the node key of the name — with
+ * every attribute and every parent (`parents`). Two pages with one name are
+ * refused.
  *
  * Its DIGEST is the tree hash over every file in it, `strut.yaml` included
  * (`hashTree`, src/version.ts — an app's version hash is the same function
@@ -18,14 +26,16 @@
  * `readPackage` reads one and refuses what it cannot install whole: an
  * unknown top-level folder (a package from a newer strut fails instead of
  * installing half), a file a folder does not hold, a name the prefix rule
- * does not allow, anything but a regular file. Whether the code loads, the
- * Concepts' parents resolve or an app builds is the install's to check; this
- * reads paths and the manifest only, and writes nothing.
+ * does not allow, anything but a regular file, two Concept pages with one
+ * name. Whether the code loads, the Concepts' parents resolve or an app
+ * builds is the install's to check; this reads paths, the manifest and each
+ * Concept page's front matter (for its name), and writes nothing.
  */
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 import { validateAppName } from "../apps/files.js";
+import { parseConceptFile } from "../concept-seed.js";
 import { hashTree } from "../version.js";
 import { validateStepName, validateWorkflowName } from "../workspace.js";
 import { loadYaml } from "../yaml.js";
@@ -70,8 +80,8 @@ const manifestSchema = z
 export type PackageManifest = z.infer<typeof manifestSchema>;
 
 /** One item: what the install publishes. A workflow, step or app is named
- *  `<package>/<path>`; a Concept by its page name (its stamp carries the
- *  package, `seedConcepts`); a graph type by its type name, since a type is
+ *  `<package>/<path>`; a Concept by its page's name — the new form's `name`,
+ *  the old form's file — (its stamp carries the package, `seedConcepts`); a graph type by its type name, since a type is
  *  the graph's, not the package's. `path` is the file, or the app's directory. */
 export interface PackageItem {
   kind: "workflow" | "step" | "concept" | "app" | "type";
@@ -157,6 +167,7 @@ export async function readPackage(dir: string): Promise<PackageInfo> {
   const steps = new Map<string, PackageItem>();
   const claims: string[] = [];
   const apps = new Map<string, boolean>();
+  const pages = new Map<string, string>(); // a Concept's name → its file
   const unknown = new Set<string>();
   for (const file of files) {
     const slash = file.indexOf("/");
@@ -176,8 +187,12 @@ export async function readPackage(dir: string): Promise<PackageInfo> {
           items.push(item);
         } else throw new Error("a step is a .ts file, its claims a .claims.yaml beside it");
       } else if (top === "concepts") {
-        if (rest.includes("/") || !rest.endsWith(".md")) throw new Error("a Concept is a page, concepts/<Name>.md, with no folders");
-        items.push({ kind: "concept", name: rest.slice(0, -3), path: file });
+        if (rest.includes("/") || !rest.endsWith(".md")) throw new Error("a Concept is a page, concepts/<file>.md, with no folders");
+        const { name } = parseConceptFile(rest, await readFile(join(dir, file), "utf-8"), "");
+        const other = pages.get(name);
+        if (other !== undefined) throw new Error(`the Concept ${name} is concepts/${other} too — a page's name is its identity, one page each`);
+        pages.set(name, rest);
+        items.push({ kind: "concept", name, path: file });
       } else if (top === "graph") {
         if (rest.includes("/") || !rest.endsWith(".yaml") || !GRAPH_TYPE_NAME.test(rest.slice(0, -5))) {
           throw new Error("a graph type is graph/<Type>.yaml, the type's name a letter then letters, digits or _, with no folders");

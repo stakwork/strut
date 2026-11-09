@@ -70,13 +70,14 @@ test("the apps across the hits come first, by title; the concept roots by how mu
   assert.deepEqual(appsOf(hits).map((a) => `${a.app.title} (${a.pkg})`), ["Cycle Report (acme/linear)", "Deadline Calculator (openlaw/civil)", "Linear Issues (acme/linear)"]);
   const roots = conceptRoots([
     { name: "Law" },
-    { name: "Civil procedure", parent: "Law" },
-    { name: "Statute of limitations", parent: "Civil procedure" },
-    { name: "Tolling", parent: "Statute of limitations" },
+    { name: "Civil procedure", parents: ["Law"] },
+    { name: "Statute of limitations", parents: ["Civil procedure"] },
+    { name: "Tolling", parents: ["Statute of limitations"] },
     { name: "Accounting" },
-    { name: "Orphan", parent: "Nowhere" },
+    { name: "Audit", parents: ["Nowhere", "Accounting"] },
+    { name: "Orphan", parents: ["Nowhere"] },
   ]);
-  assert.deepEqual(roots.map((r) => [r.root.name, r.pages]), [["Law", 3], ["Accounting", 0], ["Orphan", 0]]);
+  assert.deepEqual(roots.map((r) => [r.root.name, r.pages]), [["Law", 3], ["Accounting", 1], ["Orphan", 0]], "a page with a parent in the list is no root, whichever of its parents it is");
   assert.deepEqual(canWords(can), ["reads"]);
   assert.deepEqual(canWords({ spends: true, acts: true, code: false }), ["spends", "acts"]);
 });

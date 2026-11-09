@@ -137,17 +137,19 @@ export function appsOf<A extends HitApp>(hits: ReadonlyArray<{ package: string; 
   return out.sort((a, b) => a.app.title.localeCompare(b.app.title) || a.pkg.localeCompare(b.pkg));
 }
 
-/** The roots of the Concept tree the index knows: pages whose parent is
- *  nowhere in the list (or who have none), each with how many pages sit
- *  under it, at any depth. */
-export function conceptRoots<C extends { name: string; parent?: string }>(concepts: readonly C[]): Array<{ root: C; pages: number }> {
+/** The roots of the Concept tree the index knows: pages none of whose
+ *  parents is in the list (or who have none), each with how many pages sit
+ *  under it, at any depth — a page counted under the root its first parent
+ *  in the list leads to. */
+export function conceptRoots<C extends { name: string; parents?: readonly string[] }>(concepts: readonly C[]): Array<{ root: C; pages: number }> {
   const byName = new Map(concepts.map((c) => [c.name, c]));
+  const up = (c: C) => c.parents?.find((p) => byName.has(p));
   const rootOf = (c: C): C => {
     const seen = new Set<string>([c.name]);
     let cur = c;
-    while (cur.parent && byName.has(cur.parent) && !seen.has(cur.parent)) {
-      seen.add(cur.parent);
-      cur = byName.get(cur.parent)!;
+    for (let p = up(cur); p && !seen.has(p); p = up(cur)) {
+      seen.add(p);
+      cur = byName.get(p)!;
     }
     return cur;
   };
@@ -157,7 +159,7 @@ export function conceptRoots<C extends { name: string; parent?: string }>(concep
     if (r !== c) counts.set(r.name, (counts.get(r.name) ?? 0) + 1);
   }
   return concepts
-    .filter((c) => !c.parent || !byName.has(c.parent))
+    .filter((c) => !up(c))
     .map((root) => ({ root, pages: counts.get(root.name) ?? 0 }))
     .sort((a, b) => b.pages - a.pages || a.root.name.localeCompare(b.root.name));
 }

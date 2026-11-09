@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { seedConcepts, STRUT_CONCEPTS } from "../concept-seed.js";
 import { createStrut, type Strut } from "../createStrut.js";
 import type { GraphBackend } from "../graph/backend.js";
 import { seedStrutDomain } from "../graph/schema-seed.js";
@@ -549,6 +550,59 @@ for (const tb of testBackends()) {
       const orphan = await api.install(`file:${await writeTree({ "strut.yaml": "package: acme/orphan\nversion: '1'\n", "concepts/Child.md": "---\nparent: Nowhere\n---\nx\n" })}`);
       assert.equal(orphan.status, 409);
       assert.match(orphan.body.error!, /the Concept Child hangs under Nowhere, which is neither in the graph nor in the packages/);
+    });
+
+    it("installs a new-form page by its name whatever its file, under every parent — strut's Job among them, which strut's next boot seed leaves — with the attributes this graph declares", async () => {
+      await seedConcepts(backend, [STRUT_CONCEPTS]);
+      const files = {
+        "strut.yaml": "package: acme/code\nversion: '1'\n",
+        "concepts/linear.md": "---\nname: Linear\ndescription: The tracker\n---\nHow Linear works here.\n",
+        "concepts/Code task.md": "---\nname: acme/linear\ndescription: Work on the tracker's code\nrepo: acme/linear\njurisdiction: Delaware\nparents:\n  - Job\n  - Linear\n---\nCheck out the repo first.\n",
+      };
+      const r = await api.install(`file:${await writeTree(files)}`);
+      assert.equal(r.status, 201, JSON.stringify(r.body));
+      assert.deepEqual(r.body.warnings, ["the Concept acme/linear is installed without jurisdiction: this graph's Concept does not declare it"]);
+      assert.deepEqual(r.body.packages[0]!.items.map((i) => [i.name, i.status]).sort(), [["Linear", "installed"], ["acme/linear", "installed"]]);
+      const task = (await conceptNode("acme/linear"))!;
+      assert.match(task.unique_source_id, /^pkg\/acme\/code\/Code task\.md@[0-9a-f]{12}$/, "stamped by its file, named by its name");
+      const props = (await backend.tx((tx) => backend.nodeEngine.readRaw(tx, task.ref_id)))!.props;
+      assert.deepEqual([props["description"], props["repo"], props["jurisdiction"] ?? null, props["docs"]], ["Work on the tracker's code", "acme/linear", null, "Check out the repo first."]);
+      const parents = async () => {
+        const out = await backend.tx((tx) => backend.edgeEngine.liveEdgesOf(tx, task.ref_id, "PARENT_OF", false));
+        return (out?.edges ?? []).map((e) => e.other).sort();
+      };
+      const both = [(await conceptNode("Job"))!.ref_id, (await conceptNode("Linear"))!.ref_id].sort();
+      assert.deepEqual(await parents(), both);
+      // What the graph does not declare was never written, and is not an edit.
+      assert.deepEqual((await api.list())[0]!.items, [{ kind: "concept", name: "acme/linear", modified: false }, { kind: "concept", name: "Linear", modified: false }]);
+
+      // Strut's boot seeds its own pages again: the edge from its Job to a page it does not own stays.
+      await seedConcepts(backend, [STRUT_CONCEPTS]);
+      assert.deepEqual(await parents(), both);
+
+      // An attribute the file carries, edited in the graph, is an edit.
+      await backend.nodes.update(task.ref_id, { set: { repo: "acme/other" } });
+      assert.deepEqual((await api.list())[0]!.items.find((i) => i.name === "acme/linear"), { kind: "concept", name: "acme/linear", modified: true });
+      const out = await api.uninstall("acme/code");
+      assert.deepEqual(out.body.kept, [{ kind: "concept", name: "acme/linear", reason: "edited here" }]);
+      assert.equal(await conceptNode("Linear"), undefined, "the untouched page is retired by its name, from its file's stamp");
+    });
+
+    it("updates a page the distro installed in the old form to the new one, under another file", async () => {
+      const v1 = { "strut.yaml": "package: acme/ontology\nversion: '1'\n", ...CONCEPTS };
+      assert.equal((await strut.packages.install(`file:${await writeTree(v1)}`, { door: "distro" })).packages[0]!.status, "installed");
+      const before = (await conceptNode("Issues"))!;
+      const v2 = {
+        "strut.yaml": "package: acme/ontology\nversion: '2'\n",
+        "concepts/concept-linear.md": "---\nname: Linear\ndescription: The tracker\n---\nHow Linear works here.\n",
+        "concepts/concept-issues.md": "---\nname: Issues\ndescription: Its issues\nparents:\n  - Linear\n---\nOne issue per bug.\n",
+      };
+      const r = await strut.packages.install(`file:${await writeTree(v2)}`, { door: "distro" });
+      assert.deepEqual(r.packages[0]!.items.map((i) => [i.name, i.status]), [["Issues", "updated"], ["Linear", "updated"]]);
+      const after = (await conceptNode("Issues"))!;
+      assert.equal(after.ref_id, before.ref_id, "the same node");
+      assert.match(after.unique_source_id, /^pkg\/acme\/ontology\/concept-issues\.md@/);
+      assert.deepEqual((await api.list())[0]!.items, [{ kind: "concept", name: "Issues", modified: false }, { kind: "concept", name: "Linear", modified: false }]);
     });
 
     it("updates Concepts through the distro's door: an untouched page follows, an edited one is left, a dropped one is retired", async () => {

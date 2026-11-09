@@ -48,7 +48,7 @@ import { copyAppDir, FIRST_PARTY_PREFIX, isFirstPartyName } from "../apps/files.
 import { readManifest } from "../apps/manifest.js";
 import type { ClaimsAuthoring } from "../claims-authoring.js";
 import { walkSteps } from "../closure.js";
-import { findConcept, parseConceptFile, retireConcepts, seedConcepts } from "../concept-seed.js";
+import { declaredAttributes, findConcept, parseConceptFile, retireConcepts, seedConcepts } from "../concept-seed.js";
 import type { SecretsCapability } from "../capabilities.js";
 import type { Step, StepRegistry } from "../core.js";
 import { hasTemplates } from "../expr.js";
@@ -228,7 +228,7 @@ async function installSet(
   const publish = { source: opts.door, ...(opts.actor ? { actor: opts.actor } : {}) };
   const reports = new Map(members.map((m) => [m.info.manifest.package, [] as PackageInstallReport["items"]]));
   const wrote: Wrote[] = [];
-  const conceptsWritten = new Map<string, string[]>(); // package → the page files it wrote
+  const conceptsWritten = new Map<string, Array<{ name: string; file: string }>>(); // package → the pages it wrote
   const { warnings } = checked;
   /** What a publish of an item records, and how it is written. */
   const options = (m: Member, plan: ItemPlan) => ({ ...publish, upstream: upstreamOf(m), ...(plan.action === "diverge" ? { activate: false } : {}) });
@@ -329,11 +329,11 @@ async function installSet(
         }
         for (const i of shipped) if (edited.has(i.name)) reports.get(pkg)!.push({ kind: "concept", name: i.name, status: "modified" });
         const outcomes = shipped.every((i) => edited.has(i.name)) ? [] : await seedConcepts(deps.graph, [{ dir, prefix: conceptPrefix(pkg), keepEdited: true }]);
-        const written: string[] = [];
+        const written: Array<{ name: string; file: string }> = [];
         conceptsWritten.set(pkg, written);
         for (const o of outcomes) {
           // Taken back by retiring: a page this call made, never one an update rewrote.
-          if (o.action === "create" || (o.action === "update" && !update)) written.push(`${o.name}.md`);
+          if (o.action === "create" || (o.action === "update" && !update)) written.push({ name: o.name, file: o.file });
           if (o.action === "error" || o.action === "skip") {
             throw conflict(o.action === "skip" ? `Concept ${o.name} was taken by someone else during the install` : `Concept ${o.name}: ${o.error}`);
           }
@@ -374,7 +374,7 @@ async function installSet(
       const schema = await deps.graph.schemas.schema("Concept");
       for (const [pkg, names] of groupBy(pages)) {
         const files = new Map((await packageConcepts(deps.graph, pkg)).map((c) => [c.name, c.file]));
-        const gone = schema ? new Set(await retireConcepts(deps.graph, schema, { dir: "", prefix: conceptPrefix(pkg), retired: names.map((n) => files.get(n)).filter((f): f is string => !!f) })) : new Set<string>();
+        const gone = schema ? new Set(await retireConcepts(deps.graph, schema, { dir: "", prefix: conceptPrefix(pkg) }, names.flatMap((name) => (files.has(name) ? [{ name, file: files.get(name)! }] : [])))) : new Set<string>();
         for (const name of names) {
           if (gone.has(name)) reports.get(pkg)!.push({ kind: "concept", name, status: "retired" });
           else warnings.push(`the Concept ${name}, which the release no longer ships, was not retired`);
@@ -669,7 +669,7 @@ async function checkSet(
     }
   }
 
-  // Concepts: a page's name may be taken only by this package; its parent must exist.
+  // Concepts: a page's name may be taken only by this package; each parent must exist.
   if (concepts.size > 0) {
     const schema = deps.graph ? await deps.graph.schemas.schema("Concept") : undefined;
     if (!deps.graph || !schema) {
@@ -686,10 +686,12 @@ async function checkSet(
           if (existing && !existing.deleted && !stamp?.startsWith(conceptPrefix(pkg))) {
             problems.push(`the Concept ${page.name} is in the graph already, ${stamp ? `stamped ${stamp.replace(/@.*$/, "")}` : "made here"}`);
           }
-          if (page.parent && !concepts.has(page.parent)) {
-            const parent = await findConcept(deps.graph, schema, page.parent);
-            if (!parent || parent.deleted) problems.push(`the Concept ${page.name} hangs under ${page.parent}, which is neither in the graph nor in the packages`);
+          for (const name of page.parents.filter((p) => !concepts.has(p))) {
+            const parent = await findConcept(deps.graph, schema, name);
+            if (!parent || parent.deleted) problems.push(`the Concept ${page.name} hangs under ${name}, which is neither in the graph nor in the packages`);
           }
+          const { left } = declaredAttributes(schema, page.attributes);
+          if (left.length) out.warnings.push(`the Concept ${page.name} is installed without ${left.join(", ")}: this graph's Concept does not declare ${left.length === 1 ? "it" : "them"}`);
         }
       }
       if (problems.length) throw conflict(problems.join("; "));
@@ -850,7 +852,7 @@ function checkTypes(claims: MemberClaims["claims"], knownStep: (type: string) =>
  *  which the fold then reads as what is installed (the new version stays,
  *  inactive: no store deletes one version); the Concepts it made are
  *  retired by their stamps; then the registry as it was. */
-async function takeBack(deps: PackageDeps, wrote: Wrote[], concepts: Map<string, string[]>): Promise<void> {
+async function takeBack(deps: PackageDeps, wrote: Wrote[], concepts: Map<string, Array<{ name: string; file: string }>>): Promise<void> {
   const repoint = async (w: Wrote & { previous: string }) => {
     if ((await activeVersion(deps, w.kind, w.name))?.label === w.previous) return;
     if (w.kind === "workflow") await deps.workspace.setActiveVersion(w.name, w.previous);
@@ -873,7 +875,7 @@ async function takeBack(deps: PackageDeps, wrote: Wrote[], concepts: Map<string,
     });
   }
   const schema = concepts.size && deps.graph ? await deps.graph.schemas.schema("Concept").catch(() => undefined) : undefined;
-  if (schema) for (const [pkg, files] of concepts) await retireConcepts(deps.graph!, schema, { dir: "", prefix: conceptPrefix(pkg), retired: files });
+  if (schema) for (const [pkg, pages] of concepts) await retireConcepts(deps.graph!, schema, { dir: "", prefix: conceptPrefix(pkg) }, pages);
   await deps.getRegistry().catch(() => undefined);
 }
 
@@ -955,12 +957,12 @@ export async function uninstallPackage(
   if (pages.length && deps.graph) {
     const schema = await deps.graph.schemas.schema("Concept");
     const files = new Map((await packageConcepts(deps.graph, pkg)).map((c) => [c.name, c.file]));
-    const retire: string[] = [];
+    const retire: Array<{ name: string; file: string }> = [];
     for (const i of pages) {
-      if (i.modified === false && files.has(i.name)) retire.push(files.get(i.name)!);
+      if (i.modified === false && files.has(i.name)) retire.push({ name: i.name, file: files.get(i.name)! });
       else result.kept.push({ kind: "concept", name: i.name, reason: i.modified ? "edited here" : "its file is not in the package cache, so an edit cannot be told apart" });
     }
-    const retired = schema ? new Set(await retireConcepts(deps.graph, schema, { dir: "", prefix: conceptPrefix(pkg), retired: retire })) : new Set<string>();
+    const retired = schema ? new Set(await retireConcepts(deps.graph, schema, { dir: "", prefix: conceptPrefix(pkg) }, retire)) : new Set<string>();
     for (const name of pages.map((i) => i.name).filter((n) => retired.has(n))) result.removed.push({ kind: "concept", name });
   }
   return result;

@@ -497,7 +497,7 @@ function PackagePage(props: { pkg: string; target: string | null; link: (pkg: st
               <div class="store-chips">
                 {d.concepts.map((c) => (
                   <button class="store-chip" key={c.name} onClick={() => props.go({ view: "concept", concept: c.name })} title={c.description}>
-                    {c.name}{c.parent && <span class="auto-meta"> under {c.parent}</span>}
+                    {c.name}{c.parents?.length ? <span class="auto-meta"> under {c.parents.join(", ")}</span> : null}
                   </button>
                 ))}
               </div>
@@ -571,7 +571,7 @@ function ConceptIndex(props: { go: (v: StoreView) => void }) {
   const roots = useMemo(() => (concepts ? conceptRoots(concepts) : []), [concepts]);
   const byParent = useMemo(() => {
     const m = new Map<string, api.StoreConcept[]>();
-    for (const c of concepts ?? []) if (c.parent) m.set(c.parent, [...(m.get(c.parent) ?? []), c]);
+    for (const c of concepts ?? []) for (const p of c.parents ?? []) m.set(p, [...(m.get(p) ?? []), c]);
     return m;
   }, [concepts]);
   return (

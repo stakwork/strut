@@ -196,7 +196,7 @@ What exists, and what's missing:
 
 A **package** is a directory: a `strut.yaml` of a few hand-written lines
 and the files beside it — `workflows/<name>.yaml`, `steps/<name>.ts`,
-`concepts/<Name>.md` — every one an item named under the package's own
+`concepts/<key>.md` — every one an item named under the package's own
 prefix. Its **digest** is a hash over the tree. Building one is
 `flowClosure` written to disk, with anything the closure reaches outside
 the prefix turned into a `requires.packages` pin. Installing one checks
@@ -225,7 +225,7 @@ workflows/sync.yaml               # → the workflow acme/linear/sync, the YAML 
 steps/create-issue.ts             # → the step acme/linear/create-issue
 steps/create-issue.claims.yaml    # optional: the step's claims
 steps/_shared.ts                  # → acme/linear/_shared; helpers ride with their namespace
-concepts/Linear.md                # front matter as seedConcepts reads it
+concepts/concept-linear.md        # the Concept Linear: `name`, its attributes, `parents`; body = docs
 apps/issues/app.yaml              # → the app acme/linear/issues: a DIRECTORY item (apps.md §1.1)
 apps/issues/src/App.tsx           #   with its src/, public/ and db/ migrations — never its data.db
 ```
@@ -270,6 +270,17 @@ requires:
   newer strut fails whole instead of installing half. What has no
   publisher in strut — a binary, a service, a container — is not a kind:
   it is a requirement (§11).
+- **A Concept page is named by its `name`** (`concept-history.md` §2.1,
+  BUILT 2026-11-09). Front matter `name`, then every attribute the node
+  holds but what the graph or a seeder stamps or derives, then `parents`,
+  every parent by name; the body is `docs`. The file may be called
+  anything — a build writes it under the node key, `concepts/<key>.md`, so
+  a name with `/` or a page with two parents travels — and two pages with
+  one name are refused. The first form, `concepts/<Name>.md` with a
+  `description` and one `parent`, is still read as it was: strut's own
+  pages and every package published before the second form use it. An
+  attribute the installing graph's `Concept` does not declare is left out,
+  with a warning.
 - **An app is the one kind that is a directory** (2026-10-20). `apps/<name>/`
   is the app's whole directory as `apps.md` §1.1 lays it out — `app.yaml`,
   `src/`, `public/`, `db/` — named `<package>/<name>` like a file item.
@@ -413,7 +424,7 @@ hand; the builder can author it too.
    a local creation under the prefix, a core/lib type, a sealed namespace
    — is `package_conflict: <name>`, and **nothing is published**: an
    install is all or nothing, so every name is checked before the first
-   write. Concepts join the same pass: a `concepts/<Name>.md` whose node
+   write. Concepts join the same pass: a Concept page whose node
    exists unstamped, or stamped by a seed or another package, is
    `package_conflict: Concept <Name>` — never the seeder's silent skip. The rule holds after install too: creating a step or workflow
    under an INSTALLED prefix (`PUT /steps`, `create_step`, a publish) is

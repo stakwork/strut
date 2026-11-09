@@ -2539,7 +2539,8 @@ export interface StepDetail {
 export interface ConceptDetail {
   name: string;
   description?: string;
-  parent?: string;
+  /** Every parent, by name. */
+  parents?: string[];
   docs?: string;
 }
 export interface PackageDetail {
@@ -2606,14 +2607,16 @@ export interface StorePackage {
 export interface StoreConcept {
   name: string;
   description?: string;
-  parent?: string;
+  /** Every parent, by name. */
+  parents?: string[];
   packages: Array<{ package: string; version: string }>;
   /** The publisher servers whose public view holds this page, live: its docs are read there. */
   live?: Array<{ publisher: string; url: string }>;
 }
-export interface StoreConceptPage extends StoreConcept {
+export interface StoreConceptPage extends Omit<StoreConcept, "parents"> {
   docs?: string;
   children: Array<{ name: string; description?: string }>;
+  /** Its ancestors, nearest first, through each one's first parent. */
   parents: Array<{ name: string; description?: string }>;
 }
 

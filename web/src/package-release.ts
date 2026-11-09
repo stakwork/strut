@@ -88,7 +88,7 @@ export function comesAlong(
   const steps = new Set<string>();
   const apps = new Set<string>();
   const types = new Set<string>();
-  const pages = new Set<string>();
+  let pages = 0;
   for (const f of files) {
     const wf = /^workflows\/(.+)\.yaml$/.exec(f);
     const step = /^steps\/(.+)\.ts$/.exec(f);
@@ -96,19 +96,21 @@ export function comesAlong(
     const type = /^graph\/(.+)\.yaml$/.exec(f);
     const page = /^concepts\/(.+)\.md$/.exec(f);
     if (type) types.add(type[1]!);
-    else if (page) pages.add(page[1]!);
+    else if (page) pages++;
     else if (wf) workflows.add(wf[1]!);
     else if (step && !step[1]!.split("/").pop()!.startsWith("_")) steps.add(step[1]!);
     else if (app) apps.add(app[1]!);
   }
   const pickedWf = new Set(picked.workflows.map((n) => pathIn(pkg, n)));
   const pickedApps = new Set(picked.apps.map((n) => pathIn(pkg, n)));
-  const roots = (picked.concepts ?? []).filter((c) => pages.has(c)).sort();
+  // A page's file is its node key, not its name; a build that answered
+  // carries every Concept named (one missing refuses it).
+  const roots = pages ? [...(picked.concepts ?? [])].sort() : [];
   return {
     workflows: [...workflows].filter((p) => !pickedWf.has(p)).sort(),
     steps: [...steps].sort(),
     apps: [...apps].filter((p) => !pickedApps.has(p)).sort(),
-    concepts: { roots, pages: pages.size - roots.length },
+    concepts: { roots, pages: Math.max(0, pages - roots.length) },
     // A parent of a named type comes along; the names match case-blind, as the graph's do.
     types: [...types].filter((t) => !(picked.types ?? []).some((n) => n.toLowerCase() === t.toLowerCase())).sort(),
     leftOut: [...picked.workflows.filter((n) => !workflows.has(pathIn(pkg, n))), ...picked.apps.filter((n) => !apps.has(pathIn(pkg, n)))].sort(),

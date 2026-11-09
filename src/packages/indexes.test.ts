@@ -289,8 +289,8 @@ describe("following a package index", () => {
       const tree = await cap.concepts();
       assert.deepEqual(tree.errors, []);
       assert.deepEqual(
-        tree.concepts.map((c) => [c.name, c.parent, c.index, c.packages.map((p) => p.package)]),
-        [["Civil procedure", "Law", "public", ["openlaw/civil"]], ["Law", undefined, "public", ["openlaw/civil"]]],
+        tree.concepts.map((c) => [c.name, c.parents, c.index, c.packages.map((p) => p.package)]),
+        [["Civil procedure", ["Law"], "public", ["openlaw/civil"]], ["Law", undefined, "public", ["openlaw/civil"]]],
       );
       assert.deepEqual((await cap.concepts("civil")).concepts.map((c) => c.name), ["Civil procedure"]);
       const civil = (await cap.concept("Civil procedure"))!;
@@ -303,7 +303,7 @@ describe("following a package index", () => {
       const brief = (await getStep.run({ package: "openlaw/civil", full: false }, ctx)) as IndexPackagePage;
       assert.equal(brief.index, "public");
       assert.deepEqual(brief.detail!.concepts, [
-        { name: "Civil procedure", description: "How a civil case moves", parent: "Law" },
+        { name: "Civil procedure", description: "How a civil case moves", parents: ["Law"] },
         { name: "Law", description: "The root" },
       ]);
       assert.match(brief.detail!.readme!, /^# Civil procedure/);

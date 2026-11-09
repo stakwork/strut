@@ -661,9 +661,9 @@ for (const tb of testBackends()) {
       await claim("a judge likes it", { type: "local/judge", config: {} });
 
       const built = await build(src, { workflows: ["acme/linear/sync"], concepts: ["Linear"] });
-      assert.deepEqual(built.files, ["concepts/Issues.md", "concepts/Linear.md", "steps/_shared.ts", "steps/create-issue.claims.yaml", "steps/create-issue.ts", "strut.yaml", "workflows/sync.yaml"]);
-      assert.equal(await readFile(join(built.dir, "concepts/Linear.md"), "utf-8"), "---\ndescription: The tracker\nparent: Job\n---\nHow Linear works here.\n");
-      assert.equal(await readFile(join(built.dir, "concepts/Issues.md"), "utf-8"), "---\ndescription: Its issues\nparent: Linear\n---\n---\nOne issue per bug.\n");
+      assert.deepEqual(built.files, ["concepts/concept-issues.md", "concepts/concept-linear.md", "steps/_shared.ts", "steps/create-issue.claims.yaml", "steps/create-issue.ts", "strut.yaml", "workflows/sync.yaml"]);
+      assert.equal(await readFile(join(built.dir, "concepts/concept-linear.md"), "utf-8"), "---\nname: Linear\ndescription: The tracker\nparents:\n  - Job\n---\nHow Linear works here.\n");
+      assert.equal(await readFile(join(built.dir, "concepts/concept-issues.md"), "utf-8"), "---\nname: Issues\ndescription: Its issues\nparents:\n  - Linear\n---\n---\nOne issue per bug.\n");
       assert.deepEqual(loadYaml(await readFile(join(built.dir, "steps/create-issue.claims.yaml"), "utf-8")), [
         { text: "it reads its key", checks: [{ type: "exec", config: { cmd: "true" }, name: "exec", when: "run", policy: "always" }] },
       ]);
@@ -673,7 +673,7 @@ for (const tb of testBackends()) {
       // A page another seeder stamped is not the package's; a top page under a person's page is said.
       assert.match(await refusal(build(src, { concepts: ["Job"] })), /the Concept Job is strut\/concepts\/Job\.md's \(its stamp\): a package carries pages of its own/);
       const notes = await build(src, { package: "acme/notes", concepts: ["Roadmap"] });
-      assert.deepEqual(notes.files, ["concepts/Roadmap.md", "strut.yaml"]);
+      assert.deepEqual(notes.files, ["concepts/concept-roadmap.md", "strut.yaml"]);
       assert.match(notes.warnings.join("\n"), /the Concept Roadmap hangs under Notes, which is not in the package: the strut that installs it must have a Concept Notes/);
 
       // On a filesystem workspace: no Concepts, no claims, said.
@@ -694,6 +694,47 @@ for (const tb of testBackends()) {
       assert.deepEqual(parents?.edges.map((e) => e.other), [await conceptRef("Job")]);
       const listed = (await (await buyer.app.request(`/claims?kind=step&name=${encodeURIComponent("acme/linear/create-issue")}`)).json()) as { claims: Array<{ text: string; speaker?: string }> };
       assert.deepEqual(listed.claims.map((c) => [c.text, c.speaker]), [["it reads its key", "acme/linear"]]);
+    });
+
+    it("writes a page under its node key with its attributes and every parent, a / in its name, and builds the same bytes again from the strut that installed it", async () => {
+      const src = await graphStrut("source");
+      await page("Law", { description: "The root", docs: "All of it." });
+      await page("Repos", { docs: "Where code lives." });
+      await page("acme/linear", { description: "The tracker's code", repo: "acme/linear", docs: "Its README." }, "Law");
+      await backend.edges.write({ edge: "PARENT_OF", source_ref_id: (await conceptRef("Repos"))!, target_ref_id: (await conceptRef("acme/linear"))! });
+      await page("Notes", { docs: "A person's page." });
+      await backend.edges.write({ edge: "PARENT_OF", source_ref_id: (await conceptRef("Notes"))!, target_ref_id: (await conceptRef("Repos"))! });
+      const built = await build(src, { package: "acme/code", concepts: ["Law", "Repos"] });
+      assert.deepEqual(built.files, ["concepts/concept-acmelinear.md", "concepts/concept-law.md", "concepts/concept-repos.md", "strut.yaml"]);
+      assert.equal(
+        await readFile(join(built.dir, "concepts/concept-acmelinear.md"), "utf-8"),
+        "---\nname: acme/linear\ndescription: The tracker's code\nrepo: acme/linear\nparents:\n  - Law\n  - Repos\n---\nIts README.\n",
+      );
+      assert.equal(await readFile(join(built.dir, "concepts/concept-repos.md"), "utf-8"), "---\nname: Repos\nparents:\n  - Notes\n---\nWhere code lives.\n", "every parent, the one outside the package too");
+      assert.deepEqual(built.warnings, ["the Concept Repos hangs under Notes, which is not in the package: the strut that installs it must have a Concept Notes"]);
+
+      for (const s of struts.splice(0)) await s.close?.();
+      await tb.clear(backend);
+      const buyer = await graphStrut("buyer");
+      await page("Notes", { docs: "The buyer's own page." });
+      const r = await install(buyer, `file:${built.dir}`);
+      assert.equal(r.status, 201, JSON.stringify(r.body));
+      assert.deepEqual(r.body.warnings, []);
+      const parentsOf = async (name: string) => {
+        const ref = (await conceptRef(name))!;
+        const edges = await backend.tx((tx) => backend.edgeEngine.liveEdgesOf(tx, ref, "PARENT_OF", false));
+        return (edges?.edges ?? []).map((e) => e.other).sort();
+      };
+      assert.deepEqual(await parentsOf("acme/linear"), [await conceptRef("Law"), await conceptRef("Repos")].sort());
+      assert.deepEqual(await parentsOf("Repos"), [await conceptRef("Notes")]);
+      const ref = (await conceptRef("acme/linear"))!;
+      const raw = (await backend.tx((tx) => backend.nodeEngine.readRaw(tx, ref)))!.props;
+      assert.deepEqual([raw["description"], raw["repo"], raw["docs"]], ["The tracker's code", "acme/linear", "Its README."]);
+      assert.match(String(raw["unique_source_id"]), /^pkg\/acme\/code\/concept-acmelinear\.md@[0-9a-f]{12}$/);
+
+      // Read back, the pages are the same bytes: the same package, the same digest.
+      const again = await build(buyer, { package: "acme/code", concepts: ["Law", "Repos"] });
+      assert.equal(again.digest, built.digest);
     });
 
     it("carries apps, installs them on a cleared graph, holds the prefix, and installs again after an uninstall", async () => {
