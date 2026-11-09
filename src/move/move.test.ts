@@ -14,6 +14,7 @@ import { chmod, copyFile, cp, mkdir, readdir, readFile, rename, rm, stat, writeF
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { Readable } from "node:stream";
+import { gunzipSync } from "node:zlib";
 import { applyMove, leftBehindIn, MOVED_FILE } from "../moved.js";
 import { moveVersion, packFolders, unpack, type MoveFolders } from "./archive.js";
 import { check, fetchMove, send } from "./client.js";
@@ -376,6 +377,23 @@ describe("a job moves with its files, never its checkouts", () => {
     await writeFile(join(into, "data", MOVED_FILE), JSON.stringify({ from: data }));
     assert.equal((await applyMove(join(into, "data"))).applied, true);
     assert.deepEqual(JSON.parse(await readFile(join(into, "data", "jobs", "j1.json"), "utf-8")), { ...record, repos: {} });
+  });
+
+  it("moves a file whose path no ustar header holds, its PAX header read across chunks", async () => {
+    const data = join(root, "long", "workspace");
+    const deep = `jobs/j2/${"notes/".repeat(30)}${"n".repeat(150)}.md`;
+    await put(data, { [deep]: "a long way down", "jobs/j2/plan.md": "short" });
+    const chunks: Buffer[] = [];
+    for await (const c of (await packFolders({ data })).plain) chunks.push(c);
+    const plain = gunzipSync(Buffer.concat(chunks));
+    // A few bytes at a time: the extended header arrives in pieces.
+    const pieces = (async function* () {
+      for (let at = 0; at < plain.length; at += 97) yield plain.subarray(at, at + 97);
+    })();
+    const into = join(root, "long-unpacked");
+    await unpack(pieces, into);
+    assert.deepEqual([...(await tree(join(into, "data"))).keys()].sort(), ["jobs/j2/plan.md", deep].sort());
+    assert.equal(await readFile(join(into, "data", ...deep.split("/")), "utf-8"), "a long way down");
   });
 });
 

@@ -7,8 +7,9 @@
 //   data/…             strut's data folder, minus what is left behind (moved.ts `leftBehindIn`)
 //   sidecars/<name>…   each sidecar: a folder (or one file), opaque
 //
-// Regular files only. Written and read as streams, so a large workspace
-// never has to fit in memory.
+// Regular files only, a path ustar cannot hold in a PAX header (src/tar.ts).
+// Written and read as streams, so a large workspace never has to fit in
+// memory.
 import { createReadStream, existsSync, readFileSync } from "node:fs";
 import { cp, mkdir, open, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -19,7 +20,7 @@ import { createGunzip, createGzip } from "node:zlib";
 import { z } from "zod";
 import { bootEnv } from "../env.js";
 import { applyMove, leftBehindIn, MOVED_FILE, type Moved } from "../moved.js";
-import { parseTarHeader, TAR_END, tarHeader, tarPadding } from "../tar.js";
+import { TAR_END, type TarExtendedKind, TarNames, tarHeader, tarPadding } from "../tar.js";
 
 export const FORMAT = "strut-move";
 export const FORMAT_VERSION = 1;
@@ -294,6 +295,9 @@ export async function unpack(plain: AsyncIterable<Buffer>, dir: string): Promise
   await mkdir(dir, { recursive: true, mode: 0o700 });
   let buf: Buffer = Buffer.alloc(0);
   let file: { handle: Awaited<ReturnType<typeof open>>; left: number; pad: number } | null = null;
+  // An extended header (a long name) waiting for its whole body.
+  let extended: { kind: TarExtendedKind; size: number; pad: number } | null = null;
+  const names = new TarNames();
   let ended = false;
   for await (const chunk of gunzipped(plain)) {
     if (ended) continue;
@@ -313,12 +317,22 @@ export async function unpack(plain: AsyncIterable<Buffer>, dir: string): Promise
         await file.handle.close();
         file = null;
       }
+      if (extended) {
+        if (buf.length < extended.size + extended.pad) break;
+        names.extended(extended.kind, buf.subarray(0, extended.size));
+        buf = buf.subarray(extended.size + extended.pad);
+        extended = null;
+      }
       if (buf.length < 512) break;
-      const entry = parseTarHeader(buf.subarray(0, 512));
+      const entry = names.header(buf.subarray(0, 512));
       buf = buf.subarray(512);
       if (!entry) {
         ended = true;
         break;
+      }
+      if (entry.extended) {
+        extended = { kind: entry.extended, size: entry.size, pad: (512 - (entry.size % 512)) % 512 };
+        continue;
       }
       const problem = entryProblem(entry.name);
       if (problem) throw new Error(`refused entry ${JSON.stringify(entry.name)}: ${problem}`);

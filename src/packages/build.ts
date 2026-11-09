@@ -77,6 +77,7 @@ import { isSystemWorkflow } from "../system-workflows.js";
 import { hashTree, treeFiles } from "../version.js";
 import { packagePrefixOf, type Upstream, type VersionSource, type WorkspaceStore } from "../workspace.js";
 import { dumpYaml, loadYaml } from "../yaml.js";
+import { archiveProblem } from "./archive.js";
 import type { CachedPackage, PackageCache } from "./cache.js";
 import { MANIFEST_FILE, PACKAGE_DIGEST, PACKAGE_NAME, readPackage, type PackageManifest } from "./format.js";
 import { allTypeFiles, exportTypes } from "./graph-types.js";
@@ -217,11 +218,15 @@ export async function buildPackage(deps: BuildDeps, req: BuildRequest, opts: { d
       await mkdir(dirname(to), { recursive: true });
       await writeFile(to, text);
     }
+    // A package that cannot travel is refused here, dry run included, never
+    // kept for an archive route that could not serve it.
+    const read = await readPackage(scratch);
+    const unarchivable = await archiveProblem(scratch, read.files);
+    if (unarchivable) throw new Error(`package_unarchivable: ${pkg} cannot be sent to another strut server: ${unarchivable}`);
     if (opts.dryRun) {
-      const info = await readPackage(scratch);
-      return { package: pkg, version: req.version, digest: info.digest, files: info.files, manifest, dir: "", warnings, leftToInstaller, suggested: suggested! };
+      return { package: pkg, version: req.version, digest: read.digest, files: read.files, manifest, dir: "", warnings, leftToInstaller, suggested: suggested! };
     }
-    const info = await deps.cache.putDir(scratch);
+    const info = await deps.cache.putDir(scratch, read.digest);
     return { package: pkg, version: req.version, digest: info.digest, files: info.files, manifest, dir: info.dir, warnings, leftToInstaller, suggested: suggested! };
   } finally {
     await rm(scratch, { recursive: true, force: true });

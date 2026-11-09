@@ -1,6 +1,7 @@
 /**
  * A package's BYTES between struts (plans/marketplace.md §5, §13): a gzipped
- * ustar of its files (src/tar.ts), fetched BY DIGEST from whichever URL
+ * ustar of its files (src/tar.ts; a name ustar cannot hold — a Concept
+ * page's long node key — in a PAX header), fetched BY DIGEST from whichever URL
  * answers — the publishing strut's archive route, a mirror's. The digest is
  * the identity, so the archive is only transport: its bytes are never what
  * is checked, the unpacked tree is (`PackageCache.putArchive`), and any URL
@@ -30,11 +31,49 @@ export function archiveUrl(baseUrl: string, pkg: string, digest: string): string
   return `${baseUrl.replace(/\/+$/, "")}/packages/${encodeURIComponent(publisher)}/${encodeURIComponent(name)}/archive?digest=${encodeURIComponent(digest)}`;
 }
 
-/** `files` under `dir` as one .tar.gz, in the order given. */
-export async function packArchive(dir: string, files: string[]): Promise<Buffer> {
+/** `files` under `dir` as one tar, in the order given. */
+async function tarOf(dir: string, files: string[]): Promise<Buffer> {
   const entries: [string, Buffer][] = [];
   for (const rel of files) entries.push([rel, await readFile(join(dir, rel))]);
-  return promisify(gzip)(tar(entries));
+  return tar(entries);
+}
+
+/** `files` under `dir` as one .tar.gz, in the order given. */
+export async function packArchive(dir: string, files: string[]): Promise<Buffer> {
+  return promisify(gzip)(await tarOf(dir, files));
+}
+
+/**
+ * Why the package in `dir` (its `files`, as `readPackage` lists them) could
+ * not travel, if it could not: packed as the archive route packs it, then
+ * read back as `unpackArchive` reads it — its caps, its path checks, the
+ * same files. A build asks first, so the cache never keeps a package its
+ * archive route cannot serve or no strut could unpack.
+ */
+export async function archiveProblem(dir: string, files: string[]): Promise<string | undefined> {
+  if (files.length > MAX_ARCHIVE_FILES) return `it holds ${files.length} files, more than the ${MAX_ARCHIVE_FILES} a package archive may`;
+  let plain: Buffer;
+  try {
+    plain = await tarOf(dir, files);
+  } catch (err) {
+    return `it cannot be packed: ${err instanceof Error ? err.message : String(err)}`;
+  }
+  if (plain.length > MAX_UNPACKED_BYTES) return `its archive unpacks to ${plain.length} bytes, more than the ${MAX_UNPACKED_BYTES} a strut unpacks`;
+  const gz = await promisify(gzip)(plain);
+  if (gz.length > MAX_ARCHIVE_BYTES) return `its archive is ${gz.length} bytes, more than the ${MAX_ARCHIVE_BYTES} a strut fetches`;
+  let back: Map<string, Buffer>;
+  try {
+    back = untar(plain);
+  } catch (err) {
+    return `its archive does not read back: ${err instanceof Error ? err.message : String(err)}`;
+  }
+  const names = [...back.keys()];
+  for (const name of names) {
+    const problem = entryProblem(name);
+    if (problem) return `its archive's ${JSON.stringify(name)} ${problem}`;
+  }
+  if (names.length !== files.length || names.some((n, i) => n !== files[i])) return "its archive does not read back as the same files";
+  return undefined;
 }
 
 /** Why `name` may not come out of a package archive, if it may not: a path

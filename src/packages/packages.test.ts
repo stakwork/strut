@@ -11,7 +11,7 @@ import { MemoryRunStore } from "../store.js";
 import { tar } from "../tar.js";
 import { treeHash } from "../version.js";
 import { WorkspaceManager } from "../workspace.js";
-import { archiveUrl, fetchArchive, packArchive } from "./archive.js";
+import { archiveProblem, archiveUrl, fetchArchive, MAX_ARCHIVE_FILES, packArchive } from "./archive.js";
 import { packageCache, resolvePackage } from "./cache.js";
 import { readPackage } from "./format.js";
 
@@ -210,9 +210,30 @@ describe("the package cache", () => {
     await assert.rejects(fresh.putArchive(entries(["/etc/evil", "x"]), src.digest), /is not a relative path/);
     await assert.rejects(fresh.putArchive(entries([".git/config", "x"]), src.digest), /"\.git\/config" is a path a package digest never covers/);
     await assert.rejects(fresh.putArchive(entries(["apps/issues/dist/a.js", "x"]), src.digest), /never covers/);
+    // A name only a PAX header holds is checked whole.
+    const longEvil = `steps/${"x".repeat(120)}/${"../".repeat(30)}evil.ts`;
+    await assert.rejects(fresh.putArchive(entries([longEvil, "x"]), src.digest), /is not a relative path/);
+    await assert.rejects(fresh.putArchive(entries([`concepts/${"y".repeat(150)}/.git/config`, "x"]), src.digest), /never covers/);
     await assert.rejects(fresh.putArchive(Buffer.from("not gzip"), src.digest), /bad_package: not a package archive/);
     assert.deepEqual(readdirSync(fresh.root).filter((n) => !n.startsWith(".")), [], "nothing kept from a refused archive");
     assert.equal(existsSync(join(root, "fresh", "evil.ts")) || existsSync(join(root, "evil.ts")), false);
+  });
+});
+
+describe("a build's archive check", () => {
+  it("says nothing of a package that travels, and what is past an archive's caps", async () => {
+    const dir = join(tmpdir(), `strut-archive-check-${randomUUID()}`);
+    try {
+      await mkdir(join(dir, "concepts"), { recursive: true });
+      await writeFile(join(dir, "strut.yaml"), "package: acme/notes\nversion: '1'\n");
+      await writeFile(join(dir, "concepts", `concept-${"z".repeat(200)}.md`), "---\nname: Z\n---\n");
+      const files = (await readPackage(dir)).files;
+      assert.equal(await archiveProblem(dir, files), undefined, "a long name travels");
+      const many = Array.from({ length: MAX_ARCHIVE_FILES + 1 }, (_, i) => `steps/f${i}.ts`);
+      assert.match((await archiveProblem(dir, many))!, new RegExp(`holds ${MAX_ARCHIVE_FILES + 1} files, more than the ${MAX_ARCHIVE_FILES}`));
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
 

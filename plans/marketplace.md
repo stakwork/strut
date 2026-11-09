@@ -2226,6 +2226,32 @@ production until install (step 2) calls the resolver.
        installed-packages fold could not tell an updated page from an
        edited one at uninstall ("its file is not in the package cache"), so
        it keeps it. Safe, but the fold reads the earlier release's files.
+   - **Fixed 2026-11-09, the legal desk's archive** (the build answered
+     201, `GET …/archive` 500). With a page under its node key, five of the
+     `Law` tree's files had names longer than a ustar header holds — the
+     longest 132 bytes with no `/` to split at — and `src/tar.ts` refused
+     them, though the build said nothing:
+     - **A long name travels in a PAX header.** A name ustar cannot hold
+       goes in a POSIX PAX extended header (`path=`) before its entry, as
+       bsdtar and GNU tar write one; every name that fits is plain ustar as
+       before, so a package with no long name packs to the same bytes. The
+       reader takes PAX and GNU long names, reads past a PAX global header,
+       and holds every refusal — a non-file entry, a name twice, a cut
+       archive, `unpackArchive`'s path checks and caps — to the whole name.
+       A move (`src/move/archive.ts`) gets the same, for a data folder with
+       a deep path.
+     - **A strut from before this cannot read such an archive:** its reader
+       refuses the PAX header as a non-file entry, so the fetch fails
+       (`package_fetch_failed: … bad_package: … non-file entry
+       (././@PaxHeader)`). An index, a box or a subscriber must run this
+       strut before it fetches a package with a long name; a package with
+       none reads as before.
+     - **A build packs what it built.** `buildPackage`, dry run included,
+       packs the package as the archive route does and reads it back as a
+       fetching strut would (`archiveProblem`, archive.ts): one that could
+       not travel — past the 10,000 files, 256 MB unpacked or 64 MB as
+       `.tar.gz` a strut takes — is refused, `package_unarchivable:` (400),
+       and nothing is kept.
 3. **`git+` source + export to git**, the §2.3 export over the package
    layout.
 4. **Updates:** the ask, each re-point classified `silent` / `named` by
