@@ -27,7 +27,7 @@ import { packArchive } from "./archive.js";
 import { PackageCache } from "./cache.js";
 import { canonicalJson, keyFromSeed, sealCard, type Catalog } from "./card.js";
 import type { IndexInfo } from "./index.js";
-import { indexBaseOf, parseIndexesEnv, type ConceptSearch, type IndexConceptPageHit, type IndexPackagePage, type IndexSubscriptionInfo, type PackageSearch } from "./indexes.js";
+import { DEFAULT_PACKAGE_INDEXES, indexBaseOf, indexSubscriptionProblem, parseIndexesEnv, type ConceptSearch, type IndexConceptPageHit, type IndexPackagePage, type IndexSubscriptionInfo, type PackageSearch } from "./indexes.js";
 
 const KEY = "indexes-api-key";
 const PEER_KEY = "indexes-peer-key";
@@ -96,7 +96,8 @@ before(() => {
   process.env["STRUT_PEER_KEY"] = PEER_KEY;
   process.env["STRUT_SECRET_KEY"] = "indexes-secret";
   delete process.env["STRUT_INDEX"];
-  delete process.env["STRUT_PACKAGE_INDEXES"];
+  // Follow only the indexes each test files, never the built-in default.
+  process.env["STRUT_PACKAGE_INDEXES"] = "[]";
 });
 after(() => {
   for (const [k, v] of Object.entries(saved)) {
@@ -348,7 +349,10 @@ describe("following a package index", () => {
 
 describe("index subscriptions as configured", () => {
   it("reads STRUT_PACKAGE_INDEXES, and refuses one that is not a list of indexes", () => {
-    assert.deepEqual(parseIndexesEnv(undefined), [], "no default index until Stakwork's is deployed");
+    const defaults = parseIndexesEnv(undefined);
+    assert.deepEqual(defaults, [...DEFAULT_PACKAGE_INDEXES], "unset: the built-in defaults");
+    assert.deepEqual(defaults.map((s) => [s.id, s.urls]), [["stakwork", ["https://index.stakwork.ai/index/catalog"]]], "Stakwork's public index");
+    for (const s of defaults) assert.equal(indexSubscriptionProblem(s), undefined, `the default ${s.id} is a valid subscription`);
     assert.deepEqual(parseIndexesEnv("[]"), []);
     const key = "y".repeat(52);
     assert.deepEqual(parseIndexesEnv(JSON.stringify([{ id: "a", key, urls: ["https://i.example/index/catalog"], extra: 1 }])), [{ id: "a", key, urls: ["https://i.example/index/catalog"] }]);

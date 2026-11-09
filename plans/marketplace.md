@@ -2592,7 +2592,7 @@ production until install (step 2) calls the resolver.
      fetches URLs rather than speaks MCP — the blockquote, the `claude mcp
      add` line, the open reads, every package with what its archive holds,
      every Concept page, the store page — each a link to its JSON page, so
-     `index.sphinx.chat/llms.txt` is how such an agent learns the store;
+     `index.stakwork.ai/llms.txt` is how such an agent learns the store;
      the Store page's footer links it.
      Choices of mine, proposed: one step for the tree and a page
      (`package/concepts { query?, name? }`) rather than two; the model-facing
@@ -2603,6 +2603,22 @@ production until install (step 2) calls the resolver.
      install step) is never granted by accident — `package/install` is
      granted beside them, by name, and gated by `approve:`. Not built: the
      rest of the install ASK (the bullet above's "not built").
+   - **Built 2026-11-09: the Stakwork default.** Stakwork's index runs at
+     index.stakwork.ai (deploy/index/; it moved from index.sphinx.chat before
+     its first row, so every card it sealed names the new host). Its first
+     row, `openlaw` (openlaw1's public key, its public catalog on the
+     swarm's `/lab`), minted the index key `fesbp7why3…`, which is now
+     `DEFAULT_PACKAGE_INDEXES` (id `stakwork`): a strut with
+     `STRUT_PACKAGE_INDEXES` unset follows it, so `openlaw/legal-desk`
+     installs by its bare name. The tests that reach the package door set
+     `STRUT_PACKAGE_INDEXES='[]'`, so no test reads the real index. The first
+     package listed is `openlaw/legal-desk` 0.1.0 (Apache-2.0 AND
+     CC-BY-4.0). Getting it there found five gaps, each fixed: jarvis parent
+     types inheriting Thing's key (strut#578), a workflow's category, names
+     in Concept pages, a Concept page carried alone (#578), jarvis types
+     indexing undeclared attributes (#583), and Concept file names past
+     ustar's 100 bytes (#584, PAX headers). Rows are still the operator's
+     curl: self-serve listing is being designed in plans/index-listing.md.
    - **6b, later: the Pkarr record.** The JS client (relay-only: a relay is a
      dependency), Stakwork's relay at a stable hostname and the
      sphinx-swarm container, a publisher's record naming its public
