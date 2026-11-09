@@ -380,9 +380,17 @@ Available bindings inside a step config:
 ### 5.3 Supported expression grammar
 
 - Property access: `foo.bar.baz`, `foo["bar"]`, `arr[0]`.
+- Optional chaining: `foo?.bar` — `undefined`, no throw, when `foo` is
+  null/undefined; guards one hop (`a?.b?.c` for deeper chains). A plain `.`
+  on nothing is an error that names `?.`, `??` and the guard below.
 - Literals: numbers, strings (single or double quotes), `true`, `false`, `null`.
-- Operators: `=== !== == != < <= > >= && || !  + - * / %`.
+- Operators: `=== !== == != < <= > >= && || ?? !  + - * / %`.
 - Ternary: `a ? b : c`.
+- Short-circuit, as in JS: the branch a ternary's condition rules out, and
+  the right side an `&&` / `||` / `??` settles without, is parsed but not
+  evaluated — nothing in it is looked up, read, indexed or called — so
+  `xs.length > 0 ? xs[0].n : 0` holds on an empty list. A syntax error in a
+  skipped part still throws, and the static validator still checks its roots.
 - Array methods (whitelist): `map`, `filter`, `find`, `join`, `includes`,
   `slice` — with **single-param arrow lambdas** whose body is one expression
   (`items.map(x => x.ref_id)`). No statements, no user-defined functions, no

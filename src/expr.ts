@@ -7,8 +7,13 @@
  *    null/undefined; guards ONE hop (write a?.b?.c for deeper chains).
  *    The escape hatch for refs into steps a `when:` gate SKIPPED.
  *  - Literals: numbers, strings ('...' or "..."), true, false, null
- *  - Operators: === !== == != < <= > >= && || ! + - * / %
+ *  - Operators: === !== == != < <= > >= && || ?? ! + - * / %
  *  - Ternary: a ? b : c
+ *  - SHORT-CIRCUIT, as in JS: the branch a ternary's condition rules out and
+ *    the right side an && / || / ?? settles without are parsed but NOT
+ *    evaluated — nothing in them is looked up, read, indexed or called — so
+ *    `xs.length > 0 ? xs[0].n : 0` holds on an empty list. A syntax error in
+ *    a skipped part still throws.
  *  - Array methods (whitelist): map, filter, find, join, includes, slice —
  *    with single-param arrow lambdas, e.g. {{ search.map(n => n.ref_id) }}.
  *    Expression bodies only (no statements, no user-defined functions), so
@@ -58,6 +63,7 @@ const OPERATORS = [
   ">=",
   "&&",
   "||",
+  "??",
   "<",
   ">",
   "+",
@@ -185,9 +191,15 @@ const METHODS_HINT =
   `supported on arrays: ${ARRAY_METHODS.join(", ")} ` +
   `(single-param arrow lambdas only, e.g. items.map(x => x.ref_id))`;
 
+/** The teaching suffix for a read off nothing: the fix, so an agent whose
+ *  template met a missing value self-corrects from the error alone. */
+const MISSING_HINT =
+  `read what may be missing with ?. (a?.b), default it with ?? (a?.b ?? 0), ` +
+  `or guard it (a ? a.b : 0 — the branch not taken is never evaluated)`;
+
 function callMethod(obj: unknown, method: string, args: unknown[]): unknown {
   if (obj === null || obj === undefined) {
-    throw new TemplateError(`Cannot call method '${method}' of ${obj}`);
+    throw new TemplateError(`Cannot call method '${method}' of ${obj} — ${MISSING_HINT}`);
   }
   if (!Array.isArray(obj)) {
     throw new TemplateError(
@@ -265,24 +277,54 @@ function parse(
     return advance();
   }
 
+  /** Parse a part of the expression WITHOUT evaluating it. Under `skip` no
+   *  identifier is looked up, nothing is read, indexed or called, and every
+   *  value is undefined — so the branch a `? :` rules out, or the side an
+   *  `&&` / `||` / `??` settles without, cannot fail on what it would have
+   *  read. Its syntax is still checked: `expect` throws as ever. */
+  let skip = 0;
+  function skipping(part: () => unknown): void {
+    skip++;
+    try {
+      part();
+    } finally {
+      skip--;
+    }
+  }
+
   function parseTernary(): unknown {
-    const cond = parseOr();
+    const cond = parseNullish();
     if (peek().type === "question") {
       advance();
-      const then = parseTernary();
+      if (cond) {
+        const then = parseTernary();
+        expect("colon");
+        skipping(parseTernary);
+        return then;
+      }
+      skipping(parseTernary);
       expect("colon");
-      const els = parseTernary();
-      return cond ? then : els;
+      return parseTernary();
     }
     return cond;
+  }
+
+  function parseNullish(): unknown {
+    let left = parseOr();
+    while (peek().type === "op" && peek().value === "??") {
+      advance();
+      if (left !== null && left !== undefined) skipping(parseOr);
+      else left = parseOr();
+    }
+    return left;
   }
 
   function parseOr(): unknown {
     let left = parseAnd();
     while (peek().type === "op" && peek().value === "||") {
       advance();
-      const right = parseAnd();
-      left = left || right;
+      if (left) skipping(parseAnd);
+      else left = parseAnd();
     }
     return left;
   }
@@ -291,8 +333,8 @@ function parse(
     let left = parseEquality();
     while (peek().type === "op" && peek().value === "&&") {
       advance();
-      const right = parseEquality();
-      left = left && right;
+      if (!left) skipping(parseEquality);
+      else left = parseEquality();
     }
     return left;
   }
@@ -440,15 +482,19 @@ function parse(
         advance();
         const prop = expect("ident").value;
         if (peek().type === "lparen") {
-          obj = callMethod(obj, prop, parseCallArgs());
+          const args = parseCallArgs();
+          obj = skip ? undefined : callMethod(obj, prop, args);
           continue;
         }
-        if (obj === null || obj === undefined) {
+        if (skip) {
+          obj = undefined;
+        } else if (obj === null || obj === undefined) {
           throw new TemplateError(
-            `Cannot access property '${prop}' of ${obj}`,
+            `Cannot access property '${prop}' of ${obj} — ${MISSING_HINT}`,
           );
+        } else {
+          obj = (obj as Record<string, unknown>)[prop];
         }
-        obj = (obj as Record<string, unknown>)[prop];
       } else if (peek().type === "optionalDot") {
         // Optional chaining: `a?.b` is undefined (no throw) when `a` is
         // null/undefined — the escape hatch for refs into SKIPPED steps
@@ -459,21 +505,24 @@ function parse(
         const prop = expect("ident").value;
         if (peek().type === "lparen") {
           const args = parseCallArgs();
-          obj = obj === null || obj === undefined ? undefined : callMethod(obj, prop, args);
+          obj = skip || obj === null || obj === undefined ? undefined : callMethod(obj, prop, args);
           continue;
         }
         obj =
-          obj === null || obj === undefined
+          skip || obj === null || obj === undefined
             ? undefined
             : (obj as Record<string, unknown>)[prop];
       } else if (peek().type === "lbracket") {
         advance();
         const idx = parseTernary();
         expect("rbracket");
-        if (obj === null || obj === undefined) {
-          throw new TemplateError(`Cannot index into ${obj}`);
+        if (skip) {
+          obj = undefined;
+        } else if (obj === null || obj === undefined) {
+          throw new TemplateError(`Cannot index into ${obj} — ${MISSING_HINT}`);
+        } else {
+          obj = (obj as Record<string, unknown>)[idx as string];
         }
-        obj = (obj as Record<string, unknown>)[idx as string];
       } else {
         break;
       }
@@ -502,6 +551,7 @@ function parse(
       if (t.value === "null") return null;
       if (t.value === "undefined") return undefined;
 
+      if (skip) return undefined;
       if (!(t.value in scope)) {
         throw new TemplateError(`Undefined reference '${t.value}'`);
       }

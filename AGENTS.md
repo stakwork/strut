@@ -47,7 +47,7 @@ strut/
 ├── tsconfig.json          # strict, Node16 module, types: ["node"]
 ├── src/
 │   ├── core.ts            # flow(), step(), defineStep(), services bag, all types; the five output markers — withAccessedNodes / withMessages / withMedia / withStop / withUsage (readers accessedNodesOf / messagesOf / mediaOf / stopOf / usageOf): non-enumerable, so invisible to {{ }}, JSON, the event log and run.json. withUsage (what a step's model calls spent) is TAKEN off the output by whoever lifts it onto `step.end` as `modelCalls` / `usage` / `cost` (`takeUsage`), so a pack or subflow handing the same object on never reports it twice; `RunSummary.totals` is their sum (`tallyUsage`, store.ts)
-│   ├── expr.ts            # {{ }} template evaluator (recursive descent; whitelisted array methods + arrow lambdas)
+│   ├── expr.ts            # {{ }} template evaluator (recursive descent, one pass; `? :`, `&&`, `||`, `??` short-circuit — the part ruled out is parsed under a `skip` depth and never evaluated; `?.`; whitelisted array methods + arrow lambdas; every read-off-nothing error names the fix)
 │   ├── search.ts          # searchSteps / searchWorkflows: the one matcher behind the sidebar filters, the Add Step picker and `GET /workflows?q=` — every word must hit the name (or the category / description), name hits rank first. The web UI imports it from here
 │   ├── input-block.ts     # the optional YAML `input:` block → the flow's Zod input schema; kept as Flow.inputBlock for GET …/flow + the Run form
 │   ├── step-ref.ts        # `type: name@vN` — a PINNED custom-step version (parseStepRef / baseType); a bare type runs the active version. Events keep the bare `stepType`; the pin rides on `step.start.stepVersion`
@@ -1585,8 +1585,13 @@ the same steps are an agent's tools (`agentTools: ["browser/*"]`), and
   exist until iteration time.
 
 - **Expression evaluator** (`expr.ts`) is a one-pass recursive
-  descent parser. It does NOT short-circuit `&&`/`||` — both sides
-  are always evaluated. No function calls in v1.
+  descent parser that evaluates as it parses. `? :`, `&&`, `||` and `??`
+  SHORT-CIRCUIT as in JS: the part the operator rules out is parsed under a
+  `skip` depth — syntax still checked, nothing looked up, read, indexed or
+  called — so `xs.length > 0 ? xs[0].n : 0` holds on an empty list (before
+  2026-11-09 both branches ran, and a builder's workflow failed its last
+  step on exactly that). The static validator checks a skipped part's roots
+  like any other. No function calls in v1.
 
 - **The global regex issue**: `TEMPLATE_RE` is a module-level
   `/g` regex. `resolveTemplate` uses a non-regex check
