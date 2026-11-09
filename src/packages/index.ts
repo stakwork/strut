@@ -137,7 +137,8 @@ export interface IndexPackage {
 export interface IndexConcept {
   name: string;
   description?: string;
-  parent?: string;
+  /** Every parent, by name. */
+  parents?: string[];
   /** The packages that carry a page of this name, newest release each. */
   packages: Array<{ package: string; version: string }>;
   /** The publisher servers whose public view holds a page of this name,
@@ -145,13 +146,18 @@ export interface IndexConcept {
   live?: Array<{ publisher: string; url: string }>;
 }
 
-export interface IndexConceptPage extends IndexConcept {
+export interface IndexConceptPage extends Omit<IndexConcept, "parents"> {
   docs?: string;
-  /** The pages that name this one as their parent. */
+  /** The pages that name this one among their parents. */
   children: Array<{ name: string; description?: string }>;
-  /** The page's ancestors, nearest first, as far as the index knows them. */
+  /** The page's ancestors, nearest first, through each one's first parent,
+   *  as far as the index knows them. */
   parents: Array<{ name: string; description?: string }>;
 }
+
+/** A page's parents: a derived page's `parents`, or the one `parent` a
+ *  page derived before the new page form kept, or a live view's tree has. */
+const parentsOf = (c: { parents?: string[]; parent?: string }): string[] => c.parents ?? (c.parent ? [c.parent] : []);
 
 /** The derived page of one package, as kept on disk: `detail` or the error. */
 interface PageFile {
@@ -322,7 +328,14 @@ export function createPackageIndex(deps: IndexDeps): PackageIndex {
   };
   const readPage = async (prefix: string, name: string): Promise<PageFile | undefined> => {
     try {
-      return JSON.parse(await readFile(pageFile(prefix, name), "utf8")) as PageFile;
+      const page = JSON.parse(await readFile(pageFile(prefix, name), "utf8")) as PageFile;
+      // A page derived before the new Concept page form kept one `parent`.
+      for (const c of page.detail?.concepts ?? []) {
+        const parents = parentsOf(c);
+        delete (c as { parent?: string }).parent;
+        if (parents.length) c.parents = parents;
+      }
+      return page;
     } catch (err: any) {
       if (err?.code === "ENOENT") return undefined;
       throw err;
@@ -517,23 +530,24 @@ export function createPackageIndex(deps: IndexDeps): PackageIndex {
     return out.sort((a, b) => a.package.localeCompare(b.package));
   };
   /** The Concept pages across every package, one entry per name: the first
-   *  package (by name) gives the description and parent, every one is listed. */
+   *  package (by name) gives the description and parents, every one is listed. */
   const conceptsOf = async (): Promise<Map<string, IndexConcept & { docs?: string }>> => {
     const out = new Map<string, IndexConcept & { docs?: string }>();
     for (const page of await pagesOf()) {
       for (const c of page.detail.concepts) {
         const have = out.get(c.name);
+        const parents = parentsOf(c);
         if (have) {
           have.packages.push({ package: page.package, version: page.version });
           if (!have.description && c.description) have.description = c.description;
-          if (!have.parent && c.parent) have.parent = c.parent;
+          if (!have.parents && parents.length) have.parents = parents;
           if (!have.docs && c.docs) have.docs = c.docs;
           continue;
         }
         out.set(c.name, {
           name: c.name,
           ...(c.description ? { description: c.description } : {}),
-          ...(c.parent ? { parent: c.parent } : {}),
+          ...(parents.length ? { parents } : {}),
           ...(c.docs ? { docs: c.docs } : {}),
           packages: [{ package: page.package, version: page.version }],
         });
@@ -545,16 +559,17 @@ export function createPackageIndex(deps: IndexDeps): PackageIndex {
       for (const c of st.concepts ?? []) {
         const from = { publisher: st.prefix, url: st.url };
         const have = out.get(c.name);
+        const parents = parentsOf(c);
         if (have) {
           (have.live ??= []).push(from);
           if (!have.description && c.description) have.description = c.description;
-          if (!have.parent && c.parent) have.parent = c.parent;
+          if (!have.parents && parents.length) have.parents = parents;
           continue;
         }
         out.set(c.name, {
           name: c.name,
           ...(c.description ? { description: c.description } : {}),
-          ...(c.parent ? { parent: c.parent } : {}),
+          ...(parents.length ? { parents } : {}),
           packages: [],
           live: [from],
         });
@@ -677,15 +692,15 @@ export function createPackageIndex(deps: IndexDeps): PackageIndex {
       const page = all.get(name);
       if (!page) return undefined;
       const brief = (c: IndexConcept) => ({ name: c.name, ...(c.description ? { description: c.description } : {}) });
-      const children = [...all.values()].filter((c) => c.parent === name).map(brief).sort((a, b) => a.name.localeCompare(b.name));
+      const children = [...all.values()].filter((c) => c.parents?.includes(name)).map(brief).sort((a, b) => a.name.localeCompare(b.name));
       const parents: Array<{ name: string; description?: string }> = [];
       const seen = new Set<string>([name]);
-      for (let p = page.parent; p && !seen.has(p); p = all.get(p)?.parent) {
+      for (let p = page.parents?.[0]; p && !seen.has(p); p = all.get(p)?.parents?.[0]) {
         seen.add(p);
         const node = all.get(p);
         parents.push(node ? brief(node) : { name: p });
       }
-      const { docs, ...rest } = page;
+      const { docs, parents: _direct, ...rest } = page;
       return { ...rest, ...(docs ? { docs } : {}), children, parents };
     },
   };

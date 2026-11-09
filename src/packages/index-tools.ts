@@ -70,7 +70,7 @@ export function buildIndexTools(index: PackageIndex, opts: IndexToolsOptions = {
 
     get_package: tool({
       description:
-        "One package's PAGE: { package, publisher, key, urls, description?, releases (newest first, yanked kept), channels, readAt, detail?, detailError?, store? }. `detail` is the newest release read off its archive — `apps` (title, grants, `can`), `workflows` (each with its `inputs`, the step types it runs, its `grants`, `secrets`, `can`, `claims`), `steps` (effect, the secrets they read, the lint's findings), `concepts` (name, description, parent — a page's docs through get_concept), the README (cut at " +
+        "One package's PAGE: { package, publisher, key, urls, description?, releases (newest first, yanked kept), channels, readAt, detail?, detailError?, store? }. `detail` is the newest release read off its archive — `apps` (title, grants, `can`), `workflows` (each with its `inputs`, the step types it runs, its `grants`, `secrets`, `can`, `claims`), `steps` (effect, the secrets they read, the lint's findings), `concepts` (name, description, parents — a page's docs through get_concept), the README (cut at " +
         `${README_BRIEF_CHARS} chars), the \`secrets\` the whole package needs, and \`can\`. \`detailError\` says why there is no detail yet (the archive not read, or unreadable). ` +
         CAN +
         " " +
@@ -87,9 +87,9 @@ export function buildIndexTools(index: PackageIndex, opts: IndexToolsOptions = {
 
     get_concept: tool({
       description:
-        "The CONCEPT TREE the listed packages carry — knowledge pages (`concepts/<Name>.md`: a description, a parent, docs), folded across every package into one tree. " +
-        "With no `name`: the entries, each { name, description?, parent?, packages: [{ package, version }] } — every word of `query` must match a name or description; empty lists the whole tree. " +
-        "With `name`: that page — the entry plus `docs` (the first package's text), `children` (the pages naming it as parent) and `parents` (nearest first) — or { error } when no listed package carries it. " +
+        "The CONCEPT TREE the listed packages carry — knowledge pages (`concepts/*.md`: a name, a description, the parents, docs), folded across every package into one tree. " +
+        "With no `name`: the entries, each { name, description?, parents?, packages: [{ package, version }] } — every word of `query` must match a name or description; empty lists the whole tree. " +
+        "With `name`: that page — the entry plus `docs` (the first package's text), `children` (the pages naming it among their parents) and `parents` (its ancestors, nearest first, through each one's first parent) — or { error } when no listed package carries it. " +
         "Use it to find which package teaches a subject; get_package reads the package. " +
         INSTALL_IS_A_PERSONS_ACT,
       inputSchema: z.object({
@@ -146,7 +146,7 @@ export async function llmsTxt(index: PackageIndex, opts: { publicUrl: string; st
     "",
     `- [Search](${base}/index/packages?q=): every listed package at its newest release, \`{ packages: [{ package, publisher, key, urls, version, digest, description?, license?, requires?, detail? }] }\`; every word of \`q\` must match the name, description or publisher, empty lists all (\`limit\`, 100). \`detail\` is what the archive holds: the apps, counts of workflows, steps and Concept pages, the secrets it needs, \`can\`, whether it has a README`,
     `- [A package's page](${base}/index/packages/{publisher}/{name}): its releases and channels, and \`detail\` — apps (title, grants, \`can\`), workflows (inputs, the step types they run, grants, secrets, claims), steps (effect, the secrets they read, lint findings), Concept pages, the README, the secrets the whole package needs, and \`can: { spends, acts, code }\`: whether running it reaches a model call, a step that acts on the world, or code`,
-    `- [The Concept tree](${base}/index/concepts?q=): the knowledge pages the packages carry, folded into one tree, \`{ concepts: [{ name, description?, parent?, packages }] }\`; one page with its docs, children and parents at ${base}/index/concepts/{name}`,
+    `- [The Concept tree](${base}/index/concepts?q=): the knowledge pages the packages carry, folded into one tree, \`{ concepts: [{ name, description?, parents?, packages }] }\`; one page with its docs, children and parents at ${base}/index/concepts/{name}`,
     `- [The index card](${base}/index/catalog): the signed list of publishers (Ed25519 over RFC 8785 JSON, \`strut-index\`), what a strut follows${info ? ` — key ${info.key}` : ""}`,
     `- [MCP](${base}/index/mcp): POST, JSON-RPC over HTTP, stateless, no credential — the three tools above`,
     "",
@@ -169,7 +169,7 @@ export async function llmsTxt(index: PackageIndex, opts: { publicUrl: string; st
   out.push("", "## Concepts", "");
   if (concepts.length === 0) out.push("No listed package carries a Concept page yet.");
   for (const c of concepts) {
-    const notes = [c.description && oneLine(c.description), c.parent ? `under ${c.parent}` : "a root", `in ${c.packages.map((p) => p.package).join(", ")}`].filter(Boolean).join(" — ");
+    const notes = [c.description && oneLine(c.description), c.parents?.length ? `under ${c.parents.join(", ")}` : "a root", `in ${c.packages.map((p) => p.package).join(", ")}`].filter(Boolean).join(" — ");
     out.push(`- [${c.name}](${base}/index/concepts/${encodeURIComponent(c.name)}): ${notes}`);
   }
   out.push("", "## Optional", "");

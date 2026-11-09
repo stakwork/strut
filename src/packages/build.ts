@@ -23,8 +23,10 @@
  *      nowhere.
  *   2. The helpers: every file a carried step imports by a relative path,
  *      at the same place beside it, and every `_` step under the prefix.
- *   3. The named Concepts and the pages under each (`PARENT_OF`), and the
- *      named graph types with their parents and edges (./graph-types.ts).
+ *   3. The named Concepts and the pages under each (`PARENT_OF`), each a
+ *      new-form page under its node key (`concepts/<key>.md`: its name,
+ *      every attribute, every parent — plans/concept-history.md §2.1), and
+ *      the named graph types with their parents and edges (./graph-types.ts).
  *   4. Each step's live claims, as its `.claims.yaml` — a claim with a
  *      check that reaches outside the package and its requirements is left
  *      out, said.
@@ -54,11 +56,12 @@ import { readBuildInfo } from "../apps/build.js";
 import type { ClaimsAuthoring } from "../claims-authoring.js";
 import { claimSpecSchema, type ClaimsBlock } from "../claims-schemas.js";
 import { flowClosure, globToRegExp, type FlowClosure } from "../closure.js";
-import { findConcept, STRUT_CONCEPTS } from "../concept-seed.js";
+import { findConcept, NOT_ATTRIBUTES, renderConceptPage, STRUT_CONCEPTS } from "../concept-seed.js";
 import type { Flow, Step, StepRegistry } from "../core.js";
 import { hasTemplates } from "../expr.js";
 import type { GraphBackend } from "../graph/backend.js";
 import type { CheckRow } from "../graph/claims.js";
+import { composeNodeKey } from "../graph/node-writer.js";
 import { secretNamesIn } from "../reach.js";
 import type { SubflowResolver } from "../runner.js";
 import { isSealedStep, sealedStepPatterns } from "../sealed.js";
@@ -525,9 +528,13 @@ export async function buildPackage(deps: BuildDeps, req: BuildRequest, opts: { d
   }
 
   // 3. Concepts, and 4. the steps' claims.
+  const pageNames = new Set<string>(); // the Concepts carried, by name (a file is named by its key)
   if (req.concepts?.length) {
     const siblingPages = new Set([...siblings.values()].flatMap((p) => p.items.filter((i) => i.kind === "concept").map((i) => i.name)));
-    for (const [file, text] of await conceptFiles(deps.graph, req.concepts, pkg, [...pins.keys()], siblingPages, problems, warnings)) files.set(file, text);
+    for (const [file, page] of await conceptFiles(deps.graph, req.concepts, pkg, [...pins.keys()], siblingPages, problems, warnings)) {
+      files.set(file, page.text);
+      pageNames.add(page.name);
+    }
   }
   if (req.types?.length) {
     const required = new Set([...siblings.values()].flatMap((p) => p.items.filter((i) => i.kind === "type").map((i) => i.name)));
@@ -545,13 +552,13 @@ export async function buildPackage(deps: BuildDeps, req: BuildRequest, opts: { d
   if (!files.size) throw refused([`nothing to package`]);
 
   // What the workflows' runs wrote and read that the package does not carry yet.
-  const carried = (re: RegExp, kind: "type" | "concept") => {
-    const out = new Set([...files.keys()].map((f) => re.exec(f)?.[1]).filter((n): n is string => !!n));
+  const carried = (names: Set<string>, kind: "type" | "concept") => {
+    const out = new Set(names);
     for (const p of siblings.values()) for (const i of p.items) if (i.kind === kind) out.add(i.name);
     return out;
   };
-  const carriedTypes = carried(/^graph\/(.+)\.yaml$/, "type");
-  const carriedPages = carried(/^concepts\/(.+)\.md$/, "concept");
+  const carriedTypes = carried(new Set([...files.keys()].map((f) => /^graph\/(.+)\.yaml$/.exec(f)?.[1]).filter((n): n is string => !!n)), "type");
+  const carriedPages = carried(pageNames, "concept");
   const suggested = await suggest(
     { ...(deps.runs ? { runs: deps.runs } : {}), ...(deps.graph ? { graph: deps.graph } : {}) },
     [...new Set([...(req.workflows ?? []), ...workflows])],
@@ -704,12 +711,15 @@ async function stepClaims(claims: Pick<ClaimsAuthoring, "reader">, type: string,
   return { claims: out.sort((a, b) => a.text.localeCompare(b.text)), steps };
 }
 
-/** The named Concept pages and every page under each, as `concepts/<Name>.md`
- *  files `seedConcepts` reads back: front matter `description` and `parent`,
+/** The named Concept pages and every page under each, as the new-form
+ *  pages `seedConcepts` reads back (`renderConceptPage`), each under its
+ *  node key, `concepts/<key>.md` → its name and text: front matter `name`,
+ *  every attribute the Concept schema declares that the node holds (but
+ *  what `NOT_ATTRIBUTES` names), and `parents`, every live parent by name;
  *  the body `docs`. A page another seeder stamped is not this package's to
- *  carry; a top page's parent outside the package must be on the strut that
- *  installs it, which is said unless it is a page strut ships or one of a
- *  required package. */
+ *  carry; a parent outside the package must be on the strut that installs
+ *  it, which is said unless it is a page strut ships or one of a required
+ *  package. */
 async function conceptFiles(
   graph: GraphBackend | undefined,
   names: string[],
@@ -718,42 +728,36 @@ async function conceptFiles(
   siblingPages: Set<string>,
   problems: string[],
   warnings: Set<string>,
-): Promise<Map<string, string>> {
-  const out = new Map<string, string>();
+): Promise<Map<string, { name: string; text: string }>> {
+  const out = new Map<string, { name: string; text: string }>();
   const schema = graph ? await graph.schemas.schema("Concept") : undefined;
   if (!graph || !schema) {
     problems.push(`there are no Concepts to package: ${graph ? "the graph has no Concept schema" : "this workspace has no graph"}`);
     return out;
   }
   const known = [STRUT_CONCEPTS.prefix, ...(STRUT_CONCEPTS.legacyPrefixes ?? []), ...pins.map(conceptPrefix)];
-  const pages = new Map<string, { description?: string; docs?: string; parent?: string }>();
-  const queue: Array<{ ref: string; parent?: string }> = [];
-  const tops: Array<{ name: string; parent: string; stamp: unknown }> = [];
+  const attributes = Object.keys(schema.attributes).filter((a) => !NOT_ATTRIBUTES.has(a));
+  const pages = new Map<string, { attributes: Record<string, unknown>; parents: Array<{ name: string; stamp: unknown }>; docs?: string }>();
+  const queue: string[] = [];
   for (const name of names) {
     const node = await findConcept(graph, schema, name);
-    if (!node || node.deleted) {
-      problems.push(`no Concept ${name} in the graph`);
-      continue;
-    }
-    // A top page keeps where it hangs: the first of its parents, by name.
-    const parents = await graph.tx(async (tx) => {
-      const edges = await graph.edgeEngine.liveEdgesOf(tx, node.ref_id, "PARENT_OF", false);
-      const raws = await Promise.all((edges?.edges ?? []).map((e) => graph.nodeEngine.readRaw(tx, e.other)));
-      return raws.filter((r) => r && typeof r.props["name"] === "string").map((r) => ({ name: r!.props["name"] as string, stamp: r!.props["unique_source_id"] }));
-    });
-    const parent = parents.sort((a, b) => a.name.localeCompare(b.name))[0];
-    if (parent) tops.push({ name, parent: parent.name, stamp: parent.stamp });
-    queue.push({ ref: node.ref_id, ...(parent ? { parent: parent.name } : {}) });
+    if (!node || node.deleted) problems.push(`no Concept ${name} in the graph`);
+    else queue.push(node.ref_id);
   }
   const seen = new Set<string>();
   while (queue.length) {
-    const { ref, parent } = queue.shift()!;
+    const ref = queue.shift()!;
     if (seen.has(ref)) continue;
     seen.add(ref);
-    const { raw, children } = await graph.tx(async (tx) => ({
-      raw: await graph.nodeEngine.readRaw(tx, ref),
-      children: (await graph.edgeEngine.liveEdgesOf(tx, ref, "PARENT_OF", true))?.edges.map((e) => e.other) ?? [],
-    }));
+    const { raw, children, parents } = await graph.tx(async (tx) => {
+      const ups = await graph.edgeEngine.liveEdgesOf(tx, ref, "PARENT_OF", false);
+      const raws = await Promise.all((ups?.edges ?? []).map((e) => graph.nodeEngine.readRaw(tx, e.other)));
+      return {
+        raw: await graph.nodeEngine.readRaw(tx, ref),
+        children: (await graph.edgeEngine.liveEdgesOf(tx, ref, "PARENT_OF", true))?.edges.map((e) => e.other) ?? [],
+        parents: raws.filter((r) => r && typeof r.props["name"] === "string").map((r) => ({ name: r!.props["name"] as string, stamp: r!.props["unique_source_id"] })),
+      };
+    });
     const p = raw?.props ?? {};
     const name = p["name"];
     if (typeof name !== "string" || !name) continue;
@@ -762,25 +766,19 @@ async function conceptFiles(
       problems.push(`the Concept ${name} is ${stamp.replace(/@.*$/, "")}'s (its stamp): a package carries pages of its own`);
       continue;
     }
-    if (name.includes("/") || name.startsWith(".")) {
-      problems.push(`the Concept ${name} cannot be a file name, concepts/${name}.md`);
-      continue;
-    }
     if (pages.has(name)) continue;
-    const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : undefined);
-    const page = { ...(str(p["description"]) ? { description: str(p["description"]) } : {}), ...(str(p["docs"]) ? { docs: str(p["docs"]) } : {}), ...(parent ? { parent } : {}) };
-    pages.set(name, page);
-    for (const child of children) queue.push({ ref: child, parent: name });
-  }
-  for (const top of tops) {
-    if (pages.has(top.parent) || siblingPages.has(top.parent) || (typeof top.stamp === "string" && known.some((p) => (top.stamp as string).startsWith(p)))) continue;
-    warnings.add(`the Concept ${top.name} hangs under ${top.parent}, which is not in the package: the strut that installs it must have a Concept ${top.parent}`);
+    const held = Object.fromEntries(attributes.map((a) => [a, p[a]]).filter(([, v]) => v !== null && v !== undefined && v !== ""));
+    const docs = typeof p["docs"] === "string" && p["docs"].trim() ? p["docs"].trim() : undefined;
+    pages.set(name, { attributes: held, parents, ...(docs ? { docs } : {}) });
+    for (const child of children) queue.push(child);
   }
   for (const [name, page] of pages) {
-    const front = { ...(page.description ? { description: page.description } : {}), ...(page.parent ? { parent: page.parent } : {}) };
-    // Docs that open with `---` would read as front matter: give them an empty one.
-    const head = Object.keys(front).length ? `---\n${dumpYaml(front)}---\n` : page.docs?.startsWith("---") ? "---\n{}\n---\n" : "";
-    out.set(`concepts/${name}.md`, `${head}${page.docs ? `${page.docs}\n` : ""}`);
+    for (const parent of page.parents) {
+      if (pages.has(parent.name) || siblingPages.has(parent.name) || (typeof parent.stamp === "string" && known.some((k) => (parent.stamp as string).startsWith(k)))) continue;
+      warnings.add(`the Concept ${name} hangs under ${parent.name}, which is not in the package: the strut that installs it must have a Concept ${parent.name}`);
+    }
+    const text = renderConceptPage({ name, attributes: page.attributes, parents: page.parents.map((x) => x.name), ...(page.docs ? { docs: page.docs } : {}) });
+    out.set(`concepts/${composeNodeKey(schema, { name })}.md`, { name, text });
   }
   return out;
 }

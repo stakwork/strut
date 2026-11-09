@@ -144,7 +144,7 @@ describe("a package's detail", () => {
       assert.match(d.steps[2]!.lint.join("\n"), /global fetch/);
 
       // Concepts and the whole.
-      assert.deepEqual(d.concepts.map((c) => [c.name, c.parent, c.description]), [["Issues", "Linear", "One unit of work"], ["Linear", undefined, "The Linear tracker"]]);
+      assert.deepEqual(d.concepts.map((c) => [c.name, c.parents, c.description]), [["Issues", ["Linear"], "One unit of work"], ["Linear", undefined, "The Linear tracker"]]);
       assert.match(d.concepts[1]!.docs!, /Where issues live/);
       assert.deepEqual(d.secrets, ["GITHUB_TOKEN", "LINEAR_API_KEY", "SLACK_BOT_TOKEN"]);
       assert.deepEqual(d.can, { spends: true, acts: true, code: true });

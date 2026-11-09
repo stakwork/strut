@@ -10,7 +10,7 @@
  */
 import { after, afterEach, before, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -399,7 +399,7 @@ describe("a live row's Concept trees, and a read that fails", () => {
     const info = await index.setLive("openlaw", { url: "https://pub.example/lab" });
     assert.deepEqual(info.liveCrawled.map((s) => [s.prefix, s.apps, s.concepts, s.error ?? null]), [["openlaw", 1, 2, null]]);
     const tree = await index.concepts();
-    assert.deepEqual(tree.map((c) => [c.name, c.parent ?? null, c.packages.length, c.live?.map((l) => l.publisher)]), [["Civil procedure", "Law", 0, ["openlaw"]], ["Law", null, 0, ["openlaw"]]]);
+    assert.deepEqual(tree.map((c) => [c.name, c.parents ?? null, c.packages.length, c.live?.map((l) => l.publisher)]), [["Civil procedure", ["Law"], 0, ["openlaw"]], ["Law", null, 0, ["openlaw"]]]);
     const page = (await index.concept("Civil procedure"))!;
     assert.deepEqual(page.parents.map((p) => p.name), ["Law"]);
     assert.equal(page.docs, undefined, "a live page's docs are read from its publisher");
@@ -448,6 +448,8 @@ describe("the concept tree across the crawled packages", () => {
       "strut.yaml": "package: openlaw/limits\nversion: 0.3.0\n",
       "concepts/Statute of limitations.md": "---\ndescription: A fork's page\nparent: Civil procedure\n---\n\nAnother reading.\n",
       "concepts/Tolling.md": "---\nparent: Statute of limitations\n---\n\nWhen the clock stops.\n",
+      // The new page form: named by `name` whatever its file, every parent.
+      "concepts/equitable.md": "---\nname: Tolling/Equitable\ndescription: When fairness pauses it\nparents:\n  - Law\n  - Tolling\n---\n\nA court's discretion.\n",
     });
     const card = sealCard(
       {
@@ -484,12 +486,18 @@ describe("the concept tree across the crawled packages", () => {
     assert.ok(md.includes("- [openlaw/civil](https://index.example/index/packages/openlaw/civil): Civil procedure — 12; "), md);
 
     const all = await index.concepts();
-    assert.deepEqual(all.map((c: IndexConcept) => [c.name, c.parent, c.packages.map((p) => p.package)]), [
-      ["Civil procedure", "Law", ["openlaw/civil"]],
+    assert.deepEqual(all.map((c: IndexConcept) => [c.name, c.parents, c.packages.map((p) => p.package)]), [
+      ["Civil procedure", ["Law"], ["openlaw/civil"]],
       ["Law", undefined, ["openlaw/civil"]],
-      ["Statute of limitations", "Civil procedure", ["openlaw/civil", "openlaw/limits"]],
-      ["Tolling", "Statute of limitations", ["openlaw/limits"]],
+      ["Statute of limitations", ["Civil procedure"], ["openlaw/civil", "openlaw/limits"]],
+      ["Tolling", ["Statute of limitations"], ["openlaw/limits"]],
+      ["Tolling/Equitable", ["Law", "Tolling"], ["openlaw/limits"]],
     ]);
+    // A page with two parents is a child of each; its ancestors run through its first.
+    assert.deepEqual((await index.concept("Law"))!.children.map((c) => c.name), ["Civil procedure", "Tolling/Equitable"]);
+    assert.deepEqual((await index.concept("Tolling"))!.children, [{ name: "Tolling/Equitable", description: "When fairness pauses it" }]);
+    assert.deepEqual((await index.concept("Tolling/Equitable"))!.parents, [{ name: "Law", description: "The root" }]);
+    assert.ok(/\[Tolling\/Equitable\]\(https:\/\/index\.example\/index\/concepts\/Tolling%2FEquitable\): When fairness pauses it — under Law, Tolling — in openlaw\/limits\n/.test(md), md);
     assert.equal(all.find((c) => c.name === "Statute of limitations")!.description, "A fork's page", "a field the first package's page leaves blank is the next one's");
     assert.deepEqual((await index.concepts("clock")).map((c) => c.name), [], "the search is over names and descriptions, never the docs");
     assert.deepEqual((await index.concepts("civil")).map((c) => c.name), ["Civil procedure"]);
@@ -500,6 +508,14 @@ describe("the concept tree across the crawled packages", () => {
     assert.deepEqual(page.parents, [{ name: "Civil procedure", description: "How a civil case moves" }, { name: "Law", description: "The root" }]);
     assert.deepEqual((await index.concept("Law"))!.parents, []);
     assert.equal(await index.concept("Nope"), undefined);
+
+    // A page derived before the new page form kept one `parent`: read as its parents.
+    const stored = join(root, "index", "crawl", "pages", "openlaw", "civil.json");
+    const before = await readFile(stored, "utf8");
+    assert.ok(before.includes('"parents":["Law"]'), before);
+    await writeFile(stored, before.replace('"parents":["Law"]', '"parent":"Law"'));
+    assert.deepEqual((await index.concepts("civil")).map((c) => [c.name, c.parents]), [["Civil procedure", ["Law"]]]);
+    assert.deepEqual((await index.package("openlaw/civil"))!.detail!.concepts.find((c) => c.name === "Civil procedure")!.parents, ["Law"]);
 
     // The index's tools (./index-tools.ts) over the same functions: the page a model reads (Concept docs left out), the tree, one page — each linking its store page when a store is served.
     const server = await toolsetServer({ tools: buildIndexTools(index, { store: "https://store.example" }), instructions: indexInstructions({ publicUrl: "https://store.example", store: "https://store.example" }) });

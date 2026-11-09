@@ -14,9 +14,9 @@ export default defineStep({
   type: "package/concepts",
   effect: "read",
   description:
-    "Browse the CONCEPT TREE of the package store — the knowledge pages packages carry (`concepts/<Name>.md`: a description, a parent, docs), folded across every package the followed indexes list into one tree. " +
-    "With no `name`: the entries, each { name, description?, parent?, packages: [{ package, version }], index } — every word of `query` must match a name or description; empty lists the whole tree. " +
-    "With `name`: that page — the entry plus `docs` (the first package's text), `children` (the pages naming it as parent) and `parents` (nearest first) — or { error } when no listed package carries it. " +
+    "Browse the CONCEPT TREE of the package store — the knowledge pages packages carry (`concepts/*.md`: a name, a description, the parents, docs), folded across every package the followed indexes list into one tree. " +
+    "With no `name`: the entries, each { name, description?, parents?, packages: [{ package, version }], index } — every word of `query` must match a name or description; empty lists the whole tree. " +
+    "With `name`: that page — the entry plus `docs` (the first package's text), `children` (the pages naming it among their parents) and `parents` (its ancestors, nearest first, through each one's first parent) — or { error } when no listed package carries it. " +
     "Use it to find which package teaches a subject, and to read a page before using the package that carries it (package/get reads the package). " +
     INSTALL_IS_A_PERSONS_ACT,
   input: z.object({

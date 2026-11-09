@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import http from "node:http";
-import { PERSONAL_CONCEPTS, parseConceptFile, planConceptSeed, seedConcepts, stampOf, STRUT_CONCEPTS, type ConceptSet } from "./concept-seed.js";
+import { PERSONAL_CONCEPTS, parseConceptFile, planConceptSeed, renderConceptPage, seedConcepts, stampOf, STRUT_CONCEPTS, type ConceptSet } from "./concept-seed.js";
 import { builderSystem, renderBuilderSystem } from "./ai/builder-system.js";
 import conceptStep, { renderConceptSection } from "./steps/lib/context/concept.js";
 import { accessedNodesOf, defineStep } from "./core.js";
@@ -27,12 +27,40 @@ describe("concept files (pure)", () => {
     assert.deepEqual(parseConceptFile("Child.md", text, "p/"), {
       name: "Child",
       description: "What it is.",
-      parent: "Root",
+      attributes: { description: "What it is." },
+      parents: ["Root"],
       docs: "The page.",
       stamp: stampOf("Child.md", text, "p/"),
     });
     assert.match(stampOf("Child.md", text, "p/"), /^p\/Child\.md@[0-9a-f]{12}$/);
-    assert.deepEqual(parseConceptFile("Bare.md", "just docs", "p/"), { name: "Bare", docs: "just docs", stamp: stampOf("Bare.md", "just docs", "p/") });
+    assert.deepEqual(parseConceptFile("Bare.md", "just docs", "p/"), { name: "Bare", attributes: {}, parents: [], docs: "just docs", stamp: stampOf("Bare.md", "just docs", "p/") });
+  });
+
+  it("reads the new form: named by `name` whatever its file, every attribute, every parent — and nothing the graph stamps or derives", () => {
+    const text = "---\nname: acme/linear\ndescription: The tracker's code\nrepo: acme/linear\nalt_names: [Linear code]\nref_id: r-1\nunique_source_id: someone/else@1\ntext_embeddings: [0.1]\ndocs: not the body\nparents:\n  - Law\n  - Repos\n---\nIts README.\n";
+    assert.deepEqual(parseConceptFile("anything.md", text, "p/"), {
+      name: "acme/linear",
+      description: "The tracker's code",
+      attributes: { description: "The tracker's code", repo: "acme/linear", alt_names: ["Linear code"] },
+      parents: ["Law", "Repos"],
+      docs: "Its README.",
+      stamp: stampOf("anything.md", text, "p/"),
+    });
+    assert.deepEqual(parseConceptFile("law.md", "---\nname: Law\nparents: Root\n---\n", "p/").parents, ["Root"], "one parent may be written bare");
+    assert.deepEqual(parseConceptFile("law.md", "---\nname: Law\n---\n", "p/").parents, []);
+    assert.throws(() => parseConceptFile("n.md", "---\nname: 2024\n---\n", "p/"), /a page's name is a string/);
+    assert.throws(() => parseConceptFile("n.md", "---\nname: ''\n---\n", "p/"), /a page's name is a string/);
+    assert.throws(() => parseConceptFile("n.md", "---\nname: N\nparents: [1]\n---\n", "p/"), /parents is a list of Concept names/);
+  });
+
+  it("renders a page that reads back as it was, byte for byte", () => {
+    const page = { name: "acme/linear", attributes: { repo: "acme/linear", description: "Its code", alt_names: ["a", "b"] }, parents: ["Repos", "Law"], docs: "---\nIts README." };
+    const text = renderConceptPage(page);
+    assert.equal(text, "---\nname: acme/linear\nalt_names:\n  - a\n  - b\ndescription: Its code\nrepo: acme/linear\nparents:\n  - Law\n  - Repos\n---\n---\nIts README.\n");
+    const back = parseConceptFile("concept-acmelinear.md", text, "p/");
+    assert.deepEqual([back.name, back.attributes, back.parents, back.docs], [page.name, page.attributes, ["Law", "Repos"], page.docs]);
+    assert.equal(renderConceptPage(back), text);
+    assert.equal(renderConceptPage({ name: "Law", attributes: {}, parents: [] }), "---\nname: Law\n---\n", "a root with no docs");
   });
 
   it("plans create / keep / update / skip by the stamp, a legacy path counting as ours", () => {
@@ -51,12 +79,12 @@ describe("concept files (pure)", () => {
 
     // A seed always matches git: the same stamp over text edited in the
     // graph is put back; a field the file does not set is not the seed's.
-    const file = { description: "The job.", docs: "How a job works." };
+    const file = { attributes: { description: "The job." }, docs: "How a job works." };
     const node = { ref_id: "r", unique_source_id: stamp, description: "The job.", docs: "How a job works." };
     assert.equal(planConceptSeed(node, stamp, [], file), "keep", "the file's text: nothing to write");
     assert.equal(planConceptSeed({ ...node, docs: "Edited in the graph." }, stamp, [], file), "update", "edited docs are put back");
     assert.equal(planConceptSeed({ ...node, description: "Edited." }, stamp, [], file), "update", "an edited description is put back");
-    assert.equal(planConceptSeed({ ...node, description: "Added in the graph." }, stamp, [], { docs: file.docs }), "keep", "a field the file does not set is left as it is");
+    assert.equal(planConceptSeed({ ...node, description: "Added in the graph." }, stamp, [], { attributes: {}, docs: file.docs }), "keep", "a field the file does not set is left as it is");
     assert.equal(planConceptSeed({ ref_id: "r", docs: "A person wrote this." }, stamp, [], file), "skip", "a person's page stays theirs");
 
     // A package's set (`keepEdited`, plans/marketplace.md §3): an edit is kept,
@@ -65,6 +93,19 @@ describe("concept files (pure)", () => {
     assert.equal(planConceptSeed(node, stamp, [], file, true), "keep");
     assert.equal(planConceptSeed({ ref_id: "r", unique_source_id: "other/Job.md@aaaaaaaaaaaa", deleted: true }, stamp, [], file, true), "update", "a deleted page is nobody's");
     assert.equal(planConceptSeed({ ref_id: "r", docs: "A person wrote this." }, stamp, [], file, true), "skip", "a live page of someone else's is never written");
+
+    // Every attribute the file carries is compared, lists by value.
+    const rich = { attributes: { description: "The job.", repo: "acme/x", alt_names: ["J"] }, docs: file.docs };
+    assert.equal(planConceptSeed({ ...node, repo: "acme/x", alt_names: ["J"] }, stamp, [], rich), "keep");
+    assert.equal(planConceptSeed({ ...node, repo: "acme/y", alt_names: ["J"] }, stamp, [], rich), "update", "an edited attribute is put back");
+    assert.equal(planConceptSeed({ ...node, repo: "acme/x", alt_names: ["K"] }, stamp, [], rich), "update");
+
+    // A package's set: any file of it is ours, and a page a release moved to
+    // another file (the old form rebuilt under its key) is written again.
+    const moved = "pkg/acme/x/concept-job.md@aaaaaaaaaaaa";
+    assert.equal(planConceptSeed({ ref_id: "r", unique_source_id: "pkg/acme/x/Job.md@aaaaaaaaaaaa" }, moved, [], file, true, "pkg/acme/x/"), "update");
+    assert.equal(planConceptSeed({ ref_id: "r", unique_source_id: "pkg/acme/xy/Job.md@aaaaaaaaaaaa" }, moved, [], file, true, "pkg/acme/x/"), "skip", "another package's page");
+    assert.equal(planConceptSeed({ ref_id: "r", unique_source_id: "pkg/acme/x/Job.md@aaaaaaaaaaaa" }, moved, [], file, true), "skip", "only a package's set reads another file as its own");
   });
 
   it("ships Workflow Builder and Job as roots and App under Workflow Builder: one tree per agent, workspace-general, the legacy lab stamps named, Workflow Build and Job App retired", async () => {
@@ -72,7 +113,7 @@ describe("concept files (pure)", () => {
     const wb = await read("Workflow Builder.md");
     const job = await read("Job.md");
     for (const c of [wb, job]) {
-      assert.equal(c.parent, undefined, `${c.name} is a root`);
+      assert.deepEqual(c.parents, [], `${c.name} is a root`);
       assert.ok(c.description && c.docs?.includes("PARENT_OF"), c.name);
     }
     // One tree per agent: `Workflow Build` — the builder's entry under Job,
@@ -88,7 +129,7 @@ describe("concept files (pure)", () => {
     // of the kinds under Workflow Builder — the layout, the kit's hooks,
     // the grants, routines, the four shapes.
     const app = await read("App.md");
-    assert.equal(app.parent, "Workflow Builder");
+    assert.deepEqual(app.parents, ["Workflow Builder"]);
     for (const must of ["app.yaml", "grants", "useLaunch", "useRun", "never on a render", "llm", "@/components/ui", "strut/views", "app/build", "app/publish", "wallet:", "useWallet", "useTransaction", "Pending is not failed"]) assert.ok(app.docs!.includes(must), must);
     assert.doesNotMatch(app.docs!, /hive|@<slug>|\bpod\b/i, "names nothing one deployment has");
     // No job side of an app (retired 2026-10-22, with the `Job App` page):
@@ -108,7 +149,7 @@ describe("concept files (pure)", () => {
   it("ships Personal as a root of its own set, kept as shipped, and apart from strut's pages", async () => {
     const file = "Personal.md";
     const c = parseConceptFile(file, await readFile(join(PERSONAL_CONCEPTS.dir, file), "utf-8"), PERSONAL_CONCEPTS.prefix);
-    assert.equal(c.parent, undefined, "a root");
+    assert.deepEqual(c.parents, [], "a root");
     assert.ok(c.description && c.docs?.includes("PARENT_OF"), "says how to walk it");
     assert.doesNotMatch(c.docs!, /hive|@<slug>|\bpod\b|workspace/i, "names nothing one deployment has");
     assert.equal(PERSONAL_CONCEPTS.keepEdited, undefined, "the page is strut's; the person's knowledge is its children");
@@ -208,6 +249,28 @@ for (const tb of testBackends()) {
       assert.equal(third["Root"]!.action, "update");
       assert.equal(third["Root"]!.ref_id, root, "same node");
       assert.equal((await props(root))["docs"], "The root page, revised.");
+    });
+
+    it("writes a new-form page's attributes and a PARENT_OF from each parent, leaves out what the graph does not declare, and keeps every edge it declares", async () => {
+      await page("Root", "r");
+      await page("Other", "o");
+      await writeFile(join(dir, "task.md"), "---\nname: acme/task\nrepo: acme/task\njurisdiction: Delaware\nparents:\n  - Other\n  - Root\n---\nThe task.\n");
+      const out = byName(await seedConcepts(b, [set()]));
+      assert.deepEqual([out["acme/task"]!.action, out["acme/task"]!.file], ["create", "task.md"]);
+      const task = out["acme/task"]!.ref_id!;
+      const p = await props(task);
+      assert.deepEqual([p["name"], p["repo"], p["jurisdiction"] ?? null, p["docs"]], ["acme/task", "acme/task", null, "The task."]);
+      assert.match(String(p["unique_source_id"]), /^test\/concepts\/task\.md@/);
+      assert.deepEqual(await children(out["Root"]!.ref_id!), [task]);
+      assert.deepEqual(await children(out["Other"]!.ref_id!), [task]);
+
+      const again = byName(await seedConcepts(b, [set()]));
+      assert.equal(again["acme/task"]!.action, "keep", "what the graph does not declare is no edit");
+      assert.deepEqual(await children(out["Root"]!.ref_id!), [task], "both declared edges kept");
+      assert.deepEqual(await children(out["Other"]!.ref_id!), [task]);
+      await b.nodes.update(task, { set: { repo: "acme/other" } });
+      assert.equal(byName(await seedConcepts(b, [set()]))["acme/task"]!.action, "update");
+      assert.equal((await props(task))["repo"], "acme/task", "a seed always matches git");
     });
 
     it("brings back a deleted page of its own, and leaves a person's page alone while parenting under it", async () => {

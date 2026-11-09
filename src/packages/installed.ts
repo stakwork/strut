@@ -16,7 +16,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import type { GraphBackend } from "../graph/backend.js";
-import { conceptEdited, parseConceptFile } from "../concept-seed.js";
+import { conceptEdited, declaredAttributes, parseConceptFile } from "../concept-seed.js";
 import { loadYaml } from "../yaml.js";
 import {
   packagePrefixOf,
@@ -139,13 +139,17 @@ export async function listInstalledPackages(deps: InstalledDeps): Promise<Instal
     const rec = await deps.workspace.getApp(a.name);
     if (rec) note("app", a.name, rec.versions, rec.active);
   }
-  for (const c of await packageConcepts(deps.graph)) {
+  const concepts = await packageConcepts(deps.graph);
+  const schema = concepts.length ? await deps.graph!.schemas.schema("Concept") : undefined;
+  for (const c of concepts) {
     const p = entry(c.package);
     if (!p.digest) await fromCache(deps.cache, p, c);
     const text = p.digest ? await readText(join(deps.cache.dirOf(p.digest), "concepts", c.file)) : undefined;
     // The file this node was stamped from is the one at that digest only when the hashes agree.
     const file = text !== undefined && conceptHash(text) === c.hash ? parseConceptFile(c.file, text, conceptPrefix(c.package)) : undefined;
-    p.items.push({ kind: "concept", name: c.name, ...(file ? { modified: conceptEdited(c, file) } : {}) });
+    // An attribute this graph does not declare was never written: not an edit.
+    const page = file && schema ? { ...file, attributes: declaredAttributes(schema, file.attributes).kept } : file;
+    p.items.push({ kind: "concept", name: c.name, ...(page ? { modified: conceptEdited(c.props, page) } : {}) });
   }
 
   const kinds = ["workflow", "step", "app", "concept"];
@@ -162,17 +166,18 @@ export interface PackageConcept {
   hash: string;
   name: string;
   ref_id: string;
-  description?: unknown;
-  docs?: unknown;
+  /** The node's attributes (`description`, `docs`, …): every one its type declares. */
+  props: Record<string, unknown>;
 }
 
 /** Every live Concept a package wrote, read off its stamp. */
 export async function packageConcepts(graph: GraphBackend | undefined, pkg?: string): Promise<PackageConcept[]> {
   if (!graph) return [];
   const d = graph.dialect;
+  const declared = Object.keys((await graph.schemas.schema("Concept"))?.attributes ?? { description: "", docs: "" });
   const rows = await graph.query(
     `MATCH ${d.node("c", "Concept", { namespace: "$ns" })} WHERE ${d.live("c")} AND c.unique_source_id STARTS WITH $prefix
-     RETURN ${d.project("c", ["ref_id", "name", "unique_source_id", "description", "docs"])} AS p`,
+     RETURN ${d.project("c", [...new Set(["ref_id", "name", "unique_source_id", ...declared])])} AS p`,
     { ns: graph.namespace, prefix: pkg ? conceptPrefix(pkg) : "pkg/" },
   );
   const out: PackageConcept[] = [];
@@ -186,8 +191,7 @@ export async function packageConcepts(graph: GraphBackend | undefined, pkg?: str
       hash: m[3]!,
       name: String(p["name"]),
       ref_id: String(p["ref_id"]),
-      ...(p["description"] != null ? { description: p["description"] } : {}),
-      ...(p["docs"] != null ? { docs: p["docs"] } : {}),
+      props: Object.fromEntries(Object.entries(p).filter(([, v]) => v != null)),
     });
   }
   return out;
