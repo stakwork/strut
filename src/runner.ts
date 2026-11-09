@@ -436,7 +436,7 @@ async function executeRun<TServices = unknown>(
       opts?.job,
       opts?.continues,
     ),
-    { runId, ...(opts?.job ? { job: opts.job } : {}) },
+    { runId, ...(opts?.job ? { job: opts.job } : {}), ...((opts?.actor ?? opts?.principal) ? { actor: (opts?.actor ?? opts?.principal)! } : {}) },
   );
 
   const onEvent = opts?.onEvent;

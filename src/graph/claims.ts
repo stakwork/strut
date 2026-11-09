@@ -595,6 +595,21 @@ export class ClaimsReader {
     return rows.map((r) => compact<ClaimRow>(r["claim"] as Record<string, unknown>)).sort(byBelief);
   }
 
+  /** The names of every subject of `kind` with an active claim about it, in
+   *  one read (the history's snapshot, src/history.ts: one query for the
+   *  whole workspace, then `claimsFor` only where there are some). */
+  async claimedSubjects(kind: SubjectRef["kind"]): Promise<string[]> {
+    const n = SUBJECT_NODE[kind];
+    const d = this.d;
+    const rows = await this.graph.query(
+      `MATCH ${d.node("c", CLAIM_TYPE, { namespace: "$ns" })}-[a:\`${CLAIM_EDGES.ABOUT}\`]->${d.node("s", n.label, { namespace: "$ns" })}
+       WHERE ${d.edgeLive("a")} AND ${d.live("c")} AND ${d.live("s")} AND c.belief_valid_to IS NULL
+       RETURN DISTINCT s.${n.key} AS name`,
+      { ns: this.ns },
+    );
+    return rows.map((r) => r["name"]).filter((v): v is string => typeof v === "string" && !!v).sort();
+  }
+
   /** Claims `ABOUT` a subject — active ones unless `includeRetired`. */
   async claimsFor(subject: SubjectRef, opts: { includeRetired?: boolean } = {}): Promise<ClaimRow[]> {
     const n = SUBJECT_NODE[subject.kind];

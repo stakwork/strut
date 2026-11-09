@@ -161,6 +161,7 @@ import { searchWorkflows } from "./search.js";
 import type { AutomationStepsCapability, AutomationStepsOptions } from "./steps/lib/automation/_shared.js";
 import { BrowserService } from "./browser/service.js";
 import { seedBrowserWorkflows } from "./browser/seed.js";
+import { openHistory, type History, type HistoryCapability, type HistoryTouch } from "./history.js";
 import "./privacy/register.js";
 import { seedPrivacyWorkflows } from "./privacy/seed.js";
 import { HOME_POSTS, homeSyncRole, homeSyncRoutes, seedHomeSyncWorkflow, type HomeSyncRole } from "./home-sync.js";
@@ -496,6 +497,13 @@ export interface StrutOptions<TServices = unknown> {
    *  card. Off unless set, or STRUT_INDEX=1 (STRUT_INDEX_URLS, a JSON list). */
   index?: boolean | { urls?: string[] };
 
+  /** The HISTORY (src/history.ts, plans/concept-history.md): the whole
+   *  workspace as a package directory, committed to `<dataDir>/history.git`
+   *  each time strut hears a write; read through `history/read`. On by
+   *  default wherever strut has a graph and `git` (STRUT_HISTORY=0 turns it
+   *  off); `false` turns it off. */
+  history?: boolean;
+
   /** The strut graph backend, when the deployment has one. Default: the one
    *  behind a graph-backed workspace (`workspace.graph`), so the default
    *  server need not pass it; a host wiring a graph beside a filesystem
@@ -728,6 +736,10 @@ export interface Strut<TServices = unknown> {
    *  is over. `sync` reads one now and applies what is new. */
   subscriptions: Subscriptions;
 
+  /** The history (src/history.ts) — null when it is off: no graph, no
+   *  `git`, `history: false` or STRUT_HISTORY=0. */
+  history: History | null;
+
   /** The package index (plans/marketplace.md §7) — null unless this strut
    *  has the index role (`StrutOptions.index`, STRUT_INDEX=1). */
   index: PackageIndex | null;
@@ -855,11 +867,11 @@ export async function createStrut<TServices = unknown>(
   // once the boot is done.
   const bootPackages = [...parseBootPackagesEnv(bootEnv()["STRUT_PACKAGES"]), ...checkBootPackages(opts.packages ?? [])];
   if (opts.escapeGuard !== false) installEscapeGuard();
-  const workspace: WorkspaceStore = opts.workspace ?? new FileWorkspaceStore();
+  const baseWorkspace: WorkspaceStore = opts.workspace ?? new FileWorkspaceStore();
   // The ONE graph backend everything here reads: the host's, else the
   // workspace's own (Neo4j or a LadybugDB file). The claims gate below is
   // deliberately `workspace.graph`: claims hang off the workspace's nodes.
-  const graph: GraphBackend | undefined = opts.graph ?? workspace.graph;
+  const graph: GraphBackend | undefined = opts.graph ?? baseWorkspace.graph;
   // The graph writes made through strut, for a reader that shows what the
   // graph holds (plans/live-feeds.md §3): every run's writes land here
   // (bindGraph, src/graph-writes.ts), `graph/changes` and
@@ -869,10 +881,30 @@ export async function createStrut<TServices = unknown>(
   // stores follow the workspace's kind (file-backed → file stores under
   // dataDir; anything else → in-memory). No capability is gated on it —
   // every store is the full interface. An explicitly passed store always wins.
-  const fileBacked = workspace instanceof FileWorkspaceStore;
+  const fileBacked = baseWorkspace instanceof FileWorkspaceStore;
   const dataDir =
     opts.dataDir ??
-    (fileBacked ? workspace.path : (bootEnv()["STRUT_WORKSPACE"] ?? "./workspace"));
+    (fileBacked ? baseWorkspace.path : (bootEnv()["STRUT_WORKSPACE"] ?? "./workspace"));
+  // The HISTORY (src/history.ts, plans/concept-history.md): the whole
+  // workspace committed to `<dataDir>/history.git` each time strut hears a
+  // write. The store everything below publishes through is watched, so a
+  // publish, a change of the active version, a delete or an app release is
+  // heard whoever made it (a route, a seed, an install, the builder's
+  // `meta/*`); a run's graph writes are heard through its view (bindGraph);
+  // an install is one commit (`recorded`, below); boot is one commit, once
+  // the seeds are in (`history.start()`, at the end). The snapshot reads
+  // the store as built, never the watched one.
+  const history = await openHistory({
+    ...(opts.history !== undefined ? { history: opts.history } : {}),
+    ...(graph ? { graph } : {}),
+    dataDir,
+    workspace: baseWorkspace,
+    claims: () => claimsAuthoring,
+    apps: () => apps,
+  });
+  const workspace: WorkspaceStore = history ? history.watch(baseWorkspace) : baseWorkspace;
+  /** `fn` as one commit under its own cause (an install, an uninstall). */
+  const recorded = <T,>(fn: () => Promise<T>, touchOf: (r: T | undefined) => HistoryTouch): Promise<T> => (history ? history.hold(fn, touchOf) : fn());
   const store: RunStore = opts.store ?? (fileBacked ? new FileRunStore(dataDir) : new MemoryRunStore());
   // Home sync's role here (src/home-sync.ts): a box serves it, a copy runs it.
   const homeRole = opts.homeSync ?? homeSyncRole(bootEnv()["STRUT_HOME_SYNC"]);
@@ -1143,6 +1175,20 @@ export async function createStrut<TServices = unknown>(
     // step to its caller's list (src/graph/scope.ts).
     ...(graph ? { graph: graphView({ ...graph, close: async () => undefined }, opts.graphReaders) } : {}),
     ...(graphChanges ? { graphChanges } : {}),
+    // The history `history/read` reads and a run's graph view tells
+    // (src/history.ts): its reads and its touches, never `hold` or `close`.
+    ...(history
+      ? {
+          history: {
+            dir: history.dir,
+            waiting: history.waiting,
+            touch: history.touch,
+            settle: history.settle,
+            sync: history.sync,
+            git: history.git,
+          } satisfies HistoryCapability,
+        }
+      : {}),
     proposalChanges,
     ...(stt ? { stt } : {}),
     // The LLM auth seam, for the model-building call sites (llm.ts).
@@ -3594,7 +3640,13 @@ export async function createStrut<TServices = unknown>(
    *  it came. */
   const installByName = async (ref: string, opts: Parameters<Strut["packages"]["install"]>[1] = {}): Promise<InstallResult> => {
     const { index: which, ...rest } = opts;
-    const run = (r: string, o: typeof rest) => oneAtATime(() => installPackage(packageDeps, r, { ...o, busy: busyWorkflow, forget: forgetWorkflow }));
+    const run = (r: string, o: typeof rest) =>
+      oneAtATime(() =>
+        recorded(
+          () => installPackage(packageDeps, r, { ...o, busy: busyWorkflow, forget: forgetWorkflow }),
+          (res) => ({ cause: res ? `install ${res.package}@${res.digest}` : `install ${r}`, ...(o.actor ? { actor: o.actor } : {}) }),
+        ),
+      );
     if (!PACKAGE_NAME.test(ref)) return run(ref, rest);
     if (rest.url) throw new Error(`package_source_invalid: ${ref} is a name, looked up in an index; a url goes with a pk: ref`);
     const named = await indexes.resolveName(ref, which ? { index: which } : {});
@@ -3617,11 +3669,16 @@ export async function createStrut<TServices = unknown>(
       return installByName(ref, opts);
     },
     uninstall: (pkg, opts = {}) =>
-      oneAtATime(async () => {
-        const out = await uninstallPackage(packageDeps, pkg, { ...opts, busy: busyWorkflow, forget: forgetWorkflow });
-        await rebuildRegistry();
-        return out;
-      }),
+      oneAtATime(() =>
+        recorded(
+          async () => {
+            const out = await uninstallPackage(packageDeps, pkg, { ...opts, busy: busyWorkflow, forget: forgetWorkflow });
+            await rebuildRegistry();
+            return out;
+          },
+          () => ({ cause: `uninstall ${pkg}` }),
+        ),
+      ),
   };
   // `package/install`'s door (src/steps/lib/package/install.ts; plans/
   // marketplace.md §8, ruled 2026-10-29: an agent ASKS, a person accepts):
@@ -3911,7 +3968,12 @@ export async function createStrut<TServices = unknown>(
     cache: packageStore,
     install: (refs, o) => {
       if (registryWasInjected) return Promise.reject(new Error("package_unsupported: installing is disabled when the registry is provided at construction time"));
-      return oneAtATime(() => installPackages(packageDeps, refs, { ...o, busy: busyWorkflow, forget: forgetWorkflow }));
+      return oneAtATime(() =>
+        recorded(
+          () => installPackages(packageDeps, refs, { ...o, busy: busyWorkflow, forget: forgetWorkflow }),
+          (res) => ({ cause: res ? `install ${res.package}@${res.digest}` : `install ${refs.map((x) => x.ref).join(", ")}` }),
+        ),
+      );
     },
     uninstall: (pkg, o) => packages.uninstall(pkg, o),
     installed: () => listInstalledPackages(packageDeps),
@@ -8005,6 +8067,8 @@ export async function createStrut<TServices = unknown>(
     bootTimer = undefined;
     await bootScan;
     await packages.booted;
+    // What the history still has waiting is committed before the stores go.
+    await history?.close();
     automations.stop();
     // Every feed read still waiting answers now (plans/live-feeds.md).
     graphChanges?.close();
@@ -8072,6 +8136,10 @@ export async function createStrut<TServices = unknown>(
       console.warn(`[auto-resume] could not record this boot in ${file}:`, err);
     }
   };
+  // The history's first snapshot, cause `boot`: every seed is in. Awaited,
+  // so a strut that answers has its boot commit (a failed one is a warning).
+  await history?.start();
+
   // The first-boot installs (src/packages/boot.ts), last: after the seeds
   // (strut/views an app may import, the Concept roots a page may hang
   // under) and in the background, so a catalog that does not answer never
@@ -8119,6 +8187,7 @@ export async function createStrut<TServices = unknown>(
     automations,
     packages,
     subscriptions,
+    history,
     index,
     indexes,
     claims,

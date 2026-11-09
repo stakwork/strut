@@ -139,7 +139,6 @@ export async function exportTypes(
     problems.push("there are no graph types to package: this workspace has no graph");
     return out;
   }
-  const { checkAttribute, planNodeSchema } = await import("../graph/schema-crud.js");
   const { schemas, edges: ruled } = await graph.reader.listSchemas();
   const byLower = new Map(schemas.map((s) => [s.type.toLowerCase(), s]));
   const stops = (type: string) => everywhere(type) || required.has(type);
@@ -211,57 +210,100 @@ export async function exportTypes(
 
   // Each type as its file.
   for (const [type, env] of [...carried].sort(([a], [b]) => a.localeCompare(b))) {
-    const file = `graph/${type}.yaml`;
-    const live = await graph.schemas.schema(type);
-    const attributes: Record<string, string> = {};
-    // An attribute named as a Schema setting (`description`, a jarvis type's
-    // `role`) is read as that setting; its value, an attribute type, says it
-    // is the type's attribute. One its parent holds the same is inherited.
-    const fromParent = (await graph.schemas.schema(str(env["parent"]) ?? THING_TYPE))?.attributes ?? {};
-    const settings = Object.entries(env).filter(([k, v]) => !SETTINGS.has(k) && typeof v === "string" && ATTRIBUTE_TYPE.test(v) && !(k in fromParent));
-    for (const [k, v] of [...Object.entries(env.attributes), ...settings]) {
-      if (typeof v !== "string" || !ATTRIBUTE_TYPE.test(v)) continue; // a stamp jarvis keeps on the Schema, not an attribute
-      try {
-        checkAttribute(type, k, v);
-        attributes[k] = v;
-      } catch {
-        warnings.add(`${file}: ${type}.${k} is left out — the writer keeps that name for itself`);
-      }
-    }
-    // A key spec's first token is the type prefix, which the writer replaces
-    // with the node's own type (`composeNodeKey`) whoever declared it: a type
-    // with no key of its own inherits its parent's (jarvis's `Content` and
-    // `Legal` hold Thing's `thing-name`), so only the tokens after it are
-    // attributes. `ref_id` is no key at all.
-    const key = !live ? undefined : live.key_spec === "ref_id" ? "ref_id" : live.key_spec.split("-").slice(1).join("-") || undefined;
-    const index = live?.index.filter((f) => f !== "node_key");
-    const role = str(env["role"]) && NODE_ROLES.includes(str(env["role"])!) ? str(env["role"]) : undefined;
-    const embed = env["embed"];
-    const input: NodeSchemaInput = {
-      type,
-      ...(str(env["parent"]) ? { parent: str(env["parent"])! } : {}),
-      ...(str(env["domain"]) ? { domain: str(env["domain"])! } : {}),
-      ...(str(env["type_description"]) ? { type_description: str(env["type_description"])! } : {}),
-      attributes,
-      ...(key && key !== "name" ? { key_spec: key } : {}),
-      ...(index?.length && index.join("-") !== (key ?? "name") ? { index } : {}),
-      ...(live?.title_key && live.title_key !== "name" ? { title_key: live.title_key } : {}),
-      ...(live?.description_key && live.description_key !== "description" ? { description_key: live.description_key } : {}),
-      ...(role && NODE_ROLES.includes(role) ? { role } : {}),
-      ...(strList(env["identifiers"]) ? { identifiers: strList(env["identifiers"])! } : {}),
-      ...(typeof embed === "boolean" ? { embed } : {}),
-    };
-    try {
-      planNodeSchema(input, undefined, live?.attributes ?? {});
-    } catch (e) {
-      if (!(e instanceof Error) || e.name !== "GraphValidationError") throw e;
-      problems.push(`${file}: ${e.message}`);
-      continue;
-    }
-    const typeEdges = [...(edges.get(type) ?? [])].map((x) => x.split(" ") as [string, string]);
-    out.set(file, typeFileText({ type, input, edges: typeEdges }));
+    const one = await typeFile(graph, type, env, edges.get(type), warnings);
+    if ("problem" in one) problems.push(one.problem);
+    else out.set(one.file, one.text);
   }
   return out;
+}
+
+/**
+ * A SNAPSHOT's types (plans/concept-history.md §2): every type in the
+ * ontology but Thing and strut's own, each with its rules — the ontology's
+ * edge rules whose source it is, to any target. Never the edges the graph
+ * holds (those are facts, and reading them is a scan of every edge): what
+ * a build's `exportTypes` adds from them, and what it warns about, is a
+ * build's. A type that will not write is a warning, left out.
+ */
+export async function allTypeFiles(graph: GraphBackend, warnings: string[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const { schemas, edges: ruled } = await graph.reader.listSchemas();
+  const carried = schemas.filter((s) => s.type !== THING_TYPE && s.type !== "*" && !isStrutType(s.type)).sort((a, b) => a.type.localeCompare(b.type));
+  const names = new Set(carried.map((s) => s.type));
+  const edges = new Map<string, Set<string>>();
+  for (const r of ruled) {
+    if (r.edge_type === "CHILD_OF" || !names.has(r.source_type)) continue;
+    edges.set(r.source_type, (edges.get(r.source_type) ?? new Set()).add(`${r.edge_type} ${r.target_type}`));
+  }
+  const left = new Set<string>();
+  for (const env of carried) {
+    const one = await typeFile(graph, env.type, env, edges.get(env.type), left);
+    if ("problem" in one) left.add(one.problem);
+    else out.set(one.file, one.text);
+  }
+  warnings.push(...left);
+  return out;
+}
+
+/** One type as its `graph/<Type>.yaml`: the Schema as the ontology holds it
+ *  (`env`) and the resolver merges it, with `edges` ("EDGE target") as its
+ *  rules — or why it cannot be written. */
+async function typeFile(
+  graph: GraphBackend,
+  type: string,
+  env: Awaited<ReturnType<GraphBackend["reader"]["listSchemas"]>>["schemas"][number],
+  edges: Set<string> | undefined,
+  warnings: Set<string>,
+): Promise<{ file: string; text: string } | { problem: string }> {
+  const { checkAttribute, planNodeSchema } = await import("../graph/schema-crud.js");
+  const file = `graph/${type}.yaml`;
+  const live = await graph.schemas.schema(type);
+  const attributes: Record<string, string> = {};
+  // An attribute named as a Schema setting (`description`, a jarvis type's
+  // `role`) is read as that setting; its value, an attribute type, says it
+  // is the type's attribute. One its parent holds the same is inherited.
+  const fromParent = (await graph.schemas.schema(str(env["parent"]) ?? THING_TYPE))?.attributes ?? {};
+  const settings = Object.entries(env).filter(([k, v]) => !SETTINGS.has(k) && typeof v === "string" && ATTRIBUTE_TYPE.test(v) && !(k in fromParent));
+  for (const [k, v] of [...Object.entries(env.attributes), ...settings]) {
+    if (typeof v !== "string" || !ATTRIBUTE_TYPE.test(v)) continue; // a stamp jarvis keeps on the Schema, not an attribute
+    try {
+      checkAttribute(type, k, v);
+      attributes[k] = v;
+    } catch {
+      warnings.add(`${file}: ${type}.${k} is left out — the writer keeps that name for itself`);
+    }
+  }
+  // A key spec's first token is the type prefix, which the writer replaces
+  // with the node's own type (`composeNodeKey`) whoever declared it: a type
+  // with no key of its own inherits its parent's (jarvis's `Content` and
+  // `Legal` hold Thing's `thing-name`), so only the tokens after it are
+  // attributes. `ref_id` is no key at all.
+  const key = !live ? undefined : live.key_spec === "ref_id" ? "ref_id" : live.key_spec.split("-").slice(1).join("-") || undefined;
+  const index = live?.index.filter((f) => f !== "node_key");
+  const role = str(env["role"]) && NODE_ROLES.includes(str(env["role"])!) ? str(env["role"]) : undefined;
+  const embed = env["embed"];
+  const input: NodeSchemaInput = {
+    type,
+    ...(str(env["parent"]) ? { parent: str(env["parent"])! } : {}),
+    ...(str(env["domain"]) ? { domain: str(env["domain"])! } : {}),
+    ...(str(env["type_description"]) ? { type_description: str(env["type_description"])! } : {}),
+    attributes,
+    ...(key && key !== "name" ? { key_spec: key } : {}),
+    ...(index?.length && index.join("-") !== (key ?? "name") ? { index } : {}),
+    ...(live?.title_key && live.title_key !== "name" ? { title_key: live.title_key } : {}),
+    ...(live?.description_key && live.description_key !== "description" ? { description_key: live.description_key } : {}),
+    ...(role && NODE_ROLES.includes(role) ? { role } : {}),
+    ...(strList(env["identifiers"]) ? { identifiers: strList(env["identifiers"])! } : {}),
+    ...(typeof embed === "boolean" ? { embed } : {}),
+  };
+  try {
+    planNodeSchema(input, undefined, live?.attributes ?? {});
+  } catch (e) {
+    if (!(e instanceof Error) || e.name !== "GraphValidationError") throw e;
+    return { problem: `${file}: ${e.message}` };
+  }
+  const typeEdges = [...(edges ?? [])].map((x) => x.split(" ") as [string, string]);
+  return { file, text: typeFileText({ type, input, edges: typeEdges }) };
 }
 
 /** A set's types, read and ordered for the install: parents before children. */
