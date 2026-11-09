@@ -569,7 +569,19 @@ export async function buildPackage(deps: BuildDeps, req: BuildRequest, opts: { d
   const pageNames = new Set<string>(); // the Concepts carried, by name (a file is named by its key)
   if (req.concepts?.length) {
     const siblingPages = new Set([...siblings.values()].flatMap((p) => p.items.filter((i) => i.kind === "concept").map((i) => i.name)));
-    for (const [file, page] of await conceptFiles(deps.graph, req.concepts, pkg, [...pins.keys()], siblingPages, problems, warnings)) {
+    // A page that tells an agent to run a carried workflow or step names it
+    // as the installing strut will have it, under the prefix: `job` and the
+    // orchestrator run under no package, so a bare name finds nothing there.
+    const carriedNames = new Map<string, string>();
+    for (const name of [...workflows, ...[...steps].filter((t) => !isHelperName(t))]) if (!under(name)) carriedNames.set(name, `${prefix}${rel(name)}`);
+    const pinned = [...pins.keys()];
+    const others = new Map<string, "workflow" | "step">();
+    for (const w of await deps.workspace.listWorkflows()) {
+      if (!workflows.has(w.name) && !strutShips("workflow", w.name) && !pinned.some((p) => w.name.startsWith(`${p}/`))) others.set(w.name, "workflow");
+    }
+    for (const t of custom) if (!steps.has(t) && !isHelperName(t) && !pinned.some((p) => t.startsWith(`${p}/`))) others.set(t, "step");
+    const names: PageNames = { rename: renamer(carriedNames), others: (text) => [...namesIn(text, [...others.keys()])].map((n) => ({ kind: others.get(n)!, name: n })) };
+    for (const [file, page] of await conceptFiles(deps.graph, req.concepts, pkg, [...pins.keys()], siblingPages, problems, warnings, names)) {
       files.set(file, page.text);
       pageNames.add(page.name);
     }
@@ -772,6 +784,7 @@ async function conceptFiles(
   siblingPages: Set<string>,
   problems: string[],
   warnings: Set<string>,
+  said: PageNames = { rename: (t) => t, others: () => [] },
 ): Promise<Map<string, { name: string; text: string }>> {
   const out = new Map<string, { name: string; text: string }>();
   const schema = graph ? await graph.schemas.schema("Concept") : undefined;
@@ -821,10 +834,57 @@ async function conceptFiles(
       if (pages.has(parent.name) || siblingPages.has(parent.name) || (typeof parent.stamp === "string" && known.some((k) => (parent.stamp as string).startsWith(k)))) continue;
       warnings.add(`the Concept ${name} hangs under ${parent.name}, which is not in the package: the strut that installs it must have a Concept ${parent.name}`);
     }
-    const text = renderConceptPage({ name, attributes: page.attributes, parents: page.parents.map((x) => x.name), ...(page.docs ? { docs: page.docs } : {}) });
+    // Its docs and description name the carried workflows and steps as packaged.
+    const attributes = { ...page.attributes };
+    if (typeof attributes["description"] === "string") attributes["description"] = said.rename(attributes["description"]);
+    const docs = page.docs !== undefined ? said.rename(page.docs) : undefined;
+    for (const o of said.others(`${typeof attributes["description"] === "string" ? attributes["description"] : ""}\n${docs ?? ""}`)) {
+      warnings.add(`the Concept ${name} names the ${o.kind} ${o.name}, which the package does not carry and strut does not ship: a strut without it finds nothing by that name`);
+    }
+    const text = renderConceptPage({ name, attributes, parents: page.parents.map((x) => x.name), ...(docs ? { docs } : {}) });
     out.set(`concepts/${composeNodeKey(schema, { name })}.md`, { name, text });
   }
   return out;
+}
+
+/** How a carried page speaks of workflows and steps: `rename` writes each
+ *  carried one under the prefix, `others` lists the ones it names that the
+ *  package does not carry. */
+interface PageNames {
+  rename(text: string): string;
+  others(text: string): Array<{ kind: "workflow" | "step"; name: string }>;
+}
+
+/** A character a workflow or step name holds around its own: a name in
+ *  text is one only where neither neighbour is one of these. */
+const NAME_CHAR = "A-Za-z0-9_/\\-";
+
+/** Where `names` stand in text as names: a name with a `-`, `_` or `/` as a
+ *  whole token (`legal-task-run`, not `legal-task-run-v2` nor
+ *  `acme/legal-task-run`); a one-word name (`tidy`) only as a whole code
+ *  span, `` `tidy` ``, so prose keeps its words. Longest first. */
+function namePattern(names: readonly string[]): RegExp | null {
+  const sorted = [...new Set(names)].filter(Boolean).sort((a, b) => b.length - a.length || a.localeCompare(b));
+  const word = (n: string) => /^[A-Za-z0-9]+$/.test(n);
+  const compound = sorted.filter((n) => !word(n)).map(escapeRe);
+  const plain = sorted.filter(word).map(escapeRe);
+  const alts = [
+    ...(compound.length ? [`(?<![${NAME_CHAR}])(?:${compound.join("|")})(?![${NAME_CHAR}])`] : []),
+    ...(plain.length ? [`(?<=\`)(?:${plain.join("|")})(?=\`)`] : []),
+  ];
+  return alts.length ? new RegExp(alts.join("|"), "g") : null;
+}
+
+/** Rewrites each name in `to`'s keys as its value, where it stands as a name. */
+export function renamer(to: ReadonlyMap<string, string>): (text: string) => string {
+  const re = namePattern([...to.keys()]);
+  return (text) => (re ? text.replace(re, (m) => to.get(m) ?? m) : text);
+}
+
+/** The names among `names` that stand in `text` as names. */
+export function namesIn(text: string, names: readonly string[]): Set<string> {
+  const re = namePattern(names);
+  return new Set(re ? text.match(re) ?? [] : []);
 }
 
 /** A workflow's text with its top-level `name:` line written as `full`, or

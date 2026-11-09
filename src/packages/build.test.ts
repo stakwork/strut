@@ -684,6 +684,34 @@ for (const tb of testBackends()) {
       if (parent) await backend.edges.write({ edge: "PARENT_OF", source_ref_id: (await conceptRef(parent))!, target_ref_id: ref_id });
     };
 
+    it("names the carried workflows and steps in its pages as packaged, and says one it does not carry", async () => {
+      const src = await graphStrut("source");
+      await src.workspace.publishStep("legal-core/concept-context", PLAIN("legal-core/concept-context"));
+      await src.workspace.publishStep("artifacts/dir", PLAIN("artifacts/dir"), undefined, "artifacts-seed");
+      await src.workspace.publishWorkflow("legal-task-run", "v1", flow("legal-task-run", "type: legal-core/concept-context"));
+      await src.workspace.publishWorkflow("other-flow", "v1", flow("other-flow", "type: log, config: { message: hi }"));
+      await src.rebuildRegistry();
+      await page(
+        "Legal Task",
+        {
+          description: "Run legal-task-run for a legal task",
+          docs: "Run `legal-task-run` through meta/run-workflow; legal-core/concept-context reads the Firm root. Not legal-task-run-v2, nor openlaw/legal-desk/legal-task-run. other-flow and `artifacts/dir` are this strut's.",
+        },
+        "Job",
+      );
+
+      const built = await build(src, { package: "openlaw/legal-desk", workflows: ["legal-task-run"], concepts: ["Legal Task"] });
+      const [file] = built.files.filter((x) => x.startsWith("concepts/"));
+      assert.equal(
+        await readFile(join(built.dir, file!), "utf-8"),
+        "---\nname: Legal Task\ndescription: Run openlaw/legal-desk/legal-task-run for a legal task\nparents:\n  - Job\n---\n" +
+          "Run `openlaw/legal-desk/legal-task-run` through meta/run-workflow; openlaw/legal-desk/legal-core/concept-context reads the Firm root. Not legal-task-run-v2, nor openlaw/legal-desk/legal-task-run. other-flow and `artifacts/dir` are this strut's.\n",
+      );
+      const said = built.warnings.join("\n");
+      assert.match(said, /the Concept Legal Task names the workflow other-flow, which the package does not carry and strut does not ship/);
+      assert.match(said, /the Concept Legal Task names the step artifacts\/dir, which the package does not carry/);
+    });
+
     it("writes the pages under a Concept and the step's claims that stay inside, and installs on a cleared graph and on a filesystem", async () => {
       const src = await graphStrut("source");
       await publishLinear(src.workspace);
