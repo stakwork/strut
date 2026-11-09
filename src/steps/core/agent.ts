@@ -60,9 +60,9 @@ import os from "node:os";
  * regardless of `toolFilter`.
  *
  * Provider-direct via the AI SDK, resolved through aieo (anthropic | openai |
- * google | openrouter | xai | maple | numes), lazy-loaded. Needs the provider's key in env
+ * google | openrouter | xai | maple | numes | tokenfactory), lazy-loaded. Needs the provider's key in env
  * (ANTHROPIC_API_KEY / OPENAI_API_KEY / GOOGLE_API_KEY / OPENROUTER_API_KEY /
- * XAI_API_KEY / MAPLE_API_KEY / NUMES_API_KEY) and `git` + `rg` on PATH for the repo tools. Output: { result, object?, steps, usage, cost }
+ * XAI_API_KEY / MAPLE_API_KEY / NUMES_API_KEY / TOKENFACTORY_API_KEY) and `git` + `rg` on PATH for the repo tools. Output: { result, object?, steps, usage, cost }
  * (+ `messages` in the OUTPUT only when `returnMessages` is set). The full
  * session — system prompt, task prompt, every generated turn — is ALWAYS
  * recorded on the step's `step.end` event as `messages` (`buildSession` +
@@ -1340,7 +1340,7 @@ export default defineStep({
     provider: z
       .string()
       .optional()
-      .describe("anthropic | openai | google | openrouter | xai | maple | numes — usually omitted (inferred from `model`)"),
+      .describe("anthropic | openai | google | openrouter | xai | maple | numes | tokenfactory — usually omitted (inferred from `model`)"),
     maxSteps: z.number().int().positive().default(200).describe("cap on tool-loop turns before the agent must answer"),
     bashTimeoutMs: z
       .number()
@@ -1743,7 +1743,7 @@ export default defineStep({
     const compactAt = compactAtFromEnv();
     resultCap = resultCapChars(BASH_MAX_CHARS, resolved.contextLimit, compactAt);
     // Dollar cost: per model call, what the provider reported (Numes,
-    // OpenRouter), else the call's tokens at the model's own price (the model
+    // OpenRouter, Token Factory), else the call's tokens at the model's own price (the model
     // catalog, once loaded — aieo's loadModelCatalog) or its provider's rate.
     const costOf = (u: TokenUsage) => computeSessionCost(resolved.provider, usageForCost(u), resolved.modelId);
     const stepCost = (s: any) => reportedCost(s?.usage, s?.providerMetadata) ?? costOf(usageFromResult(s?.usage, s?.providerMetadata));

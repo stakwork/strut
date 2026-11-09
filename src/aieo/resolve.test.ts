@@ -20,6 +20,8 @@ for (const k of [
   "MAPLE_BASE_URL",
   "NUMES_API_KEY",
   "NUMES_BASE_URL",
+  "TOKENFACTORY_API_KEY",
+  "TOKENFACTORY_BASE_URL",
 ]) {
   delete process.env[k];
 }
@@ -39,9 +41,10 @@ const {
   getModelDetails,
   getProviderOptions,
   computeSessionCost,
+  getModelPrice,
   mapleReasoningEffort,
 } = await import("./provider.js");
-const { generateText } = await import("ai");
+const { generateText, streamText } = await import("ai");
 const { createServer } = await import("node:http");
 
 let passed = 0;
@@ -81,7 +84,7 @@ async function test(label: string, fn: () => unknown | Promise<unknown>) {
 
 await test("listModels: one entry per alias, PROVIDERS order, defaults flagged", () => {
   const all = listModels();
-  eq(all.map((m) => m.alias), ["sonnet", "opus", "haiku", "gemini", "gpt", "kimi", "glm", "grok", "maple", "numes"], "aliases");
+  eq(all.map((m) => m.alias), ["sonnet", "opus", "haiku", "gemini", "gpt", "kimi", "glm", "grok", "maple", "numes", "tokenfactory"], "aliases");
   eq(all.filter((m) => m.default).map((m) => m.provider), PROVIDERS, "exactly one default per provider");
   const sonnet = all.find((m) => m.alias === "sonnet")!;
   eq([sonnet.provider, sonnet.modelId, sonnet.default], ["anthropic", "claude-sonnet-5-5", true], "sonnet");
@@ -95,6 +98,7 @@ await test("listModels: one entry per alias, PROVIDERS order, defaults flagged",
   eq(all.find((m) => m.alias === "glm")!.default, false, "kimi stays the openrouter default");
   eq(all.find((m) => m.alias === "maple")!.modelId, "gemma4-31b", "maple");
   eq(all.find((m) => m.alias === "numes")!.modelId, "z-ai/glm-5.3", "numes");
+  eq(all.find((m) => m.alias === "tokenfactory")!.modelId, "glm-5.3", "tokenfactory");
 });
 
 await test("API_KEY_ENV covers every provider", () => {
@@ -161,6 +165,11 @@ const canonCases: [string | undefined, string | undefined, [string, string, stri
   ["numes", undefined, ["numes", "z-ai/glm-5.3", "numes/z-ai/glm-5.3"]],                          // the provider's own alias
   [undefined, "numes", ["numes", "z-ai/glm-5.3", "numes/z-ai/glm-5.3"]],
   ["nvidia/nemotron-3-ultra-550b-a55b", "numes", ["numes", "nvidia/nemotron-3-ultra-550b-a55b", "numes/nvidia/nemotron-3-ultra-550b-a55b"]],
+  ["tokenfactory/glm-5.3", undefined, ["tokenfactory", "glm-5.3", "tokenfactory/glm-5.3"]],        // two segments, as Maple
+  ["tokenfactory/kimi-k3.1-pro", undefined, ["tokenfactory", "kimi-k3.1-pro", "tokenfactory/kimi-k3.1-pro"]],
+  ["tokenfactory", undefined, ["tokenfactory", "glm-5.3", "tokenfactory/glm-5.3"]],               // the provider's own alias
+  [undefined, "tokenfactory", ["tokenfactory", "glm-5.3", "tokenfactory/glm-5.3"]],
+  ["nemotron-3-ultra", "tokenfactory", ["tokenfactory", "nemotron-3-ultra", "tokenfactory/nemotron-3-ultra"]], // explicit provider
 ];
 for (const [model, provider, [p, id, name]] of canonCases) {
   await test(`canonicalModelName(${JSON.stringify(model)}, ${JSON.stringify(provider)}) → ${name}`, () => {
@@ -209,6 +218,9 @@ await test("canonicalModelName: LLM_PROVIDER env disarms the trap (it names the 
 
 await test("canonicalModelName: a bare Maple id never picks Maple — it says how to", () =>
   throwsWith(() => canonicalModelName("gemma4-31b"), 'On Maple it is "maple/gemma4-31b"', "bare maple id"));
+
+await test("canonicalModelName: a bare Token Factory id never picks it — it says how to", () =>
+  throwsWith(() => canonicalModelName("kimi-k3.1-pro"), 'On Token Factory it is "tokenfactory/kimi-k3.1-pro"', "bare id"));
 
 await test("canonicalModelName: LLM_PROVIDER=maple makes a bare Maple id Maple's", () => {
   process.env.LLM_PROVIDER = "maple";
@@ -266,6 +278,12 @@ await test("maxOutputTokensFor: Numes' per model, under a tenth of the window an
   eq(maxOutputTokensFor("numes", "z-ai/glm-5.3"), 24_576, "glm-5.3 (262k window)");
   eq(maxOutputTokensFor("numes", "z-ai/glm-5.3-flash"), 64_000, "glm-5.3-flash (1M window, 65,536 limit)");
   eq(maxOutputTokensFor("numes", "anthropic/claude-fable-5"), 12_288, "unlisted");
+});
+
+await test("maxOutputTokensFor: Token Factory's per model, under a tenth of the window", () => {
+  eq(maxOutputTokensFor("tokenfactory", "glm-5.3"), 64_000, "glm-5.3 (1M window)");
+  eq(maxOutputTokensFor("tokenfactory", "qwen3.8-27b"), 24_576, "qwen3.8-27b (262k window)");
+  eq(maxOutputTokensFor("tokenfactory", "something-new"), 12_288, "unlisted");
 });
 
 // ── resolveModel ─────────────────────────────────────────────────────────
@@ -556,6 +574,162 @@ await test("numes on the wire: NUMES_BASE_URL via getSecret, /api/v1/chat/comple
     server.close();
     delete process.env.NUMES_API_KEY;
     delete process.env.NUMES_BASE_URL;
+  }
+});
+
+// ── tokenfactory ─────────────────────────────────────────────────────────
+
+await test("resolveModel: tokenfactory is a chat-completions model with the prompt its gateway takes", async () => {
+  const r = await resolveModel({ model: "tokenfactory/glm-5.3", apiKey: "k" });
+  const m = r.model as { modelId?: string; provider?: string };
+  eq([m.provider, m.modelId], ["openai.chat", "glm-5.3"], "SDK model");
+  eq([r.contextLimit, r.maxOutputTokens], [917_504, 64_000], "limits: max_input_tokens, a tenth of the window");
+  eq((await resolveModel({ model: "tokenfactory/qwen3.8-27b", apiKey: "k" })).contextLimit, 196_608, "qwen");
+  eq((await resolveModel({ model: "tokenfactory/something-new", apiKey: "k" })).contextLimit, 196_608, "unlisted: the smallest");
+});
+
+await test("getProviderOptions(tokenfactory): fast is none, thinking is high, else the model's default", () => {
+  eq(getProviderOptions("tokenfactory", "fast", "tokenfactory/glm-5.3"), { openai: { reasoningEffort: "none" } }, "fast");
+  eq(getProviderOptions("tokenfactory", "thinking", "tokenfactory"), { openai: { reasoningEffort: "high" } }, "thinking");
+  eq(getProviderOptions("tokenfactory", undefined, "tokenfactory/glm-5.3"), { openai: {} }, "the model's default");
+});
+
+await test("computeSessionCost(tokenfactory): each model at what the gateway billed, an unlisted one the dearest rate", () => {
+  const usage = { input: 1_000_000, cache_read: 0, cache_write: 0, output: 1_000_000 };
+  eq(computeSessionCost("tokenfactory", usage, "glm-5.3"), 0, "glm-5.3 is free");
+  eq(computeSessionCost("tokenfactory", usage, "glm-5.3-flash").toFixed(2), "0.65", "glm-5.3-flash: 0.15 + 0.50");
+  eq(computeSessionCost("tokenfactory", usage, "nemotron-3-ultra").toFixed(2), "3.00", "nemotron-3-ultra: 0.60 + 2.40");
+  eq(computeSessionCost("tokenfactory", usage, "something-new").toFixed(2), "3.00", "unlisted: nemotron-3-ultra's rate");
+  eq(getModelPrice("tokenfactory", "something-new"), undefined, "no price of its own for the picker");
+});
+
+await test("tokenfactory on the wire: TOKENFACTORY_BASE_URL via getSecret, /v1/chat/completions, the effort as asked", async () => {
+  const seen: { path?: string; auth?: string; effort?: unknown; model?: unknown }[] = [];
+  const server = createServer((req, res) => {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      const json = JSON.parse(body);
+      seen.push({ path: req.url, auth: req.headers.authorization, effort: json.reasoning_effort, model: json.model });
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({
+        id: "x", object: "chat.completion", created: 0, model: json.model,
+        choices: [{ index: 0, message: { role: "assistant", content: "pong" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 17, completion_tokens: 3, prompt_tokens_details: { cached_tokens: 0 } },
+      }));
+    });
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const root = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const store = (entries: Record<string, string>) => async (name: string) => entries[name];
+  try {
+    const asked: string[] = [];
+    const glm = await resolveModel({
+      model: "tokenfactory/glm-5.3",
+      getSecret: async (name) => (asked.push(name), ({ TOKENFACTORY_API_KEY: "tk", TOKENFACTORY_BASE_URL: `${root}/v1` } as Record<string, string>)[name]),
+    });
+    eq(asked, ["TOKENFACTORY_API_KEY", "TOKENFACTORY_BASE_URL"], "asked by name");
+    const r = await generateText({ model: glm.model, prompt: "hi", reasoning: "medium", maxRetries: 0 } as any);
+    eq([r.text, r.usage.inputTokens, r.usage.outputTokens], ["pong", 17, 3], "text and usage");
+    // through a gateway (a caller's baseUrl): its OpenAI-compatible route,
+    // the id naming Token Factory, TOKENFACTORY_BASE_URL not used
+    const flash = await resolveModel({ model: "tokenfactory/glm-5.3-flash", baseUrl: root, apiKey: "vk", getSecret: store({ TOKENFACTORY_BASE_URL: "http://127.0.0.1:1/v1" }) });
+    await generateText({ model: flash.model, prompt: "hi", providerOptions: getProviderOptions("tokenfactory", "fast") as any, maxRetries: 0 } as any);
+    // a caller's own endpoint (getModel's `endpoint`; a bare root gets /v1)
+    await generateText({ model: getModel("tokenfactory", { modelName: "tokenfactory/glm-5.3", apiKey: "ek", endpoint: root }), prompt: "hi", maxRetries: 0 });
+    // the env-only path (getModel)
+    process.env.TOKENFACTORY_API_KEY = "env-key";
+    process.env.TOKENFACTORY_BASE_URL = `${root}/v1`;
+    await generateText({ model: getModel("tokenfactory", { modelName: "tokenfactory/kimi-k3.1-pro" }), prompt: "hi", maxRetries: 0 });
+    eq(seen, [
+      { path: "/v1/chat/completions", auth: "Bearer tk", effort: "medium", model: "glm-5.3" },
+      { path: "/openai/v1/chat/completions", auth: "Bearer vk", effort: "none", model: "tokenfactory/glm-5.3-flash" },
+      { path: "/v1/chat/completions", auth: "Bearer ek", model: "glm-5.3" },
+      { path: "/v1/chat/completions", auth: "Bearer env-key", model: "kimi-k3.1-pro" },
+    ], "requests");
+  } finally {
+    server.close();
+    delete process.env.TOKENFACTORY_API_KEY;
+    delete process.env.TOKENFACTORY_BASE_URL;
+  }
+});
+
+await test("tokenfactory: no TOKENFACTORY_BASE_URL anywhere → gateway.trytokenfactory.dev", async () => {
+  const urls: string[] = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: any) => {
+    urls.push(typeof input === "string" ? input : input.url);
+    throw new Error("recorded");
+  }) as typeof fetch;
+  try {
+    const r = await resolveModel({ model: "tokenfactory/glm-5.3", apiKey: "k", getSecret: async () => undefined });
+    await throwsWith(() => generateText({ model: r.model, prompt: "hi", maxRetries: 0 }), "recorded", "request");
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  eq(urls, ["https://gateway.trytokenfactory.dev/v1/chat/completions"], "default url");
+});
+
+// ── a cost the provider reports ──────────────────────────────────────────
+
+await test("a reported cost reaches the call's usage.raw: Numes' usage, Token Factory's stream and header", async () => {
+  // Each request names the cost to report in its prompt: "cost=<n>|<how>".
+  const leaked: unknown[] = [];
+  const server = createServer((req, res) => {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      leaked.push(req.headers["x-aieo-cost-call"]);
+      const json = JSON.parse(body);
+      const said = String(json.messages.at(-1).content.at?.(-1)?.text ?? json.messages.at(-1).content);
+      const [, n, how] = /cost=([\d.]+)\|(\w+)/.exec(said)!;
+      const cost = Number(n);
+      const usage = { prompt_tokens: 10, completion_tokens: 2 };
+      if (json.stream) {
+        // LiteLLM's stream header is sent before the cost is known: 0.
+        res.writeHead(200, { "content-type": "text/event-stream", "x-litellm-response-cost": "0.0" });
+        const chunk = (o: object) => res.write(`data: ${JSON.stringify({ id: "x", object: "chat.completion.chunk", created: 0, model: json.model, ...o })}\n\n`);
+        chunk({ choices: [{ index: 0, delta: { role: "assistant", content: "pong" } }] });
+        chunk({ choices: [{ index: 0, delta: {}, finish_reason: "stop" }] });
+        // The usage chunk split across two writes, as a socket may.
+        const last = `data: ${JSON.stringify({ id: "x", object: "chat.completion.chunk", created: 0, model: json.model, choices: [], usage: how === "none" ? usage : { ...usage, cost } })}\n\n`;
+        res.write(last.slice(0, 40));
+        setTimeout(() => res.end(last.slice(40) + "data: [DONE]\n\n"), 5);
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json", ...(how === "header" ? { "x-litellm-response-cost": String(cost) } : {}) });
+      res.end(JSON.stringify({
+        id: "x", object: "chat.completion", created: 0, model: json.model,
+        choices: [{ index: 0, message: { role: "assistant", content: "pong" }, finish_reason: "stop" }],
+        usage: how === "body" ? { ...usage, cost } : usage,
+      }));
+    });
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const root = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const rawCost = (usage: unknown) => (usage as { raw?: { cost?: unknown } }).raw?.cost;
+  try {
+    const numes = (await resolveModel({ model: "numes/z-ai/glm-5.3-flash", apiKey: "k", getSecret: async (n) => (n === "NUMES_BASE_URL" ? `${root}/api/v1` : undefined) })).model;
+    const tf = (await resolveModel({ model: "tokenfactory/glm-5.3-flash", apiKey: "k", getSecret: async (n) => (n === "TOKENFACTORY_BASE_URL" ? `${root}/v1` : undefined) })).model;
+    const once = async (model: typeof numes, prompt: string) => (await generateText({ model, prompt, maxRetries: 0 })).steps[0].usage;
+    const streamed = async (model: typeof numes, prompt: string) => {
+      const s = streamText({ model, prompt, maxRetries: 0 });
+      eq(await s.text, "pong", "streamed text");
+      return (await s.steps)[0].usage;
+    };
+    eq(rawCost(await once(numes, "cost=0.0042|body")), 0.0042, "Numes, not streamed: its usage");
+    eq(rawCost(await streamed(numes, "cost=0.0031|stream")), 0.0031, "Numes, streamed: the usage chunk");
+    eq(rawCost(await once(tf, "cost=0.0000734|header")), 0.0000734, "Token Factory, not streamed: its header");
+    eq(rawCost(await streamed(tf, "cost=0.0000367|stream")), 0.0000367, "Token Factory, streamed: the usage chunk, not the header's 0");
+    eq(rawCost(await streamed(tf, "cost=0|none")), undefined, "a free model's stream reports none: priced from the table");
+    eq(rawCost(await once(tf, "cost=0|plain")), undefined, "nothing reported, nothing added");
+    // Calls in flight at once on one model each keep their own.
+    const both = await Promise.all([once(numes, "cost=0.5|body"), streamed(numes, "cost=0.25|stream"), once(numes, "cost=0.125|body")]);
+    eq(both.map(rawCost), [0.5, 0.25, 0.125], "parallel calls");
+    eq((both[0] as { inputTokens?: number }).inputTokens, 10, "the tokens as they were");
+    eq(leaked.filter((h) => h !== undefined), [], "the call header never reaches the provider");
+  } finally {
+    server.close();
   }
 });
 

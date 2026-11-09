@@ -21,7 +21,10 @@
  * allowlist, with no rule, travels as a rule. The same graph and the same
  * names give the same bytes. Edge rules carry no `temporal`, `cardinality`
  * or aliases yet. An edge between a named type and a type the package does
- * not carry is a warning: the package's runs may need it.
+ * not carry is a warning: the package's runs may need it. A setting that
+ * names an attribute the type neither declares nor inherits (jarvis's
+ * ontology has a few) is left out of the file, its default in its place,
+ * and is a warning: the install would refuse it.
  *
  * INSTALL (`checkPackageTypes`, then `registerPackageTypes`): every type is
  * checked before the install's first write — the grammar, a type strut
@@ -36,6 +39,7 @@ import type { GraphBackend } from "../graph/backend.js";
 import type { NodeSchemaInput } from "../graph/schema-crud.js";
 import { SEED_TYPES } from "../graph/seed-types.js";
 import { THING_TYPE, isStrutType, typeValue } from "../graph/strut-schemas.js";
+import { titleFields } from "../graph/title.js";
 import { dumpYaml, loadYaml } from "../yaml.js";
 import { GRAPH_TYPE_NAME, type PackageItem } from "./format.js";
 
@@ -273,13 +277,52 @@ async function typeFile(
       warnings.add(`${file}: ${type}.${k} is left out — the writer keeps that name for itself`);
     }
   }
+  // What a setting may name: the attributes this file carries and what the
+  // type inherits, as the install will check it (`name` always). A jarvis
+  // graph's ontology names fields it never declares — ComputedFigure's
+  // index lists `matter_slug`, Hint's index and title read `ref_id` — so a
+  // setting that names one is left out, its default in its place, and said.
+  const declared = new Set(["name", ...Object.keys(fromParent), ...Object.keys(attributes)]);
+  const left: string[] = [];
   // A key spec's first token is the type prefix, which the writer replaces
   // with the node's own type (`composeNodeKey`) whoever declared it: a type
   // with no key of its own inherits its parent's (jarvis's `Content` and
   // `Legal` hold Thing's `thing-name`), so only the tokens after it are
   // attributes. `ref_id` is no key at all.
-  const key = !live ? undefined : live.key_spec === "ref_id" ? "ref_id" : live.key_spec.split("-").slice(1).join("-") || undefined;
-  const index = live?.index.filter((f) => f !== "node_key");
+  let key = !live ? undefined : live.key_spec === "ref_id" ? "ref_id" : live.key_spec.split("-").slice(1).join("-") || undefined;
+  const keyMissing = key && key !== "ref_id" ? key.split("-").filter((t) => !declared.has(t)) : [];
+  if (keyMissing.length) {
+    left.push(`key_spec names ${keyMissing.join(", ")} (keyed by name instead)`);
+    key = undefined;
+  }
+  const liveIndex = live?.index.filter((f) => f !== "node_key") ?? [];
+  const index = liveIndex.filter((f) => declared.has(f));
+  const indexMissing = liveIndex.filter((f) => !declared.has(f));
+  if (indexMissing.length) left.push(`index names ${indexMissing.join(", ")}${index.length ? "" : " (no index left: the key's fields instead)"}`);
+  // A type that declares its own `title` is titled by it on every strut
+  // (planNodeSchema): another title_key does not travel, and jarvis's
+  // Person — `title` its job title, titled by name — is titled by its job
+  // title on the installing strut.
+  const ownTitle = "title" in attributes;
+  let titleKey = live?.title_key && live.title_key !== "name" ? live.title_key : undefined;
+  const titleMissing = titleKey ? titleFields(titleKey).filter((f) => !declared.has(f)) : [];
+  if (titleMissing.length) {
+    left.push(`title_key names ${titleMissing.join(", ")} (${ownTitle ? "title" : "name"} instead)`);
+    titleKey = undefined;
+  } else if (ownTitle && (live?.title_key ?? "name") !== "title") {
+    warnings.add(`${file}: ${type} declares its own title attribute and this graph titles it by ${live?.title_key ?? "name"}; a strut titles a type by the title it declares, so a ${type} installed there is titled by its title attribute`);
+    titleKey = undefined;
+  }
+  let descriptionKey = live?.description_key && live.description_key !== "description" ? live.description_key : undefined;
+  if (descriptionKey && !declared.has(descriptionKey)) {
+    left.push(`description_key names ${descriptionKey} (description instead)`);
+    descriptionKey = undefined;
+  }
+  const typeOf = (a: string) => attributes[a] ?? fromParent[a] ?? (a === "name" ? "string" : undefined);
+  const ids = strList(env["identifiers"]) ?? [];
+  const identifiers = ids.filter((id) => typeOf(id) && !/^\??(list|complex)$/.test(typeOf(id)!));
+  if (identifiers.length < ids.length) left.push(`identifiers name ${ids.filter((id) => !identifiers.includes(id)).join(", ")} (not one-value attributes of the type's)`);
+  if (left.length) warnings.add(`${file}: left out of the file, as this graph's ontology names attributes ${type} neither declares nor inherits — ${left.join("; ")}`);
   const role = str(env["role"]) && NODE_ROLES.includes(str(env["role"])!) ? str(env["role"]) : undefined;
   const embed = env["embed"];
   const input: NodeSchemaInput = {
@@ -289,15 +332,15 @@ async function typeFile(
     ...(str(env["type_description"]) ? { type_description: str(env["type_description"])! } : {}),
     attributes,
     ...(key && key !== "name" ? { key_spec: key } : {}),
-    ...(index?.length && index.join("-") !== (key ?? "name") ? { index } : {}),
-    ...(live?.title_key && live.title_key !== "name" ? { title_key: live.title_key } : {}),
-    ...(live?.description_key && live.description_key !== "description" ? { description_key: live.description_key } : {}),
+    ...(index.length && index.join("-") !== (key ?? "name") ? { index } : {}),
+    ...(titleKey ? { title_key: titleKey } : {}),
+    ...(descriptionKey ? { description_key: descriptionKey } : {}),
     ...(role && NODE_ROLES.includes(role) ? { role } : {}),
-    ...(strList(env["identifiers"]) ? { identifiers: strList(env["identifiers"])! } : {}),
+    ...(identifiers.length ? { identifiers } : {}),
     ...(typeof embed === "boolean" ? { embed } : {}),
   };
   try {
-    planNodeSchema(input, undefined, live?.attributes ?? {});
+    planNodeSchema(input, undefined, fromParent);
   } catch (e) {
     if (!(e instanceof Error) || e.name !== "GraphValidationError") throw e;
     return { problem: `${file}: ${e.message}` };

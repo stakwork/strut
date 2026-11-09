@@ -5,12 +5,12 @@ import {
 } from "@ai-sdk/google";
 import { createOpenAI, OpenAIResponsesProviderOptions } from "@ai-sdk/openai";
 import { createXai } from "@ai-sdk/xai";
-import { LanguageModel } from "ai";
+import { LanguageModel, wrapLanguageModel } from "ai";
 import { Logger } from "./logger.js";
 import { createOpenRouter, OpenRouterChatSettings } from "@openrouter/ai-sdk-provider";
 import { env } from "./env.js";
 
-export type Provider = "anthropic" | "google" | "openai" | "openrouter" | "xai" | "maple" | "numes";
+export type Provider = "anthropic" | "google" | "openai" | "openrouter" | "xai" | "maple" | "numes" | "tokenfactory";
 
 /**
  * Optional LLM gateway URL (e.g. Bifrost: https://github.com/maximhq/bifrost,
@@ -30,8 +30,9 @@ const LLM_GATEWAY_URL = env.LLM_GATEWAY_URL?.replace(/\/$/, "");
  * override the model to an OpenRouter model, you want the OpenAI suffix
  * here too. xAI likewise rides the OpenAI-compat path (model id prefixed
  * `xai/` in getModel), since Bifrost has no dedicated Grok route. So do
- * Maple, Numes and any provider aieo does not know (`acme/llama-4`): a
- * gateway holds each as an OpenAI-compatible custom provider of that name.
+ * Maple, Numes, Token Factory and any provider aieo does not know
+ * (`acme/llama-4`): a gateway holds each as an OpenAI-compatible custom
+ * provider of that name.
  */
 export const GATEWAY_PATHS: Record<Provider, string> = {
   anthropic: "/anthropic/v1",
@@ -41,16 +42,19 @@ export const GATEWAY_PATHS: Record<Provider, string> = {
   xai: "/openai/v1",
   maple: "/openai/v1",
   numes: "/openai/v1",
+  tokenfactory: "/openai/v1",
 };
 
 /**
  * The version path on a provider's OWN endpoint (BASE_URL_ENV), so a bare
  * root gets it: Maple's proxy ("http://maple:8080" → /v1), Numes' API
- * ("https://api.numes.ai" → /api/v1).
+ * ("https://api.numes.ai" → /api/v1), Token Factory's gateway
+ * ("https://gateway.trytokenfactory.dev" → /v1).
  */
 const ENDPOINT_PATHS: Partial<Record<Provider, string>> = {
   maple: "/v1",
   numes: "/api/v1",
+  tokenfactory: "/v1",
 };
 
 export function getGatewayBaseURL(provider: Provider | string): string | undefined {
@@ -170,10 +174,11 @@ export const PROVIDERS: Provider[] = [
   "xai",
   "maple",
   "numes",
+  "tokenfactory",
 ];
 
 // shortcuts to latest models
-export type ModelName = "sonnet" | "opus" | "haiku" | "gemini" | "gpt" | "kimi" | "glm" | "grok" | "maple" | "numes";
+export type ModelName = "sonnet" | "opus" | "haiku" | "gemini" | "gpt" | "kimi" | "glm" | "grok" | "maple" | "numes" | "tokenfactory";
 
 type ModelId = string;
 
@@ -208,6 +213,11 @@ export const MODELS: Record<Provider, Partial<Record<ModelName, ModelId>>> = {
   numes: {
     numes: "z-ai/glm-5.3",
   },
+  // Token Factory ids are bare ("glm-5.3"), so a name has two segments
+  // ("tokenfactory/glm-5.3"), as for Maple; "tokenfactory" alone is a free model.
+  tokenfactory: {
+    tokenfactory: "glm-5.3",
+  },
 };
 
 export const DEFAULT_MODELS: Record<Provider, string> = {
@@ -218,6 +228,7 @@ export const DEFAULT_MODELS: Record<Provider, string> = {
   xai: MODELS.xai.grok!,
   maple: MODELS.maple.maple!,
   numes: MODELS.numes.numes!,
+  tokenfactory: MODELS.tokenfactory.tokenfactory!,
 };
 
 // Light/cheap models for batch operations (descriptions, learnings, etc.)
@@ -229,6 +240,7 @@ const LIGHT_MODELS: Record<Provider, string> = {
   xai: "grok-4-fast-non-reasoning",
   maple: "gemma4-31b",
   numes: "z-ai/glm-5.3-flash",
+  tokenfactory: "minimax-m3.1-flash",
 };
 
 export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
@@ -342,6 +354,158 @@ function mapleFetch(inner: typeof fetch): typeof fetch {
   };
 }
 
+// ── A cost the provider reports ─────────────────────────────────────────────
+//
+// Numes reports what each call cost in its usage (`cost`); Token Factory
+// (LiteLLM) does in a streamed call's usage and, for a call that is not
+// streamed, in its `x-litellm-response-cost` header (a stream's header is
+// sent before the cost is known, so it is never read). @ai-sdk/openai's chat
+// client parses usage through a schema that keeps only token counts, so the
+// cost never reached a step's `usage.raw`. It is put back here: a fetch that
+// reads it off the response, matched to its call by a header of aieo's own
+// (taken off before the request is sent), and a model wrapper that adds it
+// to that call's `usage.raw` as `cost` — where a host reads a reported cost
+// (strut's `reportedCost`). A call that reports none is left as it was, and
+// is priced from the tables (computeSessionCost).
+
+const COST_CALL_HEADER = "x-aieo-cost-call";
+let costCalls = 0;
+
+const costOf = (v: unknown): number | undefined =>
+  typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : undefined;
+
+/** The call id a request carries, and the request without it. */
+function takeCostCall(init: RequestInit | undefined): [string | undefined, RequestInit | undefined] {
+  const h = init?.headers;
+  if (!h) return [undefined, init];
+  if (h instanceof Headers) {
+    const id = h.get(COST_CALL_HEADER) ?? undefined;
+    if (!id) return [undefined, init];
+    const headers = new Headers(h);
+    headers.delete(COST_CALL_HEADER);
+    return [id, { ...init, headers }];
+  }
+  const entries = Array.isArray(h) ? h : Object.entries(h);
+  const hit = entries.find(([k]) => k.toLowerCase() === COST_CALL_HEADER);
+  if (!hit) return [undefined, init];
+  const rest = entries.filter(([k]) => k.toLowerCase() !== COST_CALL_HEADER);
+  // Node's header records may hold a list per name; aieo sets one value.
+  const id = typeof hit[1] === "string" ? hit[1] : hit[1][0];
+  return [id, { ...init, headers: Array.isArray(h) ? rest : Object.fromEntries(rest) }];
+}
+
+/** A stream passed on as it came, each `data:` line that carries a usage
+ *  `cost` noting it for the call. */
+function costFromEvents(id: string, costs: Map<string, number>): TransformStream<Uint8Array, Uint8Array> {
+  const decoder = new TextDecoder();
+  let pending = "";
+  const scan = (text: string) => {
+    pending += text;
+    let nl: number;
+    while ((nl = pending.indexOf("\n")) >= 0) {
+      const line = pending.slice(0, nl).trim();
+      pending = pending.slice(nl + 1);
+      if (!line.startsWith("data:") || !line.includes('"cost"')) continue;
+      try {
+        const cost = costOf(JSON.parse(line.slice(5))?.usage?.cost);
+        if (cost !== undefined) costs.set(id, cost);
+      } catch {
+        // Not JSON: passed on as it is.
+      }
+    }
+  };
+  return new TransformStream({
+    transform(chunk, controller) {
+      scan(decoder.decode(chunk, { stream: true }));
+      controller.enqueue(chunk);
+    },
+    flush() {
+      scan(decoder.decode() + "\n");
+    },
+  });
+}
+
+/** The provider's fetch, noting each call's reported cost in `costs`. */
+function reportedCostFetch(inner: typeof fetch, costs: Map<string, number>): typeof fetch {
+  return async (input, init) => {
+    const [id, sent] = takeCostCall(init);
+    const res = await inner(input, sent);
+    if (!id || !res.ok) return res;
+    if ((res.headers.get("content-type") ?? "").includes("text/event-stream") && res.body) {
+      return new Response(res.body.pipeThrough(costFromEvents(id, costs)), {
+        status: res.status,
+        statusText: res.statusText,
+        headers: res.headers,
+      });
+    }
+    try {
+      const body = (await res.clone().json()) as { usage?: { cost?: unknown } } | null;
+      const cost = costOf(body?.usage?.cost);
+      if (cost !== undefined) costs.set(id, cost);
+    } catch {
+      // Not JSON: nothing reported.
+    }
+    if (!costs.has(id) && res.headers.has("x-litellm-response-cost")) {
+      const cost = costOf(Number(res.headers.get("x-litellm-response-cost")));
+      if (cost !== undefined) costs.set(id, cost);
+    }
+    return res;
+  };
+}
+
+/** The usage with `cost` added to its `raw`. */
+function usageWithCost<U extends { raw?: unknown }>(usage: U, cost: number): U {
+  const raw = usage.raw && typeof usage.raw === "object" ? usage.raw : {};
+  return { ...usage, raw: { ...raw, cost } };
+}
+
+/** The model, each call's reported cost (noted by reportedCostFetch) on its
+ *  usage. Provider and model id are the model's own. */
+function withReportedCost(model: Parameters<typeof wrapLanguageModel>[0]["model"], costs: Map<string, number>): LanguageModel {
+  const tagged = <P extends { headers?: Record<string, string | undefined> }>(params: P, id: string): P => ({
+    ...params,
+    headers: { ...params.headers, [COST_CALL_HEADER]: id },
+  });
+  return wrapLanguageModel({
+    model,
+    middleware: {
+      wrapGenerate: async ({ model, params }) => {
+        const id = String(++costCalls);
+        try {
+          const result = await model.doGenerate(tagged(params, id));
+          const cost = costs.get(id);
+          return cost === undefined ? result : { ...result, usage: usageWithCost(result.usage, cost) };
+        } finally {
+          costs.delete(id);
+        }
+      },
+      wrapStream: async ({ model, params }) => {
+        const id = String(++costCalls);
+        const result = await model.doStream(tagged(params, id));
+        type Part = typeof result.stream extends ReadableStream<infer P> ? P : never;
+        return {
+          ...result,
+          stream: result.stream.pipeThrough(
+            new TransformStream<Part, Part>({
+              transform(part, controller) {
+                if (part.type === "finish") {
+                  const cost = costs.get(id);
+                  costs.delete(id);
+                  if (cost !== undefined) part = { ...part, usage: usageWithCost(part.usage, cost) };
+                }
+                controller.enqueue(part);
+              },
+              flush() {
+                costs.delete(id);
+              },
+            }),
+          ),
+        };
+      },
+    },
+  });
+}
+
 export interface NumesModel {
   /** Context window (prompt + output), tokens. */
   context: number;
@@ -378,6 +542,56 @@ export const NUMES_MODELS: Record<string, NumesModel> = {
   "uniboshi/kimi-k3-abliterated-v1": { context: 1_048_576, maxOutput: 64_000, pricing: FREE },
 };
 
+export interface TokenFactoryModel {
+  /** The prompt the gateway takes, tokens: its `max_input_tokens`, the
+   *  window less the model's output limit (917,504 of 1,048,576), so a
+   *  prompt at strut's compaction mark (90%) is never one it refuses. */
+  context: number;
+  /** Per-call output cap: under a tenth of the window, as for Numes (the
+   *  vLLM backends refuse prompt + `max_tokens` past the window). */
+  maxOutput: number;
+  pricing: TokenPricing;
+}
+
+/**
+ * Token Factory (trytokenfactory.dev): open models behind a LiteLLM proxy,
+ * `https://gateway.trytokenfactory.dev/v1` (Chat Completions). A key is
+ * bought and topped up over Nostr; spend is in USD. Every `reasoning_effort`
+ * is taken (a model's own short list is not enforced), so none is rewritten.
+ * The gateway reports each call's cost (a streamed call's usage `cost`, a
+ * header otherwise), which withReportedCost puts on the call's usage, and a
+ * host bills that; these prices answer a call that reports none (a free
+ * model's stream) and the model picker.
+ * Listed: `GET /v1/models` on 2026-11-09 (windows, output limits); each
+ * model called a tool, and its price is what the gateway billed for that
+ * call (its `x-litellm-response-cost-input` / `-output` per token): nine
+ * cost nothing. A model whose price changes keeps this one until the list
+ * does. An unlisted model is priced at TOKEN_PRICING.tokenfactory.
+ */
+export const TOKENFACTORY_MODELS: Record<string, TokenFactoryModel> = {
+  "glm-5.3": { context: 917_504, maxOutput: 64_000, pricing: FREE },
+  "glm-5.3-flash": { context: 917_504, maxOutput: 64_000, pricing: { inputTokenPrice: 0.15, outputTokenPrice: 0.5 } },
+  "kimi-k3.1-pro": { context: 917_504, maxOutput: 64_000, pricing: FREE },
+  "minimax-m3.1-flash": { context: 917_504, maxOutput: 64_000, pricing: FREE },
+  "deepseek-v4.1-flash-1017": {
+    context: 917_504,
+    maxOutput: 64_000,
+    pricing: { inputTokenPrice: 0.205, outputTokenPrice: 1.163 },
+  },
+  "nemotron-3-ultra": { context: 917_504, maxOutput: 64_000, pricing: { inputTokenPrice: 0.6, outputTokenPrice: 2.4 } },
+  "nemotron-3-super": { context: 917_504, maxOutput: 64_000, pricing: FREE },
+  "nemotron-3.5-lightning": {
+    context: 917_504,
+    maxOutput: 64_000,
+    pricing: { inputTokenPrice: 0.06, outputTokenPrice: 0.18 },
+  },
+  "qwen3.8-27b": { context: 196_608, maxOutput: 24_576, pricing: FREE },
+  "glm-5.3-uncensored-fp8": { context: 917_504, maxOutput: 64_000, pricing: FREE },
+  "glm-5.3-flash-uncensored-fp8": { context: 917_504, maxOutput: 64_000, pricing: FREE },
+  "deepseek-v4.1-flash-1017-uncensored-fp8": { context: 917_504, maxOutput: 64_000, pricing: FREE },
+  "kimi-k3-abliterated": { context: 917_504, maxOutput: 64_000, pricing: FREE },
+};
+
 export function getLightModelForProvider(provider: Provider): string {
   return LIGHT_MODELS[provider];
 }
@@ -400,7 +614,7 @@ export interface TokenUsageForCost {
  *  0, and the gateway bills it. */
 export function computeSessionCost(provider: Provider | string, usage: TokenUsageForCost, modelId?: string, actualCost?: number): number {
   if (typeof actualCost === "number" && actualCost >= 0) return actualCost;
-  // The model's own price (Maple's or Numes' table, then the datasheet), else
+  // The model's own price (Maple's, Numes' or Token Factory's table, then the datasheet), else
   // the provider's flat rate; a provider aieo does not know has neither.
   const pricing = (modelId ? getModelPrice(provider as Provider, modelId) : undefined) ?? TOKEN_PRICING[provider as Provider];
   if (!pricing) return 0;
@@ -440,6 +654,8 @@ export function getProviderForModel(modelName?: ModelName | string): Provider {
       return "maple";
     case "numes":
       return "numes";
+    case "tokenfactory":
+      return "tokenfactory";
     // Full model IDs
     case "claude-sonnet-5-5":
     case "claude-sonnet-5":
@@ -514,11 +730,12 @@ export const API_KEY_ENV: Record<Provider, string> = {
   xai: "XAI_API_KEY",
   maple: "MAPLE_API_KEY",
   numes: "NUMES_API_KEY",
+  tokenfactory: "TOKENFACTORY_API_KEY",
 };
 
 /**
  * A provider with an endpoint of its own, never the LLM gateway's (Maple's
- * proxy, which the deployment runs; Numes' API): the env var NAME its base
+ * proxy, which the deployment runs; Numes' API; Token Factory's gateway): the env var NAME its base
  * URL is read from — through the host's getSecret first, like the key
  * (resolve.ts) — and the URL when none is set. A caller's `baseUrl` wins
  * over both. The full URL, version path included.
@@ -526,10 +743,12 @@ export const API_KEY_ENV: Record<Provider, string> = {
 export const BASE_URL_ENV: Partial<Record<Provider, string>> = {
   maple: "MAPLE_BASE_URL",
   numes: "NUMES_BASE_URL",
+  tokenfactory: "TOKENFACTORY_BASE_URL",
 };
 export const DEFAULT_BASE_URLS: Partial<Record<Provider, string>> = {
   maple: "http://localhost:8080/v1",
   numes: "https://api.numes.ai/api/v1",
+  tokenfactory: "https://gateway.trytokenfactory.dev/v1",
 };
 
 /**
@@ -585,14 +804,15 @@ export interface GetModelOptions {
   apiKey?: string;
   /**
    * A gateway's root (Bifrost), for every provider: each rides its path
-   * there (GATEWAY_PATHS). Maple, Numes and any provider aieo does not know
+   * there (GATEWAY_PATHS). Maple, Numes, Token Factory and any provider aieo does not know
    * ride its OpenAI-compatible route with the model id `<provider>/<id>`.
    */
   baseUrl?: string;
   /**
-   * A provider's OWN endpoint (BASE_URL_ENV: Maple's proxy, Numes' API), the
-   * version path included (a bare root gets it). Read from MAPLE_BASE_URL /
-   * NUMES_BASE_URL when absent. Ignored with a `baseUrl`: the call then goes
+   * A provider's OWN endpoint (BASE_URL_ENV: Maple's proxy, Numes' API,
+   * Token Factory's gateway), the version path included (a bare root gets
+   * it). Read from MAPLE_BASE_URL / NUMES_BASE_URL / TOKENFACTORY_BASE_URL
+   * when absent. Ignored with a `baseUrl`: the call then goes
    * through that gateway.
    */
   endpoint?: string;
@@ -855,6 +1075,7 @@ export function getModel(
       "grok",
       "maple",
       "numes",
+      "tokenfactory",
     ];
     if (knownShortcuts.includes(opts.modelName) && PROVIDERS.includes(provider as Provider)) {
       modelId = getModelForProvider(provider as Provider, opts.modelName as ModelName);
@@ -875,8 +1096,8 @@ export function getModel(
   // Explicit baseUrl from caller (a gateway's root) takes precedence over
   // the global LLM gateway. Normalize caller-supplied URLs so a bare gateway
   // root (e.g. the swarm host:port) gets the provider's drop-in path appended.
-  // A provider with an endpoint of its own (Maple's proxy, Numes' API) is
-  // called there unless a caller passed a gateway: the caller's `endpoint`,
+  // A provider with an endpoint of its own (Maple's proxy, Numes' API,
+  // Token Factory's gateway) is called there unless a caller passed a gateway: the caller's `endpoint`,
   // else env (resolve.ts asks the host's getSecret first and passes it in).
   const routed = !!opts?.baseUrl;
   const ownBaseUrl = !routed && BASE_URL_ENV[provider as Provider]
@@ -1022,21 +1243,24 @@ export function getModel(
       return xai(modelId);
     }
     case "maple":
-    case "numes": {
-      // Chat Completions (`.chat`): neither Maple's proxy nor Numes speaks
-      // the Responses API, which is what `createOpenAI()(id)` calls. The
-      // model's provider stays "openai.chat", so a host that treats
-      // chat-completions models alike (strut moves tool-result images beside
-      // the results) does the same here. Through a gateway (a caller's
+    case "numes":
+    case "tokenfactory": {
+      // Chat Completions (`.chat`): neither Maple's proxy, Numes nor Token
+      // Factory speaks the Responses API, which is what `createOpenAI()(id)`
+      // calls. The model's provider stays "openai.chat", so a host that
+      // treats chat-completions models alike (strut moves tool-result images
+      // beside the results) does the same here. Through a gateway (a caller's
       // baseUrl) the model id names the provider, as for xai: Bifrost picks
-      // its custom provider of that name.
+      // its custom provider of that name. A cost the response reports is put
+      // back on the call's usage (withReportedCost).
+      const costs = new Map<string, number>();
       const client = createOpenAI({
         apiKey,
         baseURL,
         ...(extraHeaders && { headers: extraHeaders }),
-        fetch: provider === "maple" ? mapleFetch(timeoutFetch) : timeoutFetch,
+        fetch: reportedCostFetch(provider === "maple" ? mapleFetch(timeoutFetch) : timeoutFetch, costs),
       });
-      return client.chat(routed ? `${provider}/${modelId}` : modelId);
+      return withReportedCost(client.chat(routed ? `${provider}/${modelId}` : modelId), costs);
     }
     // case "claude_code":
     //   try {
@@ -1151,18 +1375,21 @@ const DEFAULT_CONTEXT_LIMITS: Record<Provider, number> = {
   maple: 131_072,
   // An unlisted Numes model: the common small window of its catalogue.
   numes: 131_072,
+  // An unlisted Token Factory model: its smallest listed (qwen3.8-27b).
+  tokenfactory: 196_608,
 };
 
 // Conservative fallback if both model and provider lookups miss
 const FALLBACK_CONTEXT_LIMIT = 128_000;
 
 /**
- * Get the context window size (max input tokens) for a given model: Maple's
- * or Numes' table, else the datasheet (`loadModelCatalog`), else this file's.
+ * Get the context window size (max input tokens) for a given model: Maple's,
+ * Numes' or Token Factory's table, else the datasheet (`loadModelCatalog`), else this file's.
  */
 export function getContextLimit(modelId: string, provider: Provider): number {
   if (provider === "maple") return MAPLE_MODELS[modelId]?.context ?? DEFAULT_CONTEXT_LIMITS.maple;
   if (provider === "numes") return NUMES_MODELS[modelId]?.context ?? DEFAULT_CONTEXT_LIMITS.numes;
+  if (provider === "tokenfactory") return TOKENFACTORY_MODELS[modelId]?.context ?? DEFAULT_CONTEXT_LIMITS.tokenfactory;
   return (
     getCatalogEntry(provider, modelId)?.maxInputTokens ??
     MODEL_CONTEXT_LIMITS[modelId] ??
@@ -1212,6 +1439,12 @@ const TOKEN_PRICING: Record<Provider, TokenPricing> = {
     inputTokenPrice: 12.28,
     outputTokenPrice: 61.36,
   },
+  // An unlisted Token Factory model: the dearest listed rate
+  // (nemotron-3-ultra), so a cost is never under-reported.
+  tokenfactory: {
+    inputTokenPrice: 0.6,
+    outputTokenPrice: 2.4,
+  },
 };
 
 export function getTokenPricing(provider: Provider): TokenPricing {
@@ -1242,8 +1475,8 @@ export interface CatalogEntry {
 let catalog: Map<string, CatalogEntry> | undefined;
 let catalogTimer: ReturnType<typeof setInterval> | undefined;
 
-/** bifrost's provider name for each of aieo's. Maple has none: its models are
- *  priced by its own table only. A Numes model is looked up as the OpenRouter
+/** bifrost's provider name for each of aieo's. Maple and Token Factory have
+ *  none: their models are priced by their own tables only. A Numes model is looked up as the OpenRouter
  *  slug it is, as its unlisted models were priced before. */
 const CATALOG_PROVIDER: Partial<Record<Provider, string>> = {
   anthropic: "anthropic",
@@ -1320,12 +1553,13 @@ export function getCatalogEntry(provider: Provider, modelId: string): CatalogEnt
   return undefined;
 }
 
-/** A model's own price per million tokens: Maple's or Numes' table, then the
+/** A model's own price per million tokens: Maple's, Numes' or Token Factory's table, then the
  *  datasheet. Undefined when neither knows it — never the provider's flat
  *  rate, which `computeSessionCost` falls back to. */
 export function getModelPrice(provider: Provider, modelId: string): TokenPricing | undefined {
   if (provider === "maple") return MAPLE_MODELS[modelId]?.pricing;
   if (provider === "numes") return NUMES_MODELS[modelId]?.pricing ?? getCatalogEntry(provider, modelId)?.pricing;
+  if (provider === "tokenfactory") return TOKENFACTORY_MODELS[modelId]?.pricing;
   return getCatalogEntry(provider, modelId)?.pricing;
 }
 
@@ -1532,6 +1766,12 @@ export function getProviderOptions(
     case "numes":
       // Under `openai`, as for Maple. Numes maps an effort to what the model
       // serving the call takes, so none and high are sent as they are.
+      if (!thinkingSpeed) return { openai: {} satisfies OpenAIResponsesProviderOptions };
+      return { openai: { reasoningEffort: fast ? "none" : "high" } };
+    case "tokenfactory":
+      // Under `openai`, as for Numes. Every model takes any effort, so none
+      // and high are sent as they are; a model that always thinks (GLM,
+      // MiniMax) still does when sent none.
       if (!thinkingSpeed) return { openai: {} satisfies OpenAIResponsesProviderOptions };
       return { openai: { reasoningEffort: fast ? "none" : "high" } };
     default:

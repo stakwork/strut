@@ -157,8 +157,9 @@ export function coerceUsage(usage: unknown): TokenUsage {
 }
 
 /** The dollars a provider reported for ONE model call, when it reports them:
- *  Numes and OpenRouter return `cost` in the usage of every response (the
- *  step's raw usage), and the OpenRouter provider also lifts it into
+ *  the step's raw usage `cost` — Numes' and Token Factory's, which aieo's
+ *  chat client puts there (`withReportedCost`: @ai-sdk/openai's own usage
+ *  schema drops it) — or OpenRouter's, which its provider lifts into
  *  `providerMetadata.openrouter.usage.cost`. Only a step's usage keeps `raw`,
  *  so pass a step's `usage` and `providerMetadata`. Undefined: none reported
  *  — price the tokens instead (aieo's `computeSessionCost`). */

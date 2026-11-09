@@ -1,7 +1,7 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 
-import { MAPLE_MODELS, NUMES_MODELS } from "./aieo/index.js";
+import { MAPLE_MODELS, NUMES_MODELS, TOKENFACTORY_MODELS } from "./aieo/index.js";
 import { resolveModel, listModelOptions, canonicalModelName, createWebTools, defaultModel, modelProvider } from "./llm.js";
 import { secretsCapability } from "./capabilities.js";
 import { MemorySecretStore } from "./secret-store.js";
@@ -28,6 +28,8 @@ const ENV = [
   "MAPLE_BASE_URL",
   "NUMES_API_KEY",
   "NUMES_BASE_URL",
+  "TOKENFACTORY_API_KEY",
+  "TOKENFACTORY_BASE_URL",
   "EXA_API_KEY",
   "STRUT_MAX_OUTPUT_TOKENS",
   "MAX_OUTPUT_TOKENS",
@@ -143,6 +145,7 @@ describe("llm: model resolution through the secrets boundary", () => {
     assert.equal(new Set(names).size, names.length, "no model twice");
     for (const id of Object.keys(MAPLE_MODELS)) assert.ok(names.includes(`maple/${id}`), `maple/${id}`);
     for (const id of Object.keys(NUMES_MODELS)) assert.ok(names.includes(`numes/${id}`), `numes/${id}`);
+    for (const id of Object.keys(TOKENFACTORY_MODELS)) assert.ok(names.includes(`tokenfactory/${id}`), `tokenfactory/${id}`);
     const at = (name: string) => cat.models.find((m) => m.name === name)!;
     // An aliased model keeps its alias; one without has none.
     assert.equal(at("numes/z-ai/glm-5.3").alias, "numes");
@@ -155,10 +158,14 @@ describe("llm: model resolution through the secrets boundary", () => {
     assert.deepEqual(at("maple/glm-5-3").pricing, { inputTokenPrice: 3.6, outputTokenPrice: 11.5 });
     assert.deepEqual(at("numes/z-ai/glm-5.3-flash").pricing, { inputTokenPrice: 0, outputTokenPrice: 0 });
     assert.equal(at("numes/z-ai/glm-5.3-flash").contextLimit, 1_048_576);
+    assert.equal(at("tokenfactory/glm-5.3").alias, "tokenfactory");
+    assert.deepEqual(at("tokenfactory/glm-5.3").pricing, { inputTokenPrice: 0, outputTokenPrice: 0 });
+    assert.deepEqual(at("tokenfactory/glm-5.3-flash").pricing, { inputTokenPrice: 0.15, outputTokenPrice: 0.5 });
+    assert.equal(at("tokenfactory/qwen3.8-27b").contextLimit, 196_608);
     assert.equal(at("anthropic/claude-sonnet-5-5").pricing, undefined);
     for (const m of cat.models) {
       assert.ok((m.contextLimit ?? 0) > 0, `${m.name} has a window`);
-      assert.equal(!!m.pricing, m.provider === "maple" || m.provider === "numes", `${m.name}: a price only from a per-model table`);
+      assert.equal(!!m.pricing, ["maple", "numes", "tokenfactory"].includes(m.provider), `${m.name}: a price only from a per-model table`);
     }
     assert.equal(cat.listed, false);
   });
@@ -446,6 +453,67 @@ describe("llm: the llmAuth seam (plans/mothership-cost-control.md §1)", () => {
       ]);
     } finally {
       srv.close();
+    }
+  });
+
+  it("a tokenfactory call asks the hook too: through the gateway as tokenfactory/<id>, else to Token Factory with TOKENFACTORY_API_KEY", async () => {
+    const srv = await chatServer();
+    try {
+      const store = new MemorySecretStore();
+      await store.set("TOKENFACTORY_API_KEY", "tk");
+      // Token Factory's own gateway by default; a stand-in here.
+      await store.set("TOKENFACTORY_BASE_URL", `${srv.root}/v1`);
+      const secrets = secretsCapability(store, { envFallback: {} });
+      const auth = { kind: "chat" as const, chatId: "c1", principal: "alice" };
+      const { generateText } = await import("ai");
+      const routed = await resolveModel({
+        model: "tokenfactory/kimi-k3.1-pro",
+        secrets,
+        llmAuth: async () => ({ apiKey: "vk-user", baseUrl: srv.root, headers: { "x-macaroon": "m" } }),
+        auth,
+      });
+      assert.deepEqual([routed.provider, routed.modelId, routed.routed], ["tokenfactory", "kimi-k3.1-pro", true]);
+      await generateText({ model: routed.model, prompt: "hi", maxRetries: 0 });
+      const direct = await resolveModel({ model: "tokenfactory/kimi-k3.1-pro", secrets, llmAuth: async () => undefined, auth });
+      assert.equal(direct.contextLimit, 917_504);
+      await generateText({ model: direct.model, prompt: "hi", maxRetries: 0 });
+      assert.deepEqual(srv.seen, [
+        { path: "/openai/v1/chat/completions", auth: "Bearer vk-user", macaroon: "m", model: "tokenfactory/kimi-k3.1-pro" },
+        { path: "/v1/chat/completions", auth: "Bearer tk", macaroon: undefined, model: "kimi-k3.1-pro" },
+      ]);
+    } finally {
+      srv.close();
+    }
+  });
+
+  it("the llm step bills a Token Factory call at the cost the gateway reported, not the table's", async () => {
+    const { createServer } = await import("node:http");
+    const server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (c) => (body += c));
+      req.on("end", () => {
+        const model = JSON.parse(body).model;
+        // LiteLLM: a call that is not streamed reports its cost in a header.
+        res.writeHead(200, { "content-type": "application/json", "x-litellm-response-cost": "0.0123" });
+        res.end(JSON.stringify({
+          id: "x", object: "chat.completion", created: 0, model,
+          choices: [{ index: 0, message: { role: "assistant", content: "hello" }, finish_reason: "stop" }],
+          usage: { prompt_tokens: 10, completion_tokens: 2 },
+        }));
+      });
+    });
+    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+    try {
+      const store = new MemorySecretStore();
+      await store.set("TOKENFACTORY_API_KEY", "tk");
+      await store.set("TOKENFACTORY_BASE_URL", `http://127.0.0.1:${(server.address() as { port: number }).port}/v1`);
+      const ctx = { services: { secrets: secretsCapability(store, { envFallback: {} }) } };
+      const out: any = await llm.run(llm.input.parse({ model: "tokenfactory/glm-5.3-flash", prompt: "hi" }), ctx as any);
+      assert.equal(out.text, "hello");
+      // The table would say 10 in at $0.15/M + 2 out at $0.50/M = $0.0000025.
+      assert.equal(out.cost, 0.0123);
+    } finally {
+      server.close();
     }
   });
 
