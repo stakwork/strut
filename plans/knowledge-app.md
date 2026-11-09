@@ -1,6 +1,6 @@
-# Knowledge: the org's Concept tree as a strut app
+# Knowledge: the org's knowledge as a strut app
 
-> **Status (2026-11-06): v1 built, then reshaped on the owner's review** — the outline tree (option A) on the left; the GRAPH is the main view (no Concept | Graph toggle), each node's chip expands or collapses its neighbours, a click opens the concept in a panel on the right. Read-only: editing was built and then taken out to keep v1 simple (see Later). As built, Copy link is left out: the address bar follows the selection, and a framed page's clipboard is not reliable. Written after a read of strut `main`
+> **Status (2026-11-09): v2 built — every type, not only Concepts (see v2).** Before that, (2026-11-06): v1 built, then reshaped on the owner's review — the outline tree (option A) on the left; the GRAPH is the main view (no Concept | Graph toggle), each node's chip expands or collapses its neighbours, a click opens the concept in a panel on the right. Read-only: editing was built and then taken out to keep v1 simple (see Later). As built, Copy link is left out: the address bar follows the selection, and a framed page's clipboard is not reliable. Written after a read of strut `main`
 > @e2acbb5, Hive's `src/components/graph-workbench/` and stadeum `main`.
 > Companions: `apps.md` (apps, grants, `strut/views`), `jamie-app.md` §3, §5
 > (first-party apps, how Jamie is seeded), `concept-tree.md` (what the tree
@@ -145,6 +145,43 @@ graph toggle.
   after each.
 - **The panel.** A click on a Concept node, a row or a chip opens it in a
   panel on the right (✕ closes it; narrow, it takes the page with Back).
+
+## v2 (2026-11-09): every type, not only Concepts
+
+Concepts are one node type; a reader wants to search and walk everything the
+org knows — people, documents, decisions, features — and to see the ontology
+itself. Chosen from seven prototypes run on a local strut with a mixed demo
+graph (an ontology rail, a search-first home, a full-canvas explorer and
+mixes of them): the explorer with A's sidebar, no landing page.
+
+- **Sidebar**: one search over every domain type (`graph/graph-search` with
+  `exclude_domains: "strut"`; type chips narrow the hits), and under it the
+  **ontology**: each type `graph/get-ontology` names that holds a node, with
+  its count (`graph/find … count: true`), Concept first. Strut's own
+  bookkeeping (`Strut*`) and the graph's plumbing (`Claim`, `EdgeText`, …)
+  are never listed (`lib/ontology.ts` `isSystemType`). A type opens its
+  nodes: Concepts as the tree, any other type 15 at a time by name, "Show
+  more" reading the next page by `graph/find`'s cursor, and a search within
+  the type once it holds more than a page — a type with thousands stays
+  usable.
+- **Graph**: `NodeGraph` round the pick on every edge type. **Types ▾** over
+  it ticks node types on and off (`NodeGraph`'s new `hiddenTypes`: drawn or
+  not, nothing re-read; a node whose only way back runs through a hidden one
+  goes too). `NodeGraph` now also refits when its canvas changes size — a
+  page drawn while its frame is hidden was fitted to nothing.
+- **Card**: the pick floats on the right — type, where a Concept sits, name,
+  description, then its links grouped by how they read from this node
+  ("Owns", "Owned by", "Children"; `linkLabel`), each a chip to walk to.
+  "Docs and more" widens it to the docs. Narrow, it takes the page and goes
+  back to the graph.
+- **Trail** along the bottom with Back. The start is the first root concept.
+  `?input=node%3D<ref_id>` opens any node (`concept%3D` still read); every
+  pick is reported as `node=`.
+- Grants: `graph/get-ontology` added, still read-only.
+
+Known gaps: the ⇕ count on a node includes neighbours of hidden types; the
+card can cover nodes at the right edge of the graph; search is keyword-only
+on a graph with no embeddings.
 
 ## Later (not built now)
 
