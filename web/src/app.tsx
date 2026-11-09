@@ -18,6 +18,7 @@ import { searchSteps, searchWorkflows } from "../../src/search.js";
 import { ChatFlyout } from "./components/ChatFlyout";
 import { CategoryEditor } from "./components/CategoryEditor";
 import { RunCapEditor } from "./components/RunCapEditor";
+import { applyPeer, readPeer, togglePeer, type PeerValue } from "./peer-flag";
 import { OwnerEditor } from "./components/OwnerEditor";
 import { CreateDialog } from "./components/CreateDialog";
 import { SecretsDialog } from "./components/SecretsDialog";
@@ -278,6 +279,10 @@ function Shell() {
   // The declared `input:` block, if any — the Run form's source when present,
   // and written back on Publish so a canvas edit never drops it.
   const [localInput, setLocalInput] = useState<api.FlowDef["input"] | null>(null);
+  // The top-level `peer:` flag: published baseline + editable copy (a local
+  // edit like steps/params; Publish writes it).
+  const [wfPeer, setWfPeer] = useState<PeerValue>(undefined);
+  const [localPeer, setLocalPeer] = useState<PeerValue>(undefined);
   // Which workflow-level flyout is open — the Workflow flyout (params /
   // claims / automations as tabs) or Promote — so they exclude each other by
   // construction; or, with an app open, its Usage. `wfTab` remembers the tab
@@ -298,8 +303,8 @@ function Shell() {
     if (!publishedSteps || !localSteps) return false;
     const stepsDirty = !deepEqual(normalizeSteps(publishedSteps), normalizeSteps(localSteps));
     const paramsDirty = !deepEqual(wfParams ?? {}, localParams ?? {});
-    return stepsDirty || paramsDirty;
-  }, [publishedSteps, localSteps, wfParams, localParams]);
+    return stepsDirty || paramsDirty || wfPeer !== localPeer;
+  }, [publishedSteps, localSteps, wfParams, localParams, wfPeer, localPeer]);
 
   const activeVersion = workflows.find((w) => w.name === selectedWf)?.activeVersion;
   const selectedEntry = workflows.find((w) => w.name === selectedWf);
@@ -764,6 +769,8 @@ function Shell() {
       setWfParams(null);
       setLocalParams(null);
       setLocalInput(null);
+      setWfPeer(undefined);
+      setLocalPeer(undefined);
       setRunList(NO_RUNS);
       setFlyoutStepId(null);
       setFlyoutStepIndex(null);
@@ -777,6 +784,8 @@ function Shell() {
       setWfParams(flow.params ?? null);
       setLocalParams(flow.params ?? null);
       setLocalInput(flow.input ?? null);
+      setWfPeer(readPeer(flow));
+      setLocalPeer(readPeer(flow));
     }).catch(() => {
       setPublishedSteps(null);
       setLocalSteps(null);
@@ -1184,7 +1193,7 @@ function Shell() {
       rest = Object.fromEntries(Object.entries(prev ?? {}).filter(([k]) => !["name", "input", "steps", "params"].includes(k)));
     } catch { /* publish what the editor has */ }
     const yamlStr = yaml.dump(
-      { name: selectedWf, ...(localInput ? { input: localInput } : {}), steps: localSteps, ...(hasParams ? { params: localParams } : {}), ...rest },
+      applyPeer({ name: selectedWf, ...(localInput ? { input: localInput } : {}), steps: localSteps, ...(hasParams ? { params: localParams } : {}), ...rest }, localPeer),
       { lineWidth: 120, noRefs: true },
     );
     await api.publishWorkflowYaml(selectedWf, nextVersion, yamlStr);
@@ -1196,7 +1205,9 @@ function Shell() {
     setWfParams(flow.params ?? null);
     setLocalParams(flow.params ?? null);
     setLocalInput(flow.input ?? null);
-  }, [selectedWf, selectedEntry, localSteps, localParams, localInput, activeVersion, viewVersion, refreshWorkflows]);
+    setWfPeer(readPeer(flow));
+    setLocalPeer(readPeer(flow));
+  }, [selectedWf, selectedEntry, localSteps, localParams, localInput, localPeer, activeVersion, viewVersion, refreshWorkflows]);
 
   // Roll back (or forward) to a stored version: it becomes what Run,
   // schedules and the canvas use. Nothing is published, so unsaved canvas
@@ -1213,6 +1224,8 @@ function Shell() {
     setWfParams(flow.params ?? null);
     setLocalParams(flow.params ?? null);
     setLocalInput(flow.input ?? null);
+    setWfPeer(readPeer(flow));
+    setLocalPeer(readPeer(flow));
   }, [selectedWf, refreshWorkflows, setViewVersion]);
 
   // Clicking a node (body) always opens its flyout — leaf I/O, or a
@@ -1798,6 +1811,17 @@ function Shell() {
               categories={categories}
               onSaved={refreshWorkflows}
             />
+          )}
+          {wf && !selectedRun && !viewingOld && (
+            <button
+              type="button"
+              class={`app-tab-toggle${localPeer ? " is-on" : ""}`}
+              aria-pressed={!!localPeer}
+              title={localPeer === "person"
+                ? "Open to peers only via a person's credential (peer: person) — click to close"
+                : "Other workspaces (peers) can run this workflow through strut/run-workflow"}
+              onClick={() => setLocalPeer(togglePeer(localPeer))}
+            >{localPeer === "person" ? "Open to peers (person)" : "Open to peers"}</button>
           )}
           {wf && mothership && (
             <OwnerEditor
