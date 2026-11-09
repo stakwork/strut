@@ -2,16 +2,19 @@
 // it would run and with what — the card's fields, computed at proposal time
 // (src/proposal-card.ts) — and the person's decision on it
 // (`proposal/decide`): accept runs it, reject records why. Read live
-// (`proposal/get`), since a decision made elsewhere moves it too.
+// (`proposal/get`), since a decision made elsewhere moves it too. One only
+// an admin accepts (installing a package) says so to anyone else, in place
+// of an Accept the decision would refuse (lib/proposals.ts).
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, Lightbulb, Loader2, RotateCcw, X } from "lucide-react";
+import { Check, Lightbulb, Loader2, RotateCcw, ShieldCheck, X } from "lucide-react";
 import { useStrutClient } from "@strut/kit";
 import { Markdown } from "./Markdown";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { Tone } from "../lib/jobs";
 import type { Proposal, ProposalBrief, ProposalStatus } from "../lib/types";
+import { ADMIN_MUST_APPROVE, acceptLook } from "../lib/proposals";
 import { Notice, Pill, errorText } from "./bits";
 
 const STATUS: Record<ProposalStatus, { label: string; tone: Tone }> = {
@@ -21,6 +24,8 @@ const STATUS: Record<ProposalStatus, { label: string; tone: Tone }> = {
   rejected: { label: "Rejected", tone: "muted" },
   failed: { label: "Failed", tone: "failed" },
 };
+
+const WAITING_ON_ADMIN: { label: string; tone: Tone } = { label: "Waiting on an admin", tone: "attention" };
 
 /** `graph/create-node` → "Graph · create node". */
 export const stepLabel = (step: string) => {
@@ -39,8 +44,9 @@ export function ProposalCard({ brief }: { brief: ProposalBrief }) {
   const p = live.data;
   const status: ProposalStatus = p?.status ?? brief.status;
   const card = p?.card ?? brief.card;
-  const look = STATUS[status] ?? STATUS.pending;
   const canDecide = status === "pending" || status === "failed";
+  const accept = acceptLook(p?.approver ?? brief.approver, p?.viewer);
+  const look = status === "pending" && accept === "admin" ? WAITING_ON_ADMIN : (STATUS[status] ?? STATUS.pending);
 
   const decide = async (action: "accept" | "reject") => {
     setDeciding(action);
@@ -91,10 +97,18 @@ export function ProposalCard({ brief }: { brief: ProposalBrief }) {
           {note && <Notice tone="error">{note}</Notice>}
           {canDecide && (
             <div className="flex items-center justify-end gap-1 pt-1">
-              <Button size="sm" variant="ghost" className="h-7 text-emerald-700 dark:text-emerald-300" disabled={deciding !== null} onClick={() => void decide("accept")}>
-                {deciding === "accept" ? <Loader2 className="animate-spin" /> : status === "failed" ? <RotateCcw /> : <Check />}
-                {status === "failed" ? "Accept again" : (card?.actions.accept ?? "Approve")}
-              </Button>
+              {accept === "admin" && (
+                <span className="mr-auto flex items-center gap-1 text-xs text-muted-foreground" data-testid="proposal-admin-only">
+                  <ShieldCheck className="size-3.5" />
+                  {ADMIN_MUST_APPROVE}
+                </span>
+              )}
+              {accept === "accept" && (
+                <Button size="sm" variant="ghost" className="h-7 text-emerald-700 dark:text-emerald-300" disabled={deciding !== null} onClick={() => void decide("accept")}>
+                  {deciding === "accept" ? <Loader2 className="animate-spin" /> : status === "failed" ? <RotateCcw /> : <Check />}
+                  {status === "failed" ? "Accept again" : (card?.actions.accept ?? "Approve")}
+                </Button>
+              )}
               {status === "pending" && (
                 <Button size="sm" variant="ghost" className="h-7 text-rose-700 dark:text-rose-300" disabled={deciding !== null} onClick={() => void decide("reject")}>
                   {deciding === "reject" ? <Loader2 className="animate-spin" /> : <X />}

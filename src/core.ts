@@ -76,6 +76,14 @@ export interface StepDef<
    *  package). Called by the gate once, best effort: a throw or nothing
    *  leaves the description's first sentence as the title. */
   describe?: (cfg: z.infer<TInput>, ctx: StepContext<TServices>) => Promise<ProposalDescription | undefined>;
+  /** For a gated step: who may ACCEPT a proposal of it (src/proposals.ts).
+   *  `admin`: only an ADMIN of this strut server (plans/member-rights.md) —
+   *  the deployment key, an admin's session, a host's server holding the
+   *  key — never a member's session or a person token, which may still
+   *  reject. A turn whose person is known not to be an admin is refused
+   *  the proposal itself (`admin_required:`), so none waits on nobody.
+   *  `package/install` sets it. Absent: whoever may decide the proposal. */
+  approver?: "admin";
   run: (
     cfg: z.infer<TInput>,
     ctx: StepContext<TServices>,
@@ -427,6 +435,13 @@ export interface WorkspaceAppRef {
    *  every run the page launches. Such a page acts with its viewer's own
    *  rights: their sessions, jobs, runs and proposals. */
   firstParty?: true;
+  /** The VIEWER is an ADMIN of this strut server (plans/member-rights.md):
+   *  the page's calls came with its full scope — the deployment key, an
+   *  admin's session. Never for a member's session, a person token or a
+   *  visitor. Set by the app door alone, like `firstParty`, and carried by
+   *  every run the page launches, so a turn knows whether its person may
+   *  accept what only an admin accepts (`StepDef.approver`). */
+  admin?: true;
 }
 
 /** Is this a first-party page's call or run (`AppRef.firstParty`)? */
@@ -901,6 +916,8 @@ export interface AnyStepDef {
   after?: (cfg: any, pending: { step: string; input: unknown }) => boolean;
   /** The person's card's title and summary (see `StepDef.describe`). */
   describe?: (cfg: any, ctx: StepContext<any>) => Promise<ProposalDescription | undefined>;
+  /** Who may accept a proposal of it (see `StepDef.approver`). */
+  approver?: "admin";
   run: (cfg: any, ctx: StepContext<any>) => Promise<any>;
 }
 

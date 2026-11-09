@@ -1095,7 +1095,7 @@ grants.
 
 ## 12. Proposals — a tool call a person approves before it runs
 
-A record (`src/proposals.ts`) is `{ id, step, input, rationale?, title, summary?, card?, status, createdAt, by, decision?, result?, reportedAt? }`. `title` is the step description's first sentence, or what the step's `describe` hook gave; `summary` is what that hook read at proposal time for the card (plans/proposals.md §7; `package/install` reads the package's page off the index this strut follows). `GET …/runs/:runId/proposals` and `run.end { proposals }` carry both.
+A record (`src/proposals.ts`) is `{ id, step, input, rationale?, title, summary?, card?, approver?, status, createdAt, by, decision?, result?, reportedAt? }`. `title` is the step description's first sentence, or what the step's `describe` hook gave; `summary` is what that hook read at proposal time for the card (plans/proposals.md §7; `package/install` reads the package's page off the index this strut follows). `GET …/runs/:runId/proposals` and `run.end { proposals }` carry both.
 
 **`card`** (optional; records from before it have none) is what a person
 decides on, as data a host draws without knowing the step, computed ONCE at
@@ -1140,6 +1140,29 @@ one rule holds for files, jobs and proposals (plans/proposal-links.md). The
 plain `peer` scope decides none (`403`) and sees none, by id (`404`) or in a
 list. A repeat decide is still `409` with the record.
 
+**Only an admin accepts some** (`approver: "admin"`, plans/member-rights.md).
+A step may say that only an ADMIN of this strut accepts a proposal of it
+(`StepDef.approver`; `package/install` says it: installing a package is an
+admin's act). The record and its brief carry `approver: "admin"`, copied
+from the step at proposal time. An admin is a decider with full scope: the
+deployment key, a key login, an admin's session (a ticket with `role:
+"admin"`), a host's server holding the key (Hive decides with the swarm
+key). Anyone else — a member's session through strut's own app, a person
+token — gets `403 { error, proposal }` on `accept`, the error `admin_required:
+only an admin of this strut server accepts "<title>" (<step>) — …`, and the
+proposal stays as it was; they may still `reject` their own. A person token
+names a person, never their role here, so it counts as no admin. The step's
+word holds over a record from before it, and the record's over a step that
+dropped it. A turn whose person is known NOT to be an admin is refused the
+proposal itself — the gated tool call fails with `admin_required: <step> is
+an admin's decision on this strut server, …` and nothing is recorded — since
+a proposal shows only where it was made and nobody there could accept it:
+a turn strut's own app launched for a viewer who is not an admin
+(`AppRef.admin` unset), a peer's launch (a person token, another strut), and
+a job's run or a wake that one of those started. A turn nothing says about —
+a host's launch with the key, an automation — proposes as before, and the
+decision decides.
+
 `plans/proposals.md`. An `agent` step's `approve:` list gates registry
 steps: a call to one is RECORDED (`<dataDir>/proposals/<id>.json`) rather
 than run, and the person's accept runs it in code. The record (`Proposal`,
@@ -1159,8 +1182,8 @@ lines).
 | GET    | `/proposals?job=&session=&runId=&status=&limit=` | `{ proposals: Proposal[] }`, newest first; `status` one of the five; `limit` a positive integer, applied after what the caller may see (a person token: its own) |
 | GET    | `/proposals/changes?cursor=&wait=&limit=` | `{ cursor, reset?, more?, events: [{ event: "created" \| "decided" \| "applied" \| "failed", id, status, kind: "tool" \| "step", title, summary?, actor?, at }] }` — what happened to proposals after a cursor (`plans/live-feeds.md`, "Proposal feed"; the `proposal/changes` step is the same read), for a reader that would otherwise poll the list: one event per change, oldest first, never folded — `decided` is an accept or a reject (`status` says which), then `applied` or `failed`. The envelope only: title and summary cut at 200 chars, never the input, rationale, card or result — read the record by id. `actor` is the proposer on `created`, the decider after. Scoped like the list: the deployment key every event, a person token its own threads', the plain peer key none. The last 1 000 events, in memory. `cursor` (`since` also accepted), `wait` (at most 55 000) and `reset` as `GET /jobs/:id/updates`; `limit` at most 200 (`more: true`, read again from `cursor`) |
 | GET    | `/proposals/:id` | one record (a person token: any, by its id); 404 |
-| GET    | `/workflows/:name/runs/:runId/proposals` | `{ workflow, runId, proposals: [{ id, step, title, summary?, card?, status, url, rationale?, createdAt, decidedAt? }] }` — what the run proposed, the `run.end` field's twin (`CALLBACKS.md` §6) |
-| POST   | `/proposals/:id/decide` | `{ action: "accept" \| "reject", input?: object, reason?: string }` → the record after the decision. `accept` merges `input` (one level) onto the proposal's, re-parses with the step's schema (400, still pending, when it does not fit), records the decision, runs the step under a minimal context (the decider — the request's actor — as `ctx.actor`, the proposing run's principal binding its secrets, its job, the registry), and records `result`. `reject` records `reason`, runs nothing. 409 with the record once decided (`failed` may be accepted again); 409 too, still pending, while a proposal its step waits for (`StepDef.after`: `meta/set-automation` waits for a pending `meta/publish-workflow` of its workflow) is pending; 400 for a step no longer in the registry; 404 |
+| GET    | `/workflows/:name/runs/:runId/proposals` | `{ workflow, runId, proposals: [{ id, step, title, summary?, card?, approver?, status, url, rationale?, createdAt, decidedAt? }] }` — what the run proposed, the `run.end` field's twin (`CALLBACKS.md` §6) |
+| POST   | `/proposals/:id/decide` | `{ action: "accept" \| "reject", input?: object, reason?: string }` → the record after the decision. `accept` merges `input` (one level) onto the proposal's, re-parses with the step's schema (400, still pending, when it does not fit), records the decision, runs the step under a minimal context (the decider — the request's actor — as `ctx.actor`, the proposing run's principal binding its secrets, its job, the registry), and records `result`. `reject` records `reason`, runs nothing. 403 `admin_required:`, still pending, for an `accept` of a proposal only an admin accepts (`approver: "admin"`) by anything but full scope. 409 with the record once decided (`failed` may be accepted again); 409 too, still pending, while a proposal its step waits for (`StepDef.after`: `meta/set-automation` waits for a pending `meta/publish-workflow` of its workflow) is pending; 400 for a step no longer in the registry; 404 |
 
 A step that reaches past this strut — `strut/run-workflow`, another org's
 strut — holds to the host's gate by any route: when a host delta's `approve:`
@@ -1173,11 +1196,15 @@ agent's ungated tool is refused. No host gate: unchanged.
 The steps `proposal/list` ({ job?, session?, status?, limit? } → the briefs)
 and `proposal/get` ({ id } → the record) are the same reads for an agent.
 Called from an app's page, or in a run an app launched, `proposal/list`
-holds the list to the viewer's own, as a person token's. `proposal/decide`
+holds the list to the viewer's own, as a person token's. A page's own
+`proposal/get` also answers `viewer: { admin }`: whether its viewer is an
+admin here (`AppRef.admin`, §14.1), so a card shows "An admin must approve
+this" in place of an Accept the decision would refuse. `proposal/decide`
 ({ id, action: "accept" | "reject", input?, reason? } → the record after the
 decision) is the decide route for strut's own app (§14.10): it runs only as
-a first-party page's own call, decides only its viewer's proposals, and an
-agent never runs it.
+a first-party page's own call, decides only its viewer's proposals, accepts
+one only an admin accepts only when the viewer is an admin, and an agent
+never runs it.
 
 ## 13. Sessions — a browser signs in
 
@@ -1276,7 +1303,10 @@ the console; `?app=…` and `?artifact=…` open alone for a member with or
 without `solo=1`. A ticket with no role, including one minted before
 roles, signs in a member: a host that does not say signs nobody in with
 the console. It is not a sandbox: what a member's apps can do (Jamie
-starts a builder job as them), the member can.
+starts a builder job as them), the member can — except what only an admin
+accepts: installing a package (`package/install`, `approver: "admin"`, §12)
+is an admin's decision whichever door it comes through, so a member's
+Jamie neither proposes one nor accepts one, and tells them to ask an admin.
 
 **Same site only.** The cookie is `SameSite=Lax`, so a framed page gets it
 only when strut and the page framing it are SAME-SITE — `strut.acme.com`
@@ -1379,6 +1409,14 @@ under `step:<type>` with the actor and `app` on their summary
 (`GET /workflows/step:<type>/runs`); reads are not. A run `run/launch`
 starts records `origin: "app"` and `app` on `run.start` and its summary and
 hands `ctx.app` to every step.
+
+**`admin`.** When the connection holds full scope — the deployment key, a
+key login, an admin's session — the door also sets `ctx.app.admin: true`
+(`AppRef.admin`): the viewer is an ADMIN of this strut (§13.1, "Admins and
+members"). A member's session and a person token never get it, nor does a
+visitor. Like `firstParty` it is set by the door alone and carried by every
+run the page launches, so a turn knows whether its person may accept what
+only an admin accepts (§12, `approver: "admin"`).
 
 ### 14.2 The `run/*` steps (`src/steps/lib/run/`; `plans/apps.md` §5)
 
@@ -1863,7 +1901,7 @@ what their person token has, where §14.8's rules hold a model-written page:
 |---|---|---|
 | A sealed workflow (the orchestrator) | only through a person's grant (§14.8), the runs this app launched for the viewer | no grant: the viewer's runs (`actor`), whoever launched them, and every turn of a conversation the viewer may read (one they are in, or a shared one) |
 | Its runs' agent sessions | under `app/<name>/<viewer>/` | the viewer's own as they are (`<actor>`, `<actor>/…`), so they are conversations (§9.1), and a conversation the viewer took a turn in or a shared one (§9.1, "Who may continue one"); any other id under the app |
-| Gated tools (`approve:`) in its runs' agents | left out | kept: the proposals are the viewer's, listed by `proposal/list` and decided by `proposal/decide` |
+| Gated tools (`approve:`) in its runs' agents | left out | kept: the proposals are the viewer's, listed by `proposal/list` and decided by `proposal/decide` — one only an admin accepts (§12) only by a viewer who is one, and a turn of a viewer who is not proposes none |
 | Job ids | under `app/<name>/` | the person's own, as they are |
 | The wake (§3) | none: its turns are a relay | strut's: each turn asks for it (`wakeAsked`), so a job the turn starts wakes the conversation |
 | `conversation/*` (§9.1) | refused | as the viewer's person token |
@@ -2190,7 +2228,7 @@ is refused by name (`package_source_unsupported`).
 | PUT    | `/packages/indexes/:id` | `{ key, urls, label? }` → the `IndexSubscriptionInfo`, its card read at once (a wrong key or URL shows as `error`). `key` is the index key; `urls` where its card is served (an index strut's `…/index/catalog`). Kept in `<dataDir>/packages/indexes.json`; `STRUT_PACKAGE_INDEXES` and `createStrut({ packageIndexes })` put entries on file at boot. Full scope; 400 `package_index_invalid` |
 | DELETE | `/packages/indexes/:id` | Stop following → `{ ok, id }`; 404 when there is none |
 | GET    | `/packages/search?q=&limit=&peers=0` | `PackageSearch`: `{ packages: [IndexHit & { index }], peers: [{ peer, package, version?, digest?, source? }], errors: [{ index? \| peer?, error }] }` — each followed index strut's `GET /index/packages` (unsigned: install a hit by its NAME, which goes through the index's signed card) and, unless `peers=0`, every peer's `GET /packages` matched against `q`. A peer asking gets the indexes alone. `limit` 50 (≤ 500) |
-| —      | `package/install` (step) | The agent's INSTALL door (`src/steps/lib/package/install.ts`, over `ctx.services.packages.install`; the READS — `package/search`, `package/get`, `package/concepts` — are the steps table below). `package/install { package, index?, digest?, url? }` — a name through the followed indexes, or a `pk:` ref with its `url` — runs ONLY as a proposal a person accepted (plans/marketplace.md §8, ruled 2026-10-29): the seeds that grant it (`orchestrator`, `builder`, `job`) list it in `approve:`, so the agent's call records a proposal and returns `{ proposal, status: "pending" }`; its card's `summary` is the step's `describe` at proposal time — the index's reading of the package: publisher and key, which index lists it, digest, license, what it brings, what it can spend or act on, the secrets it needs — or that no followed index lists it; `POST /proposals/:id/decide { action: "accept" }` then installs as `POST /packages/install` would, with the decider as actor, and the result reaches the session on its next turn. The door behind the step (`services.packages.install`) checks the ACCEPTED record on disk for that very ref, so no step reaches it any other way; a direct call, a DAG step or `meta/run-step` is refused |
+| —      | `package/install` (step) | The agent's INSTALL door (`src/steps/lib/package/install.ts`, over `ctx.services.packages.install`; the READS — `package/search`, `package/get`, `package/concepts` — are the steps table below). `package/install { package, index?, digest?, url? }` — a name through the followed indexes, or a `pk:` ref with its `url` — runs ONLY as a proposal a person accepted (plans/marketplace.md §8, ruled 2026-10-29) — and only an ADMIN accepts it (`approver: "admin"`, §12): a member's or a person token's accept is `403 admin_required:`, and a turn whose person is known not to be an admin proposes nothing. The seeds that grant it (`orchestrator`, `builder`, `job`) list it in `approve:`, so the agent's call records a proposal and returns `{ proposal, status: "pending" }`; its card's `summary` is the step's `describe` at proposal time — the index's reading of the package: publisher and key, which index lists it, digest, license, what it brings, what it can spend or act on, the secrets it needs — or that no followed index lists it; `POST /proposals/:id/decide { action: "accept" }` then installs as `POST /packages/install` would, with the decider as actor, and the result reaches the session on its next turn. The door behind the step (`services.packages.install`) checks the ACCEPTED record on disk for that very ref, so no step reaches it any other way; a direct call, a DAG step or `meta/run-step` is refused |
 | POST   | `/packages/subscriptions/sync` | `{ key? }` → 202: read the catalogs now — of the subscriptions to `key`, or all; with the index role on, the index rows whose key it is are read too. What a publisher pings: a PEER may send it, since it carries nothing |
 | GET    | `/index` | **Index role only** (`STRUT_INDEX=1`, `createStrut({ index })`; `src/packages/index.ts`). `IndexInfo`: `{ key, createdAt, urls, publishers: { "<prefix>": { key, urls, description?, url? } }, crawled: [{ prefix, key, accepted?: { seq, digest, at, url }, checkedAt?, error?, packages? }] }` — the rows as the card has them and each listed publisher's catalog as last read. Any credential; 404 before the first row |
 | PUT    | `/index/:prefix` | `{ key, urls, description?, url? }` → `IndexInfo`: list a publisher — its PUBLIC key and where its public catalog is served (`urls`, tried in order) — the index key minted first when there is none, the card re-sealed, that publisher read now. Full scope. 400 `index_row_invalid`; 409 `publisher_unsafe_key` on a file store with `STRUT_SECRET_KEY` unset |

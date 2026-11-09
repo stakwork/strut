@@ -90,6 +90,8 @@ export interface ProposalBrief {
   title: string;
   summary?: string;
   card?: ProposalCard;
+  /** Only an admin of this strut server accepts it (installing a package). */
+  approver?: "admin";
   status: ProposalStatus;
   url: string;
   rationale?: string;
@@ -102,6 +104,8 @@ export interface Proposal extends Omit<ProposalBrief, "url" | "decidedAt"> {
   input: unknown;
   decision?: { action: "accept" | "reject"; by?: string; at: string; reason?: string };
   result?: { output?: unknown; error?: string; at: string };
+  /** Whether the page's viewer is an admin here (`proposal/get`, a page's call). */
+  viewer?: { admin: boolean };
 }
 
 /** A deliverable, resolved (`ArtifactRef`). */

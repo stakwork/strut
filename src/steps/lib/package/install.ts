@@ -22,6 +22,12 @@ import { PACKAGE_NAME } from "../../../packages/format.js";
  * read off the closure by the index), what it needs. Nothing is fetched
  * from the publisher before the yes; the install then re-verifies
  * everything against the publisher's own catalog.
+ *
+ * The yes is an ADMIN's (`approver: "admin"`, plans/member-rights.md):
+ * admins run the box, members use its apps. A member's accept — through
+ * strut's own app or a person token — is refused (`admin_required:`), and a
+ * turn whose person is known not to be an admin proposes nothing: the model
+ * tells them to ask an admin, who installs it from Packages.
  */
 
 const PK_REF = /^pk:[ybndrfg8ejkmcpqxot1uwisza345h769]{52}\/[a-z][a-z0-9-]*\/[a-z][a-z0-9-]*(?:@sha256:[0-9a-f]{64})?$/;
@@ -45,9 +51,11 @@ export default defineStep({
     "Install a package — the workflows, steps, apps and Concept pages someone published — on this strut server, on the person's yes. " +
     "The call becomes a proposal the person approves on a card that says what the package brings, what it can spend or act on, and which secrets it needs; " +
     "strut installs it when they accept, and tells you the result on a later turn. Find the name with package/search first (its `detail` says what a package holds) " +
-    "and put the reason in `rationale`, in the person's terms. Never installs on its own: a direct call is refused.",
+    "and put the reason in `rationale`, in the person's terms. Never installs on its own: a direct call is refused. " +
+    "Only an ADMIN of this strut server accepts it: when the person is not one, the call is refused (admin_required:) — tell them an admin installs packages (from Packages) and to ask one.",
   input,
   output: z.any(),
+  approver: "admin",
   async describe(cfg, ctx: StepContext<StrutCapabilities>) {
     const name = cfg.package.startsWith("pk:") ? cfg.package.slice(3).split("/").slice(1, 3).join("/") : cfg.package;
     const title = `Install the package ${name}`;

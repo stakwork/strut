@@ -276,6 +276,11 @@ export interface AppToolDeps {
   services: unknown;
   /** The connection's actor: the viewer, who the call runs as and who pays. */
   actor?: string;
+  /** The viewer is an ADMIN of this strut server: the connection came with
+   *  its full scope (the deployment key, an admin's session) — never a
+   *  member's session or a person token (plans/member-rights.md). Stamped
+   *  on every call's `AppRef.admin`, and so on every run the page launches. */
+  admin?: boolean;
   /** The graph's reader, for the node reads a write check needs. Default:
    *  the bag's `graph`, when the server wired one. */
   reader?: Pick<GraphReader, "getNode">;
@@ -391,7 +396,12 @@ export function buildAppTools(deps: AppToolDeps): ToolSet {
         if (!named) return { error: "step_run: `app` is not a valid app identity — the token the served document carries in <meta name=\"strut-app-token\">; a token for a run's or a job's files, a forged or unsigned one, opens nothing" };
         const found = await appOf(named, deps);
         if ("error" in found) return found;
-        const app: AppRef = { name: named.name, version: named.version, ...(firstPartyApp(named, found.seeded, deps.actor, !!deps.visitor) ? { firstParty: true as const } : {}) };
+        const app: AppRef = {
+          name: named.name,
+          version: named.version,
+          ...(firstPartyApp(named, found.seeded, deps.actor, !!deps.visitor) ? { firstParty: true as const } : {}),
+          ...(deps.admin && !deps.visitor ? { admin: true as const } : {}),
+        };
         const started = Date.now();
         const call = await dispatch(app, found.manifest, type, config, input);
         // A preview is the builder looking: not what the app costs people.

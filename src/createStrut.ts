@@ -1135,6 +1135,9 @@ export async function createStrut<TServices = unknown>(
     // Where a proposal shows (proposals.ts `visibleTo`); called at
     // proposal time, long after this function has returned.
     conversationOf: (runId) => conversationOf(runId),
+    // Whether a turn's person is an admin here: a proposal only an admin
+    // accepts is refused to one who is not (proposals.ts `proposeCall`).
+    personIsAdmin: (runId) => personIsAdmin(runId),
   });
   const services = {
     ...(standardServices({ secretStore, actorSecretStore: actorSecrets, dataDir }) as unknown as Record<
@@ -5772,6 +5775,30 @@ export async function createStrut<TServices = unknown>(
       ...(typeof model === "string" && model ? { model } : {}),
     };
   }
+  /** Is the person the run `runId` is for an ADMIN of this strut server
+   *  (plans/member-rights.md), as its records say? Its root's `run.start`:
+   *  a page's turn says (`app.admin`, the app door's), a peer's launch is not
+   *  one (a person token, or another strut), a job's run asks the turn that
+   *  started it (`startedBy`), a wake the job run it woke on. Undefined when
+   *  nothing says — a host's launch with the key, an automation — and the
+   *  decision decides (proposals.ts `acceptRefusal`). */
+  async function personIsAdmin(runId: string): Promise<boolean | undefined> {
+    const root = rootRunOf(runId);
+    let at: { workflow: string; runId: string } | undefined = root ? { workflow: root.workflow, runId: root.runId } : undefined;
+    for (let hop = 0; at && hop < 6; hop++) {
+      const start = await store.getRunStart(at.workflow, at.runId).catch(() => null);
+      if (!start) return undefined;
+      if (start.origin === "peer") return false;
+      if (start.origin === "app") return start.app?.admin === true;
+      if (start.startedBy) at = { workflow: start.startedBy.workflow, runId: start.startedBy.runId };
+      else if (start.wake && !start.wake.peer) {
+        const woke = start.wake;
+        const run = (await readJobRecord(jobRoot(dataDir, woke.job)).catch(() => null))?.runs?.find((r) => r.runId === woke.runId);
+        at = run ? { workflow: run.workflow, runId: run.runId } : undefined;
+      } else at = undefined;
+    }
+    return undefined;
+  }
   /** The thread the run `runId` belongs to, for its proposals
    *  (`Proposal.by.conversation`): a job's run belongs to the turn that
    *  started it (its `run.start.startedBy`), any other run to the session
@@ -7675,14 +7702,16 @@ export async function createStrut<TServices = unknown>(
   if (enableMcp) {
     /** The app door (src/apps/tools.ts): `step_run`, app-only, on BOTH
      *  doors — hidden from a model, callable by a page whose host relays
-     *  its tools/call here. The viewer is the connection's actor. */
-    const appDoor = async (actor: string | undefined) => {
+     *  its tools/call here. The viewer is the connection's actor, an ADMIN
+     *  when the connection holds full scope (plans/member-rights.md). */
+    const appDoor = async (actor: string | undefined, scope: Scope) => {
       const { buildAppTools, APP_TOOL_META } = await import("./apps/tools.js");
       const appTools = buildAppTools({
         apps,
         registry,
         services,
         ...(actor ? { actor } : {}),
+        admin: scope === "full",
         runStepDeps: { store, workspace, claims, onKept: (key, runId) => verifier?.schedule(key, runId) },
         monitor: appMonitor,
       });
@@ -7747,17 +7776,18 @@ export async function createStrut<TServices = unknown>(
         artifactRefs,
         detach: { waitMs: chatRunWaitMs, onDetach: () => {}, hint: MCP_DETACH_HINT },
       };
-      return { publicUrl, actor, deps, ...(await appDoor(actor)) };
+      return { publicUrl, actor, deps, ...(await appDoor(actor, await scopeOf(c))) };
     };
     /** A PERSON's token on `/mcp` (scope `peer:person`, plans/apps.md §7.4):
      *  `step_run` and nothing else — a person's own strut hosting an app
      *  that lives here relays its page's tools/call through the token it
      *  holds for this strut. The viewer is the token's own subject. A
      *  MEMBER's session gets the same (scope `member`,
-     *  plans/member-rights.md): strut's own page relays its app's calls. */
+     *  plans/member-rights.md): strut's own page relays its app's calls.
+     *  Neither is an admin here. */
     const personAppHandler = async (c: Context) => {
       const { createMcpDoor, toolsetServer } = await import("./ai/mcp.js");
-      const { appTools, appMeta } = await appDoor(await resolveActor(c));
+      const { appTools, appMeta } = await appDoor(await resolveActor(c), await scopeOf(c));
       const instructions = "An app's one tool, step_run, for a page hosted by a person's own strut: every call runs as that person, under the app's grants.";
       return createMcpDoor(() => toolsetServer({ tools: appTools, instructions, meta: appMeta })).handle(c.req.raw);
     };

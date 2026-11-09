@@ -28,6 +28,7 @@ import { appKey, openable, placeArtifact, servedFile, turnDeliverables } from ".
 import { answeredSince, askedSecret, captchaPrompt, claimPill, jobLook, jobRunWorkflow, liveStrip, openSlot, parseCaptcha, secretAlreadySet, secretPrompt, sortClaims, tapAt, toggleCell } from "./jamie/src/lib/jobs.js";
 import type { LedgerClaim, ModelCatalog } from "./jamie/src/lib/types.js";
 import { canMerge, checksLine, fixPrompt, prKey, prLive, prOf, prPill } from "./jamie/src/lib/pr.js";
+import { acceptLook } from "./jamie/src/lib/proposals.js";
 import { attachmentShow } from "./jamie/src/lib/attachments.js";
 
 /**
@@ -270,6 +271,14 @@ describe("strut/jamie — the pure parts", () => {
       fixPrompt({ repo: "a/b", number: 5, head: "fix/login", checks: [{ name: "lint", status: "failed" }, { name: "test", status: "passed" }, { name: "e2e", status: "failed" }] }),
       "The checks on a/b#5 failed: lint, e2e. Find out why, fix it, and push the fix to fix/login — the same pull request.",
     );
+  });
+
+  it("a proposal only an admin accepts: Accept for an admin, the line for anyone else, neither until the live read says who the viewer is", () => {
+    assert.equal(acceptLook(undefined, undefined), "accept", "any other proposal: Accept, as before");
+    assert.equal(acceptLook(undefined, { admin: false }), "accept");
+    assert.equal(acceptLook("admin", { admin: true }), "accept");
+    assert.equal(acceptLook("admin", { admin: false }), "admin");
+    assert.equal(acceptLook("admin", undefined), "unknown");
   });
 
   it("an attached file: an image a thumbnail, text to read, the rest a chip; nothing without a path", () => {

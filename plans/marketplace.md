@@ -817,6 +817,18 @@ chat's `install_package` with `ask_user` (the chat has no proposals; the
 person is at the Packages dialog anyway), `update_package`, the missing
 secrets asked for after the install.
 
+***Built 2026-11-09: the person is an ADMIN.*** On a strut with members
+(plans/member-rights.md), "a person installs" means an admin of this
+strut: the deployment key, an admin's session, a host's server with the
+key. `package/install` says so (`StepDef.approver: "admin"`), and the
+decision refuses anyone else's accept with `403 admin_required:` — a
+member's through Jamie, a person token's — while their reject stays open.
+A turn whose person is known not to be an admin (a member's page, a peer's
+launch, a job or wake one of those started) proposes nothing and tells
+them to ask an admin, who installs it from Packages. The record carries
+`approver: "admin"`, and Jamie's card says "An admin must approve this" in
+place of Accept for anyone else (specs/API.md §12).
+
 ## 9. What this changes in `federation.md` §2.3
 
 §2.3 (not built) planned one origin per workflow, `source: { repo, path }`,

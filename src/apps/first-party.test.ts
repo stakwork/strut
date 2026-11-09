@@ -106,6 +106,20 @@ describe("first-party apps through a whole strut", () => {
     },
   });
 
+  /** What only an admin accepts (`approver: "admin"`): package/install's kind. */
+  const installed: string[] = [];
+  const installer = defineStep({
+    type: "installer",
+    effect: "write",
+    approver: "admin",
+    input: z.object({ name: z.string() }),
+    output: z.any(),
+    async run(cfg) {
+      installed.push(cfg.name);
+      return { installed: cfg.name };
+    },
+  });
+
   const sse = (o: unknown) => `event: ${(o as { type: string }).type}\ndata: ${JSON.stringify(o)}\n\n`;
   const toolUse = (name: string, input: unknown) =>
     sse({
@@ -127,9 +141,10 @@ describe("first-party apps through a whole strut", () => {
       return active.length ? undefined : true;
     }, "idle");
 
-  /** A page's `step_run`, as the viewer `actor` (none: no person). */
-  const page = (name: string, actor?: string) => {
-    const tools = buildAppTools({ apps: strut.apps, registry, services: strut.services, ...(actor ? { actor } : {}), runStepDeps: { store, workspace: strut.workspace } });
+  /** A page's `step_run`, as the viewer `actor` (none: no person); `admin`
+   *  when the door holds full scope (an admin's session, the key). */
+  const page = (name: string, actor?: string, admin = false) => {
+    const tools = buildAppTools({ apps: strut.apps, registry, services: strut.services, ...(actor ? { actor } : {}), admin, runStepDeps: { store, workspace: strut.workspace } });
     const app = appIdentity(name, "v1");
     const call = async (type: string, config: Record<string, unknown> = {}) =>
       (await (tools[STEP_RUN_TOOL] as any).execute({ type, config, app }, { toolCallId: "t", messages: [] })) as { error?: string; result?: any };
@@ -176,6 +191,9 @@ describe("first-party apps through a whole strut", () => {
         const user = lastUser(body);
         const reply = (input: unknown) => res.writeHead(200, { "content-type": "text/event-stream" }).end(toolUse("final_answer", input));
         if (user.includes("<<<job reply")) return reply({ text: "Summary.", artifacts: [] });
+        if (user.includes("install it") && toolsOf(body).includes("installer")) {
+          return res.writeHead(200, { "content-type": "text/event-stream" }).end(toolUse("installer", { name: "pkg", rationale: "asked to" }));
+        }
         if (user.includes("note it") && toolsOf(body).includes("note")) {
           return res.writeHead(200, { "content-type": "text/event-stream" }).end(toolUse("note", { text: "remember milk", rationale: "asked to" }));
         }
@@ -186,7 +204,7 @@ describe("first-party apps through a whole strut", () => {
     await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
     process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${(server.address() as any).port}`;
 
-    registry = await createRegistry([note]);
+    registry = await createRegistry([note, installer]);
     strut = await createStrut({
       workspace: new WorkspaceManager(join(root, "ws")),
       store,
@@ -200,7 +218,7 @@ describe("first-party apps through a whole strut", () => {
       autoResume: false,
       browserWorkflows: false,
       privacyWorkflows: false,
-      orchestrator: { tools: ["note"], approve: ["note"] },
+      orchestrator: { tools: ["note", "installer"], approve: ["note", "installer"] },
       // The test publishes its own stand-in for strut's app (below).
       jamie: false,
     });
@@ -267,6 +285,38 @@ describe("first-party apps through a whole strut", () => {
     assert.equal(decided.decision.by, "alice");
     assert.deepEqual(noted, ["remember milk"]);
     assert.match((await alice.call("proposal/decide", { id: proposals[0].id, action: "accept" })).error!, /is applied/);
+  });
+
+  it("what only an admin accepts: a member's turn proposes nothing and says why; an admin's card is theirs to accept, never their member session's", async () => {
+    // A member's page: the turn's tool call is refused, the model reads why.
+    const mo = page("strut/jamie", "mo");
+    await mo.turn("mo/c1", "install it");
+    assert.deepEqual((await mo.ok("proposal/list", { status: "pending" })).proposals, []);
+    assert.ok(
+      requests.some((b) => JSON.stringify(b.messages).includes("admin_required: installer is an admin's decision on this strut server")),
+      "the model was told an admin decides it",
+    );
+
+    // An admin's page: proposed, the record saying who accepts it.
+    const ada = page("strut/jamie", "ada", true);
+    const runId = await ada.turn("ada/c1", "install it");
+    const start = (await ada.ok("run/events", { workflow: ORCHESTRATOR_WORKFLOW, runId })).find((e: any) => e.type === "run.start");
+    assert.deepEqual(start.app, { name: "strut/jamie", version: "v1", firstParty: true, admin: true });
+    const { proposals } = await ada.ok("proposal/list", { status: "pending" });
+    assert.deepEqual(proposals.map((p: any) => [p.step, p.approver]), [["installer", "admin"]]);
+    const id = proposals[0].id;
+    assert.deepEqual((await ada.ok("proposal/get", { id })).viewer, { admin: true });
+
+    // The same person through a member's session: told, and refused.
+    const adaMember = page("strut/jamie", "ada");
+    assert.deepEqual((await adaMember.ok("proposal/get", { id })).viewer, { admin: false });
+    assert.match((await adaMember.call("proposal/decide", { id, action: "accept" })).error!, /^admin_required: only an admin of this strut server accepts/);
+    assert.equal((await ada.ok("proposal/get", { id })).status, "pending");
+    assert.deepEqual(installed, []);
+
+    const decided = await ada.ok("proposal/decide", { id, action: "accept" });
+    assert.equal(decided.status, "applied");
+    assert.deepEqual(installed, ["pkg"]);
   });
 
   it("the viewer's runs of the sealed orchestrator, whoever launched them; never another's", async () => {

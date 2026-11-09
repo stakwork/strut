@@ -20,6 +20,7 @@ import { WorkspaceManager } from "../../../workspace.js";
 import { buildRegistryTools } from "../../core/agent.js";
 import type { Proposal } from "../../../proposals.js";
 import type { IndexInfo } from "../../../packages/index.js";
+import { personToken } from "../../../auth.js";
 
 const KEY = "install-api-key";
 const PEER_KEY = "install-peer-key";
@@ -146,6 +147,7 @@ describe("package/install — an agent asks, a person accepts", () => {
     assert.equal(rec.step, "package/install");
     assert.deepEqual(rec.input, { package: "acme/linear" });
     assert.equal(rec.rationale, "You asked for Linear issues on the board.");
+    assert.equal(rec.approver, "admin", "only an admin accepts an install");
     // §8's ask, read off the index's page: who, what it brings, what it can, what it needs.
     assert.match(rec.summary!, /^acme\/linear 1\.4\.0 \(MIT\) from acme — key [a-z0-9]{8}…[a-z0-9]{6}, listed by the index idx; digest [0-9a-f]{12}\./);
     assert.match(rec.summary!, /It brings 1 workflow, 1 step — TypeScript that runs inside this strut server\./);
@@ -168,6 +170,28 @@ describe("package/install — an agent asks, a person accepts", () => {
     await assert.rejects(door().install("acme/linear", { proposal: id }), /package_install_needs_person: .*is applied/);
     // The session is told on its next turn, as for any proposal.
     assert.equal((await record(id)).reportedAt, undefined);
+  });
+
+  it("an admin's decision (plans/member-rights.md): a member's page proposes nothing; a person token's accept is refused and installs nothing", async () => {
+    // A turn strut's own app launched for a viewer who is not an admin.
+    await assert.rejects(
+      gated({ ...ctx(), app: { name: "strut/jamie", version: "v1", firstParty: true } }).execute({ package: "acme/linear" }, { strutToolPath: "orchestrator/turn/010-package_install" }),
+      /admin_required: package\/install is an admin's decision on this strut server/,
+    );
+    assert.deepEqual(await (strut.services as { proposals: { list(): Promise<unknown[]> } }).proposals.list(), []);
+    // A proposal made where nothing said who the person is: the person's own token cannot accept it.
+    const out = (await gated(ctx()).execute({ package: "acme/linear" }, { strutToolPath: "orchestrator/turn/011-package_install" })) as Record<string, unknown>;
+    const id = out["proposal"] as string;
+    const asPerson = await strut.app.request(`/proposals/${id}/decide`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${personToken("ann")!.token}`, "content-type": "application/json" },
+      body: JSON.stringify({ action: "accept" }),
+    });
+    assert.equal(asPerson.status, 403);
+    assert.match(((await asPerson.json()) as { error: string }).error, /^admin_required: only an admin of this strut server accepts "Install the package acme\/linear" \(package\/install\)/);
+    assert.equal((await record(id)).status, "pending");
+    await assert.rejects(door().install("acme/linear", { proposal: id }), /package_install_needs_person: .*is pending/);
+    assert.deepEqual((await (await strut.app.request("/packages", { headers: auth })).json()) as unknown, { packages: [] }, "nothing installed");
   });
 
   it("a package no followed index lists, or a ref that is not a name or a pk: ref, is proposed honestly and fails at the apply, never silently", async () => {
