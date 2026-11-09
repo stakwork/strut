@@ -1,7 +1,7 @@
 # History: the workspace as a package, in git
 
 > **Status (2026-11-09): all four items built (strut#577, strut#579,
-> strut#PR4); revert in the Knowledge app is not (Open). Thirteen
+> strut#580); revert in the Knowledge app is not (Open). Thirteen
 > rulings in (Evan, 2026-11-07 and 2026-11-08; "Rulings" below).** Written after a read of `main`
 > @8db356c, revised on 2026-11-07 after a read of openlaw-1's climbs
 > (§1), and rewritten on 2026-11-08: a snapshot is a package build, and
@@ -527,7 +527,7 @@ not lost.
    restart. A benchmark's app imports the same component:
    openlaw-benchmarks' climb page would pass the start of one
    iteration's run and the next.
-   **BUILT 2026-11-09, strut#PR4** (`kit/src/folds/concept-diff.ts`,
+   **BUILT 2026-11-09, strut#580** (`kit/src/folds/concept-diff.ts`,
    `src/apps/views/src/components/ConceptDiff.tsx` + `lib/history.ts`,
    the Knowledge app's History and Changes). Decided in the build:
    - **The fold is the kit's**, pure, over ENTRIES in `history/read`'s
