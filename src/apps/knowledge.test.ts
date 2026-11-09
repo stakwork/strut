@@ -21,6 +21,9 @@ import { KNOWLEDGE_APP, KNOWLEDGE_DIR, seedKnowledgeApp } from "./knowledge-seed
 import { VIEWS_APP } from "./views-seed.js";
 import { buildTree, conceptOf, hasDocs, opening, pathToRoot, reach, rowKey, visibleRows, type Concept } from "./knowledge/src/lib/tree.js";
 import { groupLinks, isSystemType, linkLabel, orderTypes, textOf, typeDescription, typePlural } from "./knowledge/src/lib/ontology.js";
+import { momentOf } from "./knowledge/src/lib/moments.js";
+import { readDiff, readLog, readPage } from "./views/src/lib/history.js";
+import { foldConceptDiff } from "../../kit/src/folds/concept-diff.js";
 
 /**
  * `strut/knowledge` (plans/knowledge-app.md): the org's knowledge as a
@@ -133,6 +136,21 @@ describe("strut/knowledge: the ontology and a node's links", () => {
   });
 });
 
+describe("strut/knowledge: the changes view's moments", () => {
+  it("reads now, a time ago, a date and a commit as history/read takes them; anything else as none", () => {
+    const now = Date.UTC(2026, 10, 9, 12, 0, 0);
+    assert.equal(momentOf("now", now), "main");
+    assert.equal(momentOf(" Now ", now), "main");
+    assert.equal(momentOf("1 day ago", now), "2026-11-08T12:00:00.000Z");
+    assert.equal(momentOf("3 hours ago", now), "2026-11-09T09:00:00.000Z");
+    assert.equal(momentOf("2 weeks ago", now), "2026-10-26T12:00:00.000Z");
+    assert.equal(momentOf("2026-11-01", now), "2026-11-01T00:00:00.000Z");
+    assert.equal(momentOf("a1b2c3d4e5f6", now), "a1b2c3d4e5f6");
+    assert.equal(momentOf("", now), null);
+    assert.equal(momentOf("yesterday-ish", now), null);
+  });
+});
+
 describe("strut/knowledge — seeded at boot beside strut/views", () => {
   let kit: KitLocation;
   const dirs: string[] = [];
@@ -158,7 +176,7 @@ describe("strut/knowledge — seeded at boot beside strut/views", () => {
     assert.equal(app.hash, await treeHash(KNOWLEDGE_DIR));
     assert.equal(app.manifest.title, "Knowledge");
     assert.deepEqual(app.manifest.grants.workflows, []);
-    assert.deepEqual(app.manifest.grants.steps, ["graph/find", "graph/get-ontology", "graph/graph-edges", "graph/graph-get-batched", "graph/graph-neighbors", "graph/graph-search"]);
+    assert.deepEqual(app.manifest.grants.steps, ["graph/find", "graph/get-ontology", "graph/graph-edges", "graph/graph-get-batched", "graph/graph-neighbors", "graph/graph-search", "history/read"]);
     const info = JSON.parse(await readFile(join(app.dir, "dist", "build.json"), "utf8"));
     const views = (await first.apps.get(VIEWS_APP))!;
     assert.deepEqual(info.imports, [{ name: VIEWS_APP, version: views.version, hash: views.hash }], "strut/views compiled in");
@@ -286,5 +304,31 @@ describe("strut/knowledge — its page reads the tree on a graph", { skip: ladyb
       ["graph/create-triplet", { source_ref_id: lo, edge_type: "PARENT_OF", target_ref_id: ap }],
     ] as const) assert.match((await call(type, config)).error!, /not granted|refused/i, `read-only: ${type}`);
     assert.match((await call("run/list", { workflow: "job" })).error!, /grant/i);
+  });
+
+  it("reads a Concept's history and the tree between two moments through history/read (plans/concept-history.md §8 item 4)", async () => {
+    const call = page();
+    // The page's own client: each read through the app door, as the kit's would.
+    const client = { run: async (type: string, config: Record<string, unknown> = {}) => {
+      const r = await call(type, config);
+      if (r.error) throw new Error(r.error);
+      return r.result;
+    } } as never;
+    // The test wrote its Concepts past any run: a sync records them.
+    const synced = await call("history/read", { action: "sync" });
+    assert.equal(synced.error, undefined, synced.error);
+    if (synced.result?.history === false) return; // no git here: nothing to read
+    const first = (await readLog(client, { path: "concepts", limit: 5 })).commits[0]!;
+    const apps = (await b.reader.namesLike("Concept", "Apps", 1))[0]!;
+    await b.nodes.update(apps.ref_id, { set: { description: "The apps strut ships." } });
+    await call("history/read", { action: "sync" });
+
+    const history = (await readLog(client, { path: "concepts/concept-apps.md" })).commits;
+    assert.ok(history.length >= 2, "the edit is a commit of its own");
+    assert.equal((await readPage(client, "concepts/concept-apps.md", first.id))!.attributes["description"], "About Apps");
+    const d = foldConceptDiff((await readDiff(client, { from: first.id, to: "main" })).entries);
+    assert.deepEqual(d.pages.map((p) => `${p.name}:${p.status}`), ["Apps:edited"]);
+    assert.deepEqual(d.pages[0]!.attributes, [{ name: "description", before: "About Apps", after: "The apps strut ships." }]);
+    assert.deepEqual(d.pages[0]!.after!.parents, ["strut"]);
   });
 });

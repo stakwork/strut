@@ -1991,6 +1991,18 @@ graph), `graph/graph-get-batched` (the selected concept, fresh),
 `graph/graph-neighbors` and `graph/graph-search`. The same calls on a Neo4j
 and a Ladybug file.
 
+From the HISTORY (`plans/concept-history.md` §8 item 4), with one more read,
+`history/read`, drawn by `strut/views`' `ConceptDiff`: a concept's panel has
+**History** — `log { path: "concepts/<key>.md" }`, the page followed through
+renames, each commit's change drawn from two `show`s, two commits compared —
+and **Changes** over the graph is the tree between two moments, `diff { from,
+to, path: "concepts" }`, from "1 day ago" to now by default; any time, date or
+commit may be typed, and "Recent changes" lists the history's last commits on
+`concepts`. With no history on the server (no graph, no `git`,
+`STRUT_HISTORY=0`) both say so. There is no revert: a page may not write a
+Concept (`reservedAppType`), so a person puts a page back through a
+proposal an agent makes or through `graph/edit-node` outside the app.
+
 ### 14.12 Branding — the look every app here is shown in (`src/brand.ts`)
 
 A page takes its look from its host: the kit's stylesheet reads the MCP

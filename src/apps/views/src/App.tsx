@@ -7,8 +7,9 @@ import { StrutProvider, useStrutClient, useStrutHost } from "@strut/kit";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import {
-  AgentTrace, ArtifactView, DocumentView, LaunchForm, RunHealth, NodeCard, NodeGraph, NodeSearch, RunGraph, RunList, RunStatus, RunTimeline, SheetView, SHEETS_STEP, SpotCheck, Transcript, WalkView, WorkProducts, type RunGraphSelection,
+  AgentTrace, ArtifactView, ConceptDiff, DocumentView, LaunchForm, RunHealth, NodeCard, NodeGraph, NodeSearch, RunGraph, RunList, RunStatus, RunTimeline, SheetView, SHEETS_STEP, SpotCheck, Transcript, WalkView, WorkProducts, type RunGraphSelection,
 } from "./index";
+import { editEntry, type ConceptPage } from "@strut/kit";
 import { createFixtureClient } from "./fixtures/client";
 import { TRANSCRIPT_MARKS } from "./fixtures/content";
 import { EXPLORE_PATH, REF, RUN_ID, WORKFLOW } from "./fixtures/runs";
@@ -20,6 +21,7 @@ import { AGENT_WALK_RUN_ID, WALK_JOIN_RUN_ID, WALK_LIVE_RUN_ID, WALK_RUN_ID, WAL
 import { BIG_WALK_RUN_ID } from "./fixtures/walk-large";
 import { LARGE_RUN_HIGHLIGHTS, LARGE_RUN_ID, LARGE_RUN_WORKFLOW } from "./fixtures/run-large";
 import { SPOT_RUN_ID, SPOT_SUBJECTS, SPOT_WORKFLOW } from "./fixtures/provenance";
+import { HISTORY_COMMITS, HISTORY_FROM, HISTORY_TO, LIVE_PARENTS, PROPOSALS } from "./fixtures/history";
 
 interface Entry {
   name: string;
@@ -127,6 +129,57 @@ function SpotCheckDemo() {
       </div>
       <SpotCheck workflow={SPOT_WORKFLOW} runId={SPOT_RUN_ID} subject={SPOT_SUBJECTS[i]!.subject} onOpenStep={(path) => setOpened(path)} className="rounded-lg border p-3" />
       {opened && <p className="text-xs text-muted-foreground">onOpenStep: {opened}</p>}
+    </div>
+  );
+}
+
+const CONCEPT_DIFF_DEMOS = {
+  moments: "Between two moments",
+  commit: "One commit",
+  history: "A page's history",
+  proposal: "A pending proposal",
+  edit: "An unsaved edit",
+} as const;
+
+/** An unsaved edit: the NDA page as a person is typing it, against the page as shown. */
+const SHOWN_NDA: ConceptPage = HISTORY_COMMITS[HISTORY_COMMITS.length - 1]!.pages["concepts/concept-nda.md"]!;
+const EDITED_NDA: ConceptPage = { ...SHOWN_NDA, attributes: { ...SHOWN_NDA.attributes, description: "NDAs: who may share what, and for how long." }, docs: `${SHOWN_NDA.docs}\n- A jurisdiction clause pointing somewhere unexpected.` };
+
+/** The tree between two moments, what one commit did, a page's history, a proposal laid over its page, a person's unsaved edit — one view. */
+function ConceptDiffDemo() {
+  const [shown, setShown] = useState<keyof typeof CONCEPT_DIFF_DEMOS>("moments");
+  const [proposal, setProposal] = useState(Object.keys(PROPOSALS)[0]!);
+  const [opened, setOpened] = useState<string | null>(null);
+  const parentsOf = useCallback((n: string) => LIVE_PARENTS[n], []);
+  const commit = HISTORY_COMMITS[3]!;
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-wrap gap-1">
+        {(Object.keys(CONCEPT_DIFF_DEMOS) as Array<keyof typeof CONCEPT_DIFF_DEMOS>).map((k) => (
+          <button key={k} type="button" onClick={() => setShown(k)} className={cn("rounded-md border px-2.5 py-1 text-xs", shown === k ? "bg-muted font-medium" : "text-muted-foreground hover:bg-muted/60")}>
+            {CONCEPT_DIFF_DEMOS[k]}
+          </button>
+        ))}
+      </div>
+      {shown === "proposal" && (
+        <div className="flex flex-wrap gap-1">
+          {Object.entries(PROPOSALS).map(([id, p]) => (
+            <button key={id} type="button" onClick={() => setProposal(id)} className={cn("rounded-md border px-2 py-0.5 text-xs", proposal === id ? "bg-muted font-medium" : "text-muted-foreground hover:bg-muted/60")}>
+              {p.label}
+            </button>
+          ))}
+        </div>
+      )}
+      {shown === "moments" && <ConceptDiff from={HISTORY_FROM} to={HISTORY_TO} parentsOf={parentsOf} />}
+      {shown === "commit" && <ConceptDiff from={HISTORY_COMMITS[2]!.id} to={commit.id} parentsOf={parentsOf} />}
+      {shown === "history" && (
+        <div className="max-w-xl">
+          <ConceptDiff page={{ name: "NDA" }} onOpenRun={(r) => setOpened(r)} />
+        </div>
+      )}
+      {shown === "proposal" && <ConceptDiff key={proposal} proposal={proposal} parentsOf={parentsOf} />}
+      {shown === "edit" && <ConceptDiff entries={[editEntry("concepts/concept-nda.md", SHOWN_NDA, EDITED_NDA)]} parentsOf={parentsOf} />}
+      {opened && <p className="text-xs text-muted-foreground">onOpenRun: {opened}</p>}
     </div>
   );
 }
@@ -318,6 +371,13 @@ const ENTRIES: Entry[] = [
     grants: "grants.workflows: the run's workflow (run/provenance)",
     usage: `<SheetView … onSpotCheck={setSubject} />\n<DocumentView … onSpotCheck={setSubject} />\n<SpotCheck workflow="openlaw-run" runId={runId} subject={subject} onOpenStep={(path) => setScope(path)} />`,
     demo: () => <SpotCheckDemo />,
+  },
+  {
+    name: "ConceptDiff",
+    what: "Two states of the Concept tree drawn as one: the tree with each page marked added, removed, renamed, moved or edited, a parent that did not change drawn faint for where the change sits, and a page opening to what changed — its name, its parents, its attributes, its docs line by line. The states come from the history (two commits or two times — “a day ago” and `main`), from a pending proposal laid over the page as it is now, or from a person's unsaved edit, and are drawn the same way. A page renamed and rewritten, which git sees as one removed and one added, is paired by its parents and its words. Given a page, its history instead: every commit that changed it, followed through renames, with who and which run; a click draws what that commit did, two ticked are compared, and “The page then” shows it as it was.",
+    grants: "grants.steps: history/read · a proposal: proposal/get, graph/graph-get-batched · entries you pass: none",
+    usage: `<ConceptDiff from={dayAgo} to="main" parentsOf={(name) => liveParents[name]} />\n<ConceptDiff page={{ name: "NDA" }} onOpenRun={(runId) => …} />\n<ConceptDiff proposal={id} />  <ConceptDiff entries={[editEntry(path, shown, edited)]} />`,
+    demo: () => <ConceptDiffDemo />,
   },
   {
     name: "WorkProducts",

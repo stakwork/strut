@@ -2,14 +2,17 @@
 // Concept's path in the tree), name and description, then what it is
 // linked to, grouped by how ("Owned by", "Children"), each a chip to step
 // to. Opened wide, its docs as markdown (strut/views' DocumentView) and
-// where it came from. Read-only.
-import { ArrowLeft, Maximize2, Minimize2, X } from "lucide-react";
-import { DocumentView, useNode } from "strut/views";
+// where it came from. A Concept's HISTORY: every commit that changed its
+// page, and what each did (strut/views' ConceptDiff over `history/read`).
+// Read-only.
+import { useState } from "react";
+import { ArrowLeft, History, Maximize2, Minimize2, X } from "lucide-react";
+import { ConceptDiff, DocumentView, useNode } from "strut/views";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 import { useLinks } from "../lib/read";
 import { textOf } from "../lib/ontology";
-import type { ConceptTree } from "../lib/tree";
+import { TREE_TYPE, type ConceptTree } from "../lib/tree";
 import { Chip, Dot, SectionLabel, type Picked } from "./bits";
 
 export interface NodeDetailProps {
@@ -29,6 +32,7 @@ export interface NodeDetailProps {
 export function NodeDetail({ id, tree, path, onSelect, onClose, wide, onWide, narrow }: NodeDetailProps) {
   const q = useNode(id);
   const links = useLinks(id);
+  const [history, setHistory] = useState(false);
   if (q.isLoading) return <Skeleton className="m-4 h-32" />;
   if (!q.data) return <p className="p-4 text-sm text-muted-foreground">That node isn't in the graph any more.</p>;
   const n = q.data;
@@ -49,9 +53,24 @@ export function NodeDetail({ id, tree, path, onSelect, onClose, wide, onWide, na
           {n.node_type}
         </span>
         <span className="flex-1" />
+        {n.node_type === TREE_TYPE && n.name && (
+          <button
+            type="button"
+            onClick={() => {
+              setHistory(!history);
+              if (!history) onWide(true);
+            }}
+            className={cn("flex items-center gap-1 whitespace-nowrap rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:text-foreground", history && "bg-muted text-foreground")}
+            aria-pressed={history}
+            data-testid="concept-history-toggle"
+          >
+            <History className="size-3.5" />
+            History
+          </button>
+        )}
         {!narrow && (
           <>
-            <button type="button" onClick={() => onWide(!wide)} className="flex items-center gap-1 rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:text-foreground">
+            <button type="button" onClick={() => onWide(!wide)} className="flex items-center gap-1 whitespace-nowrap rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:text-foreground">
               {wide ? <Minimize2 className="size-3.5" /> : <Maximize2 className="size-3.5" />}
               {wide ? "Less" : "Docs and more"}
             </button>
@@ -65,10 +84,12 @@ export function NodeDetail({ id, tree, path, onSelect, onClose, wide, onWide, na
         <header className="space-y-1">
           {above && <p className="truncate text-xs text-muted-foreground">{above}</p>}
           <h1 className={cn("break-words font-semibold tracking-tight", wide ? "text-xl" : "text-base")}>{n.name}</h1>
-          {t.description && <p className="text-sm leading-relaxed text-muted-foreground">{t.description}</p>}
+          {t.description && !history && <p className="text-sm leading-relaxed text-muted-foreground">{t.description}</p>}
         </header>
 
-        {wide && (
+        {history && <ConceptDiff page={{ name: n.name }} />}
+
+        {wide && !history && (
           <section className="space-y-2">
             <SectionLabel>Docs</SectionLabel>
             {t.docs ? (
@@ -80,7 +101,7 @@ export function NodeDetail({ id, tree, path, onSelect, onClose, wide, onWide, na
           </section>
         )}
 
-        <section className="space-y-3">
+        <section className={cn("space-y-3", history && "hidden")}>
           {links.isLoading && <Skeleton className="h-16" />}
           {links.data?.length === 0 && <p className="text-xs text-muted-foreground">Not linked to anything yet.</p>}
           {links.data?.map((g) => (
@@ -97,7 +118,7 @@ export function NodeDetail({ id, tree, path, onSelect, onClose, wide, onWide, na
           ))}
         </section>
 
-        {wide && (repo || file) && (
+        {wide && !history && (repo || file) && (
           <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-xs">
             {repo && (
               <>

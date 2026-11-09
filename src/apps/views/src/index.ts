@@ -10,7 +10,8 @@
  * step on ITS grants — `grants.workflows` for the run views and LaunchForm,
  * `graph/graph-get-batched`, `graph/graph-edges` (RunGraph), `graph/graph-neighbors`
  * and `graph/graph-search` in `grants.steps` for the graph views, `sheets/get-values` for SheetView
- * over a Google sheet; SpotCheck reads `run/provenance`, on the run's workflow. The folds they draw are
+ * over a Google sheet; SpotCheck reads `run/provenance`, on the run's workflow; ConceptDiff reads
+ * `history/read` (and `proposal/get` + `graph/graph-get-batched` for a proposal). The folds they draw are
  * `@strut/kit`'s. Its own page is the gallery: every component over fixtures.
  */
 export { RunStatus } from "./components/RunStatus";
@@ -25,6 +26,11 @@ export { WorkProducts, type WorkProductsProps, type WorkProductRenderer, type Wo
 export { NodeCard, type NodeCardProps } from "./components/NodeCard";
 export { SheetView, SHEETS_STEP, SHEET_INTERVAL_MS, type SheetViewProps } from "./components/SheetView";
 export { SpotCheck, type SpotCheckProps } from "./components/SpotCheck";
+export { ConceptDiff, PageDiff, PageView, CONCEPT_STATUS, type ConceptDiffProps } from "./components/ConceptDiff";
+export {
+  HISTORY_STEP, PROPOSAL_GET_STEP, NoHistoryError, readLog, readPage, readDiff, readEntry, readProposalEntry, commitReads, compareReads,
+  type HistoryCommit, type ProposalRecord,
+} from "./lib/history";
 export {
   PROVENANCE_STEP, subjectLabel, momentPhrase, landmarks,
   type Provenance, type ProvenanceMoment, type ProvenanceSubject, type ProvenanceCall,
