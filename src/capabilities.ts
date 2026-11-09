@@ -2,6 +2,7 @@ import type { SttService } from "./audio/stt.js";
 import type { SessionsCapability } from "./session-store.js";
 import { jobsCapability, type JobsCapability } from "./jobs.js";
 import type { PeersCapability } from "./peers.js";
+import type { HistoryCapability } from "./history.js";
 import type { Channels } from "./channels.js";
 import type { PackagesCapability } from "./packages/indexes.js";
 // Type-only: the graph backend stays a lazy, opt-in dependency.
@@ -354,6 +355,10 @@ export function shellCapability(): ShellCapability {
  *  their own typed services (graph store, llm client, …). */
 export interface StrutCapabilities {
   http: HttpCapability;
+  /** The history (src/history.ts, plans/concept-history.md): what
+   *  `history/read` reads, and what a run's graph view tells. Set by the
+   *  standard server wherever it has a graph and `git`. */
+  history?: HistoryCapability;
   secrets: SecretsCapability;
   /** Per-run artifact files. Present on the standard server (rooted in the
    *  workspace); optional because a bare in-code bag may not carry one. */
