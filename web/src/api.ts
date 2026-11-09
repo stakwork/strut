@@ -543,6 +543,8 @@ export interface FlowDef {
   params?: Record<string, unknown>;
   /** Declared "promote a run output → a target param default" mappings. */
   promotes?: PromoteSpec[];
+  /** Open to other workspaces: `true`, or `"person"` (a person's credential only). */
+  peer?: true | "person";
 }
 
 /** Parsed flow of a workflow — the active version, or a pinned historical
