@@ -23,6 +23,7 @@
  * the pure helpers — is shared: an engine's retrievers hand back `Hit`s
  * and the same pipeline orders them.
  */
+import type { FactTrust } from "./fact-score.js";
 import { randomUUID } from "node:crypto";
 import type { ManagedTransaction } from "neo4j-driver";
 import { Bolt, int, txRows, type Row } from "./bolt.js";
@@ -118,6 +119,8 @@ export interface EdgeEnvelope {
   edge_type: string;
   weight?: number;
   properties: Record<string, unknown>;
+  /** A fact's (a temporal edge's) trust now, worked out on read (`NeighborsParams.trust`). */
+  trust?: FactTrust;
 }
 
 /**
@@ -167,6 +170,9 @@ export interface SearchParams {
   /** Deleted nodes and facts too, each marked `deleted_at`. A Ladybug file
    *  only: Neo4j ignores it. */
   include_deleted?: boolean;
+  /** Each fact found scored for how far to trust it now (`FactTrust`,
+   *  `fact-score.ts`). A Ladybug file only. */
+  trust?: boolean;
 }
 
 /** One end of a fact. */
@@ -185,6 +191,8 @@ export interface FactEnd {
  */
 export interface FactEnvelope {
   ref_id: string;
+  /** How far to trust it now, worked out on read (`trust`). */
+  trust?: FactTrust;
   edge_type: string;
   text: string;
   source: FactEnd;
@@ -214,6 +222,8 @@ export interface SearchResult {
 }
 
 export interface NeighborsParams {
+  /** As `SearchParams`: each fact among the edges scored. A Ladybug file only. */
+  trust?: boolean;
   edge_types?: string[];
   node_types?: string[];
   exclude_node_types?: string[];

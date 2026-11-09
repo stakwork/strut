@@ -27,7 +27,8 @@ export default defineStep({
       "current value; creating the same link again brings it back. Locate it by `edge_ref_id` (from create-triplet's output) OR " +
       "by the triple `source_ref_id` + `edge_type` + `target_ref_id`, as graph/edit-edge does. Several edges of that type between " +
       "the two nodes is refused — pass the edge ref_id. To record that a fact stopped being true, end it with graph/assert " +
-      "(`ended` or `invalid_at`) instead of deleting it. To re-home a node under a different parent use graph/move-node.\n\n" +
+      "(`ended` or `invalid_at`) instead of deleting it; when the user says it is wrong, assert it with `refuted`. Deleting a fact also " +
+      "clears the record of who said it, so saving it again starts from nothing. To re-home a node under a different parent use graph/move-node.\n\n" +
       EXAMPLE,
   },
   input: z.object({
@@ -67,6 +68,11 @@ export default defineStep({
         byRef ? { ref_id: cfg.edge_ref_id! } : { edge: cfg.edge_type!, source_ref_id: cfg.source_ref_id!, target_ref_id: cfg.target_ref_id! },
       );
       if (!r) return `graph/delete-edge failed — NOT_FOUND: no edge with ref_id ${cfg.edge_ref_id}`;
+      // A deleted fact's evidence goes with it (plans/memory-truth-layer.md): saved again, it starts from nothing.
+      if (b.kind === "ladybug") {
+        const { clearFactEvidence } = await import("../../../graph/ladybug/fact-claims.js");
+        await b.tx((tx) => clearFactEvidence(tx, r.source_ref_id, r.edge, r.target_ref_id));
+      }
       return withAccessedNodes(
         {
           status: "Success",
