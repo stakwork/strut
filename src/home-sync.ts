@@ -81,15 +81,12 @@ export function homeSyncRoutes(app: Hono, deps: { services: unknown; scopeOf: (c
   });
 }
 
-/** The workflow the copy runs. */
-export const HOME_SYNC_WORKFLOW = "home-sync";
-
 /** The copy's side (STRUT_HOME_SYNC=copy): the `home-sync` workflow, seeded
  *  by content hash like strut's other shipped workflows. */
 export async function seedHomeSyncWorkflow(workspace: WorkspaceStore): Promise<{ version: string; changed: boolean }> {
   const text = await readFile(new URL("./workflows/home-sync.yaml", import.meta.url), "utf-8");
   return workspace.publishWorkflowByContent(
-    HOME_SYNC_WORKFLOW,
+    "home-sync",
     text,
     "Syncs this strut server's read copy of its home's memory with the home (a peer, default \"home\"): pushes dictation's changes, " +
       "pulls the memory when it changed and puts it in place of this one's, keeping what dictation changes meanwhile. Input { peer? }.",

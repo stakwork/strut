@@ -51,13 +51,13 @@
  * the same workspace gives the same digest.
  */
 import { randomBytes } from "node:crypto";
+import { existsSync, readdirSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, posix } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { AppsCapability } from "../apps/apps.js";
 import { readBuildInfo } from "../apps/build.js";
 import { isFirstPartyName } from "../apps/files.js";
-import { BROWSER_WORKFLOWS } from "../browser/seed.js";
-import { BUILDER_WORKFLOW } from "../builder-seed.js";
 import type { ClaimsAuthoring } from "../claims-authoring.js";
 import { claimSpecSchema, type ClaimsBlock } from "../claims-schemas.js";
 import { flowClosure, globToRegExp, type FlowClosure } from "../closure.js";
@@ -67,10 +67,6 @@ import { hasTemplates } from "../expr.js";
 import type { GraphBackend } from "../graph/backend.js";
 import type { CheckRow } from "../graph/claims.js";
 import { composeNodeKey } from "../graph/node-writer.js";
-import { HOME_SYNC_WORKFLOW } from "../home-sync.js";
-import { JOB_WORKFLOW } from "../job-seed.js";
-import { ORCHESTRATOR_WORKFLOW } from "../orchestrator-seed.js";
-import { PRIVACY_WORKFLOWS } from "../privacy/seed.js";
 import { secretNamesIn } from "../reach.js";
 import type { SubflowResolver } from "../runner.js";
 import { isSealedStep, sealedStepPatterns } from "../sealed.js";
@@ -182,10 +178,15 @@ interface Origin {
  *  one a service published. */
 const hosts = (o: Origin) => o.source === "seed" || (o.publisher !== undefined && o.publisher !== BUILDER_STAMP);
 
-/** What strut itself seeds on every server: its shipped workflows and the
+/** What strut itself seeds on every server: the workflows it ships as
+ *  files (`src/workflows/<name>.yaml` — job, orchestrator, builder, the
+ *  browser, privacy and home-sync ones — and the system workflows) and the
  *  apps under `strut/`. A host's seed (the mcp lab's) and a service's item
  *  are not on every strut, so the build says so (`leftToInstaller`). */
-const STRUT_WORKFLOWS = new Set([JOB_WORKFLOW, ORCHESTRATOR_WORKFLOW, BUILDER_WORKFLOW, HOME_SYNC_WORKFLOW, ...Object.keys(BROWSER_WORKFLOWS), ...Object.keys(PRIVACY_WORKFLOWS)]);
+const STRUT_WORKFLOWS = (() => {
+  const dir = fileURLToPath(new URL("../workflows/", import.meta.url));
+  return new Set(existsSync(dir) ? readdirSync(dir).filter((f) => f.endsWith(".yaml")).map((f) => f.slice(0, -".yaml".length)) : []);
+})();
 const strutShips = (kind: Kind, name: string) =>
   kind === "workflow" ? STRUT_WORKFLOWS.has(name) || isSystemWorkflow(name) : kind === "app" ? isFirstPartyName(name) : false;
 
