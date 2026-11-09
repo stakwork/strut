@@ -2148,6 +2148,29 @@ production until install (step 2) calls the resolver.
        legal types off jarvis's ontology and installs them, with `Content`
        and `Legal`, on a graph strut alone holds, then writes the children
        and their edges there; the file now runs in `npm run test:graph`.
+     - **A setting that names an attribute the type never declares is left
+       out, and said.** jarvis's ontology lists fields in a type's settings
+       that neither the type nor a parent declares: `ComputedFigure` and
+       `InvestigationLog` index `matter_slug`, `AISystem` and `Hint` index
+       `ref_id`, `EvalTriggerOutput`'s index is a key spec
+       (`evaltriggeroutput-id`), `Hint`'s `title_key` is `ref_id`. The
+       install refuses such a setting (`planNodeSchema`), so the build did
+       too ("index field matter_slug is not a declared attribute"). Now the
+       export checks every setting it copies against the attributes the
+       file carries and the type inherits — the key spec's tokens, the
+       index's fields, the `title_key`'s fields, the `description_key`, the
+       identifiers — and leaves out what names anything else: an index
+       field alone (an index left empty is no index, so the key's fields),
+       a key spec, title_key or description_key whole (its default in its
+       place), with ONE warning per type naming each. Never a refusal for
+       jarvis's own inconsistency. One more is said, not refused:
+       jarvis's `Person` declares its own `title` (a job title) and is
+       titled by `name`, and a strut titles a type by the title it
+       declares, so a Person installed elsewhere is titled by its job
+       title. A case in `graph-types.test.ts` finds every such type in
+       jarvis's ontology (the list above), builds them with their parents,
+       installs them on a graph strut alone holds and writes one node of
+       each there. With the fix every jarvis type but strut's own exports.
      - **What the package leaves to the installing strut is said.** A
        host's seed (the mcp lab's `artifacts/dir`) or a service's item the
        closure reaches is recorded nowhere, as before, and is now also a

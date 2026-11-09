@@ -9,12 +9,14 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { reservedAppType } from "../apps/graph-types.js";
 import { createStrut, type Strut } from "../createStrut.js";
 import { seedJarvisOntology } from "../graph/__fixtures__/jarvis-seed.js";
 import type { GraphBackend } from "../graph/backend.js";
 import { createNodeSchema } from "../graph/schema-crud.js";
 import { seedStrutDomain } from "../graph/schema-seed.js";
 import { testBackends } from "../graph/test-util.js";
+import { titleFields } from "../graph/title.js";
 import { GraphWorkspaceStore } from "../graph/workspace-store.js";
 import { MemoryRunStore } from "../store.js";
 import { loadYaml } from "../yaml.js";
@@ -257,6 +259,86 @@ for (const tb of testBackends()) {
       const { figure } = await writeDesk(buyerGraph);
       const again = await buyerGraph.nodes.write({ type: "Figure", data: { ...fig, label: "Fee (restated)" } }, "upsert");
       assert.equal(again.ref_id, figure);
+    });
+
+    // jarvis's ontology names fields its types never declare: ComputedFigure's
+    // index lists `matter_slug`, Hint's index and title read `ref_id`. The
+    // install refuses such a setting, so the build leaves it out — its
+    // default in its place — and says so, rather than refusing jarvis's own
+    // inconsistency (openlaw1's legal desk, 2026-11-09).
+    it("exports jarvis's types whose settings name attributes they never declare, and installs and writes them on a graph without jarvis", { skip: tb.kind === "neo4j" ? false : "jarvis's ontology is a Neo4j graph's" }, async () => {
+      await tb.wipe(source);
+      await seedJarvisOntology(source);
+      await seedStrutDomain(source);
+      source.schemas.invalidate();
+
+      // Every such type, read off the ontology: a key token, an index field,
+      // a title_key field or the description_key that is not an attribute.
+      const odd: Record<string, string[]> = {};
+      for (const { type } of (await source.reader.listSchemas()).schemas) {
+        if (type === "*" || reservedAppType(type)) continue;
+        const s = (await source.schemas.schema(type))!;
+        const missing = (f: string) => f !== "name" && !(f in s.attributes);
+        const key = s.key_spec === "ref_id" ? "ref_id" : s.key_spec.split("-").slice(1).join("-");
+        const named = [
+          ...(key === "ref_id" ? [] : key.split("-")).map((f) => ["key_spec", f]),
+          ...s.index.filter((f) => f !== "node_key").map((f) => ["index", f]),
+          ...titleFields(s.title_key).map((f) => ["title_key", f]),
+          ["description_key", s.description_key],
+        ].filter(([, f]) => missing(f!));
+        if (named.length) odd[type] = named.map(([k, f]) => `${k} ${f}`);
+      }
+      assert.deepEqual(odd, {
+        AISystem: ["index ref_id"],
+        ComputedFigure: ["index matter_slug"],
+        EvalTriggerOutput: ["index evaltriggeroutput-id"],
+        Hint: ["index ref_id", "title_key ref_id"],
+        InvestigationLog: ["index matter_slug"],
+      });
+
+      // Built with their parents, and Person: it declares its own `title`
+      // (a job title) and jarvis titles it by name.
+      const named = [...Object.keys(odd), "Person"];
+      const src = await strutOn(source, "source");
+      const built = await build(src, source, { types: named });
+      const files = built.files.filter((f) => f.startsWith("graph/"));
+      for (const t of [...named, "Legal", "KnowledgeArtifact"]) assert.ok(files.includes(`graph/${t}.yaml`), `${t} in ${files.join(", ")}`);
+      const warned = built.warnings.join("\n");
+      for (const [type, fields] of Object.entries(odd)) {
+        const line = built.warnings.find((w) => w.startsWith(`graph/${type}.yaml: left out of the file`));
+        assert.ok(line, `${type}: ${warned}`);
+        for (const f of fields) assert.match(line, new RegExp(`${f.split(" ")[0]} names [^;]*${f.split(" ")[1]}`), line);
+      }
+      assert.match(warned, /graph\/Person\.yaml: Person declares its own title attribute and this graph titles it by name/);
+      const file = async (t: string) => loadYaml(await readFile(join(built.dir, `graph/${t}.yaml`), "utf-8")) as Record<string, unknown>;
+      assert.deepEqual((await file("ComputedFigure"))["index"], ["label", "discrepancy_flag"]);
+      assert.deepEqual((await file("InvestigationLog"))["index"], ["status", "investigation_type"]);
+      assert.deepEqual((await file("AISystem"))["index"], ["name", "risk_tier", "regulatory_regime"]);
+      assert.equal((await file("EvalTriggerOutput"))["index"], undefined);
+      const hint = await file("Hint");
+      assert.deepEqual([hint["key_spec"], hint["index"], hint["title_key"]], ["ref_id", ["question", "answer"], undefined]);
+      assert.equal((await file("Person"))["title_key"], undefined);
+
+      // A graph strut alone holds: they install, parents first, and each writes.
+      const buyerGraph = await freshGraph();
+      assert.equal(await buyerGraph.schemas.resolveType("ComputedFigure"), null);
+      const buyer = await strutOn(buyerGraph, "buyer");
+      const r = await install(buyer, `file:${built.dir}`);
+      assert.equal(r.status, 201, JSON.stringify(r.body));
+      const installed = r.body.packages[0]!.items.filter((i) => i.kind === "type");
+      assert.deepEqual(installed.map((i) => i.name).sort(), files.map((f) => f.slice("graph/".length, -".yaml".length)).sort());
+      assert.ok(installed.every((i) => i.status === "installed"), JSON.stringify(installed));
+      assert.deepEqual((await buyerGraph.schemas.schema("ComputedFigure"))?.index, ["label", "discrepancy_flag"]);
+      assert.equal((await buyerGraph.schemas.schema("Hint"))?.title_key, "name");
+      assert.equal((await buyerGraph.schemas.schema("Person"))?.title_key, "title");
+      const sample: Record<string, unknown> = { boolean: false, int: 1, float: 1.5, datetime: "2026-11-09T00:00:00Z", list: ["x"] };
+      for (const type of named) {
+        const s = (await buyerGraph.schemas.schema(type))!;
+        const data: Record<string, unknown> = { name: `A ${type}` };
+        for (const [k, v] of Object.entries(s.attributes)) if (!v.startsWith("?")) data[k] = sample[v] ?? `${k} of ${type}`;
+        const w = await buyerGraph.nodes.write({ type, data }, "create");
+        assert.ok(w.ref_id, type);
+      }
     });
 
     it("refuses a type the graph holds with another key, before anything is written", async () => {
