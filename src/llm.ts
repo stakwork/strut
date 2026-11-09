@@ -142,10 +142,11 @@ export async function resolveModel(opts: ResolveModelOptions = {}): Promise<Reso
   // is per provider), and aieo only resolves it inside resolveModel — so ask
   // the keyless placement first. Same errors as the resolve below.
   const placed = await modelProvider(opts.model, opts.provider, secrets);
-  // Every provider is the hook's to route, Maple's and Numes' included: with
-  // a grant the call goes through the gateway, billed and capped per person;
-  // without one Maple and Numes go to their own endpoint, as on a host with
-  // no gateway (Peel), unless the hook refuses (STRUT_MOTHERSHIP_REQUIRED).
+  // Every provider is the hook's to route, Maple's, Numes' and Token
+  // Factory's included: with a grant the call goes through the gateway,
+  // billed and capped per person; without one they go to their own
+  // endpoint, as on a host with no gateway (Peel), unless the hook refuses
+  // (STRUT_MOTHERSHIP_REQUIRED).
   let grant: LlmAuthResult | undefined;
   if (opts.llmAuth && opts.auth) grant = await opts.llmAuth({ ...opts.auth, provider: placed.provider });
   if (placed.gatewayOnly && !grant?.baseUrl) {
@@ -167,7 +168,7 @@ export async function resolveModel(opts: ResolveModelOptions = {}): Promise<Reso
   });
   let model: any = r.model;
   // Every chat-completions model aieo builds: xai and google through a
-  // gateway, maple and numes always, and a provider only a gateway has.
+  // gateway, maple, numes and tokenfactory always, and a provider only a gateway has.
   if (model?.provider === "openai.chat") model = await imagesBesideToolResults(model);
   if (grant?.explainError) model = await explaining(model, grant.explainError);
   model = await applyModelWrappers(model, { provider: r.provider, modelId: r.modelId, baseUrl: grant?.baseUrl, routed: !!grant?.baseUrl, ctx: opts.ctx, session: opts.session });
@@ -301,7 +302,7 @@ async function explaining(model: any, explain: (err: unknown) => string | undefi
 /**
  * Images a TOOL returned (`withMedia`), moved to where a chat-completions
  * API can see them. The AI SDK's `openai.chat` converter — what aieo builds
- * for xai and google routed through a gateway, and for maple and numes — sends a tool result
+ * for xai and google routed through a gateway, and for maple, numes and tokenfactory — sends a tool result
  * as one string, so an image in it reached the model as base64 TEXT (a
  * screenshot is ~300k characters). Each one now goes to a user message right
  * after the tool results, which that API reads as an image, and the result
@@ -525,7 +526,7 @@ export interface ModelOption {
   /** The context window, tokens. Absent when aieo does not know the provider. */
   contextLimit?: number;
   /** USD per million tokens, where strut knows the model's own rate:
-   *  Maple's and Numes' (aieo's tables), and every model bifrost's datasheet
+   *  Maple's, Numes' and Token Factory's (aieo's tables), and every model bifrost's datasheet
    *  holds once `startModelCatalog` has loaded it (the file the gateway bills
    *  from). Absent otherwise: aieo then bills at a flat per-provider rate,
    *  which is not the model's price. */
@@ -544,7 +545,7 @@ export interface ModelCatalog {
   keyNames: Record<string, string>;
 }
 
-/** Every model aieo knows — its aliases, and every Maple and Numes model
+/** Every model aieo knows — its aliases, and every Maple, Numes and Token Factory model
  *  it lists — plus any name the host lists in `STRUT_MODELS` that aieo does
  *  not, each with whether people may pick it. The default is
  *  `STRUT_DEFAULT_MODEL`, else `opts.default`. Never returns key values,
@@ -572,12 +573,13 @@ export async function listModelOptions(
   const tables: Partial<Record<Provider, Record<string, { pricing: TokenPricing }>>> = {
     maple: aieo.MAPLE_MODELS,
     numes: aieo.NUMES_MODELS,
+    tokenfactory: aieo.TOKENFACTORY_MODELS,
   };
   const models = new Map<string, ModelOption>();
   const add = (provider: Provider, modelId: string, alias?: string) => {
     const name = `${provider}/${modelId}`;
     if (models.has(name)) return;
-    // The model's own price: Maple's or Numes' table, else bifrost's
+    // The model's own price: Maple's, Numes' or Token Factory's table, else bifrost's
     // datasheet once `startModelCatalog` has loaded it. Never a provider's
     // flat rate, which is not a price.
     const pricing = aieo.getModelPrice(provider, modelId);

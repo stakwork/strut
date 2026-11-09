@@ -21,6 +21,7 @@
     "try-kimi": "tsx --env-file=../.env scripts/try-kimi.ts",
     "try-grok": "tsx --env-file=../.env scripts/try-grok.ts",
     "try-numes": "tsx --env-file=../.env scripts/try-numes.ts",
+    "try-tokenfactory": "tsx --env-file=../.env scripts/try-numes.ts tokenfactory",
     "try-search": "tsx --env-file=../.env scripts/try-search.ts",
     "try-fetch": "tsx --env-file=../.env scripts/try-fetch.ts",
     "cite-rate": "tsx --env-file=../.env scripts/cite-rate.ts"

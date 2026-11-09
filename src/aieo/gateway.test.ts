@@ -108,6 +108,19 @@ const cases: Case[] = [
     expectModelId: "z-ai/glm-5.3",
   },
   {
+    label: "tokenfactory via gateway → tokenfactory/ prefix",
+    provider: "tokenfactory",
+    modelName: "tokenfactory/glm-5.3",
+    baseUrl: GATEWAY,
+    expectModelId: "tokenfactory/glm-5.3",
+  },
+  {
+    label: "tokenfactory at its own endpoint → bare id",
+    provider: "tokenfactory",
+    modelName: "tokenfactory/glm-5.3",
+    expectModelId: "glm-5.3",
+  },
+  {
     label: "a provider aieo does not know, via gateway → its own prefix",
     provider: "acme",
     modelName: "acme/llama-4",

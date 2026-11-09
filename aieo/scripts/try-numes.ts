@@ -5,10 +5,11 @@ import { resolveModel } from "../../src/aieo/resolve.js";
 import { normalizeUsage } from "../../src/aieo/usage.js";
 
 
-// Numes against the real API: a tool round trip (the model calls the tool,
-// then answers from its result) and a streamed reply, for each model named
-// on the command line — by default the free ones' alias, "numes".
-// NUMES_API_KEY from env or mcp/.env.
+// Numes (or any provider, by name) against the real API: a tool round trip
+// (the model calls the tool, then answers from its result) and a streamed
+// reply, for each model named on the command line — by default the free
+// ones' alias, "numes". `try-tokenfactory` runs it on "tokenfactory". The
+// provider's key from strut's .env.
 async function tryModel(name: string) {
   const r = await resolveModel({ model: name });
   console.log(`\n== ${r.name}`, { contextLimit: r.contextLimit, maxOutputTokens: r.maxOutputTokens });

@@ -15,6 +15,7 @@
 //   openai/gpt-5                      openai      gpt-5                 (direct, NOT via OpenRouter)
 //   openrouter/openai/gpt-5           openrouter  openai/gpt-5
 //   numes/z-ai/glm-5.3                numes       z-ai/glm-5.3
+//   tokenfactory/glm-5.3              tokenfactory glm-5.3
 //   moonshotai/kimi-k2.6              rejected — no provider prefix (see canonicalModelName)
 //
 // The canonical form is "<provider>/<modelId>": two segments for direct
@@ -32,6 +33,7 @@ import {
   MODELS,
   NUMES_MODELS,
   PROVIDERS,
+  TOKENFACTORY_MODELS,
   getCatalogEntry,
   getContextLimit,
   getModel,
@@ -139,10 +141,14 @@ export function canonicalModelName(model?: string, provider?: Provider | string)
         `otherwise pass the provider explicitly.`,
     );
   }
-  // A Maple id names no provider by itself (gemma4-31b is served elsewhere
-  // too): Maple only when the name says so, never by inference.
-  if (model && !provider && !parsed.provider && !envProvider() && MAPLE_MODELS[model]) {
-    throw new Error(`Model "${model}" names no provider. On Maple it is "maple/${model}".`);
+  // A Maple or Token Factory id names no provider by itself (gemma4-31b and
+  // glm-5.3 are served elsewhere too): theirs only when the name says so,
+  // never by inference.
+  if (model && !provider && !parsed.provider && !envProvider()) {
+    if (MAPLE_MODELS[model]) throw new Error(`Model "${model}" names no provider. On Maple it is "maple/${model}".`);
+    if (TOKENFACTORY_MODELS[model]) {
+      throw new Error(`Model "${model}" names no provider. On Token Factory it is "tokenfactory/${model}".`);
+    }
   }
 
   let modelId = parsed.modelId;
@@ -178,8 +184,9 @@ export function maxOutputTokensFor(
   providerOptions?: unknown,
 ): number {
   const fromEnv = Number(env.MAX_OUTPUT_TOKENS);
+  const ownTable = provider === "maple" || provider === "numes" || provider === "tokenfactory";
   const sheet =
-    modelId && provider && provider !== "maple" && provider !== "numes" && PROVIDERS.includes(provider as Provider)
+    modelId && provider && !ownTable && PROVIDERS.includes(provider as Provider)
       ? getCatalogEntry(provider as Provider, modelId)?.maxOutputTokens
       : undefined;
   const capped = (n: number) => (sheet ? Math.min(n, sheet) : n);
@@ -199,6 +206,9 @@ export function maxOutputTokensFor(
   // max_tokens past the model's own limit. An unlisted model: under a tenth
   // of its catalogue's common 131k window.
   if (provider === "numes") return (modelId && NUMES_MODELS[modelId]?.maxOutput) || 12_288;
+  // Token Factory's vLLM backends refuse the same. An unlisted model: under
+  // a tenth of its smallest listed window.
+  if (provider === "tokenfactory") return (modelId && TOKENFACTORY_MODELS[modelId]?.maxOutput) || 12_288;
   return capped(64_000);
 }
 
