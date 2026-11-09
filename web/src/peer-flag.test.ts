@@ -15,6 +15,13 @@ describe("peer flag", () => {
     assert.equal(togglePeer(true), undefined);
     assert.equal(togglePeer("person"), undefined);
   });
+  it("turning a published person flag off and on again restores person, never true", () => {
+    const off = togglePeer("person", "person");
+    assert.equal(off, undefined);
+    assert.equal(togglePeer(off, "person"), "person");
+    assert.equal(togglePeer(undefined, true), true);
+    assert.equal(togglePeer(undefined, undefined), true);
+  });
   it("applies by setting or removing the key, keeping the rest", () => {
     assert.deepEqual(applyPeer({ name: "a", steps: [] }, true), { name: "a", steps: [], peer: true });
     assert.deepEqual(applyPeer({ name: "a", peer: true, sealed: true }, undefined), { name: "a", sealed: true });

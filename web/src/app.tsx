@@ -1820,7 +1820,7 @@ function Shell() {
               title={localPeer === "person"
                 ? "Open to peers only via a person's credential (peer: person) — click to close"
                 : "Other workspaces (peers) can run this workflow through strut/run-workflow"}
-              onClick={() => setLocalPeer(togglePeer(localPeer))}
+              onClick={() => setLocalPeer(togglePeer(localPeer, wfPeer))}
             >{localPeer === "person" ? "Open to peers (person)" : "Open to peers"}</button>
           )}
           {wf && mothership && (

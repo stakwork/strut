@@ -248,6 +248,7 @@ strut/
         ├── icons.tsx      # inline SVG icons
         ├── storage.ts     # crash-safe localStorage wrapper (UI prefs, session state)
         ├── step-depends.ts # dependsForSave: what the step editor saves as `depends` — a checked list, `[]` when the step had an explicit `depends` and nothing is checked (a parallel step stays parallel; unchecking every dep means none), omitted when it never had one (still implicitly sequential)
+        ├── peer-flag.ts   # the topbar's "Open to peers" toggle over a workflow's top-level `peer:` (a local edit Publish writes, like params): readPeer / applyPeer (off = the key removed) / togglePeer — turning a published `peer: person` off and on again restores `person`, never widens it to `true` (pure; tested)
         ├── step-attempt.ts # latestAttempt: a step's events from its last `step.start` / `step.skipped` on — a resume continues the same log, so a re-run step's earlier `step.error` is still in it; the canvas status and the run flyout read only the latest attempt (pure; tested)
         ├── (folds)        # run-overview, transcript, accessed-nodes and artifact-view are the KIT's (`kit/src/folds/`), imported as `@strut/kit/folds` — vite.config.ts aliases it onto the source, tsconfig `paths` (web's and the root's, for the tsx test run) the same
         ├── walk-graph.ts  # foldWalk: graph_walk's progress outputs → nodes/edges/current/next — the kit's `foldWalkProgress` (kit/src/folds/walk/graph.ts) under the names the chat uses; tested against the real walk
