@@ -34,6 +34,15 @@ const Fact = z.object({
   create_schema_if_missing: z.boolean().optional().describe("Create the edge type as temporal between the two ends' types when the ontology has no such edge. An existing plain edge type is never made temporal."),
   cardinality: z.enum(["one", "many"]).optional().describe("With create_schema_if_missing, for a new edge type: `one` when a subject holds one current value (where someone lives), `many` (default) when several hold at once."),
   aliases: z.array(z.string()).optional().describe("With create_schema_if_missing, for a new edge type: other words for it, which a search reads as naming it (WORKS_AT: job, employer)."),
+  check: z
+    .object({
+      expects: z.string().describe("What this kind of fact should keep producing while it is true, in plain words (\"the organisation comes up in chats\"). Leave out a check for a kind of fact that produces nothing ongoing, like a birthday."),
+      step: z.string().regex(/^graph\/check-[a-z0-9-]+$/, "a check runs one of memory's read-only graph/check-* steps").optional().describe("The check step, one of memory's read-only graph/check-* steps: default graph/check-chats, the user's chats."),
+      freshness_days: z.number().positive().optional().describe("How old its last finding may be before a read looks again (default 14)."),
+      window_days: z.number().positive().optional().describe("How far back it looks (default 30)."),
+    })
+    .optional()
+    .describe("How to check this kind of fact (plans/memory-checks.md): what it should keep producing, and where to look. Kept on the edge type the first time it is given, never changed. What a check finds is evidence, weaker than what people say."),
   volatility: z.enum(VOLATILITIES).optional().describe("How fast this kind of fact changes: `static` never (a birthday), `stable` over years (where someone lives), `evolving` within a year or so (a diet), `volatile` within weeks (what someone is working on). Kept on the edge type the first time it is given; reads lower trust in a fact as it goes unconfirmed for longer than that."),
 });
 type FactT = z.infer<typeof Fact>;
@@ -111,6 +120,11 @@ export default defineStep({
       // On Neo4j assertEdge refuses before reading anything: let it, before a node is made.
       if (b.kind !== "ladybug") await assertEdge(b, b.schemas, { edge: edgeOf(facts[0]!), source_ref_id: "", target_ref_id: "", text: "" });
       for (const f of facts) if (f.create_schema_if_missing || f.volatility) await ensureTemporal(b, f, edgeOf(f), [await typeOf(f, "source"), await typeOf(f, "target")]);
+      // A kind of fact's check, made the first time it is given (plans/memory-checks.md).
+      if (facts.some((f) => f.check)) {
+        const { ensureFactCheck } = await import("../../../graph/ladybug/fact-claims.js");
+        for (const f of facts) if (f.check) await b.tx((tx) => ensureFactCheck(tx, edgeOf(f), f.check!, Date.now(), { namespace, ...by }));
+      }
 
       // One transaction: the new nodes (each distinct one once) and every
       // fact. A lone fact between known nodes runs as its own, embedded first.

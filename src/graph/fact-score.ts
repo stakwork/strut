@@ -36,9 +36,11 @@ export const isVolatility = (v: unknown): v is Volatility => typeof v === "strin
  *  `stable`. */
 export const HALF_LIFE_DAYS: Readonly<Record<Volatility, number>> = { static: Infinity, stable: 3 * 365, evolving: 365, volatile: 60 };
 
-export type SayerKind = "owner" | "self" | "other";
-/** How far one sayer of each kind is believed. Fixed, not learned. */
-export const TRUST: Readonly<Record<SayerKind, number>> = { owner: 0.95, self: 0.9, other: 0.7 };
+export type SayerKind = "owner" | "self" | "other" | "check";
+/** How far one sayer of each kind is believed. Fixed, not learned. A check
+ *  (plans/memory-checks.md) is weaker than a person: what it finds only fits
+ *  the fact, it does not state it. */
+export const TRUST: Readonly<Record<SayerKind, number>> = { owner: 0.95, self: 0.9, other: 0.7, check: 0.6 };
 /** How much each sayer after the first adds (under 1: sayers are not fully independent). */
 const GAMMA = 0.5;
 /** Days of no decay after a mention, and the floor currency stops at. */
@@ -63,8 +65,13 @@ export interface EvidenceIn {
   said_by?: string;
   /** Epoch ms. */
   observed_at: number;
-  /** Above 0 backs it, below 0 says it is false. */
+  /** Above 0 backs it, below 0 says it is false (from a check: the
+   *  expected evidence is missing). */
   strength: number;
+  /** The check step that observed it (`observed` evidence); absent for something someone said. */
+  check?: string;
+  /** The Check that observed it. */
+  check_id?: string;
 }
 
 /** An edge of a slot, as the graph holds it (epoch ms). */
@@ -137,21 +144,32 @@ const sayerOf = (ref_id: string | undefined, s: Pick<SlotInput, "subject" | "peo
   return { ref_id, ...(p.name ? { name: p.name } : {}), kind: p.owner ? "owner" : ref_id === s.subject ? "self" : "other" };
 };
 
-/** Who backed an edge: each sayer of its supporting evidence once, or each
+/** Who or what one piece of evidence came from: a person, or a check by its step. */
+const sourceOf = (x: EvidenceIn, s: Pick<SlotInput, "subject" | "people" | "user">): Sayer =>
+  x.check ? { name: x.check, kind: "check" } : sayerOf(x.said_by, s);
+
+/** Who backed an edge: each source of its supporting evidence once, or each
  *  Person among its sources; none, the user. */
 export function sayersOf(e: SlotEdge, s: Pick<SlotInput, "subject" | "people" | "user">): Sayer[] {
   const who = e.evidence
-    ? e.evidence.filter((x) => x.strength > 0).map((x) => sayerOf(x.said_by, s))
+    ? e.evidence.filter((x) => x.strength > 0).map((x) => sourceOf(x, s))
     : e.sources.filter((x) => s.people.has(x)).map((x) => sayerOf(x, s));
   if (!who.length) return [sayerOf(undefined, s)];
   return [...new Map(who.map((w) => [`${w.kind}|${w.ref_id ?? w.name ?? ""}`, w])).values()];
 }
 
-/** Distinct sayers combined: the most trusted, and each other one adding a little. */
-export function combine(kinds: SayerKind[]): number {
-  const [first, ...rest] = kinds.map((k) => TRUST[k]).sort((a, b) => b - a);
+const trustOf = (w: Sayer) => TRUST[w.kind];
+
+/** Trusts combined: the most trusted, and each other one adding a little. */
+function combineTrust(trusts: number[]): number {
+  const [first, ...rest] = [...trusts].sort((a, b) => b - a);
   if (first === undefined) return 0;
   return sigmoid(logit(first) + GAMMA * rest.reduce((n, t) => n + logit(t), 0));
+}
+
+/** Distinct sayers of these kinds, combined. */
+export function combine(kinds: SayerKind[]): number {
+  return combineTrust(kinds.map((k) => TRUST[k]));
 }
 
 /** The latest backing: the newest supporting evidence, else its last
@@ -178,8 +196,13 @@ function newestOf(xs: EvidenceIn[] | undefined): EvidenceIn[] {
 
 /** The newest word on it is the user saying it is false; at the same time as support, the refutation wins. */
 function refutedBy(e: SlotEdge, s: Pick<SlotInput, "subject" | "people" | "user">): boolean {
-  return newestOf(e.evidence).some((x) => x.strength < 0 && sayerOf(x.said_by, s).kind === "owner");
+  return newestOf(e.evidence?.filter((x) => !x.check)).some((x) => x.strength < 0 && sayerOf(x.said_by, s).kind === "owner");
 }
+
+/** Its newest check found the expected evidence missing: weakly against it.
+ *  Only for kinds of fact that change: silence says nothing about a static or stable one. */
+const quietBy = (e: SlotEdge, volatility: Volatility | undefined) =>
+  (volatility === "evolving" || volatility === "volatile") && newestOf(e.evidence?.filter((x) => x.check)).some((x) => x.strength < 0);
 
 /** The sources that are messages (not a Person, not a run). */
 const messagesOf = (e: SlotEdge, people: ReadonlyMap<string, Person>) => e.sources.filter((x) => !people.has(x) && !x.startsWith("run:"));
@@ -199,7 +222,7 @@ export function scoreSlot(s: SlotInput): Map<string, FactTrust> {
   const sayers = new Map(s.edges.map((e) => [e.ref_id, sayersOf(e, s)]));
   const refuted = new Map(s.edges.map((e) => [e.ref_id, refutedBy(e, s)]));
   const belief = new Map(
-    s.edges.map((e) => [e.ref_id, refuted.get(e.ref_id) || rereadOnly(e, s.edges, s.people) ? 0 : combine(sayers.get(e.ref_id)!.map((x) => x.kind))]),
+    s.edges.map((e) => [e.ref_id, refuted.get(e.ref_id) || rereadOnly(e, s.edges, s.people) ? 0 : combineTrust(sayers.get(e.ref_id)!.map(trustOf))]),
   );
   const currency = new Map(s.edges.map((e) => [e.ref_id, currencyOf(e, s.volatility, s.now)]));
   const score = (e: SlotEdge) => belief.get(e.ref_id)! * currency.get(e.ref_id)!;
@@ -236,7 +259,7 @@ export function scoreSlot(s: SlotInput): Map<string, FactTrust> {
         ? "unknown"
         : behind || contested
           ? "disputed"
-          : cur < STALE_BELOW
+          : cur < STALE_BELOW || quietBy(e, s.volatility)
             ? "stale"
             : who.every((x) => x.kind === "other")
               ? "hearsay"
@@ -246,7 +269,7 @@ export function scoreSlot(s: SlotInput): Map<string, FactTrust> {
     const current = e.expired_at === null;
     const stance = !current ? undefined : status === "stale" && cur < ASK_BELOW ? "ask" : STANCE[status];
     const items = e.evidence
-      ? [...e.evidence].sort((a, b) => b.observed_at - a.observed_at).map((x) => ({ sayer: sayerOf(x.said_by, s), observed_at: x.observed_at, strength: x.strength }))
+      ? [...e.evidence].sort((a, b) => b.observed_at - a.observed_at).map((x) => ({ sayer: sourceOf(x, s), observed_at: x.observed_at, strength: x.strength }))
       : undefined;
     out.set(e.ref_id, {
       status,
