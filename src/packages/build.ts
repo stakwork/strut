@@ -539,7 +539,11 @@ export async function buildPackage(deps: BuildDeps, req: BuildRequest, opts: { d
       problems.push(`the workflow ${name}'s name: line could not be written as ${prefix}${rel(name)} — give it a plain top-level name: line`);
       continue;
     }
-    files.set(`workflows/${rel(name)}.yaml`, stamped);
+    // Its category travels in its YAML, where the install reads it as it
+    // reads `description:` (a strut that does not read it ignores the key).
+    const categorized = meta.category ? stampWorkflowCategory(stamped, meta.category) : stamped;
+    if (categorized === null) warnings.add(`the workflow ${name}'s category ${meta.category} could not be written into its YAML: it installs with none`);
+    files.set(`workflows/${rel(name)}.yaml`, categorized ?? stamped);
   }
   for (const type of [...steps].sort()) {
     const src = await deps.workspace.getStepSource(type);
@@ -829,6 +833,30 @@ export function stampWorkflowName(text: string, full: string): string | null {
   if (!line.test(text)) return null;
   const out = text.replace(line, `name: ${full}`);
   return (loadYaml(out) as { name?: unknown } | null)?.name === full ? out : null;
+}
+
+/** A workflow's text with a top-level `category:` line saying `category`
+ *  — the one it has, rewritten, else one after its `name:` line (or first)
+ *  — or null when the text would read as anything else besides. */
+export function stampWorkflowCategory(text: string, category: string): string | null {
+  const line = dumpYaml({ category }).trimEnd();
+  if (line.includes("\n")) return null;
+  const own = /^category:[^\n]*$/m;
+  const name = /^name:[^\n]*$/m.exec(text);
+  const out = own.test(text)
+    ? text.replace(own, line)
+    : name
+      ? `${text.slice(0, name.index + name[0].length)}\n${line}${text.slice(name.index + name[0].length)}`
+      : `${line}\n${text}`;
+  try {
+    const before = loadYaml(text) as Record<string, unknown> | null;
+    const after = loadYaml(out) as Record<string, unknown> | null;
+    if (!before || !after || after["category"] !== category) return null;
+    const rest = (o: Record<string, unknown>) => JSON.stringify(Object.entries(o).filter(([k]) => k !== "category"));
+    return rest(before) === rest(after) ? out : null;
+  } catch {
+    return null;
+  }
 }
 
 /** A step's source with each `type: "<from>"` literal written as `to`, or

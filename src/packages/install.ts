@@ -282,12 +282,16 @@ async function installSet(
           continue;
         }
         const text = await readFile(join(m.info.dir, item.path), "utf-8");
-        const description = (loadYaml(text) as { description?: unknown } | null)?.description;
+        const head = loadYaml(text) as { description?: unknown; category?: unknown } | null;
+        // The category the package's workflows may be found by (a planner's
+        // `category:` query): set with a version the package makes active,
+        // never on a fork beside which the release is only recorded.
+        const category = typeof head?.category === "string" && head.category && plan.action !== "diverge" ? head.category : undefined;
         const { version } = await deps.workspace.publishWorkflowByContent(
           item.name,
           text,
-          typeof description === "string" ? description : undefined,
-          undefined,
+          typeof head?.description === "string" ? head.description : undefined,
+          category,
           undefined,
           options(m, plan),
         );

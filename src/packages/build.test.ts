@@ -217,6 +217,17 @@ describe("building a package on a filesystem workspace", () => {
     ]);
   });
 
+  it("carries a workflow's category in its YAML, and the install sets it", async () => {
+    await ws.publishWorkflow("tidy", "v1", flow("tidy", "type: log, config: { message: hi }"), undefined, "legal-library");
+    const built = await build(src, { workflows: ["tidy"] });
+    assert.equal(await readFile(join(built.dir, "workflows/tidy.yaml"), "utf-8"), "name: acme/linear/tidy\ncategory: legal-library\nsteps:\n  - { id: s0, type: log, config: { message: hi } }\n");
+    const buyer = await fresh("buyer");
+    const r = await install(buyer, `file:${built.dir}`);
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    assert.equal((await buyer.workspace.getWorkflowMetadata("acme/linear/tidy"))?.category, "legal-library");
+    assert.equal((await build(src, { workflows: ["tidy"] })).digest, built.digest, "the same bytes again");
+  });
+
   it("pins a package it reaches at the digest it was installed at, and installs it first", async () => {
     const util = await writeTree({ "strut.yaml": "package: bob/util\nversion: 2.1.0\n", "steps/fmt.ts": PLAIN("bob/util/fmt", "fmt") }, "util");
     const { digest } = await readPackage(util);
@@ -676,6 +687,7 @@ for (const tb of testBackends()) {
     it("writes the pages under a Concept and the step's claims that stay inside, and installs on a cleared graph and on a filesystem", async () => {
       const src = await graphStrut("source");
       await publishLinear(src.workspace);
+      await src.workspace.setWorkflowCategory("acme/linear/sync", "linear");
       await src.workspace.publishStep("local/judge", PLAIN("local/judge"));
       await src.rebuildRegistry();
       await page("Linear", { description: "The tracker", docs: "How Linear works here." }, "Job");
@@ -718,6 +730,7 @@ for (const tb of testBackends()) {
       const buyer = await graphStrut("buyer");
       const onGraph = await roundTrip(buyer, built.dir);
       assert.deepEqual(onGraph.warnings, []);
+      assert.equal((await buyer.workspace.getWorkflowMetadata("acme/linear/sync"))?.category, "linear", "the StrutWorkflow node's category");
       const linear = await conceptRef("Linear");
       const parents = await backend.tx((tx) => backend.edgeEngine.liveEdgesOf(tx, linear!, "PARENT_OF", false));
       assert.deepEqual(parents?.edges.map((e) => e.other), [await conceptRef("Job")]);
