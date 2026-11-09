@@ -482,6 +482,12 @@ Evan, 2026-11-08:
   for either may include the other's writes. The climb loop is
   sequential and never meets this; a swarm's sweeps will. The window
   is the view's flush (one to five seconds) plus the queue's second.
+  The history is versioning, not provenance: which run wrote which node
+  is the run log's to say, exact wherever a step marks its writes with
+  `withAccessedNodes`. The one gap is a custom step that writes the
+  graph without the marker; if an eval ever needs it closed, the write
+  view, which hears every write, can record each flush on the run's
+  own log. Not this plan.
 - **Writes outside a run are timed at the next touch.** A raw write
   (`services.graph.query`, another process) is committed with the next
   snapshot, under that snapshot's cause. A benchmark that needs them can
