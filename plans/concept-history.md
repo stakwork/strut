@@ -420,10 +420,13 @@ not lost.
 
 ## 8. Work items (one PR each, in this order)
 
-1. **The page format** (§2.1). The package reader takes both forms (a
-   new-form page under any file name, its `name` its identity), a build
-   writes the new one under the key, an install writes the attributes
-   and every parent, `keepEdited` compares every attribute. Tests:
+1. **The page format** (§2.1). **BUILT 2026-11-09, strut#577.** The
+   package reader takes both forms (a new-form page under any file name,
+   its `name` its identity), a build writes the new one under the key, an
+   install writes the attributes and every parent, `keepEdited` compares
+   every attribute. Beyond this list, a package's page that a release
+   moved to another file (the old form rebuilt under its key) is the same
+   page, so a distro update across the two forms goes through. Tests:
    - a page with two parents and a `/` in its name goes through build
      and install with both parents and its attributes;
    - an old-form package installs as before;
