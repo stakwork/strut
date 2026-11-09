@@ -2170,7 +2170,7 @@ is refused by name (`package_source_unsupported`).
 | Method | Path | Description |
 | ------ | ---- | ----------- |
 | GET    | `/packages` | What is installed: `{ packages: InstalledPackage[] }` (`src/packages/installed.ts`), a fold over the workspace, never a store |
-| POST   | `/packages/build` | `BuildRequest` → 201 `{ package, version, digest, files, requires, warnings }` (`src/packages/build.ts`): a package built from this workspace into the cache. With `dryRun: true`, 200 and the same answer with nothing kept: the package page's preview of what comes along. A person's act like install: full scope, one at a time with install and uninstall |
+| POST   | `/packages/build` | `BuildRequest` → 201 `{ package, version, digest, files, requires, warnings, leftToInstaller, suggested }` (`src/packages/build.ts`): a package built from this workspace into the cache. With `dryRun: true`, 200 and the same answer with nothing kept: the package page's preview of what comes along. A person's act like install: full scope, one at a time with install and uninstall |
 | POST   | `/packages/install` | `{ ref, digest?, url?, index? }` → 201 `InstallResult` (`src/packages/install.ts`). `ref` is `file:/path/to/package`, `pk:<key>/<publisher>/<name>[@sha256:<hex>]` with `url`, where the publisher's catalog is served (a strut's `…/packages/catalog?public=1`, or the file it uploaded) — see "Installing by key" below — or a bare NAME, `publisher/name`, looked up in the indexes this strut follows (the first whose card lists the publisher, or the one `index` names) and installed as `pk:` with the row's key and catalog URLs, tried in order. A name with `url` is 400; 404 `package_not_listed` when no index lists the publisher, `package_index_unknown` for an `index` not followed; 502 `package_index_unreachable` when no index card could be read; 400 when this strut follows none. A person's act: behind the key at full scope (a peer is 403), one at a time |
 | DELETE | `/packages/:publisher/:name` | Uninstall → `{ ok: true, package, removed, kept }` (`UninstallResult`) |
 | GET    | `/packages/:publisher/:name/archive?digest=sha256:<hex>` | The package at that digest as a `.tar.gz` of its files (`content-type: application/gzip`, `ETag: "<digest>"`, `cache-control: private, max-age=31536000, immutable`; `If-None-Match` → 304). 400 without a well-formed `digest`; 404 when this strut holds no package `publisher/name` at that digest. Behind the key like every route; with `?t=` a subscriber's read of a digest the fleet catalog names; with `?public=1` anyone's read of a digest the PUBLIC catalog names (404 for any other, whatever the gate's mode) |
@@ -2262,7 +2262,8 @@ takes it from `file:<the cache directory>` (`<dataDir>/packages/sha256-<hex>/`).
     "secrets": ["LINEAR_API_KEY"], "binaries": ["sh"],
     "packages": [{ "package": "acme/util", "digest": "sha256:…", "source": "file:/…/packages/sha256-…" }]
   },
-  "warnings": [],                      // a claim left out, a closure read only in part, a parent outside the package
+  "warnings": [],                      // a claim left out, a closure read only in part, a parent outside the package, an item left to the installing strut
+  "leftToInstaller": [],               // [{ kind: "workflow" | "step" | "app", name, publisher? }]: what the closure reaches that the installing strut must already have (below)
   "suggested": { "types": [], "concepts": [] }  // not carried yet, what the package page offers to add (below)
 }
 ```
@@ -2284,7 +2285,13 @@ What goes in:
   step — a seed's (`source: "seed"`, such as `job`) or one a service
   published (a `publisher` stamp other than the builder's `ai`) — are
   recorded nowhere: the installing strut must have them, and the install
-  checks.
+  checks. One that strut does not seed on every server — a host's seed
+  (the mcp lab's `artifacts/dir`), a service's item — is listed in
+  `leftToInstaller` and said in a warning (`the step artifacts/dir is left
+  to the installing strut (published here by artifacts-seed): a strut
+  without it cannot install or run what reaches it`); strut's own seeds
+  (`job`, `orchestrator`, `builder`, the browser, privacy, system and
+  `home-sync` workflows, the `strut/` apps) are not.
 - **Another package's item** the closure reaches is a `requires.packages`
   pin: at the digest it was installed at (its `upstream`), or, for a
   package built on this strut, at the digest the request names under
@@ -2310,7 +2317,10 @@ What goes in:
   `edges: [[EDGE, Target]]`, the edges whose source it is. Its parents
   come along up to a type every strut has (`Thing`, strut's own, the
   seed's Claim / Check / Evidence / Concept) or one a required package
-  carries. The edges are the ontology's rules among the carried types and
+  carries. Its `key_spec` is the attributes after the key's type prefix,
+  whoever declared the key: a type with none of its own (jarvis's
+  `Content`, `Legal`, which inherit Thing's `thing-name`) is keyed by
+  `name`, the default, and writes no `key_spec`. The edges are the ontology's rules among the carried types and
   every edge the graph HOLDS between two of them — so an edge a Jarvis
   graph let through on its allowlist, with no rule, travels as a rule.
   Rules carry no `temporal`, `cardinality` or aliases yet. An edge the

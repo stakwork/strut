@@ -3688,6 +3688,7 @@ export async function createStrut<TServices = unknown>(
     files: built.files,
     requires: built.manifest.requires ?? {},
     warnings: built.warnings,
+    leftToInstaller: built.leftToInstaller,
     suggested: built.suggested,
   });
   /** A build reads the runs too, for what the workflows wrote and read (`suggested`). */

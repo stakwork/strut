@@ -2122,6 +2122,29 @@ production until install (step 2) calls the resolver.
      - **An install is a person's publish** (`surface: "person"`), as
        installing is a person's act: the meta surface's grant rules (no
        `llm`, `agent`, `exec`, nothing sealed) do not apply to it.
+   - **Fixed 2026-11-09, found publishing openlaw1's legal desk to a
+     self-hosted strut (Neo4j, no jarvis):**
+     - **A type with no key of its own exports with none.** jarvis's domain
+       anchors (`Content`, `Legal`) declare no `node_key`, and the schema
+       resolver merges Thing's, `thing-name`, into them; the export
+       stripped only the type's own prefix (`content-`), so the file said
+       `key_spec: thing-name` and the build refused it ("key_spec token
+       thing is not a declared attribute"). A key spec's first token is the
+       type prefix, which the writer replaces with the node's own type
+       whoever declared it (`composeNodeKey`), so the export drops it
+       always. A case in `src/packages/graph-types.test.ts` builds the 12
+       legal types off jarvis's ontology and installs them, with `Content`
+       and `Legal`, on a graph strut alone holds, then writes the children
+       and their edges there; the file now runs in `npm run test:graph`.
+     - **What the package leaves to the installing strut is said.** A
+       host's seed (the mcp lab's `artifacts/dir`) or a service's item the
+       closure reaches is recorded nowhere, as before, and is now also a
+       warning and `leftToInstaller` on the build's answer — a plain strut
+       does not have it, and its install refuses the package. strut's own
+       seeds (`job`, `orchestrator`, `builder`, the browser, privacy,
+       system and home-sync workflows, the `strut/` apps) stay silent: every
+       strut has them. The Packages tab shows the list in **Comes along**
+       as "Needs on the installing strut".
 3. **`git+` source + export to git**, the §2.3 export over the package
    layout.
 4. **Updates:** the ask, each re-point classified `silent` / `named` by

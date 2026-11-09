@@ -279,7 +279,7 @@ function PackagePage(props: {
       clearTimeout(t);
     };
   }, [props.pkg, picks, empty]);
-  const along = preview?.result ? comesAlong(props.pkg, preview.result.files, picks) : null;
+  const along = preview?.result ? comesAlong(props.pkg, preview.result.files, picks, preview.result) : null;
 
   // Concept names, as typed: the graph's own names offered as they match.
   useEffect(() => {
@@ -436,7 +436,7 @@ function PackagePage(props: {
                   Not carried, since every strut has its own: {along.leftOut.join(", ")}.
                 </div>
               )}
-              {preview?.result?.warnings.map((w, i) => <div class="auto-hint package-warning" key={i}>{w}</div>)}
+              {along.warnings.map((w, i) => <div class="auto-hint package-warning" key={i}>{w}</div>)}
             </>
           ) : (
             <div class="auto-hint">Reading what comes along…</div>
@@ -867,6 +867,17 @@ function ComesAlong(props: { along: ReturnType<typeof comesAlong>; secrets: read
           <span class="package-along-note">parent types</span>
           {chips(along.types)}
         </div>
+      ),
+    });
+  if (along.needs.length)
+    sections.push({
+      title: "Needs on the installing strut",
+      count: along.needs.length,
+      body: (
+        <>
+          <div class="package-along-say">Put here by this server's host or a service, not by strut: a strut without them cannot install or run what reaches them.</div>
+          {spaced(along.needs)}
+        </>
       ),
     });
   if (props.secrets.length) sections.push({ title: "Needs secrets", count: props.secrets.length, body: chips([...props.secrets]) });

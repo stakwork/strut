@@ -70,12 +70,16 @@ export function pickerGroups(
  *  sorted by kind: the workflows and apps it adds, every step (helpers left
  *  out), the Concept pages under each root named, and the graph types it
  *  adds — the parents of the types named — each by its path in the package;
- *  and the picks it does NOT carry — the host's own, which the installing
- *  strut has. */
+ *  the picks it does NOT carry — the host's own, which the installing
+ *  strut has; and, from the build's `leftToInstaller`, what it reaches
+ *  that the installing strut must already have (`needs`: a seed of this
+ *  strut's host, a service's item), with the build's warnings left to show
+ *  once those are said. */
 export function comesAlong(
   pkg: string,
   files: readonly string[],
   picked: { workflows: readonly string[]; apps: readonly string[]; concepts?: readonly string[]; types?: readonly string[] },
+  built: { warnings?: readonly string[]; leftToInstaller?: ReadonlyArray<{ kind: string; name: string }> } = {},
 ): {
   workflows: string[];
   steps: string[];
@@ -83,6 +87,8 @@ export function comesAlong(
   concepts: { roots: string[]; pages: number };
   types: string[];
   leftOut: string[];
+  needs: string[];
+  warnings: string[];
 } {
   const workflows = new Set<string>();
   const steps = new Set<string>();
@@ -106,6 +112,7 @@ export function comesAlong(
   // A page's file is its node key, not its name; a build that answered
   // carries every Concept named (one missing refuses it).
   const roots = pages ? [...(picked.concepts ?? [])].sort() : [];
+  const left = built.leftToInstaller ?? [];
   return {
     workflows: [...workflows].filter((p) => !pickedWf.has(p)).sort(),
     steps: [...steps].sort(),
@@ -114,6 +121,9 @@ export function comesAlong(
     // A parent of a named type comes along; the names match case-blind, as the graph's do.
     types: [...types].filter((t) => !(picked.types ?? []).some((n) => n.toLowerCase() === t.toLowerCase())).sort(),
     leftOut: [...picked.workflows.filter((n) => !workflows.has(pathIn(pkg, n))), ...picked.apps.filter((n) => !apps.has(pathIn(pkg, n)))].sort(),
+    needs: [...new Set(left.map((l) => l.name))].sort(),
+    // Each one's warning (src/packages/build.ts) is what `needs` says.
+    warnings: (built.warnings ?? []).filter((w) => !left.some((l) => w.startsWith(`the ${l.kind} ${l.name} is left to the installing strut`))),
   };
 }
 

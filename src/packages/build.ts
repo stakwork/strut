@@ -17,7 +17,9 @@
  *      `upstream`, recorded nowhere when it is the host's (a seed's,
  *      `source: "seed"` — strut's own `job` or `strut/views` — or one a
  *      service published, a `publisher` stamp other than the builder's
- *      `ai`: the installing strut must have it, and the install checks) —
+ *      `ai`: the installing strut must have it, and the install checks;
+ *      one strut itself does not seed everywhere — a host's seed, a
+ *      service's item — is a warning and `leftToInstaller`) —
  *      or under a SIBLING the request requires, a package built here whose
  *      cached copy holds it as it is now. Core and lib types are recorded
  *      nowhere.
@@ -53,6 +55,9 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, posix } from "node:path";
 import type { AppsCapability } from "../apps/apps.js";
 import { readBuildInfo } from "../apps/build.js";
+import { isFirstPartyName } from "../apps/files.js";
+import { BROWSER_WORKFLOWS } from "../browser/seed.js";
+import { BUILDER_WORKFLOW } from "../builder-seed.js";
 import type { ClaimsAuthoring } from "../claims-authoring.js";
 import { claimSpecSchema, type ClaimsBlock } from "../claims-schemas.js";
 import { flowClosure, globToRegExp, type FlowClosure } from "../closure.js";
@@ -62,10 +67,15 @@ import { hasTemplates } from "../expr.js";
 import type { GraphBackend } from "../graph/backend.js";
 import type { CheckRow } from "../graph/claims.js";
 import { composeNodeKey } from "../graph/node-writer.js";
+import { HOME_SYNC_WORKFLOW } from "../home-sync.js";
+import { JOB_WORKFLOW } from "../job-seed.js";
+import { ORCHESTRATOR_WORKFLOW } from "../orchestrator-seed.js";
+import { PRIVACY_WORKFLOWS } from "../privacy/seed.js";
 import { secretNamesIn } from "../reach.js";
 import type { SubflowResolver } from "../runner.js";
 import { isSealedStep, sealedStepPatterns } from "../sealed.js";
 import { baseType } from "../step-ref.js";
+import { isSystemWorkflow } from "../system-workflows.js";
 import { hashTree, treeFiles } from "../version.js";
 import { packagePrefixOf, type Upstream, type VersionSource, type WorkspaceStore } from "../workspace.js";
 import { dumpYaml, loadYaml } from "../yaml.js";
@@ -134,6 +144,10 @@ export interface BuildResult {
    *  nothing. */
   dir: string;
   warnings: string[];
+  /** The workflows, steps and apps the closure reaches that the installing
+   *  strut must already have — a seed of this strut's host or a service's
+   *  item, never strut's own — each also a warning. */
+  leftToInstaller: LeftToInstaller[];
   /** Graph types and Concept roots the workflows' runs wrote and read, not
    *  named (./suggest.ts): what the package page offers to add. */
   suggested: Suggested;
@@ -168,6 +182,21 @@ interface Origin {
  *  one a service published. */
 const hosts = (o: Origin) => o.source === "seed" || (o.publisher !== undefined && o.publisher !== BUILDER_STAMP);
 
+/** What strut itself seeds on every server: its shipped workflows and the
+ *  apps under `strut/`. A host's seed (the mcp lab's) and a service's item
+ *  are not on every strut, so the build says so (`leftToInstaller`). */
+const STRUT_WORKFLOWS = new Set([JOB_WORKFLOW, ORCHESTRATOR_WORKFLOW, BUILDER_WORKFLOW, HOME_SYNC_WORKFLOW, ...Object.keys(BROWSER_WORKFLOWS), ...Object.keys(PRIVACY_WORKFLOWS)]);
+const strutShips = (kind: Kind, name: string) =>
+  kind === "workflow" ? STRUT_WORKFLOWS.has(name) || isSystemWorkflow(name) : kind === "app" ? isFirstPartyName(name) : false;
+
+/** An item the closure reaches that this strut's host or a service put here. */
+export interface LeftToInstaller {
+  kind: Kind;
+  name: string;
+  /** The service stamp on it; none for a host's seed. */
+  publisher?: string;
+}
+
 /** `dryRun`: everything a build does — the closure, the refusals, the
  *  files and their digest — with nothing kept in the cache: what the
  *  package page shows as "comes along" while a person picks. */
@@ -187,6 +216,7 @@ export async function buildPackage(deps: BuildDeps, req: BuildRequest, opts: { d
   const custom = new Set(Object.keys(await deps.workspace.getActiveStepHashes()));
   const problems: string[] = [];
   const warnings = new Set<string>();
+  const left = new Map<string, LeftToInstaller>();
 
   const workflows = new Set<string>();
   const steps = new Set<string>();
@@ -248,7 +278,10 @@ export async function buildPackage(deps: BuildDeps, req: BuildRequest, opts: { d
   // package's is a pin at the digest it was installed at, anything else is
   // refused — a package carries its own prefix and nobody else's items.
   const outside = async (kind: Kind, name: string, o: Origin, by: string) => {
-    if (hosts(o)) return;
+    if (hosts(o)) {
+      if (!strutShips(kind, name)) left.set(`${kind} ${name}`, { kind, name, ...(o.publisher ? { publisher: o.publisher } : {}) });
+      return;
+    }
     const up = o.upstream;
     const sibling = siblings.get(packagePrefixOf(name) ?? "");
     if (sibling && (!up || up.package !== sibling.manifest.package)) {
@@ -603,6 +636,12 @@ export async function buildPackage(deps: BuildDeps, req: BuildRequest, opts: { d
   };
   files.set(MANIFEST_FILE, dumpYaml(manifest));
 
+  // What the package leaves to the installing strut beyond strut's own: said, never refused.
+  const leftToInstaller = [...left.values()].sort((a, b) => a.name.localeCompare(b.name) || a.kind.localeCompare(b.kind));
+  for (const l of leftToInstaller) {
+    warnings.add(`the ${l.kind} ${l.name} is left to the installing strut (${l.publisher ? `published here by ${l.publisher}` : "seeded here by this strut's host"}): a strut without it cannot install or run what reaches it`);
+  }
+
   // Written beside the cache, then in through it: the cache re-reads and hashes it.
   const scratch = join(deps.cache.root, ".build", randomBytes(8).toString("hex"));
   try {
@@ -613,10 +652,10 @@ export async function buildPackage(deps: BuildDeps, req: BuildRequest, opts: { d
     }
     if (opts.dryRun) {
       const info = await readPackage(scratch);
-      return { package: pkg, version: req.version, digest: info.digest, files: info.files, manifest, dir: "", warnings: [...warnings], suggested };
+      return { package: pkg, version: req.version, digest: info.digest, files: info.files, manifest, dir: "", warnings: [...warnings], leftToInstaller, suggested };
     }
     const info = await deps.cache.putDir(scratch);
-    return { package: pkg, version: req.version, digest: info.digest, files: info.files, manifest, dir: info.dir, warnings: [...warnings], suggested };
+    return { package: pkg, version: req.version, digest: info.digest, files: info.files, manifest, dir: info.dir, warnings: [...warnings], leftToInstaller, suggested };
   } finally {
     await rm(scratch, { recursive: true, force: true });
   }

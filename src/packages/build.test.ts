@@ -222,16 +222,45 @@ describe("building a package on a filesystem workspace", () => {
     const { digest } = await readPackage(util);
     assert.equal((await install(src, `file:${util}`)).status, 201);
     await ws.publishWorkflow("acme/linear/fmt", "v1", flow("acme/linear/fmt", "type: bob/util/fmt"));
-    // A seed's workflow is strut's own (or the host's): recorded nowhere, like a core step.
+    // A seed's workflow, a service's step, strut's own `job`: recorded nowhere,
+    // like a core step. The host's and the service's are said; strut's is every strut's.
     await ws.publishWorkflowByContent("seeded", flow("seeded", "type: log, config: { message: hi }"), undefined, undefined, undefined, { source: "seed" });
-    await ws.publishWorkflow("acme/linear/both", "v1", flow("acme/linear/both", "type: subflow, config: { workflow: acme/linear/fmt }", "type: subflow, config: { workflow: seeded }"));
+    await ws.publishWorkflowByContent("job", flow("job", "type: log, config: { message: hi }"), undefined, undefined, undefined, { source: "seed" });
+    await ws.publishStep("artifacts/dir", PLAIN("artifacts/dir", "dir"), undefined, "artifacts-seed");
+    await ws.publishWorkflow(
+      "acme/linear/both",
+      "v1",
+      flow("acme/linear/both", "type: subflow, config: { workflow: acme/linear/fmt }", "type: subflow, config: { workflow: seeded }", "type: subflow, config: { workflow: job }", "type: artifacts/dir"),
+    );
 
     const built = await build(src, { workflows: ["acme/linear/both"] });
     assert.deepEqual(built.files, ["steps/_shared.ts", "strut.yaml", "workflows/both.yaml", "workflows/fmt.yaml"]);
     assert.deepEqual(built.manifest.requires, { packages: [{ package: "bob/util", digest, source: `file:${util}` }] });
+    assert.deepEqual(built.leftToInstaller, [
+      { kind: "step", name: "artifacts/dir", publisher: "artifacts-seed" },
+      { kind: "workflow", name: "seeded" },
+    ]);
+    assert.deepEqual(
+      built.warnings.filter((w) => /left to the installing strut/.test(w)),
+      [
+        "the step artifacts/dir is left to the installing strut (published here by artifacts-seed): a strut without it cannot install or run what reaches it",
+        "the workflow seeded is left to the installing strut (seeded here by this strut's host): a strut without it cannot install or run what reaches it",
+      ],
+    );
+
+    // Without the service's step the install is refused, naming it.
+    const bare = await fresh("bare");
+    await bare.workspace.publishWorkflowByContent("seeded", flow("seeded", "type: log, config: { message: hi }"), undefined, undefined, undefined, { source: "seed" });
+    await bare.workspace.publishWorkflowByContent("job", flow("job", "type: log, config: { message: hi }"), undefined, undefined, undefined, { source: "seed" });
+    const refusedInstall = await install(bare, `file:${built.dir}`);
+    assert.equal(refusedInstall.status, 400, JSON.stringify(refusedInstall.body));
+    assert.match(String(refusedInstall.body.error), /names the step artifacts\/dir, which is neither on this strut server nor in the packages/);
 
     const buyer = await fresh("buyer");
     await buyer.workspace.publishWorkflowByContent("seeded", flow("seeded", "type: log, config: { message: hi }"), undefined, undefined, undefined, { source: "seed" });
+    await buyer.workspace.publishWorkflowByContent("job", flow("job", "type: log, config: { message: hi }"), undefined, undefined, undefined, { source: "seed" });
+    await buyer.workspace.publishStep("artifacts/dir", PLAIN("artifacts/dir", "dir"), undefined, "artifacts-seed");
+    await buyer.rebuildRegistry();
     const r = await install(buyer, `file:${built.dir}`);
     assert.equal(r.status, 201, JSON.stringify(r.body));
     assert.deepEqual(r.body.packages.map((p) => p.package), ["bob/util", "acme/linear"]);
@@ -254,7 +283,7 @@ describe("building a package on a filesystem workspace", () => {
 
     const util = await post({ package: "acme/util", version: "1", steps: ["acme/util/fmt"] });
     assert.equal(util.status, 201, JSON.stringify(util.body));
-    assert.deepEqual(util.body, { package: "acme/util", version: "1", digest: util.body.digest, files: ["steps/fmt.ts", "strut.yaml"], requires: {}, warnings: [], suggested: { types: [], concepts: [] } });
+    assert.deepEqual(util.body, { package: "acme/util", version: "1", digest: util.body.digest, files: ["steps/fmt.ts", "strut.yaml"], requires: {}, warnings: [], leftToInstaller: [], suggested: { types: [], concepts: [] } });
     r = await linear({ packages: [{ package: "acme/util", digest: util.body.digest }] });
     assert.equal(r.status, 201, JSON.stringify(r.body));
     assert.deepEqual(r.body.files, ["steps/_shared.ts", "strut.yaml", "workflows/fmt.yaml"]);
