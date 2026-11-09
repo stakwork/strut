@@ -127,6 +127,14 @@ describe("evaluateExpr", () => {
       );
     });
 
+    it("a read off nothing names the fix: ?., ?? and the guard", () => {
+      // The language's authors are models: the error alone must teach the
+      // escape hatches (the method errors' METHODS_HINT precedent).
+      assert.throws(() => evaluateExpr("x.y", { x: undefined }), /\?\. \(a\?\.b\).*\?\? \(a\?\.b \?\? 0\).*a \? a\.b : 0/);
+      assert.throws(() => evaluateExpr("x[0]", { x: null }), /Cannot index into null — read what may be missing with \?\./);
+      assert.throws(() => evaluateExpr("x.map(n => n)", { x: null }), /Cannot call method 'map' of null — read what may be missing/);
+    });
+
     it("returns undefined for missing property on object", () => {
       assert.equal(
         evaluateExpr("obj.missing", { obj: { a: 1 } }),
@@ -291,20 +299,58 @@ describe("evaluateExpr", () => {
       assert.equal(evaluateExpr("!!a", { a: 1 }), true);
     });
 
-    it("&& does not short-circuit (one-pass parser evaluates both sides)", () => {
-      // The one-pass parser evaluates eagerly — both sides are resolved.
-      // This means referencing undefined vars on the right side throws.
-      assert.throws(
-        () => evaluateExpr("false && missing", {}),
-        TemplateError,
-      );
+    it("&& short-circuits: a falsy left side leaves the right unevaluated", () => {
+      assert.equal(evaluateExpr("false && missing", {}), false);
+      assert.equal(evaluateExpr("a && a.b.c", { a: undefined }), undefined);
+      assert.equal(evaluateExpr("a && a.b.c", { a: { b: { c: 7 } } }), 7);
+      // Chained: each && settles on the running value.
+      assert.equal(evaluateExpr("a && a.b && a.b.c", { a: { b: null } }), null);
     });
 
-    it("|| does not short-circuit (one-pass parser evaluates both sides)", () => {
-      assert.throws(
-        () => evaluateExpr("true || missing", {}),
-        TemplateError,
-      );
+    it("|| short-circuits: a truthy left side leaves the right unevaluated", () => {
+      assert.equal(evaluateExpr("true || missing", {}), true);
+      assert.equal(evaluateExpr("a.name || 'anon'", { a: { name: "" } }), "anon");
+      assert.equal(evaluateExpr("a || b.c", { a: 0, b: { c: 3 } }), 3);
+    });
+
+    it("a skipped side is still parsed: its syntax errors throw", () => {
+      assert.throws(() => evaluateExpr("true || (missing", {}), /Expected rparen/);
+      assert.throws(() => evaluateExpr("false && a.", { a: 1 }), /Expected ident/);
+    });
+
+    it("a skipped side never calls a method or runs a lambda", () => {
+      // A lambda over a missing field would throw if it ran; a method on
+      // null would too. Neither is reached.
+      assert.equal(evaluateExpr("false && items.map(i => i.x.y)", { items: [{}] }), false);
+      assert.equal(evaluateExpr("true || nothing.map(i => i)", { nothing: null }), true);
+    });
+  });
+
+  describe("nullish coalescing (??)", () => {
+    it("takes the right side only for null and undefined — never for 0, '' or false", () => {
+      assert.equal(evaluateExpr("a ?? 1", { a: undefined }), 1);
+      assert.equal(evaluateExpr("a ?? 1", { a: null }), 1);
+      assert.equal(evaluateExpr("a ?? 1", { a: 0 }), 0);
+      assert.equal(evaluateExpr("a ?? 'x'", { a: "" }), "");
+      assert.equal(evaluateExpr("a ?? true", { a: false }), false);
+    });
+
+    it("short-circuits: a present left side leaves the right unevaluated", () => {
+      assert.equal(evaluateExpr("a ?? missing", { a: 1 }), 1);
+    });
+
+    it("pairs with ?. for the missing-item default", () => {
+      assert.equal(evaluateExpr("xs[0]?.linked ?? 0", { xs: [] }), 0);
+      assert.equal(evaluateExpr("xs[0]?.linked ?? 0", { xs: [{ linked: 4 }] }), 4);
+    });
+
+    it("binds looser than || and tighter than ? :", () => {
+      assert.equal(evaluateExpr("a || b ?? 'd'", { a: 0, b: null }), "d");
+      assert.equal(evaluateExpr("a ?? b ? 'y' : 'n'", { a: null, b: 1 }), "y");
+    });
+
+    it("does not confuse ?? with ?. or the ternary ?", () => {
+      assert.equal(evaluateExpr("a?.b ?? (a ? 'has a' : 'no a')", { a: {} }), "has a");
     });
   });
 
@@ -335,6 +381,29 @@ describe("evaluateExpr", () => {
           b: true,
         }),
         "two",
+      );
+    });
+
+    it("evaluates only the branch taken (the empty-list first-item case)", () => {
+      // A builder's `plan.skipped.length > 0 ? plan.skipped[0].linked : 0`
+      // failed on `[]` (2026-11-09): both branches used to be evaluated.
+      const expr = "plan.skipped.length > 0 ? plan.skipped[0].linked : 0";
+      assert.equal(evaluateExpr(expr, { plan: { skipped: [] } }), 0);
+      assert.equal(evaluateExpr(expr, { plan: { skipped: [{ linked: 3 }] } }), 3);
+      // The then branch is skipped the same way.
+      assert.equal(evaluateExpr("a ? a.b.c : missing.x", { a: { b: { c: 1 } } }), 1);
+      assert.equal(evaluateExpr("a ? missing.x : 'none'", { a: null }), "none");
+    });
+
+    it("a skipped branch is still parsed: its syntax errors throw", () => {
+      assert.throws(() => evaluateExpr("true ? 1 : (2", {}), /Expected rparen/);
+      assert.throws(() => evaluateExpr("false ? a. : 2", { a: 1 }), /Expected ident/);
+    });
+
+    it("short-circuits inside a lambda body too", () => {
+      assert.deepEqual(
+        evaluateExpr("items.map(i => i.meta ? i.meta.n : 0)", { items: [{}, { meta: { n: 2 } }] }),
+        [0, 2],
       );
     });
   });
