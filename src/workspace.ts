@@ -296,10 +296,12 @@ export interface WorkflowMetadata {
    *  version, and it survives every publish. Absent = none. */
   automations?: Automation[];
   /** Optional identifier of the service that published this workflow
-   *  (parallels `StepInfo.publisher`). Workflow-level provenance: the
-   *  authoring capability stamps everything it publishes `"ai"` and its
-   *  publish/run/run-history operations are closed over that stamped set —
-   *  see `authoring.ts` and EVOLVE_SPEC §6 (run-history scoping). */
+   *  (parallels `StepInfo.publisher`). Workflow-level provenance: a publish
+   *  that carries one stamps it when it writes a version, one that carries
+   *  none keeps it. The authoring capability stamps every version it writes
+   *  `"ai"` (`authoring.ts`), so once the meta surface has written to a
+   *  workflow it stays `ai`: what its harness evidence counts as (claims
+   *  §4). What RUNS is read per version (`aiWroteVersion`). */
   publisher?: string;
   /** The PERSON this workflow belongs to — an opaque actor string
    *  (plans/mothership-cost-control.md §2). Set by the first publish that
@@ -622,11 +624,6 @@ export interface WorkspaceStore extends SubflowResolver {
   setWorkflowRunCap(name: string, maxRunCostUsd: number | null): Promise<void>;
   /** Disable or re-enable a workflow — metadata-only. */
   setWorkflowDisabled(name: string, disabled: boolean): Promise<void>;
-  /** Set (or clear) the `publisher` stamp — metadata-only. A publish never
-   *  re-stamps a workflow; this is the one way to move it, and who may is
-   *  the caller's rule (`PUT /workflows/:name/publisher`: a person handing a
-   *  workflow to the builder, `"ai"`, or taking it back). */
-  setWorkflowPublisher(name: string, publisher: string | null): Promise<void>;
   /** Replace the workflow's automations (an empty list clears the field).
    *  Metadata-only, like `setWorkflowCategory`; throws for an unknown
    *  workflow. The whole list, because every mutation is a
@@ -964,13 +961,6 @@ export class FileWorkspaceStore implements WorkspaceStore {
     await this.patchWorkflowMetadata(name, (meta) => {
       if (disabled) meta.disabled = true;
       else delete meta.disabled;
-    });
-  }
-
-  async setWorkflowPublisher(name: string, publisher: string | null): Promise<void> {
-    await this.patchWorkflowMetadata(name, (meta) => {
-      if (publisher) meta.publisher = publisher;
-      else delete meta.publisher;
     });
   }
 

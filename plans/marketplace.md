@@ -1185,9 +1185,9 @@ struts are the source.
 marked `sealed: true` — a grader step (`defineStep({ sealed: true })`) or
 a grading harness (the workflow's top-level key). The install keeps the
 mark; `sealedInClosure` (`src/sealed.ts:55`) refuses every candidate
-that reaches one, as it does for a seeded grader; the meta surface's
-publisher rule (`requirePublisher: "ai"`, `src/authoring.ts:664`) already
-keeps it from editing a step it did not author. Holding a grader in a
+that reaches one, as it does for a seeded grader; the meta surface
+refuses to edit a sealed step (`editStep`, `src/authoring.ts`; the
+publisher rule that once did is gone, 2026-11-10). Holding a grader in a
 package adds what the lab pins by hand: the digest is the grader's
 exact bytes, so a check's evidence records `upstream.digest` in place of
 `SCORER_SHA256` / `benchmarkRev`, and a person's edit to a grader shows

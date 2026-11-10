@@ -279,12 +279,13 @@ function bindPublic<TServices>(services: TServices, origin: RunOrigin | undefine
   return { ...(services as object), sessions: view } as TServices;
 }
 
-/** Is `workflow` one the AI published, on a strut with `builder.reach`
- *  (src/reach.ts)? A publisher that cannot be read counts as the AI's. */
-async function aiAuthored(services: unknown, workflow: string): Promise<boolean> {
+/** Did the AI write the version of `workflow` that runs (`which`, else the
+ *  active one), on a strut with `builder.reach` (src/reach.ts)? A record
+ *  that cannot be read counts as the AI's. */
+async function aiAuthored(services: unknown, workflow: string, which?: { version?: string; hash?: string }): Promise<boolean> {
   const policy = reachPolicyOf(services);
   if (!policy) return false;
-  return policy.aiWorkflow(workflow).catch(() => true);
+  return policy.aiWorkflow(workflow, which).catch(() => true);
 }
 
 /** Everything the execution tree threads through unchanged — bundled so the
@@ -612,7 +613,7 @@ async function executeRun<TServices = unknown>(
     ...(opts?.mcp?.length ? { mcp: opts.mcp } : {}),
     ...(opts?.attachments?.length ? { attachments: opts.attachments } : {}),
     ...(opts?.maxCostUsd !== undefined ? { maxCostUsd: opts.maxCostUsd } : {}),
-    ...(opts?.aiAuthored || (await aiAuthored(services, wfName)) ? { aiAuthored: true } : {}),
+    ...(opts?.aiAuthored || (await aiAuthored(services, wfName, opts?.workflowHash ? { hash: opts.workflowHash } : undefined)) ? { aiAuthored: true } : {}),
     disposers: [],
   };
 
@@ -1484,7 +1485,7 @@ async function executeSubflow(
   const params = { ...(stepParams as Record<string, unknown> | undefined), ...exec.paramOverrides?.[childFlow.name] };
   // Once a frame is the AI's, everything under it is (src/reach.ts).
   const childPackage = packagePrefixOf(childName);
-  const childAi = !exec.aiAuthored && (await aiAuthored(exec.services, childFlow.name));
+  const childAi = !exec.aiAuthored && (await aiAuthored(exec.services, childFlow.name, version ? { version } : undefined));
   const childExec: Exec = {
     ...exec,
     frame: { workflow: childFlow.name, ...(childFlow.sealed ? { sealed: true } : {}) },

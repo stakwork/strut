@@ -40,6 +40,7 @@ import {
   readRun,
   readWorkflow,
   searchRunEvents,
+  seededNote,
 } from "../authoring.js";
 import { bootEnv } from "../env.js";
 // The agent step's own plumbing, reused whole (plans/apps.md §8): the
@@ -684,6 +685,7 @@ export function buildTools(deps: AiDeps): ToolSet {
             name,
             version: result.version,
             changed: result.changed,
+            ...(result.changed && seededNote(meta, name) ? { note: seededNote(meta, name) } : {}),
             ...ui(name),
             ...(claims ? { claims: await claims.applyClaimsArg({ kind: "workflow", name }, contract, actor), ...(await publishChecks("workflow", name)) } : {}),
           },
