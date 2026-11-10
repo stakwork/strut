@@ -3776,6 +3776,9 @@ body.is-resizing-flyout iframe { pointer-events: none !important; }
 .publish-body { flex: 1; min-height: 0; overflow-y: auto; padding-top: var(--sp-3); }
 .publish-dialog > .dialog-actions { flex: none; margin-top: var(--sp-3); }
 .publish-dirty-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--warning); }
+.btn > .publish-dirty-dot { display: inline-block; margin-left: 6px; vertical-align: middle; }
+/* A takeover is the one waiting request that hands a held name to another key. */
+.auto-card.is-takeover { border-color: var(--danger); }
 
 /* ─── packages (the Publish dialog's Packages tab, plans/packages-ux.md) ── */
 /* The publisher's name beside its key, at the head of the dialog. */
@@ -3798,6 +3801,24 @@ input.package-search {
 input.package-search:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 .publisher-head .package-key { margin-bottom: 0; margin-left: auto; }
 .publisher-hint { margin-bottom: var(--sp-3); }
+/* The indexes this server could be listed on (plans/index-listing.md). */
+.listing-lines { display: flex; flex-direction: column; gap: var(--sp-2); margin-bottom: var(--sp-3); }
+.listing-line { display: flex; align-items: center; flex-wrap: wrap; gap: var(--sp-2); }
+.listing-line > .auto-error,
+.listing-line > .auto-hint { flex-basis: 100%; }
+.listing-form { flex-basis: 100%; display: flex; flex-direction: column; gap: var(--sp-2); padding: var(--sp-2); border: 1px solid var(--border); border-radius: var(--r-md); }
+.listing-form label { display: flex; flex-direction: column; gap: 2px; }
+.listing-form input[type="text"] {
+  font: inherit;
+  font-size: 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  color: var(--text);
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--r-md);
+}
+.listing-form input[type="text"]:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.listing-form .listing-check { flex-direction: row; align-items: center; gap: var(--sp-2); font-size: 12px; color: var(--text-muted); }
 /* A package here: one row, the name and its newest release; click opens it. */
 .package-row {
   display: flex;

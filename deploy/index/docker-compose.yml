@@ -42,6 +42,14 @@ services:
       # reader that holds one follows a move. Add mirrors to the list.
       STRUT_INDEX_URLS: '["https://${STRUT_INDEX_HOST:?set STRUT_INDEX_HOST}/index/catalog"]'
       STRUT_PUBLIC_URL: "https://${STRUT_INDEX_HOST}"
+      # Self-serve listing (plans/index-listing.md): a publisher asks with a
+      # request sealed by its public key. A NEW name from these hosts is listed
+      # with no person (one per key and host: the swarms); everything else
+      # waits for the operator on the Publish dialog's Index tab. '[]' sends
+      # every request there.
+      STRUT_INDEX_AUTO_HOSTS: '${STRUT_INDEX_AUTO_HOSTS:-["*.sphinx.chat:3355"]}'
+      # Names beyond the built-in reserved ones that only the operator lists.
+      STRUT_INDEX_RESERVED: "${STRUT_INDEX_RESERVED:-}"
       # The operator's credential: rows, crawl, everything but the open reads.
       STRUT_API_KEY: "${STRUT_API_KEY:?set STRUT_API_KEY}"
       # Seals publisher.json, which holds the index key. Never the dev default.

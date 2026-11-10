@@ -97,7 +97,10 @@ import { PUBLISHER_FILE, PUBLISHER_NAME, catalogStore, moveChannel, publicCatalo
 import { SUBSCRIPTIONS_FILE, createSubscriptions, subscriptionProblem, type Subscription, type Subscriptions } from "./packages/subscriptions.js";
 import { createPackageIndex, indexDir, indexRowProblem, liveRowProblem, type PackageIndex } from "./packages/index.js";
 import { INDEXES_FILE, createIndexes, indexSubscriptionProblem, parseIndexesEnv, type IndexSubscription, type PackageIndexes, type PackagesCapability } from "./packages/indexes.js";
-import type { IndexLiveRow, IndexRow } from "./packages/card.js";
+import { PUBLISHER_PREFIX, Z32_KEY, type IndexLiveRow, type IndexRow } from "./packages/card.js";
+import { LISTING_MAX_BYTES, hostPatternProblem, perMinute } from "./packages/listing.js";
+import { LISTING_ERROR_STATUS, LISTING_REQUESTS_PER_MINUTE, createRequestsDesk, type RequestsDesk } from "./packages/index-requests.js";
+import { LISTINGS_FILE, createPublisherListings } from "./packages/publisher-listings.js";
 import { packageCache } from "./packages/cache.js";
 import { workspaceFences } from "./packages/fence.js";
 import { PACKAGE_DIGEST, PACKAGE_NAME } from "./packages/format.js";
@@ -495,8 +498,14 @@ export interface StrutOptions<TServices = unknown> {
    *  listed publisher's public catalog and serves `GET /index/packages?q=`
    *  and `GET /index/packages/:publisher/:name`, open to anyone. `true`, or
    *  `{ urls }` — where this index's catalog is served, written into every
-   *  card. Off unless set, or STRUT_INDEX=1 (STRUT_INDEX_URLS, a JSON list). */
-  index?: boolean | { urls?: string[] };
+   *  card. Off unless set, or STRUT_INDEX=1 (STRUT_INDEX_URLS, a JSON list).
+   *  SELF-SERVE LISTING (plans/index-listing.md; src/packages/index-requests.ts):
+   *  a publisher asks with `POST /index/requests`, open; `autoHosts` (else
+   *  STRUT_INDEX_AUTO_HOSTS, a JSON list of host patterns) are listed with no
+   *  person, everything else waits for the operator; `reserved` (else
+   *  STRUT_INDEX_RESERVED) adds to the names only the operator lists;
+   *  `allowHttp` takes a base on plain http (tests, a LAN). */
+  index?: boolean | { urls?: string[]; autoHosts?: string[]; reserved?: string[]; allowHttp?: boolean };
 
   /** The HISTORY (src/history.ts, plans/concept-history.md): the whole
    *  workspace as a package directory, committed to `<dataDir>/history.git`
@@ -918,20 +927,44 @@ export async function createStrut<TServices = unknown>(
   const voice = voiceConfig(opts.voice, bootEnv());
   // The package index role (src/packages/index.ts): on, its reads — and
   // its MCP door, `POST /index/mcp` — open to anyone.
-  const indexConfig = ((): { urls?: string[] } | undefined => {
-    if (opts.index !== undefined) return opts.index === false ? undefined : opts.index === true ? {} : opts.index;
+  const indexConfig = ((): { urls?: string[]; autoHosts?: string[]; reserved?: string[]; allowHttp?: boolean } | undefined => {
+    /** A JSON list of strings from the environment, each checked. */
+    const envList = (name: string, check: (v: string) => string | undefined): string[] | undefined => {
+      const raw = bootEnv()[name];
+      if (raw === undefined || raw.trim() === "") return undefined;
+      let list: unknown;
+      try {
+        list = JSON.parse(raw);
+      } catch (err) {
+        throw new Error(`${name} is not JSON: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      if (!Array.isArray(list) || !list.every((v) => typeof v === "string")) throw new Error(`${name} is a JSON list of strings`);
+      for (const v of list as string[]) {
+        const problem = check(v);
+        if (problem) throw new Error(`${name}: ${problem}`);
+      }
+      return list as string[];
+    };
+    const listing = (cfg: { autoHosts?: string[]; reserved?: string[] }) => {
+      for (const p of cfg.autoHosts ?? []) {
+        const problem = hostPatternProblem(p);
+        if (problem) throw new Error(`index.autoHosts: ${problem}`);
+      }
+      for (const v of cfg.reserved ?? []) if (!PUBLISHER_PREFIX.test(v)) throw new Error(`index.reserved: ${JSON.stringify(v)} is not a publisher name`);
+      const autoHosts = cfg.autoHosts ?? envList("STRUT_INDEX_AUTO_HOSTS", hostPatternProblem);
+      const reserved = cfg.reserved ?? envList("STRUT_INDEX_RESERVED", (v) => (PUBLISHER_PREFIX.test(v) ? undefined : `${JSON.stringify(v)} is not a publisher name`));
+      return { ...(autoHosts ? { autoHosts } : {}), ...(reserved ? { reserved } : {}) };
+    };
+    if (opts.index !== undefined) return opts.index === false ? undefined : opts.index === true ? listing({}) : { ...opts.index, ...listing(opts.index) };
     if (bootEnv()["STRUT_INDEX"] !== "1") return undefined;
-    const raw = bootEnv()["STRUT_INDEX_URLS"];
-    if (!raw) return {};
-    let urls: unknown;
-    try {
-      urls = JSON.parse(raw);
-    } catch (err) {
-      throw new Error(`STRUT_INDEX_URLS is not JSON: ${err instanceof Error ? err.message : String(err)}`);
-    }
-    if (!Array.isArray(urls) || !urls.every((u) => typeof u === "string" && /^https?:\/\/\S+$/.test(u))) throw new Error("STRUT_INDEX_URLS is a JSON list of http(s) URLs");
-    return { urls };
+    const urls = envList("STRUT_INDEX_URLS", (u) => (/^https?:\/\/\S+$/.test(u) ? undefined : `${JSON.stringify(u)} is not an http(s) URL`));
+    return { ...(urls ? { urls } : {}), ...listing({}) };
   })();
+  /** The index's open POSTs (plans/index-listing.md §1, §6): a publisher's
+   *  listing request and its ping, each carrying its own proof — the
+   *  request its seal, the ping nothing (it only makes the index read a
+   *  catalog it already lists). Budgeted per address. */
+  const INDEX_POSTS = new Set(["/index/requests", "/index/ping"]);
   const INDEX_READ = /^(?:\/llms\.txt$|\/index\/(?:catalog|packages(?:\/|$)|concepts(?:\/|$)|live$|mcp$))/;
   /** The index's MCP door (src/packages/index-tools.ts): the one POST the
    *  role opens, the three read tools over the same derived pages. */
@@ -1788,7 +1821,7 @@ export async function createStrut<TServices = unknown>(
     // preflight for them.
     const open = read
       ? path === "/health" || (serveUi && UI_FILE.test(path)) || carriesFileToken(c) || !!catalogTokenOf(c) || publicPackageRead(c) || (!!indexConfig && INDEX_READ.test(path)) || PUBLIC_PATH.test(path) || !!channelTicketOf(c)
-      : (path === "/auth/session" && (c.req.method === "POST" || c.req.method === "DELETE")) || (!!indexConfig && path === INDEX_MCP && c.req.method === "POST") || (c.req.method === "OPTIONS" && PUBLIC_PATH.test(path)) || (c.req.method === "POST" && path === "/public/mcp");
+      : (path === "/auth/session" && (c.req.method === "POST" || c.req.method === "DELETE")) || (!!indexConfig && (path === INDEX_MCP || INDEX_POSTS.has(path)) && c.req.method === "POST") || (c.req.method === "OPTIONS" && PUBLIC_PATH.test(path)) || (c.req.method === "POST" && path === "/public/mcp");
     if (open) return next();
     if (memberOnly(c)) {
       if (memberMay(c.req.method, path)) return next();
@@ -3830,6 +3863,9 @@ export async function createStrut<TServices = unknown>(
         : undefined,
   });
   const catalogDeps = { publisher, catalogs: catalogStore(dataDir), publicCatalogs: publicCatalogStore(dataDir) };
+  // This strut's asks to be LISTED on the indexes it follows
+  // (plans/index-listing.md §1; src/packages/publisher-listings.ts).
+  const listings = createPublisherListings({ file: join(packageStore.root, LISTINGS_FILE), indexes, publisher });
   /** A publisher refusal's code → its status, else as a package refusal. */
   const catalogError = (c: Context, err: unknown) => {
     const code = /^([a-z_]+):/.exec(err instanceof Error ? err.message : String(err))?.[1] ?? "";
@@ -3878,6 +3914,41 @@ export async function createStrut<TServices = unknown>(
       return c.json({ key: info.key, subscriber: body.subscriber.trim(), token: minted.token, exp: minted.exp }, 201);
     } catch (err) {
       return catalogError(c, err);
+    }
+  });
+  // Ask an index this strut follows to LIST its name (plans/index-listing.md
+  // §1): a request sealed by the PUBLIC key, sent to the index strut beside
+  // the followed card. Each followed index is a line: listed (read off its
+  // signed card), what was asked last, and the answer. A person's act.
+  app.get("/publisher/listings", async (c) => c.json({ listings: await listings.list() }));
+  const listingOutcome = (c: Context, out: Awaited<ReturnType<typeof listings.ask>>) => {
+    if (out.status >= 200 && out.status < 300) return c.json({ ...out.answer, record: out.record }, out.status as 200 | 202);
+    const status = out.status >= 400 && out.status < 500 ? (out.status as 400) : 502;
+    return c.json({ error: (out.answer["error"] as string | undefined) ?? `the index answered ${out.status}`, record: out.record }, status);
+  };
+  app.post("/publisher/listings", async (c) => {
+    const body = await c.req.json<{ index?: unknown; base?: unknown; description?: unknown; url?: unknown; live?: unknown }>().catch(() => ({}) as Record<string, unknown>);
+    if (typeof body.index !== "string") return c.json({ error: "index is the id of an index this strut server follows (GET /packages/indexes)" }, 400);
+    if (typeof body.base !== "string") return c.json({ error: "base is where this server is reached: an origin and at most one path segment (https://<swarm>:3355/lab)" }, 400);
+    if ((body.description !== undefined && typeof body.description !== "string") || (body.url !== undefined && typeof body.url !== "string") || (body.live !== undefined && typeof body.live !== "boolean")) {
+      return c.json({ error: "description and url are strings, live a boolean" }, 400);
+    }
+    try {
+      return listingOutcome(c, await listings.ask(body.index, { base: body.base, ...(body.description !== undefined ? { description: body.description as string } : {}), ...(body.url !== undefined ? { url: body.url as string } : {}), ...(body.live !== undefined ? { live: body.live as boolean } : {}) }));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const code = /^([a-z_]+):/.exec(message)?.[1] ?? "";
+      const status = ({ publisher_not_public: 409, publisher_no_name: 409, listing_invalid: 400, listing_no_route: 409, package_index_unknown: 404 } as Record<string, 400 | 404 | 409>)[code] ?? 500;
+      return c.json({ error: message }, status);
+    }
+  });
+  app.delete("/publisher/listings/:index", async (c) => {
+    try {
+      return listingOutcome(c, await listings.withdraw(c.req.param("index")));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const code = /^([a-z_]+):/.exec(message)?.[1] ?? "";
+      return c.json({ error: message }, ({ publisher_not_public: 409, publisher_no_name: 409, listing_no_route: 409, package_index_unknown: 404 } as Record<string, 404 | 409>)[code] ?? 500);
     }
   });
   // Build a package and publish it: its release added to the catalog, and
@@ -3968,7 +4039,11 @@ export async function createStrut<TServices = unknown>(
     const after = (await catalogDeps.publicCatalogs.current().catch(() => undefined))?.digest;
     if (!after || after === before) return;
     const key = (await publisher.get().catch(() => undefined))?.public;
-    if (key) pingSubscribers(key);
+    if (key) {
+      pingSubscribers(key);
+      // …and every index this strut asked to list it (plans/index-listing.md §6).
+      void listings.ping(key).catch(() => undefined);
+    }
   };
   /** Tell every peer on file that this strut's catalog moved, so a strut
    *  that subscribes to it reads it now instead of at its next poll
@@ -4089,6 +4164,8 @@ export async function createStrut<TServices = unknown>(
     const host = c.req.header("x-forwarded-host")?.split(",")[0]?.trim() || c.req.header("host") || url.host;
     return `${proto}://${host}`;
   };
+  /** The index's requests desk, when this strut is an index. */
+  let requestsDesk: RequestsDesk | undefined;
   const index: PackageIndex | null = indexConfig
     ? createPackageIndex({
         secrets: publisherSecrets,
@@ -4159,6 +4236,60 @@ export async function createStrut<TServices = unknown>(
     // Read the listed publishers' catalogs now (full scope; a peer's ping
     // arrives on /packages/subscriptions/sync).
     app.post("/index/crawl", async (c) => c.json({ crawled: await index.crawl() }));
+
+    // SELF-SERVE LISTING (plans/index-listing.md; src/packages/index-requests.ts):
+    // a publisher's sealed request, open and budgeted per address — listed at
+    // once or kept for the operator, who decides on the routes after it.
+    const desk = (requestsDesk = createRequestsDesk({
+      index,
+      dir: join(indexDir(dataDir), "requests"),
+      cache: packageStore,
+      ...(indexConfig?.autoHosts ? { autoHosts: indexConfig.autoHosts } : {}),
+      ...(indexConfig?.reserved ? { reserved: indexConfig.reserved } : {}),
+      ...(indexConfig?.allowHttp ? { allowHttp: true } : {}),
+      serial: oneAtATime,
+    }));
+    const requestBudget = perMinute(LISTING_REQUESTS_PER_MINUTE);
+    const pingBudget = perMinute(LISTING_REQUESTS_PER_MINUTE);
+    const deskError = (c: Context, err: unknown) => {
+      const message = err instanceof Error ? err.message : String(err);
+      const code = /^([a-z_]+):/.exec(message)?.[1] ?? "";
+      return c.json({ error: message }, LISTING_ERROR_STATUS[code] ?? 500);
+    };
+    app.post("/index/requests", async (c) => {
+      if (!requestBudget.allow(visitorAddress(c))) return c.json({ error: `listing_busy: ${LISTING_REQUESTS_PER_MINUTE} requests a minute from one address` }, 429, { "retry-after": "60" });
+      const length = Number(c.req.header("content-length") ?? 0);
+      if (length > LISTING_MAX_BYTES) return c.json({ error: `listing_invalid: a listing request is at most ${LISTING_MAX_BYTES} bytes` }, 400);
+      try {
+        const answer = await desk.submit(await c.req.text());
+        return c.json(answer, answer.status === "pending" ? 202 : 200);
+      } catch (err) {
+        return deskError(c, err);
+      }
+    });
+    app.post("/index/ping", async (c) => {
+      if (!pingBudget.allow(visitorAddress(c))) return c.json({ error: `too many pings: ${LISTING_REQUESTS_PER_MINUTE} a minute from one address` }, 429, { "retry-after": "60" });
+      const body = await c.req.json<{ key?: unknown }>().catch(() => ({}) as { key?: unknown });
+      if (typeof body.key !== "string" || !Z32_KEY.test(body.key)) return c.json({ error: "key is a listed publisher's public key in z-base-32" }, 400);
+      return c.json(await desk.ping(body.key), 202);
+    });
+    app.get("/index/requests", async (c) => c.json(await desk.list()));
+    app.post("/index/requests/:id/approve", async (c) => {
+      try {
+        return c.json(await desk.approve(c.req.param("id"), await resolveActor(c)));
+      } catch (err) {
+        return deskError(c, err);
+      }
+    });
+    app.post("/index/requests/:id/refuse", async (c) => {
+      const body = await c.req.json<{ reason?: unknown }>().catch(() => ({}) as { reason?: unknown });
+      if (typeof body.reason !== "string" || !body.reason.trim() || body.reason.length > 500) return c.json({ error: "reason is why, in a sentence: the publisher reads it" }, 400);
+      try {
+        return c.json(await desk.refuse(c.req.param("id"), body.reason.trim(), await resolveActor(c)));
+      } catch (err) {
+        return deskError(c, err);
+      }
+    });
     // Open to anyone from here on.
     app.get("/index/catalog", async (c) => {
       const digest = c.req.query("digest");
@@ -8141,6 +8272,7 @@ export async function createStrut<TServices = unknown>(
     proposalChanges.close();
     wakeJobFeeds(dataDir);
     for (const t of subscriptionTimers) clearTimeout(t);
+    requestsDesk?.close();
     // The browser connection, when strut built it: every run's context goes with it.
     await ownBrowser?.close();
     await ownStt?.close();

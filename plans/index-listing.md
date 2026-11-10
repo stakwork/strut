@@ -1,10 +1,42 @@
 # Self-serve listing: a publisher asks an index for its name
 
-> **Status (2026-11-09): proposed. Nothing is built.** Written after a
-> read of strut `main` @1ba36b7. It fills in what `plans/marketplace.md`
-> step 7 left as "self-serve by a signed request later", and builds on §7
-> (the index) and §13 (keys and cards). Every row in "Decided" is mine and
-> proposed. The open questions at the end are for the owner.
+> **Status (2026-11-10): BUILT, all four work items in one PR** (the owner
+> asked for the full plan; one PR, since items 2–4 build on item 1 and PRs
+> are never stacked). Written 2026-11-09 after a read of strut `main`
+> @1ba36b7, filling in what `plans/marketplace.md` step 7 left as
+> "self-serve by a signed request later", on §7 (the index) and §13 (keys
+> and cards). The open questions were taken as recommended. Code:
+> `src/packages/listing.ts` (the request card), `index-requests.ts` (the
+> index's desk), `publisher-listings.ts` (the publisher's asks), the routes
+> in `createStrut.ts`, `web/src/components/IndexPanel.tsx` and the Packages
+> tab's lines. Choices beyond the text:
+> - A host pattern with no port matches the scheme's default port only;
+>   `*.domain` matches exactly one label in front.
+> - A removal names no `base` (nothing else of it is read).
+> - A `base` must be a public name: no IP literal, no single-label or
+>   `.local` / `.internal` / `.lan` name, since an open route makes the
+>   index fetch it (an index that allows http, a LAN's, takes them).
+> - The index remembers a key's last `seq` only while it could still pass
+>   as fresh (10 minutes), so the file stays small under a flood of keys.
+> - A request is the whole state wanted: an edit replaces the row's
+>   description and homepage, and its `urls` become the one catalog URL.
+>   `live` absent leaves a live row alone.
+> - An approval reads the catalog again but does not ask the request to be
+>   fresh: the operator may decide days later.
+> - The publisher keeps the index's last answer; "Listed" is read off the
+>   index's signed card on every `GET /publisher/listings`, never off that
+>   record.
+> - `deploy/index` sets `STRUT_INDEX_AUTO_HOSTS` to the swarms by default;
+>   a plain-http base is for code only (`index: { allowHttp }`, the tests).
+> - The shell asks `GET /index/requests` once and, on an index, every
+>   minute, for the Index tab's dot.
+> - From the PR's review (2026-11-10): the request's catalog read follows
+>   no redirect and stops at the 4 MB cap (the host is a stranger's to
+>   choose); a name the operator lists as a live row alone is held (`live
+>   row`, the queue); a refusal never stops a removal or the row's own key
+>   changing its row on the same host; the publisher pings every index it
+>   asked until it takes itself off; the Packages tab sends `live` only
+>   when it is on, or off after this server asked for it.
 
 ## Problem
 
@@ -150,12 +182,16 @@ first five pass):
    (`listing_rollback:`).
 4. The seal verifies against `key` (`listing_invalid:`).
 5. `prefix` is not reserved (`listing_reserved:`) and was not refused for
-   this key in the last 30 days (`listing_refused: <the reason>`).
+   this key in the last 30 days (`listing_refused: <the reason>`). A
+   refusal is of what waited: it never stops a `remove`, nor the row's own
+   key changing its row on the same host.
 6. Unless `remove`: `<base>/packages/catalog?public=1` reads as a card
    sealed by `key` (`fetchCatalog`, `src/packages/pk.ts`), and lists at
    least one package under `prefix` (`listing_no_catalog:`, naming the URL
    and what it answered). One catalog read: the existing 4 MB cap and 30 s
-   timeout apply. No archive is fetched until the row exists.
+   timeout apply, the body is read no further than the cap, and a redirect
+   is refused: the index reads that URL and no other. No archive is fetched
+   until the row exists.
 7. The decision (§2, §5).
 
 **Answers:** `200 { status: "listed", row }`, `200 { status: "removed" }`,
@@ -224,7 +260,8 @@ prefix, the base's host, and why it waits:
 - `second name` — the key already holds a row;
 - `same host` — the host already holds a row;
 - `move` — an edit to another host (§5);
-- `takeover` — another key holds the name (§5).
+- `takeover` — another key holds the name (§5);
+- `live row` — the name is a live row the operator listed with no key (§7).
 
 One request waits per (prefix, key). Every decision is appended to
 `requests/log.jsonl` (time, prefix, key, host, outcome, who decided, why),
@@ -322,7 +359,9 @@ read a minute at most. The peer-credential ping on
 
 **On the publisher.** `pingPublic` (`createStrut.ts:3933`) already runs
 when the public catalog changes. It also POSTs `{ key }` to
-`<index>/index/ping` for every index in `listings.json`. So listing sets
+`<index>/index/ping` for every index in `listings.json` it has not taken
+itself off (the record is the last answer, and a failed or refused change
+leaves the row listed). So listing sets
 up the ping, and a release shows up in the store within seconds. The
 10-minute poll stays as the fallback.
 
@@ -340,6 +379,9 @@ comes only with a keyed row:
   key. A request never names it separately.
 
 The operator's `PUT /index/live/:prefix` stays for a server with no key.
+A name listed that way is held: a request for it waits as `live row`, and
+approving it lists the key under the name, moving the live row only when
+the request says `live: true`.
 
 ## 8. Abuse and limits
 

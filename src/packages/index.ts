@@ -188,8 +188,9 @@ export interface IndexDeps {
 export interface PackageIndex {
   /** The index as it is; undefined before its key is minted. */
   info(): Promise<IndexInfo | undefined>;
-  /** Add or change a row (the key minted first when there is none), re-seal the card, and read that publisher now. */
-  setRow(prefix: string, row: IndexRow): Promise<IndexInfo>;
+  /** Add or change a row (the key minted first when there is none), re-seal the card, and read that publisher now —
+   *  or, with `crawl: false`, at the caller's call (`crawl({ prefix })`). */
+  setRow(prefix: string, row: IndexRow, opts?: { crawl?: boolean }): Promise<IndexInfo>;
   /** Drop a row and re-seal; the crawl's state for it goes. */
   removeRow(prefix: string): Promise<boolean>;
   /** The current sealed card, or one by digest. */
@@ -204,8 +205,9 @@ export interface PackageIndex {
   concepts(q?: string): Promise<IndexConcept[]>;
   /** One Concept page with its docs, children and parents; undefined when no package carries it. */
   concept(name: string): Promise<IndexConceptPage | undefined>;
-  /** Add or change a LIVE row (the key minted first when there is none), re-seal the card, and read that view now. */
-  setLive(prefix: string, row: IndexLiveRow): Promise<IndexInfo>;
+  /** Add or change a LIVE row (the key minted first when there is none), re-seal the card, and read that view now
+   *  (with `crawl: false`, at the next crawl of its prefix). */
+  setLive(prefix: string, row: IndexLiveRow, opts?: { crawl?: boolean }): Promise<IndexInfo>;
   /** Drop a live row and re-seal; its crawl state goes. */
   removeLive(prefix: string): Promise<boolean>;
   /** The items the live rows' public views show (every word of `q` in the name, title, description or publisher). */
@@ -580,7 +582,7 @@ export function createPackageIndex(deps: IndexDeps): PackageIndex {
 
   return {
     info,
-    async setRow(prefix, row) {
+    async setRow(prefix, row, opts = {}) {
       const problem = indexRowProblem(prefix, row);
       if (problem) throw new Error(`index_row_invalid: ${problem}`);
       const card = await base();
@@ -590,7 +592,7 @@ export function createPackageIndex(deps: IndexDeps): PackageIndex {
       // A row with another key starts the crawl over: the old catalog is not this key's.
       const prev = await readState(prefix);
       if (prev && prev.key !== clean.key) await rm(cardFile(prefix), { force: true });
-      await crawlPrefix(prefix, clean);
+      if (opts.crawl !== false) await crawlPrefix(prefix, clean);
       return (await info())!;
     },
     async removeRow(prefix) {
@@ -604,14 +606,14 @@ export function createPackageIndex(deps: IndexDeps): PackageIndex {
       await rm(pagesDir(prefix), { recursive: true, force: true });
       return true;
     },
-    async setLive(prefix, row) {
+    async setLive(prefix, row, opts = {}) {
       const problem = liveRowProblem(prefix, row);
       if (problem) throw new Error(`index_row_invalid: ${problem}`);
       const card = await base();
       const clean: IndexLiveRow = { url: row.url.replace(/\/+$/, ""), ...(row.description !== undefined ? { description: row.description } : {}) };
       card.live = { ...(card.live ?? {}), [prefix]: clean };
       await seal(card);
-      await crawlLive(prefix, clean);
+      if (opts.crawl !== false) await crawlLive(prefix, clean);
       return (await info())!;
     },
     async removeLive(prefix) {

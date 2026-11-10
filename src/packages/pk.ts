@@ -22,7 +22,7 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
-import { archiveUrl, fetchArchive } from "./archive.js";
+import { archiveUrl, fetchArchive, readCapped } from "./archive.js";
 import type { CachedPackage, PackageCache } from "./cache.js";
 import { Z32_KEY, readCard, releaseFor, type CardKind, type Catalog, type CatalogRelease, type IndexCatalog } from "./card.js";
 import { PACKAGE_DIGEST, PACKAGE_NAME } from "./format.js";
@@ -85,10 +85,16 @@ async function writeKeyState(cache: PackageCache, key: string, state: { seq: num
 
 /** The catalog at `url`, read as the key's card — or, with `kind: "index"`,
  *  an index's card (src/packages/indexes.ts): the same checks, the same
- *  per-key order. */
-export async function fetchCatalog(key: string, url: string, opts: { cache: PackageCache; fetch?: typeof fetch; kind?: "catalog" }): Promise<{ card: Catalog; digest: string }>;
+ *  per-key order. The body is read no further than `MAX_CATALOG_BYTES`.
+ *  `redirects: false` reads that URL and no other — a redirect is refused,
+ *  never followed: what a stranger's listing request gets
+ *  (./index-requests.ts), since the URL's host is theirs to choose and a
+ *  redirect would take the read anywhere this server can reach. A catalog
+ *  someone vouched for (a row, a subscription, a `pk:` ref) may sit behind
+ *  one, as a file on a release host does. */
+export async function fetchCatalog(key: string, url: string, opts: { cache: PackageCache; fetch?: typeof fetch; kind?: "catalog"; redirects?: false }): Promise<{ card: Catalog; digest: string }>;
 export async function fetchCatalog(key: string, url: string, opts: { cache: PackageCache; fetch?: typeof fetch; kind: "index" }): Promise<{ card: IndexCatalog; digest: string }>;
-export async function fetchCatalog(key: string, url: string, opts: { cache: PackageCache; fetch?: typeof fetch; kind?: CardKind }): Promise<{ card: Catalog | IndexCatalog; digest: string }> {
+export async function fetchCatalog(key: string, url: string, opts: { cache: PackageCache; fetch?: typeof fetch; kind?: Exclude<CardKind, "listing">; redirects?: false }): Promise<{ card: Catalog | IndexCatalog; digest: string }> {
   const kind = opts.kind ?? "catalog";
   let u: URL;
   try {
@@ -100,16 +106,24 @@ export async function fetchCatalog(key: string, url: string, opts: { cache: Pack
   const where = `${u.origin}${u.pathname}`;
   let res: Response;
   try {
-    res = await (opts.fetch ?? fetch)(url, { signal: AbortSignal.timeout(CATALOG_TIMEOUT_MS) });
+    res = await (opts.fetch ?? fetch)(url, { signal: AbortSignal.timeout(CATALOG_TIMEOUT_MS), ...(opts.redirects === false ? { redirect: "manual" as const } : {}) });
   } catch (err) {
     throw new Error(`package_fetch_failed: ${where}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (opts.redirects === false && (res.type === "opaqueredirect" || (res.status >= 300 && res.status < 400))) {
+    await res.body?.cancel();
+    throw new Error(`package_fetch_failed: ${where} answered a redirect, and the ${kind} is read from that address alone`);
   }
   if (!res.ok) {
     await res.body?.cancel();
     throw new Error(`package_fetch_failed: ${where} answered ${res.status} for the ${kind}`);
   }
-  const bytes = Buffer.from(await res.arrayBuffer());
-  if (bytes.byteLength > MAX_CATALOG_BYTES) throw new Error(`package_fetch_failed: ${where}: the ${kind} is over ${MAX_CATALOG_BYTES} bytes`);
+  let bytes: Buffer;
+  try {
+    bytes = await readCapped(res, MAX_CATALOG_BYTES, kind);
+  } catch (err) {
+    throw new Error(`package_fetch_failed: ${where}: ${err instanceof Error ? err.message : String(err)}`);
+  }
   const last = await readKeyState(opts.cache, key);
   const read = kind === "index" ? readCard(bytes, { key, kind, ...(last ? { last } : {}) }) : readCard(bytes, { key, ...(last ? { last } : {}) });
   if (!last || read.card.seq > last.seq) await writeKeyState(opts.cache, key, { seq: read.card.seq, digest: read.digest, url });

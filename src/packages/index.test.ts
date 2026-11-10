@@ -551,3 +551,89 @@ describe("the concept tree across the crawled packages", () => {
     assert.deepEqual(await index.concepts(), []);
   });
 });
+
+describe("self-serve listing over HTTP (plans/index-listing.md)", () => {
+  let root: string;
+  let publisher: Strut;
+  let index: Strut;
+  let publisherWs: WorkspaceManager;
+  let publisherUrl: string;
+  let indexUrl: string;
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), "strut-listing-"));
+    publisherWs = new WorkspaceManager(join(root, "publisher"));
+    publisher = await boot(publisherWs);
+    publisherUrl = `http://127.0.0.1:${await publisher.listen(0, "127.0.0.1")}`;
+    // No auto hosts: every request waits for the operator. Plain http, for the test's loopback.
+    index = await boot(new WorkspaceManager(join(root, "index")), { index: { allowHttp: true } });
+    indexUrl = `http://127.0.0.1:${await index.listen(0, "127.0.0.1")}`;
+    for (const [type, out] of [["acme/linear/fetch", "issues"], ["acme/notion/fetch", "pages"]] as const) {
+      await publisherWs.publishStep(type, STEP(type, out));
+      await publisherWs.publishWorkflow(type.replace("/fetch", "/sync"), "v1", FLOW(type.replace("/fetch", "/sync"), type));
+    }
+  });
+  afterEach(async () => {
+    await publisher.close();
+    await index.close();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const publishPublic = async (pkg: string, workflow: string) => {
+    const res = await publisher.app.request("/packages/publish", json({ package: pkg, version: "1.0.0", workflows: [workflow], channel: "public", public: true }));
+    assert.equal(res.status, 201, await res.clone().text());
+  };
+  const lines = async () => ((await (await publisher.app.request("/publisher/listings", { headers: auth })).json()) as { listings: Array<{ index: string; listed: boolean; requests?: string; asked?: { status: string; reason?: string } }> }).listings;
+
+  it("a publisher asks, the operator approves, the store follows its releases on its ping, and it withdraws", async () => {
+    assert.equal((await publisher.app.request("/publisher", json({ name: "acme" }, "PUT"))).status, 200);
+    // Before Make public there is no key to sign with.
+    const early = await publisher.app.request("/publisher/listings", json({ index: "nowhere", base: publisherUrl }));
+    assert.equal(early.status, 404, await early.clone().text());
+
+    // The index's operator lists its first row by hand: that mints the index key.
+    const seeded = await index.app.request("/index/seed", json({ key: "y".repeat(52), urls: ["http://127.0.0.1:1/packages/catalog?public=1"] }, "PUT"));
+    assert.equal(seeded.status, 200, await seeded.clone().text());
+    const indexKey = ((await seeded.json()) as IndexInfo).key;
+    assert.equal((await publisher.app.request("/packages/indexes/stakwork", json({ key: indexKey, urls: [`${indexUrl}/index/catalog`], label: "Stakwork" }, "PUT"))).status, 200);
+    assert.equal((await publisher.app.request("/publisher/listings", json({ index: "stakwork", base: publisherUrl }))).status, 409, "no public key yet");
+
+    await publishPublic("acme/linear", "acme/linear/sync");
+    assert.deepEqual((await lines()).map((l) => [l.index, l.listed, l.requests]), [["stakwork", false, `${indexUrl}/index/requests`]]);
+
+    // The ask: sealed by the PUBLIC key, sent to the index beside the card; it waits there.
+    const asked = await publisher.app.request("/publisher/listings", json({ index: "stakwork", base: `${publisherUrl}/`, description: "Acme's tools" }));
+    assert.equal(asked.status, 202, await asked.clone().text());
+    const answer = (await asked.json()) as { status: string; reason: string; prefix: string; record: { status: string; reason: string } };
+    assert.deepEqual([answer.status, answer.reason, answer.prefix, answer.record.status, answer.record.reason], ["pending", "host", "acme", "pending", "host"]);
+    assert.equal((await lines())[0]!.asked!.status, "pending");
+
+    // The operator's routes are behind the key; the open POSTs are not.
+    assert.equal((await fetch(`${indexUrl}/index/requests`)).status, 401);
+    assert.equal((await fetch(`${indexUrl}/index/requests`, { method: "POST", body: "{}" })).status, 400, "open: the request carries its own proof");
+    assert.equal((await fetch(`${indexUrl}/index/ping`, { method: "POST", body: JSON.stringify({ key: "y".repeat(52) }) })).status, 202);
+    const waiting = ((await (await index.app.request("/index/requests", { headers: auth })).json()) as { pending: Array<{ id: string; prefix: string; reason: string; catalog: { packages: string[] } }> }).pending;
+    assert.deepEqual(waiting.map((p) => [p.prefix, p.reason, p.catalog.packages]), [["acme", "host", ["acme/linear"]]]);
+    assert.equal((await fetch(`${indexUrl}/index/requests/${waiting[0]!.id}/approve`, { method: "POST" })).status, 401);
+    const approved = await index.app.request(`/index/requests/${waiting[0]!.id}/approve`, json({}));
+    assert.equal(approved.status, 200, await approved.clone().text());
+
+    // Listed: read off the index's signed card, with the public key.
+    assert.equal((await lines())[0]!.listed, true);
+    const search = async (q: string) => ((await (await fetch(`${indexUrl}/index/packages?q=${q}`)).json()) as { packages: IndexHit[] }).packages.map((h) => h.package);
+    for (let i = 0; i < 100 && !(await search("linear")).length; i++) await new Promise((r) => setTimeout(r, 50));
+    assert.deepEqual(await search("linear"), ["acme/linear"]);
+
+    // A release: the publisher pings the index it asked (no peer on file), and the store shows it.
+    await publishPublic("acme/notion", "acme/notion/sync");
+    for (let i = 0; i < 100 && !(await search("notion")).length; i++) await new Promise((r) => setTimeout(r, 50));
+    assert.deepEqual(await search("notion"), ["acme/notion"]);
+
+    // Withdrawn: the row goes, and the line says so.
+    const gone = await publisher.app.request("/publisher/listings/stakwork", { method: "DELETE", headers: auth });
+    assert.equal(gone.status, 200, await gone.clone().text());
+    assert.ok(!((await (await index.app.request("/index", { headers: auth })).json()) as IndexInfo).publishers["acme"]);
+    assert.equal((await lines())[0]!.listed, false);
+    assert.equal((await fetch(`${publisherUrl}/publisher/listings`)).status, 401, "the publisher's routes are behind its key");
+  });
+});
