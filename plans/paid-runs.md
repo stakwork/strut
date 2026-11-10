@@ -14,6 +14,7 @@
 > `p2p-distribution-research.md` (Option E, the research behind the rail)
 > and `mothership-cost-control.md` (the cap a run gets).
 > Item 1, the ledger, is built (stakwork/strut#595, `src/payments/ledger*.ts`).
+> Item 4, the wallet and the rate, is built (stakwork/strut#598: `ctx.services.lightning`, the Sphinx daemon and NWC providers, `payments.json`, the rate; `src/payments/`, `specs/LIGHTNING.md`).
 >
 > **Revised the same day, three times.**
 > 1. The first draft gave strut a run budget of its own, for a seller with
