@@ -105,11 +105,12 @@ Everything imported is in the one document: under 20 MB of files, and a
 document over 6 MB is slow to open. Keep models low-poly and textures
 small; a few MB in all.
 
-A file the game did not ship with comes in at run time: one a run made
-(a level a workflow generated) through `run/files` on that run — its bytes
-as base64, made a blob with `URL.createObjectURL(new Blob([bytes]))` and
-loaded like an import, up to a few MB; one the player picks with
-`<input type="file">` as `URL.createObjectURL(file)` (keep it with
+A file the game did not ship with comes in at run time. One a run made
+(a level or a model a workflow generated; grant the workflow) is a URL
+from `useRunFileUrl(workflow, runId, path)` — `const { url } =
+useRunFileUrl("make-level", runId, "level.glb")`, then `useGLTF(url)` or
+`fetch(url)` — up to about 3.7 MB. One the player picks with
+`<input type="file">` is `URL.createObjectURL(file)` (keep it with
 `useUpload` when it must outlast the visit).
 
 ## Physics

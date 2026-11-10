@@ -281,6 +281,7 @@ tool (`step_run`) the host relays to the strut server:
 | `useWorkProducts(workflow, runId, { live?, intervalMs? })` → `{ products, events }` | the run's work products folded from `run/events`, appearing as steps declare them; what `WorkProducts` draws |
 | `useTranscripts(workflow, runId, paths)` | `run/transcript` for several agents, one call at a time, each kept: a Map by path. Ask only for agents that ended |
 | `useTranscript(workflow, runId, path, { full? })` | `run/transcript`: the agent session a `step.end`'s `transcript` link names (the page cannot follow the link); `full` a session turn's whole thread; `truncated` says what a 2 MB cap cut |
+| `useRunFile(workflow, runId, path)`, `useRunFileUrl(workflow, runId, path)` → `{ url, file, pending, error }` | `run/files`: one file a run made (its job's folder when it ran under a job), as text or base64 — or, with `useRunFileUrl`, as a `blob:` URL for `<img>`, `<video>`, a model loader (`useGLTF(url)`) or `fetch(url)`, let go of when the component goes. One call's answer is capped at 5 MB of text: a binary file up to about 3.7 MB. `runFileBlob(file)` is the same outside a component |
 | `useLaunch(workflow, { job? })` → `{ launch(input, params?, key?, files?), pending }` | `run/launch`: a MUTATION — a function to call on a click, never a query; `job` launches under one of the app's jobs, `files` go with the run |
 | `useUpload(job)` → `{ upload(file), remove(path) }` | `job/upload` / `job/delete-upload`: a file into the app's job, its `path` back (see "Files a person brings") |
 | `useCancel()` → `{ cancel(workflow, runId) }` | `run/cancel` |
@@ -367,7 +368,7 @@ its name. `jobs` are the jobs the latest turn started or continued
 the person's approval (graph writes) from inside an app: it does those in
 the person's own chat.
 
-Reads (`useRuns`, `useRun`, `useRunEvents`, `useTranscript`, `useTranscripts`, `useWorkflow`) are free and may
+Reads (`useRuns`, `useRun`, `useRunEvents`, `useTranscript`, `useTranscripts`, `useRunFile`, `useWorkflow`) are free and may
 refetch on their own. A tool call (`useStep` on a cheap step) is fine on a
 render. A launch is a click. Nothing in the kit launches on mount or on a
 poll, and `step_run` refuses `llm`, `agent` and `exec` whatever the manifest

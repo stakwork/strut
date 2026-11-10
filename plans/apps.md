@@ -605,6 +605,7 @@ supplies it. Every hook names a STEP TYPE:
 | Hook | Step (§5) |
 | --- | --- |
 | `useRuns(workflow, { status?, automation?, live? })`, `useRun(workflow, runId, { live? })`, `useRunEvents(workflow, runId)`, `useTranscript(workflow, runId, path, { full? })` | `run/list`, `run/get`, `run/events`, `run/transcript` |
+| `useRunFile(workflow, runId, path)`, `useRunFileUrl(…)` → `{ url, file, pending, error }` (a `blob:` URL of the file, let go of on unmount), `runFileBlob(file)` | `run/files` |
 | `useLaunch(workflow)` → `{ launch(input, params?, key?), pending }`, `useCancel()` — mutations: a function to call, never a query, so no hook launches on mount or on a poll (§5.1) | `run/launch`, `run/cancel` |
 | `useWorkflow(workflow)`: description, `input:` block, params defaults | `run/workflow` |
 | `useStep(type)` → `run(config, input)` | any granted step |

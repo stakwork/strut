@@ -79,7 +79,11 @@ the `sideEffects` and `type` rules, and that the recorded versions are
   what was appended, `run/events { skip }`, paged past its 5 000-event cap,
   every `intervalMs`), `useTranscript` (`run/transcript`: an agent's session
   by step path — the log's `transcript` link, which a page cannot follow) and
-  `useTranscripts` (several, one call at a time, kept), `useWorkProducts(workflow,
+  `useTranscripts` (several, one call at a time, kept), `useRunFile(workflow,
+  runId, path)` (`run/files`: one file a run made, text or base64, read once)
+  and `useRunFileUrl` (that file as a `blob:` URL for `<img>`, a model loader
+  or `fetch`, let go of on unmount; `runFileBlob(file)` outside a component;
+  a binary file up to about 3.7 MB, the call's 5 MB cap), `useWorkProducts(workflow,
   runId, { live })` → `{ products, events }` (the run's work products folded
   from `run/events` — `foldWorkProducts` — appearing as steps declare them,
   plans/work-products.md), `useLaunch(workflow, { job? })` →
