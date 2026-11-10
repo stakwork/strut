@@ -739,7 +739,10 @@ function LiveApp(props: { base: string; name: string; publisher: string }) {
   // The publisher's page frames the app, and a frame gets only what every
   // frame above it was granted: what the version declared goes on this one
   // too (../frame-permissions). The frame waits for the listing, since the
-  // browser reads these when it loads the page.
+  // browser reads these when it loads the page. `allow-forms` for the same
+  // reason: the app's frame has it, so a `<form onSubmit>` fires its handler,
+  // and without it here the browser refuses the submit event in every frame
+  // below (the app's CSP still sends no form anywhere).
   const grants = frameGrants(info.data?.permissions);
   return (
     <>
@@ -759,7 +762,7 @@ function LiveApp(props: { base: string; name: string; publisher: string }) {
           class="store-live-frame"
           src={page}
           title={info.data?.title ?? props.name}
-          sandbox={["allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-downloads", ...grants.sandbox].join(" ")}
+          sandbox={["allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-downloads allow-forms", ...grants.sandbox].join(" ")}
           {...(grants.allow.length ? { allow: grants.allow.join("; ") } : {})}
         />
       )}
