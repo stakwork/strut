@@ -89,10 +89,11 @@ export interface BuildInfo {
    *  with the version's file token, here and through a peer's read-through. */
   wallet?: AppManifest["wallet"];
   /** The browser features the version's frame is granted beyond every
-   *  app's (`app.yaml`'s `permissions:`, manifest.ts `APP_PERMISSIONS`): a
-   *  host reads them, with the version's file token, here and through a
-   *  peer's read-through, and sets the frame's `sandbox` and `allow` from
-   *  them before the document loads (web/src/frame-permissions.ts). */
+   *  app's (`app.yaml`'s `permissions:`, manifest.ts `DECLARED_PERMISSIONS`:
+   *  motion, camera, geolocation): a host reads them, with the version's
+   *  file token, here and through a peer's read-through, and adds them to
+   *  the frame's `allow` before the document loads
+   *  (web/src/frame-permissions.ts). Absent: every app's alone. */
   permissions?: NonNullable<AppManifest["permissions"]>;
 }
 

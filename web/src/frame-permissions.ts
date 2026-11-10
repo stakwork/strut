@@ -2,39 +2,49 @@
 // Every app's document is the srcdoc of a sandboxed frame with an opaque
 // origin (components/AppHost.tsx). What the frame lets it reach is the
 // frame's `sandbox` tokens and its `allow` features (Permissions Policy),
-// both read by the browser when the document is NAVIGATED to — so the host
-// sets them from the version's `permissions` (its `dist/build.json`,
-// `app.yaml`'s `permissions:`, src/apps/manifest.ts `APP_PERMISSIONS`)
-// before it sets the srcdoc, and an earlier version's grants never carry
-// over to the next. Pure: tested by ./frame-permissions.test.ts in the root
-// run, which installs no web/node_modules.
+// both read by the browser when the document is NAVIGATED to. Every app
+// gets the same frame, games included; three features more — motion,
+// camera, geolocation — only a version that declares them (`app.yaml`'s
+// `permissions:`, src/apps/manifest.ts `DECLARED_PERMISSIONS`, read off its
+// `dist/build.json`), so the host sets the attributes before the srcdoc and
+// an earlier version's never carry over to the next. Pure: tested by
+// ./frame-permissions.test.ts in the root run, which installs no
+// web/node_modules.
 
-/** What every app's frame gets: scripts, saving a file it was handed, a
- *  form's submit event (the CSP's `form-action 'none'` still sends nothing). */
-export const BASE_SANDBOX = ["allow-scripts", "allow-downloads", "allow-forms"] as const;
-/** What every app's frame may use: the microphone and the clipboard (a Copy
- *  button). Neither sends anything off the page. */
-export const BASE_ALLOW = ["microphone", "clipboard-write"] as const;
+/** What every app's frame gets for a game: `requestPointerLock()`, and
+ *  `screen.orientation.lock()` (which needs fullscreen, below). */
+export const GAME_SANDBOX = ["allow-pointer-lock", "allow-orientation-lock"] as const;
+/** What every app's frame may use for a game: `requestFullscreen()`, the
+ *  Gamepad API, `navigator.wakeLock.request("screen")`. Each needs a click
+ *  or a visible page, and the browser shows its own way out of the first. */
+export const GAME_ALLOW = ["fullscreen", "gamepad", "screen-wake-lock"] as const;
 
-/** What each declared permission adds to the frame. Its keys are the
- *  manifest's names, held equal to `APP_PERMISSIONS` by the test. The MCP
- *  Apps names (`camera`, `geolocation`, `microphone`, `clipboard-write`) map
- *  to the features ext-apps' `buildAllowAttribute` gives them. */
-export const FRAME_GRANTS: Readonly<Record<string, { sandbox?: readonly string[]; allow?: readonly string[] }>> = {
-  // `requestFullscreen()`; `screen.orientation.lock()`, which needs fullscreen.
-  fullscreen: { allow: ["fullscreen"], sandbox: ["allow-orientation-lock"] },
-  // `requestPointerLock()`: a sandbox token, there is no policy feature.
-  "pointer-lock": { sandbox: ["allow-pointer-lock"] },
-  gamepad: { allow: ["gamepad"] },
-  // `devicemotion` + `deviceorientation`; no magnetometer, so no compass
-  // heading (`deviceorientationabsolute`).
-  motion: { allow: ["accelerometer", "gyroscope"] },
-  "wake-lock": { allow: ["screen-wake-lock"] },
-  camera: { allow: ["camera"] },
-  geolocation: { allow: ["geolocation"] },
-  // Every app's already.
-  microphone: {},
-  "clipboard-write": {},
+/** Every app's sandbox: scripts, saving a file it was handed, a form's
+ *  submit event (the CSP's `form-action 'none'` still sends nothing), and
+ *  the game's. Never `allow-same-origin`. */
+export const BASE_SANDBOX = ["allow-scripts", "allow-downloads", "allow-forms", ...GAME_SANDBOX] as const;
+/** Every app's features: the microphone and the clipboard (a Copy button),
+ *  and the game's. None sends anything off the page. */
+export const BASE_ALLOW = ["microphone", "clipboard-write", ...GAME_ALLOW] as const;
+
+/** What each name a manifest may list adds to the frame. Its keys are the
+ *  manifest's names, held equal to `APP_PERMISSIONS` by the test. `camera`
+ *  and `geolocation` are MCP Apps' own, mapped as ext-apps'
+ *  `buildAllowAttribute` maps them. */
+export const FRAME_GRANTS: Readonly<Record<string, readonly string[]>> = {
+  // `devicemotion` + `deviceorientation` (tilt): unprompted in Chrome, and
+  // motion can be read to guess what a person types. No magnetometer, so
+  // no compass heading (`deviceorientationabsolute`).
+  motion: ["accelerometer", "gyroscope"],
+  camera: ["camera"],
+  geolocation: ["geolocation"],
+  // Every app's already: accepted, and add nothing.
+  fullscreen: [],
+  "pointer-lock": [],
+  gamepad: [],
+  "wake-lock": [],
+  microphone: [],
+  "clipboard-write": [],
 };
 
 /** The names this host knows from a list read off a build.json: a name it
@@ -44,26 +54,22 @@ export function knownPermissions(permissions: unknown): string[] {
   return Object.keys(FRAME_GRANTS).filter((p) => permissions.includes(p));
 }
 
-/** What a version's permissions add to every app's frame: the sandbox
- *  tokens and policy features, in the table's order and once each, so the
- *  same set is the same attributes. A frame that holds the app's host page
- *  (the store's live preview of a publisher's page) adds these too: a
- *  nested frame gets only what every frame above it was granted. */
-export function frameGrants(permissions?: unknown): { sandbox: string[]; allow: string[] } {
-  const sandbox: string[] = [];
+/** The policy features a version's permissions add to every app's, in the
+ *  table's order and once each. A frame that holds the app's host page
+ *  (the store's live preview of a publisher's page) adds these too, with
+ *  the game's: a nested frame gets only what every frame above it has. */
+export function declaredAllow(permissions?: unknown): string[] {
   const allow: string[] = [];
   for (const p of knownPermissions(permissions)) {
-    for (const t of FRAME_GRANTS[p]!.sandbox ?? []) if (!sandbox.includes(t)) sandbox.push(t);
-    for (const f of FRAME_GRANTS[p]!.allow ?? []) if (!allow.includes(f) && !(BASE_ALLOW as readonly string[]).includes(f)) allow.push(f);
+    for (const f of FRAME_GRANTS[p]!) if (!allow.includes(f)) allow.push(f);
   }
-  return { sandbox, allow };
+  return allow;
 }
 
-/** The app's frame's `sandbox` and `allow` for a version's permissions:
- *  every app's, then what the version declared. */
+/** The app's frame's `sandbox` and `allow`: every app's, then the features
+ *  the version declared. */
 export function frameAttributes(permissions?: unknown): { sandbox: string; allow: string } {
-  const grants = frameGrants(permissions);
-  return { sandbox: [...BASE_SANDBOX, ...grants.sandbox].join(" "), allow: [...BASE_ALLOW, ...grants.allow].join("; ") };
+  return { sandbox: BASE_SANDBOX.join(" "), allow: [...BASE_ALLOW, ...declaredAllow(permissions)].join("; ") };
 }
 
 /** MCP Apps' `McpUiResourcePermissions` (ext-apps), the shape a host reports

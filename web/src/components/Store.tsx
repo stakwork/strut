@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "preact/hooks";
 import * as api from "../api";
 import { formatBytes } from "../attachments";
 import { errorMessage } from "../helpers";
-import { frameGrants } from "../frame-permissions";
+import { GAME_ALLOW, GAME_SANDBOX, declaredAllow } from "../frame-permissions";
 import { load, remove, save } from "../storage";
 import { appsOf, canWords, conceptRoots, installLink, liveAppUrl, liveBase, normalizeStrutUrl, parseStoreView, shortKey, storeQuery, type InstallLink, type LiveKind, type StoreView } from "../store-links";
 import { CopyButton } from "./CopyButton";
@@ -737,13 +737,15 @@ function LiveApp(props: { base: string; name: string; publisher: string }) {
   const info = useLive<{ name: string; version: string; title: string; description?: string; permissions?: string[] }>(props.base, `/public/apps/${encodeURIComponent(props.name)}`);
   const page = liveAppUrl(props.base, props.name);
   // The publisher's page frames the app, and a frame gets only what every
-  // frame above it was granted: what the version declared goes on this one
-  // too (../frame-permissions). The frame waits for the listing, since the
-  // browser reads these when it loads the page. `allow-forms` for the same
-  // reason: the app's frame has it, so a `<form onSubmit>` fires its handler,
-  // and without it here the browser refuses the submit event in every frame
-  // below (the app's CSP still sends no form anywhere).
-  const grants = frameGrants(info.data?.permissions);
+  // frame above it was granted: what every app's frame has for a game, and
+  // what the version declared, go on this one too (../frame-permissions).
+  // The frame waits for the listing, since the browser reads these when it
+  // loads the page. `allow-forms` for the same reason: the app's frame has
+  // it, so a `<form onSubmit>` fires its handler, and without it here the
+  // browser refuses the submit event in every frame below (the app's CSP
+  // still sends no form anywhere).
+  const sandbox = ["allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-downloads allow-forms", ...GAME_SANDBOX].join(" ");
+  const allow = [...GAME_ALLOW, ...declaredAllow(info.data?.permissions)].join("; ");
   return (
     <>
       <div class="store-live-head">
@@ -762,8 +764,8 @@ function LiveApp(props: { base: string; name: string; publisher: string }) {
           class="store-live-frame"
           src={page}
           title={info.data?.title ?? props.name}
-          sandbox={["allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-downloads allow-forms", ...grants.sandbox].join(" ")}
-          {...(grants.allow.length ? { allow: grants.allow.join("; ") } : {})}
+          sandbox={sandbox}
+          allow={allow}
         />
       )}
     </>

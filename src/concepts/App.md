@@ -86,7 +86,7 @@ grants:
 data:
   graph:
     types: {}                  # node types it declares and may WRITE (below: Graph types)
-permissions: []                # browser features its frame is granted (below)
+permissions: []                # motion, camera, geolocation: beyond every app's (below)
 ```
 
 The grants are the app's whole reach, checked by the strut server on every call in
@@ -99,27 +99,29 @@ that does not exist is a build
 error; a graph WRITE is refused on a type the manifest does not declare,
 so an app can never rewrite a Concept.
 
-`permissions` is what the page may use of the BROWSER beyond what every app
-gets (scripts, a download, a form's submit, the microphone, writing to the
-clipboard). The host grants only the names listed, on that version's frame;
-leave out what the app does not use. Without the name the browser refuses
-the call (the promise rejects, or the event never fires):
+Every app may use what a game needs: `element.requestFullscreen()` (and
+`screen.orientation.lock()` on a phone, which needs fullscreen),
+`element.requestPointerLock()` for mouse-look, the gamepad
+(`navigator.getGamepads()`), and `navigator.wakeLock.request("screen")` to
+keep the screen on — as well as the microphone and writing to the clipboard.
+Fullscreen and pointer lock need a click or a tap first, like on any page:
+call them from its handler.
+
+`permissions` names what the page may use beyond that. The host grants only
+the names listed, on that version's frame; without the name the browser
+refuses the call (the promise rejects, or the event never fires):
 
 | name | lets the page |
 |---|---|
-| `fullscreen` | `element.requestFullscreen()`, and `screen.orientation.lock()` on a phone (which needs fullscreen) |
-| `pointer-lock` | `element.requestPointerLock()` — mouse-look |
-| `gamepad` | `navigator.getGamepads()` and the gamepad events |
 | `motion` | `devicemotion` / `deviceorientation` — tilt controls (no compass heading). Motion can be read to guess what a person types, so ask only when the app is steered by tilting. On iPhone, call `DeviceMotionEvent.requestPermission()` from a tap first |
-| `wake-lock` | `navigator.wakeLock.request("screen")` — the screen stays on |
-| `camera` | `getUserMedia({ video })` |
-| `geolocation` | `navigator.geolocation` |
+| `camera` | `getUserMedia({ video })` — the browser still asks the person |
+| `geolocation` | `navigator.geolocation` — the browser still asks the person |
 
-`microphone` and `clipboard-write` are every app's already: listing them
-changes nothing. Any other name is a build error naming these. There is no
-`vibrate`: browsers block `navigator.vibrate` in a frame like an app's, and
-no permission turns it on — show it instead. Fullscreen and pointer lock need
-a click or a tap first, like on any page; call them from its handler.
+`fullscreen`, `pointer-lock`, `gamepad`, `wake-lock`, `microphone` and
+`clipboard-write` are accepted too, so a manifest that lists them still
+builds, and change nothing: every app has them. Any other name is a build
+error naming these. There is no `vibrate`: browsers block `navigator.vibrate`
+in a frame like an app's, and no permission turns it on — show it instead.
 
 ## The kit: what an app imports
 

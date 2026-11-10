@@ -1355,42 +1355,52 @@ person's authority over the tools its grants name.
 
 - **The page holds no credential** beyond its file token, worth its own
   files and nothing more (§7.2). The frame gets an opaque origin and only the `sandbox`
-  flags `allow-scripts allow-downloads allow-forms`, plus
-  `allow="microphone; clipboard-write"`; `allow-same-origin` is never set. A download lands
+  flags `allow-scripts allow-downloads allow-forms allow-pointer-lock
+  allow-orientation-lock`, plus `allow="microphone; clipboard-write;
+  fullscreen; gamepad; screen-wake-lock"` (web/src/frame-permissions.ts,
+  the string every host copies); `allow-same-origin` is never set. A download lands
   on the viewer's disk and audio stays in the page unless a granted tool
   sends it, so neither opens a way out past the bridge. `allow-forms` lets
   a form's `submit` event fire, which a `<form onSubmit>` needs (without it
   the browser refuses the submission before the event, and the handler
   never runs); the submission itself is refused by the CSP's
   `form-action 'none'` below.
-- **More of the browser only when the version declares it.** `app.yaml`'s
-  `permissions:` names what the frame grants beyond that (manifest.ts
-  `APP_PERMISSIONS`); the build writes the list into `dist/build.json`, and
-  the host reads it there, with the version's file token, and sets the
-  frame's attributes BEFORE the srcdoc (web/src/frame-permissions.ts
-  `frameAttributes`): `fullscreen` → `allow="fullscreen"` + the sandbox's
-  `allow-orientation-lock` (orientation lock needs fullscreen),
-  `pointer-lock` → `allow-pointer-lock` (no policy feature exists for it),
-  `gamepad` → `gamepad`, `motion` → `accelerometer; gyroscope` (no
-  `magnetometer`: no compass heading), `wake-lock` → `screen-wake-lock`,
-  and MCP Apps' own `camera` and `geolocation` → those features, as ext-apps'
-  `buildAllowAttribute` maps them; `microphone` and `clipboard-write` are
-  accepted and change nothing. An unknown name is a build error; a name a
-  host does not know grants nothing there. The browser reads both
-  attributes when the frame NAVIGATES, so setting them before the srcdoc
-  is enough — the frame is not re-created when the version changes — and
-  the host puts every app's back when a page goes, so one version's grants
-  never reach the next. A visitor's page reads them from
-  `GET /public/apps/<name>` (the version the public view serves) — and the
-  store's live preview adds them to its own frame of the publisher's page,
-  since a nested frame gets only what every frame above it has — a peer's
-  app through the read-through like its document, and the page is told MCP
-  Apps' own four in `ui/initialize` (`hostCapabilities.sandbox.permissions`).
-  Nothing is granted blanket: motion can be read to infer keystrokes, and
-  the camera and location are the person's. `navigator.vibrate` has no
-  frame attribute: browsers block it in a cross-origin frame. Hive and Peel
-  frame apps too; until they read the list from build.json, an app shown
-  there gets no more than every app's.
+- **What a game needs, every app has** (ruled 2026-11-10): fullscreen (and
+  orientation lock, which needs it), pointer lock, the gamepad, the screen
+  wake lock. None is a way out: each needs a click or a visible page, the
+  browser shows its own way out of fullscreen and pointer lock, and the
+  page still sends nothing past the bridge. Declaring them per app bought
+  little and cost every builder a field to forget and every host a file to
+  read, so they are in the frame every app gets.
+- **Motion, the camera and geolocation only when the version declares
+  them.** `app.yaml`'s `permissions:` names them (manifest.ts
+  `DECLARED_PERMISSIONS`); the build writes the list into
+  `dist/build.json`, and the host reads it there, with the version's file
+  token, and adds them to the frame's `allow` BEFORE the srcdoc
+  (`frameAttributes`): `motion` → `accelerometer; gyroscope` (no
+  `magnetometer`: no compass heading), and MCP Apps' own `camera` and
+  `geolocation` → those features, as ext-apps' `buildAllowAttribute` maps
+  them. Motion is the one with a real argument: Chrome hands it to a frame
+  without asking the person, and it can be read to guess what they type.
+  The browser still prompts for the camera and location, but the prompt
+  names the host, not the app. `fullscreen`, `pointer-lock`, `gamepad`,
+  `wake-lock`, `microphone` and `clipboard-write` are accepted and dropped,
+  so a manifest written to those names still builds; any other name is a
+  build error, and a name a host does not know grants nothing there. The
+  browser reads the attributes when the frame NAVIGATES, so setting them
+  before the srcdoc is enough — the frame is not re-created when the
+  version changes — and the host puts every app's back when a page goes,
+  so one version's grants never reach the next. A visitor's page reads
+  them from `GET /public/apps/<name>` (the version the public view serves)
+  — and the store's live preview adds the game's and the declared ones to
+  its own frame of the publisher's page, since a nested frame gets only
+  what every frame above it has — a peer's app through the read-through
+  like its document, and the page is told MCP Apps' own four in
+  `ui/initialize` (`hostCapabilities.sandbox.permissions`).
+  `navigator.vibrate` has no frame attribute: browsers block it in a
+  cross-origin frame. Hive and Peel frame apps too; until they copy the
+  frame's attributes and read `permissions` from build.json, an app shown
+  there gets no more than microphone and clipboard.
 - **The document's own CSP**, which a host may only tighten:
 
   ```

@@ -12,18 +12,19 @@ import { frameAttributes } from "../frame-permissions";
 // (which mints the read token — `useFileScope`, as for a run's artifacts),
 // `dist/index.html` is fetched under that token (the server writes the
 // app's identity into it as it serves it), and the TEXT is framed as the
-// `srcdoc` of `<iframe sandbox="allow-scripts allow-downloads allow-forms">`
-// — an `about:srcdoc` document with an opaque origin (`location.origin` is
+// `srcdoc` of a sandboxed frame (`allow-scripts allow-downloads allow-forms
+// allow-pointer-lock allow-orientation-lock`, ../frame-permissions) — an
+// `about:srcdoc` document with an opaque origin (`location.origin` is
 // "null"), never `allow-same-origin`, no `src` that carries a credential.
-// It may save a file it was handed, use the microphone and write to the
-// clipboard (`allow="microphone; clipboard-write"`, a Copy button); none of
-// them sends anything off the page. Anything more — fullscreen, pointer
-// lock, the gamepad, motion sensors, the wake lock, the camera,
-// geolocation — only when the version DECLARES it (`app.yaml`'s
-// `permissions:`, read off its `dist/build.json`; ../frame-permissions):
-// the attributes are set before the srcdoc, since the browser reads both
-// when the frame navigates, and put back to every app's when the page
-// goes, so one version's grants never reach the next. `allow-forms` is what lets a
+// It may save a file it was handed, use the microphone, write to the
+// clipboard (a Copy button), and what a game needs: fullscreen, pointer
+// lock, the gamepad, the wake lock (`allow="microphone; clipboard-write;
+// fullscreen; gamepad; screen-wake-lock"`); none of them sends anything off
+// the page. Motion sensors, the camera and geolocation only when the
+// version DECLARES them (`app.yaml`'s `permissions:`, read off its
+// `dist/build.json`): the attributes are set before the srcdoc, since the
+// browser reads them when the frame navigates, and put back to every app's
+// when the page goes, so one version's grants never reach the next. `allow-forms` is what lets a
 // `<form onSubmit>` work: without it the browser refuses the submission
 // before it fires the `submit` event, so the handler never runs ("Blocked
 // form submission", 2026-11-10 — Jamie's SecretBox, strut/views'
@@ -166,8 +167,8 @@ export function AppHost(props: {
         // input as it is NOW, should it have changed while connecting.
         conn.setToolInput(toolInput.current);
         sentInput.current = toolInput.current ? JSON.stringify(toolInput.current) : "";
-        // What the version declared, read by the browser at the navigation
-        // the srcdoc starts: set first.
+        // Every app's attributes and what the version declared, read by the
+        // browser at the navigation the srcdoc starts: set first.
         const attrs = frameAttributes(permissions);
         frame.setAttribute("sandbox", attrs.sandbox);
         frame.setAttribute("allow", attrs.allow);
