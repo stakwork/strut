@@ -2610,8 +2610,9 @@ production until install (step 2) calls the resolver.
      swarm's `/lab`), minted the index key `fesbp7why3…`, which is now
      `DEFAULT_PACKAGE_INDEXES` (id `stakwork`): a strut with
      `STRUT_PACKAGE_INDEXES` unset follows it, so `openlaw/legal-desk`
-     installs by its bare name. The tests that reach the package door set
-     `STRUT_PACKAGE_INDEXES='[]'`, so no test reads the real index. The first
+     installs by its bare name. `npm test` and each test file that reaches
+     the package door set `STRUT_PACKAGE_INDEXES='[]'`, so no test reads
+     the real index. The first
      package listed is `openlaw/legal-desk` 0.1.0 (Apache-2.0 AND
      CC-BY-4.0). Getting it there found five gaps, each fixed: jarvis parent
      types inheriting Thing's key (strut#578), a workflow's category, names

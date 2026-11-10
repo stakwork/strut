@@ -25,7 +25,7 @@ import { trimOutput } from "./ai/assistant-tools.js";
 // runs the workflow it built, and reads the run with its big output held
 // back and its deliverables as shareable links.
 
-const ENV = ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "STRUT_API_KEY", "STRUT_PEER_KEY"] as const;
+const ENV = ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "STRUT_API_KEY", "STRUT_PEER_KEY", "STRUT_PACKAGE_INDEXES"] as const;
 const KEY = "assistant-key";
 const BIG = "x".repeat(3000);
 
@@ -97,6 +97,8 @@ describe("the assistant MCP door (POST /mcp)", () => {
     process.env["STRUT_API_KEY"] = KEY;
     process.env["ANTHROPIC_API_KEY"] = "test-key";
     delete process.env["STRUT_PEER_KEY"];
+    // This strut follows no index: never the built-in default, the real one.
+    process.env["STRUT_PACKAGE_INDEXES"] = "[]";
     tempDir = join(tmpdir(), `strut-mcp-assistant-${randomUUID()}`);
     await mkdir(tempDir, { recursive: true });
   });
