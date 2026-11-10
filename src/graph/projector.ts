@@ -300,12 +300,13 @@ export function projectRunEvents(workflow: string, runId: string, events: RunEve
   // own ids, when a person's credential launched it, and the conversation
   // it continues.
   const person = start?.peerPerson ? start.actor : undefined;
-  // A public run's, under `public/<runId>/` (`bindPublic`).
+  // A public run's, under `public/<runId>/`, a priced one's under
+  // `public/<token id>/` (`bindPublic`).
   const threadOf =
     start?.origin === "peer"
       ? (id: string) => peerSessionId(id, person, start?.continues)
       : start?.origin === "public"
-        ? (id: string) => publicSessionId(id, start.runId)
+        ? (id: string) => publicSessionId(id, start.credit ?? start.runId)
         : (id: string) => id;
   for (const e of events) {
     if (e.type !== "step.start" || e.stepType !== "agent") continue;

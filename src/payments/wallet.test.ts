@@ -132,7 +132,9 @@ describe("the wallet on a server", () => {
       await secretStore.set("OTHER_KEY", "other");
       const secrets = bag(strut).secrets;
       process.env["STRUT_SECRET_KEY"] = "the-key-to-payments-json";
-      for (const k of [...WALLET_ENV, "LIGHTNING_ANYTHING", "lightning_daemon_token", "STRUT_SECRET_KEY"]) {
+      // The credit tokens' root (item 5) is payments.json's too.
+      await secretStore.set("L402_ROOT", "ab".repeat(32));
+      for (const k of [...WALLET_ENV, "LIGHTNING_ANYTHING", "lightning_daemon_token", "STRUT_SECRET_KEY", "L402_ROOT"]) {
         assert.equal(await secrets.get(k), undefined, k);
         assert.equal(await secrets.forPrincipal?.("tom")?.get(k), undefined, `${k} for a principal`);
       }
@@ -144,6 +146,7 @@ describe("the wallet on a server", () => {
       assert.match(((await put.json()) as { error: string }).error, /PUT \/earnings\/wallet/);
       await assert.rejects(secretBlanks(new MemorySecretStore(), () => ({})).fill("LIGHTNING_NWC_URL", "x"), /never by a step/);
       assert.equal((await strut.app.request("/secrets/STRUT_SECRET_KEY", { method: "PUT", headers: json, body: JSON.stringify({ value: "x" }) })).status, 400);
+      assert.equal((await strut.app.request("/secrets/L402_ROOT", { method: "PUT", headers: json, body: JSON.stringify({ value: "x" }) })).status, 400);
     } finally {
       await strut.close();
     }

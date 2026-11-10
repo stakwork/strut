@@ -774,5 +774,23 @@ export {
   type RateSource,
 } from "./payments/rate.js";
 export { createPayments, receiveProvider, type Payments } from "./payments/wallet.js";
+// The credit token (plans/paid-runs.md §4): L402 macaroons as strut mints and
+// reads them — for a host or a client that holds one, narrows one before
+// handing it on, or reads what it was sold.
+export {
+  addCaveat,
+  decodeIdentifier,
+  decodeMacaroon,
+  encodeMacaroon,
+  macaroonFromBase64,
+  macaroonToBase64,
+  parseAuthorization,
+  readCaveats,
+  L402Error,
+  type Macaroon,
+  type StrutCaveats,
+  type StrutQuote,
+} from "./l402.js";
+export { createCredit, type Credit, type CreditView, type Challenge as CreditChallenge } from "./public-credit.js";
 export { hiddenFromSteps } from "./env.js";
 export { hideSecrets } from "./capabilities.js";

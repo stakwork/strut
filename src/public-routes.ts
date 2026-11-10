@@ -17,11 +17,17 @@
  * Reads, and `POST /public/mcp` (mounted by createStrut). `GET /public`
  * also lists what anyone may RUN (plans/paid-runs.md §2): price, reserve,
  * input and recent runs — never its definition unless that is public too.
- * And anyone may START one (§3, work item 3: free items): `POST
- * /public/workflows/:name/run` answers with a RUN TOKEN that opens that
- * run's reads here — as far as the item's `results` allows — and its
- * cancel, and nothing else. The policy behind a launch (the caps, the
- * charge at the end) is src/public-runs.ts; the launch itself createStrut's.
+ * And anyone may START one (§3): `POST /public/workflows/:name/run`
+ * answers with a RUN TOKEN that opens that run's reads here — as far as the
+ * item's `results` allows — and its cancel, and nothing else. A PRICED item
+ * (work item 5, §4) needs a CREDIT TOKEN that covers its reserve —
+ * `Authorization: L402 <macaroon>:<preimage>` — or answers 402 with an
+ * L402 challenge; the credit routes (`GET /public/credit`, `POST
+ * /public/credit`, `POST /public/credit/claim`) read a token's balance,
+ * sell more and hand a payer with no preimage its credential. The policy
+ * behind a launch (the caps, the hold, the charge at the end) is
+ * src/public-runs.ts; credit, src/public-credit.ts; the launch itself
+ * createStrut's.
  * `/public-view`, the person's door to the record, is mounted by
  * createStrut behind the gate like any write.
  */
@@ -39,7 +45,10 @@ import { searchWorkflows } from "./search.js";
 import { resolveStep } from "./steps/registry.js";
 import { zodToFields } from "./ai/schemaHelpers.js";
 import { isPublicRunToken, presentedRunToken, publicRunToken } from "./auth.js";
-import { isPriced } from "./public-runnable.js";
+import { isPriced, runnableReserve } from "./public-runnable.js";
+import { parseAuthorization, tokenRefusal, type VerifiedToken } from "./l402.js";
+import { CREDIT_PURCHASE_MAX_USD, CREDIT_PURCHASE_MIN_USD, type Credit, type CreditRefusal } from "./public-credit.js";
+import { microsToUsd, priceOf, usdToMicros, type Micros } from "./payments/ledger.js";
 import { PUBLIC_LAUNCHES_PER_MINUTE, PUBLIC_RUN_BODY_MAX_BYTES, PUBLIC_RUN_KEY_MAX, PUBLIC_RUN_WAIT_MAX_S, type PublicRuns } from "./public-runs.js";
 
 export interface PublicRouteDeps {
@@ -73,6 +82,9 @@ export interface PublicRouteDeps {
   /** Public RUNS (plans/paid-runs.md §3): the launch, the launcher's reads
    *  with the run token, cancel. Absent: nothing launches here. */
   launches?: PublicLaunchDeps;
+  /** Credit (plans/paid-runs.md §4, src/public-credit.ts): a priced item's
+   *  token, its 402, the credit routes. Absent: nothing priced runs here. */
+  credit?: Credit;
 }
 
 /** What the launch and cancel routes need of the server. */
@@ -86,8 +98,9 @@ export interface PublicLaunchDeps {
    *  `maxRunCostUsd`); undefined when it cannot be read. */
   workflowCap(name: string): Promise<number | undefined>;
   /** Launch the run detached, as published, `origin: "public"`, under the
-   *  id the caps minted, with its cap (`RunOptions.maxCostUsd`). */
-  launch(flow: Flow, input: unknown, o: { runId: string; maxCostUsd?: number }): void;
+   *  id the caps minted, with its cap (`RunOptions.maxCostUsd`) and, when
+   *  priced, the credit token's id (`run.start.credit`). */
+  launch(flow: Flow, input: unknown, o: { runId: string; maxCostUsd?: number; credit?: string }): void;
   /** Cancel a live run's tree: 202, or why not (404, 409). */
   cancel(name: string, runId: string): Promise<{ status: 202 | 404 | 409; body: Record<string, unknown> }>;
   /** Launches one visitor address may make a minute (`PUBLIC_LAUNCHES_PER_MINUTE`). */
@@ -108,11 +121,20 @@ export interface PublicAppInfo {
  *  reads by path, and these POSTs by name. */
 export const PUBLIC_PATH = /^\/public(?:\/|$)/;
 /** The POSTs anyone may make: a visitor's page calling its app, a launch,
- *  and the launcher's cancel. */
-export const PUBLIC_POST = /^\/public\/(?:mcp|workflows\/[^/]+\/(?:run|runs\/[^/]+\/cancel))$/;
+ *  the launcher's cancel, buying credit and claiming it. */
+export const PUBLIC_POST = /^\/public\/(?:mcp|credit|credit\/claim|workflows\/[^/]+\/(?:run|runs\/[^/]+\/cancel))$/;
 
 /** Requests one visitor address may make to `/public` in a minute. */
 export const PUBLIC_REQUESTS_PER_MINUTE = 1200;
+
+/** A credit refusal as the route answers it: its status, `code`, and a
+ *  `Retry-After` when it says one. A 401 names the scheme. */
+function creditRefusal(c: Context, r: Pick<CreditRefusal, "status" | "code" | "error" | "retryAfter">): Response {
+  const headers: Record<string, string> = {};
+  if (r.retryAfter !== undefined) headers["retry-after"] = String(r.retryAfter);
+  if (r.status === 401) headers["www-authenticate"] = `L402 error="${r.code}"`;
+  return c.json({ error: r.error, code: r.code }, r.status, headers);
+}
 
 /** The visitor's address: the first `x-forwarded-for` hop when a proxy in
  *  front set one, else the socket's. A budget, not a boundary — a client
@@ -207,7 +229,7 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): void {
       return c.body(null, 204, {
         "access-control-allow-origin": "*",
         "access-control-allow-methods": "GET, HEAD, POST",
-        // `authorization`: a launcher's run token as a Bearer.
+        // `authorization`: a launcher's run token as a Bearer, a credit token as L402.
         "access-control-allow-headers": "content-type, accept, authorization, mcp-protocol-version",
         "access-control-max-age": "600",
       });
@@ -225,6 +247,8 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): void {
       return c.json({ error: `too many requests: ${limit} a minute` }, 429, { "access-control-allow-origin": "*", "retry-after": "60" });
     }
     c.header("access-control-allow-origin", "*");
+    // A browser's L402 client reads the challenge's header.
+    c.header("access-control-expose-headers", "www-authenticate, retry-after");
     await next();
   };
   // One registration: Hono's `/public/*` matches `/public` too.
@@ -442,9 +466,9 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): void {
 
   /** The launcher's view (plans/paid-runs.md §3): the run's status, input,
    *  output, error, what it spent and its declared artifacts with links
-   *  here — and, once it ended and was charged, `charged`, in dollars. A
-   *  free run is charged nothing: `charged: 0`, its cost (`totals.cost`) the
-   *  seller's. `?wait=<s>` holds while it is in flight (at most 55 s). With
+   *  here — and, once it ended and was charged, `charged`, in dollars, as
+   *  the ledger recorded it. A free run is charged nothing: `charged: 0`,
+   *  its cost (`totals.cost`) the seller's. `?wait=<s>` holds while it is in flight (at most 55 s). With
    *  `results: "run"`, the summary as a public run shows it. */
   const launcherView = async (c: Context, got: OpenRun) => {
     const runs = deps.launches!.runs;
@@ -456,6 +480,7 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): void {
       summary = await store.getRunSummary(got.name, got.runId);
     }
     const ended = !!summary && !runs.pending(got.name, got.runId);
+    const charged = ended ? await runs.charged(got.name, got.runId).catch(() => undefined) : undefined;
     let base: Record<string, unknown>;
     if (summary) base = { ...summary };
     else {
@@ -468,8 +493,8 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): void {
     return c.json({
       ...shown,
       ...(artifacts ? { artifacts } : {}),
-      // Item 5 reads a priced run's charge from the ledger.
-      ...(ended ? { charged: 0 } : {}),
+      // What the run was charged, from the ledger: a free run nothing.
+      ...(ended ? { charged: microsToUsd(charged ?? 0) } : {}),
     });
   };
 
@@ -578,32 +603,101 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): void {
     const disabled = await launches.disabled(name);
     if (disabled) return c.json({ error: disabled }, 409);
 
-    // The caps. A `key` this address sent for a run still in flight returns
-    // that run, before any cap counts it twice.
+    // A priced item's credit token (§4.3 steps 1 to 3), read before the
+    // caps: what it may be used for is known without the wallet, and its id
+    // scopes the `key` — the same token and key are the same run.
+    const priced = isPriced(item);
+    const reserve = priced ? runnableReserve(item) : 0;
+    const credit = deps.credit;
+    let presented: VerifiedToken | undefined;
+    let expired = false;
+    if (priced) {
+      if (!credit) return c.json({ error: `workflow "${name}" is priced, and this strut server sells no credit` }, 503, { "retry-after": "60" });
+      const auth = parseAuthorization(c.req.header("authorization"));
+      if (auth) {
+        const v = await credit.verify(auth);
+        if (!v.ok) return creditRefusal(c, v);
+        presented = v.token;
+        const why = tokenRefusal(presented, { now: Date.now(), item, reserve });
+        if (why === "not_this_item") return c.json({ error: `token_not_for_this: the token's holder limited it to other items than workflow "${name}"`, code: "token_not_for_this" }, 403);
+        if (why === "over_max_charge") {
+          return c.json({ error: `token_over_max_charge: a run of "${name}" needs $${microsToUsd(reserve)} set aside, above what the token's holder allowed one run`, code: "token_over_max_charge" }, 403);
+        }
+        expired = why === "expired";
+      }
+    }
+
+    // The caps. A `key` this caller sent for a run still in flight returns
+    // that run, before any cap counts it twice: the caller is the credit
+    // token on a paid launch, else the address.
     const admitted = await launches.runs.admit(item, {
       ...(await launches.workflowCap(name).then((cap) => (cap !== undefined ? { workflowCapUsd: cap } : {}))),
-      ...(typeof key === "string" ? { key, scope: who } : {}),
+      ...(typeof key === "string" ? { key, scope: presented ? `token:${presented.tokenId}` : who } : {}),
     });
     if (admitted.ok === "existing") return c.json({ runId: admitted.runId, token: publicRunToken(name, admitted.runId), existing: true }, 202);
     if (!admitted.ok) return c.json({ error: admitted.error }, admitted.status, { "retry-after": String(admitted.retryAfter) });
 
-    // The price. Item 5 (plans/paid-runs.md §4, §5) replaces this refusal
-    // with the credit token: none, or one short of the reserve, is a 402
-    // with an L402 challenge; a good one has the reserve set aside here.
-    if (isPriced(item)) {
-      admitted.release();
-      return c.json(
-        { error: `priced_runs_not_built: workflow "${name}" is priced, and this strut server does not take payment for a run yet`, code: "priced_runs_not_built" },
-        501,
-      );
+    // The price (§3 step 4, §4, §5). No token, or one that cannot cover the
+    // reserve, is a 402: a new macaroon and an invoice for what is missing
+    // — the shortfall when the presented token's credit carries to the new
+    // one (§4.5), the whole reserve otherwise. A good token has the reserve
+    // set aside under this run's id.
+    if (priced) {
+      const pay = async (usd: Micros, o: { carry?: string; remaining?: Micros; reason?: string } = {}) => {
+        admitted.release();
+        const ch = await credit!.challenge({ usd, description: `${name}: credit for one run`, address: who, ...o });
+        if (!ch.ok) return creditRefusal(c, ch);
+        return c.json(ch.body, 402, { "www-authenticate": ch.header });
+      };
+      if (!presented) return pay(reserve);
+      if (expired) return pay(reserve, { reason: "expired" });
+      const used = await credit!.use(presented);
+      if (!used.ok) {
+        admitted.release();
+        return creditRefusal(c, used);
+      }
+      let held;
+      try {
+        held = await admitted.hold({ token: presented.tokenId, price: priceOf(item), reserve, ...(typeof key === "string" ? { key } : {}) });
+      } catch (err) {
+        console.error(`[public-runs] setting aside the reserve of ${name}/${admitted.runId} failed:`, err);
+        return c.json({ error: "this server cannot set credit aside just now — try again shortly" }, 503, { "retry-after": "30" });
+      }
+      if (!held.ok) {
+        // Only a token no holder narrowed is carried from (§4.5): a
+        // narrowed one's top-up starts a balance of its own.
+        if (held.reason === "short") {
+          const carries = !presented.narrowed;
+          return pay(carries ? reserve - held.free : reserve, { remaining: held.free, reason: "short", ...(carries ? { carry: presented.tokenId } : {}) });
+        }
+        if (held.reason === "expired" || held.reason === "closed") return pay(reserve, { reason: "expired" });
+        if (held.reason === "carried") return pay(reserve, { reason: "replaced" });
+        return creditRefusal(c, { status: 401, code: "invalid_token", error: "invalid_token: this server's ledger does not know the token" });
+      }
+      // The same token and key as an earlier launch: that run, nothing more set aside.
+      if (held.runId !== admitted.runId) return c.json({ runId: held.runId, token: publicRunToken(name, held.runId), existing: true }, 202);
     }
     try {
-      launches.launch(flow, body["input"] ?? {}, { runId: admitted.runId, ...(admitted.capUsd !== undefined ? { maxCostUsd: admitted.capUsd } : {}) });
+      launches.launch(flow, body["input"] ?? {}, {
+        runId: admitted.runId,
+        ...(admitted.capUsd !== undefined ? { maxCostUsd: admitted.capUsd } : {}),
+        ...(presented ? { credit: presented.tokenId } : {}),
+      });
     } catch (err) {
       admitted.release();
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 503, { "retry-after": "60" });
     }
-    return c.json({ runId: admitted.runId, token: publicRunToken(name, admitted.runId) }, 202);
+    const brief = presented ? await credit!.view(presented.tokenId, { entries: false }).catch(() => undefined) : undefined;
+    return c.json(
+      {
+        runId: admitted.runId,
+        token: publicRunToken(name, admitted.runId),
+        ...(brief
+          ? { credit: { held_usd: microsToUsd(reserve), remaining_usd: brief.remaining_usd, remaining_sats: brief.remaining_sats, expires: brief.expires } }
+          : {}),
+      },
+      202,
+    );
   });
 
   // The launcher's cancel: that run's tree, with its run token.
@@ -616,6 +710,91 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): void {
     if (start ? start.origin !== "public" : !launches.runs.pending(name, runId)) return c.json({ error: `no run "${runId}" of "${name}"` }, 404);
     const { status, body } = await launches.cancel(name, runId);
     return c.json(body, status);
+  });
+
+  // ── Credit (plans/paid-runs.md §3's table, §4) ──────────────────────────
+
+  /** What a credit token holds: paid, spent, set aside, remaining in dollars
+   *  and in sats at its own rate, its end, the newest 50 entries. The token
+   *  as `Authorization: L402 <macaroon>:<preimage>`; a token never used
+   *  before is used here (the wallet asked once). */
+  app.get("/public/credit", async (c) => {
+    if (!deps.credit || !(await deps.credit.selling())) return c.json({ error: "this strut server has sold no credit" }, 404);
+    const auth = parseAuthorization(c.req.header("authorization"));
+    if (!auth) return creditRefusal(c, { status: 401, code: "invalid_token", error: "invalid_token: present the token as Authorization: L402 <macaroon>:<preimage>" });
+    const used = await deps.credit.check(auth);
+    if (!used.ok) return creditRefusal(c, used);
+    const view = await deps.credit.view(used.token.tokenId);
+    return view ? c.json(view) : c.json({ error: "no such token" }, 404);
+  });
+
+  /** A challenge for more credit than one run's reserve: `{ usd }` or
+   *  `{ sats }`. Presenting a token no holder narrowed carries its free
+   *  credit to the new one (§4.5). Answers 402, like any challenge. */
+  app.post("/public/credit", async (c) => {
+    const credit = deps.credit;
+    if (!credit || !(await surface.get()).runnable.some(isPriced)) return c.json({ error: "this strut server sells nothing to run" }, 404);
+    const raw = await c.req.text();
+    if (Buffer.byteLength(raw) > 4096) return c.json({ error: "the body is over 4 KB" }, 413);
+    let body: Record<string, unknown>;
+    try {
+      body = raw.trim() ? (JSON.parse(raw) as Record<string, unknown>) : {};
+    } catch {
+      return c.json({ error: "the body is not JSON" }, 400);
+    }
+    if (!body || typeof body !== "object" || Array.isArray(body)) return c.json({ error: "the body is { usd } or { sats }" }, 400);
+    const keys = Object.keys(body);
+    if (keys.length !== 1 || (keys[0] !== "usd" && keys[0] !== "sats")) return c.json({ error: "the body is { usd } or { sats }, one of them" }, 400);
+    const usd = body["usd"];
+    const sats = body["sats"];
+    if (usd !== undefined && (typeof usd !== "number" || !Number.isFinite(usd) || usd < CREDIT_PURCHASE_MIN_USD || usd > CREDIT_PURCHASE_MAX_USD)) {
+      return c.json({ error: `usd is a number of dollars from ${CREDIT_PURCHASE_MIN_USD} to ${CREDIT_PURCHASE_MAX_USD}` }, 400);
+    }
+    if (sats !== undefined && (typeof sats !== "number" || !Number.isSafeInteger(sats) || sats < 1)) return c.json({ error: "sats is a whole number above 0" }, 400);
+    let carry: string | undefined;
+    let remaining: Micros | undefined;
+    const auth = parseAuthorization(c.req.header("authorization"));
+    if (auth) {
+      const used = await credit.check(auth);
+      if (!used.ok) return creditRefusal(c, used);
+      const view = await credit.view(used.token.tokenId, { entries: false });
+      if (!used.token.narrowed && view && !view.expired && !view.replaced) {
+        carry = used.token.tokenId;
+        remaining = usdToMicros(view.remaining_usd);
+      }
+    }
+    const ch = await credit.challenge({
+      ...(usd !== undefined ? { usd: usdToMicros(usd as number) } : { sats: sats as number }),
+      description: "credit on this strut server",
+      address: visitorAddress(c),
+      ...(carry ? { carry } : {}),
+      ...(remaining !== undefined ? { remaining } : {}),
+    });
+    if (!ch.ok) return creditRefusal(c, ch);
+    return c.json(ch.body, 402, { "www-authenticate": ch.header });
+  });
+
+  /** A payer with no preimage (§4.4): the macaroon alone, as `{ macaroon }`
+   *  or `Authorization: L402 <macaroon>`. `pending`, `expired`, or
+   *  `settled` with the preimage and the whole credential. */
+  app.post("/public/credit/claim", async (c) => {
+    if (!deps.credit || !(await deps.credit.selling())) return c.json({ error: "this strut server has sold no credit" }, 404);
+    let macaroon = parseAuthorization(c.req.header("authorization"))?.macaroon;
+    if (!macaroon) {
+      const raw = await c.req.text();
+      if (Buffer.byteLength(raw) > 16 * 1024) return c.json({ error: "the body is over 16 KB" }, 413);
+      try {
+        const body = raw.trim() ? (JSON.parse(raw) as { macaroon?: unknown }) : {};
+        if (typeof body?.macaroon === "string") macaroon = body.macaroon;
+      } catch {
+        return c.json({ error: "the body is not JSON" }, 400);
+      }
+    }
+    if (!macaroon) return c.json({ error: "the body is { macaroon }" }, 400);
+    const got = await deps.credit.claim({ macaroon }, visitorAddress(c));
+    if (!got.ok) return creditRefusal(c, got);
+    const { ok: _ok, ...out } = got;
+    return c.json(out);
   });
 
   // After the run routes: a version's YAML, the catch-all.

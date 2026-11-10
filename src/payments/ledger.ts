@@ -336,6 +336,8 @@ export interface LedgerStore {
   /** A token's entries, newest first: `ENTRIES_PAGE` of them, before `before`. */
   entries(token: string, o?: { limit?: number; before?: number }): Promise<LedgerEntry[]>;
   findHold(token: string, key: string): Promise<OpenHold | undefined>;
+  /** A run's charge, once it was charged: what the launcher's view shows. */
+  chargeOf(runId: string, subject: string): Promise<LedgerEntry | undefined>;
   /** Holds no charge has freed yet, for the boot reconcile. */
   openHolds(): Promise<OpenHold[]>;
   earnings(q: EarningsQuery): Promise<EarningsRow[]>;
