@@ -409,6 +409,13 @@ not lost.
   `params.system`. The text is pinned byte for byte by `prompts.test.ts`:
   a fixture update, and one cache miss for every live chat. Not this
   plan's PR.
+  *Built 2026-11-09 (`src/ai/prompts.ts`, the Agent rules, which the
+  builder job renders too): one line saying an agent's domain knowledge
+  is a Concept page read by `context/concept` before it, its text at the
+  end of the agent's system, and to grant `graph/graph-get` for the pages
+  under it. The line names no `{{ params.… }}`: the builder job's rules
+  sit inside `builder.yaml`'s `params.system`, where one would be
+  resolved at load.*
 
 ## 7. Where it runs
 
