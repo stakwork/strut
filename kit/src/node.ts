@@ -22,6 +22,9 @@ export interface KitManifest {
   aliases: Record<string, string>;
   entries: string[];
   candidates: number;
+  /** One sha256 over every file an app is compiled from (the modules, the
+   *  stylesheets, the base stylesheet). */
+  tree?: string;
 }
 
 export function readManifest(dir = vendorDir): KitManifest {

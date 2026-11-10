@@ -161,9 +161,9 @@ export { contentHash, nextVersionLabel, treeHash, treeFiles } from "./version.js
 // capability the app/* steps and the /apps routes are thin over.
 export { manifestSchema, parseManifest, readManifest, MANIFEST_FILE, type AppManifest, type AppGrants } from "./apps/manifest.js";
 export { buildApp, lintAppSource, readBuildInfo, cspFor, withToken, withoutTokenMeta, DOCUMENT_FILE, BUILD_FILE, TOKEN_META, type BuildDeps, type BuildInfo, type BuildResult, type InstalledApp } from "./apps/build.js";
-export { loadKit, defaultKitDir, type Kit, type KitLocation } from "./apps/kit.js";
+export { loadKit, kitDigestOf, defaultKitDir, type Kit, type KitLocation } from "./apps/kit.js";
 export { appsRoot, appVersionDir, appFilePath, listAppFiles, validateAppName } from "./apps/files.js";
-export { createApps, appErrors, TEMPLATES_DIR, PAID_OR_SHELL_STEPS, APP_ERRORS_MAX, type AppsCapability, type AppView, type AppError, type AppPublishOptions, type AppPublishResult } from "./apps/apps.js";
+export { createApps, appErrors, TEMPLATES_DIR, PAID_OR_SHELL_STEPS, APP_ERRORS_MAX, type AppsCapability, type AppView, type AppListing, type KitBehind, type AppError, type AppPublishOptions, type AppPublishResult } from "./apps/apps.js";
 // The app door (plans/apps.md §5): `step_run`, the one tool a page calls, and
 // its grant checks; the runs capability the run/* steps are thin over.
 export { buildAppTools, grantRefusal, graphWriteRefusal, keptFromApp, STEP_RUN_TOOL, APP_TOOL_META, GRAPH_WRITES, type AppToolDeps } from "./apps/tools.js";

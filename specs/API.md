@@ -1340,12 +1340,12 @@ components as an app other apps import (`import { RunTimeline } from
 
 | Method | Path | Description |
 | ------ | ---- | ----------- |
-| GET    | `/apps` | `{ apps: [{ name, activeVersion, versions, title, description?, icon?, grants, publisher?, owner?, pinned?, live?, warnings? }] }` — `pinned: true` only on an app pinned as a tab; `live` (the release id) only on an app held at a release; `warnings` (§14.6) only when the active version has some from the last day |
-| GET    | `/apps/:name[?version=vN]` | one version (the active one by default): the record (`version`, `hash`, `manifest`, `createdAt`, `upstream?`, `active`, `versions: { vN: { createdAt, hash, publisher?, source?, actor?, upstream? } }`, `publisher?`, `owner?`, `pinned?`) plus `dir`, `files`, `build` (`dist/build.json`: `kit`, `builtAt`, `hash`, `imports: [{ name, version, hash, pinned? }]`, `bytes`, `warnings`), `stale` (the document is older than the sources, or an imported kit moved), `missing` (the directory is not on this host), `inertGrants` (granted workflows that no longer exist), `live?` and `releases?: [{ id, version, createdAt, by? }]` (§14.5, without their locks); 404 |
+| GET    | `/apps` | `{ apps: [{ name, activeVersion, versions, title, description?, icon?, grants, publisher?, owner?, pinned?, live?, warnings?, kitBehind? }] }` — `pinned: true` only on an app pinned as a tab; `live` (the release id) only on an app held at a release; `warnings` (§14.6) only when the active version has some from the last day; `kitBehind: { errors }` (§14.14) only when the active version's document could not be rebuilt on this strut's kit |
+| GET    | `/apps/:name[?version=vN]` | one version (the active one by default): the record (`version`, `hash`, `manifest`, `createdAt`, `upstream?`, `active`, `versions: { vN: { createdAt, hash, publisher?, source?, actor?, upstream? } }`, `publisher?`, `owner?`, `pinned?`) plus `dir`, `files`, `build` (`dist/build.json`: `kit: { name, version, digest? }`, `builtAt`, `hash`, `imports: [{ name, version, hash, pinned? }]`, `bytes`, `warnings`), `stale` (the document is older than the sources, or an imported kit moved), `missing` (the directory is not on this host), `inertGrants` (granted workflows that no longer exist), `kitBehind?: { errors }` (§14.14: this version's document is on another kit and did not build on this one), `live?` and `releases?: [{ id, version, createdAt, by? }]` (§14.5, without their locks). A version whose document is on another kit is rebuilt first (§14.14), a second or two; 404 |
 | GET    | `/apps/:name/usage` | what the app's pages cost the server (§14.6): `{ app, since, lastCallAt?, hour, day, minutes, types, warnings }`; 404 for an unknown app |
 | GET    | `/apps/:name/versions` | `{ name, active, versions, publisher?, owner?, pinned?, live, releases, behind }` — `live` is the live release's id or `"latest"`; `releases` each with its `lock` (§14.5); `behind: [{ kind: "workflow" \| "step", name, locked, current }]`, what the live release's lock names that has moved on since (`current: null` when gone) |
 | GET    | `/apps/:name/:version/files` | `{ app, version, hash, files, token? }` — the version's directory, served exactly as a run's artifacts are (§5): the listing mints the app's FILE TOKEN (scope `app:<name>@<vN>`), absent with no secret to sign it. A version past the newest five (not the active one) is restored from its history and rebuilt first, ~2 s |
-| GET    | `/apps/:name/:version/files/<path>` | one file, by `?t=<token>` or the key, sandboxed (`CSP: sandbox`, `nosniff`). `dist/index.html` — the document — read by TOKEN carries the token in `<meta name="strut-app-token">` (written as it is served; `dist/` holds no credential) and gets `sandbox allow-scripts`; read by the KEY it carries no meta and runs no script. The document has an `ETag` and `Cache-Control: private, no-cache`: the same version is the same bytes every time it is served, so a host keeps it and sends `If-None-Match`, answered `304` while it is current. A token for another app or version is `401` whatever else the request carries |
+| GET    | `/apps/:name/:version/files/<path>` | one file, by `?t=<token>` or the key, sandboxed (`CSP: sandbox`, `nosniff`). `dist/index.html` — the document — read by TOKEN carries the token in `<meta name="strut-app-token">` (written as it is served; `dist/` holds no credential) and gets `sandbox allow-scripts`; read by the KEY it carries no meta and runs no script. The document has an `ETag` and `Cache-Control: private, no-cache`: the same version is the same bytes every time it is served, so a host keeps it and sends `If-None-Match`, answered `304` while it is current. The tag is of the bytes served, so a document rebuilt on another kit (§14.14) has a new one, unless the rebuild made the same document. A token for another app or version is `401` whatever else the request carries |
 | POST   | `/apps` | `{ name, files: { "<path>": "<text>" \| { base64 }, … }, publisher?, upstream?, reactivateKnown? }` → 201 `{ ok, name, version, changed, hash, bytes, warnings, live, liveVersion?, release?, note?, graph? }` — `live: false` when the app is held: the version is a draft (§14.5). Builds first; a build that fails is `400 { error, errors, warnings }` and publishes nothing. An app that declares graph types (`data.graph`) registers them before the version is recorded, add-only, on a Neo4j graph only: `graph: { types: [{ type, created, added }], edges: [{ edge, created }] }`. On a LadybugDB file or with no graph it does not build, and a declaration that conflicts with the graph (another attribute type, another key, a required attribute left out, a type strut keeps — `Strut*`, `Concept`, `Claim`, `Check`, `Evidence`) is a build error naming it (§14.7). A PERSON's door: the grants are unrestricted (`llm`, a sealed step — what `app/publish` refuses, §9 of the plan). The actor becomes the owner when the app has none. |
 | PUT    | `/apps/:name/active` | What people open (§14.5). `{ version: "vN" }` PROMOTES: a new release of that version with a lock taken now, made live — the app is held; `{ release: "rN" }` makes an earlier release live again, adding none; `{ version: "latest" }` follows the newest publish. → `{ ok, name, active, live, release? }` (`release` with its lock, on a promote). `400` without exactly one of the two; `404` for an unknown app, version or release; `409` for a refusal: a version that no longer builds on this strut's kit (the build's errors), an app strut seeds, a release whose lock names a workflow or step that no longer exists |
 | PUT    | `/apps/:name/pin` | `{ pinned: boolean }` → `{ ok, name, pinned, live, release? }`: pin the app as a TAB, or unpin it — the record's flag (not a version pin), which a publish and a rollback keep and a delete clears. A host that lists this strut's apps (a portal's sidebar for the workspace this strut belongs to) shows each `pinned` one as a tab at its active version. Pinning an app that follows latest also HOLDS it at that version (§14.5): `release` is the one made, `live` its id; unpinning leaves what is live alone. `400` without a boolean, `404` for an unknown app, `409` when the version to hold no longer builds |
@@ -1656,7 +1656,8 @@ it live. While held, `active` is the live release's version, a publish
 records a DRAFT (`live: false` on its result) and changes nothing people
 see, and `{ release }` rolls back (or forward) to another release. An app
 keeps every release; one is live. A version a release names keeps its
-directory, so a rollback serves the bytes that were live.
+directory, so a rollback serves the document that was live (rebuilt only
+when the kit under it moves, §14.14).
 
 The `lock` is taken when the version is made live, never at publish: every
 workflow the version grants and every subflow they reach as `{ version,
@@ -2037,6 +2038,40 @@ never be sent this way. In the kit, the color is `bg-primary` /
 every `rounded-*`. An app that names a color of its own (`bg-blue-500`)
 keeps it. A visitor's page (§17) is not branded: it has no credential to
 read the brand with.
+
+### 14.14 The kit — a document follows the strut it runs on (`plans/managed-packages.md` §6)
+
+An app has no dependencies of its own: every library it uses is the kit's,
+compiled into its document when it is built. So a fix in a new strut's kit
+reaches an app when its document is built again, and strut does that by
+itself.
+
+- `dist/build.json` records the kit a document was built on: `kit: { name,
+  version, digest }`, `digest` the sha256 of the kit's
+  `vendor/manifest.json`. That file names every package's exact version and
+  `tree`, one hash over every file an app is compiled from, so the digest
+  moves with a fix in a transitive dependency or in the kit's own sources.
+- A document whose `build.json` names another digest, or none (built before
+  the digest was recorded), is **behind**. It is rebuilt IN PLACE: the same
+  sources, each imported app at the version the document already carries,
+  this strut's kit. `dist/` is outside the version's tree hash, so the
+  version, its label, the active pointer and a held app's release stay as
+  they are: no new version, no draft, nothing to accept.
+- **When.** Every app's ACTIVE version when strut boots, in the background
+  after the seeds; any other version the first time it is read (its files,
+  `GET /apps/:name?version=`, a promote). A read waits for its own
+  version's rebuild.
+- **A rebuild that fails** (a library the new kit no longer has) writes
+  nothing: the document the version has keeps serving. The app is marked
+  `kitBehind: { errors }`, the build's errors, on `GET /apps` (the active
+  version), `GET /apps/:name` and `app/get` (the version read); `build.kit`
+  there names the kit the document is still on. Tried once per process, so
+  again at the next boot. Fixing it is a change to the app's sources: the
+  next publish builds on this kit.
+
+`kitBehind` is in memory: it is absent until the boot pass (or a read) has
+tried that version. Without a built kit nothing is rebuilt and nothing is
+behind.
 
 ## 15. Dictation — speech to text, its models and the user's vocabulary
 

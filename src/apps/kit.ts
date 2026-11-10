@@ -15,6 +15,7 @@
  * `@strut/kit` as a package finds it through `require.resolve` first.
  * Nothing here loads a browser library: these are paths and JSON.
  */
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
@@ -38,6 +39,10 @@ export interface KitManifest {
   /** How many modules the tree holds. */
   modules: number;
   candidates: number;
+  /** The sha256 over every file an app is compiled from — the modules, the
+   *  bundled stylesheets, the base stylesheet — so the manifest's own hash
+   *  moves with any of them. Absent on a layer built before it. */
+  tree?: string;
 }
 
 /** One module of the frozen tree (`modules.json`): each import as the kit's
@@ -57,12 +62,18 @@ export interface Kit {
   /** Every module of the tree by ABSOLUTE path. */
   modules: Record<string, KitModule>;
   manifest: KitManifest;
+  /** Which kit this is: the sha256 of `vendor/manifest.json` as it is on
+   *  disk. What a built document records (`dist/build.json`'s `kit.digest`);
+   *  a document that names another, or none, was built on another kit
+   *  (plans/managed-packages.md §6). */
+  digest: string;
   /** The base stylesheet's text (`src/styles/base.css`). */
   baseCss: string;
   baseCssPath: string;
 }
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+const sha256 = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 
 /** The kit's package root: `@strut/kit` when a strut pins it, else the repo's `kit/`. */
 export function defaultKitDir(): string {
@@ -96,15 +107,28 @@ export function loadKit(where: KitLocation = {}): Kit {
     modules[resolve(vendorDir, file)] = m.pure ? { links, pure: true } : { links };
   }
   const baseCssPath = join(dir, "src", "styles", "base.css");
+  const manifest = readFileSync(join(vendorDir, "manifest.json"));
   return {
     dir,
     vendorDir,
     imports: abs,
     modules,
-    manifest: JSON.parse(readFileSync(join(vendorDir, "manifest.json"), "utf8")) as KitManifest,
+    manifest: JSON.parse(manifest.toString("utf8")) as KitManifest,
+    digest: sha256(manifest),
     baseCss: readFileSync(baseCssPath, "utf8"),
     baseCssPath,
   };
+}
+
+/** A kit's digest without loading it (one small file), or null when its
+ *  vendor layer is not built. */
+export function kitDigestOf(k: Kit | KitLocation | undefined): string | null {
+  if (k && "imports" in k) return k.digest;
+  try {
+    return sha256(readFileSync(join(k?.vendorDir ?? join(k?.dir ?? defaultKitDir(), "vendor"), "manifest.json")));
+  } catch {
+    return null;
+  }
 }
 
 /** `Kit` when already loaded, else load it from a location. */
