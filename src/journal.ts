@@ -68,6 +68,9 @@ export function readRunStart(
   /** A public run's own cost cap (plans/paid-runs.md §7) — a resume keeps
    *  it, so the Mothership's link carries the same cap. */
   maxCostUsd?: number;
+  /** A priced public run's credit token id (§6) — a resume keeps it: the
+   *  same sessions' namespace, the same token charged at the end. */
+  credit?: string;
 } | null {
   const start = events.find((e) => e.type === "run.start");
   if (!start) return null;
@@ -86,6 +89,7 @@ export function readRunStart(
     ...(start.continues ? { continues: start.continues } : {}),
     attachments: start.attachments,
     ...(typeof start.maxCostUsd === "number" ? { maxCostUsd: start.maxCostUsd } : {}),
+    ...(typeof start.credit === "string" ? { credit: start.credit } : {}),
     ...(start.app ? { app: start.app } : {}),
     ...(start.startedBy ? { startedBy: start.startedBy } : {}),
     ...(start.conversation ? { conversation: start.conversation } : {}),

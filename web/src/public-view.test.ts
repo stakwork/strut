@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { boxesOf, checkedOf, emptyRecord, mergeNeeds, needsTick, removeRow, reserveUsd, rowsOf, runHints, setBox, setPrice, setResults, usd, visitorAppLink } from "./public-view.js";
+import { boxesOf, capNote, checkedOf, emptyRecord, mergeNeeds, needsTick, removeRow, reserveUsd, rowsOf, runHints, setBox, setPrice, setResults, usd, visitorAppLink } from "./public-view.js";
 import type { PublicRunInfo, PublicViewNeeds } from "./api.js";
 
 const needs: PublicViewNeeds = {
@@ -118,6 +118,16 @@ describe("a workflow or step row's three boxes", () => {
     assert.deepEqual(runHints({ ...wf, dailyCapUsd: 5 }, { ...spends, owner: "tom-1" }), []);
     assert.match(runHints({ ...wf }, { ...spends, principal: "public-runs" }).join(" "), /set a daily cap/);
     assert.deepEqual(runHints({ ...wf, base: 1 }, { ...spends, owner: "tom-1" }), [], "a priced item needs no daily cap");
+  });
+
+  it("a daily cap with no per-run cap runs one at a time, and the note beside the caps says so", () => {
+    const note = capNote({ ...wf, dailyCapUsd: 5 });
+    assert.match(note ?? "", /whole day's \$5\.00/);
+    assert.match(note ?? "", /one runs at a time/);
+    assert.match(note ?? "", /Set a per-run cap/);
+    assert.equal(capNote({ ...wf, dailyCapUsd: 5, capUsd: 1 }), undefined, "a per-run cap lets several run");
+    assert.equal(capNote({ ...wf }), undefined, "no daily cap, nothing to say");
+    assert.equal(capNote({ kind: "step", name: "s", dailyCapUsd: 5 }), undefined);
   });
 
   it("something that acts or runs code needs a tick when it is newly runnable", () => {

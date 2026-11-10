@@ -90,6 +90,22 @@ describe("the wallet's settings", () => {
       assert.equal(await settings.wallet(), null);
     });
 
+    it("L402_ROOT: none until minted, 32 random bytes once minted, read back by a new process, never replaced", async () => {
+      const settings = new PaymentsSettings(new FileSecretStore(dir, PAYMENTS_FILE));
+      assert.equal(await settings.l402Root(), null);
+      const [a, b] = await Promise.all([settings.ensureL402Root(), settings.ensureL402Root()]);
+      assert.equal(a.length, 32);
+      assert.deepEqual(a, b, "two at once mint one");
+      assert.deepEqual(await settings.ensureL402Root(), a, "never replaced");
+      assert.deepEqual(await new PaymentsSettings(new FileSecretStore(dir, PAYMENTS_FILE)).l402Root(), a, "a new process reads it back");
+      assert.ok(!(await readFile(join(dir, PAYMENTS_FILE), "utf8")).includes(a.toString("hex")), "not in clear");
+      const bad = new MemorySecretStore();
+      await bad.set("L402_ROOT", "not hex");
+      const s = new PaymentsSettings(bad);
+      assert.equal(await s.l402Root(), null);
+      await assert.rejects(s.ensureL402Root(), /fix or remove it by hand/, "a bad root is never silently replaced");
+    });
+
     it("a wallet on file that no longer parses is no wallet, said once", async () => {
       const store = new MemorySecretStore();
       await store.set("WALLET", "{ not json");

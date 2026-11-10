@@ -257,6 +257,13 @@ for (const impl of impls) {
       assert.equal((await store.token("a"))!.spent, $(3.5), "charged once");
       assert.equal((await store.today(W, { now: T0 })).calls, 1);
       assert.deepEqual(await store.openHolds(), []);
+      // The run's charge reads back by its run, for the launcher's view.
+      const read = (await store.chargeOf("r1", W))!;
+      assert.deepEqual({ kind: read.kind, usd: read.usd, token: read.token, seq: read.seq }, { kind: "charge", usd: $(3.5), token: "a", seq: c.seq });
+      assert.equal(await store.chargeOf("r1", "workflow:other"), undefined);
+      assert.equal(await store.chargeOf("r9", W), undefined);
+      await store.charge({ runId: "free1", subject: W, cost: $(1), outcome: "success", price: FREE, at: T0 });
+      assert.equal((await store.chargeOf("free1", W))!.usd, 0, "a free run's charge of nothing");
     });
 
     it("a failed run is charged its cost and no more than the reserve; a cancelled one by the rule", async () => {

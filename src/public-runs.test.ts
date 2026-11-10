@@ -119,7 +119,9 @@ describe("free public runs", () => {
       serveUi: false,
       scheduler: false,
       registry: await createRegistry([spend, session, files, asks]),
-      ...(o.wallet ? { services: { lightning: lightningCapability(new FakeWallet()) } } : {}),
+      ...(o.wallet
+        ? { services: { lightning: lightningCapability(new FakeWallet()) }, payments: { rate: async () => ({ usdPerBtc: 100_000, at: new Date().toISOString(), source: "test" }) } }
+        : {}),
       publicRuns: { ...(o.maxInFlight ? { maxInFlight: o.maxInFlight } : {}), ...(o.principal ? { principal: o.principal } : {}) },
       ...(o.llmAuth ? { llmAuth: o.llmAuth } : {}),
     });
@@ -257,16 +259,12 @@ describe("free public runs", () => {
     assert.equal((await (await strut.ledger()).today("workflow:spend")).calls, 1);
   });
 
-  it("a priced item is refused as not built yet, and holds nothing", async () => {
+  it("a priced item with no credit token is a 402, and counts nothing in flight", async () => {
     const { launch } = await boot({ wallet: true, runnable: [{ kind: "workflow", name: "spend", base: 0.5 }], maxInFlight: 1 });
-    const res = await launch("spend", { input: {} });
-    assert.equal(res.status, 501);
-    const body = (await res.json()) as { error: string; code: string };
-    assert.equal(body.code, "priced_runs_not_built");
-    assert.match(body.error, /^priced_runs_not_built: workflow "spend" is priced/);
-    // Nothing was counted in flight: with room for one run, the refusal
-    // again (not the in-flight limit).
-    assert.equal((await launch("spend", { input: {} })).status, 501);
+    // With room for one run, the 402 again (not the in-flight limit): the
+    // refusal let the admission go. Priced runs: src/public-priced.test.ts.
+    assert.equal((await launch("spend", { input: {} })).status, 402);
+    assert.equal((await launch("spend", { input: {} })).status, 402);
   });
 
   it("results: output shows the launcher the summary and the declared files; results: run, the events and every file", async () => {
