@@ -1356,13 +1356,41 @@ person's authority over the tools its grants name.
 - **The page holds no credential** beyond its file token, worth its own
   files and nothing more (§7.2). The frame gets an opaque origin and only the `sandbox`
   flags `allow-scripts allow-downloads allow-forms`, plus
-  `allow="microphone"`; `allow-same-origin` is never set. A download lands
+  `allow="microphone; clipboard-write"`; `allow-same-origin` is never set. A download lands
   on the viewer's disk and audio stays in the page unless a granted tool
   sends it, so neither opens a way out past the bridge. `allow-forms` lets
   a form's `submit` event fire, which a `<form onSubmit>` needs (without it
   the browser refuses the submission before the event, and the handler
   never runs); the submission itself is refused by the CSP's
   `form-action 'none'` below.
+- **More of the browser only when the version declares it.** `app.yaml`'s
+  `permissions:` names what the frame grants beyond that (manifest.ts
+  `APP_PERMISSIONS`); the build writes the list into `dist/build.json`, and
+  the host reads it there, with the version's file token, and sets the
+  frame's attributes BEFORE the srcdoc (web/src/frame-permissions.ts
+  `frameAttributes`): `fullscreen` → `allow="fullscreen"` + the sandbox's
+  `allow-orientation-lock` (orientation lock needs fullscreen),
+  `pointer-lock` → `allow-pointer-lock` (no policy feature exists for it),
+  `gamepad` → `gamepad`, `motion` → `accelerometer; gyroscope` (no
+  `magnetometer`: no compass heading), `wake-lock` → `screen-wake-lock`,
+  and MCP Apps' own `camera` and `geolocation` → those features, as ext-apps'
+  `buildAllowAttribute` maps them; `microphone` and `clipboard-write` are
+  accepted and change nothing. An unknown name is a build error; a name a
+  host does not know grants nothing there. The browser reads both
+  attributes when the frame NAVIGATES, so setting them before the srcdoc
+  is enough — the frame is not re-created when the version changes — and
+  the host puts every app's back when a page goes, so one version's grants
+  never reach the next. A visitor's page reads them from
+  `GET /public/apps/<name>` (the version the public view serves) — and the
+  store's live preview adds them to its own frame of the publisher's page,
+  since a nested frame gets only what every frame above it has — a peer's
+  app through the read-through like its document, and the page is told MCP
+  Apps' own four in `ui/initialize` (`hostCapabilities.sandbox.permissions`).
+  Nothing is granted blanket: motion can be read to infer keystrokes, and
+  the camera and location are the person's. `navigator.vibrate` has no
+  frame attribute: browsers block it in a cross-origin frame. Hive and Peel
+  frame apps too; until they read the list from build.json, an app shown
+  there gets no more than every app's.
 - **The document's own CSP**, which a host may only tighten:
 
   ```

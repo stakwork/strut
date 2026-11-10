@@ -15,8 +15,13 @@
  * or a media file from (§9). `wallet` is the Lightning wallet connection
  * the app asks the person's host for (plans/app-payments.md §4,
  * specs/WALLET.md §5): a REQUEST the person grants or narrows in their host,
- * which nothing here grants. Nothing else is declared: an app has no
- * `connectDomains` — it talks to the world through a workflow.
+ * which nothing here grants. `permissions` is the browser features the
+ * host's frame grants the page beyond what every app gets (§9): pointer
+ * lock, fullscreen, the gamepad, motion sensors, the screen wake lock, the
+ * camera, geolocation — only those the version names, so what a page can
+ * reach is in the version and nothing is granted blanket. Nothing else is
+ * declared: an app has no `connectDomains` — it talks to the world through
+ * a workflow.
  */
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -103,6 +108,39 @@ export const walletRequestSchema = z
     }
   });
 
+/**
+ * `permissions:` — the browser features an app's frame is granted beyond
+ * what every app gets (plans/apps.md §9). The host (web/src/frame-permissions.ts
+ * `frameAttributes`, and Hive's and Peel's frames) maps each to the frame's
+ * `sandbox` tokens and `allow` features before the document loads:
+ *
+ * - `fullscreen` — `requestFullscreen()`, and `screen.orientation.lock()` on
+ *   a phone (which needs fullscreen)
+ * - `pointer-lock` — `requestPointerLock()`, mouse-look
+ * - `gamepad` — the Gamepad API
+ * - `motion` — `devicemotion` / `deviceorientation` (tilt controls); motion
+ *   can be read to infer keystrokes, so it is never granted unasked
+ * - `wake-lock` — `navigator.wakeLock.request("screen")`
+ * - `camera`, `geolocation` — MCP Apps' own resource permissions, by their names
+ * - `microphone`, `clipboard-write` — granted to every app already; accepted
+ *   so a manifest written to MCP Apps' names parses, and change nothing
+ */
+export const APP_PERMISSIONS = [
+  "fullscreen", "pointer-lock", "gamepad", "motion", "wake-lock", "camera", "geolocation", "microphone", "clipboard-write",
+] as const;
+export type AppPermission = (typeof APP_PERMISSIONS)[number];
+
+export const permissionsSchema = z
+  .array(
+    z.string().refine((p): p is AppPermission => (APP_PERMISSIONS as readonly string[]).includes(p), {
+      error: (iss) =>
+        iss.input === "vibrate"
+          ? `"vibrate" is not a permission: browsers block navigator.vibrate in a cross-origin frame, and no frame attribute turns it on`
+          : `"${String(iss.input)}" is not a permission an app can declare — one of ${APP_PERMISSIONS.join(", ")}`,
+    }),
+  )
+  .transform((ps) => [...new Set(ps)] as AppPermission[]);
+
 export const manifestSchema = z
   .object({
     title: z.string().min(1),
@@ -126,6 +164,8 @@ export const manifestSchema = z
       .strict()
       .optional(),
     wallet: walletRequestSchema.optional(),
+    /** Browser features the frame grants beyond every app's (`APP_PERMISSIONS`). */
+    permissions: permissionsSchema.optional(),
     csp: z
       .object({
         /** Origins the document may load images, fonts and media from. */

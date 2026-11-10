@@ -467,7 +467,7 @@ describe("a public app, for a visitor (plans/public-surface.md §5)", () => {
     runId = res.runId;
     const dir = join(root, "apps", "bench");
     await mkdir(join(dir, "src"), { recursive: true });
-    await writeFile(join(dir, "app.yaml"), "title: Bench\ngrants:\n  workflows: [score-wf, other-wf, read-law]\n  steps: [demo/read, demo/shell, graph/graph-get, run/launch]\n");
+    await writeFile(join(dir, "app.yaml"), "title: Bench\ngrants:\n  workflows: [score-wf, other-wf, read-law]\n  steps: [demo/read, demo/shell, graph/graph-get, run/launch]\npermissions: [fullscreen, pointer-lock]\n");
     await writeFile(join(dir, "src", "App.tsx"), 'export default function App() { return <p className="p-2">hi</p>; }\n');
     const r = await strut.apps.publish(dir, "bench", { surface: "person" });
     assert.ok(r.ok, r.ok ? "" : r.errors.join("\n"));
@@ -503,7 +503,7 @@ describe("a public app, for a visitor (plans/public-surface.md §5)", () => {
     const put = (await (await putView({ apps: [{ name: "bench", reads: ["demo/read", "demo/shell"] }], workflows: [{ name: "score-wf", runs: true }] })).json()) as { held?: Array<{ app: string; version?: string; release?: string }> };
     assert.equal(put.held?.[0]?.app, "bench");
     assert.equal(put.held?.[0]?.version, "v1");
-    assert.deepEqual(await (await strut.app.request("/public/apps")).json(), [{ name: "bench", version: "v1", title: "Bench" }]);
+    assert.deepEqual(await (await strut.app.request("/public/apps")).json(), [{ name: "bench", version: "v1", title: "Bench", permissions: ["fullscreen", "pointer-lock"] }], "with what its frame is granted, for the visitor's host");
 
     const doc = await strut.app.request("/public/apps/bench/document");
     assert.equal(doc.status, 200);

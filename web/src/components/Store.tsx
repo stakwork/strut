@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "preact/hooks";
 import * as api from "../api";
 import { formatBytes } from "../attachments";
 import { errorMessage } from "../helpers";
+import { frameGrants } from "../frame-permissions";
 import { load, remove, save } from "../storage";
 import { appsOf, canWords, conceptRoots, installLink, liveAppUrl, liveBase, normalizeStrutUrl, parseStoreView, shortKey, storeQuery, type InstallLink, type LiveKind, type StoreView } from "../store-links";
 import { CopyButton } from "./CopyButton";
@@ -733,8 +734,13 @@ function useLive<T>(base: string, path: string): { data?: T; error?: string } {
 }
 
 function LiveApp(props: { base: string; name: string; publisher: string }) {
-  const info = useLive<{ name: string; version: string; title: string; description?: string }>(props.base, `/public/apps/${encodeURIComponent(props.name)}`);
+  const info = useLive<{ name: string; version: string; title: string; description?: string; permissions?: string[] }>(props.base, `/public/apps/${encodeURIComponent(props.name)}`);
   const page = liveAppUrl(props.base, props.name);
+  // The publisher's page frames the app, and a frame gets only what every
+  // frame above it was granted: what the version declared goes on this one
+  // too (../frame-permissions). The frame waits for the listing, since the
+  // browser reads these when it loads the page.
+  const grants = frameGrants(info.data?.permissions);
   return (
     <>
       <div class="store-live-head">
@@ -748,12 +754,15 @@ function LiveApp(props: { base: string; name: string; publisher: string }) {
         <a class="btn" href={page} target="_blank" rel="noopener">Open full page</a>
       </div>
       {info.error && <div class="auto-error">{info.error}</div>}
-      <iframe
-        class="store-live-frame"
-        src={page}
-        title={info.data?.title ?? props.name}
-        sandbox="allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-downloads"
-      />
+      {(info.data || info.error) && (
+        <iframe
+          class="store-live-frame"
+          src={page}
+          title={info.data?.title ?? props.name}
+          sandbox={["allow-scripts allow-same-origin allow-popups allow-popups-to-escape-sandbox allow-downloads", ...grants.sandbox].join(" ")}
+          {...(grants.allow.length ? { allow: grants.allow.join("; ") } : {})}
+        />
+      )}
     </>
   );
 }
