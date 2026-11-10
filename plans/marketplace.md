@@ -665,7 +665,10 @@ built), and the inverse of that: running a seller's logic and knowledge
 base on the BUYER's tokens by carrying the buyer's Mothership credential
 on the launch (`plans/mothership-cost-control.md`; federation §2.2 defers
 exactly this). Both are access on the launch route, not on the download,
-and both sit beside this plan without changing a line of §1–§5.
+and both sit beside this plan without changing a line of §1–§5. The first
+is designed in `plans/paid-runs.md` (2026-11-10, proposed): a price in the
+Public view record, an L402 credit token, and the same token as this
+section's checkout later.
 
 ## 7. The index
 
