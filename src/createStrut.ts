@@ -1263,6 +1263,7 @@ export async function createStrut<TServices = unknown>(
             dir: history.dir,
             waiting: history.waiting,
             touch: history.touch,
+            skipped: history.skipped,
             settle: history.settle,
             sync: history.sync,
             git: history.git,
