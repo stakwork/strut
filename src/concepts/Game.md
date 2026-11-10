@@ -63,8 +63,10 @@ the content then gets 480 pixels, never zero.
   phones. Put `touch-action: none` on the game's container; a drag is an
   invisible joystick, a tap the action. Say the controls for both on the
   start screen.
-- **Gamepad, mouse-look, fullscreen, tilt** need the frame's permission:
-  list them in the manifest's `permissions:` (below).
+- **Gamepad, mouse-look (pointer lock), fullscreen** work in every app's
+  frame: `navigator.getGamepads()`, `canvas.requestPointerLock()` and
+  `element.requestFullscreen()` from a click. **Tilt** needs the manifest's
+  `permissions:` (below).
 
 ## Sound
 
@@ -138,16 +140,19 @@ from the rest.
 
 ## Permissions
 
-The frame grants a browser feature only when the manifest asks for it:
+Every app's frame has fullscreen (and locking the screen's orientation,
+which needs it), pointer lock, the gamepad and the screen wake lock (keep
+the screen on): a game asks for none of them. What reads the player's
+device is granted only when the manifest asks for it:
 
 ```yaml
-permissions: [fullscreen, pointer-lock, gamepad, motion, wake-lock]
+permissions: [motion]
 ```
 
-`fullscreen` (and locking the screen's orientation, which needs it),
-`pointer-lock` (mouse-look), `gamepad`, `motion` (tilt: device
-orientation and motion), `wake-lock` (keep the screen on). List only what
-the game uses. Vibration is not available in a frame.
+`motion` is tilt — device orientation and motion; `camera` and
+`geolocation` are the others. List only what the game uses: motion can be
+used to guess what a person types, so a game without tilt controls leaves
+it out. Vibration is not available in a frame.
 
 ## Looking at a game you are building
 
