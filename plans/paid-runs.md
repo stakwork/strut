@@ -13,6 +13,11 @@
 > this builds first; §8, "paid routines"),
 > `p2p-distribution-research.md` (Option E, the research behind the rail)
 > and `mothership-cost-control.md` (the cap a run gets).
+>
+> **Revised the same day:** the first draft gave strut a run budget of its
+> own, for a seller with no gateway. *Ruled:* the gateway runs everywhere,
+> so that is dropped (decision 17, §7). What is left of it is one value:
+> a public run's cap, handed to the Mothership.
 
 ## Problem
 
@@ -54,6 +59,7 @@ receive sats, and a way to bound and measure what a stranger's run costs.
 | 14 | Strut never holds sats and never sends sats back. A fixed-price run that fails is credited back on the token. | proposed |
 | 15 | A public TOOL runs with a read-only services view. Anything that needs more is a workflow. | proposed |
 | 16 | An agent never pays by itself. Buying credit is a proposal an admin accepts; spending credit already bought needs no ask. | proposed |
+| 17 | A seller runs behind the gateway, which is what stops a run at its cap. Strut gets no run budget of its own. | **ruled** ("the plan is to run the gateway everywhere"), revising the first draft |
 
 ## Design in one paragraph
 
@@ -371,21 +377,22 @@ systems.
   when the step marks its output with `withUsage`. The `Workflow Builder`
   page says so for a step that will be sold.
 
-**A run budget, in strut** (new, and useful beyond this plan: a desktop
-strut has no gateway, and nothing enforces `maxRunCostUsd` there today).
+**The run's cap.** The gateway enforces it; strut adds no spend
+enforcement of its own (decision 17: a seller runs behind the gateway).
 
-- `RunOptions.maxCostUsd`. A public run's is the smaller of the workflow's
-  `maxRunCostUsd` and what is left of the item's `dailyCapUsd`.
-- The same number goes to `llmAuth` (`LlmAuthContext`), so through a
-  Mothership the run's link carries it and the gateway refuses before the
-  call.
-- In process: the run has a METER. Its value is `totals.cost` plus the
-  running cost of each agent or `llm` step still in flight, which those
-  steps report after every model call (the `agent` step where it already
-  checkpoints, `prepareStep`, `src/steps/core/agent.ts:1899`) and the
-  runner clears at that step's `step.end`. The next checkpoint over the
-  budget ends the run as an error, `run_budget_exceeded:`, never retried
-  and never caught by `onError`.
+- A public run's cap is the smaller of the workflow's `maxRunCostUsd` and
+  what is left of the item's `dailyCapUsd`.
+- It rides on the launch (`RunOptions.maxCostUsd`) to `llmAuth`
+  (`LlmAuthContext`). Today the Mothership reads only the workflow's own
+  cap (`resolveRunCap`, `src/mothership.ts:193`); with this the run's link
+  carries the smaller number, and the gateway refuses the call that would
+  start past it. That is the one change to the cost path.
+- A run can pass its cap by at most one call per concurrent agent, the
+  gateway's own behaviour. A price leaves room for it.
+- On a strut with no Mothership (a developer's checkout) a run's cap is
+  not enforced, as for any run there today. The dialog says so beside the
+  toggle; it does not refuse. The daily cap still holds, since it is
+  checked at the launch.
 
 **The daily cap.** A launch is refused when today's `daily.cost_usd` for
 the item, plus the cap of each of its runs in flight, reaches
@@ -545,27 +552,26 @@ Outside this repo; nothing here waits on it.
 
 Strut only, each a PR. Free runs ship with no Lightning.
 
-1. **The run budget.** `RunOptions.maxCostUsd`, the meter, the cap handed
-   to `llmAuth`, `run_budget_exceeded:`.
-2. **The ledger.** `LedgerStore` on `node:sqlite` and in memory; the
+1. **The ledger.** `LedgerStore` on `node:sqlite` and in memory; the
    conformance suite; `engines >= 22.13`.
-3. **The record and the dialog.** `runnable` in `public.json`, its checks,
+2. **The record and the dialog.** `runnable` in `public.json`, its checks,
    `GET /public`, the row control with its cascade.
-4. **Free public runs.** The launch route, `origin: "public"`,
-   `bindPublic`, the run token, the launcher's reads, cancel, the caps.
-   This is `public-surface.md` §11.
-5. **The wallet.** `ctx.services.lightning`, the daemon provider, the
+3. **Free public runs.** The launch route, `origin: "public"`,
+   `bindPublic`, the run token, the launcher's reads, cancel, the daily
+   cap, and the run's cap handed to `llmAuth` (§7). This is
+   `public-surface.md` §11.
+4. **The wallet.** `ctx.services.lightning`, the daemon provider, the
    fake; then NWC.
-6. **Paid workflows.** `src/l402.ts`, `payments.json`, the challenge, the
+5. **Paid workflows.** `src/l402.ts`, `payments.json`, the challenge, the
    check, `claim`, the credit routes, debit and void.
-7. **Paid tools.** `POST /public/steps/:type/run` and its bag.
-8. **Earnings.** The routes, the step, the four places they show.
-9. **Agents and the store.** The `/public/mcp` tools, `llms.txt`, prices
+6. **Paid tools.** `POST /public/steps/:type/run` and its bag.
+7. **Earnings.** The routes, the step, the four places they show.
+8. **Agents and the store.** The `/public/mcp` tools, `llms.txt`, prices
    in the index's live items, the store's Run form.
-10. **A strut that buys.** `remote/*`, `entitlements.json`, the buy-credit
-    proposal, the payer.
-11. **A visitor's app page.** The host pays.
-12. **Metering.** §12's first item.
+9. **A strut that buys.** `remote/*`, `entitlements.json`, the buy-credit
+   proposal, the payer.
+10. **A visitor's app page.** The host pays.
+11. **Metering.** §12's first item.
 
 ## Validation
 
@@ -588,8 +594,10 @@ Strut only, each a PR. Free runs ship with no Lightning.
   refused.
 - `claim` answers `pending` until the fake wallet settles, then the
   preimage, which then works as a credential.
-- A run that spends past its budget ends `run_budget_exceeded:` within one
-  model call, with no gateway.
+- A public run's Mothership link carries the smaller of the workflow's cap
+  and what is left of the daily cap, checked with gatekey's own verifier
+  as `src/mothership.test.ts` does; through the compose gateway
+  (`npm run test:gateway`) a run past that cap is refused by the gateway.
 - Twenty launches at once against a cap that fits three: three run.
 - A tool call cannot write the graph, start a job or open a session, and
   reads a node the Public view does not show.
