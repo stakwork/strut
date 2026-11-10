@@ -13,6 +13,7 @@
 > side, which this builds first; §8, "paid routines"),
 > `p2p-distribution-research.md` (Option E, the research behind the rail)
 > and `mothership-cost-control.md` (the cap a run gets).
+> Item 1, the ledger, is built (stakwork/strut#595, `src/payments/ledger*.ts`).
 >
 > **Revised the same day, three times.**
 > 1. The first draft gave strut a run budget of its own, for a seller with
