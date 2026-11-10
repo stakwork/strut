@@ -730,3 +730,49 @@ export {
   BUILDER_DESCRIPTION,
   type BuilderSeedOptions,
 } from "./builder-seed.js";
+// Paid runs, the wallet and the rate (plans/paid-runs.md §9): the receive
+// capability `ctx.services.lightning`, its providers (the Sphinx daemon, NWC,
+// a fake for tests), `payments.json`, and the exchange rate a quote is
+// priced at. `strut.payments` is the instance's.
+export {
+  lightningCapability,
+  LightningError,
+  isLightningError,
+  type LightningCapability,
+  type LightningErrorCode,
+  type LightningProvider,
+  type Invoice,
+  type InvoiceLookup,
+  type InvoiceState,
+  type ReceivedPayment,
+} from "./payments/lightning.js";
+export { SphinxDaemonProvider, type SphinxDaemonOptions } from "./payments/sphinx-daemon.js";
+export { NwcProvider, type NwcProviderOptions } from "./payments/nwc.js";
+export { parseNwcUrl, type NwcConnection } from "./payments/nwc-url.js";
+export { FakeWallet, type FakeInvoice, type FakeWalletOptions } from "./payments/fake-wallet.js";
+export {
+  PaymentsSettings,
+  PAYMENTS_FILE,
+  PAYMENTS_KEYS,
+  WALLET_ENV,
+  walletFromEnv,
+  walletInfo,
+  type WalletCredentials,
+  type WalletSettings,
+  type WalletInfo,
+} from "./payments/settings.js";
+export {
+  createRate,
+  urlRateSource,
+  satsForUsd,
+  usdForMsat,
+  RateUnavailableError,
+  isRateUnavailable,
+  DEFAULT_RATE_URL,
+  type ExchangeRate,
+  type Rate,
+  type RateSource,
+} from "./payments/rate.js";
+export { createPayments, receiveProvider, type Payments } from "./payments/wallet.js";
+export { hiddenFromSteps } from "./env.js";
+export { hideSecrets } from "./capabilities.js";

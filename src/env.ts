@@ -88,6 +88,31 @@ export const KEEP_ENV: readonly string[] = [
   "WINDIR",
 ];
 
+/** Names no step reads, whatever holds them — the boot environment, the
+ *  deployment's secret store, an actor's: the secrets capability answers
+ *  nothing for them (`secretsCapability`, `hideSecrets` in capabilities.ts)
+ *  and `PUT /secrets` refuses them. The wallet's credentials
+ *  (plans/paid-runs.md decision 20): `LIGHTNING_DAEMON_URL`,
+ *  `LIGHTNING_DAEMON_TOKEN`, `LIGHTNING_DAEMON_PAY_TOKEN`,
+ *  `LIGHTNING_NWC_URL`, `LIGHTNING_NWC_PAY_URL`, and any other name the
+ *  prefix covers. Server code reads them from `bootEnv()` at boot into
+ *  `payments.json` (src/payments/settings.ts). Not `STRUT_`: strut's own
+ *  steps read their settings (`STRUT_DEFAULT_MODEL`, `STRUT_MEMORY_DB`)
+ *  through the same door. */
+export const HIDDEN_FROM_STEPS_PREFIXES: readonly string[] = ["LIGHTNING_"];
+
+/** Exact names hidden the same way. `STRUT_SECRET_KEY` decrypts every
+ *  encrypted file under the data dir, `payments.json` among them: a step
+ *  that read it could read the wallet's pay credential off the disk. */
+export const HIDDEN_FROM_STEPS_NAMES: readonly string[] = ["STRUT_SECRET_KEY"];
+
+/** Whether the secrets capability must answer nothing for `name`. Case does
+ *  not matter: Windows' `process.env` reads any case. */
+export function hiddenFromSteps(name: string): boolean {
+  const upper = name.toUpperCase();
+  return HIDDEN_FROM_STEPS_NAMES.includes(upper) || HIDDEN_FROM_STEPS_PREFIXES.some((p) => upper.startsWith(p));
+}
+
 let snapshot: NodeJS.ProcessEnv = process.env;
 let scrubbed: string[] | null = null;
 

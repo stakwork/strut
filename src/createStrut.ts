@@ -36,8 +36,13 @@ import { runWorkflow, settleUnfinishedRun, summaryFromLog } from "./runner.js";
 import { RunController } from "./run-control.js";
 import { buildJournal, changedSteps, invalidateFrom, invalidateSteps, readRunStart } from "./journal.js";
 import { appIdentity, publicAppIdentity, publicAppOfIdentity, carriesApiKey, carriesPeerKey, carriesFileToken, carriesBadFileToken, catalogToken, catalogTokenOf, CATALOG_TOKEN_DAYS, publicPackageRead, fileToken, warnIfUnconfigured, channelTicket, channelTicketOf, actorFromHeader, inProcessOf, inProcessRequest, scopeFromKey, isPeerScope, isRole, memberOf, personOf, personToken, PERSON_TOKEN_DAYS, unauthorized, issueSession, redeemSignInTicket, signInTicket, sessionCookie, sessionOf, isSecureRequest, type Scope } from "./auth.js";
-import { standardServices, fileArtifactsCapability } from "./capabilities.js";
-import type { ArtifactsCapability, SecretsCapability } from "./capabilities.js";
+import { standardServices, fileArtifactsCapability, hideSecrets } from "./capabilities.js";
+import type { ArtifactsCapability, SecretsCapability, StrutCapabilities } from "./capabilities.js";
+import { PAYMENTS_FILE } from "./payments/settings.js";
+import { createPayments, type Payments } from "./payments/wallet.js";
+import type { LightningCapability } from "./payments/lightning.js";
+import type { RateSource } from "./payments/rate.js";
+import { walletRoutes } from "./payments/wallet-routes.js";
 import type { SecretStore } from "./secret-store.js";
 import {
   FileSessionStore,
@@ -140,7 +145,7 @@ import { pipeChannelToPeer } from "./channels-peer.js";
 import { WebSocketServer, type WebSocket as WsSocket } from "ws";
 import { STATUS_CODES, type IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
-import { bootEnv } from "./env.js";
+import { bootEnv, hiddenFromSteps } from "./env.js";
 import { fmtBytes, positiveBytes } from "./output-cap.js";
 import { installEscapeGuard } from "./escaped-errors.js";
 import { lintStepSource } from "./step-lint.js";
@@ -322,6 +327,12 @@ export interface StrutOptions<TServices = unknown> {
    *  once: nothing in a run waits on a delivery, and one that fails is
    *  dropped. A URL that is not http(s) fails the boot. */
   eventsSink?: { url: string };
+  /** Paid runs (plans/paid-runs.md §9). `rate`: the host's own exchange
+   *  rate source, `() => Promise<{ usdPerBtc, at, source }>`, in place of
+   *  `STRUT_RATE_URL` and mempool.space (src/payments/rate.ts). The WALLET
+   *  is set from `LIGHTNING_*` at boot or `PUT /earnings/wallet`, kept in
+   *  `payments.json`; a host's own `services.lightning` wins over both. */
+  payments?: { rate?: RateSource };
 
   /** Max agent steps (tool-call iterations) per chat turn. Raise for longer
    *  autonomous "let it rip" loops. Defaults to `STRUT_CHAT_MAX_STEPS` or 100. */
@@ -757,6 +768,12 @@ export interface Strut<TServices = unknown> {
   /** The package index (plans/marketplace.md §7) — null unless this strut
    *  has the index role (`StrutOptions.index`, STRUT_INDEX=1). */
   index: PackageIndex | null;
+
+  /** Paid runs (plans/paid-runs.md §9): the wallet's settings in
+   *  `payments.json`, its receive side (`lightning()`, what
+   *  `ctx.services.lightning` is), and the exchange rate (`rate.read()`,
+   *  what a quote is priced at). */
+  payments: Payments;
 
   /** The package indexes this strut FOLLOWS (src/packages/indexes.ts): a
    *  bare name resolves through their cards; `search` reads them and the
@@ -1237,6 +1254,34 @@ export async function createStrut<TServices = unknown>(
     ...(opts.settings ? { settings: opts.settings } : {}),
     ...((opts.services ?? {}) as Record<string, unknown>),
   } as TServices;
+  // A name no step reads (env.ts `hiddenFromSteps`: the wallet's LIGHTNING_*
+  // credentials, STRUT_SECRET_KEY) answers nothing through a host's own
+  // `secrets` either.
+  // Strut's own is built hiding them (capabilities.ts `secretsCapability`).
+  if (secretsInjected) {
+    const bag = services as Record<string, unknown>;
+    bag["secrets"] = hideSecrets(bag["secrets"] as SecretsCapability);
+  }
+  // Paid runs: the wallet and the rate (plans/paid-runs.md §9,
+  // src/payments/wallet.ts). The wallet's credentials live in an encrypted
+  // file of their own, payments.json, beside the deployment's secrets — never
+  // in secrets.json, which every step reads. `ctx.services.lightning` (the
+  // receive side, nothing that pays) is on the bag only while a wallet is
+  // set; a host's own wins. A bad LIGHTNING_* or STRUT_RATE_URL fails the
+  // boot, like STRUT_PEERS.
+  const hostLightning = (opts.services as Record<string, unknown> | undefined)?.["lightning"];
+  const payments = await createPayments({
+    store: secretStore instanceof FileSecretStore ? new FileSecretStore(dataDir, PAYMENTS_FILE) : new MemorySecretStore(),
+    http: (services as unknown as StrutCapabilities).http,
+    env: bootEnv(),
+    ...(opts.payments?.rate ? { rateSource: opts.payments.rate } : {}),
+    ...(hostLightning && typeof hostLightning === "object" ? { injected: hostLightning as LightningCapability } : {}),
+    onChange: (lightning) => {
+      const bag = services as Record<string, unknown>;
+      if (lightning) bag["lightning"] = lightning;
+      else delete bag["lightning"];
+    },
+  });
   // The browser the browser/* steps drive (src/browser/service.ts), unless
   // the host brought its own — whose teardown is then the host's too.
   // Building it touches nothing: the first step that opens a page connects.
@@ -4777,6 +4822,14 @@ export async function createStrut<TServices = unknown>(
         400,
       );
     }
+    // A name no step reads (env.ts `hiddenFromSteps`): the wallet's
+    // credentials live in payments.json (plans/paid-runs.md decision 20),
+    // and STRUT_SECRET_KEY is the server's alone. A value stored here under
+    // one would be read by nothing, in the file every step reads from.
+    if (hiddenFromSteps(name)) {
+      const where = name.toUpperCase().startsWith("LIGHTNING_") ? ": set the wallet with PUT /earnings/wallet" : "";
+      return c.json({ error: `${name} is read by the server alone, never by a step${where}` }, 400);
+    }
     const body = await c.req.json<{ value?: unknown }>().catch(() => ({ value: undefined }));
     if (typeof body.value !== "string" || body.value.length === 0) {
       return c.json({ error: "value (non-empty string) is required" }, 400);
@@ -4794,6 +4847,18 @@ export async function createStrut<TServices = unknown>(
     const existed = await secretStore.delete(name);
     if (!existed) return c.json({ error: `secret "${name}" not found` }, 404);
     return c.json({ ok: true, name });
+  });
+
+  // ── The wallet (plans/paid-runs.md §9; src/payments/wallet-routes.ts) ──
+  // Which wallet the server receives with, set by a person: full scope only,
+  // a peer's read refused too. Never a credential back.
+  walletRoutes(app, {
+    isFull: async (c) => (await scopeOf(c)) === "full",
+    injected: payments.injected,
+    settings: () => payments.settings.wallet(),
+    setWallet: (creds) => payments.setWallet(creds),
+    lightning: () => payments.lightning(),
+    envWallet: payments.envWallet,
   });
 
   // ── MCP servers (src/mcp-registry.ts) ────────────────────────────────────
@@ -8388,6 +8453,7 @@ export async function createStrut<TServices = unknown>(
     history,
     index,
     indexes,
+    payments,
     claims,
     verifier,
     listen,

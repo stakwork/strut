@@ -37,7 +37,8 @@ import {
   sep as pathSep,
 } from "node:path";
 import { runProcess, type ProcessRequest, type ProcessResult } from "./shell.js";
-import { bootEnv } from "./env.js";
+import { bootEnv, hiddenFromSteps } from "./env.js";
+import type { LightningCapability } from "./payments/lightning.js";
 
 // ── secrets ────────────────────────────────────────────────────────────────
 
@@ -79,6 +80,30 @@ export interface ActorSecretReadable {
 export function secretsCapability(
   source: Record<string, string | undefined> | SecretReadable = bootEnv(),
   opts: { envFallback?: Record<string, string | undefined>; actors?: ActorSecretReadable } = {},
+): SecretsCapability {
+  return hideSecrets(unhiddenSecrets(source, opts));
+}
+
+const HIDDEN = Symbol("strut.hiddenSecrets");
+
+/** `secrets` answering nothing for a name no step reads (`hiddenFromSteps`,
+ *  env.ts: the wallet's `LIGHTNING_*` credentials, `STRUT_SECRET_KEY`),
+ *  whoever built it — strut builds every one of its own through this, and
+ *  createStrut wraps a host's. A bound capability (`forPrincipal`) is
+ *  wrapped too. */
+export function hideSecrets(cap: SecretsCapability): SecretsCapability {
+  if ((cap as { [HIDDEN]?: true })[HIDDEN]) return cap;
+  const hidden: SecretsCapability & { [HIDDEN]?: true } = {
+    get: (name: string) => (hiddenFromSteps(name) ? Promise.resolve(undefined) : cap.get(name)),
+    ...(cap.forPrincipal ? { forPrincipal: (principal: string) => hideSecrets(cap.forPrincipal!(principal)) } : {}),
+  };
+  Object.defineProperty(hidden, HIDDEN, { value: true });
+  return hidden;
+}
+
+function unhiddenSecrets(
+  source: Record<string, string | undefined> | SecretReadable,
+  opts: { envFallback?: Record<string, string | undefined>; actors?: ActorSecretReadable },
 ): SecretsCapability {
   let base: SecretsCapability;
   if (typeof (source as SecretReadable).get === "function") {
@@ -422,6 +447,12 @@ export interface StrutCapabilities {
    *  the standard server; a bare bag falls back to the catalog with no boot
    *  default. */
   llmModels?: () => Promise<ModelCatalog>;
+  /** The server's wallet, its RECEIVE side (plans/paid-runs.md §9,
+   *  src/payments/lightning.ts): make an invoice, look one up, list what
+   *  came in, read the balance. Nothing on it pays. Present only while a
+   *  wallet is set (`LIGHTNING_*`, `PUT /earnings/wallet`); a host's own
+   *  wins. */
+  lightning?: LightningCapability;
 }
 
 /** The default standard services bag: global-fetch http + secrets + a local
