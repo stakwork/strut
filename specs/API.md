@@ -2462,9 +2462,10 @@ with types is refused (409).
       "package": "acme/linear", "version": "1.4.0", "digest": "sha256:…",
       "source": { "ref": "file:/srv/packages/acme-linear" },
       "status": "installed",          // or "present": everything was here already; "updated": moved from `from`
-      "from": { "version": "1.3.0", "digest": "sha256:…" },  // an update only (the distro's door, below)
+      "from": { "version": "1.3.0", "digest": "sha256:…" },  // an update only (the distro's door or a person's update, below)
       "items": [                      // installed | present | modified (here and forked, left as it is) |
-                                      // updated | diverged | retired | kept (+ "reason") — an update only
+                                      // updated | diverged | replayed | retired | kept (+ "reason") — an update only;
+                                      // updated and replayed carry "previous", the version that was active
                                       // (a graph type: installed | updated, extended | present)
         { "kind": "type", "name": "Issue", "status": "installed" },
         { "kind": "step", "name": "acme/linear/create-issue", "status": "installed", "version": "v1" },
@@ -2527,25 +2528,108 @@ as the next begins; Concept pages and edges after each batch); `done`,
 A phase a page does not know yet is shown by its name.
 
 **An update** — the package at another digest — is not taken by this
-route yet: a person's update asks first (`plans/marketplace.md` §4, §8).
-The operator's DISTRO applies one with no ask, in process
+route (`package_installed`): it is `POST /packages/:publisher/:name/update`,
+below. The operator's DISTRO applies one with no ask, in process
 (`strut.packages.install(ref, { door: "distro" })`, `plans/marketplace.md`
-§12, §12.1; no route takes the door), item by item, and updates a package
-the release requires first:
+§12, §12.1; no route takes the door). Both go item by item, and update a
+package the release requires first:
 
 | The item here | What the update does | `status` |
 | --- | --- | --- |
 | Its active version is one the package wrote (any release) | the release's version is published and made active | `updated` |
-| A fork: its active version is one this strut wrote | the release's version is recorded beside it, not active | `diverged` |
+| A fork: its active version is one this strut wrote | the distro: the release's version is recorded beside it, not active. A person's update: REPLAYED, below | `diverged` / `replayed` |
 | Already the release's content | nothing | `present` |
 | Not in the release, untouched | removed (the runs stay) | `retired` |
 | Not in the release, a fork — or a helper while a step of the package stays forked | kept | `kept` |
 | A Concept edited here (or whose edit cannot be told) | left as it is | `modified` |
 | A Concept not in the release with a page under it that stays (this strut's own, or one kept) | kept, and every page above it | `kept` |
 
-Versions it writes record `source: "distro"`, and `GET /packages` says
-`door: "distro"`: such a package is the distro's, and a person's install
-or uninstall of it is refused (`package_distro_owned`).
+Versions the distro writes record `source: "distro"`, and `GET /packages`
+says `door: "distro"`: such a package is the distro's, and a person's
+install, update or uninstall of it is refused (`package_distro_owned`).
+
+### A person's update (`plans/managed-packages.md` §1–§3)
+
+```
+POST /packages/:publisher/:name/update      { digest?, ref?, patch? }   → 200 InstallResult
+POST /packages/:publisher/:name/rollback    {}                          → 200 RollbackResult
+GET  /packages/:publisher/:name/patch                                   → 200 text/x-diff | 204
+```
+
+Full scope, like the install. **`update`** applies a release over what is
+installed, from where the install pinned: the recorded `ref`, and for a
+package installed from a `pk:` ref the PINNED key's catalog at the pinned
+URL — its newest release not yanked, or `digest`. An index is never read,
+and a `ref` naming another key is refused (`package_key_pinned`). `ref` is
+for a package installed from `file:` whose release is in another
+directory. The answer is an install's (`InstallResult`; the package's
+`status` is `updated` with `from`, or `present`), an item that moved
+carrying `previous`, the version that was active. It shows in
+`GET /packages/installs` while it runs, as `update <package>`.
+
+**A fork is replayed.** A fork is the release it was made from plus what
+this strut changed. The update merges three versions — the fork, that
+release's own version of the item, the new release's — one file for a
+workflow or a step, path by path for an app (a path one side changed is
+that side's; text both changed is merged; a binary both changed is the
+release's, with a warning). Then, per item:
+
+| The merge | What is written | `status` |
+| --- | --- | --- |
+| Clean, and it is the release's content | the release's version, made active: the item is untouched again | `updated` |
+| Clean, and it is the fork's content (the release did not touch what the fork changed) | the release's version beside the fork, when its content is new | `modified` |
+| Clean, anything else | the release's version beside the fork, then the MERGED content as a version of this strut's own — `source: "update"`, `upstream` the release's — made active. An app a person holds at a release gets it as a draft | `replayed` |
+| Markers left, a path deleted on one side and changed on the other, or a result that fails its check | nothing: the whole update is refused | — |
+
+The checks are the ones a release's own file passes: a merged workflow is
+valid YAML naming steps and workflows that are here, a merged step loads
+as its own type (beside the helpers as they will be), a merged app builds
+on this strut's kit. **All or nothing**: one fork that does not replay
+refuses the update with `409 package_update_conflict`, naming each item
+and why, and nothing is written. A Concept edited here is left as it is.
+Replaying needs `git` on the server (`git merge-file`); without it a fork
+does not replay, and an update of a package with no fork needs none.
+
+**`patch`** covers the forks that do not replay: a PATCH FILE — its text,
+or `sha256:<hex>` of one kept under `<dataDir>/packages/patches/` — from
+the release's files to what each fork should be on that release. It is
+what `git diff --binary` writes between two directories laid out as the
+package is, after three header lines:
+
+```
+package: acme/linear
+onto: sha256:<the release it applies to>
+over: workflows/report.yaml=<hash> apps/issues=<tree hash>
+diff --git a/workflows/report.yaml b/workflows/report.yaml
+…
+```
+
+`over` names each fork the patch covers by its path in the package, with
+the fork's active hash when the patch was made. The forks it names are not
+merged: the patch is applied to the release's files (`git apply`, all or
+nothing) and each result goes through the table and the checks above. A
+fork it does not name is merged as usual.
+
+**`GET …/patch`** is the other direction, for reading: what this strut
+changed in the package, as one patch file from each fork's release to its
+active version (`onto` the installed digest). `204` when it changed
+nothing; `501` without git.
+
+**`rollback`** points every item the LAST update moved at the version
+that was active before it (kept in `<dataDir>/packages/updates.json`).
+One level, re-pointing only: what the release added stays, what it
+dropped is not brought back.
+
+```jsonc
+// RollbackResult
+{
+  "package": "acme/linear",
+  "from": { "version": "1.1.0", "digest": "sha256:…" },   // the release it leaves
+  "to": { "version": "1.0.0", "digest": "sha256:…" },     // the one before
+  "restored": [{ "kind": "workflow", "name": "acme/linear/report", "version": "v2" }],
+  "left": []      // { kind, name, reason }: an item changed since the update, left where it is
+}
+```
 
 Refusals, as `{ error }` with a code first:
 
@@ -2553,9 +2637,14 @@ Refusals, as `{ error }` with a code first:
 | ------ | ---- | ---- |
 | 400 | `package_source_invalid`, `package_source_unsupported`, `package_digest_mismatch`, `package_name_mismatch` | the ref does not resolve to that package |
 | 400 | `bad_package` | a file it cannot install: a workflow naming a step, grant or subflow that is neither on this strut nor in the packages, a workflow whose `name:` is not its path, a claims file that is not a list of claims, a step that does not load or whose `defineStep` type is not its path, an app whose `app.yaml` does not parse, that grants a step that is neither here nor in the packages, or that does not build on this strut's kit (an import the kit lacks, a granted workflow that is nowhere) |
-| 409 | `package_conflict` | a local workflow, step or app under the prefix, a step in a sealed namespace, a Concept under the name that is someone else's, a Concept's `parent` that exists nowhere, a package pinned at two digests or installed here at another |
-| 409 | `package_update_not_built` | the package is installed here at another digest (a person's update asks first, which is not built yet) |
+| 409 | `package_conflict` | a local workflow, step or app under the prefix, a step in a sealed namespace, a Concept under the name that is someone else's, a Concept's `parent` that exists nowhere, a package pinned at two digests, or one it requires installed here at another |
+| 409 | `package_installed` | an INSTALL of a package that is here at another digest: the update route updates it |
 | 409 | `package_distro_owned` | the distro installed the package here: only the distro updates or removes it |
+| 409 | `package_update_conflict` | an update: a fork that does not replay and that no patch covers. Nothing was written |
+| 409 | `package_key_pinned` | an update's `ref` that is not the pinned key's package |
+| 409 | `patch_stale` | a patch's `over` names an item that is not a fork here, or one edited again since the patch was made |
+| 400 | `patch_invalid`, `patch_mismatch`, `patch_rejected` | not a patch file; a patch for another package or another release; a patch that does not apply to the release's files |
+| 404 | `package_not_installed`, `package_no_update`, `patch_unknown` | an update of a package that is not here; a rollback with no update on file; a patch digest not kept here |
 
 Once installed, a NEW workflow, step or app name under the prefix is
 refused at every door (`package_conflict`, `refuseUnderInstalledPackage`,
@@ -2571,6 +2660,8 @@ only …` (`src/packages/fence.ts`).
 {
   "package": "acme/linear", "version": "1.4.0", "digest": "sha256:…",
   "source": { "ref": "file:/srv/packages/acme-linear" }, "secrets": ["LINEAR_API_KEY"],
+                                      // a pk: install: { "ref": "pk:<key>/acme/linear", "url": "<its catalog>" } and
+                                      // "key": "<key>" — the key and URL an update follows
   "door": "install",                  // or "distro": the distro wrote it (absent for a package of Concepts alone)
   "items": [
     { "kind": "workflow", "name": "acme/linear/sync", "installed": "v1", "active": "v2", "modified": true },

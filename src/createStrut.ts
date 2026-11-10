@@ -4,7 +4,7 @@ import { compress } from "hono/compress";
 import { streamSSE } from "hono/streaming";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { serve } from "@hono/node-server";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -105,13 +105,18 @@ import {
   installPackage,
   installPackages,
   uninstallPackage,
+  updatePackage,
   type InstallOptions,
   type InstallResult,
   type PackageDeps,
   type PackageDoor,
   type UninstallResult,
+  type UpdateOptions,
 } from "./packages/install.js";
 import { listInstalledPackages } from "./packages/installed.js";
+import { PatchStore, packageGit } from "./packages/patch.js";
+import { localPatch } from "./packages/replay.js";
+import { createUpdates, UPDATES_FILE, type RollbackResult } from "./packages/updates.js";
 import { createInstallTracker, type InstallTracker } from "./packages/progress.js";
 import { checkBootPackages, installBootPackages, parseBootPackagesEnv, type BootPackage, type BootPackageOutcome } from "./packages/boot.js";
 import type { AppRelease, Upstream } from "./workspace.js";
@@ -726,6 +731,13 @@ export interface Strut<TServices = unknown> {
      *  or the one `index` names. */
     install(ref: string, opts?: Pick<InstallOptions, "digest" | "url" | "actor" | "door" | "progress"> & { index?: string }): Promise<InstallResult>;
     uninstall(pkg: string, opts?: { door?: PackageDoor }): Promise<UninstallResult>;
+    /** A person's UPDATE (plans/managed-packages.md §3; what `POST
+     *  /packages/:publisher/:name/update` does): the release applied over
+     *  what is here, each fork replayed onto it — or refused whole when one
+     *  does not replay and `patch` does not cover it. */
+    update(pkg: string, opts?: Pick<UpdateOptions, "digest" | "ref" | "patch" | "actor" | "progress">): Promise<InstallResult>;
+    /** Point what the last update moved at the versions before it. */
+    rollback(pkg: string, opts?: { actor?: string }): Promise<RollbackResult>;
     /** The first-boot installs (`STRUT_PACKAGES`, `StrutOptions.packages`;
      *  src/packages/boot.ts): settles once each listed package was installed,
      *  found here, or failed. `[]` when none are listed. */
@@ -3684,6 +3696,8 @@ export async function createStrut<TServices = unknown>(
         },
       }),
     );
+  // Each package's last update, for the way back (src/packages/updates.ts).
+  const updates = createUpdates({ file: join(packageStore.root, UPDATES_FILE), workspace, rebuild: rebuildRegistry });
   const packages: Strut["packages"] = {
     booted: Promise.resolve([]),
     installs,
@@ -3697,11 +3711,35 @@ export async function createStrut<TServices = unknown>(
           async () => {
             const out = await uninstallPackage(packageDeps, pkg, { ...opts, busy: busyWorkflow, forget: forgetWorkflow });
             await rebuildRegistry();
+            await updates.forget(pkg);
             return out;
           },
           () => ({ cause: `uninstall ${pkg}` }),
         ),
       ),
+    // An update is followed like an install (`GET /packages/installs`), and
+    // is one history commit, as an install is.
+    update: (pkg, opts = {}) => {
+      if (registryWasInjected) return Promise.reject(new Error("package_unsupported: updating is disabled when the registry is provided at construction time"));
+      const who = opts.actor ? { actor: opts.actor } : {};
+      return installs.start({ ref: `update ${pkg}`, door: "install", ...who }, (progress) =>
+        oneAtATime(() =>
+          recorded(
+            async () => {
+              const tell: UpdateOptions["progress"] = (p) => {
+                progress(p);
+                opts.progress?.(p);
+              };
+              const res = await updatePackage(packageDeps, pkg, { ...opts, busy: busyWorkflow, forget: forgetWorkflow, progress: tell });
+              await updates.record(res, opts.actor);
+              return res;
+            },
+            (res) => ({ cause: res ? `update ${res.package}@${res.digest}` : `update ${pkg}`, ...who }),
+          ),
+        ),
+      ).done;
+    },
+    rollback: (pkg, opts = {}) => oneAtATime(() => recorded(() => updates.rollback(pkg), () => ({ cause: `rollback ${pkg}`, ...(opts.actor ? { actor: opts.actor } : {}) }))),
   };
   // `package/install`'s door (src/steps/lib/package/install.ts; plans/
   // marketplace.md §8, ruled 2026-10-29: an agent ASKS, a person accepts):
@@ -3727,13 +3765,13 @@ export async function createStrut<TServices = unknown>(
   const packageError = (c: Context, err: unknown) => {
     const message = err instanceof Error ? err.message : String(err);
     const code = /^([a-z_]+):/.exec(message)?.[1] ?? "";
-    const status = ["package_conflict", "package_update_not_built", "package_busy", "package_distro_owned"].includes(code) || code.startsWith("catalog_")
+    const status = ["package_conflict", "package_installed", "package_update_conflict", "package_key_pinned", "package_busy", "package_distro_owned", "patch_stale"].includes(code) || code.startsWith("catalog_")
       ? 409
       : code === "package_index_unreachable"
         ? 502
-      : ["package_not_installed", "package_not_published", "package_not_listed", "package_index_unknown"].includes(code)
+      : ["package_not_installed", "package_not_published", "package_not_listed", "package_index_unknown", "package_no_update"].includes(code)
         ? 404
-        : code === "bad_package" || code.startsWith("package_")
+        : code === "bad_package" || code.startsWith("package_") || code.startsWith("patch_")
           ? 400
           : 500;
     return c.json({ error: message }, status);
@@ -4242,6 +4280,61 @@ export async function createStrut<TServices = unknown>(
       return c.json({ ok: true, ...result });
     } catch (err) {
       return packageError(c, err);
+    }
+  });
+
+  // A person's UPDATE (plans/managed-packages.md §3; src/packages/install.ts
+  // `updatePackage`): the release applied over what is here, from where the
+  // install pinned, each fork REPLAYED onto it. A person's act like the
+  // install: full scope. `patch` — a patch file's text, or the digest of one
+  // kept here — covers the forks that do not replay.
+  const patches = new PatchStore(join(packageStore.root, "patches"));
+  app.post("/packages/:publisher/:name/update", async (c) => {
+    if (registryWasInjected) return c.json({ error: "Updating is disabled when the registry is provided at construction time" }, 409);
+    const pkg = `${c.req.param("publisher")}/${c.req.param("name")}`;
+    type Body = { digest?: unknown; ref?: unknown; patch?: unknown };
+    const body = await c.req.json<Body>().catch(() => ({}) as Body);
+    if (body.digest !== undefined && (typeof body.digest !== "string" || !PACKAGE_DIGEST.test(body.digest))) return c.json({ error: "digest is the release to update to: sha256:<64 hex>" }, 400);
+    if (body.ref !== undefined && (typeof body.ref !== "string" || !/^(file|pk):/.test(body.ref))) return c.json({ error: "ref is where the release is, for a package installed from a file: ref (file:/path/to/package)" }, 400);
+    if (body.patch !== undefined && (typeof body.patch !== "string" || !body.patch)) return c.json({ error: "patch is a patch file's text, or the digest of one kept here (sha256:<64 hex>)" }, 400);
+    let patch = body.patch as string | undefined;
+    if (patch !== undefined && PACKAGE_DIGEST.test(patch)) {
+      const kept = await patches.get(patch);
+      if (kept === undefined) return c.json({ error: `patch_unknown: no patch ${patch} is kept on this strut server` }, 404);
+      patch = kept;
+    }
+    const actor = await resolveActor(c);
+    try {
+      return c.json(await packages.update(pkg, { ...(body.digest ? { digest: body.digest as string } : {}), ...(body.ref ? { ref: body.ref as string } : {}), ...(patch !== undefined ? { patch } : {}), ...(actor ? { actor } : {}) }));
+    } catch (err) {
+      return packageError(c, err);
+    }
+  });
+  // The way back: what the last update moved, pointed at the versions before it.
+  app.post("/packages/:publisher/:name/rollback", async (c) => {
+    const actor = await resolveActor(c);
+    try {
+      return c.json(await packages.rollback(`${c.req.param("publisher")}/${c.req.param("name")}`, actor ? { actor } : {}));
+    } catch (err) {
+      return packageError(c, err);
+    }
+  });
+  // What this strut changed in a package: one patch file, from each fork's
+  // installed release to what is active (§1). 204 when it changed nothing.
+  app.get("/packages/:publisher/:name/patch", async (c) => {
+    const pkg = `${c.req.param("publisher")}/${c.req.param("name")}`;
+    const here = (await listInstalledPackages(packageDeps)).find((p) => p.package === pkg);
+    if (!here) return c.json({ error: `package_not_installed: ${pkg} is not installed on this strut server` }, 404);
+    if (!here.items.some((i) => i.kind !== "concept" && i.modified)) return c.body(null, 204);
+    const git = await packageGit();
+    if ("missing" in git) return c.json({ error: `A patch is made with git, and ${git.missing}` }, 501);
+    const scratch = join(packageStore.root, ".install", randomBytes(8).toString("hex"));
+    try {
+      const patch = await localPatch({ workspace, cache: packageStore, apps }, git.path, scratch, here);
+      if (patch === null) return c.body(null, 204);
+      return c.body(patch, 200, { "content-type": "text/x-diff; charset=utf-8" });
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
     }
   });
 

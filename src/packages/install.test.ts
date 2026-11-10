@@ -294,7 +294,7 @@ describe("installing a package on a filesystem workspace", () => {
 
     const next = await api.install(`file:${await writeTree({ ...PACKAGE, "strut.yaml": PACKAGE["strut.yaml"]!.replace("1.4.0", "1.5.0") })}`);
     assert.equal(next.status, 409);
-    assert.match(next.body.error!, /^package_update_not_built: acme\/linear 1\.4\.0 is installed here at sha256:[0-9a-f]+; updating it to sha256:[0-9a-f]+ from a person's door is not built yet/);
+    assert.match(next.body.error!, /^package_installed: acme\/linear 1\.4\.0 is installed here at sha256:[0-9a-f]+, and this is sha256:[0-9a-f]+ — installing does not update it: POST \/packages\/acme\/linear\/update does/);
   });
 
   it("installs the packages it requires first, from a source relative to it, and refuses a pin that disagrees", async () => {
@@ -477,7 +477,7 @@ describe("installing a package on a filesystem workspace", () => {
       const l2 = await writeTree(requiring("2", (await readPackage(u2)).digest, u2), "l2");
       const refused = await api.install(`file:${l2}`);
       assert.equal(refused.status, 409);
-      assert.match(refused.body.error!, /package_conflict: acme\/linear requires bob\/util at sha256:[0-9a-f]+, and this strut server has it at sha256:[0-9a-f]+ — updating a package from a person's door is not built yet/);
+      assert.match(refused.body.error!, /package_conflict: acme\/linear requires bob\/util at sha256:[0-9a-f]+, and this strut server has it at sha256:[0-9a-f]+ — update bob\/util first \(POST \/packages\/bob\/util\/update\)/);
       const r = await strut.packages.install(`file:${l2}`, distro);
       assert.deepEqual(r.packages.map((p) => [p.package, p.status]), [
         ["bob/util", "updated"],
@@ -596,7 +596,7 @@ for (const tb of testBackends()) {
       assert.equal((await api.install(`file:${dir}`)).body.packages[0]!.status, "present", "the same files again: nothing to do");
       const changed = await api.install(`file:${await writeTree({ "strut.yaml": "package: acme/ontology\nversion: '2'\n", ...CONCEPTS, "concepts/Linear.md": "Changed.\n" })}`);
       assert.equal(changed.status, 409);
-      assert.match(changed.body.error!, /package_update_not_built: acme\/ontology/);
+      assert.match(changed.body.error!, /package_installed: acme\/ontology .* POST \/packages\/acme\/ontology\/update does/);
       assert.equal((await api.uninstall("acme/ontology")).status, 200);
       assert.equal(await conceptNode("Linear"), undefined);
 
