@@ -35,6 +35,7 @@ import { join } from "node:path";
 import type { SecretStore } from "../secret-store.js";
 import { CARD_VERSION, canonicalJson, cardBytes, cardDigest, keyFromSeed, sealCard, type Catalog, type CatalogPackage, type CatalogRelease, type UnsignedCatalog } from "./card.js";
 import { PACKAGE_DIGEST, type PackageManifest } from "./format.js";
+import { sealListing, type Listing, type UnsignedListing } from "./listing.js";
 
 /** The encrypted file the publisher keys are kept in, beside `secrets.json`. */
 export const PUBLISHER_FILE = "publisher.json";
@@ -94,11 +95,15 @@ export interface Publisher {
   seal(card: Omit<UnsignedCatalog, "key" | "public">): Promise<Catalog>;
   /** Seal a public catalog with the public key; refused before one is minted. */
   sealPublic(card: Omit<UnsignedCatalog, "key" | "public">): Promise<Catalog>;
+  /** A LISTING request (plans/index-listing.md §1) sealed by the public key,
+   *  under the publisher's name; refused before either exists. */
+  sealListing(fields: Omit<UnsignedListing, "v" | "key" | "prefix" | "seq">): Promise<Listing>;
 }
 
 /** `unsafe` says why this strut may not mint (its secret store is only
  *  obfuscated), or nothing. */
-export function publisherStore(secrets: SecretStore, opts: { unsafe?: () => string | undefined } = {}): Publisher {
+export function publisherStore(secrets: SecretStore, opts: { unsafe?: () => string | undefined; now?: () => number } = {}): Publisher {
+  let listingSeq = 0;
   const read = async (): Promise<PublisherRecord | undefined> => {
     const raw = await secrets.get(KEY_NAME);
     return raw ? (JSON.parse(raw) as PublisherRecord) : undefined;
@@ -161,6 +166,15 @@ export function publisherStore(secrets: SecretStore, opts: { unsafe?: () => stri
       if (!record?.publicSeed) throw new Error("publisher_not_public: this strut server has no public key yet — make a channel public first");
       const { privateKey, key } = keyFromSeed(Buffer.from(record.publicSeed, "hex"));
       return sealCard({ ...card, key } as UnsignedCatalog, privateKey);
+    },
+    async sealListing(fields) {
+      const record = await read();
+      if (!record?.publicSeed) throw new Error("publisher_not_public: this strut server has no public key yet — make a package public first (Make public), which mints the key an index lists");
+      if (!record.name) throw new Error("publisher_no_name: set the publisher's name first — it is the name an index lists");
+      const { privateKey, key } = keyFromSeed(Buffer.from(record.publicSeed, "hex"));
+      // An index reads one request per key at a time, each after the last.
+      listingSeq = Math.max(Math.floor((opts.now?.() ?? Date.now()) * 1000), listingSeq + 1);
+      return sealListing({ ...fields, v: CARD_VERSION, prefix: record.name, key, seq: listingSeq }, privateKey);
     },
   };
 }

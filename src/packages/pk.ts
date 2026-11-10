@@ -88,7 +88,7 @@ async function writeKeyState(cache: PackageCache, key: string, state: { seq: num
  *  per-key order. */
 export async function fetchCatalog(key: string, url: string, opts: { cache: PackageCache; fetch?: typeof fetch; kind?: "catalog" }): Promise<{ card: Catalog; digest: string }>;
 export async function fetchCatalog(key: string, url: string, opts: { cache: PackageCache; fetch?: typeof fetch; kind: "index" }): Promise<{ card: IndexCatalog; digest: string }>;
-export async function fetchCatalog(key: string, url: string, opts: { cache: PackageCache; fetch?: typeof fetch; kind?: CardKind }): Promise<{ card: Catalog | IndexCatalog; digest: string }> {
+export async function fetchCatalog(key: string, url: string, opts: { cache: PackageCache; fetch?: typeof fetch; kind?: Exclude<CardKind, "listing"> }): Promise<{ card: Catalog | IndexCatalog; digest: string }> {
   const kind = opts.kind ?? "catalog";
   let u: URL;
   try {

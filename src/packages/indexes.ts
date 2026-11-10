@@ -206,8 +206,8 @@ export interface PackageIndexes {
   list(): Promise<IndexSubscriptionInfo[]>;
   set(sub: IndexSubscription): Promise<IndexSubscriptionInfo>;
   remove(id: string): Promise<boolean>;
-  /** The index's card, checked against its key (read again after a minute). */
-  card(id: string): Promise<{ card: IndexCatalog; url: string }>;
+  /** The index's card, checked against its key (read again after a minute, or now with `fresh`). */
+  card(id: string, opts?: { fresh?: boolean }): Promise<{ card: IndexCatalog; url: string }>;
   /** A bare name through the cards, in order — or one index's, with `index`. */
   resolveName(name: string, opts?: { index?: string }): Promise<ResolvedName>;
   /** The indexes' packages and the peers' installed ones, every word of `q` matched. */

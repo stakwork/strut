@@ -1,10 +1,35 @@
 # Self-serve listing: a publisher asks an index for its name
 
-> **Status (2026-11-09): proposed. Nothing is built.** Written after a
-> read of strut `main` @1ba36b7. It fills in what `plans/marketplace.md`
-> step 7 left as "self-serve by a signed request later", and builds on §7
-> (the index) and §13 (keys and cards). Every row in "Decided" is mine and
-> proposed. The open questions at the end are for the owner.
+> **Status (2026-11-10): BUILT, all four work items in one PR** (the owner
+> asked for the full plan; one PR, since items 2–4 build on item 1 and PRs
+> are never stacked). Written 2026-11-09 after a read of strut `main`
+> @1ba36b7, filling in what `plans/marketplace.md` step 7 left as
+> "self-serve by a signed request later", on §7 (the index) and §13 (keys
+> and cards). The open questions were taken as recommended. Code:
+> `src/packages/listing.ts` (the request card), `index-requests.ts` (the
+> index's desk), `publisher-listings.ts` (the publisher's asks), the routes
+> in `createStrut.ts`, `web/src/components/IndexPanel.tsx` and the Packages
+> tab's lines. Choices beyond the text:
+> - A host pattern with no port matches the scheme's default port only;
+>   `*.domain` matches exactly one label in front.
+> - A removal names no `base` (nothing else of it is read).
+> - A `base` must be a public name: no IP literal, no single-label or
+>   `.local` / `.internal` / `.lan` name, since an open route makes the
+>   index fetch it (an index that allows http, a LAN's, takes them).
+> - The index remembers a key's last `seq` only while it could still pass
+>   as fresh (10 minutes), so the file stays small under a flood of keys.
+> - A request is the whole state wanted: an edit replaces the row's
+>   description and homepage, and its `urls` become the one catalog URL.
+>   `live` absent leaves a live row alone.
+> - An approval reads the catalog again but does not ask the request to be
+>   fresh: the operator may decide days later.
+> - The publisher keeps the index's last answer; "Listed" is read off the
+>   index's signed card on every `GET /publisher/listings`, never off that
+>   record.
+> - `deploy/index` sets `STRUT_INDEX_AUTO_HOSTS` to the swarms by default;
+>   a plain-http base is for code only (`index: { allowHttp }`, the tests).
+> - The shell asks `GET /index/requests` once and, on an index, every
+>   minute, for the Index tab's dot.
 
 ## Problem
 

@@ -223,6 +223,19 @@ function Shell() {
   const [publishTab, setPublishTab] = useState<PublishTab | null>(installLink ? "packages" : null);
   const publishOpen = publishTab !== null;
   const pickPublishTab = (tab: PublishTab) => { setPublishTab(tab); savePref("publishTab", tab); };
+  // On an INDEX strut, the listing requests waiting for its operator
+  // (plans/index-listing.md §3): the Publish dialog's Index tab, and a dot on
+  // the button while any wait. Undefined on any other strut: asked once.
+  const [indexWaiting, setIndexWaiting] = useState<number | undefined>(undefined);
+  useEffect(() => {
+    let timer: ReturnType<typeof setInterval> | undefined;
+    const read = () => api.listIndexRequests().then((r) => {
+      setIndexWaiting(r ? r.pending.length : undefined);
+      if (!r && timer) clearInterval(timer);
+    }, () => {});
+    void read().then(() => { timer = setInterval(() => void read(), 60_000); });
+    return () => { if (timer) clearInterval(timer); };
+  }, []);
   const [sttSettings, setSttSettings] = useState<SttSettings>(() => sttStore.get());
   const updateStt = (next: SttSettings) => { sttStore.set(next); setSttSettings(next); };
   const [showAddStep, setShowAddStep] = useState(false);
@@ -1960,8 +1973,11 @@ function Shell() {
           <button
             class={`btn${publishOpen ? " is-active" : ""}`}
             title="Packages other strut servers install, and what anyone can read here with no account"
-            onClick={() => setPublishTab(loadPref<PublishTab>("publishTab", "packages"))}
-          >Publish</button>
+            onClick={() => {
+              const last = loadPref<PublishTab>("publishTab", "packages");
+              setPublishTab(last === "index" && indexWaiting === undefined ? "packages" : last);
+            }}
+          >Publish{!!indexWaiting && <span class="publish-dirty-dot" title={`${indexWaiting} listing request${indexWaiting === 1 ? "" : "s"} waiting for you`} />}</button>
           <button class={`btn btn-ai${showChat ? " is-active" : ""}`} onClick={() => setShowChat(!showChat)}>AI</button>
           <button class="btn btn-icon" onClick={() => setShowSettings(true)} aria-label="Settings" title="Settings">
             <GearIcon />
@@ -2092,6 +2108,8 @@ function Shell() {
           tab={publishTab}
           onTab={pickPublishTab}
           install={installLink}
+          indexWaiting={indexWaiting}
+          onIndexChanged={setIndexWaiting}
           onClose={() => { setPublishTab(null); void refreshWorkflows(); void refreshApps(); }}
         />
       )}

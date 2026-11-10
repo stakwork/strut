@@ -2530,6 +2530,99 @@ export const listSubscriptions = () =>
 export const followPackageIndex = (id: string, body: { key: string; urls: string[]; label?: string }) =>
   fetchJSON<PackageIndexInfo>(`/packages/indexes/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(body) });
 
+// ── Listing (plans/index-listing.md) ───────────────────────────────────────
+//
+// The publisher's side: this strut asks an index it follows to list its
+// name, with a request sealed by its PUBLIC key (`/publisher/listings`).
+// The index's side: the requests that wait for its operator
+// (`/index/requests`, only on a strut with the index role) and its rows.
+
+/** One followed index as the Packages tab draws its line. */
+export interface ListingLine {
+  index: string;
+  label?: string;
+  indexKey: string;
+  /** Where requests go; absent when the card is a file no index strut serves. */
+  requests?: string;
+  /** Our name with our public key on the index's signed card, read now. */
+  listed: boolean;
+  row?: { key: string; urls: string[]; description?: string; url?: string };
+  /** Another key holds our name there. */
+  heldBy?: string;
+  cardError?: string;
+  asked?: { status: "listed" | "pending" | "removed" | "refused" | "error"; reason?: string; base?: string; description?: string; url?: string; live?: boolean; at: string };
+}
+
+export const listListings = () => fetchJSON<{ listings: ListingLine[] }>("/publisher/listings").then((r) => r.listings);
+
+/** `POST /publisher/listings`: ask a followed index for this strut's name.
+ *  The answer: listed at once, or waiting for its operator (`reason`). */
+export const askListing = (body: { index: string; base: string; description?: string; url?: string; live?: boolean }) =>
+  fetchJSON<{ status: "listed" | "pending"; reason?: string }>("/publisher/listings", { method: "POST", body: JSON.stringify(body) });
+
+/** `DELETE /publisher/listings/:index`: take this strut's row (or its waiting request) off the index. */
+export const withdrawListing = (index: string) =>
+  fetchJSON<{ status: "removed" }>(`/publisher/listings/${encodeURIComponent(index)}`, { method: "DELETE" });
+
+/** A listing request waiting for this index's operator. */
+export interface PendingListing {
+  id: string;
+  prefix: string;
+  key: string;
+  base: string;
+  host: string;
+  reason: "host" | "second name" | "same host" | "move" | "takeover";
+  description?: string;
+  url?: string;
+  live?: boolean;
+  receivedAt: string;
+  catalog: { seq: number; digest: string; packages: string[] };
+  heldBy?: string;
+  from?: string;
+}
+
+export interface IndexRequests {
+  pending: PendingListing[];
+  refused: Array<{ prefix: string; key: string; host?: string; reason: string; at: string; by?: string }>;
+  autoHosts: string[];
+}
+
+/** `GET /index/requests`; null when this strut is no index. */
+export async function listIndexRequests(): Promise<IndexRequests | null> {
+  const res = await apiFetch("/index/requests");
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json() as Promise<IndexRequests>;
+}
+
+export const approveIndexRequest = (id: string) =>
+  fetchJSON<unknown>(`/index/requests/${encodeURIComponent(id)}/approve`, { method: "POST", body: "{}" });
+
+export const refuseIndexRequest = (id: string, reason: string) =>
+  fetchJSON<unknown>(`/index/requests/${encodeURIComponent(id)}/refuse`, { method: "POST", body: JSON.stringify({ reason }) });
+
+/** `GET /index`: the rows and their crawl; null before the first row mints the key. */
+export interface IndexOperatorInfo {
+  key: string;
+  urls: string[];
+  publishers: Record<string, { key: string; urls: string[]; description?: string; url?: string }>;
+  crawled: Array<{ prefix: string; key: string; accepted?: { seq: number; digest: string; at: string; url: string }; checkedAt?: string; error?: string; packages?: number }>;
+  live: Record<string, { url: string; description?: string }>;
+}
+
+export async function getIndexInfo(): Promise<IndexOperatorInfo | null> {
+  const res = await apiFetch("/index");
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json() as Promise<IndexOperatorInfo>;
+}
+
+/** `PUT /index/:prefix`: list a publisher by hand (the first row mints the index key). */
+export const setIndexRow = (prefix: string, row: { key: string; urls: string[]; description?: string; url?: string }) =>
+  fetchJSON<IndexOperatorInfo>(`/index/${encodeURIComponent(prefix)}`, { method: "PUT", body: JSON.stringify(row) });
+
+export const removeIndexRow = (prefix: string) => fetchJSON<unknown>(`/index/${encodeURIComponent(prefix)}`, { method: "DELETE" });
+
 // ── The store front (plans/marketplace.md §7; src/packages/index.ts) ───────
 //
 // What an INDEX strut serves to anyone, with no credential: its signed card,

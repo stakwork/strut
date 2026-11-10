@@ -32,6 +32,11 @@ export const CATALOG_DOMAIN = "strut-catalog\n";
 /** The INDEX card's domain (§7): the same card one level up, `publishers`
  *  where a catalog has `packages`, sealed by the index key. */
 export const INDEX_DOMAIN = "strut-index\n";
+/** A LISTING request's domain (plans/index-listing.md §1): what a
+ *  publisher's PUBLIC key signs to ask an index for its name. Its own
+ *  domain, so a signed request never passes as a catalog, nor a catalog as
+ *  a request. */
+export const LISTING_DOMAIN = "strut-listing\n";
 
 /** One row of an index: the key that publishes under a prefix, and where
  *  its PUBLIC catalog is served (§7; the record that would answer "where"
@@ -72,9 +77,10 @@ export interface IndexCatalog extends UnsignedIndexCatalog {
   sig: string;
 }
 
-/** The two kinds of card: a publisher's catalog and an index. */
-export type CardKind = "catalog" | "index";
-const DOMAINS: Record<CardKind, string> = { catalog: CATALOG_DOMAIN, index: INDEX_DOMAIN };
+/** The kinds of card: a publisher's catalog, an index, and a listing
+ *  request a publisher sends an index (./listing.ts). */
+export type CardKind = "catalog" | "index" | "listing";
+const DOMAINS: Record<CardKind, string> = { catalog: CATALOG_DOMAIN, index: INDEX_DOMAIN, listing: LISTING_DOMAIN };
 
 /** One release of a package. With no `urls`, a reader fetches it from the
  *  archive route of the strut that served the catalog (`host: self`). */
@@ -217,11 +223,22 @@ function publicKeyOf(key: string): KeyObject {
 /** The catalog sealed by `privateKey`, whose public key is `card.key`. */
 export function sealCard(card: UnsignedCatalog, privateKey: KeyObject): Catalog;
 export function sealCard(card: UnsignedIndexCatalog, privateKey: KeyObject, kind: "index"): IndexCatalog;
-export function sealCard(card: UnsignedCatalog | UnsignedIndexCatalog, privateKey: KeyObject, kind: CardKind = "catalog"): Catalog | IndexCatalog {
+export function sealCard<T extends { key: string }>(card: T, privateKey: KeyObject, kind: "listing"): T & { sig: string };
+export function sealCard(card: { key: string }, privateKey: KeyObject, kind: CardKind = "catalog"): { key: string; sig: string } {
   const unsigned = { ...card } as Catalog;
   delete (unsigned as Partial<Catalog>).sig;
   const sig = sign(null, Buffer.from(DOMAINS[kind] + fingerprintOf(unsigned), "utf8"), privateKey).toString("hex");
   return { ...unsigned, sig };
+}
+
+/** Whether `card.sig` is `key`'s seal over the card as a `kind`. */
+export function sealVerifies(card: { sig?: unknown }, key: string, kind: CardKind): boolean {
+  if (typeof card.sig !== "string" || !/^[0-9a-f]{128}$/.test(card.sig) || !Z32_KEY.test(key)) return false;
+  try {
+    return verify(null, Buffer.from(DOMAINS[kind] + fingerprintOf(card as unknown as UnsignedCatalog), "utf8"), publicKeyOf(key), Buffer.from(card.sig, "hex"));
+  } catch {
+    return false;
+  }
 }
 
 export interface ReadCardOptions {
@@ -229,8 +246,9 @@ export interface ReadCardOptions {
   key: string;
   /** The last catalog the reader accepted from that key. */
   last?: { seq: number; digest: string };
-  /** Which card it is: a publisher's catalog (the default) or an index. */
-  kind?: CardKind;
+  /** Which card it is: a publisher's catalog (the default) or an index.
+   *  A listing request is read by ./listing.ts, never here. */
+  kind?: "catalog" | "index";
 }
 
 /**
