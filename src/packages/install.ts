@@ -28,6 +28,16 @@
  * it is. A package the distro wrote is the distro's: a person's door
  * refuses to write or remove it.
  *
+ * A person's UPDATE (`updatePackage`, plans/managed-packages.md §3) is that
+ * table through the person's door, from the ref and the key the install
+ * pinned, with one row changed: a fork is REPLAYED — the release's version
+ * recorded beside it, and the fork carried onto the release (a three-way
+ * merge, replay.ts) made active as a version of this strut's own
+ * (`source: "update"`, upstreamed to the release). A fork that does not
+ * merge, or whose result fails the check a release's own file passes,
+ * refuses the whole update before the first write — unless the caller hands
+ * in a patch file (patch.ts) that covers it.
+ *
  * GRAPH TYPES (`graph/`, ./graph-types.ts) are checked with everything
  * else and registered before the first other write, parents first, so a
  * workflow's first run finds them. They are add-only and the graph's: no
@@ -64,6 +74,9 @@ import { assertValidWorkflowYaml, ensureEsmScope, readClaimsBlock, type Upstream
 import { loadYaml } from "../yaml.js";
 import { fileRefPath, resolvePackage, type CachedPackage } from "./cache.js";
 import type { PackageItem } from "./format.js";
+import { applyPatch, packageGit, parsePatch } from "./patch.js";
+import { parsePkRef } from "./pk.js";
+import { copyContent, forkFromPatch, replayFork, type Content, type Fork, type Replayed } from "./replay.js";
 import type { InstallProgress } from "./progress.js";
 import { checkPackageTypes, registerPackageTypes, type CheckedTypes } from "./graph-types.js";
 import {
@@ -98,15 +111,20 @@ export interface PackageDeps extends InstalledDeps {
   apps?: AppsCapability;
   /** What a `pk:` resolve fetches with (tests). */
   fetch?: typeof fetch;
+  /** The git an update's replay runs (patch.ts): its path, or why there is
+   *  none. The first on PATH unless given (tests). */
+  git?: () => Promise<{ path: string } | { missing: string }>;
 }
 
 /** What happened to one item: `installed` new here; `present` already here
  *  as the package has it; `modified` here and forked (or a Concept edited),
  *  left as it is; `updated` fast-forwarded to the release; `diverged` the
- *  release's version recorded beside a fork, which stays active; `retired`
- *  dropped by the release and removed; `kept` dropped by the release and
- *  kept, with the reason. */
-export type InstallItemStatus = "installed" | "present" | "modified" | "updated" | "diverged" | "retired" | "kept";
+ *  release's version recorded beside a fork, which stays active; `replayed`
+ *  a fork carried onto the release by an update — the release's version
+ *  recorded beside it, the merged one active (a draft, on an app a person
+ *  holds); `retired` dropped by the release and removed; `kept` dropped by
+ *  the release and kept, with the reason. */
+export type InstallItemStatus = "installed" | "present" | "modified" | "updated" | "diverged" | "replayed" | "retired" | "kept";
 
 export interface PackageInstallReport {
   package: string;
@@ -118,7 +136,9 @@ export interface PackageInstallReport {
   status: "installed" | "updated" | "present";
   /** The release it was at before an update. */
   from?: { version?: string; digest?: string };
-  items: Array<{ kind: PackageItem["kind"]; name: string; status: InstallItemStatus; version?: string; reason?: string }>;
+  /** `previous`: the version that was active before an `updated` or
+   *  `replayed` item moved — what a rollback points it at again. */
+  items: Array<{ kind: PackageItem["kind"]; name: string; status: InstallItemStatus; version?: string; previous?: string; reason?: string }>;
 }
 
 export interface InstallOptions {
@@ -138,6 +158,10 @@ export interface InstallOptions {
   /** Told as the install goes: each phase, and how far a long one is
    *  (src/packages/progress.ts). */
   progress?(p: InstallProgress): void;
+  /** A person's UPDATE of `package` (`updatePackage` sets it; no route
+   *  takes it as it is): the release is applied over what is here, forks
+   *  replayed. `patch` is a patch file for the forks it names. */
+  update?: { package: string; patch?: string };
 }
 
 export interface InstallResult {
@@ -179,9 +203,14 @@ export async function installPackage(deps: PackageDeps, ref: string, opts: Insta
 export async function installPackages(deps: PackageDeps, refs: Array<{ ref: string; digest?: string; url?: string }>, opts: Omit<InstallOptions, "digest" | "url"> = {}): Promise<InstallResult> {
   if (!refs.length) throw new Error("package_source_invalid: nothing to install");
   const door = opts.door ?? "install";
+  if (opts.update && door !== "install") throw new Error("package_source_invalid: an update is a person's door; the distro applies its own releases");
   opts.progress?.({ phase: "resolving" });
   const before = new Map((await listInstalledPackages(deps)).map((p) => [p.package, p]));
-  const members = await resolveSet(deps, refs, before, door);
+  const members = await resolveSet(deps, refs, before, door, !!opts.update);
+  const got = members.at(-1)!.info.manifest.package;
+  if (opts.update && got !== opts.update.package) {
+    throw new Error(`package_name_mismatch: ${refs.at(-1)!.ref} is the package ${got}, not ${opts.update.package}`);
+  }
   const registry = await deps.getRegistry();
   // The apps are copied out of the cache to build (a build writes `dist/`),
   // and the steps to a trial directory to load.
@@ -193,6 +222,52 @@ export async function installPackages(deps: PackageDeps, refs: Array<{ ref: stri
   }
 }
 
+export interface UpdateOptions extends Pick<InstallOptions, "digest" | "actor" | "busy" | "forget" | "progress"> {
+  /** Where the release is, for a package whose install pinned no key (a
+   *  `file:` ref): the recorded ref unless given. A package installed from
+   *  a `pk:` ref follows its key, and takes none. */
+  ref?: string;
+  /** A patch file (patch.ts) for the forks it names: they are not merged,
+   *  the patch is applied to the release's files instead. */
+  patch?: string;
+}
+
+/**
+ * UPDATE an installed package (plans/managed-packages.md §3): the release
+ * at `digest` — else the newest its source has — applied over what is here
+ * through the person's door. What nobody changed is fast-forwarded, what the
+ * release drops is retired, and a fork is REPLAYED onto the release; one
+ * that does not replay refuses the whole update (`package_update_conflict`)
+ * with nothing written. The release comes from where the install pinned:
+ * the recorded ref, and for a `pk:` install the pinned key's catalog at the
+ * pinned URL — never an index.
+ */
+export async function updatePackage(deps: PackageDeps, pkg: string, opts: UpdateOptions = {}): Promise<InstallResult> {
+  const here = (await listInstalledPackages(deps)).find((p) => p.package === pkg);
+  if (!here) throw new Error(`package_not_installed: ${pkg} is not installed on this strut server`);
+  if (here.door === "distro") throw new Error(`package_distro_owned: ${pkg} was installed here by the distro, which updates and removes it`);
+  const { ref: named, patch, digest: asked, ...rest } = opts;
+  let digest = asked;
+  let ref = named ?? here.source?.ref;
+  if (!ref) throw new Error(`package_source_invalid: ${pkg} records no source to update from — name one (ref)`);
+  if (here.key) {
+    const parsed = parsePkRef(ref);
+    if (typeof parsed === "string" || parsed.key !== here.key || parsed.package !== pkg) {
+      throw new Error(`package_key_pinned: ${pkg} follows the publisher key it was installed from (${here.key}), and ${ref} is not that key's ${pkg}`);
+    }
+    // The release is `digest` (or the one a ref given now pins), else the
+    // catalog's newest: never the digest the INSTALL's ref pinned.
+    if (named) digest ??= parsed.digest;
+    ref = `pk:${here.key}/${pkg}`;
+  }
+  const url = ref.startsWith("pk:") ? here.source?.url : undefined;
+  return installPackages(deps, [{ ref, ...(digest ? { digest } : {}), ...(url ? { url } : {}) }], {
+    ...rest,
+    door: "install",
+    update: { package: pkg, ...(patch !== undefined ? { patch } : {}) },
+  });
+}
+
 /** A workflow, step or app the release ships, and what the install does with it. */
 type ItemPlan =
   | { action: "new" }
@@ -200,15 +275,20 @@ type ItemPlan =
   | { action: "present" | "modified" }
   /** The package wrote the active version: the release's becomes active. */
   | { action: "update"; previous: string }
-  /** A fork: the release's version is recorded beside it, not made active. */
-  | { action: "diverge" };
+  /** A fork: the release's version is recorded beside it, not made active.
+   *  An update REPLAYS the fork (replay.ts): with `merged`, the fork carried
+   *  onto the release becomes active over `previous`; `stands`, the fork
+   *  already holds what the release changed and stays as it is. */
+  | { action: "diverge"; merged?: Content; previous?: string; stands?: true };
 
 /** A workflow, step or app the install writes: a new one (taken back by
- *  deleting it), or an update (by re-pointing it at `previous`). */
+ *  deleting it), or an update (by re-pointing it at `previous`). `fork`: a
+ *  replayed fork, whose contract stays its own. */
 interface Wrote {
   kind: "workflow" | "step" | "app";
   name: string;
   previous?: string;
+  fork?: true;
 }
 
 async function installSet(
@@ -221,7 +301,7 @@ async function installSet(
 ): Promise<InstallResult> {
   const tell = (p: InstallProgress) => opts.progress?.(p);
   tell({ phase: "checking", package: members.at(-1)!.info.manifest.package });
-  const checked = await checkSet(deps, members, registry, before, scratch, opts.door);
+  const checked = await checkSet(deps, members, registry, before, scratch, opts.door, opts.update);
   const retiring = retirements(checked, members);
   const busy = retiring.filter((i) => i.go && i.item.kind === "workflow" && opts.busy?.(i.item.name));
   if (busy.length) throw new Error(`package_busy: ${busy.map((i) => i.item.name).join(", ")} has a run in flight, and the release no longer ships it — cancel it first`);
@@ -241,12 +321,18 @@ async function installSet(
   const { warnings } = checked;
   /** What a publish of an item records, and how it is written. */
   const options = (m: Member, plan: ItemPlan) => ({ ...publish, upstream: upstreamOf(m), ...(plan.action === "diverge" ? { activate: false } : {}) });
+  /** What a replayed fork's version records: this strut's own, upstreamed to the release. */
+  const carried = (m: Member) => ({ source: "update" as const, ...(opts.actor ? { actor: opts.actor } : {}), upstream: upstreamOf(m) });
   /** Report an item, and remember a write the install would take back. */
   const done = (m: Member, kind: Wrote["kind"], name: string, plan: ItemPlan, version?: string) => {
+    const replayed = plan.action === "diverge" && !!plan.merged;
     if (plan.action === "new") wrote.push({ kind, name });
     if (plan.action === "update") wrote.push({ kind, name, previous: plan.previous });
-    const status: InstallItemStatus = plan.action === "new" ? "installed" : plan.action === "update" ? "updated" : plan.action === "diverge" ? "diverged" : plan.action;
-    reports.get(m.info.manifest.package)!.push({ kind, name, status, ...(version && plan.action !== "present" && plan.action !== "modified" ? { version } : {}) });
+    if (plan.action === "diverge" && replayed) wrote.push({ kind, name, previous: plan.previous!, fork: true });
+    const status: InstallItemStatus =
+      plan.action === "new" ? "installed" : plan.action === "update" ? "updated" : plan.action !== "diverge" ? plan.action : replayed ? "replayed" : plan.stands ? "modified" : "diverged";
+    const previous = plan.action === "update" || (plan.action === "diverge" && replayed) ? plan.previous : undefined;
+    reports.get(m.info.manifest.package)!.push({ kind, name, status, ...(version && status !== "present" && status !== "modified" ? { version } : {}), ...(previous ? { previous } : {}) });
   };
   const writes = (plan: ItemPlan) => plan.action !== "present" && plan.action !== "modified";
 
@@ -278,7 +364,10 @@ async function installSet(
           continue;
         }
         const code = await readFile(join(m.info.dir, item.path), "utf-8");
-        const { version } = await deps.workspace.publishStep(item.name, code, undefined, undefined, options(m, plan));
+        let { version } = await deps.workspace.publishStep(item.name, code, undefined, undefined, options(m, plan));
+        if (plan.action === "diverge" && plan.merged && "text" in plan.merged) {
+          ({ version } = await deps.workspace.publishStep(item.name, plan.merged.text, carriedNote(m), undefined, carried(m)));
+        }
         done(m, "step", item.name, plan, version);
       }
     }
@@ -308,7 +397,7 @@ async function installSet(
         // `category:` query): set with a version the package makes active,
         // never on a fork beside which the release is only recorded.
         const category = typeof head?.category === "string" && head.category && plan.action !== "diverge" ? head.category : undefined;
-        const { version } = await deps.workspace.publishWorkflowByContent(
+        let { version } = await deps.workspace.publishWorkflowByContent(
           item.name,
           text,
           typeof head?.description === "string" ? head.description : undefined,
@@ -316,6 +405,10 @@ async function installSet(
           undefined,
           options(m, plan),
         );
+        if (plan.action === "diverge" && plan.merged && "text" in plan.merged) {
+          const mine = loadYaml(plan.merged.text) as { description?: unknown } | null;
+          ({ version } = await deps.workspace.publishWorkflowByContent(item.name, plan.merged.text, typeof mine?.description === "string" ? mine.description : undefined, undefined, undefined, carried(m)));
+        }
         if (plan.action === "new" && opts.actor) await deps.workspace.setWorkflowOwner(item.name, opts.actor);
         done(m, "workflow", item.name, plan, version);
       }
@@ -333,7 +426,14 @@ async function installSet(
       const plan = checked.plan.get(app.name)!;
       const r = await deps.apps!.publish(app.dir, app.name, { surface: "person", ...options(app.member, plan) });
       if (!r.ok) throw new Error(`bad_package: the app ${app.name} — ${r.errors.join("; ")}`);
-      done(app.member, "app", app.name, plan, r.version);
+      let version = r.version;
+      if (plan.action === "diverge" && plan.merged && "dir" in plan.merged) {
+        // The fork carried onto the release: live, or a draft where a person holds the app.
+        const mine = await deps.apps!.publish(plan.merged.dir, app.name, { surface: "person", ...carried(app.member) });
+        if (!mine.ok) throw new Error(`package_update_conflict: the app ${app.name}, carried onto the release — ${mine.errors.join("; ")}`);
+        version = mine.version;
+      }
+      done(app.member, "app", app.name, plan, version);
     }
     // Concepts, through the seeder: a set per package, stamped `pkg/<package>/`.
     if (checked.conceptsOn) {
@@ -341,7 +441,7 @@ async function installSet(
         if (!m.info.items.some((i) => i.kind === "concept")) continue;
         const pkg = m.info.manifest.package;
         const here = before.get(pkg);
-        const update = opts.door === "distro" && !!here;
+        const update = (opts.door === "distro" || !!opts.update) && !!here;
         // An update leaves a page edited here out of the set: the seeder
         // writes a page whose file changed over any edit. So is a page whose
         // edit cannot be told (its old file is not in the cache).
@@ -420,7 +520,8 @@ async function installSet(
 
   // The contract, once everything it names is here. A claim that will not
   // write is said, never a reason to take the install back: the code is in.
-  const published = new Set(wrote.map((w) => `${w.kind}:${w.name}`));
+  // Not for a replayed fork: its contract stays its own.
+  const published = new Set(wrote.filter((w) => !w.fork).map((w) => `${w.kind}:${w.name}`));
   if (checked.members.some((m) => m.claims.some((c) => published.has(`${c.subject.kind}:${c.subject.name}`)))) tell({ phase: "claims" });
   for (const m of checked.members) {
     for (const c of m.claims) {
@@ -467,8 +568,8 @@ async function installSet(
  *  cache holds its digest already — in install order, requirements first.
  *  Exact pins union; a name pinned at two digests is refused, and so is one
  *  required at one digest and installed at another — unless the distro's
- *  door is installing, which updates it first (§4). */
-async function resolveSet(deps: PackageDeps, refs: Array<{ ref: string; digest?: string; url?: string }>, installed: Map<string, InstalledPackage>, door: PackageDoor): Promise<Member[]> {
+ *  door is installing, or a person is updating: it is updated first (§4). */
+async function resolveSet(deps: PackageDeps, refs: Array<{ ref: string; digest?: string; url?: string }>, installed: Map<string, InstalledPackage>, door: PackageDoor, updating = false): Promise<Member[]> {
   const order: Member[] = [];
   const inSet = new Map<string, string>();
   const visit = async (ref: string, digest: string | undefined, base: string | undefined, expected?: { package: string; by: string }, url?: string): Promise<void> => {
@@ -497,8 +598,8 @@ async function resolveSet(deps: PackageDeps, refs: Array<{ ref: string; digest?:
       }
       const here = installed.get(req.package);
       if (here?.digest === req.digest) continue;
-      if (here && door === "install") {
-        throw conflict(`${pkg} requires ${req.package} at ${req.digest}, and this strut server has it at ${here.digest ?? "another digest"} — updating a package from a person's door is not built yet`);
+      if (here && door === "install" && !updating) {
+        throw conflict(`${pkg} requires ${req.package} at ${req.digest}, and this strut server has it at ${here.digest ?? "another digest"} — update ${req.package} first (POST /packages/${req.package}/update)`);
       }
       await visit(req.source, req.digest, member.base, { package: req.package, by: pkg });
     }
@@ -537,6 +638,7 @@ async function checkSet(
   installed: Map<string, InstalledPackage>,
   scratch: string,
   door: PackageDoor,
+  update?: InstallOptions["update"],
 ): Promise<Checked & { members: Array<Member & { claims: MemberClaims[] }> }> {
   const out: Checked = { plan: new Map(), dropped: new Map(), conceptsOn: false, warnings: [], apps: [], types: { types: [], byPackage: new Map() } };
   const sealed = deps.sealed ?? sealedStepPatterns();
@@ -559,13 +661,13 @@ async function checkSet(
     const here = installed.get(pkg);
     if (here && door === "install") {
       if (here.door === "distro") throw new Error(`package_distro_owned: ${pkg} was installed here by the distro, which updates and removes it`);
-      if (here.digest && here.digest !== m.info.digest) {
-        throw new Error(`package_update_not_built: ${pkg} ${here.version ?? ""} is installed here at ${here.digest}; updating it to ${m.info.digest} from a person's door is not built yet (it asks first) — uninstall it first (DELETE /packages/${pkg})`.replace("  ", " "));
+      if (!update && here.digest && here.digest !== m.info.digest) {
+        throw new Error(`package_installed: ${pkg} ${here.version ?? ""} is installed here at ${here.digest}, and this is ${m.info.digest} — installing does not update it: POST /packages/${pkg}/update does, carrying what was changed here onto the release`.replace("  ", " "));
       }
-      if (!here.digest) await sameConcepts(deps, m, here);
+      if (!update && !here.digest) await sameConcepts(deps, m, here);
     }
     const mine = new Map((here?.items ?? []).map((i) => [i.name, i]));
-    if (here && door === "distro") {
+    if (here && (door === "distro" || update)) {
       const ships = new Set(m.info.items.map((i) => `${i.kind}:${i.name}`));
       const gone = here.items.filter((i) => !ships.has(`${i.kind}:${i.name}`));
       if (gone.length) out.dropped.set(pkg, gone);
@@ -580,7 +682,7 @@ async function checkSet(
     for (const item of m.info.items) {
       if (item.kind === "step" || item.kind === "workflow" || item.kind === "app") {
         const at = mine.get(item.name);
-        out.plan.set(item.name, at ? await planItem(deps, m, item, at, door) : { action: "new" });
+        out.plan.set(item.name, at ? await planItem(deps, m, item, at, door === "distro" || !!update) : { action: "new" });
         if (item.kind === "step" && isSealedStep(item.name, undefined, sealed)) problems.push(`${item.name} is in a sealed namespace (${sealed.join(", ")}): those are strut's`);
         if (item.kind === "step" && !at && registry[item.name] && !workspaceSteps.includes(item.name)) problems.push(`${item.name} is a step strut ships`);
         if (item.kind === "app" && isFirstPartyName(item.name)) problems.push(`the app ${item.name} is under ${FIRST_PARTY_PREFIX}: those are strut's`);
@@ -645,22 +747,127 @@ async function checkSet(
   }
   if (bad.length) throw new Error(`bad_package: ${bad.join("; ")}`);
 
+  // An update REPLAYS each fork onto its release (plans/managed-packages.md
+  // §2), or reads it out of the patch handed in. `stuck` is every fork that
+  // does not replay, or whose result fails a check below: any one refuses
+  // the whole update, before anything is written.
+  const stuck: string[] = [];
+  if (update) {
+    const root = members.at(-1)!;
+    const forks: Array<{ member: Member; fork: Fork }> = [];
+    for (const m of members) {
+      for (const item of m.info.items) {
+        if (out.plan.get(item.name)?.action !== "diverge" || (item.kind !== "workflow" && item.kind !== "step" && item.kind !== "app")) continue;
+        forks.push({ member: m, fork: { kind: item.kind, name: item.name, path: item.path, theirs: join(m.info.dir, item.path) } });
+      }
+    }
+    const git = forks.length || update.patch !== undefined ? await (deps.git ?? packageGit)() : undefined;
+    // The patch: applied to the release's files of the forks it covers.
+    const patched = join(scratch, ".patched");
+    const covered = new Set<string>();
+    if (update.patch !== undefined) {
+      const header = parsePatch(update.patch);
+      if (typeof header === "string") throw new Error(`patch_invalid: ${header}`);
+      if (header.package !== update.package) throw new Error(`patch_mismatch: the patch is for ${header.package}, and this updates ${update.package}`);
+      if (header.onto !== root.info.digest) throw new Error(`patch_mismatch: the patch applies to the release ${header.onto}, and this update is to ${root.info.digest}`);
+      if (!git || "missing" in git) throw new Error(`package_update_conflict: a patch is applied with git, and ${git?.missing ?? "there is none"}`);
+      for (const [path, hash] of Object.entries(header.over)) {
+        const f = forks.find((x) => x.member === root && x.fork.path === path);
+        if (!f) throw new Error(`patch_stale: the patch covers ${path}, which is not an item of ${update.package} that was edited here`);
+        if ((await activeVersion(deps, f.fork.kind, f.fork.name))?.hash !== hash) {
+          throw new Error(`patch_stale: ${f.fork.name} was edited again after the patch was made — make the patch again from what is here now`);
+        }
+        await copyContent(f.fork.theirs, join(patched, ...path.split("/")));
+        covered.add(f.fork.name);
+      }
+      await applyPatch(git.path, patched, update.patch);
+    }
+    for (const { member: m, fork } of forks) {
+      const r: Replayed = covered.has(fork.name)
+        ? await forkFromPatch(deps, patched, fork)
+        : !git || "missing" in git
+          ? { outcome: "conflict", why: `carrying a change onto a release needs git, and ${git?.missing ?? "there is none"}` }
+          : await replayFork(deps, git.path, join(scratch, ".replay"), fork);
+      if (r.outcome === "conflict") {
+        stuck.push(`the ${fork.kind} ${fork.name} — ${r.why}`);
+        continue;
+      }
+      out.warnings.push(...r.notes);
+      const previous = (await activeVersion(deps, fork.kind, fork.name))!.label;
+      if (r.outcome === "converged") out.plan.set(fork.name, { action: "update", previous });
+      else if (r.outcome === "stands") out.plan.set(fork.name, { action: "diverge", stands: true });
+      else {
+        // A merged text passes what a release's own file passes; a merged
+        // step is loaded and a merged app built with the others, below.
+        if (fork.kind === "workflow" && "text" in r.merged) {
+          const pkg = m.info.manifest.package;
+          const wrong = workflowProblems(
+            r.merged.text,
+            fork.name,
+            (t) => knownStep(t) || knownStep(`${pkg}/${t}`),
+            (w) => [w, `${pkg}/${w}`].some((n) => setWorkflows.has(n) || workspaceWorkflows.has(n)),
+          );
+          if (wrong.length) {
+            stuck.push(`the workflow ${fork.name}, carried onto the release — ${wrong.join("; ")}`);
+            continue;
+          }
+        }
+        if (fork.kind === "step" && "text" in r.merged && !fork.name.split("/").pop()!.startsWith("_")) {
+          const findings = lintStepSource(r.merged.text);
+          if (findings.length) out.warnings.push(`${fork.name}, carried onto the release, reaches past ctx.services:\n${formatStepLint(findings)}`);
+        }
+        out.plan.set(fork.name, { action: "diverge", merged: r.merged, previous });
+      }
+    }
+  }
+  /** Refuse the update for what did not replay. */
+  const refuseStuck = () => {
+    if (!stuck.length) return;
+    const to = members.at(-1)!.info.manifest;
+    throw new Error(`package_update_conflict: ${to.package} ${to.version} was not applied, and nothing was written — ${stuck.join("; ")}. Hand in a patch that covers ${stuck.length === 1 ? "it" : "them"} (patch), or make the release's version active on ${stuck.length === 1 ? "it" : "each"} to drop the change made here`);
+  };
+
   // Steps: each one the install makes active LOADS, as its own type,
   // before anything is written.
-  bad.push(...(await trialLoad(deps, members, out.plan, join(scratch, "trial"))));
+  const loads = await trialLoad(deps, members, out.plan, join(scratch, "trial"));
+  bad.push(...loads.filter((l) => !l.carried).map((l) => l.problem));
   if (bad.length) throw new Error(`bad_package: ${bad.join("; ")}`);
+  stuck.push(...loads.filter((l) => l.carried).map((l) => `${l.problem} (with the changes carried onto the release)`));
 
   // Apps: each one the install publishes BUILDS against this strut's kit,
   // with the set's workflows and apps in reach, before anything is written.
   const publishes = (name: string) => ["new", "update", "diverge"].includes(out.plan.get(name)?.action ?? "");
   const staged = new Map<string, { dir: string; hash: string; member: Member; path: string }>();
+  /** The forks an update carried onto the release: app → its merged directory. */
+  const carriedApps = new Map<string, string>();
   for (const m of members) {
     for (const item of m.info.items.filter((i) => i.kind === "app" && publishes(i.name))) {
       const dir = join(scratch, ...item.name.split("/"));
       await copyAppDir(join(m.info.dir, item.path), dir, { dist: false });
       staged.set(item.name, { dir, hash: await treeHash(dir), member: m, path: item.path });
+      const plan = out.plan.get(item.name);
+      if (plan?.action === "diverge" && plan.merged && "dir" in plan.merged) carriedApps.set(item.name, plan.merged.dir);
     }
   }
+  /** An app's build, with the set's workflows and apps in reach. */
+  const buildDepsFor = (name: string): AppBuildDeps => {
+    const base = deps.apps!.buildDeps(name);
+    return {
+      ...base,
+      // An app of the set resolves to its staged directory — the fork
+      // carried onto the release, where an update made one; a pin of one is
+      // this strut's label, which it has none of yet.
+      resolveApp: async (n, v) => {
+        const s = staged.get(n);
+        if (!s) return base.resolveApp ? base.resolveApp(n, v) : null;
+        if (v) return null;
+        const mine = carriedApps.get(n);
+        return mine ? { name: n, version: "install", dir: mine, hash: await treeHash(mine) } : { name: n, version: "install", dir: s.dir, hash: s.hash };
+      },
+      installedApps: async () => [...new Set([...((await base.installedApps?.()) ?? []), ...staged.keys()])].sort(),
+      workflowExists: async (wf) => setWorkflows.has(wf) || ((await base.workflowExists?.(wf)) ?? false),
+    };
+  };
   const imports = new Map<string, string[]>();
   for (const [name, app] of staged) {
     const read = await readManifest(app.dir);
@@ -674,24 +881,18 @@ async function checkSet(
         bad.push(`the app ${name} grants the step ${g}, which is neither on this strut server nor in the packages`);
       }
     }
-    const base = deps.apps!.buildDeps(name);
-    const buildDeps: AppBuildDeps = {
-      ...base,
-      // An app of the set resolves to its staged directory; a pin of one is
-      // this strut's label, which it has none of yet.
-      resolveApp: async (n, v) => {
-        const s = staged.get(n);
-        if (s) return v ? null : { name: n, version: "install", dir: s.dir, hash: s.hash };
-        return base.resolveApp ? base.resolveApp(n, v) : null;
-      },
-      installedApps: async () => [...new Set([...((await base.installedApps?.()) ?? []), ...staged.keys()])].sort(),
-      workflowExists: async (wf) => setWorkflows.has(wf) || ((await base.workflowExists?.(wf)) ?? false),
-    };
-    const built = await buildApp(app.dir, buildDeps);
+    const built = await buildApp(app.dir, buildDepsFor(name));
     if (!built.ok) bad.push(`the app ${name} does not build on this strut server — ${built.errors.join("; ")}`);
     else imports.set(name, built.imports.map((i) => i.name).filter((n) => staged.has(n)));
   }
   if (bad.length) throw new Error(`bad_package: ${bad.join("; ")}`);
+  // A fork carried onto the release builds too, or it did not replay.
+  for (const [name, dir] of carriedApps) {
+    const read = await readManifest(dir);
+    const built = read.ok ? await buildApp(dir, buildDepsFor(name)) : { ok: false as const, errors: read.errors.map((e) => `app.yaml: ${e}`) };
+    if (!built.ok) stuck.push(`the app ${name}, carried onto the release, does not build — ${built.errors.join("; ")}`);
+  }
+  refuseStuck();
   // Each after the apps of the set it imports (the build refuses a cycle).
   const placed = new Set<string>();
   for (let progress = true; progress; ) {
@@ -761,16 +962,17 @@ async function sameConcepts(deps: PackageDeps, m: Member, here: InstalledPackage
   }
   for (const c of await packageConcepts(deps.graph, pkg)) {
     if (files.get(c.file) !== c.hash) {
-      throw new Error(`package_update_not_built: ${pkg} is installed here from other files (${here.items.length} item(s)); updating it is not built yet — uninstall it first (DELETE /packages/${pkg})`);
+      throw new Error(`package_installed: ${pkg} is installed here from other files (${here.items.length} item(s)) — installing does not update it: POST /packages/${pkg}/update does`);
     }
   }
 }
 
 /** What an install does with an item it ships that is here already (§4's
- *  table, through the distro's door). A person's door installs only what is
- *  missing, so it leaves every item that is here as it is. */
-async function planItem(deps: PackageDeps, m: Member, item: PackageItem, at: InstalledItem, door: PackageDoor): Promise<ItemPlan> {
-  if (door === "install") return { action: at.modified ? "modified" : "present" };
+ *  table, when it `applies` the release: the distro's door, a person's
+ *  update). A person's install only adds what is missing, so it leaves
+ *  every item that is here as it is. */
+async function planItem(deps: PackageDeps, m: Member, item: PackageItem, at: InstalledItem, applies: boolean): Promise<ItemPlan> {
+  if (!applies) return { action: at.modified ? "modified" : "present" };
   const active = await activeVersion(deps, item.kind as Wrote["kind"], item.name);
   if (!active) return { action: "new" };
   const path = join(m.info.dir, item.path);
@@ -798,30 +1000,58 @@ async function activeVersion(deps: PackageDeps, kind: Wrote["kind"], name: strin
  *  file for what the install writes or already has as the release has it,
  *  this strut's own for a fork it leaves active (§12 step 6). Nothing is
  *  written to the workspace. The problems, each naming the step. */
-async function trialLoad(deps: PackageDeps, members: Member[], plan: Map<string, ItemPlan>, dir: string): Promise<string[]> {
+async function trialLoad(deps: PackageDeps, members: Member[], plan: Map<string, ItemPlan>, dir: string): Promise<Array<{ problem: string; carried: boolean }>> {
   const fileOf = (name: string) => join(dir, ...`${name}.ts`.split("/"));
-  const check: string[] = [];
+  const check = new Map<string, boolean>(); // step → was it (or a helper beside it) carried onto the release?
   for (const m of members) {
-    for (const item of m.info.items.filter((i) => i.kind === "step")) {
+    const steps = m.info.items.filter((i) => i.kind === "step");
+    /** A fork an update carried onto the release: its merged source. */
+    const mergedOf = (name: string) => {
+      const p = plan.get(name);
+      return p?.action === "diverge" && p.merged && "text" in p.merged ? p.merged.text : undefined;
+    };
+    // A helper carried onto the release changes what every step beside it imports.
+    const helperCarried = steps.some((i) => isHelper(i) && mergedOf(i.name) !== undefined);
+    for (const item of steps) {
       const action = plan.get(item.name)?.action;
-      const local = action === "modified" || action === "diverge";
-      const code = local ? (await deps.workspace.getStepSource(item.name))?.code : await readFile(join(m.info.dir, item.path), "utf-8");
+      const merged = mergedOf(item.name);
+      const local = merged === undefined && (action === "modified" || action === "diverge");
+      const code = merged ?? (local ? (await deps.workspace.getStepSource(item.name))?.code : await readFile(join(m.info.dir, item.path), "utf-8"));
       if (code === undefined) continue;
       await mkdir(dirname(fileOf(item.name)), { recursive: true });
       await writeFile(fileOf(item.name), code);
-      if (!isHelper(item) && (action === "new" || action === "update")) check.push(item.name);
+      if (isHelper(item)) continue;
+      if (action === "new" || action === "update") check.set(item.name, helperCarried);
+      else if (merged !== undefined || (helperCarried && !local)) check.set(item.name, true);
     }
   }
-  if (!check.length) return [];
+  if (!check.size) return [];
   await ensureEsmScope(dir);
-  const problems: string[] = [];
-  for (const name of check) {
+  const problems: Array<{ problem: string; carried: boolean }> = [];
+  for (const [name, carried] of check) {
     const r = await stepFileType(fileOf(name));
-    if ("error" in r) problems.push(`the step ${name} — ${r.error}`);
-    else if (r.type !== name) problems.push(`the step ${name} — its defineStep says type "${r.type}" — a step's type is its path, ${name}`);
+    if ("error" in r) problems.push({ problem: `the step ${name} — ${r.error}`, carried });
+    else if (r.type !== name) problems.push({ problem: `the step ${name} — its defineStep says type "${r.type}" — a step's type is its path, ${name}`, carried });
   }
   return problems;
 }
+
+/** What is wrong with a workflow's text that a replay made: the checks a
+ *  release's own file passes. */
+function workflowProblems(text: string, name: string, knownStep: (type: string) => boolean, knownWorkflow: (name: string) => boolean): string[] {
+  try {
+    assertValidWorkflowYaml(text);
+  } catch (err) {
+    return [err instanceof Error ? err.message : String(err)];
+  }
+  const parsed = (loadYaml(text) ?? {}) as { name?: unknown; steps?: unknown };
+  if (parsed.name !== undefined && parsed.name !== name) return [`it says name: ${String(parsed.name)} — a workflow's name is ${name}`];
+  if (!Array.isArray(parsed.steps)) return ["a workflow has a steps list"];
+  return namesIn(parsed.steps as Step[], knownStep, knownWorkflow);
+}
+
+/** The note on a version an update made by carrying a fork onto a release. */
+const carriedNote = (m: Member): string => `Local changes carried onto ${m.info.manifest.package} ${m.info.manifest.version}`;
 
 /** An item a release no longer ships, and whether it goes. */
 interface Retirement {

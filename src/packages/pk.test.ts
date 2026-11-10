@@ -166,6 +166,38 @@ describe("installing by a publisher's key", () => {
     assert.equal(again.body.packages![0]!.status, "present");
   });
 
+  it("updates from the key and the URL the install pinned: the catalog's newest release, a fork carried onto it, and no other key", async () => {
+    const v1 = await publish("acme/linear", "1.0.0", ["acme/linear/sync"]);
+    await makePublic("acme/linear", v1.digest);
+    const pub = await publicKey();
+    assert.equal((await install({ ref: `pk:${pub}/acme/linear@${v1.digest}`, url: catalogUrl })).status, 201);
+    // A change here, to the workflow; a release there, of the step.
+    await installerWs.publishWorkflow("acme/linear/sync", "v2", FLOW("acme/linear/sync", "acme/linear/fetch", "  - { id: mine, type: log, config: { message: here } }\n"));
+    await publisherWs.publishStep("acme/linear/fetch", STEP("acme/linear/fetch", "issues, faster"));
+    const v2 = await publish("acme/linear", "1.1.0", ["acme/linear/sync"]);
+    await makePublic("acme/linear", v2.digest);
+
+    const update = async (body: Record<string, unknown>) => {
+      const res = await installer.app.request("/packages/acme/linear/update", json(body));
+      return { status: res.status, body: (await res.json()) as { digest?: string; packages?: Array<{ status: string; items: Array<{ name: string; status: string }> }>; error?: string } };
+    };
+    // Another key's ref is not followed, whatever it lists.
+    const other = await update({ ref: `pk:${v2.catalog.key}/acme/linear` });
+    assert.equal(other.status, 409, JSON.stringify(other.body));
+    assert.match(other.body.error!, /^package_key_pinned: acme\/linear follows the publisher key it was installed from/);
+    // No ref: the pinned key's catalog at the pinned URL, its newest release — not the digest the install named.
+    const ok = await update({});
+    assert.equal(ok.status, 200, JSON.stringify(ok.body));
+    assert.equal(ok.body.digest, v2.digest);
+    assert.deepEqual(ok.body.packages![0]!.items.map((i) => [i.name, i.status]), [
+      ["acme/linear/fetch", "updated"],
+      ["acme/linear/sync", "modified"],
+    ]);
+    assert.equal((await installer.run("acme/linear/sync", {})).output, "here", "the fork runs, over the release's step");
+    const [p] = await installed();
+    assert.deepEqual([p!.digest, p!.key, p!.source], [v2.digest, pub, { ref: `pk:${pub}/acme/linear`, url: catalogUrl }]);
+  });
+
   it("fetches what the package requires from the same catalog, and refuses an older catalog served after a newer", async () => {
     await publisherWs.publishStep("acme/util/fetch", STEP("acme/util/fetch", "util"));
     await publisherWs.publishWorkflow("acme/util/sync", "v1", FLOW("acme/util/sync", "acme/util/fetch"));

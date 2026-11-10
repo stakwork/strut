@@ -52,7 +52,12 @@ export interface InstalledPackage {
    *  alone, off its directory in the cache when it is there. */
   version?: string;
   digest?: string;
-  source?: { ref: string };
+  /** Where it was fetched from; for a `pk:` ref, `url` is where its
+   *  catalog was read — what an update starts from. */
+  source?: { ref: string; url?: string };
+  /** The publisher key the install pinned (a `pk:` ref): the only key an
+   *  update follows. */
+  key?: string;
   /** What its steps may read (the fence, src/packages/fence.ts). */
   secrets?: string[];
   /** Which door wrote it: a person's install, or the distro, whose package
@@ -118,6 +123,8 @@ export async function listInstalledPackages(deps: InstalledDeps): Promise<Instal
       releasedAt.set(upstream.package, at);
       const door = versions[installed]!.source === "distro" ? "distro" : "install";
       Object.assign(p, { version: upstream.version, digest: upstream.digest, source: upstream.source, secrets: upstream.secrets, door });
+      if (upstream.key) p.key = upstream.key;
+      else delete p.key;
     }
     const helper = kind === "step" && name.split("/").pop()!.startsWith("_");
     p.items.push({ kind, name, ...(helper ? { helper: true as const } : {}), installed, active, modified: active !== installed });

@@ -296,10 +296,13 @@ nothing.** Each install pinned the key and the catalog URL it resolved
 from the index again.
 
 - Installing the same name again from a person's door now resolves to the
-  new key. A different digest is refused (`package_update_not_built:`,
-  `src/packages/install.ts:537`). Once marketplace §4's person update is
-  built, it compares the row with `upstream.key` and asks, naming both
-  keys (§13, "Key loss and rotation").
+  new key. A different digest is refused (`package_installed:`,
+  `src/packages/install.ts`): an install never updates. A person's update
+  (`POST /packages/:publisher/:name/update`, `plans/managed-packages.md`
+  §3) follows the pinned key and URL and never reads the index, so the
+  new row does not reach it; comparing the row with `upstream.key` and
+  asking, naming both keys, is still to build (§13, "Key loss and
+  rotation").
 - A subscription follows its own key, never the index.
 - Only NEW installs follow the new row.
 

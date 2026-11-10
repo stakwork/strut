@@ -222,9 +222,12 @@ export interface WorkflowVersionInfo {
  *  UI, `api` any other HTTP caller, `builder` the chat builder's tools,
  *  `agent` the in-run `meta/*` authoring surface, `promote` a promoted param,
  *  `install` a person's package install (marketplace.md §3), `distro` a
- *  package the operator's distro applied, with no ask (§12).
+ *  package the operator's distro applied, with no ask (§12), `update` a
+ *  local edit of an installed item carried onto a newer release by a
+ *  package update (managed-packages.md §2) — this strut's own version, not
+ *  the package's.
  *  So "is the active version still the seed?" is one lookup. */
-export type VersionSource = "seed" | "ui" | "api" | "builder" | "agent" | "promote" | "install" | "distro";
+export type VersionSource = "seed" | "ui" | "api" | "builder" | "agent" | "promote" | "install" | "distro" | "update";
 
 /** Where an installed version came from (marketplace.md §3): which package
  *  at which version, its tree digest, the source it was fetched from, and the

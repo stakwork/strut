@@ -685,6 +685,29 @@ export function workspaceConformance(impl: WorkspaceImpl): void {
       assert.equal((await ws.getApp("app"))?.version, "v1");
     });
 
+    it("a fork carried onto a release (managed-packages.md §2): the release beside it, then this strut's own version upstreamed to the release", async () => {
+      const at = (version: string, digest: string) => ({ package: "acme/linear", version, digest, source: { ref: "file:/tmp/acme-linear" }, secrets: [] });
+      const yamlOf = (greeting: string) => `name: acme/linear/sync\nsteps:\n  - { id: a, type: log, config: { message: ${greeting} } }\n`;
+      await ws.publishWorkflowByContent("acme/linear/sync", yamlOf("one"), undefined, undefined, undefined, { source: "install", upstream: at("1.0.0", "d1") });
+      await ws.publishWorkflowByContent("acme/linear/sync", yamlOf("mine"), undefined, undefined, undefined, { source: "ui" });
+      await ws.publishWorkflowByContent("acme/linear/sync", yamlOf("two"), undefined, undefined, undefined, { source: "install", upstream: at("1.1.0", "d2"), activate: false });
+      await ws.publishWorkflowByContent("acme/linear/sync", yamlOf("two, mine"), undefined, undefined, undefined, { source: "update", actor: "ann", upstream: at("1.1.0", "d2") });
+      const wf = (await ws.getWorkflowMetadata("acme/linear/sync"))!;
+      assert.equal(wf.active, "v4");
+      assert.deepEqual(Object.values(wf.versions).map((v) => [v.source, v.upstream?.digest]), [["install", "d1"], ["ui", "d1"], ["install", "d2"], ["update", "d2"]]);
+      assert.equal(wf.versions["v4"]?.actor, "ann");
+
+      await ws.publishStep("acme/linear/fetch", STEP_SRC("acme/linear/fetch", "one"), undefined, undefined, { source: "install", upstream: at("1.0.0", "d1") });
+      await ws.publishStep("acme/linear/fetch", STEP_SRC("acme/linear/fetch", "two, mine"), "carried", undefined, { source: "update", upstream: at("1.1.0", "d2") });
+      const step = (await ws.getStepMetadata("acme/linear/fetch"))!;
+      assert.deepEqual([step.versions[step.active]?.source, step.versions[step.active]?.upstream?.version, step.versions[step.active]?.description], ["update", "1.1.0", "carried"]);
+
+      await ws.publishApp("acme/linear/ui", "h1", APP("One"), { source: "install", upstream: at("1.0.0", "d1") });
+      await ws.publishApp("acme/linear/ui", "h2", APP("Two, mine"), { source: "update", upstream: at("1.1.0", "d2") });
+      const app = (await ws.getApp("acme/linear/ui"))!;
+      assert.deepEqual([app.versions[app.active]?.source, app.versions[app.active]?.upstream?.digest], ["update", "d2"]);
+    });
+
     it("workflow names carry slashes: a workflow beside its namespace, created and deleted apart, and the rule for slashed names", async () => {
       await ws.publishWorkflow("acme", "v1", { steps }, "the root");
       await ws.publishWorkflow("acme/linear/sync", "v1", { steps, params: { x: 1 } }, "installed");
