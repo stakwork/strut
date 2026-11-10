@@ -13,7 +13,8 @@
  *     about themself, someone else), so repeating a fact adds nothing;
  *   - currency: how long since it was last backed, against how fast the
  *     edge type changes (its `volatility`); a fresh mention restarts it;
- *   - refuted: the newest word on it is the user saying it is false;
+ *   - refuted: the user's own newest word on it is that it is false; it
+ *     stands, whoever says it after, until the user backs it;
  *   - rival: on a one-value slot, an ended edge replaced by someone believed
  *     less stays in the running;
  *   - a message read again: an edge whose only messages already backed an
@@ -194,9 +195,11 @@ function newestOf(xs: EvidenceIn[] | undefined): EvidenceIn[] {
   return (xs ?? []).filter((x) => x.observed_at === at);
 }
 
-/** The newest word on it is the user saying it is false; at the same time as support, the refutation wins. */
+/** The user's newest word on it is that it is false: someone else saying it
+ *  after does not undo "that was never true", only the user backing it does.
+ *  At the same time as their support, the refutation wins. */
 function refutedBy(e: SlotEdge, s: Pick<SlotInput, "subject" | "people" | "user">): boolean {
-  return newestOf(e.evidence?.filter((x) => !x.check)).some((x) => x.strength < 0 && sayerOf(x.said_by, s).kind === "owner");
+  return newestOf(e.evidence?.filter((x) => !x.check && sayerOf(x.said_by, s).kind === "owner")).some((x) => x.strength < 0);
 }
 
 /** Its newest check found the expected evidence missing: weakly against it.
