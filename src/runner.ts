@@ -28,7 +28,7 @@ import type { JobsCapability } from "./jobs.js";
 import { mcpOrigins } from "./mcp-servers.js";
 import { resolveSettings } from "./extensions.js";
 import { reachPolicyOf, withinReach } from "./reach.js";
-import { appSessionId, peerSessionId, type SessionsCapability } from "./session-store.js";
+import { appSessionId, peerSessionId, publicSessionId, type SessionsCapability } from "./session-store.js";
 import { bindGraph } from "./graph-writes.js";
 import { outputTooBig } from "./output-cap.js";
 import { guardEscapes } from "./escaped-errors.js";
@@ -175,6 +175,12 @@ export interface RunOptions<TServices = unknown> {
    *  artifacts by the launcher: handed to every step as `ctx.attachments`,
    *  recorded on `run.start` (no bytes), read back by a resume. */
   attachments?: RunAttachment[];
+  /** The run's own cost cap in dollars, below its workflow's: a PUBLIC
+   *  run's (plans/paid-runs.md §7), the smallest of the item's per-run cap,
+   *  the workflow's and what is left of its daily cap. Recorded on
+   *  `run.start`, handed to every step as `ctx.maxCostUsd`, and from there
+   *  to `llmAuth` (`stepAuth`). */
+  maxCostUsd?: number;
 }
 
 /** Sentinel returned by steps that were skipped because their `when` didn't match. */
@@ -258,6 +264,21 @@ function bindApp<TServices>(services: TServices, app: AppRef | undefined, actor?
   return { ...(services as object), sessions: view } as TServices;
 }
 
+/** A PUBLIC run (plans/paid-runs.md §6) opens every session under
+ *  `public/<runId>/` (`publicSessionId`): a name a stranger chooses is never
+ *  a local thread, nor another caller's. The twin of `bindPeer`, with no
+ *  exception: a stranger owns no thread here. */
+function bindPublic<TServices>(services: TServices, origin: RunOrigin | undefined, runId: string): TServices {
+  if (origin !== "public" || services == null || typeof services !== "object") return services;
+  const sessions = (services as { sessions?: SessionsCapability }).sessions;
+  if (typeof sessions?.open !== "function") return services;
+  const view: SessionsCapability = {
+    open: (id, holder) => sessions.open(publicSessionId(id, runId), holder),
+    holder: (id) => sessions.holder(publicSessionId(id, runId)),
+  };
+  return { ...(services as object), sessions: view } as TServices;
+}
+
 /** Is `workflow` one the AI published, on a strut with `builder.reach`
  *  (src/reach.ts)? A publisher that cannot be read counts as the AI's. */
 async function aiAuthored(services: unknown, workflow: string): Promise<boolean> {
@@ -295,6 +316,8 @@ interface Exec {
   wake?: WakeMark;
   mcp?: McpServer[];
   attachments?: RunAttachment[];
+  /** The run's own cost cap (`RunOptions.maxCostUsd`). */
+  maxCostUsd?: number;
   /** This frame is a workflow the AI published, or runs under one
    *  (`StepContext.aiAuthored`, src/reach.ts). */
   aiAuthored?: boolean;
@@ -426,7 +449,7 @@ async function executeRun<TServices = unknown>(
   const { services, reporter: graphReports } = bindGraph(
     bindApp(
       bindPeer(
-        bindPrincipal((opts?.services ?? ({} as TServices)) as TServices, opts?.principal),
+        bindPublic(bindPrincipal((opts?.services ?? ({} as TServices)) as TServices, opts?.principal), opts?.origin, runId),
         opts?.origin,
         opts?.peerPerson ? opts.actor : undefined,
         opts?.continues,
@@ -534,6 +557,7 @@ async function executeRun<TServices = unknown>(
       ...(opts?.callback ? { callback: opts.callback } : {}),
       ...(opts?.mcp?.length ? { mcp: mcpOrigins(opts.mcp) } : {}),
       ...(opts?.attachments?.length ? { attachments: opts.attachments } : {}),
+      ...(opts?.maxCostUsd !== undefined ? { maxCostUsd: opts.maxCostUsd } : {}),
       // Tree linkage on disk: a nested run names its parent so boot-time
       // auto-resume can tell roots from children (§5.3).
       ...(opts?.controller?.parent ? { parentRunId: opts.controller.parent.runId } : {}),
@@ -587,6 +611,7 @@ async function executeRun<TServices = unknown>(
     ...(opts?.wake ? { wake: opts.wake } : {}),
     ...(opts?.mcp?.length ? { mcp: opts.mcp } : {}),
     ...(opts?.attachments?.length ? { attachments: opts.attachments } : {}),
+    ...(opts?.maxCostUsd !== undefined ? { maxCostUsd: opts.maxCostUsd } : {}),
     ...(opts?.aiAuthored || (await aiAuthored(services, wfName)) ? { aiAuthored: true } : {}),
     disposers: [],
   };
@@ -1095,6 +1120,7 @@ async function dispatchStep(
         ...(exec.wake ? { wake: exec.wake } : {}),
         ...(exec.mcp ? { mcp: exec.mcp } : {}),
         ...(exec.attachments ? { attachments: exec.attachments } : {}),
+        ...(exec.maxCostUsd !== undefined ? { maxCostUsd: exec.maxCostUsd } : {}),
         // One disposer list per run (`Exec.disposers`), whatever frame the
         // step runs in; drained in runWorkflow's `finally`.
         onRunEnd: (fn) => void exec.disposers.push(fn),

@@ -78,7 +78,7 @@ import type { AccessedNode, RunEvent, RunSummary } from "../core.js";
 import { executedWorkflowHash } from "../journal.js";
 import { stepTypeOfRunKey, type RunStore } from "../store.js";
 import type { ChatMeta, ChatStore, StoredMessage } from "../chat-store.js";
-import { idProblem, peerSessionId } from "../session-store.js";
+import { idProblem, peerSessionId, publicSessionId } from "../session-store.js";
 import { artifactEntriesOf } from "../artifact-refs.js";
 import type { JobIndex, JobView } from "../job-index.js";
 import type { ConversationRecord, Conversations } from "../conversations.js";
@@ -300,7 +300,13 @@ export function projectRunEvents(workflow: string, runId: string, events: RunEve
   // own ids, when a person's credential launched it, and the conversation
   // it continues.
   const person = start?.peerPerson ? start.actor : undefined;
-  const threadOf = start?.origin === "peer" ? (id: string) => peerSessionId(id, person, start?.continues) : (id: string) => id;
+  // A public run's, under `public/<runId>/` (`bindPublic`).
+  const threadOf =
+    start?.origin === "peer"
+      ? (id: string) => peerSessionId(id, person, start?.continues)
+      : start?.origin === "public"
+        ? (id: string) => publicSessionId(id, start.runId)
+        : (id: string) => id;
   for (const e of events) {
     if (e.type !== "step.start" || e.stepType !== "agent") continue;
     const end = ends.get(keyOf(e));

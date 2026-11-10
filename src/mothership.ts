@@ -36,6 +36,7 @@ import type { WorkspaceStore } from "./workspace.js";
 import type { LlmAuth, LlmAuthContext, LlmAuthResult } from "./llm.js";
 import { gatewayLacksProvider } from "./llm.js";
 import { bootEnv } from "./env.js";
+import { DEFAULT_RUN_CAP_USD, resolveRunCap } from "./run-cap.js";
 
 /** The one agent name hive authorizes for strut; every lineage starts here. */
 export const STRUT_AGENT = "strut-agent";
@@ -44,7 +45,6 @@ export const STRUT_ASSISTANT = "strut-assistant";
 /** The delegation file, beside `secrets.json` under `dataDir`. */
 export const DELEGATIONS_FILE = "mothership.json";
 
-const DEFAULT_RUN_CAP_USD = 100;
 /** A link must outlive the longest single step (the header is fixed when the
  *  step builds its client); it does not bound the run — strut re-links. */
 const LINK_TTL_MS = 8 * 3600_000;
@@ -183,27 +183,8 @@ export function stepAgentName(stepPath: string): string {
   return name || "unknown";
 }
 
-/**
- * A run's cost cap: the workflow's `maxRunCostUsd`, else
- * `STRUT_RUN_MAX_COST_USD`, else the built-in default. Anything that is not
- * a positive number is an ERROR, never a fallback — `0` reads as "uncapped"
- * to the gateway, and that must never happen by way of a typo. An unset or
- * empty env var is simply absent.
- */
-export function resolveRunCap(
-  workflowCap: number | undefined,
-  env: Record<string, string | undefined> = bootEnv(),
-  fallback = DEFAULT_RUN_CAP_USD,
-): number {
-  const raw = env["STRUT_RUN_MAX_COST_USD"];
-  const cap = workflowCap ?? (raw != null && raw.trim() !== "" ? Number(raw) : fallback);
-  if (typeof cap !== "number" || !Number.isFinite(cap) || cap <= 0) {
-    throw new Error(
-      `run cost cap must be a positive number of dollars, got ${JSON.stringify(cap)} — check the workflow's maxRunCostUsd / STRUT_RUN_MAX_COST_USD`,
-    );
-  }
-  return cap;
-}
+/** A run's cost cap (src/run-cap.ts): re-exported, the Mothership's to apply. */
+export { resolveRunCap };
 
 // ── The module ─────────────────────────────────────────────────────────────
 
@@ -262,8 +243,8 @@ export function createMothership(opts: MothershipOptions): Mothership {
   };
   /** The cap for a run, checked against the delegation's ceiling — a link
    *  above it would be rejected by the gateway, so fail here, loudly. */
-  const capOrThrow = (workflowCap: number | undefined, ceiling: number, principal: string) => {
-    const cap = resolveRunCap(workflowCap, bootEnv(), opts.runCapDefault);
+  const capOrThrow = (workflowCap: number | undefined, ceiling: number, principal: string, runCap?: number) => {
+    const cap = resolveRunCap(workflowCap, bootEnv(), opts.runCapDefault ?? DEFAULT_RUN_CAP_USD, runCap);
     if (cap > ceiling) {
       throw new Error(`workflow cap $${cap} exceeds the delegation ceiling $${ceiling} for ${principal} — lower the cap or re-authorize with a higher ceiling`);
     }
@@ -286,7 +267,9 @@ export function createMothership(opts: MothershipOptions): Mothership {
     if (cached && cached.delegationId === d.delegationId && cached.expMs - now.getTime() > RELINK_BEFORE_MS) return cached;
     if (!workspace) throw new Error("createMothership: call mount(strut) before running workflows");
     const meta = ctx.workflow ? await workspace.getWorkflowMetadata(ctx.workflow).catch(() => null) : null;
-    const capUsd = capOrThrow(meta?.maxRunCostUsd, m.invocation.max_cost_usd, principal);
+    // A public run carries a cap of its own (plans/paid-runs.md §7): the
+    // link carries the smaller of it and the workflow's.
+    const capUsd = capOrThrow(meta?.maxRunCostUsd, m.invocation.max_cost_usd, principal, ctx.maxCostUsd);
     const exp = expFor(now, m.invocation.exp);
     const link = gk.attenuate(gk.invocationSigBytes(m.invocation), caveats([STRUT_AGENT], runId, capUsd, exp));
     sweep(now.getTime());

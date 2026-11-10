@@ -1402,10 +1402,14 @@ describe("the API key gate", () => {
     // what a person made public, and with nothing public it serves nothing.
     const publicReads = routes.filter((r) => /^GET \/public(?:\/|$)/.test(r));
     // A visitor's page calls its app here (plans/public-surface.md §5): open,
-    // and with nothing in the public view it opens no app.
+    // and with nothing in the public view it opens no app. And anyone's
+    // launch and the launcher's cancel (plans/paid-runs.md §3): open, by
+    // name, and with nothing runnable they launch nothing.
     const visitorDoor = "POST /public/mcp";
-    const gated = routes.filter((r) => !publicReads.includes(r) && r !== visitorDoor);
-    assert.ok(routes.includes(visitorDoor));
+    const publicPosts = [visitorDoor, "POST /public/workflows/x/run", "POST /public/workflows/x/runs/x/cancel"];
+    const gated = routes.filter((r) => !publicReads.includes(r) && !publicPosts.includes(r));
+    for (const r of publicPosts) assert.ok(routes.includes(r), r);
+    assert.deepEqual(routes.filter((r) => r.startsWith("POST /public")).sort(), [...publicPosts].sort(), "no other POST under /public is open");
     assert.ok(gated.length > 80, `swept ${gated.length} routes`);
     assert.ok(gated.includes("GET /workflows/x/runs/x/transcripts/x"));
     assert.ok(gated.includes("GET /host/mounted"));
@@ -1428,6 +1432,12 @@ describe("the API key gate", () => {
       assert.ok(res.status === 200 || res.status === 404, `${route} → ${res.status}`);
       if (!["/public", "/public/workflows", "/public/steps", "/public/concepts", "/public/apps"].includes(path)) assert.equal(res.status, 404, `${route} serves nothing on an empty surface`);
     }
+    for (const route of publicPosts.filter((r) => r !== visitorDoor)) {
+      const res = await strut.app.request(route.slice(5), { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+      assert.equal(res.status, 404, `${route} launches nothing on an empty surface`);
+    }
+    // A POST under /public by any other name is behind the key.
+    assert.equal((await strut.app.request("/public/workflows/x/runs/x/pause", { method: "POST" })).status, 401);
     // A path no route answers is not the UI either.
     assert.equal((await strut.app.request("/nope")).status, 401);
     assert.equal((await strut.app.request("/", { method: "POST" })).status, 401);
@@ -1448,8 +1458,10 @@ describe("the API key gate", () => {
     // The wallet is full scope only, its read included (plans/paid-runs.md §9).
     const fullOnlyReads = ["GET /earnings/wallet"];
     for (const r of fullOnlyReads) assert.ok(routes.includes(r), r);
-    const allowed = routes.filter((r) => (r.startsWith("GET ") && !fullOnlyReads.includes(r)) || peerPost.test(r) || r === "POST /public/mcp");
-    assert.equal(allowed.filter((r) => r.startsWith("POST ")).length, 7, allowed.join(", "));
+    // So are anyone's launch and its cancel (plans/paid-runs.md §3).
+    const publicPost = /^POST \/public\/(?:mcp|workflows\/x\/(?:run|runs\/x\/cancel))$/;
+    const allowed = routes.filter((r) => (r.startsWith("GET ") && !fullOnlyReads.includes(r)) || peerPost.test(r) || publicPost.test(r));
+    assert.equal(allowed.filter((r) => r.startsWith("POST ")).length, 9, allowed.join(", "));
     assert.ok(allowed.includes("GET /host/mounted"));
     assert.ok(routes.includes("POST /host/mounted") && !allowed.includes("POST /host/mounted"));
     for (const route of routes) {
@@ -1721,7 +1733,8 @@ describe("the API key gate", () => {
     const { cookie, session } = await signInAs(strut, "ada-1");
     assert.equal(session.role, "member", "no role is a member");
     // Open to anyone, a member included, as they are today.
-    const open = (r: string) => r === "GET /health" || r === "POST /auth/session" || r === "DELETE /auth/session" || r === "POST /public/mcp" || /^GET \/public(?:\/|$)/.test(r);
+    const open = (r: string) =>
+      r === "GET /health" || r === "POST /auth/session" || r === "DELETE /auth/session" || /^POST \/public\/(?:mcp|workflows\/x\/(?:run|runs\/x\/cancel))$/.test(r) || /^GET \/public(?:\/|$)/.test(r);
     const routes = everyRoute(strut).filter((r) => !open(r));
     // plans/member-rights.md "What a member's session opens", and the brand
     // the app is shown in.
@@ -1756,6 +1769,10 @@ describe("the API key gate", () => {
       await res.body?.cancel(); // a stream route answers at once and tails
       if (allowed.includes(route)) assert.ok(res.status !== 401 && res.status !== 403, `${route} → ${res.status}`);
       else assert.equal(res.status, 403, route);
+    }
+    // Anyone's launch is a member's too: open, and nothing is runnable here.
+    for (const path of ["/public/workflows/x/run", "/public/workflows/x/runs/x/cancel"]) {
+      assert.equal((await strut.app.request(path, { method: "POST", headers: { cookie, "x-strut-ui": "1", "content-type": "application/json" }, body: "{}" })).status, 404, path);
     }
     // An app's name is one segment, `/` encoded: it is still the app's route.
     assert.equal((await strut.app.request("/apps/acme%2Fnone/versions", { headers: { cookie } })).status, 404, "past the gate: no such app");

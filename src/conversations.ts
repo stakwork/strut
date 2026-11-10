@@ -45,7 +45,7 @@ import type { Scope } from "./auth.js";
 import type { Flow, RunAttachment, RunEvent, RunSummary, WakeMark } from "./core.js";
 import { jobRoot, readJobRecord, withLock, type JobRun } from "./jobs.js";
 import { briefOf, listProposals, proposalsRoot, type ProposalBrief } from "./proposals.js";
-import { APP_NAMESPACE, PEER_NAMESPACE, encodeId, idProblem, type SessionStore, type SessionTurn } from "./session-store.js";
+import { APP_NAMESPACE, PEER_NAMESPACE, PUBLIC_NAMESPACE, encodeId, idProblem, type SessionStore, type SessionTurn } from "./session-store.js";
 import type { RunStore } from "./store.js";
 import { replyOf } from "./wake.js";
 
@@ -77,10 +77,11 @@ export function isConversationFlow(flow: Pick<Flow, "params"> | null | undefined
   return typeof flow?.params?.["wake"] === "string";
 }
 
-/** Where a conversation never lives: a plain peer's relays (`peer/…`) and an
- *  app's own threads (`app/…`, until the first-party tier, §3). */
+/** Where a conversation never lives: a plain peer's relays (`peer/…`), an
+ *  app's own threads (`app/…`, until the first-party tier, §3) and a public
+ *  run's (`public/…`, plans/paid-runs.md §6). */
 export function outsideConversations(id: string): boolean {
-  return id.startsWith(PEER_NAMESPACE) || id.startsWith(APP_NAMESPACE);
+  return id.startsWith(PEER_NAMESPACE) || id.startsWith(APP_NAMESPACE) || id.startsWith(PUBLIC_NAMESPACE);
 }
 
 /** The title a first message gives: Hive's leading `@<workspace>` line

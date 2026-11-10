@@ -205,6 +205,17 @@ describe("mothership: the llmAuth hook", () => {
     await assert.rejects(() => ms.llmAuth(stepCtx({ workflow: "uncapped", runId: "6", stepPath: "uncapped/s" })), /positive number/);
   });
 
+  it("a run's own cap (a public run's, plans/paid-runs.md §7): the link carries the smaller of it and the workflow's", async () => {
+    const { ms } = await build({ caps: { capped: 5, uncapped: undefined }, runCapDefault: 25 });
+    const cap = async (workflow: string, runId: string, maxCostUsd?: number) =>
+      verify((await ms.llmAuth(stepCtx({ workflow, runId, stepPath: `${workflow}/s`, ...(maxCostUsd !== undefined ? { maxCostUsd } : {}) })))!.headers!["x-macaroon"]!, policy, new Date()).effective_caveats.max_cost_usd;
+    assert.equal(await cap("capped", "1", 3), 3, "the run's, below the workflow's");
+    assert.equal(await cap("capped", "2", 8), 5, "the workflow's, below the run's");
+    assert.equal(await cap("uncapped", "3", 0.5), 0.5, "the run's, below the default");
+    assert.equal(await cap("uncapped", "4"), 25, "none: the workflow's as before");
+    await assert.rejects(() => ms.llmAuth(stepCtx({ workflow: "capped", runId: "5", stepPath: "capped/s", maxCostUsd: 0 })), /positive number/);
+  });
+
   it("a widened link is what the gateway rejects: more money, a dropped ancestor, a call cap, a longer life", async () => {
     const { ms, d } = await build({ caps: { digest: 5 } });
     const good = decodeMacaroon((await ms.llmAuth(stepCtx()))!.headers!["x-macaroon"]!);

@@ -265,6 +265,11 @@ export interface StepContext<TServices = unknown> {
    *  these, newest turn first, each with the `runId` that holds it. Absent on
    *  a run launched without. */
   attachments?: RunAttachment[];
+  /** The run's own cost cap in dollars, when it has one below its
+   *  workflow's (a public run's, plans/paid-runs.md §7): `stepAuth` hands it
+   *  to `llmAuth`, and the Mothership's run link carries the smaller of the
+   *  two. Absent on every other run. */
+  maxCostUsd?: number;
   /** Register a run-scoped disposer: the runner calls every registered `fn`
    *  in its `finally` when the run settles — success, error AND cancel —
    *  newest first, each guarded, BEFORE the services bag's own `onRunEnd`.
@@ -398,7 +403,7 @@ export type RunEventType =
 /** Who launched a run, when it was not a person or an API call. `"app"`:
  *  an APP's page, through `step_run` → `run/launch` (plans/apps.md §5, §11)
  *  — a person's click in the viewer's name, so the run carries `app` too. */
-export type RunOrigin = "verify" | "schedule" | "peer" | "app";
+export type RunOrigin = "verify" | "schedule" | "peer" | "app" | "public";
 
 /** The APP a run or a step works for (plans/apps.md §5): what `step_run`
  *  sets as `ctx.app` for the page's call, and what a run the app launches
@@ -498,7 +503,9 @@ export interface RunEvent {
    *  (plans/automations.md) — a real execution, verified like any other.
    *  `"peer"`: launched over HTTP by another strut (a `peer`-scoped
    *  request, plans/federation.md §3) — the only runs a peer may cancel,
-   *  pause or resume. */
+   *  pause or resume. `"public"`: launched by anyone through `POST
+   *  /public/workflows/:name/run` (plans/paid-runs.md §6) — no actor, the
+   *  workflow as published, its sessions under `public/<runId>/`. */
   origin?: RunOrigin;
   /** On a peer run's `run.start`: launched by a PERSON's credential (scope
    *  `peer:person`), so `actor` is the credential's own and the run may
@@ -540,6 +547,10 @@ export interface RunEvent {
    *  { attachments }`) — names, types, sizes and where the run's artifacts
    *  keep them, never the bytes. Read back by a resume. */
   attachments?: RunAttachment[];
+  /** On `run.start`: the run's own cost cap in dollars, below the
+   *  workflow's (a public run's, plans/paid-runs.md §7) — handed to every
+   *  step as `ctx.maxCostUsd` and on to `llmAuth`. Read back by a resume. */
+  maxCostUsd?: number;
   /** On a CHECK run's `run.start`: which check ran, over what. Lets the
    *  verify budget be computed from the run store alone (plans/claims.md
    *  §4.1): a subject's spend today is the cost of today's runs in its

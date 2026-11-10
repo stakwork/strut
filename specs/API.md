@@ -2792,7 +2792,8 @@ Packages tab's **Make public** is the package catalog's, §16):
 Concept roots (each root and every page under it by `PARENT_OF`),
 workflows (with or without their runs), steps, node types, and apps — and
 what anyone may RUN, free or priced in dollars (`runnable`,
-`plans/paid-runs.md` §2; the launch door itself is a later item).
+`plans/paid-runs.md` §2; a free item launches through §17.4, a priced one
+is refused until priced runs are built).
 Everything else stays behind the key. The record is one file,
 `<dataDir>/public.json` (`src/public-surface.ts`); nothing public until
 someone puts it there. The UI's door is the topbar's **Publish** dialog, its
@@ -2939,7 +2940,7 @@ a `404`, as if it were not there.
 | `GET /public/workflows/:name/flow[?version=]` | `{ name, steps, input?, params?, sealed?, peer? }` (§2) |
 | `GET /public/workflows/:name/:version` | the version's YAML (`text/yaml`) |
 | `GET /public/workflows/:name/runs[?limit=&before=]` | with `runs: true`: a page of summaries (§5.1) |
-| `GET /public/workflows/:name/runs/:runId` | the summary, or the partial one of a run in flight (§5.2) |
+| `GET /public/workflows/:name/runs/:runId` | the summary, or the partial one of a run in flight (§5.2); with a run token, the launcher's view (§17.4) |
 | `GET /public/workflows/:name/runs/:runId/events` | the events (§5.3); an agent session is a `transcript` link under `/public` |
 | `GET /public/workflows/:name/runs/:runId/transcripts/<step path>` | that session's messages (never `?full=1`: a thread's earlier turns may be another run's) |
 | `GET /public/workflows/:name/runs/:runId/files[/<path>]` | the run's own files (its artifacts directory; a job's directory is not public), served sandboxed like `/artifacts/:runId` (§5), no script |
@@ -2962,6 +2963,10 @@ shown there): prices in dollars, `capUsd` null when the item sets none,
 `input:` block or the step's input JSON Schema, and `recent` the ledger's
 last 30 days for it (`{ days, runs, average }`: public runs, and the
 average charge in dollars).
+
+The run routes (`…/runs/:runId`, `/events`, `/transcripts/…`, `/files…`)
+also answer a launcher's RUN TOKEN for a public run of theirs whose
+workflow's runs are not public (§17.4).
 
 A node is visible when it is a Concept under a public root, a node a run
 of a workflow with public runs NAMED (its steps' `step.end.nodes`; another
@@ -3002,6 +3007,93 @@ In the page, the kit's `useHost().public` is true (it reads the meta), so it
 disables what would only fail (it never hides it): strut/views' `LaunchForm`
 renders with every control off and a line saying runs are started by the
 people who keep the server.
+
+### 17.4 A public run — `POST /public/workflows/:name/run` (anyone)
+
+What anyone may START (`plans/paid-runs.md` §3, §6, §7; `src/public-runs.ts`):
+a workflow in the record's `runnable` (§17.1). A launch carries no
+credential — one sent is ignored — and answers with a RUN TOKEN, the
+launcher's receipt for that one run. Open by name in the gate, like
+`POST /public/mcp`, whatever its mode; CORS as §17.2 (a preflight allows
+`authorization`).
+
+| Route | |
+| --- | --- |
+| `POST /public/workflows/:name/run` | `{ input?, key? }` → `202 { runId, token }` (`existing: true` when `key` named a run still in flight) |
+| `GET /public/workflows/:name/runs/:runId` | with the run token (`?t=` or `Authorization: Bearer`): the launcher's view; `?wait=<s>` holds while the run is in flight, at most 55 s |
+| `POST /public/workflows/:name/runs/:runId/cancel` | with the run token: cancels that run and the runs it started; `202 { ok, runId, state }`, `409` when it already ended |
+
+A launch is checked in this order, each step answering before the next
+costs anything:
+
+1. **The address's budget**, 60 launches a minute (beside §17.2's 1200
+   requests), `429` past it.
+2. **The item**: a workflow not in `runnable` (or sealed since) is `404`.
+3. **The drain** (§8.1): `503` with `Retry-After`.
+4. **The body**, at most 256 KB (`413`): a JSON object with `input` and
+   `key` alone — `params`, `job`, `callback`, `attachments`, `settings` or
+   anything else is a `400` naming it — and `input` validated against the
+   workflow's `input:` block (`400`). `key` is 1 to 200 characters. A
+   workflow disabled, or one whose active version no longer declares an
+   `input:` block, is `409`.
+5. **The caps**, `429` with `Retry-After`: the server's limit on public runs
+   in flight (`STRUT_PUBLIC_RUNS_MAX`, 10 by default; `Retry-After: 30`),
+   then the item's `dailyCapUsd` — today's cost of its public runs (UTC,
+   from the ledger) plus the cap of each of its runs in flight, reaching it
+   refuses the launch (`Retry-After` until midnight UTC when the day is
+   spent, else 60). The check and counting the new run are one step, so
+   launches at once never pass the cap together. A `key` this address sent
+   for a run still in flight returns that run, before any cap.
+6. **The price**: a free item goes on. A priced one is
+   `501 { error: "priced_runs_not_built: …", code: "priced_runs_not_built" }`
+   for now; this is where the credit token and its `402` go.
+7. **The run**, detached.
+
+The run is the workflow AS PUBLISHED — the active version, no `params`, no
+settings — with `origin: "public"` on `run.start` and its summary, no actor,
+and no job (a `job/dir` step gets the run's own directory). Its principal is
+the host's `createStrut({ publicRuns: { principal } })`, else the
+workflow's owner. Every agent session it opens is `public/<runId>/<id>`,
+whatever id its input names. It is verified like any other run. Its CAP is
+the smallest of the item's `capUsd`, the workflow's own (`maxRunCostUsd`,
+else `STRUT_RUN_MAX_COST_USD`, else $100) and what is left of the daily cap:
+recorded on `run.start` as `maxCostUsd`, and carried by the Mothership's
+run link, so the gateway stops the run there (without a gateway nothing
+stops it mid-flight; the daily cap bounds the day). When it ends — success,
+error, cancelled, or finished by a durable resume after a restart — the
+ledger records it: a free run is charged nothing and its cost counts in the
+day. What is not yet charged is kept in `<dataDir>/payments/public-runs.json`
+and charged at the next boot (a run cut off that nothing resumed, at what
+its log spent, as an error); the ledger records a run once.
+
+**The run token** is an HMAC over `public-run:<workflow>/<runId>` under the
+API key (else `STRUT_SECRET_KEY`, else a key the process makes, which a
+restart forgets). It opens that run's `/public` reads and its cancel, and
+nothing else: no private route takes it, nor another run's. A wrong token
+reads as a run that is not there (`404`).
+
+**The launcher's view** (`GET …/runs/:runId` with the token):
+
+```json
+{
+  "runId": "1800000000000", "workflow": "cve/scan", "status": "success",
+  "startedAt": "…", "finishedAt": "…", "durationMs": 4200, "origin": "public",
+  "input": { "package": "lodash" }, "output": { "artifacts": [ … ] },
+  "totals": { "modelCalls": 3, "usage": { … }, "cost": 0.042 },
+  "artifacts": [{ "id": "report", "title": "Report", "url": "/public/workflows/cve%2Fscan/runs/1800000000000/files/report.md" }],
+  "charged": 0
+}
+```
+
+`charged` (dollars) appears once the run ended and was charged: `0` for a
+free run, whose cost (`totals.cost`) the seller carried. `artifacts` are the
+declared ones, a file here at its `/public` link (add `?t=<token>`). What
+else the launcher reads is the item's `results`: with `output` (the
+default) the view above, without step counts or an error's stack, and the
+declared files alone (`…/files` lists them; any other file, the events and
+the transcripts are `404`); with `run`, the summary, events, transcripts and
+every file as §17.2 serves a public run's. A workflow whose runs are public
+(§17.1) shows them whole to anyone, token or not.
 
 ## 18. The wallet — what the server receives with (`plans/paid-runs.md` §9)
 

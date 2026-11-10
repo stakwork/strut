@@ -180,7 +180,9 @@ import { HOME_POSTS, homeSyncRole, homeSyncRoutes, seedHomeSyncWorkflow, type Ho
 import { VOICE_CALLS, voiceConfig, voiceRoutes, warmSpeech, type VoiceConfig } from "./voice.js";
 import { createPublicSurface, normalizeSurface, surfaceProblem, visitorRefusal, visitorRuns, type PublicSurface } from "./public-surface.js";
 import { brandProblem, brandStyles, normalizeBrand, readBrand, writeBrand } from "./brand.js";
-import { PUBLIC_PATH, publicRoutes, visitorAddress } from "./public-routes.js";
+import { PUBLIC_PATH, PUBLIC_POST, publicRoutes, visitorAddress } from "./public-routes.js";
+import { createPublicRuns, publicRunsMaxFromEnv, publicRunsPath } from "./public-runs.js";
+import { resolveRunCap } from "./run-cap.js";
 import { publicViewNeeds } from "./public-view.js";
 // Pure (node:crypto only): the ask/answer shapes behind the two elicitation
 // tools and endpoints — plans/elicitation.md.
@@ -340,10 +342,12 @@ export interface StrutOptions<TServices = unknown> {
    *  every public run is billed to — a Mothership delegation of its own (say
    *  `public-runs`), so strangers' runs draw on a budget apart from any
    *  person's. Without it a public run's principal is the workflow's owner,
-   *  the automation rule. Today it only answers the save's check that a
-   *  runnable workflow which spends has someone to pay for it (work item 2);
-   *  the launch (item 3) bills it. `STRUT_HOST_CONFIG`'s `publicRuns`. */
-  publicRuns?: { principal?: string };
+   *  the automation rule; the save's check asks that a runnable workflow
+   *  which spends has one of the two. `maxInFlight`, the most public runs
+   *  in flight on this server at once (`STRUT_PUBLIC_RUNS_MAX`, else 10;
+   *  src/public-runs.ts): a launch past it is a 429. `STRUT_HOST_CONFIG`'s
+   *  `publicRuns` sets `principal`. */
+  publicRuns?: { principal?: string; maxInFlight?: number };
 
   /** Max agent steps (tool-call iterations) per chat turn. Raise for longer
    *  autonomous "let it rip" loops. Defaults to `STRUT_CHAT_MAX_STEPS` or 100. */
@@ -1310,6 +1314,19 @@ export async function createStrut<TServices = unknown>(
     });
     return ledgerOpen;
   };
+  // Public runs (plans/paid-runs.md §3, §6, §7; src/public-runs.ts): the
+  // caps a launch is admitted against, what a run in flight counts for, and
+  // its charge when it ends. What is not yet charged is on file beside the
+  // ledger, so a restart charges it; memory where the run store is.
+  const publicRunsMax = opts.publicRuns?.maxInFlight ?? publicRunsMaxFromEnv(bootEnv()["STRUT_PUBLIC_RUNS_MAX"]);
+  if (!Number.isInteger(publicRunsMax) || publicRunsMax < 1) throw new Error(`publicRuns.maxInFlight must be a whole number of runs, 1 or more — got ${publicRunsMax}`);
+  const publicRuns = createPublicRuns({
+    ledger,
+    store,
+    ...(store instanceof MemoryRunStore ? {} : { file: publicRunsPath(dataDir) }),
+    maxInFlight: publicRunsMax,
+  });
+  await publicRuns.load();
   // The browser the browser/* steps drive (src/browser/service.ts), unless
   // the host brought its own — whose teardown is then the host's too.
   // Building it touches nothing: the first step that opens a page connects.
@@ -1894,7 +1911,7 @@ export async function createStrut<TServices = unknown>(
     // preflight for them.
     const open = read
       ? path === "/health" || (serveUi && UI_FILE.test(path)) || carriesFileToken(c) || !!catalogTokenOf(c) || publicPackageRead(c) || (!!indexConfig && INDEX_READ.test(path)) || PUBLIC_PATH.test(path) || !!channelTicketOf(c)
-      : (path === "/auth/session" && (c.req.method === "POST" || c.req.method === "DELETE")) || (!!indexConfig && (path === INDEX_MCP || INDEX_POSTS.has(path)) && c.req.method === "POST") || (c.req.method === "OPTIONS" && PUBLIC_PATH.test(path)) || (c.req.method === "POST" && path === "/public/mcp");
+      : (path === "/auth/session" && (c.req.method === "POST" || c.req.method === "DELETE")) || (!!indexConfig && (path === INDEX_MCP || INDEX_POSTS.has(path)) && c.req.method === "POST") || (c.req.method === "OPTIONS" && PUBLIC_PATH.test(path)) || (c.req.method === "POST" && PUBLIC_POST.test(path));
     if (open) return next();
     if (memberOnly(c)) {
       if (memberMay(c.req.method, path)) return next();
@@ -2456,6 +2473,10 @@ export async function createStrut<TServices = unknown>(
         // An app's run stays the app's: its sessions under the app's
         // namespace (runner.ts `bindApp`), never the ids its page passed.
         ...(p.runStart.origin === "app" && p.runStart.app ? { origin: "app" as const, app: p.runStart.app } : {}),
+        // A public run stays one: its sessions under `public/<runId>/`, its
+        // cap, its charge when it ends (plans/paid-runs.md §6).
+        ...(p.runStart.origin === "public" ? { origin: "public" as const } : {}),
+        ...(p.runStart.maxCostUsd !== undefined ? { maxCostUsd: p.runStart.maxCostUsd } : {}),
         ...(p.runStart.startedBy ? { startedBy: p.runStart.startedBy } : {}),
         ...(p.runStart.wake ? { wake: p.runStart.wake } : {}),
         // Billed to whoever the original launch was billed to — never
@@ -2507,6 +2528,7 @@ export async function createStrut<TServices = unknown>(
       ...(typeof session === "string" ? { session } : {}),
     }));
     if (url) postRunCallback(url, name, res, Date.now() - durationMs, start?.job, start?.startedBy, wake);
+    if (start?.origin === "public") await publicRuns.ended(name, runId);
     return url;
   };
 
@@ -3291,6 +3313,34 @@ export async function createStrut<TServices = unknown>(
         const bytes = await readAppFile(dir.path, DOCUMENT_FILE);
         if (!bytes) return null;
         return { version: dir.version, html: withPublicIdentity(Buffer.from(bytes).toString("utf8"), publicAppIdentity(name, dir.version)) };
+      },
+    },
+    // Anyone's launch (plans/paid-runs.md §3, §6): the workflow as published
+    // — no params, no settings, no job — with no actor, billed to the host's
+    // public principal else its owner, under `public/<runId>/` (runner.ts
+    // `bindPublic`), its cap on the launch.
+    launches: {
+      runs: publicRuns,
+      draining: () => drain.refusal(),
+      disabled: async (name) => (await workflowDisabled(workspace, name)) ?? undefined,
+      workflowCap: async (name) => {
+        const meta = await workspace.getWorkflowMetadata(name).catch(() => null);
+        try {
+          return resolveRunCap(meta?.maxRunCostUsd);
+        } catch {
+          return meta?.maxRunCostUsd;
+        }
+      },
+      launch: (flow, input, o) => {
+        launchDetached(flow, { input, runId: o.runId }, {
+          origin: "public",
+          ...(opts.publicRuns?.principal ? { principal: opts.publicRuns.principal } : {}),
+          ...(o.maxCostUsd !== undefined ? { maxCostUsd: o.maxCostUsd } : {}),
+        });
+      },
+      cancel: async (name, runId) => {
+        const { status, ...body } = await controlLiveRun(name, runId, "cancel");
+        return { status: status === 403 ? 404 : status, body };
       },
     },
   });
@@ -5699,8 +5749,12 @@ export async function createStrut<TServices = unknown>(
       resume?: boolean;
       version?: string;
       /** An automation's fire (plans/automations.md §3), a peer's launch
-       *  (plans/federation.md §3), or an app's (plans/apps.md §5). */
-      origin?: "schedule" | "peer" | "app";
+       *  (plans/federation.md §3), an app's (plans/apps.md §5), or anyone's
+       *  (`POST /public/workflows/:name/run`, plans/paid-runs.md §6). */
+      origin?: "schedule" | "peer" | "app" | "public";
+      /** The run's own cost cap (a public run's, plans/paid-runs.md §7):
+       *  recorded on `run.start`, handed to `llmAuth`. */
+      maxCostUsd?: number;
       /** A peer's launch through a PERSON's credential (scope
        *  `peer:person`): the run may open its actor's own sessions. */
       peerPerson?: boolean;
@@ -5760,8 +5814,11 @@ export async function createStrut<TServices = unknown>(
     const callback = extra?.callback;
     const mcp = extra?.mcp?.length ? extra.mcp : undefined;
     // The conversation it runs on: a wake waits while it is in flight.
+    // A public run's never is one: its sessions open under
+    // `public/<runId>/` (runner.ts `bindPublic`), and nothing here waits on
+    // a name a stranger chose.
     const rawSession = (body.input as Record<string, unknown> | undefined)?.["session"];
-    const session = typeof rawSession === "string" && rawSession ? rawSession : undefined;
+    const session = typeof rawSession === "string" && rawSession && extra?.origin !== "public" ? rawSession : undefined;
     if (session) liveSessions.set(session, new Set([...(liveSessions.get(session) ?? []), runId]));
     // A turn of a conversation (src/conversations.ts): recorded at launch,
     // so a turn that fails — and commits nothing to the session — still
@@ -5778,6 +5835,9 @@ export async function createStrut<TServices = unknown>(
           : session;
     const conversation = opened && isConversationFlow(flow) && !outsideConversations(opened) && !idProblem(opened) ? opened : undefined;
     let principal = extra?.principal;
+    // A public run counts against the caps while it is in flight — its
+    // launch admitted it already; a resume of one is counted again here.
+    const isPublic = extra?.origin === "public";
     void (async () => {
       // A resume drops the summary of the attempt it resumes FIRST, so the
       // run reads as live (its controller), never as the outcome it is
@@ -5791,6 +5851,7 @@ export async function createStrut<TServices = unknown>(
       if (callback && !extra?.resume) await store.setRunCallback(flow.name, runId, callback.url);
       if (mcp && !extra?.resume) await store.setRunMcp(flow.name, runId, mcp);
       if (extra?.jobCallback && !extra.resume) await store.setRunJobCallback(flow.name, runId, extra.jobCallback.url);
+      if (isPublic) await publicRuns.track(flow.name, runId, extra?.maxCostUsd);
       const attachments =
         extra?.savedAttachments ??
         (extra?.attachments?.length ? await saveRunAttachments(requireRunFiles(), runId, extra.attachments) : undefined);
@@ -5842,6 +5903,7 @@ export async function createStrut<TServices = unknown>(
         ...(callback ? { callback: roomActorOf(callback.url) !== undefined ? { room: true as const } : { origin: callbackOrigin(callback.url) } } : {}),
         ...(mcp ? { mcp } : {}),
         ...(attachments?.length ? { attachments } : {}),
+        ...(extra?.maxCostUsd !== undefined ? { maxCostUsd: extra.maxCostUsd } : {}),
         // Its end, recorded from the terminal event — before the summary is
         // written, so whoever sees the run done sees the conversation say so.
         ...(conversation ? { onEvent: (e: RunEvent) => conversationEnd(conversation, runId, e) } : {}),
@@ -5861,6 +5923,12 @@ export async function createStrut<TServices = unknown>(
           return { runId, status: "error", error: { message: err instanceof Error ? err.message : String(err) } };
         },
       )
+      .then(async (res) => {
+        // A public run is charged when it ends (src/public-runs.ts): its
+        // cost into the ledger's `daily`, which the daily cap reads.
+        if (isPublic) await publicRuns.ended(flow.name, runId);
+        return res;
+      })
       .then(async (res) => {
         // What strut does about the end — a job turn's wake, decided before
         // its run.end goes out, which says so; a wake turn's end — then the
@@ -8470,6 +8538,7 @@ export async function createStrut<TServices = unknown>(
     // The wakes a dead process left: after the scan, so a wake turn it
     // resumed is live and waited on (src/wake.ts).
     await wakes.reconcile().catch((err) => console.error(`[wake] boot reconcile failed:`, err));
+    await reconcilePublicRuns();
     try {
       await mkdir(dataDir, { recursive: true });
       await writeFile(file, JSON.stringify({ startedAt: new Date(bootedAt).toISOString() }) + "\n", "utf-8");
@@ -8494,11 +8563,25 @@ export async function createStrut<TServices = unknown>(
       });
   }
 
-  if (autoResumeRuns || autoResumeChats) {
+  // The public runs a dead process left uncharged (src/public-runs.ts):
+  // after auto-resume relaunched what it will, the rest are charged from
+  // their logs — with auto-resume off, all of them.
+  const reconcilePublicRuns = async () => {
+    try {
+      for (const r of await publicRuns.reconcile((name, runId) => controllers.has(`${name}/${runId}`))) {
+        if (r.action !== "live") console.log(`[public-runs] ${r.workflow}/${r.runId}: ${r.action} at boot`);
+      }
+    } catch (err) {
+      console.error(`[public-runs] boot reconcile failed:`, err);
+    }
+  };
+  // On file at boot: `load()` counted them in flight.
+  const reconcilePublic = !(store instanceof MemoryRunStore) && publicRuns.inFlight() > 0;
+  if (autoResumeRuns || autoResumeChats || reconcilePublic) {
     bootTimer = setTimeout(() => {
       bootTimer = undefined;
       bootScan = Promise.all([
-        autoResumeRuns ? bootResumeRuns().catch((err) => console.error(`[auto-resume] scan failed:`, err)) : undefined,
+        autoResumeRuns ? bootResumeRuns().catch((err) => console.error(`[auto-resume] scan failed:`, err)) : reconcilePublic ? reconcilePublicRuns() : undefined,
         autoResumeChats ? autoResumeStaleChats(autoResumeOpts).catch((err) => console.error(`[auto-resume] chat scan failed:`, err)) : undefined,
       ]);
     }, autoResumeOpts.delayMs ?? 3000);
