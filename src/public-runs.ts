@@ -397,7 +397,8 @@ export function createPublicRuns(o: PublicRunsOptions): PublicRuns {
     if (!r.holds) return out;
     // The ledger's open holds of runs this file does not hold: charged from
     // their logs (§5, "Holds outlive a restart"). A workflow's only: a
-    // priced tool's call holds while it runs, and is item 6's to reconcile.
+    // priced tool's call holds while it runs, and src/public-tools.ts frees
+    // one a dead process left.
     for (const h of await (await o.ledger()).openHolds()) {
       if (!h.subject.startsWith("workflow:")) continue;
       const workflow = h.subject.slice("workflow:".length);

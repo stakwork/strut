@@ -60,8 +60,15 @@ export interface RunStepOptions {
   /** Recorded on `run.start` (see `RunEvent.stepHashes`). `runStep` fills it
    *  from the workspace; pass it yourself only when calling this directly. */
   stepHashes?: Record<string, string>;
-  /** `"verify"` when the verify pass runs a check through here. */
-  origin?: "verify";
+  /** `"verify"` when the verify pass runs a check through here; `"public"`
+   *  for a public tool's call (src/public-tools.ts). */
+  origin?: "verify" | "public";
+  /** The run's id; minted here when absent. A public tool's call passes the
+   *  id its ledger hold names. */
+  runId?: string;
+  /** The run's own cost cap in dollars (`RunOptions.maxCostUsd`): a public
+   *  tool's call carries its item's. */
+  maxCostUsd?: number;
   /** Recorded on the check run's `run.start` (see `RunEvent.verify`). */
   verify?: { checkId: string; subject: string; sourceRunId: string };
   /** The job the run is launched under (`RunOptions.job`): a JOB check
@@ -103,7 +110,7 @@ export async function runSingleStep(
 ): Promise<RunStepResult> {
   const pkg = packageOfRun(opts);
   const type = stepInPackage(pkg, named, (t) => !!registry[t]);
-  const runId = generateRunId();
+  const runId = opts.runId ?? generateRunId();
   if (!(await resolveStep(registry, type).catch(() => null))) {
     return {
       runId,
@@ -141,6 +148,7 @@ export async function runSingleStep(
     ...(opts.verify ? { verify: opts.verify } : {}),
     ...(opts.actor ? { actor: opts.actor } : {}),
     ...(opts.principal ? { principal: opts.principal } : {}),
+    ...(opts.maxCostUsd !== undefined ? { maxCostUsd: opts.maxCostUsd } : {}),
     ...(opts.job ? { job: opts.job } : {}),
     ...(opts.app ? { app: opts.app } : {}),
     ...(pkg ? { package: pkg } : {}),

@@ -18,6 +18,7 @@
 > Item 2, the record and the dialog, is built (stakwork/strut#599: `runnable` in `public.json` with its checks at `PUT /public-view`, `GET /public`'s `runnable`, the row's three boxes, `strut.ledger()`; `src/public-runnable.ts`).
 > Item 3, free public runs, is built (`POST /public/workflows/:name/run`, the run token, the launcher's reads and cancel, the caps, the charge at the end, the run's cap to `llmAuth`; `src/public-runs.ts`, specs/API.md §17.4).
 > Item 5, priced workflows, is built (the L402 challenge with its locked quote, the check and a token's first use, the credit routes and `claim`, the reserve at the launch and the charge at the end, carry-over; `src/l402.ts`, `src/public-credit.ts`, specs/API.md §17.5).
+> Item 6, priced tools, is built (`POST /public/steps/:type/run`, its allowlist bag with the whole graph's reader, the reserve and the charge around one call, a dead call's hold freed at boot; `src/public-tools.ts`, specs/API.md §17.6).
 >
 > **Revised the same day, three times.**
 > 1. The first draft gave strut a run budget of its own, for a seller with

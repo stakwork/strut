@@ -1,0 +1,565 @@
+/**
+ * Public tools (plans/paid-runs.md work item 6; §3's table, §6 "A tool",
+ * decision 15): `POST /public/steps/:type/run { config }` — free, or charged
+ * by the rule against a credit token — run once against an allowlist bag,
+ * never kept as a run. Against the fake wallet and a step whose reported
+ * cost the test sets.
+ */
+import { describe, it, beforeEach, afterEach, before, after } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { z } from "zod";
+import { createStrut } from "./createStrut.js";
+import { WorkspaceManager } from "./workspace.js";
+import { MemoryRunStore } from "./store.js";
+import { defineStep, withUsage, type StepContext } from "./core.js";
+import { createRegistry } from "./steps/registry.js";
+import { FakeWallet } from "./payments/fake-wallet.js";
+import { lightningCapability } from "./payments/lightning.js";
+import { MemoryLedgerStore } from "./payments/ledger-memory.js";
+import { usdToMicros } from "./payments/ledger.js";
+import type { ExchangeRate } from "./payments/rate.js";
+import { addCaveat, decodeIdentifier, macaroonFromBase64, macaroonToBase64 } from "./l402.js";
+import { createPublicTools, publicToolServices, templateIn, PUBLIC_TOOL_RESULT_MAX_CHARS } from "./public-tools.js";
+import { PUBLIC_POST } from "./public-routes.js";
+import type { GraphBackend } from "./graph/backend.js";
+import type { GraphReader } from "./graph/search.js";
+import { seedConceptSchema, testBackends } from "./graph/test-util.js";
+import { seedStrutDomain } from "./graph/schema-seed.js";
+
+const KEY = "public-tools-key";
+const auth = { authorization: `Bearer ${KEY}`, "content-type": "application/json" };
+const json = { "content-type": "application/json" };
+const RATE = 100_000; // dollars per bitcoin: $1 is 1000 sats
+const fixedRate = async (): Promise<ExchangeRate> => ({ usdPerBtc: RATE, at: new Date().toISOString(), source: "test" });
+
+/** Released by a test that holds calls in flight. */
+let gate: Promise<void> = Promise.resolve();
+
+/** A tool whose reported cost, failure and size its config sets. */
+const tool = (type: string) =>
+  defineStep({
+    type,
+    description: `test tool ${type}`,
+    input: z.object({ cost: z.number().optional(), fail: z.boolean().optional(), big: z.boolean().optional(), wait: z.boolean().optional(), note: z.string().default("hi") }),
+    output: z.any(),
+    async run(cfg, ctx: StepContext<unknown>) {
+      if (cfg.wait) await gate;
+      if (cfg.fail) {
+        // A call it made before it failed, reported as a tool call's end.
+        if (cfg.cost) await ctx.emit({ ts: new Date().toISOString(), runId: ctx.runId, path: `${ctx.path}/001-api`, type: "step.end", stepType: "tool:api", cost: cfg.cost, modelCalls: 1, usage: {} } as never);
+        throw new Error("the API said no");
+      }
+      const out = { note: cfg.note, ...(cfg.big ? { blob: "x".repeat(PUBLIC_TOOL_RESULT_MAX_CHARS + 10) } : {}) };
+      return withUsage(out, cfg.cost ? { modelCalls: 1, usage: {}, cost: cfg.cost } : undefined);
+    },
+  });
+/** Reaches for what a public tool's bag does not hold. */
+const reach = defineStep({
+  type: "tool/reach",
+  input: z.object({ what: z.enum(["shell", "graph-write", "artifacts", "sessions"]) }),
+  output: z.any(),
+  async run(cfg, ctx: StepContext<unknown>) {
+    const bag = ctx.services as Record<string, any>;
+    if (cfg.what === "shell") return bag["shell"].run({ cmd: "true" });
+    if (cfg.what === "graph-write") return bag["graph"].nodes.write({ type: "Concept", data: { name: "x" } });
+    if (cfg.what === "artifacts") return bag["artifacts"].write(ctx.runId, "a.txt", "x");
+    return bag["sessions"].open("s", { runId: ctx.runId, path: ctx.path });
+  },
+});
+const STEPS = ["tool/free", "tool/fixed", "tool/metered", "tool/both", "tool/other"].map(tool);
+
+class WatchedStore extends MemoryRunStore {
+  writes = 0;
+  override async append(...a: Parameters<MemoryRunStore["append"]>) {
+    this.writes++;
+    return super.append(...a);
+  }
+  override async finalize(...a: Parameters<MemoryRunStore["finalize"]>) {
+    this.writes++;
+    return super.finalize(...a);
+  }
+}
+
+interface Challenge402 {
+  usd: number;
+  sats: number;
+  invoice: string;
+  macaroon: string;
+  remaining_usd: number;
+  reason?: string;
+  carries?: boolean;
+  description: string;
+}
+
+describe("public tools", () => {
+  let dir: string;
+  let savedKey: string | undefined;
+  const open: Array<{ close(): Promise<void> }> = [];
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "strut-public-tools-"));
+    savedKey = process.env["STRUT_API_KEY"];
+    process.env["STRUT_API_KEY"] = KEY;
+    gate = Promise.resolve();
+  });
+  afterEach(async () => {
+    for (const s of open.splice(0)) await s.close();
+    if (savedKey === undefined) delete process.env["STRUT_API_KEY"];
+    else process.env["STRUT_API_KEY"] = savedKey;
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  const boot = async (runnable: unknown[], o: { steps?: string[] } = {}) => {
+    const wallet = new FakeWallet();
+    const store = new WatchedStore();
+    const strut = await createStrut({
+      workspace: new WorkspaceManager(join(dir, "ws")),
+      store,
+      serveUi: false,
+      scheduler: false,
+      registry: await createRegistry([...STEPS, reach]),
+      services: { lightning: lightningCapability(wallet) },
+      payments: { rate: fixedRate },
+    });
+    open.push(strut);
+    const put = await strut.app.request("/public-view", { method: "PUT", headers: auth, body: JSON.stringify({ runnable, ...(o.steps ? { steps: o.steps } : {}) }) });
+    assert.equal(put.status, 200, await put.clone().text());
+    let addr = 0;
+    const call = (type: string, body: unknown = {}, credential?: string, o2: { address?: string } = {}) =>
+      strut.app.request(`/public/steps/${type}/run`, {
+        method: "POST",
+        headers: { ...json, "x-forwarded-for": o2.address ?? `10.0.0.${++addr % 250}`, ...(credential ? { authorization: `L402 ${credential}` } : {}) },
+        body: JSON.stringify(body),
+      });
+    const ok = async (res: Response) => {
+      assert.equal(res.status, 200, await res.clone().text());
+      return (await res.json()) as { output: Record<string, unknown>; credit?: Record<string, number | string> };
+    };
+    const challenged = async (res: Response) => {
+      assert.equal(res.status, 402, await res.clone().text());
+      return (await res.json()) as Challenge402;
+    };
+    const pay = (c: Challenge402) => `${c.macaroon}:${wallet.settle(c.invoice)}`;
+    const buy = async (usd: number) => {
+      const res = await strut.app.request("/public/credit", { method: "POST", headers: json, body: JSON.stringify({ usd }) });
+      return pay(await challenged(res));
+    };
+    const credit = async (credential: string) => {
+      const res = await strut.app.request("/public/credit", { headers: { authorization: `L402 ${credential}` } });
+      assert.equal(res.status, 200, await res.clone().text());
+      return (await res.json()) as Record<string, any>;
+    };
+    return { strut, store, wallet, call, ok, challenged, pay, buy, credit };
+  };
+
+  it("a free step answers its output at once, needs no token, and is counted in the ledger with its cost — never in the run store", async () => {
+    const { strut, store, call, ok } = await boot([{ kind: "step", name: "tool/free" }]);
+    const a = await ok(await call("tool/free", { config: { cost: 0.3, note: "cve" } }));
+    assert.deepEqual(a, { output: { note: "cve" } });
+    const b = await ok(await call("tool/free"));
+    assert.deepEqual(b.output, { note: "hi" }, "no config: the step's defaults");
+    const day = await (await strut.ledger()).today("step:tool/free");
+    assert.deepEqual({ calls: day.calls, failed: day.failed, earned: day.earned, cost: day.cost }, { calls: 2, failed: 0, earned: 0, cost: usdToMicros(0.3) });
+    assert.equal(store.writes, 0, "nothing reaches the run store");
+    assert.equal(store.events.size + store.summaries.size, 0);
+  });
+
+  it("the pricing rule: base alone, markup alone, both; a call that reports no cost is charged its base", async () => {
+    const { call, ok, buy, credit } = await boot([
+      { kind: "step", name: "tool/fixed", base: 0.5 },
+      { kind: "step", name: "tool/metered", markup: 2, capUsd: 1 },
+      { kind: "step", name: "tool/both", base: 0.1, markup: 1.5, capUsd: 2 },
+    ]);
+    const cred = await buy(20);
+    const fixed = await ok(await call("tool/fixed", { config: { cost: 2 } }, cred));
+    assert.equal(fixed.credit!["charged_usd"], 0.5, "base alone, whatever it cost");
+    assert.equal(fixed.credit!["remaining_usd"], 19.5);
+    assert.equal((await ok(await call("tool/fixed", { config: {} }, cred))).credit!["charged_usd"], 0.5, "no cost reported: its base");
+    assert.equal((await ok(await call("tool/metered", { config: { cost: 0.3 } }, cred))).credit!["charged_usd"], 0.6, "markup alone: 2 × 0.30");
+    assert.equal((await ok(await call("tool/metered", { config: {} }, cred))).credit!["charged_usd"], 0, "metered, no cost reported: its base, nothing");
+    const both = await ok(await call("tool/both", { config: { cost: 1 } }, cred));
+    assert.equal(both.credit!["charged_usd"], 1.6, "both: 0.10 + 1.5 × 1");
+    assert.equal(both.credit!["remaining_usd"], 16.8, "20 − 0.50 − 0.50 − 0.60 − 1.60");
+    assert.ok(typeof both.credit!["remaining_sats"] === "number" && typeof both.credit!["expires"] === "string");
+    const bal = await credit(cred);
+    assert.deepEqual({ spent: bal.spent_usd, held: bal.held_usd }, { spent: 3.2, held: 0 });
+  });
+
+  it("a throw is charged its cost and no base, and answers its error; a result over 5 MB likewise; never more than the reserve", async () => {
+    const { strut, call, buy } = await boot([{ kind: "step", name: "tool/both", base: 0.1, markup: 1.5, capUsd: 2 }]);
+    const cred = await buy(20);
+    const thrown = await call("tool/both", { config: { fail: true, cost: 0.4 } }, cred);
+    assert.equal(thrown.status, 500);
+    const t = (await thrown.json()) as { error: string; code: string; credit: Record<string, number> };
+    assert.equal(t.code, "step_failed");
+    assert.match(t.error, /the API said no/);
+    assert.equal(t.credit["charged_usd"], 0.4, "its cost, no markup, no base");
+    const nothing = (await (await call("tool/both", { config: { fail: true } }, cred)).json()) as { credit: Record<string, number> };
+    assert.equal(nothing.credit["charged_usd"], 0, "a throw that spent nothing: nothing");
+    const big = await call("tool/both", { config: { big: true, cost: 0.2 } }, cred);
+    assert.equal(big.status, 500);
+    const b = (await big.json()) as { code: string; error: string; credit: Record<string, number>; output?: unknown };
+    assert.equal(b.code, "result_too_big");
+    assert.match(b.error, /over the 5 MB cap/);
+    assert.equal(b.output, undefined);
+    assert.equal(b.credit["charged_usd"], 0.2, "charged like a throw: its cost");
+    // The rule asks 0.10 + 1.5 × 10 = 15.10; the reserve is 0.10 + 1.5 × 2.
+    const over = (await (await call("tool/both", { config: { cost: 10 } }, cred)).json()) as { credit: Record<string, number> };
+    assert.equal(over.credit["charged_usd"], 3.1, "never more than the reserve");
+    const ledger = await strut.ledger();
+    assert.deepEqual(await ledger.today("step:tool/both"), {
+      key: "step:tool/both",
+      calls: 4,
+      failed: 3,
+      earned: usdToMicros(0.4 + 0.2 + 3.1),
+      cost: usdToMicros(0.4 + 0.2 + 10),
+    });
+  });
+
+  it("a token one cent short is a 402 for the shortfall that carries; the top-up runs", async () => {
+    const { call, ok, challenged, pay, buy, credit } = await boot([{ kind: "step", name: "tool/fixed", base: 0.5 }]);
+    const none = await challenged(await call("tool/fixed", { config: {} }));
+    assert.deepEqual({ usd: none.usd, sats: none.sats, remaining: none.remaining_usd, description: none.description }, { usd: 0.5, sats: 500, remaining: 0, description: "tool/fixed: credit for one call" });
+    const a = await buy(0.49);
+    const short = await challenged(await call("tool/fixed", { config: {} }, a));
+    assert.deepEqual({ usd: short.usd, sats: short.sats, remaining: short.remaining_usd, reason: short.reason, carries: short.carries }, { usd: 0.01, sats: 10, remaining: 0.49, reason: "short", carries: true });
+    const b = pay(short);
+    const done = await ok(await call("tool/fixed", { config: {} }, b));
+    assert.deepEqual({ charged: done.credit!["charged_usd"], remaining: done.credit!["remaining_usd"] }, { charged: 0.5, remaining: 0 });
+    assert.equal((await credit(a)).replaced, true);
+  });
+
+  it("a narrowed token is held to its caveats: another item's is 403, one whose max charge is under the reserve is 403", async () => {
+    const { call, ok, buy } = await boot([
+      { kind: "step", name: "tool/fixed", base: 0.5 },
+      { kind: "step", name: "tool/other", base: 0.5 },
+    ]);
+    const a = await buy(5);
+    const [mac, preimage] = a.split(":") as [string, string];
+    const narrow = (...caveats: string[]) => `${macaroonToBase64(caveats.reduce((m, c) => addCaveat(m, c), macaroonFromBase64(mac)))}:${preimage}`;
+    const onlyOther = narrow("strut_capabilities=step:tool/other");
+    const notThis = await call("tool/fixed", { config: {} }, onlyOther);
+    assert.equal(notThis.status, 403);
+    assert.equal(((await notThis.json()) as { code: string }).code, "token_not_for_this");
+    const capped = await call("tool/fixed", { config: {} }, narrow("strut_max_charge=400000"));
+    assert.equal(capped.status, 403);
+    assert.equal(((await capped.json()) as { code: string }).code, "token_over_max_charge");
+    assert.equal((await ok(await call("tool/other", { config: {} }, onlyOther))).credit!["charged_usd"], 0.5);
+    const workflowOnly = await call("tool/other", { config: {} }, narrow("strut_capabilities=workflow:tool/other"));
+    assert.equal(workflowOnly.status, 403, "a capability names its kind");
+  });
+
+  it("twenty calls at once on a token that covers three reserves: three run, seventeen are 402, and the token is never overdrawn", async () => {
+    const { strut, call, buy, credit } = await boot([{ kind: "step", name: "tool/fixed", base: 1 }]);
+    const cred = await buy(3);
+    let release!: () => void;
+    gate = new Promise((r) => (release = r));
+    const pending = Array.from({ length: 20 }, () => call("tool/fixed", { config: { wait: true } }, cred));
+    // Three holds land while the rest are answered 402.
+    const deadline = Date.now() + 10_000;
+    const tokenId = decodeIdentifier(macaroonFromBase64(cred.split(":")[0]!).id).tokenId;
+    while (((await (await strut.ledger()).token(tokenId))?.held ?? 0) < usdToMicros(3)) {
+      if (Date.now() > deadline) throw new Error("the holds never landed");
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    const mid = await credit(cred);
+    assert.deepEqual({ held: mid.held_usd, remaining: mid.remaining_usd }, { held: 3, remaining: 0 });
+    release();
+    const answers = await Promise.all(pending);
+    assert.equal(answers.filter((r) => r.status === 200).length, 3, answers.map((r) => r.status).join(","));
+    assert.equal(answers.filter((r) => r.status === 402).length, 17);
+    const bal = await credit(cred);
+    assert.deepEqual({ spent: bal.spent_usd, held: bal.held_usd, remaining: bal.remaining_usd }, { spent: 3, held: 0, remaining: 0 });
+    assert.equal((await (await strut.ledger()).today("step:tool/fixed")).calls, 3);
+  });
+
+  it("the body is { config } alone, at most 256 KB; a config the step's schema refuses is 400 naming the field; a template is refused; an item nobody opened is 404", async () => {
+    const { call, strut } = await boot([{ kind: "step", name: "tool/free" }]);
+    assert.equal((await call("tool/free", { config: {}, key: "k" })).status, 400);
+    assert.equal((await call("tool/free", [])).status, 400);
+    const bad = await call("tool/free", { config: { cost: "lots" } });
+    assert.equal(bad.status, 400);
+    assert.match(((await bad.json()) as { error: string }).error, /config\.cost/);
+    assert.equal((await call("tool/free", { config: "x" })).status, 400);
+    const tmpl = await call("tool/free", { config: { note: "{{ $settings }}" } });
+    assert.equal(tmpl.status, 400);
+    assert.match(((await tmpl.json()) as { error: string }).error, /config\.note/);
+    const huge = await strut.app.request("/public/steps/tool/free/run", { method: "POST", headers: json, body: JSON.stringify({ config: { note: "x".repeat(300 * 1024) } }) });
+    assert.equal(huge.status, 413);
+    assert.equal((await call("tool/fixed", { config: {} })).status, 404, "a step not in runnable");
+    assert.equal((await call("tool/nope", { config: {} })).status, 404);
+  });
+
+  it("the save refusals are asked again at the call: a step sealed after the save is 404", async () => {
+    const saved = process.env["STRUT_SEALED"];
+    const { call } = await boot([{ kind: "step", name: "tool/free" }]);
+    try {
+      assert.equal((await call("tool/free", { config: {} })).status, 200);
+      process.env["STRUT_SEALED"] = "tool/*";
+      assert.equal((await call("tool/free", { config: {} })).status, 404);
+    } finally {
+      if (saved === undefined) delete process.env["STRUT_SEALED"];
+      else process.env["STRUT_SEALED"] = saved;
+    }
+  });
+
+  it("the bag holds no shell, no artifacts, no sessions and no graph writer: a step reaching for one fails", async () => {
+    const { call, store } = await boot([{ kind: "step", name: "tool/reach" }]);
+    for (const what of ["shell", "graph-write", "artifacts", "sessions"]) {
+      const res = await call("tool/reach", { config: { what } });
+      assert.equal(res.status, 500, what);
+      assert.equal(((await res.json()) as { code: string }).code, "step_failed", what);
+    }
+    assert.equal(store.writes, 0);
+  });
+
+  it("GET /public lists a runnable step's input as the JSON Schema a caller builds config from", async () => {
+    const { strut } = await boot([{ kind: "step", name: "tool/fixed", base: 0.5 }]);
+    const listed = ((await (await strut.app.request("/public")).json()) as { runnable: Array<{ kind: string; name: string; input: Record<string, any>; reserve: number }> }).runnable;
+    const fixed = listed.find((r) => r.name === "tool/fixed")!;
+    assert.equal(fixed.kind, "step");
+    assert.equal(fixed.reserve, 0.5);
+    assert.equal(fixed.input["type"], "object");
+    assert.deepEqual(Object.keys(fixed.input["properties"]).sort(), ["big", "cost", "fail", "note", "wait"]);
+    assert.equal(fixed.input["properties"]["note"]["default"], "hi");
+    assert.ok(!(fixed.input["required"] ?? []).includes("note"), "a field with a default is the caller's to leave out");
+  });
+
+  it("the drain refuses a call; the gate opens the route by name", async () => {
+    const { strut, call } = await boot([{ kind: "step", name: "tool/free" }]);
+    assert.ok(PUBLIC_POST.test("/public/steps/tool/free/run"));
+    assert.ok(PUBLIC_POST.test("/public/steps/x/run"));
+    assert.ok(!PUBLIC_POST.test("/public/steps/x/schema"));
+    assert.equal((await strut.app.request("/drain", { method: "PUT", headers: auth, body: JSON.stringify({ reason: "update" }) })).status, 200);
+    assert.equal((await call("tool/free", { config: {} })).status, 503);
+    assert.equal((await strut.app.request("/drain", { method: "DELETE", headers: auth })).status, 200);
+    assert.equal((await call("tool/free", { config: {} })).status, 200);
+  });
+});
+
+describe("the public tool service", () => {
+  it("a crash between the hold and the charge: reconcile frees a step call's hold, but never one in flight here", async () => {
+    const ledger = new MemoryLedgerStore();
+    await ledger.firstUse({ id: "tok", paymentHash: "h", askedMsat: 10_000_000, settledMsat: 10_000_000, credit: usdToMicros(10), rate: RATE, expires: Date.now() + 86_400_000 });
+    // A dead process's hold, and a workflow's (item 5's to reconcile).
+    assert.ok((await ledger.hold({ token: "tok", reserve: usdToMicros(1), subject: "step:tool/fixed", runId: "dead-call" })).ok);
+    assert.ok((await ledger.hold({ token: "tok", reserve: usdToMicros(2), subject: "workflow:fixed", runId: "a-run" })).ok);
+    let release!: () => void;
+    const hold = new Promise<void>((r) => (release = r));
+    const slow = defineStep({ type: "tool/slow", input: z.object({}), output: z.any(), run: async () => (await hold, { ok: true }) });
+    const registry = await createRegistry([slow]);
+    const fakeCredit = {
+      verify: async () => ({ ok: true as const, token: { tokenId: "tok", narrowed: false, quote: { validUntil: Number.MAX_SAFE_INTEGER }, holder: { capabilities: [], maxCharge: [], validUntil: [] } } as never }),
+      use: async (t: never) => ({ ok: true as const, token: t, balance: (await ledger.token("tok"))!, created: false }),
+      view: async () => undefined,
+    };
+    const tools = createPublicTools({
+      ledger: async () => ledger,
+      surface: { runnable: async (kind, name) => (kind === "step" && name === "tool/slow" ? { kind, name, base: 0.5 } : undefined) },
+      registry: () => registry,
+      services: () => ({}),
+      credit: fakeCredit as never,
+    });
+    const inFlight = tools.call({ type: "tool/slow", config: {}, presented: { macaroon: "m", preimage: "p" }, address: "a" });
+    while (tools.inFlight() === 0 || (await ledger.openHolds()).length < 3) await new Promise((r) => setTimeout(r, 5));
+    const freed = await tools.reconcile();
+    assert.deepEqual(freed.map((f) => [f.callId, f.action]), [["dead-call", "freed"]]);
+    const open = (await ledger.openHolds()).map((h) => h.subject).sort();
+    assert.deepEqual(open, ["step:tool/slow", "workflow:fixed"], "the call in flight and the workflow's keep theirs");
+    release();
+    const a = await inFlight;
+    assert.equal(a.status, 200);
+    assert.deepEqual((await ledger.openHolds()).map((h) => h.subject), ["workflow:fixed"]);
+    const t = (await ledger.token("tok"))!;
+    assert.deepEqual({ spent: t.spent, held: t.held }, { spent: usdToMicros(0.5), held: usdToMicros(2) }, "the dead call charged nothing; the live one its base");
+    assert.deepEqual(await tools.reconcile(), [], "nothing twice");
+  });
+
+  it("a free step's daily cap: a call in flight counts at its cap, a spent day is 429 until midnight", async () => {
+    const ledger = new MemoryLedgerStore();
+    let release!: () => void;
+    const hold = new Promise<void>((r) => (release = r));
+    const spend = defineStep({
+      type: "tool/spend",
+      input: z.object({ cost: z.number(), wait: z.boolean().optional() }),
+      output: z.any(),
+      run: async (cfg) => {
+        if (cfg.wait) await hold;
+        return withUsage({ ok: true }, { modelCalls: 1, usage: {}, cost: cfg.cost });
+      },
+    });
+    const registry = await createRegistry([spend]);
+    const tools = createPublicTools({
+      ledger: async () => ledger,
+      surface: { runnable: async (kind, name) => (name === "tool/spend" ? { kind, name, dailyCapUsd: 1, capUsd: 0.6 } : undefined) },
+      registry: () => registry,
+      services: () => ({}),
+    });
+    // Two calls in flight: the first at its cap (0.60), the second at what
+    // is left (0.40). A third finds the whole day set aside.
+    const first = tools.call({ type: "tool/spend", config: { cost: 0.2, wait: true }, address: "a" });
+    while (tools.inFlight() < 1) await new Promise((r) => setTimeout(r, 5));
+    const second = tools.call({ type: "tool/spend", config: { cost: 0.1, wait: true }, address: "a" });
+    while (tools.inFlight() < 2) await new Promise((r) => setTimeout(r, 5));
+    const third = await tools.call({ type: "tool/spend", config: { cost: 0 }, address: "a" });
+    assert.equal(third.status, 429);
+    assert.match((third.body as { error: string }).error, /set aside for calls in flight/);
+    release();
+    assert.deepEqual((await Promise.all([first, second])).map((a) => a.status), [200, 200]);
+    // 0.30 spent: a call fits, then the day is spent.
+    assert.equal((await tools.call({ type: "tool/spend", config: { cost: 0.7 }, address: "a" })).status, 200);
+    const spent = await tools.call({ type: "tool/spend", config: { cost: 0 }, address: "a" });
+    assert.equal(spent.status, 429);
+    assert.match((spent.body as { error: string }).error, /spent its daily cap/);
+    assert.ok(Number(spent.headers!["retry-after"]) > 0);
+    assert.equal((await ledger.today("step:tool/spend")).cost, usdToMicros(1));
+  });
+
+  it("the server's limit on calls in flight is a 429", async () => {
+    let release!: () => void;
+    const hold = new Promise<void>((r) => (release = r));
+    const slow = defineStep({ type: "tool/slow", input: z.object({}), output: z.any(), run: async () => (await hold, { ok: true }) });
+    const registry = await createRegistry([slow]);
+    const tools = createPublicTools({
+      ledger: async () => new MemoryLedgerStore(),
+      surface: { runnable: async (kind, name) => ({ kind, name }) },
+      registry: () => registry,
+      services: () => ({}),
+      maxInFlight: 2,
+    });
+    const two = [tools.call({ type: "tool/slow", address: "a" }), tools.call({ type: "tool/slow", address: "a" })];
+    while (tools.inFlight() < 2) await new Promise((r) => setTimeout(r, 5));
+    const third = await tools.call({ type: "tool/slow", address: "a" });
+    assert.equal(third.status, 429);
+    release();
+    assert.deepEqual((await Promise.all(two)).map((a) => a.status), [200, 200]);
+    assert.equal(tools.inFlight(), 0);
+  });
+
+  it("the bag is an allowlist: http, secrets, runs, and a graph that reads but never writes", async () => {
+    const reader = { getNode: async () => null } as unknown as GraphReader;
+    const graph = { kind: "ladybug", namespace: "default", cfg: {}, schemas: { schema: async () => null, createEdgeSchema: async () => ({}) }, reader, nodes: { write: async () => ({}) } };
+    const bag = publicToolServices({ http: 1, secrets: 2, shell: 3, artifacts: 4, sessions: 5, jobs: 6, peers: 7, lightning: 8, onRunEnd: 9, onRunEvent: 10, graph }, graph as never, { runs: { list: 1 } });
+    assert.deepEqual(Object.keys(bag).sort(), ["graph", "http", "runs", "secrets"]);
+    const g = bag["graph"] as Record<string, any>;
+    assert.equal(g["reader"], reader);
+    await assert.rejects(g["nodes"].write({}), /not available to a public tool/);
+    await assert.rejects(g["edges"].write({}), /not available to a public tool/);
+    await assert.rejects(g["query"]("MATCH (n) RETURN n"), /not available to a public tool/);
+    await assert.rejects(g["schemas"].createEdgeSchema("A", "E", "B"), /not available to a public tool/);
+    assert.equal(await g["schemas"].schema("X"), null, "the schema reads pass");
+    const none = publicToolServices({}, null)["graph"] as Record<string, unknown>;
+    assert.equal(none["nodes"], undefined, "no graph: its writers read as absent");
+    assert.throws(() => none["reader"], /no graph/);
+  });
+
+  it("templateIn finds a template anywhere in a config", () => {
+    assert.equal(templateIn({ a: [1, { b: "x {{ y }}" }] }), "config.a[1].b");
+    assert.equal(templateIn({ a: "{ not one }" }), undefined);
+  });
+});
+
+for (const tb of testBackends()) describe(`a public tool reads the whole graph (${tb.name})`, { skip: tb.skip }, () => {
+  let b: GraphBackend;
+  let dir: string;
+  before(async () => {
+    b = await tb.open();
+  });
+  after(async () => {
+    await tb.close(b);
+  });
+  beforeEach(async () => {
+    await tb.wipe(b);
+    await seedStrutDomain(b);
+    await seedConceptSchema(b);
+    dir = await mkdtemp(join(tmpdir(), "strut-public-tools-graph-"));
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("a node outside the Public view is readable, and a graph write fails", async () => {
+    const store = new MemoryRunStore();
+    const strut = await createStrut({ workspace: new WorkspaceManager(join(dir, "ws")), graph: b, store, serveUi: false, scheduler: false, concepts: false, views: false, jamie: false, knowledge: false });
+    try {
+      const secret = (await b.nodes.write({ type: "Concept", data: { name: "Secret", description: "Not public" } })).ref_id;
+      const put = await strut.app.request("/public-view", { method: "PUT", headers: json, body: JSON.stringify({ runnable: [{ kind: "step", name: "graph/graph-get" }, { kind: "step", name: "graph/create-node" }] }) });
+      assert.equal(put.status, 200, await put.clone().text());
+      assert.equal((await strut.app.request(`/public/graph/nodes/${secret}`)).status, 404, "the Public view does not show it");
+      const got = await strut.app.request("/public/steps/graph/graph-get/run", { method: "POST", headers: json, body: JSON.stringify({ config: { ref_id: secret } }) });
+      assert.equal(got.status, 200, await got.clone().text());
+      assert.match(JSON.stringify(await got.json()), /Secret/);
+      const before = await b.reader.namesLike("Concept", "Leak");
+      const wrote = await strut.app.request("/public/steps/graph/create-node/run", { method: "POST", headers: json, body: JSON.stringify({ config: { node_type: "Concept", node_data: { name: "Leak", description: "x" } } }) });
+      assert.equal(wrote.status, 200, "the step answers its own failure as text");
+      assert.match(String(((await wrote.json()) as { output: unknown }).output), /not available to a public tool/);
+      assert.deepEqual(await b.reader.namesLike("Concept", "Leak"), before, "nothing was written");
+      assert.equal(store.events.size + store.summaries.size, 0);
+    } finally {
+      await strut.close();
+    }
+  });
+});
+
+describe("a public tool call across a restart", () => {
+  it("a hold a dead process left between a call's hold and its charge is freed at boot, once; a call after it charges as usual", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "strut-public-tools-restart-"));
+    const saved = process.env["STRUT_API_KEY"];
+    delete process.env["STRUT_API_KEY"];
+    const registry = await createRegistry(STEPS);
+    const wallet = new FakeWallet();
+    const make = (o: { autoResume: false | { delayMs: number } }) =>
+      createStrut({
+        workspace: new WorkspaceManager(join(dir, "ws")),
+        serveUi: false,
+        scheduler: false,
+        registry,
+        autoResume: o.autoResume,
+        services: { lightning: lightningCapability(wallet) },
+        payments: { rate: fixedRate },
+      });
+    try {
+      const first = await make({ autoResume: false });
+      assert.equal((await first.app.request("/public-view", { method: "PUT", headers: json, body: JSON.stringify({ runnable: [{ kind: "step", name: "tool/fixed", base: 0.5 }] }) })).status, 200);
+      const c = (await (await first.app.request("/public/credit", { method: "POST", headers: json, body: JSON.stringify({ usd: 5 }) })).json()) as Challenge402;
+      const cred = `${c.macaroon}:${wallet.settle(c.invoice)}`;
+      const tokenId = decodeIdentifier(macaroonFromBase64(c.macaroon).id).tokenId;
+      assert.equal((await first.app.request("/public/credit", { headers: { authorization: `L402 ${cred}` } })).status, 200, "its first use");
+      // What a process that died mid-call left: the reserve set aside, no charge.
+      assert.ok((await (await first.ledger()).hold({ token: tokenId, reserve: usdToMicros(0.5), subject: "step:tool/fixed", runId: "1800000000009" })).ok);
+      await first.close();
+
+      const second = await make({ autoResume: { delayMs: 0 } });
+      try {
+        const l = await second.ledger();
+        const deadline = Date.now() + 10_000;
+        while ((await l.openHolds()).length) {
+          if (Date.now() > deadline) throw new Error("the hold was never freed");
+          await new Promise((r) => setTimeout(r, 25));
+        }
+        const t = (await l.token(tokenId))!;
+        assert.deepEqual({ spent: t.spent, held: t.held }, { spent: 0, held: 0 }, "the call never answered: charged nothing");
+        const res = await second.app.request("/public/steps/tool/fixed/run", { method: "POST", headers: { ...json, authorization: `L402 ${cred}` }, body: JSON.stringify({ config: {} }) });
+        assert.equal(res.status, 200, await res.clone().text());
+        assert.equal(((await res.json()) as { credit: { remaining_usd: number } }).credit.remaining_usd, 4.5);
+      } finally {
+        await second.close();
+      }
+      const third = await make({ autoResume: { delayMs: 0 } });
+      try {
+        await new Promise((r) => setTimeout(r, 200));
+        const l = await third.ledger();
+        assert.equal((await l.token(tokenId))!.spent, usdToMicros(0.5));
+        assert.deepEqual(await l.today("step:tool/fixed"), { key: "step:tool/fixed", calls: 2, failed: 1, earned: usdToMicros(0.5), cost: 0 }, "the freed hold is one failed call, charged nothing");
+      } finally {
+        await third.close();
+      }
+    } finally {
+      if (saved === undefined) delete process.env["STRUT_API_KEY"];
+      else process.env["STRUT_API_KEY"] = saved;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});

@@ -661,8 +661,8 @@ interface DrainView {
   since?: string;      // ISO, when it was turned on
   reason?: string;
   until?: string;      // ISO, when it lifts by itself
-  idle: boolean;       // no run executing and no builder chat turn running
-  active: { runs: number; chats: number };
+  idle: boolean;       // no run executing, no builder chat turn running, no public tool call in flight
+  active: { runs: number; chats: number; tools: number };
   runs: { workflow: string; runId: string; state: string }[]; // the top-level runs it waits on (first 50)
 }
 ```
@@ -674,7 +674,9 @@ While draining:
   `POST …/runs/:runId/resume` (unpausing a live run is let through), `POST
   /steps/:type/run` of a step that does not declare `effect: "read"` (a read
   still answers), `POST /chat`, an elicitation answer (the question stays
-  open), Run now.
+  open), Run now, and anyone's `POST /public/workflows/:name/run` and `POST
+  /public/steps/:type/run` (§17.4, §17.6; a public call is refused whatever
+  its step declares, and one in flight is waited on).
 - **Refused in process**: every new top-level run whatever starts it — an
   agent's `job/start` / `job/continue` or `meta/run-workflow`, the builder's
   `run_workflow`, an app's `run/launch`, `strut.run()` — reads the same
@@ -2793,8 +2795,8 @@ Packages tab's **Make public** is the package catalog's, §16):
 Concept roots (each root and every page under it by `PARENT_OF`),
 workflows (with or without their runs), steps, node types, and apps — and
 what anyone may RUN, free or priced in dollars (`runnable`,
-`plans/paid-runs.md` §2; an item launches through §17.4, a priced one
-paid from a credit token, §17.5).
+`plans/paid-runs.md` §2; a workflow launches through §17.4, a step is
+called through §17.6, a priced one paid from a credit token, §17.5).
 Everything else stays behind the key. The record is one file,
 `<dataDir>/public.json` (`src/public-surface.ts`); nothing public until
 someone puts it there. The UI's door is the topbar's **Publish** dialog, its
@@ -2961,7 +2963,9 @@ not sealed, whether or not its definition is public (its YAML is never
 shown there): prices in dollars, `capUsd` null when the item sets none,
 `reserve` the credit a run needs to start (`base + markup × capUsd`),
 `results` `output` unless the item says `run`, `input` the workflow's
-`input:` block or the step's input JSON Schema, and `recent` the ledger's
+`input:` block or the step's input JSON Schema (draft 2020-12, the input
+view: a field with a default is not `required`; what §17.6's `config` is
+built from), and `recent` the ledger's
 last 30 days for it (`{ days, runs, average }`: public runs, and the
 average charge in dollars).
 
@@ -3176,7 +3180,7 @@ A HOLDER may append, before handing a token to someone else:
 | Caveat | Means |
 | --- | --- |
 | `strut_capabilities=workflow:<name>,step:<type>,…` | only these items (`403 token_not_for_this`) |
-| `strut_max_charge=<micro-dollars>` | no run whose reserve is above it (`403 token_over_max_charge`) |
+| `strut_max_charge=<micro-dollars>` | no run or call whose reserve is above it (`403 token_over_max_charge`) |
 | `strut_valid_until=<unix>` | an earlier end for this copy |
 | `services=…` | must still name `strut:0` |
 
@@ -3200,6 +3204,89 @@ from: its top-up starts a balance of its own.
 and what it handed on or lost to its end; `remaining_*` is 0 once it is
 replaced or past its end. `entries` are the newest 50: `payment`, `hold`,
 `charge`, `carry` (− out, + in), `expiry`.
+
+### 17.6 A public tool — `POST /public/steps/:type/run` (anyone)
+
+A STEP in the record's `runnable` (§17.1) is called once and answers at
+once (`plans/paid-runs.md` §3, §6; `src/public-tools.ts`): what the tool
+returns is what its publisher sells. Free, or charged by the rule against a
+credit token (§17.5). Open by name in the gate, like a launch; CORS as
+§17.2.
+
+| Route | |
+| --- | --- |
+| `POST /public/steps/:type/run` | `{ config }` → `200 { output, credit? }`; priced with no token, or one short: `402` (§17.5) |
+
+A call is checked in this order, each step answering before the next costs
+anything:
+
+1. **The address's budget**: the launches' (§17.4), 60 a minute, shared
+   with them; `429` past it.
+2. **The drain** (§8.1): `503` with `Retry-After`.
+3. **The body**, at most 256 KB (`413`): a JSON object with `config` alone
+   (`400` naming anything else).
+4. **The item**: a step not in `runnable` is `404`, and so is one the save
+   would refuse NOW — sealed since, gone, or one that spends or runs a
+   shell or other steps (`agent`, `llm`, `exec`, `acp/prompt`, `meta/*`,
+   `subflow` / `loop` / `foreach` / `if`): the registry changes after a
+   save.
+5. **The config**: an object (absent is `{}`), parsed by the step's own
+   input schema (`400` naming the field: `config.cost: …`). A string in it
+   holding `{{` is a `400`: a stranger's config is data, never a template
+   the runner evaluates.
+6. **The price's token** (a priced step), as a launch's: `401
+   invalid_token`, `403 token_not_for_this` (a holder's
+   `strut_capabilities` without `step:<type>`), `403 token_over_max_charge`.
+7. **The caps**, `429` with `Retry-After`: the server's limit on public
+   tool calls in flight (20), then the item's `dailyCapUsd` when it sets
+   one — today's cost of its calls plus each call in flight at its cap
+   (`capUsd`, else the whole daily cap), as a run's. A free step needs no
+   daily cap at the save: a runnable step cannot be one that spends.
+8. **The price**: as a launch's — no token, one past its end or replaced,
+   or one short of the RESERVE (`base + markup × capUsd`) is a `402`, for
+   the shortfall and carrying when the token was not narrowed; a token's
+   first use asks the wallet (`503` when it cannot); a good token has the
+   reserve set aside under the call's id. There is no `key`: a call answers
+   at once.
+9. **The call**: the step run once — never kept as a run, nothing in the
+   run store, not verified, projected or sent to an events sink; the
+   ledger's entry is its record. No actor; the host's
+   `createStrut({ publicRuns: { principal } })` as its principal; the
+   item's `capUsd` (or what is left of the day) as its cap, carried to the
+   Mothership as a run's is.
+10. **The charge**, by the rule: base + markup × what the call reported it
+    cost (`withUsage`); a call that reports none, its base. A call that
+    THREW, or whose result is over 5 MB as JSON, is charged its cost — no
+    markup, no base — and answers `500` with `code` `step_failed` (its
+    error, cut at 2000 characters) or `result_too_big`. Never more than
+    the reserve, nor what the token holds. A free call is charged nothing,
+    and its cost counts in the day.
+
+```json
+{ "output": { "cves": [ … ] },
+  "credit": { "charged_usd": 0.6, "remaining_usd": 4.4, "remaining_sats": 4400, "expires": "…" } }
+```
+
+`credit` is a priced call's: what this call was charged and what the token
+holds after it; a `500` carries it too. The token's balance (§17.5) lists
+the call as a `hold` and a `charge` on `step:<type>`.
+
+**What the step runs against** is an allowlist (decision 15): the visitor's
+(§17.3) — `http`, `secrets` (the keys its publisher's step reads), the runs
+held to the public view — with one difference: the graph's READER is the
+whole graph's, not the public view's (on a host that set `graphReaders`,
+the `jobs` list), so a tool answers from a graph that is not public. Its
+schema reads pass; its writers, a raw query and a transaction refuse, and so
+does every write through the schema. There is no shell, no artifacts, no
+jobs, no sessions, no peers, no MCP, no browser and no wallet: a step
+reaching for one fails (a `graph/*` write step answers its own refusal as
+text, as it answers any failure). Not a sandbox: a step whose publisher
+made it callable may still reach past `ctx.services` — an API over `http`,
+its own connection from a secret.
+
+**A restart between a call's hold and its charge** leaves the hold open,
+and the call never answered: the next boot frees it, a charge of nothing
+that the day counts as a failed call.
 
 ## 18. The wallet — what the server receives with (`plans/paid-runs.md` §9)
 

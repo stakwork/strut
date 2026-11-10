@@ -127,6 +127,22 @@ export async function runnableCan(item: Pick<PublicRunnable, "kind" | "name">, d
 }
 
 /**
+ * Why a step may not be run by anyone, or undefined: not one that spends or
+ * runs a shell (the app door's list: the workflow is the unit of spend), not
+ * one of the runner's containers, not sealed (the meta surface, the
+ * graders), and on this server. Asked at the save, and again at every call
+ * (src/public-tools.ts): the registry changes after a save.
+ */
+export function stepRunnableProblem(type: string, registry: StepRegistry, patterns: readonly string[] = sealedStepPatterns()): string | undefined {
+  const label = runnableLabel({ kind: "step", name: type });
+  if (PAID_OR_SHELL.includes(type)) return `${label} spends or runs a shell — a stranger runs it inside a workflow, which is the unit of spend: make the workflow runnable`;
+  if (CONTAINER_STEPS.has(type)) return `${label} runs other steps, which a stranger's config would choose — make a workflow that holds it runnable`;
+  if (isSealedStep(type, registry, patterns)) return `${label} is sealed: the meta surface and the graders are never run from outside`;
+  if (!registry[type]) return `no step "${type}" on this strut server`;
+  return undefined;
+}
+
+/**
  * Why `item` may not be saved as runnable, naming it, or undefined
  * (plans/paid-runs.md §2, "Checked at the save"). The record's shape is
  * `runnableShapeProblem`'s; this asks the server:
@@ -151,13 +167,7 @@ export async function runnableProblem(item: PublicRunnable, deps: RunnableDeps):
     return undefined;
   };
 
-  if (item.kind === "step") {
-    if (PAID_OR_SHELL.includes(item.name)) return `${label} spends or runs a shell — a stranger runs it inside a workflow, which is the unit of spend: make the workflow runnable`;
-    if (CONTAINER_STEPS.has(item.name)) return `${label} runs other steps, which a stranger's config would choose — make a workflow that holds it runnable`;
-    if (isSealedStep(item.name, registry, patterns)) return `${label} is sealed: the meta surface and the graders are never run from outside`;
-    if (!registry[item.name]) return `no step "${item.name}" on this strut server`;
-    return priceProblem();
-  }
+  if (item.kind === "step") return stepRunnableProblem(item.name, registry, patterns) ?? priceProblem();
 
   let flow: Flow;
   try {

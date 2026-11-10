@@ -293,6 +293,19 @@ for (const impl of impls) {
       assert.equal(day.cost, $(30), "the margin shows the loss");
     });
 
+    it("withinReserve: a tool's charge never passes its reserve, however much the token holds", async () => {
+      const S = "step:acme/cve/lookup";
+      const reserve = reserveFor(price, $(1));
+      await buy(store, 50, { id: "a" });
+      await store.hold({ token: "a", reserve, subject: S, runId: "c1", at: T0 });
+      const c = await store.charge({ token: "a", runId: "c1", subject: S, cost: $(10), outcome: "success", price, withinReserve: true, at: T0 });
+      assert.equal(c.due, $(15.5), "the rule: 0.50 + 1.5 × 10");
+      assert.equal(c.charged, reserve, "0.50 + 1.5 × 1, the reserve");
+      const t = (await store.token("a"))!;
+      assert.deepEqual({ held: t.held, spent: t.spent }, { held: 0, spent: reserve });
+      assert.equal((await store.today(S, { now: T0 })).cost, $(10), "the cost is recorded whole: the margin shows the loss");
+    });
+
     it("a charge needs its hold, on the subject it was held for", async () => {
       await buy(store, 10, { id: "a" });
       await store.hold({ token: "a", reserve: $(1), subject: W, runId: "r1", at: T0 });

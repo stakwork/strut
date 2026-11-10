@@ -155,7 +155,7 @@ export class MemoryLedgerStore implements LedgerStore {
     const t = this.tokens.get(token)!;
     const available = Math.max(0, t.paid - t.spent - (t.held - reserve));
     const due = chargeFor(input.price, cost, input.outcome, reserve);
-    const charged = Math.min(due, available);
+    const charged = Math.min(due, available, input.withinReserve ? reserve : Infinity);
     t.held -= reserve;
     t.spent += charged;
     const e = this.entry(at, "charge", { token, usd: charged, subject: input.subject, runId: input.runId, cost, outcome: input.outcome });

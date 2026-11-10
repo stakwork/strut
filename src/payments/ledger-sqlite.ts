@@ -296,7 +296,7 @@ export class SqliteLedgerStore implements LedgerStore {
       const t = this.s.token.get(token) as Row;
       const available = Math.max(0, (t.paid as number) - (t.spent as number) - ((t.held as number) - reserve));
       const due = chargeFor(input.price, cost, input.outcome, reserve);
-      const charged = Math.min(due, available);
+      const charged = Math.min(due, available, input.withinReserve ? reserve : Infinity);
       this.s.release.run(reserve, charged, token);
       const seq = this.entry(at, "charge", { token, usd: charged, subject: input.subject, runId: input.runId, cost, outcome: input.outcome });
       this.s.daily.run(dayOf(at), input.subject, 1, failed, charged, cost);
