@@ -133,6 +133,14 @@
 > runs; the knowledge base, and every workflow, step and app a publisher
 > shows, is read LIVE from its home's public surface, read-only and with no
 > launches, and the store lists both. This plan's copy side is unchanged.
+>
+> **Keeping a copy current is `plans/managed-packages.md`** (proposed
+> 2026-11-09, nothing built): step 4's open half — the person's update
+> and the merge — designed as a fork being the newest release plus a
+> local PATCH that code replays on every release, with a `builder` job
+> only for a patch that no longer applies. It would revise §4's "Rebase
+> is the builder's" and, if the owner rules so, the row "An update, and
+> a person". Until it is ruled, this plan stands as written.
 
 ## Problem
 
@@ -548,6 +556,10 @@ install put there:
 | A Concept | The same four rows, read off the node against the installed file (`keepEdited`): untouched → updated and restamped; edited → left alone and reported, with the three texts for the merge below — base the file in the previous install's cached directory, theirs the new file, ours the node |
 
 A required package at a new digest is updated the same way, first.
+
+*(Proposed 2026-11-09, `plans/managed-packages.md`: the merge below runs
+in code at every update, the patch going onto the release, and the
+builder is called only for what does not apply.)*
 
 **Rebase is the builder's.** `update_package` does, per diverged item: a
 three-way merge of base (the version the fork inherited `upstream` from),
