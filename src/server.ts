@@ -46,11 +46,13 @@ let strutInstance: Strut | null = null;
  *  `memory?: "graph"`, accepted and ignored (the memory is always the
  *  graph), and `concepts?: false | { personal?: boolean }`,
  *  the Concept pages seeded (`StrutOptions.concepts`), and `assistant?: false
- *  | { title? }`, strut's own assistant app (`StrutOptions.assistant`).
+ *  | { title? }`, strut's own assistant app (`StrutOptions.assistant`), and
+ *  `publicRuns?: { principal? }`, who pays for a stranger's run
+ *  (`StrutOptions.publicRuns`, plans/paid-runs.md §6).
  *  Nothing when unset.
  *  A file that cannot be read or parsed fails the boot, rather than
  *  seeding the workflows without the host's tools. */
-export function hostConfigFromEnv(env: NodeJS.ProcessEnv = bootEnv()): Pick<StrutOptions, "job" | "orchestrator" | "builder" | "automation" | "settings" | "graphReaders" | "concepts" | "jamie" | "knowledge"> {
+export function hostConfigFromEnv(env: NodeJS.ProcessEnv = bootEnv()): Pick<StrutOptions, "job" | "orchestrator" | "builder" | "automation" | "settings" | "graphReaders" | "concepts" | "jamie" | "knowledge" | "publicRuns"> {
   const file = env["STRUT_HOST_CONFIG"];
   if (!file) return {};
   let raw: unknown;
@@ -59,7 +61,7 @@ export function hostConfigFromEnv(env: NodeJS.ProcessEnv = bootEnv()): Pick<Stru
   } catch (err) {
     throw new Error(`STRUT_HOST_CONFIG: could not read ${file}: ${err instanceof Error ? err.message : err}`);
   }
-  const out: Pick<StrutOptions, "job" | "orchestrator" | "builder" | "automation" | "settings" | "graphReaders" | "concepts" | "jamie" | "knowledge"> = {};
+  const out: Pick<StrutOptions, "job" | "orchestrator" | "builder" | "automation" | "settings" | "graphReaders" | "concepts" | "jamie" | "knowledge" | "publicRuns"> = {};
   for (const key of ["job", "orchestrator", "builder"] as const) {
     const delta = (raw as Record<string, unknown> | null)?.[key];
     if (delta === undefined) continue;
@@ -102,6 +104,16 @@ export function hostConfigFromEnv(env: NodeJS.ProcessEnv = bootEnv()): Pick<Stru
   const jamie = (raw as Record<string, unknown> | null)?.["jamie"];
   if (jamie !== undefined && jamie !== false) throw new Error(`STRUT_HOST_CONFIG: ${file}: "jamie" must be false`);
   if (jamie === false) out.jamie = false;
+  const publicRuns = (raw as Record<string, unknown> | null)?.["publicRuns"];
+  if (publicRuns !== undefined) {
+    const principal = (publicRuns as { principal?: unknown } | null)?.principal;
+    if (
+      !publicRuns || typeof publicRuns !== "object" || Array.isArray(publicRuns) ||
+      Object.keys(publicRuns).some((k) => k !== "principal") ||
+      (principal !== undefined && (typeof principal !== "string" || !principal.trim()))
+    ) throw new Error(`STRUT_HOST_CONFIG: ${file}: "publicRuns" must be { principal?: string }`);
+    out.publicRuns = principal !== undefined ? { principal: principal as string } : {};
+  }
   const knowledge = (raw as Record<string, unknown> | null)?.["knowledge"];
   if (knowledge !== undefined && knowledge !== false) throw new Error(`STRUT_HOST_CONFIG: ${file}: "knowledge" must be false`);
   if (knowledge === false) out.knowledge = false;

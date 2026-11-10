@@ -7,7 +7,10 @@
  * plain JSON in `<dataDir>/public.json` (nothing in it is a secret).
  *
  * This module is the record and the rules over it, with no routes:
- * - `readSurface` / `writeSurface` / `surfaceProblem` — the file.
+ * - `readSurface` / `writeSurface` / `surfaceProblem` — the file. Its
+ *   `runnable` list (plans/paid-runs.md §2) is what anyone may START, and
+ *   for how much; the checks that need the workspace, the registry or the
+ *   wallet are src/public-runnable.ts's.
  * - `createPublicSurface` — the service the `/public` routes
  *   (src/public-routes.ts) read through: which workflow, run or step is
  *   public, the public Concept trees, and which graph NODES are visible
@@ -45,6 +48,28 @@ export interface PublicApp {
   domains?: string[];
 }
 
+/** What anyone may RUN (plans/paid-runs.md §2): a workflow or a step, free
+ *  or priced by one rule, charge = base + markup × what the run cost.
+ *  Independent of `workflows` and `steps` (decision 11): an item may be run
+ *  by anyone without its definition or its runs being shown. Prices are
+ *  dollars. Changing it publishes no version. */
+export interface PublicRunnable {
+  kind: "workflow" | "step";
+  /** A workflow name or a step type. */
+  name: string;
+  /** Dollars per run or call; 0 when absent. */
+  base?: number;
+  /** Times what the run cost; 0 when absent. */
+  markup?: number;
+  /** The most one run may spend, in dollars; required with a markup. */
+  capUsd?: number;
+  /** The spend its owner carries per UTC day, in dollars. */
+  dailyCapUsd?: number;
+  /** What a workflow's launcher reads: its output (the default), or the
+   *  whole run. A workflow's only. */
+  results?: "output" | "run";
+}
+
 export interface PublicSurface {
   /** Concept ROOT names: each root and every page under it by PARENT_OF. */
   concepts: string[];
@@ -54,26 +79,61 @@ export interface PublicSurface {
   /** Node types whose nodes are visible whole. */
   types: string[];
   apps: PublicApp[];
+  /** What anyone may run, and for how much. An older record has none. */
+  runnable: PublicRunnable[];
 }
 
 /** `<dataDir>/public.json`. */
 export const PUBLIC_FILE = "public.json";
 
 export function emptySurface(): PublicSurface {
-  return { concepts: [], workflows: [], steps: [], types: [], apps: [] };
+  return { concepts: [], workflows: [], steps: [], types: [], apps: [], runnable: [] };
 }
 
 const NAME_MAX = 200;
 const okName = (v: unknown): v is string => typeof v === "string" && v.trim() === v && v.length > 0 && v.length <= NAME_MAX && !/[\u0000-\u001f]/.test(v);
 const HOST = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
 
+const SURFACE_FIELDS = ["concepts", "workflows", "steps", "types", "apps", "runnable"];
+const SURFACE_SHAPE = "the surface is { concepts?, workflows?, steps?, types?, apps?, runnable? }";
+const RUNNABLE_FIELDS = ["kind", "name", "base", "markup", "capUsd", "dailyCapUsd", "results"];
+const RUNNABLE_SHAPE = "runnable is a list of { kind: workflow | step, name, base?, markup?, capUsd?, dailyCapUsd?, results? }";
+
+/** The label a refusal names an item by: `workflow "acme/x"`. */
+export const runnableLabel = (r: { kind: string; name: string }) => `${r.kind} "${r.name}"`;
+
+/** Why one `runnable` entry is not well formed, or undefined: its fields,
+ *  and numbers that are finite and not negative (a cap above zero: the
+ *  gateway reads a cap of 0 as none, and a daily cap of 0 refuses every
+ *  run). What needs the server — the item exists, a wallet — is
+ *  src/public-runnable.ts's. */
+export function runnableShapeProblem(v: unknown): string | undefined {
+  const o = v as Record<string, unknown> | null;
+  if (!o || typeof o !== "object" || Array.isArray(o) || (o["kind"] !== "workflow" && o["kind"] !== "step") || !okName(o["name"])) return RUNNABLE_SHAPE;
+  const label = runnableLabel(o as { kind: string; name: string });
+  const extra = Object.keys(o).find((k) => !RUNNABLE_FIELDS.includes(k));
+  if (extra) return `${label}: unknown field "${extra}" — ${RUNNABLE_SHAPE}`;
+  for (const f of ["base", "markup", "capUsd", "dailyCapUsd"]) {
+    const n = o[f];
+    if (n === undefined) continue;
+    if (typeof n !== "number" || !Number.isFinite(n) || n < 0) return `${label}: ${f} is a number, 0 or more`;
+  }
+  if (o["capUsd"] === 0) return `${label}: capUsd is the most one run may spend — above 0 (leave it out for the server's cap)`;
+  if (o["dailyCapUsd"] === 0) return `${label}: a daily cap of 0 refuses every run — take the item out instead`;
+  if (o["results"] !== undefined) {
+    if (o["kind"] === "step") return `${label}: results is a workflow's (a step's call answers its output)`;
+    if (o["results"] !== "output" && o["results"] !== "run") return `${label}: results is "output" or "run"`;
+  }
+  return undefined;
+}
+
 /** Why `v` is not a surface record, or undefined. Every list is optional
  *  (an absent one is empty); every name is a non-empty string. */
 export function surfaceProblem(v: unknown): string | undefined {
-  if (!v || typeof v !== "object" || Array.isArray(v)) return "the surface is { concepts?, workflows?, steps?, types?, apps? }";
+  if (!v || typeof v !== "object" || Array.isArray(v)) return SURFACE_SHAPE;
   const r = v as Record<string, unknown>;
   for (const k of Object.keys(r)) {
-    if (!["concepts", "workflows", "steps", "types", "apps"].includes(k)) return `unknown field "${k}": the surface is { concepts?, workflows?, steps?, types?, apps? }`;
+    if (!SURFACE_FIELDS.includes(k)) return `unknown field "${k}": ${SURFACE_SHAPE}`;
   }
   const names = (field: string): string | undefined => {
     const list = r[field];
@@ -106,6 +166,13 @@ export function surfaceProblem(v: unknown): string | undefined {
       }
     }
   }
+  if (r["runnable"] !== undefined) {
+    if (!Array.isArray(r["runnable"])) return RUNNABLE_SHAPE;
+    for (const item of r["runnable"]) {
+      const bad = runnableShapeProblem(item);
+      if (bad) return bad;
+    }
+  }
   return undefined;
 }
 
@@ -129,6 +196,18 @@ export function normalizeSurface(v: unknown): PublicSurface {
         ...(a.domains?.length ? { domains: unique([...a.domains], (s) => s) } : {}),
       })),
       (a) => a.name,
+    ),
+    runnable: unique(
+      (r.runnable ?? []).map((x) => ({
+        kind: x.kind,
+        name: x.name,
+        ...(x.base ? { base: x.base } : {}),
+        ...(x.markup ? { markup: x.markup } : {}),
+        ...(x.capUsd !== undefined ? { capUsd: x.capUsd } : {}),
+        ...(x.dailyCapUsd !== undefined ? { dailyCapUsd: x.dailyCapUsd } : {}),
+        ...(x.kind === "workflow" && x.results === "run" ? { results: "run" as const } : {}),
+      })),
+      (x) => `${x.kind}:${x.name}`,
     ),
   };
 }
@@ -271,6 +350,8 @@ export interface PublicSurfaceService {
   set(s: PublicSurface): Promise<PublicSurface>;
   workflow(name: string): Promise<PublicWorkflow | undefined>;
   step(type: string): Promise<boolean>;
+  /** The item anyone may run under this name, if it is one (plans/paid-runs.md §2). */
+  runnable(kind: PublicRunnable["kind"], name: string): Promise<PublicRunnable | undefined>;
   conceptTree(): Promise<PublicConceptTree>;
   /** The trees under these roots, whether or not they are public — what
    *  the Publish dialog's Public view tab shows before a root is added (its page count). */
@@ -495,6 +576,9 @@ export function createPublicSurface(deps: PublicSurfaceDeps): PublicSurfaceServi
     workflow,
     async step(type) {
       return (await get()).steps.includes(type);
+    },
+    async runnable(kind, name) {
+      return (await get()).runnable.find((r) => r.kind === kind && r.name === name);
     },
     conceptTree,
     walk: walkTrees,

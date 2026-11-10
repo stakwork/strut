@@ -5108,6 +5108,7 @@ input.package-search { width: 100%; margin-bottom: var(--sp-2); }
   border-top: 1px solid var(--border);
 }
 .public-view-save .auto-hint { flex: 1; margin: 0; }
+.public-view-save .btn:disabled { opacity: 0.45; cursor: default; }
 .public-row {
   display: flex;
   align-items: center;
@@ -5118,6 +5119,39 @@ input.package-search { width: 100%; margin-bottom: var(--sp-2); }
 .public-row .auto-hint { flex: 1; }
 .public-row .package-name { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .public-runs { display: flex; align-items: center; gap: var(--sp-1); font-size: 12px; color: var(--text-muted); margin-left: auto; white-space: nowrap; }
+/* A workflow or step row: three boxes, and the price "anyone can run it" opens. */
+.public-item { border-bottom: 1px solid var(--border); }
+.public-item .public-row { border-bottom: 0; flex-wrap: wrap; }
+.public-item.is-off .package-name { color: var(--text-muted); text-decoration: line-through; }
+.public-boxes { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-1) var(--sp-3); margin-left: auto; }
+.public-box { display: flex; align-items: center; gap: var(--sp-1); font-size: 12px; color: var(--text-muted); white-space: nowrap; cursor: pointer; }
+.public-run {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin: 0 0 var(--sp-2) var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border-left: 2px solid var(--border-strong);
+}
+.public-run-can { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); }
+.public-run-can .auto-hint { margin: 0; }
+.public-price { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: var(--sp-2); }
+.public-price label { display: flex; flex-direction: column; gap: 2px; font-size: 12px; min-width: 0; }
+.public-price input,
+.public-price select {
+  font: inherit;
+  font-size: 12px;
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  color: var(--text);
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--r-md);
+}
+.public-run-hint { font-size: 12px; color: var(--warning); line-height: 1.5; }
+.public-tick { display: flex; align-items: flex-start; gap: var(--sp-2); font-size: 12px; color: var(--danger); line-height: 1.5; cursor: pointer; }
+.public-tick input { margin-top: 3px; }
 .public-add { display: flex; gap: var(--sp-2); align-items: center; }
 .public-add select {
   font: inherit;
@@ -5128,7 +5162,7 @@ input.package-search { width: 100%; margin-bottom: var(--sp-2); }
   padding: var(--sp-1) var(--sp-2);
   border-radius: var(--r-md);
 }
-.public-add input.package-search { flex: 1; width: auto; margin-bottom: 0; }
+.public-add input.package-search { flex: 1; width: auto; min-width: 0; margin-bottom: 0; }
 .public-cascade { margin-top: var(--sp-3); }
 .public-cascade .flyout-section-title { margin-top: var(--sp-2); }
 .public-need { display: flex; align-items: flex-start; gap: var(--sp-2); padding: var(--sp-1) 0; cursor: pointer; }

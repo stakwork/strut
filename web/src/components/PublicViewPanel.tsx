@@ -2,7 +2,28 @@ import { useEffect, useMemo, useState } from "preact/hooks";
 import * as api from "../api";
 import { errorMessage } from "../helpers";
 import { CopyButton } from "./CopyButton";
-import { checkedOf, emptyRecord, mergeNeeds, sameRecord, visitorAppLink } from "../public-view";
+import { canWords } from "../store-links";
+import {
+  boxesOf,
+  checkedOf,
+  emptyRecord,
+  isPricedItem,
+  mergeNeeds,
+  needsTick,
+  removeRow,
+  reserveUsd,
+  rowKey,
+  rowsOf,
+  runHints,
+  sameRecord,
+  setBox,
+  setPrice,
+  setResults,
+  usd,
+  visitorAppLink,
+  type PriceField,
+  type Row,
+} from "../public-view";
 
 // ── Public view (the Publish dialog's Public view tab; plans/public-surface.md
 // §2, decisions 19–20) ──────────────────────────────────────────────────────
@@ -74,6 +95,112 @@ function Cascade(props: { needs: api.PublicViewNeeds; onAdd: (checked: Set<strin
   );
 }
 
+const PRICE_FIELDS: Array<{ field: PriceField; label: string; unit: string; step: string; title: string }> = [
+  { field: "base", label: "Base", unit: "$ a run", step: "0.01", title: "Charged on every run, whatever it cost" },
+  { field: "markup", label: "Markup", unit: "× cost", step: "0.1", title: "Times what the run cost: 1 charges exactly the cost" },
+  { field: "capUsd", label: "Per-run cap", unit: "$", step: "0.5", title: "The most one run may spend; a markup needs one" },
+  { field: "dailyCapUsd", label: "Daily cap", unit: "$", step: "1", title: "The spend you carry per UTC day; a free item that calls a model needs one" },
+];
+
+/** A workflow or step row: its three boxes, and the price "anyone can run
+ *  it" opens (plans/paid-runs.md §2). */
+function ItemRow(props: {
+  row: Row;
+  draft: api.PublicViewRecord;
+  saved: api.PublicViewRecord;
+  info: api.PublicRunInfo | undefined;
+  infoError?: string;
+  ticked: boolean;
+  gone: preact.ComponentChild;
+  onTick: (on: boolean) => void;
+  onRemove: () => void;
+  edit: (fn: (r: api.PublicViewRecord) => api.PublicViewRecord) => void;
+}) {
+  const { row, draft, info } = props;
+  const boxes = boxesOf(draft, row);
+  const item = draft.runnable.find((r) => r.kind === row.kind && r.name === row.name);
+  const box = (key: "definition" | "runs" | "run", label: string, title: string) => (
+    <label class="public-box" title={title}>
+      <input type="checkbox" checked={boxes[key]} onChange={() => props.edit((r) => setBox(r, row, key, !boxes[key]))} />
+      {label}
+    </label>
+  );
+  const hints = item && info ? runHints(item, info) : [];
+  const tick = needsTick(row, info, props.saved);
+  const nothing = !boxes.definition && !boxes.runs && !boxes.run;
+  return (
+    <div class={`public-item${nothing ? " is-off" : ""}`}>
+      <div class="public-row">
+        <span class="package-name">{row.name} {props.gone}</span>
+        <span class="public-boxes">
+          {box("definition", "definition", row.kind === "workflow" ? "Anyone reads its definition and versions" : "Anyone reads its schema, its source and the helpers it imports")}
+          {row.kind === "workflow" && box("runs", "runs", "Anyone reads every run, whole: its input, outputs, agents' transcripts and files")}
+          {box("run", "anyone can run it", "Anyone may start it, free or for sats, with their own input")}
+        </span>
+        <button class="btn btn-sm" title="Take it out of the public view" onClick={props.onRemove}>Remove</button>
+      </div>
+      {item && (
+        <div class="public-run">
+          {info && (
+            <div class="public-run-can">
+              <span class="store-can" title="What running it reaches: spends = a model is called; acts = a step changes something outside the run; code = code runs in this server; reads = none of those">
+                {canWords(info.can).map((w) => <span key={w} class={`badge store-can-${w}`}>{w}</span>)}
+              </span>
+              <span class="auto-hint">
+                {info.costs.measured
+                  ? `Its runs here, last ${info.costs.days} days: ${info.costs.runs} · average ${usd(info.costs.average)} · highest ${usd(info.costs.highest)}`
+                  : row.kind === "step"
+                    ? `No kept runs of this step here in the last ${info.costs.days} days (a call inside a workflow counts as the workflow's)`
+                    : `No runs here in the last ${info.costs.days} days`}
+              </span>
+            </div>
+          )}
+          {props.infoError && <div class="auto-error">{props.infoError}</div>}
+          <div class="public-price">
+            {PRICE_FIELDS.map((f) => (
+              <label key={f.field} title={f.title}>
+                <span>{f.label} <span class="auto-hint">{f.unit}</span></span>
+                <input
+                  type="number"
+                  min="0"
+                  step={f.step}
+                  value={item[f.field] ?? ""}
+                  placeholder={f.field === "base" || f.field === "markup" ? "0" : "none"}
+                  onInput={(e) => props.edit((r) => setPrice(r, row, f.field, (e.target as HTMLInputElement).value))}
+                />
+              </label>
+            ))}
+            {row.kind === "workflow" && (
+              <label title="What the person who started a run reads back">
+                <span>Launcher reads</span>
+                <select value={item.results ?? "output"} onChange={(e) => props.edit((r) => setResults(r, row, (e.target as HTMLSelectElement).value as "output" | "run"))}>
+                  <option value="output">its output</option>
+                  <option value="run">the whole run</option>
+                </select>
+              </label>
+            )}
+          </div>
+          <div class="auto-hint">
+            {isPricedItem(item)
+              ? `A run needs ${usd(reserveUsd(item))} of credit to start (base + markup × the per-run cap); what it is not charged stays the buyer's.`
+              : `Free: anyone may run it, and you carry what it costs${item.dailyCapUsd !== undefined ? `, up to ${usd(item.dailyCapUsd)} a day` : ""}.`}
+          </div>
+          {info && !info.gateway && (info.can.spends || (item.markup ?? 0) > 0) && (
+            <div class="auto-hint">No gateway here: nothing stops a run at its cap. Overspend shows after the run, bounded by the agent's step limit and the daily cap.</div>
+          )}
+          {hints.map((h) => <div class="public-run-hint" key={h}>{h}</div>)}
+          {tick && (
+            <label class="public-tick">
+              <input type="checkbox" checked={props.ticked} onChange={() => props.onTick(!props.ticked)} />
+              Strangers will run this on your server with their input — it {[info!.can.acts ? "changes things outside the run" : "", info!.can.code ? "runs code" : ""].filter(Boolean).join(" and ")}.
+            </label>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** `onDirty` hears whether the draft differs from what is saved, so the tab
  *  can say so while the other tab is open. */
 export function PublicViewPanel(props: { onDirty?: (dirty: boolean) => void }) {
@@ -86,9 +213,16 @@ export function PublicViewPanel(props: { onDirty?: (dirty: boolean) => void }) {
   const [name, setName] = useState("");
   const [needs, setNeeds] = useState<api.PublicViewNeeds | null>(null);
   const [names, setNames] = useState<Record<Kind, string[]>>({ app: [], workflow: [], step: [], concept: [] });
+  // The workflow and step rows, kept in the order first shown, so a row the
+  // person unticks everything on stays where it is until Remove.
+  const [rows, setRows] = useState<Row[]>([]);
+  // What "anyone can run it" shows per row (`GET /public-view/runnable`),
+  // read when the box is first on; and the ticks given for what acts or runs code.
+  const [infos, setInfos] = useState<Record<string, api.PublicRunInfo | { error: string }>>({});
+  const [ticks, setTicks] = useState<Set<string>>(new Set());
 
   useEffect(() => {
-    api.getPublicView().then((v) => { setSaved(v); setDraft(v.surface); }, (e) => setError(errorMessage(e)));
+    api.getPublicView().then((v) => { setSaved(v); setDraft(v.surface); setRows(rowsOf(v.surface)); }, (e) => setError(errorMessage(e)));
     void Promise.all([
       api.listApps().catch(() => []),
       api.listWorkflows().catch(() => []),
@@ -103,6 +237,23 @@ export function PublicViewPanel(props: { onDirty?: (dirty: boolean) => void }) {
 
   const dirty = !!saved && !sameRecord(saved.surface, draft);
   useEffect(() => props.onDirty?.(dirty), [dirty]);
+  useEffect(() => setRows((r) => rowsOf(draft, r)), [draft]);
+  useEffect(() => {
+    for (const item of draft.runnable) {
+      const key = rowKey(item);
+      if (infos[key]) continue;
+      setInfos((m) => ({ ...m, [key]: m[key] ?? { error: "" } }));
+      api.publicRunInfo(item.kind === "workflow" ? { workflow: item.name } : { step: item.name }).then(
+        (info) => setInfos((m) => ({ ...m, [key]: info })),
+        (e) => setInfos((m) => ({ ...m, [key]: { error: errorMessage(e) } })),
+      );
+    }
+  }, [draft, infos]);
+  const infoOf = (r: Row) => {
+    const i = infos[rowKey(r)];
+    return i && "can" in i ? i : undefined;
+  };
+  const untickedRows = saved ? rows.filter((r) => boxesOf(draft, r).run && needsTick(r, infoOf(r), saved.surface) && !ticks.has(rowKey(r))) : [];
   const add = async () => {
     const n = name.trim();
     if (!n) return;
@@ -129,30 +280,41 @@ export function PublicViewPanel(props: { onDirty?: (dirty: boolean) => void }) {
       setSaved(v);
       setDraft(v.surface);
       setHeld(v.held);
+      // A row left with nothing ticked was taken out by the save.
+      const listed = new Set(rowsOf(v.surface).map(rowKey));
+      setRows((rs) => rowsOf(v.surface, rs.filter((r) => listed.has(rowKey(r)))));
     } catch (e) {
       setError(errorMessage(e));
+      // Read each row's facts again: what the save refused may have changed
+      // elsewhere (an owner claimed, a wallet set).
+      setInfos({});
     } finally {
       setBusy(false);
     }
   };
-  const edit = (fn: (r: api.PublicViewRecord) => void) => {
+  const edit =(fn: (r: api.PublicViewRecord) => void) => {
     const next: api.PublicViewRecord = JSON.parse(JSON.stringify(draft));
     fn(next);
     setDraft(next);
+  };
+  const remove = (row: Row) => {
+    setDraft(removeRow(draft, row));
+    setRows((rs) => rs.filter((r) => rowKey(r) !== rowKey(row)));
   };
   const missing = useMemo(() => {
     const m = saved?.missing;
     return new Set([...(m?.apps ?? []).map((x) => `app:${x}`), ...(m?.workflows ?? []).map((x) => `workflow:${x}`), ...(m?.steps ?? []).map((x) => `step:${x}`), ...(m?.concepts ?? []).map((x) => `concept:${x}`)]);
   }, [saved]);
   const gone = (key: string) => missing.has(key) && <span class="badge badge-warning" title="Not on this server: skipped by every read">not here</span>;
-  const nothing = draft.apps.length + draft.workflows.length + draft.steps.length + draft.concepts.length + draft.types.length === 0;
+  const nothing = draft.apps.length + rows.length + draft.concepts.length + draft.types.length === 0;
 
   return (
     <div class="public-view-panel">
       <div class="auto-hint">
         What anyone can read on this server, live and read-only, with no account: under <code>/public</code>. Nothing here is a copy — take an item out and it closes again.
+        A workflow or a step may also be run by anyone, free or for sats, whether or not its definition is shown.
       </div>
-      {error && <div class="auto-error">{error}</div>}
+      {error && <div class="auto-error">{error.split("; ").map((line) => <div key={line}>{line}</div>)}</div>}
       {saved === null && !error && <div class="auto-hint">Loading…</div>}
 
       {saved && (
@@ -177,29 +339,39 @@ export function PublicViewPanel(props: { onDirty?: (dirty: boolean) => void }) {
                 )}
               </div>
             ))}
-            {draft.workflows.length > 0 && <div class="flyout-section-title">Workflows</div>}
-            {draft.workflows.map((w) => (
-              <div class="public-row" key={`workflow:${w.name}`}>
-                <span class="package-name">{w.name} {gone(`workflow:${w.name}`)}</span>
-                <label class="public-runs" title="Every run, whole: its input, outputs, agents' transcripts and files">
-                  <input type="checkbox" checked={!!w.runs} onChange={() => edit((r) => {
-                    const at = r.workflows.find((x) => x.name === w.name)!;
-                    if (at.runs) delete at.runs;
-                    else at.runs = true;
-                  })} />
-                  with its runs
-                </label>
-                <button class="btn btn-sm" onClick={() => edit((r) => { r.workflows = r.workflows.filter((x) => x.name !== w.name); })}>Remove</button>
-              </div>
-            ))}
-            {draft.steps.length > 0 && <div class="flyout-section-title">Steps</div>}
-            {draft.steps.map((s) => (
-              <div class="public-row" key={`step:${s}`}>
-                <span class="package-name">{s} {gone(`step:${s}`)}</span>
-                <span class="auto-hint">its schema, source and helpers</span>
-                <button class="btn btn-sm" onClick={() => edit((r) => { r.steps = r.steps.filter((x) => x !== s); })}>Remove</button>
-              </div>
-            ))}
+            {(["workflow", "step"] as const).map((k) => {
+              const of = rows.filter((r) => r.kind === k);
+              if (!of.length) return null;
+              return (
+                <div key={k}>
+                  <div class="flyout-section-title">{k === "workflow" ? "Workflows" : "Steps"}</div>
+                  {of.map((row) => {
+                    const key = rowKey(row);
+                    const info = infos[key];
+                    return (
+                      <ItemRow
+                        key={key}
+                        row={row}
+                        draft={draft}
+                        saved={saved.surface}
+                        info={info && "can" in info ? info : undefined}
+                        {...(info && "error" in info && info.error ? { infoError: info.error } : {})}
+                        ticked={ticks.has(key)}
+                        gone={gone(key)}
+                        onTick={(on) => setTicks((t) => {
+                          const next = new Set(t);
+                          if (on) next.add(key);
+                          else next.delete(key);
+                          return next;
+                        })}
+                        onRemove={() => remove(row)}
+                        edit={(fn) => setDraft(fn(draft))}
+                      />
+                    );
+                  })}
+                </div>
+              );
+            })}
             {draft.concepts.length > 0 && <div class="flyout-section-title">Concept trees</div>}
             {draft.concepts.map((c) => (
               <div class="public-row" key={`concept:${c}`}>
@@ -259,9 +431,13 @@ export function PublicViewPanel(props: { onDirty?: (dirty: boolean) => void }) {
 
       {dirty && (
         <div class="public-view-save">
-          <span class="auto-hint">Unsaved changes: nothing is shown or taken out until you save.</span>
-          <button class="btn" disabled={busy} onClick={() => saved && setDraft(saved.surface)}>Discard</button>
-          <button class="btn btn-primary" disabled={busy} onClick={() => void save()}>{busy ? "Saving…" : "Save"}</button>
+          <span class="auto-hint">
+            {untickedRows.length
+              ? `Tick that strangers will run ${untickedRows.map((r) => r.name).join(", ")} before saving.`
+              : "Unsaved changes: nothing is shown or taken out until you save."}
+          </span>
+          <button class="btn" disabled={busy} onClick={() => { if (saved) { setDraft(saved.surface); setRows(rowsOf(saved.surface)); setError(null); } }}>Discard</button>
+          <button class="btn btn-primary" disabled={busy || untickedRows.length > 0} onClick={() => void save()}>{busy ? "Saving…" : "Save"}</button>
         </div>
       )}
     </div>

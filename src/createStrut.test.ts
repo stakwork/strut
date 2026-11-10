@@ -1410,6 +1410,7 @@ describe("the API key gate", () => {
     assert.ok(gated.includes("GET /workflows/x/runs/x/transcripts/x"));
     assert.ok(gated.includes("GET /host/mounted"));
     assert.ok(gated.includes("PUT /public-view") && gated.includes("GET /public-view"), "the record itself is behind the key");
+    assert.ok(gated.includes("GET /public-view/runnable"), "what a runnable item costs here is behind the key");
     assert.ok(gated.includes("GET /earnings/wallet") && gated.includes("PUT /earnings/wallet"), "the wallet is behind the key");
     for (const route of gated) {
       const [method, path] = route.split(" ") as [string, string];

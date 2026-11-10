@@ -14,7 +14,10 @@
  * `access-control-allow-origin: *` (the store reads a publisher's items
  * from the visitor's browser) and no cookie.
  *
- * Reads, and `POST /public/mcp` (mounted by createStrut). `/public-view`, the person's door to the record, is mounted by
+ * Reads, and `POST /public/mcp` (mounted by createStrut). `GET /public`
+ * also lists what anyone may RUN (plans/paid-runs.md §2): price, reserve,
+ * input and recent runs — never its definition unless that is public too.
+ * `/public-view`, the person's door to the record, is mounted by
  * createStrut behind the gate like any write.
  */
 import type { Context, Hono } from "hono";
@@ -24,6 +27,7 @@ import { summarizeFromEvents } from "./store.js";
 import type { WorkspaceStore } from "./workspace.js";
 import type { ArtifactsCapability } from "./capabilities.js";
 import type { PublicSurfaceService } from "./public-surface.js";
+import type { ListedRunnable } from "./public-runnable.js";
 import { publicEvent, publicSummary, stepHelpers } from "./public-surface.js";
 import { runsPage } from "./runs.js";
 import { searchWorkflows } from "./search.js";
@@ -55,6 +59,9 @@ export interface PublicRouteDeps {
   };
   /** The headers an app's document is served with (it runs: it is the app). */
   documentHeaders?: (path: string) => Record<string, string>;
+  /** What anyone may run, and for how much (plans/paid-runs.md §2,
+   *  `listRunnable`): `GET /public`'s `runnable`. */
+  runnable?: () => Promise<ListedRunnable[]>;
 }
 
 /** A public app as a visitor's host reads it. */
@@ -193,6 +200,8 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): void {
       concepts: roots.map((r) => ({ name: r.name, ...(r.description ? { description: r.description } : {}), pages: tree!.concepts.filter((x) => x.root === r.root).length })),
       types: s.types,
       apps: await listedApps(),
+      // Listed whether or not its definition is public (decision 11).
+      runnable: (await deps.runnable?.()) ?? [],
     });
   });
 
