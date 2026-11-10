@@ -104,6 +104,7 @@ import { createAppMonitor, type AppMonitor } from "./apps/monitor.js";
 import { seedViewsApp } from "./apps/views-seed.js";
 import { RETIRED_APP, seedJamieApp } from "./apps/jamie-seed.js";
 import { seedKnowledgeApp } from "./apps/knowledge-seed.js";
+import { seedDreamApp } from "./apps/dream-seed.js";
 import type { KitLocation } from "./apps/kit.js";
 import { appsRoot, isPreviewLabel, listAppFiles, readAppFile, reservedAppName, validateAppName, writeAppFiles } from "./apps/files.js";
 import { DOCUMENT_FILE, readBuildInfo, withPublicIdentity, withToken, withoutTokenMeta } from "./apps/build.js";
@@ -521,6 +522,10 @@ export interface StrutOptions<TServices = unknown> {
    *  at boot after `strut/views` (it imports it; none without it). `false`
    *  seeds nothing. */
   knowledge?: false;
+  /** `strut/dream` (`src/apps/dream-seed.ts`, plans/dream.md): what the
+   *  `dream` system workflow did, run by run, as a first-party app, seeded
+   *  at boot after `strut/views`. `false` seeds nothing. */
+  dream?: false;
   /** The `automation/*` steps (src/steps/lib/automation/), an agent's own
    *  door onto the automations: the one workflow they schedule, and the
    *  registry step that asks the person before one is made, changed,
@@ -1712,6 +1717,15 @@ export async function createStrut<TServices = unknown>(
       if (r?.changed) console.log(`[knowledge] seeded app: strut/knowledge @ ${r.version}`);
     } catch (err) {
       console.warn(`[knowledge] could not seed strut/knowledge:`, err instanceof Error ? err.message : err);
+    }
+  }
+  // `strut/dream` (src/apps/dream-seed.ts): the dream's runs, lessons and steps.
+  if (opts.dream !== false) {
+    try {
+      const r = await seedDreamApp({ workspace, ...(opts.kit ? { kit: opts.kit } : {}) });
+      if (r?.changed) console.log(`[dream] seeded app: strut/dream @ ${r.version}`);
+    } catch (err) {
+      console.warn(`[dream] could not seed strut/dream:`, err instanceof Error ? err.message : err);
     }
   }
   if (await workspace.getApp(RETIRED_APP).catch(() => null)) {

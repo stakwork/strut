@@ -1,0 +1,10 @@
+title: Dream
+description: >-
+  What the dream did (plans/dream.md): each run of the `dream` workflow, what
+  it changed in facts and pages, the lessons it has learned with the turns
+  that show them, and every step it took. Run one now from here. Strut ships
+  it and seeds it on every server; it acts as its viewer.
+icon: moon
+grants:
+  workflows: [dream]
+  steps: []
