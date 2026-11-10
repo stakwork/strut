@@ -113,12 +113,13 @@ export async function unpackArchive(gz: Buffer, into: string): Promise<void> {
 }
 
 /** A response body as bytes, refused past `max` — whatever its
- *  content-length says, since a server may not send one. */
-async function readCapped(res: Response, max: number): Promise<Buffer> {
+ *  content-length says, since a server may not send one. Nothing past the
+ *  cap is kept: the read stops there. */
+export async function readCapped(res: Response, max: number, what = "archive"): Promise<Buffer> {
   const declared = Number(res.headers.get("content-length"));
   if (declared > max) {
     await res.body?.cancel();
-    throw new Error(`the archive is ${declared} bytes, more than ${max}`);
+    throw new Error(`the ${what} is ${declared} bytes, more than ${max}`);
   }
   const chunks: Uint8Array[] = [];
   let size = 0;
@@ -130,7 +131,7 @@ async function readCapped(res: Response, max: number): Promise<Buffer> {
     size += value.byteLength;
     if (size > max) {
       await reader.cancel();
-      throw new Error(`the archive is more than ${max} bytes`);
+      throw new Error(`the ${what} is more than ${max} bytes`);
     }
     chunks.push(value);
   }

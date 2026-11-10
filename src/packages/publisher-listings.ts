@@ -217,7 +217,9 @@ export function createPublisherListings(deps: PublisherListingsDeps): PublisherL
       return send(id, {}, true);
     },
     async ping(key) {
-      const asked = Object.values(await read()).filter((r) => r.status === "listed" || r.status === "pending");
+      // Every index asked, but one this strut took itself off: the record is the
+      // LAST answer, and a failed or refused change leaves the row listed.
+      const asked = Object.values(await read()).filter((r) => r.status !== "removed");
       const subs = await deps.indexes.list();
       await Promise.allSettled(
         asked.map(async (r) => {

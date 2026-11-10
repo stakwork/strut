@@ -2571,7 +2571,7 @@ export interface PendingListing {
   key: string;
   base: string;
   host: string;
-  reason: "host" | "second name" | "same host" | "move" | "takeover";
+  reason: "host" | "second name" | "same host" | "move" | "takeover" | "live row";
   description?: string;
   url?: string;
   live?: boolean;

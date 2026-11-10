@@ -11,7 +11,9 @@
  * key holds a row), `same host` (the host holds a row), `move` (the row's
  * key moving it to another host — with automatic moves a stolen key alone
  * would point new installs at the thief's server), `takeover` (another key
- * holds the name — the only way back for a publisher who lost its key).
+ * holds the name — the only way back for a publisher who lost its key),
+ * `live row` (the name is a live row the operator listed with no key: theirs
+ * to give).
  *
  * On disk under `<indexDir>/requests/`: `pending/<id>.json` (the request
  * as sent and what the index read, the id its fingerprint), `refused.json`
@@ -41,7 +43,7 @@ export const PING_EVERY_MS = 60_000;
 /** Each open route's budget per address a minute (`POST /index/requests`, `POST /index/ping`). */
 export const LISTING_REQUESTS_PER_MINUTE = 10;
 
-export type ListingWait = "host" | "second name" | "same host" | "move" | "takeover";
+export type ListingWait = "host" | "second name" | "same host" | "move" | "takeover" | "live row";
 
 /** A request waiting for the operator. */
 export interface PendingListing {
@@ -59,7 +61,7 @@ export interface PendingListing {
   catalog: { seq: number; digest: string; packages: string[] };
   /** The key that holds the name now, on a takeover. */
   heldBy?: string;
-  /** The row's host now, on a move. */
+  /** The row's host now, on a move; the live row's, on a live row. */
   from?: string;
   /** The request as sent, its seal included. */
   request: Listing;
@@ -201,6 +203,14 @@ export function createRequestsDesk(deps: RequestsDeskDeps): RequestsDesk {
     return all;
   };
   const refusalKey = (prefix: string, key: string) => `${prefix} ${key}`;
+  /** The host a row's URL names, or nothing: a row typed by hand may hold one that does not parse. */
+  const hostOrNone = (url: string | undefined): string | undefined => {
+    try {
+      return url ? hostOf(url) : undefined;
+    } catch {
+      return undefined;
+    }
+  };
 
   /** The index as it is: its key, rows and live rows. */
   const card = async () => {
@@ -213,7 +223,8 @@ export function createRequestsDesk(deps: RequestsDeskDeps): RequestsDesk {
   const readCatalog = async (r: Listing) => {
     const url = catalogUrlOf(r.base!);
     try {
-      const { card: catalog, digest } = await fetchCatalog(r.key, url, { cache: deps.cache, ...(deps.fetch ? { fetch: deps.fetch } : {}) });
+      // That URL and no other: the host is the sender's to choose, so a redirect is refused.
+      const { card: catalog, digest } = await fetchCatalog(r.key, url, { cache: deps.cache, redirects: false, ...(deps.fetch ? { fetch: deps.fetch } : {}) });
       const packages = Object.keys(catalog.packages).filter((p) => p.startsWith(`${r.prefix}/`)).sort();
       if (!packages.length) throw new Error(`it lists no package under ${r.prefix}/ — publish one and make it public first`);
       return { seq: catalog.seq, digest, packages };
@@ -313,9 +324,13 @@ export function createRequestsDesk(deps: RequestsDeskDeps): RequestsDesk {
         seqs[r.key] = r.seq;
         await writeJson(seqFile, seqs);
       });
-      // 5: names only the operator lists, and a refusal still in force.
+      // 5: names only the operator lists, and a refusal still in force. A
+      // refusal is of what WAITED: it never stops a removal, nor the row's
+      // own key changing its row where it is.
       if (reserved.has(r.prefix)) throw new Error(`listing_reserved: ${r.prefix} is reserved — only this index's operator lists it`);
-      const refusal = (await readRefused())[refusalKey(r.prefix, r.key)];
+      const held = info.publishers[r.prefix];
+      const own = !!r.remove || (held?.key === r.key && hostOrNone(held.urls[0]) === hostOf(r.base!));
+      const refusal = own ? undefined : (await readRefused())[refusalKey(r.prefix, r.key)];
       if (refusal) throw new Error(`listing_refused: ${refusal.reason} (refused ${refusal.at.slice(0, 10)}; this key may ask again after 30 days)`);
 
       if (r.remove) {
@@ -347,20 +362,26 @@ export function createRequestsDesk(deps: RequestsDeskDeps): RequestsDesk {
 
       // 7: the decision, against the card as it is now.
       return locked(async () => {
-        const { publishers } = await card();
+        const { publishers, live } = await card();
         const row = publishers[r.prefix];
         if (row) {
           if (row.key !== r.key) return wait(r, "takeover", read, { heldBy: row.key });
-          const from = row.urls[0] ? hostOf(row.urls[0]) : undefined;
+          const from = hostOrNone(row.urls[0]);
           if (from !== host) return wait(r, "move", read, from ? { from } : {});
           const listed = await apply(r);
           await dropPending(r.prefix, r.key);
           await log({ prefix: r.prefix, key: r.key, host, outcome: "edited" });
           return listed;
         }
+        // A name the operator lists as a live row, with no key, is held too.
+        const liveRow = live[r.prefix];
+        if (liveRow) {
+          const from = hostOrNone(liveRow.url);
+          return wait(r, "live row", read, from ? { from } : {});
+        }
         const rows = Object.values(publishers);
         if (rows.some((x) => x.key === r.key)) return wait(r, "second name", read);
-        if (rows.some((x) => x.urls.some((u) => hostOf(u) === host))) return wait(r, "same host", read);
+        if (rows.some((x) => x.urls.some((u) => hostOrNone(u) === host))) return wait(r, "same host", read);
         if (!autoHosts.some((p) => hostMatches(p, host))) return wait(r, "host", read);
         const listed = await apply(r);
         await dropPending(r.prefix, r.key);

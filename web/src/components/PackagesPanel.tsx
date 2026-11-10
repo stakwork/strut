@@ -197,6 +197,7 @@ export const WAIT_WORDS: Record<api.PendingListing["reason"], string> = {
   "same host": "this server's host already holds a name there",
   move: "the name is moving to another host",
   takeover: "another key holds the name",
+  "live row": "the name already shows a server's public view there, listed by the index's operator",
 };
 
 /** Where this server is reached, as a listing names it: the page's origin and its mount. */
@@ -232,7 +233,11 @@ function ListingLines(props: { publisher: api.PublisherInfo }) {
     setError(null);
     setSaid(null);
     try {
-      const r = await api.askListing({ index: form.index, base: form.base.trim(), ...(form.description.trim() ? { description: form.description.trim() } : {}), ...(form.url.trim() ? { url: form.url.trim() } : {}), live: form.live });
+      // `live` only when it says something: on, or off after this server asked
+      // for it. Left out, the index leaves a live row under the name alone.
+      const askedLive = lines?.find((l) => l.index === form.index)?.asked?.live === true;
+      const live = form.live ? { live: true } : askedLive ? { live: false } : {};
+      const r = await api.askListing({ index: form.index, base: form.base.trim(), ...(form.description.trim() ? { description: form.description.trim() } : {}), ...(form.url.trim() ? { url: form.url.trim() } : {}), ...live });
       setSaid(r.status === "listed" ? "Listed." : `Sent: waiting for the index's operator — ${WAIT_WORDS[r.reason as api.PendingListing["reason"]] ?? r.reason}.`);
       setForm(null);
     } catch (err) {

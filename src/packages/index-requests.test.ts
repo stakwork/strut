@@ -6,6 +6,7 @@
  */
 import { afterEach, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { createServer, type Server } from "node:http";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -53,7 +54,8 @@ describe("the index's requests desk", () => {
   const submit = (signer: Signer, fields: Partial<UnsignedListing> & { prefix: string }) => desk.submit(ask(signer, fields));
   const rows = async () => (await index.info())!.publishers;
 
-  const boot = (opts: { autoHosts?: string[] } = {}) => {
+  /** `network`: the real one, plain http allowed (a test's loopback servers). */
+  const boot = (opts: { autoHosts?: string[]; network?: boolean } = {}) => {
     desk?.close();
     desk = createRequestsDesk({
       index: { ...index, crawl: async (f) => (crawls.push(f ?? {}), []) },
@@ -61,7 +63,7 @@ describe("the index's requests desk", () => {
       cache: new PackageCache(join(root, "cache")),
       autoHosts: opts.autoHosts ?? ["*.sphinx.chat:3355"],
       reserved: ["acme-corp"],
-      fetch: stubFetch,
+      ...(opts.network ? { allowHttp: true } : { fetch: stubFetch }),
       now: () => clock,
     });
   };
@@ -225,6 +227,92 @@ describe("the index's requests desk", () => {
     assert.deepEqual(await submit(heir, { prefix: "acme", remove: true }), { status: "removed", prefix: "acme" });
     assert.equal(fetched.length, before);
     assert.ok(!(await rows())["acme"]);
+  });
+
+  it("reads the base and nothing else: a redirect is refused, and a body is read no further than the cap", async () => {
+    await mint();
+    boot({ network: true });
+    const servers: Server[] = [];
+    const listen = (srv: Server) => new Promise<string>((done) => (servers.push(srv), srv.listen(0, "127.0.0.1", () => done(`http://127.0.0.1:${(srv.address() as { port: number }).port}`))));
+    try {
+      // A base that answers with a redirect: the address it names is never asked.
+      const inside: string[] = [];
+      const elsewhere = await listen(createServer((req, res) => (inside.push(req.url ?? ""), res.writeHead(403).end("not for you"))));
+      const redirecting = await listen(createServer((_req, res) => res.writeHead(302, { location: `${elsewhere}/admin` }).end()));
+      await assert.rejects(submit(newSigner(), { prefix: "acme", base: redirecting }), /^Error: listing_no_catalog: .*answered a redirect/);
+      assert.deepEqual(inside, [], "the redirect was not followed");
+
+      // A body with no end: the read stops at the cap, long before the server is done.
+      const TOTAL = 64 * 1024 * 1024;
+      let sent = 0;
+      const endless = await listen(
+        createServer((_req, res) => {
+          const chunk = Buffer.alloc(256 * 1024, 0x20);
+          const pump = () => {
+            while (sent < TOTAL && !res.destroyed) {
+              sent += chunk.length;
+              if (!res.write(chunk)) return void res.once("drain", pump);
+            }
+            res.end();
+          };
+          pump();
+        }),
+      );
+      await assert.rejects(submit(newSigner(), { prefix: "acme", base: endless }), /^Error: listing_no_catalog: .*the catalog is more than 4194304 bytes/);
+      assert.ok(sent < TOTAL / 2, `the server had sent ${sent} of ${TOTAL} bytes when the read stopped`);
+    } finally {
+      for (const srv of servers) await new Promise((done) => (srv.closeAllConnections(), srv.close(done)));
+    }
+  });
+
+  it("holds a name the operator lists as a live row alone: it waits, and the live row is the operator's to move", async () => {
+    await mint();
+    await index.setLive("docs", { url: "https://docs.operator.example" }, { crawl: false });
+    const asker = newSigner();
+    const base = "https://asker.sphinx.chat:3355/lab";
+    serve(asker, base, ["docs/guide"]);
+    const waiting = (await submit(asker, { prefix: "docs", base, live: true })) as ListingAnswer & { status: "pending" };
+    assert.deepEqual([waiting.status, waiting.reason], ["pending", "live row"], "an auto host does not take the name");
+    assert.equal((await desk.list()).pending[0]!.from, "docs.operator.example");
+    assert.ok(!(await rows())["docs"]);
+    assert.deepEqual((await index.info())!.live["docs"], { url: "https://docs.operator.example" }, "the live row is as the operator left it");
+
+    // The operator approves: the key is listed under the name, and the live row moves as the request asked.
+    await desk.approve(waiting.id, "operator");
+    assert.equal((await rows())["docs"]!.key, asker.key);
+    assert.equal((await index.info())!.live["docs"]!.url, base);
+  });
+
+  it("answers a refusal for what waited, never for a removal or the row's own key changing its row where it is", async () => {
+    await mint();
+    const acme = newSigner();
+    const base = "https://acme1.sphinx.chat:3355/lab";
+    serve(acme, base, ["acme/linear"]);
+    await submit(acme, { prefix: "acme", base });
+    const moved = "https://acme2.sphinx.chat:3355/lab";
+    serve(acme, moved, ["acme/linear"]);
+    const move = (await submit(acme, { prefix: "acme", base: moved })) as ListingAnswer & { status: "pending" };
+    await desk.refuse(move.id, "stay where you are", "operator");
+
+    // The move again: the refusal, with no fetch.
+    const before = fetched.length;
+    await assert.rejects(submit(acme, { prefix: "acme", base: moved }), /^Error: listing_refused: stay where you are/);
+    assert.equal(fetched.length, before);
+    // An edit on the row's own host (which serves the publisher's catalog as it is now): applied.
+    serve(acme, base, ["acme/linear"]);
+    assert.equal((await submit(acme, { prefix: "acme", base, description: "new words" })).status, "listed");
+    assert.equal((await rows())["acme"]!.description, "new words");
+    // And the row's key takes its row away.
+    assert.deepEqual(await submit(acme, { prefix: "acme", remove: true }), { status: "removed", prefix: "acme" });
+    assert.ok(!(await rows())["acme"]);
+  });
+
+  it("decides a new name beside a row whose URL does not parse", async () => {
+    await mint();
+    await index.setRow("odd", { key: newSigner().key, urls: ["https://host:port/packages/catalog?public=1"] }, { crawl: false });
+    const acme = newSigner();
+    serve(acme, "https://acme1.sphinx.chat:3355/lab", ["acme/linear"]);
+    assert.equal((await submit(acme, { prefix: "acme", base: "https://acme1.sphinx.chat:3355/lab" })).status, "listed");
   });
 
   it("keeps the queue bounded, one request per name and key", async () => {

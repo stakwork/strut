@@ -30,6 +30,13 @@
 >   a plain-http base is for code only (`index: { allowHttp }`, the tests).
 > - The shell asks `GET /index/requests` once and, on an index, every
 >   minute, for the Index tab's dot.
+> - From the PR's review (2026-11-10): the request's catalog read follows
+>   no redirect and stops at the 4 MB cap (the host is a stranger's to
+>   choose); a name the operator lists as a live row alone is held (`live
+>   row`, the queue); a refusal never stops a removal or the row's own key
+>   changing its row on the same host; the publisher pings every index it
+>   asked until it takes itself off; the Packages tab sends `live` only
+>   when it is on, or off after this server asked for it.
 
 ## Problem
 
@@ -175,12 +182,16 @@ first five pass):
    (`listing_rollback:`).
 4. The seal verifies against `key` (`listing_invalid:`).
 5. `prefix` is not reserved (`listing_reserved:`) and was not refused for
-   this key in the last 30 days (`listing_refused: <the reason>`).
+   this key in the last 30 days (`listing_refused: <the reason>`). A
+   refusal is of what waited: it never stops a `remove`, nor the row's own
+   key changing its row on the same host.
 6. Unless `remove`: `<base>/packages/catalog?public=1` reads as a card
    sealed by `key` (`fetchCatalog`, `src/packages/pk.ts`), and lists at
    least one package under `prefix` (`listing_no_catalog:`, naming the URL
    and what it answered). One catalog read: the existing 4 MB cap and 30 s
-   timeout apply. No archive is fetched until the row exists.
+   timeout apply, the body is read no further than the cap, and a redirect
+   is refused: the index reads that URL and no other. No archive is fetched
+   until the row exists.
 7. The decision (§2, §5).
 
 **Answers:** `200 { status: "listed", row }`, `200 { status: "removed" }`,
@@ -249,7 +260,8 @@ prefix, the base's host, and why it waits:
 - `second name` — the key already holds a row;
 - `same host` — the host already holds a row;
 - `move` — an edit to another host (§5);
-- `takeover` — another key holds the name (§5).
+- `takeover` — another key holds the name (§5);
+- `live row` — the name is a live row the operator listed with no key (§7).
 
 One request waits per (prefix, key). Every decision is appended to
 `requests/log.jsonl` (time, prefix, key, host, outcome, who decided, why),
@@ -347,7 +359,9 @@ read a minute at most. The peer-credential ping on
 
 **On the publisher.** `pingPublic` (`createStrut.ts:3933`) already runs
 when the public catalog changes. It also POSTs `{ key }` to
-`<index>/index/ping` for every index in `listings.json`. So listing sets
+`<index>/index/ping` for every index in `listings.json` it has not taken
+itself off (the record is the last answer, and a failed or refused change
+leaves the row listed). So listing sets
 up the ping, and a release shows up in the store within seconds. The
 10-minute poll stays as the fallback.
 
@@ -365,6 +379,9 @@ comes only with a keyed row:
   key. A request never names it separately.
 
 The operator's `PUT /index/live/:prefix` stays for a server with no key.
+A name listed that way is held: a request for it waits as `live row`, and
+approving it lists the key under the name, moving the live row only when
+the request says `live: true`.
 
 ## 8. Abuse and limits
 

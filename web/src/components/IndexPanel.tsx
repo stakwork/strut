@@ -88,7 +88,7 @@ export function IndexPanel(props: { onChanged?: (waiting: number) => void }) {
           <div class={`auto-card${p.reason === "takeover" ? " is-takeover" : ""}`} key={p.id}>
             <div class="auto-card-head">
               <span class="package-name">{p.prefix}</span>
-              <span class={`badge${p.reason === "takeover" ? " badge-danger" : p.reason === "move" ? " badge-warning" : ""}`} title={WAIT_WORDS[p.reason]}>{p.reason}</span>
+              <span class={`badge${p.reason === "takeover" ? " badge-danger" : p.reason === "move" || p.reason === "live row" ? " badge-warning" : ""}`} title={WAIT_WORDS[p.reason]}>{p.reason}</span>
             </div>
             <div class="auto-meta">
               <span title={p.key}>key {short(p.key)}</span>
@@ -99,6 +99,12 @@ export function IndexPanel(props: { onChanged?: (waiting: number) => void }) {
             <div class="auto-meta">Its catalog holds {p.catalog.packages.join(", ")}</div>
             {p.reason === "takeover" && p.heldBy && <div class="auto-error">The name is held by {short(p.heldBy)}. Approving gives it to the new key: new installs follow it, copies already installed keep the old one.</div>}
             {p.reason === "move" && p.from && <div class="auto-hint">Listed at {p.from} now; approving moves it to {p.host}.</div>}
+            {p.reason === "live row" && (
+              <div class="auto-hint">
+                You list {p.prefix} as a live row{p.from ? ` at ${p.from}` : ""}, with no key. Approving lists this key under the name
+                {p.live === true ? `, and moves the live row to ${p.host}.` : p.live === false ? ", and drops the live row." : "; the live row stays."}
+              </div>
+            )}
             {refusing?.id === p.id ? (
               <div class="listing-form">
                 <label>
