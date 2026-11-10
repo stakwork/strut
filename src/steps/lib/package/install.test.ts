@@ -50,7 +50,9 @@ const boot = (ws: WorkspaceManager, extra: Record<string, unknown> = {}) =>
   });
 const saved: Record<string, string | undefined> = {};
 before(() => {
-  for (const k of ["STRUT_API_KEY", "STRUT_PEER_KEY", "STRUT_SECRET_KEY", "STRUT_INDEX"]) saved[k] = process.env[k];
+  for (const k of ["STRUT_API_KEY", "STRUT_PEER_KEY", "STRUT_SECRET_KEY", "STRUT_INDEX", "STRUT_PACKAGE_INDEXES"]) saved[k] = process.env[k];
+  // Follow only the index each test files, never the built-in default.
+  process.env["STRUT_PACKAGE_INDEXES"] = "[]";
   process.env["STRUT_API_KEY"] = KEY;
   process.env["STRUT_PEER_KEY"] = PEER_KEY;
   process.env["STRUT_SECRET_KEY"] = "install-secret";

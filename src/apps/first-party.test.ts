@@ -85,7 +85,7 @@ describe("first-party apps: the pure parts", () => {
 });
 
 describe("first-party apps through a whole strut", () => {
-  const ENV = ["ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "STRUT_API_KEY", "AI_SDK_LOG_WARNINGS"];
+  const ENV = ["ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "STRUT_API_KEY", "AI_SDK_LOG_WARNINGS", "STRUT_PACKAGE_INDEXES"];
   let saved: Record<string, string | undefined> = {};
   let root = "";
   let server: http.Server;
@@ -178,6 +178,8 @@ describe("first-party apps through a whole strut", () => {
     process.env["STRUT_API_KEY"] = KEY;
     process.env["ANTHROPIC_API_KEY"] = "test-key";
     process.env["AI_SDK_LOG_WARNINGS"] = "false";
+    // A package/install proposal reads its card off the followed indexes: none, never the real one.
+    process.env["STRUT_PACKAGE_INDEXES"] = "[]";
     root = await mkdtemp(join(tmpdir(), "strut-first-party-"));
 
     // The stand-in model: a wake says "Summary."; "note it" calls the gated

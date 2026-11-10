@@ -45,10 +45,18 @@ export interface IndexSubscription {
   label?: string;
 }
 
-/** The indexes a strut follows when `STRUT_PACKAGE_INDEXES` is unset.
- *  Stakwork's public index goes here once it is deployed with the role and
- *  its key is known; until then a strut follows none by default. */
-export const DEFAULT_PACKAGE_INDEXES: readonly IndexSubscription[] = [];
+/** The indexes a strut follows when `STRUT_PACKAGE_INDEXES` is unset:
+ *  Stakwork's public index at index.stakwork.ai (deploy/index/), its key
+ *  the one its first row minted (2026-11-09). `STRUT_PACKAGE_INDEXES='[]'`
+ *  follows none. */
+export const DEFAULT_PACKAGE_INDEXES: readonly IndexSubscription[] = [
+  {
+    id: "stakwork",
+    key: "fesbp7why3z9ikyc1k6qzdh5srfi9sh7fj397wdmicjsu4nmn8my",
+    urls: ["https://index.stakwork.ai/index/catalog"],
+    label: "Stakwork",
+  },
+];
 
 /** `<dataDir>/packages/indexes.json`. */
 export const INDEXES_FILE = "indexes.json";
