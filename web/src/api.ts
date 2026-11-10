@@ -2023,6 +2023,9 @@ export interface AppListEntry {
   /** The live version's warnings in the last day (src/apps/monitor.ts): its
    *  pages cost the server too much. Absent when none. */
   warnings?: number;
+  /** The live version's document is still on an older kit: it did not build
+   *  on this server's, and these are the build's errors (specs/API.md §14.14). */
+  kitBehind?: { errors: string[] };
   /** The peer the app lives on, for one listed through the read-through
    *  (`listPeerApps`; never on the wire). */
   peer?: string;
@@ -2076,6 +2079,8 @@ export interface AppView {
   stale: boolean;
   inertGrants: string[];
   errors?: AppError[];
+  /** This version's document is still on an older kit (specs/API.md §14.14). */
+  kitBehind?: { errors: string[] };
 }
 
 // ── What an app's pages cost the server (src/apps/monitor.ts) ───────────────

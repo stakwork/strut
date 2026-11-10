@@ -29,11 +29,19 @@
 //                    aliases included
 //   <name>.css       the stylesheet entries, bundled
 //   candidates.json  the Tailwind class candidates of the kit's own components
-//   manifest.json    the kit's version, each package's version, the entries
+//   manifest.json    the kit's version, each package's version, the entries,
+//                    and `tree`: one sha256 over every file an app is
+//                    compiled from (the modules, the stylesheets, the base
+//                    stylesheet). The manifest's own sha256 is how strut
+//                    tells which kit a document was built on
+//                    (src/apps/kit.ts), so it has to move with a fix in a
+//                    transitive dependency or in the kit's own sources, which
+//                    change no version here
 // One React per page holds by construction: every import of `react`, from
 // anywhere in the tree, is the one file the table names. Nothing here runs in
 // strut's server process; `yarn build:vendor`.
 import { build, transform, type BuildOptions, type Metafile, type Message } from "esbuild";
+import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -263,6 +271,11 @@ export async function buildVendor({ outdir = vendorDir, minify = true }: { outdi
 
   const candidates = await kitCandidates();
   const pkg = JSON.parse(readFileSync(join(kitDir, "package.json"), "utf8"));
+  // Every file an app's document is compiled from, by name and content.
+  const tree = createHash("sha256");
+  const add = (name: string, file: string) => tree.update(`${name}\0${createHash("sha256").update(readFileSync(file)).digest("hex")}\n`);
+  for (const file of [...Object.keys(modules), ...css.map((e) => `${e.out}.css`)].sort()) add(file, join(outdir, file));
+  add("base.css", join(kitDir, "src", "styles", "base.css"));
   const manifest = {
     name: pkg.name,
     version: pkg.version,
@@ -271,6 +284,7 @@ export async function buildVendor({ outdir = vendorDir, minify = true }: { outdi
     entries: all.map((e) => e.id),
     modules: Object.keys(modules).length,
     candidates: candidates.length,
+    tree: tree.digest("hex"),
   };
   writeFileSync(join(outdir, "modules.json"), JSON.stringify(modules) + "\n");
   writeFileSync(join(outdir, "import-map.json"), JSON.stringify({ imports }, null, 2) + "\n");

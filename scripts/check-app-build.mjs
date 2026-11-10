@@ -57,7 +57,7 @@ try {
     [".text-emerald-600", "a Tailwind class the fixture uses"],
   ].filter(([s]) => !html.includes(s));
   if (missing.length) fail(`${DOCUMENT_FILE} lacks ${missing.map(([, what]) => what).join(", ")}`);
-  if (info.kit?.version !== kit.manifest.version) fail(`${BUILD_FILE} names kit ${JSON.stringify(info.kit)}, the vendor layer is ${kit.manifest.version}`);
+  if (info.kit?.version !== kit.manifest.version || info.kit?.digest !== kit.digest) fail(`${BUILD_FILE} names kit ${JSON.stringify(info.kit)}, the vendor layer is ${kit.manifest.version} (${kit.digest})`);
   console.log(
     `[app-build] OK: ${fixture} → ${DOCUMENT_FILE} (${(r.bytes / 1e6).toFixed(2)} MB) in ${Date.now() - t0} ms, ` +
       `${kit.manifest.name} ${kit.manifest.version} from ${kit.vendorDir}, esbuild ${esbuild.version}${r.warnings.length ? `; warnings: ${r.warnings.join("; ")}` : ""}`,

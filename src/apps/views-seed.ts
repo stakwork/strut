@@ -105,8 +105,8 @@ async function builtCopy(
   resolveApp: (name: string, version?: string) => Promise<InstalledApp | null>,
   importsKey: string,
 ): Promise<{ dir: string; manifest: AppManifest }> {
-  const kitId = await readFile(join(kit.vendorDir, "manifest.json"), "utf8").catch(() => kit.manifest.version);
-  const key = createHash("sha256").update(`${name}\n${hash}\n${kit.vendorDir}\n${kitId}\n${importsKey}`).digest("hex").slice(0, 24);
+  // The kit by its digest, which the built copy's `build.json` records.
+  const key = createHash("sha256").update(`${name}\n${hash}\n${kit.vendorDir}\n${kit.digest}\n${importsKey}`).digest("hex").slice(0, 24);
   let p = building.get(key);
   if (!p) {
     p = (async () => {

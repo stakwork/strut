@@ -1,10 +1,11 @@
 /**
  * The app BUILD (plans/apps.md §2): one directory with an `app.yaml` → one
  * self-contained HTML document, `dist/index.html`, beside `dist/build.json`
- * (the kit it was built with, `builtAt`, the tree hash it built from, each
- * imported app's name and hash). esbuild bundles the entry against the KIT
- * — the frozen vendor layer, never `node_modules` — and Tailwind 4's pure-JS
- * `compile()` turns the classes every bundled source uses into one `<style>`.
+ * (the kit it was built with, by name, version and digest, `builtAt`, the
+ * tree hash it built from, each imported app's name and hash). esbuild
+ * bundles the entry against the KIT — the frozen vendor layer, never
+ * `node_modules` — and Tailwind 4's pure-JS `compile()` turns the classes
+ * every bundled source uses into one `<style>`.
  * The same inputs give the same bytes, and the document holds no
  * credential: the app's file token goes into `<meta name="strut-app-token">`
  * when the file route SERVES the document (§7.2), never here.
@@ -22,7 +23,7 @@
  * too. Lazy-imported by whoever builds (the publish, `app/build`), as a lib
  * step's SDK is, so the registry build never loads esbuild.
  */
-import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
+import { readFile, realpath, stat } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, extname, join, relative, resolve, sep } from "node:path";
 import type { Message, OnResolveResult } from "esbuild";
@@ -30,6 +31,7 @@ import { treeFiles, treeHash } from "../version.js";
 import { packagePrefixOf } from "../package-lookup.js";
 import { kitOf, type Kit, type KitLocation } from "./kit.js";
 import { readManifest, type AppManifest } from "./manifest.js";
+import { writeWhole } from "./objects.js";
 
 export const DOCUMENT_FILE = "dist/index.html";
 export const BUILD_FILE = "dist/build.json";
@@ -72,7 +74,11 @@ export interface BuildDeps {
 
 /** `dist/build.json`. */
 export interface BuildInfo {
-  kit: { name: string; version: string };
+  /** The kit the document was built on: its name and version, and its
+   *  digest (`Kit.digest`, the sha256 of its `vendor/manifest.json`) — absent
+   *  on a document built before the digest was recorded, which is then
+   *  behind this strut's kit like one that names another (src/apps/apps.ts). */
+  kit: { name: string; version: string; digest?: string };
   builtAt: string;
   /** The tree hash of the directory as built. */
   hash: string;
@@ -616,7 +622,7 @@ export async function buildApp(dir: string, deps: BuildDeps = {}): Promise<Build
     .map((r) => ({ name: r.name!, version: r.version!, hash: r.hash!, ...(r.pinned ? { pinned: true as const } : {}) }))
     .sort((a, b) => a.name.localeCompare(b.name) || a.version.localeCompare(b.version));
   const info: BuildInfo = {
-    kit: { name: kit.manifest.name, version: kit.manifest.version },
+    kit: { name: kit.manifest.name, version: kit.manifest.version, digest: kit.digest },
     builtAt: (deps.now?.() ?? new Date()).toISOString(),
     hash,
     imports,
@@ -625,9 +631,11 @@ export async function buildApp(dir: string, deps: BuildDeps = {}): Promise<Build
     title: manifest.title,
     ...(manifest.wallet ? { wallet: manifest.wallet } : {}),
   };
-  await mkdir(join(root, "dist"), { recursive: true });
-  await writeFile(join(root, DOCUMENT_FILE), html, "utf8");
-  await writeFile(join(root, BUILD_FILE), JSON.stringify(info, null, 2) + "\n", "utf8");
+  // Each by way of a sibling and a rename: a version's document is rebuilt
+  // in place while it is served (the kit moved), and a reader never sees
+  // half of one. The document first, so a build cut short is built again.
+  await writeWhole(join(root, DOCUMENT_FILE), html);
+  await writeWhole(join(root, BUILD_FILE), JSON.stringify(info, null, 2) + "\n");
   return { ok: true, manifest, hash, bytes, warnings, imports };
 }
 

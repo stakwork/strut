@@ -8,7 +8,8 @@ export default defineStep({
   description:
     "One workspace app at a version (the active one by default): its manifest (title, grants, data, csp), hash, versions, publisher, owner, upstream, the version's directory (`dir`) and files, " +
     "its build (`build`: the kit, builtAt, the hash it built from, the imported apps) and `stale` — true when the document is older than the sources or an imported kit moved, so a build is due — " +
-    "`inertGrants`, granted workflows that no longer exist, and `errors`, the page's latest client-side errors. " +
+    "`inertGrants`, granted workflows that no longer exist, `errors`, the page's latest client-side errors, " +
+    "and `kitBehind: { errors }` when the document is still on an older kit because it does not build on this server's (`build.kit` names the one it is on): the fix is a source change, then a publish. " +
     "With `path` instead of `name`: an app DIRECTORY you are working on (in your job's directory; `job` names another job's) — read back the same way: manifest, files, build, `stale`.",
   input: z.object({
     name: z.string().optional().describe("A workspace app's name (app/list)."),

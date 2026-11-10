@@ -47,7 +47,7 @@ export function hashOfTree(files: Record<string, string>): string {
 }
 
 /** Write a file by way of a sibling and a rename, so a reader never sees half of it. */
-async function writeWhole(path: string, bytes: Uint8Array | string): Promise<void> {
+export async function writeWhole(path: string, bytes: Uint8Array | string): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
   await writeFile(tmp, bytes);

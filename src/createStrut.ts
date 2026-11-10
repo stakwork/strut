@@ -88,7 +88,7 @@ import { createAppMonitor, type AppMonitor } from "./apps/monitor.js";
 import { seedViewsApp } from "./apps/views-seed.js";
 import { RETIRED_APP, seedJamieApp } from "./apps/jamie-seed.js";
 import { seedKnowledgeApp } from "./apps/knowledge-seed.js";
-import type { KitLocation } from "./apps/kit.js";
+import type { Kit, KitLocation } from "./apps/kit.js";
 import { appsRoot, isPreviewLabel, listAppFiles, readAppFile, reservedAppName, validateAppName, writeAppFiles } from "./apps/files.js";
 import { DOCUMENT_FILE, readBuildInfo, withPublicIdentity, withToken, withoutTokenMeta } from "./apps/build.js";
 import { packArchive } from "./packages/archive.js";
@@ -203,8 +203,9 @@ export interface StrutOptions<TServices = unknown> {
   /** Where the app KIT is (plans/apps.md §3; `src/apps/kit.ts`): the vendor
    *  layer app builds resolve against. Default: `@strut/kit` when pinned,
    *  else the repo's `kit/` — read at the first build, so a strut without a
-   *  built kit boots and the build says what is missing. */
-  kit?: KitLocation;
+   *  built kit boots and the build says what is missing. Or a kit already
+   *  loaded (`loadKit`). */
+  kit?: Kit | KitLocation;
 
   /** Local directory for the inherently-local things: run artifacts,
    *  step cassettes, the chat builder's shell cwd + scratch/. Defaults to
@@ -905,7 +906,9 @@ export async function createStrut<TServices = unknown>(
     dataDir,
     workspace: baseWorkspace,
     claims: () => claimsAuthoring,
-    apps: () => apps,
+    // A snapshot reads an app's sources, never its document: it does not
+    // wait for one to be rebuilt on this kit (`apps.refreshKit`).
+    apps: () => ({ versionDir: (name, version) => apps.versionDir(name, version, { sources: true }) }),
   });
   const workspace: WorkspaceStore = history ? history.watch(baseWorkspace) : baseWorkspace;
   /** `fn` as one commit under its own cause (an install, an uninstall). */
@@ -3346,8 +3349,9 @@ export async function createStrut<TServices = unknown>(
       const served = identity ? withToken(html, identity) : withoutTokenMeta(html);
       // The same bytes every time a version is served (the identity is a
       // signature of it, not a nonce), so a host keeps them and asks again
-      // with If-None-Match: a rebuild, a rotated key or another version
-      // changes the tag.
+      // with If-None-Match: a rebuild that changed the document (on another
+      // kit: `apps.refreshKit`), a rotated key or another version changes
+      // the tag.
       const etag = `"${createHash("sha256").update(served).digest("hex").slice(0, 32)}"`;
       const headers = { ...artifactHeaders(relPath, tokenRead), etag, "cache-control": "private, no-cache" };
       if (etagMatches(c.req.header("if-none-match"), etag)) return c.body(null, 304, headers);
@@ -8127,11 +8131,14 @@ export async function createStrut<TServices = unknown>(
    *  writing into its data dir (`boot.json`) after `close()`. */
   let bootTimer: ReturnType<typeof setTimeout> | undefined;
   let bootScan: Promise<unknown> | undefined;
+  /** The apps' documents being brought onto this kit (below). */
+  let kitRefresh: Promise<unknown> | undefined;
 
   async function close(): Promise<void> {
     if (bootTimer) clearTimeout(bootTimer);
     bootTimer = undefined;
     await bootScan;
+    await kitRefresh;
     await packages.booted;
     // What the history still has waiting is committed before the stores go.
     await history?.close();
@@ -8205,6 +8212,21 @@ export async function createStrut<TServices = unknown>(
   // The history's first snapshot, cause `boot`: every seed is in. Awaited,
   // so a strut that answers has its boot commit (a failed one is a warning).
   await history?.start();
+
+  // The kit (plans/managed-packages.md §6; `apps.refreshKit`): an app's
+  // libraries are the kit's, compiled into its document, so a strut upgraded
+  // since an app was built brings every ACTIVE version's document onto its
+  // kit — rebuilt in place, the version and what is live as they were. After
+  // the seeds, which build strut's own apps, and in the background: a build
+  // is a second or two an app, and a read of a version waits only for its
+  // own. One that no longer builds keeps its document (`kitBehind`).
+  // `close()` waits.
+  kitRefresh = Promise.resolve()
+    .then(() => apps.refreshKit())
+    .then((r) => {
+      if (r.rebuilt.length) console.log(`[apps] rebuilt on this strut server's kit: ${r.rebuilt.join(", ")}`);
+    })
+    .catch((err) => console.warn(`[apps] could not bring the apps' documents onto this kit:`, err instanceof Error ? err.message : err));
 
   // The first-boot installs (src/packages/boot.ts), last: after the seeds
   // (strut/views an app may import, the Concept roots a page may hang

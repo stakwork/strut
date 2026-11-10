@@ -25,7 +25,19 @@
  * publish records the version's sources once per file, the active version
  * and the newest few keep their directory, and an older one is restored
  * from its tree and rebuilt the first time it is read (`ensure`). Every
- * read of a version goes through `ensure`.
+ * read of a version goes through `ensure` — one of its sources alone
+ * through `restored`, the half of it that puts the directory there.
+ *
+ * And a version's DOCUMENT follows the kit (plans/managed-packages.md §6):
+ * an app has no dependencies of its own — every library it uses is the
+ * kit's, compiled into `dist/index.html` — so a fix in a new strut's kit
+ * reaches an app when its document is built again. A document built on
+ * another kit (`dist/build.json`'s `kit.digest`) is rebuilt IN PLACE, the
+ * same sources on this kit: the active versions when strut boots
+ * (`refreshKit`), any other when it is next read (`ensure`). `dist/` is
+ * outside the tree hash, so nothing else moves: no new version, no draft on
+ * a held app. One that no longer builds keeps the document it has, and the
+ * app says so (`kitBehind`).
  */
 import { randomBytes } from "node:crypto";
 import { rename, rm, stat } from "node:fs/promises";
@@ -43,7 +55,7 @@ import { copyAppDir, isEmptyDir, isPreviewLabel, listAppFiles, reservedAppName, 
 import { memoryAppGrants, type AppGrant, type AppGrantStore } from "./grants.js";
 import { removeAppState } from "./state.js";
 import { checkAppGraph, registerAppGraph, type RegisteredGraph } from "./graph-types.js";
-import type { Kit, KitLocation } from "./kit.js";
+import { kitDigestOf, type Kit, type KitLocation } from "./kit.js";
 import { readManifest, type AppManifest } from "./manifest.js";
 import { evictVersionDir, keptVersions, readTree, recordTree, restoreSources } from "./objects.js";
 import type { AppMonitor, AppUsageBrief } from "./monitor.js";
@@ -83,10 +95,22 @@ export interface AppView extends Omit<AppRecord, "releases"> {
   usage?: AppUsageBrief;
   /** The sealed workflows a person granted the app (./grants.ts). */
   granted: AppGrant[];
+  /** This version's document is built on another kit and did not build on
+   *  this one (`build.kit` names the one it is on). */
+  kitBehind?: KitBehind;
 }
 
-/** A listed app, with the live version's warning count (./monitor.ts) when it has any. */
-export type AppListing = AppListEntry & { warnings?: number };
+/** A document left on the kit it was built with (plans/managed-packages.md
+ *  §6): this strut's kit is another, and the rebuild failed with these
+ *  errors. The old document still serves; the fix is a change to the app's
+ *  sources. */
+export interface KitBehind {
+  errors: string[];
+}
+
+/** A listed app, with the live version's warning count (./monitor.ts) when
+ *  it has any, and `kitBehind` when its document could not follow the kit. */
+export type AppListing = AppListEntry & { warnings?: number; kitBehind?: KitBehind };
 
 /** One client-side error an app's page reported (`app/report-error`). */
 export interface AppError {
@@ -189,8 +213,10 @@ export interface AppsCapability {
   /** Every app, each with its live version's warning count when it has any. */
   list(): Promise<AppListing[]>;
   get(name: string, version?: string): Promise<AppView | null>;
-  /** A version's directory (the active one by default), or null. */
-  versionDir(name: string, version?: string): Promise<{ path: string; version: string; hash: string } | null>;
+  /** A version's directory (the active one by default), or null — its
+   *  document brought onto this strut's kit first (`refreshKit`), unless
+   *  the caller reads only its `sources` (a package build, the history). */
+  versionDir(name: string, version?: string, opts?: { sources?: boolean }): Promise<{ path: string; version: string; hash: string } | null>;
   /** Build the directory in place (`dist/`), with the installed apps and the
    *  workspace's workflows in reach; `name` is the app's, when known. */
   build(dir: string, opts?: { name?: string }): Promise<BuildResult>;
@@ -226,6 +252,12 @@ export interface AppsCapability {
    *  before ./objects.ts) and drop the directories no longer kept: a boot
    *  step. A directory whose files no longer match its version is left alone. */
   compact(): Promise<{ recorded: number; evicted: number; mismatched: string[] }>;
+  /** Bring every app's ACTIVE version onto this strut's kit: a boot step,
+   *  run in the background. A document built on another kit is rebuilt in
+   *  place — the version, its label and what is live stay as they are; one
+   *  that does not build keeps its document and is `failed` (`kitBehind` on
+   *  the app). Each as `name@vN`. Nothing without a built kit. */
+  refreshKit(): Promise<{ rebuilt: string[]; failed: string[] }>;
   /** Pin the app as a tab a host shows (`AppMetadata.pinned`), or unpin it.
    *  A tab is what people use, so pinning an app that follows latest also
    *  HOLDS it at the version it shows (plans/app-releases.md, ruled
@@ -295,6 +327,18 @@ export function createApps(deps: AppsDeps): AppsCapability {
   const grants = deps.grants ?? memoryAppGrants();
   const templatesDir = deps.templatesDir ?? TEMPLATES_DIR;
 
+  /** This strut's kit, by digest (./kit.ts), read once: a kit does not move
+   *  under a running process. Null with no vendor layer built — nothing can
+   *  be rebuilt then, so nothing is behind. */
+  let kitDigest: string | null | undefined;
+  const thisKit = () => (kitDigest === undefined ? (kitDigest = kitDigestOf(deps.kit)) : kitDigest);
+  /** The version directories whose document is known to be on this kit. */
+  const onKit = new Set<string>();
+  /** The versions whose rebuild on this kit failed, `name@vN` → the build's
+   *  errors: tried once per process, so again at the next boot. */
+  const kitFailed = new Map<string, string[]>();
+  const failedBuild = (err: unknown) => ({ ok: false as const, errors: [err instanceof Error ? err.message : String(err)] });
+
   /**
    * A version's directory, there to be read: as it is when kept, else
    * restored from its tree and rebuilt (a build that fails leaves the
@@ -302,7 +346,7 @@ export function createApps(deps: AppsDeps): AppsCapability {
    * Absent with no tree to restore from (a graph copied without its
    * dataDir): `missing`. One restore per directory at a time.
    */
-  const ensure = async (name: string, version: string): Promise<{ path: string; hash: string }> => {
+  const restored = async (name: string, version: string): Promise<{ path: string; hash: string }> => {
     const at = await workspace.materializeAppVersion(name, version);
     if (await isDir(at.path)) return at;
     return withLock(`app-version:${at.path}`, async () => {
@@ -312,9 +356,11 @@ export function createApps(deps: AppsDeps): AppsCapability {
       const tmp = join(dirname(at.path), `.restore-${version}-${process.pid}-${Date.now()}`);
       try {
         await restoreSources(at.path, tree, tmp);
-        const built = await buildApp(tmp, buildDeps(name)).catch((err: unknown) => ({ ok: false as const, errors: [err instanceof Error ? err.message : String(err)] }));
+        const built = await buildApp(tmp, buildDeps(name)).catch(failedBuild);
         if (!built.ok) console.warn(`[apps] ${name}@${version} was restored but does not build on this kit: ${built.errors.join("; ")}`);
         await rename(tmp, at.path);
+        // What is there now was built here, or not at all.
+        kitFailed.delete(`${name}@${version}`);
       } finally {
         await rm(tmp, { recursive: true, force: true });
       }
@@ -322,12 +368,59 @@ export function createApps(deps: AppsDeps): AppsCapability {
     });
   };
 
+  /**
+   * The version's document on this strut's kit (plans/managed-packages.md
+   * §6). One whose `dist/build.json` names another kit, or none (a document
+   * from before the digest was recorded), is rebuilt in place: the same
+   * sources, each imported app at the version the document already carries,
+   * this kit — so only the kit moves, on a held app too. A granted workflow
+   * that is gone does not stop it (`inertGrants` says that). The build
+   * writes nothing unless it succeeds, so one that fails leaves the old
+   * document serving; it is remembered (`kitBehind`) and not tried again by
+   * this process. A version never built is left alone.
+   */
+  const followKit = async (name: string, version: string, path: string): Promise<"current" | "rebuilt" | "failed"> => {
+    const key = `${name}@${version}`;
+    if (onKit.has(path)) return "current";
+    if (kitFailed.has(key)) return "failed";
+    const digest = thisKit();
+    if (!digest) return "current";
+    return withLock(`app-version:${path}`, async () => {
+      if (onKit.has(path)) return "current";
+      if (kitFailed.has(key)) return "failed";
+      const build = await readBuildInfo(path);
+      if (!build) return "current";
+      if (build.kit?.digest === digest) {
+        onKit.add(path);
+        return "current";
+      }
+      const was = new Map((build.imports ?? []).map((i) => [i.name, i.version]));
+      const { workflowExists: _granted, ...kitDeps } = buildDeps(name);
+      const built = await buildApp(path, { ...kitDeps, resolveApp: (n, v) => resolveApp(n, v ?? was.get(n)) }).catch(failedBuild);
+      if (built.ok) {
+        onKit.add(path);
+        return "rebuilt";
+      }
+      kitFailed.set(key, built.errors);
+      console.warn(`[apps] ${key} does not build on this strut server's kit; it keeps the document it has (${build.kit?.name ?? "kit"} ${build.kit?.version ?? "unknown"}): ${built.errors.join("; ")}`);
+      return "failed";
+    });
+  };
+
+  /** A version's directory to READ: there (`restored`), its document on this kit (`followKit`). */
+  const ensure = async (name: string, version: string): Promise<{ path: string; hash: string }> => {
+    const at = await restored(name, version);
+    await followKit(name, version, at.path);
+    return at;
+  };
+
   /** Drop the directories of the versions no longer kept (their trees stay). */
   const evict = async (name: string): Promise<number> => {
     const rec = await workspace.getApp(name);
     if (!rec) return 0;
-    // A version a release names keeps its directory: a rebuild would take
-    // today's kit and imports, and a rollback serves the bytes that were live.
+    // A version a release names keeps its directory: a restore would build it
+    // with today's imports, and a rollback serves the document that was live
+    // (only the kit moves under it, `followKit`).
     const kept = new Set([...keptVersions(Object.keys(rec.versions), rec.active), ...(rec.releases ?? []).map((r) => r.version)]);
     let n = 0;
     for (const v of Object.keys(rec.versions)) {
@@ -357,7 +450,8 @@ export function createApps(deps: AppsDeps): AppsCapability {
       if (version && (await workspace.getApp(name))) throw new Error(`the installed app ${name} has no version ${version}`);
       return null;
     }
-    const { path } = await ensure(name, rec.version);
+    // An importer compiles the app's sources: its own document is not read.
+    const { path } = await restored(name, rec.version);
     return { name, version: rec.version, dir: path, hash: rec.hash };
   };
 
@@ -421,14 +515,14 @@ export function createApps(deps: AppsDeps): AppsCapability {
     return preview;
   };
 
-  const versionDir: AppsCapability["versionDir"] = async (name, version) => {
+  const versionDir: AppsCapability["versionDir"] = async (name, version, opts) => {
     if (version && isPreviewLabel(version)) {
       const p = previewOf(name, version);
       return p ? { path: p.path, version: p.version, hash: p.hash } : null;
     }
     const rec = await workspace.getApp(name, version);
     if (!rec) return null;
-    const { path } = await ensure(name, rec.version);
+    const { path } = await (opts?.sources ? restored : ensure)(name, rec.version);
     return { path, version: rec.version, hash: rec.hash };
   };
 
@@ -472,12 +566,10 @@ export function createApps(deps: AppsDeps): AppsCapability {
 
   return {
     async list() {
-      const listed = await workspace.listApps();
-      const monitor = deps.monitor;
-      if (!monitor) return listed;
-      return listed.map((a) => {
-        const warnings = monitor.warningCount(a.name, a.activeVersion);
-        return warnings ? { ...a, warnings } : a;
+      return (await workspace.listApps()).map((a) => {
+        const warnings = deps.monitor?.warningCount(a.name, a.activeVersion);
+        const behind = kitFailed.get(`${a.name}@${a.activeVersion}`);
+        return { ...a, ...(warnings ? { warnings } : {}), ...(behind ? { kitBehind: { errors: behind } } : {}) };
       });
     },
 
@@ -491,6 +583,7 @@ export function createApps(deps: AppsDeps): AppsCapability {
       const stale = missing || (await isStale(path, build));
       const inertGrants = await inert(rec.manifest);
       const errors = deps.errors ? await errorsOf(name) : undefined;
+      const behind = kitFailed.get(`${name}@${rec.version}`);
       const { releases, ...record } = rec;
       return {
         ...record,
@@ -504,6 +597,7 @@ export function createApps(deps: AppsDeps): AppsCapability {
         ...(errors ? { errors } : {}),
         ...(deps.monitor ? { usage: deps.monitor.brief(name) } : {}),
         granted: await grants.list(name),
+        ...(behind ? { kitBehind: { errors: behind } } : {}),
       };
     },
 
@@ -568,6 +662,7 @@ export function createApps(deps: AppsDeps): AppsCapability {
       await withLock(`app-version:${path}`, async () => {
         if (resolve(dir) !== resolve(path)) await copyAppDir(dir, path, { dist: true });
         await recordTree(path, built.hash);
+        kitFailed.delete(`${name}@${r.version}`);
       });
       await evict(name);
       // A person's publish of a manifest naming a sealed workflow IS their
@@ -651,7 +746,7 @@ export function createApps(deps: AppsDeps): AppsCapability {
       if (own && (await isDir(own))) {
         await copyAppDir(own, to, { dist: false });
       } else {
-        const at = await versionDir(template).catch(() => null);
+        const at = await versionDir(template, undefined, { sources: true }).catch(() => null);
         if (!at) {
           const names = await this.templates();
           throw new Error(`no template "${template}" — strut's templates: ${names.join(", ")}; or the name of an installed app (app/list)`);
@@ -706,6 +801,26 @@ export function createApps(deps: AppsDeps): AppsCapability {
       return { recorded, evicted, mismatched };
     },
 
+    async refreshKit() {
+      const rebuilt: string[] = [];
+      const failed: string[] = [];
+      if (!thisKit()) return { rebuilt, failed };
+      for (const { name, activeVersion } of await workspace.listApps()) {
+        const outcome = await restored(name, activeVersion)
+          .then((at) => followKit(name, activeVersion, at.path))
+          .catch(async (err: unknown) => {
+            // An app deleted since it was listed has nothing to bring current.
+            if (await workspace.getApp(name, activeVersion).catch(() => null)) {
+              console.warn(`[apps] could not check ${name}@${activeVersion} against the kit:`, err instanceof Error ? err.message : err);
+            }
+            return "current" as const;
+          });
+        if (outcome === "rebuilt") rebuilt.push(`${name}@${activeVersion}`);
+        else if (outcome === "failed") failed.push(`${name}@${activeVersion}`);
+      }
+      return { rebuilt, failed };
+    },
+
     async pin(name, pinned, opts) {
       // The hold first: a version that no longer builds pins nothing.
       const rec = pinned ? await workspace.getApp(name) : null;
@@ -716,6 +831,8 @@ export function createApps(deps: AppsDeps): AppsCapability {
     async delete(name) {
       const removed = await workspace.deleteApp(name);
       if (removed) deps.monitor?.forget(name);
+      // A name has no "@": every version of this app, and no other's.
+      for (const key of kitFailed.keys()) if (key.startsWith(`${name}@`)) kitFailed.delete(key);
       await grants.removeAll(name);
       if (deps.dataDir) await removeAppState(deps.dataDir, name);
       return removed;

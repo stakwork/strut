@@ -106,6 +106,11 @@ describe("the vendor build — a frozen module tree", () => {
     }
   });
 
+  it("names its own bytes: `tree`, a hash over every file an app is compiled from, so the manifest's own hash tells one layer from another", () => {
+    assert.match(readManifest(outdir).tree ?? "", /^[0-9a-f]{64}$/);
+    assert.equal(readManifest(outdir).tree, built.manifest["tree"]);
+  });
+
   it("precomputes the components' Tailwind candidates, which the base stylesheet compiles", async () => {
     const candidates = readCandidates(outdir);
     for (const c of ["inline-flex", "bg-primary", "text-primary-foreground", "rounded-md", "bg-destructive/5", "data-[state=open]:bg-accent"]) {
