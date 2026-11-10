@@ -11,12 +11,17 @@ import { appToolInput, namesApp, peerAppLink } from "../app-links";
 // (which mints the read token — `useFileScope`, as for a run's artifacts),
 // `dist/index.html` is fetched under that token (the server writes the
 // app's identity into it as it serves it), and the TEXT is framed as the
-// `srcdoc` of `<iframe sandbox="allow-scripts allow-downloads">` — an
-// `about:srcdoc` document with an opaque origin (`location.origin` is
+// `srcdoc` of `<iframe sandbox="allow-scripts allow-downloads allow-forms">`
+// — an `about:srcdoc` document with an opaque origin (`location.origin` is
 // "null"), never `allow-same-origin`, no `src` that carries a credential.
 // It may save a file it was handed, use the microphone and write to the
 // clipboard (`allow="microphone; clipboard-write"`, a Copy button); none of
-// them sends anything off the page. Not a `blob:`
+// them sends anything off the page. `allow-forms` is what lets a
+// `<form onSubmit>` work: without it the browser refuses the submission
+// before it fires the `submit` event, so the handler never runs ("Blocked
+// form submission", 2026-11-10 — Jamie's SecretBox, strut/views'
+// LaunchForm and every form the builder wrote). A form still goes nowhere:
+// the document's CSP says `form-action 'none'`. Not a `blob:`
 // URL: a blob document's `location.origin` is its creator's while its
 // pathname is the whole blob URL, and a JSON-schema validator bundled into
 // the MCP SDK does `new URL(location.origin + location.pathname)` at module
@@ -178,7 +183,7 @@ export function AppHost(props: {
 
   return (
     <div class={`app-host${theme === "light" ? " light" : ""}`}>
-      <iframe ref={frameRef} class="app-frame" sandbox="allow-scripts allow-downloads" allow="microphone; clipboard-write" title={app.name} />
+      <iframe ref={frameRef} class="app-frame" sandbox="allow-scripts allow-downloads allow-forms" allow="microphone; clipboard-write" title={app.name} />
       {state.status !== "ready" && (
         <div class={`app-host-overlay${state.status === "error" ? " is-error" : ""}`}>
           {state.status === "loading" ? "Loading the app…" : `The app could not be loaded: ${state.error}`}

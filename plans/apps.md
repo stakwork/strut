@@ -1355,10 +1355,14 @@ person's authority over the tools its grants name.
 
 - **The page holds no credential** beyond its file token, worth its own
   files and nothing more (§7.2). The frame gets an opaque origin and only the `sandbox`
-  flags `allow-scripts allow-downloads`, plus `allow="microphone"`;
-  `allow-same-origin` is never set. A download lands on the viewer's disk
-  and audio stays in the page unless a granted tool sends it, so neither
-  opens a way out past the bridge.
+  flags `allow-scripts allow-downloads allow-forms`, plus
+  `allow="microphone"`; `allow-same-origin` is never set. A download lands
+  on the viewer's disk and audio stays in the page unless a granted tool
+  sends it, so neither opens a way out past the bridge. `allow-forms` lets
+  a form's `submit` event fire, which a `<form onSubmit>` needs (without it
+  the browser refuses the submission before the event, and the handler
+  never runs); the submission itself is refused by the CSP's
+  `form-action 'none'` below.
 - **The document's own CSP**, which a host may only tighten:
 
   ```
