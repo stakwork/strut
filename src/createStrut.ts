@@ -1800,6 +1800,7 @@ export async function createStrut<TServices = unknown>(
       ...(reach ? { reach } : {}),
       // Defined further down; called only once a run is going.
       resumeRun: (name, runId, body) => resumeRun(name, runId, body),
+      controlRun: (name, runId, action, force) => controlLiveRun(name, runId, action, false, force),
     });
   }
 

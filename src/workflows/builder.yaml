@@ -169,8 +169,10 @@ params:
   builtins: [web_search, web_fetch, str_replace_based_edit_tool, repo_overview, fulltext_search]
   # THE evolvable surface: registry steps granted to the agent as tools.
   # `meta/*` is the whole authoring surface as steps — the reads, the runs,
-  # publish-workflow, create-step, edit-step, validate-workflow, run-step,
-  # the claim steps, verify-run, verify-job — and a twin added later lands
+  # publish-workflow, edit-workflow (find-and-replace), create-step,
+  # edit-step, validate-workflow, run-step, set-active-version (rollback),
+  # set-workflow-category, cancel-run, pause-run, resume-run, the claim
+  # steps, verify-run, verify-job — and a twin added later lands
   # here without a seed edit. The graph reads the chat builder has
   # (graph/query is its graph_query: with none, the job wrote custom steps
   # that opened the graph themselves); the job/* reads, to build from an
