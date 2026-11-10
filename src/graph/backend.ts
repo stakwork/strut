@@ -191,7 +191,7 @@ async function openLadybugBackend(cfg: LadybugConfig, opts: GraphBackendOptions)
     const given = typeof opts.embeddings === "object" ? opts.embeddings : undefined;
     const load = opts.embeddings !== false && !given;
     const readerOpts: { embedder?: Embedder } = {};
-    const writerOpts: { embedder?: Embedder; resolver?: SchemaResolver } = {};
+    const writerOpts: { embedder?: Embedder; resolver?: SchemaResolver; later?: (refs: string[]) => void } = {};
     const engine = new LadybugEngine(lbug, namespace);
     const schemas = new SchemaResolver(engine);
     const backend: LadybugBackend = {
@@ -237,12 +237,18 @@ async function openLadybugBackend(cfg: LadybugConfig, opts: GraphBackendOptions)
       // injected embedder is used as it is.
       passWorker = given ? undefined : new WorkerEmbedder();
       const pass = passWorker ?? embedder;
-      void engine.nodeEngine.embedPendingRows?.(pass);
-      void engine.nodeEngine.embedPendingNodes?.(pass, async (type) => {
+      const embeddable = async (type: string) => {
         if (type === SCHEMA_TYPE || type === MERGE_TYPE) return false;
         const s = await schemas.schema(type).catch(() => null);
         return !!s && s.embed && s.role !== "record";
-      });
+      };
+      void engine.nodeEngine.embedPendingRows?.(pass);
+      void engine.nodeEngine.embedPendingNodes?.(pass, embeddable);
+      // A write that asks for `embed: "later"` leaves its nodes with no
+      // vector: the same backfill finds them, in the same worker.
+      writerOpts.later = () => {
+        if (!closed) void engine.nodeEngine.embedPendingNodes?.(pass, embeddable);
+      };
     };
     if (given) attach(given);
     else if (load) void loadLadybugEmbedder(cfg.path).then((e) => e && attach(e));
@@ -348,7 +354,8 @@ async function open(cfg: Neo4jConfig, opts: GraphBackendOptions): Promise<Neo4jB
       nodeEngine: engine.nodeEngine,
       edgeEngine: engine.edgeEngine,
       schemaSource: engine.schemaSource,
-      nodes: new NodeWriter(engine, { embedder, resolver: schemas }),
+      // A write that asks for `embed: "later"` hands its nodes to the pass.
+      nodes: new NodeWriter(engine, { embedder, resolver: schemas, ...(embeddings ? { later: (refs: string[]) => embeddings.soon(refs) } : {}) }),
       edges: new EdgeWriter(engine, { resolver: schemas }),
       reader: new Neo4jReader(bolt, { embedder, resolver: schemas }),
       schemas,

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import yaml from "js-yaml";
 import type { GraphBackend } from "./graph/backend.js";
+import type { RawNode } from "./graph/engine.js";
 import type { NodeSchema } from "./graph/schema-resolver.js";
 import { composeNodeKey } from "./graph/node-writer.js";
 import { GENERIC_NODE_PROPERTIES } from "./graph/strut-schemas.js";
@@ -285,7 +286,52 @@ export function planConceptSeed(
 
 const pathsOf = (set: ConceptSet, file: string): string[] => [set.prefix, ...(set.legacyPrefixes ?? [])].map((p) => `${p}${file}@`);
 
-export async function seedConcepts(graph: GraphBackend | undefined, sets: ConceptSet[]): Promise<ConceptSeedOutcome[]> {
+/** Nodes or edges per write, and keys per read: a package's tree is
+ *  hundreds of pages (openlaw/legal-desk: 752), and one statement per page
+ *  was most of an install. */
+const CHUNK = 250;
+
+/** How far a seed is, for a caller that shows it (a package install). */
+export interface ConceptSeedProgress {
+  /** `pages`: reading and writing the nodes; `edges`: the `PARENT_OF` tree. */
+  phase: "pages" | "edges";
+  done: number;
+  total: number;
+}
+
+export interface ConceptSeedOptions {
+  /** Told after each batch. */
+  progress?: (p: ConceptSeedProgress) => void;
+}
+
+/** One page of the call, in file order. */
+interface SeedPage {
+  file: string;
+  set: ConceptSet;
+  /** The name, or the file's basename when it did not parse. */
+  name: string;
+  c?: ConceptFile;
+  outcome?: ConceptSeedOutcome;
+}
+
+const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err));
+
+/** A few names for a log line. */
+const someOf = (names: readonly string[], n = 5) => (names.length <= n ? names.join(", ") : `${names.slice(0, n).join(", ")} and ${names.length - n} more`);
+
+/**
+ * The module comment's reconcile, with every read and write batched: the
+ * pages are read in one pass, the graph's nodes under their names in one
+ * read, the creates and the updates written `CHUNK` at a time (their
+ * vectors left to the backend's background embedder, `embed: "later"`),
+ * the parents read in one more, the edges written `CHUNK` at a time, and
+ * the undeclared ones found in one read. A batch that fails is written
+ * again one page (or edge) at a time, so a failure is that page's outcome
+ * alone, as it always was. A name two pages of the call share is seeded
+ * after the batch, in file order, each reading what the one before wrote.
+ * One log line says what was written.
+ */
+export async function seedConcepts(graph: GraphBackend | undefined, sets: ConceptSet[], opts: ConceptSeedOptions = {}): Promise<ConceptSeedOutcome[]> {
   if (!graph) {
     console.log("[concepts] no graph: Concept files not seeded");
     return [];
@@ -295,93 +341,221 @@ export async function seedConcepts(graph: GraphBackend | undefined, sets: Concep
     console.log(`[concepts] no "${TYPE}" schema in the graph: Concept files not seeded`);
     return [];
   }
-  const outcomes: ConceptSeedOutcome[] = [];
   const refs = new Map<string, string>(); // every live node under a seeded name, for parenting
   const owned = new Map<string, string>(); // name → ref_id: the ones the seed wrote or keeps
   const parsed: ConceptFile[] = [];
+  const pages: SeedPage[] = [];
+  const leftOut = new Map<string, string[]>(); // the attributes left out → the pages
   for (const set of sets) {
     let files: string[];
     try {
       files = (await readdir(set.dir)).filter((f) => f.endsWith(".md")).sort();
     } catch (err) {
-      console.warn(`[concepts] could not read ${set.dir}:`, err instanceof Error ? err.message : err);
+      console.warn(`[concepts] could not read ${set.dir}:`, errorText(err));
       continue;
     }
     for (const file of files) {
-      let name = file.replace(/\.md$/i, "");
+      const page: SeedPage = { file, set, name: file.replace(/\.md$/i, "") };
+      pages.push(page);
       try {
         const read = parseConceptFile(file, await readFile(join(set.dir, file), "utf-8"), set.prefix);
-        name = read.name;
+        page.name = read.name;
         // What this graph's Concept does not declare is not written, and not compared.
         const { kept, left } = declaredAttributes(schema, read.attributes);
-        if (left.length) console.warn(`[concepts] ${name}: left out ${left.join(", ")} — this graph's ${TYPE} does not declare ${left.length === 1 ? "it" : "them"}`);
+        if (left.length) leftOut.set(left.join(", "), [...(leftOut.get(left.join(", ")) ?? []), read.name]);
         const c = { ...read, attributes: kept };
+        composeNodeKey(schema, { name: c.name }); // a name with no key is this page's error, before any read
         parsed.push(c);
-        const existing = await findConcept(graph, schema, c.name);
-        const action = planConceptSeed(existing, c.stamp, pathsOf(set, file).slice(1), c, set.keepEdited, set.keepEdited ? set.prefix : undefined);
-        if (action === "keep" || action === "skip") {
-          if (!existing!.deleted) refs.set(c.name, existing!.ref_id); // a deleted node is nobody's parent
-          if (action === "keep") owned.set(c.name, existing!.ref_id);
-          const edited = action === "keep" && conceptEdited(existing!, c);
-          outcomes.push({ name: c.name, file, action, ref_id: existing!.ref_id, ...(edited ? { edited: true as const } : {}) });
-          continue;
-        }
-        const data = {
-          name: c.name,
-          ...c.attributes,
-          ...(c.docs ? { docs: c.docs } : {}),
-          unique_source_id: c.stamp,
-        };
-        const r = await graph.nodes.write({ type: TYPE, data }, action === "create" ? "create" : "upsert");
-        refs.set(c.name, r.ref_id);
-        owned.set(c.name, r.ref_id);
-        outcomes.push({ name: c.name, file, action, ref_id: r.ref_id });
-        console.log(`[concepts] ${action === "create" ? "seeded" : "updated"} Concept: ${c.name} (${r.outcome})`);
+        page.c = c;
       } catch (err) {
-        const error = err instanceof Error ? err.message : String(err);
-        outcomes.push({ name, file, action: "error", error });
-        console.warn(`[concepts] could not seed Concept from "${file}":`, error);
+        page.outcome = { name: page.name, file, action: "error", error: errorText(err) };
       }
     }
   }
+  for (const [left, names] of leftOut) {
+    console.warn(`[concepts] left out ${left} on ${names.length === 1 ? names[0] : `${names.length} pages (${someOf(names)})`} — this graph's ${TYPE} does not declare ${left.includes(",") ? "them" : "it"}`);
+  }
+  const total = pages.length;
+  let settled = pages.filter((p) => p.outcome).length;
+  const tell = () => opts.progress?.({ phase: "pages", done: settled, total });
+
+  /** The rule for one page against what the graph holds under its name. */
+  const plan = (page: SeedPage, existing: ExistingConcept | null): SeedAction => {
+    const set = page.set;
+    return planConceptSeed(existing, page.c!.stamp, pathsOf(set, page.file).slice(1), page.c!, set.keepEdited, set.keepEdited ? set.prefix : undefined);
+  };
+  /** A page kept or skipped: nothing written. */
+  const leave = (page: SeedPage, existing: ExistingConcept, action: "keep" | "skip") => {
+    const c = page.c!;
+    if (!existing.deleted) refs.set(c.name, existing.ref_id); // a deleted node is nobody's parent
+    if (action === "keep") owned.set(c.name, existing.ref_id);
+    const edited = action === "keep" && conceptEdited(existing, c);
+    page.outcome = { name: c.name, file: page.file, action, ref_id: existing.ref_id, ...(edited ? { edited: true as const } : {}) };
+  };
+  const nodeOf = (c: ConceptFile) => ({ type: TYPE, data: { name: c.name, ...c.attributes, ...(c.docs ? { docs: c.docs } : {}), unique_source_id: c.stamp } });
+  const wrote = (page: SeedPage, action: "create" | "update", ref_id: string) => {
+    refs.set(page.c!.name, ref_id);
+    owned.set(page.c!.name, ref_id);
+    page.outcome = { name: page.c!.name, file: page.file, action, ref_id };
+  };
+  /** One page, read and written on its own: a name another page of the
+   *  call has, or a page whose batch failed. */
+  const one = async (page: SeedPage, existing?: ExistingConcept | null) => {
+    try {
+      const found = existing !== undefined ? existing : await findConcept(graph, schema, page.c!.name);
+      const action = plan(page, found);
+      if (action === "keep" || action === "skip") return leave(page, found!, action);
+      const r = await graph.nodes.write(nodeOf(page.c!), action === "create" ? "create" : "upsert", { embed: "later" });
+      wrote(page, action, r.ref_id);
+    } catch (err) {
+      page.outcome = { name: page.name, file: page.file, action: "error", error: errorText(err) };
+      console.warn(`[concepts] could not seed Concept from "${page.file}":`, page.outcome.error);
+    }
+  };
+
+  // The first page of each name in one pass; a page whose name an earlier
+  // page of the call has waits for it (`one`, after the batch).
+  const seen = new Set<string>();
+  const first: SeedPage[] = [];
+  const again: SeedPage[] = [];
+  for (const page of pages) {
+    if (!page.c) continue;
+    (seen.has(page.c.name) ? again : first).push(page);
+    seen.add(page.c.name);
+  }
+  let found: Map<string, ExistingConcept> | undefined;
+  try {
+    found = await findConcepts(graph, schema, first.map((p) => p.c!.name));
+  } catch (err) {
+    // As a read per page would have: each page's error.
+    for (const page of [...first, ...again]) page.outcome = { name: page.name, file: page.file, action: "error", error: errorText(err) };
+    console.warn(`[concepts] could not read the Concepts under ${first.length} name(s):`, errorText(err));
+  }
+  if (found) {
+    const writes: Record<"create" | "update", SeedPage[]> = { create: [], update: [] };
+    for (const page of first) {
+      const existing = found.get(page.c!.name) ?? null;
+      const action = plan(page, existing);
+      if (action === "keep" || action === "skip") {
+        leave(page, existing!, action);
+        settled++;
+      } else writes[action].push(page);
+    }
+    tell();
+    for (const action of ["create", "update"] as const) {
+      const list = writes[action];
+      for (let i = 0; i < list.length; i += CHUNK) {
+        const chunk = list.slice(i, i + CHUNK);
+        try {
+          const out = await graph.nodes.writeMany(chunk.map((p) => nodeOf(p.c!)), action === "create" ? "create" : "upsert", { embed: "later" });
+          chunk.forEach((p, k) => wrote(p, action, out[k]!.ref_id));
+        } catch {
+          // The batch is all or nothing: each page again on its own, so a
+          // failure is that page's.
+          for (const p of chunk) await one(p, found.get(p.c!.name) ?? null);
+        }
+        settled += chunk.length;
+        tell();
+      }
+    }
+    for (const page of again) {
+      await one(page);
+      settled++;
+    }
+    if (again.length) tell();
+  }
+  const outcomes = pages.map((p) => p.outcome!);
   for (const set of sets) await retireConcepts(graph, schema, set);
+
+  // The tree: each owned page under each of its parents.
   const declared = new Set<string>(); // `<parent ref_id>><child ref_id>`, as the files have it
+  const missing = new Set<string>();
+  for (const c of parsed) if (owned.has(c.name)) for (const p of c.parents) if (!refs.has(p)) missing.add(p);
+  const parentsFound = new Map<string, string>();
+  if (missing.size) {
+    try {
+      for (const [name, node] of await findConcepts(graph, schema, missing)) if (!node.deleted) parentsFound.set(name, node.ref_id);
+    } catch (err) {
+      console.warn(`[concepts] could not read the parents ${someOf([...missing])}:`, errorText(err));
+    }
+  }
+  const edges: Array<{ parentName: string; childName: string; source_ref_id: string; target_ref_id: string }> = [];
   for (const c of parsed) {
     const child = owned.get(c.name);
     if (!child) continue;
     for (const parentName of c.parents) {
-      try {
-        let parent = refs.get(parentName);
-        if (!parent) {
-          const found = await findConcept(graph, schema, parentName);
-          if (found && !found.deleted) parent = found.ref_id;
-        }
-        if (!parent) {
-          console.warn(`[concepts] no live Concept "${parentName}" to parent "${c.name}" under`);
-          continue;
-        }
-        declared.add(`${parent}>${child}`); // before the write: a failed write must not read as "undeclared"
-        const e = await graph.edges.write({ edge: EDGE, source_ref_id: parent, target_ref_id: child });
-        if (e.created) console.log(`[concepts] linked ${parentName} -${EDGE}-> ${c.name}`);
-      } catch (err) {
-        console.warn(`[concepts] could not parent "${c.name}" under "${parentName}":`, err instanceof Error ? err.message : err);
+      const parent = refs.get(parentName) ?? parentsFound.get(parentName);
+      if (!parent) {
+        console.warn(`[concepts] no live Concept "${parentName}" to parent "${c.name}" under`);
+        continue;
       }
+      declared.add(`${parent}>${child}`); // before the write: a failed write must not read as "undeclared"
+      edges.push({ parentName, childName: c.name, source_ref_id: parent, target_ref_id: child });
     }
   }
-  // Between two Concepts we own, the files are the whole truth.
+  // What is there already, from every parent the files name (one read per
+  // CHUNK): a live edge the files declare is not written again — a MERGE
+  // on it would change nothing — and, between two pages we own, one no
+  // file declares goes.
   const names = new Map([...owned].map(([name, ref]) => [ref, name]));
-  for (const [parentName, parent] of owned) {
+  const parentRefs = [...new Set([...owned.values(), ...edges.map((e) => e.source_ref_id)])];
+  const present = new Map<string, Array<{ other: string; edge_ref_id: string }>>();
+  const unread = new Set<string>();
+  for (let i = 0; i < parentRefs.length; i += CHUNK) {
+    const chunk = parentRefs.slice(i, i + CHUNK);
     try {
-      const out = await graph.tx((tx) => graph.edgeEngine.liveEdgesOf(tx, parent, EDGE, true));
-      for (const e of out?.edges ?? []) {
-        if (!names.has(e.other) || declared.has(`${parent}>${e.other}`)) continue;
-        await graph.edges.delete({ ref_id: e.edge_ref_id, edge: EDGE });
-        console.log(`[concepts] unlinked ${parentName} -${EDGE}-> ${names.get(e.other)} (no file declares it)`);
-      }
+      const out = await graph.tx((tx) => graph.edgeEngine.liveEdgesOfMany(tx, chunk, EDGE, true));
+      for (const ref of chunk) present.set(ref, out.get(ref)?.edges ?? []);
     } catch (err) {
-      console.warn(`[concepts] could not reconcile ${EDGE} edges under "${parentName}":`, err instanceof Error ? err.message : err);
+      for (const ref of chunk) unread.add(ref);
+      const owners = chunk.filter((r) => names.has(r)).map((r) => names.get(r)!);
+      if (owners.length) console.warn(`[concepts] could not reconcile ${EDGE} edges under ${someOf(owners)}:`, errorText(err));
     }
   }
+  const isThere = (e: (typeof edges)[number]) => present.get(e.source_ref_id)?.some((x) => x.other === e.target_ref_id) ?? false;
+  const toWrite = edges.filter((e) => !isThere(e));
+  const linked: string[] = [];
+  for (let i = 0; i < toWrite.length; i += CHUNK) {
+    const chunk = toWrite.slice(i, i + CHUNK);
+    const input = (e: (typeof edges)[number]) => ({ edge: EDGE, source_ref_id: e.source_ref_id, target_ref_id: e.target_ref_id });
+    try {
+      const out = await graph.edges.writeMany(chunk.map(input));
+      chunk.forEach((e, k) => out[k]!.created && linked.push(`${e.parentName} → ${e.childName}`));
+    } catch {
+      for (const e of chunk) {
+        try {
+          if ((await graph.edges.write(input(e))).created) linked.push(`${e.parentName} → ${e.childName}`);
+        } catch (err) {
+          console.warn(`[concepts] could not parent "${e.childName}" under "${e.parentName}":`, errorText(err));
+        }
+      }
+    }
+    opts.progress?.({ phase: "edges", done: Math.min(i + CHUNK, toWrite.length), total: toWrite.length });
+  }
+
+  // Between two Concepts we own, the files are the whole truth.
+  const unlinked: string[] = [];
+  for (const parent of owned.values()) {
+    if (unread.has(parent)) continue;
+    for (const e of present.get(parent) ?? []) {
+      if (!names.has(e.other) || declared.has(`${parent}>${e.other}`)) continue;
+      try {
+        await graph.edges.delete({ ref_id: e.edge_ref_id, edge: EDGE });
+        unlinked.push(`${names.get(parent)} → ${names.get(e.other)}`);
+      } catch (err) {
+        console.warn(`[concepts] could not unlink ${names.get(parent)} -${EDGE}-> ${names.get(e.other)}:`, errorText(err));
+      }
+    }
+  }
+
+  const of = (action: SeedAction) => outcomes.filter((o) => o.action === action).map((o) => o.name);
+  const said = [
+    ...(of("create").length ? [`seeded ${of("create").length} (${someOf(of("create"))})`] : []),
+    ...(of("update").length ? [`updated ${of("update").length} (${someOf(of("update"))})`] : []),
+    ...(linked.length ? [`linked ${linked.length} ${EDGE} (${someOf(linked, 3)})`] : []),
+    ...(unlinked.length ? [`unlinked ${unlinked.length} ${EDGE} no file declares (${someOf(unlinked, 3)})`] : []),
+  ];
+  if (said.length) console.log(`[concepts] ${said.join("; ")}${of("keep").length ? `; ${of("keep").length} kept` : ""}`);
   return outcomes;
 }
 
@@ -397,36 +571,52 @@ export async function retireConcepts(
   pages: ReadonlyArray<{ name: string; file: string }> = (set.retired ?? []).map((file) => ({ name: file.replace(/\.md$/i, ""), file })),
 ): Promise<string[]> {
   const out: string[] = [];
+  if (!pages.length) return out;
+  let found: Map<string, ExistingConcept>;
+  try {
+    found = await findConcepts(graph, schema, pages.map((p) => p.name));
+  } catch (err) {
+    console.warn(`[concepts] could not read the Concepts to retire (${someOf(pages.map((p) => p.name))}):`, errorText(err));
+    return out;
+  }
   for (const { name, file } of pages) {
     try {
-      const existing = await findConcept(graph, schema, name);
+      const existing = found.get(name);
       const usid = existing?.unique_source_id;
       if (!existing || existing.deleted || typeof usid !== "string" || !pathsOf(set, file).some((p) => usid.startsWith(p))) continue;
       // Guarded on the stamp: a node taken over since it was read is left alone.
-      if (await graph.nodeEngine.softDelete(existing.ref_id, graph.namespace, { type: schema.type, props: { unique_source_id: usid } })) {
-        console.log(`[concepts] retired Concept: ${name}`);
-        out.push(name);
-      }
+      if (await graph.nodeEngine.softDelete(existing.ref_id, graph.namespace, { type: schema.type, props: { unique_source_id: usid } })) out.push(name);
     } catch (err) {
-      console.warn(`[concepts] could not retire Concept "${name}":`, err instanceof Error ? err.message : err);
+      console.warn(`[concepts] could not retire Concept "${name}":`, errorText(err));
     }
+  }
+  if (out.length) console.log(`[concepts] retired ${out.length} Concept(s): ${someOf(out)}`);
+  return out;
+}
+
+/** The nodes under these names in the backend's namespace, deleted or not,
+ *  by name: one read for every `CHUNK` names (`NodeEngine.readByKeys`). A
+ *  name no node holds is absent. */
+export async function findConcepts(graph: GraphBackend, schema: NodeSchema, names: Iterable<string>): Promise<Map<string, ExistingConcept>> {
+  const keyOf = new Map<string, string>();
+  for (const name of names) if (!keyOf.has(name)) keyOf.set(name, composeNodeKey(schema, { name }));
+  const keys = [...new Set(keyOf.values())];
+  const raws = new Map<string, RawNode>();
+  for (let i = 0; i < keys.length; i += CHUNK) {
+    const part = await graph.tx((tx) => graph.nodeEngine.readByKeys(tx, schema.type, keys.slice(i, i + CHUNK), graph.namespace));
+    for (const [k, raw] of part) raws.set(k, raw);
+  }
+  const out = new Map<string, ExistingConcept>();
+  for (const [name, key] of keyOf) {
+    const raw = raws.get(key);
+    if (!raw) continue;
+    const p = raw.props;
+    out.set(name, { ...p, ref_id: raw.ref_id, unique_source_id: p["unique_source_id"], deleted: p["deleted_at"] != null || p["is_deleted"] === true });
   }
   return out;
 }
 
 /** The node under this name in the backend's namespace, deleted or not. */
 export async function findConcept(graph: GraphBackend, schema: NodeSchema, name: string): Promise<ExistingConcept | null> {
-  const key = composeNodeKey(schema, { name });
-  return graph.tx(async (tx) => {
-    const ref = await graph.nodeEngine.refByKey(tx, schema.type, key, graph.namespace);
-    const raw = ref ? await graph.nodeEngine.readRaw(tx, ref) : null;
-    if (!raw) return null;
-    const p = raw.props;
-    return {
-      ...p,
-      ref_id: raw.ref_id,
-      unique_source_id: p["unique_source_id"],
-      deleted: p["deleted_at"] != null || p["is_deleted"] === true,
-    };
-  });
+  return (await findConcepts(graph, schema, [name])).get(name) ?? null;
 }

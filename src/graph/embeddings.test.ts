@@ -321,6 +321,24 @@ describe("EmbeddingPass (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J_U
     assert.equal(pass.status().newcomers.embedded, 1, "nothing new: nothing done");
   });
 
+  it("soon: the nodes a writer left without a vector are embedded in the next tick — an old node an update cleared too", async () => {
+    await fn("function-old", "oldFn", "there before");
+    await fn("function-blank", "", undefined);
+    await pass.sweep();
+    // An update cleared its vector: not a newcomer (its stamp is old), so only `soon` finds it before the next sweep.
+    await bolt.run(`MATCH (n {node_key: "function-old"}) SET n.description = "changed", n.Data_Bank = "oldFn\\nchanged", n.text_embeddings = null`);
+    await fn("function-new", "newFn", "written for later", Date.now());
+    pass.soon(["function-old", "function-new", "function-blank", "no-such-node"]);
+    await pass.tick();
+    for (const k of ["function-old", "function-new"]) assert.ok(vectorOf((await node(k)).p), k);
+    assert.equal(vectorOf((await node("function-old")).p)![0], "oldFn\nchanged".length);
+    assert.ok(!vectorOf((await node("function-blank")).p), "a blank text is left alone");
+    assert.ok(lines.some((l) => /written for later 2/.test(l)), lines.join("\n"));
+    pass.soon([]);
+    await pass.tick();
+    assert.equal(pass.status().sweep.n, 1, "no sweep begun for it");
+  });
+
   it("newcomers: rows the pass never embeds do not hide the code ingested beside them; a stamp a whole batch shares is read through; blank rows on one stamp are stepped past", async () => {
     await pass.stop();
     pass = new EmbeddingPass(bolt, fake, resolver, { autoStart: false, sweepEveryMs: 1e12, pageSize: 3, log: (l) => lines.push(l) });

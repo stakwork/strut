@@ -48,7 +48,7 @@ import { copyAppDir, FIRST_PARTY_PREFIX, isFirstPartyName } from "../apps/files.
 import { readManifest } from "../apps/manifest.js";
 import type { ClaimsAuthoring } from "../claims-authoring.js";
 import { walkSteps } from "../closure.js";
-import { declaredAttributes, findConcept, parseConceptFile, retireConcepts, seedConcepts } from "../concept-seed.js";
+import { declaredAttributes, findConcepts, parseConceptFile, retireConcepts, seedConcepts, type ConceptFile } from "../concept-seed.js";
 import type { SecretsCapability } from "../capabilities.js";
 import type { Step, StepRegistry } from "../core.js";
 import { hasTemplates } from "../expr.js";
@@ -686,22 +686,28 @@ async function checkSet(
     } else {
       out.conceptsOn = true;
       const problems: string[] = [];
+      // Every page first, then the graph's nodes under their names and
+      // their outside parents in one read (a package's tree is hundreds of pages).
+      const pages: Array<{ pkg: string; page: ConceptFile }> = [];
       for (const m of members) {
         const pkg = m.info.manifest.package;
         for (const item of m.info.items.filter((i) => i.kind === "concept")) {
-          const page = parseConceptFile(item.path.slice("concepts/".length), await readFile(join(m.info.dir, item.path), "utf-8"), conceptPrefix(pkg));
-          const existing = await findConcept(deps.graph, schema, page.name);
-          const stamp = typeof existing?.unique_source_id === "string" ? existing.unique_source_id : undefined;
-          if (existing && !existing.deleted && !stamp?.startsWith(conceptPrefix(pkg))) {
-            problems.push(`the Concept ${page.name} is in the graph already, ${stamp ? `stamped ${stamp.replace(/@.*$/, "")}` : "made here"}`);
-          }
-          for (const name of page.parents.filter((p) => !concepts.has(p))) {
-            const parent = await findConcept(deps.graph, schema, name);
-            if (!parent || parent.deleted) problems.push(`the Concept ${page.name} hangs under ${name}, which is neither in the graph nor in the packages`);
-          }
-          const { left } = declaredAttributes(schema, page.attributes);
-          if (left.length) out.warnings.push(`the Concept ${page.name} is installed without ${left.join(", ")}: this graph's Concept does not declare ${left.length === 1 ? "it" : "them"}`);
+          pages.push({ pkg, page: parseConceptFile(item.path.slice("concepts/".length), await readFile(join(m.info.dir, item.path), "utf-8"), conceptPrefix(pkg)) });
         }
+      }
+      const found = await findConcepts(deps.graph, schema, [...pages.map((p) => p.page.name), ...pages.flatMap((p) => p.page.parents.filter((n) => !concepts.has(n)))]);
+      for (const { pkg, page } of pages) {
+        const existing = found.get(page.name);
+        const stamp = typeof existing?.unique_source_id === "string" ? existing.unique_source_id : undefined;
+        if (existing && !existing.deleted && !stamp?.startsWith(conceptPrefix(pkg))) {
+          problems.push(`the Concept ${page.name} is in the graph already, ${stamp ? `stamped ${stamp.replace(/@.*$/, "")}` : "made here"}`);
+        }
+        for (const name of page.parents.filter((p) => !concepts.has(p))) {
+          const parent = found.get(name);
+          if (!parent || parent.deleted) problems.push(`the Concept ${page.name} hangs under ${name}, which is neither in the graph nor in the packages`);
+        }
+        const { left } = declaredAttributes(schema, page.attributes);
+        if (left.length) out.warnings.push(`the Concept ${page.name} is installed without ${left.join(", ")}: this graph's Concept does not declare ${left.length === 1 ? "it" : "them"}`);
       }
       if (problems.length) throw conflict(problems.join("; "));
     }
@@ -993,18 +999,29 @@ const keptFor = (under: string) => `${under} hangs under it and stays, so it sta
  */
 async function heldPages(graph: GraphBackend, schema: NodeSchema, names: readonly string[]): Promise<Map<string, string>> {
   const children = new Map<string, string[]>();
-  for (const name of names) {
-    const node = await findConcept(graph, schema, name);
-    if (!node || node.deleted) continue;
-    children.set(
-      name,
-      await graph.tx(async (tx) => {
-        const edges = (await graph.edgeEngine.liveEdgesOf(tx, node.ref_id, "PARENT_OF", true))?.edges ?? [];
-        const raws = await Promise.all(edges.map((e) => graph.nodeEngine.readRaw(tx, e.other)));
-        return raws.flatMap((r) => (r && r.props["deleted_at"] == null && r.props["is_deleted"] !== true ? [typeof r.props["name"] === "string" ? r.props["name"] : r.ref_id] : []));
-      }),
-    );
-  }
+  const found = await findConcepts(graph, schema, names);
+  const live = names.flatMap((name) => {
+    const node = found.get(name);
+    return node && !node.deleted ? [{ name, ref_id: node.ref_id }] : [];
+  });
+  // The pages' own names are known; a child of another's is read on its own.
+  const nameOf = new Map(live.map((p) => [p.ref_id, p.name]));
+  await graph.tx(async (tx) => {
+    const edges = await graph.edgeEngine.liveEdgesOfMany(tx, live.map((p) => p.ref_id), "PARENT_OF", true);
+    for (const { name, ref_id } of live) {
+      const under: string[] = [];
+      for (const e of edges.get(ref_id)?.edges ?? []) {
+        const known = nameOf.get(e.other);
+        if (known !== undefined) {
+          under.push(known);
+          continue;
+        }
+        const r = await graph.nodeEngine.readRaw(tx, e.other);
+        if (r && r.props["deleted_at"] == null && r.props["is_deleted"] !== true) under.push(typeof r.props["name"] === "string" ? r.props["name"] : r.ref_id);
+      }
+      children.set(name, under);
+    }
+  });
   const going = new Set(children.keys());
   const held = new Map<string, string>();
   for (let changed = true; changed; ) {

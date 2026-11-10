@@ -309,6 +309,22 @@ class Neo4jNodes implements NodeEngine {
     return rows.length ? String(rows[0]!["ref_id"]) : null;
   }
 
+  async readByKeys(tx: GraphTx, type: string, keys: readonly string[], namespace: string): Promise<Map<string, RawNode>> {
+    const out = new Map<string, RawNode>();
+    if (!keys.length) return out;
+    const rows = await tx.run(
+      `UNWIND $keys AS k MATCH (n:${q(type)} {node_key: k, namespace: $ns}) RETURN k, n.ref_id AS ref_id, labels(n) AS labels, properties(n) AS props`,
+      { keys: [...new Set(keys)], ns: namespace },
+    );
+    for (const r of rows) {
+      const k = String(r["k"]);
+      if (out.has(k)) continue; // `refByKey` takes one
+      const t = typeLabelOf(r["labels"] as string[]);
+      out.set(k, { ref_id: String(r["ref_id"]), type: t, props: fromNeo4j(r["props"] as Record<string, unknown>, t, undefined) });
+    }
+    return out;
+  }
+
   async holdersOf(tx: GraphTx, type: string, attribute: string, values: unknown[], namespace: string) {
     const rows = await tx.run(
       `MATCH (n:${q(type)} {namespace: $ns}) WHERE n.${q(neo4jName(attribute, type))} IN $values AND ${NODE_LIVE("n")}
@@ -462,6 +478,27 @@ class Neo4jEdges implements EdgeEngine {
         .filter((r) => r["other"] != null)
         .map((r) => ({ other: String(r["other"]), edge_ref_id: String(r["edge_ref_id"]), props: fromNeo4j((r["props"] ?? {}) as Record<string, unknown>) })),
     };
+  }
+
+  async liveEdgesOfMany(tx: GraphTx, ref_ids: readonly string[], edge: string, forward: boolean) {
+    const out = new Map<string, { node: string; edges: Array<{ other: string; edge_ref_id: string; props: Record<string, unknown> }> }>();
+    if (!ref_ids.length) return out;
+    const hop = forward ? `-[r:${q(edge)}]->` : `<-[r:${q(edge)}]-`;
+    const rows = await tx.run(
+      `UNWIND $refs AS ref
+       MATCH (x:Data_Bank {ref_id: ref})
+       OPTIONAL MATCH (x)-[:IS_ALIAS]->(xa)
+       WITH ref, COALESCE(xa, x) AS n
+       OPTIONAL MATCH (n)${hop}(p) WHERE ${NODE_LIVE("n")} AND ${EDGE_LIVE("r")} AND ${NODE_LIVE("p")}
+       RETURN ref, n.ref_id AS node, p.ref_id AS other, r.ref_id AS edge_ref_id, properties(r) AS props`,
+      { refs: [...new Set(ref_ids)] },
+    );
+    for (const r of rows) {
+      const ref = String(r["ref"]);
+      const at = out.get(ref) ?? out.set(ref, { node: String(r["node"]), edges: [] }).get(ref)!;
+      if (r["other"] != null) at.edges.push({ other: String(r["other"]), edge_ref_id: String(r["edge_ref_id"]), props: fromNeo4j((r["props"] ?? {}) as Record<string, unknown>) });
+    }
+    return out;
   }
 
   async wouldCycle(tx: GraphTx, edge: string, node: string, to: string, forward: boolean): Promise<boolean> {

@@ -230,6 +230,23 @@ class LadybugNodes implements NodeEngine {
     return rows.length ? String(rows[0]!["ref_id"]) : null;
   }
 
+  async readByKeys(tx: GraphTx, type: string, keys: readonly string[], namespace: string): Promise<Map<string, RawNode>> {
+    const out = new Map<string, RawNode>();
+    if (!keys.length) return out;
+    const rows = await tx.run(`UNWIND $keys AS k MATCH (n:Node {node_type: $type, namespace: $ns, \`key\`: k}) RETURN k AS k, n`, {
+      keys: [...new Set(keys)],
+      type,
+      ns: writeNamespace(type, namespace, this.ns),
+    });
+    for (const r of rows) {
+      const k = String(r["k"]);
+      if (out.has(k)) continue; // `refByKey` takes one
+      const { node_type, ...props } = r["n"] as Record<string, unknown>;
+      out.set(k, { ref_id: String(props["ref_id"]), type: typeof node_type === "string" ? node_type : undefined, props });
+    }
+    return out;
+  }
+
   async mergedAway(tx: GraphTx, type: string, attribute: string, values: unknown[], namespace: string): Promise<Map<string, string>> {
     const out = new Map<string, string>();
     if (!values.length || !(attribute in (await this.known(tx, [attribute])))) return out;
@@ -467,44 +484,120 @@ class LadybugEdges implements EdgeEngine {
     );
   }
 
+  /**
+   * The rows of one shape (the same optional fields and extra columns, each
+   * value of one type: a list of structs is one type) in two statements —
+   * the revive, then an UNWIND MERGE — instead of two per row: a package's
+   * Concept tree is hundreds of edges (openlaw/legal-desk: 820, ~4 s one at
+   * a time). A row whose identity (source, `edge_key`, target) an earlier
+   * row of the batch has, and a shape of one row, go one at a time
+   * (`mergeRow`), after, as they always did: the later row finds the edge
+   * the earlier one made.
+   */
   async mergeBatch(tx: GraphTx, edge: string, rows: EdgeMergeRow[]): Promise<EdgeMergeResult[]> {
     if (!(await this.table(tx, edge))) throw new GraphValidationError("WRONG_TYPE", edge, "not an edge type this graph holds: register it between two types first (graph/create-triplet's create_schema_if_missing)");
-    const out: EdgeMergeResult[] = [];
+    const seen = new Set<string>();
+    const later: EdgeMergeRow[] = [];
+    const shapes = new Map<string, Array<{ e: EdgeMergeRow; extra: Record<string, unknown> }>>();
     for (const e of rows) {
+      const id = `${e.src}\u0000${e.edge_key}\u0000${e.tgt}`;
+      if (seen.has(id)) {
+        later.push(e);
+        continue;
+      }
+      seen.add(id);
       const extra = edgeColumns(edge, e.props);
-      const params: Params = { src: e.src, tgt: e.tgt, edge_key: e.edge_key, ref_id: e.ref_id, weight: e.weight, added: e.created_at };
-      const sets = ["r.ref_id = $ref_id", "r.weight = $weight", "r.created_at = CAST($added AS INT64)", "r.updated_at = CAST($added AS INT64)"];
-      if (e.namespace !== undefined) {
-        params["ns"] = e.namespace;
-        sets.push("r.namespace = $ns");
-      }
-      if (e.created_by !== undefined) {
-        params["by"] = e.created_by;
-        sets.push("r.created_by = $by");
-      }
-      let i = 0;
-      for (const [k, v] of Object.entries(extra)) {
-        params[`p${i}`] = v;
-        sets.push(`r.${q(k)} = $p${i++}`);
-      }
-      // A deleted edge of the same identity is brought back, as a node is.
-      const revived = await tx.run(
-        `MATCH (s:Node {ref_id: $src})-[r:${q(edge)} {edge_key: $edge_key}]->(t:Node {ref_id: $tgt}) WHERE r.deleted_at IS NOT NULL
-         SET r.deleted_at = NULL, r.updated_at = CAST($added AS INT64) RETURN r.ref_id AS ref_id`,
-        { src: e.src, tgt: e.tgt, edge_key: e.edge_key, added: e.created_at },
-      );
-      const r = await tx.run(
-        `MATCH (s:Node {ref_id: $src}), (t:Node {ref_id: $tgt})
-         MERGE (s)-[r:${q(edge)} {edge_key: $edge_key}]->(t)
-         ON CREATE SET ${sets.join(", ")}
-         RETURN r.ref_id AS ref_id, r.ref_id = $ref_id AS created, s.ref_id AS source_ref_id, t.ref_id AS target_ref_id`,
-        params,
-      );
-      const row = r[0];
-      if (!row) throw new Error(`edge MERGE for ${edge} matched no endpoints (${e.src} → ${e.tgt})`);
-      out.push({ k: e.k, ref_id: String(row["ref_id"]), created: row["created"] === true || revived.length > 0, source_ref_id: String(row["source_ref_id"]), target_ref_id: String(row["target_ref_id"]) });
+      const kind = (v: unknown) => (v === null ? "null" : Array.isArray(v) ? "array" : Number.isInteger(v) ? "int" : typeof v);
+      const shape = JSON.stringify([e.namespace !== undefined, e.created_by !== undefined, kind(e.weight), ...Object.keys(extra).sort().map((k) => [k, kind(extra[k])])]);
+      shapes.set(shape, [...(shapes.get(shape) ?? []), { e, extra }]);
     }
-    return out;
+    const out = new Map<number, EdgeMergeResult>();
+    for (const group of shapes.values()) {
+      if (group.length === 1) {
+        out.set(group[0]!.e.k, await this.mergeRow(tx, edge, group[0]!.e));
+        continue;
+      }
+      const { e: first, extra: firstExtra } = group[0]!;
+      const cols = Object.keys(firstExtra).sort();
+      const sets = ["r.ref_id = e.ref_id", "r.weight = e.weight", "r.created_at = CAST(e.added AS INT64)", "r.updated_at = CAST(e.added AS INT64)"];
+      if (first.namespace !== undefined) sets.push("r.namespace = e.ns");
+      if (first.created_by !== undefined) sets.push("r.created_by = e.by");
+      cols.forEach((c, i) => sets.push(`r.${q(c)} = e.p${i}`));
+      const params = group.map(({ e, extra }) => ({
+        k: e.k,
+        src: e.src,
+        tgt: e.tgt,
+        edge_key: e.edge_key,
+        ref_id: e.ref_id,
+        weight: e.weight,
+        added: e.created_at,
+        ...(first.namespace !== undefined ? { ns: e.namespace } : {}),
+        ...(first.created_by !== undefined ? { by: e.created_by } : {}),
+        ...Object.fromEntries(cols.map((c, i) => [`p${i}`, extra[c]])),
+      }));
+      // A deleted edge of the same identity is brought back, as a node is.
+      const revived = new Set(
+        (
+          await tx.run(
+            `UNWIND $rows AS e
+             MATCH (s:Node {ref_id: e.src})-[r:${q(edge)} {edge_key: e.edge_key}]->(t:Node {ref_id: e.tgt}) WHERE r.deleted_at IS NOT NULL
+             SET r.deleted_at = NULL, r.updated_at = CAST(e.added AS INT64) RETURN e.k AS k`,
+            { rows: params },
+          )
+        ).map((r) => Number(r["k"])),
+      );
+      const merged = await tx.run(
+        `UNWIND $rows AS e
+         MATCH (s:Node {ref_id: e.src}), (t:Node {ref_id: e.tgt})
+         MERGE (s)-[r:${q(edge)} {edge_key: e.edge_key}]->(t)
+         ON CREATE SET ${sets.join(", ")}
+         RETURN e.k AS k, r.ref_id AS ref_id, r.ref_id = e.ref_id AS created, s.ref_id AS source_ref_id, t.ref_id AS target_ref_id`,
+        { rows: params },
+      );
+      for (const r of merged) {
+        const k = Number(r["k"]);
+        out.set(k, { k, ref_id: String(r["ref_id"]), created: r["created"] === true || revived.has(k), source_ref_id: String(r["source_ref_id"]), target_ref_id: String(r["target_ref_id"]) });
+      }
+      for (const { e } of group) if (!out.has(e.k)) throw new Error(`edge MERGE for ${edge} matched no endpoints (${e.src} → ${e.tgt})`);
+    }
+    for (const e of later) out.set(e.k, await this.mergeRow(tx, edge, e));
+    return rows.map((e) => out.get(e.k)!);
+  }
+
+  /** One row: the revive, then the MERGE. */
+  private async mergeRow(tx: GraphTx, edge: string, e: EdgeMergeRow): Promise<EdgeMergeResult> {
+    const extra = edgeColumns(edge, e.props);
+    const params: Params = { src: e.src, tgt: e.tgt, edge_key: e.edge_key, ref_id: e.ref_id, weight: e.weight, added: e.created_at };
+    const sets = ["r.ref_id = $ref_id", "r.weight = $weight", "r.created_at = CAST($added AS INT64)", "r.updated_at = CAST($added AS INT64)"];
+    if (e.namespace !== undefined) {
+      params["ns"] = e.namespace;
+      sets.push("r.namespace = $ns");
+    }
+    if (e.created_by !== undefined) {
+      params["by"] = e.created_by;
+      sets.push("r.created_by = $by");
+    }
+    let i = 0;
+    for (const [k, v] of Object.entries(extra)) {
+      params[`p${i}`] = v;
+      sets.push(`r.${q(k)} = $p${i++}`);
+    }
+    // A deleted edge of the same identity is brought back, as a node is.
+    const revived = await tx.run(
+      `MATCH (s:Node {ref_id: $src})-[r:${q(edge)} {edge_key: $edge_key}]->(t:Node {ref_id: $tgt}) WHERE r.deleted_at IS NOT NULL
+       SET r.deleted_at = NULL, r.updated_at = CAST($added AS INT64) RETURN r.ref_id AS ref_id`,
+      { src: e.src, tgt: e.tgt, edge_key: e.edge_key, added: e.created_at },
+    );
+    const r = await tx.run(
+      `MATCH (s:Node {ref_id: $src}), (t:Node {ref_id: $tgt})
+       MERGE (s)-[r:${q(edge)} {edge_key: $edge_key}]->(t)
+       ON CREATE SET ${sets.join(", ")}
+       RETURN r.ref_id AS ref_id, r.ref_id = $ref_id AS created, s.ref_id AS source_ref_id, t.ref_id AS target_ref_id`,
+      params,
+    );
+    const row = r[0];
+    if (!row) throw new Error(`edge MERGE for ${edge} matched no endpoints (${e.src} → ${e.tgt})`);
+    return { k: e.k, ref_id: String(row["ref_id"]), created: row["created"] === true || revived.length > 0, source_ref_id: String(row["source_ref_id"]), target_ref_id: String(row["target_ref_id"]) };
   }
 
   private async locate(tx: GraphTx, ref_id: string, hint?: EdgeHint): Promise<{ edge: string; src: string; tgt: string } | null> {
@@ -572,6 +665,23 @@ class LadybugEdges implements EdgeEngine {
       node: ref_id,
       edges: rows.map((r) => ({ other: String(r["other"]), edge_ref_id: String(r["edge_ref_id"]), props: edgeProps(r["rel"] as Record<string, unknown>) })),
     };
+  }
+
+  async liveEdgesOfMany(tx: GraphTx, ref_ids: readonly string[], edge: string, forward: boolean) {
+    const out = new Map<string, { node: string; edges: Array<{ other: string; edge_ref_id: string; props: Record<string, unknown> }> }>();
+    if (!ref_ids.length) return out;
+    const refs = [...new Set(ref_ids)];
+    for (const r of await tx.run(`MATCH (x:Node) WHERE x.ref_id IN $refs RETURN x.ref_id AS ref_id`, { refs })) {
+      out.set(String(r["ref_id"]), { node: String(r["ref_id"]), edges: [] });
+    }
+    if (!out.size || !(await this.table(tx, edge))) return out;
+    const hop = forward ? `-[r:${q(edge)}]->` : `<-[r:${q(edge)}]-`;
+    const rows = await tx.run(
+      `MATCH (n:Node)${hop}(p:Node) WHERE n.ref_id IN $refs AND n.deleted_at IS NULL AND p.deleted_at IS NULL AND r.deleted_at IS NULL RETURN n.ref_id AS ref, p.ref_id AS other, r.ref_id AS edge_ref_id, r AS rel`,
+      { refs },
+    );
+    for (const r of rows) out.get(String(r["ref"]))?.edges.push({ other: String(r["other"]), edge_ref_id: String(r["edge_ref_id"]), props: edgeProps(r["rel"] as Record<string, unknown>) });
+    return out;
   }
 
   async wouldCycle(tx: GraphTx, edge: string, node: string, to: string, forward: boolean): Promise<boolean> {
