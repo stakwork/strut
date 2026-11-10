@@ -16,6 +16,8 @@ export const PACKAGES = [
   "react-router", "zustand", "immer",
   "recharts", "d3", "@xyflow/react",
   "three", "@react-three/fiber",
+  "@react-three/drei", "@react-three/rapier", "@react-three/postprocessing", "postprocessing",
+  "@dimforge/rapier3d-compat", "@dimforge/rapier2d-compat", "three-mesh-bvh",
   "leaflet", "react-leaflet",
   "motion",
   "@tanstack/react-query", "@tanstack/react-table", "@tanstack/react-virtual",
@@ -33,7 +35,9 @@ export const JS_ENTRIES = [
   "vaul", "react-day-picker", "react-resizable-panels", "sonner", "cmdk",
   "react-router", "zustand", "zustand/middleware", "immer",
   "recharts", "d3", "@xyflow/react",
-  "three", "@react-three/fiber",
+  "three", "three/addons", "@react-three/fiber",
+  "@react-three/drei", "@react-three/rapier", "@react-three/postprocessing", "postprocessing",
+  "@dimforge/rapier3d-compat", "@dimforge/rapier2d-compat", "three-mesh-bvh",
   "leaflet", "react-leaflet",
   "motion", "motion/react",
   "@tanstack/react-query", "@tanstack/react-table", "@tanstack/react-virtual",
@@ -41,6 +45,17 @@ export const JS_ENTRIES = [
   "date-fns", "lodash", "zod", "react-hook-form", "@hookform/resolvers/zod",
   "papaparse", "mathjs", "simple-statistics", "fuse.js",
   "react-markdown", "remark-gfm",
+];
+
+/** Package folders whose every module an app imports by path: one entry per
+ *  `.js` file under `dir`, as `<prefix><path>`, the same without `.js`, and
+ *  under each `also` prefix (aliases). `skip` leaves out folders of scripts a
+ *  loader fetches rather than imports (three's draco and basis decoders);
+ *  a module there that an addon imports is still reached through it. */
+export const SUBPATHS: Array<{ prefix: string; dir: string; also: string[]; skip: string[] }> = [
+  // three's addons — controls, loaders, post-processing, geometries, utils —
+  // as three's own docs import them, and under their older path.
+  { prefix: "three/addons/", dir: "three/examples/jsm", also: ["three/examples/jsm/"], skip: ["libs/"] },
 ];
 
 /** Stylesheets an app imports by specifier (`import "@xyflow/react/dist/style.css"`). */

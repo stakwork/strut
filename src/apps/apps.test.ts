@@ -331,8 +331,8 @@ describe("the apps capability", () => {
     assert.ok(copied.files.includes("src/App.tsx") && !copied.files.some((f) => f.startsWith("dist/")), "a copy of the sources, no dist");
     assert.ok((await apps.publish(copied.path, "hello-copy", { surface: "person" })).ok);
     assert.equal((await ws.getApp("hello-copy"))?.upstream, undefined, "a copy under a new name has no upstream");
-    await assert.rejects(apps.init(fresh("init"), "nope"), /no template "nope" — strut's templates: default; or the name of an installed app/);
-    assert.deepEqual(await apps.templates(), ["default"]);
+    await assert.rejects(apps.init(fresh("init"), "nope"), /no template "nope" — strut's templates: default, game; or the name of an installed app/);
+    assert.deepEqual(await apps.templates(), ["default", "game"]);
   });
 
   it("the meta surface may not grant llm / agent / exec, a sealed step or a sealed workflow; a person may", async () => {

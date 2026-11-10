@@ -34,6 +34,10 @@ export interface KitManifest {
   packages: Record<string, string>;
   /** A specifier models write by reflex → the one it means (`framer-motion` → `motion/react`). */
   aliases: Record<string, string>;
+  /** Package folders whose every module is an entry by path, each family's
+   *  prefixes (`["three/addons/", "three/examples/jsm/"]`); its modules are in
+   *  the import map, not `entries`. */
+  subpaths?: string[][];
   entries: string[];
   /** How many modules the tree holds. */
   modules: number;

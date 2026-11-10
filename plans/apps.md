@@ -488,9 +488,16 @@ Its input is:
 
 ### 2.3 Assets
 
-Files under `public/` and anything imported by path are inlined: images
-and fonts as data URLs, JSON and text as values. The document stays one
-file. A large dataset belongs in SQLite or a run's output, not in
+Files under `public/` and anything imported by path are inlined: images,
+fonts, sounds, video, 3D models and textures (`.glb`, `.obj`, `.fbx`,
+`.vox`, `.hdr`, `.exr`, `.ktx2`, `.bin`, `.wasm`, …; `ASSET_LOADERS` in
+build.ts) as data URLs, JSON and text as values. The document stays one
+file. A loader that takes a URL takes the data URL, and `fetch` reads it
+(the CSP's `connect-src data: blob:`, §9), so three's `GLTFLoader.load`,
+drei's `useGLTF` and `decodeAudioData` work on an imported file as they
+would on a served one. A file a run made reaches the page through
+`run/files` and becomes a blob: URL; one the viewer picks is a blob: URL
+already. A large dataset belongs in SQLite or a run's output, not in
 `public/`.
 
 ### 2.4 The document
@@ -577,6 +584,7 @@ tables, drag and drop, node graphs.
 | UI | `react`, `react-dom`; shadcn/ui at its usual paths (`@/components/ui/button`, `card`, `dialog`, `drawer`, `dropdown-menu`, `input`, `select`, `table`, `tabs`, `tooltip`, `sheet`, `badge`, `popover`, `command`, `calendar`, `chart`, `form`, `resizable`, `skeleton`, `sidebar`, …) and `@/lib/utils` (`cn`), with their Radix primitives, `class-variance-authority`, `clsx`, `tailwind-merge`, `vaul`, `react-day-picker` and `react-resizable-panels`; `lucide-react`, `sonner`, `cmdk` |
 | App structure | `react-router` (a memory router; deep links arrive as `tool-input`), `zustand`, `immer` |
 | Charts and graphs | `recharts`, `d3`, `@xyflow/react` (React Flow), `three` + `@react-three/fiber` |
+| Games (kit 0.3) | `@react-three/drei`, three's addons by path (`three/addons/*`, `three/examples/jsm/*` the same files, `libs/` left out), Rapier — `@react-three/rapier` and the engines it runs, `@dimforge/rapier3d-compat` + `rapier2d-compat`, pinned to the version `@react-three/rapier` pins so a page has one — `@react-three/postprocessing` + `postprocessing`, `three-mesh-bvh` (drei's line, one copy). The `-compat` builds carry their WebAssembly inline, which the frozen tree can hold; the CSP allows compiling it (§9). The `Game` Concept page (under `App`) and the `game` starter (`app/init { template: "game" }`) are the builder's way in |
 | Motion | `motion` (`motion/react`), with `framer-motion` aliased to it |
 | Data | `@tanstack/react-query`, `@tanstack/react-table`, `@tanstack/react-virtual`, `@dnd-kit/core` + `@dnd-kit/sortable`, `date-fns`, `lodash`, `zod`, `react-hook-form` + `@hookform/resolvers`, `papaparse`, `mathjs`, `simple-statistics`, `fuse.js` |
 | Content | `react-markdown` + `remark-gfm` |
@@ -1366,14 +1374,22 @@ person's authority over the tools its grants name.
 - **The document's own CSP**, which a host may only tighten:
 
   ```
-  default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline';
-  img-src data: blob: <resourceDomains>; font-src data: <resourceDomains>;
-  media-src data: blob: <resourceDomains>; connect-src 'none';
-  frame-src 'none'; form-action 'none'; base-uri 'none'
+  default-src 'none'; script-src 'unsafe-inline' 'wasm-unsafe-eval';
+  style-src 'unsafe-inline'; img-src data: blob: <resourceDomains>;
+  font-src data: <resourceDomains>; media-src data: blob: <resourceDomains>;
+  connect-src data: blob:; frame-src 'none'; form-action 'none'; base-uri 'none'
   ```
 
-  The page can send data nowhere but through its bridge: no `fetch`, and no
-  image beacon to an arbitrary `https:` host. WebRTC is the exception: no
+  The page can send data nowhere but through its bridge: no `fetch` to a
+  host, and no image beacon to an arbitrary `https:` host. `connect-src
+  data: blob:` (2026-11-10, for games) lets `fetch` read an imported file's
+  data URL and a blob the page made — what three's and drei's loaders and
+  `decodeAudioData` need — and neither scheme reaches a host.
+  `'wasm-unsafe-eval'` (the same day) lets the page compile WebAssembly, as
+  a physics engine ships: not `eval`, and Wasm reaches nothing its JS does
+  not hand it, though Wasm bytes from a run's output would be code the build
+  did not compile. Workers stay out (no `worker-src`): a worker is code
+  loaded at run time. WebRTC is the exception: no
   browser applies `connect-src` to it or honors `webrtc 'block'` (tested
   2026-11-04, app-channels.md item 0), so a hostile page can still reach a
   STUN or TURN host it names. Hive's frame policy allows

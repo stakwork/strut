@@ -116,6 +116,35 @@ describe("the app build", () => {
     assert.ok(/\.text-brand\b/.test(html) || html.includes("--color-brand"), "the app's @theme token is compiled in");
   });
 
+  it("the game starter builds: Rapier, drei and React Three Fiber from the kit, one document", async () => {
+    const dir = fresh();
+    await cp(join(HERE, "templates", "game"), dir, { recursive: true });
+    const r = await build(dir);
+    assert.ok(r.ok, errorsOf(r).join("\n"));
+    assert.deepEqual(r.warnings, []);
+    const html = await readFile(join(dir, "dist", "index.html"), "utf8");
+    assert.ok(html.includes("Coin rush"));
+    assert.ok(html.includes("'wasm-unsafe-eval'"), "Rapier compiles its WebAssembly: the CSP allows it");
+  });
+
+  it("an imported model, sound or texture is a data URL; three's addons import by path, under either prefix", async () => {
+    const dir = await writeApp(fresh(), {
+      "app.yaml": "title: Assets\n",
+      "src/App.tsx":
+        'import model from "../public/ship.glb";\nimport level from "../public/level.vox";\nimport hit from "../public/hit.ogg";\nimport sky from "../public/sky.hdr";\n' +
+        'import { OrbitControls } from "three/addons/controls/OrbitControls.js";\nimport { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader";\n' +
+        "export default function App() { return <p>{[model, level, hit, sky, typeof OrbitControls, typeof GLTFLoader].join(\"|\")}</p>; }\n",
+    });
+    await mkdir(join(dir, "public"), { recursive: true });
+    for (const f of ["ship.glb", "level.vox", "hit.ogg", "sky.hdr"]) await writeFile(join(dir, "public", f), Buffer.from([0x67, 0x6c, 0x54, 0x46, 2, 0, 0, 0]));
+    const r = await build(dir);
+    assert.ok(r.ok, errorsOf(r).join("\n"));
+    const html = await readFile(join(dir, "dist", "index.html"), "utf8");
+    // base64, or percent-encoded when that is shorter (esbuild's choice)
+    assert.equal(html.match(/data:[^"]*?(?:Z2xURgIAAAA=|glTF%02%00%00%00)/g)?.length, 4, "four files, four data URLs");
+    assert.ok(html.includes("OrbitControls"));
+  });
+
   it("a kit import resolves, an alias too, and a kit stylesheet rides along raw", async () => {
     const dir = await writeApp(fresh(), {
       "app.yaml": "title: Kit imports\n",
@@ -213,12 +242,16 @@ describe("the app build", () => {
     }
   });
 
-  it("a global fetch, XMLHttpRequest or WebSocket is a WARNING naming the hook; the build goes through", async () => {
+  it("a fetch of a written-out URL, XMLHttpRequest or WebSocket is a WARNING naming the hook; the build goes through", async () => {
     const r = await build(await writeApp(fresh(), minimal('async function load() { const r = await fetch("/api/x"); new WebSocket("ws://x"); return r; }')));
     assert.ok(r.ok, errorsOf(r).join("\n"));
     assert.equal(r.warnings.length, 2);
-    assert.match(r.warnings[0]!, /src\/App\.tsx:1: calls the global fetch — .*connect-src 'none'.*useStep.*useLaunch/);
+    assert.match(r.warnings[0]!, /src\/App\.tsx:1: fetches a URL — .*connect-src data: blob:.*useStep.*useLaunch/);
     assert.match(r.warnings[1]!, /opens a WebSocket/);
+    // What a page may fetch: an imported file's data: URL, a blob it made.
+    const fine = await build(await writeApp(fresh(), minimal('async function load(model: string) { await fetch(model); await fetch(`data:,x`); return fetch("blob:x"); }', using("load"))));
+    assert.ok(fine.ok, errorsOf(fine).join("\n"));
+    assert.deepEqual(fine.warnings, []);
     assert.deepEqual((await readBuildInfo(await writeApp(fresh(), minimal())))?.warnings, undefined, "a fresh dir has no build yet");
   });
 
