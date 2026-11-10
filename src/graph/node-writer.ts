@@ -406,6 +406,11 @@ export interface NodeWriteResult {
 
 export interface NodeWriterOptions {
   embedder?: Embedder;
+  /** The backend's background embedder, for a write that asks for
+   *  `embed: "later"`: handed the nodes written with no vector, it embeds
+   *  them off the caller's path (Neo4j's embedding pass, a Ladybug file's
+   *  backfill, both in a worker thread). Absent: such a write embeds inline. */
+  later?: (ref_ids: string[]) => void;
   /** Shared resolver (one per backend); a private one is created otherwise. */
   resolver?: SchemaResolver;
   /** The writer's clock for `created_at` and `updated_at` (epoch ms). */
@@ -428,6 +433,15 @@ export interface WriteOptions extends WriterCallOptions {
    *  be registered when it is not `default` (callers check via
    *  `GraphReader.resolveNamespace`). */
   namespace?: string;
+  /** `later`: write the text and leave the vectors to the backend's
+   *  background embedder (`NodeWriterOptions.later`) — a vector the node
+   *  held is cleared, never left beside new text. For a caller writing
+   *  hundreds of nodes at once (a package's Concepts): the model runs at
+   *  about 9 ms a text on a laptop's CPU, so inline it is most of the
+   *  write. Where the backend has no background embedder, or on a
+   *  caller's transaction (the nodes are not there until it commits), the
+   *  write embeds inline as always. */
+  embed?: "later";
 }
 
 export interface NodeUpdate {
@@ -537,7 +551,11 @@ export class NodeWriter {
       }
       return { schema: v.schema, key, ref_id, namespace, props };
     });
-    if (this.opts.embedder && jobs.length) {
+    if (this.defers(opts)) {
+      // No vector now, and none kept from before: the background embedder
+      // finds the node by its missing vector.
+      for (const j of jobs) prepared[j.idx]!.props[j.column] = null;
+    } else if (this.opts.embedder && jobs.length) {
       const vectors = await this.opts.embedder.embed(jobs.map((j) => j.text));
       jobs.forEach((j, i) => {
         prepared[j.idx]!.props[j.column] = vectors[i];
@@ -581,7 +599,13 @@ export class NodeWriter {
     };
     await (opts.tx ? go(opts.tx) : this.engine.tx(go));
     this.embedRecomposed(opts.tx);
+    if (this.defers(opts)) this.opts.later!(results.map((r) => r.ref_id));
     return results;
+  }
+
+  /** Does this write leave its vectors to the background embedder? */
+  private defers(opts: WriteOptions): boolean {
+    return opts.embed === "later" && !!this.opts.later && !opts.tx;
   }
 
   /**

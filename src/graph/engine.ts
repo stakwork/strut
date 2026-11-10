@@ -160,6 +160,11 @@ export interface NodeEngine {
   readRaw(tx: GraphTx, ref_id: string, schemaOf?: SchemaOf): Promise<RawNode | null>;
   /** The ref_id of the node of `type` with this identity, or null. */
   refByKey(tx: GraphTx, type: string, key: string, namespace: string): Promise<string | null>;
+  /** `refByKey` + `readRaw` for many identities in one read: the node of
+   *  `type` under each key in `namespace`, deleted or not, by key. A key no
+   *  node holds is absent. What a caller reconciling hundreds of nodes reads
+   *  (concept-seed.ts), instead of a transaction per node. */
+  readByKeys(tx: GraphTx, type: string, keys: readonly string[], namespace: string): Promise<Map<string, RawNode>>;
   /** Of `values` of `attribute` (`key`, or an identifier), those held by a
    *  node of `type` merged away (soft-deleted by `graph/merge`), each to the
    *  node it now lives on, chains followed. Ladybug only: a write that would
@@ -255,6 +260,9 @@ export interface EdgeEngine {
    *  and its live `edge` edges that way — `forward` = `(node)-[edge]->(other)`.
    *  Null when there is no such node. */
   liveEdgesOf(tx: GraphTx, ref_id: string, edge: string, forward: boolean): Promise<{ node: string; edges: Array<{ other: string; edge_ref_id: string; props: Record<string, unknown> }> } | null>;
+  /** `liveEdgesOf` for many nodes in one read, by the ref_id asked. A
+   *  ref_id no node holds is absent. */
+  liveEdgesOfMany(tx: GraphTx, ref_ids: readonly string[], edge: string, forward: boolean): Promise<Map<string, { node: string; edges: Array<{ other: string; edge_ref_id: string; props: Record<string, unknown> }> }>>;
   /** Would hanging `node` under `to` along `edge` make a cycle: is `to`
    *  (alias-rewritten) already below `node` that way? */
   wouldCycle(tx: GraphTx, edge: string, node: string, to: string, forward: boolean): Promise<boolean>;

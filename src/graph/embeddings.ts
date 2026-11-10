@@ -390,6 +390,11 @@ export class EmbeddingPass {
   private skipped: Array<{ type: string; reason: SkipReason }> = [];
   private since: number | null = null;
   private newcomersEmbedded = 0;
+  /** Nodes a writer left without a vector (`embed: "later"`), by ref_id:
+   *  the next tick embeds them first. */
+  private readonly queued = new Set<string>();
+  /** `soon` was called while a tick ran: run one more when it ends. */
+  private wanted = false;
   private lastError: string | null = null;
   private ticks = 0;
 
@@ -465,8 +470,26 @@ export class EmbeddingPass {
       })
       .finally(() => {
         this.inflight = null;
+        if (this.wanted && !this.stopped) {
+          this.wanted = false;
+          setTimeout(() => void this.tick(), 0).unref?.();
+        }
       });
     return this.inflight;
+  }
+
+  /** Nodes a writer wrote with no vector (`NodeWriter`'s `embed: "later"`):
+   *  embedded in the next tick, ahead of the sweep and the newcomers — a
+   *  tick begins now, or as soon as the one running ends, when the timer
+   *  runs (a pass driven by hand only queues them). A newcomer would wait
+   *  for the next minute's tick, and a node an update cleared would wait
+   *  for the next sweep. */
+  soon(refs: readonly string[]): void {
+    if (this.stopped || !refs.length) return;
+    for (const r of refs) this.queued.add(r);
+    if (!this.timer) return;
+    if (this.inflight) this.wanted = true;
+    else void this.tick();
   }
 
   /** Run the sweep in flight — or a new one — to its end. What a caller
@@ -479,14 +502,64 @@ export class EmbeddingPass {
   private async run(): Promise<void> {
     this.ticks++;
     const start = this.now();
-    const did = { embedded: 0, removed: 0, newcomers: 0, ended: false };
+    const did = { embedded: 0, removed: 0, newcomers: 0, queued: 0, ended: false };
     if (!this.plan && (this.finishedAt === null || this.now() - this.finishedAt >= this.sweepEveryMs)) await this.beginSweep();
     const was = this.plan ? `sweep ${this.sweepN}` : "between sweeps";
+    if (this.queued.size) await this.drainQueued(start, did);
     if (this.plan) await this.work(start, did);
     else await this.newcomers(start, did);
-    if (did.embedded || did.removed || did.newcomers || did.ended) {
+    if (did.embedded || did.removed || did.newcomers || did.queued || did.ended) {
       const at = this.plan ? ` at ${this.pos.phase} ${this.status().sweep.type ?? "-"} ${JSON.stringify(this.pos.cursor)}` : "";
-      this.log(`tick ${this.ticks} (${was}${at}): embedded ${did.embedded}, removed ${did.removed}, newcomers ${did.newcomers}${did.ended ? "; sweep done" : ""}`);
+      this.log(`tick ${this.ticks} (${was}${at}): embedded ${did.embedded}, removed ${did.removed}, newcomers ${did.newcomers}${did.queued ? `, written for later ${did.queued}` : ""}${did.ended ? "; sweep done" : ""}`);
+    }
+  }
+
+  /** The nodes `soon` was handed, a batch at a time until the budget is
+   *  spent (what is left waits for the next tick). Each is repaired as the
+   *  sweep repairs a row: a node whose text is blank, or whose type the
+   *  last plan does not embed, is left alone. */
+  private async drainQueued(start: number, did: { queued: number }): Promise<void> {
+    if (!this.embedList.length) {
+      this.queued.clear(); // nothing here is embedded at all
+      return;
+    }
+    const byLabel = new Map(this.embedList.map((m) => [m.type, m]));
+    const fields = [...new Set(this.embedList.flatMap((m) => m.index))];
+    const vfields = [...new Set(this.embedList.flatMap((m) => m.vectorIndex))];
+    const scratch: TypeCounts = { seen: 0, stale: 0, embedded: 0, removed: 0, errors: 0 }; // `current` is the sweep's
+    for (let batches = 0; this.queued.size && !this.stopped; batches++) {
+      if (batches > 0 && this.now() - start >= this.tickBudgetMs) return;
+      const refs = [...this.queued].slice(0, this.batchSize);
+      for (const r of refs) this.queued.delete(r);
+      const rows = await this.bolt.run(
+        `MATCH (n:Data_Bank) WHERE n.ref_id IN $refs
+         RETURN elementId(n) AS eid, labels(n) AS labels, n.Data_Bank AS text, [f IN $F | n[f]] AS values,
+                n.text_embeddings IS NULL AS unembedded, [p IN $V | n[p]] AS vvalues, [c IN $C | n[c] IS NULL] AS vnull`,
+        { refs, F: fields, V: vfields, C: vfields.map(embeddingColumn) },
+      );
+      const byType = new Map<Marked, PageRow[]>();
+      for (const r of rows) {
+        const labels = r["labels"] as string[];
+        const m = labels.map((l) => byLabel.get(l)).find((x): x is Marked => !!x);
+        if (!m) continue;
+        const all = r["values"] as unknown[];
+        const vall = r["vvalues"] as unknown[];
+        const vnull = r["vnull"] as boolean[];
+        byType.set(m, [
+          ...(byType.get(m) ?? []),
+          {
+            eid: String(r["eid"]),
+            node_key: "",
+            text: r["text"],
+            values: m.index.map((f) => all[fields.indexOf(f)]),
+            unembedded: r["unembedded"] === true,
+            labeled: !m.label || labels.includes(m.label),
+            vvalues: m.vectorIndex.map((p) => vall[vfields.indexOf(p)]),
+            vnull: m.vectorIndex.map((p) => vnull[vfields.indexOf(p)] === true),
+          },
+        ]);
+      }
+      for (const [m, typed] of byType) did.queued += await this.repair(m, typed, scratch);
     }
   }
 

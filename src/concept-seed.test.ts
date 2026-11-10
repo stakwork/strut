@@ -405,6 +405,44 @@ for (const tb of testBackends()) {
       const viaRegistry = await runSingleStep("context/concept", await createRegistry([]), { graph: b }, { config: { name: "Job", tool: "graph_get" } });
       assert.ok((viaRegistry.output as { text: string }).text.includes('graph_get({ node_type: "Concept"'), "discovered as a lib step");
     });
+
+    it("a tree of hundreds of pages is read and written in a few batches, not a round trip per page, and says how far it is", async () => {
+      // Root → 20 areas → 280 pages, every tenth under two areas.
+      await page("Root", "The root.");
+      for (let a = 0; a < 20; a++) await page(`Area ${a}`, `Area ${a}.`, { parent: "Root" });
+      for (let i = 0; i < 280; i++) {
+        const parents = i % 10 === 0 ? `["Area ${i % 20}", "Area ${(i + 1) % 20}"]` : `["Area ${i % 20}"]`;
+        await page(`p${i}`, `Page ${i}.`, { name: `"Page ${i}"`, parents });
+      }
+      const calls: Record<string, number> = {};
+      const count = <T extends object>(obj: T, method: keyof T & string) => {
+        const f = (obj[method] as (...a: unknown[]) => unknown).bind(obj);
+        (obj as Record<string, unknown>)[method] = (...a: unknown[]) => ((calls[method] = (calls[method] ?? 0) + 1), f(...a));
+        return () => ((obj as Record<string, unknown>)[method] = f);
+      };
+      const undo = [count(b.nodes, "write"), count(b.nodes, "writeMany"), count(b.edges, "write"), count(b.edges, "writeMany"), count(b, "tx")];
+      const seen: string[] = [];
+      try {
+        const first = await seedConcepts(b, [set()], { progress: (p) => seen.push(`${p.phase} ${p.done}/${p.total}`) });
+        assert.equal(first.length, 301);
+        assert.ok(first.every((o) => o.action === "create"), JSON.stringify(first.find((o) => o.action !== "create")));
+        assert.deepEqual(calls, { writeMany: 4, tx: 4 }, "two node batches, two edge batches; the reads: the names, the parents' edges");
+        assert.deepEqual(seen, ["pages 0/301", "pages 250/301", "pages 301/301", "edges 250/328", "edges 328/328"]);
+        const ref = (name: string) => byName(first)[name]!.ref_id!;
+        assert.equal((await children(ref("Root"))).length, 20);
+        const underArea1 = Array.from({ length: 280 }, (_, i) => i).filter((i) => i % 20 === 1 || (i % 10 === 0 && (i + 1) % 20 === 1));
+        assert.deepEqual(await children(ref("Area 1")), underArea1.map((i) => ref(`Page ${i}`)).sort());
+        for (const k of Object.keys(calls)) delete calls[k];
+        seen.length = 0;
+        // Again: everything kept, nothing written.
+        const again = await seedConcepts(b, [set()], { progress: (p) => seen.push(`${p.phase} ${p.done}/${p.total}`) });
+        assert.ok(again.every((o) => o.action === "keep"));
+        assert.deepEqual(calls, { tx: 4 }, "the names and the parents' edges, two reads each; no write");
+        assert.deepEqual(seen, ["pages 301/301"]);
+      } finally {
+        for (const u of undo) u();
+      }
+    });
   });
 }
 

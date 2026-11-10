@@ -459,6 +459,38 @@ for (const tb of testBackends()) {
       if (neo) assert.equal((p2["input_embeddings"] as number[])[0], "Input:\n{ab}".length);
     });
 
+    it("embed: later — the text written, the vector left to the background embedder (and cleared on an update); inline where there is none", async () => {
+      const seen: string[] = [];
+      const handed: string[] = [];
+      const w = new NodeWriter(backend, { embedder: fakeEmbedder(seen), resolver: backend.schemas, later: (refs) => handed.push(...refs) });
+      const a = await w.write({ type: "StrutStep", data: { step_type: "x/y", description: "d" } });
+      assert.equal(((await props(a.ref_id))["text_embeddings"] as number[])[0], "x/y\nd".length, "written as always: a vector");
+      seen.length = 0;
+      const [b, c] = await w.writeMany(
+        [
+          { type: "StrutStep", data: { step_type: "x/y", description: "dd" } },
+          { type: "StrutStep", data: { step_type: "x/z", description: "e" } },
+        ],
+        "upsert",
+        { embed: "later" },
+      );
+      assert.equal(b!.ref_id, a.ref_id);
+      assert.deepEqual(seen, [], "nothing embedded on the write");
+      assert.deepEqual(handed, [a.ref_id, c!.ref_id], "both handed on, in order");
+      const pb = await props(b!.ref_id);
+      assert.equal(pb["search_text"], st("x/y\ndd"), "the text is written now");
+      assert.ok(!("text_embeddings" in pb), "the old vector is gone with the old text");
+      assert.ok(!("text_embeddings" in (await props(c!.ref_id))));
+      // No background embedder, or the caller's transaction: inline, as always.
+      handed.length = 0;
+      const inline = new NodeWriter(backend, { embedder: fakeEmbedder(seen), resolver: backend.schemas });
+      await inline.write({ type: "StrutStep", data: { step_type: "x/z", description: "ee" } }, "upsert", { embed: "later" });
+      assert.equal(((await props(c!.ref_id))["text_embeddings"] as number[])[0], "x/z\nee".length);
+      await backend.tx((tx) => w.write({ type: "StrutStep", data: { step_type: "x/y", description: "ddd" } }, "upsert", { embed: "later", tx }));
+      assert.equal(((await props(a.ref_id))["text_embeddings"] as number[])[0], "x/y\nddd".length);
+      assert.deepEqual(handed, []);
+    });
+
     it("update: merge, remove, re-validate, re-key with collision check, rebuild Data_Bank", async () => {
       const seen: string[] = [];
       const w = new NodeWriter(backend, { embedder: fakeEmbedder(seen), resolver: backend.schemas });

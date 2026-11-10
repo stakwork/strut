@@ -3,7 +3,7 @@ import type { ComponentChildren } from "preact";
 import * as api from "../api";
 import { ago } from "./ClaimsPanel";
 import { errorMessage } from "../helpers";
-import { PACKAGE_SEGMENT, byNamespace, comesAlong, isHostsStamp, isInstalledName, nextVersion, packageLabel, pickerGroups, picksFromRelease } from "../package-release";
+import { PACKAGE_SEGMENT, byNamespace, comesAlong, installProgressText, isHostsStamp, isInstalledName, nextVersion, packageLabel, pickerGroups, picksFromRelease } from "../package-release";
 import { canWords, indexIdOf, type InstallLink } from "../store-links";
 import { ConfirmButton } from "./ConfirmButton";
 import { CopyButton } from "./CopyButton";
@@ -562,10 +562,63 @@ function FindPackages(props: { installed: string[]; initial?: InstallLink | null
   const [following, setFollowing] = useState<string | null>(null);
   const [searchSeq, setSearchSeq] = useState(0);
   const seq = useRef(0);
+  // The install going now — this tab's, or one another door started (the
+  // boot list, a proposal, a subscription) — followed until it ends.
+  const [running, setRunning] = useState<api.PackageInstallState | null>(null);
+  const onInstalled = useRef(props.onInstalled);
+  onInstalled.current = props.onInstalled;
 
   useEffect(() => {
     api.listPackageIndexes().then(setIndexes, (err) => setError(errorMessage(err)));
   }, []);
+  const id = running && !running.finishedAt ? running.id : null;
+  // While none is followed, another door's is looked for every 2 s.
+  useEffect(() => {
+    if (id) return;
+    let stop = false;
+    const look = () =>
+      api.listPackageInstalls().then((all) => {
+        const going = all.find((s) => !s.finishedAt);
+        if (going && !stop) setRunning((mine) => (mine && !mine.finishedAt ? mine : going));
+      }, () => undefined);
+    void look();
+    const t = setInterval(() => void look(), 2000);
+    return () => {
+      stop = true;
+      clearInterval(t);
+    };
+  }, [id]);
+  useEffect(() => {
+    if (!id) return;
+    let stop = false;
+    const tick = async () => {
+      while (!stop) {
+        await new Promise((r) => setTimeout(r, 600));
+        if (stop) return;
+        let s: api.PackageInstallState;
+        try {
+          s = await api.getPackageInstall(id);
+        } catch {
+          continue; // a dropped read: the next one
+        }
+        if (stop) return;
+        setRunning(s);
+        if (!s.finishedAt) continue;
+        const pkg = s.result?.package ?? s.ref;
+        if (s.status === "done" && s.result) {
+          const needs = [...s.result.missing.secrets.map((x) => `secret ${x}`), ...s.result.missing.binaries, ...s.result.missing.runtimes];
+          setOutcome({ pkg: s.ref, ok: true, text: `Installed ${pkg}.${needs.length ? ` It needs ${needs.join(", ")}.` : ""}` });
+          onInstalled.current();
+        } else setOutcome({ pkg: s.ref, ok: false, text: s.error ?? "The install failed." });
+        setBusy(null);
+        return;
+      }
+    };
+    void tick();
+    return () => {
+      stop = true;
+    };
+  }, [id]);
   // A search per pause in the typing; only the newest answer is shown.
   useEffect(() => {
     const mine = ++seq.current;
@@ -595,19 +648,32 @@ function FindPackages(props: { installed: string[]; initial?: InstallLink | null
     }
   };
 
+  // Started at once and followed: a package of hundreds of Concept pages
+  // takes a while, and the request would otherwise wait it out silently.
   const install = async (pkg: string, index: string) => {
     setBusy(pkg);
     setOutcome(null);
     try {
-      const r = await api.installPackage(pkg, { index });
-      const needs = [...r.missing.secrets.map((s) => `secret ${s}`), ...r.missing.binaries, ...r.missing.runtimes];
-      setOutcome({ pkg, ok: true, text: `Installed ${r.package}.${needs.length ? ` It needs ${needs.join(", ")}.` : ""}` });
-      props.onInstalled();
+      setRunning(await api.startPackageInstall(pkg, { index }));
     } catch (err) {
       setOutcome({ pkg, ok: false, text: errorMessage(err) });
-    } finally {
       setBusy(null);
     }
+  };
+  const going = running && !running.finishedAt ? running : null;
+  /** The install's line and bar. */
+  const progressOf = (s: api.PackageInstallState) => {
+    const { text, fraction } = installProgressText(s);
+    return (
+      <div class="install-progress" title={s.package ? `${s.package}: ${text}` : text}>
+        <span>{text}</span>
+        {fraction !== undefined && (
+          <span class="install-progress-bar">
+            <span style={{ width: `${Math.round(fraction * 100)}%` }} />
+          </span>
+        )}
+      </div>
+    );
   };
 
   const none = indexes !== null && indexes.length === 0;
@@ -630,6 +696,16 @@ function FindPackages(props: { installed: string[]; initial?: InstallLink | null
           )}
         </div>
       )}
+      {going && !found?.packages.some((h) => h.package === going.ref) && (
+        <div class="auto-card">
+          <div class="auto-card-head">
+            <span class="package-name">{going.ref}</span>
+            <span class="badge">{going.door === "distro" ? "from a subscription" : "installing"}</span>
+          </div>
+          {progressOf(going)}
+        </div>
+      )}
+      {outcome && !found?.packages.some((h) => h.package === outcome.pkg) && <div class={outcome.ok ? "auto-hint" : "auto-error"}>{outcome.text}</div>}
       <input class="package-search" type="text" placeholder="Search packages" value={q} onInput={(e) => setQ((e.target as HTMLInputElement).value)} />
       {indexes && (
         <div class="auto-meta">
@@ -656,8 +732,8 @@ function FindPackages(props: { installed: string[]; initial?: InstallLink | null
               {have ? (
                 <span class="badge">installed</span>
               ) : (
-                <button class="btn btn-sm" disabled={busy !== null} onClick={() => void install(h.package, h.index)} title={`Installs ${h.package} from the catalog the index ${h.index} names for ${h.publisher}. Its code runs on this strut server.`}>
-                  {busy === h.package ? "Installing…" : "Install"}
+                <button class="btn btn-sm" disabled={busy !== null || going !== null} onClick={() => void install(h.package, h.index)} title={`Installs ${h.package} from the catalog the index ${h.index} names for ${h.publisher}. Its code runs on this strut server.`}>
+                  {busy === h.package || going?.ref === h.package ? "Installing…" : "Install"}
                 </button>
               )}
             </div>
@@ -674,6 +750,7 @@ function FindPackages(props: { installed: string[]; initial?: InstallLink | null
                 {h.detail.secrets.length > 0 && <span>needs {h.detail.secrets.join(", ")}</span>}
               </div>
             )}
+            {going?.ref === h.package && progressOf(going)}
             {outcome?.pkg === h.package && <div class={outcome.ok ? "auto-hint" : "auto-error"}>{outcome.text}</div>}
           </div>
         );

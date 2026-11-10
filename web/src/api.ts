@@ -2448,6 +2448,38 @@ export const installPackage = (ref: string, opts: { index?: string; digest?: str
     body: JSON.stringify({ ref, ...opts }),
   });
 
+/** An install as it goes (`GET /packages/installs/:id`, src/packages/progress.ts). */
+export interface PackageInstallState {
+  id: string;
+  ref: string;
+  door: "install" | "distro";
+  actor?: string;
+  status: "queued" | "running" | "done" | "failed";
+  phase: string;
+  package?: string;
+  done?: number;
+  total?: number;
+  startedAt: number;
+  updatedAt: number;
+  finishedAt?: number;
+  result?: Awaited<ReturnType<typeof installPackage>>;
+  error?: string;
+}
+
+/** `POST /packages/install { wait: false }`: the install's record at once,
+ *  to follow with `getPackageInstall`. */
+export const startPackageInstall = (ref: string, opts: { index?: string; digest?: string; url?: string } = {}) =>
+  fetchJSON<{ install: PackageInstallState }>("/packages/install", {
+    method: "POST",
+    body: JSON.stringify({ ref, ...opts, wait: false }),
+  }).then((r) => r.install);
+
+/** `GET /packages/installs/:id`. */
+export const getPackageInstall = (id: string) => fetchJSON<PackageInstallState>(`/packages/installs/${encodeURIComponent(id)}`);
+
+/** `GET /packages/installs`: every install as it goes, whichever door, and those that ended in the last hour. */
+export const listPackageInstalls = () => fetchJSON<{ installs: PackageInstallState[] }>("/packages/installs").then((r) => r.installs);
+
 /** `GET /packages/indexes`: the indexes this strut follows, each with its last read. */
 export interface PackageIndexInfo {
   id: string;

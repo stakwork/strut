@@ -2620,6 +2620,28 @@ production until install (step 2) calls the resolver.
      indexing undeclared attributes (#583), and Concept file names past
      ustar's 100 bytes (#584, PAX headers). Rows are still the operator's
      curl: self-serve listing is being designed in plans/index-listing.md.
+   - **Built 2026-11-10: a big package installs fast, and says how far it
+     is.** The first real install of `openlaw/legal-desk` (stadeum1, Neo4j
+     5.26) crawled through its 752 Concept pages with one log line each and
+     nothing on the person's side. Measured locally with the release's own
+     pages: 19 s on Neo4j and 28 s on a Ladybug file, of which ~7 s was
+     MiniLM run inline on the main thread a page at a time (~9 ms a page
+     here; several times that on a small box) and the rest ~3,000 round
+     trips — every page its own read, write and edge write, the install's
+     check its own read per page, and every owned page's edges read again.
+     Now `seedConcepts` batches every read and write (250 at a time; a
+     failed batch falls back to page by page, so the reconcile and its
+     outcomes are as they were), writes only the edges not there yet,
+     leaves the vectors to the backend's background embedder in its worker
+     (`embed: "later"`; the vectors land some seconds after), and Ladybug
+     merges a batch of edges in one UNWIND. 752 pages: 1.0 s on Neo4j (0.6
+     s again), 1.2 s on Ladybug (0.8 s again). Every install has a record
+     as it goes (`src/packages/progress.ts`): its phase and how far
+     ("Concepts 312 / 752"), whichever door started it; `POST
+     /packages/install { wait: false }` answers 202 with it, `GET
+     /packages/installs[/:id]` reads it, and the Packages tab's Find shows
+     it with a bar. A caller that waits for the 201 is unchanged (the boot
+     list, a proposal's apply, a subscription, stadeum's page today).
    - **6b, later: the Pkarr record.** The JS client (relay-only: a relay is a
      dependency), Stakwork's relay at a stable hostname and the
      sphinx-swarm container, a publisher's record naming its public

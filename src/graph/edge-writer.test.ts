@@ -257,6 +257,36 @@ for (const tb of testBackends()) {
       }
     });
 
+    it("writeMany: a batch of one edge type — new, already there, deleted before, repeated — each as one write would have it", async () => {
+      const [a, b, c, d] = (
+        await nodes.writeMany(["A", "B", "C", "D"].map((name) => ({ type: "Concept", data: { name } })))
+      ).map((r) => r.ref_id) as [string, string, string, string];
+      const there = await edges.write({ edge: "PARENT_OF", source_ref_id: a, target_ref_id: b });
+      const gone = await edges.write({ edge: "PARENT_OF", source_ref_id: a, target_ref_id: c });
+      await edges.delete(gone.ref_id);
+      const rs = await edges.writeMany([
+        { edge: "PARENT_OF", source_ref_id: a, target_ref_id: b },
+        { edge: "PARENT_OF", source_ref_id: a, target_ref_id: c },
+        { edge: "PARENT_OF", source_ref_id: a, target_ref_id: d },
+        { edge: "PARENT_OF", source_ref_id: b, target_ref_id: c },
+        { edge: "PARENT_OF", source_ref_id: a, target_ref_id: d },
+        { edge: "PARENT_OF", source_ref_id: c, target_ref_id: d, weight: 0.5 },
+      ]);
+      assert.deepEqual(rs.map((r) => r.created), [false, true, true, true, false, true]);
+      assert.equal(rs[0]!.ref_id, there.ref_id);
+      if (!neo) assert.equal(rs[1]!.ref_id, gone.ref_id, "a deleted edge is the hidden one back");
+      assert.equal(rs[4]!.ref_id, rs[2]!.ref_id, "a repeat in the batch finds the edge the first made");
+      assert.deepEqual(rs.map((r) => [r.source_ref_id, r.target_ref_id]), [[a, b], [a, c], [a, d], [b, c], [a, d], [c, d]]);
+      assert.equal(await edgeCount(backend, "PARENT_OF"), 5);
+      assert.equal((await rel(rs[5]!.ref_id)).props["weight"], 0.5);
+      const live = await backend.tx((tx) => backend.edgeEngine.liveEdgesOfMany(tx, [a, b, c, d, randomUUID()], "PARENT_OF", true));
+      assert.deepEqual(
+        [a, b, c, d].map((r) => live.get(r)?.edges.map((e) => e.other).sort()),
+        [[b, c, d].sort(), [c], [d], []],
+      );
+      assert.equal(live.size, 4, "a ref_id no node holds is absent");
+    });
+
     it("caller weight overrides the stamp", async () => {
       const a = await edges.write({ edge: "IN_JOB", source_ref_id: run, target_ref_id: job, weight: 3 });
       assert.equal((await rel(a.ref_id)).props["weight"], 3);
