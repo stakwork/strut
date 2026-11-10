@@ -67,10 +67,33 @@ in the starter template, or your own keys, such as `{ run: "12" }`; see
 "Deep links"). `steps` then does what a person would, in order:
 `{ do: "click", selector: "text=Agents" }`, `{ do: "fill", selector:
 "input[placeholder=Filter]", value: "draft" }`, `{ do: "wait", text:
-"3 agents" }` (click, fill, type, press, select, hover, scroll, wait). A
-step that fails comes back as `stopped`, with the shot of where the page
-got to. A view no link reaches is one a person cannot share either: give
-it a key in the link.
+"3 agents" }` (click, fill, type, press, keydown, keyup, select, hover,
+scroll, wait, debug). A step that fails comes back as `stopped`, with the
+shot of where the page got to. A view no link reaches is one a person
+cannot share either: give it a key in the link.
+
+Keys go to the app: a key step puts focus in the app's frame first, so a
+page listening on `window` hears them. `press` taps a key. To HOLD one,
+as a game is played: `{ do: "keydown", key: "ArrowRight" }`, `{ do:
+"wait", ms: 500 }`, `{ do: "keyup", key: "ArrowRight" }` — one key a
+step (a second keydown holds a second key: run and jump), one keydown
+event and no auto-repeat, so read the keys held each frame rather than
+moving once per keydown event. A key still held when the list ends, or
+when a step fails, is let go of.
+
+**What the text cannot say, put on `window.__debug`.** A canvas, a game,
+a chart draws pixels, and a look reads only text and a picture. So a page
+whose state is not in its text sets `window.__debug` to a JSON value, or
+to a function returning one when the state lives in refs and changes
+every frame — `window.__debug = () => ({ x: pos.current.x, score })` —
+and the look returns it as `debug`, read just after the shot. `{ do:
+"debug" }` reads it at that point of the list, into `debugReads` (`{
+step, value }`, step = its number in the list), so a debug step before
+and after a held key shows what the key did. Keep it small and current:
+a read is cut at 8,000 chars of JSON and given 2 s, and one that throws
+comes back as an error, never a failed look. It is every app's
+convention, not a game's: whatever a look should check and cannot read
+off the page goes there.
 
 ## The manifest
 
