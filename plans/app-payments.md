@@ -579,7 +579,10 @@ records other than 13377331.
   retries with `L402 <macaroon>:<preimage>`; strut verifies offline. This is the
   same token plans/p2p-distribution-research.md puts on a `peer: true` launch, and
   the voice top-up. x402's Lightning `exact` scheme is the same exchange in
-  another envelope.
+  another envelope. Designed in `plans/paid-runs.md` (2026-11-10,
+  proposed), with two changes: the price is in the Public view record, not
+  the YAML, and the token holds credit that each run debits. That plan
+  builds §6's `ctx.services.lightning` first.
 - **Agents paying.**
   - On the desktop strut: a sealed `sphinx/pay` device step through the bridge Peel
     runs, carded every time (`ToolIntent.cost`), plus an `http/fetch-402` step on

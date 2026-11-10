@@ -497,7 +497,9 @@ alone, whatever its own gate's mode (§3). Nothing changes in sphinx-swarm
 
 - **Public launches.** A workflow a person opens to visitors, judged by its
   closure (no `acts`, no `code`), with a daily spend cap billed to its
-  owner when it `spends`. openlaw-run alone is about $30 a run.
+  owner when it `spends`. openlaw-run alone is about $30 a run. Designed
+  in `plans/paid-runs.md` (2026-11-10, proposed), where a free launch is a
+  price of 0; there the closure is shown and ticked, not refused.
 - **A signed `/public` listing** (by the publisher's public key).
 - **Diffs** between versions or revisions in the store.
 - **Suggesting back from an installed copy** (its `upstream` names the
