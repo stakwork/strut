@@ -43,6 +43,9 @@ import { createPayments, type Payments } from "./payments/wallet.js";
 import type { LightningCapability } from "./payments/lightning.js";
 import type { RateSource } from "./payments/rate.js";
 import { walletRoutes } from "./payments/wallet-routes.js";
+import { openLedger, type LedgerStore } from "./payments/ledger.js";
+import { MemoryLedgerStore } from "./payments/ledger-memory.js";
+import { listRunnable, recentCosts, runnableCan, runnableProblems, type RunnableDeps } from "./public-runnable.js";
 import type { SecretStore } from "./secret-store.js";
 import {
   FileSessionStore,
@@ -333,6 +336,14 @@ export interface StrutOptions<TServices = unknown> {
    *  is set from `LIGHTNING_*` at boot or `PUT /earnings/wallet`, kept in
    *  `payments.json`; a host's own `services.lightning` wins over both. */
   payments?: { rate?: RateSource };
+  /** Public runs (plans/paid-runs.md §6): `principal`, the ONE principal
+   *  every public run is billed to — a Mothership delegation of its own (say
+   *  `public-runs`), so strangers' runs draw on a budget apart from any
+   *  person's. Without it a public run's principal is the workflow's owner,
+   *  the automation rule. Today it only answers the save's check that a
+   *  runnable workflow which spends has someone to pay for it (work item 2);
+   *  the launch (item 3) bills it. `STRUT_HOST_CONFIG`'s `publicRuns`. */
+  publicRuns?: { principal?: string };
 
   /** Max agent steps (tool-call iterations) per chat turn. Raise for longer
    *  autonomous "let it rip" loops. Defaults to `STRUT_CHAT_MAX_STEPS` or 100. */
@@ -774,6 +785,12 @@ export interface Strut<TServices = unknown> {
    *  `ctx.services.lightning` is), and the exchange rate (`rate.read()`,
    *  what a quote is priced at). */
   payments: Payments;
+
+  /** The paid-runs LEDGER (plans/paid-runs.md §5, src/payments/ledger.ts):
+   *  opened on first call — `<dataDir>/payments/ledger.db`, or memory where
+   *  the run store is — so a strut that sells and gives nothing never makes
+   *  the file; closed by `close()`. What the launch and the charge write. */
+  ledger(): Promise<LedgerStore>;
 
   /** The package indexes this strut FOLLOWS (src/packages/indexes.ts): a
    *  bare name resolves through their cards; `search` reads them and the
@@ -1282,6 +1299,17 @@ export async function createStrut<TServices = unknown>(
       else delete bag["lightning"];
     },
   });
+  // The paid-runs ledger (plans/paid-runs.md §5): opened on first use, so a
+  // strut that sells and gives nothing never makes `payments/ledger.db`;
+  // memory where the run store is, since its charges are those runs'.
+  let ledgerOpen: Promise<LedgerStore> | undefined;
+  const ledger = (): Promise<LedgerStore> => {
+    ledgerOpen ??= store instanceof MemoryRunStore ? Promise.resolve(new MemoryLedgerStore()) : openLedger({ dataDir });
+    ledgerOpen.catch(() => {
+      ledgerOpen = undefined;
+    });
+    return ledgerOpen;
+  };
   // The browser the browser/* steps drive (src/browser/service.ts), unless
   // the host brought its own — whose teardown is then the host's too.
   // Building it touches nothing: the first step that opens a page connects.
@@ -3229,10 +3257,26 @@ export async function createStrut<TServices = unknown>(
       ...(view.manifest.icon ? { icon: view.manifest.icon } : {}),
     };
   };
+  /** What the `runnable` checks ask of the server (src/public-runnable.ts). */
+  const runnableDeps: RunnableDeps = {
+    workspace,
+    registry: () => registry,
+    stepSources: () => stepSources,
+    wallet: () => payments.lightning() !== null,
+    ...(opts.publicRuns?.principal ? { principal: opts.publicRuns.principal } : {}),
+  };
   publicRoutes(app, {
     surface: publicSurface,
     workspace,
     store,
+    runnable: async () => {
+      let descriptions: Map<string, string | undefined> | undefined;
+      return listRunnable(await publicSurface.get(), {
+        ...runnableDeps,
+        workflowDescription: async (name) => (descriptions ??= new Map((await workspace.listWorkflows()).map((w) => [w.name, w.description]))).get(name),
+        ledger,
+      });
+    },
     registry: () => registry,
     stepSources: () => stepSources,
     ...(artifacts ? { artifacts } : {}),
@@ -3257,9 +3301,10 @@ export async function createStrut<TServices = unknown>(
     const workflows = new Set((await workspace.listWorkflows()).map((w) => w.name));
     const appNames = new Set((await apps.list().catch(() => [])).map((a) => a.name));
     const tree = s.concepts.length ? await publicSurface.conceptTree().catch(() => undefined) : undefined;
+    const named = (kind: "workflow" | "step", listed: string[]) => [...new Set([...listed, ...s.runnable.filter((r) => r.kind === kind).map((r) => r.name)])];
     return {
-      workflows: s.workflows.map((w) => w.name).filter((n) => !workflows.has(n)),
-      steps: s.steps.filter((t) => !registry[t]),
+      workflows: named("workflow", s.workflows.map((w) => w.name)).filter((n) => !workflows.has(n)),
+      steps: named("step", s.steps).filter((t) => !registry[t]),
       concepts: tree ? tree.missing : s.concepts.length && !graph ? s.concepts : [],
       apps: s.apps.map((a) => a.name).filter((n) => !appNames.has(n)),
     };
@@ -3272,8 +3317,13 @@ export async function createStrut<TServices = unknown>(
     const body: unknown = await c.req.json().catch(() => undefined);
     const problem = surfaceProblem(body);
     if (problem) return c.json({ error: problem }, 400);
+    // What anyone may run is checked whole at every save (plans/paid-runs.md
+    // §2): each refusal names its item, and nothing is written.
+    const normalized = normalizeSurface(body);
+    const problems = await runnableProblems(normalized, runnableDeps);
+    if (problems.length) return c.json({ error: problems.join("; "), problems }, 400);
     const before = new Set((await publicSurface.get()).apps.map((a) => a.name));
-    const next = await publicSurface.set(normalizeSurface(body));
+    const next = await publicSurface.set(normalized);
     // An app added to the public view is HELD at the version it shows
     // (plans/public-surface.md §2, as pinning holds, plans/app-releases.md):
     // a builder's later publish is a draft until a person moves the release.
@@ -3293,6 +3343,31 @@ export async function createStrut<TServices = unknown>(
       }
     }
     return c.json({ surface: next, missing: await publicViewMissing(next), ...(held.length ? { held } : {}) });
+  });
+  // What the dialog's third box ("anyone can run it") shows for a workflow
+  // or a step (plans/paid-runs.md §2): what its closure can do, what its
+  // runs here cost over the last 30 days (run summaries, never the ledger),
+  // and the facts the save checks — an `input:` block, an owner or the
+  // host's principal, a wallet — so the dialog says what is missing first.
+  app.get("/public-view/runnable", async (c) => {
+    const wf = c.req.query("workflow");
+    const step = c.req.query("step");
+    if (!wf === !step) return c.json({ error: "name a workflow (?workflow=) or a step (?step=)" }, 400);
+    const item = wf ? { kind: "workflow" as const, name: wf } : { kind: "step" as const, name: step! };
+    const can = await runnableCan(item, runnableDeps);
+    if (!can) return c.json({ error: `no ${item.kind} "${item.name}" on this strut server` }, 404);
+    const flow = wf ? await workspace.getWorkflow(wf).catch(() => null) : null;
+    const owner = wf ? (await workspace.getWorkflowMetadata(wf))?.owner : undefined;
+    return c.json({
+      ...item,
+      can,
+      costs: await recentCosts(store, wf ?? `step:${step}`),
+      ...(wf ? { input: flow?.inputBlock != null } : {}),
+      ...(owner ? { owner } : {}),
+      ...(opts.publicRuns?.principal ? { principal: opts.publicRuns.principal } : {}),
+      wallet: runnableDeps.wallet(),
+      gateway: !!opts.llmAuth,
+    });
   });
   // What adding an app or a workflow brings along, for the dialog to
   // pre-check (src/public-view.ts): every line with what it exposes.
@@ -8346,6 +8421,9 @@ export async function createStrut<TServices = unknown>(
     await ownSink?.close();
     // And the apps' usage counted since the last write.
     await appMonitor.close();
+    // The ledger's WAL folded into its file, when it was opened.
+    if (ledgerOpen) await (await ledgerOpen.catch(() => null))?.close();
+    ledgerOpen = undefined;
     // A room's sockets close with the server; their rooms queue what follows.
     for (const ws of roomsWss.clients) ws.terminate();
     // A channel's sockets too; the channels are memory, and go with the process.
@@ -8454,6 +8532,7 @@ export async function createStrut<TServices = unknown>(
     index,
     indexes,
     payments,
+    ledger,
     claims,
     verifier,
     listen,

@@ -2782,12 +2782,39 @@ export const storeCatalogUrl = (card: IndexCard | null) => card?.urls?.[0] ?? `$
 // is the person's (`/public-view`, behind the credential); a visitor reads
 // it under `/public/*` with no credential at all. Never a "publish".
 
+/** What anyone may run, and for how much (plans/paid-runs.md §2; dollars). */
+export interface PublicRunnable {
+  kind: "workflow" | "step";
+  name: string;
+  base?: number;
+  markup?: number;
+  capUsd?: number;
+  dailyCapUsd?: number;
+  results?: "output" | "run";
+}
 export interface PublicViewRecord {
   concepts: string[];
   workflows: Array<{ name: string; runs?: boolean }>;
   steps: string[];
   types: string[];
   apps: Array<{ name: string; reads?: string[]; domains?: string[] }>;
+  runnable: PublicRunnable[];
+}
+/** `GET /public-view/runnable`: what the "anyone can run it" box shows. */
+export interface PublicRunInfo {
+  kind: "workflow" | "step";
+  name: string;
+  can: PackageCan;
+  /** What its runs here cost over the last `days`, from run summaries (dollars). */
+  costs: { days: number; runs: number; measured: number; average: number; highest: number };
+  /** A workflow declares an `input:` block. */
+  input?: boolean;
+  owner?: string;
+  /** The host's principal for every public run. */
+  principal?: string;
+  wallet: boolean;
+  /** Model calls go through the Mothership's gateway, which stops a run at its cap. */
+  gateway: boolean;
 }
 export interface PublicViewAnswer {
   surface: PublicViewRecord;
@@ -2814,6 +2841,8 @@ export interface PublicViewNeeds {
 export const getPublicView = () => fetchJSON<PublicViewAnswer>("/public-view");
 export const putPublicView = (surface: PublicViewRecord) =>
   fetchJSON<PublicViewAnswer>("/public-view", { method: "PUT", body: JSON.stringify(surface) });
+export const publicRunInfo = (q: { workflow: string } | { step: string }) =>
+  fetchJSON<PublicRunInfo>(`/public-view/runnable?${new URLSearchParams(q as Record<string, string>)}`);
 export const publicViewNeeds = (q: { app?: string; workflow?: string }) =>
   fetchJSON<PublicViewNeeds>(`/public-view/needs?${new URLSearchParams(q as Record<string, string>)}`);
 

@@ -62,6 +62,7 @@ describe("the surface record", () => {
       steps: ["s"],
       types: [],
       apps: [],
+      runnable: [],
     });
   });
 
@@ -205,7 +206,7 @@ describe("the /public routes", () => {
     const { strut } = await boot();
     const res = await strut.app.request("/public");
     assert.equal(res.status, 200);
-    assert.deepEqual(await res.json(), { workflows: [], steps: [], concepts: [], types: [], apps: [] });
+    assert.deepEqual(await res.json(), { workflows: [], steps: [], concepts: [], types: [], apps: [], runnable: [] });
     assert.equal((await strut.app.request("/public/workflows/demo")).status, 404);
     assert.equal((await strut.app.request("/public/workflows/demo/flow")).status, 404);
     assert.equal((await strut.app.request("/public/graph/nodes/x")).status, 404);

@@ -2790,7 +2790,9 @@ A person chooses what this strut server shows anyone, live and read-only —
 its PUBLIC VIEW (not a copy: nothing is copied or versioned, and the
 Packages tab's **Make public** is the package catalog's, §16):
 Concept roots (each root and every page under it by `PARENT_OF`),
-workflows (with or without their runs), steps, node types, and apps.
+workflows (with or without their runs), steps, node types, and apps — and
+what anyone may RUN, free or priced in dollars (`runnable`,
+`plans/paid-runs.md` §2; the launch door itself is a later item).
 Everything else stays behind the key. The record is one file,
 `<dataDir>/public.json` (`src/public-surface.ts`); nothing public until
 someone puts it there. The UI's door is the topbar's **Publish** dialog, its
@@ -2803,6 +2805,7 @@ someone puts it there. The UI's door is the topbar's **Publish** dialog, its
 | `GET /public-view` | `{ surface, missing }` — the record as kept, and what it names that this server does not hold |
 | `PUT /public-view` | replace the record (body below); `{ surface, missing, held? }` |
 | `GET /public-view/needs?app=<name>` \| `?workflow=<name>` | what adding it brings along, for the dialog to pre-check (`src/public-view.ts`) |
+| `GET /public-view/runnable?workflow=<name>` \| `?step=<type>` | what the "anyone can run it" box shows: what it can do, what its runs here cost, and what the save will ask (below) |
 
 ```json
 {
@@ -2810,7 +2813,12 @@ someone puts it there. The UI's door is the topbar's **Publish** dialog, its
   "workflows": [{ "name": "openlaw-run", "runs": true }, { "name": "harvey-lab-run" }],
   "steps": ["openlaw/list-tasks"],
   "types": [],
-  "apps": [{ "name": "openlaw-benchmarks", "reads": ["openlaw/runs"], "domains": ["openlaw.ai"] }]
+  "apps": [{ "name": "openlaw-benchmarks", "reads": ["openlaw/runs"], "domains": ["openlaw.ai"] }],
+  "runnable": [
+    { "kind": "workflow", "name": "cve/scan", "dailyCapUsd": 5 },
+    { "kind": "workflow", "name": "voxel/character", "base": 0.1, "markup": 1.2, "capUsd": 5, "results": "run" },
+    { "kind": "step", "name": "cve/lookup", "base": 0.01 }
+  ]
 }
 ```
 
@@ -2827,6 +2835,67 @@ release.
 ```json
 { "surface": { … }, "missing": { "workflows": [], "steps": [], "concepts": [], "apps": [] }, "held": [{ "app": "openlaw-benchmarks", "version": "v7", "release": "r3" }] }
 ```
+
+**`runnable`** (`plans/paid-runs.md` §2): what anyone may START, a workflow
+or a step, independent of `workflows` and `steps` — an item may be run by
+anyone without its definition or its runs being shown. One pricing rule,
+`charge = base + markup × what the run cost`, in dollars:
+
+| Field | |
+| --- | --- |
+| `kind`, `name` | `workflow` and its name, or `step` and its type |
+| `base` | dollars a run or call; 0 when absent |
+| `markup` | times what the run cost; 0 when absent (1 charges exactly the cost) |
+| `capUsd` | the most one run may spend, above 0; required with a markup |
+| `dailyCapUsd` | the spend the owner carries per UTC day, above 0 |
+| `results` | a workflow's: what its launcher reads, `output` (the default) or the whole `run` |
+
+Base and markup both 0 is free. The RESERVE a run needs is derived, never
+set: `base + markup × capUsd`. Changing the list publishes no version.
+`missing` reports a runnable workflow or step that is not here, like any
+other. The save checks every item, and refuses with a `400` naming each one
+it refuses (`{ error, problems: [...] }`, `error` the problems joined by
+`; `), writing nothing:
+
+- it exists and is not sealed, and a workflow's closure reaches nothing
+  sealed (a subflow's grader, a `meta/*` grant);
+- a step is not `agent`, `llm`, `exec`, `acp/prompt` (a stranger runs one
+  inside a workflow: the workflow is the unit of spend), `meta/*`, nor one
+  of the runner's containers, `subflow`, `loop`, `foreach`, `if` (a
+  stranger's config would choose what they run);
+- a workflow declares an `input:` block (§2);
+- a `markup` has a `capUsd`;
+- a priced item has a wallet (§18, or the host's own `services.lightning`);
+- a workflow whose closure calls a model (`agent`, `llm`, `acp/prompt`, or
+  a closure strut cannot read in full) has someone to pay for a stranger's
+  run — its owner, or the host's `createStrut({ publicRuns: { principal } })`
+  — and, when it is free, a `dailyCapUsd`;
+- every number is finite and not negative.
+
+`GET /public-view/runnable` answers, for the dialog's third box:
+
+```json
+{
+  "kind": "workflow", "name": "cve/summarize",
+  "can": { "spends": true, "acts": false, "code": false },
+  "costs": { "days": 30, "runs": 5, "measured": 5, "average": 0.264, "highest": 0.58 },
+  "input": true, "owner": "tom-1", "wallet": false, "gateway": false
+}
+```
+
+`can` is the store's chips over the live closure (`spends`: a model call;
+`acts`: a step with `effect: "write"`; `code`: `exec`, a custom step, or an
+agent that has `bash`); a closure strut cannot read in full is all three.
+`costs` is what its runs on this server cost over the last 30 days, in
+dollars, from run summaries (`RunSummary.totals`): `runs` counts every run
+in the window, `average` and `highest` are over the newest 200 finished
+(`measured`). A step's are its KEPT runs (`step:<type>`: a `run_step` with
+claims or `keep`, an app's writes); a step called inside a workflow counts
+as the workflow's, so most steps show none. `input` (a workflow's) says
+whether it declares an `input:` block; `owner` is the workflow's, `principal`
+the host's; `wallet` whether one is set; `gateway` whether model calls go
+through the Mothership's gateway, which stops a run at its cap. `404` for
+an item not here.
 
 `needs` answers with every line pre-checked or not, each with what it
 shows anyone (`note`):
@@ -2863,7 +2932,7 @@ a `404`, as if it were not there.
 
 | Route | Answer |
 | --- | --- |
-| `GET /public` | `{ workflows: [{ name, activeVersion, versions, description?, category?, runs }], steps: [{ type, source, description?, effect? }], concepts: [{ name, description?, pages }], types, apps: [{ name }] }` — the roots, with how many pages each holds |
+| `GET /public` | `{ workflows: [{ name, activeVersion, versions, description?, category?, runs }], steps: [{ type, source, description?, effect? }], concepts: [{ name, description?, pages }], types, apps: [{ name }], runnable: [{ kind, name, description?, base, markup, capUsd, reserve, results, input, recent }] }` — the roots, with how many pages each holds; what anyone may run (below) |
 | `GET /public/workflows[?q=]` | the public workflows, as above |
 | `GET /public/workflows/:name` | `{ name, active, category?, runs, versions: { vN: { createdAt, description?, hash, source? } } }` |
 | `GET /public/workflows/:name/versions` | `{ active, versions: [{ version, createdAt, description?, source? }] }` newest first |
@@ -2884,6 +2953,15 @@ a `404`, as if it were not there.
 | `GET /public/apps` | `[{ name, version, title, description?, icon? }]` — each at the version the public view serves |
 | `GET /public/apps/:name` | one of them |
 | `GET /public/apps/:name/document` | the page: that version's `dist/index.html` with a VISITOR's identity in `<meta name="strut-app-token">` and `<meta name="strut-public-view" content="1">` beside it |
+
+`runnable` lists every item of the record's `runnable` that is here and
+not sealed, whether or not its definition is public (its YAML is never
+shown there): prices in dollars, `capUsd` null when the item sets none,
+`reserve` the credit a run needs to start (`base + markup × capUsd`),
+`results` `output` unless the item says `run`, `input` the workflow's
+`input:` block or the step's input JSON Schema, and `recent` the ledger's
+last 30 days for it (`{ days, runs, average }`: public runs, and the
+average charge in dollars).
 
 A node is visible when it is a Concept under a public root, a node a run
 of a workflow with public runs NAMED (its steps' `step.end.nodes`; another
