@@ -224,12 +224,16 @@ export async function buildVendor({ outdir = vendorDir, minify = true }: { outdi
   const css = all.filter((e) => e.kind === "css");
 
   // The resolution pass: what every JS entry reaches, and how each import resolved.
+  // Only the metafile is read. `splitting` keeps each module ONE output in
+  // memory: without it every entry is a whole bundle, and three's ~470
+  // addons each carried all of three (1.5 GB, against ~250 MB).
   const scan = await build({
     ...BUILD_OPTIONS,
     entryPoints: js.map((e) => ({ in: e.in, out: e.out })),
     outdir: join(outdir, ".scan"),
     write: false,
     metafile: true,
+    splitting: true,
   });
   const metafile = scan.metafile;
   const modules: Record<string, VendorModule> = {};
