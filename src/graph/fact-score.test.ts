@@ -3,9 +3,10 @@
  * who backed it, each sayer once; how long since it was last backed, by the
  * edge type's volatility; an ended value kept in the running when a less
  * trusted sayer replaced it; a message read again that brings nothing back;
- * the user saying it is false, which wins a tie with support; and the
- * status and stance that follow. Evidence rows, and sources for a fact
- * written before claims, give the same answer.
+ * the user saying it is false, which stands until the user backs it and
+ * wins a tie with their support; and the status and stance that follow.
+ * Evidence rows, and sources for a fact written before claims, give the
+ * same answer.
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -97,8 +98,11 @@ describe("fact-score", () => {
     const e = edge("e1", "vegan", ["sam"], 0, { evidence: [said("a", "sam", 0), said("b", undefined, 20, -1)] });
     const s = slot("me", [e], 25, { volatility: "evolving" });
     assert.deepEqual([...view(s, "e1"), s.get("e1")!.belief], ["refuted", "ask", 0]);
-    // Backed again after the refutation, it stands.
-    const back = slot("me", [{ ...e, evidence: [...e.evidence!, said("c", undefined, 30)] }], 35, { volatility: "evolving" });
+    // Sam saying it again after the refutation does not undo it.
+    const again = slot("me", [{ ...e, evidence: [...e.evidence!, said("c", "sam", 30)] }], 35, { volatility: "evolving" });
+    assert.deepEqual(view(again, "e1"), ["refuted", "ask"], "only the user takes back their own word");
+    // The user backing it after the refutation, it stands.
+    const back = slot("me", [{ ...e, evidence: [...e.evidence!, said("c", "sam", 30), said("d", undefined, 31)] }], 35, { volatility: "evolving" });
     assert.equal(back.get("e1")!.status, "supported");
   });
 
