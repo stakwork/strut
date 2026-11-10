@@ -15,10 +15,11 @@ import "./styles/components.css";
 import { deepEqual, errorMessage, normalizeSteps, statusTone } from "./helpers";
 import { load as loadPref, save as savePref } from "./storage";
 import { searchSteps, searchWorkflows } from "../../src/search.js";
+import { canvasOrder } from "../../src/canvas-form.js";
 import { ChatFlyout } from "./components/ChatFlyout";
 import { CategoryEditor } from "./components/CategoryEditor";
 import { RunCapEditor } from "./components/RunCapEditor";
-import { applyPeer, readPeer, togglePeer, type PeerValue } from "./peer-flag";
+import { readPeer, togglePeer, type PeerValue } from "./peer-flag";
 import { OwnerEditor } from "./components/OwnerEditor";
 import { CreateDialog } from "./components/CreateDialog";
 import { SecretsDialog } from "./components/SecretsDialog";
@@ -1183,17 +1184,17 @@ function Shell() {
     // the active version is not the newest, and active+1 would overwrite.
     const nums = (selectedEntry?.versions ?? [activeVersion]).map((v) => parseInt(v.replace(/^v/, ""), 10) || 0);
     const nextVersion = `v${Math.max(0, ...nums) + 1}`;
-    const hasParams = localParams != null && Object.keys(localParams).length > 0;
     // The editor models name / input / steps / params; every other top-level
-    // key of the version being edited — `claims:`, `promotes:`, `sealed:`,
-    // `peer:` — rides through unchanged.
-    let rest: Record<string, unknown> = {};
+    // key of the version being edited — `claims:`, `promotes:`, `sealed:` —
+    // rides through unchanged, and `peer:` is the toggle's.
+    let prev: Record<string, unknown> = {};
     try {
-      const prev = yaml.load(await api.getWorkflowYaml(selectedWf, viewVersion ?? activeVersion)) as Record<string, unknown> | null;
-      rest = Object.fromEntries(Object.entries(prev ?? {}).filter(([k]) => !["name", "input", "steps", "params"].includes(k)));
+      prev = (yaml.load(await api.getWorkflowYaml(selectedWf, viewVersion ?? activeVersion)) as Record<string, unknown> | null) ?? {};
     } catch { /* publish what the editor has */ }
+    // The canvas form (src/canvas-form.ts): one key order for every publish
+    // from here, which a package update reads back when it merges a release.
     const yamlStr = yaml.dump(
-      applyPeer({ name: selectedWf, ...(localInput ? { input: localInput } : {}), steps: localSteps, ...(hasParams ? { params: localParams } : {}), ...rest }, localPeer),
+      canvasOrder({ ...prev, input: localInput, steps: localSteps, params: localParams, peer: localPeer }, selectedWf),
       { lineWidth: 120, noRefs: true },
     );
     await api.publishWorkflowYaml(selectedWf, nextVersion, yamlStr);

@@ -2581,6 +2581,16 @@ release's, with a warning). Then, per item:
 | Clean, anything else | the release's version beside the fork, then the MERGED content as a version of this strut's own — `source: "update"`, `upstream` the release's — made active. An app a person holds at a release gets it as a draft | `replayed` |
 | Markers left, a path deleted on one side and changed on the other, or a result that fails its check | nothing: the whole update is refused | — |
 
+A workflow edited in strut's web editor is merged in the editor's own
+form. The editor rebuilds the file from its steps on every publish, so
+against a hand-written release most lines differ (comments gone, quotes
+and inline maps rewritten, `description:` moved below the steps). When the
+fork's text is exactly what the editor would write, the two releases are
+put through the same key order and dump before the merge (`canvasOrder`,
+`src/canvas-form.ts`), and the fork has converged when it equals the new
+release in that form: the release's own file, comments and all, is then
+made active.
+
 The checks are the ones a release's own file passes: a merged workflow is
 valid YAML naming steps and workflows that are here, a merged step loads
 as its own type (beside the helpers as they will be), a merged app builds

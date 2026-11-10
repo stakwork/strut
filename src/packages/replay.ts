@@ -14,12 +14,21 @@
  * `localPatch` is the other direction, for reading: what this strut changed
  * in a package, as one patch file from the installed release to what is
  * active.
+ *
+ * A workflow edited in the web editor is in the CANVAS FORM (canvas-form.ts):
+ * the editor re-dumps the whole file, so against a hand-written release
+ * most of its lines differ and a line merge would conflict on a one-line
+ * edit. When the fork is in that form, the base and the release are put
+ * through the same order and dump before the merge, and "is it the
+ * release's content now?" is asked of the release in that form.
  */
 import { copyFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { AppsCapability } from "../apps/apps.js";
+import { canvasOrder } from "../canvas-form.js";
 import { contentHash, treeFiles, treeHash } from "../version.js";
 import { versionLabelOrder, type Upstream, type VersionSource, type WorkspaceStore } from "../workspace.js";
+import { dumpYaml, loadYaml } from "../yaml.js";
 import type { PackageCache } from "./cache.js";
 import { byPackage, type InstalledPackage } from "./installed.js";
 import { diffDirs, formatPatch, mergeText, mergeTrees } from "./patch.js";
@@ -95,6 +104,18 @@ async function baseOf(deps: ReplayDeps, fork: Fork, item: { active: string; vers
 
 const hashOf = async (c: Content): Promise<string> => ("text" in c ? contentHash(c.text) : treeHash(c.dir));
 
+/** A workflow's YAML in the canvas form (canvas-form.ts), as the web
+ *  editor would publish it unchanged; undefined for text that is not a
+ *  YAML mapping. */
+export function canvasForm(text: string, name: string): string | undefined {
+  try {
+    const doc = loadYaml(text);
+    return doc && typeof doc === "object" && !Array.isArray(doc) ? dumpYaml(canvasOrder(doc as Record<string, unknown>, name)) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** What a merged content is against the fork and the release. */
 async function settle(merged: Content, theirsHash: string, oursHash: string | undefined, notes: string[]): Promise<Replayed> {
   const hash = await hashOf(merged);
@@ -113,8 +134,15 @@ export async function replayFork(deps: ReplayDeps, git: string, scratch: string,
   const ours = await contentAt(deps, fork.kind, fork.name, item.active);
   const oursHash = item.versions[item.active]?.hash;
   if ("text" in ours && "text" in base) {
-    const theirs = await readFile(fork.theirs, "utf-8");
-    const m = await mergeText(git, scratch, { base: base.text, ours: ours.text, theirs });
+    let theirs = await readFile(fork.theirs, "utf-8");
+    let from = base.text;
+    // A fork in the canvas form is merged against the base and the release
+    // in that form, so the merge sees the edit and not the editor's re-dump.
+    if (fork.kind === "workflow" && canvasForm(ours.text, fork.name) === ours.text) {
+      from = canvasForm(from, fork.name) ?? from;
+      theirs = canvasForm(theirs, fork.name) ?? theirs;
+    }
+    const m = await mergeText(git, scratch, { base: from, ours: ours.text, theirs });
     if (!m.clean) return { outcome: "conflict", why: "its change here and the release's change touch the same lines" };
     return settle({ text: m.text }, contentHash(theirs), oursHash, []);
   }

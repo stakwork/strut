@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { canvasOrder } from "../canvas-form.js";
 import { createStrut, type Strut } from "../createStrut.js";
 import type { GraphBackend } from "../graph/backend.js";
 import { seedStrutDomain } from "../graph/schema-seed.js";
@@ -18,11 +19,13 @@ import { GraphWorkspaceStore } from "../graph/workspace-store.js";
 import { MemoryRunStore } from "../store.js";
 import { kitForTests } from "../test-util/app-kit.js";
 import { WorkspaceManager, type WorkspaceStore } from "../workspace.js";
+import { dumpYaml, loadYaml } from "../yaml.js";
 import { packageCache } from "./cache.js";
 import { readPackage } from "./format.js";
 import { updatePackage, type InstallResult } from "./install.js";
 import type { InstalledPackage } from "./installed.js";
 import { diffDirs, formatPatch, packageGit, PatchStore } from "./patch.js";
+import { canvasForm } from "./replay.js";
 import type { RollbackResult } from "./updates.js";
 
 const found = await packageGit();
@@ -337,6 +340,72 @@ describe("updating an installed package", { skip: git ? false : "no git here" },
     assert.equal(of(third.body, "acme/linear/report"), "present");
     const local = await (await api.patch("acme/linear")).text();
     assert.match(local, /^package: acme\/linear\nonto: sha256:[0-9a-f]+\nover: workflows\/sync\.yaml=\S+\ndiff --git /, "only sync is this strut's change");
+  });
+
+  it("carries a workflow edited in the web editor onto a hand-written release, and makes it untouched again once the release takes the edit", async () => {
+    // As a publisher writes one: comments, inline maps, quotes, the description up top.
+    const HAND = (url = "https://api.linear.app/issues?team={{ input.team }}", message = "{{ summarize.text }}", description = "Weekly report of open issues") => `name: acme/linear/report
+description: ${description}
+# The report: fetch, summarize, post.
+input:
+  team: { type: string, description: "Team key" }
+params:
+  model: sonnet
+steps:
+  - id: fetch
+    type: http
+    config:
+      url: "${url}"
+      method: GET
+  # One call, no tools.
+  - id: summarize
+    type: llm
+    config: { model: "{{ params.model }}", prompt: "Summarize:\\n\\n{{ fetch.body }}" }
+  - id: note
+    type: log
+    depends: [summarize]
+    config: { message: "${message}" }
+`;
+    const release = (version: string, text: string) => ({ "strut.yaml": `package: acme/linear\nversion: ${version}\n`, "workflows/report.yaml": text });
+    const name = "acme/linear/report";
+    const path = `/workflows/${encodeURIComponent(name)}`;
+    assert.equal((await api.install(`file:${await writeTree(release("1.0.0", HAND()), "h1")}`)).status, 201);
+
+    // The editor's Publish (web/src/app.tsx handlePublish): the parsed flow,
+    // one step edited, the whole file dumped again in the canvas form.
+    const flow = (await (await api.req(`${path}/flow`)).json()) as { steps: Array<{ config: Record<string, unknown> }>; input?: unknown; params?: unknown; peer?: unknown };
+    const prev = loadYaml(await (await api.req(`${path}/v1`)).text()) as Record<string, unknown>;
+    flow.steps[2]!.config["message"] = "Report: {{ summarize.text }}";
+    const edited = dumpYaml(canvasOrder({ ...prev, input: flow.input ?? null, steps: flow.steps, params: flow.params ?? null, peer: flow.peer }, name));
+    const published = await api.req(path, json({ version: "v2", yaml: edited, source: "ui" }));
+    assert.equal(published.status, 201, await published.clone().text());
+    assert.equal(canvasForm(edited, name), edited, "what the editor wrote is in the canvas form");
+    assert.ok(edited.split("\n").filter((line) => line && !HAND().split("\n").includes(line)).length > 8, "one edit there rewrote much of the file");
+
+    // 1.1 changes the first step and the description, by hand.
+    const second = HAND("https://api.linear.app/issues?team={{ input.team }}&state=open", undefined, "Weekly report");
+    const r = await api.update("acme/linear", { ref: `file:${await writeTree(release("1.1.0", second), "h2")}` });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.deepEqual(statuses(r.body), [["workflow", name, "replayed"]]);
+    const carried = (await ws.getWorkflowMetadata(name))!;
+    assert.equal(carried.versions[carried.active]?.source, "update");
+    const text = await ws.getWorkflowSource(name, carried.active);
+    assert.equal(canvasForm(text, name), text, "still in the canvas form");
+    const want = loadYaml(second) as { steps: Array<{ config: Record<string, unknown> }>; description: string };
+    want.steps[2]!.config["message"] = "Report: {{ summarize.text }}";
+    const got = loadYaml(text) as typeof want;
+    assert.deepEqual(got.steps, want.steps, "the release's change and the edit made here");
+    assert.equal(got.description, "Weekly report");
+
+    // 1.2 takes the edit: nothing of this strut's is left, so the release's own file is active.
+    const third = HAND("https://api.linear.app/issues?team={{ input.team }}&state=open", "Report: {{ summarize.text }}", "Weekly report");
+    const again = await api.update("acme/linear", { ref: `file:${await writeTree(release("1.2.0", third), "h3")}` });
+    assert.equal(again.status, 200, JSON.stringify(again.body));
+    assert.deepEqual(statuses(again.body), [["workflow", name, "updated"]]);
+    const back = (await ws.getWorkflowMetadata(name))!;
+    assert.equal(back.versions[back.active]?.source, "install");
+    assert.equal(await ws.getWorkflowSource(name, back.active), third, "as the publisher wrote it, comments and all");
+    assert.equal((await api.list())[0]!.items[0]!.modified, false);
   });
 
   it("refuses a carried step that no longer loads, a package that is not here, and one the distro owns", async () => {
