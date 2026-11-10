@@ -87,6 +87,18 @@ export interface LlmAuthResult {
   /** Turn a provider/gateway error into a clearer message (a 402 that names
    *  a delegation, say). Return `undefined` to keep the original error. */
   explainError?: (err: unknown) => string | undefined;
+  /** The call may go to the provider directly when the gateway has no route
+   *  to it (`gatewayLacksProvider`: a Maple, Numes or Token Factory nobody set
+   *  up on that gateway). A host that requires every call to go through the
+   *  gateway leaves it off. */
+  direct?: boolean;
+}
+
+/** The gateway refused a request because it holds no provider by the name
+ *  the model carries (`numes/…` on a Bifrost with no `numes` provider). */
+export function gatewayLacksProvider(err: unknown): boolean {
+  const e = err as { message?: unknown; responseBody?: unknown } | null;
+  return /could not auto resolve a provider/i.test([e?.message, e?.responseBody].filter((s) => typeof s === "string").join(" "));
 }
 
 export type LlmAuth = (ctx: LlmAuthContext) => Promise<LlmAuthResult | undefined>;
@@ -167,6 +179,15 @@ export async function resolveModel(opts: ResolveModelOptions = {}): Promise<Reso
     ...(grant?.headers ? { headers: grant.headers } : {}),
   });
   let model: any = r.model;
+  if (grant?.baseUrl && grant.direct && !placed.gatewayOnly) {
+    model = await directWhenGatewayLacks(model, placed.provider, () =>
+      aieo.resolveModel({
+        model: opts.model,
+        provider: opts.provider,
+        getSecret: secrets ? (name) => secrets.get(name) : undefined,
+      }).then((d) => d.model),
+    );
+  }
   // Every chat-completions model aieo builds: xai and google through a
   // gateway, maple, numes and tokenfactory always, and a provider only a gateway has.
   if (model?.provider === "openai.chat") model = await imagesBesideToolResults(model);
@@ -267,6 +288,52 @@ export function stepAuth(ctx: StepContext<unknown> | undefined, session?: string
       ...(ctx.principal ? { principal: ctx.principal } : {}),
     },
   };
+}
+
+const warnedDirect = new Set<string>();
+
+/** Wrap a routed model so a request the gateway refuses for want of the
+ *  provider (`gatewayLacksProvider`) is sent again, as it is, straight to the
+ *  provider with the deployment's key. The direct model is built on first
+ *  need; if it cannot be (no key here), the gateway's error stands. */
+async function directWhenGatewayLacks(model: any, provider: string, direct: () => Promise<any>): Promise<any> {
+  const { wrapLanguageModel } = await import("ai");
+  let built: Promise<any> | undefined;
+  const fallback = async (err: unknown): Promise<any> => {
+    if (!gatewayLacksProvider(err)) throw err;
+    built ??= direct();
+    let d: any;
+    try {
+      d = await built;
+    } catch {
+      built = undefined;
+      throw err;
+    }
+    if (!warnedDirect.has(provider)) {
+      warnedDirect.add(provider);
+      console.warn(`[llm] the gateway has no "${provider}" provider; calling ${provider} directly, unbilled by the gateway`);
+    }
+    return d;
+  };
+  return wrapLanguageModel({
+    model,
+    middleware: {
+      wrapGenerate: async ({ doGenerate, params }) => {
+        try {
+          return await doGenerate();
+        } catch (err) {
+          return (await fallback(err)).doGenerate(params);
+        }
+      },
+      wrapStream: async ({ doStream, params }) => {
+        try {
+          return await doStream();
+        } catch (err) {
+          return (await fallback(err)).doStream(params);
+        }
+      },
+    },
+  });
 }
 
 /** Wrap a model so a request failure the auth layer can explain is rethrown

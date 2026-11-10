@@ -34,6 +34,7 @@ import { principalRequired, requireApiKey } from "./auth.js";
 import { FileSecretStore, type SecretStore } from "./secret-store.js";
 import type { WorkspaceStore } from "./workspace.js";
 import type { LlmAuth, LlmAuthContext, LlmAuthResult } from "./llm.js";
+import { gatewayLacksProvider } from "./llm.js";
 import { bootEnv } from "./env.js";
 
 /** The one agent name hive authorizes for strut; every lineage starts here. */
@@ -348,7 +349,11 @@ export function createMothership(opts: MothershipOptions): Mothership {
         // Mothership UI can fold strut's steps under one node from day one.
         "x-bf-dim-root-agent": STRUT_AGENT,
       },
-      explainError: (err) => explainExhausted(err, d, principal, m.invocation.max_cost_usd) ?? explainRefused(err),
+      explainError: (err) =>
+        explainExhausted(err, d, principal, m.invocation.max_cost_usd) ?? explainRefused(err) ?? explainUnrouted(err, ctx.provider),
+      // A provider this gateway does not hold (a Numes nobody set up on it)
+      // is called directly — unless every call must be billed here.
+      direct: !required(),
     };
   };
 
@@ -412,6 +417,17 @@ export function explainExhausted(err: unknown, d: Pick<Delegation, "delegationId
 export function explainRefused(err: unknown): string | undefined {
   const m = /\b(?:Model|Provider) '([^']+)' is not allowed/.exec(errorText(err));
   return m ? `${m[1]} is not enabled for this workspace: ask an admin` : undefined;
+}
+
+/**
+ * The gateway holds no provider by this name (`numes/…` on a Bifrost nobody
+ * added `numes` to). Reached only where the call may not go around the
+ * gateway (STRUT_MOTHERSHIP_REQUIRED): say what an admin must add.
+ */
+export function explainUnrouted(err: unknown, provider: string): string | undefined {
+  return gatewayLacksProvider(err)
+    ? `${provider} is not set up on this deployment's LLM gateway: ask an admin to add it as a custom provider`
+    : undefined;
 }
 
 /** An AI SDK error's message and the provider's response body, as one string. */

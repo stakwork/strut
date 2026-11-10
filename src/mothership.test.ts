@@ -31,6 +31,7 @@ import {
   checkDelegationMacaroon,
   explainExhausted,
   explainRefused,
+  explainUnrouted,
   resolveRunCap,
   stepAgentName,
   STRUT_AGENT,
@@ -283,6 +284,19 @@ describe("mothership: the llmAuth hook", () => {
       grant.explainError!({ message: "Forbidden", responseBody: JSON.stringify({ error: { message: "Provider 'xai' is not allowed" } }) }),
       "xai is not enabled for this workspace: ask an admin",
     );
+  });
+
+  it("a provider the gateway lacks: the grant allows a direct call unless required, and then says what to add", async () => {
+    const { ms } = await build();
+    assert.equal((await ms.llmAuth(stepCtx()))!.direct, true);
+    process.env["STRUT_MOTHERSHIP_REQUIRED"] = "1";
+    const grant = (await ms.llmAuth({ ...stepCtx(), provider: "numes" }))!;
+    assert.equal(grant.direct, false);
+    assert.equal(
+      grant.explainError!({ message: "Bad Request", responseBody: JSON.stringify({ error: { message: "could not auto resolve a provider for the request" } }) }),
+      "numes is not set up on this deployment's LLM gateway: ask an admin to add it as a custom provider",
+    );
+    assert.equal(explainUnrouted(new Error("nope"), "numes"), undefined);
   });
 
   it("explainRefused: the gateway's model and provider refusals only", () => {
