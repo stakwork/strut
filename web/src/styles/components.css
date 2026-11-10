@@ -3880,6 +3880,10 @@ input.package-search { width: 100%; margin-bottom: var(--sp-2); }
 .package-new { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); margin-top: var(--sp-3); }
 .package-new input { flex: 1 1 140px; width: auto; min-width: 0; }
 .package-new .auto-hint { flex-basis: 100%; }
+/* An install as it goes: the phase in a line ("Concepts 312 / 752"), a bar when it counts. */
+.install-progress { display: flex; align-items: center; gap: var(--sp-2); font-size: 12px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.install-progress-bar { flex: 1; min-width: 60px; height: 4px; border-radius: 2px; background: var(--border); overflow: hidden; }
+.install-progress-bar > span { display: block; height: 100%; background: var(--accent); transition: width 0.3s ease; }
 /* A refusal names every problem in one line: keep it readable as it came. */
 .package-refusal { white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-mono); font-size: 11px; }
 .package-warning { color: var(--warning); }

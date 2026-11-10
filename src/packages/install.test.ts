@@ -128,6 +128,41 @@ describe("installing a package on a filesystem workspace", () => {
     await strut.close?.();
   });
 
+  it("wait: false answers at once with the install's id; its record says how far it is and how it ended, the same answer as a wait", async () => {
+    const dir = await writeTree(PACKAGE);
+    const res = await api.req("/packages/install", json({ ref: `file:${dir}`, wait: false }));
+    assert.equal(res.status, 202);
+    const { install } = (await res.json()) as { install: { id: string; status: string; phase: string; ref: string; door: string } };
+    assert.match(install.id, /^inst_[0-9a-f]{16}$/);
+    assert.deepEqual([install.ref, install.door], [`file:${dir}`, "install"]);
+    type State = { id: string; status: string; phase: string; result?: InstallResult; error?: string; finishedAt?: number };
+    const read = async (id: string) => (await (await api.req(`/packages/installs/${id}`)).json()) as State;
+    let state = await read(install.id);
+    for (let i = 0; i < 200 && !state.finishedAt; i++) {
+      await new Promise((r) => setTimeout(r, 25));
+      state = await read(install.id);
+    }
+    assert.equal(state.status, "done", JSON.stringify(state));
+    assert.equal(state.result!.package, "acme/linear");
+    assert.deepEqual(state.result!.packages[0]!.items.map((i) => [i.kind, i.name, i.status]), [["step", "acme/linear/_shared", "installed"], ["step", "acme/linear/create-issue", "installed"], ["workflow", "acme/linear/sync", "installed"]]);
+    assert.equal(state.phase, "workflows", "the last phase it was in");
+
+    // A refusal is on the record as the route would have answered it.
+    const bad = (await (await api.req("/packages/install", json({ ref: `file:${join(root, "nowhere")}`, wait: false }))).json()) as { install: { id: string } };
+    let failed = await read(bad.install.id);
+    for (let i = 0; i < 200 && !failed.finishedAt; i++) {
+      await new Promise((r) => setTimeout(r, 25));
+      failed = await read(bad.install.id);
+    }
+    assert.equal(failed.status, "failed");
+    assert.match(failed.error!, /^package_/);
+
+    const all = ((await (await api.req("/packages/installs")).json()) as { installs: State[] }).installs;
+    assert.deepEqual(all.map((s) => s.id), [bad.install.id, install.id], "newest first");
+    assert.equal((await api.req("/packages/installs/inst_0000000000000000")).status, 404);
+    assert.equal((await api.req("/packages/install", json({ ref: `file:${dir}`, wait: "no" }))).status, 400);
+  });
+
   it("publishes its items stamped with where they came from, runs them, and lists them as installed", async () => {
     const dir = await writeTree(PACKAGE);
     const { digest } = await readPackage(dir);
@@ -530,6 +565,25 @@ for (const tb of testBackends()) {
       assert.equal((await conceptNode("Issues"))?.docs, "Edited here.");
       const under = await backend.tx(async (tx) => backend.edgeEngine.liveEdgesOf(tx, (await conceptNode("Linear"))!.ref_id, "PARENT_OF", true));
       assert.deepEqual(under?.edges.map((e) => e.other), [(await conceptNode("Issues"))!.ref_id], "still under Linear");
+    });
+
+    it("says how far it is: each phase in order, the Concepts and their tree counted", async () => {
+      const seen: string[] = [];
+      const files = { ...PACKAGE, ...CONCEPTS };
+      const r = await strut.packages.install(`file:${await writeTree(files)}`, { progress: (p) => seen.push([p.phase, p.package, p.total === undefined ? "" : `${p.done}/${p.total}`].filter(Boolean).join(" ")) });
+      assert.equal(r.package, "acme/linear");
+      assert.deepEqual(seen, [
+        "resolving",
+        "checking acme/linear",
+        "steps acme/linear 0/2",
+        "steps acme/linear 1/2",
+        "workflows acme/linear 0/1",
+        "concepts acme/linear 0/2",
+        "concepts acme/linear 2/2",
+        "concept-tree acme/linear 1/1",
+      ]);
+      const [last] = strut.packages.installs.list();
+      assert.deepEqual([last!.status, last!.phase, last!.done, last!.total, last!.result?.package], ["done", "concept-tree", 1, 1, "acme/linear"]);
     });
 
     it("installs a package of Concepts alone, lists it with its digest, and refuses a page someone else holds", async () => {

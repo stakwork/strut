@@ -112,6 +112,7 @@ import {
   type UninstallResult,
 } from "./packages/install.js";
 import { listInstalledPackages } from "./packages/installed.js";
+import { createInstallTracker, type InstallTracker } from "./packages/progress.js";
 import { checkBootPackages, installBootPackages, parseBootPackagesEnv, type BootPackage, type BootPackageOutcome } from "./packages/boot.js";
 import type { AppRelease, Upstream } from "./workspace.js";
 import type { CassetteMode } from "./cassette.js";
@@ -723,12 +724,16 @@ export interface Strut<TServices = unknown> {
     /** `ref` is `file:`, `pk:` (with `url`), or a bare name looked up in
      *  the indexes this strut follows — the first that lists its publisher,
      *  or the one `index` names. */
-    install(ref: string, opts?: Pick<InstallOptions, "digest" | "url" | "actor" | "door"> & { index?: string }): Promise<InstallResult>;
+    install(ref: string, opts?: Pick<InstallOptions, "digest" | "url" | "actor" | "door" | "progress"> & { index?: string }): Promise<InstallResult>;
     uninstall(pkg: string, opts?: { door?: PackageDoor }): Promise<UninstallResult>;
     /** The first-boot installs (`STRUT_PACKAGES`, `StrutOptions.packages`;
      *  src/packages/boot.ts): settles once each listed package was installed,
      *  found here, or failed. `[]` when none are listed. */
     booted: Promise<BootPackageOutcome[]>;
+    /** Every install as it goes, whichever door started it, and the ones
+     *  that ended in the last hour (src/packages/progress.ts) — what
+     *  `GET /packages/installs` serves. */
+    installs: Pick<InstallTracker, "get" | "list">;
   };
 
   /** Package subscriptions (plans/marketplace.md §12.1): this strut
@@ -3609,6 +3614,8 @@ export async function createStrut<TServices = unknown>(
       return registry;
     },
   };
+  // Every install as it goes, whichever door (src/packages/progress.ts).
+  const installs = createInstallTracker();
   let packageWrites: Promise<unknown> = Promise.resolve();
   const oneAtATime = <T>(fn: () => Promise<T>): Promise<T> => {
     const next = packageWrites.then(fn);
@@ -3665,11 +3672,24 @@ export async function createStrut<TServices = unknown>(
     }
     throw last;
   };
+  /** An install under a record of how it goes: its id now, its result
+   *  when it ends. The caller's own `progress` is told as well. */
+  const startInstall = (ref: string, opts: Parameters<Strut["packages"]["install"]>[1] = {}) =>
+    installs.start({ ref, door: opts.door ?? "install", ...(opts.actor ? { actor: opts.actor } : {}) }, (progress) =>
+      installByName(ref, {
+        ...opts,
+        progress: (p) => {
+          progress(p);
+          opts.progress?.(p);
+        },
+      }),
+    );
   const packages: Strut["packages"] = {
     booted: Promise.resolve([]),
+    installs,
     install: (ref, opts = {}) => {
       if (registryWasInjected) return Promise.reject(new Error("package_unsupported: installing is disabled when the registry is provided at construction time"));
-      return installByName(ref, opts);
+      return startInstall(ref, opts).done;
     },
     uninstall: (pkg, opts = {}) =>
       oneAtATime(() =>
@@ -3721,7 +3741,8 @@ export async function createStrut<TServices = unknown>(
   app.get("/packages", async (c) => c.json({ packages: await listInstalledPackages(packageDeps) }));
   app.post("/packages/install", async (c) => {
     if (registryWasInjected) return c.json({ error: "Installing is disabled when the registry is provided at construction time" }, 409);
-    const body = await c.req.json<{ ref?: unknown; digest?: unknown; url?: unknown; index?: unknown }>().catch(() => ({}) as { ref?: unknown; digest?: unknown; url?: unknown; index?: unknown });
+    type Body = { ref?: unknown; digest?: unknown; url?: unknown; index?: unknown; wait?: unknown };
+    const body = await c.req.json<Body>().catch(() => ({}) as Body);
     if (typeof body.ref !== "string" || !body.ref) return c.json({ error: "ref is required: file:/path/to/package, pk:<key>/<publisher>/<name> with url, or a name (publisher/name) looked up in the indexes this strut server follows" }, 400);
     if (body.index !== undefined && typeof body.index !== "string") return c.json({ error: "index is the id of an index this strut server follows (GET /packages/indexes)" }, 400);
     if (body.digest !== undefined && (typeof body.digest !== "string" || !PACKAGE_DIGEST.test(body.digest))) {
@@ -3730,13 +3751,26 @@ export async function createStrut<TServices = unknown>(
     if (body.url !== undefined && (typeof body.url !== "string" || !/^https?:\/\/\S+$/.test(body.url))) {
       return c.json({ error: "url is where the publisher's catalog is served: an http(s) URL (a strut server's …/packages/catalog?public=1)" }, 400);
     }
+    if (body.wait !== undefined && typeof body.wait !== "boolean") return c.json({ error: "wait is a boolean: false answers at once with the install's id, to follow at GET /packages/installs/:id" }, 400);
     const actor = await resolveActor(c);
+    const started = startInstall(body.ref, { ...(body.digest ? { digest: body.digest as string } : {}), ...(body.url ? { url: body.url as string } : {}), ...(body.index ? { index: body.index as string } : {}), ...(actor ? { actor } : {}) });
+    if (body.wait === false) {
+      // How it ends is on its record; nobody awaits it here.
+      started.done.catch(() => undefined);
+      return c.json({ install: installs.get(started.id) }, 202);
+    }
     try {
-      const result = await packages.install(body.ref, { ...(body.digest ? { digest: body.digest as string } : {}), ...(body.url ? { url: body.url as string } : {}), ...(body.index ? { index: body.index as string } : {}), ...(actor ? { actor } : {}) });
-      return c.json(result, 201);
+      return c.json(await started.done, 201);
     } catch (err) {
       return packageError(c, err);
     }
+  });
+  // Installs as they go (src/packages/progress.ts): any door's, newest
+  // first, and those that ended in the last hour; one by its id.
+  app.get("/packages/installs", (c) => c.json({ installs: installs.list() }));
+  app.get("/packages/installs/:id", (c) => {
+    const state = installs.get(c.req.param("id"));
+    return state ? c.json(state) : c.json({ error: `no install ${c.req.param("id")} here: an install's record is kept for an hour after it ends, and a restart forgets it` }, 404);
   });
   // A package BUILT from this workspace (src/packages/build.ts, §2): what the
   // named workflows and apps can execute, the named steps, apps and Concepts,
@@ -3971,12 +4005,14 @@ export async function createStrut<TServices = unknown>(
     cache: packageStore,
     install: (refs, o) => {
       if (registryWasInjected) return Promise.reject(new Error("package_unsupported: installing is disabled when the registry is provided at construction time"));
-      return oneAtATime(() =>
-        recorded(
-          () => installPackages(packageDeps, refs, { ...o, busy: busyWorkflow, forget: forgetWorkflow }),
-          (res) => ({ cause: res ? `install ${res.package}@${res.digest}` : `install ${refs.map((x) => x.ref).join(", ")}` }),
+      return installs.start({ ref: refs.map((x) => x.ref).join(", "), door: o.door ?? "distro" }, (progress) =>
+        oneAtATime(() =>
+          recorded(
+            () => installPackages(packageDeps, refs, { ...o, progress, busy: busyWorkflow, forget: forgetWorkflow }),
+            (res) => ({ cause: res ? `install ${res.package}@${res.digest}` : `install ${refs.map((x) => x.ref).join(", ")}` }),
+          ),
         ),
-      );
+      ).done;
     },
     uninstall: (pkg, o) => packages.uninstall(pkg, o),
     installed: () => listInstalledPackages(packageDeps),

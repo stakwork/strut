@@ -251,3 +251,37 @@ export function nextVersion(newest?: string): string {
   if (!newest) return "1.0.0";
   return newest.replace(/(\d+)(\D*)$/, (_, n: string, rest: string) => `${Number(n) + 1}${rest}`);
 }
+
+/** An install as `GET /packages/installs/:id` reports it — the fields the
+ *  tab reads (src/packages/progress.ts). */
+export interface InstallProgressView {
+  status: "queued" | "running" | "done" | "failed";
+  phase: string;
+  package?: string;
+  done?: number;
+  total?: number;
+}
+
+const PHASES: Record<string, string> = {
+  queued: "Waiting for another install to finish",
+  resolving: "Fetching the package",
+  checking: "Checking it against this strut server",
+  types: "Graph types",
+  steps: "Steps",
+  workflows: "Workflows",
+  apps: "Building the apps",
+  concepts: "Concepts",
+  "concept-tree": "Concept tree",
+  retiring: "Removing what the release dropped",
+  claims: "Recording the claims",
+};
+
+/** What an install is doing, in a line — "Concepts 312 / 752" — and how
+ *  far, 0..1, when the phase counts. */
+export function installProgressText(p: InstallProgressView): { text: string; fraction?: number } {
+  if (p.status === "done") return { text: "Installed", fraction: 1 };
+  if (p.status === "failed") return { text: "Failed" };
+  const label = PHASES[p.phase] ?? p.phase;
+  const counted = p.total !== undefined && p.total > 0 && p.done !== undefined;
+  return counted ? { text: `${label} ${p.done} / ${p.total}`, fraction: Math.min(1, p.done! / p.total!) } : { text: p.phase === "types" && p.total ? `${label} (${p.total})` : label };
+}

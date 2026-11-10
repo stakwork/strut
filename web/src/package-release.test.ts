@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { PACKAGE_NAME, PACKAGE_SEGMENT, byNamespace, comesAlong, installedTitle, isInstalledName, nameInGroup, nextVersion, packageLabel, packageOf, pickerGroups, picksFromRelease, sidebarGroups } from "./package-release";
+import { PACKAGE_NAME, PACKAGE_SEGMENT, byNamespace, comesAlong, installProgressText, installedTitle, isInstalledName, nameInGroup, nextVersion, packageLabel, packageOf, pickerGroups, picksFromRelease, sidebarGroups } from "./package-release";
 
 test("packageOf reads the package off a name with a prefix", () => {
   assert.equal(packageOf("stakwork/tools/summarize"), "stakwork/tools");
@@ -135,4 +135,15 @@ test("sidebarGroups names an installed package in full when another group reads 
   const workflows = [{ name: "acme/tools/a" }, { name: "bob/tools/b" }, { name: "acme/media/c" }, { name: "local", category: "media" }];
   const groups = sidebarGroups(workflows, [{ package: "acme/tools" }, { package: "bob/tools" }, { package: "acme/media" }]);
   assert.deepEqual(groups.filter((g) => g.installed).map((g) => g.label).sort(), ["acme/media", "acme/tools", "bob/tools"]);
+});
+
+test("installProgressText: a phase in a line, counted when it counts", () => {
+  assert.deepEqual(installProgressText({ status: "running", phase: "concepts", done: 312, total: 752 }), { text: "Concepts 312 / 752", fraction: 312 / 752 });
+  assert.deepEqual(installProgressText({ status: "running", phase: "concept-tree", done: 820, total: 820 }), { text: "Concept tree 820 / 820", fraction: 1 });
+  assert.deepEqual(installProgressText({ status: "queued", phase: "queued" }), { text: "Waiting for another install to finish" });
+  assert.deepEqual(installProgressText({ status: "running", phase: "types", total: 26 }), { text: "Graph types (26)" });
+  assert.deepEqual(installProgressText({ status: "running", phase: "checking", package: "openlaw/legal-desk" }), { text: "Checking it against this strut server" });
+  assert.deepEqual(installProgressText({ status: "running", phase: "concepts", done: 0, total: 0 }), { text: "Concepts" });
+  assert.deepEqual(installProgressText({ status: "running", phase: "later-phase" }), { text: "later-phase" }, "a phase this page does not know yet, as it came");
+  assert.deepEqual(installProgressText({ status: "done", phase: "concept-tree" }), { text: "Installed", fraction: 1 });
 });

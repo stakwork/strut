@@ -2221,7 +2221,9 @@ is refused by name (`package_source_unsupported`).
 | ------ | ---- | ----------- |
 | GET    | `/packages` | What is installed: `{ packages: InstalledPackage[] }` (`src/packages/installed.ts`), a fold over the workspace, never a store |
 | POST   | `/packages/build` | `BuildRequest` → 201 `{ package, version, digest, files, requires, warnings, leftToInstaller, suggested }` (`src/packages/build.ts`): a package built from this workspace into the cache. With `dryRun: true`, 200 and the same answer with nothing kept: the package page's preview of what comes along. Both pack the package as the archive route would and read it back as a fetching strut does: one past what a strut fetches (10,000 files, 256 MB unpacked, 64 MB as `.tar.gz`) is 400 `package_unarchivable: …`, and nothing is kept. A person's act like install: full scope, one at a time with install and uninstall |
-| POST   | `/packages/install` | `{ ref, digest?, url?, index? }` → 201 `InstallResult` (`src/packages/install.ts`). `ref` is `file:/path/to/package`, `pk:<key>/<publisher>/<name>[@sha256:<hex>]` with `url`, where the publisher's catalog is served (a strut's `…/packages/catalog?public=1`, or the file it uploaded) — see "Installing by key" below — or a bare NAME, `publisher/name`, looked up in the indexes this strut follows (the first whose card lists the publisher, or the one `index` names) and installed as `pk:` with the row's key and catalog URLs, tried in order. A name with `url` is 400; 404 `package_not_listed` when no index lists the publisher, `package_index_unknown` for an `index` not followed; 502 `package_index_unreachable` when no index card could be read; 400 when this strut follows none. A person's act: behind the key at full scope (a peer is 403), one at a time |
+| POST   | `/packages/install` | `{ ref, digest?, url?, index?, wait? }` → 201 `InstallResult` (`src/packages/install.ts`), or with `wait: false` 202 `{ install: InstallState }` at once, the install going on behind it — follow it at `GET /packages/installs/:id` ("An install as it goes" below); a body that is not one is still 400 before anything starts. `ref` is `file:/path/to/package`, `pk:<key>/<publisher>/<name>[@sha256:<hex>]` with `url`, where the publisher's catalog is served (a strut's `…/packages/catalog?public=1`, or the file it uploaded) — see "Installing by key" below — or a bare NAME, `publisher/name`, looked up in the indexes this strut follows (the first whose card lists the publisher, or the one `index` names) and installed as `pk:` with the row's key and catalog URLs, tried in order. A name with `url` is 400; 404 `package_not_listed` when no index lists the publisher, `package_index_unknown` for an `index` not followed; 502 `package_index_unreachable` when no index card could be read; 400 when this strut follows none. A person's act: behind the key at full scope (a peer is 403), one at a time |
+| GET    | `/packages/installs` | `{ installs: InstallState[] }` (`src/packages/progress.ts`): every install as it goes, whichever door started it — this route with or without `wait`, a `package/install` proposal's apply, the boot list (`STRUT_PACKAGES`), a subscription — newest first, and the last 20 that ended within the hour. In memory: a restart forgets them |
+| GET    | `/packages/installs/:id` | One `InstallState`; 404 for an id this process does not hold |
 | DELETE | `/packages/:publisher/:name` | Uninstall → `{ ok: true, package, removed, kept }` (`UninstallResult`) |
 | GET    | `/packages/:publisher/:name/archive?digest=sha256:<hex>` | The package at that digest as a `.tar.gz` of its files — ustar, a path past what its header holds in a POSIX PAX extended header, which a strut from before 2026-11-09 cannot read (`content-type: application/gzip`, `ETag: "<digest>"`, `cache-control: private, max-age=31536000, immutable`; `If-None-Match` → 304). 400 without a well-formed `digest`; 404 when this strut holds no package `publisher/name` at that digest. Behind the key like every route; with `?t=` a subscriber's read of a digest the fleet catalog names; with `?public=1` anyone's read of a digest the PUBLIC catalog names (404 for any other, whatever the gate's mode) |
 | GET    | `/packages/:publisher/:name/items?digest=sha256:<hex>` | `{ package, version, digest, items: [{ kind: "workflow" \| "step" \| "app" \| "concept" \| "type", name, alone? }] }`: what the package at that digest holds, each by its name INSIDE the package (`summarize` for `acme/tools/summarize`; a Concept by its page name, a graph type by its type), helpers left out — what the package page ticks from a release (`plans/packages-ux.md` §3). `alone: true` on a Concept page that has pages under it in this graph none of which the release holds: it went alone (`conceptsAlone`), and the page picks it alone again. 400 without a well-formed `digest`; 404 when this strut's cache holds no package `publisher/name` at that digest |
@@ -2479,6 +2481,50 @@ with types is refused (409).
 
 The same package at the same digest installs again as what is missing (a
 deleted item comes back; a fork stays active).
+
+A package's CONCEPTS are seeded in batches (`seedConcepts`,
+`src/concept-seed.ts`): the nodes under every page's name in one read per
+250, the creates and the updates written 250 at a time, the parents' live
+`PARENT_OF` edges read once and only the missing edges written. Their
+VECTORS come after: each page is written with its search text (keyword
+search finds it at once) and no vector, and the graph's background
+embedder — Neo4j's embedding pass, a Ladybug file's backfill, both in a
+worker thread — embeds them within the minute (an update clears the old
+vector first). openlaw/legal-desk's 752 pages install in about a second
+on either engine; their vectors follow some seconds later.
+
+**An install as it goes** (`src/packages/progress.ts`). Every install has a
+record from the moment it is asked for until an hour after it ends —
+whichever door started it — so a page can say what it is doing: `POST
+/packages/install { …, wait: false }` answers 202 with it at once, and
+`GET /packages/installs/:id` reads it again (every 600 ms is plenty;
+strut's Packages tab polls so, and shows an install another door started
+when it finds one at `GET /packages/installs`). A caller that waits for the
+201 can read `GET /packages/installs` meanwhile; the newest record whose
+`ref` is its own is its install.
+
+```jsonc
+// InstallState
+{
+  "id": "inst_9f2c41d07a3b55e6",
+  "ref": "openlaw/legal-desk",        // as asked; a subscription's refs joined with ", "
+  "door": "install",                  // or "distro": a subscription
+  "actor": "evan",
+  "status": "running",                // queued (behind another install or uninstall: one at a time) | running | done | failed
+  "phase": "concepts",                // queued | resolving | checking | types | steps | workflows | apps | concepts | concept-tree | retiring | claims
+  "package": "openlaw/legal-desk",    // the package of the set the phase is about, when it names one
+  "done": 500, "total": 752,          // how far, when the phase counts: steps, workflows, apps, Concept pages, PARENT_OF edges
+  "startedAt": 1794272815737, "updatedAt": 1794272816102,
+  "finishedAt": 1794272816911,        // once it ended
+  "result": { /* InstallResult */ },  // done: what the 201 would have answered
+  "error": "package_conflict: …"      // failed: the refusal as the route would have answered it
+}
+```
+
+A count is how many are DONE as the phase reports (a step, workflow or app
+as the next begins; Concept pages and edges after each batch); `done`,
+`total` and `package` are always the current phase's, never one before.
+A phase a page does not know yet is shown by its name.
 
 **An update** — the package at another digest — is not taken by this
 route yet: a person's update asks first (`plans/marketplace.md` §4, §8).

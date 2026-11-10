@@ -64,6 +64,7 @@ import { assertValidWorkflowYaml, ensureEsmScope, readClaimsBlock, type Upstream
 import { loadYaml } from "../yaml.js";
 import { fileRefPath, resolvePackage, type CachedPackage } from "./cache.js";
 import type { PackageItem } from "./format.js";
+import type { InstallProgress } from "./progress.js";
 import { checkPackageTypes, registerPackageTypes, type CheckedTypes } from "./graph-types.js";
 import {
   conceptHash,
@@ -134,6 +135,9 @@ export interface InstallOptions {
   busy?(workflow: string): boolean;
   /** Drops a retired workflow's schedules. */
   forget?(workflow: string): Promise<void>;
+  /** Told as the install goes: each phase, and how far a long one is
+   *  (src/packages/progress.ts). */
+  progress?(p: InstallProgress): void;
 }
 
 export interface InstallResult {
@@ -175,6 +179,7 @@ export async function installPackage(deps: PackageDeps, ref: string, opts: Insta
 export async function installPackages(deps: PackageDeps, refs: Array<{ ref: string; digest?: string; url?: string }>, opts: Omit<InstallOptions, "digest" | "url"> = {}): Promise<InstallResult> {
   if (!refs.length) throw new Error("package_source_invalid: nothing to install");
   const door = opts.door ?? "install";
+  opts.progress?.({ phase: "resolving" });
   const before = new Map((await listInstalledPackages(deps)).map((p) => [p.package, p]));
   const members = await resolveSet(deps, refs, before, door);
   const registry = await deps.getRegistry();
@@ -214,6 +219,8 @@ async function installSet(
   scratch: string,
   opts: InstallOptions & { door: PackageDoor },
 ): Promise<InstallResult> {
+  const tell = (p: InstallProgress) => opts.progress?.(p);
+  tell({ phase: "checking", package: members.at(-1)!.info.manifest.package });
   const checked = await checkSet(deps, members, registry, before, scratch, opts.door);
   const retiring = retirements(checked, members);
   const busy = retiring.filter((i) => i.go && i.item.kind === "workflow" && opts.busy?.(i.item.name));
@@ -245,6 +252,7 @@ async function installSet(
 
   // Graph types before anything that writes them. Add-only, so nothing to take back.
   if (checked.types.types.length) {
+    tell({ phase: "types", total: checked.types.types.length });
     const status = await registerPackageTypes(deps.graph!, checked.types);
     for (const [pkg, names] of checked.types.byPackage) {
       for (const name of names) reports.get(pkg)!.push({ kind: "type", name, status: status.get(name) ?? "present" });
@@ -252,9 +260,18 @@ async function installSet(
   }
 
   try {
+    /** A phase over every package's items of one kind, counted: told as
+     *  each item begins, with how many are done. */
+    const counted = (phase: "steps" | "workflows", kind: PackageItem["kind"]) => {
+      const total = members.reduce((n, m) => n + m.info.items.filter((i) => i.kind === kind).length, 0);
+      let done = 0;
+      return (m: Member) => tell({ phase, package: m.info.manifest.package, done: done++, total });
+    };
     // Steps first, every package's, so one registry rebuild loads them all.
+    const stepDone = counted("steps", "step");
     for (const m of members) {
       for (const item of m.info.items.filter((i) => i.kind === "step")) {
+        stepDone(m);
         const plan = checked.plan.get(item.name)!;
         if (!writes(plan)) {
           done(m, "step", item.name, plan);
@@ -276,8 +293,10 @@ async function installSet(
         : ((await stepLoadError(join(await deps.workspace.materializeCustomSteps(), `${w.name}.ts`))) ?? "it did not load into the registry");
       throw new Error(`bad_package: the step ${w.name} — ${why}`);
     }
+    const workflowDone = counted("workflows", "workflow");
     for (const m of members) {
       for (const item of m.info.items.filter((i) => i.kind === "workflow")) {
+        workflowDone(m);
         const plan = checked.plan.get(item.name)!;
         if (!writes(plan)) {
           done(m, "workflow", item.name, plan);
@@ -309,7 +328,8 @@ async function installSet(
         if (!writes(plan)) done(m, "app", item.name, plan);
       }
     }
-    for (const app of checked.apps) {
+    for (const [i, app] of checked.apps.entries()) {
+      tell({ phase: "apps", package: app.member.info.manifest.package, done: i, total: checked.apps.length });
       const plan = checked.plan.get(app.name)!;
       const r = await deps.apps!.publish(app.dir, app.name, { surface: "person", ...options(app.member, plan) });
       if (!r.ok) throw new Error(`bad_package: the app ${app.name} — ${r.errors.join("; ")}`);
@@ -334,7 +354,11 @@ async function installSet(
           for (const i of shipped) if (!edited.has(i.name)) await writeFile(join(dir, i.path.slice("concepts/".length)), await readFile(join(m.info.dir, i.path)));
         }
         for (const i of shipped) if (edited.has(i.name)) reports.get(pkg)!.push({ kind: "concept", name: i.name, status: "modified" });
-        const outcomes = shipped.every((i) => edited.has(i.name)) ? [] : await seedConcepts(deps.graph, [{ dir, prefix: conceptPrefix(pkg), keepEdited: true }]);
+        const outcomes = shipped.every((i) => edited.has(i.name))
+          ? []
+          : await seedConcepts(deps.graph, [{ dir, prefix: conceptPrefix(pkg), keepEdited: true }], {
+              progress: (p) => tell({ phase: p.phase === "pages" ? "concepts" : "concept-tree", package: pkg, done: p.done, total: p.total }),
+            });
         const written: Array<{ name: string; file: string }> = [];
         conceptsWritten.set(pkg, written);
         for (const o of outcomes) {
@@ -357,6 +381,7 @@ async function installSet(
   // untouched, kept when forked. A removal that fails is said, never a
   // reason to take the release back.
   if (retiring.length) {
+    tell({ phase: "retiring", total: retiring.length });
     for (const r of retiring) {
       const report = reports.get(r.pkg)!;
       if (!r.go) {
@@ -396,6 +421,7 @@ async function installSet(
   // The contract, once everything it names is here. A claim that will not
   // write is said, never a reason to take the install back: the code is in.
   const published = new Set(wrote.map((w) => `${w.kind}:${w.name}`));
+  if (checked.members.some((m) => m.claims.some((c) => published.has(`${c.subject.kind}:${c.subject.name}`)))) tell({ phase: "claims" });
   for (const m of checked.members) {
     for (const c of m.claims) {
       if (!published.has(`${c.subject.kind}:${c.subject.name}`)) continue;
