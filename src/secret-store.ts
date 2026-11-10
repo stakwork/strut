@@ -26,7 +26,7 @@ import {
 } from "node:crypto";
 import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { bootEnv } from "./env.js";
+import { bootEnv, hiddenFromSteps } from "./env.js";
 
 /** Metadata about a stored secret. Deliberately never includes the value —
  *  `list()` and the `GET /secrets` endpoint return only this shape. */
@@ -88,6 +88,7 @@ export function secretBlanks(store: SecretStore, env: () => Record<string, strin
     fill(name, value) {
       const run = last.then(async () => {
         if (!isValidSecretName(name)) throw new Error(`secret_name: "${name.slice(0, 80)}" is not a secret name — letters, digits and _, not starting with a digit`);
+        if (hiddenFromSteps(name)) throw new Error(`secret_name: ${name} is read by the server alone, never by a step — an admin sets it`);
         if (!value.trim()) throw new Error(`secret_empty: no value for ${name}`);
         const fromEnv = env()[name];
         if ((await store.get(name)) !== undefined || (fromEnv !== undefined && fromEnv !== "")) {

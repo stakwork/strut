@@ -53,6 +53,7 @@
     "@hono/node-server": "^2.0.4",
     "@huggingface/transformers": "^4.1.0",
     "@modelcontextprotocol/sdk": "^1.32.1",
+    "@noble/curves": "^1.6.0",
     "@octokit/rest": "^22.0.1",
     "@openrouter/ai-sdk-provider": "3.0.0",
     "esbuild": "0.28.2",

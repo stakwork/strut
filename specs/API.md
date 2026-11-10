@@ -2924,3 +2924,60 @@ In the page, the kit's `useHost().public` is true (it reads the meta), so it
 disables what would only fail (it never hides it): strut/views' `LaunchForm`
 renders with every control off and a line saying runs are started by the
 people who keep the server.
+
+## 18. The wallet — what the server receives with (`plans/paid-runs.md` §9)
+
+The wallet a server sells with: the Sphinx daemon (the treasury) or an NWC
+connection. Its credentials live in `payments.json`, an encrypted file of
+their own beside `peers.json`, which no step reads (decision 20); its
+RECEIVE side is `ctx.services.lightning` (`src/payments/lightning.ts`) while
+one is set. Set from the environment at boot (`LIGHTNING_DAEMON_URL`,
+`LIGHTNING_DAEMON_TOKEN`, `LIGHTNING_DAEMON_PAY_TOKEN`, or
+`LIGHTNING_NWC_URL`, `LIGHTNING_NWC_PAY_URL`; the environment sets it again
+at every boot) or here. What strut expects of each wallet is
+`specs/LIGHTNING.md`.
+
+FULL SCOPE only: the deployment key or an admin's session. A member's
+session, a peer and a person token are refused (`403`), reads included.
+Both routes answer `501` when the host brought its own `services.lightning`.
+
+| Route | |
+| --- | --- |
+| `GET /earnings/wallet[?check=1]` | which wallet is set and what it can do, never a credential; `check=1` also reads its balance |
+| `PUT /earnings/wallet` | set it, change it, or remove it; answers as `GET` does, with `check` |
+
+```json
+{ "provider": "sphinx", "receive": true, "pay": true, "url": "http://treasury:3000",
+  "from": "api", "setAt": "2026-11-10T18:50:08.000Z",
+  "check": { "ok": true, "msat": 1250000 } }
+```
+
+`provider` is `sphinx`, `nwc` or `null` (none: `receive` and `pay` false).
+`receive`: a receive credential is on file, so the server can sell. `pay`:
+a pay credential is on file, so Withdraw can pay (item 7). `url` is the
+daemon's (no credential in it); for NWC, `relays` lists the relays' hosts
+instead, since the connection URL is the credential. `from` is `env` or
+`api`. `note` says when the environment names a wallet, which replaces this
+one at the next boot. `check` is `{ ok: true, msat }` or `{ ok: false,
+error }`, the wallet's balance read within 5 s; a failed check never
+refuses the save.
+
+`PUT` bodies:
+
+```json
+{ "provider": "sphinx", "url": "http://treasury:3000", "token": "<receive token>", "payToken": "<pay token>" }
+{ "provider": "nwc", "url": "nostr+walletconnect://…", "payUrl": "nostr+walletconnect://…" }
+{ "provider": null }
+```
+
+For the provider already on file, a field left out keeps what is on file
+(a pay credential added without typing the receive one again) and `null`
+removes a pay credential (`payToken`, `payUrl`); another provider needs
+every field. `400` for a body that is not one of these, a daemon URL that
+is not http(s) or carries a credential, an NWC URL that does not parse, or
+a pay credential equal to the receive one; what is on file stays.
+
+`PUT /secrets/LIGHTNING_…` is refused (`400`): a wallet credential never
+goes in the deployment's secrets, and the secrets capability answers
+nothing for any `LIGHTNING_*` name, wherever it is held — nor for
+`STRUT_SECRET_KEY`, which decrypts `payments.json`.
