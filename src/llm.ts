@@ -77,6 +77,10 @@ export interface LlmAuthContext {
   stepPath?: string;
   actor?: string;
   principal?: string;
+  /** The run's own cost cap in dollars, below its workflow's: a public
+   *  run's (plans/paid-runs.md §7). The Mothership's run link carries the
+   *  smaller of it and the workflow's (`resolveRunCap`). */
+  maxCostUsd?: number;
 }
 
 export interface LlmAuthResult {
@@ -286,6 +290,7 @@ export function stepAuth(ctx: StepContext<unknown> | undefined, session?: string
       stepPath: ctx.path,
       ...(ctx.actor ? { actor: ctx.actor } : {}),
       ...(ctx.principal ? { principal: ctx.principal } : {}),
+      ...(ctx.maxCostUsd !== undefined ? { maxCostUsd: ctx.maxCostUsd } : {}),
     },
   };
 }

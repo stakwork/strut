@@ -78,6 +78,19 @@ export function peerSessionId(id: string, person?: string, continues?: string): 
   return peerScoped(id);
 }
 
+/** Where a PUBLIC run's sessions live (plans/paid-runs.md §6): a run
+ *  anyone launched opens every session under `public/<runId>/`, so a name a
+ *  stranger chooses never opens a local thread or another caller's. */
+export const PUBLIC_NAMESPACE = "public/";
+
+/** Where a public run's session `id` opens: `public/<scope>/<id>`, left as
+ *  it is when it already is there. `scope` is the run's id (a free run);
+ *  a paid run's is its credit token's (plans/paid-runs.md §6, item 5). */
+export function publicSessionId(id: string, scope: string): string {
+  const prefix = `${PUBLIC_NAMESPACE}${scope}/`;
+  return id.startsWith(prefix) ? id : `${prefix}${id}`;
+}
+
 /** Where an APP's ids live (plans/apps.md §12): a job id a page names is
  *  kept under `app/<name>/`, as a peer's is kept under `peer/`. */
 export const APP_NAMESPACE = "app/";

@@ -16,6 +16,7 @@
 > Item 1, the ledger, is built (stakwork/strut#595, `src/payments/ledger*.ts`).
 > Item 4, the wallet and the rate, is built (stakwork/strut#598: `ctx.services.lightning`, the Sphinx daemon and NWC providers, `payments.json`, the rate; `src/payments/`, `specs/LIGHTNING.md`).
 > Item 2, the record and the dialog, is built (stakwork/strut#599: `runnable` in `public.json` with its checks at `PUT /public-view`, `GET /public`'s `runnable`, the row's three boxes, `strut.ledger()`; `src/public-runnable.ts`).
+> Item 3, free public runs, is built (`POST /public/workflows/:name/run`, the run token, the launcher's reads and cancel, the caps, the charge at the end, the run's cap to `llmAuth`; `src/public-runs.ts`, specs/API.md §17.4).
 >
 > **Revised the same day, three times.**
 > 1. The first draft gave strut a run budget of its own, for a seller with

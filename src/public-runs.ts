@@ -1,0 +1,344 @@
+/**
+ * PUBLIC RUNS (plans/paid-runs.md §3, §6, §7; work item 3, free runs): the
+ * policy behind `POST /public/workflows/:name/run` — what a launch is
+ * admitted against, what a run in flight counts for, and what is charged
+ * when it ends. The route is `src/public-routes.ts`'s, the launch
+ * createStrut's (`launchDetached` with `origin: "public"`).
+ *
+ * - **The caps** (`admit`, §3 step 3): the server's limit on public runs in
+ *   flight, then the item's `dailyCapUsd` — today's `daily.cost` for the
+ *   item in the ledger, plus the cap of each of its runs in flight, reaching
+ *   it refuses the launch (§7). Admission is SERIAL: the check and counting
+ *   the new run are one step, so twenty launches in one second stay inside
+ *   the cap. A `key` the same caller sent for a run still in flight returns
+ *   that run, before any cap.
+ * - **The run's cap** (§7): the smallest of the item's `capUsd`, the
+ *   workflow's own (its `maxRunCostUsd`, else the deployment's, as
+ *   `resolveRunCap` reads it) and what is left of the daily cap. It rides on
+ *   the launch as `RunOptions.maxCostUsd` to `llmAuth`.
+ * - **The charge** (`ended`, §5): when the run ends — success, error,
+ *   cancelled, or finished by a durable resume after a restart — the ledger
+ *   records it with no token, a charge of nothing that counts its cost in
+ *   `daily`, which the daily cap reads. The ledger is idempotent on the run,
+ *   so a second call writes nothing.
+ * - **What outlives a restart.** Each admitted run is written to
+ *   `<dataDir>/payments/public-runs.json` before it launches and taken off
+ *   once it is charged. At boot (`load`) every run on file counts as in
+ *   flight; once auto-resume has relaunched what it will, `reconcile`
+ *   charges the rest: a run that ended (its summary, or its log's end), and
+ *   one cut off that nothing resumed, at what its log says it cost. A run
+ *   that never wrote `run.start` is dropped: nothing ran.
+ *
+ * Item 5 (priced runs) slots in here: the hold on a credit token after the
+ * caps, its token and price on the entry, and the charge against it.
+ */
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import type { RunEvent } from "./core.js";
+import type { RunStore } from "./store.js";
+import { generateRunId } from "./store.js";
+import { summaryFromLog } from "./runner.js";
+import { FREE, microsToUsd, usdToMicros, type LedgerStore, type Micros, type RunOutcome } from "./payments/ledger.js";
+import { runnableSubject } from "./public-runnable.js";
+import type { PublicRunnable } from "./public-surface.js";
+
+/** The most a launch body may be (§3 step 2). */
+export const PUBLIC_RUN_BODY_MAX_BYTES = 256 * 1024;
+/** Launches one visitor address may make in a minute: a smaller allowance
+ *  than the reads' (`PUBLIC_REQUESTS_PER_MINUTE`, 1200). */
+export const PUBLIC_LAUNCHES_PER_MINUTE = 60;
+/** Public runs in flight on this server at once, by default
+ *  (`STRUT_PUBLIC_RUNS_MAX`, `createStrut({ publicRuns: { maxInFlight } })`). */
+export const PUBLIC_RUNS_MAX_IN_FLIGHT = 10;
+/** A launch's retry `key`, at most. */
+export const PUBLIC_RUN_KEY_MAX = 200;
+/** The most a launcher's read holds with `?wait=` (seconds). */
+export const PUBLIC_RUN_WAIT_MAX_S = 55;
+/** Where the runs not yet charged are kept, under `<dataDir>/payments/`. */
+export const PUBLIC_RUNS_FILE = "public-runs.json";
+
+/** A public run admitted and not yet charged. */
+export interface PublicRunEntry {
+  workflow: string;
+  runId: string;
+  /** The ledger's subject: `workflow:<name>`. */
+  subject: string;
+  /** The run's cap, micro-dollars — what the daily cap counts it at while
+   *  it is in flight. Absent on a run that had none. */
+  cap?: Micros;
+  /** Epoch ms it was admitted. */
+  at: number;
+}
+
+export type Admission =
+  | {
+      ok: true;
+      runId: string;
+      /** The run's own cap in dollars (`RunOptions.maxCostUsd`); absent
+       *  when nothing caps it here (no item cap, no workflow cap passed). */
+      capUsd?: number;
+      /** A refusal after the caps (the price: item 5's 402) lets it go. */
+      release(): void;
+    }
+  /** The same caller's `key` names a run still in flight. */
+  | { ok: "existing"; runId: string }
+  | { ok: false; status: 429 | 503; error: string; retryAfter: number };
+
+export interface PublicRunsOptions {
+  ledger: () => Promise<LedgerStore>;
+  store: Pick<RunStore, "getRunSummary" | "getRunEvents">;
+  /** The file the runs not yet charged are kept in; none = memory (a memory
+   *  run store, whose runs do not outlive the process either). */
+  file?: string;
+  maxInFlight?: number;
+  now?: () => number;
+}
+
+export interface PublicRuns {
+  /** The caps step: the in-flight limit and the item's daily cap, serial.
+   *  An admitted run is counted, minted an id and on file before this
+   *  answers. `scope` is who the `key` belongs to (the visitor's address). */
+  admit(item: PublicRunnable, o: { workflowCapUsd?: number; key?: string; scope?: string }): Promise<Admission>;
+  /** A public run in flight again: a durable resume of one. */
+  track(workflow: string, runId: string, capUsd?: number): Promise<void>;
+  /** The run ended: charge it, then let it go. Never throws. */
+  ended(workflow: string, runId: string): Promise<void>;
+  /** Admitted and not yet charged. */
+  pending(workflow: string, runId: string): boolean;
+  /** How many public runs this server counts in flight. */
+  inFlight(): number;
+  /** Boot: every run on file counts as in flight until `reconcile`. */
+  load(): Promise<void>;
+  /** Boot, after auto-resume: charge every run on file that is not live. */
+  reconcile(live: (workflow: string, runId: string) => boolean): Promise<Array<{ workflow: string; runId: string; action: "charged" | "dropped" | "failed" | "live" }>>;
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const keyOf = (workflow: string, runId: string) => `${workflow}\0${runId}`;
+
+/** Seconds until the next UTC day, when a spent daily cap is free again. */
+export function secondsToUtcMidnight(now: number): number {
+  return Math.max(1, Math.ceil((Math.floor(now / DAY_MS + 1) * DAY_MS - now) / 1000));
+}
+
+const usd = (micros: Micros) => `$${microsToUsd(micros).toFixed(2)}`;
+const isTerminal = (e: RunEvent) => e.type === "run.end" || e.type === "run.error" || e.type === "run.cancelled";
+
+export function createPublicRuns(o: PublicRunsOptions): PublicRuns {
+  const now = o.now ?? Date.now;
+  const max = o.maxInFlight ?? PUBLIC_RUNS_MAX_IN_FLIGHT;
+  /** Counted in flight: admitted, resumed, or on file at boot. */
+  const flights = new Map<string, PublicRunEntry>();
+  /** On file: admitted and not yet charged. */
+  const onFile = new Map<string, PublicRunEntry>();
+  /** `<workflow>\0<scope>\0<key>` → the run it launched, while in flight. */
+  const keys = new Map<string, string>();
+
+  // The file is rewritten whole (it holds the runs in flight, a handful) on
+  // one chain, through a scratch file and a rename.
+  let writes: Promise<void> = Promise.resolve();
+  const save = (): Promise<void> => {
+    if (!o.file) return Promise.resolve();
+    const file = o.file;
+    const body = JSON.stringify([...onFile.values()]) + "\n";
+    const next = writes.then(async () => {
+      await mkdir(dirname(file), { recursive: true, mode: 0o700 });
+      const tmp = `${file}.${process.pid}.tmp`;
+      await writeFile(tmp, body, { mode: 0o600 });
+      await rename(tmp, file);
+    });
+    writes = next.catch(() => undefined);
+    return next;
+  };
+
+  // Admission is one step at a time: the check and counting the run.
+  let serial: Promise<unknown> = Promise.resolve();
+  const oneAtATime = <T>(fn: () => Promise<T>): Promise<T> => {
+    const p = serial.then(fn, fn);
+    serial = p.catch(() => undefined);
+    return p;
+  };
+
+  const forget = (k: string) => {
+    flights.delete(k);
+    for (const [kk, id] of keys) if (keyOf(kk.slice(0, kk.indexOf("\0")), id) === k) keys.delete(kk);
+  };
+
+  const admit: PublicRuns["admit"] = (item, a) =>
+    oneAtATime(async (): Promise<Admission> => {
+      const subject = runnableSubject(item);
+      const keyed = a.key !== undefined ? `${item.name}\0${a.scope ?? ""}\0${a.key}` : undefined;
+      if (keyed) {
+        const prior = keys.get(keyed);
+        if (prior && flights.has(keyOf(item.name, prior))) return { ok: "existing", runId: prior };
+      }
+      if (flights.size >= max) {
+        return { ok: false, status: 429, error: `too many public runs in flight on this server (${max}) — try again when one ends`, retryAfter: 30 };
+      }
+      const caps: Micros[] = [];
+      if (item.capUsd !== undefined) caps.push(usdToMicros(item.capUsd));
+      if (a.workflowCapUsd !== undefined) caps.push(usdToMicros(a.workflowCapUsd));
+      if (item.dailyCapUsd !== undefined) {
+        const daily = usdToMicros(item.dailyCapUsd);
+        let today: Micros;
+        try {
+          today = (await (await o.ledger()).today(subject, { now: now() })).cost;
+        } catch (err) {
+          console.error(`[public-runs] reading today's spend of ${subject} failed:`, err);
+          return { ok: false, status: 503, error: "the ledger cannot be read just now — try again shortly", retryAfter: 30 };
+        }
+        // A run in flight counts at its cap; one with none, at the whole cap.
+        let held = 0;
+        for (const f of flights.values()) if (f.subject === subject) held += f.cap ?? daily;
+        if (today + held >= daily) {
+          const spent = today >= daily;
+          return {
+            ok: false,
+            status: 429,
+            error: spent
+              ? `${item.kind} "${item.name}" has spent its daily cap (${usd(daily)}) — try again tomorrow (UTC)`
+              : `${item.kind} "${item.name}" has its daily cap (${usd(daily)}) set aside for runs in flight — try again when one ends`,
+            retryAfter: spent ? secondsToUtcMidnight(now()) : 60,
+          };
+        }
+        caps.push(daily - today - held);
+      }
+      const cap = caps.length ? Math.max(1, Math.min(...caps)) : undefined;
+      const runId = generateRunId();
+      const entry: PublicRunEntry = { workflow: item.name, runId, subject, ...(cap !== undefined ? { cap } : {}), at: now() };
+      const k = keyOf(item.name, runId);
+      flights.set(k, entry);
+      if (keyed) keys.set(keyed, runId);
+      onFile.set(k, entry);
+      let released = false;
+      const release = () => {
+        if (released) return;
+        released = true;
+        forget(k);
+        onFile.delete(k);
+        void save().catch(() => undefined);
+      };
+      try {
+        await save();
+      } catch (err) {
+        console.error(`[public-runs] recording ${item.name}/${runId} failed:`, err);
+        release();
+        return { ok: false, status: 503, error: "this server cannot record a public run just now — try again shortly", retryAfter: 30 };
+      }
+      return { ok: true, runId, ...(cap !== undefined ? { capUsd: microsToUsd(cap) } : {}), release };
+    });
+
+  const track: PublicRuns["track"] = async (workflow, runId, capUsd) => {
+    const k = keyOf(workflow, runId);
+    const known = flights.get(k) ?? onFile.get(k);
+    const entry: PublicRunEntry = known ?? {
+      workflow,
+      runId,
+      subject: runnableSubject({ kind: "workflow", name: workflow }),
+      ...(capUsd !== undefined ? { cap: usdToMicros(capUsd) } : {}),
+      at: now(),
+    };
+    flights.set(k, entry);
+    if (!onFile.has(k)) {
+      onFile.set(k, entry);
+      await save().catch((err) => console.error(`[public-runs] recording ${workflow}/${runId} failed:`, err));
+    }
+  };
+
+  /** What a run cost and how it ended: its summary, else its log (a log
+   *  that never ended is charged as an error, at what it spent so far).
+   *  Null when it never wrote `run.start`: nothing ran. */
+  const outcomeOf = async (workflow: string, runId: string): Promise<{ outcome: RunOutcome; cost: number } | null> => {
+    const summary = await o.store.getRunSummary(workflow, runId);
+    if (summary) return { outcome: summary.status, cost: summary.totals?.cost ?? 0 };
+    const events = await o.store.getRunEvents(workflow, runId);
+    if (!events.some((e) => e.type === "run.start")) return null;
+    const last = events[events.length - 1]!;
+    const outcome: RunOutcome = !isTerminal(last) ? "error" : last.type === "run.end" ? "success" : last.type === "run.cancelled" ? "cancelled" : "error";
+    return { outcome, cost: summaryFromLog(workflow, runId, events, outcome).totals?.cost ?? 0 };
+  };
+
+  /** Charge the run and let it go: `charged`, `dropped` (it never ran),
+   *  or `failed` — left counted and on file, for the next boot. */
+  const settle = async (workflow: string, runId: string): Promise<"charged" | "dropped" | "failed"> => {
+    const k = keyOf(workflow, runId);
+    const entry = flights.get(k) ?? onFile.get(k);
+    let action: "charged" | "dropped";
+    try {
+      const got = await outcomeOf(workflow, runId);
+      action = got ? "charged" : "dropped";
+      if (got) {
+        const cost = Number.isFinite(got.cost) && got.cost > 0 ? usdToMicros(got.cost) : 0;
+        await (await o.ledger()).charge({
+          runId,
+          subject: entry?.subject ?? runnableSubject({ kind: "workflow", name: workflow }),
+          cost,
+          outcome: got.outcome,
+          price: FREE,
+        });
+      }
+    } catch (err) {
+      console.error(`[public-runs] charging ${workflow}/${runId} failed:`, err);
+      return "failed";
+    }
+    if (onFile.delete(k)) await save().catch((err) => console.error(`[public-runs] forgetting ${workflow}/${runId} failed:`, err));
+    forget(k);
+    return action;
+  };
+
+  const ended: PublicRuns["ended"] = async (workflow, runId) => {
+    await settle(workflow, runId);
+  };
+
+  const load: PublicRuns["load"] = async () => {
+    if (!o.file) return;
+    let raw: string;
+    try {
+      raw = await readFile(o.file, "utf-8");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw err;
+    }
+    const list = JSON.parse(raw) as unknown;
+    if (!Array.isArray(list)) throw new Error(`${o.file}: not a list of public runs`);
+    for (const e of list as PublicRunEntry[]) {
+      if (!e || typeof e.workflow !== "string" || typeof e.runId !== "string" || typeof e.subject !== "string") continue;
+      const k = keyOf(e.workflow, e.runId);
+      onFile.set(k, e);
+      flights.set(k, e);
+    }
+  };
+
+  const reconcile: PublicRuns["reconcile"] = async (live) => {
+    const out: Array<{ workflow: string; runId: string; action: "charged" | "dropped" | "failed" | "live" }> = [];
+    for (const e of [...onFile.values()]) {
+      const action = live(e.workflow, e.runId) ? "live" : await settle(e.workflow, e.runId);
+      out.push({ workflow: e.workflow, runId: e.runId, action });
+    }
+    return out;
+  };
+
+  return {
+    admit,
+    track,
+    ended,
+    pending: (workflow, runId) => onFile.has(keyOf(workflow, runId)),
+    inFlight: () => flights.size,
+    load,
+    reconcile,
+  };
+}
+
+/** `STRUT_PUBLIC_RUNS_MAX`: unset or empty is the default; anything but a
+ *  whole number of runs, 1 or more, fails the boot. */
+export function publicRunsMaxFromEnv(raw: string | undefined): number {
+  if (raw === undefined || raw.trim() === "") return PUBLIC_RUNS_MAX_IN_FLIGHT;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1) throw new Error(`STRUT_PUBLIC_RUNS_MAX must be a whole number of runs, 1 or more — got ${JSON.stringify(raw)}`);
+  return n;
+}
+
+/** `<dataDir>/payments/public-runs.json`. */
+export function publicRunsPath(dataDir: string): string {
+  return join(dataDir, "payments", PUBLIC_RUNS_FILE);
+}

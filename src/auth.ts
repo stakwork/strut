@@ -308,6 +308,41 @@ export function publicAppOfIdentity(identity: unknown): AppRef | undefined {
   return { name, version };
 }
 
+// ── The run token (plans/paid-runs.md §3) ────────────────────────────────
+//
+// What a public launch answers with beside the run's id: a RECEIPT for that
+// one run, safe to put in a link. An HMAC over `public-run:<workflow>/<runId>`
+// under the same secret as a file token, so it opens that run's `/public`
+// reads and its cancel — and nothing else: no private route takes it (its
+// input is not a file token's `<kind>:<id>`), and no other run's. Free and
+// paid runs alike get one; a credit token is money, this is not. With no
+// secret to sign under, a key this PROCESS made: a run id is a timestamp,
+// so an unsigned token would open every public run to whoever guesses one
+// on a strut whose gate a host keeps — and a restart then ends the
+// launcher's reads, never anyone else's.
+
+let processRunSecret: Buffer | undefined;
+const runTokenSecret = (): string | Buffer => tokenSecret() ?? (processRunSecret ??= randomBytes(32));
+
+/** The run token for a public run of `workflow`. */
+export function publicRunToken(workflow: string, runId: string): string {
+  return createHmac("sha256", runTokenSecret()).update(`public-run:${workflow}/${runId}`).digest("base64url");
+}
+
+/** Is `got` the run token of that run? */
+export function isPublicRunToken(workflow: string, runId: string, got: string | undefined): boolean {
+  const expected = publicRunToken(workflow, runId);
+  return typeof got === "string" && got.length === expected.length && timingSafeEqual(Buffer.from(expected), Buffer.from(got));
+}
+
+/** The run token a request presents: `?t=`, else `Authorization: Bearer`. */
+export function presentedRunToken(c: Context): string | undefined {
+  const q = c.req.query("t")?.trim();
+  if (q) return q;
+  const m = /^Bearer\s+(\S+)\s*$/i.exec(c.req.header("authorization") ?? "");
+  return m?.[1];
+}
+
 /** Does this request carry a valid file token (`?t=`) for the scope its
  *  path reads from? A read (GET / HEAD) under a scope only; a token on any
  *  other path, or for another run, job or app, opens nothing. */

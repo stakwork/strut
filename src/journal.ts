@@ -65,6 +65,9 @@ export function readRunStart(
   wakeAsked?: true;
   /** A wake turn's mark — a resume keeps it, so its end is still heard. */
   wake?: WakeMark;
+  /** A public run's own cost cap (plans/paid-runs.md §7) — a resume keeps
+   *  it, so the Mothership's link carries the same cap. */
+  maxCostUsd?: number;
 } | null {
   const start = events.find((e) => e.type === "run.start");
   if (!start) return null;
@@ -82,6 +85,7 @@ export function readRunStart(
     ...(start.peerPerson ? { peerPerson: true as const } : {}),
     ...(start.continues ? { continues: start.continues } : {}),
     attachments: start.attachments,
+    ...(typeof start.maxCostUsd === "number" ? { maxCostUsd: start.maxCostUsd } : {}),
     ...(start.app ? { app: start.app } : {}),
     ...(start.startedBy ? { startedBy: start.startedBy } : {}),
     ...(start.conversation ? { conversation: start.conversation } : {}),

@@ -263,7 +263,10 @@ describe("the /public routes", () => {
     const pre = await strut.app.request("/public/workflows", { method: "OPTIONS", headers: { origin: "https://index.sphinx.chat", "access-control-request-method": "GET" } });
     assert.equal(pre.status, 204);
     assert.equal(pre.headers.get("access-control-allow-origin"), "*");
-    assert.equal((await strut.app.request("/public/workflows/demo/run", { method: "POST" })).status, 401);
+    // A launch is open by name (plans/paid-runs.md §3): a workflow nobody
+    // made runnable launches nothing. Any other write under /public is shut.
+    assert.equal((await strut.app.request("/public/workflows/demo/run", { method: "POST" })).status, 404);
+    assert.equal((await strut.app.request("/public/workflows/demo/runs/1/pause", { method: "POST" })).status, 401);
     assert.equal((await strut.app.request("/public", { method: "PUT" })).status, 401);
     assert.equal((await strut.app.request("/public-view")).status, 401);
   });
