@@ -18,6 +18,10 @@
 > own, for a seller with no gateway. *Ruled:* the gateway runs everywhere,
 > so that is dropped (decision 17, §7). What is left of it is one value:
 > a public run's cap, handed to the Mothership.
+>
+> **Ruled after that, the same day:** credit lasts a year (decision 18),
+> and withdrawals get a button in the UI (decision 19; §8, and the payer
+> in §9).
 
 ## Problem
 
@@ -60,6 +64,9 @@ receive sats, and a way to bound and measure what a stranger's run costs.
 | 15 | A public TOOL runs with a read-only services view. Anything that needs more is a workflow. | proposed |
 | 16 | An agent never pays by itself. Buying credit is a proposal an admin accepts; spending credit already bought needs no ask. | proposed |
 | 17 | A seller runs behind the gateway, which is what stops a run at its cap. Strut gets no run budget of its own. | **ruled** ("the plan is to run the gateway everywhere"), revising the first draft |
+| 18 | Credit lasts a year from its purchase. What is unused then stays with the seller (decision 14: strut sends nothing back). | **ruled** ("yes credits lasting a year is good") |
+| 19 | Withdrawing sats has a button in strut's UI, in the Earnings tab. | **ruled** ("yes a withdraw button in the UI is good") |
+| 20 | The wallet's credentials live in a file no step can read, and the one that can pay is apart from the one that receives. | proposed |
 
 ## Design in one paragraph
 
@@ -231,7 +238,7 @@ the wallet a record until it expires.
 |---|---|---|
 | `services=strut:0` | strut | L402's service line |
 | `strut_sats=<n>` | strut | What the invoice was for |
-| `strut_valid_until=<unix>` | strut; a holder may shorten it | When the credit ends (a year after the challenge) |
+| `strut_valid_until=<unix>` | strut; a holder may shorten it | When the credit ends: a year after the purchase (decision 18) |
 | `strut_capabilities=<kind>:<name>,…` | a holder | Only these items |
 | `strut_max_price_sats=<n>` | a holder | No single debit above this |
 
@@ -290,7 +297,7 @@ payments.
 | Table | One row per | Size | Read by |
 |---|---|---|---|
 | `tokens` | Token: `id`, `payment_hash`, `paid`, `spent`, `held`, `created`, `expires`, `closed` | Thousands | Every paid call |
-| `entries` | `payment`, `debit`, `void`, `cost`, later `hold` / `release`: `seq`, `at`, `token`, `msat`, `subject`, `run_id`, `key`, `cost_usd`. Never updated | Millions | A buyer's receipt, audits |
+| `entries` | `payment`, `debit`, `void`, `cost`, `expiry`, `withdrawal`, later `hold` / `release`: `seq`, `at`, `token`, `msat`, `subject`, `run_id`, `key`, `ref` (a payment hash), `cost_usd`. Never updated | Millions | A buyer's receipt, audits |
 | `daily` | Day and subject: `calls`, `failed`, `earned`, `cost_usd` | Days × items | Every earnings screen |
 
 - **Amounts are msat**, as in the wallet contract (`specs/WALLET.md`). The
@@ -311,6 +318,10 @@ payments.
   runs fail on purpose.
 - **Cost** arrives at the run's end (`onRunEnd`): a `cost` entry and
   `daily.cost_usd`, from `RunSummary.totals`.
+- **Expiry** (decision 18). A token past `expires` is refused. A sweep, at
+  boot and once a day, closes it and writes an `expiry` entry for what was
+  left, counted as earned under the subject `expired`, so outstanding
+  credit never includes credit nobody can spend.
 - **Earnings never scan `entries`.** By item, by package, by day and in
   total are sums over `daily`. Received-by-day reads the `payment`
   entries through a partial index; they are few.
@@ -401,19 +412,20 @@ it is what keeps twenty launches in one second inside the cap.
 
 ## 8. Earnings
 
-Three numbers, all shown:
+Four numbers, all shown:
 
 - **Received:** sats paid in.
 - **Earned:** credit that runs and calls have used.
 - **Outstanding credit:** received less earned, prepaid and still owed as
-  service.
+  service. Credit that reached its year unused moves to earned.
+- **Withdrawn:** sats sent out of the wallet through strut.
 
 | Level | Where | Shows |
 |---|---|---|
 | Run | The run overview, beside Cost | Sats debited, model cost |
 | Workflow or tool | Its row in the Public view tab; the Workflow flyout | Price, calls, failed, earned, cost |
 | Package | Its page in the Packages tab | The same, summed over its prefix, on this server |
-| Server | A third tab in the Publish dialog, **Earnings** | The wallet's balance, received, earned, outstanding, by day and by item |
+| Server | A third tab in the Publish dialog, **Earnings** | The wallet's balance with **Withdraw** beside it, received, earned, outstanding, withdrawn, by day and by item |
 
 - `GET /earnings?from=&to=&by=item|day|package` and `GET
   /earnings/entries`, full scope. `earnings/read`, a read step, for Jamie
@@ -424,6 +436,28 @@ Three numbers, all shown:
 - **A package's number is this server's.** A copy installed elsewhere
   earns for that server. Nothing flows back to its publisher, as the
   no-DRM ruling has it (`marketplace.md` §6).
+
+**Withdraw** (decision 19). A button beside the wallet's balance in the
+Earnings tab.
+
+- The dialog takes a BOLT11 invoice, shows the amount it asks for, and
+  asks before paying. `POST /earnings/withdraw { invoice, msat }` pays it
+  through the payer (§9). `msat` is what the person confirmed; an invoice
+  for any other amount is refused, so what was shown is what is paid. The
+  answer is the payment's state and its fee, or the wallet's refusal as it
+  came.
+- **Full scope only:** the key or an admin's session. The gate already
+  refuses a member's session, a person token and a peer; no step, builder
+  tool or app page reaches it.
+- **In the books.** Each one is a `withdrawal` entry: who, the amount, the
+  fee, the payment hash. Received less withdrawn is what the wallet should
+  hold, which the reconcile checks.
+- **Not limited to what is earned.** The sats are the seller's when they
+  arrive; what a buyer is owed is service. The dialog shows the
+  outstanding credit beside the balance.
+- **Disabled, saying why,** when the wallet cannot pay (no pay
+  credential, §9).
+- Later: paying a Lightning address, and a sweep on a schedule.
 
 ## 9. The wallet
 
@@ -443,15 +477,40 @@ Nothing on it moves a sat out. The steps an app may grant
 (`lightning/invoice`, `lightning/verify`, `lightning/received`) stay
 `app-payments.md`'s item, over this capability.
 
-- **`SphinxDaemonProvider`** (`LIGHTNING_DAEMON_URL`,
-  `LIGHTNING_DAEMON_TOKEN`, store or env). First.
-- **`NwcProvider`** (`LIGHTNING_NWC_URL`). Second: a seller with Alby Hub,
+- **`SphinxDaemonProvider`** (the daemon's URL and its receive token).
+  First.
+- **`NwcProvider`** (a connection URL). Second: a seller with Alby Hub,
   LNbits or any NWC wallet.
 - A fake, for tests: invoices it settles on command.
 
 **Where the sats are.** In the wallet: with the daemon, the treasury
 account's balance on the Sphinx mixer (custodial); with NWC, the connected
-wallet. Strut keeps the books. Getting sats out is the wallet's business.
+wallet. Strut keeps the books. Getting them out is the Withdraw button
+(§8), or the wallet's own UI.
+
+**Where the wallet's credentials live** (decision 20). In `payments.json`,
+the encrypted file that holds `L402_ROOT`, and never in the secret store.
+A step reads every deployment secret by name (`ctx.services.secrets`), and
+a credential that can pay must be readable by nothing, the rule a peer's
+token follows (`peers.json`). They are set two ways:
+
+- from the environment at boot: `LIGHTNING_DAEMON_URL`,
+  `LIGHTNING_DAEMON_TOKEN`, `LIGHTNING_DAEMON_PAY_TOKEN`, or
+  `LIGHTNING_NWC_URL`, `LIGHTNING_NWC_PAY_URL` (the env scrub keeps them
+  from steps);
+- in the Earnings tab's Wallet form: `PUT /earnings/wallet`, full scope.
+  `GET` answers which provider is set and whether it can pay, never a
+  credential.
+
+`app-payments.md` §6 put the NWC URL in the secret store. A receive-only
+connection is harmless there; one file for both is simpler, and is what a
+pay credential needs.
+
+**The payer.** Paying is not on the capability. createStrut holds one
+payer, built from the PAY credential when there is one, and exactly two
+doors call it: `POST /earnings/withdraw` (§8) and an accepted
+`remote/buy-credit` proposal (§10). With no pay credential both say so,
+and nothing else changes: a server can sell without being able to pay.
 
 **The treasury daemon** (decisions 9 and 10; work in the sphinx repo, not
 this one). A second container of `ghcr.io/stakwork/sphinx-daemon` with its
@@ -467,9 +526,13 @@ own seed and `DAEMON_REPLY=none`, in no tribe. What it needs, as read in
    `check_invoice` on the same core.
 3. `GET /payments?since=`: what came in, for the reconcile.
 4. The core refuses a payment that carries less than its invoice.
-5. A token that can make and look up invoices and no more, beside the
-   admin token, so strut's provider cannot post or join as an account.
-6. `POST /pay`, admin only: withdrawals, and a buyer's side (§10).
+5. Two scoped tokens beside the admin token: a RECEIVE token (invoices,
+   lookups, the payments list, the balance) and a PAY token (those and
+   `POST /pay`). Strut never holds the admin token, so it cannot post or
+   join as the account.
+6. `POST /pay { invoice, max_fee_msat? }`, with the pay token, answering
+   `{ payment_hash, state, fee_msat, preimage? }`: withdrawals (§8) and a
+   buyer's side (§10).
 
 Facts that hold as they are: its invoices are ordinary BOLT11 with a route
 hint through the LSP, payable from any wallet; the account must answer
@@ -501,9 +564,8 @@ on; an invoice lasts an hour.
   - `remote/buy-credit { url, sats }` runs only as a proposal a person
     accepted, and that person an admin (`approver: "admin"`, as
     `package/install`). Its card reads the seller's `/public`: who, what
-    it sells, the price. On accept strut pays from the deployment's wallet
-    (the treasury daemon's `POST /pay`, or an NWC connection that may pay),
-    through a payer that is not on the services bag, and keeps the token.
+    it sells, the price. On accept strut pays through the payer (§9),
+    which is not on the services bag, and keeps the token.
   - After that, agents and automations spend within the credit with no
     ask (decision 16).
 - **A visitor's app page.** `run/launch` on a runnable workflow the app
@@ -561,11 +623,12 @@ Strut only, each a PR. Free runs ship with no Lightning.
    cap, and the run's cap handed to `llmAuth` (§7). This is
    `public-surface.md` §11.
 4. **The wallet.** `ctx.services.lightning`, the daemon provider, the
-   fake; then NWC.
+   fake, its settings in `payments.json`; then NWC.
 5. **Paid workflows.** `src/l402.ts`, `payments.json`, the challenge, the
    check, `claim`, the credit routes, debit and void.
 6. **Paid tools.** `POST /public/steps/:type/run` and its bag.
-7. **Earnings.** The routes, the step, the four places they show.
+7. **Earnings.** The routes, the step, the four places they show; the
+   payer, `POST /earnings/withdraw` and the Withdraw button.
 8. **Agents and the store.** The `/public/mcp` tools, `llms.txt`, prices
    in the index's live items, the store's Run form.
 9. **A strut that buys.** `remote/*`, `entitlements.json`, the buy-credit
@@ -606,21 +669,26 @@ Strut only, each a PR. Free runs ship with no Lightning.
   milliseconds.
 - A restart loses no credit; a copy of the data folder with
   `payments.json` and `ledger.db` honors every token.
+- A token past its year is refused, and its unused credit shows as earned.
+- Withdraw: an admin's session pays an invoice and the ledger gains a
+  `withdrawal`; a member's session is refused; an invoice whose amount is
+  not the one confirmed is refused; with no pay credential the button is
+  disabled and the route says why.
+- No step reads a wallet credential: `secrets.get` of each `LIGHTNING_*`
+  name answers nothing, and nothing on the services bag pays.
 - Live, with real sats: a treasury daemon, one paid run from Peel, one
   from a wallet that is not Sphinx.
 
 ## Open questions
 
-1. **How long credit lasts.** A year is the draft. Unused credit at expiry
-   stays with the seller, since strut sends nothing back; shorter is
-   harsher on buyers, longer keeps a liability open.
+1. **How long credit lasts.** *Answered (ruled): a year* (decision 18).
 2. **Crediting back a failed run.** Decision 14 trusts the daily cap to
    bound abuse. The alternative is a per-item choice, credit back or keep.
 3. **The rate** metering needs: a setting the operator keeps, or a price
    feed read through `ctx.services.http`.
-4. **Withdrawals.** A button in the Earnings tab over the daemon's `POST
-   /pay` (admin only), or left to the wallet. And whether a sweep to a
-   Lightning address belongs in the daemon.
+4. **Withdrawals.** *Answered (ruled): a button in the Earnings tab*
+   (decision 19, §8). Still open: paying a Lightning address, and whether
+   a sweep on a schedule belongs in strut or in the daemon.
 5. **The desktop package.** Whether its Node has `node:sqlite` without a
    flag. A laptop only buys, so the ledger could simply be absent there.
 6. **Showing "ran and paid" in public.** A count of paid runs per item on
