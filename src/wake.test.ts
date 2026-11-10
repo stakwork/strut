@@ -14,6 +14,7 @@ import type { Scope } from "./auth.js";
 import type { SessionTurn } from "./session-store.js";
 import {
   WAKE_REPLY_MAX,
+  createWakes,
   parseWakeDoor,
   replyOf,
   trailingWakes,
@@ -89,6 +90,13 @@ describe("wakePrompt on the template strut ships", () => {
   it("a template with no section is the whole prompt once per job", () => {
     assert.equal(wakePrompt("{job} {silent}", [end(), end({ job: "j-2" })]), "j-1 [silent]\n\nj-2 [silent]");
   });
+
+  it("a run a job left going: {run} and {workflow} name it, its outcome is a run's", () => {
+    const run = (status: string) => end({ kind: "run", runId: "r-7", workflow: "slow", status, text: '{"ok":true}', startedBy: undefined });
+    assert.equal(wakePrompt("{each}{run} {workflow} {outcome}: {reply}{/each}", [run("success")]), 'r-7 slow finished: {"ok":true}');
+    assert.equal(wakePrompt("{each}{outcome}{/each}", [run("error")]), "failed");
+    assert.equal(wakePrompt("{each}{outcome}{/each}", [run("cancelled")]), "been cancelled");
+  });
 });
 
 describe("the wake's pure parts", () => {
@@ -133,6 +141,70 @@ describe("the wake's pure parts", () => {
     assert.match((parseWakeDoor({ session: "s", source: "a b", end: {} }) as { error: string }).error, /^source /);
     assert.match((parseWakeDoor({ session: "s", source: "acme", end: { workflow: "orchestrator", runId: "r", job: "j", status: "success" } }) as { error: string }).error, /turn's own reply/);
     assert.match((parseWakeDoor({ session: "s", source: "acme", end: { workflow: "job" } }) as { error: string }).error, /runId, job and status/);
+  });
+});
+
+describe("a run a job left going, across a restart", () => {
+  it("reconcile ends a run that is no longer live — with its summary, or as cut off — and wakes the job under its job", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "strut-wake-run-"));
+    try {
+      const launches: any[] = [];
+      const ended = new Set<string>();
+      const turn = { workflow: "builder", runId: "t-1" };
+      const summaries: Record<string, any> = { "r-done": { status: "success", output: { rows: 3 } } };
+      const wakes = createWakes({
+        dataDir,
+        enabled: true,
+        max: 4,
+        store: {
+          getRunEvents: async (_w: string, id: string) => (id === "t-1" ? [{ type: "run.start", job: "j-1", startedBy: { workflow: "orchestrator", runId: "o-1", session: "c-1" } }] : []) as any,
+          getRunSummary: async (_w: string, id: string) => summaries[id] ?? null,
+          getRunCallback: async () => null,
+          getRunJobCallback: async () => null,
+        },
+        sessions: { load: async () => null } as any,
+        holder: () => undefined,
+        liveOn: () => [],
+        // The wake's own turns are live until they end; the runs left going
+        // died with the last process.
+        isLive: (_w, id) => id.startsWith("w-") && !ended.has(id),
+        getWorkflow: async (name) => ({ name, params: { wake: "{each}{run} {outcome}: {reply} / {/each}" }, steps: [] }) as any,
+        launch: (_flow, run) => (launches.push(run), `w-${launches.length}`),
+      });
+      await wakes.waitFor("j-1", { workflow: "slow", runId: "r-done", turn });
+      await wakes.waitFor("j-1", { workflow: "slow", runId: "r-gone", turn });
+      assert.equal(await wakes.busy("j-1"), true);
+      const file = async () => JSON.parse(await readFile(wakeFilePath(dataDir, "j-1"), "utf-8")) as WakeFile;
+      // A turn is launched, then written down as the session's turn.
+      const launched = async (n: number) => {
+        for (let i = 0; i < 400 && (await file()).turn?.runId !== `w-${n}`; i++) await new Promise((r) => setTimeout(r, 5));
+        assert.equal(launches.length, n);
+        return launches[n - 1];
+      };
+      await wakes.reconcile();
+      const first = await launched(1);
+      assert.equal(first.job, "j-1", "the job's next turn, under the job");
+      assert.deepEqual(first.startedBy, { workflow: "orchestrator", runId: "o-1", session: "c-1" }, "the detaching turn's, so its end wakes the conversation");
+      assert.equal(first.input.prompt, 'r-done finished: {"rows":3} / ');
+      const f = await file();
+      assert.deepEqual(f.waiting, [], "neither is waited on any more");
+      assert.deepEqual(f.queued.map((e) => e.runId), ["r-gone"], "the other waits for the job's turn to end");
+      ended.add("w-1");
+      await wakes.turnEnded("j-1", "w-1");
+      wakes.kick("j-1");
+      const second = await launched(2);
+      assert.equal(second.input.prompt, "r-gone failed: (no reply; the error: the run was cut off by a restart) / ");
+      assert.equal(await wakes.busy("j-1", "w-2"), false);
+
+      // A run whose turn was cancelled is forgotten, not woken on.
+      await wakes.waitFor("j-1", { workflow: "slow", runId: "r-3", turn });
+      assert.equal(await wakes.runEnded("j-1", { runId: "r-3", workflow: "slow", job: "j-1", status: "cancelled", artifacts: [] }, true), "none");
+      assert.equal(launches.length, 2);
+      assert.equal(await wakes.busy("j-1", "w-2"), false);
+    } finally {
+      // The wake writes its file just after it launches.
+      await rm(dataDir, { recursive: true, force: true, maxRetries: 5 });
+    }
   });
 });
 
@@ -200,7 +272,7 @@ describe("the wake through a whole strut", () => {
    *  `{ text: "<prompt>: found 3", ask? }` with no model. `reply` answers a
    *  person's turn (by its request); a wake turn says "Summary." unless
    *  `wakeReply` says otherwise. `hold`, when set, holds a person's turn. */
-  const boot = async (o: { orchestrator?: Record<string, unknown>; reply?: (body: any) => unknown; hold?: () => Promise<void> } = {}) => {
+  const boot = async (o: { orchestrator?: Record<string, unknown>; reply?: (body: any) => unknown; hold?: () => Promise<void>; chatRunWaitMs?: number } = {}) => {
     const seen = { person: [] as any[], wake: [] as any[] };
     process.env["ANTHROPIC_BASE_URL"] = await listen(async (body) => {
       if (isWake(body)) {
@@ -222,6 +294,7 @@ describe("the wake through a whole strut", () => {
       job: false,
       builder: false,
       autoResume: false,
+      ...(o.chatRunWaitMs ? { chatRunWaitMs: o.chatRunWaitMs } : {}),
       orchestrator: o.orchestrator ?? {},
       resolveActor: (c) => c.req.header("x-test-actor"),
       resolveScope: (c) => c.req.header("x-test-scope") as Scope | undefined,
@@ -249,7 +322,7 @@ describe("the wake through a whole strut", () => {
         const active = (await (await strut.app.request("/runs/active")).json()) as unknown[];
         return active.length ? undefined : true;
       }, "idle");
-    return { strut, seen, ends, post, say, job, endOf, wakeEnds, turns, idle };
+    return { strut, seen, ends, post, say, job, endOf, wakeEnds, turns, idle, callback };
   };
 
   it("a job a turn started wakes the turn's conversation: the reply inline, the person's model, where and zone, the job's asker, the turn's callback; every run.end says what strut did", async () => {
@@ -330,6 +403,73 @@ describe("the wake through a whole strut", () => {
     const file = JSON.parse(await readFile(wakeFilePath(strut.dataDir, "c-2"), "utf-8")) as WakeFile;
     assert.deepEqual(file.queued, []);
     assert.equal(file.turn, undefined, "cleared once the turn was done");
+  });
+
+  it("a builder's long test run: handed back running, the turn ends `waiting`, the run's end wakes the job, and the job's next turn wakes the conversation", async () => {
+    const { strut, seen, post, endOf, callback } = await boot({ chatRunWaitMs: 50 });
+    await strut.workspace.createWorkflow("slow", "name: slow\nsteps:\n  - id: w\n    type: wait\n    config:\n      durationMs: 400\n  - id: out\n    type: pack\n    config:\n      rows: 3\n");
+    // A stand-in builder: its first turn tests `slow` through
+    // meta/run-workflow; a woken turn reports the prompt it was given.
+    await strut.workspace.createWorkflow(
+      "builder",
+      [
+        "name: builder",
+        "params:",
+        '  wake: "{each}WOKEN {workflow} {run} {outcome}: {reply}{/each}"',
+        "steps:",
+        "  - id: first",
+        "    type: if",
+        "    config:",
+        "      cond: \"{{ input.prompt === 'build' }}\"",
+        "  - id: test",
+        "    type: meta/run-workflow",
+        "    depends: first",
+        "    when: true",
+        "    config:",
+        "      name: slow",
+        "      input: {}",
+        "  - id: result",
+        "    type: pack",
+        "    depends: [first, test]",
+        "    config:",
+        '      text: "{{ test?.status === \'running\' ? \'testing\' : input.prompt }}"',
+        "      artifacts: []",
+        "",
+      ].join("\n"),
+    );
+    const launched = await post("/workflows/builder/run", { job: "j-b", input: { prompt: "build" }, conversation: "c-b", wake: true, callback: { url: callback } }, { "x-test-actor": "bob" });
+    assert.equal(launched.status, 202, JSON.stringify(launched.body));
+    const first = await endOf(launched.body.runId);
+    assert.equal(first.output.text, "testing", "the test run came back running");
+    assert.equal(first.wake, "waiting", "a turn that left a run going wakes no conversation");
+
+    // The conversation's wake turn: no person's turn there to take a
+    // callback from, so it is read off the stand-in model.
+    await until(() => (seen.wake.length ? true : undefined), "the conversation's wake");
+    const second = ((await strut.store.listRuns("builder")) as unknown as string[]).find((id) => id !== launched.body.runId)!;
+    const start = (await strut.store.getRunEvents("builder", second)).find((e) => e.type === "run.start")!;
+    assert.equal(start.job, "j-b", "the job's next turn, under the job");
+    assert.equal(start.conversation, "c-b", "naming the conversation the job's turn named");
+    const prompt = (start.input as { prompt: string }).prompt;
+    assert.match(prompt, /^WOKEN slow \d+ finished: \{"rows":3\}$/, prompt);
+    assert.equal(start.wake?.job, "j-b");
+    const secondEnd = await endOf(second);
+    assert.equal(secondEnd.wake, "launched", "the job's woken turn wakes the conversation");
+    assert.equal(seen.wake.length, 1, "the conversation heard once");
+    assert.ok(lastUser(seen.wake[0]).includes("WOKEN slow"), "with the job's later reply");
+    const file = JSON.parse(await readFile(wakeFilePath(strut.dataDir, "j-b"), "utf-8")) as WakeFile;
+    assert.deepEqual([file.waiting, file.queued, file.turn], [[], [], undefined], "nothing left waiting for the job");
+  });
+
+  it("a test run outside a job's turn, or from a workflow with no params.wake, is waited out", async () => {
+    const { strut, post, endOf, callback } = await boot({ chatRunWaitMs: 50 });
+    await strut.workspace.createWorkflow("slow", "name: slow\nsteps:\n  - id: w\n    type: wait\n    config:\n      durationMs: 200\n");
+    await strut.workspace.createWorkflow("runner", "name: runner\nsteps:\n  - id: test\n    type: meta/run-workflow\n    config:\n      name: slow\n      input: {}\n");
+    const r = await post("/workflows/runner/run", { job: "j-r", input: {}, callback: { url: callback } });
+    const e = await endOf(r.body.runId);
+    assert.equal(e.status, "success");
+    const out = (await strut.store.getRunEvents("runner", r.body.runId)).find((x) => x.type === "step.end" && x.path === "runner/test") as any;
+    assert.equal(out.output.status, "success", "waited for, not handed back running");
   });
 
   it("past wakeMax wake turns in a row: capped, no turn; a person's turn starts the count over", async () => {

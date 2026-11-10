@@ -57,7 +57,7 @@ When the run ends, strut sends **one** `POST` to your URL with a JSON body:
 | `runId`      | the id from step 1                                           |
 | `job`        | the job the run was launched under — only for a job run      |
 | `startedBy`  | `{ workflow, runId, session? }` — the TURN that started this job through `job/start` / `job/continue` (§5): the root run you launched, and the `session` your launch named. Only on a job run a turn started; what tells a room (§8) which conversation a job belongs to, since every job of the person arrives on one socket — over a URL, the URL you gave the turn already says |
-| `wake`       | on a JOB turn's `run.end` (`job`, `builder`): what strut did about it for the conversation it belongs to (§9) — `"launched"` (a wake turn's reply follows, even if it waits), `"capped"` (too many wakes in a row: show the job's own words), `"none"` (no conversation, the host did not ask — `wake: true` on its launches, §9 — a relay, or the wake is off). On a WAKE turn's `run.end`: `{ job, runId, peer?, also? }`, the job run it woke on |
+| `wake`       | on a JOB turn's `run.end` (`job`, `builder`): what strut did about it for the conversation it belongs to (§9) — `"launched"` (a wake turn's reply follows, even if it waits), `"capped"` (too many wakes in a row: show the job's own words), `"none"` (no conversation, the host did not ask — `wake: true` on its launches, §9 — a relay, or the wake is off), `"waiting"` (the turn left a run going — a builder's long test run, §9 — and the job's next turn, which strut starts when that run ends, is the one the conversation hears: show nothing yet). On a WAKE turn's `run.end`: `{ job, runId, peer?, also? }`, the job run it woke on |
 | `status`     | `"success"`, `"error"` or `"cancelled"`                      |
 | `output`     | the workflow's output (its last step's) — on success only    |
 | `error`      | `{ "message": "..." }` — on error only                       |
@@ -539,7 +539,8 @@ carries `wake: true`, as it carries `callback: true`: this server honors it
 (an older one ignores the field and never wakes). Every job turn's `run.end`
 carries `wake` (§2). Turn your own wake off for a job whose end says
 `"launched"`; on `"capped"`, show the job's words as they are; on `"none"`,
-wake it yourself as before.
+wake it yourself as before; on `"waiting"`, do nothing: a later `run.end` of
+the same job brings its result.
 
 **The turn.** One run of the conversation's workflow on its session, `input:
 { prompt, session, context }`, the prompt the template's `params.wake` with
@@ -566,6 +567,20 @@ conversation that came in from another strut (a person token, a peer) or an
 app is a relay and never woken: the head of the chain wakes itself. Durable:
 a restart launches what was waiting. `createStrut({ orchestrator: { wake:
 false } })` (or `STRUT_HOST_CONFIG`'s `orchestrator.wake`) turns it off.
+
+**A job's own wake: a long test run.** A builder turn tests what it built
+with `meta/run-workflow`; a run still going after the wait window (about a
+minute, the chat's) comes back `running` and goes on, and the turn ends. That
+turn's `run.end` says `wake: "waiting"`. When the run ends, strut starts the
+JOB's next turn — the job's workflow under the same job, `input: { prompt,
+session }` with the template's `params.wake` (the run's outcome and output),
+the conversation of the job's latest person's turn (`startedBy`, or your
+`conversation` and `wake: true`) — and that turn's end wakes the
+conversation as any job turn's does. Only a job workflow with `params.wake`
+(the seeded `builder`), only a turn not launched by another strut, and while
+the run goes on the job stays busy (`job_busy:`): it is the job's. A run that
+dies with the process ends at the next boot as cut off; a run whose turn was
+cancelled wakes nothing.
 
 **A job that ran on another strut.** You heard its `run.end` on that
 strut's room (§8), not here. Hand it in, and the local conversation wakes on

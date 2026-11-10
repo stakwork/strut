@@ -489,8 +489,8 @@ export interface AuthoringCapability {
      *  `job/dir` and `workdir` resolve to the directory the parent holds,
      *  which it shares (`holdJob`). `mcp`: the launching run's caller's MCP
      *  servers (`ctx.mcp`), so the child's agents reach the same caller. */
-    opts?: { parentRunId?: string; actor?: string; principal?: string; job?: string; mcp?: McpServer[] },
-  ): Promise<RunResult | { error: string }>;
+    opts?: { parentRunId?: string; actor?: string; principal?: string; job?: string; mcp?: McpServer[]; caller?: RunCaller },
+  ): Promise<RunResult | DetachedRun | { error: string }>;
   listRuns(name: string, limit?: number): Promise<unknown>;
   getRun(name: string, runId: string, opts?: RunViewOptions): Promise<unknown>;
   searchRuns(name: string, pattern: string, opts?: RunSearchOptions): Promise<unknown>;
@@ -544,6 +544,28 @@ export interface AuthoringCapability {
   ): Promise<unknown>;
 }
 
+/** The run a `meta/run-workflow` call is made from (its step's run). */
+export interface RunCaller {
+  workflow: string;
+  runId: string;
+  job?: string;
+}
+
+/** What `runWorkflow` hands back for a run that outlived the caller's wait
+ *  (`AuthoringDeps.detach`): it goes on, and the caller is woken when it
+ *  ends. */
+export interface DetachedRun {
+  runId: string;
+  workflow: string;
+  status: "running";
+  detached: true;
+  hint: string;
+}
+
+/** What `meta/run-workflow` says about a run it handed back running. */
+export const DETACHED_HINT =
+  "The run is still going and goes on without you. End your turn now: say what you launched and what you will check when it ends. When it ends, strut starts your next turn with its outcome — do not wait for it or poll meta/get-run in a loop.";
+
 export interface AuthoringDeps extends StepPublishDeps {
   store: RunStore;
   /** Local directory for step cassettes (`runStep` record/replay). Optional:
@@ -585,6 +607,15 @@ export interface AuthoringDeps extends StepPublishDeps {
     runId: string,
     body: { from?: string; version?: string },
   ) => Promise<{ ok: boolean; status?: number; [key: string]: unknown }>;
+  /** Long runs (src/wake.ts): for a caller strut can wake when its run ends
+   *  — a builder job's turn — `after` is how long `runWorkflow` waits
+   *  before handing back `DetachedRun`; undefined = wait it out. `detached`
+   *  records the run as waited on, `ended` hands its end over. */
+  detach?: {
+    after(caller: RunCaller): Promise<number | undefined>;
+    detached(caller: RunCaller, run: { workflow: string; runId: string }): Promise<void>;
+    ended(caller: RunCaller, workflow: string, result: RunResult): void;
+  };
 }
 
 export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapability {
@@ -869,8 +900,13 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
       } catch (err) {
         return { error: err instanceof Error ? err.message : String(err) };
       }
+      // A caller strut can wake (a builder job's turn) waits only so long:
+      // past it the run goes on and the caller's turn ends (src/wake.ts).
+      const caller = opts?.caller;
+      const waitMs = caller && deps.detach ? await deps.detach.after(caller).catch(() => undefined) : undefined;
+      let detached = false;
       try {
-        const result = await runWorkflow(flow, coerceJsonArg(input) ?? {}, registry, {
+        const running = runWorkflow(flow, coerceJsonArg(input) ?? {}, registry, {
           runId,
           store,
           workspace,
@@ -885,6 +921,25 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
           ...(opts?.job ? { job: opts.job } : {}),
           ...(opts?.mcp?.length ? { mcp: opts.mcp } : {}),
         });
+        if (waitMs !== undefined && caller && deps.detach) {
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          const late = new Promise<"running">((res) => (timer = setTimeout(() => res("running"), waitMs)));
+          const first = await Promise.race([running, late]);
+          clearTimeout(timer);
+          if (first === "running") {
+            detached = true;
+            const child = { workflow: flow.name, runId };
+            await deps.detach.detached(caller, child);
+            // Off the live list first: the job's wake waits for its runs.
+            const ended = (r: RunResult) => {
+              tracked?.untrack();
+              deps.detach!.ended(caller, flow.name, r);
+            };
+            void running.then(ended, (err: unknown) => ended({ runId, status: "error", error: { message: err instanceof Error ? err.message : String(err) } }));
+            return { ...child, status: "running", detached: true, hint: DETACHED_HINT } satisfies DetachedRun;
+          }
+        }
+        const result = await running;
         // The graph nodes the child run touched, off its log — what its
         // steps and agents' tool calls reported (`step.end.nodes`), so the
         // launching step reports them too and a reader of THIS run (the run
@@ -906,7 +961,7 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
         }
         return withUsage(withAccessedNodes(result, [...touched.values()]), spent);
       } finally {
-        tracked?.untrack();
+        if (!detached) tracked?.untrack();
       }
     },
 
