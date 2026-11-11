@@ -4,7 +4,7 @@
 // { input, cacheRead, cacheWrite, output } token count, shared by the LLM
 // steps (the core `agent` step, plus the lab's eval/reflect + gitsee steps).
 //
-// PRICING IS NOT HERE. aieo owns the price table and the per-provider output
+// PRICING IS NOT HERE (an unpriced model costs 0, see aieo's modelPriceSource). aieo owns the price table and the per-provider output
 // cap (`getTokenPricing` / `computeSessionCost` in its provider.ts,
 // `maxOutputTokensFor` in its resolve.ts); `usageForCost` below is the shape
 // adapter into `computeSessionCost`. aieo stays lazy-loaded (it pulls every
@@ -17,12 +17,15 @@ export interface TokenUsage {
   inputTokens: number; // non-cached input (billed at full input price)
   cacheReadTokens: number;
   cacheWriteTokens: number;
+  /** The part of cacheWriteTokens written with the 1-hour TTL (a SUBSET, priced
+   *  at the 1h rate). Absent / 0: all writes are 5-minute ones. */
+  cacheWrite1hTokens?: number;
   outputTokens: number;
   totalTokens: number;
 }
 
 export function emptyUsage(): TokenUsage {
-  return { inputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 0, totalTokens: 0 };
+  return { inputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, cacheWrite1hTokens: 0, outputTokens: 0, totalTokens: 0 };
 }
 
 const num = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) ? v : 0);
@@ -45,6 +48,8 @@ export function usageFromResult(usage: unknown, providerMetadata?: unknown): Tok
 
   let cacheReadTokens = num(details.cacheReadTokens ?? u.cachedInputTokens);
   let cacheWriteTokens = num(details.cacheWriteTokens);
+  // Anthropic's split of the writes by TTL, when its usage carries one.
+  const cacheWrite1hTokens = rawCacheWrite1h(u.raw, providerMetadata);
   // Non-cached input: the detailed noCacheTokens when present, else the flat
   // total input minus what we already accounted as cache read/write.
   let inputTokens =
@@ -69,7 +74,7 @@ export function usageFromResult(usage: unknown, providerMetadata?: unknown): Tok
   const totalTokens =
     num(u.totalTokens) || inputTokens + cacheReadTokens + cacheWriteTokens + outputTokens;
 
-  return { inputTokens, cacheReadTokens, cacheWriteTokens, outputTokens, totalTokens };
+  return { inputTokens, cacheReadTokens, cacheWriteTokens, cacheWrite1hTokens: Math.min(cacheWrite1hTokens, cacheWriteTokens), outputTokens, totalTokens };
 }
 
 /** Sum per-step usage over a run's `steps` — the accurate way to total a run
@@ -131,12 +136,34 @@ export function rawCacheTokens(raw: unknown, providerMetadata?: unknown): { read
   };
 }
 
+// Anthropic's raw usage (also providerMetadata.anthropic.usage, the same
+// object) splits writes: cache_creation.{ephemeral_5m,ephemeral_1h}_input_tokens.
+// @ai-sdk/anthropic's schema is a looseObject, so the field survives in `raw`.
+const RAW_CACHE_WRITE_1H = ["cache_creation.ephemeral_1h_input_tokens", "anthropic.usage.cache_creation.ephemeral_1h_input_tokens"];
+const RAW_CACHE_WRITE_5M = ["cache_creation.ephemeral_5m_input_tokens", "anthropic.usage.cache_creation.ephemeral_5m_input_tokens"];
+
+/** The 1-hour cache-write tokens in a provider's raw usage / metadata (0: none). */
+export function rawCacheWrite1h(raw: unknown, providerMetadata?: unknown): number {
+  return firstPositive(raw, RAW_CACHE_WRITE_1H) || firstPositive(providerMetadata, RAW_CACHE_WRITE_1H.slice(1));
+}
+
+/** Whether the raw usage carries a 5m/1h breakdown of the cache writes at all. */
+export function hasCacheWriteSplit(raw: unknown, providerMetadata?: unknown): boolean {
+  const has = (o: unknown, p: string) => {
+    let v: any = o;
+    for (const k of p.split(".")) v = v && typeof v === "object" ? v[k] : undefined;
+    return typeof v === "number";
+  };
+  return [...RAW_CACHE_WRITE_1H, ...RAW_CACHE_WRITE_5M].some((p) => has(raw, p) || has(providerMetadata, p));
+}
+
 /** Sum two normalized usages (e.g. across multiple LLM calls in one run). */
 export function addUsage(a: TokenUsage, b: TokenUsage): TokenUsage {
   return {
     inputTokens: a.inputTokens + b.inputTokens,
     cacheReadTokens: a.cacheReadTokens + b.cacheReadTokens,
     cacheWriteTokens: a.cacheWriteTokens + b.cacheWriteTokens,
+    cacheWrite1hTokens: (a.cacheWrite1hTokens ?? 0) + (b.cacheWrite1hTokens ?? 0),
     outputTokens: a.outputTokens + b.outputTokens,
     totalTokens: a.totalTokens + b.totalTokens,
   };
@@ -151,6 +178,7 @@ export function coerceUsage(usage: unknown): TokenUsage {
     inputTokens: num(u.inputTokens),
     cacheReadTokens: num(u.cacheReadTokens),
     cacheWriteTokens: num(u.cacheWriteTokens),
+    cacheWrite1hTokens: num(u.cacheWrite1hTokens),
     outputTokens: num(u.outputTokens),
     totalTokens: num(u.totalTokens) || num(u.inputTokens) + num(u.cacheReadTokens) + num(u.cacheWriteTokens) + num(u.outputTokens),
   };
@@ -177,6 +205,7 @@ export function usageForCost(u: TokenUsage): TokenUsageForCost {
     input: u.inputTokens,
     cache_read: u.cacheReadTokens,
     cache_write: u.cacheWriteTokens,
+    ...(u.cacheWrite1hTokens ? { cache_write_1h: u.cacheWrite1hTokens } : {}),
     output: u.outputTokens,
   };
 }

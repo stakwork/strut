@@ -78,8 +78,9 @@ describe("llm step: cost", () => {
 
     next = stub();
     const priced = await llm.run({ prompt: "ping", model: "openrouter/acme/paid-1" }, ctx);
-    // No catalog loaded, an unknown OpenRouter model: OpenRouter's flat rate,
-    // $0.60 in and $3 out per million.
-    assert.equal(priced.cost.toFixed(7), "0.0006300");
+    // No catalog loaded, an unknown OpenRouter model: unpriced, 0 and flagged.
+    assert.equal(priced.cost, 0);
+    assert.equal(priced.costUnpriced, true);
+    assert.equal(reported.costUnpriced, undefined, "a reported cost is never unpriced");
   });
 });

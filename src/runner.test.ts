@@ -774,7 +774,7 @@ describe("step output cap", () => {
 // ── Usage marker (withUsage → step.end.modelCalls / usage / cost) ──────────
 
 describe("step.end carries a step's spend; the summary sums it once", () => {
-  const usage = { inputTokens: 10, cacheReadTokens: 100, cacheWriteTokens: 0, outputTokens: 5, totalTokens: 115 };
+  const usage = { inputTokens: 10, cacheReadTokens: 100, cacheWriteTokens: 0, cacheWrite1hTokens: 0, outputTokens: 5, totalTokens: 115 };
   /** A model-calling step: a slim output marked with what its calls spent. */
   const spender = defineStep({
     type: "spender",

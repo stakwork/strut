@@ -600,29 +600,91 @@ export interface TokenPricing {
   inputTokenPrice: number;
   outputTokenPrice: number;
   cacheReadPrice?: number;
+  /** 5-minute cache writes. */
   cacheWritePrice?: number;
+  /** 1-hour cache writes, from the datasheet's `cache_creation_input_token_cost_above_1hr`.
+   *  Absent: priced at cacheWritePrice (no multiplier is invented here; a
+   *  missing 1h rate belongs in the datasheet). */
+  cacheWrite1hPrice?: number;
+  /** The datasheet's long-prompt tier: when ONE call's prompt (input + cache
+   *  read + cache write tokens) is over `aboveTokens`, ALL its tokens are
+   *  priced at `pricing`. */
+  longContext?: { aboveTokens: number; pricing: TokenPricing };
 }
 
 export interface TokenUsageForCost {
   input: number;
   cache_read: number;
+  /** All cache writes, the 1-hour ones included. */
   cache_write: number;
+  /** The part of cache_write written with the 1-hour TTL (default 0). */
+  cache_write_1h?: number;
   output: number;
 }
 
+/** Providers whose models are priced by the datasheet only: a model it does
+ *  not hold is UNPRICED (0), never another model's rate. */
+const DIRECT_PROVIDERS: ReadonlySet<string> = new Set(["anthropic", "openai", "google", "xai", "openrouter"]);
+const warnedUnpriced = new Set<string>();
+let warnedNoCatalog = false;
+
+/** Where a model's price comes from:
+ *  - "table": the Maple / Numes / Token Factory tables in this file;
+ *  - "catalog": bifrost's datasheet (the only source of every other price);
+ *  - "provider-default": the provider's flat rate (no model named, or a
+ *    gateway provider's deliberate ceiling for an unlisted model);
+ *  - "unpriced": a direct provider's model the datasheet does not hold (or
+ *    no datasheet is loaded): its cost is reported as 0. */
+export function modelPriceSource(provider: Provider | string, modelId?: string): "table" | "catalog" | "provider-default" | "unpriced" {
+  if (!modelId) return "provider-default";
+  const p = provider as Provider;
+  if (p === "maple" && MAPLE_MODELS[modelId]) return "table";
+  if (p === "numes" && NUMES_MODELS[modelId]) return "table";
+  if (p === "tokenfactory" && TOKENFACTORY_MODELS[modelId]) return "table";
+  if (p !== "maple" && p !== "tokenfactory" && getCatalogEntry(p, modelId)?.pricing) return "catalog";
+  return DIRECT_PROVIDERS.has(provider) ? "unpriced" : "provider-default";
+}
+
 /** A provider aieo does not know (one only a gateway has) has no rate here:
- *  0, and the gateway bills it. */
+ *  0, and the gateway bills it. A direct provider's model that the datasheet
+ *  does not price is UNPRICED: 0, with one warning (see modelPriceSource),
+ *  never another model's rate. */
 export function computeSessionCost(provider: Provider | string, usage: TokenUsageForCost, modelId?: string, actualCost?: number): number {
   if (typeof actualCost === "number" && actualCost >= 0) return actualCost;
-  // The model's own price (Maple's, Numes' or Token Factory's table, then the datasheet), else
-  // the provider's flat rate; a provider aieo does not know has neither.
-  const pricing = (modelId ? getModelPrice(provider as Provider, modelId) : undefined) ?? TOKEN_PRICING[provider as Provider];
+  if (modelId && !catalog && !warnedNoCatalog && CATALOG_PROVIDER[provider as Provider]) {
+    warnedNoCatalog = true;
+    console.error(
+      `[aieo] the model catalog (bifrost's datasheet) is not loaded: costs of models priced by it are reported as 0 (unpriced). A host that embeds createStrut gets it started by createStrut; STRUT_MODEL_CATALOG=off turns it off.`,
+    );
+  }
+  let pricing = modelId ? getModelPrice(provider as Provider, modelId) : undefined;
+  if (!pricing && modelId && DIRECT_PROVIDERS.has(provider)) {
+    const key = `${provider}/${modelId}`;
+    if (!warnedUnpriced.has(key)) {
+      warnedUnpriced.add(key);
+      console.warn(`[aieo] no price for ${key}: cost reported as 0 (unpriced)`);
+    }
+    return 0;
+  }
+  // No model named: the provider's flat rate. A gateway provider (maple,
+  // numes, tokenfactory) with an unlisted model: its TOKEN_PRICING is a
+  // deliberate "dearest listed rate" ceiling, so a cost is never
+  // under-reported. A provider aieo does not know has neither.
+  pricing ??= TOKEN_PRICING[provider as Provider];
   if (!pricing) return 0;
-  const inputCost = (usage.input / 1_000_000) * pricing.inputTokenPrice;
-  const cacheReadCost = (usage.cache_read / 1_000_000) * (pricing.cacheReadPrice ?? pricing.inputTokenPrice);
-  const cacheWriteCost = (usage.cache_write / 1_000_000) * (pricing.cacheWritePrice ?? pricing.inputTokenPrice);
-  const outputCost = (usage.output / 1_000_000) * pricing.outputTokenPrice;
-  return inputCost + cacheReadCost + cacheWriteCost + outputCost;
+  const cacheWrite = Math.max(0, usage.cache_write);
+  const prompt = usage.input + usage.cache_read + cacheWrite;
+  if (pricing.longContext && prompt > pricing.longContext.aboveTokens) pricing = pricing.longContext.pricing;
+  const write1h = Math.min(Math.max(0, usage.cache_write_1h ?? 0), cacheWrite);
+  const write5mPrice = pricing.cacheWritePrice ?? pricing.inputTokenPrice;
+  const write1hPrice = pricing.cacheWrite1hPrice ?? write5mPrice;
+  return (
+    (usage.input / 1_000_000) * pricing.inputTokenPrice +
+    (usage.cache_read / 1_000_000) * (pricing.cacheReadPrice ?? pricing.inputTokenPrice) +
+    ((cacheWrite - write1h) / 1_000_000) * write5mPrice +
+    (write1h / 1_000_000) * write1hPrice +
+    (usage.output / 1_000_000) * pricing.outputTokenPrice
+  );
 }
 
 export function getProviderForModel(modelName?: ModelName | string): Provider {
@@ -697,6 +759,7 @@ export function getProviderForModel(modelName?: ModelName | string): Provider {
         const m = modelName.toLowerCase();
         if (m.startsWith("gpt-")) return "openai";
         if (m.startsWith("gemini-")) return "google";
+        if (m.startsWith("claude-")) return "anthropic";
       }
       return "anthropic";
   }
@@ -1398,6 +1461,10 @@ export function getContextLimit(modelId: string, provider: Provider): number {
   );
 }
 
+// A provider's flat rate: used ONLY when no model is named. For a direct
+// provider it is not a fallback for an unknown model (that is unpriced, see
+// computeSessionCost); the maple / numes / tokenfactory entries are the
+// deliberate "dearest listed rate" ceiling for an unlisted gateway model.
 const TOKEN_PRICING: Record<Provider, TokenPricing> = {
   anthropic: {
     inputTokenPrice: 3.0,
@@ -1458,8 +1525,9 @@ export function getTokenPricing(provider: Provider): TokenPricing {
 // keyed by model as bifrost names it ("claude-sonnet-5-5",
 // "gemini/gemini-3.8-flash", "openrouter/moonshotai/kimi-k3"), each with its
 // per-token prices and input and output limits. `loadModelCatalog` loads it;
-// until then, and for a model it does not hold, the tables in this file
-// answer. Maple's and Numes' own tables answer before it (the gateway's
+// until then, and for a model it does not hold, a direct provider's model is
+// UNPRICED (computeSessionCost: 0, flagged); there is no built-in price list.
+// Maple's and Numes' own tables answer before it (the gateway's
 // runtime price rows do the same there): the key rule's last-segment form
 // would otherwise price a free Numes model, or an unlisted Maple one, at
 // another vendor's rate.
@@ -1474,6 +1542,21 @@ export interface CatalogEntry {
 
 let catalog: Map<string, CatalogEntry> | undefined;
 let catalogTimer: ReturnType<typeof setInterval> | undefined;
+let catalogSource: "fetch" | "cache" | "none" = "none";
+let catalogError: string | undefined;
+let catalogAt: string | undefined;
+
+/** Whether the datasheet is loaded, how many models it holds, where this copy
+ *  came from, and the last load's error. Served beside the model list. */
+export function modelCatalogStatus(): { loaded: boolean; models: number; source: "fetch" | "cache" | "none"; lastError?: string; at?: string } {
+  return {
+    loaded: !!catalog,
+    models: catalog?.size ?? 0,
+    source: catalog ? catalogSource : "none",
+    ...(catalogError ? { lastError: catalogError } : {}),
+    ...(catalogAt ? { at: catalogAt } : {}),
+  };
+}
 
 /** bifrost's provider name for each of aieo's. Maple and Token Factory have
  *  none: their models are priced by their own tables only. A Numes model is looked up as the OpenRouter
@@ -1494,6 +1577,34 @@ const perMillion = (v: unknown): number | undefined =>
 const positive = (v: unknown): number | undefined =>
   typeof v === "number" && Number.isFinite(v) && v > 0 ? v : undefined;
 
+// The sheet's long-prompt tier: the base `<field>_above_<N>k_tokens` rows only
+// (a `_batches`, `_priority`, `_flex` or `_fast` variant carries a further
+// suffix and does not match). Several thresholds: the lowest.
+const TIER_FIELDS = {
+  input_cost_per_token: "inputTokenPrice",
+  output_cost_per_token: "outputTokenPrice",
+  cache_read_input_token_cost: "cacheReadPrice",
+  cache_creation_input_token_cost: "cacheWritePrice",
+  cache_creation_input_token_cost_above_1hr: "cacheWrite1hPrice",
+} as const;
+const TIER_KEY = /^(.+)_above_(\d+)k_tokens$/;
+
+function longContextTier(row: Record<string, unknown>, base: TokenPricing): TokenPricing["longContext"] | undefined {
+  const found: { field: (typeof TIER_FIELDS)[keyof typeof TIER_FIELDS]; k: number; price: number }[] = [];
+  for (const [key, value] of Object.entries(row)) {
+    const m = TIER_KEY.exec(key);
+    const field = m ? (TIER_FIELDS as Record<string, (typeof TIER_FIELDS)[keyof typeof TIER_FIELDS]>)[m[1]!] : undefined;
+    const price = perMillion(value);
+    if (m && field && price !== undefined) found.push({ field, k: Number(m[2]), price });
+  }
+  if (!found.length) return undefined;
+  const k = Math.min(...found.map((f) => f.k));
+  const pricing: TokenPricing = { ...base };
+  delete pricing.longContext;
+  for (const f of found) if (f.k === k) pricing[f.field] = f.price;
+  return { aboveTokens: k * 1000, pricing };
+}
+
 /** The datasheet's JSON → entries. Throws when nothing in it is priced. */
 export function parseModelCatalog(raw: string): Map<string, CatalogEntry> {
   const sheet = JSON.parse(raw) as Record<string, Record<string, unknown>>;
@@ -1507,12 +1618,16 @@ export function parseModelCatalog(raw: string): Map<string, CatalogEntry> {
     if (input !== undefined && output !== undefined) {
       const cacheRead = perMillion(row.cache_read_input_token_cost);
       const cacheWrite = perMillion(row.cache_creation_input_token_cost);
+      const cacheWrite1h = perMillion(row.cache_creation_input_token_cost_above_1hr);
       entry.pricing = {
         inputTokenPrice: input,
         outputTokenPrice: output,
         ...(cacheRead ? { cacheReadPrice: cacheRead } : {}),
         ...(cacheWrite ? { cacheWritePrice: cacheWrite } : {}),
+        ...(cacheWrite1h ? { cacheWrite1hPrice: cacheWrite1h } : {}),
       };
+      const tier = longContextTier(row, entry.pricing);
+      if (tier) entry.pricing.longContext = tier;
       priced++;
     }
     const maxIn = positive(row.max_input_tokens);
@@ -1529,16 +1644,39 @@ export function parseModelCatalog(raw: string): Map<string, CatalogEntry> {
  *  sheet already, and tests, set it here; `loadModelCatalog` does it too. */
 export function setModelCatalog(next: Map<string, CatalogEntry> | undefined): void {
   catalog = next;
+  if (!next) {
+    catalogSource = "none";
+    catalogError = undefined;
+    catalogAt = undefined;
+  } else if (catalogSource === "none") {
+    catalogSource = "cache";
+  }
 }
 
 /** The gateway's key rule (`pricing.Keys`): the model as given, then
  *  "<provider>/<model>", then the name after its last "/". */
-function catalogKeys(provider: string, model: string): string[] {
+function keysOf(provider: string, model: string): string[] {
   const keys = [model];
   if (!model.startsWith(`${provider}/`)) keys.push(`${provider}/${model}`);
   const i = model.lastIndexOf("/");
   if (i >= 0 && i + 1 < model.length) keys.push(model.slice(i + 1));
   return keys;
+}
+
+/** A model id as the sheet tends to spell it: no leading "<provider>/", dots
+ *  between version digits as dashes ("claude-opus-5.5" → "claude-opus-5-5"). */
+export function normalizeModelId(provider: string, model: string): string {
+  const bare = model.startsWith(`${provider}/`) ? model.slice(provider.length + 1) : model;
+  return bare.replace(/(\d)\.(?=\d)/g, "$1-").replace(/@(\d{8})$/, "-$1");
+}
+
+/** The keys to try, in order: the gateway's rule on the id as given, then on
+ *  its normalised form, then on that without a trailing -YYYYMMDD / @YYYYMMDD
+ *  date (only after the exact dated id has been tried: the sheet holds some). */
+function catalogKeys(provider: string, model: string): string[] {
+  const normalized = normalizeModelId(provider, model);
+  const undated = normalized.replace(/[-@]\d{8}$/, "");
+  return [...new Set([...keysOf(provider, model), ...keysOf(provider, normalized), ...keysOf(provider, undated)])];
 }
 
 /** The datasheet's entry for a model: undefined when no catalog is loaded,
@@ -1554,8 +1692,8 @@ export function getCatalogEntry(provider: Provider, modelId: string): CatalogEnt
 }
 
 /** A model's own price per million tokens: Maple's, Numes' or Token Factory's table, then the
- *  datasheet. Undefined when neither knows it — never the provider's flat
- *  rate, which `computeSessionCost` falls back to. */
+ *  datasheet (the only source for every other provider). Undefined when
+ *  neither knows it — never the provider's flat rate. */
 export function getModelPrice(provider: Provider, modelId: string): TokenPricing | undefined {
   if (provider === "maple") return MAPLE_MODELS[modelId]?.pricing;
   if (provider === "numes") return NUMES_MODELS[modelId]?.pricing ?? getCatalogEntry(provider, modelId)?.pricing;
@@ -1591,6 +1729,8 @@ export async function loadModelCatalog(
     try {
       catalog = parseModelCatalog(await readFile(opts.cachePath, "utf8"));
       source = "cache";
+      catalogSource = "cache";
+      catalogAt = new Date().toISOString();
     } catch (err: any) {
       if (err?.code !== "ENOENT") console.warn(`[aieo] model catalog at ${opts.cachePath} unreadable (${err?.message ?? err}); waiting for a fetch`);
     }
@@ -1601,6 +1741,9 @@ export async function loadModelCatalog(
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const raw = await res.text();
       catalog = parseModelCatalog(raw);
+      catalogSource = "fetch";
+      catalogError = undefined;
+      catalogAt = new Date().toISOString();
       if (opts.cachePath) {
         const tmp = `${opts.cachePath}.tmp`;
         await mkdir(dirname(opts.cachePath), { recursive: true });
@@ -1609,11 +1752,17 @@ export async function loadModelCatalog(
       }
       return true;
     } catch (err: any) {
+      catalogError = `${url}: ${err?.message ?? err}`;
       console.warn(`[aieo] model catalog fetch from ${url} failed (${err?.message ?? err}); ${catalog ? "keeping the last good one" : "using aieo's own tables"}`);
       return false;
     }
   };
   if (await fetchOnce()) source = "fetch";
+  if (!catalog) {
+    console.error(
+      `[aieo] the model catalog is NOT loaded: fetching ${url} failed (${catalogError ?? "unknown error"}) and there is no saved copy. Costs of models priced by it will be reported as 0 (unpriced) until a fetch succeeds.`,
+    );
+  }
   const every = opts.refreshMs ?? 24 * 60 * 60 * 1000;
   if (catalogTimer) clearInterval(catalogTimer);
   catalogTimer = undefined;

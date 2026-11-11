@@ -30,7 +30,7 @@ import type { InputBlock } from "./input-block.js";
 import { buildRegistry, resolveStep } from "./steps/registry.js";
 import { parseStepRef } from "./step-ref.js";
 import { zodToFields } from "./ai/schemaHelpers.js";
-import { resolveModel, listModelOptions, defaultModel, createWebTools, type LlmAuth } from "./llm.js";
+import { resolveModel, listModelOptions, defaultModel, createWebTools, startModelCatalog, type LlmAuth } from "./llm.js";
 import type { StepSources } from "./steps/registry.js";
 import { runWorkflow, settleUnfinishedRun, summaryFromLog } from "./runner.js";
 import { RunController, runLineage } from "./run-control.js";
@@ -240,6 +240,13 @@ export interface StrutOptions<TServices = unknown> {
    *  workspace can point this at any scratch volume — losing it loses
    *  blobs and cassettes, never workspace records. */
   dataDir?: string;
+
+  /** Load bifrost's model datasheet (the one source of model prices, windows
+   *  and output caps; src/llm.ts `startModelCatalog`) for this strut's
+   *  `dataDir`: detached, never blocking the boot, once per process.
+   *  Default true; `STRUT_MODEL_CATALOG=off` (or `false` here) loads nothing,
+   *  and without it every model priced by the datasheet costs 0 (unpriced). */
+  modelCatalog?: boolean;
 
   /** Step registry. If supplied, used as-is and `rebuildRegistry` becomes
    *  a no-op (the consumer owns step composition). If omitted, strut
@@ -990,6 +997,13 @@ export async function createStrut<TServices = unknown>(
   const dataDir =
     opts.dataDir ??
     (fileBacked ? baseWorkspace.path : (bootEnv()["STRUT_WORKSPACE"] ?? "./workspace"));
+  // Prices come from bifrost's datasheet and nowhere else, so every host that
+  // embeds strut needs it loaded, not only the default server (server.ts).
+  // Detached: a slow or failed fetch never holds the boot. A node:test run
+  // fetches nothing unless STRUT_MODEL_CATALOG says where from.
+  if (opts.modelCatalog !== false && (!process.env["NODE_TEST_CONTEXT"] || bootEnv()["STRUT_MODEL_CATALOG"])) {
+    void startModelCatalog(dataDir).catch(() => {});
+  }
   // The HISTORY (src/history.ts, plans/concept-history.md): the whole
   // workspace committed to `<dataDir>/history.git` each time strut hears a
   // write. The store everything below publishes through is watched, so a

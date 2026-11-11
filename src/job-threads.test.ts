@@ -14,7 +14,7 @@ let tick = 0;
 const ts = () => new Date(Date.UTC(2026, 9, 12, 16, 0, tick++)).toISOString();
 const ev = (runId: string, type: RunEvent["type"], path: string, extra: Partial<RunEvent> = {}): RunEvent =>
   ({ ts: ts(), runId, path, type, ...extra }) as RunEvent;
-const usage = (out: number) => ({ inputTokens: 10, cacheReadTokens: 1000, cacheWriteTokens: 100, outputTokens: out, totalTokens: 1110 + out });
+const usage = (out: number) => ({ inputTokens: 10, cacheReadTokens: 1000, cacheWriteTokens: 100, cacheWrite1hTokens: 0, outputTokens: out, totalTokens: 1110 + out });
 const summary = (runId: string, workflow: string, status: RunSummary["status"], output?: unknown): RunSummary =>
   ({ runId, workflow, status, startedAt: ts(), finishedAt: ts(), durationMs: 1000, output }) as RunSummary;
 

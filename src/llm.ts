@@ -33,13 +33,27 @@ export function loadAieo(): Promise<typeof import("./aieo/index.js")> {
  *  prices every call from, with each model's price, context window and
  *  output cap (aieo `loadModelCatalog`). Kept at
  *  `<dataDir>/models/datasheet.json`, read at once and fetched again every
- *  24 h; a fetch that fails keeps the last good copy, and without any, aieo's
- *  own tables answer. `STRUT_MODEL_CATALOG`: `off` loads nothing, an http(s)
+ *  24 h; a fetch that fails keeps the last good copy, and without any, the models it
+ *  prices are reported as unpriced (aieo has no built-in prices). `STRUT_MODEL_CATALOG`: `off` loads nothing, an http(s)
  *  URL is fetched instead of bifrost's. The default server calls this at
- *  boot (server.ts); a host that embeds createStrut calls it itself. Never
+ *  boot (server.ts) and createStrut itself (once per process). Never
  *  throws, and nothing waits on it. */
-export async function startModelCatalog(dataDir: string): Promise<void> {
+const startedCatalogs = new Map<string, Promise<void>>();
+
+export function startModelCatalog(dataDir: string): Promise<void> {
   const setting = bootEnv()["STRUT_MODEL_CATALOG"]?.trim();
+  // Idempotent: a second call for the same data dir and source (server.ts and
+  // createStrut both start it) is the first call's promise, not a second
+  // fetch and refresh timer.
+  const key = `${dataDir}\0${setting ?? ""}`;
+  const had = startedCatalogs.get(key);
+  if (had) return had;
+  const started = startOnce(dataDir, setting);
+  startedCatalogs.set(key, started);
+  return started;
+}
+
+async function startOnce(dataDir: string, setting: string | undefined): Promise<void> {
   if (setting === "off") return;
   if (setting && !/^https?:\/\//.test(setting)) {
     console.warn(`[models] STRUT_MODEL_CATALOG is neither "off" nor an http(s) URL; the catalog is not loaded`);
@@ -51,7 +65,7 @@ export async function startModelCatalog(dataDir: string): Promise<void> {
     const got = await aieo.loadModelCatalog({ cachePath: join(dataDir, "models", "datasheet.json"), ...(setting ? { url: setting } : {}) });
     console.log(`[models] catalog: ${got.models} models (${got.source})`);
   } catch (err) {
-    console.warn(`[models] catalog not loaded: ${err instanceof Error ? err.message : String(err)}`);
+    console.error(`[models] catalog not loaded: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
@@ -615,6 +629,8 @@ export interface ModelCatalog {
   listed: boolean;
   /** provider → the env var / secret NAME that holds its key. */
   keyNames: Record<string, string>;
+  /** The datasheet the prices come from: loaded or not, from where, and the last error. */
+  catalog: ReturnType<typeof import("./aieo/index.js").modelCatalogStatus>;
 }
 
 /** Every model aieo knows — its aliases, and every Maple, Numes and Token Factory model
@@ -691,5 +707,5 @@ export async function listModelOptions(
   } catch {
     def = want ?? ""; // a misconfigured default still lists the catalog
   }
-  return { default: def, models: [...models.values()], listed: !!allowed, keyNames: { ...aieo.API_KEY_ENV } };
+  return { default: def, models: [...models.values()], listed: !!allowed, keyNames: { ...aieo.API_KEY_ENV }, catalog: aieo.modelCatalogStatus() };
 }

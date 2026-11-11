@@ -13,6 +13,7 @@ test("usageFromResult prefers the v6 inputTokenDetails breakdown", () => {
     inputTokens: 600,
     cacheReadTokens: 300,
     cacheWriteTokens: 100,
+    cacheWrite1hTokens: 0,
     outputTokens: 200,
     totalTokens: 1200,
   });
@@ -112,4 +113,18 @@ test("reportedCost: what Numes or OpenRouter reported for one call, else nothing
   assert.equal(reportedCost({ raw: { cost: -1 } }), undefined, "negative");
   assert.equal(reportedCost({ inputTokens: 3 }), undefined, "an Anthropic call reports none");
   assert.equal(reportedCost(undefined), undefined);
+});
+
+test("usageFromResult reads the 1h cache writes from anthropic's raw usage", () => {
+  const raw = { input_tokens: 10, cache_creation_input_tokens: 1000, cache_creation: { ephemeral_5m_input_tokens: 600, ephemeral_1h_input_tokens: 400 } };
+  const u = usageFromResult({ inputTokens: 1010, outputTokens: 5, inputTokenDetails: { noCacheTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 1000 }, raw });
+  assert.equal(u.cacheWriteTokens, 1000);
+  assert.equal(u.cacheWrite1hTokens, 400);
+  assert.equal(usageForCost(u).cache_write_1h, 400);
+  const viaMeta = usageFromResult({ outputTokens: 1, inputTokenDetails: { noCacheTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 50 } }, { anthropic: { usage: raw } });
+  assert.equal(viaMeta.cacheWrite1hTokens, 50, "capped to the writes");
+  const sum = addUsage(u, u);
+  assert.equal(sum.cacheWrite1hTokens, 800);
+  assert.equal(coerceUsage(sum).cacheWrite1hTokens, 800);
+  assert.equal(usageForCost(emptyUsage()).cache_write_1h, undefined);
 });

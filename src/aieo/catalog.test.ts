@@ -92,12 +92,11 @@ describe("the lookup: the gateway's key rule", () => {
 describe("where a cost comes from", () => {
   it("the provider's own figure, then the model's price, then the provider's flat rate", () => {
     const usage = { input: 1_000_000, cache_read: 1_000_000, cache_write: 1_000_000, output: 1_000_000 };
-    const flat = computeSessionCost("anthropic", usage, "claude-sonnet-5-5");
     setModelCatalog(parseModelCatalog(RAW));
     assert.equal(computeSessionCost("anthropic", usage, "claude-sonnet-5-5"), 2 + 0.1 + 2.5 + 10);
     assert.equal(computeSessionCost("anthropic", usage, "claude-sonnet-5-5", 0.25), 0.25, "reported wins");
-    assert.equal(computeSessionCost("anthropic", usage, "claude-unknown-9"), flat, "a model the sheet lacks: the flat rate");
-    assert.equal(computeSessionCost("anthropic", usage), flat, "no model named: the flat rate");
+    assert.equal(computeSessionCost("anthropic", usage, "claude-unknown-9"), 0, "a model the sheet lacks: unpriced, 0");
+    assert.equal(computeSessionCost("anthropic", usage), 3 + 0.3 + 3.75 + 15, "no model named: the flat rate");
   });
 });
 
