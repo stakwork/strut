@@ -1,10 +1,12 @@
 # Listing a public view with no package
 
-> **Status (2026-11-11): PROPOSED, for rulings. No code yet.** Written
-> after a read of strut `main` @e2c44d57, on `plans/index-listing.md`
-> (self-serve listing, BUILT 2026-11-10) and `plans/public-surface.md` §8
-> (live rows). A new file rather than a section of `index-listing.md`:
-> that plan is marked built, and this one is not.
+> **Status (2026-11-11): RULED, not built.** The owner took all seven
+> open questions as recommended (below), so every "proposed" in this plan
+> is decided. Written after a read of strut `main` @e2c44d57, on
+> `plans/index-listing.md` (self-serve listing, BUILT 2026-11-10) and
+> `plans/public-surface.md` §8 (live rows). A new file rather than a
+> section of `index-listing.md`: that plan is marked built, and this one
+> is not.
 
 ## Problem
 
@@ -63,9 +65,9 @@ per-key rule in `index-listing.md` holds as written, because the row is a
 keyed row. When the server later makes a package public, the row it
 already has starts listing it, with no second request.
 
-## Decided (proposed)
+## Decided
 
-| Question | Proposal |
+| Question | Decision |
 | --- | --- |
 | When the public key is minted with no package | At the first listing request, `POST /publisher/listings` (§1) |
 | What the server serves before a package is public | An empty public catalog sealed by the public key, written when the key is minted (§1) |
@@ -213,7 +215,7 @@ The row is a keyed row, so `index-listing.md` §2–§5 apply as written:
 
 **The operator's no-key live rows** (`PUT /index/live/:prefix`). Today a
 request for such a name waits as `live row`, and approving it lists the
-key and moves the live row to the base. Proposed refinement: when the
+key and moves the live row to the base. The refinement (ruled 2026-11-11): when the
 request's base is that live row's URL (both normalized), the server the
 operator already listed is the one asking. It is listed at once and logged
 as `claimed`, as if it were the row's own key editing its row. A request
@@ -374,25 +376,27 @@ Alternatives:
 - **A server the index cannot reach** (a desktop strut behind NAT) still
   cannot list, for a view as for packages.
 
-## Open questions
+## Rulings (2026-11-11)
+
+All seven taken as recommended.
 
 1. **Mint the public key at the first listing request, and seal an empty
-   public catalog with it.** *Recommended: yes.* Only a person's ask mints
+   public catalog with it.** *Ruled: yes.* Only a person's ask mints
    it, and the empty catalog is the proof step 6 already reads.
 2. **The key is proven by that catalog, read as today; the name counts as
    used if it holds a package OR the request asks `live: true` and
-   `/public` shows something.** *Recommended: yes.* It adds nothing new to
+   `/public` shows something.** *Ruled: yes.* It adds nothing new to
    prove and keeps the anti-squatting rule.
 3. **A view-only listing is an ordinary keyed row with an empty catalog,
-   plus the live row.** *Recommended: yes.* No card change, and every
+   plus the live row.** *Ruled: yes.* No card change, and every
    per-key rule holds.
 4. **An operator's no-key live row at the request's own base is claimed at
-   once.** *Recommended: yes.* The alternative is today's rule: wait as
+   once.** *Ruled: yes.* The alternative is today's rule: wait as
    `live row`.
 5. **`live: false` on a row with no package is refused, pointing to
-   `remove`.** *Recommended: yes.*
+   `remove`.** *Ruled: yes.*
 6. **The UI is a section, In the store, in the Public view tab, sharing the
    Packages tab's component, with the name asked inline (it also becomes
-   the package prefix).** *Recommended: yes.*
+   the package prefix).** *Ruled: yes.*
 7. **`/llms.txt` and the MCP tools learn live items as a separate work
-   item.** *Recommended: yes, after item 1.*
+   item.** *Ruled: yes, after item 1.*
