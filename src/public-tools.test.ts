@@ -22,7 +22,7 @@ import { MemoryLedgerStore } from "./payments/ledger-memory.js";
 import { usdToMicros } from "./payments/ledger.js";
 import type { ExchangeRate } from "./payments/rate.js";
 import { addCaveat, decodeIdentifier, macaroonFromBase64, macaroonToBase64 } from "./l402.js";
-import { createPublicTools, guardedHttp, inputTemplates, publicToolServices, PUBLIC_TOOL_RESULT_MAX_CHARS } from "./public-tools.js";
+import { createPublicTools, guardedHttp, inputTemplates, publicToolServices, withoutCredentials, PUBLIC_TOOL_RESULT_MAX_CHARS } from "./public-tools.js";
 import { PUBLIC_POST } from "./public-routes.js";
 import { PUBLIC_PATH as EXPORTED_PATH, PUBLIC_POST as EXPORTED_POST } from "./index.js";
 import type { GraphBackend } from "./graph/backend.js";
@@ -564,6 +564,27 @@ describe("the public tool service", () => {
     await assert.rejects(http("https://bounce.example/x"), /private or reserved/, "a redirect to the metadata service");
     assert.deepEqual(await http("https://api.example/cves?q=lodash").then((r) => r.body), { ok: true });
     assert.ok(!seen.some((u) => u.includes("169.254")), "nothing private was fetched");
+  });
+
+  it("a redirect to another origin carries no Authorization, Cookie or Proxy-Authorization; a same-origin one keeps them", async () => {
+    const got: Record<string, Record<string, string>> = {};
+    const fake = (async (url: string, init?: RequestInit) => {
+      got[url] = { ...((init?.headers ?? {}) as Record<string, string>) };
+      if (url === "https://vendor.example/a") return new Response(null, { status: 302, headers: { location: "https://elsewhere.example/b" } });
+      if (url === "https://vendor.example/same") return new Response(null, { status: 307, headers: { location: "/next" } });
+      if (url === "http://vendor.example/scheme") return new Response(null, { status: 302, headers: { location: "https://vendor.example/secure" } });
+      return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+    const http = guardedHttp({ fetch: fake, lookup: async () => ["93.184.216.34"] });
+    const headers = { Authorization: "Bearer OWNER_KEY", COOKIE: "s=1", "proxy-authorization": "Basic x", "x-api-version": "2" };
+    await http("https://vendor.example/a", { headers });
+    assert.equal(got["https://vendor.example/a"]!["Authorization"], "Bearer OWNER_KEY", "the first hop is the host the step named");
+    assert.deepEqual(got["https://elsewhere.example/b"], { "x-api-version": "2" }, "another origin: no credential, in any case");
+    await http("https://vendor.example/same", { headers });
+    assert.equal(got["https://vendor.example/next"]!["Authorization"], "Bearer OWNER_KEY", "the same origin keeps them");
+    await http("http://vendor.example/scheme", { headers });
+    assert.equal(got["https://vendor.example/secure"]!["Authorization"], undefined, "another scheme is another origin");
+    assert.deepEqual(withoutCredentials(new Headers({ Authorization: "a", Cookie: "c", Accept: "x" })), { accept: "x" });
   });
 
   it("a call past its time is stopped: 504, charged its cost and no base, its slot free", async () => {

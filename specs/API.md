@@ -3306,9 +3306,13 @@ held to the public view — with two differences:
   write through the schema refuse; the engine's handles are not on it.
 - **`http` reaches no private address**: `http(s)` only, never loopback,
   private, link-local (the cloud's metadata service), multicast or
-  reserved, nor a name that resolves to one, redirects checked hop by hop,
-  each request at most 30 s. A tool that fronts a service on the server's
-  own network is a workflow.
+  reserved, nor a name that resolves to one, redirects checked hop by hop
+  — and, as fetch does, a hop to another origin carries no
+  `Authorization`, `Cookie` or `Proxy-Authorization` — each request at
+  most 30 s. A tool that fronts a service on the server's own network is a
+  workflow. Known limit: the name is resolved for the check and again for
+  the fetch, so a host that answers the two differently (DNS rebinding) can
+  pass; pinning the checked address would close it.
 
 There is no shell, no artifacts, no jobs, no sessions, no peers, no MCP,
 no browser and no wallet: a step reaching for one fails. Not a sandbox: a
