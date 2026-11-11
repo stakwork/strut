@@ -3244,8 +3244,11 @@ anything:
    `strut_capabilities` without `step:<type>`), `403 token_over_max_charge`.
 7. **The caps**, `429` with `Retry-After`: the address's share of the calls
    in flight (5), the server's limit (20), then the item's `dailyCapUsd`
-   when it sets one — today's cost of its calls plus each call in flight at
-   its cap (`capUsd`, else the whole daily cap), as a run's. A free step
+   when it sets one, by a launch's rule (§17.4): today's cost of its calls
+   plus the cap of each call in flight; a call is admitted while what is
+   left of the day holds its full cap, never a sliver, and past that the
+   last of the day goes to one call alone. A call's cap is the item's
+   `capUsd`, else a tenth of its daily cap, so ten run at once. A free step
    needs no daily cap at the save: a runnable step cannot be one that
    spends.
 8. **The price**: as a launch's — no token, one past its end or replaced,
@@ -3258,9 +3261,9 @@ anything:
    stopped and answers `504 timeout` — never kept as a run, nothing in the
    run store, not verified, projected or sent to an events sink; the
    ledger's entry is its record. No actor; the host's
-   `createStrut({ publicRuns: { principal } })` as its principal; the
-   item's `capUsd` (or what is left of the day) as its cap, carried to the
-   Mothership as a run's is.
+   `createStrut({ publicRuns: { principal } })` as its principal; its cap
+   (step 7's, or what is left of the day for the day's last call) carried
+   to the Mothership as a run's is.
 10. **The charge**, by the rule: base + markup × what the call reported it
     cost (`withUsage`); a call that reports none, its base. A call that
     THREW, ran out of time, or whose result is over 5 MB as JSON is charged

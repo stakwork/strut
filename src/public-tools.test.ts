@@ -52,7 +52,7 @@ const tool = (type: string) =>
         if (cfg.cost) await ctx.emit({ ts: new Date().toISOString(), runId: ctx.runId, path: `${ctx.path}/001-api`, type: "step.end", stepType: "tool:api", cost: cfg.cost, modelCalls: 1, usage: {} } as never);
         throw new Error("the API said no");
       }
-      const out = { note: cfg.note, ...(cfg.big ? { blob: "x".repeat(PUBLIC_TOOL_RESULT_MAX_CHARS + 10) } : {}) };
+      const out = { note: cfg.note, ...(ctx.maxCostUsd !== undefined ? { cap: ctx.maxCostUsd } : {}), ...(cfg.big ? { blob: "x".repeat(PUBLIC_TOOL_RESULT_MAX_CHARS + 10) } : {}) };
       return withUsage(out, cfg.cost ? { modelCalls: 1, usage: {}, cost: cfg.cost } : undefined);
     },
   });
@@ -173,6 +173,31 @@ describe("public tools", () => {
     assert.deepEqual({ calls: day.calls, failed: day.failed, earned: day.earned, cost: day.cost }, { calls: 2, failed: 0, earned: 0, cost: usdToMicros(0.3) });
     assert.equal(store.writes, 0, "nothing reaches the run store");
     assert.equal(store.events.size + store.summaries.size, 0);
+  });
+
+  it("with a daily cap and no per-call cap, ten calls run at once — each may spend a tenth of the day's cap", async () => {
+    const { strut, call, ok } = await boot([{ kind: "step", name: "tool/free", dailyCapUsd: 5 }]);
+    let release!: () => void;
+    gate = new Promise((r) => (release = r));
+    let settled = 0;
+    const pending = Array.from({ length: 12 }, () => call("tool/free", { config: { wait: true, cost: 0.25 } }).finally(() => settled++));
+    // The two refused answer at once; the ten admitted wait on the gate.
+    const deadline = Date.now() + 10_000;
+    while (settled < 2) {
+      if (Date.now() > deadline) throw new Error("no call was refused");
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    release();
+    const answers = await Promise.all(pending);
+    const done = answers.filter((r) => r.status === 200);
+    assert.equal(done.length, 10, answers.map((r) => r.status).join(","));
+    const refused = answers.filter((r) => r.status === 429);
+    assert.equal(refused.length, 2);
+    assert.match(((await refused[0]!.json()) as { error: string }).error, /set aside for calls in flight/);
+    for (const r of done) assert.equal((await r.json()).output.cap, 0.5, "each call's cap is a tenth of the daily cap");
+    assert.equal((await (await strut.ledger()).today("step:tool/free")).cost, usdToMicros(2.5));
+    // $2.50 spent, nothing in flight: the next call runs, with a whole cap.
+    assert.equal((await ok(await call("tool/free", { config: {} }))).output["cap"], 0.5);
   });
 
   it("the pricing rule: base alone, markup alone, both; a call that reports no cost is charged its base", async () => {
@@ -407,17 +432,17 @@ describe("the public tool service", () => {
     assert.deepEqual(await tools.reconcile(), [], "nothing twice");
   });
 
-  it("a free step's daily cap: a call in flight counts at its cap, a spent day is 429 until midnight", async () => {
+  it("a free step's daily cap: a call in flight counts at its cap, never a sliver; the day's last call goes alone; a spent day is 429 until midnight", async () => {
     const ledger = new MemoryLedgerStore();
     let release!: () => void;
-    const hold = new Promise<void>((r) => (release = r));
+    let hold = new Promise<void>((r) => (release = r));
     const spend = defineStep({
       type: "tool/spend",
       input: z.object({ cost: z.number(), wait: z.boolean().optional() }),
       output: z.any(),
-      run: async (cfg) => {
+      run: async (cfg, ctx: StepContext<unknown>) => {
         if (cfg.wait) await hold;
-        return withUsage({ ok: true }, { modelCalls: 1, usage: {}, cost: cfg.cost });
+        return withUsage({ cap: ctx.maxCostUsd }, { modelCalls: 1, usage: {}, cost: cfg.cost });
       },
     });
     const registry = await createRegistry([spend]);
@@ -427,19 +452,26 @@ describe("the public tool service", () => {
       registry: () => registry,
       services: () => ({}),
     });
-    // Two calls in flight: the first at its cap (0.60), the second at what
-    // is left (0.40). A third finds the whole day set aside.
+    const cap = (a: Awaited<ReturnType<typeof tools.call>>) => (a.body as { output: { cap: number } }).output.cap;
+    // One call in flight at its cap (0.60): 0.40 is left, under a whole cap,
+    // so a second is refused rather than given a sliver.
     const first = tools.call({ type: "tool/spend", config: { cost: 0.2, wait: true }, address: "a" });
     while (tools.inFlight() < 1) await new Promise((r) => setTimeout(r, 5));
-    const second = tools.call({ type: "tool/spend", config: { cost: 0.1, wait: true }, address: "a" });
-    while (tools.inFlight() < 2) await new Promise((r) => setTimeout(r, 5));
-    const third = await tools.call({ type: "tool/spend", config: { cost: 0 }, address: "a" });
-    assert.equal(third.status, 429);
-    assert.match((third.body as { error: string }).error, /set aside for calls in flight/);
+    const second = await tools.call({ type: "tool/spend", config: { cost: 0 }, address: "b" });
+    assert.equal(second.status, 429);
+    assert.match((second.body as { error: string }).error, /set aside for calls in flight/);
     release();
-    assert.deepEqual((await Promise.all([first, second])).map((a) => a.status), [200, 200]);
-    // 0.30 spent: a call fits, then the day is spent.
-    assert.equal((await tools.call({ type: "tool/spend", config: { cost: 0.7 }, address: "a" })).status, 200);
+    assert.equal(cap(await first), 0.6);
+    // 0.20 spent: a whole cap fits.
+    const whole = await tools.call({ type: "tool/spend", config: { cost: 0.7 }, address: "a" });
+    assert.equal(cap(whole), 0.6);
+    // 0.90 spent: the last 0.10 of the day goes to one call alone.
+    hold = new Promise((r) => (release = r));
+    const last = tools.call({ type: "tool/spend", config: { cost: 0.1, wait: true }, address: "a" });
+    while (tools.inFlight() < 1) await new Promise((r) => setTimeout(r, 5));
+    assert.equal((await tools.call({ type: "tool/spend", config: { cost: 0 }, address: "b" })).status, 429, "not beside it");
+    release();
+    assert.equal(Math.round(cap(await last) * 100) / 100, 0.1);
     const spent = await tools.call({ type: "tool/spend", config: { cost: 0 }, address: "a" });
     assert.equal(spent.status, 429);
     assert.match((spent.body as { error: string }).error, /spent its daily cap/);

@@ -17,8 +17,11 @@
  * - a priced item's credit token (§4.3 steps 1 to 3): 401 a bad one, 403 one
  *   its holder narrowed away from this step or below its reserve;
  * - the caps: the address's share of calls in flight, the server's limit,
- *   and the item's `dailyCapUsd` when it sets one (today's cost plus each
- *   call in flight at its cap, as a run's, §7) — 429;
+ *   and the item's `dailyCapUsd` when it sets one, by a run's rule (§7,
+ *   src/public-runs.ts `dailyRoom`): today's cost plus each call in flight
+ *   at its cap; a call fits while what is left holds its whole cap
+ *   (`perRunCapUsd`: its `capUsd`, else a tenth of the daily cap), never a
+ *   sliver, and the day's last call goes alone — 429;
  * - the price: no token, or one short of the reserve, is a 402 (§4, carry-
  *   over as a launch's); a token's first use asks the wallet (503 when it
  *   cannot); the reserve is set aside under the call's id (`ledger.hold`);
@@ -54,13 +57,13 @@ import type { StepRegistry } from "./core.js";
 import type { LedgerStore, Micros, Price, ChargeInput } from "./payments/ledger.js";
 import { FREE, LedgerError, microsToUsd, priceOf, usdToMicros } from "./payments/ledger.js";
 import type { PublicRunnable, PublicSurfaceService } from "./public-surface.js";
-import { isPriced, runnableReserve, runnableSubject, stepRunnableProblem } from "./public-runnable.js";
+import { isPriced, perRunCapUsd, runnableReserve, runnableSubject, stepRunnableProblem } from "./public-runnable.js";
 import { tokenRefusal, type Presented, type VerifiedToken } from "./l402.js";
 import type { Challenge, Credit, CreditRefusal } from "./public-credit.js";
 import { runSingleStep } from "./run-step.js";
 import { RunController } from "./run-control.js";
 import { countUsage, generateRunId } from "./store.js";
-import { secondsToUtcMidnight } from "./public-runs.js";
+import { dailyRoom, secondsToUtcMidnight } from "./public-runs.js";
 import { STEP_RUN_RESULT_MAX_CHARS } from "./apps/tools.js";
 import { secretNamesIn } from "./reach.js";
 import { asPublicCall } from "./public-call.js";
@@ -207,8 +210,12 @@ export function createPublicTools(o: PublicToolsOptions): PublicTools {
       if (flights.size >= max) {
         return { ok: false, answer: { status: 429, body: { error: `too many public tool calls in flight on this server (${max}) — try again shortly` }, headers: { "retry-after": "5" } } };
       }
+      // The call's cap, as a run's (§7): its `capUsd`, else a share of the
+      // daily cap (`perRunCapUsd`), so a free step with a daily cap and no
+      // per-call cap admits several calls at once, never one.
       const caps: Micros[] = [];
-      if (item.capUsd !== undefined) caps.push(usdToMicros(item.capUsd));
+      const own = perRunCapUsd(item);
+      if (own !== undefined) caps.push(usdToMicros(own));
       if (item.dailyCapUsd !== undefined) {
         const daily = usdToMicros(item.dailyCapUsd);
         let today: Micros;
@@ -218,25 +225,32 @@ export function createPublicTools(o: PublicToolsOptions): PublicTools {
           console.error(`[public-tools] reading today's spend of ${subject} failed:`, err);
           return { ok: false, answer: { status: 503, body: { error: "the ledger cannot be read just now — try again shortly" }, headers: { "retry-after": "30" } } };
         }
-        // A call in flight counts at its cap; one with none, at the whole cap.
+        // A call in flight counts at its cap; the rule for whether one more
+        // fits is a run's (`dailyRoom`): a whole cap, never a sliver, and the
+        // last of the day to one call alone.
         let held = 0;
-        for (const f of flights.values()) if (f.subject === subject) held += f.cap ?? daily;
-        if (today + held >= daily) {
-          const spent = today >= daily;
+        let inFlight = 0;
+        for (const f of flights.values()) {
+          if (f.subject !== subject) continue;
+          held += f.cap ?? daily;
+          inFlight++;
+        }
+        const room = dailyRoom({ daily, today, held, inFlight, full: caps.length ? Math.min(...caps) : daily });
+        if (!room.ok) {
           return {
             ok: false,
             answer: {
               status: 429,
               body: {
-                error: spent
+                error: room.spent
                   ? `step "${item.name}" has spent its daily cap (${usd(daily)}) — try again tomorrow (UTC)`
                   : `step "${item.name}" has its daily cap (${usd(daily)}) set aside for calls in flight — try again when one ends`,
               },
-              headers: { "retry-after": String(spent ? secondsToUtcMidnight(now()) : 5) },
+              headers: { "retry-after": String(room.spent ? secondsToUtcMidnight(now()) : 5) },
             },
           };
         }
-        caps.push(daily - today - held);
+        caps.push(room.cap);
       }
       const cap = caps.length ? Math.max(1, Math.min(...caps)) : undefined;
       const callId = generateRunId();
