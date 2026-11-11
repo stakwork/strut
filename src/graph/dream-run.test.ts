@@ -1,10 +1,12 @@
 /**
  * The dream end to end (plans/dream.md): a whole strut on a Ladybug graph
- * with Peel's reader lists. A person takes two turns with the assistant, the
- * second a correction; the shipped `dream` workflow, with a stand-in model,
- * reads both turns, records the lesson with the turn that shows it, stamped
- * "janitor", and marks the turns read. A second dream finds nothing new and
- * still reports the lesson.
+ * with Peel's reader lists and its `Personal` tree. A person takes two turns
+ * with the assistant, the second a correction; the shipped `dream` workflow,
+ * with a stand-in model, reads both turns, records the correction as a claim
+ * about a page of the tree with the turn as its evidence, stamped "janitor",
+ * and marks the turns read. A second dream finds nothing new and still
+ * reports the claim. With `review`, a change to a page is a proposal and the
+ * page is left as it was.
  */
 import { after, afterEach, before, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
@@ -53,7 +55,7 @@ const text = (t: string) =>
   sse({ type: "message_delta", delta: { stop_reason: "end_turn", stop_sequence: null }, usage: { output_tokens: 5 } }) +
   sse({ type: "message_stop" });
 
-const REPORT = "LESSONS: Keep summaries to three lines — session c-1 turn 1, new\nFACTS: none\nPAGES: none\nLEFT ALONE: none";
+const REPORT = "CLAIMS: Summaries are three lines or fewer — missing — session c-1 turn 1, new\nFACTS: none\nPAGES: none\nLEFT ALONE: none";
 
 describe("the dream on the graph, under Peel's reader lists (ladybug)", { skip: lb.skip }, () => {
   let b: LadybugBackend;
@@ -63,12 +65,14 @@ describe("the dream on the graph, under Peel's reader lists (ladybug)", { skip: 
   /** What the dream's agent was sent as its prompt, and what each of its tools answered. */
   let prompt = "";
   let results: Array<{ name: string; content: string }> = [];
+  /** What the stand-in dream does once it has read the claims and the root: record a claim, or edit the root's page. */
+  let third: "claim" | "edit" = "claim";
   const ENV = ["ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "STRUT_API_KEY", "AI_SDK_LOG_WARNINGS"];
   const saved = Object.fromEntries(ENV.map((k) => [k, process.env[k]]));
 
   before(async () => {
     // The stand-in model. The assistant answers every turn "Hello."; the dream
-    // lists the lessons, records one for the correction, then reports.
+    // lists the claims, reads the tree's root, then does `third`, then reports.
     let n = 0;
     const named = new Map<string, string>();
     provider = http.createServer((req, res) => {
@@ -77,7 +81,7 @@ describe("the dream on the graph, under Peel's reader lists (ladybug)", { skip: 
       req.on("end", () => {
         const body = JSON.parse(raw) as { system?: unknown; messages: Array<{ role: string; content: unknown }> };
         res.writeHead(200, { "content-type": "text/event-stream" });
-        if (!JSON.stringify(body.system ?? "").includes("look back over a person's conversations")) return res.end(toolUse(`toolu_${++n}`, "final_answer", { text: "Hello.", artifacts: [] }));
+        if (!JSON.stringify(body.system ?? "").includes("keep a tree of Concept pages in step")) return res.end(toolUse(`toolu_${++n}`, "final_answer", { text: "Hello.", artifacts: [] }));
         const parts = body.messages.flatMap((m) => (Array.isArray(m.content) ? m.content : [])) as Array<Record<string, any>>;
         prompt = JSON.stringify(body.messages[0]?.content ?? "");
         for (const c of parts) if (c["type"] === "tool_use") named.set(c["id"], c["name"]);
@@ -85,11 +89,14 @@ describe("the dream on the graph, under Peel's reader lists (ladybug)", { skip: 
           name: named.get(c["tool_use_id"]) ?? "?",
           content: typeof c["content"] === "string" ? c["content"] : JSON.stringify(c["content"]),
         }));
-        if (!results.length) return res.end(toolUse(`toolu_${++n}`, "dream_lessons", {}));
-        if (results.length === 1) {
-          return res.end(toolUse(`toolu_${++n}`, "dream_lesson", {
-            text: "Keep summaries to three lines", title: "Summaries too long", session: "c-1", turn: 1,
-            excerpt: "too long, keep summaries to three lines", why: "the reply ran long",
+        if (!results.length) return res.end(toolUse(`toolu_${++n}`, "dream_claims", { root: "Personal" }));
+        if (results.length === 1) return res.end(toolUse(`toolu_${++n}`, "graph_graph_get", { node_type: "Concept", name: "Personal" }));
+        if (results.length === 2) {
+          const root = /\\?"ref_id\\?":\s*\\?"([^"\\]+)/.exec(results[1]!.content)?.[1] ?? "";
+          if (third === "edit") return res.end(toolUse(`toolu_${++n}`, "graph_edit_node", { ref_id: root, node_data: { description: "changed by the dream" } }));
+          return res.end(toolUse(`toolu_${++n}`, "dream_claim", {
+            text: "Summaries are three lines or fewer", title: "Summaries too long", about: root, session: "c-1", turn: 1,
+            excerpt: "too long, keep summaries to three lines", why: "the reply ran long", outcome: "missing",
           }));
         }
         res.end(text(REPORT));
@@ -114,6 +121,7 @@ describe("the dream on the graph, under Peel's reader lists (ladybug)", { skip: 
     await lb.clear(b);
     prompt = "";
     results = [];
+    third = "claim";
     dir = join(tmpdir(), `strut-dream-run-${randomUUID()}`);
     await mkdir(dir, { recursive: true });
     strut = await createStrut({
@@ -121,7 +129,7 @@ describe("the dream on the graph, under Peel's reader lists (ladybug)", { skip: 
       graph: b,
       store: new MemoryRunStore(),
       serveUi: false, enableChat: false, scheduler: false, stt: false, autoResume: false,
-      job: false, builder: false, concepts: false, orchestrator: {},
+      job: false, builder: false, orchestrator: {}, concepts: { personal: true },
       graphReaders: PEEL_READERS,
     });
     await strut.secretStore.set("STRUT_DEFAULT_MODEL", "anthropic/claude-sonnet-4-5");
@@ -145,25 +153,29 @@ describe("the dream on the graph, under Peel's reader lists (ladybug)", { skip: 
     throw new Error(`${workflow} never finished`);
   }
   const say = (text: string) => runOf(ORCHESTRATOR_WORKFLOW, { input: { prompt: text, session: "c-1" } });
+  const rootPage = async () => (await b.query("MATCH (p:Node {node_type: 'Concept', name: 'Personal'}) RETURN p.ref_id AS ref, p.description AS description"))[0]!;
 
-  it("reads the new turns, records the correction as a lesson with its turn, marks them read; the next dream finds nothing new", async () => {
+  it("reads the new turns, records the correction as a claim about a page of the tree, marks them read; the next dream finds nothing new", async () => {
     assert.equal((await say("summarise my notes from Monday"))["status"], "success");
     assert.equal((await say("too long, keep summaries to three lines"))["status"], "success");
 
     const run = await runOf("dream");
     assert.equal(run["status"], "success", JSON.stringify(run));
-    assert.match(prompt, /session c-1 · turn 0 · [^\]]+ · success\]\\nPERSON: summarise my notes from Monday\\nASSISTANT: Hello\./, prompt.slice(-600));
-    assert.match(prompt, /turn 1 · [^\]]+\]\\nPERSON: too long, keep summaries to three lines/);
-    assert.deepEqual(results.map((r) => r.name), ["dream_lessons", "dream_lesson"]);
+    assert.match(prompt, /The tree you tend is the Concept `Personal`/);
+    assert.match(prompt, /session c-1 · turn 0 · [^\]]+ · success\]\\n(OPENED: [^\\]*\\n)?PERSON: summarise my notes from Monday\\nASSISTANT: Hello\./, prompt.slice(-700));
+    assert.match(prompt, /turn 1 · [^\]]+\]\\n(OPENED: [^\\]*\\n)?PERSON: too long, keep summaries to three lines/);
+    assert.deepEqual(results.map((r) => r.name), ["dream_claims", "graph_graph_get", "dream_claim"]);
     assert.doesNotMatch(results.map((r) => r.content).join("\n"), /REFUSED|failed/, JSON.stringify(results));
     const out = run["output"] as Record<string, any>;
     assert.equal(out["text"], REPORT);
-    assert.equal(out["turns"], 2);
-    assert.deepEqual(out["lessons"].map((l: any) => [l.title, l.text, l.against, l.for]), [["Summaries too long", "Keep summaries to three lines", 1, 0]]);
-    assert.deepEqual(out["lessons"][0].evidence.map((e: any) => [e.session, e.turn, e.excerpt, e.why, e.against]), [["c-1", 1, "too long, keep summaries to three lines", "the reply ran long", true]]);
+    assert.deepEqual([out["turns"], out["root"]], [2, "Personal"]);
+    assert.deepEqual(out["claims"].map((c: any) => [c.title, c.text, c.concept, c.corrected, c.kept]), [["Summaries too long", "Summaries are three lines or fewer", "Personal", 1, 0]]);
+    const [e] = out["claims"][0].evidence;
+    assert.deepEqual([e.source, e.session, e.turn, e.excerpt, e.why, e.outcome, e.denies], ["conversation", "c-1", 1, "too long, keep summaries to three lines", "the reply ran long", "missing", false]);
+    assert.equal(e.dream, run["runId"], "the evidence names the dream that found it");
     const [claim] = await b.query("MATCH (c:Node {node_type: 'Claim'}) RETURN c.created_by AS by, c.namespace AS ns");
     assert.deepEqual([claim!["by"], claim!["ns"]], [SYSTEM_WRITER, "private"]);
-    assert.deepEqual(JSON.parse(await readFile(join(dir, "dream", "state.json"), "utf-8")).marks, { "c-1": 1 });
+    assert.deepEqual(JSON.parse(await readFile(join(dir, "dream", "personal.json"), "utf-8")).marks, { "c-1": 1 });
 
     results = [];
     const again = await runOf("dream");
@@ -171,6 +183,28 @@ describe("the dream on the graph, under Peel's reader lists (ladybug)", { skip: 
     assert.equal(results.length, 0, "no model call: nothing new to read");
     assert.equal(again["output"]["text"], "No new turns since the last dream.");
     assert.equal(again["output"]["turns"], 0);
-    assert.equal(again["output"]["lessons"].length, 1, "the lesson is still reported");
+    assert.equal(again["output"]["claims"].length, 1, "the claim is still reported");
+    // Another tree is another input: its dream has its own marks, so it reads the turns, and reports only its own claims.
+    const other = await runOf("dream", { input: { root: "Elsewhere" } });
+    assert.deepEqual([other["output"]["turns"], other["output"]["root"], other["output"]["claims"]], [2, "Elsewhere", []]);
+    assert.match(prompt, /The tree you tend is the Concept `Elsewhere`/);
+  });
+
+  it("without review a change to a page applies; with review it is a proposal and the page is left as it was", async () => {
+    third = "edit";
+    await say("always sign off as Tom");
+    const applied = await runOf("dream");
+    assert.equal(applied["status"], "success", JSON.stringify(applied));
+    assert.equal((await rootPage())["description"], "changed by the dream");
+
+    await b.query("MATCH (p:Node {node_type: 'Concept', name: 'Personal'}) SET p.description = 'as it was'");
+    await say("and never use emoji");
+    results = [];
+    const held = await runOf("dream", { input: { review: true } });
+    assert.equal(held["status"], "success", JSON.stringify(held));
+    assert.equal(results[2]!.name, "graph_edit_node");
+    assert.equal((await rootPage())["description"], "as it was", `not applied: ${results[2]!.content}`);
+    const { proposals } = (await (await strut!.app.request("/proposals")).json()) as { proposals: Array<{ step: string; status: string }> };
+    assert.deepEqual(proposals.map((p) => [p.step, p.status]), [["graph/edit-node", "pending"]]);
   });
 });

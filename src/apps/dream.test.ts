@@ -12,7 +12,7 @@ import { treeHash } from "../version.js";
 import type { KitLocation } from "./kit.js";
 import { DREAM_APP, DREAM_DIR } from "./dream-seed.js";
 import { VIEWS_APP } from "./views-seed.js";
-import { costText, sectionsOf } from "./dream/src/lib/report.js";
+import { costText, nest, sectionsOf, type Claim } from "./dream/src/lib/report.js";
 
 /**
  * `strut/dream` (plans/dream.md): what the dream did, as a first-party app
@@ -22,9 +22,9 @@ import { costText, sectionsOf } from "./dream/src/lib/report.js";
 
 describe("strut/dream: the report", () => {
   it("splits the report into its sections, an item a line; `none` and blank lines are no item", () => {
-    const text = "LESSONS: Keep summaries to three lines — session c-1 turn 1, new\n- No greeting in emails to Sam — turn 4\nFACTS: none\nPAGES:\n- Writing: added \"three lines\"\n\n**LEFT ALONE:** (none)";
+    const text = "CLAIMS: Keep summaries to three lines — session c-1 turn 1, new\n- No greeting in emails to Sam — turn 4\nFACTS: none\nPAGES:\n- Writing: added \"three lines\"\n\n**LEFT ALONE:** (none)";
     assert.deepEqual(sectionsOf(text), [
-      { title: "Lessons", lines: ["Keep summaries to three lines — session c-1 turn 1, new", "No greeting in emails to Sam — turn 4"] },
+      { title: "Claims", lines: ["Keep summaries to three lines — session c-1 turn 1, new", "No greeting in emails to Sam — turn 4"] },
       { title: "Facts changed", lines: [] },
       { title: "Pages changed", lines: ['Writing: added "three lines"'] },
       { title: "Left alone", lines: [] },
@@ -34,6 +34,12 @@ describe("strut/dream: the report", () => {
   it("a report not shaped that way is not split: the page draws it as written", () => {
     assert.equal(sectionsOf("No new turns since the last dream."), null);
     assert.equal(sectionsOf(""), null);
+  });
+
+  it("lists each group with its claims under it, then the claims in no group; a claim whose group is not listed stands alone", () => {
+    const c = (id: string, extra: Partial<Claim> = {}): Claim => ({ id, title: id, text: id, about: "p", concept: "Writing", corrected: 0, kept: 0, evidence: [], ...extra });
+    const listed = nest([c("group", { children: ["a", "b"] }), c("a", { parent: "group" }), c("solo"), c("b", { parent: "group" }), c("orphan", { parent: "gone" })]);
+    assert.deepEqual(listed.map((x) => [x.claim.id, x.children.map((k) => k.id)]), [["group", ["a", "b"]], ["solo", []], ["orphan", []]]);
   });
 
   it("says what a run cost, and when it cost nothing", () => {

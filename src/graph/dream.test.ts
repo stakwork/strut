@@ -1,93 +1,140 @@
 /**
- * The dream (plans/dream.md): lessons on the truth layer of a Ladybug file
- * (`ladybug/lessons.ts`), the steps that write and list them, the step that
- * hands a dream the turns no dream has read, and the shipped workflow.
+ * The dream (plans/dream.md): claims about a Concept page on every graph
+ * engine (`concept-claims.ts`), the steps that write, group and list them,
+ * the step that hands a dream the turns no dream has read, and the shipped
+ * workflow.
  */
 import { after, afterEach, before, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { LadybugBackend } from "./backend.js";
+import type { GraphBackend } from "./backend.js";
 import { testBackends } from "./test-util.js";
-import { isLessonId, lessonId, listLessons, recordLesson } from "./ladybug/lessons.js";
+import { conceptClaimId, conceptsOpenedBy, groupClaims, listClaims, recordSaid, type ClaimGraph, type Said } from "./concept-claims.js";
 import type { ConversationTurn } from "../conversations.js";
 import { createRegistry } from "../steps/registry.js";
 import { validateWorkflowYaml } from "../validate.js";
 import { flowFromYaml } from "../workspace.js";
 import { SYSTEM_DIR, isSystemWorkflow } from "../system-workflows.js";
-import lessonStep from "../steps/lib/dream/lesson.js";
-import lessonsStep from "../steps/lib/dream/lessons.js";
+import claimStep from "../steps/lib/dream/claim.js";
+import claimsStep from "../steps/lib/dream/claims.js";
+import groupStep from "../steps/lib/dream/group.js";
 import turnsStep from "../steps/lib/dream/turns.js";
 import doneStep from "../steps/lib/dream/done.js";
 
-const lb = testBackends().find((b) => b.kind === "ladybug")!;
 type Step = { input: { parse(v: unknown): unknown }; run: (cfg: any, ctx: any) => Promise<unknown> };
-const ctxOf = (services: Record<string, unknown>) => ({ runId: "r-1", path: "dream/dream", workflow: "dream", scope: {}, input: undefined, emit: async () => {}, services });
+const ctxOf = (services: Record<string, unknown>) => ({ runId: "dream-run-1", path: "dream/dream", workflow: "dream", scope: {}, input: undefined, emit: async () => {}, services });
 const run = (step: Step, cfg: Record<string, unknown>, services: Record<string, unknown>): Promise<any> => step.run(step.input.parse(cfg), ctxOf(services));
 
-describe("lessons on a ladybug file", { skip: lb.skip }, () => {
-  let b: LadybugBackend;
-  before(async () => {
-    b = (await lb.open()) as LadybugBackend;
-  });
-  after(async () => {
-    await lb.close(b);
-  });
-  beforeEach(async () => {
-    await lb.clear(b);
-  });
-  const at = Date.parse("2026-11-09T10:00:00Z");
-  const turn = (n: number, extra: Record<string, unknown> = {}) => ({ session: "peel/agent-1/dm", turn: n, excerpt: "too long, keep summaries to three lines", strength: -1 as const, observed_at: at + n * 60_000, now: at + n * 60_000, ...extra });
+for (const tb of testBackends()) {
+  describe(`claims about a Concept (${tb.name})`, { skip: tb.skip }, () => {
+    let b: GraphBackend;
+    let g: ClaimGraph;
+    /** Personal ─┬─ Writing      Work ── Reports */
+    let personal = "", writing = "", work = "", reports = "";
+    before(async () => {
+      b = await tb.open();
+      g = b;
+    });
+    after(async () => {
+      await tb.close(b);
+    });
+    beforeEach(async () => {
+      await tb.clear(b);
+      [personal, writing, work, reports] = (await b.nodes.writeMany(["Personal", "Writing", "Work", "Reports"].map((name) => ({ type: "Concept", data: { name } })))).map((r) => r.ref_id) as [string, string, string, string];
+      await b.edges.writeMany([
+        { edge: "PARENT_OF", source_ref_id: personal, target_ref_id: writing },
+        { edge: "PARENT_OF", source_ref_id: work, target_ref_id: reports },
+      ]);
+    });
+    const at = Date.parse("2026-11-09T10:00:00Z");
+    const said = (turn: number, extra: Partial<Said> = {}): Said => ({
+      source: "conversation", session: "peel/agent-1/dm", turn, excerpt: "too long, keep summaries to three lines", outcome: "missing", observed_at: at + turn * 60_000, ...extra,
+    });
 
-  it("a correction makes a lesson with the turn as evidence; the same turn again writes nothing", async () => {
-    const first = await b.tx((tx) => recordLesson(tx, { ...turn(4), text: "Keep summaries to three lines", title: "Summaries too long" }));
-    assert.equal(first.lesson, lessonId("Keep summaries to three lines"));
-    assert.ok(isLessonId(first.lesson));
-    assert.deepEqual([first.created, first.recorded], [true, true]);
-    const again = await b.tx((tx) => recordLesson(tx, { ...turn(4), text: "Keep summaries to three lines" }));
-    assert.deepEqual([again.created, again.recorded], [false, false]);
-    const [l] = await b.tx((tx) => listLessons(tx, undefined));
-    assert.equal(l!.title, "Summaries too long");
-    assert.equal(l!.text, "Keep summaries to three lines");
-    assert.deepEqual([l!.against, l!.for], [1, 0]);
-    assert.deepEqual(l!.evidence.map((e) => [e.session, e.turn, e.against]), [["peel/agent-1/dm", 4, true]]);
-  });
+    it("a correction makes a claim about its page, with the words as evidence that the claim is right and the assistant was wrong; the same words again write nothing", async () => {
+      const first = await recordSaid(g, said(4, { text: "Summaries are three lines or fewer", title: "Summaries too long", about: writing, dream: "dream-1", said_by: "tom", why: "the reply ran long" }));
+      assert.equal(first.claim, conceptClaimId(writing, "Summaries are three lines or fewer"));
+      assert.deepEqual([first.created, first.recorded], [true, true]);
+      const again = await recordSaid(g, said(4, { text: "Summaries are three lines or fewer", about: writing }));
+      assert.deepEqual([again.claim, again.created, again.recorded], [first.claim, false, false]);
+      const [c] = await listClaims(g, undefined);
+      assert.deepEqual([c!.title, c!.text, c!.about, c!.concept], ["Summaries too long", "Summaries are three lines or fewer", writing, "Writing"]);
+      assert.deepEqual([c!.corrected, c!.kept], [1, 0]);
+      assert.deepEqual(c!.evidence, [{
+        source: "conversation", session: "peel/agent-1/dm", turn: 4, said_by: "tom", excerpt: "too long, keep summaries to three lines", why: "the reply ran long",
+        denies: false, outcome: "missing", at: new Date(at + 4 * 60_000).toISOString(), dream: "dream-1",
+      }]);
+    });
 
-  it("a second correction lands on the same lesson by id, a confirmation counts for it, and the counts are read, not stored", async () => {
-    const { lesson } = await b.tx((tx) => recordLesson(tx, { ...turn(4), text: "Keep summaries to three lines" }));
-    await b.tx((tx) => recordLesson(tx, { ...turn(9, { excerpt: "again, too long", why: "an eight-line summary" }), lesson }));
-    await b.tx((tx) => recordLesson(tx, { ...turn(12, { excerpt: "yes, exactly like that", strength: 1 as const }), lesson }));
-    const lessons = await b.tx((tx) => listLessons(tx, undefined));
-    assert.equal(lessons.length, 1);
-    assert.deepEqual([lessons[0]!.against, lessons[0]!.for], [2, 1]);
-    assert.deepEqual(lessons[0]!.evidence.map((e) => e.turn), [12, 9, 4], "newest first");
-    assert.equal(lessons[0]!.evidence[1]!.why, "an eight-line summary");
-  });
+    it("later words land on the claim by id: a correction counts against the assistant, a confirmation for it, a denial is the person saying the claim is wrong", async () => {
+      const { claim } = await recordSaid(g, said(4, { text: "Summaries are three lines or fewer", about: writing }));
+      await recordSaid(g, said(9, { claim, excerpt: "again, too long", outcome: "not_followed" }));
+      await recordSaid(g, said(12, { claim, excerpt: "yes, exactly like that", outcome: "followed" }));
+      await recordSaid(g, said(15, { claim, excerpt: "actually, long summaries are fine", outcome: "contradicted", denies: true }));
+      const [c] = await listClaims(g, undefined);
+      assert.deepEqual([c!.corrected, c!.kept], [3, 1], "counted on read");
+      assert.deepEqual(c!.evidence.map((e) => [e.turn, e.outcome, e.denies]), [[15, "contradicted", true], [12, "followed", false], [9, "not_followed", false], [4, "missing", false]]);
+    });
 
-  it("the most corrected lesson is listed first; an unknown id, or a new lesson with no text, is refused", async () => {
-    await b.tx((tx) => recordLesson(tx, { ...turn(1), text: "No greeting in emails to Sam" }));
-    const { lesson } = await b.tx((tx) => recordLesson(tx, { ...turn(2), text: "Keep summaries to three lines" }));
-    await b.tx((tx) => recordLesson(tx, { ...turn(3), lesson }));
-    assert.deepEqual((await b.tx((tx) => listLessons(tx, undefined))).map((l) => l.text), ["Keep summaries to three lines", "No greeting in emails to Sam"]);
-    await assert.rejects(b.tx((tx) => recordLesson(tx, { ...turn(5), lesson: "nope" })), /not a lesson id/);
-    await assert.rejects(b.tx((tx) => recordLesson(tx, { ...turn(5), lesson: lessonId("never written") })), /pass `text`/);
-    await assert.rejects(b.tx((tx) => recordLesson(tx, turn(5))), /needs `text`/);
-  });
+    it("claims of one kind go under a parent claim, whose counts are theirs; one level, one group each", async () => {
+      const sam = (await recordSaid(g, said(1, { text: "No greeting in emails to Sam", about: writing }))).claim;
+      const kate = (await recordSaid(g, said(2, { text: "No greeting in emails to Kate", about: writing }))).claim;
+      await recordSaid(g, said(3, { claim: kate, outcome: "not_followed" }));
+      const group = await groupClaims(g, { text: "Emails have no greeting", about: writing, claims: [sam, kate], at });
+      assert.deepEqual([group.created, group.grouped.sort()], [true, [sam, kate].sort()]);
+      // A new claim made under the group; grouping again adds nothing.
+      const ann = (await recordSaid(g, said(5, { text: "No greeting in emails to Ann", about: writing, parent: group.claim }))).claim;
+      assert.deepEqual((await groupClaims(g, { text: "Emails have no greeting", about: writing, claims: [sam], at })).grouped, []);
+      const claims = await listClaims(g, undefined);
+      const parent = claims.find((c) => c.id === group.claim)!;
+      assert.deepEqual([parent.corrected, parent.kept, parent.evidence.length, parent.children], [4, 0, 0, [sam, kate, ann].sort()]);
+      assert.equal(claims[0]!.id, group.claim, "the most corrected first");
+      assert.ok(claims.filter((c) => c.id !== group.claim).every((c) => c.parent === group.claim));
+      await assert.rejects(groupClaims(g, { text: "Another group", about: writing, claims: [sam], at }), /already in the group/);
+      await assert.rejects(groupClaims(g, { text: "A group of groups", about: writing, claims: [group.claim], at }), /one level of groups/);
+    });
 
-  it("through the steps: dream/lesson records, stamped with who wrote it; dream/lessons lists with the evidence capped", async () => {
-    const made = await run(lessonStep, { text: "Do not ask before reading the calendar", session: "s", turn: 2, at: "2026-11-09T10:00:00Z", excerpt: "don't ask me that again", created_by: "janitor" }, { graph: b });
-    assert.deepEqual([made.created, made.recorded], [true, true]);
-    await run(lessonStep, { lesson: made.lesson, session: "s", turn: 7, excerpt: "I told you, just read it" }, { graph: b });
-    await run(lessonStep, { lesson: made.lesson, session: "s", turn: 8, excerpt: "thanks, that's right", kept: true }, { graph: b });
-    const { lessons } = await run(lessonsStep, { evidence: 2 }, { graph: b });
-    assert.equal(lessons.length, 1);
-    assert.deepEqual([lessons[0].against, lessons[0].for, lessons[0].evidence.length], [2, 1, 2]);
-    assert.match(await run(lessonStep, { session: "s", turn: 9, excerpt: "x" }, { graph: b }), /dream\/lesson failed/);
-    const [row] = await b.query("MATCH (c:Node {node_type: 'Claim'}) WHERE c.id = $id RETURN c.created_by AS by", { id: made.lesson });
-    assert.equal(row!["by"], "janitor");
+    it("a tree's claims are those about its pages; a claim needs a real Concept, and an unknown claim is refused", async () => {
+      await recordSaid(g, said(1, { text: "Summaries are three lines or fewer", about: writing }));
+      await recordSaid(g, said(2, { text: "Reports open with the result", about: reports, excerpt: "lead with the result" }));
+      await recordSaid(g, said(3, { text: "Ask before booking anything", about: personal, excerpt: "ask me first" }));
+      assert.deepEqual((await listClaims(g, undefined, "Personal")).map((c) => c.concept).sort(), ["Personal", "Writing"]);
+      assert.deepEqual((await listClaims(g, undefined, "Work")).map((c) => c.concept), ["Reports"]);
+      assert.deepEqual(await listClaims(g, undefined, "No such tree"), []);
+      assert.equal((await listClaims(g, undefined)).length, 3);
+      await assert.rejects(recordSaid(g, said(5, { text: "x", about: "not-a-node" })), /is not a Concept/);
+      await assert.rejects(recordSaid(g, said(5, { claim: "nope" })), /no claim "nope"/);
+      await assert.rejects(recordSaid(g, said(5, { text: "no page named" })), /needs `text`.*and `about`/);
+    });
+
+    it("says which pages a run opened, and tells none from not known", async () => {
+      assert.equal(await conceptsOpenedBy(g, "r-unknown"), null, "the run is not on the graph");
+      const [runRef] = (await b.nodes.writeMany([{ type: "StrutRun", data: { run_id: "r-1", workflow_name: "orchestrator", run_status: "success", started_at: "2026-11-09T10:00:00Z" } }])).map((r) => r.ref_id);
+      assert.deepEqual(await conceptsOpenedBy(g, "r-1"), [], "on the graph, and it opened none");
+      await b.edges.writeMany([{ edge: "ACCESSED", source_ref_id: runRef!, target_ref_id: writing }]);
+      assert.deepEqual(await conceptsOpenedBy(g, "r-1"), ["Writing"]);
+    });
+
+    it("through the steps: dream/claim records with the dream's run and its writer, dream/group groups, dream/claims lists a tree with the evidence capped", async () => {
+      const made = await run(claimStep, { text: "Do not ask before reading the calendar", about: personal, session: "s", turn: 2, at: "2026-11-09T10:00:00Z", excerpt: "don't ask me that again", outcome: "missing", created_by: "janitor" }, { graph: b });
+      assert.deepEqual([made.created, made.recorded], [true, true]);
+      await run(claimStep, { claim: made.claim, session: "s", turn: 7, excerpt: "I told you, just read it", outcome: "not_opened" }, { graph: b });
+      await run(claimStep, { claim: made.claim, session: "s", turn: 8, excerpt: "thanks, that's right", outcome: "followed" }, { graph: b });
+      const other = await run(claimStep, { text: "Do not ask before reading email", about: personal, session: "s", turn: 9, excerpt: "same for email", outcome: "missing" }, { graph: b });
+      const group = await run(groupStep, { text: "Read what you are allowed to without asking", about: personal, claims: [made.claim, other.claim] }, { graph: b });
+      assert.deepEqual(group.grouped.sort(), [made.claim, other.claim].sort());
+      const { claims } = await run(claimsStep, { root: "Personal", evidence: 2 }, { graph: b });
+      const mine = claims.find((c: any) => c.id === made.claim);
+      assert.deepEqual([mine.corrected, mine.kept, mine.evidence.length, mine.parent], [2, 1, 2, group.claim]);
+      assert.equal(mine.evidence[0].dream, "dream-run-1", "the run that found it");
+      assert.deepEqual(claims.find((c: any) => c.id === group.claim).corrected, 3);
+      assert.deepEqual((await run(claimsStep, { root: "Work" }, { graph: b })).claims, []);
+      assert.match(await run(claimStep, { session: "s", turn: 9, excerpt: "x", outcome: "missing" }, { graph: b }), /dream\/claim failed/);
+    });
   });
-});
+}
 
 describe("dream/turns and dream/done", () => {
   let dir = "";
@@ -111,16 +158,18 @@ describe("dream/turns and dream/done", () => {
     },
   });
 
-  it("hands over the unread turns oldest first, skips wakes, waits at a turn in flight, and starts after dream/done's mark", async () => {
+  it("hands over the unread turns oldest first with who spoke, skips wakes, waits at a turn in flight, and starts after dream/done's mark", async () => {
     const all = {
-      a: [t(0, 50), t(1, 40, { wake: true, prompt: undefined }), t(2, 30, { status: "cancelled" }), t(3, 20), t(4, 5, { status: "running" })],
+      a: [t(0, 50, { by: "tom" }), t(1, 40, { wake: true, prompt: undefined }), t(2, 30, { status: "cancelled" }), t(3, 20), t(4, 5, { status: "running" })],
       b: [t(0, 45)],
     };
     const services = { conversations: index(all), dataDir: dir };
     const first = await run(turnsStep, {}, services);
     assert.deepEqual(first.turns.map((x: any) => `${x.session}${x.turn}`), ["a0", "b0", "a2", "a3"], "by time; the wake and the running turn left out");
+    assert.deepEqual([first.turns[0].source, first.turns[0].said_by, first.turns[0].opened], ["conversation", "tom", undefined], "no graph: which pages it opened is not known");
     assert.equal(first.turns[2].status, "cancelled");
     assert.deepEqual(first.cursor, { a: 3, b: 0 });
+    assert.match(first.text, /\[session a · turn 0 · [^\]]+ · success · said by tom\]\nPERSON: said 0/);
     assert.match(first.text, /\[session a · turn 2 · .* · cancelled\]\nPERSON: said 2\nASSISTANT: reply 2/);
     assert.equal(first.more, undefined);
 
@@ -135,7 +184,11 @@ describe("dream/turns and dream/done", () => {
     assert.deepEqual(next.turns.map((x: any) => x.turn), [4, 5]);
     // A mark never moves back.
     await run(doneStep, { cursor: { a: 1 } }, services);
-    assert.equal(JSON.parse(await readFile(join(dir, "dream", "state.json"), "utf-8")).marks.a, 3);
+    assert.equal(JSON.parse(await readFile(join(dir, "dream", "personal.json"), "utf-8")).marks.a, 3);
+    // Another tree's dream has its own marks: it has read none of them.
+    assert.equal((await run(turnsStep, { tree: "Work / Reports" }, services)).count, 6);
+    await run(doneStep, { tree: "Work / Reports", cursor: { a: 5 } }, services);
+    assert.equal(JSON.parse(await readFile(join(dir, "dream", "work_reports.json"), "utf-8")).marks.a, 5);
   });
 
   it("a limit leaves the rest for the next dream, and the first dream reads only its window", async () => {
@@ -151,20 +204,25 @@ describe("dream/turns and dream/done", () => {
 });
 
 describe("the shipped dream workflow", () => {
-  it("is valid, reads the turns before the agent, marks them only after it, and reports text, turns and cost", async () => {
+  it("is valid; a tree and review are its input; it reads the turns before the agent, marks them only after it, and reports text, claims, turns and cost", async () => {
     const text = await readFile(join(SYSTEM_DIR, "dream", "workflow.yaml"), "utf-8");
     const v = validateWorkflowYaml(text, { registry: await createRegistry([]) });
     assert.equal(v.ok, true, JSON.stringify(v.errors, null, 2));
     const flow = flowFromYaml("dream", "v1", text);
-    assert.deepEqual(flow.steps.map((s) => s.type), ["dream/turns", "if", "agent", "dream/done", "pack", "dream/lessons", "pack"]);
-    const agent = flow.steps[2]!;
-    const cfg = agent.config as Record<string, unknown>;
+    assert.deepEqual(flow.steps.map((s) => s.type), ["dream/turns", "if", "agent", "dream/done", "pack", "dream/claims", "pack"]);
+    const cfg = flow.steps[2]!.config as Record<string, unknown>;
     assert.deepEqual(cfg["toolFilter"], ["none"]);
     assert.equal(cfg["model"], undefined);
-    // It can record lessons, read, and change facts and pages. It cannot delete or merge.
+    // It can record and group claims, read, and change facts and pages. It cannot delete or merge.
     const tools = cfg["agentTools"] as string[];
-    assert.ok(["dream/lessons", "dream/lesson", "graph/assert", "graph/edit-node", "graph/create-triplet", "graph/move-node"].every((x) => tools.includes(x)));
+    assert.ok(["dream/claims", "dream/claim", "dream/group", "graph/assert", "graph/edit-node", "graph/create-triplet", "graph/move-node"].every((x) => tools.includes(x)));
     assert.ok(!tools.some((x) => /delete|merge/.test(x)));
+    // Review gates every write to a page or a fact, and nothing else.
+    assert.equal(cfg["approve"], "{{ input.review ? params.writes : params.none }}");
+    const params = (flow as unknown as { params: Record<string, string[]> }).params;
+    assert.deepEqual([...params["writes"]!].sort(), tools.filter((x) => x.startsWith("graph/") && !/get|neighbors|search|find|resolve/.test(x)).sort());
+    assert.deepEqual(params["none"], []);
+    assert.match(String(cfg["prompt"]), /name "\{\{ input\.root \}\}"/);
     assert.equal(flow.steps[3]!.depends, "dream");
     assert.ok(isSystemWorkflow("dream"));
     assert.deepEqual(JSON.parse(await readFile(join(SYSTEM_DIR, "dream", "automation.json"), "utf-8")).trigger, { every: "day", at: ["04:00"] });

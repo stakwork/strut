@@ -36,10 +36,10 @@ import { edgeKeyFor } from "../edge-writer.js";
 import type { EvidenceIn } from "../fact-score.js";
 
 const q = (s: string) => `\`${s}\``;
-export const hash = (s: string) => createHash("sha256").update(s, "utf8").digest("hex").slice(0, 32);
+const hash = (s: string) => createHash("sha256").update(s, "utf8").digest("hex").slice(0, 32);
 /** The INT64 columns these writes set: a JS number is cast. */
 const INTS = new Set(["created_at", "updated_at", "belief_valid_from", "observed_at", "freshness_days"]);
-export const fields = (props: Record<string, unknown>, params: Params, prefix: string): string =>
+const fields = (props: Record<string, unknown>, params: Params, prefix: string): string =>
   Object.entries(props)
     .filter(([, v]) => v !== null && v !== undefined)
     .map(([k, v], i) => {

@@ -1,35 +1,69 @@
 // What a run of the `dream` workflow returns (its `result` pack), and how the
 // page reads it. Pure: no React, so the tests read it too.
 
-export interface LessonTurn {
+export type Outcome = "missing" | "not_opened" | "not_followed" | "contradicted" | "followed";
+
+/** One thing somebody said that bears on a claim. */
+export interface SaidRow {
+  source: string;
   session: string;
   turn: number;
+  said_by?: string;
   excerpt: string;
   why?: string;
-  against: boolean;
+  /** They said the claim itself is wrong. */
+  denies: boolean;
+  /** What the assistant did there. */
+  outcome?: Outcome;
   at: string;
 }
 
-export interface Lesson {
+/** A claim about a Concept page, as `dream/claims` lists it. */
+export interface Claim {
   id: string;
   title: string;
   text: string;
-  against: number;
-  for: number;
-  evidence: LessonTurn[];
+  /** The page it belongs on. */
+  about: string;
+  concept: string;
+  parent?: string;
+  /** The claims under it, when it is a group. */
+  children?: string[];
+  corrected: number;
+  kept: number;
+  evidence: SaidRow[];
 }
 
 export interface DreamOutput {
   text?: string;
-  lessons?: Lesson[];
+  /** The tree the dream tended: its root Concept's name. */
+  root?: string;
+  claims?: Claim[];
   turns?: number;
   more?: boolean;
   cost?: number;
 }
 
+/** What the assistant did, in the page's words. */
+export const OUTCOME_TEXT: Record<Outcome, string> = {
+  missing: "no page had it",
+  not_opened: "the page was not opened",
+  not_followed: "the page was opened, not followed",
+  contradicted: "a page said the opposite",
+  followed: "followed",
+};
+
+/** The claims as the page lists them: each group with its claims under it, then the claims in no group, in the order given. */
+export function nest(claims: readonly Claim[]): Array<{ claim: Claim; children: Claim[] }> {
+  const by = new Map(claims.map((c) => [c.id, c]));
+  return claims
+    .filter((c) => !c.parent || !by.has(c.parent))
+    .map((claim) => ({ claim, children: (claim.children ?? []).map((id) => by.get(id)).filter((c): c is Claim => !!c) }));
+}
+
 /** The report's sections, in the order the workflow's prompt asks for them. */
-const TITLES: Record<string, string> = { LESSONS: "Lessons", FACTS: "Facts changed", PAGES: "Pages changed", "LEFT ALONE": "Left alone" };
-const HEAD = /^\**(LESSONS|FACTS|PAGES|LEFT ALONE)\**:\**\s*(.*)$/;
+const TITLES: Record<string, string> = { CLAIMS: "Claims", FACTS: "Facts changed", PAGES: "Pages changed", "LEFT ALONE": "Left alone" };
+const HEAD = /^\**(CLAIMS|FACTS|PAGES|LEFT ALONE)\**:\**\s*(.*)$/;
 const none = (l: string) => /^\(?none\.?\)?$/i.test(l);
 
 /** The report split into its sections, each line an item; null when it is not shaped that way. */

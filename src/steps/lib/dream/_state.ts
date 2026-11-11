@@ -1,8 +1,9 @@
 /**
- * Where the dream left off (plans/dream.md): per conversation, the last turn
- * it has read. Bookkeeping, so a file under the data directory
- * (`<dataDir>/dream/state.json`) and never the graph: memory is for what the
- * person said.
+ * Where the dream left off (plans/dream.md): per tree, and per conversation,
+ * the last turn it has read. Each tree has its own marks, as each is tended
+ * by its own dream over what may be the same conversations. Bookkeeping, so a
+ * file under the data directory (`<dataDir>/dream/<tree>.json`) and never
+ * the graph: memory is for what the person said.
  */
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -14,12 +15,13 @@ export interface DreamState {
   at?: string;
 }
 
-const fileOf = (dataDir: string) => join(dataDir, "dream", "state.json");
+/** A tree's file: its root's name, made safe for a file name. */
+const fileOf = (dataDir: string, tree: string) => join(dataDir, "dream", `${tree.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, "_") || "tree"}.json`);
 
 /** The state, or null when no dream has finished here yet. */
-export async function readState(dataDir: string): Promise<DreamState | null> {
+export async function readState(dataDir: string, tree: string): Promise<DreamState | null> {
   try {
-    const s = JSON.parse(await readFile(fileOf(dataDir), "utf-8")) as Partial<DreamState>;
+    const s = JSON.parse(await readFile(fileOf(dataDir, tree), "utf-8")) as Partial<DreamState>;
     return { marks: s.marks && typeof s.marks === "object" ? s.marks : {}, ...(typeof s.at === "string" ? { at: s.at } : {}) };
   } catch {
     return null;
@@ -27,12 +29,12 @@ export async function readState(dataDir: string): Promise<DreamState | null> {
 }
 
 /** Move each mark forward to `cursor`'s, never back. */
-export async function advanceState(dataDir: string, cursor: Record<string, number>, now: Date): Promise<DreamState> {
-  const marks = { ...((await readState(dataDir))?.marks ?? {}) };
+export async function advanceState(dataDir: string, tree: string, cursor: Record<string, number>, now: Date): Promise<DreamState> {
+  const marks = { ...((await readState(dataDir, tree))?.marks ?? {}) };
   for (const [id, turn] of Object.entries(cursor)) if (Number.isInteger(turn) && turn > (marks[id] ?? -1)) marks[id] = turn;
   const state = { marks, at: now.toISOString() };
-  await mkdir(dirname(fileOf(dataDir)), { recursive: true });
-  await writeFile(fileOf(dataDir), JSON.stringify(state, null, 2), "utf-8");
+  await mkdir(dirname(fileOf(dataDir, tree)), { recursive: true });
+  await writeFile(fileOf(dataDir, tree), JSON.stringify(state, null, 2), "utf-8");
   return state;
 }
 

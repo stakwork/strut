@@ -128,6 +128,10 @@ export const SEED_EDGES: readonly SeedEdgeDef[] = [
   // A job's claim hangs off the job; its evidence is about the TURN — the
   // run (plans/job-claims.md §1–§2).
   { edge: "ABOUT", source: CLAIM_TYPE, target: "StrutJob" },
+  // A claim about a Concept page, and claims of one kind under a parent
+  // claim (plans/dream.md, `concept-claims.ts`).
+  { edge: "ABOUT", source: CLAIM_TYPE, target: CONCEPT_TYPE },
+  { edge: "PARENT_OF", source: CLAIM_TYPE, target: CLAIM_TYPE },
   { edge: "ABOUT", source: EVIDENCE_TYPE, target: "StrutWorkflowVersion" },
   { edge: "ABOUT", source: EVIDENCE_TYPE, target: "StrutStepVersion" },
   { edge: "ABOUT", source: EVIDENCE_TYPE, target: "StrutRun" },

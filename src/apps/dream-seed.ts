@@ -1,6 +1,6 @@
 /**
  * `strut/dream` (plans/dream.md): what the `dream` system workflow did, run
- * by run — its report, the lessons it has learned and every step it took —
+ * by run — its report, the claims about the tree and every step it took —
  * as an app strut ships, seeded at boot after `strut/views` (whose
  * components it imports) by the same tree hash (./views-seed.ts).
  * First-party like `strut/knowledge`. `dream: false` seeds nothing.

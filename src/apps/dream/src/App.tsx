@@ -1,8 +1,8 @@
 // strut/dream (plans/dream.md): what the dream did. On the left its runs,
 // newest first, and a button to run one now. On the right the picked run,
 // read from the outcome back to how it got there: what it changed (its
-// report), the lessons as they stood after it with the turns that show each
-// one, then every step the agent took. Everything is read from the run
+// report), the claims as they stood after it, grouped, with what was said for
+// each and what the assistant did there, then every step the agent took. Everything is read from the run
 // (`grants.workflows: [dream]`), so the page shows what the dream's own run
 // could read and nothing more. Narrow, the list and the run take the page in
 // turn.
@@ -12,7 +12,7 @@ import { useLaunch, useRun, useRuns, type RunSummary } from "@strut/kit";
 import { DocumentView, RunList, RunStatus, Transcript } from "strut/views";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { costText, sectionsOf, whenText, type DreamOutput, type Lesson } from "./lib/report";
+import { OUTCOME_TEXT, costText, nest, sectionsOf, whenText, type Claim, type DreamOutput } from "./lib/report";
 
 const WORKFLOW = "dream";
 /** The agent step's path in a run of the workflow: its transcript. */
@@ -55,25 +55,28 @@ function Report({ text }: { text: string }) {
   );
 }
 
-/** A lesson with the turns behind it: what the person said, when, and where. */
-function LessonCard({ lesson }: { lesson: Lesson }) {
+/** A claim with what was said for it: the words, when, where, and what the assistant did there. */
+function ClaimCard({ claim, nested }: { claim: Claim; nested?: boolean }) {
   return (
-    <li className="flex flex-col gap-2 rounded-md border p-3" data-testid="lesson">
+    <li className={cn("flex flex-col gap-2 rounded-md border p-3", nested && "border-dashed")} data-testid="claim">
       <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-        <span className="text-sm font-medium">{lesson.title || lesson.text}</span>
+        <span className="text-sm font-medium">{claim.title || claim.text}</span>
         <span className="text-xs tabular-nums text-muted-foreground">
-          corrected {lesson.against}× · kept {lesson.for}×
+          corrected {claim.corrected}× · kept {claim.kept}×
         </span>
+        <span className="text-xs text-muted-foreground">on {claim.concept}</span>
       </div>
-      {lesson.title && lesson.title !== lesson.text && <p className="text-sm text-muted-foreground">{lesson.text}</p>}
+      {claim.title && claim.title !== claim.text && <p className="text-sm text-muted-foreground">{claim.text}</p>}
       <ul className="flex flex-col gap-1.5">
-        {lesson.evidence.map((e, i) => (
+        {claim.evidence.map((e, i) => (
           <li key={i} className="grid grid-cols-[7.5rem_1fr] gap-x-3 text-xs">
             <span className="tabular-nums text-muted-foreground">{whenText(e.at)}</span>
             <span className="min-w-0">
-              <span className={cn("break-words", !e.against && "text-muted-foreground")}>“{e.excerpt}”</span>
+              <span className={cn("break-words", e.outcome === "followed" && "text-muted-foreground")}>“{e.excerpt}”</span>
               <span className="block text-muted-foreground">
-                {e.against ? "corrected" : "kept"} · {e.session} · turn {e.turn}
+                {e.outcome ? OUTCOME_TEXT[e.outcome] : "not sorted"}
+                {e.denies ? " · says the claim is wrong" : ""} · {e.said_by ? `${e.said_by} · ` : ""}
+                {e.session} · turn {e.turn}
                 {e.why ? ` · ${e.why}` : ""}
               </span>
             </span>
@@ -84,11 +87,32 @@ function LessonCard({ lesson }: { lesson: Lesson }) {
   );
 }
 
+/** A group: its sentence and its counts (its claims' added up), with those claims under it. */
+function ClaimGroup({ claim, children }: { claim: Claim; children: Claim[] }) {
+  if (!children.length) return <ClaimCard claim={claim} />;
+  return (
+    <li className="flex flex-col gap-2 rounded-md border p-3" data-testid="claim-group">
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <span className="text-sm font-semibold">{claim.title || claim.text}</span>
+        <span className="text-xs tabular-nums text-muted-foreground">
+          corrected {claim.corrected}× · kept {claim.kept}× · {children.length} claim{children.length === 1 ? "" : "s"}
+        </span>
+        <span className="text-xs text-muted-foreground">on {claim.concept}</span>
+      </div>
+      <ul className="flex flex-col gap-2">
+        {children.map((c) => (
+          <ClaimCard key={c.id} claim={c} nested />
+        ))}
+      </ul>
+    </li>
+  );
+}
+
 function RunDetail({ runId, lead }: { runId: string; lead?: ReactNode }) {
   const run = useRun(WORKFLOW, runId, { live: true });
   const r = run.data;
   const out = (r?.output && typeof r.output === "object" ? r.output : {}) as DreamOutput;
-  const lessons = Array.isArray(out.lessons) ? out.lessons : [];
+  const claims = nest(Array.isArray(out.claims) ? out.claims : []);
   const done = !!r && r.status !== "running" && r.status !== "paused";
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-testid="run-detail">
@@ -111,15 +135,15 @@ function RunDetail({ runId, lead }: { runId: string; lead?: ReactNode }) {
         )}
         {done && (
           <section className="flex flex-col gap-2">
-            <h2 className="text-sm font-semibold">Lessons after this dream</h2>
-            {lessons.length ? (
+            <h2 className="text-sm font-semibold">Claims after this dream{out.root ? `, on ${out.root}` : ""}</h2>
+            {claims.length ? (
               <ul className="flex flex-col gap-2">
-                {lessons.map((l) => (
-                  <LessonCard key={l.id} lesson={l} />
+                {claims.map((c) => (
+                  <ClaimGroup key={c.claim.id} claim={c.claim} children={c.children} />
                 ))}
               </ul>
             ) : (
-              <p className="text-sm text-muted-foreground">No lessons yet.</p>
+              <p className="text-sm text-muted-foreground">No claims yet.</p>
             )}
           </section>
         )}
