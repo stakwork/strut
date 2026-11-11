@@ -5,7 +5,7 @@ import { requireAuthoring } from "./_shared.js";
 export default defineStep({
   type: "meta/run-workflow",
   description:
-    "Run a published workflow with a given input, awaiting the result: { runId, status, output?, error? }. It runs as its OWN persisted run (inspect it with meta/get-run). Any workflow — a candidate you authored, a seeded one like pod-pr — except a SEALED one (a grading harness), which is refused by name. Sees steps and workflows published earlier in this same run (the registry is re-read fresh). Launched from a job run (POST …/run { job }) the child carries the same job: its {{ $job }} resolves to it and job/dir hands it the SAME directory, shared with this run rather than job_busy. The graph nodes the child run touched are reported on this step too (its log's step.end.nodes, deduplicated), so a reader of this run sees what the whole tree read or wrote. In a builder job, a run that outlives the wait (about a minute) is handed back as { runId, status: \"running\", detached: true } and goes on: end your turn, and strut starts the job's next turn with the run's outcome when it ends.",
+    "Run a published workflow with a given input, awaiting the result: { runId, status, output?, error? }. It runs as its OWN persisted run (inspect it with meta/get-run). Any workflow — a candidate you authored, a seeded one like pod-pr — except a SEALED one (a grading harness), which is refused by name. Sees steps and workflows published earlier in this same run (the registry is re-read fresh). Launched from a job run (POST …/run { job }) the child carries the same job: its {{ $job }} resolves to it and job/dir hands it the SAME directory, shared with this run rather than job_busy. The graph nodes the child run touched are reported on this step too (its log's step.end.nodes, deduplicated), so a reader of this run sees what the whole tree read or wrote. In a BUILDER job the run is a run of its own instead — not under the job, so the job stays free for the person's next message — and this call looks at it for about a minute: one still going is handed back as { runId, status: \"running\", detached: true } and goes on. End your turn then, saying it is running; strut starts the job's next turn with the run's outcome when it ends, and meta/cancel-run stops it.",
   input: z.object({
     name: z.string().describe("Workflow name to run"),
     input: z
@@ -40,8 +40,8 @@ export default defineStep({
       ...(ctx.job ? { job: ctx.job } : {}),
       // Its agents reach the same caller (`ctx.mcp`), as this run's do.
       ...(ctx.mcp?.length ? { mcp: ctx.mcp } : {}),
-      // Who is waiting: a turn strut can wake (a builder job's) waits only
-      // so long (src/wake.ts).
+      // Who is asking: for a turn strut wakes (a builder job's) the run is
+      // a run of its own, looked at for a while (src/wake.ts).
       caller: { workflow: workflowOf(ctx), runId: ctx.runId, ...(ctx.job ? { job: ctx.job } : {}) },
     });
   },

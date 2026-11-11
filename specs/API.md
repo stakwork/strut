@@ -195,7 +195,7 @@ rights) of a conversation workflow — one whose template has `params.wake`,
 the seeded `orchestrator` — on an `input.session`, or of a job turn naming a
 `conversation`, answers `wake: true`: when a job of that conversation ends,
 strut runs one more turn of it on its own (`CALLBACKS.md` §9). Every job turn's `run.end` then says what strut did
-(`wake: "launched" | "capped" | "none" | "waiting"` — `waiting`: the turn left a test run going, CALLBACKS.md §9), and the wake turn's carries
+(`wake: "launched" | "capped" | "none"`), and the wake turn's carries
 `wake: { job, runId }`. `POST /conversations/wake` is the same wake for a
 job that ran on ANOTHER strut, whose `run.end` you heard on that strut's
 room: `session` the local conversation, `source` the peer's id, `end` the

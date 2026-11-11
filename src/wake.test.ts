@@ -8,13 +8,13 @@ import yaml from "js-yaml";
 
 import { createStrut } from "./createStrut.js";
 import { WorkspaceManager } from "./workspace.js";
-import { MemoryRunStore } from "./store.js";
+import { FileRunStore, MemoryRunStore } from "./store.js";
+import { jobRoot, readJobRecord } from "./jobs.js";
 import { ORCHESTRATOR_WORKFLOW } from "./orchestrator-seed.js";
 import type { Scope } from "./auth.js";
 import type { SessionTurn } from "./session-store.js";
 import {
   WAKE_REPLY_MAX,
-  createWakes,
   parseWakeDoor,
   replyOf,
   trailingWakes,
@@ -92,10 +92,9 @@ describe("wakePrompt on the template strut ships", () => {
   });
 
   it("a run a job left going: {run} and {workflow} name it, its outcome is a run's", () => {
-    const run = (status: string) => end({ kind: "run", runId: "r-7", workflow: "slow", status, text: '{"ok":true}', startedBy: undefined });
+    const run = (status: string) => end({ kind: "run", runId: "r-7", workflow: "slow", status, text: '{"ok":true}' });
     assert.equal(wakePrompt("{each}{run} {workflow} {outcome}: {reply}{/each}", [run("success")]), 'r-7 slow finished: {"ok":true}');
     assert.equal(wakePrompt("{each}{outcome}{/each}", [run("error")]), "failed");
-    assert.equal(wakePrompt("{each}{outcome}{/each}", [run("cancelled")]), "been cancelled");
   });
 });
 
@@ -141,70 +140,6 @@ describe("the wake's pure parts", () => {
     assert.match((parseWakeDoor({ session: "s", source: "a b", end: {} }) as { error: string }).error, /^source /);
     assert.match((parseWakeDoor({ session: "s", source: "acme", end: { workflow: "orchestrator", runId: "r", job: "j", status: "success" } }) as { error: string }).error, /turn's own reply/);
     assert.match((parseWakeDoor({ session: "s", source: "acme", end: { workflow: "job" } }) as { error: string }).error, /runId, job and status/);
-  });
-});
-
-describe("a run a job left going, across a restart", () => {
-  it("reconcile ends a run that is no longer live — with its summary, or as cut off — and wakes the job under its job", async () => {
-    const dataDir = await mkdtemp(join(tmpdir(), "strut-wake-run-"));
-    try {
-      const launches: any[] = [];
-      const ended = new Set<string>();
-      const turn = { workflow: "builder", runId: "t-1" };
-      const summaries: Record<string, any> = { "r-done": { status: "success", output: { rows: 3 } } };
-      const wakes = createWakes({
-        dataDir,
-        enabled: true,
-        max: 4,
-        store: {
-          getRunEvents: async (_w: string, id: string) => (id === "t-1" ? [{ type: "run.start", job: "j-1", startedBy: { workflow: "orchestrator", runId: "o-1", session: "c-1" } }] : []) as any,
-          getRunSummary: async (_w: string, id: string) => summaries[id] ?? null,
-          getRunCallback: async () => null,
-          getRunJobCallback: async () => null,
-        },
-        sessions: { load: async () => null } as any,
-        holder: () => undefined,
-        liveOn: () => [],
-        // The wake's own turns are live until they end; the runs left going
-        // died with the last process.
-        isLive: (_w, id) => id.startsWith("w-") && !ended.has(id),
-        getWorkflow: async (name) => ({ name, params: { wake: "{each}{run} {outcome}: {reply} / {/each}" }, steps: [] }) as any,
-        launch: (_flow, run) => (launches.push(run), `w-${launches.length}`),
-      });
-      await wakes.waitFor("j-1", { workflow: "slow", runId: "r-done", turn });
-      await wakes.waitFor("j-1", { workflow: "slow", runId: "r-gone", turn });
-      assert.equal(await wakes.busy("j-1"), true);
-      const file = async () => JSON.parse(await readFile(wakeFilePath(dataDir, "j-1"), "utf-8")) as WakeFile;
-      // A turn is launched, then written down as the session's turn.
-      const launched = async (n: number) => {
-        for (let i = 0; i < 400 && (await file()).turn?.runId !== `w-${n}`; i++) await new Promise((r) => setTimeout(r, 5));
-        assert.equal(launches.length, n);
-        return launches[n - 1];
-      };
-      await wakes.reconcile();
-      const first = await launched(1);
-      assert.equal(first.job, "j-1", "the job's next turn, under the job");
-      assert.deepEqual(first.startedBy, { workflow: "orchestrator", runId: "o-1", session: "c-1" }, "the detaching turn's, so its end wakes the conversation");
-      assert.equal(first.input.prompt, 'r-done finished: {"rows":3} / ');
-      const f = await file();
-      assert.deepEqual(f.waiting, [], "neither is waited on any more");
-      assert.deepEqual(f.queued.map((e) => e.runId), ["r-gone"], "the other waits for the job's turn to end");
-      ended.add("w-1");
-      await wakes.turnEnded("j-1", "w-1");
-      wakes.kick("j-1");
-      const second = await launched(2);
-      assert.equal(second.input.prompt, "r-gone failed: (no reply; the error: the run was cut off by a restart) / ");
-      assert.equal(await wakes.busy("j-1", "w-2"), false);
-
-      // A run whose turn was cancelled is forgotten, not woken on.
-      await wakes.waitFor("j-1", { workflow: "slow", runId: "r-3", turn });
-      assert.equal(await wakes.runEnded("j-1", { runId: "r-3", workflow: "slow", job: "j-1", status: "cancelled", artifacts: [] }, true), "none");
-      assert.equal(launches.length, 2);
-      assert.equal(await wakes.busy("j-1", "w-2"), false);
-    } finally {
-      // The wake writes its file just after it launches.
-      await rm(dataDir, { recursive: true, force: true, maxRetries: 5 });
-    }
   });
 });
 
@@ -405,71 +340,172 @@ describe("the wake through a whole strut", () => {
     assert.equal(file.turn, undefined, "cleared once the turn was done");
   });
 
-  it("a builder's long test run: handed back running, the turn ends `waiting`, the run's end wakes the job, and the job's next turn wakes the conversation", async () => {
-    const { strut, seen, post, endOf, callback } = await boot({ chatRunWaitMs: 50 });
-    await strut.workspace.createWorkflow("slow", "name: slow\nsteps:\n  - id: w\n    type: wait\n    config:\n      durationMs: 400\n  - id: out\n    type: pack\n    config:\n      rows: 3\n");
-    // A stand-in builder: its first turn tests `slow` through
-    // meta/run-workflow; a woken turn reports the prompt it was given.
-    await strut.workspace.createWorkflow(
-      "builder",
-      [
-        "name: builder",
-        "params:",
-        '  wake: "{each}WOKEN {workflow} {run} {outcome}: {reply}{/each}"',
-        "steps:",
-        "  - id: first",
-        "    type: if",
-        "    config:",
-        "      cond: \"{{ input.prompt === 'build' }}\"",
-        "  - id: test",
-        "    type: meta/run-workflow",
-        "    depends: first",
-        "    when: true",
-        "    config:",
-        "      name: slow",
-        "      input: {}",
-        "  - id: result",
-        "    type: pack",
-        "    depends: [first, test]",
-        "    config:",
-        '      text: "{{ test?.status === \'running\' ? \'testing\' : input.prompt }}"',
-        "      artifacts: []",
-        "",
-      ].join("\n"),
-    );
+  /** `slow`: `waits` waits of `ms` each, then `{ rows: 3 }`. A cancel lands
+   *  between two of them. */
+  const slowYaml = (waits: number, ms: number) =>
+    ["name: slow", "steps:", ...Array.from({ length: waits }, (_, i) => `  - id: w${i}\n    type: wait\n    config:\n      durationMs: ${ms}`), "  - id: out", "    type: pack", "    config:", "      rows: 3", ""].join("\n");
+  /** A stand-in builder: a turn whose prompt is `build` tests `slow`
+   *  through meta/run-workflow and says how that went; any other turn (a
+   *  woken one) says the prompt it was given. */
+  const BUILDER = [
+    "name: builder",
+    "peer: true",
+    "params:",
+    '  wake: "{each}WOKEN {workflow} {run} {outcome}: {reply}{/each}"',
+    "steps:",
+    "  - id: first",
+    "    type: if",
+    "    config:",
+    "      cond: \"{{ input.prompt === 'build' }}\"",
+    "  - id: test",
+    "    type: meta/run-workflow",
+    "    depends: first",
+    "    when: true",
+    "    config:",
+    "      name: slow",
+    "      input: {}",
+    "  - id: result",
+    "    type: pack",
+    "    depends: [first, test]",
+    "    config:",
+    "      text: \"{{ test ? (test.status === 'running' ? 'testing' : 'tested: ' + test.status + ' ' + test.output?.rows) : input.prompt }}\"",
+    "      artifacts: []",
+    "",
+  ].join("\n");
+  const startOf = async (strut: { store: MemoryRunStore | any }, workflow: string, runId: string) =>
+    (await strut.store.getRunEvents(workflow, runId)).find((e: any) => e.type === "run.start")!;
+  const runsOf = async (strut: { store: any }, workflow: string) => (await strut.store.listRuns(workflow)) as unknown as string[];
+  /** The job's next turn — the builder run that is not `first` — once its
+   *  `run.start` is written (a file store lists a run before its log). */
+  const wokenTurn = (strut: { store: any }, first: string) =>
+    until(async () => {
+      const id = (await runsOf(strut, "builder")).find((r) => r !== first);
+      const start = id ? await startOf(strut, "builder", id) : undefined;
+      return id && start ? { id, start } : undefined;
+    }, "the job's next turn");
+
+  it("a builder's test run is a run of its own: handed back running, the turn's reply reaches the person, the job stays free, and the run's end starts the job's next turn, whose reply reaches the person too", async () => {
+    const { strut, seen, post, endOf, idle, callback } = await boot({ chatRunWaitMs: 50 });
+    await strut.workspace.createWorkflow("slow", slowYaml(1, 400));
+    await strut.workspace.createWorkflow("builder", BUILDER);
     const launched = await post("/workflows/builder/run", { job: "j-b", input: { prompt: "build" }, conversation: "c-b", wake: true, callback: { url: callback } }, { "x-test-actor": "bob" });
     assert.equal(launched.status, 202, JSON.stringify(launched.body));
     const first = await endOf(launched.body.runId);
     assert.equal(first.output.text, "testing", "the test run came back running");
-    assert.equal(first.wake, "waiting", "a turn that left a run going wakes no conversation");
+    assert.equal(first.wake, "launched", "the turn's own reply reaches the person: it is running");
 
-    // The conversation's wake turn: no person's turn there to take a
-    // callback from, so it is read off the stand-in model.
-    await until(() => (seen.wake.length ? true : undefined), "the conversation's wake");
-    const second = ((await strut.store.listRuns("builder")) as unknown as string[]).find((id) => id !== launched.body.runId)!;
-    const start = (await strut.store.getRunEvents("builder", second)).find((e) => e.type === "run.start")!;
-    assert.equal(start.job, "j-b", "the job's next turn, under the job");
+    // The run is its own: no job and no parent, and it names the turn.
+    const [run] = await runsOf(strut, "slow");
+    const runStart = await startOf(strut, "slow", run!);
+    assert.equal(runStart.job, undefined, "not under the job");
+    assert.equal(runStart.parentRunId, undefined, "a root run: a restart resumes it");
+    assert.deepEqual(runStart.startedBy, { workflow: "builder", runId: launched.body.runId, session: "j-b" });
+    assert.equal(runStart.actor, "bob", "billed as the turn is");
+    const lines = (await readJobRecord(jobRoot(strut.dataDir, "j-b")))?.runs ?? [];
+    assert.deepEqual(
+      lines.map((r) => [r.workflow, r.runId, r.parentRunId]),
+      [["builder", launched.body.runId, undefined], ["slow", run, launched.body.runId]],
+      "on the job's record as the turn's child, for its timeline",
+    );
+    // So nothing holds the job while it goes on: the person's next message
+    // would reach the build.
+    const active = (await (await strut.app.request("/runs/active")).json()) as Array<{ workflow: string; job?: string }>;
+    assert.ok(active.some((r) => r.workflow === "slow"), "the run is still going");
+    assert.ok(!active.some((r) => r.job === "j-b"), JSON.stringify(active));
+
+    // Its end starts the job's next turn, under the job, in its thread.
+    const { id: second, start } = await wokenTurn(strut, launched.body.runId);
+    assert.equal(start.job, "j-b", "under the job");
     assert.equal(start.conversation, "c-b", "naming the conversation the job's turn named");
-    const prompt = (start.input as { prompt: string }).prompt;
-    assert.match(prompt, /^WOKEN slow \d+ finished: \{"rows":3\}$/, prompt);
     assert.equal(start.wake?.job, "j-b");
+    assert.equal(start.actor, "bob");
+    const prompt = (start.input as { prompt: string; session: string }).prompt;
+    assert.match(prompt, new RegExp(`^WOKEN slow ${run} finished: \\{"rows":3\\}$`), prompt);
+    assert.equal((start.input as { session: string }).session, "j-b", "the job's own thread");
     const secondEnd = await endOf(second);
-    assert.equal(secondEnd.wake, "launched", "the job's woken turn wakes the conversation");
-    assert.equal(seen.wake.length, 1, "the conversation heard once");
-    assert.ok(lastUser(seen.wake[0]).includes("WOKEN slow"), "with the job's later reply");
+    assert.equal(secondEnd.wake, "launched", "the woken turn is a job turn: its reply reaches the person");
+
+    // The person heard twice: it is running, then how it went.
+    await until(() => (seen.wake.length >= 2 ? true : undefined), "both wakes of the conversation");
+    assert.ok(lastUser(seen.wake[0]).includes("testing"));
+    assert.ok(lastUser(seen.wake[1]).includes("WOKEN slow"));
+    await idle();
+    assert.equal(seen.wake.length, 2);
+    assert.equal((await runsOf(strut, "builder")).length, 2, "one woken turn");
     const file = JSON.parse(await readFile(wakeFilePath(strut.dataDir, "j-b"), "utf-8")) as WakeFile;
-    assert.deepEqual([file.waiting, file.queued, file.turn], [[], [], undefined], "nothing left waiting for the job");
+    assert.deepEqual([file.queued, file.turn], [[], undefined], "nothing left waiting for the job");
   });
 
-  it("a test run outside a job's turn, or from a workflow with no params.wake, is waited out", async () => {
+  it("a test run that ends while the turn still looks at it comes back as its result, and wakes nothing", async () => {
+    const { strut, seen, post, endOf, idle, callback } = await boot({ chatRunWaitMs: 5_000 });
+    await strut.workspace.createWorkflow("slow", slowYaml(1, 20));
+    await strut.workspace.createWorkflow("builder", BUILDER);
+    const launched = await post("/workflows/builder/run", { job: "j-q", input: { prompt: "build" }, conversation: "c-q", wake: true, callback: { url: callback } });
+    const first = await endOf(launched.body.runId);
+    assert.equal(first.output.text, "tested: success 3", "the result, as before");
+    await until(() => (seen.wake.length ? true : undefined), "the conversation's wake");
+    await idle();
+    assert.equal((await runsOf(strut, "builder")).length, 1, "the job is not woken for a run its turn already read");
+    assert.equal(seen.wake.length, 1);
+    const [run] = await runsOf(strut, "slow");
+    assert.equal((await startOf(strut, "slow", run!)).startedBy.runId, launched.body.runId);
+  });
+
+  it("a run somebody cancelled wakes nothing; a turn stopped while it looks stops the run", async () => {
+    const { strut, post, endOf, idle, callback } = await boot({ chatRunWaitMs: 50 });
+    await strut.workspace.createWorkflow("slow", slowYaml(40, 25));
+    await strut.workspace.createWorkflow("builder", BUILDER);
+    const live = (job: string) => post("/workflows/builder/run", { job, input: { prompt: "build" }, callback: { url: callback } });
+
+    // Handed back running, then cancelled — as the builder does when the
+    // person says "cancel that".
+    const a = await live("j-c");
+    assert.equal((await endOf(a.body.runId)).output.text, "testing");
+    const [run] = await runsOf(strut, "slow");
+    assert.equal((await post(`/workflows/slow/runs/${run}/cancel`, {})).status, 202);
+    await until(async () => ((await strut.store.getRunSummary("slow", run!))?.status === "cancelled" ? true : undefined), "the run cancelled");
+    await idle();
+    assert.equal((await runsOf(strut, "builder")).length, 1, "no woken turn");
+
+    // Stopped inside the look: the run is still the turn's, and stops too.
+    const { strut: s2, post: post2, endOf: endOf2, idle: idle2, callback: cb2 } = await boot({ chatRunWaitMs: 60_000 });
+    await s2.workspace.createWorkflow("slow", slowYaml(40, 25));
+    await s2.workspace.createWorkflow("builder", BUILDER);
+    const b = await post2("/workflows/builder/run", { job: "j-s", input: { prompt: "build" }, callback: { url: cb2 } });
+    const looked = await until(async () => (await runsOf(s2, "slow"))[0], "the test run");
+    assert.equal((await post2(`/workflows/builder/runs/${b.body.runId}/cancel`, {})).status, 202);
+    assert.equal((await endOf2(b.body.runId)).status, "cancelled");
+    await until(async () => ((await s2.store.getRunSummary("slow", looked))?.status === "cancelled" ? true : undefined), "the run stopped with its turn");
+    await idle2();
+    assert.equal((await runsOf(s2, "builder")).length, 1);
+  });
+
+  it("only a job's own turn is woken: any other caller's run is a child it waits out", async () => {
     const { strut, post, endOf, callback } = await boot({ chatRunWaitMs: 50 });
-    await strut.workspace.createWorkflow("slow", "name: slow\nsteps:\n  - id: w\n    type: wait\n    config:\n      durationMs: 200\n");
+    await strut.workspace.createWorkflow("slow", slowYaml(1, 200));
+    await strut.workspace.createWorkflow("builder", BUILDER);
+    const child = async (workflow: string, runId: string) => {
+      const out = (await strut.store.getRunEvents(workflow, runId)).find((x) => x.type === "step.end" && x.path === `${workflow}/test`) as any;
+      assert.equal(out.output.status, "success", "waited for, not handed back running");
+      return startOf(strut, "slow", out.output.runId);
+    };
+    // A workflow with no params.wake, under a job.
     await strut.workspace.createWorkflow("runner", "name: runner\nsteps:\n  - id: test\n    type: meta/run-workflow\n    config:\n      name: slow\n      input: {}\n");
     const r = await post("/workflows/runner/run", { job: "j-r", input: {}, callback: { url: callback } });
-    const e = await endOf(r.body.runId);
-    assert.equal(e.status, "success");
-    const out = (await strut.store.getRunEvents("runner", r.body.runId)).find((x) => x.type === "step.end" && x.path === "runner/test") as any;
-    assert.equal(out.output.status, "success", "waited for, not handed back running");
+    assert.equal((await endOf(r.body.runId)).status, "success");
+    const under = await child("runner", r.body.runId);
+    assert.equal(under.job, "j-r", "a child shares the job");
+    assert.equal(under.parentRunId, r.body.runId);
+    assert.equal(under.startedBy, undefined);
+    // A builder with no job, and one another strut launched (its end goes
+    // back over strut/run-workflow, which nothing reaches later).
+    const bare = await post("/workflows/builder/run", { input: { prompt: "build" }, callback: { url: callback } });
+    assert.equal((await endOf(bare.body.runId)).output.text, "tested: success 3");
+    const peer = await post("/workflows/builder/run", { job: "j-p", input: { prompt: "build" } }, { "x-test-scope": "peer" });
+    assert.equal(peer.status, 202, JSON.stringify(peer.body));
+    const done = await until(async () => (await strut.store.getRunSummary("builder", peer.body.runId)) ?? undefined, "the peer's turn");
+    assert.equal((done.output as { text: string }).text, "tested: success 3");
+    assert.equal((await child("builder", peer.body.runId)).startedBy, undefined);
   });
 
   it("past wakeMax wake turns in a row: capped, no turn; a person's turn starts the count over", async () => {
@@ -621,5 +657,38 @@ describe("the wake through a whole strut", () => {
     }, "the file cleared");
     assert.deepEqual(after.seen, ["1700000000001"]);
     assert.equal((await strut.sessionStore.load("c-8"))!.turns[0]!.wake, true);
+  });
+
+  it("a run left going survives a restart: the next process resumes it, and its end wakes the job", async () => {
+    // What a dead process left: the builder turn that ended saying
+    // "testing", and the run it launched, cut off before its first step.
+    const ws = new WorkspaceManager(dir);
+    await ws.createWorkflow("slow", slowYaml(1, 20));
+    await ws.createWorkflow("builder", BUILDER);
+    const store = new FileRunStore(dir);
+    const at = new Date().toISOString();
+    const by = { workflow: "builder", runId: "1700000000100", session: "j-x" };
+    await store.append("builder", by.runId, { ts: at, runId: by.runId, path: "builder", type: "run.start", input: { prompt: "build" }, job: "j-x", actor: "bob" });
+    await store.append("builder", by.runId, { ts: at, runId: by.runId, path: "builder", type: "run.end", output: { text: "testing", artifacts: [] } });
+    await store.finalize("builder", by.runId, { runId: by.runId, workflow: "builder", status: "success", startedAt: at, finishedAt: at, durationMs: 1, job: "j-x", output: { text: "testing", artifacts: [] } } as any);
+    await store.append("slow", "1700000000200", { ts: at, runId: "1700000000200", path: "slow", type: "run.start", input: {}, startedBy: by, actor: "bob" });
+
+    const strut = await createStrut({
+      workspace: new WorkspaceManager(dir),
+      serveUi: false,
+      enableChat: false,
+      scheduler: false,
+      job: false,
+      builder: false,
+      orchestrator: false,
+      autoResume: { delayMs: 10 },
+    });
+    const { id: woken, start } = await wokenTurn(strut, by.runId);
+    assert.equal(start.job, "j-x");
+    assert.equal(start.actor, "bob");
+    assert.equal((start.input as { prompt: string }).prompt, 'WOKEN slow 1700000000200 finished: {"rows":3}');
+    assert.equal((await strut.store.getRunSummary("slow", "1700000000200"))?.status, "success", "the run was resumed, not lost");
+    await until(async () => ((await strut.store.getRunSummary("builder", woken)) ? true : undefined), "the woken turn's end");
+    await strut.close();
   });
 });

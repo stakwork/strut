@@ -610,9 +610,9 @@ export interface RunCaller {
   job?: string;
 }
 
-/** What `runWorkflow` hands back for a run that outlived the caller's wait
- *  (`AuthoringDeps.detach`): it goes on, and the caller is woken when it
- *  ends. */
+/** What `runWorkflow` hands back for a run still going when the caller
+ *  stopped looking (`AuthoringDeps.runDetached`): a run of its own, which
+ *  goes on, and whose end starts the caller's next turn. */
 export interface DetachedRun {
   runId: string;
   workflow: string;
@@ -623,7 +623,7 @@ export interface DetachedRun {
 
 /** What `meta/run-workflow` says about a run it handed back running. */
 export const DETACHED_HINT =
-  "The run is still going and goes on without you. End your turn now: say what you launched and what you will check when it ends. When it ends, strut starts your next turn with its outcome — do not wait for it or poll meta/get-run in a loop.";
+  "The run is still going, as a run of its own. End your turn now: tell the person it is running and what it does. When it ends, strut starts your next turn with its outcome — do not wait for it or poll meta/get-run in a loop. The job is free meanwhile: the person may ask for a change, and meta/cancel-run stops the run.";
 
 export interface AuthoringDeps extends StepPublishDeps {
   store: RunStore;
@@ -666,15 +666,17 @@ export interface AuthoringDeps extends StepPublishDeps {
     runId: string,
     body: { from?: string; version?: string },
   ) => Promise<{ ok: boolean; status?: number; [key: string]: unknown }>;
-  /** Long runs (src/wake.ts): for a caller strut can wake when its run ends
-   *  — a builder job's turn — `after` is how long `runWorkflow` waits
-   *  before handing back `DetachedRun`; undefined = wait it out. `detached`
-   *  records the run as waited on, `ended` hands its end over. */
-  detach?: {
-    after(caller: RunCaller): Promise<number | undefined>;
-    detached(caller: RunCaller, run: { workflow: string; runId: string }): Promise<void>;
-    ended(caller: RunCaller, workflow: string, result: RunResult): void;
-  };
+  /** A run of its own (src/wake.ts), for a caller strut wakes when it ends
+   *  — a builder job's turn: launched detached, naming the caller's turn,
+   *  and looked at for a while. Resolves with its result when it ended
+   *  inside the look, with `DetachedRun` when it is still going, and with
+   *  `undefined` for any other caller: `runWorkflow` then runs it as a
+   *  child and waits it out. */
+  runDetached?: (
+    caller: RunCaller,
+    flow: Flow,
+    run: { input: unknown; params?: Record<string, unknown>; version?: string; actor?: string; principal?: string; mcp?: McpServer[] },
+  ) => Promise<RunResult | DetachedRun | undefined>;
   /** createStrut's run control (the cancel / pause routes' core). Optional:
    *  without it `controlRun` answers that this host cannot. */
   controlRun?: (
@@ -973,6 +975,45 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
       if (widened) {
         return { error: `params may not widen what the workflow "${name}" allows — more tools, or fewer approvals: ${widened}. Run it with its own params, fewer tools, or more approvals.` };
       }
+      // The graph nodes the run touched, off its log — what its steps and
+      // agents' tool calls reported (`step.end.nodes`), so the launching
+      // step reports them too and a reader of THIS run (the run flyout,
+      // hive's run graph) sees what the whole tree read or wrote. A ref the
+      // run got from a peer keeps its peer tag. A log that cannot be read
+      // leaves the result unmarked. What the run's model calls spent rides
+      // the same way (`withUsage`), so the launching step's `step.end`
+      // carries it and this run's totals include the run it waited on.
+      const finished = async (result: RunResult) => {
+        const touched = new Map<string, AccessedNode>();
+        let spent: ModelUsage | undefined;
+        try {
+          const events = await store.getRunEvents(flow.name, result.runId);
+          for (const e of events) foldAccessedNodes(touched, e);
+          const totals = countUsage(events);
+          if (totals.modelCalls || totals.cost) spent = totals;
+        } catch {
+          // the result stands without them
+        }
+        return withUsage(withAccessedNodes(result, [...touched.values()]), spent);
+      };
+      // A caller strut wakes when its run ends (a builder job's turn): the
+      // run is its own from the start — no job, no parent — and this call
+      // only looks at it for a while (src/wake.ts).
+      if (opts?.caller && deps.runDetached) {
+        try {
+          const own = await deps.runDetached(opts.caller, flow, {
+            input: coerceJsonArg(input) ?? {},
+            ...(params !== undefined ? { params: coerceJsonArg(params) as Record<string, unknown> } : {}),
+            ...(version ? { version } : {}),
+            ...(opts.actor ? { actor: opts.actor } : {}),
+            ...(opts.principal ? { principal: opts.principal } : {}),
+            ...(opts.mcp?.length ? { mcp: opts.mcp } : {}),
+          });
+          if (own) return "detached" in own ? own : await finished(own);
+        } catch (err) {
+          return { error: err instanceof Error ? err.message : String(err) };
+        }
+      }
       const runId = generateRunId();
       // Tree linkage: attach this nested run's controller to the launching
       // run's (opts.parentRunId = the calling step's ctx.runId), so controls
@@ -985,13 +1026,8 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
       } catch (err) {
         return { error: err instanceof Error ? err.message : String(err) };
       }
-      // A caller strut can wake (a builder job's turn) waits only so long:
-      // past it the run goes on and the caller's turn ends (src/wake.ts).
-      const caller = opts?.caller;
-      const waitMs = caller && deps.detach ? await deps.detach.after(caller).catch(() => undefined) : undefined;
-      let detached = false;
       try {
-        const running = runWorkflow(flow, coerceJsonArg(input) ?? {}, registry, {
+        const result = await runWorkflow(flow, coerceJsonArg(input) ?? {}, registry, {
           runId,
           store,
           workspace,
@@ -1006,47 +1042,9 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
           ...(opts?.job ? { job: opts.job } : {}),
           ...(opts?.mcp?.length ? { mcp: opts.mcp } : {}),
         });
-        if (waitMs !== undefined && caller && deps.detach) {
-          let timer: ReturnType<typeof setTimeout> | undefined;
-          const late = new Promise<"running">((res) => (timer = setTimeout(() => res("running"), waitMs)));
-          const first = await Promise.race([running, late]);
-          clearTimeout(timer);
-          if (first === "running") {
-            detached = true;
-            const child = { workflow: flow.name, runId };
-            await deps.detach.detached(caller, child);
-            // Off the live list first: the job's wake waits for its runs.
-            const ended = (r: RunResult) => {
-              tracked?.untrack();
-              deps.detach!.ended(caller, flow.name, r);
-            };
-            void running.then(ended, (err: unknown) => ended({ runId, status: "error", error: { message: err instanceof Error ? err.message : String(err) } }));
-            return { ...child, status: "running", detached: true, hint: DETACHED_HINT } satisfies DetachedRun;
-          }
-        }
-        const result = await running;
-        // The graph nodes the child run touched, off its log — what its
-        // steps and agents' tool calls reported (`step.end.nodes`), so the
-        // launching step reports them too and a reader of THIS run (the run
-        // flyout, hive's run graph) sees what the whole tree read or wrote.
-        // A ref the child got from a peer keeps its peer tag. A log that
-        // cannot be read leaves the result unmarked.
-        // What the child's model calls spent rides the same way
-        // (`withUsage`), so the launching step's `step.end` carries it and
-        // this run's totals include the run it waited on.
-        const touched = new Map<string, AccessedNode>();
-        let spent: ModelUsage | undefined;
-        try {
-          const events = await store.getRunEvents(flow.name, runId);
-          for (const e of events) foldAccessedNodes(touched, e);
-          const totals = countUsage(events);
-          if (totals.modelCalls || totals.cost) spent = totals;
-        } catch {
-          // the result stands without them
-        }
-        return withUsage(withAccessedNodes(result, [...touched.values()]), spent);
+        return await finished(result);
       } finally {
-        if (!detached) tracked?.untrack();
+        tracked?.untrack();
       }
     },
 
