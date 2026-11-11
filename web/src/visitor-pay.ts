@@ -227,12 +227,16 @@ export async function callPaying(
     pay: (p: PaymentRequired, workflow: string) => Promise<PayOutcome>;
     /** The purse changed: keep it (`savePurse`). */
     save?: () => void;
+    /** The call IS a launch of this workflow, whatever its params say: a
+     *  caller that launches over plain HTTP (the store's Run form), its
+     *  answers read into a CallResult (`httpCallResult`, ./store-run). */
+    launch?: { workflow: string };
   },
 ): Promise<CallResult> {
   const { purse } = deps;
   const save = deps.save ?? (() => {});
   let result = await deps.call(params);
-  const launch = launchOf(params);
+  const launch = deps.launch ?? launchOf(params);
   if (!launch) return result;
   const tried = new Set<string>(purse.credential ? [purse.credential] : []);
   let paid = false;

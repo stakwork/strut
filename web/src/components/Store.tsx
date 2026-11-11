@@ -8,6 +8,11 @@ import { appsOf, canWords, conceptRoots, installLink, liveAppUrl, liveBase, norm
 import { CopyButton } from "./CopyButton";
 import { Markdown } from "./Markdown";
 import { shortDigest } from "./PackagesPanel";
+import { ConfigField } from "./ConfigField";
+import { PaymentSheet } from "./PaymentSheet";
+import { callPaying, formatSats, formatUsd, type ClaimEnd, type PayOutcome, type PaymentRequired } from "../visitor-pay";
+import { bodyOf, errorOf, httpCallResult, inputOf, newLaunchKey, priceBadge, priceNotes, priceWords, runFields, runFileUrl, type LaunchedRun, type LiveRunnableItem } from "../store-run";
+import { payWith, storePurse } from "../store-purse";
 
 // ── The store front (plans/marketplace.md §7) ───────────────────────────────
 //
@@ -30,6 +35,14 @@ import { shortDigest } from "./PackagesPanel";
 // visitor's browser, with no credential — an app framed from its server
 // (`?app=&solo=1&public=1`), a workflow, step or Concept page drawn here from
 // its `/public` JSON. Nothing to install: it is the publisher's, live.
+//
+// A live workflow or step that anyone may RUN (plans/paid-runs.md §10 "The
+// store") shows its price, what recent runs were charged, and a Run form
+// drawn from its input (`RunPanel`). The run happens on the publisher's
+// server, launched from this browser with no credential of anyone's; a
+// priced one is paid here — the invoice as a QR code, claimed until it
+// settles even after the sheet closes (../store-purse), the credit kept per
+// server in this page's sessionStorage, never in a URL.
 
 const TARGET_KEY = "store.strut";
 
@@ -271,6 +284,11 @@ function Browse(props: { q?: string; card: api.IndexCard | undefined; go: (v: St
                 <span class="store-row-main">
                   <span class="package-name">{i.name}</span>
                   <span class="badge">{i.kind}</span>
+                  {i.run && (
+                    <span class="badge badge-accent" title={`Anyone may run it there: ${priceWords({ kind: i.kind === "step" ? "step" : "workflow", ...i.run })}`}>
+                      run · {priceBadge(i.run)}
+                    </span>
+                  )}
                   {i.runs && <span class="badge" title="Its runs are public too">with runs</span>}
                   <span class="auto-meta">{i.publisher}</span>
                 </span>
@@ -772,23 +790,40 @@ function LiveApp(props: { base: string; name: string; publisher: string }) {
   );
 }
 
+/** What anyone may run on a publisher's server: its `GET /public` listing's
+ *  `runnable`, read fresh (the index's copy is for the lists). */
+function useRunnable(base: string, kind: "workflow" | "step", name: string): { item?: LiveRunnableItem; loaded: boolean } {
+  const listing = useLive<{ runnable?: LiveRunnableItem[] }>(base, "/public");
+  const item = listing.data?.runnable?.find((r) => r.kind === kind && r.name === name);
+  return { ...(item ? { item } : {}), loaded: listing.data !== undefined || listing.error !== undefined };
+}
+
 function LiveWorkflow(props: { base: string; name: string; publisher: string }) {
   const w = encodeURIComponent(props.name);
   const meta = useLive<{ name: string; active: string; runs: boolean; category?: string }>(props.base, `/public/workflows/${w}`);
   const flow = useLive<api.LiveWorkflowFlow>(props.base, `/public/workflows/${w}/flow`);
+  const run = useRunnable(props.base, "workflow", props.name);
   const [runs, setRuns] = useState<api.LiveRunRow[] | null>(null);
   useEffect(() => {
     if (!meta.data?.runs) return;
     api.liveJSON<api.LiveRunRow[]>(props.base, `/public/workflows/${w}/runs?limit=10`).then(setRuns, () => setRuns([]));
   }, [meta.data?.runs, props.base, w]);
   const inputs = Object.entries(flow.data?.input ?? {});
+  // Runnable and nothing else public: its definition is not shown (decision 11).
+  const privateDefinition = !!run.item && !!meta.error;
   return (
     <div class="store-package-body">
       <div class="store-package-main">
         <h1>{props.name}</h1>
-        <div class="auto-meta">{props.publisher} · {meta.data ? `active ${meta.data.active}` : "…"}{meta.data?.category ? ` · ${meta.data.category}` : ""}</div>
-        {(meta.error || flow.error) && <div class="auto-error">{meta.error ?? flow.error}</div>}
-        {inputs.length > 0 && (
+        {run.item?.description && <p class="store-package-desc">{run.item.description}</p>}
+        <div class="auto-meta">
+          {props.publisher}
+          {meta.data ? ` · active ${meta.data.active}` : privateDefinition ? " · its steps are not public" : " · …"}
+          {meta.data?.category ? ` · ${meta.data.category}` : ""}
+        </div>
+        {(meta.error || flow.error) && !privateDefinition && run.loaded && <div class="auto-error">{meta.error ?? flow.error}</div>}
+        {run.item && <RunPanel base={props.base} item={run.item} />}
+        {!run.item && inputs.length > 0 && (
           <section>
             <h2>Inputs</h2>
             <ul class="store-releases">
@@ -811,9 +846,10 @@ function LiveWorkflow(props: { base: string; name: string; publisher: string }) 
         )}
       </div>
       <aside class="store-package-aside">
+        {run.item && <PriceCard item={run.item} />}
         <section>
           <h3>Runs</h3>
-          {!meta.data?.runs && <div class="auto-hint">Its runs are not public.</div>}
+          {!meta.data?.runs && <div class="auto-hint">Its runs are not public{run.item ? ": a run you start here is yours to read." : "."}</div>}
           {meta.data?.runs && runs === null && <div class="auto-hint">Loading…</div>}
           {runs?.length === 0 && <div class="auto-hint">No runs yet.</div>}
           <ul class="store-releases">
@@ -834,36 +870,264 @@ function LiveStep(props: { base: string; name: string; publisher: string }) {
   const t = props.name.split("/").map(encodeURIComponent).join("/");
   const schema = useLive<api.LiveStepSchema>(props.base, `/public/steps/${t}/schema`);
   const source = useLive<api.LiveStepSource>(props.base, `/public/steps/${t}/source`);
+  const run = useRunnable(props.base, "step", props.name);
+  const privateDefinition = !!run.item && !!schema.error;
+  const description = schema.data?.description ?? run.item?.description;
   return (
-    <div class="store-package-main">
-      <h1>{props.name}</h1>
-      {schema.data?.description && <p class="store-package-desc">{schema.data.description}</p>}
-      <div class="auto-meta">
-        {props.publisher}
-        {schema.data?.effect ? ` · ${schema.data.effect === "read" ? "reads" : "acts"}` : ""}
-        {schema.data?.secrets?.length ? ` · reads the secrets ${schema.data.secrets.join(", ")}` : ""}
+    <div class="store-package-body">
+      <div class="store-package-main">
+        <h1>{props.name}</h1>
+        {description && <p class="store-package-desc">{description}</p>}
+        <div class="auto-meta">
+          {props.publisher}
+          {schema.data?.effect ? ` · ${schema.data.effect === "read" ? "reads" : "acts"}` : ""}
+          {schema.data?.secrets?.length ? ` · reads the secrets ${schema.data.secrets.join(", ")}` : ""}
+          {privateDefinition ? " · its source is not public" : ""}
+        </div>
+        {(schema.error || source.error) && !privateDefinition && run.loaded && <div class="auto-error">{schema.error ?? source.error}</div>}
+        {run.item && <RunPanel base={props.base} item={run.item} />}
+        {!run.item && schema.data && schema.data.fields.length > 0 && (
+          <section>
+            <h2>Fields</h2>
+            <ul class="store-releases">
+              {schema.data.fields.map((f) => <li key={f.name}><code>{f.name}</code> <span class="auto-meta">{f.type}</span>{f.description && <span class="auto-hint"> — {f.description}</span>}</li>)}
+            </ul>
+          </section>
+        )}
+        {source.data?.source && (
+          <section>
+            <h2>Source</h2>
+            <pre class="store-source">{source.data.source}</pre>
+            {source.data.helpers.map((h) => (
+              <div key={h.name}>
+                <h3><code>{h.name}</code></h3>
+                <pre class="store-source">{h.source}</pre>
+              </div>
+            ))}
+          </section>
+        )}
       </div>
-      {(schema.error || source.error) && <div class="auto-error">{schema.error ?? source.error}</div>}
-      {schema.data && schema.data.fields.length > 0 && (
-        <section>
-          <h2>Fields</h2>
-          <ul class="store-releases">
-            {schema.data.fields.map((f) => <li key={f.name}><code>{f.name}</code> <span class="auto-meta">{f.type}</span>{f.description && <span class="auto-hint"> — {f.description}</span>}</li>)}
-          </ul>
-        </section>
+      {run.item && (
+        <aside class="store-package-aside">
+          <PriceCard item={run.item} />
+        </aside>
       )}
-      {source.data?.source && (
-        <section>
-          <h2>Source</h2>
-          <pre class="store-source">{source.data.source}</pre>
-          {source.data.helpers.map((h) => (
-            <div key={h.name}>
-              <h3><code>{h.name}</code></h3>
-              <pre class="store-source">{h.source}</pre>
-            </div>
+    </div>
+  );
+}
+
+// ── Running a live item (plans/paid-runs.md §10 "The store") ────────────────
+
+/** The price, the credit a run needs, what recent runs were charged, and
+ *  the visitor's own credit on that server. */
+function PriceCard(props: { item: LiveRunnableItem }) {
+  const { item } = props;
+  return (
+    <section class="store-price" data-testid="store-price">
+      <h3>Price</h3>
+      <div class="store-price-main">{priceWords(item)}</div>
+      {priceNotes(item).map((n) => <div class="auto-hint" key={n}>{n}</div>)}
+      {(item.base > 0 || item.markup > 0) && <div class="auto-hint">Paid over Lightning: any wallet pays the invoice. A run that fails is charged what it cost, no more.</div>}
+      <div class="auto-hint">
+        {item.kind === "step"
+          ? "It answers at once with what it returns."
+          : `You read ${item.results === "run" ? "the whole run: its steps, transcripts and files" : "its output and the files it declares"}.`}
+      </div>
+    </section>
+  );
+}
+
+/** The Run form: fields from the item's input, Run, the sheet when it is
+ *  priced, the runs this tab started there. */
+function RunPanel(props: { base: string; item: LiveRunnableItem }) {
+  const { base, item } = props;
+  const sp = useMemo(() => storePurse(base), [base]);
+  const fields = useMemo(() => runFields(item), [item]);
+  const [values, setValues] = useState<Record<string, unknown>>({});
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [payment, setPayment] = useState<{ p: PaymentRequired; workflow: string; settled: Promise<ClaimEnd>; done: (o: PayOutcome) => void } | null>(null);
+  const [runs, setRuns] = useState<LaunchedRun[]>(() => sp.runs().filter((r) => r.workflow === item.name));
+  const [called, setCalled] = useState<{ output: unknown; credit?: Record<string, unknown> } | null>(null);
+  const [credit, setCredit] = useState<{ remaining_usd: number; remaining_sats: number; held_usd: number; expires: string } | null>(null);
+  const priced = item.base > 0 || item.markup > 0;
+
+  const readCredit = () => {
+    const cred = sp.purse.credential;
+    if (!cred) return setCredit(null);
+    api.liveCredit(base, cred).then(
+      (a) => {
+        const b = a.body as { remaining_usd?: number; remaining_sats?: number; held_usd?: number; expires?: string } | null;
+        setCredit(a.status === 200 && b && typeof b.remaining_usd === "number" ? { remaining_usd: b.remaining_usd, remaining_sats: b.remaining_sats ?? 0, held_usd: b.held_usd ?? 0, expires: b.expires ?? "" } : null);
+      },
+      () => setCredit(null),
+    );
+  };
+  useEffect(readCredit, [base]);
+
+  const pay = useMemo(
+    () =>
+      payWith(sp, (p, workflow, settled) => {
+        // Paid, sheet or no sheet: the credit line shows it.
+        void settled.then(() => readCredit());
+        return new Promise<PayOutcome>((resolve) => {
+          setPayment({
+            p,
+            workflow,
+            settled,
+            done: (o) => {
+              setPayment(null);
+              resolve(o);
+            },
+          });
+        });
+      }),
+    [sp],
+  );
+
+  const submit = async (e: Event) => {
+    e.preventDefault();
+    const got = inputOf(fields, values);
+    if ("error" in got) return setError(got.error);
+    setError(null);
+    setCalled(null);
+    setBusy(true);
+    // One key per press: every retry of this launch — after a payment, after
+    // a lost answer — is the same run while it is in flight.
+    const key = newLaunchKey();
+    const send = async () => {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          const a = item.kind === "workflow"
+            ? await api.liveLaunch(base, item.name, { input: got.input, key }, sp.purse.credential)
+            : await api.liveCall(base, item.name, got.input, sp.purse.credential);
+          return httpCallResult(a.status, a.body, a.retryAfter);
+        } catch (err) {
+          // A launch is sent again under its key; a call is never sent twice.
+          if (item.kind === "step" || attempt >= 2) throw err;
+          await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+        }
+      }
+    };
+    try {
+      const result = await callPaying({ name: item.kind === "workflow" ? "run_workflow" : "call_tool" }, { call: send, purse: sp.purse, save: sp.save, pay, launch: { workflow: item.name } });
+      const failed = errorOf(result);
+      const body = bodyOf(result);
+      if (failed) setError(failed);
+      else if (item.kind === "workflow" && body && typeof body["runId"] === "string" && typeof body["token"] === "string") {
+        sp.remember({ workflow: item.name, runId: body["runId"], token: body["token"], at: new Date().toISOString() });
+        setRuns(sp.runs().filter((r) => r.workflow === item.name));
+      } else if (item.kind === "step" && body) {
+        setCalled({ output: body["output"], ...(body["credit"] && typeof body["credit"] === "object" ? { credit: body["credit"] as Record<string, unknown> } : {}) });
+      }
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setBusy(false);
+      readCredit();
+    }
+  };
+
+  return (
+    <section class="store-run" data-testid="store-run">
+      <h2>{item.kind === "workflow" ? "Run it" : "Call it"}</h2>
+      <form class="store-run-form" onSubmit={(e) => void submit(e)}>
+        {fields.map((f) => (
+          <ConfigField key={f.name} field={f} value={values[f.name]} onChange={(v) => setValues((cur) => ({ ...cur, [f.name]: v }))} />
+        ))}
+        {fields.length === 0 && <div class="auto-hint">It takes no input.</div>}
+        <div class="store-run-actions">
+          <button type="submit" class="btn btn-primary" disabled={busy}>
+            {busy ? "Starting…" : item.kind === "workflow" ? "Run" : "Call"}
+          </button>
+          <span class="auto-meta">{priceWords(item)}</span>
+          {credit && priced && (
+            <span class="auto-meta" title={credit.expires ? `Until ${new Date(credit.expires).toLocaleDateString()}` : undefined}>
+              · your credit here: {formatUsd(credit.remaining_usd)} ({formatSats(credit.remaining_sats)}){credit.held_usd > 0 ? `, ${formatUsd(credit.held_usd)} set aside for a run in flight` : ""}
+            </span>
+          )}
+          {!credit && priced && <span class="auto-meta">· you pay when you run it</span>}
+        </div>
+        {error && <div class="auto-error">{error}</div>}
+      </form>
+      {called && (
+        <div class="store-run-result">
+          <div class="store-run-head">
+            <span class="badge badge-ok">done</span>
+            {typeof called.credit?.["charged_usd"] === "number" && <span class="auto-meta">charged {formatUsd(called.credit["charged_usd"] as number)}</span>}
+          </div>
+          <pre class="store-source">{JSON.stringify(called.output, null, 2)}</pre>
+        </div>
+      )}
+      {runs.length > 0 && (
+        <div class="store-run-list">
+          <h3>Your runs here</h3>
+          {runs.map((r) => <RunView key={r.runId} base={base} run={r} onEnded={readCredit} />)}
+        </div>
+      )}
+      {payment && <PaymentSheet payment={payment.p} workflow={payment.workflow} settled={payment.settled} onDone={payment.done} />}
+    </section>
+  );
+}
+
+/** One run this tab started on a publisher's server, read with its run
+ *  token until it ends: its status, output, files, and what it was charged. */
+function RunView(props: { base: string; run: LaunchedRun; onEnded?: () => void }) {
+  const { base, run } = props;
+  const [view, setView] = useState<Record<string, unknown> | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    void (async () => {
+      for (let i = 0; live; i++) {
+        try {
+          const a = await api.liveRun(base, run.workflow, run.runId, run.token, i === 0 ? 0 : 25);
+          if (!live) return;
+          const b = a.body as Record<string, unknown> | null;
+          if (a.status !== 200 || !b) {
+            setError(typeof b?.["error"] === "string" ? (b["error"] as string) : `${a.status}`);
+            return;
+          }
+          setError(null);
+          setView(b);
+          // `charged` is there once it ended and was charged.
+          if (b["charged"] !== undefined) {
+            if (i > 0) props.onEnded?.();
+            return;
+          }
+        } catch {
+          // A dropped request: read again shortly.
+          await new Promise((r) => setTimeout(r, 3000));
+        }
+      }
+    })();
+    return () => {
+      live = false;
+    };
+  }, [base, run.runId, run.token]);
+  const status = String(view?.["status"] ?? "starting");
+  const artifacts = (Array.isArray(view?.["artifacts"]) ? view!["artifacts"] : []) as Array<{ id: string; title: string; url?: string; content?: unknown }>;
+  const output = view?.["output"];
+  const err = (view?.["error"] as { message?: string } | undefined)?.message;
+  return (
+    <div class="store-run-result" data-testid="store-run-view">
+      <div class="store-run-head">
+        <span class={`badge${status === "success" ? " badge-ok" : status === "error" ? " badge-danger" : ""}`}>{status}</span>
+        <span class="auto-meta">{new Date(run.at).toLocaleString()}</span>
+        {typeof view?.["charged"] === "number" && <span class="auto-meta">· charged {formatUsd(view["charged"] as number)}</span>}
+      </div>
+      {error && <div class="auto-error">{error}</div>}
+      {err && <div class="auto-error">{err}</div>}
+      {artifacts.length > 0 && (
+        <ul class="store-releases">
+          {artifacts.map((a) => (
+            <li key={a.id}>
+              {a.url ? <a href={runFileUrl(base, a.url, run.token)} target="_blank" rel="noopener">{a.title}</a> : <span>{a.title}</span>}
+            </li>
           ))}
-        </section>
+        </ul>
       )}
+      {output !== undefined && <pre class="store-source">{JSON.stringify(output, null, 2)}</pre>}
     </div>
   );
 }

@@ -1982,11 +1982,13 @@ export async function createStrut<TServices = unknown>(
   // gate's mode. With the INDEX role on, `GET /index/catalog`,
   // `/index/packages…` and `/index/concepts…` are open the same way — the
   // phone book and the search over public catalogs, public by construction
-  // (§7) — and so are `GET /llms.txt` (the same store as a markdown page
-  // for an agent that fetches URLs; llmstxt.org) and ONE POST,
+  // (§7) — and so is ONE POST,
   // `/index/mcp`: the same three reads as MCP tools for an agent with no
   // credential (src/packages/index-tools.ts); nothing on them installs or
-  // writes. And a peer may POST one more route,
+  // writes. `GET /llms.txt` is open whatever the role (llmstxt.org): the
+  // index's store as a markdown page, else the public view's — what anyone
+  // may run here and its price (plans/paid-runs.md §10) — and a 404 when
+  // nothing is public. And a peer may POST one more route,
   // `/packages/subscriptions/sync`: it carries nothing, and makes this strut
   // read its own subscriptions' catalogs — what the publisher pings.
   //

@@ -35,7 +35,8 @@
  *   distinct `key` starts another.
  * - **No call held past a client's patience.** `run_workflow` waits `wait`
  *   seconds (25 by default, 55 at most) for the run, sending progress while
- *   it waits, then answers the run's handle — `run_id` and `token` — for
+ *   it waits (from 10 s in, then every 5 s, to a client that asked), then
+ *   answers the run's handle — `run_id` and `token` — for
  *   `get_run`, which waits again. `call_tool` sends progress while the call
  *   runs (it answers within 60 s).
  * - **A failed or timed-out call is charged its cost**: `call_tool` has no
@@ -53,8 +54,10 @@ import { PUBLIC_RUN_WAIT_MAX_S } from "./public-runs.js";
 export const AGENT_RUN_WAIT_S = 25;
 /** Progress this often while a tool holds the call, so a client whose
  *  request times out unless progress resets it (60 s, the MCP SDK's
- *  default) keeps waiting. */
-export const AGENT_PROGRESS_EVERY_MS = 10_000;
+ *  default) keeps waiting. The door sends a yield's progress when the NEXT
+ *  one arrives (src/ai/mcp.ts: it cannot know which yield is the last), so
+ *  the first notification reaches the client two beats in: 10 s. */
+export const AGENT_PROGRESS_EVERY_MS = 5_000;
 
 export interface PublicAgentOptions {
   doors: PublicDoors;
