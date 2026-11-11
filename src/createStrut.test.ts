@@ -1461,8 +1461,9 @@ describe("the API key gate", () => {
     const peerPost = /^POST (?:\/workflows\/x\/(?:x\/run|run|runs\/x\/(?:cancel|pause|resume))|\/packages\/subscriptions\/sync)$/;
     // `POST /public/mcp` is a visitor's door, open to anyone (plans/public-surface.md §5).
     // The wallet is full scope only, its read included (plans/paid-runs.md §9).
-    // Earnings too (§8): the books are an admin's, like the wallet.
-    const fullOnlyReads = ["GET /earnings/wallet", "GET /earnings", "GET /earnings/entries"];
+    // Earnings too (§8): the books are an admin's, like the wallet. And the
+    // credit this strut bought at other struts (§10).
+    const fullOnlyReads = ["GET /earnings/wallet", "GET /earnings", "GET /earnings/entries", "GET /remote/credit"];
     for (const r of fullOnlyReads) assert.ok(routes.includes(r), r);
     // So are anyone's launch, its cancel and a tool's call (plans/paid-runs.md §3).
     const publicPost = /^POST \/public\/(?:mcp|credit|credit\/claim|workflows\/x\/(?:run|runs\/x\/cancel)|steps\/x\/run)$/;

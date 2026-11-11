@@ -3647,7 +3647,7 @@ Refusals answer `{ error, code, walletCode? }`:
 
 No step, builder tool or app page reaches the payer: it is never on the
 services bag. The second door that calls it is an accepted
-`remote/buy-credit` proposal (a later item), through the same service with
+`remote/buy-credit` proposal (§20), through the same service with
 `purpose: "purchase"`: its sends are pending, read and recorded the same
 way, and land in `purchases`.
 
@@ -3671,3 +3671,152 @@ entry (its purpose and who asked kept; `feeMsat` the fee, when known, else
 `{ days?, from?, to?, by?, package?, wallet? }` → `GET /earnings`'s answer.
 `days: 7` is the last seven days counting today. Under `ctx.app`, only a
 first-party page's call or run, for a viewer who is an admin here.
+
+## 20. A strut that buys — credit held at other struts (`plans/paid-runs.md` §10)
+
+What THIS strut does at another strut's public door (§17.4, §17.5, §17.7):
+the CVE case, an hourly automation that runs a workflow another strut
+sells. No peer record; any strut server's URL. `src/remote.ts`, the
+`remote/*` steps.
+
+**The seller** is a base URL, https only (the credit held there is a bearer
+credential): `https://cve.example`, or a strut under a path,
+`https://swarm.example:3355/lab`. A trailing `/` or `/public` is dropped,
+the host lower-cased. Every request to it goes through a guarded http: no
+loopback, private, link-local or reserved address, nor a name resolving to
+one; redirects followed by hand, and a redirect to another origin carries
+no `Authorization`. **`STRUT_REMOTE_LOCAL=1`** (`createStrut({ remote: {
+local: true } })`) is for a dev box or a LAN — two struts on one machine, a
+home box on `192.168.x`: an `http:` seller is allowed, and loopback and
+private addresses pass; a link-local one (the cloud's metadata at
+`169.254.169.254`) never does. Off by default: the credit is a bearer
+credential.
+
+**The credit** held at a seller is ONE L402 token (§17.5), kept in
+`entitlements.json` beside `payments.json`, encrypted, under names no step
+reads. A step presents it (`Authorization: L402 <macaroon>:<preimage>`)
+and never sees it.
+
+### The steps
+
+| Step | | |
+| --- | --- | --- |
+| `remote/list { url }` | read | `{ seller, runnable, credit }`: the seller's `GET /public` `runnable` list (§17.2), and what is held there — `{ held, remaining_usd?, remaining_sats?, held_usd?, expires?, expired?, replaced?, error?, buying? }`, read with `GET /public/credit` |
+| `remote/run-workflow { url, workflow, input?, key? }` | spends | `POST <seller>/public/workflows/:name/run`, then the launcher's view (`?wait=25`) until the run is charged: `{ seller, workflow, runId, status, output?, error?, charged_usd?, credit?, durationMs, existing? }` — `status` `success`, `error`, `cancelled`, or `stale` when the seller reports the run cut off and nothing resumes it for ~5 minutes |
+| `remote/call { url, type, config? }` | spends | `POST <seller>/public/steps/:type/run { config }`: `{ seller, type, output, credit? }` |
+| `remote/buy-credit { url, usd }` | buys | a PROPOSAL an admin accepts (below) |
+
+- **Spending needs no ask** (decision 16): an agent or an automation with
+  the step spends what is held. With no credit, or too little, the step
+  fails and pays nothing: `payment_required: <seller> asks $2.50 (2500
+  sats) for a run of cve/scan: this strut server holds no credit there. …
+  an admin buys credit there with remote/buy-credit { url, usd: 2.5 }`
+  (the 402's price; `short`, `expired` and `replaced` said as such). A
+  token the seller refuses is `token_refused:`; a 404 `not_found:`; a 429
+  or 5xx `remote_unavailable:` with `try again in N s`; other 4xx
+  `remote_refused:` with the seller's words. A `replaced` token, when the
+  token held changed since it was read (a purchase settled meanwhile), is
+  sent once more with the new one.
+- **What the seller charged is the step's cost.** Its output is marked with
+  it (`withUsage`: no model call, the dollars charged), so the calling run's
+  `totals.cost`, a public run's markup and its daily cap count it.
+- **Never spent by a stranger or another strut** (decision 16's "no ask"
+  is for this strut's own agents): in a run whose tree is a stranger's
+  public run, a run another strut launched on the peer key without a
+  person's credential, or a run started from either (a job, by
+  `startedBy`), `remote/run-workflow` and `remote/call` fail with
+  `spend_refused:` and reach nothing. A run a PERSON's credential launched
+  (`peer:person`) is this strut's own person and spends.
+- **A launch is never two runs.** It carries a `key` — by default the
+  step's own (its run and path), the same on every retry — and the seller
+  returns the run that key started while it is in flight (§17.4). A launch
+  the seller turns away for a moment — a 429 at its in-flight limit, a
+  drain's 503, any 5xx, no answer (a lost 202) — is tried again under that
+  key, up to 5 times, honouring `Retry-After` (one over 2 minutes, a day's
+  cap spent until midnight, is not waited for). The handle is journaled at
+  `<path>#launch` (no run token in it), so a resume of the calling run waits
+  on the run it launched, ended or not. The run token is kept by this
+  strut (in the seller's record) while the step waits, at most 7 days,
+  never in a run log. Cancelling the calling run cancels the remote one.
+- **A remote run is waited out.** It is the seller's and charged whether
+  or not it is read, so a seller that does not answer (restarting, a
+  proxy's 502, a 429) is read again after a wait that doubles to 30 s, for
+  as long as the calling run waits; only the seller not knowing the run or
+  its token (404, 401, 403: `run_unknown:`) ends the wait, and the run's
+  cancel stops it.
+- **A tool call is never sent twice**: the seller's door takes no key. A
+  call that FAILED there — `step_failed`, `result_too_big`, `timeout`,
+  which the seller charged its cost — is `failed_charged:`, never "try
+  again"; one whose answer was lost is `may_have_run:` (it may have run and
+  been charged: read the credit left with `remote/list`).
+- They are spending steps: never a page's call (`step_run`), never a public
+  tool, never an AI-published app's grant, and a closure that reaches them
+  `spends`. The job and builder seeds grant all four; the orchestrator
+  `remote/list` and `remote/buy-credit` (a turn never waits on a run).
+
+### Buying — `remote/buy-credit { url, usd }`
+
+Runs ONLY as a proposal (§12) an ADMIN accepted (`approver: "admin"`, as
+`package/install`): a direct call is refused, and the door behind it opens
+only for the accepted record on disk of that step, for that seller and
+that amount (an edit on the card included). Its card reads the seller's
+`/public`: who, what it sells and at what price, what recent runs were
+charged, what is held there now, and whether this server's wallet can pay
+(`no_pay_credential:` on accept when it cannot: nothing is paid).
+
+On accept:
+
+1. **One purchase per seller at a time.** Another still being paid answers
+   `purchase_in_flight:`; accept again once it settles or its invoice ends.
+   One the seller never answers for (it rotated its L402 root, stopped
+   selling, moved) ends an hour past its invoice when the payer says the
+   payment failed or never left; one the payer says SETTLED is kept (the
+   seller has the sats): an admin drops it with `DELETE /remote/purchases`.
+2. `POST <seller>/public/credit { usd }`, presenting the token held, so the
+   new one inherits what is left (§17.5, `carries`).
+3. **The challenge is checked before anything is paid** (`bad_challenge:`,
+   `quote_too_high:`): the invoice and the macaroon name one payment hash;
+   the macaroon is a strut credit token, un-narrowed, its `strut_sats` the
+   invoice's amount and its `strut_credit` at least the dollars accepted;
+   neither expired; and the sats are within 10% of what this server's own
+   rate (§18) makes of those dollars, when it has a reading.
+4. The purchase is kept ON FILE, then paid through the payer (§19,
+   `POST /earnings/withdraw`'s service, `purpose: "purchase"`): one
+   payment per payment hash, booked once as a `withdrawal` entry with
+   subject `purchase` (`GET /earnings`' `purchases`).
+5. **The token is stored only when its preimage hashes to its payment
+   hash** — the payer's, or the seller's `POST /public/credit/claim`
+   answer — and replaces the one held.
+
+The proposal's result: `{ seller, usd, sats, paymentHash, state: "stored",
+credit }`, or `state: "paying"` when the payment has not settled yet (or
+settled and the seller has not seen it). A purchase still out is CLAIMED
+every minute (and at boot) until the seller answers `settled` (stored) or
+`expired` (the invoice ended unpaid: dropped). The keeper never pays.
+Accepting the same proposal again (after a `failed` apply) reuses the
+purchase's invoice: a purchase is never paid twice. One sent whose invoice
+expired while the seller does not answer is kept, never dropped:
+`remote_unavailable: … the purchase is kept and claimed every minute` —
+until the payer says it never left (above). A withdraw error on a purchase
+already handed to the payer never drops it.
+
+### `GET /remote/credit`
+
+Full scope only (the deployment key, an admin's session), like §19.
+`{ sellers: [{ seller, credit?, purchase?, runs }] }`: per seller, the
+token held (`tokenId`, `paymentHash`, `boughtAt`, `usd`, `sats`,
+`expires`, `carried?`, `proposal`), the purchase still being paid
+(`proposal`, `usd`, `sats`, `msat`, `paymentHash`, `at`, `sent?`,
+`lastError?`), and how many remote runs it waits on — never a macaroon, a
+preimage or an invoice. `?balance=1` adds each seller's `balance`, read
+from it (`remote/list`'s `credit`).
+
+### `DELETE /remote/purchases?seller=<url>`
+
+Full scope only. Drops the purchase still being paid at that seller —
+for one the seller will never answer for — so the next `remote/buy-credit`
+there can go: `{ seller, dropped? }` (`dropped` as `GET /remote/credit`
+shows a purchase; none when there was nothing). `409
+purchase_in_flight` while one is being paid at that moment; `400` for a
+URL that is not a seller's. Nothing is paid or refunded: whether its
+payment went is the payer's (§19, `…/withdrawals/:paymentHash/read`).
