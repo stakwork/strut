@@ -12,6 +12,7 @@ import {
   useAppLink, useCancel, useHost, useLaunch, useRun, useRunEvents, useRuns, useStep, useToolInput, useTranscript, useTranscripts, useUpload, useWorkflow,
   useAssistant, assistantJobs, useJobUpdates, useGraphChanges, FEED_WAIT_MS,
   useAppState, APP_STATE_STEP, APP_STATE_WRITE_MS,
+  useRunFile, useRunFileUrl, runFileBlob, type RunFile,
 } from "./hooks.js";
 import { appLink } from "./links.js";
 
@@ -209,6 +210,71 @@ describe("the run hooks name their step and pass what they were given", () => {
     assert.deepEqual(calls, [{ type: "run/workflow", config: { workflow: "wf" } }]);
     assert.equal(h.result().data!.description, "a workflow");
     await h.unmount();
+  });
+});
+
+describe("a run's file as a URL the page can load", () => {
+  const glb = Buffer.from([0x67, 0x6c, 0x54, 0x46, 2, 0, 0, 0, 0xff]);
+  const model: RunFile = { path: "out/ship.glb", mediaType: "model/gltf-binary", bytes: glb.length, base64: glb.toString("base64") };
+
+  it("runFileBlob: the bytes from base64 or the text, of the file's type; a file cut short throws", async () => {
+    const b = runFileBlob(model);
+    assert.equal(b.type, "model/gltf-binary");
+    assert.deepEqual(Buffer.from(await b.arrayBuffer()), glb);
+    const t = runFileBlob({ path: "a.csv", mediaType: "text/csv", bytes: 4, text: "a,b\n" });
+    assert.equal(await t.text(), "a,b\n");
+    assert.throws(() => runFileBlob({ ...model, bytes: 12e6, truncated: true }), /out\/ship\.glb is 11\.4 MB, too big to read through one call/);
+  });
+
+  it("useRunFile → run/files once, kept; an initial file is shown without a call; nothing without a path", async () => {
+    const { client, calls } = fakeClient({ [RUN_STEPS.files]: () => model });
+    const h = await renderHook(() => useRunFile("wf", "r1", "out/ship.glb"), { client });
+    await until(() => h.result().data !== undefined, "the file");
+    assert.deepEqual(calls, [{ type: "run/files", config: { workflow: "wf", runId: "r1", path: "out/ship.glb" } }]);
+    await h.rerender();
+    assert.equal(calls.length, 1, "read once");
+    await h.unmount();
+    const given = fakeClient();
+    const g = await renderHook(() => useRunFile("wf", "r1", "out/ship.glb", { initial: model }), { client: given.client });
+    assert.equal(g.result().data, model);
+    const n = await renderHook(() => useRunFile("wf", "r1", undefined), { client: given.client });
+    await act(async () => { await sleep(30); });
+    assert.deepEqual(given.calls, []);
+    await g.unmount();
+    await n.unmount();
+  });
+
+  it("useRunFileUrl: a blob: URL of the file's bytes, let go of on unmount; a missing file is null, a cut one an error", async () => {
+    const revoked: string[] = [];
+    const revoke = URL.revokeObjectURL;
+    URL.revokeObjectURL = (u: string) => { revoked.push(u); revoke(u); };
+    try {
+      const { client } = fakeClient({ [RUN_STEPS.files]: () => model });
+      const h = await renderHook(() => useRunFileUrl("wf", "r1", "out/ship.glb"), { client });
+      await until(() => h.result().url !== null, "the URL");
+      const url = h.result().url!;
+      assert.match(url, /^blob:/);
+      assert.equal(h.result().pending, false);
+      assert.equal(h.result().error, null);
+      assert.equal(h.result().file, model);
+      await h.unmount();
+      assert.deepEqual(revoked, [url], "let go of once the component goes");
+
+      const none = fakeClient({ [RUN_STEPS.files]: () => null });
+      const m = await renderHook(() => useRunFileUrl("wf", "r1", "nope.glb"), { client: none.client });
+      await until(() => !m.result().pending, "the answer");
+      assert.deepEqual([m.result().url, m.result().error, m.result().file], [null, null, null]);
+      await m.unmount();
+
+      const cut = fakeClient({ [RUN_STEPS.files]: () => ({ ...model, bytes: 12e6, truncated: true }) });
+      const c = await renderHook(() => useRunFileUrl("wf", "r1", "out/ship.glb"), { client: cut.client });
+      await until(() => c.result().error !== null, "the error");
+      assert.equal(c.result().url, null);
+      assert.match(c.result().error!.message, /too big to read through one call/);
+      await c.unmount();
+    } finally {
+      URL.revokeObjectURL = revoke;
+    }
   });
 });
 

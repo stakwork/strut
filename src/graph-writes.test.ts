@@ -181,3 +181,77 @@ describe("graph writes, heard (plans/live-feeds.md §2, §3)", () => {
     assert.deepEqual(read.changes.map((c) => c.ref_id), ["n2", "n3"]);
   });
 });
+
+/** The history's side of a view, as src/history.ts keeps it: the views
+ *  waiting, and each touch. */
+function fakeHistory() {
+  const waiting = new Set<() => Promise<void>>();
+  const touches: Array<{ cause: string; run?: string }> = [];
+  return {
+    waiting: (f: () => Promise<void>) => void waiting.add(f),
+    touch: (t: { cause: string; run?: string }, from?: () => Promise<void>) => {
+      if (from) waiting.delete(from);
+      touches.push(t);
+    },
+    skipped: (f: () => Promise<void>) => void waiting.delete(f),
+    views: waiting,
+    touches,
+  };
+}
+
+describe("graph writes, told to the history (plans/concept-history.md §3)", () => {
+  const reporter = (h: ReturnType<typeof fakeHistory>, r: typeof reader = reader) =>
+    graphReporter({ runId: "r1", history: h, reader: r, debounceMs: 60_000 });
+
+  it("a flush of instances alone touches nothing, and leaves nothing waiting", async () => {
+    const h = fakeHistory();
+    const r = reporter(h);
+    r.note({ kind: "node", op: "created", ref_id: "a", node_type: "Option" });
+    r.note({ kind: "node", op: "updated", ref_id: "q1" }); // typed by a read: Question
+    r.note({ kind: "node", op: "created", ref_id: "run1", node_type: "StrutRun" });
+    r.note({ kind: "edge", op: "created", ref_id: "e1", edge_type: "HAS_OPTION", source: "q1", target: "a" });
+    assert.equal(h.views.size, 1, "waiting from the first write");
+    await r.flush();
+    assert.deepEqual(h.touches, []);
+    assert.equal(h.views.size, 0);
+  });
+
+  for (const [what, change] of [
+    ["a Concept", { kind: "node", op: "updated", ref_id: "c1", node_type: "Concept" }],
+    ["a type or an edge rule", { kind: "node", op: "updated", ref_id: "schema:Option", node_type: "Schema" }],
+    ["a step's claim", { kind: "node", op: "created", ref_id: "cl1", node_type: "Claim" }],
+    ["a PARENT_OF edge", { kind: "edge", op: "created", ref_id: "e1", edge_type: "PARENT_OF", source: "q1", target: "o1" }],
+    ["a claim's check edge", { kind: "edge", op: "created", ref_id: "e2", edge_type: "TESTS", source: "q1", target: "o1" }],
+    ["a node no read could type", { kind: "node", op: "updated", ref_id: "gone" }],
+    ["an edge of no known type", { kind: "edge", op: "deleted", ref_id: "e3" }],
+  ] as const) {
+    it(`a flush with ${what} among instances touches it once, as the run`, async () => {
+      const h = fakeHistory();
+      const r = reporter(h);
+      r.note({ kind: "node", op: "created", ref_id: "a", node_type: "Option" });
+      r.note(change);
+      await r.flush();
+      assert.deepEqual(h.touches, [{ cause: "run r1", run: "r1" }]);
+      assert.equal(h.views.size, 0);
+    });
+  }
+
+  it("a write noted while the batch was being typed stays waiting, so settle still flushes it", async () => {
+    const h = fakeHistory();
+    let release!: () => void;
+    const held = new Promise<void>((res) => (release = res));
+    const slow = { getNode: async (ref: string) => (await held, TYPES[ref] ? { node_type: TYPES[ref] } : null) };
+    const r = reporter(h, slow);
+    r.note({ kind: "node", op: "updated", ref_id: "q1" }); // an instance, once typed
+    const sending = r.flush();
+    await new Promise((res) => setImmediate(res));
+    r.note({ kind: "node", op: "updated", ref_id: "c1", node_type: "Concept" });
+    release();
+    await sending;
+    assert.deepEqual(h.touches, [], "the first batch held only an instance");
+    assert.equal(h.views.size, 1, "the Concept written meanwhile is waiting");
+    await r.flush();
+    assert.deepEqual(h.touches, [{ cause: "run r1", run: "r1" }]);
+    assert.equal(h.views.size, 0);
+  });
+});

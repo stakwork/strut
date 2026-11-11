@@ -23,6 +23,13 @@ import { requireApps, resolveAppPath } from "./_shared.js";
  * (`?app=…&input=…`); with `steps`, a person's clicks and typing then run
  * in the app's frame, through the verbs `browser/capture` runs. So a page
  * past the first one, or a tab of it, is looked at the way it is reached.
+ * Keys reach the app's frame (a key verb focuses it), and `keydown` /
+ * `keyup` hold one, as a game is played.
+ *
+ * What the page cannot say in its text — a canvas, a game's state — it
+ * puts on `window.__debug` (a JSON value, or a function returning one),
+ * the one debug convention every app shares: the look returns it as
+ * `debug`, and `{ do: "debug" }` reads it mid-list into `debugReads`.
  *
  * Under `app/*`, so the builders, which hold that grant, have it with no
  * browser grant of their own. The chat builder's tools run under no run:
@@ -36,10 +43,13 @@ export default defineStep({
     "With `path`: the app DIRECTORY you are working on — built (a failing build returns { ok: false, errors } and nothing opens) and looked at WITHOUT publishing anything, so look, fix and look again from the directory, and app/publish once it shows what was asked for. " +
     "With `version` (or neither): a published version — the active one by default; name a held app's draft to see it. " +
     "It opens on the app's first page; `input` opens it where a deep link carrying that input takes a person (the app's own keys, what its useToolInput() reads: { view: \"/runs\" } in the starter template, { run: \"12\" } where the app reads a run). " +
-    "`steps` then does what a person would, in the app, in order: { do: click | fill | type | press | select | hover | scroll | wait, ...that browser/* step's input }, each target a `selector`, e.g. { do: \"click\", selector: \"text=Agents\" }, { do: \"wait\", text: \"drafter\" }. " +
-    "Returns { name, version, rendered, hostError?, stopped?, text, errors, appErrors, path, url, width, height } — `version` a `preview-…` label for a directory; `rendered`: the page drew something; `hostError`: why the host shows no app; " +
+    "`steps` then does what a person would, in the app, in order: { do: click | fill | type | press | keydown | keyup | select | hover | scroll | wait | debug, ...that browser/* step's input }, each target a `selector`, e.g. { do: \"click\", selector: \"text=Agents\" }, { do: \"wait\", text: \"drafter\" }. " +
+    "Keys go to the APP: a key step puts focus in the app's frame first (an input you filled or an element you clicked keeps it). `press` taps a key; to HOLD one (a game's run, a jump while running), { do: \"keydown\", key: \"ArrowRight\" }, { do: \"wait\", ms: 500 }, { do: \"keyup\", key: \"ArrowRight\" } — one key a step, no auto-repeat, and a key still held when the list ends or a step fails is let go of. " +
+    "A page whose state is not in its text (a canvas, a game) puts what a look should see on `window.__debug` — a JSON value, or a function returning one; { do: \"debug\" } reads it at that point of the list. " +
+    "Returns { name, version, rendered, hostError?, stopped?, text, debug?, debugReads?, errors, appErrors, path, url, width, height } — `version` a `preview-…` label for a directory; `rendered`: the page drew something; `hostError`: why the host shows no app; " +
     "`stopped`: the step that failed ({ step, verb, args, message }) — the shot and the text are of where the page got to; `text`: the page's visible text (capped); " +
-    "`errors`: console errors, page errors, failed or 4xx/5xx requests; `appErrors`: what the app's error boundary reported during the look — and, when you are an agent, you SEE the screenshot. " +
+    "`debug`: `window.__debug` read just after the shot (left out when the page sets none); `debugReads`: each debug step's read, in order, as { step, value } or { step, error } (step = its number in the list); a read is capped at 8,000 chars of JSON, ending in a note when cut, and 2 s; " +
+    "`errors`: console errors, page errors, failed or 4xx/5xx requests, and `debug: …` when the last read failed; `appErrors`: what the app's error boundary reported during the look — and, when you are an agent, you SEE the screenshot. " +
     "It runs the page: its reads and writes are real calls, as when a person opens it.",
   input: z.object({
     name: z.string().describe("The app's workspace name."),
@@ -53,7 +63,7 @@ export default defineStep({
     steps: z
       .array(z.looseObject({ do: z.enum(LOOK_VERBS) }))
       .optional()
-      .describe("What a person does on the app's page before the shot, in order: each the input of the browser/* step it names plus `do`, a target by `selector`."),
+      .describe("What a person does on the app's page before the shot, in order: each the input of the browser/* step it names plus `do`, a target by `selector`; { do: \"debug\" } reads window.__debug there."),
     wait: z.number().int().min(0).max(30_000).optional().describe("Extra ms to let the page settle before the shot (a chart animating in, a slow first read)."),
     fullPage: z.boolean().optional().describe("The whole scrollable page, not just the 1280×800 viewport."),
     viewport: z

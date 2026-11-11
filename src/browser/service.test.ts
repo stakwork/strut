@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Browser } from "playwright-core";
-import { BrowserService, checkSteps, strictHint } from "./service.js";
+import { BrowserService, checkLookSteps, checkSteps, debugReadOf, readDebugInPage, strictHint } from "./service.js";
 import { sleep } from "./settle.js";
 
 test("BROWSER_WS_URL and BROWSER_CDP_URL together are refused at boot; either alone is a backend", () => {
@@ -38,6 +38,15 @@ class FakePage {
   box = { x: 10, y: 20, width: 400, height: 300 };
   /** `evaluate` never answers: a page whose main thread is wedged. */
   hang = false;
+  /** Every key the keyboard sent, in order: `down ArrowRight`, `up ArrowRight`. */
+  keys: string[] = [];
+  readonly keyboard = {
+    down: async (key: string) => {
+      if (key === "Nope") throw new Error(`keyboard.down: Unknown key: "${key}"`);
+      this.keys.push(`down ${key}`);
+    },
+    up: async (key: string) => void this.keys.push(`up ${key}`),
+  };
   isClosed() { return this.closed; }
   setDefaultTimeout() {}
   on() {}
@@ -236,6 +245,107 @@ test("checkSteps: each step is given what its verb needs, named by its place in 
   assert.throws(() => checkSteps([{ do: "fill", selector: "input" }], "capture"), /step 1 \(fill\): needs `value`/);
   assert.throws(() => checkSteps([{ do: "text", ref: "e1", selector: "p" }], "capture"), /step 1 \(text\): give ref or selector, not both/);
   assert.throws(() => checkSteps([{ do: "goto", url: "https://x" }, { do: "explode" }], "capture"), /^Error: capture: step 2: unknown verb "explode" \(one of goto, /);
+  checkSteps([{ do: "keydown", key: "ArrowRight" }, { do: "wait", ms: 500 }, { do: "keyup", key: "ArrowRight" }, { do: "keydown", key: "+" }], "capture");
+  assert.throws(() => checkSteps([{ do: "keydown" }], "capture"), /step 1 \(keydown\): needs `key`/);
+  assert.throws(() => checkSteps([{ do: "keyup", key: "Shift+ArrowRight" }], "verify"), /step 1 \(keyup\): one key a step — hold "Shift" with a keydown of its own/);
+  assert.throws(() => checkSteps([{ do: "debug" }], "capture"), /step 1: unknown verb "debug"/, "debug is the look's own");
+});
+
+test("checkLookSteps: the look's verbs — keys held and let go, debug reads — each target a selector", () => {
+  checkLookSteps([
+    { do: "click", selector: "canvas" },
+    { do: "debug" },
+    { do: "keydown", key: "ArrowRight" },
+    { do: "keydown", key: "Space" },
+    { do: "wait", ms: 500 },
+    { do: "keyup", key: "Space" },
+    { do: "keyup", key: "ArrowRight" },
+    { do: "press", key: "Escape" },
+    { do: "debug" },
+  ]);
+  assert.throws(() => checkLookSteps([{ do: "debug" }, { do: "evaluate", expression: "1" }]), /^Error: app\/look: step 2: unknown verb "evaluate" \(one of click, .*keydown, keyup, .*debug\)$/);
+  assert.throws(() => checkLookSteps([{ do: "debug" }, { do: "keydown" }]), /app\/look: step 2 \(keydown\): needs `key`/);
+  assert.throws(() => checkLookSteps([{ do: "click", ref: "e3" }]), /give a selector/);
+});
+
+test("a declared list lets go of every key it left held — at its end, and when a step fails; a key held before it stays down", async () => {
+  const pw = new FakePlaywright();
+  const svc = new Service(pw);
+  const page = (await svc.page("r1")) as unknown as FakePage;
+  assert.deepEqual(await svc.keydown("r1", { key: "Shift" }), { ok: true, held: ["Shift"] }, "held by the step alone, before any list");
+
+  const ran = await svc.drive("r1", [
+    { do: "keydown", key: "ArrowRight" },
+    { do: "keydown", key: "Space" },
+    { do: "keyup", key: "Space" },
+    { do: "keydown", key: "ArrowUp" },
+  ]);
+  assert.equal(ran.stopped, undefined);
+  assert.deepEqual(page.keys, ["down Shift", "down ArrowRight", "down Space", "up Space", "down ArrowUp", "up ArrowUp", "up ArrowRight"], "last down, first up; Shift is not the list's");
+
+  page.keys = [];
+  const failed = await svc.drive("r1", [{ do: "keydown", key: "ArrowLeft" }, { do: "keydown", key: "Nope" }, { do: "keyup", key: "ArrowLeft" }]);
+  assert.equal(failed.stopped?.step, 2);
+  assert.equal(failed.stopped?.verb, "keydown");
+  assert.match(failed.stopped?.message ?? "", /Unknown key: "Nope"/);
+  assert.deepEqual(page.keys, ["down ArrowLeft", "up ArrowLeft"], "the step after the failure never ran; the key it would have let go of is let go of");
+
+  assert.deepEqual(await svc.keyup("r1", { key: "Shift" }), { ok: true, held: [] });
+  await svc.dispose("r1");
+});
+
+// ── window.__debug: what a page puts out for a look to read ──────────────────
+
+/** A document root whose window holds `__debug` (or nothing, with NONE). */
+const NONE = Symbol("none");
+function rootWith(debug: unknown, cap = 100) {
+  const w: Record<string, unknown> = {};
+  if (debug !== NONE) w["__debug"] = debug;
+  return [{ ownerDocument: { defaultView: w } }, cap] as const;
+}
+
+test("readDebugInPage: a value, or a function's, as JSON; nothing set is none", async () => {
+  assert.deepEqual(await readDebugInPage(...rootWith(NONE)), { none: true });
+  assert.deepEqual(await readDebugInPage({ ownerDocument: null }, 100), { none: true }, "no window");
+  assert.deepEqual(await readDebugInPage(...rootWith({ x: 3, y: [1, 2] })), { json: '{"x":3,"y":[1,2]}' });
+  assert.deepEqual(await readDebugInPage(...rootWith(null)), { json: "null" }, "null is a value");
+  let x = 10;
+  const live = rootWith(function (this: Record<string, unknown>) {
+    return { x, self: this["__debug"] === live[0].ownerDocument.defaultView["__debug"] };
+  });
+  assert.deepEqual(await readDebugInPage(...live), { json: '{"x":10,"self":true}' }, "called on the window");
+  x = 60;
+  assert.deepEqual(await readDebugInPage(...live), { json: '{"x":60,"self":true}' }, "read anew each time: state in refs");
+  assert.deepEqual(await readDebugInPage(...rootWith(async () => ({ ready: true }))), { json: '{"ready":true}' }, "a promise is awaited");
+});
+
+test("readDebugInPage: a function that throws, or a value that is not JSON, is an answer, never a throw", async () => {
+  assert.deepEqual(
+    await readDebugInPage(...rootWith(() => {
+      throw new TypeError("player is undefined");
+    })),
+    { error: "window.__debug() threw TypeError: player is undefined" },
+  );
+  assert.deepEqual(await readDebugInPage(...rootWith(async () => Promise.reject(new Error("later")))), { error: "window.__debug() threw Error: later" });
+  const getter = { ownerDocument: { defaultView: Object.defineProperty({}, "__debug", { get: () => { throw new Error("no"); } }) } };
+  assert.deepEqual(await readDebugInPage(getter, 100), { error: "window.__debug threw Error: no" });
+  assert.deepEqual(await readDebugInPage(...rootWith(() => undefined)), { error: "window.__debug() returned undefined, not a JSON value" });
+  const loop: Record<string, unknown> = {};
+  loop["self"] = loop;
+  assert.match((await readDebugInPage(...rootWith(loop))).error as string, /^window\.__debug is not JSON: .*circular/i);
+  assert.match((await readDebugInPage(...rootWith(() => ({ n: 1n })))).error as string, /^window\.__debug\(\) is not JSON: .*BigInt/);
+  assert.deepEqual(await readDebugInPage(...rootWith(() => () => 1)), { error: "window.__debug() is a function, not a JSON value" });
+});
+
+test("a read is cut at the cap, and the look says so", async () => {
+  const big = { cells: Array.from({ length: 50 }, (_, i) => i) };
+  const whole = JSON.stringify(big);
+  const answer = await readDebugInPage(...rootWith(big, 40));
+  assert.deepEqual(answer, { json: whole.slice(0, 40), chars: whole.length });
+  assert.deepEqual(debugReadOf(answer), { value: `${whole.slice(0, 40)}\n… (window.__debug's JSON cut at 40 of ${whole.length} chars)` });
+  assert.deepEqual(debugReadOf({ json: '{"x":3}' }), { value: { x: 3 } }, "whole: the value itself");
+  assert.deepEqual(debugReadOf({ error: "nope" }), { error: "nope" });
+  assert.deepEqual(debugReadOf({ none: true }), { none: true });
 });
 
 // ── A page the JOB keeps ─────────────────────────────────────────────────────

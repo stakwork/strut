@@ -132,6 +132,12 @@ describe("concept files (pure)", () => {
     assert.deepEqual(app.parents, ["Workflow Builder"]);
     for (const must of ["app.yaml", "grants", "useLaunch", "useRun", "never on a render", "llm", "@/components/ui", "strut/views", "app/build", "app/publish", "wallet:", "useWallet", "useTransaction", "Pending is not failed"]) assert.ok(app.docs!.includes(must), must);
     assert.doesNotMatch(app.docs!, /hive|@<slug>|\bpod\b/i, "names nothing one deployment has");
+    // A game is a kind of app: its page under App, read when the builder
+    // makes one — the starter, the loop, input, assets, physics, the look.
+    const game = await read("Game.md");
+    assert.deepEqual(game.parents, ["App"]);
+    for (const must of ['template: "game"', "useFrame", "touch-action: none", "useGLTF", "data: URL", "useAppState", "useChannel", "permissions:", "window.__debug", "keydown"]) assert.ok(game.docs!.includes(must), must);
+    assert.doesNotMatch(game.docs!, /hive|@<slug>|\bpod\b/i, "names nothing one deployment has");
     // No job side of an app (retired 2026-10-22, with the `Job App` page):
     // an app is the builder's, handed over by NAME — the job agent passes
     // the builder's deliverable on — and a page over the job's own results
@@ -399,7 +405,9 @@ for (const tb of testBackends()) {
       assert.ok(builds.text.includes("- App — An APP") && !builds.text.includes("To record a new kind"), "the builder's kinds, the orchestrator's second list");
       assert.ok(!out.text.includes("Job App"), "nor in the job agent's");
       assert.ok(!kinds.text.includes("graph_graph_get"), "no tool, no opener");
-      assert.deepEqual(await run({ name: "App", docs: false }), { text: "" }, "no kinds under it, nothing");
+      const appKinds = await run({ name: "App", docs: false, tool: "" });
+      assert.ok(appKinds.text.includes("- Game — A GAME"), "a game is a kind of app: the builder finds its page under App");
+      assert.deepEqual(await run({ name: "Game", docs: false }), { text: "" }, "no kinds under it, nothing");
       assert.deepEqual(await run({ name: "Nope" }), { text: "" }, "no such page");
       assert.deepEqual(await run({ name: "Job" }, {}), { text: "" }, "no graph");
       const viaRegistry = await runSingleStep("context/concept", await createRegistry([]), { graph: b }, { config: { name: "Job", tool: "graph_get" } });

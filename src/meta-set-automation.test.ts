@@ -11,7 +11,8 @@ import type { Proposal, ProposalsCapability } from "./proposals.js";
 import type { Automations } from "./scheduler.js";
 
 // meta/set-automation: the builder job schedules a workflow it published —
-// only one stamped `ai`, only once a person allowed it, after its publish.
+// only one whose active version it wrote, only once a person allowed it,
+// after its publish.
 
 const yaml = (name: string) => `name: ${name}\nsteps:\n  - id: say\n    type: log\n    config:\n      message: hi\n`;
 const weekly = { every: "week", on: ["mon"], at: ["09:00"], tz: "Europe/London" };
@@ -48,10 +49,20 @@ describe("meta/set-automation", () => {
 
   it("refuses a seeded or a person's workflow, and a workflow that does not exist", async () => {
     await strut.workspace.publishWorkflowByContent("persons", yaml("persons"), undefined, undefined, undefined);
-    await assert.rejects(() => run({ workflow: "persons", name: "x", trigger: weekly }), /was not published through meta\/publish-workflow \(publisher: none\)/);
-    await assert.rejects(() => run({ workflow: "job", name: "x", trigger: weekly }), /was not published through meta\/publish-workflow/);
+    await assert.rejects(() => run({ workflow: "persons", name: "x", trigger: weekly }), /active version was not published through meta\/publish-workflow \(source: none\)/);
+    await assert.rejects(() => run({ workflow: "job", name: "x", trigger: weekly }), /active version was not published through meta\/publish-workflow \(source: seed\)/);
     await assert.rejects(() => run({ workflow: "nowhere", name: "x", trigger: weekly }), /not found — publish it with meta\/publish-workflow first/);
     assert.deepEqual(await automations().list("persons"), []);
+  });
+
+  it("follows the active version: the AI's version over a person's workflow is schedulable, the person's own later one is not", async () => {
+    const authoring = (strut.services as unknown as { authoring: { publishWorkflow(n: string, y: string): Promise<{ ok?: boolean }> } }).authoring;
+    await strut.workspace.publishWorkflowByContent("theirs", yaml("theirs"), undefined, undefined, undefined, { source: "ui" });
+    assert.equal((await authoring.publishWorkflow("theirs", yaml("theirs").replace("hi", "hello"))).ok, true);
+    const made = (await run({ workflow: "theirs", name: "x", trigger: weekly })) as { automation: { id: string } };
+    assert.ok(made.automation.id);
+    await strut.workspace.publishWorkflowByContent("theirs", yaml("theirs").replace("hi", "mine again"), undefined, undefined, undefined, { source: "ui" });
+    await assert.rejects(() => run({ workflow: "theirs", name: "y", trigger: weekly }), /\(source: ui\)/);
   });
 
   it("runs only as an accepted proposal: a tool call, a DAG step, meta/run-step or a subflow is refused", async () => {

@@ -21,6 +21,7 @@ export const RUN_STEPS = {
   launch: "run/launch",
   cancel: "run/cancel",
   workflow: "run/workflow",
+  files: "run/files",
 } as const;
 
 /** How often a `live` query refetches while something it shows is in flight. */
@@ -122,6 +123,7 @@ export const runKeys = {
   events: (workflow: string, runId: string) => ["strut", RUN_STEPS.events, workflow, runId] as const,
   transcript: (workflow: string, runId: string, path: string, full = false) => ["strut", RUN_STEPS.transcript, workflow, runId, path, full] as const,
   workflow: (workflow: string) => ["strut", RUN_STEPS.workflow, workflow] as const,
+  file: (workflow: string, runId: string, path: string) => ["strut", RUN_STEPS.files, workflow, runId, path] as const,
 };
 
 /** Drop undefined values, so the config strut sees is only what was asked. */
@@ -259,6 +261,103 @@ export function useTranscript(workflow: string, runId: string | undefined, path:
     enabled: (opts.enabled ?? true) && !!workflow && !!runId && !!path,
     staleTime: Infinity,
   });
+}
+
+/** One file of a run, as `run/files` answers (src/runs.ts `RunFile`): text
+ *  as text, anything else as base64. */
+export interface RunFile {
+  path: string;
+  mediaType: string;
+  /** The file's size on disk. */
+  bytes: number;
+  text?: string;
+  base64?: string;
+  /** Cut at `run/files`' cap: what came is not the whole file. */
+  truncated?: true;
+}
+
+export interface UseRunFileOptions {
+  enabled?: boolean;
+  /** Show this file instead of reading it. */
+  initial?: RunFile;
+}
+
+/** `run/files`: one file a run made — from its job's folder when it ran
+ *  under a job, else its artifacts; `path` relative to that. A page cannot
+ *  fetch a URL, so a run's file reaches it as one call's answer, which is
+ *  capped at 5 MB of text: a binary file up to about 3.7 MB, as base64.
+ *  Read once and kept (`refetch()` reads it again); `null` when there is no
+ *  such file. */
+export function useRunFile(workflow: string, runId: string | undefined, path: string | undefined, opts: UseRunFileOptions = {}): UseQueryResult<RunFile | null> {
+  const client = useStrutClient();
+  return useQuery({
+    queryKey: runKeys.file(workflow, runId ?? "", path ?? ""),
+    queryFn: () => client.run<RunFile | null>(RUN_STEPS.files, { workflow, runId, path }),
+    enabled: (opts.enabled ?? true) && !opts.initial && !!workflow && !!runId && !!path,
+    staleTime: Infinity,
+    ...(opts.initial ? { initialData: opts.initial } : {}),
+  });
+}
+
+/** A run's file as a `Blob` of its own type — the bytes from base64, or the
+ *  text. Throws on a file `run/files` cut short: a cut model, sound or image
+ *  is not the file. */
+export function runFileBlob(file: RunFile): Blob {
+  if (file.truncated) {
+    throw new Error(`${file.path} is ${(file.bytes / 1024 / 1024).toFixed(1)} MB, too big to read through one call — have the workflow make it smaller, or hand the host a link to it`);
+  }
+  if (file.base64 === undefined) return new Blob([file.text ?? ""], { type: file.mediaType });
+  const bin = atob(file.base64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type: file.mediaType });
+}
+
+export interface UseRunFileUrl {
+  /** A `blob:` URL of the file, or null — not read yet, no such file, or an error. */
+  url: string | null;
+  file: RunFile | null | undefined;
+  /** Reading the file, or making its URL. */
+  pending: boolean;
+  error: Error | null;
+  refetch(): void;
+}
+
+/**
+ * A run's file as a `blob:` URL (`run/files` → `runFileBlob`), for anything
+ * that takes a URL: `<img>`, `<video>`, `<audio>`, a model loader
+ * (`useGLTF(url)`, `new GLTFLoader().load(url, …)`), `fetch(url)` for the
+ * bytes. The URL is the page's own and reaches no server; it is let go of
+ * when the file changes or the component unmounts. A file `run/files` cut
+ * short (past its cap) is an `error`, never a URL.
+ */
+export function useRunFileUrl(workflow: string, runId: string | undefined, path: string | undefined, opts: UseRunFileOptions = {}): UseRunFileUrl {
+  const q = useRunFile(workflow, runId, path, opts);
+  const file = q.data;
+  const [made, setMade] = useState<{ file: RunFile | null | undefined; url: string | null; error: Error | null }>({ file: undefined, url: null, error: null });
+  useEffect(() => {
+    if (!file) {
+      setMade({ file, url: null, error: null });
+      return;
+    }
+    let url: string;
+    try {
+      url = URL.createObjectURL(runFileBlob(file));
+    } catch (err) {
+      setMade({ file, url: null, error: err instanceof Error ? err : new Error(String(err)) });
+      return;
+    }
+    setMade({ file, url, error: null });
+    return () => URL.revokeObjectURL(url);
+  }, [file]);
+  const current = made.file === file;
+  return {
+    url: current ? made.url : null,
+    file,
+    pending: q.isLoading || (!!file && !current),
+    error: (q.error as Error | null) ?? (current ? made.error : null),
+    refetch: () => void q.refetch(),
+  };
 }
 
 /**

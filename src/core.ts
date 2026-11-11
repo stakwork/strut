@@ -213,8 +213,8 @@ export interface StepContext<TServices = unknown> {
    *  deliberately and what a model inside it decided to do are not the same
    *  actor (plans/claims.md §4.1, fixed point 3). */
   agentTool?: boolean;
-  /** This step runs inside a workflow the meta surface published
-   *  (`publisher: ai`) on a strut whose host set `builder.reach`: the
+  /** This step runs inside a version of a workflow the meta surface wrote
+   *  (`source: agent`) on a strut whose host set `builder.reach`: the
    *  runner sets it, a subflow keeps it, and an agent's tool calls inherit
    *  it. Each step is then held to reach, as resolved (src/reach.ts). */
   aiAuthored?: boolean;

@@ -55,10 +55,10 @@ export const navigated = z.object({
 export const ok = z.object({ ok: z.literal(true) });
 
 /** The verbs a `capture` list may name — must match the service's CAPTURE_VERBS. */
-export const CAPTURE_VERBS = ["goto", "click", "fill", "type", "press", "select", "hover", "scroll", "wait", "text", "evaluate", "back"] as const;
+export const CAPTURE_VERBS = ["goto", "click", "fill", "type", "press", "keydown", "keyup", "select", "hover", "scroll", "wait", "text", "evaluate", "back"] as const;
 
 /** The verbs an `app/look` list may name — must match the service's LOOK_VERBS. */
-export const LOOK_VERBS = ["click", "fill", "type", "press", "select", "hover", "scroll", "wait"] as const;
+export const LOOK_VERBS = ["click", "fill", "type", "press", "keydown", "keyup", "select", "hover", "scroll", "wait", "debug"] as const;
 
 /** A kept page's name: the job's, so a later run can open it again. */
 export const session = z

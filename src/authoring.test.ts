@@ -14,8 +14,8 @@ import { mergeClaimSpecs } from "./claims-authoring.js";
 /**
  * The authoring capability (services.authoring) + the meta/* lib steps —
  * EVOLVE_SPEC §5.2/§6: an in-workflow agent's author/test/inspect surface.
- * It publishes only over what it stamped (publisher "ai"), and runs or
- * inspects anything but what is SEALED (src/sealed.ts).
+ * It stamps what it publishes (publisher "ai"), and publishes over, runs
+ * or inspects anything but what is SEALED (src/sealed.ts).
  *
  * Authored step sources deliberately avoid `import "strut"`: the temp
  * workspace lives outside the package tree, where that specifier can't
@@ -94,6 +94,11 @@ describe("authoring capability (the meta surface)", () => {
       "meta/get-run",
       "meta/search-runs",
       "meta/resume-run",
+      "meta/edit-workflow",
+      "meta/set-active-version",
+      "meta/set-workflow-category",
+      "meta/cancel-run",
+      "meta/pause-run",
       "meta/list-secrets",
       // the claims surface (plans/claims.md §2)
       "meta/add-claim",
@@ -160,7 +165,7 @@ describe("authoring capability (the meta surface)", () => {
     assert.equal(broken.loaded, false);
   });
 
-  it("editStep refuses steps the agent surface did not author", async () => {
+  it("editStep edits a step someone else published, and the step keeps its stamp", async () => {
     await strut.workspace.publishStep(
       "seeded/tool",
       echoStep("seeded/tool", 1),
@@ -168,10 +173,16 @@ describe("authoring capability (the meta surface)", () => {
       "harness-seed",
     );
     const res = (await authoring.editStep("seeded/tool", echoStep("seeded/tool", 2))) as any;
-    assert.ok(res.error && /only edits steps it authored/.test(res.error), res.error);
+    assert.equal(res.ok, true, JSON.stringify(res));
+    assert.equal(res.version, "v2");
+    assert.equal(res.loaded, true);
+    const ran = (await authoring.runStep("seeded/tool", { config: { msg: "x" } })) as any;
+    assert.equal(ran.output?.rev, 2, JSON.stringify(ran));
+    const listed = (await strut.workspace.listSteps()).find((s) => s.type === "seeded/tool");
+    assert.equal(listed?.publisher, "harness-seed", "a service's step stays the service's to clean up");
   });
 
-  it("publishWorkflow stamps publisher 'ai' and publishes only over that stamped set; a seeded workflow runs and reads back", async () => {
+  it("publishWorkflow stamps publisher 'ai' and publishes over anyone's workflow; a seed's says the next boot puts it back", async () => {
     // Candidate: published through the meta surface → stamped.
     const pub = (await authoring.publishWorkflow("cand-flow", logFlow("cand-flow", "v1"))) as any;
     assert.equal(pub.ok, true, JSON.stringify(pub));
@@ -194,17 +205,31 @@ describe("authoring capability (the meta surface)", () => {
     const bumped = (await authoring.publishWorkflow("cand-flow", logFlow("cand-flow", "v2"))) as any;
     assert.equal(bumped.version, "v2");
 
-    // Seeded outside the meta surface → unstamped: never published over…
-    await strut.workspace.createWorkflow("pod-pr", logFlow("pod-pr", "gold"));
+    // A person's workflow (published outside the meta surface, unstamped):
+    // the meta surface publishes over it, and the version it wrote says so.
+    await strut.workspace.createWorkflow("pod-pr", logFlow("pod-pr", "gold"), undefined, undefined, undefined, { source: "ui" });
+    const overwrite = (await authoring.publishWorkflow("pod-pr", logFlow("pod-pr", "better"))) as any;
+    assert.equal(overwrite.ok, true, JSON.stringify(overwrite));
+    assert.equal(overwrite.version, "v2");
+    assert.equal(overwrite.created, false);
+    assert.equal(overwrite.note, undefined, "not a seed");
+    const podMeta = (await strut.workspace.getWorkflowMetadata("pod-pr"))!;
+    assert.equal(podMeta.publisher, "ai", "the workflow carries the stamp once the AI wrote to it");
+    assert.equal(podMeta.versions["v2"]!.source, "agent");
+    assert.equal(((await authoring.getWorkflow("pod-pr")) as any).source, "agent");
+    assert.equal(((await authoring.getWorkflow("pod-pr", "v1")) as any).source, "ui");
 
-    const overwrite = (await authoring.publishWorkflow(
-      "pod-pr",
-      logFlow("pod-pr", "evil"),
-    )) as any;
-    assert.ok(overwrite.error && /not agent-authored/.test(overwrite.error), overwrite.error);
+    // A seeded workflow: the edit goes through, and the result says the next
+    // boot puts the seed back.
+    await strut.workspace.publishWorkflowByContent("seeded-flow", logFlow("seeded-flow", "seed"), undefined, undefined, undefined, { source: "seed" });
+    const overSeed = (await authoring.publishWorkflow("seeded-flow", logFlow("seeded-flow", "edited"))) as any;
+    assert.equal(overSeed.ok, true, JSON.stringify(overSeed));
+    assert.match(overSeed.note, /seeded by this strut server: the next boot puts the seeded version back/);
+    assert.match(overSeed.note, /into the seed's source/);
+    assert.equal(((await authoring.publishWorkflow("seeded-flow", logFlow("seeded-flow", "edited"))) as any).note, undefined, "nothing changed, nothing to say");
 
-    // …but not sealed, so it runs and its runs read back like a candidate's
-    // (the job agent running a seeded pod-pr through meta/run-workflow).
+    // Not sealed, so it runs and its runs read back like a candidate's (the
+    // job agent running a seeded pod-pr through meta/run-workflow).
     const seeded = (await authoring.runWorkflow("pod-pr")) as any;
     assert.equal(seeded.status, "success", JSON.stringify(seeded.error));
     const seededRuns = (await authoring.listRuns("pod-pr")) as any;
@@ -305,6 +330,96 @@ describe("authoring capability (the meta surface)", () => {
     assert.match(refused.error, /billed to alice/);
   });
 
+  it("editWorkflow and editStep take find-and-replace edits over the active version", async () => {
+    await authoring.publishWorkflow("cand-edits", logFlow("cand-edits", "one"));
+    const edited = (await authoring.editWorkflow("cand-edits", [{ old: '"one"', new: '"two"' }])) as any;
+    assert.equal(edited.ok, true, JSON.stringify(edited));
+    assert.equal(edited.version, "v2");
+    assert.ok((await strut.workspace.getWorkflowSource("cand-edits", "v2")).includes('"two"'));
+    assert.match(((await authoring.editWorkflow("cand-edits", [{ old: "nowhere", new: "x" }])) as any).error, /no match/);
+    assert.match(((await authoring.editWorkflow("no-such-flow", [{ old: "a", new: "b" }])) as any).error, /not found/);
+
+    await authoring.createStep("cand/edits", echoStep("cand/edits", 1));
+    const step = (await authoring.editStep("cand/edits", { edits: [{ old: "rev: 1", new: "rev: 7" }] })) as any;
+    assert.equal(step.ok, true, JSON.stringify(step));
+    assert.equal(step.version, "v2");
+    assert.equal(((await authoring.runStep("cand/edits", { config: { msg: "x" } })) as any).output.rev, 7);
+
+    // The step: code OR edits, never both, never neither.
+    const def = strut.getRegistry()["meta/edit-step"]!;
+    const ctx = { services: strut.services } as any;
+    assert.match(((await def.run({ type: "cand/edits" }, ctx)) as any).error, /full step source or `edits`/);
+    assert.match(((await def.run({ type: "cand/edits", code: "x", edits: [{ old: "a", new: "b" }] }, ctx)) as any).error, /not both/);
+  });
+
+  it("setActiveVersion rolls a workflow or a step back; the version is held to what publishing it would be", async () => {
+    await authoring.publishWorkflow("cand-roll", logFlow("cand-roll", "one"));
+    await authoring.publishWorkflow("cand-roll", logFlow("cand-roll", "two"));
+    const back = (await authoring.setActiveVersion("workflow", "cand-roll", "v1")) as any;
+    assert.deepEqual(back, { ok: true, kind: "workflow", name: "cand-roll", active: "v1" });
+    assert.equal((await strut.workspace.getWorkflowMetadata("cand-roll"))?.active, "v1");
+    assert.ok(((await authoring.setActiveVersion("workflow", "cand-roll", "v9")) as any).error);
+
+    await authoring.createStep("cand/roll", echoStep("cand/roll", 1));
+    await authoring.editStep("cand/roll", echoStep("cand/roll", 2));
+    assert.equal(((await authoring.setActiveVersion("step", "cand/roll", "v1")) as any).ok, true);
+    assert.equal(((await authoring.runStep("cand/roll", { config: { msg: "x" } })) as any).output.rev, 1);
+
+    // A sealed harness is never rolled back.
+    await strut.workspace.createWorkflow("sealed-roll", `name: sealed-roll\nsealed: true\nsteps:\n  - id: s\n    type: log\n    config:\n      message: a\n`);
+    await strut.workspace.publishWorkflowByContent("sealed-roll", `name: sealed-roll\nsealed: true\nsteps:\n  - id: s\n    type: log\n    config:\n      message: b\n`);
+    assert.match(((await authoring.setActiveVersion("workflow", "sealed-roll", "v1")) as any).error, /is sealed/);
+    // Nor rolled back onto a version that opens it to other struts.
+    await strut.workspace.createWorkflow("peer-roll", `name: peer-roll\npeer: true\nsteps:\n  - id: s\n    type: log\n    config:\n      message: a\n`);
+    await strut.workspace.publishWorkflowByContent("peer-roll", logFlow("peer-roll", "b"));
+    assert.match(((await authoring.setActiveVersion("workflow", "peer-roll", "v1")) as any).error, /says `peer: true`/);
+    assert.equal((await strut.workspace.getWorkflowMetadata("peer-roll"))?.active, "v2");
+  });
+
+  it("setWorkflowCategory sets and clears a category without publishing", async () => {
+    await authoring.publishWorkflow("cand-cat", logFlow("cand-cat", "x"));
+    assert.equal(((await authoring.setWorkflowCategory("cand-cat", "experiments")) as any).ok, true);
+    assert.equal((await strut.workspace.getWorkflowMetadata("cand-cat"))?.category, "experiments");
+    await authoring.setWorkflowCategory("cand-cat", null);
+    assert.equal((await strut.workspace.getWorkflowMetadata("cand-cat"))?.category ?? null, null);
+    assert.equal((await strut.workspace.getWorkflowMetadata("cand-cat"))?.active, "v1", "nothing published");
+  });
+
+  it("controlRun pauses and cancels a live run; refuses another's run and the caller's own", async () => {
+    const launch = async (name: string) => {
+      const res = await strut.app.request(`/workflows/${name}/run`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ input: {} }) });
+      assert.equal(res.status, 202);
+      return ((await res.json()) as { runId: string }).runId;
+    };
+    const settled = async (name: string, runId: string) => {
+      const deadline = Date.now() + 10_000;
+      for (;;) {
+        const summary = await strut.store.getRunSummary(name, runId);
+        if (summary) return summary;
+        assert.ok(Date.now() < deadline, `run ${runId} never ended`);
+        await new Promise((res) => setTimeout(res, 20));
+      }
+    };
+
+    await strut.workspace.createWorkflow("slow", `name: slow\nsteps:\n  - id: a\n    type: wait\n    config:\n      durationMs: 300\n  - id: b\n    type: wait\n    config:\n      durationMs: 300\n`);
+    const runId = await launch("slow");
+    const paused = (await authoring.controlRun("slow", runId, "pause")) as any;
+    assert.equal(paused.ok, true, JSON.stringify(paused));
+    const cancelled = (await authoring.controlRun("slow", runId, "cancel")) as any;
+    assert.equal(cancelled.ok, true, JSON.stringify(cancelled));
+    assert.equal((await settled("slow", runId)).status, "cancelled");
+
+    const theirs = await strut.run("slow", {}, { actor: "alice" });
+    assert.match(((await authoring.controlRun("slow", theirs.runId, "cancel", { principal: "bob" })) as any).error, /billed to alice/);
+
+    // meta/cancel-run on its own run is refused, not obeyed.
+    await strut.workspace.createWorkflow("self-stop", `name: self-stop\nsteps:\n  - id: stop\n    type: meta/cancel-run\n    config:\n      name: self-stop\n      runId: "{{ $runId }}"\n`);
+    const own = await launch("self-stop");
+    assert.equal((await settled("self-stop", own)).status, "success");
+    const end = (await strut.store.getRunEvents("self-stop", own)).find((e) => e.type === "step.end" && e.path === "self-stop/stop") as any;
+    assert.match(end.output.error, /cannot cancel itself/);
+  });
+
   it("sealed (EVOLVE_SPEC §6): a grading harness and a grader step are refused by name; a publish that reaches one is refused", async () => {
     // A seeded grading harness: `sealed: true` at the top of its YAML.
     await strut.workspace.createWorkflow("grader-flow", `name: grader-flow\nsealed: true\nsteps:\n  - id: say\n    type: log\n    config:\n      message: "gold"\n`);
@@ -325,6 +440,11 @@ describe("authoring capability (the meta surface)", () => {
       assert.ok(r.error && /is sealed \(a grading harness/.test(r.error), JSON.stringify(r));
     }
     assert.match(((await authoring.runStep("gaia/evaluate", { config: { msg: "x" } })) as any).error, /is sealed \(a grader\)/);
+    // Nor published over, nor edited: a version without the seal would open it.
+    assert.match(((await authoring.publishWorkflow("grader-flow", logFlow("grader-flow", "open"))) as any).error, /is sealed \(a grading harness.*may not publish over it/);
+    assert.deepEqual(Object.keys((await strut.workspace.getWorkflowMetadata("grader-flow"))!.versions), ["v1"]);
+    assert.match(((await authoring.editStep("gaia/evaluate", echoStep("gaia/evaluate", 2))) as any).error, /is sealed \(a grader\) — the meta surface may not edit it/);
+    assert.deepEqual((await strut.workspace.listStepVersions("gaia/evaluate")).versions, ["v1"]);
     assert.match(((await authoring.listRuns("step:gaia/evaluate")) as any).error, /is sealed \(a grader\)/);
     // The sealed namespaces: nothing is authored into them.
     assert.match(((await authoring.createStep("eval/sneak", echoStep("eval/sneak", 1))) as any).error, /sealed namespace/);
@@ -355,6 +475,14 @@ describe("authoring capability (the meta surface)", () => {
     assert.ok(!(await strut.workspace.listWorkflows()).some((w) => w.name === "cand-peer"), "nothing was published");
     const person = (await authoring.publishWorkflow("cand-peer", `name: cand-peer\npeer: person\nsteps:\n  - id: s\n    type: log\n    config:\n      message: hi\n`)) as any;
     assert.ok(person.error && /declares `peer: person`/.test(person.error), JSON.stringify(person));
+    // Over a person's workflow open to peers the key may not be kept: the
+    // AI's version closes it, and the refusal says so.
+    await strut.workspace.createWorkflow("open-flow", `name: open-flow\npeer: true\nsteps:\n  - id: s\n    type: log\n    config:\n      message: hi\n`);
+    const kept = (await authoring.publishWorkflow("open-flow", `name: open-flow\npeer: true\nsteps:\n  - id: s\n    type: log\n    config:\n      message: bye\n`)) as any;
+    assert.match(kept.error, /your version closes it to them until a person opens it again/);
+    const closed = (await authoring.publishWorkflow("open-flow", logFlow("open-flow", "bye"))) as any;
+    assert.equal(closed.ok, true, JSON.stringify(closed));
+    assert.equal((await strut.workspace.getWorkflow("open-flow")).peer, undefined);
   });
 
   it("the job agent's shape: a workflow whose meta/run-workflow step runs a seeded pod-pr", async () => {

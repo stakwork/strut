@@ -662,13 +662,6 @@ export class GraphWorkspaceStore implements WorkspaceStore {
     if (patch) await this.backend.nodes.update(w.ref_id, patch);
   }
 
-  async setWorkflowPublisher(name: string, publisher: string | null): Promise<void> {
-    const w = await this.workflowRow(name);
-    if (!w) throw new Error(`Workflow "${name}" not found`);
-    const patch = patchFor(w as unknown as Record<string, unknown>, { publisher: publisher || undefined });
-    if (patch) await this.backend.nodes.update(w.ref_id, patch);
-  }
-
   async setWorkflowAutomations(name: string, automations: Automation[]): Promise<void> {
     const w = await this.workflowRow(name);
     if (!w) throw new Error(`Workflow "${name}" not found`);

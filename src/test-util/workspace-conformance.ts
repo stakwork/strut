@@ -155,7 +155,7 @@ export function workspaceConformance(impl: WorkspaceImpl): void {
       await ws.setWorkflowAutomations("wf", automations);
       await ws.setWorkflowOwner("wf", "alice-1");
       await ws.setWorkflowRunCap("wf", 2.5);
-      await ws.setWorkflowPublisher("wf", "ai");
+      await ws.publishWorkflowByContent("wf", (await ws.getWorkflowSource("wf", "v1")).replace("old", "theirs"), undefined, undefined, "ai");
       await ws.publishWorkflow("other", "v1", { steps });
 
       assert.equal(await ws.deleteWorkflow("wf"), true);
@@ -175,23 +175,27 @@ export function workspaceConformance(impl: WorkspaceImpl): void {
       assert.equal(meta!.owner, undefined);
       assert.equal(meta!.maxRunCostUsd, undefined);
       assert.equal(meta!.automations, undefined);
-      assert.equal(meta!.publisher, undefined, "a new workflow is nobody's to hand over");
+      assert.equal(meta!.publisher, undefined, "a new workflow carries no stamp of the old one");
     });
 
-    it("the publisher stamp moves only by setWorkflowPublisher: set, kept by a publish that carries none, cleared", async () => {
+    it("the publisher stamp: set by a publish that writes a version, kept by one that carries none, never by known content", async () => {
       const stamp = async () => (await ws.getWorkflowMetadata("wf"))?.publisher;
       await ws.publishWorkflow("wf", "v1", { steps });
+      const v1 = await ws.getWorkflowSource("wf", "v1");
       assert.equal(await stamp(), undefined);
-      await ws.setWorkflowPublisher("wf", "ai");
+
+      // The meta surface writes a version over a person's workflow: stamped.
+      await ws.publishWorkflowByContent("wf", v1.replace("hi", "bye"), undefined, undefined, "ai", { source: "agent" });
       assert.equal(await stamp(), "ai");
       assert.equal((await ws.listWorkflows()).find((w) => w.name === "wf")?.publisher, "ai");
+      assert.equal((await ws.getWorkflowMetadata("wf"))!.versions["v2"]!.source, "agent");
 
-      await ws.publishWorkflowByContent("wf", (await ws.getWorkflowSource("wf", "v1")).replace("hi", "bye"));
+      // A person's publish keeps it; so does republishing known content.
+      await ws.publishWorkflowByContent("wf", v1.replace("hi", "again"), undefined, undefined, undefined, { source: "ui" });
       assert.equal(await stamp(), "ai", "a person's publish keeps the stamp");
-
-      await ws.setWorkflowPublisher("wf", null);
-      assert.equal(await stamp(), undefined);
-      await assert.rejects(() => ws.setWorkflowPublisher("missing", "ai"), /not found/);
+      await ws.publishWorkflowByContent("other", v1, undefined, undefined, undefined);
+      await ws.publishWorkflowByContent("other", v1, undefined, undefined, "ai");
+      assert.equal((await ws.getWorkflowMetadata("other"))?.publisher, undefined, "known content never re-stamps");
     });
 
     it("owner and run cap are workflow-level metadata: set, survive a publish, clear", async () => {

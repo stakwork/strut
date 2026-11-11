@@ -1,0 +1,15 @@
+{
+  "//": "Type-checks the `game` starter (src/apps/templates/game, the Game Concept page's start) against the kit: its own src first for @/, then the kit's; bare packages from the kit's install. `npx tsc -p kit/tsconfig.game.json`.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": [],
+    "paths": {
+      "@strut/kit": ["./src/index.ts"],
+      "@strut/kit/folds": ["./src/folds/index.ts"],
+      "@/*": ["../src/apps/templates/game/src/*", "./src/*"],
+      "*": ["./node_modules/@types/*", "./node_modules/*"]
+    }
+  },
+  "include": ["../src/apps/templates/game/src/**/*"]
+}

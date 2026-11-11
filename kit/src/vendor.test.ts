@@ -16,6 +16,11 @@ const SINGLETONS: Record<string, string> = {
   zod: "/zod/v4/classic/schemas.mjs",
   "radix dismissable layer": "/react-dismissable-layer/dist/index.mjs",
   "react-router": "/react-router/dist/production/index.mjs",
+  three: "/three/build/three.core.mjs",
+  // @react-three/rapier pins its rapier: the kit pins the same, one engine.
+  rapier: "/@dimforge/rapier3d-compat/rapier.mjs",
+  // drei's three-mesh-bvh is the kit's.
+  "three-mesh-bvh": "/three-mesh-bvh/src/index.mjs",
 };
 
 /** Every file under a directory, relative to it. */
@@ -52,6 +57,13 @@ describe("the vendor build — a frozen module tree", () => {
     assert.equal(relative(outdir, map["@/lib/utils"]!), "files/src/lib/utils.mjs");
     assert.equal(relative(outdir, map["react"]!), "files/_m/react/index.js");
     assert.ok(map["@xyflow/react/dist/style.css"]?.endsWith(".css"));
+    // three's addons, by path, under both prefixes, with or without `.js`.
+    const orbit = "files/_m/three/examples/jsm/controls/OrbitControls.mjs";
+    for (const id of ["three/addons/controls/OrbitControls.js", "three/addons/controls/OrbitControls", "three/examples/jsm/controls/OrbitControls.js", "three/examples/jsm/controls/OrbitControls"]) {
+      assert.equal(relative(outdir, map[id]!), orbit, id);
+    }
+    assert.equal(relative(outdir, map["three/addons"]!), "files/_m/three/examples/jsm/Addons.mjs");
+    assert.ok(!Object.keys(map).some((id) => id.startsWith("three/addons/libs/")), "libs/ holds what loaders fetch, not entries");
     assert.equal(built.warnings.length, 0, built.warnings.map((w) => w.text).join("\n"));
   });
 

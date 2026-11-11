@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildApp, cspFor, lintAppSource, readBuildInfo, TOKEN_PLACEHOLDER, withToken, withoutTokenMeta, zodNamespaceImports, type BuildDeps } from "./build.js";
-import { parseManifest, WALLET_NOTIFICATION_TYPES, WALLET_RENEWAL_PERIODS, WALLET_REQUESTABLE_METHODS } from "./manifest.js";
+import { APP_PERMISSIONS, DECLARED_PERMISSIONS, EVERY_APP_PERMISSIONS, parseManifest, WALLET_NOTIFICATION_TYPES, WALLET_RENEWAL_PERIODS, WALLET_REQUESTABLE_METHODS } from "./manifest.js";
 import { NOTIFICATION_TYPES, RENEWAL_PERIODS, REQUESTABLE_METHODS } from "@strut/kit/wallet";
 import { loadKit, type KitLocation } from "./kit.js";
 import { treeFiles, treeHash } from "../version.js";
@@ -116,6 +116,35 @@ describe("the app build", () => {
     assert.ok(/\.text-brand\b/.test(html) || html.includes("--color-brand"), "the app's @theme token is compiled in");
   });
 
+  it("the game starter builds: Rapier, drei and React Three Fiber from the kit, one document", async () => {
+    const dir = fresh();
+    await cp(join(HERE, "templates", "game"), dir, { recursive: true });
+    const r = await build(dir);
+    assert.ok(r.ok, errorsOf(r).join("\n"));
+    assert.deepEqual(r.warnings, []);
+    const html = await readFile(join(dir, "dist", "index.html"), "utf8");
+    assert.ok(html.includes("Coin rush"));
+    assert.ok(html.includes("'wasm-unsafe-eval'"), "Rapier compiles its WebAssembly: the CSP allows it");
+  });
+
+  it("an imported model, sound or texture is a data URL; three's addons import by path, under either prefix", async () => {
+    const dir = await writeApp(fresh(), {
+      "app.yaml": "title: Assets\n",
+      "src/App.tsx":
+        'import model from "../public/ship.glb";\nimport level from "../public/level.vox";\nimport hit from "../public/hit.ogg";\nimport sky from "../public/sky.hdr";\n' +
+        'import { OrbitControls } from "three/addons/controls/OrbitControls.js";\nimport { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader";\n' +
+        "export default function App() { return <p>{[model, level, hit, sky, typeof OrbitControls, typeof GLTFLoader].join(\"|\")}</p>; }\n",
+    });
+    await mkdir(join(dir, "public"), { recursive: true });
+    for (const f of ["ship.glb", "level.vox", "hit.ogg", "sky.hdr"]) await writeFile(join(dir, "public", f), Buffer.from([0x67, 0x6c, 0x54, 0x46, 2, 0, 0, 0]));
+    const r = await build(dir);
+    assert.ok(r.ok, errorsOf(r).join("\n"));
+    const html = await readFile(join(dir, "dist", "index.html"), "utf8");
+    // base64, or percent-encoded when that is shorter (esbuild's choice)
+    assert.equal(html.match(/data:[^"]*?(?:Z2xURgIAAAA=|glTF%02%00%00%00)/g)?.length, 4, "four files, four data URLs");
+    assert.ok(html.includes("OrbitControls"));
+  });
+
   it("a kit import resolves, an alias too, and a kit stylesheet rides along raw", async () => {
     const dir = await writeApp(fresh(), {
       "app.yaml": "title: Kit imports\n",
@@ -213,12 +242,16 @@ describe("the app build", () => {
     }
   });
 
-  it("a global fetch, XMLHttpRequest or WebSocket is a WARNING naming the hook; the build goes through", async () => {
+  it("a fetch of a written-out URL, XMLHttpRequest or WebSocket is a WARNING naming the hook; the build goes through", async () => {
     const r = await build(await writeApp(fresh(), minimal('async function load() { const r = await fetch("/api/x"); new WebSocket("ws://x"); return r; }')));
     assert.ok(r.ok, errorsOf(r).join("\n"));
     assert.equal(r.warnings.length, 2);
-    assert.match(r.warnings[0]!, /src\/App\.tsx:1: calls the global fetch — .*connect-src 'none'.*useStep.*useLaunch/);
+    assert.match(r.warnings[0]!, /src\/App\.tsx:1: fetches a URL — .*connect-src data: blob:.*useStep.*useLaunch/);
     assert.match(r.warnings[1]!, /opens a WebSocket/);
+    // What a page may fetch: an imported file's data: URL, a blob it made.
+    const fine = await build(await writeApp(fresh(), minimal('async function load(model: string) { await fetch(model); await fetch(`data:,x`); return fetch("blob:x"); }', using("load"))));
+    assert.ok(fine.ok, errorsOf(fine).join("\n"));
+    assert.deepEqual(fine.warnings, []);
     assert.deepEqual((await readBuildInfo(await writeApp(fresh(), minimal())))?.warnings, undefined, "a fresh dir has no build yet");
   });
 
@@ -244,6 +277,18 @@ describe("the app build", () => {
     const none = await writeApp(fresh(), minimal());
     assert.ok((await build(none)).ok);
     assert.equal((await readBuildInfo(none))!.wallet, undefined, "an app that asks for no wallet says nothing of one");
+  });
+
+  it("build.json carries the permissions the version's frame is granted beyond every app's, for the host that frames it", async () => {
+    const dir = await writeApp(fresh(), { ...minimal(), "app.yaml": "title: Tilt maze\npermissions: [motion, fullscreen, motion, geolocation]\n" });
+    const r = await build(dir);
+    assert.ok(r.ok, errorsOf(r).join("\n"));
+    assert.deepEqual((await readBuildInfo(dir))!.permissions, ["motion", "geolocation"], "once each, as declared; every app's left out");
+    const game = await writeApp(fresh(), { ...minimal(), "app.yaml": "title: Maze\npermissions: [pointer-lock, fullscreen, gamepad, wake-lock]\n" });
+    assert.ok((await build(game)).ok, "a manifest written to the earlier names still builds");
+    assert.equal((await readBuildInfo(game))!.permissions, undefined, "and asks for nothing: every app has those");
+    const bad = await build(await writeApp(fresh(), { ...minimal(), "app.yaml": "title: Buzz\npermissions: [motion, rumble]\n" }));
+    assert.match(errorsOf(bad).join("\n"), /app\.yaml: permissions\[1\]: "rumble" is not a permission an app can declare — one of motion, camera, geolocation \(/);
   });
 
   it("a grant naming a workflow that does not exist fails the build naming it; the manifest is shape-checked", async () => {
@@ -331,6 +376,23 @@ wallet:
     assert.match(errors("wallet:\n  request_methods: []\n"), /request_methods needs at least one method/);
     assert.match(errors("wallet:\n  request_methods: [pay_keysend]\n  renewal_period: daily\n"), /renewal_period needs max_amount/);
     assert.match(errors("wallet:\n  request_methods: [pay_keysend]\n  budget_renewal: weekly\n"), /wallet/);
+  });
+
+  it("keeps the declared frame permissions once each, drops every app's, and names the allowed set for any other", () => {
+    const ok = parseManifest("title: Racer\npermissions: [fullscreen, pointer-lock, gamepad, geolocation, motion, wake-lock, camera, microphone, clipboard-write, motion]\n");
+    assert.ok(ok.ok);
+    assert.deepEqual(ok.manifest.permissions, ["geolocation", "motion", "camera"], "what it asks for beyond every app's, as declared, the repeat dropped");
+    assert.deepEqual([...APP_PERMISSIONS], [...DECLARED_PERMISSIONS, ...EVERY_APP_PERMISSIONS]);
+    assert.deepEqual([...DECLARED_PERMISSIONS], ["motion", "camera", "geolocation"]);
+    assert.equal((parseManifest("title: X\n") as { manifest: { permissions?: unknown } }).manifest.permissions, undefined);
+    const errors = (yaml: string) => (parseManifest(`title: X\n${yaml}`) as { errors?: string[] }).errors?.join("\n") ?? "";
+    assert.equal(
+      errors("permissions: [fullscreen, clipboardWrite]\n"),
+      'app.yaml: permissions[1]: "clipboardWrite" is not a permission an app can declare — one of motion, camera, geolocation ' +
+        "(fullscreen, pointer-lock, gamepad, wake-lock, microphone, clipboard-write are every app's already)",
+    );
+    assert.match(errors("permissions: [vibrate]\n"), /"vibrate" is not a permission: browsers block navigator\.vibrate in a cross-origin frame/);
+    assert.match(errors("permissions: fullscreen\n"), /app\.yaml: permissions: .*expected array/);
   });
 
   it("names the wallet contract's own lists", () => {

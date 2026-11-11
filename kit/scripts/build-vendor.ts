@@ -38,7 +38,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync,
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { kitDir, scanCandidates, sourceFiles, vendorDir } from "../src/node.js";
-import { ALIASES, CSS_ENTRIES, JS_ENTRIES, KIT_ENTRIES, PACKAGES, outName } from "./manifest.js";
+import { ALIASES, CSS_ENTRIES, JS_ENTRIES, KIT_ENTRIES, PACKAGES, SUBPATHS, outName } from "./manifest.js";
 
 export interface VendorEntry {
   /** The specifier an app imports. */
@@ -61,11 +61,44 @@ export interface VendorModule {
 /** A direct dependency's package.json (read from the file: not every package exports it). */
 const packageJson = (name: string) => JSON.parse(readFileSync(join(kitDir, "node_modules", name, "package.json"), "utf8"));
 
+/** Every `.js` file under a directory, relative to it, sorted. */
+function jsFiles(dir: string, base = dir): string[] {
+  const out: string[] = [];
+  for (const f of readdirSync(dir, { withFileTypes: true })) {
+    const p = join(dir, f.name);
+    if (f.isDirectory()) out.push(...jsFiles(p, base));
+    else if (f.name.endsWith(".js")) out.push(relative(base, p));
+  }
+  return out.sort();
+}
+
+/** The `SUBPATHS` families, expanded: one entry per module (`<prefix><path>.js`),
+ *  and the aliases that name the same module (no `.js`, the `also` prefixes). */
+export function subpathEntries(): { ids: string[]; aliases: Record<string, string> } {
+  const ids: string[] = [];
+  const aliases: Record<string, string> = {};
+  for (const s of SUBPATHS) {
+    for (const rel of jsFiles(join(kitDir, "node_modules", s.dir))) {
+      if (s.skip.some((d) => rel.startsWith(d))) continue;
+      const id = `${s.prefix}${rel}`;
+      ids.push(id);
+      const bare = rel.slice(0, -".js".length);
+      aliases[`${s.prefix}${bare}`] = id;
+      for (const p of s.also) {
+        aliases[`${p}${rel}`] = id;
+        aliases[`${p}${bare}`] = id;
+      }
+    }
+  }
+  return { ids, aliases };
+}
+
 /** The specifiers the import map holds, with what each builds from. */
 export function entries(): VendorEntry[] {
   const ui = readdirSync(join(kitDir, "src/components/ui")).filter((f) => f.endsWith(".tsx")).sort();
   const list: VendorEntry[] = [];
   for (const id of JS_ENTRIES) list.push({ id, in: id, out: outName(id), kind: "js" });
+  for (const id of subpathEntries().ids) list.push({ id, in: id, out: outName(id).replace(/\.js$/, ""), kind: "js" });
   for (const id of CSS_ENTRIES) list.push({ id, in: id, out: outName(id), kind: "css" });
   for (const [id, file] of Object.entries(KIT_ENTRIES)) list.push({ id, in: file, out: outName(id), kind: "js" });
   for (const f of ui) {
@@ -191,12 +224,16 @@ export async function buildVendor({ outdir = vendorDir, minify = true }: { outdi
   const css = all.filter((e) => e.kind === "css");
 
   // The resolution pass: what every JS entry reaches, and how each import resolved.
+  // Only the metafile is read. `splitting` keeps each module ONE output in
+  // memory: without it every entry is a whole bundle, and three's ~470
+  // addons each carried all of three (1.5 GB, against ~250 MB).
   const scan = await build({
     ...BUILD_OPTIONS,
     entryPoints: js.map((e) => ({ in: e.in, out: e.out })),
     outdir: join(outdir, ".scan"),
     write: false,
     metafile: true,
+    splitting: true,
   });
   const metafile = scan.metafile;
   const modules: Record<string, VendorModule> = {};
@@ -256,7 +293,8 @@ export async function buildVendor({ outdir = vendorDir, minify = true }: { outdi
     if (!existsSync(join(outdir, file))) throw new Error(`vendor build wrote no ${file} for ${e.id}`);
     imports[e.id] = `./${file}`;
   }
-  for (const [alias, target] of Object.entries(ALIASES)) {
+  const subpaths = subpathEntries();
+  for (const [alias, target] of Object.entries({ ...ALIASES, ...subpaths.aliases })) {
     if (!imports[target]) throw new Error(`alias ${alias} → ${target}: no such entry`);
     imports[alias] = imports[target];
   }
@@ -268,7 +306,8 @@ export async function buildVendor({ outdir = vendorDir, minify = true }: { outdi
     version: pkg.version,
     packages: packageVersions(),
     aliases: ALIASES,
-    entries: all.map((e) => e.id),
+    subpaths: SUBPATHS.map((s) => [s.prefix, ...s.also]),
+    entries: all.map((e) => e.id).filter((id) => !SUBPATHS.some((s) => id.startsWith(s.prefix))),
     modules: Object.keys(modules).length,
     candidates: candidates.length,
   };
