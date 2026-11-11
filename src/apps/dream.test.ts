@@ -12,6 +12,7 @@ import { treeHash } from "../version.js";
 import type { KitLocation } from "./kit.js";
 import { DREAM_APP, DREAM_DIR } from "./dream-seed.js";
 import { VIEWS_APP } from "./views-seed.js";
+import { buildModel, headline, inMemory, runSummary, wordDiff, type Run } from "./dream/src/lib/model.js";
 import { changesOf, costText, foundBy, nest, conceptChanges, sectionsOf, standingOf, summaryOf, type Claim, type SaidRow, type TreeConcept } from "./dream/src/lib/report.js";
 
 /**
@@ -91,6 +92,45 @@ describe("strut/dream: the report", () => {
     assert.deepEqual(summaryOf({ turns: 3, claims: [came], changes: out.changes }, "run"), { turns: 3, found: 1, concepts: 2, back: 1 }, "came back: corrected after a fix already made");
   });
 
+  it("reads every dream together: evidence added up across runs, each change tied to its claim, and where each cause stands", () => {
+    const fix = { at: "2026-11-11T04:00:00.000Z", concept: "w", line: "Summaries are three lines." };
+    const first = said({ dream: "run-1", at: "2026-11-10T10:00:00.000Z", excerpt: "too long" });
+    const again = said({ dream: "run-1", at: "2026-11-10T11:00:00.000Z", turn: 2, excerpt: "still too long" });
+    const back = said({ dream: "run-2", at: "2026-11-12T10:00:00.000Z", turn: 3, excerpt: "long again", outcome: "not_followed" });
+    const other = said({ dream: "run-2", at: "2026-11-12T11:00:00.000Z", turn: 4, excerpt: "no emoji" });
+    const run = (runId: string, startedAt: string, output: Run["output"]): Run => ({ runId, startedAt, status: "completed", output });
+    const root = { ref_id: "root", name: "Personal", depth: 0 };
+    const runs = [
+      run("run-1", "2026-11-11T04:00:00.000Z", {
+        turns: 5, claims: [claim("a", { corrected: 2, open: 0, fixes: [fix], evidence: [again, first] })],
+        changes: [{ claim: "a", title: "a", concept: { ref_id: "w", name: "Writing" }, kind: "changed", removed: ["Be brief."], added: [fix.line], why: "said twice" }],
+      }),
+      run("run-2", "2026-11-13T04:00:00.000Z", {
+        turns: 3, claims: [claim("a", { corrected: 3, open: 1, fixes: [fix], evidence: [back] }), claim("b", { corrected: 1, open: 1, fixes: [], evidence: [other] })],
+        changes: [], tree: [root, concept("w", "Writing", { docs: "Summaries are three lines.\nNo emoji." })],
+      }),
+      run("run-3", "2026-11-14T04:00:00.000Z", { turns: 0 }),
+    ];
+    const m = buildModel(runs);
+    assert.deepEqual(m.runs.map((r) => r.runId), ["run-3", "run-2", "run-1"], "newest first");
+    assert.deepEqual(m.causes.map((c) => [c.claim.id, c.fix, c.back, c.fresh, c.said.map((e) => e.excerpt)]), [
+      ["a", "back", 1, false, ["long again", "still too long", "too long"]],
+      ["b", "none", 0, true, ["no emoji"]],
+    ], "the newest run's claims, with what every run kept said for them");
+    const a = m.byId.get("a")!;
+    assert.deepEqual(a.fixes.map((f) => [f.run.runId, f.change.name, f.causes.map((w) => w.said.excerpt)]), [["run-1", "Writing", ["still too long", "too long"]]]);
+    assert.deepEqual(inMemory(m, a), [fix.line], "the line written for it that memory still has");
+    assert.deepEqual(runs.map((r) => runSummary(m, r)), [{ turns: 5, changed: 1, found: 2, back: 0 }, { turns: 3, changed: 0, found: 2, back: 1 }, { turns: 0, changed: 0, found: 0, back: 0 }]);
+    assert.deepEqual(runs.map((r) => headline(m, r)), ["1 change · 2 corrections", "2 corrections · 1 came back", "Nothing new to read"]);
+    assert.equal(headline(m, { ...runs[2]!, status: "running" }), "Dreaming");
+  });
+
+  it("marks the words two lines do not share", () => {
+    const d = wordDiff("Call it [peel agent] in notes", "Call it [Agent] in notes");
+    assert.deepEqual(d.was.filter(([w, hot]) => hot && w.trim()).map(([w]) => w), ["[peel", "agent]"]);
+    assert.deepEqual(d.is.filter(([w, hot]) => hot && w.trim()).map(([w]) => w), ["[Agent]"]);
+  });
+
   it("says what a run cost, and when it cost nothing", () => {
     assert.deepEqual([costText(0), costText(undefined), costText(0.004), costText(1.239)], ["no model cost", "no model cost", "under $0.01", "$1.24"]);
   });
@@ -126,7 +166,8 @@ describe("strut/dream — seeded at boot beside strut/views", () => {
     assert.deepEqual(info.imports, [{ name: VIEWS_APP, version: views.version, hash: views.hash }], "strut/views compiled in");
     assert.deepEqual(info.warnings, []);
     const html = await readFile(join(app.dir, "dist", "index.html"), "utf8");
-    assert.match(html, /Runs from its automation/);
+    assert.match(html, /run it once, in Automations/);
+    assert.match(html, /In memory now/);
     assert.doesNotMatch(html, /Run now/, "the app starts no run");
     assert.match(html, /Every step it took/);
     assert.ok(info.bytes < 2_000_000, `${info.bytes} bytes`);
