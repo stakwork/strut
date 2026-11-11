@@ -124,6 +124,7 @@ import { PACKAGE_DIGEST, PACKAGE_NAME } from "./packages/format.js";
 import {
   installPackage,
   installPackages,
+  repoOwned,
   uninstallPackage,
   type InstallOptions,
   type InstallResult,
@@ -794,7 +795,7 @@ export interface Strut<TServices = unknown> {
      *  (read with the secret `tokenSecret` names, default GITHUB_TOKEN), or a
      *  bare name looked up in the indexes this strut follows — the first
      *  that lists its publisher, or the one `index` names. */
-    install(ref: string, opts?: Pick<InstallOptions, "digest" | "url" | "tokenSecret" | "commit" | "actor" | "door" | "progress"> & { index?: string }): Promise<InstallResult>;
+    install(ref: string, opts?: Pick<InstallOptions, "digest" | "url" | "tokenSecret" | "commit" | "actor" | "door" | "adoptPages" | "progress"> & { index?: string }): Promise<InstallResult>;
     uninstall(pkg: string, opts?: { door?: PackageDoor }): Promise<UninstallResult>;
     /** The first-boot installs (`STRUT_PACKAGES`, `StrutOptions.packages`;
      *  src/packages/boot.ts): settles once each listed package was installed,
@@ -4062,6 +4063,8 @@ export async function createStrut<TServices = unknown>(
       oneAtATime(() =>
         recorded(
           async () => {
+            // An open repo's package goes with its repo: close it first.
+            if (await packages.repos.isOpen(pkg)) throw repoOwned(pkg);
             const out = await uninstallPackage(packageDeps, pkg, { ...opts, busy: busyWorkflow, forget: forgetWorkflow });
             await rebuildRegistry();
             return out;
@@ -4094,7 +4097,7 @@ export async function createStrut<TServices = unknown>(
   const packageError = (c: Context, err: unknown) => {
     const message = err instanceof Error ? err.message : String(err);
     const code = /^([a-z_]+):/.exec(message)?.[1] ?? "";
-    const status = ["package_conflict", "package_update_not_built", "package_busy", "package_distro_owned"].includes(code) || code.startsWith("catalog_")
+    const status = ["package_conflict", "package_update_not_built", "package_busy", "package_distro_owned", "package_repo_owned"].includes(code) || code.startsWith("catalog_")
       ? 409
       : ["package_index_unreachable", "package_repo_unreachable", "package_repo_denied"].includes(code)
         ? 502
@@ -4202,10 +4205,20 @@ export async function createStrut<TServices = unknown>(
   // applies the result. Git merges; strut writes files and applies trees. A
   // person's act like install — behind the key, one write at a time — or an
   // accepted `package/commit` proposal (the door below).
-  const repoInstall = (ref: string, o: { digest: string; commit: string; actor?: string }) =>
+  const repoInstall = (ref: string, o: { digest: string; commit: string; actor?: string; adoptPages?: boolean }) =>
     installs.start({ ref, door: "repo", ...(o.actor ? { actor: o.actor } : {}) }, (progress) =>
       recorded(
-        () => installPackage(packageDeps, ref, { digest: o.digest, commit: o.commit, door: "repo", busy: busyWorkflow, forget: forgetWorkflow, progress, ...(o.actor ? { actor: o.actor } : {}) }),
+        () =>
+          installPackage(packageDeps, ref, {
+            digest: o.digest,
+            commit: o.commit,
+            door: "repo",
+            busy: busyWorkflow,
+            forget: forgetWorkflow,
+            progress,
+            ...(o.actor ? { actor: o.actor } : {}),
+            ...(o.adoptPages ? { adoptPages: true } : {}),
+          }),
         (res) => ({ cause: res ? `repo ${res.package}@${o.commit.slice(0, 12)}` : `repo ${ref}`, ...(o.actor ? { actor: o.actor } : {}) }),
       ),
     ).done;

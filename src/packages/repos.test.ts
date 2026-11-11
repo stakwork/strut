@@ -8,6 +8,7 @@
 import { after, afterEach, before, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
@@ -423,5 +424,80 @@ describe("adding to a repo", () => {
     const done = (await (await req("/packages/repos/acme/moon/commit", json({ message: "The ghost", branch: "main" }))).json()) as CommitResult;
     assert.deepEqual(done.stamped, [{ kind: "workflow", name: "acme/moon/ghost" }]);
     assert.match(remoteFile(remote.dir, "main", "workflows/ghost.yaml"), /"boo again"/);
+  });
+});
+
+describe("a name taken twice", () => {
+  let strut: Strut;
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), "strut-repos-twice-"));
+    strut = await boot(join(root, "ws"));
+  });
+  afterEach(async () => {
+    await strut.close?.();
+    await rm(root, { recursive: true, force: true });
+  });
+  const req = (path: string, init?: RequestInit) => strut.app.request(path, init);
+  /** The package acme/moon as a folder, installed the ordinary way from `file:`. */
+  const plainMoon = async (message: string) => {
+    const dir = join(root, `plain-${++n}`);
+    await write(dir, { "strut.yaml": "package: acme/moon\nversion: 0.1.0\n", "workflows/score.yaml": SCORE("acme/moon/score", message) });
+    return `file:${dir}`;
+  };
+  const emptyLog = (dir: string) => spawnSync("git", ["--git-dir", dir, "log", "--oneline", "--all"], { encoding: "utf8" }).stdout.trim();
+
+  it("a first Open refuses items made here under the package's name, and keeps nothing", async () => {
+    await strut.workspace.publishWorkflowByContent("acme/moon/score", SCORE("acme/moon/score", "mine"));
+    await strut.workspace.publishWorkflowByContent("acme/moon/extra", SCORE("acme/moon/extra", "mine too"));
+    const remote = await moonRemote();
+    const res = await req("/packages/repos", json({ url: remote.url }));
+    assert.equal(res.status, 409);
+    const error = ((await res.json()) as { error: string }).error;
+    assert.match(error, /package_conflict: .*the workflow acme\/moon\/extra is a local one under acme\/moon\//);
+    assert.match(error, /the workflow acme\/moon\/score is a local one/);
+    // Nothing kept: the local items as they were, no repo, no working copy.
+    const meta = (await strut.workspace.getWorkflowMetadata("acme/moon/score"))!;
+    assert.deepEqual(Object.keys(meta.versions), ["v1"]);
+    assert.match(await strut.workspace.getWorkflowSource("acme/moon/score", "v1"), /"mine"/);
+    assert.deepEqual(((await (await req("/packages/repos")).json()) as { repos: unknown[] }).repos, []);
+    assert.equal(existsSync(join(root, "ws", "packages", "work", "acme", "moon")), false);
+  });
+
+  it("while a repo is open, no other door writes or removes its package", async () => {
+    const remote = await moonRemote();
+    assert.equal((await req("/packages/repos", json({ url: remote.url }))).status, 201);
+    const other = await plainMoon("other");
+    // A person's install of the same name.
+    const installed = await req("/packages/install", json({ ref: other }));
+    assert.equal(installed.status, 409);
+    assert.match(((await installed.json()) as { error: string }).error, /package_repo_owned: acme\/moon is opened here as a git repo/);
+    // The distro's (a subscription, a served box).
+    await assert.rejects(strut.packages.install(other, { door: "distro" }), /package_repo_owned/);
+    // An uninstall.
+    const gone = await req("/packages/acme/moon", { method: "DELETE" });
+    assert.equal(gone.status, 409);
+    assert.match(((await gone.json()) as { error: string }).error, /package_repo_owned/);
+    const meta = (await strut.workspace.getWorkflowMetadata("acme/moon/score"))!;
+    assert.match(await strut.workspace.getWorkflowSource("acme/moon/score", meta.active), /"one"/, "the repo's, untouched");
+    // Closed, it uninstalls; then the same name installs from elsewhere.
+    assert.equal((await req("/packages/repos/acme/moon", { method: "DELETE" })).status, 200);
+    assert.equal((await req("/packages/acme/moon", { method: "DELETE" })).status, 200);
+    assert.equal((await req("/packages/install", json({ ref: other }))).status, 201);
+  });
+
+  it("Create repo refuses a name installed here, or one with items under it, before pushing anything", async () => {
+    await strut.workspace.publishWorkflowByContent("hello", SCORE("hello", "hi"));
+    assert.equal((await req("/packages/install", json({ ref: await plainMoon("plain") }))).status, 201);
+    const remote = await bareRemote();
+    const installedHere = await req("/packages/repos/create", json({ url: remote.url, package: "acme/moon", version: "1.0.0", workflows: ["hello"] }));
+    assert.equal(installedHere.status, 409);
+    assert.match(((await installedHere.json()) as { error: string }).error, /package_conflict: acme\/moon is installed here already \(from file:.*Create repo makes a NEW package/);
+    assert.equal(emptyLog(remote.dir), "", "nothing pushed");
+
+    await strut.workspace.publishWorkflowByContent("acme/made/hello", SCORE("acme/made/hello", "made"));
+    const under = await req("/packages/repos/create", json({ url: remote.url, package: "acme/made", version: "1.0.0", workflows: ["hello"] }));
+    assert.equal(under.status, 409);
+    assert.match(((await under.json()) as { error: string }).error, /package_conflict: acme\/made\/hello is already here under acme\/made\//);
+    assert.equal(emptyLog(remote.dir), "", "nothing pushed");
   });
 });

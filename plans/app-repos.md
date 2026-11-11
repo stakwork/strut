@@ -97,12 +97,20 @@
 > - Closing a repo puts the rule back. An item added and not committed stays
 >   a local item that runs and can be edited, and the first Commit after the
 >   repo is opened again writes it.
+> - One name, one door. A first Open refuses workflows, steps or apps made
+>   here under the package's name and a Concept page made here with one of
+>   its pages' names, as an ordinary install does; only an open repo's
+>   apply, a reopen, and Create repo's own open take them. While a repo is
+>   open no other door writes or removes its package (`package_repo_owned`:
+>   a person's install, the distro's, an uninstall). Create repo refuses a
+>   name installed here, or one with items under it, before it pushes.
 > - The re-stamp rewrites the known version's door, actor and upstream in
 >   place: no new version. It runs after every other write, as it is not
 >   taken back.
 > - The `repo` door makes a fork what the commit holds, retires what the
->   commit dropped whatever its state, and takes a Concept page made here
->   under a page's name.
+>   commit dropped whatever its state, and — for a repo already open, or
+>   Create repo's own open — takes a Concept page made here under a page's
+>   name.
 > - A Commit defaults to a new branch `strut/<name>-<sha>` with a pull
 >   request (GitHub only; elsewhere the branch is pushed and the answer says
 >   why there is no PR). It pushes straight only when `branch` names the

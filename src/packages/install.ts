@@ -155,6 +155,12 @@ export interface InstallOptions {
   /** Who writes it (`install` unless said): the distro's door applies a
    *  release with no ask and updates (§12). Code only: no route takes it. */
   door?: PackageDoor;
+  /** The repo door only: a Concept page made here (no stamp) under one of
+   *  the package's page names is taken as the package's — Create repo's
+   *  open, where it is the page the package was built from. A repo already
+   *  opened here takes them anyway (its author added them); a first Open
+   *  refuses them, as a person's door does. */
+  adoptPages?: boolean;
   /** A workflow with a run in flight: one the release drops refuses the update. */
   busy?(workflow: string): boolean;
   /** Drops a retired workflow's schedules. */
@@ -188,6 +194,9 @@ interface Member {
 }
 
 const conflict = (msg: string) => new Error(`package_conflict: ${msg}`);
+/** A package opened here as a git repo, which another door may not write. */
+export const repoOwned = (pkg: string) =>
+  new Error(`package_repo_owned: ${pkg} is opened here as a git repo, which changes it through its commits alone — Pull brings in the repo's changes; to install it from elsewhere, close the repo (Packages → Repos) and uninstall it first`);
 const isHelper = (item: PackageItem) => item.kind === "step" && !!item.helper;
 
 /** Install the package at `ref` (pinned to `digest` when given), and first
@@ -259,7 +268,7 @@ async function installSet(
 ): Promise<InstallResult> {
   const tell = (p: InstallProgress) => opts.progress?.(p);
   tell({ phase: "checking", package: members.at(-1)!.info.manifest.package });
-  const checked = await checkSet(deps, members, registry, before, scratch, opts.door);
+  const checked = await checkSet(deps, members, registry, before, scratch, opts.door, !!opts.adoptPages);
   const retiring = retirements(checked, members, opts.door);
   const busy = retiring.filter((i) => i.go && i.item.kind === "workflow" && opts.busy?.(i.item.name));
   if (busy.length) throw new Error(`package_busy: ${busy.map((i) => i.item.name).join(", ")} has a run in flight, and the release no longer ships it — cancel it first`);
@@ -410,7 +419,7 @@ async function installSet(
         for (const i of shipped) if (edited.has(i.name)) reports.get(pkg)!.push({ kind: "concept", name: i.name, status: "modified" });
         const outcomes = shipped.every((i) => edited.has(i.name))
           ? []
-          : await seedConcepts(deps.graph, [{ dir, prefix: conceptPrefix(pkg), keepEdited: true, ...(opts.door === "repo" ? { adopt: true } : {}) }], {
+          : await seedConcepts(deps.graph, [{ dir, prefix: conceptPrefix(pkg), keepEdited: true, ...(opts.door === "repo" && (opts.adoptPages || here?.door === "repo") ? { adopt: true } : {}) }], {
               progress: (p) => tell({ phase: p.phase === "pages" ? "concepts" : "concept-tree", package: pkg, done: p.done, total: p.total }),
             });
         const written: Array<{ name: string; file: string }> = [];
@@ -635,6 +644,7 @@ async function checkSet(
   installed: Map<string, InstalledPackage>,
   scratch: string,
   door: PackageDoor,
+  adoptPages = false,
 ): Promise<Checked & { members: Array<Member & { claims: MemberClaims[] }> }> {
   const out: Checked = { plan: new Map(), dropped: new Map(), conceptsOn: false, warnings: [], apps: [], types: { types: [], byPackage: new Map() } };
   const sealed = deps.sealed ?? sealedStepPatterns();
@@ -655,6 +665,9 @@ async function checkSet(
       throw new Error(`package_unsupported: ${pkg} ships an app (apps/), and this strut server hosts no apps`);
     }
     const here = installed.get(pkg);
+    // A package opened here as a git repo changes through its commits alone
+    // (./repos.ts): no other door writes it.
+    if (here?.door === "repo" && door !== "repo") throw repoOwned(pkg);
     if (here && door === "install") {
       if (here.door === "distro") throw new Error(`package_distro_owned: ${pkg} was installed here by the distro, which updates and removes it`);
       if (here.digest && here.digest !== m.info.digest) {
@@ -672,15 +685,18 @@ async function checkSet(
       if (gone.length) out.dropped.set(pkg, gone);
     }
 
-    // The prefix holds this package's items alone — but for a repo's, whose
-    // author adds items here (an open repo takes new names): its commit
-    // makes them the package's, and one it does not hold stays local.
+    // The prefix holds this package's items alone — but for a repo already
+    // opened here (its commit applied, or the repo opened again after a
+    // close), whose author added items under it (an open repo takes new
+    // names): the commit makes them the package's, and one it does not hold
+    // stays local. A first Open refuses them, as a person's door does.
     const under = (name: string) => name.startsWith(`${pkg}/`);
+    const takesLocal = door === "repo" && here?.door === "repo";
     const local = new Map<string, InstalledItem>();
     for (const [kind, names] of [["workflow", [...workspaceWorkflows]], ["step", workspaceSteps], ["app", workspaceApps]] as const) {
       for (const name of names.filter(under)) {
         if (mine.has(name)) continue;
-        if (door === "repo") local.set(name, { kind, name, modified: true });
+        if (takesLocal) local.set(name, { kind, name, modified: true });
         else problems.push(`the ${kind} ${name} is a local one under ${pkg}/`);
       }
     }
@@ -833,8 +849,11 @@ async function checkSet(
       for (const { pkg, page } of pages) {
         const existing = found.get(page.name);
         const stamp = typeof existing?.unique_source_id === "string" ? existing.unique_source_id : undefined;
-        // A repo's door takes a page made here (no stamp) as the package's.
-        if (existing && !existing.deleted && !stamp?.startsWith(conceptPrefix(pkg)) && !(door === "repo" && !stamp)) {
+        // A repo's door takes a page made here (no stamp) as the package's —
+        // for a repo already opened here (its author added it) or Create
+        // repo's (it is the page the package was built from), never a first Open.
+        const adopts = door === "repo" && (adoptPages || installed.get(pkg)?.door === "repo");
+        if (existing && !existing.deleted && !stamp?.startsWith(conceptPrefix(pkg)) && !(adopts && !stamp)) {
           problems.push(`the Concept ${page.name} is in the graph already, ${stamp ? `stamped ${stamp.replace(/@.*$/, "")}` : "made here"}`);
         }
         for (const name of page.parents.filter((p) => !concepts.has(p))) {

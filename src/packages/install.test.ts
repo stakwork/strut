@@ -526,6 +526,20 @@ for (const tb of testBackends()) {
         | { ref_id: string; unique_source_id: string; docs: string }
         | undefined;
 
+    it("the repo door: a first Open refuses a page made here under a page's name; Create repo's open takes it over, the same node", async () => {
+      const made = await backend.nodes.write({ type: "Concept", data: { name: "Linear", docs: "Written here." } }, "create");
+      const tree = `file:${await writeTree({ ...PACKAGE, ...CONCEPTS })}`;
+      await assert.rejects(strut.packages.install(tree, { door: "repo" }), /package_conflict: .*the Concept Linear is in the graph already, made here/);
+      assert.equal((await conceptNode("Linear"))!.unique_source_id ?? undefined, undefined, "untouched");
+      assert.equal((await conceptNode("Issues")), undefined, "nothing installed");
+      const r = await strut.packages.install(tree, { door: "repo", adoptPages: true });
+      assert.equal(r.packages[0]!.status, "installed");
+      const linear = (await conceptNode("Linear"))!;
+      assert.equal(linear.ref_id, made.ref_id, "the same page");
+      assert.match(linear.unique_source_id, /^pkg\/acme\/linear\/Linear\.md@/);
+      assert.equal(linear.docs, "How Linear works here.");
+    });
+
     it("writes the Concepts stamped by the package, records the claims as its own, and retires untouched pages on uninstall", async () => {
       const files = {
         ...PACKAGE,

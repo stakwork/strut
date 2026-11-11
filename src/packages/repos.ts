@@ -103,7 +103,7 @@ export interface ReposDeps {
   http?: HttpCapability;
   secrets?: SecretsCapability;
   /** Install a tree the cache holds through the `repo` door. */
-  install(ref: string, opts: { digest: string; commit: string; actor?: string }): Promise<InstallResult>;
+  install(ref: string, opts: { digest: string; commit: string; actor?: string; adoptPages?: boolean }): Promise<InstallResult>;
   /** Build a package into the cache (Create repo; src/packages/build.ts). */
   build?(req: BuildRequest): Promise<CachedPackage>;
   /** Remove a bare original (a workflow, step or app). */
@@ -470,7 +470,9 @@ export function createRepos(deps: ReposDeps): Repos {
       };
       let install: InstallResult;
       try {
-        install = await deps.install(ref, { digest: tree.digest, commit, ...(input.actor ? { actor: input.actor } : {}) });
+        // Create repo's own open takes the pages it was built from (they are
+        // the same pages); a first Open of someone's repo never takes a page.
+        install = await deps.install(ref, { digest: tree.digest, commit, ...(input.actor ? { actor: input.actor } : {}), ...(originals ? { adoptPages: true } : {}) });
       } catch (err) {
         await removeWorkdir(pkg, cacheDir);
         throw err;
@@ -513,6 +515,23 @@ export function createRepos(deps: ReposDeps): Repos {
       const asked = parseGitRef(`git+${repo.url}@${branch}${input.path ? `#${input.path}` : ""}`);
       if (typeof asked === "string") throw refusal("package_source_invalid", asked);
       if ((await readAll()).some((r) => r.package === input.package)) throw refusal("package_repo_open", `${input.package} is opened here already`);
+      // What the open after the push would refuse, refused before anything
+      // is pushed: the name installed here already, or items made here under it.
+      const here = (await listInstalledPackages(deps.files)).find((p) => p.package === input.package);
+      if (here) {
+        throw refusal(
+          "package_conflict",
+          `${input.package} is installed here already (${here.door === "repo" ? "from a repo that was closed" : here.door === "distro" ? "by the distro" : `from ${here.source?.ref ?? "a package"}`}) — Create repo makes a NEW package: pick another name, or open that package's own repo`,
+        );
+      }
+      const prefix = `${input.package}/`;
+      const { workspace } = deps.files;
+      const taken = [
+        ...(await workspace.listWorkflows()).map((w) => w.name),
+        ...Object.keys(await workspace.getActiveStepHashes()),
+        ...(await workspace.listApps()).map((a) => a.name),
+      ].filter((n) => n.startsWith(prefix));
+      if (taken.length) throw refusal("package_conflict", `${taken.join(", ")} ${taken.length === 1 ? "is" : "are"} already here under ${prefix} — Create repo names its items under a new package: pick another name`);
       const { url: _u, branch: _b, path: _p, tokenSecret: _t, actor: _a, ...req } = input;
       const built = await deps.build(req);
       const token = await tokenOf(input.tokenSecret, input.actor);
@@ -539,7 +558,6 @@ export function createRepos(deps: ReposDeps): Repos {
         }
       });
       // The bare items the package was built from: what the person may retire.
-      const prefix = `${input.package}/`;
       const originals: RepoItem[] = [];
       for (const i of built.items) {
         if (i.kind !== "workflow" && i.kind !== "step" && i.kind !== "app") continue;
@@ -548,7 +566,7 @@ export function createRepos(deps: ReposDeps): Repos {
         const exists = i.kind === "workflow" ? !!(await ws.getWorkflowMetadata(bare)) : i.kind === "step" ? !!(await ws.getStepMetadata(bare)) : !!(await ws.getApp(bare));
         if (exists && !packagePrefixOf(bare)) originals.push({ kind: i.kind, name: bare });
       }
-      const opened = await open({ url: repo.url, ref: branch, ...(input.path ? { path: input.path } : {}), ...(input.tokenSecret ? { tokenSecret: input.tokenSecret } : {}), ...(input.actor ? { actor: input.actor } : {}) }, originals);
+      const opened = await open({ url: repo.url, ref: branch, ...(input.path ? { path: input.path } : {}), ...(input.tokenSecret ? { tokenSecret: input.tokenSecret } : {}), ...(input.actor ? { actor: input.actor } : {}) }, originals ?? []);
       return { ...opened, originals };
     },
 
