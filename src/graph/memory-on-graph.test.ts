@@ -246,7 +246,7 @@ describe("the generic tools cover remember and forget (ladybug)", { skip: lb.ski
   });
 
   it("the evidence keeps the person's words, and the session and turn beside the run", async () => {
-    const turnCtx = ctxOf({ graph: b }, { actor: "agent", turnOf: { session: "chat-1", turn: 3 } });
+    const turnCtx = ctxOf({ graph: b }, { actor: "agent", agentTurn: { session: "chat-1", turn: 3 } });
     await run(assertStep, { source_ref_id: tom, edge_type: "LIVES_IN", target_ref_id: leeds, text: "Tom lives in Leeds", words: "I'm in Leeds these days" }, turnCtx);
     const [ev] = await b.query("MATCH (:Node {node_type: 'Claim'})-[r:EVIDENCED_BY]->(e:Node {node_type: 'Evidence'}) RETURN e.content AS content, r.context AS context");
     assert.equal(ev?.["content"], "I'm in Leeds these days");

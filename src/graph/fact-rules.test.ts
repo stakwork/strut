@@ -30,7 +30,7 @@ type Step = { input: { parse(v: unknown): unknown }; run: (cfg: any, ctx: any) =
 const run = (step: Step, cfg: Record<string, unknown>, ctx: unknown): Promise<any> => step.run(step.input.parse(cfg), ctx);
 /** A tool call in turn `turn` of agent session `session`, as the agent step makes it. */
 const turnCtx = (b: LadybugBackend, session: string, turn: number) =>
-  ({ runId: `run-${session}-${turn}`, path: "t/s", workflow: "t", scope: {}, input: undefined, emit: async () => {}, services: { graph: b }, actor: "agent", turnOf: { session, turn } }) as unknown as StepContext;
+  ({ runId: `run-${session}-${turn}`, path: "t/s", workflow: "t", scope: {}, input: undefined, emit: async () => {}, services: { graph: b }, actor: "agent", agentTurn: { session, turn } }) as unknown as StepContext;
 
 const RULES = [
   "no node is a Thing",
@@ -239,7 +239,7 @@ describe("memory filing rules: each bug's shape breaks its rule (ladybug)", { sk
   });
 
   it("evidence names session and turn: a fact saved with the run alone", async () => {
-    const noTurn = { ...ctx(), turnOf: undefined };
+    const noTurn = { ...ctx(), agentTurn: undefined };
     await run(assertStep, { source_ref_id: tom, edge_type: "PLAYS", target_ref_id: padel, text: "Tom plays padel" }, noTurn);
     await breaks("evidence names session and turn");
   });

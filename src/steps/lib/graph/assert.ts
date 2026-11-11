@@ -196,7 +196,7 @@ export default defineStep({
             ...(f.said_by ? { said_by: f.said_by } : {}),
             // Where it was said is the run's to know, never the model's to pass.
             ...(ctx?.runId ? { run: ctx.runId } : {}),
-            ...(ctx?.turnOf ? { session: ctx.turnOf.session, turn: ctx.turnOf.turn } : {}),
+            ...(ctx?.agentTurn ? { session: ctx.agentTurn.session, turn: ctx.agentTurn.turn } : {}),
             ...(f.words ? { words: f.words } : {}),
             ...(f.replaces ? { replaces: f.replaces } : {}),
             ...(ns ? { namespace } : {}),
