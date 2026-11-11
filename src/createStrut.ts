@@ -189,7 +189,9 @@ import { HOME_POSTS, homeSyncRole, homeSyncRoutes, seedHomeSyncWorkflow, type Ho
 import { VOICE_CALLS, voiceConfig, voiceRoutes, warmSpeech, type VoiceConfig } from "./voice.js";
 import { createPublicSurface, normalizeSurface, surfaceProblem, VISIT_HEADER, visitProblem, visitorOfVisit, visitorRefusal, visitorRuns, type PublicSurface } from "./public-surface.js";
 import { brandProblem, brandStyles, normalizeBrand, readBrand, writeBrand } from "./brand.js";
-import { PUBLIC_PATH, PUBLIC_POST, publicRoutes, visitorAddress } from "./public-routes.js";
+import { PUBLIC_PATH, PUBLIC_POST, PUBLIC_REQUESTS_PER_MINUTE, publicRoutes, visitorAddress } from "./public-routes.js";
+/** How long `GET /llms.txt` keeps a page it built, per base URL. */
+const LLMS_TXT_CACHE_MS = 30_000;
 import { createPublicRuns, publicRunsMaxFromEnv, publicRunsPath } from "./public-runs.js";
 import { resolveRunCap } from "./run-cap.js";
 import { publicViewNeeds } from "./public-view.js";
@@ -4577,6 +4579,29 @@ export async function createStrut<TServices = unknown>(
             : undefined,
       })
     : null;
+  /** `GET /llms.txt`, one page (the index's store, else the public view):
+   *  built at most every `LLMS_TXT_CACHE_MS` per base URL — it reads the
+   *  ledger and the store — and counted against the visitor address's
+   *  `/public` budget, as the reads it summarizes are. `null`: nothing to
+   *  show, a 404. */
+  const llmsCache = new Map<string, { at: number; text: string | null }>();
+  const llmsPage = async (c: Context, build: (publicUrl: string) => Promise<string | null>) => {
+    if (publicDoors.overBudget(visitorAddress(c))) return c.json({ error: `too many requests: ${PUBLIC_REQUESTS_PER_MINUTE} a minute` }, 429, { "retry-after": "60" });
+    const publicUrl = publicUrlOf(c);
+    let hit = llmsCache.get(publicUrl);
+    if (!hit || Date.now() - hit.at > LLMS_TXT_CACHE_MS) {
+      if (llmsCache.size > 100) llmsCache.clear();
+      hit = { at: Date.now(), text: await build(publicUrl) };
+      llmsCache.set(publicUrl, hit);
+    }
+    if (hit.text === null) return c.json({ error: "nothing is public on this strut server" }, 404);
+    return c.body(hit.text, 200, {
+      "content-type": "text/markdown; charset=utf-8",
+      "x-content-type-options": "nosniff",
+      "cache-control": "public, max-age=30",
+      "access-control-allow-origin": "*",
+    });
+  };
   if (index) {
     const indexError = (c: Context, err: unknown) => {
       const message = err instanceof Error ? err.message : String(err);
@@ -4738,37 +4763,36 @@ export async function createStrut<TServices = unknown>(
     // agent that fetches URLs rather than speaks MCP: what the index is, the
     // door above, the open reads, every package and Concept page, each a
     // link to its JSON page here. Open like the reads; derived like them.
-    app.get("/llms.txt", async (c) => {
-      const { llmsTxt } = await import("./packages/index-tools.js");
-      const publicUrl = publicUrlOf(c);
-      let text = await llmsTxt(index, { publicUrl, ...(serveUi ? { store: publicUrl } : {}) });
-      // An index that also sells (plans/paid-runs.md §10): what anyone may
-      // run HERE, after the store.
-      const runnable = await publicDoors.runnable().catch(() => []);
-      if (runnable.length) {
-        const { runnableSection } = await import("./public-agents.js");
-        text += `\n# Run on this server\n\nAnyone may run these here, with no account, over MCP at ${publicUrl}/public/mcp (list_public, run_workflow, call_tool, get_run, get_credit) or plain HTTP.\n\n${runnableSection(runnable, publicUrl).join("\n")}\n`;
-      }
-      return c.body(text, 200, { "content-type": "text/markdown; charset=utf-8", "x-content-type-options": "nosniff", "cache-control": "public, no-cache" });
-    });
+    app.get("/llms.txt", (c) =>
+      llmsPage(c, async (publicUrl) => {
+        const { llmsTxt } = await import("./packages/index-tools.js");
+        let text = await llmsTxt(index, { publicUrl, ...(serveUi ? { store: publicUrl } : {}) });
+        // An index that also sells (plans/paid-runs.md §10): what anyone may
+        // run HERE, after the store.
+        const runnable = await publicDoors.runnable().catch(() => []);
+        if (runnable.length) {
+          const { runnableSection } = await import("./public-agents.js");
+          const how = enableMcp
+            ? `over MCP at ${publicUrl}/public/mcp (list_public, run_workflow, call_tool, get_run, get_credit) or plain HTTP`
+            : "over plain HTTP";
+          text += `\n# Run on this server\n\nAnyone may run these here, with no account, ${how}.\n\n${runnableSection(runnable, publicUrl).join("\n")}\n`;
+        }
+        return text;
+      }),
+    );
   } else {
     // The public view as ONE markdown page (llmstxt.org, plans/paid-runs.md
     // §10): what anyone may run here and its price, how an agent runs and
     // pays for it, what else anyone may read. Open to anyone, like
     // `/public`; nothing public, nothing here.
-    app.get("/llms.txt", async (c) => {
-      const listing = await publicDoors.listing();
-      if (!listing.runnable.length && !listing.workflows.length && !listing.apps.length && !listing.concepts.length && !listing.steps.length) {
-        return c.json({ error: "nothing is public on this strut server" }, 404);
-      }
-      const { publicLlmsTxt } = await import("./public-agents.js");
-      return c.body(publicLlmsTxt(listing, { publicUrl: publicUrlOf(c) }), 200, {
-        "content-type": "text/markdown; charset=utf-8",
-        "x-content-type-options": "nosniff",
-        "cache-control": "public, no-cache",
-        "access-control-allow-origin": "*",
-      });
-    });
+    app.get("/llms.txt", (c) =>
+      llmsPage(c, async (publicUrl) => {
+        const listing = await publicDoors.listing();
+        if (!listing.runnable.length && !listing.workflows.length && !listing.apps.length && !listing.concepts.length && !listing.steps.length) return null;
+        const { publicLlmsTxt } = await import("./public-agents.js");
+        return publicLlmsTxt(listing, { publicUrl, mcp: enableMcp });
+      }),
+    );
   }
 
   const envPoll = Number(bootEnv()["STRUT_DISTRO_POLL_MINUTES"] ?? 10);

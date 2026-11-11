@@ -11,7 +11,7 @@ import { shortDigest } from "./PackagesPanel";
 import { ConfigField } from "./ConfigField";
 import { PaymentSheet } from "./PaymentSheet";
 import { callPaying, formatSats, formatUsd, type ClaimEnd, type PayOutcome, type PaymentRequired } from "../visitor-pay";
-import { bodyOf, errorOf, httpCallResult, inputOf, newLaunchKey, priceBadge, priceNotes, priceWords, runFields, runFileUrl, type LaunchedRun, type LiveRunnableItem } from "../store-run";
+import { bodyOf, errorOf, httpCallResult, inputOf, newLaunchKey, priceBadge, priceNotes, priceWords, runEnded, runFields, runFileUrl, type LaunchedRun, type LiveRunnableItem } from "../store-run";
 import { payWith, storePurse } from "../store-purse";
 
 // ── The store front (plans/marketplace.md §7) ───────────────────────────────
@@ -1050,6 +1050,7 @@ function RunPanel(props: { base: string; item: LiveRunnableItem }) {
         </div>
         {error && <div class="auto-error">{error}</div>}
       </form>
+      {priced && <KeepCredit sp={sp} onChange={readCredit} />}
       {called && (
         <div class="store-run-result">
           <div class="store-run-head">
@@ -1070,6 +1071,56 @@ function RunPanel(props: { base: string; item: LiveRunnableItem }) {
   );
 }
 
+/** The visitor's credit on this server lives in this TAB (sessionStorage):
+ *  to keep it beyond the tab, they copy the credential somewhere safe and
+ *  paste it back in another tab or browser. Shown only on request, never in
+ *  a URL; anyone holding it can spend it. */
+function KeepCredit(props: { sp: ReturnType<typeof storePurse>; onChange: () => void }) {
+  const { sp } = props;
+  const [shown, setShown] = useState(false);
+  const [pasted, setPasted] = useState("");
+  const [note, setNote] = useState<string | null>(null);
+  const use = async () => {
+    const cred = pasted.trim().replace(/^(?:L402|LSAT)\s+/i, "");
+    if (!/^\S+:[0-9a-fA-F]{64}$/.test(cred)) return setNote("That is not a credential: it is <macaroon>:<64 hex characters>.");
+    const a = await api.liveCredit(sp.base, cred).catch(() => null);
+    const b = a?.body as { remaining_usd?: number; error?: string } | null | undefined;
+    if (!a || a.status !== 200 || typeof b?.remaining_usd !== "number") return setNote(b?.error ?? "This server does not know that credential.");
+    if (sp.purse.credential && sp.purse.credential !== cred && !sp.purse.spare.includes(sp.purse.credential)) sp.purse.spare.push(sp.purse.credential);
+    sp.purse.spare = sp.purse.spare.filter((c) => c !== cred);
+    sp.purse.credential = cred;
+    sp.save();
+    setPasted("");
+    setNote(`Using it: ${formatUsd(b.remaining_usd)} left.`);
+    props.onChange();
+  };
+  return (
+    <details class="store-keep-credit">
+      <summary>Your credit lives in this tab</summary>
+      <p class="auto-hint">
+        What you buy here is credit on this server for a year, kept in this browser tab (a reload keeps it; closing the tab does not). To keep it, copy your credential somewhere safe and paste it here in another tab or browser. Anyone who holds it can spend it.
+      </p>
+      {sp.purse.credential ? (
+        shown ? (
+          <div class="store-keep-row">
+            <code class="store-credential" title="Your credential">{sp.purse.credential}</code>
+            <CopyButton value={sp.purse.credential} label="Copy the credential" />
+          </div>
+        ) : (
+          <button type="button" class="btn" onClick={() => setShown(true)}>Show my credential</button>
+        )
+      ) : (
+        <div class="auto-hint">No credit bought in this tab yet.</div>
+      )}
+      <div class="store-keep-row">
+        <input type="text" placeholder="Paste a credential you copied" value={pasted} onInput={(e) => setPasted((e.target as HTMLInputElement).value)} aria-label="A credential to use" />
+        <button type="button" class="btn" disabled={!pasted.trim()} onClick={() => void use()}>Use it</button>
+      </div>
+      {note && <div class="auto-hint">{note}</div>}
+    </details>
+  );
+}
+
 /** One run this tab started on a publisher's server, read with its run
  *  token until it ends: its status, output, files, and what it was charged. */
 function RunView(props: { base: string; run: LaunchedRun; onEnded?: () => void }) {
@@ -1078,10 +1129,11 @@ function RunView(props: { base: string; run: LaunchedRun; onEnded?: () => void }
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     let live = true;
+    let pendingReads = 0;
     void (async () => {
       for (let i = 0; live; i++) {
         try {
-          const a = await api.liveRun(base, run.workflow, run.runId, run.token, i === 0 ? 0 : 25);
+          const a = await api.liveRun(base, run.workflow, run.runId, run.token, i === 0 || pendingReads > 0 ? 0 : 25);
           if (!live) return;
           const b = a.body as Record<string, unknown> | null;
           if (a.status !== 200 || !b) {
@@ -1090,10 +1142,17 @@ function RunView(props: { base: string; run: LaunchedRun; onEnded?: () => void }
           }
           setError(null);
           setView(b);
-          // `charged` is there once it ended and was charged.
+          // `charged` is there once it ended and was charged. Ended with its
+          // charge pending (the ledger refused it for now; it is tried again):
+          // ended, read a few more times, slowly — never "still running".
           if (b["charged"] !== undefined) {
             if (i > 0) props.onEnded?.();
             return;
+          }
+          if (runEnded(b)) {
+            if (++pendingReads > 6) return;
+            await new Promise((r) => setTimeout(r, 10_000));
+            continue;
           }
         } catch {
           // A dropped request: read again shortly.
@@ -1115,6 +1174,7 @@ function RunView(props: { base: string; run: LaunchedRun; onEnded?: () => void }
         <span class={`badge${status === "success" ? " badge-ok" : status === "error" ? " badge-danger" : ""}`}>{status}</span>
         <span class="auto-meta">{new Date(run.at).toLocaleString()}</span>
         {typeof view?.["charged"] === "number" && <span class="auto-meta">· charged {formatUsd(view["charged"] as number)}</span>}
+        {view && view["charged"] === undefined && runEnded(view) && <span class="auto-meta" title="The run ended; the server records its charge shortly">· charge pending</span>}
       </div>
       {error && <div class="auto-error">{error}</div>}
       {err && <div class="auto-error">{err}</div>}

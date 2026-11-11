@@ -24,7 +24,7 @@ import { createRegistry } from "./steps/registry.js";
 import { FakeWallet } from "./payments/fake-wallet.js";
 import { lightningCapability } from "./payments/lightning.js";
 import { STEP_RUN_TOOL } from "./apps/tools.js";
-import { buildPublicAgentTools, defaultLaunchKey, priceWords } from "./public-agents.js";
+import { buildPublicAgentTools, defaultLaunchKey, priceWords, publicLlmsTxt } from "./public-agents.js";
 import type { PublicDoors } from "./public-routes.js";
 import type { ExchangeRate } from "./payments/rate.js";
 
@@ -161,7 +161,8 @@ describe("an agent over MCP buys and runs (plans/paid-runs.md §10)", () => {
     assert.equal(out["run"]["status"], "success");
     assert.deepEqual(out["run"]["output"], { text: "hello", artifacts: [{ id: "out", title: "Out", path: "out.txt" }] });
     assert.equal(out["run"]["charged"], 0, "a free run is charged nothing");
-    assert.equal(out["key"], defaultLaunchKey("free", { text: "hello" }), "a key made from the workflow and input");
+    assert.equal(out["key"], undefined, "a free launch gets no key unless the agent names one: its callers may share an address");
+    assert.match(out["run"]["url"], /^http:\/\/localhost\/public\/workflows\/free\/runs\/\d+\?t=/, "the run over HTTP, its token on it");
     assert.equal(out["next"], undefined);
     const link = out["run"]["artifacts"][0]["url"] as string;
     assert.match(link, /^http:\/\/localhost\/public\/workflows\/free\/runs\/\d+\/files\/out\.txt\?t=/);
@@ -183,26 +184,27 @@ describe("an agent over MCP buys and runs (plans/paid-runs.md §10)", () => {
     assert.match((await tool("run_workflow", { workflow: "nope", input: { text: "x" } })).out["error"], /not open to anyone/);
   });
 
-  it("run_workflow, a long run: answers a handle with `next`; get_run waits; the same launch sent again while it is in flight is the same run", async () => {
+  it("run_workflow, a long free run: answers a handle with `next`; get_run waits; the agent's own key joins the run in flight, no key is a run of its own", async () => {
     let open!: () => void;
     gate = new Promise<void>((r) => (open = r));
     try {
-      const first = await tool("run_workflow", { workflow: "free", input: { text: "slow", hold: true }, wait: 0 });
+      const first = await tool("run_workflow", { workflow: "free", input: { text: "slow", hold: true }, key: "mine", wait: 0 });
       assert.equal(first.isError, false, JSON.stringify(first.out));
       assert.match(first.out["next"], /get_run/);
       assert.equal(first.out["run"]["charged"], undefined, "not ended");
-      // A retry — no key named, the same input — returns the run in flight.
-      const again = await tool("run_workflow", { workflow: "free", input: { text: "slow", hold: true }, wait: 0 });
+      // A retry under the agent's own key returns the run in flight.
+      const again = await tool("run_workflow", { workflow: "free", input: { text: "slow", hold: true }, key: "mine", wait: 0 });
       assert.equal(again.out["run_id"], first.out["run_id"]);
       assert.equal(again.out["existing"], true);
-      // A distinct key is another run.
-      const other = await tool("run_workflow", { workflow: "free", input: { text: "slow", hold: true }, key: "second", wait: 0 });
-      assert.notEqual(other.out["run_id"], first.out["run_id"]);
+      // No key on a free launch: another caller at the same address (a hosted agent's vendor) never joins it.
+      const stranger = await tool("run_workflow", { workflow: "free", input: { text: "slow", hold: true }, wait: 0 });
+      assert.notEqual(stranger.out["run_id"], first.out["run_id"]);
+      assert.equal(stranger.out["existing"], undefined);
       open();
       const done = await tool("get_run", { workflow: "free", run_id: first.out["run_id"], token: first.out["token"], wait: 10 });
       assert.equal(done.out["run"]["status"], "success");
       assert.equal(done.out["next"], undefined);
-      await tool("get_run", { workflow: "free", run_id: other.out["run_id"], token: other.out["token"], wait: 10 });
+      await tool("get_run", { workflow: "free", run_id: stranger.out["run_id"], token: stranger.out["token"], wait: 10 });
     } finally {
       open?.();
       gate = Promise.resolve();
@@ -280,7 +282,9 @@ describe("an agent over MCP buys and runs (plans/paid-runs.md §10)", () => {
       const holds = (await ledgerHolds()).length;
       const first = await tool("run_workflow", { workflow: "priced", input: { text: "lost", hold: true }, payment: credential, wait: 0 });
       assert.equal(first.isError, false, JSON.stringify(first.out));
-      const retry = await tool("run_workflow", { workflow: "priced", input: { text: "lost", hold: true }, payment: credential, wait: 0 });
+      assert.equal(first.out["key"], defaultLaunchKey("priced", { text: "lost", hold: true, cost: 0 }), "a priced launch's default key: the parsed input, keys sorted");
+      // The retry writes the fields in another order: the same run.
+      const retry = await tool("run_workflow", { workflow: "priced", input: { hold: true, text: "lost" }, payment: credential, wait: 0 });
       assert.equal(retry.out["run_id"], first.out["run_id"]);
       assert.equal(retry.out["existing"], true);
       assert.equal((await ledgerHolds()).length, holds + 1, "never a second reserve");
@@ -290,6 +294,31 @@ describe("an agent over MCP buys and runs (plans/paid-runs.md §10)", () => {
       open?.();
       gate = Promise.resolve();
     }
+  });
+
+  it("a lost answer after the run ENDED: get_credit lists the run with its token, get_run reads it, and nothing is paid twice", async () => {
+    const asked = await tool("run_workflow", { workflow: "priced", input: { text: "ended" } });
+    const p = asked.out["payment_required"] as Record<string, any>;
+    const credential = `${p["macaroon"]}:${wallet.settle(p["invoice"])}`;
+    const ran = await tool("run_workflow", { workflow: "priced", input: { text: "ended" }, payment: credential, wait: 10 });
+    assert.equal(ran.out["run"]["charged"], 0.5);
+    // The agent never saw that answer. Before calling again it reads its credit:
+    const credit = await tool("get_credit", { payment: credential });
+    const runs = credit.out["runs"] as Array<Record<string, any>>;
+    assert.equal(runs.length, 1, JSON.stringify(runs));
+    assert.equal(runs[0]!["kind"], "workflow");
+    assert.equal(runs[0]!["name"], "priced");
+    assert.equal(runs[0]!["runId"], ran.out["run_id"]);
+    assert.equal(runs[0]!["status"], "success");
+    assert.equal(runs[0]!["charged_usd"], 0.5);
+    assert.equal(runs[0]!["token"], ran.out["token"]);
+    assert.match(runs[0]!["url"], /^http:\/\/localhost\/public\/workflows\/priced\/runs\/\d+\?t=/);
+    const got = await tool("get_run", { workflow: "priced", run_id: runs[0]!["runId"], token: runs[0]!["token"] });
+    assert.deepEqual(got.out["run"]["output"], ran.out["run"]["output"]);
+    // The same over HTTP, with relative urls.
+    const http = (await (await strut.app.request("/public/credit", { headers: { authorization: `L402 ${credential}` } })).json()) as { runs: Array<Record<string, any>> };
+    assert.equal(http.runs[0]!["token"], ran.out["token"]);
+    assert.match(http.runs[0]!["url"], /^\/public\/workflows\/priced\/runs\//);
   });
 
   it("a metered run whose launcher reads the whole run: charged base + markup × cost", async () => {
@@ -313,6 +342,12 @@ describe("an agent over MCP buys and runs (plans/paid-runs.md §10)", () => {
     assert.equal(got.isError, false, JSON.stringify(got.out));
     assert.deepEqual(got.out["output"], { note: "hi" });
     assert.equal(got.out["credit"]["charged_usd"], 0.02);
+    // The call is on the credential's list: what it was charged and how it ended.
+    const listed = ((await tool("get_credit", { payment: credential })).out["runs"] as Array<Record<string, any>>).find((r) => r["kind"] === "step");
+    assert.equal(listed?.["name"], "test/echo");
+    assert.equal(listed?.["charged_usd"], 0.02);
+    assert.equal(listed?.["status"], "success");
+    assert.equal(listed?.["token"], undefined, "a call has no run to read");
     const bad = await tool("call_tool", { type: "test/echo", config: { nope: 1 }, payment: credential });
     assert.equal(bad.isError, true);
     assert.match(bad.out["error"], /config/);
@@ -342,22 +377,27 @@ describe("an agent over MCP buys and runs (plans/paid-runs.md §10)", () => {
   });
 });
 
-describe("the agent tools hold no call past a client's patience", () => {
-  /** Doors whose run is in flight for `reads` reads, then ends. */
-  const fakeDoors = (reads: number): PublicDoors => {
+describe("the agent tools hold no call past a client's patience, and cut nothing paid for", () => {
+  /** Doors whose run is in flight for `reads` reads, then ends as `ended`. */
+  const fakeDoors = (o: { reads?: number; ended?: Record<string, unknown>; callMs?: number; output?: unknown; launchMs?: number } = {}): PublicDoors => {
     let n = 0;
-    const view = () => (++n > reads ? { runId: "r1", status: "success", output: { ok: true }, charged: 0 } : { runId: "r1", status: "running" });
+    const ended = o.ended ?? { runId: "r1", status: "success", output: { ok: true }, charged: 0 };
+    const view = () => (++n > (o.reads ?? 0) ? ended : { runId: "r1", status: "running" });
     return {
-      launch: async () => ({ status: 202, body: { runId: "r1", token: "tok" } }),
+      launch: async () => {
+        if (o.launchMs) await new Promise((r) => setTimeout(r, o.launchMs));
+        return { status: 202, body: { runId: "r1", token: "tok" } };
+      },
       call: async () => {
-        await new Promise((r) => setTimeout(r, 120));
-        return { status: 200, body: { output: { done: true } } };
+        await new Promise((r) => setTimeout(r, o.callMs ?? 120));
+        return { status: 200, body: { output: o.output ?? { done: true } } };
       },
       run: async ({ token }) => (token === "tok" ? { status: 200, body: view() } : { status: 404, body: { error: "no run" } }),
       credit: async () => ({ status: 404, body: { error: "no credit" } }),
       claim: async () => ({ status: 404, body: { error: "no credit" } }),
       runnable: async () => [],
       listing: async () => ({ workflows: [], steps: [], concepts: [], types: [], apps: [], runnable: [] }),
+      overBudget: () => false,
     };
   };
   const drain = async (gen: unknown): Promise<unknown[]> => {
@@ -365,27 +405,73 @@ describe("the agent tools hold no call past a client's patience", () => {
     for await (const y of gen as AsyncIterable<unknown>) out.push(y);
     return out;
   };
+  const run = async (tools: ReturnType<typeof buildPublicAgentTools>, name: string, args: Record<string, unknown>) =>
+    drain(await tools[name]!.execute!(args as never, { toolCallId: "1", messages: [] }));
 
-  it("run_workflow yields progress while its run goes on, then the result; past `wait`, a handle with `next`", async () => {
-    const tools = buildPublicAgentTools({ doors: fakeDoors(3), who: "a", publicUrl: "https://s.example/", progressEveryMs: 1 });
-    const ys = await drain(await tools["run_workflow"]!.execute!({ workflow: "w", input: {}, wait: 5 }, { toolCallId: "1", messages: [] }));
-    assert.ok(ys.length >= 2, "progress before the result");
-    assert.deepEqual(ys.slice(0, -1).map((y) => (y as { status: string }).status), Array(ys.length - 1).fill("running"));
-    const last = ys.at(-1) as Record<string, any>;
+  it("run_workflow: the first yield carries the run's handle, progress while it goes, then the result; past `wait`, a handle with `next`", async () => {
+    const tools = buildPublicAgentTools({ doors: fakeDoors({ reads: 3 }), who: "a", publicUrl: "https://s.example/", progressEveryMs: 1 });
+    const ys = (await run(tools, "run_workflow", { workflow: "w", input: {}, wait: 5 })) as Array<Record<string, any>>;
+    assert.deepEqual(ys[0], { status: "running", workflow: "w", run_id: "r1", token: "tok", url: "https://s.example/public/workflows/w/runs/r1?t=tok" }, "a client that loses the answer still has the handle");
+    assert.ok(ys.slice(1, -1).every((y) => y["status"] === "running" && y["run_id"] === "r1" && y["token"] === "tok"));
+    const last = ys.at(-1)!;
     assert.equal(last["run"]["status"], "success");
-    assert.equal(last["token"], "tok");
+    assert.equal(last["run"]["url"], "https://s.example/public/workflows/w/runs/r1?t=tok");
 
-    const held = buildPublicAgentTools({ doors: fakeDoors(1000), who: "a", publicUrl: "https://s.example", progressEveryMs: 1 });
-    const handle = (await drain(await held["run_workflow"]!.execute!({ workflow: "w", input: {}, wait: 0 }, { toolCallId: "1", messages: [] }))).at(-1) as Record<string, any>;
+    const held = buildPublicAgentTools({ doors: fakeDoors({ reads: 1000 }), who: "a", publicUrl: "https://s.example", progressEveryMs: 1 });
+    const handle = (await run(held, "run_workflow", { workflow: "w", input: {}, wait: 0 })).at(-1) as Record<string, any>;
     assert.equal(handle["run_id"], "r1");
     assert.match(handle["next"], /get_run/);
   });
 
-  it("call_tool yields progress while the call runs, then its output", async () => {
-    const tools = buildPublicAgentTools({ doors: fakeDoors(0), who: "a", publicUrl: "https://s.example", progressEveryMs: 20 });
-    const ys = await drain(await tools["call_tool"]!.execute!({ type: "t", config: {} }, { toolCallId: "1", messages: [] }));
-    assert.ok(ys.length >= 2, `beats then the output: ${JSON.stringify(ys)}`);
-    assert.deepEqual(ys.at(-1), { output: { done: true } });
+  it("a run that ended with its charge pending reads as ended, never as still running", async () => {
+    const tools = buildPublicAgentTools({ doors: fakeDoors({ ended: { runId: "r1", status: "success", output: { ok: 1 }, charge_pending: true } }), who: "a", publicUrl: "https://s.example", progressEveryMs: 1 });
+    const t0 = Date.now();
+    const last = (await run(tools, "get_run", { workflow: "w", run_id: "r1", token: "tok", wait: 30 })).at(-1) as Record<string, any>;
+    assert.ok(Date.now() - t0 < 2000, "answered at once, not after `wait`");
+    assert.equal(last["run"]["status"], "success");
+    assert.match(last["next"], /charge is not recorded yet/);
+    assert.doesNotMatch(last["next"], /Still running/);
+  });
+
+  it("the call's deadline: a launch or a call still going answers what it has before the client's 60 s, and says to read get_credit", async () => {
+    const slowCall = buildPublicAgentTools({ doors: fakeDoors({ callMs: 300 }), who: "a", publicUrl: "https://s.example", progressEveryMs: 20, deadlineMs: 100 });
+    const call = (await run(slowCall, "call_tool", { type: "t", config: {}, payment: "mac:aa" })).at(-1) as Record<string, any>;
+    assert.equal(call["status"], "still_running");
+    assert.match(call["next"], /get_credit/);
+    const slowLaunch = buildPublicAgentTools({ doors: fakeDoors({ launchMs: 300 }), who: "a", publicUrl: "https://s.example", progressEveryMs: 20, deadlineMs: 100 });
+    const launch = (await run(slowLaunch, "run_workflow", { workflow: "w", input: {}, payment: "mac:aa" })).at(-1) as Record<string, any>;
+    assert.equal(launch["status"], "starting");
+    assert.match(launch["next"], /get_credit/);
+    // A run that outlasts the deadline answers its handle.
+    const longRun = buildPublicAgentTools({ doors: fakeDoors({ reads: Number.MAX_SAFE_INTEGER }), who: "a", publicUrl: "https://s.example", progressEveryMs: 20, deadlineMs: 100 });
+    const t0 = Date.now();
+    const handle = (await run(longRun, "run_workflow", { workflow: "w", input: {}, wait: 45 })).at(-1) as Record<string, any>;
+    assert.ok(Date.now() - t0 < 1000, "held no longer than the deadline");
+    assert.match(handle["next"], /get_run/);
+  });
+
+  it("nothing paid for is cut: a call's output comes back whole; a run's large output is left out with its url", async () => {
+    const big = { text: "x".repeat(200_000) };
+    const tools = buildPublicAgentTools({ doors: fakeDoors({ output: big, callMs: 1 }), who: "a", publicUrl: "https://s.example", progressEveryMs: 20 });
+    const call = (await run(tools, "call_tool", { type: "t", config: {} })).at(-1) as Record<string, any>;
+    assert.equal(call["output"]["text"].length, 200_000);
+    const huge = buildPublicAgentTools({ doors: fakeDoors({ ended: { runId: "r1", status: "success", output: big, charged: 0.1 } }), who: "a", publicUrl: "https://s.example", progressEveryMs: 1 });
+    const last = (await run(huge, "get_run", { workflow: "w", run_id: "r1", token: "tok" })).at(-1) as Record<string, any>;
+    assert.equal(last["run"]["output"], undefined);
+    assert.equal(last["run"]["output_omitted"]["read_at"], "https://s.example/public/workflows/w/runs/r1?t=tok");
+    assert.ok(last["run"]["output_omitted"]["chars"] > 200_000);
+  });
+
+  it("the default key is the parsed input with its keys sorted", () => {
+    assert.equal(defaultLaunchKey("w", { b: 1, a: { d: 2, c: [1, { f: 1, e: 2 }] } }), defaultLaunchKey("w", { a: { c: [1, { e: 2, f: 1 }], d: 2 }, b: 1 }));
+    assert.notEqual(defaultLaunchKey("w", { a: 1 }), defaultLaunchKey("w", { a: 2 }));
+    assert.notEqual(defaultLaunchKey("w", { a: 1 }), defaultLaunchKey("v", { a: 1 }));
+  });
+
+  it("llms.txt leaves the MCP door out when it is off", () => {
+    const listing = { runnable: [], workflows: [{ name: "w" }], apps: [], concepts: [] };
+    assert.match(publicLlmsTxt(listing, { publicUrl: "https://s.example" }), /\/public\/mcp/);
+    assert.doesNotMatch(publicLlmsTxt(listing, { publicUrl: "https://s.example", mcp: false }), /\/public\/mcp|claude mcp add/);
   });
 
   it("priceWords: free, fixed, metered, both — and the reserve and recent charges", () => {

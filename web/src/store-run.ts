@@ -136,7 +136,10 @@ export function httpCallResult(status: number, body: unknown, retryAfter?: strin
   const code = typeof b["code"] === "string" ? b["code"] : undefined;
   const after = retryAfter ? Number(retryAfter) : NaN;
   const error = `${code && !message.startsWith(`${code}:`) ? `${code}: ` : ""}${message}${Number.isFinite(after) && after > 0 ? ` (try again in ${after} s)` : ""}`;
-  return { isError: true, content: [{ type: "text", text: JSON.stringify({ error }) }] };
+  // The code and status ride along, so the paying loop tells the door's
+  // own refusal of the credential (401 invalid_token) from a step's failure
+  // whose text merely mentions it (`refusesCredential`).
+  return { isError: true, structuredContent: { error, status, ...(code ? { code } : {}) }, content: [{ type: "text", text: JSON.stringify({ error }) }] };
 }
 
 /** A result's error, or undefined. */
@@ -156,6 +159,17 @@ export function errorOf(r: CallResult): string | undefined {
 export function bodyOf(r: CallResult): Record<string, unknown> | undefined {
   if (r.isError) return undefined;
   return r.structuredContent && typeof r.structuredContent === "object" ? (r.structuredContent as Record<string, unknown>) : undefined;
+}
+
+/** A run status that means it is still going. */
+const IN_FLIGHT = new Set(["running", "paused", "pending", "cancelling", "pausing", "queued", "starting"]);
+
+/** The launcher's view says the run has ENDED — success, error, cancelled,
+ *  stale — by its own status, whether or not its charge is recorded yet
+ *  (`charge_pending`). */
+export function runEnded(view: Record<string, unknown>): boolean {
+  const status = view["status"];
+  return typeof status === "string" && !IN_FLIGHT.has(status);
 }
 
 /** A key per press of Run: sent again with every retry of that launch — after

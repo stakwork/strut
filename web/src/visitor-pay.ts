@@ -99,12 +99,27 @@ export function paymentRequiredIn(result: CallResult): PaymentRequired | undefin
   return p && typeof p === "object" && typeof p.macaroon === "string" && typeof p.invoice === "string" ? p : undefined;
 }
 
-/** A failed call that refused the CREDENTIAL itself (the server does not
- *  know it, or it no longer verifies): drop it and ask again without. */
+/** A failed call that is the DOOR refusing the credential itself (the
+ *  server does not know it, or it no longer verifies — a 401 before anything
+ *  ran): drop it and ask again without. Only the door's own refusal: a
+ *  result that says its code and status is read by them (`code:
+ *  "invalid_token"`, `status: 401`), else its error must BEGIN with
+ *  `invalid_token:`, as the launcher's refusal does. A step's own failure
+ *  that merely mentions the words (an OAuth error, charged) never drops the
+ *  credential, and is never sent again. */
 export function refusesCredential(result: CallResult): boolean {
   if (!result.isError) return false;
-  const text = result.content?.map((c) => (typeof c.text === "string" ? c.text : "")).join(" ") ?? "";
-  return text.includes("invalid_token");
+  const s = result.structuredContent as { code?: unknown; status?: unknown } | undefined;
+  if (s && typeof s === "object" && ("code" in s || "status" in s)) return s.code === "invalid_token" && s.status === 401;
+  const text = result.content?.find((c) => c.type === "text" && typeof c.text === "string")?.text ?? "";
+  let error = text;
+  try {
+    const parsed = JSON.parse(text) as { error?: unknown };
+    if (typeof parsed?.error === "string") error = parsed.error;
+  } catch {
+    // Plain text.
+  }
+  return /^invalid_token:/.test(error.trim());
 }
 
 /** The answer a page gets when its visitor closed the sheet: a plain error. */

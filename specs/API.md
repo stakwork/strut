@@ -1626,7 +1626,9 @@ buys credit — and sends the same launch again with `Authorization: L402
 <macaroon>:<preimage>`, as §17.6's steps 3 to 9. The credential, credentials
 paid for and not sent, and every invoice shown live in the store page's
 `sessionStorage`, one purse per publisher's server (`strut.store.purse:<url>`),
-never in a URL; the runs a tab launched are kept beside it with their run
+never in a URL — **Your credit lives in this tab** shows the credential on
+request (with Copy) and takes one pasted back, checked with `GET
+/public/credit`, to spend it in another tab or browser; the runs a tab launched are kept beside it with their run
 tokens and read back until they end — status, output, the declared files
 (each link the publisher's, with `?t=<run token>`) and what it was
 charged.
@@ -3198,7 +3200,10 @@ reads as a run that is not there (`404`).
 
 `charged` (dollars) appears once the run ended and was charged, as the
 ledger recorded it: `0` for a free run, whose cost (`totals.cost`) the
-seller carried. `artifacts` are the
+seller carried. A run that ended and whose charge the ledger has not
+recorded yet (it refused it for now; it is tried again) answers
+`charge_pending: true` beside its ended status, at most 2 s after it
+ended, whatever `wait` asked — never as a run still going. `artifacts` are the
 declared ones, a file here at its `/public` link (add `?t=<token>`). What
 else the launcher reads is the item's `results`: with `output` (the
 default) the view above, without step counts or an error's stack, and the
@@ -3290,6 +3295,24 @@ and what it handed on or lost to its end; `remaining_*` is 0 once it is
 replaced or past its end. `entries` are the newest 50: `payment`, `hold`,
 `charge`, `carry` (− out, + in), `expiry`.
 
+`runs` are the runs and tool calls those entries name, newest first —
+the way back to a run whose answer was lost after it ended, which its `key`
+no longer finds (a key matches only a run in flight):
+
+```json
+"runs": [
+  { "kind": "workflow", "name": "voxel/character", "runId": "1800000000000", "at": "…",
+    "held_usd": 7.6, "charged_usd": 2.25, "outcome": "success", "status": "success",
+    "token": "<the run token>", "url": "/public/workflows/voxel%2Fcharacter/runs/1800000000000" },
+  { "kind": "step", "name": "cve/lookup", "runId": "1800000000123", "at": "…",
+    "held_usd": 0.02, "charged_usd": 0.02, "outcome": "success", "status": "success" }
+]
+```
+
+A run's `status` is its own (`charge_pending: true` when it ended and is
+not charged yet), its `token` the run token that reads it (§17.4); a call's
+is how its charge ended, or `running, or answered and not yet charged`.
+
 ### 17.6 A visitor's launch from a public app — what a host does (`plans/paid-runs.md` §10)
 
 A public app's page launches a workflow it grants that a person made
@@ -3371,8 +3394,11 @@ host the same):
    `— your payment is kept as credit on this server: run it again in a
    moment, and it is spent then` to the error).
 7. Send the same header on later requests: launches spend the credit until
-   it runs short. An `invalid_token` error with a credential attached: drop
-   it and send the call again without.
+   it runs short. The door's own refusal of the credential — an error that
+   BEGINS `invalid_token:` (a 401: nothing ran) — with a credential
+   attached: drop it and send the call again without. Never on an error that
+   merely mentions the words (a step's own failure, which ran and was
+   charged): keep the credential and send nothing again.
 8. When the visitor cancels, answer the page's call with a plain error
    (strut's UI: `payment_cancelled: the run of <workflow> was not paid for,
    so it did not start`) — and keep claiming that invoice (step 5).
@@ -3513,10 +3539,10 @@ and the rest — and the credit reads through §17.5's.
 | Tool | Arguments | Answers |
 | --- | --- | --- |
 | `list_public` | `query?` | `{ server, runnable: [{ …§17.2's runnable item, call_with: run_workflow \| call_tool }] }` |
-| `run_workflow` | `workflow`, `input?`, `key?`, `payment?`, `wait?` (s, 25 by default, 55 at most) | `{ workflow, run_id, token, key, existing?, credit?, run: <the launcher's view, §17.4>, next? }` — waits `wait` s for the run; still running then, `next` says to call `get_run`. `key` defaults to one made from the workflow and the input |
-| `call_tool` | `type`, `config?`, `payment?` | `{ output, credit? }` (§17.7) |
+| `run_workflow` | `workflow`, `input?`, `key?`, `payment?`, `wait?` (s, 25 by default, 45 at most) | `{ workflow, run_id, token, key?, existing?, credit?, run: <the launcher's view, §17.4, with its \`url\`>, next? }` — waits `wait` s for the run; still running then, `next` says to call `get_run`. A PRICED launch with no `key` goes under one made from the workflow and the input as its `input:` block parsed it, keys sorted; a FREE one has a key only when the agent passes one |
+| `call_tool` | `type`, `config?`, `payment?` | `{ output, credit? }` (§17.7), the output whole; `{ status: "still_running", next }` when the call has not answered in 45 s |
 | `get_run` | `workflow`, `run_id`, `token`, `wait?` | `{ workflow, run_id, token, run, next? }` — by the run token alone |
-| `get_credit` | `payment?` | the balance (§17.5); with the macaroon alone, its CLAIM: `{ state: pending \| expired \| settled, credential?, credit? }` |
+| `get_credit` | `payment?` | the balance with its `runs` (§17.5; each run's `url` absolute, with its token); with the macaroon alone, its CLAIM: `{ state: pending \| expired \| settled, credential?, credit? }` |
 
 - **Paying.** A priced launch or call with no credit, or too little,
   answers a RESULT, not an error: `{ payment_required: { macaroon, invoice,
@@ -3531,21 +3557,37 @@ and the rest — and the credit reads through §17.5's.
   and its answer carries the whole `credential` to send from then on. The
   credential is credit here for a year and works on ANY connection: the
   door keeps nothing between requests.
-- **A retry is the same run.** A launch always carries a `key` — the
-  agent's, else one made from the workflow and the input — so the same
-  launch sent again (after paying, after a lost answer) returns the run in
-  flight (`existing: true`) and sets nothing more aside; a distinct `key`
-  starts another. A key matches only a run still in flight (§17.4).
-- **No call held past a client's patience.** `run_workflow`, `get_run` and
-  `call_tool` send `notifications/progress` while they hold the call, to a
-  client that passed a `progressToken` — from 10 s in, then every 5 s — so a
-  client whose request times out unless progress resets it (the MCP SDK's
-  60 s) keeps waiting; `run_workflow` and `get_run` answer a handle once
-  `wait` passes. `call_tool` has no key: a priced call that failed, timed
-  out or returned too much is charged its cost, so its error is read before
-  it is sent again.
+- **A retry is the same run while it is in flight.** A PRICED launch
+  carries a `key` — the agent's, else one made from the workflow and the
+  input as its `input:` block parsed it, keys sorted, scoped by the credit
+  token — so the same launch sent again while its run is in flight (after
+  paying, after a lost answer) returns that run (`existing: true`) and sets
+  nothing more aside. A FREE launch carries one only when the agent passes
+  it: its scope is the caller's address, which unrelated users of one
+  hosted agent share. A key matches only a run still in flight (§17.4).
+- **The way back to a lost answer is `get_credit`.** Once a run ended its
+  key no longer finds it, so the same call starts — and pays for — another.
+  `get_credit` lists the runs and calls the credential paid for, each run
+  with its run token; every tool's description says to read it before
+  calling again after a timeout or a dropped answer. The first progress
+  note of a launch carries its `run_id` and `token` too.
+- **No call outlives a client's patience.** Every tool answers within 45 s
+  — under the MCP SDK's 60 s default request timeout, which progress resets
+  only when the client asks — with what it has: a launch still starting
+  (`status: "starting"`), a run still going (its handle and `next`), a call
+  still going (`still_running`: it goes on, may be charged, and its output
+  is not kept). Progress goes to a client that passed a `progressToken`,
+  from the start of a launch, then every 5 s. A run reads as going by its
+  own status: one that ended with its charge pending says so.
+- **Nothing paid for is cut.** A call's output comes back whole (the door's
+  5 MB cap); a run's output over 100,000 characters as JSON is left out of
+  the answer (`output_omitted: { chars, read_at }`), read in full at the
+  run's `url`. `call_tool` has no key: a priced call that failed, timed out
+  or returned too much is charged its cost, even when the client gave up
+  waiting, so its error — or `get_credit` — is read before it is sent again.
 - **Links** in a run's answer are absolute (`STRUT_PUBLIC_URL`, else the
-  request's origin), each file carrying the run token as `?t=`.
+  request's origin), the run's own `url` and each file carrying the run
+  token as `?t=`.
 - Refusals are `isError` results: `{ error, status, code?, retry_after_s?
   }`, the route's sentence with its code first.
 
@@ -3556,9 +3598,11 @@ blockquote saying what it is, the `claude mcp add` line for
 its `config:`), `## Paying` (the 402, the retry, `/public/credit`, its
 claim, a launch's and a call's shapes), `## Read` (`/public`, each public
 workflow's definition, each public app's page, each Concept root) and
-`## Optional`. `404` when nothing is public. On an index strut the index's
-page answers (§16), with the run lists appended when this server also
-sells.
+`## Optional`. The `/public/mcp` lines are left out when the MCP doors
+are off (`enableMcp`). Built at most every 30 s per base URL, and counted
+against the address's `/public` budget (§17.2, `429` past it). `404` when
+nothing is public. On an index strut the index's page answers (§16), with
+the run lists appended when this server also sells.
 
 ## 18. The wallet — what the server receives with (`plans/paid-runs.md` §9)
 

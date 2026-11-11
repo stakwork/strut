@@ -6,7 +6,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { bodyOf, errorOf, httpCallResult, inputOf, loadRuns, newLaunchKey, priceBadge, priceNotes, priceWords, rememberRun, RUNS_KEPT, runFields, runFileUrl, storePurseKey, type LaunchedRun } from "./store-run";
-import { callPaying, newPurse, type CallParams, type PaymentRequired } from "./visitor-pay";
+import { callPaying, newPurse, refusesCredential, type CallParams, type PaymentRequired } from "./visitor-pay";
 
 describe("the store's Run form (plans/paid-runs.md §10)", () => {
   it("prices in words: free, fixed, metered, both; a badge; the reserve and what recent runs were charged", () => {
@@ -116,6 +116,25 @@ describe("the store's Run form (plans/paid-runs.md §10)", () => {
       pay: async () => null,
     });
     assert.match(errorOf(cancelled)!, /^payment_cancelled/);
+  });
+
+  it("a step's 500 whose text mentions invalid_token keeps the credential and is not sent again; the door's 401 invalid_token drops it", async () => {
+    const failed = httpCallResult(500, { error: "the OAuth server said invalid_token: expired", code: "step_failed", credit: { charged_usd: 0.01 } });
+    assert.equal(refusesCredential(failed), false);
+    assert.equal(refusesCredential(httpCallResult(401, { error: "invalid_token: this server's ledger does not know the token", code: "invalid_token" })), true);
+    const purse = { ...newPurse("y".repeat(32)), credential: "mac:pre" };
+    let sent = 0;
+    const result = await callPaying({ name: "call_tool" } as CallParams, {
+      call: async () => (sent++, failed),
+      purse,
+      launch: { workflow: "demo/echo" },
+      pay: async () => {
+        throw new Error("never asked to pay");
+      },
+    });
+    assert.equal(sent, 1, "a charged call is never sent again");
+    assert.equal(purse.credential, "mac:pre", "the credential is kept");
+    assert.match(errorOf(result)!, /^step_failed: /);
   });
 
   it("the runs a tab launched there: kept newest first, one per run, at most RUNS_KEPT; storage that is not ours reads as none", () => {

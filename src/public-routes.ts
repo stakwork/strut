@@ -121,6 +121,8 @@ export interface PublicLaunchOutcome {
   status: 202 | 400 | 401 | 402 | 403 | 404 | 409 | 413 | 429 | 503;
   body: Record<string, unknown>;
   headers?: Record<string, string>;
+  /** The key the launch went under when `defaultKey` made it. */
+  key?: string;
 }
 
 /** One public launch (§3's order): who, what, and the credential. */
@@ -141,6 +143,12 @@ export interface PublicLaunchRequest {
   /** A visitor's page's launch: the visit's hash, on the run's `run.start`
    *  (plans/paid-runs.md §10) — what lets that visit read it back. */
   visitor?: string;
+  /** The key a PRICED launch is sent under when its body names none, made
+   *  from the input as the workflow's `input:` block parsed it (an agent's
+   *  door, src/public-agents.ts): a retry with the same input — fields in
+   *  any order — joins the run in flight. Scoped by the credit token, so
+   *  never applied to a free launch, whose callers share an address. */
+  defaultKey?: (input: unknown) => string;
 }
 
 /** One public tool call (§3's order), whichever door it came through. */
@@ -185,6 +193,10 @@ export interface PublicDoors {
   runnable(): Promise<ListedRunnable[]>;
   /** `GET /public` itself: everything the public view shows. */
   listing(): Promise<PublicListing>;
+  /** Count one request against `who`'s `/public` budget (1200 a minute):
+   *  true when it is over — for a read served outside the prefix
+   *  (`GET /llms.txt`). */
+  overBudget(who: string): boolean;
 }
 
 /** `GET /public`: what the public view shows, and what anyone may run. */
@@ -220,6 +232,9 @@ export const PUBLIC_PATH = /^\/public(?:\/|$)/;
  *  these. */
 export const PUBLIC_POST = /^\/public\/(?:mcp|credit|credit\/claim|workflows\/[^/]+\/(?:run|runs\/[^/]+\/cancel)|steps\/.+\/run)$/;
 
+/** How long the launcher's view waits, once the run ended, for its charge
+ *  before it answers `charge_pending`. */
+const LAUNCHER_CHARGE_WAIT_MS = 2000;
 /** Requests one visitor address may make to `/public` in a minute. */
 export const PUBLIC_REQUESTS_PER_MINUTE = 1200;
 /** Tool calls one visitor address may make in a minute (beside launches'
@@ -286,6 +301,17 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
   // minute. Reads and the visitor door only: a write elsewhere under the prefix gets no CORS.
   const limit = deps.ratePerMinute ?? PUBLIC_REQUESTS_PER_MINUTE;
   const counts = new Map<string, { minute: number; n: number }>();
+  /** Count one request of `who`'s: over this minute's budget? */
+  const overRequestBudget = (who: string): boolean => {
+    const minute = Math.floor(Date.now() / 60_000);
+    const at = counts.get(who);
+    if (!at || at.minute !== minute) {
+      if (counts.size > 10_000) for (const [k, v] of counts) if (v.minute !== minute) counts.delete(k);
+      counts.set(who, { minute, n: 1 });
+      return false;
+    }
+    return ++at.n > limit;
+  };
   const publicMiddleware = async (c: Context, next: () => Promise<void>) => {
     const method = c.req.method;
     if (method === "OPTIONS") {
@@ -301,13 +327,7 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
     // Reads, a visitor's page calling its app (`POST /public/mcp`), and a
     // launch and its cancel (plans/paid-runs.md §3).
     if (method !== "GET" && method !== "HEAD" && !(method === "POST" && PUBLIC_POST.test(c.req.path))) return next();
-    const minute = Math.floor(Date.now() / 60_000);
-    const who = visitorAddress(c);
-    const at = counts.get(who);
-    if (!at || at.minute !== minute) {
-      if (counts.size > 10_000) for (const [k, v] of counts) if (v.minute !== minute) counts.delete(k);
-      counts.set(who, { minute, n: 1 });
-    } else if (++at.n > limit) {
+    if (overRequestBudget(visitorAddress(c))) {
       return c.json({ error: `too many requests: ${limit} a minute` }, 429, { "access-control-allow-origin": "*", "retry-after": "60" });
     }
     c.header("access-control-allow-origin", "*");
@@ -540,11 +560,17 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
     const runs = deps.launches!.runs;
     const deadline = Date.now() + 1000 * Math.min(PUBLIC_RUN_WAIT_MAX_S, Number.isFinite(waitS) && waitS > 0 ? waitS : 0);
     let summary = await store.getRunSummary(name, runId);
-    while ((!summary || runs.pending(name, runId)) && Date.now() < deadline) {
+    while (!summary && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 250));
       summary = await store.getRunSummary(name, runId);
     }
+    // Ended: its charge follows at once, unless the ledger refuses it for a
+    // while (it is tried again) — then the run reads as ended with its charge
+    // pending, never as a run still going.
+    const chargeBy = Math.min(deadline, Date.now() + LAUNCHER_CHARGE_WAIT_MS);
+    while (summary && runs.pending(name, runId) && Date.now() < chargeBy) await new Promise((r) => setTimeout(r, 100));
     const ended = !!summary && !runs.pending(name, runId);
+    const chargePending = !!summary && !ended;
     const charged = ended ? await runs.charged(name, runId).catch(() => undefined) : undefined;
     let base: Record<string, unknown>;
     if (summary) base = { ...summary };
@@ -560,6 +586,7 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
       ...(artifacts ? { artifacts } : {}),
       // What the run was charged, from the ledger: a free run nothing.
       ...(ended ? { charged: microsToUsd(charged ?? 0) } : {}),
+      ...(chargePending ? { charge_pending: true } : {}),
     };
   };
   const launcherView = async (c: Context, got: OpenRun) => c.json(await launcherBody(got.name, got.runId, got.open, Number(c.req.query("wait") ?? 0)));
@@ -651,7 +678,13 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
     return { status: r.status, body: { error: r.error, code: r.code }, headers };
   };
 
+  /** One launch; the key a `defaultKey` made rides back on the outcome. */
   const launch = async (r: PublicLaunchRequest): Promise<PublicLaunchOutcome> => {
+    let made: string | undefined;
+    const out = await launchOnce(r.defaultKey ? { ...r, defaultKey: (input) => (made = r.defaultKey!(input)) } : r);
+    return made ? { ...out, key: made.slice(0, PUBLIC_RUN_KEY_MAX) } : out;
+  };
+  const launchOnce = async (r: PublicLaunchRequest): Promise<PublicLaunchOutcome> => {
     const launches = deps.launches;
     const { name, who } = r;
     const refuse = (status: PublicLaunchOutcome["status"], error: string, headers?: Record<string, string>): PublicLaunchOutcome => ({ status, body: { error }, ...(headers ? { headers } : {}) });
@@ -672,11 +705,17 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
     if (Buffer.byteLength(JSON.stringify(body)) > PUBLIC_RUN_BODY_MAX_BYTES) return refuse(413, `the body is over ${PUBLIC_RUN_BODY_MAX_BYTES / 1024} KB`);
     const extra = Object.keys(body).filter((k) => k !== "input" && k !== "key");
     if (extra.length) return refuse(400, `a public launch runs the workflow as published and takes { input, key } alone — drop ${extra.join(", ")}`);
-    const key = body["key"];
-    if (key !== undefined && (typeof key !== "string" || !key || key.length > PUBLIC_RUN_KEY_MAX)) return refuse(400, `key is a string of 1 to ${PUBLIC_RUN_KEY_MAX} characters`);
+    const sentKey = body["key"];
+    if (sentKey !== undefined && (typeof sentKey !== "string" || !sentKey || sentKey.length > PUBLIC_RUN_KEY_MAX)) return refuse(400, `key is a string of 1 to ${PUBLIC_RUN_KEY_MAX} characters`);
     if (flow.inputBlock == null) return refuse(409, `workflow "${name}" no longer declares an input: block, so a stranger's input cannot be checked`);
     const parsed = flow.input.safeParse(body["input"] ?? {});
     if (!parsed.success) return refuse(400, `input: ${parsed.error.issues.map((i) => `${i.path.join(".") || "input"}: ${i.message}`).join("; ")}`);
+    // A priced launch with no key of its own gets the caller's default, made
+    // from the parsed input: the credit token scopes it. A free one never:
+    // its callers share an address (a hosted agent's vendor), and two of them
+    // must not join each other's run.
+    const defaulted = sentKey === undefined && r.defaultKey && isPriced(item) ? r.defaultKey(parsed.data).slice(0, PUBLIC_RUN_KEY_MAX) : undefined;
+    const key: unknown = sentKey ?? defaulted;
     const disabled = await launches.disabled(name);
     if (disabled) return refuse(409, disabled);
 
@@ -877,7 +916,46 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
     const used = await deps.credit.check(auth);
     if (!used.ok) return refusalAnswer(used);
     const view = await deps.credit.view(used.token.tokenId);
-    return view ? { status: 200, body: view as unknown as Record<string, unknown> } : { status: 404, body: { error: "no such token" } };
+    if (!view) return { status: 404, body: { error: "no such token" } };
+    return { status: 200, body: { ...(view as unknown as Record<string, unknown>), runs: await creditRuns(view.entries) } };
+  };
+  /** The runs and calls a token paid for, from its newest entries — what a
+   *  caller whose answer was lost reads to find the run it launched (and its
+   *  run token) before it launches again (plans/paid-runs.md §10). */
+  const creditRuns = async (entries: Array<Record<string, unknown>>): Promise<Array<Record<string, unknown>>> => {
+    const byRun = new Map<string, Record<string, unknown>>();
+    for (const e of [...entries].reverse()) {
+      const subject = typeof e["subject"] === "string" ? e["subject"] : "";
+      const runId = typeof e["runId"] === "string" ? e["runId"] : "";
+      const m = /^(workflow|step):(.+)$/.exec(subject);
+      if (!m || !runId || (e["kind"] !== "hold" && e["kind"] !== "charge")) continue;
+      const cur = byRun.get(runId) ?? { kind: m[1], name: m[2], runId, at: e["at"] };
+      if (e["kind"] === "hold") cur["held_usd"] = Math.abs(Number(e["usd"] ?? 0));
+      else {
+        cur["charged_usd"] = Math.abs(Number(e["usd"] ?? 0));
+        if (e["outcome"]) cur["outcome"] = e["outcome"];
+      }
+      byRun.set(runId, cur);
+    }
+    const out: Array<Record<string, unknown>> = [];
+    for (const r of [...byRun.values()].reverse()) {
+      const name = String(r["name"]);
+      const runId = String(r["runId"]);
+      if (r["kind"] === "workflow") {
+        const summary = await store.getRunSummary(name, runId).catch(() => null);
+        const charged = r["charged_usd"] !== undefined;
+        out.push({
+          ...r,
+          status: summary?.status ?? deps.liveStatus(name, runId),
+          ...(summary && !charged ? { charge_pending: true } : {}),
+          token: publicRunToken(name, runId),
+          url: `/public/workflows/${enc(name)}/runs/${enc(runId)}`,
+        });
+      } else {
+        out.push({ ...r, status: r["charged_usd"] !== undefined ? String(r["outcome"] ?? "answered") : "running, or answered and not yet charged" });
+      }
+    }
+    return out;
   };
   app.get("/public/credit", async (c) => {
     const a = await creditView({ authorization: c.req.header("authorization") });
@@ -1069,5 +1147,5 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
     return c.json({ ref_id: node.ref_id, node_type: node.node_type ?? null, name: node.name ?? null, title: node.title ?? null, properties: node.properties });
   });
 
-  return { launch, call: callTool, run: runByToken, credit: creditView, claim: claimCredit, runnable: async () => (await deps.runnable?.()) ?? [], listing };
+  return { launch, call: callTool, run: runByToken, credit: creditView, claim: claimCredit, runnable: async () => (await deps.runnable?.()) ?? [], listing, overBudget: overRequestBudget };
 }
