@@ -3,20 +3,22 @@
 // memory holds for it and one history of what was said and what was changed.
 // Dreams: each run, newest first, with what it changed and what it noted.
 // A claim in a dream opens its cause; a remark or change in a cause opens
-// its dream. The app starts no run and writes nothing: a dream runs from its
+// its dream. Memory: the tree of Concepts as the last dream left it, each
+// with its text, the causes on it and the changes dreams made to it; a
+// Concept's name opens it wherever it appears. The app starts no run and writes nothing: a dream runs from its
 // automation, as one of strut's own jobs, since a run an app launches reads
 // only what an app may and could not see a private tree. Everything is read
 // from the runs' outputs (`grants.workflows: [dream]`), every listed run's,
 // not only the picked one's: a cause's history spans them.
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQueries } from "@tanstack/react-query";
 import { ArrowLeft } from "lucide-react";
 import { hierarchy, pack } from "d3";
 import { RUN_STEPS, isInFlight, runKeys, useRuns, useStrutClient, type RunSummary } from "@strut/kit";
 import { DocumentView, RunStatus, Transcript } from "strut/views";
 import { cn } from "@/lib/utils";
-import { costText, foundBy, sectionsOf, type DreamOutput, type Outcome, type SaidRow } from "./lib/report";
-import { buildModel, headline, inMemory, runSummary, wordDiff, type Cause, type Change, type Model, type Run } from "./lib/model";
+import { agoText, costText, foundBy, sectionsOf, type DreamOutput, type Outcome, type SaidRow, type TreeConcept } from "./lib/report";
+import { buildModel, conceptOf, headline, inMemory, runSummary, wordDiff, type Cause, type Change, type Model, type Run } from "./lib/model";
 
 const WORKFLOW = "dream";
 /** The agent step's path in an older, one-agent run: its transcript. */
@@ -31,10 +33,19 @@ const OUTCOME: Record<Outcome, string> = {
   contradicted: "Memory said the opposite",
   followed: "Followed",
 };
-const when = (iso: string) => {
+const exact = (iso: string) => {
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? "" : `${d.toLocaleDateString([], { month: "short", day: "numeric" })}, ${d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
 };
+/** A time as it is read: how long ago today and yesterday, the date before that. The exact time on hover. */
+const When = ({ at }: { at: string }) => <time dateTime={at} title={exact(at)}>{agoText(at, Date.now())}</time>;
+
+/** Opening a Concept from wherever its name appears. */
+const OpenConcept = createContext<(ref: string, name: string) => void>(() => {});
+function ConceptLink({ refId, name, className }: { refId: string; name: string; className?: string }) {
+  const open = useContext(OpenConcept);
+  return <button type="button" onClick={() => open(refId, name)} className={cn("text-left underline decoration-dotted underline-offset-2 hover:decoration-solid", className)}>{name}</button>;
+}
 
 function useNarrow() {
   const [narrow, setNarrow] = useState(() => typeof window !== "undefined" && window.innerWidth < NARROW);
@@ -177,7 +188,7 @@ const speaker = (by: string | undefined) => (by && /^[\p{L}][\p{L} .'-]{0,15}$/u
 function Said({ said, lead, model, onRun, outcome }: { said: SaidRow; lead?: ReactNode; model: Model; onRun?: (id: string) => void; outcome?: boolean }) {
   const run = model.runs.find((r) => r.runId === said.dream);
   const label = "truncate pt-0.5 text-xs text-muted-foreground";
-  const where = <span className="shrink-0 whitespace-nowrap text-xs tabular-nums text-muted-foreground">{when(said.at)} · <span className="font-mono">{said.session.split("/").pop()}</span> · turn {said.turn}</span>;
+  const where = <span className="shrink-0 whitespace-nowrap text-xs tabular-nums text-muted-foreground"><When at={said.at} /> · <span className="font-mono">{said.session.split("/").pop()}</span> · turn {said.turn}</span>;
   return (
     <div className="flex flex-col gap-2">
       {lead && (
@@ -206,7 +217,7 @@ function Said({ said, lead, model, onRun, outcome }: { said: SaidRow; lead?: Rea
             <dt />
             <dd className="flex flex-wrap items-center gap-x-3 text-xs text-muted-foreground">
               {!lead && where}
-              {run && onRun && <button type="button" onClick={() => onRun(run.runId)} className="ml-auto whitespace-nowrap underline decoration-dotted underline-offset-2 hover:text-foreground">Dream {when(run.startedAt)}</button>}
+              {run && onRun && <button type="button" onClick={() => onRun(run.runId)} className="ml-auto whitespace-nowrap underline decoration-dotted underline-offset-2 hover:text-foreground">Dream <When at={run.startedAt} /></button>}
             </dd>
           </>
         )}
@@ -316,7 +327,7 @@ function CauseDetail({ cause, model, onRun, onCause }: { cause: Cause; model: Mo
         <h2 className="text-lg font-semibold leading-snug">{cause.claim.title || cause.claim.text}</h2>
         <p className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted-foreground">
           <span className="tabular-nums">Corrected {cause.claim.corrected}×{cause.claim.kept ? ` · followed ${cause.claim.kept}×` : ""}</span>
-          <span>{cause.claim.concept}</span>
+          <ConceptLink refId={cause.claim.about} name={cause.claim.concept} />
           <Standing cause={cause} />
         </p>
       </header>
@@ -342,9 +353,9 @@ function CauseDetail({ cause, model, onRun, onCause }: { cause: Cause; model: Mo
               it.fix ? (
                 <li key={i} className="flex flex-col gap-2 bg-muted/30 px-4 py-3">
                   <p className="flex flex-wrap items-baseline gap-x-2 text-sm">
-                    <span className="font-medium">{it.fix.change.kind === "added" ? "Added" : "Changed"} {it.fix.change.name}</span>
+                    <span className="font-medium">{it.fix.change.kind === "added" ? "Added" : "Changed"} <ConceptLink refId={it.fix.change.ref_id} name={it.fix.change.name} /></span>
                     {it.fix.change.proposed && <Chip tone="strong">Waiting for a yes</Chip>}
-                    <button type="button" onClick={() => onRun(it.fix!.run.runId)} className="ml-auto whitespace-nowrap text-xs text-muted-foreground underline decoration-dotted underline-offset-2 hover:text-foreground">Dream {when(it.fix.run.startedAt)}</button>
+                    <button type="button" onClick={() => onRun(it.fix!.run.runId)} className="ml-auto whitespace-nowrap text-xs text-muted-foreground underline decoration-dotted underline-offset-2 hover:text-foreground">Dream <When at={it.fix.run.startedAt} /></button>
                   </p>
                   <ChangeView change={it.fix} />
                 </li>
@@ -399,7 +410,7 @@ function RunDetail({ run, model, onCause }: { run: Run; model: Model; onCause: (
         <h2 className="text-lg font-semibold">{headline(model, run)}</h2>
         <p className="flex flex-wrap items-center gap-x-2 text-sm tabular-nums text-muted-foreground">
           {(!done || run.error) && <RunStatus status={run.status} />}
-          <span>{when(run.startedAt)}{done && !run.error ? ` · ${out.turns ?? 0} turns read · ${costText(out.cost)}` : ""}{done && out.more ? " · more turns waiting" : ""}</span>
+          <span><When at={run.startedAt} />{done && !run.error ? ` · ${out.turns ?? 0} turns read · ${costText(out.cost)}` : ""}{done && out.more ? " · more turns waiting" : ""}</span>
         </p>
       </header>
 
@@ -415,7 +426,7 @@ function RunDetail({ run, model, onCause }: { run: Run; model: Model; onCause: (
               return (
                 <li key={c.key} className="flex flex-col gap-4 px-4 py-3.5">
                   <p className="flex flex-wrap items-baseline gap-x-2 text-sm">
-                    <span className="font-medium">{c.change.name}</span>
+                    <ConceptLink refId={c.change.ref_id} name={c.change.name} className="font-medium" />
                     <span className="text-muted-foreground">· {c.change.kind === "added" ? "added to memory" : c.change.kind === "removed" ? "removed from memory" : c.change.kind === "moved" ? "moved" : "changed"}</span>
                     {c.change.proposed && <Chip tone="strong">Waiting for a yes</Chip>}
                   </p>
@@ -468,33 +479,98 @@ function RunDetail({ run, model, onCause }: { run: Run; model: Model; onCause: (
   );
 }
 
+// ── Memory: the tree of Concepts ──
+
+function ConceptDetail({ concept, model, onRun, onCause }: { concept: TreeConcept; model: Model; onRun: (id: string) => void; onCause: (id: string) => void }) {
+  const parent = model.tree.find((t) => t.ref_id === concept.parent);
+  const causes = [...model.byId.values()].filter((c) => c.claim.about === concept.ref_id);
+  const changes = model.changes.filter((c) => conceptOf(model, c.change.ref_id, c.change.name)?.ref_id === concept.ref_id);
+  const docs = (concept.docs ?? "").trim();
+  return (
+    <div className="mx-auto flex w-full max-w-3xl flex-col gap-6 p-6" data-testid="concept-detail">
+      <header className="flex flex-col gap-2">
+        {parent && <ConceptLink refId={parent.ref_id} name={parent.name} className="w-fit text-xs text-muted-foreground no-underline hover:text-foreground" />}
+        <h2 className="text-lg font-semibold leading-snug">{concept.name}</h2>
+        {concept.description && <p className="break-words text-sm text-muted-foreground">{concept.description}</p>}
+      </header>
+
+      <section className="flex flex-col gap-2">
+        <h3 className="text-sm font-semibold">In memory now</h3>
+        {docs ? <div className="rounded-md border px-4 py-3"><DocumentView text={docs} kind="markdown" /></div> : <p className="text-sm text-muted-foreground">Nothing written on it yet.</p>}
+      </section>
+
+      {causes.length > 0 && (
+        <section className="flex flex-col gap-2">
+          <h3 className="text-sm font-semibold">Causes <span className="font-normal tabular-nums text-muted-foreground">{causes.length}</span></h3>
+          <ul className="flex flex-col divide-y rounded-md border">
+            {causes.map((k) => <li key={k.claim.id}><CauseRow cause={k} selected={false} onPick={() => onCause(k.claim.id)} /></li>)}
+          </ul>
+        </section>
+      )}
+
+      {changes.length > 0 && (
+        <section className="flex flex-col gap-2">
+          <h3 className="text-sm font-semibold">Changes by dreams <span className="font-normal tabular-nums text-muted-foreground">{changes.length}</span></h3>
+          <ol className="flex flex-col divide-y rounded-md border">
+            {changes.map((c) => {
+              const cause = c.change.claim ? model.byId.get(c.change.claim) : undefined;
+              return (
+                <li key={c.key} className="flex flex-col gap-2 px-4 py-3">
+                  <p className="flex flex-wrap items-baseline gap-x-2 text-sm">
+                    {cause ? <button type="button" onClick={() => onCause(cause.claim.id)} className="min-w-0 text-left font-medium underline-offset-2 hover:underline">{cause.claim.title || cause.claim.text}</button> : <span className="font-medium">{c.change.kind === "added" ? "Added" : "Changed"}</span>}
+                    {c.change.proposed && <Chip tone="strong">Waiting for a yes</Chip>}
+                    <button type="button" onClick={() => onRun(c.run.runId)} className="ml-auto whitespace-nowrap text-xs text-muted-foreground underline decoration-dotted underline-offset-2 hover:text-foreground">Dream <When at={c.run.startedAt} /></button>
+                  </p>
+                  <ChangeView change={c} />
+                </li>
+              );
+            })}
+          </ol>
+        </section>
+      )}
+    </div>
+  );
+}
+
+type View = "causes" | "dreams" | "memory";
+
 export default function App() {
   const { runs, loading, error } = useDreams();
   const model = useMemo(() => buildModel(runs), [runs]);
   const narrow = useNarrow();
-  const [view, setView] = useState<"causes" | "dreams">("causes");
+  const [view, setView] = useState<View>("causes");
+  const [conceptRef, setConceptRef] = useState<string | null>(null);
   const [causeId, setCauseId] = useState<string | null>(null);
   const [runId, setRunId] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
   const [graph, setGraph] = useState(false);
   const toCause = (id: string) => { setCauseId(id); setView("causes"); setOpen(true); };
   const toRun = (id: string) => { setRunId(id); setView("dreams"); setOpen(true); };
+  const toConcept = (ref: string, name: string) => {
+    const c = conceptOf(model, ref, name);
+    if (!c) return;
+    setConceptRef(c.ref_id); setView("memory"); setOpen(true);
+  };
+  const concept = model.tree.find((t) => t.ref_id === conceptRef) ?? model.tree[0];
+  const touched = new Set(model.changes.map((c) => conceptOf(model, c.change.ref_id, c.change.name)?.ref_id));
   const cause = (causeId && model.byId.get(causeId)) || model.causes[0];
   const run = model.runs.find((r) => r.runId === runId) ?? model.runs[0];
   const empty = (text: string) => <p className="p-4 text-sm text-muted-foreground">{text}</p>;
   const none = error ?? (loading ? "Reading the dreams." : "No dream has run yet. Turn Dream on, or run it once, in Automations: what it finds shows here.");
-  const tab = (v: "causes" | "dreams", label: string, n: number) => (
+  const tab = (v: View, label: string, n: number) => (
     <button type="button" onClick={() => { setView(v); setOpen(false); }} className={cn("-mb-px border-b-2 px-1 py-2.5 text-sm", view === v ? "border-foreground font-medium" : "border-transparent text-muted-foreground hover:text-foreground")}>
       {label} <span className="tabular-nums text-muted-foreground">{n}</span>
     </button>
   );
   return (
+    <OpenConcept.Provider value={toConcept}>
     <div className="flex h-dvh flex-col bg-background text-foreground" data-testid="dream-app">
       <header className="flex shrink-0 items-center gap-5 border-b px-4">
-        <h1 className="text-sm font-semibold">Dream</h1>
+        <h1 className="flex items-baseline gap-1.5 font-serif text-xl leading-none tracking-tight">Glimmer <span className="font-sans text-xs tracking-normal text-muted-foreground">gRLM</span></h1>
         <nav className="flex gap-4">
           {tab("causes", "Causes", model.causes.length)}
           {tab("dreams", "Dreams", model.runs.length)}
+          {tab("memory", "Memory", model.tree.length)}
         </nav>
         {view === "causes" && model.causes.length > 0 && (
           <div className="ml-auto py-1.5">
@@ -525,6 +601,27 @@ export default function App() {
           }
           detail={cause ? <CauseDetail key={cause.claim.id} cause={cause} model={model} onRun={toRun} onCause={toCause} /> : null}
         />
+      ) : view === "memory" ? (
+        <Split
+          narrow={narrow} open={open} onBack={() => setOpen(false)}
+          list={
+            model.tree.length ? (
+              <ul className="flex flex-col py-1.5" data-testid="tree">
+                {model.tree.map((t) => (
+                  <li key={t.ref_id}>
+                    <button type="button" onClick={() => toConcept(t.ref_id, t.name)} style={{ paddingLeft: `${1 + t.depth * 1.25}rem` }} className={cn("flex w-full items-baseline gap-2 py-1.5 pr-4 text-left text-sm hover:bg-muted/60", !narrow && concept?.ref_id === t.ref_id && "bg-muted")}>
+                      <span className={cn("min-w-0 truncate", t.depth === 0 && "font-medium")}>{t.name}</span>
+                      {touched.has(t.ref_id) && <Chip tone="tint">Changed</Chip>}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              empty("No dream has read memory yet.")
+            )
+          }
+          detail={concept ? <ConceptDetail key={concept.ref_id} concept={concept} model={model} onRun={toRun} onCause={toCause} /> : null}
+        />
       ) : (
         <Split
           narrow={narrow} open={open} onBack={() => setOpen(false)}
@@ -537,7 +634,7 @@ export default function App() {
                   <li key={r.runId}>
                     <button type="button" onClick={() => toRun(r.runId)} className={cn("flex w-full flex-col gap-0.5 px-4 py-2.5 text-left hover:bg-muted/60", !narrow && run?.runId === r.runId && "bg-muted")}>
                       <span className={cn("text-sm", quiet ? "text-muted-foreground" : "font-medium")}>{headline(model, r)}</span>
-                      <span className="text-xs tabular-nums text-muted-foreground">{when(r.startedAt)}</span>
+                      <span className="text-xs tabular-nums text-muted-foreground"><When at={r.startedAt} /></span>
                     </button>
                   </li>
                 );
@@ -548,5 +645,6 @@ export default function App() {
         />
       )}
     </div>
+    </OpenConcept.Provider>
   );
 }

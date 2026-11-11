@@ -128,11 +128,16 @@ export function buildModel(runs: readonly Run[]): Model {
   return { runs: desc, causes, byId, changes: changes.reverse(), tree };
 }
 
+/** The Concept a change or claim names, as the tree has it: by ref, or by name for one a dream added (it had no ref yet). */
+export function conceptOf(model: Model, ref: string, name?: string): TreeConcept | undefined {
+  return model.tree.find((t) => t.ref_id === ref) ?? (ref.startsWith("new:") || !ref ? model.tree.find((t) => t.name === (name ?? ref.slice(4))) : undefined);
+}
+
 /** The lines written for a cause that its Concept still holds. */
 export function inMemory(model: Model, cause: Cause): string[] {
   const out: string[] = [];
   for (const f of cause.fixes) {
-    const docs = (model.tree.find((t) => t.ref_id === f.change.ref_id || (f.change.ref_id.startsWith("new:") && t.name === f.change.name))?.docs ?? "").split("\n");
+    const docs = (conceptOf(model, f.change.ref_id, f.change.name)?.docs ?? "").split("\n");
     for (const l of f.change.added) if (docs.some((d) => sameLine(d, l)) && !out.some((o) => sameLine(o, l))) out.push(l);
   }
   return out;

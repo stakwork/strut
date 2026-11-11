@@ -12,8 +12,8 @@ import { treeHash } from "../version.js";
 import type { KitLocation } from "./kit.js";
 import { DREAM_APP, DREAM_DIR } from "./dream-seed.js";
 import { VIEWS_APP } from "./views-seed.js";
-import { buildModel, headline, inMemory, runSummary, wordDiff, type Run } from "./dream/src/lib/model.js";
-import { changesOf, costText, foundBy, nest, conceptChanges, sectionsOf, standingOf, summaryOf, type Claim, type SaidRow, type TreeConcept } from "./dream/src/lib/report.js";
+import { buildModel, conceptOf, headline, inMemory, runSummary, wordDiff, type Run } from "./dream/src/lib/model.js";
+import { agoText, changesOf, costText, foundBy, nest, conceptChanges, sectionsOf, standingOf, summaryOf, type Claim, type SaidRow, type TreeConcept } from "./dream/src/lib/report.js";
 
 /**
  * `strut/dream` (plans/dream.md): what the dream did, as a first-party app
@@ -119,10 +119,20 @@ describe("strut/dream: the report", () => {
     ], "the newest run's claims, with what every run kept said for them");
     const a = m.byId.get("a")!;
     assert.deepEqual(a.fixes.map((f) => [f.run.runId, f.change.name, f.causes.map((w) => w.said.excerpt)]), [["run-1", "Writing", ["still too long", "too long"]]]);
+    assert.deepEqual([conceptOf(m, "w")?.name, conceptOf(m, "new:Writing", "Writing")?.ref_id, conceptOf(m, "gone")], ["Writing", "w", undefined], "a Concept by ref, or by name when a dream added it");
     assert.deepEqual(inMemory(m, a), [fix.line], "the line written for it that memory still has");
     assert.deepEqual(runs.map((r) => runSummary(m, r)), [{ turns: 5, changed: 1, found: 2, back: 0 }, { turns: 3, changed: 0, found: 2, back: 1 }, { turns: 0, changed: 0, found: 0, back: 0 }]);
     assert.deepEqual(runs.map((r) => headline(m, r)), ["1 change · 2 corrections", "2 corrections · 1 came back", "Nothing new to read"]);
     assert.equal(headline(m, { ...runs[2]!, status: "running" }), "Dreaming");
+  });
+
+  it("says a time as how long ago for today and yesterday, the date before that", () => {
+    const now = new Date(2026, 10, 11, 15, 0, 0).getTime();
+    const back = (mins: number) => new Date(now - mins * 60_000).toISOString();
+    assert.deepEqual([back(0), back(5), back(61), back(20 * 60), back(30 * 60)].map((t) => agoText(t, now)), ["just now", "5 min ago", "1 hr ago", "20 hr ago", "yesterday"]);
+    assert.match(agoText(new Date(2026, 10, 8, 9, 0, 0).toISOString(), now), /8/);
+    assert.doesNotMatch(agoText(new Date(2026, 10, 8, 9, 0, 0).toISOString(), now), /ago|yesterday/);
+    assert.equal(agoText("nope", now), "");
   });
 
   it("marks the words two lines do not share", () => {

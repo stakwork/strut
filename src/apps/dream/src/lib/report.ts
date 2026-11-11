@@ -142,6 +142,20 @@ export function whenText(iso: string): string {
   return d.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
+/** A time as it is read: how long ago for today and yesterday, the date before that. */
+export function agoText(iso: string, now: number): string {
+  const d = new Date(iso);
+  const t = d.getTime();
+  if (Number.isNaN(t)) return "";
+  const mins = Math.floor((now - t) / 60_000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins} min ago`;
+  const midnight = new Date(now);
+  midnight.setHours(0, 0, 0, 0);
+  if (t >= midnight.getTime() - 86_400_000) return mins < 24 * 60 ? `${Math.floor(mins / 60)} hr ago` : "yesterday";
+  return d.toLocaleDateString([], { month: "short", day: "numeric", ...(d.getFullYear() !== new Date(now).getFullYear() ? { year: "numeric" } : {}) });
+}
+
 const isCorrection = (o: Outcome | undefined): boolean => !!o && o !== "followed";
 const linesOf = (docs: string | undefined): string[] => (docs ?? "").split("\n").map((l) => l.trim()).filter(Boolean);
 
