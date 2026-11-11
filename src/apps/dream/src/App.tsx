@@ -50,12 +50,19 @@ function ChangeRow({ change, causes }: { change: PageChange; causes: Array<{ cla
     change.kind === "added" ? `page added${change.to ? ` under ${change.to}` : ""}`
     : change.kind === "removed" ? "page removed"
     : change.kind === "moved" ? `moved from ${change.from || "the top"} to ${change.to || "the top"}`
-    : `${change.added.length && change.removed.length ? "line changed" : change.added.length ? "line added" : "line removed"}${change.from !== undefined ? `, moved to ${change.to || "the top"}` : ""}`;
+    : `${change.added.length && change.removed.length ? "line changed" : change.added.length ? "line added" : change.removed.length ? "line removed" : "description changed"}${change.from !== undefined ? `, moved to ${change.to || "the top"}` : ""}`;
   return (
     <li className="flex flex-col gap-1.5 px-3 py-2.5" data-testid="change">
       <p className="text-sm">
         <span className="font-medium">{change.name}</span> <span className="text-muted-foreground">· {what}</span>
       </p>
+      {change.description && (
+        <div className="flex flex-col gap-1" data-testid="description-change">
+          <p className="text-xs text-muted-foreground">Description</p>
+          {change.description.was && <p className="break-words rounded bg-muted/50 px-2 py-1 text-xs text-muted-foreground line-through">{change.description.was}</p>}
+          {change.description.is && <p className="break-words rounded bg-primary/10 px-2 py-1 text-xs">{change.description.is}</p>}
+        </div>
+      )}
       {change.removed.map((l, i) => (
         <p key={`r${i}`} className="break-words rounded bg-muted/50 px-2 py-1 font-mono text-xs text-muted-foreground line-through">{l}</p>
       ))}

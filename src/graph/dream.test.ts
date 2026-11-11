@@ -252,6 +252,9 @@ describe("the shipped dream workflow", () => {
     assert.deepEqual([...params["writes"]!].sort(), tools.filter((x) => x.startsWith("graph/") && !/get|neighbors|search|find|resolve/.test(x)).sort());
     assert.deepEqual(params["none"], []);
     assert.match(String(cfg["prompt"]), /name "\{\{ input\.root \}\}"/);
+    // Single remarks add up through groups, and "remember" is a lasting preference.
+    assert.match(String(cfg["prompt"]), /look over ALL the claims, old and new/);
+    assert.match(String(cfg["prompt"]), /"from now on" or "remember"/);
     assert.equal(flow.steps[4]!.depends, "dream");
     assert.equal(flow.steps[3]!.depends, "before", "the tree is read before the agent changes it");
     assert.ok(isSystemWorkflow("dream"));

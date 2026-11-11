@@ -99,25 +99,33 @@ steps:
         4. RECORD it with dream_claim: the turn, the person's own words as `excerpt`, and the outcome. Find its home
            first, in this order:
            a. an existing claim that already covers it: pass that claim's id;
-           b. an existing claim of the same kind about another case ("no greeting to Sam", now "no greeting to Kate"):
-              group them with dream_group under one sentence that covers both, then record a new claim with that
-              group as `parent`;
+           b. an existing claim of the same kind: about another case ("no greeting to Sam", now "no greeting to
+              Kate"), or another side of one habit ("tribe messages are short", now "tribe updates carry no
+              caveats"). Group them with dream_group under one sentence that covers both, then record a new claim
+              with that group as `parent`;
            c. otherwise a new claim, `about` the page it belongs on: the page that says it or should, and the root
               when no page fits yet.
            A remark about one task ("shorter this time") is recorded the same way and changes no page.
 
-        5. FACTS. Where the person said a remembered fact is wrong or no longer true, or a turn shows the assistant
+        5. GROUP. When every moment is recorded, call dream_claims again and look over ALL the claims, old and new.
+           Claims that say the same thing about different cases, or are sides of one habit, go under one parent
+           with dream_group, whether or not these turns added to them. A claim alone stays alone: never group
+           claims that only share a topic. Grouping is what lets several single remarks add up: a group's
+           count is its claims' together.
+
+        6. FACTS. Where the person said a remembered fact is wrong or no longer true, or a turn shows the assistant
            relying on something false about the person or people they know, check memory with graph_resolve and
            graph_graph_search (facts true). If memory still holds the wrong fact, correct it with graph_assert:
            `refuted` when it was never true, `ended` when it is over, and assert the right value when the person gave
            one. Only from the person's words in these turns. If memory already matches, change nothing.
 
-        6. FIX the tree, by outcome. Read a page before you change it and keep everything else in its docs word for
+        7. FIX the tree, by outcome. Read a page before you change it and keep everything else in its docs word for
            word.
            - `missing`: add ONE line to the page that should hold it (graph_edit_node), or add a page under the root
-             (graph_create_triplet) when none fits. Only for a lasting preference: the person said "always", "never"
-             or "from now on", or the claim (or its group) has been corrected more than once. One remark alone changes
-             no page.
+             (graph_create_triplet) when none fits. Only for a lasting preference: the person said "always", "never",
+             "from now on" or "remember" ("remember that", "remember this"), or the claim, or its group taken
+             together, has been corrected more than once. One remark alone changes no page. When what the person
+             asked to remember is not clear enough to write as a line, say so under LEFT ALONE.
            - `not_opened`: the line exists and was not found. Make it findable: move the page under a parent the
              assistant does open (graph_move_node), or put the line on the page it did open and take it off the other.
            - `not_followed`: the line was read and not followed. Reword that line so it cannot be misread and put it
@@ -129,7 +137,7 @@ steps:
         Limits: at most 10 writes to facts and pages together. When in doubt, record the claim and change nothing.
 
         Finish with a short report in exactly these sections, one line per item, "none" when empty:
-        CLAIMS: each claim recorded or added to, its outcome and its turn ("Summaries are three lines or fewer — missing — session X turn 4, new").
+        CLAIMS: each claim recorded or added to, its outcome and its turn ("Summaries are three lines or fewer — missing — session X turn 4, new"), and each group made.
         FACTS: each fact changed, and why.
         PAGES: each page edited, added or moved, and the line that changed.
         LEFT ALONE: anything you saw but did not act on, and why.

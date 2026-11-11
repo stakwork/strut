@@ -127,6 +127,8 @@ export interface PageChange {
   /** A moved page's old and new parent, by name. */
   from?: string;
   to?: string;
+  /** Its one-line description, when that changed: as it was and as it is. */
+  description?: { was: string; is: string };
 }
 
 /** The pages a dream added, changed, moved or removed, in the tree's order (a removed one last). A page whose
@@ -148,10 +150,12 @@ export function pageChanges(before: readonly TreePage[] | undefined, after: read
     const removed = a.filter((l) => !b.includes(l));
     const added = b.filter((l) => !a.includes(l));
     const moved = (old.parent ?? "") !== (p.parent ?? "");
-    if (!removed.length && !added.length && !moved) continue;
+    const described = (old.description ?? "").trim() !== (p.description ?? "").trim();
+    if (!removed.length && !added.length && !moved && !described) continue;
     out.push({
-      ref_id: p.ref_id, name: p.name, kind: removed.length || added.length ? "changed" : "moved", removed, added,
+      ref_id: p.ref_id, name: p.name, kind: removed.length || added.length || described ? "changed" : "moved", removed, added,
       ...(moved ? { from: nameIn(was, old.parent), to: nameIn(is, p.parent) } : {}),
+      ...(described ? { description: { was: (old.description ?? "").trim(), is: (p.description ?? "").trim() } } : {}),
     });
   }
   for (const p of before) if (!is.has(p.ref_id)) out.push({ ref_id: p.ref_id, name: p.name, kind: "removed", removed: linesOf(p.docs), added: [], from: nameIn(was, p.parent) });

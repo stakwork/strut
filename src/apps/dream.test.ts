@@ -57,6 +57,9 @@ describe("strut/dream: the report", () => {
       { ref_id: "old", name: "Old", kind: "removed", removed: [], added: [], from: "Personal" },
     ]);
     assert.deepEqual(pageChanges(undefined, after), [], "a dream that read nothing kept no snapshot before");
+    assert.deepEqual(pageChanges([root, page("w", "Writing", { description: "How to write", docs: "x" })], [root, page("w", "Writing", { description: "How to write to me", docs: "x" })]), [
+      { ref_id: "w", name: "Writing", kind: "changed", removed: [], added: [], description: { was: "How to write", is: "How to write to me" } },
+    ], "a description alone is a change");
   });
 
   it("says where a claim stands, and sums a run: what it found, the pages it changed, the claims that came back", () => {
