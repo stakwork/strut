@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { appsOf, canWords, conceptRoots, indexIdOf, installLink, liveAppUrl, liveBase, normalizeStrutUrl, parseInstallLink, parseStoreView, storeQuery } from "./store-links";
+import { appsOf, canWords, conceptChildren, conceptRoots, indexIdOf, installLink, liveAppUrl, liveBase, normalizeStrutUrl, parseInstallLink, parseStoreView, storeQuery } from "./store-links";
 
 const KEY = "y".repeat(52);
 
@@ -78,6 +78,14 @@ test("the apps across the hits come first, by title; the concept roots by how mu
     { name: "Orphan", parents: ["Nowhere"] },
   ]);
   assert.deepEqual(roots.map((r) => [r.root.name, r.pages]), [["Law", 3], ["Accounting", 1], ["Orphan", 0]], "a page with a parent in the list is no root, whichever of its parents it is");
+  const kids = conceptChildren([
+    { name: "Law" },
+    { name: "Tax", parents: ["Law"] },
+    { name: "Contracts", parents: ["Law"] },
+    { name: "Indemnity", parents: ["Contracts", "Tax", "Tax", "Nowhere"] },
+    { name: "Loop", parents: ["Loop"] },
+  ]);
+  assert.deepEqual([...kids].map(([p, list]) => [p, list.map((c) => c.name)]), [["Law", ["Contracts", "Tax"]], ["Contracts", ["Indemnity"]], ["Tax", ["Indemnity"]]], "sorted by name, under each parent once, never under a parent the list lacks or itself");
   assert.deepEqual(canWords(can), ["reads"]);
   assert.deepEqual(canWords({ spends: true, acts: true, code: false }), ["spends", "acts"]);
 });

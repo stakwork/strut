@@ -25,7 +25,7 @@ import { fetchArchive } from "./archive.js";
 import type { PackageCache } from "./cache.js";
 import { CARD_VERSION, PUBLISHER_PREFIX, Z32_KEY, canonicalJson, keyFromSeed, releaseFor, sealCard, type Catalog, type CatalogRelease, type IndexCatalog, type IndexLiveRow, type IndexRow, type UnsignedIndexCatalog } from "./card.js";
 export type { IndexLiveRow, IndexRow } from "./card.js";
-import { derivePackageDetail, summarizeDetail, type DetailSummary, type PackageDetail, type StepFacts } from "./detail.js";
+import { derivePackageDetail, summarizeDetail, type ConceptDetail, type DetailSummary, type PackageDetail, type StepFacts } from "./detail.js";
 export type { AppDetail, ConceptDetail, DetailSummary, PackageCan, PackageDetail, StepDetail, WorkflowDetail } from "./detail.js";
 import { fetchCatalog, releaseUrls } from "./pk.js";
 import { CatalogStore, type CatalogFile } from "./publisher.js";
@@ -202,6 +202,14 @@ export interface IndexPackage {
   detail?: PackageDetail;
   /** Why it has no `detail`: the archive could not be fetched or read. */
   detailError?: string;
+}
+
+/** A package's page without its Concept pages' text: what a reader that
+ *  draws the tree from names needs (the store, `?docs=0`; a model's brief
+ *  page). One page's docs are `concept(name)`'s. */
+export function withoutConceptDocs<T extends { detail?: PackageDetail }>(page: T): Omit<T, "detail"> & { detail?: Omit<PackageDetail, "concepts"> & { concepts: Array<Omit<ConceptDetail, "docs">> } } {
+  const { detail, ...rest } = page;
+  return detail ? { ...rest, detail: { ...detail, concepts: detail.concepts.map(({ docs: _docs, ...c }) => c) } } : rest;
 }
 
 /** One Concept page as the index knows it: across every crawled package. */
