@@ -1,7 +1,7 @@
 import { useEffect, useState } from "preact/hooks";
 import * as api from "../api";
 import { errorMessage } from "../helpers";
-import { RANGES, byEarned, fmtSats, fmtUsd, priceLine, rangeFrom, subjectLabel, withdrawBlocked, type RangeId } from "../earnings";
+import { RANGES, byEarned, fmtSats, fmtUsd, priceLine, rangeFrom, subjectLabel, withdrawBlocked, withdrawRefusal, type RangeId } from "../earnings";
 import { fmtTime } from "./JobTimeline";
 import { ConfirmButton } from "./ConfirmButton";
 import { WithdrawDialog } from "./WithdrawDialog";
@@ -88,7 +88,8 @@ export function EarningsPanel() {
             </div>
             {wallet && (wallet.balance || wallet.expectedMsat !== 0) && (
               <div class="auto-hint earnings-check">
-                The books say it should hold {fmtSats(Math.max(0, wallet.expectedMsat))}: everything received, less everything withdrawn and its fees.
+                The books say it should hold {fmtSats(Math.max(0, wallet.expectedMsat))}: everything received, less everything sent and its fees
+                {wallet.pendingMsat > 0 ? `, and less the ${fmtSats(wallet.pendingMsat)} still on its way` : ""}.
                 {wallet.differenceMsat !== undefined && wallet.differenceMsat !== 0 && (
                   <> It holds {fmtSats(Math.abs(wallet.differenceMsat))} {wallet.differenceMsat > 0 ? "more — money that came some other way, or a paid invoice whose credit was never used" : "less — money that left some other way"}.</>
                 )}
@@ -97,13 +98,9 @@ export function EarningsPanel() {
             )}
             {view.pending.length > 0 && (
               <div class="earnings-pending">
-                <div class="ov-tile-label">Withdrawals on their way</div>
+                <div class="ov-tile-label">On their way</div>
                 {view.pending.map((p) => (
-                  <div key={p.paymentHash} class="earnings-pending-row">
-                    <span>{fmtSats(p.msat)}</span>
-                    <span class="auto-hint">{p.answered ? "sent, not settled yet: read again every minute" : "the wallet never answered: open Withdraw with the same invoice to read it"}</span>
-                    <span class="auto-hint">{fmtTime(new Date(p.at).toISOString())}</span>
-                  </div>
+                  <PendingRow key={p.paymentHash} p={p} onChanged={() => setReload((n) => n + 1)} />
                 ))}
               </div>
             )}
@@ -124,6 +121,9 @@ export function EarningsPanel() {
             <Tile label="Received" value={fmtSats(view.received.msat)} sub={`${view.received.count} payment${view.received.count === 1 ? "" : "s"} · ${fmtUsd(view.received.usd)} of credit`} />
             <Tile label="Withdrawn" value={fmtSats(view.withdrawn.msat)} sub={`${view.withdrawn.count} · fees ${fmtSats(view.withdrawn.feeMsat)}`} />
           </div>
+          {view.purchases.count > 0 && (
+            <div class="auto-hint">Also paid out: {fmtSats(view.purchases.msat)} for credit bought from other servers ({view.purchases.count}, fees {fmtSats(view.purchases.feeMsat)}).</div>
+          )}
 
           <div class="flyout-section">
             <div class="flyout-section-title">By item</div>
@@ -200,6 +200,76 @@ export function EarningsPanel() {
           onPaid={() => setReload((n) => n + 1)}
         />
       )}
+    </div>
+  );
+}
+
+/** One send still out: what it is, what is known, and what a person may do
+ *  — read it now; once it is stale (past its invoice's expiry and an hour,
+ *  never to be answered) or went through a wallet no longer set, record it
+ *  as paid or drop it. */
+function PendingRow(props: { p: api.PendingWithdrawal; onChanged: () => void }) {
+  const { p } = props;
+  const [busy, setBusy] = useState(false);
+  const [said, setSaid] = useState<string | null>(null);
+  const [fee, setFee] = useState("");
+  const read = async () => {
+    setBusy(true);
+    setSaid(null);
+    try {
+      const r = await api.readWithdrawal(p.paymentHash);
+      setSaid(r.ok ? (r.state === "settled" ? `Settled: recorded, fee ${fmtSats(r.feeMsat)}.` : r.state === "failed" ? `It failed: ${r.error ?? "nothing was paid"}.` : r.reading ? "The wallet has not answered yet: still reading." : `Still on its way${r.error ? `: ${r.error}` : ""}.`) : withdrawRefusal(r));
+      props.onChanged();
+    } finally {
+      setBusy(false);
+    }
+  };
+  const resolve = async (action: "paid" | "drop") => {
+    setBusy(true);
+    setSaid(null);
+    try {
+      const sats = Number(fee);
+      await api.resolveWithdrawal(p.paymentHash, { action, ...(action === "paid" && fee.trim() && Number.isFinite(sats) && sats >= 0 ? { feeMsat: Math.round(sats * 1000) } : {}) });
+      props.onChanged();
+    } catch (err) {
+      setSaid(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const state = p.reading
+    ? "being read now"
+    : p.otherWallet
+      ? `went out through another wallet (${p.payer || "an earlier one"}): set it back to read it`
+      : p.stale
+        ? "stale: the wallet will not say more — record it as paid if it left the wallet, or drop it"
+        : p.answered
+          ? "sent, not settled yet: read again every minute"
+          : "the wallet never answered: read it now";
+  const decide = p.stale || p.otherWallet;
+  return (
+    <div class={`earnings-pending-item${decide ? " is-stale" : ""}`}>
+      <div class="earnings-pending-row">
+        <span>{fmtSats(p.msat)}{p.purpose === "purchase" ? " · credit" : ""}</span>
+        <span class="auto-hint">{state}</span>
+        <span class="auto-hint">{fmtTime(new Date(p.at).toISOString())}</span>
+      </div>
+      {p.lastError && <div class="auto-hint">Last read: {p.lastError}</div>}
+      <div class="earnings-pending-actions">
+        {!p.otherWallet && <button class="btn btn-sm" disabled={busy || p.reading} onClick={() => void read()}>Read it now</button>}
+        {decide && (
+          <>
+            <input class="earnings-fee-input" type="number" min="0" step="1" placeholder="fee, sats" value={fee} title="The routing fee it cost, when you know it (0 otherwise)" onInput={(e) => setFee((e.target as HTMLInputElement).value)} />
+            <ConfirmButton class="btn btn-sm" label="Record as paid" disabled={busy || p.reading}
+              note={`Record ${fmtSats(p.msat)} as paid out, in the books? Do it only if it left the wallet.`}
+              confirmLabel="Record" tone="primary" onConfirm={() => void resolve("paid")} />
+            <ConfirmButton class="btn btn-sm" label="Drop" disabled={busy || p.reading}
+              note="Forget it? Nothing goes in the books; if it did leave the wallet, the books check will show it."
+              confirmLabel="Drop" onConfirm={() => void resolve("drop")} />
+          </>
+        )}
+        {said && <span class="auto-hint">{said}</span>}
+      </div>
     </div>
   );
 }

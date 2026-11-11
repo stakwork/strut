@@ -149,7 +149,7 @@ class WalletService {
   requests: Array<{ method: string; params: Record<string, unknown>; encryption: string; author: string }> = [];
   silent = false;
   /** The pay side: how the next pay_invoice ends, and what it paid. */
-  payOutcomes: Array<"settled" | "failed" | "no_answer" | "INSUFFICIENT_BALANCE"> = [];
+  payOutcomes: Array<"settled" | "failed" | "no_answer" | "no_preimage" | "INSUFFICIENT_BALANCE"> = [];
   preimages = new Map<string, string>();
   outgoing = new Map<string, { state: "pending" | "settled" | "failed"; fees_paid: number }>();
 
@@ -179,6 +179,7 @@ class WalletService {
         return;
       }
       if (outcome === "INSUFFICIENT_BALANCE") body = { result_type: method, error: { code: "INSUFFICIENT_BALANCE", message: "not enough sats" } };
+      else if (outcome === "no_preimage") body = { result_type: method, result: { fees_paid: 2000 } };
       else if (outcome === "failed") {
         this.outgoing.set(hash, { state: "failed", fees_paid: 0 });
         body = { result_type: method, error: { code: "PAYMENT_FAILED", message: "no route" } };
@@ -349,9 +350,20 @@ describe("NwcPayer: pay_invoice over the pay connection", () => {
     wallet.outgoing.set(inv.hash, { state: "settled", fees_paid: 1500 });
     assert.deepEqual(await p.status({ invoice: inv.invoice, paymentHash: inv.hash, maxFeeMsat: 5000 }), { paymentHash: inv.hash, state: "settled", feeMsat: 1500, preimage: inv.preimage });
     assert.equal(wallet.requests.filter((r) => r.method === "pay_invoice").length, 1, "status never pays");
-    // A payment the wallet has no record of never went out.
+    // No record of it is not "nothing was paid": pending, saying so.
     const unknown = invoice();
-    assert.equal((await p.status({ invoice: unknown.invoice, paymentHash: unknown.hash, maxFeeMsat: 5000 })).state, "failed");
+    const none = await p.status({ invoice: unknown.invoice, paymentHash: unknown.hash, maxFeeMsat: 5000 });
+    assert.deepEqual([none.state, none.error], ["pending", "the wallet has no record of this payment"]);
+  });
+
+  it("a pay_invoice that answered is never failed: with no preimage that proves it, pending — and named by its wallet's pubkey", async () => {
+    const p = new NwcPayer({ payUrl, timeoutMs: 5000 });
+    assert.equal(p.id, `nwc:${wallet.pubkey}`);
+    wallet.payOutcomes.push("no_preimage");
+    const inv = invoice();
+    const out = await p.pay({ invoice: inv.invoice, maxFeeMsat: 5000 });
+    assert.equal(out.state, "pending");
+    assert.match(out.error!, /no preimage/);
   });
 
   it("a relay that is not there is wallet_unavailable before anything went out", async () => {

@@ -11,14 +11,17 @@
  * books say it should hold: everything received, less everything withdrawn
  * and the fees those paid.
  *
- * A package's number is this server's: the subjects under its prefix here.
+ * A package's number is this server's. For a package PUBLISHED here, its
+ * items carry their bare local names (plans/packages-ux.md), so it is the sum
+ * over the subjects its newest release holds; for one INSTALLED here, the
+ * subjects under its prefix (`deps.packageSubjects` decides which).
  */
 
 import type { LightningCapability } from "./lightning.js";
 import type { LedgerStore, Micros } from "./ledger.js";
 import { microsToUsd } from "./ledger.js";
 import type { WalletInfo } from "./settings.js";
-import type { PendingWithdrawal } from "./withdrawals.js";
+import type { PendingView } from "./withdrawals.js";
 
 export type EarningsBy = "item" | "day" | "package" | "total";
 export const EARNINGS_BY: readonly EarningsBy[] = ["item", "day", "package", "total"];
@@ -30,6 +33,9 @@ export interface EarningsQuery {
   by?: EarningsBy;
   /** Only the subjects under this package prefix (`acme/voxel`). */
   prefix?: string;
+  /** One package's items, whichever way it is here: published (the
+   *  subjects its newest release holds) or installed (its prefix). */
+  package?: string;
   /** Read the wallet's balance too (a call to the wallet). */
   wallet?: boolean;
 }
@@ -63,11 +69,14 @@ export interface WalletView extends WalletInfo {
   rate?: number;
   /** Why the balance could not be read. */
   error?: string;
-  /** What the books say the wallet should hold: received − withdrawn − fees,
-   *  all time. More in the wallet is money that came some other way (or a
-   *  paid invoice whose token was never used); less is money that left it
-   *  some other way. */
+  /** What the books say the wallet should hold: received, less every send
+   *  (withdrawals and purchases) and its fees, less what is still out
+   *  (`pendingMsat`), all time. More in the wallet is money that came some
+   *  other way (or a paid invoice whose token was never used); less is money
+   *  that left it some other way. */
   expectedMsat: number;
+  /** Sends still out (pending), counted as gone: a wallet keeps the debit. */
+  pendingMsat: number;
   /** balance − expected, when the balance was read. */
   differenceMsat?: number;
 }
@@ -77,16 +86,21 @@ export interface EarningsView {
   to?: string;
   by: EarningsBy;
   prefix?: string;
+  /** `package=`: how its items were found — the newest release published
+   *  here (`release`, its version), or its prefix (`prefix`). */
+  package?: { name: string; via: "release" | "prefix"; version?: string };
   totals: Omit<EarningsRowView, "key" | "price">;
   rows: EarningsRowView[];
   /** Paid for and not yet charged: still owed as service. Now, not ranged. */
   outstanding: { tokens: number; usd: number; held: number };
   /** Sats paid in, in the range, with the dollars they were credited as. */
   received: { count: number; msat: number; usd: number; days: Array<{ day: string; count: number; msat: number; usd: number }> };
-  /** Sats sent out through strut, in the range. */
+  /** Sats a person withdrew through strut, in the range. */
   withdrawn: { count: number; msat: number; feeMsat: number; days: Array<{ day: string; count: number; msat: number; feeMsat: number }> };
-  /** Withdrawals out and not yet settled or failed. */
-  pending: Array<Pick<PendingWithdrawal, "paymentHash" | "msat" | "maxFeeMsat" | "at" | "expiresAt" | "answered" | "actor">>;
+  /** Sats this strut paid other struts for credit (item 9), in the range. */
+  purchases: { count: number; msat: number; feeMsat: number };
+  /** Sends out and not yet settled or failed. */
+  pending: PendingView[];
   wallet?: WalletView;
 }
 
@@ -96,7 +110,10 @@ export interface EarningsDeps {
   ledger: () => Promise<LedgerStore | null>;
   /** Runnable items now, for each row's price. */
   runnable?: () => Promise<Array<{ kind: "workflow" | "step"; name: string; base?: number; markup?: number; capUsd?: number; dailyCapUsd?: number }>>;
-  pending?: () => Promise<PendingWithdrawal[]>;
+  pending?: () => Promise<PendingView[]>;
+  /** A package's subjects: those its newest release published here holds,
+   *  or null when it was not published here (then its prefix is read). */
+  packageSubjects?: (pkg: string) => Promise<{ subjects: string[]; version: string } | null>;
   /** What `GET /earnings/wallet` answers. */
   walletInfo?: () => Promise<WalletInfo>;
   lightning?: () => LightningCapability | null;
@@ -123,11 +140,13 @@ export function checkEarningsQuery(q: Record<string, unknown>): EarningsQuery {
     if (!EARNINGS_BY.includes(by as EarningsBy)) throw new Error(`by must be one of ${EARNINGS_BY.join(", ")}`);
     out.by = by as EarningsBy;
   }
-  const prefix = q["prefix"];
-  if (prefix !== undefined && prefix !== "") {
-    if (typeof prefix !== "string" || !/^[^\s:]+\/[^\s:]+$/.test(prefix) || prefix.endsWith("/")) throw new Error("prefix is a package: publisher/name");
-    out.prefix = prefix;
+  for (const k of ["prefix", "package"] as const) {
+    const v = q[k];
+    if (v === undefined || v === "") continue;
+    if (typeof v !== "string" || !/^[^\s:]+\/[^\s:]+$/.test(v) || v.endsWith("/")) throw new Error(`${k} is a package: publisher/name`);
+    out[k] = v;
   }
+  if (out.prefix && out.package) throw new Error("give prefix or package, not both");
   if (q["wallet"] === true || q["wallet"] === "1" || q["wallet"] === "true") out.wallet = true;
   return out;
 }
@@ -165,10 +184,11 @@ function withRunnable<R extends { key: string; calls: number; failed: number; ea
   rows: R[],
   runnable: Array<{ kind: "workflow" | "step"; name: string }>,
   prefix?: string,
+  subjects?: readonly string[],
 ): Array<R | { key: string; calls: number; failed: number; earned: Micros; cost: Micros }> {
   const have = new Set(rows.map((r) => r.key));
   const missing = runnable
-    .filter((r) => !have.has(subjectOf(r)) && (!prefix || r.name.startsWith(`${prefix}/`)))
+    .filter((r) => !have.has(subjectOf(r)) && (!prefix || r.name.startsWith(`${prefix}/`)) && (!subjects || subjects.includes(subjectOf(r))))
     .map((r) => ({ key: subjectOf(r), calls: 0, failed: 0, earned: 0, cost: 0 }));
   return [...rows, ...missing].sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
 }
@@ -177,15 +197,23 @@ export async function readEarnings(deps: EarningsDeps, q: EarningsQuery = {}): P
   const by = q.by ?? "item";
   const range = { ...(q.from ? { from: q.from } : {}), ...(q.to ? { to: q.to } : {}) };
   const ledger = await deps.ledger();
-  const [rows, total, outstanding, received, withdrawn, runnable, pending] = await Promise.all([
-    ledger ? ledger.earnings({ by, ...range, ...(q.prefix ? { prefix: q.prefix } : {}) }) : Promise.resolve([]),
-    ledger ? ledger.earnings({ by: "total", ...range, ...(q.prefix ? { prefix: q.prefix } : {}) }) : Promise.resolve([]),
+  // A package: its release's subjects when it was published here, else its prefix.
+  const published = q.package && deps.packageSubjects ? await deps.packageSubjects(q.package) : null;
+  const prefix = q.prefix ?? (q.package && !published ? q.package : undefined);
+  const subjects = published?.subjects;
+  const scoped = !!(prefix || subjects);
+  const filter = { ...(prefix ? { prefix } : {}), ...(subjects ? { subjects } : {}) };
+  const [rows, total, outstanding, received, sends, runnable, pending] = await Promise.all([
+    ledger ? ledger.earnings({ by, ...range, ...filter }) : Promise.resolve([]),
+    ledger ? ledger.earnings({ by: "total", ...range, ...filter }) : Promise.resolve([]),
     ledger ? ledger.outstanding() : Promise.resolve({ tokens: 0, usd: 0, held: 0 }),
-    ledger && !q.prefix ? ledger.received(range) : Promise.resolve([]),
-    ledger && !q.prefix ? ledger.withdrawn(range) : Promise.resolve([]),
+    ledger && !scoped ? ledger.received(range) : Promise.resolve([]),
+    ledger && !scoped ? ledger.withdrawn(range) : Promise.resolve([]),
     deps.runnable ? deps.runnable().catch(() => []) : Promise.resolve([]),
-    deps.pending && !q.prefix ? deps.pending() : Promise.resolve([]),
+    deps.pending && !scoped ? deps.pending() : Promise.resolve([]),
   ]);
+  const withdrawn = sends.filter((r) => r.purpose === "withdrawal");
+  const purchased = sends.filter((r) => r.purpose === "purchase");
   const prices = new Map(runnable.map((r) => [subjectOf(r), r]));
   const view = (r: { key: string; calls: number; failed: number; earned: Micros; cost: Micros }) => ({
     calls: r.calls,
@@ -199,8 +227,9 @@ export async function readEarnings(deps: EarningsDeps, q: EarningsQuery = {}): P
     ...range,
     by,
     ...(q.prefix ? { prefix: q.prefix } : {}),
+    ...(q.package ? { package: { name: q.package, via: published ? ("release" as const) : ("prefix" as const), ...(published ? { version: published.version } : {}) } } : {}),
     totals: view(t),
-    rows: (by === "item" ? withRunnable(rows, runnable, q.prefix) : rows).map((r) => {
+    rows: (by === "item" ? withRunnable(rows, runnable, prefix, subjects) : rows).map((r) => {
       const p = by === "item" ? prices.get(r.key) : undefined;
       return {
         key: r.key,
@@ -219,23 +248,30 @@ export async function readEarnings(deps: EarningsDeps, q: EarningsQuery = {}): P
       count: withdrawn.reduce((n, r) => n + r.count, 0),
       msat: withdrawn.reduce((n, r) => n + r.msat, 0),
       feeMsat: withdrawn.reduce((n, r) => n + r.feeMsat, 0),
-      days: withdrawn,
+      days: withdrawn.map(({ purpose: _p, ...d }) => d),
     },
-    pending: pending.map((p) => ({ paymentHash: p.paymentHash, msat: p.msat, maxFeeMsat: p.maxFeeMsat, at: p.at, expiresAt: p.expiresAt, answered: p.answered, ...(p.actor ? { actor: p.actor } : {}) })),
+    purchases: {
+      count: purchased.reduce((n, r) => n + r.count, 0),
+      msat: purchased.reduce((n, r) => n + r.msat, 0),
+      feeMsat: purchased.reduce((n, r) => n + r.feeMsat, 0),
+    },
+    pending,
   };
   if (!q.wallet) return out;
 
-  // The wallet, beside the books: everything received less everything
-  // withdrawn and its fees, all time.
-  const [info, lifeIn, lifeOut, rate, balance] = await Promise.all([
+  // The wallet, beside the books: everything received less every send and
+  // its fees, and less what is still out, all time.
+  const [info, lifeIn, lifeOut, rate, balance, allPending] = await Promise.all([
     deps.walletInfo ? deps.walletInfo() : Promise.resolve({ provider: null, receive: false, pay: false } as WalletInfo),
     ledger ? ledger.received() : Promise.resolve([]),
     ledger ? ledger.withdrawn() : Promise.resolve([]),
     deps.usdPerBtc ? deps.usdPerBtc().catch(() => undefined) : Promise.resolve(undefined),
     readBalance(deps.lightning?.(), deps.balanceMs ?? 5_000),
+    scoped && deps.pending ? deps.pending() : Promise.resolve(pending),
   ]);
-  const expectedMsat = lifeIn.reduce((n, r) => n + r.msat, 0) - lifeOut.reduce((n, r) => n + r.msat + r.feeMsat, 0);
-  const wallet: WalletView = { ...info, expectedMsat, ...(rate ? { rate } : {}) };
+  const pendingMsat = allPending.reduce((n, p) => n + p.msat, 0);
+  const expectedMsat = lifeIn.reduce((n, r) => n + r.msat, 0) - lifeOut.reduce((n, r) => n + r.msat + r.feeMsat, 0) - pendingMsat;
+  const wallet: WalletView = { ...info, expectedMsat, pendingMsat, ...(rate ? { rate } : {}) };
   if ("msat" in balance) {
     wallet.balance = { msat: balance.msat, sats: Math.floor(balance.msat / 1000), ...(rate ? { usd: Math.round((balance.msat / 1000 / 100_000_000) * rate * 100) / 100 } : {}) };
     wallet.differenceMsat = balance.msat - expectedMsat;

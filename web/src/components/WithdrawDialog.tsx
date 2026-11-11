@@ -1,6 +1,6 @@
 import { useMemo, useState } from "preact/hooks";
 import * as api from "../api";
-import { fmtExpiresIn, fmtSats, fmtUsd, readWithdrawInvoice, usdOfMsat, withdrawRefusal } from "../earnings";
+import { fmtExpiresIn, fmtSats, fmtUsd, maxWithdrawMsat, readWithdrawInvoice, usdOfMsat, withdrawRefusal } from "../earnings";
 
 // ── Withdraw (plans/paid-runs.md §8, decision 19) ──────────────────────────
 //
@@ -30,8 +30,10 @@ export function WithdrawDialog(props: {
   const [stage, setStage] = useState<Stage>({ at: "edit" });
   const balance = props.wallet.balance?.msat;
   const rate = props.wallet.rate;
-  const reading = useMemo(() => readWithdrawInvoice(text, { balanceMsat: balance, usdPerBtc: rate }), [text, balance, rate]);
-  const capsFee = props.wallet.provider !== "nwc";
+  const provider = props.wallet.provider;
+  const reading = useMemo(() => readWithdrawInvoice(text, { balanceMsat: balance, usdPerBtc: rate, provider }), [text, balance, rate, provider]);
+  const capsFee = provider !== "nwc";
+  const most = balance !== undefined ? maxWithdrawMsat(provider, balance) : undefined;
 
   const pay = async () => {
     if (!reading.ok) return;
@@ -58,6 +60,11 @@ export function WithdrawDialog(props: {
             <div class="ov-tile-label">In the wallet</div>
             <div class="withdraw-figure">{balance !== undefined ? fmtSats(balance) : "—"}</div>
             {props.wallet.balance?.usd !== undefined && <div class="ov-tile-sub">≈ {fmtUsd(props.wallet.balance.usd)}</div>}
+            {most !== undefined && (
+              <div class="ov-tile-sub" title={capsFee ? "The Lightning provider takes the amount first and its routing fee from what is left" : "The wallet keeps its routing fee back beside the amount"}>
+                at most {fmtSats(most)} out
+              </div>
+            )}
           </div>
           <div title="Paid for and not yet charged: what buyers are still owed as service. The sats are yours either way.">
             <div class="ov-tile-label">Owed as service</div>
@@ -95,7 +102,12 @@ export function WithdrawDialog(props: {
                     : <>Routing fee: the NWC wallet's own limit applies; strut reports the fee after. </>}
                   Expires {fmtExpiresIn(reading.expiresIn)}.
                 </div>
-                {reading.overBalance && <div class="public-run-hint">This asks for more than the wallet holds (with the fee): the wallet will likely refuse it.</div>}
+                {reading.network && <div class="auto-hint">A {reading.network} invoice: the wallet pays it only if it is on that network.</div>}
+                {reading.overBalance && most !== undefined && (
+                  <div class="public-run-hint">
+                    This asks for more than can be withdrawn: at most {fmtSats(most)}{capsFee ? "" : ", with the wallet's fee beside it"}. The wallet will refuse it.
+                  </div>
+                )}
               </div>
             )}
           </>
@@ -108,14 +120,20 @@ export function WithdrawDialog(props: {
                 <div class="withdraw-result-title">{stage.result.existing ? "Already paid" : "Paid"}: {fmtSats(stage.result.msat)}</div>
                 <div class="auto-hint">
                   Fee {fmtSats(stage.result.feeMsat)}{rate ? ` (≈ ${fmtUsd(usdOfMsat(stage.result.feeMsat, rate))})` : ""}. Recorded in the books as a withdrawal.
+                  {stage.result.routingFeeMsat !== undefined && ` The route reported ${fmtSats(stage.result.routingFeeMsat)}, but too little was left for the provider to take it.`}
                   {stage.result.existing && " This invoice was paid before: nothing was sent again."}
                 </div>
               </>
             )}
             {stage.result.state === "pending" && (
               <>
-                <div class="withdraw-result-title">Sent, not settled yet</div>
-                <div class="auto-hint">The wallet has it and is still routing it. Strut reads it again every minute and records it once it settles; asking again here reads where it stands now.</div>
+                <div class="withdraw-result-title">{stage.result.reading ? "Still waiting on the wallet" : "Sent, not settled yet"}</div>
+                <div class="auto-hint">
+                  {stage.result.reading
+                    ? "The wallet has not answered yet. Strut keeps reading it and records it once it settles; it shows under the wallet as on its way."
+                    : "The wallet has it and is still routing it. Strut reads it again every minute and records it once it settles; asking again here reads where it stands now."}
+                  {stage.result.error && !stage.result.reading && <> The wallet said: {stage.result.error}.</>}
+                </div>
               </>
             )}
             {stage.result.state === "failed" && (

@@ -23,6 +23,7 @@ import { decodeBolt11 } from "./bolt11.js";
 import { lspFeeFloorMsat } from "./fee.js";
 import { LightningError, checkPaymentHash } from "./lightning.js";
 import { NwcClient, type NwcSocketFactory } from "./nwc.js";
+import { parseNwcUrl } from "./nwc-url.js";
 import type { WalletCredentials } from "./settings.js";
 import { daemonUrl } from "./sphinx-daemon.js";
 
@@ -32,13 +33,22 @@ export interface PayResult {
   /** hex, 64. */
   paymentHash: string;
   state: PaymentState;
-  /** The routing fee: what it cost beyond the invoice. 0 unless settled. */
+  /** The fee the WALLET was charged beyond the invoice: what the books
+   *  record. 0 unless settled. */
   feeMsat: number;
+  /** The routing fee the wallet reported, when it is not what it was
+   *  charged (the Sphinx mixer skips the fee when too little is left). */
+  routingFeeMsat?: number;
   /** Proof of payment, once settled, when the wallet gave one that hashes
    *  to the payment hash. */
   preimage?: string;
-  /** `failed`: the wallet's words. */
+  /** `failed`: the wallet's words. `pending`: why it is not known yet, when
+   *  there is a reason. */
   error?: string;
+  /** What the wallet held just before this payment was sent, when the
+   *  payer read it: a later `status` hands it back, so the fee booked is
+   *  the one taken. */
+  balanceBeforeMsat?: number;
 }
 
 export interface PayRequest {
@@ -46,10 +56,16 @@ export interface PayRequest {
   invoice: string;
   /** The routing fee the payment may cost at most (see `capsFee`). */
   maxFeeMsat: number;
+  /** `status` only: what the first `pay` answered as `balanceBeforeMsat`. */
+  balanceBeforeMsat?: number;
 }
 
 export interface Payer {
   readonly provider: "sphinx" | "nwc";
+  /** Which wallet this is — `sphinx:<daemon url>`, `nwc:<wallet pubkey>` —
+   *  never a credential. A payment is read again only through the payer it
+   *  went out through: another wallet does not know it. */
+  readonly id: string;
   /** Whether the wallet keeps `maxFeeMsat`. The daemon does (and refuses one
    *  below its LSP's own limit, `minFeeMsat`); NWC's `pay_invoice` takes no
    *  cap, so the wallet's own limit applies and the fee is reported after. */
@@ -76,6 +92,11 @@ function provenPreimage(v: unknown, paymentHash: string): string | undefined {
   if (typeof v !== "string") return undefined;
   const p = v.toLowerCase();
   return /^[0-9a-f]{64}$/.test(p) && sha256hex(p) === paymentHash ? p : undefined;
+}
+
+function wholeMsatOrUndefined(v: unknown): number | undefined {
+  const n = typeof v === "string" && /^\d+$/.test(v) ? Number(v) : v;
+  return typeof n === "number" && Number.isSafeInteger(n) && n >= 0 ? n : undefined;
 }
 
 function wholeMsat(v: unknown): number {
@@ -109,6 +130,15 @@ export interface SphinxDaemonPayerOptions {
  * payment hash, so `status` POSTs the same invoice again; there is no GET.
  * A 400 is a refusal before anything was sent, its `code` the daemon's
  * (`bad_request`, `own_invoice`, `expired`, `max_fee_too_low`).
+ *
+ * THE FEE BOOKED. The Sphinx mixer takes the amount first and the routing
+ * fee after it, and when too little is left for the fee it takes none
+ * (mixer/src/send.rs `openpay`), while the daemon still reports the
+ * routing fee as `fee_msat`. So a fresh `pay` reads the balance first
+ * (`GET /balance`, which the pay token opens) and a settled payment books
+ * the fee only when the balance less the amount covered it; the reported
+ * fee rides along as `routingFeeMsat`. Without a balance read, the
+ * reported fee is booked.
  */
 export class SphinxDaemonPayer implements Payer {
   readonly provider = "sphinx" as const;
@@ -126,12 +156,38 @@ export class SphinxDaemonPayer implements Payer {
     this.#timeoutMs = opts.timeoutMs ?? DAEMON_PAY_TIMEOUT_MS;
   }
 
+  get id(): string {
+    return `sphinx:${this.#url}`;
+  }
+
   minFeeMsat(msat: number): number {
     return lspFeeFloorMsat(msat);
   }
 
+  /** The balance now, or undefined when the daemon does not say in time. */
+  async #balance(): Promise<number | undefined> {
+    try {
+      const res = await this.#http(`${this.#url}/balance`, { method: "GET", headers: { authorization: `Bearer ${this.#token}`, accept: "application/json" }, timeout: 10_000 });
+      const msat = res.ok && res.body && typeof res.body === "object" ? wholeMsatOrUndefined((res.body as Record<string, unknown>)["msat"]) : undefined;
+      return msat;
+    } catch {
+      return undefined;
+    }
+  }
+
   async pay(req: PayRequest): Promise<PayResult> {
     checkPayRequest(req);
+    let amount: number | undefined;
+    try {
+      amount = decodeBolt11(req.invoice).msat;
+    } catch {
+      amount = undefined; // the daemon says what is wrong with it
+    }
+    const balanceBeforeMsat = req.balanceBeforeMsat ?? (await this.#balance());
+    return this.#post(req, amount, balanceBeforeMsat);
+  }
+
+  async #post(req: PayRequest, amount: number | undefined, balanceBeforeMsat: number | undefined): Promise<PayResult> {
     let res: HttpResponse;
     try {
       res = await this.#http(`${this.#url}/pay`, {
@@ -166,17 +222,30 @@ export class SphinxDaemonPayer implements Payer {
       throw new LightningError("wallet_bad_answer", "the daemon's POST /pay answered no payment_hash");
     }
     const preimage = state === "settled" ? provenPreimage(said["preimage"], paymentHash) : undefined;
+    const routing = state === "settled" ? wholeMsat(said["fee_msat"]) : 0;
+    // The mixer takes the fee only from what is left after the amount.
+    const taken = routing > 0 && balanceBeforeMsat !== undefined && amount !== undefined && balanceBeforeMsat - amount < routing ? 0 : routing;
     return {
       paymentHash,
       state,
-      feeMsat: state === "settled" ? wholeMsat(said["fee_msat"]) : 0,
+      feeMsat: taken,
+      ...(taken !== routing ? { routingFeeMsat: routing } : {}),
       ...(preimage ? { preimage } : {}),
       ...(state === "failed" ? { error: typeof said["error"] === "string" && said["error"] ? said["error"] : "the payment failed" } : {}),
+      ...(balanceBeforeMsat !== undefined ? { balanceBeforeMsat } : {}),
     };
   }
 
   async status(req: PayRequest & { paymentHash: string }): Promise<PayResult> {
-    const out = await this.pay(req);
+    checkPayRequest(req);
+    let amount: number | undefined;
+    try {
+      amount = decodeBolt11(req.invoice).msat;
+    } catch {
+      amount = undefined;
+    }
+    // Never a fresh balance read: by now the amount may have left.
+    const out = await this.#post(req, amount, req.balanceBeforeMsat);
     if (out.paymentHash !== checkPaymentHash(req.paymentHash)) throw new LightningError("wallet_bad_answer", "the daemon answered for another payment");
     return out;
   }
@@ -206,16 +275,21 @@ const NWC_FAILED = new Set(["PAYMENT_FAILED"]);
  * fees_paid? }`. NIP-47 takes no fee cap: the wallet's own limit applies.
  * A call published to the relay that gets no answer in time is `pending`
  * (the wallet may be paying it); `status` reads it with `lookup_invoice`.
+ * A `pay_invoice` that answered at all is never `failed` unless the wallet
+ * said so: one without a preimage that proves it is `pending`, and a lookup
+ * the wallet has no record of is `pending` too, never "nothing was paid".
  */
 export class NwcPayer implements Payer {
   readonly provider = "nwc" as const;
   readonly capsFee = false;
+  readonly id: string;
   readonly #pay: NwcClient;
   readonly #receive: NwcClient | null;
   readonly #timeoutMs: number;
 
   constructor(opts: NwcPayerOptions) {
     this.#timeoutMs = opts.timeoutMs ?? NWC_PAY_TIMEOUT_MS;
+    this.id = `nwc:${parseNwcUrl(opts.payUrl).walletPubkey}`;
     this.#pay = new NwcClient({ url: opts.payUrl, timeoutMs: Math.min(this.#timeoutMs, 15_000), ...(opts.socket ? { socket: opts.socket } : {}) });
     this.#receive = opts.url ? new NwcClient({ url: opts.url, timeoutMs: Math.min(this.#timeoutMs, 15_000), ...(opts.socket ? { socket: opts.socket } : {}) }) : null;
   }
@@ -246,8 +320,9 @@ export class NwcPayer implements Payer {
       throw err;
     }
     const preimage = provenPreimage(result["preimage"], paymentHash);
-    // A pay that answers with no preimage that proves it: read where it stands.
-    if (!preimage) return this.status({ ...req, paymentHash });
+    // The wallet answered the pay: whatever else it did, it may have paid.
+    // With no preimage that proves it, it is pending until a lookup says.
+    if (!preimage) return { paymentHash, state: "pending", feeMsat: 0, error: "the wallet answered with no preimage that proves the payment: read it again" };
     return { paymentHash, state: "settled", feeMsat: wholeMsat(result["fees_paid"]), preimage };
   }
 
@@ -259,7 +334,8 @@ export class NwcPayer implements Payer {
     } catch (err) {
       if (!(err instanceof LightningError)) throw err;
       if (err.code === "wallet_unauthorized" && this.#receive) r = await this.#lookupOnReceive(paymentHash);
-      else if (err.code === "invoice_unknown") return { paymentHash, state: "failed", feeMsat: 0, error: "the wallet has no payment for this invoice" };
+      // No record is not "nothing was paid": a wallet may not list it yet.
+      else if (err.code === "invoice_unknown") return { paymentHash, state: "pending", feeMsat: 0, error: "the wallet has no record of this payment" };
       else throw err;
     }
     const state = r["state"];
@@ -268,14 +344,14 @@ export class NwcPayer implements Payer {
       return { paymentHash, state: "settled", feeMsat: wholeMsat(r["fees_paid"]), ...(preimage ? { preimage } : {}) };
     }
     if (state === "failed" || state === "expired") return { paymentHash, state: "failed", feeMsat: 0, error: `the wallet says the payment ${state}` };
-    return { paymentHash, state: "pending", feeMsat: 0 };
+    return { paymentHash, state: "pending", feeMsat: 0, ...(typeof r["error"] === "string" ? { error: r["error"] } : {}) };
   }
 
   async #lookupOnReceive(paymentHash: string): Promise<Record<string, unknown>> {
     try {
       return await this.#receive!.request("lookup_invoice", { payment_hash: paymentHash });
     } catch (err) {
-      if (err instanceof LightningError && err.code === "invoice_unknown") return { state: "failed" };
+      if (err instanceof LightningError && err.code === "invoice_unknown") return { error: "the wallet has no record of this payment" };
       throw err;
     }
   }

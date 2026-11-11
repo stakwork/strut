@@ -177,6 +177,8 @@ export type FakePayOutcome = "settled" | "pending" | "failed" | LightningError;
 export class FakePayer implements Payer {
   readonly provider = "sphinx" as const;
   readonly capsFee = true;
+  /** Which wallet it is: a test changes it to model another wallet. */
+  id = "sphinx:fake";
   /** Outcomes for the next pays, in order; empty → settled. */
   readonly outcomes: FakePayOutcome[] = [];
   /** The fee a settled payment costs: a share of the amount, within the cap. */

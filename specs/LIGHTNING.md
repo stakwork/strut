@@ -182,6 +182,19 @@ answers `200`:
 - **`failed` carries `error`**, the LSP's words (`"not enough balance"`).
   `fee_msat` is 0 unless settled; `preimage` only when it hashes to the
   payment hash (the payer checks again and drops one that does not).
+- **`fee_msat` is the ROUTE's fee, not always the one taken.** The mixer
+  (`mixer/src/send.rs`, `openpay`) debits the amount, pays, and then
+  debits the fee; when what is left is less than the fee, that debit fails
+  and is only logged, while the daemon still reports the routing fee. So
+  the payer reads `GET /balance` before a fresh pay and books the fee only
+  when the balance less the amount covered it (`routingFeeMsat` carries
+  the reported one). The whole balance can therefore be withdrawn.
+- **A pending payment may never resolve.** When CLN does not answer within
+  the mixer's budget, `openpay` answers PENDING, keeps the debit and never
+  refunds it, and the daemon ignores a PENDING send, so every re-POST
+  waits 60 s and answers `pending` again. Strut stops polling one an hour
+  past its invoice's expiry and lets a person record it or drop it
+  (specs/API.md §19).
 - **The fee cap.** The LSP pays with CLN `pay`'s defaults — a routing fee
   of at most 0.5% of the amount, or 5 sats when that is more — and takes no
   cap of the daemon's. A `max_fee_msat` below that limit is refused before
@@ -214,7 +227,9 @@ payment is proven by a `preimage` that hashes to the invoice's payment
 hash; `PAYMENT_FAILED` is `failed` with the wallet's words; any other error
 (`INSUFFICIENT_BALANCE`, `QUOTA_EXCEEDED`) is a refusal before sending. A
 request on the relay with no answer in 60 s is `pending`, read again with
-`lookup_invoice`; a payment the wallet has no record of never went out.
+`lookup_invoice`. A `pay_invoice` that answered without a preimage that
+proves it, and a lookup the wallet has no record of, are `pending` too:
+never "nothing was paid", which would invite paying it again.
 
 One call opens a socket to the first relay that answers, reads the
 wallet's info event (kind 13194, the methods it allows and its `encryption`

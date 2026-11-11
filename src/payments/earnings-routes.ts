@@ -16,6 +16,12 @@
  *   invoice out of the wallet through the payer (withdrawals.ts). `msat` is
  *   what the person confirmed. The answer is the payment's state and fee, or
  *   the wallet's refusal as it came (`{ error, code, walletCode? }`).
+ * - `POST /earnings/withdrawals/:paymentHash/read`: read one that is still
+ *   out, now, by its payment hash, through the payer it went out through.
+ * - `POST /earnings/withdrawals/:paymentHash/resolve { action: "paid" |
+ *   "drop", feeMsat? }`: a person settles one by hand — a stale one the
+ *   wallet will never answer for (the Sphinx mixer keeps a debit it never
+ *   resolves), or one that went through a wallet no longer set.
  */
 
 import type { Context, Hono } from "hono";
@@ -88,6 +94,46 @@ export function earningsRoutes(app: Hono, deps: EarningsRoutesDeps): void {
     return c.json({ entries: entries.map(entryView) });
   });
 
+  const refusal = (c: Context, err: unknown) => {
+    if (err instanceof WithdrawError) return c.json({ error: err.message, code: err.code, ...(err.walletCode ? { walletCode: err.walletCode } : {}) }, err.status);
+    throw err;
+  };
+  const answerOf = (a: Awaited<ReturnType<Withdrawals["withdraw"]>>) => {
+    const { entry, ...rest } = a;
+    return { ...rest, ...(entry ? { entry: entryView(entry) } : {}) };
+  };
+  const HASH = /^[0-9a-fA-F]{64}$/;
+
+  app.post("/earnings/withdrawals/:paymentHash/read", async (c) => {
+    const refused = await refuse(c);
+    if (refused) return refused;
+    const hash = c.req.param("paymentHash");
+    if (!HASH.test(hash)) return c.json({ error: "paymentHash is 64 hex characters", code: "bad_request" }, 400);
+    try {
+      return c.json(answerOf(await deps.withdrawals.read(hash)));
+    } catch (err) {
+      return refusal(c, err);
+    }
+  });
+
+  app.post("/earnings/withdrawals/:paymentHash/resolve", async (c) => {
+    const refused = await refuse(c);
+    if (refused) return refused;
+    const hash = c.req.param("paymentHash");
+    if (!HASH.test(hash)) return c.json({ error: "paymentHash is 64 hex characters", code: "bad_request" }, 400);
+    const body = (await c.req.json().catch(() => undefined)) as Record<string, unknown> | undefined;
+    const action = body?.["action"];
+    if (action !== "paid" && action !== "drop") return c.json({ error: 'action is "paid" (record it in the books) or "drop" (forget it)', code: "bad_request" }, 400);
+    if (body?.["feeMsat"] !== undefined && (action !== "paid" || typeof body["feeMsat"] !== "number")) return c.json({ error: "feeMsat is a number of msat, with action paid", code: "bad_request" }, 400);
+    const actor = await deps.actorOf(c);
+    try {
+      const r = await deps.withdrawals.resolve(hash, { action, ...(body?.["feeMsat"] !== undefined ? { feeMsat: body["feeMsat"] as number } : {}), ...(actor ? { actor } : {}) });
+      return c.json({ action: r.action, ...(r.entry ? { entry: entryView(r.entry) } : {}) });
+    } catch (err) {
+      return refusal(c, err);
+    }
+  });
+
   app.post("/earnings/withdraw", async (c) => {
     const refused = await refuse(c);
     if (refused) return refused;
@@ -100,17 +146,18 @@ export function earningsRoutes(app: Hono, deps: EarningsRoutesDeps): void {
     if (body["maxFeeMsat"] !== undefined && typeof body["maxFeeMsat"] !== "number") return c.json({ error: "maxFeeMsat must be a number of msat", code: "bad_request" }, 400);
     const actor = await deps.actorOf(c);
     try {
-      const a = await deps.withdrawals.withdraw({
-        invoice: body["invoice"],
-        msat: body["msat"],
-        ...(body["maxFeeMsat"] !== undefined ? { maxFeeMsat: body["maxFeeMsat"] as number } : {}),
-        ...(actor ? { actor } : {}),
-      });
-      const { entry, ...rest } = a;
-      return c.json({ ...rest, ...(entry ? { entry: entryView(entry) } : {}) });
+      return c.json(
+        answerOf(
+          await deps.withdrawals.withdraw({
+            invoice: body["invoice"],
+            msat: body["msat"],
+            ...(body["maxFeeMsat"] !== undefined ? { maxFeeMsat: body["maxFeeMsat"] as number } : {}),
+            ...(actor ? { actor } : {}),
+          }),
+        ),
+      );
     } catch (err) {
-      if (err instanceof WithdrawError) return c.json({ error: err.message, code: err.code, ...(err.walletCode ? { walletCode: err.walletCode } : {}) }, err.status);
-      throw err;
+      return refusal(c, err);
     }
   });
 }

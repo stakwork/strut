@@ -110,7 +110,7 @@ import { PUBLISHER_FILE, PUBLISHER_NAME, catalogStore, moveChannel, publicCatalo
 import { SUBSCRIPTIONS_FILE, createSubscriptions, subscriptionProblem, type Subscription, type Subscriptions } from "./packages/subscriptions.js";
 import { createPackageIndex, indexDir, indexRowProblem, liveRowProblem, type PackageIndex } from "./packages/index.js";
 import { INDEXES_FILE, createIndexes, indexSubscriptionProblem, parseIndexesEnv, type IndexSubscription, type PackageIndexes, type PackagesCapability } from "./packages/indexes.js";
-import { PUBLISHER_PREFIX, Z32_KEY, type IndexLiveRow, type IndexRow } from "./packages/card.js";
+import { PUBLISHER_PREFIX, Z32_KEY, releaseFor, type IndexLiveRow, type IndexRow } from "./packages/card.js";
 import { LISTING_MAX_BYTES, hostPatternProblem, perMinute } from "./packages/listing.js";
 import { LISTING_ERROR_STATUS, LISTING_REQUESTS_PER_MINUTE, createRequestsDesk, type RequestsDesk } from "./packages/index-requests.js";
 import { LISTINGS_FILE, createPublisherListings } from "./packages/publisher-listings.js";
@@ -5035,6 +5035,26 @@ export async function createStrut<TServices = unknown>(
     walletInfo: async () => (payments.injected ? { provider: null, receive: !!payments.lightning(), pay: await payments.canPay() } : { ...(await payments.wallet()), pay: await payments.canPay() }),
     lightning: () => payments.lightning(),
     usdPerBtc: async () => (await payments.rate.read()).usdPerBtc,
+    // A package published HERE: its items carry their bare local names
+    // (plans/packages-ux.md), so its subjects come from its newest release —
+    // each item by its name inside the package, and by the prefixed name
+    // too, for a strut that keeps it so. Not published here: null, and its
+    // prefix is read (an installed package's items are under it).
+    packageSubjects: async (pkg) => {
+      const card = (await catalogDeps.catalogs.current().catch(() => undefined))?.card;
+      const release = card ? releaseFor(card, pkg) : undefined;
+      if (!release) return null;
+      const info = await packageStore.get(release.digest).catch(() => undefined);
+      if (!info) return null;
+      const subjects = new Set<string>();
+      for (const item of info.items) {
+        if (item.helper || (item.kind !== "workflow" && item.kind !== "step")) continue;
+        const inner = item.name.startsWith(`${pkg}/`) ? item.name.slice(pkg.length + 1) : item.name;
+        subjects.add(`${item.kind}:${inner}`);
+        subjects.add(`${item.kind}:${pkg}/${inner}`);
+      }
+      return { subjects: [...subjects].sort(), version: release.version };
+    },
   };
   if (!(services as Record<string, unknown>)["earnings"]) {
     (services as Record<string, unknown>)["earnings"] = Object.freeze({ read: (q: EarningsQuery = {}) => readEarnings(earningsDeps, q) });

@@ -44,6 +44,7 @@ import {
   type ReceivedRow,
   type Recent,
   type RunOutcome,
+  type SendPurpose,
   type SweepResult,
   type TokenBalance,
   type WithdrawalInput,
@@ -207,8 +208,8 @@ export class SqliteLedgerStore implements LedgerStore {
            from entries where kind = 'payment' and at >= ? and at < ? group by day order by day`,
       ),
       withdrawn: p(
-        `select date(at / 1000, 'unixepoch') day, count(*) count, sum(msat) msat, coalesce(sum(fee_msat), 0) fee_msat
-           from entries where kind = 'withdrawal' and at >= ? and at < ? group by day order by day`,
+        `select date(at / 1000, 'unixepoch') day, coalesce(subject, 'withdrawal') purpose, count(*) count, sum(msat) msat, coalesce(sum(fee_msat), 0) fee_msat
+           from entries where kind = 'withdrawal' and at >= ? and at < ? group by day, purpose order by day, purpose`,
       ),
       outstanding: p(
         `select coalesce(sum(case when successor is null then 1 else 0 end), 0) tokens,
@@ -356,7 +357,7 @@ export class SqliteLedgerStore implements LedgerStore {
     return this.tx(() => {
       const known = this.s.withdrawalOf.get(input.paymentHash) as Row | undefined;
       if (known) return entryOf(known);
-      const seq = this.entry(at, "withdrawal", { msat: input.msat, feeMsat: input.feeMsat, ref: input.paymentHash, actor: input.actor, usd: input.usd });
+      const seq = this.entry(at, "withdrawal", { msat: input.msat, feeMsat: input.feeMsat, ref: input.paymentHash, actor: input.actor, usd: input.usd, subject: input.purpose ?? "withdrawal" });
       return entryOf(this.s.entry.get(seq) as Row);
     }, true);
   }
@@ -401,6 +402,13 @@ export class SqliteLedgerStore implements LedgerStore {
       where.push("((subject >= ? and subject < ?) or (subject >= ? and subject < ?))");
       args.push(`workflow:${q.prefix}/`, `workflow:${q.prefix}0`, `step:${q.prefix}/`, `step:${q.prefix}0`);
     }
+    if (q.subjects) {
+      if (!q.subjects.length) where.push("0");
+      else {
+        where.push(`subject in (${q.subjects.map(() => "?").join(", ")})`);
+        args.push(...q.subjects);
+      }
+    }
     const sums = "sum(calls) calls, sum(failed) failed, sum(earned) earned, sum(cost) cost";
     const filter = `where ${where.join(" and ")}`;
     const db = this.live().db;
@@ -430,6 +438,7 @@ export class SqliteLedgerStore implements LedgerStore {
     const [from, to] = msRange(range);
     return (this.live().s.withdrawn.all(from, to) as Row[]).map((r) => ({
       day: r.day as string,
+      purpose: r.purpose as SendPurpose,
       count: r.count as number,
       msat: r.msat as number,
       feeMsat: r.fee_msat as number,

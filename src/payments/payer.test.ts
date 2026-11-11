@@ -37,6 +37,8 @@ class StandIn {
   outcomes: Array<"settled" | "failed" | "pending"> = [];
   requests: Array<{ auth: string | undefined; body: Record<string, unknown> }> = [];
   ownHashes = new Set<string>();
+  /** What GET /balance answers; undefined: no such route. */
+  balanceMsat: number | undefined = undefined;
 
   async start() {
     this.server = createServer(async (req, res) => {
@@ -45,6 +47,10 @@ class StandIn {
         res.writeHead(status, { "content-type": "application/json" });
         res.end(JSON.stringify(b));
       };
+      if (req.method === "GET" && req.url === "/balance") {
+        if (this.balanceMsat === undefined) return send(404, { error: "no route GET /balance", code: "not_found" });
+        return send(200, { msat: this.balanceMsat });
+      }
       this.requests.push({ auth: req.headers.authorization, body });
       if (req.method !== "POST" || req.url !== "/pay") return send(404, { error: `no route ${req.method} ${req.url}`, code: "not_found" });
       if (req.headers.authorization === `Bearer ${RECEIVE}`) return send(403, { error: "the receive token may not pay", code: "forbidden" });
@@ -136,7 +142,37 @@ describe("SphinxDaemonPayer", () => {
     daemon.pays.clear();
     daemon.outcomes = [];
     daemon.requests = [];
+    daemon.balanceMsat = undefined;
     payer = new SphinxDaemonPayer({ url: daemon.url, payToken: PAY });
+  });
+
+  it("names its wallet by the daemon's URL, never a credential", () => {
+    assert.equal(payer.id, `sphinx:${daemon.url}`);
+    assert.ok(!payer.id.includes(PAY));
+  });
+
+  it("the fee booked is the one taken: the mixer skips it when the balance less the amount does not cover it", async () => {
+    // 2 000 sats held, 1 999 asked: 1 sat left, the 1.2-sat routing fee is not taken.
+    daemon.balanceMsat = 2_000_000;
+    const tight = invoice(1_999_000);
+    const out = await payer.pay({ invoice: tight.invoice, maxFeeMsat: 10_000 });
+    assert.deepEqual([out.state, out.feeMsat, out.routingFeeMsat, out.balanceBeforeMsat], ["settled", 0, 1200, 2_000_000]);
+    // Room for it: booked as reported.
+    const roomy = invoice(1_000_000);
+    const ok = await payer.pay({ invoice: roomy.invoice, maxFeeMsat: 10_000 });
+    assert.deepEqual([ok.feeMsat, ok.routingFeeMsat], [1200, undefined]);
+    // A pending one read later is judged on the balance before it went, never a fresh read.
+    daemon.outcomes.push("pending");
+    const later = invoice(1_999_000);
+    const first = await payer.pay({ invoice: later.invoice, maxFeeMsat: 10_000 });
+    daemon.balanceMsat = 50_000_000;
+    daemon.settle(later.hash);
+    const read = await payer.status({ invoice: later.invoice, paymentHash: later.hash, maxFeeMsat: 10_000, balanceBeforeMsat: first.balanceBeforeMsat! });
+    assert.deepEqual([read.feeMsat, read.routingFeeMsat], [0, 1200]);
+    // No balance to read: the reported fee is booked.
+    daemon.balanceMsat = undefined;
+    const blind = invoice(1_999_000);
+    assert.equal((await payer.pay({ invoice: blind.invoice, maxFeeMsat: 10_000 })).feeMsat, 1200);
   });
 
   it("pays with the pay token and the cap, and reads settled with its fee and a proven preimage", async () => {

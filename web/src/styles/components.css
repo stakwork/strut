@@ -5368,3 +5368,11 @@ input.package-search { width: 100%; margin-bottom: var(--sp-2); }
   .earnings-blocked { text-align: left; }
   .earnings-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+.earnings-pending-item { display: flex; flex-direction: column; gap: 2px; padding: 4px 0; border-top: 1px dashed var(--border); }
+.earnings-pending-item:first-of-type { border-top: 0; }
+.earnings-pending-item.is-stale .earnings-pending-row > span:nth-child(2) { color: var(--warning); }
+.earnings-pending-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); }
+.earnings-fee-input {
+  width: 90px; font: inherit; font-size: 12px; background: var(--surface-2); border: 1px solid var(--border-strong);
+  color: var(--text); padding: 2px var(--sp-2); border-radius: var(--r-md);
+}

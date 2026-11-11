@@ -248,11 +248,20 @@ export interface OpenHold {
   key?: string;
 }
 
+/** What a payment OUT of the wallet was for: a person's withdrawal, or
+ *  credit this strut bought from another (item 9, `remote/buy-credit`). The
+ *  books check counts every one; Earnings shows each apart. */
+export type SendPurpose = "withdrawal" | "purchase";
+export const SEND_PURPOSES: readonly SendPurpose[] = ["withdrawal", "purchase"];
+
 export interface WithdrawalInput {
   msat: number;
+  /** The fee the wallet was charged. */
   feeMsat?: number;
   paymentHash: string;
   actor?: string;
+  /** What it was for (kept in the entry's `subject`); `withdrawal` when left out. */
+  purpose?: SendPurpose;
   /** The dollars at the moment, for the books. */
   usd?: Micros;
   at?: number;
@@ -285,6 +294,9 @@ export interface EarningsQuery extends DayRange {
   by: "item" | "day" | "package" | "total";
   /** Only the subjects under this package prefix (`acme/voxel`). */
   prefix?: string;
+  /** Only these subjects (`workflow:<name>`, `step:<type>`): a package
+   *  published here, whose items carry their bare local names. */
+  subjects?: readonly string[];
 }
 
 export interface ReceivedRow {
@@ -296,6 +308,7 @@ export interface ReceivedRow {
 
 export interface WithdrawnRow {
   day: string;
+  purpose: SendPurpose;
   count: number;
   msat: number;
   feeMsat: number;
@@ -445,6 +458,7 @@ export function rollUp(rows: Array<EarningsRow & { day: string; subject: string 
   const out = new Map<string, EarningsRow>();
   for (const r of rows) {
     if (q.prefix && !underPrefix(r.subject, q.prefix)) continue;
+    if (q.subjects && !q.subjects.includes(r.subject)) continue;
     let key: string | undefined;
     if (q.by === "item") key = r.subject;
     else if (q.by === "day") key = r.day;

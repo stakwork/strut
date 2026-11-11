@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { encodeBolt11 } from "../../src/payments/bolt11.js";
-import { byEarned, fmtExpiresIn, fmtSats, fmtUsd, priceLine, rangeFrom, readWithdrawInvoice, subjectLabel, withdrawBlocked, withdrawRefusal } from "./earnings.js";
+import { byEarned, maxWithdrawMsat, fmtExpiresIn, fmtSats, fmtUsd, priceLine, rangeFrom, readWithdrawInvoice, subjectLabel, withdrawBlocked, withdrawRefusal } from "./earnings.js";
 
 const HASH = "ab".repeat(32);
 const NOW = Date.parse("2026-11-10T12:00:00Z");
@@ -54,8 +54,14 @@ describe("the Withdraw dialog's reading of an invoice", () => {
     assert.equal(r.usd, 10);
     assert.equal(r.overBalance, false);
     assert.equal(r.invoice.description, "to cold storage");
-    const big = readWithdrawInvoice(inv, { balanceMsat: 10_000_000, nowMs: NOW });
-    assert.ok(big.ok && big.overBalance, "the fee counts");
+    // The Sphinx provider takes the amount first and the fee from what is
+    // left: the whole balance can go. An NWC wallet keeps the fee back.
+    const whole = readWithdrawInvoice(inv, { balanceMsat: 10_000_000, nowMs: NOW, provider: "sphinx" });
+    assert.ok(whole.ok && !whole.overBalance);
+    const nwc = readWithdrawInvoice(inv, { balanceMsat: 10_000_000, nowMs: NOW, provider: "nwc" });
+    assert.ok(nwc.ok && nwc.overBalance, "the fee must fit beside it");
+    const over = readWithdrawInvoice(inv, { balanceMsat: 9_999_000, nowMs: NOW, provider: "sphinx" });
+    assert.ok(over.ok && over.overBalance);
   });
 
   it("refuses what it cannot pay as confirmed, before anything is sent", () => {
@@ -67,7 +73,17 @@ describe("the Withdraw dialog's reading of an invoice", () => {
     assert.match(why("hello"), /Not an invoice/);
     assert.match(why(encodeBolt11({ paymentHash: HASH, timestamp: nowS })), /no amount/);
     assert.match(why(encodeBolt11({ msat: 1000, paymentHash: HASH, timestamp: nowS - 7200 })), /expired/);
-    assert.match(why(encodeBolt11({ msat: 1000, paymentHash: HASH, timestamp: nowS, network: "tb" })), /testnet/);
+    // The network is the wallet's to judge: a test stack pays a regtest invoice.
+    const regtest = readWithdrawInvoice(encodeBolt11({ msat: 1000, paymentHash: HASH, timestamp: nowS, network: "bcrt" }), { nowMs: NOW });
+    assert.ok(regtest.ok && regtest.network === "regtest");
+  });
+
+  it("the most that can be withdrawn: the whole balance with the Sphinx provider; less the fee cap with NWC", () => {
+    assert.equal(maxWithdrawMsat("sphinx", 354_592_000), 354_592_000);
+    const m = maxWithdrawMsat("nwc", 10_000_000);
+    assert.ok(m + Math.max(5000, Math.floor(m * 0.005)) <= 10_000_000);
+    assert.ok(m + 1 + Math.max(5000, Math.floor((m + 1) * 0.005)) > 10_000_000, "the largest that fits");
+    assert.equal(maxWithdrawMsat("nwc", 3000), 0);
   });
 
   it("the server's refusals, said for a person", () => {

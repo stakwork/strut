@@ -19,7 +19,7 @@ export default defineStep({
   effect: "read",
   description:
     "What this strut server earned from the workflows and tools anyone may run here, in dollars: earned (what runs were charged), cost (what they spent on models), margin (earned − cost), calls and failed — " +
-    "by `by`: item (each workflow or tool), day, package (summed over its prefix) or total — plus outstanding credit (paid for, not yet charged), received (sats paid in, and the dollars they bought) and withdrawn (sats paid out, with fees). " +
+    "by `by`: item (each workflow or tool), day, package (each installed package, summed over its prefix) or total — plus outstanding credit (paid for, not yet charged), received (sats paid in, and the dollars they bought) and withdrawn (sats paid out, with fees). `package` keeps one package's items. " +
     "`days: 7` is the last seven days counting today; or `from` / `to` as UTC days (YYYY-MM-DD); neither is all time. `wallet: true` also reads the wallet's balance in sats and dollars beside what the books say it holds. " +
     "Answers { totals, rows: [{ key, calls, failed, earned, cost, margin, price? }], outstanding, received, withdrawn, pending, wallet? }.",
   input: z.object({
@@ -27,7 +27,7 @@ export default defineStep({
     from: z.string().optional().describe("The first UTC day, YYYY-MM-DD."),
     to: z.string().optional().describe("The last UTC day, YYYY-MM-DD."),
     by: z.enum(EARNINGS_BY as unknown as [string, ...string[]]).optional().describe("item (default), day, package or total."),
-    prefix: z.string().optional().describe("Only one package's items: its name, publisher/name."),
+    package: z.string().optional().describe("Only one package's items, by its name (publisher/name): one published here is read over the items of its newest release, one installed here over its prefix."),
     wallet: z.boolean().optional().describe("Also read the wallet's balance."),
   }),
   output: z.any(),
@@ -43,7 +43,7 @@ export default defineStep({
       ...(cfg.from ? { from: cfg.from } : {}),
       ...(cfg.to ? { to: cfg.to } : {}),
       ...(cfg.by ? { by: cfg.by } : {}),
-      ...(cfg.prefix ? { prefix: cfg.prefix } : {}),
+      ...(cfg.package ? { package: cfg.package } : {}),
       ...(cfg.wallet ? { wallet: true } : {}),
     });
     return earnings.read(q);

@@ -19,13 +19,16 @@ import type { StrutCapabilities } from "../capabilities.js";
 import type { StepContext } from "../core.js";
 import readStep from "../steps/lib/earnings/read.js";
 import { encodeBolt11 } from "./bolt11.js";
+
 import { FakePayer, FakeWallet } from "./fake-wallet.js";
 import { LightningError, lightningCapability } from "./lightning.js";
 import { MemoryLedgerStore } from "./ledger-memory.js";
 import { dayOf, usdToMicros, type LedgerStore } from "./ledger.js";
 import { WALLET_ENV } from "./settings.js";
-import { createWithdrawals, WithdrawError } from "./withdrawals.js";
-import type { EarningsView } from "./earnings.js";
+import { createWithdrawals, STALE_AFTER_EXPIRY_MS, WithdrawError } from "./withdrawals.js";
+import { readEarnings, type EarningsView } from "./earnings.js";
+import { decodeBolt11 } from "./bolt11.js";
+import type { PayResult, Payer } from "./payer.js";
 
 const KEY = "earnings-key";
 const PEER = "earnings-peer-key";
@@ -320,6 +323,42 @@ describe("earnings and withdraw on a server", () => {
     }
   });
 
+  it("a package's number: one published here sums the subjects its newest release holds (bare names); one installed here, its prefix", async () => {
+    process.env["STRUT_SECRET_KEY"] = "earnings-secret";
+    const strut = await boot();
+    try {
+      const wf = (name: string) => `name: ${name}\ninput:\n  x:\n    type: string\nsteps:\n  - id: say\n    type: log\n    config:\n      message: "{{ input.x }}"\n`;
+      for (const name of ["rig", "slice", "cve-check"]) {
+        const r = await strut.app.request("/workflows", { method: "POST", headers: json, body: JSON.stringify({ name, yaml: wf(name) }) });
+        assert.equal(r.status, 201, await r.clone().text());
+      }
+      const pub = await strut.app.request("/packages/publish", { method: "POST", headers: json, body: JSON.stringify({ package: "acme/voxel", version: "0.1.0", workflows: ["rig", "slice"] }) });
+      assert.equal(pub.status, 201, await pub.clone().text());
+
+      const ledger = await strut.ledger();
+      await ledger.firstUse({ id: "a", paymentHash: "pay-a", askedMsat: 1e7, settledMsat: 1e7, credit: $(10), rate: 1e5, expires: Date.now() + 365 * DAY });
+      const price = { base: $(1), markup: 0 };
+      // Bare names, as a publishing strut keeps them; and an installed package's prefixed one.
+      for (const [runId, subject] of [["r1", "workflow:rig"], ["r2", "workflow:slice"], ["r3", "workflow:cve-check"], ["r4", "workflow:other/tools/scan"]] as const) {
+        await ledger.hold({ token: "a", reserve: $(1), subject, runId });
+        await ledger.charge({ token: "a", runId, subject, cost: 0, outcome: "success", price });
+      }
+      const published = await get(strut, "/earnings?by=item&package=acme/voxel");
+      assert.deepEqual(published.package, { name: "acme/voxel", via: "release", version: "0.1.0" });
+      assert.deepEqual(published.totals, { calls: 2, failed: 0, earned: 2, cost: 0, margin: 2 });
+      assert.deepEqual(published.rows.map((r) => r.key), ["workflow:rig", "workflow:slice"]);
+      assert.deepEqual(published.pending, [], "the wallet's, not a package's");
+      const installed = await get(strut, "/earnings?by=total&package=other/tools");
+      assert.deepEqual(installed.package, { name: "other/tools", via: "prefix" });
+      assert.equal(installed.totals.calls, 1);
+      const byPackage = await get(strut, "/earnings?by=package");
+      assert.deepEqual(byPackage.rows.map((r) => [r.key, r.calls]), [["other/tools", 1]], "by=package rolls up installed prefixes");
+      assert.equal((await strut.app.request("/earnings?package=acme/voxel&prefix=acme/voxel", { headers: keyed })).status, 400);
+    } finally {
+      await strut.close();
+    }
+  });
+
   it("earnings/read: a first-party page's admin reads; another app, or a member on strut's own page, is refused", async () => {
     const strut = await boot();
     try {
@@ -384,6 +423,129 @@ describe("withdrawals on file", () => {
     const after = await second.check();
     assert.equal(after[0]!.paymentHash, lost.hash);
     assert.notEqual(after[0]!.state, "unread", "once expired it can only be read");
+  });
+
+  /** A payer a test scripts: each pay or status call takes the next answer
+   *  (a state, a LightningError, or a promise it waits on). */
+  const scripted = (id = "sphinx:a") => {
+    const answers: Array<PayResult["state"] | LightningError | Promise<PayResult["state"]>> = [];
+    const calls: string[] = [];
+    const next = async (method: string, req: { invoice: string }): Promise<PayResult> => {
+      calls.push(method);
+      const a = answers.shift() ?? "settled";
+      if (a instanceof LightningError) throw a;
+      const state = await a;
+      return { paymentHash: decodeBolt11(req.invoice).paymentHash, state, feeMsat: state === "settled" ? 1000 : 0 };
+    };
+    const payer: Payer = { provider: "sphinx", id, capsFee: true, minFeeMsat: () => 0, pay: (r) => next("pay", r), status: (r) => next("status", r) };
+    return { payer, answers, calls };
+  };
+
+  it("a payment is read only through the payer it went out through; a refused credential never drops it", async () => {
+    const ledger = new MemoryLedgerStore();
+    const a = scripted("sphinx:a");
+    let current: Payer = a.payer;
+    const w = createWithdrawals({ payer: async () => current, ledger: async () => ledger });
+    a.answers.push("pending");
+    const out = invoice(2_000_000);
+    assert.equal((await w.withdraw({ invoice: out.invoice, msat: 2_000_000 })).state, "pending");
+    assert.equal((await w.pending())[0]!.payer, "sphinx:a");
+
+    // The wallet changed: the new one does not know it — never read, never dropped.
+    const b = scripted("nwc:b");
+    current = b.payer;
+    assert.deepEqual((await w.check()).map((r) => [r.state, /another wallet/.test(r.error ?? "")]), [["unread", true]]);
+    await assert.rejects(w.read(out.hash), (e: unknown) => e instanceof WithdrawError && e.code === "other_wallet");
+    await assert.rejects(w.withdraw({ invoice: out.invoice, msat: 2_000_000 }), (e: unknown) => e instanceof WithdrawError && e.code === "other_wallet");
+    assert.equal(b.calls.length, 0);
+    assert.equal((await w.pending())[0]!.otherWallet, true);
+
+    // Back on the first, whose pay token was rotated: 401 keeps it, says so.
+    current = a.payer;
+    a.answers.push(new LightningError("wallet_unauthorized", "the Sphinx daemon refused the pay token"));
+    await assert.rejects(w.read(out.hash), (e: unknown) => e instanceof WithdrawError && e.status === 502);
+    assert.equal((await w.pending()).length, 1, "it may have gone: kept");
+    assert.match((await w.pending())[0]!.lastError!, /refused the pay token/);
+    // A person drops it by hand (it went through a wallet now gone, say).
+    assert.deepEqual(await w.resolve(out.hash, { action: "drop" }), { action: "drop" });
+    assert.deepEqual(await w.pending(), []);
+    assert.equal(await ledger.withdrawalOf(out.hash), undefined);
+  });
+
+  it("stale: past its invoice's expiry and an hour, no more polling; a person records it as paid (once) or reads it again", async () => {
+    const ledger = new MemoryLedgerStore();
+    const a = scripted();
+    let now = Date.now();
+    const w = createWithdrawals({ payer: async () => a.payer, ledger: async () => ledger, now: () => now });
+    a.answers.push("pending", "pending");
+    const out = invoice(3_000_000, { expirySecs: 600 });
+    await w.withdraw({ invoice: out.invoice, msat: 3_000_000, actor: "evan" });
+    assert.deepEqual((await w.check()).map((r) => r.state), ["pending"], "polled while it may still settle");
+    now += 600_000 + STALE_AFTER_EXPIRY_MS + 1000;
+    const before = a.calls.length;
+    const read = await w.check();
+    assert.match(read[0]!.error!, /stale/);
+    assert.equal(a.calls.length, before, "a stale one is not read unattended");
+    assert.equal((await w.pending())[0]!.stale, true);
+    // The mixer kept the debit: a person records it, with the fee they know.
+    const r = await w.resolve(out.hash, { action: "paid", feeMsat: 15_000, actor: "admin-1" });
+    assert.equal(r.entry!.msat, 3_000_000);
+    assert.equal(r.entry!.feeMsat, 15_000);
+    assert.equal(r.entry!.actor, "evan", "who asked for it");
+    await assert.rejects(w.resolve(out.hash, { action: "paid" }), (e: unknown) => e instanceof WithdrawError && e.code === "not_pending");
+    assert.equal((await ledger.list({ kind: "withdrawal" })).length, 1);
+    // Read by hash after: the books answer.
+    assert.equal((await w.read(out.hash)).existing, true);
+  });
+
+  it("one read per payment: a caller is answered within its wait, others join the read in flight, and checks never overlap", async () => {
+    const ledger = new MemoryLedgerStore();
+    const a = scripted();
+    const w = createWithdrawals({ payer: async () => a.payer, ledger: async () => ledger, answerWithinMs: 50 });
+    a.answers.push("pending");
+    const out = invoice(1_000_000);
+    await w.withdraw({ invoice: out.invoice, msat: 1_000_000 });
+    let release!: (s: PayResult["state"]) => void;
+    a.answers.push(new Promise<PayResult["state"]>((r) => (release = r)));
+    const first = await w.read(out.hash);
+    assert.deepEqual([first.state, first.reading], ["pending", true], "the wallet is slow: answered pending, the read goes on");
+    const [second, checked] = await Promise.all([w.read(out.hash), w.check()]);
+    assert.equal(second.reading, true);
+    assert.match(checked[0]!.error!, /being read now/);
+    assert.equal(a.calls.filter((c) => c === "status").length, 1, "one read, joined");
+    assert.equal((await w.pending())[0]!.reading, true);
+    release("settled");
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal((await ledger.list({ kind: "withdrawal" })).length, 1, "the read went on and recorded it");
+    assert.deepEqual(await w.pending(), []);
+
+    // Two checks at once: the second reads nothing while the first runs.
+    a.answers.push("pending");
+    const two = invoice(1_000_000);
+    await w.withdraw({ invoice: two.invoice, msat: 1_000_000 });
+    let hold!: (s: PayResult["state"]) => void;
+    a.answers.push(new Promise<PayResult["state"]>((r) => (hold = r)));
+    const running = w.check();
+    assert.deepEqual(await w.check(), []);
+    hold("settled");
+    assert.deepEqual((await running).map((r) => r.state), ["settled"]);
+  });
+
+  it("a send's purpose: a purchase (item 9's) is books too, apart from withdrawals; pending sends count in the books check", async () => {
+    const ledger = new MemoryLedgerStore();
+    const a = scripted();
+    const w = createWithdrawals({ payer: async () => a.payer, ledger: async () => ledger });
+    const bought = invoice(4_000_000);
+    await w.withdraw({ invoice: bought.invoice, msat: 4_000_000, purpose: "purchase" });
+    assert.equal((await ledger.withdrawalOf(bought.hash))!.subject, "purchase");
+    a.answers.push("pending");
+    const out = invoice(2_000_000);
+    await w.withdraw({ invoice: out.invoice, msat: 2_000_000 });
+    const view = await readEarnings({ ledger: async () => ledger, pending: () => w.pending(), lightning: () => null }, { by: "total", wallet: true });
+    assert.deepEqual(view.purchases, { count: 1, msat: 4_000_000, feeMsat: 1000 });
+    assert.equal(view.withdrawn.count, 0);
+    assert.equal(view.wallet!.pendingMsat, 2_000_000);
+    assert.equal(view.wallet!.expectedMsat, 0 - 4_001_000 - 2_000_000, "every send and its fee, and what is still out");
   });
 
   it("no pay credential: refused before anything is on file", async () => {

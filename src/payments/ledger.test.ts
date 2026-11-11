@@ -436,7 +436,7 @@ for (const impl of impls) {
         { kind: "withdrawal", msat: 5_000_000, feeMsat: 12_000, ref: "out-1", actor: "evan", token: undefined },
       );
       await store.withdrawal({ msat: 1_000_000, paymentHash: "out-2", at: T0 + DAY + 5 });
-      assert.deepEqual(await store.withdrawn(), [{ day: dayOf(T0 + DAY), count: 2, msat: 6_000_000, feeMsat: 12_000 }]);
+      assert.deepEqual(await store.withdrawn(), [{ day: dayOf(T0 + DAY), purpose: "withdrawal", count: 2, msat: 6_000_000, feeMsat: 12_000 }]);
       const received = await store.received();
       assert.deepEqual(received.map((r) => [r.day, r.count, r.usd]), [[dayOf(T0), 1, $(10)], [dayOf(T0 + DAY), 2, $(5) + $(0.5)]]);
       const a = (await store.token("a"))!;
@@ -451,7 +451,30 @@ for (const impl of impls) {
       assert.deepEqual(again, first);
       assert.deepEqual(await store.withdrawalOf("out-1"), first);
       assert.equal(await store.withdrawalOf("out-2"), undefined);
-      assert.deepEqual(await store.withdrawn(), [{ day: dayOf(T0), count: 1, msat: 5_000_000, feeMsat: 12_000 }]);
+      assert.deepEqual(await store.withdrawn(), [{ day: dayOf(T0), purpose: "withdrawal", count: 1, msat: 5_000_000, feeMsat: 12_000 }]);
+    });
+
+    it("a send has a purpose: a withdrawal, or credit bought from another strut; read apart, by day", async () => {
+      await store.withdrawal({ msat: 5_000_000, feeMsat: 1000, paymentHash: "out-1", at: T0 });
+      const bought = await store.withdrawal({ msat: 2_000_000, feeMsat: 500, paymentHash: "buy-1", purpose: "purchase", at: T0 + 5 });
+      assert.equal(bought.subject, "purchase");
+      assert.deepEqual(await store.withdrawn(), [
+        { day: dayOf(T0), purpose: "purchase", count: 1, msat: 2_000_000, feeMsat: 500 },
+        { day: dayOf(T0), purpose: "withdrawal", count: 1, msat: 5_000_000, feeMsat: 1000 },
+      ]);
+    });
+
+    it("earnings over a list of subjects: a package published here, its items by their bare names", async () => {
+      await buy(store, 100, { id: "a", at: T0 });
+      const price = { base: $(1), markup: 0 };
+      for (const [runId, subject] of [["r1", "workflow:rig"], ["r2", "step:slice"], ["r3", "workflow:other"]] as const) {
+        await store.hold({ token: "a", reserve: $(1), subject, runId, at: T0 });
+        await store.charge({ token: "a", runId, subject, cost: 0, outcome: "success", price, at: T0 + 1 });
+      }
+      const subjects = ["workflow:rig", "step:slice", "workflow:acme/voxel/rig"];
+      assert.deepEqual((await store.earnings({ by: "total", subjects }))[0], { key: "total", calls: 2, failed: 0, earned: $(2), cost: 0 });
+      assert.deepEqual((await store.earnings({ by: "item", subjects })).map((r) => r.key), ["step:slice", "workflow:rig"]);
+      assert.deepEqual((await store.earnings({ by: "total", subjects: [] }))[0]!.calls, 0);
     });
 
     it("list: entries newest first, of one kind or one run, paged", async () => {
