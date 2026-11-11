@@ -600,27 +600,135 @@ export interface TokenPricing {
   inputTokenPrice: number;
   outputTokenPrice: number;
   cacheReadPrice?: number;
+  /** 5-minute cache writes. */
   cacheWritePrice?: number;
+  /** 1-hour cache writes (Anthropic: 2x input). Absent: priced at cacheWritePrice. */
+  cacheWrite1hPrice?: number;
+  /** A long-prompt tier: when ONE call's prompt (input + cache read + cache
+   *  write tokens) is over `aboveTokens`, ALL its tokens are priced at `pricing`. */
+  longContext?: { aboveTokens: number; pricing: TokenPricing };
 }
 
 export interface TokenUsageForCost {
   input: number;
   cache_read: number;
+  /** All cache writes, the 1-hour ones included. */
   cache_write: number;
+  /** The part of cache_write that was written with the 1-hour TTL (default 0). */
+  cache_write_1h?: number;
   output: number;
 }
 
+const ANTHROPIC_PRICE = (
+  inputTokenPrice: number,
+  cacheReadPrice: number,
+  cacheWritePrice: number,
+  cacheWrite1hPrice: number,
+  outputTokenPrice: number,
+): TokenPricing => ({ inputTokenPrice, cacheReadPrice, cacheWritePrice, cacheWrite1hPrice, outputTokenPrice });
+
+// Anthropic list prices, USD per million tokens: input / cache read / cache
+// write (5m) / cache write (1h) / output. Sources:
+// https://platform.claude.com/docs/en/about-claude/pricing and
+// https://claude.com/pricing, read 2026-11-11.
+// Used when the datasheet catalog (the LLM gateway's own, refreshed daily) is
+// not loaded or lacks the model; the catalog wins when it has it.
+const ANTHROPIC_MODELS: Record<string, TokenPricing> = {
+  "claude-fable-5-2": ANTHROPIC_PRICE(8, 0.2, 10, 16, 40),
+  "claude-mythos-5-2": ANTHROPIC_PRICE(8, 0.2, 10, 16, 40),
+  "claude-fable-5-1": ANTHROPIC_PRICE(10, 0.25, 12.5, 20, 50),
+  "claude-mythos-5-1": ANTHROPIC_PRICE(10, 0.25, 12.5, 20, 50),
+  "claude-fable-5": ANTHROPIC_PRICE(10, 1, 12.5, 20, 50),
+  "claude-mythos-5": ANTHROPIC_PRICE(10, 1, 12.5, 20, 50),
+  "claude-opus-5-5": ANTHROPIC_PRICE(4, 0.2, 5, 8, 20),
+  "claude-opus-5": ANTHROPIC_PRICE(5, 0.5, 6.25, 10, 25),
+  "claude-opus-4-8": ANTHROPIC_PRICE(5, 0.5, 6.25, 10, 25),
+  "claude-opus-4-7": ANTHROPIC_PRICE(5, 0.5, 6.25, 10, 25),
+  "claude-opus-4-6": ANTHROPIC_PRICE(5, 0.5, 6.25, 10, 25),
+  "claude-opus-4-5": ANTHROPIC_PRICE(5, 0.5, 6.25, 10, 25),
+  "claude-opus-4-1": ANTHROPIC_PRICE(15, 1.5, 18.75, 30, 75),
+  "claude-opus-4": ANTHROPIC_PRICE(15, 1.5, 18.75, 30, 75),
+  "claude-sonnet-5-5": ANTHROPIC_PRICE(2, 0.1, 2.5, 4, 10),
+  "claude-sonnet-5": ANTHROPIC_PRICE(2, 0.2, 2.5, 4, 10),
+  "claude-sonnet-4-6": ANTHROPIC_PRICE(3, 0.3, 3.75, 6, 15),
+  "claude-sonnet-4-5": ANTHROPIC_PRICE(3, 0.3, 3.75, 6, 15),
+  "claude-sonnet-4": ANTHROPIC_PRICE(3, 0.3, 3.75, 6, 15),
+  "claude-haiku-5-5": {
+    ...ANTHROPIC_PRICE(0.1, 0.01, 0.125, 0.2, 0.5),
+    longContext: { aboveTokens: 100_000, pricing: ANTHROPIC_PRICE(0.5, 0.05, 0.625, 1, 2.5) },
+  },
+  "claude-haiku-4-5": ANTHROPIC_PRICE(1, 0.1, 1.25, 2, 5),
+};
+
+/** An Anthropic model id as the table keys it: no `anthropic/` prefix, dots
+ *  between version digits as dashes (OpenRouter's "claude-opus-5.5"), no
+ *  trailing -YYYYMMDD / @YYYYMMDD date. */
+export function normalizeAnthropicModelId(modelId: string): string {
+  return modelId
+    .trim()
+    .replace(/^anthropic\//i, "")
+    .toLowerCase()
+    .replace(/(\d)\.(?=\d)/g, "$1-")
+    .replace(/[-@]\d{8}$/, "");
+}
+
+const DIRECT_PROVIDERS: ReadonlySet<string> = new Set(["anthropic", "openai", "google", "xai", "openrouter"]);
+const warnedUnpriced = new Set<string>();
+
+/** Where a model's price comes from:
+ *  - "table": aieo's own table (Anthropic, Maple, Numes, Token Factory);
+ *  - "catalog": the datasheet;
+ *  - "provider-default": the provider's flat rate (no model named, or a gateway
+ *    provider's deliberate ceiling for an unlisted model);
+ *  - "unpriced": a direct provider (anthropic, openai, google, xai, openrouter)
+ *    and a model neither knows: its cost is reported as 0, not as another
+ *    model's. */
+export function modelPriceSource(provider: Provider | string, modelId?: string): "table" | "catalog" | "provider-default" | "unpriced" {
+  if (!modelId) return "provider-default";
+  const p = provider as Provider;
+  const catalogHas = !!getCatalogEntry(p, modelId)?.pricing;
+  if (p === "anthropic") {
+    if (catalogHas) return "catalog";
+    return ANTHROPIC_MODELS[normalizeAnthropicModelId(modelId)] ? "table" : "unpriced";
+  }
+  if (p === "maple" && MAPLE_MODELS[modelId]) return "table";
+  if (p === "numes" && NUMES_MODELS[modelId]) return "table";
+  if (p === "tokenfactory" && TOKENFACTORY_MODELS[modelId]) return "table";
+  if (catalogHas && p !== "maple" && p !== "tokenfactory") return "catalog";
+  return DIRECT_PROVIDERS.has(provider) ? "unpriced" : "provider-default";
+}
+
 /** A provider aieo does not know (one only a gateway has) has no rate here:
- *  0, and the gateway bills it. */
+ *  0, and the gateway bills it. A direct provider's model that nothing prices
+ *  is UNPRICED: 0, with one warning (see modelPriceSource), never another
+ *  model's rate. */
 export function computeSessionCost(provider: Provider | string, usage: TokenUsageForCost, modelId?: string, actualCost?: number): number {
   if (typeof actualCost === "number" && actualCost >= 0) return actualCost;
-  // The model's own price (Maple's, Numes' or Token Factory's table, then the datasheet), else
-  // the provider's flat rate; a provider aieo does not know has neither.
-  const pricing = (modelId ? getModelPrice(provider as Provider, modelId) : undefined) ?? TOKEN_PRICING[provider as Provider];
+  // The model's own price (Anthropic's, Maple's, Numes' or Token Factory's table, then the datasheet).
+  let pricing = modelId ? getModelPrice(provider as Provider, modelId) : undefined;
+  if (!pricing && modelId && DIRECT_PROVIDERS.has(provider)) {
+    const key = `${provider}/${modelId}`;
+    if (!warnedUnpriced.has(key)) {
+      warnedUnpriced.add(key);
+      console.warn(`[aieo] no price for ${key}: cost reported as 0 (unpriced)`);
+    }
+    return 0;
+  }
+  // No model named: the provider's flat rate. A gateway provider (maple, numes,
+  // tokenfactory) with an unlisted model: its TOKEN_PRICING is a deliberate
+  // "dearest listed rate" ceiling, so a cost is never under-reported. A
+  // provider aieo does not know has neither.
+  pricing ??= TOKEN_PRICING[provider as Provider];
   if (!pricing) return 0;
+  const cacheWrite = Math.max(0, usage.cache_write);
+  const prompt = usage.input + usage.cache_read + cacheWrite;
+  if (pricing.longContext && prompt > pricing.longContext.aboveTokens) pricing = pricing.longContext.pricing;
+  const write1h = Math.min(Math.max(0, usage.cache_write_1h ?? 0), cacheWrite);
   const inputCost = (usage.input / 1_000_000) * pricing.inputTokenPrice;
   const cacheReadCost = (usage.cache_read / 1_000_000) * (pricing.cacheReadPrice ?? pricing.inputTokenPrice);
-  const cacheWriteCost = (usage.cache_write / 1_000_000) * (pricing.cacheWritePrice ?? pricing.inputTokenPrice);
+  const write5mPrice = pricing.cacheWritePrice ?? pricing.inputTokenPrice;
+  const write1hPrice = pricing.cacheWrite1hPrice ?? write5mPrice;
+  const cacheWriteCost = ((cacheWrite - write1h) / 1_000_000) * write5mPrice + (write1h / 1_000_000) * write1hPrice;
   const outputCost = (usage.output / 1_000_000) * pricing.outputTokenPrice;
   return inputCost + cacheReadCost + cacheWriteCost + outputCost;
 }
@@ -697,6 +805,7 @@ export function getProviderForModel(modelName?: ModelName | string): Provider {
         const m = modelName.toLowerCase();
         if (m.startsWith("gpt-")) return "openai";
         if (m.startsWith("gemini-")) return "google";
+        if (m.startsWith("claude-")) return "anthropic";
       }
       return "anthropic";
   }
@@ -1398,6 +1507,10 @@ export function getContextLimit(modelId: string, provider: Provider): number {
   );
 }
 
+// A provider's flat rate: used when no model is named. For a direct provider
+// it is NOT a fallback for an unknown model (that is unpriced, see
+// computeSessionCost); the maple / numes / tokenfactory entries are the
+// deliberate ceiling for an unlisted model on a gateway.
 const TOKEN_PRICING: Record<Provider, TokenPricing> = {
   anthropic: {
     inputTokenPrice: 3.0,
@@ -1507,11 +1620,13 @@ export function parseModelCatalog(raw: string): Map<string, CatalogEntry> {
     if (input !== undefined && output !== undefined) {
       const cacheRead = perMillion(row.cache_read_input_token_cost);
       const cacheWrite = perMillion(row.cache_creation_input_token_cost);
+      const cacheWrite1h = perMillion(row.cache_creation_input_token_cost_above_1hr);
       entry.pricing = {
         inputTokenPrice: input,
         outputTokenPrice: output,
         ...(cacheRead ? { cacheReadPrice: cacheRead } : {}),
         ...(cacheWrite ? { cacheWritePrice: cacheWrite } : {}),
+        ...(cacheWrite1h ? { cacheWrite1hPrice: cacheWrite1h } : {}),
       };
       priced++;
     }
@@ -1554,12 +1669,17 @@ export function getCatalogEntry(provider: Provider, modelId: string): CatalogEnt
 }
 
 /** A model's own price per million tokens: Maple's, Numes' or Token Factory's table, then the
- *  datasheet. Undefined when neither knows it — never the provider's flat
- *  rate, which `computeSessionCost` falls back to. */
+ *  datasheet; Anthropic: the datasheet (the gateway bills from it), then the
+ *  built-in table (ids normalised, see normalizeAnthropicModelId). Undefined
+ *  when none knows it — never the provider's flat rate. */
 export function getModelPrice(provider: Provider, modelId: string): TokenPricing | undefined {
   if (provider === "maple") return MAPLE_MODELS[modelId]?.pricing;
   if (provider === "numes") return NUMES_MODELS[modelId]?.pricing ?? getCatalogEntry(provider, modelId)?.pricing;
   if (provider === "tokenfactory") return TOKENFACTORY_MODELS[modelId]?.pricing;
+  if (provider === "anthropic") {
+    const id = normalizeAnthropicModelId(modelId);
+    return getCatalogEntry(provider, modelId)?.pricing ?? (id !== modelId ? getCatalogEntry(provider, id)?.pricing : undefined) ?? ANTHROPIC_MODELS[id];
+  }
   return getCatalogEntry(provider, modelId)?.pricing;
 }
 

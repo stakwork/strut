@@ -1139,6 +1139,31 @@ describe("mid-stream socket death is resumed, not lost", () => {
       { runId: "r", path: "p", scope: {}, input: undefined, emit: async () => {}, services: {}, registry: {} } as any,
     ) as Promise<any>;
 
+  it("flags `costUnpriced` (and costs 0) for a model nothing prices; a priced one has no flag", async () => {
+    const s = await serve((_call, res) => {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.write(msgStart());
+      res.write(toolUse("toolu_1", "final_answer", { answer: "done" }));
+      res.end();
+    });
+    process.env["ANTHROPIC_BASE_URL"] = `http://127.0.0.1:${s.port}`;
+    const go = (model: string) =>
+      agent.run(
+        (agent.input as any).parse({ cwd, system: "sys", prompt: "go", model, finalAnswer: "Report.", toolFilter: ["bash"] }),
+        { runId: "r", path: "p", scope: {}, input: undefined, emit: async () => {}, services: {}, registry: {} } as any,
+      ) as Promise<any>;
+    try {
+      const unpriced = await go("claude-unpriced-test-9");
+      assert.equal(unpriced.cost, 0);
+      assert.equal(unpriced.costUnpriced, true);
+      const priced = await go("claude-sonnet-4-5");
+      assert.ok(priced.cost > 0);
+      assert.equal("costUnpriced" in priced, false);
+    } finally {
+      s.close();
+    }
+  });
+
   it("takes the provider key from ctx.services.secrets when env has none", async () => {
     const s = await serve((_call, res) => {
       res.writeHead(200, { "content-type": "text/event-stream" });
