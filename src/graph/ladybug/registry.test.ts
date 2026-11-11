@@ -91,7 +91,7 @@ describe("ladybug registry — the ontology seed (plans/ladybug-backend.md §3, 
     for (const [k, t] of Object.entries(SCHEMA_COLUMNS)) assert.equal(cols[k], t, `the Schema field ${k}`);
     assert.equal(cols["attributes"], "STRING", "a type's declared attributes are one JSON column");
     assert.equal(cols["aliases"], "STRING[]");
-    assert.ok(Object.keys(cols).length > 80 && Object.keys(cols).length < 140, `${Object.keys(cols).length} columns`);
+    assert.ok(Object.keys(cols).length > 80 && Object.keys(cols).length < 160, `${Object.keys(cols).length} columns`);
     assert.deepEqual(Object.keys(EDGE_COLUMNS), ["ref_id", "edge_key", "namespace", "created_by", "created_at", "updated_at", "deleted_at", "weight", "importance"]);
     assert.deepEqual(EDGE_TYPE_COLUMNS, { EVIDENCED_BY: { strength: "DOUBLE", context: "STRING" }, HAS_SOURCE: { context: "STRING", start_time: "INT64", end_time: "INT64", post_url: "STRING" } }, "the claim columns, on the claim edges only");
     assert.ok(!("cardinality" in SCHEMA_COLUMNS), "cardinality is an edge type's rule, never a node type's");
@@ -119,7 +119,7 @@ describe("ladybug registry — the ontology seed (plans/ladybug-backend.md §3, 
 
   it("the seed's stamp is pinned: a new stamp re-seeds every file's Schema rows at its next open", () => {
     // Change this only with a change to the seed's content you mean to ship.
-    assert.equal(ontologySeed().id, "ladybug_ontology_seed:e18d83de40b0f0d6");
+    assert.equal(ontologySeed().id, "ladybug_ontology_seed:01f1ebc0fb9a990c");
   });
 
   it("holds the types and edge rules both engines seed (seed-types.ts), in place", () => {

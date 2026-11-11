@@ -37,7 +37,7 @@ import {
   spawnedRunIds,
   wholeText,
 } from "./projector.js";
-import { TEXT_MAX_CHARS } from "./strut-schemas.js";
+import { TEXT_MAX_CHARS, WORKFLOW_USAGE_FIELDS } from "./strut-schemas.js";
 import type { JobView } from "../job-index.js";
 import type { ConversationRecord } from "../conversations.js";
 import { runStep } from "../run-step.js";
@@ -80,6 +80,32 @@ function sampleEvents(workflowHash: string): RunEvent[] {
     ev(7, "step.start", `${WF}/ship`, { stepType: "log" }),
     ev(8, "step.end", `${WF}/ship`, { stepType: "log", output: "shipped" }),
     ev(9, "run.end", WF, { output: { delivered: 60 } }),
+  ];
+}
+
+/** A scheduled run of an app's, launched under another run, whose agent
+ *  spent `usage` and went on past a failed tool call, and whose subflow's
+ *  child then failed the run. */
+function launchedEvents(usage: RunEvent["usage"]): RunEvent[] {
+  return [
+    ev(0, "run.start", WF, {
+      input: {},
+      origin: "schedule",
+      automation: { id: "auto-1" },
+      actor: "alice",
+      principal: "bob",
+      parentRunId: "1788307090000",
+      app: { name: "acme/board", version: "v3" },
+    }),
+    ev(1, "step.start", `${WF}/plan`, { stepType: "agent", input: { prompt: "go" } }),
+    ev(2, "step.start", `${WF}/plan/001-read`, { stepType: "tool:read" }),
+    ev(3, "step.error", `${WF}/plan/001-read`, { stepType: "tool:read", error: { message: "HTTP 500" } }),
+    ev(4, "step.end", `${WF}/plan`, { stepType: "agent", output: "ok", modelCalls: 3, cost: 0.25, usage }),
+    ev(5, "step.start", `${WF}/sub`, { stepType: "subflow" }),
+    ev(6, "step.start", `${WF}/sub/fetch`, { stepType: "http" }),
+    ev(7, "step.error", `${WF}/sub/fetch`, { stepType: "http", error: { message: "HTTP 500" } }),
+    ev(8, "step.error", `${WF}/sub`, { stepType: "subflow", error: { message: "HTTP 500" } }),
+    ev(9, "run.error", WF, { error: { message: "HTTP 500" } }),
   ];
 }
 
@@ -308,6 +334,41 @@ describe("projectRunEvents (pure)", () => {
     assert.equal(withSummary.run.data["error_message"], "boom");
     assert.equal(withSummary.run.data["summary"], "error: boom");
     assert.equal(projectRunEvents(WF, RUN, [], null), null);
+  });
+
+  it("records who launched a run and from where, what it spent, and the step that failed it", () => {
+    const usage = { inputTokens: 100, cacheReadTokens: 900, cacheWriteTokens: 50, outputTokens: 40, totalTokens: 1090 };
+    const events = launchedEvents(usage);
+    const run = (summary: RunSummary | null) => {
+      const data = projectRunEvents(WF, RUN, events, summary)!.run.data;
+      const keys = ["origin", "automation_id", "actor", "principal", "parent_run_id", "app", "app_version", "cost_usd", "model_calls", "input_tokens", "output_tokens", "failed_step"];
+      return Object.fromEntries(keys.filter((k) => k in data).map((k) => [k, data[k]]));
+    };
+    assert.deepEqual(run(null), {
+      origin: "schedule",
+      automation_id: "auto-1",
+      actor: "alice",
+      principal: "bob",
+      parent_run_id: "1788307090000",
+      app: "acme/board",
+      app_version: "v3",
+      // Summed from the log: no summary yet. Input is every token read.
+      cost_usd: 0.25,
+      model_calls: 3,
+      input_tokens: 1050,
+      output_tokens: 40,
+      // The subflow's child, not the subflow, and never the tool call the agent went on past.
+      failed_step: `${WF}/sub/fetch`,
+    });
+
+    // The summary's totals win; a run that did not fail names no step, and
+    // one that called no model records no spend.
+    const totals = { modelCalls: 5, cost: 1, usage: { ...usage, inputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 2 } };
+    const done = { runId: RUN, workflow: WF, startedAt: ts(0), finishedAt: ts(9), durationMs: 9000, input: {} };
+    assert.deepEqual([run({ ...done, status: "error", totals }).model_calls, run({ ...done, status: "error", totals }).input_tokens], [5, 10]);
+    assert.equal(run({ ...done, status: "cancelled", totals }).failed_step, undefined);
+    const quiet = projectRunEvents(WF, RUN, sampleEvents("h"), null)!.run.data;
+    assert.deepEqual(["cost_usd", "model_calls", "failed_step", "origin", "app"].filter((k) => k in quiet), []);
   });
 
   it("preview caps length; messageText + spawnedRunIds read transcripts", () => {
@@ -711,6 +772,83 @@ for (const tb of testBackends()) describe(`projector on ${tb.name}`, { skip: tb.
     assert.equal(await count("StrutRun"), 1);
   });
 
+  it("a StrutRun holds who launched it and from where, what it spent, and the step that failed it", async () => {
+    const usage = { inputTokens: 100, cacheReadTokens: 900, cacheWriteTokens: 50, outputTokens: 40, totalTokens: 1090 };
+    for (const e of launchedEvents(usage)) await store.append(WF, RUN, e);
+    await store.finalize(WF, RUN, {
+      runId: RUN, workflow: WF, startedAt: ts(0), finishedAt: ts(9), durationMs: 9000, status: "error", input: {},
+      error: { message: "HTTP 500" }, totals: { modelCalls: 3, cost: 0.25, usage },
+    });
+    assert.ok(await projectRun(backend, store, WF, RUN));
+    const fields = ["origin", "automation_id", "actor", "principal", "parent_run_id", "app", "app_version", "cost_usd", "model_calls", "input_tokens", "output_tokens", "failed_step"];
+    const [row] = await backend.query(`MATCH ${d().node("r", "StrutRun", { run_id: "$id" })} RETURN ${d().project("r", fields)} AS p`, { id: RUN });
+    assert.deepEqual(row!["p"], {
+      origin: "schedule",
+      automation_id: "auto-1",
+      actor: "alice",
+      principal: "bob",
+      parent_run_id: "1788307090000",
+      app: "acme/board",
+      app_version: "v3",
+      cost_usd: 0.25,
+      model_calls: 3,
+      input_tokens: 1050,
+      output_tokens: 40,
+      failed_step: `${WF}/sub/fetch`,
+    });
+  });
+
+  it("a workflow's run counts on its StrutWorkflow: recounted after each run's projection, backfilled by projectRuns, cleared with the workflow", async () => {
+    const hash = (await ws.getWorkflowHash(WF))!;
+    const now = Date.now();
+    const day = 86_400_000;
+    const usage = async (name = WF) => {
+      const rows = await backend.query(`MATCH ${d().node("w", "StrutWorkflow", { name: "$n" })} WHERE ${d().live("w")} RETURN ${d().project("w", [...WORKFLOW_USAGE_FIELDS])} AS p`, { n: name });
+      return Object.fromEntries(Object.entries((rows[0]?.["p"] ?? {}) as Record<string, unknown>).filter(([, v]) => v != null));
+    };
+    /** A finished run of `WF` started `ago` ms before now, ending `status`. */
+    const run = async (id: string, ago: number, status: RunSummary["status"]) => {
+      const startedAt = new Date(now - ago).toISOString();
+      const workflowHash = (await ws.getWorkflowHash(WF))!;
+      await store.append(WF, id, { ts: startedAt, runId: id, path: WF, type: "run.start", input: {}, workflowHash });
+      await store.append(WF, id, { ts: startedAt, runId: id, path: WF, type: status === "success" ? "run.end" : status === "error" ? "run.error" : "run.cancelled" });
+      await store.finalize(WF, id, { runId: id, workflow: WF, startedAt, finishedAt: startedAt, durationMs: 1, status, input: {} });
+      return projectRunOnce(backend, store, WF, id);
+    };
+    const secs = (ago: number) => Math.floor((now - ago) / 1000);
+
+    assert.deepEqual(await usage(), {}, "no runs, no counts");
+    await run("1001", 60 * day, "success");
+    await run("1002", 3 * day, "error");
+    await run("1003", 2 * day, "cancelled");
+    await run("1004", day, "success");
+    const expected = { usage_count: 4, usage_count_30d: 3, success_count: 2, error_count: 1, last_run_at: secs(day), last_run_status: "success" };
+    assert.deepEqual(await usage(), expected);
+
+    // Recounted, never incremented: projecting a run again changes nothing.
+    await projectRunOnce(backend, store, WF, "1002");
+    assert.deepEqual(await usage(), expected);
+
+    // A graph projected before the counts existed gets them from a backfill,
+    // settled runs and all.
+    await backend.nodes.update((await backend.query(`MATCH ${d().node("w", "StrutWorkflow", { name: "$n" })} RETURN w.ref_id AS r`, { n: WF }))[0]!["r"] as string, { remove: [...WORKFLOW_USAGE_FIELDS] });
+    assert.deepEqual(await usage(), {});
+    const report = await projectRuns(backend, store, { workflows: [WF] });
+    assert.deepEqual([report.runs, report.skipped, report.workflowUsage], [0, 4, 1]);
+    assert.deepEqual(await usage(), expected);
+    // A workflow the graph holds no node of (a filesystem workspace's) is no error.
+    assert.equal((await projectRuns(backend, store, { workflows: ["not-here"] })).workflowUsage, 0);
+
+    // Deleted, then published again under the name: a new workflow, none of
+    // the old runs counted.
+    await ws.deleteWorkflow(WF);
+    await ws.publishWorkflow(WF, "v1", { steps: [{ id: "ship", type: "log", config: {} }] });
+    assert.notEqual(await ws.getWorkflowHash(WF), hash);
+    assert.deepEqual(await usage(), {}, "the node came back; the delete cleared its counts");
+    await run("1005", 0, "error");
+    assert.deepEqual(await usage(), { usage_count: 1, usage_count_30d: 1, success_count: 0, error_count: 1, last_run_at: secs(0), last_run_status: "error" });
+  });
+
   it("search finds what was said past the first 500 characters: a thread's turn and a chat's", neoOnly("agent sessions and chats are not in the file"), async () => {
     const filler = "Some context first. ".repeat(40);
     const events: RunEvent[] = [
@@ -1084,7 +1222,7 @@ for (const tb of testBackends()) describe(`projector on ${tb.name}`, { skip: tb.
       // The run ends: its projection links each of its proposals.
       const hash = (await ws.getWorkflowHash(WF))!;
       for (const e of sampleEvents(hash)) await store.append(WF, RUN, e);
-      const report = { runs: 0, sessions: 0, toolCalls: 0, chats: 0, turns: 0, edges: 0, accessed: 0, unresolved: 0, skipped: 0, jobs: 0, proposals: 0 };
+      const report = { runs: 0, sessions: 0, toolCalls: 0, chats: 0, turns: 0, edges: 0, accessed: 0, unresolved: 0, skipped: 0, jobs: 0, proposals: 0, workflowUsage: 0 };
       assert.ok(await projectRun(backend, store, WF, RUN, report, undefined, undefined, cap));
       assert.equal(report.proposals, 2);
       const inRun = async () =>
@@ -1260,7 +1398,7 @@ describe("orchestrator speaker (SENT edge)", () => {
   it("projectRun: SENT from the existing member to the turn's session; reprojecting adds none and creates no nodes", async () => {
     const f = fake([{ ref_id: "member-1", user_id: UID }, { ref_id: "member-2", user_id: UID }, { ref_id: "other", user_id: "c99999999999999999999999999" }]);
     const store = await seedRun(turnEvents({ actor: ACTOR }, "@someone"));
-    const report = { runs: 0, sessions: 0, toolCalls: 0, chats: 0, turns: 0, edges: 0, accessed: 0, unresolved: 0, skipped: 0, jobs: 0, proposals: 0 };
+    const report = { runs: 0, sessions: 0, toolCalls: 0, chats: 0, turns: 0, edges: 0, accessed: 0, unresolved: 0, skipped: 0, jobs: 0, proposals: 0, workflowUsage: 0 };
     await projectRun(f.backend, store, "orchestrator", "1", report);
     const session = "ref:StrutAgentSession:strutagentsession:1:orchestrator/turn";
     assert.deepEqual(sent(f.edges).map((e) => [e.source_ref_id, e.target_ref_id]).sort(), [["member-1", session], ["member-2", session]]);
