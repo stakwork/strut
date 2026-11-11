@@ -63,6 +63,7 @@ import { contentHash, treeHash } from "../version.js";
 import { assertValidWorkflowYaml, ensureEsmScope, readClaimsBlock, type Upstream } from "../workspace.js";
 import { loadYaml } from "../yaml.js";
 import { fileRefPath, resolvePackage, type CachedPackage } from "./cache.js";
+import { gitOrigin } from "./git-source.js";
 import type { PackageItem } from "./format.js";
 import type { InstallProgress } from "./progress.js";
 import { checkPackageTypes, registerPackageTypes, type CheckedTypes } from "./graph-types.js";
@@ -510,18 +511,24 @@ async function resolveSet(
   const secrets = as.actor && deps.secrets?.forPrincipal ? deps.secrets.forPrincipal(as.actor) : deps.secrets;
   const git = {
     ...(as.tokenSecret ? { tokenSecret: as.tokenSecret } : {}),
-    ...(secrets ? { secret: (name: string) => secrets.get(name) } : {}),
     ...(deps.shell ? { shell: deps.shell } : {}),
     ...(deps.dataDir ? { dataDir: deps.dataDir } : {}),
   };
+  const secret = secrets ? { secret: (name: string) => secrets.get(name) } : {};
+  // The token goes only where a person pointed it: the refs asked for, and a
+  // requirement on the same origin as one of them — never a host a
+  // package's requirement names, so a package cannot send it elsewhere.
+  const tokenOrigins = new Set(refs.map((r) => gitOrigin(r.ref)).filter((o): o is string => !!o));
+  const tokenFor = (ref: string, asked: boolean) => (asked || tokenOrigins.has(gitOrigin(ref) ?? "") ? secret : {});
   const visit = async (ref: string, digest: string | undefined, base: string | undefined, expected?: { package: string; by: string }, url?: string, commit?: string): Promise<void> => {
+    const asked = !expected;
     // A `pk:` ref is always resolved: the catalog is the key's word on the
     // release, and the resolve records the key and URL the install pins.
     // A pinned `file:` or `git+` ref the cache holds is taken from it.
     const cached = digest && !ref.startsWith("pk:") ? await deps.cache.get(digest) : undefined;
     const resolved = cached
       ? undefined
-      : await resolvePackage(ref, { cache: deps.cache, ...(digest ? { digest } : {}), ...(base ? { base } : {}), ...(url ? { url } : {}), ...(deps.fetch ? { fetch: deps.fetch } : {}), ...git });
+      : await resolvePackage(ref, { cache: deps.cache, ...(digest ? { digest } : {}), ...(base ? { base } : {}), ...(url ? { url } : {}), ...(deps.fetch ? { fetch: deps.fetch } : {}), ...git, ...tokenFor(ref, asked) });
     const info = cached ?? resolved!;
     const pkg = info.manifest.package;
     if (expected && pkg !== expected.package) {

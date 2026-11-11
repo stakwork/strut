@@ -310,6 +310,31 @@ describe("installing from git+", () => {
     assert.equal(wf?.versions[wf.active]?.upstream?.commit, repo.v1);
   });
 
+  it("hands the token to the refs a person named, never to a host a package's requirement names", async () => {
+    const calls: ProcessRequest[] = [];
+    const shell = (req: ProcessRequest) => (calls.push(req), runProcess(req));
+    const s = await fresh("ws-token", { services: { shell } });
+    await s.app.request("/secrets/GITHUB_TOKEN", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ value: "tok-person-named" }) });
+    const fetched = () => calls.filter((c) => c.args?.includes("fetch")).map((c) => c.env?.["STRUT_GIT_TOKEN"]);
+
+    // Named by the person: the token rides along (on a file:// repo git asks for none).
+    const site = await siteRepo();
+    assert.equal((await install(s, { ref: `git+${site.url}@main#strut` })).status, 201);
+    assert.deepEqual(fetched(), ["tok-person-named"]);
+
+    // Named by a package's strut.yaml: read with no token.
+    calls.length = 0;
+    const repo = await landerRepo();
+    const v1 = await resolvePackage(`git+${repo.url}@v1`, { cache: packageCache(join(root, "elsewhere")) });
+    const bundle = join(root, "bundle");
+    await write(bundle, {
+      "strut.yaml": `package: acme/bundle\nversion: 1.0.0\nrequires:\n  packages:\n    - { package: acme/lander, digest: "${v1.digest}", source: "git+${repo.url}@v1" }\n`,
+      "workflows/all.yaml": SCORE("acme/bundle/all", "all"),
+    });
+    assert.equal((await install(s, { ref: `file:${bundle}` })).status, 201);
+    assert.deepEqual(fetched(), [undefined]);
+  });
+
   it("STRUT_PACKAGES takes git+: installed once, then found by its ref and left alone", async () => {
     const repo = await landerRepo();
     const ref = `git+${repo.url}@main`;

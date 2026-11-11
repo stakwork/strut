@@ -21,7 +21,7 @@ import { existsSync } from "node:fs";
 import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { shellCapability, type ShellCapability } from "../capabilities.js";
-import { cachePath, commitOf, fetchCache, gitOk, parseRepo, remoteDefaultBranch, SHA_RE, withLock, type RepoRef } from "../steps/lib/git/_shared.js";
+import { cachePath, commitOf, fetchCache, git, parseRepo, remoteDefaultBranch, SHA_RE, withLock, type RepoRef } from "../steps/lib/git/_shared.js";
 import { MANIFEST_FILE } from "./format.js";
 
 /** The secret a `git+` ref's token is read from when none is named. */
@@ -78,6 +78,16 @@ export function parseGitRef(ref: string): GitPackageRef | string {
   return { ref, repo, ...(rev ? { rev } : {}), ...(path ? { path } : {}) };
 }
 
+/** The origin a `git+` ref's token would be sent to (`https://github.com`);
+ *  undefined for a `file://` repository, which takes none, or a ref that is
+ *  not one. */
+export function gitOrigin(ref: string): string | undefined {
+  const parsed = ref.startsWith("git+") ? parseGitRef(ref) : undefined;
+  if (!parsed || typeof parsed === "string") return undefined;
+  const u = new URL(parsed.repo.url);
+  return u.protocol === "file:" ? undefined : u.origin;
+}
+
 export interface GitSourceOptions {
   /** Where `repos/` (the bare caches git/checkout keeps) lives. */
   dataDir: string;
@@ -121,7 +131,7 @@ export async function fetchGitRef<T>(ref: string, opts: GitSourceOptions, then: 
       let commit = await commitOf(shell, cacheDir, names, o);
       if (!commit && SHA_RE.test(rev) && rev.length === 40) {
         // A commit on no branch or tag: GitHub serves reachable shas.
-        await shell({ cmd: "git", args: ["fetch", "--quiet", "origin", rev], cwd: cacheDir, timeoutMs: o.timeoutMs, env: { GIT_TERMINAL_PROMPT: "0" } }).catch(() => undefined);
+        await git(shell, ["fetch", "--quiet", "origin", rev], { cwd: cacheDir, ...o });
         commit = await commitOf(shell, cacheDir, [rev], o);
       }
       if (!commit) throw new Error(`package_ref_not_found: ${ref}: no branch, tag or commit "${rev}" in ${parsed.repo.url}`);
