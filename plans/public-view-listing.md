@@ -1,9 +1,14 @@
 # Listing a public view with no package
 
-> **Status (2026-11-11): RULED, and work item 1 BUILT** in the same PR as
-> the plan (#636). The owner took all seven open questions as recommended
-> (below), so every "proposed" in this plan is decided. Work item 2
-> (agents) is not built. Code: `ensurePublic` and `ensurePublicCatalog`
+> **Status (2026-11-11): RULED, and both work items BUILT** in the same PR
+> as the plan (#636). The owner took all seven open questions as
+> recommended (below), so every "proposed" in this plan is decided. Work
+> item 2 is `search_live` on `/index/mcp` and `## Live` in the index's
+> `/llms.txt` (`src/packages/index-tools.ts`): each live server a line to
+> its own `llms.txt` and MCP door, then each thing anyone may run there,
+> linked to its run route on the server with its price in words. Apps and
+> readable workflows are left to the server's own `llms.txt`. Work item 1's
+> code: `ensurePublic` and `ensurePublicCatalog`
 > (`src/packages/publisher.ts`), the desk's `readUsed` / `readView` and the
 > claim (`src/packages/index-requests.ts`), `live` on a listing line
 > (`publisher-listings.ts`), the listing route and the view ping
