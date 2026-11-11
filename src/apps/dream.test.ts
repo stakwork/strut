@@ -12,7 +12,7 @@ import { treeHash } from "../version.js";
 import type { KitLocation } from "./kit.js";
 import { DREAM_APP, DREAM_DIR } from "./dream-seed.js";
 import { VIEWS_APP } from "./views-seed.js";
-import { buildModel, conceptOf, headline, inMemory, runSummary, wordDiff, type Run } from "./dream/src/lib/model.js";
+import { buildModel, conceptOf, headline, inMemory, inlineDiff, runSummary, stagesOf, type Run } from "./dream/src/lib/model.js";
 import { agoText, changesOf, costText, foundBy, nest, conceptChanges, sectionsOf, standingOf, summaryOf, type Claim, type SaidRow, type TreeConcept } from "./dream/src/lib/report.js";
 
 /**
@@ -135,10 +135,16 @@ describe("strut/dream: the report", () => {
     assert.equal(agoText("nope", now), "");
   });
 
-  it("marks the words two lines do not share", () => {
-    const d = wordDiff("Call it [peel agent] in notes", "Call it [Agent] in notes");
-    assert.deepEqual(d.was.filter(([w, hot]) => hot && w.trim()).map(([w]) => w), ["[peel", "agent]"]);
-    assert.deepEqual(d.is.filter(([w, hot]) => hot && w.trim()).map(([w]) => w), ["[Agent]"]);
+  it("reads a rewritten line as one line, and two lines that share little apart", () => {
+    assert.deepEqual(inlineDiff("Call it [peel agent] in notes", "Call it [Agent] in notes"), [["Call it ", "same"], ["[peel agent]", "gone"], ["[Agent] ", "new"], ["in notes", "same"]]);
+    assert.equal(inlineDiff("Be brief.", "Summaries are three lines or fewer."), null);
+  });
+
+  it("says how a staged dream got there, a stage a line; an older run has no stages", () => {
+    const out = { turns: 60, more: true, moments: 8, records: [{ i: 0, claim: "a", created: true, recorded: true, outcome: "missing" as const }, { i: 1, claim: "a", created: false, recorded: true, outcome: "missing" as const }, { i: 2, claim: "b", created: false, recorded: false, outcome: "missing" as const }], groups: [{ claim: "g", grouped: ["a", "b"] }], due: 1, changes: [] };
+    assert.deepEqual(stagesOf(out).map((s) => [s.stage, s.count]), [["Read", 60], ["Found", 8], ["Recorded", 2], ["Grouped", 1], ["Due", 1], ["Changed", 0]]);
+    assert.match(stagesOf(out)[2]!.text, /1 on a new cause, 1 on one already known/);
+    assert.deepEqual(stagesOf({ turns: 5 }), []);
   });
 
   it("says what a run cost, and when it cost nothing", () => {

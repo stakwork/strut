@@ -166,19 +166,46 @@ export function headline(model: Model, run: Run): string {
   return [...(s.changed ? [plural(s.changed, "change")] : []), ...(s.found ? [plural(s.found, "correction")] : []), ...(s.back ? [`${s.back} came back`] : [])].join(" · ") || "Nothing found";
 }
 
-/** Two lines word by word: each side's words, marked where the other side does not have them. */
-export function wordDiff(a: string, b: string): { was: Array<[string, boolean]>; is: Array<[string, boolean]> } {
-  const x = a.split(/(\s+)/), y = b.split(/(\s+)/);
+/** A changed line as one line: the words both have, the words only the old had (`gone`) and only the new has (`new`).
+ *  null when the two share too little to read as one line: then they are shown apart. */
+export function inlineDiff(a: string, b: string): Array<[string, "same" | "gone" | "new"]> | null {
+  const x = a.trim().split(/(\s+)/), y = b.trim().split(/(\s+)/);
   const t = Array.from({ length: x.length + 1 }, () => new Array<number>(y.length + 1).fill(0));
   for (let i = x.length - 1; i >= 0; i--) for (let j = y.length - 1; j >= 0; j--) t[i]![j] = x[i] === y[j] ? t[i + 1]![j + 1]! + 1 : Math.max(t[i + 1]![j]!, t[i]![j + 1]!);
-  const was: Array<[string, boolean]> = [], is: Array<[string, boolean]> = [];
-  let i = 0, j = 0;
+  const out: Array<[string, "same" | "gone" | "new"]> = [];
+  const push = (w: string, kind: "same" | "gone" | "new") => {
+    const last = out[out.length - 1];
+    // Whitespace between two words of one kind joins them, so a changed phrase is one mark.
+    if (last && last[1] === kind) last[0] += w;
+    else if (!w.trim() && last) last[0] += w;
+    else out.push([w, kind]);
+  };
+  let i = 0, j = 0, shared = 0;
   while (i < x.length && j < y.length) {
-    if (x[i] === y[j]) { was.push([x[i]!, false]); is.push([y[j]!, false]); i++; j++; }
-    else if (t[i + 1]![j]! >= t[i]![j + 1]!) was.push([x[i++]!, true]);
-    else is.push([y[j++]!, true]);
+    if (x[i] === y[j]) { if (x[i]!.trim()) shared += 1; push(x[i]!, "same"); i++; j++; }
+    else if (t[i + 1]![j]! >= t[i]![j + 1]!) push(x[i++]!, "gone");
+    else push(y[j++]!, "new");
   }
-  while (i < x.length) was.push([x[i++]!, true]);
-  while (j < y.length) is.push([y[j++]!, true]);
-  return { was, is };
+  while (i < x.length) push(x[i++]!, "gone");
+  while (j < y.length) push(y[j++]!, "new");
+  const words = (l: string[]) => l.filter((w) => w.trim()).length;
+  return shared * 2 >= Math.max(words(x), words(y)) ? out : null;
+}
+
+/** How a staged dream got to what it did, a stage a line: what it counted at each. Empty for an older, one-agent run. */
+export function stagesOf(out: DreamOutput): Array<{ stage: string; count: number; text: string }> {
+  if (!Array.isArray(out.changes)) return [];
+  const records = out.records ?? [];
+  const recorded = records.filter((r) => r.recorded);
+  const made = recorded.filter((r) => r.created).length;
+  const groups = out.groups ?? [];
+  const n = (count: number, one: string, many: string) => (count === 1 ? one : many);
+  return [
+    { stage: "Read", count: out.turns ?? 0, text: `${n(out.turns ?? 0, "turn", "turns")} of conversation since the last dream${out.more ? ", with more waiting for the next one" : ""}` },
+    { stage: "Found", count: out.moments ?? 0, text: `${n(out.moments ?? 0, "moment", "moments")} where you corrected the assistant or said how you want things` },
+    { stage: "Recorded", count: recorded.length, text: `as evidence on a cause: ${made} on a new cause, ${recorded.length - made} on one already known` },
+    { stage: "Grouped", count: groups.length, text: `${n(groups.length, "group", "groups")} made of causes that are the same kind` },
+    { stage: "Due", count: out.due ?? 0, text: `${n(out.due ?? 0, "cause", "causes")} due a memory change: said to last, or corrected twice` },
+    { stage: "Changed", count: out.changes.length, text: `${n(out.changes.length, "change", "changes")} written to memory` },
+  ];
 }

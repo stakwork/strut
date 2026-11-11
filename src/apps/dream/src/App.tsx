@@ -16,7 +16,7 @@
 // not only the picked one's: a cause's history spans them.
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQueries } from "@tanstack/react-query";
-import { ArrowLeft, BookOpen, Moon, Target, type LucideIcon } from "lucide-react";
+import { ArrowLeft, BookOpen, ChevronRight, Moon, Target, type LucideIcon } from "lucide-react";
 import {
   Sidebar, SidebarContent, SidebarGroup, SidebarGroupContent, SidebarGroupLabel, SidebarHeader, SidebarInset, SidebarMenu,
   SidebarMenuBadge, SidebarMenuButton, SidebarMenuItem, SidebarProvider, SidebarTrigger, useSidebar,
@@ -26,7 +26,7 @@ import { RUN_STEPS, isInFlight, runKeys, useRuns, useStrutClient, type RunSummar
 import { DocumentView, RunStatus, Transcript } from "strut/views";
 import { cn } from "@/lib/utils";
 import { agoText, costText, foundBy, sectionsOf, type DreamOutput, type Outcome, type SaidRow, type TreeConcept } from "./lib/report";
-import { buildModel, conceptOf, headline, inMemory, runSummary, wordDiff, type Cause, type Change, type Model, type Run } from "./lib/model";
+import { buildModel, conceptOf, headline, inMemory, inlineDiff, runSummary, stagesOf, type Cause, type Change, type Model, type Run } from "./lib/model";
 
 const WORKFLOW = "dream";
 /** The agent step's path in an older, one-agent run: its transcript. */
@@ -131,32 +131,30 @@ function OutcomeMark({ outcome }: { outcome?: Outcome }) {
   );
 }
 
-const RED = "bg-red-500/10 text-red-800 dark:text-red-200";
-const GREEN = "bg-emerald-500/10 text-emerald-800 dark:text-emerald-200";
-
-function Line({ sign, parts }: { sign: "-" | "+"; parts: Array<[string, boolean]> }) {
-  return (
-    <p className={cn("grid grid-cols-[1rem_minmax(0,1fr)] rounded px-2 py-1.5 text-sm leading-snug", sign === "-" ? RED : GREEN)}>
-      <span className="select-none font-mono opacity-60" aria-label={sign === "-" ? "Removed" : "Added"}>{sign}</span>
-      <span className="break-words">
-        {parts.map(([w, hot], k) => (hot && w.trim() ? <span key={k} className={cn("rounded-sm", sign === "-" ? "bg-red-500/25 line-through" : "bg-emerald-500/25")}>{w}</span> : w))}
-      </span>
-    </p>
-  );
-}
-
-/** What a dream did to a Concept, as a diff: the lines it lost and gained, the changed words marked within a line. */
+/** What a dream did to a Concept. A line it rewrote reads as one line, the words it dropped struck through and the
+ *  words it wrote marked; a line it only removed is struck through, one it only added stands as written. */
 function ChangeView({ change }: { change: Change }) {
   const c = change.change;
   const removed = [...(c.description?.was ? [c.description.was] : []), ...c.removed];
   const added = [...(c.description?.is ? [c.description.is] : []), ...c.added];
-  const none = (l: string): Array<[string, boolean]> => [[l, false]];
-  return (
-    <div className="flex flex-col gap-1" data-testid="change">
-      {removed.map((l, i) => <Line key={`r${i}`} sign="-" parts={added[i] !== undefined ? wordDiff(l, added[i]!).was : none(l)} />)}
-      {added.map((l, i) => <Line key={`a${i}`} sign="+" parts={removed[i] !== undefined ? wordDiff(removed[i]!, l).is : none(l)} />)}
-    </div>
-  );
+  const line = "break-words border-l-2 py-0.5 pl-3 text-sm leading-relaxed";
+  const gone = "text-muted-foreground line-through decoration-muted-foreground/60";
+  const rows: ReactNode[] = [];
+  for (let i = 0; i < Math.max(removed.length, added.length); i++) {
+    const was = removed[i], is = added[i];
+    const parts = was !== undefined && is !== undefined ? inlineDiff(was, is) : null;
+    if (parts) {
+      rows.push(
+        <p key={i} className={cn(line, "border-foreground/40")}>
+          {parts.map(([w, kind], k) => (kind === "same" ? w : kind === "gone" ? <del key={k} className={cn(gone, !/\s$/.test(w) && "mr-1")}>{w}</del> : <ins key={k} className="rounded-sm bg-primary/15 font-medium no-underline">{w}</ins>))}
+        </p>,
+      );
+      continue;
+    }
+    if (was !== undefined) rows.push(<p key={`r${i}`} className={cn(line, "border-border")}><del className={gone}>{was}</del></p>);
+    if (is !== undefined) rows.push(<p key={`a${i}`} className={cn(line, "border-foreground/40")}><ins className="no-underline">{is}</ins></p>);
+  }
+  return <div className="flex flex-col gap-1.5" data-testid="change">{rows}</div>;
 }
 
 /** A list beside what is picked from it. Narrow, they take the screen in turn. */
@@ -383,15 +381,22 @@ function CauseDetail({ cause, model, onRun, onCause }: { cause: Cause; model: Mo
 // ── Dreams ──
 
 /** What a dream noted without changing a Concept, by what it means for the reader. */
-const GROUPS: Array<{ title: string; mixed?: boolean; has: (o: Outcome | undefined) => boolean }> = [
-  { title: "New, not in memory yet", has: (o) => o === "missing" || !o },
-  { title: "In memory, still got wrong", mixed: true, has: (o) => o === "not_opened" || o === "not_followed" || o === "contradicted" },
-  { title: "Followed", has: (o) => o === "followed" },
+const GROUPS: Array<{ title: string; note: string; mixed?: boolean; has: (o: Outcome | undefined) => boolean }> = [
+  { title: "Noted, memory not changed yet", note: "You corrected something memory has nothing about. It is kept as a cause; memory changes once you say it should last or it comes up a second time.", has: (o) => o === "missing" || !o },
+  { title: "Already in memory, got wrong again", note: "Memory covers this and the assistant still got it wrong. Counted against the cause; twice since its last change and the line is rewritten.", mixed: true, has: (o) => o === "not_opened" || o === "not_followed" || o === "contradicted" },
+  { title: "Followed", note: "The assistant did what memory says, or you confirmed it.", has: (o) => o === "followed" },
 ];
 
-const Rows = ({ title, lines }: { title: string; lines: string[] }) => (
+const Head = ({ title, count, note }: { title: string; count?: number; note?: string }) => (
+  <div className="flex flex-col gap-0.5">
+    <h3 className="text-sm font-semibold">{title}{count !== undefined && <span className="font-normal tabular-nums text-muted-foreground"> {count}</span>}</h3>
+    {note && <p className="text-xs text-muted-foreground">{note}</p>}
+  </div>
+);
+
+const Rows = ({ title, note, lines }: { title: string; note?: string; lines: string[] }) => (
   <section className="flex flex-col gap-2">
-    <h3 className="text-sm font-semibold">{title}</h3>
+    <Head title={title} count={lines.length} {...(note ? { note } : {})} />
     <ul className="flex flex-col divide-y rounded-md border text-sm text-muted-foreground">
       {lines.map((l, i) => <li key={i} className="break-words px-4 py-2">{l}</li>)}
     </ul>
@@ -409,6 +414,8 @@ function RunDetail({ run, model, onCause }: { run: Run; model: Model; onCause: (
   const text = typeof out.text === "string" ? out.text : "";
   const left = sectionsOf(text)?.find((s) => s.title === "Left alone")?.lines ?? [];
   const facts = typeof out.facts === "string" ? out.facts.trim() : "";
+  const stages = stagesOf(out);
+  const [steps, setSteps] = useState(false);
   const claimLink = (id: string, label: string) => (
     <button type="button" onClick={() => onCause(id)} className="w-fit text-left text-sm font-medium underline-offset-2 hover:underline">{label}</button>
   );
@@ -427,7 +434,7 @@ function RunDetail({ run, model, onCause }: { run: Run; model: Model; onCause: (
 
       {changes.length > 0 && (
         <section className="flex flex-col gap-2">
-          <h3 className="text-sm font-semibold">Memory changes</h3>
+          <Head title="Changed in memory" count={changes.length} note="What this dream wrote: a line rewritten, a line added, or a new Concept. Each with what you said that led to it." />
           <ul className="flex flex-col divide-y rounded-md border">
             {changes.map((c) => {
               const cause = c.change.claim ? model.byId.get(c.change.claim) : undefined;
@@ -454,7 +461,7 @@ function RunDetail({ run, model, onCause }: { run: Run; model: Model; onCause: (
         if (!rows.length) return null;
         return (
           <section key={g.title} className="flex flex-col gap-2">
-            <h3 className="text-sm font-semibold">{g.title} <span className="font-normal tabular-nums text-muted-foreground">{rows.length}</span></h3>
+            <Head title={g.title} count={rows.length} note={g.note} />
             <ul className="flex flex-col divide-y rounded-md border">
               {rows.map((f, i) => (
                 <li key={i} className="px-4 py-3.5"><Said said={f.said} model={model} outcome={!!g.mixed} lead={claimLink(f.claim.id, f.claim.title || f.claim.text)} /></li>
@@ -466,21 +473,37 @@ function RunDetail({ run, model, onCause }: { run: Run; model: Model; onCause: (
 
       {facts && (
         <section className="flex flex-col gap-2">
-          <h3 className="text-sm font-semibold">Facts</h3>
+          <Head title="Facts" note="Things you said are wrong about you or the world, checked against what memory holds." />
           <div className="rounded-md border px-4 py-3"><DocumentView text={facts} kind="markdown" /></div>
         </section>
       )}
 
-      {passed.length > 0 && <Rows title="Passed over" lines={passed} />}
-      {left.length > 0 && <Rows title="Left alone" lines={left} />}
+      {(passed.length > 0 || left.length > 0) && <Rows title="Looked at, not kept" note="Moments the dream read and decided not to record or act on, with its reason." lines={[...passed, ...left]} />}
 
       {done && !run.error && !changes.length && !recorded.length && !left.length && !facts && text && <DocumentView text={text} kind="markdown" />}
 
       {/* An older, one-agent run kept its whole transcript at one path; a staged run's stages are in its run log. */}
-      {done && (out.turns ?? 0) > 0 && !Array.isArray(out.changes) && (
+      {done && stages.length > 0 && (
         <section className="flex flex-col gap-2">
-          <h3 className="text-sm font-semibold">Every step it took</h3>
-          <Transcript workflow={WORKFLOW} runId={run.runId} path={AGENT_PATH} />
+          <Head title="How it got there" />
+          <ol className="flex flex-col divide-y rounded-md border text-sm">
+            {stages.map((s) => (
+              <li key={s.stage} className="grid grid-cols-[5.5rem_2.5rem_minmax(0,1fr)] items-baseline gap-x-3 px-4 py-2">
+                <span className="text-muted-foreground">{s.stage}</span>
+                <span className="text-right font-medium tabular-nums">{s.count}</span>
+                <span className={cn("break-words", !s.count && "text-muted-foreground")}>{s.text}</span>
+              </li>
+            ))}
+          </ol>
+        </section>
+      )}
+      {done && (out.turns ?? 0) > 0 && !stages.length && (
+        <section className="flex flex-col gap-2">
+          <button type="button" onClick={() => setSteps((v) => !v)} aria-expanded={steps} className="flex w-fit items-center gap-1 text-sm font-semibold">
+            <ChevronRight className={cn("size-3.5 transition-transform duration-150", steps && "rotate-90")} />
+            Every step it took
+          </button>
+          {steps && <Transcript workflow={WORKFLOW} runId={run.runId} path={AGENT_PATH} />}
         </section>
       )}
     </div>

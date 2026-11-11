@@ -79,6 +79,8 @@ export interface DreamOutput {
   records?: Array<{ i: number; claim: string; created: boolean; recorded: boolean; outcome: Outcome }>;
   unsorted?: Array<{ i?: number; why: string }>;
   changes?: AppliedChange[];
+  /** The groups made or added to: the group's claim and the claims put under it. */
+  groups?: Array<{ claim: string; created?: boolean; grouped?: string[] }>;
   unfixed?: Array<{ claim: string; why: string }>;
   /** How many claims were due a fix. */
   due?: number;
