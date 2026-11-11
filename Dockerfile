@@ -17,7 +17,7 @@
 
 # One Node for every stage. Pinned to the patch so a security release is a
 # visible bump here, not whatever the floating tag held when the cache was made.
-ARG NODE_VERSION=22.23.4
+ARG NODE_VERSION=24.22.1
 
 # Web UI → web/dist, served by the engine (STRUT_WEB_DIST default). It is
 # arch-independent, so it builds once on the build host, not per target. It
