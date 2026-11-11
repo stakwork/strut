@@ -243,7 +243,7 @@ export async function writeSurface(dataDir: string, s: PublicSurface): Promise<v
  *  (actors are deferred, plans/public-surface.md decision 18), the job and
  *  conversation it ran in (their ids name people), and where its callbacks
  *  and MCP servers are. */
-const PRIVATE_RUN_FIELDS = ["actor", "principal", "job", "startedBy", "peerPerson", "callback", "mcp"] as const;
+const PRIVATE_RUN_FIELDS = ["actor", "principal", "job", "startedBy", "peerPerson", "callback", "mcp", "credit"] as const;
 
 /** A run event for a visitor: the private fields gone, an agent session
  *  replaced by `transcript`, a link under `/public` (the transcript route

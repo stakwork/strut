@@ -94,6 +94,11 @@ describe("authoring capability (the meta surface)", () => {
       "meta/get-run",
       "meta/search-runs",
       "meta/resume-run",
+      "meta/edit-workflow",
+      "meta/set-active-version",
+      "meta/set-workflow-category",
+      "meta/cancel-run",
+      "meta/pause-run",
       "meta/list-secrets",
       // the claims surface (plans/claims.md §2)
       "meta/add-claim",
@@ -323,6 +328,96 @@ describe("authoring capability (the meta surface)", () => {
     const theirs = await strut.run("heal-me", {}, { actor: "alice" });
     const refused = (await authoring.resumeRun("heal-me", theirs.runId, { from: "heal-me/work" }, { principal: "bob" })) as any;
     assert.match(refused.error, /billed to alice/);
+  });
+
+  it("editWorkflow and editStep take find-and-replace edits over the active version", async () => {
+    await authoring.publishWorkflow("cand-edits", logFlow("cand-edits", "one"));
+    const edited = (await authoring.editWorkflow("cand-edits", [{ old: '"one"', new: '"two"' }])) as any;
+    assert.equal(edited.ok, true, JSON.stringify(edited));
+    assert.equal(edited.version, "v2");
+    assert.ok((await strut.workspace.getWorkflowSource("cand-edits", "v2")).includes('"two"'));
+    assert.match(((await authoring.editWorkflow("cand-edits", [{ old: "nowhere", new: "x" }])) as any).error, /no match/);
+    assert.match(((await authoring.editWorkflow("no-such-flow", [{ old: "a", new: "b" }])) as any).error, /not found/);
+
+    await authoring.createStep("cand/edits", echoStep("cand/edits", 1));
+    const step = (await authoring.editStep("cand/edits", { edits: [{ old: "rev: 1", new: "rev: 7" }] })) as any;
+    assert.equal(step.ok, true, JSON.stringify(step));
+    assert.equal(step.version, "v2");
+    assert.equal(((await authoring.runStep("cand/edits", { config: { msg: "x" } })) as any).output.rev, 7);
+
+    // The step: code OR edits, never both, never neither.
+    const def = strut.getRegistry()["meta/edit-step"]!;
+    const ctx = { services: strut.services } as any;
+    assert.match(((await def.run({ type: "cand/edits" }, ctx)) as any).error, /full step source or `edits`/);
+    assert.match(((await def.run({ type: "cand/edits", code: "x", edits: [{ old: "a", new: "b" }] }, ctx)) as any).error, /not both/);
+  });
+
+  it("setActiveVersion rolls a workflow or a step back; the version is held to what publishing it would be", async () => {
+    await authoring.publishWorkflow("cand-roll", logFlow("cand-roll", "one"));
+    await authoring.publishWorkflow("cand-roll", logFlow("cand-roll", "two"));
+    const back = (await authoring.setActiveVersion("workflow", "cand-roll", "v1")) as any;
+    assert.deepEqual(back, { ok: true, kind: "workflow", name: "cand-roll", active: "v1" });
+    assert.equal((await strut.workspace.getWorkflowMetadata("cand-roll"))?.active, "v1");
+    assert.ok(((await authoring.setActiveVersion("workflow", "cand-roll", "v9")) as any).error);
+
+    await authoring.createStep("cand/roll", echoStep("cand/roll", 1));
+    await authoring.editStep("cand/roll", echoStep("cand/roll", 2));
+    assert.equal(((await authoring.setActiveVersion("step", "cand/roll", "v1")) as any).ok, true);
+    assert.equal(((await authoring.runStep("cand/roll", { config: { msg: "x" } })) as any).output.rev, 1);
+
+    // A sealed harness is never rolled back.
+    await strut.workspace.createWorkflow("sealed-roll", `name: sealed-roll\nsealed: true\nsteps:\n  - id: s\n    type: log\n    config:\n      message: a\n`);
+    await strut.workspace.publishWorkflowByContent("sealed-roll", `name: sealed-roll\nsealed: true\nsteps:\n  - id: s\n    type: log\n    config:\n      message: b\n`);
+    assert.match(((await authoring.setActiveVersion("workflow", "sealed-roll", "v1")) as any).error, /is sealed/);
+    // Nor rolled back onto a version that opens it to other struts.
+    await strut.workspace.createWorkflow("peer-roll", `name: peer-roll\npeer: true\nsteps:\n  - id: s\n    type: log\n    config:\n      message: a\n`);
+    await strut.workspace.publishWorkflowByContent("peer-roll", logFlow("peer-roll", "b"));
+    assert.match(((await authoring.setActiveVersion("workflow", "peer-roll", "v1")) as any).error, /says `peer: true`/);
+    assert.equal((await strut.workspace.getWorkflowMetadata("peer-roll"))?.active, "v2");
+  });
+
+  it("setWorkflowCategory sets and clears a category without publishing", async () => {
+    await authoring.publishWorkflow("cand-cat", logFlow("cand-cat", "x"));
+    assert.equal(((await authoring.setWorkflowCategory("cand-cat", "experiments")) as any).ok, true);
+    assert.equal((await strut.workspace.getWorkflowMetadata("cand-cat"))?.category, "experiments");
+    await authoring.setWorkflowCategory("cand-cat", null);
+    assert.equal((await strut.workspace.getWorkflowMetadata("cand-cat"))?.category ?? null, null);
+    assert.equal((await strut.workspace.getWorkflowMetadata("cand-cat"))?.active, "v1", "nothing published");
+  });
+
+  it("controlRun pauses and cancels a live run; refuses another's run and the caller's own", async () => {
+    const launch = async (name: string) => {
+      const res = await strut.app.request(`/workflows/${name}/run`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ input: {} }) });
+      assert.equal(res.status, 202);
+      return ((await res.json()) as { runId: string }).runId;
+    };
+    const settled = async (name: string, runId: string) => {
+      const deadline = Date.now() + 10_000;
+      for (;;) {
+        const summary = await strut.store.getRunSummary(name, runId);
+        if (summary) return summary;
+        assert.ok(Date.now() < deadline, `run ${runId} never ended`);
+        await new Promise((res) => setTimeout(res, 20));
+      }
+    };
+
+    await strut.workspace.createWorkflow("slow", `name: slow\nsteps:\n  - id: a\n    type: wait\n    config:\n      durationMs: 300\n  - id: b\n    type: wait\n    config:\n      durationMs: 300\n`);
+    const runId = await launch("slow");
+    const paused = (await authoring.controlRun("slow", runId, "pause")) as any;
+    assert.equal(paused.ok, true, JSON.stringify(paused));
+    const cancelled = (await authoring.controlRun("slow", runId, "cancel")) as any;
+    assert.equal(cancelled.ok, true, JSON.stringify(cancelled));
+    assert.equal((await settled("slow", runId)).status, "cancelled");
+
+    const theirs = await strut.run("slow", {}, { actor: "alice" });
+    assert.match(((await authoring.controlRun("slow", theirs.runId, "cancel", { principal: "bob" })) as any).error, /billed to alice/);
+
+    // meta/cancel-run on its own run is refused, not obeyed.
+    await strut.workspace.createWorkflow("self-stop", `name: self-stop\nsteps:\n  - id: stop\n    type: meta/cancel-run\n    config:\n      name: self-stop\n      runId: "{{ $runId }}"\n`);
+    const own = await launch("self-stop");
+    assert.equal((await settled("self-stop", own)).status, "success");
+    const end = (await strut.store.getRunEvents("self-stop", own)).find((e) => e.type === "step.end" && e.path === "self-stop/stop") as any;
+    assert.match(end.output.error, /cannot cancel itself/);
   });
 
   it("sealed (EVOLVE_SPEC §6): a grading harness and a grader step are refused by name; a publish that reaches one is refused", async () => {

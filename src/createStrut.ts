@@ -43,9 +43,10 @@ import { createPayments, type Payments } from "./payments/wallet.js";
 import type { LightningCapability } from "./payments/lightning.js";
 import type { RateSource } from "./payments/rate.js";
 import { walletRoutes } from "./payments/wallet-routes.js";
-import { openLedger, type LedgerStore } from "./payments/ledger.js";
+import { ledgerPath, openLedger, priceOf, type LedgerStore } from "./payments/ledger.js";
 import { MemoryLedgerStore } from "./payments/ledger-memory.js";
-import { listRunnable, recentCosts, runnableCan, runnableProblems, type RunnableDeps } from "./public-runnable.js";
+import { isPriced, listRunnable, recentCosts, runnableCan, runnableProblems, runnableSubject, type RunnableDeps } from "./public-runnable.js";
+import { createCredit } from "./public-credit.js";
 import type { SecretStore } from "./secret-store.js";
 import {
   FileSessionStore,
@@ -1262,6 +1263,7 @@ export async function createStrut<TServices = unknown>(
             dir: history.dir,
             waiting: history.waiting,
             touch: history.touch,
+            skipped: history.skipped,
             settle: history.settle,
             sync: history.sync,
             git: history.git,
@@ -1325,8 +1327,22 @@ export async function createStrut<TServices = unknown>(
     store,
     ...(store instanceof MemoryRunStore ? {} : { file: publicRunsPath(dataDir) }),
     maxInFlight: publicRunsMax,
+    // A priced run whose entry was lost is charged at its item's price now.
+    price: async (subject) => {
+      const item = (await publicSurface.get()).runnable.find((r) => runnableSubject(r) === subject);
+      return item ? priceOf(item) : undefined;
+    },
   });
   await publicRuns.load();
+  // Credit (plans/paid-runs.md §4, src/public-credit.ts): a priced item's
+  // L402 token — its check, its first use against the wallet, the 402 that
+  // sells it, its balance, `claim`. `L402_ROOT` lives in payments.json.
+  const credit = createCredit({
+    ledger,
+    settings: payments.settings,
+    rate: payments.rate,
+    lightning: () => payments.lightning(),
+  });
   // The browser the browser/* steps drive (src/browser/service.ts), unless
   // the host brought its own — whose teardown is then the host's too.
   // Building it touches nothing: the first step that opens a page connects.
@@ -1803,6 +1819,7 @@ export async function createStrut<TServices = unknown>(
       ...(reach ? { reach } : {}),
       // Defined further down; called only once a run is going.
       resumeRun: (name, runId, body) => resumeRun(name, runId, body),
+      controlRun: (name, runId, action, force) => controlLiveRun(name, runId, action, false, force),
     });
   }
 
@@ -2480,6 +2497,7 @@ export async function createStrut<TServices = unknown>(
         // cap, its charge when it ends (plans/paid-runs.md §6).
         ...(p.runStart.origin === "public" ? { origin: "public" as const } : {}),
         ...(p.runStart.maxCostUsd !== undefined ? { maxCostUsd: p.runStart.maxCostUsd } : {}),
+        ...(p.runStart.origin === "public" && p.runStart.credit ? { credit: p.runStart.credit } : {}),
         ...(p.runStart.startedBy ? { startedBy: p.runStart.startedBy } : {}),
         ...(p.runStart.wake ? { wake: p.runStart.wake } : {}),
         // Billed to whoever the original launch was billed to — never
@@ -3244,6 +3262,7 @@ export async function createStrut<TServices = unknown>(
       title: view.manifest.title,
       ...(view.manifest.description ? { description: view.manifest.description } : {}),
       ...(view.manifest.icon ? { icon: view.manifest.icon } : {}),
+      ...(view.manifest.permissions?.length ? { permissions: view.manifest.permissions } : {}),
     };
   };
   /** What the `runnable` checks ask of the server (src/public-runnable.ts). */
@@ -3286,6 +3305,7 @@ export async function createStrut<TServices = unknown>(
     // — no params, no settings, no job — with no actor, billed to the host's
     // public principal else its owner, under `public/<runId>/` (runner.ts
     // `bindPublic`), its cap on the launch.
+    credit,
     launches: {
       runs: publicRuns,
       draining: () => drain.refusal(),
@@ -3303,6 +3323,7 @@ export async function createStrut<TServices = unknown>(
           origin: "public",
           ...(opts.publicRuns?.principal ? { principal: opts.publicRuns.principal } : {}),
           ...(o.maxCostUsd !== undefined ? { maxCostUsd: o.maxCostUsd } : {}),
+          ...(o.credit ? { credit: o.credit } : {}),
         });
       },
       cancel: async (name, runId) => {
@@ -3339,6 +3360,9 @@ export async function createStrut<TServices = unknown>(
     const normalized = normalizeSurface(body);
     const problems = await runnableProblems(normalized, runnableDeps);
     if (problems.length) return c.json({ error: problems.join("; "), problems }, 400);
+    // The first priced item mints the credit tokens' root (§4.2), before the
+    // record says anything is for sale.
+    if (normalized.runnable.some(isPriced)) await payments.settings.ensureL402Root();
     const before = new Set((await publicSurface.get()).apps.map((a) => a.name));
     const next = await publicSurface.set(normalized);
     // An app added to the public view is HELD at the version it shows
@@ -5722,6 +5746,9 @@ export async function createStrut<TServices = unknown>(
       /** The run's own cost cap (a public run's, plans/paid-runs.md §7):
        *  recorded on `run.start`, handed to `llmAuth`. */
       maxCostUsd?: number;
+      /** A priced public run's credit token id (§6): on `run.start`, its
+       *  sessions' namespace, what its end charges. */
+      credit?: string;
       /** A peer's launch through a PERSON's credential (scope
        *  `peer:person`): the run may open its actor's own sessions. */
       peerPerson?: boolean;
@@ -5818,7 +5845,7 @@ export async function createStrut<TServices = unknown>(
       if (callback && !extra?.resume) await store.setRunCallback(flow.name, runId, callback.url);
       if (mcp && !extra?.resume) await store.setRunMcp(flow.name, runId, mcp);
       if (extra?.jobCallback && !extra.resume) await store.setRunJobCallback(flow.name, runId, extra.jobCallback.url);
-      if (isPublic) await publicRuns.track(flow.name, runId, extra?.maxCostUsd);
+      if (isPublic) await publicRuns.track(flow.name, runId, extra?.maxCostUsd, extra?.credit);
       const attachments =
         extra?.savedAttachments ??
         (extra?.attachments?.length ? await saveRunAttachments(requireRunFiles(), runId, extra.attachments) : undefined);
@@ -5871,6 +5898,7 @@ export async function createStrut<TServices = unknown>(
         ...(mcp ? { mcp } : {}),
         ...(attachments?.length ? { attachments } : {}),
         ...(extra?.maxCostUsd !== undefined ? { maxCostUsd: extra.maxCostUsd } : {}),
+        ...(isPublic && extra?.credit ? { credit: extra.credit } : {}),
         // Its end, recorded from the terminal event — before the summary is
         // written, so whoever sees the run done sees the conversation say so.
         ...(conversation ? { onEvent: (e: RunEvent) => conversationEnd(conversation, runId, e) } : {}),
@@ -8433,10 +8461,14 @@ export async function createStrut<TServices = unknown>(
    *  writing into its data dir (`boot.json`) after `close()`. */
   let bootTimer: ReturnType<typeof setTimeout> | undefined;
   let bootScan: Promise<unknown> | undefined;
+  /** The ledger's daily sweep (plans/paid-runs.md §5, "Expiry"). */
+  let ledgerSweepTimer: ReturnType<typeof setInterval> | undefined;
 
   async function close(): Promise<void> {
     if (bootTimer) clearTimeout(bootTimer);
     bootTimer = undefined;
+    if (ledgerSweepTimer) clearInterval(ledgerSweepTimer);
+    ledgerSweepTimer = undefined;
     await bootScan;
     await packages.booted;
     // What the history still has waiting is committed before the stores go.
@@ -8533,17 +8565,35 @@ export async function createStrut<TServices = unknown>(
   // The public runs a dead process left uncharged (src/public-runs.ts):
   // after auto-resume relaunched what it will, the rest are charged from
   // their logs — with auto-resume off, all of them.
+  // And the ledger's (§5): holds whose run is neither on file nor live are
+  // charged from their logs, and the sweep closes every token past its year
+  // — at boot and once a day. Only where a ledger already is: a strut that
+  // never sold anything never makes one.
+  const ledgerOnDisk = !(store instanceof MemoryRunStore) && existsSync(ledgerPath(dataDir));
   const reconcilePublicRuns = async () => {
     try {
-      for (const r of await publicRuns.reconcile((name, runId) => controllers.has(`${name}/${runId}`))) {
+      for (const r of await publicRuns.reconcile((name, runId) => controllers.has(`${name}/${runId}`), { holds: ledgerOnDisk })) {
         if (r.action !== "live") console.log(`[public-runs] ${r.workflow}/${r.runId}: ${r.action} at boot`);
       }
     } catch (err) {
       console.error(`[public-runs] boot reconcile failed:`, err);
     }
+    if (ledgerOnDisk) await sweepLedger();
   };
-  // On file at boot: `load()` counted them in flight.
-  const reconcilePublic = !(store instanceof MemoryRunStore) && publicRuns.inFlight() > 0;
+  const sweepLedger = async () => {
+    try {
+      const swept = await (await ledger()).sweep();
+      if (swept.closed) console.log(`[ledger] ${swept.closed} credit token(s) past their year closed; $${(swept.expired / 1_000_000).toFixed(2)} unused, earned as expired`);
+    } catch (err) {
+      console.error(`[ledger] the sweep failed:`, err);
+    }
+  };
+  ledgerSweepTimer = setInterval(() => {
+    if (ledgerOpen) void sweepLedger();
+  }, 24 * 60 * 60 * 1000);
+  ledgerSweepTimer.unref?.();
+  // On file at boot: `load()` counted them in flight. A ledger: its holds.
+  const reconcilePublic = !(store instanceof MemoryRunStore) && (publicRuns.inFlight() > 0 || ledgerOnDisk);
   if (autoResumeRuns || autoResumeChats || reconcilePublic) {
     bootTimer = setTimeout(() => {
       bootTimer = undefined;

@@ -183,12 +183,12 @@ export interface AiDeps {
  * `builderRules(JOB_TOOLS)` into its `params.system`). `chat` is what
  * differs beyond the names: the chat's prompt ends with the steps listing,
  * a long run_workflow detaches and a notification wakes the next turn, a
- * question ends the turn (ask_user), the edit tools take `edits`, a file
- * lives under the data directory, and it has tools no twin plays (bash,
- * graph_query, request_secret, rollback, run control, schedules, peers).
- * The job has none of that: it waits on its runs, asks in its reply's
- * `ask`, publishes whole texts through one upsert, works in the job's
- * directory and has no shell. The chat's rendering is the prompt the chat
+ * question ends the turn (ask_user), a file lives under the data
+ * directory, and it has tools no twin plays (bash, graph_query,
+ * request_secret, schedules, peers). The job has none of that: it waits on
+ * its runs, asks in its reply's `ask`, publishes a whole text through one
+ * upsert (meta/edit-workflow for `edits`), works in the job's directory
+ * and has no shell. The chat's rendering is the prompt the chat
  * always had, byte for byte (prompts.test.ts pins it): it heads every
  * chat's cached prefix, so a change to it is a change to every chat's.
  */
@@ -212,6 +212,13 @@ export interface BuilderTools {
   searchRuns: string;
   /** Heals a failed run in place (RUN_CONTROL_SPEC §5.4). */
   resumeRun: string;
+  /** A new version of an existing workflow by `edits`. */
+  editWorkflow: string;
+  /** Rollback: a prior version made active. */
+  setActiveVersion: string;
+  setCategory: string;
+  cancelRun: string;
+  pauseRun: string;
   graphGet: string;
   /** The app/* steps as this surface names them, by prefix: `app_build`, `app/build`. */
   app: string;
@@ -235,6 +242,11 @@ export const CHAT_TOOLS: BuilderTools = {
   getRun: "get_run",
   searchRuns: "search_runs",
   resumeRun: "resume_run",
+  editWorkflow: "edit_workflow",
+  setActiveVersion: "set_active_version",
+  setCategory: "set_workflow_category",
+  cancelRun: "cancel_run",
+  pauseRun: "pause_run",
   graphGet: "graph_get",
   app: "app_",
 };
@@ -257,6 +269,11 @@ export const JOB_TOOLS: BuilderTools = {
   getRun: "meta/get-run",
   searchRuns: "meta/search-runs",
   resumeRun: "meta/resume-run",
+  editWorkflow: "meta/edit-workflow",
+  setActiveVersion: "meta/set-active-version",
+  setCategory: "meta/set-workflow-category",
+  cancelRun: "meta/cancel-run",
+  pauseRun: "meta/pause-run",
   graphGet: "graph/graph-get",
   app: "app/",
 };
@@ -383,7 +400,7 @@ Error handling:
 
 Authoring custom steps (${t.createStep} / ${t.editStep}):
 - If no existing step does what you need, you can write one. ${t.createStep} makes a NEW step type; ${t.editStep} publishes a new version of an existing custom step (v1 → v2 …, with rollback). Built-in core/lib steps can't be edited.
-- A bare "type: <name>" always runs the step's ACTIVE version, so editing a step${t.chat ? " (or set_active_version)" : ""} changes every workflow that uses it on their next run. To hold one workflow at a version, pin it: "type: <name>@v2" (custom steps only; the version label from ${t.getStep} / list versions). Pin when the user asks for it or when a workflow must not pick up later edits; otherwise leave it bare.
+- A bare "type: <name>" always runs the step's ACTIVE version, so editing a step (or ${t.setActiveVersion}) changes every workflow that uses it on their next run. To hold one workflow at a version, pin it: "type: <name>@v2" (custom steps only; the version label from ${t.getStep} / list versions). Pin when the user asks for it or when a workflow must not pick up later edits; otherwise leave it bare.
 - A step MUST be self-contained TypeScript:
     import { z, defineStep } from "strut";   // the ONLY runtime import
     export default defineStep({
@@ -405,7 +422,7 @@ Authoring custom steps (${t.createStep} / ${t.editStep}):
   So a typical REST adapter is: const key = await ctx.services.secrets.get("STRIPE_KEY"); const res = await ctx.services.http("https://api.stripe.com/v1/charges", { query: { customer: cfg.customer }, headers: { authorization: \`Bearer \${key}\` } }); return { charges: res.body.data };
   The built-in "http" step is the canonical example — call ${t.getStep}("http", source: true) to read its source and mirror how it uses ctx.services.http.
 - Prefer raw REST via ctx.services.http — you rarely need a vendor SDK (it's just a wrapper over REST, and an SDK does its own networking so it can't be recorded/replayed). Only import a package other than "strut" if the deployment has pre-installed it (a vendor SDK with gnarly auth); otherwise the step will fail to load. If you're unsure what else is on ctx.services, call ${t.getStep}(type, source: true) on an existing custom step and mirror how it uses ctx.services.
-- Keep the step's algorithm inline (that's the editable part). To change a prompt or heuristic in an existing step, call ${t.getStep}(type, source: true) to read it, then ${t.editStep}${t.chat ? " — with \`edits\` (exact-string replacements over the active source, each matching once) for a small change, or the full updated source." : " with the full updated source."}
+- Keep the step's algorithm inline (that's the editable part). To change a prompt or heuristic in an existing step, call ${t.getStep}(type, source: true) to read it, then ${t.editStep} — with \`edits\` (exact-string replacements over the active source, each matching once) for a small change, or the full updated source.
 - Fail with ACTIONABLE errors. API calls return opaque statuses (a GitHub/Drive 404 means "wrong id, private, OR it's actually a different resource type" — not just "not found"). Catch the common failures and throw an Error whose message names the resource and the likely fix (bad/expired token, missing scope, wrong id, resource is private). Let unexpected errors propagate as-is. The lib steps github/fetch-pr and gdrive/export-file are the reference examples — call ${t.getStep}(type, source: true) to mirror their handling.`;
 }
 
@@ -447,6 +464,10 @@ ${t.chat ? `- create_workflow / edit_workflow: publish a NEW workflow, or a new 
 - list_peers() (when offered): the OTHER workspaces you can act on, each on a strut server of its own, as { id, label?, description?, repos?, baseUrl } (repos: the repositories that workspace holds), plus \`self\`: THIS workspace and its repositories, when set. "@<id>" in the user's message names one (hive registers a workspace by its slug: @acme-web). list_workflows / get_workflow / run_workflow take peer: "<id>" to act on THAT workspace instead of this one — list its workflows, read one, run one. A peer run is awaited to completion (never auto-detached) and executes there: its runs, files and artifacts stay on the peer, its secrets and billing are the peer's. A WORKFLOW does the same with the strut/run-workflow step (get_step it).
 ` : `- ${t.createWorkflow}(name, yaml, description?, category?): publish a NEW workflow, or the next VERSION of any existing one but a sealed one (a person's or a seeded one too: a seeded one's result carries a \`note\` that the next boot puts the seed back — tell the person). It takes the full yaml (${t.getWorkflow} first). A new version is for STRUCTURAL changes (add/remove steps, rewire depends, promote a winning params default). To merely try a different prompt/threshold value, do NOT publish a version — pass params to ${t.runWorkflow} (those are runs, not versions). category is a sidebar grouping label — set it when the person asks or when the workflow clearly belongs with an existing group (${t.listWorkflows} shows categories in use).
 - ${t.runWorkflow}("<name>", input?, params?, version?): run a published workflow and WAIT for its result — { runId, status, output?, error? } — as its own run under this job. ${t.getRun} explains a failure.
+- ${t.editWorkflow}("<name>", edits, description?, category?): a new VERSION of an existing workflow by \`edits\` — exact-string replacements over the ACTIVE version's YAML, each matching once. Use it for a small change to a big workflow (one params default, one config value) instead of resending the YAML; it publishes exactly as ${t.createWorkflow} does, with the same checks.
+- ${t.setActiveVersion}(kind, "<name>", "<version>"): ROLLBACK — make a prior version of a workflow or custom step the active one (the one runs and the registry use). No new version is published; history is kept. Use this when a new version turns out worse ("go back to v2") instead of republishing old source as a fresh version.
+- ${t.setCategory}("<name>", category|null): set or clear a workflow's sidebar category without publishing a version.
+- ${t.cancelRun} / ${t.pauseRun}("<name>", "<runId>") (${t.cancelRun} takes force: true for a run stuck cancelling on a step that never returns — it abandons the step): stop or pause a run that is LIVE in this process — one you resumed with ${t.resumeRun} (it returns at once), or one the person asks you to stop. A finished run reports its terminal status instead; ${t.resumeRun} continues a paused one. Never your own run: end your turn instead.
 `}- ${t.listRuns}("<name>", limit?): a workflow's past runs (newest first) with status/duration — for inspecting history or comparing experiment runs.
 - ${t.getRun}("<name>", "<runId>", path?, fullEvents?): one run as a TREE — summary, "errors" (deepest first, the failure chain on top, each with the siblings that ran before it), and "steps" with everything below each rolled up (an agent's tool calls are a histogram, not a list). Zoom with path (any event path from errors/steps/${t.searchRuns} — "wf/agent", "wf/items#3", "wf/agent/042-bash"): that node is "focus" with its payloads, its children listed. fullEvents:true adds payload previews to every listed node. Read the errors first; zoom only when they are not enough.
 - ${t.searchRuns}("<name>", "<pattern>", runIds?/runLimit?/maxMatches?/ignoreCase?): grep a regex across recent runs' event logs (inputs/outputs/errors) → matching (runId, path, snippet) tuples + per-run counts — for cross-run questions ("which runs hit this error, and how often?"); then ${t.getRun} on a hit.`;

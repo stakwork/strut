@@ -79,8 +79,9 @@ export function peerSessionId(id: string, person?: string, continues?: string): 
 }
 
 /** Where a PUBLIC run's sessions live (plans/paid-runs.md §6): a run
- *  anyone launched opens every session under `public/<runId>/`, so a name a
- *  stranger chooses never opens a local thread or another caller's. */
+ *  anyone launched opens every session under `public/<runId>/` — a priced
+ *  one under `public/<token id>/` — so a name a stranger chooses never
+ *  opens a local thread or another caller's. */
 export const PUBLIC_NAMESPACE = "public/";
 
 /** Where a public run's session `id` opens: `public/<scope>/<id>`, left as

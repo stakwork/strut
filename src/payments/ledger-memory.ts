@@ -215,6 +215,11 @@ export class MemoryLedgerStore implements LedgerStore {
     return e ? holdOf(e) : undefined;
   }
 
+  async chargeOf(runId: string, subject: string): Promise<LedgerEntry | undefined> {
+    const e = this.log.find((x) => x.kind === "charge" && x.runId === runId && x.subject === subject);
+    return e ? { ...e } : undefined;
+  }
+
   async openHolds(): Promise<OpenHold[]> {
     const out: OpenHold[] = [];
     for (const t of this.tokens.values()) {

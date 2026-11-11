@@ -22,6 +22,7 @@ import {
 import { CHANNELS_CAPABILITY, relayChannels } from "@strut/kit/channels";
 import { API_BASE, apiHeaders, channelSocketUrl, channelTicket, type BrandStyles } from "./api";
 import { strutLink } from "./app-links";
+import { mcpPermissions } from "./frame-permissions";
 
 // The pure parts — where a link leads, what a message becomes — are
 // ./app-links (tested there; this module's imports need web/node_modules).
@@ -68,6 +69,11 @@ export interface AppHostOptions {
   /** This strut's brand (`GET /brand`): each theme's style variables, sent
    *  in the host context so the kit's tokens take them (src/brand.ts). */
   brand?: BrandStyles | null;
+  /** The version's declared `permissions` (its build.json), which the
+   *  frame's attributes grant (./frame-permissions `frameAttributes`): MCP
+   *  Apps' own four are reported in `ui/initialize` as
+   *  `hostCapabilities.sandbox.permissions`. */
+  permissions?: string[];
 }
 
 export interface AppHostConnection {
@@ -130,6 +136,7 @@ export async function connectAppHost(opts: AppHostOptions): Promise<AppHostConne
     {
       serverTools: {},
       openLinks: {},
+      sandbox: { permissions: mcpPermissions(opts.permissions) },
       ...(opts.handlers.onMessage ? { message: { text: {} } } : {}),
       ...(capability || opts.channels
         ? { experimental: { ...(capability ? { [WALLET_CAPABILITY]: capability } : {}), ...(opts.channels ? { [CHANNELS_CAPABILITY]: { v: 1 } } : {}) } }

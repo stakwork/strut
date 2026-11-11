@@ -15,6 +15,7 @@ import {
   rowKey,
   rowsOf,
   runHints,
+  capNote,
   sameRecord,
   setBox,
   setPrice,
@@ -185,6 +186,7 @@ function ItemRow(props: {
               ? `A run needs ${usd(reserveUsd(item))} of credit to start (base + markup × the per-run cap); what it is not charged stays the buyer's.`
               : `Free: anyone may run it, and you carry what it costs${item.dailyCapUsd !== undefined ? `, up to ${usd(item.dailyCapUsd)} a day` : ""}.`}
           </div>
+          {capNote(item) && <div class="auto-hint">{capNote(item)}</div>}
           {info && !info.gateway && (info.can.spends || (item.markup ?? 0) > 0) && (
             <div class="auto-hint">No gateway here: nothing stops a run at its cap. Overspend shows after the run, bounded by the agent's step limit and the daily cap.</div>
           )}

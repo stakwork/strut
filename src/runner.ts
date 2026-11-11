@@ -181,6 +181,9 @@ export interface RunOptions<TServices = unknown> {
    *  `run.start`, handed to every step as `ctx.maxCostUsd`, and from there
    *  to `llmAuth` (`stepAuth`). */
   maxCostUsd?: number;
+  /** A priced public run's credit token id (plans/paid-runs.md §6):
+   *  recorded on `run.start`; its sessions open under `public/<token id>/`. */
+  credit?: string;
 }
 
 /** Sentinel returned by steps that were skipped because their `when` didn't match. */
@@ -265,16 +268,17 @@ function bindApp<TServices>(services: TServices, app: AppRef | undefined, actor?
 }
 
 /** A PUBLIC run (plans/paid-runs.md §6) opens every session under
- *  `public/<runId>/` (`publicSessionId`): a name a stranger chooses is never
- *  a local thread, nor another caller's. The twin of `bindPeer`, with no
- *  exception: a stranger owns no thread here. */
-function bindPublic<TServices>(services: TServices, origin: RunOrigin | undefined, runId: string): TServices {
+ *  `public/<runId>/`, or a priced run's under `public/<token id>/`
+ *  (`publicSessionId`): a name a stranger chooses is never a local thread,
+ *  nor another caller's. The twin of `bindPeer`, with no exception: a
+ *  stranger owns no thread here. */
+function bindPublic<TServices>(services: TServices, origin: RunOrigin | undefined, scope: string): TServices {
   if (origin !== "public" || services == null || typeof services !== "object") return services;
   const sessions = (services as { sessions?: SessionsCapability }).sessions;
   if (typeof sessions?.open !== "function") return services;
   const view: SessionsCapability = {
-    open: (id, holder) => sessions.open(publicSessionId(id, runId), holder),
-    holder: (id) => sessions.holder(publicSessionId(id, runId)),
+    open: (id, holder) => sessions.open(publicSessionId(id, scope), holder),
+    holder: (id) => sessions.holder(publicSessionId(id, scope)),
   };
   return { ...(services as object), sessions: view } as TServices;
 }
@@ -450,7 +454,7 @@ async function executeRun<TServices = unknown>(
   const { services, reporter: graphReports } = bindGraph(
     bindApp(
       bindPeer(
-        bindPublic(bindPrincipal((opts?.services ?? ({} as TServices)) as TServices, opts?.principal), opts?.origin, runId),
+        bindPublic(bindPrincipal((opts?.services ?? ({} as TServices)) as TServices, opts?.principal), opts?.origin, opts?.credit ?? runId),
         opts?.origin,
         opts?.peerPerson ? opts.actor : undefined,
         opts?.continues,
@@ -559,6 +563,7 @@ async function executeRun<TServices = unknown>(
       ...(opts?.mcp?.length ? { mcp: mcpOrigins(opts.mcp) } : {}),
       ...(opts?.attachments?.length ? { attachments: opts.attachments } : {}),
       ...(opts?.maxCostUsd !== undefined ? { maxCostUsd: opts.maxCostUsd } : {}),
+      ...(opts?.credit ? { credit: opts.credit } : {}),
       // Tree linkage on disk: a nested run names its parent so boot-time
       // auto-resume can tell roots from children (§5.3).
       ...(opts?.controller?.parent ? { parentRunId: opts.controller.parent.runId } : {}),

@@ -265,14 +265,16 @@ in-workflow author on iteration one:
 | `meta/list-workflows`, `meta/get-workflow` | workflow discovery | read current source before editing |
 | `meta/validate-workflow` | `validateWorkflowYaml` (the chat's `validate_workflow`) | static check before publishing — a typo never becomes a version |
 | `meta/publish-workflow` | create/edit as an explicit upsert | the candidate artifact |
+| `meta/edit-workflow` | `applyEdits` + the publish above | a small change to a big workflow without resending it (the chat's `edit_workflow { edits }`; `meta/edit-step` takes `edits` too) |
+| `meta/set-active-version` | `setActiveVersion` / `setActiveStepVersion` | rollback without republishing; the version made active is held to what a publish of it would be (nothing sealed, not newly open to peers, within the reach) |
+| `meta/set-workflow-category` | `setWorkflowCategory` | the sidebar label, no version (categories carry no policy) |
 | `meta/run-workflow` | `runWorkflow` | test the candidate end to end |
 | `meta/list-runs`, `meta/get-run` | run-store reads | debug a failed candidate — **provenance-scoped, see §6** |
+| `meta/resume-run`, `meta/cancel-run`, `meta/pause-run` | the run routes' core (RUN_CONTROL_SPEC) | heal, stop or pause a run; never a sealed one, one billed to someone else, or (cancel, pause) the caller's own |
 | `meta/list-secrets` | secret NAMES only | author steps that reference auth by name |
 
 Deliberately absent: `bash` and `web_search` — the agent step grants those
-itself, and §5.3.2 forbids `meta/*` + `bash` on one agent anyway — and
-`set_workflow_category` (UI cosmetics; and keeping it out means an in-run
-author cannot re-file a workflow into the candidate namespace, §6).
+itself, and §5.3.2 forbids `meta/*` + `bash` on one agent anyway.
 
 The chat tools carry real logic worth not duplicating: name-conflict checks,
 JSON-string arg coercion (`coerceJsonArg`), and the load-verify-and-report

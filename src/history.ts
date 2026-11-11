@@ -12,8 +12,10 @@
  *                                 (inside the repository, so it moves and is
  *                                 backed up with it; rebuilt by any snapshot)
  *
- * TOUCHES (§3): a run's graph view tells the history when it flushes its
- * writes (`bindGraph`, src/graph-writes.ts — schema writes included), and
+ * TOUCHES (§3): a run's graph view tells the history when it flushes a
+ * write a snapshot records — a Concept, a `PARENT_OF` edge, a type or an
+ * edge rule, a step's claim (`historyRecords`, src/graph-writes.ts; a write
+ * of unknown type counts) — never a flush of instances alone, and
  * the workspace store is wrapped once (`watch`) so a publish, a change of
  * the active version, a delete or an app release touches it after it
  * returns. An install or an uninstall is HELD (`hold`): what it publishes
@@ -96,6 +98,9 @@ export interface HistoryCapability {
   waiting(flush: () => Promise<void>): void;
   /** Something changed what a snapshot writes; `from`, the view that sent it. */
   touch(t: HistoryTouch, from?: () => Promise<void>): void;
+  /** A view sent its writes and none was one the history records
+   *  (`historyRecords`, src/graph-writes.ts): nothing of it waits. */
+  skipped(from: () => Promise<void>): void;
   /** Flush every view with writes waiting and run the queue now. */
   settle(): Promise<void>;
   /** A snapshot now, cause `sync` (after what is waiting). */
@@ -406,6 +411,9 @@ export function createHistory(deps: HistoryDeps): History {
       if (closed) return;
       add(t);
       schedule();
+    },
+    skipped(from) {
+      waitingViews.delete(from);
     },
     async settle() {
       const views = [...waitingViews];

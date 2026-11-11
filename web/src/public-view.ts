@@ -200,6 +200,16 @@ export function runHints(item: PublicRunnable, info: PublicRunInfo): string[] {
   return out;
 }
 
+/** What the caps do together, said beside them — not a refusal. A run in
+ *  flight counts against the daily cap at its own cap (plans/paid-runs.md
+ *  §7), and with no per-run cap that is the whole day's: one run at a time.
+ *  The workflow's own run cap, when smaller, is what a run counts at, and
+ *  the dialog does not know it, so the note says so. */
+export function capNote(item: PublicRunnable): string | undefined {
+  if (item.kind !== "workflow" || item.dailyCapUsd === undefined || item.capUsd !== undefined) return undefined;
+  return `No per-run cap: a run in flight counts as the whole day's ${usd(item.dailyCapUsd)} (or the workflow's own run cap, if smaller), so one runs at a time. Set a per-run cap to let several run at once.`;
+}
+
 /** Turning "anyone can run it" on for something that acts or runs code
  *  needs the person's tick; one already runnable when the tab opened had it. */
 export function needsTick(row: Row, info: PublicRunInfo | undefined, saved: PublicViewRecord): boolean {

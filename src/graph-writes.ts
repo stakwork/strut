@@ -23,10 +23,16 @@
  *     only, the latest per node or edge.
  *
  *   - to the HISTORY (src/history.ts, plans/concept-history.md §3), when
- *     the bag has one: told that the run (or the proposal) flushed — never
- *     what — before anything is left out as strut's own, so a type or an
- *     edge rule written through the view's `schemaSource` or `schemas`
- *     (`createNodeSchema`, `createEdgeSchema`) is heard like a node.
+ *     the bag has one and the flush held a write the history records
+ *     (`historyRecords`: a Concept, a `PARENT_OF` edge, a step's claim or
+ *     check, or a type or an edge rule written through the view's
+ *     `schemaSource` or `schemas` — `createNodeSchema`, `createEdgeSchema`
+ *     — noted as a `Schema` change): told that the run (or the proposal)
+ *     flushed, never what, and before anything is left out as strut's own.
+ *     A write whose type is not known is one it records. A flush of
+ *     instances alone tells it nothing: a snapshot reads every Concept,
+ *     and an ingest run would make it read them all every few seconds for
+ *     a commit that never comes.
  *
  * Not heard: a write through raw Cypher (`graph.query`), a write by another
  * process (jarvis, an ingest, a host writing the database itself), and
@@ -60,6 +66,20 @@ export interface GraphChange {
  *  claims layer (its own updates are `evidence` / `verify`) and the ontology. */
 const QUIET_TYPES = new Set(["claim", "check", "evidence", "thing", "schema"]);
 export const isQuietType = (t: string | undefined): boolean => !!t && (/^strut/i.test(t) || QUIET_TYPES.has(t.toLowerCase()));
+
+/** What a history snapshot reads of the graph (`wholeFiles`,
+ *  src/packages/build.ts): every Concept with its `PARENT_OF` parents, the
+ *  ontology (a `Schema` change, `watchSchemas`), and each custom step's
+ *  claims (a Claim, its Checks, and the claim edges between them). */
+const HISTORY_NODE_TYPES = new Set(["concept", "schema", "claim", "check"]);
+const HISTORY_EDGE_TYPES = new Set(["PARENT_OF", "ABOUT", "TESTS", "SUPERSEDES"]);
+
+/** Whether a write may change what the history records. One whose type is
+ *  not known may. */
+export const historyRecords = (c: Pick<GraphChange, "kind" | "node_type" | "edge_type">): boolean =>
+  c.kind === "node"
+    ? !c.node_type || HISTORY_NODE_TYPES.has(c.node_type.toLowerCase())
+    : !c.edge_type || HISTORY_EDGE_TYPES.has(c.edge_type.toUpperCase());
 
 /** The writes the deployment's feed keeps. */
 export const GRAPH_FEED_MAX = 5_000;
@@ -144,8 +164,9 @@ export function graphReporter(o: {
   notify?: (job: string, update: JobUpdateInput) => void;
   feed?: GraphChangeFeed;
   reader?: TypeReader;
-  /** The history, told when this run or proposal flushed (and by whom). */
-  history?: Pick<HistoryCapability, "waiting" | "touch">;
+  /** The history, told when this run or proposal flushed a write it
+   *  records (and by whom). */
+  history?: Pick<HistoryCapability, "waiting" | "touch" | "skipped">;
   actor?: string;
   debounceMs?: number;
   maxDelayMs?: number;
@@ -169,11 +190,21 @@ export function graphReporter(o: {
     const batch = pending;
     pending = [];
     if (batch.length === 0) return;
-    if (o.history) {
-      const proposal = o.id?.startsWith("proposal:") ? o.id.slice("proposal:".length) : undefined;
-      const cause = o.runId ? `run ${o.runId}` : proposal ? `proposal ${proposal}` : (o.id ?? "graph");
-      o.history.touch({ cause, ...(o.actor ? { actor: o.actor } : {}), ...(o.runId ? { run: o.runId } : {}) }, flush);
-    }
+    // Decided once every write is typed; a send that fails before then
+    // touches, so the history never misses one.
+    let recorded = false;
+    let typed = false;
+    const tellHistory = () => {
+      const h = o.history;
+      if (!h) return;
+      if (recorded || !typed) {
+        const proposal = o.id?.startsWith("proposal:") ? o.id.slice("proposal:".length) : undefined;
+        const cause = o.runId ? `run ${o.runId}` : proposal ? `proposal ${proposal}` : (o.id ?? "graph");
+        h.touch({ cause, ...(o.actor ? { actor: o.actor } : {}), ...(o.runId ? { run: o.runId } : {}) }, flush);
+      } else h.skipped(flush);
+      // A write noted while this batch was being typed is still waiting.
+      if (pending.length > 0) h.waiting(flush);
+    };
     let lookups = 0;
     const resolve = async (ref: string | undefined): Promise<string | undefined> => {
       if (!ref) return undefined;
@@ -185,17 +216,24 @@ export function graphReporter(o: {
       return t;
     };
     const out: GraphChange[] = [];
-    for (const c of batch) {
-      if (c.kind === "node") {
-        const node_type = c.node_type ?? (await resolve(c.ref_id));
-        if (isQuietType(node_type)) continue;
-        out.push(node_type ? { ...c, node_type } : c);
-      } else {
-        const ends = [await resolve(c.source), await resolve(c.target)];
-        if (ends.some(isQuietType)) continue;
-        const known = ends.filter((t): t is string => !!t);
-        out.push(known.length ? { ...c, types: known } : c);
+    try {
+      for (const c of batch) {
+        if (c.kind === "node") {
+          const node_type = c.node_type ?? (await resolve(c.ref_id));
+          if (!recorded && historyRecords({ kind: "node", node_type })) recorded = true;
+          if (isQuietType(node_type)) continue;
+          out.push(node_type ? { ...c, node_type } : c);
+        } else {
+          if (!recorded && historyRecords(c)) recorded = true;
+          const ends = [await resolve(c.source), await resolve(c.target)];
+          if (ends.some(isQuietType)) continue;
+          const known = ends.filter((t): t is string => !!t);
+          out.push(known.length ? { ...c, types: known } : c);
+        }
       }
+      typed = true;
+    } finally {
+      tellHistory();
     }
     if (out.length === 0) return;
     o.feed?.push(out);
@@ -418,7 +456,7 @@ export function bindGraph<TServices>(
     graph?: object & { nodes?: object; edges?: object; reader?: TypeReader };
     graphChanges?: GraphChangeFeed;
     jobs?: { notify?: (job: string, update: JobUpdateInput) => void };
-    history?: Pick<HistoryCapability, "waiting" | "touch">;
+    history?: Pick<HistoryCapability, "waiting" | "touch" | "skipped">;
   };
   const graph = bag.graph;
   if (!graph || (!graph.nodes && !graph.edges)) return { services };

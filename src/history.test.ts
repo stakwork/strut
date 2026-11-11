@@ -77,6 +77,12 @@ steps:
     type: graph/delete-node
     config: { ref_id: "{{ input.ref }}" }
 `,
+  "c-instance": `name: c-instance
+steps:
+  - id: make
+    type: graph/create-node
+    config: { node_type: "{{ input.type }}", node_data: "{{ input.data }}" }
+`,
   "c-schema": `name: c-schema
 steps:
   - id: schema
@@ -447,6 +453,23 @@ for (const tb of testBackends()) {
       const next = (await commits(s))[0]!;
       assert.equal(next.subject, `run ${r.runId}`);
       assert.deepEqual((await changed(s, next.id)).map((c) => c[1]).sort(), ["concepts/concept-heard.md", "concepts/concept-rawtoo.md"]);
+    });
+
+    it("takes no snapshot for a run that writes only instances, and the next Concept write commits what waited", async () => {
+      const s = await ready();
+      await run(s, "c-schema", { type: "Widget", attributes: { name: "string" }, key: "name" });
+      const base = (await commits(s)).length;
+      // Unheard, so only a snapshot would commit it.
+      await backend.nodes.write({ type: "Concept", data: { name: "Unseen" } }, "create");
+      const r = await run(s, "c-instance", { type: "Widget", data: { name: "w1" } });
+      assert.equal(r.status, "success", r.status === "error" ? r.error.message : "");
+      await s.history!.settle();
+      assert.equal((await commits(s)).length, base, "a Widget alone took no snapshot");
+      const heard = await run(s, "t-concept", { op: "create", name: "Seen" });
+      const log = await commits(s);
+      assert.equal(log.length, base + 1);
+      assert.equal(log[0]!.subject, `run ${heard.runId}`);
+      assert.deepEqual((await changed(s, log[0]!.id)).map((c) => c[1]).sort(), ["concepts/concept-seen.md", "concepts/concept-unseen.md"]);
     });
 
     it("snapshots a few hundred Concepts in time (the cost, logged)", async () => {

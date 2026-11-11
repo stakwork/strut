@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildApp, cspFor, lintAppSource, readBuildInfo, TOKEN_PLACEHOLDER, withToken, withoutTokenMeta, zodNamespaceImports, type BuildDeps } from "./build.js";
-import { parseManifest, WALLET_NOTIFICATION_TYPES, WALLET_RENEWAL_PERIODS, WALLET_REQUESTABLE_METHODS } from "./manifest.js";
+import { APP_PERMISSIONS, DECLARED_PERMISSIONS, EVERY_APP_PERMISSIONS, parseManifest, WALLET_NOTIFICATION_TYPES, WALLET_RENEWAL_PERIODS, WALLET_REQUESTABLE_METHODS } from "./manifest.js";
 import { NOTIFICATION_TYPES, RENEWAL_PERIODS, REQUESTABLE_METHODS } from "@strut/kit/wallet";
 import { loadKit, type KitLocation } from "./kit.js";
 import { treeFiles, treeHash } from "../version.js";
@@ -246,6 +246,18 @@ describe("the app build", () => {
     assert.equal((await readBuildInfo(none))!.wallet, undefined, "an app that asks for no wallet says nothing of one");
   });
 
+  it("build.json carries the permissions the version's frame is granted beyond every app's, for the host that frames it", async () => {
+    const dir = await writeApp(fresh(), { ...minimal(), "app.yaml": "title: Tilt maze\npermissions: [motion, fullscreen, motion, geolocation]\n" });
+    const r = await build(dir);
+    assert.ok(r.ok, errorsOf(r).join("\n"));
+    assert.deepEqual((await readBuildInfo(dir))!.permissions, ["motion", "geolocation"], "once each, as declared; every app's left out");
+    const game = await writeApp(fresh(), { ...minimal(), "app.yaml": "title: Maze\npermissions: [pointer-lock, fullscreen, gamepad, wake-lock]\n" });
+    assert.ok((await build(game)).ok, "a manifest written to the earlier names still builds");
+    assert.equal((await readBuildInfo(game))!.permissions, undefined, "and asks for nothing: every app has those");
+    const bad = await build(await writeApp(fresh(), { ...minimal(), "app.yaml": "title: Buzz\npermissions: [motion, rumble]\n" }));
+    assert.match(errorsOf(bad).join("\n"), /app\.yaml: permissions\[1\]: "rumble" is not a permission an app can declare — one of motion, camera, geolocation \(/);
+  });
+
   it("a grant naming a workflow that does not exist fails the build naming it; the manifest is shape-checked", async () => {
     const r = await build(await writeApp(fresh(), { ...minimal(), "app.yaml": "title: G\ngrants:\n  workflows: [exists, missing-one]\n  automations: [gone]\n" }), {
       workflowExists: async (wf) => wf === "exists",
@@ -331,6 +343,23 @@ wallet:
     assert.match(errors("wallet:\n  request_methods: []\n"), /request_methods needs at least one method/);
     assert.match(errors("wallet:\n  request_methods: [pay_keysend]\n  renewal_period: daily\n"), /renewal_period needs max_amount/);
     assert.match(errors("wallet:\n  request_methods: [pay_keysend]\n  budget_renewal: weekly\n"), /wallet/);
+  });
+
+  it("keeps the declared frame permissions once each, drops every app's, and names the allowed set for any other", () => {
+    const ok = parseManifest("title: Racer\npermissions: [fullscreen, pointer-lock, gamepad, geolocation, motion, wake-lock, camera, microphone, clipboard-write, motion]\n");
+    assert.ok(ok.ok);
+    assert.deepEqual(ok.manifest.permissions, ["geolocation", "motion", "camera"], "what it asks for beyond every app's, as declared, the repeat dropped");
+    assert.deepEqual([...APP_PERMISSIONS], [...DECLARED_PERMISSIONS, ...EVERY_APP_PERMISSIONS]);
+    assert.deepEqual([...DECLARED_PERMISSIONS], ["motion", "camera", "geolocation"]);
+    assert.equal((parseManifest("title: X\n") as { manifest: { permissions?: unknown } }).manifest.permissions, undefined);
+    const errors = (yaml: string) => (parseManifest(`title: X\n${yaml}`) as { errors?: string[] }).errors?.join("\n") ?? "";
+    assert.equal(
+      errors("permissions: [fullscreen, clipboardWrite]\n"),
+      'app.yaml: permissions[1]: "clipboardWrite" is not a permission an app can declare — one of motion, camera, geolocation ' +
+        "(fullscreen, pointer-lock, gamepad, wake-lock, microphone, clipboard-write are every app's already)",
+    );
+    assert.match(errors("permissions: [vibrate]\n"), /"vibrate" is not a permission: browsers block navigator\.vibrate in a cross-origin frame/);
+    assert.match(errors("permissions: fullscreen\n"), /app\.yaml: permissions: .*expected array/);
   });
 
   it("names the wallet contract's own lists", () => {
