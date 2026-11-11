@@ -2,6 +2,10 @@
 // Causes: every claim as it stands now, most corrected first, each with what
 // memory holds for it and one history of what was said and what was changed.
 // Dreams: each run, newest first, with what it changed and what it noted.
+// A sidebar moves between them, as the Memory app's does; under Ontology it
+// lists each kind of thing a dream tends (`KINDS`): Concepts today, and a
+// kind added there (facts, say) is one more entry, once a dream's output
+// carries it.
 // A claim in a dream opens its cause; a remark or change in a cause opens
 // its dream. Memory: the tree of Concepts as the last dream left it, each
 // with its text, the causes on it and the changes dreams made to it; a
@@ -12,7 +16,11 @@
 // not only the picked one's: a cause's history spans them.
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQueries } from "@tanstack/react-query";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, BookOpen, Moon, Target, type LucideIcon } from "lucide-react";
+import {
+  Sidebar, SidebarContent, SidebarGroup, SidebarGroupContent, SidebarGroupLabel, SidebarHeader, SidebarInset, SidebarMenu,
+  SidebarMenuBadge, SidebarMenuButton, SidebarMenuItem, SidebarProvider, SidebarTrigger, useSidebar,
+} from "@/components/ui/sidebar";
 import { hierarchy, pack } from "d3";
 import { RUN_STEPS, isInFlight, runKeys, useRuns, useStrutClient, type RunSummary } from "@strut/kit";
 import { DocumentView, RunStatus, Transcript } from "strut/views";
@@ -534,6 +542,48 @@ function ConceptDetail({ concept, model, onRun, onCause }: { concept: TreeConcep
 
 type View = "causes" | "dreams" | "memory";
 
+/** The sidebar: what the dreams found, then each kind of thing in memory a dream tends. */
+const NAV: Array<{ label?: string; items: Array<{ view: View; title: string; icon: LucideIcon; count: (m: Model) => number }> }> = [
+  { items: [
+    { view: "causes", title: "Causes", icon: Target, count: (m) => m.causes.length },
+    { view: "dreams", title: "Dreams", icon: Moon, count: (m) => m.runs.length },
+  ] },
+  // KINDS: one entry per kind of thing in memory.
+  { label: "Ontology", items: [{ view: "memory", title: "Concepts", icon: BookOpen, count: (m) => m.tree.length }] },
+];
+const TITLE: Record<View, string> = { causes: "Causes", dreams: "Dreams", memory: "Concepts" };
+
+function Nav({ view, model, onPick }: { view: View; model: Model; onPick: (v: View) => void }) {
+  const { isMobile, setOpenMobile } = useSidebar();
+  return (
+    <Sidebar>
+      <SidebarHeader className="px-4 py-3">
+        <h1 className="flex items-baseline gap-1.5 font-serif text-xl leading-none tracking-tight">Glimmer <span className="font-sans text-xs tracking-normal text-muted-foreground">gRLM</span></h1>
+      </SidebarHeader>
+      <SidebarContent>
+        {NAV.map((g, i) => (
+          <SidebarGroup key={i}>
+            {g.label && <SidebarGroupLabel>{g.label}</SidebarGroupLabel>}
+            <SidebarGroupContent>
+              <SidebarMenu>
+                {g.items.map((it) => (
+                  <SidebarMenuItem key={it.view}>
+                    <SidebarMenuButton isActive={view === it.view} onClick={() => { onPick(it.view); if (isMobile) setOpenMobile(false); }}>
+                      <it.icon />
+                      <span>{it.title}</span>
+                    </SidebarMenuButton>
+                    <SidebarMenuBadge>{it.count(model)}</SidebarMenuBadge>
+                  </SidebarMenuItem>
+                ))}
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        ))}
+      </SidebarContent>
+    </Sidebar>
+  );
+}
+
 export default function App() {
   const { runs, loading, error } = useDreams();
   const model = useMemo(() => buildModel(runs), [runs]);
@@ -557,27 +607,20 @@ export default function App() {
   const run = model.runs.find((r) => r.runId === runId) ?? model.runs[0];
   const empty = (text: string) => <p className="p-4 text-sm text-muted-foreground">{text}</p>;
   const none = error ?? (loading ? "Reading the dreams." : "No dream has run yet. Turn Dream on, or run it once, in Automations: what it finds shows here.");
-  const tab = (v: View, label: string, n: number) => (
-    <button type="button" onClick={() => { setView(v); setOpen(false); }} className={cn("-mb-px border-b-2 px-1 py-2.5 text-sm", view === v ? "border-foreground font-medium" : "border-transparent text-muted-foreground hover:text-foreground")}>
-      {label} <span className="tabular-nums text-muted-foreground">{n}</span>
-    </button>
-  );
   return (
     <OpenConcept.Provider value={toConcept}>
-    <div className="flex h-dvh flex-col bg-background text-foreground" data-testid="dream-app">
-      <header className="flex shrink-0 items-center gap-5 border-b px-4">
-        <h1 className="flex items-baseline gap-1.5 font-serif text-xl leading-none tracking-tight">Glimmer <span className="font-sans text-xs tracking-normal text-muted-foreground">gRLM</span></h1>
-        <nav className="flex gap-4">
-          {tab("causes", "Causes", model.causes.length)}
-          {tab("dreams", "Dreams", model.runs.length)}
-          {tab("memory", "Memory", model.tree.length)}
-        </nav>
-        {view === "causes" && model.causes.length > 0 && (
-          <div className="ml-auto py-1.5">
-            <Segmented label="How the causes are shown" value={graph ? "graph" : "list"} onChange={(v) => setGraph(v === "graph")} options={[{ value: "list", label: "List" }, { value: "graph", label: "Graph" }]} />
-          </div>
-        )}
-      </header>
+    <SidebarProvider>
+      <Nav view={view} model={model} onPick={(v) => { setView(v); setOpen(false); }} />
+      <SidebarInset className="h-dvh min-w-0" data-testid="dream-app">
+        <header className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
+          <SidebarTrigger />
+          <h2 className="text-sm font-semibold">{TITLE[view]}</h2>
+          {view === "causes" && model.causes.length > 0 && (
+            <div className="ml-auto">
+              <Segmented label="How the causes are shown" value={graph ? "graph" : "list"} onChange={(v) => setGraph(v === "graph")} options={[{ value: "list", label: "List" }, { value: "graph", label: "Graph" }]} />
+            </div>
+          )}
+        </header>
       {!model.runs.length ? (
         empty(none)
       ) : view === "causes" ? (
@@ -644,7 +687,8 @@ export default function App() {
           detail={run ? <RunDetail key={run.runId} run={run} model={model} onCause={toCause} /> : null}
         />
       )}
-    </div>
+      </SidebarInset>
+    </SidebarProvider>
     </OpenConcept.Provider>
   );
 }
