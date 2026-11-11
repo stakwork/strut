@@ -600,8 +600,12 @@ they could be built.
      consent and a budget; signing in becomes one more thing it grants, on
      the same sheet: "you" (the root Sphinx key) or "a new identity for
      this app".
-   - **The guard.** Peel signs only strut's challenge, for the domain it
-     loaded.
+   - **The guard.** Peel signs only strut's challenge, for the seller's
+     domain.
+   - **Where the page runs.** On the Mac, the person's own strut UI hosts
+     the stranger's app (#625's remote mode). On the iPhone, Peel opens the
+     served box directly and trusts only the origin it loaded
+     (`app-payments.md` R7).
    - **No QR inside Peel.** A QR code is only for a page in another browser
      with Peel on the phone, which is later, with Peel as an NWC wallet
      service (`app-payments.md` §5.4).

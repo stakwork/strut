@@ -2,7 +2,8 @@
 
 Ruled 2026-11-04: R1, R2, R3 and R5 accepted; R4 (Peel as an NWC wallet service)
 later (§11). Ruled 2026-11-10: R6, signing in through the connection, the root
-key by default (§4.4, rewritten). How a strut app (plans/apps.md) gets a
+key by default (§4.4, rewritten); R7, a stranger's public app opens directly on
+the iPhone, keyed by origin (§5.3). How a strut app (plans/apps.md) gets a
 Lightning wallet:
 - in Peel, where the person's Sphinx account is;
 - in any other host — strut's UI, Hive, a full-screen app host of its own — with
@@ -153,7 +154,7 @@ Sphinx-style apps, which is us.
 | `pay_lightning_address { address \| lnurl, amount, comment?, payer_data?, metadata? }` → a payment | The host resolves LNURL (LUD-06/16, LUD-12 comments, LUD-18 payer data), because the frame cannot fetch. This is what WebLN's `lnurl()` does in the extension; NWC leaves it to the client. |
 | `pay { payment, amount?, max_fee?, payer_note?, metadata? }` (NWC-321: a BIP-321 URI, bolt11, `lno=`) | BOLT12 offers, later, without a new method. |
 | `make_hold_invoice` / `settle_hold_invoice` / `cancel_hold_invoice` (NWC-03) | Escrow and bets. Later. |
-| `sign_in { challenge }` → `{ key, sig }` | Strut's visitor challenge only, and only from the host page, never from the app (§4.4). There is no general `sign_message`. |
+| `sign_message` | Never. An app does not choose what the wallet signs. Signing in is the HOST's request, not an app's method (§4.4). |
 
 Left out: `multi_pay_invoice` and `multi_pay_keysend`, which NIP-47 dropped in
 2026-02 (nips#2210) for lack of use. A split is N `pay_keysend` calls.
@@ -409,10 +410,20 @@ under a per-app linking key only, "never the identity key". This replaces it.*
   methods and budget. An app that wants both gets ONE sheet: who you are, and
   what it may spend.
 - **How the app asks.** It calls the kit's `useVisitor().signIn()` (app-repos
-  §5.2). Strut's host page forwards that to the host as `strut/wallet/sign_in`.
-  An app never calls `sign_in` itself, and never sees a key.
+  §5.2), and strut's UI does the rest:
+  - fetches the seller's visitor challenge;
+  - asks the native host with a HOST request,
+    `{ v: 1, op: "sign_in", seller, app, challenge }`.
+
+  That request sits beside #625's `buy_credit` in `specs/WALLET.md` §1.2:
+  the same handler, listed by `host_capability`, never a `strut/wallet/*`
+  method. An app never sees the request or a key.
+- **Where the session is kept.** The seller's visitor token is kept by
+  strut's UI per seller, as #625 keeps its purse: the seller's cookie is
+  third-party on a page another strut hosts.
 - **What Peel's sheet adds:**
-  - the box's origin, from Peel's own record of the page it opened (§5.3);
+  - the seller's origin: on the Mac as the person's own strut UI names it;
+    on the iPhone from Peel's own record of the page it opened (§5.3);
   - "Sign in as **you**", the person's Sphinx account;
   - or "as **a new identity for this app**", the sub-account below.
 
@@ -422,16 +433,22 @@ under a per-app linking key only, "never the identity key". This replaces it.*
   connection runs without a sheet, with a toast, as a payment within its
   budget does. Revoking the connection ends both.
 
-**What is signed: only strut's challenge, bound to the page's own domain.**
+**What is signed: only strut's challenge, bound to the seller's domain.**
 - **The challenge,** `strut-visitor.<claims>.<hmac>` (app-repos §5.2), names
   its `host`.
 - **Peel checks it.** It reads that claim and signs only when it equals the
-  origin of the page it loaded.
+  seller:
+  - **on the Mac,** the `seller` the person's own strut UI names (#625's
+    remote mode, which Peel trusts as its main frame);
+  - **on the iPhone,** the origin Peel itself loaded, whatever the page
+    claims (§5.3, R7).
 - **A box gets a signature over its own login only.** That closes
   sphinx-bridge's worst hole (§9, one app minting another app's login) by
   binding the signature to a domain, not by keeping the identity key out of it.
 - **No general `sign_message`.** `sign_in` signs a strut challenge or
   nothing: an app never chooses the message.
+- **The connection is keyed by** (seller, app) on the Mac, and by origin on
+  the iPhone. Either way, a page cannot sign in, or spend, as another.
 
 **Which key.**
 - **By default, the root key.** The person's Sphinx node key, the one their
@@ -543,15 +560,35 @@ Peel's side:
   need no gesture, which is what lets a stream run.
 - **The iPhone pays only in the foreground,** with the engine connected. An app on
   screen is.
-- **A third kind of page: a public app on a box Peel is not paired with**
-  (§4.4).
-  - **Today the handler answers two origins only:** the Mac's `MemoryServer`
-    and an org's base URL.
-  - **A served app at its own domain is a third.** Peel opens its URL (a
-    link, or `peel://open?url=…`), and that box's own code is the main frame.
-  - **Its connection is keyed by that ORIGIN,** as the iPhone keys by org.
-  - **The sheet names the origin** from Peel's record of what it opened,
-    never from the page.
+- **A stranger's public app: a box Peel is not paired with** (§4.4). It is
+  hosted one way on the Mac and another on the iPhone (R7).
+  - **On the Mac: #625's remote mode.** Peel opens
+    `<its local strut>/?app=<name>&public=1&from=<seller>`.
+    - The main frame is still Peel's local strut UI, at `MemoryServer`'s
+      origin, so the handler's rules do not change.
+    - Only the sandboxed frame is the stranger's, and the UI names the
+      seller.
+    - Connections are keyed by (seller, app).
+  - **On the iPhone: direct open.** There is no local strut there to host
+    the page, so Peel loads the served app's own URL (a link, or
+    `peel://open?url=…`), and that box's own code is the main frame. This
+    is R5's rule for orgs applied to any origin:
+    - **The handler answers that origin,** as the third it answers beside
+      the Mac's `MemoryServer` and an org's base URL.
+    - **Every connection is keyed by that ORIGIN.**
+    - **Every sheet names it from Peel's own record** of what it opened.
+    - **Peel ignores what the page claims about itself:** the `seller` in
+      a `buy_credit` purchase, an app's name or version.
+    - **Peel decodes every invoice itself,** as `specs/WALLET.md` §1.2
+      (#625) already requires.
+  - **What a stranger's main frame can still do:** draw what it likes and
+    ask often. It cannot move money or sign without Peel's sheet, and the
+    gesture rule (sheets only after a tap) bounds the asking. It is what
+    any site gets from a browser wallet extension.
+  - **Later: the same mode on both.** Once Peel bundles strut's UI on the
+    iPhone (§12, 8), the iPhone uses remote mode too. Remote mode runs
+    nothing on the hosting strut (`web/src/remote-app.ts`), so the bundle
+    is strut's static UI files, not a server.
 
 ### 5.4 Peel as an NWC wallet service (later, and the biggest reach)
 
@@ -674,7 +711,7 @@ the KMP desktop, Electron.
 | No origin check: `"*"`, handlers open to every frame, navigation inherited the bridge | The frame reaches only its host's relay; Peel answers its main frame at its own origin |
 | The app was unidentified (the tribe's `app_url`) | The host's verified identity of the version it hosts; on the iPhone, the org |
 | The budget was in the app's JS for years; iOS stored an app-supplied `amount`; Android never decremented; no refunds | The connection lives in the host, decremented with the payment, refunded on failure, shown and revocable |
-| `SIGN` signed anything with the identity key, silently | Signs only strut's login challenge, bound to the page's own domain, inside a connection the person granted. The root key by default, a per-app key when the person or the app chooses (§4.4) |
+| `SIGN` signed anything with the identity key, silently | Signs only strut's login challenge, bound to the seller's domain, inside a connection the person granted. The root key by default, a per-app key when the person or the app chooses (§4.4) |
 | `PAYMENT` returned no preimage; Android claimed success before settling; iOS's LSAT lost tokens after 7 s | §2.2: a state, the preimage on settle, never failure as success |
 | One LSAT bag for all apps, the issuer self-declared | No tokens in the wallet; L402 is the server's (§8) |
 | A dismissed prompt sent nothing back | `USER_REJECTED` |
@@ -746,13 +783,21 @@ the KMP desktop, Electron.
     connection grants it, on the same sheet as the budget.
   - **The key.** The person's root Sphinx key by default, or a sub-account
     key per app when they or the app choose.
-  - **The guard.** Only strut's challenge is signed, bound to the domain Peel
-    loaded.
+  - **The guard.** Only strut's challenge is signed, bound to the seller's
+    domain (on the iPhone, the origin Peel loaded).
   - **What it replaces:** the 2026-11-04 "per-app linking key, never the
     identity key".
   - **Why.** The owner's words: "We already have a wallet! It's called
     Peel!" It matches `plans/app-repos.md`'s ruling 3 (one root key by
     default).
+- **R7, ruled 2026-11-10. On the iPhone a stranger's public app opens
+  directly** (§5.3).
+  - **What it means.** Peel loads the served box's own URL and keys every
+    connection and sheet by the origin it loaded, as R5 does for orgs.
+  - **Why.** #625's remote mode needs a strut UI of the person's own to host
+    the page, and the iPhone has none. The Mac keeps remote mode.
+  - **Later.** Bundling strut's UI in Peel on the iPhone (§12, 8) would let
+    it use remote mode too.
 
 Open questions:
 - **Keysend via the core to a non-Sphinx node.** Is the route through the LSP's
@@ -796,21 +841,25 @@ Open questions:
    (ruled 2026-11-04: by org for now); Peel as an NWC wallet service; `useValueBlock`; `pay` (321) and
    BOLT12; hold invoices; paid routines; agents paying; the three extensions
    proposed to NWC upstream.
-9. **Signing in through Peel (§4.4, R6).** The first test: a public app on a
-   box Peel is not paired with, opened in Peel. The person signs in through
-   the connection, writes a row as themselves, then tips through the same
-   connection.
+9. **Signing in through Peel (§4.4, R6, R7).** Builds on #625 (remote public
+   apps, `buy_credit`). The first test: a public app on a box Peel is not
+   paired with. On the Mac it opens through #625's remote link, on the
+   iPhone directly. The person signs in through the connection, writes a
+   row as themselves, then tips through the same connection.
    - **strut:**
-     - `strut/wallet/sign_in` on the relay, sent by the host page for
-       `useVisitor().signIn()` when the host offers it in
-       `experimental["strut/wallet"]`;
+     - the `sign_in` host request beside `buy_credit` in `specs/WALLET.md`
+       §1.2, listed by `host_capability`, with vectors beside #625's
+       credit vectors, which Peel copies;
+     - strut's UI sending it for `useVisitor().signIn()`, and keeping the
+       seller's visitor token per seller;
      - the `ln-message` verifier beside app-repos §5.2's four;
-     - `peel` among `serve.yaml`'s and the public view's sign-in methods;
-     - the method in `specs/WALLET.md` and its vectors, which Peel copies.
+     - `peel` among `serve.yaml`'s and the public view's sign-in methods.
    - **Peel:**
      - the sign-in grant on the connection sheet ("you" or "a new identity
        for this app");
      - signing with the node key, or the LUD-05 child key;
-     - the challenge's `host` checked against the loaded origin;
-     - a public app's page as a third kind of page (§5.3), its connection
-       keyed by origin.
+     - the challenge's `host` checked against the seller: the one its own
+       strut UI names on the Mac, the origin it loaded on the iPhone;
+     - on the iPhone, direct open of a stranger's served app, with the
+       handler answering that origin and every connection and sheet keyed
+       by it, the page's own claims ignored (§5.3).
