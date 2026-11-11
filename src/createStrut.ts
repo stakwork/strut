@@ -111,12 +111,12 @@ import { DOCUMENT_FILE, readBuildInfo, withPublicIdentity, withToken, withoutTok
 import { packArchive } from "./packages/archive.js";
 import { buildPackage, type BuildRequest } from "./packages/build.js";
 import { createRepos, type RepoItem, type Repos } from "./packages/repos.js";
-import { PUBLISHER_FILE, PUBLISHER_NAME, catalogStore, moveChannel, publicCatalogStore, publishRelease, publisherStore } from "./packages/publisher.js";
+import { PUBLISHER_FILE, PUBLISHER_NAME, catalogStore, ensurePublicCatalog, moveChannel, publicCatalogStore, publishRelease, publisherStore } from "./packages/publisher.js";
 import { SUBSCRIPTIONS_FILE, createSubscriptions, subscriptionProblem, type Subscription, type Subscriptions } from "./packages/subscriptions.js";
 import { createPackageIndex, indexDir, indexRowProblem, liveRowProblem, withoutConceptDocs, type PackageIndex } from "./packages/index.js";
 import { INDEXES_FILE, createIndexes, indexSubscriptionProblem, parseIndexesEnv, type IndexSubscription, type PackageIndexes, type PackagesCapability } from "./packages/indexes.js";
 import { PUBLISHER_PREFIX, Z32_KEY, releaseFor, type IndexLiveRow, type IndexRow } from "./packages/card.js";
-import { LISTING_MAX_BYTES, hostPatternProblem, perMinute } from "./packages/listing.js";
+import { LISTING_MAX_BYTES, baseProblem, hostPatternProblem, perMinute } from "./packages/listing.js";
 import { LISTING_ERROR_STATUS, LISTING_REQUESTS_PER_MINUTE, createRequestsDesk, type RequestsDesk } from "./packages/index-requests.js";
 import { LISTINGS_FILE, createPublisherListings } from "./packages/publisher-listings.js";
 import { packageCache } from "./packages/cache.js";
@@ -3580,6 +3580,7 @@ export async function createStrut<TServices = unknown>(
         held.push({ app: a.name, error: err instanceof Error ? err.message : String(err) });
       }
     }
+    viewChanged();
     return c.json({ surface: next, missing: await publicViewMissing(next), ...(held.length ? { held } : {}) });
   });
   // What the dialog's third box ("anyone can run it") shows for a workflow
@@ -4510,11 +4511,24 @@ export async function createStrut<TServices = unknown>(
       return c.json({ error: "description and url are strings, live a boolean" }, 400);
     }
     try {
+      if (!(await indexes.list()).some((x) => x.id === body.index)) throw new Error(`package_index_unknown: this strut server follows no index "${body.index}"`);
+      const name = (await publisher.get())?.name;
+      if (!name) throw new Error("publisher_no_name: set the publisher's name first — it is the name an index lists");
+      // A server with nothing public yet lists its public VIEW (plans/public-view-listing.md
+      // §1): the ask mints the public key and an empty public catalog, the index's proof
+      // that this base holds the key. Asked for nothing an index could list, it mints nothing.
+      const shown = (await catalogDeps.publicCatalogs.current())?.card.packages ?? {};
+      if (body.live !== true && !Object.keys(shown).some((p) => p.startsWith(`${name}/`))) {
+        throw new Error(`listing_nothing_public: this strut server has made no package under ${name}/ public — make one public, or ask for its public view (live: true)`);
+      }
+      const badBase = baseProblem(body.base, { allowHttp: true });
+      if (badBase) throw new Error(`listing_invalid: ${badBase}`);
+      if (body.live === true) await oneAtATime(() => ensurePublicCatalog(catalogDeps));
       return listingOutcome(c, await listings.ask(body.index, { base: body.base, ...(body.description !== undefined ? { description: body.description as string } : {}), ...(body.url !== undefined ? { url: body.url as string } : {}), ...(body.live !== undefined ? { live: body.live as boolean } : {}) }));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const code = /^([a-z_]+):/.exec(message)?.[1] ?? "";
-      const status = ({ publisher_not_public: 409, publisher_no_name: 409, listing_invalid: 400, listing_no_route: 409, package_index_unknown: 404 } as Record<string, 400 | 404 | 409>)[code] ?? 500;
+      const status = ({ publisher_not_public: 409, publisher_no_name: 409, publisher_unsafe_key: 409, listing_nothing_public: 409, listing_invalid: 400, listing_no_route: 409, package_index_unknown: 404 } as Record<string, 400 | 404 | 409>)[code] ?? 500;
       return c.json({ error: message }, status);
     }
   });
@@ -4609,6 +4623,15 @@ export async function createStrut<TServices = unknown>(
       return catalogError(c, err);
     }
   });
+  /** The public VIEW changed (a save, a served box's deploy): every index
+   *  this strut asked to list it reads it again (plans/public-view-listing.md
+   *  §6). The index re-reads the live row of each row naming the key. */
+  const viewChanged = () => {
+    void (async () => {
+      const key = (await publisher.get().catch(() => undefined))?.public;
+      if (key) await listings.ping(key);
+    })().catch(() => undefined);
+  };
   /** The same ping with the PUBLIC key, when the public catalog changed —
    *  what an index strut among the peers follows (§7). */
   const pingPublic = async (before: string | undefined) => {
@@ -4692,7 +4715,10 @@ export async function createStrut<TServices = unknown>(
             if (!problems.length && s.runnable.some(isPriced)) await payments.settings.ensureL402Root();
             return problems;
           },
-          setSurface: async (s) => void (await publicSurface.set(s)),
+          setSurface: async (s) => {
+            await publicSurface.set(s);
+            viewChanged();
+          },
           icon: (name) => lucideIconSvg(opts.kit ?? {}, name),
         })
       : null;

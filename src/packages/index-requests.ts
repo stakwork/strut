@@ -13,7 +13,14 @@
  * would point new installs at the thief's server), `takeover` (another key
  * holds the name — the only way back for a publisher who lost its key),
  * `live row` (the name is a live row the operator listed with no key: theirs
- * to give).
+ * to give — unless the request's base IS that live row's URL: the server the
+ * operator listed is the one asking, and it claims the row at once).
+ *
+ * A name is USED (plans/public-view-listing.md §2) when the public catalog
+ * at the base lists a package under it, or when the request asks for the
+ * server's public view (`live: true`) and `<base>/public` shows something.
+ * The catalog is read either way: it is what proves the base holds the key,
+ * empty or not.
  *
  * On disk under `<indexDir>/requests/`: `pending/<id>.json` (the request
  * as sent and what the index read, the id its fingerprint), `refused.json`
@@ -26,7 +33,8 @@ import { appendFile, mkdir, readFile, readdir, rename, rm, writeFile } from "nod
 import { join } from "node:path";
 import type { PackageCache } from "./cache.js";
 import type { IndexLiveRow, IndexRow } from "./card.js";
-import type { PackageIndex } from "./index.js";
+import { readCapped } from "./archive.js";
+import { liveRunnableOf, type PackageIndex } from "./index.js";
 import { LISTING_FRESH_MS, catalogUrlOf, hostMatches, hostOf, listingId, normalizeBase, readListing, type Listing } from "./listing.js";
 import { fetchCatalog } from "./pk.js";
 
@@ -42,6 +50,18 @@ export const REFUSAL_MS = 30 * 86_400_000;
 export const PING_EVERY_MS = 60_000;
 /** Each open route's budget per address a minute (`POST /index/requests`, `POST /index/ping`). */
 export const LISTING_REQUESTS_PER_MINUTE = 10;
+/** One read of a request's public view: as long as the live crawl's, and no bigger than a catalog. */
+const VIEW_TIMEOUT_MS = 15_000;
+const VIEW_MAX_BYTES = 4 * 1024 * 1024;
+
+/** What a server's public view showed when its request was read: the store's kinds, counted. */
+export interface ViewCounts {
+  apps: number;
+  workflows: number;
+  steps: number;
+  concepts: number;
+  runnable: number;
+}
 
 export type ListingWait = "host" | "second name" | "same host" | "move" | "takeover" | "live row";
 
@@ -59,6 +79,8 @@ export interface PendingListing {
   receivedAt: string;
   /** What the index read at the base when it arrived. */
   catalog: { seq: number; digest: string; packages: string[] };
+  /** What `<base>/public` showed, when the name is used by the view alone. */
+  view?: ViewCounts;
   /** The key that holds the name now, on a takeover. */
   heldBy?: string;
   /** The row's host now, on a move; the live row's, on a live row. */
@@ -86,7 +108,7 @@ export interface ListingLogLine {
   prefix: string;
   key: string;
   host?: string;
-  outcome: "listed" | "edited" | "removed" | "waiting" | "approved" | "refused" | "withdrawn";
+  outcome: "listed" | "edited" | "claimed" | "removed" | "waiting" | "approved" | "refused" | "withdrawn";
   reason?: string;
   by?: string;
 }
@@ -203,6 +225,14 @@ export function createRequestsDesk(deps: RequestsDeskDeps): RequestsDesk {
     return all;
   };
   const refusalKey = (prefix: string, key: string) => `${prefix} ${key}`;
+  /** Whether two bases are one server's: a live row typed by hand may not parse. */
+  const sameBase = (a: string, b: string): boolean => {
+    try {
+      return normalizeBase(a) === normalizeBase(b);
+    } catch {
+      return false;
+    }
+  };
   /** The host a row's URL names, or nothing: a row typed by hand may hold one that does not parse. */
   const hostOrNone = (url: string | undefined): string | undefined => {
     try {
@@ -219,18 +249,55 @@ export function createRequestsDesk(deps: RequestsDeskDeps): RequestsDesk {
     return info;
   };
 
-  /** The request's catalog, read from the one URL the index builds. */
-  const readCatalog = async (r: Listing) => {
+  /** The request's catalog, read from the one URL the index builds: the
+   *  proof the server at the base holds the key, empty or not. */
+  const readCatalog = async (r: Listing): Promise<PendingListing["catalog"]> => {
     const url = catalogUrlOf(r.base!);
     try {
       // That URL and no other: the host is the sender's to choose, so a redirect is refused.
       const { card: catalog, digest } = await fetchCatalog(r.key, url, { cache: deps.cache, redirects: false, ...(deps.fetch ? { fetch: deps.fetch } : {}) });
       const packages = Object.keys(catalog.packages).filter((p) => p.startsWith(`${r.prefix}/`)).sort();
-      if (!packages.length) throw new Error(`it lists no package under ${r.prefix}/ — publish one and make it public first`);
       return { seq: catalog.seq, digest, packages };
     } catch (err) {
       throw new Error(`listing_no_catalog: ${url.split("?")[0]}?public=1: ${err instanceof Error ? err.message : String(err)}`);
     }
+  };
+
+  /** What `<base>/public` shows, counted: the one URL, no redirect, capped. */
+  const readView = async (base: string): Promise<ViewCounts> => {
+    const url = `${normalizeBase(base)}/public`;
+    try {
+      const res = await (deps.fetch ?? fetch)(url, { headers: { accept: "application/json" }, redirect: "manual", signal: AbortSignal.timeout(VIEW_TIMEOUT_MS) });
+      if (res.type === "opaqueredirect" || (res.status >= 300 && res.status < 400)) {
+        await res.body?.cancel();
+        throw new Error("it answered a redirect, and the public view is read from that address alone");
+      }
+      if (!res.ok) {
+        await res.body?.cancel();
+        throw new Error(`it answered ${res.status}`);
+      }
+      const raw = JSON.parse((await readCapped(res, VIEW_MAX_BYTES, "public view")).toString("utf8")) as Record<string, unknown>;
+      const count = (v: unknown) => (Array.isArray(v) ? v.length : 0);
+      return { apps: count(raw["apps"]), workflows: count(raw["workflows"]), steps: count(raw["steps"]), concepts: count(raw["concepts"]), runnable: liveRunnableOf(raw["runnable"]).length };
+    } catch (err) {
+      throw new Error(`listing_no_catalog: ${url}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
+  /** The base holds the key (its catalog), and the name is used: a package
+   *  under it, or — asked for with `live: true` — a public view that shows
+   *  something (plans/public-view-listing.md §2). */
+  const readUsed = async (r: Listing): Promise<{ catalog: PendingListing["catalog"]; view?: ViewCounts }> => {
+    const catalog = await readCatalog(r);
+    if (catalog.packages.length) return { catalog };
+    const at = `${catalogUrlOf(r.base!).split("?")[0]}?public=1`;
+    if (r.live === false) throw new Error(`listing_no_catalog: ${at}: it lists no package under ${r.prefix}/, so a row without the public view would list nothing — take the row off instead (remove)`);
+    if (r.live !== true) throw new Error(`listing_no_catalog: ${at}: it lists no package under ${r.prefix}/ — publish one and make it public first, or ask for this server's public view (live: true)`);
+    const view = await readView(r.base!);
+    if (!(view.apps + view.workflows + view.steps + view.concepts + view.runnable)) {
+      throw new Error(`listing_no_catalog: ${at} lists no package under ${r.prefix}/, and its public view at ${normalizeBase(r.base!)}/public shows nothing — add something to the public view first`);
+    }
+    return { catalog, view };
   };
 
   const rowOf = (r: Listing): IndexRow => ({
@@ -258,7 +325,7 @@ export function createRequestsDesk(deps: RequestsDeskDeps): RequestsDesk {
   };
 
   /** Keep a request for the operator. */
-  const wait = async (r: Listing, reason: ListingWait, read: PendingListing["catalog"], extra: Pick<PendingListing, "heldBy" | "from"> = {}): Promise<ListingAnswer> => {
+  const wait = async (r: Listing, reason: ListingWait, read: { catalog: PendingListing["catalog"]; view?: ViewCounts }, extra: Pick<PendingListing, "heldBy" | "from"> = {}): Promise<ListingAnswer> => {
     const host = hostOf(r.base!);
     const others = (await readPending()).filter((p) => !(p.prefix === r.prefix && p.key === r.key));
     if (others.length >= QUEUE_MAX) throw new Error(`listing_busy: ${QUEUE_MAX} requests already wait for this index's operator — try again later`);
@@ -275,7 +342,8 @@ export function createRequestsDesk(deps: RequestsDeskDeps): RequestsDesk {
       ...(r.url !== undefined ? { url: r.url } : {}),
       ...(r.live !== undefined ? { live: r.live } : {}),
       receivedAt: iso(),
-      catalog: read,
+      catalog: read.catalog,
+      ...(read.view ? { view: read.view } : {}),
       ...extra,
       request: r,
     };
@@ -356,8 +424,8 @@ export function createRequestsDesk(deps: RequestsDeskDeps): RequestsDesk {
         });
       }
 
-      // 6: the base publishes with that key, and holds a package under the name.
-      const read = await readCatalog(r);
+      // 6: the base publishes with that key, and the name is used there.
+      const read = await readUsed(r);
       const host = hostOf(r.base!);
 
       // 7: the decision, against the card as it is now.
@@ -373,13 +441,20 @@ export function createRequestsDesk(deps: RequestsDeskDeps): RequestsDesk {
           await log({ prefix: r.prefix, key: r.key, host, outcome: "edited" });
           return listed;
         }
-        // A name the operator lists as a live row, with no key, is held too.
+        const rows = Object.values(publishers);
+        // A name the operator lists as a live row, with no key, is held too —
+        // unless the server at that very URL is the one asking: it claims it.
         const liveRow = live[r.prefix];
         if (liveRow) {
+          if (sameBase(liveRow.url, r.base!) && !rows.some((x) => x.key === r.key)) {
+            const listed = await apply(r);
+            await dropPending(r.prefix, r.key);
+            await log({ prefix: r.prefix, key: r.key, host, outcome: "claimed" });
+            return listed;
+          }
           const from = hostOrNone(liveRow.url);
           return wait(r, "live row", read, from ? { from } : {});
         }
-        const rows = Object.values(publishers);
         if (rows.some((x) => x.key === r.key)) return wait(r, "second name", read);
         if (rows.some((x) => x.urls.some((u) => hostOrNone(u) === host))) return wait(r, "same host", read);
         if (!autoHosts.some((p) => hostMatches(p, host))) return wait(r, "host", read);
@@ -402,8 +477,8 @@ export function createRequestsDesk(deps: RequestsDeskDeps): RequestsDesk {
     async approve(id, by) {
       const pending = (await readPending()).find((p) => p.id === id);
       if (!pending) throw new Error(`listing_unknown: no request ${id} waits here`);
-      // The catalog again: it may have moved since the request arrived.
-      await readCatalog(pending.request);
+      // The catalog (and the view) again: they may have moved since the request arrived.
+      await readUsed(pending.request);
       return locked(async () => {
         if (!(await readPending()).some((p) => p.id === id)) throw new Error(`listing_unknown: no request ${id} waits here`);
         const listed = await apply(pending.request);
