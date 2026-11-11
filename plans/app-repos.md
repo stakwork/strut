@@ -6,7 +6,7 @@
 > are the owner's words; every other row is *proposed*. Written against
 > strut `main` @8f231964.
 >
-> **Work item 1 BUILT (stakwork/strut#617, open at writing):**
+> **Work item 1 BUILT (stakwork/strut#617, merged 2026-11-10):**
 > - `serve.yaml` (`src/packages/serve.ts`);
 > - `STRUT_SERVE` over a name, `pk:` and `file:`, installed through the
 >   distro's door and followed on the subscriptions' poll and ping;
@@ -27,7 +27,27 @@
 > - `og:image` is served at `GET /serve/image`.
 > - The favicon is a `data:` URL in the page.
 >
-> `STRUT_SERVE_POLL_MINUTES` and `POST /serve/sync` stay with item 2.
+> **Work item 2 BUILT (stakwork/strut#621, open at writing):**
+> - the `git+` source (`src/packages/git-source.ts`) over `git/checkout`'s
+>   bare cache: a branch, tag or commit, and `#path`;
+> - the token from a named secret (`tokenSecret`, default `GITHUB_TOKEN`),
+>   sent only to the origins a person named;
+> - the commit recorded as `upstream.commit`;
+> - every install door taking it: `POST /packages/install`,
+>   `STRUT_PACKAGES`, `requires.packages`;
+> - `STRUT_SERVE` over `git+`, with `STRUT_SERVE_TOKEN_SECRET`;
+> - `STRUT_SERVE_POLL_MINUTES` (default 5), for `git+` refs only;
+> - `POST /serve/sync`: open, at most one fetch a minute, and a ping inside
+>   the minute schedules one fetch when it ends, so no push is lost;
+> - the commit on `GET /serve`.
+>
+> Choices beyond the text, from the PR:
+> - `@<ref>` is optional: without it, the remote's default branch.
+> - A ref resolves as a branch first, then a tag, then a commit.
+> - A requirement on another host is read without the token, so a package
+>   cannot send it elsewhere; a private requirement there fails.
+> - A moved commit whose digest did not move deploys nothing (a change to
+>   `.github/`, say).
 >
 > Companion to:
 > - `marketplace.md`: the package format (§1), the `git+` source and the
@@ -622,7 +642,8 @@ players before it needs git, visitors (4) moves up to second.
    `pickPage`, title, favicon, `og:`), `/?shell=1`, `GET /serve`,
    `deploy/app/`. With this alone a creator publishes a release from their
    strut and a box serves it at a domain.
-2. **The `git+` source.** The resolver over `git/checkout`'s bare cache,
+2. **The `git+` source.** *BUILT, stakwork/strut#621.* The resolver over
+   `git/checkout`'s bare cache,
    `#path`, the commit recorded in `upstream`, `STRUT_SERVE` and
    `STRUT_PACKAGES` taking `git+`, the poll and `POST /serve/sync`.
 3. **The round trip.** Open repo, Create repo, Commit, Pull, the `repo`
