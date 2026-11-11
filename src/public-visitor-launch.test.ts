@@ -307,6 +307,22 @@ describe("a visitor's app page launches a runnable workflow (plans/paid-runs.md 
     assert.match(forged.error!, /invalid_token/);
   });
 
+  it("the same input launched twice with one credential is two runs: a key matches only a run still in flight", async () => {
+    // Credit for two runs (the reserve is $0.50), bought up front.
+    const bought = (await (await strut.app.request("/public/credit", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ usd: 1 }) })).json()) as Record<string, any>;
+    const credential = `${bought["macaroon"]}:${wallet.settle(bought["invoice"])}`;
+    const one = await call("run/launch", { workflow: "priced", input: { text: "twice" }, key: "same" }, { visit: VISIT, credential });
+    assert.equal(one.error, undefined, one.error);
+    // Ended AND charged: until its charge a key still names the run in flight.
+    await waitEnded("priced", one.result!["runId"] as string);
+    for (let i = 0; i < 200 && !(await (await strut.ledger()).chargeOf(one.result!["runId"] as string, "workflow:priced")); i++) await new Promise((r) => setTimeout(r, 25));
+    const two = await call("run/launch", { workflow: "priced", input: { text: "twice" }, key: "same" }, { visit: VISIT, credential });
+    assert.equal(two.error, undefined, two.error);
+    assert.notEqual(two.result!["runId"], one.result!["runId"], "a finished run is not returned again");
+    assert.equal(two.result!["existing"], undefined);
+    await waitEnded("priced", two.result!["runId"] as string);
+  });
+
   it("the visitor's door answers a browser's preflight for the visit header", async () => {
     const res = await strut.app.request("/public/mcp", { method: "OPTIONS" });
     assert.equal(res.status, 204);
