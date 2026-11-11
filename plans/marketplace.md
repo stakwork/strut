@@ -323,6 +323,24 @@ requires:
   manifest nowhere, since the manifest is under it. Pinning the digest
   pins every byte, and a changed byte fails the install. The same thing
   git's tree hash and an OCI digest are.
+- **Every name lands as itself** (BUILT 2026-11-11; the idea is the
+  filename lints of Casey Rodarmor's filepack). A package's files are written to
+  whatever disk the installing strut has, and the digest is over the
+  paths, so a path one disk reads differently from another is a package
+  that installs on one and fails on the other. Refused (`bad_package`,
+  `pathProblems` in `src/packages/format.ts`): two paths — files, or the
+  folders above them — that differ only in letter case, which a Mac or
+  Windows holds as one, so the second overwrites the first and the tree
+  no longer hashes to its digest; a name Windows cannot hold (`< > : " | ?
+  *`, a control character, a trailing dot or space, `CON`, `NUL`, `COM1`,
+  `LPT1` and the rest, with any extension); a name not in Unicode NFC (an
+  accent written apart from its letter, which a Mac reads as the composed
+  spelling). A Mac's disk merges a clash before anything can read it back,
+  so the names are checked where they arrive as a LIST, before a file is
+  written: the build, an archive's entries, a `git+` tree; `readPackage`
+  checks them too, which is where a disk that keeps letter case shows a
+  clash. Added while one package was published (`openlaw/legal-desk`,
+  805 files, none refused), so the rule refuses nothing anyone has.
 - **Nothing in the manifest is derivable from the files.** The item list
   IS the directory; the core and lib types the items name are read off the
   files at install. So the manifest changes only when the author changes

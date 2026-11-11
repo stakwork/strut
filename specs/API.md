@@ -2499,6 +2499,14 @@ namespace, a step that does not load here as its own type, a Concept
 another seeder stamped, a closure that cannot be read whole (a templated
 subflow, a grant read only at run time) unless the request names more than
 that workflow, a sibling that is not in the cache or no longer matches.
+A file the build would write under a path that does not land as itself on
+every machine is 400 `bad_package: …`, before anything is written: two
+paths (files, or the folders above them) that differ only in letter case,
+which a Mac or Windows holds as one — two workflows `acme/notes/Sync` and
+`acme/notes/sync` — a name Windows cannot hold (`< > : " | ? *` or a
+control character, a trailing dot or space, `CON`, `NUL`, `COM1`, `LPT1`
+and the rest, with any extension), or one not in Unicode NFC. The person
+renames the item.
 
 **Install** resolves the package, then every package its
 `requires.packages` pins that is not installed here at that digest (from
@@ -2630,7 +2638,7 @@ Refusals, as `{ error }` with a code first:
 | Status | Code | When |
 | ------ | ---- | ---- |
 | 400 | `package_source_invalid`, `package_source_unsupported`, `package_digest_mismatch`, `package_name_mismatch` | the ref does not resolve to that package |
-| 400 | `bad_package` | a file it cannot install: a workflow naming a step, grant or subflow that is neither on this strut nor in the packages, a workflow whose `name:` is not its path, a claims file that is not a list of claims, a step that does not load or whose `defineStep` type is not its path, an app whose `app.yaml` does not parse, that grants a step that is neither here nor in the packages, or that does not build on this strut's kit (an import the kit lacks, a granted workflow that is nowhere) |
+| 400 | `bad_package` | a file it cannot install: a path that does not land as itself on every machine (two that differ only in letter case, a name Windows cannot hold, one not in Unicode NFC — checked in an archive or a `git+` tree before a file is written), a workflow naming a step, grant or subflow that is neither on this strut nor in the packages, a workflow whose `name:` is not its path, a claims file that is not a list of claims, a step that does not load or whose `defineStep` type is not its path, an app whose `app.yaml` does not parse, that grants a step that is neither here nor in the packages, or that does not build on this strut's kit (an import the kit lacks, a granted workflow that is nowhere) |
 | 409 | `package_conflict` | a local workflow, step or app under the prefix, a step in a sealed namespace, a Concept under the name that is someone else's, a Concept's `parent` that exists nowhere, a package pinned at two digests or installed here at another |
 | 409 | `package_update_not_built` | the package is installed here at another digest (a person's update asks first, which is not built yet) |
 | 409 | `package_distro_owned` | the distro installed the package here: only the distro updates or removes it |

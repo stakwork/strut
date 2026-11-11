@@ -22,7 +22,18 @@ import { mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { shellCapability, type ShellCapability } from "../capabilities.js";
 import { cachePath, commitOf, fetchCache, git, parseRepo, remoteDefaultBranch, SHA_RE, withLock, type RepoRef } from "../steps/lib/git/_shared.js";
-import { MANIFEST_FILE } from "./format.js";
+import { MANIFEST_FILE, packageExcluded, pathProblems } from "./format.js";
+
+/** The most a tree's file list may be, as text: far past what a package
+ *  can hold (10 000 files, archive.ts), so a list cut there is no package. */
+const LIST_MAX_CHARS = 16_000_000;
+
+/** Whether the digest covers `path` (none of its segments a dotfile,
+ *  `node_modules` or an app's derived files — `packageExcluded`). */
+function covered(path: string): boolean {
+  const segments = path.split("/");
+  return !segments.some((seg, i) => packageExcluded(segments.slice(0, i + 1).join("/"), seg));
+}
 
 /** The secret a `git+` ref's token is read from when none is named. */
 export const DEFAULT_TOKEN_SECRET = "GITHUB_TOKEN";
@@ -153,6 +164,15 @@ export async function exportGitTree(got: GitFetched, into: string, opts: Pick<Gi
   if (kind.code !== 0 || kind.stdout.trim() !== "tree") {
     throw new Error(`package_source_invalid: ${ref.ref}: ${where} is not in ${ref.repo.url} at ${commit}`);
   }
+  // The names, read off the tree before a file is written: a Mac's disk
+  // would merge two that differ only in letter case, and the package read
+  // back would be missing one.
+  const listed = await shell({ cmd: "git", args: ["ls-tree", "-r", "-z", "--name-only", tree], cwd: cacheDir, timeoutMs, maxOutputChars: LIST_MAX_CHARS });
+  if (listed.code !== 0 || listed.truncated) {
+    throw new Error(`package_source_invalid: ${ref.ref}: could not list ${where} at ${commit}${listed.truncated ? ": it holds more files than a package can" : `: ${(listed.stderr || listed.stdout).trim().slice(-500)}`}`);
+  }
+  const unportable = pathProblems(listed.stdout.split("\0").filter((name) => name && covered(name)));
+  if (unportable.length) throw new Error(`bad_package: ${ref.ref} at ${commit}: ${unportable.join("; ")}`);
   // A throwaway index outside the cache: the bare repository gains nothing.
   await mkdir(into, { recursive: true });
   const index = `${into}.index-${randomBytes(4).toString("hex")}`;
