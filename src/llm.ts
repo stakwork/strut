@@ -29,30 +29,32 @@ export function loadAieo(): Promise<typeof import("./aieo/index.js")> {
   return import("./aieo/index.js");
 }
 
-/** Start aieo's model catalog: bifrost's datasheet, the file the LLM gateway
- *  prices every call from, with each model's price, context window and
- *  output cap (aieo `loadModelCatalog`). Kept at
- *  `<dataDir>/models/datasheet.json`, read at once and fetched again every
- *  24 h; a fetch that fails keeps the last good copy, and without any, aieo's
- *  own tables answer. `STRUT_MODEL_CATALOG`: `off` loads nothing, an http(s)
- *  URL is fetched instead of bifrost's. The default server calls this at
- *  boot (server.ts); a host that embeds createStrut calls it itself. Never
- *  throws, and nothing waits on it. */
-export async function startModelCatalog(dataDir: string): Promise<void> {
-  const setting = bootEnv()["STRUT_MODEL_CATALOG"]?.trim();
-  if (setting === "off") return;
-  if (setting && !/^https?:\/\//.test(setting)) {
-    console.warn(`[models] STRUT_MODEL_CATALOG is neither "off" nor an http(s) URL; the catalog is not loaded`);
-    return;
+/** @deprecated strut no longer fetches a price sheet: model prices come from
+ *  the LLM gateway (aieo `gatewayModelPrice`). Kept as a no-op so a host that
+ *  still calls it keeps booting. */
+export async function startModelCatalog(_dataDir?: string): Promise<void> {}
+
+/** The gateway root prices are asked of: the call's own grant `baseUrl` (the
+ *  gateway the call goes through), else `STRUT_GATEWAY_URL` for a host that
+ *  calls providers directly. */
+export function gatewayRootFor(grantBaseUrl?: string): string | undefined {
+  const root = (grantBaseUrl?.trim() || bootEnv()["STRUT_GATEWAY_URL"]?.trim() || "").replace(/\/+$/, "");
+  return root || undefined;
+}
+
+/** The gateway's price for a model, once, for a step to hand to
+ *  `computeSessionCost`. Undefined when aieo's own tables price the model
+ *  (Maple, Numes, Token Factory), when none is configured (said once on
+ *  stderr: direct-provider costs are then unpriced), or when the gateway
+ *  does not price it. Never throws. */
+export async function resolveModelPrice(provider: string, modelId: string, gatewayRoot?: string): Promise<import("./aieo/index.js").GatewayPrice | undefined> {
+  const aieo = await loadAieo();
+  if (!modelId || aieo.getModelPrice(provider as Provider, modelId)) return undefined;
+  if (!gatewayRoot) {
+    if (["anthropic", "openai", "google", "xai", "openrouter"].includes(provider)) aieo.warnNoGateway();
+    return undefined;
   }
-  try {
-    const aieo = await loadAieo();
-    const { join } = await import("node:path");
-    const got = await aieo.loadModelCatalog({ cachePath: join(dataDir, "models", "datasheet.json"), ...(setting ? { url: setting } : {}) });
-    console.log(`[models] catalog: ${got.models} models (${got.source})`);
-  } catch (err) {
-    console.warn(`[models] catalog not loaded: ${err instanceof Error ? err.message : String(err)}`);
-  }
+  return aieo.gatewayModelPrice(provider, modelId, gatewayRoot);
 }
 
 // ── The auth seam (plans/mothership-cost-control.md §1) ────────────────────
@@ -145,6 +147,11 @@ export interface ResolvedModel {
    *  returned a `baseUrl`). `createWebTools` reads it: a routed call never
    *  uses Anthropic's server-executed web tools (see `routed` there). */
   routed: boolean;
+  /** The gateway root this model's price was asked of (see `gatewayRootFor`). */
+  gatewayRoot?: string;
+  /** The gateway's price for the model, resolved once here: hand it to
+   *  `computeSessionCost`. Absent: unpriced (or priced by aieo's own tables). */
+  price?: import("./aieo/index.js").GatewayPrice;
 }
 
 /** Name → everything a caller needs to run. Throws on an unknown provider,
@@ -197,15 +204,22 @@ export async function resolveModel(opts: ResolveModelOptions = {}): Promise<Reso
   if (model?.provider === "openai.chat") model = await imagesBesideToolResults(model);
   if (grant?.explainError) model = await explaining(model, grant.explainError);
   model = await applyModelWrappers(model, { provider: r.provider, modelId: r.modelId, baseUrl: grant?.baseUrl, routed: !!grant?.baseUrl, ctx: opts.ctx, session: opts.session });
+  // The price, and the limits that ride with it, once per step: the gateway
+  // answers for the model as it bills it (cached 5 min per model).
+  const gatewayRoot = gatewayRootFor(grant?.baseUrl);
+  const price = await resolveModelPrice(r.provider, r.modelId, gatewayRoot);
+  const ownOutput = price?.maxOutputTokens;
   return {
     provider: r.provider,
     modelId: r.modelId,
     name: r.name,
     apiKey: r.apiKey,
     model,
-    contextLimit: r.contextLimit,
-    maxOutputTokens: strutOutputCap() ?? r.maxOutputTokens,
+    contextLimit: price?.maxInputTokens ?? r.contextLimit,
+    maxOutputTokens: strutOutputCap() ?? (ownOutput ? Math.min(r.maxOutputTokens, ownOutput) : r.maxOutputTokens),
     routed: !!grant?.baseUrl,
+    ...(gatewayRoot ? { gatewayRoot } : {}),
+    ...(price ? { price } : {}),
   };
 }
 
@@ -598,10 +612,9 @@ export interface ModelOption {
   /** The context window, tokens. Absent when aieo does not know the provider. */
   contextLimit?: number;
   /** USD per million tokens, where strut knows the model's own rate:
-   *  Maple's, Numes' and Token Factory's (aieo's tables), and every model bifrost's datasheet
-   *  holds once `startModelCatalog` has loaded it (the file the gateway bills
-   *  from). Absent otherwise: aieo then bills at a flat per-provider rate,
-   *  which is not the model's price. */
+   *  Maple's, Numes' and Token Factory's (aieo's tables), and a model the
+   *  gateway priced (its cached answer: listing never asks per model). Absent
+   *  otherwise: the model is unpriced. */
   pricing?: TokenPricing;
 }
 
@@ -615,6 +628,11 @@ export interface ModelCatalog {
   listed: boolean;
   /** provider → the env var / secret NAME that holds its key. */
   keyNames: Record<string, string>;
+  /** Where prices come from: the LLM gateway, the one source. `gateway` is its
+   *  root, null when none is configured (direct-provider models are then
+   *  unpriced); `status` is its /_plugin/pricing/status when it answered,
+   *  else `error` says why not. */
+  pricing: { source: "gateway"; gateway: string | null; status?: unknown; error?: string };
 }
 
 /** Every model aieo knows — its aliases, and every Maple, Numes and Token Factory model
@@ -623,7 +641,7 @@ export interface ModelCatalog {
  *  `STRUT_DEFAULT_MODEL`, else `opts.default`. Never returns key values,
  *  only whether one exists. */
 export async function listModelOptions(
-  opts: { default?: string; secrets?: SecretsCapability } = {},
+  opts: { default?: string; secrets?: SecretsCapability; gatewayRoot?: string } = {},
 ): Promise<ModelCatalog> {
   const aieo = await loadAieo();
   const canonical = (name: string): string => {
@@ -651,10 +669,9 @@ export async function listModelOptions(
   const add = (provider: Provider, modelId: string, alias?: string) => {
     const name = `${provider}/${modelId}`;
     if (models.has(name)) return;
-    // The model's own price: Maple's, Numes' or Token Factory's table, else bifrost's
-    // datasheet once `startModelCatalog` has loaded it. Never a provider's
-    // flat rate, which is not a price.
-    const pricing = aieo.getModelPrice(provider, modelId);
+    // The model's own price: Maple's, Numes' or Token Factory's table, else
+    // the gateway's cached answer. Never a provider's flat rate, which is not a price.
+    const pricing = aieo.getModelPrice(provider, modelId) ?? aieo.cachedGatewayPrice(provider, modelId)?.pricing;
     models.set(name, {
       provider,
       ...(alias ? { alias } : {}),
@@ -691,5 +708,15 @@ export async function listModelOptions(
   } catch {
     def = want ?? ""; // a misconfigured default still lists the catalog
   }
-  return { default: def, models: [...models.values()], listed: !!allowed, keyNames: { ...aieo.API_KEY_ENV } };
+  // The gateway's own state, when one is known: one status call (cached by
+  // aieo), never a request per model.
+  const gateway = gatewayRootFor(opts.gatewayRoot) ?? null;
+  const got = gateway ? await aieo.gatewayPricingStatus(gateway) : {};
+  return {
+    default: def,
+    models: [...models.values()],
+    listed: !!allowed,
+    keyNames: { ...aieo.API_KEY_ENV },
+    pricing: { source: "gateway", gateway, ...(got.status !== undefined ? { status: got.status } : {}), ...(got.error ? { error: got.error } : {}) },
+  };
 }

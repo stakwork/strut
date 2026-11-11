@@ -333,6 +333,7 @@ describe("llm: the llmAuth seam (plans/mothership-cost-control.md §1)", () => {
     const { createServer } = await import("node:http");
     const seen: (string | undefined)[] = [];
     const server = createServer((req, res) => {
+      if (req.url?.startsWith("/_plugin/pricing/")) return void res.writeHead(404).end("{}"); // the gateway's price lookup, not a model call
       seen.push(req.headers["anthropic-workspace-id"] as string | undefined);
       res.writeHead(400, { "content-type": "application/json" });
       res.end(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "recorded" } }));
@@ -371,6 +372,7 @@ describe("llm: the llmAuth seam (plans/mothership-cost-control.md §1)", () => {
     const { createServer } = await import("node:http");
     const seen: { path?: string; auth?: string; macaroon?: string; model?: string }[] = [];
     const server = createServer((req, res) => {
+      if (req.url?.startsWith("/_plugin/pricing/")) return void res.writeHead(404).end("{}"); // the gateway's price lookup, not a model call
       let body = "";
       req.on("data", (c) => (body += c));
       req.on("end", () => {
@@ -492,6 +494,7 @@ describe("llm: the llmAuth seam (plans/mothership-cost-control.md §1)", () => {
     const { createServer } = await import("node:http");
     const seen: string[] = [];
     const server = createServer((req, res) => {
+      if (req.url?.startsWith("/_plugin/pricing/")) return void res.writeHead(404).end("{}"); // the gateway's price lookup, not a model call
       let body = "";
       req.on("data", (c) => (body += c));
       req.on("end", () => {
@@ -559,6 +562,7 @@ describe("llm: the llmAuth seam (plans/mothership-cost-control.md §1)", () => {
   it("the llm step bills a Token Factory call at the cost the gateway reported, not the table's", async () => {
     const { createServer } = await import("node:http");
     const server = createServer((req, res) => {
+      if (req.url?.startsWith("/_plugin/pricing/")) return void res.writeHead(404).end("{}"); // the gateway's price lookup, not a model call
       let body = "";
       req.on("data", (c) => (body += c));
       req.on("end", () => {
@@ -706,6 +710,7 @@ describe("llm: the llmAuth seam (plans/mothership-cost-control.md §1)", () => {
     const { createServer } = await import("node:http");
     const bodies: any[] = [];
     const server = createServer((req, res) => {
+      if (req.url?.startsWith("/_plugin/pricing/")) return void res.writeHead(404).end("{}"); // the gateway's price lookup, not a model call
       let raw = "";
       req.on("data", (c) => (raw += c));
       req.on("end", () => {
@@ -790,6 +795,7 @@ describe("llm: the llmAuth seam (plans/mothership-cost-control.md §1)", () => {
     const { createServer } = await import("node:http");
     const bodies: any[] = [];
     const server = createServer((req, res) => {
+      if (req.url?.startsWith("/_plugin/pricing/")) return void res.writeHead(404).end("{}"); // the gateway's price lookup, not a model call
       let raw = "";
       req.on("data", (c) => (raw += c));
       req.on("end", () => {

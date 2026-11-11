@@ -21,7 +21,7 @@ import { capToolOutput } from "../../chat-store.js";
 import { gatedByDefault, grantsTool, mcpGrantName, MCP_GRANT_PREFIX, resolveRegistration, type McpRegistry } from "../../mcp-registry.js";
 import { isSystemWorkflow, SYSTEM_WRITER } from "../../system-workflows.js";
 import { resolveStep } from "../registry.js";
-import { usageFromResult, usageFromSteps, usageForCost, addUsage, emptyUsage, reportedCost, type TokenUsage } from "../../pricing.js";
+import { usageFromResult, usageForCost, addUsage, emptyUsage, reportedCost, hasCacheWriteSplit, type TokenUsage } from "../../pricing.js";
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, statSync } from "node:fs";
 import { join, resolve, dirname, isAbsolute, sep } from "node:path";
 import os from "node:os";
@@ -1385,7 +1385,7 @@ export default defineStep({
     // the secrets boundary (secret store → env), LLM gateway routing and a
     // timeout-wrapped fetch. The PROVIDER is needed now (provider-specific
     // tools below) and is keyless; the key + client are resolved LAST.
-    const { computeSessionCost } = await loadAieo();
+    const { computeSessionCost, modelPriceSource } = await loadAieo();
     if (cfg.session !== undefined) {
       const problem = idProblem(cfg.session);
       if (problem) throw new Error(`agent: session "${cfg.session}" ${problem}`);
@@ -1743,10 +1743,27 @@ export default defineStep({
     const compactAt = compactAtFromEnv();
     resultCap = resultCapChars(BASH_MAX_CHARS, resolved.contextLimit, compactAt);
     // Dollar cost: per model call, what the provider reported (Numes,
-    // OpenRouter, Token Factory), else the call's tokens at the model's own price (the model
-    // catalog, once loaded — aieo's loadModelCatalog) or its provider's rate.
-    const costOf = (u: TokenUsage) => computeSessionCost(resolved.provider, usageForCost(u), resolved.modelId);
-    const stepCost = (s: any) => reportedCost(s?.usage, s?.providerMetadata) ?? costOf(usageFromResult(s?.usage, s?.providerMetadata));
+    // OpenRouter, Token Factory), else the call's tokens at the model's own
+    // price (the gateway's, resolved once with the model; aieo's own tables
+    // for Maple / Numes / Token Factory) — unpriced when there is none.
+    // A step with cacheTtl "1h" on anthropic whose usage carries no 5m/1h
+    // split wrote ALL its cache at the 1h rate (the gateway's `cache_write_1h_per_mtok`).
+    const usageOf = (s: any): TokenUsage => {
+      const u = usageFromResult(s?.usage, s?.providerMetadata);
+      if (resolved.provider === "anthropic" && cfg.cacheTtl === "1h" && !hasCacheWriteSplit(s?.usage?.raw, s?.providerMetadata)) {
+        return { ...u, cacheWrite1hTokens: u.cacheWriteTokens };
+      }
+      return u;
+    };
+    const usageOfSteps = (steps: any[] | undefined): TokenUsage => (steps ?? []).reduce((t: TokenUsage, s: any) => addUsage(t, usageOf(s)), emptyUsage());
+    // Set when a model call was priced from tokens and nothing prices the model:
+    // the step's `cost` is then 0 for it, and the output says so (costUnpriced).
+    let costUnpriced = false;
+    const costOf = (u: TokenUsage) => {
+      if (modelPriceSource(resolved.provider, resolved.modelId, resolved.price) === "unpriced") costUnpriced = true;
+      return computeSessionCost(resolved.provider, usageForCost(u), resolved.modelId, undefined, resolved.price);
+    };
+    const stepCost = (s: any) => reportedCost(s?.usage, s?.providerMetadata) ?? costOf(usageOf(s));
     const stepsCost = (steps: any[] | undefined) => (steps ?? []).reduce((sum: number, s: any) => sum + stepCost(s), 0);
 
     // A session is held from here to the commit (or the failure): one turn at
@@ -1873,7 +1890,7 @@ export default defineStep({
         bankedSteps.push(sf);
         // Per-step in v7 (v6 made these cumulative, so banking them duplicated history).
         bankedMessages.push(...((sf.response?.messages ?? []) as any[]));
-        const stepUsage = usageFromResult(sf.usage, sf.providerMetadata);
+        const stepUsage = usageOf(sf);
         bankedUsage = addUsage(bankedUsage, stepUsage);
         bankedCost += stepCost(sf);
         contextUsed = stepUsage.inputTokens + stepUsage.cacheReadTokens + stepUsage.cacheWriteTokens + stepUsage.outputTokens;
@@ -2124,6 +2141,7 @@ export default defineStep({
        *  task, what was generated): the turn is committed to the session
        *  store, which holds the rest, and the output says where it sits. */
       const finish = async (out: Record<string, unknown>) => {
+        if (costUnpriced) out = { ...out, costUnpriced: true };
         const turn = [{ role: "system", content: system }, ...lead, task, ...messages];
         if (compactions) out = { ...out, compactions };
         if (stoppedBy) out = { ...out, stopped: { tool: stoppedBy } };
@@ -2206,7 +2224,7 @@ export default defineStep({
         if (useSchema) replyTap?.object();
         await drain(forced);
         const forcedSteps = await forced.steps;
-        const fu = usageFromSteps(forcedSteps);
+        const fu = usageOfSteps(forcedSteps);
         usage = addUsage(usage, fu);
         cost += stepsCost(forcedSteps);
         if (((await forced.toolCalls) as unknown[]).length) {
@@ -2270,7 +2288,7 @@ export default defineStep({
         const nudgedSteps = (await nudged.steps) ?? [];
         stepsUsed += nudgedSteps.length;
         noteText(nudgedSteps);
-        const nu = usageFromSteps(nudgedSteps);
+        const nu = usageOfSteps(nudgedSteps);
         usage = addUsage(usage, nu);
         cost += stepsCost(nudgedSteps);
         return nudgedSteps;

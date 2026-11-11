@@ -187,6 +187,8 @@ export {
   listModelOptions,
   canonicalModelName,
   startModelCatalog,
+  gatewayRootFor,
+  resolveModelPrice,
   stepAuth,
   type ResolveModelOptions,
   type ResolvedModel,
