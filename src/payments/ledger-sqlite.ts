@@ -28,6 +28,9 @@ import {
   type ChargeInput,
   type ChargeResult,
   type DayRange,
+  type Deposit,
+  type DepositedRow,
+  type DepositInput,
   type EarningsQuery,
   type EarningsRow,
   type EntryKind,
@@ -111,6 +114,16 @@ create table if not exists daily (
   primary key (day, subject)
 ) strict, without rowid;
 create index if not exists daily_subject on daily(subject, day);
+
+-- Sats an admin paid into the wallet by hand: the books count them, nothing
+-- else does. A table of its own, so no ledger file needs a migration.
+create table if not exists deposits (
+  payment_hash text primary key,
+  at integer not null,
+  msat integer not null,
+  actor text
+) strict;
+create index if not exists deposits_at on deposits(at);
 `;
 
 type Row = Record<string, unknown>;
@@ -218,6 +231,12 @@ export class SqliteLedgerStore implements LedgerStore {
       ),
       scan: p("select * from entries where seq > ? order by seq limit ?"),
       withdrawalOf: p("select * from entries where kind = 'withdrawal' and ref = ?"),
+      insertDeposit: p("insert or ignore into deposits (payment_hash, at, msat, actor) values (?, ?, ?, ?)"),
+      depositOf: p("select * from deposits where payment_hash = ?"),
+      deposited: p(
+        `select date(at / 1000, 'unixepoch') day, count(*) count, sum(msat) msat
+           from deposits where at >= ? and at < ? group by day order by day`,
+      ),
       listAll: p("select * from entries where seq < ? order by seq desc limit ?"),
       listKind: p("select * from entries where kind = ? and seq < ? order by seq desc limit ?"),
       listRun: p("select * from entries where run_id = ? and seq < ? order by seq desc limit ?"),
@@ -365,6 +384,27 @@ export class SqliteLedgerStore implements LedgerStore {
   async withdrawalOf(paymentHash: string): Promise<LedgerEntry | undefined> {
     const row = this.live().s.withdrawalOf.get(paymentHash) as Row | undefined;
     return row ? entryOf(row) : undefined;
+  }
+
+  async deposit(input: DepositInput): Promise<Deposit> {
+    const at = input.at ?? Date.now();
+    positiveInt("msat", input.msat);
+    need("paymentHash", input.paymentHash);
+    int("at", at);
+    return this.tx(() => {
+      this.s.insertDeposit.run(input.paymentHash, at, input.msat, input.actor ?? null);
+      return depositOf(this.s.depositOf.get(input.paymentHash) as Row);
+    }, true);
+  }
+
+  async depositOf(paymentHash: string): Promise<Deposit | undefined> {
+    const row = this.live().s.depositOf.get(paymentHash) as Row | undefined;
+    return row ? depositOf(row) : undefined;
+  }
+
+  async deposited(range?: DayRange): Promise<DepositedRow[]> {
+    const [from, to] = msRange(range);
+    return (this.live().s.deposited.all(from, to) as Row[]).map((r) => ({ day: r.day as string, count: r.count as number, msat: r.msat as number }));
   }
 
   // ── reads ─────────────────────────────────────────────────────────────
@@ -609,6 +649,12 @@ function entryOf(r: Row): LedgerEntry {
   const e: Record<string, unknown> = { seq: r.seq, at: r.at, kind: r.kind };
   for (const [col, field] of ENTRY_FIELDS) if (r[col] !== null && r[col] !== undefined) e[field] = r[col];
   return e as unknown as LedgerEntry;
+}
+
+function depositOf(r: Row): Deposit {
+  const d: Deposit = { at: r.at as number, msat: r.msat as number, paymentHash: r.payment_hash as string };
+  if (r.actor !== null) d.actor = r.actor as string;
+  return d;
 }
 
 function holdOf(r: Row): OpenHold {

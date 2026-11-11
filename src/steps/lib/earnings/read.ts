@@ -19,9 +19,9 @@ export default defineStep({
   effect: "read",
   description:
     "What this strut server earned from the workflows and tools anyone may run here, in dollars: earned (what runs were charged), cost (what they spent on models), margin (earned − cost), calls and failed — " +
-    "by `by`: item (each workflow or tool), day, package (each installed package, summed over its prefix) or total — plus outstanding credit (paid for, not yet charged), received (sats paid in, and the dollars they bought) and withdrawn (sats paid out, with fees). `package` keeps one package's items. " +
+    "by `by`: item (each workflow or tool), day, package (each installed package, summed over its prefix) or total — plus outstanding credit (paid for, not yet charged), received (sats paid in, and the dollars they bought), deposited (sats an admin added by hand: never credit, never earnings) and withdrawn (sats paid out, with fees). `package` keeps one package's items. " +
     "`days: 7` is the last seven days counting today; or `from` / `to` as UTC days (YYYY-MM-DD); neither is all time. `wallet: true` also reads the wallet's balance in sats and dollars beside what the books say it holds. " +
-    "Answers { totals, rows: [{ key, calls, failed, earned, cost, margin, price? }], outstanding, received, withdrawn, pending, wallet? }.",
+    "Answers { totals, rows: [{ key, calls, failed, earned, cost, margin, price? }], outstanding, received, deposited, withdrawn, purchases, pending, wallet? }.",
   input: z.object({
     days: z.number().int().positive().max(3660).optional().describe("The last N days, counting today. Leave out with from/to."),
     from: z.string().optional().describe("The first UTC day, YYYY-MM-DD."),

@@ -39,7 +39,7 @@ import { PAYING_LONG_MS, STATUS_EVERY_MS, fallbackNote, type WalletAnswer, type 
 
 /** The invoice as an SVG QR code: dark modules on white, a four-module
  *  quiet zone, scaled by the container. */
-function qrSvg(text: string): string {
+export function qrSvg(text: string): string {
   const qr = qrcode(0, "M");
   qr.addData(text, "Alphanumeric");
   qr.make();
