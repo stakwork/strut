@@ -2324,7 +2324,8 @@ export interface PublisherInfo {
   name?: string;
   host: "self";
   createdAt: string;
-  /** The PUBLIC key, once a channel was made public: what the world will follow. */
+  /** The PUBLIC key, once a channel was made public or this server asked an
+   *  index to list it: what the world will follow. */
   public?: string;
   /** The channels in the public catalog; every other channel is the fleet's alone. */
   publicChannels: string[];
@@ -2653,6 +2654,8 @@ export interface ListingLine {
   row?: { key: string; urls: string[]; description?: string; url?: string };
   /** Another key holds our name there. */
   heldBy?: string;
+  /** The live row under our name: the store shows this server's public view. */
+  live?: { url: string; description?: string };
   cardError?: string;
   asked?: { status: "listed" | "pending" | "removed" | "refused" | "error"; reason?: string; base?: string; description?: string; url?: string; live?: boolean; at: string };
 }
@@ -2681,6 +2684,8 @@ export interface PendingListing {
   live?: boolean;
   receivedAt: string;
   catalog: { seq: number; digest: string; packages: string[] };
+  /** What the server's public view showed, when the name is used by the view alone. */
+  view?: { apps: number; workflows: number; steps: number; concepts: number; runnable: number };
   heldBy?: string;
   from?: string;
 }

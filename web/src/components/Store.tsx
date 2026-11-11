@@ -528,6 +528,11 @@ function Browse(props: { q?: string; card: api.IndexCard | undefined; go: (v: St
                 <span class="store-line-main">
                   <span class="store-line-title">
                     <span class="package-name">{prefix}</span>
+                    {props.card?.live?.[prefix] && (
+                      // A server listed for its public view (plans/public-view-listing.md §6):
+                      // its items are under the Live sections, and it may have no package yet.
+                      <span class="badge" title="Its server's public view is shown live in this store">{hits && !hits.some((h) => h.publisher === prefix) ? "public view only" : "public view"}</span>
+                    )}
                     {row.url && <a href={row.url} target="_blank" rel="noopener noreferrer" class="auto-link">{row.url.replace(/^https?:\/\//, "")}</a>}
                   </span>
                   {row.description && <span class="store-line-desc">{row.description}</span>}

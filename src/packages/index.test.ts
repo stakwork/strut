@@ -691,4 +691,56 @@ describe("self-serve listing over HTTP (plans/index-listing.md)", () => {
     assert.equal((await lines())[0]!.listed, false);
     assert.equal((await fetch(`${publisherUrl}/publisher/listings`)).status, 401, "the publisher's routes are behind its key");
   });
+
+  it("a server with no public package lists its public view: the ask mints the public key and an empty catalog, and a later package joins the same row (plans/public-view-listing.md)", async () => {
+    assert.equal((await publisher.app.request("/publisher", json({ name: "acme" }, "PUT"))).status, 200);
+    const seeded = await index.app.request("/index/seed", json({ key: "y".repeat(52), urls: ["http://127.0.0.1:1/packages/catalog?public=1"] }, "PUT"));
+    const indexKey = ((await seeded.json()) as IndexInfo).key;
+    assert.equal((await publisher.app.request("/packages/indexes/stakwork", json({ key: indexKey, urls: [`${indexUrl}/index/catalog`], label: "Stakwork" }, "PUT"))).status, 200);
+    const publicKey = async () => ((await (await publisher.app.request("/publisher", { headers: auth })).json()) as { public?: string }).public;
+
+    // Nothing public, and the view not asked for: refused here, and nothing is minted.
+    const nothing = await publisher.app.request("/publisher/listings", json({ index: "stakwork", base: publisherUrl }));
+    assert.equal(nothing.status, 409);
+    assert.match(((await nothing.json()) as { error: string }).error, /^listing_nothing_public:/);
+    assert.equal(await publicKey(), undefined);
+    assert.equal((await fetch(`${publisherUrl}/packages/catalog?public=1`)).status, 404);
+
+    // The view shows a workflow; the ask mints the public key and an empty public catalog sealed by it.
+    assert.equal((await publisher.app.request("/public-view", json({ workflows: [{ name: "acme/linear/sync" }] }, "PUT"))).status, 200);
+    const asked = await publisher.app.request("/publisher/listings", json({ index: "stakwork", base: publisherUrl, description: "Acme, live", live: true }));
+    assert.equal(asked.status, 202, await asked.clone().text());
+    const key = await publicKey();
+    assert.ok(key, "the ask minted the public key");
+    const empty = await fetch(`${publisherUrl}/packages/catalog?public=1`);
+    assert.equal(empty.status, 200, "served to anyone");
+    assert.deepEqual(readCard(Buffer.from(await empty.arrayBuffer()), { key: key! }).card.packages, {});
+
+    // The operator sees a view-only request, and approves it.
+    const waiting = ((await (await index.app.request("/index/requests", { headers: auth })).json()) as { pending: Array<{ id: string; reason: string; catalog: { packages: string[] }; view?: Record<string, number> }> }).pending;
+    assert.deepEqual(waiting.map((p) => [p.reason, p.catalog.packages, p.view]), [["host", [], { apps: 0, workflows: 1, steps: 0, concepts: 0, runnable: 0 }]]);
+    assert.equal((await index.app.request(`/index/requests/${waiting[0]!.id}/approve`, json({}))).status, 200);
+    const card = (await (await index.app.request("/index", { headers: auth })).json()) as IndexInfo;
+    assert.deepEqual([card.publishers["acme"]!.key, card.live["acme"]!.url], [key, publisherUrl], "a keyed row and the live row at the base");
+    const line = (await (await publisher.app.request("/publisher/listings", { headers: auth })).json()) as { listings: Array<{ listed: boolean; live?: { url: string } }> };
+    assert.deepEqual([line.listings[0]!.listed, line.listings[0]!.live?.url], [true, publisherUrl]);
+
+    // The store shows the view; a change to it pings the index, which reads it again.
+    const liveNames = async () => ((await (await fetch(`${indexUrl}/index/live`)).json()) as { items: Array<{ kind: string; name: string }> }).items.map((i) => `${i.kind} ${i.name}`).sort();
+    for (let i = 0; i < 100 && !(await liveNames()).length; i++) await new Promise((r) => setTimeout(r, 50));
+    assert.deepEqual(await liveNames(), ["workflow acme/linear/sync"]);
+    assert.equal((await publisher.app.request("/public-view", json({ workflows: [{ name: "acme/linear/sync" }, { name: "acme/notion/sync" }] }, "PUT"))).status, 200);
+    for (let i = 0; i < 100 && (await liveNames()).length < 2; i++) await new Promise((r) => setTimeout(r, 50));
+    assert.deepEqual(await liveNames(), ["workflow acme/linear/sync", "workflow acme/notion/sync"]);
+
+    // A package made public later: the same key, the same row — no second request. (Its
+    // ping, inside the minute of the view's, is folded into one more read at the minute's
+    // end; the operator's crawl reads it now.)
+    await publishPublic("acme/linear", "acme/linear/sync");
+    assert.equal(await publicKey(), key);
+    assert.equal((await index.app.request("/index/crawl", json({}))).status, 200);
+    const search = async (q: string) => ((await (await fetch(`${indexUrl}/index/packages?q=${q}`)).json()) as { packages: IndexHit[] }).packages.map((h) => h.package);
+    assert.deepEqual(await search("linear"), ["acme/linear"]);
+    assert.equal(((await (await index.app.request("/index/requests", { headers: auth })).json()) as { pending: unknown[] }).pending.length, 0);
+  });
 });

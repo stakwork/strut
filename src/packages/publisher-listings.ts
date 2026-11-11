@@ -16,7 +16,7 @@
 import { randomBytes } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import { canonicalJson, type IndexRow } from "./card.js";
+import { canonicalJson, type IndexLiveRow, type IndexRow } from "./card.js";
 import { indexBaseOf, type PackageIndexes } from "./indexes.js";
 import { baseProblem, normalizeBase } from "./listing.js";
 import type { Publisher } from "./publisher.js";
@@ -66,6 +66,8 @@ export interface ListingLine {
   row?: IndexRow;
   /** Another key holds our name there. */
   heldBy?: string;
+  /** The live row under our name on the card: where the store reads a public view. */
+  live?: IndexLiveRow;
   /** Why the card could not be read. */
   cardError?: string;
   /** What we asked last, and the answer. */
@@ -196,6 +198,8 @@ export function createPublisherListings(deps: PublisherListingsDeps): PublisherL
             if (pub?.public && row.key === pub.public) line.listed = true;
             else line.heldBy = row.key;
           }
+          const live = pub?.name && card.live && Object.hasOwn(card.live, pub.name) ? card.live[pub.name] : undefined;
+          if (live) line.live = live;
         } catch (err) {
           line.cardError = err instanceof Error ? err.message : String(err);
         }

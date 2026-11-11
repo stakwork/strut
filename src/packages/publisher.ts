@@ -63,9 +63,9 @@ export interface PublisherInfo {
   /** Where its bytes are served: this strut's own routes. */
   host: "self";
   createdAt: string;
-  /** The PUBLIC key, z-base-32, once a channel was made public: the
-   *  publisher's identity to the world, the only key a record or an index
-   *  row carries. */
+  /** The PUBLIC key, z-base-32, once a channel was made public or this
+   *  server asked an index to list it: the publisher's identity to the
+   *  world, the only key a record or an index row carries. */
   public?: string;
   /** The channels marked public: in the public catalog, sealed by the
    *  public key. Every other channel is in the fleet catalog alone. */
@@ -87,6 +87,10 @@ export interface Publisher {
   ensure(): Promise<{ info: PublisherInfo; minted: boolean }>;
   /** Set the publisher's name (the key minted first when there is none). */
   setName(name: string): Promise<PublisherInfo>;
+  /** The PUBLIC key, minted when there is none, marking no channel: what a
+   *  server whose only public thing is its public view lists itself with
+   *  (plans/public-view-listing.md §1). */
+  ensurePublic(): Promise<PublisherInfo>;
   /** Mark a channel public — the public key minted first when there is
    *  none — and keep it so: a channel goes private → public only. */
   makePublic(channel: string): Promise<PublisherInfo>;
@@ -98,6 +102,13 @@ export interface Publisher {
   /** A LISTING request (plans/index-listing.md §1) sealed by the public key,
    *  under the publisher's name; refused before either exists. */
   sealListing(fields: Omit<UnsignedListing, "v" | "key" | "prefix" | "seq">): Promise<Listing>;
+}
+
+/** A record with a public key: the one it has, else a new one. */
+function withPublicSeed(record: PublisherRecord): PublisherRecord {
+  if (record.publicSeed) return record;
+  const seed = randomBytes(32);
+  return { ...record, publicSeed: seed.toString("hex"), public: keyFromSeed(seed).key };
 }
 
 /** `unsafe` says why this strut may not mint (its secret store is only
@@ -142,17 +153,19 @@ export function publisherStore(secrets: SecretStore, opts: { unsafe?: () => stri
       await secrets.set(KEY_NAME, JSON.stringify(next));
       return info(next);
     },
+    async ensurePublic() {
+      const { record } = await ensure();
+      if (record.publicSeed) return info(record);
+      const next = withPublicSeed(record);
+      await secrets.set(KEY_NAME, JSON.stringify(next));
+      return info(next);
+    },
     async makePublic(channel) {
       if (!CHANNEL_NAME.test(channel)) throw new Error(`catalog_channel: ${JSON.stringify(channel)} is not a channel name ([a-z0-9][a-z0-9._-]*)`);
       const { record } = await ensure();
       const channels = record.publicChannels ?? [];
       if (channels.includes(channel) && record.publicSeed) return info(record);
-      const next: PublisherRecord = { ...record, publicChannels: [...new Set([...channels, channel])].sort() };
-      if (!next.publicSeed) {
-        const seed = randomBytes(32);
-        next.publicSeed = seed.toString("hex");
-        next.public = keyFromSeed(seed).key;
-      }
+      const next = withPublicSeed({ ...record, publicChannels: [...new Set([...channels, channel])].sort() });
       await secrets.set(KEY_NAME, JSON.stringify(next));
       return info(next);
     },
@@ -169,7 +182,7 @@ export function publisherStore(secrets: SecretStore, opts: { unsafe?: () => stri
     },
     async sealListing(fields) {
       const record = await read();
-      if (!record?.publicSeed) throw new Error("publisher_not_public: this strut server has no public key yet — make a package public first (Make public), which mints the key an index lists");
+      if (!record?.publicSeed) throw new Error("publisher_not_public: this strut server has no public key yet — asking an index to list it (POST /publisher/listings) or making a package public (Make public) mints it");
       if (!record.name) throw new Error("publisher_no_name: set the publisher's name first — it is the name an index lists");
       const { privateKey, key } = keyFromSeed(Buffer.from(record.publicSeed, "hex"));
       // An index reads one request per key at a time, each after the last.
@@ -302,6 +315,23 @@ export function projectPublic(fleet: Draft, prev: Draft | undefined, publicChann
     packages[pkg] = entry;
   }
   return { v: CARD_VERSION, seq: prev?.seq ?? 0, packages, ...(Object.keys(channels).length ? { channels } : {}) };
+}
+
+/**
+ * The public key and a public catalog to show for it, for a server that
+ * asks an index to list it (plans/public-view-listing.md §1): the key
+ * minted when there is none, and — when nothing is public yet — an EMPTY
+ * public catalog sealed by it, which `GET /packages/catalog?public=1` then
+ * serves. The index reads that catalog to learn the server at a base holds
+ * the key, whether or not it lists a package. A later **Make public** seals
+ * the next one after it, under the same key.
+ */
+export async function ensurePublicCatalog(deps: CatalogDeps): Promise<CatalogFile> {
+  await deps.publisher.ensurePublic();
+  const cur = await deps.publicCatalogs.current();
+  if (cur) return cur;
+  const empty: Draft = { v: CARD_VERSION, seq: 0, packages: {} };
+  return deps.publicCatalogs.put(await deps.publisher.sealPublic({ ...empty, seq: seqAfter(deps, empty) }));
 }
 
 /** The required packages of a release that no public channel's catalog

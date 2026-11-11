@@ -379,6 +379,8 @@ comes only with a keyed row:
   key. A request never names it separately.
 
 The operator's `PUT /index/live/:prefix` stays for a server with no key.
+(A server with no package public lists its public view alone with its own
+key: `plans/public-view-listing.md`.)
 A name listed that way is held: a request for it waits as `live row`, and
 approving it lists the key under the name, moving the live row only when
 the request says `live: true`.

@@ -1,8 +1,23 @@
 # Listing a public view with no package
 
-> **Status (2026-11-11): RULED, not built.** The owner took all seven
-> open questions as recommended (below), so every "proposed" in this plan
-> is decided. Written after a read of strut `main` @e2c44d57, on
+> **Status (2026-11-11): RULED, and work item 1 BUILT** in the same PR as
+> the plan (#636). The owner took all seven open questions as recommended
+> (below), so every "proposed" in this plan is decided. Work item 2
+> (agents) is not built. Code: `ensurePublic` and `ensurePublicCatalog`
+> (`src/packages/publisher.ts`), the desk's `readUsed` / `readView` and the
+> claim (`src/packages/index-requests.ts`), `live` on a listing line
+> (`publisher-listings.ts`), the listing route and the view ping
+> (`src/createStrut.ts`), `web/src/components/ListingLines.tsx` (shared by
+> the Packages and Public view tabs). Choices beyond the text:
+> - The listing route refuses an ask that lists nothing before it mints
+>   anything: no package under the name is public and `live` is not
+>   `true` → 409 `listing_nothing_public`. Only `live: true` mints.
+> - A claim of an operator's live row needs a key that holds no other row
+>   (one name per key, as the auto lane): otherwise it waits as `live row`.
+> - The Packages tab draws its line once something is public or the name
+>   is listed, so a view-only server sees its row there too.
+> - A view ping and a release ping inside one minute fold into one read at
+>   the minute's end, the desk's existing rule. Written after a read of strut `main` @e2c44d57, on
 > `plans/index-listing.md` (self-serve listing, BUILT 2026-11-10) and
 > `plans/public-surface.md` §8 (live rows). A new file rather than a
 > section of `index-listing.md`: that plan is marked built, and this one
