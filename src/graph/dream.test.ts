@@ -317,6 +317,12 @@ for (const { tb, readers } of VARIANTS) describe(`the dream on ${tb.name}${reade
     const heard = await knowledge.addEvidence({ claim: (onRoot as { id: string }).id, workflow: ORCHESTRATOR_WORKFLOW, runId: turn["runId"], supports: false, said: "no greeting, I said", by: "evan" });
     assert.deepEqual([("ok" in heard && heard.concept), (await claimsOn("Personal"))[0]!["status"]], ["Personal", "refuted"]);
 
+    // The door reads the graph as it is, so each step first asks whether its CALLER may read where the tree is
+    // kept: on a personal strut an app's page reads `shared` alone, and the tree is private.
+    const fromApp = { services: strut!.services, app: { name: "notes", version: "v1" } } as never;
+    if (readers) await assert.rejects(async () => pageStep.run(pageStep.input.parse({ name: "Personal" }), fromApp), /this caller may not read "private", where the Concept tree is kept \(an app's page reads only what an app may\)/);
+    else assert.equal(((await pageStep.run(pageStep.input.parse({ name: "Personal" }), fromApp)) as { name: string }).name, "Personal");
+
     // One run adds at most so many claims.
     for (let i = 0; i < KNOWLEDGE_CLAIMS_PER_RUN; i++) assert.ok("ok" in (await knowledge.addClaim({ concept: "Personal", text: `rule ${i}` }, { runId: "r2" })));
     assert.match(((await knowledge.addClaim({ concept: "Personal", text: "one more" }, { runId: "r2" })) as { error: string }).error, /already added 10 claims/);
