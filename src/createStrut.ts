@@ -191,7 +191,8 @@ import { HOME_POSTS, homeSyncRole, homeSyncRoutes, seedHomeSyncWorkflow, type Ho
 import { VOICE_CALLS, voiceConfig, voiceRoutes, warmSpeech, type VoiceConfig } from "./voice.js";
 import { createPublicSurface, normalizeSurface, surfaceProblem, VISIT_HEADER, visitProblem, visitorOfVisit, visitorRefusal, visitorRuns, type PublicSurface } from "./public-surface.js";
 import { brandProblem, brandStyles, normalizeBrand, readBrand, writeBrand } from "./brand.js";
-import { PUBLIC_PATH, PUBLIC_POST, PUBLIC_REQUESTS_PER_MINUTE, publicRoutes, visitorAddress } from "./public-routes.js";
+import { PUBLIC_PATH, PUBLIC_POST, PUBLIC_REQUESTS_PER_MINUTE, publicRoutes } from "./public-routes.js";
+import { DEFAULT_TRUSTED_PROXIES, TRUSTED_PROXIES_ENV, trustedProxies, trustedProxiesFromEnv, visitorAddressFor } from "./visitor-address.js";
 /** How long `GET /llms.txt` keeps a page it built, per base URL. */
 const LLMS_TXT_CACHE_MS = 30_000;
 import { createPublicRuns, publicRunsMaxFromEnv, publicRunsPath } from "./public-runs.js";
@@ -383,6 +384,12 @@ export interface StrutOptions<TServices = unknown> {
    *  src/public-runs.ts): a launch past it is a 429. `STRUT_HOST_CONFIG`'s
    *  `publicRuns` sets `principal`. */
   publicRuns?: { principal?: string; maxInFlight?: number };
+  /** The proxies whose `x-forwarded-for` names the visitor every public
+   *  budget counts (src/visitor-address.ts): IPs and CIDRs, [] for none.
+   *  Defaults to `STRUT_TRUSTED_PROXIES`, else loopback, link-local and
+   *  private addresses. A peer outside the set is the visitor itself,
+   *  whatever its header says. */
+  trustedProxies?: readonly string[];
 
   /** Max agent steps (tool-call iterations) per chat turn. Raise for longer
    *  autonomous "let it rip" loops. Defaults to `STRUT_CHAT_MAX_STEPS` or 100. */
@@ -971,6 +978,12 @@ export async function createStrut<TServices = unknown>(
   const bootPackages = [...parseBootPackagesEnv(bootEnv()["STRUT_PACKAGES"]), ...checkBootPackages(opts.packages ?? [])];
   // The package this box SERVES (src/packages/serve.ts), checked as early.
   const serveRef = serveRefOf(opts.serve, bootEnv());
+  // Who a public request is from: the socket's peer, or `x-forwarded-for`
+  // when that peer is a trusted proxy (src/visitor-address.ts). Checked as
+  // early: a proxy list strut cannot read fails the boot.
+  const visitorAddress = visitorAddressFor(
+    trustedProxies(opts.trustedProxies ?? trustedProxiesFromEnv(bootEnv()[TRUSTED_PROXIES_ENV]) ?? DEFAULT_TRUSTED_PROXIES),
+  );
   if (opts.escapeGuard !== false) installEscapeGuard();
   const baseWorkspace: WorkspaceStore = opts.workspace ?? new FileWorkspaceStore();
   // The ONE graph backend everything here reads: the host's, else the
@@ -3428,6 +3441,7 @@ export async function createStrut<TServices = unknown>(
   });
   const publicDoors = publicRoutes(app, {
     surface: publicSurface,
+    visitorAddress,
     workspace,
     store,
     runnable: async () => {

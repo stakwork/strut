@@ -112,7 +112,7 @@ describe("free public runs", () => {
     await rm(dir, { recursive: true, force: true });
   });
 
-  const boot = async (o: { runnable?: unknown[]; workflows?: unknown[]; maxInFlight?: number; wallet?: boolean; principal?: string; llmAuth?: ReturnType<typeof createMothership>["llmAuth"]; file?: boolean } = {}) => {
+  const boot = async (o: { runnable?: unknown[]; workflows?: unknown[]; maxInFlight?: number; wallet?: boolean; principal?: string; llmAuth?: ReturnType<typeof createMothership>["llmAuth"]; file?: boolean; trustedProxies?: string[] } = {}) => {
     const strut = await createStrut({
       workspace: new WorkspaceManager(join(dir, "ws")),
       ...(o.file ? { autoResume: false } : { store: new MemoryRunStore() }),
@@ -124,6 +124,7 @@ describe("free public runs", () => {
         : {}),
       publicRuns: { ...(o.maxInFlight ? { maxInFlight: o.maxInFlight } : {}), ...(o.principal ? { principal: o.principal } : {}) },
       ...(o.llmAuth ? { llmAuth: o.llmAuth } : {}),
+      ...(o.trustedProxies ? { trustedProxies: o.trustedProxies } : {}),
     });
     open.push(strut);
     for (const [name, yaml] of Object.entries(WORKFLOWS)) await strut.workspace.createWorkflow(name, yaml);
@@ -196,6 +197,65 @@ describe("free public runs", () => {
     assert.ok(after > 0 && after <= 86_400, String(after));
     // Credentials are ignored: the key is not a way past the cap.
     assert.equal((await launch("spend", { input: {} }, { authorization: `Bearer ${KEY}` })).status, 429);
+  });
+
+  /** One launch from the socket peer `peer`, its `x-forwarded-for` naming
+   *  `xff`: the budget answers before the item, so a 404 passed it. */
+  const launchFrom = (strut: Awaited<ReturnType<typeof boot>>["strut"], peer: string, xff: string) =>
+    strut.app.request("/public/workflows/spend/run", { method: "POST", headers: { ...json, "x-forwarded-for": xff }, body: "{}" }, { incoming: { socket: { remoteAddress: peer } } });
+  /** 61 launches from `peer`, each naming a fresh visitor: past the 60 a
+   *  minute only when the header is not read. */
+  const sixtyOneFrom = async (strut: Awaited<ReturnType<typeof boot>>["strut"], peer: string, net: string) => {
+    const statuses: number[] = [];
+    for (let i = 0; i <= 60; i++) statuses.push((await launchFrom(strut, peer, `${net}.${i}`)).status);
+    return statuses;
+  };
+
+  it("the launch budget is the socket peer's when no trusted proxy is in front: a fresh x-forwarded-for each time is still one budget", async () => {
+    const { strut } = await boot();
+    const direct = await sixtyOneFrom(strut, "203.0.113.7", "198.51.100");
+    assert.deepEqual(direct.slice(0, 60), Array(60).fill(404));
+    assert.equal(direct[60], 429);
+    const over = await launchFrom(strut, "::ffff:203.0.113.7", "192.0.2.1");
+    assert.equal(over.status, 429, "the same client over IPv4-mapped IPv6");
+    assert.match(((await over.json()) as { error: string }).error, /too many launches: 60 a minute/);
+    assert.equal((await launchFrom(strut, "203.0.113.8", "192.0.2.1")).status, 404, "another client has its own");
+    // Through a proxy on the container network (trusted by default), the
+    // hop it appended names each visitor; what a client wrote before it does not.
+    assert.deepEqual(await sixtyOneFrom(strut, "172.18.0.2", "192.0.2"), Array(61).fill(404));
+    for (let i = 0; i < 60; i++) assert.equal((await launchFrom(strut, "172.18.0.2", `10.9.${i}.1, 198.51.200.1`)).status, 404);
+    assert.equal((await launchFrom(strut, "172.18.0.2", "spoof, 198.51.200.1")).status, 429);
+  });
+
+  it("STRUT_TRUSTED_PROXIES=none trusts no proxy, not even loopback", async () => {
+    const saved = process.env["STRUT_TRUSTED_PROXIES"];
+    process.env["STRUT_TRUSTED_PROXIES"] = "none";
+    try {
+      const { strut } = await boot();
+      const statuses = await sixtyOneFrom(strut, "127.0.0.1", "198.51.100");
+      assert.equal(statuses[60], 429);
+    } finally {
+      if (saved === undefined) delete process.env["STRUT_TRUSTED_PROXIES"];
+      else process.env["STRUT_TRUSTED_PROXIES"] = saved;
+    }
+  });
+
+  it("createStrut({ trustedProxies }) replaces the set: the named proxy is trusted, a private peer no longer is", async () => {
+    const saved = process.env["STRUT_TRUSTED_PROXIES"];
+    process.env["STRUT_TRUSTED_PROXIES"] = "none";
+    try {
+      const { strut } = await boot({ trustedProxies: ["203.0.113.5", "2001:db8::/32"] });
+      assert.deepEqual(await sixtyOneFrom(strut, "203.0.113.5", "198.51.100"), Array(61).fill(404), "the option wins over the env");
+      assert.deepEqual(await sixtyOneFrom(strut, "2001:db8::9", "192.0.2"), Array(61).fill(404));
+      assert.equal((await sixtyOneFrom(strut, "10.0.0.1", "198.18.0"))[60], 429);
+    } finally {
+      if (saved === undefined) delete process.env["STRUT_TRUSTED_PROXIES"];
+      else process.env["STRUT_TRUSTED_PROXIES"] = saved;
+    }
+  });
+
+  it("a trusted-proxy entry that is not an IP or a CIDR fails the boot", async () => {
+    await assert.rejects(boot({ trustedProxies: ["proxy.example"] }), /STRUT_TRUSTED_PROXIES: "proxy.example" is not an IP address or a CIDR/);
   });
 
   it("the body is input and key alone, validated against the input: block; an item nobody made runnable is 404", async () => {
