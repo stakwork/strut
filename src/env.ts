@@ -98,8 +98,13 @@ export const KEEP_ENV: readonly string[] = [
  *  prefix covers. Server code reads them from `bootEnv()` at boot into
  *  `payments.json` (src/payments/settings.ts). Not `STRUT_`: strut's own
  *  steps read their settings (`STRUT_DEFAULT_MODEL`, `STRUT_MEMORY_DB`)
- *  through the same door. */
-export const HIDDEN_FROM_STEPS_PREFIXES: readonly string[] = ["LIGHTNING_"];
+ *  through the same door. And `ENTITLEMENT_`: the names in
+ *  `entitlements.json` (src/remote.ts), the credit this strut BOUGHT at
+ *  other struts (plans/paid-runs.md §10), a bearer credential the
+ *  `remote/*` steps present through `ctx.services.remote` and no step
+ *  reads — a value of such a name set anywhere else is never a step's
+ *  either. */
+export const HIDDEN_FROM_STEPS_PREFIXES: readonly string[] = ["LIGHTNING_", "ENTITLEMENT_"];
 
 /** Exact names hidden the same way. `STRUT_SECRET_KEY` decrypts every
  *  encrypted file under the data dir, `payments.json` among them: a step

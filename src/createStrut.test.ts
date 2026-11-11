@@ -1408,7 +1408,9 @@ describe("the API key gate", () => {
     // and claiming it (§3's table, §4.4): open, and on a server that never
     // priced anything they sell and find nothing.
     const visitorDoor = "POST /public/mcp";
-    const publicPosts = [visitorDoor, "POST /public/workflows/x/run", "POST /public/workflows/x/runs/x/cancel", "POST /public/credit", "POST /public/credit/claim"];
+    // And anyone's call of a runnable step (§6, work item 6): open, by name,
+    // and with nothing runnable it calls nothing.
+    const publicPosts = [visitorDoor, "POST /public/workflows/x/run", "POST /public/workflows/x/runs/x/cancel", "POST /public/steps/x/run", "POST /public/credit", "POST /public/credit/claim"];
     const gated = routes.filter((r) => !publicReads.includes(r) && !publicPosts.includes(r));
     for (const r of publicPosts) assert.ok(routes.includes(r), r);
     assert.deepEqual(routes.filter((r) => r.startsWith("POST /public")).sort(), [...publicPosts].sort(), "no other POST under /public is open");
@@ -1459,14 +1461,15 @@ describe("the API key gate", () => {
     const peerPost = /^POST (?:\/workflows\/x\/(?:x\/run|run|runs\/x\/(?:cancel|pause|resume))|\/packages\/subscriptions\/sync)$/;
     // `POST /public/mcp` is a visitor's door, open to anyone (plans/public-surface.md §5).
     // The wallet is full scope only, its read included (plans/paid-runs.md §9).
-    // Earnings too (§8): the books are an admin's, like the wallet. And a
-    // served box's state (plans/app-repos.md §4.4).
-    const fullOnlyReads = ["GET /earnings/wallet", "GET /earnings", "GET /earnings/entries", "GET /serve"];
+    // Earnings too (§8): the books are an admin's, like the wallet. And the
+    // credit this strut bought at other struts (§10), and a served box's
+    // state (plans/app-repos.md §4.4).
+    const fullOnlyReads = ["GET /earnings/wallet", "GET /earnings", "GET /earnings/entries", "GET /remote/credit", "GET /serve"];
     for (const r of fullOnlyReads) assert.ok(routes.includes(r), r);
-    // So are anyone's launch and its cancel (plans/paid-runs.md §3).
-    const publicPost = /^POST \/public\/(?:mcp|credit|credit\/claim|workflows\/x\/(?:run|runs\/x\/cancel))$/;
+    // So are anyone's launch, its cancel and a tool's call (plans/paid-runs.md §3).
+    const publicPost = /^POST \/public\/(?:mcp|credit|credit\/claim|workflows\/x\/(?:run|runs\/x\/cancel)|steps\/x\/run)$/;
     const allowed = routes.filter((r) => (r.startsWith("GET ") && !fullOnlyReads.includes(r)) || peerPost.test(r) || publicPost.test(r));
-    assert.equal(allowed.filter((r) => r.startsWith("POST ")).length, 11, allowed.join(", "));
+    assert.equal(allowed.filter((r) => r.startsWith("POST ")).length, 12, allowed.join(", "));
     assert.ok(allowed.includes("GET /host/mounted"));
     assert.ok(routes.includes("POST /host/mounted") && !allowed.includes("POST /host/mounted"));
     for (const route of routes) {
@@ -1739,7 +1742,7 @@ describe("the API key gate", () => {
     assert.equal(session.role, "member", "no role is a member");
     // Open to anyone, a member included, as they are today.
     const open = (r: string) =>
-      r === "GET /health" || r === "POST /auth/session" || r === "DELETE /auth/session" || /^POST \/public\/(?:mcp|credit|credit\/claim|workflows\/x\/(?:run|runs\/x\/cancel))$/.test(r) || /^GET \/public(?:\/|$)/.test(r);
+      r === "GET /health" || r === "POST /auth/session" || r === "DELETE /auth/session" || /^POST \/public\/(?:mcp|credit|credit\/claim|workflows\/x\/(?:run|runs\/x\/cancel)|steps\/x\/run)$/.test(r) || /^GET \/public(?:\/|$)/.test(r);
     const routes = everyRoute(strut).filter((r) => !open(r));
     // plans/member-rights.md "What a member's session opens", and the brand
     // the app is shown in.

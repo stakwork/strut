@@ -134,8 +134,10 @@ export interface DetailDeps {
 
 export const README_MAX_CHARS = 64_000;
 const DOCS_MAX_CHARS = 32_000;
-/** The steps that spend on a model: the `spends` flag. */
-export const SPENDING_STEPS: ReadonlySet<string> = new Set(["agent", "llm", "acp/prompt"]);
+/** The steps that spend: on a model (`graph/walk` asks a decision model at
+ *  every hop, its `evaluate` grader), or the credit this strut bought at
+ *  another strut's public door (src/remote.ts) — the `spends` flag. */
+export const SPENDING_STEPS: ReadonlySet<string> = new Set(["agent", "llm", "acp/prompt", "graph/walk", "remote/run-workflow", "remote/call", "remote/buy-credit"]);
 
 /** Regexes over a step's SOURCE — a reading of `defineStep({ … })` without
  *  loading it: its description, `effect`, declared `secrets`, and every

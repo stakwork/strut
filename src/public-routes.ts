@@ -22,7 +22,8 @@
  * item's `results` allows — and its cancel, and nothing else. A PRICED item
  * (work item 5, §4) needs a CREDIT TOKEN that covers its reserve —
  * `Authorization: L402 <macaroon>:<preimage>` — or answers 402 with an
- * L402 challenge; the credit routes (`GET /public/credit`, `POST
+ * L402 challenge; so does a priced TOOL (item 6), `POST /public/steps/
+ * :type/run { config }`, which answers its output at once (src/public-tools.ts); the credit routes (`GET /public/credit`, `POST
  * /public/credit`, `POST /public/credit/claim`) read a token's balance,
  * sell more and hand a payer with no preimage its credential. The policy
  * behind a launch (the caps, the hold, the charge at the end) is
@@ -50,6 +51,7 @@ import { parseAuthorization, tokenRefusal, type VerifiedToken } from "./l402.js"
 import { CREDIT_PURCHASE_MAX_USD, CREDIT_PURCHASE_MIN_USD, type Credit, type CreditRefusal } from "./public-credit.js";
 import { microsToUsd, priceOf, usdToMicros, type Micros } from "./payments/ledger.js";
 import { PUBLIC_LAUNCHES_PER_MINUTE, PUBLIC_RUN_BODY_MAX_BYTES, PUBLIC_RUN_KEY_MAX, PUBLIC_RUN_WAIT_MAX_S, type PublicRuns } from "./public-runs.js";
+import type { PublicTools } from "./public-tools.js";
 
 export interface PublicRouteDeps {
   surface: PublicSurfaceService;
@@ -85,6 +87,9 @@ export interface PublicRouteDeps {
   /** Credit (plans/paid-runs.md §4, src/public-credit.ts): a priced item's
    *  token, its 402, the credit routes. Absent: nothing priced runs here. */
   credit?: Credit;
+  /** Anyone's call of a runnable step (plans/paid-runs.md §6, work item 6;
+   *  src/public-tools.ts). Absent: no step is called here. */
+  tools?: PublicTools;
 }
 
 /** What the launch and cancel routes need of the server. */
@@ -161,13 +166,17 @@ export interface PublicAppInfo {
  *  reads by path, and these POSTs by name. */
 export const PUBLIC_PATH = /^\/public(?:\/|$)/;
 /** The POSTs anyone may make: a visitor's page calling its app, a launch,
- *  the launcher's cancel, buying credit and claiming it. Exported from the
- *  package (src/index.ts) with `PUBLIC_PATH`, so a host whose own gate
- *  stands in front of strut (mcp's `/lab`) passes exactly these. */
-export const PUBLIC_POST = /^\/public\/(?:mcp|credit|credit\/claim|workflows\/[^/]+\/(?:run|runs\/[^/]+\/cancel))$/;
+ *  the launcher's cancel, a tool's call, buying credit and claiming it.
+ *  Exported from the package (src/index.ts) with `PUBLIC_PATH`, so a host
+ *  whose own gate stands in front of strut (mcp's `/lab`) passes exactly
+ *  these. */
+export const PUBLIC_POST = /^\/public\/(?:mcp|credit|credit\/claim|workflows\/[^/]+\/(?:run|runs\/[^/]+\/cancel)|steps\/.+\/run)$/;
 
 /** Requests one visitor address may make to `/public` in a minute. */
 export const PUBLIC_REQUESTS_PER_MINUTE = 1200;
+/** Tool calls one visitor address may make in a minute (beside launches'
+ *  60): a call answers at once, and a priced one's 402 round trip counts. */
+export const PUBLIC_TOOL_CALLS_PER_MINUTE = 120;
 
 /** A credit refusal as the route answers it: its status, `code`, and a
  *  `Retry-After` when it says one. A 401 names the scheme. */
@@ -742,6 +751,51 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
     if (start ? start.origin !== "public" : !launches.runs.pending(name, runId)) return c.json({ error: `no run "${runId}" of "${name}"` }, 404);
     const { status, body } = await launches.cancel(name, runId);
     return c.json(body, status);
+  });
+
+  // ── A tool's call (plans/paid-runs.md §3's table, §6; work item 6) ──────
+
+  // `{ config }` → 200 `{ output, credit? }`. The per-address budget (the
+  // tools' own) and the drain, then the body here; the rest — the item, the
+  // config against the step's schema, the token, the caps, the 402, the
+  // reserve, the call and its charge — is src/public-tools.ts's, which an
+  // MCP door calls the same way.
+  const callLimit = PUBLIC_TOOL_CALLS_PER_MINUTE;
+  const callCounts = new Map<string, { minute: number; n: number }>();
+  const overCallBudget = (who: string): boolean => {
+    const minute = Math.floor(Date.now() / 60_000);
+    const at = callCounts.get(who);
+    if (!at || at.minute !== minute) {
+      if (callCounts.size > 10_000) for (const [k, v] of callCounts) if (v.minute !== minute) callCounts.delete(k);
+      callCounts.set(who, { minute, n: 1 });
+      return false;
+    }
+    return ++at.n > callLimit;
+  };
+  app.post("/public/steps/:type{.+}/run", async (c) => {
+    const tools = deps.tools;
+    const type = c.req.param("type");
+    const who = visitorAddress(c);
+    if (overCallBudget(who)) return c.json({ error: `too many calls: ${callLimit} a minute` }, 429, { "retry-after": "60" });
+    if (!tools) return c.json({ error: `step "${type}" is not open to anyone to call on this strut server` }, 404);
+    const draining = tools.draining();
+    if (draining) return c.json({ error: draining }, 503, { "retry-after": "60" });
+    const length = Number(c.req.header("content-length") ?? 0);
+    if (length > PUBLIC_RUN_BODY_MAX_BYTES) return c.json({ error: `the body is over ${PUBLIC_RUN_BODY_MAX_BYTES / 1024} KB` }, 413);
+    const raw = await c.req.text();
+    if (Buffer.byteLength(raw) > PUBLIC_RUN_BODY_MAX_BYTES) return c.json({ error: `the body is over ${PUBLIC_RUN_BODY_MAX_BYTES / 1024} KB` }, 413);
+    let body: Record<string, unknown>;
+    try {
+      body = raw.trim() ? (JSON.parse(raw) as Record<string, unknown>) : {};
+    } catch {
+      return c.json({ error: "the body is not JSON" }, 400);
+    }
+    if (!body || typeof body !== "object" || Array.isArray(body)) return c.json({ error: "the body is a JSON object: { config }" }, 400);
+    const extra = Object.keys(body).filter((k) => k !== "config");
+    if (extra.length) return c.json({ error: `a public call takes { config } alone — drop ${extra.join(", ")}` }, 400);
+    const presented = parseAuthorization(c.req.header("authorization"));
+    const a = await tools.call({ type, config: body["config"], ...(presented ? { presented } : {}), address: who });
+    return c.json(a.body, a.status, a.headers);
   });
 
   // ── Credit (plans/paid-runs.md §3's table, §4) ──────────────────────────

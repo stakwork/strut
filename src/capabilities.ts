@@ -40,6 +40,7 @@ import { runProcess, type ProcessRequest, type ProcessResult } from "./shell.js"
 import { bootEnv, hiddenFromSteps } from "./env.js";
 import type { LightningCapability } from "./payments/lightning.js";
 import type { EarningsQuery, EarningsView } from "./payments/earnings.js";
+import type { RemoteCapability } from "./remote.js";
 
 // ── secrets ────────────────────────────────────────────────────────────────
 
@@ -458,6 +459,11 @@ export interface StrutCapabilities {
    *  the read `GET /earnings` answers, what the `earnings/read` step is thin
    *  over. Reads only: nothing on it pays — the payer is never on the bag. */
   earnings?: { read(q?: EarningsQuery): Promise<EarningsView> };
+  /** Another strut's public door (plans/paid-runs.md §10, src/remote.ts):
+   *  what it sells, a run or a tool call there with the credit this strut
+   *  holds — injected, never handed out — and the door an ACCEPTED
+   *  `remote/buy-credit` proposal pays through. The payer is not on it. */
+  remote?: RemoteCapability;
 }
 
 /** The default standard services bag: global-fetch http + secrets + a local
