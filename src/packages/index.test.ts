@@ -171,8 +171,9 @@ describe("the package index", () => {
       // The MCP door is the role's too: without it the gate answers, and with the key there is no route.
       assert.equal((await plain.app.request("/index/mcp", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).status, 401);
       assert.equal((await plain.app.request("/index/mcp", { method: "POST", headers: { ...auth, "content-type": "application/json", accept: "application/json, text/event-stream" }, body: "{}" })).status, 404);
-      // So is llms.txt: the role's page, nothing without it.
-      assert.equal((await plain.app.request("/llms.txt")).status, 401);
+      // llms.txt is the role's page, or the public view's (plans/paid-runs.md
+      // §10): open to anyone, and with neither there is nothing to read.
+      assert.equal((await plain.app.request("/llms.txt")).status, 404);
       assert.equal((await plain.app.request("/llms.txt", { headers: auth })).status, 404);
     } finally {
       await plain.close();
@@ -354,7 +355,7 @@ describe("the package index", () => {
       const txt = await ui.app.request("/llms.txt");
       assert.equal(txt.status, 200);
       assert.ok((await txt.text()).includes("- [The store page](http://localhost/?store=1)"), "the store page, for a person");
-      assert.equal((await plain.app.request("/llms.txt")).status, 401);
+      assert.equal((await plain.app.request("/llms.txt")).status, 404, "nothing public there: no page");
     } finally {
       await ui.close();
       await plain.close();
@@ -412,6 +413,52 @@ describe("a live row's Concept trees, and a read that fails", () => {
     assert.match(kept.error!, /503/);
     assert.equal(kept.apps, 1, "the view read before is kept");
     assert.equal((await index.live()).length, 2);
+  });
+
+  it("carries what anyone may RUN there with its price (plans/paid-runs.md §10): beside a public item, an item of its own when only runnable, a stranger's fields checked", async () => {
+    const served: Record<string, unknown> = {
+      "https://pub.example/public": {
+        workflows: [{ name: "cve/scan", description: "Scan a package", runs: true }],
+        steps: [],
+        types: [],
+        apps: [],
+        concepts: [],
+        runnable: [
+          { kind: "workflow", name: "cve/scan", base: 0, markup: 0, capUsd: null, reserve: 0, results: "output", input: { pkg: { type: "string" } }, recent: { days: 30, runs: 12, average: 0 } },
+          { kind: "workflow", name: "voxel/character", description: "A rigged character", base: 0.1, markup: 1.5, capUsd: 5, reserve: 7.6, results: "run", recent: { days: 30, runs: 3, average: 2.25 } },
+          { kind: "step", name: "cve/lookup", base: 0.02, markup: 0, capUsd: null, reserve: 0.02, results: "output" },
+          // A stranger's answer: what the index cannot show is left out.
+          { kind: "workflow", name: "bad", base: "free", markup: 0, reserve: 0 },
+          { kind: "workflow", name: "negative", base: -1, markup: 0, reserve: 0 },
+          { kind: "app", name: "not-runnable", base: 0, markup: 0, reserve: 0 },
+          "not an item",
+        ],
+      },
+    };
+    const fakeFetch = (async (input: string | URL | Request) => {
+      const body = served[String(input)];
+      return body === undefined ? new Response("missing", { status: 404 }) : new Response(JSON.stringify(body), { status: 200 });
+    }) as typeof fetch;
+    const index = createPackageIndex({ secrets: new MemorySecretStore(), dir: join(root, "index"), cache: new PackageCache(join(root, "cache")), fetch: fakeFetch });
+    const info = await index.setLive("acme", { url: "https://pub.example" });
+    assert.equal(info.liveCrawled[0]!.error, undefined);
+    assert.equal(info.liveCrawled[0]!.runnable, 3);
+    const items = await index.live();
+    const byName = Object.fromEntries(items.map((i) => [`${i.kind}:${i.name}`, i]));
+    assert.deepEqual(Object.keys(byName).sort(), ["step:cve/lookup", "workflow:cve/scan", "workflow:voxel/character"]);
+    // Public AND runnable: one item, its price beside it.
+    assert.deepEqual(byName["workflow:cve/scan"]!.run, { base: 0, markup: 0, capUsd: null, reserve: 0, results: "output", recent: { days: 30, runs: 12, average: 0 } });
+    assert.equal(byName["workflow:cve/scan"]!.definition, undefined);
+    assert.equal(byName["workflow:cve/scan"]!.runs, true);
+    // Runnable alone: an item of its own, its definition not public, no input kept (the store reads it from the publisher).
+    const voxel = byName["workflow:voxel/character"]!;
+    assert.equal(voxel.definition, false);
+    assert.equal(voxel.description, "A rigged character");
+    assert.deepEqual(voxel.run, { base: 0.1, markup: 1.5, capUsd: 5, reserve: 7.6, results: "run", recent: { days: 30, runs: 3, average: 2.25 } });
+    assert.equal((voxel.run as Record<string, unknown>)["input"], undefined);
+    assert.deepEqual(byName["step:cve/lookup"]!.run, { base: 0.02, markup: 0, capUsd: null, reserve: 0.02, results: "output" });
+    // Searchable by its words like any live item.
+    assert.deepEqual((await index.live("rigged")).map((i) => i.name), ["voxel/character"]);
   });
 });
 

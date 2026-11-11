@@ -1400,7 +1400,8 @@ describe("the API key gate", () => {
     )].filter((r) => r !== "GET /health" && r !== "POST /auth/session" && r !== "DELETE /auth/session");
     // `GET /public/*` is open by design (src/public-routes.ts): it serves only
     // what a person made public, and with nothing public it serves nothing.
-    const publicReads = routes.filter((r) => /^GET \/public(?:\/|$)/.test(r));
+    // So is `GET /llms.txt` (plans/paid-runs.md §10): the public view as a page.
+    const publicReads = routes.filter((r) => /^GET \/public(?:\/|$)/.test(r) || r === "GET /llms.txt");
     // A visitor's page calls its app here (plans/public-surface.md §5): open,
     // and with nothing in the public view it opens no app. And anyone's
     // launch and the launcher's cancel (plans/paid-runs.md §3): open, by
@@ -1427,6 +1428,7 @@ describe("the API key gate", () => {
       assert.equal((await strut.app.request(path, { method, headers: { authorization: "Bearer nope" } })).status, 401, route);
     }
     assert.ok(publicReads.length >= 15, publicReads.join(", "));
+    assert.ok(publicReads.includes("GET /llms.txt"), "llms.txt is open");
     for (const route of publicReads) {
       const path = route.slice(4);
       const res = await strut.app.request(path);
@@ -1742,7 +1744,7 @@ describe("the API key gate", () => {
     assert.equal(session.role, "member", "no role is a member");
     // Open to anyone, a member included, as they are today.
     const open = (r: string) =>
-      r === "GET /health" || r === "POST /auth/session" || r === "DELETE /auth/session" || /^POST \/public\/(?:mcp|credit|credit\/claim|workflows\/x\/(?:run|runs\/x\/cancel)|steps\/x\/run)$/.test(r) || /^GET \/public(?:\/|$)/.test(r);
+      r === "GET /health" || r === "POST /auth/session" || r === "DELETE /auth/session" || /^POST \/public\/(?:mcp|credit|credit\/claim|workflows\/x\/(?:run|runs\/x\/cancel)|steps\/x\/run)$/.test(r) || /^GET \/public(?:\/|$)/.test(r) || r === "GET /llms.txt";
     const routes = everyRoute(strut).filter((r) => !open(r));
     // plans/member-rights.md "What a member's session opens", and the brand
     // the app is shown in.
