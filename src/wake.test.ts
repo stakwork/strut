@@ -375,11 +375,11 @@ describe("the wake through a whole strut", () => {
   const startOf = async (strut: { store: MemoryRunStore | any }, workflow: string, runId: string) =>
     (await strut.store.getRunEvents(workflow, runId)).find((e: any) => e.type === "run.start")!;
   const runsOf = async (strut: { store: any }, workflow: string) => (await strut.store.listRuns(workflow)) as unknown as string[];
-  /** The job's next turn — the builder run that is not `first` — once its
-   *  `run.start` is written (a file store lists a run before its log). */
-  const wokenTurn = (strut: { store: any }, first: string) =>
+  /** The job's next turn — the builder run that is none of `known` — once
+   *  its `run.start` is written (a file store lists a run before its log). */
+  const wokenTurn = (strut: { store: any }, ...known: string[]) =>
     until(async () => {
-      const id = (await runsOf(strut, "builder")).find((r) => r !== first);
+      const id = (await runsOf(strut, "builder")).find((r) => !known.includes(r));
       const start = id ? await startOf(strut, "builder", id) : undefined;
       return id && start ? { id, start } : undefined;
     }, "the job's next turn");
@@ -449,6 +449,32 @@ describe("the wake through a whole strut", () => {
     assert.equal(seen.wake.length, 1);
     const [run] = await runsOf(strut, "slow");
     assert.equal((await startOf(strut, "slow", run!)).startedBy.runId, launched.body.runId);
+  });
+
+  it("a run healed under its own id wakes the job again when it ends: once per attempt, not once per run", async () => {
+    const { strut, post, endOf, idle, callback } = await boot({ chatRunWaitMs: 50 });
+    // Fails once the look is over, so the failure wakes the job.
+    await strut.workspace.createWorkflow("slow", slowYaml(1, 300).replace("rows: 3", 'rows: "{{ w0.nope.rows }}"'));
+    await strut.workspace.createWorkflow("builder", BUILDER);
+    const launched = await post("/workflows/builder/run", { job: "j-h", input: { prompt: "build" }, conversation: "c-h", wake: true, callback: { url: callback } });
+    assert.equal((await endOf(launched.body.runId)).output.text, "testing");
+    const [run] = await runsOf(strut, "slow");
+    const failed = await wokenTurn(strut, launched.body.runId);
+    assert.match((failed.start.input as { prompt: string }).prompt, new RegExp(`^WOKEN slow ${run} failed: `));
+    await endOf(failed.id);
+
+    // What the builder does on that turn: fix the workflow and heal the run
+    // (meta/resume-run) — the same run id, on the version it just published.
+    await strut.workspace.publishWorkflow("slow", "v2", slowYaml(1, 300));
+    const healed = await post(`/workflows/slow/runs/${run}/resume`, { version: "active" });
+    assert.equal(healed.status, 202, JSON.stringify(healed.body));
+    const fixed = await wokenTurn(strut, launched.body.runId, failed.id);
+    assert.match((fixed.start.input as { prompt: string }).prompt, new RegExp(`^WOKEN slow ${run} finished: \\{"rows":3\\}$`));
+    assert.equal((await endOf(fixed.id)).wake, "launched", "the person hears how the healed run went");
+    await idle();
+    assert.equal((await runsOf(strut, "builder")).length, 3, "one woken turn per end of the run");
+    const file = JSON.parse(await readFile(wakeFilePath(strut.dataDir, "j-h"), "utf-8")) as WakeFile;
+    assert.deepEqual(file.seen, [run, `${run}#1`]);
   });
 
   it("a run somebody cancelled wakes nothing; a turn stopped while it looks stops the run", async () => {

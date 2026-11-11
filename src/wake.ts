@@ -63,7 +63,8 @@ export const WAKE_SILENT = "[silent]";
 export const WAKE_REPLY_MAX = 6_000;
 /** Wake turns since the person's last turn, at most. */
 export const WAKE_MAX = 4;
-/** Job runs remembered per session, so an end heard twice wakes once. */
+/** Job runs remembered per session, so an end heard twice wakes once: a
+ *  run id, with `#<n>` after its nth durable resume. */
 const SEEN_MAX = 500;
 /** How long a busy session is waited on when no run of ours will end it. */
 const RETRY_MS = 2_000;
@@ -110,7 +111,8 @@ export interface WakeFile {
   queued: WakeEnd[];
   /** The wake turn in flight, and the ends it carries. */
   turn?: { workflow: string; runId: string; ends: WakeEnd[] };
-  /** The job runs already woken on or capped, newest last. */
+  /** The job runs already woken on or capped, newest last; a healed run's
+   *  later end is `<runId>#<its durable resumes>`. */
   seen: string[];
 }
 
@@ -517,7 +519,13 @@ export function createWakes(deps: WakeDeps): Wakes {
       const workflow = local?.workflow ?? anchor.turns.at(-1)?.workflow ?? "orchestrator";
       const flow = await deps.getWorkflow(workflow).catch(() => null);
       if (!flow || typeof flow.params?.["wake"] !== "string") return "none";
-      const key = end.source ? `${end.source}/${end.runId}` : end.runId;
+      // Once per ATTEMPT of a run: one healed under its own id (a durable
+      // resume) ends again, and that end is news. Another strut's run is
+      // known here by its id alone.
+      const resumes = end.source
+        ? 0
+        : (await deps.store.getRunEvents(end.workflow, end.runId).catch(() => [])).filter((e) => e.type === "run.resumed" && !e.live).length;
+      const key = end.source ? `${end.source}/${end.runId}` : resumes ? `${end.runId}#${resumes}` : end.runId;
       const outcome = await withLock(`wake:${session}`, async (): Promise<WakeOutcome> => {
         const f = await read(session);
         if (f.seen.includes(key)) return "none";

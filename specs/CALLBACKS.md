@@ -558,7 +558,9 @@ the job's reply inline (6 000 chars at most) and its question. It runs:
   runId }` on it and on its `run.start`, `wake: true` on the session's turn
   line. A reply of exactly `[silent]` means there is nothing to add: hide it.
 
-**Gates.** Once per job run. Queued, never dropped: while a turn of the
+**Gates.** Once per end of a job run: an end heard twice wakes once, and a
+run resumed under its own id wakes again when it ends again. Queued, never
+dropped: while a turn of the
 conversation runs, the end waits, and every end that waited goes as one turn
 (`also` lists the others). At most four wake turns since the person's last
 turn (`createStrut({ orchestrator: { wakeMax } })`): past it, `"capped"`. A
@@ -594,7 +596,9 @@ another run started through `meta/run-workflow`, waits for its test run as
 before. A run that was cancelled wakes nothing, nor one whose turn the
 person stopped; a turn stopped while it still looks at the run stops the
 run. A restart resumes the run like any root run, and its end wakes the job
-then. The woken turns count toward `wakeMax`.
+then. So does a run the builder healed (`meta/resume-run`): it ends again
+under its own id, and wakes the job again. The woken turns count toward
+`wakeMax`.
 
 **A job that ran on another strut.** You heard its `run.end` on that
 strut's room (§8), not here. Hand it in, and the local conversation wakes on
