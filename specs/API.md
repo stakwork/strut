@@ -3079,9 +3079,11 @@ stops it mid-flight; the daily cap bounds the day). When it ends — success,
 error, cancelled, or finished by a durable resume after a restart — the
 ledger records it: a free run is charged nothing and its cost counts in the
 day; a paid run is charged its token by the rule — base + markup × cost, at
-the price of its launch; a run that FAILED its cost, no markup and no base,
-and never more than its reserve — never more than the token holds, and the
-rest of its reserve is free again. What is not yet charged is kept in
+the price of its launch; a run that FAILED its cost, no markup and no base;
+whatever the outcome, never more than its RESERVE (what a run spent past it
+— an overshoot with no gateway, or one call per agent with one — is the
+seller's, never the buyer's other credit), and the rest of its reserve is
+free again. What is not yet charged is kept in
 `<dataDir>/payments/public-runs.json` and charged at the next boot (a run
 cut off that nothing resumed, at what its log spent, as an error), and so
 is a hold the ledger keeps for a run that file lost (at the item's price

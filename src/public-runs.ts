@@ -38,8 +38,8 @@
  *   finds in the ledger. A hold refused, or a launch that fails after it,
  *   lets the admission go and frees the hold (a charge of nothing). The
  *   run's end charges the token by the rule (`chargeFor`, the ledger's):
- *   base + markup × cost, a failed run its cost and no more than the
- *   reserve, never more than the token holds.
+ *   base + markup × cost, a failed run its cost, and never more than its
+ *   reserve: what a run spent past it is the seller's.
  * - **Holds outlive a restart.** `reconcile(live, { holds: true })` also
  *   reads the ledger's open holds: one whose run is not on file (its file
  *   was lost) and not live is charged from its run's log, at the item's
@@ -121,7 +121,17 @@ export interface PublicRunsOptions {
   price?: (subject: string) => Promise<Price | undefined>;
   maxInFlight?: number;
   now?: () => number;
+  /** When a run's charge failed at its end, the waits before it is tried
+   *  again, the last repeated until it goes through (`SETTLE_RETRY_MS`). */
+  settleRetryMs?: readonly number[];
 }
+
+/** A charge that failed at a run's end (the ledger busy past its timeout, a
+ *  store read that threw) is tried again after these waits, the last one
+ *  repeated, rather than left until the next boot: until then the run holds
+ *  its cap against the daily cap, a slot of the server's in-flight limit
+ *  and its token's reserve, and its launcher never sees it end. */
+export const SETTLE_RETRY_MS: readonly number[] = [5_000, 30_000, 120_000, 600_000];
 
 export interface PublicRuns {
   /** The caps step: the in-flight limit and the item's daily cap, serial.
@@ -399,8 +409,22 @@ export function createPublicRuns(o: PublicRunsOptions): PublicRuns {
     return action;
   };
 
+  const retryWaits = o.settleRetryMs ?? SETTLE_RETRY_MS;
+  const settleLater = (workflow: string, runId: string, attempt: number) => {
+    const wait = retryWaits[Math.min(attempt, retryWaits.length - 1)] ?? 600_000;
+    const timer = setTimeout(() => {
+      const k = keyOf(workflow, runId);
+      // Settled meanwhile (a later `ended`, the boot reconcile): nothing to do.
+      if (!flights.has(k) && !onFile.has(k)) return;
+      void settle(workflow, runId).then((action) => {
+        if (action === "failed") settleLater(workflow, runId, attempt + 1);
+      });
+    }, wait);
+    timer.unref?.();
+  };
+
   const ended: PublicRuns["ended"] = async (workflow, runId) => {
-    await settle(workflow, runId);
+    if ((await settle(workflow, runId)) === "failed") settleLater(workflow, runId, 0);
   };
 
   const load: PublicRuns["load"] = async () => {
@@ -412,8 +436,22 @@ export function createPublicRuns(o: PublicRunsOptions): PublicRuns {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
       throw err;
     }
-    const list = JSON.parse(raw) as unknown;
-    if (!Array.isArray(list)) throw new Error(`${o.file}: not a list of public runs`);
+    // A file that does not read (cut short by a power loss) must not stop
+    // the server from booting: it is moved aside and named. The ledger's open
+    // holds are still charged by the reconcile; a free run it held goes
+    // uncounted in its day.
+    let list: unknown;
+    try {
+      list = JSON.parse(raw);
+    } catch {
+      list = undefined;
+    }
+    if (!Array.isArray(list)) {
+      const aside = `${o.file}.unreadable-${now()}`;
+      await rename(o.file, aside).catch(() => undefined);
+      console.error(`[public-runs] ${o.file} is not a list of public runs — moved aside to ${aside}; the ledger's open holds are still reconciled`);
+      return;
+    }
     for (const e of list as PublicRunEntry[]) {
       if (!e || typeof e.workflow !== "string" || typeof e.runId !== "string" || typeof e.subject !== "string") continue;
       const k = keyOf(e.workflow, e.runId);

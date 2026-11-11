@@ -124,7 +124,9 @@ export interface PublicAppInfo {
  *  reads by path, and these POSTs by name. */
 export const PUBLIC_PATH = /^\/public(?:\/|$)/;
 /** The POSTs anyone may make: a visitor's page calling its app, a launch,
- *  the launcher's cancel, buying credit and claiming it. */
+ *  the launcher's cancel, buying credit and claiming it. Exported from the
+ *  package (src/index.ts) with `PUBLIC_PATH`, so a host whose own gate
+ *  stands in front of strut (mcp's `/lab`) passes exactly these. */
 export const PUBLIC_POST = /^\/public\/(?:mcp|credit|credit\/claim|workflows\/[^/]+\/(?:run|runs\/[^/]+\/cancel))$/;
 
 /** Requests one visitor address may make to `/public` in a minute. */
