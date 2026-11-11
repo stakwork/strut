@@ -45,6 +45,25 @@ export interface Claim {
   corrected: number;
   kept: number;
   evidence: SaidRow[];
+  /** They said it is to last. */
+  lasting?: boolean;
+  /** The fixes made for it, newest first. */
+  fixes?: Array<{ at: string; page: string; line: string; dream?: string }>;
+  /** Corrections since its newest fix. */
+  open?: number;
+}
+
+/** A page edit a dream made for a claim (`dream/apply`). */
+export interface AppliedChange {
+  claim: string;
+  title: string;
+  page: { ref_id?: string; name: string };
+  kind: "changed" | "added";
+  removed: string[];
+  added: string[];
+  why?: string;
+  /** The proposal that holds it, when it waits for a person. */
+  proposed?: string;
 }
 
 export interface DreamOutput {
@@ -52,9 +71,19 @@ export interface DreamOutput {
   /** The tree the dream tended: its root Concept's name. */
   root?: string;
   claims?: Claim[];
-  /** The tree after the dream, and before it worked (absent when it read nothing). */
+  /** The tree after the dream. `before` is an older run's: the tree before it worked. */
   tree?: TreePage[];
   before?: TreePage[];
+  /** What each stage did: the moments found, how each was sorted, the page edits made, and what was passed over. */
+  moments?: number;
+  records?: Array<{ i: number; claim: string; created: boolean; recorded: boolean; outcome: Outcome }>;
+  unsorted?: Array<{ i?: number; why: string }>;
+  changes?: AppliedChange[];
+  unfixed?: Array<{ claim: string; why: string }>;
+  /** How many claims were due a fix. */
+  due?: number;
+  /** What the facts stage said it changed in memory. */
+  facts?: string;
   turns?: number;
   more?: boolean;
   cost?: number;
@@ -129,6 +158,19 @@ export interface PageChange {
   to?: string;
   /** Its one-line description, when that changed: as it was and as it is. */
   description?: { was: string; is: string };
+  /** The claim it was made for, why, and the proposal that holds it when it waits for a person (a staged dream's). */
+  claim?: string;
+  why?: string;
+  proposed?: string;
+}
+
+/** The page edits of a run: a staged dream lists them itself; an older run's are read off its two trees. */
+export function changesOf(out: DreamOutput): PageChange[] {
+  if (!Array.isArray(out.changes)) return pageChanges(out.before, out.tree);
+  return out.changes.map((c) => ({
+    ref_id: c.page.ref_id ?? `new:${c.page.name}`, name: c.page.name, kind: c.kind, removed: c.removed ?? [], added: c.added ?? [],
+    claim: c.claim, ...(c.why ? { why: c.why } : {}), ...(c.proposed ? { proposed: c.proposed } : {}),
+  }));
 }
 
 /** The pages a dream added, changed, moved or removed, in the tree's order (a removed one last). A page whose
@@ -171,11 +213,22 @@ export function foundBy(claims: readonly Claim[] | undefined, runId: string): Ar
 
 export type ClaimTone = "back" | "kept" | "quiet" | "new";
 
-/** Where a claim stands, read off what was said for it: corrected again after an earlier correction (`back`),
- *  last confirmed or followed (`kept`), first seen in this run (`new`), or nothing since (`quiet`, with how long
- *  against `now`). A group's is its own counts alone: its children say the rest. */
+/** Where a claim stands. With its fixes on it (a staged dream's): corrected since its last fix (`back`), fixed
+ *  and quiet since, due a fix (said to last, or corrected twice), or seen once. Without them, read off what was
+ *  said: corrected again after an earlier correction, last confirmed, first seen in this run, or quiet. */
 export function standingOf(claim: Claim, runId: string | undefined, now: number): { tone: ClaimTone; label: string } {
   const last = claim.evidence[0];
+  if (claim.fixes && typeof claim.open === "number") {
+    const fixed = claim.fixes[0];
+    if (fixed && claim.open > 0) return { tone: "back", label: "Came back after fix" };
+    if (fixed) {
+      const days = Math.max(0, Math.floor((now - Date.parse(fixed.at)) / 86_400_000));
+      return { tone: "quiet", label: days > 0 ? `Fixed, quiet ${days} day${days === 1 ? "" : "s"}` : "Fixed" };
+    }
+    if (last?.outcome === "followed") return { tone: "kept", label: "Kept" };
+    if (claim.open > 0 && (claim.lasting || claim.corrected >= 2)) return { tone: "new", label: "Due a fix" };
+    if (claim.open > 0) return { tone: "quiet", label: "Seen once" };
+  }
   if (last && isCorrection(last.outcome) && runId && last.dream === runId) {
     return claim.corrected > 1 ? { tone: "back", label: "Came back" } : { tone: "new", label: "New" };
   }
@@ -187,10 +240,12 @@ export function standingOf(claim: Claim, runId: string | undefined, now: number)
 /** The run in four numbers: turns read, corrections it found, pages it changed, claims that came back. */
 export function summaryOf(out: DreamOutput, runId: string): { turns: number; found: number; pages: number; back: number } {
   const found = foundBy(out.claims, runId).filter((f) => isCorrection(f.said.outcome));
+  // Came back: corrected in this run after a fix already made for it (a staged dream's), else corrected before.
+  const back = found.filter((f) => (f.claim.fixes ? f.claim.fixes.some((x) => x.at < f.said.at) : f.claim.corrected > 1));
   return {
     turns: typeof out.turns === "number" ? out.turns : 0,
     found: found.length,
-    pages: pageChanges(out.before, out.tree).length,
-    back: new Set(found.filter((f) => f.claim.corrected > 1).map((f) => f.claim.id)).size,
+    pages: changesOf(out).length,
+    back: new Set(back.map((f) => f.claim.id)).size,
   };
 }

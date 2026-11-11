@@ -15,7 +15,7 @@ import { useRun, useRuns, type RunSummary } from "@strut/kit";
 import { DocumentView, RunList, RunStatus, Transcript } from "strut/views";
 import { cn } from "@/lib/utils";
 import {
-  OUTCOME_TEXT, costText, foundBy, nest, pageChanges, sectionsOf, standingOf, summaryOf, whenText,
+  OUTCOME_TEXT, changesOf, costText, foundBy, nest, sectionsOf, standingOf, summaryOf, whenText,
   type Claim, type ClaimTone, type DreamOutput, type PageChange, type SaidRow, type TreePage,
 } from "./lib/report";
 
@@ -53,8 +53,9 @@ function ChangeRow({ change, causes }: { change: PageChange; causes: Array<{ cla
     : `${change.added.length && change.removed.length ? "line changed" : change.added.length ? "line added" : change.removed.length ? "line removed" : "description changed"}${change.from !== undefined ? `, moved to ${change.to || "the top"}` : ""}`;
   return (
     <li className="flex flex-col gap-1.5 px-3 py-2.5" data-testid="change">
-      <p className="text-sm">
+      <p className="flex flex-wrap items-baseline gap-x-2 text-sm">
         <span className="font-medium">{change.name}</span> <span className="text-muted-foreground">· {what}</span>
+        {change.proposed && <span className="rounded border border-foreground/50 px-1.5 py-0.5 text-xs">Waiting for a yes</span>}
       </p>
       {change.description && (
         <div className="flex flex-col gap-1" data-testid="description-change">
@@ -74,6 +75,7 @@ function ChangeRow({ change, causes }: { change: PageChange; causes: Array<{ cla
           Said: “{c.said.excerpt}” · {saidWhere(c.said)}
         </p>
       ))}
+      {change.why && <p className="text-xs text-muted-foreground">Why: {change.why}</p>}
     </li>
   );
 }
@@ -187,8 +189,20 @@ function RunDetail({ runId, lead }: { runId: string; lead?: ReactNode }) {
   const all = Array.isArray(out.claims) ? out.claims : [];
   const claims = nest(all);
   const tree = Array.isArray(out.tree) ? out.tree : [];
-  const changes = pageChanges(Array.isArray(out.before) ? out.before : undefined, tree);
+  const changes = changesOf(out);
   const found = foundBy(all, runId);
+  // The words behind a change: what was said for its claim (or, a group's, its claims), newest first. An older
+  // run names no claim: what this run found on that page.
+  const said = (c: PageChange) => {
+    const claim = all.find((x) => x.id === c.claim);
+    if (!claim) return found.filter((f) => f.claim.about === c.ref_id);
+    const ids = new Set([claim.id, ...(claim.children ?? [])]);
+    return all.filter((x) => ids.has(x.id)).flatMap((x) => x.evidence.filter((e) => e.outcome !== "followed").map((e) => ({ claim: x, said: e }))).sort((a, b) => b.said.at.localeCompare(a.said.at)).slice(0, 3);
+  };
+  const passed = [
+    ...(out.unfixed ?? []).map((u) => `${all.find((x) => x.id === u.claim)?.title ?? "A claim"}: ${u.why}`),
+    ...(out.unsorted ?? []).map((u) => `A moment was not recorded: ${u.why}`),
+  ];
   const sum = summaryOf(out, runId);
   const done = !!r && r.status !== "running" && r.status !== "paused";
   const now = r?.startedAt ? Date.parse(r.startedAt) : Date.now();
@@ -221,15 +235,23 @@ function RunDetail({ runId, lead }: { runId: string; lead?: ReactNode }) {
             {changes.length ? (
               <ul className="flex flex-col divide-y rounded-md border">
                 {changes.map((c) => (
-                  <ChangeRow key={c.ref_id} change={c} causes={found.filter((f) => f.claim.about === c.ref_id)} />
+                  <ChangeRow key={`${c.ref_id}|${c.claim ?? ""}`} change={c} causes={said(c)} />
                 ))}
               </ul>
             ) : (
-              <p className="text-sm text-muted-foreground">{sum.turns ? "No page changed." : text || "Nothing new to read."}</p>
+              <p className="text-sm text-muted-foreground">
+                {sum.turns ? (typeof out.due === "number" && !out.due ? "No page changed: no claim was due a fix. One remark alone changes nothing." : "No page changed.") : text || "Nothing new to read."}
+              </p>
             )}
           </section>
         )}
         {done && text && <Notes text={text} only={["Facts changed"]} />}
+        {done && typeof out.facts === "string" && out.facts.trim() && (
+          <section className="flex flex-col gap-2">
+            <h2 className="text-sm font-semibold">Facts</h2>
+            <DocumentView text={out.facts} kind="markdown" />
+          </section>
+        )}
         {done && !r?.error && (
           <section className="flex flex-col gap-2">
             <h2 className="text-sm font-semibold">Causes, most corrected first</h2>
@@ -251,16 +273,29 @@ function RunDetail({ runId, lead }: { runId: string; lead?: ReactNode }) {
           </section>
         )}
         {done && text && <Notes text={text} only={["Left alone"]} />}
+        {done && passed.length > 0 && (
+          <section className="flex flex-col gap-2">
+            <h2 className="text-sm font-semibold">Left alone</h2>
+            <ul className="flex flex-col divide-y rounded-md border text-sm">
+              {passed.map((l, i) => (
+                <li key={i} className="px-3 py-2">{l}</li>
+              ))}
+            </ul>
+          </section>
+        )}
         {done && text && !sectionsOf(text) && sum.turns > 0 && (
           <section className="flex flex-col gap-2">
             <h2 className="text-sm font-semibold">Its report</h2>
             <DocumentView text={text} kind="markdown" />
           </section>
         )}
-        <section className="flex flex-col gap-2 pb-4">
-          <h2 className="text-sm font-semibold">Every step it took</h2>
-          <Transcript workflow={WORKFLOW} runId={runId} path={AGENT_PATH} live={!done} />
-        </section>
+        {/* An older, one-agent run kept its whole transcript at one path; a staged run's stages are in its run log. */}
+        {!Array.isArray(out.changes) && (
+          <section className="flex flex-col gap-2 pb-4">
+            <h2 className="text-sm font-semibold">Every step it took</h2>
+            <Transcript workflow={WORKFLOW} runId={runId} path={AGENT_PATH} live={!done} />
+          </section>
+        )}
       </div>
     </div>
   );

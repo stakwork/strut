@@ -22,6 +22,11 @@ import claimStep from "../steps/lib/dream/claim.js";
 import claimsStep from "../steps/lib/dream/claims.js";
 import groupStep from "../steps/lib/dream/group.js";
 import turnsStep from "../steps/lib/dream/turns.js";
+import candidatesStep from "../steps/lib/dream/candidates.js";
+import recordStep from "../steps/lib/dream/record.js";
+import neighboursStep from "../steps/lib/dream/neighbours.js";
+import dueStep from "../steps/lib/dream/due.js";
+import applyStep from "../steps/lib/dream/apply.js";
 import doneStep from "../steps/lib/dream/done.js";
 
 type Step = { input: { parse(v: unknown): unknown }; run: (cfg: any, ctx: any) => Promise<unknown> };
@@ -148,6 +153,70 @@ for (const tb of testBackends()) {
       assert.match(await run(claimStep, { session: "s", turn: 9, excerpt: "x", outcome: "missing" }, { graph: b }), /dream\/claim failed/);
     });
 
+    it("the stages between the models: candidates for a moment, the sorting written, neighbours, what is due, and one line applied", async () => {
+      await b.nodes.update(writing, { set: { docs: "Write plainly.\nNo emoji." }, remove: [] });
+      const services = { graph: b };
+      const turns = [{ source: "conversation", session: "s", turn: 1, at: "2026-11-09T10:00:00.000Z", status: "success", run: "r1", said: "too long", reply: "ok", opened: ["Writing"] }];
+      const moments = [
+        { session: "s", turn: 1, excerpt: "too long, keep summaries to three lines", statement: "Summaries are three lines or fewer", kind: "preference", lasting: false },
+        { session: "s", turn: 1, excerpt: "Kate lives in Leeds", statement: "Kate lives in Leeds", kind: "fact", lasting: false },
+        { session: "nope", turn: 9, excerpt: "x", statement: "an invented turn", kind: "correction", lasting: false },
+      ];
+      const c = await run(candidatesStep, { moments, turns }, services);
+      assert.deepEqual([c.count, c.facts_count], [1, 1], "a fact goes to memory's stage; a moment of no turn is dropped");
+      assert.deepEqual(c.items[0].pages.map((p: any) => [p.name, !!p.opened, !!p.root]), [["Writing", true, false], ["Personal", false, true]], "the page it opened, then the root");
+      assert.match(c.text, /MOMENT 0 \[session s · turn 1\]\n {2}said: "too long, keep summaries to three lines"/);
+      assert.match(c.facts_text, /FACT 0 .*\n {2}said: "Kate lives in Leeds"/);
+
+      const r = await run(recordStep, { items: c.items, decisions: [{ i: 0, text: "Summaries are three lines or fewer", page: writing, outcome: "missing" }, { i: 7, outcome: "missing" }] }, services);
+      assert.deepEqual([r.recorded, r.touched.length, r.skipped.map((x: any) => x.why)], [1, 1, ["no such moment"]]);
+      const [claim] = r.touched;
+      // The same sentence found again is a candidate, and a claim of another tree's page is not written.
+      const again = await run(candidatesStep, { moments: [{ ...moments[0], excerpt: "again, too long" }], turns: [{ ...turns[0], turn: 2 }].concat(turns as any).map((t, i) => ({ ...t, turn: i === 0 ? 1 : 1 })) }, services);
+      assert.deepEqual(again.items[0].claims.map((x: any) => x.id), [claim]);
+      assert.match((await run(recordStep, { items: c.items, decisions: [{ i: 0, claim: "f".repeat(32), outcome: "missing" }] }, services)).skipped[0].why, /no claim .* in this tree/);
+
+      // Once: not due. Said to last, or corrected twice: due, with its page as it reads.
+      assert.equal((await run(dueStep, {}, services)).count, 0);
+      await recordSaid(g, said(3, { claim, session: "s", excerpt: "again, too long", outcome: "not_followed" }));
+      const due = await run(dueStep, {}, services);
+      assert.deepEqual(due.items.map((d: any) => [d.claim, d.corrected, d.open, d.page.name]), [[claim, 2, 2, "Writing"]]);
+      assert.match(due.text, /its page [0-9a-f-]{36} "Writing" reads:\n {4}\| Write plainly\.\n {4}\| No emoji\./);
+
+      const applied = await run(applyStep, {
+        items: due.items,
+        edits: [
+          { claim, action: "replace", page: writing, old_line: "not on the page", new_line: "x" },
+          { claim, action: "add", page: personal, new_line: "on the root" },
+          { claim, action: "add", page: reports, new_line: "on another tree's page" },
+          { claim: "nope", action: "add", page: writing, new_line: "x" },
+          { claim, action: "add", page: writing, new_line: "Summaries are three lines or fewer.", first: true },
+          { claim, action: "add", page: writing, new_line: "Summaries are three lines or fewer." },
+        ],
+      }, services);
+      assert.deepEqual(applied.skipped.map((x: any) => x.why), [
+        "the line to replace is not on the page as written", "the root's own text is left alone", "not a page of this tree", "not a claim that is due", "the page already says it",
+      ]);
+      assert.deepEqual(applied.changes.map((x: any) => [x.page.name, x.kind, x.removed, x.added]), [["Writing", "changed", [], ["Summaries are three lines or fewer."]]]);
+      assert.equal((await treePages(g, undefined, "Personal"))[1]!.docs, "Summaries are three lines or fewer.\nWrite plainly.\nNo emoji.", "one line, first; the rest word for word");
+      // Fixed: nothing open, so nothing due, until it is corrected again.
+      const fixed = (await listClaims(g, undefined, "Personal")).find((x) => x.id === claim)!;
+      assert.deepEqual([fixed.open, fixed.fixes.map((f) => f.line), fixed.corrected, fixed.evidence.length], [0, ["Summaries are three lines or fewer."], 2, 2], "a fix is not something said");
+      assert.equal((await run(dueStep, {}, services)).count, 0);
+      await recordSaid(g, said(0, { claim, session: "s", turn: 9, excerpt: "still too long", outcome: "not_followed", observed_at: Date.now() + 1000 }));
+      assert.deepEqual((await run(dueStep, {}, services)).items.map((d: any) => [d.open, d.fixes]), [[1, ["Summaries are three lines or fewer."]]]);
+
+      // Neighbours: claims that share words are offered; a claim under a group is offered as its group.
+      const sam = (await recordSaid(g, said(1, { text: "No greeting in emails to Sam", about: writing }))).claim;
+      const kate = (await recordSaid(g, said(2, { text: "No greeting in emails to Kate", about: writing }))).claim;
+      const near = await run(neighboursStep, { claims: [kate] }, services);
+      assert.deepEqual(near.items.map((n: any) => [n.claim.id, n.near.map((o: any) => o.id)]), [[kate, [sam]]]);
+      const group = await groupClaims(g, { text: "Emails have no greeting", claims: [sam], at });
+      const ann = (await recordSaid(g, said(4, { text: "No greeting in emails to Ann", about: writing }))).claim;
+      assert.deepEqual((await run(neighboursStep, { claims: [ann] }, services)).items[0].near.map((o: any) => [o.id, !!o.group]).slice(0, 2).sort(), [[group.claim, true], [kate, false]].sort());
+      assert.deepEqual((await groupClaims(g, { parent: group.claim, claims: [ann, kate], at })).grouped.sort(), [ann, kate].sort(), "added to an existing group by its id");
+    });
+
     it("dream/turns stops before reading when the run cannot see the tree: no root page, or a run an app's page launched", async () => {
       const services = { conversations: { all: async () => [], get: async () => null }, dataDir: join(tmpdir(), "strut-dream-none"), graph: b };
       assert.equal((await run(turnsStep, {}, services)).count, 0, "the tree is there: nothing new to read");
@@ -233,30 +302,38 @@ describe("dream/turns and dream/done", () => {
 });
 
 describe("the shipped dream workflow", () => {
-  it("is valid; a tree and review are its input; it reads the turns before the agent, marks them only after it, and reports text, claims, turns and cost", async () => {
+  it("is valid and staged: a model stage per job, each gated, with code picking, counting and writing between them", async () => {
     const text = await readFile(join(SYSTEM_DIR, "dream", "workflow.yaml"), "utf-8");
     const v = validateWorkflowYaml(text, { registry: await createRegistry([]) });
     assert.equal(v.ok, true, JSON.stringify(v.errors, null, 2));
     const flow = flowFromYaml("dream", "v1", text);
-    assert.deepEqual(flow.steps.map((s) => s.type), ["dream/turns", "if", "dream/tree", "agent", "dream/done", "pack", "dream/claims", "dream/tree", "pack"]);
-    const cfg = flow.steps[3]!.config as Record<string, unknown>;
-    assert.deepEqual(cfg["toolFilter"], ["none"]);
-    assert.equal(cfg["model"], undefined);
-    // It can record and group claims, read, and change facts and pages. It cannot delete or merge.
-    const tools = cfg["agentTools"] as string[];
-    assert.ok(["dream/claims", "dream/claim", "dream/group", "graph/assert", "graph/edit-node", "graph/create-triplet", "graph/move-node"].every((x) => tools.includes(x)));
-    assert.ok(!tools.some((x) => /delete|merge/.test(x)));
-    // Review gates every write to a page or a fact, and nothing else.
-    assert.equal(cfg["approve"], "{{ input.review ? params.writes : params.none }}");
-    const params = (flow as unknown as { params: Record<string, string[]> }).params;
-    assert.deepEqual([...params["writes"]!].sort(), tools.filter((x) => x.startsWith("graph/") && !/get|neighbors|search|find|resolve/.test(x)).sort());
-    assert.deepEqual(params["none"], []);
-    assert.match(String(cfg["prompt"]), /name "\{\{ input\.root \}\}"/);
-    // Single remarks add up through groups, and "remember" is a lasting preference.
-    assert.match(String(cfg["prompt"]), /look over ALL the claims, old and new/);
-    assert.match(String(cfg["prompt"]), /"from now on" or "remember"/);
-    assert.equal(flow.steps[4]!.depends, "dream");
-    assert.equal(flow.steps[3]!.depends, "before", "the tree is read before the agent changes it");
+    assert.deepEqual(flow.steps.map((s) => `${s.id}:${s.type}`), [
+      "turns:dream/turns", "hasTurns:if", "find:agent", "cands:dream/candidates", "hasMoments:if", "match:agent", "record:dream/record",
+      "hasFacts:if", "facts:agent", "near:dream/neighbours", "hasNear:if", "group:agent", "grouped:foreach", "due:dream/due", "hasDue:if", "fix:agent",
+      "apply:dream/apply", "done:dream/done", "after:dream/claims", "tree:dream/tree", "result:pack",
+    ]);
+    const step = (id: string) => flow.steps.find((s) => s.id === id)!;
+    const cfg = (id: string) => step(id).config as Record<string, any>;
+    // The stages that judge read what they are handed and hold no tool: they cannot look further, or write.
+    for (const id of ["find", "match", "group", "fix"]) {
+      assert.deepEqual([cfg(id)["toolFilter"], cfg(id)["agentTools"], cfg(id)["model"], typeof cfg(id)["schema"]], [["none"], undefined, undefined, "object"], id);
+      assert.equal(step(id).when, true, `${id} runs only when there is something for it`);
+    }
+    // Only the facts stage holds tools: memory's, and no delete or merge. Review gates its one write.
+    assert.deepEqual(cfg("facts")["agentTools"], ["graph/resolve", "graph/graph-search", "graph/graph-get", "graph/assert"]);
+    assert.equal(cfg("facts")["approve"], "{{ input.review ? params.writes : params.none }}");
+    assert.deepEqual((flow as unknown as { params: Record<string, string[]> }).params, { writes: ["graph/assert"], none: [] });
+    // A model never reads the whole transcript twice, the claims or the tree: each prompt is its stage's text alone.
+    assert.match(cfg("find")["prompt"], /\{\{ turns\.text \}\}/);
+    assert.doesNotMatch(cfg("match")["prompt"], /turns\.text/);
+    assert.match(cfg("match")["prompt"], /\{\{ cands\.text \}\}/);
+    assert.match(cfg("group")["prompt"], /\{\{ near\.text \}\}/);
+    assert.match(cfg("fix")["prompt"], /\{\{ due\.text \}\}/);
+    assert.match(cfg("find")["prompt"], /always, never, from now on, or remember|said always/i);
+    // Marked read only at the end; a tree and review are its input.
+    assert.deepEqual(step("done").depends, ["apply", "hasFacts", "facts"]);
+    assert.equal(cfg("apply")["review"], "{{ input.review }}");
+    assert.equal(cfg("turns")["tree"], "{{ input.root }}");
     assert.ok(isSystemWorkflow("dream"));
     assert.deepEqual(JSON.parse(await readFile(join(SYSTEM_DIR, "dream", "automation.json"), "utf-8")).trigger, { every: "day", at: ["04:00"] });
   });

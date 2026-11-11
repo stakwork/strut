@@ -12,7 +12,7 @@ import { treeHash } from "../version.js";
 import type { KitLocation } from "./kit.js";
 import { DREAM_APP, DREAM_DIR } from "./dream-seed.js";
 import { VIEWS_APP } from "./views-seed.js";
-import { costText, foundBy, nest, pageChanges, sectionsOf, standingOf, summaryOf, type Claim, type SaidRow, type TreePage } from "./dream/src/lib/report.js";
+import { changesOf, costText, foundBy, nest, pageChanges, sectionsOf, standingOf, summaryOf, type Claim, type SaidRow, type TreePage } from "./dream/src/lib/report.js";
 
 /**
  * `strut/dream` (plans/dream.md): what the dream did, as a first-party app
@@ -73,6 +73,22 @@ describe("strut/dream: the report", () => {
     const root = { ref_id: "root", name: "Personal", depth: 0 };
     const out = { turns: 12, claims: [fresh, back, kept, quiet], before: [root, page("w", "Writing")], tree: [root, page("w", "Writing", { docs: "Be brief." })] };
     assert.deepEqual(summaryOf(out, "run-2"), { turns: 12, found: 2, pages: 1, back: 1 }, "a confirmation is not a correction");
+  });
+
+  it("a staged dream lists its own page edits, and a claim with its fixes on it says where it stands exactly", () => {
+    const now = Date.parse("2026-11-15T10:00:00.000Z");
+    const out = { changes: [{ claim: "a", title: "Summaries too long", page: { ref_id: "w", name: "Writing" }, kind: "changed" as const, removed: ["old"], added: ["new"], why: "it came back" }, { claim: "b", title: "x", page: { name: "Email" }, kind: "added" as const, removed: [], added: ["No greeting."], proposed: "p1" }] };
+    assert.deepEqual(changesOf(out).map((c) => [c.ref_id, c.name, c.kind, c.claim, c.proposed]), [["w", "Writing", "changed", "a", undefined], ["new:Email", "Email", "added", "b", "p1"]]);
+    const fix = { at: "2026-11-12T10:00:00.000Z", page: "w", line: "new" };
+    assert.deepEqual([
+      claim("back", { corrected: 2, open: 1, fixes: [fix], evidence: [said({ at: "2026-11-14T10:00:00.000Z" })] }),
+      claim("fixed", { corrected: 2, open: 0, fixes: [fix], evidence: [said()] }),
+      claim("due", { corrected: 2, open: 2, fixes: [], evidence: [said()] }),
+      claim("lasting", { corrected: 1, open: 1, lasting: true, fixes: [], evidence: [said()] }),
+      claim("once", { corrected: 1, open: 1, fixes: [], evidence: [said()] }),
+    ].map((c) => standingOf(c, "run", now).label), ["Came back after fix", "Fixed, quiet 3 days", "Due a fix", "Due a fix", "Seen once"]);
+    const came = claim("back", { corrected: 2, open: 1, fixes: [fix], evidence: [said({ dream: "run", at: "2026-11-14T10:00:00.000Z" }), said({ dream: "old" })] });
+    assert.deepEqual(summaryOf({ turns: 3, claims: [came], changes: out.changes }, "run"), { turns: 3, found: 1, pages: 2, back: 1 }, "came back: corrected after a fix already made");
   });
 
   it("says what a run cost, and when it cost nothing", () => {

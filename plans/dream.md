@@ -90,33 +90,50 @@ settings, so a second tree is a second automation:
 
 - `root` (default `Personal`): the tree it tends.
 - `review` (default false): every change to a page or a fact is a proposal
-  a person decides (the agent's `approve`). Claims and evidence are never
-  gated.
+  a person decides. Claims and evidence are never gated.
 
-1. `dream/turns` reads the conversation index for the turns after each
-   conversation's mark, oldest first, capped (60), each with who spoke and
-   which pages its run opened. Wakes are skipped; a turn in flight stops
-   that conversation there. The first dream reads the last 14 days only.
-2. With no new turns the run ends here, with no model call.
-3. One agent, stamped "janitor": `dream/claims`, `dream/claim`,
-   `dream/group`, the graph reads, and `graph/assert`, `graph/edit-node`,
-   `graph/create-triplet`, `graph/move-node`. No delete, no merge. In
-   order: look at the claims and the tree; find each correction; sort it
-   into an outcome; record it on a claim that covers it, else group it
-   with one of its kind, else make a new one; correct a fact the person
-   said is wrong; fix the tree as the outcome calls for. One remark alone
-   changes no page. At most 10 writes to facts and pages.
-4. `dream/done` moves the marks. A dream that fails before it reads the
-   same turns again; evidence is found by its turn, so nothing is written
-   twice.
-5. The run's output: the report, the tree's claims as they stand, the
-   tree before the agent worked and after (`dream/tree`), the turns read,
-   the cost. What the dream changed is the difference between the two
-   trees: no page needs the history, or a read of the graph, to show it.
+Three rules shape it. Nothing unbounded goes in a prompt: a model reads the
+capped batch of turns, or one thing with the few candidates picked for it,
+never every claim or the whole tree. Code finds, counts and decides when;
+a model judges small things. One job per model call, with no tool but its
+answer, so it cannot skip a step or write.
+
+| Stage | Who | Reads | Makes |
+| --- | --- | --- | --- |
+| `turns` | code | the turns after the tree's marks, capped (60) | the batch |
+| FIND | model | the batch | moments: the turn, the words, one sentence that should hold, its kind, whether it was said to last |
+| `candidates` | code | the claims and the tree | for each moment, the few claims and pages nearest it, and the pages its turn opened |
+| MATCH | model | each moment with its candidates | which claim (or a new one, on which page), and the outcome |
+| `record` | code | the sorting | the evidence, checked against the tree |
+| FACTS | model, memory's tools | the moments that are facts | a wrong fact refuted or ended |
+| `neighbours` | code | the claims | for each claim touched, the few it might be one kind with |
+| GROUP | model | those | groups |
+| `due` | code | the counts | the claims due a fix: a correction since the last fix, AND said to last or corrected twice (a group together) |
+| FIX | model | each due claim, what was said, its one page | one edit: a line added or replaced, or a new page |
+| `apply` | code | the edits | the page written (or a proposal), and the fix noted on the claim |
+| `done` | code | | the marks moved |
+
+A stage with nothing to do is skipped, so a dream with no new turns and
+nothing due calls no model. `candidates` and `neighbours` pick by shared
+words (`concept-claims.ts` `nearest`): a stand-in for search, and the seam
+a real one replaces. It need not be exact, since GROUP catches a claim
+that MATCH made twice. `due` is why one remark changes nothing, and why a
+claim fixed and corrected again is fixed again: by replacing its line.
+
+A fix is noted on its claim (an Evidence of its own kind, never counted as
+something said): when, which page, the line. That is the claim's fix time,
+so "came back after its fix" is read off the graph.
 
 The marks are bookkeeping, so a file per tree
 (`<dataDir>/dream/<tree>.json`) and never the graph. Each tree has its own:
-two trees may be fed by the same conversations.
+two trees may be fed by the same conversations. They move only at the end:
+a dream that fails reads the same turns again, and evidence is found by its
+turn, so nothing is written twice.
+
+The run's output is what each stage did: the moments found and how each
+was sorted, the page edits (lines lost and gained, for which claim), what
+was passed over and why, the tree's claims and pages as they stand, and
+the cost.
 
 ## The app
 

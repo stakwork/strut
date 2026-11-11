@@ -75,6 +75,8 @@ export interface Said {
   why?: string;
   /** The sayer says the claim is WRONG. Default: they say it is right. */
   denies?: boolean;
+  /** They said it is to last ("always", "never", "from now on", "remember"). */
+  lasting?: boolean;
   outcome: Outcome;
   /** When it was said (epoch ms). */
   observed_at: number;
@@ -168,6 +170,9 @@ export async function recordSaid(g: ClaimGraph, s: Said): Promise<SaidWrite> {
   const context = JSON.stringify({
     source: s.source, session: s.session, turn: s.turn, outcome: s.outcome,
     ...(s.run ? { run: s.run } : {}), ...(s.said_by ? { said_by: s.said_by } : {}), ...(s.why ? { why: s.why } : {}), ...(s.dream ? { dream: s.dream } : {}),
+    ...(s.lasting ? { lasting: true } : {}),
+    // When, to the millisecond: the node's `observed_at` is whole seconds, too coarse to order a correction and a fix.
+    ms: s.observed_at,
   });
   await g.edges.write({ edge: CLAIM_EDGES.EVIDENCED_BY, source_ref_id: ref, target_ref_id: node.ref_id, properties: { strength, context }, ...edgeBase(s) });
   return { claim: id, created, recorded: true };
@@ -177,13 +182,24 @@ export async function recordSaid(g: ClaimGraph, s: Said): Promise<SaidWrite> {
  *  another parent, or a parent itself, is refused. The parent is about the Concept `about` names. */
 export async function groupClaims(
   g: ClaimGraph,
-  input: { text: string; title?: string; about: string; claims: string[]; at: number; namespace?: string; created_by?: string },
+  input: { text?: string; title?: string; about?: string; parent?: string; claims: string[]; at: number; namespace?: string; created_by?: string },
 ): Promise<{ claim: string; created: boolean; grouped: string[] }> {
-  if (!input.text.trim()) throw new Error("a group needs `text`: the sentence its claims have in common");
+  if (!input.parent && !input.text?.trim()) throw new Error("a group needs `text` (the sentence its claims have in common) or `parent` (an existing group's id)");
   if (!input.claims.length) throw new Error("a group needs the claims it holds");
-  if (!(await conceptRef(g, input.about))) throw new Error(`"${input.about}" is not a Concept`);
   const d = g.dialect;
-  const id = groupClaimId(input.text);
+  // The page a new group belongs on: the one named, else its first claim's.
+  let about = input.about;
+  if (!about && !input.parent) {
+    const rows = await g.query(
+      `MATCH ${d.node("c", CLAIM_TYPE, { id: "$id" })}-[a:${q(CLAIM_EDGES.ABOUT)}]->${d.node("p", CONCEPT_TYPE)} WHERE ${d.edgeLive("a")} AND ${d.live("p")} RETURN p.ref_id AS r LIMIT 1`,
+      { id: input.claims[0]! },
+    );
+    about = typeof rows[0]?.["r"] === "string" ? (rows[0]!["r"] as string) : undefined;
+  }
+  if (!input.parent && (!about || !(await conceptRef(g, about)))) throw new Error(`"${String(about)}" is not a Concept`);
+  const id = input.parent ?? groupClaimId(input.text!);
+  const parentRef = input.parent ? await claimRef(g, input.namespace, input.parent) : null;
+  if (input.parent && !parentRef) throw new Error(`no claim "${input.parent}" to group them under`);
   const children: Array<{ id: string; ref: string }> = [];
   for (const c of [...new Set(input.claims)]) {
     const ref = await claimRef(g, input.namespace, c);
@@ -203,11 +219,11 @@ export async function groupClaims(
     { ids: children.map((c) => c.id) },
   );
   if (parents.length) throw new Error(`claim "${String(parents[0]!["id"])}" is a group: one level of groups`);
-  const w = await writeClaim(g, { id, text: input.text, ...(input.title ? { title: input.title } : {}), at: input.at, ...edgeBase(input) });
+  const w = parentRef ? { ref_id: parentRef, created: false } : await writeClaim(g, { id, text: input.text!, ...(input.title ? { title: input.title } : {}), at: input.at, ...edgeBase(input) });
   const fresh = children.filter((c) => !under.has(c.id));
   await g.edges.writeMany([
     ...fresh.map((c) => ({ edge: PARENT_OF, source_ref_id: w.ref_id, target_ref_id: c.ref, ...edgeBase(input) })),
-    ...(w.created ? [{ edge: CLAIM_EDGES.ABOUT, source_ref_id: w.ref_id, target_ref_id: input.about, ...edgeBase(input) }] : []),
+    ...(w.created ? [{ edge: CLAIM_EDGES.ABOUT, source_ref_id: w.ref_id, target_ref_id: about!, ...edgeBase(input) }] : []),
   ]);
   return { claim: id, created: w.created, grouped: fresh.map((c) => c.id) };
 }
@@ -226,6 +242,7 @@ export interface SaidRow {
   at: string;
   /** The run that found it. */
   dream?: string;
+  lasting?: boolean;
 }
 
 export interface ConceptClaim {
@@ -247,6 +264,12 @@ export interface ConceptClaim {
   last?: string;
   /** Its own evidence, newest first. A group has none. */
   evidence: SaidRow[];
+  /** Somebody said it is to last. */
+  lasting?: boolean;
+  /** The fixes made for it, newest first: when, on which page, and the line written. */
+  fixes: Array<{ at: string; page: string; line: string; dream?: string }>;
+  /** Corrections after its newest fix (all of them when it has none), its children's included. Counted here. */
+  open: number;
 }
 
 const num = (v: unknown): number => (typeof v === "bigint" ? Number(v) : Number((v as { toNumber?: () => number } | null)?.toNumber?.() ?? v ?? 0));
@@ -290,7 +313,7 @@ export async function listClaims(g: ClaimGraph, namespace: string | undefined, r
     if (tree && !tree.has(String(r["about"]))) continue;
     out.set(String(r["id"]), {
       id: String(r["id"]), title: String(r["title"] ?? ""), text: String(r["text"] ?? ""), since: new Date(num(r["since"]) * 1000).toISOString(),
-      about: String(r["about"]), concept: String(r["concept"] ?? ""), corrected: 0, kept: 0, evidence: [],
+      about: String(r["about"]), concept: String(r["concept"] ?? ""), corrected: 0, kept: 0, evidence: [], fixes: [], open: 0,
     });
   }
   const ids = [...out.keys()];
@@ -310,6 +333,15 @@ export async function listClaims(g: ClaimGraph, namespace: string | undefined, r
     } catch {
       context = {};
     }
+    const when = new Date(typeof context["ms"] === "number" ? context["ms"] : num(r["at"]) * 1000).toISOString();
+    if (context["kind"] === "fix") {
+      claim.fixes.push({
+        at: when, page: String(context["page"] ?? ""), line: String(r["excerpt"] ?? ""),
+        ...(typeof context["dream"] === "string" ? { dream: context["dream"] } : {}),
+      });
+      continue;
+    }
+    if (context["lasting"] === true) claim.lasting = true;
     const outcome = (OUTCOMES as readonly string[]).includes(String(context["outcome"])) ? (context["outcome"] as Outcome) : undefined;
     if (outcome === "followed") claim.kept++;
     else if (isCorrection(outcome)) claim.corrected++;
@@ -317,7 +349,8 @@ export async function listClaims(g: ClaimGraph, namespace: string | undefined, r
     claim.evidence.push({
       source: String(context["source"] ?? ""), session: String(context["session"] ?? ""), turn: num(context["turn"]),
       ...str("run"), ...str("said_by"), excerpt: String(r["excerpt"] ?? ""), ...str("why"),
-      denies: num(r["strength"]) < 0, ...(outcome ? { outcome } : {}), at: new Date(num(r["at"]) * 1000).toISOString(), ...str("dream"),
+      denies: num(r["strength"]) < 0, ...(outcome ? { outcome } : {}), at: when, ...str("dream"),
+      ...(context["lasting"] === true ? { lasting: true } : {}),
     } as SaidRow);
   }
   const groups = await g.query(
@@ -333,18 +366,69 @@ export async function listClaims(g: ClaimGraph, namespace: string | undefined, r
   }
   for (const c of out.values()) {
     c.evidence.sort((a, b) => b.at.localeCompare(a.at));
+    c.fixes.sort((a, b) => b.at.localeCompare(a.at));
     if (c.evidence[0]) c.last = c.evidence[0].at;
   }
+  // What is still open: corrections after the newest fix that covers the claim, its own or its group's.
+  const fixedAt = (c: ConceptClaim) => [c.fixes[0]?.at, c.parent ? out.get(c.parent)?.fixes[0]?.at : undefined].filter((x): x is string => !!x).sort().pop() ?? "";
+  for (const c of out.values()) c.open = c.evidence.filter((e) => isCorrection(e.outcome) && e.at > fixedAt(c)).length;
   for (const c of out.values()) {
     if (!c.children) continue;
     for (const k of c.children.map((id) => out.get(id)!)) {
       c.corrected += k.corrected;
       c.kept += k.kept;
+      c.open += k.open;
+      if (k.lasting) c.lasting = true;
       if (k.last && (!c.last || k.last > c.last)) c.last = k.last;
     }
     c.children.sort();
   }
   return [...out.values()].sort((a, b) => b.corrected - a.corrected || (b.last ?? b.since).localeCompare(a.last ?? a.since));
+}
+
+/** A fix made for a claim: the line written on a page, by which dream. Kept on the claim as a record of its own
+ *  (the edge's `context.kind` is "fix", its strength 0), so it is never counted as something said. */
+export async function recordFix(g: ClaimGraph, f: { claim: string; page: string; line: string; dream?: string; at: number; namespace?: string; created_by?: string }): Promise<boolean> {
+  const ref = await claimRef(g, f.namespace, f.claim);
+  if (!ref) throw new Error(`no claim "${f.claim}"`);
+  const id = hash(`${f.claim}|fix|${f.page}|${f.dream ?? f.at}`);
+  const node = await g.nodes.write(
+    {
+      type: EVIDENCE_TYPE,
+      data: { id, name: boundedName(f.line || "fix"), content: f.line, evidence_mode: "observed", evidence_status: "collected", observed_at: seconds(f.at) },
+      ...(f.created_by ? { created_by: f.created_by } : {}),
+    },
+    "create",
+    f.namespace ? { namespace: f.namespace } : {},
+  );
+  if (node.outcome !== "created") return false;
+  const context = JSON.stringify({ kind: "fix", page: f.page, ...(f.dream ? { dream: f.dream } : {}), ms: f.at });
+  await g.edges.write({ edge: CLAIM_EDGES.EVIDENCED_BY, source_ref_id: ref, target_ref_id: node.ref_id, properties: { strength: 0, context }, ...edgeBase(f) });
+  return true;
+}
+
+const STOP = new Set("the and for that this with from have has not are was were you your they them their its but can will would should when what which who how into than then also just only about more most very any all one two out off over under after before again there here been being does did done make made use used get got".split(" "));
+/** The words of a sentence that carry it: lowercased, three letters or more, the common ones dropped. */
+export function wordsOf(text: string): Set<string> {
+  return new Set((text.toLowerCase().match(/[a-z0-9][a-z0-9'-]{2,}/g) ?? []).map((w) => w.replace(/(ing|ed|es|s)$/, "")).filter((w) => w.length > 2 && !STOP.has(w)));
+}
+/** How alike two texts are by the words they share: 0 none, 1 the same words. A stand-in for search (plans/dream.md):
+ *  it picks the handful of candidates a model then judges, and is the seam a real search replaces. */
+export function alike(a: Set<string>, b: Set<string>): number {
+  if (!a.size || !b.size) return 0;
+  let n = 0;
+  for (const w of a) if (b.has(w)) n++;
+  return n / Math.sqrt(a.size * b.size);
+}
+/** The `k` of `items` most like `text`, best first; those sharing no word are left out. */
+export function nearest<T>(text: string, items: readonly T[], textOf: (x: T) => string, k: number): T[] {
+  const w = wordsOf(text);
+  return items
+    .map((x) => ({ x, s: alike(w, wordsOf(textOf(x))) }))
+    .filter((r) => r.s > 0)
+    .sort((a, b) => b.s - a.s)
+    .slice(0, k)
+    .map((r) => r.x);
 }
 
 export interface TreePage {

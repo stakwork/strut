@@ -2,7 +2,7 @@ import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
 import { OUTCOMES } from "../../../graph/concept-claims.js";
 import { errText } from "../graph/_shared.js";
-import { claimGraph } from "./_graph.js";
+import { claimGraph, writerOf } from "./_graph.js";
 
 export default defineStep({
   type: "dream/claim",
@@ -33,6 +33,7 @@ export default defineStep({
     why: z.string().optional().describe("One line: what the assistant did and what was wanted."),
     outcome: z.enum(OUTCOMES).describe("What the assistant did there."),
     denies: z.boolean().optional().describe("The person says the claim itself is wrong. Default false."),
+    lasting: z.boolean().optional().describe("They said it is to last (\"always\", \"never\", \"from now on\", \"remember\")."),
     created_by: z.string().optional(),
   }),
   output: z.any(),
@@ -41,7 +42,7 @@ export default defineStep({
       const { g, namespace, readable } = await claimGraph(ctx);
       if (!readable) return "dream/claim failed — REFUSED: this caller may not read the namespace claims are kept in";
       const at = cfg.at ? Date.parse(cfg.at) : NaN;
-      const by = cfg.created_by ?? ctx?.actor;
+      const by = writerOf(ctx, cfg.created_by);
       const { recordSaid } = await import("../../../graph/concept-claims.js");
       return await recordSaid(g, {
         ...(cfg.claim ? { claim: cfg.claim } : {}),
@@ -57,6 +58,7 @@ export default defineStep({
         excerpt: cfg.excerpt,
         ...(cfg.why ? { why: cfg.why } : {}),
         ...(cfg.denies ? { denies: true } : {}),
+        ...(cfg.lasting ? { lasting: true } : {}),
         outcome: cfg.outcome,
         observed_at: Number.isFinite(at) ? at : Date.now(),
         // The run that found it: with the claim's Concept, what finds the history commit that fixed it.
