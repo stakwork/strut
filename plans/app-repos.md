@@ -1,9 +1,10 @@
 # An app as a repo — build it in strut, keep it in git, serve it at a domain
 
-> **Status (2026-11-10): proposed.** From one design conversation with the
-> owner. Rows in "Decided" marked **owner** are the owner's words; every
-> other row is *proposed*. Nothing here is built. Written against strut
-> `main` @8f231964.
+> **Status (2026-11-10): proposed; its open questions RULED the same day**
+> ("Rulings", at the end, folded into the sections they touch). From one
+> design conversation with the owner. Rows in "Decided" marked **owner**
+> are the owner's words; every other row is *proposed*. Nothing here is
+> built. Written against strut `main` @8f231964.
 >
 > Companion to:
 > - `marketplace.md`: the package format (§1), the `git+` source and the
@@ -151,6 +152,8 @@ runnable:                     # paid-runs.md §2's record, names package-first
   - { kind: workflow, name: ghost, base: 0.002, markup: 1.3, capUsd: 0.05, dailyCapUsd: 5 }
 concepts: [Moon Lander]       # Concept roots in the public view
 signIn: [key, lnurl, nostr]   # §5.3's methods this box accepts (default: none)
+visitorKey: domain            # a child key per domain (default: root — §5.2)
+limits: { writesPerDay: 500 } # per-visitor limits over strut's defaults (§5.1)
 ```
 
 - **Applied at every deploy.** It writes the box's public view record
@@ -271,10 +274,9 @@ what the box should have; the second names the app it is.
   `?app=<n>&solo=1&public=1` today.
 - **Deep links.** The app's own `?input=` still works: a shared link opens
   the game where it says.
-- **No other UI by default.** The shell, the store and the key prompt are
+- **No other UI for visitors.** The shell, the store and the key prompt are
   not drawn. With the key (a session, `?key=`), `/?shell=1` opens strut's
-  own UI: the operator's console for runs, logs and secrets (open
-  question 1).
+  own UI: the operator's console for runs, logs and secrets (ruled 1).
 - **Open routes.** `/public/*` and the visitor's MCP door, as on any strut
   with a public view. Every other route keeps its credential.
 - **Many hosts, one app.** Whatever `Host` a request carries, `/` is the
@@ -319,8 +321,16 @@ the same image runs on Fly, Railway or a home server.
 ### 4.6 The strut version
 
 The kit an app builds against is the strut's. The image tag pins it
-(`STRUT_IMAGE_TAG=<sha>`, or a release channel). A repo cannot yet say
-which strut it needs (open question 8).
+(`STRUT_IMAGE_TAG=<sha>`, or a release channel). A repo does not say which
+strut it needs (ruled 8): strut's version is a commit today, with nothing
+to compare against. Revisit once strut has release numbers.
+
+### 4.7 A private repo
+
+A served box may follow a private repo (ruled 9): `STRUT_SERVE`'s
+`tokenSecret` names the secret it reads with, as `git/checkout` does. The
+app is public and the source stays private, like any closed-source site.
+Nothing else changes.
 
 ## 5. Visitors
 
@@ -360,25 +370,38 @@ A session, the existing signed cookie (`auth.ts`), with `role: "visitor"`
 - **Nothing else.** Not Jamie, not another app, not a private read. A
   visitor is not a member: a member's Jamie reaches the builder.
 
-**Limits.** An anonymous key costs nothing to make, so per-actor counts
-alone don't hold. Writes and launches are budgeted per actor and per
-address (`visitorAddress`), the monitor (`src/apps/monitor.ts`) warns on
-fan-out, and anything that costs money is priced or capped.
+**Limits** (ruled 5). Writes and launches are budgeted per actor, with
+defaults in strut that `serve.yaml`'s `limits` may change. An anonymous
+key costs nothing to make, so per-actor counts alone don't hold: the
+per-address budget (`visitorAddress`) stays on top whatever `limits`
+says, the monitor (`src/apps/monitor.ts`) warns on fan-out, and anything
+that costs money is priced or capped.
 
 ### 5.2 The seam: a signature over strut's challenge
 
 The server side is small and fixed:
 
-1. **Challenge.** `GET /visitors/challenge` → `{ challenge, methods }`. The
-   challenge is `strut-visitor.<claims>.<hmac>`: claims `{ host, nonce,
-   exp }` (60 s), signed like a sign-in ticket, so it is stateless. It is
-   good once (redeemed nonces kept until they expire, as tickets' `jti`).
-   `methods` is `serve.yaml`'s `signIn`, or the public view's.
+1. **Challenge.** `GET /visitors/challenge` → `{ challenge, methods,
+   visitorKey }`. The challenge is `strut-visitor.<claims>.<hmac>`: claims
+   `{ host, visitorKey, nonce, exp }` (60 s), signed like a sign-in
+   ticket, so it is stateless. It is good once (redeemed nonces kept until
+   they expire, as tickets' `jti`). `methods` is `serve.yaml`'s `signIn`,
+   or the public view's; `visitorKey` is `serve.yaml`'s, `root` unless
+   the app asks for `domain`.
 2. **Sign.** The client signs the challenge with a key, by one of §5.3's
-   methods.
+   methods: the root key, or the domain's child key when the challenge
+   says `domain`.
 3. **Verify.** `POST /visitors/session { challenge, method, key, sig, … }`
    checks the signature with the method's verifier. On success it sets the
-   session cookie with actor `<scheme>:<public key>`. `DELETE` signs out.
+   session cookie with actor `<scheme>:<public key>`, and also returns
+   `{ actor, token, exp }`. `DELETE` signs out.
+4. **When the cookie can't be kept** (ruled 4). When the store or Hive
+   shows the app inside its own page, the box is a third party there and
+   the browser drops its cookie. So strut's host page keeps the returned
+   token in the browser's storage for this site, which a browser keeps
+   apart per framing site, and sends it as `Authorization: Bearer` when
+   no cookie is sent. The framing host does nothing. The token is the
+   cookie's value, signed the same way, and works as one.
 
 **Verifiers.** A method names one of a few:
 
@@ -390,10 +413,28 @@ The server side is small and fixed:
 | `webauthn` | an assertion (authenticator data, client data, signature) against a credential the box registered at first use | a passkey with no wallet behind it |
 
 **Actor ids.** One per key, not per method:
-- `secp:<x-only hex>` for any secp256k1 key, so a Sphinx key signing
+- `secp:<x-only hex>` for any secp256k1 key, so the same key signing
   through wasm, through an extension or from Peel is one person;
 - `p256:<hex>` for a browser key;
 - `passkey:<credential id hash>` for a passkey.
+
+**One root key by default; a child key per domain when the app asks**
+(ruled 3).
+- **Default, `visitorKey: root`.** A provider that holds a root key signs
+  with it, so the same person is the same actor on every box. That gives
+  a portable profile, and it means games can tell it's the same player.
+- **Opt-in, `visitorKey: domain`.** The provider signs with a child key
+  derived one-way from the challenge's `host`, so the visitor is a
+  different actor on this domain and no other domain can tie the two
+  together. The derivation is LNURL-auth's (LUD-05: a BIP-32 path from an
+  HMAC of the domain), so every provider that holds a root key gets the
+  same child for the same domain.
+- **Methods that are per domain anyway:** the anonymous browser key and a
+  passkey alone live in the domain's storage or under its RP ID, and
+  LNURL-auth's linking key is per domain by its spec, whatever the box
+  asks.
+- **Methods that cannot derive:** a Nostr extension signs with its one
+  key, so it is not offered where the app asks for `domain`.
 
 **Where implementations live.** A method that needs no new verifier is
 client code only: a provider in the host page (`web/src/`), the same
@@ -420,7 +461,7 @@ they could be built.
 4. **A Nostr extension** (`nostr`). `window.nostr` in the top page (NIP-07)
    signs a NIP-98 HTTP-auth event for `POST /visitors/session`, its
    `payload` tag the hash of the body that carries the challenge, verified
-   by `bip340`.
+   by `bip340`. Root key only (§5.2).
 5. **Sphinx in wasm, on this origin** (`sphinx`). The Sphinx v2 core as
    wasm (`sphinx/wasm`, `wasm-pack --target web`; `sphinx-chat` runs the
    same core in Node) loaded by the host page. The visitor gets a Sphinx
@@ -442,8 +483,15 @@ they could be built.
 The idea: **instant, cross-origin Sphinx, with the keys following the
 person to their phone.**
 
-- **One origin.** The wallet is a page at one origin, for example
-  `wallet.sphinx.chat`. It is static, plus a small store of ciphertexts.
+- **One origin: `wallet.sphinx.chat`** (ruled 6), run by Sphinx as the
+  default every app shares. The page is static, plus a small store of
+  ciphertexts. It is open source, so a deployment may run its own and
+  name it.
+- **Not Peel's wallet** (ruled 7). The browser wallet is less secure than
+  Peel and is a Sphinx account of its own, never the person's Peel
+  account. A person who holds sats in it can sweep them to Peel, or skip
+  it and connect Peel over NWC (§5.3, 7). Signing in with it and signing
+  in with Peel are two actors.
 - **First use, from any app's domain.** The host page opens the wallet in
   a popup, which is first-party there, so its storage and passkeys work.
   The person creates a passkey (Face ID) with the PRF extension. The page:
@@ -457,8 +505,9 @@ person to their phone.**
 - **Every later domain.** The same popup asks for the passkey, PRF gives
   the same output, and the same wallet opens. The host page and the popup
   talk by `postMessage`:
-  - sign strut's challenge (the visitor's actor is the Sphinx key, so the
-    same person on every box);
+  - sign strut's challenge: with the wallet's root key, so the same person
+    on every box, or with the domain's child key where the app asks
+    (§5.2);
   - pay, make an invoice: the wallet contract's methods.
 
   Per-app connections and budgets (`app-payments.md` §4) are enforced in
@@ -466,9 +515,8 @@ person to their phone.**
   person allowed it.
 - **The phone.** Passkeys sync through iCloud Keychain and Google Password
   Manager, so the same passkey on the phone gives the same PRF output and
-  opens the same ciphertext. Nothing is "sent" to the phone; the sync is
-  the transport. Peel could open it natively too, as an associated domain
-  of the RP ID (open question 7).
+  opens the same ciphertext in the phone's browser. Nothing is "sent" to
+  the phone; the sync is the transport.
 - **Why a popup, not one passkey across domains.** WebAuthn's Related
   Origin Requests lets several domains use one RP ID, but browsers cap the
   list at five registrable-domain labels: fine for one company's ccTLDs,
@@ -479,7 +527,7 @@ person to their phone.**
 - **What can go wrong.**
   - The passkey is the only unlock. Lose it, or use a password manager
     that does not carry PRF, and the seed is gone. So the wallet offers a
-    seed backup or an export to Peel the first time it holds sats.
+    seed backup, or a sweep to Peel, the first time it holds sats.
   - PRF support is broad now (iCloud Keychain on Safari 18 and Chrome,
     Google Password Manager, Firefox on macOS) but not universal. A
     cross-device QR flow has been reported to return no PRF in Safari, and
@@ -541,7 +589,8 @@ brings on its own domain. The app does not change.
 
 ## Work items
 
-In order. Each one is useful alone.
+In order (ruled 2). Each one is useful alone. If the first real game needs
+players before it needs git, visitors (4) moves up to second.
 
 1. **Serve mode over the refs that exist.** `serve.yaml` (format, check,
    apply), `STRUT_SERVE` over `pk:` and `file:`, the distro's door,
@@ -561,8 +610,8 @@ In order. Each one is useful alone.
    anonymous key and a host's ticket, then LNURL-auth and Nostr.
 5. **Browser wallets.** Bitcoin Connect (`app-payments.md` §5.2), then
    Sphinx in wasm on the origin, each also a sign-in where it holds a key.
-6. **The passkey Sphinx wallet.** A plan of its own, mostly in `sphinx`;
-   strut's part is the provider.
+6. **The passkey Sphinx wallet at `wallet.sphinx.chat`.** A plan of its
+   own, mostly in `sphinx`; strut's part is the provider.
 
 ## Validation
 
@@ -583,6 +632,10 @@ In order. Each one is useful alone.
     actor on a written row.
   - A spending workflow launched outside `runnable` is refused.
   - A replayed challenge is refused.
+  - One root key signs in as the same actor on two hosts, and, with
+    `visitorKey: domain`, as two actors.
+  - A session sent as a bearer token, with no cookie, works as the cookie
+    does.
   - A visitor session is 403 on every route outside its scope (a sweep,
     like the member's).
 - **Live.** `deploy/app/` on a small VPS with a real domain and a game
@@ -590,30 +643,29 @@ In order. Each one is useful alone.
   by the webhook, a phone paying a priced run by QR, a second phone in the
   same channel room.
 
-## Open questions
+## Rulings (2026-11-10)
 
-1. **The shell on a served box.** `/?shell=1` for whoever has the key, or
-   no strut UI at all (operate by API and logs)?
-2. **The order.** Serve mode first, as listed, or the git pieces first
-   because they are the point?
-3. **One visitor key everywhere, or one per domain?** One key makes a
-   portable profile (the same person on every game) and makes them
-   linkable across games. LNURL-auth chose per domain; a Sphinx wallet can
-   derive either.
-4. **A visitor inside a frame.** When the store or Hive frames a served
-   app, the box's cookie is third-party and browsers drop it. Should the
-   framing host's page hold the session as a bearer token instead?
-5. **Per-visitor quotas.** Writes and launches per actor per day: a fixed
-   default, or `serve.yaml`'s?
-6. **Who hosts the passkey wallet's origin,** and is it one origin for all
-   of Sphinx, or one a deployment may run?
-7. **Can one Sphinx v2 account be live in two places at once** (the
-   browser wallet and Peel)? If not, the phone and the browser need a
-   handover rather than both being open.
-8. **Can a repo name the strut it needs?** A `requires.strut` would be a
-   new key in the strict manifest, which an older strut refuses with an
-   "unknown key" error instead of a clear one. Another top-level file?
-9. **A private repo served publicly.** The box reads the repo with a token
-   secret; the app is public anyway. Is a public served app from a private
-   repo the "selling the source separately" case `marketplace.md` §6
-   describes?
+The plan's open questions, ruled by the owner the same day. Each is folded
+into the section it touches.
+
+1. **The shell on a served box:** `/?shell=1` opens strut's console for
+   whoever holds the key; visitors never see it (§4.2).
+2. **The order:** as "Work items" lists it, serve mode first. Visitors move
+   up to second if the first real game needs players before git.
+3. **One visitor key or one per domain:** one root key by default, so a
+   person is the same actor on every box. An app may opt in to a child
+   key for its domain with `visitorKey: domain` (§5.2).
+4. **A visitor inside a frame:** the sign-in also returns the session as a
+   token, which strut's host page keeps and sends as a bearer when the
+   browser drops the third-party cookie (§5.2, step 4).
+5. **Per-visitor limits:** defaults in strut, which `serve.yaml`'s `limits`
+   may change; the per-address budget always stays on top (§5.1).
+6. **The passkey wallet's origin:** `wallet.sphinx.chat`, run by Sphinx; a
+   deployment may run its own (§5.4).
+7. **One Sphinx account in the browser and in Peel:** no. The browser
+   wallet is less secure and is its own account, never Peel's; it can
+   sweep to Peel (§5.4).
+8. **A repo naming the strut it needs:** not now; the image tag pins strut
+   (§4.6).
+9. **A private repo served publicly:** allowed, nothing special; the box
+   reads it with a token secret (§4.7).
