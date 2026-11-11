@@ -49,7 +49,7 @@
 > - A moved commit whose digest did not move deploys nothing (a change to
 >   `.github/`, say).
 >
-> **Work item 4 BUILT (stakwork/strut#PR, open at writing):**
+> **Work item 4 BUILT (stakwork/strut#624, open at writing):**
 > - the challenge (`GET /visitors/challenge`), `POST`/`DELETE
 >   /visitors/session`, `GET /visitors`, role and scope `visitor` with its
 >   route sweep, and `fullSession` made an allowlist (admin or the key
@@ -684,7 +684,7 @@ players before it needs git, visitors (4) moves up to second.
 3. **The round trip.** Open repo, Create repo, Commit, Pull, the `repo`
    door, `package/commit` as a proposal, the Packages tab's rows for a
    repo.
-4. **Signed-in visitors.** *BUILT, stakwork/strut#PR.* The challenge, `POST /visitors/session`, role
+4. **Signed-in visitors.** *BUILT, stakwork/strut#624.* The challenge, `POST /visitors/session`, role
    and scope `visitor`, §5.1's rules in `step_run`, per-actor budgets, the
    kit's `useVisitor()`, the host page's sheet. The first methods are the
    anonymous key and a host's ticket, then LNURL-auth and Nostr.
