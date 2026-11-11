@@ -10,6 +10,7 @@ import type { HttpCapability } from "../capabilities.js";
 import type { SecretStore } from "../secret-store.js";
 import { lightningCapability, type LightningCapability, type LightningProvider } from "./lightning.js";
 import { NwcProvider } from "./nwc.js";
+import { payerFor, type Payer } from "./payer.js";
 import { createRate, rateSourceFor, type Rate, type RateSource } from "./rate.js";
 import { PaymentsSettings, sameCredentials, walletFromEnv, walletInfo, type WalletCredentials, type WalletInfo, type WalletSettings } from "./settings.js";
 import { SphinxDaemonProvider } from "./sphinx-daemon.js";
@@ -28,6 +29,14 @@ export interface Payments {
   /** Replace the wallet (`from: "api"` unless said) or remove it (`null`);
    *  the capability follows at once. Refused when the host brought its own. */
   setWallet(creds: WalletCredentials | null, from?: "env" | "api"): Promise<WalletSettings | null>;
+  /** The PAYER (plans/paid-runs.md §9, payer.ts): built from the wallet's
+   *  PAY credential (the daemon's pay token, an NWC connection that may pay),
+   *  or the host's own; null when there is none — `POST /earnings/withdraw`
+   *  then says so, and so does an accepted `remote/buy-credit` (item 9).
+   *  Server code's alone: never on the services bag, never a step's. */
+  payer(): Promise<Payer | null>;
+  /** Whether `payer()` would give one, without building it. */
+  canPay(): Promise<boolean>;
   /** The host brought its own `services.lightning`. */
   readonly injected: boolean;
   /** The environment named a wallet at boot (it is set again at the next). */
@@ -58,6 +67,9 @@ export interface PaymentsDeps {
   onChange?: (lightning: LightningCapability | null) => void;
   /** Builds a provider (tests: a fake). Default `receiveProvider`. */
   provider?: (settings: WalletCredentials) => LightningProvider;
+  /** A host's own payer (`createStrut({ payments: { payer } })`): what pays
+   *  in place of one built from the pay credential. A test's fake. */
+  payer?: Payer;
   now?: () => Date;
 }
 
@@ -100,9 +112,27 @@ export async function createPayments(deps: PaymentsDeps): Promise<Payments> {
     }
   }
 
+  // One payer, for the credentials on file; built again when they change.
+  let built: { key: string; payer: Payer | null } | null = null;
+  const payer = async (): Promise<Payer | null> => {
+    if (deps.payer) return deps.payer;
+    if (deps.injected) return null;
+    const s = await settings.wallet();
+    if (!s) return null;
+    const key = JSON.stringify(s.provider === "sphinx" ? [s.provider, s.url, s.payToken] : [s.provider, s.url, s.payUrl]);
+    if (built?.key !== key) built = { key, payer: payerFor(s, { http: deps.http }) };
+    return built.payer;
+  };
+
   return {
     settings,
     rate,
+    payer,
+    async canPay() {
+      if (deps.payer) return true;
+      if (deps.injected) return false;
+      return walletInfo(await settings.wallet()).pay;
+    },
     lightning: () => current,
     wallet: async () => walletInfo(await settings.wallet()),
     async setWallet(creds, from = "api") {

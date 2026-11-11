@@ -3463,7 +3463,7 @@ Both routes answer `501` when the host brought its own `services.lightning`.
 
 `provider` is `sphinx`, `nwc` or `null` (none: `receive` and `pay` false).
 `receive`: a receive credential is on file, so the server can sell. `pay`:
-a pay credential is on file, so Withdraw can pay (item 7). `url` is the
+a pay credential is on file, so Withdraw can pay (§19). `url` is the
 daemon's (no credential in it); for NWC, `relays` lists the relays' hosts
 instead, since the connection URL is the credential. `from` is `env` or
 `api`. `note` says when the environment names a wallet, which replaces this
@@ -3490,3 +3490,184 @@ a pay credential equal to the receive one; what is on file stays.
 goes in the deployment's secrets, and the secrets capability answers
 nothing for any `LIGHTNING_*` name, wherever it is held — nor for
 `STRUT_SECRET_KEY`, which decrypts `payments.json`.
+
+## 19. Earnings and Withdraw — what the server made, and sats out (`plans/paid-runs.md` §8)
+
+What anyone's runs and calls were charged here, what they cost, and the
+wallet the sats land in (`src/payments/earnings.ts`,
+`earnings-routes.ts`, `withdrawals.ts`). Earned, cost and margin are
+DOLLARS (decision 27); the wallet holds sats, in msat. Every number is read
+from the ledger's rollups (`daily`, and the payment and withdrawal entries
+through their partial indexes), never by scanning entries. A server that
+never sold anything answers zeros and makes no ledger file.
+
+FULL SCOPE only, reads included: the deployment key or an admin's session.
+A member's session, a peer and a person token are refused (`403`).
+
+| Route | |
+| --- | --- |
+| `GET /earnings?from=&to=&by=&prefix=&package=&wallet=1` | earned, cost, margin, calls, failed — by `item` (default), `day`, `package` or `total` — plus outstanding, received, withdrawn, purchases and the sends still out |
+| `GET /earnings/entries?kind=&runId=&token=&before=&limit=` | the ledger's entries, newest first |
+| `POST /earnings/withdraw` | pay a BOLT11 invoice out of the wallet |
+| `POST /earnings/withdrawals/:paymentHash/read` | read a send still out, now |
+| `POST /earnings/withdrawals/:paymentHash/resolve` | record one as paid, or drop it, by hand |
+
+### `GET /earnings`
+
+`from` / `to` are inclusive UTC days (`YYYY-MM-DD`); neither is all time.
+`package` (`publisher/name`) keeps one package's items, this server's
+number: for a package PUBLISHED here, whose items carry their bare local
+names, the subjects its newest release holds (each by its name inside the
+package, and prefixed too); otherwise the subjects under its prefix (an
+installed package). The answer says which: `package: { name, via:
+"release" | "prefix", version? }`. `prefix` keeps the subjects under a
+prefix whatever the package. `wallet=1` also reads the wallet's balance
+(5 s at most).
+
+```json
+{
+  "by": "item", "from": "2026-11-04",
+  "totals": { "calls": 41, "failed": 3, "earned": 10.425, "cost": 4.73, "margin": 5.695 },
+  "rows": [
+    { "key": "workflow:acme/voxel/rig", "calls": 18, "failed": 1, "earned": 8.29, "cost": 2.1, "margin": 6.19,
+      "price": { "base": 0.25, "markup": 2, "capUsd": 1, "dailyCapUsd": 20 } }
+  ],
+  "outstanding": { "tokens": 14, "usd": 151.825, "held": 0 },
+  "received": { "count": 14, "msat": 166858000, "usd": 162.25, "days": [{ "day": "2026-11-09", "count": 1, "msat": 10284000, "usd": 10 }] },
+  "withdrawn": { "count": 1, "msat": 60000000, "feeMsat": 72000, "days": [{ "day": "2026-11-06", "count": 1, "msat": 60000000, "feeMsat": 72000 }] },
+  "purchases": { "count": 0, "msat": 0, "feeMsat": 0 },
+  "pending": [{ "paymentHash": "<hex>", "msat": 20000000, "maxFeeMsat": 100000, "purpose": "withdrawal", "payer": "sphinx:http://treasury:3000",
+    "at": 1794355009628, "expiresAt": 1794358609, "answered": true, "stale": false, "reading": false, "otherWallet": false }],
+  "wallet": { "provider": "sphinx", "receive": true, "pay": true, "url": "http://treasury:3000",
+    "balance": { "msat": 304532000, "sats": 304532, "usd": 296.13 }, "rate": 97240,
+    "expectedMsat": 36726000, "pendingMsat": 20000000, "differenceMsat": 267806000 }
+}
+```
+
+- A row's `key` is a subject (`workflow:<name>`, `step:<type>`, or
+  `expired` — credit that reached its year unused, earned by the seller), a
+  day, a package prefix, or `total`. By item, every item runnable now has a
+  row, with nothing yet when it has not run, and its `price` from the
+  Public view record.
+- `outstanding` is now, not ranged: credit paid for and not yet charged,
+  still owed as service; `held` is set aside for runs in flight.
+- `received`, `withdrawn` and `purchases` are ranged; under a `prefix` or
+  `package` they are empty (they are the wallet's, not a package's).
+  `withdrawn` is a person's withdrawals; `purchases` is credit this strut
+  bought from other struts (item 9, `remote/buy-credit`), the same payer's
+  other sends.
+- `pending`: sends still out. `answered: true`, the wallet answered
+  `pending` (read again every minute until it settles or fails);
+  `answered: false`, its pay call never answered. `payer` is the wallet it
+  went through, and it is read only through that one (`otherWallet` when
+  another is set now). `stale`: past its invoice's expiry and an hour — the
+  Sphinx mixer keeps the debit of a payment its LSP never answered and
+  never refunds it, so the daemon answers `pending` forever — and no longer
+  polled: a person reads it once more, or records it as paid or drops it.
+  `reading`: a read is in flight. `lastError`: what the last read said.
+- `wallet`: `GET /earnings/wallet`'s fields (`pay` true when there is a
+  payer), the balance at the rate of the moment (or `error`), and the
+  books' check: `expectedMsat` is everything received less every send and
+  its fee and less what is still out (`pendingMsat`), all time;
+  `differenceMsat` is balance − expected (more: money that came some other
+  way, or a paid invoice whose credit was never used; less: money that left
+  some other way).
+
+`400` for a day that is not `YYYY-MM-DD`, `from` after `to`, a `by` not in
+the list, a `prefix` or `package` that is not `publisher/name`, or both.
+
+### `GET /earnings/entries`
+
+Newest first, `limit` (50, at most 500) before the seq `before`. `kind`
+(`payment`, `hold`, `charge`, `carry`, `expiry`, `withdrawal`) keeps one
+kind; `runId` one run's (its hold and charge: the run overview's
+"Charged"); `token` one credit token's, with its balance as `token`
+(404 for a token not in the ledger). Dollars as in `/earnings`.
+
+```json
+{ "entries": [
+  { "seq": 88, "at": 1794354873686, "kind": "withdrawal", "msat": 50000000, "ref": "<payment hash>", "feeMsat": 60000, "actor": "evan-1", "usd": 48.62 },
+  { "seq": 31, "at": 1794354832100, "kind": "charge", "token": "<id>", "usd": 0.25, "subject": "workflow:acme/voxel/rig", "runId": "1794354831528", "cost": 0, "outcome": "success" }
+] }
+```
+
+### `POST /earnings/withdraw`
+
+```json
+{ "invoice": "lnbc500000n1…", "msat": 50000000, "maxFeeMsat": 250000 }
+```
+
+Pays the invoice through the PAYER (`src/payments/payer.ts`): the
+wallet's pay credential — the daemon's pay token (`POST /pay`,
+`specs/LIGHTNING.md`) or an NWC connection that may pay (`pay_invoice`).
+`msat` is the amount the person CONFIRMED: an invoice for any other
+amount, or one that names none, is refused, so what was shown is what is
+paid. `maxFeeMsat` defaults to the Sphinx LSP's own routing-fee limit,
+0.5% of the amount or 5 sats when that is more (`src/payments/fee.ts`);
+an NWC wallet takes no cap, so its own limit applies. Answers `200`:
+
+```json
+{ "state": "settled", "paymentHash": "<hex>", "msat": 50000000, "feeMsat": 60000, "maxFeeMsat": 250000,
+  "entry": { "seq": 88, "kind": "withdrawal", "msat": 50000000, "feeMsat": 60000, "actor": "evan-1", "usd": 48.62 } }
+```
+
+- `settled`: recorded as ONE `withdrawal` entry — who asked (`actor`), the
+  amount, the fee the wallet was CHARGED, the payment hash, and the dollars
+  at the moment. The Sphinx mixer takes its routing fee only from what is
+  left after the amount, and none when too little is, so the payer reads
+  the balance before it pays and books the fee taken; `routingFeeMsat` says
+  what the route reported when that differs. The same invoice again pays
+  nothing and answers `existing: true`.
+- `pending`: sent, no answer yet. Kept on file
+  (`<dataDir>/payments/withdrawals.json`) with the wallet it went through,
+  read again every minute, by asking again with the same invoice and by
+  `…/read`, and recorded once when it settles. ONE pay or read of a payment
+  is in flight at a time and a second caller joins it; a caller is answered
+  within 25 s, `reading: true` when the wallet has not answered yet (the
+  read goes on and records), so no request waits on the daemon's 60 s.
+  With the daemon, reading it POSTs the invoice again (the daemon has no
+  read for a payment, and pays a FAILED one again); one whose pay call
+  never answered is read in the background only once its invoice expires,
+  since the daemon would pay one it never saw.
+- `failed`: `error` is the wallet's words; nothing is recorded, and the
+  same invoice may be paid again. An NWC `pay_invoice` that answered at all
+  is never `failed` unless the wallet said so: with no preimage that
+  proves it, it is `pending`.
+
+Refusals answer `{ error, code, walletCode? }`:
+
+| Status | `code` | |
+| --- | --- | --- |
+| `400` | `not_an_invoice`, `no_amount`, `amount_mismatch`, `expired`, `bad_fee`, `bad_request` | before anything is sent |
+| `400` | `wallet_refused` | the wallet refused it before sending, as it came; `walletCode` is the wallet's own: `max_fee_too_low`, `own_invoice`, `expired`, `bad_request`, NWC's `INSUFFICIENT_BALANCE` |
+| `409` | `no_pay_credential` | the wallet has no pay credential (Withdraw is disabled, saying so) |
+| `409` | `other_wallet` | the invoice is out through another wallet than the one set now: set it back, or resolve it |
+| `502` | `wallet_unauthorized`, `wallet_bad_answer` | the wallet refused strut's pay credential (a rotated pay token), or answered something strut cannot read: kept as pending, since it may have gone — never dropped |
+| `503` | `wallet_unavailable` | no answer: it may have gone, so it is kept as pending (`answered: false`) |
+
+No step, builder tool or app page reaches the payer: it is never on the
+services bag. The second door that calls it is an accepted
+`remote/buy-credit` proposal (a later item), through the same service with
+`purpose: "purchase"`: its sends are pending, read and recorded the same
+way, and land in `purchases`.
+
+### `POST /earnings/withdrawals/:paymentHash/read` and `…/resolve`
+
+`…/read` (no body) reads a send still out NOW, through the wallet it went
+out through, and answers as `POST /earnings/withdraw` does (`existing:
+true` once it is in the books). `404 not_pending` when nothing with that
+hash is out; `409 other_wallet`; `409 no_pay_credential`.
+
+`…/resolve { "action": "paid" | "drop", "feeMsat"? }` settles one by hand,
+for a send the wallet will not say more about — a stale one, or one that
+went through a wallet no longer set. `paid` records it as one `withdrawal`
+entry (its purpose and who asked kept; `feeMsat` the fee, when known, else
+0) and answers `{ action, entry }`; `drop` forgets it and records nothing.
+`409 reading` while a read of it is in flight; `404 not_pending`.
+
+### `earnings/read` — the same read as a step
+
+`effect: "read"`, over `ctx.services.earnings` (reads only):
+`{ days?, from?, to?, by?, package?, wallet? }` → `GET /earnings`'s answer.
+`days: 7` is the last seven days counting today. Under `ctx.app`, only a
+first-party page's call or run, for a viewer who is an admin here.

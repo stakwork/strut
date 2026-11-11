@@ -248,14 +248,31 @@ export interface OpenHold {
   key?: string;
 }
 
+/** What a payment OUT of the wallet was for: a person's withdrawal, or
+ *  credit this strut bought from another (item 9, `remote/buy-credit`). The
+ *  books check counts every one; Earnings shows each apart. */
+export type SendPurpose = "withdrawal" | "purchase";
+export const SEND_PURPOSES: readonly SendPurpose[] = ["withdrawal", "purchase"];
+
 export interface WithdrawalInput {
   msat: number;
+  /** The fee the wallet was charged. */
   feeMsat?: number;
   paymentHash: string;
   actor?: string;
+  /** What it was for (kept in the entry's `subject`); `withdrawal` when left out. */
+  purpose?: SendPurpose;
   /** The dollars at the moment, for the books. */
   usd?: Micros;
   at?: number;
+}
+
+export interface EntryListQuery {
+  kind?: EntryKind;
+  runId?: string;
+  /** A seq: entries before it. */
+  before?: number;
+  limit?: number;
 }
 
 export interface EarningsRow {
@@ -277,6 +294,9 @@ export interface EarningsQuery extends DayRange {
   by: "item" | "day" | "package" | "total";
   /** Only the subjects under this package prefix (`acme/voxel`). */
   prefix?: string;
+  /** Only these subjects (`workflow:<name>`, `step:<type>`): a package
+   *  published here, whose items carry their bare local names. */
+  subjects?: readonly string[];
 }
 
 export interface ReceivedRow {
@@ -288,6 +308,7 @@ export interface ReceivedRow {
 
 export interface WithdrawnRow {
   day: string;
+  purpose: SendPurpose;
   count: number;
   msat: number;
   feeMsat: number;
@@ -330,7 +351,11 @@ export interface LedgerStore {
   /** Closes every open token past its expiry; what was left is earned under
    *  `expired`. */
   sweep(o?: { now?: number }): Promise<SweepResult>;
+  /** A payment out of the wallet, once it settled: one entry per payment
+   *  hash. The same hash again writes nothing and answers the first entry. */
   withdrawal(input: WithdrawalInput): Promise<LedgerEntry>;
+  /** The withdrawal recorded for a payment hash, if one is. */
+  withdrawalOf(paymentHash: string): Promise<LedgerEntry | undefined>;
 
   token(id: string): Promise<TokenBalance | undefined>;
   /** A token's entries, newest first: `ENTRIES_PAGE` of them, before `before`. */
@@ -352,6 +377,9 @@ export interface LedgerStore {
   recent(subject: string, o?: { now?: number; days?: number }): Promise<Recent>;
   /** A subject's row for one day (today by default): the daily cap reads `cost`. */
   today(subject: string, o?: { now?: number }): Promise<EarningsRow>;
+  /** Entries newest first, a page at a time (`ENTRIES_PAGE` before
+   *  `before`): of one kind, or of one run. The Earnings tab's lists. */
+  list(o?: EntryListQuery): Promise<LedgerEntry[]>;
   /** Every entry in order, a page at a time: for an audit or an export.
    *  Nothing on a request path reads it. */
   scan(o?: { after?: number; limit?: number }): Promise<LedgerEntry[]>;
@@ -430,6 +458,7 @@ export function rollUp(rows: Array<EarningsRow & { day: string; subject: string 
   const out = new Map<string, EarningsRow>();
   for (const r of rows) {
     if (q.prefix && !underPrefix(r.subject, q.prefix)) continue;
+    if (q.subjects && !q.subjects.includes(r.subject)) continue;
     let key: string | undefined;
     if (q.by === "item") key = r.subject;
     else if (q.by === "day") key = r.day;

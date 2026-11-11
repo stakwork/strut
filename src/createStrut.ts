@@ -43,6 +43,10 @@ import { createPayments, type Payments } from "./payments/wallet.js";
 import type { LightningCapability } from "./payments/lightning.js";
 import type { RateSource } from "./payments/rate.js";
 import { walletRoutes } from "./payments/wallet-routes.js";
+import { earningsRoutes } from "./payments/earnings-routes.js";
+import { readEarnings, type EarningsDeps, type EarningsQuery } from "./payments/earnings.js";
+import { createWithdrawals, WITHDRAWALS_FILE } from "./payments/withdrawals.js";
+import type { Payer } from "./payments/payer.js";
 import { ledgerPath, openLedger, priceOf, type LedgerStore } from "./payments/ledger.js";
 import { MemoryLedgerStore } from "./payments/ledger-memory.js";
 import { isPriced, listRunnable, recentCosts, runnableCan, runnableProblems, runnableSubject, type RunnableDeps } from "./public-runnable.js";
@@ -107,7 +111,7 @@ import { PUBLISHER_FILE, PUBLISHER_NAME, catalogStore, moveChannel, publicCatalo
 import { SUBSCRIPTIONS_FILE, createSubscriptions, subscriptionProblem, type Subscription, type Subscriptions } from "./packages/subscriptions.js";
 import { createPackageIndex, indexDir, indexRowProblem, liveRowProblem, type PackageIndex } from "./packages/index.js";
 import { INDEXES_FILE, createIndexes, indexSubscriptionProblem, parseIndexesEnv, type IndexSubscription, type PackageIndexes, type PackagesCapability } from "./packages/indexes.js";
-import { PUBLISHER_PREFIX, Z32_KEY, type IndexLiveRow, type IndexRow } from "./packages/card.js";
+import { PUBLISHER_PREFIX, Z32_KEY, releaseFor, type IndexLiveRow, type IndexRow } from "./packages/card.js";
 import { LISTING_MAX_BYTES, hostPatternProblem, perMinute } from "./packages/listing.js";
 import { LISTING_ERROR_STATUS, LISTING_REQUESTS_PER_MINUTE, createRequestsDesk, type RequestsDesk } from "./packages/index-requests.js";
 import { LISTINGS_FILE, createPublisherListings } from "./packages/publisher-listings.js";
@@ -339,8 +343,10 @@ export interface StrutOptions<TServices = unknown> {
    *  rate source, `() => Promise<{ usdPerBtc, at, source }>`, in place of
    *  `STRUT_RATE_URL` and mempool.space (src/payments/rate.ts). The WALLET
    *  is set from `LIGHTNING_*` at boot or `PUT /earnings/wallet`, kept in
-   *  `payments.json`; a host's own `services.lightning` wins over both. */
-  payments?: { rate?: RateSource };
+   *  `payments.json`; a host's own `services.lightning` wins over both.
+   *  `payer`: the host's own payer (src/payments/payer.ts), in place of one
+   *  built from the wallet's pay credential — what Withdraw pays through. */
+  payments?: { rate?: RateSource; payer?: Payer };
   /** Public runs (plans/paid-runs.md §6): `principal`, the ONE principal
    *  every public run is billed to — a Mothership delegation of its own (say
    *  `public-runs`), so strangers' runs draw on a budget apart from any
@@ -1306,6 +1312,7 @@ export async function createStrut<TServices = unknown>(
     http: (services as unknown as StrutCapabilities).http,
     env: bootEnv(),
     ...(opts.payments?.rate ? { rateSource: opts.payments.rate } : {}),
+    ...(opts.payments?.payer ? { payer: opts.payments.payer } : {}),
     ...(hostLightning && typeof hostLightning === "object" ? { injected: hostLightning as LightningCapability } : {}),
     onChange: (lightning) => {
       const bag = services as Record<string, unknown>;
@@ -1350,6 +1357,20 @@ export async function createStrut<TServices = unknown>(
     settings: payments.settings,
     rate: payments.rate,
     lightning: () => payments.lightning(),
+  });
+  // Earnings (plans/paid-runs.md §8): a READ opens the ledger only where one
+  // already is, so looking at an empty Earnings tab never makes the file.
+  const ledgerIfAny = async (): Promise<LedgerStore | null> =>
+    ledgerOpen || store instanceof MemoryRunStore || existsSync(ledgerPath(dataDir)) ? ledger() : null;
+  // Withdraw (§8, src/payments/withdrawals.ts): pays through the payer —
+  // `payments.payer()`, never on the services bag — and keeps a payment the
+  // wallet answered `pending` on file beside the ledger until it settles
+  // (one `withdrawal` entry) or fails.
+  const withdrawals = createWithdrawals({
+    payer: () => payments.payer(),
+    ledger,
+    ...(store instanceof MemoryRunStore ? {} : { file: join(dataDir, WITHDRAWALS_FILE) }),
+    usdPerBtc: async () => (await payments.rate.read()).usdPerBtc,
   });
   // The browser the browser/* steps drive (src/browser/service.ts), unless
   // the host brought its own — whose teardown is then the host's too.
@@ -5032,6 +5053,48 @@ export async function createStrut<TServices = unknown>(
     envWallet: payments.envWallet,
   });
 
+  // ── Earnings and Withdraw (plans/paid-runs.md §8; src/payments/earnings*.ts) ──
+  // Full scope only, reads included. The same read is `ctx.services.earnings`
+  // (reads, nothing that pays), what the `earnings/read` step answers with.
+  const earningsDeps: EarningsDeps = {
+    ledger: ledgerIfAny,
+    runnable: async () => (await publicSurface.get()).runnable,
+    pending: () => withdrawals.pending(),
+    walletInfo: async () => (payments.injected ? { provider: null, receive: !!payments.lightning(), pay: await payments.canPay() } : { ...(await payments.wallet()), pay: await payments.canPay() }),
+    lightning: () => payments.lightning(),
+    usdPerBtc: async () => (await payments.rate.read()).usdPerBtc,
+    // A package published HERE: its items carry their bare local names
+    // (plans/packages-ux.md), so its subjects come from its newest release —
+    // each item by its name inside the package, and by the prefixed name
+    // too, for a strut that keeps it so. Not published here: null, and its
+    // prefix is read (an installed package's items are under it).
+    packageSubjects: async (pkg) => {
+      const card = (await catalogDeps.catalogs.current().catch(() => undefined))?.card;
+      const release = card ? releaseFor(card, pkg) : undefined;
+      if (!release) return null;
+      const info = await packageStore.get(release.digest).catch(() => undefined);
+      if (!info) return null;
+      const subjects = new Set<string>();
+      for (const item of info.items) {
+        if (item.helper || (item.kind !== "workflow" && item.kind !== "step")) continue;
+        const inner = item.name.startsWith(`${pkg}/`) ? item.name.slice(pkg.length + 1) : item.name;
+        subjects.add(`${item.kind}:${inner}`);
+        subjects.add(`${item.kind}:${pkg}/${inner}`);
+      }
+      return { subjects: [...subjects].sort(), version: release.version };
+    },
+  };
+  if (!(services as Record<string, unknown>)["earnings"]) {
+    (services as Record<string, unknown>)["earnings"] = Object.freeze({ read: (q: EarningsQuery = {}) => readEarnings(earningsDeps, q) });
+  }
+  earningsRoutes(app, {
+    isFull: async (c) => (await scopeOf(c)) === "full",
+    actorOf: async (c) => (await resolveActor(c)) ?? undefined,
+    earnings: earningsDeps,
+    ledger: ledgerIfAny,
+    withdrawals,
+  });
+
   // ── MCP servers (src/mcp-registry.ts) ────────────────────────────────────
   //
   // Registered once, their values by secret NAME; an agent reaches one's
@@ -8586,6 +8649,7 @@ export async function createStrut<TServices = unknown>(
     if (ledgerSweepTimer) clearInterval(ledgerSweepTimer);
     ledgerSweepTimer = undefined;
     publicTools.close();
+    withdrawals.stop();
     await bootScan;
     await packages.booted;
     // What the history still has waiting is committed before the stores go.
@@ -8714,6 +8778,9 @@ export async function createStrut<TServices = unknown>(
     if (ledgerOpen) void sweepLedger();
   }, 24 * 60 * 60 * 1000);
   ledgerSweepTimer.unref?.();
+  // Withdrawals the wallet answered `pending` (on file from a past process
+  // too) are read every minute until they settle or fail.
+  withdrawals.start();
   // On file at boot: `load()` counted them in flight. A ledger: its holds.
   const reconcilePublic = !(store instanceof MemoryRunStore) && (publicRuns.inFlight() > 0 || ledgerOnDisk);
   if (autoResumeRuns || autoResumeChats || reconcilePublic) {

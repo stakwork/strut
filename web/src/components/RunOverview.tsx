@@ -126,6 +126,20 @@ export function RunOverview(props: {
     return () => { alive = false; };
   }, [done, runId, o.workflow, proposalsKey]);
 
+  // A public run's charge (plans/paid-runs.md §8): the ledger's hold and
+  // charge for it, beside Cost. Earnings are full scope: anyone else sees none.
+  const origin = useMemo(() => (props.events.find((e) => e.type === "run.start") as { origin?: string } | undefined)?.origin, [props.events]);
+  const [ledgerEntries, setLedgerEntries] = useState<api.LedgerEntryView[] | null>(null);
+  useEffect(() => {
+    setLedgerEntries(null);
+    if (origin !== "public" || !runId) return;
+    let alive = true;
+    api.getEarningsEntries({ runId }).then((r) => alive && setLedgerEntries(r.entries), () => {});
+    return () => { alive = false; };
+  }, [origin, runId, done]);
+  const charge = ledgerEntries?.find((e) => e.kind === "charge");
+  const hold = ledgerEntries?.find((e) => e.kind === "hold");
+
   const [viewing, setViewing] = useState<string | null>(null);
   const [inline, setInline] = useState<string | null>(null);
   const [showOutput, setShowOutput] = useState(false);
@@ -185,14 +199,23 @@ export function RunOverview(props: {
             {o.error.message || "failed"}
           </button>
         )}
-        {/* A run that called no model (exec, http, …) has nothing to say here. */}
-        {(o.cost > 0 || o.modelCalls > 0 || o.toolCalls > 0 || tokens > 0) && (
+        {/* A run that called no model (exec, http, …) has nothing to say here, but a public run's charge. */}
+        {(o.cost > 0 || o.modelCalls > 0 || o.toolCalls > 0 || tokens > 0 || ledgerEntries) && (
           <div class="ov-tiles">
             <div class="ov-tile">
               <div class="ov-tile-label">Cost</div>
               <div class="ov-tile-value">{fmtCost(o.cost)}</div>
               <div class="ov-tile-sub">{props.cap ? `of ${fmtCost(props.cap)} cap` : `${formatTokens(tokens)} tokens`}</div>
             </div>
+            {ledgerEntries && (
+              <div class="ov-tile" title="What this public run was charged: base + markup × its cost; a failed run its cost, never more than its reserve">
+                <div class="ov-tile-label">Charged</div>
+                <div class="ov-tile-value">{charge ? fmtCost(charge.usd ?? 0) : hold ? "—" : "$0"}</div>
+                <div class="ov-tile-sub">
+                  {charge ? (hold ? `of ${fmtCost(hold.usd ?? 0)} reserved` : "free run") : hold ? `${fmtCost(hold.usd ?? 0)} reserved` : "free run"}
+                </div>
+              </div>
+            )}
             <div class="ov-tile">
               <div class="ov-tile-label">Model calls</div>
               <div class="ov-tile-value">{o.modelCalls}</div>

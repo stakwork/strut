@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "preact/hooks";
 import * as api from "../api";
 import { errorMessage } from "../helpers";
 import { CopyButton } from "./CopyButton";
+import { EarningsLine, useEarnings } from "./EarningsLine";
 import { canWords } from "../store-links";
 import {
   boxesOf,
@@ -112,6 +113,8 @@ function ItemRow(props: {
   info: api.PublicRunInfo | undefined;
   infoError?: string;
   ticked: boolean;
+  /** What it earned here, all time (plans/paid-runs.md §8). */
+  earned?: api.EarningsRow;
   gone: preact.ComponentChild;
   onTick: (on: boolean) => void;
   onRemove: () => void;
@@ -191,6 +194,7 @@ function ItemRow(props: {
             <div class="auto-hint">No gateway here: nothing stops a run at its cap. Overspend shows after the run, bounded by the agent's step limit and the daily cap.</div>
           )}
           {hints.map((h) => <div class="public-run-hint" key={h}>{h}</div>)}
+          {props.earned && props.earned.calls > 0 && <EarningsLine label="Here, all time" row={props.earned} />}
           {tick && (
             <label class="public-tick">
               <input type="checkbox" checked={props.ticked} onChange={() => props.onTick(!props.ticked)} />
@@ -222,6 +226,10 @@ export function PublicViewPanel(props: { onDirty?: (dirty: boolean) => void }) {
   // read when the box is first on; and the ticks given for what acts or runs code.
   const [infos, setInfos] = useState<Record<string, api.PublicRunInfo | { error: string }>>({});
   const [ticks, setTicks] = useState<Set<string>>(new Set());
+  // What each runnable item earned here (`GET /earnings`), read again after a save.
+  const [savedAt, setSavedAt] = useState(0);
+  const earnings = useEarnings({ by: "item" }, savedAt);
+  const earnedOf = (r: Row) => earnings?.rows.find((e) => e.key === `${r.kind}:${r.name}`);
 
   useEffect(() => {
     api.getPublicView().then((v) => { setSaved(v); setDraft(v.surface); setRows(rowsOf(v.surface)); }, (e) => setError(errorMessage(e)));
@@ -282,6 +290,7 @@ export function PublicViewPanel(props: { onDirty?: (dirty: boolean) => void }) {
       setSaved(v);
       setDraft(v.surface);
       setHeld(v.held);
+      setSavedAt(Date.now());
       // A row left with nothing ticked was taken out by the save.
       const listed = new Set(rowsOf(v.surface).map(rowKey));
       setRows((rs) => rowsOf(v.surface, rs.filter((r) => listed.has(rowKey(r)))));
@@ -359,6 +368,7 @@ export function PublicViewPanel(props: { onDirty?: (dirty: boolean) => void }) {
                         info={info && "can" in info ? info : undefined}
                         {...(info && "error" in info && info.error ? { infoError: info.error } : {})}
                         ticked={ticks.has(key)}
+                        {...(earnedOf(row) ? { earned: earnedOf(row) } : {})}
                         gone={gone(key)}
                         onTick={(on) => setTicks((t) => {
                           const next = new Set(t);

@@ -5297,3 +5297,82 @@ input.package-search { width: 100%; margin-bottom: var(--sp-2); }
   color: var(--text-muted);
   padding: var(--sp-5) 0;
 }
+
+/* ─── Earnings (plans/paid-runs.md §8): the Publish dialog's tab, Withdraw,
+   and the one-line earnings an item shows where it is sold ─── */
+.earnings-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px var(--sp-3); font-size: 12px; color: var(--text-muted); }
+.earnings-line b { color: var(--text); font-weight: 500; font-variant-numeric: tabular-nums; }
+.earnings-line-label { color: var(--text-dim); }
+.earnings-line-item.is-failed b { color: var(--danger); }
+.earnings-line-item.is-loss b, .ov-tile-value.is-loss, .earnings-table .is-loss { color: var(--danger); }
+.earnings-table .is-failed { color: var(--danger); }
+.flyout-earnings { display: flex; align-items: baseline; gap: var(--sp-2); padding: var(--sp-2) var(--sp-4); border-bottom: 1px solid var(--border); }
+.package-earnings-row { display: flex; flex-direction: column; gap: 2px; padding: var(--sp-1) 0 var(--sp-1) var(--sp-3); border-left: 2px solid var(--border-strong); margin-top: var(--sp-2); }
+.package-earnings-row .package-name { font-size: 12px; }
+
+.earnings-panel { display: flex; flex-direction: column; gap: var(--sp-3); }
+.earnings-panel > .auto-hint { margin: 0; }
+.earnings-wallet { border: 1px solid var(--border); border-radius: var(--r-lg); padding: var(--sp-3); display: flex; flex-direction: column; gap: var(--sp-2); background: var(--surface); }
+.earnings-wallet-figures { display: grid; grid-template-columns: 1fr 1fr auto; gap: var(--sp-3); align-items: start; }
+.earnings-big { font-size: 22px; font-weight: 500; color: var(--text); line-height: 1.25; font-variant-numeric: tabular-nums; }
+.earnings-withdraw { display: flex; flex-direction: column; align-items: flex-end; gap: var(--sp-1); max-width: 190px; }
+.earnings-withdraw .btn { min-width: 110px; }
+.earnings-blocked { white-space: normal; text-align: right; color: var(--warning); }
+.earnings-wallet-info .earnings-blocked, .earnings-wallet-info .auto-hint { text-align: left; }
+.earnings-check { border-top: 1px solid var(--border); padding-top: var(--sp-2); }
+.earnings-pending { border-top: 1px solid var(--border); padding-top: var(--sp-2); display: flex; flex-direction: column; gap: 2px; }
+.earnings-pending-row { display: grid; grid-template-columns: 110px 1fr auto; gap: var(--sp-2); font-size: 12px; align-items: baseline; font-variant-numeric: tabular-nums; }
+.earnings-range { display: flex; gap: 2px; background: var(--surface-2); border-radius: var(--r-md); padding: 2px; align-self: flex-start; }
+.earnings-range-btn { background: none; border: 0; color: var(--text-muted); font: inherit; font-size: 12px; padding: 3px 10px; border-radius: 4px; cursor: pointer; }
+.earnings-range-btn.is-active { background: var(--surface); color: var(--text); box-shadow: 0 0 0 1px var(--border-strong); }
+.earnings-tiles { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; }
+.earnings-tiles .ov-tile { background: var(--surface-2); }
+.earnings-table { width: 100%; border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+.earnings-table th { text-align: right; font-weight: 500; color: var(--text-muted); padding: 4px 6px; border-bottom: 1px solid var(--border-strong); white-space: nowrap; }
+.earnings-table td { text-align: right; padding: 4px 6px; border-bottom: 1px solid var(--border); color: var(--text); white-space: nowrap; }
+.earnings-table th:first-child, .earnings-table td:first-child, .earnings-table td:nth-child(2), .earnings-table th:nth-child(2) { text-align: left; }
+.earnings-table td.earnings-item { white-space: normal; overflow-wrap: anywhere; }
+.earnings-table td:nth-child(2) { color: var(--text-muted); }
+.earnings-wallet-info { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--sp-2); font-size: 13px; margin-bottom: var(--sp-2); }
+.earnings-wallet-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); align-items: center; }
+.earnings-wallet-edit { display: flex; flex-direction: column; gap: var(--sp-2); border-left: 2px solid var(--border-strong); padding-left: var(--sp-3); }
+.earnings-wallet-field { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--text-muted); }
+.earnings-wallet-field input, .earnings-wallet-field select {
+  font: inherit; font-size: 12px; background: var(--surface-2); border: 1px solid var(--border-strong); color: var(--text);
+  padding: var(--sp-1) var(--sp-2); border-radius: var(--r-md);
+}
+
+/* Withdraw: a dialog over the Publish dialog. */
+.withdraw-backdrop { z-index: 50; }
+.withdraw-dialog { z-index: 51; width: min(500px, 92vw); display: flex; flex-direction: column; gap: var(--sp-3); }
+.withdraw-dialog .dialog-title { margin-bottom: 0; }
+.withdraw-dialog .dialog-field { margin-bottom: 0; }
+.withdraw-dialog .dialog-actions { margin-top: 0; align-items: center; flex-wrap: wrap; }
+.withdraw-books { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-3); background: var(--surface-2); border-radius: var(--r-md); padding: var(--sp-2) var(--sp-3); }
+.withdraw-figure { font-size: 18px; font-weight: 500; color: var(--text); font-variant-numeric: tabular-nums; }
+.withdraw-invoice { font-family: var(--font-mono, ui-monospace, monospace) !important; font-size: 11px !important; resize: vertical; word-break: break-all; }
+.withdraw-ask { display: flex; flex-direction: column; gap: var(--sp-1); border-left: 2px solid var(--accent); padding-left: var(--sp-3); }
+.withdraw-amount { display: flex; align-items: baseline; gap: var(--sp-2); flex-wrap: wrap; }
+.withdraw-amount .withdraw-figure { font-size: 22px; }
+.withdraw-desc { font-size: 13px; color: var(--text); }
+.withdraw-confirm { flex: 1 1 100%; font-size: 12px; color: var(--warning); text-align: right; }
+.withdraw-result { display: flex; flex-direction: column; gap: var(--sp-1); border-radius: var(--r-md); padding: var(--sp-2) var(--sp-3); border: 1px solid var(--border-strong); }
+.withdraw-result.is-settled { border-color: rgba(34, 197, 94, 0.4); background: rgba(34, 197, 94, 0.07); }
+.withdraw-result.is-pending { border-color: rgba(251, 191, 36, 0.35); background: rgba(251, 191, 36, 0.06); }
+.withdraw-result.is-failed { border-color: rgba(248, 113, 113, 0.35); background: rgba(248, 113, 113, 0.07); }
+.withdraw-result-title { font-size: 14px; font-weight: 600; color: var(--text); }
+.withdraw-hash { font-size: 10px; color: var(--text-dim); word-break: break-all; }
+@media (max-width: 640px) {
+  .earnings-wallet-figures { grid-template-columns: 1fr 1fr; }
+  .earnings-withdraw { grid-column: 1 / -1; align-items: stretch; max-width: none; }
+  .earnings-blocked { text-align: left; }
+  .earnings-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+.earnings-pending-item { display: flex; flex-direction: column; gap: 2px; padding: 4px 0; border-top: 1px dashed var(--border); }
+.earnings-pending-item:first-of-type { border-top: 0; }
+.earnings-pending-item.is-stale .earnings-pending-row > span:nth-child(2) { color: var(--warning); }
+.earnings-pending-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); }
+.earnings-fee-input {
+  width: 90px; font: inherit; font-size: 12px; background: var(--surface-2); border: 1px solid var(--border-strong);
+  color: var(--text); padding: 2px var(--sp-2); border-radius: var(--r-md);
+}

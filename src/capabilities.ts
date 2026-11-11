@@ -39,6 +39,7 @@ import {
 import { runProcess, type ProcessRequest, type ProcessResult } from "./shell.js";
 import { bootEnv, hiddenFromSteps } from "./env.js";
 import type { LightningCapability } from "./payments/lightning.js";
+import type { EarningsQuery, EarningsView } from "./payments/earnings.js";
 
 // ── secrets ────────────────────────────────────────────────────────────────
 
@@ -453,6 +454,10 @@ export interface StrutCapabilities {
    *  wallet is set (`LIGHTNING_*`, `PUT /earnings/wallet`); a host's own
    *  wins. */
   lightning?: LightningCapability;
+  /** What this server earned (plans/paid-runs.md §8, src/payments/earnings.ts):
+   *  the read `GET /earnings` answers, what the `earnings/read` step is thin
+   *  over. Reads only: nothing on it pays — the payer is never on the bag. */
+  earnings?: { read(q?: EarningsQuery): Promise<EarningsView> };
 }
 
 /** The default standard services bag: global-fetch http + secrets + a local
