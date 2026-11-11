@@ -188,12 +188,12 @@ for (const tb of testBackends()) {
       const applied = await run(applyStep, {
         items: due.items,
         edits: [
-          { claim, action: "replace", concept: writing, old_line: "not on the Concept", new_line: "x" },
-          { claim, action: "add", concept: personal, new_line: "on the root" },
-          { claim, action: "add", concept: reports, new_line: "on another tree's Concept" },
-          { claim: "nope", action: "add", concept: writing, new_line: "x" },
-          { claim, action: "add", concept: writing, new_line: "Summaries are three lines or fewer.", first: true },
-          { claim, action: "add", concept: writing, new_line: "Summaries are three lines or fewer." },
+          { claim, action: "replace", concept: writing, old_text: "not on the Concept", new_text: "x" },
+          { claim, action: "add", concept: personal, new_text: "on the root" },
+          { claim, action: "add", concept: reports, new_text: "on another tree's Concept" },
+          { claim: "nope", action: "add", concept: writing, new_text: "x" },
+          { claim, action: "add", concept: writing, new_text: "Summaries are three lines or fewer.", first: true },
+          { claim, action: "add", concept: writing, new_text: "Summaries are three lines or fewer." },
         ],
       }, services);
       assert.deepEqual(applied.skipped.map((x: any) => x.why), [
@@ -207,6 +207,35 @@ for (const tb of testBackends()) {
       assert.equal((await run(dueStep, {}, services)).count, 0);
       await recordSaid(g, said(0, { claim, session: "s", turn: 9, excerpt: "still too long", outcome: "not_followed", observed_at: Date.now() + 1000 }));
       assert.deepEqual((await run(dueStep, {}, services)).items.map((d: any) => [d.open, d.fixes]), [[1, ["Summaries are three lines or fewer."]]]);
+
+      // Before it opens a Concept the assistant sees its name and its one line: a dream can write both, never the root's.
+      const again2 = await run(dueStep, {}, services);
+      assert.match(again2.text, /the assistant sees its Concept listed as "Writing", with no description\n {2}its Concept /);
+      const named = await run(applyStep, {
+        items: again2.items,
+        edits: [
+          { claim, action: "describe", concept: writing, description: "How Tom wants things written:\n open before writing anything" },
+          { claim, action: "describe", concept: writing, description: "How Tom wants things written: open before writing anything" },
+          { claim, action: "rename", concept: writing, concept_name: "personal" },
+          { claim, action: "rename", concept: writing, concept_name: "Writing style" },
+          { claim, action: "rename", concept: personal, concept_name: "Mine" },
+          { claim, action: "describe", concept: writing },
+          { claim, action: "replace", concept: writing, old_text: "Write plainly.\nNo emoji.", new_text: "Write plainly:\n  - short sentences\n  - no emoji" },
+          { claim, action: "remove", concept: writing, old_text: "  - no emoji" },
+          { claim, action: "remove", concept: writing, old_text: "not there" },
+          { claim, action: "add", concept: writing, new_text: Array.from({ length: 13 }, (_, i) => `line ${i}`).join("\n") },
+        ],
+      }, services);
+      assert.deepEqual(named.skipped.map((x: any) => x.why), ["the Concept's description is already that", 'a Concept "personal" is already in the tree', "the root's own text is left alone", "no description to write", "the line to remove is not on the Concept as written", "more than 12 lines: a Concept is not rewritten"]);
+      assert.deepEqual(named.changes.map((x: any) => [x.concept.name, x.kind, x.removed, x.added, x.description ?? x.renamed]), [
+        ["Writing", "changed", [], [], { was: "", is: "How Tom wants things written: open before writing anything" }],
+        ["Writing style", "changed", [], [], { was: "Writing", is: "Writing style" }],
+        ["Writing style", "changed", ["Write plainly.", "No emoji."], ["Write plainly:", "  - short sentences", "  - no emoji"], undefined],
+        ["Writing style", "changed", ["- no emoji"], [], undefined],
+      ]);
+      const renamed = (await treeConcepts(g, undefined, "Personal"))[1]!;
+      assert.deepEqual([renamed.ref_id, renamed.name, renamed.description, renamed.docs], [writing, "Writing style", "How Tom wants things written: open before writing anything", "Summaries are three lines or fewer.\nWrite plainly:\n  - short sentences"], "a few lines swapped for a few, one taken off; the rest word for word");
+      assert.match((await run(dueStep, {}, services)).text || "nothing due", /nothing due|listed as "Writing style": How Tom wants/);
 
       // Neighbours: claims that share words are offered; a claim under a group is offered as its group.
       const sam = (await recordSaid(g, said(1, { text: "No greeting in emails to Sam", about: writing }))).claim;

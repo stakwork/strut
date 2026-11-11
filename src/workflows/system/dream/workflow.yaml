@@ -316,7 +316,8 @@ steps:
       toolFilter: [none]
       maxSteps: 4
       system: >-
-        You write the one line a Concept needs so an assistant gets something right next time. You write plainly,
+        You write what a Concept needs so an assistant gets something right next time: usually one line, a few
+        when the rule needs them, or the name or description that makes it open that Concept. You write plainly,
         change as little as possible, and never rewrite a Concept.
       schema:
         type: object
@@ -332,11 +333,12 @@ steps:
               required: [claim, action]
               properties:
                 claim: { type: string, description: "the claim's id" }
-                action: { type: string, enum: [add, replace, add_concept, none] }
-                concept: { type: string, description: "for add and replace: the ref_id of the Concept" }
-                old_line: { type: string, description: "for replace: the line to replace, copied exactly from the Concept" }
-                new_line: { type: string, description: "the line to write: one line, the rule itself" }
-                concept_name: { type: string, description: "for add_concept: the new Concept's name, a few words" }
+                action: { type: string, enum: [add, replace, remove, rename, describe, add_concept, none] }
+                concept: { type: string, description: "for add, replace, rename and describe: the ref_id of the Concept" }
+                old_text: { type: string, description: "for replace and remove: the line or lines to take off, copied exactly from the Concept, a line a line" }
+                new_text: { type: string, description: "for add, replace and add_concept: what to write, the rule itself. One line; a few (at most 12, a line a line) only when one cannot hold it" }
+                concept_name: { type: string, description: "for add_concept and rename: the Concept's name, a few words" }
+                description: { type: string, description: "for describe and add_concept: the Concept's one line, what it holds and when to open it" }
                 first: { type: boolean, description: "put the line first on the Concept" }
                 why: { type: string, description: "one line: why this edit, or why none" }
       prompt: |
@@ -345,16 +347,22 @@ steps:
 
         - The Concept does not say it (`missing`): `add` the line to that Concept.
         - A line for it was already written and it came back, or the Concept says it and it was not followed
-          (`not_followed`, `not_opened`): `replace` that line with one that cannot be misread, and set `first`.
-          Never add a second line that says the same thing.
+          (`not_followed`): `replace` that line with one that cannot be misread, and set `first`. Never add a
+          second line that says the same thing.
+        - The Concept says it and the assistant never opened the Concept (`not_opened`): before opening one, the
+          assistant sees only each Concept's name and description, shown with the claim. When those do not say
+          the Concept holds this, `describe` it: one line, what it holds and when to open it. Only when the name
+          itself misleads, `rename` it. When both already say it, `replace` the line as above.
         - The Concept says the opposite (`contradicted`): `replace` that line.
         - The claim sits on the root: choose the listed Concept it belongs on and `add` there. Only when none fits,
-          `add_concept` with a short `concept_name`.
+          `add_concept` with a short `concept_name` and a `description`.
         - The Concept already says it clearly and nothing since suggests it is unclear: `none`, with why.
 
-        `new_line` is one line: the rule itself, in plain words, as it should be followed. No mention of the
-        conversation or of when it was said. For a group, one line that covers its claims. `old_line` is copied
-        exactly from the Concept as shown.
+        - A line on the Concept is wrong and nothing should stand in its place: `remove` it.
+
+        `new_text` is the rule itself, in plain words, as it should be followed: one line when one can hold it, a
+        few when it needs a condition, steps or an example. No mention of the conversation or of when it was
+        said. For a group, text that covers its claims. `old_text` is copied exactly from the Concept as shown.
 
         {{ due.text }}
   - id: apply

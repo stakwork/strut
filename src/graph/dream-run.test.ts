@@ -98,10 +98,10 @@ describe("the dream on the graph, under Peel's reader lists (ladybug)", { skip: 
           const root = /- ([0-9a-f-]{36}) \\"Personal\\"/.exec(prompt)?.[1];
           return answer("match", { decisions: [claim ? { i: 0, claim, outcome: "not_followed", why: "an eight-line summary" } : { i: 0, text: CLAIM, title: "Summaries too long", concept: root, outcome: "missing", why: "the reply ran long" }] });
         }
-        if (system.includes("You write the one line a Concept needs")) {
+        if (system.includes("You write what a Concept needs")) {
           const claim = /CLAIM ([0-9a-f]{32}) /.exec(prompt)?.[1];
           const concept = /its Concept ([0-9a-f-]{36}) \\"Writing\\"/.exec(prompt)?.[1];
-          return answer("fix", { edits: [concept ? { claim, action: "replace", concept, old_line: LINE_1, new_line: LINE_2, first: true, why: "it came back" } : { claim, action: "add_concept", concept_name: "Writing", new_line: LINE_1, why: "no Concept had it" }] });
+          return answer("fix", { edits: [concept ? { claim, action: "replace", concept, old_text: LINE_1, new_text: LINE_2, first: true, why: "it came back" } : { claim, action: "add_concept", concept_name: "Writing", new_text: LINE_1, why: "no Concept had it" }] });
         }
         if (system.includes("which claims about how an assistant should act")) return answer("group", { groups: [] });
         if (system.includes("You judge whether an assistant did what a rule says")) return answer("judge", verdict ? { supports: true, content: "three lines" } : { supports: false, content: "eight lines" });

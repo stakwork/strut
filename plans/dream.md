@@ -54,7 +54,7 @@ Each piece of evidence keeps two things apart:
 | Outcome | What went wrong | The fix |
 | --- | --- | --- |
 | `missing` | No Concept said it | Add the line |
-| `not_opened` | A Concept said it, and the assistant did not open that Concept | Move it where it is found |
+| `not_opened` | A Concept said it, and the assistant did not open that Concept | Say so where it looks first: the Concept's description, or its name when that misleads |
 | `not_followed` | It opened the Concept and still got it wrong | Reword it, put it first |
 | `contradicted` | A Concept said the opposite | Change the line |
 | `followed` | Nothing: it did as the claim says, or the person confirmed it | — |
@@ -109,7 +109,7 @@ answer, so it cannot skip a step or write.
 | `neighbours` | code | the claims | for each claim touched, the few it might be one kind with |
 | GROUP | model | those | groups |
 | `due` | code | the counts | the claims due a fix: a correction since the last fix, AND said to last or corrected twice (a group together) |
-| FIX | model | each due claim, what was said, its one Concept | one edit: a line added or replaced, or a new Concept |
+| FIX | model | each due claim, what was said, its one Concept | one edit: a line or a few (at most 12) added, replaced or removed; a Concept's name or description; or a new Concept |
 | `apply` | code | the edits | the Concept written (or a proposal), and the fix noted on the claim |
 | `checks` | code | the claims due or changed, and the checks gone stale | the checks to run, capped (`params.maxChecks`, 0: none) |
 | CHECK | the `dream-check` workflow, once per check | the request and the claim | `{ supports, content }`, or why it could not tell |

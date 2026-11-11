@@ -63,6 +63,9 @@ export interface AppliedChange {
   kind: "changed" | "added";
   removed: string[];
   added: string[];
+  /** The Concept's name or one-line description, when that is what changed. */
+  renamed?: { was: string; is: string };
+  description?: { was: string; is: string };
   why?: string;
   /** The proposal that holds it, when it waits for a person. */
   proposed?: string;
@@ -200,6 +203,8 @@ export interface ConceptChange {
   to?: string;
   /** Its one-line description, when that changed: as it was and as it is. */
   description?: { was: string; is: string };
+  /** Its name, when a dream changed it. */
+  renamed?: { was: string; is: string };
   /** The claim it was made for, why, and the proposal that holds it when it waits for a person (a staged dream's). */
   claim?: string;
   why?: string;
@@ -214,6 +219,7 @@ export function changesOf(out: DreamOutput): ConceptChange[] {
   if (!Array.isArray(out.changes)) return conceptChanges(out.before, out.tree);
   return out.changes.map((c) => ({
     ref_id: placeOf(c).ref_id ?? `new:${placeOf(c).name}`, name: placeOf(c).name, kind: c.kind, removed: c.removed ?? [], added: c.added ?? [],
+    ...(c.description ? { description: c.description } : {}), ...(c.renamed ? { renamed: c.renamed } : {}),
     claim: c.claim, ...(c.why ? { why: c.why } : {}), ...(c.proposed ? { proposed: c.proposed } : {}),
   }));
 }

@@ -17,7 +17,7 @@ export default defineStep({
   effect: "read",
   description:
     "The claims of a tree that are due a fix, the most open corrections first: { count, items: [{ claim, title, text, lasting, corrected, open, children, said: [{ excerpt, outcome }], " +
-    "concept: { ref_id, name, docs, root? }, concepts: [{ ref_id, name, description? }] }], text }. Due = at least one correction since its last fix, AND said to last or corrected twice " +
+    "concept: { ref_id, name, description?, docs, root? }, concepts: [{ ref_id, name, description? }] }], text }. Due = at least one correction since its last fix, AND said to last or corrected twice " +
     "(a group's claims counted together; a claim under a group is fixed through its group). `concept` is the Concept the claim is about; `concepts` the tree's top concepts, for a claim that sits on the root.",
   input: z.object({
     root: z.string().optional().default("Personal"),
@@ -47,7 +47,7 @@ export default defineStep({
       const concept = concepts.find((p) => p.ref_id === c.fixes[0]?.concept) ?? concepts.find((p) => p.ref_id === c.about);
       return {
         claim: c.id, title: c.title, text: c.text, lasting: !!c.lasting, corrected: c.corrected, open: c.open, children: kids.map((k) => k.text), said,
-        concept: concept ? { ref_id: concept.ref_id, name: concept.name, docs: cut(concept.docs ?? "", CONCEPT_MAX), ...(concept.depth === 0 ? { root: true } : {}) } : null,
+        concept: concept ? { ref_id: concept.ref_id, name: concept.name, ...(concept.description ? { description: cut(concept.description, 160) } : {}), docs: cut(concept.docs ?? "", CONCEPT_MAX), ...(concept.depth === 0 ? { root: true } : {}) } : null,
         concepts: top,
         fixes: c.fixes.slice(0, 2).map((f) => f.line),
       };
@@ -61,7 +61,7 @@ export default defineStep({
           ...(it.fixes.length ? [`  already written for it, and it came back: ${it.fixes.map((l: string) => `"${l}"`).join(" | ")}`] : []),
           it.concept?.root || !it.concept
             ? `  it sits on the root, which is left alone. Concepts it could go on: ${it.concepts.map((p: any) => `${p.ref_id} "${p.name}"`).join("; ") || "none yet"}`
-            : `  its Concept ${it.concept.ref_id} "${it.concept.name}" reads:\n${(it.concept.docs || "(empty)").split("\n").map((l: string) => `    | ${l}`).join("\n")}`,
+            : `  the assistant sees its Concept listed as "${it.concept.name}"${it.concept.description ? `: ${it.concept.description}` : ", with no description"}\n  its Concept ${it.concept.ref_id} "${it.concept.name}" reads:\n${(it.concept.docs || "(empty)").split("\n").map((l: string) => `    | ${l}`).join("\n")}`,
         ].join("\n"),
       )
       .join("\n\n");

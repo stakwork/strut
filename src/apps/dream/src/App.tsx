@@ -136,8 +136,8 @@ function OutcomeMark({ outcome }: { outcome?: Outcome }) {
  *  words it wrote marked; a line it only removed is struck through, one it only added stands as written. */
 function ChangeView({ change }: { change: Change }) {
   const c = change.change;
-  const removed = [...(c.description?.was ? [c.description.was] : []), ...c.removed];
-  const added = [...(c.description?.is ? [c.description.is] : []), ...c.added];
+  const removed = [...(c.renamed ? [c.renamed.was] : []), ...(c.description?.was ? [c.description.was] : []), ...c.removed];
+  const added = [...(c.renamed ? [c.renamed.is] : []), ...(c.description?.is ? [c.description.is] : []), ...c.added];
   const line = "break-words border-l-2 py-0.5 pl-3 text-sm leading-relaxed";
   const gone = "text-muted-foreground line-through decoration-muted-foreground/60";
   const rows: ReactNode[] = [];
