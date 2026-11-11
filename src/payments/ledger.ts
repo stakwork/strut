@@ -219,11 +219,6 @@ export interface ChargeInput {
   cost: Micros;
   outcome: RunOutcome;
   price: Price;
-  /** Never charge more than the hold's reserve, whatever the rule asks: a
-   *  public TOOL's call (§6), which nothing stops mid-flight, so its buyer
-   *  is charged at most what they set aside. A run leaves it off: the
-   *  gateway holds a run to its cap, and past it the token pays (§7). */
-  withinReserve?: boolean;
   at?: number;
 }
 

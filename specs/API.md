@@ -2922,7 +2922,11 @@ literal, or `{{ params.X }}` off the flow's params; a name from the input is
 ### 17.2 The reads — `GET /public/*` (anyone)
 
 Served from the record alone, whatever the gate's mode: a host's gate in
-front of an unkeyed strut (mcp's `/lab`) passes the prefix by path. Each
+front of an unkeyed strut (mcp's `/lab`) passes the prefix by path — the
+package exports `PUBLIC_PATH` for the reads and `PUBLIC_POST` for the POSTs
+anyone may make (`/public/mcp`, a launch and its cancel, a tool's call,
+`/public/credit` and its `claim`), the very patterns strut's own gate
+opens. Each
 answer carries `access-control-allow-origin: *` (a preflight is answered
 too) and no cookie; each visitor address may make 1200 requests a minute
 (the first `x-forwarded-for` hop, else the socket; `429` past it). Paths

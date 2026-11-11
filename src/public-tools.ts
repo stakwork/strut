@@ -37,9 +37,10 @@
  * - the charge, by the rule (`chargeFor`): base + markup × what the call
  *   reported it cost (`withUsage`; none, its base); a throw, a time-out, or
  *   a result over 5 MB, its cost and no base; never more than the reserve
- *   (`withinReserve`) or what the token holds. A free call is a charge of
- *   nothing, which `daily` counts with its cost. A charge the ledger refuses
- *   is tried again, then again every `CHARGE_RETRY_MS` for an hour.
+ *   (the ledger's rule for every charge) or what the token holds. A free
+ *   call is a charge of nothing, which `daily` counts with its cost. A
+ *   charge the ledger refuses is tried again, then again every
+ *   `CHARGE_RETRY_MS` for an hour.
  *
  * **A crash between the hold and the charge** leaves the hold open with no
  * record of what ran: the call never answered, so its buyer is charged
@@ -434,7 +435,7 @@ export function createPublicTools(o: PublicToolsOptions): PublicTools {
           cost,
           outcome: failure ? "error" : "success",
           price,
-          ...(presented ? { token: presented.tokenId, withinReserve: true } : {}),
+          ...(presented ? { token: presented.tokenId } : {}),
           at: now(),
         })) ?? 0;
       const view = presented ? await creditOf(presented, charged) : undefined;

@@ -24,6 +24,7 @@ import type { ExchangeRate } from "./payments/rate.js";
 import { addCaveat, decodeIdentifier, macaroonFromBase64, macaroonToBase64 } from "./l402.js";
 import { createPublicTools, guardedHttp, inputTemplates, publicToolServices, PUBLIC_TOOL_RESULT_MAX_CHARS } from "./public-tools.js";
 import { PUBLIC_POST } from "./public-routes.js";
+import { PUBLIC_PATH as EXPORTED_PATH, PUBLIC_POST as EXPORTED_POST } from "./index.js";
 import type { GraphBackend } from "./graph/backend.js";
 import type { LedgerStore } from "./payments/ledger.js";
 import { seedConceptSchema, testBackends } from "./graph/test-util.js";
@@ -380,6 +381,22 @@ describe("public tools", () => {
     assert.deepEqual(Object.keys(fixed.input["properties"]).sort(), ["big", "cost", "fail", "note", "wait"]);
     assert.equal(fixed.input["properties"]["note"]["default"], "hi");
     assert.ok(!(fixed.input["required"] ?? []).includes("note"), "a field with a default is the caller's to leave out");
+  });
+
+  it("the tool route is in PUBLIC_POST as the package exports it, and so is every POST strut mounts under /public", async () => {
+    const { strut } = await boot([{ kind: "step", name: "tool/free" }]);
+    assert.equal(EXPORTED_POST, PUBLIC_POST, "a host gate in front of strut passes exactly what strut's own gate does");
+    for (const path of ["/public/steps/tool/free/run", "/public/steps/x/run", "/public/steps/acme/cve/lookup/run"]) {
+      assert.ok(EXPORTED_POST.test(path), path);
+      assert.ok(EXPORTED_PATH.test(path), path);
+    }
+    for (const path of ["/public/steps/x/schema", "/public/steps/run", "/public/steps/x/run/extra", "/steps/x/run"]) assert.ok(!EXPORTED_POST.test(path), path);
+    const posts = [...new Set(strut.app.routes.filter((r) => r.method === "POST" && r.path.startsWith("/public")).map((r) => r.path.replace(/:[A-Za-z]+(\{[^}]*\})?/g, "x")))];
+    assert.ok(posts.includes("/public/steps/x/run"), posts.join(", "));
+    for (const path of posts) assert.ok(EXPORTED_POST.test(path), path);
+    // And strut's own gate, which opens the same list, answers it with no credential.
+    const res = await strut.app.request("/public/steps/tool/free/run", { method: "POST", headers: json, body: JSON.stringify({ config: {} }) });
+    assert.equal(res.status, 200);
   });
 
   it("the drain refuses a call; the gate opens the route by name", async () => {
