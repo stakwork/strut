@@ -961,7 +961,7 @@ second one.
 
 ## 11. MCP — strut for an external agent
 
-Strut serves three tool sets over the Model Context Protocol (Streamable HTTP,
+Strut serves four tool sets over the Model Context Protocol (Streamable HTTP,
 stateless; `src/ai/mcp.ts`), for an agent outside strut — Claude Code, Hermes,
 any MCP client:
 
@@ -970,6 +970,7 @@ any MCP client:
 | `POST /mcp` | **assistant** (`src/ai/assistant-tools.ts`): nine tools — talk to the workflow builder, read its chats, list workflows and runs, read a run, run a workflow, search the package store and read a package's page | an agent with its own connectors that wants workflows built, run and shared, and should not learn strut's YAML; the default |
 | `POST /mcp/builder` | **builder**: the SAME tools the builder chat's model gets — `list_steps` … `create_workflow` … `run_workflow` … `get_run`, the `app_*` steps, the `package_*` reads and the text editor, with their descriptions, input schemas and capped results (`buildTools`, nothing reimplemented) | an agent that authors workflows itself |
 | `POST /index/mcp` | **store** (`src/packages/index-tools.ts`; §16): three READ tools over a package INDEX's derived pages — `search_packages`, `get_package`, `get_concept` — nothing that installs | any agent, with NO credential: a strut with the index role is the store, and this is its face for an agent as `?store=1` is for a person (`claude mcp add --transport http strut-store https://<index>/index/mcp`). An agent that fetches URLs instead reads `GET /llms.txt` (§16): the same store as one markdown page |
+| `POST /public/mcp` | **buyer** (`src/public-agents.ts`; §17.8): `list_public`, `run_workflow`, `call_tool`, `get_run`, `get_credit` — what anyone may run here, free or paid in sats over L402 — beside a public app page's `step_run` (§17.3) | any agent, with NO account: `claude mcp add --transport http <name> https://<strut>/public/mcp`. `GET /llms.txt` says the same as one page (§17.8) |
 
 Both doors also list **`step_run`**, the APP door (§14.1): an app-only tool
 (`_meta.ui.visibility: ["app"]` — an MCP Apps host hides it from the model
@@ -1605,6 +1606,32 @@ signed card's, never the page's. The visitor names their strut once
 ("Your strut", kept in that browser); with none the button asks, and the
 name to paste is beside it. On an index strut the UI's root redirects a
 visitor with no credential there (§16, `GET /`).
+
+**Running a live item from the store** (`plans/paid-runs.md` §10 "The
+store"; `web/src/store-run.ts`, `web/src/store-purse.ts`). A live workflow
+or step anyone may run (`/index/live`'s `run`, a price badge on Browse)
+shows its PRICE — what a run costs, the credit it needs to start, what
+recent runs were charged — read fresh from `<url>/public`'s `runnable`,
+and a **Run** form drawn from its input (a step's: **Call**). The run
+happens on the publisher's server, sent from the visitor's browser with no
+cookie and no key: `POST <url>/public/workflows/:name/run { input, key }`
+(§17.4) or `POST <url>/public/steps/:type/run { config }` (§17.7). One
+`key` per press, sent again with every retry of that launch — after a
+payment, after a dropped request — so it is the same run while it is in
+flight; a call is never sent twice. A priced one with no credit shows the
+402's invoice as a QR code (the sheet §17.6 describes), claims it with
+`POST <url>/public/credit/claim` until it settles or ends — whether or not
+the sheet is still open, so an invoice paid from a phone after Cancel still
+buys credit — and sends the same launch again with `Authorization: L402
+<macaroon>:<preimage>`, as §17.6's steps 3 to 9. The credential, credentials
+paid for and not sent, and every invoice shown live in the store page's
+`sessionStorage`, one purse per publisher's server (`strut.store.purse:<url>`),
+never in a URL — **Your credit lives in this tab** shows the credential on
+request (with Copy) and takes one pasted back, checked with `GET
+/public/credit`, to spend it in another tab or browser; the runs a tab launched are kept beside it with their run
+tokens and read back until they end — status, output, the declared files
+(each link the publisher's, with `?t=<run token>`) and what it was
+charged.
 
 **One file alone.** The twin for a deliverable that is a file:
 `/?key=<the local strut's key>&artifact=<encodeURIComponent(path)>&solo=1`
@@ -2254,7 +2281,7 @@ installed it, it can be a mirror. `file:`, `pk:` and `git+` refs resolve
 | DELETE | `/index/:prefix` | Drop the row and re-seal → `{ ok, prefix }`; its crawl state goes. 404 when there is none |
 | PUT    | `/index/live/:prefix` | `{ url, description? }` → `IndexInfo`: a LIVE row (`plans/public-surface.md` §8) — where a publisher server's public view is served (`<url>/public`, §17), no key, no catalog — sealed into the card's `live` map beside `publishers` (a reader that knows only `publishers` reads the card as before), and read now: `<url>/public` and `<url>/public/concepts`, kept until the next read (a failed read keeps the one before and says why, `liveCrawled[].error`). Read again with every crawl. Full scope. 400 `index_row_invalid` (a `url` with a query, or anything but `url` and `description`) |
 | DELETE | `/index/live/:prefix` | Drop the live row and re-seal → `{ ok, prefix }`. 404 when there is none |
-| GET    | `/index/live?q=` | `{ items: [{ publisher, url, kind: app \| workflow \| step \| concept, name, title?, description?, version?, runs?, pages? }] }` — what the live rows' public views show, as last read; the item itself is read from `<url>/public/…` (the store does, in the visitor's browser). **Open to anyone** |
+| GET    | `/index/live?q=` | `{ items: [{ publisher, url, kind: app \| workflow \| step \| concept, name, title?, description?, version?, runs?, pages?, run?, definition? }] }` — what the live rows' public views show, as last read; the item itself is read from `<url>/public/…` (the store does, in the visitor's browser). `run` (`plans/paid-runs.md` §10): anyone may run it there — `{ base, markup, capUsd, reserve, results, recent? }` as the view's `runnable` listed it (§17.2), each field checked as a stranger's and left out when it is not one the index can show; never its input (read from the publisher). A runnable item whose definition is not public is an item of its own with `definition: false`. **Open to anyone** |
 | POST   | `/index/crawl` | `{ crawled: CrawlState[] }`: read every listed publisher's catalog now. Full scope |
 | POST   | `/index/requests` | **Index role only.** A publisher's LISTING REQUEST (`plans/index-listing.md`; `src/packages/listing.ts`, `src/packages/index-requests.ts`): the RFC 8785 bytes of `{ v: 1, index, prefix, key, base?, description?, url?, remove?, live?, seq, sig }`, sealed by `key` (the publisher's PUBLIC key) under `strut-listing\n` (`listing.test.ts` holds a test vector). Checked cheapest first, nothing fetched until the first five pass: one byte form, ≤ 8 KB, its shape (`base` https on a public name — no IP literal, no local name — an origin and at most one path segment, no query) — `index` this index's key — `seq` (microseconds) within 10 minutes of the index's clock and greater than the last from `key` — the seal — `prefix` not reserved (`strut`, `stakwork`, `sphinx`, `hive`, `stadeum`, `peel`, `jamie`, `index`, `official`, `admin`, + `STRUT_INDEX_RESERVED`) nor refused for this key in the last 30 days (a refusal is of what waited: it never stops a `remove`, nor the row's own key changing its row on the same host) — then `<base>/packages/catalog?public=1` (the ONE URL the index reads: a redirect is refused, never followed, and the body is read no further than 4 MB) is a catalog sealed by `key` listing a package under `prefix/`. Then: the row's own key on the same host, or a NEW name from a host in `STRUT_INDEX_AUTO_HOSTS` (`*`, `host[:port]`, `*.domain[:port]`) from a key and a host that hold no row → 200 `{ status: "listed", prefix, row, live? }`, the publisher read at once; `remove` by the row's key → 200 `{ status: "removed" }`; anything else → 202 `{ status: "pending", id, prefix, reason }`, `reason` one of `host`, `second name`, `same host`, `move` (the row's key, another host), `takeover` (another key holds the name), `live row` (the name is a live row the operator listed with no key). One request waits per (name, key); 200 at most, 3 per host; 30 days. `live: true` also writes a live row at the base, `false` removes it, absent leaves one alone. Errors: 400 `listing_invalid`, 403 `listing_reserved` / `listing_refused` (with the operator's reason), 404 `listing_not_listed`, 409 `listing_rollback`, 422 `listing_no_catalog`, 429 `listing_busy` (also 10 a minute per address), 503 `index_no_key` before the first row. **Open to anyone**: the request carries its own proof |
 | POST   | `/index/ping` | **Index role only.** `{ key }` → 202 `{ rows }`: read the rows naming `key` now — at most once a minute each, a ping inside the minute folded into one more read at its end. What a listed publisher sends after a release (its public key). Carries nothing: the catalog is read from the row's own URLs, against the row's key. **Open to anyone**, 10 a minute per address |
@@ -2266,7 +2293,7 @@ installed it, it can be a mirror. `file:`, `pk:` and `git+` refs resolve
 | GET    | `/index/packages/:publisher/:name` | `IndexPackage`: `{ package, publisher, key, urls, description?, releases (newest first, yanked kept), channels: { "<public channel>": digest }, readAt, detail?, detailError? }`. `detail` is the newest release not yanked read off its archive — `PackageDetail`: `{ digest, version, derivedAt, readme?, apps: [{ name, title, description?, icon?, grants: { workflows, steps }, can, files }], workflows: [{ name, description?, inputs: [{ name, type, required, description?, default? }], steps, grants, can, secrets, peer?, sealed?, claims?, error? }], steps: [{ name, helper?, description?, effect?, secrets, lint: [string], bytes, claims? }], concepts: [{ name, description?, parent?, docs? }], secrets, can, files, bytes }` (names inside the package; `can` = what running it reaches: `spends` an `agent` / `llm` step, `acts` a step declaring `effect: "write"`, `code` an `exec` or one of the package's own steps; the steps' facts are regexes over the source, the lint `src/step-lint.ts`'s findings — a reading, never a check); `detailError` says why there is none (the archive not fetched yet, or unreadable). **Open to anyone**; 404 when no listed publisher's catalog has it |
 | GET    | `/index/concepts?q=` | `{ concepts: IndexConcept[] }` — every Concept page across the crawled packages AND the live rows' public trees, one per name: `{ name, description?, parent?, packages: [{ package, version }], live?: [{ publisher, url }] }` (the first package by name gives the description and parent, then a live tree's; a page only a live view holds has `packages: []`, and its docs are read from `<url>/public/concepts/<name>`; `q` over names and descriptions). **Open to anyone** |
 | GET    | `/index/concepts/:name` | `IndexConceptPage`: the entry plus `docs?` (the first package's text), `children: [{ name, description? }]` (the pages naming this one as parent) and `parents` (nearest first). **Open to anyone**; 404 when no listed package carries it |
-| GET    | `/llms.txt` | **Index role only.** The store as ONE markdown page for an agent that fetches URLs (llmstxt.org; `llmsTxt`, `src/packages/index-tools.ts`), `text/markdown`: an H1 naming the index, a blockquote saying what it is (derived, unsigned past the card, an install re-verifies against the publisher), how an agent reaches it (the `claude mcp add` line for `/index/mcp`) and that a PERSON installs; then `## Reads` (the five open routes above, each a link), `## Packages` (every listed package at its newest release — `- [publisher/name](…/index/packages/publisher/name): description — version; N workflows, M steps, K apps; needs SECRET; spends (model calls), acts on the world, runs code`), `## Concepts` (every page the packages carry, each a link to `/index/concepts/<name>`, its parent and packages) and `## Optional` (the store page `?store=1` when the index serves the UI). **Open to anyone**; 401 (no such page, the gate answers) on a strut without the role |
+| GET    | `/llms.txt` | On an index strut, the store as ONE markdown page for an agent that fetches URLs (llmstxt.org; `llmsTxt`, `src/packages/index-tools.ts`), `text/markdown`: an H1 naming the index, a blockquote saying what it is (derived, unsigned past the card, an install re-verifies against the publisher), how an agent reaches it (the `claude mcp add` line for `/index/mcp`) and that a PERSON installs; then `## Reads` (the five open routes above, each a link), `## Packages` (every listed package at its newest release — `- [publisher/name](…/index/packages/publisher/name): description — version; N workflows, M steps, K apps; needs SECRET; spends (model calls), acts on the world, runs code`), `## Concepts` (every page the packages carry, each a link to `/index/concepts/<name>`, its parent and packages) and `## Optional` (the store page `?store=1` when the index serves the UI), and, when this strut also lets anyone run something, `# Run on this server` with §17.8's run and tool lists. **Open to anyone**. On a strut without the role it is the public view's page (§17.8), and `404` when nothing is public |
 | POST   | `/index/mcp` | **Index role only.** The store for an AGENT (§11; `src/packages/index-tools.ts`): the three reads above as MCP tools over the same derived pages — `search_packages { query?, limit? }` → `{ packages: IndexHit[], total, store?, install }`; `get_package { package }` → the `IndexPackage` as a model reads it (`detail.readme` cut at 12 000 chars, the Concept pages' `docs` left out) + `store?` + `install`, or `{ error }`; `get_concept { name?, query? }` → one `IndexConceptPage` (+ `store?`) or `{ concepts: IndexConcept[], total }`. `store` links the store page (`?store=1&pkg=`, `&concept=`, `&q=`) when the index serves the UI; `install` says a PERSON installs, and where. The `instructions` say what the index is, that everything is derived and an install re-verifies against the publisher, and how a person installs. **Open to anyone** — the one POST the gate opens with the role; GET and DELETE are 405 |
 | GET    | `/` | **Index role, with the UI served:** a request for the UI's root with NO credential (no key, no session cookie, no `?key=`) is a 302 to `./?store=1` — the STORE FRONT (§14.3), the index's public face over the four open reads above; what else the URL carried rides along. With a credential, the shell as always |
 
@@ -3060,6 +3087,7 @@ a `404`, as if it were not there.
 | Route | Answer |
 | --- | --- |
 | `GET /public` | `{ workflows: [{ name, activeVersion, versions, description?, category?, runs }], steps: [{ type, source, description?, effect? }], concepts: [{ name, description?, pages }], types, apps: [{ name }], runnable: [{ kind, name, description?, base, markup, capUsd, reserve, results, input, recent }] }` — the roots, with how many pages each holds; what anyone may run (below) |
+| `GET /llms.txt` | the same as ONE markdown page for an agent that fetches URLs (§17.8); not under `/public`, open the same way |
 | `GET /public/workflows[?q=]` | the public workflows, as above |
 | `GET /public/workflows/:name` | `{ name, active, category?, runs, versions: { vN: { createdAt, description?, hash, source? } } }` |
 | `GET /public/workflows/:name/versions` | `{ active, versions: [{ version, createdAt, description?, source? }] }` newest first |
@@ -3105,8 +3133,9 @@ both ends are. The trees are walked live, at most every 30 s.
 
 strut's UI hosts a visitor's page at `?app=<name>&solo=1&public=1`: the
 document from §17.2, framed as for any app (§14.3), its tools/call relayed to
-`POST /public/mcp` with no credential. The door serves `step_run` alone
-(app-only, as on `/mcp`, §14.1). Its `app` argument must be the VISITOR's
+`POST /public/mcp` with no credential. For a page the door serves
+`step_run` (app-only, as on `/mcp`, §14.1); beside it, a model sees an
+agent's five tools (§17.8). Its `app` argument must be the VISITOR's
 identity the public document carries — `app:<name>@<vN>.<token>`, the
 token signed over `public-app:<name>@<vN>` (`publicAppIdentity`, auth.ts),
 which opens this door for that app and nothing else: never `/mcp`, never a
@@ -3255,7 +3284,10 @@ reads as a run that is not there (`404`).
 
 `charged` (dollars) appears once the run ended and was charged, as the
 ledger recorded it: `0` for a free run, whose cost (`totals.cost`) the
-seller carried. `artifacts` are the
+seller carried. A run that ended and whose charge the ledger has not
+recorded yet (it refused it for now; it is tried again) answers
+`charge_pending: true` beside its ended status, at most 2 s after it
+ended, whatever `wait` asked — never as a run still going. `artifacts` are the
 declared ones, a file here at its `/public` link (add `?t=<token>`). What
 else the launcher reads is the item's `results`: with `output` (the
 default) the view above, without step counts or an error's stack, and the
@@ -3347,6 +3379,24 @@ and what it handed on or lost to its end; `remaining_*` is 0 once it is
 replaced or past its end. `entries` are the newest 50: `payment`, `hold`,
 `charge`, `carry` (− out, + in), `expiry`.
 
+`runs` are the runs and tool calls those entries name, newest first —
+the way back to a run whose answer was lost after it ended, which its `key`
+no longer finds (a key matches only a run in flight):
+
+```json
+"runs": [
+  { "kind": "workflow", "name": "voxel/character", "runId": "1800000000000", "at": "…",
+    "held_usd": 7.6, "charged_usd": 2.25, "outcome": "success", "status": "success",
+    "token": "<the run token>", "url": "/public/workflows/voxel%2Fcharacter/runs/1800000000000" },
+  { "kind": "step", "name": "cve/lookup", "runId": "1800000000123", "at": "…",
+    "held_usd": 0.02, "charged_usd": 0.02, "outcome": "success", "status": "success" }
+]
+```
+
+A run's `status` is its own (`charge_pending: true` when it ended and is
+not charged yet), its `token` the run token that reads it (§17.4); a call's
+is how its charge ended, or `running, or answered and not yet charged`.
+
 ### 17.6 A visitor's launch from a public app — what a host does (`plans/paid-runs.md` §10)
 
 A public app's page launches a workflow it grants that a person made
@@ -3428,8 +3478,11 @@ host the same):
    `— your payment is kept as credit on this server: run it again in a
    moment, and it is spent then` to the error).
 7. Send the same header on later requests: launches spend the credit until
-   it runs short. An `invalid_token` error with a credential attached: drop
-   it and send the call again without.
+   it runs short. The door's own refusal of the credential — an error that
+   BEGINS `invalid_token:` (a 401: nothing ran) — with a credential
+   attached: drop it and send the call again without. Never on an error that
+   merely mentions the words (a step's own failure, which ran and was
+   charged): keep the credential and send nothing again.
 8. When the visitor cancels, answer the page's call with a plain error
    (strut's UI: `payment_cancelled: the run of <workflow> was not paid for,
    so it did not start`) — and keep claiming that invoice (step 5).
@@ -3555,6 +3608,85 @@ step whose publisher made it callable may still reach past `ctx.services`
 **A restart between a call's hold and its charge** leaves the hold open,
 and the call never answered: the next boot frees it, a charge of nothing
 that the day counts as a failed call.
+
+### 17.8 An agent as a buyer — `POST /public/mcp`'s tools, `GET /llms.txt` (`plans/paid-runs.md` §10)
+
+An agent with no account on this server runs what anyone may run here
+over MCP: `POST /public/mcp` (stateless, as §11) serves five tools beside a
+public app page's `step_run` (§17.3, still app-only, its semantics
+unchanged). Every one goes through the SAME doors as the HTTP routes
+(`PublicDoors`, `src/public-routes.ts`): a launch through §17.4's launcher —
+the address's 60 launches a minute, the drain, the body, the caps, the
+price, the key — a call through §17.7's — the address's 120 calls a minute
+and the rest — and the credit reads through §17.5's.
+
+| Tool | Arguments | Answers |
+| --- | --- | --- |
+| `list_public` | `query?` | `{ server, runnable: [{ …§17.2's runnable item, call_with: run_workflow \| call_tool }] }` |
+| `run_workflow` | `workflow`, `input?`, `key?`, `payment?`, `wait?` (s, 25 by default, 45 at most) | `{ workflow, run_id, token, key?, existing?, credit?, run: <the launcher's view, §17.4, with its \`url\`>, next? }` — waits `wait` s for the run; still running then, `next` says to call `get_run`. A PRICED launch with no `key` goes under one made from the workflow and the input as its `input:` block parsed it, keys sorted; a FREE one has a key only when the agent passes one |
+| `call_tool` | `type`, `config?`, `payment?` | `{ output, credit? }` (§17.7), the output whole; `{ status: "still_running", next }` when the call has not answered in 45 s |
+| `get_run` | `workflow`, `run_id`, `token`, `wait?` | `{ workflow, run_id, token, run, next? }` — by the run token alone |
+| `get_credit` | `payment?` | the balance with its `runs` (§17.5; each run's `url` absolute, with its token); with the macaroon alone, its CLAIM: `{ state: pending \| expired \| settled, credential?, credit? }` |
+
+- **Paying.** A priced launch or call with no credit, or too little,
+  answers a RESULT, not an error: `{ payment_required: { macaroon, invoice,
+  usd, sats, rate, description, expires, remaining_usd?, reason?, carries?
+  }, next, key? }` — nothing launched, nothing set aside. Pay the BOLT11
+  invoice with any wallet and call again with `payment:
+  "<macaroon>:<preimage hex>"` (and, for a launch, the same `key`). The
+  connection's own `Authorization: L402 <macaroon>:<preimage>` header pays
+  too, when a call names no `payment`. `payment: "<macaroon>"` with no
+  preimage (a person paid the QR code) is claimed first: `{
+  payment_pending, next }` until the invoice settles, then the call goes on
+  and its answer carries the whole `credential` to send from then on. The
+  credential is credit here for a year and works on ANY connection: the
+  door keeps nothing between requests.
+- **A retry is the same run while it is in flight.** A PRICED launch
+  carries a `key` — the agent's, else one made from the workflow and the
+  input as its `input:` block parsed it, keys sorted, scoped by the credit
+  token — so the same launch sent again while its run is in flight (after
+  paying, after a lost answer) returns that run (`existing: true`) and sets
+  nothing more aside. A FREE launch carries one only when the agent passes
+  it: its scope is the caller's address, which unrelated users of one
+  hosted agent share. A key matches only a run still in flight (§17.4).
+- **The way back to a lost answer is `get_credit`.** Once a run ended its
+  key no longer finds it, so the same call starts — and pays for — another.
+  `get_credit` lists the runs and calls the credential paid for, each run
+  with its run token; every tool's description says to read it before
+  calling again after a timeout or a dropped answer. The first progress
+  note of a launch carries its `run_id` and `token` too.
+- **No call outlives a client's patience.** Every tool answers within 45 s
+  — under the MCP SDK's 60 s default request timeout, which progress resets
+  only when the client asks — with what it has: a launch still starting
+  (`status: "starting"`), a run still going (its handle and `next`), a call
+  still going (`still_running`: it goes on, may be charged, and its output
+  is not kept). Progress goes to a client that passed a `progressToken`,
+  from the start of a launch, then every 5 s. A run reads as going by its
+  own status: one that ended with its charge pending says so.
+- **Nothing paid for is cut.** A call's output comes back whole (the door's
+  5 MB cap); a run's output over 100,000 characters as JSON is left out of
+  the answer (`output_omitted: { chars, read_at }`), read in full at the
+  run's `url`. `call_tool` has no key: a priced call that failed, timed out
+  or returned too much is charged its cost, even when the client gave up
+  waiting, so its error — or `get_credit` — is read before it is sent again.
+- **Links** in a run's answer are absolute (`STRUT_PUBLIC_URL`, else the
+  request's origin), the run's own `url` and each file carrying the run
+  token as `?t=`.
+- Refusals are `isError` results: `{ error, status, code?, retry_after_s?
+  }`, the route's sentence with its code first.
+
+**`GET /llms.txt`** (llmstxt.org), open to anyone, `text/markdown`: on a
+strut whose public view has anything, an H1 naming the server, a
+blockquote saying what it is, the `claude mcp add` line for
+`/public/mcp`, then `## Run` (each runnable workflow as `- [name](<base>/public/workflows/<name>/run): description — price; needs $R of credit to start; N in the last 30 days, $A charged on average; input: \`field\` (type, optional)`), `## Tools` (each runnable step,
+its `config:`), `## Paying` (the 402, the retry, `/public/credit`, its
+claim, a launch's and a call's shapes), `## Read` (`/public`, each public
+workflow's definition, each public app's page, each Concept root) and
+`## Optional`. The `/public/mcp` lines are left out when the MCP doors
+are off (`enableMcp`). Built at most every 30 s per base URL, and counted
+against the address's `/public` budget (§17.2, `429` past it). `404` when
+nothing is public. On an index strut the index's page answers (§16), with
+the run lists appended when this server also sells.
 
 ## 18. The wallet — what the server receives with (`plans/paid-runs.md` §9)
 

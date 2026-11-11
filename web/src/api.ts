@@ -3004,6 +3004,11 @@ export interface StoreLiveItem {
   version?: string;
   runs?: boolean;
   pages?: number;
+  /** Anyone may run it on its server (plans/paid-runs.md §10): its price as
+   *  the index's crawl read it. */
+  run?: { base: number; markup: number; capUsd: number | null; reserve: number; results: "output" | "run"; recent?: { days: number; runs: number; average: number } };
+  /** Runnable, its definition not public: its page reads `/public` alone. */
+  definition?: false;
 }
 export const storeLive = (q = "") => storeJSON<{ items: StoreLiveItem[] }>(`/index/live?q=${encodeURIComponent(q)}`).then((r) => r.items);
 
@@ -3050,6 +3055,47 @@ export interface LiveConceptPage {
   parent?: string;
   root: string;
   children: Array<{ name: string; description?: string }>;
+}
+
+// ── The store's Run form (plans/paid-runs.md §10 "The store") ───────────────
+// A launch, a read and a call on the PUBLISHER's server, from the visitor's
+// browser. No cookie, never the operator's key: a priced one presents the
+// visitor's own credit credential as `Authorization: L402 …`, in a header
+// alone — never in a URL. A run's reads present its run token (a receipt
+// for that run alone) as a Bearer.
+
+/** One answer of a publisher's public door: its status, body and
+ *  `Retry-After`. A network failure throws. */
+export interface LiveAnswer {
+  status: number;
+  body: unknown;
+  retryAfter: string | null;
+}
+async function liveSend(url: string, init: RequestInit): Promise<LiveAnswer> {
+  const res = await fetch(url, { ...init, credentials: "omit", cache: "no-store" });
+  return { status: res.status, body: await res.json().catch(() => null), retryAfter: res.headers.get("retry-after") };
+}
+const l402 = (credential: string | undefined): Record<string, string> => (credential ? { authorization: `L402 ${credential}` } : {});
+const enc2 = (s: string) => s.split("/").map(encodeURIComponent).join("/");
+
+/** `GET <base>/public`: what the publisher's server shows and lets anyone run. */
+export const liveListing = (base: string) => liveJSON<{ runnable?: import("./store-run").LiveRunnableItem[] }>(base, "/public");
+/** Launch a workflow anyone may run there: `{ input, key }`. */
+export const liveLaunch = (base: string, name: string, body: { input: Record<string, unknown>; key: string }, credential?: string) =>
+  liveSend(`${base}/public/workflows/${encodeURIComponent(name)}/run`, { method: "POST", headers: { "content-type": "application/json", ...l402(credential) }, body: JSON.stringify(body) });
+/** Call a step anyone may call there: `{ config }`. */
+export const liveCall = (base: string, type: string, config: Record<string, unknown>, credential?: string) =>
+  liveSend(`${base}/public/steps/${enc2(type)}/run`, { method: "POST", headers: { "content-type": "application/json", ...l402(credential) }, body: JSON.stringify({ config }) });
+/** The launcher's view of a run launched there, by its run token; `wait`
+ *  holds while it is in flight. */
+export const liveRun = (base: string, name: string, runId: string, token: string, wait = 0) =>
+  liveSend(`${base}/public/workflows/${encodeURIComponent(name)}/runs/${encodeURIComponent(runId)}${wait > 0 ? `?wait=${wait}` : ""}`, { headers: { accept: "application/json", authorization: `Bearer ${token}` } });
+/** The visitor's credit there (`GET /public/credit`). */
+export const liveCredit = (base: string, credential: string) => liveSend(`${base}/public/credit`, { headers: { accept: "application/json", ...l402(credential) } });
+/** Claim an invoice paid without a preimage (`POST /public/credit/claim`). */
+export async function liveClaim(base: string, macaroon: string): Promise<ClaimAnswer> {
+  const a = await liveSend(`${base}/public/credit/claim`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ macaroon }) });
+  return claimAnswerOf(a.status, a.body, a.retryAfter);
 }
 
 // ── Earnings and Withdraw (plans/paid-runs.md §8) ──────────────────────────

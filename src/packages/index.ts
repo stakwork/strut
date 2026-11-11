@@ -61,7 +61,7 @@ export interface LiveState {
   /** What stopped the last read (the listing kept is the one before). */
   error?: string;
 }
-export type LiveStateBrief = Omit<LiveState, "listing" | "concepts"> & { apps?: number; workflows?: number; steps?: number; concepts?: number };
+export type LiveStateBrief = Omit<LiveState, "listing" | "concepts"> & { apps?: number; workflows?: number; steps?: number; concepts?: number; runnable?: number };
 
 /** `GET <url>/public`, as the index keeps it (src/public-routes.ts). */
 export interface LiveListing {
@@ -69,6 +69,71 @@ export interface LiveListing {
   steps: Array<{ type: string; description?: string; effect?: string }>;
   concepts: Array<{ name: string; description?: string; pages?: number }>;
   apps: Array<{ name: string; version: string; title: string; description?: string; icon?: string }>;
+  /** What anyone may RUN there, and for how much (plans/paid-runs.md §2,
+   *  decision 25), as the crawl read it — absent from a view read before. */
+  runnable?: LiveRunnable[];
+}
+
+/** One item a publisher's server lets anyone run, as the index keeps it:
+ *  its price, the credit a run needs to start, and what recent runs were
+ *  charged — read off a stranger's server, so every field is checked
+ *  (`liveRunnableOf`). The input is read from the publisher when it is run. */
+export interface LiveRunnable {
+  kind: "workflow" | "step";
+  name: string;
+  description?: string;
+  /** Dollars a run or call. */
+  base: number;
+  /** Times what the run cost. */
+  markup: number;
+  /** The most one run may spend, in dollars; null when the item sets none. */
+  capUsd: number | null;
+  /** The credit a run needs to start, in dollars. */
+  reserve: number;
+  results: "output" | "run";
+  recent?: { days: number; runs: number; average: number };
+}
+
+/** The most runnable items the index keeps of one server's view. */
+export const LIVE_RUNNABLE_MAX = 500;
+const LIVE_TEXT_MAX = 2000;
+
+/** `GET <url>/public`'s `runnable`, checked: only items with a kind, a
+ *  name and prices that are numbers the index can show; strings cut. A
+ *  server's answer is a stranger's, never trusted as it came. */
+export function liveRunnableOf(raw: unknown): LiveRunnable[] {
+  if (!Array.isArray(raw)) return [];
+  const money = (v: unknown): number | undefined => (typeof v === "number" && Number.isFinite(v) && v >= 0 && v < 1e9 ? v : undefined);
+  const text = (v: unknown, max: number): string | undefined => (typeof v === "string" && v.trim() ? v.slice(0, max) : undefined);
+  const out: LiveRunnable[] = [];
+  for (const r of raw.slice(0, LIVE_RUNNABLE_MAX)) {
+    if (!r || typeof r !== "object") continue;
+    const o = r as Record<string, unknown>;
+    const kind = o["kind"] === "workflow" || o["kind"] === "step" ? o["kind"] : undefined;
+    const name = text(o["name"], 300);
+    const base = money(o["base"] ?? 0);
+    const markup = money(o["markup"] ?? 0);
+    const reserve = money(o["reserve"] ?? 0);
+    const cap = o["capUsd"] === null || o["capUsd"] === undefined ? null : money(o["capUsd"]);
+    if (!kind || !name || base === undefined || markup === undefined || reserve === undefined || cap === undefined) continue;
+    const description = text(o["description"], LIVE_TEXT_MAX);
+    const rec = o["recent"] as Record<string, unknown> | undefined;
+    const days = money(rec?.["days"]);
+    const runs = money(rec?.["runs"]);
+    const average = money(rec?.["average"]);
+    out.push({
+      kind,
+      name,
+      ...(description ? { description } : {}),
+      base,
+      markup,
+      capUsd: cap,
+      reserve,
+      results: o["results"] === "run" ? "run" : "output",
+      ...(days !== undefined && runs !== undefined && average !== undefined ? { recent: { days, runs: Math.floor(runs), average } } : {}),
+    });
+  }
+  return out;
 }
 
 /** One item a publisher's public view shows, as the store lists it. */
@@ -84,6 +149,12 @@ export interface IndexLiveItem {
   version?: string;
   runs?: boolean;
   pages?: number;
+  /** Anyone may run it there (plans/paid-runs.md §10): its price, as the
+   *  crawl read it. */
+  run?: Omit<LiveRunnable, "kind" | "name" | "description">;
+  /** Runnable, and its definition is NOT in the public view: the store reads
+   *  its price and input from the server's `/public` listing alone. */
+  definition?: false;
 }
 
 export interface CrawlState {
@@ -426,7 +497,8 @@ export function createPackageIndex(deps: IndexDeps): PackageIndex {
     try {
       const listing = (await get("/public")) as Partial<LiveListing>;
       const tree = listing.concepts?.length ? ((await get("/public/concepts")) as { concepts?: LiveState["concepts"] }).concepts ?? [] : [];
-      state.listing = { workflows: listing.workflows ?? [], steps: listing.steps ?? [], concepts: listing.concepts ?? [], apps: listing.apps ?? [] };
+      const runnable = liveRunnableOf((listing as { runnable?: unknown }).runnable);
+      state.listing = { workflows: listing.workflows ?? [], steps: listing.steps ?? [], concepts: listing.concepts ?? [], apps: listing.apps ?? [], ...(runnable.length ? { runnable } : {}) };
       state.concepts = tree.map((c) => ({ name: c.name, ...(c.description ? { description: c.description } : {}), ...(c.parent ? { parent: c.parent } : {}), root: c.root }));
       state.readAt = state.checkedAt;
       delete state.error;
@@ -455,7 +527,7 @@ export function createPackageIndex(deps: IndexDeps): PackageIndex {
   };
   const briefOf = ({ listing, concepts, ...rest }: LiveState): LiveStateBrief => ({
     ...rest,
-    ...(listing ? { apps: listing.apps.length, workflows: listing.workflows.length, steps: listing.steps.length } : {}),
+    ...(listing ? { apps: listing.apps.length, workflows: listing.workflows.length, steps: listing.steps.length, ...(listing.runnable?.length ? { runnable: listing.runnable.length } : {}) } : {}),
     ...(concepts ? { concepts: concepts.length } : {}),
   });
 
@@ -632,9 +704,29 @@ export function createPackageIndex(deps: IndexDeps): PackageIndex {
         const l = st.listing;
         if (!l) continue;
         const at = { publisher: st.prefix, url: st.url };
+        // Its price, beside the item when its definition is public too, else
+        // an item of its own (decision 11: runnable is not readable).
+        const runOf = (kind: "workflow" | "step", name: string) => {
+          const r = l.runnable?.find((x) => x.kind === kind && x.name === name);
+          if (!r) return undefined;
+          const { kind: _k, name: _n, description: _d, ...run } = r;
+          return run;
+        };
         for (const a of l.apps) items.push({ ...at, kind: "app", name: a.name, title: a.title, ...(a.description ? { description: a.description } : {}), version: a.version });
-        for (const w of l.workflows) items.push({ ...at, kind: "workflow", name: w.name, ...(w.description ? { description: w.description } : {}), runs: !!w.runs });
-        for (const t of l.steps) items.push({ ...at, kind: "step", name: t.type, ...(t.description ? { description: t.description } : {}) });
+        for (const w of l.workflows) {
+          const run = runOf("workflow", w.name);
+          items.push({ ...at, kind: "workflow", name: w.name, ...(w.description ? { description: w.description } : {}), runs: !!w.runs, ...(run ? { run } : {}) });
+        }
+        for (const t of l.steps) {
+          const run = runOf("step", t.type);
+          items.push({ ...at, kind: "step", name: t.type, ...(t.description ? { description: t.description } : {}), ...(run ? { run } : {}) });
+        }
+        for (const r of l.runnable ?? []) {
+          const shown = r.kind === "workflow" ? l.workflows.some((w) => w.name === r.name) : l.steps.some((t) => t.type === r.name);
+          if (shown) continue;
+          const { kind, name, description, ...run } = r;
+          items.push({ ...at, kind, name, ...(description ? { description } : {}), run, definition: false });
+        }
         for (const c of l.concepts) items.push({ ...at, kind: "concept", name: c.name, ...(c.description ? { description: c.description } : {}), ...(c.pages !== undefined ? { pages: c.pages } : {}) });
       }
       const words = q.trim();

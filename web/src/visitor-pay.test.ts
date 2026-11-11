@@ -53,6 +53,39 @@ describe("a visitor's page, paid for by its host (plans/paid-runs.md §10)", () 
     assert.equal(refusesCredential(err("invalid_token: nope")), true);
     assert.equal(refusesCredential(err("too many launches")), false);
     assert.equal(refusesCredential(ok({ runId: "r" })), false);
+    // Only the door's own refusal: a failure whose text merely mentions the words is not one.
+    assert.equal(refusesCredential(err("step_failed: the OAuth server said invalid_token: expired")), false);
+    assert.equal(refusesCredential(err("upstream returned invalid_token")), false);
+    assert.equal(refusesCredential({ isError: true, structuredContent: { error: "invalid_token: no", code: "invalid_token", status: 401 }, content: [{ type: "text", text: "{}" }] }), true);
+    assert.equal(refusesCredential({ isError: true, structuredContent: { error: "step_failed: invalid_token from the API", code: "step_failed", status: 500 }, content: [{ type: "text", text: JSON.stringify({ error: "invalid_token: looks like one" }) }] }), false, "the code says what it is");
+  });
+
+  it("a failure that mentions invalid_token keeps the credential and is never sent again; the door's own refusal drops it and asks once more", async () => {
+    // A launch whose answer is an error that merely mentions the words.
+    const purse: VisitorPurse = { ...newPurse("v"), credential: "good:1" };
+    let calls = 0;
+    const mentioned = await callPaying(launch(), {
+      call: async () => {
+        calls++;
+        return err("step_failed: the provider said invalid_token");
+      },
+      purse,
+      pay: async () => {
+        throw new Error("never asked");
+      },
+    });
+    assert.equal(calls, 1, "never sent again");
+    assert.equal(purse.credential, "good:1", "the credential is kept");
+    assert.match(JSON.parse(mentioned.content![0]!.text!).error, /step_failed/);
+    // The door's own refusal: dropped, and sent once more without it.
+    const s = server({ accepts: new Set(), refuses: new Set(["stale:1"]) });
+    s.purse.credential = "stale:1";
+    let asked = 0;
+    await callPaying(launch(), { call: s.call, purse: s.purse, pay: async () => (asked++, null) });
+    assert.equal(s.purse.credential, undefined);
+    assert.equal(s.seen[0]!.authorization, "L402 stale:1");
+    assert.equal(s.seen[1]!.authorization, undefined);
+    assert.equal(asked, 1, "then asked to pay");
   });
 
   it("a call that is not a launch passes through untouched, whatever it answers", async () => {
