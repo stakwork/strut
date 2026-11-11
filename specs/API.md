@@ -1229,18 +1229,23 @@ accepted proposal (`ctx.proposal`, set by the apply alone). A workflow step
 `meta/run-workflow builder` with `input.peer`), `meta/run-step` or another
 agent's ungated tool is refused. No host gate: unchanged.
 
-The steps `proposal/list` ({ job?, session?, status?, limit? } → the briefs)
-and `proposal/get` ({ id } → the record) are the same reads for an agent.
-Called from an app's page, or in a run an app launched, `proposal/list`
-holds the list to the viewer's own, as a person token's. A page's own
+The steps `proposal/list` ({ job?, session?, workflow?, status?, input?,
+limit? } → the briefs; `workflow` keeps those a run of that workflow made,
+`input: true` adds each one's `input`) and `proposal/get` ({ id } → the
+record) are the same reads for an agent. Called from an app's page, or in a
+run an app launched, `proposal/list` holds the list to the viewer's own, as
+a person token's; strut's own page, in its own call, also lists an ADMIN
+viewer the proposals made in no conversation (`pageSees`: an automation's,
+the dream's changes to the Concept tree, §14.13), which their session
+already reads at `GET /proposals`. A page's own
 `proposal/get` also answers `viewer: { admin }`: whether its viewer is an
 admin here (`AppRef.admin`, §14.1), so a card shows "An admin must approve
 this" in place of an Accept the decision would refuse. `proposal/decide`
 ({ id, action: "accept" | "reject", input?, reason? } → the record after the
 decision) is the decide route for strut's own app (§14.10): it runs only as
-a first-party page's own call, decides only its viewer's proposals, accepts
-one only an admin accepts only when the viewer is an admin, and an agent
-never runs it.
+a first-party page's own call, decides only its viewer's proposals — and,
+for an admin, one made in no conversation — accepts one only an admin
+accepts only when the viewer is an admin, and an agent never runs it.
 
 ## 13. Sessions — a browser signs in
 
@@ -2113,7 +2118,7 @@ draws shows in the thread; the rest is handed to the host as
 
 The app strut seeds after `strut/views` (`src/apps/knowledge/`,
 `src/apps/knowledge-seed.ts`), in place of Hive's org graph view: the
-organisation's Concepts as an outline beside their graph, read-only. Roots are the Concepts
+organisation's Concepts as an outline beside their graph. Roots are the Concepts
 with `PARENT_OF` children and no parent, biggest tree first; a Concept in no
 tree is listed under "Not in any tree"; a Concept with two parents is a row
 under each. The main view is the graph (`NodeGraph` on `PARENT_OF` only, so every node
@@ -2130,7 +2135,7 @@ lists it from `GET /apps` (title `Knowledge`) and opens it as
 each selection is reported back the same way (`ui/open-link` to the app
 itself), so the host's address bar follows it.
 
-Its grants are reads only: `graph/find` (every Concept, 200 a page),
+Its graph grants are reads only: `graph/find` (every Concept, 200 a page),
 `graph/graph-edges` (the edges among them, 1,000 `ref_ids` a call with every
 Concept as `among`; past 5,000 Concepts the page says it read part of the
 graph), `graph/graph-get-batched` (the selected concept, fresh),
@@ -2148,6 +2153,28 @@ commit may be typed, and "Recent changes" lists the history's last commits on
 `STRUT_HISTORY=0`) both say so. There is no revert: a page may not write a
 Concept (`reservedAppType`), so a person puts a page back through a
 proposal an agent makes or through `graph/edit-node` outside the app.
+
+The LEARNING LOOP (the `dream`, AGENTS.md "The dream"), with five more
+grants: `knowledge/page`, `knowledge/claims`, `proposal/list`,
+`proposal/get` and `proposal/decide`. A Concept's panel lists its CLAIMS
+(`knowledge/page { name }`, shown only when the page it answers is that
+node) — each sentence, its status (supported, refuted, stale, unknown) and
+the latest evidence in a line: what a person said and who, or what a check
+saw. Where the page may not read the namespace the tree is kept in (a
+personal strut, whose pages read `shared`) or the server keeps no claims,
+the step refuses and the panel says why in one line. Above them, the
+CHANGES to that Concept the dream proposed and waiting on a person
+(`proposal/list { workflow: "dream", status, input: true }`, pending and
+failed): a `graph/edit-node`, `move-node` or `delete-node` on its `ref_id`,
+or a `graph/create-triplet` adding a page under it along `PARENT_OF`. Each
+is drawn by `ConceptDiff`'s `proposal` (its title, rationale and what it
+changes on the page as it is now) with Accept and Reject through
+`proposal/decide` — the one write the app makes; an accepted change reads
+everything again. Only an ADMIN sees and decides the dream's changes (they
+are made in no conversation, §12); a member sees the claims. **Waiting**
+over the graph lists the Concepts with a change waiting or a claim refuted
+(`knowledge/claims`: every Concept carrying claims, with them), each
+opening its Concept.
 
 ### 14.12 Branding — the look every app here is shown in (`src/brand.ts`)
 

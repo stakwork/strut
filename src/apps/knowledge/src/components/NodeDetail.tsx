@@ -4,7 +4,8 @@
 // to. Opened wide, its docs as markdown (strut/views' DocumentView) and
 // where it came from. A Concept's HISTORY: every commit that changed its
 // page, and what each did (strut/views' ConceptDiff over `history/read`).
-// Read-only.
+// A Concept's CLAIMS — what its readers are held to — and the changes to it
+// waiting on a person, decided here (./Learning).
 import { useState } from "react";
 import { ArrowLeft, History, Maximize2, Minimize2, X } from "lucide-react";
 import { ConceptDiff, DocumentView, useNode } from "strut/views";
@@ -13,7 +14,9 @@ import { cn } from "@/lib/utils";
 import { useLinks } from "../lib/read";
 import { textOf } from "../lib/ontology";
 import { TREE_TYPE, type ConceptTree } from "../lib/tree";
+import type { PendingChange } from "../lib/learning";
 import { Chip, Dot, SectionLabel, type Picked } from "./bits";
+import { ChangesSection, ClaimsSection } from "./Learning";
 
 export interface NodeDetailProps {
   id: string;
@@ -27,9 +30,11 @@ export interface NodeDetailProps {
   onWide: (wide: boolean) => void;
   /** Narrow: the card has the page, so it goes Back to the graph and is always wide. */
   narrow?: boolean;
+  /** The changes to this node waiting on a person (the dream's proposals). */
+  changes?: readonly PendingChange[];
 }
 
-export function NodeDetail({ id, tree, path, onSelect, onClose, wide, onWide, narrow }: NodeDetailProps) {
+export function NodeDetail({ id, tree, path, onSelect, onClose, wide, onWide, narrow, changes = [] }: NodeDetailProps) {
   const q = useNode(id);
   const links = useLinks(id);
   const [history, setHistory] = useState(false);
@@ -88,6 +93,10 @@ export function NodeDetail({ id, tree, path, onSelect, onClose, wide, onWide, na
         </header>
 
         {history && <ConceptDiff page={{ name: n.name }} />}
+
+        {!history && <ChangesSection changes={changes} wide={wide} onWide={onWide} />}
+
+        {!history && n.node_type === TREE_TYPE && n.name && <ClaimsSection id={id} name={n.name} />}
 
         {wide && !history && (
           <section className="space-y-2">

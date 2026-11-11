@@ -12,6 +12,8 @@
  *     it, the claims on it with what the evidence says. Not an observation:
  *     no version is recorded, so tending a page is never checked against
  *     the claims about it (`graph/graph-get` is how work OPENS a page);
+ *   - `claims`: every Concept carrying claims, with them — what a keeper
+ *     scans for the rules that do not hold, without opening every page;
  *   - `opened`: which pages a run opened, read off its log — what tells
  *     "the page was never opened" from "it was opened and not followed";
  *   - `addClaim`: one sentence a Concept's readers must hold to, written
@@ -25,7 +27,7 @@
  * Changing a Concept is not here: a tender proposes it with the ordinary
  * graph steps under its workflow's `approve:`, and a person decides.
  */
-import type { ClaimActor, ClaimListing, ClaimsAuthoring } from "./claims-authoring.js";
+import { toSubjectRef, type ClaimActor, type ClaimListing, type ClaimsAuthoring } from "./claims-authoring.js";
 import type { GraphBackend } from "./graph/backend.js";
 import type { RunStore } from "./store.js";
 import { conceptsOpenedIn, type Verifier } from "./verify.js";
@@ -71,9 +73,18 @@ export interface KnowledgePage {
   claims: KnowledgeClaim[];
 }
 
+/** A Concept that carries claims, with them (`claims`). */
+export interface KnowledgeClaimed {
+  concept: string;
+  ref_id: string;
+  claims: KnowledgeClaim[];
+}
+
 export interface KnowledgeCapability {
   /** One Concept, by its exact name; null when there is none. */
   page(name: string): Promise<KnowledgePage | null>;
+  /** Every Concept of the tree's namespace that carries claims, by name. */
+  claims(): Promise<KnowledgeClaimed[]>;
   /** The Concepts a run opened, by name; null when its log does not say. */
   opened(workflow: string, runId: string): Promise<string[] | null>;
   addClaim(input: { concept: string; text: string }, by?: { runId?: string }): Promise<{ ok: true; id: string; existing?: true } | { error: string }>;
@@ -88,6 +99,21 @@ export interface KnowledgeDeps {
 }
 
 const text = (v: unknown): string | undefined => (typeof v === "string" && v.trim() ? v : undefined);
+
+/** How many Concepts `claims` reads at once. */
+const CLAIMS_AT_ONCE = 8;
+
+/** A claim as a tender (and a keeper) reads it. */
+function claimOf(c: ClaimListing): KnowledgeClaim {
+  const l = c.latest;
+  return {
+    id: c.id,
+    text: c.text,
+    status: c.status,
+    ...(c.speaker ? { speaker: c.speaker } : {}),
+    ...(l ? { latest: { ...(l.content ? { content: l.content } : {}), ...(l.mode ? { mode: l.mode } : {}), ...(l.by ? { by: l.by } : {}) } } : {}),
+  };
+}
 
 /** The standard check: the run that opened the page, handed to the judge. */
 export function conceptCheckSpec(claim: string) {
@@ -168,17 +194,24 @@ export function createKnowledge(deps: KnowledgeDeps): KnowledgeCapability {
             return { name: child, ...(line ? { description: line } : {}), ...(has.has(child) ? { has_claims: true as const } : {}) };
           })
           .sort((a, b) => a.name.localeCompare(b.name)),
-        claims:
-          "ok" in listed
-            ? listed.claims.map((c) => ({
-                id: c.id,
-                text: c.text,
-                status: c.status,
-                ...(c.speaker ? { speaker: c.speaker } : {}),
-                ...(c.latest ? { latest: { ...(c.latest.content ? { content: c.latest.content } : {}), ...(c.latest.mode ? { mode: c.latest.mode } : {}), ...(c.latest.by ? { by: c.latest.by } : {}) } } : {}),
-              }))
-            : [],
+        claims: "ok" in listed ? listed.claims.map(claimOf) : [],
       };
+    },
+
+    async claims() {
+      const names = await claims.reader.claimedSubjects("concept");
+      const out: KnowledgeClaimed[] = [];
+      for (let i = 0; i < names.length; i += CLAIMS_AT_ONCE) {
+        const read = await Promise.all(
+          names.slice(i, i + CLAIMS_AT_ONCE).map(async (concept) => {
+            const subject = { kind: "concept" as const, name: concept };
+            const [ref, listed] = await Promise.all([claims.reader.subjectRefId(toSubjectRef(subject)), claims.listClaims(subject)]);
+            return ref && "ok" in listed && listed.claims.length ? { concept, ref_id: ref, claims: listed.claims.map(claimOf) } : null;
+          }),
+        );
+        for (const r of read) if (r) out.push(r);
+      }
+      return out;
     },
 
     async opened(workflow, runId) {

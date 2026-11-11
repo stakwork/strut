@@ -120,7 +120,8 @@ function ConceptTreeDiff({ entries, from, to, path, proposal, parentsOf, hideUnc
   if (!diff) return <Skeleton className={cn("h-40", className)} />;
   const changed = diff.pages.filter((p) => p.status !== "unchanged").length;
   return (
-    <div className={cn("flex min-w-0 flex-col gap-3 text-sm", className)} data-testid="concept-diff">
+    // A container: the tree beside the page only where the box itself is wide, not the window (a card, a panel).
+    <div className={cn("@container/diff flex min-w-0 flex-col gap-3 text-sm", className)} data-testid="concept-diff">
       {proposalQ.data && <ProposalHead proposal={proposalQ.data.proposal} />}
       <div className="flex flex-wrap items-center gap-1.5 text-xs">
         {changed === 0 ? (
@@ -138,7 +139,7 @@ function ConceptTreeDiff({ entries, from, to, path, proposal, parentsOf, hideUnc
         {diffQ.data?.more && <span className="text-muted-foreground">· more pages changed than are shown</span>}
       </div>
       {changed > 0 && (
-        <div className="grid min-w-0 gap-4 md:grid-cols-[minmax(12rem,18rem)_minmax(0,1fr)]">
+        <div className="grid min-w-0 gap-4 @xl/diff:grid-cols-[minmax(12rem,18rem)_minmax(0,1fr)]">
           <nav className="min-w-0 rounded-md border py-1" aria-label="Changed pages" data-testid="concept-diff-tree">
             {diff.tree.map((n) => (
               <TreeRow key={n.key} node={n} depth={0} open={open?.path ?? null} onPick={pick} />

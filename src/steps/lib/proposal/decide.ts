@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { defineStep, isFirstParty, workflowOf, type StepContext } from "../../../core.js";
-import { proposalsOf, proposalUrl } from "../../../proposals.js";
+import { pageSees, proposalsOf, proposalUrl } from "../../../proposals.js";
 import { RUN_STEP_FLOW } from "../../../run-step.js";
 
 /**
@@ -8,8 +8,9 @@ import { RUN_STEP_FLOW } from "../../../run-step.js";
  * §3): what `POST /proposals/:id/decide` does for a person token, as the
  * page's viewer — accept applies the step in code with the recorded input
  * (the person's edits merged), reject records the reason. Only the viewer's
- * own proposals. What only an admin accepts (`StepDef.approver`: installing
- * a package) the viewer accepts only when they are an admin here
+ * own proposals — and, for an ADMIN here, one made in no conversation (the
+ * dream's: `pageSees`). What only an admin accepts (`StepDef.approver`:
+ * installing a package) the viewer accepts only when they are an admin here
  * (`AppRef.admin`): a member is refused it (`admin_required:`) and may reject.
  *
  * It runs only as a FIRST-PARTY page's own call (`step_run`, a one-step run):
@@ -22,7 +23,7 @@ export default defineStep({
   effect: "write",
   description:
     "A person's decision on a proposal, from strut's own app only: accept runs the proposed step with its input (and `input`, the person's edits, merged), reject records `reason`. " +
-    "Only the viewer's own proposals; one only an admin accepts (`approver: admin`) is accepted only by an admin of this strut server. Returns the record after the decision (status applied, rejected or failed). An agent never decides a proposal.",
+    "Only the viewer's own proposals (and, for an admin, one no conversation made); one only an admin accepts (`approver: admin`) is accepted only by an admin of this strut server. Returns the record after the decision (status applied, rejected or failed). An agent never decides a proposal.",
   input: z.object({
     id: z.string().min(1).describe("The proposal id."),
     action: z.enum(["accept", "reject"]),
@@ -38,17 +39,22 @@ export default defineStep({
     }
     const cap = proposalsOf(ctx.services);
     if (!cap?.decide) throw new Error("proposal/decide needs strut's proposals (ctx.services.proposals); the standard strut server provides them.");
+    const admin = ctx.app?.admin === true;
+    // The viewer decides as their person token does: their own. One made in
+    // no conversation (the dream's) an admin decides as their session does.
+    const rec = await cap.get(cfg.id);
+    const unthreaded = !!rec && pageSees(rec, { admin });
     const outcome = await cap.decide(cfg.id, {
       action: cfg.action,
       ...(cfg.input ? { input: cfg.input } : {}),
       ...(cfg.reason ? { reason: cfg.reason } : {}),
       by: ctx.actor,
-      scope: "peer:person",
+      scope: unthreaded ? "full" : "peer:person",
       // What only an admin accepts (`StepDef.approver`, package/install) is
       // the viewer's to accept only when the page's calls came with an
       // admin's scope (`AppRef.admin`, set by the app door): a member's
       // session or a person token is refused it, and may still reject.
-      admin: ctx.app?.admin === true,
+      admin,
     });
     if (outcome.status !== 200) throw new Error((outcome.body as { error: string }).error);
     const p = outcome.body as { id: string };

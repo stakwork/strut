@@ -22,7 +22,10 @@ import { VIEWS_APP } from "./views-seed.js";
 import { buildTree, conceptOf, hasDocs, opening, pathToRoot, reach, rowKey, visibleRows, type Concept } from "./knowledge/src/lib/tree.js";
 import { groupLinks, isSystemType, linkLabel, orderTypes, textOf, typeDescription, typePlural } from "./knowledge/src/lib/ontology.js";
 import { momentOf } from "./knowledge/src/lib/moments.js";
-import { readDiff, readLog, readPage } from "./views/src/lib/history.js";
+import {
+  byStatus, changesByConcept, claimsUnavailable, conceptOfChange, evidenceLine, waitingAcross, waitingWords, DREAM, type PageClaim, type PendingChange,
+} from "./knowledge/src/lib/learning.js";
+import { readDiff, readLog, readPage, readProposalEntry } from "./views/src/lib/history.js";
 import { foldConceptDiff } from "../../kit/src/folds/concept-diff.js";
 
 /**
@@ -151,6 +154,66 @@ describe("strut/knowledge: the changes view's moments", () => {
   });
 });
 
+describe("strut/knowledge: claims and the changes waiting on a person", () => {
+  const claim = (id: string, status: PageClaim["status"]): PageClaim => ({ id, text: id, status });
+  const change = (id: string, step: string, input: unknown, createdAt = "2026-11-11T10:00:00Z", status = "pending"): PendingChange => ({ id, step, title: id, status, createdAt, input });
+
+  it("a claim's latest evidence in a line: what a person said and who, or what a check saw; the worst status first", () => {
+    assert.equal(evidenceLine({ content: "too long", mode: "asserted", by: "evan" }), "evan said: “too long”");
+    assert.equal(evidenceLine({ content: "too long", mode: "asserted", by: "person" }), "A person said: “too long”");
+    assert.equal(evidenceLine({ content: "three lines", mode: "observed" }), "Checked: three lines");
+    assert.equal(evidenceLine({ content: "  ", mode: "observed" }), null);
+    assert.equal(evidenceLine(undefined), null);
+    assert.deepEqual([claim("a", "supported"), claim("b", "unknown"), claim("c", "refuted"), claim("d", "stale")].sort(byStatus).map((c) => c.id), ["c", "d", "b", "a"]);
+  });
+
+  it("why the claims are not shown, in one line, from the step's refusal", () => {
+    assert.equal(
+      claimsUnavailable('knowledge/page: this caller may not read "private", where the Concept tree is kept (an app\'s page reads only what an app may)'),
+      "Claims aren't shown here: this page may not read where the tree is kept.",
+    );
+    assert.equal(claimsUnavailable("knowledge/page needs the claims layer (ctx.services.knowledge): a graph-backed workspace with claims on"), "This server keeps no claims.");
+    assert.equal(claimsUnavailable("boom"), "Couldn't read the claims: boom");
+  });
+
+  it("the Concept a change is to: an edit, move or delete its node; a new page under another the parent; anything else none", () => {
+    assert.equal(conceptOfChange(change("e", "graph/edit-node", { ref_id: "a", node_data: { docs: "x" } })), "a");
+    assert.equal(conceptOfChange(change("m", "graph/move-node", { ref_id: "a", to_ref_id: "b" })), "a");
+    assert.equal(conceptOfChange(change("d", "graph/delete-node", { ref_id: "a" })), "a");
+    const triplet = { source_ref_id: "p", edge_type: "PARENT_OF", target_type: "Concept", target_data: { name: "New" } };
+    assert.equal(conceptOfChange(change("t", "graph/create-triplet", triplet)), "p");
+    assert.equal(conceptOfChange(change("t", "graph/create-triplet", { ...triplet, edge_type: "RELATES_TO" })), null);
+    assert.equal(conceptOfChange(change("t", "graph/create-triplet", { ...triplet, target_type: "Person" })), null);
+    assert.equal(conceptOfChange(change("x", "graph/create-node", { node_type: "Concept", node_data: { name: "x" } })), null);
+    assert.equal(conceptOfChange(change("x", "graph/edit-node", {})), null);
+  });
+
+  it("the changes by Concept, oldest first, only what still waits and only Concepts in the tree; what waits across the tree, changes first", () => {
+    const tree = buildTree([c("a", "Alpha"), c("b", "Beta"), c("z", "Zeta")], [edge("a", "b")]);
+    const list = [
+      change("late", "graph/edit-node", { ref_id: "a" }, "2026-11-11T12:00:00Z"),
+      change("early", "graph/edit-node", { ref_id: "a" }, "2026-11-11T09:00:00Z"),
+      change("again", "graph/edit-node", { ref_id: "b" }, "2026-11-11T09:30:00Z", "failed"),
+      change("done", "graph/edit-node", { ref_id: "b" }, "2026-11-11T09:00:00Z", "applied"),
+      change("gone", "graph/edit-node", { ref_id: "elsewhere" }),
+    ];
+    const by = changesByConcept(list, tree);
+    assert.deepEqual([...by].map(([id, l]) => [id, l.map((p) => p.id)]), [["a", ["early", "late"]], ["b", ["again"]]]);
+    assert.deepEqual([...changesByConcept(list).keys()].sort(), ["a", "b", "elsewhere"], "no tree: every Concept named");
+
+    const claimed = [
+      { concept: "Zeta", ref_id: "z", claims: [claim("1", "refuted"), claim("2", "refuted"), claim("3", "supported")] },
+      { concept: "Beta", ref_id: "b", claims: [claim("4", "refuted")] },
+      { concept: "Gone", ref_id: "elsewhere", claims: [claim("5", "refuted")] },
+      { concept: "Alpha", ref_id: "a", claims: [claim("6", "stale")] },
+    ];
+    const waiting = waitingAcross(tree, by, claimed);
+    assert.deepEqual(waiting.map((w) => [w.name, w.changes, w.refuted]), [["Alpha", 2, 0], ["Beta", 1, 1], ["Zeta", 0, 2]]);
+    assert.deepEqual(waiting.map(waitingWords), ["2 changes", "1 change · 1 refuted", "2 refuted"]);
+    assert.deepEqual(waitingAcross(tree, new Map(), []), []);
+  });
+});
+
 describe("strut/knowledge — seeded at boot beside strut/views", () => {
   let kit: KitLocation;
   const dirs: string[] = [];
@@ -176,7 +239,11 @@ describe("strut/knowledge — seeded at boot beside strut/views", () => {
     assert.equal(app.hash, await treeHash(KNOWLEDGE_DIR));
     assert.equal(app.manifest.title, "Knowledge");
     assert.deepEqual(app.manifest.grants.workflows, []);
-    assert.deepEqual(app.manifest.grants.steps, ["graph/find", "graph/get-ontology", "graph/graph-edges", "graph/graph-get-batched", "graph/graph-neighbors", "graph/graph-search", "history/read"]);
+    assert.deepEqual(app.manifest.grants.steps, [
+      "graph/find", "graph/get-ontology", "graph/graph-edges", "graph/graph-get-batched", "graph/graph-neighbors", "graph/graph-search", "history/read",
+      // The learning loop: a Concept's claims, and the dream's changes a person decides here.
+      "knowledge/page", "knowledge/claims", "proposal/list", "proposal/get", "proposal/decide",
+    ]);
     const info = JSON.parse(await readFile(join(app.dir, "dist", "build.json"), "utf8"));
     const views = (await first.apps.get(VIEWS_APP))!;
     assert.deepEqual(info.imports, [{ name: VIEWS_APP, version: views.version, hash: views.hash }], "strut/views compiled in");
@@ -219,8 +286,9 @@ describe("strut/knowledge — its page reads the tree on a graph", { skip: ladyb
   let strut: Strut;
   let registry: StepRegistry;
   const store = new MemoryRunStore();
-  const page = (actor = "alice") => {
-    const tools = buildAppTools({ apps: strut.apps, registry, services: strut.services, actor, runStepDeps: { store, workspace: strut.workspace } });
+  /** The page's `step_run` as `actor`; `admin` when the door holds full scope (an admin's session, the key). */
+  const page = (actor = "alice", admin = false) => {
+    const tools = buildAppTools({ apps: strut.apps, registry, services: strut.services, actor, admin, runStepDeps: { store, workspace: strut.workspace } });
     const app = appIdentity(KNOWLEDGE_APP, "v1");
     return async (type: string, config: Record<string, unknown> = {}) =>
       (await (tools[STEP_RUN_TOOL] as any).execute({ type, config, app }, { toolCallId: "t", messages: [] })) as { error?: string; result?: any };
@@ -330,5 +398,54 @@ describe("strut/knowledge — its page reads the tree on a graph", { skip: ladyb
     assert.deepEqual(d.pages.map((p) => `${p.name}:${p.status}`), ["Apps:edited"]);
     assert.deepEqual(d.pages[0]!.attributes, [{ name: "description", before: "About Apps", after: "The apps strut ships." }]);
     assert.deepEqual(d.pages[0]!.after!.parents, ["strut"]);
+  });
+
+  it("the dream's changes: an admin's page lists them, draws one over its page and decides it; a member's sees none; claims say why they are not shown", async () => {
+    const [apps] = await b.reader.namesLike("Concept", "Apps", 1);
+    const [cb] = await b.reader.namesLike("Concept", "Codebase", 1);
+    const proposals = (strut.services as unknown as { proposals: { propose: (p: unknown) => Promise<{ id: string }> } }).proposals;
+    // As the dream proposes them: a run no person launched, in no conversation.
+    const by = { workflow: DREAM, runId: "1", path: "dream/tend" };
+    const edit = await proposals.propose({ step: "graph/edit-node", input: { ref_id: apps!.ref_id, node_data: { docs: "Every app strut ships." } }, title: "Edit a node", rationale: "The person asked for it.", by });
+    const add = await proposals.propose({
+      step: "graph/create-triplet",
+      input: { source_ref_id: cb!.ref_id, edge_type: "PARENT_OF", target_type: "Concept", target_data: { name: "Style", description: "How code reads." } },
+      title: "Add a page",
+      by,
+    });
+    // Another workflow's, made in a person's conversation: never listed here.
+    await proposals.propose({ step: "graph/edit-node", input: { ref_id: apps!.ref_id, node_data: { docs: "x" } }, title: "Hers", by: { workflow: "orchestrator", runId: "2", path: "orchestrator/agent", actor: "alice", session: "alice/c1" } });
+
+    const ada = page("ada", true);
+    const listed = await ada("proposal/list", { workflow: DREAM, status: "pending", input: true });
+    assert.equal(listed.error, undefined, listed.error);
+    assert.deepEqual(listed.result.proposals.map((p: any) => p.id).sort(), [edit.id, add.id].sort());
+    const tree = buildTree((await ada("graph/find", { node_type: "Concept", limit: 50 })).result.nodes.map(conceptOf), []);
+    assert.deepEqual([...changesByConcept(listed.result.proposals, tree)].map(([id, l]) => [tree.nodes[id]!.name, l.map((p) => p.title)]).sort(), [["Apps", ["Edit a node"]], ["Codebase", ["Add a page"]]]);
+    // A member sees none of them, and may not decide one; a model-written page is never shown them either.
+    const mo = page("mo");
+    assert.deepEqual((await mo("proposal/list", { workflow: DREAM, status: "pending" })).result.proposals, []);
+    assert.match((await mo("proposal/decide", { id: edit.id, action: "accept" })).error!, /not yours to decide/);
+
+    // What the card draws: the change over the page as it is now, through the app's own grants.
+    const client = { run: async (type: string, config: Record<string, unknown> = {}) => {
+      const r = await ada(type, config);
+      if (r.error) throw new Error(r.error);
+      return r.result;
+    } } as never;
+    const added = await readProposalEntry(client, add.id);
+    assert.deepEqual(added.entry, { path: "concepts/concept-style.md", after: { name: "Style", attributes: { description: "How code reads." }, parents: ["Codebase"] } });
+
+    // The admin decides: rejected, nothing runs; accepted, the page changes.
+    assert.equal((await ada("proposal/decide", { id: add.id, action: "reject" })).result.status, "rejected");
+    const accepted = await ada("proposal/decide", { id: edit.id, action: "accept" });
+    assert.equal(accepted.result.status, "applied", accepted.error ?? JSON.stringify(accepted.result));
+    assert.equal(accepted.result.decision.by, "ada");
+    assert.equal((await b.reader.getNode(apps!.ref_id))!.properties["docs"], "Every app strut ships.");
+    assert.deepEqual((await ada("proposal/list", { workflow: DREAM, status: "pending" })).result.proposals, []);
+
+    // No claims layer on this server: the card says so in one line.
+    const claims = await ada("knowledge/page", { name: "Apps" });
+    assert.equal(claimsUnavailable(claims.error!), "This server keeps no claims.");
   });
 });

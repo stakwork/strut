@@ -93,6 +93,8 @@ export type NewProposal = Pick<Proposal, "step" | "input" | "rationale" | "title
 export interface ProposalFilter {
   job?: string;
   session?: string;
+  /** Only those a run of this workflow made (`by.workflow`): the dream's, for the Knowledge app. */
+  workflow?: string;
   /** One run's, or any of several (a conversation page's turns). */
   runId?: string | string[];
   status?: ProposalStatus | ProposalStatus[];
@@ -134,6 +136,19 @@ export function visibleTo(scope: Scope, actor: string | undefined, p: Pick<Propo
   if (opts.byId) return true;
   const thread = p.by.conversation ?? p.by.session;
   return !!actor && p.by.actor === actor && !!thread && (thread === actor || thread.startsWith(`${actor}/`));
+}
+
+/** What strut's OWN page shows and lets its viewer decide (`proposal/list`,
+ *  `proposal/decide`, a first-party page's own call): their own, as their
+ *  person token sees them (`visibleTo`), and, when the viewer is an ADMIN
+ *  here, a proposal made in NO conversation — an automation's, such as the
+ *  dream's changes to the Concept tree. One of those belongs to no thread, so
+ *  it shows where the people who run this strut keep what it changes; an
+ *  admin's session already lists and decides it at `/proposals`. A member
+ *  sees what they did before. */
+export function pageSees(p: Pick<Proposal, "by">, viewer: { actor?: string; admin?: boolean }): boolean {
+  if (visibleTo("peer:person", viewer.actor, p)) return true;
+  return viewer.admin === true && !(p.by.conversation ?? p.by.session);
 }
 
 export function briefOf(p: Proposal): ProposalBrief {
@@ -285,7 +300,7 @@ async function updateProposal(root: string, id: string, edit: (p: Proposal) => v
 }
 
 export function listProposals(root: string, filter: ProposalFilter = {}): Promise<Proposal[]> {
-  const key = `${root}\0${JSON.stringify([filter.job, filter.session, filter.runId, filter.status, filter.reported, filter.viewer?.scope, filter.viewer?.actor, filter.limit])}`;
+  const key = `${root}\0${JSON.stringify([filter.job, filter.session, filter.workflow, filter.runId, filter.status, filter.reported, filter.viewer?.scope, filter.viewer?.actor, filter.limit])}`;
   let p = inflight.get(key);
   if (!p) {
     p = runList(root, filter).finally(() => {
@@ -305,6 +320,7 @@ async function runList(root: string, filter: ProposalFilter): Promise<Proposal[]
     (e) =>
       (filter.job === undefined || e.by.job === filter.job) &&
       (filter.session === undefined || e.by.session === filter.session) &&
+      (filter.workflow === undefined || e.by.workflow === filter.workflow) &&
       (!runIds || runIds.has(e.by.runId)) &&
       (!statuses || statuses.has(e.status)) &&
       (filter.reported === undefined || !!e.reportedAt === filter.reported) &&

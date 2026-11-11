@@ -13,7 +13,8 @@ import { useAppLink, useAppState, useHost, useToolInput } from "@strut/kit";
 import { NodeGraph } from "strut/views";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { useConceptTree, useOntology, useSearch } from "./lib/read";
+import { useChanges, useClaimed, useConceptTree, useOntology, useSearch } from "./lib/read";
+import { changesByConcept, waitingAcross } from "./lib/learning";
 import { opening, pathToRoot, rowKey, TREE_TYPE } from "./lib/tree";
 import { typePlural } from "./lib/ontology";
 import { Tree } from "./components/Tree";
@@ -21,6 +22,7 @@ import { TypeList } from "./components/TypeList";
 import { TypesMenu } from "./components/TypesMenu";
 import { NodeDetail } from "./components/NodeDetail";
 import { Changes } from "./components/Changes";
+import { WaitingMenu } from "./components/WaitingMenu";
 import { Dot, NodeRow, type Picked } from "./components/bits";
 
 /** Narrower than this, the sidebar and the graph take the page in turn. */
@@ -81,6 +83,11 @@ export default function App() {
   const tree = q.data?.tree;
   const ontology = useOntology();
   const types = ontology.data ?? [];
+  // The learning loop: the dream's changes waiting on a person, and the claims not held.
+  const proposed = useChanges();
+  const claimed = useClaimed();
+  const proposedFor = useMemo(() => changesByConcept(proposed.data ?? [], tree), [proposed.data, tree]);
+  const waiting = useMemo(() => (tree ? waitingAcross(tree, proposedFor, claimed.data ?? []) : []), [tree, proposedFor, claimed.data]);
   const input = useToolInput<{ node?: string; concept?: string }>();
   const host = useHost();
   const link = useAppLink();
@@ -311,6 +318,7 @@ export default function App() {
               <div className="absolute left-3 top-3 z-20 flex items-center gap-2">
                 {showRail}
                 {types.length > 1 && centre && <TypesMenu types={types} hidden={hidden} onHidden={setHidden} />}
+                {tree && waiting.length > 0 && <WaitingMenu waiting={waiting} onOpen={(w) => pick({ ref_id: w.id, node_type: TREE_TYPE, name: w.name })} />}
                 <button
                   type="button"
                   onClick={() => setChanges(true)}
@@ -373,6 +381,7 @@ export default function App() {
                     narrow={narrow}
                     onSelect={(n) => pick(n)}
                     onClose={() => setCard(false)}
+                    changes={proposedFor.get(sel.ref_id)}
                   />
                 </div>
               </section>

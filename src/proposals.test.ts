@@ -15,6 +15,7 @@ import {
   PROPOSAL_RESULT_PREFIX,
   decideProposal,
   listProposals,
+  pageSees,
   proposalResultLines,
   proposalsCapability,
   proposalsRoot,
@@ -58,6 +59,24 @@ describe("proposals", () => {
   afterEach(() => rm(dir, { recursive: true, force: true }));
 
   const cap = () => proposalsCapability(dir, { notify: (job, update) => updates.push({ job, update }) });
+
+  it("strut's own page shows its viewer their own, and an admin what no conversation made (the dream's); a workflow filter lists one workflow's", async () => {
+    const theirs = { workflow: "orchestrator", runId: "1", path: "o/a", actor: "alice", session: "alice/c1" };
+    const dreams = { workflow: "dream", runId: "2", path: "dream/tend" };
+    const hers = { by: theirs };
+    const unthreaded = { by: dreams };
+    assert.deepEqual([pageSees(hers, { actor: "alice" }), pageSees(hers, { actor: "bob" }), pageSees(hers, { actor: "bob", admin: true })], [true, false, false], "another person's conversation, admin or not");
+    assert.deepEqual([pageSees(unthreaded, { actor: "bob" }), pageSees(unthreaded, { actor: "bob", admin: true }), pageSees(unthreaded, { admin: true })], [false, true, true]);
+    // A run a person launched outside any conversation is no one's thread: an admin's to see.
+    assert.equal(pageSees({ by: { ...dreams, actor: "alice" } }, { actor: "bob", admin: true }), true);
+
+    const c = cap();
+    const a = await c.propose({ step: "dev/write", input: { name: "a", n: 1 }, title: "A", by: theirs });
+    const b = await c.propose({ step: "dev/write", input: { name: "b", n: 1 }, title: "B", by: dreams });
+    assert.deepEqual((await c.list({ workflow: "dream" })).map((p) => p.id), [b.id]);
+    assert.deepEqual((await c.list({ workflow: "orchestrator", status: "pending" })).map((p) => p.id), [a.id]);
+    assert.deepEqual(await c.list({ workflow: "nope" }), []);
+  });
   const root = () => proposalsRoot(dir);
 
   /** The agent's tool ctx: the run, the job, the journal slice. */
