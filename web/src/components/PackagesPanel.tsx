@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import type { ComponentChildren } from "preact";
 import * as api from "../api";
+import { EarningsLine, useEarnings } from "./EarningsLine";
 import { ago } from "./ClaimsPanel";
 import { errorMessage } from "../helpers";
 import { PACKAGE_SEGMENT, byNamespace, comesAlong, installProgressText, isHostsStamp, isInstalledName, nextVersion, packageLabel, pickerGroups, picksFromRelease } from "../package-release";
@@ -657,12 +658,34 @@ function PackagePage(props: {
           </details>
         </div>
       )}
+      <PackageEarnings pkg={props.pkg} {...(newest ? { release: newest.digest } : {})} />
       <div class="flyout-section">
         <div class="flyout-section-title">Releases</div>
         {!entry && <div class="auto-hint">Not published yet.</div>}
         {props.catalog && entry && <CatalogPackage name={props.pkg} catalog={props.catalog} publicChannels={props.publicChannels} onChanged={props.onChanged} />}
       </div>
     </>
+  );
+}
+
+/** What the package's workflows and tools earned on THIS server (plans/
+ *  paid-runs.md §8): the items its newest release holds, by their names
+ *  here (bare, on the strut that publishes it), summed, then each. A copy
+ *  installed elsewhere earns for that server. Nothing until one is sold. */
+function PackageEarnings(props: { pkg: string; release?: string }) {
+  const view = useEarnings({ by: "item", package: props.pkg }, props.release);
+  if (!view || view.rows.length === 0) return null;
+  return (
+    <div class="flyout-section">
+      <div class="flyout-section-title">Earnings here</div>
+      <EarningsLine label="All its items" row={view.totals} />
+      {view.rows.map((r) => (
+        <div key={r.key} class="package-earnings-row">
+          <span class="package-name">{r.key.slice(r.key.indexOf(":") + 1)}</span>
+          <EarningsLine row={r} {...(r.price ? { price: r.price } : {})} />
+        </div>
+      ))}
+    </div>
   );
 }
 
@@ -918,6 +941,9 @@ export function PackagesPanel(props: { install?: InstallLink | null }) {
   const [peers, setPeers] = useState<string[] | null>(null);
   const [subs, setSubs] = useState<api.SubscriptionInfo[] | null>(null);
   const [installed, setInstalled] = useState<api.InstalledPackage[] | null>(null);
+  // What an installed package's items earned here, by its prefix: one read.
+  const byPackage = useEarnings({ by: "package" });
+  const installedEarnings = useMemo(() => (byPackage ? new Map(byPackage.rows.map((r) => [r.key, r])) : null), [byPackage]);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [open, setOpen] = useState<string | null>(null);
 
@@ -1022,6 +1048,7 @@ export function PackagesPanel(props: { install?: InstallLink | null }) {
                   {p.digest && <code class="package-digest" title={p.digest}>{shortDigest(p.digest)}</code>}
                   {p.secrets?.length ? <span>reads {p.secrets.join(", ")}</span> : null}
                 </div>
+                {installedEarnings?.get(p.package) && <EarningsLine label="Sold here" row={installedEarnings.get(p.package)} />}
                 <ul class="package-items">
                   {p.items.map((it) => (
                     <li key={`${it.kind}:${it.name}`}>

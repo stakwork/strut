@@ -19,6 +19,7 @@
 > Item 3, free public runs, is built (`POST /public/workflows/:name/run`, the run token, the launcher's reads and cancel, the caps, the charge at the end, the run's cap to `llmAuth`; `src/public-runs.ts`, specs/API.md §17.4).
 > Item 5, priced workflows, is built (the L402 challenge with its locked quote, the check and a token's first use, the credit routes and `claim`, the reserve at the launch and the charge at the end, carry-over; `src/l402.ts`, `src/public-credit.ts`, specs/API.md §17.5).
 > Item 10, a visitor's app page, is built (a public app's `run/launch` on a runnable workflow it grants through the public launcher, `{ payment_required }` as the tool result, the host's sheet that pays and retries with the credential on the request, the visit that reads its own runs back; `src/public-surface.ts`, `web/src/visitor-pay.ts`, specs/API.md §17.6).
+> Item 7, earnings, is built (the payer for the daemon's `POST /pay` and NWC's `pay_invoice`, `POST /earnings/withdraw` and its Withdraw dialog, `GET /earnings` and `/earnings/entries`, `earnings/read`, the Earnings tab and the earnings shown on a run, a runnable row, the Workflow flyout and a package's page; `src/payments/payer.ts`, `withdrawals.ts`, `earnings.ts`, specs/API.md §19).
 >
 > **Revised the same day, three times.**
 > 1. The first draft gave strut a run budget of its own, for a seller with

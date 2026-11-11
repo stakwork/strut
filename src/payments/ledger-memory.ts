@@ -24,6 +24,7 @@ import {
   type EarningsQuery,
   type EarningsRow,
   type EntryKind,
+  type EntryListQuery,
   type FirstUseInput,
   type FirstUseResult,
   type HoldInput,
@@ -193,7 +194,26 @@ export class MemoryLedgerStore implements LedgerStore {
     need("paymentHash", input.paymentHash);
     if (input.feeMsat !== undefined) int("feeMsat", input.feeMsat);
     if (input.usd !== undefined) int("usd", input.usd);
-    return { ...this.entry(at, "withdrawal", { msat: input.msat, feeMsat: input.feeMsat, ref: input.paymentHash, actor: input.actor, usd: input.usd }) };
+    const known = this.log.find((e) => e.kind === "withdrawal" && e.ref === input.paymentHash);
+    if (known) return { ...known };
+    return { ...this.entry(at, "withdrawal", { msat: input.msat, feeMsat: input.feeMsat, ref: input.paymentHash, actor: input.actor, usd: input.usd, subject: input.purpose ?? "withdrawal" }) };
+  }
+
+  async withdrawalOf(paymentHash: string): Promise<LedgerEntry | undefined> {
+    const e = this.log.find((x) => x.kind === "withdrawal" && x.ref === paymentHash);
+    return e ? { ...e } : undefined;
+  }
+
+  async list(o: EntryListQuery = {}): Promise<LedgerEntry[]> {
+    const limit = pageLimit(o.limit, ENTRIES_PAGE, ENTRIES_PAGE_MAX);
+    const before = o.before ?? Number.MAX_SAFE_INTEGER;
+    const out: LedgerEntry[] = [];
+    for (let i = this.log.length - 1; i >= 0 && out.length < limit; i--) {
+      const e = this.log[i]!;
+      if (e.seq >= before || (o.kind && e.kind !== o.kind) || (o.runId && e.runId !== o.runId)) continue;
+      out.push({ ...e });
+    }
+    return out;
   }
 
   // ── reads ─────────────────────────────────────────────────────────────
@@ -269,13 +289,14 @@ export class MemoryLedgerStore implements LedgerStore {
     for (const e of this.log) {
       if (e.kind !== "withdrawal" || e.at < from || e.at >= to) continue;
       const day = dayOf(e.at);
-      const r = out.get(day) ?? { day, count: 0, msat: 0, feeMsat: 0 };
+      const purpose = (e.subject ?? "withdrawal") as WithdrawnRow["purpose"];
+      const r = out.get(k(day, purpose)) ?? { day, purpose, count: 0, msat: 0, feeMsat: 0 };
       r.count++;
       r.msat += e.msat ?? 0;
       r.feeMsat += e.feeMsat ?? 0;
-      out.set(day, r);
+      out.set(k(day, purpose), r);
     }
-    return [...out.values()].sort((a, b) => (a.day < b.day ? -1 : 1));
+    return [...out.values()].sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : a.purpose < b.purpose ? -1 : 1));
   }
 
   async outstanding(): Promise<Outstanding> {

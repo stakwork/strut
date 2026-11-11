@@ -2946,3 +2946,122 @@ export interface LiveConceptPage {
   root: string;
   children: Array<{ name: string; description?: string }>;
 }
+
+// ── Earnings and Withdraw (plans/paid-runs.md §8) ──────────────────────────
+// Full scope only: the key or an admin's session. Dollars for earned, cost
+// and margin; msat for what the wallet holds and pays.
+
+export type EarningsBy = "item" | "day" | "package" | "total";
+export interface EarningsRow {
+  /** `workflow:<name>`, `step:<type>`, `expired`, a day, a package, or `total`. */
+  key: string;
+  calls: number;
+  failed: number;
+  earned: number;
+  cost: number;
+  margin: number;
+  price?: { base: number; markup: number; capUsd?: number; dailyCapUsd?: number };
+}
+export interface WalletInfo {
+  provider: "sphinx" | "nwc" | null;
+  receive: boolean;
+  pay: boolean;
+  url?: string;
+  relays?: string[];
+  from?: "env" | "api";
+  setAt?: string;
+  note?: string;
+  check?: { ok: true; msat: number } | { ok: false; error: string };
+}
+export interface PendingWithdrawal {
+  paymentHash: string;
+  msat: number;
+  maxFeeMsat: number;
+  at: number;
+  expiresAt: number;
+  /** The wallet answered `pending`: it is out. False: its pay call never answered. */
+  answered: boolean;
+  actor?: string;
+  /** A person's withdrawal, or credit this strut bought (item 9). */
+  purpose: "withdrawal" | "purchase";
+  /** The wallet it went through (`sphinx:<url>`, `nwc:<pubkey>`). */
+  payer: string;
+  /** Past its invoice's expiry and an hour: no more polling — record it or drop it. */
+  stale: boolean;
+  /** Being read now. */
+  reading: boolean;
+  /** It went through a wallet that is not the one set now. */
+  otherWallet: boolean;
+  lastError?: string;
+  checkedAt?: number;
+}
+export interface EarningsView {
+  from?: string;
+  to?: string;
+  by: EarningsBy;
+  prefix?: string;
+  package?: { name: string; via: "release" | "prefix"; version?: string };
+  totals: Omit<EarningsRow, "key" | "price">;
+  rows: EarningsRow[];
+  outstanding: { tokens: number; usd: number; held: number };
+  received: { count: number; msat: number; usd: number; days: Array<{ day: string; count: number; msat: number; usd: number }> };
+  withdrawn: { count: number; msat: number; feeMsat: number; days: Array<{ day: string; count: number; msat: number; feeMsat: number }> };
+  /** Credit this strut bought from other struts (item 9). */
+  purchases: { count: number; msat: number; feeMsat: number };
+  pending: PendingWithdrawal[];
+  wallet?: WalletInfo & {
+    balance?: { msat: number; sats: number; usd?: number };
+    rate?: number;
+    error?: string;
+    expectedMsat: number;
+    pendingMsat: number;
+    differenceMsat?: number;
+  };
+}
+export interface LedgerEntryView {
+  seq: number;
+  at: number;
+  kind: "payment" | "hold" | "charge" | "carry" | "expiry" | "withdrawal";
+  token?: string;
+  usd?: number;
+  msat?: number;
+  subject?: string;
+  runId?: string;
+  ref?: string;
+  cost?: number;
+  outcome?: "success" | "error" | "cancelled";
+  feeMsat?: number;
+  actor?: string;
+}
+export const getEarnings = (q: { from?: string; to?: string; by?: EarningsBy; prefix?: string; package?: string; wallet?: boolean } = {}) => {
+  const p = new URLSearchParams();
+  for (const [k, v] of Object.entries(q)) if (v !== undefined && v !== false) p.set(k, v === true ? "1" : String(v));
+  const qs = p.toString();
+  return fetchJSON<EarningsView>(`/earnings${qs ? `?${qs}` : ""}`);
+};
+export const getEarningsEntries = (q: { kind?: LedgerEntryView["kind"]; runId?: string; before?: number; limit?: number } = {}) => {
+  const p = new URLSearchParams(Object.entries(q).filter(([, v]) => v !== undefined).map(([k, v]) => [k, String(v)]));
+  return fetchJSON<{ entries: LedgerEntryView[] }>(`/earnings/entries?${p}`);
+};
+export const getWallet = (check = false) => fetchJSON<WalletInfo>(`/earnings/wallet${check ? "?check=1" : ""}`);
+export const putWallet = (body: Record<string, unknown>) => fetchJSON<WalletInfo>("/earnings/wallet", { method: "PUT", body: JSON.stringify(body) });
+
+/** What `POST /earnings/withdraw` answered: the payment, or the refusal. */
+export type WithdrawResult =
+  | { ok: true; state: "settled" | "pending" | "failed"; paymentHash: string; msat: number; feeMsat: number; routingFeeMsat?: number; maxFeeMsat: number; error?: string; existing?: true; reading?: true }
+  | { ok: false; status: number; error: string; code?: string; walletCode?: string };
+export function withdraw(body: { invoice: string; msat: number; maxFeeMsat?: number }): Promise<WithdrawResult> {
+  return withdrawCall("/earnings/withdraw", body);
+}
+/** Read a payment that is still out, now, by its payment hash. */
+export const readWithdrawal = (paymentHash: string) => withdrawCall(`/earnings/withdrawals/${paymentHash}/read`, {});
+/** Settle one by hand: record it as paid (with the fee, if known) or drop it. */
+export async function resolveWithdrawal(paymentHash: string, body: { action: "paid" | "drop"; feeMsat?: number }): Promise<{ action: string }> {
+  return fetchJSON(`/earnings/withdrawals/${paymentHash}/resolve`, { method: "POST", body: JSON.stringify(body) });
+}
+async function withdrawCall(path: string, body: unknown): Promise<WithdrawResult> {
+  const res = await apiFetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const out = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+  if (res.ok) return { ok: true, ...(out as Omit<Extract<WithdrawResult, { ok: true }>, "ok">) };
+  return { ok: false, status: res.status, error: String(out["error"] ?? `${res.status} ${res.statusText}`), ...(out["code"] ? { code: String(out["code"]) } : {}), ...(out["walletCode"] ? { walletCode: String(out["walletCode"]) } : {}) };
+}
