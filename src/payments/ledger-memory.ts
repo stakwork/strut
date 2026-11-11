@@ -102,7 +102,7 @@ export class MemoryLedgerStore implements LedgerStore {
     need("subject", input.subject);
     need("runId", input.runId);
     if (input.key !== undefined) {
-      const first = this.holdByKey.get(k(input.token, input.key));
+      const first = this.openHoldByKey(input.token, input.subject, input.key);
       if (first) return { ok: true, existing: true, seq: first.seq, runId: first.runId!, reserve: first.usd!, subject: first.subject! };
     }
     const same = this.holdByRun.get(k(input.token, input.runId));
@@ -116,7 +116,7 @@ export class MemoryLedgerStore implements LedgerStore {
     if (free < input.reserve) return { ok: false, reason: "short", free: Math.max(0, free) };
     t.held += input.reserve;
     const e = this.entry(at, "hold", { token: t.id, usd: input.reserve, subject: input.subject, runId: input.runId, key: input.key });
-    if (input.key !== undefined) this.holdByKey.set(k(t.id, input.key), e);
+    if (input.key !== undefined) this.holdByKey.set(k(t.id, `${input.subject}\0${input.key}`), e);
     this.holdByRun.set(k(t.id, input.runId), e);
     return { ok: true, existing: false, seq: e.seq, runId: input.runId, reserve: input.reserve, subject: input.subject };
   }
@@ -155,7 +155,9 @@ export class MemoryLedgerStore implements LedgerStore {
     const t = this.tokens.get(token)!;
     const available = Math.max(0, t.paid - t.spent - (t.held - reserve));
     const due = chargeFor(input.price, cost, input.outcome, reserve);
-    const charged = Math.min(due, available);
+    // Never more than the hold: the reserve is the most a run could be
+    // charged (decision 21); what a run spent past it is the seller's.
+    const charged = Math.min(due, reserve, available);
     t.held -= reserve;
     t.spent += charged;
     const e = this.entry(at, "charge", { token, usd: charged, subject: input.subject, runId: input.runId, cost, outcome: input.outcome });
@@ -210,9 +212,18 @@ export class MemoryLedgerStore implements LedgerStore {
     return out;
   }
 
-  async findHold(token: string, key: string): Promise<OpenHold | undefined> {
-    const e = this.holdByKey.get(k(token, key));
+  async findHold(token: string, subject: string, key: string): Promise<OpenHold | undefined> {
+    const e = this.openHoldByKey(token, subject, key);
     return e ? holdOf(e) : undefined;
+  }
+
+  /** The hold `key` names on `token` for `subject` while its run is not
+   *  charged: a key dedupes a launch in flight, never one that ended or never
+   *  ran (its hold freed by a charge of nothing), as a free run's does
+   *  (src/public-runs.ts), so the same input runs again once it is done. */
+  private openHoldByKey(token: string, subject: string, key: string): LedgerEntry | undefined {
+    const e = this.holdByKey.get(k(token, `${subject}\0${key}`));
+    return e && !this.chargeByRun.has(k(token, e.runId!)) ? e : undefined;
   }
 
   async chargeOf(runId: string, subject: string): Promise<LedgerEntry | undefined> {

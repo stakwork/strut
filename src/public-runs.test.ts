@@ -518,6 +518,50 @@ describe("public runs: the charge, once, across a restart", () => {
     assert.deepEqual(dailyRoom({ ...big, today: $(1), held: $(4), inFlight: 1 }), { ok: false, spent: false });
   });
 
+  it("a charge that fails at the run's end is tried again, not left until the next boot", async () => {
+    const store = new MemoryRunStore();
+    const ledger = new MemoryLedgerStore();
+    let failures = 2;
+    const flaky = new Proxy(ledger, {
+      get(t, prop, r) {
+        if (prop === "charge") {
+          return async (input: Parameters<MemoryLedgerStore["charge"]>[0]) => {
+            if (failures-- > 0) throw new Error("the ledger is busy");
+            return t.charge(input);
+          };
+        }
+        const v = Reflect.get(t, prop, r) as unknown;
+        return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(t) : v;
+      },
+    });
+    const runs = createPublicRuns({ ledger: async () => flaky, store, settleRetryMs: [5] });
+    const item = { kind: "workflow" as const, name: "w", dailyCapUsd: 10 };
+    const got = await runs.admit(item, { workflowCapUsd: 100 });
+    assert.equal(got.ok, true);
+    const runId = (got as { runId: string }).runId;
+    store.summaries.set(`w/${runId}`, { runId, workflow: "w", status: "success", origin: "public", totals: { modelCalls: 1, usage: {}, cost: 0.5 } } as never);
+    await runs.ended("w", runId);
+    assert.equal(runs.inFlight(), 1, "the first charge failed: still counted");
+    for (let i = 0; i < 50 && runs.inFlight() > 0; i++) await new Promise((r) => setTimeout(r, 10));
+    assert.equal(runs.inFlight(), 0, "charged on a retry");
+    assert.equal((await ledger.today("workflow:w")).cost, usdToMicros(0.5));
+  });
+
+  it("a runs file that does not read is moved aside, and the server still boots", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "strut-public-runs-bad-"));
+    try {
+      const file = publicRunsPath(dir);
+      await mkdir(join(file, ".."), { recursive: true });
+      await writeFile(file, "[{\"workflow\": \"w\", \"ru");
+      const runs = createPublicRuns({ ledger: async () => new MemoryLedgerStore(), store: new MemoryRunStore(), file });
+      await runs.load();
+      assert.equal(runs.inFlight(), 0);
+      await assert.rejects(readFile(file, "utf-8"), /ENOENT/, "moved aside");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it("secondsToUtcMidnight", () => {
     assert.equal(secondsToUtcMidnight(Date.parse("2026-11-10T23:59:00Z")), 60);
     assert.equal(secondsToUtcMidnight(Date.parse("2026-11-10T00:00:00Z")), 86_400);
