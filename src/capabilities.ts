@@ -41,6 +41,7 @@ import { bootEnv, hiddenFromSteps } from "./env.js";
 import type { LightningCapability } from "./payments/lightning.js";
 import type { EarningsQuery, EarningsView } from "./payments/earnings.js";
 import type { RemoteCapability } from "./remote.js";
+import type { KnowledgeCapability } from "./knowledge.js";
 
 // ── secrets ────────────────────────────────────────────────────────────────
 
@@ -412,6 +413,12 @@ export interface StrutCapabilities {
    *  strut runs when the job is deleted or swept. Present wherever the bag
    *  has a `dataDir`. */
   jobs?: JobsCapability;
+  /** The Knowledge door (src/knowledge.ts): what a workflow that tends the
+   *  Concept tree works through — a page as a tender reads it, the claims
+   *  on it, a claim written with the standard check, what a person said as
+   *  evidence. Set by the standard server wherever the claims layer is on;
+   *  the `knowledge/*` steps are thin over it. */
+  knowledge?: KnowledgeCapability;
   /** The other struts this one may call (peers.ts; plans/federation.md
    *  §2.2): name a peer, make a request with its token injected — the
    *  token itself is readable by nothing. Set by the standard server; a

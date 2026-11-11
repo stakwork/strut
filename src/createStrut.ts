@@ -105,6 +105,7 @@ import { createAppMonitor, type AppMonitor } from "./apps/monitor.js";
 import { seedViewsApp } from "./apps/views-seed.js";
 import { RETIRED_APP, seedJamieApp } from "./apps/jamie-seed.js";
 import { seedKnowledgeApp } from "./apps/knowledge-seed.js";
+import { createKnowledge } from "./knowledge.js";
 import type { KitLocation } from "./apps/kit.js";
 import { appsRoot, isPreviewLabel, listAppFiles, readAppFile, reservedAppName, validateAppName, writeAppFiles } from "./apps/files.js";
 import { DOCUMENT_FILE, readBuildInfo, withPublicIdentity, withToken, withoutTokenMeta } from "./apps/build.js";
@@ -1864,6 +1865,11 @@ export async function createStrut<TServices = unknown>(
         onSettled: (r) => verifySettled?.(r),
       })
     : null;
+  // The Knowledge door (src/knowledge.ts): what a workflow that tends the
+  // Concept tree works through. A host's own wins.
+  if (claimsGraph && claimsAuthoring && verifier && !(services as Record<string, unknown>)["knowledge"]) {
+    (services as Record<string, unknown>)["knowledge"] = createKnowledge({ graph: claimsGraph, claims: claimsAuthoring, verifier, store });
+  }
   // A job's ledger rides on the jobs capability (plans/job-claims.md §6), so
   // `GET /jobs/:id` and `job/get` carry the same `claims`.
   if (verifier && claimsJobs) {
