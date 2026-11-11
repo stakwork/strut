@@ -2986,8 +2986,10 @@ can show:
 | --- | --- |
 | an app not in the public view, or another version than the one it serves | refused |
 | `run/list`, `get`, `events`, `transcript`, `files`, `provenance` | a workflow in the public view WITH its runs; `run/workflow` one in it at all; `run/transcript { full }` refused; a job run's files refused |
+| the same on a workflow anyone may RUN (§17.4) whose runs are not public | the runs THIS VISIT launched (§17.6), as far as the item's `results` lets its launcher: `output` — `run/get` (the summary's run, status, input, output, totals, error message, declared artifacts), `run/list`, and `run/files` of the files its output declares; `run` — all of them. `run/workflow` is its name, description and `input:` block alone |
+| `run/launch` | a workflow anyone may run (`runnable`) that the app grants: through the public launcher (§17.6) |
 | `graph/graph-get`, `graph-get-batched`, `graph-search`, `graph-neighbors`, `graph-edges` | through a reader that sees only visible nodes (§17.2) |
-| `run/launch`, `run/cancel`, `job/*`, `app/*` (state and error reports included), any other `graph/*` | refused: a visitor starts and keeps nothing |
+| `run/launch` of anything else, `run/cancel`, `job/*`, `app/*` (state and error reports included), any other `graph/*` | refused: a visitor starts only what a person made runnable, and keeps nothing |
 | anything else granted | only when the app's `reads` name it |
 
 The step runs with NO actor and a bag of reads alone: `http`, `secrets`
@@ -2999,9 +3001,19 @@ it, so a step that reaches for a write, a shell or a file fails naming it,
 and nothing is kept as a run. The visitor's address counts against §17.2's
 budget, and the app's usage (§14.6) counts the call under `visitor <address>`.
 In the page, the kit's `useHost().public` is true (it reads the meta), so it
-disables what would only fail (it never hides it): strut/views' `LaunchForm`
-renders with every control off and a line saying runs are started by the
-people who keep the server.
+disables what would only fail (it never hides it), and `useHost().runnable`
+lists the granted workflows a visitor may start, under the names the app
+grants them by, and `useHost().results` what a visitor reads of the runs it
+launched of each (`output` or `run`, the item's `results`) — the document's
+second meta, `<meta name="strut-public-runnable"
+content='[{"name":"fortune","results":"output"}]'>`, written as it is served
+(absent when there are none). A page shows a visitor's own run of an
+`output` item with `useRun` and the declared files: `useRunEvents`,
+`useWorkProducts` and a run timeline are refused there. strut/views' `LaunchForm`
+renders a runnable workflow's form enabled (with a line saying a priced run
+asks for payment first), anything else with every control off and a line
+saying runs are started by the people who keep the server; Cancel is off
+for a visitor either way.
 
 ### 17.4 A public run — `POST /public/workflows/:name/run` (anyone)
 
@@ -3201,6 +3213,105 @@ from: its top-up starts a balance of its own.
 and what it handed on or lost to its end; `remaining_*` is 0 once it is
 replaced or past its end. `entries` are the newest 50: `payment`, `hold`,
 `charge`, `carry` (− out, + in), `expiry`.
+
+### 17.6 A visitor's launch from a public app — what a host does (`plans/paid-runs.md` §10)
+
+A public app's page launches a workflow it grants that a person made
+runnable with `step_run` of `run/launch` on `POST /public/mcp`. The call
+goes through the SAME launcher as `POST /public/workflows/:name/run` (§17.4):
+the address's launch budget, the drain, the body — `config.input` and
+`config.key` alone; `params`, `job`, `title`, `attachments` or
+`conversation` are refused by name — the caps, the price, then the launch,
+`origin: "public"`. A priced one is paid by the HOST (strut's UI, Peel),
+never the frame: a model-written page must not hold a bearer token that is
+money. The page sees a launch that took a moment longer.
+
+The page names a workflow as its app's package does: in an app named
+`<publisher>/<package>/<app>`, a bare `fortune` is `<publisher>/<package>/fortune`
+when that workflow exists (package first, as the run steps resolve it), and
+that is the name the public view's `runnable` and `workflows` are checked
+against.
+
+**The visit.** The host mints a secret per tab — 22 to 128 characters of
+base64url, at random (strut's UI: 24 random bytes) — and sends it on EVERY
+`/public/mcp` request as `x-strut-visit`. A run launched under it records a
+hash of it (`run.start.visitor`, and on the summary; never shown to a
+visitor), and the reads in §17.3's table open the runs that visit launched.
+**A launch with no visit, or one that is not 22 to 128 characters of
+base64url, is refused** — `visit_required: …x-strut-visit…` — before
+anything is admitted, held, invoiced or charged: its run could never be
+read back. Reads without one see a runnable workflow's runs as none
+(`run/list` is `[]`, `run/get` "not found"). The frame never sees it.
+
+**The answers** of `run/launch`, as the tool's result (`structuredContent`,
+and its JSON as the text):
+
+| | Result |
+| --- | --- |
+| launched | `{ runId, existing?, credit? }` — `existing` when the visit (free) or the credit token (priced) launched one under the same `key` still in flight; `credit` on a priced launch: `{ held_usd, remaining_usd, remaining_sats, expires }`. Never the run token: the visit is what reads it back |
+| priced, and no credit covers it | `{ payment_required: { macaroon, invoice, usd, sats, rate, description, expires, remaining_usd?, reason?, carries? } }` — §17.5's challenge, as a RESULT: nothing launched, nothing set aside. `reason` is `short` (the presented credit has `remaining_usd` left), `expired` or `replaced`; `carries: true` when the new macaroon inherits the presented token's credit (§4.5), so once paid it REPLACES that credential |
+| refused | an error (`isError`) with the route's sentence, its code first when it has one — `visit_required: …`, `invalid_token: …`, `token_not_for_this: …`, `too many launches …`, the in-flight limit's, the daily cap's — and `(try again in N s)` when the route would send `Retry-After` |
+
+**What a host does** (strut's UI: `web/src/visitor-pay.ts`, relayed in
+`web/src/app-host.ts`, the sheet in `components/PaymentSheet.tsx`; a native
+host the same):
+
+1. **Keep a purse per tab**, where a reload in the tab finds it and no
+   frame can read it (strut's UI: the host page's `sessionStorage`, under
+   `strut.visitor:<base>`): the visit; the credential it sends; credentials
+   paid for and not yet sent ("spares"); every invoice shown and not yet
+   settled. A reload then keeps the visit's runs readable and its credit
+   spendable.
+2. Relay the page's `tools/call` to `/public/mcp` as it is, with
+   `x-strut-visit` (and, once it holds one, the credential below) on the
+   request.
+3. Watch the result of a `step_run` whose `arguments.type` is `run/launch`.
+   When it is `{ payment_required }`, do not hand it to the page. First
+   send the call again with a spare, if the purse has one. Else pay it with
+   the host's own wallet, or show it: the price in dollars and sats, what it
+   is for (`description`), and the `invoice` as a QR code with a Copy
+   button.
+4. **Keep the page's request alive while the visitor pays.** The page's
+   `tools/call` times out after 60 s unless progress resets it (ext-apps'
+   `callServerTool` asks for that, with a `progressToken` in `_meta`): send
+   `notifications/progress` for that token every 15 s or so until you
+   answer. (The kit's `run/launch` also asks for 15 minutes, for a host
+   that sends none.)
+5. **Claim every invoice you showed until it settles or ends — whether or
+   not its sheet is still open.** With no preimage of its own (a phone paid
+   the QR), ask `POST /public/credit/claim { macaroon }` every few seconds
+   (§17.5; 120 a minute an address) until it answers `settled` with
+   `credential` — `<macaroon>:<preimage>` — or `expired`, and once more a
+   little after its `expires`. A visitor who pays from a phone and THEN
+   presses Cancel has paid: what settles goes into the purse — as the
+   credential when there is none, or when the invoice `carries` from the
+   credential that was sent (it replaces it), else as a spare.
+6. Once paid while the page waits, send the page's ORIGINAL call again with
+   `Authorization: L402 <macaroon>:<preimage>` on the `/public/mcp`
+   request. Never in the call's arguments: they are the page's. Hand the
+   page that result. If that retry is refused (the server's runs in flight
+   filled while the visitor paid, the drain, the day's cap), tell the page
+   the payment is KEPT as credit and to run it again (strut's UI appends
+   `— your payment is kept as credit on this server: run it again in a
+   moment, and it is spent then` to the error).
+7. Send the same header on later requests: launches spend the credit until
+   it runs short. An `invalid_token` error with a credential attached: drop
+   it and send the call again without.
+8. When the visitor cancels, answer the page's call with a plain error
+   (strut's UI: `payment_cancelled: the run of <workflow> was not paid for,
+   so it did not start`) — and keep claiming that invoice (step 5).
+9. One payment at a time: a second priced launch that meets a 402 while the
+   visitor is paying for the first waits for it, then is sent again with
+   what the first bought before anyone is asked again.
+
+A host that does none of this still works for a free workflow — as long as
+it sends `x-strut-visit`; a priced launch's `payment_required` then reaches
+the page, whose kit `useLaunch` turns it into an error (`payment_required:
+a run of <workflow> costs $X, and this page's host does not pay for runs`)
+— never a launch.
+
+`POST /public/mcp`'s preflight allows `authorization` and `x-strut-visit`, so
+a host on another origin may send both.
 
 ## 18. The wallet — what the server receives with (`plans/paid-runs.md` §9)
 

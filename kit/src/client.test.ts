@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { appOfToken, createBridgeClient, StrutError, unwrapToolResult, STEP_RUN_TOOL, type ToolResult } from "./client.js";
+import { LAUNCH_TIMEOUT_MS, appOfToken, createBridgeClient, StrutError, unwrapToolResult, STEP_RUN_TOOL, type ToolResult } from "./client.js";
 
 describe("unwrapToolResult", () => {
   it("prefers structuredContent", () => {
@@ -30,6 +30,14 @@ describe("createBridgeClient", () => {
     );
     assert.deepEqual(await client.run("run/list", { workflow: "wf" }, { q: 1 }), { ok: true });
     assert.deepEqual(calls, [{ name: STEP_RUN_TOOL, arguments: { type: "run/list", config: { workflow: "wf" }, input: { q: 1 }, app: "tok-1" } }]);
+  });
+  it("run/launch waits long — a priced public launch returns once the host was paid — and nothing else changes its timeout", async () => {
+    const options: unknown[] = [];
+    const client = createBridgeClient({ callServerTool: async (_p, o) => { options.push(o); return { structuredContent: { runId: "1" } } as ToolResult; } }, "tok");
+    await client.run("run/launch", { workflow: "wf" });
+    await client.run("run/get", { workflow: "wf", runId: "1" });
+    assert.deepEqual(options, [{ timeout: LAUNCH_TIMEOUT_MS }, undefined]);
+    assert.ok(LAUNCH_TIMEOUT_MS > 10 * 60_000, "longer than an invoice lasts");
   });
   it("knows which app it is from the identity — a workspace app at a version — and nothing from anything else", () => {
     const call = { callServerTool: async () => ({ content: [] }) };

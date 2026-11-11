@@ -93,7 +93,17 @@ the `sideEffects` and `type` rules, and that the recorded versions are
   `{ upload(file), remove(path) }` (`job/upload`, `job/delete-upload`: files
   into the app's job, §12; `fileData` turns a `File` into what a step
   takes), `useCancel`, `useWorkflow` (`run/workflow`), `useStep(type)` →
-  `run(config, input)`, `useToolInput`, `useAppLink`, `useHost`,
+  `run(config, input)`, `useToolInput`, `useAppLink`, `useHost` (theme,
+  display mode, `sendMessage`, `openLink`; in a strut server's public view
+  `public: true`, `runnable` — the granted workflows a VISITOR may start —
+  and `results`, what it reads of the runs it launched of each (`output`:
+  `useRun` and the declared files; `run`: everything) — read off the
+  document's `strut-public-view` and `strut-public-runnable` metas. A priced
+  one's host pays before the launch returns (`plans/paid-runs.md` §10,
+  specs/API.md §17.6), so `run/launch` waits up to `LAUNCH_TIMEOUT_MS` (15
+  minutes); a host that cannot pay leaves a `{ payment_required }` result,
+  which `useLaunch` throws as a `payment_required: …` error, never a launch;
+  `paymentRequiredOf` reads one),
   `useAppState(key, initial)` → `[value, set, { loaded, error }]` (`app/state`:
   what this viewer's page remembers across visits — the page has no browser
   storage; writes go out within `APP_STATE_WRITE_MS`, every key set meanwhile
