@@ -52,6 +52,7 @@ import { CREDIT_PURCHASE_MAX_USD, CREDIT_PURCHASE_MIN_USD, type Credit, type Cre
 import { microsToUsd, priceOf, usdToMicros, type Micros } from "./payments/ledger.js";
 import { PUBLIC_LAUNCHES_PER_MINUTE, PUBLIC_RUN_BODY_MAX_BYTES, PUBLIC_RUN_KEY_MAX, PUBLIC_RUN_WAIT_MAX_S, type PublicRuns } from "./public-runs.js";
 import type { PublicTools } from "./public-tools.js";
+import { defaultVisitorAddress } from "./visitor-address.js";
 
 export interface PublicRouteDeps {
   surface: PublicSurfaceService;
@@ -69,6 +70,10 @@ export interface PublicRouteDeps {
   liveStatus: (workflow: string, runId: string) => string;
   /** Requests per visitor address per minute (`PUBLIC_REQUESTS_PER_MINUTE`). */
   ratePerMinute?: number;
+  /** Who a request is from (src/visitor-address.ts): the socket's peer, or
+   *  `x-forwarded-for` read through the TRUSTED proxies createStrut was
+   *  booted with. Absent: the default set. */
+  visitorAddress?: (c: Context) => string;
   /** The apps in the public view, each at the version it serves: what a
    *  visitor's host lists and frames (plans/public-surface.md §5). */
   apps?: {
@@ -259,16 +264,6 @@ function creditRefusal(c: Context, r: Pick<CreditRefusal, "status" | "code" | "e
   return c.json({ error: r.error, code: r.code }, r.status, headers);
 }
 
-/** The visitor's address: the first `x-forwarded-for` hop when a proxy in
- *  front set one, else the socket's. A budget, not a boundary — a client
- *  can name any address in the header. */
-export function visitorAddress(c: Context): string {
-  const fwd = c.req.header("x-forwarded-for")?.split(",")[0]?.trim();
-  if (fwd) return fwd;
-  const incoming = (c.env as { incoming?: { socket?: { remoteAddress?: string } } } | undefined)?.incoming;
-  return incoming?.socket?.remoteAddress ?? "unknown";
-}
-
 const enc = encodeURIComponent;
 /** The link a public run event carries for an agent session. */
 export const publicTranscriptUrl = (workflow: string, runId: string, path: string) =>
@@ -302,6 +297,7 @@ function launcherArtifacts(name: string, runId: string, output: unknown): Array<
 
 export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors {
   const { surface, workspace, store } = deps;
+  const visitorAddress = deps.visitorAddress ?? defaultVisitorAddress;
   const notPublic = (c: Context, what: string) => c.json({ error: `${what} is not public on this strut server` }, 404);
 
   // Before every route below: a browser on another origin may read these

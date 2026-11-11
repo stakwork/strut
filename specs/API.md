@@ -3087,7 +3087,13 @@ anyone may make (`/public/mcp`, a launch and its cancel, a tool's call,
 opens. Each
 answer carries `access-control-allow-origin: *` (a preflight is answered
 too) and no cookie; each visitor address may make 1200 requests a minute
-(the first `x-forwarded-for` hop, else the socket; `429` past it). Paths
+(`429` past it). The visitor address is the socket's peer; only when that
+peer is a TRUSTED proxy is `x-forwarded-for` read, from the right, and the
+first hop that is not a trusted proxy is the visitor (every hop trusted:
+the leftmost). Trusted by default: loopback, link-local and private
+addresses; `STRUT_TRUSTED_PROXIES` (comma-separated IPs and CIDRs, or
+`none`; `createStrut({ trustedProxies })`) replaces the set
+(`src/visitor-address.ts`). Paths
 and shapes mirror the private routes, minus what a visitor never reads:
 who launched, owns or changed a thing, schedules, the job and conversation
 a run belonged to, callback and MCP origins. Anything not on the record is
