@@ -79,8 +79,9 @@
 > - `ticket` needs no entry in `signIn`: minting one already takes the key.
 > - Limits: 1 000 writes and 100 launches a visitor a day by default; ten
 >   times that per address, fixed; counted in memory.
-> - A non-served strut names its methods with `PUT /public-view`'s
->   `visitors`; the Public view tab has no field for it yet.
+> - A non-served strut names its methods in the Publish dialog's Public
+>   view tab (a Sign-in section), which writes `PUT /public-view`'s
+>   `visitors`.
 > - Signing in drops what the page set before and the server refused; an app
 >   sets it again once signed in.
 >

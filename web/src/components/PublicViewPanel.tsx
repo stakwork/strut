@@ -21,10 +21,16 @@ import {
   setBox,
   setPrice,
   setResults,
+  setSignIn,
+  setVisitorKey,
+  setVisitorLimit,
+  SIGN_IN_METHODS,
   usd,
   visitorAppLink,
+  VISITOR_DEFAULT_LIMITS,
   type PriceField,
   type Row,
+  type VisitorLimitField,
 } from "../public-view";
 
 // ── Public view (the Publish dialog's Public view tab; plans/public-surface.md
@@ -37,6 +43,9 @@ import {
 // and pre-checks it, every line saying what it shows anyone; a person
 // unticks what they do not mean, and Save writes the whole list — so the
 // record stays explicit, and a later release never widens it by itself.
+// Below the items, who may SIGN IN to the public apps (plans/app-repos.md
+// §5): the methods, a key per domain, and each visitor's daily limits — the
+// record's `visitors`, which a served box's serve.yaml writes instead.
 
 type Kind = "app" | "workflow" | "step" | "concept";
 const KINDS: Array<{ kind: Kind; label: string }> = [
@@ -202,6 +211,67 @@ function ItemRow(props: {
             </label>
           )}
         </div>
+      )}
+    </div>
+  );
+}
+
+const LIMIT_FIELDS: Array<{ field: VisitorLimitField; label: string; title: string }> = [
+  { field: "writesPerDay", label: "Writes", title: "Saved state, graph rows and error reports, per visitor per UTC day" },
+  { field: "launchesPerDay", label: "Launches", title: "Runs started, per visitor per UTC day" },
+];
+
+/** Who may sign in to the public apps, and what one visitor may do in a day. */
+function SignInSection(props: { draft: api.PublicViewRecord; setDraft: (r: api.PublicViewRecord) => void }) {
+  const { draft, setDraft } = props;
+  const v = draft.visitors;
+  const offered = new Set(v?.signIn ?? []);
+  const domain = v?.visitorKey === "domain";
+  return (
+    <div class="flyout-section public-sign-in">
+      <div class="flyout-section-title">Sign-in</div>
+      <div class="auto-hint">
+        Visitors of the public apps may sign in with a key they hold, and are then that key here: their own saved state, channels and rows.
+        Nothing about them is kept but the key. With none ticked, every visitor is anonymous.
+      </div>
+      {SIGN_IN_METHODS.map((m) => (
+        <label class="public-need" key={m.method}>
+          <input type="checkbox" checked={offered.has(m.method)} onChange={() => setDraft(setSignIn(draft, m.method, !offered.has(m.method)))} />
+          <span class="public-need-text">
+            <span class="package-name">{m.label}</span>
+            <span class="auto-hint">{m.note}</span>
+          </span>
+        </label>
+      ))}
+      {v && (
+        <>
+          <label class="public-need">
+            <input type="checkbox" checked={domain} onChange={() => setDraft(setVisitorKey(draft, !domain))} />
+            <span class="public-need-text">
+              <span class="package-name">A key per domain</span>
+              <span class="auto-hint">
+                a visitor is someone else on each domain this server answers on, and no domain can tie them to another
+                {offered.has("nostr") ? " — a Nostr extension then is not offered" : ""}
+              </span>
+            </span>
+          </label>
+          <div class="public-price">
+            {LIMIT_FIELDS.map((f) => (
+              <label key={f.field} title={f.title}>
+                <span>{f.label} <span class="auto-hint">a visitor a day</span></span>
+                <input
+                  type="number"
+                  min="0"
+                  step="1"
+                  value={v.limits?.[f.field] ?? ""}
+                  placeholder={String(VISITOR_DEFAULT_LIMITS[f.field])}
+                  onInput={(e) => setDraft(setVisitorLimit(draft, f.field, (e.target as HTMLInputElement).value))}
+                />
+              </label>
+            ))}
+          </div>
+          {draft.apps.length === 0 && <div class="auto-hint">No app is in the public view yet: a visitor signs in to one.</div>}
+        </>
       )}
     </div>
   );
@@ -400,6 +470,8 @@ export function PublicViewPanel(props: { onDirty?: (dirty: boolean) => void }) {
               </div>
             ))}
           </div>
+
+          <SignInSection draft={draft} setDraft={setDraft} />
 
           {needs ? (
             <Cascade

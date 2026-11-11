@@ -2821,6 +2821,15 @@ export interface PublicViewRecord {
   types: string[];
   apps: Array<{ name: string; reads?: string[]; domains?: string[] }>;
   runnable: PublicRunnable[];
+  /** Who may sign in to the public apps (plans/app-repos.md §5); absent,
+   *  every visitor is anonymous. */
+  visitors?: PublicVisitors;
+}
+/** The record's sign-in: the methods, a key per domain, the daily limits. */
+export interface PublicVisitors {
+  signIn: Array<"key" | "ticket" | "lnurl" | "nostr">;
+  visitorKey?: "domain";
+  limits?: { writesPerDay?: number; launchesPerDay?: number };
 }
 /** `GET /public-view/runnable`: what the "anyone can run it" box shows. */
 export interface PublicRunInfo {
