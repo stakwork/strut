@@ -67,6 +67,13 @@ export default defineConfig({
       // it installed or follows (specs/API.md §16).
       "/packages": "http://localhost:3000",
       "/publisher": "http://localhost:3000",
+      // Paid runs: Earnings, the wallet, Add sats, Withdraw; the rate; the
+      // credit held at other struts; the Public view and what it serves.
+      "/earnings": "http://localhost:3000",
+      "/rate": "http://localhost:3000",
+      "/remote": "http://localhost:3000",
+      "/public-view": "http://localhost:3000",
+      "/public": "http://localhost:3000",
       // The index role's open reads: the store front (`?store=1`).
       "/index": index ? { target: index, changeOrigin: true } : "http://localhost:3000",
       // Model downloads are SSE; /audio/stream is a WebSocket.

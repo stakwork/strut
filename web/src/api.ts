@@ -3227,6 +3227,8 @@ export interface EarningsView {
   withdrawn: { count: number; msat: number; feeMsat: number; days: Array<{ day: string; count: number; msat: number; feeMsat: number }> };
   /** Credit this strut bought from other struts (item 9). */
   purchases: { count: number; msat: number; feeMsat: number };
+  /** Sats an admin added to the wallet by hand (Add sats): never credit, never earnings. */
+  deposited: { count: number; msat: number; days: Array<{ day: string; count: number; msat: number }> };
   pending: PendingWithdrawal[];
   wallet?: WalletInfo & {
     balance?: { msat: number; sats: number; usd?: number };
@@ -3264,6 +3266,56 @@ export const getEarningsEntries = (q: { kind?: LedgerEntryView["kind"]; runId?: 
 };
 export const getWallet = (check = false) => fetchJSON<WalletInfo>(`/earnings/wallet${check ? "?check=1" : ""}`);
 export const putWallet = (body: Record<string, unknown>) => fetchJSON<WalletInfo>("/earnings/wallet", { method: "PUT", body: JSON.stringify(body) });
+
+/** An invoice INTO this server's wallet (`POST /earnings/deposit`), and
+ *  where it stands (`POST /earnings/deposits/:hash/read`). */
+export interface DepositAnswer {
+  state: "pending" | "settled" | "expired";
+  paymentHash: string;
+  /** What the invoice asks. */
+  msat: number;
+  /** ISO 8601. */
+  expires: string;
+  /** While pending: the invoice to pay. */
+  invoice?: string;
+  /** Once settled: what settled, and when (ISO 8601). */
+  deposit?: { at: string; msat: number; paymentHash: string; actor?: string };
+  /** Pending: why the wallet could not be asked just now. */
+  error?: string;
+}
+export const askDeposit = (sats: number) => fetchJSON<DepositAnswer>("/earnings/deposit", { method: "POST", body: JSON.stringify({ sats }) });
+export const readDeposit = (paymentHash: string) => fetchJSON<DepositAnswer>(`/earnings/deposits/${paymentHash}/read`, { method: "POST", body: "{}" });
+
+/** What this strut holds at another strut's public door (`GET /remote/credit?balance=1`, plans/paid-runs.md §10). */
+export interface RemoteBalance {
+  seller: string;
+  held: boolean;
+  remaining_usd?: number;
+  remaining_sats?: number;
+  held_usd?: number;
+  spent_usd?: number;
+  paid_usd?: number;
+  expires?: string;
+  expired?: boolean;
+  replaced?: boolean;
+  /** The seller could not be asked, or refused the token. */
+  error?: string;
+  buying?: { usd: number; at: string };
+}
+export interface HeldAtSeller {
+  seller: string;
+  /** The credit token held there (never the token itself). */
+  credit?: { tokenId: string; paymentHash: string; boughtAt: string; usd: number; sats: number; expires: string; carried?: string; proposal?: string };
+  /** A purchase asked for and not yet stored. */
+  purchase?: { proposal: string; actor?: string; usd: number; sats: number; msat: number; paymentHash: string; tokenId: string; invoiceExpiresAt: number; validUntil: number; carries: boolean; at: number; sent?: boolean; checkedAt?: number; lastError?: string };
+  /** Remote runs a step is waiting on now. */
+  runs: number;
+  balance?: RemoteBalance;
+}
+export const remoteCredit = (balance = false) => fetchJSON<{ sellers: HeldAtSeller[] }>(`/remote/credit${balance ? "?balance=1" : ""}`);
+/** Forget a purchase the seller will never answer for, so a new one can go. */
+export const dropRemotePurchase = (seller: string) =>
+  fetchJSON<{ seller: string; dropped?: unknown }>(`/remote/purchases?seller=${encodeURIComponent(seller)}`, { method: "DELETE" });
 
 /** What `POST /earnings/withdraw` answered: the payment, or the refusal. */
 export type WithdrawResult =
