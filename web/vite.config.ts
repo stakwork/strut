@@ -12,6 +12,10 @@ const sseConfigure = (proxy: any) => {
   });
 };
 
+// `STRUT_DEV_INDEX=https://index.stakwork.ai npm run dev`: the store front
+// (`?store=1`) of this checkout over a deployed index's open reads.
+const index = process.env.STRUT_DEV_INDEX;
+
 export default defineConfig({
   // Relative asset URLs so the built UI can be served from any mount path
   // (root or a sub-path like /lab) without a baked-in base. Pairs with the
@@ -64,7 +68,7 @@ export default defineConfig({
       "/packages": "http://localhost:3000",
       "/publisher": "http://localhost:3000",
       // The index role's open reads: the store front (`?store=1`).
-      "/index": "http://localhost:3000",
+      "/index": index ? { target: index, changeOrigin: true } : "http://localhost:3000",
       // Model downloads are SSE; /audio/stream is a WebSocket.
       "/audio": { target: "http://localhost:3000", ws: true, configure: sseConfigure },
       // An app's channel socket (plans/app-channels.md): a WebSocket.
