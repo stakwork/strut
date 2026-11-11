@@ -60,7 +60,11 @@
  * app's calls go through the host and `step_run` exactly as a person's do.
  * A look opens the app at a deep link (`input`, as a person's link does)
  * and runs a declared list (`LOOK_VERBS`) through the same verbs as
- * `capture`, which look inside the app's frame, not the host around it.
+ * `capture`, which look inside the app's frame, not the host around it —
+ * keys included: a key verb puts focus in the frame first. What the page
+ * cannot show as text (a canvas, a game's state) it puts on
+ * `window.__debug`, which the look reads (`readDebugInPage`), never
+ * arbitrary script.
  *
  * `playwright-core` is imported lazily, on the first connection, so a strut
  * that never opens a browser never loads it (the lib step convention).
@@ -253,10 +257,81 @@ export type AppLooked = Shot & {
   /** The step of the look's list that failed, and why: the shot and the
    *  text are of where the page got to. */
   stopped?: StoppedAt;
+  /** What the page put on `window.__debug`, read just after the shot: its
+   *  value (its JSON cut at `LOOK_DEBUG_CAP` chars, with a note, when
+   *  longer). Left out when the page set none; a read that failed is in
+   *  `errors` as `debug: …`. */
+  debug?: unknown;
+  /** The read at each `{ do: "debug" }` step of the list, in order, with
+   *  the step's number. Left out when the list has none. */
+  debugReads?: Array<{ step: number; value: unknown } | { step: number; error: string }>;
 };
 
 /** How much of the app's text `lookAtApp` returns: a page's gist, not a table dump. */
 export const LOOK_TEXT_CAP = 8_000;
+/** How much of `window.__debug`'s JSON one read returns. */
+export const LOOK_DEBUG_CAP = 8_000;
+/** How long one read of `window.__debug` may take. */
+export const LOOK_DEBUG_MS = 2_000;
+
+/**
+ * THE DEBUG CONVENTION, one for every app: a page whose state a look cannot
+ * read off its text (a canvas, a game, a chart) puts what a look should see
+ * on `window.__debug` — a JSON value, or a function returning one, for
+ * state in refs that changes every frame — and `lookAtApp` reads it: a
+ * narrow read the app declares, instead of arbitrary script in the page.
+ *
+ * This runs IN THE PAGE (a locator's `evaluate`, `root` the document's
+ * root, inside the app's frame on a look): it names nothing outside itself,
+ * and declares no nested named function — tsx's keepNames would wrap one in
+ * a helper the page does not have. A function's promise is awaited. It
+ * answers the JSON text, cut at `cap` chars (`chars` the whole length),
+ * `none` when nothing is set, or why it cannot be read; it never throws.
+ */
+export async function readDebugInPage(root: { ownerDocument: { defaultView: unknown } | null }, cap: number): Promise<DebugAnswer> {
+  const w = root.ownerDocument?.defaultView as { __debug?: unknown } | null | undefined;
+  let v: unknown;
+  let called = false;
+  try {
+    v = w?.__debug;
+    if (v === undefined) return { none: true };
+    if (typeof v === "function") {
+      called = true;
+      v = (v as () => unknown).call(w);
+    }
+    if (v !== null && typeof v === "object" && typeof (v as { then?: unknown }).then === "function") v = await (v as PromiseLike<unknown>);
+  } catch (e) {
+    return { error: `window.__debug${called ? "()" : ""} threw ${e instanceof Error ? `${e.name}: ${e.message}` : String(e)}` };
+  }
+  if (v === undefined) return { error: "window.__debug() returned undefined, not a JSON value" };
+  let json: string | undefined;
+  try {
+    json = JSON.stringify(v);
+  } catch (e) {
+    return { error: `window.__debug${called ? "()" : ""} is not JSON: ${e instanceof Error ? e.message : String(e)}` };
+  }
+  if (json === undefined) return { error: `window.__debug${called ? "()" : ""} is a ${typeof v}, not a JSON value` };
+  return json.length > cap ? { json: json.slice(0, cap), chars: json.length } : { json };
+}
+
+/** What `readDebugInPage` answers, across the page boundary. */
+export type DebugAnswer = { json: string; chars?: number } | { error: string } | { none: true };
+
+/** One read of `window.__debug`, as a look reports it. */
+export type DebugRead = { value: unknown } | { error: string } | { none: true };
+
+/** The page's answer as a look reports it: the value parsed back, or — cut
+ *  — the JSON text so far and a note saying so. */
+export function debugReadOf(a: DebugAnswer): DebugRead {
+  if (!("json" in a)) return a;
+  if (a.chars === undefined) return { value: JSON.parse(a.json) as unknown };
+  return { value: `${a.json}\n… (window.__debug's JSON cut at ${a.json.length} of ${a.chars} chars)` };
+}
+
+/** A read at a `debug` step: nothing set is worth saying there. */
+function noneSaid(r: DebugRead): { value: unknown } | { error: string } {
+  return "none" in r ? { error: "the page has not set window.__debug" } : r;
+}
 /** How long `lookAtApp` gives the host and the app to draw. */
 export const LOOK_READY_MS = 30_000;
 /** What the host asks and is told no by design, not a fault of the app,
@@ -288,24 +363,31 @@ function withoutHostRefusals(seen: string[]): string[] {
 
 /** The verbs a `capture` list may name — everything that drives the page
  *  the run already has; `open`/`close`/`screenshot` are the compound's own. */
-export const CAPTURE_VERBS = ["goto", "click", "fill", "type", "press", "select", "hover", "scroll", "wait", "text", "evaluate", "back"] as const;
+export const CAPTURE_VERBS = ["goto", "click", "fill", "type", "press", "keydown", "keyup", "select", "hover", "scroll", "wait", "text", "evaluate", "back"] as const;
 
 type CaptureVerb = (typeof CAPTURE_VERBS)[number];
 
-/** The verbs a look's list may name: what a person does on the app's page.
- *  Not `goto` or `back` (they would take the host off the app), nor
- *  `evaluate` or `text` (the look returns the page's text itself). */
-export const LOOK_VERBS = ["click", "fill", "type", "press", "select", "hover", "scroll", "wait"] as const satisfies readonly CaptureVerb[];
+/** The verbs a look's list may name: what a person does on the app's page,
+ *  and `debug`, the look's own — a read of what the page put on
+ *  `window.__debug` (`readDebugInPage`), at that point in the list. Not
+ *  `goto` or `back` (they would take the host off the app), nor `evaluate`
+ *  or `text` (the look returns the page's text itself; what else it should
+ *  see, the app declares on `window.__debug`). */
+export const LOOK_VERBS = ["click", "fill", "type", "press", "keydown", "keyup", "select", "hover", "scroll", "wait", "debug"] as const satisfies readonly (CaptureVerb | "debug")[];
+
+type LookVerb = (typeof LOOK_VERBS)[number];
 
 /** What each verb in a declared list needs: the rules its `browser/*`
  *  step's input schema enforces, which a list — run through the verbs
  *  directly — would otherwise meet only once it got there. */
-const STEP_NEEDS: Record<CaptureVerb, { required?: string[]; oneOf?: string[]; atMostOne?: string[] }> = {
+const STEP_NEEDS: Record<CaptureVerb | LookVerb, { required?: string[]; oneOf?: string[]; atMostOne?: string[] }> = {
   goto: { required: ["url"] },
   click: { oneOf: ["ref", "selector"] },
   fill: { required: ["value"], oneOf: ["ref", "selector"] },
   type: { required: ["text"] },
   press: { required: ["key"] },
+  keydown: { required: ["key"] },
+  keyup: { required: ["key"] },
   select: { required: ["value"], oneOf: ["ref", "selector"] },
   hover: { oneOf: ["ref", "selector"] },
   scroll: { oneOf: ["ref", "selector", "y"] },
@@ -313,6 +395,7 @@ const STEP_NEEDS: Record<CaptureVerb, { required?: string[]; oneOf?: string[]; a
   text: { atMostOne: ["ref", "selector"] },
   evaluate: { required: ["expression"] },
   back: {},
+  debug: {},
 };
 
 /** The key a check's own session is kept under: `<runId><CHECK_KEY><n>`. */
@@ -352,6 +435,10 @@ interface Session {
   /** Where the verbs find an element: an app look's frame (`lookAtApp`),
    *  else the page itself (`scopeOf`). */
   scope?: FrameLocator;
+  /** The keys `keydown` holds down and no `keyup` has let go of yet, in
+   *  the order they went down — what `releaseKeys` lets go of when a
+   *  declared list ends. */
+  held?: string[];
 }
 
 interface Run {
@@ -870,7 +957,8 @@ export class BrowserService {
   }
 
   async type(runId: string, input: { text: string; delay?: number; timeoutMs?: number }): Promise<{ ok: true }> {
-    return this.call(runId, "type", input.timeoutMs, async (s) => {
+    return this.call(runId, "type", input.timeoutMs, async (s, ms) => {
+      await focusScope(s, ms);
       await s.page.keyboard.type(input.text, { delay: input.delay });
       await settlePage(s.page);
       return { ok: true };
@@ -878,11 +966,44 @@ export class BrowserService {
   }
 
   async press(runId: string, input: { key: string; timeoutMs?: number }): Promise<{ url: string }> {
-    return this.call(runId, "press", input.timeoutMs, async (s) => {
+    return this.call(runId, "press", input.timeoutMs, async (s, ms) => {
+      await focusScope(s, ms);
       await s.page.keyboard.press(input.key);
       await settlePage(s.page);
       await this.landed(s);
       return { url: s.page.url() };
+    });
+  }
+
+  /**
+   * Hold a key down until `keyup` lets it go: ONE keydown event, as when a
+   * person first presses it — no auto-repeat, so a page that moves while a
+   * key is held (a game reading the keys held each frame) sees it held, and
+   * one that moves per keydown event moves once. One key per call (hold
+   * Shift with a keydown of its own). No settle after it: the time until
+   * the `keyup` is the hold. A declared list lets go of every key it left
+   * held when it ends (`releaseKeys`); a key held by the step alone stays
+   * down until its `keyup` or the page closes. `held`: the keys down now.
+   */
+  async keydown(runId: string, input: { key: string; timeoutMs?: number }): Promise<{ ok: true; held: string[] }> {
+    return this.call(runId, "keydown", input.timeoutMs, async (s, ms) => {
+      await focusScope(s, ms);
+      await s.page.keyboard.down(input.key);
+      const held = (s.held ??= []);
+      if (!held.includes(input.key)) held.push(input.key);
+      return { ok: true, held: [...held] };
+    });
+  }
+
+  /** Let go of a key `keydown` holds (a keyup event); no settle, as for
+   *  `keydown`. Letting go of a key that is not down sends the event all
+   *  the same. `held`: the keys still down. */
+  async keyup(runId: string, input: { key: string; timeoutMs?: number }): Promise<{ ok: true; held: string[] }> {
+    return this.call(runId, "keyup", input.timeoutMs, async (s, ms) => {
+      await focusScope(s, ms);
+      await s.page.keyboard.up(input.key);
+      s.held = (s.held ?? []).filter((k) => k !== input.key);
+      return { ok: true, held: [...s.held] };
     });
   }
 
@@ -1024,19 +1145,71 @@ export class BrowserService {
 
   /** Run a declared list through the verbs, in order, and stop at the
    *  first step that fails: which one, and why. The page stays where it got
-   *  to. A list that is wrong (`checkSteps`) is refused before anything runs. */
+   *  to, every key the list left held let go of (`releaseKeys`). A list
+   *  that is wrong (`checkSteps`) is refused before anything runs. */
   async drive(runId: string, steps: CaptureStep[] = [], label = "capture"): Promise<{ stopped?: StoppedAt }> {
     checkSteps(steps, label);
-    for (const [i, step] of steps.entries()) {
-      const { do: verb, ...args } = step;
-      try {
-        await (this[verb as CaptureVerb] as (runId: string, args: unknown) => Promise<unknown>)(runId, args);
-      } catch (err) {
-        // Whole: `call` already bounded it, and a strict-mode violation's matches and way out are its tail.
-        return { stopped: { step: i + 1, verb, args, message: err instanceof Error ? err.message : String(err) } };
+    // A key the run's page held before the list (browser/keydown alone) is not the list's to let go of.
+    const before = [...(this.runs.get(this.keyOf(runId))?.session?.held ?? [])];
+    try {
+      for (const [i, step] of steps.entries()) {
+        const stopped = await this.runStep(runId, step, i);
+        if (stopped) return { stopped };
       }
+      return {};
+    } finally {
+      await this.releaseKeys(runId, before);
     }
-    return {};
+  }
+
+  /** Step `i` of a declared list through its verb: why it failed, or
+   *  nothing. The list was checked before it began. */
+  private async runStep(runId: string, step: CaptureStep, i: number): Promise<StoppedAt | undefined> {
+    const { do: verb, ...args } = step;
+    try {
+      await (this[verb as CaptureVerb] as (runId: string, args: unknown) => Promise<unknown>)(runId, args);
+      return undefined;
+    } catch (err) {
+      // Whole: `call` already bounded it, and a strict-mode violation's matches and way out are its tail.
+      return { step: i + 1, verb, args, message: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  /** Let go of every key a declared list held down and did not let go of
+   *  — it ended without a `keyup`, or a step failed while one was down — so
+   *  a held key never outlives its list (a game's player running on into
+   *  the shot). Last down, first up; `before`, the keys held when the list
+   *  began, stay down. Best effort: a page that is gone has no keys down. */
+  private async releaseKeys(runId: string, before: readonly string[] = []): Promise<void> {
+    const s = this.runs.get(this.keyOf(runId))?.session;
+    const keys = (s?.held ?? []).filter((k) => !before.includes(k)).reverse();
+    if (!s || !keys.length) return;
+    s.held = s.held!.filter((k) => before.includes(k));
+    await this.call(runId, "keyup", undefined, async (live) => {
+      for (const k of keys) await live.page.keyboard.up(k).catch(() => {});
+    }).catch(() => {});
+  }
+
+  /** What the page put on `window.__debug`, read where the verbs look (an
+   *  app look's frame): its value, the JSON cut at `LOOK_DEBUG_CAP` chars
+   *  with a note when longer, `none` when the page set nothing, or why it
+   *  could not be read — a function that throws, a value that is not JSON,
+   *  a read that takes over `LOOK_DEBUG_MS`. Never throws for the page's
+   *  sake; only the instrument failing does (`call`). */
+  private async readDebug(runId: string): Promise<DebugRead> {
+    return this.call(runId, "debug", LOOK_DEBUG_MS, async (s, ms) => {
+      const read = scopeOf(s).locator(":root").evaluate(readDebugInPage, LOOK_DEBUG_CAP, { timeout: ms }).then(
+        debugReadOf,
+        (err: unknown): DebugRead => ({ error: `window.__debug could not be read: ${message(err).split("\n")[0]}` }),
+      );
+      let timer: NodeJS.Timeout | undefined;
+      const late = new Promise<DebugRead>((r) => (timer = setTimeout(() => r({ error: `window.__debug did not answer within ${ms} ms` }), ms)));
+      try {
+        return await Promise.race([read, late]);
+      } finally {
+        clearTimeout(timer);
+      }
+    });
   }
 
   /** The declared compound: open → steps → settle → shoot → drain. A
@@ -1128,16 +1301,16 @@ export class BrowserService {
 
       let stopped: StoppedAt | undefined;
       let framedLast = steps.length === 0;
-      for (const [i, raw] of steps.entries()) {
-        const { caption, ...step } = raw;
-        const s = capWait(step as CaptureStep);
-        const r = await this.drive(key, [s], "walkthrough");
-        if (r.stopped) {
-          stopped = { ...r.stopped, step: i + 1 };
-          break;
+      try {
+        for (const [i, raw] of steps.entries()) {
+          const { caption, ...step } = raw;
+          stopped = await this.runStep(key, capWait(step as CaptureStep), i);
+          if (stopped) break;
+          framedLast = typeof caption === "string" && caption !== "";
+          if (framedLast) await frame(caption as string, step);
         }
-        framedLast = typeof caption === "string" && caption !== "";
-        if (framedLast) await frame(caption as string, step);
+      } finally {
+        await this.releaseKeys(key);
       }
       const errors = flattenObs(this.observe(key));
       const expectations = await this.call(key, "walkthrough", input.timeoutMs, (s) => expectationsOn(s.page, input.expect ?? {}, errors));
@@ -1166,14 +1339,17 @@ export class BrowserService {
    * `actor` (the file comment). `link` is what a deep link to the app
    * carries (`&input=…`, as the kit's `appLink` writes it): the app opens
    * where that link takes a person. Waits for the host to fill its frame
-   * and for the app to draw, runs `steps` in the app's frame (`drive`, the
-   * verbs `capture` uses), settles (the app's calls answered), shoots the
-   * page, and drains what went wrong — the host's errors and the app's, its
-   * frame being part of the page. A host that shows no app (none by that
-   * name and version, a document that would not load) is a result,
-   * `hostError`, and so is a step that fails, `stopped`, shot where the
-   * page got to; only the instrument failing throws. A session of its own,
-   * closed after, like a check.
+   * and for the app to draw, runs `steps` in the app's frame (the verbs
+   * `capture` uses — a key verb puts focus in the frame first — and
+   * `debug`, a read of `window.__debug` there), lets go of any key the list
+   * left held, settles (the app's calls answered), shoots the page, reads
+   * `window.__debug` once more, and drains what went wrong — the host's
+   * errors and the app's, its frame being part of the page. A host that
+   * shows no app (none by that name and version, a document that would not
+   * load) is a result, `hostError`, and so is a step that fails, `stopped`,
+   * shot where the page got to, and a `window.__debug` that cannot be read;
+   * only the instrument failing throws. A session of its own, closed after,
+   * like a check.
    */
   async lookAtApp(
     runId: string,
@@ -1212,15 +1388,34 @@ export class BrowserService {
       }
       const shown = await this.call(key, "app", LOOK_READY_MS, (s, ms) => appShown(s.page, ms));
       let stopped: StoppedAt | undefined;
-      if (shown.rendered && steps.length) {
+      const debugReads: NonNullable<AppLooked["debugReads"]> = [];
+      if (shown.rendered) {
         this.live(key).scope = appFrame(page);
-        ({ stopped } = await this.drive(key, steps, "app/look"));
+        try {
+          for (const [i, step] of steps.entries()) {
+            if (step.do === "debug") debugReads.push({ step: i + 1, ...noneSaid(await this.readDebug(key)) });
+            else if ((stopped = await this.runStep(key, step, i))) break;
+          }
+        } finally {
+          await this.releaseKeys(key);
+        }
       }
       await settlePage(page, input.wait);
       const shot = await this.screenshot(key, { fullPage: input.fullPage, timeoutMs: input.timeoutMs }, sink);
+      // The page's own account, read as close to the shot as it can be.
+      const debug = shown.rendered ? await this.readDebug(key) : { none: true as const };
       const text = shown.rendered ? await this.call(key, "app", input.timeoutMs, (_s, ms) => appFrame(page).locator("body").innerText({ timeout: ms })) : "";
       const errors = withoutHostRefusals(flattenObs(this.observe(key)));
-      return { ...shot, ...shown, text: cap(text, LOOK_TEXT_CAP), errors, ...(stopped ? { stopped } : {}) };
+      if ("error" in debug) errors.push(`debug: ${debug.error}`);
+      return {
+        ...shot,
+        ...shown,
+        text: cap(text, LOOK_TEXT_CAP),
+        errors,
+        ...("value" in debug ? { debug: debug.value } : {}),
+        ...(debugReads.length ? { debugReads } : {}),
+        ...(stopped ? { stopped } : {}),
+      };
     });
   }
 
@@ -1409,6 +1604,18 @@ function scopeOf(s: Session): Page | FrameLocator {
   return s.scope ?? s.page;
 }
 
+/** Keys go to whatever has focus, and in a look that is the host around
+ *  the app until something in the app takes it: a game listening on its
+ *  window would hear nothing. So before a key verb sends one, focus goes
+ *  into the app's frame — unless it is already in there (an input the list
+ *  filled, an element it clicked, keeps it). Elsewhere a no-op. */
+async function focusScope(s: Session, ms: number): Promise<void> {
+  if (!s.scope) return;
+  const frame = s.scope.owner();
+  const inside = await frame.evaluate((el) => el.ownerDocument.activeElement === el, undefined, { timeout: ms });
+  if (!inside) await frame.focus({ timeout: ms });
+}
+
 /** Wait for strut's UI to show the app: the host fills its frame (or says
  *  why it cannot — no such app, a document that would not load), then the
  *  app draws into its root. A host that never settles is a `hostError`; an
@@ -1500,30 +1707,40 @@ export function checkSteps(steps: readonly CaptureStep[], label: string): void {
     if (!(CAPTURE_VERBS as readonly string[]).includes(s.do)) {
       throw new Error(`${label}: step ${i + 1}: unknown verb "${s.do}" (one of ${CAPTURE_VERBS.join(", ")})`);
     }
-    const at = `${label}: step ${i + 1} (${s.do})`;
-    const needs = STEP_NEEDS[s.do as CaptureVerb];
-    const given = (k: string) => s[k] !== undefined && s[k] !== "";
-    for (const k of needs.required ?? []) if (s[k] === undefined) throw new Error(`${at}: needs \`${k}\``);
-    if (needs.oneOf && needs.oneOf.filter(given).length !== 1) {
-      // `timeoutMs` alone is the classic mistake: it caps a wait, it is not one.
-      const pause = s.do === "wait" && !needs.oneOf.some(given) && s["timeoutMs"] !== undefined ? ` (timeoutMs only caps a wait; a pause is { do: "wait", ms: ${s["timeoutMs"]} })` : "";
-      throw new Error(`${at}: give exactly one of ${either(needs.oneOf)}${pause}`);
-    }
-    if (needs.atMostOne && needs.atMostOne.filter(given).length > 1) throw new Error(`${at}: give ${either(needs.atMostOne)}, not both`);
+    checkStep(s, i, label);
+  }
+}
+
+/** Step `i` of a list, its verb known: given what the verb needs. */
+function checkStep(s: CaptureStep, i: number, label: string): void {
+  const at = `${label}: step ${i + 1} (${s.do})`;
+  const needs = STEP_NEEDS[s.do as CaptureVerb | LookVerb];
+  const given = (k: string) => s[k] !== undefined && s[k] !== "";
+  for (const k of needs.required ?? []) if (s[k] === undefined) throw new Error(`${at}: needs \`${k}\``);
+  if (needs.oneOf && needs.oneOf.filter(given).length !== 1) {
+    // `timeoutMs` alone is the classic mistake: it caps a wait, it is not one.
+    const pause = s.do === "wait" && !needs.oneOf.some(given) && s["timeoutMs"] !== undefined ? ` (timeoutMs only caps a wait; a pause is { do: "wait", ms: ${s["timeoutMs"]} })` : "";
+    throw new Error(`${at}: give exactly one of ${either(needs.oneOf)}${pause}`);
+  }
+  if (needs.atMostOne && needs.atMostOne.filter(given).length > 1) throw new Error(`${at}: give ${either(needs.atMostOne)}, not both`);
+  // One key a call: Playwright's keyboard.down takes no chord, and its error says only "Unknown key".
+  if ((s.do === "keydown" || s.do === "keyup") && typeof s["key"] === "string" && s["key"].length > 1 && s["key"].includes("+")) {
+    throw new Error(`${at}: one key a step — hold "${s["key"].split("+")[0]}" with a keydown of its own, then the next`);
   }
 }
 
 /**
  * A look's list (`lookAtApp`), checked before anything opens: each verb one
  * of `LOOK_VERBS`, each target a selector — a ref comes from
- * browser/snapshot, which a look has none of — then `checkSteps`.
+ * browser/snapshot, which a look has none of — and each step given what
+ * its verb needs.
  */
 export function checkLookSteps(steps: readonly CaptureStep[]): void {
   for (const [i, s] of steps.entries()) {
     if (!(LOOK_VERBS as readonly string[]).includes(s.do)) throw new Error(`app/look: step ${i + 1}: unknown verb "${s.do}" (one of ${LOOK_VERBS.join(", ")})`);
     if (s["ref"] !== undefined) throw new Error(`app/look: step ${i + 1} (${s.do}): give a selector (text=Agents, role=button[name="Agents"]), not a ref`);
+    checkStep(s, i, "app/look");
   }
-  checkSteps(steps, "app/look");
 }
 
 /** `ref, selector, or y`. */

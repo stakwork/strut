@@ -28,6 +28,8 @@ import click from "./click.js";
 import fill from "./fill.js";
 import type_ from "./type.js";
 import press from "./press.js";
+import keydown from "./keydown.js";
+import keyup from "./keyup.js";
 import select from "./select.js";
 import hover from "./hover.js";
 import scroll from "./scroll.js";
@@ -47,7 +49,7 @@ import tap from "./tap.js";
 import captchaAsk from "./captcha-ask.js";
 import captchaState from "./captcha-state.js";
 
-const STEPS = { open, goto, snapshot, click, fill, type: type_, press, select, hover, scroll, wait, text, screenshot, evaluate, observe, back, state, close, capture, verify, walkthrough, keep, tap, "captcha-ask": captchaAsk, "captcha-state": captchaState };
+const STEPS = { open, goto, snapshot, click, fill, type: type_, press, keydown, keyup, select, hover, scroll, wait, text, screenshot, evaluate, observe, back, state, close, capture, verify, walkthrough, keep, tap, "captcha-ask": captchaAsk, "captcha-state": captchaState };
 
 const NAV = { url: "https://example.com/", title: "Example Domain", status: 200 };
 const SHOT = { path: "shots/001.png", dir: "/art/r1", url: "/artifacts/r1/shots/001.png", width: 1280, height: 800, bytes: 4321, small: Buffer.from("png") };
@@ -99,6 +101,8 @@ class FakeBrowser {
   async fill(runId: string, input: unknown) { return this.rec("fill", runId, [input], { ok: true as const }); }
   async type(runId: string, input: unknown) { return this.rec("type", runId, [input], { ok: true as const }); }
   async press(runId: string, input: unknown) { return this.rec("press", runId, [input], { url: NAV.url }); }
+  async keydown(runId: string, input: unknown) { return this.rec("keydown", runId, [input], { ok: true as const, held: ["ArrowRight"] }); }
+  async keyup(runId: string, input: unknown) { return this.rec("keyup", runId, [input], { ok: true as const, held: [] }); }
   async select(runId: string, input: unknown) { return this.rec("select", runId, [input], { ok: true as const }); }
   async hover(runId: string, input: unknown) { return this.rec("hover", runId, [input], { ok: true as const }); }
   async scroll(runId: string, input: unknown) { return this.rec("scroll", runId, [input], { ok: true as const }); }
@@ -161,6 +165,8 @@ test("each verb step forwards its validated input to the service under the run i
     [fill, { ref: "e1", value: "hi" }, "fill", { ref: "e1", value: "hi" }],
     [type_, { text: "abc", delay: 5 }, "type", { text: "abc", delay: 5 }],
     [press, { key: "Enter" }, "press", { key: "Enter" }],
+    [keydown, { key: "ArrowRight" }, "keydown", { key: "ArrowRight" }],
+    [keyup, { key: "ArrowRight", timeoutMs: 500 }, "keyup", { key: "ArrowRight", timeoutMs: 500 }],
     [select, { selector: "#s", value: "blue" }, "select", { selector: "#s", value: "blue" }],
     [hover, { ref: "e9" }, "hover", { ref: "e9" }],
     [scroll, { y: -300 }, "scroll", { y: -300 }],
