@@ -175,6 +175,31 @@ describe("resolving a git+ ref", () => {
     );
   });
 
+  it("refuses a tree whose names would not land as themselves, before a file is written", async () => {
+    // Made with plumbing alone, so a Mac's disk (which cannot hold the
+    // pair) never sees it: the index takes the names as given.
+    const dir = join(root, "clash");
+    await mkdir(dir, { recursive: true });
+    git(dir, "-c", "init.defaultBranch=main", "init", "--quiet");
+    await write(root, { "blob-manifest": "package: acme/clash\nversion: '1'\n", "blob-flow": SCORE("acme/clash/sync", "hi") });
+    const manifest = git(dir, "hash-object", "-w", join(root, "blob-manifest"));
+    const flow = git(dir, "hash-object", "-w", join(root, "blob-flow"));
+    for (const [blob, path] of [[manifest, "strut.yaml"], [flow, "workflows/sync.yaml"], [flow, "workflows/Sync.yaml"], [flow, ".github/Skip.yaml"], [flow, ".github/skip.yaml"]]) {
+      git(dir, "-c", "core.ignorecase=false", "update-index", "--add", "--cacheinfo", `100644,${blob},${path}`);
+    }
+    const commit = git(dir, "commit-tree", git(dir, "write-tree"), "-m", "clash");
+    git(dir, "update-ref", "refs/heads/main", commit);
+
+    const cache = packageCache(join(root, "data"));
+    const err = await resolvePackage(`git+${pathToFileURL(dir).href}@main`, { cache }).then(
+      () => assert.fail("the tree was installed"),
+      (e: Error) => e.message,
+    );
+    assert.match(err, new RegExp(`^bad_package: git\\+file:.*@main at ${commit}: workflows/Sync\\.yaml and workflows/sync\\.yaml differ only in letter case`));
+    assert.doesNotMatch(err, /\.github/, "what the digest never covers is not judged");
+    assert.deepEqual((await readdir(cache.root).catch(() => [])).filter((n) => n.startsWith("sha256-")), [], "nothing kept");
+  });
+
   it("hands the token to git through the child env alone, read from the secret tokenSecret names, and never puts it in an error", async () => {
     const repo = await landerRepo();
     const calls: ProcessRequest[] = [];

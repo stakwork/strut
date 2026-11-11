@@ -79,7 +79,7 @@ import { packagePrefixOf, type Upstream, type VersionSource, type WorkspaceStore
 import { dumpYaml, loadYaml } from "../yaml.js";
 import { archiveProblem } from "./archive.js";
 import type { CachedPackage, PackageCache } from "./cache.js";
-import { MANIFEST_FILE, PACKAGE_DIGEST, PACKAGE_NAME, readPackage, type PackageManifest } from "./format.js";
+import { MANIFEST_FILE, PACKAGE_DIGEST, PACKAGE_NAME, pathProblems, readPackage, type PackageManifest } from "./format.js";
 import { allTypeFiles, exportTypes } from "./graph-types.js";
 import { suggest, type SuggestDeps, type Suggested } from "./suggest.js";
 import { parseServeFile, planServe, SERVE_FILE } from "./serve.js";
@@ -216,6 +216,10 @@ export interface LeftToInstaller {
 export async function buildPackage(deps: BuildDeps, req: BuildRequest, opts: { dryRun?: boolean } = {}): Promise<BuildResult> {
   const { files, manifest, warnings, suggested, leftToInstaller = [] } = await packageFiles(deps, req);
   const pkg = manifest.package;
+  // Before a file is written: on a Mac two names one in letter case would
+  // land as one file, and the package read back would be missing the other.
+  const unportable = pathProblems([...files.keys()]);
+  if (unportable.length) throw new Error(`bad_package: ${unportable.join("; ")}`);
   // Written beside the cache, then in through it: the cache re-reads and hashes it.
   const scratch = join(deps.cache.root, ".build", randomBytes(8).toString("hex"));
   try {

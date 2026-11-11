@@ -13,7 +13,7 @@ import { treeHash } from "../version.js";
 import { WorkspaceManager } from "../workspace.js";
 import { archiveProblem, archiveUrl, fetchArchive, MAX_ARCHIVE_FILES, packArchive } from "./archive.js";
 import { packageCache, resolvePackage } from "./cache.js";
-import { readPackage } from "./format.js";
+import { pathProblems, readPackage } from "./format.js";
 
 const PACKAGE: Record<string, string> = {
   "strut.yaml": "package: acme/linear\nversion: 1.4.0\ndescription: Linear issues\nrequires:\n  secrets: [LINEAR_API_KEY]\n",
@@ -160,6 +160,44 @@ describe("readPackage", () => {
   });
 });
 
+describe("a package's names", () => {
+  const CLASH = "differ only in letter case, which a Mac or Windows holds as one name — rename one";
+
+  it("land as themselves on every machine: no two one in letter case, none Windows cannot hold, every one in Unicode NFC", () => {
+    assert.deepEqual(pathProblems(Object.keys(PACKAGE)), []);
+    // A file, then a folder: the second spelling is named once, however
+    // many files sit under it.
+    assert.deepEqual(pathProblems(["workflows/sync.yaml", "workflows/Sync.yaml", "workflows/SYNC.yaml"]), [`workflows/sync.yaml and workflows/Sync.yaml ${CLASH}`]);
+    assert.deepEqual(pathProblems(["workflows/Admin/a.yaml", "workflows/admin/b.yaml", "workflows/admin/c.yaml"]), [`workflows/Admin/ and workflows/admin/ ${CLASH}`]);
+    // Composed is one spelling everywhere; a letter plus a combining accent is not.
+    assert.deepEqual(pathProblems(["concepts/café.md"]), []);
+    assert.deepEqual(pathProblems(["workflows/console.yaml", "workflows/com10.yaml", "workflows/nullable.yaml"]), [], "a device's name inside a longer one is fine");
+    const problems = pathProblems([
+      "concepts/café.md",
+      "workflows/a:b.yaml",
+      "workflows/con.yaml",
+      "workflows/Lpt1",
+      "workflows/v1./x.yaml",
+      "workflows/tab\there.yaml",
+      "workflows/ok.yaml",
+    ]);
+    assert.equal(problems.length, 6, problems.join("\n"));
+    assert.match(problems[0]!, /^concepts\/café\.md: spells an accented letter as a letter plus a separate accent \(not Unicode NFC\)/);
+    assert.equal(problems[1], 'workflows/a:b.yaml: holds ":", which Windows does not allow in a file name');
+    assert.equal(problems[2], "workflows/con.yaml: is CON, a name Windows keeps for a device");
+    assert.equal(problems[3], "workflows/Lpt1: is LPT1, a name Windows keeps for a device");
+    assert.equal(problems[4], "workflows/v1./: ends in a dot or a space, which Windows drops from a file name");
+    assert.equal(problems[5], "workflows/tab\there.yaml: holds a control character");
+  });
+
+  it("are refused by readPackage, and a clash too where the disk keeps letter case", async () => {
+    await assert.rejects(readPackage(await pkgDir({ ...PACKAGE, "workflows/a:b.yaml": "steps: []\n" })), /^Error: bad_package: workflows\/a:b\.yaml: holds ":", which Windows does not allow/);
+    const probe = await pkgDir({ "x.txt": "" });
+    if (existsSync(join(probe, "X.txt"))) return; // a Mac's disk: it cannot hold the pair, and archives and git trees are checked before writing
+    await assert.rejects(readPackage(await pkgDir({ ...PACKAGE, "workflows/Sync.yaml": "steps: []\n" })), new RegExp(`workflows/Sync\\.yaml and workflows/sync\\.yaml ${CLASH}`));
+  });
+});
+
 describe("the package cache", () => {
   it("resolves file: into one directory per digest, once", async () => {
     const cache = packageCache(join(root, "data"));
@@ -216,6 +254,12 @@ describe("the package cache", () => {
     await assert.rejects(fresh.putArchive(entries([longEvil, "x"]), src.digest), /is not a relative path/);
     await assert.rejects(fresh.putArchive(entries([`concepts/${"y".repeat(150)}/.git/config`, "x"]), src.digest), /never covers/);
     await assert.rejects(fresh.putArchive(Buffer.from("not gzip"), src.digest), /bad_package: not a package archive/);
+    // Two names one in letter case: refused before a file is written, so a
+    // Mac's disk never merges them into a tree that hashes to something else.
+    await assert.rejects(
+      fresh.putArchive(entries(["workflows/Sync.yaml", "steps: []\n"]), src.digest),
+      /^Error: bad_package: workflows\/sync\.yaml and workflows\/Sync\.yaml differ only in letter case/,
+    );
     assert.deepEqual(readdirSync(fresh.root).filter((n) => !n.startsWith(".")), [], "nothing kept from a refused archive");
     assert.equal(existsSync(join(root, "fresh", "evil.ts")) || existsSync(join(root, "evil.ts")), false);
   });

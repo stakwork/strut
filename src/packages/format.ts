@@ -27,7 +27,9 @@
  * unknown top-level folder (a package from a newer strut fails instead of
  * installing half), a file a folder does not hold, a name the prefix rule
  * does not allow, anything but a regular file, two Concept pages with one
- * name. Whether the code loads, the Concepts' parents resolve or an app
+ * name, a path that would not land as itself on every machine
+ * (`pathProblems`: two names one in letter case, a name Windows cannot
+ * hold, one not in Unicode NFC). Whether the code loads, the Concepts' parents resolve or an app
  * builds is the install's to check; this reads paths, the manifest and each
  * Concept page's front matter (for its name), and writes nothing.
  */
@@ -111,6 +113,63 @@ export function packageExcluded(relPath: string, name: string): boolean {
   return /^apps\/[^/]+\/(?:dist|data\.db)$/.test(relPath);
 }
 
+/** A name Windows keeps for a device, alone or with an extension
+ *  (`nul.txt` too), in any letter case. */
+const WINDOWS_DEVICE = /^(?:con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³])(?:\..*)?$/i;
+/** A control character, or one Windows refuses in a file name. */
+const UNWRITABLE = /[\u0000-\u001f\u007f<>:"|?*\\]/;
+
+/** Why one segment of a path would not be written as itself on every
+ *  machine a strut runs on, if it would not. */
+function nameProblem(segment: string): string | undefined {
+  if (segment !== segment.normalize("NFC")) {
+    return "spells an accented letter as a letter plus a separate accent (not Unicode NFC), which a Mac reads as the same name as the composed spelling — write the accent composed";
+  }
+  const bad = UNWRITABLE.exec(segment)?.[0];
+  if (bad !== undefined) {
+    return /[\u0000-\u001f\u007f]/.test(bad) ? "holds a control character" : `holds ${JSON.stringify(bad)}, which Windows does not allow in a file name`;
+  }
+  if (/[. ]$/.test(segment)) return "ends in a dot or a space, which Windows drops from a file name";
+  if (WINDOWS_DEVICE.test(segment)) return `is ${segment.split(".")[0]!.toUpperCase()}, a name Windows keeps for a device`;
+  return undefined;
+}
+
+/** Why the files at `paths` would not land as the same files on every
+ *  machine a strut runs on (plans/marketplace.md §1, "Every name lands
+ *  as itself"): a name a Mac reads as another, one Windows cannot hold,
+ *  and two paths — files or the folders above them — that differ only in
+ *  letter case, which a Mac or Windows holds as one, so the second
+ *  overwrites the first, or two folders merge, and the tree no longer
+ *  hashes to its digest. Checked wherever names arrive as a LIST, before
+ *  anything is written: a case-insensitive disk merges them silently, so a
+ *  directory read back there cannot show the clash. */
+export function pathProblems(paths: string[]): string[] {
+  const problems: string[] = [];
+  const judged = new Set<string>();
+  const folded = new Map<string, string>(); // a path in lower case → the path as first seen
+  const clashed = new Set<string>();
+  for (const path of paths) {
+    const segments = path.split("/");
+    for (let i = 0; i < segments.length; i++) {
+      const at = segments.slice(0, i + 1).join("/");
+      const shown = i < segments.length - 1 ? `${at}/` : at;
+      if (!judged.has(at)) {
+        judged.add(at);
+        const problem = nameProblem(segments[i]!);
+        if (problem) problems.push(`${shown}: ${problem}`);
+      }
+      const key = at.toLowerCase();
+      const first = folded.get(key);
+      if (first === undefined) folded.set(key, shown);
+      else if (first.replace(/\/$/, "") !== at && !clashed.has(key)) {
+        clashed.add(key);
+        problems.push(`${first} and ${shown} differ only in letter case, which a Mac or Windows holds as one name — rename one`);
+      }
+    }
+  }
+  return problems;
+}
+
 /** Every file under `dir` the digest covers. Throws on a symlink or any
  *  other entry that is not a regular file or a folder. */
 async function packageFiles(dir: string): Promise<string[]> {
@@ -162,7 +221,7 @@ export async function readPackage(dir: string): Promise<PackageInfo> {
   const pkg = manifest.package;
   if (manifest.requires?.packages?.some((p) => p.package === pkg)) throw new Error(`bad_package: ${pkg} requires itself`);
 
-  const problems: string[] = [];
+  const problems: string[] = pathProblems(files);
   const items: PackageItem[] = [];
   const steps = new Map<string, PackageItem>();
   const claims: string[] = [];

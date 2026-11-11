@@ -16,7 +16,7 @@ import { promisify } from "node:util";
 import { gunzip, gzip } from "node:zlib";
 import { tar, untar } from "../tar.js";
 import type { PackageCache, CachedPackage } from "./cache.js";
-import { PACKAGE_DIGEST, packageExcluded } from "./format.js";
+import { PACKAGE_DIGEST, packageExcluded, pathProblems } from "./format.js";
 
 /** The most an archive may be on the wire, and unpack to. Packages are
  *  kilobytes to a few megabytes; an app's `public/` is what grows one. */
@@ -92,7 +92,8 @@ function entryProblem(name: string): string | undefined {
 
 /** Unpack a package archive into the empty directory `into`. Throws
  *  `bad_package: …` on an archive that is not one, holds a path that
- *  leaves the directory or the digest, or is too big. */
+ *  leaves the directory or the digest or would not land as itself on
+ *  every machine (`pathProblems`), or is too big. */
 export async function unpackArchive(gz: Buffer, into: string): Promise<void> {
   let entries: Map<string, Buffer>;
   try {
@@ -105,6 +106,9 @@ export async function unpackArchive(gz: Buffer, into: string): Promise<void> {
     const problem = entryProblem(name);
     if (problem) throw new Error(`bad_package: the archive's ${JSON.stringify(name)} ${problem}`);
   }
+  // Before a file is written: a case-insensitive disk would merge them.
+  const unportable = pathProblems([...entries.keys()]);
+  if (unportable.length) throw new Error(`bad_package: ${unportable.join("; ")}`);
   for (const [name, bytes] of entries) {
     const path = join(into, ...name.split("/"));
     await mkdir(dirname(path), { recursive: true });
