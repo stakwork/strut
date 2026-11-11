@@ -456,8 +456,8 @@ the directory. A workspace publish calls it (§1.3) and so does `app/build`
   rule is untouched. None of this code runs in the server process.
 - **The AST checks**, over every source file. `dangerouslySetInnerHTML`,
   `eval` and `new Function` are refused. Markdown goes through the kit's
-  `react-markdown`, which is safe by default. Even with `connect-src 'none'`
-  (§9), a script injected into an app could call that app's granted tools
+  `react-markdown`, which is safe by default. Even with no host in
+  `connect-src` (§9: `data:` and `blob:` only), a script injected into an app could call that app's granted tools
   as the viewer, so the build closes the door it can see. A call to the
   global `fetch`, `XMLHttpRequest` or `WebSocket` is a WARNING in the
   result that names the hook to use instead (`useStep`, `useLaunch`): a
@@ -488,9 +488,16 @@ Its input is:
 
 ### 2.3 Assets
 
-Files under `public/` and anything imported by path are inlined: images
-and fonts as data URLs, JSON and text as values. The document stays one
-file. A large dataset belongs in SQLite or a run's output, not in
+Files under `public/` and anything imported by path are inlined: images,
+fonts, sounds, video, 3D models and textures (`.glb`, `.obj`, `.fbx`,
+`.vox`, `.hdr`, `.exr`, `.ktx2`, `.bin`, `.wasm`, …; `ASSET_LOADERS` in
+build.ts) as data URLs, JSON and text as values. The document stays one
+file. A loader that takes a URL takes the data URL, and `fetch` reads it
+(the CSP's `connect-src data: blob:`, §9), so three's `GLTFLoader.load`,
+drei's `useGLTF` and `decodeAudioData` work on an imported file as they
+would on a served one. A file a run made reaches the page through
+`run/files` and becomes a blob: URL; one the viewer picks is a blob: URL
+already. A large dataset belongs in SQLite or a run's output, not in
 `public/`.
 
 ### 2.4 The document
@@ -577,6 +584,7 @@ tables, drag and drop, node graphs.
 | UI | `react`, `react-dom`; shadcn/ui at its usual paths (`@/components/ui/button`, `card`, `dialog`, `drawer`, `dropdown-menu`, `input`, `select`, `table`, `tabs`, `tooltip`, `sheet`, `badge`, `popover`, `command`, `calendar`, `chart`, `form`, `resizable`, `skeleton`, `sidebar`, …) and `@/lib/utils` (`cn`), with their Radix primitives, `class-variance-authority`, `clsx`, `tailwind-merge`, `vaul`, `react-day-picker` and `react-resizable-panels`; `lucide-react`, `sonner`, `cmdk` |
 | App structure | `react-router` (a memory router; deep links arrive as `tool-input`), `zustand`, `immer` |
 | Charts and graphs | `recharts`, `d3`, `@xyflow/react` (React Flow), `three` + `@react-three/fiber` |
+| Games (kit 0.3) | `@react-three/drei`, three's addons by path (`three/addons/*`, `three/examples/jsm/*` the same files, `libs/` left out), Rapier — `@react-three/rapier` and the engines it runs, `@dimforge/rapier3d-compat` + `rapier2d-compat`, pinned to the version `@react-three/rapier` pins so a page has one — `@react-three/postprocessing` + `postprocessing`, `three-mesh-bvh` (drei's line, one copy). The `-compat` builds carry their WebAssembly inline, which the frozen tree can hold; the CSP allows compiling it (§9). The `Game` Concept page (under `App`) and the `game` starter (`app/init { template: "game" }`) are the builder's way in |
 | Motion | `motion` (`motion/react`), with `framer-motion` aliased to it |
 | Data | `@tanstack/react-query`, `@tanstack/react-table`, `@tanstack/react-virtual`, `@dnd-kit/core` + `@dnd-kit/sortable`, `date-fns`, `lodash`, `zod`, `react-hook-form` + `@hookform/resolvers`, `papaparse`, `mathjs`, `simple-statistics`, `fuse.js` |
 | Content | `react-markdown` + `remark-gfm` |
@@ -597,6 +605,7 @@ supplies it. Every hook names a STEP TYPE:
 | Hook | Step (§5) |
 | --- | --- |
 | `useRuns(workflow, { status?, automation?, live? })`, `useRun(workflow, runId, { live? })`, `useRunEvents(workflow, runId)`, `useTranscript(workflow, runId, path, { full? })` | `run/list`, `run/get`, `run/events`, `run/transcript` |
+| `useRunFile(workflow, runId, path)`, `useRunFileUrl(…)` → `{ url, file, pending, error }` (a `blob:` URL of the file, let go of on unmount), `runFileBlob(file)` | `run/files` |
 | `useLaunch(workflow)` → `{ launch(input, params?, key?), pending }`, `useCancel()` — mutations: a function to call, never a query, so no hook launches on mount or on a poll (§5.1) | `run/launch`, `run/cancel` |
 | `useWorkflow(workflow)`: description, `input:` block, params defaults | `run/workflow` |
 | `useStep(type)` → `run(config, input)` | any granted step |
@@ -1211,7 +1220,7 @@ host UI ── its own credential ──▶ the person's strut ── person tok
    (`web/src/components/SoloApp.tsx`).
 
 The token never leaves the peers file, the page never talks to the peer
-(`connect-src 'none'`), and the identity the page sends is the peer's own
+(its `connect-src` names no host), and the identity the page sends is the peer's own
 signature, which the person's strut cannot forge.
 
 **Open by default** (the owner's choice, 2026-10-23): every app on the
@@ -1404,14 +1413,22 @@ person's authority over the tools its grants name.
 - **The document's own CSP**, which a host may only tighten:
 
   ```
-  default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline';
-  img-src data: blob: <resourceDomains>; font-src data: <resourceDomains>;
-  media-src data: blob: <resourceDomains>; connect-src 'none';
-  frame-src 'none'; form-action 'none'; base-uri 'none'
+  default-src 'none'; script-src 'unsafe-inline' 'wasm-unsafe-eval';
+  style-src 'unsafe-inline'; img-src data: blob: <resourceDomains>;
+  font-src data: <resourceDomains>; media-src data: blob: <resourceDomains>;
+  connect-src data: blob:; frame-src 'none'; form-action 'none'; base-uri 'none'
   ```
 
-  The page can send data nowhere but through its bridge: no `fetch`, and no
-  image beacon to an arbitrary `https:` host. WebRTC is the exception: no
+  The page can send data nowhere but through its bridge: no `fetch` to a
+  host, and no image beacon to an arbitrary `https:` host. `connect-src
+  data: blob:` (2026-11-10, for games) lets `fetch` read an imported file's
+  data URL and a blob the page made — what three's and drei's loaders and
+  `decodeAudioData` need — and neither scheme reaches a host.
+  `'wasm-unsafe-eval'` (the same day) lets the page compile WebAssembly, as
+  a physics engine ships: not `eval`, and Wasm reaches nothing its JS does
+  not hand it, though Wasm bytes from a run's output would be code the build
+  did not compile. Workers stay out (no `worker-src`): a worker is code
+  loaded at run time. WebRTC is the exception: no
   browser applies `connect-src` to it or honors `webrtc 'block'` (tested
   2026-11-04, app-channels.md item 0), so a hostile page can still reach a
   STUN or TURN host it names. Hive's frame policy allows

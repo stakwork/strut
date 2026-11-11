@@ -1,0 +1,16 @@
+/* The app's own styles, compiled after the kit's base stylesheet. A game
+   takes the whole frame, and a drag on it steers instead of scrolling or
+   selecting. */
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+.game {
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}

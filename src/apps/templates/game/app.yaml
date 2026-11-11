@@ -1,0 +1,9 @@
+title: New game
+description: "A starter game: a ball rolls after coins against the clock — three.js through React Three Fiber, Rapier physics, keys and touch, sound with no files, each player's best score kept."
+icon: gamepad-2
+entry: src/App.tsx
+grants:
+  workflows: []       # the app's ROUTINES — run/* on these (a leaderboard workflow, a level generator)
+  steps: []           # cheap steps it may call with useStep (graph/find for a leaderboard of a declared type)
+  sqlite: false
+  automations: []

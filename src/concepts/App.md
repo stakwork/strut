@@ -19,7 +19,7 @@ apps/<name>/
   src/pages/*.tsx     # anything else the app is made of
   src/components/ui/  # optional: overrides of the kit's shadcn components (shadcn's own model)
   src/styles.css      # optional: @theme, @layer, custom utilities (Tailwind 4)
-  public/             # images, fonts, JSON fixtures, imported by path (inlined at build)
+  public/             # images, fonts, models, sounds, JSON fixtures, imported by path (inlined at build)
   db/                 # SQL migrations (a later release; keep it empty for now)
 ```
 
@@ -155,12 +155,25 @@ React 19, Tailwind 4, shadcn/ui at `@/components/ui/<name>` and `cn` at
 `@tanstack/react-query`, `@tanstack/react-table`, `@tanstack/react-virtual`,
 `@dnd-kit/*`, `date-fns`, `lodash`, `zod`, `react-hook-form`, `papaparse`,
 `mathjs`, `simple-statistics`, `fuse.js`, `react-markdown` + `remark-gfm`,
-`sonner`, `cmdk`, `three` + `@react-three/fiber`, `leaflet` + `react-leaflet`
-(tiles from a domain in `csp.resourceDomains`). An import outside this set is
-a build error naming the set — ask for a workflow instead. A `.css` import of
-a kit stylesheet (`@xyflow/react/dist/style.css`, `leaflet/dist/leaflet.css`)
-is appended raw. Each app keeps only what it uses: three icons are three
-icons, not the library — import what you draw.
+`sonner`, `cmdk`, `three` + `@react-three/fiber` + `@react-three/drei`,
+three's addons by path (`three/addons/controls/OrbitControls.js`), Rapier
+physics (`@react-three/rapier`, `@dimforge/rapier3d-compat`,
+`@dimforge/rapier2d-compat`), `@react-three/postprocessing`,
+`three-mesh-bvh`, `leaflet` + `react-leaflet` (tiles from a domain in
+`csp.resourceDomains`). An import outside this set is a build error naming
+the set — ask for a workflow instead. A `.css` import of a kit stylesheet
+(`@xyflow/react/dist/style.css`, `leaflet/dist/leaflet.css`) is appended
+raw. Each app keeps only what it uses: three icons are three icons, not the
+library — import what you draw. A GAME — a canvas, 2D or 3D — has a page of
+its own under this one, `Game`, and a starter: `app/init { path, template:
+"game" }`.
+
+**Files are imports.** An image, font, sound, video, 3D model or texture in
+the app's folder is imported by path and becomes a data URL inlined in the
+document — `import logo from "../public/logo.svg"`, `<img src={logo}>`,
+`useGLTF(ship)`; `.md`, `.txt`, `.csv` and `.html` import as their text,
+`.json` as its value. The page may `fetch` such a data URL, or a blob: URL
+it made, and nothing else: nothing is served beside the document.
 
 **The look is the server's.** A person sets a brand on the server (a color,
 a corner radius, a font) and the host hands it to every page, so draw the
@@ -316,6 +329,7 @@ tool (`step_run`) the host relays to the strut server:
 | `useWorkProducts(workflow, runId, { live?, intervalMs? })` → `{ products, events }` | the run's work products folded from `run/events`, appearing as steps declare them; what `WorkProducts` draws |
 | `useTranscripts(workflow, runId, paths)` | `run/transcript` for several agents, one call at a time, each kept: a Map by path. Ask only for agents that ended |
 | `useTranscript(workflow, runId, path, { full? })` | `run/transcript`: the agent session a `step.end`'s `transcript` link names (the page cannot follow the link); `full` a session turn's whole thread; `truncated` says what a 2 MB cap cut |
+| `useRunFile(workflow, runId, path)`, `useRunFileUrl(workflow, runId, path)` → `{ url, file, pending, error }` | `run/files`: one file a run made (its job's folder when it ran under a job), as text or base64 — or, with `useRunFileUrl`, as a `blob:` URL for `<img>`, `<video>`, a model loader (`useGLTF(url)`) or `fetch(url)`, let go of when the component goes. One call's answer is capped at 5 MB of text: a binary file up to about 3.7 MB. `runFileBlob(file)` is the same outside a component |
 | `useLaunch(workflow, { job? })` → `{ launch(input, params?, key?, files?), pending }` | `run/launch`: a MUTATION — a function to call on a click, never a query; `job` launches under one of the app's jobs, `files` go with the run |
 | `useUpload(job)` → `{ upload(file), remove(path) }` | `job/upload` / `job/delete-upload`: a file into the app's job, its `path` back (see "Files a person brings") |
 | `useCancel()` → `{ cancel(workflow, runId) }` | `run/cancel` |
@@ -402,7 +416,7 @@ its name. `jobs` are the jobs the latest turn started or continued
 the person's approval (graph writes) from inside an app: it does those in
 the person's own chat.
 
-Reads (`useRuns`, `useRun`, `useRunEvents`, `useTranscript`, `useTranscripts`, `useWorkflow`) are free and may
+Reads (`useRuns`, `useRun`, `useRunEvents`, `useTranscript`, `useTranscripts`, `useRunFile`, `useWorkflow`) are free and may
 refetch on their own. A tool call (`useStep` on a cheap step) is fine on a
 render. A launch is a click. Nothing in the kit launches on mount or on a
 poll, and `step_run` refuses `llm`, `agent` and `exec` whatever the manifest
@@ -638,10 +652,13 @@ an app is slow or the person asks about one; a fixed version starts clean.
 
 An import outside the kit and the installed apps; a relative import that
 leaves the directory; `http(s):` imports; `dangerouslySetInnerHTML`,
-`eval`, `new Function`. A call to the global `fetch`, `XMLHttpRequest` or a
-`WebSocket` is a warning: the page's CSP is `connect-src 'none'`, so it
-fails at runtime — call a granted step with `useStep`, launch a workflow
-with `useLaunch`, talk to the app's other viewers with `useChannel`. The document's size over 6 MB is a warning.
+`eval`, `new Function`. A `fetch` of a URL written out (`fetch("/api/x")`,
+`fetch("https://…")`), `XMLHttpRequest` or a `WebSocket` is a warning: the
+page's CSP allows a connection to nothing (`connect-src data: blob:` — an
+imported file, a blob the page made), so it fails at runtime — call a
+granted step with `useStep`, launch a workflow with `useLaunch`, talk to
+the app's other viewers with `useChannel`. The document's size over 6 MB is
+a warning.
 
 ## Four shapes
 

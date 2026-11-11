@@ -118,9 +118,11 @@ const REFUSED: Array<[RegExp, string]> = [
   [/\bnew\s+Function\s*\(/, "calls new Function — an app's code is what the build compiled, nothing else runs"],
 ];
 const WARNED: Array<[RegExp, string]> = [
-  [/(?<![.\w$])fetch\s*\(/, "calls the global fetch — the page's CSP has connect-src 'none', so it fails at runtime; call a granted step with useStep, or launch a workflow with useLaunch"],
-  [/\bXMLHttpRequest\b/, "uses XMLHttpRequest — the page can connect nowhere (connect-src 'none'); call a granted step with useStep, or launch a workflow with useLaunch"],
-  [/\bnew\s+WebSocket\s*\(/, "opens a WebSocket — the page can connect nowhere (connect-src 'none'); read a run live with useRun({ live }), or talk to the app's other viewers with useChannel"],
+  // A URL written out: an imported file's data: URL and a blob: URL the page
+  // made are what `fetch` may read, and those come from variables.
+  [/(?<![.\w$])fetch\s*\(\s*["'`](?!data:|blob:)/, "fetches a URL — the page can fetch only a file it imports (its data: URL) or a blob: URL it made (connect-src data: blob:), so this fails at runtime; call a granted step with useStep, or launch a workflow with useLaunch"],
+  [/\bXMLHttpRequest\b/, "uses XMLHttpRequest — the page can connect nowhere (connect-src data: blob:); call a granted step with useStep, or launch a workflow with useLaunch"],
+  [/\bnew\s+WebSocket\s*\(/, "opens a WebSocket — the page can connect nowhere (connect-src data: blob:); read a run live with useRun({ live }), or talk to the app's other viewers with useChannel"],
 ];
 
 /** The source checks over one file's text: refusals and warnings, each
@@ -173,19 +175,42 @@ export function zodNamespaceImports(text: string): string {
 
 const LOADERS: Record<string, "js" | "jsx" | "ts" | "tsx"> = { ".js": "js", ".mjs": "js", ".cjs": "js", ".jsx": "jsx", ".ts": "ts", ".mts": "ts", ".tsx": "tsx" };
 
+/** What an imported file becomes (§2.3): a data URL — what `<img>`, a font,
+ *  `<audio>` and any loader that takes a URL want, and what `fetch` reads
+ *  bytes from (`connect-src data:`) — or, for text, its value. A model is
+ *  one file: `.glb`, not a `.gltf` with its buffers beside it. */
+export const ASSET_LOADERS: Record<string, "dataurl" | "text"> = Object.fromEntries([
+  ...[
+    // images and fonts
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".bmp", ".svg", ".ico",
+    ".woff", ".woff2", ".ttf", ".otf",
+    // audio and video
+    ".mp3", ".wav", ".ogg", ".oga", ".opus", ".m4a", ".aac", ".flac", ".mp4", ".webm",
+    // 3D models, textures, environment maps, voxels, raw bytes, WebAssembly
+    ".glb", ".gltf", ".obj", ".mtl", ".fbx", ".stl", ".ply", ".vox", ".hdr", ".exr", ".ktx2", ".bin", ".wasm",
+  ].map((ext) => [ext, "dataurl" as const]),
+  ...[".md", ".txt", ".csv", ".html"].map((ext) => [ext, "text" as const]),
+]);
+
 // ── The document ────────────────────────────────────────────────────────────
 
-/** The document's own CSP (§9), which a host may only tighten. */
+/** The document's own CSP (§9), which a host may only tighten.
+ *  `'wasm-unsafe-eval'` lets the page compile WebAssembly (a physics engine
+ *  ships as one) — not `eval`: Wasm reaches nothing its JS does not hand it.
+ *  `connect-src data: blob:` lets `fetch` read the files the app imports
+ *  (data: URLs) and the blobs the page makes, which loaders like three's need;
+ *  neither scheme reaches a host, so the page still sends data nowhere but
+ *  through its bridge. */
 export function cspFor(resourceDomains: readonly string[] = []): string {
   const extra = resourceDomains.length ? ` ${resourceDomains.join(" ")}` : "";
   return [
     "default-src 'none'",
-    "script-src 'unsafe-inline'",
+    "script-src 'unsafe-inline' 'wasm-unsafe-eval'",
     "style-src 'unsafe-inline'",
     `img-src data: blob:${extra}`,
     `font-src data:${extra}`,
     `media-src data: blob:${extra}`,
-    "connect-src 'none'",
+    "connect-src data: blob:",
     "frame-src 'none'",
     "form-action 'none'",
     "base-uri 'none'",
@@ -338,7 +363,7 @@ const inside = (root: string, abs: string) => abs === root || abs.startsWith(roo
 
 /** The error a bare import outside the kit gets (§2.1). */
 function notInKit(spec: string, kit: Kit, installed: string[]): string {
-  const available = [...Object.keys(kit.manifest.packages), "@/components/ui/<name>", "@/lib/utils", "@strut/kit"].join(", ");
+  const available = [...Object.keys(kit.manifest.packages), "three/addons/<path>.js", "@/components/ui/<name>", "@/lib/utils", "@strut/kit"].join(", ");
   return (
     `"${spec}" is not in the app kit (${kit.manifest.name} ${kit.manifest.version}). Available: ${available}. ` +
     `Installed kits (an app imports another app's src/ by name): ${installed.length ? installed.join(", ") : "none"}. ` +
@@ -548,12 +573,7 @@ export async function buildApp(dir: string, deps: BuildDeps = {}): Promise<Build
       // The browser bundles were built for production; so is the app's code.
       // (The key is spelled apart: strut's env scan, env.test.ts, is text.)
       define: { [["process", "env", "NODE_ENV"].join(".")]: '"production"' },
-      loader: {
-        ".png": "dataurl", ".jpg": "dataurl", ".jpeg": "dataurl", ".gif": "dataurl", ".webp": "dataurl", ".svg": "dataurl", ".ico": "dataurl",
-        ".woff": "dataurl", ".woff2": "dataurl", ".ttf": "dataurl", ".otf": "dataurl",
-        ".mp3": "dataurl", ".wav": "dataurl", ".mp4": "dataurl", ".webm": "dataurl",
-        ".md": "text", ".txt": "text", ".csv": "text", ".html": "text",
-      },
+      loader: ASSET_LOADERS,
       plugins: [plugin],
       metafile: true,
       logLevel: "silent",
