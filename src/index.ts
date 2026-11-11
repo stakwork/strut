@@ -794,3 +794,6 @@ export {
 export { createCredit, type Credit, type CreditView, type Challenge as CreditChallenge } from "./public-credit.js";
 export { hiddenFromSteps } from "./env.js";
 export { hideSecrets } from "./capabilities.js";
+// What a host gate in front of strut lets anyone reach: the public view's
+// reads by path, and its POSTs by name.
+export { PUBLIC_PATH, PUBLIC_POST } from "./public-routes.js";
