@@ -295,9 +295,12 @@ export function createWithdrawals(deps: WithdrawalsDeps): Withdrawals {
    *  not answered within `answerWithin` (the operation goes on). */
   const answer = async (hash: string, op: Promise<WithdrawAnswer>, p: PendingWithdrawal): Promise<WithdrawAnswer> => {
     let timer: NodeJS.Timeout | undefined;
+    // Referenced, unlike the minute's check: a caller is waiting on it (an
+    // HTTP request, a step), and it is cleared the moment the answer comes.
+    // Unreferenced, a process with nothing else on its loop — a test runner
+    // on Node 22 — would end with the caller still waiting.
     const late = new Promise<"late">((resolve) => {
       timer = setTimeout(() => resolve("late"), answerWithin);
-      timer.unref?.();
     });
     try {
       const r = await Promise.race([op, late]);
