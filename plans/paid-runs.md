@@ -21,6 +21,7 @@
 > Item 6, priced tools, is built (`POST /public/steps/:type/run`, its allowlist bag with the whole graph's reader, the reserve and the charge around one call, a dead call's hold freed at boot; `src/public-tools.ts`, specs/API.md §17.7).
 > Item 10, a visitor's app page, is built (a public app's `run/launch` on a runnable workflow it grants through the public launcher, `{ payment_required }` as the tool result, the host's sheet that pays and retries with the credential on the request, the visit that reads its own runs back; `src/public-surface.ts`, `web/src/visitor-pay.ts`, specs/API.md §17.6).
 > Item 7, earnings, is built (the payer for the daemon's `POST /pay` and NWC's `pay_invoice`, `POST /earnings/withdraw` and its Withdraw dialog, `GET /earnings` and `/earnings/entries`, `earnings/read`, the Earnings tab and the earnings shown on a run, a runnable row, the Workflow flyout and a package's page; `src/payments/payer.ts`, `withdrawals.ts`, `earnings.ts`, specs/API.md §19).
+> Item 9, a strut that buys, is built (`remote/list`, `remote/run-workflow`, `remote/call` spending the credit held at a seller, `entitlements.json`, the admin's `remote/buy-credit` proposal paid through the withdrawals service and claimed until it settles, `GET /remote/credit`; `src/remote.ts`, `src/guarded-http.ts`, specs/API.md §20).
 >
 > **Revised the same day, three times.**
 > 1. The first draft gave strut a run budget of its own, for a seller with

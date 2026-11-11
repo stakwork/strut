@@ -47,7 +47,7 @@ import { earningsRoutes } from "./payments/earnings-routes.js";
 import { readEarnings, type EarningsDeps, type EarningsQuery } from "./payments/earnings.js";
 import { createWithdrawals, WITHDRAWALS_FILE } from "./payments/withdrawals.js";
 import { createRemote, ENTITLEMENTS_FILE, REMOTE_CALL_TIMEOUT_MS, type RemoteService } from "./remote.js";
-import { guardedHttp } from "./guarded-http.js";
+import { guardedHttp as strangerHttp } from "./guarded-http.js";
 import type { Payer } from "./payments/payer.js";
 import { ledgerPath, openLedger, priceOf, type LedgerStore } from "./payments/ledger.js";
 import { MemoryLedgerStore } from "./payments/ledger-memory.js";
@@ -1393,7 +1393,7 @@ export async function createStrut<TServices = unknown>(
   // A stranger's URL goes through the guarded http.
   const remote = createRemote({
     store: secretStore instanceof FileSecretStore ? new FileSecretStore(dataDir, ENTITLEMENTS_FILE) : new MemorySecretStore(),
-    http: opts.remote?.http ?? guardedHttp({ timeoutMs: REMOTE_CALL_TIMEOUT_MS }),
+    http: opts.remote?.http ?? strangerHttp({ timeoutMs: REMOTE_CALL_TIMEOUT_MS }),
     withdraw: (o) => withdrawals.withdraw(o),
     canPay: () => payments.canPay(),
     proposal: (id) => readProposal(proposalsRoot(dataDir), id),
@@ -8689,7 +8689,7 @@ export async function createStrut<TServices = unknown>(
     ledgerSweepTimer = undefined;
     publicTools.close();
     withdrawals.stop();
-    remote.stop();
+    await remote.stop();
     await bootScan;
     await packages.booted;
     // What the history still has waiting is committed before the stores go.

@@ -34,6 +34,18 @@ const input = z.object({
     .describe("How many dollars of credit to buy there (0.01 to 1000) — at least what the runs to come need: a run sets its item's `reserve` aside to start."),
 });
 
+/** The card's read of the seller, at most: the agent's turn waits on it. */
+const DESCRIBE_WAIT_MS = 10_000;
+
+/** `p`, or an error once `ms` passed (the read goes on, unheard). */
+function within<T>(p: Promise<T>, ms: number): Promise<T | Error> {
+  let timer: NodeJS.Timeout | undefined;
+  const late = new Promise<Error>((resolve) => {
+    timer = setTimeout(() => resolve(new Error(`no answer in ${ms / 1000} s`)), ms);
+  });
+  return Promise.race([p.catch((err: unknown) => (err instanceof Error ? err : new Error(String(err)))), late]).finally(() => clearTimeout(timer));
+}
+
 const priceLine = (i: RemoteRunnable): string => {
   const price =
     !i.base && !i.markup
@@ -65,10 +77,7 @@ export default defineStep({
     const title = `Buy ${usdText(cfg.usd)} of credit at ${host}`;
     const remote = ctx.services?.remote;
     if (!remote) return { title };
-    const [listing, canPay] = await Promise.all([
-      remote.list(seller).catch((err: unknown) => (err instanceof Error ? err : new Error(String(err)))),
-      remote.canPay().catch(() => false),
-    ]);
+    const [listing, canPay] = await Promise.all([within(remote.list(seller), DESCRIBE_WAIT_MS), remote.canPay().catch(() => false)]);
     const lines: string[] = [];
     const fields: CardField[] = [{ label: "Seller", value: seller, kind: "ref" }, { label: "Amount", value: `${usdText(cfg.usd)} of credit, paid in sats at the rate when it is bought` }];
     if (listing instanceof Error) {

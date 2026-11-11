@@ -322,7 +322,9 @@ export interface RemoteService {
   /** What is held and being bought, per seller (an admin's read): no token. */
   held(): Promise<Array<{ seller: string; credit?: Omit<HeldCredit, "macaroon" | "preimage">; purchase?: Omit<Purchase, "macaroon" | "invoice">; runs: number }>>;
   start(ms?: number): void;
-  stop(): void;
+  /** Stop the minute's claims, once a claim and the writes in flight are
+   *  done (`close()` awaits it: a token being stored reaches the file). */
+  stop(): Promise<void>;
 }
 
 export function createRemote(deps: RemoteDeps): RemoteService {
@@ -872,9 +874,10 @@ export function createRemote(deps: RemoteDeps): RemoteService {
       tick();
     },
 
-    stop() {
+    async stop() {
       if (timer) clearInterval(timer);
       timer = undefined;
+      await Promise.all([checking, ...writes.values(), ...buying.values()].map((p) => Promise.resolve(p).catch(() => undefined)));
     },
   };
   return service;

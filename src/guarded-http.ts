@@ -9,10 +9,10 @@
  * does — a hop to another origin carries no `Authorization`, `Cookie` or
  * `Proxy-Authorization`; each request at most `timeoutMs`.
  *
- * Two users: a public tool's bag (plans/paid-runs.md §6, stakwork/strut#609,
- * which built it first in src/public-tools.ts) and the `remote/*` steps
- * (§10 "Another strut", src/remote.ts), which call a seller's public door
- * with the credit this strut holds there.
+ * Two users: a public tool's bag (plans/paid-runs.md §6, src/public-tools.ts,
+ * which built it first) and the `remote/*` steps (§10 "Another strut",
+ * src/remote.ts), which call a seller's public door with the credit this
+ * strut holds there.
  *
  * Known limit: the address is checked by resolving the name, and the fetch
  * resolves it again, so a host that answers the two lookups differently

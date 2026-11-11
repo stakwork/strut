@@ -56,6 +56,17 @@ const spend = defineStep({
     return withUsage({ spent: cfg.cost ?? 0, cve: "CVE-2026-0001" }, cfg.cost ? { modelCalls: 1, usage: {}, cost: cfg.cost } : undefined);
   },
 });
+/** A tool the seller sells: looks a package up, spending what it is told. */
+const lookup = defineStep({
+  type: "cve/lookup",
+  description: "Look a package up in the CVE feed",
+  effect: "read",
+  input: z.object({ package: z.string(), cost: z.number().optional() }),
+  output: z.any(),
+  async run(cfg) {
+    return withUsage({ package: cfg.package, cves: ["CVE-2026-0002"] }, cfg.cost ? { modelCalls: 1, usage: {}, cost: cfg.cost } : undefined);
+  },
+});
 const FLOW = (name: string) =>
   `name: ${name}\ninput:\n  cost: { type: number, default: 0 }\n  ms: { type: number, default: 0 }\nsteps:\n  - id: s\n    type: test/spend\n    config:\n      cost: "{{ input.cost }}"\n      ms: "{{ input.ms }}"\n`;
 
@@ -160,7 +171,7 @@ describe("a strut that buys — remote/* against another strut's public door", (
       workspace: new WorkspaceManager(join(dir, "seller")),
       store: new MemoryRunStore(),
       ...quiet,
-      registry: await createRegistry([spend]),
+      registry: await createRegistry([spend, lookup]),
       services: { lightning: lightningCapability(sellerWallet) },
       payments: { rate: fixedRate },
     });
@@ -171,7 +182,13 @@ describe("a strut that buys — remote/* against another strut's public door", (
     const put = await seller.app.request("/public-view", {
       method: "PUT",
       headers: auth,
-      body: JSON.stringify({ runnable: [{ kind: "workflow", name: "cve/scan", base: 0.5, markup: 2, capUsd: 1 }, { kind: "workflow", name: "cve/free", dailyCapUsd: 5 }] }),
+      body: JSON.stringify({
+        runnable: [
+          { kind: "workflow", name: "cve/scan", base: 0.5, markup: 2, capUsd: 1 },
+          { kind: "workflow", name: "cve/free", dailyCapUsd: 5 },
+          { kind: "step", name: "cve/lookup", base: 0.1, markup: 1, capUsd: 0.5 },
+        ],
+      }),
     });
     assert.equal(put.status, 200, await put.clone().text());
     launches = 0;
@@ -228,6 +245,7 @@ describe("a strut that buys — remote/* against another strut's public door", (
     const scan = listing.runnable.find((i) => i.name === "cve/scan")!;
     assert.deepEqual([scan.kind, scan.base, scan.markup, scan.capUsd, scan.reserve], ["workflow", 0.5, 2, 1, 2.5]);
     assert.ok(listing.runnable.some((i) => i.name === "cve/free" && i.base === 0 && i.markup === 0));
+    assert.ok(listing.runnable.some((i) => i.kind === "step" && i.name === "cve/lookup" && i.reserve === 0.6));
     assert.deepEqual(listing.credit, { seller: SELLER, held: false });
     assert.equal(sellerOf("https://Seller.Example:443/lab/public"), "https://seller.example/lab");
     await assert.rejects(step("remote/list").run({ url: "http://seller.example" }, ctx()), /bad_url: http:\/\/seller\.example is not https/);
@@ -263,7 +281,7 @@ describe("a strut that buys — remote/* against another strut's public door", (
     assert.equal(rec.approver, "admin");
     assert.equal(rec.title, "Buy $5.00 of credit at seller.example");
     // The card (decision 25): who, what it sells and at what price, what is held, whether the wallet pays.
-    assert.match(rec.summary!, /https:\/\/seller\.example sells 2 things to run \(1 priced\): cve\/scan \(workflow\): \$0\.50 a run \+ 2× its cost, \$2\.50 to start/);
+    assert.match(rec.summary!, /https:\/\/seller\.example sells 3 things to run \(2 priced\): cve\/scan \(workflow\): \$0\.50 a run \+ 2× its cost, \$2\.50 to start/);
     assert.match(rec.summary!, /This strut server holds no credit there\./);
     assert.match(rec.summary!, /Paid from this strut server's wallet/);
     await assert.rejects(door.buyCredit(SELLER, 5, { proposal: id }), /buy_needs_person: .*is pending/, "pending is not accepted");
@@ -307,6 +325,11 @@ describe("a strut that buys — remote/* against another strut's public door", (
     assert.equal(ran.credit.held_usd, 2.5);
     const after = (await step("remote/list").run({ url: SELLER }, ctx())) as RemoteListing;
     assert.equal(after.credit.remaining_usd, 4);
+    // A tool the seller sells, called with the same credit (its real door, POST /public/steps/:type/run).
+    const called = (await step("remote/call").run({ url: SELLER, type: "cve/lookup", config: { package: "lodash", cost: 0.2 } }, ctx())) as Record<string, any>;
+    assert.deepEqual(called.output, { package: "lodash", cves: ["CVE-2026-0002"] });
+    assert.equal(called.credit.charged_usd, 0.3, "0.1 + 1 × 0.2");
+    assert.equal(((await step("remote/list").run({ url: SELLER }, ctx())) as RemoteListing).credit.remaining_usd, 3.7);
     assert.equal(payer.sent.length, 1, "spending pays nothing");
     // The run's token is let go once the step ends.
     assert.equal((await held())[0]!.runs, 0);
@@ -359,7 +382,7 @@ describe("a strut that buys — remote/* against another strut's public door", (
     buyer = await createStrut({ workspace: new WorkspaceManager(join(dir, "buyer")), store: new MemoryRunStore(), ...quiet, remote: { http: toSeller }, payments: { rate: fixedRate, payer } });
     // The boot's own claim may have run first; either way it ends held.
     await buyer.remote.check();
-    for (let i = 0; i < 40 && (await held())[0]?.purchase; i++) await new Promise((r) => setTimeout(r, 50));
+    for (let i = 0; i < 200 && (await held())[0]?.purchase; i++) await new Promise((r) => setTimeout(r, 50));
     const h = (await held())[0]!;
     assert.equal(h.purchase, undefined);
     assert.equal(h.credit.usd, 5);
@@ -400,12 +423,12 @@ describe("a strut that buys — remote/* against another strut's public door", (
     // A key the seller saw for a run in flight returns that run.
     const slow = ctx([]);
     const remote = (buyer.services as { remote: import("./remote.js").RemoteCapability }).remote;
-    const h1 = await remote.launch(SELLER, "cve/scan", { input: { ms: 400 }, key: "k-1" });
-    const h2 = await remote.launch(SELLER, "cve/scan", { input: { ms: 400 }, key: "k-1" });
+    const h1 = await remote.launch(SELLER, "cve/scan", { input: { ms: 3000 }, key: "k-1" });
+    const h2 = await remote.launch(SELLER, "cve/scan", { input: { ms: 3000 }, key: "k-1" });
     assert.equal(h2.runId, h1.runId);
     assert.equal(h2.existing, true);
     // Resumed with a journaled launch: it waits on that run, launching nothing.
-    const resumed = (await step("remote/run-workflow").run({ url: SELLER, workflow: "cve/scan", input: { ms: 400 }, key: "k-1" }, { ...slow, journal: { [`${slow.path}#launch`]: { seller: SELLER, workflow: "cve/scan", runId: h1.runId } } })) as Record<string, any>;
+    const resumed = (await step("remote/run-workflow").run({ url: SELLER, workflow: "cve/scan", input: { ms: 3000 }, key: "k-1" }, { ...slow, journal: { [`${slow.path}#launch`]: { seller: SELLER, workflow: "cve/scan", runId: h1.runId } } })) as Record<string, any>;
     assert.equal(resumed.runId, h1.runId, "waited on the journaled run");
     assert.equal(resumed.status, "success");
     assert.equal(launches, 3, "no launch on resume");
