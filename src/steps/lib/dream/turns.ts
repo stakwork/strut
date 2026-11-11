@@ -37,7 +37,8 @@ export default defineStep({
   description:
     "The turns of the person's conversations with the assistant that no dream has read yet, oldest first: { count, turns: [{ session, turn, at, status, run, said, reply }], " +
     "cursor, more, text }. Each turn also has `said_by` when it names its speaker and `opened`, the Concept pages its run opened (absent when the graph does not say). `text` is the same turns as a transcript. `cursor` is what dream/done takes once they are dealt with; `more` says turns were left for the next run. " +
-    "A turn the person stopped has status `cancelled`. A wake (strut's own turn after a job) is skipped. The first dream reads the last `days` only.",
+    "A turn the person stopped has status `cancelled`. A wake (strut's own turn after a job) is skipped. The first dream reads the last `days` only. " +
+    "It refuses, before reading anything, when this run cannot read the tree it is for: a run an app's page launched reads what an app may, and the tree's root must exist.",
   input: z.object({
     tree: z.string().optional().default("Personal").describe("The tree this dream tends (its root Concept's name): each tree keeps its own marks."),
     limit: z.number().int().positive().max(200).optional().default(60).describe("Most turns to return (default 60)."),
@@ -47,6 +48,18 @@ export default defineStep({
   async run(cfg, ctx: StepContext) {
     const conversations = (ctx.services as { conversations?: ConversationsCapability } | undefined)?.conversations;
     if (!conversations) throw new Error("dream/turns needs the conversation index (ctx.services.conversations). The standard strut server provides it.");
+    // A dream that cannot see its tree stops here: nothing read, nothing sent to a model, nothing marked.
+    if ((ctx.services as { graph?: unknown } | undefined)?.graph) {
+      const { g, namespace, readable } = await claimGraph(ctx);
+      if (!readable) {
+        throw new Error(
+          `dream/turns: this run may not read "${namespace}", where the tree "${cfg.tree}" is kept` +
+            (ctx.app ? ": it was launched from an app's page, which reads only what an app may. Run the dream from its automation" : ""),
+        );
+      }
+      const { conceptNamed } = await import("../../../graph/concept-claims.js");
+      if (!(await conceptNamed(g, namespace, cfg.tree))) throw new Error(`dream/turns: there is no Concept "${cfg.tree}" to tend: the dream's \`root\` names the tree's root page`);
+    }
     const state = await readState(dataDirOf(ctx, "dream/turns"), cfg.tree);
     const floor = state ? 0 : Date.now() - cfg.days * 86_400_000;
     // The dream is strut's own job over the person's conversations: it reads them all, as the run logs can be.

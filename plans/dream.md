@@ -118,8 +118,12 @@ two trees may be fed by the same conversations.
 
 ## The app
 
-`strut/dream`, first-party, seeded beside `strut/views`. The dream's runs,
-a Run now button, and for the picked run: what it changed, the claims
+`strut/dream`, first-party, seeded beside `strut/views`. A viewer: it
+starts no run. A run a page launches reads what an app may (on Peel,
+`shared` alone) and could not see a private tree, so the dream runs from
+its automation, as one of strut's own jobs, and `dream/turns` refuses a run
+that cannot read its tree before anything is read or sent to a model. The
+page lists the dream's runs, and for the picked run: what it changed, the claims
 (groups with theirs under them) with what was said for each and what the
 assistant did there, and every step the agent took. It is granted the
 `dream` workflow's runs and no step, so it shows what the run itself could

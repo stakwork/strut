@@ -2,8 +2,9 @@ title: Dream
 description: >-
   What the dream did (plans/dream.md): each run of the `dream` workflow, what
   it changed in facts and pages, the claims about the tree with what was
-  said for each, and every step it took. Run one now from here. Strut ships
-  it and seeds it on every server; it acts as its viewer.
+  said for each, and every step it took. It starts no run: the dream runs
+  from its automation. Strut ships it and seeds it on every server; it acts
+  as its viewer.
 icon: moon
 grants:
   workflows: [dream]

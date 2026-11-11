@@ -184,9 +184,16 @@ describe("the dream on the graph, under Peel's reader lists (ladybug)", { skip: 
     assert.equal(again["output"]["text"], "No new turns since the last dream.");
     assert.equal(again["output"]["turns"], 0);
     assert.equal(again["output"]["claims"].length, 1, "the claim is still reported");
+    // A tree with no root page is not dreamt on: it stops before a turn is read or a model called.
+    results = [];
+    const none = await runOf("dream", { input: { root: "Elsewhere" } });
+    assert.equal(none["status"], "error");
+    assert.match(none["error"]["message"], /there is no Concept "Elsewhere" to tend/);
+    assert.equal(results.length, 0);
     // Another tree is another input: its dream has its own marks, so it reads the turns, and reports only its own claims.
+    await b.nodes.write({ type: "Concept", data: { name: "Elsewhere" } });
     const other = await runOf("dream", { input: { root: "Elsewhere" } });
-    assert.deepEqual([other["output"]["turns"], other["output"]["root"], other["output"]["claims"]], [2, "Elsewhere", []]);
+    assert.deepEqual([other["status"], other["output"]["turns"], other["output"]["root"], other["output"]["claims"]], ["success", 2, "Elsewhere", []]);
     assert.match(prompt, /The tree you tend is the Concept `Elsewhere`/);
   });
 

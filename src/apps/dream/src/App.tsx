@@ -1,5 +1,7 @@
 // strut/dream (plans/dream.md): what the dream did. On the left its runs,
-// newest first, and a button to run one now. On the right the picked run,
+// newest first. The page starts none: a dream runs from its automation, as
+// one of strut's own jobs, since a run a page launches reads only what an
+// app may and could not see a private tree. On the right the picked run,
 // read from the outcome back to how it got there: what it changed (its
 // report), the claims as they stood after it, grouped, with what was said for
 // each and what the assistant did there, then every step the agent took. Everything is read from the run
@@ -7,10 +9,9 @@
 // could read and nothing more. Narrow, the list and the run take the page in
 // turn.
 import { useEffect, useState, type ReactNode } from "react";
-import { ArrowLeft, Play } from "lucide-react";
-import { useLaunch, useRun, useRuns, type RunSummary } from "@strut/kit";
+import { ArrowLeft } from "lucide-react";
+import { useRun, useRuns, type RunSummary } from "@strut/kit";
 import { DocumentView, RunList, RunStatus, Transcript } from "strut/views";
-import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { OUTCOME_TEXT, costText, nest, sectionsOf, whenText, type Claim, type DreamOutput } from "./lib/report";
 
@@ -159,7 +160,6 @@ function RunDetail({ runId, lead }: { runId: string; lead?: ReactNode }) {
 export default function App() {
   const narrow = useNarrow();
   const runs = useRuns(WORKFLOW, { limit: 30, live: true });
-  const launcher = useLaunch(WORKFLOW);
   const [picked, setPicked] = useState<string | null>(null);
   const [showList, setShowList] = useState(true);
   const list: RunSummary[] | undefined = runs.data;
@@ -169,20 +169,12 @@ export default function App() {
     setPicked(id);
     setShowList(false);
   };
-  const runNow = async () => {
-    const r = await launcher.launch({});
-    if (r?.runId) open(r.runId);
-  };
   const listPane = (
     <aside className={cn("flex min-h-0 shrink-0 flex-col", narrow ? "flex-1" : "w-80 border-r")} data-testid="runs">
-      <header className="flex shrink-0 items-center justify-between gap-2 border-b px-4 py-3">
+      <header className="flex shrink-0 flex-col gap-0.5 border-b px-4 py-3">
         <h1 className="text-sm font-semibold">Dream</h1>
-        <Button size="sm" onClick={runNow} disabled={launcher.pending}>
-          <Play />
-          Run now
-        </Button>
+        <p className="text-xs text-muted-foreground">Runs from its automation. Turn it on or run it once in Automations.</p>
       </header>
-      {launcher.error && <p className="border-b px-4 py-2 text-xs text-muted-foreground">{launcher.error.message}</p>}
       <div className="min-h-0 flex-1 overflow-y-auto p-4">
         {runs.isError ? (
           <p className="text-sm text-muted-foreground">{runs.error instanceof Error ? runs.error.message : String(runs.error)}</p>
@@ -200,7 +192,7 @@ export default function App() {
   const detail = runId ? (
     <RunDetail key={runId} runId={runId} lead={back} />
   ) : (
-    <p className="p-4 text-sm text-muted-foreground">{list && !list.length ? "No dream has run yet. Run one now to see what it finds." : "Pick a run."}</p>
+    <p className="p-4 text-sm text-muted-foreground">{list && !list.length ? "No dream has run yet. Turn Dream on, or run it once, in Automations: its runs show here." : "Pick a run."}</p>
   );
   return (
     <div className="flex h-dvh min-h-0 bg-background text-foreground" data-testid="dream-app">

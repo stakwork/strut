@@ -77,7 +77,8 @@ describe("strut/dream — seeded at boot beside strut/views", () => {
     assert.deepEqual(info.imports, [{ name: VIEWS_APP, version: views.version, hash: views.hash }], "strut/views compiled in");
     assert.deepEqual(info.warnings, []);
     const html = await readFile(join(app.dir, "dist", "index.html"), "utf8");
-    assert.match(html, /Run now/);
+    assert.match(html, /Runs from its automation/);
+    assert.doesNotMatch(html, /Run now/, "the page starts no run");
     assert.match(html, /Every step it took/);
     assert.ok(info.bytes < 2_000_000, `${info.bytes} bytes`);
 

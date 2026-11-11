@@ -251,6 +251,12 @@ export interface ConceptClaim {
 
 const num = (v: unknown): number => (typeof v === "bigint" ? Number(v) : Number((v as { toNumber?: () => number } | null)?.toNumber?.() ?? v ?? 0));
 
+/** Is there a Concept named `name` (a tree's root) in `namespace`? */
+export async function conceptNamed(g: ClaimGraph, namespace: string | undefined, name: string): Promise<boolean> {
+  const d = g.dialect;
+  return (await g.query(`MATCH ${d.node("r", CONCEPT_TYPE, nsProps(namespace, { name: "$name" }))} WHERE ${d.live("r")} RETURN r.ref_id AS r LIMIT 1`, { ...nsParams(namespace), name })).length > 0;
+}
+
 /** The ref_ids of `root` (a Concept's name) and every Concept under it; null when there is no such root. */
 async function treeOf(g: ClaimGraph, namespace: string | undefined, root: string): Promise<Set<string> | null> {
   const d = g.dialect;

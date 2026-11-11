@@ -10,6 +10,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { GraphBackend } from "./backend.js";
+import { graphView, parseGraphReaders } from "./scope.js";
 import { testBackends } from "./test-util.js";
 import { conceptClaimId, conceptsOpenedBy, groupClaims, listClaims, recordSaid, type ClaimGraph, type Said } from "./concept-claims.js";
 import type { ConversationTurn } from "../conversations.js";
@@ -132,6 +133,21 @@ for (const tb of testBackends()) {
       assert.deepEqual(claims.find((c: any) => c.id === group.claim).corrected, 3);
       assert.deepEqual((await run(claimsStep, { root: "Work" }, { graph: b })).claims, []);
       assert.match(await run(claimStep, { session: "s", turn: 9, excerpt: "x", outcome: "missing" }, { graph: b }), /dream\/claim failed/);
+    });
+
+    it("dream/turns stops before reading when the run cannot see the tree: no root page, or a run an app's page launched", async () => {
+      const services = { conversations: { all: async () => [], get: async () => null }, dataDir: join(tmpdir(), "strut-dream-none"), graph: b };
+      assert.equal((await run(turnsStep, {}, services)).count, 0, "the tree is there: nothing new to read");
+      await assert.rejects(run(turnsStep, { tree: "No such tree" }, services), /there is no Concept "No such tree" to tend/);
+      if (b.kind !== "ladybug") return;
+      // Peel's lists: an app's page reads `shared` alone, and the tree is in `private`.
+      const scoped = graphView(b, parseGraphReaders({
+        assistant: { workflows: ["orchestrator"], namespaces: ["private", "shared"] }, jobs: { namespaces: ["private", "shared"], exclude_domains: ["Strut"] },
+        apps: { namespaces: ["shared"], exclude_domains: ["Strut"] }, peers: { namespaces: ["shared"] }, builder: { namespaces: ["*"] }, ui: { namespaces: ["*"] },
+      }));
+      const asApp = { ...ctxOf({ ...services, graph: scoped }), app: { name: "strut/dream", version: "v1" } };
+      await assert.rejects(turnsStep.run(turnsStep.input.parse({}) as any, asApp as any), /may not read "private".*launched from an app's page.*Run the dream from its automation/);
+      assert.equal((await run(turnsStep, {}, { ...services, graph: scoped })).count, 0, "the same lists, as one of strut's own jobs");
     });
   });
 }
