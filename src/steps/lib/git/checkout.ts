@@ -1,66 +1,27 @@
 import { existsSync } from "node:fs";
 import { mkdir, rm, rmdir } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { z } from "zod";
 import { defineStep } from "../../../core.js";
-import type { ShellCapability, StrutCapabilities } from "../../../capabilities.js";
+import type { StrutCapabilities } from "../../../capabilities.js";
 import { idProblem } from "../../../session-store.js";
 import { holdJob, jobRoot, jobTtlMs, readJobRecord, releaseWith, sweepJobs, touchJob } from "../../../jobs.js";
 import {
   cachePath,
   cancelSignal,
+  commitOf,
   dataDirOf,
+  fetchCache,
   git,
   gitOk,
   parseRepo,
+  remoteDefaultBranch,
+  SHA_RE,
   shellOf,
   withLock,
   worktreeRoot,
   type GitCtx,
-  type GitOpts,
 } from "./_shared.js";
-
-/** Where the cache keeps the remote's branches: `origin/<name>`, as any
- *  clone does. Its own `refs/heads/*` are the branches agents make in its
- *  working copies, which a fetch never touches. */
-const TRACKING = "+refs/heads/*:refs/remotes/origin/*";
-
-/**
- * A cache from before TRACKING mirrored the remote into `refs/heads/*`
- * (`clone --bare`) and fetched with `--prune` into them — so a branch an
- * agent made in a kept working copy was deleted by the next run's fetch,
- * whoever ran it, and that copy's next commit was a root commit holding
- * every file. Moved over once: the mirrored heads go, except one a working
- * copy has checked out, and the fetch tracks the remote from then on.
- */
-async function trackRemoteBranches(shell: ShellCapability, cacheDir: string, url: string, o: Omit<GitOpts, "cwd">): Promise<void> {
-  const at = { cwd: cacheDir, ...o };
-  const spec = await git(shell, ["config", "--get", "remote.origin.fetch"], at);
-  if (spec.code === 0 && spec.stdout.trim() === TRACKING) return;
-  if ((await git(shell, ["config", "--get", "remote.origin.url"], at)).code !== 0) {
-    await gitOk(shell, ["config", "remote.origin.url", url], at); // a cache cut off before its remote was added
-  }
-  const heads = (await gitOk(shell, ["for-each-ref", "--format=%(refname)", "refs/heads/"], at)).split("\n").filter(Boolean);
-  const checkedOut = new Set(
-    (await gitOk(shell, ["worktree", "list", "--porcelain"], at))
-      .split("\n")
-      .filter((l) => l.startsWith("branch "))
-      .map((l) => l.slice("branch ".length)),
-  );
-  const mirrored = heads.filter((h) => !checkedOut.has(h));
-  if (mirrored.length) {
-    const del = await shell({
-      cmd: "git",
-      args: ["update-ref", "--stdin"],
-      cwd: cacheDir,
-      stdin: mirrored.map((h) => `delete ${h}\n`).join(""),
-      timeoutMs: o.timeoutMs ?? 60_000,
-      ...(o.signal ? { signal: o.signal } : {}),
-    });
-    if (del.code !== 0) throw new Error(`git update-ref failed: ${(del.stderr || del.stdout).trim().slice(-2000)}`);
-  }
-  await gitOk(shell, ["config", "remote.origin.fetch", TRACKING], at);
-}
 
 const EXAMPLE = `- id: checkout
   type: git/checkout
@@ -179,27 +140,10 @@ export default defineStep({
     try {
       return await withLock(cacheDir, async () => {
         const o = { token, timeoutMs: cfg.timeoutMs, signal: cancel.signal };
-        await mkdir(dirname(cacheDir), { recursive: true });
-        if (!existsSync(join(cacheDir, "HEAD"))) {
-          await rm(cacheDir, { recursive: true, force: true }); // a half-made cache
-          await gitOk(shell, ["init", "--bare", "--quiet", cacheDir], { cwd: dirname(cacheDir), ...o });
-          await gitOk(shell, ["remote", "add", "origin", r.url], { cwd: cacheDir, ...o }); // fetches into TRACKING
-        } else {
-          await trackRemoteBranches(shell, cacheDir, r.url, o);
-        }
-        // --prune drops what the remote deleted — under origin/, never a
-        // branch an agent made.
-        await gitOk(shell, ["fetch", "--quiet", "--prune", "origin", TRACKING, "+refs/tags/*:refs/tags/*"], { cwd: cacheDir, ...o });
+        await fetchCache(shell, cacheDir, r.url, o);
         await ctx.control?.checkpoint();
 
-        // The remote's default branch — asked of the remote, so a change on
-        // GitHub is seen; the clone-time HEAD is the fallback.
-        const symref = await gitOk(shell, ["ls-remote", "--symref", "origin", "HEAD"], { cwd: cacheDir, ...o });
-        let branch = /^ref: refs\/heads\/(\S+)\tHEAD$/m.exec(symref)?.[1];
-        if (!branch) {
-          const head = await git(shell, ["symbolic-ref", "--short", "HEAD"], { cwd: cacheDir, ...o });
-          branch = head.code === 0 ? head.stdout.trim() : "";
-        }
+        const branch = await remoteDefaultBranch(shell, cacheDir, o);
         if (!branch) throw new Error(`git/checkout: could not determine the default branch of ${r.url}`);
         const where = { branch, repo: `${r.owner}/${r.name}`, host: r.host, url: r.url };
 
@@ -212,15 +156,9 @@ export default defineStep({
 
         const ref = cfg.ref ?? branch;
         // The remote's branch of that name first, then a tag or a sha.
-        const revParse = async (): Promise<string> => {
-          for (const name of [`refs/remotes/origin/${ref}`, ref]) {
-            const rp = await git(shell, ["rev-parse", "--verify", "--quiet", `${name}^{commit}`], { cwd: cacheDir, ...o });
-            if (rp.code === 0) return rp.stdout.trim();
-          }
-          return "";
-        };
+        const revParse = () => commitOf(shell, cacheDir, [`refs/remotes/origin/${ref}`, ref], o);
         let sha = await revParse();
-        if (!sha && /^[0-9a-f]{7,40}$/i.test(ref)) {
+        if (!sha && SHA_RE.test(ref)) {
           // A commit not on any branch or tag: GitHub serves reachable shas.
           await git(shell, ["fetch", "--quiet", "origin", ref], { cwd: cacheDir, ...o });
           sha = await revParse();

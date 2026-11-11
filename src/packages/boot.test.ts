@@ -92,7 +92,11 @@ describe("STRUT_PACKAGES", () => {
     assert.throws(() => parseBootPackagesEnv(`[{"ref":"pk:${KEY}/acme/desk"}]`), /needs url/);
     assert.throws(() => parseBootPackagesEnv('[{"ref":"acme/desk","url":"https://x.example/c"}]'), /a url goes with a pk: ref/);
     assert.throws(() => parseBootPackagesEnv('[{"ref":"acme/desk","digest":"sha256:no"}]'), /digest is sha256/);
-    assert.throws(() => parseBootPackagesEnv('[{"ref":"git+https://x"}]'), /a ref is publisher\/name/);
+    assert.throws(() => parseBootPackagesEnv('[{"ref":"git+https://x"}]'), /needs an owner and a name/);
+    assert.throws(() => parseBootPackagesEnv('[{"ref":"https://x/a/b"}]'), /a ref is publisher\/name/);
+    assert.throws(() => parseBootPackagesEnv('[{"ref":"acme/desk","tokenSecret":"GH"}]'), /tokenSecret goes with a git\+ ref/);
+    assert.throws(() => parseBootPackagesEnv('[{"ref":"git+https://github.com/acme/desk@main","tokenSecret":"ghp_x-y"}]'), /NAME of a secret/);
+    assert.deepEqual(parseBootPackagesEnv('[{"ref":"git+https://github.com/acme/desk@main#strut","tokenSecret":"DESK_GH"}]'), [{ ref: "git+https://github.com/acme/desk@main#strut", tokenSecret: "DESK_GH" }]);
     assert.throws(() => parseBootPackagesEnv('[{"ref":"acme/desk","channel":"stable"}]'), /unknown field "channel"/);
   });
 

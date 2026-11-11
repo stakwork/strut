@@ -3,9 +3,11 @@
 # boot strut installs it through the distro's door, writes its public view
 # from the package's serve.yaml, and answers `/` with the app alone. Nothing
 # of strut's UI is drawn for a visitor; `/?shell=1` with the key is the
-# operator's console. The package is followed as a subscription is: a new
-# release is deployed at the next poll (STRUT_DISTRO_POLL_MINUTES, 10) or on
-# the publisher's ping.
+# operator's console. A git+ ref (a repository's branch) is fetched every
+# STRUT_SERVE_POLL_MINUTES (5) and on `POST /serve/sync`, a push webhook,
+# and deployed when the branch's commit and the package moved. Any other ref
+# is followed as a subscription is: a new release is deployed at the next
+# poll (STRUT_DISTRO_POLL_MINUTES, 10) or on the publisher's ping.
 #
 # Run from this folder; compose reads ./.env (gitignored) by itself:
 #   cp env.example .env      # then fill it in
@@ -16,8 +18,9 @@
 # local try, `app.localhost` gets one from Caddy's own CA (curl -k).
 #
 # Every line of .env reaches the strut container (`env_file`), so the model
-# keys, the wallet (LIGHTNING_*) and the values of the package's
-# `requires.secrets` go there too.
+# keys, the wallet (LIGHTNING_*), the token a private repository is read
+# with (GITHUB_TOKEN) and the values of the package's `requires.secrets` go
+# there too.
 name: strut-app
 
 services:
@@ -35,6 +38,7 @@ services:
       STRUT_MODEL_DIR: /data/models
       STRUT_SERVE: "${STRUT_SERVE:?set STRUT_SERVE}"
       STRUT_SERVE_URL: "${STRUT_SERVE_URL:-}"
+      STRUT_SERVE_TOKEN_SECRET: "${STRUT_SERVE_TOKEN_SECRET:-}"
       # og:image and og:url are written against it.
       STRUT_PUBLIC_URL: "https://${STRUT_APP_HOST:?set STRUT_APP_HOST}"
       # The operator's key: the console (/?shell=1), GET /serve, everything

@@ -133,7 +133,7 @@ import {
 import { listInstalledPackages } from "./packages/installed.js";
 import { createInstallTracker, type InstallTracker } from "./packages/progress.js";
 import { checkBootPackages, installBootPackages, parseBootPackagesEnv, type BootPackage, type BootPackageOutcome } from "./packages/boot.js";
-import { createServe, lucideIconSvg, SERVE_FILE, SERVE_IMAGE_PATH, serveRefOf, servedHtml, type ServeRef, type ServeService } from "./packages/serve.js";
+import { createServe, lucideIconSvg, SERVE_FILE, SERVE_IMAGE_PATH, SERVE_POLL_MINUTES, serveRefOf, servedHtml, type ServeRef, type ServeService } from "./packages/serve.js";
 import type { AppRelease, Upstream } from "./workspace.js";
 import type { CassetteMode } from "./cassette.js";
 // Type-only: the graph backend stays a lazy, opt-in dependency.
@@ -324,19 +324,25 @@ export interface StrutOptions<TServices = unknown> {
    *  record of the same id. A bare package name installs through them. */
   packageIndexes?: IndexSubscription[];
   /** Packages installed at FIRST BOOT (src/packages/boot.ts), after
-   *  `STRUT_PACKAGES` — each `{ ref, url?, digest? }`, what `POST
+   *  `STRUT_PACKAGES` — each `{ ref, url?, digest?, tokenSecret? }`, what `POST
    *  /packages/install` takes. A listed package not installed here is
    *  installed in the background once the boot is done; one already here,
    *  at any digest, is left alone. A bad entry fails the boot; a failed
    *  install is a warning, tried again next boot. */
   packages?: BootPackage[];
   /** SERVE MODE (src/packages/serve.ts; plans/app-repos.md §4): the
-   *  package this box serves, after `STRUT_SERVE` + `STRUT_SERVE_URL` (this
-   *  wins; `false`: none) — `{ ref, url? }`, a ref the install takes. At
-   *  boot it is installed through the distro's door, its `serve.yaml` is
-   *  the public view (`PUT /public-view` is refused), and `/` is its app
-   *  alone; it is followed as a subscription is. A bad ref fails the boot. */
+   *  package this box serves, after `STRUT_SERVE` + `STRUT_SERVE_URL` +
+   *  `STRUT_SERVE_TOKEN_SECRET` (this wins; `false`: none) — `{ ref, url?,
+   *  tokenSecret? }`, a ref the install takes. At boot it is installed
+   *  through the distro's door, its `serve.yaml` is the public view (`PUT
+   *  /public-view` is refused), and `/` is its app alone. A `git+` ref is
+   *  fetched every `servePoll` minutes and on `POST /serve/sync`; any other
+   *  is followed as a subscription is. A bad ref fails the boot. */
   serve?: ServeRef | false;
+  /** How often a served `git+` ref is fetched, in minutes:
+   *  `STRUT_SERVE_POLL_MINUTES`, default 5; `0` or `false` = at boot and on
+   *  `POST /serve/sync` only. */
+  servePoll?: number | false;
   /** This strut's OWN workspace — `{ id?, label?, description?, repos? }`,
    *  what `strut/list-peers` reports as `self` so an agent knows which repos
    *  are here. Seeded at boot after `STRUT_SELF` (this wins); `PUT /self` is
@@ -781,10 +787,11 @@ export interface Strut<TServices = unknown> {
    *  applies a release with no ask and updates an installed package item by
    *  item (§4). No route takes the door: an operator's subscription does. */
   packages: {
-    /** `ref` is `file:`, `pk:` (with `url`), or a bare name looked up in
-     *  the indexes this strut follows — the first that lists its publisher,
-     *  or the one `index` names. */
-    install(ref: string, opts?: Pick<InstallOptions, "digest" | "url" | "actor" | "door" | "progress"> & { index?: string }): Promise<InstallResult>;
+    /** `ref` is `file:`, `pk:` (with `url`), `git+<repo>[@<ref>][#<path>]`
+     *  (read with the secret `tokenSecret` names, default GITHUB_TOKEN), or a
+     *  bare name looked up in the indexes this strut follows — the first
+     *  that lists its publisher, or the one `index` names. */
+    install(ref: string, opts?: Pick<InstallOptions, "digest" | "url" | "tokenSecret" | "commit" | "actor" | "door" | "progress"> & { index?: string }): Promise<InstallResult>;
     uninstall(pkg: string, opts?: { door?: PackageDoor }): Promise<UninstallResult>;
     /** The first-boot installs (`STRUT_PACKAGES`, `StrutOptions.packages`;
      *  src/packages/boot.ts): settles once each listed package was installed,
@@ -2033,7 +2040,7 @@ export async function createStrut<TServices = unknown>(
     // preflight for them.
     const open = read
       ? path === "/health" || (serveUi && UI_FILE.test(path)) || (!!serveRef && path === SERVE_IMAGE_PATH) || carriesFileToken(c) || !!catalogTokenOf(c) || publicPackageRead(c) || (!!indexConfig && INDEX_READ.test(path)) || PUBLIC_PATH.test(path) || !!channelTicketOf(c)
-      : (path === "/auth/session" && (c.req.method === "POST" || c.req.method === "DELETE")) || (!!indexConfig && (path === INDEX_MCP || INDEX_POSTS.has(path)) && c.req.method === "POST") || (c.req.method === "OPTIONS" && PUBLIC_PATH.test(path)) || (c.req.method === "POST" && PUBLIC_POST.test(path));
+      : (path === "/auth/session" && (c.req.method === "POST" || c.req.method === "DELETE")) || (!!indexConfig && (path === INDEX_MCP || INDEX_POSTS.has(path)) && c.req.method === "POST") || (c.req.method === "OPTIONS" && PUBLIC_PATH.test(path)) || (c.req.method === "POST" && PUBLIC_POST.test(path)) || (!!serveRef && c.req.method === "POST" && path === "/serve/sync");
     if (open) return next();
     if (memberOnly(c)) {
       if (memberMay(c.req.method, path)) return next();
@@ -3957,6 +3964,8 @@ export async function createStrut<TServices = unknown>(
     ...(secretsCap ? { secrets: secretsCap } : {}),
     path: bootEnv()["PATH"] ?? "",
     apps,
+    dataDir,
+    ...((services as Record<string, unknown>)["shell"] ? { shell: (services as Record<string, unknown>)["shell"] as ShellCapability } : {}),
     getRegistry: async () => {
       await rebuildRegistry();
       return registry;
@@ -4077,9 +4086,9 @@ export async function createStrut<TServices = unknown>(
     const code = /^([a-z_]+):/.exec(message)?.[1] ?? "";
     const status = ["package_conflict", "package_update_not_built", "package_busy", "package_distro_owned"].includes(code) || code.startsWith("catalog_")
       ? 409
-      : code === "package_index_unreachable"
+      : ["package_index_unreachable", "package_repo_unreachable", "package_repo_denied"].includes(code)
         ? 502
-      : ["package_not_installed", "package_not_published", "package_not_listed", "package_index_unknown"].includes(code)
+      : ["package_not_installed", "package_not_published", "package_not_listed", "package_index_unknown", "package_repo_not_found", "package_ref_not_found"].includes(code)
         ? 404
         : code === "bad_package" || code.startsWith("package_")
           ? 400
@@ -4089,9 +4098,12 @@ export async function createStrut<TServices = unknown>(
   app.get("/packages", async (c) => c.json({ packages: await listInstalledPackages(packageDeps) }));
   app.post("/packages/install", async (c) => {
     if (registryWasInjected) return c.json({ error: "Installing is disabled when the registry is provided at construction time" }, 409);
-    type Body = { ref?: unknown; digest?: unknown; url?: unknown; index?: unknown; wait?: unknown };
+    type Body = { ref?: unknown; digest?: unknown; url?: unknown; tokenSecret?: unknown; index?: unknown; wait?: unknown };
     const body = await c.req.json<Body>().catch(() => ({}) as Body);
-    if (typeof body.ref !== "string" || !body.ref) return c.json({ error: "ref is required: file:/path/to/package, pk:<key>/<publisher>/<name> with url, or a name (publisher/name) looked up in the indexes this strut server follows" }, 400);
+    if (typeof body.ref !== "string" || !body.ref) return c.json({ error: "ref is required: file:/path/to/package, pk:<key>/<publisher>/<name> with url, git+https://host/org/repo@<branch|tag|commit>[#<folder>], or a name (publisher/name) looked up in the indexes this strut server follows" }, 400);
+    if (body.tokenSecret !== undefined && (typeof body.tokenSecret !== "string" || !isValidSecretName(body.tokenSecret) || !body.ref.startsWith("git+"))) {
+      return c.json({ error: "tokenSecret is the NAME of the secret holding the token a git+ ref is read with (letters, digits, underscore; default GITHUB_TOKEN) — never the token itself" }, 400);
+    }
     if (body.index !== undefined && typeof body.index !== "string") return c.json({ error: "index is the id of an index this strut server follows (GET /packages/indexes)" }, 400);
     if (body.digest !== undefined && (typeof body.digest !== "string" || !PACKAGE_DIGEST.test(body.digest))) {
       return c.json({ error: "digest is sha256:<64 hex>" }, 400);
@@ -4101,7 +4113,13 @@ export async function createStrut<TServices = unknown>(
     }
     if (body.wait !== undefined && typeof body.wait !== "boolean") return c.json({ error: "wait is a boolean: false answers at once with the install's id, to follow at GET /packages/installs/:id" }, 400);
     const actor = await resolveActor(c);
-    const started = startInstall(body.ref, { ...(body.digest ? { digest: body.digest as string } : {}), ...(body.url ? { url: body.url as string } : {}), ...(body.index ? { index: body.index as string } : {}), ...(actor ? { actor } : {}) });
+    const started = startInstall(body.ref, {
+      ...(body.digest ? { digest: body.digest as string } : {}),
+      ...(body.url ? { url: body.url as string } : {}),
+      ...(body.tokenSecret ? { tokenSecret: body.tokenSecret as string } : {}),
+      ...(body.index ? { index: body.index as string } : {}),
+      ...(actor ? { actor } : {}),
+    });
     if (body.wait === false) {
       // How it ends is on its record; nobody awaits it here.
       started.done.catch(() => undefined);
@@ -4423,6 +4441,8 @@ export async function createStrut<TServices = unknown>(
           cache: packageStore,
           resolveName: (name) => indexes.resolveName(name),
           install: (ref, o) => packages.install(ref, { ...o, door: "distro" }),
+          ...(secretsCap ? { secret: (name: string) => secretsCap.get(name) } : {}),
+          ...(packageDeps.shell ? { shell: packageDeps.shell } : {}),
           apps,
           workspace,
           surfaceProblems: async (s) => {
@@ -4441,6 +4461,14 @@ export async function createStrut<TServices = unknown>(
     if ((await scopeOf(c)) !== "full") return c.json({ error: "forbidden: a served box's state is its operator's" }, 403);
     if (!served) return c.json({ error: "this strut server serves no package (STRUT_SERVE)" }, 404);
     return c.json(served.status());
+  });
+  // A push webhook (GitHub, GitLab, Forgejo): fetch the served ref now, at
+  // most once a minute — a ping inside the minute is one fetch when it is
+  // up. Open to anyone on a served box (the gate): all it can do is make
+  // strut read the ref it already follows. The body is not read.
+  app.post("/serve/sync", (c) => {
+    if (!served) return c.json({ error: "this strut server serves no package (STRUT_SERVE)" }, 404);
+    return c.json(served.ping(), 202);
   });
   // The image `serve.yaml` names, for a link's preview (og:image): open to
   // anyone, as `/` is.
@@ -4719,16 +4747,26 @@ export async function createStrut<TServices = unknown>(
   const envPoll = Number(bootEnv()["STRUT_DISTRO_POLL_MINUTES"] ?? 10);
   const pollMinutes = opts.subscriptionPoll ?? (Number.isFinite(envPoll) && envPoll >= 0 ? envPoll : 10);
   const subscriptionTimers: NodeJS.Timeout[] = [];
+  // A served git+ ref has a poll of its own (below); any other is read
+  // again with the subscriptions.
+  const servesGit = !!served && served.ref.ref.startsWith("git+");
   if (pollMinutes !== false) {
     const tick = () => {
       void subscriptions.syncAll();
-      void served?.sync();
+      if (!servesGit) void served?.sync();
       if (index) void index.crawl().catch(() => undefined);
     };
     subscriptionTimers.push(setTimeout(tick, 3_000));
     if (pollMinutes > 0) subscriptionTimers.push(setInterval(tick, pollMinutes * 60_000));
-    for (const t of subscriptionTimers) t.unref?.();
   }
+  // Following the branch (plans/app-repos.md §4.3): fetched every
+  // STRUT_SERVE_POLL_MINUTES, deployed when the commit and the digest moved.
+  if (servesGit) {
+    const envServePoll = Number(bootEnv()["STRUT_SERVE_POLL_MINUTES"] ?? SERVE_POLL_MINUTES);
+    const servePoll = opts.servePoll ?? (Number.isFinite(envServePoll) && envServePoll >= 0 ? envServePoll : SERVE_POLL_MINUTES);
+    if (servePoll !== false && servePoll > 0) subscriptionTimers.push(setInterval(() => void served!.sync(), servePoll * 60_000));
+  }
+  for (const t of subscriptionTimers) t.unref?.();
 
   app.delete("/packages/:publisher/:name", async (c) => {
     const pkg = `${c.req.param("publisher")}/${c.req.param("name")}`;
@@ -8806,6 +8844,7 @@ export async function createStrut<TServices = unknown>(
 
   async function close(): Promise<void> {
     await serveBooted;
+    await served?.close();
     if (bootTimer) clearTimeout(bootTimer);
     bootTimer = undefined;
     if (ledgerSweepTimer) clearInterval(ledgerSweepTimer);
@@ -8901,7 +8940,7 @@ export async function createStrut<TServices = unknown>(
     if (registryWasInjected) console.warn(`[packages] not installing ${bootPackages.map((p) => p.ref).join(", ")} at boot: installing is disabled when the registry is provided at construction time`);
     else
       packages.booted = installBootPackages(bootPackages, {
-        installed: async () => (await listInstalledPackages(packageDeps)).map((p) => p.package),
+        installed: async () => (await listInstalledPackages(packageDeps)).map((p) => ({ package: p.package, ...(p.source ? { ref: p.source.ref } : {}) })),
         install: (ref, o) => packages.install(ref, o),
       });
   }

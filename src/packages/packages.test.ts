@@ -181,7 +181,7 @@ describe("the package cache", () => {
     assert.equal(existsSync(cache.dirOf(pin)), false);
   });
 
-  it("takes a relative file: ref only against a base, and names the sources not built yet", async () => {
+  it("takes a relative file: ref only against a base, and names a ref that is not one", async () => {
     const cache = packageCache(join(root, "data"));
     await pkgDir(PACKAGE, "distro/packages/acme");
     const [id] = readdirSync(join(root, "distro", "packages", "acme"));
@@ -189,7 +189,8 @@ describe("the package cache", () => {
     const rel = await resolvePackage(`file:packages/acme/${id}`, { cache, base: join(root, "distro") });
     assert.equal(rel.manifest.package, "acme/linear");
     await assert.rejects(resolvePackage(`file:${join(root, "nope")}`, { cache }), /package_source_invalid: .*no directory/);
-    await assert.rejects(resolvePackage("git+https://github.com/acme/linear@v1", { cache }), /package_source_unsupported: .*git\+ sources are not built yet/);
+    await assert.rejects(resolvePackage("git+https://github.com/acme/linear@", { cache }), /package_source_invalid: .*nothing after @/);
+    await assert.rejects(resolvePackage("git+ssh://github.com/acme/linear@v1", { cache }), /package_source_invalid: .*a token cannot authenticate an ssh remote/);
     await assert.rejects(resolvePackage(`pk:${"y".repeat(52)}/acme/linear`, { cache }), /package_source_invalid: .*a pk: ref needs url/);
     await assert.rejects(resolvePackage("https://example.com/x.tar.gz", { cache }), /package_source_invalid: .*starts with file:, git\+ or pk:/);
   });
