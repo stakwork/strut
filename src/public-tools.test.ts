@@ -36,6 +36,19 @@ const json = { "content-type": "application/json" };
 const RATE = 100_000; // dollars per bitcoin: $1 is 1000 sats
 const fixedRate = async (): Promise<ExchangeRate> => ({ usdPerBtc: RATE, at: new Date().toISOString(), source: "test" });
 
+/** Await `p` with the event loop held open. The service's own timers (a
+ *  call's time limit, a refused charge's retry) are unref'd, so they never
+ *  keep a server alive; a test that waits on one alone would let Node 22's
+ *  runner see an idle loop and cancel the file. */
+async function heldOpen<T>(p: Promise<T>): Promise<T> {
+  const keep = setInterval(() => undefined, 1000);
+  try {
+    return await p;
+  } finally {
+    clearInterval(keep);
+  }
+}
+
 /** Released by a test that holds calls in flight. */
 let gate: Promise<void> = Promise.resolve();
 
@@ -599,7 +612,8 @@ describe("the public tool service", () => {
       timeoutMs: 100,
     });
     const started = Date.now();
-    const a = await tools.call({ type: "tool/stuck", address: "a" });
+    // Only the call's own time limit, an unref'd timer, ends this wait.
+    const a = await heldOpen(tools.call({ type: "tool/stuck", address: "a" }));
     assert.equal(a.status, 504);
     assert.equal((a.body as { code: string }).code, "timeout");
     assert.ok(Date.now() - started < 5000, "the caller is answered at the limit");
