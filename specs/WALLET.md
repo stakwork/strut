@@ -45,7 +45,8 @@ is hand-rolled; ids, timeouts and errors are the SDK's.
   `strut/wallet/notification { notification_type, notification }` to the page
   (§4.4).
 - **A native host** (Peel) is reached through its web view's main frame, which
-  is strut's UI relaying what the app's frame sent it (§1.1).
+  is strut's UI relaying what the app's frame sent it (§1.1). strut's UI also
+  asks it, on its OWN account, to pay for a visitor's credit (§1.2).
 
 ### 1.1 The native bridge
 
@@ -125,6 +126,123 @@ ships it, so its `app` is the app hosted. On the iPhone it is the org's strut
 UI, which can name any app of that org. There Peel keys connections by org
 (§5.2), and the sheet names the org from Peel's own record of the page it
 opened.
+
+### 1.2 The host's own purchase: a visitor's credit, one tap
+
+A VISITOR's page is a public app: this strut server's, or another strut
+server's that strut's UI hosts (specs/API.md §17.6, §17.9). It may launch a
+priced workflow. The HOST pays for the credit that launch needs, never the
+page. In a native host's web view, strut's UI asks the native wallet to pay
+before it shows the invoice as a QR code: one tap on the native host's own
+sheet.
+
+This is not an app's call:
+- it carries no app connection;
+- no app budget counts it;
+- it is no `strut/wallet/*` method.
+
+The page never sees it. Each purchase is the person's tap.
+
+```
+app frame ──step_run run/launch──▶ strut's UI ──POST /public/mcp──▶ the seller (a strut server)
+                                        │◀── { payment_required: { macaroon, invoice, usd, sats, … } }
+                                        │ checks the challenge (below)
+                                        ├──{ op: "host_capability" }──▶ native host
+                                        ├──{ op: "buy_credit", purchase }──▶ native host ── its sheet, the person taps, it pays
+                                        │◀── { result: Payment } with the preimage
+                                        │ sha256(preimage) == payment_hash → credential <macaroon>:<preimage>
+                                        └──POST /public/mcp again, Authorization: L402 <credential> ──▶ the seller
+```
+
+**The messages.** They go through the same handler as §1.1
+(`window.webkit.messageHandlers.strutWallet`), with the same reply rule:
+always resolved, `{ result }` or `{ error }`. They are `HostWalletMessage`
+in `protocol.ts`:
+
+```
+{ v: 1, op: "host_capability" }                         → { result: { version: 1, ops: ["buy_credit", "buy_credit_cancel"] } }
+{ v: 1, op: "buy_credit", purchase: CreditPurchase }    → { result: Payment } | { error }   (a pay method's answer, §3, §4.1)
+{ v: 1, op: "buy_credit_cancel", payment_hash }         → { result: {} }
+```
+
+**`host_capability`** is asked before each purchase.
+- `ops` names what the native host takes. `buy_credit_cancel` is optional.
+- Any other answer, or none within 5 s (`WALLET_PROBE_MS`), means no
+  one-tap purchase, only the QR code. An older native host is read this way.
+
+**`buy_credit`'s purchase** (`CreditPurchase`, checked by
+`creditPurchaseProblems`):
+
+| Field | |
+|---|---|
+| `invoice` | BOLT11, lower case, naming its amount |
+| `payment_hash` | hex 64: the invoice's |
+| `amount` | msat: the invoice's amount, `sats × 1000` |
+| `sats`, `usd` | the price as the seller quoted it; `usd` is the credit it buys |
+| `rate?` | `{ usd_per_btc, at, source }`, the rate the seller quoted at |
+| `description` | the seller's words for what it sells. The sheet quotes them as the seller's |
+| `expires_at` | unix seconds: when the invoice ends |
+| `seller` | the strut server the credit is bought on, as its base URL: `https://…`, or `http://` on loopback. It has no credentials, query or fragment (`isSellerUrl`) |
+| `app` | `{ name, version, title }`: the public app whose page asked, as the seller serves it |
+| `workflow` | the workflow the launch is for |
+| `credit` | `{ carries, reason?, remaining_usd? }`: the new token inherits the credit held (`carries`); why the held credit did not do (`short`, `expired`, `replaced`); what it still has |
+
+It never carries the macaroon or a credential. The native host pays an
+invoice; strut's UI keeps the credit.
+
+**What strut's UI checked before asking** (`web/src/challenge.ts`), so a
+seller's junk is never shown nor paid:
+- the invoice is BOLT11 and asks for an amount;
+- it has not ended;
+- the macaroon is an L402 one whose identifier names the SAME payment hash;
+- its `strut_sats` is the challenge's `sats`, which is the invoice's amount;
+- its `strut_credit` is the challenge's `usd`.
+
+**What the native host does:**
+1. Answers only the main frame it trusts (§1.1's rule).
+2. Runs `creditPurchaseProblems`, and decodes the invoice ITSELF. The amount
+   must be `amount`, the payment hash `payment_hash`, and it must not have
+   ended. Anything else is `BAD_REQUEST`.
+3. Applies §5.4's gesture rule: `RESTRICTED` unless the person tapped in the
+   web view within the last few seconds. A page that launches on load, with
+   no tap, gets the QR code.
+4. Shows its own sheet:
+   - the seller by its host;
+   - the app's title, "on <seller>";
+   - the workflow;
+   - the decoded amount in sats and the seller's dollars;
+   - the description, quoted as the seller's;
+   - that this buys CREDIT on that server, which later runs in this page
+     spend: what a run does not use stays.
+
+   No budget pays it silently: every purchase asks.
+5. On a tap, pays the invoice and answers a `Payment` (§3):
+   - `settled` with the preimage;
+   - `pending` when it has not settled yet;
+   - or `failed`.
+
+   On a decline it answers `USER_REJECTED`.
+6. Answers before `expires_at`. A sheet still up when the invoice ends is
+   taken down and answered `RESTRICTED`.
+7. On `buy_credit_cancel` for a sheet still up: takes it down and answers the
+   purchase `USER_REJECTED`. For a payment already made, it does nothing. The
+   host sends the cancel when it stopped waiting: the person chose the QR
+   code, the page went away, or the invoice ended.
+
+**What strut's UI does with the answer** (`readCreditReply`; the
+`credit_replies` vectors, §7):
+
+| Answer | Outcome |
+|---|---|
+| `settled`, and `sha256(preimage) == payment_hash` | **paid**: the credential is `<macaroon>:<preimage>`, kept by strut's UI; the page's call is sent again with it |
+| `pending` | the sheet waits on the claim, with no QR code to pay a second time from |
+| anything else: an error, `failed`, a preimage that proves nothing, another invoice's payment, not a `Payment` at all, no answer before the invoice ends | **fallback**: the QR code, with why (a decline says so) |
+
+The claim runs whatever the outcome. From the moment the challenge is
+shown, strut's UI claims the invoice (`POST <seller>/public/credit/claim`)
+until it settles or ends, and a reload resumes it. So a payment the native
+host made, whose answer was lost or came late, still buys the credit. Paying
+the same invoice twice is not possible: a Lightning invoice settles once.
 
 ## 2. Methods
 
@@ -382,7 +500,7 @@ one. A lookup of anything else is `NOT_FOUND`.
 
 ## 7. Conformance vectors
 
-`vectors.json` holds six lists. Every implementation runs all of them in its own
+`vectors.json` holds eight lists. Every implementation runs all of them in its own
 tests. The kit's runner is `kit/src/wallet/protocol.test.ts`.
 
 | List | Each entry | Passing means |
@@ -392,6 +510,8 @@ tests. The kit's runner is `kit/src/wallet/protocol.test.ts`.
 | `notifications` | `{ name, notification, valid }` | the same (`notificationProblems`) |
 | `connection_requests` | `{ name, request, valid }` | an `app.yaml` `wallet:` block is (or is not) accepted |
 | `preimages` | `{ preimage, payment_hash, valid }` | `sha256(preimage) == payment_hash` |
+| `credit_purchases` | `{ name, purchase, valid }` | a `buy_credit` purchase is (or is not) one the contract allows (`creditPurchaseProblems`, §1.2): shapes and arithmetic, the native host's own decode on top |
+| `credit_replies` | `{ name, payment_hash, reply, outcome, preimage?, code? }` | strut's UI reads the native host's answer to `buy_credit` as `outcome` (`paid` with `preimage`, `pending`, or `fallback` with `code`; `readCreditReply`). A native host checks that its own answers come to `paid` |
 | `scenarios` | a host's behaviour, below | the host does what each step says |
 
 **A scenario** starts from:

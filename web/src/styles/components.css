@@ -4675,6 +4675,8 @@ input.package-search { width: 100%; margin-bottom: var(--sp-2); }
 }
 @keyframes pay-sheet-spin { to { transform: rotate(360deg); } }
 .pay-sheet-rate { color: var(--text-dim); font-size: 11px; }
+.pay-sheet-seller { color: var(--text-muted); font-size: 12px; font-weight: 400; overflow-wrap: anywhere; }
+.pay-sheet-note { margin: 0; color: var(--text); line-height: 1.45; font-size: 12px; }
 .pay-sheet-actions { display: flex; justify-content: flex-end; gap: var(--sp-2); }
 
 /* An app a job delivered (the builder's, by name): its page in the job
@@ -5639,6 +5641,7 @@ button.store-stat:hover .store-stat-l { color: var(--accent-strong); }
 
 /* ── The store's live items (Store.tsx LivePage) ─────────────────────────── */
 .store-live-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--sp-3); margin-bottom: var(--sp-3); }
+.store-live-open { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--sp-2); flex: none; max-width: 100%; }
 .store-live-frame { display: block; width: 100%; height: 78vh; border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--surface); }
 /* Running a live item (Store.tsx RunPanel, plans/paid-runs.md §10). */
 .store-price-main { font-size: 14px; font-weight: 600; margin-bottom: var(--sp-2); }

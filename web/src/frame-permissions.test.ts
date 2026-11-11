@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { BASE_ALLOW, BASE_SANDBOX, FRAME_GRANTS, GAME_ALLOW, GAME_SANDBOX, declaredAllow, frameAttributes, knownPermissions, mcpPermissions } from "./frame-permissions";
+import { BASE_ALLOW, BASE_SANDBOX, FRAME_GRANTS, GAME_ALLOW, GAME_SANDBOX, declaredAllow, frameAttributes, knownPermissions, mcpPermissions, strangerFrameAttributes, strangerMcpPermissions } from "./frame-permissions";
 import { APP_PERMISSIONS, DECLARED_PERMISSIONS } from "../../src/apps/manifest.js";
 
 /** What an app's frame is granted (plans/apps.md §9): every app's — a
@@ -48,5 +48,13 @@ describe("an app's frame", () => {
   it("reports MCP Apps' own four as the page's ui/initialize names them", () => {
     assert.deepEqual(mcpPermissions(), { microphone: {}, clipboardWrite: {} });
     assert.deepEqual(mcpPermissions(["motion", "geolocation", "camera"]), { camera: {}, microphone: {}, geolocation: {}, clipboardWrite: {} });
+  });
+
+  it("a stranger's page (another server's public app, hosted here) gets no microphone and nothing it declares", () => {
+    const a = strangerFrameAttributes();
+    assert.equal(a.sandbox, SANDBOX, "every app's sandbox, never allow-same-origin");
+    assert.equal(a.allow, "clipboard-write; fullscreen; gamepad; screen-wake-lock");
+    for (const f of ["microphone", "camera", "geolocation", "accelerometer", "gyroscope"]) assert.ok(!a.allow.includes(f), f);
+    assert.deepEqual(strangerMcpPermissions(), { clipboardWrite: {} });
   });
 });

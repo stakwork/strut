@@ -810,7 +810,8 @@ export interface NativeWalletApp {
  *  params already through `checkParams`. */
 export type NativeWalletMessage =
   | { v: 1; op: "capability"; app: NativeWalletApp }
-  | { v: 1; op: "call"; method: WalletMethod; params: unknown; app: NativeWalletApp };
+  | { v: 1; op: "call"; method: WalletMethod; params: unknown; app: NativeWalletApp }
+  | HostWalletMessage;
 
 /** Native → UI, the reply to a message: always resolved, a refusal in
  *  `error`. A rejected promise is a transport failure, never an answer. */
@@ -845,4 +846,191 @@ export function isWalletCapability(c: unknown): c is WalletCapability {
     Array.isArray(w.notifications) && w.notifications.every((n) => oneOf(n, NOTIFICATION_TYPES)) &&
     typeof w.wallet === "string" && typeof w.connected === "boolean"
   );
+}
+
+// ── The HOST's own purchase (specs/WALLET.md §1.2) ─────────────────────────
+// A VISITOR's page — a public app, of this strut server or of another one
+// (plans/paid-runs.md §10) — may launch a priced workflow. Its HOST pays for
+// the credit the launch needs, never the page: in a native host's web view
+// (Peel), strut's UI asks the native wallet to pay the invoice with one tap
+// on the native host's own sheet, before it falls back to showing the
+// invoice as a QR code. Not an app's call: no app connection, no app
+// budget, no `strut/wallet/*` method. The host checked the challenge
+// before asking (the invoice and the macaroon name one payment hash, the
+// invoice asks what the challenge says); the native host decodes the invoice
+// again itself.
+
+/** The ops a host page sends that are its own, not an app's. */
+export const HOST_WALLET_OPS = ["buy_credit", "buy_credit_cancel"] as const;
+export type HostWalletOp = (typeof HOST_WALLET_OPS)[number];
+
+/** UI → native, the host's own: what the native host takes
+ *  (`host_capability`), a purchase (`buy_credit`), and taking down the sheet
+ *  of a purchase the page stopped waiting for (`buy_credit_cancel`). */
+export type HostWalletMessage =
+  | { v: 1; op: "host_capability" }
+  | { v: 1; op: "buy_credit"; purchase: CreditPurchase }
+  | { v: 1; op: "buy_credit_cancel"; payment_hash: string };
+
+/** What `host_capability` answers: `{ result: HostWalletCapability }`. A
+ *  native host that does not know the op answers anything else, or nothing:
+ *  then the host shows the QR code. */
+export interface HostWalletCapability {
+  version: number;
+  ops: HostWalletOp[];
+}
+
+export function isHostWalletCapability(c: unknown): c is HostWalletCapability {
+  if (typeof c !== "object" || c === null) return false;
+  const w = c as Record<string, unknown>;
+  return w.version === WALLET_PROTOCOL_VERSION && Array.isArray(w.ops) && w.ops.every((o) => oneOf(o, HOST_WALLET_OPS));
+}
+
+/** Why the credit is being bought, beside the invoice: the server's own words
+ *  (§17.5's challenge, plans/paid-runs.md §4). */
+export interface CreditReason {
+  /** The new macaroon inherits the presented token's credit: once paid it
+   *  replaces that credential. */
+  carries: boolean;
+  /** Why the credit held was not enough: `short`, `expired`, `replaced`. */
+  reason?: "short" | "expired" | "replaced";
+  /** What the credit held still has, when it ran short. */
+  remaining_usd?: number;
+}
+
+/** A purchase of CREDIT on a strut server, for a visitor's page: what the
+ *  native sheet shows and what it pays. */
+export interface CreditPurchase {
+  /** BOLT11, lower case. */
+  invoice: string;
+  /** hex 64: the invoice's, which the host checked is the macaroon's. */
+  payment_hash: string;
+  /** msat: what the invoice asks, which the host decoded: `sats × 1000`. */
+  amount: number;
+  sats: number;
+  /** The dollars the credit is worth, as the server quoted them. */
+  usd: number;
+  /** The rate the server quoted at. */
+  rate?: { usd_per_btc: number; at: string; source: string };
+  /** The server's words for what it sells (quoted as the server's). */
+  description: string;
+  /** Unix seconds: when the invoice ends, as the host decoded it. */
+  expires_at: number;
+  /** The strut server the credit is bought on, as its base URL: https, or
+   *  http on this machine (loopback). */
+  seller: string;
+  /** The public app whose page asked, as the seller serves it. */
+  app: { name: string; version: string; title: string };
+  /** The workflow the launch is for. */
+  workflow: string;
+  /** What the credit is for beside this launch. */
+  credit: CreditReason;
+}
+
+/** The longest description, title or name a purchase carries. */
+export const CREDIT_TEXT_MAX = 1000;
+
+const LOOPBACK_HOST_RE = /^(localhost|[a-z0-9-]+\.localhost|127\.\d{1,3}\.\d{1,3}\.\d{1,3}|\[::1\])$/;
+
+/** Whether a URL names a strut server a host may buy credit on: https, or
+ *  http on this machine; no credentials, query or fragment. */
+export function isSellerUrl(v: unknown): v is string {
+  if (typeof v !== "string") return false;
+  let u: URL;
+  try {
+    u = new URL(v);
+  } catch {
+    return false;
+  }
+  if (u.username || u.password || u.search || u.hash) return false;
+  if (u.protocol === "https:") return true;
+  return u.protocol === "http:" && LOOPBACK_HOST_RE.test(u.hostname.toLowerCase());
+}
+
+/** What is wrong with a purchase; none when it is good. Shapes and the
+ *  arithmetic between them: the native host still decodes the invoice and
+ *  holds it to `amount`, `payment_hash` and `expires_at` before its sheet. */
+export function creditPurchaseProblems(raw: unknown): string[] {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return ["a purchase must be an object"];
+  const p = raw as Record<string, unknown>;
+  const out: string[] = [];
+  const shortText = (v: unknown, what: string, required = true) => {
+    if (v === undefined && !required) return;
+    if (typeof v !== "string" || (required && !v)) out.push(`${what} must be a string`);
+    else if (v.length > CREDIT_TEXT_MAX) out.push(`${what} is longer than ${CREDIT_TEXT_MAX} characters`);
+  };
+  const inv = typeof p.invoice === "string" ? INVOICE_RE.exec(p.invoice) : null;
+  if (!inv || p.invoice !== (p.invoice as string).toLowerCase()) out.push("invoice must be a BOLT11 invoice, lower case");
+  else if (inv[2] === undefined) out.push("invoice must name its amount");
+  if (!isHash(p.payment_hash)) out.push("payment_hash must be 64 hex");
+  if (!isInt(p.sats, 1)) out.push("sats must be a whole number above 0");
+  if (!isInt(p.amount, 1)) out.push("amount must be msat above 0");
+  else if (isInt(p.sats, 1) && p.amount !== p.sats * 1000) out.push("amount must be sats × 1000");
+  if (typeof p.usd !== "number" || !Number.isFinite(p.usd) || p.usd < 0) out.push("usd must be a number of dollars, 0 or more");
+  if (p.rate !== undefined) {
+    const r = p.rate as Record<string, unknown> | null;
+    if (!r || typeof r !== "object" || typeof r.usd_per_btc !== "number" || !(r.usd_per_btc > 0) || typeof r.at !== "string" || typeof r.source !== "string") {
+      out.push("rate must be { usd_per_btc, at, source }");
+    }
+  }
+  shortText(p.description, "description");
+  if (!isInt(p.expires_at, 1)) out.push("expires_at must be unix seconds");
+  if (!isSellerUrl(p.seller)) out.push("seller must be a strut server's base URL: https, or http on loopback, with no credentials, query or fragment");
+  const app = p.app as Record<string, unknown> | undefined;
+  if (!app || typeof app !== "object") out.push("app is missing");
+  else {
+    shortText(app.name, "app.name");
+    shortText(app.version, "app.version");
+    shortText(app.title, "app.title");
+  }
+  shortText(p.workflow, "workflow");
+  const c = p.credit as Record<string, unknown> | undefined;
+  if (!c || typeof c !== "object") out.push("credit is missing");
+  else {
+    if (typeof c.carries !== "boolean") out.push("credit.carries must be true or false");
+    if (c.reason !== undefined && !oneOf(c.reason, ["short", "expired", "replaced"])) out.push("credit.reason must be short, expired or replaced");
+    if (c.remaining_usd !== undefined && (typeof c.remaining_usd !== "number" || !Number.isFinite(c.remaining_usd) || c.remaining_usd < 0)) {
+      out.push("credit.remaining_usd must be a number of dollars, 0 or more");
+    }
+  }
+  return out;
+}
+
+/** What the host does with the native host's answer to `buy_credit`: the
+ *  payment settled with a preimage that PROVES it (`paid`: the credential is
+ *  `<macaroon>:<preimage>`), it is on its way (`pending`: the host waits on
+ *  its claim), or anything else (`fallback`: the host shows the invoice as a
+ *  QR code — and keeps claiming it, so a payment that did go through still
+ *  buys the credit). */
+export type CreditReplyOutcome =
+  | { outcome: "paid"; preimage: string }
+  | { outcome: "pending" }
+  | { outcome: "fallback"; code: WalletErrorCode; message: string };
+
+/** Read the native host's reply to `buy_credit` for the invoice whose
+ *  payment hash is `paymentHash`. A reply is a `{ result: Payment }` (a pay
+ *  method's answer, §3) or `{ error }` (§4.1). */
+export async function readCreditReply(reply: unknown, paymentHash: string): Promise<CreditReplyOutcome> {
+  const fallback = (code: WalletErrorCode, message: string): CreditReplyOutcome => ({ outcome: "fallback", code, message });
+  if (typeof reply !== "object" || reply === null) return fallback("INTERNAL", "the wallet answered with neither a result nor an error");
+  const r = reply as { result?: unknown; error?: unknown };
+  if ("error" in r) {
+    const e = r.error as { message?: unknown; data?: { code?: unknown } } | undefined;
+    const code = isWalletErrorCode(e?.data?.code) ? e!.data!.code : "OTHER";
+    return fallback(code, typeof e?.message === "string" && e.message ? e.message : code);
+  }
+  if (!("result" in r)) return fallback("INTERNAL", "the wallet answered with neither a result nor an error");
+  const problems = resultProblems("pay_invoice", r.result);
+  if (problems.length) return fallback("INTERNAL", `the wallet's answer is not a payment: ${problems.join("; ")}`);
+  const pay = r.result as Payment;
+  if (pay.payment_hash !== paymentHash.toLowerCase()) return fallback("INTERNAL", "the wallet answered for another invoice");
+  if (pay.state === "failed") return fallback("PAYMENT_FAILED", pay.failure_reason || "the payment failed");
+  if (pay.state === "pending") return { outcome: "pending" };
+  let proven = false;
+  try {
+    proven = await verifyPreimage(pay.preimage!, paymentHash);
+  } catch {
+    // No WebCrypto here (an insecure page): unproven, the claim decides.
+  }
+  return proven ? { outcome: "paid", preimage: pay.preimage!.toLowerCase() } : fallback("INTERNAL", "the wallet's preimage does not prove the payment");
 }

@@ -2990,6 +2990,35 @@ export async function fetchPublicAppDocument(name: string): Promise<string> {
   return res.text();
 }
 
+// ── Another strut server's public app, hosted here (specs/API.md §17.9) ─────
+// Read from that server in this browser, with no credential of anyone's:
+// its `/public` answers anyone, CORS open. `from` is its base URL
+// (./remote-app `remoteBase`).
+
+const hostOf = (from: string) => {
+  try {
+    return new URL(from).host;
+  } catch {
+    return from;
+  }
+};
+/** A public app on another strut server, as it lists it; null when it is
+ *  not in that server's public view. */
+export async function getRemotePublicApp(from: string, name: string): Promise<PublicAppInfo | null> {
+  const res = await fetch(`${from}/public/apps/${encodeURIComponent(name)}`, { credentials: "omit", cache: "no-cache", headers: { accept: "application/json" } });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`${hostOf(from)} answered ${res.status} ${res.statusText}`);
+  const info = (await res.json()) as PublicAppInfo;
+  if (!info || typeof info.name !== "string" || typeof info.version !== "string") throw new Error(`${hostOf(from)} did not answer with an app`);
+  return { ...info, title: typeof info.title === "string" ? info.title : info.name };
+}
+/** That app's document, its visitor's identity written in by its server. */
+export async function fetchRemotePublicAppDocument(from: string, name: string): Promise<string> {
+  const res = await fetch(`${from}/public/apps/${encodeURIComponent(name)}/document`, { credentials: "omit", cache: "no-cache" });
+  if (!res.ok) throw new Error(res.status === 404 ? `"${name}" is not in ${hostOf(from)}'s public view` : `${hostOf(from)} answered ${res.status} ${res.statusText}`);
+  return res.text();
+}
+
 // ── The store's LIVE items (plans/public-surface.md §8) ─────────────────────
 // What the index's live rows show (`GET /index/live`), and the item itself,
 // read from its publisher's server in the visitor's browser — the

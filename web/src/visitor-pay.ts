@@ -201,9 +201,16 @@ export function creditSettled(purse: VisitorPurse, entry: PendingClaim, credenti
 }
 
 /** What the payer decided: the credential (paid), `again` (send the call
- *  again: the invoice expired, or credit arrived meanwhile), or null (the
- *  visitor cancelled). */
-export type PayOutcome = string | "again" | null;
+ *  again: the invoice expired, or credit arrived meanwhile), null (the
+ *  visitor cancelled), or `{ error }` — the host would not pay this one (a
+ *  challenge that does not check out, ./challenge), which the page gets as
+ *  its call's error. */
+export type PayOutcome = string | "again" | null | { error: string };
+
+/** The answer a page gets when its host refused to pay: a plain error. */
+export function refusedResult(error: string): CallResult {
+  return { isError: true, content: [{ type: "text", text: JSON.stringify({ error }) }] };
+}
 
 /** How many answers one call may act on before it gives up: a spare tried,
  *  a top-up that is short again, an expired invoice asked for again. */
@@ -278,6 +285,7 @@ export async function callPaying(
     }
     const outcome = await deps.pay(p, launch.workflow);
     if (outcome === null) return cancelledResult(launch.workflow);
+    if (typeof outcome === "object") return refusedResult(outcome.error);
     if (outcome !== "again") {
       // This call asked for it: it is the one to send now.
       purse.spare = purse.spare.filter((c) => c !== outcome);

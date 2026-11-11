@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "about": "The wallet contract's conformance vectors (specs/WALLET.md §7). Every implementation passes them: the kit (kit/src/wallet/protocol.test.ts), each host's WalletHost, Peel's Swift. Amounts are msat. `params`: what checkParams answers. `results` / `notifications` / `connection_requests`: shapes, valid or not. `preimages`: sha256(preimage) == payment_hash. `scenarios`: a host's behaviour, step by step, against a scripted wallet.",
+  "about": "The wallet contract's conformance vectors (specs/WALLET.md §7). Every implementation passes them: the kit (kit/src/wallet/protocol.test.ts), each host's WalletHost, Peel's Swift. Amounts are msat. `params`: what checkParams answers. `results` / `notifications` / `connection_requests`: shapes, valid or not. `preimages`: sha256(preimage) == payment_hash. `scenarios`: a host's behaviour, step by step, against a scripted wallet. `credit_purchases` / `credit_replies`: the HOST's own purchase (§1.2) — a `buy_credit` purchase's shape, valid or not, and what the host does with the native host's reply: `paid` (the preimage proves the payment), `pending`, or `fallback` (the QR code), with `code` on a fallback.",
   "params": [
     {
       "name": "pay_invoice: an invoice, lower-cased, with metadata kept",
@@ -1344,6 +1344,641 @@
           }
         }
       ]
+    }
+  ],
+  "credit_purchases": [
+    {
+      "name": "a purchase: the BOLT11 spec's invoice, 250000 sats",
+      "purchase": {
+        "invoice": "lnbc2500u1pvjluezsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygspp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpu9qrsgquk0rl77nj30yxdy8j9vdx85fkpmdla2087ne0xh8nhedh8w27kyke0lp53ut353s06fv3qfegext0eh0ymjpf39tuven09sam30g4vgpfna3rh",
+        "payment_hash": "0001020304050607080900010203040506070809000102030405060708090102",
+        "amount": 250000000,
+        "sats": 250000,
+        "usd": 250,
+        "rate": {
+          "usd_per_btc": 100000,
+          "at": "2026-11-10T12:00:00.000Z",
+          "source": "mempool.space"
+        },
+        "description": "acme/voxel/character: credit for one run",
+        "expires_at": 1496314718,
+        "seller": "https://acme.example/lab",
+        "app": {
+          "name": "acme/voxel/studio",
+          "version": "v3",
+          "title": "Voxel Studio"
+        },
+        "workflow": "acme/voxel/character",
+        "credit": {
+          "carries": false
+        }
+      },
+      "valid": true
+    },
+    {
+      "name": "a top-up that carries the credit held",
+      "purchase": {
+        "invoice": "lnbc2500u1pvjluezsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygspp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpu9qrsgquk0rl77nj30yxdy8j9vdx85fkpmdla2087ne0xh8nhedh8w27kyke0lp53ut353s06fv3qfegext0eh0ymjpf39tuven09sam30g4vgpfna3rh",
+        "payment_hash": "0001020304050607080900010203040506070809000102030405060708090102",
+        "amount": 250000000,
+        "sats": 250000,
+        "usd": 250,
+        "rate": {
+          "usd_per_btc": 100000,
+          "at": "2026-11-10T12:00:00.000Z",
+          "source": "mempool.space"
+        },
+        "description": "acme/voxel/character: credit for one run",
+        "expires_at": 1496314718,
+        "seller": "https://acme.example/lab",
+        "app": {
+          "name": "acme/voxel/studio",
+          "version": "v3",
+          "title": "Voxel Studio"
+        },
+        "workflow": "acme/voxel/character",
+        "credit": {
+          "carries": true,
+          "reason": "short",
+          "remaining_usd": 0.4
+        }
+      },
+      "valid": true
+    },
+    {
+      "name": "no rate: it is optional",
+      "purchase": {
+        "invoice": "lnbc2500u1pvjluezsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygspp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpu9qrsgquk0rl77nj30yxdy8j9vdx85fkpmdla2087ne0xh8nhedh8w27kyke0lp53ut353s06fv3qfegext0eh0ymjpf39tuven09sam30g4vgpfna3rh",
+        "payment_hash": "0001020304050607080900010203040506070809000102030405060708090102",
+        "amount": 250000000,
+        "sats": 250000,
+        "usd": 250,
+        "description": "acme/voxel/character: credit for one run",
+        "expires_at": 1496314718,
+        "seller": "https://acme.example/lab",
+        "app": {
+          "name": "acme/voxel/studio",
+          "version": "v3",
+          "title": "Voxel Studio"
+        },
+        "workflow": "acme/voxel/character",
+        "credit": {
+          "carries": false
+        }
+      },
+      "valid": true
+    },
+    {
+      "name": "http on this machine: a development pair",
+      "purchase": {
+        "invoice": "lnbc2500u1pvjluezsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygspp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpu9qrsgquk0rl77nj30yxdy8j9vdx85fkpmdla2087ne0xh8nhedh8w27kyke0lp53ut353s06fv3qfegext0eh0ymjpf39tuven09sam30g4vgpfna3rh",
+        "payment_hash": "0001020304050607080900010203040506070809000102030405060708090102",
+        "amount": 250000000,
+        "sats": 250000,
+        "usd": 250,
+        "rate": {
+          "usd_per_btc": 100000,
+          "at": "2026-11-10T12:00:00.000Z",
+          "source": "mempool.space"
+        },
+        "description": "acme/voxel/character: credit for one run",
+        "expires_at": 1496314718,
+        "seller": "http://localhost:3001",
+        "app": {
+          "name": "acme/voxel/studio",
+          "version": "v3",
+          "title": "Voxel Studio"
+        },
+        "workflow": "acme/voxel/character",
+        "credit": {
+          "carries": false
+        }
+      },
+      "valid": true
+    },
+    {
+      "name": "amount is not sats × 1000",
+      "purchase": {
+        "invoice": "lnbc2500u1pvjluezsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygspp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpu9qrsgquk0rl77nj30yxdy8j9vdx85fkpmdla2087ne0xh8nhedh8w27kyke0lp53ut353s06fv3qfegext0eh0ymjpf39tuven09sam30g4vgpfna3rh",
+        "payment_hash": "0001020304050607080900010203040506070809000102030405060708090102",
+        "amount": 250000001,
+        "sats": 250000,
+        "usd": 250,
+        "rate": {
+          "usd_per_btc": 100000,
+          "at": "2026-11-10T12:00:00.000Z",
+          "source": "mempool.space"
+        },
+        "description": "acme/voxel/character: credit for one run",
+        "expires_at": 1496314718,
+        "seller": "https://acme.example/lab",
+        "app": {
+          "name": "acme/voxel/studio",
+          "version": "v3",
+          "title": "Voxel Studio"
+        },
+        "workflow": "acme/voxel/character",
+        "credit": {
+          "carries": false
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "an invoice upper-cased: the host lower-cases it",
+      "purchase": {
+        "invoice": "LNBC2500U1PVJLUEZSP5ZYG3ZYG3ZYG3ZYG3ZYG3ZYG3ZYG3ZYG3ZYG3ZYG3ZYG3ZYG3ZYGSPP5QQQSYQCYQ5RQWZQFQQQSYQCYQ5RQWZQFQQQSYQCYQ5RQWZQFQYPQDQ5XYSXXATSYP3K7ENXV4JSXQZPU9QRSGQUK0RL77NJ30YXDY8J9VDX85FKPMDLA2087NE0XH8NHEDH8W27KYKE0LP53UT353S06FV3QFEGEXT0EH0YMJPF39TUVEN09SAM30G4VGPFNA3RH",
+        "payment_hash": "0001020304050607080900010203040506070809000102030405060708090102",
+        "amount": 250000000,
+        "sats": 250000,
+        "usd": 250,
+        "rate": {
+          "usd_per_btc": 100000,
+          "at": "2026-11-10T12:00:00.000Z",
+          "source": "mempool.space"
+        },
+        "description": "acme/voxel/character: credit for one run",
+        "expires_at": 1496314718,
+        "seller": "https://acme.example/lab",
+        "app": {
+          "name": "acme/voxel/studio",
+          "version": "v3",
+          "title": "Voxel Studio"
+        },
+        "workflow": "acme/voxel/character",
+        "credit": {
+          "carries": false
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "an invoice that names no amount",
+      "purchase": {
+        "invoice": "lnbc1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdpl2pkx2ctnv5sxxmmwwd5kgetjypeh2ursdae8g6twvus8g6rfwvs8qun0dfjkxaq8rkx3yf5tcsyz3d73gafnh3cax9rn449d9p5uxz9ezhhypd0elx87sjle52x86fux2ypatgddc6k63n7erqz25le42c4u4ecky03ylcqca784w",
+        "payment_hash": "0001020304050607080900010203040506070809000102030405060708090102",
+        "amount": 250000000,
+        "sats": 250000,
+        "usd": 250,
+        "rate": {
+          "usd_per_btc": 100000,
+          "at": "2026-11-10T12:00:00.000Z",
+          "source": "mempool.space"
+        },
+        "description": "acme/voxel/character: credit for one run",
+        "expires_at": 1496314718,
+        "seller": "https://acme.example/lab",
+        "app": {
+          "name": "acme/voxel/studio",
+          "version": "v3",
+          "title": "Voxel Studio"
+        },
+        "workflow": "acme/voxel/character",
+        "credit": {
+          "carries": false
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "payment_hash is not 64 hex",
+      "purchase": {
+        "invoice": "lnbc2500u1pvjluezsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygspp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpu9qrsgquk0rl77nj30yxdy8j9vdx85fkpmdla2087ne0xh8nhedh8w27kyke0lp53ut353s06fv3qfegext0eh0ymjpf39tuven09sam30g4vgpfna3rh",
+        "payment_hash": "00",
+        "amount": 250000000,
+        "sats": 250000,
+        "usd": 250,
+        "rate": {
+          "usd_per_btc": 100000,
+          "at": "2026-11-10T12:00:00.000Z",
+          "source": "mempool.space"
+        },
+        "description": "acme/voxel/character: credit for one run",
+        "expires_at": 1496314718,
+        "seller": "https://acme.example/lab",
+        "app": {
+          "name": "acme/voxel/studio",
+          "version": "v3",
+          "title": "Voxel Studio"
+        },
+        "workflow": "acme/voxel/character",
+        "credit": {
+          "carries": false
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "http to another machine: never",
+      "purchase": {
+        "invoice": "lnbc2500u1pvjluezsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygspp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpu9qrsgquk0rl77nj30yxdy8j9vdx85fkpmdla2087ne0xh8nhedh8w27kyke0lp53ut353s06fv3qfegext0eh0ymjpf39tuven09sam30g4vgpfna3rh",
+        "payment_hash": "0001020304050607080900010203040506070809000102030405060708090102",
+        "amount": 250000000,
+        "sats": 250000,
+        "usd": 250,
+        "rate": {
+          "usd_per_btc": 100000,
+          "at": "2026-11-10T12:00:00.000Z",
+          "source": "mempool.space"
+        },
+        "description": "acme/voxel/character: credit for one run",
+        "expires_at": 1496314718,
+        "seller": "http://acme.example",
+        "app": {
+          "name": "acme/voxel/studio",
+          "version": "v3",
+          "title": "Voxel Studio"
+        },
+        "workflow": "acme/voxel/character",
+        "credit": {
+          "carries": false
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "a seller URL with credentials",
+      "purchase": {
+        "invoice": "lnbc2500u1pvjluezsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygspp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpu9qrsgquk0rl77nj30yxdy8j9vdx85fkpmdla2087ne0xh8nhedh8w27kyke0lp53ut353s06fv3qfegext0eh0ymjpf39tuven09sam30g4vgpfna3rh",
+        "payment_hash": "0001020304050607080900010203040506070809000102030405060708090102",
+        "amount": 250000000,
+        "sats": 250000,
+        "usd": 250,
+        "rate": {
+          "usd_per_btc": 100000,
+          "at": "2026-11-10T12:00:00.000Z",
+          "source": "mempool.space"
+        },
+        "description": "acme/voxel/character: credit for one run",
+        "expires_at": 1496314718,
+        "seller": "https://me:secret@acme.example",
+        "app": {
+          "name": "acme/voxel/studio",
+          "version": "v3",
+          "title": "Voxel Studio"
+        },
+        "workflow": "acme/voxel/character",
+        "credit": {
+          "carries": false
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "a seller URL with a query",
+      "purchase": {
+        "invoice": "lnbc2500u1pvjluezsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygspp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpu9qrsgquk0rl77nj30yxdy8j9vdx85fkpmdla2087ne0xh8nhedh8w27kyke0lp53ut353s06fv3qfegext0eh0ymjpf39tuven09sam30g4vgpfna3rh",
+        "payment_hash": "0001020304050607080900010203040506070809000102030405060708090102",
+        "amount": 250000000,
+        "sats": 250000,
+        "usd": 250,
+        "rate": {
+          "usd_per_btc": 100000,
+          "at": "2026-11-10T12:00:00.000Z",
+          "source": "mempool.space"
+        },
+        "description": "acme/voxel/character: credit for one run",
+        "expires_at": 1496314718,
+        "seller": "https://acme.example/?key=abc",
+        "app": {
+          "name": "acme/voxel/studio",
+          "version": "v3",
+          "title": "Voxel Studio"
+        },
+        "workflow": "acme/voxel/character",
+        "credit": {
+          "carries": false
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "no app",
+      "purchase": {
+        "invoice": "lnbc2500u1pvjluezsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygspp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpu9qrsgquk0rl77nj30yxdy8j9vdx85fkpmdla2087ne0xh8nhedh8w27kyke0lp53ut353s06fv3qfegext0eh0ymjpf39tuven09sam30g4vgpfna3rh",
+        "payment_hash": "0001020304050607080900010203040506070809000102030405060708090102",
+        "amount": 250000000,
+        "sats": 250000,
+        "usd": 250,
+        "rate": {
+          "usd_per_btc": 100000,
+          "at": "2026-11-10T12:00:00.000Z",
+          "source": "mempool.space"
+        },
+        "description": "acme/voxel/character: credit for one run",
+        "expires_at": 1496314718,
+        "seller": "https://acme.example/lab",
+        "workflow": "acme/voxel/character",
+        "credit": {
+          "carries": false
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "no workflow",
+      "purchase": {
+        "invoice": "lnbc2500u1pvjluezsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygspp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpu9qrsgquk0rl77nj30yxdy8j9vdx85fkpmdla2087ne0xh8nhedh8w27kyke0lp53ut353s06fv3qfegext0eh0ymjpf39tuven09sam30g4vgpfna3rh",
+        "payment_hash": "0001020304050607080900010203040506070809000102030405060708090102",
+        "amount": 250000000,
+        "sats": 250000,
+        "usd": 250,
+        "rate": {
+          "usd_per_btc": 100000,
+          "at": "2026-11-10T12:00:00.000Z",
+          "source": "mempool.space"
+        },
+        "description": "acme/voxel/character: credit for one run",
+        "expires_at": 1496314718,
+        "seller": "https://acme.example/lab",
+        "app": {
+          "name": "acme/voxel/studio",
+          "version": "v3",
+          "title": "Voxel Studio"
+        },
+        "credit": {
+          "carries": false
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "credit.reason not one of the server's",
+      "purchase": {
+        "invoice": "lnbc2500u1pvjluezsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygspp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpu9qrsgquk0rl77nj30yxdy8j9vdx85fkpmdla2087ne0xh8nhedh8w27kyke0lp53ut353s06fv3qfegext0eh0ymjpf39tuven09sam30g4vgpfna3rh",
+        "payment_hash": "0001020304050607080900010203040506070809000102030405060708090102",
+        "amount": 250000000,
+        "sats": 250000,
+        "usd": 250,
+        "rate": {
+          "usd_per_btc": 100000,
+          "at": "2026-11-10T12:00:00.000Z",
+          "source": "mempool.space"
+        },
+        "description": "acme/voxel/character: credit for one run",
+        "expires_at": 1496314718,
+        "seller": "https://acme.example/lab",
+        "app": {
+          "name": "acme/voxel/studio",
+          "version": "v3",
+          "title": "Voxel Studio"
+        },
+        "workflow": "acme/voxel/character",
+        "credit": {
+          "carries": false,
+          "reason": "cheap"
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "no expires_at",
+      "purchase": {
+        "invoice": "lnbc2500u1pvjluezsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygspp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpu9qrsgquk0rl77nj30yxdy8j9vdx85fkpmdla2087ne0xh8nhedh8w27kyke0lp53ut353s06fv3qfegext0eh0ymjpf39tuven09sam30g4vgpfna3rh",
+        "payment_hash": "0001020304050607080900010203040506070809000102030405060708090102",
+        "amount": 250000000,
+        "sats": 250000,
+        "usd": 250,
+        "rate": {
+          "usd_per_btc": 100000,
+          "at": "2026-11-10T12:00:00.000Z",
+          "source": "mempool.space"
+        },
+        "description": "acme/voxel/character: credit for one run",
+        "seller": "https://acme.example/lab",
+        "app": {
+          "name": "acme/voxel/studio",
+          "version": "v3",
+          "title": "Voxel Studio"
+        },
+        "workflow": "acme/voxel/character",
+        "credit": {
+          "carries": false
+        }
+      },
+      "valid": false
+    },
+    {
+      "name": "negative dollars",
+      "purchase": {
+        "invoice": "lnbc2500u1pvjluezsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygspp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpu9qrsgquk0rl77nj30yxdy8j9vdx85fkpmdla2087ne0xh8nhedh8w27kyke0lp53ut353s06fv3qfegext0eh0ymjpf39tuven09sam30g4vgpfna3rh",
+        "payment_hash": "0001020304050607080900010203040506070809000102030405060708090102",
+        "amount": 250000000,
+        "sats": 250000,
+        "usd": -1,
+        "rate": {
+          "usd_per_btc": 100000,
+          "at": "2026-11-10T12:00:00.000Z",
+          "source": "mempool.space"
+        },
+        "description": "acme/voxel/character: credit for one run",
+        "expires_at": 1496314718,
+        "seller": "https://acme.example/lab",
+        "app": {
+          "name": "acme/voxel/studio",
+          "version": "v3",
+          "title": "Voxel Studio"
+        },
+        "workflow": "acme/voxel/character",
+        "credit": {
+          "carries": false
+        }
+      },
+      "valid": false
+    }
+  ],
+  "credit_replies": [
+    {
+      "name": "settled, and the preimage proves it: paid",
+      "payment_hash": "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925",
+      "reply": {
+        "result": {
+          "transaction_id": "tx-1",
+          "state": "settled",
+          "payment_hash": "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925",
+          "amount": 21000,
+          "fees_paid": 10,
+          "preimage": "0000000000000000000000000000000000000000000000000000000000000000",
+          "created_at": 1793800000,
+          "settled_at": 1793800002
+        }
+      },
+      "outcome": "paid",
+      "preimage": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "name": "settled with the preimage upper-cased: not the contract's lower-case hex",
+      "payment_hash": "9a2db2e23f1504cd056606553ac049c5e718e8f9ce9233876df1a7a1821af885",
+      "reply": {
+        "result": {
+          "transaction_id": "tx-1",
+          "state": "settled",
+          "payment_hash": "9a2db2e23f1504cd056606553ac049c5e718e8f9ce9233876df1a7a1821af885",
+          "amount": 21000,
+          "fees_paid": 10,
+          "preimage": "ABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABABAB",
+          "created_at": 1793800000,
+          "settled_at": 1793800002
+        }
+      },
+      "outcome": "fallback",
+      "code": "INTERNAL"
+    },
+    {
+      "name": "pending: the host waits on its claim",
+      "payment_hash": "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925",
+      "reply": {
+        "result": {
+          "transaction_id": "tx-1",
+          "state": "pending",
+          "payment_hash": "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925",
+          "amount": 21000,
+          "created_at": 1793800000
+        }
+      },
+      "outcome": "pending"
+    },
+    {
+      "name": "settled with a preimage that proves nothing: the QR code",
+      "payment_hash": "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925",
+      "reply": {
+        "result": {
+          "transaction_id": "tx-1",
+          "state": "settled",
+          "payment_hash": "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925",
+          "amount": 21000,
+          "fees_paid": 10,
+          "preimage": "0101010101010101010101010101010101010101010101010101010101010101",
+          "created_at": 1793800000,
+          "settled_at": 1793800002
+        }
+      },
+      "outcome": "fallback",
+      "code": "INTERNAL"
+    },
+    {
+      "name": "settled with no preimage: not a payment the contract allows",
+      "payment_hash": "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925",
+      "reply": {
+        "result": {
+          "transaction_id": "tx-1",
+          "state": "settled",
+          "payment_hash": "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925",
+          "amount": 21000,
+          "fees_paid": 10,
+          "created_at": 1793800000,
+          "settled_at": 1793800002
+        }
+      },
+      "outcome": "fallback",
+      "code": "INTERNAL"
+    },
+    {
+      "name": "a payment of another invoice",
+      "payment_hash": "72cd6e8422c407fb6d098690f1130b7ded7ec2f7f5e1d30bd9d521f015363793",
+      "reply": {
+        "result": {
+          "transaction_id": "tx-1",
+          "state": "settled",
+          "payment_hash": "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925",
+          "amount": 21000,
+          "fees_paid": 10,
+          "preimage": "0000000000000000000000000000000000000000000000000000000000000000",
+          "created_at": 1793800000,
+          "settled_at": 1793800002
+        }
+      },
+      "outcome": "fallback",
+      "code": "INTERNAL"
+    },
+    {
+      "name": "failed",
+      "payment_hash": "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925",
+      "reply": {
+        "result": {
+          "transaction_id": "tx-1",
+          "state": "failed",
+          "payment_hash": "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925",
+          "amount": 21000,
+          "created_at": 1793800000,
+          "failure_reason": "no route"
+        }
+      },
+      "outcome": "fallback",
+      "code": "PAYMENT_FAILED"
+    },
+    {
+      "name": "the person declined",
+      "payment_hash": "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925",
+      "reply": {
+        "error": {
+          "code": -32000,
+          "message": "Declined",
+          "data": {
+            "code": "USER_REJECTED"
+          }
+        }
+      },
+      "outcome": "fallback",
+      "code": "USER_REJECTED"
+    },
+    {
+      "name": "not enough in the wallet",
+      "payment_hash": "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925",
+      "reply": {
+        "error": {
+          "code": -32000,
+          "message": "Not enough sats",
+          "data": {
+            "code": "INSUFFICIENT_BALANCE"
+          }
+        }
+      },
+      "outcome": "fallback",
+      "code": "INSUFFICIENT_BALANCE"
+    },
+    {
+      "name": "no tap in the web view first",
+      "payment_hash": "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925",
+      "reply": {
+        "error": {
+          "code": -32000,
+          "message": "Tap Run first",
+          "data": {
+            "code": "RESTRICTED"
+          }
+        }
+      },
+      "outcome": "fallback",
+      "code": "RESTRICTED"
+    },
+    {
+      "name": "an error with no wallet code",
+      "payment_hash": "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925",
+      "reply": {
+        "error": {
+          "code": -32601,
+          "message": "unknown op"
+        }
+      },
+      "outcome": "fallback",
+      "code": "OTHER"
+    },
+    {
+      "name": "neither a result nor an error",
+      "payment_hash": "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925",
+      "reply": {
+        "ok": true
+      },
+      "outcome": "fallback",
+      "code": "INTERNAL"
+    },
+    {
+      "name": "nothing",
+      "payment_hash": "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925",
+      "reply": null,
+      "outcome": "fallback",
+      "code": "INTERNAL"
     }
   ]
 }
