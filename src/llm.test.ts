@@ -162,9 +162,12 @@ describe("llm: model resolution through the secrets boundary", () => {
     assert.deepEqual(at("tokenfactory/glm-5.3").pricing, { inputTokenPrice: 0, outputTokenPrice: 0 });
     assert.deepEqual(at("tokenfactory/glm-5.3-flash").pricing, { inputTokenPrice: 0.15, outputTokenPrice: 0.5 });
     assert.equal(at("tokenfactory/qwen3.8-27b").contextLimit, 196_608);
-    assert.equal(at("anthropic/claude-sonnet-5-5").pricing, undefined);
+    // Anthropic's own list prices are built in (aieo's table), so its models are priced with no catalog loaded.
+    assert.equal(at("anthropic/claude-sonnet-5-5").pricing?.inputTokenPrice, 2);
+    assert.equal(at("anthropic/claude-sonnet-5-5").pricing?.cacheWrite1hPrice, 4);
     for (const m of cat.models) {
       assert.ok((m.contextLimit ?? 0) > 0, `${m.name} has a window`);
+      if (m.provider === "anthropic") continue; // priced from aieo's Anthropic table where it lists the model
       assert.equal(!!m.pricing, ["maple", "numes", "tokenfactory"].includes(m.provider), `${m.name}: a price only from a per-model table`);
     }
     assert.equal(cat.listed, false);

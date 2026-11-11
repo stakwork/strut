@@ -45,7 +45,7 @@ describe("startModelCatalog", () => {
   it("loads the sheet, keeps it under the data dir, and /llm/models shows its prices", async () => {
     const dir = mkdtempSync(join(tmpdir(), "strut-catalog-"));
     const before = (await listModelOptions()).models.find((m) => m.name === "anthropic/claude-sonnet-5-5");
-    assert.equal(before?.pricing, undefined, "no catalog: no price for Sonnet");
+    assert.equal(before?.pricing?.cacheWrite1hPrice, 4, "no catalog: Sonnet at aieo's built-in list price");
     process.env["STRUT_MODEL_CATALOG"] = url;
     await startModelCatalog(dir);
     assert.equal(hits, 1);
