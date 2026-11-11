@@ -34,8 +34,9 @@ export interface ClaimsRoutesDeps {
 }
 
 /** The HTTP door's actor — a PERSON: unscoped, and stamped as one. Shared
- *  with the publish routes, which apply a YAML `claims:` block the same way. */
-export const PERSON: ClaimActor = { publisher: "person", scoped: false };
+ *  with the publish routes, which apply a YAML `claims:` block the same way.
+ *  A door that keeps the Concept tree, so it may write claims about Concepts. */
+export const PERSON: ClaimActor = { publisher: "person", scoped: false, concepts: true };
 
 export function claimsRoutes(app: Hono, deps: ClaimsRoutesDeps): void {
   const claims = deps.claims;

@@ -554,11 +554,12 @@ against it.
 "concept", name, version }` and `run.path: "concept:<name>"`. `when:
 publish` is refused.
 
-Stating one is a person's act, through the routes in this section. The AI
-writes nothing on a claim about a Concept: the builder's claim tools and
-the `meta/*` claim steps do not take the kind, and an `ai` author is
-refused on every write (the claim, its checks, attaching and detaching).
-Its runs are still checked against these claims.
+Who may write one is decided by the door, not by the author. The routes
+in this section may. The doors of ordinary work may not: the builder's
+claim tools and the `meta/*` claim steps do not take the kind, and are
+refused on every write to such a claim (the claim, its checks, attaching
+and detaching). Runs launched from those doors are still checked against
+these claims.
 
 ## 6. Control a run
 

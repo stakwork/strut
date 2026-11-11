@@ -36,12 +36,17 @@
  *     is what the agent's instrument should test, there is no seeded line
  *     to silence, and the person's own external check stays beside it as a
  *     separate stream; edit / retire / detach stay scoped;
- *   - a claim about a CONCEPT is a PERSON's: it says what the work of every
- *     run that opened the page must look like, which is for the people who
- *     keep the page to state, not for the AI to add on its way through a
- *     build. An author stamped `ai` — the builder chat and the meta surface
- *     alike — adds, attaches, edits and retires nothing on one, claim or
- *     check; it is still checked against them, and reads the verdicts;
+ *   - a claim about a CONCEPT is written through a door that keeps the
+ *     Concept tree, never in passing: the DOOR decides, not the author
+ *     (`ClaimActor.concepts`). It says what the work of every run that
+ *     opened the page must look like, so it is not for an agent to add on
+ *     its way through a build. The regular doors — the builder chat's tools
+ *     and the meta surface — add, attach, edit and retire nothing on one,
+ *     claim or check; their runs are still checked against them, and they
+ *     read the verdicts. A door that sets `concepts` may, whoever writes
+ *     through it: a person's `/claims` routes today, and a workflow that
+ *     tends the tree (an AI author, stamped `ai` like any other, so fixed
+ *     point 2 holds for its checks);
  *   - FIXED POINT 2 — a check stamped `ai` may not reach a grader: nothing
  *     SEALED (`src/sealed.ts`: the sealed namespaces `eval/*`, `meta/*` plus
  *     `STRUT_SEALED`, a step def's `sealed: true`, a workflow's `sealed:
@@ -110,10 +115,15 @@ export interface ClaimSpecInput {
   checks: CheckSpecInput[];
 }
 
-/** Who is writing. `scoped` = the meta surface: only what it stamped. */
+/** Who is writing, and through which door. `scoped` = the meta surface:
+ *  only what it stamped. `concepts` = a door that may write claims about
+ *  Concepts, and their checks: one that keeps the Concept tree (a person's
+ *  `/claims` routes; a workflow that tends the tree), never the doors of
+ *  ordinary work (the builder chat's tools, the meta surface). */
 export interface ClaimActor {
   publisher: string;
   scoped: boolean;
+  concepts?: boolean;
 }
 
 export type ClaimsResult<T> = ({ ok: true } & T) | { error: string };
@@ -429,7 +439,8 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
    *  deliver, so a job subject is always its author's to claim about. */
   async function ownsSubject(subject: SubjectRef, actor: ClaimActor): Promise<boolean> {
     if (subject.kind === "job") return true;
-    // Nobody published a Concept (and an `ai` author is refused before this).
+    // Nobody published a Concept: the meta surface owns none (and its door
+    // is refused before this).
     if (subject.kind === "concept") return false;
     if (subject.kind === "step") return (await deps.workspace.listSteps({ publisher: actor.publisher })).some((s) => s.type === subject.type);
     return (await deps.workspace.getWorkflowMetadata(subject.name))?.publisher === actor.publisher;
@@ -444,18 +455,19 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
     }
   }
 
-  /** A claim about a Concept is a person's to write: the AI, by any door,
-   *  writes nothing on one. `subjects` = what the write touches. */
-  function requirePersonOn(subjects: readonly SubjectRef[], actor: ClaimActor): void {
-    const concept = actor.publisher === AI_STAMP ? subjects.find((s) => s.kind === "concept") : undefined;
+  /** A claim about a Concept is written through a door that keeps the
+   *  Concept tree (`ClaimActor.concepts`): the door decides, not the author.
+   *  `subjects` = what the write touches. */
+  function requireConceptDoor(subjects: readonly SubjectRef[], actor: ClaimActor): void {
+    const concept = actor.concepts ? undefined : subjects.find((s) => s.kind === "concept");
     if (concept) {
-      throw new ClaimsError("REFUSED", `concept "${subjectName(concept)}": a claim about a Concept is a person's to write, and so are its checks — the AI is checked against it, and changes nothing on it`);
+      throw new ClaimsError("REFUSED", `concept "${subjectName(concept)}": claims about a Concept, and their checks, are not written from here — they are kept where the Concept tree is tended. Work done here is checked against them, and changes nothing on them`);
     }
   }
-  /** The same, for a write on an existing claim (read only for an `ai` author). */
-  async function requirePersonOnClaims(claimIds: readonly string[], actor: ClaimActor): Promise<void> {
-    if (actor.publisher !== AI_STAMP) return;
-    for (const id of claimIds) requirePersonOn(await subjectsOfClaim(id), actor);
+  /** The same, for a write on an existing claim (read only at a door without `concepts`). */
+  async function requireConceptDoorFor(claimIds: readonly string[], actor: ClaimActor): Promise<void> {
+    if (actor.concepts) return;
+    for (const id of claimIds) requireConceptDoor(await subjectsOfClaim(id), actor);
   }
 
   async function requireOwnClaim(id: string, actor: ClaimActor, verb: string): Promise<void> {
@@ -559,7 +571,7 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
     async addClaim(input: { subjects: SubjectInput[]; text: string; checks: CheckSpecInput[] }, actor: ClaimActor): Promise<ClaimsResult<{ id: string; checks: string[] }>> {
       try {
         const subjects = (input.subjects ?? []).map(toSubjectRef);
-        requirePersonOn(subjects, actor);
+        requireConceptDoor(subjects, actor);
         await requireOwnedSubjects(subjects, actor, "adds claims to");
         const [claim] = await normalizeClaims([{ text: input.text, checks: input.checks }], actor, undefined, onOf(subjects));
         await ensureSubjectNodes(subjects);
@@ -571,7 +583,7 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
 
     async editClaim(id: string, text: string, actor: ClaimActor): Promise<ClaimsResult<{ id: string; superseded?: string; unchanged?: true }>> {
       try {
-        await requirePersonOnClaims([id], actor);
+        await requireConceptDoorFor([id], actor);
         await requireOwnClaim(id, actor, "edits");
         return { ok: true, ...(await writer.editClaim(id, text, actor.publisher)) };
       } catch (e) {
@@ -581,7 +593,7 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
 
     async retireClaim(id: string, actor: ClaimActor): Promise<ClaimsResult<{ id: string }>> {
       try {
-        await requirePersonOnClaims([id], actor);
+        await requireConceptDoorFor([id], actor);
         await requireOwnClaim(id, actor, "retires");
         return { ok: true, ...(await writer.retireClaim(id)) };
       } catch (e) {
@@ -592,8 +604,8 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
     async attachClaim(id: string, subject: SubjectInput, actor: ClaimActor): Promise<ClaimsResult<{ id: string; attached: boolean }>> {
       try {
         const ref = toSubjectRef(subject);
-        requirePersonOn([ref], actor);
-        await requirePersonOnClaims([id], actor);
+        requireConceptDoor([ref], actor);
+        await requireConceptDoorFor([id], actor);
         await requireOwnedSubjects([ref], actor, "attaches claims to");
         await ensureSubjectNodes([ref]);
         return { ok: true, ...(await writer.attachClaim(id, ref)) };
@@ -604,7 +616,7 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
 
     async detachClaim(id: string, subject: SubjectInput, actor: ClaimActor): Promise<ClaimsResult<{ id: string; detached: boolean }>> {
       try {
-        await requirePersonOnClaims([id], actor);
+        await requireConceptDoorFor([id], actor);
         await requireOwnClaim(id, actor, "detaches");
         return { ok: true, ...(await writer.detachClaim(id, toSubjectRef(subject))) };
       } catch (e) {
@@ -615,7 +627,7 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
     async addCheck(claimId: string, spec: CheckSpecInput, actor: ClaimActor): Promise<ClaimsResult<{ id: string }>> {
       try {
         const subjects = await subjectsOfClaim(claimId);
-        requirePersonOn(subjects, actor);
+        requireConceptDoor(subjects, actor);
         const on = onOf(subjects);
         // Fixed point 1's one exception (plans/job-claims.md §1, ruled): on a
         // job the agent may hang its instrument on the person's claim.
@@ -630,7 +642,7 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
      *  re-validated as a whole and written as a SUCCESSOR. */
     async editCheck(id: string, patch: CheckSpecInput, actor: ClaimActor): Promise<ClaimsResult<{ id: string; superseded?: string; unchanged?: true }>> {
       try {
-        await requirePersonOnClaims((await reader.claimsTestedBy(id)).map((c) => c.id), actor);
+        await requireConceptDoorFor((await reader.claimsTestedBy(id)).map((c) => c.id), actor);
         const old = await requireOwnCheck(id, actor, "edits");
         if (!old) throw new ClaimsError("NOT_FOUND", `check "${id}" not found`);
         const current = listingOf(old);
@@ -661,7 +673,7 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
 
     async retireCheck(id: string, actor: ClaimActor): Promise<ClaimsResult<{ id: string }>> {
       try {
-        await requirePersonOnClaims((await reader.claimsTestedBy(id)).map((c) => c.id), actor);
+        await requireConceptDoorFor((await reader.claimsTestedBy(id)).map((c) => c.id), actor);
         await requireOwnCheck(id, actor, "retires");
         return { ok: true, ...(await writer.retireCheck(id)) };
       } catch (e) {

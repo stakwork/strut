@@ -17,12 +17,13 @@ export const subjectSchema = z
   .describe("A claim's subject — the STABLE identity, never a version: the claim applies to whatever version is active when a run is verified (for a job, to its newest turn).");
 
 /**
- * A subject as a PERSON names one (the `/claims` routes): the kinds above,
- * and a CONCEPT — a page of the knowledge graph, by its exact name. No model
- * is offered that kind: the builder's tools and their `meta/*` twins take
- * `subjectSchema`. A claim about a Concept says what the work of every run
- * that opened the page must look like, and stating one is a person's act
- * (`claims-authoring.ts`). Its check reads the RUN that opened the page, as
+ * A subject at a door that keeps the Concept tree (the `/claims` routes):
+ * the kinds above, and a CONCEPT — a page of the knowledge graph, by its
+ * exact name. The doors of ordinary work are not offered that kind: the
+ * builder's tools and their `meta/*` twins take `subjectSchema`. A claim
+ * about a Concept says what the work of every run that opened the page must
+ * look like, so it is written where the tree is tended, never in passing
+ * (`ClaimActor.concepts`, claims-authoring.ts). Its check reads the RUN that opened the page, as
  * a workflow's check does, plus `{{ input.concept }}`, `{{ input.concepts }}`
  * (every page the run opened, by name), `{{ input.dir }}` (the run's files:
  * its job's directory, else its artifacts) and `{{ input.job }}`; a check

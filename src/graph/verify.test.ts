@@ -974,6 +974,8 @@ for (const tb of testBackends()) describe(`verify pass on ${tb.name}`, { skip: t
       name: "opened",
       config: { supports: "{{ input.input.kind ? input.concepts.includes(input.input.kind) : null }}", content: "opened: {{ input.concepts.join(', ') }}" },
     };
+    /** A door that keeps the Concept tree: what the person's routes are, and what a workflow tending the tree will be. */
+    const keeper: ClaimActor = { publisher: "evan", scoped: false, concepts: true };
     const conceptStatus = async (subject: { kind: "concept"; name: string }) => {
       const r = await claims.listClaims(subject);
       assert.ok("ok" in r, (r as { error?: string }).error);
@@ -1012,8 +1014,8 @@ for (const tb of testBackends()) describe(`verify pass on ${tb.name}`, { skip: t
     });
 
     it("a run that opened the page is checked against the claims about it: a regex on the file it wrote, evidence ABOUT the Concept at the version it read", async () => {
-      const onPlanning = await addClaim(PLANNING as never, "a plan has a rollout section", [hasRollout]);
-      const onJob = await addClaim(JOB_ROOT as never, "a request of a kind opens that kind's page", [opensItsPage]);
+      const onPlanning = await addClaim(PLANNING as never, "a plan has a rollout section", [hasRollout], keeper);
+      const onJob = await addClaim(JOB_ROOT as never, "a request of a kind opens that kind's page", [opensItsPage], keeper);
       assert.deepEqual(await conceptStatus(PLANNING), [["a plan has a rollout section", "unknown", undefined, undefined]]);
       const reader = verifier.reader;
       const v1 = await reader.activeVersion(PLANNING);
@@ -1064,8 +1066,8 @@ for (const tb of testBackends()) describe(`verify pass on ${tb.name}`, { skip: t
     });
 
     it("a run that skipped the page is no observation of it: the claim that it gets opened sits on the page that lists it, and a check that does not apply records nothing", async () => {
-      await addClaim(PLANNING as never, "a plan has a rollout section", [hasRollout]);
-      await addClaim(JOB_ROOT as never, "a request of a kind opens that kind's page", [opensItsPage]);
+      await addClaim(PLANNING as never, "a plan has a rollout section", [hasRollout], keeper);
+      await addClaim(JOB_ROOT as never, "a request of a kind opens that kind's page", [opensItsPage], keeper);
 
       // Asked for a plan, never opened Planning: only the root was read, and its claim catches it.
       const skipped = await plan({ kind: "Planning", plan: "1. Build it." });
@@ -1087,20 +1089,21 @@ for (const tb of testBackends()) describe(`verify pass on ${tb.name}`, { skip: t
       assert.equal((await conceptStatus(JOB_ROOT))[0]![1], "supported");
     });
 
-    it("authoring: a person states a claim about a Concept, by its name; never at publish, and nothing on one is the AI's to write; a person's word is evidence about the page the run read", async () => {
-      const made = await addClaim(PLANNING as never, "a plan has a rollout section", [hasRollout, { description: "Read the plan: is the rollout staged?" }]);
+    it("authoring: a claim about a Concept, by its name, is written through a door that keeps the tree, whoever the author; never at publish, never from the doors of ordinary work; a person's word is evidence about the page the run read", async () => {
+      const made = await addClaim(PLANNING as never, "a plan has a rollout section", [hasRollout, { description: "Read the plan: is the rollout staged?" }], keeper);
       // Defaults are a template's: a code check fires on every run, an external one paces its question.
       const listed = await claims.listClaims(PLANNING);
       assert.ok("ok" in listed);
       assert.deepEqual((listed as Extract<typeof listed, { ok: true }>).claims[0]!.checks.map((k) => [k.name, k.policy]), [["rollout", "always"], ["Read the plan: is the rollout staged?", "on_change"]]);
 
-      const missing = await claims.addClaim({ subjects: [{ kind: "concept", name: "Nope" }], text: "x", checks: [hasRollout] }, human);
+      const missing = await claims.addClaim({ subjects: [{ kind: "concept", name: "Nope" }], text: "x", checks: [hasRollout] }, keeper);
       assert.match((missing as { error: string }).error, /concept "Nope" is not in the graph/);
-      const atPublish = await claims.addClaim({ subjects: [PLANNING], text: "x", checks: [{ ...hasRollout, when: "publish" }] }, human);
+      const atPublish = await claims.addClaim({ subjects: [PLANNING], text: "x", checks: [{ ...hasRollout, when: "publish" }] }, keeper);
       assert.match((atPublish as { error: string }).error, /a Concept is never published/);
-      // The AI writes nothing on one, by either door: the builder chat (unscoped) or the meta surface (scoped)…
-      const PERSONS = /a claim about a Concept is a person's to write/;
-      for (const actor of [ai, { publisher: "ai", scoped: true }]) {
+      // The DOOR decides, not the author. The doors of ordinary work write nothing on one: the builder chat
+      // (unscoped), the meta surface (scoped), and a person's stamp alone opens nothing either…
+      const NOT_HERE = /claims about a Concept, and their checks, are not written from here/;
+      for (const actor of [ai, { publisher: "ai", scoped: true }, human]) {
         const refused = [
           await claims.addClaim({ subjects: [PLANNING], text: "x", checks: [hasRollout] }, actor),
           await claims.addClaim({ subjects: [{ kind: "workflow", name: "planner" }, PLANNING], text: "x", checks: [hasRollout] }, actor),
@@ -1112,15 +1115,25 @@ for (const tb of testBackends()) describe(`verify pass on ${tb.name}`, { skip: t
           await claims.editCheck(made.checks[0]!, { name: "renamed" }, actor),
           await claims.retireCheck(made.checks[0]!, actor),
         ];
-        for (const r of refused) assert.match((r as { error: string }).error, PERSONS);
+        for (const r of refused) assert.match((r as { error: string }).error, NOT_HERE);
       }
-      // …and no model is offered the kind: the tools' subject is a step, a workflow or a job; the person's routes add the Concept.
+      // …and those doors are not offered the kind: the tools' subject is a step, a workflow or a job.
       assert.equal(subjectSchema.safeParse(PLANNING).success, false);
       assert.equal(personSubjectSchema.safeParse(PLANNING).success, true);
-      // A person edits their own: nothing above changed it.
-      assert.deepEqual((await conceptStatus(PLANNING)).map((c) => c[0]), ["a plan has a rollout section"]);
-      const renamed = await claims.editCheck(made.checks[0]!, { name: "has a rollout" }, human);
+      assert.deepEqual((await conceptStatus(PLANNING)).map((c) => c[0]), ["a plan has a rollout section"], "nothing above changed it");
+      // A door that keeps the tree may, with an AI as the author: its claim is stamped `ai` like any other,
+      // so a check of its own still may not reach a grader (fixed point 2).
+      const tending: ClaimActor = { publisher: "ai", scoped: false, concepts: true };
+      const byAi = await claims.addClaim({ subjects: [PLANNING], text: "a plan names an owner", checks: [{ ...hasRollout, name: "owner", config: { cmd: "grep", args: ["-qi", "owner", "plan.md"], cwd: "{{ input.dir }}" } }] }, tending);
+      assert.ok("ok" in byAi, (byAi as { error?: string }).error);
+      const listedAfter = await claims.listClaims(PLANNING);
+      assert.deepEqual((listedAfter as Extract<typeof listedAfter, { ok: true }>).claims.map((c) => [c.text, c.speaker]), [["a plan has a rollout section", "evan"], ["a plan names an owner", "ai"]]);
+      const grader = await claims.addCheck((byAi as { id: string }).id, { type: "meta/verify-job", config: { job: "j" } }, tending);
+      assert.match((grader as { error: string }).error, /may not reach a sealed/);
+      const renamed = await claims.editCheck(made.checks[0]!, { name: "has a rollout" }, keeper);
       assert.ok("ok" in renamed, (renamed as { error?: string }).error);
+      const retired = await claims.retireClaim((byAi as { id: string }).id, tending);
+      assert.ok("ok" in retired, (retired as { error?: string }).error);
       const unknown = await claims.listClaims({ kind: "concept", name: "Nope" });
       assert.match((unknown as { error: string }).error, /concept "Nope" is not in the graph/);
 
