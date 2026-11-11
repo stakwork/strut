@@ -2732,8 +2732,10 @@ decides. The install records on every version it writes the ref as given
 (`upstream.source.ref`, what an update re-resolves: a branch moves, a tag
 does not) and the commit it resolved (`upstream.commit`); `GET /packages`
 and the install report show `commit`. A `requires.packages` entry may name
-a `git+` source; it is read with the same `tokenSecret`, or taken from the
-cache when it holds the pinned digest. Refusals:
+a `git+` source; it is taken from the cache when it holds the pinned
+digest, else read — with the token only when it is on the same origin as a
+ref the person named, so a package never sends this strut's token to a
+host of its choosing. Refusals:
 
 | Code | Status | |
 | --- | --- | --- |
