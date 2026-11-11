@@ -347,3 +347,15 @@ export function SidebarIcon({ size = 16, ...rest }: IconProps) {
     </Outline>
   );
 }
+
+export function SearchIcon({ size = 14, ...rest }: IconProps) {
+  return <Outline size={size} rest={rest}><circle cx="11" cy="11" r="7" /><path d="M20 20l-3.5-3.5" /></Outline>;
+}
+
+export function ChevronRightIcon({ size = 14, ...rest }: IconProps) {
+  return <Outline size={size} rest={rest}><path d="M9 6l6 6-6 6" /></Outline>;
+}
+
+export function ArrowRightIcon({ size = 14, ...rest }: IconProps) {
+  return <Outline size={size} rest={rest}><path d="M5 12h14M13 6l6 6-6 6" /></Outline>;
+}

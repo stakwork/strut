@@ -22,7 +22,7 @@ import { MemoryRunStore } from "../store.js";
 import { WorkspaceManager } from "../workspace.js";
 import { INDEX_DOMAIN, readCard, type IndexCatalog } from "./card.js";
 import { buildIndexTools, indexInstructions, llmsTxt } from "./index-tools.js";
-import { createPackageIndex, type IndexConcept, type IndexConceptPage, type IndexHit, type IndexInfo, type IndexPackage } from "./index.js";
+import { createPackageIndex, withoutConceptDocs, type IndexConcept, type IndexConceptPage, type IndexHit, type IndexInfo, type IndexPackage } from "./index.js";
 import { packArchive } from "./archive.js";
 import { PackageCache } from "./cache.js";
 import { canonicalJson, keyFromSeed, sealCard, type Catalog } from "./card.js";
@@ -232,6 +232,7 @@ describe("the package index", () => {
     assert.equal((await search("linear acme")).length, 1, "every word, in the name or the publisher");
     assert.equal((await fetch(`${indexUrl}/index/packages/acme/notion`)).status, 404);
     const page = (await (await fetch(`${indexUrl}/index/packages/acme/linear`)).json()) as IndexPackage;
+    assert.deepEqual(await (await fetch(`${indexUrl}/index/packages/acme/linear?docs=0`)).json(), page, "docs=0 leaves out only Concept pages' text, and this package has none");
     assert.equal(page.package, "acme/linear");
     assert.deepEqual(page.releases.map((r) => r.version), ["1.0.0"]);
     assert.deepEqual(page.channels, { public: linear.digest });
@@ -563,6 +564,13 @@ describe("the concept tree across the crawled packages", () => {
     await writeFile(stored, before.replace('"parents":["Law"]', '"parent":"Law"'));
     assert.deepEqual((await index.concepts("civil")).map((c) => [c.name, c.parents]), [["Civil procedure", ["Law"]]]);
     assert.deepEqual((await index.package("openlaw/civil"))!.detail!.concepts.find((c) => c.name === "Civil procedure")!.parents, ["Law"]);
+
+    // The store's read of a package (`?docs=0`): the tree's names and parents, no page's text.
+    const whole = (await index.package("openlaw/civil"))!;
+    assert.match(whole.detail!.concepts.find((c) => c.name === "Statute of limitations")!.docs!, /How long you have/);
+    const slim = withoutConceptDocs(whole);
+    assert.deepEqual(slim.detail!.concepts.map((c) => [c.name, c.parents, "docs" in c]), whole.detail!.concepts.map((c) => [c.name, c.parents, false]));
+    assert.deepEqual({ ...slim, detail: undefined }, { ...whole, detail: undefined }, "nothing else of the page changes");
 
     // The index's tools (./index-tools.ts) over the same functions: the page a model reads (Concept docs left out), the tree, one page — each linking its store page when a store is served.
     const server = await toolsetServer({ tools: buildIndexTools(index, { store: "https://store.example" }), instructions: indexInstructions({ publicUrl: "https://store.example", store: "https://store.example" }) });

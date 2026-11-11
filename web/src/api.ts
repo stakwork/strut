@@ -2778,7 +2778,9 @@ async function storeJSON<T>(path: string): Promise<T> {
 }
 export const storeCatalog = () => storeJSON<IndexCard>("/index/catalog");
 export const storeSearch = (q = "", limit = 200) => storeJSON<{ packages: StoreHit[] }>(`/index/packages?q=${encodeURIComponent(q)}&limit=${limit}`).then((r) => r.packages);
-export const storePackage = (pkg: string) => storeJSON<StorePackage>(`/index/packages/${pkg.split("/").map(encodeURIComponent).join("/")}`);
+/** A package's page, without its Concept pages' text (`docs=0`): the tree is
+ *  drawn from names, and a page's docs are `storeConcept`'s. */
+export const storePackage = (pkg: string) => storeJSON<StorePackage>(`/index/packages/${pkg.split("/").map(encodeURIComponent).join("/")}?docs=0`);
 export const storeConcepts = (q = "") => storeJSON<{ concepts: StoreConcept[] }>(`/index/concepts?q=${encodeURIComponent(q)}`).then((r) => r.concepts);
 export const storeConcept = (name: string) => storeJSON<StoreConceptPage>(`/index/concepts/${encodeURIComponent(name)}`);
 /** Where this index's card is served, for the link into a strut: what the

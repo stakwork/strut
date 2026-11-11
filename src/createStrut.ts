@@ -111,7 +111,7 @@ import { packArchive } from "./packages/archive.js";
 import { buildPackage, type BuildRequest } from "./packages/build.js";
 import { PUBLISHER_FILE, PUBLISHER_NAME, catalogStore, moveChannel, publicCatalogStore, publishRelease, publisherStore } from "./packages/publisher.js";
 import { SUBSCRIPTIONS_FILE, createSubscriptions, subscriptionProblem, type Subscription, type Subscriptions } from "./packages/subscriptions.js";
-import { createPackageIndex, indexDir, indexRowProblem, liveRowProblem, type PackageIndex } from "./packages/index.js";
+import { createPackageIndex, indexDir, indexRowProblem, liveRowProblem, withoutConceptDocs, type PackageIndex } from "./packages/index.js";
 import { INDEXES_FILE, createIndexes, indexSubscriptionProblem, parseIndexesEnv, type IndexSubscription, type PackageIndexes, type PackagesCapability } from "./packages/indexes.js";
 import { PUBLISHER_PREFIX, Z32_KEY, releaseFor, type IndexLiveRow, type IndexRow } from "./packages/card.js";
 import { LISTING_MAX_BYTES, hostPatternProblem, perMinute } from "./packages/listing.js";
@@ -4731,7 +4731,11 @@ export async function createStrut<TServices = unknown>(
     app.get("/index/packages/:publisher/:name", async (c) => {
       const name = `${c.req.param("publisher")}/${c.req.param("name")}`;
       const page = await index.package(name);
-      return page ? c.json(page, 200, { "cache-control": "public, no-cache" }) : c.json({ error: `no listed publisher's catalog has ${name}` }, 404);
+      if (!page) return c.json({ error: `no listed publisher's catalog has ${name}` }, 404);
+      // `?docs=0`: without each Concept page's text. The store draws a
+      // package's tree from names alone and reads one page's docs from
+      // `/index/concepts/:name`; a package of 750 pages is megabytes of them.
+      return c.json(c.req.query("docs") === "0" ? withoutConceptDocs(page) : page, 200, { "cache-control": "public, no-cache" });
     });
     // The Concept pages across every crawled package (plans/marketplace.md
     // §7, the store): the tree, and one page with its docs.
