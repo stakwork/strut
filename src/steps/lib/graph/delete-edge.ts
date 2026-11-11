@@ -3,6 +3,7 @@ import type { CardField } from "../../../core.js";
 import { defineStep, type StepContext, withAccessedNodes } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
 import { graphCtx, errText, describeNodes, namesOf } from "./_shared.js";
+import { stepFailed } from "../../../public-call.js";
 
 const EXAMPLE = `- id: unlink
   type: graph/delete-edge
@@ -67,7 +68,7 @@ export default defineStep({
       const r = await b.edges.delete(
         byRef ? { ref_id: cfg.edge_ref_id! } : { edge: cfg.edge_type!, source_ref_id: cfg.source_ref_id!, target_ref_id: cfg.target_ref_id! },
       );
-      if (!r) return `graph/delete-edge failed — NOT_FOUND: no edge with ref_id ${cfg.edge_ref_id}`;
+      if (!r) return stepFailed(`graph/delete-edge failed — NOT_FOUND: no edge with ref_id ${cfg.edge_ref_id}`);
       // A deleted fact's evidence goes with it (plans/memory-truth-layer.md): saved again, it starts from nothing.
       if (b.kind === "ladybug") {
         const { clearFactEvidence } = await import("../../../graph/ladybug/fact-claims.js");

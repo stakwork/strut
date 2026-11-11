@@ -5,6 +5,7 @@ import type { AccessedNode, StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
 import type { GraphBackend } from "../../../graph/backend.js";
 import { graphFor, type Narrowing } from "../../../graph/scope.js";
+import { StepFailure, stepFailed } from "../../../public-call.js";
 
 export type { GraphBackend };
 
@@ -203,11 +204,14 @@ export function graphErrorCode(e: unknown): string | undefined {
 }
 
 /** Render a graph error as a plain string the agent can read (the same
- *  convention the jarvis/* steps use for HTTP failures). */
+ *  convention the jarvis/* steps use for HTTP failures) — inside a public
+ *  call (src/public-call.ts) thrown instead, so the call is charged as the
+ *  failure it is. */
 export function errText(step: string, e: unknown): string {
+  if (e instanceof StepFailure) throw e;
   const code = graphErrorCode(e);
   const msg = e instanceof Error ? e.message : String(e);
-  return code ? `${step} failed — ${code}: ${msg}` : `${step} failed: ${msg}`;
+  return stepFailed(code ? `${step} failed — ${code}: ${msg}` : `${step} failed: ${msg}`);
 }
 
 const LABEL_MAX = 160;

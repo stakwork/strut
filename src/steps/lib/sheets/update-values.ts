@@ -2,6 +2,7 @@ import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
 import { SHEETS_API, errorResult, serviceAccountField, sheetsCtx, valuesSchema } from "./_shared.js";
+import { StepFailure, stepFailed } from "../../../public-call.js";
 
 export default defineStep({
   type: "sheets/update-values",
@@ -36,7 +37,8 @@ export default defineStep({
       const { updatedRange, updatedCells } = resp.body;
       return { updated_range: updatedRange, updated_cells: updatedCells };
     } catch (err: any) {
-      return `sheets_update_values failed: ${err?.message ?? String(err)}`;
+      if (err instanceof StepFailure) throw err;
+      return stepFailed(`sheets_update_values failed: ${err?.message ?? String(err)}`);
     }
   },
 });

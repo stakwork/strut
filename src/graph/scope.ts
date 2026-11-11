@@ -162,6 +162,15 @@ export function fullReaderOf(g: unknown): GraphReader | undefined {
   return infoOf(g)?.reader;
 }
 
+/** `target` carrying `from`'s reader lists, its unscoped raw query replaced
+ *  by `query`: a view that keeps every list `from` is held to while it
+ *  reads through a query of its own (a public tool's read-only one,
+ *  src/public-tools.ts). `target` as it is when `from` carries none. */
+export function carryScope<T extends object>(from: object, target: T, query: GraphBackend["query"]): T {
+  const info = infoOf(from);
+  return info ? ({ ...target, [SCOPE]: { ...info, query } } as T) : target;
+}
+
 /** A scoped backend's list and its unscoped query, for a read that applies
  *  the list itself (graph/find: one type, one namespace). */
 export function boundsOf(b: object): { list: ReaderList; query: GraphBackend["query"] } | undefined {

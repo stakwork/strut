@@ -2,6 +2,7 @@ import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
 import { DRIVE_API, SHEETS_API, serviceAccountField, sheetsCtx, truncate } from "./_shared.js";
+import { StepFailure, stepFailed } from "../../../public-call.js";
 
 // ── Pure helpers ────────────────────────────────────────────────────────────
 
@@ -111,7 +112,7 @@ export default defineStep({
         `${DRIVE_API}/${encodeURIComponent(source_file_id)}?supportsAllDrives=true&fields=name,mimeType,parents`,
       );
       if (!metaResp.ok) {
-        return `sheets_import_spreadsheet failed: could not fetch source file metadata: HTTP ${metaResp.status}: ${truncate(metaResp.body?.error?.message ?? metaResp.body, 300)}`;
+        return stepFailed(`sheets_import_spreadsheet failed: could not fetch source file metadata: HTTP ${metaResp.status}: ${truncate(metaResp.body?.error?.message ?? metaResp.body, 300)}`);
       }
       const sourceMeta: { name: string; mimeType: string; parents?: string[] } = metaResp.body;
 
@@ -133,7 +134,7 @@ export default defineStep({
           copyBody,
         );
         if (!copyResp.ok) {
-          return `sheets_import_spreadsheet failed: could not convert source file to Google Sheets: HTTP ${copyResp.status}: ${truncate(copyResp.body?.error?.message ?? copyResp.body, 300)}`;
+          return stepFailed(`sheets_import_spreadsheet failed: could not convert source file to Google Sheets: HTTP ${copyResp.status}: ${truncate(copyResp.body?.error?.message ?? copyResp.body, 300)}`);
         }
         // Store in a dedicated variable; NEVER reuse source_file_id.
         tempSpreadsheetId = copyResp.body.id as string;
@@ -148,7 +149,7 @@ export default defineStep({
         `${SHEETS_API}/${encodeURIComponent(workingId)}?fields=properties.title,sheets.properties`,
       );
       if (!srcSheetsResp.ok) {
-        return `sheets_import_spreadsheet failed: could not read source spreadsheet: HTTP ${srcSheetsResp.status}: ${truncate(srcSheetsResp.body?.error?.message ?? srcSheetsResp.body, 300)}`;
+        return stepFailed(`sheets_import_spreadsheet failed: could not read source spreadsheet: HTTP ${srcSheetsResp.status}: ${truncate(srcSheetsResp.body?.error?.message ?? srcSheetsResp.body, 300)}`);
       }
       const sourceSheets: Array<{ sheetId: number; title: string }> = (
         srcSheetsResp.body.sheets ?? []
@@ -165,7 +166,7 @@ export default defineStep({
         `${SHEETS_API}/${encodeURIComponent(destination_spreadsheet_id)}?fields=sheets.properties.title`,
       );
       if (!dstSheetsResp.ok) {
-        return `sheets_import_spreadsheet failed: could not read destination spreadsheet: HTTP ${dstSheetsResp.status}: ${truncate(dstSheetsResp.body?.error?.message ?? dstSheetsResp.body, 300)}`;
+        return stepFailed(`sheets_import_spreadsheet failed: could not read destination spreadsheet: HTTP ${dstSheetsResp.status}: ${truncate(dstSheetsResp.body?.error?.message ?? dstSheetsResp.body, 300)}`);
       }
       // Single source of truth for collision detection — updated after each rename.
       const existingTitles = new Set<string>(
@@ -331,7 +332,8 @@ export default defineStep({
         warnings,
       };
     } catch (err: any) {
-      return `sheets_import_spreadsheet failed: ${err?.message ?? String(err)}`;
+      if (err instanceof StepFailure) throw err;
+      return stepFailed(`sheets_import_spreadsheet failed: ${err?.message ?? String(err)}`);
     }
   },
 });

@@ -20,6 +20,7 @@
 //     the text says sheets are unavailable here and to go on without them —
 //     never a "paste the key into env" (seen live sending an agent hunting the
 //     filesystem for service-account JSON).
+import { stepFailed } from "../../../public-call.js";
 import { createPrivateKey, createSign } from "node:crypto";
 import { z } from "zod";
 import type { StepContext } from "../../../core.js";
@@ -113,7 +114,7 @@ export function truncate(value: unknown, maxChars: number): string {
 
 export function errorResult(label: string, status: number, body: any): string {
   const message = body?.error?.message ?? body;
-  return `${label} failed: HTTP ${status}: ${truncate(message, 500)}`;
+  return stepFailed(`${label} failed: HTTP ${status}: ${truncate(message, 500)}`);
 }
 
 /** Access tokens (Google's last ~1h), keyed by client_email so different

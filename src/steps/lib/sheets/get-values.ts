@@ -2,6 +2,7 @@ import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
 import { SHEETS_API, errorResult, serviceAccountField, sheetsCtx } from "./_shared.js";
+import { StepFailure, stepFailed } from "../../../public-call.js";
 
 /** `grid: true` asks one `spreadsheets.get` for the title, every tab, and
  *  per cell its display text, value and formula — one request, so a page
@@ -129,7 +130,7 @@ export default defineStep({
           const meta = await api("GET", `${base}?fields=${encodeURIComponent("sheets(properties(title,hidden))")}`);
           if (!meta.ok) return errorResult("sheets_get_values", meta.status, meta.body);
           const first = meta.body?.sheets?.find((s: any) => !s?.properties?.hidden)?.properties?.title;
-          if (typeof first !== "string") return "sheets_get_values failed: the spreadsheet has no tab to read";
+          if (typeof first !== "string") return stepFailed("sheets_get_values failed: the spreadsheet has no tab to read");
           range = `'${first.replace(/'/g, "''")}'`;
         }
         const resp = await api("GET", `${base}?ranges=${encodeURIComponent(range)}&fields=${encodeURIComponent(GRID_FIELDS)}`);
@@ -149,7 +150,8 @@ export default defineStep({
       if (!resp.ok) return errorResult("sheets_get_values", resp.status, resp.body);
       return { range: resp.body.range, values: resp.body.values ?? [] };
     } catch (err: any) {
-      return `sheets_get_values failed: ${err?.message ?? String(err)}`;
+      if (err instanceof StepFailure) throw err;
+      return stepFailed(`sheets_get_values failed: ${err?.message ?? String(err)}`);
     }
   },
 });

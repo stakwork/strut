@@ -2,6 +2,7 @@ import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
 import { graphCtx, errText } from "./_shared.js";
+import { stepFailed } from "../../../public-call.js";
 
 /**
  * Move a node or an edge to another namespace — `shared`, so every reader
@@ -35,7 +36,7 @@ export default defineStep({
       const b = await graphCtx(ctx as StepContext<StrutCapabilities>);
       // The proposer's reader must see what it moves: a hidden node is not there.
       const seen = cfg.kind === "node" ? await b.reader.getNode(cfg.ref_id) : true;
-      if (!seen) return `graph/set-namespace failed — NOT_FOUND: no node ${cfg.ref_id}`;
+      if (!seen) return stepFailed(`graph/set-namespace failed — NOT_FOUND: no node ${cfg.ref_id}`);
       const { setNamespace } = await import("../../../graph/set-namespace.js");
       return await setNamespace(b, { kind: cfg.kind ?? "node", ref_id: cfg.ref_id, namespace: cfg.namespace });
     } catch (e) {

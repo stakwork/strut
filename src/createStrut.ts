@@ -51,6 +51,7 @@ import { ledgerPath, openLedger, priceOf, type LedgerStore } from "./payments/le
 import { MemoryLedgerStore } from "./payments/ledger-memory.js";
 import { isPriced, listRunnable, recentCosts, runnableCan, runnableProblems, runnableSubject, type RunnableDeps } from "./public-runnable.js";
 import { createCredit } from "./public-credit.js";
+import { createPublicTools, guardedHttp, publicToolServices } from "./public-tools.js";
 import type { SecretStore } from "./secret-store.js";
 import {
   FileSessionStore,
@@ -3309,6 +3310,32 @@ export async function createStrut<TServices = unknown>(
     wallet: () => payments.lightning() !== null,
     ...(opts.publicRuns?.principal ? { principal: opts.publicRuns.principal } : {}),
   };
+  // Anyone's call of a runnable STEP (plans/paid-runs.md §6, work item 6;
+  // src/public-tools.ts): its config checked, a priced one's reserve set
+  // aside, the step run once against an allowlist — the visitor's bag, with
+  // the whole graph read-only (the `jobs` list's, on a host that set
+  // `graphReaders`) and an http that reaches no private address — never
+  // kept as a run, and charged by the rule.
+  const toolHttp = guardedHttp();
+  const toolGraph = graph ? graphView(graph, opts.graphReaders, "jobs") : null;
+  const publicTools = createPublicTools({
+    ledger,
+    surface: publicSurface,
+    registry: () => registry,
+    services: () => {
+      const bag = services as Record<string, unknown>;
+      return publicToolServices(bag, {
+        graph: toolGraph,
+        http: toolHttp,
+        // The runs as a visitor reads them, held to the public view; no
+        // launcher, so a tool launches nothing.
+        ...(bag["runs"] ? { runs: visitorRuns(bag["runs"] as Parameters<typeof visitorRuns>[0], { surface: () => publicSurface.get() }) } : {}),
+      });
+    },
+    credit,
+    draining: () => drain.refusal(),
+    ...(opts.publicRuns?.principal ? { principal: opts.publicRuns.principal } : {}),
+  });
   const publicDoors = publicRoutes(app, {
     surface: publicSurface,
     workspace,
@@ -3353,6 +3380,7 @@ export async function createStrut<TServices = unknown>(
     // public principal else its owner, under `public/<runId>/` (runner.ts
     // `bindPublic`), its cap on the launch.
     credit,
+    tools: publicTools,
     launches: {
       runs: publicRuns,
       draining: () => drain.refusal(),
@@ -8417,8 +8445,8 @@ export async function createStrut<TServices = unknown>(
     return {
       draining: !!state,
       ...(state ?? {}),
-      idle: running.length === 0 && chats.length === 0,
-      active: { runs: running.length, chats: chats.length },
+      idle: running.length === 0 && chats.length === 0 && publicTools.inFlight() === 0,
+      active: { runs: running.length, chats: chats.length, tools: publicTools.inFlight() },
       // The top-level runs it waits on (the first 50), so a person sees what.
       runs: running
         .filter((ctl) => !ctl.parent)
@@ -8620,6 +8648,7 @@ export async function createStrut<TServices = unknown>(
     bootTimer = undefined;
     if (ledgerSweepTimer) clearInterval(ledgerSweepTimer);
     ledgerSweepTimer = undefined;
+    publicTools.close();
     withdrawals.stop();
     await bootScan;
     await packages.booted;
@@ -8729,6 +8758,11 @@ export async function createStrut<TServices = unknown>(
       }
     } catch (err) {
       console.error(`[public-runs] boot reconcile failed:`, err);
+    }
+    // A tool call's hold a dead process left between its hold and its
+    // charge (src/public-tools.ts): the call never answered, so it is freed.
+    if (ledgerOnDisk) {
+      for (const r of await publicTools.reconcile()) console.log(`[public-tools] ${r.subject} call ${r.callId}: hold ${r.action} at boot`);
     }
     if (ledgerOnDisk) await sweepLedger();
   };

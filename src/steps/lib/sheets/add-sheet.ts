@@ -2,6 +2,7 @@ import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
 import { SHEETS_API, errorResult, serviceAccountField, sheetsCtx } from "./_shared.js";
+import { StepFailure, stepFailed } from "../../../public-call.js";
 
 export default defineStep({
   type: "sheets/add-sheet",
@@ -28,7 +29,8 @@ export default defineStep({
       const props = resp.body.replies?.[0]?.addSheet?.properties;
       return { sheet_id: props?.sheetId, title: props?.title ?? cfg.title };
     } catch (err: any) {
-      return `sheets_add_sheet failed: ${err?.message ?? String(err)}`;
+      if (err instanceof StepFailure) throw err;
+      return stepFailed(`sheets_add_sheet failed: ${err?.message ?? String(err)}`);
     }
   },
 });
