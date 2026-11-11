@@ -27,7 +27,7 @@
 > - `og:image` is served at `GET /serve/image`.
 > - The favicon is a `data:` URL in the page.
 >
-> **Work item 2 BUILT (stakwork/strut#621, open at writing):**
+> **Work item 2 BUILT (stakwork/strut#621, merged 2026-11-10):**
 > - the `git+` source (`src/packages/git-source.ts`) over `git/checkout`'s
 >   bare cache: a branch, tag or commit, and `#path`;
 > - the token from a named secret (`tokenSecret`, default `GITHUB_TOKEN`),
@@ -48,6 +48,85 @@
 >   cannot send it elsewhere; a private requirement there fails.
 > - A moved commit whose digest did not move deploys nothing (a change to
 >   `.github/`, say).
+>
+> **Work item 3 BUILT (stakwork/strut#622, open at writing):**
+> - `src/packages/repos.ts` and the routes `/packages/repos[/:publisher/:name
+>   [/diff|commit|pull|retire]]` (specs/API.md §16, "Working on a
+>   repository");
+> - Open repo: a kept working copy at `<dataDir>/packages/work/<publisher>/
+>   <name>/`, a worktree of `git/checkout`'s bare cache, and the branch's
+>   commit installed through the `repo` door; on file in
+>   `<dataDir>/packages/repos.json` with the token secret's NAME;
+> - the `repo` door (`src/packages/install.ts`): the commit is the truth,
+>   and a version whose content is the commit's is stamped with it in place
+>   (`PublishOptions.stamp`, both workspace stores);
+> - Commit: the edits written with `packageFiles(…, { under })`, a commit
+>   with the actor's identity, a new branch and a pull request, or the
+>   followed branch when asked, then the re-stamp;
+> - Pull: the edits committed locally first, `git merge`, a conflict named
+>   with nothing installed, the merged tree applied;
+> - Create repo: a build pushed as an empty remote's first commit, then
+>   opened; the bare originals retired only on the person's word;
+> - `package/commit`, a proposal an admin accepts, granted and in `approve:`
+>   in the `job`, `builder` and `orchestrator` seeds;
+> - an opened repo's prefix takes NEW workflows, steps and apps from any
+>   door (`WorkspaceStore.setOpenPackages`), which Commit writes as new
+>   files; every other installed package keeps marketplace.md §3's rule;
+> - the Packages tab's Repos section (`web/src/components/PackageRepos.tsx`)
+>   and Create repo on a package's page.
+>
+> Choices beyond the text, from the PR:
+> - A repo's id is its package (one repo per package); the routes take
+>   `:publisher/:name`.
+> - A repo is opened on a branch: a tag or a commit cannot be followed or
+>   pushed to.
+> - The working copy's branch is its own, `repo/<publisher>/<name>`,
+>   tracking the followed branch, so no other worktree of the cache holds it.
+> - A Commit writes only the EDITS — an item whose active version the
+>   `repo` door did not write at the commit on file, and the deletions — so
+>   it never undoes what git merged. `strut.yaml`, `serve.yaml`, `graph/`
+>   and other files are the repo's; claims travel with an edited step.
+> - A new item under an opened repo's prefix is allowed from any door and
+>   named under the package (`acme/moonlander/ghost`): the refusal, where
+>   the rule still holds, says how to open the repo, and the `App` page says
+>   to name a new item under the package. A file added in the working copy
+>   also installs at the next Pull.
+> - A new Concept page under one of the package's pages is the package's at
+>   the next Commit (adopted by the repo door). It shows in the diff, not in
+>   the row's "new" list.
+> - Closing a repo puts the rule back. An item added and not committed stays
+>   a local item that runs and can be edited, and the first Commit after the
+>   repo is opened again writes it.
+> - One name, one door. A first Open refuses workflows, steps or apps made
+>   here under the package's name and a Concept page made here with one of
+>   its pages' names, as an ordinary install does; only an open repo's
+>   apply, a reopen, and Create repo's own open take them. While a repo is
+>   open no other door writes or removes its package (`package_repo_owned`:
+>   a person's install, the distro's, an uninstall). Create repo refuses a
+>   name installed here, or one with items under it, before it pushes.
+> - The re-stamp rewrites the known version's door, actor and upstream in
+>   place: no new version. It runs after every other write, as it is not
+>   taken back.
+> - The `repo` door makes a fork what the commit holds, retires what the
+>   commit dropped whatever its state, and — for a repo already open, or
+>   Create repo's own open — takes a Concept page made here under a page's
+>   name.
+> - A Commit defaults to a new branch `strut/<name>-<sha>` with a pull
+>   request (GitHub only; elsewhere the branch is pushed and the answer says
+>   why there is no PR). It pushes straight only when `branch` names the
+>   followed branch, and never forces.
+> - A commit's author is the token's GitHub account on github.com, as
+>   `git/push`; elsewhere the actor, at `strut@strut.invalid`.
+> - A pull's conflict is kept on the record: until the merged tree is
+>   applied nothing more is written from the workspace, and Commit waits.
+>   Edits made in the workspace meanwhile are not carried.
+> - Pull concludes a merge whose files the person resolved and `git add`ed.
+> - `package/commit` is an admin's yes (`approver: "admin"`), as the HTTP
+>   door is full scope and a push may use the deployment's token.
+> - Close (`DELETE /packages/repos/:publisher/:name`) forgets the repo and
+>   its working copy; the items stay installed.
+> - The diff preview writes the edits into the working copy and stages
+>   them, without committing.
 >
 > **Work item 4 BUILT (stakwork/strut#624, open at writing):**
 > - the challenge (`GET /visitors/challenge`), `POST`/`DELETE
@@ -87,7 +166,8 @@
 >
 > Companion to:
 > - `marketplace.md`: the package format (§1), the `git+` source and the
->   export to git (§5, step 3, not built), the distro's door (§12);
+>   export to git (§5, step 3; the export is this plan's round trip), the
+>   distro's door (§12);
 > - `public-surface.md`: the visitor's page (§5) and custom domains (§9);
 > - `paid-runs.md`: public and priced runs, the L402 credit token;
 > - `app-payments.md`: the wallet contract an app speaks and the browser
@@ -682,9 +762,9 @@ players before it needs git, visitors (4) moves up to second.
    `git/checkout`'s bare cache,
    `#path`, the commit recorded in `upstream`, `STRUT_SERVE` and
    `STRUT_PACKAGES` taking `git+`, the poll and `POST /serve/sync`.
-3. **The round trip.** Open repo, Create repo, Commit, Pull, the `repo`
-   door, `package/commit` as a proposal, the Packages tab's rows for a
-   repo.
+3. **The round trip.** *BUILT, stakwork/strut#622.* Open repo, Create
+   repo, Commit, Pull, the `repo` door, `package/commit` as a proposal, the
+   Packages tab's rows for a repo.
 4. **Signed-in visitors.** *BUILT, stakwork/strut#624.* The challenge, `POST /visitors/session`, role
    and scope `visitor`, §5.1's rules in `step_run`, per-actor budgets, the
    kit's `useVisitor()`, the host page's sheet. The first methods are the

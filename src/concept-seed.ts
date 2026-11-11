@@ -99,6 +99,10 @@ export interface ConceptSet {
    *  overwritten — and a deleted node under a page's name is taken whoever
    *  stamped it, since the install checked every live name first. */
   keepEdited?: boolean;
+  /** A REPO's set (app-repos.md §3.1): a live node under a page's name that
+   *  no seeder stamped — a page made here — is taken as that page and
+   *  stamped, so a page put in a repo by Create repo stays the same node. */
+  adopt?: boolean;
 }
 
 export interface ConceptFile {
@@ -272,12 +276,13 @@ export function planConceptSeed(
   file?: Pick<ConceptFile, "attributes" | "docs">,
   keepEdited = false,
   anyFileOf?: string,
+  adopt = false,
 ): SeedAction {
   if (!existing) return "create";
-  const usid = typeof existing.unique_source_id === "string" ? existing.unique_source_id : undefined;
+  const usid = typeof existing.unique_source_id === "string" && existing.unique_source_id ? existing.unique_source_id : undefined;
   const at = stamp.lastIndexOf("@") + 1;
   const samePath = usid !== undefined && [stamp.slice(0, at), ...legacy].some((path) => usid.startsWith(path));
-  const ours = samePath || (usid !== undefined && anyFileOf !== undefined && usid.startsWith(anyFileOf));
+  const ours = samePath || (usid !== undefined && anyFileOf !== undefined && usid.startsWith(anyFileOf)) || (adopt && usid === undefined);
   if (existing.deleted) return ours || keepEdited ? "update" : "skip"; // an upsert restores a deleted node
   if (!ours) return "skip";
   if (!samePath || usid!.slice(usid!.lastIndexOf("@") + 1) !== stamp.slice(at)) return "update";
@@ -382,7 +387,7 @@ export async function seedConcepts(graph: GraphBackend | undefined, sets: Concep
   /** The rule for one page against what the graph holds under its name. */
   const plan = (page: SeedPage, existing: ExistingConcept | null): SeedAction => {
     const set = page.set;
-    return planConceptSeed(existing, page.c!.stamp, pathsOf(set, page.file).slice(1), page.c!, set.keepEdited, set.keepEdited ? set.prefix : undefined);
+    return planConceptSeed(existing, page.c!.stamp, pathsOf(set, page.file).slice(1), page.c!, set.keepEdited, set.keepEdited ? set.prefix : undefined, set.adopt);
   };
   /** A page kept or skipped: nothing written. */
   const leave = (page: SeedPage, existing: ExistingConcept, action: "keep" | "skip") => {

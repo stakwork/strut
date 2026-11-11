@@ -130,7 +130,7 @@ describe("concept files (pure)", () => {
     // the grants, routines, the four shapes.
     const app = await read("App.md");
     assert.deepEqual(app.parents, ["Workflow Builder"]);
-    for (const must of ["app.yaml", "grants", "useLaunch", "useRun", "never on a render", "llm", "@/components/ui", "strut/views", "app/build", "app/publish", "wallet:", "useWallet", "useTransaction", "Pending is not failed"]) assert.ok(app.docs!.includes(must), must);
+    for (const must of ["app.yaml", "grants", "useLaunch", "useRun", "never on a render", "llm", "@/components/ui", "strut/views", "app/build", "app/publish", "wallet:", "useWallet", "useTransaction", "Pending is not failed", "Packages → Repos", "never `ghost`"]) assert.ok(app.docs!.includes(must), must);
     assert.doesNotMatch(app.docs!, /hive|@<slug>|\bpod\b/i, "names nothing one deployment has");
     // A game is a kind of app: its page under App, read when the builder
     // makes one — the starter, the loop, input, assets, physics, the look.

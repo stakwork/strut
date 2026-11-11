@@ -30,7 +30,7 @@ export interface InstallState {
   /** What was asked: the ref, or a subscription's refs joined. */
   ref: string;
   /** A person's install, or the distro's (a subscription). */
-  door: "install" | "distro";
+  door: "install" | "distro" | "repo";
   actor?: string;
   status: "queued" | "running" | "done" | "failed";
   phase: InstallPhase;
@@ -50,7 +50,7 @@ export interface InstallState {
 export interface InstallTracker {
   /** Run `install` under a record: its id now, its result when it ends
    *  (rejected as the install is). `install` is handed the reporter. */
-  start(what: { ref: string; door?: "install" | "distro"; actor?: string }, install: (progress: (p: InstallProgress) => void) => Promise<InstallResult>): { id: string; done: Promise<InstallResult> };
+  start(what: { ref: string; door?: "install" | "distro" | "repo"; actor?: string }, install: (progress: (p: InstallProgress) => void) => Promise<InstallResult>): { id: string; done: Promise<InstallResult> };
   get(id: string): InstallState | undefined;
   /** Newest first: the running ones and the recently ended. */
   list(): InstallState[];

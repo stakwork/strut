@@ -216,6 +216,9 @@ params:
     # A package someone published (plans/marketplace.md §8), installed only
     # on the person's yes: the call is a proposal.
     - package/install
+    # A package opened here as a git repo (plans/app-repos.md §3.3):
+    # committed and pushed only on an admin's yes — the call is a proposal.
+    - package/commit
     # Another strut server's public door (plans/paid-runs.md §10): what it
     # sells, and a run or a tool call there spending the credit this strut
     # already holds — no ask (decision 16). Buying credit is an admin's yes:
@@ -227,11 +230,13 @@ params:
   # Tools among the grants that need the PERSON's approval
   # (plans/proposals.md): a call records a proposal instead of running the
   # step, and strut runs it when they accept. Strut's own: package/install
-  # (someone's code into this strut) and remote/buy-credit (this server's
+  # (someone's code into this strut), package/commit (this workspace pushed
+  # to a repo with a person's credential) and remote/buy-credit (this server's
   # sats to another strut). A host appends its gated writes
   # (`createStrut({ job: { approve } })`).
   approve:
     - package/install
+    - package/commit
     - remote/buy-credit
   system: |
     You are working on a JOB with a person, over many turns. Your working

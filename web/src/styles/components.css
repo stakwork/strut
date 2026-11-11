@@ -3878,7 +3878,7 @@ input.package-search { width: 100%; margin-bottom: var(--sp-2); }
   margin-bottom: var(--sp-1);
 }
 .dialog-field .package-workflow input { width: auto; padding: 0; margin: 0; }
-.package-publish-actions { display: flex; margin: var(--sp-3) 0; }
+.package-publish-actions { display: flex; flex-wrap: wrap; align-items: flex-start; gap: var(--sp-2); margin: var(--sp-3) 0; }
 .package-filter { margin-bottom: var(--sp-2); }
 .package-group { margin-bottom: var(--sp-2); }
 .package-group-title { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-dim); margin: var(--sp-1) 0 2px; }
@@ -3907,6 +3907,52 @@ input.package-search { width: 100%; margin-bottom: var(--sp-2); }
 .install-progress-bar > span { display: block; height: 100%; background: var(--accent); transition: width 0.3s ease; }
 /* A refusal names every problem in one line: keep it readable as it came. */
 .package-refusal { white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-mono); font-size: 11px; }
+/* A repo this strut works on (plans/app-repos.md §3): its row, Commit and Pull. */
+.package-publish-actions > .listing-form,
+.package-publish-actions > .auto-card { flex-basis: 100%; }
+.repo-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-2); }
+.repo-panel { display: flex; flex-direction: column; gap: var(--sp-2); border-top: 1px solid var(--border); padding-top: var(--sp-2); }
+.repo-panel .dialog-field { margin-bottom: 0; }
+.repo-push { display: flex; flex-direction: column; gap: var(--sp-1); }
+.repo-push .listing-check { display: flex; align-items: center; gap: var(--sp-2); font-size: 12px; color: var(--text-muted); }
+.repo-push input[type="text"] {
+  font: inherit;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  color: var(--text);
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--r-md);
+}
+.repo-panel textarea {
+  font: inherit;
+  font-size: 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  color: var(--text);
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--r-md);
+  resize: vertical;
+}
+.repo-files { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; font-size: 12px; }
+.repo-files li { display: flex; gap: var(--sp-2); align-items: baseline; }
+.repo-file-status { font-family: var(--font-mono); font-size: 11px; width: 1.2em; color: var(--text-muted); }
+.repo-file-status.is-added { color: var(--success, var(--accent)); }
+.repo-file-status.is-deleted { color: var(--danger); }
+.repo-diff summary { cursor: pointer; font-size: 12px; color: var(--text-muted); }
+.repo-diff pre {
+  margin: var(--sp-1) 0 0;
+  max-height: 280px;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: var(--sp-2);
+  white-space: pre;
+}
 .package-warning { color: var(--warning); }
 .package-files summary { cursor: pointer; font-size: 12px; color: var(--text-muted); }
 .package-files ul { margin: var(--sp-1) 0 0; padding-left: var(--sp-4); font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); }
