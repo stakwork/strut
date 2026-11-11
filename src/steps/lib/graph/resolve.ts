@@ -44,7 +44,10 @@ export default defineStep({
       };
       const typed = cfg.node_type?.trim() ? await resolveNode(b, { ...asked, type: cfg.node_type }) : undefined;
       // A typed miss: the same name under another entity type is the thing filed elsewhere.
-      const across = !typed || (!typed.match && !typed.ambiguous) ? await resolveAcross(b, asked) : undefined;
+      // Only when there is a name to look for: a miss asked by key or identifier alone has no `elsewhere`.
+      const dataName = cfg.node_data?.["name"];
+      const named = !!(cfg.name?.trim() || (typeof dataName === "string" && dataName.trim()) || cfg.aliases?.some((a) => a.trim()));
+      const across = !typed ? await resolveAcross(b, asked) : !typed.match && !typed.ambiguous && named ? await resolveAcross(b, asked) : undefined;
       const others = across && typed ? (across.match ? [across.match] : across.ambiguous ? across.candidates : []).filter((n) => n.node_type !== typed.node_type) : [];
       const r = typed ? { ...typed, ...(others.length ? { elsewhere: others } : {}) } : across!;
       return r.match ? withAccessedNodes(r, [{ ref_id: r.match.ref_id, node_type: r.match.node_type, ...(r.match.title ? { name: r.match.title } : {}) }]) : r;
