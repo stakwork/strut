@@ -7,7 +7,8 @@
  * Any strut code can read any secret by name: a step's `secrets.get`, an
  * `agent` / `exec` step's `secretsEnv`, a `git/*` step's `tokenSecret`. That
  * is fine for code a person wrote. For what the meta surface publishes
- * (stamped `publisher: ai`) the host names an ALLOW list instead:
+ * (a version it wrote, `source: agent` — the workflow is then stamped
+ * `publisher: ai`) the host names an ALLOW list instead:
  *
  *   - `tools`: step types (globs, as `agentTools` takes them) a workflow the
  *     AI publishes may run or grant to its agents. Control flow and the model
@@ -27,10 +28,12 @@
  * every step the closure walks and every grant, and a closure that cannot be
  * read in full (a templated grant or subflow) is refused. At RUN
  * (`withinReach`, from the runner, an agent's tool call and a proposal's
- * apply), inside a workflow the AI published (`ctx.aiAuthored`): each step
- * as resolved — which covers what a model passes a granted tool, a workflow
- * stamped `ai` before its host set a reach, and a person's subflow that
- * changed after the AI published over it.
+ * apply), inside a version of a workflow the AI wrote (`ctx.aiAuthored`,
+ * `aiWroteVersion` in authoring.ts — the version that RUNS, so a seed put
+ * back at boot or a person's own later version is not held, and the AI's
+ * version run by name is): each step as resolved — which covers what a model
+ * passes a granted tool, a workflow the AI wrote before its host set a
+ * reach, and a person's subflow that changed after the AI published over it.
  *
  * strut's own reads are untouched: the `agent` and `llm` steps still read
  * the model key through the run's secrets.
@@ -57,8 +60,10 @@ export const ALWAYS_IN_REACH: ReadonlySet<string> = new Set(["loop", "foreach", 
  *  (createStrut puts it there when the host set `builder.reach`). */
 export interface ReachPolicy {
   reach: Readonly<BuilderReach>;
-  /** Was this workflow published by the meta surface (`publisher: ai`)? */
-  aiWorkflow(name: string): Promise<boolean>;
+  /** Did the meta surface write this version of the workflow — the one
+   *  that runs (`which`: its label or content hash), else the active one
+   *  (`aiWroteVersion`, authoring.ts)? */
+  aiWorkflow(name: string, which?: { version?: string; hash?: string }): Promise<boolean>;
 }
 
 export function reachPolicyOf(services: unknown): ReachPolicy | undefined {

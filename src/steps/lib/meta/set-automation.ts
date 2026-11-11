@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { defineStep } from "../../../core.js";
-import { AI_PUBLISHER } from "../../../authoring.js";
+import { aiWrote } from "../../../authoring.js";
 import { automationInputSchema, triggerSchema } from "../../../automations.js";
 import { brief, unwrap, type AutomationStepsCapability } from "../automation/_shared.js";
 import { requireAuthoring } from "./_shared.js";
@@ -10,8 +10,9 @@ import { requireAuthoring } from "./_shared.js";
  * docs/connectors-and-authoring.md §6): the builder job's twin of the chat
  * builder's `set_automation`, held to two rules the chat's is not.
  *
- *   - Only a workflow stamped `publisher: ai` — never a seeded one, a
- *     host's or a person's, whose schedules are theirs.
+ *   - Only a workflow whose ACTIVE version the AI published (`source:
+ *     agent`, `aiWrote`) — never a seeded one, a host's or a person's
+ *     (the AI may publish over those, but their schedules are theirs).
  *   - Only as a proposal a person accepted (`ctx.proposal`): a direct tool
  *     call, a DAG step, `meta/run-step` or a subflow is refused. The host
  *     lists it in the agent's `approve:` (the builder's delta), so the call
@@ -26,8 +27,8 @@ export default defineStep({
   type: "meta/set-automation",
   description:
     "Schedule a workflow you published: create an automation on it, or (with `id`) change one — only the fields you pass change; " +
-    "pause with { id, enabled: false }; delete with { id, remove: true }. Only on workflows published through meta/publish-workflow " +
-    "(publisher 'ai'), never a seeded or a person's workflow. It runs only on the person's yes: where this strut server gates it, the call " +
+    "pause with { id, enabled: false }; delete with { id, remove: true }. Only on a workflow whose active version you published through " +
+    "meta/publish-workflow, never a seeded or a person's workflow. It runs only on the person's yes: where this strut server gates it, the call " +
     "becomes a proposal, applied when they accept it (after the publish of that workflow if that is waiting too); where it does not, " +
     "it is refused and you tell the person to schedule it themselves. Returns the automation and its next fires.",
   input: z.object({
@@ -52,10 +53,10 @@ export default defineStep({
     }
     const api = (ctx.services as { automations?: AutomationStepsCapability } | undefined)?.automations;
     if (!api?.api) throw new Error("meta/set-automation needs strut's automations (ctx.services.automations); the standard strut server provides them.");
-    const wf = (await requireAuthoring(ctx.services).getWorkflow(cfg.workflow)) as { error?: string; publisher?: string };
+    const wf = (await requireAuthoring(ctx.services).getWorkflow(cfg.workflow)) as { error?: string; publisher?: string; source?: string };
     if (wf.error) throw new Error(`${wf.error} — publish it with meta/publish-workflow first.`);
-    if (wf.publisher !== AI_PUBLISHER) {
-      throw new Error(`Workflow "${cfg.workflow}" was not published through meta/publish-workflow (publisher: ${wf.publisher ?? "none"}): only those may be scheduled here.`);
+    if (!aiWrote(wf.source, wf.publisher)) {
+      throw new Error(`Workflow "${cfg.workflow}": its active version was not published through meta/publish-workflow (source: ${wf.source ?? "none"}): only a workflow whose active version you published may be scheduled here; a person schedules the others.`);
     }
     const { workflow, id, remove, ...fields } = cfg;
     if (remove) {

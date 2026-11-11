@@ -89,7 +89,7 @@ import { installSystemWorkflows } from "./system-workflows.js";
 import { PEERS_FILE, checkPeer, checkSelf, parsePeersEnv, parseSelfEnv, peerIdProblem, peerInfo, peerStore, peersCapability, type Peer, type SelfInfo } from "./peers.js";
 import { globToRegExp, grantWidenedBy, stepHashesFor } from "./closure.js";
 import { stepStats } from "./step-stats.js";
-import { AI_PUBLISHER, buildAuthoringCapability } from "./authoring.js";
+import { aiWroteVersion, buildAuthoringCapability } from "./authoring.js";
 import type { ReachPolicy } from "./reach.js";
 import { appErrors, createApps, type AppsCapability, type AppPublishResult } from "./apps/apps.js";
 import { fileAppGrants } from "./apps/grants.js";
@@ -1783,9 +1783,9 @@ export async function createStrut<TServices = unknown>(
   // the registry state initialized just before. This is what the meta/* lib
   // steps reach via ctx.services.authoring, letting an in-workflow agent
   // (agentTools: ["meta/*"]) author and evaluate candidate workflows
-  // (EVOLVE_SPEC §5). Everything it publishes is stamped publisher "ai" and
-  // it publishes only over that stamped set; it runs and inspects anything
-  // but what is sealed (src/sealed.ts: a grading harness, a grader step).
+  // (EVOLVE_SPEC §5). Everything it publishes is stamped publisher "ai"; it
+  // publishes over, runs and inspects anything but what is sealed
+  // (src/sealed.ts: a grading harness, a grader step).
   if (reach) {
     // Frozen, and a copy: a step holds the bag, and must not widen it.
     const policy: ReachPolicy = Object.freeze({
@@ -1794,7 +1794,10 @@ export async function createStrut<TServices = unknown>(
         builtins: Object.freeze([...(reach.builtins ?? [])]) as string[],
         secrets: Object.freeze([...(reach.secrets ?? [])]) as string[],
       }),
-      aiWorkflow: async (name: string) => (await workspace.getWorkflowMetadata(name))?.publisher === AI_PUBLISHER,
+      aiWorkflow: async (name: string, which?: { version?: string; hash?: string }) => {
+        const meta = await workspace.getWorkflowMetadata(name);
+        return meta ? aiWroteVersion(meta, which) : false;
+      },
     });
     Object.defineProperty(services, "reach", { value: policy, enumerable: true, writable: false, configurable: false });
   }
@@ -3161,42 +3164,6 @@ export async function createStrut<TServices = unknown>(
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : String(err) }, 404);
     }
-  });
-
-  // Hand a workflow to the builder, or take it back: the `publisher` stamp
-  // the meta surface publishes over (it writes only over names stamped
-  // "ai", src/authoring.ts). A person's door — the gate refuses a peer, and
-  // no tool reaches it. It moves the stamp between none and "ai" only (a
-  // service's stamp is the service's), and refuses to hand over what the
-  // builder could not keep: a sealed workflow (a candidate without
-  // `sealed:` would unseal a grading harness), one open to peers (the
-  // builder may not publish `peer:`, so its next version would close it to
-  // them) and a seed (every boot puts the committed version back).
-  app.put("/workflows/:name/publisher", async (c) => {
-    const name = c.req.param("name")!;
-    const body = await c.req.json<{ publisher?: string | null }>().catch(() => ({}) as { publisher?: string | null });
-    const publisher = body.publisher ?? null;
-    if (publisher !== null && publisher !== AI_PUBLISHER) {
-      return c.json({ error: `publisher is "${AI_PUBLISHER}" (hand the workflow to the builder) or null (take it back)` }, 400);
-    }
-    const meta = await workspace.getWorkflowMetadata(name);
-    if (!meta) return c.json({ error: `Workflow "${name}" not found` }, 404);
-    if (meta.publisher && meta.publisher !== AI_PUBLISHER) {
-      return c.json({ error: `Workflow "${name}" is stamped "${meta.publisher}", a service's: only an unstamped workflow is handed to the builder` }, 409);
-    }
-    if (publisher) {
-      const refusal = async (): Promise<string | undefined> => {
-        if (meta.versions[meta.active]?.source === "seed") return "it is a seed: every boot puts the committed version back, so change it where it is seeded";
-        const flow = await workspace.getWorkflow(name);
-        if (flow.sealed) return "it is sealed: the builder may never publish over a grading harness";
-        if (flow.peer) return `it is open to other struts (\`peer: ${flow.peer}\`), and the builder may not publish that key: its next version would close it to them`;
-        return undefined;
-      };
-      const why = await refusal();
-      if (why) return c.json({ error: `Workflow "${name}" is not handed to the builder — ${why}` }, 409);
-    }
-    await workspace.setWorkflowPublisher(name, publisher);
-    return c.json({ ok: true, workflow: name, publisher });
   });
 
   app.put("/workflows/:name/active", async (c) => {

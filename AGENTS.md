@@ -154,7 +154,7 @@ strut/
 │   │   │   ├── job/       # job/dir: the run's JOB directory (jobs.ts) for an agent's cwd — `<dataDir>/jobs/<job>/`, the same path every run launched with that `job`; a run with no job gets its own artifact dir, so a job workflow is also a one-shot; `hold: false` hands it out without holding it, for a run that only reads (several of a job's readers at once — a convention, not a sandbox). job/upload / job/delete-upload: one file into / out of the job's `uploads/` (`saveJobUpload`, jobs.ts: never overwritten, a taken name numbered, the job made when there is none, no hold) — an app page's upload (plans/apps.md §12), never kept as a run from the app door since its input is the bytes. job/updates: the job's LIVE UPDATES after a cursor, held up to `wait` (`ctx.services.jobs.updates`, plans/live-feeds.md §1) — an app page's way to follow its jobs, granted like any read; job/status { title, detail? }: one line of what the run is doing now, `job.update { kind: "status", id: <runId> }` to the run's job (nothing without one). job/list, job/get, job/read: the job INDEX (job-index.ts) as steps — find an earlier job by words, read what it produced and the thread to continue, open one of its files (an image is SHOWN to the model via withMedia) — thin over `ctx.services.jobs`, the same reads `GET /jobs[/:id]` serves. job/start, job/continue: hand work to a job-shaped workflow DETACHED — `job`, or `builder` with `workflow: builder` (the authoring hands — workflows, and the apps that live in a workspace; `peer` for a build on another strut, plans/builder-job.md §2; the closed set is `JOB_WORKFLOWS`, jobs.ts, and the rule is on the field's own description, beside the `Workflow Builder` kinds the orchestrator reads) — and return `{ job, runId, callback, workflow }` at once — `workflow` the one the job's run is, the record's for a continue (an orchestrator's start_job / continue_job, as Jamie does in Hive); the job's run records the TURN that started it — `startedBy: { workflow, runId, session? }`, the launching root run and the conversation its launch named, on its `run.start`, the job record's run line and its `run.end` (CALLBACKS.md §2) — so a host hearing every job of a person on one room socket finds the conversation — unlike meta/run-workflow, which waits, so the calling turn ends and its session is free; through `ctx.services.jobs.launch` (createStrut, over launchDetached): the job's `run.end` goes to the LAUNCHING run's own callback (the run store's, never a URL the model wrote), `job_busy:` while a run of the job is in flight, start mints the id and takes a `title` and the request's `kind` (a page under `Job`, which job.yaml opens every turn with; continue carries the last turn's unless it names another) (`peer` with `workflow: job`, `kind` with `workflow: builder`, or `repos` with `builder`, refused), continue refuses a job not on file and names only the job — the launcher follows the record (`turnOf`: the workflow the newest turn ran, that turn's `input.peer` carried along), so a builder job on a peer stays one; and both fill `input.workspace` from this strut's `self` record when the launch has none, so the agent's first line names its workspace as a host's own launch does. job/verify { job, claims?, detach? } and job/evidence { job, claim, runId, supports, content, slot? }: a PERSON's acts on a job's claims — what `POST /jobs/:id/verify` and `POST /claims/:id/evidence { job }` do, over `ctx.services.jobs.verify` / `.evidence` (set by createStrut where the claims layer is on) — for strut's own app's claims card: only as a first-party page's own call (never an agent's tool; an agent has meta/verify-job), on a job the viewer launched a run of (the record's `actors`)
 │   │   │   ├── automation/ # automation/list, preview, create, update, delete, run-now: an agent's own door onto the automations (scheduler.ts), through `ctx.services.automations` — scoped to the ONE workflow the host names (`createStrut({ automation: { workflow, approve } })`, STRUT_HOST_CONFIG's `automation`), never another workflow's schedules; the run is handed `{ name, prompt, since: "{{ last.finishedAt }}", now: "{{ now }}" }` (the person's `{{`/`}}` kept apart by a zero-width space). The acting four first run the host's APPROVAL step (`{ intent: { action, content?, details? } }` → `{ approved }`, or a withStop output that the step passes up, ending the turn with nothing changed), refuse without one, and journal what they did so a resume never acts twice. A host whose approval step grants more than the prompt (`automation.grants`: Peel's posting as the person) gets a `grant` on create and update: strut never reads it, hands it to the approval step with the automation's ID and name (the id minted BEFORE the card, `automationId`, the same for the same call, given to `create`), and the host keeps what it allowed under that id; a change, run-now or delete card names the automation the same way (the host lets a deleted one's grant go). At each fire the runner hands every step `ctx.automation` (set by the scheduler's launch alone — a `POST …/run` or `meta/run-workflow` body cannot), which is where a host step acting on the grant names the automation; nothing rides in the input. An automation made from a turn inherits the root run's callback, as job/start does
 │   │   │   ├── meta/          # the AUTHORING TWINS (EVOLVE_SPEC §5.2): the chat builder's tools as registry steps over `ctx.services.authoring` (authoring.ts `buildAuthoringCapability`, the meta policy on top) — what the `builder` job and an evolve loop author through. Steps: list/search/get-step, create-step, edit-step (`code` or `edits`), run-step, list/get-workflow, validate-workflow, publish-workflow (the upsert), edit-workflow (`edits` over the active YAML, then the same publish), set-active-version (rollback, workflow or step), set-workflow-category, run-workflow, list/get/search-runs, resume-run, cancel-run, pause-run (never the caller's own run: `ownRunRefusal`), list-secrets, the claim steps, verify-run, verify-job. Not in the chat's set: bash, ask_user / request_secret (the job asks in its reply), peers, schedules (below)
-│   │   │   ├── meta/set-automation.ts # the builder job's schedule for a workflow it published: only on one stamped `publisher: ai`, and only as a proposal a person accepted (`ctx.proposal`, set by the apply alone) — a tool call, DAG step, meta/run-step or subflow is refused, so the host lists it in the builder's `approve:`; a proposal of it waits (`StepDef.after`, 409 on an early accept) for a pending `meta/publish-workflow` of the same workflow. Create, change, pause, remove by id; its fires report where the proposing run does, else nowhere until the host points them
+│   │   │   ├── meta/set-automation.ts # the builder job's schedule for a workflow it published: only on one whose ACTIVE version the meta surface wrote (`source: agent`, `aiWrote`), and only as a proposal a person accepted (`ctx.proposal`, set by the apply alone) — a tool call, DAG step, meta/run-step or subflow is refused, so the host lists it in the builder's `approve:`; a proposal of it waits (`StepDef.after`, 409 on an early accept) for a pending `meta/publish-workflow` of the same workflow. Create, change, pause, remove by id; its fires report where the proposing run does, else nowhere until the host points them
 │   │   │   ├── conversation/ # conversation/list { q?, archived?, limit?, before? }, conversation/get { session, limit?, before?, wait?, since? }, conversation/update { session, title?, archived?, seen?, shared? }, conversation/fork { session, id? }: the conversation index (src/conversations.ts) as steps, the viewer the step's actor — thin over `ctx.services.conversations`; conversation/list also answers `viewer`, the actor the list is for (where a page mints `<viewer>/<id>`). Refused under `ctx.app`, except a first-party page's (strut's own app, plans/jamie-app.md §3), which reads them as its viewer's person token
 │   │   │   ├── secret/    # secret/add { name, value } (plans/member-rights.md "Adding a secret"): a secret a PERSON types into strut's own app — the builder's reply names it in `ask.secret`, Jamie's SecretBox stores it — FILLING A BLANK through `ctx.services.secretBlanks` (src/secret-store.ts `secretBlanks`, set by createStrut when strut owns the store): refused (`secret_set:`) when the name has a value in the store or the environment, so a member never replaces the team's model or GitHub key; never lists, reads, changes or deletes one. Answers `{ name }` alone. Runs only as a first-party page's own call (a one-step run, for its viewer), never an agent's tool or a model-written page's; its `value` is `redact`ed from the run's events (`StepDef.redact`, runner.ts), so no log, sink or kept run holds it
 │   │   │   ├── history/   # history/read (plans/concept-history.md §4): the HISTORY (src/history.ts) as git keeps it, `effect: "read"` — `log { path?, run?, from?, to?, limit? }` (commits newest first: id, time, author, subject, the `Run:` trailers, each changed path with `added | modified | deleted | renamed` + `from`; `run` the commits carrying that run, `from`/`to` a range, `path` followed through renames with `--follow` when it is a file), `show { path, at }` (the file then: `text`, and `parsed` where the package reader parses it — a page through `parseConceptFile`, a type through `parseTypeFile` — or a folder's entries), `diff { from, to, path?, patch? }` (each path that differs, `before` / `after` as `show` gives them, `patch: true` the unified diff), `sync` (a snapshot now, cause `sync`; nothing written in the graph). A commit may be a TIME everywhere (ISO 8601 or epoch ms): the last commit at or before it (`rev-list -1 --before=@<s>`). Read-your-writes: `history.settle()` first. Held to the caller's reader list (`graphFor` + `boundsOf`, graph/scope.ts): `concepts/` when it cannot read the backend's own namespace, `namespaces/<ns>/` for each it cannot, in none of its answers — a commit of only those is not in its log, `namespaces/` is not listed when none in it is readable. No history: `{ history: false, message }`, never a failed run. No route: the step is the door
@@ -892,11 +892,14 @@ instead of baked into env at deploy time.
   `tokenSecret` or `storageStateSecret` — a default too — `http/verify`'s
   `{NAME}` header templates, or one named by a template); `meta/run-step`
   refuses a step outside it. The same rule (`stepProblems`) holds at RUN
-  time for every step inside a workflow the AI published or a
-  `meta/run-step` run (`ctx.aiAuthored`, kept by a subflow, inherited by an
-  agent's tool calls and a proposal's apply), as resolved — what a model
-  passes a tool, a workflow stamped `ai` before the host set a reach, a
-  person's subflow changed since — and the launcher's MCP servers are
+  time for every step inside a version of a workflow the AI wrote (the
+  version that runs, `aiWroteVersion`: a seed put back at boot, or a
+  person's own later version, is not held; the AI's version run by name or
+  by a pinned subflow is) or a `meta/run-step` run (`ctx.aiAuthored`, kept
+  by a subflow, inherited by an agent's tool calls and a proposal's apply),
+  as resolved — what a model passes a tool, a version the AI wrote before
+  the host set a reach, a person's subflow changed since — and the
+  launcher's MCP servers are
   dropped there. The model key the `agent` / `llm` steps read is strut's
   own and unaffected. A step in `tools` that launches a run (`run/launch`,
   `job/start`) hands that run out of reach: the host decides. A new config
@@ -2270,25 +2273,31 @@ the same steps are an agent's tools (`agentTools: ["browser/*"]`), and
   claims when the ask is understood, verify before saying done.
 
 - **Sealed — what the meta surface may never touch** (`src/sealed.ts`;
-  EVOLVE_SPEC §6). The `meta/*` steps publish only over names they stamped
-  `ai` — a person hands one of theirs over with `PUT
-  /workflows/:name/publisher { publisher: "ai" }` (the Workflow flyout's
-  "Let the builder edit this"; never a seed, a sealed or `peer:` workflow,
-  or another publisher's; `null` takes it back; a publish never moves the
-  stamp) — but RUN, read the runs of, and verify any workflow except a sealed
-  one — `sealed: true` at the top of its YAML, a grading harness whose run
-  log records what its graders were handed — and run any step except a
-  sealed one: the sealed namespaces (`eval/*`, `meta/*`, plus
+  EVOLVE_SPEC §6). The `meta/*` steps publish over ANY workflow and edit any
+  custom step, whoever published it (ruled 2026-11-10: there is no
+  handover) — but never publish over, RUN, read the runs of, or verify a
+  sealed workflow — `sealed: true` at the top of its YAML, a grading harness
+  whose run log records what its graders were handed — and never edit or
+  run a sealed step: the sealed namespaces (`eval/*`, `meta/*`, plus
   `STRUT_SEALED`) or `sealed: true` on its def (the lab's graders seal
   themselves; `gaia/*` is not sealed whole because `gaia/get-task` is the
   producer's door). A publish whose closure reaches one — the step by type,
   the workflow through a subflow, a grader in an `agentTools` grant — is
-  refused, as is a candidate that seals itself or a step authored into a
-  sealed namespace. So the job agent runs a seeded `pod-pr` through
-  `meta/run-workflow`, and an evolve candidate still cannot run, read, or
-  subflow its grader. Evidence is unchanged: only an unstamped harness
-  records `observed`. The web editor's Publish carries `sealed:` (and
-  `claims:`, `promotes:`) through from the version being edited.
+  refused, as is a candidate that seals itself or opens itself to peers
+  (`peer:`; over a workflow open to peers the AI's version closes it), or a
+  step authored into a sealed namespace. So the job agent edits and runs a
+  seeded `pod-pr`, and an evolve candidate still cannot run, read, rewrite or
+  subflow its grader. A publish over a SEEDED workflow goes through and its
+  result's `note` says the next boot puts the seed back. Every version the
+  meta surface writes is `source: agent` and stamps the workflow
+  `publisher: ai`, which then stays (a person's later publish keeps it):
+  what RUNS is read per version (`aiWroteVersion`, authoring.ts — reach and
+  `meta/set-automation`, so a seed put back or a person's later version is
+  not the AI's), while evidence reads the stamp (only a harness the AI never
+  wrote to records `observed`). A step it edits keeps its stamp (a
+  service's stays the service's to clean up). The web editor's Publish
+  carries `sealed:` (and `claims:`, `promotes:`) through from the version
+  being edited.
 
 - **Automations — run a workflow on a schedule** (`plans/automations.md`;
   `src/automations.ts` pure, `src/scheduler.ts` stateful). An automation is

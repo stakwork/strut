@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { coerceJsonArg, foldAccessedNodes, withAccessedNodes, withUsage, type AccessedNode, type ModelUsage, type AnyStepDef, type Flow, type McpServer, type RunEvent, type RunResult, type RunSummary, type StepRegistry } from "./core.js";
 import { buildRunView, type RunViewOptions } from "./run-view.js";
-import { claimsBlockOf, flowFromYaml, workflowDisabled, type WorkspaceStore } from "./workspace.js";
+import { claimsBlockOf, flowFromYaml, workflowDisabled, type WorkflowMetadata, type WorkspaceStore } from "./workspace.js";
 import type { RunStore } from "./store.js";
 import { countUsage, generateRunId, stepRunKey, stepTypeOfRunKey } from "./store.js";
 import { runWorkflow } from "./runner.js";
@@ -42,18 +42,55 @@ import { formatStepLint, lintStepSource } from "./step-lint.js";
  * The exported helpers are the shared MECHANISM (conflict checks, strict
  * load-verification, run-history reads). `buildAuthoringCapability` bakes in
  * the meta-surface POLICY on top (EVOLVE_SPEC §6): everything it publishes
- * is stamped `publisher: "ai"` and it publishes only over names so stamped;
- * what it may RUN, read the runs of, verify, or reach from a publish is
- * decided by SEALING (`src/sealed.ts`) — a grading harness (`sealed: true`
- * in its YAML) or a grader step (a sealed namespace, or `sealed: true` on
- * its def) is refused by name, and a publish whose closure reaches one is
- * refused. Any other workflow — a seeded `pod-pr`, a person's — it runs and
- * inspects like its own: a harness's run log records what its graders were
- * handed, a job's does not.
+ * is stamped `publisher: "ai"` — provenance, not an ownership line: it
+ * publishes over any workflow and edits any custom step (ruled 2026-11-10);
+ * what it may publish over, RUN, read the runs of, verify, or reach from a
+ * publish is decided by SEALING (`src/sealed.ts`) — a grading harness
+ * (`sealed: true` in its YAML) or a grader step (a sealed namespace, or
+ * `sealed: true` on its def) is refused by name, and a publish whose closure
+ * reaches one is refused. Any other workflow — a seeded `pod-pr`, a
+ * person's — it edits, runs and inspects like its own: a harness's run log
+ * records what its graders were handed, a job's does not.
  */
 
 /** The provenance stamp for AI-authored artifacts (steps AND workflows). */
 export const AI_PUBLISHER = "ai";
+
+/**
+ * Did the meta surface WRITE this version of a workflow — the one a run
+ * executes (`which`: its label, or its content hash), else the active one?
+ * The version's door says so (`source: "agent"`); a version that records no
+ * door (written before 2026-10-06) counts as the AI's when the workflow is
+ * stamped `ai`. What reach holds at run time (src/reach.ts) and what the
+ * meta surface may schedule: since it may publish over any workflow, the
+ * question is who wrote what runs. A seeded version put back at boot, or a
+ * person's own version published after the AI's, is not the AI's.
+ */
+export function aiWroteVersion(
+  meta: Pick<WorkflowMetadata, "publisher" | "active" | "versions">,
+  which?: { version?: string; hash?: string },
+): boolean {
+  const byHash = which?.hash ? Object.values(meta.versions).find((v) => v.hash === which.hash) : undefined;
+  const info = (which?.version ? meta.versions[which.version] : undefined) ?? byHash ?? meta.versions[meta.active];
+  return aiWrote(info?.source, meta.publisher);
+}
+
+/** `aiWroteVersion`'s rule, for a reader holding the version's door and the
+ *  workflow's stamp (meta/get-workflow's `source` and `publisher`). */
+export const aiWrote = (source: string | undefined, publisher: string | undefined): boolean =>
+  source ? source === "agent" : publisher === AI_PUBLISHER;
+
+/** What a publish over a SEEDED workflow says (a version records `source:
+ *  "seed"`): strut, or its host, publishes the seed again at every boot
+ *  (seeds always match git), so the edit lasts until then. Undefined for
+ *  any other workflow. */
+export function seededNote(meta: Pick<WorkflowMetadata, "versions"> | null | undefined, name: string): string | undefined {
+  if (!meta || !Object.values(meta.versions).some((v) => v.source === "seed")) return undefined;
+  return (
+    `"${name}" is seeded by this strut server: the next boot puts the seeded version back over this one. ` +
+    `To keep the change, it has to go into the seed's source (strut's, or the host's that seeds it).`
+  );
+}
 
 // ── Workflow reads (shared mechanism) ──────────────────────────────────────
 
@@ -62,9 +99,9 @@ export const DEFAULT_WORKFLOW_LIST_LIMIT = 100;
 
 /**
  * The workflows a builder can pick from: `name`, `description`, `category`,
- * `activeVersion` (and the `publisher` stamp, which the meta surface
- * republishes by) — never the version list or the schedules, which are
- * `readWorkflow`'s and the automations tools' and once made a thousand
+ * `activeVersion` (and the `publisher` stamp) — never the version list or
+ * the schedules, which are `readWorkflow`'s and the automations tools' and
+ * once made a thousand
  * workflows a 100k-token tool result on the first turn of every chat.
  * `query` is the sidebar's matcher (`searchWorkflows`: every word must hit
  * the name, category or description; name hits rank first); `limit` cuts
@@ -116,6 +153,8 @@ export async function readWorkflow(
     versions,
     description: meta.versions[meta.active]?.description,
     ...(meta.publisher ? { publisher: meta.publisher } : {}),
+    // Which door wrote this version (`seed`, `agent`, `ui`, …), when recorded.
+    ...(meta.versions[resolved]?.source ? { source: meta.versions[resolved]!.source } : {}),
     yaml,
   };
 }
@@ -385,14 +424,14 @@ export async function publishNewStep(
 }
 
 /** Publish a NEW VERSION of an existing custom step (the chat `edit_step` /
- *  `meta/edit-step` mechanism). Pass `requirePublisher` to enforce the meta
- *  ownership rule: only steps stamped with that publisher may be edited. */
+ *  `meta/edit-step` mechanism). Any custom step, whoever published it; the
+ *  step keeps its `publisher` stamp (a service's step stays the service's
+ *  to clean up and publish again). */
 export async function publishStepVersion(
   deps: StepPublishDeps,
   type: string,
   code: string,
   description?: string,
-  opts: { requirePublisher?: string } = {},
 ): Promise<StepPublishResult> {
   if (deps.publishingEnabled === false) {
     return { error: "Step publishing is disabled (the registry was injected at construction)." };
@@ -404,14 +443,6 @@ export async function publishStepVersion(
       error: (await deps.getRegistry())[type]
         ? `"${type}" is a built-in step and can't be edited. Use create_step with a new name.`
         : `Step "${type}" not found. Use create_step to author a new step.`,
-    };
-  }
-  if (opts.requirePublisher && existing.publisher !== opts.requirePublisher) {
-    return {
-      error:
-        `Step "${type}" was not published by "${opts.requirePublisher}" (publisher: ` +
-        `${existing.publisher ?? "none"}) — the meta surface only edits steps it authored. ` +
-        `Author a new step under a different name instead.`,
     };
   }
   const leaks = lintStepSource(code);
@@ -647,7 +678,8 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
   };
 
   /** A workflow's metadata record (one read, never a listing) — for its
-   *  publisher stamp; undefined when there is no such workflow. */
+   *  publisher stamp and its versions' doors; undefined when there is no
+   *  such workflow. */
   const findWorkflow = async (name: string) => (await workspace.getWorkflowMetadata(name)) ?? undefined;
 
   /** The sealed gate (EVOLVE_SPEC §6; `src/sealed.ts`): a run-store key the
@@ -740,9 +772,9 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
       }
       const invalid = await claimsGate(contract);
       if (invalid) return { error: `Nothing was published — fix the claims first. ${invalid}` };
-      const published = await publishStepVersion(deps, type, code, description, {
-        requirePublisher: AI_PUBLISHER,
-      });
+      // A grader is sealed on its def: editing it could unseal it.
+      if (isSealedStep(type, await deps.getRegistry())) return { error: sealedStep(type, "edit it") };
+      const published = await publishStepVersion(deps, type, code, description);
       const result = published.ok && claims ? { ...published, claims: await claims.applyClaimsArg({ kind: "step", name: type }, contract, actor), ...(await publishChecks("step", type)) } : published;
       if (result.ok && result.loaded === false) {
         return {
@@ -829,14 +861,15 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
       const invalid = await claimsGate(contract);
       if (invalid) return { error: `Nothing was published — fix the claims first. ${invalid}` };
       const entry = await findWorkflow(name);
-      if (entry && entry.publisher !== AI_PUBLISHER) {
-        return {
-          error:
-            `Workflow "${name}" exists and is not agent-authored (publisher: ` +
-            `${entry.publisher ?? "none"}). The meta surface never edits workflows it ` +
-            `didn't publish — choose a new name to author a candidate, or ask the person to ` +
-            `hand this one to you ("Let the builder edit this" on the workflow, in strut).`,
-        };
+      // Any workflow but a sealed one (a grading harness): a version over it
+      // could drop the seal and open its run log. An active version that no
+      // longer loads is read as text.
+      if (entry) {
+        const sealed = await workspace
+          .getWorkflow(name)
+          .then((f) => f.sealed === true)
+          .catch(async () => /^sealed:\s*true\s*$/m.test(await workspace.getWorkflowSource(name, entry.active).catch(() => "")));
+        if (sealed) return { error: sealedWorkflow(name, "publish over it") };
       }
       // What the candidate can EXECUTE is read off its definition: it may
       // not seal itself, and nothing in its closure may be sealed — the
@@ -853,7 +886,7 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
       // Nor open itself to peers: what another strut may launch here is a
       // person's call (plans/federation.md §3), never an agent's in a run.
       if (candidate.peer) {
-        return { error: `Nothing was published — "${name}" declares \`peer: ${candidate.peer}\`. Only a person opens a workflow to other struts; drop the key.` };
+        return { error: `Nothing was published — "${name}" declares \`peer: ${candidate.peer}\`. Only a person opens a workflow to other struts; drop the key (over a workflow open to peers, your version closes it to them until a person opens it again).` };
       }
       const reached = sealedInClosure(await flowClosure(candidate, workspace), await deps.getRegistry());
       if (reached) {
@@ -878,6 +911,7 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
           version: result.version,
           changed: result.changed,
           created: !entry,
+          ...(result.changed && seededNote(entry, name) ? { note: seededNote(entry, name) } : {}),
           ...(claims ? { claims: await claims.applyClaimsArg({ kind: "workflow", name }, contract, actor), ...(await publishChecks("workflow", name)) } : {}),
         };
       } catch (err) {

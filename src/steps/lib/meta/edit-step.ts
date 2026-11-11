@@ -6,7 +6,7 @@ import { claimsArgSchema } from "../../../claims-schemas.js";
 export default defineStep({
   type: "meta/edit-step",
   description:
-    "Publish a NEW VERSION of an EXISTING agent-authored custom step. Same self-contained source rules as meta/create-step; call meta/get-step (source: true) first to read the current source. Pass EITHER `code` (the full updated source) OR `edits` (exact-string replacements over the active version's source, each matching once — for a small change, so you never resend the file). Identical content is a no-op; a change increments the version (v1 → v2 → …) with prior versions kept for rollback (meta/set-active-version). Only steps the agent surface authored can be edited — built-ins and seeded steps are refused.",
+    "Publish a NEW VERSION of an EXISTING custom step. Same self-contained source rules as meta/create-step; call meta/get-step (source: true) first to read the current source. Pass EITHER `code` (the full updated source) OR `edits` (exact-string replacements over the active version's source, each matching once — for a small change, so you never resend the file). Identical content is a no-op; a change increments the version (v1 → v2 → …) with prior versions kept for rollback (meta/set-active-version). Any custom step can be edited, whoever published it; built-ins and SEALED steps (graders) are refused.",
   input: z.object({
     type: z.string().describe("Existing custom step type to edit, e.g. 'candidates/my-fetcher'."),
     code: z.string().optional().describe("Full updated TypeScript source (same self-contained shape as meta/create-step). Omit when passing `edits`."),
