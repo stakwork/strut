@@ -2215,14 +2215,14 @@ named by its type (`src/packages/graph-types.ts`). It is pinned by its DIGEST, `
 file in it (`readPackage`, `src/packages/format.ts`). A strut keeps every
 package it resolved under `<dataDir>/packages/`, one directory per digest,
 and serves any of them by digest — whether it built the package or
-installed it, it can be a mirror. `file:` and `pk:` refs resolve; `git+`
-is refused by name (`package_source_unsupported`).
+installed it, it can be a mirror. `file:`, `pk:` and `git+` refs resolve
+("Installing from a repository" below).
 
 | Method | Path | Description |
 | ------ | ---- | ----------- |
 | GET    | `/packages` | What is installed: `{ packages: InstalledPackage[] }` (`src/packages/installed.ts`), a fold over the workspace, never a store |
 | POST   | `/packages/build` | `BuildRequest` → 201 `{ package, version, digest, files, requires, warnings, leftToInstaller, suggested }` (`src/packages/build.ts`): a package built from this workspace into the cache. With `dryRun: true`, 200 and the same answer with nothing kept: the package page's preview of what comes along. Both pack the package as the archive route would and read it back as a fetching strut does: one past what a strut fetches (10,000 files, 256 MB unpacked, 64 MB as `.tar.gz`) is 400 `package_unarchivable: …`, and nothing is kept. A person's act like install: full scope, one at a time with install and uninstall |
-| POST   | `/packages/install` | `{ ref, digest?, url?, index?, wait? }` → 201 `InstallResult` (`src/packages/install.ts`), or with `wait: false` 202 `{ install: InstallState }` at once, the install going on behind it — follow it at `GET /packages/installs/:id` ("An install as it goes" below); a body that is not one is still 400 before anything starts. `ref` is `file:/path/to/package`, `pk:<key>/<publisher>/<name>[@sha256:<hex>]` with `url`, where the publisher's catalog is served (a strut's `…/packages/catalog?public=1`, or the file it uploaded) — see "Installing by key" below — or a bare NAME, `publisher/name`, looked up in the indexes this strut follows (the first whose card lists the publisher, or the one `index` names) and installed as `pk:` with the row's key and catalog URLs, tried in order. A name with `url` is 400; 404 `package_not_listed` when no index lists the publisher, `package_index_unknown` for an `index` not followed; 502 `package_index_unreachable` when no index card could be read; 400 when this strut follows none. A person's act: behind the key at full scope (a peer is 403), one at a time |
+| POST   | `/packages/install` | `{ ref, digest?, url?, tokenSecret?, index?, wait? }` → 201 `InstallResult` (`src/packages/install.ts`), or with `wait: false` 202 `{ install: InstallState }` at once, the install going on behind it — follow it at `GET /packages/installs/:id` ("An install as it goes" below); a body that is not one is still 400 before anything starts. `ref` is `file:/path/to/package`, `pk:<key>/<publisher>/<name>[@sha256:<hex>]` with `url`, where the publisher's catalog is served (a strut's `…/packages/catalog?public=1`, or the file it uploaded) — see "Installing by key" below — `git+https://host/org/repo[@<branch\|tag\|commit>][#<folder>]`, a git repository read with the secret `tokenSecret` names (default `GITHUB_TOKEN`; only with `git+`) — see "Installing from a repository" below — or a bare NAME, `publisher/name`, looked up in the indexes this strut follows (the first whose card lists the publisher, or the one `index` names) and installed as `pk:` with the row's key and catalog URLs, tried in order. A name with `url` is 400; 404 `package_not_listed` when no index lists the publisher, `package_index_unknown` for an `index` not followed; 502 `package_index_unreachable` when no index card could be read; 400 when this strut follows none. A person's act: behind the key at full scope (a peer is 403), one at a time |
 | GET    | `/packages/installs` | `{ installs: InstallState[] }` (`src/packages/progress.ts`): every install as it goes, whichever door started it — this route with or without `wait`, a `package/install` proposal's apply, the boot list (`STRUT_PACKAGES`), a subscription — newest first, and the last 20 that ended within the hour. In memory: a restart forgets them |
 | GET    | `/packages/installs/:id` | One `InstallState`; 404 for an id this process does not hold |
 | DELETE | `/packages/:publisher/:name` | Uninstall → `{ ok: true, package, removed, kept }` (`UninstallResult`) |
@@ -2271,9 +2271,10 @@ is refused by name (`package_source_unsupported`).
 
 **Installed at first boot.** `STRUT_PACKAGES` (and `createStrut({
 packages })`) lists packages a box should come up with: a JSON list of `{
-ref, url?, digest? }`, the fields `POST /packages/install` takes. Once the
+ref, url?, digest?, tokenSecret? }`, the fields `POST /packages/install` takes. Once the
 boot is done, each listed package not installed here (by its name, at any
-digest) is installed through the person's door, one at a time, in order,
+digest; a `git+` ref's name is known once fetched, so it is here when an
+installed package records that very ref) is installed through the person's door, one at a time, in order,
 in the background (`src/packages/boot.ts`); one already here is left alone,
 so a change to the list never updates anything. A source that does not
 answer, or any other failure, is a warning and the next boot tries again;
@@ -2471,6 +2472,7 @@ with types is refused (409).
     {
       "package": "acme/linear", "version": "1.4.0", "digest": "sha256:…",
       "source": { "ref": "file:/srv/packages/acme-linear" },
+      // "commit": "8f2c…",           // a git+ ref: the commit it resolved
       "status": "installed",          // or "present": everything was here already; "updated": moved from `from`
       "from": { "version": "1.3.0", "digest": "sha256:…" },  // an update only (the distro's door, below)
       "items": [                      // installed | present | modified (here and forked, left as it is) |
@@ -2581,6 +2583,7 @@ only …` (`src/packages/fence.ts`).
 {
   "package": "acme/linear", "version": "1.4.0", "digest": "sha256:…",
   "source": { "ref": "file:/srv/packages/acme-linear" }, "secrets": ["LINEAR_API_KEY"],
+  // "commit": "8f2c…",               // a git+ ref: the commit its newest installed version was read at
   "door": "install",                  // or "distro": the distro wrote it (absent for a package of Concepts alone)
   "items": [
     { "kind": "workflow", "name": "acme/linear/sync", "installed": "v1", "active": "v2", "modified": true },
@@ -2710,6 +2713,36 @@ install records `upstream.key` (the key an update must match) and
 writes; `GET /packages` shows `source: { ref, url }`. The URL is only
 where the catalog is today: an index row or, later, the key's Pkarr
 record are other places it comes from, and neither changes a check.
+
+**Installing from a repository** (`plans/marketplace.md` §5,
+`plans/app-repos.md` §2; `src/packages/git-source.ts`). `POST
+/packages/install { ref: "git+https://github.com/acme/linear@main#strut",
+tokenSecret? }` reads a package out of a git repository: any http(s) host
+or `file://` (no credentials in the URL, no ssh), at a branch, a tag or a
+commit (the remote's default branch with no `@`), at the repository's root
+or in the folder `#<folder>` names. The repository is fetched into the same
+bare cache `git/checkout` keeps (`<dataDir>/repos/`); the ref is the
+remote's branch of that name, then a tag, then a commit; the tree at that
+commit is read out, hashed, and kept by its digest like any package. A
+private repository is read with the token in the secret `tokenSecret`
+names (default `GITHUB_TOKEN`; the installing person's own first where
+actor secrets are kept): it reaches git through its environment alone,
+never a URL, an argument, an error or a record, and the repository's ACL
+decides. The install records on every version it writes the ref as given
+(`upstream.source.ref`, what an update re-resolves: a branch moves, a tag
+does not) and the commit it resolved (`upstream.commit`); `GET /packages`
+and the install report show `commit`. A `requires.packages` entry may name
+a `git+` source; it is read with the same `tokenSecret`, or taken from the
+cache when it holds the pinned digest. Refusals:
+
+| Code | Status | |
+| --- | --- | --- |
+| `package_repo_not_found` | 404 | no repository at that URL |
+| `package_ref_not_found` | 404 | no branch, tag or commit of that name |
+| `package_source_invalid` | 400 | not a `git+` ref; `#<folder>` not in the repository at that commit; no `strut.yaml` there |
+| `package_repo_denied` | 502 | the host asked for credentials (a private or missing repository, no token), or refused the token |
+| `package_repo_unreachable` | 502 | the fetch failed otherwise |
+| `package_digest_mismatch` | 400 | a pinned `digest` the commit's tree is not (the commit named) |
 
 **One publisher, two keys** (`plans/marketplace.md` §13). A card's `seq`
 rule is per key, so one key cannot seal a catalog a fleet reads and
@@ -3826,13 +3859,15 @@ payment went is the payer's (§19, `…/withdrawals/:paymentHash/read`).
 
 ## 21. Serve mode — one package's app at a domain (`plans/app-repos.md` §4)
 
-A strut started with `STRUT_SERVE=<ref>` (`createStrut({ serve: { ref, url?
-} })`) is the box one package's app is served from (`src/packages/serve.ts`;
+A strut started with `STRUT_SERVE=<ref>` (`createStrut({ serve: { ref, url?,
+tokenSecret? } })`) is the box one package's app is served from (`src/packages/serve.ts`;
 `deploy/app/` runs one). The ref is one the install takes: a bare
 `publisher/name` through the followed indexes, `pk:<key>/<publisher>/<name>`
-with `STRUT_SERVE_URL` (the publisher's `…/packages/catalog?public=1`), or
-`file:/path`; `git+` fails the boot, not served yet. At boot, in the
-background, the box DEPLOYS the ref:
+with `STRUT_SERVE_URL` (the publisher's `…/packages/catalog?public=1`),
+`git+https://host/org/repo@<branch|tag|commit>[#<folder>]` (§16,
+"Installing from a repository"; a private one read with the secret
+`STRUT_SERVE_TOKEN_SECRET` names, default `GITHUB_TOKEN`), or `file:/path`.
+At boot, in the background, the box DEPLOYS the ref:
 
 1. the ref into the package cache;
 2. the package's `serve.yaml` read and checked (below) — a bad one stops
@@ -3844,10 +3879,19 @@ background, the box DEPLOYS the ref:
    public view record written whole from it.
 
 A deploy that cannot resolve, install or apply leaves the previous one
-serving, and `GET /serve` says why. The ref is then FOLLOWED as a
-subscription is (§16): read again at `STRUT_DISTRO_POLL_MINUTES` and on the
-publisher's ping (`POST /packages/subscriptions/sync { key }` naming a `pk:`
-ref's key, or a name's once resolved), and deployed when its digest moved.
+serving, and `GET /serve` says why. The ref is then FOLLOWED:
+
+- **A `git+` ref follows its branch** (`plans/app-repos.md` §4.3): fetched
+  every `STRUT_SERVE_POLL_MINUTES` (5; `0` = at boot and on a ping only)
+  and on `POST /serve/sync`. A commit still serving is answered from the
+  cache; a commit that moved whose package's digest did not deploys
+  nothing (`serving.commit` follows it: the same tree serves); a moved
+  digest deploys, each version it writes recording the commit
+  (`upstream.commit`). A rollback is a revert on the branch.
+- **Any other ref** is followed as a subscription is (§16): read again at
+  `STRUT_DISTRO_POLL_MINUTES` and on the publisher's ping (`POST
+  /packages/subscriptions/sync { key }` naming a `pk:` ref's key, or a
+  name's once resolved), and deployed when its digest moved.
 `strut/jamie` and `strut/knowledge` are not seeded on a served box.
 
 **`serve.yaml`**, a top-level file of the package (in the digest; a strut
@@ -3889,6 +3933,7 @@ any strut with a public view.
 | --- | --- |
 | `GET /serve` | the deploy state (below). FULL SCOPE: a peer or a person token is `403`; `404` when nothing is served |
 | `GET /serve/image` | the `image` `serve.yaml` names, from the serving package, under `CSP: sandbox`. Open to anyone; `404` without one |
+| `POST /serve/sync` | a push webhook (GitHub, GitLab, Forgejo: point it here, no secret): fetch the served ref now → `202 { status: "syncing", at }`. At most one fetch a minute: a ping inside the minute is `202 { status: "queued", at }`, one fetch at `at` whatever the pings meanwhile. The body is not read. **Open to anyone on a served box** (all it can do is make strut read the ref it already follows); elsewhere behind the key, and `404` |
 | `PUT /public-view` | `409 { error: "serve_owned: … serve.yaml writes the public view at every deploy …" }` |
 
 ```jsonc
@@ -3896,9 +3941,11 @@ any strut with a public view.
 {
   "ref": "pk:fesbp7why3…/acme/moonlander",
   "url": "https://publisher.example.com/packages/catalog?public=1",
+  // "tokenSecret": "MOONLANDER_TOKEN", // a git+ ref's secret, by NAME
   "serving": {                          // absent before the first deploy
     "package": "acme/moonlander", "version": "1.2.0", "digest": "sha256:…",
     "ref": "pk:…",                      // what it was deployed from
+    // "commit": "8f2c…",              // a git+ ref: the commit serving (deployed, or a later one with the same digest)
     "app": "acme/moonlander/game", "appVersion": "v3",   // the version visitors open
     "at": "2026-11-10T18:00:00.000Z",   // the last deploy
     "page": { "app": "acme/moonlander/game", "title": "Moon Lander", "description": "…", "image": true, "icon": "<svg…>" },
@@ -3908,7 +3955,9 @@ any strut with a public view.
   "error": "serve_invalid: serve.yaml: app: \"nope\" is not an app of acme/moonlander (it holds game — apps/<name>/)",
   "errorAt": "2026-11-10T18:10:00.000Z",
   "errorDigest": "sha256:…",           // the digest that deploy was of, when it read the ref
+  // "errorCommit": "8f2c…",           // and its commit, for a git+ ref
   "deploying": false
+  // "pingAt": "2026-11-10T18:11:00.000Z" // a POST /serve/sync waiting for its minute
 }
 ```
 

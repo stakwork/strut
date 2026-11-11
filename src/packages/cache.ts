@@ -138,6 +138,9 @@ export interface ResolveOptions {
   /** Where a `git+` ref's bare cache lives (`<dataDir>/repos/`); default
    *  the cache's own parent, the data directory. */
   dataDir?: string;
+  /** A `git+` ref's last resolve: when the ref still points at `commit`,
+   *  the cached `digest` is the answer and nothing is read out of git. */
+  known?: { commit: string; digest: string };
 }
 
 /**
@@ -170,6 +173,10 @@ async function resolveGit(ref: string, opts: ResolveOptions): Promise<ResolvedPa
   const token = (await opts.secret?.(tokenSecret)) || undefined;
   const git = { dataDir: opts.dataDir ?? dirname(opts.cache.root), tokenSecret, ...(token ? { token } : {}), ...(opts.shell ? { shell: opts.shell } : {}) };
   return fetchGitRef(ref, git, async (got) => {
+    if (opts.known?.commit === got.commit && (!opts.digest || opts.digest === opts.known.digest)) {
+      const have = await opts.cache.get(opts.known.digest);
+      if (have) return { ...have, source: { ref }, commit: got.commit };
+    }
     const out = join(opts.cache.root, ".scratch", `git-${randomBytes(8).toString("hex")}`);
     try {
       await exportGitTree(got, out, git);

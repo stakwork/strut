@@ -137,6 +137,10 @@ export interface InstallOptions {
    *  GITHUB_TOKEN), read as `actor` when one is given. The packages it
    *  requires are read with the same one. */
   tokenSecret?: string;
+  /** The commit a `git+` ref's `digest` was read at, by a caller that
+   *  resolved it already (serve mode): recorded as it is when the cache
+   *  holds the digest, so nothing is fetched twice. */
+  commit?: string;
   /** Recorded on every version written; owns the new workflows. */
   actor?: string;
   /** Who writes it (`install` unless said): the distro's door applies a
@@ -181,8 +185,8 @@ const isHelper = (item: PackageItem) => item.kind === "step" && !!item.helper;
  *  every package it requires — through the distro's door, updating it and
  *  them (the module comment). */
 export async function installPackage(deps: PackageDeps, ref: string, opts: InstallOptions = {}): Promise<InstallResult> {
-  const { digest, url, ...rest } = opts;
-  return installPackages(deps, [{ ref, ...(digest ? { digest } : {}), ...(url ? { url } : {}) }], rest);
+  const { digest, url, commit, ...rest } = opts;
+  return installPackages(deps, [{ ref, ...(digest ? { digest } : {}), ...(url ? { url } : {}), ...(commit ? { commit } : {}) }], rest);
 }
 
 /** One package an install is asked for. */
@@ -190,13 +194,15 @@ export interface PackageRef {
   ref: string;
   digest?: string;
   url?: string;
+  /** The commit a `git+` ref's `digest` was read at (`InstallOptions.commit`). */
+  commit?: string;
 }
 
 /** Install several packages as ONE install — all or nothing, every name of
  *  every package checked before the first write — each with what it
  *  requires, requirements first: a channel's release applied as a whole
  *  (§12.1). The result names the last package as the one asked for. */
-export async function installPackages(deps: PackageDeps, refs: PackageRef[], opts: Omit<InstallOptions, "digest" | "url"> = {}): Promise<InstallResult> {
+export async function installPackages(deps: PackageDeps, refs: PackageRef[], opts: Omit<InstallOptions, "digest" | "url" | "commit"> = {}): Promise<InstallResult> {
   if (!refs.length) throw new Error("package_source_invalid: nothing to install");
   const door = opts.door ?? "install";
   opts.progress?.({ phase: "resolving" });
@@ -508,7 +514,7 @@ async function resolveSet(
     ...(deps.shell ? { shell: deps.shell } : {}),
     ...(deps.dataDir ? { dataDir: deps.dataDir } : {}),
   };
-  const visit = async (ref: string, digest: string | undefined, base: string | undefined, expected?: { package: string; by: string }, url?: string): Promise<void> => {
+  const visit = async (ref: string, digest: string | undefined, base: string | undefined, expected?: { package: string; by: string }, url?: string, commit?: string): Promise<void> => {
     // A `pk:` ref is always resolved: the catalog is the key's word on the
     // release, and the resolve records the key and URL the install pins.
     // A pinned `file:` or `git+` ref the cache holds is taken from it.
@@ -532,7 +538,7 @@ async function resolveSet(
       info,
       source: resolved?.source ?? { ref },
       ...(resolved?.key ? { key: resolved.key } : {}),
-      ...(resolved?.commit ? { commit: resolved.commit } : {}),
+      ...(resolved?.commit ? { commit: resolved.commit } : cached && commit && ref.startsWith("git+") ? { commit } : {}),
       ...(ref.startsWith("file:") ? { base: fileRefPath(ref, base) } : {}),
     };
     for (const req of info.manifest.requires?.packages ?? []) {
@@ -550,7 +556,7 @@ async function resolveSet(
     }
     order.push(member);
   };
-  for (const r of refs) await visit(r.ref, r.digest, undefined, undefined, r.url);
+  for (const r of refs) await visit(r.ref, r.digest, undefined, undefined, r.url, r.commit);
   return order;
 }
 

@@ -4,13 +4,14 @@
  * with `git init` in a temp dir, resolved by a branch, a tag, a commit and a
  * `#path`, then installed through every door — `POST /packages/install`,
  * `STRUT_PACKAGES` and a `requires.packages` entry — with the commit it
- * resolved recorded on each version's `upstream`.
+ * resolved recorded on each version's `upstream`; and a served box
+ * (`STRUT_SERVE=git+…`, src/packages/serve.ts) following its branch.
  */
 import { after, afterEach, before, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { cp, mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -25,6 +26,7 @@ import { packageCache, resolvePackage } from "./cache.js";
 import { parseGitRef } from "./git-source.js";
 import type { InstallResult } from "./install.js";
 import type { InstalledPackage } from "./installed.js";
+import type { PingOutcome, ServeStatus } from "./serve.js";
 
 const HELLO = join(dirname(fileURLToPath(import.meta.url)), "..", "apps", "__fixtures__", "hello");
 const GIT_ID = ["-c", "user.name=test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false"];
@@ -330,5 +332,160 @@ describe("installing from git+", () => {
     } finally {
       delete process.env["STRUT_PACKAGES"];
     }
+  });
+});
+
+// ── a served box following a branch (plans/app-repos.md §4.3) ──────────────
+
+const KEY = "git-serve-key";
+const auth = { authorization: `Bearer ${KEY}` };
+const INDEX_HTML = `<!doctype html>\n<html lang="en">\n  <head>\n    <meta charset="UTF-8" />\n    <title>strut</title>\n  </head>\n  <body><div id="app"></div></body>\n</html>\n`;
+const GREET = 'name: acme/moon/greet\ninput:\n  who: { type: string, required: false, default: world }\nsteps:\n  - { id: say, type: log, config: { message: "hi {{ input.who }}" } }\n';
+const SERVE = (title: string) => `app: hello\ntitle: ${title}\nrunnable:\n  - { kind: workflow, name: greet }\n`;
+
+describe("a served box following a branch", () => {
+  let kit: KitLocation;
+  const saved: Record<string, string | undefined> = {};
+  let strut: Strut | undefined;
+  before(async () => {
+    for (const k of ["STRUT_API_KEY", "STRUT_SECRET_KEY"]) saved[k] = process.env[k];
+    process.env["STRUT_API_KEY"] = KEY;
+    process.env["STRUT_SECRET_KEY"] = "git-serve-secret";
+    kit = await kitForTests();
+  });
+  afterEach(async () => {
+    await strut?.close();
+    strut = undefined;
+  });
+  after(() => {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  });
+
+  /** The moon repo: the hello app, a workflow anyone may run, serve.yaml. */
+  async function moonRepo(): Promise<{ dir: string; url: string; commit(files: Record<string, string>, message: string): string }> {
+    const dir = join(root, "moon");
+    await mkdir(dir, { recursive: true });
+    git(dir, "-c", "init.defaultBranch=main", "init", "--quiet");
+    await cp(HELLO, join(dir, "apps", "hello"), { recursive: true });
+    await write(dir, {
+      "apps/hello/app.yaml": "title: Hello\nicon: hand\ngrants:\n  workflows: [greet]\n  steps: []\n",
+      "strut.yaml": "package: acme/moon\nversion: 1.0.0\n",
+      "workflows/greet.yaml": GREET,
+      "serve.yaml": SERVE("Moon one"),
+    });
+    git(dir, "add", ".");
+    git(dir, "commit", "--quiet", "-m", "one");
+    return {
+      dir,
+      url: pathToFileURL(dir).href,
+      commit: (files, message) => {
+        for (const [rel, text] of Object.entries(files)) {
+          mkdirSync(dirname(join(dir, rel)), { recursive: true });
+          writeFileSync(join(dir, rel), text);
+        }
+        git(dir, "add", ".");
+        git(dir, "commit", "--quiet", "-m", message);
+        return git(dir, "rev-parse", "HEAD");
+      },
+    };
+  }
+
+  const bootServed = async (ref: string) => {
+    await mkdir(join(root, "web"), { recursive: true });
+    await writeFile(join(root, "web", "index.html"), INDEX_HTML);
+    return boot(new WorkspaceManager(join(root, "ws-served")), { kit, webDist: join(root, "web"), serveUi: true, serve: { ref, tokenSecret: "MOON_GH" }, subscriptionPoll: false, servePoll: false, autoResume: false });
+  };
+  const status = async (s: Strut) => (await (await s.app.request("/serve", { headers: auth })).json()) as ServeStatus;
+  const title = async (s: Strut) => /<title>([^<]*)<\/title>/.exec(await (await s.app.request("/")).text())?.[1];
+  /** POST /serve/sync with no credential, as a webhook sends it. */
+  const ping = async (s: Strut) => {
+    const res = await s.app.request("/serve/sync", { method: "POST", headers: { "content-type": "application/json", "x-github-event": "push" }, body: JSON.stringify({ ref: "refs/heads/main" }) });
+    return { status: res.status, body: (await res.json()) as PingOutcome & { error?: string } };
+  };
+  const settled = async (s: Strut, done: (st: ServeStatus) => boolean) => {
+    let st = await status(s);
+    for (let i = 0; i < 200 && !(done(st) && !st.deploying); i++) {
+      await new Promise((r) => setTimeout(r, 50));
+      st = await status(s);
+    }
+    return st;
+  };
+
+  it("serves the branch, and a commit plus POST /serve/sync serves the new version — at most one fetch a minute", async () => {
+    const repo = await moonRepo();
+    const first = git(repo.dir, "rev-parse", "HEAD");
+    const ref = `git+${repo.url}@main`;
+    strut = await bootServed(ref);
+    const boot1 = await strut.serve!.sync();
+    assert.notEqual(boot1.status, "error", boot1.error);
+    let st = await status(strut);
+    assert.equal(st.error, undefined, st.error);
+    assert.deepEqual([st.ref, st.tokenSecret, st.serving?.commit, st.serving?.package], [ref, "MOON_GH", first, "acme/moon"]);
+    const firstDigest = st.serving?.digest;
+    assert.equal(await title(strut), "Moon one");
+    const wf = await strut.workspace.getWorkflowMetadata("acme/moon/greet");
+    assert.deepEqual([wf?.versions[wf.active]?.source, wf?.versions[wf.active]?.upstream?.commit], ["distro", first]);
+
+    // A push to main, and the webhook.
+    const second = repo.commit({ "serve.yaml": SERVE("Moon two"), "workflows/greet.yaml": GREET.replace("hi {{", "hello {{") }, "two");
+    const pinged = await ping(strut);
+    assert.equal(pinged.status, 202, pinged.body.error);
+    assert.equal(pinged.body.status, "syncing");
+    st = await settled(strut, (x) => x.serving?.commit === second);
+    assert.equal(st.error, undefined, st.error);
+    assert.equal(st.serving?.commit, second);
+    assert.notEqual(st.serving?.digest, firstDigest);
+    assert.equal(await title(strut), "Moon two");
+    const upstream = (await strut.workspace.getWorkflowMetadata("acme/moon/greet"))!;
+    assert.deepEqual([upstream.active, upstream.versions[upstream.active]?.upstream?.commit], ["v2", second], "the version the deploy wrote records its commit");
+
+    // A second push inside the minute: no fetch now, one when it is up.
+    repo.commit({ "serve.yaml": SERVE("Moon three") }, "three");
+    const fetchedAt = (await status(strut)).fetchedAt;
+    const again = await ping(strut);
+    assert.equal(again.body.status, "queued");
+    assert.ok(Date.parse(again.body.at) - Date.now() > 50_000, again.body.at);
+    assert.deepEqual((await ping(strut)).body, again.body, "one waiting fetch, whatever the pings");
+    await new Promise((r) => setTimeout(r, 200));
+    st = await status(strut);
+    assert.equal(st.fetchedAt, fetchedAt, "nothing fetched inside the minute");
+    assert.equal(st.pingAt, again.body.at);
+    assert.equal(await title(strut), "Moon two");
+  });
+
+  it("a commit that leaves the package's digest as it was deploys nothing; a bad ref is named on GET /serve", async () => {
+    const repo = await moonRepo();
+    strut = await bootServed(`git+${repo.url}@main`);
+    assert.notEqual((await strut.serve!.sync()).status, "error");
+    const before = await status(strut);
+
+    // A dotfile is not in the digest: the commit moves, the package does not.
+    const ci = repo.commit({ ".github/workflows/deploy.yml": "on: push\n" }, "ci");
+    const out = await strut.serve!.sync();
+    assert.equal(out.status, "current", out.error);
+    const after = await status(strut);
+    assert.equal(after.serving?.digest, before.serving?.digest);
+    assert.equal(after.serving?.at, before.serving?.at, "nothing deployed");
+    assert.equal(after.serving?.commit, ci, "the commit serving is the branch's, the same tree");
+    assert.deepEqual(Object.keys((await strut.workspace.getWorkflowMetadata("acme/moon/greet"))?.versions ?? {}), ["v1"]);
+    assert.equal((await strut.serve!.sync()).status, "current", "the same commit: nothing read out");
+
+    // A commit that breaks serve.yaml: the previous deploy keeps serving.
+    const broken = repo.commit({ "serve.yaml": "app: nope\n" }, "broken");
+    assert.equal((await strut.serve!.sync()).status, "error");
+    const st = await status(strut);
+    assert.match(st.error ?? "", /serve_invalid: serve\.yaml: app: "nope"/);
+    assert.equal(st.errorCommit, broken);
+    assert.equal(st.serving?.commit, ci);
+    assert.equal(await title(strut), "Moon one");
+  });
+
+  it("POST /serve/sync is open only on a served box", async () => {
+    strut = await boot(new WorkspaceManager(join(root, "ws-plain")), { kit, subscriptionPoll: false, autoResume: false });
+    assert.equal((await strut.app.request("/serve/sync", { method: "POST" })).status, 401);
+    assert.equal((await strut.app.request("/serve/sync", { method: "POST", headers: auth })).status, 404);
   });
 });
