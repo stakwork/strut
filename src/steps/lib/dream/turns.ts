@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
-import { CONVERSATION_LIST_MAX, CONVERSATION_TURNS_MAX, type ConversationTurn, type ConversationsCapability } from "../../../conversations.js";
+import { CONVERSATION_TURNS_MAX, type ConversationTurn, type ConversationsCapability } from "../../../conversations.js";
 import { dataDirOf, readState } from "./_state.js";
 import { claimGraph } from "./_graph.js";
 
@@ -53,8 +53,8 @@ export default defineStep({
     const viewer = { all: true } as const;
     const pool: DreamTurn[] = [];
     const seen: Record<string, number> = {};
-    const { conversations: list } = await conversations.list({ limit: CONVERSATION_LIST_MAX }, viewer);
-    for (const c of list) {
+    // Every conversation on file: a person's list is their own index, and the dream is nobody's.
+    for (const c of await conversations.all()) {
       const mark = state?.marks[c.id] ?? -1;
       if (c.turns - 1 <= mark || Date.parse(c.updatedAt) < floor) continue;
       const fresh: ConversationTurn[] = [];

@@ -150,7 +150,7 @@ describe("dream/turns and dream/done", () => {
   });
   /** A stand-in conversation index: newest first, paged like the real one. */
   const index = (all: Record<string, ConversationTurn[]>) => ({
-    list: async () => ({ conversations: Object.entries(all).map(([id, turns]) => ({ id, title: id, createdAt: turns[0]!.at, updatedAt: turns[turns.length - 1]!.at, turns: turns.length, unread: false })) }),
+    all: async () => Object.entries(all).map(([id, turns]) => ({ id, title: id, createdAt: turns[0]!.at, updatedAt: turns[turns.length - 1]!.at, turns: turns.length })),
     get: async (q: { session: string; limit?: number; before?: number }) => {
       const turns = [...(all[q.session] ?? [])].filter((x) => q.before === undefined || x.turn < q.before).sort((a, b) => b.turn - a.turn);
       const page = turns.slice(0, 2);
