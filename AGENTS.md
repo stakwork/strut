@@ -2800,9 +2800,9 @@ the same steps are an agent's tools (`agentTools: ["browser/*"]`), and
   INSTALLED APP's `src/` compiled in (`strut/views`, `hive/ui@v3` — a kit is
   an app other apps import, §3.4; a cycle is an error naming the chain),
   anything else an error naming the set and the kits. `dangerouslySetInnerHTML`,
-  `eval` and `new Function` are refused; a global `fetch` is a WARNING
-  naming the hook (the document's CSP has `connect-src 'none'`: the page
-  reaches strut only through its bridge). **Versions are TREE HASHES**
+  `eval` and `new Function` are refused; a `fetch` of a written-out URL is a
+  WARNING naming the hook (the document's CSP allows `connect-src data: blob:`
+  alone, no host: the page reaches strut only through its bridge). **Versions are TREE HASHES**
   (`treeHash`, `src/version.ts`: `<path>\0<sha256>\n` per file, sorted;
   `dist/` and `data.db` left out, the kit never in it — the same function
   `marketplace.md` uses for a package digest): `publishApp` follows

@@ -456,8 +456,8 @@ the directory. A workspace publish calls it (§1.3) and so does `app/build`
   rule is untouched. None of this code runs in the server process.
 - **The AST checks**, over every source file. `dangerouslySetInnerHTML`,
   `eval` and `new Function` are refused. Markdown goes through the kit's
-  `react-markdown`, which is safe by default. Even with `connect-src 'none'`
-  (§9), a script injected into an app could call that app's granted tools
+  `react-markdown`, which is safe by default. Even with no host in
+  `connect-src` (§9: `data:` and `blob:` only), a script injected into an app could call that app's granted tools
   as the viewer, so the build closes the door it can see. A call to the
   global `fetch`, `XMLHttpRequest` or `WebSocket` is a WARNING in the
   result that names the hook to use instead (`useStep`, `useLaunch`): a
@@ -1220,7 +1220,7 @@ host UI ── its own credential ──▶ the person's strut ── person tok
    (`web/src/components/SoloApp.tsx`).
 
 The token never leaves the peers file, the page never talks to the peer
-(`connect-src 'none'`), and the identity the page sends is the peer's own
+(its `connect-src` names no host), and the identity the page sends is the peer's own
 signature, which the person's strut cannot forge.
 
 **Open by default** (the owner's choice, 2026-10-23): every app on the
