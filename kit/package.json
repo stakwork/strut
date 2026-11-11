@@ -35,6 +35,10 @@
       "types": "./dist/channels/index.d.ts",
       "import": "./dist/channels/index.js"
     },
+    "./visitor": {
+      "types": "./dist/visitor/index.d.ts",
+      "import": "./dist/visitor/index.js"
+    },
     "./node": {
       "types": "./dist/node.d.ts",
       "import": "./dist/node.js"
@@ -48,7 +52,7 @@
     "build:vendor": "tsx scripts/build-vendor.ts",
     "build:lib": "tsx scripts/build-lib.ts",
     "shadcn": "shadcn add --all --overwrite --yes",
-    "test": "tsx --test src/*.test.ts src/folds/*.test.ts src/folds/run-graph/*.test.ts src/wallet/*.test.ts src/channels/*.test.ts"
+    "test": "tsx --test src/*.test.ts src/folds/*.test.ts src/folds/run-graph/*.test.ts src/wallet/*.test.ts src/channels/*.test.ts src/visitor/*.test.ts"
   },
   "peerDependencies": {
     "@tanstack/react-query": "5.104.5",

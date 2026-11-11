@@ -23,7 +23,9 @@ import {
   type NativeWalletApp, type RelayBridge,
 } from "@strut/kit/wallet";
 import { CHANNELS_CAPABILITY, relayChannels } from "@strut/kit/channels";
+import { VISITOR_CAPABILITY, VISITOR_PASS_THROUGH, VISITOR_SIGN_IN_METHOD, VISITOR_SIGN_OUT_METHOD } from "@strut/kit/visitor";
 import { API_BASE, apiHeaders, channelSocketUrl, channelTicket, claimPublicCredit, type BrandStyles } from "./api";
+import { signOutVisitor, visitorAuth, visitorChannelTicket, visitorInfo, type SignInMethod, type VisitorSession } from "./visitor-signin";
 import { strutLink } from "./app-links";
 import { mcpPermissions } from "./frame-permissions";
 import {
@@ -52,6 +54,10 @@ export interface AppHostHandlers {
    *  a new invoice, or null when the visitor cancels. Absent, the page's
    *  launch answers that the run was not paid for. */
   onPayment?: (p: PaymentRequired, workflow: string, settled: Promise<ClaimEnd>) => Promise<PayOutcome>;
+  /** A VISITOR's page asks to sign the visitor in (plans/app-repos.md §5):
+   *  sign them in by one of `methods` (the sheet), answering the session,
+   *  or null when they closed it. Absent, no sign-in is offered. */
+  onSignIn?: (methods: SignInMethod[]) => Promise<VisitorSession | null>;
 }
 
 export interface AppHostOptions {
@@ -77,7 +83,8 @@ export interface AppHostOptions {
    *  channels (plans/app-channels.md §3) — one socket to this strut's
    *  `/channels` for the page, opened with a ticket on its first join. A
    *  peer's app names its peer, and this strut relays the socket there
-   *  (§4). Left out for a visitor: there is no viewer to mint for. */
+   *  (§4). For a visitor's page, a ticket only once the visitor signed in
+   *  (plans/app-repos.md §5.1): until then a join waits and tries again. */
   channels?: { name: string; version: string; peer?: string };
   /** This strut's brand (`GET /brand`): each theme's style variables, sent
    *  in the host context so the kit's tokens take them (src/brand.ts). */
@@ -139,10 +146,13 @@ export function createRelayClient(base = "", visitor = false): { client: Client;
     requestInit: visitor ? { credentials: "omit" } : { headers: apiHeaders() },
     ...(visitor
       ? {
+          // The visit and its credit; and a signed-in visitor's session —
+          // its cookie where the browser sends it, its token beside the
+          // credit token (plans/app-repos.md §5.2).
           fetch: (url: string | URL, init?: RequestInit) => {
             const headers = new Headers(init?.headers);
-            for (const [k, v] of Object.entries(visitorHeaders(visitorPurse))) headers.set(k, v);
-            return fetch(url, { ...init, headers, credentials: "omit" });
+            for (const [k, v] of Object.entries({ ...visitorAuth(true), ...visitorHeaders(visitorPurse) })) headers.set(k, v);
+            return fetch(url, { ...init, headers, credentials: "same-origin" });
           },
         }
       : {}),
@@ -182,6 +192,9 @@ export async function connectAppHost(opts: AppHostOptions): Promise<AppHostConne
   // this app before the bridge exists: the offer rides in ui/initialize.
   const native = opts.wallet ? nativeWalletOf(window) : undefined;
   const capability = native && opts.wallet ? await probeNativeWallet(native, opts.wallet) : undefined;
+  // A visitor's page: who is signed in, and how one signs in here.
+  const signIn = opts.visitor && opts.handlers.onSignIn ? await visitorInfo().catch(() => null) : null;
+  const visitorCap = signIn && (signIn.methods.length || signIn.actor) ? { v: 1 as const, methods: signIn.methods, ...(signIn.actor ? { actor: signIn.actor } : {}) } : undefined;
   const bridge = new AppBridge(
     client,
     { name: "strut-ui", version: "0" },
@@ -190,8 +203,14 @@ export async function connectAppHost(opts: AppHostOptions): Promise<AppHostConne
       openLinks: {},
       sandbox: { permissions: mcpPermissions(opts.permissions) },
       ...(opts.handlers.onMessage ? { message: { text: {} } } : {}),
-      ...(capability || opts.channels
-        ? { experimental: { ...(capability ? { [WALLET_CAPABILITY]: capability } : {}), ...(opts.channels ? { [CHANNELS_CAPABILITY]: { v: 1 } } : {}) } }
+      ...(capability || (opts.channels && !opts.visitor) || visitorCap
+        ? {
+            experimental: {
+              ...(capability ? { [WALLET_CAPABILITY]: capability } : {}),
+              ...(opts.channels && (!opts.visitor || visitorCap) ? { [CHANNELS_CAPABILITY]: { v: 1 } } : {}),
+              ...(visitorCap ? { [VISITOR_CAPABILITY]: visitorCap } : {}),
+            },
+          }
         : {}),
     },
     { hostContext: hostContextFor(opts.theme, opts.brand) },
@@ -201,16 +220,28 @@ export async function connectAppHost(opts: AppHostOptions): Promise<AppHostConne
     const relay = relayNativeWallet({ bridge: bridge as unknown as RelayBridge, native, app: opts.wallet, capability });
     stopWallet = nativeWalletNotifications(window).register(opts.wallet, relay.notify);
   }
-  const channels = opts.channels;
+  // A visitor's page carries channels only where a visitor may sign in.
+  const channels = opts.visitor && !visitorCap ? undefined : opts.channels;
   const channelRelay = channels
     ? relayChannels({
         bridge: bridge as unknown as Parameters<typeof relayChannels>[0]["bridge"],
         async open(client) {
-          const { ticket } = await channelTicket(channels.name, channels.version, channels.peer);
+          const { ticket } = opts.visitor ? await visitorChannelTicket(channels.name, channels.version) : await channelTicket(channels.name, channels.version, channels.peer);
           return new WebSocket(channelSocketUrl(ticket, client));
         },
       })
     : undefined;
+  if (visitorCap) {
+    const onSignIn = opts.handlers.onSignIn!;
+    bridge.setRequestHandler(VISITOR_SIGN_IN_METHOD as never, { params: VISITOR_PASS_THROUGH } as never, (async () => {
+      const session = await onSignIn(visitorCap.methods as SignInMethod[]);
+      return session ? { actor: session.actor } : {};
+    }) as never);
+    bridge.setRequestHandler(VISITOR_SIGN_OUT_METHOD as never, { params: VISITOR_PASS_THROUGH } as never, (async () => {
+      await signOutVisitor();
+      return {};
+    }) as never);
+  }
   bridge.onmessage = async (params) => {
     const text = (params.content ?? [])
       .map((c) => (c.type === "text" ? c.text : ""))

@@ -43,6 +43,9 @@ export interface RunListQuery {
    *  hash. Set by the visitor's door alone (src/public-surface.ts
    *  `visitorRuns`), never from a step's config. */
   visitor?: string;
+  /** Runs one actor launched: a signed-in visitor's own (plans/app-repos.md
+   *  §5.1). Set by the visitor's door alone, never from a step's config. */
+  actor?: string;
 }
 
 /** One row of `run/list`: the summary without its payloads (`input`,
@@ -241,6 +244,7 @@ export function matchesRunFilter(run: Partial<RunSummary> & { runId: string; sta
   if (q.automation && run.automation?.id !== q.automation) return false;
   if (q.job && run.job !== q.job) return false;
   if (q.visitor && run.visitor !== q.visitor) return false;
+  if (q.actor && run.actor !== q.actor) return false;
   const from = sinceMs(q.since);
   if (from !== undefined) {
     const launched = launchedAt(run);

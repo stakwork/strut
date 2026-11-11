@@ -16,6 +16,9 @@
  *   reads: [score-board]            # the app's public reads (step types)
  *   runnable: [{ kind: workflow, name: ghost, dailyCapUsd: 5 }]
  *   concepts: [Moon Lander]         # Concept roots in the public view
+ *   signIn: [key, lnurl, nostr]     # how a visitor signs in (default: none)
+ *   visitorKey: domain              # a child key per domain (default: root)
+ *   limits: { writesPerDay: 500 }   # per-visitor limits over strut's defaults
  *
  * Names are the package's own, resolved package-first (src/package-lookup.ts)
  * against what the package holds and written whole into the record
@@ -48,7 +51,7 @@ import type { AppsCapability } from "../apps/apps.js";
 import type { ShellCapability } from "../capabilities.js";
 import { defaultKitDir, type KitLocation } from "../apps/kit.js";
 import { nameInPackage } from "../package-lookup.js";
-import { normalizeSurface, runnableShapeProblem, surfaceProblem, type PublicRunnable, type PublicSurface } from "../public-surface.js";
+import { normalizeSurface, runnableShapeProblem, surfaceProblem, VISITOR_METHOD_NAMES, type PublicRunnable, type PublicSurface } from "../public-surface.js";
 import type { WorkspaceStore } from "../workspace.js";
 import { loadYaml } from "../yaml.js";
 import { bootPackageProblem } from "./boot.js";
@@ -116,12 +119,19 @@ const serveSchema = z
     reads: names.optional(),
     runnable: z.array(z.unknown()).optional(),
     concepts: names.optional(),
+    signIn: z.array(z.enum(VISITOR_METHOD_NAMES, { message: `signIn lists sign-ins strut knows: ${VISITOR_METHOD_NAMES.join(", ")}` })).optional(),
+    visitorKey: z.enum(["root", "domain"], { message: "visitorKey is root or domain" }).optional(),
+    limits: z
+      .object({
+        writesPerDay: z.number().int().min(0, "writesPerDay is 0 or more").optional(),
+        launchesPerDay: z.number().int().min(0, "launchesPerDay is 0 or more").optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
 export type ServeFile = Omit<z.infer<typeof serveSchema>, "runnable"> & { runnable?: PublicRunnable[] };
-
-const LATER_FIELDS = new Set(["signIn", "visitorKey", "limits"]);
 
 /** `serve.yaml`'s text → its fields, or a thrown `serve_invalid: …`
  *  naming every problem. */
@@ -137,10 +147,7 @@ export function parseServeFile(source: string): ServeFile {
     const issues = parsed.error.issues.map((i) => {
       if (i.code === "unrecognized_keys") {
         const keys = (i as { keys: string[] }).keys;
-        const later = keys.filter((k) => LATER_FIELDS.has(k));
-        return later.length === keys.length
-          ? `${later.join(", ")}: not on this strut server yet (signed-in visitors come later)`
-          : `unknown field${keys.length > 1 ? "s" : ""} ${keys.join(", ")} — ${SERVE_FILE} is { app, title?, description?, image?, reads?, runnable?, concepts? }`;
+        return `unknown field${keys.length > 1 ? "s" : ""} ${keys.join(", ")} — ${SERVE_FILE} is { app, title?, description?, image?, reads?, runnable?, concepts?, signIn?, visitorKey?, limits? }`;
       }
       const path = i.path.map((p) => (typeof p === "number" ? `[${p}]` : `.${String(p)}`)).join("").replace(/^\./, "");
       return `${path ? `${path}: ` : ""}${i.message}`;
@@ -187,6 +194,15 @@ export function planServe(file: ServeFile, info: Pick<PackageInfo, "manifest" | 
     concepts: file.concepts ?? [],
     apps: [{ name: app, ...(file.reads?.length ? { reads: file.reads.map((r) => nameInPackage(pkg, r, (n) => steps.has(n))) } : {}) }],
     runnable: (file.runnable ?? []).map((r) => ({ ...r, name: nameInPackage(pkg, r.name, (n) => (r.kind === "workflow" ? workflows : steps).has(n)) })),
+    ...(file.signIn?.length
+      ? {
+          visitors: {
+            signIn: file.signIn,
+            ...(file.visitorKey === "domain" ? { visitorKey: "domain" as const } : {}),
+            ...(file.limits && Object.keys(file.limits).length ? { limits: file.limits } : {}),
+          },
+        }
+      : {}),
   };
   const bad = surfaceProblem(record);
   if (bad) throw new Error(`serve_invalid: ${SERVE_FILE}: ${bad}`);

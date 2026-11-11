@@ -4630,6 +4630,9 @@ input.package-search { width: 100%; margin-bottom: var(--sp-2); }
 @keyframes pay-sheet-spin { to { transform: rotate(360deg); } }
 .pay-sheet-rate { color: var(--text-dim); font-size: 11px; }
 .pay-sheet-actions { display: flex; justify-content: flex-end; gap: var(--sp-2); }
+/* The visitor's sign-in sheet (SignInSheet.tsx): a method a row. */
+.sign-in-methods { display: flex; flex-direction: column; gap: var(--sp-2); }
+.sign-in-methods .btn { justify-content: center; }
 
 /* An app a job delivered (the builder's, by name): its page in the job
    timeline, under a bar with Reload (components/JobAppPanel.tsx); large,

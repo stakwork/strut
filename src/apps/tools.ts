@@ -296,8 +296,15 @@ export interface AppToolDeps {
    *  and `viewer` names the visitor for the monitor. */
   visitor?: {
     identity: (identity: unknown) => AppRef | undefined;
-    refusal: (app: AppRef, type: string, config: Record<string, unknown>) => Promise<string | null>;
+    refusal: (app: AppRef, type: string, config: Record<string, unknown>, manifest: AppManifest) => Promise<string | null>;
     viewer?: string;
+    /** A SIGNED-IN visitor (plans/app-repos.md §5.1): its writes are KEPT
+     *  as runs with its actor, so a row it wrote says who. */
+    keep?: boolean;
+    /** The bag one call runs against, when it depends on the call (a
+     *  signed-in visitor's graph is writable for a write alone). Default:
+     *  `services`. */
+    services?: (app: AppRef, manifest: AppManifest, type: string) => unknown;
   };
 }
 
@@ -346,24 +353,27 @@ export function buildAppTools(deps: AppToolDeps): ToolSet {
     const base = baseType(type);
     const refused = grantRefusal(base, cfg, manifest, deps.registry);
     if (refused) return refuse(`step_run refused: ${refused}`);
-    const closed = deps.visitor ? await deps.visitor.refusal(app, base, cfg) : null;
+    const closed = deps.visitor ? await deps.visitor.refusal(app, base, cfg, manifest) : null;
     if (closed) return refuse(`step_run refused: ${closed}`);
+    const bag = deps.visitor?.services ? deps.visitor.services(app, manifest, base) : deps.services;
     if (GRAPH_WRITES.has(base)) {
-      const bad = await graphWriteRefusal(base, cfg, manifest, reader);
+      // A per-call bag's own reader: what this caller may see of the graph.
+      const own = deps.visitor?.services ? (bag as { graph?: GraphBackend } | undefined)?.graph?.reader : undefined;
+      const bad = await graphWriteRefusal(base, cfg, manifest, own ?? reader);
       if (bad) return refuse(`step_run refused: ${bad}`);
     }
     if (!(await resolveStep(deps.registry, type).catch(() => null))) return refuse(`step_run: step type "${type}" not found (${app.name}@${app.version})`);
     const result = await runStep(
       type,
       deps.registry,
-      deps.services,
+      bag,
       {
         // A first-party page's jobs are its viewer's own: never moved.
         config: app.firstParty ? cfg : scopeAppJobs(app.name, base, cfg),
         ...(input !== undefined ? { input } : {}),
         ...(deps.actor ? { actor: deps.actor, principal: deps.actor } : {}),
         app,
-        keep: !deps.visitor && keptFromApp(base),
+        keep: (!deps.visitor || !!deps.visitor.keep) && keptFromApp(base),
         ...(deps.runStepDeps.workspace ? { workspace: deps.runStepDeps.workspace } : {}),
       },
       deps.runStepDeps,

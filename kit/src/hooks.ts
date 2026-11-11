@@ -1008,6 +1008,26 @@ class AppStateStore {
     });
   }
 
+  /** The viewer changed (a visitor signed in or out, plans/app-repos.md
+   *  §5): the new viewer's state is read anew, and what this page set and
+   *  strut did not keep is dropped — an app that wants it kept sets it
+   *  again once signed in (a functional set reads the new state). */
+  reload() {
+    clearTimeout(this.timer);
+    this.timer = undefined;
+    this.pending = new Map();
+    this.sending = new Map();
+    this.server = {};
+    this.error = null;
+    if (!this.started || !this.client.app) return this.emit();
+    this.loaded = false;
+    this.emit();
+    void this.send({}).then(() => {
+      this.loaded = true;
+      this.emit();
+    });
+  }
+
   private send(config: Record<string, unknown>): Promise<boolean> {
     const call = this.queue.then(() => this.client.run<{ state: AppState }>(APP_STATE_STEP, config)).then(
       (r) => {
@@ -1026,6 +1046,11 @@ class AppStateStore {
 }
 
 const appStateStores = new WeakMap<StrutClient, AppStateStore>();
+
+/** Read this page's `useAppState` again, for a new viewer (`useVisitor`). */
+export function reloadAppState(client: StrutClient): void {
+  appStateStores.get(client)?.reload();
+}
 
 /**
  * What THIS viewer's page remembers, across visits, hosts and devices — a

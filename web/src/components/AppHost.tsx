@@ -7,6 +7,8 @@ import { appToolInput, namesApp, peerAppLink } from "../app-links";
 import { frameAttributes } from "../frame-permissions";
 import type { ClaimEnd, PaymentRequired, PayOutcome } from "../visitor-pay";
 import { PaymentSheet } from "./PaymentSheet";
+import { SignInSheet } from "./SignInSheet";
+import { signInWithKey, usableMethods, type SignInMethod, type VisitorSession } from "../visitor-signin";
 
 // ── An app's page, hosted (plans/apps.md §7.3) ─────────────────────────────
 //
@@ -45,7 +47,10 @@ import { PaymentSheet } from "./PaymentSheet";
 // document, and relays its tools/call to the peer with the token on file.
 // A VISITOR's page (the public view) may launch a workflow anyone may run;
 // when it costs something this host — never the frame — shows the invoice
-// over the frame and pays (./PaymentSheet, plans/paid-runs.md §10).
+// over the frame and pays (./PaymentSheet, plans/paid-runs.md §10). And it
+// may ask to sign the visitor in (`useVisitor`, plans/app-repos.md §5):
+// this host draws the sheet over the frame (./SignInSheet) and keeps the
+// session; the page learns the actor, never a key.
 
 /** The frame every app starts in (../frame-permissions). Constant, so a
  *  render never writes over what the effect set for the version on screen. */
@@ -90,6 +95,10 @@ export function AppHost(props: {
   const [payment, setPayment] = useState<{ p: PaymentRequired; workflow: string; settled: Promise<ClaimEnd>; done: (o: PayOutcome) => void } | null>(null);
   const paymentRef = useRef(payment);
   paymentRef.current = payment;
+  /** The visitor's sign-in the page asked for, and where its answer goes. */
+  const [signIn, setSignIn] = useState<{ methods: SignInMethod[]; done: (s: VisitorSession | null) => void } | null>(null);
+  const signInRef = useRef(signIn);
+  signInRef.current = signIn;
   const connRef = useRef<AppHostConnection | null>(null);
   const handlers = useRef({ onMessage: props.onMessage, onNavigate: props.onNavigate, onReady: props.onReady });
   handlers.current = { onMessage: props.onMessage, onNavigate: props.onNavigate, onReady: props.onReady };
@@ -148,12 +157,29 @@ export function AppHost(props: {
           ...(app.peer ? { base: api.peerBase(app.peer) } : {}),
           ...(wallet ? { wallet } : {}),
           ...(permissions ? { permissions } : {}),
-          // Channels as the signed-in viewer: a peer's app's are relayed to the peer.
-          ...(!visitor ? { channels: { name: app.name, version: app.version, ...(app.peer ? { peer: app.peer } : {}) } } : {}),
+          // Channels as the signed-in viewer: a peer's app's are relayed to
+          // the peer; a visitor's once they signed in.
+          channels: { name: app.name, version: app.version, ...(app.peer ? { peer: app.peer } : {}) },
           handlers: {
             onInitialized: markReady,
             ...(visitor
               ? {
+                  // The visitor signs in (plans/app-repos.md §5.3): one tap
+                  // when this browser's key is all there is, else the sheet.
+                  onSignIn: async (offered: SignInMethod[]) => {
+                    const methods = usableMethods(offered);
+                    if (methods.length === 1 && methods[0] === "key") return signInWithKey();
+                    if (!methods.length) throw new Error("no sign-in this browser can do here");
+                    return new Promise<VisitorSession | null>((resolve) => {
+                      setSignIn({
+                        methods,
+                        done: (s) => {
+                          setSignIn(null);
+                          resolve(s);
+                        },
+                      });
+                    });
+                  },
                   onPayment: (p: PaymentRequired, workflow: string, settled: Promise<ClaimEnd>) =>
                     new Promise<PayOutcome>((resolve) => {
                       setPayment({
@@ -208,6 +234,7 @@ export function AppHost(props: {
       cancelled = true;
       // A sheet still open answers its call: the page is going away.
       paymentRef.current?.done(null);
+      signInRef.current?.done(null);
       clearTimeout(readyTimer);
       frame.removeEventListener("load", onLoad);
       connRef.current = null;
@@ -239,6 +266,7 @@ export function AppHost(props: {
       {/* Every app's attributes; the effect sets the version's before the srcdoc. */}
       <iframe ref={frameRef} class="app-frame" sandbox={BASE_FRAME.sandbox} allow={BASE_FRAME.allow} title={app.name} />
       {payment && <PaymentSheet payment={payment.p} workflow={payment.workflow} settled={payment.settled} onDone={payment.done} />}
+      {signIn && <SignInSheet methods={signIn.methods} onDone={signIn.done} />}
       {state.status !== "ready" && (
         <div class={`app-host-overlay${state.status === "error" ? " is-error" : ""}`}>
           {state.status === "loading" ? "Loading the app…" : `The app could not be loaded: ${state.error}`}

@@ -2,6 +2,7 @@ import type { ConnectionRequest } from "@strut/kit/wallet";
 import { fileScopeOf, isPeerPath, type AccessedNode, type RunApp, type TokenUsage } from "@strut/kit/folds";
 import { takeTicket } from "./ticket";
 import { claimAnswerOf, type ClaimAnswer } from "./visitor-pay";
+import { setVisitorSession } from "./visitor-signin";
 
 // Mount-path-agnostic API base. Derived at runtime from the app's own
 // script URL so the UI works whether strut is served at the root (`/`) or
@@ -182,8 +183,10 @@ export interface SessionInfo {
   /** When the session ends (ms since the epoch). */
   exp: number;
   /** What a host's ticket signed the person in as (plans/member-rights.md):
-   *  an admin gets the shell, a member their apps. None for the key login. */
-  role?: "admin" | "member";
+   *  an admin gets the shell, a member their apps — a visitor
+   *  (plans/app-repos.md §5) neither: it uses the public apps alone. None
+   *  for the key login. */
+  role?: "admin" | "member" | "visitor";
 }
 
 /** The marker kept for a session the server answered with. */
@@ -342,7 +345,14 @@ async function tradeTicket(ticket: string): Promise<TicketSignIn> {
       headers: { "Content-Type": "application/json", "x-strut-ui": "1" },
       body: JSON.stringify({ ticket }),
     });
-    const body = (await res.json().catch(() => null)) as SessionInfo | null;
+    const body = (await res.json().catch(() => null)) as (SessionInfo & { token?: string }) | null;
+    // A VISITOR's ticket (plans/app-repos.md §5.3, `ticket`): its own
+    // cookie, and the token this page keeps for a frame that drops it.
+    if (res.ok && body?.role === "visitor" && body.actor && body.token) {
+      setSignedInByHost(false);
+      setVisitorSession({ actor: body.actor, token: body.token, exp: body.exp });
+      return "signed-in";
+    }
     if (res.ok && typeof body?.exp === "number") {
       setSession(markerOf(body));
       return "signed-in";
@@ -391,7 +401,8 @@ export const pageSession: Promise<SessionInfo | null> = ticketSignIn.then(async 
     const res = await fetch(`${BASE}/auth/session`, { headers: { "x-strut-ui": "1" } });
     if (!res.ok) return null;
     const body = (await res.json().catch(() => null)) as SessionInfo | null;
-    if (typeof body?.exp !== "number") return null;
+    // A visitor's session is the public apps' (./visitor-signin), never this page's.
+    if (typeof body?.exp !== "number" || body.role === "visitor") return null;
     setSession(markerOf(body));
     return getSession();
   } catch {

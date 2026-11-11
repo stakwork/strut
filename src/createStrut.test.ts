@@ -1350,6 +1350,9 @@ describe("listen()", () => {
 
 // ── The gate: with a key configured, nothing is served without it ─────────
 
+/** The visitor's sign-in routes (plans/app-repos.md §5.2): open to anyone. */
+const VISITOR_SIGN_IN_ROUTES = ["GET /visitors", "GET /visitors/challenge", "GET /visitors/lnurl", "POST /visitors/session", "DELETE /visitors/session"];
+
 describe("the API key gate", () => {
   const KEY = "gate-key";
   const PEER = "peer-key";
@@ -1397,7 +1400,7 @@ describe("the API key gate", () => {
       strut.app.routes
         .filter((r) => r.method !== "ALL" && r.path !== "*")
         .map((r) => `${r.method} ${r.path.replace(/:[A-Za-z]+(\{[^}]*\})?/g, "x")}`),
-    )].filter((r) => r !== "GET /health" && r !== "POST /auth/session" && r !== "DELETE /auth/session");
+    )].filter((r) => r !== "GET /health" && r !== "POST /auth/session" && r !== "DELETE /auth/session" && !VISITOR_SIGN_IN_ROUTES.includes(r));
     // `GET /public/*` is open by design (src/public-routes.ts): it serves only
     // what a person made public, and with nothing public it serves nothing.
     // So is `GET /llms.txt` (plans/paid-runs.md §10): the public view as a page.
@@ -1443,6 +1446,11 @@ describe("the API key gate", () => {
       const res = await strut.app.request(route.slice(5), { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
       assert.equal(res.status, 404, `${route} launches or sells nothing on an empty surface`);
     }
+    // The visitor's sign-in (plans/app-repos.md §5.2): open, and where the
+    // public view names no method it signs nobody in.
+    assert.deepEqual(await (await strut.app.request("/visitors")).json(), { methods: [], visitorKey: "root" });
+    assert.equal((await strut.app.request("/visitors/challenge")).status, 404);
+    assert.equal((await strut.app.request("/visitors/session", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ method: "key", challenge: "x" }) })).status, 401);
     // A POST under /public by any other name is behind the key.
     assert.equal((await strut.app.request("/public/workflows/x/runs/x/pause", { method: "POST" })).status, 401);
     // A path no route answers is not the UI either.
@@ -1458,7 +1466,7 @@ describe("the API key gate", () => {
       strut.app.routes
         .filter((r) => r.method !== "ALL" && r.path !== "*")
         .map((r) => `${r.method} ${r.path.replace(/:[A-Za-z]+(\{[^}]*\})?/g, "x")}`),
-    )].filter((r) => r !== "POST /auth/session" && r !== "DELETE /auth/session"); // the login, open to anyone
+    )].filter((r) => r !== "POST /auth/session" && r !== "DELETE /auth/session" && !VISITOR_SIGN_IN_ROUTES.includes(r)); // the login, open to anyone
     // A launch, a run's control, and the publisher's ping to sync subscriptions.
     const peerPost = /^POST (?:\/workflows\/x\/(?:x\/run|run|runs\/x\/(?:cancel|pause|resume))|\/packages\/subscriptions\/sync)$/;
     // `POST /public/mcp` is a visitor's door, open to anyone (plans/public-surface.md §5).
@@ -1731,6 +1739,9 @@ describe("the API key gate", () => {
     assert.equal(traded.status, 200);
     return { cookie: traded.headers.get("set-cookie")!.split(";")[0]!, session: (await traded.json()) as { actor?: string; exp: number; role?: string } };
   };
+  /** Open to anyone, whoever is signed in. */
+  const openToAnyone = (r: string) =>
+    r === "GET /health" || r === "POST /auth/session" || r === "DELETE /auth/session" || /^POST \/public\/(?:mcp|credit|credit\/claim|workflows\/x\/(?:run|runs\/x\/cancel)|steps\/x\/run)$/.test(r) || /^GET \/public(?:\/|$)/.test(r) || r === "GET /llms.txt" || VISITOR_SIGN_IN_ROUTES.includes(r);
   const everyRoute = (strut: Awaited<ReturnType<typeof boot>>) => [...new Set(
     strut.app.routes
       .filter((r) => r.method !== "ALL" && r.path !== "*")
@@ -1743,9 +1754,7 @@ describe("the API key gate", () => {
     const { cookie, session } = await signInAs(strut, "ada-1");
     assert.equal(session.role, "member", "no role is a member");
     // Open to anyone, a member included, as they are today.
-    const open = (r: string) =>
-      r === "GET /health" || r === "POST /auth/session" || r === "DELETE /auth/session" || /^POST \/public\/(?:mcp|credit|credit\/claim|workflows\/x\/(?:run|runs\/x\/cancel)|steps\/x\/run)$/.test(r) || /^GET \/public(?:\/|$)/.test(r) || r === "GET /llms.txt";
-    const routes = everyRoute(strut).filter((r) => !open(r));
+    const routes = everyRoute(strut).filter((r) => !openToAnyone(r));
     // plans/member-rights.md "What a member's session opens", and the brand
     // the app is shown in.
     const allowed = [
@@ -1802,6 +1811,65 @@ describe("the API key gate", () => {
     assert.equal((await strut.app.request("/secrets/X", { method: "PUT", headers: { cookie, "x-strut-ui": "1", authorization: `Bearer ${PEER}`, "content-type": "application/json" }, body: "{}" })).status, 403);
   });
 
+  it("a visitor's session (plans/app-repos.md §5.1) passes its own routes and nothing else — 403 on every other, reads included, as cookie and as bearer", async () => {
+    const strut = await boot();
+    process.env["STRUT_API_KEY"] = KEY;
+    // A host vouches (`ticket`): the visitor's own cookie, and its token.
+    const json = { "content-type": "application/json" };
+    const minted = await strut.app.request("/auth/ticket", { method: "POST", headers: { ...json, ...auth.headers }, body: JSON.stringify({ actor: "guest-7", role: "visitor" }) });
+    const { ticket } = (await minted.json()) as { ticket: string };
+    const traded = await strut.app.request("/auth/session", { method: "POST", headers: { ...json, "x-strut-ui": "1" }, body: JSON.stringify({ ticket }) });
+    assert.equal(traded.status, 200);
+    const setCookie = traded.headers.get("set-cookie")!;
+    assert.match(setCookie, /^strut_visitor=/, "a cookie of its own: never the operator's session");
+    const cookie = setCookie.split(";")[0]!;
+    const got = (await traded.json()) as { actor: string; role: string; token: string; exp: number };
+    assert.equal(got.role, "visitor");
+    assert.equal(got.actor, "guest-7");
+    assert.ok(got.exp > Date.now() + 29 * 86_400_000, "a visitor's session lasts a month");
+    // The trap (auth.ts `fullSession`): a visitor's token in the operator's
+    // cookie is no session of the key's at all.
+    const asOperator = `strut_session=${got.token}`;
+    assert.equal(apiKeyMatches(undefined, undefined, asOperator), false);
+    assert.equal(apiKeyMatches(undefined, undefined, cookie), false);
+    assert.equal((await strut.app.request("/workflows", { headers: { cookie: asOperator } })).status, 401);
+    assert.deepEqual(await (await strut.app.request("/health", { headers: { cookie } })).json(), { ok: true });
+
+    const routes = everyRoute(strut).filter((r) => !openToAnyone(r));
+    const allowed = ["GET /auth/session", "POST /apps/x/channel-ticket"];
+    for (const r of allowed) assert.ok(routes.includes(r), r);
+    assert.ok(routes.length > 100, `swept ${routes.length} routes`);
+    assert.ok(routes.includes("GET /host/mounted") && routes.includes("POST /mcp") && routes.includes("GET /apps"), "Jamie's door and the apps list are swept");
+    for (const creds of [{ cookie, "x-strut-ui": "1" }, { authorization: `Bearer ${got.token}` }, { "x-strut-visitor": got.token }]) {
+      for (const route of routes) {
+        const [method, path] = route.split(" ") as [string, string];
+        const write = method !== "GET" && method !== "HEAD";
+        const res = await strut.app.request(path, {
+          method,
+          headers: { ...creds, "content-type": "application/json", accept: "application/json, text/event-stream" },
+          ...(write ? { body: "{}" } : {}),
+        });
+        await res.body?.cancel();
+        if (allowed.includes(route)) assert.ok(res.status !== 401 && res.status !== 403, `${route} → ${res.status}`);
+        else assert.equal(res.status, 403, `${route} (${Object.keys(creds).join(", ")})`);
+      }
+    }
+    // Who it is, as cookie and as bearer alike.
+    for (const headers of [{ cookie }, { authorization: `Bearer ${got.token}` }]) {
+      assert.deepEqual(await (await strut.app.request("/auth/session", { headers })).json(), { actor: "guest-7", exp: got.exp, role: "visitor" });
+    }
+    // A channel ticket: a public app's alone — nothing is public here.
+    assert.equal((await strut.app.request("/apps/x/channel-ticket", { method: "POST", headers: { authorization: `Bearer ${got.token}`, ...json }, body: JSON.stringify({ version: "v1" }) })).status, 403);
+    // The cookie keeps the CSRF rules: a write on it alone is no session.
+    assert.equal((await strut.app.request("/apps/x/channel-ticket", { method: "POST", headers: { cookie, ...json }, body: "{}" })).status, 401);
+    // Signing out clears the visitor's cookie, and only it.
+    const out = await strut.app.request("/visitors/session", { method: "DELETE", headers: { cookie } });
+    assert.equal(out.status, 204);
+    assert.match(out.headers.get("set-cookie") ?? "", /^strut_visitor=; .*Max-Age=0/);
+    // Beside a visitor's, the key is the key.
+    assert.equal((await strut.app.request("/workflows", { headers: { authorization: `Bearer ${KEY}`, cookie } })).status, 200);
+  });
+
   it("roles: an admin's session is the key's equal, a bad role is a 400, a member cannot mint a ticket, and /mcp gives a member step_run alone", async () => {
     const strut = await boot();
     process.env["STRUT_API_KEY"] = KEY;
@@ -1811,7 +1879,7 @@ describe("the API key gate", () => {
     for (const role of ["owner", "Admin", "", 7, true, ["admin"]]) {
       const res = await strut.app.request("/auth/ticket", { method: "POST", headers: { ...json, ...auth.headers }, body: JSON.stringify({ actor: "ada-1", role }) });
       assert.equal(res.status, 400, JSON.stringify(role));
-      assert.match(((await res.json()) as { error: string }).error, /role must be "admin" or "member"/);
+      assert.match(((await res.json()) as { error: string }).error, /role must be "admin", "member" or "visitor"/);
     }
 
     // An admin: GET /auth/session says so, and every route the key opens it opens.
