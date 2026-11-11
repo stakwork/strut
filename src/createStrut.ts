@@ -1048,7 +1048,7 @@ export async function createStrut<TServices = unknown>(
    *  request its seal, the ping nothing (it only makes the index read a
    *  catalog it already lists). Budgeted per address. */
   const INDEX_POSTS = new Set(["/index/requests", "/index/ping"]);
-  const INDEX_READ = /^(?:\/llms\.txt$|\/index\/(?:catalog|packages(?:\/|$)|concepts(?:\/|$)|live$|mcp$))/;
+  const INDEX_READ = /^\/index\/(?:catalog|packages(?:\/|$)|concepts(?:\/|$)|live$|mcp$)/;
   /** The index's MCP door (src/packages/index-tools.ts): the one POST the
    *  role opens, the three read tools over the same derived pages. */
   const INDEX_MCP = "/index/mcp";
@@ -2039,7 +2039,7 @@ export async function createStrut<TServices = unknown>(
     // from the surface alone, so open to anyone — reads and a browser's
     // preflight for them.
     const open = read
-      ? path === "/health" || (serveUi && UI_FILE.test(path)) || (!!serveRef && path === SERVE_IMAGE_PATH) || carriesFileToken(c) || !!catalogTokenOf(c) || publicPackageRead(c) || (!!indexConfig && INDEX_READ.test(path)) || PUBLIC_PATH.test(path) || !!channelTicketOf(c)
+      ? path === "/health" || path === "/llms.txt" || (serveUi && UI_FILE.test(path)) || (!!serveRef && path === SERVE_IMAGE_PATH) || carriesFileToken(c) || !!catalogTokenOf(c) || publicPackageRead(c) || (!!indexConfig && INDEX_READ.test(path)) || PUBLIC_PATH.test(path) || !!channelTicketOf(c)
       : (path === "/auth/session" && (c.req.method === "POST" || c.req.method === "DELETE")) || (!!indexConfig && (path === INDEX_MCP || INDEX_POSTS.has(path)) && c.req.method === "POST") || (c.req.method === "OPTIONS" && PUBLIC_PATH.test(path)) || (c.req.method === "POST" && PUBLIC_POST.test(path)) || (!!serveRef && c.req.method === "POST" && path === "/serve/sync");
     if (open) return next();
     if (memberOnly(c)) {
@@ -4739,8 +4739,33 @@ export async function createStrut<TServices = unknown>(
     app.get("/llms.txt", async (c) => {
       const { llmsTxt } = await import("./packages/index-tools.js");
       const publicUrl = publicUrlOf(c);
-      const text = await llmsTxt(index, { publicUrl, ...(serveUi ? { store: publicUrl } : {}) });
+      let text = await llmsTxt(index, { publicUrl, ...(serveUi ? { store: publicUrl } : {}) });
+      // An index that also sells (plans/paid-runs.md §10): what anyone may
+      // run HERE, after the store.
+      const runnable = await publicDoors.runnable().catch(() => []);
+      if (runnable.length) {
+        const { runnableSection } = await import("./public-agents.js");
+        text += `\n# Run on this server\n\nAnyone may run these here, with no account, over MCP at ${publicUrl}/public/mcp (list_public, run_workflow, call_tool, get_run, get_credit) or plain HTTP.\n\n${runnableSection(runnable, publicUrl).join("\n")}\n`;
+      }
       return c.body(text, 200, { "content-type": "text/markdown; charset=utf-8", "x-content-type-options": "nosniff", "cache-control": "public, no-cache" });
+    });
+  } else {
+    // The public view as ONE markdown page (llmstxt.org, plans/paid-runs.md
+    // §10): what anyone may run here and its price, how an agent runs and
+    // pays for it, what else anyone may read. Open to anyone, like
+    // `/public`; nothing public, nothing here.
+    app.get("/llms.txt", async (c) => {
+      const listing = await publicDoors.listing();
+      if (!listing.runnable.length && !listing.workflows.length && !listing.apps.length && !listing.concepts.length && !listing.steps.length) {
+        return c.json({ error: "nothing is public on this strut server" }, 404);
+      }
+      const { publicLlmsTxt } = await import("./public-agents.js");
+      return c.body(publicLlmsTxt(listing, { publicUrl: publicUrlOf(c) }), 200, {
+        "content-type": "text/markdown; charset=utf-8",
+        "x-content-type-options": "nosniff",
+        "cache-control": "public, no-cache",
+        "access-control-allow-origin": "*",
+      });
     });
   }
 
@@ -8501,9 +8526,18 @@ export async function createStrut<TServices = unknown>(
           viewer: `visitor ${who}`,
         },
       });
-      const instructions =
-        "A public app's one tool, step_run, for a visitor's page: reads held to this strut server's public view, and run/launch of a workflow anyone may run that the app grants — a priced one answers { payment_required } until its host pays.";
-      return createMcpDoor(() => toolsetServer({ tools, instructions, meta: APP_TOOL_META })).handle(c.req.raw);
+      // An AGENT with no account (plans/paid-runs.md §10, work item 8): the
+      // five tools beside the page's `step_run` — list_public, run_workflow,
+      // call_tool, get_run, get_credit — over the SAME doors as the HTTP
+      // routes (`publicDoors`): the address's budgets, the drain, the caps,
+      // the price and the key are one code path. A priced one with no
+      // credit answers `{ payment_required }` as its result; the agent pays
+      // and calls again with `payment`, or this request's own
+      // `Authorization: L402`.
+      const { buildPublicAgentTools, publicMcpInstructions } = await import("./public-agents.js");
+      const publicUrl = publicUrlOf(c);
+      const agentTools = buildPublicAgentTools({ doors: publicDoors, who, authorization: c.req.header("authorization"), publicUrl });
+      return createMcpDoor(() => toolsetServer({ tools: { ...agentTools, ...tools }, instructions: publicMcpInstructions(publicUrl), meta: APP_TOOL_META })).handle(c.req.raw);
     });
     /** The builder deps both doors spread: public links, and a run that
      *  outlives the wait window goes on detached, tracked like any launch —

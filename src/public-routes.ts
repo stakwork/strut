@@ -143,10 +143,58 @@ export interface PublicLaunchRequest {
   visitor?: string;
 }
 
-/** What `publicRoutes` hands back to the server: the launch, for the
- *  visitor's door. */
+/** One public tool call (§3's order), whichever door it came through. */
+export interface PublicCallRequest {
+  type: string;
+  /** The caller's address: the calls' budget, its share of calls in flight. */
+  who: string;
+  /** `Authorization` as sent: a credit token as `L402 <macaroon>:<preimage>`. */
+  authorization?: string | undefined;
+  /** The body (`{ config }` and nothing else), read only once the budget,
+   *  the door and the drain have answered; or the refusal reading it came to. */
+  readBody: () => Promise<{ body: unknown } | { refused: PublicLaunchOutcome }>;
+}
+
+/** An answer of the doors below, as data: the route's status, body and
+ *  headers. */
+export interface PublicAnswer {
+  status: number;
+  body: Record<string, unknown>;
+  headers?: Record<string, string>;
+}
+
+/** What `publicRoutes` hands back to the server: the doors a second front
+ *  door shares — a visitor's page's `run/launch` and an agent's tools on
+ *  `POST /public/mcp` (plans/paid-runs.md §10) — so admission, budgets,
+ *  caps, price, keys and drain are ONE code path whichever way a caller
+ *  came. */
 export interface PublicDoors {
   launch(r: PublicLaunchRequest): Promise<PublicLaunchOutcome>;
+  /** A tool's call: the calls' per-address budget, the drain, the body, then
+   *  src/public-tools.ts `call`. */
+  call(r: PublicCallRequest): Promise<PublicAnswer>;
+  /** The launcher's view of a public run, with its RUN TOKEN (§3): 404 for a
+   *  token that is not that run's. `wait` holds while it is in flight (s,
+   *  at most `PUBLIC_RUN_WAIT_MAX_S`). */
+  run(r: { name: string; runId: string; token: string | undefined; wait?: number }): Promise<PublicAnswer>;
+  /** A credit token's balance (`GET /public/credit`). */
+  credit(r: { authorization: string | undefined }): Promise<PublicAnswer>;
+  /** A payer with no preimage (`POST /public/credit/claim`): the macaroon alone. */
+  claim(r: { macaroon: string; who: string }): Promise<PublicAnswer>;
+  /** What anyone may run here, and for how much (`GET /public`'s `runnable`). */
+  runnable(): Promise<ListedRunnable[]>;
+  /** `GET /public` itself: everything the public view shows. */
+  listing(): Promise<PublicListing>;
+}
+
+/** `GET /public`: what the public view shows, and what anyone may run. */
+export interface PublicListing {
+  workflows: Array<{ name: string; activeVersion: string; versions: string[]; description?: string; category?: string; runs: boolean }>;
+  steps: Array<{ type: string; source: string; description?: string; effect?: string }>;
+  concepts: Array<{ name: string; description?: string; pages: number }>;
+  types: string[];
+  apps: PublicAppInfo[];
+  runnable: ListedRunnable[];
 }
 
 /** A public app as a visitor's host reads it. */
@@ -353,11 +401,11 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
 
   // ── The surface ─────────────────────────────────────────────────────────
 
-  app.get("/public", async (c) => {
+  const listing: PublicDoors["listing"] = async () => {
     const s = await surface.get();
     const tree = s.concepts.length ? await surface.conceptTree() : undefined;
     const roots = tree ? tree.concepts.filter((x) => !x.parent) : [];
-    return c.json({
+    return {
       workflows: await listedWorkflows(),
       steps: await listedSteps(),
       concepts: roots.map((r) => ({ name: r.name, ...(r.description ? { description: r.description } : {}), pages: tree!.concepts.filter((x) => x.root === r.root).length })),
@@ -365,8 +413,9 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
       apps: await listedApps(),
       // Listed whether or not its definition is public (decision 11).
       runnable: (await deps.runnable?.()) ?? [],
-    });
-  });
+    };
+  };
+  app.get("/public", async (c) => c.json(await listing()));
 
   // ── Apps ────────────────────────────────────────────────────────────────
 
@@ -484,34 +533,45 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
    *  output, error, what it spent and its declared artifacts with links
    *  here — and, once it ended and was charged, `charged`, in dollars, as
    *  the ledger recorded it. A free run is charged nothing: `charged: 0`,
-   *  its cost (`totals.cost`) the seller's. `?wait=<s>` holds while it is in flight (at most 55 s). With
-   *  `results: "run"`, the summary as a public run shows it. */
-  const launcherView = async (c: Context, got: OpenRun) => {
+   *  its cost (`totals.cost`) the seller's. `waitS` holds while it is in
+   *  flight (at most 55 s). With `results: "run"`, the summary as a public
+   *  run shows it. */
+  const launcherBody = async (name: string, runId: string, open: OpenRun["open"], waitS: number): Promise<Record<string, unknown>> => {
     const runs = deps.launches!.runs;
-    const waitS = Number(c.req.query("wait") ?? 0);
     const deadline = Date.now() + 1000 * Math.min(PUBLIC_RUN_WAIT_MAX_S, Number.isFinite(waitS) && waitS > 0 ? waitS : 0);
-    let summary = await store.getRunSummary(got.name, got.runId);
-    while ((!summary || runs.pending(got.name, got.runId)) && Date.now() < deadline) {
+    let summary = await store.getRunSummary(name, runId);
+    while ((!summary || runs.pending(name, runId)) && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 250));
-      summary = await store.getRunSummary(got.name, got.runId);
+      summary = await store.getRunSummary(name, runId);
     }
-    const ended = !!summary && !runs.pending(got.name, got.runId);
-    const charged = ended ? await runs.charged(got.name, got.runId).catch(() => undefined) : undefined;
+    const ended = !!summary && !runs.pending(name, runId);
+    const charged = ended ? await runs.charged(name, runId).catch(() => undefined) : undefined;
     let base: Record<string, unknown>;
     if (summary) base = { ...summary };
     else {
-      const events = await store.getRunEvents(got.name, got.runId);
-      const partial = summarizeFromEvents(got.name, got.runId, events, deps.liveStatus(got.name, got.runId));
-      base = partial ? { ...(partial as unknown as Record<string, unknown>) } : { runId: got.runId, workflow: got.name, status: deps.liveStatus(got.name, got.runId) };
+      const events = await store.getRunEvents(name, runId);
+      const partial = summarizeFromEvents(name, runId, events, deps.liveStatus(name, runId));
+      base = partial ? { ...(partial as unknown as Record<string, unknown>) } : { runId, workflow: name, status: deps.liveStatus(name, runId) };
     }
-    const shown = got.open === "all" ? publicSummary(base) : outputOnly(base);
-    const artifacts = launcherArtifacts(got.name, got.runId, summary?.output);
-    return c.json({
+    const shown = open === "all" ? publicSummary(base) : outputOnly(base);
+    const artifacts = launcherArtifacts(name, runId, summary?.output);
+    return {
       ...shown,
       ...(artifacts ? { artifacts } : {}),
       // What the run was charged, from the ledger: a free run nothing.
       ...(ended ? { charged: microsToUsd(charged ?? 0) } : {}),
-    });
+    };
+  };
+  const launcherView = async (c: Context, got: OpenRun) => c.json(await launcherBody(got.name, got.runId, got.open, Number(c.req.query("wait") ?? 0)));
+
+  /** A launcher's run, read by its token alone (an agent's `get_run`). */
+  const runByToken: PublicDoors["run"] = async ({ name, runId, token, wait }) => {
+    const missing = { status: 404, body: { error: `no run "${runId}" of "${name}" for that token` } };
+    if (!deps.launches || !runId || /[/\\]|\.\./.test(runId) || !isPublicRunToken(name, runId, token)) return missing;
+    const start = (await store.getRunEvents(name, runId)).find((e) => e.type === "run.start");
+    if (start ? start.origin !== "public" : !deps.launches.runs.pending(name, runId)) return missing;
+    const all = (await surface.workflow(name))?.runs || (await surface.runnable("workflow", name))?.results === "run";
+    return { status: 200, body: await launcherBody(name, runId, all ? "all" : "output", wait ?? 0) };
   };
 
   app.get("/public/workflows/:name/runs/:runId/events", async (c) => {
@@ -725,18 +785,7 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
       who: visitorAddress(c),
       authorization: c.req.header("authorization"),
       // Read only once the cheaper refusals have answered.
-      readBody: async () => {
-        const length = Number(c.req.header("content-length") ?? 0);
-        const tooBig = { refused: { status: 413 as const, body: { error: `the body is over ${PUBLIC_RUN_BODY_MAX_BYTES / 1024} KB` } } };
-        if (length > PUBLIC_RUN_BODY_MAX_BYTES) return tooBig;
-        const raw = await c.req.text();
-        if (Buffer.byteLength(raw) > PUBLIC_RUN_BODY_MAX_BYTES) return tooBig;
-        try {
-          return { body: raw.trim() ? (JSON.parse(raw) as unknown) : {} };
-        } catch {
-          return { refused: { status: 400 as const, body: { error: "the body is not JSON" } } };
-        }
-      },
+      readBody: () => readJsonBody(c),
     });
     return c.json(out.body, out.status, out.headers);
   });
@@ -772,30 +821,40 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
     }
     return ++at.n > callLimit;
   };
-  app.post("/public/steps/:type{.+}/run", async (c) => {
-    const tools = deps.tools;
-    const type = c.req.param("type");
-    const who = visitorAddress(c);
-    if (overCallBudget(who)) return c.json({ error: `too many calls: ${callLimit} a minute` }, 429, { "retry-after": "60" });
-    if (!tools) return c.json({ error: `step "${type}" is not open to anyone to call on this strut server` }, 404);
-    const draining = tools.draining();
-    if (draining) return c.json({ error: draining }, 503, { "retry-after": "60" });
+  /** A JSON body of at most 256 KB, read from the request, or the refusal. */
+  const readJsonBody = async (c: Context): Promise<{ body: unknown } | { refused: PublicLaunchOutcome }> => {
     const length = Number(c.req.header("content-length") ?? 0);
-    if (length > PUBLIC_RUN_BODY_MAX_BYTES) return c.json({ error: `the body is over ${PUBLIC_RUN_BODY_MAX_BYTES / 1024} KB` }, 413);
+    const tooBig = { refused: { status: 413 as const, body: { error: `the body is over ${PUBLIC_RUN_BODY_MAX_BYTES / 1024} KB` } } };
+    if (length > PUBLIC_RUN_BODY_MAX_BYTES) return tooBig;
     const raw = await c.req.text();
-    if (Buffer.byteLength(raw) > PUBLIC_RUN_BODY_MAX_BYTES) return c.json({ error: `the body is over ${PUBLIC_RUN_BODY_MAX_BYTES / 1024} KB` }, 413);
-    let body: Record<string, unknown>;
+    if (Buffer.byteLength(raw) > PUBLIC_RUN_BODY_MAX_BYTES) return tooBig;
     try {
-      body = raw.trim() ? (JSON.parse(raw) as Record<string, unknown>) : {};
+      return { body: raw.trim() ? (JSON.parse(raw) as unknown) : {} };
     } catch {
-      return c.json({ error: "the body is not JSON" }, 400);
+      return { refused: { status: 400 as const, body: { error: "the body is not JSON" } } };
     }
-    if (!body || typeof body !== "object" || Array.isArray(body)) return c.json({ error: "the body is a JSON object: { config }" }, 400);
+  };
+  const callTool: PublicDoors["call"] = async (r) => {
+    const tools = deps.tools;
+    const { type, who } = r;
+    if (overCallBudget(who)) return { status: 429, body: { error: `too many calls: ${callLimit} a minute` }, headers: { "retry-after": "60" } };
+    if (!tools) return { status: 404, body: { error: `step "${type}" is not open to anyone to call on this strut server` } };
+    const draining = tools.draining();
+    if (draining) return { status: 503, body: { error: draining }, headers: { "retry-after": "60" } };
+    const read = await r.readBody();
+    if ("refused" in read) return read.refused;
+    const body = read.body as Record<string, unknown>;
+    if (!body || typeof body !== "object" || Array.isArray(body)) return { status: 400, body: { error: "the body is a JSON object: { config }" } };
+    if (Buffer.byteLength(JSON.stringify(body)) > PUBLIC_RUN_BODY_MAX_BYTES) return { status: 413, body: { error: `the body is over ${PUBLIC_RUN_BODY_MAX_BYTES / 1024} KB` } };
     const extra = Object.keys(body).filter((k) => k !== "config");
-    if (extra.length) return c.json({ error: `a public call takes { config } alone — drop ${extra.join(", ")}` }, 400);
-    const presented = parseAuthorization(c.req.header("authorization"));
+    if (extra.length) return { status: 400, body: { error: `a public call takes { config } alone — drop ${extra.join(", ")}` } };
+    const presented = parseAuthorization(r.authorization);
     const a = await tools.call({ type, config: body["config"], ...(presented ? { presented } : {}), address: who });
-    return c.json(a.body, a.status, a.headers);
+    return { status: a.status, body: a.body as unknown as Record<string, unknown>, ...(a.headers ? { headers: a.headers } : {}) };
+  };
+  app.post("/public/steps/:type{.+}/run", async (c) => {
+    const a = await callTool({ type: c.req.param("type"), who: visitorAddress(c), authorization: c.req.header("authorization"), readBody: () => readJsonBody(c) });
+    return c.json(a.body, a.status as 200, a.headers);
   });
 
   // ── Credit (plans/paid-runs.md §3's table, §4) ──────────────────────────
@@ -804,14 +863,25 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
    *  and in sats at its own rate, its end, the newest 50 entries. The token
    *  as `Authorization: L402 <macaroon>:<preimage>`; a token never used
    *  before is used here (the wallet asked once). */
-  app.get("/public/credit", async (c) => {
-    if (!deps.credit || !(await deps.credit.selling())) return c.json({ error: "this strut server has sold no credit" }, 404);
-    const auth = parseAuthorization(c.req.header("authorization"));
-    if (!auth) return creditRefusal(c, { status: 401, code: "invalid_token", error: "invalid_token: present the token as Authorization: L402 <macaroon>:<preimage>" });
+  /** A credit refusal as an answer: `creditRefusal`, as data. */
+  const refusalAnswer = (r: Pick<CreditRefusal, "status" | "code" | "error" | "retryAfter">): PublicAnswer => {
+    const headers: Record<string, string> = {};
+    if (r.retryAfter !== undefined) headers["retry-after"] = String(r.retryAfter);
+    if (r.status === 401) headers["www-authenticate"] = `L402 error="${r.code}"`;
+    return { status: r.status, body: { error: r.error, code: r.code }, headers };
+  };
+  const creditView: PublicDoors["credit"] = async ({ authorization }) => {
+    if (!deps.credit || !(await deps.credit.selling())) return { status: 404, body: { error: "this strut server has sold no credit" } };
+    const auth = parseAuthorization(authorization);
+    if (!auth) return refusalAnswer({ status: 401, code: "invalid_token", error: "invalid_token: present the token as Authorization: L402 <macaroon>:<preimage>" });
     const used = await deps.credit.check(auth);
-    if (!used.ok) return creditRefusal(c, used);
+    if (!used.ok) return refusalAnswer(used);
     const view = await deps.credit.view(used.token.tokenId);
-    return view ? c.json(view) : c.json({ error: "no such token" }, 404);
+    return view ? { status: 200, body: view as unknown as Record<string, unknown> } : { status: 404, body: { error: "no such token" } };
+  };
+  app.get("/public/credit", async (c) => {
+    const a = await creditView({ authorization: c.req.header("authorization") });
+    return c.json(a.body, a.status as 200, a.headers);
   });
 
   /** A challenge for more credit than one run's reserve: `{ usd }` or
@@ -863,6 +933,13 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
   /** A payer with no preimage (§4.4): the macaroon alone, as `{ macaroon }`
    *  or `Authorization: L402 <macaroon>`. `pending`, `expired`, or
    *  `settled` with the preimage and the whole credential. */
+  const claimCredit: PublicDoors["claim"] = async ({ macaroon, who }) => {
+    if (!deps.credit || !(await deps.credit.selling())) return { status: 404, body: { error: "this strut server has sold no credit" } };
+    const got = await deps.credit.claim({ macaroon }, who);
+    if (!got.ok) return refusalAnswer(got);
+    const { ok: _ok, ...out } = got;
+    return { status: 200, body: out };
+  };
   app.post("/public/credit/claim", async (c) => {
     if (!deps.credit || !(await deps.credit.selling())) return c.json({ error: "this strut server has sold no credit" }, 404);
     let macaroon = parseAuthorization(c.req.header("authorization"))?.macaroon;
@@ -877,10 +954,8 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
       }
     }
     if (!macaroon) return c.json({ error: "the body is { macaroon }" }, 400);
-    const got = await deps.credit.claim({ macaroon }, visitorAddress(c));
-    if (!got.ok) return creditRefusal(c, got);
-    const { ok: _ok, ...out } = got;
-    return c.json(out);
+    const a = await claimCredit({ macaroon, who: visitorAddress(c) });
+    return c.json(a.body, a.status as 200, a.headers);
   });
 
   // After the run routes: a version's YAML, the catch-all.
@@ -994,5 +1069,5 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
     return c.json({ ref_id: node.ref_id, node_type: node.node_type ?? null, name: node.name ?? null, title: node.title ?? null, properties: node.properties });
   });
 
-  return { launch };
+  return { launch, call: callTool, run: runByToken, credit: creditView, claim: claimCredit, runnable: async () => (await deps.runnable?.()) ?? [], listing };
 }
