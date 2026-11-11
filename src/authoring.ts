@@ -458,7 +458,9 @@ export interface AuthoringCapability {
    *  authored with the code. Additive and idempotent by exact text; invalid
    *  claims block the publish (plans/claims.md §2, door one). */
   createStep(name: string, code: string, description?: string, claims?: ClaimSpecInput[]): Promise<StepPublishResult>;
-  editStep(type: string, code: string, description?: string, claims?: ClaimSpecInput[]): Promise<StepPublishResult>;
+  /** `code` is the full source, or `{ edits }` over the active version's
+   *  (`applyEdits`). */
+  editStep(type: string, code: string | { edits: TextEdit[] }, description?: string, claims?: ClaimSpecInput[]): Promise<StepPublishResult>;
   runStep(type: string, args?: RunStepArgs): Promise<RunStepResult | { error: string }>;
   /** Slim entries, `query`-filtered and cut at `limit` (default 100) with
    *  `total` + a `hint` when cut — `listWorkflowEntries`. */
@@ -475,6 +477,32 @@ export interface AuthoringCapability {
     claims?: ClaimSpecInput[],
     /** Who is publishing (the calling run's actor), recorded on the version. */
     actor?: string,
+  ): Promise<unknown>;
+  /** `publishWorkflow` of the active version's YAML with `edits` applied
+   *  (`applyEdits`): a small change without resending the whole YAML. */
+  editWorkflow(
+    name: string,
+    edits: TextEdit[],
+    description?: string,
+    category?: string,
+    claims?: ClaimSpecInput[],
+    actor?: string,
+  ): Promise<unknown>;
+  /** ROLLBACK: make an existing version the active one; nothing is
+   *  published. A workflow's target version is held to what a publish of it
+   *  would be (sealed, peers, reach); a step's is code, refused under a
+   *  reach. */
+  setActiveVersion(kind: "workflow" | "step", name: string, version: string): Promise<unknown>;
+  /** Set or clear a workflow's sidebar category; nothing is published. */
+  setWorkflowCategory(name: string, category: string | null): Promise<unknown>;
+  /** Cancel or pause a run LIVE in this process (RUN_CONTROL_SPEC §4).
+   *  Refused for a sealed workflow, and for a run billed to someone other
+   *  than `caller.principal`. */
+  controlRun(
+    name: string,
+    runId: string,
+    action: "cancel" | "pause",
+    caller?: { principal?: string; force?: boolean },
   ): Promise<unknown>;
   runWorkflow(
     name: string,
@@ -585,6 +613,14 @@ export interface AuthoringDeps extends StepPublishDeps {
     runId: string,
     body: { from?: string; version?: string },
   ) => Promise<{ ok: boolean; status?: number; [key: string]: unknown }>;
+  /** createStrut's run control (the cancel / pause routes' core). Optional:
+   *  without it `controlRun` answers that this host cannot. */
+  controlRun?: (
+    name: string,
+    runId: string,
+    action: "cancel" | "pause",
+    force: boolean,
+  ) => Promise<{ ok?: boolean; status?: number; [key: string]: unknown }>;
 }
 
 export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapability {
@@ -637,8 +673,14 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
   // in this process, past any scope (src/reach.ts).
   const noStepCode = (type: string) =>
     `Nothing was published — "${type}": this strut server does not let the AI publish step code (builder.reach). Build the workflow from the steps it has.`;
+  /** A run someone else pays for is theirs to resume, cancel or pause. */
+  const billedElsewhere = async (name: string, runId: string, principal: string | undefined, verb: string) => {
+    const start = await store.getRunStart(name, runId);
+    const payer = start?.principal ?? start?.actor;
+    return payer && payer !== principal ? `run ${runId} is billed to ${payer}, not to this run's principal — only they ${verb} it` : null;
+  };
 
-  return {
+  const cap: AuthoringCapability = {
     async listSteps(path = "steps") {
       return lsSteps(path, await explorerDeps());
     },
@@ -685,8 +727,17 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
       return result;
     },
 
-    async editStep(type, code, description, contract) {
+    async editStep(type, given, description, contract) {
       if (deps.reach) return { error: noStepCode(type) };
+      let code: string;
+      if (typeof given === "string") code = given;
+      else {
+        const current = await workspace.getStepSource(type);
+        if (!current) return { error: `Step "${type}" not found. Use meta/create-step to author a new step.` };
+        const r = applyEdits(current.code, given.edits, "step source");
+        if ("error" in r) return r;
+        code = r.text;
+      }
       const invalid = await claimsGate(contract);
       if (invalid) return { error: `Nothing was published — fix the claims first. ${invalid}` };
       const published = await publishStepVersion(deps, type, code, description, {
@@ -932,15 +983,84 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
       if (!deps.resumeRun) return { error: "this server cannot resume runs" };
       const gate = await sealedGate(name, "resume its runs");
       if (gate) return { error: gate };
-      // A resumed run is billed to whoever its launch was billed to: a run
-      // someone else pays for is theirs to resume.
-      const start = await store.getRunStart(name, runId);
-      const payer = start?.principal ?? start?.actor;
-      if (payer && payer !== caller.principal) {
-        return { error: `run ${runId} is billed to ${payer}, not to this run's principal — only they resume it` };
-      }
+      // A resumed run is billed to whoever its launch was billed to.
+      const theirs = await billedElsewhere(name, runId, caller.principal, "resume");
+      if (theirs) return { error: theirs };
       const { status: _status, ...out } = await deps.resumeRun(name, runId, body);
       return out;
+    },
+
+    async controlRun(name, runId, action, caller = {}) {
+      if (!deps.controlRun) return { error: `this server cannot ${action} runs` };
+      const gate = await sealedGate(name, `${action} its runs`);
+      if (gate) return { error: gate };
+      const theirs = await billedElsewhere(name, runId, caller.principal, action);
+      if (theirs) return { error: theirs };
+      const { status: _status, ...out } = await deps.controlRun(name, runId, action, caller.force === true);
+      return out;
+    },
+
+    async editWorkflow(name, edits, description, category, contract, by) {
+      const meta = await findWorkflow(name);
+      if (!meta) return { error: `Workflow "${name}" not found. Use meta/publish-workflow to author a new one.` };
+      const r = applyEdits(await workspace.getWorkflowSource(name, meta.active), edits, "workflow YAML");
+      if ("error" in r) return r;
+      return cap.publishWorkflow(name, r.text, description, category, contract, by);
+    },
+
+    async setActiveVersion(kind, name, version) {
+      if (kind === "step") {
+        if (deps.reach) return { error: `Nothing was changed — "${name}": this strut server does not let the AI change step code (builder.reach).` };
+        if (deps.publishingEnabled === false) return { error: "Step versioning is disabled in this deployment (the registry is provided in code)." };
+        if (isSealedStep(name, await deps.getRegistry())) return { error: sealedStep(name, "roll it back") };
+        try {
+          await workspace.setActiveStepVersion(name, version);
+        } catch (err) {
+          return { error: err instanceof Error ? err.message : String(err) };
+        }
+        await deps.getRegistry();
+        return { ok: true, kind, name, active: version };
+      }
+      const gate = await sealedGate(name, "roll it back");
+      if (gate) return { error: gate };
+      let active: Flow;
+      let target: Flow;
+      try {
+        active = await workspace.getWorkflow(name);
+        target = await workspace.getWorkflowVersion(name, version);
+      } catch (err) {
+        return { error: err instanceof Error ? err.message : String(err) };
+      }
+      // The version that becomes active is held to what a publish of it
+      // would be: nothing sealed, not opened to peers (unless it already
+      // is), within the reach.
+      if (target.sealed) return { error: sealedWorkflow(`${name}@${version}`, "make it active") };
+      if (target.peer && target.peer !== active.peer) {
+        return { error: `Nothing was changed — ${version} of "${name}" says \`peer: ${target.peer}\` and the active version does not. Only a person opens a workflow to other struts.` };
+      }
+      const reached = sealedInClosure(await flowClosure(target, workspace), await deps.getRegistry());
+      if (reached) return { error: `Nothing was changed — ${version} of "${name}" reaches a sealed ${reached} (EVOLVE_SPEC §6).` };
+      if (deps.reach) {
+        const outside = await reachRefusal(target, deps.reach, await deps.getRegistry(), workspace);
+        if (outside) return { error: `Nothing was changed — ${version} of "${name}": ${outside}.` };
+      }
+      try {
+        await workspace.setActiveVersion(name, version);
+      } catch (err) {
+        return { error: err instanceof Error ? err.message : String(err) };
+      }
+      return { ok: true, kind, name, active: version };
+    },
+
+    async setWorkflowCategory(name, category) {
+      const gate = await sealedGate(name, "recategorize it");
+      if (gate) return { error: gate };
+      try {
+        await workspace.setWorkflowCategory(name, category);
+      } catch (err) {
+        return { error: err instanceof Error ? err.message : String(err) };
+      }
+      return { ok: true, name, category };
     },
 
     async listSecrets() {
@@ -992,4 +1112,5 @@ export function buildAuthoringCapability(deps: AuthoringDeps): AuthoringCapabili
       });
     },
   };
+  return cap;
 }

@@ -104,6 +104,12 @@ describe("the builder workflow strut ships", () => {
       "app/init scaffolds one at apps/<name> in the job's directory",
       "name it in your reply's `ask.secret` (the NAME alone)",
       "your next turn begins `[secret] NAME stored`",
+      // Find-and-replace, rollback, category and run control, in the twins' names.
+      "- meta/edit-workflow(\"<name>\", edits, description?, category?)",
+      "then meta/edit-step — with `edits`",
+      "- meta/set-active-version(kind,",
+      "- meta/set-workflow-category(",
+      "- meta/cancel-run / meta/pause-run(",
     ]) assert.ok(system.includes(said), said);
 
     // Never the chat's: no tool of its, no bash, no mechanics it alone has.
@@ -111,7 +117,7 @@ describe("the builder workflow strut ships", () => {
       assert.ok(!system.includes(chat), `the chat's ${chat}`);
     }
     assert.doesNotMatch(system, /\bbash\(|where bash runs|clone a repo/, "never told to use a shell");
-    for (const mechanic of ["[run-notification]", "[restart-notification]", "this chat", "scratch/", "`edits`"]) assert.ok(!system.includes(mechanic), mechanic);
+    for (const mechanic of ["[run-notification]", "[restart-notification]", "this chat", "scratch/"]) assert.ok(!system.includes(mechanic), mechanic);
 
     // Every authoring tool it names is a step the agent is granted.
     const registry = await createRegistry([]);
