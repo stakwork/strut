@@ -259,7 +259,7 @@ describe("installing a package on a filesystem workspace", () => {
       assert.match(r.body.error!, re);
       await nothing();
     }
-    assert.equal((await api.install("git+https://example.com/acme/linear@v1")).status, 400);
+    assert.equal((await api.install("git+ssh://example.com/acme/linear@v1")).status, 400);
     assert.equal((await api.install(`file:${join(root, "missing")}`)).status, 400);
     assert.equal((await api.req("/packages/install", json({}))).status, 400);
   });

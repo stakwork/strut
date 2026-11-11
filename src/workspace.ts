@@ -244,6 +244,9 @@ export interface Upstream {
    *  follows this key, and an index row that later names another is asked
    *  about, never followed. */
   key?: string;
+  /** The commit a `git+` ref resolved (app-repos.md §3.1). What an update
+   *  re-resolves is `source.ref` — the branch or tag — never this. */
+  commit?: string;
   secrets: string[];
 }
 

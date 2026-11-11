@@ -52,7 +52,9 @@ export interface InstalledPackage {
    *  alone, off its directory in the cache when it is there. */
   version?: string;
   digest?: string;
-  source?: { ref: string };
+  source?: { ref: string; url?: string };
+  /** The commit a `git+` ref resolved at that release. */
+  commit?: string;
   /** What its steps may read (the fence, src/packages/fence.ts). */
   secrets?: string[];
   /** Which door wrote it: a person's install, or the distro, whose package
@@ -117,7 +119,8 @@ export async function listInstalledPackages(deps: InstalledDeps): Promise<Instal
     if (!p.digest || at > (releasedAt.get(upstream.package) ?? "")) {
       releasedAt.set(upstream.package, at);
       const door = versions[installed]!.source === "distro" ? "distro" : "install";
-      Object.assign(p, { version: upstream.version, digest: upstream.digest, source: upstream.source, secrets: upstream.secrets, door });
+      Object.assign(p, { version: upstream.version, digest: upstream.digest, source: upstream.source, ...(upstream.commit ? { commit: upstream.commit } : {}), secrets: upstream.secrets, door });
+      if (!upstream.commit) delete p.commit;
     }
     const helper = kind === "step" && name.split("/").pop()!.startsWith("_");
     p.items.push({ kind, name, ...(helper ? { helper: true as const } : {}), installed, active, modified: active !== installed });

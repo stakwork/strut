@@ -49,7 +49,7 @@ import { readManifest } from "../apps/manifest.js";
 import type { ClaimsAuthoring } from "../claims-authoring.js";
 import { walkSteps } from "../closure.js";
 import { declaredAttributes, findConcepts, parseConceptFile, retireConcepts, seedConcepts, type ConceptFile } from "../concept-seed.js";
-import type { SecretsCapability } from "../capabilities.js";
+import type { SecretsCapability, ShellCapability } from "../capabilities.js";
 import type { Step, StepRegistry } from "../core.js";
 import { hasTemplates } from "../expr.js";
 import type { GraphBackend } from "../graph/backend.js";
@@ -98,6 +98,11 @@ export interface PackageDeps extends InstalledDeps {
   apps?: AppsCapability;
   /** What a `pk:` resolve fetches with (tests). */
   fetch?: typeof fetch;
+  /** What a `git+` resolve runs git with (default: a local shell). */
+  shell?: ShellCapability;
+  /** Where a `git+` resolve keeps its bare caches (`<dataDir>/repos/`);
+   *  default the package cache's parent. */
+  dataDir?: string;
 }
 
 /** What happened to one item: `installed` new here; `present` already here
@@ -112,7 +117,9 @@ export interface PackageInstallReport {
   package: string;
   version: string;
   digest: string;
-  source: { ref: string };
+  source: { ref: string; url?: string };
+  /** The commit a `git+` ref resolved. */
+  commit?: string;
   /** `installed`: this call wrote something; `updated`: it moved the
    *  package from another digest (`from`); `present`: it was all here. */
   status: "installed" | "updated" | "present";
@@ -126,6 +133,10 @@ export interface InstallOptions {
   digest?: string;
   /** A `pk:` ref's catalog URL (src/packages/pk.ts). */
   url?: string;
+  /** A `git+` ref's token: the NAME of the secret holding it (default
+   *  GITHUB_TOKEN), read as `actor` when one is given. The packages it
+   *  requires are read with the same one. */
+  tokenSecret?: string;
   /** Recorded on every version written; owns the new workflows. */
   actor?: string;
   /** Who writes it (`install` unless said): the distro's door applies a
@@ -157,6 +168,8 @@ interface Member {
   source: { ref: string; url?: string };
   /** The publisher key a `pk:` ref resolved. */
   key?: string;
+  /** The commit a `git+` ref resolved. */
+  commit?: string;
   /** Where a relative `file:` ref of its requirements resolves from. */
   base?: string;
 }
@@ -172,16 +185,23 @@ export async function installPackage(deps: PackageDeps, ref: string, opts: Insta
   return installPackages(deps, [{ ref, ...(digest ? { digest } : {}), ...(url ? { url } : {}) }], rest);
 }
 
+/** One package an install is asked for. */
+export interface PackageRef {
+  ref: string;
+  digest?: string;
+  url?: string;
+}
+
 /** Install several packages as ONE install — all or nothing, every name of
  *  every package checked before the first write — each with what it
  *  requires, requirements first: a channel's release applied as a whole
  *  (§12.1). The result names the last package as the one asked for. */
-export async function installPackages(deps: PackageDeps, refs: Array<{ ref: string; digest?: string; url?: string }>, opts: Omit<InstallOptions, "digest" | "url"> = {}): Promise<InstallResult> {
+export async function installPackages(deps: PackageDeps, refs: PackageRef[], opts: Omit<InstallOptions, "digest" | "url"> = {}): Promise<InstallResult> {
   if (!refs.length) throw new Error("package_source_invalid: nothing to install");
   const door = opts.door ?? "install";
   opts.progress?.({ phase: "resolving" });
   const before = new Map((await listInstalledPackages(deps)).map((p) => [p.package, p]));
-  const members = await resolveSet(deps, refs, before, door);
+  const members = await resolveSet(deps, refs, before, door, { ...(opts.tokenSecret ? { tokenSecret: opts.tokenSecret } : {}), ...(opts.actor ? { actor: opts.actor } : {}) });
   const registry = await deps.getRegistry();
   // The apps are copied out of the cache to build (a build writes `dist/`),
   // and the steps to a trial directory to load.
@@ -228,6 +248,7 @@ async function installSet(
 
   const upstreamOf = (m: Member): Upstream => ({
     ...(m.key ? { key: m.key } : {}),
+    ...(m.commit ? { commit: m.commit } : {}),
     package: m.info.manifest.package,
     version: m.info.manifest.version,
     digest: m.info.digest,
@@ -452,6 +473,7 @@ async function installSet(
         version: m.info.manifest.version,
         digest: m.info.digest,
         source: m.source,
+        ...(m.commit ? { commit: m.commit } : {}),
         status: moved ? "updated" : changed ? "installed" : "present",
         ...(moved ? { from: { ...(here!.version ? { version: here!.version } : {}), digest: here!.digest } } : {}),
         items,
@@ -468,14 +490,32 @@ async function installSet(
  *  Exact pins union; a name pinned at two digests is refused, and so is one
  *  required at one digest and installed at another — unless the distro's
  *  door is installing, which updates it first (§4). */
-async function resolveSet(deps: PackageDeps, refs: Array<{ ref: string; digest?: string; url?: string }>, installed: Map<string, InstalledPackage>, door: PackageDoor): Promise<Member[]> {
+async function resolveSet(
+  deps: PackageDeps,
+  refs: PackageRef[],
+  installed: Map<string, InstalledPackage>,
+  door: PackageDoor,
+  as: { tokenSecret?: string; actor?: string } = {},
+): Promise<Member[]> {
   const order: Member[] = [];
   const inSet = new Map<string, string>();
+  // A `git+` ref's token, read as the actor when the deployment keeps
+  // per-actor secrets (theirs first, then the deployment's).
+  const secrets = as.actor && deps.secrets?.forPrincipal ? deps.secrets.forPrincipal(as.actor) : deps.secrets;
+  const git = {
+    ...(as.tokenSecret ? { tokenSecret: as.tokenSecret } : {}),
+    ...(secrets ? { secret: (name: string) => secrets.get(name) } : {}),
+    ...(deps.shell ? { shell: deps.shell } : {}),
+    ...(deps.dataDir ? { dataDir: deps.dataDir } : {}),
+  };
   const visit = async (ref: string, digest: string | undefined, base: string | undefined, expected?: { package: string; by: string }, url?: string): Promise<void> => {
     // A `pk:` ref is always resolved: the catalog is the key's word on the
     // release, and the resolve records the key and URL the install pins.
+    // A pinned `file:` or `git+` ref the cache holds is taken from it.
     const cached = digest && !ref.startsWith("pk:") ? await deps.cache.get(digest) : undefined;
-    const resolved = cached ? undefined : await resolvePackage(ref, { cache: deps.cache, ...(digest ? { digest } : {}), ...(base ? { base } : {}), ...(url ? { url } : {}), ...(deps.fetch ? { fetch: deps.fetch } : {}) });
+    const resolved = cached
+      ? undefined
+      : await resolvePackage(ref, { cache: deps.cache, ...(digest ? { digest } : {}), ...(base ? { base } : {}), ...(url ? { url } : {}), ...(deps.fetch ? { fetch: deps.fetch } : {}), ...git });
     const info = cached ?? resolved!;
     const pkg = info.manifest.package;
     if (expected && pkg !== expected.package) {
@@ -488,7 +528,13 @@ async function resolveSet(deps: PackageDeps, refs: Array<{ ref: string; digest?:
       return;
     }
     inSet.set(pkg, info.digest);
-    const member: Member = { info, source: resolved?.source ?? { ref }, ...(resolved?.key ? { key: resolved.key } : {}), ...(ref.startsWith("file:") ? { base: fileRefPath(ref, base) } : {}) };
+    const member: Member = {
+      info,
+      source: resolved?.source ?? { ref },
+      ...(resolved?.key ? { key: resolved.key } : {}),
+      ...(resolved?.commit ? { commit: resolved.commit } : {}),
+      ...(ref.startsWith("file:") ? { base: fileRefPath(ref, base) } : {}),
+    };
     for (const req of info.manifest.requires?.packages ?? []) {
       const pinned = inSet.get(req.package);
       if (pinned !== undefined) {

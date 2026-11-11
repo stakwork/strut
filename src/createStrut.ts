@@ -323,7 +323,7 @@ export interface StrutOptions<TServices = unknown> {
    *  record of the same id. A bare package name installs through them. */
   packageIndexes?: IndexSubscription[];
   /** Packages installed at FIRST BOOT (src/packages/boot.ts), after
-   *  `STRUT_PACKAGES` — each `{ ref, url?, digest? }`, what `POST
+   *  `STRUT_PACKAGES` — each `{ ref, url?, digest?, tokenSecret? }`, what `POST
    *  /packages/install` takes. A listed package not installed here is
    *  installed in the background once the boot is done; one already here,
    *  at any digest, is left alone. A bad entry fails the boot; a failed
@@ -773,10 +773,11 @@ export interface Strut<TServices = unknown> {
    *  applies a release with no ask and updates an installed package item by
    *  item (§4). No route takes the door: an operator's subscription does. */
   packages: {
-    /** `ref` is `file:`, `pk:` (with `url`), or a bare name looked up in
-     *  the indexes this strut follows — the first that lists its publisher,
-     *  or the one `index` names. */
-    install(ref: string, opts?: Pick<InstallOptions, "digest" | "url" | "actor" | "door" | "progress"> & { index?: string }): Promise<InstallResult>;
+    /** `ref` is `file:`, `pk:` (with `url`), `git+<repo>[@<ref>][#<path>]`
+     *  (read with the secret `tokenSecret` names, default GITHUB_TOKEN), or a
+     *  bare name looked up in the indexes this strut follows — the first
+     *  that lists its publisher, or the one `index` names. */
+    install(ref: string, opts?: Pick<InstallOptions, "digest" | "url" | "tokenSecret" | "actor" | "door" | "progress"> & { index?: string }): Promise<InstallResult>;
     uninstall(pkg: string, opts?: { door?: PackageDoor }): Promise<UninstallResult>;
     /** The first-boot installs (`STRUT_PACKAGES`, `StrutOptions.packages`;
      *  src/packages/boot.ts): settles once each listed package was installed,
@@ -3936,6 +3937,8 @@ export async function createStrut<TServices = unknown>(
     ...(secretsCap ? { secrets: secretsCap } : {}),
     path: bootEnv()["PATH"] ?? "",
     apps,
+    dataDir,
+    ...((services as Record<string, unknown>)["shell"] ? { shell: (services as Record<string, unknown>)["shell"] as ShellCapability } : {}),
     getRegistry: async () => {
       await rebuildRegistry();
       return registry;
@@ -4056,9 +4059,9 @@ export async function createStrut<TServices = unknown>(
     const code = /^([a-z_]+):/.exec(message)?.[1] ?? "";
     const status = ["package_conflict", "package_update_not_built", "package_busy", "package_distro_owned"].includes(code) || code.startsWith("catalog_")
       ? 409
-      : code === "package_index_unreachable"
+      : ["package_index_unreachable", "package_repo_unreachable", "package_repo_denied"].includes(code)
         ? 502
-      : ["package_not_installed", "package_not_published", "package_not_listed", "package_index_unknown"].includes(code)
+      : ["package_not_installed", "package_not_published", "package_not_listed", "package_index_unknown", "package_repo_not_found", "package_ref_not_found"].includes(code)
         ? 404
         : code === "bad_package" || code.startsWith("package_")
           ? 400
@@ -4068,9 +4071,12 @@ export async function createStrut<TServices = unknown>(
   app.get("/packages", async (c) => c.json({ packages: await listInstalledPackages(packageDeps) }));
   app.post("/packages/install", async (c) => {
     if (registryWasInjected) return c.json({ error: "Installing is disabled when the registry is provided at construction time" }, 409);
-    type Body = { ref?: unknown; digest?: unknown; url?: unknown; index?: unknown; wait?: unknown };
+    type Body = { ref?: unknown; digest?: unknown; url?: unknown; tokenSecret?: unknown; index?: unknown; wait?: unknown };
     const body = await c.req.json<Body>().catch(() => ({}) as Body);
-    if (typeof body.ref !== "string" || !body.ref) return c.json({ error: "ref is required: file:/path/to/package, pk:<key>/<publisher>/<name> with url, or a name (publisher/name) looked up in the indexes this strut server follows" }, 400);
+    if (typeof body.ref !== "string" || !body.ref) return c.json({ error: "ref is required: file:/path/to/package, pk:<key>/<publisher>/<name> with url, git+https://host/org/repo@<branch|tag|commit>[#<folder>], or a name (publisher/name) looked up in the indexes this strut server follows" }, 400);
+    if (body.tokenSecret !== undefined && (typeof body.tokenSecret !== "string" || !isValidSecretName(body.tokenSecret) || !body.ref.startsWith("git+"))) {
+      return c.json({ error: "tokenSecret is the NAME of the secret holding the token a git+ ref is read with (letters, digits, underscore; default GITHUB_TOKEN) — never the token itself" }, 400);
+    }
     if (body.index !== undefined && typeof body.index !== "string") return c.json({ error: "index is the id of an index this strut server follows (GET /packages/indexes)" }, 400);
     if (body.digest !== undefined && (typeof body.digest !== "string" || !PACKAGE_DIGEST.test(body.digest))) {
       return c.json({ error: "digest is sha256:<64 hex>" }, 400);
@@ -4080,7 +4086,13 @@ export async function createStrut<TServices = unknown>(
     }
     if (body.wait !== undefined && typeof body.wait !== "boolean") return c.json({ error: "wait is a boolean: false answers at once with the install's id, to follow at GET /packages/installs/:id" }, 400);
     const actor = await resolveActor(c);
-    const started = startInstall(body.ref, { ...(body.digest ? { digest: body.digest as string } : {}), ...(body.url ? { url: body.url as string } : {}), ...(body.index ? { index: body.index as string } : {}), ...(actor ? { actor } : {}) });
+    const started = startInstall(body.ref, {
+      ...(body.digest ? { digest: body.digest as string } : {}),
+      ...(body.url ? { url: body.url as string } : {}),
+      ...(body.tokenSecret ? { tokenSecret: body.tokenSecret as string } : {}),
+      ...(body.index ? { index: body.index as string } : {}),
+      ...(actor ? { actor } : {}),
+    });
     if (body.wait === false) {
       // How it ends is on its record; nobody awaits it here.
       started.done.catch(() => undefined);
@@ -8824,7 +8836,7 @@ export async function createStrut<TServices = unknown>(
     if (registryWasInjected) console.warn(`[packages] not installing ${bootPackages.map((p) => p.ref).join(", ")} at boot: installing is disabled when the registry is provided at construction time`);
     else
       packages.booted = installBootPackages(bootPackages, {
-        installed: async () => (await listInstalledPackages(packageDeps)).map((p) => p.package),
+        installed: async () => (await listInstalledPackages(packageDeps)).map((p) => ({ package: p.package, ...(p.source ? { ref: p.source.ref } : {}) })),
         install: (ref, o) => packages.install(ref, o),
       });
   }
