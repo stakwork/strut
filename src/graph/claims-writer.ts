@@ -110,7 +110,9 @@ export class ClaimsWriter {
           "NOT_FOUND",
           s.kind === "job"
             ? `${describeSubject(s)} is not on file — a job exists once a run was launched under it (POST …/run { job })`
-            : `${describeSubject(s)} is not in the workspace — only published workflows and custom steps can carry claims (built-in steps cannot)`,
+            : s.kind === "concept"
+              ? `${describeSubject(s)} is not in the graph — a claim about a Concept names an existing page by its exact name`
+              : `${describeSubject(s)} is not in the workspace — only published workflows and custom steps can carry claims (built-in steps cannot)`,
         );
       }
       if (!refs.includes(ref)) refs.push(ref);

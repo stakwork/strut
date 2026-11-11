@@ -74,8 +74,9 @@ export function latestRefs(e: Pick<EvidenceRow, "about" | "source">): { about?: 
   return { ...(e.about?.content_hash ? { about: e.about.content_hash } : {}), ...(locator ? { locator } : {}) };
 }
 
-/** One list per subject: a workflow by name, a step by type (`step:<type>`
- *  only if a workflow shares the name). */
+/** One list per subject: a workflow by name, a step by type, a job by id,
+ *  a Concept by name (`<kind>:<name>` only when an earlier subject already
+ *  took the name). */
 export type Ledger = Record<string, LedgerClaim[]>;
 
 export const VERIFY_NOTIFICATION_PREFIX = "[verify-notification]";

@@ -60,7 +60,7 @@ strut/
 │   ├── journal.ts         # resume journal: step.end outputs → {path→output}; `from` invalidation; `changedSteps` / `invalidateSteps` — a resume onto another version re-runs what changed (§5.4); `executedWorkflowHash` — the version a run executes now (the newest durable `run.resumed`'s, else `run.start`'s)
 │   ├── store.ts           # RunStore interface (writes + reads + tail) + FileRunStore + MemoryRunStore + tailJsonl / tailFromPolling. Keys are workflow names, plus two non-workflow buckets no workflow listing can see: `step:<type>` → steps/<type>/runs/ (kept run_step runs), `check:<id>` → checks/<id>/runs/ (paid check runs)
 │   ├── claims-authoring.ts # the policy layer behind BOTH claim doors (chat tools + meta/* twins): check-spec validation + write-time defaults (presumed-paid → on_change; on a JOB subject `manual`, `sample` refused), the additive `claims` publish arg, publisher scoping (fixed point 1; a job is nobody's template, so any author may claim about it, and on a job an `ai` author may add a check to a PERSON's claim — plans/job-claims.md §1, ruled), the sealed check over the check closure (fixed point 2; sealed.ts), `ensureJobNode` before a claim about a job is written
-│   ├── claims-schemas.ts  # zod shapes + model-facing docs for subjects / check specs / the `claims` arg, shared by ai/tools.ts and the meta/* claim steps
+│   ├── claims-schemas.ts  # zod shapes + model-facing docs for subjects / check specs / the `claims` arg, shared by ai/tools.ts and the meta/* claim steps; `personSubjectSchema`, the subject at a door that keeps the Concept tree (the `/claims` routes): those kinds plus `concept`, which the doors of ordinary work are not offered
 │   ├── sealed.ts          # what the meta surface may never touch (EVOLVE_SPEC §6): DEFAULT_SEALED_STEPS (`eval/*`, `meta/*`) + STRUT_SEALED, a step def's `sealed: true` (the graders — their namespace also holds the producer's door), a workflow's top-level `sealed: true` (content: Flow.sealed, rides in the version hash). isSealedStep / sealedInClosure (a grant the closure cannot read before the run counts as reaching one) — read by authoring.ts (run / run-history / verify / run-step refused by name, a publish refused by closure), claims-authoring.ts and verify.ts (an ai-stamped check's closure, fixed point 2)
 │   ├── verify.ts          # the verify pass (plans/claims.md §4): subjectsOfRun (a run's event log → observed subjects + the version each executed), mapCheckResult (the check contract; a check that cannot run writes NOTHING), policyFires (always / on_change / sample / manual), budget (presumed-paid skipped at a cap; reported cost persisted under `check:<id>` and counted), planned slots for external checks, addEvidence, verifyPublish. Triggered from `services.onRunEnd` for every top-level run and after a kept run_step; check runs (`origin: "verify"`) are never verified
 │   ├── ledger.ts          # the ledger (plans/claims.md §5): buildLedger (claims per subject with computed status + each check's lastVerify: pending | ran | skipped | planned), subjectsOfFlow (what a launch can execute), the [verify-notification] text. The forcing function — the model reads its contract in a tool RESULT, not an instruction
@@ -232,7 +232,8 @@ strut/
 │   │   ├── node-writer.ts # §6 validation gate + node_key composition (jarvis's sanitizer, verbatim; hex tokens for an `exact_key` type — `keyToken`) + Data_Bank + the create/upsert/restore/update semantics; issues no Cypher — `NodeEngine` does (`neo4j-engine.ts`, `ladybug/engine.ts`); softDelete (Domain_strut only) + retirePlannedEvidence. A write may ask for `embed: "later"`: its text is written, its vectors cleared and handed to the backend's background embedder (`NodeWriterOptions.later` — Neo4j's pass `soon`, a Ladybug file's backfill, both in a worker thread), for a caller writing hundreds of nodes at once (MiniLM is ~9 ms a text on a laptop's CPU, inline on the main thread); with no background embedder, or on a caller's transaction, it embeds inline
 │   │   ├── edge-writer.ts # the edge rules (closed Strut registry for Strut sources, the resolver's edge schemas for the rest — jarvis's edge allowlist only on a graph jarvis shares, one holding jarvis's `About` node; elsewhere every edge needs a rule, plans/ontology.md ruling 1), stamps, update() = jarvis PATCH /v2/edges/:ref_id (stamps protected), move() with its cycle check; issues no Cypher — `EdgeEngine` does (on Neo4j: MERGE by edge_key with the IS_ALIAS rewrite, ON CREATE only, a legacy muted edge made live)
 │   │   ├── schema-crud.ts # createNodeSchema(): register a non-Strut node type like jarvis POST /v2/schema (parent, attribute grammar, node_key, CHILD_OF, constraint) or add-only extend an existing one, on both engines (on Ladybug a new attribute is a new column); on Ladybug a name or `aliases` entry that is already another type's name or alias is refused, and a `managed_by` type only takes its owner (plans/memory-in-workspace-graph.md decision 9; `SchemaSource.typesNamed`, Ladybug's — Neo4j keeps jarvis's rules)
-│   │   ├── claims.ts      # the truth layer (plans/claims.md): Claim/Check/Evidence contract (ids, check subject + result shapes), claimStatus() — status computed on read per (claim, subject) — and ClaimsReader, whose reads are written with the backend's dialect helpers (one reader for Neo4j and a Ladybug file; the evidence joins are four statements joined in TS, never an OPTIONAL MATCH; a filter is in the text only when asked for, never a null param) — ClaimsReader (claimsFor/checksFor/evidenceFor/statusFor; deleted nodes + legacy muted edges invisible). `strut.claims` is null unless the workspace is graph-backed
+│   │   ├── claims.ts      # the truth layer (plans/claims.md): Claim/Check/Evidence contract (ids, check subject + result shapes), claimStatus() — status computed on read per (claim, subject) — and ClaimsReader, whose reads are written with the backend's dialect helpers (one reader for Neo4j and a Ladybug file; the evidence joins are four statements joined in TS, never an OPTIONAL MATCH; a filter is in the text only when asked for, never a null param) — ClaimsReader (claimsFor/checksFor/evidenceFor/statusFor; deleted nodes + legacy muted edges invisible). `strut.claims` is null unless the workspace is graph-backed. Four subject kinds, one rule — a run observes each thing it used, at the version it used: `step`, `workflow` (content hashes), `job` (the turn) and `concept` (what opening the page returned; evidence ABOUT the Concept, the version on its source)
+│   │   ├── concept-version.ts # a Concept's VERSION, what a claim about it is versioned by: `conceptVersionOf` (pure: a hash of its name, description and docs and of the name + description of each Concept under it, PARENT_OF, in name order) and `readConceptVersion(graph, ref_id)` (two statements with the dialect helpers, over the graph as it is — a scoped view's unscoped query, `boundsOf`). ONE function for both sides: `graph/graph-get` stamps it on the node it reports when it opens a Concept (`AccessedNode.version`), and `ClaimsReader.activeVersion` computes it now
 │   │   ├── claims-writer.ts # ClaimsWriter: the claim graph's invariants — ≥1 check per claim, edits SUPERSEDE (successor claim carries ABOUT + checks; successor check takes over TESTS), retire = timestamp, detach = deleted edge, last check / last subject refused
 │   │   ├── exact-key-migration.ts # one-shot boot re-key of existing StrutWorkflow/-Version/StrutStep/-Version nodes from the sanitized name to the exact (hex) key — ledger-stamped, idempotent, every namespace, soft-deleted nodes included; ref_ids, edges and the Schema nodes untouched
 │   │   ├── embeddings.ts  # local all-MiniLM-L6-v2 via transformers.js, tokenized like sentence-transformers (256 incl. specials), 2 intra-op threads; + the EMBEDDING PASS (plans/semantic-search.md §1): a timer in the serving process that keeps `Data_Bank` + `text_embeddings` + the domain label current on EVERY node of a Schema-marked type, whoever wrote it (stakgraph's ingest, jarvis, an import) — stale = the stored text ≠ the writer's composition from the Schema's `index` fields, or no vector — strips the no-embed types (`embed: false`: `Turn` via its Schema, `StrutToolCall` / `StrutTurn` in code), pages by `node_key` (an index seek per page, never a scan), works 15 s a minute (the budget checked between batches of 100 rows), sweeps hourly (code types first), embeds NEWCOMERS by `date_added_to_graph` between sweeps (marked labels only, a `>=` cursor: stakgraph stamps a whole ingest batch alike). Its inference runs in a WORKER THREAD (`WorkerEmbedder`, over `ModelWorker` — src/model-worker.ts): onnxruntime-node's `run()` is synchronous, and on the serving process's main thread every forward pass stalled every request (swarm38, 2026-10-11: mcp's `/lab/health` 0.34 s → 1.74 s during a tick); the writer and search keep the in-process model. `GET /graph/embeddings` is its status; `STRUT_GRAPH_EMBEDDINGS=off` turns it off with the embedder. `soon(refs)`: the nodes a writer left without a vector (`embed: "later"`) are embedded in the next tick, ahead of the sweep and the newcomers (an updated node's stamp is old, so it is no newcomer)
@@ -2329,6 +2330,52 @@ the same steps are an agent's tools (`agentTools: ["browser/*"]`), and
   Refutes is `POST /claims/:id/evidence { job, runId }`. The `job` seed
   grants the claim tools and `http/verify`, and its prompt says: author the
   claims when the ask is understood, verify before saying done.
+  **A CONCEPT is the fourth subject kind** (`{ kind: "concept", name }` on
+  every door, the Concept of that name in the backend's own namespace): a
+  claim about what the work of a run that OPENED the page must look like
+  ("a plan has a rollout section"). One rule covers all four kinds: a run
+  observes each thing it used, at the version it used. A Concept's version
+  is a hash of what opening its page returns — its name, description and
+  docs, and the name and description of each Concept under it
+  (`src/graph/concept-version.ts`; a child's docs, or a page elsewhere, do
+  not move it) — and it is RECORDED AT THE READ: `graph/graph-get` (so
+  `context/concept` and an agent's `graph_graph_get` alike) stamps it on
+  the node it reports (`AccessedNode.version` → `step.end.nodes`), so
+  `subjectsOfRun` reads it off the log and the pass never asks the graph
+  what the page says now. A Concept the log gives no version for — written,
+  traversed (`graph-get-batched`, `graph-neighbors`, a walk), touched by a
+  run this one launched, another strut's, or of that name in another
+  namespace — is not observed. A Concept keeps no node per version:
+  evidence is `ABOUT` the Concept itself, sourced to the run
+  (`HAS_SOURCE`), with the version on the source (`SourceContext.version`),
+  at path `concept:<name>`; two seeded edge rules, `Claim —ABOUT→ Concept`
+  and `Evidence —ABOUT→ Concept`. The check reads the RUN as a workflow's
+  check does (`input.input`, `input.output` or `input.error`,
+  `input.params`) plus `input.concept`, `input.concepts` (every page the
+  run opened, by name), `input.dir` (the run's files: its job's directory,
+  else its artifacts) and `input.job`; a check that does not apply to the
+  run returns no `supports`, and nothing is recorded. A run that skipped a
+  page never observes it, so a claim that a page GETS OPENED sits on the
+  page that lists it ("a request of a kind opens that kind's page" on
+  `Job`, checked with `input.concepts`), and rewriting the child's
+  description moves that parent's version. Checks take a template's
+  defaults (`always` for code, `on_change` for a paid or external one);
+  `when: publish` is refused. The DOOR decides who writes one, not the
+  author (`ClaimActor.concepts`, `requireConceptDoor` in
+  claims-authoring.ts): a claim about a Concept is written where the tree
+  is tended, never in passing. The doors of ordinary work — the builder
+  chat's tools and the `meta/*` twins — are not offered the kind
+  (`subjectSchema`: step, workflow, job) and add, attach, edit and retire
+  nothing on such a claim, claim or check; their runs are still checked
+  against it, and they read the verdicts in their ledger. A door that sets
+  `concepts` may, whoever writes through it: a person's `/claims` routes
+  today (`personSubjectSchema`), and next the workflow the Knowledge app
+  shows (ruled 2026-11-11: AI-driven, its claims and checks written
+  directly, its Concept edits proposals). An AI author there is stamped
+  `ai` like any other, so fixed point 2 holds for its checks. Not built:
+  that workflow and its steps,
+  Concepts in other namespaces, claims travelling with a package's pages,
+  running a check against a tree that is not live, any UI.
 
 - **Sealed — what the meta surface may never touch** (`src/sealed.ts`;
   EVOLVE_SPEC §6). The `meta/*` steps publish over ANY workflow and edit any

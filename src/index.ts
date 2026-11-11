@@ -539,6 +539,7 @@ export {
   type EvidenceMode,
   type EvidenceStatus,
 } from "./graph/claims.js";
+export { conceptVersionOf, readConceptVersion } from "./graph/concept-version.js";
 export { ClaimsWriter, ClaimsError, boundedName, type CheckData, type ClaimsErrorCode } from "./graph/claims-writer.js";
 export {
   buildClaimsAuthoring,
@@ -552,7 +553,7 @@ export {
   type ClaimListing,
   type ClaimsResult,
 } from "./claims-authoring.js";
-export { subjectSchema, checkSpecSchema, claimSpecSchema, claimsArgSchema } from "./claims-schemas.js";
+export { subjectSchema, personSubjectSchema, checkSpecSchema, claimSpecSchema, claimsArgSchema } from "./claims-schemas.js";
 export { claimsRoutes, type ClaimsRoutesDeps } from "./claims-routes.js";
 // Automations — run a workflow on a schedule (plans/automations.md).
 export {
@@ -586,6 +587,7 @@ export {
   createVerifier,
   subjectsOfRun,
   jobSubjectPath,
+  conceptSubjectPath,
   mapCheckResult,
   policyFires,
   sampleFires,

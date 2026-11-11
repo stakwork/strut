@@ -5,17 +5,22 @@
  * instrument that can test it, `Evidence` is what one test observed — and
  * the edges between them:
  *
- *   Claim    —ABOUT→        StrutStep | StrutWorkflow | StrutJob   (stable identity)
+ *   Claim    —ABOUT→        StrutStep | StrutWorkflow | StrutJob | Concept   (stable identity)
  *   Check    —TESTS→        Claim
  *   Claim    —EVIDENCED_BY {strength ±1}→ Evidence
  *   Evidence —PRODUCED_BY→  Check                            (absent: no check produced it)
- *   Evidence —ABOUT→        StrutStepVersion | StrutWorkflowVersion | StrutRun (a job's TURN)
+ *   Evidence —ABOUT→        StrutStepVersion | StrutWorkflowVersion | StrutRun (a job's TURN) | Concept
  *   Evidence —HAS_SOURCE {context, …}→ StrutRun
  *
- * Three subject kinds, one rule (plans/job-claims.md §1–§2): a step and a
- * workflow are TEMPLATES whose versions are content hashes; a job is an
- * INSTANCE whose version is the turn — its newest top-level run, read from
- * the job index — and whose evidence is ABOUT that run's node.
+ * Four subject kinds, one rule: a run observes each thing it used, at the
+ * version it used. A step and a workflow are TEMPLATES whose versions are
+ * content hashes; a job (plans/job-claims.md §1–§2) is an INSTANCE whose
+ * version is the turn — its newest top-level run, read from the job index —
+ * and whose evidence is ABOUT that run's node; a CONCEPT is a page agents
+ * read, observed by every run that opened it, whose version is a hash of
+ * what that read returned (`concept-version.ts`). A Concept has no version
+ * node: its evidence is ABOUT the Concept itself and carries the version on
+ * its source (`SourceContext.version`).
  *
  * None of the three is a Strut type: their schemas live in the database
  * (jarvis migrations 119/120/124/125, or the bundled ontology fixture) and
@@ -41,6 +46,7 @@ import type { JobIndex } from "../job-index.js";
 import type { GraphBackend } from "./backend.js";
 import type { Dialect } from "./engine.js";
 import { typeValue } from "./strut-schemas.js";
+import { readConceptVersion } from "./concept-version.js";
 
 // ── Vocabulary ──────────────────────────────────────────────────────────────
 
@@ -110,27 +116,29 @@ export function evidenceId(checkId: string, runId: string, path: string): string
 // ── Subjects ────────────────────────────────────────────────────────────────
 
 /** What a claim is about: the STABLE identity, never a version. A job
- *  (plans/job-claims.md) is named by its id; its version is the turn. */
-export type SubjectRef = { kind: "workflow"; name: string } | { kind: "step"; type: string } | { kind: "job"; id: string };
+ *  (plans/job-claims.md) is named by its id; its version is the turn. A
+ *  Concept is named by its name, in the backend's own namespace. */
+export type SubjectRef = { kind: "workflow"; name: string } | { kind: "step"; type: string } | { kind: "job"; id: string } | { kind: "concept"; name: string };
 
-export const SUBJECT_KINDS: readonly SubjectRef["kind"][] = ["step", "workflow", "job"];
+export const SUBJECT_KINDS: readonly SubjectRef["kind"][] = ["step", "workflow", "job", "concept"];
 
 /** The exact version an observation was made on (`Evidence —ABOUT→`). */
 export interface VersionRef {
   kind: SubjectRef["kind"];
-  /** Workflow name, step type, or job id. */
+  /** Workflow name, step type, job id, or Concept name. */
   name: string;
-  /** A workflow's or step's content hash; a job's turn — the run id. */
+  /** A workflow's or step's content hash; a job's turn — the run id; a
+   *  Concept's version (`concept-version.ts`). */
   content_hash: string;
 }
 
 export function subjectName(subject: SubjectRef): string {
-  return subject.kind === "workflow" ? subject.name : subject.kind === "step" ? subject.type : subject.id;
+  return subject.kind === "step" ? subject.type : subject.kind === "job" ? subject.id : subject.name;
 }
 
 /** A subject from its kind and name — the inverse of `subjectName`. */
 export function subjectOf(kind: SubjectRef["kind"], name: string): SubjectRef {
-  return kind === "step" ? { kind, type: name } : kind === "workflow" ? { kind, name } : { kind, id: name };
+  return kind === "step" ? { kind, type: name } : kind === "job" ? { kind, id: name } : { kind, name };
 }
 
 function isVersionOf(version: VersionRef | undefined, subject: SubjectRef): boolean {
@@ -140,13 +148,16 @@ function isVersionOf(version: VersionRef | undefined, subject: SubjectRef): bool
 /** The node a subject hangs off (`label`, matched by `key`), and the node
  *  one of its versions is (`version`, matched by `versionKey` = the
  *  subject's name and `versionHash` = the version). */
-const SUBJECT_NODE = {
+const SUBJECT_NODE: Record<SubjectRef["kind"], { label: string; key: string; version: string; versionKey: string; versionHash: string | null }> = {
   workflow: { label: "StrutWorkflow", key: "name", version: "StrutWorkflowVersion", versionKey: "name", versionHash: "content_hash" },
   step: { label: "StrutStep", key: "step_type", version: "StrutStepVersion", versionKey: "step_type", versionHash: "content_hash" },
   // A job's version is the TURN (plans/job-claims.md §2): the run node, which
   // the projector stamps with the job it was launched under.
   job: { label: "StrutJob", key: "job_id", version: "StrutRun", versionKey: "job", versionHash: "run_id" },
-} as const;
+  // A Concept keeps no node per version: evidence is ABOUT the Concept, and
+  // the version it observed rides on the evidence's source.
+  concept: { label: "Concept", key: "name", version: "Concept", versionKey: "name", versionHash: null },
+};
 
 /** A job's active version: its newest TOP-LEVEL run (no `parentRunId`) on
  *  the record, `runs` newest first as the index serves them — written at
@@ -187,6 +198,19 @@ export interface RunCheckSubject {
   path: string;
   artifactsDir?: string;
   cassette?: CassetteMode;
+  /** A CONCEPT subject's check reads the run that opened the Concept's page
+   *  as a workflow's check reads its run (`input`, `params`, `output` or
+   *  `error`), and these beside it. The Concept the claim is about, by name. */
+  concept?: string;
+  /** Every Concept whose page the run opened, by name, in the order first
+   *  opened: what a claim about ROUTING reads. "A turn that writes a message
+   *  opens Communication Style" sits on the page that LISTS it, since a run
+   *  that skipped a page never observes it. */
+  concepts?: string[];
+  /** The job the run was launched under, when it was. */
+  job?: string;
+  /** Where the run's files are: its job's directory, else its artifacts. */
+  dir?: string;
 }
 
 /** What a `publish` check reads: the new version's source. */
@@ -209,6 +233,10 @@ export interface CheckResult {
 export interface SourceContext {
   /** The observed step's event path. Unused for a job subject. */
   path?: string;
+  /** A Concept subject's evidence: the version of the Concept the run read
+   *  (`AccessedNode.version`). There is no version node to point `ABOUT` at,
+   *  so this is where a reader finds it. */
+  version?: string;
   /** A job subject's evidence (plans/job-claims.md §2): the turn observed —
    *  the run id the `ABOUT` edge points at, for readers that do not follow
    *  the edge. */
@@ -497,11 +525,16 @@ export class ClaimsReader {
 
   /** Content hash of the subject's active version; null when the subject
    *  does not exist or has none. For a job: its active TURN, from the job
-   *  index (`activeTurnOf`) — null without an index, or with no record. */
+   *  index (`activeTurnOf`) — null without an index, or with no record. For
+   *  a Concept: what opening its page returns now (`readConceptVersion`). */
   async activeVersion(subject: SubjectRef): Promise<string | null> {
     if (subject.kind === "job") {
       const view = await this.deps.jobs?.get?.(subject.id, { threads: false });
       return view ? activeTurnOf(view.runs) : null;
+    }
+    if (subject.kind === "concept") {
+      const ref = await this.subjectRefId(subject);
+      return ref ? readConceptVersion(this.graph, ref) : null;
     }
     const n = SUBJECT_NODE[subject.kind];
     const d = this.d;
@@ -528,13 +561,14 @@ export class ClaimsReader {
   }
 
   /** `ref_id` of the version node a `VersionRef` names, or null. For a
-   *  job: the turn's `StrutRun`, stamped with the job. */
+   *  job: the turn's `StrutRun`, stamped with the job. For a Concept: the
+   *  Concept itself, whatever the version. */
   async versionRefId(version: VersionRef): Promise<string | null> {
     const n = SUBJECT_NODE[version.kind];
     const d = this.d;
     const rows = await this.graph.query(
-      `MATCH ${d.node("v", n.version, { namespace: "$ns", [n.versionKey]: "$name", [n.versionHash]: "$hash" })} WHERE ${d.live("v")} RETURN v.ref_id AS r LIMIT 1`,
-      { ns: this.ns, name: version.name, hash: version.content_hash },
+      `MATCH ${d.node("v", n.version, { namespace: "$ns", [n.versionKey]: "$name", ...(n.versionHash ? { [n.versionHash]: "$hash" } : {}) })} WHERE ${d.live("v")} RETURN v.ref_id AS r LIMIT 1`,
+      { ns: this.ns, name: version.name, ...(n.versionHash ? { hash: version.content_hash } : {}) },
     );
     return typeof rows[0]?.["r"] === "string" ? (rows[0]!["r"] as string) : null;
   }
@@ -561,7 +595,7 @@ export class ClaimsReader {
 
   /** The subjects a claim is attached to (live `ABOUT` edges), with the
    *  edge's ref_id — what `detach` mutes. Steps first, then workflows, then
-   *  jobs, each by name. */
+   *  jobs, then Concepts, each by name. */
   async subjectsOf(claimId: string): Promise<Array<{ subject: SubjectRef; ref_id: string; edge_ref_id: string }>> {
     const d = this.d;
     const out: Array<{ subject: SubjectRef; ref_id: string; edge_ref_id: string }> = [];
@@ -732,22 +766,6 @@ export class ClaimsReader {
     );
     for (const r of checks) each(String(r["e"]), (row) => (row.check_id ??= typeof r["check_id"] === "string" ? r["check_id"] : undefined));
 
-    // A job's evidence is ABOUT a `StrutRun` (its turn): the version read
-    // back is the run id, the name the job the run carries — a run with no
-    // job is nobody's version.
-    for (const kind of SUBJECT_KINDS) {
-      const n = SUBJECT_NODE[kind];
-      const about = await this.graph.query(
-        `MATCH ${d.node("e", EVIDENCE_TYPE)}-[ab:\`${CLAIM_EDGES.ABOUT}\`]->${d.node("v", n.version)}
-         WHERE e.ref_id IN $ids AND ${d.edgeLive("ab")} RETURN e.ref_id AS e, v.\`${n.versionKey}\` AS name, v.\`${n.versionHash}\` AS hash`,
-        { ids },
-      );
-      for (const r of about) {
-        if (typeof r["hash"] !== "string" || typeof r["name"] !== "string") continue;
-        each(String(r["e"]), (row) => (row.about ??= { kind, name: r["name"] as string, content_hash: r["hash"] as string }));
-      }
-    }
-
     const sources = await this.graph.query(
       `MATCH ${d.node("e", EVIDENCE_TYPE)}-[hs:\`${CLAIM_EDGES.HAS_SOURCE}\`]->(src)
        WHERE e.ref_id IN $ids AND ${d.edgeLive("hs")}
@@ -769,6 +787,26 @@ export class ClaimsReader {
           post_url: r["hs_url"],
         });
       });
+    }
+
+    // A job's evidence is ABOUT a `StrutRun` (its turn): the version read
+    // back is the run id, the name the job the run carries — a run with no
+    // job is nobody's version. A Concept's is ABOUT the Concept, and the
+    // version is the one its source recorded (read above); none, no version.
+    for (const kind of SUBJECT_KINDS) {
+      const n = SUBJECT_NODE[kind];
+      const about = await this.graph.query(
+        `MATCH ${d.node("e", EVIDENCE_TYPE)}-[ab:\`${CLAIM_EDGES.ABOUT}\`]->${d.node("v", n.version)}
+         WHERE e.ref_id IN $ids AND ${d.edgeLive("ab")} RETURN e.ref_id AS e, v.\`${n.versionKey}\` AS name${n.versionHash ? `, v.\`${n.versionHash}\` AS hash` : ""}`,
+        { ids },
+      );
+      for (const r of about) {
+        if (typeof r["name"] !== "string") continue;
+        each(String(r["e"]), (row) => {
+          const hash = n.versionHash ? r["hash"] : row.source?.context?.version;
+          if (typeof hash === "string" && hash) row.about ??= { kind, name: r["name"] as string, content_hash: hash };
+        });
+      }
     }
     return out;
   }
@@ -807,7 +845,7 @@ const byBelief = (a: ClaimRow, b: ClaimRow) => (a.belief_valid_from ?? 0) - (b.b
 
 /**
  * The gate (plans/claims.md, Design): claims hang off the subjects' graph
- * nodes (`StrutStep` / `StrutWorkflow` / `StrutJob`), so the layer exists
+ * nodes (`StrutStep` / `StrutWorkflow` / `StrutJob` / `Concept`), so the layer exists
  * only when the WORKSPACE keeps them in a graph. On a filesystem or
  * in-memory workspace this is null — no claim tool is offered and the
  * verify pass is a no-op.

@@ -661,6 +661,12 @@ export interface AccessedNode {
    *  ref locally: the projector writes no edge for it, the run flyout shows
    *  it under the peer. `strut/run-workflow` tags what a peer's run touched. */
   peer?: string;
+  /** A Concept whose PAGE was opened (`graph/graph-get`, so `context/concept`
+   *  too): the version that read returned (`graph/concept-version.ts`). It is
+   *  what makes the run an observation of that Concept for the claims about
+   *  it (`verify.ts`): recorded at the read, never looked up afterwards.
+   *  Absent on a write, a traversal, and a node a launched run touched. */
+  version?: string;
 }
 
 const ACCESSED_NAME_MAX = 200;
@@ -694,6 +700,7 @@ export function withAccessedNodes<T>(output: T, nodes: Array<AccessedNode | null
       ...(typeof n.node_type === "string" && n.node_type ? { node_type: n.node_type } : {}),
       ...(typeof n.name === "string" && n.name.trim() ? { name: n.name.trim().slice(0, ACCESSED_NAME_MAX) } : {}),
       ...(typeof n.peer === "string" && n.peer.trim() ? { peer: n.peer.trim() } : {}),
+      ...(typeof n.version === "string" && n.version ? { version: n.version } : {}),
     });
   }
   if (list.length === 0) return output;

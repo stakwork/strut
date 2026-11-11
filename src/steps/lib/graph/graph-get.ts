@@ -2,8 +2,10 @@ import { z } from "zod";
 import { defineStep, type StepContext, withAccessedNodes } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
 import { nodeTitle } from "../../../graph/title.js";
-import { graphCtx, errText, deriveNodeName, edgeCountMap, deletedOut } from "./_shared.js";
+import { graphCtx, errText, deriveNodeName, edgeCountMap, deletedOut, type GraphBackend } from "./_shared.js";
 import { stepFailed } from "../../../public-call.js";
+import { boundsOf } from "../../../graph/scope.js";
+import { readConceptVersion } from "../../../graph/concept-version.js";
 
 const CHILD_CAP = 50;
 const CHILD_DESCRIPTION_MAX = 300;
@@ -76,6 +78,21 @@ export default defineStep({
   },
 });
 
+/** A Concept's page was opened: the version this read returned
+ *  (`graph/concept-version.ts`), reported with the node so the run's log says
+ *  which one it read — what the claims about the Concept are checked against
+ *  (`verify.ts`). Read past the caller's list (a hash, and the caller was
+ *  just allowed the node). Best effort: no version, no observation. */
+async function conceptVersion(b: GraphBackend, raw: { ref_id: string; node_type?: string }): Promise<{ version?: string }> {
+  if (raw.node_type !== "Concept") return {};
+  try {
+    const version = await readConceptVersion({ query: boundsOf(b)?.query ?? b.query.bind(b), dialect: b.dialect }, raw.ref_id);
+    return version ? { version } : {};
+  } catch {
+    return {};
+  }
+}
+
 async function resolve(
   cfg: { ref_id?: string; owner?: boolean; node_type?: string; name?: string; namespace?: string; children?: string; include_deleted?: boolean },
   ctx: unknown,
@@ -122,7 +139,7 @@ async function resolve(
       ...deletedOut((raw.properties ?? {})["deleted_at"]),
     };
     // Provenance: the node that was asked for — never its table of contents.
-    const read = [{ ref_id: raw.ref_id, node_type: raw.node_type, name: out.name }];
+    const read = [{ ref_id: raw.ref_id, node_type: raw.node_type, name: out.name, ...(await conceptVersion(b, raw)) }];
     if (!cfg.children) return withAccessedNodes(out, read);
 
     // The table of contents: what this node points to along one edge type.

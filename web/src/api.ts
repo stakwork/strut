@@ -1672,8 +1672,8 @@ export const deleteSecret = (name: string) =>
 // otherwise, and the panel hides itself.
 
 export interface ClaimSubject {
-  kind: "step" | "workflow" | "job";
-  /** Workflow name, custom step type, or job id. */
+  kind: "step" | "workflow" | "job" | "concept";
+  /** Workflow name, custom step type, job id, or Concept name. */
   name: string;
 }
 
@@ -1822,8 +1822,8 @@ export const verifyJob = (id: string, claims?: string[]) =>
 /** One check's verdict on one run (`RunEvidence`, src/claims-authoring.ts). */
 export interface RunEvidence {
   claim: { id: string; text: string };
-  /** The workflow, or a step it executed — and the version that ran. */
-  subject?: { kind: "step" | "workflow"; name: string; version: string };
+  /** The workflow, a step it executed, its job, or a Concept whose page it opened — and the version observed. */
+  subject?: { kind: "step" | "workflow" | "job" | "concept"; name: string; version: string };
   /** `open` = an external check's question, still waiting on someone. */
   verdict: "supports" | "refutes" | "open";
   content?: string;

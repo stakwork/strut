@@ -7,7 +7,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import type { RunEvent } from "./core.js";
 import type { EvidenceRow } from "./graph/claims.js";
-import { jobSubjectPath, mapCheckResult, policyFires, reportedCost, sampleFires, subjectsOfRun } from "./verify.js";
+import { conceptSubjectPath, jobSubjectPath, mapCheckResult, policyFires, reportedCost, sampleFires, subjectsOfRun } from "./verify.js";
 
 let tick = 0;
 const ev = (type: RunEvent["type"], path: string, extra: Partial<RunEvent> = {}): RunEvent => ({
@@ -167,6 +167,48 @@ describe("subjectsOfRun", () => {
     const cancelled = [ended[0]!, ev("run.cancelled", "job")];
     assert.ok(!subjectsOfRun("job", cancelled).some((o) => o.subject.kind === "job"));
     assert.ok(!subjectsOfRun("wf", [ev("run.start", "wf", { input: {} }), ev("run.end", "wf", { output: 1 })]).some((o) => o.subject.kind === "job"), "no job, no job subject");
+  });
+
+  it("a workflow run observes each CONCEPT whose page it opened, at the version that read recorded: a workflow's own step or an agent's tool call, never a write or a node with no version", () => {
+    const concept = (name: string, version?: string, extra: object = {}) => ({ ref_id: `ref-${name}`, node_type: "Concept", name, ...(version ? { version } : {}), ...extra });
+    const events = [
+      ev("run.start", "job", { job: "j-1", workflowHash: "h", input: { prompt: "write me a plan" }, params: { concept: "Job" } }),
+      // context/concept: the workflow's own step opened the page.
+      ev("step.start", "job/concepts", { stepType: "context/concept", input: { name: "Job" } }),
+      ev("step.end", "job/concepts", { stepType: "context/concept", output: { text: "…" }, nodes: [concept("Job", "v-job")] }),
+      ev("step.start", "job/work", { stepType: "agent", input: {} }),
+      // The agent opened one page twice (the second read is the one it acted on), edited another, and listed a third.
+      ev("step.end", "job/work/001-graph_graph_get", { stepType: "tool:graph_graph_get", nodes: [concept("Planning", "v-old")] }),
+      ev("step.end", "job/work/002-graph_graph_get", { stepType: "tool:graph_graph_get", nodes: [concept("Planning", "v-new")] }),
+      ev("step.end", "job/work/003-graph_edit_node", { stepType: "tool:graph_edit_node", nodes: [concept("Glossary")] }),
+      ev("step.end", "job/work/004-graph_graph_get", { stepType: "tool:graph_graph_get", nodes: [{ ref_id: "f1", node_type: "Function", name: "main", version: "x" }, concept("Theirs", "v-peer", { peer: "acme" })] }),
+      ev("step.end", "job/work", { stepType: "agent", output: { result: "done" } }),
+      ev("run.end", "job", { output: { text: "the plan", artifacts: [{ id: "plan", path: "plan.md" }] } }),
+    ];
+    const observed = subjectsOfRun("job", events).filter((o) => o.subject.kind === "concept");
+    assert.deepEqual(observed.map((o) => [o.subject, o.version, o.ref, o.path]), [
+      [{ kind: "concept", name: "Job" }, "v-job", "ref-Job", "concept:Job"],
+      [{ kind: "concept", name: "Planning" }, "v-new", "ref-Planning", "concept:Planning"],
+    ]);
+    assert.equal(conceptSubjectPath("Planning"), "concept:Planning");
+    // The check reads the RUN, as the workflow subject's does, with the Concepts it opened beside it.
+    assert.deepEqual(observed[1]!.check, {
+      runId: "r1",
+      input: { prompt: "write me a plan" },
+      params: { concept: "Job" },
+      path: "job",
+      output: { text: "the plan", artifacts: [{ id: "plan", path: "plan.md" }] },
+      concept: "Planning",
+      concepts: ["Job", "Planning"],
+      job: "j-1",
+    });
+    assert.equal(observed[1]!.at, events.at(-1)!.ts);
+
+    // A run that failed is still an observation (the check reads `error`); one that never ended, or a single-step bucket, is not.
+    const failed = [...events.slice(0, 3), ev("run.error", "job", { error: { message: "boom" } })];
+    assert.deepEqual(subjectsOfRun("job", failed).filter((o) => o.subject.kind === "concept").map((o) => [o.subject, (o.check as { error?: unknown }).error]), [[{ kind: "concept", name: "Job" }, { message: "boom" }]]);
+    assert.ok(!subjectsOfRun("job", events.slice(0, -1)).some((o) => o.subject.kind === "concept"), "no run.end, nothing observed");
+    assert.ok(!subjectsOfRun("step:graph/graph-get", events).some((o) => o.subject.kind === "concept"), "a kept step run is no workflow run");
   });
 });
 

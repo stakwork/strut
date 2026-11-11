@@ -523,6 +523,44 @@ carries the ledger as `claims`; `GET /jobs/:id/claims` serves it alone:
   refutation on the newest turn wins over every instrument until the turn
   moves.
 
+### 5.6 A Concept's claims
+
+A claim may be about a **Concept** — `{ kind: "concept", name: <the
+Concept's exact name> }` on every claim route and tool — and then states
+what the work of a run that opened that page must look like ("a plan has a
+rollout section"). Every workflow run that opened the page is checked
+against it.
+
+- **Opened** means its page was read with `graph/graph-get`: a workflow's
+  own step (`context/concept` is one) or an agent's tool call. A run that
+  wrote the Concept, listed it, or never read it is no observation of it.
+- **Its version** is a hash of what that read returned: the page's name,
+  description and docs, and the name and description of each Concept under
+  it. The run's log records it (`step.end.nodes[].version`), evidence is
+  about that version, and the claim reads `stale` once the page, or the
+  line a child shows in it, changes.
+- **Its check** reads the run as a workflow's check does (`{{ input.input }}`,
+  `{{ input.output }}` or `{{ input.error }}`, `{{ input.params }}`,
+  `{{ input.runId }}`), and beside it `{{ input.concept }}`,
+  `{{ input.concepts }}` (every page the run opened, by name),
+  `{{ input.dir }}` (the run's files: its job's directory, else its
+  artifacts) and `{{ input.job }}`. A check that does not apply to the run
+  returns no `supports`, and nothing is recorded.
+- **A page that was not opened** is caught one level up: put the claim on
+  the page that lists it, with a check over `{{ input.concepts }}`.
+
+`GET /claims?kind=concept&name=Planning` lists them; `GET
+/workflows/:name/evidence` carries a run's, with `subject: { kind:
+"concept", name, version }` and `run.path: "concept:<name>"`. `when:
+publish` is refused.
+
+Who may write one is decided by the door, not by the author. The routes
+in this section may. The doors of ordinary work may not: the builder's
+claim tools and the `meta/*` claim steps do not take the kind, and are
+refused on every write to such a claim (the claim, its checks, attaching
+and detaching). Runs launched from those doors are still checked against
+these claims.
+
 ## 6. Control a run
 
 ### 6.1 Live: cancel, pause, resume
