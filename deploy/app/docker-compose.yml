@@ -1,0 +1,75 @@
+# A SERVED APP (plans/app-repos.md §4.5): one strut serving one package's
+# app at a domain, behind Caddy for TLS. `STRUT_SERVE` names the package; at
+# boot strut installs it through the distro's door, writes its public view
+# from the package's serve.yaml, and answers `/` with the app alone. Nothing
+# of strut's UI is drawn for a visitor; `/?shell=1` with the key is the
+# operator's console. The package is followed as a subscription is: a new
+# release is deployed at the next poll (STRUT_DISTRO_POLL_MINUTES, 10) or on
+# the publisher's ping.
+#
+# Run from this folder; compose reads ./.env (gitignored) by itself:
+#   cp env.example .env      # then fill it in
+#   docker compose up -d
+#
+# One hostname pointed at this box (STRUT_APP_HOST): Caddy gets its
+# certificate from Let's Encrypt, so ports 80 and 443 must reach it. For a
+# local try, `app.localhost` gets one from Caddy's own CA (curl -k).
+#
+# Every line of .env reaches the strut container (`env_file`), so the model
+# keys, the wallet (LIGHTNING_*) and the values of the package's
+# `requires.secrets` go there too.
+name: strut-app
+
+services:
+  strut:
+    # Published by .github/workflows/publish-image.yml (amd64 + arm64). The
+    # tag pins the strut, and with it the kit the app is built against.
+    image: ghcr.io/stakwork/strut:${STRUT_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # One LadybugDB file, no Neo4j: the workspace, runs and models all on
+      # the one volume.
+      STRUT_WORKSPACE_BACKEND: ladybug
+      STRUT_WORKSPACE: /data/workspace
+      STRUT_MODEL_DIR: /data/models
+      STRUT_SERVE: "${STRUT_SERVE:?set STRUT_SERVE}"
+      STRUT_SERVE_URL: "${STRUT_SERVE_URL:-}"
+      # og:image and og:url are written against it.
+      STRUT_PUBLIC_URL: "https://${STRUT_APP_HOST:?set STRUT_APP_HOST}"
+      # The operator's key: the console (/?shell=1), GET /serve, everything
+      # but the app and its open reads.
+      STRUT_API_KEY: "${STRUT_API_KEY:?set STRUT_API_KEY}"
+      STRUT_SECRET_KEY: "${STRUT_SECRET_KEY:?set STRUT_SECRET_KEY}"
+    volumes:
+      - strut:/data
+      # A package on this machine instead (STRUT_SERVE=file:/package):
+      # - ./package:/package:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 30s
+
+  caddy:
+    image: caddy:${CADDY_TAG:-2}
+    restart: unless-stopped
+    depends_on:
+      strut:
+        condition: service_healthy
+    ports:
+      - "${APP_HTTP_PORT:-80}:80"
+      - "${APP_HTTPS_PORT:-443}:443"
+      - "${APP_HTTPS_PORT:-443}:443/udp"   # HTTP/3
+    environment:
+      STRUT_APP_HOST: "${STRUT_APP_HOST}"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data       # certificates and the ACME account
+      - caddy-config:/config
+
+volumes:
+  strut:
+  caddy-data:
+  caddy-config:

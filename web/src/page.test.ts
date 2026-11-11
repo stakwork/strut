@@ -40,6 +40,26 @@ describe("pickPage", () => {
     assert.deepEqual(pickPage("?artifact=%2Fartifacts%2F17%2Fout.png", member), { kind: "artifact", artifact: "/artifacts/17/out.png" });
     assert.deepEqual(pickPage(new URLSearchParams({ app: "" }), member), { kind: "member-apps" });
   });
+
+  it("a served box is its app alone, as a visitor's page, whatever the address asks", () => {
+    const served = { app: "acme/moon/game", key: false };
+    for (const s of [null, {}, admin, member]) {
+      for (const q of ["", "?wf=job", "?store=1", "?app=strut%2Fjamie&solo=1", "?shell=1&solo=1"]) {
+        if (q.startsWith("?shell=1") && s) continue;
+        assert.deepEqual(pickPage(q, s, served), { kind: "app", app: "acme/moon/game", input: null, visitor: true }, q);
+      }
+    }
+    assert.deepEqual(pickPage("?input=level%3D3&theme=light", null, served), { kind: "app", app: "acme/moon/game", input: "level=3", visitor: true, theme: "light" }, "a deep link opens the app where it says");
+    assert.deepEqual(pickPage("", null, { app: "", key: false }), { kind: "unserved" }, "nothing deployed yet");
+  });
+
+  it("a served box's ?shell=1 is the operator's console, only with the key or a session", () => {
+    assert.deepEqual(pickPage("?shell=1", null, { app: "acme/moon/game", key: true }), { kind: "shell" });
+    assert.deepEqual(pickPage("?shell=1", {}, { app: "acme/moon/game", key: false }), { kind: "shell" });
+    assert.deepEqual(pickPage("?shell=1&wf=job", admin, { app: "", key: false }), { kind: "shell" });
+    assert.deepEqual(pickPage("?shell=1", null, { app: "acme/moon/game", key: false }).kind, "app", "a visitor never sees it");
+    assert.deepEqual(pickPage("?shell=1", member, { app: "acme/moon/game", key: false }), { kind: "member-apps" }, "a member's session is still a member's");
+  });
 });
 
 describe("memberApps", () => {

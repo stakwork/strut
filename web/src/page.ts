@@ -12,8 +12,17 @@ export interface PageSession {
   role?: "admin" | "member";
 }
 
+/** A SERVED box's page (plans/app-repos.md §4.2): the server writes
+ *  `<meta name="strut-serve" content="<app>">` into `/` — the app's name,
+ *  empty while nothing is deployed yet. `key`: this browser holds the key. */
+export interface ServedBox {
+  app: string;
+  key: boolean;
+}
+
 export type Page =
   | { kind: "store" }
+  | { kind: "unserved" }
   | { kind: "app"; app: string; input: string | null; visitor: boolean; theme?: "light" | "dark" }
   | { kind: "artifact"; artifact: string }
   | { kind: "member-apps" }
@@ -21,6 +30,10 @@ export type Page =
 
 /**
  * The page for this address and session.
+ *  - On a SERVED box (`served`): its app alone, as a visitor's page, at any
+ *    address — `?input=` and `?theme=` as for any app alone. Only `?shell=1`
+ *    with the key or a session goes on to the rules below: the operator's
+ *    console. Nothing deployed yet: a page that says so.
  *  - `?store=1`: the store front, whoever asks.
  *  - `?solo=1` beside `?app=` or `?artifact=`: that alone, as before.
  *  - A MEMBER (a host signed them in as one): an app or a file it names
@@ -29,8 +42,13 @@ export type Page =
  *    reads is an admin's.
  *  - Anyone else: the shell.
  */
-export function pickPage(search: string | URLSearchParams, session: PageSession | null): Page {
+export function pickPage(search: string | URLSearchParams, session: PageSession | null, served: ServedBox | null = null): Page {
   const p = typeof search === "string" ? new URLSearchParams(search) : search;
+  if (served && !(p.get("shell") === "1" && (served.key || session))) {
+    if (!served.app) return { kind: "unserved" };
+    const theme = soloTheme(p.get("theme"));
+    return { kind: "app", app: served.app, input: p.get("input"), visitor: true, ...(theme ? { theme } : {}) };
+  }
   if (p.get("store") === "1") return { kind: "store" };
   const member = session?.role === "member";
   if (p.get("solo") === "1" || member) {

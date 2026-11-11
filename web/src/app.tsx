@@ -6,7 +6,7 @@ import yaml from "js-yaml";
 import * as api from "./api";
 import { foldAccessedNodes, isServedFilePath } from "@strut/kit/folds";
 import { latestAttempt } from "./step-attempt";
-import { pushUrl, replaceUrl } from "./embed";
+import { pushUrl, replaceUrl, reportReady } from "./embed";
 import { hereEntry, readTrail, stepTrail, trailTitle, withTrail, type TrailEntry } from "./nav-trail";
 import { flowToCanvas, stepWorkflow, strutTheme } from "./flow-to-canvas";
 import type { StepData, RunEventData } from "./flow-to-canvas";
@@ -51,7 +51,7 @@ import { INSTALL_LINK_PARAMS, parseInstallLink, type InstallLink } from "./store
 import { ArtifactViewer } from "./components/ArtifactViewer";
 import { AppGlyph, SidebarIcon } from "./icons";
 import { appKey, appMessage, appToolInput } from "./app-links";
-import { pickPage, type PageSession } from "./page";
+import { pickPage, type PageSession, type ServedBox } from "./page";
 import { MemberApps } from "./components/MemberApps";
 import { RunInputPopover } from "./components/RunInputPopover";
 import { ConfirmButton } from "./components/ConfirmButton";
@@ -125,8 +125,13 @@ export function App({ session = null }: { session?: PageSession | null } = {}) {
   //  - A MEMBER (plans/member-rights.md): the apps here, or the one app or
   //    file a link names, alone — never the shell, whose every read the
   //    server refuses a member.
-  const [page] = useState(() => pickPage(location.search, session));
+  //  - On a SERVED box (plans/app-repos.md §4.2), whose `/` the server
+  //    marks with `<meta name="strut-serve">`: its app alone, as a visitor's
+  //    page, whatever the address — `?shell=1` with the key or a session is
+  //    the shell.
+  const [page] = useState(() => pickPage(location.search, session, servedBox()));
   if (page.kind === "store") return <Store />;
+  if (page.kind === "unserved") return <Unserved />;
   if (page.kind === "app") return <SoloApp app={page.app} input={page.input} visitor={page.visitor} {...(page.theme ? { theme: page.theme } : {})} />;
   if (page.kind === "artifact") {
     return isServedFilePath(page.artifact)
@@ -135,6 +140,22 @@ export function App({ session = null }: { session?: PageSession | null } = {}) {
   }
   if (page.kind === "member-apps") return <MemberApps {...(session?.actor ? { actor: session.actor } : {})} />;
   return <Shell />;
+}
+
+/** The served box's marker, when this page is one's (./page `ServedBox`). */
+function servedBox(): ServedBox | null {
+  const app = document.querySelector('meta[name="strut-serve"]')?.getAttribute("content");
+  return app == null ? null : { app, key: !!api.getApiKey() };
+}
+
+/** A served box before its first deploy. */
+function Unserved() {
+  useEffect(reportReady, []);
+  return (
+    <div class="app-solo">
+      <div class="empty">Nothing is served here yet.</div>
+    </div>
+  );
 }
 
 function Shell() {

@@ -367,6 +367,16 @@ const hostTicket = takeTicketFromUrl();
 /** The host's sign-in, started as this module loads. */
 export const ticketSignIn: Promise<TicketSignIn> = hostTicket === null ? Promise.resolve("none") : tradeTicket(hostTicket);
 
+/** A served box's page that is not `?shell=1` (./page `pickPage`): its app
+ *  as a visitor's whatever the session, so there is none to ask about. */
+function servedVisit(): boolean {
+  try {
+    return !!document.querySelector('meta[name="strut-serve"]') && new URLSearchParams(location.search).get("shell") !== "1";
+  } catch {
+    return false;
+  }
+}
+
 /**
  * The session this page runs under, asked of the server once the ticket
  * (if any) is traded: `GET /auth/session` — the cookie is HttpOnly, so the
@@ -375,7 +385,7 @@ export const ticketSignIn: Promise<TicketSignIn> = hostTicket === null ? Promise
  * with no session; the marker follows the answer.
  */
 export const pageSession: Promise<SessionInfo | null> = ticketSignIn.then(async (signedIn) => {
-  if (signedIn === "refused") return null;
+  if (signedIn === "refused" || servedVisit()) return null;
   if (!getSession() && getApiKey()) return null;
   try {
     const res = await fetch(`${BASE}/auth/session`, { headers: { "x-strut-ui": "1" } });
