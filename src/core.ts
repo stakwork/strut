@@ -265,6 +265,11 @@ export interface StepContext<TServices = unknown> {
    *  these, newest turn first, each with the `runId` that holds it. Absent on
    *  a run launched without. */
   attachments?: RunAttachment[];
+  /** The agent session whose turn this tool call is (`turn` 0-based): set
+   *  by an `agent` step with a `session` on the context its tools get, so
+   *  a fact a tool saves can say which conversation and turn it came from.
+   *  Absent outside such a turn. */
+  turnOf?: { session: string; turn: number };
   /** The run's own cost cap in dollars, when it has one below its
    *  workflow's (a public run's, plans/paid-runs.md §7): `stepAuth` hands it
    *  to `llmAuth`, and the Mothership's run link carries the smaller of the

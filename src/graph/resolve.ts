@@ -49,6 +49,7 @@ import { ALL_NAMESPACES, boundsOf, hidesType, readsNamespace, type ReaderList } 
 import type { NodeSchema } from "./schema-resolver.js";
 import { GraphReadError } from "./search.js";
 import { composeTitle } from "./title.js";
+import { THING_REFUSED, THING_TYPE } from "./strut-schemas.js";
 
 /** The list field a node's other names are kept in. */
 export { ALT_NAMES };
@@ -116,9 +117,10 @@ export async function resolveNode(b: GraphBackend, input: ResolveInput): Promise
   const schema = await b.schemas.schema(String(input.type ?? ""));
   // The view's own query refuses a limited reader: the list is applied here.
   const bounds = boundsOf(b);
-  if (!schema || (bounds && hidesType(bounds.list, schema.domainLabels))) throw new GraphValidationError("UNKNOWN_TYPE", String(input.type), "unknown node type");
+  if (!schema || (bounds && hidesType(bounds.list, schema.domainLabels))) throw new GraphValidationError("UNKNOWN_TYPE", String(input.type), "unknown node type: leave the type out to look across every entity type");
   // The ontology's Schema rows and the edges' search rows are not data nodes.
   if (HIDDEN_TYPES.includes(schema.type)) throw new GraphValidationError("WRONG_TYPE", schema.type, "not a node type resolve reads");
+  if (schema.type === THING_TYPE) throw new GraphValidationError("UNKNOWN_TYPE", THING_TYPE, THING_REFUSED);
   const namespaces = scope(input.namespaces, b.namespace, bounds?.list);
   if (!namespaces.length) return { node_type: schema.type, namespaces, match: null, ambiguous: false, candidates: [] };
   const query: GraphBackend["query"] = bounds?.query ?? b.query.bind(b);
@@ -175,6 +177,51 @@ export async function resolveNode(b: GraphBackend, input: ResolveInput): Promise
   }
 
   return { node_type: schema.type, namespaces, match: null, ambiguous: false, candidates: await candidates(b, query, schema, namespaces, [name, ...aliases].filter(Boolean), limit) };
+}
+
+export type ResolveAcrossInput = Omit<ResolveInput, "type">;
+
+export interface ResolveAcrossResult {
+  namespaces: string[];
+  /** The one node, of any entity type, a stage found; null when none did, or several did. */
+  match: ResolvedNode | null;
+  /** Several nodes (of one type or more): they are `candidates`, and none is chosen. */
+  ambiguous: boolean;
+  /** With no match, the nodes that may be it, each with its type. */
+  candidates: ResolvedNode[];
+}
+
+/**
+ * `resolveNode` with no type: the same stages for each entity type (role
+ * `entity`) with live nodes in scope, so a thing filed under a type the
+ * caller did not guess is still found. One node across all of them is the
+ * match; two or more, of one type or several, are ambiguous. With none, the
+ * candidates are each type's, in turn. A name or aliases are needed.
+ */
+export async function resolveAcross(b: GraphBackend, input: ResolveAcrossInput): Promise<ResolveAcrossResult> {
+  if (b.kind !== "ladybug") throw new ResolveError(`resolve is not on this backend (${b.kind}): it reads a Ladybug file's titles, alt_names and namespaces`);
+  const data = input.data ?? {};
+  const named = (input.name ?? "").trim() || (typeof data["name"] === "string" && data["name"].trim()) || (input.aliases ?? []).some((a) => String(a).trim());
+  if (!named) throw new GraphValidationError("MISSING_REQUIRED", "*", "with no node_type, give a name (or aliases) to look for", "name");
+  const bounds = boundsOf(b);
+  const namespaces = scope(input.namespaces, b.namespace, bounds?.list);
+  const limit = Math.min(CANDIDATES_MAX, Math.max(1, Math.floor(Number(input.limit) || CANDIDATES_DEFAULT)));
+  if (!namespaces.length) return { namespaces, match: null, ambiguous: false, candidates: [] };
+  const query: GraphBackend["query"] = bounds?.query ?? b.query.bind(b);
+  const types = (await query(`MATCH (n:Node) WHERE n.namespace IN $ns AND n.deleted_at IS NULL RETURN DISTINCT n.node_type AS t`, { ns: namespaces })).map((r) => String(r["t"]));
+  const found: ResolvedNode[] = [];
+  const near: ResolvedNode[] = [];
+  for (const t of types.sort()) {
+    const schema = await b.schemas.schema(t);
+    if (schema?.role !== "entity" || (bounds && hidesType(bounds.list, schema.domainLabels))) continue;
+    const r = await resolveNode(b, { ...input, type: schema.type });
+    if (r.match) found.push(r.match);
+    else if (r.ambiguous) found.push(...r.candidates);
+    else near.push(...r.candidates);
+  }
+  if (found.length === 1) return { namespaces, match: found[0]!, ambiguous: false, candidates: [] };
+  if (found.length > 1) return { namespaces, match: null, ambiguous: true, candidates: found.slice(0, limit) };
+  return { namespaces, match: null, ambiguous: false, candidates: near.slice(0, limit) };
 }
 
 /** The namespaces asked for, checked; the backend's own when none are.

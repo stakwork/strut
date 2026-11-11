@@ -84,6 +84,12 @@ export const STRUT_DOMAIN = "Strut";
 export const STRUT_DOMAIN_LABEL = "Domain_strut";
 export const THING_TYPE = "Thing";
 
+/** Why a node is never written as `Thing`: it is the ontology's root, which
+ *  holds no nodes. A node filed under it is found by no type's search and
+ *  no fact or correction about it lines up with another. */
+export const THING_REFUSED =
+  "the ontology's root, never a node's type: use the most specific type that fits (graph_get_ontology lists them), or make one with graph_create_schema";
+
 /** Colour pair for every Strut type (one of jarvis's `get_color_pairs()`). */
 const COLORS = { primary_color: "#1D3140", secondary_color: "#4FA7D9" };
 

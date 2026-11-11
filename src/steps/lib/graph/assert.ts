@@ -19,16 +19,21 @@ const Fact = z.object({
   source_ref_id: z.string().optional().describe("The node the fact is about (its subject), from graph/resolve."),
   source_type: z.string().optional().describe("Instead of source_ref_id, for a subject graph/resolve did not find: its type, with source_data. Created in the same transaction."),
   source_data: z.record(z.string(), z.any()).optional().describe("The new subject's fields, e.g. its name."),
-  edge_type: z.string().describe("The temporal relationship type (uppercased)."),
-  target_ref_id: z.string().optional().describe("The node it relates the subject to, from graph/resolve."),
+  edge_type: z.string().describe(
+    "The temporal relationship type (uppercased): the most specific one whose name says what the relationship is. " +
+      "Reuse a type graph/get-ontology lists only when its name says this relationship, never one type as a catch-all for unrelated kinds of fact; otherwise make one with create_schema_if_missing.",
+  ),
+  target_ref_id: z.string().optional().describe("The node it relates the subject to, from graph/resolve: the thing itself (a place, an organisation, a project, an activity), never a day, time or amount, which go in `text`."),
   target_type: z.string().optional().describe("Instead of target_ref_id, for a target graph/resolve did not find: its type, with target_data."),
   target_data: z.record(z.string(), z.any()).optional().describe("The new target's fields."),
-  text: z.string().describe("The fact as one plain sentence, naming both ends."),
+  text: z.string().describe("The fact as one plain sentence, naming both ends, with any day, time or amount (\"Kate works at Acme three days a week\")."),
+  words: z.string().optional().describe("The person's own words it was learned from, as they said them, when you have them: kept as the evidence."),
+  replaces: z.string().optional().describe("The edge_ref_id of a current fact this one corrects or replaces (\"actually it's Tuesdays\"): it ends, superseded by this one. Every correction or new value is asserted this way, never as a refutation plus a new fact."),
   valid_at: z.string().optional().describe("When it became true, only if the words say."),
   invalid_at: z.string().optional().describe("When it stopped being true, only if the words say."),
   observed_at: z.string().optional().describe("When the evidence is from, when not now: the time of the message, email, calendar event or document it was read from (ISO). Left out for what is said in this conversation."),
   ended: z.boolean().optional().describe("It is over (\"used to …\", \"I left\"), even with no date: kept as past, no end date invented. It was true; it is not now."),
-  refuted: z.boolean().optional().describe("The speaker says it is false (\"that's wrong\", \"I'm not vegan\"): it was never true. The fact held now ends, and its record keeps the speaker's word against it, so it is not stated again. Not for something that is merely over: that is `ended`."),
+  refuted: z.boolean().optional().describe("The speaker says it is false (\"that's wrong\", \"I'm not vegan\"): it was never true, and nothing replaces it. The fact held now ends, and its record keeps the speaker's word against it, so it is not stated again. Not for something that is merely over (`ended`), nor for a fact with a new value (assert the new fact with `replaces`)."),
   source: z.string().optional().describe("Only for more than this run says: the ref_id of a message or node it was read from. The run it is asserted in is kept as a source on its own."),
   said_by: z.string().optional().describe("The ref_id of whoever said it, when not the user: e.g. the Person whose message this was."),
   create_schema_if_missing: z.boolean().optional().describe("Create the edge type as temporal between the two ends' types when the ontology has no such edge. An existing plain edge type is never made temporal."),
@@ -76,6 +81,15 @@ async function ensureTemporal(b: GraphBackend, f: FactT, edge: string, types: [s
   await b.schemas.createEdgeSchema(types[0], edge, types[1], wanted, { aliases: exists ? [] : f.aliases ?? [] });
 }
 
+/** What the agent should act on in a fact's result, in words. */
+function notesOf(r: { between?: unknown[]; held_text?: string; no_volatility?: boolean; replaced?: string }, edge: string): string[] {
+  return [
+    ...(r.held_text ? ["The graph already held this fact with another sentence (`held_text`); the sentence given was not saved. If it changed, ask, then assert the new sentence with `replaces` set to this edge_ref_id."] : []),
+    ...(r.between?.length && !r.replaced ? ["The same two nodes already have other current facts (`between`): ask whether this corrects one of them (assert with `replaces`) or adds to them."] : []),
+    ...(r.no_volatility ? [`${edge} has no volatility: pass \`volatility\` (static, stable, evolving, volatile) on the next assert of it to keep one.`] : []),
+  ];
+}
+
 export default defineStep({
   type: "graph/assert",
   description:
@@ -85,9 +99,12 @@ export default defineStep({
     "Asserting what the graph already holds RE-CONFIRMS it: `source` and `said_by` are added once, a missing date is filled, nothing else changes (the same sources again change nothing). " +
     "On a one-value edge type (cardinality one) a different target ENDS the current edge and creates the new one — unless `valid_at` is before the current one began: " +
     "then the new one is HISTORY, ended when the current one began, and the current one stays. `ended` (or an `invalid_at` already past) records something no longer true; " +
-    "asserting the current fact with `ended` ends it. When the user says a fact is wrong (\"that's wrong\", \"I'm not vegan\"), assert it with `refuted`, said by whoever said so: it ends, and is kept as false, not as something they backed. " +
+    "asserting the current fact with `ended` ends it. When the user says a fact is wrong and gives no new value (\"that's wrong\", \"I'm not vegan\"), assert it with `refuted`, said by whoever said so: it ends, and is kept as false, not as something they backed. " +
     "Dates are ISO ('2026-09-14'), a year-month ('2026-09') or a year ('2026'), only when the words say. " +
     "First-person words mean the speaker: what someone else said is theirs, with `said_by` naming them. " +
+    "The target is the thing itself; a day, time or amount goes in `text`, so a later correction lands on the same two nodes. " +
+    "A correction or a new value is the new fact, asserted with `replaces` naming the one it replaces; nothing is refuted. When the same two nodes already hold other current facts the result lists them (`between`): " +
+    "ask whether the new one corrects one of them or adds to them. Pass the person's own words in `words` when you have them. " +
     "Pass several in `facts` to save them all or nothing: one failure writes none of them, nodes included.\n\n" +
     EXAMPLE,
   input: Fact.partial({ edge_type: true, text: true }).extend({
@@ -119,6 +136,22 @@ export default defineStep({
       };
       // On Neo4j assertEdge refuses before reading anything: let it, before a node is made.
       if (b.kind !== "ladybug") await assertEdge(b, b.schemas, { edge: edgeOf(facts[0]!), source_ref_id: "", target_ref_id: "", text: "" });
+      // A new end whose name is already an entity of another type is that thing, filed
+      // under another type: refused, naming it, before anything is written.
+      const { resolveAcross } = await import("../../../graph/resolve.js");
+      for (const [i, f] of facts.entries()) {
+        for (const side of ["source", "target"] as const) {
+          const name = f[`${side}_data`]?.["name"];
+          if (!f[`${side}_type`] || typeof name !== "string" || !name.trim()) continue;
+          const type = (await b.schemas.schema(f[`${side}_type`]!))?.type ?? f[`${side}_type`]!;
+          const r = await resolveAcross(b, { name, namespaces: [namespace] });
+          const other = (r.match ? [r.match] : r.ambiguous ? r.candidates : []).filter((n) => n.node_type !== type);
+          if (other.length) {
+            const at = facts.length > 1 ? `facts[${i}]: ` : "";
+            return `graph/assert refused — ${at}"${name}" already exists as ${other.map((n) => `${n.node_type} ${n.ref_id}`).join(", ")}: pass ${side}_ref_id with it instead of making a ${type}`;
+          }
+        }
+      }
       for (const f of facts) if (f.create_schema_if_missing || f.volatility) await ensureTemporal(b, f, edgeOf(f), [await typeOf(f, "source"), await typeOf(f, "target")]);
       // A kind of fact's check, made the first time it is given (plans/memory-checks.md).
       if (facts.some((f) => f.check)) {
@@ -163,6 +196,9 @@ export default defineStep({
             ...(f.said_by ? { said_by: f.said_by } : {}),
             // Where it was said is the run's to know, never the model's to pass.
             ...(ctx?.runId ? { run: ctx.runId } : {}),
+            ...(ctx?.turnOf ? { session: ctx.turnOf.session, turn: ctx.turnOf.turn } : {}),
+            ...(f.words ? { words: f.words } : {}),
+            ...(f.replaces ? { replaces: f.replaces } : {}),
             ...(ns ? { namespace } : {}),
             ...by,
           }, tx ? { tx } : { ...(b.embedder ? { embedder: b.embedder } : {}) });
@@ -183,6 +219,10 @@ export default defineStep({
         ...(r.superseded.length ? { superseded: r.superseded } : {}),
         ...(r.ended ? { ended: true } : {}),
         ...(r.filled ? { filled: r.filled } : {}),
+        ...(r.replaced ? { replaced: r.replaced } : {}),
+        ...(r.between ? { between: r.between } : {}),
+        ...(r.held_text ? { held_text: r.held_text } : {}),
+        ...(notesOf(r, edge).length ? { notes: notesOf(r, edge) } : {}),
       });
       const nodes = [...created.values()];
       const touched = await describeNodes(b, results.flatMap((x) => [x.source_ref_id, x.target_ref_id]));

@@ -166,6 +166,93 @@ describe("the generic tools cover remember and forget (ladybug)", { skip: lb.ski
     assert.equal((await b.schemas.edgeSchema("MENTORS", "Person", "Person"))?.rule.temporal, undefined, "left plain");
   });
 
+  it("never files a node as Thing: no node, no edge type, from any tool that creates one", async () => {
+    const count = async () => Number((await b.query("MATCH (n:Node) WHERE n.node_type = 'Thing' RETURN count(n) AS n"))[0]?.["n"]);
+    const fact = await run(assertStep, {
+      source_ref_id: kate, edge_type: "LIKES", target_type: "Thing", target_data: { name: "Tea" }, text: "Kate likes tea", create_schema_if_missing: true,
+    }, ctx);
+    assert.match(String(fact), /ontology's root, never a node's type/);
+    assert.equal(await b.schemas.edgeSchema("LIKES", "Person", "Thing"), null, "no edge type against the root");
+    for (const node_type of ["Thing", "thing"]) {
+      assert.match(String(await run(createNode, { node_type, node_data: { name: "Tea" } }, ctx)), /ontology's root, never a node's type/, node_type);
+    }
+    await assert.rejects(b.nodes.write({ type: "Thing", data: { name: "Tea" } }), /ontology's root/);
+    await assert.rejects(b.schemas.createEdgeSchema("Thing", "LIKES", "Person", { temporal: true }), /ontology's root/);
+    assert.equal(await count(), 0);
+  });
+
+  it("a new end named like an entity of another type is refused, naming it; nothing is written", async () => {
+    await createNodeSchema(b, b.schemas, { type: "Topic", attributes: {}, role: "entity" });
+    const football = (await b.nodes.write({ type: "Topic", data: { name: "5-a-side football" } })).ref_id;
+    const before = await nodeCount(b);
+    const out = await run(assertStep, {
+      facts: [
+        { source_ref_id: tom, edge_type: "LIVES_IN", target_ref_id: leeds, text: "Tom lives in Leeds" },
+        { source_ref_id: tom, edge_type: "PLAYS", target_type: "Place", target_data: { name: "5-A-Side Football" }, text: "Tom plays 5-a-side football on Saturdays", create_schema_if_missing: true },
+      ],
+    }, ctx);
+    assert.match(String(out), new RegExp(`facts\\[1\\]: "5-A-Side Football" already exists as Topic ${football}: pass target_ref_id`));
+    assert.equal(await nodeCount(b), before, "nothing written");
+    assert.equal(await b.schemas.edgeSchema("PLAYS", "Person", "Place"), null);
+    const same = await run(assertStep, { source_ref_id: tom, edge_type: "PLAYS", target_type: "Topic", target_data: { name: "5-a-side football" }, text: "Tom plays 5-a-side football", create_schema_if_missing: true }, ctx);
+    assert.equal(same.target_ref_id, football, "the same type is the same node");
+  });
+
+  it("`replaces` ends the fact a correction replaces, superseded by the new one; a refuted fact replaces nothing", async () => {
+    await b.schemas.createEdgeSchema("Person", "VISITS", "Place", { temporal: true, cardinality: "many", volatility: "evolving" });
+    const lisbon = (await b.nodes.write({ type: "Place", data: { name: "Lisbon" } })).ref_id;
+    const old = await run(assertStep, { source_ref_id: tom, edge_type: "VISITS", target_ref_id: leeds, text: "Tom visits Leeds" }, ctx);
+    const fix = await run(assertStep, { source_ref_id: tom, edge_type: "VISITS", target_ref_id: lisbon, text: "Tom visits Lisbon", replaces: old.edge_ref_id }, ctx);
+    assert.equal(fix.action, "created", JSON.stringify(fix));
+    assert.equal(fix.replaced, old.edge_ref_id);
+    const [was] = await b.query("MATCH ()-[r:VISITS {ref_id: $id}]->() RETURN r.expired_at AS ended, r.superseded_by AS by", { id: old.edge_ref_id });
+    assert.ok(was?.["ended"] !== null);
+    assert.equal(was?.["by"], fix.edge_ref_id);
+    assert.match(String(await run(assertStep, { source_ref_id: tom, edge_type: "VISITS", target_ref_id: leeds, text: "Tom visits Leeds", refuted: true, replaces: fix.edge_ref_id }, ctx)), /a refuted fact replaces nothing/);
+    assert.match(String(await run(assertStep, { source_ref_id: kate, edge_type: "VISITS", target_ref_id: leeds, text: "Kate visits Leeds", replaces: fix.edge_ref_id }, ctx)), /a fact about another subject/);
+    assert.match(String(await run(assertStep, { source_ref_id: tom, edge_type: "VISITS", target_ref_id: leeds, text: "Tom visits Leeds", replaces: "nope" }, ctx)), /no such fact/);
+  });
+
+  it("a refutation is of the fact it was said about: a new fact on the same two nodes is not read as refuted", async () => {
+    await b.schemas.createEdgeSchema("Person", "VISITS", "Place", { temporal: true, cardinality: "many", volatility: "evolving" });
+    await run(assertStep, { source_ref_id: tom, edge_type: "VISITS", target_ref_id: leeds, text: "Tom visits Leeds on Mondays" }, ctx);
+    await run(assertStep, { source_ref_id: tom, edge_type: "VISITS", target_ref_id: leeds, text: "Tom visits Leeds on Mondays", refuted: true }, ctx);
+    const now = await run(assertStep, { source_ref_id: tom, edge_type: "VISITS", target_ref_id: leeds, text: "Tom visits Leeds on Fridays" }, ctx);
+    assert.equal(now.action, "created", JSON.stringify(now));
+    const found = await run(graphSearch, { q: "Tom visits Leeds", facts: true }, ctx);
+    const fact = (found.facts as Array<{ ref_id: string; status?: string }>).find((f) => f.ref_id === now.edge_ref_id);
+    assert.ok(fact, JSON.stringify(found.facts));
+    assert.notEqual(fact.status, "refuted", JSON.stringify(fact));
+  });
+
+  it("a fact joining two nodes that hold other current facts lists them; a re-confirm with another sentence says so", async () => {
+    await b.schemas.createEdgeSchema("Person", "VISITS", "Place", { temporal: true, cardinality: "many", volatility: "evolving" });
+    const first = await run(assertStep, { source_ref_id: tom, edge_type: "VISITS", target_ref_id: leeds, text: "Tom visits Leeds every Monday" }, ctx);
+    assert.equal(first.between, undefined);
+    const other = await run(assertStep, { source_ref_id: tom, edge_type: "TRAINS_IN", target_ref_id: leeds, text: "Tom trains in Leeds on Saturdays", create_schema_if_missing: true }, ctx);
+    assert.deepEqual(other.between, [{ ref_id: first.edge_ref_id, edge_type: "VISITS", text: "Tom visits Leeds every Monday" }]);
+    assert.ok(other.notes.some((n: string) => /ask whether this corrects one of them/.test(n)));
+    const again = await run(assertStep, { source_ref_id: tom, edge_type: "VISITS", target_ref_id: leeds, text: "Tom visits Leeds on Saturday mornings" }, ctxOf({ graph: b }, { actor: "agent", runId: "r-2" }));
+    assert.equal(again.action, "reconfirmed");
+    assert.equal(again.held_text, "Tom visits Leeds every Monday");
+    assert.ok(again.notes.some((n: string) => /another sentence/.test(n)));
+  });
+
+  it("a fact on an edge type with no volatility says so, until one is given", async () => {
+    const r = await run(assertStep, { source_ref_id: tom, edge_type: "LIVES_IN", target_ref_id: leeds, text: "Tom lives in Leeds" }, ctx);
+    assert.ok(r.notes.some((n: string) => /LIVES_IN has no volatility/.test(n)), JSON.stringify(r));
+    const kept = await run(assertStep, { source_ref_id: kate, edge_type: "LIVES_IN", target_ref_id: leeds, text: "Kate lives in Leeds", volatility: "stable" }, ctx);
+    assert.equal(kept.notes, undefined, JSON.stringify(kept));
+  });
+
+  it("the evidence keeps the person's words, and the session and turn beside the run", async () => {
+    const turnCtx = ctxOf({ graph: b }, { actor: "agent", turnOf: { session: "chat-1", turn: 3 } });
+    await run(assertStep, { source_ref_id: tom, edge_type: "LIVES_IN", target_ref_id: leeds, text: "Tom lives in Leeds", words: "I'm in Leeds these days" }, turnCtx);
+    const [ev] = await b.query("MATCH (:Node {node_type: 'Claim'})-[r:EVIDENCED_BY]->(e:Node {node_type: 'Evidence'}) RETURN e.content AS content, r.context AS context");
+    assert.equal(ev?.["content"], "I'm in Leeds these days");
+    assert.deepEqual(JSON.parse(String(ev?.["context"])), { run: "r-1", session: "chat-1", turn: 3 });
+  });
+
   it("works under a reader list: a scoped caller asserts, makes a temporal type, and finds the user", async () => {
     const scoped = ctxOf({ graph: graphView(b, parseGraphReaders({ jobs: { namespaces: ["private", "shared"], exclude_domains: ["Strut"] } })) }, { actor: "agent" });
     const r = await run(assertStep, {
