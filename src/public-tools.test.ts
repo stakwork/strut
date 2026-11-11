@@ -268,6 +268,26 @@ describe("public tools", () => {
     });
   });
 
+  it("a tool's calls show in GET /earnings by item: a step:<type> row beside a workflow's", async () => {
+    const { strut, call, ok, buy } = await boot([{ kind: "step", name: "tool/fixed", base: 0.5 }]);
+    await strut.workspace.createWorkflow("hello", "name: hello\ninput:\n  who: { type: string, default: x }\nsteps:\n  - id: s\n    type: log\n    config:\n      message: hi\n");
+    const put = await strut.app.request("/public-view", { method: "PUT", headers: auth, body: JSON.stringify({ runnable: [{ kind: "step", name: "tool/fixed", base: 0.5 }, { kind: "workflow", name: "hello" }] }) });
+    assert.equal(put.status, 200, await put.clone().text());
+    const launched = (await (await strut.app.request("/public/workflows/hello/run", { method: "POST", headers: json, body: JSON.stringify({ input: {} }) })).json()) as { runId: string; token: string };
+    assert.equal((await strut.app.request(`/public/workflows/hello/runs/${launched.runId}?t=${encodeURIComponent(launched.token)}&wait=10`)).status, 200);
+    const cred = await buy(2);
+    await ok(await call("tool/fixed", { config: { cost: 0.3 } }, cred));
+    await ok(await call("tool/fixed", { config: {} }, cred));
+    const res = await strut.app.request("/earnings", { headers: auth });
+    assert.equal(res.status, 200, await res.clone().text());
+    const view = (await res.json()) as { rows: Array<{ key: string; calls: number; failed: number; earned: number; cost: number }> };
+    const step = view.rows.find((r) => r.key === "step:tool/fixed");
+    assert.deepEqual(step && { calls: step.calls, failed: step.failed, earned: step.earned, cost: step.cost }, { calls: 2, failed: 0, earned: 1, cost: 0.3 });
+    const wf = view.rows.find((r) => r.key === "workflow:hello");
+    assert.ok(wf, view.rows.map((r) => r.key).join(", "));
+    assert.equal(wf!.calls, 1);
+  });
+
   it("a token one cent short is a 402 for the shortfall that carries; the top-up runs", async () => {
     const { call, ok, challenged, pay, buy, credit } = await boot([{ kind: "step", name: "tool/fixed", base: 0.5 }]);
     const none = await challenged(await call("tool/fixed", { config: {} }));
