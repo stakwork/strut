@@ -3306,7 +3306,9 @@ export async function createStrut<TServices = unknown>(
       return publicToolServices(bag, {
         graph: toolGraph,
         http: toolHttp,
-        ...(bag["runs"] ? { runs: visitorRuns(bag["runs"] as Parameters<typeof visitorRuns>[0]) } : {}),
+        // The runs as a visitor reads them, held to the public view; no
+        // launcher, so a tool launches nothing.
+        ...(bag["runs"] ? { runs: visitorRuns(bag["runs"] as Parameters<typeof visitorRuns>[0], { surface: () => publicSurface.get() }) } : {}),
       });
     },
     credit,

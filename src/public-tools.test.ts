@@ -73,13 +73,15 @@ const tool = (type: string) =>
 /** Reaches for what a public tool's bag does not hold. */
 const reach = defineStep({
   type: "tool/reach",
-  input: z.object({ what: z.enum(["shell", "graph-write", "artifacts", "sessions"]) }),
+  input: z.object({ what: z.enum(["shell", "graph-write", "artifacts", "sessions", "runs", "launch"]) }),
   output: z.any(),
   async run(cfg, ctx: StepContext<unknown>) {
     const bag = ctx.services as Record<string, any>;
     if (cfg.what === "shell") return bag["shell"].run({ cmd: "true" });
     if (cfg.what === "graph-write") return bag["graph"].nodes.write({ type: "Concept", data: { name: "x" } });
     if (cfg.what === "artifacts") return bag["artifacts"].write(ctx.runId, "a.txt", "x");
+    if (cfg.what === "runs") return bag["runs"].list({ workflow: "private" });
+    if (cfg.what === "launch") return bag["runs"].launch({ workflow: "private", input: {} });
     return bag["sessions"].open("s", { runId: ctx.runId, path: ctx.path });
   },
 });
@@ -374,14 +376,23 @@ describe("public tools", () => {
     }
   });
 
-  it("the bag holds no shell, no artifacts, no sessions and no graph writer: a step reaching for one fails", async () => {
-    const { call, store } = await boot([{ kind: "step", name: "tool/reach" }]);
+  it("the bag holds no shell, no artifacts, no sessions and no graph writer, reads no run outside the public view and launches nothing: a step reaching for one fails", async () => {
+    const { strut, call, store } = await boot([{ kind: "step", name: "tool/reach" }]);
+    await strut.workspace.createWorkflow("private", "name: private\nsteps:\n  - id: s\n    type: log\n    config:\n      message: hi\n");
+    await strut.run("private", {});
+    const writes = store.writes;
+    for (const what of ["runs", "launch"]) {
+      const res = await call("tool/reach", { config: { what } });
+      assert.equal(res.status, 500, what);
+      assert.match(((await res.json()) as { error: string }).error, /not in the public view|not available in the public view/, what);
+    }
+    assert.equal(store.writes, writes, "nothing launched");
     for (const what of ["shell", "graph-write", "artifacts", "sessions"]) {
       const res = await call("tool/reach", { config: { what } });
       assert.equal(res.status, 500, what);
       assert.equal(((await res.json()) as { code: string }).code, "step_failed", what);
     }
-    assert.equal(store.writes, 0);
+    assert.equal(store.writes, writes);
   });
 
   it("GET /public lists a runnable step's input as the JSON Schema a caller builds config from", async () => {
