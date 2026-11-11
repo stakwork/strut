@@ -9,6 +9,7 @@ import {
   serviceAccountField,
   sheetsCtx,
 } from "./_shared.js";
+import { StepFailure, stepFailed } from "../../../public-call.js";
 
 const spreadsheetUrl = (id: string) => `https://docs.google.com/spreadsheets/d/${id}/edit`;
 
@@ -84,7 +85,8 @@ export default defineStep({
         sheets: ["Sheet1", ...(cfg.extra_sheet_titles ?? [])],
       };
     } catch (err: any) {
-      return `sheets_create_spreadsheet failed: ${err?.message ?? String(err)}`;
+      if (err instanceof StepFailure) throw err;
+      return stepFailed(`sheets_create_spreadsheet failed: ${err?.message ?? String(err)}`);
     }
   },
 });

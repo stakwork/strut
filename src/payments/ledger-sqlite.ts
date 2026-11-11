@@ -31,6 +31,7 @@ import {
   type EarningsQuery,
   type EarningsRow,
   type EntryKind,
+  type EntryListQuery,
   type FirstUseInput,
   type FirstUseResult,
   type HoldInput,
@@ -43,6 +44,7 @@ import {
   type ReceivedRow,
   type Recent,
   type RunOutcome,
+  type SendPurpose,
   type SweepResult,
   type TokenBalance,
   type WithdrawalInput,
@@ -88,10 +90,14 @@ create table if not exists entries (
   actor text
 ) strict;
 create index if not exists entries_token on entries(token, seq) where token is not null;
-create unique index if not exists entries_token_key on entries(token, key) where key is not null;
+-- A key names a hold while its run is in flight; once charged, the same key
+-- may hold again (a re-run of the same input), so it is not unique.
+drop index if exists entries_token_key;
+create index if not exists entries_token_keyed on entries(token, key, seq) where key is not null;
 create index if not exists entries_run on entries(run_id) where run_id is not null;
 create index if not exists entries_payments on entries(at) where kind = 'payment';
 create index if not exists entries_withdrawals on entries(at) where kind = 'withdrawal';
+create unique index if not exists entries_withdrawal_hash on entries(ref) where kind = 'withdrawal';
 create trigger if not exists entries_append_only before update on entries
   begin select raise(abort, 'ledger entries are append-only'); end;
 
@@ -165,7 +171,14 @@ export class SqliteLedgerStore implements LedgerStore {
          values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ),
       entry: p("select * from entries where seq = ?"),
-      holdByKey: p("select * from entries where token = ? and key = ? and kind = 'hold'"),
+      // The newest hold `key` names on a token for a subject while its run is
+      // not charged: a key dedupes a launch in flight, never one that ended or
+      // never ran (freed by a charge of nothing), and never another item's.
+      holdByKey: p(
+        `select h.* from entries h where h.token = ? and h.subject = ? and h.key = ? and h.kind = 'hold'
+            and not exists (select 1 from entries c where c.run_id = h.run_id and c.kind = 'charge' and c.token = h.token)
+          order by h.seq desc limit 1`,
+      ),
       holdByRun: p("select * from entries where run_id = ? and kind = 'hold' and token = ?"),
       chargeByRun: p("select * from entries where run_id = ? and kind = 'charge' and token = ?"),
       freeChargeByRun: p("select * from entries where run_id = ? and kind = 'charge' and token is null and subject = ?"),
@@ -195,8 +208,8 @@ export class SqliteLedgerStore implements LedgerStore {
            from entries where kind = 'payment' and at >= ? and at < ? group by day order by day`,
       ),
       withdrawn: p(
-        `select date(at / 1000, 'unixepoch') day, count(*) count, sum(msat) msat, coalesce(sum(fee_msat), 0) fee_msat
-           from entries where kind = 'withdrawal' and at >= ? and at < ? group by day order by day`,
+        `select date(at / 1000, 'unixepoch') day, coalesce(subject, 'withdrawal') purpose, count(*) count, sum(msat) msat, coalesce(sum(fee_msat), 0) fee_msat
+           from entries where kind = 'withdrawal' and at >= ? and at < ? group by day, purpose order by day, purpose`,
       ),
       outstanding: p(
         `select coalesce(sum(case when successor is null then 1 else 0 end), 0) tokens,
@@ -204,6 +217,10 @@ export class SqliteLedgerStore implements LedgerStore {
            from tokens where closed is null`,
       ),
       scan: p("select * from entries where seq > ? order by seq limit ?"),
+      withdrawalOf: p("select * from entries where kind = 'withdrawal' and ref = ?"),
+      listAll: p("select * from entries where seq < ? order by seq desc limit ?"),
+      listKind: p("select * from entries where kind = ? and seq < ? order by seq desc limit ?"),
+      listRun: p("select * from entries where run_id = ? and seq < ? order by seq desc limit ?"),
     };
   }
 
@@ -241,7 +258,7 @@ export class SqliteLedgerStore implements LedgerStore {
     need("runId", input.runId);
     return this.tx<HoldResult>(() => {
       if (input.key !== undefined) {
-        const first = this.s.holdByKey.get(input.token, input.key) as Row | undefined;
+        const first = this.s.holdByKey.get(input.token, input.subject, input.key) as Row | undefined;
         if (first) return { ok: true, existing: true, seq: first.seq as number, runId: first.run_id as string, reserve: first.usd as number, subject: first.subject as string };
       }
       const same = this.s.holdByRun.get(input.runId, input.token) as Row | undefined;
@@ -296,7 +313,9 @@ export class SqliteLedgerStore implements LedgerStore {
       const t = this.s.token.get(token) as Row;
       const available = Math.max(0, (t.paid as number) - (t.spent as number) - ((t.held as number) - reserve));
       const due = chargeFor(input.price, cost, input.outcome, reserve);
-      const charged = Math.min(due, available);
+      // Never more than the hold: the reserve is the most a run could be
+      // charged (decision 21); what a run spent past it is the seller's.
+      const charged = Math.min(due, reserve, available);
       this.s.release.run(reserve, charged, token);
       const seq = this.entry(at, "charge", { token, usd: charged, subject: input.subject, runId: input.runId, cost, outcome: input.outcome });
       this.s.daily.run(dayOf(at), input.subject, 1, failed, charged, cost);
@@ -336,9 +355,16 @@ export class SqliteLedgerStore implements LedgerStore {
     if (input.feeMsat !== undefined) int("feeMsat", input.feeMsat);
     if (input.usd !== undefined) int("usd", input.usd);
     return this.tx(() => {
-      const seq = this.entry(at, "withdrawal", { msat: input.msat, feeMsat: input.feeMsat, ref: input.paymentHash, actor: input.actor, usd: input.usd });
+      const known = this.s.withdrawalOf.get(input.paymentHash) as Row | undefined;
+      if (known) return entryOf(known);
+      const seq = this.entry(at, "withdrawal", { msat: input.msat, feeMsat: input.feeMsat, ref: input.paymentHash, actor: input.actor, usd: input.usd, subject: input.purpose ?? "withdrawal" });
       return entryOf(this.s.entry.get(seq) as Row);
     }, true);
+  }
+
+  async withdrawalOf(paymentHash: string): Promise<LedgerEntry | undefined> {
+    const row = this.live().s.withdrawalOf.get(paymentHash) as Row | undefined;
+    return row ? entryOf(row) : undefined;
   }
 
   // ── reads ─────────────────────────────────────────────────────────────
@@ -353,8 +379,8 @@ export class SqliteLedgerStore implements LedgerStore {
     return (this.live().s.tokenEntries.all(token, o.before ?? Number.MAX_SAFE_INTEGER, limit) as Row[]).map(entryOf);
   }
 
-  async findHold(token: string, key: string): Promise<OpenHold | undefined> {
-    const row = this.live().s.holdByKey.get(token, key) as Row | undefined;
+  async findHold(token: string, subject: string, key: string): Promise<OpenHold | undefined> {
+    const row = this.live().s.holdByKey.get(token, subject, key) as Row | undefined;
     return row ? holdOf(row) : undefined;
   }
 
@@ -375,6 +401,13 @@ export class SqliteLedgerStore implements LedgerStore {
       // `workflow:<prefix>0` ('/' + 1).
       where.push("((subject >= ? and subject < ?) or (subject >= ? and subject < ?))");
       args.push(`workflow:${q.prefix}/`, `workflow:${q.prefix}0`, `step:${q.prefix}/`, `step:${q.prefix}0`);
+    }
+    if (q.subjects) {
+      if (!q.subjects.length) where.push("0");
+      else {
+        where.push(`subject in (${q.subjects.map(() => "?").join(", ")})`);
+        args.push(...q.subjects);
+      }
     }
     const sums = "sum(calls) calls, sum(failed) failed, sum(earned) earned, sum(cost) cost";
     const filter = `where ${where.join(" and ")}`;
@@ -405,6 +438,7 @@ export class SqliteLedgerStore implements LedgerStore {
     const [from, to] = msRange(range);
     return (this.live().s.withdrawn.all(from, to) as Row[]).map((r) => ({
       day: r.day as string,
+      purpose: r.purpose as SendPurpose,
       count: r.count as number,
       msat: r.msat as number,
       feeMsat: r.fee_msat as number,
@@ -428,6 +462,14 @@ export class SqliteLedgerStore implements LedgerStore {
   async today(subject: string, o: { now?: number } = {}): Promise<EarningsRow> {
     const r = this.live().s.day.get(dayOf(o.now ?? Date.now()), subject) as Row | undefined;
     return r ? rowOf({ ...r, key: subject }) : { key: subject, calls: 0, failed: 0, earned: 0, cost: 0 };
+  }
+
+  async list(o: EntryListQuery = {}): Promise<LedgerEntry[]> {
+    const limit = pageLimit(o.limit, ENTRIES_PAGE, ENTRIES_PAGE_MAX);
+    const before = o.before ?? Number.MAX_SAFE_INTEGER;
+    const s = this.live().s;
+    const rows = o.runId ? s.listRun.all(o.runId, before, limit) : o.kind ? s.listKind.all(o.kind, before, limit) : s.listAll.all(before, limit);
+    return (rows as Row[]).filter((r) => !o.kind || r.kind === o.kind).map(entryOf);
   }
 
   async scan(o: { after?: number; limit?: number } = {}): Promise<LedgerEntry[]> {

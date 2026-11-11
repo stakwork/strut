@@ -6,12 +6,17 @@
  * (every call `wallet_unavailable`) to test a 503.
  *
  * Its invoices are not BOLT11: `lnfake1<msat>n<payment hash>`, which no
- * wallet pays. Its preimages are real: sha256(preimage) is the payment
- * hash, so an L402 check runs against it unchanged.
+ * wallet pays — unless `bolt11: true`, which makes them readable BOLT11
+ * (`encodeBolt11`, zero-signed), for a test where another strut's payer
+ * pays them (plans/paid-runs.md §10, a strut that buys). Its preimages are
+ * real: sha256(preimage) is the payment hash, so an L402 check runs
+ * against it unchanged.
  */
 
 import { createHash, randomBytes } from "node:crypto";
+import { decodeBolt11, encodeBolt11 } from "./bolt11.js";
 import { LightningError, checkPaymentHash, type Invoice, type InvoiceLookup, type LightningProvider, type ReceivedPayment } from "./lightning.js";
+import { lspFeeFloorMsat, type PayRequest, type PayResult, type Payer } from "./payer.js";
 
 /** One invoice as the fake keeps it. Times are epoch ms. */
 export interface FakeInvoice {
@@ -35,6 +40,8 @@ export interface FakeWalletOptions {
   startMsat?: number;
   /** An invoice's lifetime when the caller names none: an hour, as the daemon. */
   defaultExpirySecs?: number;
+  /** Make BOLT11 invoices a payer can read (zero-signed): for a buyer's test. */
+  bolt11?: boolean;
 }
 
 const FAKE_PREFIX = "lnfake1";
@@ -42,6 +49,7 @@ const FAKE_PREFIX = "lnfake1";
 export class FakeWallet implements LightningProvider {
   readonly #now: () => number;
   readonly #defaultExpiry: number;
+  readonly #bolt11: boolean;
   readonly #invoices = new Map<string, FakeInvoice>();
   #startMsat: number;
   #down: string | null = null;
@@ -52,6 +60,7 @@ export class FakeWallet implements LightningProvider {
     this.#now = opts.now ?? Date.now;
     this.#startMsat = opts.startMsat ?? 0;
     this.#defaultExpiry = opts.defaultExpirySecs ?? 3600;
+    this.#bolt11 = !!opts.bolt11;
   }
 
   // ── the capability ─────────────────────────────────────────────────────
@@ -62,14 +71,17 @@ export class FakeWallet implements LightningProvider {
     const preimage = randomBytes(32).toString("hex");
     const payment_hash = createHash("sha256").update(Buffer.from(preimage, "hex")).digest("hex");
     const now = this.#now();
+    const expirySecs = o.expirySecs ?? this.#defaultExpiry;
     const inv: FakeInvoice = {
-      invoice: `${FAKE_PREFIX}${o.msat}n${payment_hash}`,
+      invoice: this.#bolt11
+        ? encodeBolt11({ msat: o.msat, paymentHash: payment_hash, ...(o.description !== undefined ? { description: o.description } : {}), timestamp: Math.floor(now / 1000), expirySecs })
+        : `${FAKE_PREFIX}${o.msat}n${payment_hash}`,
       payment_hash,
       preimage,
       msat: o.msat,
       ...(o.description !== undefined ? { description: o.description } : {}),
       createdAt: now,
-      expiresAt: now + (o.expirySecs ?? this.#defaultExpiry) * 1000,
+      expiresAt: now + expirySecs * 1000,
     };
     this.#invoices.set(payment_hash, inv);
     return { invoice: inv.invoice, payment_hash, expires: new Date(inv.expiresAt).toISOString() };
@@ -152,9 +164,109 @@ export class FakeWallet implements LightningProvider {
   }
 
   #find(ref: string): FakeInvoice {
-    const hash = ref.startsWith(FAKE_PREFIX) ? ref.slice(ref.lastIndexOf("n") + 1) : ref.toLowerCase();
+    const hash = ref.startsWith(FAKE_PREFIX) ? ref.slice(ref.lastIndexOf("n") + 1) : ref.startsWith("ln") ? decodeBolt11(ref).paymentHash : ref.toLowerCase();
     const inv = this.#invoices.get(hash);
     if (!inv) throw new Error(`fake wallet: no invoice ${ref.slice(0, 80)}`);
+    return inv;
+  }
+}
+
+// ── the pay side, for tests ─────────────────────────────────────────────
+
+/** How a FakePayer answers the next pay: a state, or a refusal before
+ *  anything is sent (a `LightningError`). */
+export type FakePayOutcome = "settled" | "pending" | "failed" | LightningError;
+
+/**
+ * A payer in memory (payer.ts's `Payer`), for the withdraw tests and the
+ * browser demo: it pays a BOLT11 invoice by the outcome a test queues
+ * (settled by default), keeps a pending one until the test settles or fails
+ * it, and, like the Sphinx daemon, answers a payment hash it already paid as
+ * it stands, paying only a failed one again. It takes the daemon's fee floor.
+ */
+export class FakePayer implements Payer {
+  readonly provider = "sphinx" as const;
+  readonly capsFee = true;
+  /** Which wallet it is: a test changes it to model another wallet. */
+  id = "sphinx:fake";
+  /** Outcomes for the next pays, in order; empty → settled. */
+  readonly outcomes: FakePayOutcome[] = [];
+  /** The fee a settled payment costs: a share of the amount, within the cap. */
+  feeShare = 0.001;
+  readonly #payments = new Map<string, PayResult & { msat: number; invoice: string }>();
+  /** Every pay and status call, in order. */
+  readonly calls: Array<{ method: "pay" | "status"; paymentHash: string; maxFeeMsat: number }> = [];
+
+  minFeeMsat(msat: number): number {
+    return lspFeeFloorMsat(msat);
+  }
+
+  async pay(req: PayRequest): Promise<PayResult> {
+    const inv = this.#decode(req.invoice);
+    this.calls.push({ method: "pay", paymentHash: inv.paymentHash, maxFeeMsat: req.maxFeeMsat });
+    const had = this.#payments.get(inv.paymentHash);
+    if (had && had.state !== "failed") return this.#answer(had);
+    const outcome = this.outcomes.shift() ?? "settled";
+    if (outcome instanceof LightningError) throw outcome;
+    if (req.maxFeeMsat < this.minFeeMsat(inv.msat!)) {
+      throw new LightningError("wallet_refused", `max_fee_msat ${req.maxFeeMsat} is below the LSP's own fee limit for ${inv.msat} msat, ${this.minFeeMsat(inv.msat!)}`, "max_fee_too_low");
+    }
+    const p = { paymentHash: inv.paymentHash, msat: inv.msat!, invoice: req.invoice, state: outcome, feeMsat: 0 } as PayResult & { msat: number; invoice: string };
+    this.#payments.set(inv.paymentHash, p);
+    if (outcome === "settled") this.#settle(p, req.maxFeeMsat);
+    if (outcome === "failed") p.error = "no route found";
+    return this.#answer(p);
+  }
+
+  async status(req: PayRequest & { paymentHash: string }): Promise<PayResult> {
+    this.calls.push({ method: "status", paymentHash: req.paymentHash, maxFeeMsat: req.maxFeeMsat });
+    const p = this.#payments.get(req.paymentHash);
+    if (!p) return this.pay(req);
+    if (p.state === "failed") return this.pay(req);
+    return this.#answer(p);
+  }
+
+  /** Settle a pending payment (by its payment hash). */
+  settle(paymentHash: string, maxFeeMsat = Number.MAX_SAFE_INTEGER): void {
+    const p = this.#payments.get(paymentHash);
+    if (!p || p.state !== "pending") throw new Error(`fake payer: ${paymentHash} is not pending`);
+    this.#settle(p, maxFeeMsat);
+  }
+
+  /** Fail a pending payment (by its payment hash). */
+  fail(paymentHash: string, error = "no route found"): void {
+    const p = this.#payments.get(paymentHash);
+    if (!p || p.state !== "pending") throw new Error(`fake payer: ${paymentHash} is not pending`);
+    p.state = "failed";
+    p.error = error;
+  }
+
+  /** What it paid out, settled, fees included. */
+  paidMsat(): number {
+    let msat = 0;
+    for (const p of this.#payments.values()) if (p.state === "settled") msat += p.msat + p.feeMsat;
+    return msat;
+  }
+
+  #settle(p: PayResult & { msat: number }, maxFeeMsat: number): void {
+    p.state = "settled";
+    p.feeMsat = Math.min(maxFeeMsat, Math.ceil(p.msat * this.feeShare));
+    p.preimage = undefined;
+    delete p.error;
+  }
+
+  #answer(p: PayResult): PayResult {
+    return { paymentHash: p.paymentHash, state: p.state, feeMsat: p.state === "settled" ? p.feeMsat : 0, ...(p.error && p.state === "failed" ? { error: p.error } : {}) };
+  }
+
+  #decode(invoice: string) {
+    let inv;
+    try {
+      inv = decodeBolt11(invoice);
+    } catch (err) {
+      throw new LightningError("wallet_refused", `invoice is not a BOLT11 invoice: ${(err as Error).message}`, "bad_request");
+    }
+    if (!inv.msat) throw new LightningError("wallet_refused", "the invoice names no amount", "bad_request");
     return inv;
   }
 }

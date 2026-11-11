@@ -200,14 +200,26 @@ export function runHints(item: PublicRunnable, info: PublicRunInfo): string[] {
   return out;
 }
 
+/** How many runs of an item with a daily cap and no per-run cap fit in the
+ *  daily cap at once: the server's `DAILY_CAP_SHARE` (src/public-runnable.ts),
+ *  held equal by public-view.test.ts. */
+export const DAILY_CAP_SHARE = 10;
+
 /** What the caps do together, said beside them — not a refusal. A run in
  *  flight counts against the daily cap at its own cap (plans/paid-runs.md
- *  §7), and with no per-run cap that is the whole day's: one run at a time.
- *  The workflow's own run cap, when smaller, is what a run counts at, and
- *  the dialog does not know it, so the note says so. */
+ *  §7). With no per-run cap a run may spend a `DAILY_CAP_SHARE`th of the
+ *  daily cap, so that many run at once; a per-run cap at or above the daily
+ *  cap lets one run at a time. The workflow's own run cap, when smaller,
+ *  lets more run, and the dialog does not know it: "up to". */
 export function capNote(item: PublicRunnable): string | undefined {
-  if (item.kind !== "workflow" || item.dailyCapUsd === undefined || item.capUsd !== undefined) return undefined;
-  return `No per-run cap: a run in flight counts as the whole day's ${usd(item.dailyCapUsd)} (or the workflow's own run cap, if smaller), so one runs at a time. Set a per-run cap to let several run at once.`;
+  if (item.kind !== "workflow" || item.dailyCapUsd === undefined) return undefined;
+  if (item.capUsd === undefined) {
+    return `No per-run cap: each run may spend up to ${usd(item.dailyCapUsd / DAILY_CAP_SHARE)} (the daily cap over ${DAILY_CAP_SHARE}), so ${DAILY_CAP_SHARE} can run at once.`;
+  }
+  if (micros(item.capUsd) >= micros(item.dailyCapUsd)) {
+    return `The per-run cap is at least the daily cap, so one run at a time. Lower it to let several run at once.`;
+  }
+  return undefined;
 }
 
 /** Turning "anyone can run it" on for something that acts or runs code

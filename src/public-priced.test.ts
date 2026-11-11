@@ -457,7 +457,7 @@ describe("priced public runs", () => {
     await ended("fixed", b.runId, b.token);
   });
 
-  it("the same token and key return one run and set aside one reserve, in flight and after it ended", async () => {
+  it("the same token and key return one run and set aside one reserve while it is in flight; after it ended, the key runs the input again", async () => {
     const { launched, buy, credit, ended } = await boot({ runnable: [{ kind: "workflow", name: "fixed", base: 1 }] });
     const cred = await buy(3);
     const first = await launched("fixed", { input: { ms: 300 }, key: "k1" }, cred);
@@ -466,10 +466,14 @@ describe("priced public runs", () => {
     assert.equal(again.existing, true);
     assert.equal((await credit(cred)).held_usd, 1);
     assert.equal((await ended("fixed", first.runId, first.token)).charged, 1);
+    // The run ended: a key dedupes a launch in flight (as a free run's and
+    // the kit's `run/launch` key do), so the same input runs again.
     const later = await launched("fixed", { input: {}, key: "k1" }, cred);
-    assert.deepEqual({ runId: later.runId, existing: later.existing }, { runId: first.runId, existing: true });
+    assert.notEqual(later.runId, first.runId);
+    assert.ok(!later.existing);
+    assert.equal((await ended("fixed", later.runId, later.token)).charged, 1);
     const bal = await credit(cred);
-    assert.deepEqual({ spent: bal.spent_usd, held: bal.held_usd }, { spent: 1, held: 0 });
+    assert.deepEqual({ spent: bal.spent_usd, held: bal.held_usd }, { spent: 2, held: 0 });
     // Another key is another run.
     const other = await launched("fixed", { input: {}, key: "k2" }, cred);
     assert.notEqual(other.runId, first.runId);

@@ -39,6 +39,10 @@ export interface RunListQuery {
   automation?: string;
   /** Runs launched under a job. */
   job?: string;
+  /** Public runs one visit launched (plans/paid-runs.md §10): the visit's
+   *  hash. Set by the visitor's door alone (src/public-surface.ts
+   *  `visitorRuns`), never from a step's config. */
+  visitor?: string;
 }
 
 /** One row of `run/list`: the summary without its payloads (`input`,
@@ -236,6 +240,7 @@ export function matchesRunFilter(run: Partial<RunSummary> & { runId: string; sta
   if (q.status && run.status !== q.status) return false;
   if (q.automation && run.automation?.id !== q.automation) return false;
   if (q.job && run.job !== q.job) return false;
+  if (q.visitor && run.visitor !== q.visitor) return false;
   const from = sinceMs(q.since);
   if (from !== undefined) {
     const launched = launchedAt(run);

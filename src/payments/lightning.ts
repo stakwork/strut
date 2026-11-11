@@ -3,9 +3,9 @@
  * (plans/paid-runs.md §9; the receive half of plans/app-payments.md §6):
  * make an invoice, look one up, list what came in, read the balance.
  *
- * Nothing here moves a sat out. Paying is the payer's (item 7 of the plan),
- * built from a PAY credential that never reaches this capability, the
- * services bag or a step. A provider holds only what lets it RECEIVE.
+ * Nothing here moves a sat out. Paying is the payer's (payer.ts), built from
+ * a PAY credential that never reaches this capability, the services bag or
+ * a step. A provider holds only what lets it RECEIVE.
  *
  * Providers: the Sphinx daemon (`sphinx-daemon.ts`), NWC, and a fake for
  * tests (`fake-wallet.ts`). Each answers the provider interface below; what
@@ -79,10 +79,14 @@ export type LightningErrorCode =
  *  classifies. */
 export class LightningError extends Error {
   readonly code: LightningErrorCode;
-  constructor(code: LightningErrorCode, message: string) {
+  /** The wallet's own code for it, as it came (`max_fee_too_low`,
+   *  `own_invoice`, NWC's `INSUFFICIENT_BALANCE`), when it gave one. */
+  readonly walletCode?: string;
+  constructor(code: LightningErrorCode, message: string, walletCode?: string) {
     super(`${code}: ${message}`);
     this.name = "LightningError";
     this.code = code;
+    if (walletCode) this.walletCode = walletCode;
   }
 }
 

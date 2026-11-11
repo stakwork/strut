@@ -11,7 +11,10 @@
 // strut's: `ui/message` goes to the builder chat, `ui/open-link` to the
 // SPA's own navigation for a strut link and a new tab for anything else,
 // a theme change to `host-context-changed`, and what a link opened the app
-// with (`?input=`) to `ui/notifications/tool-input`.
+// with (`?input=`) to `ui/notifications/tool-input`. For a VISITOR's page
+// (the public view) the relay also names the visit and PAYS for a priced
+// launch (plans/paid-runs.md §10, ./visitor-pay): the one call it does not
+// pass through as it is.
 import { AppBridge, PostMessageTransport } from "@modelcontextprotocol/ext-apps/app-bridge";
 import type { McpUiHostContext, McpUiTheme } from "@modelcontextprotocol/ext-apps/app-bridge";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
@@ -20,9 +23,13 @@ import {
   type NativeWalletApp, type RelayBridge,
 } from "@strut/kit/wallet";
 import { CHANNELS_CAPABILITY, relayChannels } from "@strut/kit/channels";
-import { API_BASE, apiHeaders, channelSocketUrl, channelTicket, type BrandStyles } from "./api";
+import { API_BASE, apiHeaders, channelSocketUrl, channelTicket, claimPublicCredit, type BrandStyles } from "./api";
 import { strutLink } from "./app-links";
 import { mcpPermissions } from "./frame-permissions";
+import {
+  callPaying, createClaimKeeper, loadPurse, payInTurn, savePurse, visitorHeaders,
+  type CallParams, type CallResult, type ClaimEnd, type PaymentRequired, type PayOutcome,
+} from "./visitor-pay";
 
 // The pure parts — where a link leads, what a message becomes — are
 // ./app-links (tested there; this module's imports need web/node_modules).
@@ -39,6 +46,12 @@ export interface AppHostHandlers {
   onNavigate?: (params: Record<string, string>) => boolean | void;
   /** The page's `ui/notifications/initialized`: it has started. */
   onInitialized?: () => void;
+  /** A VISITOR's priced launch (plans/paid-runs.md §10): show the invoice
+   *  until `settled` says how it ended — the host keeps claiming it either
+   *  way — and answer the credential (`<macaroon>:<preimage>`), `again` for
+   *  a new invoice, or null when the visitor cancels. Absent, the page's
+   *  launch answers that the run was not paid for. */
+  onPayment?: (p: PaymentRequired, workflow: string, settled: Promise<ClaimEnd>) => Promise<PayOutcome>;
 }
 
 export interface AppHostOptions {
@@ -88,12 +101,51 @@ export interface AppHostConnection {
   close(): Promise<void>;
 }
 
+/** What this page holds for the visitor's pages it shows (§10): one visit
+ *  per tab — the runs launched under it are the ones its pages read back —
+ *  the credit credential, credentials paid for and not sent yet, and every
+ *  invoice shown and not settled. In this page's `sessionStorage`, so a
+ *  reload in the tab keeps the visit's runs and its credit; never a frame's. */
+const PURSE_KEY = `strut.visitor:${API_BASE}`;
+const purseStorage = (() => {
+  try {
+    return typeof sessionStorage !== "undefined" ? sessionStorage : undefined;
+  } catch {
+    return undefined;
+  }
+})();
+const visitorPurse = loadPurse(purseStorage, PURSE_KEY);
+const savePurseNow = () => savePurse(purseStorage, PURSE_KEY, visitorPurse);
+savePurseNow();
+/** Every invoice shown is claimed until it settles or ends, apart from any
+ *  sheet: a phone that pays after the visitor pressed Cancel still buys
+ *  credit. Those a reload found pending are watched again. */
+const claimKeeper = createClaimKeeper({ purse: visitorPurse, claim: claimPublicCredit, save: savePurseNow });
+claimKeeper.resume();
+/** One payment sheet at a time for that purse, whichever frame asked. */
+const visitorPayTurn = payInTurn(visitorPurse);
+/** While a paying launch waits, `notifications/progress` for the page's
+ *  request this often: the frame's request times out after 60 s unless
+ *  progress resets it (ext-apps' `callServerTool` asks for that). */
+const PROGRESS_EVERY_MS = 15_000;
+
 /** The MCP client the relay forwards through: one per frame, over `/mcp`
- *  (or a peer's, `/peers/<id>/mcp`), the UI's credential on every request. */
+ *  (or a peer's, `/peers/<id>/mcp`), the UI's credential on every request.
+ *  A visitor's goes to `/public/mcp` with no credential of the UI's, naming
+ *  the visit and, once paid, presenting the credit credential. */
 export function createRelayClient(base = "", visitor = false): { client: Client; transport: StreamableHTTPClientTransport } {
   const client = new Client({ name: "strut-ui", version: "0" });
   const transport = new StreamableHTTPClientTransport(new URL(`${API_BASE}${visitor ? "/public" : base}/mcp`, location.href), {
     requestInit: visitor ? { credentials: "omit" } : { headers: apiHeaders() },
+    ...(visitor
+      ? {
+          fetch: (url: string | URL, init?: RequestInit) => {
+            const headers = new Headers(init?.headers);
+            for (const [k, v] of Object.entries(visitorHeaders(visitorPurse))) headers.set(k, v);
+            return fetch(url, { ...init, headers, credentials: "omit" });
+          },
+        }
+      : {}),
   });
   return { client, transport };
 }
@@ -185,6 +237,45 @@ export async function connectAppHost(opts: AppHostOptions): Promise<AppHostConne
   const win = opts.frame.contentWindow;
   if (!win) throw new Error("the frame has no window yet");
   await bridge.connect(new PostMessageTransport(win, win));
+  // A visitor's page: every call passes through as it is, but a priced
+  // launch is paid for here and sent again (./visitor-pay `callPaying`).
+  // Set once connected — `connect` sets the plain forwarder — and still
+  // before the document loads.
+  if (opts.visitor) {
+    const pay = opts.handlers.onPayment;
+    bridge.oncalltool = async (params, extra) => {
+      // The page's request stays alive while the visitor pays: progress for
+      // its token resets the frame's timeout.
+      const token = (params as { _meta?: { progressToken?: string | number } })._meta?.progressToken;
+      let beats = 0;
+      const beat = token === undefined
+        ? undefined
+        : setInterval(() => {
+            void bridge.notification({ method: "notifications/progress", params: { progressToken: token, progress: ++beats, message: "waiting for the payment" } }).catch(() => {});
+          }, PROGRESS_EVERY_MS);
+      try {
+        return (await callPaying(params as CallParams, {
+          call: async (p) => (await client.request({ method: "tools/call", params: p }, { signal: extra.mcpReq.signal })) as CallResult,
+          purse: visitorPurse,
+          save: savePurseNow,
+          pay: (p, workflow) =>
+            visitorPayTurn((q, w) => {
+              if (!pay) return Promise.resolve(null);
+              // Claimed from now until it settles or ends, sheet or no sheet;
+              // a top-up replaces the credential it was minted to carry from.
+              const settled = claimKeeper.watch({
+                macaroon: q.macaroon,
+                ...(q.expires ? { expires: q.expires } : {}),
+                ...(q.carries && visitorPurse.credential ? { carriesFrom: visitorPurse.credential } : {}),
+              });
+              return pay(q, w, settled);
+            }, p, workflow),
+        })) as Awaited<ReturnType<NonNullable<typeof bridge.oncalltool>>>;
+      } finally {
+        if (beat) clearInterval(beat);
+      }
+    };
+  }
   return {
     bridge,
     setTheme: (theme) => bridge.setHostContext({ ...hostContextFor(theme, opts.brand), theme }),

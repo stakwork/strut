@@ -204,14 +204,24 @@ params:
     - package/get
     - package/concepts
     - package/install
+    # Another strut server's public door (plans/paid-runs.md §10): what it
+    # sells, and a run or a tool call there spending the credit this strut
+    # already holds — no ask (decision 16). Buying credit is an admin's yes:
+    # remote/buy-credit is a proposal, below.
+    - remote/list
+    - remote/run-workflow
+    - remote/call
+    - remote/buy-credit
   # Tools among the grants that need the PERSON's approval
   # (plans/proposals.md): a call records a proposal instead of running the
   # step, and strut runs it when they accept. Strut's own: package/install
-  # (someone's code into this strut). A deployment that wants a hand on
+  # (someone's code into this strut) and remote/buy-credit (this server's
+  # sats to another strut). A deployment that wants a hand on
   # every publish names meta/publish-workflow, meta/create-step and
   # meta/edit-step here through its delta.
   approve:
     - package/install
+    - remote/buy-credit
   # The prompt of the turn strut runs when a run this job left going ends
   # (src/wake.ts). A test run is a run of its own: meta/run-workflow looks
   # at it for about a minute, then hands it back `running`, the turn ends

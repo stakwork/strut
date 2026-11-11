@@ -3,6 +3,7 @@ import type { CardField } from "../../../core.js";
 import { defineStep, type StepContext, withAccessedNodes } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
 import { graphCtx, errText, describeNodes, namesOf } from "./_shared.js";
+import { stepFailed } from "../../../public-call.js";
 
 const EXAMPLE = `- id: retire
   type: graph/delete-node
@@ -61,13 +62,13 @@ export default defineStep({
       const b = await graphCtx(ctx as StepContext<StrutCapabilities>);
       // Described BEFORE the delete: a deleted node is hidden from every read.
       const [node] = await describeNodes(b, [cfg.ref_id]);
-      if (!node?.node_type) return `graph/delete-node failed — NOT_FOUND: no live node with ref_id ${cfg.ref_id}`;
+      if (!node?.node_type) return stepFailed(`graph/delete-node failed — NOT_FOUND: no live node with ref_id ${cfg.ref_id}`);
       if ((await b.reader.getNode(cfg.ref_id))?.properties["is_owner"] === true) {
-        return "graph/delete-node failed — REFUSED: this is the user (is_owner), who is never deleted; delete or end their edges instead";
+        return stepFailed("graph/delete-node failed — REFUSED: this is the user (is_owner), who is never deleted; delete or end their edges instead");
       }
       const namespace = await b.reader.resolveNamespace(cfg.namespace);
       const r = await b.nodes.deleteNode(cfg.ref_id, { namespace, ...(cfg.reason ? { reason: cfg.reason } : {}) });
-      if (!r) return `graph/delete-node failed — NOT_FOUND: no node with ref_id ${cfg.ref_id} in namespace ${namespace}`;
+      if (!r) return stepFailed(`graph/delete-node failed — NOT_FOUND: no node with ref_id ${cfg.ref_id} in namespace ${namespace}`);
       return withAccessedNodes(
         {
           status: "Success",

@@ -1,25 +1,29 @@
 import { useState } from "preact/hooks";
 import type { InstallLink } from "../store-links";
+import { EarningsPanel } from "./EarningsPanel";
 import { IndexPanel } from "./IndexPanel";
 import { PackagesPanel } from "./PackagesPanel";
 import { PublicViewPanel } from "./PublicViewPanel";
 
 // ── The Publish dialog: the topbar's one door out of this server ───────────
 //
-// Two tabs, three on an index. Packages: COPIES — releases by digest, the catalog other struts
+// Three tabs, four on an index. Packages: COPIES — releases by digest, the catalog other struts
 // install from, and what this strut follows and has installed
 // (PackagesPanel). Public view: what anyone may read here LIVE, with no
-// account (PublicViewPanel). On an INDEX strut a third, Index: the listing
+// account (PublicViewPanel). Earnings: what anyone's runs were charged, the
+// wallet the sats land in and Withdraw (EarningsPanel, plans/paid-runs.md
+// §8). On an INDEX strut a fourth, Index: the listing
 // requests waiting for its operator and the rows (IndexPanel,
 // plans/index-listing.md §3). A tab mounts the first time it is shown and
 // stays mounted, so a Public view draft and a package page you are halfway
 // through survive a look at the other tab; Close drops both.
 
-export type PublishTab = "packages" | "public" | "index";
+export type PublishTab = "packages" | "public" | "earnings" | "index";
 
 const TABS: Array<{ tab: PublishTab; label: string; title: string }> = [
   { tab: "packages", label: "Packages", title: "The packages here, what this strut server follows and what it has installed" },
   { tab: "public", label: "Public view", title: "What anyone can read on this server, live and read-only, with no account" },
+  { tab: "earnings", label: "Earnings", title: "What anyone's runs were charged here, what they cost, and the wallet the sats land in" },
   { tab: "index", label: "Index", title: "The publishers this index lists, and the listing requests waiting for you" },
 ];
 
@@ -68,6 +72,11 @@ export function PublishDialog(props: {
           {shown.has("public") && (
             <div role="tabpanel" hidden={props.tab !== "public"}>
               <PublicViewPanel onDirty={setPublicDirty} />
+            </div>
+          )}
+          {shown.has("earnings") && (
+            <div role="tabpanel" hidden={props.tab !== "earnings"}>
+              <EarningsPanel />
             </div>
           )}
           {shown.has("index") && props.indexWaiting !== undefined && (

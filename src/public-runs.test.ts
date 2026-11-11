@@ -21,7 +21,7 @@ import { FakeWallet } from "./payments/fake-wallet.js";
 import { lightningCapability } from "./payments/lightning.js";
 import { MemoryLedgerStore } from "./payments/ledger-memory.js";
 import { usdToMicros } from "./payments/ledger.js";
-import { createPublicRuns, publicRunsPath, secondsToUtcMidnight } from "./public-runs.js";
+import { createPublicRuns, dailyRoom, publicRunsPath, secondsToUtcMidnight } from "./public-runs.js";
 import { stepAuth } from "./llm.js";
 import { createMothership } from "./mothership.js";
 import { MemorySecretStore } from "./secret-store.js";
@@ -179,15 +179,16 @@ describe("free public runs", () => {
     assert.equal(summary.origin, "public");
     assert.equal(summary.actor, undefined);
     assert.equal(summary.principal, "owner-1");
-    // $3 spent of $5: the next run's cap is what is left ($2), and when that
-    // is spent too, the launch is a 429 until tomorrow (UTC).
+    // $3 spent of $5: with no per-run cap, the next run's cap is a tenth of
+    // the daily cap ($0.50, under the $2 left), and once the day is spent
+    // the launch is a 429 until tomorrow (UTC).
     const ledger = await strut.ledger();
     assert.equal((await ledger.today("workflow:spend")).cost, usdToMicros(3));
     assert.equal((await ledger.today("workflow:spend")).calls, 2);
     const third = await launched("spend", { input: { cost: 2 } });
     await ended("spend", third.runId, third.token);
     const start = (await strut.store.getRunEvents("spend", third.runId)).find((e) => e.type === "run.start")!;
-    assert.equal(start.maxCostUsd, 2, "the run's cap is what is left of the daily cap");
+    assert.equal(start.maxCostUsd, 0.5, "with no per-run cap, a tenth of the daily cap");
     const refused = await launch("spend", { input: { cost: 1 } });
     assert.equal(refused.status, 429);
     assert.match(((await refused.json()) as { error: string }).error, /spent its daily cap \(\$5\.00\)/);
@@ -224,6 +225,25 @@ describe("free public runs", () => {
     for (const r of runs) await ended("spend", r.runId, r.token);
     assert.equal((await (await strut.ledger()).today("workflow:spend")).cost, usdToMicros(3));
     assert.equal((await launch("spend", { input: {} })).status, 429, "and the day is spent");
+  });
+
+  it("with a daily cap and no per-run cap, ten run at once — each may spend a tenth of the day's cap", async () => {
+    const { strut, launch, launched, ended } = await boot({ runnable: [{ kind: "workflow", name: "spend", dailyCapUsd: 5 }], maxInFlight: 20 });
+    const answers = await Promise.all(Array.from({ length: 12 }, () => launch("spend", { input: { cost: 0.25, ms: 200 } })));
+    const ok = answers.filter((r) => r.status === 202);
+    assert.equal(ok.length, 10, "ten fit, not one");
+    const refused = answers.filter((r) => r.status === 429);
+    assert.equal(refused.length, 2);
+    assert.match(((await refused[0]!.json()) as { error: string }).error, /set aside for runs in flight/);
+    const runs = (await Promise.all(ok.map((r) => r.json()))) as Array<{ runId: string; token: string }>;
+    for (const r of runs) {
+      await ended("spend", r.runId, r.token);
+      const start = (await strut.store.getRunEvents("spend", r.runId)).find((e) => e.type === "run.start")!;
+      assert.equal(start.maxCostUsd, 0.5, "each run's cap is a tenth of the daily cap");
+    }
+    // $2.50 spent, nothing in flight: the next launch runs.
+    const next = await launched("spend", { input: {} });
+    await ended("spend", next.runId, next.token);
   });
 
   it("a workflow whose name carries a slash launches and reads back by its encoded name", async () => {
@@ -478,6 +498,66 @@ describe("public runs: the charge, once, across a restart", () => {
     } finally {
       if (saved === undefined) delete process.env["STRUT_API_KEY"];
       else process.env["STRUT_API_KEY"] = saved;
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("dailyRoom: a full cap while the day holds one, never a sliver; the last of the day to one run alone", () => {
+    const $ = usdToMicros;
+    const base = { daily: $(5), full: $(1) };
+    assert.deepEqual(dailyRoom({ ...base, today: 0, held: $(3), inFlight: 3 }), { ok: true, cap: $(1) });
+    // $4.70 spent or held, runs in flight: $0.30 is left — a sliver the
+    // gateway would stop partway, so wait for a run to end.
+    assert.deepEqual(dailyRoom({ ...base, today: $(0.7), held: $(4), inFlight: 4 }), { ok: false, spent: false });
+    // Nothing in flight and $0.30 left: the last run of the day, with that.
+    assert.deepEqual(dailyRoom({ ...base, today: $(4.7), held: 0, inFlight: 0 }), { ok: true, cap: $(0.3) });
+    assert.deepEqual(dailyRoom({ ...base, today: $(5), held: 0, inFlight: 0 }), { ok: false, spent: true });
+    // A per-run cap over the daily cap: one run at a time, all day.
+    const big = { daily: $(5), full: $(8) };
+    assert.deepEqual(dailyRoom({ ...big, today: $(1), held: 0, inFlight: 0 }), { ok: true, cap: $(4) });
+    assert.deepEqual(dailyRoom({ ...big, today: $(1), held: $(4), inFlight: 1 }), { ok: false, spent: false });
+  });
+
+  it("a charge that fails at the run's end is tried again, not left until the next boot", async () => {
+    const store = new MemoryRunStore();
+    const ledger = new MemoryLedgerStore();
+    let failures = 2;
+    const flaky = new Proxy(ledger, {
+      get(t, prop, r) {
+        if (prop === "charge") {
+          return async (input: Parameters<MemoryLedgerStore["charge"]>[0]) => {
+            if (failures-- > 0) throw new Error("the ledger is busy");
+            return t.charge(input);
+          };
+        }
+        const v = Reflect.get(t, prop, r) as unknown;
+        return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(t) : v;
+      },
+    });
+    const runs = createPublicRuns({ ledger: async () => flaky, store, settleRetryMs: [5] });
+    const item = { kind: "workflow" as const, name: "w", dailyCapUsd: 10 };
+    const got = await runs.admit(item, { workflowCapUsd: 100 });
+    assert.equal(got.ok, true);
+    const runId = (got as { runId: string }).runId;
+    store.summaries.set(`w/${runId}`, { runId, workflow: "w", status: "success", origin: "public", totals: { modelCalls: 1, usage: {}, cost: 0.5 } } as never);
+    await runs.ended("w", runId);
+    assert.equal(runs.inFlight(), 1, "the first charge failed: still counted");
+    for (let i = 0; i < 50 && runs.inFlight() > 0; i++) await new Promise((r) => setTimeout(r, 10));
+    assert.equal(runs.inFlight(), 0, "charged on a retry");
+    assert.equal((await ledger.today("workflow:w")).cost, usdToMicros(0.5));
+  });
+
+  it("a runs file that does not read is moved aside, and the server still boots", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "strut-public-runs-bad-"));
+    try {
+      const file = publicRunsPath(dir);
+      await mkdir(join(file, ".."), { recursive: true });
+      await writeFile(file, "[{\"workflow\": \"w\", \"ru");
+      const runs = createPublicRuns({ ledger: async () => new MemoryLedgerStore(), store: new MemoryRunStore(), file });
+      await runs.load();
+      assert.equal(runs.inFlight(), 0);
+      await assert.rejects(readFile(file, "utf-8"), /ENOENT/, "moved aside");
+    } finally {
       await rm(dir, { recursive: true, force: true });
     }
   });

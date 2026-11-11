@@ -655,8 +655,8 @@ interface DrainView {
   since?: string;      // ISO, when it was turned on
   reason?: string;
   until?: string;      // ISO, when it lifts by itself
-  idle: boolean;       // no run executing and no builder chat turn running
-  active: { runs: number; chats: number };
+  idle: boolean;       // no run executing, no builder chat turn running, no public tool call in flight
+  active: { runs: number; chats: number; tools: number };
   runs: { workflow: string; runId: string; state: string }[]; // the top-level runs it waits on (first 50)
 }
 ```
@@ -668,7 +668,9 @@ While draining:
   `POST …/runs/:runId/resume` (unpausing a live run is let through), `POST
   /steps/:type/run` of a step that does not declare `effect: "read"` (a read
   still answers), `POST /chat`, an elicitation answer (the question stays
-  open), Run now.
+  open), Run now, and anyone's `POST /public/workflows/:name/run` and `POST
+  /public/steps/:type/run` (§17.4, §17.7; a public call is refused whatever
+  its step declares, and one in flight is waited on).
 - **Refused in process**: every new top-level run whatever starts it — an
   agent's `job/start` / `job/continue` or `meta/run-workflow`, the builder's
   `run_workflow`, an app's `run/launch`, `strut.run()` — reads the same
@@ -2787,8 +2789,8 @@ Packages tab's **Make public** is the package catalog's, §16):
 Concept roots (each root and every page under it by `PARENT_OF`),
 workflows (with or without their runs), steps, node types, and apps — and
 what anyone may RUN, free or priced in dollars (`runnable`,
-`plans/paid-runs.md` §2; an item launches through §17.4, a priced one
-paid from a credit token, §17.5).
+`plans/paid-runs.md` §2; a workflow launches through §17.4, a step is
+called through §17.7, a priced one paid from a credit token, §17.5).
 Everything else stays behind the key. The record is one file,
 `<dataDir>/public.json` (`src/public-surface.ts`); nothing public until
 someone puts it there. The UI's door is the topbar's **Publish** dialog, its
@@ -2842,7 +2844,7 @@ anyone without its definition or its runs being shown. One pricing rule,
 | `kind`, `name` | `workflow` and its name, or `step` and its type |
 | `base` | dollars a run or call; 0 when absent |
 | `markup` | times what the run cost; 0 when absent (1 charges exactly the cost) |
-| `capUsd` | the most one run may spend, above 0; required with a markup |
+| `capUsd` | the most one run may spend, above 0; required with a markup. Left out on an item with a daily cap, a run may spend a tenth of the daily cap, so ten run at once |
 | `dailyCapUsd` | the spend the owner carries per UTC day, above 0 |
 | `results` | a workflow's: what its launcher reads, `output` (the default) or the whole `run` |
 
@@ -2855,15 +2857,18 @@ it refuses (`{ error, problems: [...] }`, `error` the problems joined by
 
 - it exists and is not sealed, and a workflow's closure reaches nothing
   sealed (a subflow's grader, a `meta/*` grant);
-- a step is not `agent`, `llm`, `exec`, `acp/prompt` (a stranger runs one
-  inside a workflow: the workflow is the unit of spend), `meta/*`, nor one
-  of the runner's containers, `subflow`, `loop`, `foreach`, `if` (a
-  stranger's config would choose what they run);
+- a step is not `agent`, `llm`, `exec`, `acp/prompt`, `graph/walk` (a
+  stranger runs one inside a workflow: the workflow is the unit of spend),
+  `meta/*`, nor one of the runner's containers, `subflow`, `loop`,
+  `foreach`, `if` (a stranger's config would choose what they run), nor one
+  whose config names a secret — a `secretsEnv`, `tokenSecret`,
+  `storageStateSecret` or `secrets` field (`git/*`, `browser/open`,
+  `http/verify`): a stranger would choose which secret it reads;
 - a workflow declares an `input:` block (§2);
 - a `markup` has a `capUsd`;
 - a priced item has a wallet (§18, or the host's own `services.lightning`);
-- a workflow whose closure calls a model (`agent`, `llm`, `acp/prompt`, or
-  a closure strut cannot read in full) has someone to pay for a stranger's
+- a workflow whose closure calls a model (`agent`, `llm`, `acp/prompt`,
+  `graph/walk`, or a closure strut cannot read in full) has someone to pay for a stranger's
   run — its owner, or the host's `createStrut({ publicRuns: { principal } })`
   — and, when it is free, a `dailyCapUsd`;
 - every number is finite and not negative.
@@ -2917,7 +2922,11 @@ literal, or `{{ params.X }}` off the flow's params; a name from the input is
 ### 17.2 The reads — `GET /public/*` (anyone)
 
 Served from the record alone, whatever the gate's mode: a host's gate in
-front of an unkeyed strut (mcp's `/lab`) passes the prefix by path. Each
+front of an unkeyed strut (mcp's `/lab`) passes the prefix by path — the
+package exports `PUBLIC_PATH` for the reads and `PUBLIC_POST` for the POSTs
+anyone may make (`/public/mcp`, a launch and its cancel, a tool's call,
+`/public/credit` and its `claim`), the very patterns strut's own gate
+opens. Each
 answer carries `access-control-allow-origin: *` (a preflight is answered
 too) and no cookie; each visitor address may make 1200 requests a minute
 (the first `x-forwarded-for` hop, else the socket; `429` past it). Paths
@@ -2955,7 +2964,9 @@ not sealed, whether or not its definition is public (its YAML is never
 shown there): prices in dollars, `capUsd` null when the item sets none,
 `reserve` the credit a run needs to start (`base + markup × capUsd`),
 `results` `output` unless the item says `run`, `input` the workflow's
-`input:` block or the step's input JSON Schema, and `recent` the ledger's
+`input:` block or the step's input JSON Schema (draft 2020-12, the input
+view: a field with a default is not `required`; what §17.7's `config` is
+built from), and `recent` the ledger's
 last 30 days for it (`{ days, runs, average }`: public runs, and the
 average charge in dollars).
 
@@ -2986,8 +2997,10 @@ can show:
 | --- | --- |
 | an app not in the public view, or another version than the one it serves | refused |
 | `run/list`, `get`, `events`, `transcript`, `files`, `provenance` | a workflow in the public view WITH its runs; `run/workflow` one in it at all; `run/transcript { full }` refused; a job run's files refused |
+| the same on a workflow anyone may RUN (§17.4) whose runs are not public | the runs THIS VISIT launched (§17.6), as far as the item's `results` lets its launcher: `output` — `run/get` (the summary's run, status, input, output, totals, error message, declared artifacts), `run/list`, and `run/files` of the files its output declares; `run` — all of them. `run/workflow` is its name, description and `input:` block alone |
+| `run/launch` | a workflow anyone may run (`runnable`) that the app grants: through the public launcher (§17.6) |
 | `graph/graph-get`, `graph-get-batched`, `graph-search`, `graph-neighbors`, `graph-edges` | through a reader that sees only visible nodes (§17.2) |
-| `run/launch`, `run/cancel`, `job/*`, `app/*` (state and error reports included), any other `graph/*` | refused: a visitor starts and keeps nothing |
+| `run/launch` of anything else, `run/cancel`, `job/*`, `app/*` (state and error reports included), any other `graph/*` | refused: a visitor starts only what a person made runnable, and keeps nothing |
 | anything else granted | only when the app's `reads` name it |
 
 The step runs with NO actor and a bag of reads alone: `http`, `secrets`
@@ -2999,9 +3012,19 @@ it, so a step that reaches for a write, a shell or a file fails naming it,
 and nothing is kept as a run. The visitor's address counts against §17.2's
 budget, and the app's usage (§14.6) counts the call under `visitor <address>`.
 In the page, the kit's `useHost().public` is true (it reads the meta), so it
-disables what would only fail (it never hides it): strut/views' `LaunchForm`
-renders with every control off and a line saying runs are started by the
-people who keep the server.
+disables what would only fail (it never hides it), and `useHost().runnable`
+lists the granted workflows a visitor may start, under the names the app
+grants them by, and `useHost().results` what a visitor reads of the runs it
+launched of each (`output` or `run`, the item's `results`) — the document's
+second meta, `<meta name="strut-public-runnable"
+content='[{"name":"fortune","results":"output"}]'>`, written as it is served
+(absent when there are none). A page shows a visitor's own run of an
+`output` item with `useRun` and the declared files: `useRunEvents`,
+`useWorkProducts` and a run timeline are refused there. strut/views' `LaunchForm`
+renders a runnable workflow's form enabled (with a line saying a priced run
+asks for payment first), anything else with every control off and a line
+saying runs are started by the people who keep the server; Cancel is off
+for a visitor either way.
 
 ### 17.4 A public run — `POST /public/workflows/:name/run` (anyone)
 
@@ -3035,10 +3058,12 @@ costs anything:
    `input:` block, is `409`.
 5. **The caps**, `429` with `Retry-After`: the server's limit on public runs
    in flight (`STRUT_PUBLIC_RUNS_MAX`, 10 by default; `Retry-After: 30`),
-   then the item's `dailyCapUsd` — today's cost of its public runs (UTC,
-   from the ledger) plus the cap of each of its runs in flight, reaching it
-   refuses the launch (`Retry-After` until midnight UTC when the day is
-   spent, else 60). The check and counting the new run are one step, so
+   then the item's `dailyCapUsd`: today's cost of its public runs (UTC,
+   from the ledger) plus the cap of each of its runs in flight. A launch is
+   admitted while what is left of the day holds a run's full cap, never a
+   sliver of one the gateway would stop partway; past that, the last of the
+   day goes to one run at a time, with what is left as its cap. Otherwise a
+   `429` (`Retry-After` until midnight UTC when the day is spent, else 60). The check and counting the new run are one step, so
    launches at once never pass the cap together. A `key` this caller sent
    for a run still in flight returns that run, before any cap: the caller
    is the credit token on a paid launch, else the address.
@@ -3066,17 +3091,22 @@ workflow's owner. Every agent session it opens is `public/<runId>/<id>` —
 a paid run's `public/<token id>/<id>` — whatever id its input names; a paid
 run's `run.start` names its token as `credit` (never shown to a visitor).
 It is verified like any other run. Its CAP is
-the smallest of the item's `capUsd`, the workflow's own (`maxRunCostUsd`,
-else `STRUT_RUN_MAX_COST_USD`, else $100) and what is left of the daily cap:
+the smaller of the item's `capUsd` (none set and a daily cap: a tenth of
+the daily cap, so ten runs fit in the day's cap at once — a run in flight
+counts against it at its cap) and the workflow's own (`maxRunCostUsd`, else
+`STRUT_RUN_MAX_COST_USD`, else $100) — or, for the day's last run, what is
+left of the daily cap (step 5):
 recorded on `run.start` as `maxCostUsd`, and carried by the Mothership's
 run link, so the gateway stops the run there (without a gateway nothing
 stops it mid-flight; the daily cap bounds the day). When it ends — success,
 error, cancelled, or finished by a durable resume after a restart — the
 ledger records it: a free run is charged nothing and its cost counts in the
 day; a paid run is charged its token by the rule — base + markup × cost, at
-the price of its launch; a run that FAILED its cost, no markup and no base,
-and never more than its reserve — never more than the token holds, and the
-rest of its reserve is free again. What is not yet charged is kept in
+the price of its launch; a run that FAILED its cost, no markup and no base;
+whatever the outcome, never more than its RESERVE (what a run spent past it
+— an overshoot with no gateway, or one call per agent with one — is the
+seller's, never the buyer's other credit), and the rest of its reserve is
+free again. What is not yet charged is kept in
 `<dataDir>/payments/public-runs.json` and charged at the next boot (a run
 cut off that nothing resumed, at what its log spent, as an error), and so
 is a hold the ledger keeps for a run that file lost (at the item's price
@@ -3170,7 +3200,7 @@ A HOLDER may append, before handing a token to someone else:
 | Caveat | Means |
 | --- | --- |
 | `strut_capabilities=workflow:<name>,step:<type>,…` | only these items (`403 token_not_for_this`) |
-| `strut_max_charge=<micro-dollars>` | no run whose reserve is above it (`403 token_over_max_charge`) |
+| `strut_max_charge=<micro-dollars>` | no run or call whose reserve is above it (`403 token_over_max_charge`) |
 | `strut_valid_until=<unix>` | an earlier end for this copy |
 | `services=…` | must still name `strut:0` |
 
@@ -3194,6 +3224,215 @@ from: its top-up starts a balance of its own.
 and what it handed on or lost to its end; `remaining_*` is 0 once it is
 replaced or past its end. `entries` are the newest 50: `payment`, `hold`,
 `charge`, `carry` (− out, + in), `expiry`.
+
+### 17.6 A visitor's launch from a public app — what a host does (`plans/paid-runs.md` §10)
+
+A public app's page launches a workflow it grants that a person made
+runnable with `step_run` of `run/launch` on `POST /public/mcp`. The call
+goes through the SAME launcher as `POST /public/workflows/:name/run` (§17.4):
+the address's launch budget, the drain, the body — `config.input` and
+`config.key` alone; `params`, `job`, `title`, `attachments` or
+`conversation` are refused by name — the caps, the price, then the launch,
+`origin: "public"`. A priced one is paid by the HOST (strut's UI, Peel),
+never the frame: a model-written page must not hold a bearer token that is
+money. The page sees a launch that took a moment longer.
+
+The page names a workflow as its app's package does: in an app named
+`<publisher>/<package>/<app>`, a bare `fortune` is `<publisher>/<package>/fortune`
+when that workflow exists (package first, as the run steps resolve it), and
+that is the name the public view's `runnable` and `workflows` are checked
+against.
+
+**The visit.** The host mints a secret per tab — 22 to 128 characters of
+base64url, at random (strut's UI: 24 random bytes) — and sends it on EVERY
+`/public/mcp` request as `x-strut-visit`. A run launched under it records a
+hash of it (`run.start.visitor`, and on the summary; never shown to a
+visitor), and the reads in §17.3's table open the runs that visit launched.
+**A launch with no visit, or one that is not 22 to 128 characters of
+base64url, is refused** — `visit_required: …x-strut-visit…` — before
+anything is admitted, held, invoiced or charged: its run could never be
+read back. Reads without one see a runnable workflow's runs as none
+(`run/list` is `[]`, `run/get` "not found"). The frame never sees it.
+
+**The answers** of `run/launch`, as the tool's result (`structuredContent`,
+and its JSON as the text):
+
+| | Result |
+| --- | --- |
+| launched | `{ runId, existing?, credit? }` — `existing` when the visit (free) or the credit token (priced) launched one under the same `key` still in flight; `credit` on a priced launch: `{ held_usd, remaining_usd, remaining_sats, expires }`. Never the run token: the visit is what reads it back |
+| priced, and no credit covers it | `{ payment_required: { macaroon, invoice, usd, sats, rate, description, expires, remaining_usd?, reason?, carries? } }` — §17.5's challenge, as a RESULT: nothing launched, nothing set aside. `reason` is `short` (the presented credit has `remaining_usd` left), `expired` or `replaced`; `carries: true` when the new macaroon inherits the presented token's credit (§4.5), so once paid it REPLACES that credential |
+| refused | an error (`isError`) with the route's sentence, its code first when it has one — `visit_required: …`, `invalid_token: …`, `token_not_for_this: …`, `too many launches …`, the in-flight limit's, the daily cap's — and `(try again in N s)` when the route would send `Retry-After` |
+
+**What a host does** (strut's UI: `web/src/visitor-pay.ts`, relayed in
+`web/src/app-host.ts`, the sheet in `components/PaymentSheet.tsx`; a native
+host the same):
+
+1. **Keep a purse per tab**, where a reload in the tab finds it and no
+   frame can read it (strut's UI: the host page's `sessionStorage`, under
+   `strut.visitor:<base>`): the visit; the credential it sends; credentials
+   paid for and not yet sent ("spares"); every invoice shown and not yet
+   settled. A reload then keeps the visit's runs readable and its credit
+   spendable.
+2. Relay the page's `tools/call` to `/public/mcp` as it is, with
+   `x-strut-visit` (and, once it holds one, the credential below) on the
+   request.
+3. Watch the result of a `step_run` whose `arguments.type` is `run/launch`.
+   When it is `{ payment_required }`, do not hand it to the page. First
+   send the call again with a spare, if the purse has one. Else pay it with
+   the host's own wallet, or show it: the price in dollars and sats, what it
+   is for (`description`), and the `invoice` as a QR code with a Copy
+   button.
+4. **Keep the page's request alive while the visitor pays.** The page's
+   `tools/call` times out after 60 s unless progress resets it (ext-apps'
+   `callServerTool` asks for that, with a `progressToken` in `_meta`): send
+   `notifications/progress` for that token every 15 s or so until you
+   answer. (The kit's `run/launch` also asks for 15 minutes, for a host
+   that sends none.)
+5. **Claim every invoice you showed until it settles or ends — whether or
+   not its sheet is still open.** With no preimage of its own (a phone paid
+   the QR), ask `POST /public/credit/claim { macaroon }` every few seconds
+   (§17.5; 120 a minute an address) until it answers `settled` with
+   `credential` — `<macaroon>:<preimage>` — or `expired`, and once more a
+   little after its `expires`. A visitor who pays from a phone and THEN
+   presses Cancel has paid: what settles goes into the purse — as the
+   credential when there is none, or when the invoice `carries` from the
+   credential that was sent (it replaces it), else as a spare.
+6. Once paid while the page waits, send the page's ORIGINAL call again with
+   `Authorization: L402 <macaroon>:<preimage>` on the `/public/mcp`
+   request. Never in the call's arguments: they are the page's. Hand the
+   page that result. If that retry is refused (the server's runs in flight
+   filled while the visitor paid, the drain, the day's cap), tell the page
+   the payment is KEPT as credit and to run it again (strut's UI appends
+   `— your payment is kept as credit on this server: run it again in a
+   moment, and it is spent then` to the error).
+7. Send the same header on later requests: launches spend the credit until
+   it runs short. An `invalid_token` error with a credential attached: drop
+   it and send the call again without.
+8. When the visitor cancels, answer the page's call with a plain error
+   (strut's UI: `payment_cancelled: the run of <workflow> was not paid for,
+   so it did not start`) — and keep claiming that invoice (step 5).
+9. One payment at a time: a second priced launch that meets a 402 while the
+   visitor is paying for the first waits for it, then is sent again with
+   what the first bought before anyone is asked again.
+
+A host that does none of this still works for a free workflow — as long as
+it sends `x-strut-visit`; a priced launch's `payment_required` then reaches
+the page, whose kit `useLaunch` turns it into an error (`payment_required:
+a run of <workflow> costs $X, and this page's host does not pay for runs`)
+— never a launch.
+
+`POST /public/mcp`'s preflight allows `authorization` and `x-strut-visit`, so
+a host on another origin may send both.
+
+### 17.7 A public tool — `POST /public/steps/:type/run` (anyone)
+
+A STEP in the record's `runnable` (§17.1) is called once and answers at
+once (`plans/paid-runs.md` §3, §6; `src/public-tools.ts`): what the tool
+returns is what its publisher sells. Free, or charged by the rule against a
+credit token (§17.5). Open by name in the gate, like a launch; CORS as
+§17.2.
+
+| Route | |
+| --- | --- |
+| `POST /public/steps/:type/run` | `{ config }` → `200 { output, credit? }`; priced with no token, or one short: `402` (§17.5) |
+
+A call is checked in this order, each step answering before the next costs
+anything:
+
+1. **The address's budget**: 120 calls a minute, its own (beside §17.4's 60
+   launches and §17.2's 1200 requests); a priced call's `402` round trip
+   counts. `429` past it.
+2. **The drain** (§8.1): `503` with `Retry-After`.
+3. **The body**, at most 256 KB (`413`): a JSON object with `config` alone
+   (`400` naming anything else).
+4. **The item**: a step not in `runnable` is `404`, and so is one the save
+   would refuse NOW (§17.1) — sealed since, gone, one that spends or runs a
+   shell or other steps, or one whose config names a secret: the registry
+   changes after a save.
+5. **The config**: an object (absent is `{}`), parsed by the step's own
+   input schema (`400` naming the field: `config.cost: …`). One that names
+   a secret (`secretsEnv`, `tokenSecret`, `storageStateSecret`, `secrets`)
+   is a `400`. A value may hold anything, `{{` included: the config is the
+   run's INPUT and the step reads each key as `{{ input["k"] }}`, a sole
+   expression the runner returns as it is — nothing a stranger sends is
+   evaluated.
+6. **The price's token** (a priced step), as a launch's: `401
+   invalid_token`, `403 token_not_for_this` (a holder's
+   `strut_capabilities` without `step:<type>`), `403 token_over_max_charge`.
+7. **The caps**, `429` with `Retry-After`: the address's share of the calls
+   in flight (5), the server's limit (20), then the item's `dailyCapUsd`
+   when it sets one, by a launch's rule (§17.4): today's cost of its calls
+   plus the cap of each call in flight; a call is admitted while what is
+   left of the day holds its full cap, never a sliver, and past that the
+   last of the day goes to one call alone. A call's cap is the item's
+   `capUsd`, else a tenth of its daily cap, so ten run at once. A free step
+   needs no daily cap at the save: a runnable step cannot be one that
+   spends.
+8. **The price**: as a launch's — no token, one past its end or replaced,
+   or one short of the RESERVE (`base + markup × capUsd`) is a `402`, for
+   the shortfall and carrying when the token was not narrowed; a token's
+   first use asks the wallet (`503` when it cannot); a good token has the
+   reserve set aside under the call's id. There is no `key`: a call answers
+   at once.
+9. **The call**: the step run once, for at most 60 s — past it the call is
+   stopped and answers `504 timeout` — never kept as a run, nothing in the
+   run store, not verified, projected or sent to an events sink; the
+   ledger's entry is its record. No actor; the host's
+   `createStrut({ publicRuns: { principal } })` as its principal; its cap
+   (step 7's, or what is left of the day for the day's last call) carried
+   to the Mothership as a run's is.
+10. **The charge**, by the rule: base + markup × what the call reported it
+    cost (`withUsage`); a call that reports none, its base. A call that
+    THREW, ran out of time, or whose result is over 5 MB as JSON is charged
+    its cost — no markup, no base — and answers `500` with `code`
+    `step_failed` (its error, cut at 2000 characters) or `result_too_big`,
+    or the `504`. A lib step that answers a failure as text for a model
+    (`graph/*`'s "node not found", `sheets/*`'s API errors) fails the call
+    here (`step_failed`). Never more than the reserve, nor what the token
+    holds. A free call is charged nothing, and its cost counts in the day.
+    A charge the ledger refuses is tried again (every 30 s, for an hour);
+    the answer stands meanwhile.
+
+```json
+{ "output": { "cves": [ … ] },
+  "credit": { "charged_usd": 0.6, "remaining_usd": 4.4, "remaining_sats": 4400, "expires": "…" } }
+```
+
+`credit` is a priced call's: what this call was charged and what the token
+holds after it; a `500` or `504` carries it too. The token's balance
+(§17.5) lists the call as a `hold` and a `charge` on `step:<type>`.
+
+**What the step runs against** is an allowlist (decision 15): the visitor's
+(§17.3) — `http`, `secrets` (the keys its publisher's step reads by name in
+its own code; a step whose config names one is never callable), the runs
+held to the public view — with two differences:
+
+- **The graph is the whole graph's, read-only**, not the public view's (on
+  a host that set `graphReaders`, the `jobs` list), so a tool answers from
+  a graph that is not public. Its reader, dialect and schema reads pass, and
+  a raw query READS: on the engine's own read-only path (a READ transaction
+  on Neo4j, a `READ ONLY` connection on a Ladybug file) after the write
+  keyword check, and only for a list that reads every namespace, as any
+  view's — so `graph/find` works. Its writers, a transaction and every
+  write through the schema refuse; the engine's handles are not on it.
+- **`http` reaches no private address**: `http(s)` only, never loopback,
+  private, link-local (the cloud's metadata service), multicast or
+  reserved, nor a name that resolves to one, redirects checked hop by hop
+  — and, as fetch does, a hop to another origin carries no
+  `Authorization`, `Cookie` or `Proxy-Authorization` — each request at
+  most 30 s. A tool that fronts a service on the server's own network is a
+  workflow. Known limit: the name is resolved for the check and again for
+  the fetch, so a host that answers the two differently (DNS rebinding) can
+  pass; pinning the checked address would close it.
+
+There is no shell, no artifacts, no jobs, no sessions, no peers, no MCP,
+no browser and no wallet: a step reaching for one fails. Not a sandbox: a
+step whose publisher made it callable may still reach past `ctx.services`
+— its own connection from a secret its code names.
+
+**A restart between a call's hold and its charge** leaves the hold open,
+and the call never answered: the next boot frees it, a charge of nothing
+that the day counts as a failed call.
 
 ## 18. The wallet — what the server receives with (`plans/paid-runs.md` §9)
 
@@ -3224,7 +3463,7 @@ Both routes answer `501` when the host brought its own `services.lightning`.
 
 `provider` is `sphinx`, `nwc` or `null` (none: `receive` and `pay` false).
 `receive`: a receive credential is on file, so the server can sell. `pay`:
-a pay credential is on file, so Withdraw can pay (item 7). `url` is the
+a pay credential is on file, so Withdraw can pay (§19). `url` is the
 daemon's (no credential in it); for NWC, `relays` lists the relays' hosts
 instead, since the connection URL is the credential. `from` is `env` or
 `api`. `note` says when the environment names a wallet, which replaces this
@@ -3251,3 +3490,333 @@ a pay credential equal to the receive one; what is on file stays.
 goes in the deployment's secrets, and the secrets capability answers
 nothing for any `LIGHTNING_*` name, wherever it is held — nor for
 `STRUT_SECRET_KEY`, which decrypts `payments.json`.
+
+## 19. Earnings and Withdraw — what the server made, and sats out (`plans/paid-runs.md` §8)
+
+What anyone's runs and calls were charged here, what they cost, and the
+wallet the sats land in (`src/payments/earnings.ts`,
+`earnings-routes.ts`, `withdrawals.ts`). Earned, cost and margin are
+DOLLARS (decision 27); the wallet holds sats, in msat. Every number is read
+from the ledger's rollups (`daily`, and the payment and withdrawal entries
+through their partial indexes), never by scanning entries. A server that
+never sold anything answers zeros and makes no ledger file.
+
+FULL SCOPE only, reads included: the deployment key or an admin's session.
+A member's session, a peer and a person token are refused (`403`).
+
+| Route | |
+| --- | --- |
+| `GET /earnings?from=&to=&by=&prefix=&package=&wallet=1` | earned, cost, margin, calls, failed — by `item` (default), `day`, `package` or `total` — plus outstanding, received, withdrawn, purchases and the sends still out |
+| `GET /earnings/entries?kind=&runId=&token=&before=&limit=` | the ledger's entries, newest first |
+| `POST /earnings/withdraw` | pay a BOLT11 invoice out of the wallet |
+| `POST /earnings/withdrawals/:paymentHash/read` | read a send still out, now |
+| `POST /earnings/withdrawals/:paymentHash/resolve` | record one as paid, or drop it, by hand |
+
+### `GET /earnings`
+
+`from` / `to` are inclusive UTC days (`YYYY-MM-DD`); neither is all time.
+`package` (`publisher/name`) keeps one package's items, this server's
+number: for a package PUBLISHED here, whose items carry their bare local
+names, the subjects its newest release holds (each by its name inside the
+package, and prefixed too); otherwise the subjects under its prefix (an
+installed package). The answer says which: `package: { name, via:
+"release" | "prefix", version? }`. `prefix` keeps the subjects under a
+prefix whatever the package. `wallet=1` also reads the wallet's balance
+(5 s at most).
+
+```json
+{
+  "by": "item", "from": "2026-11-04",
+  "totals": { "calls": 41, "failed": 3, "earned": 10.425, "cost": 4.73, "margin": 5.695 },
+  "rows": [
+    { "key": "workflow:acme/voxel/rig", "calls": 18, "failed": 1, "earned": 8.29, "cost": 2.1, "margin": 6.19,
+      "price": { "base": 0.25, "markup": 2, "capUsd": 1, "dailyCapUsd": 20 } }
+  ],
+  "outstanding": { "tokens": 14, "usd": 151.825, "held": 0 },
+  "received": { "count": 14, "msat": 166858000, "usd": 162.25, "days": [{ "day": "2026-11-09", "count": 1, "msat": 10284000, "usd": 10 }] },
+  "withdrawn": { "count": 1, "msat": 60000000, "feeMsat": 72000, "days": [{ "day": "2026-11-06", "count": 1, "msat": 60000000, "feeMsat": 72000 }] },
+  "purchases": { "count": 0, "msat": 0, "feeMsat": 0 },
+  "pending": [{ "paymentHash": "<hex>", "msat": 20000000, "maxFeeMsat": 100000, "purpose": "withdrawal", "payer": "sphinx:http://treasury:3000",
+    "at": 1794355009628, "expiresAt": 1794358609, "answered": true, "stale": false, "reading": false, "otherWallet": false }],
+  "wallet": { "provider": "sphinx", "receive": true, "pay": true, "url": "http://treasury:3000",
+    "balance": { "msat": 304532000, "sats": 304532, "usd": 296.13 }, "rate": 97240,
+    "expectedMsat": 36726000, "pendingMsat": 20000000, "differenceMsat": 267806000 }
+}
+```
+
+- A row's `key` is a subject (`workflow:<name>`, `step:<type>`, or
+  `expired` — credit that reached its year unused, earned by the seller), a
+  day, a package prefix, or `total`. By item, every item runnable now has a
+  row, with nothing yet when it has not run, and its `price` from the
+  Public view record.
+- `outstanding` is now, not ranged: credit paid for and not yet charged,
+  still owed as service; `held` is set aside for runs in flight.
+- `received`, `withdrawn` and `purchases` are ranged; under a `prefix` or
+  `package` they are empty (they are the wallet's, not a package's).
+  `withdrawn` is a person's withdrawals; `purchases` is credit this strut
+  bought from other struts (item 9, `remote/buy-credit`), the same payer's
+  other sends.
+- `pending`: sends still out. `answered: true`, the wallet answered
+  `pending` (read again every minute until it settles or fails);
+  `answered: false`, its pay call never answered. `payer` is the wallet it
+  went through, and it is read only through that one (`otherWallet` when
+  another is set now). `stale`: past its invoice's expiry and an hour — the
+  Sphinx mixer keeps the debit of a payment its LSP never answered and
+  never refunds it, so the daemon answers `pending` forever — and no longer
+  polled: a person reads it once more, or records it as paid or drops it.
+  `reading`: a read is in flight. `lastError`: what the last read said.
+- `wallet`: `GET /earnings/wallet`'s fields (`pay` true when there is a
+  payer), the balance at the rate of the moment (or `error`), and the
+  books' check: `expectedMsat` is everything received less every send and
+  its fee and less what is still out (`pendingMsat`), all time;
+  `differenceMsat` is balance − expected (more: money that came some other
+  way, or a paid invoice whose credit was never used; less: money that left
+  some other way).
+
+`400` for a day that is not `YYYY-MM-DD`, `from` after `to`, a `by` not in
+the list, a `prefix` or `package` that is not `publisher/name`, or both.
+
+### `GET /earnings/entries`
+
+Newest first, `limit` (50, at most 500) before the seq `before`. `kind`
+(`payment`, `hold`, `charge`, `carry`, `expiry`, `withdrawal`) keeps one
+kind; `runId` one run's (its hold and charge: the run overview's
+"Charged"); `token` one credit token's, with its balance as `token`
+(404 for a token not in the ledger). Dollars as in `/earnings`.
+
+```json
+{ "entries": [
+  { "seq": 88, "at": 1794354873686, "kind": "withdrawal", "msat": 50000000, "ref": "<payment hash>", "feeMsat": 60000, "actor": "evan-1", "usd": 48.62 },
+  { "seq": 31, "at": 1794354832100, "kind": "charge", "token": "<id>", "usd": 0.25, "subject": "workflow:acme/voxel/rig", "runId": "1794354831528", "cost": 0, "outcome": "success" }
+] }
+```
+
+### `POST /earnings/withdraw`
+
+```json
+{ "invoice": "lnbc500000n1…", "msat": 50000000, "maxFeeMsat": 250000 }
+```
+
+Pays the invoice through the PAYER (`src/payments/payer.ts`): the
+wallet's pay credential — the daemon's pay token (`POST /pay`,
+`specs/LIGHTNING.md`) or an NWC connection that may pay (`pay_invoice`).
+`msat` is the amount the person CONFIRMED: an invoice for any other
+amount, or one that names none, is refused, so what was shown is what is
+paid. `maxFeeMsat` defaults to the Sphinx LSP's own routing-fee limit,
+0.5% of the amount or 5 sats when that is more (`src/payments/fee.ts`);
+an NWC wallet takes no cap, so its own limit applies. Answers `200`:
+
+```json
+{ "state": "settled", "paymentHash": "<hex>", "msat": 50000000, "feeMsat": 60000, "maxFeeMsat": 250000,
+  "entry": { "seq": 88, "kind": "withdrawal", "msat": 50000000, "feeMsat": 60000, "actor": "evan-1", "usd": 48.62 } }
+```
+
+- `settled`: recorded as ONE `withdrawal` entry — who asked (`actor`), the
+  amount, the fee the wallet was CHARGED, the payment hash, and the dollars
+  at the moment. The Sphinx mixer takes its routing fee only from what is
+  left after the amount, and none when too little is, so the payer reads
+  the balance before it pays and books the fee taken; `routingFeeMsat` says
+  what the route reported when that differs. The same invoice again pays
+  nothing and answers `existing: true`.
+- `pending`: sent, no answer yet. Kept on file
+  (`<dataDir>/payments/withdrawals.json`) with the wallet it went through,
+  read again every minute, by asking again with the same invoice and by
+  `…/read`, and recorded once when it settles. ONE pay or read of a payment
+  is in flight at a time and a second caller joins it; a caller is answered
+  within 25 s, `reading: true` when the wallet has not answered yet (the
+  read goes on and records), so no request waits on the daemon's 60 s.
+  With the daemon, reading it POSTs the invoice again (the daemon has no
+  read for a payment, and pays a FAILED one again); one whose pay call
+  never answered is read in the background only once its invoice expires,
+  since the daemon would pay one it never saw.
+- `failed`: `error` is the wallet's words; nothing is recorded, and the
+  same invoice may be paid again. An NWC `pay_invoice` that answered at all
+  is never `failed` unless the wallet said so: with no preimage that
+  proves it, it is `pending`.
+
+Refusals answer `{ error, code, walletCode? }`:
+
+| Status | `code` | |
+| --- | --- | --- |
+| `400` | `not_an_invoice`, `no_amount`, `amount_mismatch`, `expired`, `bad_fee`, `bad_request` | before anything is sent |
+| `400` | `wallet_refused` | the wallet refused it before sending, as it came; `walletCode` is the wallet's own: `max_fee_too_low`, `own_invoice`, `expired`, `bad_request`, NWC's `INSUFFICIENT_BALANCE` |
+| `409` | `no_pay_credential` | the wallet has no pay credential (Withdraw is disabled, saying so) |
+| `409` | `other_wallet` | the invoice is out through another wallet than the one set now: set it back, or resolve it |
+| `502` | `wallet_unauthorized`, `wallet_bad_answer` | the wallet refused strut's pay credential (a rotated pay token), or answered something strut cannot read: kept as pending, since it may have gone — never dropped |
+| `503` | `wallet_unavailable` | no answer: it may have gone, so it is kept as pending (`answered: false`) |
+
+No step, builder tool or app page reaches the payer: it is never on the
+services bag. The second door that calls it is an accepted
+`remote/buy-credit` proposal (§20), through the same service with
+`purpose: "purchase"`: its sends are pending, read and recorded the same
+way, and land in `purchases`.
+
+### `POST /earnings/withdrawals/:paymentHash/read` and `…/resolve`
+
+`…/read` (no body) reads a send still out NOW, through the wallet it went
+out through, and answers as `POST /earnings/withdraw` does (`existing:
+true` once it is in the books). `404 not_pending` when nothing with that
+hash is out; `409 other_wallet`; `409 no_pay_credential`.
+
+`…/resolve { "action": "paid" | "drop", "feeMsat"? }` settles one by hand,
+for a send the wallet will not say more about — a stale one, or one that
+went through a wallet no longer set. `paid` records it as one `withdrawal`
+entry (its purpose and who asked kept; `feeMsat` the fee, when known, else
+0) and answers `{ action, entry }`; `drop` forgets it and records nothing.
+`409 reading` while a read of it is in flight; `404 not_pending`.
+
+### `earnings/read` — the same read as a step
+
+`effect: "read"`, over `ctx.services.earnings` (reads only):
+`{ days?, from?, to?, by?, package?, wallet? }` → `GET /earnings`'s answer.
+`days: 7` is the last seven days counting today. Under `ctx.app`, only a
+first-party page's call or run, for a viewer who is an admin here.
+
+## 20. A strut that buys — credit held at other struts (`plans/paid-runs.md` §10)
+
+What THIS strut does at another strut's public door (§17.4, §17.5, §17.7):
+the CVE case, an hourly automation that runs a workflow another strut
+sells. No peer record; any strut server's URL. `src/remote.ts`, the
+`remote/*` steps.
+
+**The seller** is a base URL, https only (the credit held there is a bearer
+credential): `https://cve.example`, or a strut under a path,
+`https://swarm.example:3355/lab`. A trailing `/` or `/public` is dropped,
+the host lower-cased. Every request to it goes through a guarded http: no
+loopback, private, link-local or reserved address, nor a name resolving to
+one; redirects followed by hand, and a redirect to another origin carries
+no `Authorization`. **`STRUT_REMOTE_LOCAL=1`** (`createStrut({ remote: {
+local: true } })`) is for a dev box or a LAN — two struts on one machine, a
+home box on `192.168.x`: an `http:` seller is allowed, and loopback and
+private addresses pass; a link-local one (the cloud's metadata at
+`169.254.169.254`) never does. Off by default: the credit is a bearer
+credential.
+
+**The credit** held at a seller is ONE L402 token (§17.5), kept in
+`entitlements.json` beside `payments.json`, encrypted, under names no step
+reads. A step presents it (`Authorization: L402 <macaroon>:<preimage>`)
+and never sees it.
+
+### The steps
+
+| Step | | |
+| --- | --- | --- |
+| `remote/list { url }` | read | `{ seller, runnable, credit }`: the seller's `GET /public` `runnable` list (§17.2), and what is held there — `{ held, remaining_usd?, remaining_sats?, held_usd?, expires?, expired?, replaced?, error?, buying? }`, read with `GET /public/credit` |
+| `remote/run-workflow { url, workflow, input?, key? }` | spends | `POST <seller>/public/workflows/:name/run`, then the launcher's view (`?wait=25`) until the run is charged: `{ seller, workflow, runId, status, output?, error?, charged_usd?, credit?, durationMs, existing? }` — `status` `success`, `error`, `cancelled`, or `stale` when the seller reports the run cut off and nothing resumes it for ~5 minutes |
+| `remote/call { url, type, config? }` | spends | `POST <seller>/public/steps/:type/run { config }`: `{ seller, type, output, credit? }` |
+| `remote/buy-credit { url, usd }` | buys | a PROPOSAL an admin accepts (below) |
+
+- **Spending needs no ask** (decision 16): an agent or an automation with
+  the step spends what is held. With no credit, or too little, the step
+  fails and pays nothing: `payment_required: <seller> asks $2.50 (2500
+  sats) for a run of cve/scan: this strut server holds no credit there. …
+  an admin buys credit there with remote/buy-credit { url, usd: 2.5 }`
+  (the 402's price; `short`, `expired` and `replaced` said as such). A
+  token the seller refuses is `token_refused:`; a 404 `not_found:`; a 429
+  or 5xx `remote_unavailable:` with `try again in N s`; other 4xx
+  `remote_refused:` with the seller's words. A `replaced` token, when the
+  token held changed since it was read (a purchase settled meanwhile), is
+  sent once more with the new one.
+- **What the seller charged is the step's cost.** Its output is marked with
+  it (`withUsage`: no model call, the dollars charged), so the calling run's
+  `totals.cost`, a public run's markup and its daily cap count it.
+- **Never spent by a stranger or another strut** (decision 16's "no ask"
+  is for this strut's own agents): in a run whose tree is a stranger's
+  public run, a run another strut launched on the peer key without a
+  person's credential, or a run started from either (a job, by
+  `startedBy`), `remote/run-workflow` and `remote/call` fail with
+  `spend_refused:` and reach nothing. A run a PERSON's credential launched
+  (`peer:person`) is this strut's own person and spends.
+- **A launch is never two runs.** It carries a `key` — by default the
+  step's own (its run and path), the same on every retry — and the seller
+  returns the run that key started while it is in flight (§17.4). A launch
+  the seller turns away for a moment — a 429 at its in-flight limit, a
+  drain's 503, any 5xx, no answer (a lost 202) — is tried again under that
+  key, up to 5 times, honouring `Retry-After` (one over 2 minutes, a day's
+  cap spent until midnight, is not waited for). The handle is journaled at
+  `<path>#launch` (no run token in it), so a resume of the calling run waits
+  on the run it launched, ended or not. The run token is kept by this
+  strut (in the seller's record) while the step waits, at most 7 days,
+  never in a run log. Cancelling the calling run cancels the remote one.
+- **A remote run is waited out.** It is the seller's and charged whether
+  or not it is read, so a seller that does not answer (restarting, a
+  proxy's 502, a 429) is read again after a wait that doubles to 30 s, for
+  as long as the calling run waits; only the seller not knowing the run or
+  its token (404, 401, 403: `run_unknown:`) ends the wait, and the run's
+  cancel stops it.
+- **A tool call is never sent twice**: the seller's door takes no key. A
+  call that FAILED there — `step_failed`, `result_too_big`, `timeout`,
+  which the seller charged its cost — is `failed_charged:`, never "try
+  again"; one whose answer was lost is `may_have_run:` (it may have run and
+  been charged: read the credit left with `remote/list`).
+- They are spending steps: never a page's call (`step_run`), never a public
+  tool, never an AI-published app's grant, and a closure that reaches them
+  `spends`. The job and builder seeds grant all four; the orchestrator
+  `remote/list` and `remote/buy-credit` (a turn never waits on a run).
+
+### Buying — `remote/buy-credit { url, usd }`
+
+Runs ONLY as a proposal (§12) an ADMIN accepted (`approver: "admin"`, as
+`package/install`): a direct call is refused, and the door behind it opens
+only for the accepted record on disk of that step, for that seller and
+that amount (an edit on the card included). Its card reads the seller's
+`/public`: who, what it sells and at what price, what recent runs were
+charged, what is held there now, and whether this server's wallet can pay
+(`no_pay_credential:` on accept when it cannot: nothing is paid).
+
+On accept:
+
+1. **One purchase per seller at a time.** Another still being paid answers
+   `purchase_in_flight:`; accept again once it settles or its invoice ends.
+   One the seller never answers for (it rotated its L402 root, stopped
+   selling, moved) ends an hour past its invoice when the payer says the
+   payment failed or never left; one the payer says SETTLED is kept (the
+   seller has the sats): an admin drops it with `DELETE /remote/purchases`.
+2. `POST <seller>/public/credit { usd }`, presenting the token held, so the
+   new one inherits what is left (§17.5, `carries`).
+3. **The challenge is checked before anything is paid** (`bad_challenge:`,
+   `quote_too_high:`): the invoice and the macaroon name one payment hash;
+   the macaroon is a strut credit token, un-narrowed, its `strut_sats` the
+   invoice's amount and its `strut_credit` at least the dollars accepted;
+   neither expired; and the sats are within 10% of what this server's own
+   rate (§18) makes of those dollars, when it has a reading.
+4. The purchase is kept ON FILE, then paid through the payer (§19,
+   `POST /earnings/withdraw`'s service, `purpose: "purchase"`): one
+   payment per payment hash, booked once as a `withdrawal` entry with
+   subject `purchase` (`GET /earnings`' `purchases`).
+5. **The token is stored only when its preimage hashes to its payment
+   hash** — the payer's, or the seller's `POST /public/credit/claim`
+   answer — and replaces the one held.
+
+The proposal's result: `{ seller, usd, sats, paymentHash, state: "stored",
+credit }`, or `state: "paying"` when the payment has not settled yet (or
+settled and the seller has not seen it). A purchase still out is CLAIMED
+every minute (and at boot) until the seller answers `settled` (stored) or
+`expired` (the invoice ended unpaid: dropped). The keeper never pays.
+Accepting the same proposal again (after a `failed` apply) reuses the
+purchase's invoice: a purchase is never paid twice. One sent whose invoice
+expired while the seller does not answer is kept, never dropped:
+`remote_unavailable: … the purchase is kept and claimed every minute` —
+until the payer says it never left (above). A withdraw error on a purchase
+already handed to the payer never drops it.
+
+### `GET /remote/credit`
+
+Full scope only (the deployment key, an admin's session), like §19.
+`{ sellers: [{ seller, credit?, purchase?, runs }] }`: per seller, the
+token held (`tokenId`, `paymentHash`, `boughtAt`, `usd`, `sats`,
+`expires`, `carried?`, `proposal`), the purchase still being paid
+(`proposal`, `usd`, `sats`, `msat`, `paymentHash`, `at`, `sent?`,
+`lastError?`), and how many remote runs it waits on — never a macaroon, a
+preimage or an invoice. `?balance=1` adds each seller's `balance`, read
+from it (`remote/list`'s `credit`).
+
+### `DELETE /remote/purchases?seller=<url>`
+
+Full scope only. Drops the purchase still being paid at that seller —
+for one the seller will never answer for — so the next `remote/buy-credit`
+there can go: `{ seller, dropped? }` (`dropped` as `GET /remote/credit`
+shows a purchase; none when there was nothing). `409
+purchase_in_flight` while one is being paid at that moment; `400` for a
+URL that is not a seller's. Nothing is paid or refunded: whether its
+payment went is the payer's (§19, `…/withdrawals/:paymentHash/read`).

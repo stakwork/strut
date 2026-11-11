@@ -7,6 +7,7 @@ import { addUsage, emptyUsage, type TokenUsage } from "../../../pricing.js";
 import { resolveEvaluationModel, stepAuth } from "../../../llm.js";
 import { graphCtx, errText, deriveNodeName, isoDates, timeInputs, deletedOut, EXCLUDED_NODE_TYPES } from "./_shared.js";
 import { bootEnv } from "../../../env.js";
+import { stepFailed } from "../../../public-call.js";
 
 /**
  * `graph/walk` — gather context for a goal by walking the graph.
@@ -590,7 +591,7 @@ export default defineStep({
   output: z.any(),
   async run(cfg, ctx?: StepContext<StrutCapabilities>) {
     try {
-      if (!cfg.start?.length && !cfg.query?.trim()) return "graph/walk failed: needs `start` (ref_ids) or `query`";
+      if (!cfg.start?.length && !cfg.query?.trim()) return stepFailed("graph/walk failed: needs `start` (ref_ids) or `query`");
       const b = await graphCtx(ctx, { ...(cfg.exclude_domains ? { exclude_domains: cfg.exclude_domains } : {}), ...(cfg.namespace ? { namespace: cfg.namespace } : {}) });
       // No model named: jev when its key is configured, else the deployment's
       // default language model (STRUT_LLM_*), as the llm step would use.

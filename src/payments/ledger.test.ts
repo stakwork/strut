@@ -219,6 +219,39 @@ for (const impl of impls) {
       assert.equal((await store.openHolds()).length, 3);
     });
 
+    it("a key dedupes a run in flight only: once its run is charged, the same key holds again", async () => {
+      await buy(store, 10, { id: "a" });
+      const first = await store.hold({ token: "a", reserve: $(2), subject: W, runId: "r1", key: "k", at: T0 });
+      assert.ok(first.ok && !first.existing);
+      await store.charge({ token: "a", runId: "r1", subject: W, cost: $(1), outcome: "success", price, at: T0 });
+      assert.equal(await store.findHold("a", W, "k"), undefined, "the charged hold is no longer open");
+      const again = await store.hold({ token: "a", reserve: $(2), subject: W, runId: "r2", key: "k", at: T0 });
+      assert.ok(again.ok);
+      assert.equal(again.existing, false, "a new run, not the one that ended");
+      assert.equal(again.runId, "r2");
+      assert.equal((await store.findHold("a", W, "k"))!.runId, "r2");
+      const dup = await store.hold({ token: "a", reserve: $(2), subject: W, runId: "r3", key: "k", at: T0 });
+      assert.ok(dup.ok && dup.existing && dup.runId === "r2", "while r2 is in flight the key returns it");
+      assert.equal((await store.token("a"))!.held, $(2));
+    });
+
+    it("a key is one item's: the same key for another subject holds anew", async () => {
+      await buy(store, 10, { id: "a" });
+      const one = await store.hold({ token: "a", reserve: $(2), subject: W, runId: "r1", key: "k", at: T0 });
+      const other = await store.hold({ token: "a", reserve: $(2), subject: "workflow:other", runId: "r2", key: "k", at: T0 });
+      assert.ok(one.ok && other.ok && !other.existing && other.runId === "r2");
+      assert.equal((await store.token("a"))!.held, $(4));
+    });
+
+    it("a run is never charged more than its reserve, whatever it cost; the rest of the token's credit stays the buyer's", async () => {
+      await buy(store, 10, { id: "a" });
+      await store.hold({ token: "a", reserve: $(2), subject: W, runId: "r1", at: T0 });
+      const c = await store.charge({ token: "a", runId: "r1", subject: W, cost: $(5), outcome: "success", price, at: T0 });
+      assert.equal(c.charged, $(2), "the reserve, not base + markup × $5");
+      assert.ok(c.due > $(2), "the rule's amount is still reported");
+      assert.equal((await store.token("a"))!.free, $(8));
+    });
+
     it("the same key returns the first hold and its run, and sets nothing more aside", async () => {
       await buy(store, 10, { id: "a" });
       const first = await store.hold({ token: "a", reserve: $(2), subject: W, runId: "r1", key: "k", at: T0 });
@@ -228,8 +261,8 @@ for (const impl of impls) {
       assert.equal(again.runId, "r1");
       assert.equal(again.seq, first.seq);
       assert.equal((await store.token("a"))!.held, $(2));
-      assert.equal((await store.findHold("a", "k"))!.runId, "r1");
-      assert.equal(await store.findHold("a", "other"), undefined);
+      assert.equal((await store.findHold("a", W, "k"))!.runId, "r1");
+      assert.equal(await store.findHold("a", W, "other"), undefined);
       const sameRun = await store.hold({ token: "a", reserve: $(2), subject: W, runId: "r1", at: T0 });
       assert.ok(sameRun.ok && sameRun.existing, "one hold per run");
       assert.equal((await store.token("a"))!.held, $(2));
@@ -403,13 +436,58 @@ for (const impl of impls) {
         { kind: "withdrawal", msat: 5_000_000, feeMsat: 12_000, ref: "out-1", actor: "evan", token: undefined },
       );
       await store.withdrawal({ msat: 1_000_000, paymentHash: "out-2", at: T0 + DAY + 5 });
-      assert.deepEqual(await store.withdrawn(), [{ day: dayOf(T0 + DAY), count: 2, msat: 6_000_000, feeMsat: 12_000 }]);
+      assert.deepEqual(await store.withdrawn(), [{ day: dayOf(T0 + DAY), purpose: "withdrawal", count: 2, msat: 6_000_000, feeMsat: 12_000 }]);
       const received = await store.received();
       assert.deepEqual(received.map((r) => [r.day, r.count, r.usd]), [[dayOf(T0), 1, $(10)], [dayOf(T0 + DAY), 2, $(5) + $(0.5)]]);
       const a = (await store.token("a"))!;
       assert.equal(received[0].msat, a.msat);
       assert.deepEqual(await store.received({ from: dayOf(T0 + DAY) }), received.slice(1));
       assert.deepEqual(await store.received({ to: dayOf(T0) }), received.slice(0, 1));
+    });
+
+    it("one withdrawal per payment hash: the same hash again writes nothing and answers the first", async () => {
+      const first = await store.withdrawal({ msat: 5_000_000, feeMsat: 12_000, paymentHash: "out-1", actor: "evan", at: T0 });
+      const again = await store.withdrawal({ msat: 5_000_000, feeMsat: 99_000, paymentHash: "out-1", actor: "someone", at: T0 + DAY });
+      assert.deepEqual(again, first);
+      assert.deepEqual(await store.withdrawalOf("out-1"), first);
+      assert.equal(await store.withdrawalOf("out-2"), undefined);
+      assert.deepEqual(await store.withdrawn(), [{ day: dayOf(T0), purpose: "withdrawal", count: 1, msat: 5_000_000, feeMsat: 12_000 }]);
+    });
+
+    it("a send has a purpose: a withdrawal, or credit bought from another strut; read apart, by day", async () => {
+      await store.withdrawal({ msat: 5_000_000, feeMsat: 1000, paymentHash: "out-1", at: T0 });
+      const bought = await store.withdrawal({ msat: 2_000_000, feeMsat: 500, paymentHash: "buy-1", purpose: "purchase", at: T0 + 5 });
+      assert.equal(bought.subject, "purchase");
+      assert.deepEqual(await store.withdrawn(), [
+        { day: dayOf(T0), purpose: "purchase", count: 1, msat: 2_000_000, feeMsat: 500 },
+        { day: dayOf(T0), purpose: "withdrawal", count: 1, msat: 5_000_000, feeMsat: 1000 },
+      ]);
+    });
+
+    it("earnings over a list of subjects: a package published here, its items by their bare names", async () => {
+      await buy(store, 100, { id: "a", at: T0 });
+      const price = { base: $(1), markup: 0 };
+      for (const [runId, subject] of [["r1", "workflow:rig"], ["r2", "step:slice"], ["r3", "workflow:other"]] as const) {
+        await store.hold({ token: "a", reserve: $(1), subject, runId, at: T0 });
+        await store.charge({ token: "a", runId, subject, cost: 0, outcome: "success", price, at: T0 + 1 });
+      }
+      const subjects = ["workflow:rig", "step:slice", "workflow:acme/voxel/rig"];
+      assert.deepEqual((await store.earnings({ by: "total", subjects }))[0], { key: "total", calls: 2, failed: 0, earned: $(2), cost: 0 });
+      assert.deepEqual((await store.earnings({ by: "item", subjects })).map((r) => r.key), ["step:slice", "workflow:rig"]);
+      assert.deepEqual((await store.earnings({ by: "total", subjects: [] }))[0]!.calls, 0);
+    });
+
+    it("list: entries newest first, of one kind or one run, paged", async () => {
+      await buy(store, 100, { id: "a", at: T0 });
+      for (let i = 0; i < 4; i++) await store.hold({ token: "a", reserve: $(1), subject: W, runId: `r${i}`, at: T0 + i });
+      await store.charge({ token: "a", runId: "r1", subject: W, cost: $(0.5), outcome: "success", price: { base: 0, markup: 1 }, at: T0 + 10 });
+      await store.withdrawal({ msat: 1000, paymentHash: "out-1", at: T0 + 20 });
+      const all = await store.list();
+      assert.deepEqual(all.map((e) => e.kind), ["withdrawal", "charge", "hold", "hold", "hold", "hold", "payment"]);
+      assert.deepEqual((await store.list({ kind: "hold", limit: 2 })).map((e) => e.runId), ["r3", "r2"]);
+      assert.deepEqual((await store.list({ kind: "hold", before: all[3]!.seq })).map((e) => e.runId), ["r1", "r0"]);
+      assert.deepEqual((await store.list({ runId: "r1" })).map((e) => e.kind), ["charge", "hold"]);
+      assert.deepEqual((await store.list({ kind: "payment" })).map((e) => e.token), ["a"]);
     });
 
     it("a token's entries, newest 50 first, paged", async () => {
@@ -527,7 +605,7 @@ for (const impl of impls) {
         assert.deepEqual(await store.token("a"), before);
         assert.deepEqual((await store.openHolds()).map((h) => h.runId), ["r1"]);
         assert.equal((await store.hold({ token: "a", reserve: $(4), subject: W, runId: "rx", key: "k", at: T0 })).ok, true);
-        assert.equal((await store.findHold("a", "k"))!.runId, "r1");
+        assert.equal((await store.findHold("a", W, "k"))!.runId, "r1");
         const c = await store.charge({ token: "a", runId: "r1", subject: W, cost: $(1), outcome: "success", price, at: T0 });
         assert.equal(c.charged, $(2));
         assert.equal((await buy(store, 10, { id: "a" })).created, false);

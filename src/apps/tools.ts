@@ -58,8 +58,10 @@ export const APP_TOOL_META: Record<string, Record<string, unknown>> = {
 export const STEP_RUN_RESULT_MAX_CHARS = 5 * 1024 * 1024;
 
 /** Refused at call time whatever the manifest says (§5.1, §9): a paid or
- *  shell-shaped step runs inside a workflow the app launches. */
-export const PAID_OR_SHELL: ReadonlyArray<string> = ["llm", "agent", "exec", "acp/prompt"];
+ *  shell-shaped step runs inside a workflow the app launches. `remote/*`
+ *  spend (or buy) the credit this strut holds at another strut
+ *  (plans/paid-runs.md §10); `remote/list` only reads. */
+export const PAID_OR_SHELL: ReadonlyArray<string> = ["llm", "agent", "exec", "acp/prompt", "remote/run-workflow", "remote/call", "remote/buy-credit"];
 
 /** The graph writes (§4.3): checked against the declared types. */
 export const GRAPH_WRITES: ReadonlySet<string> = new Set([

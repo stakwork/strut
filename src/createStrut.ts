@@ -33,20 +33,27 @@ import { zodToFields } from "./ai/schemaHelpers.js";
 import { resolveModel, listModelOptions, defaultModel, createWebTools, type LlmAuth } from "./llm.js";
 import type { StepSources } from "./steps/registry.js";
 import { runWorkflow, settleUnfinishedRun, summaryFromLog } from "./runner.js";
-import { RunController } from "./run-control.js";
+import { RunController, runLineage } from "./run-control.js";
 import { buildJournal, changedSteps, invalidateFrom, invalidateSteps, readRunStart } from "./journal.js";
 import { appIdentity, publicAppIdentity, publicAppOfIdentity, carriesApiKey, carriesPeerKey, carriesFileToken, carriesBadFileToken, catalogToken, catalogTokenOf, CATALOG_TOKEN_DAYS, publicPackageRead, fileToken, warnIfUnconfigured, channelTicket, channelTicketOf, actorFromHeader, inProcessOf, inProcessRequest, scopeFromKey, isPeerScope, isRole, memberOf, personOf, personToken, PERSON_TOKEN_DAYS, unauthorized, issueSession, redeemSignInTicket, signInTicket, sessionCookie, sessionOf, isSecureRequest, type Scope } from "./auth.js";
 import { standardServices, fileArtifactsCapability, hideSecrets } from "./capabilities.js";
-import type { ArtifactsCapability, SecretsCapability, StrutCapabilities } from "./capabilities.js";
+import type { ArtifactsCapability, HttpCapability, SecretsCapability, StrutCapabilities } from "./capabilities.js";
 import { PAYMENTS_FILE } from "./payments/settings.js";
 import { createPayments, type Payments } from "./payments/wallet.js";
 import type { LightningCapability } from "./payments/lightning.js";
 import type { RateSource } from "./payments/rate.js";
 import { walletRoutes } from "./payments/wallet-routes.js";
+import { earningsRoutes } from "./payments/earnings-routes.js";
+import { readEarnings, type EarningsDeps, type EarningsQuery } from "./payments/earnings.js";
+import { createWithdrawals, WithdrawError, WITHDRAWALS_FILE } from "./payments/withdrawals.js";
+import { createRemote, ENTITLEMENTS_FILE, REMOTE_CALL_TIMEOUT_MS, type RemoteService } from "./remote.js";
+import { guardedHttp as strangerHttp } from "./guarded-http.js";
+import type { Payer } from "./payments/payer.js";
 import { ledgerPath, openLedger, priceOf, type LedgerStore } from "./payments/ledger.js";
 import { MemoryLedgerStore } from "./payments/ledger-memory.js";
 import { isPriced, listRunnable, recentCosts, runnableCan, runnableProblems, runnableSubject, type RunnableDeps } from "./public-runnable.js";
 import { createCredit } from "./public-credit.js";
+import { createPublicTools, guardedHttp, publicToolServices } from "./public-tools.js";
 import type { SecretStore } from "./secret-store.js";
 import {
   FileSessionStore,
@@ -106,7 +113,7 @@ import { PUBLISHER_FILE, PUBLISHER_NAME, catalogStore, moveChannel, publicCatalo
 import { SUBSCRIPTIONS_FILE, createSubscriptions, subscriptionProblem, type Subscription, type Subscriptions } from "./packages/subscriptions.js";
 import { createPackageIndex, indexDir, indexRowProblem, liveRowProblem, type PackageIndex } from "./packages/index.js";
 import { INDEXES_FILE, createIndexes, indexSubscriptionProblem, parseIndexesEnv, type IndexSubscription, type PackageIndexes, type PackagesCapability } from "./packages/indexes.js";
-import { PUBLISHER_PREFIX, Z32_KEY, type IndexLiveRow, type IndexRow } from "./packages/card.js";
+import { PUBLISHER_PREFIX, Z32_KEY, releaseFor, type IndexLiveRow, type IndexRow } from "./packages/card.js";
 import { LISTING_MAX_BYTES, hostPatternProblem, perMinute } from "./packages/listing.js";
 import { LISTING_ERROR_STATUS, LISTING_REQUESTS_PER_MINUTE, createRequestsDesk, type RequestsDesk } from "./packages/index-requests.js";
 import { LISTINGS_FILE, createPublisherListings } from "./packages/publisher-listings.js";
@@ -179,12 +186,13 @@ import "./privacy/register.js";
 import { seedPrivacyWorkflows } from "./privacy/seed.js";
 import { HOME_POSTS, homeSyncRole, homeSyncRoutes, seedHomeSyncWorkflow, type HomeSyncRole } from "./home-sync.js";
 import { VOICE_CALLS, voiceConfig, voiceRoutes, warmSpeech, type VoiceConfig } from "./voice.js";
-import { createPublicSurface, normalizeSurface, surfaceProblem, visitorRefusal, visitorRuns, type PublicSurface } from "./public-surface.js";
+import { createPublicSurface, normalizeSurface, surfaceProblem, VISIT_HEADER, visitProblem, visitorOfVisit, visitorRefusal, visitorRuns, type PublicSurface } from "./public-surface.js";
 import { brandProblem, brandStyles, normalizeBrand, readBrand, writeBrand } from "./brand.js";
 import { PUBLIC_PATH, PUBLIC_POST, publicRoutes, visitorAddress } from "./public-routes.js";
 import { createPublicRuns, publicRunsMaxFromEnv, publicRunsPath } from "./public-runs.js";
 import { resolveRunCap } from "./run-cap.js";
 import { publicViewNeeds } from "./public-view.js";
+import { nameInPackageAsync, packagePrefixOf } from "./package-lookup.js";
 // Pure (node:crypto only): the ask/answer shapes behind the two elicitation
 // tools and endpoints — plans/elicitation.md.
 import {
@@ -337,8 +345,16 @@ export interface StrutOptions<TServices = unknown> {
    *  rate source, `() => Promise<{ usdPerBtc, at, source }>`, in place of
    *  `STRUT_RATE_URL` and mempool.space (src/payments/rate.ts). The WALLET
    *  is set from `LIGHTNING_*` at boot or `PUT /earnings/wallet`, kept in
-   *  `payments.json`; a host's own `services.lightning` wins over both. */
-  payments?: { rate?: RateSource };
+   *  `payments.json`; a host's own `services.lightning` wins over both.
+   *  `payer`: the host's own payer (src/payments/payer.ts), in place of one
+   *  built from the wallet's pay credential — what Withdraw pays through. */
+  payments?: { rate?: RateSource; payer?: Payer };
+  /** A strut that BUYS (plans/paid-runs.md §10, src/remote.ts): `http`, the
+   *  capability the `remote/*` steps reach a seller through, in place of
+   *  the guarded one (src/guarded-http.ts) — a test's in-process seller.
+   *  `local`: an http seller on loopback or the LAN is allowed (a dev box,
+   *  a home box), as `STRUT_REMOTE_LOCAL=1`; never a link-local address. */
+  remote?: { http?: HttpCapability; local?: boolean };
   /** Public runs (plans/paid-runs.md §6): `principal`, the ONE principal
    *  every public run is billed to — a Mothership delegation of its own (say
    *  `public-runs`), so strangers' runs draw on a budget apart from any
@@ -791,6 +807,12 @@ export interface Strut<TServices = unknown> {
    *  what a quote is priced at). */
   payments: Payments;
 
+  /** A strut that BUYS (plans/paid-runs.md §10, src/remote.ts): the credit
+   *  held at other struts (`held()`, never a token), the purchases still
+   *  being paid (`check()` claims them; it runs every minute on its own),
+   *  and the capability the `remote/*` steps get as `ctx.services.remote`. */
+  remote: RemoteService;
+
   /** The paid-runs LEDGER (plans/paid-runs.md §5, src/payments/ledger.ts):
    *  opened on first call — `<dataDir>/payments/ledger.db`, or memory where
    *  the run store is — so a strut that sells and gives nothing never makes
@@ -1024,6 +1046,16 @@ export async function createStrut<TServices = unknown>(
    *  run it has just launched is never refused. A dead run is judged by its
    *  log. */
   const peerLaunched = new WeakSet<RunController>();
+  /** The runs that never spend credit this strut BOUGHT (plans/paid-runs.md
+   *  §10, decision 16 — no ask is for this strut's own agents): a stranger's
+   *  public run, a run a peer launched with no person's credential, and a
+   *  run either started (a job, `startedBy`). Their child runs are covered
+   *  by the run tree (`runLineage`). */
+  const noRemoteSpend = new WeakSet<RunController>();
+  const treeSpendsNot = (c: RunController | undefined): boolean => {
+    for (; c; c = c.parent) if (noRemoteSpend.has(c)) return true;
+    return false;
+  };
   /** The deployment's drain (src/drain.ts, `PUT /drain`). Lifting it — by
    *  hand or at its deadline — launches the wake turns it held back. */
   const drain = createDrain({ onLift: () => void wakes.reconcile() });
@@ -1039,7 +1071,7 @@ export async function createStrut<TServices = unknown>(
    *  will record them — known from the launch, so a run a caller has just
    *  been handed the id of is theirs before its first event lands (`ownRun`).
    *  A dead run is judged by its log. */
-  const launchedAs = new WeakMap<RunController, { app?: AppRef; actor?: string }>();
+  const launchedAs = new WeakMap<RunController, { app?: AppRef; actor?: string; visitor?: string }>();
   /** Register a run as in-flight, creating its controller (attached to the
    *  launching run's controller when `parentRunId` resolves — controls apply
    *  to whole subtrees). Every launch path must register: HTTP
@@ -1079,6 +1111,12 @@ export async function createStrut<TServices = unknown>(
     controller?.job
       ? { job: controller.job.id, ...(controller.job.title ? { jobTitle: controller.job.title } : {}) }
       : {};
+  /** A live public run's visit (plans/paid-runs.md §10), as its summary
+   *  will carry it: a visitor's own runs list before they end. */
+  const liveVisitor = (controller: RunController | undefined) => {
+    const visitor = controller ? launchedAs.get(controller)?.visitor : undefined;
+    return visitor ? { visitor } : {};
+  };
   /** Append a control marker (run.paused / run.resumed) to a run's log so
    *  the parked gap is visible in the record (§4 observability). A
    *  `run.resumed` written here is an UNPAUSE of a live run, marked `live`:
@@ -1298,6 +1336,7 @@ export async function createStrut<TServices = unknown>(
     http: (services as unknown as StrutCapabilities).http,
     env: bootEnv(),
     ...(opts.payments?.rate ? { rateSource: opts.payments.rate } : {}),
+    ...(opts.payments?.payer ? { payer: opts.payments.payer } : {}),
     ...(hostLightning && typeof hostLightning === "object" ? { injected: hostLightning as LightningCapability } : {}),
     onChange: (lightning) => {
       const bag = services as Record<string, unknown>;
@@ -1343,6 +1382,53 @@ export async function createStrut<TServices = unknown>(
     rate: payments.rate,
     lightning: () => payments.lightning(),
   });
+  // Earnings (plans/paid-runs.md §8): a READ opens the ledger only where one
+  // already is, so looking at an empty Earnings tab never makes the file.
+  const ledgerIfAny = async (): Promise<LedgerStore | null> =>
+    ledgerOpen || store instanceof MemoryRunStore || existsSync(ledgerPath(dataDir)) ? ledger() : null;
+  // Withdraw (§8, src/payments/withdrawals.ts): pays through the payer —
+  // `payments.payer()`, never on the services bag — and keeps a payment the
+  // wallet answered `pending` on file beside the ledger until it settles
+  // (one `withdrawal` entry) or fails.
+  const withdrawals = createWithdrawals({
+    payer: () => payments.payer(),
+    ledger,
+    ...(store instanceof MemoryRunStore ? {} : { file: join(dataDir, WITHDRAWALS_FILE) }),
+    usdPerBtc: async () => (await payments.rate.read()).usdPerBtc,
+  });
+  // A strut that BUYS (plans/paid-runs.md §10, src/remote.ts): the credit
+  // this strut holds at other struts' public doors, in an encrypted file of
+  // its own (`entitlements.json`) no step reads; `ctx.services.remote`
+  // presents it for the remote/* steps, and pays — through the withdrawals
+  // service, as a purchase — only for an ACCEPTED remote/buy-credit
+  // proposal (the record on disk is the proof, as for package/install).
+  // A stranger's URL goes through the guarded http.
+  const remoteLocal = opts.remote?.local ?? bootEnv()["STRUT_REMOTE_LOCAL"] === "1";
+  const remote = createRemote({
+    store: secretStore instanceof FileSecretStore ? new FileSecretStore(dataDir, ENTITLEMENTS_FILE) : new MemorySecretStore(),
+    http: opts.remote?.http ?? strangerHttp({ timeoutMs: REMOTE_CALL_TIMEOUT_MS, allowLocal: remoteLocal }),
+    allowLocal: remoteLocal,
+    withdraw: (o) => withdrawals.withdraw(o),
+    canPay: () => payments.canPay(),
+    proposal: (id) => readProposal(proposalsRoot(dataDir), id),
+    rate: () => payments.rate.read(),
+    spendRefusal: (control) =>
+      runLineage(control).some((c) => noRemoteSpend.has(c))
+        ? "spend_refused: a stranger's public run, a run another strut launched without a person's credential, or a run either started never spends the credit this strut server bought (plans/paid-runs.md decision 16)"
+        : undefined,
+    // Where a purchase's payment stands at the payer: `gone` when nothing
+    // with its hash is out or in the books (it failed, or never left).
+    sendState: async (hash) => {
+      try {
+        const a = await withdrawals.read(hash);
+        return a.state === "settled" ? "settled" : a.state === "failed" ? "gone" : "pending";
+      } catch (err) {
+        if (err instanceof WithdrawError && err.code === "not_pending") return "gone";
+        return "pending";
+      }
+    },
+  });
+  if (!(services as Record<string, unknown>)["remote"]) (services as Record<string, unknown>)["remote"] = Object.freeze(remote.capability);
   // The browser the browser/* steps drive (src/browser/service.ts), unless
   // the host brought its own — whose teardown is then the host's too.
   // Building it touches nothing: the first step that opens a page connects.
@@ -2500,6 +2586,7 @@ export async function createStrut<TServices = unknown>(
         ...(p.runStart.origin === "public" ? { origin: "public" as const } : {}),
         ...(p.runStart.maxCostUsd !== undefined ? { maxCostUsd: p.runStart.maxCostUsd } : {}),
         ...(p.runStart.origin === "public" && p.runStart.credit ? { credit: p.runStart.credit } : {}),
+        ...(p.runStart.origin === "public" && p.runStart.visitor ? { visitor: p.runStart.visitor } : {}),
         ...(p.runStart.startedBy ? { startedBy: p.runStart.startedBy } : {}),
         ...(p.runStart.wake ? { wake: p.runStart.wake } : {}),
         // Billed to whoever the original launch was billed to — never
@@ -3253,6 +3340,13 @@ export async function createStrut<TServices = unknown>(
       }
     };
   }
+  /** A page's `config.workflow` as the app's package means it (package
+   *  first, as `run/*` resolve it through `ctx.resolveWorkflow`): what the
+   *  public view's names are compared with. */
+  const workflowInApp = (app: string, name: string) =>
+    nameInPackageAsync(packagePrefixOf(app), name, async (candidate) => !!(await workspace.getWorkflowMetadata(candidate).catch(() => null)));
+  const inAppPackage = async (app: string, config: Record<string, unknown>): Promise<Record<string, unknown>> =>
+    typeof config["workflow"] === "string" && config["workflow"] ? { ...config, workflow: await workflowInApp(app, config["workflow"]) } : config;
   /** A public app as a visitor's host reads it: the version people open
    *  (the held release's once the public view holds it). */
   const publicAppInfo = async (name: string) => {
@@ -3275,7 +3369,33 @@ export async function createStrut<TServices = unknown>(
     wallet: () => payments.lightning() !== null,
     ...(opts.publicRuns?.principal ? { principal: opts.publicRuns.principal } : {}),
   };
-  publicRoutes(app, {
+  // Anyone's call of a runnable STEP (plans/paid-runs.md §6, work item 6;
+  // src/public-tools.ts): its config checked, a priced one's reserve set
+  // aside, the step run once against an allowlist — the visitor's bag, with
+  // the whole graph read-only (the `jobs` list's, on a host that set
+  // `graphReaders`) and an http that reaches no private address — never
+  // kept as a run, and charged by the rule.
+  const toolHttp = guardedHttp();
+  const toolGraph = graph ? graphView(graph, opts.graphReaders, "jobs") : null;
+  const publicTools = createPublicTools({
+    ledger,
+    surface: publicSurface,
+    registry: () => registry,
+    services: () => {
+      const bag = services as Record<string, unknown>;
+      return publicToolServices(bag, {
+        graph: toolGraph,
+        http: toolHttp,
+        // The runs as a visitor reads them, held to the public view; no
+        // launcher, so a tool launches nothing.
+        ...(bag["runs"] ? { runs: visitorRuns(bag["runs"] as Parameters<typeof visitorRuns>[0], { surface: () => publicSurface.get() }) } : {}),
+      });
+    },
+    credit,
+    draining: () => drain.refusal(),
+    ...(opts.publicRuns?.principal ? { principal: opts.publicRuns.principal } : {}),
+  });
+  const publicDoors = publicRoutes(app, {
     surface: publicSurface,
     workspace,
     store,
@@ -3300,7 +3420,18 @@ export async function createStrut<TServices = unknown>(
         if (!dir) return null;
         const bytes = await readAppFile(dir.path, DOCUMENT_FILE);
         if (!bytes) return null;
-        return { version: dir.version, html: withPublicIdentity(Buffer.from(bytes).toString("utf8"), publicAppIdentity(name, dir.version)) };
+        // What its page may start (plans/paid-runs.md §10): the workflows
+        // it grants that anyone may run, under the names it grants them by
+        // (a package's own bare), with what a visitor reads of its runs.
+        const grants = (await apps.get(name, dir.version).catch(() => null))?.manifest.grants.workflows ?? [];
+        const surface = await publicSurface.get();
+        const runnable: Array<{ name: string; results: "output" | "run" }> = [];
+        for (const g of grants) {
+          const full = await workflowInApp(name, g);
+          const item = surface.runnable.find((r) => r.kind === "workflow" && r.name === full);
+          if (item) runnable.push({ name: g, results: item.results === "run" ? "run" : "output" });
+        }
+        return { version: dir.version, html: withPublicIdentity(Buffer.from(bytes).toString("utf8"), publicAppIdentity(name, dir.version), runnable) };
       },
     },
     // Anyone's launch (plans/paid-runs.md §3, §6): the workflow as published
@@ -3308,6 +3439,7 @@ export async function createStrut<TServices = unknown>(
     // public principal else its owner, under `public/<runId>/` (runner.ts
     // `bindPublic`), its cap on the launch.
     credit,
+    tools: publicTools,
     launches: {
       runs: publicRuns,
       draining: () => drain.refusal(),
@@ -3326,6 +3458,7 @@ export async function createStrut<TServices = unknown>(
           ...(opts.publicRuns?.principal ? { principal: opts.publicRuns.principal } : {}),
           ...(o.maxCostUsd !== undefined ? { maxCostUsd: o.maxCostUsd } : {}),
           ...(o.credit ? { credit: o.credit } : {}),
+          ...(o.visitor ? { visitor: o.visitor } : {}),
         });
       },
       cancel: async (name, runId) => {
@@ -4979,6 +5112,72 @@ export async function createStrut<TServices = unknown>(
     envWallet: payments.envWallet,
   });
 
+  // ── Earnings and Withdraw (plans/paid-runs.md §8; src/payments/earnings*.ts) ──
+  // Full scope only, reads included. The same read is `ctx.services.earnings`
+  // (reads, nothing that pays), what the `earnings/read` step answers with.
+  const earningsDeps: EarningsDeps = {
+    ledger: ledgerIfAny,
+    runnable: async () => (await publicSurface.get()).runnable,
+    pending: () => withdrawals.pending(),
+    walletInfo: async () => (payments.injected ? { provider: null, receive: !!payments.lightning(), pay: await payments.canPay() } : { ...(await payments.wallet()), pay: await payments.canPay() }),
+    lightning: () => payments.lightning(),
+    usdPerBtc: async () => (await payments.rate.read()).usdPerBtc,
+    // A package published HERE: its items carry their bare local names
+    // (plans/packages-ux.md), so its subjects come from its newest release —
+    // each item by its name inside the package, and by the prefixed name
+    // too, for a strut that keeps it so. Not published here: null, and its
+    // prefix is read (an installed package's items are under it).
+    packageSubjects: async (pkg) => {
+      const card = (await catalogDeps.catalogs.current().catch(() => undefined))?.card;
+      const release = card ? releaseFor(card, pkg) : undefined;
+      if (!release) return null;
+      const info = await packageStore.get(release.digest).catch(() => undefined);
+      if (!info) return null;
+      const subjects = new Set<string>();
+      for (const item of info.items) {
+        if (item.helper || (item.kind !== "workflow" && item.kind !== "step")) continue;
+        const inner = item.name.startsWith(`${pkg}/`) ? item.name.slice(pkg.length + 1) : item.name;
+        subjects.add(`${item.kind}:${inner}`);
+        subjects.add(`${item.kind}:${pkg}/${inner}`);
+      }
+      return { subjects: [...subjects].sort(), version: release.version };
+    },
+  };
+  if (!(services as Record<string, unknown>)["earnings"]) {
+    (services as Record<string, unknown>)["earnings"] = Object.freeze({ read: (q: EarningsQuery = {}) => readEarnings(earningsDeps, q) });
+  }
+  earningsRoutes(app, {
+    isFull: async (c) => (await scopeOf(c)) === "full",
+    actorOf: async (c) => (await resolveActor(c)) ?? undefined,
+    earnings: earningsDeps,
+    ledger: ledgerIfAny,
+    withdrawals,
+  });
+
+  // ── Credit held at other struts (plans/paid-runs.md §10; src/remote.ts) ──
+  // What this strut bought where, and what is still being paid: an admin's
+  // read (full scope), never a token. `?balance=1` asks each seller.
+  app.get("/remote/credit", async (c) => {
+    if ((await scopeOf(c)) !== "full") return c.json({ error: "forbidden: the credit this strut server holds is an admin's: the deployment key or an admin's session" }, 403);
+    const sellers = await remote.held();
+    if (c.req.query("balance") !== "1") return c.json({ sellers });
+    const balances = await Promise.all(sellers.map((s) => remote.capability.credit(s.seller).catch((err: unknown) => ({ seller: s.seller, held: !!s.credit, error: err instanceof Error ? err.message : String(err) }))));
+    return c.json({ sellers: sellers.map((s, i) => ({ ...s, balance: balances[i] })) });
+  });
+  // An admin drops a purchase the seller will never answer for (a rotated
+  // L402 root, a seller gone): the next remote/buy-credit there can go.
+  app.delete("/remote/purchases", async (c) => {
+    if ((await scopeOf(c)) !== "full") return c.json({ error: "forbidden: the credit this strut server holds is an admin's: the deployment key or an admin's session" }, 403);
+    const seller = c.req.query("seller");
+    if (!seller) return c.json({ error: "seller is the seller's base URL: DELETE /remote/purchases?seller=https://…" }, 400);
+    try {
+      return c.json(await remote.dropPurchase(seller));
+    } catch (err) {
+      const code = (err as { code?: string }).code;
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, code === "bad_url" ? 400 : code === "purchase_in_flight" ? 409 : 500);
+    }
+  });
+
   // ── MCP servers (src/mcp-registry.ts) ────────────────────────────────────
   //
   // Registered once, their values by secret NAME; an agent reaches one's
@@ -5751,6 +5950,9 @@ export async function createStrut<TServices = unknown>(
       /** A priced public run's credit token id (§6): on `run.start`, its
        *  sessions' namespace, what its end charges. */
       credit?: string;
+      /** A public run a visitor's app page launched (§10): the visit's
+       *  hash, on `run.start` and the summary — its reads back. */
+      visitor?: string;
       /** A peer's launch through a PERSON's credential (scope
        *  `peer:person`): the run may open its actor's own sessions. */
       peerPerson?: boolean;
@@ -5805,7 +6007,15 @@ export async function createStrut<TServices = unknown>(
       body.job ? { id: body.job, ...(body.title ? { title: body.title } : {}) } : undefined,
     );
     if (extra?.origin === "peer") peerLaunched.add(controller);
-    launchedAs.set(controller, { ...(extra?.app ? { app: extra.app } : {}), ...(extra?.actor ? { actor: extra.actor } : {}) });
+    const launcher = extra?.startedBy?.runId ? controllersByRunId.get(extra.startedBy.runId) : undefined;
+    if (extra?.origin === "public" || (extra?.origin === "peer" && !extra.peerPerson) || (launcher && treeSpendsNot(launcher))) {
+      noRemoteSpend.add(controller);
+    }
+    launchedAs.set(controller, {
+      ...(extra?.app ? { app: extra.app } : {}),
+      ...(extra?.actor ? { actor: extra.actor } : {}),
+      ...(extra?.origin === "public" && extra.visitor ? { visitor: extra.visitor } : {}),
+    });
     const launchedAt = Date.now();
     const callback = extra?.callback;
     const mcp = extra?.mcp?.length ? extra.mcp : undefined;
@@ -5901,6 +6111,7 @@ export async function createStrut<TServices = unknown>(
         ...(attachments?.length ? { attachments } : {}),
         ...(extra?.maxCostUsd !== undefined ? { maxCostUsd: extra.maxCostUsd } : {}),
         ...(isPublic && extra?.credit ? { credit: extra.credit } : {}),
+        ...(isPublic && extra?.visitor ? { visitor: extra.visitor } : {}),
         // Its end, recorded from the terminal event — before the summary is
         // written, so whoever sees the run done sees the conversation say so.
         ...(conversation ? { onEvent: (e: RunEvent) => conversationEnd(conversation, runId, e) } : {}),
@@ -6554,6 +6765,9 @@ export async function createStrut<TServices = unknown>(
   // consumer brought its own. An APP reaches these through `step_run` on
   // its `grants.workflows`; an agent through `agentTools: ["run/*"]`.
 
+  /** How long `run/get` waits for a live run's first event (its launch is
+   *  still on its way to `run.start`). */
+  const RUN_FIRST_EVENT_WAIT_MS = 5_000;
   /** `run/launch { key }` (§5.1): `<workflow>\0<key>` → the run launched
    *  under it, memory-only — a key whose run is no longer live is free. */
   const launchKeys = new Map<string, string>();
@@ -6644,7 +6858,14 @@ export async function createStrut<TServices = unknown>(
         const summary = await store.getRunSummary(workflow, runId);
         const row: RunListEntry & { jobTitle?: string } = summary
           ? listEntryOf(summary)
-          : { runId, workflow, status: liveStatus(workflow, runId), ...liveJob(controllers.get(`${workflow}/${runId}`)), ...(q.workflow ? {} : { job: q.job }) } as RunListEntry;
+          : ({
+              runId,
+              workflow,
+              status: liveStatus(workflow, runId),
+              ...liveJob(controllers.get(`${workflow}/${runId}`)),
+              ...liveVisitor(controllers.get(`${workflow}/${runId}`)),
+              ...(q.workflow ? {} : { job: q.job }),
+            } as RunListEntry);
         if (!matchesRunFilter(row, q)) continue;
         if (scoped && !(await ownRun(workflow, runId, by, summary))) continue;
         const artifacts = summary ? await artifactRefs(runId, summary.output, summary.job).catch(() => undefined) : undefined;
@@ -6655,6 +6876,10 @@ export async function createStrut<TServices = unknown>(
     async get(q, by) {
       if (!(await openRun(q.workflow, q.runId, by)).visible) return null;
       const deadline = Date.now() + Math.min(RUN_GET_MAX_WAIT_MS, Math.max(0, q.wait ?? 0));
+      // A run launched a moment ago may not have written `run.start` yet: a
+      // read right after `run/launch` waits for it rather than answer that
+      // the run does not exist.
+      const firstEvent = Date.now() + RUN_FIRST_EVENT_WAIT_MS;
       for (;;) {
         const summary = await store.getRunSummary(q.workflow, q.runId);
         if (summary) {
@@ -6668,6 +6893,10 @@ export async function createStrut<TServices = unknown>(
           continue;
         }
         const events = await store.getRunEvents(q.workflow, q.runId);
+        if (!events.length && liveKey(q.workflow, q.runId) && Date.now() < firstEvent) {
+          await new Promise((r) => setTimeout(r, 50));
+          continue;
+        }
         const partial = summarizeFromEvents(q.workflow, q.runId, events, liveStatus(q.workflow, q.runId));
         return partial ? { ...partial, partial: true } : null;
       }
@@ -8235,12 +8464,26 @@ export async function createStrut<TServices = unknown>(
      *  `secrets` (for a read a person ticked), the graph's reader held to
      *  visible nodes, the runs held to the public view. Nothing else is on
      *  it, so a step reaching for a write, a shell or a file fails naming
-     *  what is missing. */
+     *  what is missing.
+     *
+     *  One write: `run/launch` of a workflow anyone may run that the app
+     *  grants (plans/paid-runs.md §10), through the SAME launcher as `POST
+     *  /public/workflows/:name/run` — this address's budget, the drain, the
+     *  body, the caps, the price. The HOST pays: a priced launch with no
+     *  credit answers `{ payment_required }`, and the host retries with the
+     *  credit token as this request's `Authorization: L402 …` — never in the
+     *  tool's arguments or result. The host names the VISIT
+     *  (`x-strut-visit`, a secret it mints per page): the runs launched
+     *  under it are the ones its page reads back. */
     app.post("/public/mcp", async (c) => {
       const { buildAppTools, APP_TOOL_META } = await import("./apps/tools.js");
       const { createMcpDoor, toolsetServer } = await import("./ai/mcp.js");
       const bag = services as Record<string, unknown>;
       const reader = publicSurface.reader();
+      const who = visitorAddress(c);
+      const visit = c.req.header(VISIT_HEADER);
+      const visitor = visitorOfVisit(visit);
+      const visitRefusal = visitProblem(visit);
       const visitorBag = {
         ...(bag["http"] ? { http: bag["http"] } : {}),
         ...(bag["secrets"] ? { secrets: bag["secrets"] } : {}),
@@ -8256,7 +8499,24 @@ export async function createStrut<TServices = unknown>(
               },
             }
           : {}),
-        ...(bag["runs"] ? { runs: visitorRuns(bag["runs"] as Parameters<typeof visitorRuns>[0]) } : {}),
+        ...(bag["runs"]
+          ? {
+              runs: visitorRuns(bag["runs"] as Parameters<typeof visitorRuns>[0], {
+                surface: () => publicSurface.get(),
+                ...(visitor ? { visitor } : {}),
+                ...(visitRefusal ? { visitRefusal } : {}),
+                launch: (workflow, body) =>
+                  publicDoors.launch({
+                    name: workflow,
+                    who,
+                    authorization: c.req.header("authorization"),
+                    readBody: async () => ({ body }),
+                    scope: visitor ? `visit:${visitor}` : who,
+                    ...(visitor ? { visitor } : {}),
+                  }),
+              }),
+            }
+          : {}),
       };
       const tools = buildAppTools({
         apps,
@@ -8266,11 +8526,15 @@ export async function createStrut<TServices = unknown>(
         monitor: appMonitor,
         visitor: {
           identity: publicAppOfIdentity,
-          refusal: async (at, type, config) => visitorRefusal(await publicSurface.get(), (await apps.versionDir(at.name).catch(() => null))?.version, at, type, config),
-          viewer: `visitor ${visitorAddress(c)}`,
+          // The page names a workflow as its package does (package-first,
+          // as the run steps resolve it): checked under the name it runs as.
+          refusal: async (at, type, config) =>
+            visitorRefusal(await publicSurface.get(), (await apps.versionDir(at.name).catch(() => null))?.version, at, type, await inAppPackage(at.name, config)),
+          viewer: `visitor ${who}`,
         },
       });
-      const instructions = "A public app's one tool, step_run, for a visitor's page: reads only, held to this strut server's public view.";
+      const instructions =
+        "A public app's one tool, step_run, for a visitor's page: reads held to this strut server's public view, and run/launch of a workflow anyone may run that the app grants — a priced one answers { payment_required } until its host pays.";
       return createMcpDoor(() => toolsetServer({ tools, instructions, meta: APP_TOOL_META })).handle(c.req.raw);
     });
     /** The builder deps both doors spread: public links, and a run that
@@ -8406,8 +8670,8 @@ export async function createStrut<TServices = unknown>(
     return {
       draining: !!state,
       ...(state ?? {}),
-      idle: running.length === 0 && chats.length === 0,
-      active: { runs: running.length, chats: chats.length },
+      idle: running.length === 0 && chats.length === 0 && publicTools.inFlight() === 0,
+      active: { runs: running.length, chats: chats.length, tools: publicTools.inFlight() },
       // The top-level runs it waits on (the first 50), so a person sees what.
       runs: running
         .filter((ctl) => !ctl.parent)
@@ -8609,6 +8873,9 @@ export async function createStrut<TServices = unknown>(
     bootTimer = undefined;
     if (ledgerSweepTimer) clearInterval(ledgerSweepTimer);
     ledgerSweepTimer = undefined;
+    publicTools.close();
+    withdrawals.stop();
+    await remote.stop();
     await bootScan;
     await packages.booted;
     // What the history still has waiting is committed before the stores go.
@@ -8718,6 +8985,11 @@ export async function createStrut<TServices = unknown>(
     } catch (err) {
       console.error(`[public-runs] boot reconcile failed:`, err);
     }
+    // A tool call's hold a dead process left between its hold and its
+    // charge (src/public-tools.ts): the call never answered, so it is freed.
+    if (ledgerOnDisk) {
+      for (const r of await publicTools.reconcile()) console.log(`[public-tools] ${r.subject} call ${r.callId}: hold ${r.action} at boot`);
+    }
     if (ledgerOnDisk) await sweepLedger();
   };
   const sweepLedger = async () => {
@@ -8732,6 +9004,12 @@ export async function createStrut<TServices = unknown>(
     if (ledgerOpen) void sweepLedger();
   }, 24 * 60 * 60 * 1000);
   ledgerSweepTimer.unref?.();
+  // Withdrawals the wallet answered `pending` (on file from a past process
+  // too) are read every minute until they settle or fail.
+  withdrawals.start();
+  // Credit bought from another strut whose payment had not settled (on
+  // file from a past process too) is claimed every minute until it does.
+  remote.start();
   // On file at boot: `load()` counted them in flight. A ledger: its holds.
   const reconcilePublic = !(store instanceof MemoryRunStore) && (publicRuns.inFlight() > 0 || ledgerOnDisk);
   if (autoResumeRuns || autoResumeChats || reconcilePublic) {
@@ -8772,6 +9050,7 @@ export async function createStrut<TServices = unknown>(
     index,
     indexes,
     payments,
+    remote,
     ledger,
     claims,
     verifier,

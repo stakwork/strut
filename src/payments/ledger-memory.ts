@@ -24,6 +24,7 @@ import {
   type EarningsQuery,
   type EarningsRow,
   type EntryKind,
+  type EntryListQuery,
   type FirstUseInput,
   type FirstUseResult,
   type HoldInput,
@@ -102,7 +103,7 @@ export class MemoryLedgerStore implements LedgerStore {
     need("subject", input.subject);
     need("runId", input.runId);
     if (input.key !== undefined) {
-      const first = this.holdByKey.get(k(input.token, input.key));
+      const first = this.openHoldByKey(input.token, input.subject, input.key);
       if (first) return { ok: true, existing: true, seq: first.seq, runId: first.runId!, reserve: first.usd!, subject: first.subject! };
     }
     const same = this.holdByRun.get(k(input.token, input.runId));
@@ -116,7 +117,7 @@ export class MemoryLedgerStore implements LedgerStore {
     if (free < input.reserve) return { ok: false, reason: "short", free: Math.max(0, free) };
     t.held += input.reserve;
     const e = this.entry(at, "hold", { token: t.id, usd: input.reserve, subject: input.subject, runId: input.runId, key: input.key });
-    if (input.key !== undefined) this.holdByKey.set(k(t.id, input.key), e);
+    if (input.key !== undefined) this.holdByKey.set(k(t.id, `${input.subject}\0${input.key}`), e);
     this.holdByRun.set(k(t.id, input.runId), e);
     return { ok: true, existing: false, seq: e.seq, runId: input.runId, reserve: input.reserve, subject: input.subject };
   }
@@ -155,7 +156,9 @@ export class MemoryLedgerStore implements LedgerStore {
     const t = this.tokens.get(token)!;
     const available = Math.max(0, t.paid - t.spent - (t.held - reserve));
     const due = chargeFor(input.price, cost, input.outcome, reserve);
-    const charged = Math.min(due, available);
+    // Never more than the hold: the reserve is the most a run could be
+    // charged (decision 21); what a run spent past it is the seller's.
+    const charged = Math.min(due, reserve, available);
     t.held -= reserve;
     t.spent += charged;
     const e = this.entry(at, "charge", { token, usd: charged, subject: input.subject, runId: input.runId, cost, outcome: input.outcome });
@@ -191,7 +194,26 @@ export class MemoryLedgerStore implements LedgerStore {
     need("paymentHash", input.paymentHash);
     if (input.feeMsat !== undefined) int("feeMsat", input.feeMsat);
     if (input.usd !== undefined) int("usd", input.usd);
-    return { ...this.entry(at, "withdrawal", { msat: input.msat, feeMsat: input.feeMsat, ref: input.paymentHash, actor: input.actor, usd: input.usd }) };
+    const known = this.log.find((e) => e.kind === "withdrawal" && e.ref === input.paymentHash);
+    if (known) return { ...known };
+    return { ...this.entry(at, "withdrawal", { msat: input.msat, feeMsat: input.feeMsat, ref: input.paymentHash, actor: input.actor, usd: input.usd, subject: input.purpose ?? "withdrawal" }) };
+  }
+
+  async withdrawalOf(paymentHash: string): Promise<LedgerEntry | undefined> {
+    const e = this.log.find((x) => x.kind === "withdrawal" && x.ref === paymentHash);
+    return e ? { ...e } : undefined;
+  }
+
+  async list(o: EntryListQuery = {}): Promise<LedgerEntry[]> {
+    const limit = pageLimit(o.limit, ENTRIES_PAGE, ENTRIES_PAGE_MAX);
+    const before = o.before ?? Number.MAX_SAFE_INTEGER;
+    const out: LedgerEntry[] = [];
+    for (let i = this.log.length - 1; i >= 0 && out.length < limit; i--) {
+      const e = this.log[i]!;
+      if (e.seq >= before || (o.kind && e.kind !== o.kind) || (o.runId && e.runId !== o.runId)) continue;
+      out.push({ ...e });
+    }
+    return out;
   }
 
   // ── reads ─────────────────────────────────────────────────────────────
@@ -210,9 +232,18 @@ export class MemoryLedgerStore implements LedgerStore {
     return out;
   }
 
-  async findHold(token: string, key: string): Promise<OpenHold | undefined> {
-    const e = this.holdByKey.get(k(token, key));
+  async findHold(token: string, subject: string, key: string): Promise<OpenHold | undefined> {
+    const e = this.openHoldByKey(token, subject, key);
     return e ? holdOf(e) : undefined;
+  }
+
+  /** The hold `key` names on `token` for `subject` while its run is not
+   *  charged: a key dedupes a launch in flight, never one that ended or never
+   *  ran (its hold freed by a charge of nothing), as a free run's does
+   *  (src/public-runs.ts), so the same input runs again once it is done. */
+  private openHoldByKey(token: string, subject: string, key: string): LedgerEntry | undefined {
+    const e = this.holdByKey.get(k(token, `${subject}\0${key}`));
+    return e && !this.chargeByRun.has(k(token, e.runId!)) ? e : undefined;
   }
 
   async chargeOf(runId: string, subject: string): Promise<LedgerEntry | undefined> {
@@ -258,13 +289,14 @@ export class MemoryLedgerStore implements LedgerStore {
     for (const e of this.log) {
       if (e.kind !== "withdrawal" || e.at < from || e.at >= to) continue;
       const day = dayOf(e.at);
-      const r = out.get(day) ?? { day, count: 0, msat: 0, feeMsat: 0 };
+      const purpose = (e.subject ?? "withdrawal") as WithdrawnRow["purpose"];
+      const r = out.get(k(day, purpose)) ?? { day, purpose, count: 0, msat: 0, feeMsat: 0 };
       r.count++;
       r.msat += e.msat ?? 0;
       r.feeMsat += e.feeMsat ?? 0;
-      out.set(day, r);
+      out.set(k(day, purpose), r);
     }
-    return [...out.values()].sort((a, b) => (a.day < b.day ? -1 : 1));
+    return [...out.values()].sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : a.purpose < b.purpose ? -1 : 1));
   }
 
   async outstanding(): Promise<Outstanding> {

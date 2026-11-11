@@ -174,7 +174,7 @@ describe("draining a strut", () => {
     assert.equal(off.status, 200);
     assert.equal(off.json.draining, false);
     assert.equal(off.json.idle, false);
-    assert.deepEqual(off.json.active, { runs: 1, chats: 0 });
+    assert.deepEqual(off.json.active, { runs: 1, chats: 0, tools: 0 });
 
     assert.equal((await call("PUT", "/drain", { minutes: 0 })).status, 400);
     const on = await call("PUT", "/drain", { reason: "an image update", minutes: 30 });
@@ -225,7 +225,7 @@ describe("draining a strut", () => {
     assert.equal((await finished("slow", slow)).status, "success");
     const idle = await call("GET", "/drain");
     assert.equal(idle.json.idle, true);
-    assert.deepEqual(idle.json.active, { runs: 0, chats: 0 });
+    assert.deepEqual(idle.json.active, { runs: 0, chats: 0, tools: 0 });
     assert.deepEqual(idle.json.runs, []);
 
     // Lifted: launches go through again.
@@ -248,7 +248,7 @@ describe("draining a strut", () => {
     await call("PUT", "/drain", {});
     const view = (await call("GET", "/drain")).json;
     assert.equal(view.idle, true, JSON.stringify(view));
-    assert.deepEqual(view.active, { runs: 0, chats: 0 });
+    assert.deepEqual(view.active, { runs: 0, chats: 0, tools: 0 });
     // Unpausing it is its own work going on: let through while draining.
     assert.equal((await call("POST", `/workflows/slow/runs/${slow}/resume`)).status, 202);
     release();

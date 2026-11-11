@@ -556,6 +556,12 @@ export interface RunEvent {
    *  under `public/<token id>/`. Read back by a resume. Never shown to a
    *  visitor (`PRIVATE_RUN_FIELDS`). */
   credit?: string;
+  /** On a public run a VISITOR's app page launched (plans/paid-runs.md §10,
+   *  item 10): the hash of the visit's secret its host sent
+   *  (`x-strut-visit`, `visitorOfVisit`) — what lets that visit read its
+   *  own run back, and nothing else. Never shown to a visitor
+   *  (`PRIVATE_RUN_FIELDS`). Read back by a resume. */
+  visitor?: string;
   /** On a CHECK run's `run.start`: which check ran, over what. Lets the
    *  verify budget be computed from the run store alone (plans/claims.md
    *  §4.1): a subject's spend today is the cost of today's runs in its
@@ -884,6 +890,10 @@ export interface RunSummary {
   /** The app the run was launched for (plans/apps.md §11) — on the summary
    *  so a fold by app is a summary scan; `origin: "app"` says who launched. */
   app?: AppRef;
+  /** The visit a visitor's app page launched it from (as on `run.start`,
+   *  plans/paid-runs.md §10) — on the summary so a visit's own runs are a
+   *  summary scan. */
+  visitor?: string;
   /** Content hash of the workflow version the run executed (as on
    *  `run.start`) — on the summary so "runs per version" is a summary scan. */
   workflowHash?: string;

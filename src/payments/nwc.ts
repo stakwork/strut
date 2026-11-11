@@ -1,9 +1,10 @@
 /**
  * An NWC wallet (NIP-47) as the server's wallet (plans/paid-runs.md §9,
  * decision 7: second after the Sphinx daemon) — a seller with Alby Hub,
- * LNbits or any NWC wallet. Strut holds a RECEIVE connection URL: it calls
- * `make_invoice`, `lookup_invoice`, `list_transactions` and `get_balance`,
- * never a pay method. A connection that may pay is the payer's (item 7).
+ * LNbits or any NWC wallet. `NwcProvider` holds a RECEIVE connection URL: it
+ * calls `make_invoice`, `lookup_invoice`, `list_transactions` and
+ * `get_balance`, never a pay method. A connection that may pay is the
+ * payer's (payer.ts), through the same `NwcClient`.
  *
  * One call: open a socket to the connection's relay (the first that
  * answers), read the wallet's info event (kind 13194: what it allows and
@@ -307,7 +308,7 @@ const isEvent = (v: unknown): v is NostrEvent =>
 
 const subId = () => randomBytes(8).toString("hex");
 
-// ── the provider ─────────────────────────────────────────────────────────
+// ── a connection ─────────────────────────────────────────────────────────
 
 interface WalletInfoEvent {
   methods: Set<string>;
@@ -315,7 +316,23 @@ interface WalletInfoEvent {
   at: number;
 }
 
-export class NwcProvider implements LightningProvider {
+export interface NwcRequestOptions {
+  /** How long this call may take; the client's own by default. */
+  timeoutMs?: number;
+  /** Called once the request is on the relay (it said OK, or no relay
+   *  answer came before the wallet's): from then on the wallet may act on
+   *  it, so a call that ends without an answer did not necessarily do
+   *  nothing. The payer reads a pay with no answer as pending. */
+  onPublished?: () => void;
+}
+
+/**
+ * One NWC connection URL and its calls: any NIP-47 method, signed with the
+ * connection's key and encrypted as the wallet says. What a caller may do is
+ * what the CONNECTION allows: `NwcProvider` holds a receive connection and
+ * calls the receive methods; the payer (payer.ts) holds the pay connection.
+ */
+export class NwcClient {
   readonly #conn: NwcConnection;
   readonly #timeoutMs: number;
   readonly #socket: NwcSocketFactory;
@@ -328,7 +345,7 @@ export class NwcProvider implements LightningProvider {
   }
 
   /** The relays' hosts, for a message (a relay URL may carry a query). */
-  get #where(): string {
+  get where(): string {
     return this.#conn.relays.map((r) => new URL(r).host).join(", ");
   }
 
@@ -382,9 +399,15 @@ export class NwcProvider implements LightningProvider {
     return info;
   }
 
-  async #request(method: NwcReceiveMethod, params: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const deadline = Date.now() + this.#timeoutMs;
+  async request(method: string, params: Record<string, unknown>, opts: NwcRequestOptions = {}): Promise<Record<string, unknown>> {
+    const deadline = Date.now() + (opts.timeoutMs ?? this.#timeoutMs);
     const relay = await this.#connect(deadline);
+    let published = false;
+    const publish = () => {
+      if (published) return;
+      published = true;
+      opts.onPublished?.();
+    };
     try {
       const info = await this.#readInfo(relay, deadline);
       if (info.methods.size > 0 && !info.methods.has(method)) {
@@ -406,10 +429,11 @@ export class NwcProvider implements LightningProvider {
             deadline,
           );
         } catch (err) {
-          throw new LightningError("wallet_unavailable", `the NWC wallet did not answer ${method} through ${this.#where}: ${err instanceof Error ? err.message : String(err)}`);
+          throw new LightningError("wallet_unavailable", `the NWC wallet did not answer ${method} through ${this.where}: ${err instanceof Error ? err.message : String(err)}`);
         }
         if (msg[0] === "OK") {
           if (msg[2] === false) throw new LightningError("wallet_unavailable", `the NWC relay refused ${method}'s request: ${String(msg[3] ?? "")}`.trim());
+          publish();
           continue;
         }
         if (msg[0] === "CLOSED") throw new LightningError("wallet_unavailable", `the NWC relay closed ${method}'s subscription: ${String(msg[2] ?? "")}`.trim());
@@ -417,6 +441,7 @@ export class NwcProvider implements LightningProvider {
         if (!isEvent(e) || e.kind !== NWC_RESPONSE_KIND || e.pubkey !== walletPubkey) continue;
         if (!e.tags.some((t) => t[0] === "e" && t[1] === request.id)) continue;
         if (!(await verifyEvent(e))) continue;
+        publish();
         let body: { result_type?: unknown; error?: { code?: unknown; message?: unknown } | null; result?: unknown };
         try {
           const text = info.encryption === "nip44_v2" ? nip44Decrypt(nip44ConversationKey(secret, walletPubkey), e.content) : nip04Decrypt(secret, walletPubkey, e.content);
@@ -427,7 +452,7 @@ export class NwcProvider implements LightningProvider {
         if (body.error) {
           const code = typeof body.error.code === "string" ? body.error.code : "OTHER";
           const message = typeof body.error.message === "string" ? body.error.message : code;
-          throw new LightningError(NWC_ERROR_MAP[code] ?? "wallet_refused", `the NWC wallet refused ${method}: ${code}: ${message}`);
+          throw new LightningError(NWC_ERROR_MAP[code] ?? "wallet_refused", `the NWC wallet refused ${method}: ${code}: ${message}`, code);
         }
         if (!body.result || typeof body.result !== "object") throw new LightningError("wallet_bad_answer", `the NWC wallet answered ${method} with no result`);
         return body.result as Record<string, unknown>;
@@ -435,6 +460,21 @@ export class NwcProvider implements LightningProvider {
     } finally {
       relay.close();
     }
+  }
+}
+
+// ── the provider ─────────────────────────────────────────────────────────
+
+export class NwcProvider implements LightningProvider {
+  readonly #client: NwcClient;
+
+  constructor(opts: NwcProviderOptions) {
+    this.#client = new NwcClient(opts);
+  }
+
+  /** Receive methods only: this connection is never asked to pay. */
+  #request(method: NwcReceiveMethod, params: Record<string, unknown>): Promise<Record<string, unknown>> {
+    return this.#client.request(method, params);
   }
 
   async makeInvoice(o: { msat: number; description?: string; expirySecs?: number }): Promise<Invoice> {

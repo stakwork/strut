@@ -1,6 +1,6 @@
 import { mkdir, writeFile, appendFile, readdir, readFile, open, rename, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
-import type { McpServer, ModelUsage, RunEvent, RunSummary, StepCounts } from "./core.js";
+import type { McpServer, ModelUsage, RunEvent, RunOrigin, RunSummary, StepCounts } from "./core.js";
 import { addUsage, emptyUsage } from "./pricing.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -380,6 +380,11 @@ export interface PartialRunSummary {
   lastEventAt?: string;
   eventCount: number;
   input?: unknown;
+  /** Who launched it, as `run.start` says (a summary's `origin`). */
+  origin?: RunOrigin;
+  /** A public run a visitor's page launched: the visit's hash, as on
+   *  `run.start` — what lets that visit read the run while it is in flight. */
+  visitor?: string;
   /** Latest completed output per TOP-LEVEL step (path `<wf>/<stepId>` with
    *  no deeper segment and no `#iteration`), in completion order. */
   steps: Record<string, unknown>;
@@ -458,6 +463,8 @@ export function summarizeFromEvents(
     if (e.type === "run.start") {
       summary.startedAt ??= e.ts;
       if (e.input !== undefined) summary.input = e.input;
+      if (e.origin) summary.origin = e.origin;
+      if (e.visitor) summary.visitor = e.visitor;
     }
     if ((e.type === "step.end" || e.type === "step.replayed") && isTopLevelStep(e.path)) {
       const stepId = e.path.slice(prefix.length);
