@@ -310,7 +310,7 @@ describe("the shipped dream workflow", () => {
     assert.deepEqual(flow.steps.map((s) => `${s.id}:${s.type}`), [
       "turns:dream/turns", "hasTurns:if", "find:agent", "cands:dream/candidates", "hasMoments:if", "match:agent", "record:dream/record",
       "hasFacts:if", "facts:agent", "near:dream/neighbours", "hasNear:if", "group:agent", "grouped:foreach", "due:dream/due", "hasDue:if", "fix:agent",
-      "apply:dream/apply", "done:dream/done", "after:dream/claims", "tree:dream/tree", "result:pack",
+      "apply:dream/apply", "done:dream/done", "after:dream/claims", "tree:dream/tree", "memfacts:dream/facts", "result:pack",
     ]);
     const step = (id: string) => flow.steps.find((s) => s.id === id)!;
     const cfg = (id: string) => step(id).config as Record<string, any>;

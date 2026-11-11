@@ -17,6 +17,8 @@ import { mkdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LadybugBackend } from "./backend.js";
+import { createNodeSchema } from "./schema-crud.js";
+import { assertEdge } from "./temporal.js";
 import { parseGraphReaders } from "./scope.js";
 import { testBackends } from "./test-util.js";
 import { createStrut, type Strut } from "../createStrut.js";
@@ -158,6 +160,21 @@ describe("the dream on the graph, under Peel's reader lists (ladybug)", { skip: 
     return run;
   };
   const docsOf = async (name: string) => (await b.query("MATCH (p:Node {node_type: 'Concept', name: $name}) RETURN p.docs AS docs", { name }))[0]?.["docs"];
+
+  it("lists the facts memory holds in the run's output: what holds now first, an ended one kept and marked", async () => {
+    await createNodeSchema(b, b.schemas, { type: "Town", attributes: {}, role: "entity" });
+    await b.schemas.createEdgeSchema("Person", "LIVES_IN", "Town", { temporal: true, cardinality: "one" });
+    const [tom, boston, canton] = await b.nodes.writeMany([{ type: "Person", data: { name: "Tom" } }, { type: "Town", data: { name: "Boston" } }, { type: "Town", data: { name: "Canton" } }]);
+    await assertEdge(b, b.schemas, { edge: "LIVES_IN", source_ref_id: tom!.ref_id, target_ref_id: boston!.ref_id, text: "Tom lives in Boston", valid_at: "2015", namespace: "private" });
+    await assertEdge(b, b.schemas, { edge: "LIVES_IN", source_ref_id: tom!.ref_id, target_ref_id: canton!.ref_id, text: "Tom lives in Canton", valid_at: "2021", namespace: "private" });
+    const out = (await dream())["output"] as Record<string, any>;
+    assert.deepEqual(calls, [], "listing facts calls no model");
+    assert.equal(out["fact_count"], 2);
+    assert.deepEqual(out["fact_list"].map((f: any) => [f.text, f.kind, f.subject, f.object, f.since?.slice(0, 4), !!f.ended]), [
+      ["Tom lives in Canton", "LIVES_IN", "Tom", "Canton", "2021", false],
+      ["Tom lives in Boston", "LIVES_IN", "Tom", "Boston", "2015", true],
+    ]);
+  });
 
   it("finds a correction said to last, sorts it onto a new claim, fixes it with one line on a new concept; nothing new calls no model; corrected again, the line is replaced", async () => {
     assert.equal((await say("summarise my notes from Monday"))["status"], "success");

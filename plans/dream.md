@@ -112,6 +112,7 @@ answer, so it cannot skip a step or write.
 | FIX | model | each due claim, what was said, its one Concept | one edit: a line added or replaced, or a new Concept |
 | `apply` | code | the edits | the Concept written (or a proposal), and the fix noted on the claim |
 | `done` | code | | the marks moved |
+| `claims`, `tree`, `facts` | code | the claims, the tree, memory's facts (the newest 200) | what the run's output shows a reader: the causes, the Concepts and the facts as the dream left them |
 
 A stage with nothing to do is skipped, so a dream with no new turns and
 nothing due calls no model. `candidates` and `neighbours` pick by shared

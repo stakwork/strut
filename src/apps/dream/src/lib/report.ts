@@ -66,6 +66,23 @@ export interface AppliedChange {
   proposed?: string;
 }
 
+/** A fact memory holds, as `dream/facts` lists it: a sentence on a relationship, with the time it holds for. */
+export interface MemoryFact {
+  ref_id: string;
+  text: string;
+  /** The relationship: LIVES_IN. */
+  kind: string;
+  subject: string;
+  object: string;
+  since?: string;
+  until?: string;
+  /** It no longer holds: kept as history. */
+  ended?: boolean;
+}
+
+/** A relationship as words: `LIVES_IN` → "lives in". */
+export const kindText = (kind: string): string => kind.toLowerCase().replace(/_+/g, " ").trim();
+
 export interface DreamOutput {
   text?: string;
   /** The tree the dream tended: its root Concept's name. */
@@ -84,6 +101,9 @@ export interface DreamOutput {
   unfixed?: Array<{ claim: string; why: string }>;
   /** How many claims were due a fix. */
   due?: number;
+  /** The facts memory holds after the dream (the newest, capped), and how many there are in all. */
+  fact_list?: MemoryFact[];
+  fact_count?: number;
   /** What the facts stage said it changed in memory. */
   facts?: string;
   turns?: number;

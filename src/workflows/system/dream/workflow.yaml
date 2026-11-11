@@ -367,10 +367,14 @@ steps:
     depends: after
     config:
       root: "{{ input.root }}"
-  # The run's output: what each stage did, the claims, the tree, and what it cost.
+  # The facts memory holds after this dream, beside the tree: the other kind of thing a reader looks at.
+  - id: memfacts
+    type: dream/facts
+    depends: tree
+  # The run's output: what each stage did, the claims, the tree, the facts, and what it cost.
   - id: result
     type: pack
-    depends: tree
+    depends: memfacts
     config:
       root: "{{ input.root }}"
       turns: "{{ turns.count }}"
@@ -385,4 +389,6 @@ steps:
       unfixed: "{{ apply.skipped }}"
       claims: "{{ after?.claims }}"
       tree: "{{ tree?.concepts }}"
+      fact_list: "{{ memfacts?.facts }}"
+      fact_count: "{{ memfacts?.count || 0 }}"
       cost: "{{ (find?.cost || 0) + (match?.cost || 0) + (facts?.cost || 0) + (group?.cost || 0) + (fix?.cost || 0) }}"

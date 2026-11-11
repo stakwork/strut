@@ -3,7 +3,7 @@
 // and the dreams, each with what it found and changed. One run's output
 // keeps only a few pieces of evidence per claim; older runs kept older
 // ones, so they are added up. Pure: no React, so the tests read it too.
-import { changesOf, foundBy, nest, type Claim, type ConceptChange, type DreamOutput, type Outcome, type SaidRow, type TreeConcept } from "./report";
+import { changesOf, foundBy, nest, type Claim, type ConceptChange, type DreamOutput, type MemoryFact, type Outcome, type SaidRow, type TreeConcept } from "./report";
 
 /** One run of the dream workflow, as the app reads it. */
 export interface Run {
@@ -49,6 +49,9 @@ export interface Model {
   /** Newest first. */
   changes: Change[];
   tree: TreeConcept[];
+  /** The facts memory holds, as the newest dream that listed them left them; `factCount` is how many there are in all. */
+  facts: MemoryFact[];
+  factCount: number;
 }
 
 export const isCorrection = (o: Outcome | undefined): boolean => !!o && o !== "followed";
@@ -125,7 +128,9 @@ export function buildModel(runs: readonly Run[]): Model {
     byId.set(c.claim.id, c);
     for (const k of c.children) byId.set(k.claim.id, k);
   }
-  return { runs: desc, causes, byId, changes: changes.reverse(), tree };
+  const withFacts = desc.find((r) => Array.isArray(r.output.fact_list));
+  const facts = withFacts?.output.fact_list ?? [];
+  return { runs: desc, causes, byId, changes: changes.reverse(), tree, facts, factCount: Math.max(facts.length, Number(withFacts?.output.fact_count) || 0) };
 }
 
 /** The Concept a change or claim names, as the tree has it: by ref, or by name for one a dream added (it had no ref yet). */

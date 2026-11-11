@@ -16,7 +16,7 @@
 // not only the picked one's: a cause's history spans them.
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useQueries } from "@tanstack/react-query";
-import { ArrowLeft, BookOpen, ChevronRight, Moon, Target, type LucideIcon } from "lucide-react";
+import { ArrowLeft, BookOpen, ChevronRight, Sparkles, Moon, Target, type LucideIcon } from "lucide-react";
 import {
   Sidebar, SidebarContent, SidebarGroup, SidebarGroupContent, SidebarGroupLabel, SidebarHeader, SidebarInset, SidebarMenu,
   SidebarMenuBadge, SidebarMenuButton, SidebarMenuItem, SidebarProvider, SidebarTrigger, useSidebar,
@@ -25,7 +25,8 @@ import { hierarchy, pack } from "d3";
 import { RUN_STEPS, isInFlight, runKeys, useRuns, useStrutClient, type RunSummary } from "@strut/kit";
 import { DocumentView, RunStatus, Transcript } from "strut/views";
 import { cn } from "@/lib/utils";
-import { agoText, costText, foundBy, sectionsOf, type DreamOutput, type Outcome, type SaidRow, type TreeConcept } from "./lib/report";
+import { agoText, costText, foundBy, kindText, sectionsOf, type DreamOutput, type MemoryFact, type Outcome, type SaidRow, type TreeConcept } from "./lib/report";
+import { CauseTimeline, Lanes } from "./Timeline";
 import { buildModel, conceptOf, headline, inMemory, inlineDiff, runSummary, stagesOf, type Cause, type Change, type Model, type Run } from "./lib/model";
 
 const WORKFLOW = "dream";
@@ -351,6 +352,13 @@ function CauseDetail({ cause, model, onRun, onCause }: { cause: Cause; model: Mo
         </ul>
       )}
 
+      {items.length > 1 && (
+        <section className="flex flex-col gap-2">
+          <h3 className="text-sm font-semibold">Over time</h3>
+          <CauseTimeline cause={cause} model={model} kind="dots" onRun={onRun} />
+        </section>
+      )}
+
       {items.length > 0 && (
         <section className="flex flex-col gap-2">
           <h3 className="text-sm font-semibold">History</h3>
@@ -563,7 +571,56 @@ function ConceptDetail({ concept, model, onRun, onCause }: { concept: TreeConcep
   );
 }
 
-type View = "causes" | "dreams" | "memory";
+// ── Facts: the other kind of thing in memory ──
+
+const day = (iso: string | undefined) => {
+  const d = new Date(iso ?? "");
+  return Number.isNaN(d.getTime()) ? "" : d.toLocaleDateString([], { year: "numeric", month: "short", day: "numeric" });
+};
+
+function FactRows({ facts }: { facts: MemoryFact[] }) {
+  return (
+    <ul className="flex flex-col divide-y rounded-md border" data-testid="facts">
+      {facts.map((f) => (
+        <li key={f.ref_id} className="grid grid-cols-[minmax(0,1fr)_9.5rem] items-baseline gap-x-4 px-4 py-2.5">
+          <span className="flex min-w-0 flex-col gap-0.5">
+            <span className={cn("break-words text-sm leading-snug", f.ended && "text-muted-foreground line-through decoration-muted-foreground/60")}>{f.text}</span>
+            <span className="truncate text-xs text-muted-foreground">{[f.subject, kindText(f.kind), f.object].filter(Boolean).join(" · ")}</span>
+          </span>
+          <span className="text-right text-xs tabular-nums text-muted-foreground">
+            {f.ended ? (f.until ? `until ${day(f.until)}` : "no longer") : f.since ? `since ${day(f.since)}` : ""}
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** The facts memory holds as the last dream left them: what holds now, then what ended, kept as history. */
+function Facts({ model }: { model: Model }) {
+  const now = model.facts.filter((f) => !f.ended), ended = model.facts.filter((f) => f.ended);
+  const cut = model.factCount - model.facts.length;
+  return (
+    <div className="mx-auto flex w-full max-w-3xl flex-col gap-6 p-6">
+      {!model.facts.length && <p className="text-sm text-muted-foreground">No dream has listed memory's facts yet. They show here after the next one runs.</p>}
+      {now.length > 0 && (
+        <section className="flex flex-col gap-2">
+          <Head title="Holds now" count={now.length} note="What memory takes to be true, with when it started." />
+          <FactRows facts={now} />
+        </section>
+      )}
+      {ended.length > 0 && (
+        <section className="flex flex-col gap-2">
+          <Head title="Ended" count={ended.length} note="Facts that stopped holding or were corrected. Kept as history, not used as current." />
+          <FactRows facts={ended} />
+        </section>
+      )}
+      {cut > 0 && <p className="text-xs text-muted-foreground">{cut} more not listed: a dream lists the newest {model.facts.length}.</p>}
+    </div>
+  );
+}
+
+type View = "causes" | "dreams" | "memory" | "facts";
 
 /** The sidebar: what the dreams found, then each kind of thing in memory a dream tends. */
 const NAV: Array<{ label?: string; items: Array<{ view: View; title: string; icon: LucideIcon; count: (m: Model) => number }> }> = [
@@ -572,9 +629,12 @@ const NAV: Array<{ label?: string; items: Array<{ view: View; title: string; ico
     { view: "dreams", title: "Dreams", icon: Moon, count: (m) => m.runs.length },
   ] },
   // KINDS: one entry per kind of thing in memory.
-  { label: "Ontology", items: [{ view: "memory", title: "Concepts", icon: BookOpen, count: (m) => m.tree.length }] },
+  { label: "Ontology", items: [
+    { view: "memory", title: "Concepts", icon: BookOpen, count: (m) => m.tree.length },
+    { view: "facts", title: "Facts", icon: Sparkles, count: (m) => m.factCount },
+  ] },
 ];
-const TITLE: Record<View, string> = { causes: "Causes", dreams: "Dreams", memory: "Concepts" };
+const TITLE: Record<View, string> = { causes: "Causes", dreams: "Dreams", memory: "Concepts", facts: "Facts" };
 
 function Nav({ view, model, onPick }: { view: View; model: Model; onPick: (v: View) => void }) {
   const { isMobile, setOpenMobile } = useSidebar();
@@ -616,7 +676,8 @@ export default function App() {
   const [causeId, setCauseId] = useState<string | null>(null);
   const [runId, setRunId] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
-  const [graph, setGraph] = useState(false);
+  const [mode, setMode] = useState<"list" | "graph" | "time">("list");
+  const graph = mode === "graph";
   const toCause = (id: string) => { setCauseId(id); setView("causes"); setOpen(true); };
   const toRun = (id: string) => { setRunId(id); setView("dreams"); setOpen(true); };
   const toConcept = (ref: string, name: string) => {
@@ -640,7 +701,7 @@ export default function App() {
           <h2 className="text-sm font-semibold">{TITLE[view]}</h2>
           {view === "causes" && model.causes.length > 0 && (
             <div className="ml-auto">
-              <Segmented label="How the causes are shown" value={graph ? "graph" : "list"} onChange={(v) => setGraph(v === "graph")} options={[{ value: "list", label: "List" }, { value: "graph", label: "Graph" }]} />
+              <Segmented label="How the causes are shown" value={mode} onChange={setMode} options={[{ value: "list", label: "List" }, { value: "graph", label: "Graph" }, { value: "time", label: "Timeline" }]} />
             </div>
           )}
         </header>
@@ -648,9 +709,11 @@ export default function App() {
         empty(none)
       ) : view === "causes" ? (
         <Split
-          narrow={narrow} open={open} onBack={() => setOpen(false)} wide={graph}
+          narrow={narrow} open={open} onBack={() => setOpen(false)} wide={mode !== "list"}
           list={
-            graph && model.causes.length ? (
+            mode === "time" && model.causes.length ? (
+              <Lanes model={model} selected={narrow ? null : (cause?.claim.id ?? null)} onPick={toCause} />
+            ) : graph && model.causes.length ? (
               <Graph causes={model.causes} selected={narrow ? null : (cause?.claim.id ?? null)} onPick={toCause} />
             ) : model.causes.length ? (
               <ul className="flex flex-col divide-y" data-testid="causes">
@@ -667,6 +730,8 @@ export default function App() {
           }
           detail={cause ? <CauseDetail key={cause.claim.id} cause={cause} model={model} onRun={toRun} onCause={toCause} /> : null}
         />
+      ) : view === "facts" ? (
+        <div className="min-h-0 flex-1 overflow-y-auto"><Facts model={model} /></div>
       ) : view === "memory" ? (
         <Split
           narrow={narrow} open={open} onBack={() => setOpen(false)}
