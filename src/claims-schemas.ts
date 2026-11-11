@@ -8,13 +8,13 @@ import { z } from "zod";
 export const subjectSchema = z
   .object({
     kind: z
-      .enum(["step", "workflow", "job"])
+      .enum(["step", "workflow", "job", "concept"])
       .describe(
-        "What the claim is about: a custom step type, a published workflow, or a JOB — one piece of work across its turns (its version is the turn: the job's newest run). A job claim says what the WORK must deliver (\"the settings page renders\"); a step or workflow claim says how the TEMPLATE behaves on every run.",
+        "What the claim is about: a custom step type, a published workflow, a JOB — one piece of work across its turns (its version is the turn: the job's newest run) — or a CONCEPT, a page of the knowledge graph that agents read. A job claim says what the WORK must deliver (\"the settings page renders\"); a step or workflow claim says how the TEMPLATE behaves on every run; a concept claim says what the work of a run that OPENED that page must look like (\"a plan has a rollout section\"), and is checked against every such run.",
       ),
-    name: z.string().describe("Workflow name, custom step type (e.g. 'clip/compute-times'), or the job id."),
+    name: z.string().describe("Workflow name, custom step type (e.g. 'clip/compute-times'), the job id, or the Concept's exact name."),
   })
-  .describe("A claim's subject — the STABLE identity, never a version: the claim applies to whatever version is active when a run is verified (for a job, to its newest turn).");
+  .describe("A claim's subject — the STABLE identity, never a version: the claim applies to whatever version is active when a run is verified (for a job, to its newest turn; for a Concept, to the page as the run read it).");
 
 export const checkSpecSchema = z
   .object({
@@ -28,7 +28,7 @@ export const checkSpecSchema = z
       .record(z.string(), z.any())
       .optional()
       .describe(
-        "That step's config. The observed subject IS the check's input: `{{ input.output.* }}` is the step's output, `{{ input.input.* }}` its resolved config (for a workflow: the run's input, with `{{ input.params.* }}` beside it), `{{ input.error.message }}` when it failed, plus `{{ input.runId }}`, `{{ input.path }}`, `{{ input.artifactsDir }}`. A JOB check reads the job's STATE instead: `{{ input.dir }}` (its directory — an exec's cwd), `{{ input.urls.<kind> }}` (the address of what it holds: `{{ input.urls.pod }}/settings`), `{{ input.artifacts }}` (its current deliverables), `{{ input.holds }}`, `{{ input.repos }}`, `{{ input.output }}` / `{{ input.text }}` (the turn's reply), `{{ input.runId }}` (the turn). A `publish` check reads `{{ input.source }}` (step) / `{{ input.yaml }}` (workflow). The check must RETURN { supports: boolean, content: string, locator?: { path?, start_time?, end_time?, url? } } — never throw on a failed assertion, return supports:false. A bare `exec` with no JSON on stdout maps from its exit code (0 = supports) with the output tail as content.",
+        "That step's config. The observed subject IS the check's input: `{{ input.output.* }}` is the step's output, `{{ input.input.* }}` its resolved config (for a workflow: the run's input, with `{{ input.params.* }}` beside it), `{{ input.error.message }}` when it failed, plus `{{ input.runId }}`, `{{ input.path }}`, `{{ input.artifactsDir }}`. A JOB check reads the job's STATE instead: `{{ input.dir }}` (its directory — an exec's cwd), `{{ input.urls.<kind> }}` (the address of what it holds: `{{ input.urls.pod }}/settings`), `{{ input.artifacts }}` (its current deliverables), `{{ input.holds }}`, `{{ input.repos }}`, `{{ input.output }}` / `{{ input.text }}` (the turn's reply), `{{ input.runId }}` (the turn). A CONCEPT check reads the RUN that opened the page, as a workflow's check does (`{{ input.input.* }}`, `{{ input.output.* }}` or `{{ input.error.message }}`, `{{ input.params.* }}`, `{{ input.runId }}`), plus `{{ input.concept }}` (the Concept's name), `{{ input.concepts }}` (every Concept whose page the run opened, by name — so a claim on the page that LISTS another can check the run opened it), `{{ input.dir }}` (where the run's files are: its job's directory, else its artifacts — an exec's cwd) and `{{ input.job }}`; a check that does not apply to the run returns no `supports`, and nothing is recorded. A `publish` check reads `{{ input.source }}` (step) / `{{ input.yaml }}` (workflow). The check must RETURN { supports: boolean, content: string, locator?: { path?, start_time?, end_time?, url? } } — never throw on a failed assertion, return supports:false. A bare `exec` with no JSON on stdout maps from its exit code (0 = supports) with the output tail as content.",
       ),
     name: z.string().optional().describe("Short label, e.g. 'stt fuzzy-match'. Defaults to the step type."),
     description: z

@@ -232,7 +232,8 @@ strut/
 │   │   ├── node-writer.ts # §6 validation gate + node_key composition (jarvis's sanitizer, verbatim; hex tokens for an `exact_key` type — `keyToken`) + Data_Bank + the create/upsert/restore/update semantics; issues no Cypher — `NodeEngine` does (`neo4j-engine.ts`, `ladybug/engine.ts`); softDelete (Domain_strut only) + retirePlannedEvidence. A write may ask for `embed: "later"`: its text is written, its vectors cleared and handed to the backend's background embedder (`NodeWriterOptions.later` — Neo4j's pass `soon`, a Ladybug file's backfill, both in a worker thread), for a caller writing hundreds of nodes at once (MiniLM is ~9 ms a text on a laptop's CPU, inline on the main thread); with no background embedder, or on a caller's transaction, it embeds inline
 │   │   ├── edge-writer.ts # the edge rules (closed Strut registry for Strut sources, the resolver's edge schemas for the rest — jarvis's edge allowlist only on a graph jarvis shares, one holding jarvis's `About` node; elsewhere every edge needs a rule, plans/ontology.md ruling 1), stamps, update() = jarvis PATCH /v2/edges/:ref_id (stamps protected), move() with its cycle check; issues no Cypher — `EdgeEngine` does (on Neo4j: MERGE by edge_key with the IS_ALIAS rewrite, ON CREATE only, a legacy muted edge made live)
 │   │   ├── schema-crud.ts # createNodeSchema(): register a non-Strut node type like jarvis POST /v2/schema (parent, attribute grammar, node_key, CHILD_OF, constraint) or add-only extend an existing one, on both engines (on Ladybug a new attribute is a new column); on Ladybug a name or `aliases` entry that is already another type's name or alias is refused, and a `managed_by` type only takes its owner (plans/memory-in-workspace-graph.md decision 9; `SchemaSource.typesNamed`, Ladybug's — Neo4j keeps jarvis's rules)
-│   │   ├── claims.ts      # the truth layer (plans/claims.md): Claim/Check/Evidence contract (ids, check subject + result shapes), claimStatus() — status computed on read per (claim, subject) — and ClaimsReader, whose reads are written with the backend's dialect helpers (one reader for Neo4j and a Ladybug file; the evidence joins are four statements joined in TS, never an OPTIONAL MATCH; a filter is in the text only when asked for, never a null param) — ClaimsReader (claimsFor/checksFor/evidenceFor/statusFor; deleted nodes + legacy muted edges invisible). `strut.claims` is null unless the workspace is graph-backed
+│   │   ├── claims.ts      # the truth layer (plans/claims.md): Claim/Check/Evidence contract (ids, check subject + result shapes), claimStatus() — status computed on read per (claim, subject) — and ClaimsReader, whose reads are written with the backend's dialect helpers (one reader for Neo4j and a Ladybug file; the evidence joins are four statements joined in TS, never an OPTIONAL MATCH; a filter is in the text only when asked for, never a null param) — ClaimsReader (claimsFor/checksFor/evidenceFor/statusFor; deleted nodes + legacy muted edges invisible). `strut.claims` is null unless the workspace is graph-backed. Four subject kinds, one rule — a run observes each thing it used, at the version it used: `step`, `workflow` (content hashes), `job` (the turn) and `concept` (what opening the page returned; evidence ABOUT the Concept, the version on its source)
+│   │   ├── concept-version.ts # a Concept's VERSION, what a claim about it is versioned by: `conceptVersionOf` (pure: a hash of its name, description and docs and of the name + description of each Concept under it, PARENT_OF, in name order) and `readConceptVersion(graph, ref_id)` (two statements with the dialect helpers, over the graph as it is — a scoped view's unscoped query, `boundsOf`). ONE function for both sides: `graph/graph-get` stamps it on the node it reports when it opens a Concept (`AccessedNode.version`), and `ClaimsReader.activeVersion` computes it now
 │   │   ├── claims-writer.ts # ClaimsWriter: the claim graph's invariants — ≥1 check per claim, edits SUPERSEDE (successor claim carries ABOUT + checks; successor check takes over TESTS), retire = timestamp, detach = deleted edge, last check / last subject refused
 │   │   ├── exact-key-migration.ts # one-shot boot re-key of existing StrutWorkflow/-Version/StrutStep/-Version nodes from the sanitized name to the exact (hex) key — ledger-stamped, idempotent, every namespace, soft-deleted nodes included; ref_ids, edges and the Schema nodes untouched
 │   │   ├── embeddings.ts  # local all-MiniLM-L6-v2 via transformers.js, tokenized like sentence-transformers (256 incl. specials), 2 intra-op threads; + the EMBEDDING PASS (plans/semantic-search.md §1): a timer in the serving process that keeps `Data_Bank` + `text_embeddings` + the domain label current on EVERY node of a Schema-marked type, whoever wrote it (stakgraph's ingest, jarvis, an import) — stale = the stored text ≠ the writer's composition from the Schema's `index` fields, or no vector — strips the no-embed types (`embed: false`: `Turn` via its Schema, `StrutToolCall` / `StrutTurn` in code), pages by `node_key` (an index seek per page, never a scan), works 15 s a minute (the budget checked between batches of 100 rows), sweeps hourly (code types first), embeds NEWCOMERS by `date_added_to_graph` between sweeps (marked labels only, a `>=` cursor: stakgraph stamps a whole ingest batch alike). Its inference runs in a WORKER THREAD (`WorkerEmbedder`, over `ModelWorker` — src/model-worker.ts): onnxruntime-node's `run()` is synchronous, and on the serving process's main thread every forward pass stalled every request (swarm38, 2026-10-11: mcp's `/lab/health` 0.34 s → 1.74 s during a tick); the writer and search keep the in-process model. `GET /graph/embeddings` is its status; `STRUT_GRAPH_EMBEDDINGS=off` turns it off with the embedder. `soon(refs)`: the nodes a writer left without a vector (`embed: "later"`) are embedded in the next tick, ahead of the sweep and the newcomers (an updated node's stamp is old, so it is no newcomer)
@@ -2329,6 +2330,40 @@ the same steps are an agent's tools (`agentTools: ["browser/*"]`), and
   Refutes is `POST /claims/:id/evidence { job, runId }`. The `job` seed
   grants the claim tools and `http/verify`, and its prompt says: author the
   claims when the ask is understood, verify before saying done.
+  **A CONCEPT is the fourth subject kind** (`{ kind: "concept", name }` on
+  every door, the Concept of that name in the backend's own namespace): a
+  claim about what the work of a run that OPENED the page must look like
+  ("a plan has a rollout section"). One rule covers all four kinds: a run
+  observes each thing it used, at the version it used. A Concept's version
+  is a hash of what opening its page returns — its name, description and
+  docs, and the name and description of each Concept under it
+  (`src/graph/concept-version.ts`; a child's docs, or a page elsewhere, do
+  not move it) — and it is RECORDED AT THE READ: `graph/graph-get` (so
+  `context/concept` and an agent's `graph_graph_get` alike) stamps it on
+  the node it reports (`AccessedNode.version` → `step.end.nodes`), so
+  `subjectsOfRun` reads it off the log and the pass never asks the graph
+  what the page says now. A Concept the log gives no version for — written,
+  traversed (`graph-get-batched`, `graph-neighbors`, a walk), touched by a
+  run this one launched, another strut's, or of that name in another
+  namespace — is not observed. A Concept keeps no node per version:
+  evidence is `ABOUT` the Concept itself, sourced to the run
+  (`HAS_SOURCE`), with the version on the source (`SourceContext.version`),
+  at path `concept:<name>`; two seeded edge rules, `Claim —ABOUT→ Concept`
+  and `Evidence —ABOUT→ Concept`. The check reads the RUN as a workflow's
+  check does (`input.input`, `input.output` or `input.error`,
+  `input.params`) plus `input.concept`, `input.concepts` (every page the
+  run opened, by name), `input.dir` (the run's files: its job's directory,
+  else its artifacts) and `input.job`; a check that does not apply to the
+  run returns no `supports`, and nothing is recorded. A run that skipped a
+  page never observes it, so a claim that a page GETS OPENED sits on the
+  page that lists it ("a request of a kind opens that kind's page" on
+  `Job`, checked with `input.concepts`), and rewriting the child's
+  description moves that parent's version. Checks take a template's
+  defaults (`always` for code, `on_change` for a paid or external one);
+  `when: publish` is refused; the meta surface (a scoped author) writes no
+  claims about Concepts — a person, or the builder chat, does. Not built:
+  Concepts in other namespaces, claims travelling with a package's pages,
+  running a check against a tree that is not live, any UI.
 
 - **Sealed — what the meta surface may never touch** (`src/sealed.ts`;
   EVOLVE_SPEC §6). The `meta/*` steps publish over ANY workflow and edit any

@@ -65,7 +65,7 @@ describe("seedStrutDomain (live Neo4j)", { skip: cfg ? false : "STRUT_TEST_NEO4J
     // but CHILD_OF's: on Neo4j the type tree's own CHILD_OF links (Concept to
     // Thing) already allow it, through the ancestor walk.
     const seedRows = SEED_EDGES.filter((e) => e.edge !== "CHILD_OF").map((e) => `${e.source}-[${e.edge}]->${e.target}`);
-    assert.equal(seedRows.length, 15);
+    assert.equal(seedRows.length, 17);
     assert.deepEqual(r1.createdEdgeSchemas, [...STRUT_EDGES.filter((e) => !e.ladybugOnly && e.target !== "Person").map((e) => `${e.source}-[${e.edge}]->${e.target}`), ...seedRows]);
     assert.ok(!r1.createdEdgeSchemas.includes("StrutRun-[ACCESSED]->Thing"));
 

@@ -55,7 +55,7 @@ export function claimsRoutes(app: Hono, deps: ClaimsRoutesDeps): void {
   app.get("/claims", async (c) => {
     if (!claims) return c.json({ enabled: false, claims: [] });
     const subject = subjectSchema.safeParse({ kind: c.req.query("kind"), name: c.req.query("name") });
-    if (!subject.success) return c.json({ error: "kind (step | workflow) and name are required" }, 400);
+    if (!subject.success) return c.json({ error: "kind (step | workflow | job | concept) and name are required" }, 400);
     const listing = await claims.listClaims(subject.data);
     // A built-in step has no node in the workspace: it simply has no contract.
     if (!("ok" in listing)) return c.json({ enabled: true, subject: subject.data, claims: [], note: listing.error });

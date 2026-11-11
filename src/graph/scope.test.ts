@@ -18,6 +18,8 @@ import { setNamespace } from "./set-namespace.js";
 import { assertEdge } from "./temporal.js";
 import { seedConceptSchema, testBackends } from "./test-util.js";
 import { seedStrutDomain } from "./schema-seed.js";
+import { readConceptVersion } from "./concept-version.js";
+import { accessedNodesOf } from "../core.js";
 import { createStrut } from "../createStrut.js";
 import { hostConfigFromEnv } from "../server.js";
 import { MemoryRunStore } from "../store.js";
@@ -108,6 +110,22 @@ describe("reader lists on a ladybug file (plans/graph-memory-plan.md step 6)", {
     assert.equal(((await run(graphGet, { ref_id: mine.ref_id }, job)) as { ref_id: string }).ref_id, mine.ref_id);
     assert.equal(typeof (await run(graphGet, { ref_id: runRef }, job)), "string");
     assert.match(String(await run(graphFind, { node_type: "StrutRun", namespace: "shared" }, job)), /unknown node type/);
+  });
+
+  it("a Concept's page opened through a reader's list reports the version the claims reader computes: one hash, over the graph as it is", async () => {
+    // Harbour (shared) lists a shared page and a private one; an app reads shared alone, and may not query raw.
+    await b.edges.write({ edge: "PARENT_OF", source_ref_id: ours.ref_id, target_ref_id: pier.ref_id, namespace: "shared" });
+    await b.edges.write({ edge: "PARENT_OF", source_ref_id: ours.ref_id, target_ref_id: mine.ref_id, namespace: "shared" });
+    const app = appCtx(services);
+    await assert.rejects(run(graphQuery, { cypher: "MATCH (n:Node) RETURN count(n) AS c" }, app) as Promise<unknown>, /raw graph queries are off/);
+    const versionOf = (out: unknown) => accessedNodesOf(out)?.map((n) => [n.ref_id, n.node_type, n.version]);
+    const whole = await readConceptVersion(b, ours.ref_id);
+    assert.match(whole!, /^[a-f0-9]{12}$/);
+    assert.deepEqual(versionOf(await run(graphGet, { ref_id: ours.ref_id, children: "PARENT_OF" }, app)), [[ours.ref_id, "Concept", whole]]);
+    assert.deepEqual(versionOf(await run(graphGet, { ref_id: ours.ref_id }, jobCtx(services))), [[ours.ref_id, "Concept", whole]], "with or without its children listed, whoever reads");
+    // A node that is no Concept carries none.
+    const person = await b.nodes.write({ type: "Person", data: { name: "Ada" } }, "create", { namespace: "shared" });
+    assert.deepEqual(versionOf(await run(graphGet, { ref_id: person.ref_id }, jobCtx(services))), [[person.ref_id, "Person", undefined]]);
   });
 
   it("an app reads only shared, with no Strut records, through every read step", async () => {

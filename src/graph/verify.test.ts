@@ -17,6 +17,8 @@ import { defineStep, type RunEvent, type StepRegistry } from "../core.js";
 import { createStrut, type Strut } from "../createStrut.js";
 import { coreRegistry } from "../steps/registry.js";
 import jobDir from "../steps/lib/job/dir.js";
+import contextConcept from "../steps/lib/context/concept.js";
+import graphGet from "../steps/lib/graph/graph-get.js";
 import jobGet from "../steps/lib/job/get.js";
 import verifyJobStep from "../steps/lib/meta/verify-job.js";
 import { MemoryRunStore } from "../store.js";
@@ -120,6 +122,9 @@ for (const tb of testBackends()) describe(`verify pass on ${tb.name}`, { skip: t
       // evidence at the shot, refutes while a `fail` marker is in the job.
       "job/dir": jobDir,
       "job/get": jobGet,
+      // What opens a Concept's page: the step behind an agent's graph_graph_get, and the one a workflow puts it in a prompt with.
+      "context/concept": contextConcept,
+      "graph/graph-get": graphGet,
       "meta/verify-job": verifyJobStep,
       "probe/shot": defineStep({
         type: "probe/shot",
@@ -952,5 +957,168 @@ for (const tb of testBackends()) describe(`verify pass on ${tb.name}`, { skip: t
     const tools = buildTools(bare) as Record<string, { inputSchema: z.ZodObject }>;
     assert.ok(!tools["add_claim"] && !tools["verify_run"] && !("claims" in tools["create_step"]!.inputSchema.shape));
     assert.ok(!(await buildSystem(bare)).includes(CLAIMS_SECTION));
+  });
+  // ── A Concept as a subject ─────────────────────────────────────────────────
+  // A run observes every Concept whose page it opened, at the version that
+  // read returned; the claims about it are checked against the run.
+
+  describe("a CONCEPT subject", () => {
+    const PLANNING = { kind: "concept" as const, name: "Planning" };
+    const JOB_ROOT = { kind: "concept" as const, name: "Job" };
+    const ref: Record<string, string> = {};
+    /** The plan must mention a rollout: a regex over the file the run wrote, in the run's own directory. */
+    const hasRollout: CheckSpecInput = { type: "exec", name: "rollout", config: { cmd: "grep", args: ["-qi", "rollout", "plan.md"], cwd: "{{ input.dir }}" } };
+    /** A request of a kind opens that kind's page. No kind asked for: no verdict, so nothing is recorded. */
+    const opensItsPage: CheckSpecInput = {
+      type: "pack",
+      name: "opened",
+      config: { supports: "{{ input.input.kind ? input.concepts.includes(input.input.kind) : null }}", content: "opened: {{ input.concepts.join(', ') }}" },
+    };
+    const conceptStatus = async (subject: { kind: "concept"; name: string }) => {
+      const r = await claims.listClaims(subject);
+      assert.ok("ok" in r, (r as { error?: string }).error);
+      return (r as Extract<typeof r, { ok: true }>).claims.map((c) => [c.text, c.status, c.latest?.content, c.latest?.about] as const);
+    };
+    const plan = async (input: Record<string, unknown>) => {
+      const run = await strut.run("planner", input);
+      assert.equal(run.status, "success");
+      return { run, result: await verify("planner", run.runId) };
+    };
+
+    beforeEach(async () => {
+      const [job, planning, research] = await backend.nodes.writeMany([
+        { type: "Concept", data: { name: "Job", description: "What a job agent does", docs: "Open the page of the kind of work asked for." } },
+        { type: "Concept", data: { name: "Planning", description: "writing a plan", docs: "A plan ends with a rollout section." } },
+        { type: "Concept", data: { name: "Research", description: "finding things out", docs: "Cite sources." } },
+      ]);
+      Object.assign(ref, { job: job!.ref_id, planning: planning!.ref_id, research: research!.ref_id });
+      await backend.edges.writeMany([
+        { edge: "PARENT_OF", source_ref_id: job!.ref_id, target_ref_id: planning!.ref_id },
+        { edge: "PARENT_OF", source_ref_id: job!.ref_id, target_ref_id: research!.ref_id },
+      ]);
+      // The job workflow in small: the root page in front of the agent, the kind's page opened when one is asked for, a file written.
+      await ws.publishWorkflowByContent(
+        "planner",
+        WF(
+          "planner",
+          [
+            `  - id: kinds\n    type: context/concept\n    config: { name: Job }\n`,
+            `  - id: page\n    type: graph/graph-get\n    config: { node_type: Concept, name: "{{ input.open }}" }\n`,
+            `  - id: write\n    type: exec\n    config: { cmd: sh, args: ["-c", 'printf "%s" "$1" > plan.md', "_", "{{ input.plan }}"] }\n`,
+            `  - id: result\n    type: pack\n    config: { text: "{{ input.plan }}" }\n`,
+          ].join(""),
+        ),
+      );
+    });
+
+    it("a run that opened the page is checked against the claims about it: a regex on the file it wrote, evidence ABOUT the Concept at the version it read", async () => {
+      const onPlanning = await addClaim(PLANNING as never, "a plan has a rollout section", [hasRollout]);
+      const onJob = await addClaim(JOB_ROOT as never, "a request of a kind opens that kind's page", [opensItsPage]);
+      assert.deepEqual(await conceptStatus(PLANNING), [["a plan has a rollout section", "unknown", undefined, undefined]]);
+      const reader = verifier.reader;
+      const v1 = await reader.activeVersion(PLANNING);
+
+      const good = await plan({ kind: "Planning", open: "Planning", plan: "1. Build it.\n2. Rollout: staged, 10% first." });
+      assert.deepEqual(outcomes(good.result), [["concept:Job", { ran: true }], ["concept:Planning", { ran: true }]]);
+      assert.deepEqual(good.result.subjects, [JOB_ROOT, PLANNING]);
+      assert.deepEqual(await conceptStatus(PLANNING), [["a plan has a rollout section", "supported", "exit 0", v1]]);
+      assert.deepEqual(await conceptStatus(JOB_ROOT), [["a request of a kind opens that kind's page", "supported", "opened: Job, Planning", await reader.activeVersion(JOB_ROOT)]]);
+
+      // The graph: ABOUT the Concept itself, sourced to the run, the version on the source.
+      const written = await rows(
+        `MATCH ${n("c", "Claim", { id: "$c" })}-[eb:EVIDENCED_BY]->${n("e", "Evidence")}-[:PRODUCED_BY]->${n("k", "Check", { id: "$k" })}, (e)-[:ABOUT]->${n("p", "Concept")}, (e)-[hs:HAS_SOURCE]->${n("r", "StrutRun")}
+         RETURN eb.strength AS strength, e.evidence_mode AS mode, p.name AS about, r.run_id AS run, hs.context AS context`,
+        { c: onPlanning.id, k: onPlanning.checks[0] },
+      );
+      assert.deepEqual(
+        written.map((w) => ({ ...w, context: JSON.parse(w["context"] as string) })),
+        [{ strength: 1, mode: "observed", about: "Planning", run: good.run.runId, context: { path: "concept:Planning", version: v1, checkVersion: "exec" } }],
+      );
+      // The run view carries it beside the workflow's own.
+      const view = (await (await strut.app.request(`/workflows/planner/evidence?runId=${good.run.runId}`)).json()) as { evidence: Array<{ claim: { text: string }; subject?: { kind: string; name: string; version: string }; verdict: string }> };
+      assert.deepEqual(
+        view.evidence.map((e) => [e.subject, e.verdict]).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
+        [[{ kind: "concept", name: "Job", version: await reader.activeVersion(JOB_ROOT) }, "supports"], [{ kind: "concept", name: "Planning", version: v1 }, "supports"]],
+      );
+      // Idempotent, like every pass.
+      const again = await verify("planner", good.run.runId);
+      assert.equal(again.evidence, 0);
+
+      // A plan with no rollout refutes; a refutation on the page as it is always wins.
+      const bad = await plan({ kind: "Planning", open: "Planning", plan: "1. Build it." });
+      assert.deepEqual((await conceptStatus(PLANNING))[0]!.slice(0, 2), ["a plan has a rollout section", "refuted"]);
+      assert.equal(bad.result.evidence, 2);
+
+      // The page is rewritten: what was observed is about an older page, so the claim reads stale, never refuted.
+      await backend.nodes.update(ref["planning"]!, { set: { docs: "A plan ALWAYS ends with a section titled Rollout." } });
+      const v2 = await reader.activeVersion(PLANNING);
+      assert.notEqual(v2, v1);
+      assert.equal((await conceptStatus(PLANNING))[0]![1], "stale");
+      // The root's version is the lines its children show in it: their docs do not move it…
+      assert.equal((await conceptStatus(JOB_ROOT))[0]![1], "supported");
+      // …and the next run that opens the new page is evidence about it.
+      const fixed = await plan({ kind: "Planning", open: "Planning", plan: "Rollout: all at once." });
+      assert.deepEqual(await conceptStatus(PLANNING), [["a plan has a rollout section", "supported", "exit 0", v2]]);
+      assert.equal(fixed.result.evidence, 2);
+      void onJob;
+    });
+
+    it("a run that skipped the page is no observation of it: the claim that it gets opened sits on the page that lists it, and a check that does not apply records nothing", async () => {
+      await addClaim(PLANNING as never, "a plan has a rollout section", [hasRollout]);
+      await addClaim(JOB_ROOT as never, "a request of a kind opens that kind's page", [opensItsPage]);
+
+      // Asked for a plan, never opened Planning: only the root was read, and its claim catches it.
+      const skipped = await plan({ kind: "Planning", plan: "1. Build it." });
+      assert.deepEqual(outcomes(skipped.result), [["concept:Job", { ran: true }]]);
+      assert.deepEqual(await conceptStatus(PLANNING), [["a plan has a rollout section", "unknown", undefined, undefined]]);
+      assert.deepEqual((await conceptStatus(JOB_ROOT))[0]!.slice(0, 3), ["a request of a kind opens that kind's page", "refuted", "opened: Job"]);
+
+      // The fix is the line the child shows in the root: the root's version moves, and its claim reads stale until a run answers.
+      await backend.nodes.update(ref["planning"]!, { set: { description: "ANY request for a plan: open this first" } });
+      assert.equal((await conceptStatus(JOB_ROOT))[0]![1], "stale");
+      await plan({ kind: "Planning", open: "Planning", plan: "Rollout: staged." });
+      assert.equal((await conceptStatus(JOB_ROOT))[0]![1], "supported");
+
+      // A run the claim does not apply to (no kind asked for): the check gives no verdict, nothing is written.
+      const before = await nodeCount(backend, "Evidence");
+      const chat = await plan({ plan: "hello" });
+      assert.deepEqual(outcomes(chat.result), [["concept:Job", { skipped: "cannot-launch", reason: "the check returned no { supports, content }" }]]);
+      assert.equal(await nodeCount(backend, "Evidence"), before);
+      assert.equal((await conceptStatus(JOB_ROOT))[0]![1], "supported");
+    });
+
+    it("authoring: a Concept by its name through every door; never published, never the meta surface's; a person's word is evidence about the page the run read", async () => {
+      const made = await addClaim(PLANNING as never, "a plan has a rollout section", [hasRollout, { description: "Read the plan: is the rollout staged?" }]);
+      // Defaults are a template's: a code check fires on every run, an external one paces its question.
+      const listed = await claims.listClaims(PLANNING);
+      assert.ok("ok" in listed);
+      assert.deepEqual((listed as Extract<typeof listed, { ok: true }>).claims[0]!.checks.map((k) => [k.name, k.policy]), [["rollout", "always"], ["Read the plan: is the rollout staged?", "on_change"]]);
+
+      const missing = await claims.addClaim({ subjects: [{ kind: "concept", name: "Nope" }], text: "x", checks: [hasRollout] }, human);
+      assert.match((missing as { error: string }).error, /concept "Nope" is not in the graph/);
+      const atPublish = await claims.addClaim({ subjects: [PLANNING], text: "x", checks: [{ ...hasRollout, when: "publish" }] }, human);
+      assert.match((atPublish as { error: string }).error, /a Concept is never published/);
+      const meta = await claims.addClaim({ subjects: [PLANNING], text: "x", checks: [hasRollout] }, { publisher: "ai", scoped: true });
+      assert.match((meta as { error: string }).error, /the meta surface writes no claims about Concepts/);
+      const unknown = await claims.listClaims({ kind: "concept", name: "Nope" });
+      assert.match((unknown as { error: string }).error, /concept "Nope" is not in the graph/);
+
+      // The route a page reads.
+      const res = await strut.app.request(`/claims?kind=concept&name=Planning`);
+      assert.equal(res.status, 200);
+      assert.deepEqual(((await res.json()) as { claims: Array<{ text: string }> }).claims.map((c) => c.text), ["a plan has a rollout section"]);
+
+      // The external check opens a slot on the run; a person fills it: asserted, about the version the run read.
+      const { run, result } = await plan({ kind: "Planning", open: "Planning", plan: "Rollout: staged." });
+      assert.equal(result.slots, 1);
+      const answered = await verifier.addEvidence({ claim: made.id, name: "planner", runId: run.runId, supports: true, content: "staged, 10% first", by: "evan" });
+      assert.deepEqual([("ok" in answered && answered.filled), ("ok" in answered && answered.subject)], [true, PLANNING]);
+      // A run that never opened the page cannot be cited for it.
+      const other = await plan({ plan: "hello" });
+      const refused = await verifier.addEvidence({ claim: made.id, name: "planner", runId: other.run.runId, supports: true, content: "looks fine", by: "evan" });
+      assert.match((refused as { error: string }).error, /did not execute a subject of this claim/);
+      // The ledger a settled pass hands a model names the page.
+      assert.deepEqual(Object.keys(await verifier.ledger(result)), ["Planning"]);
+    });
   });
 });

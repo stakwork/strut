@@ -539,6 +539,7 @@ export {
   type EvidenceMode,
   type EvidenceStatus,
 } from "./graph/claims.js";
+export { conceptVersionOf, readConceptVersion } from "./graph/concept-version.js";
 export { ClaimsWriter, ClaimsError, boundedName, type CheckData, type ClaimsErrorCode } from "./graph/claims-writer.js";
 export {
   buildClaimsAuthoring,
@@ -586,6 +587,7 @@ export {
   createVerifier,
   subjectsOfRun,
   jobSubjectPath,
+  conceptSubjectPath,
   mapCheckResult,
   policyFires,
   sampleFires,

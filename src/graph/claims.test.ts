@@ -28,6 +28,7 @@ import {
 } from "./claims.js";
 import type { GraphBackend } from "./backend.js";
 import type { JobView } from "../job-index.js";
+import { conceptVersionOf, readConceptVersion } from "./concept-version.js";
 
 
 // ── claimStatus (pure) ──────────────────────────────────────────────────────
@@ -199,9 +200,41 @@ describe("claimStatus over a JOB subject (pure, plans/job-claims.md §2)", () =>
     assert.equal(activeTurnOf([{ runId: "1702", parentRunId: "1701" }, { runId: "1701" }, { runId: "1700" }]), "1701");
     assert.equal(activeTurnOf([{ runId: "1702", parentRunId: "1701" }]), null);
     assert.equal(activeTurnOf([]), null);
-    assert.deepEqual(SUBJECT_KINDS, ["step", "workflow", "job"]);
+    assert.deepEqual(SUBJECT_KINDS, ["step", "workflow", "job", "concept"]);
     for (const kind of SUBJECT_KINDS) assert.equal(subjectName(subjectOf(kind, "x/y")), "x/y");
     assert.deepEqual(subjectOf("job", "j-1"), { kind: "job", id: "j-1" });
+    assert.deepEqual(subjectOf("concept", "Planning"), { kind: "concept", name: "Planning" });
+  });
+});
+
+describe("a CONCEPT subject (pure)", () => {
+  const PAGE: SubjectRef = { kind: "concept", name: "Planning" };
+  const read = (version: string, over: Partial<EvidenceRow> & { at?: number; run?: string } = {}) => ev({ about: { kind: "concept", name: "Planning", content_hash: version }, ...over });
+  const on = (evidence: EvidenceRow[], active: string | null) => claimStatus({ claim: { id: "c1" }, checks: [{ id: "k1" }], subject: PAGE, evidence, activeVersion: active });
+
+  it("the version is what a run read: supported on the page as it is, stale once the page (or a child's line in it) changed, refuted wins", () => {
+    assert.equal(on([read("p1")], "p1").status, "supported");
+    assert.deepEqual([on([read("p1")], "p2").status, on([read("p1")], "p2").unverified], ["stale", 1]);
+    assert.equal(on([read("p1", { at: 10, run: "r1" }), read("p1", { at: 20, run: "r2", strength: -1 })], "p1").status, "refuted");
+    assert.equal(on([read("p1", { strength: -1 }), read("p2", { at: 5000, run: "r9" })], "p2").status, "supported", "the edit answered it");
+    assert.equal(on([read("p1")], null).status, "stale", "the page is gone: never supported");
+    assert.equal(on([ev({ about: { kind: "workflow", name: "Planning", content_hash: "p1" } })], "p1").status, "unknown", "a workflow of the same name is another subject");
+  });
+
+  it("conceptVersionOf: the page and its children's names and descriptions, whatever order they were read in", () => {
+    const page = { name: "Personal", description: "How the person likes things done", docs: "Be brief.", children: [{ name: "Communication Style", description: "tone" }, { name: "Travel" }] };
+    const v = conceptVersionOf(page);
+    assert.match(v, /^[a-f0-9]{12}$/);
+    assert.equal(conceptVersionOf({ ...page, children: [...page.children].reverse() }), v);
+    assert.equal(conceptVersionOf({ ...page, description: null, children: [{ name: "Travel", description: "" }, page.children[0]!] }), conceptVersionOf({ ...page, description: undefined }), "absent, null and empty read alike");
+    for (const changed of [
+      { ...page, docs: "Be brief. No greeting." },
+      { ...page, description: "How Tom likes things done" },
+      { ...page, name: "Tom" },
+      { ...page, children: [{ name: "Communication Style", description: "open this before writing to anyone" }, { name: "Travel" }] },
+      { ...page, children: [page.children[0]!] },
+      { ...page, children: [...page.children, { name: "Food" }] },
+    ]) assert.notEqual(conceptVersionOf(changed), v);
   });
 });
 
@@ -542,6 +575,92 @@ for (const tb of testBackends()) {
       // A child run is not a turn.
       runs = [{ workflow: "pod-pr", runId: "1702", at: "", status: "running", parentRunId: "1701" }, ...runs];
       assert.equal(await withIndex.activeVersion(JOB), "1701");
+    });
+
+    it("a CONCEPT subject: the claim hangs off the Concept, the evidence is ABOUT it at the version its source recorded, and the active version is what opening the page returns now", async () => {
+      const [page, style, travel, other, turn] = await nodes.writeMany([
+        { type: "Concept", data: { name: "Personal", description: "How the person likes things done", docs: "Be brief." } },
+        { type: "Concept", data: { name: "Communication Style", description: "tone", docs: "No greeting. Sign off with a dash." } },
+        { type: "Concept", data: { name: "Travel", docs: "Window seat." } },
+        { type: "Concept", data: { name: "Glossary", docs: "Terms." } },
+        { type: "StrutRun", data: { run_id: "1800", workflow_name: "orchestrator", run_status: "success", started_at: now - 20 } },
+      ]);
+      await edges.writeMany([
+        { edge: "PARENT_OF", source_ref_id: page!.ref_id, target_ref_id: style!.ref_id },
+        { edge: "PARENT_OF", source_ref_id: page!.ref_id, target_ref_id: travel!.ref_id },
+      ]);
+      const text = "a turn that writes a message opens Communication Style";
+      const [cc] = await nodes.writeMany([{ type: "Claim", data: { id: "cc", name: text, claim_text: text, speaker_name: "evan", belief_valid_from: now - 9 } }], "create");
+      const [kc] = await nodes.writeMany([{ type: "Check", data: { id: "kc", name: "opened", step_type: "pack", step_config: "{}", policy: "always" } }]);
+      await edges.writeMany([
+        { edge: "ABOUT", source_ref_id: cc!.ref_id, target_ref_id: page!.ref_id },
+        { edge: "TESTS", source_ref_id: kc!.ref_id, target_ref_id: cc!.ref_id },
+      ]);
+      const PAGE: SubjectRef = { kind: "concept", name: "Personal" };
+
+      assert.deepEqual((await reader.subjectsOf("cc")).map((s) => [s.subject, s.ref_id]), [[PAGE, page!.ref_id]]);
+      assert.deepEqual((await reader.claimsFor(PAGE)).map((c) => c.id), ["cc"]);
+      assert.deepEqual(await reader.claimedSubjects("concept"), ["Personal"]);
+      assert.equal(await reader.subjectRefId(PAGE), page!.ref_id);
+      assert.equal(await reader.subjectRefId({ kind: "concept", name: "Nope" }), null);
+      assert.equal(await reader.activeVersion({ kind: "concept", name: "Nope" }), null);
+
+      // The version: one function, the page and the lines its children show in it.
+      const v1 = await reader.activeVersion(PAGE);
+      assert.equal(v1, conceptVersionOf({ name: "Personal", description: "How the person likes things done", docs: "Be brief.", children: [{ name: "Travel" }, { name: "Communication Style", description: "tone" }] }));
+      assert.equal(await readConceptVersion(backend, page!.ref_id), v1);
+      assert.equal(await readConceptVersion(backend, "no-such-ref"), null);
+      // A Concept keeps no node per version: the version node IS the Concept.
+      assert.equal(await reader.versionRefId({ kind: "concept", name: "Personal", content_hash: v1! }), page!.ref_id);
+      assert.equal(await reader.versionRefId({ kind: "concept", name: "Personal", content_hash: "an older one" }), page!.ref_id);
+
+      // What the pass writes: ABOUT the Concept, sourced to the run that read it, the version on the source.
+      const eid = evidenceId("kc", "1800", "concept:Personal");
+      const e = await nodes.write({ type: "Evidence", data: { id: eid, name: text, content: "opened: Communication Style", evidence_mode: "observed", evidence_status: "collected", observed_at: now - 5 } }, "create");
+      await edges.writeMany([
+        { edge: "EVIDENCED_BY", source_ref_id: cc!.ref_id, target_ref_id: e.ref_id, properties: { strength: 1 } },
+        { edge: "PRODUCED_BY", source_ref_id: e.ref_id, target_ref_id: kc!.ref_id },
+        { edge: "ABOUT", source_ref_id: e.ref_id, target_ref_id: page!.ref_id },
+        { edge: "HAS_SOURCE", source_ref_id: e.ref_id, target_ref_id: turn!.ref_id, properties: { context: JSON.stringify({ path: "concept:Personal", version: v1, checkVersion: "pack" }) } },
+      ]);
+      // Evidence about the Concept whose source recorded no version is about nothing: never guessed.
+      const strayId = newEpistemicId();
+      const stray = await nodes.write({ type: "Evidence", data: { id: strayId, name: "stray", content: "x", evidence_mode: "observed", evidence_status: "collected", observed_at: now - 4 } });
+      await edges.writeMany([
+        { edge: "EVIDENCED_BY", source_ref_id: cc!.ref_id, target_ref_id: stray.ref_id, properties: { strength: -1 } },
+        { edge: "ABOUT", source_ref_id: stray.ref_id, target_ref_id: page!.ref_id },
+        { edge: "HAS_SOURCE", source_ref_id: stray.ref_id, target_ref_id: turn!.ref_id, properties: { context: JSON.stringify({ path: "concept:Personal" }) } },
+      ]);
+
+      assert.deepEqual((await reader.evidenceFor("cc")).find((x) => x.id === strayId)!.about, undefined);
+      const [row] = await reader.evidenceFor("cc", PAGE);
+      assert.deepEqual(
+        [row!.id, row!.about, row!.source?.run_id, row!.source?.run_key, row!.source?.context],
+        [eid, { kind: "concept", name: "Personal", content_hash: v1 }, "1800", "orchestrator", { path: "concept:Personal", version: v1, checkVersion: "pack" }],
+      );
+      assert.deepEqual(await reader.evidenceFor("cc", { kind: "workflow", name: "Personal" }), [], "a workflow of the same name is another subject");
+      let [s] = await reader.statusFor(PAGE);
+      assert.deepEqual([s!.status.status, s!.status.unverified, s!.status.latest?.id], ["supported", 0, eid]);
+      // The run view lists it with the run's other evidence.
+      assert.deepEqual((await reader.evidenceForRuns("orchestrator")).map((x) => [x.id, x.about?.kind]).filter(([id]) => id === eid), [[eid, "concept"]]);
+
+      // A page elsewhere in the tree, or the docs of a child, do not move it…
+      await nodes.update(other!.ref_id, { set: { docs: "More terms." } });
+      await nodes.update(style!.ref_id, { set: { docs: "No greeting." } });
+      assert.equal(await reader.activeVersion(PAGE), v1);
+      // …the line a child shows in the page does: what was observed is now about an older page.
+      await nodes.update(style!.ref_id, { set: { description: "open this before writing to anyone" } });
+      const v2 = await reader.activeVersion(PAGE);
+      assert.notEqual(v2, v1);
+      [s] = await reader.statusFor(PAGE);
+      assert.deepEqual([s!.status.status, s!.status.unverified], ["stale", 1]);
+      // So does the page's own text, and a child leaving it.
+      await nodes.update(page!.ref_id, { set: { docs: "Be brief. Never apologise." } });
+      const v3 = await reader.activeVersion(PAGE);
+      await nodes.deleteNode(travel!.ref_id);
+      const v4 = await reader.activeVersion(PAGE);
+      assert.equal(new Set([v1, v2, v3, v4]).size, 4);
+      assert.equal(v4, conceptVersionOf({ name: "Personal", description: "How the person likes things done", docs: "Be brief. Never apologise.", children: [{ name: "Communication Style", description: "open this before writing to anyone" }] }));
     });
   });
 }
