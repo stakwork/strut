@@ -53,6 +53,7 @@ import {
   upstreamFor,
   fromPackage,
   refuseUnderInstalledPackage,
+  type OpenPackages,
   appListEntry,
   appRecord,
   newestVersion,
@@ -259,6 +260,11 @@ function collectStepRefs(node: unknown, out: Array<{ type: string; config: Recor
 
 export class GraphWorkspaceStore implements WorkspaceStore {
   private readonly ns: string;
+  private openPackages?: OpenPackages;
+
+  setOpenPackages(check: OpenPackages): void {
+    this.openPackages = check;
+  }
   private readonly materializeDir: string;
   private readonly appsDir: string;
 
@@ -470,7 +476,7 @@ export class GraphWorkspaceStore implements WorkspaceStore {
     const hash = contentHash(yamlStr);
     const { nodes } = this.backend;
     const w = await this.workflowRow(name);
-    if (!w) await refuseUnderInstalledPackage("workflow", name, opts, (prefix) => this.installedUnder(prefix));
+    if (!w) await refuseUnderInstalledPackage("workflow", name, opts, (prefix) => this.installedUnder(prefix), this.openPackages);
     const versions = await this.versionRows(name);
     const upstream = upstreamFor(opts, parseJson<Upstream>(versions.find((v) => v.content_hash === w?.active_version)?.upstream));
     const existing = versions.find((v) => v.content_hash === hash);
@@ -889,7 +895,7 @@ export class GraphWorkspaceStore implements WorkspaceStore {
     const { nodes } = this.backend;
     const existing = await this.stepRow(name);
     const versions = existing ? await this.stepVersionRows(name) : [];
-    if (!existing) await refuseUnderInstalledPackage("step", name, opts, (prefix) => this.installedUnder(prefix));
+    if (!existing) await refuseUnderInstalledPackage("step", name, opts, (prefix) => this.installedUnder(prefix), this.openPackages);
 
     if (existing) {
       const match = versions.find((v) => v.content_hash === hash);
@@ -1066,7 +1072,7 @@ export class GraphWorkspaceStore implements WorkspaceStore {
     validateAppName(name);
     const { nodes } = this.backend;
     const existing = await this.appRow(name);
-    if (!existing) await refuseUnderInstalledPackage("app", name, opts, (prefix) => this.installedUnder(prefix));
+    if (!existing) await refuseUnderInstalledPackage("app", name, opts, (prefix) => this.installedUnder(prefix), this.openPackages);
     const versions = existing ? await this.appVersionRows(name) : [];
     const owner = opts?.owner ?? opts?.actor;
 

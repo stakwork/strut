@@ -95,6 +95,17 @@ comes back as an error, never a failed look. It is every app's
 convention, not a game's: whatever a look should check and cannot read
 off the page goes there.
 
+## An app in a repo
+
+A package opened here as a git repository (Packages → Repos) is worked on
+in place: its installed items — `acme/moonlander/game`,
+`acme/moonlander/score` — are the ones you edit, and a person's Commit
+pushes the edits to the repo. To ADD a workflow, step or app to it, name
+it under the package: `acme/moonlander/ghost`, never `ghost`. Inside a
+package a bare name means the package's own item first, so a new bare
+name is outside the package, and no commit carries it. The package's
+items still call each other by their bare names.
+
 ## The manifest
 
 ```yaml

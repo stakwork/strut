@@ -69,6 +69,9 @@
 >   opened; the bare originals retired only on the person's word;
 > - `package/commit`, a proposal an admin accepts, granted and in `approve:`
 >   in the `job`, `builder` and `orchestrator` seeds;
+> - an opened repo's prefix takes NEW workflows, steps and apps from any
+>   door (`WorkspaceStore.setOpenPackages`), which Commit writes as new
+>   files; every other installed package keeps marketplace.md §3's rule;
 > - the Packages tab's Repos section (`web/src/components/PackageRepos.tsx`)
 >   and Create repo on a package's page.
 >
@@ -83,9 +86,17 @@
 >   `repo` door did not write at the commit on file, and the deletions — so
 >   it never undoes what git merged. `strut.yaml`, `serve.yaml`, `graph/`
 >   and other files are the repo's; claims travel with an edited step.
-> - A new item under the prefix is still refused by the workspace
->   (marketplace.md §3); a file added in the working copy installs at the
->   next Pull.
+> - A new item under an opened repo's prefix is allowed from any door and
+>   named under the package (`acme/moonlander/ghost`): the refusal, where
+>   the rule still holds, says how to open the repo, and the `App` page says
+>   to name a new item under the package. A file added in the working copy
+>   also installs at the next Pull.
+> - A new Concept page under one of the package's pages is the package's at
+>   the next Commit (adopted by the repo door). It shows in the diff, not in
+>   the row's "new" list.
+> - Closing a repo puts the rule back. An item added and not committed stays
+>   a local item that runs and can be edited, and the first Commit after the
+>   repo is opened again writes it.
 > - The re-stamp rewrites the known version's door, actor and upstream in
 >   place: no new version. It runs after every other write, as it is not
 >   taken back.

@@ -84,6 +84,9 @@ export interface RepoItem {
  *  the workspace changed since the commit installed, and a merge waiting. */
 export interface RepoView extends RepoRecord {
   workdir: string;
+  /** New here: an item under the prefix the commit does not hold. */
+  added: RepoItem[];
+  /** Edited here since the commit installed. */
   forked: RepoItem[];
   deleted: RepoItem[];
   /** Files a pull's merge left in conflict, waiting for the person. */
@@ -156,7 +159,7 @@ export interface CommitResult {
   /** Why no pull request was opened for a new branch. */
   prSkipped?: string;
   diff: RepoDiff;
-  /** The items that were forks and are now the package's. */
+  /** The items added or edited here that are now the package's. */
   stamped: RepoItem[];
   install?: InstallResult;
 }
@@ -172,6 +175,9 @@ export interface PullResult {
 }
 
 export interface Repos {
+  /** Is the package opened here as a repo? Its prefix then takes new names
+   *  (`WorkspaceStore.setOpenPackages`). */
+  isOpen(pkg: string): Promise<boolean>;
   list(): Promise<RepoView[]>;
   get(pkg: string): Promise<RepoView | undefined>;
   open(input: OpenInput): Promise<RepoView & { install: InstallResult }>;
@@ -286,66 +292,85 @@ export function createRepos(deps: ReposDeps): Repos {
     return r.code === 0;
   };
 
-  /** What the workspace changed since the commit on file: an item whose
-   *  active version the repo door did not write at that commit (a fork, an
-   *  older version made active), a Concept edited here or added under the
-   *  package's pages; and the items the commit holds that are gone here. */
-  const edits = async (rec: RepoRecord): Promise<{ forked: RepoItem[]; deleted: RepoItem[]; baseline: CachedPackage | undefined }> => {
+  /** What the workspace changed since the commit on file: an item the
+   *  author ADDED under the prefix (an open repo takes new names, src/
+   *  workspace.ts `OpenPackages`) — one the commit does not hold; an item
+   *  whose active version the repo door did not write at that commit (a
+   *  fork, an older version made active) or a Concept the fold calls edited;
+   *  and the items the commit holds that are gone here. A new Concept page
+   *  under the package's pages is found when the files are written
+   *  (`writeEdits`), not here: finding it walks the tree. */
+  const edits = async (rec: RepoRecord): Promise<{ added: RepoItem[]; forked: RepoItem[]; deleted: RepoItem[]; baseline: CachedPackage | undefined; pages: Set<string> }> => {
     const { workspace, graph } = deps.files;
     const prefix = `${rec.package}/`;
+    const baseline = await deps.cache.get(rec.digest).catch(() => undefined);
+    const inCommit = new Set((baseline?.items ?? []).map((i) => `${i.kind}:${i.name}`));
     const atCommit = (v: { source?: VersionSource; upstream?: { commit?: string } } | undefined) => v?.source === "repo" && v.upstream?.commit === rec.commit;
+    const added: RepoItem[] = [];
     const forked: RepoItem[] = [];
     const here = new Set<string>();
+    const sort = (item: RepoItem, version: { source?: VersionSource; upstream?: { commit?: string } } | undefined) => {
+      here.add(`${item.kind}:${item.name}`);
+      if (!inCommit.has(`${item.kind}:${item.name}`)) added.push(item);
+      else if (!atCommit(version)) forked.push(item);
+    };
     for (const w of await workspace.listWorkflows()) {
       if (!w.name.startsWith(prefix)) continue;
-      here.add(`workflow:${w.name}`);
       const meta = await workspace.getWorkflowMetadata(w.name);
-      if (!atCommit(meta?.versions[meta.active])) forked.push({ kind: "workflow", name: w.name });
+      sort({ kind: "workflow", name: w.name }, meta?.versions[meta.active]);
     }
     for (const type of Object.keys(await workspace.getActiveStepHashes())) {
       if (!type.startsWith(prefix)) continue;
-      here.add(`step:${type}`);
       const meta = await workspace.getStepMetadata(type);
-      if (!atCommit(meta?.versions[meta.active])) forked.push({ kind: "step", name: type });
+      sort({ kind: "step", name: type }, meta?.versions[meta.active]);
     }
     for (const a of await workspace.listApps()) {
       if (!a.name.startsWith(prefix)) continue;
-      here.add(`app:${a.name}`);
-      const rec2 = await workspace.getApp(a.name);
-      if (!atCommit(rec2?.versions[rec2.active])) forked.push({ kind: "app", name: a.name });
+      const app = await workspace.getApp(a.name);
+      sort({ kind: "app", name: a.name }, app?.versions[app.active]);
     }
+    const pages = new Set<string>();
     if (graph) {
       const pkg = (await listInstalledPackages(deps.files)).find((p) => p.package === rec.package);
       for (const c of pkg?.items.filter((i) => i.kind === "concept") ?? []) {
         here.add(`concept:${c.name}`);
+        pages.add(c.name);
         if (c.modified !== false) forked.push({ kind: "concept", name: c.name });
       }
     }
-    const baseline = await deps.cache.get(rec.digest).catch(() => undefined);
     const deleted: RepoItem[] = [];
     for (const i of baseline?.items ?? []) {
       if (i.kind === "type" || (i.kind === "concept" && !graph)) continue;
       if (!here.has(`${i.kind}:${i.name}`)) deleted.push({ kind: i.kind, name: i.name });
     }
-    return { forked, deleted, baseline };
+    return { added, forked, deleted, baseline, pages };
   };
 
   /** Write the workspace's edits into the working copy's package folder:
-   *  each edited item's files, an edited app's folder whole, a page under
-   *  its key (its old file gone when that was another), and a deleted
-   *  item's files removed. Returns what it found. */
-  const writeEdits = async (rec: RepoRecord): Promise<{ forked: RepoItem[]; deleted: RepoItem[]; warnings: string[] }> => {
+   *  each added or edited item's files (a step's claims beside it), an app's
+   *  folder whole, a page under its key (its old file gone when that was
+   *  another) — a page the package does not hold yet, under one of its
+   *  pages, is added — and a deleted item's files removed. Returns what it
+   *  found. */
+  const writeEdits = async (rec: RepoRecord): Promise<{ added: RepoItem[]; forked: RepoItem[]; deleted: RepoItem[]; warnings: string[] }> => {
     const found = await edits(rec);
     const dir = pkgDirOf(rec);
-    const edited = new Set(found.forked.map((i) => `${i.kind}:${i.name}`));
+    const changed = new Set([...found.added, ...found.forked].map((i) => `${i.kind}:${i.name}`));
     const pageFiles = new Map((found.baseline?.items ?? []).filter((i) => i.kind === "concept").map((i) => [i.name, i.path]));
     const remove = async (rel: string) => rm(join(dir, ...rel.split("/")), { recursive: true, force: true });
-    const out = edited.size ? await packageFiles(deps.files, { under: rec.package }) : undefined;
-    // An edited app is written whole: a file it dropped goes.
-    for (const i of found.forked.filter((x) => x.kind === "app")) await remove(`apps/${i.name.slice(rec.package.length + 1)}`);
-    for (const [rel, body] of out?.files ?? []) {
-      const item = out!.items!.get(rel);
-      if (!item || !edited.has(`${item.kind}:${item.name}`)) continue;
+    const out = await packageFiles(deps.files, { under: rec.package });
+    const added = [...found.added];
+    // A page under the package's pages that it does not hold yet: added here.
+    for (const item of out.items?.values() ?? []) {
+      if (item.kind !== "concept" || found.pages.has(item.name) || changed.has(`concept:${item.name}`)) continue;
+      changed.add(`concept:${item.name}`);
+      added.push(item);
+    }
+    // An app is written whole: a file it dropped goes.
+    for (const i of [...found.added, ...found.forked].filter((x) => x.kind === "app")) await remove(`apps/${i.name.slice(rec.package.length + 1)}`);
+    for (const [rel, body] of out.files) {
+      const item = out.items!.get(rel);
+      if (!item || !changed.has(`${item.kind}:${item.name}`)) continue;
       if (item.kind === "concept") {
         const old = pageFiles.get(item.name);
         if (old && old !== rel) await remove(old);
@@ -359,7 +384,7 @@ export function createRepos(deps: ReposDeps): Repos {
       await remove(at.path);
       if (at.claims) await remove(at.claims);
     }
-    return { forked: found.forked, deleted: found.deleted, warnings: out?.warnings ?? [] };
+    return { added, forked: found.forked, deleted: found.deleted, warnings: out.warnings };
   };
 
   const diffOf = async (work: string, range: string[], spec: string): Promise<RepoDiff> => {
@@ -375,9 +400,9 @@ export function createRepos(deps: ReposDeps): Repos {
 
   const view = async (rec: RepoRecord): Promise<RepoView> => {
     const work = workdirOf(rec.package);
-    const { forked, deleted } = await edits(rec);
+    const { added, forked, deleted } = await edits(rec);
     const waiting = existsSync(join(work, ".git")) && (await merging(work)) ? await unmerged(work) : undefined;
-    return { ...rec, workdir: work, forked, deleted, ...(waiting?.length ? { conflict: waiting } : {}) };
+    return { ...rec, workdir: work, added, forked, deleted, ...(waiting?.length ? { conflict: waiting } : {}) };
   };
 
   /** Apply the working copy's HEAD through the repo door and put it on file. */
@@ -468,6 +493,9 @@ export function createRepos(deps: ReposDeps): Repos {
   };
 
   return {
+    async isOpen(pkg) {
+      return (await readAll()).some((r) => r.package === pkg);
+    },
     async list() {
       return Promise.all((await readAll()).map(view));
     },
@@ -592,7 +620,7 @@ export function createRepos(deps: ReposDeps): Repos {
           ...(pr ? { pr } : {}),
           ...(prSkipped ? { prSkipped } : {}),
           diff: done.diff,
-          stamped: done.found.forked,
+          stamped: [...done.found.added, ...done.found.forked],
           install,
         };
       });

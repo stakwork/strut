@@ -8,10 +8,12 @@
 import { after, afterEach, before, beforeEach, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { dirname, join, relative } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import type { KitLocation } from "../apps/kit.js";
+import { kitForTests } from "../test-util/app-kit.js";
 import { createStrut, type Strut } from "../createStrut.js";
 import { MemoryRunStore } from "../store.js";
 import { WorkspaceManager } from "../workspace.js";
@@ -20,6 +22,22 @@ import type { CommitResult, PullResult, RepoView } from "./repos.js";
 
 const GIT_ID = ["-c", "user.name=test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false", "-c", "init.defaultBranch=main"];
 const TOKEN = "ghp_SENTINELtoken0123456789abcdefSENTINEL";
+const HELLO = join(dirname(fileURLToPath(import.meta.url)), "..", "apps", "__fixtures__", "hello");
+const STEP = (type: string, body = "return { ok: true };") =>
+  `import { z, defineStep } from "strut";\nexport default defineStep({ type: ${JSON.stringify(type)}, description: "x", input: z.object({}), output: z.any(), async run() { ${body} } });\n`;
+/** A directory's files as \`POST /apps\` takes them. */
+async function filesOf(dir: string): Promise<Record<string, { base64: string }>> {
+  const out: Record<string, { base64: string }> = {};
+  const walk = async (d: string): Promise<void> => {
+    for (const e of await readdir(d, { withFileTypes: true })) {
+      const at = join(d, e.name);
+      if (e.isDirectory()) await walk(at);
+      else out[relative(dir, at)] = { base64: (await readFile(at)).toString("base64") };
+    }
+  };
+  await walk(dir);
+  return out;
+}
 
 function git(cwd: string, ...args: string[]): string {
   const r = spawnSync("git", [...GIT_ID, ...args], { cwd, encoding: "utf8" });
@@ -66,8 +84,9 @@ async function pushElsewhere(remote: string, files: Record<string, string>, mess
 }
 const remoteFile = (dir: string, rev: string, path: string) => git(dir, "show", `${rev}:${path}`);
 
-const boot = (dir: string): Promise<Strut> =>
+const boot = (dir: string, extra: Record<string, unknown> = {}): Promise<Strut> =>
   createStrut({
+    ...extra,
     workspace: new WorkspaceManager(dir),
     store: new MemoryRunStore(),
     serveUi: false,
@@ -323,5 +342,86 @@ describe("a repo", () => {
     const door = (strut.services as { packages: { commit(p: string, o: { proposal: string; message: string }): Promise<unknown> } }).packages.commit;
     await assert.rejects(door("acme/moon", { proposal: "nope", message: "Push it" }), /package_commit_needs_person/);
     assert.equal(git(remote.dir, "log", "--format=%s", "main"), "first", "nothing was pushed");
+  });
+});
+
+describe("adding to a repo", () => {
+  let kit: KitLocation;
+  let strut: Strut;
+  before(async () => {
+    kit = await kitForTests();
+  });
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), "strut-repos-add-"));
+    strut = await boot(join(root, "ws"), { kit });
+  });
+  afterEach(async () => {
+    await strut.close?.();
+    await rm(root, { recursive: true, force: true });
+  });
+  const req = (path: string, init?: RequestInit) => strut.app.request(path, init);
+  const publish = (name: string, message: string) => req("/workflows", json({ name, yaml: SCORE(name, message) }));
+
+  it("takes a new workflow, step, helper and app under an OPEN repo's prefix, and a Commit writes them to the remote as the package's", async () => {
+    const remote = await moonRemote();
+    assert.equal((await req("/packages/repos", json({ url: remote.url }))).status, 201);
+    // A new name under the package: the open repo takes it, from any door.
+    const wf = await publish("acme/moon/ghost", "boo");
+    assert.equal(wf.status, 201, await wf.clone().text());
+    assert.equal((await req("/steps", json({ name: "acme/moon/_util", code: "export const twice = (n: number) => n * 2;\n" }))).status, 201);
+    const step = await req("/steps", json({ name: "acme/moon/replay", code: STEP("acme/moon/replay") }));
+    assert.equal(step.status, 201, await step.clone().text());
+    const app = await req("/apps", json({ name: "acme/moon/game", files: await filesOf(HELLO) }));
+    assert.equal(app.status, 201, await app.clone().text());
+    const view = (await (await req("/packages/repos/acme/moon")).json()) as RepoView;
+    assert.deepEqual(
+      view.added.map((i) => `${i.kind}:${i.name}`).sort(),
+      ["app:acme/moon/game", "step:acme/moon/_util", "step:acme/moon/replay", "workflow:acme/moon/ghost"],
+    );
+    assert.deepEqual(view.forked, []);
+
+    const done = (await (await req("/packages/repos/acme/moon/commit", json({ message: "Add the ghost", branch: "main" }))).json()) as CommitResult;
+    assert.equal(done.pushed, true, JSON.stringify(done));
+    const files = git(remote.dir, "ls-tree", "-r", "--name-only", "main").split("\n");
+    for (const f of ["workflows/ghost.yaml", "steps/replay.ts", "steps/_util.ts", "apps/game/app.yaml", "apps/game/src/App.tsx"]) assert.ok(files.includes(f), `${f} is in the commit: ${files.join(", ")}`);
+    assert.equal(files.some((f) => f.startsWith("apps/game/dist/")), false, "no build output");
+    assert.match(remoteFile(remote.dir, "main", "workflows/ghost.yaml"), /"boo"/);
+    // The package's now: stamped with the commit, nothing new or edited.
+    const meta = (await strut.workspace.getWorkflowMetadata("acme/moon/ghost"))!;
+    assert.equal(meta.versions[meta.active]?.upstream?.commit, done.commit);
+    const pkg = ((await (await req("/packages")).json()) as { packages: InstalledPackage[] }).packages.find((p) => p.package === "acme/moon");
+    assert.deepEqual(
+      pkg?.items.map((i) => `${i.kind}:${i.name}:${i.modified}`).sort(),
+      ["app:acme/moon/game:false", "step:acme/moon/_util:false", "step:acme/moon/replay:false", "workflow:acme/moon/ghost:false", "workflow:acme/moon/score:false"],
+    );
+    const after = (await (await req("/packages/repos/acme/moon")).json()) as RepoView;
+    assert.deepEqual([after.added, after.forked], [[], []]);
+  });
+
+  it("keeps the rule for a package installed the ordinary way, and puts it back when the repo is closed", async () => {
+    // Installed from a file: a new name under it is refused, with the way to add one.
+    const dir = join(root, "plain");
+    await write(dir, { "strut.yaml": "package: acme/plain\nversion: 1.0.0\n", "workflows/one.yaml": SCORE("acme/plain/one", "1") });
+    assert.equal((await req("/packages/install", json({ ref: `file:${dir}` }))).status, 201);
+    const refused = await publish("acme/plain/two", "2");
+    assert.equal(refused.status, 400);
+    assert.match(((await refused.json()) as { error: string }).error, /package_conflict: acme\/plain\/two is under acme\/plain, an installed package.*open its git repository here \(Packages → Repos\)/);
+
+    // An open repo takes one; closed, the next new name is refused again.
+    const remote = await moonRemote();
+    await req("/packages/repos", json({ url: remote.url }));
+    assert.equal((await publish("acme/moon/ghost", "boo")).status, 201);
+    assert.equal((await req("/packages/repos/acme/moon", { method: "DELETE" })).status, 200);
+    const again = await publish("acme/moon/spirit", "s");
+    assert.equal(again.status, 400);
+    assert.match(((await again.json()) as { error: string }).error, /package_conflict: acme\/moon\/spirit is under acme\/moon/);
+    // What was added and not committed stays, a local item that can still be edited.
+    assert.ok(await strut.workspace.getWorkflowMetadata("acme/moon/ghost"));
+    await strut.workspace.publishWorkflowByContent("acme/moon/ghost", SCORE("acme/moon/ghost", "boo again"));
+    // Opened again, the next Commit writes it.
+    assert.equal((await req("/packages/repos", json({ url: remote.url }))).status, 201);
+    const done = (await (await req("/packages/repos/acme/moon/commit", json({ message: "The ghost", branch: "main" }))).json()) as CommitResult;
+    assert.deepEqual(done.stamped, [{ kind: "workflow", name: "acme/moon/ghost" }]);
+    assert.match(remoteFile(remote.dir, "main", "workflows/ghost.yaml"), /"boo again"/);
   });
 });

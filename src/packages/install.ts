@@ -672,15 +672,22 @@ async function checkSet(
       if (gone.length) out.dropped.set(pkg, gone);
     }
 
-    // The prefix holds this package's items alone.
+    // The prefix holds this package's items alone — but for a repo's, whose
+    // author adds items here (an open repo takes new names): its commit
+    // makes them the package's, and one it does not hold stays local.
     const under = (name: string) => name.startsWith(`${pkg}/`);
-    for (const name of [...workspaceWorkflows].filter(under)) if (!mine.has(name)) problems.push(`the workflow ${name} is a local one under ${pkg}/`);
-    for (const name of workspaceSteps.filter(under)) if (!mine.has(name)) problems.push(`the step ${name} is a local one under ${pkg}/`);
-    for (const name of workspaceApps.filter(under)) if (!mine.has(name)) problems.push(`the app ${name} is a local one under ${pkg}/`);
+    const local = new Map<string, InstalledItem>();
+    for (const [kind, names] of [["workflow", [...workspaceWorkflows]], ["step", workspaceSteps], ["app", workspaceApps]] as const) {
+      for (const name of names.filter(under)) {
+        if (mine.has(name)) continue;
+        if (door === "repo") local.set(name, { kind, name, modified: true });
+        else problems.push(`the ${kind} ${name} is a local one under ${pkg}/`);
+      }
+    }
 
     for (const item of m.info.items) {
       if (item.kind === "step" || item.kind === "workflow" || item.kind === "app") {
-        const at = mine.get(item.name);
+        const at = mine.get(item.name) ?? local.get(item.name);
         out.plan.set(item.name, at ? await planItem(deps, m, item, at, door) : { action: "new" });
         if (item.kind === "step" && isSealedStep(item.name, undefined, sealed)) problems.push(`${item.name} is in a sealed namespace (${sealed.join(", ")}): those are strut's`);
         if (item.kind === "step" && !at && registry[item.name] && !workspaceSteps.includes(item.name)) problems.push(`${item.name} is a step strut ships`);

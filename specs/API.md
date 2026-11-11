@@ -2758,7 +2758,7 @@ proposal only an admin accepts (below).
 
 | Method | Path | Description |
 | ------ | ---- | ----------- |
-| GET    | `/packages/repos` | `{ repos: RepoView[] }`: each repo on file (`<dataDir>/packages/repos.json`) — `{ package, url, branch, path?, ref, commit, digest, tokenSecret?, openedAt, by?, originals?, merge?, workdir, forked, deleted, conflict? }`. `commit` is the commit last installed, `ref` the `git+<url>@<branch>[#<path>]` each version's `upstream.source.ref` records, `tokenSecret` the NAME of the secret its token is read from (never a value), `forked` / `deleted` the items edited or deleted here since `commit` (`{ kind, name }`), `conflict` the files a pull's merge left unmerged |
+| GET    | `/packages/repos` | `{ repos: RepoView[] }`: each repo on file (`<dataDir>/packages/repos.json`) — `{ package, url, branch, path?, ref, commit, digest, tokenSecret?, openedAt, by?, originals?, merge?, workdir, added, forked, deleted, conflict? }`. `commit` is the commit last installed, `ref` the `git+<url>@<branch>[#<path>]` each version's `upstream.source.ref` records, `tokenSecret` the NAME of the secret its token is read from (never a value), `added` / `forked` / `deleted` the workflows, steps and apps added, edited or deleted here since `commit` (`{ kind, name }`; an edited Concept is in `forked`, a new page only in the diff), `conflict` the files a pull's merge left unmerged |
 | POST   | `/packages/repos` | **Open repo**: `{ url, ref?, path?, tokenSecret? }` → 201 `RepoView` + `install` (an `InstallResult`). The repository fetched into `git/checkout`'s bare cache; `ref` a BRANCH (default the remote's default branch), followed from then on; a KEPT working copy at `<dataDir>/packages/work/<publisher>/<name>/`, a worktree of the cache on a branch of its own (`repo/<publisher>/<name>`) tracking the remote's; the package at the branch's commit installed through the `repo` door — every item checked before the first write, missing secrets reported, each version stamped `source: "repo"` with `upstream: { …, source: { ref }, commit }`. 409 `package_repo_open` when the package is a repo here already, `package_conflict` when it is installed by another door (uninstall it first); 400 `package_repo_branch` for a ref that is no branch; 502 `package_repo_unreachable` |
 | POST   | `/packages/repos/create` | **Create repo**: a `BuildRequest` (`package`, `version`, the picks — as `POST /packages/build`) + `{ url, branch?, path?, tokenSecret? }` → 201 `RepoView` + `install` + `originals`. The picks built, written as the first commit of the EMPTY remote at `url` on `branch` (default `main`), in the folder `path` when given, with the person's identity, pushed, then opened as above. `originals` are the bare workflows, steps and apps the package was built from: they stay until the person retires them (below). 409 `package_repo_not_empty` when the remote has any branch or tag; 400 a build's refusal |
 | GET    | `/packages/repos/:publisher/:name` | One `RepoView`; 404 when the package is not a repo here |
@@ -2768,14 +2768,27 @@ proposal only an admin accepts (below).
 | POST   | `/packages/repos/:publisher/:name/retire` | `{ items: [{ kind: workflow \| step \| app, name }] }` → `{ retired, failed }`: Create repo's bare originals deleted, on the person's word — only those Create named (any other is `failed`); a workflow with a run in flight is `failed` |
 | DELETE | `/packages/repos/:publisher/:name` | Close the repo → `{ ok: true }`: the record and the working copy go (anything committed there and not pushed goes with it); the installed items stay, uninstalled with `DELETE /packages/:publisher/:name` |
 
-- **What the workspace changed** — `forked` and `deleted` — is read off the
-  version records: an item whose active version the `repo` door did not
-  write at the commit on file is edited (a fork, an older version made
-  active), a Concept the installed fold calls edited or a page added under
-  the package's pages is edited, and an item the commit holds that is gone
-  here is deleted. A new workflow, step or app under the package's prefix
-  is refused by the workspace (`package_conflict`): add its file to the
-  working copy instead, and the next Pull installs it.
+- **What the workspace changed** — `added`, `forked` and `deleted` — is
+  read off the version records: an item under the package's prefix that
+  the commit does not hold is added; an item whose active version the
+  `repo` door did not write at the commit on file is edited (a fork, an
+  older version made active), and so is a Concept the installed fold calls
+  edited; an item the commit holds that is gone here is deleted. A Concept
+  page under the package's pages that it does not hold is added at the
+  Commit (it shows in the diff, not in `added`, as finding it walks the
+  tree).
+- **An open repo takes new names.** The workspace refuses a new workflow,
+  step or app under an INSTALLED package's prefix (`package_conflict`,
+  marketplace.md §3) — but not under a package opened here as a repo: its
+  author adds items from any door (the builder's tools, `POST /workflows`,
+  `POST /steps`, `POST /apps`), named under the package
+  (`acme/moonlander/ghost`: inside a package a bare name means its own item
+  first, so a bare new name is outside it), and the next Commit writes
+  them. A package installed any other way keeps the rule, and the refusal
+  says how to open its repo. Closing the repo puts the rule back: an item
+  added and not committed stays, a local item that runs and can be edited
+  but takes no new name beside it, and is written by the first Commit
+  after the repo is opened again.
 - **Commit** writes the edited items' files — `packageFiles(…, { under })`
   (`src/packages/build.ts`): each workflow's and step's active version as
   published, a step's live claims, an app's active sources whole, a page

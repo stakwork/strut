@@ -4232,6 +4232,11 @@ export async function createStrut<TServices = unknown>(
     },
   });
   packages.repos = repos;
+  // An OPEN repo's prefix takes new names (src/workspace.ts `OpenPackages`):
+  // the author adds a workflow, step or app to the package from any door,
+  // and the next Commit writes it. Every other installed package keeps the
+  // name rule.
+  baseWorkspace.setOpenPackages?.((prefix) => repos.isOpen(prefix));
   /** A repo refusal's code → its status, else as a package refusal. */
   const repoError = (c: Context, err: unknown) => {
     const message = err instanceof Error ? err.message : String(err);
@@ -4360,7 +4365,7 @@ export async function createStrut<TServices = unknown>(
   // the proof, as for package/install.
   packagesBag["repo"] ??= async (pkg: string) => {
     const r = await repos.get(pkg);
-    return r ? { url: r.url, branch: r.branch, ...(r.path ? { path: r.path } : {}), commit: r.commit, forked: [...r.forked, ...r.deleted] } : undefined;
+    return r ? { url: r.url, branch: r.branch, ...(r.path ? { path: r.path } : {}), commit: r.commit, forked: [...r.added, ...r.forked, ...r.deleted] } : undefined;
   };
   packagesBag["commit"] ??= async (pkg: string, o: { proposal: string; message: string; branch?: string; pr?: boolean; actor?: string }) => {
     const rec = typeof o?.proposal === "string" ? await readProposal(proposalsDir, o.proposal) : null;

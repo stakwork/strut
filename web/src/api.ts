@@ -2437,6 +2437,8 @@ export interface RepoInfo {
   /** A pull's merge waits on a conflict (the commit holding the edits). */
   merge?: string;
   workdir: string;
+  /** New here: added under the package's prefix, not in the commit yet. */
+  added: RepoItem[];
   /** Edited here since the commit installed. */
   forked: RepoItem[];
   /** Deleted here since the commit installed. */

@@ -53,7 +53,11 @@ function RepoRow(props: { repo: api.RepoInfo; onChanged: () => void }) {
     setMode(mode === m ? null : m);
     if (mode !== m) props.onChanged();
   };
-  const edited = [...r.forked, ...r.deleted.map((d) => ({ ...d, gone: true }))];
+  const edited: Array<api.RepoItem & { mark?: "new" | "deleted" }> = [
+    ...r.added.map((i) => ({ ...i, mark: "new" as const })),
+    ...r.forked,
+    ...r.deleted.map((i) => ({ ...i, mark: "deleted" as const })),
+  ];
   return (
     <div class="auto-card repo-card">
       <div class="auto-card-head">
@@ -75,14 +79,18 @@ function RepoRow(props: { repo: api.RepoInfo; onChanged: () => void }) {
       {edited.length > 0 ? (
         <div class="package-chips" aria-label="Edited here since the commit installed">
           {edited.map((i) => (
-            <span class="badge badge-warning" key={`${i.kind}:${i.name}`} title={"gone" in i ? `Deleted here: a commit removes the ${i.kind}` : `Edited here: a commit writes this ${i.kind}`}>
-              {"gone" in i ? "deleted " : ""}{i.name.startsWith(`${r.package}/`) ? i.name.slice(r.package.length + 1) : i.name}
+            <span class={`badge ${i.mark === "new" ? "badge-accent" : "badge-warning"}`} key={`${i.kind}:${i.name}`}
+              title={i.mark === "deleted" ? `Deleted here: a commit removes the ${i.kind}` : i.mark === "new" ? `New here: a commit adds this ${i.kind} to the repo` : `Edited here: a commit writes this ${i.kind}`}>
+              {i.mark ? `${i.mark} ` : ""}{i.name.startsWith(`${r.package}/`) ? i.name.slice(r.package.length + 1) : i.name}
             </span>
           ))}
         </div>
       ) : (
         <div class="auto-hint">Nothing edited here since {short(r.commit)}.</div>
       )}
+      <div class="auto-hint">
+        A new workflow, step or app goes in the repo when it is named under the package — <code>{r.package}/…</code> — and committed.
+      </div>
       {r.originals?.length ? <RetireOriginals repo={r} onChanged={props.onChanged} /> : null}
       <div class="repo-actions">
         <button class={`btn${mode === "commit" ? " btn-primary" : ""}`} disabled={!!r.conflict || !!r.merge} onClick={() => open("commit")}>Commit…</button>
