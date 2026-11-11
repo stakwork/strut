@@ -2,6 +2,7 @@ import { z } from "zod";
 import { defineStep, type StepContext } from "../../../core.js";
 import type { StrutCapabilities } from "../../../capabilities.js";
 import { graphCtx, errText } from "./_shared.js";
+import { THING_TYPE } from "../../../graph/strut-schemas.js";
 /** Same reduction as jarvis/get-ontology: filter "*"/deleted schemas, group
  *  node types by (lowercased) domain ("ungrouped" for null), derive the
  *  sorted domains list, and optionally append deduped compact edge triples
@@ -11,7 +12,8 @@ function buildOntologyPayload(schemaData: any, includeEdges: boolean, includeAtt
   const rawEdges: any[] = schemaData?.edges ?? [];
 
   const nodeTypes = schemas
-    .filter((s: any) => s.type && s.type !== "*" && !s.is_deleted)
+    // Thing is the hidden root, never a type to file a node under.
+    .filter((s: any) => s.type && s.type !== "*" && s.type !== THING_TYPE && !s.is_deleted)
     .map((s: any) => {
       const td = (s.type_description as string) ?? "";
       const desc = (s.description as string) ?? "";
@@ -39,6 +41,7 @@ function buildOntologyPayload(schemaData: any, includeEdges: boolean, includeAtt
   const edgeSeen = new Set<string>();
   const edges: Array<{ edge_type: string; source_type: string; target_type: string }> = [];
   for (const e of rawEdges) {
+    if (e.source_type === THING_TYPE || e.target_type === THING_TYPE) continue;
     const triple = { edge_type: e.edge_type as string, source_type: e.source_type as string, target_type: e.target_type as string };
     const key = `${triple.edge_type}|${triple.source_type}|${triple.target_type}`;
     if (!edgeSeen.has(key)) {

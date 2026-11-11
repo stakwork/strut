@@ -1758,6 +1758,7 @@ export default defineStep({
     // tools may hand them on (job/start): after this run's own, newest first.
     const earlierFiles = session ? threadAttachments(session.turns) : [];
     if (toolCtx && earlierFiles.length) toolCtx.attachments = [...(toolCtx.attachments ?? []), ...earlierFiles];
+    if (toolCtx && session) toolCtx.agentTurn = { session: session.id, turn: session.turns.length };
     const system = session?.system ?? cfg.system;
     // What the requests send: the same text, with its own cache breakpoint.
     const instructions = cachedSystem(system, providerOptions) as any;

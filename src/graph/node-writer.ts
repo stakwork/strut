@@ -55,7 +55,7 @@ import { sameStored } from "./engine.js";
 import { asEngine } from "./neo4j-engine.js";
 import { SchemaResolver, fromStrut, type NodeSchema } from "./schema-resolver.js";
 import { nodeTitleFor } from "./title.js";
-import { OWN_CREATED_BY, STRUT_DOMAIN_LABEL, isGenericProperty, embeddingColumn, getStrutSchema, vectorStem } from "./strut-schemas.js";
+import { OWN_CREATED_BY, STRUT_DOMAIN_LABEL, THING_REFUSED, THING_TYPE, isGenericProperty, embeddingColumn, getStrutSchema, vectorStem } from "./strut-schemas.js";
 
 export type { PreparedNode, WriteMode, WriteOutcome };
 
@@ -505,7 +505,8 @@ export class NodeWriter {
     const now = this.stamp();
     for (const i of inputs) {
       const schema = await this.resolver.schema(i.type, opts.tx);
-      if (!schema) throw new GraphValidationError("UNKNOWN_TYPE", i.type, "unknown node type (not a Strut type and no such Schema in the graph)");
+      if (!schema) throw new GraphValidationError("UNKNOWN_TYPE", i.type, "unknown node type (not a Strut type and no such Schema in the graph): graph_get_ontology lists the types; graph_create_schema makes one");
+      if (schema.type === THING_TYPE) throw new GraphValidationError("UNKNOWN_TYPE", THING_TYPE, THING_REFUSED);
       validated.push(validateNode(schema, this.callerData(i.data)));
     }
     // Gather every text to embed across the batch → one encoder call.
