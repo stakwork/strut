@@ -25,6 +25,7 @@ import { flowClosure, globToRegExp, type FlowClosure } from "./closure.js";
 import { isSealedStep, sealedInClosure, sealedStepPatterns } from "./sealed.js";
 import { PAID_OR_SHELL } from "./apps/tools.js";
 import { SPENDING_STEPS, type PackageCan } from "./packages/detail.js";
+import { configSecretField } from "./reach.js";
 import { stepSchemas } from "./ai/schemaHelpers.js";
 import { baseType } from "./step-ref.js";
 import { isFree, microsToUsd, priceOf, RECENT_DAYS, reserveFor, usdToMicros, type LedgerStore, type Micros } from "./payments/ledger.js";
@@ -128,17 +129,22 @@ export async function runnableCan(item: Pick<PublicRunnable, "kind" | "name">, d
 
 /**
  * Why a step may not be run by anyone, or undefined: not one that spends or
- * runs a shell (the app door's list: the workflow is the unit of spend), not
- * one of the runner's containers, not sealed (the meta surface, the
- * graders), and on this server. Asked at the save, and again at every call
- * (src/public-tools.ts): the registry changes after a save.
+ * runs a shell (the app door's list, and every step that calls a model:
+ * the workflow is the unit of spend), not one of the runner's containers,
+ * not sealed (the meta surface, the graders), not one whose config names a
+ * secret (the caller would pick which secret it reads), and on this server.
+ * Asked at the save, and again at every call (src/public-tools.ts): the
+ * registry changes after a save.
  */
 export function stepRunnableProblem(type: string, registry: StepRegistry, patterns: readonly string[] = sealedStepPatterns()): string | undefined {
   const label = runnableLabel({ kind: "step", name: type });
-  if (PAID_OR_SHELL.includes(type)) return `${label} spends or runs a shell — a stranger runs it inside a workflow, which is the unit of spend: make the workflow runnable`;
+  if (PAID_OR_SHELL.includes(type) || SPENDING_STEPS.has(type)) return `${label} spends or runs a shell — a stranger runs it inside a workflow, which is the unit of spend: make the workflow runnable`;
   if (CONTAINER_STEPS.has(type)) return `${label} runs other steps, which a stranger's config would choose — make a workflow that holds it runnable`;
   if (isSealedStep(type, registry, patterns)) return `${label} is sealed: the meta surface and the graders are never run from outside`;
-  if (!registry[type]) return `no step "${type}" on this strut server`;
+  const def = registry[type];
+  if (!def) return `no step "${type}" on this strut server`;
+  const field = configSecretField(def);
+  if (field) return `${label} takes a secret's name in its config (${field}): a stranger would choose which secret it reads — make a workflow that holds it runnable, with the name written in`;
   return undefined;
 }
 

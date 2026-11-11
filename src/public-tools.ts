@@ -12,55 +12,76 @@
  * - the drain (503), the item (404: not in `runnable` as a step), and item
  *   2's save checks asked AGAIN (`stepRunnableProblem`: the registry changes
  *   after a save — a step since sealed, or gone, is 404);
- * - the config: an object, no `{{ }}` (a stranger's config is data, never
- *   an expression the runner evaluates), parsed by the step's own input
- *   schema (400 naming the field);
+ * - the config: an object parsed by the step's own input schema (400 naming
+ *   the field), naming no secret (`secretNamesIn`, 400);
  * - a priced item's credit token (§4.3 steps 1 to 3): 401 a bad one, 403 one
  *   its holder narrowed away from this step or below its reserve;
- * - the caps: the server's limit on tool calls in flight, and the item's
- *   `dailyCapUsd` when it sets one (today's cost plus each call in flight at
- *   its cap, as a run's, §7) — 429;
+ * - the caps: the address's share of calls in flight, the server's limit,
+ *   and the item's `dailyCapUsd` when it sets one (today's cost plus each
+ *   call in flight at its cap, as a run's, §7) — 429;
  * - the price: no token, or one short of the reserve, is a 402 (§4, carry-
  *   over as a launch's); a token's first use asks the wallet (503 when it
  *   cannot); the reserve is set aside under the call's id (`ledger.hold`);
  * - the call: `runSingleStep` — never `runStep`, which keeps a run with
  *   claims — against the ALLOWLIST bag (`publicToolServices`), with no actor,
- *   the host's public principal, the item's cap; nothing reaches the run
- *   store: the ledger entry is the call's record;
+ *   the host's public principal, the item's cap, and a time limit
+ *   (`PUBLIC_TOOL_CALL_TIMEOUT_MS`, then force-cancelled: 504). The config
+ *   is the run's INPUT and the step's config is `{ k: "{{ input.k }}" }` per
+ *   key: a sole expression's value is taken as it is, so a stranger's
+ *   `{{` inside a value is text, never evaluated. Inside `asPublicCall`, so
+ *   a lib step's failure answered as text (`stepFailed`) throws. Nothing
+ *   reaches the run store: the ledger entry is the call's record;
  * - the charge, by the rule (`chargeFor`): base + markup × what the call
- *   reported it cost (`withUsage`; none, its base); a throw, or a result over
- *   5 MB, its cost and no base; never more than the reserve (`withinReserve`)
- *   or what the token holds. A free call is a charge of nothing, which
- *   `daily` counts with its cost.
+ *   reported it cost (`withUsage`; none, its base); a throw, a time-out, or
+ *   a result over 5 MB, its cost and no base; never more than the reserve
+ *   (`withinReserve`) or what the token holds. A free call is a charge of
+ *   nothing, which `daily` counts with its cost. A charge the ledger refuses
+ *   is tried again, then again every `CHARGE_RETRY_MS` for an hour.
  *
  * **A crash between the hold and the charge** leaves the hold open with no
  * record of what ran: the call never answered, so its buyer is charged
  * nothing. `reconcile` (boot, beside item 5's) frees every open `step:` hold
- * whose call is not in flight in this process — a charge of nothing.
+ * whose call is neither in flight nor waiting on a charge in this process —
+ * a charge of nothing.
  *
- * **Free calls** need no token. Beyond the per-address budget (the route's,
- * shared with launches) they are held by the server's limit on tool calls in
- * flight, and by the item's daily cap when it sets one; no daily cap is
+ * **Free calls** need no token. Beyond the per-address budget (the route's)
+ * they are held by the address's share of the calls in flight, the server's
+ * limit, and the item's daily cap when it sets one; no daily cap is
  * required of a free step at the save, since a runnable step cannot be one
- * that spends (`agent`, `llm`, `acp/prompt`).
+ * that spends (`agent`, `llm`, `acp/prompt`, `graph/walk`).
  */
 import type { StepRegistry } from "./core.js";
-import type { LedgerStore, Micros, Price } from "./payments/ledger.js";
+import type { LedgerStore, Micros, Price, ChargeInput } from "./payments/ledger.js";
 import { FREE, LedgerError, microsToUsd, priceOf, usdToMicros } from "./payments/ledger.js";
 import type { PublicRunnable, PublicSurfaceService } from "./public-surface.js";
 import { isPriced, runnableReserve, runnableSubject, stepRunnableProblem } from "./public-runnable.js";
 import { tokenRefusal, type Presented, type VerifiedToken } from "./l402.js";
 import type { Challenge, Credit, CreditRefusal } from "./public-credit.js";
 import { runSingleStep } from "./run-step.js";
+import { RunController } from "./run-control.js";
 import { countUsage, generateRunId } from "./store.js";
 import { secondsToUtcMidnight } from "./public-runs.js";
 import { STEP_RUN_RESULT_MAX_CHARS } from "./apps/tools.js";
-import type { GraphReader } from "./graph/search.js";
+import { secretNamesIn } from "./reach.js";
+import { asPublicCall } from "./public-call.js";
+import { httpCapability, type FetchLike, type HttpCapability } from "./capabilities.js";
+import { assertRawQuery, carryScope } from "./graph/scope.js";
+import type { GraphBackend } from "./graph/backend.js";
+import type { Params, Row } from "./graph/engine.js";
 
 /** Public tool calls in flight on this server at once, by default. */
 export const PUBLIC_TOOL_CALLS_MAX_IN_FLIGHT = 20;
+/** Of those, one visitor address's share. */
+export const PUBLIC_TOOL_CALLS_PER_ADDRESS = 5;
+/** How long a call may run before it is force-cancelled (504). */
+export const PUBLIC_TOOL_CALL_TIMEOUT_MS = 60_000;
+/** One HTTP request a public call makes, at most. */
+export const PUBLIC_TOOL_HTTP_TIMEOUT_MS = 30_000;
 /** The most a call's result may be, as JSON: the app door's cap. */
 export const PUBLIC_TOOL_RESULT_MAX_CHARS = STEP_RUN_RESULT_MAX_CHARS;
+/** A charge the ledger refused is tried again this often, for an hour. */
+export const CHARGE_RETRY_MS = 30_000;
+const CHARGE_RETRY_FOR_MS = 60 * 60 * 1000;
 /** The most of a failed call's error its caller reads. */
 const ERROR_MAX_CHARS = 2000;
 
@@ -78,7 +99,7 @@ export type ToolAnswer =
   | { status: 200; body: { output: unknown; credit?: ToolCredit }; headers?: undefined }
   | { status: 402; body: Challenge["body"]; headers: Record<string, string> }
   | {
-      status: 400 | 401 | 403 | 404 | 429 | 500 | 503;
+      status: 400 | 401 | 403 | 404 | 429 | 500 | 503 | 504;
       body: { error: string; code?: string; credit?: ToolCredit };
       headers?: Record<string, string>;
     };
@@ -90,7 +111,7 @@ export interface ToolCall {
   config?: unknown;
   /** The credit token as presented (`Authorization: L402 <macaroon>:<preimage>`). */
   presented?: Presented;
-  /** Who is asking: the per-address allowance on invoices. */
+  /** Who is asking: the address's share of calls in flight, its invoices. */
   address: string;
 }
 
@@ -109,6 +130,10 @@ export interface PublicToolsOptions {
   principal?: string;
   sealedPatterns?: readonly string[];
   maxInFlight?: number;
+  perAddress?: number;
+  timeoutMs?: number;
+  /** A refused charge's next try (tests). */
+  chargeRetryMs?: number;
   now?: () => number;
 }
 
@@ -119,9 +144,12 @@ export interface PublicTools {
   draining(): string | undefined;
   /** Tool calls in flight in this process: what the drain waits on. */
   inFlight(): number;
-  /** Boot: free every open `step:` hold whose call is not in flight here —
-   *  a crash cut it off between its hold and its charge. Never throws. */
+  /** Boot: free every open `step:` hold whose call is neither in flight here
+   *  nor waiting on a charge — a crash cut it off between its hold and its
+   *  charge. Never throws. */
   reconcile(): Promise<Array<{ subject: string; callId: string; action: "freed" | "failed" }>>;
+  /** Stop retrying refused charges (`strut.close()`). */
+  close(): void;
 }
 
 const usd = (micros: Micros) => `$${microsToUsd(micros).toFixed(2)}`;
@@ -134,30 +162,29 @@ function refused(r: Pick<CreditRefusal, "status" | "code" | "error" | "retryAfte
   return { status: r.status, body: { error: r.error, code: r.code }, headers };
 }
 
-/** The first string in `v` that holds a template, by its path, else undefined. */
-export function templateIn(v: unknown, path = "config"): string | undefined {
-  if (typeof v === "string") return v.includes("{{") ? path : undefined;
-  if (Array.isArray(v)) {
-    for (let i = 0; i < v.length; i++) {
-      const at = templateIn(v[i], `${path}[${i}]`);
-      if (at) return at;
-    }
-    return undefined;
-  }
-  if (v && typeof v === "object") {
-    for (const [k, x] of Object.entries(v)) {
-      const at = templateIn(x, `${path}.${k}`);
-      if (at) return at;
-    }
-  }
-  return undefined;
+/**
+ * The step's config for a public call: each top-level key of the caller's
+ * config read from the run's input as a sole expression,
+ * `{ k: '{{ input["k"] }}' }`. The runner returns a sole expression's value
+ * as it is (expr.ts `resolveTemplate`), evaluating nothing inside it, so a
+ * stranger's text holding `{{` is passed to the step as text.
+ */
+export function inputTemplates(config: Record<string, unknown>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const k of Object.keys(config)) out[k] = `{{ input[${JSON.stringify(k)}] }}`;
+  return out;
 }
 
 export function createPublicTools(o: PublicToolsOptions): PublicTools {
   const now = o.now ?? Date.now;
   const max = o.maxInFlight ?? PUBLIC_TOOL_CALLS_MAX_IN_FLIGHT;
-  /** callId → its subject and what the daily cap counts it at. */
-  const flights = new Map<string, { subject: string; cap?: Micros }>();
+  const perAddress = o.perAddress ?? PUBLIC_TOOL_CALLS_PER_ADDRESS;
+  const timeoutMs = o.timeoutMs ?? PUBLIC_TOOL_CALL_TIMEOUT_MS;
+  const retryMs = o.chargeRetryMs ?? CHARGE_RETRY_MS;
+  /** callId → its subject, who asked, and what the daily cap counts it at. */
+  const flights = new Map<string, { subject: string; address: string; cap?: Micros }>();
+  /** callId → a charge the ledger refused, tried again on a timer. */
+  const pendingCharges = new Map<string, { input: ChargeInput; until: number; timer: ReturnType<typeof setTimeout> }>();
 
   // Admission is one step at a time: the daily cap's check and counting the
   // call are one step, so twenty calls in one second stay inside the cap.
@@ -169,9 +196,14 @@ export function createPublicTools(o: PublicToolsOptions): PublicTools {
   };
 
   type Admitted = { ok: true; callId: string; capUsd?: number } | { ok: false; answer: ToolAnswer };
-  const admit = (item: PublicRunnable): Promise<Admitted> =>
+  const admit = (item: PublicRunnable, address: string): Promise<Admitted> =>
     oneAtATime(async (): Promise<Admitted> => {
       const subject = runnableSubject(item);
+      let mine = 0;
+      for (const f of flights.values()) if (f.address === address) mine++;
+      if (mine >= perAddress) {
+        return { ok: false, answer: { status: 429, body: { error: `too many public tool calls in flight from this address (${perAddress}) — try again when one answers` }, headers: { "retry-after": "5" } } };
+      }
       if (flights.size >= max) {
         return { ok: false, answer: { status: 429, body: { error: `too many public tool calls in flight on this server (${max}) — try again shortly` }, headers: { "retry-after": "5" } } };
       }
@@ -208,9 +240,41 @@ export function createPublicTools(o: PublicToolsOptions): PublicTools {
       }
       const cap = caps.length ? Math.max(1, Math.min(...caps)) : undefined;
       const callId = generateRunId();
-      flights.set(callId, { subject, ...(cap !== undefined ? { cap } : {}) });
+      flights.set(callId, { subject, address, ...(cap !== undefined ? { cap } : {}) });
       return { ok: true, callId, ...(cap !== undefined ? { capUsd: microsToUsd(cap) } : {}) };
     });
+
+  /** Charge a call: tried twice now; refused again, on a timer for an hour,
+   *  its hold kept out of the boot reconcile meanwhile. What was charged,
+   *  or undefined when it is still waiting. */
+  const charge = async (input: ChargeInput): Promise<Micros | undefined> => {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        return (await (await o.ledger()).charge(input)).charged;
+      } catch (err) {
+        if (attempt === 1) {
+          console.error(`[public-tools] charging ${input.subject} call ${input.runId} failed — trying again every ${retryMs / 1000} s:`, err);
+          later(input, now() + CHARGE_RETRY_FOR_MS);
+        }
+      }
+    }
+    return undefined;
+  };
+  const later = (input: ChargeInput, until: number) => {
+    const timer = setTimeout(async () => {
+      try {
+        await (await o.ledger()).charge(input);
+        pendingCharges.delete(input.runId);
+      } catch (err) {
+        if (now() >= until) {
+          pendingCharges.delete(input.runId);
+          console.error(`[public-tools] gave up charging ${input.subject} call ${input.runId} (the next boot frees its hold):`, err);
+        } else later(input, until);
+      }
+    }, retryMs);
+    timer.unref?.();
+    pendingCharges.set(input.runId, { input, until, timer });
+  };
 
   /** What the token holds after this call, as the caller reads it. */
   const creditOf = async (token: VerifiedToken, charged: Micros): Promise<ToolCredit | undefined> => {
@@ -225,7 +289,8 @@ export function createPublicTools(o: PublicToolsOptions): PublicTools {
     const notOpen: ToolAnswer = { status: 404, body: { error: `step "${type}" is not open to anyone to call on this strut server` } };
     const item = await o.surface.runnable("step", type);
     if (!item) return notOpen;
-    // Item 2's save checks, again: sealed, spends or a shell, a container, gone.
+    // Item 2's save checks, again: sealed, spends or a shell, a container,
+    // a config that names a secret, gone.
     const registry = o.registry();
     const problem = stepRunnableProblem(type, registry, o.sealedPatterns);
     if (problem) {
@@ -234,13 +299,13 @@ export function createPublicTools(o: PublicToolsOptions): PublicTools {
     }
     const def = registry[type]!;
 
-    // The config: an object of data, as the step's own schema reads it.
+    // The config: an object of data, as the step's own schema reads it,
+    // naming no secret.
     const config = c.config ?? {};
     if (!config || typeof config !== "object" || Array.isArray(config)) return { status: 400, body: { error: "config is a JSON object: the step's config" } };
-    const tmpl = templateIn(config);
-    if (tmpl) return { status: 400, body: { error: `${tmpl}: a public call's config is data — "{{" is not allowed in it` } };
     const parsed = def.input.safeParse(config);
     if (!parsed.success) return { status: 400, body: { error: `config: ${parsed.error.issues.map((i) => `${["config", ...i.path].join(".")}: ${i.message}`).join("; ")}` } };
+    if (secretNamesIn(config).length) return { status: 400, body: { error: "config names a secret: a public call never chooses which secret a step reads" } };
 
     // A priced item's credit token (§4.3 steps 1 to 3), before the caps:
     // what it may be used for is known without the wallet.
@@ -265,7 +330,7 @@ export function createPublicTools(o: PublicToolsOptions): PublicTools {
       }
     }
 
-    const admitted = await admit(item);
+    const admitted = await admit(item, c.address);
     if (!admitted.ok) return admitted.answer;
     const { callId } = admitted;
     const subject = runnableSubject(item);
@@ -302,24 +367,45 @@ export function createPublicTools(o: PublicToolsOptions): PublicTools {
         }
       }
 
-      // The call, against the allowlist; never kept as a run.
-      const result = await runSingleStep(type, registry, o.services(), {
-        runId: callId,
-        config: config as Record<string, unknown>,
-        origin: "public",
-        ...(o.principal ? { principal: o.principal } : {}),
-        ...(admitted.capUsd !== undefined ? { maxCostUsd: admitted.capUsd } : {}),
-      });
+      // The call, against the allowlist, under a time limit; never kept as
+      // a run. The caller's config is the run's input, read by the step's
+      // config as sole expressions: nothing in it is evaluated.
+      const controller = new RunController(callId, `step:${type}`);
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        controller.force();
+      }, timeoutMs);
+      timer.unref?.();
+      let result;
+      try {
+        result = await asPublicCall(() =>
+          runSingleStep(type, registry, o.services(), {
+            runId: callId,
+            input: config,
+            config: inputTemplates(config as Record<string, unknown>),
+            origin: "public",
+            controller,
+            ...(o.principal ? { principal: o.principal } : {}),
+            ...(admitted.capUsd !== undefined ? { maxCostUsd: admitted.capUsd } : {}),
+          }),
+        );
+      } finally {
+        clearTimeout(timer);
+      }
       const spent = countUsage(result.events).cost;
       const cost = Number.isFinite(spent) && spent > 0 ? usdToMicros(spent) : 0;
-      let failure: { code: string; error: string } | undefined;
-      if (result.status !== "success") {
+      let failure: { status: 500 | 504; code: string; error: string } | undefined;
+      if (timedOut) {
+        failure = { status: 504, code: "timeout", error: `timeout: the call of ${type} ran past ${Math.round(timeoutMs / 1000)} s and was stopped` };
+      } else if (result.status !== "success") {
         const message = (result.error?.message ?? `the call ended ${result.status}`).slice(0, ERROR_MAX_CHARS);
-        failure = { code: "step_failed", error: `step_failed: ${message}` };
+        failure = { status: 500, code: "step_failed", error: `step_failed: ${message}` };
       } else {
         const size = JSON.stringify(result.output ?? null).length;
         if (size > PUBLIC_TOOL_RESULT_MAX_CHARS) {
           failure = {
+            status: 500,
             code: "result_too_big",
             error: `result_too_big: the result of ${type} is ${(size / 1024 / 1024).toFixed(1)} MB, over the ${PUBLIC_TOOL_RESULT_MAX_CHARS / 1024 / 1024} MB cap — ask for less`,
           };
@@ -327,9 +413,8 @@ export function createPublicTools(o: PublicToolsOptions): PublicTools {
       }
 
       // The charge (§5, §6): by the rule, never past the reserve.
-      let charged: Micros = 0;
-      try {
-        const done = await (await o.ledger()).charge({
+      const charged =
+        (await charge({
           runId: callId,
           subject,
           cost,
@@ -337,14 +422,9 @@ export function createPublicTools(o: PublicToolsOptions): PublicTools {
           price,
           ...(presented ? { token: presented.tokenId, withinReserve: true } : {}),
           at: now(),
-        });
-        charged = done.charged;
-      } catch (err) {
-        // The answer stands; the hold stays set aside until the boot frees it.
-        console.error(`[public-tools] charging ${type} call ${callId} failed (the boot reconcile frees its hold):`, err);
-      }
+        })) ?? 0;
       const view = presented ? await creditOf(presented, charged) : undefined;
-      if (failure) return { status: 500, body: { error: failure.error, code: failure.code, ...(view ? { credit: view } : {}) } };
+      if (failure) return { status: failure.status, body: { error: failure.error, code: failure.code, ...(view ? { credit: view } : {}) } };
       return { status: 200, body: { output: result.output ?? null, ...(view ? { credit: view } : {}) } };
     } finally {
       flights.delete(callId);
@@ -361,7 +441,7 @@ export function createPublicTools(o: PublicToolsOptions): PublicTools {
       return out;
     }
     for (const h of holds) {
-      if (!h.subject.startsWith("step:") || flights.has(h.runId)) continue;
+      if (!h.subject.startsWith("step:") || flights.has(h.runId) || pendingCharges.has(h.runId)) continue;
       try {
         await (await o.ledger()).charge({ token: h.token, runId: h.runId, subject: h.subject, cost: 0, outcome: "error", price: FREE, at: now() });
         out.push({ subject: h.subject, callId: h.runId, action: "freed" });
@@ -374,19 +454,15 @@ export function createPublicTools(o: PublicToolsOptions): PublicTools {
     return out;
   };
 
-  return { call, draining: () => o.draining?.(), inFlight: () => flights.size, reconcile };
+  const close = () => {
+    for (const p of pendingCharges.values()) clearTimeout(p.timer);
+    pendingCharges.clear();
+  };
+
+  return { call, draining: () => o.draining?.(), inFlight: () => flights.size, reconcile, close };
 }
 
 // ── The bag ───────────────────────────────────────────────────────────────
-
-/** What a public tool reads of the graph: `kind`, `namespace`, `cfg`,
- *  `reader`, and the schema reads. */
-interface GraphLike {
-  kind: string;
-  namespace: string;
-  cfg: unknown;
-  schemas: object;
-}
 
 /** A refusal for anything a public tool may not touch. */
 const refuse = (what: string) => () => Promise.reject(new Error(`${what} is not available to a public tool: it reads (plans/paid-runs.md decision 15)`));
@@ -428,39 +504,114 @@ const NO_GRAPH: object = new Proxy(
   },
 );
 
+/** One read-only statement's rows, on the engine's own read-only path: a
+ *  READ transaction on Neo4j, a `READ ONLY` connection on a Ladybug file —
+ *  the engine refuses a write whatever the keyword pre-check missed. */
+async function readOnlyRows(g: GraphBackend, cypher: string, params: Params = {}): Promise<Row[]> {
+  const { findWriteKeyword, ReadOnlyViolation } = await import("./graph/query.js");
+  const kw = findWriteKeyword(cypher);
+  if (kw) throw new ReadOnlyViolation(kw);
+  if (g.kind === "ladybug") {
+    const ro = await g.lbug.readOnly();
+    try {
+      return (await ro.run(cypher, params)).rows;
+    } finally {
+      await ro.close();
+    }
+  }
+  const { txRows } = await import("./graph/bolt.js");
+  return g.bolt.read((tx) => txRows(tx, cypher, params));
+}
+
+/**
+ * The graph as a public tool reads it: `g` — the backend, or the view of it
+ * a host's `graphReaders` hold to the `jobs` list — with its reader, its
+ * dialect and its schema reads, a raw `query` that only READS (and only
+ * when `g`'s list may read every namespace, as any view's), and every way
+ * to write refused: the writers, a transaction, the schema's writes. The
+ * engine's handles (`bolt`, `lbug`) are not on it.
+ */
+export function readOnlyGraph(g: GraphBackend): object {
+  const rows = (cypher: string, params?: Params) => readOnlyRows(g, cypher, params);
+  const view = {
+    kind: g.kind,
+    namespace: g.namespace,
+    cfg: g.cfg,
+    dialect: g.dialect,
+    reader: g.reader,
+    schemas: readOnlySchemas(g.schemas),
+    nodes: closedWriter("the graph's node writes"),
+    edges: closedWriter("the graph's edge writes"),
+    async query(cypher: string, params?: Params): Promise<Row[]> {
+      await assertRawQuery(g);
+      return rows(cypher, params);
+    },
+    tx: refuse("a graph transaction"),
+  };
+  return carryScope(g, view, rows);
+}
+
+/** Resolve a hostname to its addresses (tests pass their own). */
+export type HostLookup = (hostname: string) => Promise<string[]>;
+
+/**
+ * An http capability for a public call (SSRF): every URL, and every
+ * redirect's, checked before it is fetched — `http(s)` only, never a
+ * loopback, private, link-local (the cloud's metadata at 169.254.169.254),
+ * multicast or reserved address, nor a name that resolves to one (aieo's
+ * `validateFetchUrl`, loaded on the first request); redirects followed by
+ * hand, at most 5; each request at most `PUBLIC_TOOL_HTTP_TIMEOUT_MS`. A
+ * tool that fronts a service on this server's network is a workflow.
+ */
+export function guardedHttp(o: { fetch?: typeof globalThis.fetch; lookup?: HostLookup; timeoutMs?: number } = {}): HttpCapability {
+  const fetchImpl = o.fetch ?? globalThis.fetch;
+  const limit = o.timeoutMs ?? PUBLIC_TOOL_HTTP_TIMEOUT_MS;
+  const guarded: FetchLike = async (raw, init = {}) => {
+    const { validateFetchUrl } = await import("./aieo/fetch.js");
+    const check = (u: string) => validateFetchUrl(u, o.lookup ? { lookup: o.lookup } : {});
+    let url = await check(raw);
+    let req = { ...init };
+    for (let hop = 0; ; hop++) {
+      const res = await fetchImpl(url.toString(), { ...req, redirect: "manual" } as RequestInit);
+      if (![301, 302, 303, 307, 308].includes(res.status)) return res as unknown as Awaited<ReturnType<FetchLike>>;
+      const location = res.headers.get("location");
+      await res.body?.cancel().catch(() => undefined);
+      if (!location) throw new Error(`redirect (${res.status}) without a Location header`);
+      if (hop >= 5) throw new Error("too many redirects (more than 5)");
+      url = await check(new URL(location, url).toString());
+      // As fetch does: a 303, or a 301/302 after a POST, goes on as a GET.
+      if (res.status === 303 || ((res.status === 301 || res.status === 302) && (req.method ?? "GET").toUpperCase() === "POST")) {
+        const { body: _b, ...rest } = req;
+        req = { ...rest, method: "GET" };
+      }
+    }
+  };
+  const inner = httpCapability(guarded);
+  return (url, opts = {}) => inner(url, { ...opts, timeout: Math.min(opts.timeout ?? limit, limit) });
+}
+
 /**
  * The services bag a public tool's call runs against (§6, decision 15): an
- * ALLOWLIST, the visitor's (plans/public-surface.md §5) — `http`, `secrets`
- * (a step reads the keys its publisher ticked), the runs held to the public
- * view — with one difference: the graph's READER is the whole graph's, not
- * the Public view's filter. What the tool returns is what its publisher
- * sells; it reads the graph so the graph need not be public. No writers,
- * no raw query, no shell, no jobs, no sessions, no peers, no MCP, no
- * artifacts, no browser, no wallet: a step reaching for one fails naming
- * what is missing. Nothing on it hears a run end (`onRunEnd`,
- * `onRunEvent`): the call is not projected, verified or sent to a sink.
+ * ALLOWLIST, the visitor's (plans/public-surface.md §5) — `http` (guarded
+ * for a stranger's call, `guardedHttp`), `secrets` (a step reads the keys
+ * its own code names; a step whose config names one is never callable),
+ * the runs held to the public view — with one difference: the graph's
+ * READER is the whole graph's (`readOnlyGraph`), not the Public view's
+ * filter. What the tool returns is what its publisher sells; it reads the
+ * graph so the graph need not be public. No writers, no shell, no jobs, no
+ * sessions, no peers, no MCP, no artifacts, no browser, no wallet: a step
+ * reaching for one fails naming what is missing. Nothing on it hears a run
+ * end (`onRunEnd`, `onRunEvent`): the call is not projected, verified or
+ * sent to a sink.
  */
 export function publicToolServices(
   bag: Record<string, unknown>,
-  graph: (GraphLike & { reader: GraphReader }) | null,
-  o: { reader?: GraphReader; runs?: Record<string, unknown> } = {},
+  o: { graph?: GraphBackend | null; http?: HttpCapability; runs?: Record<string, unknown> } = {},
 ): Record<string, unknown> {
   return {
-    ...(bag["http"] ? { http: bag["http"] } : {}),
+    ...(o.http ? { http: o.http } : {}),
     ...(bag["secrets"] ? { secrets: bag["secrets"] } : {}),
-    graph: graph
-      ? {
-          kind: graph.kind,
-          namespace: graph.namespace,
-          cfg: graph.cfg,
-          schemas: readOnlySchemas(graph.schemas),
-          reader: o.reader ?? graph.reader,
-          nodes: closedWriter("the graph's node writes"),
-          edges: closedWriter("the graph's edge writes"),
-          query: refuse("a raw graph query"),
-          tx: refuse("a graph transaction"),
-        }
-      : NO_GRAPH,
+    graph: o.graph ? readOnlyGraph(o.graph) : NO_GRAPH,
     ...(o.runs ? { runs: o.runs } : {}),
   };
 }

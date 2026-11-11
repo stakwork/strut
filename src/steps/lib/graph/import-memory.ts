@@ -7,6 +7,7 @@ import { vocabulary, type Vocabulary } from "../memory/_ontology.js";
 import { NodeWriter } from "../../../graph/node-writer.js";
 import { words } from "../../../graph/text-match.js";
 import { importMishearings } from "../dictation/_graph.js";
+import { stepFailed } from "../../../public-call.js";
 
 /**
  * The one-off move of the old memory database (the retired `memory/*` steps'
@@ -223,7 +224,7 @@ export default defineStep({
       const path = await oldMemoryPath(sctx);
       if (!path) return { status: "Warning", messages: ["no old memory database here: nothing to import"], imported: 0, skipped: 0 };
       const b = await graphCtx(sctx);
-      if (b.kind !== "ladybug") return "graph/import-memory failed — WRONG_TYPE: it imports into a LadybugDB graph only";
+      if (b.kind !== "ladybug") return stepFailed("graph/import-memory failed — WRONG_TYPE: it imports into a LadybugDB graph only");
       const { assertEdge } = await import("../../../graph/temporal.js");
       const { resolveNode } = await import("../../../graph/resolve.js");
       const { PRIVATE_NAMESPACE } = await import("../../../graph/ladybug/namespaces.js");

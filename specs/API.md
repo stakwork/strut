@@ -2863,15 +2863,18 @@ it refuses (`{ error, problems: [...] }`, `error` the problems joined by
 
 - it exists and is not sealed, and a workflow's closure reaches nothing
   sealed (a subflow's grader, a `meta/*` grant);
-- a step is not `agent`, `llm`, `exec`, `acp/prompt` (a stranger runs one
-  inside a workflow: the workflow is the unit of spend), `meta/*`, nor one
-  of the runner's containers, `subflow`, `loop`, `foreach`, `if` (a
-  stranger's config would choose what they run);
+- a step is not `agent`, `llm`, `exec`, `acp/prompt`, `graph/walk` (a
+  stranger runs one inside a workflow: the workflow is the unit of spend),
+  `meta/*`, nor one of the runner's containers, `subflow`, `loop`,
+  `foreach`, `if` (a stranger's config would choose what they run), nor one
+  whose config names a secret — a `secretsEnv`, `tokenSecret`,
+  `storageStateSecret` or `secrets` field (`git/*`, `browser/open`,
+  `http/verify`): a stranger would choose which secret it reads;
 - a workflow declares an `input:` block (§2);
 - a `markup` has a `capUsd`;
 - a priced item has a wallet (§18, or the host's own `services.lightning`);
-- a workflow whose closure calls a model (`agent`, `llm`, `acp/prompt`, or
-  a closure strut cannot read in full) has someone to pay for a stranger's
+- a workflow whose closure calls a model (`agent`, `llm`, `acp/prompt`,
+  `graph/walk`, or a closure strut cannot read in full) has someone to pay for a stranger's
   run — its owner, or the host's `createStrut({ publicRuns: { principal } })`
   — and, when it is free, a `dailyCapUsd`;
 - every number is finite and not negative.
@@ -3220,35 +3223,40 @@ credit token (§17.5). Open by name in the gate, like a launch; CORS as
 A call is checked in this order, each step answering before the next costs
 anything:
 
-1. **The address's budget**: the launches' (§17.4), 60 a minute, shared
-   with them; `429` past it.
+1. **The address's budget**: 120 calls a minute, its own (beside §17.4's 60
+   launches and §17.2's 1200 requests); a priced call's `402` round trip
+   counts. `429` past it.
 2. **The drain** (§8.1): `503` with `Retry-After`.
 3. **The body**, at most 256 KB (`413`): a JSON object with `config` alone
    (`400` naming anything else).
 4. **The item**: a step not in `runnable` is `404`, and so is one the save
-   would refuse NOW — sealed since, gone, or one that spends or runs a
-   shell or other steps (`agent`, `llm`, `exec`, `acp/prompt`, `meta/*`,
-   `subflow` / `loop` / `foreach` / `if`): the registry changes after a
-   save.
+   would refuse NOW (§17.1) — sealed since, gone, one that spends or runs a
+   shell or other steps, or one whose config names a secret: the registry
+   changes after a save.
 5. **The config**: an object (absent is `{}`), parsed by the step's own
-   input schema (`400` naming the field: `config.cost: …`). A string in it
-   holding `{{` is a `400`: a stranger's config is data, never a template
-   the runner evaluates.
+   input schema (`400` naming the field: `config.cost: …`). One that names
+   a secret (`secretsEnv`, `tokenSecret`, `storageStateSecret`, `secrets`)
+   is a `400`. A value may hold anything, `{{` included: the config is the
+   run's INPUT and the step reads each key as `{{ input["k"] }}`, a sole
+   expression the runner returns as it is — nothing a stranger sends is
+   evaluated.
 6. **The price's token** (a priced step), as a launch's: `401
    invalid_token`, `403 token_not_for_this` (a holder's
    `strut_capabilities` without `step:<type>`), `403 token_over_max_charge`.
-7. **The caps**, `429` with `Retry-After`: the server's limit on public
-   tool calls in flight (20), then the item's `dailyCapUsd` when it sets
-   one — today's cost of its calls plus each call in flight at its cap
-   (`capUsd`, else the whole daily cap), as a run's. A free step needs no
-   daily cap at the save: a runnable step cannot be one that spends.
+7. **The caps**, `429` with `Retry-After`: the address's share of the calls
+   in flight (5), the server's limit (20), then the item's `dailyCapUsd`
+   when it sets one — today's cost of its calls plus each call in flight at
+   its cap (`capUsd`, else the whole daily cap), as a run's. A free step
+   needs no daily cap at the save: a runnable step cannot be one that
+   spends.
 8. **The price**: as a launch's — no token, one past its end or replaced,
    or one short of the RESERVE (`base + markup × capUsd`) is a `402`, for
    the shortfall and carrying when the token was not narrowed; a token's
    first use asks the wallet (`503` when it cannot); a good token has the
    reserve set aside under the call's id. There is no `key`: a call answers
    at once.
-9. **The call**: the step run once — never kept as a run, nothing in the
+9. **The call**: the step run once, for at most 60 s — past it the call is
+   stopped and answers `504 timeout` — never kept as a run, nothing in the
    run store, not verified, projected or sent to an events sink; the
    ledger's entry is its record. No actor; the host's
    `createStrut({ publicRuns: { principal } })` as its principal; the
@@ -3256,11 +3264,15 @@ anything:
    Mothership as a run's is.
 10. **The charge**, by the rule: base + markup × what the call reported it
     cost (`withUsage`); a call that reports none, its base. A call that
-    THREW, or whose result is over 5 MB as JSON, is charged its cost — no
-    markup, no base — and answers `500` with `code` `step_failed` (its
-    error, cut at 2000 characters) or `result_too_big`. Never more than
-    the reserve, nor what the token holds. A free call is charged nothing,
-    and its cost counts in the day.
+    THREW, ran out of time, or whose result is over 5 MB as JSON is charged
+    its cost — no markup, no base — and answers `500` with `code`
+    `step_failed` (its error, cut at 2000 characters) or `result_too_big`,
+    or the `504`. A lib step that answers a failure as text for a model
+    (`graph/*`'s "node not found", `sheets/*`'s API errors) fails the call
+    here (`step_failed`). Never more than the reserve, nor what the token
+    holds. A free call is charged nothing, and its cost counts in the day.
+    A charge the ledger refuses is tried again (every 30 s, for an hour);
+    the answer stands meanwhile.
 
 ```json
 { "output": { "cves": [ … ] },
@@ -3268,21 +3280,32 @@ anything:
 ```
 
 `credit` is a priced call's: what this call was charged and what the token
-holds after it; a `500` carries it too. The token's balance (§17.5) lists
-the call as a `hold` and a `charge` on `step:<type>`.
+holds after it; a `500` or `504` carries it too. The token's balance
+(§17.5) lists the call as a `hold` and a `charge` on `step:<type>`.
 
 **What the step runs against** is an allowlist (decision 15): the visitor's
-(§17.3) — `http`, `secrets` (the keys its publisher's step reads), the runs
-held to the public view — with one difference: the graph's READER is the
-whole graph's, not the public view's (on a host that set `graphReaders`,
-the `jobs` list), so a tool answers from a graph that is not public. Its
-schema reads pass; its writers, a raw query and a transaction refuse, and so
-does every write through the schema. There is no shell, no artifacts, no
-jobs, no sessions, no peers, no MCP, no browser and no wallet: a step
-reaching for one fails (a `graph/*` write step answers its own refusal as
-text, as it answers any failure). Not a sandbox: a step whose publisher
-made it callable may still reach past `ctx.services` — an API over `http`,
-its own connection from a secret.
+(§17.3) — `http`, `secrets` (the keys its publisher's step reads by name in
+its own code; a step whose config names one is never callable), the runs
+held to the public view — with two differences:
+
+- **The graph is the whole graph's, read-only**, not the public view's (on
+  a host that set `graphReaders`, the `jobs` list), so a tool answers from
+  a graph that is not public. Its reader, dialect and schema reads pass, and
+  a raw query READS: on the engine's own read-only path (a READ transaction
+  on Neo4j, a `READ ONLY` connection on a Ladybug file) after the write
+  keyword check, and only for a list that reads every namespace, as any
+  view's — so `graph/find` works. Its writers, a transaction and every
+  write through the schema refuse; the engine's handles are not on it.
+- **`http` reaches no private address**: `http(s)` only, never loopback,
+  private, link-local (the cloud's metadata service), multicast or
+  reserved, nor a name that resolves to one, redirects checked hop by hop,
+  each request at most 30 s. A tool that fronts a service on the server's
+  own network is a workflow.
+
+There is no shell, no artifacts, no jobs, no sessions, no peers, no MCP,
+no browser and no wallet: a step reaching for one fails. Not a sandbox: a
+step whose publisher made it callable may still reach past `ctx.services`
+— its own connection from a secret its code names.
 
 **A restart between a call's hold and its charge** leaves the hold open,
 and the call never answered: the next boot frees it, a charge of nothing

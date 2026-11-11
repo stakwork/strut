@@ -3,6 +3,7 @@ import { stepHashesFor } from "./closure.js";
 import type { AppRef, Flow, StepRegistry, RunEvent, RunResult, RunSummary } from "./core.js";
 import type { ClaimsReader } from "./graph/claims.js";
 import { runWorkflow, type SubflowResolver } from "./runner.js";
+import type { RunController } from "./run-control.js";
 import { baseType } from "./step-ref.js";
 import { resolveStep } from "./steps/registry.js";
 import { packagePrefixOf, stepInPackage } from "./package-lookup.js";
@@ -69,6 +70,9 @@ export interface RunStepOptions {
   /** The run's own cost cap in dollars (`RunOptions.maxCostUsd`): a public
    *  tool's call carries its item's. */
   maxCostUsd?: number;
+  /** Run control (`RunOptions.controller`): a public tool's call is
+   *  force-cancelled past its time. */
+  controller?: RunController;
   /** Recorded on the check run's `run.start` (see `RunEvent.verify`). */
   verify?: { checkId: string; subject: string; sourceRunId: string };
   /** The job the run is launched under (`RunOptions.job`): a JOB check
@@ -149,6 +153,7 @@ export async function runSingleStep(
     ...(opts.actor ? { actor: opts.actor } : {}),
     ...(opts.principal ? { principal: opts.principal } : {}),
     ...(opts.maxCostUsd !== undefined ? { maxCostUsd: opts.maxCostUsd } : {}),
+    ...(opts.controller ? { controller: opts.controller } : {}),
     ...(opts.job ? { job: opts.job } : {}),
     ...(opts.app ? { app: opts.app } : {}),
     ...(pkg ? { package: pkg } : {}),

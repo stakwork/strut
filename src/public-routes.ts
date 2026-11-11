@@ -131,6 +131,9 @@ export const PUBLIC_POST = /^\/public\/(?:mcp|credit|credit\/claim|workflows\/[^
 
 /** Requests one visitor address may make to `/public` in a minute. */
 export const PUBLIC_REQUESTS_PER_MINUTE = 1200;
+/** Tool calls one visitor address may make in a minute (beside launches'
+ *  60): a call answers at once, and a priced one's 402 round trip counts. */
+export const PUBLIC_TOOL_CALLS_PER_MINUTE = 120;
 
 /** A credit refusal as the route answers it: its status, `code`, and a
  *  `Retry-After` when it says one. A 401 names the scheme. */
@@ -720,15 +723,27 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): void {
   // ── A tool's call (plans/paid-runs.md §3's table, §6; work item 6) ──────
 
   // `{ config }` → 200 `{ output, credit? }`. The per-address budget (the
-  // launches', shared) and the drain, then the body here; the rest — the
-  // item, the config against the step's schema, the token, the caps, the
-  // 402, the reserve, the call and its charge — is src/public-tools.ts's,
-  // which an MCP door calls the same way.
+  // tools' own) and the drain, then the body here; the rest — the item, the
+  // config against the step's schema, the token, the caps, the 402, the
+  // reserve, the call and its charge — is src/public-tools.ts's, which an
+  // MCP door calls the same way.
+  const callLimit = PUBLIC_TOOL_CALLS_PER_MINUTE;
+  const callCounts = new Map<string, { minute: number; n: number }>();
+  const overCallBudget = (who: string): boolean => {
+    const minute = Math.floor(Date.now() / 60_000);
+    const at = callCounts.get(who);
+    if (!at || at.minute !== minute) {
+      if (callCounts.size > 10_000) for (const [k, v] of callCounts) if (v.minute !== minute) callCounts.delete(k);
+      callCounts.set(who, { minute, n: 1 });
+      return false;
+    }
+    return ++at.n > callLimit;
+  };
   app.post("/public/steps/:type{.+}/run", async (c) => {
     const tools = deps.tools;
     const type = c.req.param("type");
     const who = visitorAddress(c);
-    if (overLaunchBudget(who)) return c.json({ error: `too many calls: ${launchLimit} a minute` }, 429, { "retry-after": "60" });
+    if (overCallBudget(who)) return c.json({ error: `too many calls: ${callLimit} a minute` }, 429, { "retry-after": "60" });
     if (!tools) return c.json({ error: `step "${type}" is not open to anyone to call on this strut server` }, 404);
     const draining = tools.draining();
     if (draining) return c.json({ error: draining }, 503, { "retry-after": "60" });

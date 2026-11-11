@@ -47,7 +47,7 @@ import { ledgerPath, openLedger, priceOf, type LedgerStore } from "./payments/le
 import { MemoryLedgerStore } from "./payments/ledger-memory.js";
 import { isPriced, listRunnable, recentCosts, runnableCan, runnableProblems, runnableSubject, type RunnableDeps } from "./public-runnable.js";
 import { createCredit } from "./public-credit.js";
-import { createPublicTools, publicToolServices } from "./public-tools.js";
+import { createPublicTools, guardedHttp, publicToolServices } from "./public-tools.js";
 import type { SecretStore } from "./secret-store.js";
 import {
   FileSessionStore,
@@ -3307,15 +3307,20 @@ export async function createStrut<TServices = unknown>(
   // Anyone's call of a runnable STEP (plans/paid-runs.md §6, work item 6;
   // src/public-tools.ts): its config checked, a priced one's reserve set
   // aside, the step run once against an allowlist — the visitor's bag, with
-  // the whole graph's reader — never kept as a run, and charged by the rule.
+  // the whole graph read-only (the `jobs` list's, on a host that set
+  // `graphReaders`) and an http that reaches no private address — never
+  // kept as a run, and charged by the rule.
+  const toolHttp = guardedHttp();
+  const toolGraph = graph ? graphView(graph, opts.graphReaders, "jobs") : null;
   const publicTools = createPublicTools({
     ledger,
     surface: publicSurface,
     registry: () => registry,
     services: () => {
       const bag = services as Record<string, unknown>;
-      return publicToolServices(bag, graph ?? null, {
-        ...(graph ? { reader: readerFor(graph, opts.graphReaders, "jobs") } : {}),
+      return publicToolServices(bag, {
+        graph: toolGraph,
+        http: toolHttp,
         ...(bag["runs"] ? { runs: visitorRuns(bag["runs"] as Parameters<typeof visitorRuns>[0]) } : {}),
       });
     },
@@ -8520,6 +8525,7 @@ export async function createStrut<TServices = unknown>(
     bootTimer = undefined;
     if (ledgerSweepTimer) clearInterval(ledgerSweepTimer);
     ledgerSweepTimer = undefined;
+    publicTools.close();
     await bootScan;
     await packages.booted;
     // What the history still has waiting is committed before the stores go.

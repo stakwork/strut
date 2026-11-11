@@ -101,6 +101,19 @@ export function secretNamesIn(cfg: unknown, def?: AnyStepDef): unknown[] {
  *  names a secret today; a new one is added here. */
 const SECRET_NAME_FIELDS = ["tokenSecret", "storageStateSecret"] as const;
 
+/** Every config field through which a step's caller names a secret:
+ *  what `secretNamesIn` reads. */
+export const SECRET_CONFIG_FIELDS: readonly string[] = ["secretsEnv", ...SECRET_NAME_FIELDS, "secrets"];
+
+/** The first field of `def`'s config through which its caller names a
+ *  secret, else undefined: a step a stranger must never call, since the
+ *  caller would pick which secret it reads (plans/paid-runs.md §6). */
+export function configSecretField(def: AnyStepDef): string | undefined {
+  if (!(def.input instanceof z.ZodObject)) return undefined;
+  const shape = def.input.shape as Record<string, unknown>;
+  return SECRET_CONFIG_FIELDS.find((f) => f in shape);
+}
+
 /** May a workflow the AI published run `type` (bare)? `exec` is a built-in;
  *  control flow and the model steps are always in. */
 export function stepInReach(type: string, reach: BuilderReach): boolean {

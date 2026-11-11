@@ -3,6 +3,7 @@ import { defineStep, type StepContext, withAccessedNodes } from "../../../core.j
 import type { StrutCapabilities } from "../../../capabilities.js";
 import { nodeTitle } from "../../../graph/title.js";
 import { graphCtx, errText, deriveNodeName, edgeCountMap, deletedOut } from "./_shared.js";
+import { stepFailed } from "../../../public-call.js";
 
 const CHILD_CAP = 50;
 const CHILD_DESCRIPTION_MAX = 300;
@@ -83,26 +84,26 @@ async function resolve(
     const b = await graphCtx(ctx as StepContext<StrutCapabilities>);
     let raw;
     if (cfg.owner) {
-      if (b.kind !== "ladybug") return "graph/graph-get failed: owner needs a LadybugDB graph, where the user is the Person marked is_owner";
+      if (b.kind !== "ladybug") return stepFailed("graph/graph-get failed: owner needs a LadybugDB graph, where the user is the Person marked is_owner");
       const { findNodes } = await import("../../../graph/find.js");
       const { PERSON_TYPE } = await import("../../../graph/ladybug/registry.js");
       const [hit] = (await findNodes(b, { node_type: PERSON_TYPE, where: { is_owner: true }, limit: 1, ...(cfg.namespace ? { namespace: cfg.namespace } : {}) })).nodes;
       raw = hit ? await b.reader.getNode(hit.ref_id) : null;
-      if (!raw) return "node not found: no Person is marked is_owner yet — create the user with graph_create_node (is_owner: true) once you know their name";
+      if (!raw) return stepFailed("node not found: no Person is marked is_owner yet — create the user with graph_create_node (is_owner: true) once you know their name");
     } else if (cfg.ref_id) {
       raw = await b.reader.getNode(cfg.ref_id, cfg.include_deleted ? { include_deleted: true } : undefined);
-      if (!raw) return `node not found: ${cfg.ref_id}`;
+      if (!raw) return stepFailed(`node not found: ${cfg.ref_id}`);
     } else {
-      if (!cfg.node_type || !cfg.name) return "graph/graph-get failed: pass ref_id, or node_type + name";
+      if (!cfg.node_type || !cfg.name) return stepFailed("graph/graph-get failed: pass ref_id, or node_type + name");
       const schema = await b.schemas.schema(cfg.node_type);
-      if (!schema) return `graph/graph-get failed: unknown node type "${cfg.node_type}"`;
+      if (!schema) return stepFailed(`graph/graph-get failed: unknown node type "${cfg.node_type}"`);
       const keyed = schema.key_spec.split("-").slice(1);
       if (keyed.length !== 1 || keyed[0]!.toLowerCase() !== "name") {
-        return `graph/graph-get failed: ${schema.type} is keyed by ${keyed.join(" + ") || "nothing"}, not name — pass its ref_id (graph_graph_search finds it)`;
+        return stepFailed(`graph/graph-get failed: ${schema.type} is keyed by ${keyed.join(" + ") || "nothing"}, not name — pass its ref_id (graph_graph_search finds it)`);
       }
       const { composeNodeKey } = await import("../../../graph/node-writer.js");
       raw = await b.reader.getNodeByKey(schema.type, composeNodeKey(schema, { name: cfg.name }), cfg.namespace);
-      if (!raw) return `node not found: ${schema.type} "${cfg.name}"`;
+      if (!raw) return stepFailed(`node not found: ${schema.type} "${cfg.name}"`);
     }
     const properties = (raw.properties ?? {}) as Record<string, any>;
     // Edge-type connectivity. Best effort — never fail the whole call.
