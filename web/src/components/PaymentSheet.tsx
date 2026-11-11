@@ -1,20 +1,21 @@
 import { useEffect, useMemo, useState } from "preact/hooks";
 import qrcode from "qrcode-generator";
-import * as api from "../api";
-import { creditLine, formatSats, formatUsd, invoiceQrText, secondsLeft, waitForClaim, type PayOutcome, type PaymentRequired } from "../visitor-pay";
+import { creditLine, formatSats, formatUsd, invoiceQrText, secondsLeft, type ClaimEnd, type PayOutcome, type PaymentRequired } from "../visitor-pay";
 
 // ── The sheet a visitor pays a priced run on (plans/paid-runs.md §10) ──────
 //
 // Over a public app's frame, never in it: the page asked to launch a
 // workflow that costs something, and its HOST shows what it costs — in
 // dollars and in sats at the quoted rate — what the workflow is, and the
-// invoice as a QR code with a Copy button. The sheet asks `POST
-// /public/credit/claim` with the challenge's macaroon until the invoice
-// settles (§4.4: a phone wallet never gives this page the preimage), then
-// answers the credential to the relay (../visitor-pay `callPaying`), which
-// keeps it in memory and sends the page's call again. Cancel answers the
-// page that the run was not paid for; an invoice that expired can be asked
-// for again.
+// invoice as a QR code with a Copy button. The relay claims the invoice —
+// `POST /public/credit/claim` with the challenge's macaroon (§4.4: a phone
+// wallet never gives this page the preimage) — until it settles or ends,
+// whether or not this sheet is still open (../visitor-pay
+// `createClaimKeeper`); the sheet waits on that (`settled`) and answers the
+// credential, and the relay sends the page's call again. Cancel answers the
+// page that the run was not paid for — an invoice paid after it is still
+// claimed, its credit kept for the next launch; an invoice that expired can
+// be asked for again.
 
 /** The invoice as an SVG QR code: dark modules on white, a four-module
  *  quiet zone, scaled by the container. */
@@ -29,24 +30,27 @@ function qrSvg(text: string): string {
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${size} ${size}" shape-rendering="crispEdges"><rect width="${size}" height="${size}" fill="#fff"/><path d="${d}" fill="#000"/></svg>`;
 }
 
-export function PaymentSheet(props: { payment: PaymentRequired; workflow: string; onDone: (outcome: PayOutcome) => void }) {
-  const { payment, workflow, onDone } = props;
+export function PaymentSheet(props: { payment: PaymentRequired; workflow: string; settled: Promise<ClaimEnd>; onDone: (outcome: PayOutcome) => void }) {
+  const { payment, workflow, settled, onDone } = props;
   const [state, setState] = useState<"waiting" | "expired">("waiting");
   const [copied, setCopied] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const svg = useMemo(() => qrSvg(invoiceQrText(payment.invoice)), [payment.invoice]);
 
-  // Until the invoice settles or expires: then the credential goes to the
-  // relay, or the sheet says it expired.
+  // Until the invoice settles or ends: then the credential goes to the
+  // relay, or the sheet says it expired. Closing the sheet stops only this
+  // listener; the relay goes on claiming.
   useEffect(() => {
-    const abort = new AbortController();
-    void waitForClaim(() => api.claimPublicCredit(payment.macaroon), { signal: abort.signal }).then((got) => {
-      if (!got || abort.signal.aborted) return;
+    let open = true;
+    void settled.then((got) => {
+      if (!open) return;
       if (got.state === "settled") onDone(got.credential);
       else setState("expired");
     });
-    return () => abort.abort();
-  }, [payment.macaroon]);
+    return () => {
+      open = false;
+    };
+  }, [settled]);
 
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000);

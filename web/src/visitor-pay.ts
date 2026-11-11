@@ -6,7 +6,7 @@
 // payment_required: { macaroon, invoice, usd, sats, … } }`, and the HOST —
 // this page, never the frame — pays it: a sheet with the invoice, `POST
 // /public/credit/claim` with the macaroon until it settles (§4.4), the
-// credential kept in this page's memory, and the page's ORIGINAL call sent
+// credential kept by the host, and the page's ORIGINAL call sent
 // again with it as the request's `Authorization: L402 <macaroon>:<preimage>`.
 // The page sees a launch that took a moment longer; a model-written page
 // never holds a bearer token that is money (§10). Later launches reuse the
@@ -14,8 +14,16 @@
 // left over (§4.5), so paying it again replaces the credential.
 //
 // The host also names the VISIT (`x-strut-visit`, a random secret minted
-// once per page load): the runs launched under it are the ones the page
-// reads back (src/public-surface.ts `visitorRuns`).
+// once per tab): the runs launched under it are the ones the page reads
+// back (src/public-surface.ts `visitorRuns`).
+//
+// What the host holds — the visit, the credential, credentials paid for and
+// not yet sent, and every invoice it showed until that invoice ends — lives
+// in the host page's `sessionStorage` (strut's origin, never a frame's), so
+// a reload in the tab keeps the visit's runs readable and its credit
+// spendable. An invoice is claimed until it settles or ends whether or not
+// its sheet is still open (`createClaimKeeper`): a phone that pays after the
+// visitor pressed Cancel still buys credit, which the next launch spends.
 //
 // Pure, with no import from web/node_modules, so the root test run covers
 // it (visitor-pay.test.ts); ./app-host wires it to the bridge.
@@ -37,6 +45,9 @@ export interface PaymentRequired {
   remaining_usd?: number;
   /** Why a token was not enough: `short`, `expired`, `replaced`. */
   reason?: string;
+  /** The new macaroon inherits the presented token's free credit (§4.5):
+   *  once paid it REPLACES that credential. */
+  carries?: boolean;
 }
 
 /** MCP's `tools/call` params and result, the parts read here. */
@@ -102,12 +113,61 @@ export function cancelledResult(workflow: string): CallResult {
   return { isError: true, content: [{ type: "text", text: JSON.stringify({ error }) }] };
 }
 
-/** What the host holds for a page load: the visit and, once paid, the
- *  credential — in memory only. */
+/** What the host holds for a visit, kept in the host page's
+ *  `sessionStorage` so a reload in the tab keeps it. */
 export interface VisitorPurse {
   visit: string;
   /** `<macaroon>:<preimage>`, sent as `Authorization: L402 …`. */
   credential?: string;
+  /** Credentials paid for and not sent yet — an invoice paid after its
+   *  sheet was closed — tried before the visitor is asked again. */
+  spare: string[];
+  /** Every invoice the host showed and has not seen settle: claimed until it
+   *  ends (`createClaimKeeper`). */
+  pending: PendingClaim[];
+}
+
+/** An invoice the host showed: its macaroon, when it ends, and the
+ *  credential it was minted to inherit from (`carries`), which it replaces. */
+export interface PendingClaim {
+  macaroon: string;
+  expires?: string;
+  carriesFrom?: string;
+}
+
+export function newPurse(visit: string = newVisit()): VisitorPurse {
+  return { visit, spare: [], pending: [] };
+}
+
+const VISIT_SHAPE = /^[A-Za-z0-9_-]{22,128}$/;
+
+/** The purse `storage` keeps under `key`, or a new one. Anything that is not
+ *  a purse — or a storage that throws (a private window) — is a new one. */
+export function loadPurse(storage: Pick<Storage, "getItem"> | undefined, key: string): VisitorPurse {
+  try {
+    const raw = storage?.getItem(key);
+    const v = raw ? (JSON.parse(raw) as Record<string, unknown>) : undefined;
+    if (v && typeof v["visit"] === "string" && VISIT_SHAPE.test(v["visit"])) {
+      const strings = (x: unknown) => (Array.isArray(x) ? x.filter((c): c is string => typeof c === "string") : []);
+      const pending = Array.isArray(v["pending"])
+        ? (v["pending"] as unknown[]).filter((e): e is PendingClaim => !!e && typeof (e as PendingClaim).macaroon === "string")
+        : [];
+      return { visit: v["visit"], ...(typeof v["credential"] === "string" ? { credential: v["credential"] } : {}), spare: strings(v["spare"]), pending };
+    }
+  } catch {
+    // Unreadable: a new visit.
+  }
+  return newPurse();
+}
+
+/** Keep the purse for a reload in this tab; a storage that throws keeps it
+ *  in memory alone. */
+export function savePurse(storage: Pick<Storage, "setItem"> | undefined, key: string, purse: VisitorPurse): void {
+  try {
+    storage?.setItem(key, JSON.stringify(purse));
+  } catch {
+    // Full or refused: the page load still holds it.
+  }
 }
 
 /** The headers every `/public/mcp` request of the visit carries. */
@@ -115,21 +175,49 @@ export function visitorHeaders(purse: VisitorPurse): Record<string, string> {
   return { [VISIT_HEADER]: purse.visit, ...(purse.credential ? { authorization: `L402 ${purse.credential}` } : {}) };
 }
 
-/** What the payer decided: the credential (paid), `again` (the invoice
- *  expired: ask for a new one), or null (the visitor cancelled). */
+/** An invoice the visitor paid, into the purse: the credential to send when
+ *  there is none, or when it was minted to carry from the one sent (§4.5:
+ *  its first use moved that one's credit to it); else a spare. */
+export function creditSettled(purse: VisitorPurse, entry: PendingClaim, credential: string): void {
+  purse.pending = purse.pending.filter((e) => e.macaroon !== entry.macaroon);
+  if (purse.credential === credential || purse.spare.includes(credential)) return;
+  if (!purse.credential || (entry.carriesFrom !== undefined && entry.carriesFrom === purse.credential)) purse.credential = credential;
+  else purse.spare.push(credential);
+}
+
+/** What the payer decided: the credential (paid), `again` (send the call
+ *  again: the invoice expired, or credit arrived meanwhile), or null (the
+ *  visitor cancelled). */
 export type PayOutcome = string | "again" | null;
 
-/** How many 402s one call may meet before it gives up: a top-up that is
- *  short again, an expired invoice asked for again. */
-export const PAY_ROUNDS = 4;
+/** How many answers one call may act on before it gives up: a spare tried,
+ *  a top-up that is short again, an expired invoice asked for again. */
+export const PAY_ROUNDS = 6;
+
+/** A failed launch after the visitor paid in this call (the server's runs
+ *  in flight filled while they paid, the drain, the day's cap): the error,
+ *  and that the payment is kept as credit. */
+export function keptCreditResult(result: CallResult): CallResult {
+  const text = result.content?.find((c) => c.type === "text" && typeof c.text === "string")?.text ?? "";
+  let error = text;
+  try {
+    const parsed = JSON.parse(text) as { error?: unknown };
+    if (typeof parsed?.error === "string") error = parsed.error;
+  } catch {
+    // Plain text.
+  }
+  const kept = `${error || "the run did not start"} — your payment is kept as credit on this server: run it again in a moment, and it is spent then`;
+  return { ...result, isError: true, content: [{ type: "text", text: JSON.stringify({ error: kept }) }] };
+}
 
 /**
  * The page's `tools/call`, paid for when it must: sent as it is; a launch
- * answered `payment_required` is shown to the visitor (`pay`), and once
- * paid sent again with the credential the purse now holds (`call` reads the
- * purse for its headers). A credential the server refuses is dropped and
- * the call made again without it. Anything that is not a launch passes
- * through untouched.
+ * answered `payment_required` first tries a credential paid for earlier and
+ * not sent yet (`spare`), else is shown to the visitor (`pay`), and once paid
+ * sent again with the credential the purse then holds (`call` reads the purse
+ * for its headers). A credential the server refuses is dropped and the call
+ * made again without it. A launch that fails after the visitor paid says the
+ * payment is kept. Anything that is not a launch passes through untouched.
  */
 export async function callPaying(
   params: CallParams,
@@ -137,36 +225,63 @@ export async function callPaying(
     call: (params: CallParams) => Promise<CallResult>;
     purse: VisitorPurse;
     pay: (p: PaymentRequired, workflow: string) => Promise<PayOutcome>;
+    /** The purse changed: keep it (`savePurse`). */
+    save?: () => void;
   },
 ): Promise<CallResult> {
+  const { purse } = deps;
+  const save = deps.save ?? (() => {});
   let result = await deps.call(params);
   const launch = launchOf(params);
   if (!launch) return result;
+  const tried = new Set<string>(purse.credential ? [purse.credential] : []);
+  let paid = false;
+  const settle = (r: CallResult) => (paid && r.isError && !paymentRequiredIn(r) ? keptCreditResult(r) : r);
   for (let round = 0; round < PAY_ROUNDS; round++) {
-    if (deps.purse.credential && refusesCredential(result)) {
-      delete deps.purse.credential;
+    if (purse.credential && refusesCredential(result)) {
+      delete purse.credential;
+      save();
       result = await deps.call(params);
       continue;
     }
     const p = paymentRequiredIn(result);
-    if (!p) return result;
-    const paid = await deps.pay(p, launch.workflow);
-    if (paid === null) return cancelledResult(launch.workflow);
-    if (paid !== "again") deps.purse.credential = paid;
+    if (!p) return settle(result);
+    const spare = purse.spare.find((c) => !tried.has(c));
+    if (spare) {
+      purse.spare = purse.spare.filter((c) => c !== spare);
+      // What is left on a short one stays for later (its remainder), once.
+      if (purse.credential && p.reason === "short" && (p.remaining_usd ?? 0) > 0) purse.spare.push(purse.credential);
+      purse.credential = spare;
+      tried.add(spare);
+      save();
+      result = await deps.call(params);
+      continue;
+    }
+    const outcome = await deps.pay(p, launch.workflow);
+    if (outcome === null) return cancelledResult(launch.workflow);
+    if (outcome !== "again") {
+      // This call asked for it: it is the one to send now.
+      purse.spare = purse.spare.filter((c) => c !== outcome);
+      purse.credential = outcome;
+      tried.add(outcome);
+      paid = true;
+      save();
+    }
     result = await deps.call(params);
   }
-  return result;
+  return settle(result);
 }
 
-/** One sheet at a time for a page load's purse: a second priced launch
- *  that met a 402 while the visitor was paying for the first waits for that
- *  one, and then — when a credential was bought meanwhile — is sent again
- *  with it (`again`) instead of asking the visitor twice. */
+/** One sheet at a time for a purse: a second priced launch that met a 402
+ *  while the visitor was paying for the first waits for that one, and then
+ *  — when credit arrived meanwhile — is sent again (`again`) instead of
+ *  asking the visitor twice. */
 export function payInTurn(purse: VisitorPurse): (pay: (p: PaymentRequired, workflow: string) => Promise<PayOutcome>, p: PaymentRequired, workflow: string) => Promise<PayOutcome> {
   let turn: Promise<unknown> = Promise.resolve();
   return (pay, p, workflow) => {
     const before = purse.credential;
-    const mine = turn.then(() => (purse.credential !== before ? ("again" as const) : pay(p, workflow)));
+    const spares = purse.spare.length;
+    const mine = turn.then(() => (purse.credential !== before || purse.spare.length > spares ? ("again" as const) : pay(p, workflow)));
     turn = mine.catch(() => undefined);
     return mine;
   };
@@ -206,6 +321,90 @@ export async function waitForClaim(
   return null;
 }
 
+/** How long past its end an invoice is still asked about once: a payment
+ *  made at the last moment settles a little later. */
+export const CLAIM_GRACE_MS = 30_000;
+
+/** How an invoice the host showed ended. */
+export type ClaimEnd = { state: "settled"; credential: string } | { state: "expired" };
+
+export interface ClaimKeeper {
+  /** Claim this invoice until it settles or ends, whether or not a sheet
+   *  still shows it; a settled one goes into the purse (`creditSettled`).
+   *  The same macaroon twice is one watch. */
+  watch(entry: PendingClaim): Promise<ClaimEnd>;
+  /** Watch every invoice the purse still holds (after a reload). */
+  resume(): void;
+}
+
+/** The host's claims, apart from any sheet (§4.4): an invoice shown is
+ *  claimed every `intervalMs` until it settles — its credential into the
+ *  purse — or it ends. Each change is saved. */
+export function createClaimKeeper(o: {
+  purse: VisitorPurse;
+  claim: (macaroon: string) => Promise<ClaimAnswer>;
+  save: () => void;
+  now?: () => number;
+  intervalMs?: number;
+  sleep?: (ms: number) => Promise<void>;
+}): ClaimKeeper {
+  const now = o.now ?? Date.now;
+  const every = o.intervalMs ?? 3000;
+  const sleep = o.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const watching = new Map<string, Promise<ClaimEnd>>();
+  const over = (e: PendingClaim) => {
+    const t = e.expires ? Date.parse(e.expires) : NaN;
+    return Number.isFinite(t) && now() > t + CLAIM_GRACE_MS;
+  };
+  const drop = (e: PendingClaim) => {
+    o.purse.pending = o.purse.pending.filter((x) => x.macaroon !== e.macaroon);
+    o.save();
+  };
+  const watch = (entry: PendingClaim): Promise<ClaimEnd> => {
+    const known = watching.get(entry.macaroon);
+    if (known) return known;
+    if (!o.purse.pending.some((e) => e.macaroon === entry.macaroon)) {
+      o.purse.pending.push(entry);
+      o.save();
+    }
+    const run = (async (): Promise<ClaimEnd> => {
+      for (;;) {
+        const last = over(entry);
+        let wait = every;
+        try {
+          const a = await o.claim(entry.macaroon);
+          if ("state" in a && a.state === "settled") {
+            creditSettled(o.purse, entry, a.credential);
+            o.save();
+            return a;
+          }
+          if ("state" in a && a.state === "expired") {
+            drop(entry);
+            return a;
+          }
+          if ("error" in a && a.retryAfter) wait = Math.max(every, a.retryAfter * 1000);
+        } catch {
+          // A dropped request: ask again.
+        }
+        if (last) {
+          drop(entry);
+          return { state: "expired" };
+        }
+        await sleep(wait);
+      }
+    })();
+    watching.set(entry.macaroon, run);
+    void run.finally(() => watching.delete(entry.macaroon));
+    return run;
+  };
+  return {
+    watch,
+    resume() {
+      for (const e of [...o.purse.pending]) void watch(e);
+    },
+  };
+}
+
 /** The claim route's answer read: its JSON, and `Retry-After` on a refusal. */
 export function claimAnswerOf(status: number, body: unknown, retryAfter: string | null): ClaimAnswer {
   const b = (body ?? {}) as Record<string, unknown>;
@@ -231,7 +430,7 @@ export function creditLine(p: Pick<PaymentRequired, "reason" | "remaining_usd">)
     return `Your credit has ${formatUsd(p.remaining_usd!)} left; this tops it up, and what a run does not use stays yours for later runs here.`;
   }
   if (p.reason === "short") return "Your credit here is spent; this buys more, and what a run does not use stays yours for later runs here.";
-  return "What the run does not use stays as credit for later runs here, while this page is open.";
+  return "What the run does not use stays as credit for later runs here, in this tab, even after a reload.";
 }
 
 /** Sats with thousands separated. */

@@ -6,7 +6,7 @@ import {
   useMutation, useQueries, useQuery, useQueryClient,
   type QueryKey, type UseQueryResult,
 } from "@tanstack/react-query";
-import { StrutError, isPublicView, paymentRequiredOf, publicRunnable, type AppIdentity, type StrutClient } from "./client.js";
+import { StrutError, isPublicView, paymentRequiredOf, publicRunnableItems, type AppIdentity, type PublicResults, type StrutClient } from "./client.js";
 import type { DisplayMode, HostState, Theme } from "./host.js";
 import { appLink, type AppLinkInput } from "./links.js";
 import { useStrutClient, useStrutHost } from "./provider.js";
@@ -1111,6 +1111,11 @@ export interface UseHost {
    *  — a priced one's host pays before the launch returns. Empty outside the
    *  public view, where a page starts what its viewer may. */
   runnable: readonly string[];
+  /** For each of `runnable`, what the visitor reads of the runs it
+   *  launched: `output` — `useRun` and the files the output declares;
+   *  `useRunEvents`, `useWorkProducts` and a run timeline are refused — or
+   *  `run`, everything. */
+  results: Readonly<Record<string, PublicResults>>;
 }
 
 /** The host behind the page: theme, display mode, locale, and the two
@@ -1130,7 +1135,10 @@ export function useHost(): UseHost {
       openLink: (url: string) => host.openLink(url),
       requestDisplayMode: (mode: DisplayMode) => host.requestDisplayMode(mode),
       public: isPublicView(),
-      runnable: publicRunnable(),
+      ...(() => {
+        const items = publicRunnableItems();
+        return { runnable: items.map((i) => i.name), results: Object.fromEntries(items.map((i) => [i.name, i.results])) };
+      })(),
     }),
     [host, s],
   );

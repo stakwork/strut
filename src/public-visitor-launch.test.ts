@@ -57,6 +57,18 @@ describe("a visitor's app page launches a runnable workflow (plans/paid-runs.md 
   let saved: string | undefined;
   let strut: Awaited<ReturnType<typeof createStrut>>;
   let identity: string;
+  /** The identity of `acme/shop/web`, an app in a package. */
+  let pkgIdentity: string;
+  const identityOf = async (name: string) => {
+    const res = await strut.app.request(`/public/apps/${encodeURIComponent(name)}/document`);
+    const html = await res.text();
+    assert.equal(res.status, 200, `${name}: ${html.slice(0, 300)}`);
+    return html.match(/<meta name="strut-app-token" content="([^"]+)">/)![1]!.replace(/&amp;/g, "&");
+  };
+  const metaOf = async (name: string) => {
+    const html = await (await strut.app.request(`/public/apps/${encodeURIComponent(name)}/document`)).text();
+    return JSON.parse(html.match(/<meta name="strut-public-runnable" content="([^"]+)">/)?.[1]?.replace(/&quot;/g, '"') ?? "null") as unknown;
+  };
   const wallet = new FakeWallet();
   const store = new MemoryRunStore();
 
@@ -72,12 +84,12 @@ describe("a visitor's app page launches a runnable workflow (plans/paid-runs.md 
     return { raw: text, body: line ? JSON.parse(line.slice(6)) : JSON.parse(text) };
   };
   /** A page's call through the visitor's door, as its host sends it. */
-  const call = async (type: string, config: Record<string, unknown>, o: { visit?: string; credential?: string } = {}) => {
+  const call = async (type: string, config: Record<string, unknown>, o: { visit?: string; credential?: string; app?: string } = {}) => {
     const headers: Record<string, string> = {
-      ...(o.visit ? { [VISIT_HEADER]: o.visit } : {}),
+      ...(o.visit !== undefined ? { [VISIT_HEADER]: o.visit } : {}),
       ...(o.credential ? { authorization: `L402 ${o.credential}` } : {}),
     };
-    const { raw, body } = await rpc("tools/call", { name: STEP_RUN_TOOL, arguments: { type, config, app: identity } }, headers);
+    const { raw, body } = await rpc("tools/call", { name: STEP_RUN_TOOL, arguments: { type, config, app: o.app ?? identity } }, headers);
     const out = JSON.parse(body.result.content[0].text) as Record<string, any>;
     return { raw, error: body.result.isError ? (out["error"] as string) : undefined, result: body.result.isError ? undefined : out };
   };
@@ -102,7 +114,7 @@ describe("a visitor's app page launches a runnable workflow (plans/paid-runs.md 
       services: { lightning: lightningCapability(wallet) },
       payments: { rate: async (): Promise<ExchangeRate> => ({ usdPerBtc: RATE, at: new Date().toISOString(), source: "test" }) },
     });
-    for (const name of ["free-out", "free-run", "priced", "closed", "ungranted"]) {
+    for (const name of ["free-out", "free-run", "priced", "closed", "ungranted", "acme/shop/fortune"]) {
       await workspace.publishWorkflowByContent(name, wf(name));
       await workspace.setWorkflowOwner(name, "owner-1");
     }
@@ -112,12 +124,20 @@ describe("a visitor's app page launches a runnable workflow (plans/paid-runs.md 
     await writeFile(join(dir, "src", "App.tsx"), 'export default function App() { return <p className="p-2">shop</p>; }\n');
     const r = await strut.apps.publish(dir, "shop", { surface: "person" });
     assert.ok(r.ok, r.ok ? "" : r.errors.join("\n"));
+    // An app in a package names its package's workflow bare, as its page does.
+    const pkgDir = join(root, "apps", "acme-web");
+    await mkdir(join(pkgDir, "src"), { recursive: true });
+    await writeFile(join(pkgDir, "app.yaml"), "title: Acme\ngrants:\n  workflows: [fortune]\n");
+    await writeFile(join(pkgDir, "src", "App.tsx"), 'export default function App() { return <p className="p-2">acme</p>; }\n');
+    const rp = await strut.apps.publish(pkgDir, "acme/shop/web", { surface: "person" });
+    assert.ok(rp.ok, rp.ok ? "" : rp.errors.join("\n"));
     const put = await strut.app.request("/public-view", {
       method: "PUT",
       headers: auth,
       body: JSON.stringify({
-        apps: [{ name: "shop" }],
+        apps: [{ name: "shop" }, { name: "acme/shop/web" }],
         runnable: [
+          { kind: "workflow", name: "acme/shop/fortune", dailyCapUsd: 5 },
           { kind: "workflow", name: "free-out", dailyCapUsd: 5 },
           { kind: "workflow", name: "free-run", dailyCapUsd: 5, results: "run" },
           { kind: "workflow", name: "priced", base: 0.5 },
@@ -126,9 +146,9 @@ describe("a visitor's app page launches a runnable workflow (plans/paid-runs.md 
       }),
     });
     assert.equal(put.status, 200, await put.clone().text());
-    const html = await (await strut.app.request("/public/apps/shop/document")).text();
-    identity = html.match(/<meta name="strut-app-token" content="([^"]+)">/)![1]!.replace(/&amp;/g, "&");
+    identity = await identityOf("shop");
     assert.deepEqual(publicAppOfIdentity(identity), { name: "shop", version: "v1" });
+    pkgIdentity = await identityOf("acme/shop/web");
   });
   after(async () => {
     await strut?.close?.().catch(() => {});
@@ -137,10 +157,37 @@ describe("a visitor's app page launches a runnable workflow (plans/paid-runs.md 
     await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   });
 
-  it("the document names what its page may start: the runnable workflows it grants, nothing else", async () => {
-    const html = await (await strut.app.request("/public/apps/shop/document")).text();
-    const meta = html.match(/<meta name="strut-public-runnable" content="([^"]+)">/)?.[1]?.replace(/&quot;/g, '"');
-    assert.deepEqual(JSON.parse(meta ?? "null"), ["free-out", "free-run", "priced"]);
+  it("the document names what its page may start — the runnable workflows it grants, nothing else — and what a visitor reads of each run", async () => {
+    assert.deepEqual(await metaOf("shop"), [
+      { name: "free-out", results: "output" },
+      { name: "free-run", results: "run" },
+      { name: "priced", results: "output" },
+    ]);
+  });
+
+  it("an app in a package: its page's bare name is its package's workflow, for the meta, the launch and the reads", async () => {
+    assert.deepEqual(await metaOf("acme/shop/web"), [{ name: "fortune", results: "output" }]);
+    const launched = await call("run/launch", { workflow: "fortune", input: { text: "pkg" } }, { visit: VISIT, app: pkgIdentity });
+    assert.equal(launched.error, undefined, launched.error);
+    const runId = launched.result!["runId"] as string;
+    await waitEnded("acme/shop/fortune", runId);
+    const got = await call("run/get", { workflow: "fortune", runId }, { visit: VISIT, app: pkgIdentity });
+    assert.equal(got.error, undefined, got.error);
+    assert.equal(got.result!["status"], "success");
+    assert.deepEqual(((await call("run/list", { workflow: "fortune" }, { visit: VISIT, app: pkgIdentity })).result as unknown as Array<{ runId: string }>).map((r) => r.runId), [runId]);
+  });
+
+  it("no visit, or not one: the launch is refused naming the header, before anything is admitted, held or charged", async () => {
+    const invoices = wallet.calls.filter((c) => c.method === "makeInvoice").length;
+    const before = (await store.listRuns("priced")).length + (await store.listRuns("free-out")).length;
+    for (const visit of [undefined, "short", "not a visit secret at all, spaces and all"]) {
+      for (const workflow of ["free-out", "priced"]) {
+        const r = await call("run/launch", { workflow, input: { text: "x" } }, visit === undefined ? {} : { visit });
+        assert.match(r.error!, /^visit_required: .*x-strut-visit/, `${workflow} with visit ${String(visit)}`);
+      }
+    }
+    assert.equal((await store.listRuns("priced")).length + (await store.listRuns("free-out")).length, before, "nothing ran");
+    assert.equal(wallet.calls.filter((c) => c.method === "makeInvoice").length, invoices, "no invoice was minted");
   });
 
   it("free: it launches through the public launcher, the result carries runId and no token, and the visit reads its own run back as `results` allows", async () => {
@@ -253,6 +300,7 @@ describe("a visitor's app page launches a runnable workflow (plans/paid-runs.md 
     const again = third.result!["payment_required"] as Record<string, any>;
     assert.equal(again["reason"], "short");
     assert.equal(again["remaining_usd"], 0);
+    assert.equal(again["carries"], true, "the top-up inherits the token presented: the host replaces its credential with it");
 
     // A credential the server cannot vouch for is an error the host reads.
     const forged = await call("run/launch", { workflow: "priced", input: { text: "x" } }, { visit: VISIT, credential: `${p["macaroon"]}:${"0".repeat(64)}` });

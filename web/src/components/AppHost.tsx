@@ -5,7 +5,7 @@ import { connectAppHost, type AppHostConnection } from "../app-host";
 import { nativeWalletOf, type NativeWalletApp } from "@strut/kit/wallet";
 import { appToolInput, namesApp, peerAppLink } from "../app-links";
 import { frameAttributes } from "../frame-permissions";
-import type { PaymentRequired, PayOutcome } from "../visitor-pay";
+import type { ClaimEnd, PaymentRequired, PayOutcome } from "../visitor-pay";
 import { PaymentSheet } from "./PaymentSheet";
 
 // ── An app's page, hosted (plans/apps.md §7.3) ─────────────────────────────
@@ -87,7 +87,7 @@ export function AppHost(props: {
   const frameRef = useRef<HTMLIFrameElement>(null);
   const [state, setState] = useState<{ status: "loading" | "ready" | "error"; error?: string }>({ status: "loading" });
   /** A priced launch the visitor is asked to pay, and where its answer goes. */
-  const [payment, setPayment] = useState<{ p: PaymentRequired; workflow: string; done: (o: PayOutcome) => void } | null>(null);
+  const [payment, setPayment] = useState<{ p: PaymentRequired; workflow: string; settled: Promise<ClaimEnd>; done: (o: PayOutcome) => void } | null>(null);
   const paymentRef = useRef(payment);
   paymentRef.current = payment;
   const connRef = useRef<AppHostConnection | null>(null);
@@ -154,11 +154,12 @@ export function AppHost(props: {
             onInitialized: markReady,
             ...(visitor
               ? {
-                  onPayment: (p: PaymentRequired, workflow: string) =>
+                  onPayment: (p: PaymentRequired, workflow: string, settled: Promise<ClaimEnd>) =>
                     new Promise<PayOutcome>((resolve) => {
                       setPayment({
                         p,
                         workflow,
+                        settled,
                         done: (o) => {
                           setPayment(null);
                           resolve(o);
@@ -237,7 +238,7 @@ export function AppHost(props: {
     <div class={`app-host${theme === "light" ? " light" : ""}`}>
       {/* Every app's attributes; the effect sets the version's before the srcdoc. */}
       <iframe ref={frameRef} class="app-frame" sandbox={BASE_FRAME.sandbox} allow={BASE_FRAME.allow} title={app.name} />
-      {payment && <PaymentSheet payment={payment.p} workflow={payment.workflow} onDone={payment.done} />}
+      {payment && <PaymentSheet payment={payment.p} workflow={payment.workflow} settled={payment.settled} onDone={payment.done} />}
       {state.status !== "ready" && (
         <div class={`app-host-overlay${state.status === "error" ? " is-error" : ""}`}>
           {state.status === "loading" ? "Loading the app…" : `The app could not be loaded: ${state.error}`}

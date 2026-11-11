@@ -797,6 +797,17 @@ export function visitorOfVisit(visit: string | undefined): string | undefined {
   return visit && VISIT.test(visit) ? createHash("sha256").update(`strut-visit:${visit}`).digest("hex").slice(0, 32) : undefined;
 }
 
+/** Why a visitor's LAUNCH is refused for want of a visit, else undefined: a
+ *  run launched with none could never be read back, so it is refused
+ *  before anything is admitted, held or charged — naming the header. */
+export function visitProblem(visit: string | undefined): string | undefined {
+  if (visit === undefined || visit === "") {
+    return `visit_required: a visitor's launch needs its host to name the visit — the ${VISIT_HEADER} header on the /public/mcp request, 22 to 128 characters of base64url minted at random for the page — or its run could never be read back; this host sent none`;
+  }
+  if (!VISIT.test(visit)) return `visit_required: ${VISIT_HEADER} is not 22 to 128 characters of base64url`;
+  return undefined;
+}
+
 /** A launch's answer as a visitor's page reads it (plans/paid-runs.md §10):
  *  the run (`{ runId, existing?, credit? }`) — never its run token, which
  *  would be a bearer credential in the frame; for a priced workflow no
@@ -811,7 +822,7 @@ export function visitorLaunchResult(out: PublicLaunchOutcome): Record<string, un
   if (out.status === 402) {
     const b = out.body;
     const pick: Record<string, unknown> = {};
-    for (const k of ["macaroon", "invoice", "usd", "sats", "rate", "description", "expires", "remaining_usd", "reason"]) if (b[k] !== undefined) pick[k] = b[k];
+    for (const k of ["macaroon", "invoice", "usd", "sats", "rate", "description", "expires", "remaining_usd", "reason", "carries"]) if (b[k] !== undefined) pick[k] = b[k];
     return { payment_required: pick };
   }
   const message = typeof out.body["error"] === "string" ? out.body["error"] : `the launch was refused (${out.status})`;
@@ -837,6 +848,9 @@ export interface VisitorRunsOptions {
   /** The visit's hash (`visitorOfVisit`), when its host named one: the
    *  runs it launched are the runs it reads of a runnable workflow. */
   visitor?: string;
+  /** Why this request may launch nothing (`visitProblem`): no visit, or
+   *  not one. Checked before the launcher is called. */
+  visitRefusal?: string;
   /** A public launch through the one launcher (`PublicDoors.launch`,
    *  src/public-routes.ts): the address's budget, the drain, the body, the
    *  caps, the price. Absent: nothing launches. */
@@ -954,6 +968,7 @@ export function visitorRuns(inner: RunsReads, o?: VisitorRunsOptions): Record<st
       ? async (q: Record<string, unknown> & { workflow: string }) => {
           // The body as the public route takes it: `input` and `key`, and
           // anything else the page sent, which the launcher refuses by name.
+          if (o.visitRefusal) throw new Error(o.visitRefusal);
           const { workflow, ...rest } = q;
           const body = Object.fromEntries(Object.entries(rest).filter(([, v]) => v !== undefined));
           return visitorLaunchResult(await o.launch!(workflow, body));

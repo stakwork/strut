@@ -24,26 +24,47 @@ export function isPublicView(doc: Document | undefined = typeof document !== "un
 
 /** The `<meta name>` a public view document carries beside its mark when
  *  a visitor may START some of the workflows the app grants
- *  (plans/paid-runs.md §10): a JSON array of their names. */
+ *  (plans/paid-runs.md §10): a JSON array of `{ name, results }`. */
 export const PUBLIC_RUNNABLE_META = "strut-public-runnable";
 
-/** The workflows a visitor's page may start: none outside the public view,
- *  where a page starts what its viewer may. */
-export function publicRunnable(doc: Document | undefined = typeof document !== "undefined" ? document : undefined): string[] {
+/** What a visitor reads of a run it launched: its `output` alone (the
+ *  summary — `useRun` — and the files the output declares, `run/files`), or
+ *  the whole `run` (its events and transcripts too: `useRunEvents`,
+ *  `useWorkProducts`, a run timeline). */
+export type PublicResults = "output" | "run";
+
+/** The workflows a visitor's page may start, each with what it reads of
+ *  its own runs: none outside the public view, where a page starts what its
+ *  viewer may. */
+export function publicRunnableItems(doc: Document | undefined = typeof document !== "undefined" ? document : undefined): Array<{ name: string; results: PublicResults }> {
   const content = doc?.querySelector(`meta[name="${PUBLIC_RUNNABLE_META}"]`)?.getAttribute("content");
   if (!content) return [];
   try {
-    const names: unknown = JSON.parse(content);
-    return Array.isArray(names) ? names.filter((n): n is string => typeof n === "string") : [];
+    const items: unknown = JSON.parse(content);
+    if (!Array.isArray(items)) return [];
+    const out: Array<{ name: string; results: PublicResults }> = [];
+    for (const it of items) {
+      if (typeof it === "string") out.push({ name: it, results: "output" });
+      else if (it && typeof it === "object" && typeof (it as { name?: unknown }).name === "string") {
+        out.push({ name: (it as { name: string }).name, results: (it as { results?: unknown }).results === "run" ? "run" : "output" });
+      }
+    }
+    return out;
   } catch {
     return [];
   }
+}
+
+/** The names alone (`publicRunnableItems`). */
+export function publicRunnable(doc?: Document): string[] {
+  return publicRunnableItems(doc).map((i) => i.name);
 }
 
 /** What a public view's `run/launch` answers when the workflow is priced
  *  and no credit covers the run (plans/paid-runs.md §10): the HOST pays it
  *  and retries, so a page only sees one when its host cannot pay. */
 export interface PaymentRequired {
+  carries?: boolean;
   macaroon: string;
   invoice: string;
   usd: number;
@@ -128,8 +149,15 @@ function parseJson(text: string | undefined): unknown {
 /** Something that can make a `tools/call` — the MCP Apps `App`'s
  *  `callServerTool`, or a host's relay. */
 export interface ToolCaller {
-  callServerTool(params: { name: string; arguments?: Record<string, unknown> }): Promise<ToolResult>;
+  callServerTool(params: { name: string; arguments?: Record<string, unknown> }, options?: { timeout?: number }): Promise<ToolResult>;
 }
+
+/** How long a page waits on `run/launch` (the MCP default is 60 s): in a
+ *  strut server's public view a priced launch returns only once the
+ *  visitor has paid its host, and an invoice lasts ten minutes
+ *  (plans/paid-runs.md §10). A host that sends progress meanwhile resets
+ *  the default anyway; this is for one that does not. */
+export const LAUNCH_TIMEOUT_MS = 15 * 60_000;
 
 /** The bridge client: every `run` is `tools/call` of `step_run`, with the
  *  app's file token as its `app` argument (§7.2) — what tells strut which
@@ -143,7 +171,7 @@ export function createBridgeClient(caller: ToolCaller, token: string | undefined
       if (config !== undefined) args.config = config;
       if (input !== undefined) args.input = input;
       if (token !== undefined) args.app = token;
-      const result = await caller.callServerTool({ name: STEP_RUN_TOOL, arguments: args });
+      const result = await caller.callServerTool({ name: STEP_RUN_TOOL, arguments: args }, type === "run/launch" ? { timeout: LAUNCH_TIMEOUT_MS } : undefined);
       return unwrapToolResult(type, result) as T;
     },
   };

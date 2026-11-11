@@ -434,6 +434,7 @@ describe("the host hooks", () => {
       const v = await renderHook(() => useHost(), { client, host });
       assert.equal(v.result().public, true);
       assert.deepEqual(v.result().runnable, [], "nothing to start unless the document says so");
+      assert.deepEqual(v.result().results, {});
       await v.unmount();
     } finally {
       meta.remove();
@@ -445,12 +446,13 @@ describe("the host hooks", () => {
     const host = createStaticHost({});
     const meta = document.createElement("meta");
     meta.setAttribute("name", PUBLIC_RUNNABLE_META);
-    meta.setAttribute("content", JSON.stringify(["free-out", "priced", 3]));
+    meta.setAttribute("content", JSON.stringify([{ name: "free-out", results: "output" }, { name: "priced", results: "run" }, 3, "older"]));
     document.head.appendChild(meta);
     try {
-      assert.deepEqual(publicRunnable(), ["free-out", "priced"]);
+      assert.deepEqual(publicRunnable(), ["free-out", "priced", "older"]);
       const h = await renderHook(() => useHost(), { client, host });
-      assert.deepEqual(h.result().runnable, ["free-out", "priced"]);
+      assert.deepEqual(h.result().runnable, ["free-out", "priced", "older"]);
+      assert.deepEqual(h.result().results, { "free-out": "output", priced: "run", older: "output" }, "what a visitor reads of its own runs");
       await h.unmount();
       meta.setAttribute("content", "not json");
       assert.deepEqual(publicRunnable(), []);

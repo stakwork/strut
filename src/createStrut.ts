@@ -179,12 +179,13 @@ import "./privacy/register.js";
 import { seedPrivacyWorkflows } from "./privacy/seed.js";
 import { HOME_POSTS, homeSyncRole, homeSyncRoutes, seedHomeSyncWorkflow, type HomeSyncRole } from "./home-sync.js";
 import { VOICE_CALLS, voiceConfig, voiceRoutes, warmSpeech, type VoiceConfig } from "./voice.js";
-import { createPublicSurface, normalizeSurface, surfaceProblem, VISIT_HEADER, visitorOfVisit, visitorRefusal, visitorRuns, type PublicSurface } from "./public-surface.js";
+import { createPublicSurface, normalizeSurface, surfaceProblem, VISIT_HEADER, visitProblem, visitorOfVisit, visitorRefusal, visitorRuns, type PublicSurface } from "./public-surface.js";
 import { brandProblem, brandStyles, normalizeBrand, readBrand, writeBrand } from "./brand.js";
 import { PUBLIC_PATH, PUBLIC_POST, publicRoutes, visitorAddress } from "./public-routes.js";
 import { createPublicRuns, publicRunsMaxFromEnv, publicRunsPath } from "./public-runs.js";
 import { resolveRunCap } from "./run-cap.js";
 import { publicViewNeeds } from "./public-view.js";
+import { nameInPackageAsync, packagePrefixOf } from "./package-lookup.js";
 // Pure (node:crypto only): the ask/answer shapes behind the two elicitation
 // tools and endpoints — plans/elicitation.md.
 import {
@@ -3258,6 +3259,13 @@ export async function createStrut<TServices = unknown>(
       }
     };
   }
+  /** A page's `config.workflow` as the app's package means it (package
+   *  first, as `run/*` resolve it through `ctx.resolveWorkflow`): what the
+   *  public view's names are compared with. */
+  const workflowInApp = (app: string, name: string) =>
+    nameInPackageAsync(packagePrefixOf(app), name, async (candidate) => !!(await workspace.getWorkflowMetadata(candidate).catch(() => null)));
+  const inAppPackage = async (app: string, config: Record<string, unknown>): Promise<Record<string, unknown>> =>
+    typeof config["workflow"] === "string" && config["workflow"] ? { ...config, workflow: await workflowInApp(app, config["workflow"]) } : config;
   /** A public app as a visitor's host reads it: the version people open
    *  (the held release's once the public view holds it). */
   const publicAppInfo = async (name: string) => {
@@ -3306,9 +3314,16 @@ export async function createStrut<TServices = unknown>(
         const bytes = await readAppFile(dir.path, DOCUMENT_FILE);
         if (!bytes) return null;
         // What its page may start (plans/paid-runs.md §10): the workflows
-        // it grants that anyone may run.
+        // it grants that anyone may run, under the names it grants them by
+        // (a package's own bare), with what a visitor reads of its runs.
         const grants = (await apps.get(name, dir.version).catch(() => null))?.manifest.grants.workflows ?? [];
-        const runnable = (await publicSurface.get()).runnable.filter((r) => r.kind === "workflow" && grants.includes(r.name)).map((r) => r.name);
+        const surface = await publicSurface.get();
+        const runnable: Array<{ name: string; results: "output" | "run" }> = [];
+        for (const g of grants) {
+          const full = await workflowInApp(name, g);
+          const item = surface.runnable.find((r) => r.kind === "workflow" && r.name === full);
+          if (item) runnable.push({ name: g, results: item.results === "run" ? "run" : "output" });
+        }
         return { version: dir.version, html: withPublicIdentity(Buffer.from(bytes).toString("utf8"), publicAppIdentity(name, dir.version), runnable) };
       },
     },
@@ -8150,7 +8165,9 @@ export async function createStrut<TServices = unknown>(
       const bag = services as Record<string, unknown>;
       const reader = publicSurface.reader();
       const who = visitorAddress(c);
-      const visitor = visitorOfVisit(c.req.header(VISIT_HEADER));
+      const visit = c.req.header(VISIT_HEADER);
+      const visitor = visitorOfVisit(visit);
+      const visitRefusal = visitProblem(visit);
       const visitorBag = {
         ...(bag["http"] ? { http: bag["http"] } : {}),
         ...(bag["secrets"] ? { secrets: bag["secrets"] } : {}),
@@ -8171,6 +8188,7 @@ export async function createStrut<TServices = unknown>(
               runs: visitorRuns(bag["runs"] as Parameters<typeof visitorRuns>[0], {
                 surface: () => publicSurface.get(),
                 ...(visitor ? { visitor } : {}),
+                ...(visitRefusal ? { visitRefusal } : {}),
                 launch: (workflow, body) =>
                   publicDoors.launch({
                     name: workflow,
@@ -8192,7 +8210,10 @@ export async function createStrut<TServices = unknown>(
         monitor: appMonitor,
         visitor: {
           identity: publicAppOfIdentity,
-          refusal: async (at, type, config) => visitorRefusal(await publicSurface.get(), (await apps.versionDir(at.name).catch(() => null))?.version, at, type, config),
+          // The page names a workflow as its package does (package-first,
+          // as the run steps resolve it): checked under the name it runs as.
+          refusal: async (at, type, config) =>
+            visitorRefusal(await publicSurface.get(), (await apps.versionDir(at.name).catch(() => null))?.version, at, type, await inAppPackage(at.name, config)),
           viewer: `visitor ${who}`,
         },
       });

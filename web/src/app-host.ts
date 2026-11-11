@@ -23,10 +23,13 @@ import {
   type NativeWalletApp, type RelayBridge,
 } from "@strut/kit/wallet";
 import { CHANNELS_CAPABILITY, relayChannels } from "@strut/kit/channels";
-import { API_BASE, apiHeaders, channelSocketUrl, channelTicket, type BrandStyles } from "./api";
+import { API_BASE, apiHeaders, channelSocketUrl, channelTicket, claimPublicCredit, type BrandStyles } from "./api";
 import { strutLink } from "./app-links";
 import { mcpPermissions } from "./frame-permissions";
-import { callPaying, newVisit, payInTurn, visitorHeaders, type CallParams, type CallResult, type PaymentRequired, type PayOutcome, type VisitorPurse } from "./visitor-pay";
+import {
+  callPaying, createClaimKeeper, loadPurse, payInTurn, savePurse, visitorHeaders,
+  type CallParams, type CallResult, type ClaimEnd, type PaymentRequired, type PayOutcome,
+} from "./visitor-pay";
 
 // The pure parts — where a link leads, what a message becomes — are
 // ./app-links (tested there; this module's imports need web/node_modules).
@@ -43,11 +46,12 @@ export interface AppHostHandlers {
   onNavigate?: (params: Record<string, string>) => boolean | void;
   /** The page's `ui/notifications/initialized`: it has started. */
   onInitialized?: () => void;
-  /** A VISITOR's priced launch (plans/paid-runs.md §10): show the invoice,
-   *  wait for it to settle, answer the credential (`<macaroon>:<preimage>`),
-   *  `again` for a new invoice, or null when the visitor cancels. Absent,
-   *  the page's launch answers that the run was not paid for. */
-  onPayment?: (p: PaymentRequired, workflow: string) => Promise<PayOutcome>;
+  /** A VISITOR's priced launch (plans/paid-runs.md §10): show the invoice
+   *  until `settled` says how it ended — the host keeps claiming it either
+   *  way — and answer the credential (`<macaroon>:<preimage>`), `again` for
+   *  a new invoice, or null when the visitor cancels. Absent, the page's
+   *  launch answers that the run was not paid for. */
+  onPayment?: (p: PaymentRequired, workflow: string, settled: Promise<ClaimEnd>) => Promise<PayOutcome>;
 }
 
 export interface AppHostOptions {
@@ -98,12 +102,32 @@ export interface AppHostConnection {
 }
 
 /** What this page holds for the visitor's pages it shows (§10): one visit
- *  per page load — the runs launched under it are the ones its pages read
- *  back — and, once paid, the credit credential. In memory only: never
- *  storage, never a frame. */
-const visitorPurse: VisitorPurse = { visit: newVisit() };
+ *  per tab — the runs launched under it are the ones its pages read back —
+ *  the credit credential, credentials paid for and not sent yet, and every
+ *  invoice shown and not settled. In this page's `sessionStorage`, so a
+ *  reload in the tab keeps the visit's runs and its credit; never a frame's. */
+const PURSE_KEY = `strut.visitor:${API_BASE}`;
+const purseStorage = (() => {
+  try {
+    return typeof sessionStorage !== "undefined" ? sessionStorage : undefined;
+  } catch {
+    return undefined;
+  }
+})();
+const visitorPurse = loadPurse(purseStorage, PURSE_KEY);
+const savePurseNow = () => savePurse(purseStorage, PURSE_KEY, visitorPurse);
+savePurseNow();
+/** Every invoice shown is claimed until it settles or ends, apart from any
+ *  sheet: a phone that pays after the visitor pressed Cancel still buys
+ *  credit. Those a reload found pending are watched again. */
+const claimKeeper = createClaimKeeper({ purse: visitorPurse, claim: claimPublicCredit, save: savePurseNow });
+claimKeeper.resume();
 /** One payment sheet at a time for that purse, whichever frame asked. */
 const visitorPayTurn = payInTurn(visitorPurse);
+/** While a paying launch waits, `notifications/progress` for the page's
+ *  request this often: the frame's request times out after 60 s unless
+ *  progress resets it (ext-apps' `callServerTool` asks for that). */
+const PROGRESS_EVERY_MS = 15_000;
 
 /** The MCP client the relay forwards through: one per frame, over `/mcp`
  *  (or a peer's, `/peers/<id>/mcp`), the UI's credential on every request.
@@ -219,12 +243,38 @@ export async function connectAppHost(opts: AppHostOptions): Promise<AppHostConne
   // before the document loads.
   if (opts.visitor) {
     const pay = opts.handlers.onPayment;
-    bridge.oncalltool = async (params, extra) =>
-      (await callPaying(params as CallParams, {
-        call: async (p) => (await client.request({ method: "tools/call", params: p }, { signal: extra.mcpReq.signal })) as CallResult,
-        purse: visitorPurse,
-        pay: (p, workflow) => visitorPayTurn((q, w) => (pay ? pay(q, w) : Promise.resolve(null)), p, workflow),
-      })) as Awaited<ReturnType<NonNullable<typeof bridge.oncalltool>>>;
+    bridge.oncalltool = async (params, extra) => {
+      // The page's request stays alive while the visitor pays: progress for
+      // its token resets the frame's timeout.
+      const token = (params as { _meta?: { progressToken?: string | number } })._meta?.progressToken;
+      let beats = 0;
+      const beat = token === undefined
+        ? undefined
+        : setInterval(() => {
+            void bridge.notification({ method: "notifications/progress", params: { progressToken: token, progress: ++beats, message: "waiting for the payment" } }).catch(() => {});
+          }, PROGRESS_EVERY_MS);
+      try {
+        return (await callPaying(params as CallParams, {
+          call: async (p) => (await client.request({ method: "tools/call", params: p }, { signal: extra.mcpReq.signal })) as CallResult,
+          purse: visitorPurse,
+          save: savePurseNow,
+          pay: (p, workflow) =>
+            visitorPayTurn((q, w) => {
+              if (!pay) return Promise.resolve(null);
+              // Claimed from now until it settles or ends, sheet or no sheet;
+              // a top-up replaces the credential it was minted to carry from.
+              const settled = claimKeeper.watch({
+                macaroon: q.macaroon,
+                ...(q.expires ? { expires: q.expires } : {}),
+                ...(q.carries && visitorPurse.credential ? { carriesFrom: visitorPurse.credential } : {}),
+              });
+              return pay(q, w, settled);
+            }, p, workflow),
+        })) as Awaited<ReturnType<NonNullable<typeof bridge.oncalltool>>>;
+      } finally {
+        if (beat) clearInterval(beat);
+      }
+    };
   }
   return {
     bridge,

@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
-  VISIT_HEADER, callPaying, cancelledResult, claimAnswerOf, creditLine, formatSats, payInTurn, formatUsd, invoiceQrText, launchOf, newVisit, paymentRequiredIn,
+  CLAIM_GRACE_MS, VISIT_HEADER, callPaying, cancelledResult, claimAnswerOf, createClaimKeeper, creditLine, creditSettled, formatSats, keptCreditResult, loadPurse, newPurse, payInTurn, savePurse, formatUsd, invoiceQrText, launchOf, newVisit, paymentRequiredIn,
   refusesCredential, secondsLeft, visitorHeaders, waitForClaim, type CallParams, type CallResult, type ClaimAnswer, type PaymentRequired, type VisitorPurse,
 } from "./visitor-pay";
 
@@ -14,7 +14,7 @@ const challenge = (n: number): PaymentRequired => ({ macaroon: `mac${n}`, invoic
 function server(o: { accepts: Set<string>; refuses?: Set<string> }) {
   const seen: Array<{ params: CallParams; authorization?: string }> = [];
   let n = 0;
-  const purse: VisitorPurse = { visit: "v" };
+  const purse: VisitorPurse = newPurse("v");
   const call = async (params: CallParams): Promise<CallResult> => {
     const auth = visitorHeaders(purse)["authorization"];
     seen.push({ params, ...(auth ? { authorization: auth } : {}) });
@@ -36,8 +36,8 @@ describe("a visitor's page, paid for by its host (plans/paid-runs.md §10)", () 
   });
 
   it("every request names the visit, and the credential once one is held — never anything else", () => {
-    assert.deepEqual(visitorHeaders({ visit: "abc" }), { [VISIT_HEADER]: "abc" });
-    assert.deepEqual(visitorHeaders({ visit: "abc", credential: "m:p" }), { [VISIT_HEADER]: "abc", authorization: "L402 m:p" });
+    assert.deepEqual(visitorHeaders(newPurse("abc")), { [VISIT_HEADER]: "abc" });
+    assert.deepEqual(visitorHeaders({ ...newPurse("abc"), credential: "m:p", spare: ["x:y"] }), { [VISIT_HEADER]: "abc", authorization: "L402 m:p" }, "a spare is not sent");
   });
 
   it("reads a launch call and its payment_required answer, from structuredContent or the text", () => {
@@ -64,7 +64,7 @@ describe("a visitor's page, paid for by its host (plans/paid-runs.md §10)", () 
   });
 
   it("free: the launch answers at once and nothing is asked", async () => {
-    const purse: VisitorPurse = { visit: "v" };
+    const purse: VisitorPurse = newPurse("v");
     let asked = 0;
     const out = await callPaying(launch(), { call: async () => ok({ runId: "r9" }), purse, pay: async () => (asked++, null) });
     assert.deepEqual(out.structuredContent, { runId: "r9" });
@@ -156,7 +156,111 @@ describe("a visitor's page, paid for by its host (plans/paid-runs.md §10)", () 
     let asked = 0;
     const out = await callPaying(launch(), { call: s.call, purse: s.purse, pay: async (p) => (asked++, `${p.macaroon}:never`) });
     assert.ok(paymentRequiredIn(out));
-    assert.equal(asked, 4);
+    assert.equal(asked, 6);
+  });
+
+  it("a spare credential — an invoice paid after its sheet closed — is spent before the visitor is asked again", async () => {
+    const s = server({ accepts: new Set(["late:pre"]) });
+    s.purse.spare.push("late:pre");
+    let saves = 0;
+    const out = await callPaying(launch(), { call: s.call, purse: s.purse, pay: async () => assert.fail("not asked"), save: () => saves++ });
+    assert.deepEqual(out.structuredContent, { runId: "r1" });
+    assert.equal(s.purse.credential, "late:pre");
+    assert.deepEqual(s.purse.spare, []);
+    assert.ok(saves > 0, "the purse is kept for a reload");
+  });
+
+  it("paid, then refused (the runs in flight filled, the drain, the day's cap): the page is told its payment is kept", async () => {
+    const purse = newPurse("v");
+    let n = 0;
+    const call = async (): Promise<CallResult> => (n++ === 0 ? ok({ payment_required: challenge(1) }) : err("too many public runs in flight on this strut server (try again in 30 s)"));
+    const out = await callPaying(launch(), { call, purse, pay: async () => "mac1:pre" });
+    assert.equal(out.isError, true);
+    assert.match(out.content![0]!.text!, /too many public runs in flight.*your payment is kept as credit on this server: run it again in a moment/);
+    assert.equal(purse.credential, "mac1:pre", "the credit stays for the next try");
+    const plain = await callPaying(launch(), { call: async () => err("too many launches"), purse: newPurse("v"), pay: async () => null });
+    assert.doesNotMatch(plain.content![0]!.text!, /kept as credit/, "nothing paid in this call: the error as it was");
+    assert.match(keptCreditResult({ content: [{ type: "text", text: "plain words" }], isError: true }).content![0]!.text!, /plain words — your payment is kept/);
+  });
+
+  it("a settled invoice goes into the purse: the credential with none, the one it carried from replaced, else a spare", () => {
+    const purse = newPurse("v");
+    purse.pending.push({ macaroon: "a" }, { macaroon: "b", carriesFrom: "a:1" }, { macaroon: "c" });
+    creditSettled(purse, { macaroon: "a" }, "a:1");
+    assert.equal(purse.credential, "a:1");
+    creditSettled(purse, { macaroon: "c" }, "c:3");
+    assert.deepEqual([purse.credential, purse.spare], ["a:1", ["c:3"]], "another token's credit is not lost");
+    creditSettled(purse, { macaroon: "b", carriesFrom: "a:1" }, "b:2");
+    assert.equal(purse.credential, "b:2", "a top-up replaces the token it inherited from");
+    assert.deepEqual(purse.pending, []);
+    creditSettled(purse, { macaroon: "b" }, "b:2");
+    assert.deepEqual(purse.spare, ["c:3"], "the same credential twice is one");
+  });
+
+  it("the purse survives a reload in the tab: the visit, the credential, the spares, the invoices still to claim", () => {
+    const store = new Map<string, string>();
+    const storage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => void store.set(k, v) };
+    const fresh = loadPurse(storage, "k");
+    assert.match(fresh.visit, /^[A-Za-z0-9_-]{32}$/);
+    fresh.credential = "m:p";
+    fresh.spare.push("s:p");
+    fresh.pending.push({ macaroon: "x", expires: "2026-11-10T19:00:00Z" });
+    savePurse(storage, "k", fresh);
+    assert.deepEqual(loadPurse(storage, "k"), fresh);
+    store.set("k", JSON.stringify({ visit: "too short" }));
+    assert.notEqual(loadPurse(storage, "k").visit, "too short", "not a purse: a new visit");
+    const throwing = { getItem: () => { throw new Error("denied"); }, setItem: () => { throw new Error("denied"); } };
+    assert.match(loadPurse(throwing, "k").visit, /^[A-Za-z0-9_-]{32}$/, "a storage that throws: a visit in memory");
+    savePurse(throwing, "k", fresh);
+    assert.match(loadPurse(undefined, "k").visit, /^[A-Za-z0-9_-]{32}$/);
+  });
+
+  it("the claim keeper: an invoice is claimed after its sheet is gone, until it settles — into the purse — or ends", async () => {
+    let now = Date.parse("2026-11-10T18:50:00Z");
+    const states = new Map<string, ClaimAnswer[]>([
+      ["paid-late", [{ state: "pending" }, { state: "pending" }, { state: "settled", credential: "paid-late:pre" }]],
+      ["never", [{ state: "pending" }]],
+      ["gone", [{ state: "expired" }]],
+    ]);
+    const asked: string[] = [];
+    const purse = newPurse("v");
+    let saves = 0;
+    const keeper = createClaimKeeper({
+      purse,
+      claim: async (m) => {
+        asked.push(m);
+        const list = states.get(m)!;
+        return list.length > 1 ? list.shift()! : list[0]!;
+      },
+      save: () => saves++,
+      now: () => now,
+      intervalMs: 1,
+      sleep: async () => {
+        now += 60_000;
+      },
+    });
+    const late = keeper.watch({ macaroon: "paid-late", expires: "2026-11-10T19:00:00Z" });
+    assert.equal(keeper.watch({ macaroon: "paid-late" }), late, "one watch per invoice");
+    assert.deepEqual(purse.pending.map((e) => e.macaroon), ["paid-late"], "kept for a reload while it waits");
+    assert.deepEqual(await late, { state: "settled", credential: "paid-late:pre" });
+    assert.equal(purse.credential, "paid-late:pre", "a payment made after Cancel is credit");
+    assert.deepEqual(purse.pending, []);
+
+    now = Date.parse("2026-11-10T18:50:00Z");
+    assert.deepEqual(await keeper.watch({ macaroon: "never", expires: "2026-11-10T18:52:00Z" }), { state: "expired" }, "past its end and a grace, it is let go");
+    assert.ok(asked.filter((m) => m === "never").length >= 3, "asked until then");
+    assert.ok(CLAIM_GRACE_MS > 0);
+    assert.deepEqual(await keeper.watch({ macaroon: "gone" }), { state: "expired" });
+    assert.deepEqual(purse.pending, []);
+    assert.ok(saves >= 4);
+
+    // After a reload: what was pending is watched again.
+    const again = newPurse("v");
+    again.pending.push({ macaroon: "reloaded" });
+    const keeper2 = createClaimKeeper({ purse: again, claim: async () => ({ state: "settled", credential: "reloaded:pre" }), save: () => {}, sleep: async () => {} });
+    keeper2.resume();
+    await new Promise((r) => setTimeout(r, 5));
+    assert.equal(again.credential, "reloaded:pre");
   });
 
   it("claim: asks until settled, waits longer when told to, and stops when aborted", async () => {
