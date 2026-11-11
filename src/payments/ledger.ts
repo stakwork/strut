@@ -340,7 +340,10 @@ export interface LedgerStore {
   token(id: string): Promise<TokenBalance | undefined>;
   /** A token's entries, newest first: `ENTRIES_PAGE` of them, before `before`. */
   entries(token: string, o?: { limit?: number; before?: number }): Promise<LedgerEntry[]>;
-  findHold(token: string, key: string): Promise<OpenHold | undefined>;
+  /** The hold a launch's `key` names on `token` for `subject`, while its run
+   *  is not charged: a key dedupes a launch in flight, never one that ended
+   *  or never ran, and never another item's. */
+  findHold(token: string, subject: string, key: string): Promise<OpenHold | undefined>;
   /** A run's charge, once it was charged: what the launcher's view shows. */
   chargeOf(runId: string, subject: string): Promise<LedgerEntry | undefined>;
   /** Holds no charge has freed yet, for the boot reconcile. */
