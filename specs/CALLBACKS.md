@@ -600,6 +600,15 @@ then. So does a run the builder healed (`meta/resume-run`): it ends again
 under its own id, and wakes the job again. The woken turns count toward
 `wakeMax`.
 
+**A job the conversation stopped.** `job/stop { job }` (the orchestrator's
+tool, for a person who changed their mind while a job works) cancels the
+job's turn in flight and any run a turn left going, and waits up to 30
+seconds for them to end. A turn that ends inside that wait posts its
+`run.end` as `status: "cancelled"` with `wake: "none"`: the turn that
+stopped it was told in the tool's result, so nothing wakes. One still
+finishing a step when the wait is over ends later, and wakes the
+conversation as any stopped turn does.
+
 **A job that ran on another strut.** You heard its `run.end` on that
 strut's room (§8), not here. Hand it in, and the local conversation wakes on
 it, its Continue handing the go-ahead to that strut's assistant:

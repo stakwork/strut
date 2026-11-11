@@ -21,7 +21,7 @@ export default defineStep({
   description:
     "Send an existing JOB its next message — the answer to its question, a change, \"go on\" — and return at once: { job, runId, callback, workflow }. " +
     "It continues in the job's own directory and thread, remembering its earlier turns, with the same hands it had (a builder job goes on building, where it builds); this call does not wait for it, and its result reaches the person when it ends. " +
-    "Refused while the job is still working (job_busy: its result is on the way). The `job` id is the one job/start returned, or one job/list finds.",
+    "Refused while the job is still working (job_busy: its result is on the way; job/stop stops it first, when the person wants it stopped or changed). The `job` id is the one job/start returned, or one job/list finds.",
   input: z.object({
     job: z.string().min(1).describe("The job id, from job/start or job/list."),
     prompt: z.string().min(1).describe("The message for the job. It does not see this conversation: include what it needs."),

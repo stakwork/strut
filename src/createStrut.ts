@@ -173,7 +173,7 @@ import { PROPOSAL_FEED_READ_MAX, createProposalFeed } from "./proposal-feed.js";
 import { briefOf, decideProposal, visibleTo, listProposals, proposalsCapability, proposalsRoot, readProposal, type Decision, type Proposal, type ProposalsCapability, type ProposalStatus } from "./proposals.js";
 import type { AssistantChatDoor } from "./ai/assistant-tools.js";
 import { shellCapability, type ShellCapability } from "./capabilities.js";
-import { JOB_WORKFLOWS, deleteJob, jobFilePath, jobRoot, jobsCapability, listJobFiles, readJobRecord, releaseWith, setJobCallback, turnOf, wakeJobFeeds, type JobsCapability } from "./jobs.js";
+import { JOB_STOP_WAIT_MS, JOB_WORKFLOWS, deleteJob, jobFilePath, jobRoot, jobsCapability, listJobFiles, readJobRecord, releaseWith, setJobCallback, turnOf, wakeJobFeeds, type JobStop, type JobsCapability } from "./jobs.js";
 import { createJobIndex } from "./job-index.js";
 import { transcriptUrl } from "./job-threads.js";
 import { resolveArtifactRefs, type ArtifactRef } from "./artifact-refs.js";
@@ -6258,6 +6258,10 @@ export async function createStrut<TServices = unknown>(
   /** The runs a job turn launched and still looks at (`runOwn`), by run id:
    *  an end inside the look is the turn's to read, and wakes nothing. */
   const looks = new Map<string, (res?: RunResult) => void>();
+  /** The runs `job/stop` told to stop and still waits on (the jobs
+   *  capability's `stop`): a job turn among them that ends cancelled wakes
+   *  no conversation — whoever stopped it knows, and is told so there. */
+  const quietStops = new Set<string>();
 
   /** A builder job's test run (meta/run-workflow, src/wake.ts): a run of
    *  its OWN from the start. No job, so the job stays free — the person's
@@ -6355,6 +6359,7 @@ export async function createStrut<TServices = unknown>(
    *  that turn and carries no job) wakes the JOB: the turn's own to read
    *  while the turn still looks at it, else the job's next turn — never
    *  for a run somebody cancelled, or one whose turn the person stopped.
+   *  A job turn `job/stop` stopped, and waited out, wakes nothing either.
    *  Anything else: nothing, no `wake` field. Never throws: a failure is
    *  `none`, logged. */
   async function wakeOnEnd(
@@ -6363,6 +6368,7 @@ export async function createStrut<TServices = unknown>(
     info: { job?: string; startedBy?: StartedBy; conversation?: string; asked?: boolean; actor?: string; principal?: string; mark?: WakeMark; session?: string },
   ): Promise<WakeOutcome | WakeMark | undefined> {
     try {
+      const quiet = quietStops.delete(res.runId) && res.status === "cancelled";
       const by = info.mark ? undefined : leftGoingBy(info);
       if (by?.session) {
         const look = looks.get(res.runId);
@@ -6396,7 +6402,7 @@ export async function createStrut<TServices = unknown>(
       }
       if (!jobTurn) return undefined;
       const session = info.startedBy?.session ?? info.conversation;
-      if (!session || !info.job || !wakes.enabled) return "none";
+      if (!session || !info.job || !wakes.enabled || quiet) return "none";
       return await wakes.jobEnded(session, await wakeEndOf(workflow, res, { ...info, job: info.job }));
     } catch (err) {
       console.error(`[wake] run ${res.runId} of ${workflow}:`, err);
@@ -6587,7 +6593,7 @@ export async function createStrut<TServices = unknown>(
       // synchronous, so two launches of one job cannot both pass.
       const running = [...controllers.values()].find((c) => c.job?.id === job);
       if (running) {
-        throw new Error(`job_busy: job "${job}" has a run in flight (${running.workflow} ${running.runId}); its result comes when it ends — continue it then`);
+        throw new Error(`job_busy: job "${job}" has a run in flight (${running.workflow} ${running.runId}); its result comes when it ends — continue it then, or stop it first with job/stop when the person wants it stopped or changed`);
       }
       const runId = launchDetached(flow, { input, job, ...(title ? { title } : {}), ...(model ? { params: { model } } : {}) }, {
         ...(actor ? { actor } : {}),
@@ -6600,6 +6606,37 @@ export async function createStrut<TServices = unknown>(
         ...(attachments?.length ? { attachments } : {}),
       });
       return { runId, callback: !!url, workflow };
+    };
+    // `job/stop`: every run of the job in flight is told to stop — a run
+    // that carries the job (a turn: its root, so the runs under it and the
+    // run it still looks at go with it) and a run a turn left going (on the
+    // job's record, carrying no job) — and waited on, so a job/continue
+    // right after finds the job free.
+    launchCap.stop = async (job, o = {}) => {
+      const problem = idProblem(job);
+      if (problem) throw new Error(`job "${job}" ${problem}`);
+      const own = o.from ? rootRunOf(o.from) : undefined;
+      const roots = new Set<RunController>();
+      const add = (c: RunController | undefined) => {
+        while (c?.parent) c = c.parent;
+        if (c && c !== own) roots.add(c);
+      };
+      for (const c of controllers.values()) if (c.job?.id === job) add(c);
+      for (const r of (await readJobRecord(jobRoot(dataDir, job)))?.runs ?? []) add(controllers.get(`${r.workflow}/${r.runId}`));
+      const stopped: JobStop["stopped"] = [];
+      for (const c of roots) {
+        quietStops.add(c.runId);
+        const out = await controlLiveRun(c.workflow, c.runId, "cancel");
+        if (out.ok) stopped.push({ workflow: c.workflow, runId: c.runId, ...(c.job?.id === job ? { turn: true as const } : {}) });
+        else quietStops.delete(c.runId);
+      }
+      const going = () => stopped.filter((r) => controllers.has(`${r.workflow}/${r.runId}`));
+      const deadline = Date.now() + (o.waitMs ?? JOB_STOP_WAIT_MS);
+      while (going().length && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+      // What is still finishing a step ends later, when nobody is waiting
+      // on it: its end wakes the conversation as a stopped turn's does.
+      for (const r of going()) quietStops.delete(r.runId);
+      return { stopped, stopping: going().length > 0 };
     };
   }
 

@@ -9,7 +9,7 @@ import yaml from "js-yaml";
 import { createStrut } from "./createStrut.js";
 import { WorkspaceManager } from "./workspace.js";
 import { FileRunStore, MemoryRunStore } from "./store.js";
-import { jobRoot, readJobRecord } from "./jobs.js";
+import { jobRoot, readJobRecord, type JobsCapability } from "./jobs.js";
 import { ORCHESTRATOR_WORKFLOW } from "./orchestrator-seed.js";
 import type { Scope } from "./auth.js";
 import type { SessionTurn } from "./session-store.js";
@@ -504,6 +504,79 @@ describe("the wake through a whole strut", () => {
     await until(async () => ((await s2.store.getRunSummary("slow", looked))?.status === "cancelled" ? true : undefined), "the run stopped with its turn");
     await idle2();
     assert.equal((await runsOf(s2, "builder")).length, 1);
+  });
+
+  /** job/stop as a turn's tool would call it: one step, over HTTP. */
+  const stop = async (post: (path: string, body: unknown) => Promise<{ status: number; body: any }>, job: string) =>
+    (await post("/steps/job/stop/run", { config: { job } })).body as { status: string; output?: any; error?: { message: string } };
+
+  it("job/stop while the job's turn works: the turn and the run it looks at stop, the job is free at once, and nobody is woken", async () => {
+    const { strut, seen, post, endOf, idle, callback } = await boot({ chatRunWaitMs: 60_000 });
+    await strut.workspace.createWorkflow("slow", slowYaml(200, 25));
+    await strut.workspace.createWorkflow("builder", BUILDER);
+    const turn = await post("/workflows/builder/run", { job: "j-x", input: { prompt: "build" }, conversation: "c-x", wake: true, callback: { url: callback } });
+    const run = await until(async () => (await runsOf(strut, "slow"))[0], "the test run");
+
+    const out = await stop(post, "j-x");
+    assert.equal(out.status, "success", JSON.stringify(out));
+    assert.deepEqual(out.output.stopped.filter((r: any) => r.turn), [{ workflow: "builder", runId: turn.body.runId, turn: true }]);
+    assert.equal(out.output.stopping, undefined, "it waited for the stop to land");
+    assert.match(out.output.note, /may not remember the turn that was stopped/);
+    // Free at once: what job/continue asks before it launches.
+    const active = (await (await strut.app.request("/runs/active")).json()) as unknown[];
+    assert.deepEqual(active, [], "nothing of the job is in flight when job/stop returns");
+
+    const end = await endOf(turn.body.runId);
+    assert.equal(end.status, "cancelled");
+    assert.equal(end.wake, "none", "whoever stopped it knows: no wake of the conversation");
+    assert.equal((await strut.store.getRunSummary("slow", run))?.status, "cancelled", "the run it looked at stopped with it");
+    await idle();
+    assert.equal(seen.wake.length, 0);
+    assert.equal((await runsOf(strut, "builder")).length, 1, "no woken turn");
+  });
+
+  it("job/stop after the turn ended: the run it left going stops, and wakes nothing; nothing running, or no such job, says so", async () => {
+    const { strut, seen, post, endOf, idle, callback } = await boot({ chatRunWaitMs: 50 });
+    await strut.workspace.createWorkflow("slow", slowYaml(200, 25));
+    await strut.workspace.createWorkflow("builder", BUILDER);
+    const turn = await post("/workflows/builder/run", { job: "j-y", input: { prompt: "build" }, conversation: "c-y", wake: true, callback: { url: callback } });
+    assert.equal((await endOf(turn.body.runId)).output.text, "testing");
+    const [run] = await runsOf(strut, "slow");
+
+    const out = await stop(post, "j-y");
+    assert.deepEqual(out.output.stopped, [{ workflow: "slow", runId: run }], "the run alone: the turn had ended");
+    assert.match(out.output.note, /left going/);
+    assert.equal((await strut.store.getRunSummary("slow", run!))?.status, "cancelled");
+    await idle();
+    assert.equal((await runsOf(strut, "builder")).length, 1, "a run somebody stopped wakes no turn");
+    assert.equal(seen.wake.length, 1, "the person heard it was running, and nothing since");
+
+    const again = await stop(post, "j-y");
+    assert.deepEqual(again.output.stopped, []);
+    assert.match(again.output.note, /Nothing of this job was running/);
+    const none = await stop(post, "no-such-job");
+    assert.equal(none.status, "error");
+    assert.match(none.error!.message, /No job "no-such-job"/);
+  });
+
+  it("a stop that outlasts its wait says so, and the turn's end wakes the conversation as a stopped turn's does", async () => {
+    const { strut, seen, post, endOf, callback } = await boot();
+    // A turn on a step that does not stop early.
+    await strut.workspace.createWorkflow(
+      "builder",
+      ["name: builder", "params:", '  wake: "{each}WOKEN{/each}"', "steps:", "  - id: w", "    type: wait", "    config:", "      durationMs: 400", "  - id: result", "    type: pack", "    config:", "      text: done", "      artifacts: []", ""].join("\n"),
+    );
+    const turn = await post("/workflows/builder/run", { job: "j-z", input: { prompt: "build" }, conversation: "c-z", wake: true, callback: { url: callback } });
+    await until(async () => ((await startOf(strut, "builder", turn.body.runId)) ? true : undefined), "the turn's start");
+    const jobs = (strut.services as { jobs: JobsCapability }).jobs;
+    const out = await jobs.stop!("j-z", { waitMs: 20 });
+    assert.deepEqual(out, { stopped: [{ workflow: "builder", runId: turn.body.runId, turn: true }], stopping: true });
+
+    const end = await endOf(turn.body.runId);
+    assert.equal(end.status, "cancelled");
+    assert.equal(end.wake, "launched", "nobody was waiting on it any more: the conversation hears it stopped");
+    await until(() => (seen.wake.length ? true : undefined), "the wake");
+    assert.ok(lastUser(seen.wake[0]).includes("has been stopped"), lastUser(seen.wake[0]));
   });
 
   it("only a job's own turn is woken: any other caller's run is a child it waits out", async () => {

@@ -51,7 +51,7 @@ export const ORCHESTRATOR_DESCRIPTION =
   "Input: { prompt, session? (the conversation's thread), context?: { line, where?, timeZone? } (put before the prompt: the time, the person's time zone; where the conversation is read) }. " +
   "Launched with wake: true, a turn asks strut to wake the session when a job it started ends: one more turn whose prompt is params.wake (the 202 says wake: true). " +
   "Output: { text, artifacts, ask?: { message }, cost, session }, job's shape. " +
-  "params.tools (job/start, continue, list, get, read, strut/list-peers, strut/run-workflow) and params.system are the evolvable surface; the host adds its own through createStrut({ orchestrator }).";
+  "params.tools (job/start, continue, stop, list, get, read, strut/list-peers, strut/run-workflow) and params.system are the evolvable surface; the host adds its own through createStrut({ orchestrator }).";
 
 const ORCHESTRATOR_YAML = new URL("./workflows/orchestrator.yaml", import.meta.url);
 
