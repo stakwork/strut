@@ -2410,6 +2410,99 @@ export interface PublishResult {
 export const publishPackage = (req: PublishRequest) =>
   fetchJSON<PublishResult>("/packages/publish", { method: "POST", body: JSON.stringify(req) });
 
+// ── Repos (plans/app-repos.md §3; src/packages/repos.ts) ──────────────────
+
+/** An item of a repo's package: a workflow, step or app by its name here, a Concept by its page's name. */
+export interface RepoItem {
+  kind: "workflow" | "step" | "app" | "concept";
+  name: string;
+}
+
+/** `GET /packages/repos`: a package this strut works on as a git checkout. */
+export interface RepoInfo {
+  package: string;
+  url: string;
+  /** The branch it follows: what Pull merges, and a straight Commit pushes to. */
+  branch: string;
+  path?: string;
+  ref: string;
+  /** The commit last installed. */
+  commit: string;
+  digest: string;
+  tokenSecret?: string;
+  openedAt: string;
+  by?: string;
+  /** Create repo's bare originals, offered for retirement. */
+  originals?: RepoItem[];
+  /** A pull's merge waits on a conflict (the commit holding the edits). */
+  merge?: string;
+  workdir: string;
+  /** Edited here since the commit installed. */
+  forked: RepoItem[];
+  /** Deleted here since the commit installed. */
+  deleted: RepoItem[];
+  /** Files a pull's merge left in conflict. */
+  conflict?: string[];
+}
+
+export interface RepoDiff {
+  files: Array<{ path: string; status: "added" | "modified" | "deleted" }>;
+  stat: string;
+  patch: string;
+  truncated?: boolean;
+}
+
+export interface RepoCommitResult {
+  package: string;
+  committed: boolean;
+  commit: string;
+  branch?: string;
+  pushed?: boolean;
+  pr?: { url: string; number: number; created: boolean };
+  prSkipped?: string;
+  diff: RepoDiff;
+  stamped: RepoItem[];
+}
+
+export interface RepoPullResult {
+  package: string;
+  commit: string;
+  local?: string;
+  conflict?: string[];
+  error?: string;
+}
+
+const repoPath = (pkg: string) => `/packages/repos/${pkg.split("/").map(encodeURIComponent).join("/")}`;
+
+export const listRepos = () => fetchJSON<{ repos: RepoInfo[] }>("/packages/repos").then((r) => r.repos);
+
+export const openRepo = (req: { url: string; ref?: string; path?: string; tokenSecret?: string }) =>
+  fetchJSON<RepoInfo>("/packages/repos", { method: "POST", body: JSON.stringify(req) });
+
+/** `POST /packages/repos/create`: the picks built and pushed as the first
+ *  commit of an EMPTY remote, then opened. */
+export const createRepo = (req: Omit<PublishRequest, "channel" | "public"> & { url: string; branch?: string; path?: string; tokenSecret?: string }) =>
+  fetchJSON<RepoInfo & { originals: RepoItem[] }>("/packages/repos/create", { method: "POST", body: JSON.stringify(req) });
+
+/** What a Commit would push: the workspace's edits written into the working copy, staged. */
+export const repoDiff = (pkg: string) => fetchJSON<RepoDiff>(`${repoPath(pkg)}/diff`);
+
+export const commitRepo = (pkg: string, req: { message: string; branch?: string; pr?: boolean }) =>
+  fetchJSON<RepoCommitResult>(`${repoPath(pkg)}/commit`, { method: "POST", body: JSON.stringify(req) });
+
+/** `POST …/pull`: a conflict is an answer too (409, with the files). */
+export async function pullRepo(pkg: string): Promise<RepoPullResult> {
+  const res = await apiFetch(`${repoPath(pkg)}/pull`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+  const body = (await res.json().catch(() => ({}))) as RepoPullResult & { error?: string };
+  if (res.ok || (res.status === 409 && body.conflict)) return body;
+  throw new Error(body.error ?? `${res.status} ${res.statusText}`);
+}
+
+export const retireRepoOriginals = (pkg: string, items: RepoItem[]) =>
+  fetchJSON<{ retired: RepoItem[]; failed: Array<RepoItem & { error: string }> }>(`${repoPath(pkg)}/retire`, { method: "POST", body: JSON.stringify({ items }) });
+
+export const closeRepo = (pkg: string) => fetchJSON<{ ok: true }>(repoPath(pkg), { method: "DELETE" });
+
 /** Point `channel` at one of a package's releases (a rollback is moving it
  *  back), or with `digest: null` take the package out — every strut that
  *  follows the channel then uninstalls it. `public: true` marks the channel
@@ -2433,7 +2526,7 @@ export interface InstalledPackage {
   source?: { ref: string };
   secrets?: string[];
   /** A person's install, or the distro's (a subscription). */
-  door?: "install" | "distro";
+  door?: "install" | "distro" | "repo";
   items: Array<{
     kind: "workflow" | "step" | "app" | "concept";
     name: string;
@@ -2461,7 +2554,7 @@ export const installPackage = (ref: string, opts: { index?: string; digest?: str
 export interface PackageInstallState {
   id: string;
   ref: string;
-  door: "install" | "distro";
+  door: "install" | "distro" | "repo";
   actor?: string;
   status: "queued" | "running" | "done" | "failed";
   phase: string;

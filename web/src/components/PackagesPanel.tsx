@@ -8,6 +8,7 @@ import { PACKAGE_SEGMENT, byNamespace, comesAlong, installProgressText, isHostsS
 import { canWords, indexIdOf, type InstallLink } from "../store-links";
 import { ConfirmButton } from "./ConfirmButton";
 import { CopyButton } from "./CopyButton";
+import { CreateRepo, PackageRepos } from "./PackageRepos";
 
 // ── Packages (the Publish dialog's Packages tab) ────────────────────────────
 //
@@ -25,8 +26,10 @@ import { CopyButton } from "./CopyButton";
 // indexes this strut follows and its peers' installs, a hit installed by
 // its NAME (the index's signed card names the key, so nothing in a search
 // answer is trusted as is). Then, read only, what this strut FOLLOWS and has
-// INSTALLED (specs/API.md §16). Publishing and installing are a person's
-// acts; no builder tool does either.
+// INSTALLED (specs/API.md §16), and the REPOS this strut works on as git
+// checkouts (./PackageRepos.tsx: Open, Commit, Pull; Create repo on a
+// package's page). Publishing, installing, committing and pulling are a
+// person's acts; an agent may only propose a commit (package/commit).
 
 const secs = (iso?: string) => (iso ? Date.parse(iso) / 1000 : undefined);
 /** A digest, short: the first 12 hex. The full one rides in the title. */
@@ -630,6 +633,17 @@ function PackagePage(props: {
         <button class="btn btn-primary" disabled={busy || !version.trim() || empty} onClick={() => void publish()}>
           {busy ? "Publishing…" : "Publish"}
         </button>
+        <CreateRepo pkg={props.pkg} disabled={busy || !version.trim() || empty} onCreated={props.onChanged}
+          request={() => ({
+            package: props.pkg,
+            version: version.trim(),
+            workflows: picks.workflows,
+            ...(picks.apps.length ? { apps: picks.apps } : {}),
+            ...(picks.concepts.length ? { concepts: picks.concepts } : {}),
+            ...(picks.conceptsAlone.length ? { conceptsAlone: picks.conceptsAlone } : {}),
+            ...(picks.types.length ? { types: picks.types } : {}),
+            ...(description.trim() ? { description: description.trim() } : {}),
+          })} />
       </div>
       {error && <div class="auto-error package-refusal">{error}</div>}
       {result && (
@@ -993,6 +1007,8 @@ export function PackagesPanel(props: { install?: InstallLink | null }) {
 
           <FindPackages installed={installedNames} initial={props.install} onInstalled={() => api.listInstalledPackages().then(setInstalled, failed("installed"))} />
 
+          <PackageRepos onChanged={() => api.listInstalledPackages().then(setInstalled, failed("installed"))} />
+
           <div class="flyout-section">
             <div class="flyout-section-title">Following</div>
             {errors.subs && <div class="auto-error">{errors.subs}</div>}
@@ -1038,7 +1054,7 @@ export function PackagesPanel(props: { install?: InstallLink | null }) {
                 <div class="auto-card-head">
                   <span class="package-name">{p.package} {p.version && <span class="package-version">{p.version}</span>}</span>
                   {p.door && (
-                    <span class="badge" title={p.door === "distro" ? "A subscription installed it: only the distro updates or removes it" : "A person installed it"}>
+                    <span class="badge" title={p.door === "distro" ? "A subscription installed it: only the distro updates or removes it" : p.door === "repo" ? "Opened here as a git repo: Commit and Pull, under Repos" : "A person installed it"}>
                       {p.door}
                     </span>
                   )}

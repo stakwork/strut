@@ -222,9 +222,10 @@ export interface WorkflowVersionInfo {
  *  UI, `api` any other HTTP caller, `builder` the chat builder's tools,
  *  `agent` the in-run `meta/*` authoring surface, `promote` a promoted param,
  *  `install` a person's package install (marketplace.md §3), `distro` a
- *  package the operator's distro applied, with no ask (§12).
+ *  package the operator's distro applied, with no ask (§12), `repo` a
+ *  package this strut works on as a git checkout (app-repos.md §3).
  *  So "is the active version still the seed?" is one lookup. */
-export type VersionSource = "seed" | "ui" | "api" | "builder" | "agent" | "promote" | "install" | "distro";
+export type VersionSource = "seed" | "ui" | "api" | "builder" | "agent" | "promote" | "install" | "distro" | "repo";
 
 /** Where an installed version came from (marketplace.md §3): which package
  *  at which version, its tree digest, the source it was fetched from, and the
@@ -256,6 +257,24 @@ export interface PublishOptions {
   actor?: string;
   /** This version's upstream; `null` clears what would be carried forward. */
   upstream?: Upstream | null;
+  /** KNOWN content: record this publish's `source`, `actor` and `upstream`
+   *  on the version that holds it, in place of what it recorded — how a
+   *  repo's apply makes a version the package's (app-repos.md §3.3: a fork
+   *  committed to the repo is no longer one). New content records them as
+   *  any publish does. */
+  stamp?: boolean;
+}
+
+/** What a `stamp` publish writes on the known version (`PublishOptions.stamp`),
+ *  or nothing when it is not one or would change nothing. */
+export function stampFor(
+  recorded: { source?: unknown; actor?: unknown; upstream?: unknown },
+  opts?: PublishOptions,
+): Pick<WorkflowVersionInfo, "source" | "actor" | "upstream"> | undefined {
+  if (!opts?.stamp) return undefined;
+  const next = { ...(opts.source ? { source: opts.source } : {}), ...(opts.actor ? { actor: opts.actor } : {}), ...(opts.upstream ? { upstream: opts.upstream } : {}) };
+  const same = (Object.keys(next) as Array<keyof typeof next>).every((k) => JSON.stringify(recorded[k]) === JSON.stringify(next[k]));
+  return same ? undefined : next;
 }
 
 /** The upstream a new version records: the publish's own, none when it
@@ -1080,7 +1099,7 @@ export class FileWorkspaceStore implements WorkspaceStore {
       );
       if (match) {
         const [vid, info] = match;
-        const door = missingProvenance(info, opts);
+        const door = stampFor(info, opts) ?? missingProvenance(info, opts);
         if (door) await this.patchWorkflowMetadata(name, (m) => Object.assign(m.versions[vid]!, door));
         if (meta.active === vid || opts?.reactivateKnown === false || opts?.activate === false) {
           return { version: vid, changed: false };
@@ -1194,7 +1213,7 @@ export class FileWorkspaceStore implements WorkspaceStore {
           existing.publisher = publisher;
           dirty = true;
         }
-        const door = missingProvenance(info, opts);
+        const door = stampFor(info, opts) ?? missingProvenance(info, opts);
         if (door) {
           Object.assign(info, door);
           dirty = true;
@@ -1333,6 +1352,11 @@ export class FileWorkspaceStore implements WorkspaceStore {
         const owner = opts?.owner ?? opts?.actor;
         if (!meta.owner && owner) {
           meta.owner = owner;
+          dirty = true;
+        }
+        const stamp = stampFor(meta.versions[vid]!, opts);
+        if (stamp) {
+          Object.assign(meta.versions[vid]!, stamp);
           dirty = true;
         }
         if (dirty) await this.writeAppMetadata(name, meta);

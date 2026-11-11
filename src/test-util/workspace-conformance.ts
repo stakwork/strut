@@ -593,6 +593,43 @@ export function workspaceConformance(impl: WorkspaceImpl): void {
       assert.equal(await ws.getStepMetadata("nope"), null);
     });
 
+    it("a stamp publish of known content records its door, actor and upstream on that version (app-repos.md §3.3)", async () => {
+      const at = (commit: string) => ({ package: "acme/moon", version: "0.1.0", digest: `d-${commit}`, source: { ref: "git+file:///tmp/moon@main" }, secrets: [] });
+      const yamlOf = (msg: string) => `name: acme/moon/score\nsteps:\n  - { id: a, type: log, config: { message: ${msg} } }\n`;
+      // Installed at commit c1, then forked by the builder.
+      await ws.publishWorkflowByContent("acme/moon/score", yamlOf("one"), undefined, undefined, undefined, { upstream: at("c1"), source: "repo" });
+      const fork = await ws.publishWorkflowByContent("acme/moon/score", yamlOf("two"), undefined, undefined, undefined, { source: "agent", actor: "ai" });
+      // The fork's content committed as c2: stamped in place, no new version.
+      const stamped = await ws.publishWorkflowByContent("acme/moon/score", yamlOf("two"), undefined, undefined, undefined, { upstream: at("c2"), source: "repo", actor: "alice", stamp: true });
+      assert.deepEqual(stamped, { version: fork.version, changed: false });
+      let meta = (await ws.getWorkflowMetadata("acme/moon/score"))!;
+      assert.equal(Object.keys(meta.versions).length, 2);
+      assert.equal(meta.versions[fork.version]?.source, "repo");
+      assert.equal(meta.versions[fork.version]?.actor, "alice");
+      assert.deepEqual(meta.versions[fork.version]?.upstream, at("c2"));
+      assert.deepEqual(meta.versions["v1"]?.upstream, at("c1"), "an older version keeps its own");
+      // Without `stamp`, known content keeps what it recorded.
+      await ws.publishWorkflowByContent("acme/moon/score", yamlOf("two"), undefined, undefined, undefined, { upstream: at("c3"), source: "install" });
+      meta = (await ws.getWorkflowMetadata("acme/moon/score"))!;
+      assert.deepEqual(meta.versions[fork.version]?.upstream, at("c2"));
+
+      const type = "acme/moon/replay";
+      await ws.publishStep(type, STEP_SRC(type, "one"), undefined, undefined, { upstream: at("c1"), source: "repo" });
+      const s2 = await ws.publishStep(type, STEP_SRC(type, "two"), undefined, undefined, { source: "builder" });
+      await ws.publishStep(type, STEP_SRC(type, "two"), undefined, undefined, { upstream: at("c2"), source: "repo", stamp: true });
+      const info = (await ws.getStepMetadata(type))!;
+      assert.equal(info.versions[s2.version]?.source, "repo");
+      assert.deepEqual(info.versions[s2.version]?.upstream, at("c2"));
+
+      await ws.publishApp("acme/moon/game", "h1", APP("One"), { upstream: at("c1"), source: "repo" });
+      const a2 = await ws.publishApp("acme/moon/game", "h2", APP("Two"), { source: "agent" });
+      await ws.publishApp("acme/moon/game", "h2", APP("Two"), { upstream: at("c2"), source: "repo", stamp: true });
+      const app = (await ws.getApp("acme/moon/game"))!;
+      assert.equal(app.version, a2.version);
+      assert.deepEqual(app.upstream, at("c2"));
+      assert.equal(app.versions[a2.version]?.source, "repo");
+    });
+
     it("a new name under an installed package's prefix is refused; the package's own install and an edit of its items are not", async () => {
       const upstream = { package: "acme/linear", version: "1.4.0", digest: "d1", source: { ref: "file:/tmp/acme-linear" }, secrets: [] };
       const yamlOf = (name: string) => `name: ${name}\nsteps:\n  - { id: a, type: log, config: { message: hi } }\n`;

@@ -49,6 +49,7 @@ import {
   validateWorkflowName,
   provenance,
   missingProvenance,
+  stampFor,
   upstreamFor,
   fromPackage,
   refuseUnderInstalledPackage,
@@ -544,8 +545,20 @@ export class GraphWorkspaceStore implements WorkspaceStore {
   }
 
   /** A known version's missing door, filled in by a publish of its content
-   *  (`missingProvenance`). */
-  private async fillDoor(row: { ref_id: string; version_source?: VersionSource; actor?: string }, opts?: PublishOptions): Promise<void> {
+   *  (`missingProvenance`) — or, for a `stamp` publish, its door, actor and
+   *  upstream replaced (`stampFor`). */
+  private async fillDoor(row: { ref_id: string; version_source?: VersionSource; actor?: string; upstream?: string }, opts?: PublishOptions): Promise<void> {
+    const stamp = stampFor({ source: row.version_source, actor: row.actor, upstream: parseJson<Upstream>(row.upstream) }, opts);
+    if (stamp) {
+      const desired = {
+        ...(stamp.source ? { version_source: stamp.source } : {}),
+        ...(stamp.actor ? { actor: stamp.actor } : {}),
+        ...(stamp.upstream ? { upstream: JSON.stringify(stamp.upstream) } : {}),
+      };
+      const patch = patchFor(row as unknown as Record<string, unknown>, desired);
+      if (patch) await this.backend.nodes.update(row.ref_id, patch);
+      return;
+    }
     const door = missingProvenance({ source: row.version_source, actor: row.actor }, opts);
     if (!door) return;
     // An absent `actor` must stay out of the patch: patchFor removes a field
@@ -1072,6 +1085,7 @@ export class GraphWorkspaceStore implements WorkspaceStore {
         const patch = patchFor(existing as unknown as Record<string, unknown>, desired);
         if (patch) await nodes.update(existing.ref_id, patch);
         if (changed) await this.swapActiveEdge("StrutApp", existing.ref_id, "StrutAppVersion", match.ref_id);
+        if (opts?.stamp) await this.fillDoor(match, opts);
         return { version: match.version_label, changed };
       }
     }
