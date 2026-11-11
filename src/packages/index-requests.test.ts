@@ -265,6 +265,31 @@ describe("the index's requests desk", () => {
     }
   });
 
+  it("reads a view-only request's public view at the base alone: a redirect is refused", async () => {
+    await mint();
+    boot({ network: true });
+    const signer = newSigner();
+    const inside: string[] = [];
+    const elsewhere = createServer((req, res) => (inside.push(req.url ?? ""), res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ workflows: [{ name: "x" }] }))));
+    let elsewhereUrl = "";
+    const server = createServer((req, res) => {
+      if (req.url === "/packages/catalog?public=1") {
+        const card = sealCard({ v: 1, key: signer.key, seq: Math.floor(clock * 1000) + seq++, packages: {} } as UnsignedCatalog, signer.privateKey);
+        return void res.writeHead(200, { "content-type": "application/json" }).end(canonicalJson(card));
+      }
+      res.writeHead(302, { location: `${elsewhereUrl}/public` }).end();
+    });
+    const listen = (srv: Server) => new Promise<string>((done) => srv.listen(0, "127.0.0.1", () => done(`http://127.0.0.1:${(srv.address() as { port: number }).port}`)));
+    try {
+      elsewhereUrl = await listen(elsewhere);
+      const base = await listen(server);
+      await assert.rejects(submit(signer, { prefix: "redir", base, live: true }), /^Error: listing_no_catalog: http:\/\/127\.0\.0\.1:\d+\/public: it answered a redirect/);
+      assert.deepEqual(inside, [], "the redirect was not followed");
+    } finally {
+      for (const srv of [server, elsewhere]) await new Promise((done) => (srv.closeAllConnections(), srv.close(done)));
+    }
+  });
+
   it("holds a name the operator lists as a live row alone: it waits, and the live row is the operator's to move", async () => {
     await mint();
     await index.setLive("docs", { url: "https://docs.operator.example" }, { crawl: false });
@@ -281,6 +306,108 @@ describe("the index's requests desk", () => {
     await desk.approve(waiting.id, "operator");
     assert.equal((await rows())["docs"]!.key, asker.key);
     assert.equal((await index.info())!.live["docs"]!.url, base);
+  });
+
+  /** A server's public view at `base`, as `GET <base>/public` answers it. */
+  const showView = (base: string, view: { workflows?: string[]; runnable?: string[] } = {}) =>
+    served.set(
+      `${base.replace(/\/+$/, "")}/public`,
+      JSON.stringify({
+        host: { remote: 1 },
+        workflows: (view.workflows ?? []).map((name) => ({ name, activeVersion: "v1", versions: ["v1"], runs: false })),
+        steps: [],
+        concepts: [],
+        types: ["Node"],
+        apps: [],
+        runnable: (view.runnable ?? []).map((name) => ({ kind: "workflow", name, base: 0, markup: 0, capUsd: null, reserve: 0, results: "output" })),
+      }),
+    );
+
+  it("lists a server's public view with no package (plans/public-view-listing.md): an empty catalog proves the key, the view that the name is used", async () => {
+    await mint();
+    const echo = newSigner();
+    const base = "https://echo1.sphinx.chat:3355/lab";
+    serve(echo, base, []);
+    showView(base, { runnable: ["public-echo"] });
+    const listed = await submit(echo, { prefix: "echo", base, description: "A free echo", live: true });
+    assert.equal(listed.status, "listed");
+    assert.deepEqual((await rows())["echo"], { key: echo.key, urls: [catalogUrlOf(base)], description: "A free echo" }, "an ordinary keyed row, its catalog empty");
+    assert.deepEqual((await index.info())!.live["echo"], { url: base, description: "A free echo" });
+    assert.ok(fetched.includes(`${base}/public`));
+
+    // The row's own key: an edit on the same host, at once; the view is still what keeps the name.
+    assert.equal((await submit(echo, { prefix: "echo", base, description: "Echo, free", live: true })).status, "listed");
+    // Without the view, a row with no package would list nothing.
+    await assert.rejects(submit(echo, { prefix: "echo", base, live: false }), /^Error: listing_no_catalog: .*take the row off instead \(remove\)/);
+    assert.ok((await index.info())!.live["echo"], "the refused change left the live row");
+
+    // Not asking for the view: refused before the view is read.
+    const quiet = newSigner();
+    const quietBase = "https://quiet.sphinx.chat:3355/lab";
+    serve(quiet, quietBase, []);
+    showView(quietBase, { workflows: ["hello"] });
+    await assert.rejects(submit(quiet, { prefix: "quiet", base: quietBase }), /^Error: listing_no_catalog: .*lists no package under quiet\/ — publish one and make it public first, or ask for this server's public view \(live: true\)/);
+    assert.ok(!fetched.includes(`${quietBase}/public`));
+    // Asking for a view that shows nothing (node types do not count): refused.
+    const blank = newSigner();
+    const blankBase = "https://blank.sphinx.chat:3355/lab";
+    serve(blank, blankBase, []);
+    showView(blankBase);
+    await assert.rejects(submit(blank, { prefix: "blank", base: blankBase, live: true }), /^Error: listing_no_catalog: .*its public view at https:\/\/blank\.sphinx\.chat:3355\/lab\/public shows nothing/);
+    // A view that does not answer: refused, naming it.
+    const gone = newSigner();
+    serve(gone, "https://gone.sphinx.chat:3355", []);
+    await assert.rejects(submit(gone, { prefix: "gone", base: "https://gone.sphinx.chat:3355", live: true }), /^Error: listing_no_catalog: https:\/\/gone\.sphinx\.chat:3355\/public: it answered 404/);
+
+    // A stranger cannot list someone else's server: its catalog is sealed by another key, and the view is never read.
+    const stranger = newSigner();
+    const victim = "https://victim.sphinx.chat:3355/lab";
+    serve(newSigner(), victim, []);
+    showView(victim, { runnable: ["paid"] });
+    await assert.rejects(submit(stranger, { prefix: "victim", base: victim, live: true }), /^Error: listing_no_catalog: .*catalog_key/);
+    assert.ok(!fetched.includes(`${victim}/public`), "the view is read only once the key is proven");
+    assert.deepEqual(Object.keys(await rows()).sort(), ["echo", "seed"]);
+  });
+
+  it("keeps what a view-only request showed for the operator, and reads it again on approval", async () => {
+    await mint();
+    boot({ autoHosts: [] });
+    const box = newSigner();
+    const base = "https://strut.box.example";
+    serve(box, base, []);
+    showView(base, { workflows: ["hello", "world"], runnable: ["hello"] });
+    const waiting = (await submit(box, { prefix: "box", base, live: true })) as ListingAnswer & { status: "pending" };
+    assert.equal(waiting.reason, "host");
+    const pending = (await desk.list()).pending[0]!;
+    assert.deepEqual(pending.catalog.packages, []);
+    assert.deepEqual(pending.view, { apps: 0, workflows: 2, steps: 0, concepts: 0, runnable: 1 });
+    // The view emptied meanwhile: the approval reads it again, and refuses.
+    showView(base);
+    await assert.rejects(desk.approve(pending.id), /listing_no_catalog: .*shows nothing/);
+    showView(base, { workflows: ["hello"] });
+    assert.equal((await desk.approve(pending.id, "operator")).status, "listed");
+    assert.equal((await index.info())!.live["box"]!.url, base);
+  });
+
+  it("lets the server an operator listed as a live row claim it at that very URL; another URL still waits", async () => {
+    await mint();
+    const base = "https://docs1.sphinx.chat:3355/lab";
+    await index.setLive("docs", { url: `${base}/` }, { crawl: false });
+    const docs = newSigner();
+    serve(docs, base, []);
+    showView(base, { workflows: ["guide"] });
+    const claimed = await submit(docs, { prefix: "docs", base, live: true });
+    assert.equal(claimed.status, "listed");
+    assert.equal((await rows())["docs"]!.key, docs.key);
+    assert.equal((await index.info())!.live["docs"]!.url, base);
+    const log = (await readFile(join(root, "index", "requests", "log.jsonl"), "utf8")).trim().split("\n").map((l) => JSON.parse(l) as { prefix: string; outcome: string });
+    assert.deepEqual(log.map((l) => `${l.prefix} ${l.outcome}`), ["docs claimed"]);
+
+    // A key that already holds a name does not take a second one this way.
+    await index.setLive("more", { url: "https://docs1.sphinx.chat:3355/more" }, { crawl: false });
+    serve(docs, "https://docs1.sphinx.chat:3355/more", []);
+    showView("https://docs1.sphinx.chat:3355/more", { workflows: ["guide"] });
+    assert.equal(((await submit(docs, { prefix: "more", base: "https://docs1.sphinx.chat:3355/more", live: true })) as { reason: string }).reason, "live row");
   });
 
   it("answers a refusal for what waited, never for a removal or the row's own key changing its row where it is", async () => {

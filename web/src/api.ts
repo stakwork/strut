@@ -1683,8 +1683,8 @@ export const deleteSecret = (name: string) =>
 // otherwise, and the panel hides itself.
 
 export interface ClaimSubject {
-  kind: "step" | "workflow" | "job";
-  /** Workflow name, custom step type, or job id. */
+  kind: "step" | "workflow" | "job" | "concept";
+  /** Workflow name, custom step type, job id, or Concept name. */
   name: string;
 }
 
@@ -1833,8 +1833,8 @@ export const verifyJob = (id: string, claims?: string[]) =>
 /** One check's verdict on one run (`RunEvidence`, src/claims-authoring.ts). */
 export interface RunEvidence {
   claim: { id: string; text: string };
-  /** The workflow, or a step it executed — and the version that ran. */
-  subject?: { kind: "step" | "workflow"; name: string; version: string };
+  /** The workflow, a step it executed, its job, or a Concept whose page it opened — and the version observed. */
+  subject?: { kind: "step" | "workflow" | "job" | "concept"; name: string; version: string };
   /** `open` = an external check's question, still waiting on someone. */
   verdict: "supports" | "refutes" | "open";
   content?: string;
@@ -2335,7 +2335,8 @@ export interface PublisherInfo {
   name?: string;
   host: "self";
   createdAt: string;
-  /** The PUBLIC key, once a channel was made public: what the world will follow. */
+  /** The PUBLIC key, once a channel was made public or this server asked an
+   *  index to list it: what the world will follow. */
   public?: string;
   /** The channels in the public catalog; every other channel is the fleet's alone. */
   publicChannels: string[];
@@ -2664,6 +2665,8 @@ export interface ListingLine {
   row?: { key: string; urls: string[]; description?: string; url?: string };
   /** Another key holds our name there. */
   heldBy?: string;
+  /** The live row under our name: the store shows this server's public view. */
+  live?: { url: string; description?: string };
   cardError?: string;
   asked?: { status: "listed" | "pending" | "removed" | "refused" | "error"; reason?: string; base?: string; description?: string; url?: string; live?: boolean; at: string };
 }
@@ -2692,6 +2695,8 @@ export interface PendingListing {
   live?: boolean;
   receivedAt: string;
   catalog: { seq: number; digest: string; packages: string[] };
+  /** What the server's public view showed, when the name is used by the view alone. */
+  view?: { apps: number; workflows: number; steps: number; concepts: number; runnable: number };
   heldBy?: string;
   from?: string;
 }
@@ -3010,6 +3015,70 @@ export async function fetchPublicAppDocument(name: string): Promise<string> {
   return res.text();
 }
 
+// ── Another strut server's public app, hosted here (specs/API.md §17.9) ─────
+// Read from that server in this browser, with no credential of anyone's:
+// its `/public` answers anyone, CORS open. `from` is its base URL
+// (./remote-app `remoteBase`).
+
+const hostOf = (from: string) => {
+  try {
+    return new URL(from).host;
+  } catch {
+    return from;
+  }
+};
+/** A public app on another strut server, as it lists it; null when it is
+ *  not in that server's public view. */
+export async function getRemotePublicApp(from: string, name: string): Promise<PublicAppInfo | null> {
+  const res = await fetch(`${from}/public/apps/${encodeURIComponent(name)}`, { credentials: "omit", cache: "no-cache", headers: { accept: "application/json" } });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`${hostOf(from)} answered ${res.status} ${res.statusText}`);
+  const info = (await res.json()) as PublicAppInfo;
+  if (!info || typeof info.name !== "string" || typeof info.version !== "string") throw new Error(`${hostOf(from)} did not answer with an app`);
+  return { ...info, title: typeof info.title === "string" ? info.title : info.name };
+}
+/** Whether that server's public apps may be hosted by another strut UI:
+ *  its `GET /public` says `host.remote` (src/public-routes.ts
+ *  `PUBLIC_HOST`). A strut from before it says nothing — its `/public/mcp`
+ *  answers no page on another origin — and one that does not answer at all
+ *  is an error naming it. */
+export async function remoteHostable(from: string): Promise<boolean> {
+  let res: Response;
+  try {
+    res = await fetch(`${from}/public`, { credentials: "omit", cache: "no-cache", headers: { accept: "application/json" } });
+  } catch {
+    throw new Error(`${hostOf(from)} did not answer`);
+  }
+  if (!res.ok) throw new Error(`${hostOf(from)} answered ${res.status} ${res.statusText}`);
+  const body = (await res.json().catch(() => null)) as { host?: { remote?: unknown } } | null;
+  return typeof body?.host?.remote === "number" && body.host.remote >= 1;
+}
+
+/** The sentence for a server whose public apps cannot be hosted here yet. */
+export const notHostableYet = (from: string) => `${hostOf(from)} runs an older strut, whose public apps cannot be hosted from another strut yet`;
+
+/** The rate THIS strut trusts (`GET /rate`): what a stranger's invoice is
+ *  priced at in dollars. Read once per page; null with no credential here
+ *  or no rate to be had — then the sheet shows sats alone. */
+let trustedRateRead: Promise<{ usdPerBtc: number; source: string } | null> | undefined;
+export function trustedRate(): Promise<{ usdPerBtc: number; source: string } | null> {
+  // Not apiFetch: a visitor with no credential here is no session that ran
+  // out, and must never be asked for the key.
+  return (trustedRateRead ??= fetch(`${BASE}/rate`, { headers: authHeaders(), cache: "no-cache" })
+    .then((res) => (res.ok ? (res.json() as Promise<{ usdPerBtc?: unknown; source?: unknown }>) : null))
+    .then(
+      (r) => (r && typeof r.usdPerBtc === "number" && r.usdPerBtc > 0 && typeof r.source === "string" ? { usdPerBtc: r.usdPerBtc, source: r.source } : null),
+      () => null,
+    ));
+}
+
+/** That app's document, its visitor's identity written in by its server. */
+export async function fetchRemotePublicAppDocument(from: string, name: string): Promise<string> {
+  const res = await fetch(`${from}/public/apps/${encodeURIComponent(name)}/document`, { credentials: "omit", cache: "no-cache" });
+  if (!res.ok) throw new Error(res.status === 404 ? `"${name}" is not in ${hostOf(from)}'s public view` : `${hostOf(from)} answered ${res.status} ${res.statusText}`);
+  return res.text();
+}
+
 // ── The store's LIVE items (plans/public-surface.md §8) ─────────────────────
 // What the index's live rows show (`GET /index/live`), and the item itself,
 // read from its publisher's server in the visitor's browser — the
@@ -3143,6 +3212,8 @@ export interface WalletInfo {
   relays?: string[];
   from?: "env" | "api";
   setAt?: string;
+  /** The environment names the wallet: the deployment owns it, and `PUT` is refused. */
+  env?: boolean;
   note?: string;
   check?: { ok: true; msat: number } | { ok: false; error: string };
 }
@@ -3181,6 +3252,8 @@ export interface EarningsView {
   withdrawn: { count: number; msat: number; feeMsat: number; days: Array<{ day: string; count: number; msat: number; feeMsat: number }> };
   /** Credit this strut bought from other struts (item 9). */
   purchases: { count: number; msat: number; feeMsat: number };
+  /** Sats an admin added to the wallet by hand (Add sats): never credit, never earnings. */
+  deposited: { count: number; msat: number; days: Array<{ day: string; count: number; msat: number }> };
   pending: PendingWithdrawal[];
   wallet?: WalletInfo & {
     balance?: { msat: number; sats: number; usd?: number };
@@ -3218,6 +3291,56 @@ export const getEarningsEntries = (q: { kind?: LedgerEntryView["kind"]; runId?: 
 };
 export const getWallet = (check = false) => fetchJSON<WalletInfo>(`/earnings/wallet${check ? "?check=1" : ""}`);
 export const putWallet = (body: Record<string, unknown>) => fetchJSON<WalletInfo>("/earnings/wallet", { method: "PUT", body: JSON.stringify(body) });
+
+/** An invoice INTO this server's wallet (`POST /earnings/deposit`), and
+ *  where it stands (`POST /earnings/deposits/:hash/read`). */
+export interface DepositAnswer {
+  state: "pending" | "settled" | "expired";
+  paymentHash: string;
+  /** What the invoice asks. */
+  msat: number;
+  /** ISO 8601. */
+  expires: string;
+  /** While pending: the invoice to pay. */
+  invoice?: string;
+  /** Once settled: what settled, and when (ISO 8601). */
+  deposit?: { at: string; msat: number; paymentHash: string; actor?: string };
+  /** Pending: why the wallet could not be asked just now. */
+  error?: string;
+}
+export const askDeposit = (sats: number) => fetchJSON<DepositAnswer>("/earnings/deposit", { method: "POST", body: JSON.stringify({ sats }) });
+export const readDeposit = (paymentHash: string) => fetchJSON<DepositAnswer>(`/earnings/deposits/${paymentHash}/read`, { method: "POST", body: "{}" });
+
+/** What this strut holds at another strut's public door (`GET /remote/credit?balance=1`, plans/paid-runs.md §10). */
+export interface RemoteBalance {
+  seller: string;
+  held: boolean;
+  remaining_usd?: number;
+  remaining_sats?: number;
+  held_usd?: number;
+  spent_usd?: number;
+  paid_usd?: number;
+  expires?: string;
+  expired?: boolean;
+  replaced?: boolean;
+  /** The seller could not be asked, or refused the token. */
+  error?: string;
+  buying?: { usd: number; at: string };
+}
+export interface HeldAtSeller {
+  seller: string;
+  /** The credit token held there (never the token itself). */
+  credit?: { tokenId: string; paymentHash: string; boughtAt: string; usd: number; sats: number; expires: string; carried?: string; proposal?: string };
+  /** A purchase asked for and not yet stored. */
+  purchase?: { proposal: string; actor?: string; usd: number; sats: number; msat: number; paymentHash: string; tokenId: string; invoiceExpiresAt: number; validUntil: number; carries: boolean; at: number; sent?: boolean; checkedAt?: number; lastError?: string };
+  /** Remote runs a step is waiting on now. */
+  runs: number;
+  balance?: RemoteBalance;
+}
+export const remoteCredit = (balance = false) => fetchJSON<{ sellers: HeldAtSeller[] }>(`/remote/credit${balance ? "?balance=1" : ""}`);
+/** Forget a purchase the seller will never answer for, so a new one can go. */
+export const dropRemotePurchase = (seller: string) =>
+  fetchJSON<{ seller: string; dropped?: unknown }>(`/remote/purchases?seller=${encodeURIComponent(seller)}`, { method: "DELETE" });
 
 /** What `POST /earnings/withdraw` answered: the payment, or the refusal. */
 export type WithdrawResult =

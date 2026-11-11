@@ -3,6 +3,7 @@ import * as api from "../api";
 import { errorMessage } from "../helpers";
 import { CopyButton } from "./CopyButton";
 import { EarningsLine, useEarnings } from "./EarningsLine";
+import { ListingLines } from "./ListingLines";
 import { canWords } from "../store-links";
 import {
   boxesOf,
@@ -299,10 +300,13 @@ export function PublicViewPanel(props: { onDirty?: (dirty: boolean) => void }) {
   // What each runnable item earned here (`GET /earnings`), read again after a save.
   const [savedAt, setSavedAt] = useState(0);
   const earnings = useEarnings({ by: "item" }, savedAt);
+  // This server as the publisher an index lists (plans/public-view-listing.md §5).
+  const [publisher, setPublisher] = useState<api.PublisherInfo | null | undefined>(undefined);
   const earnedOf = (r: Row) => earnings?.rows.find((e) => e.key === `${r.kind}:${r.name}`);
 
   useEffect(() => {
     api.getPublicView().then((v) => { setSaved(v); setDraft(v.surface); setRows(rowsOf(v.surface)); }, (e) => setError(errorMessage(e)));
+    api.getPublisher().then(setPublisher, () => setPublisher(null));
     void Promise.all([
       api.listApps().catch(() => []),
       api.listWorkflows().catch(() => []),
@@ -388,6 +392,8 @@ export function PublicViewPanel(props: { onDirty?: (dirty: boolean) => void }) {
   }, [saved]);
   const gone = (key: string) => missing.has(key) && <span class="badge badge-warning" title="Not on this server: skipped by every read">not here</span>;
   const nothing = draft.apps.length + rows.length + draft.concepts.length + draft.types.length === 0;
+  // What an index lists: something the store would show (node types alone do not count).
+  const shows = !!saved && saved.surface.apps.length + saved.surface.workflows.length + saved.surface.steps.length + saved.surface.concepts.length + saved.surface.runnable.length > 0;
 
   return (
     <div class="public-view-panel">
@@ -397,6 +403,12 @@ export function PublicViewPanel(props: { onDirty?: (dirty: boolean) => void }) {
       </div>
       {error && <div class="auto-error">{error.split("; ").map((line) => <div key={line}>{line}</div>)}</div>}
       {saved === null && !error && <div class="auto-hint">Loading…</div>}
+      {saved && publisher !== undefined && (
+        <div class="flyout-section">
+          <div class="flyout-section-title">In the store</div>
+          <ListingLines mode="view" publisher={publisher} viewShows={shows} onPublisher={setPublisher} />
+        </div>
+      )}
 
       {saved && (
         <>

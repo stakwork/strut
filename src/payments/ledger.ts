@@ -20,6 +20,13 @@
  * - `daily`, one row per UTC day and subject: calls, failed, earned, cost.
  *   Every earnings read is a sum over it, never over `entries`.
  *
+ * And `deposits`, one row per payment hash: sats an admin paid into the
+ * wallet by hand (Earnings' Add sats, `src/payments/deposits.ts`). Never
+ * credit on a token, never earnings: only the books check counts them, as
+ * money the wallet should hold. A table of its own, added beside the rest
+ * (`create table if not exists`), so a ledger file from before it opens
+ * unchanged and a strut from before it still opens a file that has it.
+ *
  * A SUBJECT is `workflow:<name>`, `step:<type>`, or `expired` (credit that
  * reached its year unused, earned by the seller). A package's earnings are
  * the subjects under its prefix.
@@ -267,6 +274,31 @@ export interface WithdrawalInput {
   at?: number;
 }
 
+/** Sats an admin paid into the wallet (§9's books): one per payment hash. */
+export interface DepositInput {
+  /** What settled. */
+  msat: number;
+  paymentHash: string;
+  /** Who asked for the invoice. */
+  actor?: string;
+  /** When it settled, epoch ms. */
+  at?: number;
+}
+
+export interface Deposit {
+  /** Epoch ms, when it settled. */
+  at: number;
+  msat: number;
+  paymentHash: string;
+  actor?: string;
+}
+
+export interface DepositedRow {
+  day: string;
+  count: number;
+  msat: number;
+}
+
 export interface EntryListQuery {
   kind?: EntryKind;
   runId?: string;
@@ -356,6 +388,13 @@ export interface LedgerStore {
   withdrawal(input: WithdrawalInput): Promise<LedgerEntry>;
   /** The withdrawal recorded for a payment hash, if one is. */
   withdrawalOf(paymentHash: string): Promise<LedgerEntry | undefined>;
+  /** Sats paid into the wallet by hand, once they settled: one row per
+   *  payment hash. The same hash again writes nothing and answers the first. */
+  deposit(input: DepositInput): Promise<Deposit>;
+  /** The deposit recorded for a payment hash, if one is. */
+  depositOf(paymentHash: string): Promise<Deposit | undefined>;
+  /** Deposits by day. */
+  deposited(range?: DayRange): Promise<DepositedRow[]>;
 
   token(id: string): Promise<TokenBalance | undefined>;
   /** A token's entries, newest first: `ENTRIES_PAGE` of them, before `before`. */

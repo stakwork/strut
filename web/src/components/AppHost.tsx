@@ -4,7 +4,9 @@ import { useFileScope } from "../use-artifact-url";
 import { connectAppHost, type AppHostConnection } from "../app-host";
 import { nativeWalletOf, type NativeWalletApp } from "@strut/kit/wallet";
 import { appToolInput, namesApp, peerAppLink } from "../app-links";
-import { frameAttributes } from "../frame-permissions";
+import { frameAttributes, strangerFrameAttributes } from "../frame-permissions";
+import type { WalletAsk } from "../native-pay";
+import { strangerDocument } from "../remote-app";
 import type { ClaimEnd, PaymentRequired, PayOutcome } from "../visitor-pay";
 import { PaymentSheet } from "./PaymentSheet";
 import { SignInSheet } from "./SignInSheet";
@@ -47,17 +49,33 @@ import { signInWithKey, usableMethods, type SignInMethod, type VisitorSession } 
 // document, and relays its tools/call to the peer with the token on file.
 // A VISITOR's page (the public view) may launch a workflow anyone may run;
 // when it costs something this host — never the frame — shows the invoice
-// over the frame and pays (./PaymentSheet, plans/paid-runs.md §10). And it
-// may ask to sign the visitor in (`useVisitor`, plans/app-repos.md §5):
-// this host draws the sheet over the frame (./SignInSheet) and keeps the
-// session; the page learns the actor, never a key.
+// over the frame and pays (./PaymentSheet, plans/paid-runs.md §10), through
+// a native host's wallet first when this page runs in one (Peel). It may
+// ask to sign the visitor in (`useVisitor`, plans/app-repos.md §5): this
+// host draws the sheet over the frame (./SignInSheet) and keeps the
+// session; the page learns the actor, never a key. A visitor's page of
+// ANOTHER strut server (`app.from`, ../remote-app, specs/API.md §17.9) is
+// read from that server, its calls relayed there, and framed as a
+// STRANGER's: this UI's CSP written ahead of its document, no microphone
+// and nothing its version declares (the frame runs on this strut's
+// origin, whose grants a feature would hand it), and no sign-in (the
+// session is this server's).
 
 /** The frame every app starts in (../frame-permissions). Constant, so a
  *  render never writes over what the effect set for the version on screen. */
 const BASE_FRAME = frameAttributes();
 
-/** What the host renders: a workspace app at a version — here, or on `peer`. */
-export type HostedApp = { name: string; version: string; peer?: string };
+const hostOf = (base: string) => {
+  try {
+    return new URL(base).host;
+  } catch {
+    return base;
+  }
+};
+
+/** What the host renders: a workspace app at a version — here, or on `peer`
+ *  — or, with `from`, another strut server's public app (a visitor's page). */
+export type HostedApp = { name: string; version: string; peer?: string; from?: string; title?: string };
 
 export function AppHost(props: {
   app: HostedApp;
@@ -85,14 +103,21 @@ export function AppHost(props: {
   onReady?: () => void;
 }) {
   const app = props.app;
-  const visitor = !!props.visitor;
+  const from = app.from;
+  const visitor = !!props.visitor || !!from;
   // The version's token comes from its (cached) listing; a visitor has none.
   const scope = useFileScope(visitor ? null : api.appFilesScope(app.name, app.version, app.peer));
   const ready = visitor || !!scope;
   const frameRef = useRef<HTMLIFrameElement>(null);
   const [state, setState] = useState<{ status: "loading" | "ready" | "error"; error?: string }>({ status: "loading" });
   /** A priced launch the visitor is asked to pay, and where its answer goes. */
-  const [payment, setPayment] = useState<{ p: PaymentRequired; workflow: string; settled: Promise<ClaimEnd>; done: (o: PayOutcome) => void } | null>(null);
+  const [payment, setPayment] = useState<{
+    p: PaymentRequired;
+    workflow: string;
+    settled: Promise<ClaimEnd>;
+    wallet?: WalletAsk;
+    done: (o: PayOutcome) => void;
+  } | null>(null);
   const paymentRef = useRef(payment);
   paymentRef.current = payment;
   /** The visitor's sign-in the page asked for, and where its answer goes. */
@@ -135,25 +160,34 @@ export function AppHost(props: {
         // The version's build.json beside it — what its frame is granted;
         // a visitor's from the public view's listing of the app. Unread, the
         // frame gets what every app gets.
-        const infoRead = visitor
-          ? api.getPublicApp(app.name).catch(() => null)
-          : api.fetchAppBuildInfo(app.name, app.version, scope!.token, app.peer);
-        const html = visitor ? await api.fetchPublicAppDocument(app.name) : await api.fetchAppDocument(app.name, app.version, scope!.token, app.peer);
+        const infoRead = from
+          ? api.getRemotePublicApp(from, app.name).catch(() => null)
+          : visitor
+            ? api.getPublicApp(app.name).catch(() => null)
+            : api.fetchAppBuildInfo(app.name, app.version, scope!.token, app.peer);
+        // A seller from before remote hosting answers no page on another
+        // origin: say so, rather than a bare "Failed to fetch" at connect.
+        if (from && !(await api.remoteHostable(from))) throw new Error(api.notHostableYet(from));
+        const html = from
+          ? strangerDocument(await api.fetchRemotePublicAppDocument(from, app.name))
+          : visitor ? await api.fetchPublicAppDocument(app.name) : await api.fetchAppDocument(app.name, app.version, scope!.token, app.peer);
         const info = await infoRead;
         if (cancelled) return;
-        const permissions = Array.isArray(info?.permissions) ? info.permissions : undefined;
+        // A stranger's version declares nothing this host grants.
+        const permissions = !from && Array.isArray(info?.permissions) ? info.permissions : undefined;
         // In a native host's web view (Peel), the version's wallet request,
         // for its wallet: read only there, and only an app that asks for one
         // is offered a wallet (specs/WALLET.md §1.1).
         let wallet: NativeWalletApp | undefined;
-        if (nativeWalletOf(window) && info && "wallet" in info && info.wallet) {
+        if (!visitor && nativeWalletOf(window) && info && "wallet" in info && info.wallet) {
           wallet = { name: app.name, version: app.version, ...(app.peer ? { peer: app.peer } : {}), title: info.title ?? app.name, request: info.wallet };
         }
         conn = await connectAppHost({
           frame,
           theme,
           brand: await brand,
-          ...(visitor ? { visitor: true } : {}),
+          ...(visitor ? { visitor: true, visitorApp: { name: app.name, version: app.version, title: info?.title ?? app.title ?? app.name } } : {}),
+          ...(from ? { from } : {}),
           ...(app.peer ? { base: api.peerBase(app.peer) } : {}),
           ...(wallet ? { wallet } : {}),
           ...(permissions ? { permissions } : {}),
@@ -180,12 +214,13 @@ export function AppHost(props: {
                       });
                     });
                   },
-                  onPayment: (p: PaymentRequired, workflow: string, settled: Promise<ClaimEnd>) =>
+                  onPayment: (p: PaymentRequired, workflow: string, settled: Promise<ClaimEnd>, wallet?: WalletAsk) =>
                     new Promise<PayOutcome>((resolve) => {
                       setPayment({
                         p,
                         workflow,
                         settled,
+                        ...(wallet ? { wallet } : {}),
                         done: (o) => {
                           setPayment(null);
                           resolve(o);
@@ -220,13 +255,16 @@ export function AppHost(props: {
         sentInput.current = toolInput.current ? JSON.stringify(toolInput.current) : "";
         // Every app's attributes and what the version declared, read by the
         // browser at the navigation the srcdoc starts: set first.
-        const attrs = frameAttributes(permissions);
+        const attrs = from ? strangerFrameAttributes() : frameAttributes(permissions);
         frame.setAttribute("sandbox", attrs.sandbox);
         frame.setAttribute("allow", attrs.allow);
         frame.srcdoc = html;
         setState({ status: "ready" });
       } catch (err) {
-        if (!cancelled) setState({ status: "error", error: err instanceof Error ? err.message : String(err) });
+        const message = err instanceof Error ? err.message : String(err);
+        // A seller that went away between the check and the connect: name it.
+        const error = from && err instanceof TypeError ? `${hostOf(from)} did not answer (${message})` : message;
+        if (!cancelled) setState({ status: "error", error });
         markReady();
       }
     })();
@@ -248,7 +286,7 @@ export function AppHost(props: {
     // The token is the scope's; a reload re-fetches the document (a new
     // version was published under the same label only on a rebuild).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [app.name, app.version, app.peer, props.reload, scope?.token, ready]);
+  }, [app.name, app.version, app.peer, from, props.reload, scope?.token, ready]);
 
   useEffect(() => {
     connRef.current?.setTheme(theme);
@@ -265,7 +303,16 @@ export function AppHost(props: {
     <div class={`app-host${theme === "light" ? " light" : ""}`}>
       {/* Every app's attributes; the effect sets the version's before the srcdoc. */}
       <iframe ref={frameRef} class="app-frame" sandbox={BASE_FRAME.sandbox} allow={BASE_FRAME.allow} title={app.name} />
-      {payment && <PaymentSheet payment={payment.p} workflow={payment.workflow} settled={payment.settled} onDone={payment.done} />}
+      {payment && (
+        <PaymentSheet
+          payment={payment.p}
+          workflow={payment.workflow}
+          settled={payment.settled}
+          onDone={payment.done}
+          {...(payment.wallet ? { wallet: payment.wallet } : {})}
+          {...(from ? { seller: hostOf(from) } : {})}
+        />
+      )}
       {signIn && <SignInSheet methods={signIn.methods} onDone={signIn.done} />}
       {state.status !== "ready" && (
         <div class={`app-host-overlay${state.status === "error" ? " is-error" : ""}`}>

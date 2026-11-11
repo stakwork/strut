@@ -14,7 +14,8 @@ import { createStrut, type Strut } from "../createStrut.js";
 import { MemoryRunStore } from "../store.js";
 import { WorkspaceManager } from "../workspace.js";
 import { readCard, type Catalog } from "./card.js";
-import { PUBLISHER_FILE } from "./publisher.js";
+import { MemorySecretStore } from "../secret-store.js";
+import { CatalogStore, PUBLISHER_FILE, ensurePublicCatalog, publishRelease, publisherStore } from "./publisher.js";
 
 const STEP = (type: string, out: string) =>
   `import { z, defineStep } from "strut";\nexport default defineStep({ type: ${JSON.stringify(type)}, input: z.object({}), output: z.any(), async run() { return ${JSON.stringify(out)}; } });\n`;
@@ -284,6 +285,30 @@ describe("publishing packages from this strut", () => {
     assert.equal(linear2.status, 409, JSON.stringify(linear2.body));
     assert.match(linear2.body.error!, /^catalog_private_requirement: acme\/linear 2\.1\.0 requires acme\/util/);
     assert.equal(util2.status, 201);
+  });
+
+  it("mints the public key with no package, seals an empty public catalog with it, and keeps both when a package is made public (plans/public-view-listing.md §1)", async () => {
+    let now = Date.parse("2026-11-11T12:00:00Z");
+    const deps = { publisher: publisherStore(new MemorySecretStore(), { now: () => now }), catalogs: new CatalogStore(join(root, "fleet")), publicCatalogs: new CatalogStore(join(root, "public")), now: () => now };
+    // A fleet-only release first: it never reaches the public catalog.
+    await publishRelease(deps, { manifest: { package: "acme/private", version: "1.0.0" }, digest: `sha256:${"aa".repeat(32)}`, channel: "stable" });
+    assert.equal((await deps.publisher.get())!.public, undefined);
+    const first = await ensurePublicCatalog(deps);
+    const info = (await deps.publisher.get())!;
+    assert.ok(info.public);
+    assert.deepEqual(info.publicChannels, [], "no channel was made public");
+    assert.deepEqual(readCard(first.bytes, { key: info.public! }).card.packages, {});
+    assert.equal((await ensurePublicCatalog(deps)).digest, first.digest, "asked again: the same catalog");
+    assert.equal((await deps.catalogs.current())!.card.public, undefined, "the fleet catalog sealed before the key does not name it");
+
+    // Make public later: the same key, the next public catalog after the empty one.
+    now += 60_000;
+    await publishRelease(deps, { manifest: { package: "acme/linear", version: "1.0.0" }, digest: `sha256:${"bb".repeat(32)}`, channel: "public", public: true });
+    const after = (await deps.publisher.get())!;
+    assert.equal(after.public, info.public);
+    const pub = readCard((await deps.publicCatalogs.current())!.bytes, { key: info.public!, last: { seq: first.card.seq, digest: first.digest } }).card;
+    assert.deepEqual(Object.keys(pub.packages), ["acme/linear"], "the private release stays private");
+    assert.equal((await deps.catalogs.current())!.card.public, info.public);
   });
 
   it("refuses to mint a key or publish while the secret store runs on the dev default key", async () => {

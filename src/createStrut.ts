@@ -47,6 +47,7 @@ import { walletRoutes } from "./payments/wallet-routes.js";
 import { earningsRoutes } from "./payments/earnings-routes.js";
 import { readEarnings, type EarningsDeps, type EarningsQuery } from "./payments/earnings.js";
 import { createWithdrawals, WithdrawError, WITHDRAWALS_FILE } from "./payments/withdrawals.js";
+import { createDeposits, DEPOSITS_FILE } from "./payments/deposits.js";
 import { createRemote, ENTITLEMENTS_FILE, REMOTE_CALL_TIMEOUT_MS, type RemoteService } from "./remote.js";
 import { guardedHttp as strangerHttp } from "./guarded-http.js";
 import type { Payer } from "./payments/payer.js";
@@ -113,12 +114,12 @@ import { DOCUMENT_FILE, readBuildInfo, withPublicIdentity, withToken, withoutTok
 import { packArchive } from "./packages/archive.js";
 import { buildPackage, type BuildRequest } from "./packages/build.js";
 import { createRepos, type RepoItem, type Repos } from "./packages/repos.js";
-import { PUBLISHER_FILE, PUBLISHER_NAME, catalogStore, moveChannel, publicCatalogStore, publishRelease, publisherStore } from "./packages/publisher.js";
+import { PUBLISHER_FILE, PUBLISHER_NAME, catalogStore, ensurePublicCatalog, moveChannel, publicCatalogStore, publishRelease, publisherStore } from "./packages/publisher.js";
 import { SUBSCRIPTIONS_FILE, createSubscriptions, subscriptionProblem, type Subscription, type Subscriptions } from "./packages/subscriptions.js";
 import { createPackageIndex, indexDir, indexRowProblem, liveRowProblem, withoutConceptDocs, type PackageIndex } from "./packages/index.js";
 import { INDEXES_FILE, createIndexes, indexSubscriptionProblem, parseIndexesEnv, type IndexSubscription, type PackageIndexes, type PackagesCapability } from "./packages/indexes.js";
 import { PUBLISHER_PREFIX, Z32_KEY, releaseFor, type IndexLiveRow, type IndexRow } from "./packages/card.js";
-import { LISTING_MAX_BYTES, hostPatternProblem, perMinute } from "./packages/listing.js";
+import { LISTING_MAX_BYTES, baseProblem, hostPatternProblem, perMinute } from "./packages/listing.js";
 import { LISTING_ERROR_STATUS, LISTING_REQUESTS_PER_MINUTE, createRequestsDesk, type RequestsDesk } from "./packages/index-requests.js";
 import { LISTINGS_FILE, createPublisherListings } from "./packages/publisher-listings.js";
 import { packageCache } from "./packages/cache.js";
@@ -194,7 +195,8 @@ import { HOME_POSTS, homeSyncRole, homeSyncRoutes, seedHomeSyncWorkflow, type Ho
 import { VOICE_CALLS, voiceConfig, voiceRoutes, warmSpeech, type VoiceConfig } from "./voice.js";
 import { createPublicSurface, normalizeSurface, surfaceProblem, VISIT_HEADER, visitProblem, visitorOfVisit, visitorRefusal, visitorRuns, type PublicSurface } from "./public-surface.js";
 import { brandProblem, brandStyles, normalizeBrand, readBrand, writeBrand } from "./brand.js";
-import { PUBLIC_PATH, PUBLIC_POST, PUBLIC_REQUESTS_PER_MINUTE, publicRoutes, visitorAddress } from "./public-routes.js";
+import { PUBLIC_PATH, PUBLIC_POST, PUBLIC_REQUESTS_PER_MINUTE, publicRoutes } from "./public-routes.js";
+import { DEFAULT_TRUSTED_PROXIES, TRUSTED_PROXIES_ENV, trustedProxies, trustedProxiesFromEnv, visitorAddressFor } from "./visitor-address.js";
 /** How long `GET /llms.txt` keeps a page it built, per base URL. */
 const LLMS_TXT_CACHE_MS = 30_000;
 import { createPublicRuns, publicRunsMaxFromEnv, publicRunsPath } from "./public-runs.js";
@@ -386,6 +388,12 @@ export interface StrutOptions<TServices = unknown> {
    *  src/public-runs.ts): a launch past it is a 429. `STRUT_HOST_CONFIG`'s
    *  `publicRuns` sets `principal`. */
   publicRuns?: { principal?: string; maxInFlight?: number };
+  /** The proxies whose `x-forwarded-for` names the visitor every public
+   *  budget counts (src/visitor-address.ts): IPs and CIDRs, [] for none.
+   *  Defaults to `STRUT_TRUSTED_PROXIES`, else loopback, link-local and
+   *  private addresses. A peer outside the set is the visitor itself,
+   *  whatever its header says. */
+  trustedProxies?: readonly string[];
 
   /** Max agent steps (tool-call iterations) per chat turn. Raise for longer
    *  autonomous "let it rip" loops. Defaults to `STRUT_CHAT_MAX_STEPS` or 100. */
@@ -974,6 +982,12 @@ export async function createStrut<TServices = unknown>(
   const bootPackages = [...parseBootPackagesEnv(bootEnv()["STRUT_PACKAGES"]), ...checkBootPackages(opts.packages ?? [])];
   // The package this box SERVES (src/packages/serve.ts), checked as early.
   const serveRef = serveRefOf(opts.serve, bootEnv());
+  // Who a public request is from: the socket's peer, or `x-forwarded-for`
+  // when that peer is a trusted proxy (src/visitor-address.ts). Checked as
+  // early: a proxy list strut cannot read fails the boot.
+  const visitorAddress = visitorAddressFor(
+    trustedProxies(opts.trustedProxies ?? trustedProxiesFromEnv(bootEnv()[TRUSTED_PROXIES_ENV]) ?? DEFAULT_TRUSTED_PROXIES),
+  );
   if (opts.escapeGuard !== false) installEscapeGuard();
   const baseWorkspace: WorkspaceStore = opts.workspace ?? new FileWorkspaceStore();
   // The ONE graph backend everything here reads: the host's, else the
@@ -1428,6 +1442,15 @@ export async function createStrut<TServices = unknown>(
     ledger,
     ...(store instanceof MemoryRunStore ? {} : { file: join(dataDir, WITHDRAWALS_FILE) }),
     usdPerBtc: async () => (await payments.rate.read()).usdPerBtc,
+  });
+  // Add sats (§8, §9; src/payments/deposits.ts): an invoice INTO the wallet,
+  // made by its receive side, for an admin to pay from their own, so this
+  // strut has sats to buy credit with before it sold anything. Kept on file
+  // beside the ledger until it settles (one row in `deposits`) or expires.
+  const deposits = createDeposits({
+    lightning: () => payments.lightning(),
+    ledger,
+    ...(store instanceof MemoryRunStore ? {} : { file: join(dataDir, DEPOSITS_FILE) }),
   });
   // A strut that BUYS (plans/paid-runs.md §10, src/remote.ts): the credit
   // this strut holds at other struts' public doors, in an encrypted file of
@@ -2032,7 +2055,8 @@ export async function createStrut<TServices = unknown>(
   const PEER_POST = /^\/workflows\/[^/]+\/(?:[^/]+\/run|run|runs\/[^/]+\/(?:cancel|pause|resume))$/;
   /** What a member's session may call: the page of one app, its calls, its
    *  channels, and a file it hands the side panel. `GET /brand` is the
-   *  style the app is shown in; `GET` and `DELETE /mcp` answer 405 (the
+   *  style the app is shown in; `GET /rate` what a stranger's invoice is
+   *  priced at in dollars (specs/API.md §17.9); `GET` and `DELETE /mcp` answer 405 (the
    *  page's MCP client asks for a stream once). */
   const MEMBER_ROUTES: Array<[method: string, path: RegExp]> = [
     ["GET", /^\/auth\/session$/],
@@ -2040,6 +2064,7 @@ export async function createStrut<TServices = unknown>(
     ["GET", /^\/apps\/[^/]+\/versions$/],
     ["GET", /^\/apps\/[^/]+\/[^/]+\/files(?:\/.+)?$/],
     ["GET", /^\/brand$/],
+    ["GET", /^\/rate$/],
     ["POST", /^\/mcp$/],
     ["GET", /^\/mcp$/],
     ["DELETE", /^\/mcp$/],
@@ -3460,6 +3485,7 @@ export async function createStrut<TServices = unknown>(
   });
   const publicDoors = publicRoutes(app, {
     surface: publicSurface,
+    visitorAddress,
     workspace,
     store,
     runnable: async () => {
@@ -3586,6 +3612,7 @@ export async function createStrut<TServices = unknown>(
         held.push({ app: a.name, error: err instanceof Error ? err.message : String(err) });
       }
     }
+    viewChanged();
     return c.json({ surface: next, missing: await publicViewMissing(next), ...(held.length ? { held } : {}) });
   });
   // What the dialog's third box ("anyone can run it") shows for a workflow
@@ -4656,11 +4683,24 @@ export async function createStrut<TServices = unknown>(
       return c.json({ error: "description and url are strings, live a boolean" }, 400);
     }
     try {
+      if (!(await indexes.list()).some((x) => x.id === body.index)) throw new Error(`package_index_unknown: this strut server follows no index "${body.index}"`);
+      const name = (await publisher.get())?.name;
+      if (!name) throw new Error("publisher_no_name: set the publisher's name first — it is the name an index lists");
+      // A server with nothing public yet lists its public VIEW (plans/public-view-listing.md
+      // §1): the ask mints the public key and an empty public catalog, the index's proof
+      // that this base holds the key. Asked for nothing an index could list, it mints nothing.
+      const shown = (await catalogDeps.publicCatalogs.current())?.card.packages ?? {};
+      if (body.live !== true && !Object.keys(shown).some((p) => p.startsWith(`${name}/`))) {
+        throw new Error(`listing_nothing_public: this strut server has made no package under ${name}/ public — make one public, or ask for its public view (live: true)`);
+      }
+      const badBase = baseProblem(body.base, { allowHttp: true });
+      if (badBase) throw new Error(`listing_invalid: ${badBase}`);
+      if (body.live === true) await oneAtATime(() => ensurePublicCatalog(catalogDeps));
       return listingOutcome(c, await listings.ask(body.index, { base: body.base, ...(body.description !== undefined ? { description: body.description as string } : {}), ...(body.url !== undefined ? { url: body.url as string } : {}), ...(body.live !== undefined ? { live: body.live as boolean } : {}) }));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const code = /^([a-z_]+):/.exec(message)?.[1] ?? "";
-      const status = ({ publisher_not_public: 409, publisher_no_name: 409, listing_invalid: 400, listing_no_route: 409, package_index_unknown: 404 } as Record<string, 400 | 404 | 409>)[code] ?? 500;
+      const status = ({ publisher_not_public: 409, publisher_no_name: 409, publisher_unsafe_key: 409, listing_nothing_public: 409, listing_invalid: 400, listing_no_route: 409, package_index_unknown: 404 } as Record<string, 400 | 404 | 409>)[code] ?? 500;
       return c.json({ error: message }, status);
     }
   });
@@ -4755,6 +4795,15 @@ export async function createStrut<TServices = unknown>(
       return catalogError(c, err);
     }
   });
+  /** The public VIEW changed (a save, a served box's deploy): every index
+   *  this strut asked to list it reads it again (plans/public-view-listing.md
+   *  §6). The index re-reads the live row of each row naming the key. */
+  const viewChanged = () => {
+    void (async () => {
+      const key = (await publisher.get().catch(() => undefined))?.public;
+      if (key) await listings.ping(key);
+    })().catch(() => undefined);
+  };
   /** The same ping with the PUBLIC key, when the public catalog changed —
    *  what an index strut among the peers follows (§7). */
   const pingPublic = async (before: string | undefined) => {
@@ -4838,7 +4887,10 @@ export async function createStrut<TServices = unknown>(
             if (!problems.length && s.runnable.some(isPriced)) await payments.settings.ensureL402Root();
             return problems;
           },
-          setSurface: async (s) => void (await publicSurface.set(s)),
+          setSurface: async (s) => {
+            await publicSurface.set(s);
+            viewChanged();
+          },
           icon: (name) => lucideIconSvg(opts.kit ?? {}, name),
         })
       : null;
@@ -5656,6 +5708,20 @@ export async function createStrut<TServices = unknown>(
     envWallet: payments.envWallet,
   });
 
+  // ── The rate this strut trusts (src/payments/rate.ts) ───────────────────
+  // What strut's UI prices a STRANGER's invoice at (specs/API.md §17.9): the
+  // sats an invoice asks are the price, and dollars beside them come from
+  // here, never from the seller's own quote. Any credential, a member's
+  // session included (it hosts apps alone); read a minute at a time.
+  app.get("/rate", async (c) => {
+    try {
+      const r = await payments.rate.read();
+      return c.json({ usdPerBtc: r.usdPerBtc, at: r.at, source: r.source }, 200, { "cache-control": "private, max-age=60" });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 503);
+    }
+  });
+
   // ── Earnings and Withdraw (plans/paid-runs.md §8; src/payments/earnings*.ts) ──
   // Full scope only, reads included. The same read is `ctx.services.earnings`
   // (reads, nothing that pays), what the `earnings/read` step answers with.
@@ -5666,6 +5732,7 @@ export async function createStrut<TServices = unknown>(
     walletInfo: async () => (payments.injected ? { provider: null, receive: !!payments.lightning(), pay: await payments.canPay() } : { ...(await payments.wallet()), pay: await payments.canPay() }),
     lightning: () => payments.lightning(),
     usdPerBtc: async () => (await payments.rate.read()).usdPerBtc,
+    settleDeposits: () => deposits.check(),
     // A package published HERE: its items carry their bare local names
     // (plans/packages-ux.md), so its subjects come from its newest release —
     // each item by its name inside the package, and by the prefixed name
@@ -5696,6 +5763,7 @@ export async function createStrut<TServices = unknown>(
     earnings: earningsDeps,
     ledger: ledgerIfAny,
     withdrawals,
+    deposits,
   });
 
   // ── Credit held at other struts (plans/paid-runs.md §10; src/remote.ts) ──
@@ -9357,6 +9425,7 @@ export async function createStrut<TServices = unknown>(
     ledgerSweepTimer = undefined;
     publicTools.close();
     withdrawals.stop();
+    deposits.stop();
     await remote.stop();
     await bootScan;
     await packages.booted;
@@ -9493,6 +9562,9 @@ export async function createStrut<TServices = unknown>(
   // Withdrawals the wallet answered `pending` (on file from a past process
   // too) are read every minute until they settle or fail.
   withdrawals.start();
+  // Deposit invoices asked for (on file from a past process too) are read
+  // every minute until they settle or expire.
+  deposits.start();
   // Credit bought from another strut whose payment had not settled (on
   // file from a past process too) is claimed every minute until it does.
   remote.start();

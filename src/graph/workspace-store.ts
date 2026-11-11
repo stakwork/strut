@@ -82,6 +82,7 @@ import { appVersionDir, validateAppName } from "../apps/files.js";
 import { readStepSourceFromDisk, type StepSource } from "../steps/registry.js";
 import { contentHash, nextVersionLabel } from "../version.js";
 import type { GraphBackend } from "./backend.js";
+import { WORKFLOW_USAGE_FIELDS } from "./strut-schemas.js";
 
 export interface GraphWorkspaceStoreOptions {
   /** Where active custom steps are written for the module loader. Default:
@@ -106,6 +107,13 @@ interface WorkflowRow {
   owner?: string;
   max_run_cost_usd?: number;
   disabled?: boolean;
+  /** The run counts the projector writes (`refreshWorkflowUsage`). */
+  usage_count?: number;
+  usage_count_30d?: number;
+  success_count?: number;
+  error_count?: number;
+  last_run_at?: number;
+  last_run_status?: string;
 }
 
 /** A workflow row's automations; a blob that fails to parse reads as none. */
@@ -205,7 +213,7 @@ function parseJson<T>(text: string | undefined): T | undefined {
   }
 }
 
-const WORKFLOW_FIELDS = ["ref_id", "name", "description", "category", "publisher", "active_version", "automations", "owner", "max_run_cost_usd", "disabled"] as const;
+const WORKFLOW_FIELDS = ["ref_id", "name", "description", "category", "publisher", "active_version", "automations", "owner", "max_run_cost_usd", "disabled", ...WORKFLOW_USAGE_FIELDS] as const;
 const VERSION_FIELDS = ["ref_id", "name", "content_hash", "version_label", "description", "published_at", "source", "publisher", "version_source", "actor", "upstream", "created_at"] as const;
 const STEP_FIELDS = ["ref_id", "step_type", "description", "publisher", "active_version"] as const;
 const STEP_VERSION_FIELDS = ["ref_id", "step_type", "content_hash", "version_label", "description", "published_at", "source", "publisher", "version_source", "actor", "upstream", "created_at"] as const;
@@ -692,13 +700,13 @@ export class GraphWorkspaceStore implements WorkspaceStore {
   /** Soft, like `deleteStep`: the nodes stay, stamped `deleted_at`, and
    *  their edges go. A later publish under the same name RESTORES the
    *  workflow node (the node writer clears the markers on a key match), so the metadata that would otherwise
-   *  ride along — schedules, owner, cap, category, the publisher stamp — is cleared first: the
+   *  ride along — schedules, owner, cap, category, the publisher stamp, the run counts — is cleared first: the
    *  new workflow is a new one, not this one back. Versions stay deleted
    *  unless their exact content is published again. */
   async deleteWorkflow(name: string): Promise<boolean> {
     const w = await this.workflowRow(name);
     if (!w) return false;
-    const remove = (["automations", "owner", "max_run_cost_usd", "disabled", "category", "publisher"] as const).filter((k) => w[k] != null);
+    const remove = (["automations", "owner", "max_run_cost_usd", "disabled", "category", "publisher", ...WORKFLOW_USAGE_FIELDS] as const).filter((k) => w[k] != null);
     if (remove.length) await this.backend.nodes.update(w.ref_id, { remove: [...remove] });
     for (const v of await this.versionRows(name)) await this.backend.nodes.softDelete(v.ref_id);
     await this.backend.nodes.softDelete(w.ref_id);

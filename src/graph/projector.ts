@@ -76,7 +76,7 @@
  */
 import type { AccessedNode, RunEvent, RunSummary } from "../core.js";
 import { executedWorkflowHash } from "../journal.js";
-import { stepTypeOfRunKey, type RunStore } from "../store.js";
+import { countUsage, stepTypeOfRunKey, type RunStore } from "../store.js";
 import type { ChatMeta, ChatStore, StoredMessage } from "../chat-store.js";
 import { idProblem, peerSessionId, publicSessionId } from "../session-store.js";
 import { artifactEntriesOf } from "../artifact-refs.js";
@@ -86,7 +86,7 @@ import type { Proposal, ProposalsCapability } from "../proposals.js";
 import type { GraphBackend } from "./backend.js";
 import type { NodeInput } from "./node-writer.js";
 import type { EdgeInput } from "./edge-writer.js";
-import { PREVIEW_MAX_CHARS, TEXT_MAX_CHARS, getStrutSchema } from "./strut-schemas.js";
+import { PREVIEW_MAX_CHARS, TEXT_MAX_CHARS, WORKFLOW_USAGE_FIELDS, getStrutSchema } from "./strut-schemas.js";
 
 /** Does this backend's ontology hold nodes of `type`? Every type where
  *  Strut's own types come from code (Neo4j: jarvis's meta-graph is open, and
@@ -158,9 +158,12 @@ export interface ProjectReport {
   jobs: number;
   /** `StrutProposal` nodes upserted. */
   proposals: number;
+  /** `StrutWorkflow` nodes whose run counts were recounted
+   *  (`refreshWorkflowUsage`). */
+  workflowUsage: number;
 }
 
-const emptyReport = (): ProjectReport => ({ runs: 0, sessions: 0, toolCalls: 0, chats: 0, turns: 0, edges: 0, accessed: 0, unresolved: 0, skipped: 0, jobs: 0, proposals: 0 });
+const emptyReport = (): ProjectReport => ({ runs: 0, sessions: 0, toolCalls: 0, chats: 0, turns: 0, edges: 0, accessed: 0, unresolved: 0, skipped: 0, jobs: 0, proposals: 0, workflowUsage: 0 });
 
 /** A bounded text preview of any value — the shape of payload that reaches
  *  the graph, but for a conversation turn's words (`wholeText`). */
@@ -203,6 +206,18 @@ function isTerminalStatus(s: unknown): boolean {
 
 /** Status of a run from its summary, else from the last terminal event in
  *  the log, else "stale" (never finalized — crashed or still in flight). */
+/** The path of the deepest step whose error ended a failed run — the run
+ *  overview's rule (kit/src/folds/run-overview.ts): a subflow's child fails
+ *  first, then each container above it with the same message, and an agent
+ *  goes on past a failed tool call, so a tool call is never it. */
+function failedStep(events: RunEvent[]): string | undefined {
+  const errors = events.filter((e) => e.type === "step.error" && !e.stepType?.startsWith("tool:"));
+  const last = errors.at(-1);
+  if (!last) return undefined;
+  const message = last.error?.message ?? "";
+  return errors.filter((e) => (e.error?.message ?? "") === message).reduce((m, e) => (e.path.length > m.path.length ? e : m)).path;
+}
+
 function runStatus(summary: RunSummary | null, events: RunEvent[]): string {
   if (summary) return summary.status;
   for (let i = events.length - 1; i >= 0; i--) {
@@ -266,6 +281,10 @@ export function projectRunEvents(workflow: string, runId: string, events: RunEve
   const logRef = `${workflow}/${runId}`;
   // The job (plans/jobs.md §1): on `run.start`, and on the summary.
   const job = typeof start?.job === "string" ? start.job : summary?.job;
+  const app = start?.app ?? summary?.app;
+  // A run cut off before its summary has its spend in its log.
+  const totals = summary?.totals ?? countUsage(events);
+  const spent = totals.modelCalls > 0 || totals.cost > 0;
 
   const run: NodeInput = {
     type: "StrutRun",
@@ -284,6 +303,18 @@ export function projectRunEvents(workflow: string, runId: string, events: RunEve
       output_preview: preview(summary?.output),
       error_message: errorMessage,
       log_ref: logRef,
+      origin: start?.origin ?? summary?.origin,
+      automation_id: (start?.automation ?? summary?.automation)?.id,
+      actor: start?.actor ?? summary?.actor,
+      principal: start?.principal ?? summary?.principal,
+      parent_run_id: start?.parentRunId,
+      app: app?.name,
+      app_version: app?.version,
+      cost_usd: spent ? totals.cost : undefined,
+      model_calls: spent ? totals.modelCalls : undefined,
+      input_tokens: spent ? totals.usage.inputTokens + totals.usage.cacheReadTokens + totals.usage.cacheWriteTokens : undefined,
+      output_tokens: spent ? totals.usage.outputTokens : undefined,
+      failed_step: status === "error" ? failedStep(events) : undefined,
       unique_source_id: `strutrun:${runId}`,
     }),
   };
@@ -615,6 +646,100 @@ async function heldNodes(backend: GraphBackend, ids: string[]): Promise<Set<stri
   );
 }
 
+/** In-flight work per key, for `oneAtATime`. */
+type Slots<T> = Map<string, { tail: Promise<T>; queued?: Promise<T> }>;
+
+/** `fn` one at a time per key and backend: a call while one runs queues ONE
+ *  more, which every later call joins and which starts when the running one
+ *  ends — so what changed meanwhile is read by the next. */
+function oneAtATime<T>(all: WeakMap<GraphBackend, Slots<T>>, backend: GraphBackend, key: string, fn: () => Promise<T>): Promise<T> {
+  let slots = all.get(backend);
+  if (!slots) all.set(backend, (slots = new Map()));
+  const inFlight = slots;
+  const slot = inFlight.get(key);
+  if (slot?.queued) return slot.queued;
+  const next: Promise<T> = (slot?.tail ?? Promise.resolve())
+    .catch(() => undefined)
+    .then(() => {
+      if (entry.queued === next) delete entry.queued;
+      return fn();
+    });
+  const entry: { tail: Promise<T>; queued?: Promise<T> } = { tail: next, queued: next };
+  inFlight.set(key, entry);
+  void next.catch(() => undefined).finally(() => inFlight.get(key) === entry && inFlight.delete(key));
+  return next;
+}
+
+/** The window `usage_count_30d` counts. */
+const USAGE_WINDOW_SECS = 30 * 86_400;
+
+/**
+ * A workflow's run counts onto its `StrutWorkflow` (`WORKFLOW_USAGE_FIELDS`):
+ * every live `StrutRun` that EXECUTED one of its versions — `usage_count`,
+ * `usage_count_30d` (started in the 30 days before `now`), `success_count`
+ * and `error_count` by `run_status` (a cancelled or stale run counts only
+ * as a run), and the newest one's `last_run_at` + `last_run_status`.
+ * RECOUNTED from the graph, never incremented, so a run projected again
+ * changes nothing and `graph/project` backfills the counts. A deleted
+ * workflow's versions are deleted with it, so a workflow published again
+ * under the name starts from none — but on a Ladybug file, where a delete
+ * hides a node's edges rather than removing them, publishing a deleted
+ * version's very content brings that version back with its runs. False when
+ * the graph holds no live `StrutWorkflow` of that name (a filesystem
+ * workspace's).
+ */
+export async function refreshWorkflowUsage(backend: GraphBackend, workflow: string, now = Date.now()): Promise<boolean> {
+  const { namespace: ns, dialect: d } = backend;
+  const wf = d.node("w", "StrutWorkflow", { namespace: "$ns", name: "$name" });
+  const [w] = await backend.query(`MATCH ${wf} WHERE ${d.live("w")} RETURN ${d.project("w", ["ref_id", ...WORKFLOW_USAGE_FIELDS])} AS p LIMIT 1`, { ns, name: workflow });
+  const current = w?.["p"] as Record<string, unknown> | undefined;
+  if (!current || typeof current["ref_id"] !== "string") return false;
+  // One row per status: a handful, however many runs. `count` of a CASE
+  // with no ELSE counts the matches (an INT64 on Ladybug, where `sum` is not).
+  const rows = await backend.query(
+    `MATCH ${wf}<-[:VERSION_OF]-${d.node("v", "StrutWorkflowVersion", { namespace: "$ns" })}<-[:EXECUTED]-${d.node("r", "StrutRun", { namespace: "$ns" })}
+     WHERE ${d.live("w")} AND ${d.live("v")} AND ${d.live("r")}
+     RETURN r.run_status AS status, count(r) AS runs, count(CASE WHEN r.started_at >= $since THEN 1 END) AS recent, max(r.started_at) AS last`,
+    { ns, name: workflow, since: Math.floor(now / 1000) - USAGE_WINDOW_SECS },
+  );
+  const n = (v: unknown) => Number(v) || 0;
+  const of = (status: string) => n(rows.find((r) => r["status"] === status)?.["runs"]);
+  const newest = rows.reduce<Record<string, unknown> | undefined>((a, r) => (r["last"] != null && (!a || n(r["last"]) > n(a["last"])) ? r : a), undefined);
+  const runs = rows.reduce((sum, r) => sum + n(r["runs"]), 0);
+  const desired: Record<string, unknown> = runs
+    ? {
+        usage_count: runs,
+        usage_count_30d: rows.reduce((sum, r) => sum + n(r["recent"]), 0),
+        success_count: of("success"),
+        error_count: of("error"),
+        last_run_at: newest ? n(newest["last"]) : undefined,
+        last_run_status: newest?.["status"],
+      }
+    : {};
+  const set: Record<string, unknown> = {};
+  const remove: string[] = [];
+  for (const k of WORKFLOW_USAGE_FIELDS) {
+    const want = desired[k];
+    if (want == null) {
+      if (current[k] != null) remove.push(k);
+    } else if (current[k] !== want) set[k] = want;
+  }
+  if (Object.keys(set).length || remove.length) await backend.nodes.update(current["ref_id"], { set, remove });
+  return true;
+}
+
+const usageRefreshes = new WeakMap<GraphBackend, Slots<boolean>>();
+
+/** `refreshWorkflowUsage`, one at a time per workflow, so two runs ending
+ *  together never leave the earlier count on the node. Never throws: the
+ *  counts are derived, and a failure never costs a run its projection. */
+export function refreshWorkflowUsageOnce(backend: GraphBackend, workflow: string): Promise<boolean> {
+  return oneAtATime(usageRefreshes, backend, workflow, () => refreshWorkflowUsage(backend, workflow)).catch((e) => {
+    console.warn(`[projector] workflow ${workflow}: run counts not written: ${e instanceof Error ? e.message : String(e)}`);
+    return false;
+  });
+}
+
 /** The `StrutRun` the graph holds for a run, with its status; null when the
  *  run is not projected (yet). Never projects. */
 async function heldRun(backend: GraphBackend, workflow: string, runId: string): Promise<{ ref: string; status: unknown } | null> {
@@ -662,7 +787,7 @@ async function projectProposal(backend: GraphBackend, proposals: ProposalReader,
   return report;
 }
 
-const proposalProjections = new WeakMap<GraphBackend, Map<string, { tail: Promise<ProjectReport>; queued?: Promise<ProjectReport> }>>();
+const proposalProjections = new WeakMap<GraphBackend, Slots<ProjectReport>>();
 
 /**
  * `projectProposal`, one at a time per proposal: a call while it is being
@@ -672,21 +797,7 @@ const proposalProjections = new WeakMap<GraphBackend, Map<string, { tail: Promis
  * and the run's projection for each proposal the run made.
  */
 export function projectProposalOnce(backend: GraphBackend, proposals: ProposalReader, id: string): Promise<ProjectReport> {
-  let all = proposalProjections.get(backend);
-  if (!all) proposalProjections.set(backend, (all = new Map()));
-  const inFlight = all;
-  const slot = inFlight.get(id);
-  if (slot?.queued) return slot.queued;
-  const next: Promise<ProjectReport> = (slot?.tail ?? Promise.resolve())
-    .catch(() => undefined)
-    .then(() => {
-      if (entry.queued === next) delete entry.queued;
-      return projectProposal(backend, proposals, id);
-    });
-  const entry: { tail: Promise<ProjectReport>; queued?: Promise<ProjectReport> } = { tail: next, queued: next };
-  inFlight.set(id, entry);
-  void next.catch(() => undefined).finally(() => inFlight.get(id) === entry && inFlight.delete(id));
-  return next;
+  return oneAtATime(proposalProjections, backend, id, () => projectProposal(backend, proposals, id));
 }
 
 /** Project runs from a `RunStore` into the graph. */
@@ -715,6 +826,9 @@ export async function projectRuns(backend: GraphBackend, store: RunStore, opts: 
       }
       await projectRun(backend, store, workflow, runId, report, opts.jobs, opts.conversations, opts.proposals);
     }
+    // Once per workflow, settled runs or not: a graph projected before the
+    // counts were written gets them here.
+    if (!stepTypeOfRunKey(workflow) && (await refreshWorkflowUsageOnce(backend, workflow))) report.workflowUsage++;
   }
   return report;
 }
@@ -971,7 +1085,13 @@ export function projectRunOnce(
   const key = `${workflow}/${runId}`;
   const running = inFlight.get(key);
   if (running) return running;
-  const p = projectRun(backend, store, workflow, runId, emptyReport(), jobs, conversations, proposals).finally(() => inFlight.delete(key));
+  // Then the workflow's run counts, which now include this run.
+  const p = projectRun(backend, store, workflow, runId, emptyReport(), jobs, conversations, proposals)
+    .then(async (ref) => {
+      if (ref && !stepTypeOfRunKey(workflow)) await refreshWorkflowUsageOnce(backend, workflow);
+      return ref;
+    })
+    .finally(() => inFlight.delete(key));
   inFlight.set(key, p);
   return p;
 }
@@ -996,10 +1116,9 @@ export async function runRef(backend: GraphBackend, store: RunStore, workflow: s
  *  about to pull the graph from under it (a test's wipe). */
 export async function projectionsSettled(backend: GraphBackend): Promise<void> {
   const runs = projecting.get(backend);
-  const chats = chatProjections.get(backend);
-  const props = proposalProjections.get(backend);
-  while (runs?.size || chats?.size || props?.size)
-    await Promise.allSettled([...(runs?.values() ?? []), ...[...(chats?.values() ?? [])].map((c) => c.tail), ...[...(props?.values() ?? [])].map((c) => c.tail)]);
+  const queues = [chatProjections, proposalProjections, usageRefreshes].map((q) => q.get(backend) as Slots<unknown> | undefined);
+  while (runs?.size || queues.some((q) => q?.size))
+    await Promise.allSettled([...(runs?.values() ?? []), ...queues.flatMap((q) => [...(q?.values() ?? [])].map((c) => c.tail))]);
 }
 
 /** Resolves once the projections in flight of these runs have — a chat
@@ -1078,7 +1197,7 @@ export async function projectChat(backend: GraphBackend, chatStore: ChatStore, c
   return report;
 }
 
-const chatProjections = new WeakMap<GraphBackend, Map<string, { tail: Promise<ProjectReport>; queued?: Promise<ProjectReport> }>>();
+const chatProjections = new WeakMap<GraphBackend, Slots<ProjectReport>>();
 
 /**
  * `projectChat`, one at a time per chat: a call while the chat is being
@@ -1087,21 +1206,7 @@ const chatProjections = new WeakMap<GraphBackend, Map<string, { tail: Promise<Pr
  * createStrut calls at the end of every chat turn.
  */
 export function projectChatOnce(backend: GraphBackend, chatStore: ChatStore, chatId: string): Promise<ProjectReport> {
-  let chats = chatProjections.get(backend);
-  if (!chats) chatProjections.set(backend, (chats = new Map()));
-  const inFlight = chats;
-  const slot = inFlight.get(chatId);
-  if (slot?.queued) return slot.queued;
-  const next: Promise<ProjectReport> = (slot?.tail ?? Promise.resolve())
-    .catch(() => undefined)
-    .then(() => {
-      if (entry.queued === next) delete entry.queued;
-      return projectChat(backend, chatStore, chatId);
-    });
-  const entry: { tail: Promise<ProjectReport>; queued?: Promise<ProjectReport> } = { tail: next, queued: next };
-  inFlight.set(chatId, entry);
-  void next.catch(() => undefined).finally(() => inFlight.get(chatId) === entry && inFlight.delete(chatId));
-  return next;
+  return oneAtATime(chatProjections, backend, chatId, () => projectChat(backend, chatStore, chatId));
 }
 
 async function writeChat(backend: GraphBackend, chatStore: ChatStore, meta: ChatMeta, report: ProjectReport): Promise<void> {
@@ -1196,5 +1301,6 @@ export async function projectAll(
     skipped: a.skipped + b.skipped,
     jobs: a.jobs + b.jobs,
     proposals: a.proposals + b.proposals,
+    workflowUsage: a.workflowUsage + b.workflowUsage,
   };
 }

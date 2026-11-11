@@ -14,7 +14,10 @@
 // with (`?input=`) to `ui/notifications/tool-input`. For a VISITOR's page
 // (the public view) the relay also names the visit and PAYS for a priced
 // launch (plans/paid-runs.md §10, ./visitor-pay): the one call it does not
-// pass through as it is.
+// pass through as it is. A visitor's page of ANOTHER strut server (`from`,
+// ./remote-app, specs/API.md §17.9) is the same with every request sent to
+// that server, its purse kept apart under that server's base, and its links
+// read against that server.
 import { AppBridge, PostMessageTransport } from "@modelcontextprotocol/ext-apps/app-bridge";
 import type { McpUiHostContext, McpUiTheme } from "@modelcontextprotocol/ext-apps/app-bridge";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
@@ -22,15 +25,19 @@ import {
   WALLET_CAPABILITY, nativeWalletNotifications, nativeWalletOf, probeNativeWallet, relayNativeWallet,
   type NativeWalletApp, type RelayBridge,
 } from "@strut/kit/wallet";
+import { checkChallenge } from "./challenge";
+import { createHostWalletProbe, walletAsk, type WalletAsk } from "./native-pay";
+import { remoteAppLink, remoteHere } from "./remote-app";
+import { storePurse } from "./store-purse";
 import { CHANNELS_CAPABILITY, relayChannels } from "@strut/kit/channels";
 import { VISITOR_CAPABILITY, VISITOR_PASS_THROUGH, VISITOR_SIGN_IN_METHOD, VISITOR_SIGN_OUT_METHOD } from "@strut/kit/visitor";
 import { API_BASE, apiHeaders, channelSocketUrl, channelTicket, claimPublicCredit, type BrandStyles } from "./api";
 import { signOutVisitor, visitorAuth, visitorChannelTicket, visitorInfo, type SignInMethod, type VisitorSession } from "./visitor-signin";
 import { strutLink } from "./app-links";
-import { mcpPermissions } from "./frame-permissions";
+import { mcpPermissions, strangerMcpPermissions } from "./frame-permissions";
 import {
   callPaying, createClaimKeeper, loadPurse, payInTurn, savePurse, visitorHeaders,
-  type CallParams, type CallResult, type ClaimEnd, type PaymentRequired, type PayOutcome,
+  type CallParams, type CallResult, type ClaimEnd, type ClaimKeeper, type PaymentRequired, type PayOutcome, type VisitorPurse,
 } from "./visitor-pay";
 
 // The pure parts — where a link leads, what a message becomes — are
@@ -48,15 +55,20 @@ export interface AppHostHandlers {
   onNavigate?: (params: Record<string, string>) => boolean | void;
   /** The page's `ui/notifications/initialized`: it has started. */
   onInitialized?: () => void;
-  /** A VISITOR's priced launch (plans/paid-runs.md §10): show the invoice
-   *  until `settled` says how it ended — the host keeps claiming it either
-   *  way — and answer the credential (`<macaroon>:<preimage>`), `again` for
-   *  a new invoice, or null when the visitor cancels. Absent, the page's
-   *  launch answers that the run was not paid for. */
-  onPayment?: (p: PaymentRequired, workflow: string, settled: Promise<ClaimEnd>) => Promise<PayOutcome>;
+  /** A VISITOR's priced launch (plans/paid-runs.md §10), its challenge
+   *  checked (./challenge): show the invoice until `settled` says how it
+   *  ended — the host keeps claiming it either way — and answer the
+   *  credential (`<macaroon>:<preimage>`), `again` for a new invoice, or null
+   *  when the visitor cancels. `wallet`, when this page is a native host's
+   *  main frame (Peel): ask its wallet first (./native-pay), the QR code
+   *  being what is left when it does not pay. Absent, the page's launch
+   *  answers that the run was not paid for. */
+  onPayment?: (p: PaymentRequired, workflow: string, settled: Promise<ClaimEnd>, wallet?: WalletAsk) => Promise<PayOutcome>;
   /** A VISITOR's page asks to sign the visitor in (plans/app-repos.md §5):
    *  sign them in by one of `methods` (the sheet), answering the session,
-   *  or null when they closed it. Absent, no sign-in is offered. */
+   *  or null when they closed it. Absent, no sign-in is offered. A page of
+   *  ANOTHER server (`from`) is never offered it: the session is this
+   *  server's. */
   onSignIn?: (methods: SignInMethod[]) => Promise<VisitorSession | null>;
 }
 
@@ -73,6 +85,14 @@ export interface AppHostOptions {
   /** A VISITOR's page (the public view, plans/public-surface.md §5): the
    *  relay calls `/public/mcp` with no credential at all. */
   visitor?: boolean;
+  /** A visitor's page of ANOTHER strut server (./remote-app): its base URL.
+   *  The relay calls `<from>/public/mcp`, its credit is kept under that
+   *  server, its links are read against it, and the frame is a stranger's
+   *  (no microphone, nothing its version declares). */
+  from?: string;
+  /** A visitor's app as the server serves it: what a native wallet's sheet
+   *  names when it pays for the page's credit. */
+  visitorApp?: { name: string; version: string; title: string };
   /** The app as a native host's wallet names it — its identity, title and
    *  `wallet:` request (specs/WALLET.md §1.1) — for an app that requests a
    *  wallet. When this page is a native host's main frame (Peel's web view),
@@ -131,6 +151,31 @@ const claimKeeper = createClaimKeeper({ purse: visitorPurse, claim: claimPublicC
 claimKeeper.resume();
 /** One payment sheet at a time for that purse, whichever frame asked. */
 const visitorPayTurn = payInTurn(visitorPurse);
+
+/** What the page holds for one server's visitor pages: the purse, its
+ *  claims, its one-sheet-at-a-time turn. */
+interface VisitorWallet {
+  purse: VisitorPurse;
+  save: () => void;
+  keeper: ClaimKeeper;
+  payTurn: ReturnType<typeof payInTurn>;
+}
+const thisServer: VisitorWallet = { purse: visitorPurse, save: savePurseNow, keeper: claimKeeper, payTurn: visitorPayTurn };
+/** The native host's wallet for a visitor's credit (Peel's web view),
+ *  asked once per page what it takes: warmed as a visitor's relay connects,
+ *  so a priced launch never waits on the question (./native-pay). */
+const hostWallet = createHostWalletProbe();
+
+/** A link a page may open in a new tab: the web's own, and mail. Never a
+ *  `javascript:` URL, which a new window runs on THIS page's origin. */
+const OPENABLE = /^(https?|mailto):$/;
+
+/** This server's, or ANOTHER server's (`from`): one purse per server, so two
+ *  servers never see each other's visit or credit. Another server's is the
+ *  one the store's Run form keeps for it in this page (./store-purse). */
+function visitorWalletFor(from?: string): VisitorWallet {
+  return from ? storePurse(from) : thisServer;
+}
 /** While a paying launch waits, `notifications/progress` for the page's
  *  request this often: the frame's request times out after 60 s unless
  *  progress resets it (ext-apps' `callServerTool` asks for that). */
@@ -140,19 +185,26 @@ const PROGRESS_EVERY_MS = 15_000;
  *  (or a peer's, `/peers/<id>/mcp`), the UI's credential on every request.
  *  A visitor's goes to `/public/mcp` with no credential of the UI's, naming
  *  the visit and, once paid, presenting the credit credential. */
-export function createRelayClient(base = "", visitor = false): { client: Client; transport: StreamableHTTPClientTransport } {
+export function createRelayClient(base = "", visitor = false, from?: string): { client: Client; transport: StreamableHTTPClientTransport } {
   const client = new Client({ name: "strut-ui", version: "0" });
-  const transport = new StreamableHTTPClientTransport(new URL(`${API_BASE}${visitor ? "/public" : base}/mcp`, location.href), {
+  const remote = visitor && !!from;
+  const url = remote ? new URL(`${from}/public/mcp`) : new URL(`${API_BASE}${visitor ? "/public" : base}/mcp`, location.href);
+  // The visit and the credit are that server's alone: sent there and nowhere else.
+  const purse = visitor ? visitorWalletFor(remote ? from : undefined).purse : undefined;
+  const transport = new StreamableHTTPClientTransport(url, {
     requestInit: visitor ? { credentials: "omit" } : { headers: apiHeaders() },
-    ...(visitor
+    ...(purse
       ? {
           // The visit and its credit; and a signed-in visitor's session —
           // its cookie where the browser sends it, its token beside the
           // credit token (plans/app-repos.md §5.2).
           fetch: (url: string | URL, init?: RequestInit) => {
             const headers = new Headers(init?.headers);
-            for (const [k, v] of Object.entries({ ...visitorAuth(true), ...visitorHeaders(visitorPurse) })) headers.set(k, v);
-            return fetch(url, { ...init, headers, credentials: "same-origin" });
+            // A signed-in visitor's session is THIS server's: never sent to
+            // another server's page (`from`).
+            const auth = remote ? {} : visitorAuth(true);
+            for (const [k, v] of Object.entries({ ...auth, ...visitorHeaders(purse) })) headers.set(k, v);
+            return fetch(url, { ...init, headers, credentials: remote ? "omit" : "same-origin" });
           },
         }
       : {}),
@@ -186,14 +238,15 @@ export function hostContextFor(theme: McpUiTheme, brand?: BrandStyles | null): M
  * answers in the page are wired here.
  */
 export async function connectAppHost(opts: AppHostOptions): Promise<AppHostConnection> {
-  const { client, transport } = createRelayClient(opts.base, opts.visitor);
+  const from = opts.visitor ? opts.from : undefined;
+  const { client, transport } = createRelayClient(opts.base, opts.visitor, from);
   await client.connect(transport);
   // A native host's wallet (Peel's Sphinx account), asked what it offers
   // this app before the bridge exists: the offer rides in ui/initialize.
   const native = opts.wallet ? nativeWalletOf(window) : undefined;
   const capability = native && opts.wallet ? await probeNativeWallet(native, opts.wallet) : undefined;
   // A visitor's page: who is signed in, and how one signs in here.
-  const signIn = opts.visitor && opts.handlers.onSignIn ? await visitorInfo().catch(() => null) : null;
+  const signIn = opts.visitor && !from && opts.handlers.onSignIn ? await visitorInfo().catch(() => null) : null;
   const visitorCap = signIn && (signIn.methods.length || signIn.actor) ? { v: 1 as const, methods: signIn.methods, ...(signIn.actor ? { actor: signIn.actor } : {}) } : undefined;
   const bridge = new AppBridge(
     client,
@@ -201,7 +254,7 @@ export async function connectAppHost(opts: AppHostOptions): Promise<AppHostConne
     {
       serverTools: {},
       openLinks: {},
-      sandbox: { permissions: mcpPermissions(opts.permissions) },
+      sandbox: { permissions: from ? strangerMcpPermissions() : mcpPermissions(opts.permissions) },
       ...(opts.handlers.onMessage ? { message: { text: {} } } : {}),
       ...(capability || (opts.channels && !opts.visitor) || visitorCap
         ? {
@@ -250,11 +303,22 @@ export async function connectAppHost(opts: AppHostOptions): Promise<AppHostConne
     if (text) await opts.handlers.onMessage?.(text);
     return {};
   };
+  // A remote page's links are its own server's: `?app=<other>` is an app
+  // there, never one of this strut's (./remote-app `remoteHere`).
+  const here = from ? remoteHere(from) : opts.here ?? { origin: location.origin, pathname: location.pathname };
   bridge.onopenlink = async ({ url }) => {
-    const params = strutLink(url, opts.here ?? { origin: location.origin, pathname: location.pathname });
-    if (!params || !opts.handlers.onNavigate || opts.handlers.onNavigate(params) === false) {
-      window.open(url, "_blank", "noopener");
+    const params = strutLink(url, here);
+    if (params && opts.handlers.onNavigate && opts.handlers.onNavigate(params) !== false) return {};
+    // Another app on a remote page's server: hosted HERE too, never by that
+    // server's own UI (./remote-app `remoteAppLink`).
+    const hosted = from && params ? remoteAppLink(params, from, new URL(`${API_BASE}/`, location.href).href) : null;
+    let href: URL;
+    try {
+      href = new URL(hosted ?? url, `${here.origin}${here.pathname}`);
+    } catch {
+      return {};
     }
+    if (OPENABLE.test(href.protocol)) window.open(href.href, "_blank", "noopener");
     return {};
   };
   // `tool-input` goes after the page's `initialized`, as the spec orders it.
@@ -274,6 +338,10 @@ export async function connectAppHost(opts: AppHostOptions): Promise<AppHostConne
   // before the document loads.
   if (opts.visitor) {
     const pay = opts.handlers.onPayment;
+    const w = visitorWalletFor(from);
+    void hostWallet(window);
+    // The server the credit is bought on, as a native wallet's sheet names it.
+    const seller = from ?? new URL(`${API_BASE}/`, location.href).href.replace(/\/+$/, "");
     bridge.oncalltool = async (params, extra) => {
       // The page's request stays alive while the visitor pays: progress for
       // its token resets the frame's timeout.
@@ -287,19 +355,27 @@ export async function connectAppHost(opts: AppHostOptions): Promise<AppHostConne
       try {
         return (await callPaying(params as CallParams, {
           call: async (p) => (await client.request({ method: "tools/call", params: p }, { signal: extra.mcpReq.signal })) as CallResult,
-          purse: visitorPurse,
-          save: savePurseNow,
+          purse: w.purse,
+          save: w.save,
           pay: (p, workflow) =>
-            visitorPayTurn((q, w) => {
-              if (!pay) return Promise.resolve(null);
-              // Claimed from now until it settles or ends, sheet or no sheet;
-              // a top-up replaces the credential it was minted to carry from.
-              const settled = claimKeeper.watch({
+            w.payTurn(async (q, wf): Promise<PayOutcome> => {
+              // Junk — an invoice the macaroon does not name, a price that
+              // differs from the invoice's — is never shown nor paid.
+              const check = checkChallenge(q);
+              if (!check.ok) return { error: check.error };
+              if (!pay) return null;
+              // Claimed from now until it settles or ends, sheet or no sheet,
+              // wallet or no wallet; a top-up replaces the credential it was
+              // minted to carry from.
+              // Until the invoice's own end as decoded, never the seller's word.
+              const settled = w.keeper.watch({
                 macaroon: q.macaroon,
-                ...(q.expires ? { expires: q.expires } : {}),
-                ...(q.carries && visitorPurse.credential ? { carriesFrom: visitorPurse.credential } : {}),
+                expires: new Date(check.checked.expiresAt * 1000).toISOString(),
+                ...(q.carries && w.purse.credential ? { carriesFrom: w.purse.credential } : {}),
               });
-              return pay(q, w, settled);
+              // Peel's web view: its wallet pays with one tap, before any QR.
+              const wallet = walletAsk({ wallet: await hostWallet(window), p: q, checked: check.checked, seller, app: opts.visitorApp, workflow: wf });
+              return pay(q, wf, settled, wallet);
             }, p, workflow),
         })) as Awaited<ReturnType<NonNullable<typeof bridge.oncalltool>>>;
       } finally {

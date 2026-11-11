@@ -60,6 +60,30 @@ export async function slotEdges(tx: GraphTx, edge: string, source: string, ended
   return rows.map(temporalEdge);
 }
 
+/** The temporal edge `ref_id`, of any temporal type, with its type and
+ *  subject; null when there is none (or it is deleted). */
+export async function temporalEdgeById(tx: GraphTx, ref_id: string): Promise<(TemporalEdge & { edge: string; source: string; superseded_by: string | null }) | null> {
+  for (const edge of await temporalEdgeTypes((c, p) => tx.run(c, p))) {
+    const [r] = await tx.run(
+      `MATCH (s:Node)-[r:${q(edge)} {ref_id: $id}]->(t:Node) WHERE r.deleted_at IS NULL
+       RETURN r.ref_id AS ref_id, s.ref_id AS source, t.ref_id AS target, r.text AS text, r.sources AS sources, r.valid_at AS valid_at, r.invalid_at AS invalid_at,
+              r.expired_at AS expired_at, r.last_confirmed_at AS last_confirmed_at, r.superseded_by AS superseded_by LIMIT 1`,
+      { id: ref_id },
+    );
+    if (r) return { ...temporalEdge(r), edge, source: String(r["source"]), superseded_by: typeof r["superseded_by"] === "string" ? r["superseded_by"] : null };
+  }
+  return null;
+}
+
+/** The current temporal edges from `source` to `target`, of every temporal type. */
+export async function pairEdges(tx: GraphTx, source: string, target: string): Promise<Array<TemporalEdge & { edge: string }>> {
+  const out: Array<TemporalEdge & { edge: string }> = [];
+  for (const edge of await temporalEdgeTypes((c, p) => tx.run(c, p))) {
+    for (const e of await slotEdges(tx, edge, source)) if (e.target === target) out.push({ ...e, edge });
+  }
+  return out;
+}
+
 /** A new temporal edge; a null or empty value is left out (the column stays
  *  NULL). */
 export async function createTemporalEdge(tx: GraphTx, edge: string, src: string, tgt: string, props: Record<string, unknown>): Promise<void> {

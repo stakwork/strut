@@ -6,10 +6,10 @@
  * comes from the ledger's rollups (`daily`, and the payment and withdrawal
  * entries through their partial indexes), never from scanning entries:
  * earned, cost, margin, calls and failed by item, day, package or in total;
- * outstanding credit; received and withdrawn by day. With `wallet`, the
- * wallet's balance in sats and at the rate of the moment, beside what the
- * books say it should hold: everything received, less everything withdrawn
- * and the fees those paid.
+ * outstanding credit; received, added and withdrawn by day. With `wallet`,
+ * the wallet's balance in sats and at the rate of the moment, beside what the
+ * books say it should hold: everything received and added by hand, less
+ * everything withdrawn and the fees those paid.
  *
  * A package's number is this server's. For a package PUBLISHED here, its
  * items carry their bare local names (plans/packages-ux.md), so it is the sum
@@ -69,9 +69,9 @@ export interface WalletView extends WalletInfo {
   rate?: number;
   /** Why the balance could not be read. */
   error?: string;
-  /** What the books say the wallet should hold: received, less every send
-   *  (withdrawals and purchases) and its fees, less what is still out
-   *  (`pendingMsat`), all time. More in the wallet is money that came some
+  /** What the books say the wallet should hold: received and added by hand
+   *  (deposits), less every send (withdrawals and purchases) and its fees,
+   *  less what is still out (`pendingMsat`), all time. More in the wallet is money that came some
    *  other way (or a paid invoice whose token was never used); less is money
    *  that left it some other way. */
   expectedMsat: number;
@@ -95,6 +95,9 @@ export interface EarningsView {
   outstanding: { tokens: number; usd: number; held: number };
   /** Sats paid in, in the range, with the dollars they were credited as. */
   received: { count: number; msat: number; usd: number; days: Array<{ day: string; count: number; msat: number; usd: number }> };
+  /** Sats an admin added to the wallet by hand (Add sats), in the range:
+   *  never credit, never earnings. */
+  deposited: { count: number; msat: number; days: Array<{ day: string; count: number; msat: number }> };
   /** Sats a person withdrew through strut, in the range. */
   withdrawn: { count: number; msat: number; feeMsat: number; days: Array<{ day: string; count: number; msat: number; feeMsat: number }> };
   /** Sats this strut paid other struts for credit (item 9), in the range. */
@@ -119,6 +122,9 @@ export interface EarningsDeps {
   lightning?: () => LightningCapability | null;
   /** Dollars per bitcoin now. */
   usdPerBtc?: () => Promise<number>;
+  /** Records the deposits that settled since they were last read, before
+   *  the books are read beside the wallet (`deposits.check()`). */
+  settleDeposits?: () => Promise<unknown>;
   /** How long the balance is waited on. */
   balanceMs?: number;
 }
@@ -203,7 +209,8 @@ export async function readEarnings(deps: EarningsDeps, q: EarningsQuery = {}): P
   const subjects = published?.subjects;
   const scoped = !!(prefix || subjects);
   const filter = { ...(prefix ? { prefix } : {}), ...(subjects ? { subjects } : {}) };
-  const [rows, total, outstanding, received, sends, runnable, pending] = await Promise.all([
+  if (q.wallet && deps.settleDeposits) await deps.settleDeposits().catch(() => {});
+  const [rows, total, outstanding, received, sends, runnable, pending, deposited] = await Promise.all([
     ledger ? ledger.earnings({ by, ...range, ...filter }) : Promise.resolve([]),
     ledger ? ledger.earnings({ by: "total", ...range, ...filter }) : Promise.resolve([]),
     ledger ? ledger.outstanding() : Promise.resolve({ tokens: 0, usd: 0, held: 0 }),
@@ -211,6 +218,7 @@ export async function readEarnings(deps: EarningsDeps, q: EarningsQuery = {}): P
     ledger && !scoped ? ledger.withdrawn(range) : Promise.resolve([]),
     deps.runnable ? deps.runnable().catch(() => []) : Promise.resolve([]),
     deps.pending && !scoped ? deps.pending() : Promise.resolve([]),
+    ledger && !scoped ? ledger.deposited(range) : Promise.resolve([]),
   ]);
   const withdrawn = sends.filter((r) => r.purpose === "withdrawal");
   const purchased = sends.filter((r) => r.purpose === "purchase");
@@ -244,6 +252,11 @@ export async function readEarnings(deps: EarningsDeps, q: EarningsQuery = {}): P
       usd: usd(received.reduce((n, r) => n + r.usd, 0)),
       days: received.map((r) => ({ day: r.day, count: r.count, msat: r.msat, usd: usd(r.usd) })),
     },
+    deposited: {
+      count: deposited.reduce((n, r) => n + r.count, 0),
+      msat: deposited.reduce((n, r) => n + r.msat, 0),
+      days: deposited,
+    },
     withdrawn: {
       count: withdrawn.reduce((n, r) => n + r.count, 0),
       msat: withdrawn.reduce((n, r) => n + r.msat, 0),
@@ -259,18 +272,20 @@ export async function readEarnings(deps: EarningsDeps, q: EarningsQuery = {}): P
   };
   if (!q.wallet) return out;
 
-  // The wallet, beside the books: everything received less every send and
-  // its fees, and less what is still out, all time.
-  const [info, lifeIn, lifeOut, rate, balance, allPending] = await Promise.all([
+  // The wallet, beside the books: everything received and added by hand,
+  // less every send and its fees, and less what is still out, all time.
+  const [info, lifeIn, lifeAdded, lifeOut, rate, balance, allPending] = await Promise.all([
     deps.walletInfo ? deps.walletInfo() : Promise.resolve({ provider: null, receive: false, pay: false } as WalletInfo),
     ledger ? ledger.received() : Promise.resolve([]),
+    ledger ? ledger.deposited() : Promise.resolve([]),
     ledger ? ledger.withdrawn() : Promise.resolve([]),
     deps.usdPerBtc ? deps.usdPerBtc().catch(() => undefined) : Promise.resolve(undefined),
     readBalance(deps.lightning?.(), deps.balanceMs ?? 5_000),
     scoped && deps.pending ? deps.pending() : Promise.resolve(pending),
   ]);
   const pendingMsat = allPending.reduce((n, p) => n + p.msat, 0);
-  const expectedMsat = lifeIn.reduce((n, r) => n + r.msat, 0) - lifeOut.reduce((n, r) => n + r.msat + r.feeMsat, 0) - pendingMsat;
+  const expectedMsat =
+    lifeIn.reduce((n, r) => n + r.msat, 0) + lifeAdded.reduce((n, r) => n + r.msat, 0) - lifeOut.reduce((n, r) => n + r.msat + r.feeMsat, 0) - pendingMsat;
   const wallet: WalletView = { ...info, expectedMsat, pendingMsat, ...(rate ? { rate } : {}) };
   if ("msat" in balance) {
     wallet.balance = { msat: balance.msat, sats: Math.floor(balance.msat / 1000), ...(rate ? { usd: Math.round((balance.msat / 1000 / 100_000_000) * rate * 100) / 100 } : {}) };

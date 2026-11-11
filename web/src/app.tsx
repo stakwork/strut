@@ -115,7 +115,9 @@ export function App({ session = null }: { session?: PageSession | null } = {}) {
   //    run behind it. Beside `?app=`: the app's page, here or a peer's
   //    (plans/apps.md §7.4); `&theme=light` hands it a light theme
   //    (`soloTheme`); `&public=1` makes it a VISITOR's page, the app as this
-  //    server's public view serves it, with no credential (SoloApp). Beside
+  //    server's public view serves it, with no credential (SoloApp), and
+  //    `&from=<base>` ANOTHER strut server's public app with this UI as its
+  //    host (./remote-app, solo implied). Beside
   //    `?artifact=<path>`: one served file — a job's file or a run's
   //    artifact, here or a peer's through the read-through — for a
   //    deliverable. Only a path of that shape (`isServedFilePath`).
@@ -132,7 +134,8 @@ export function App({ session = null }: { session?: PageSession | null } = {}) {
   const [page] = useState(() => pickPage(location.search, session, servedBox()));
   if (page.kind === "store") return <Store />;
   if (page.kind === "unserved") return <Unserved />;
-  if (page.kind === "app") return <SoloApp app={page.app} input={page.input} visitor={page.visitor} {...(page.theme ? { theme: page.theme } : {})} />;
+  if (page.kind === "app") return <SoloApp app={page.app} input={page.input} visitor={page.visitor} {...(page.from ? { from: page.from } : {})} {...(page.theme ? { theme: page.theme } : {})} />;
+  if (page.kind === "refused") return <Refused message={page.message} />;
   if (page.kind === "artifact") {
     return isServedFilePath(page.artifact)
       ? <ArtifactViewer path={page.artifact} solo />
@@ -146,6 +149,16 @@ export function App({ session = null }: { session?: PageSession | null } = {}) {
 function servedBox(): ServedBox | null {
   const app = document.querySelector('meta[name="strut-serve"]')?.getAttribute("content");
   return app == null ? null : { app, key: !!api.getApiKey() };
+}
+
+/** A link this UI does not open (./page `refused`): why, alone. */
+function Refused(props: { message: string }) {
+  useEffect(reportReady, []);
+  return (
+    <div class="app-solo">
+      <div class="empty">{props.message}</div>
+    </div>
+  );
 }
 
 /** A served box before its first deploy. */

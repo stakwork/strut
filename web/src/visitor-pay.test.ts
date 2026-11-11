@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   CLAIM_GRACE_MS, VISIT_HEADER, callPaying, cancelledResult, claimAnswerOf, createClaimKeeper, creditLine, creditSettled, formatSats, keptCreditResult, loadPurse, newPurse, payInTurn, savePurse, formatUsd, invoiceQrText, launchOf, newVisit, paymentRequiredIn,
-  refusesCredential, secondsLeft, visitorHeaders, waitForClaim, type CallParams, type CallResult, type ClaimAnswer, type PaymentRequired, type VisitorPurse,
+  priceView, refusesCredential, secondsLeft, visitorHeaders, waitForClaim, type CallParams, type CallResult, type ClaimAnswer, type PaymentRequired, type VisitorPurse,
 } from "./visitor-pay";
 
 const launch = (workflow = "priced"): CallParams => ({ name: "step_run", arguments: { type: "run/launch", config: { workflow, input: { text: "x" } }, app: "app:shop@v1.t" } });
@@ -184,12 +184,36 @@ describe("a visitor's page, paid for by its host (plans/paid-runs.md §10)", () 
     assert.equal(sheets, 1, "the visitor is asked once");
   });
 
-  it("gives up after a few rounds rather than asking forever", async () => {
+  it("pays at most once per call: a server that asks again after a payment is not paid again", async () => {
     const s = server({ accepts: new Set() });
     let asked = 0;
     const out = await callPaying(launch(), { call: s.call, purse: s.purse, pay: async (p) => (asked++, `${p.macaroon}:never`) });
+    assert.equal(asked, 1);
+    assert.equal(out.isError, true);
+    assert.match(out.content![0]!.text!, /asked to be paid again after this payment, so nothing more was paid — your payment is kept as credit/);
+    assert.equal(paymentRequiredIn(out), undefined, "the page never sees a challenge to pay");
+  });
+
+  it("gives up after a few rounds of answers that ask for no payment rather than asking forever", async () => {
+    const s = server({ accepts: new Set() });
+    let asked = 0;
+    const out = await callPaying(launch(), { call: s.call, purse: s.purse, pay: async () => (asked++, "again") });
     assert.ok(paymentRequiredIn(out));
     assert.equal(asked, 6);
+  });
+
+  it("what a payment costs on the sheet: the invoice's sats, dollars only at a rate this host trusts, the server's figure only as credit", () => {
+    assert.deepEqual(priceView({ sats: 500, usd: 0.5 }, null, "acme.example"), { sats: "500 sats", credit: "Buys $0.50 of credit on acme.example, by the server's own figure." });
+    assert.deepEqual(priceView({ sats: 500, usd: 0.5 }, { usdPerBtc: 100_000, source: "mempool.space" }), {
+      sats: "500 sats", usd: "≈ $0.50 at mempool.space", credit: "Buys $0.50 of credit, by the server's own figure.",
+    });
+    // A seller that makes a large invoice look cheap: 200 000 sats "for $0.02".
+    const v = priceView({ sats: 200_000, usd: 0.02 }, { usdPerBtc: 100_000, source: "mempool.space" }, "acme.example");
+    assert.equal(v.sats, "200,000 sats");
+    assert.equal(v.usd, "≈ $200.00 at mempool.space");
+    assert.equal(v.warning, "The server credits $0.02 for a payment worth $200.00 at mempool.space's rate.");
+    // More credit than it is worth is no risk to the buyer: no warning.
+    assert.equal(priceView({ sats: 500, usd: 0.6 }, { usdPerBtc: 100_000, source: "m" }).warning, undefined);
   });
 
   it("a spare credential — an invoice paid after its sheet closed — is spent before the visitor is asked again", async () => {

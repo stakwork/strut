@@ -247,6 +247,19 @@ A launch, in order. Each step answers before the next costs anything:
 The charge is made when the run ends (§5). `key` makes a retry safe: the
 same token and `key` return the same run and set nothing more aside.
 
+**The visitor address.** Every per-address budget here (the reads, the
+launches, the tool calls, the invoices and claims of §4.1) counts under
+`visitorAddress` (`src/visitor-address.ts`): the socket's peer, unless that
+peer is a trusted proxy. Then `x-forwarded-for` is walked from the right,
+trusted hops skipped, and the first untrusted hop is the visitor (every hop
+trusted: the leftmost). A client that reaches strut with no trusted proxy
+in between cannot name its own address. Trusted by default: loopback,
+link-local and private addresses, where a proxy on the same box or
+container network connects from. `STRUT_TRUSTED_PROXIES` (IPs and CIDRs,
+comma-separated, or `none`) replaces that set, and a server that untrusted
+clients reach from a private address should set it. The address is a
+budget, never auth: a priced item still needs paid credit.
+
 **The run token.** The 202's `token` is an HMAC over `public-run:<workflow>/<runId>`,
 signed like `publicAppIdentity`, so it opens that run's `/public` reads
 and no private route. Free and paid runs alike get one. The credit token

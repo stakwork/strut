@@ -4,7 +4,7 @@ import { errorMessage } from "../helpers";
 import { ago } from "./ClaimsPanel";
 import { ConfirmButton } from "./ConfirmButton";
 import { CopyButton } from "./CopyButton";
-import { WAIT_WORDS } from "./PackagesPanel";
+import { WAIT_WORDS, viewWords } from "./ListingLines";
 
 // ── The Index tab (plans/index-listing.md §3) ──────────────────────────────
 //
@@ -96,7 +96,7 @@ export function IndexPanel(props: { onChanged?: (waiting: number) => void }) {
               <span title={new Date(p.receivedAt).toLocaleString()}>asked {ago(secs(p.receivedAt))}</span>
             </div>
             {p.description && <div class="auto-hint">{p.description}</div>}
-            <div class="auto-meta">Its catalog holds {p.catalog.packages.join(", ")}</div>
+            <div class="auto-meta">{p.catalog.packages.length ? `Its catalog holds ${p.catalog.packages.join(", ")}` : p.view ? `No package yet: its public view shows ${viewWords(p.view)}` : "Its catalog holds no package"}</div>
             {p.reason === "takeover" && p.heldBy && <div class="auto-error">The name is held by {short(p.heldBy)}. Approving gives it to the new key: new installs follow it, copies already installed keep the old one.</div>}
             {p.reason === "move" && p.from && <div class="auto-hint">Listed at {p.from} now; approving moves it to {p.host}.</div>}
             {p.reason === "live row" && (

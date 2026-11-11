@@ -523,6 +523,44 @@ carries the ledger as `claims`; `GET /jobs/:id/claims` serves it alone:
   refutation on the newest turn wins over every instrument until the turn
   moves.
 
+### 5.6 A Concept's claims
+
+A claim may be about a **Concept** — `{ kind: "concept", name: <the
+Concept's exact name> }` on every claim route and tool — and then states
+what the work of a run that opened that page must look like ("a plan has a
+rollout section"). Every workflow run that opened the page is checked
+against it.
+
+- **Opened** means its page was read with `graph/graph-get`: a workflow's
+  own step (`context/concept` is one) or an agent's tool call. A run that
+  wrote the Concept, listed it, or never read it is no observation of it.
+- **Its version** is a hash of what that read returned: the page's name,
+  description and docs, and the name and description of each Concept under
+  it. The run's log records it (`step.end.nodes[].version`), evidence is
+  about that version, and the claim reads `stale` once the page, or the
+  line a child shows in it, changes.
+- **Its check** reads the run as a workflow's check does (`{{ input.input }}`,
+  `{{ input.output }}` or `{{ input.error }}`, `{{ input.params }}`,
+  `{{ input.runId }}`), and beside it `{{ input.concept }}`,
+  `{{ input.concepts }}` (every page the run opened, by name),
+  `{{ input.dir }}` (the run's files: its job's directory, else its
+  artifacts) and `{{ input.job }}`. A check that does not apply to the run
+  returns no `supports`, and nothing is recorded.
+- **A page that was not opened** is caught one level up: put the claim on
+  the page that lists it, with a check over `{{ input.concepts }}`.
+
+`GET /claims?kind=concept&name=Planning` lists them; `GET
+/workflows/:name/evidence` carries a run's, with `subject: { kind:
+"concept", name, version }` and `run.path: "concept:<name>"`. `when:
+publish` is refused.
+
+Who may write one is decided by the door, not by the author. The routes
+in this section may. The doors of ordinary work may not: the builder's
+claim tools and the `meta/*` claim steps do not take the kind, and are
+refused on every write to such a claim (the claim, its checks, attaching
+and detaching). Runs launched from those doors are still checked against
+these claims.
+
 ## 6. Control a run
 
 ### 6.1 Live: cancel, pause, resume
@@ -969,7 +1007,7 @@ any MCP client:
 | ---- | -------- | --- |
 | `POST /mcp` | **assistant** (`src/ai/assistant-tools.ts`): nine tools — talk to the workflow builder, read its chats, list workflows and runs, read a run, run a workflow, search the package store and read a package's page | an agent with its own connectors that wants workflows built, run and shared, and should not learn strut's YAML; the default |
 | `POST /mcp/builder` | **builder**: the SAME tools the builder chat's model gets — `list_steps` … `create_workflow` … `run_workflow` … `get_run`, the `app_*` steps, the `package_*` reads and the text editor, with their descriptions, input schemas and capped results (`buildTools`, nothing reimplemented) | an agent that authors workflows itself |
-| `POST /index/mcp` | **store** (`src/packages/index-tools.ts`; §16): three READ tools over a package INDEX's derived pages — `search_packages`, `get_package`, `get_concept` — nothing that installs | any agent, with NO credential: a strut with the index role is the store, and this is its face for an agent as `?store=1` is for a person (`claude mcp add --transport http strut-store https://<index>/index/mcp`). An agent that fetches URLs instead reads `GET /llms.txt` (§16): the same store as one markdown page |
+| `POST /index/mcp` | **store** (`src/packages/index-tools.ts`; §16): four READ tools over a package INDEX's derived pages — `search_packages`, `get_package`, `get_concept`, and `search_live` (what the listed servers show live and what anyone may run there) — nothing that installs or runs | any agent, with NO credential: a strut with the index role is the store, and this is its face for an agent as `?store=1` is for a person (`claude mcp add --transport http strut-store https://<index>/index/mcp`). An agent that fetches URLs instead reads `GET /llms.txt` (§16): the same store as one markdown page |
 | `POST /public/mcp` | **buyer** (`src/public-agents.ts`; §17.8): `list_public`, `run_workflow`, `call_tool`, `get_run`, `get_credit` — what anyone may run here, free or paid in sats over L402 — beside a public app page's `step_run` (§17.3) | any agent, with NO account: `claude mcp add --transport http <name> https://<strut>/public/mcp`. `GET /llms.txt` says the same as one page (§17.8) |
 
 Both doors also list **`step_run`**, the APP door (§14.1): an app-only tool
@@ -2340,10 +2378,10 @@ installed it, it can be a mirror. `file:`, `pk:` and `git+` refs resolve
 | PUT    | `/publisher` | `{ name }` → `PublisherInfo`: the publisher's NAME, `[a-z][a-z0-9-]*` — the first segment of every package published here (`plans/packages-ux.md`). The web UI composes package names from it, so nobody types the prefix. Mints the key first when there is none (409 `publisher_unsafe_key` as above); 400 `publisher_name` for a name that is not one |
 | POST   | `/packages/publish` | `BuildRequest` + `channel?` + `public?` (with a channel: mark it public first) → 201 `{ package, version, digest, files, requires, warnings, channel?, catalog: { key, seq, digest } }`: build, then the release added to the catalog (and the channel moved to it). Mints the key on first use. With a publisher `name` set, a `package` whose first segment is another is 400 `package_build_refused` before any build. Full scope, one at a time |
 | GET    | `/packages/catalog[?digest=sha256:<hex>]` | The FLEET catalog CARD as served (`application/json`, its RFC 8785 bytes; `ETag: "<catalog digest>"`, `If-None-Match` → 304): the current one (`cache-control: private, no-cache`), or an earlier one by digest (immutable). 404 before the first publish |
-| GET    | `/packages/catalog?public=1[&digest=]` | The PUBLIC catalog the same way, sealed by the public key: the public channels and every release one holds or has held. Open to anyone — no credential; 404 before the first **Make public** (or for a fleet catalog's digest) |
+| GET    | `/packages/catalog?public=1[&digest=]` | The PUBLIC catalog the same way, sealed by the public key: the public channels and every release one holds or has held — EMPTY (`packages: {}`) on a server whose public key was minted by a listing ask with nothing public yet (`plans/public-view-listing.md` §1). Open to anyone — no credential; 404 before there is a public key (or for a fleet catalog's digest) |
 | PUT    | `/packages/channels/:channel` | `{ package, digest, public? }` → `{ channel, package, digest, public, catalog }`: the channel moved to a release the catalog lists — a rollback is moving it back — or, with `digest: null`, the package taken out of it. `public: true` marks the channel public first (**Make public** is this on the channel `public`); `false` on a public channel is 409 `catalog_channel_public` — what was published stays published. 409 `catalog_private_requirement` when the release goes public but requires a package no public channel holds. 404 `catalog_no_release`; 400 `catalog_channel` for a name that is not `[a-z0-9][a-z0-9._-]*` |
-| GET    | `/publisher/listings` | `{ listings: ListingLine[] }` (`src/packages/publisher-listings.ts`; `plans/index-listing.md` §1): one line per index this strut FOLLOWS — `{ index, label?, indexKey, requests?, listed, row?, heldBy?, cardError?, asked? }`: `listed` is this strut's publisher name on that index's signed card with its PUBLIC key, read now; `heldBy` another key holding the name there; `requests` where an ask goes (absent when the card is a file no index strut serves); `asked` the last answer, kept in `<dataDir>/packages/listings.json` (`{ status: listed \| pending \| removed \| refused \| error, reason?, base?, description?, url?, live?, at }`) |
-| POST   | `/publisher/listings` | `{ index, base, description?, url?, live? }` → the index's answer + `record`: ask a followed index to LIST this strut's name, or change its row. Sealed by the PUBLIC key under `strut-listing\n` with the publisher's name as `prefix`, POSTed to the index strut beside the followed card (`…/index/catalog` → `…/index/requests`); the index key comes from the followed record. `base` is where this server is reached — an origin and at most one path segment (`https://<swarm>:3355/lab`); `live` also lists its public view (a live row at the base), `false` drops it. 200 `{ status: "listed" }`, 202 `{ status: "pending", reason }` (waiting for the index's operator); the index's 4xx passed on with its `error`, 502 when it cannot be reached. 409 `publisher_not_public` (no public key: **Make public** first), `publisher_no_name`, `listing_no_route`; 400 `listing_invalid`; 404 `package_index_unknown`. Full scope. After every change to the public catalog this strut also POSTs `{ key }` to `…/index/ping` on every index it asked and has not taken itself off |
+| GET    | `/publisher/listings` | `{ listings: ListingLine[] }` (`src/packages/publisher-listings.ts`; `plans/index-listing.md` §1): one line per index this strut FOLLOWS — `{ index, label?, indexKey, requests?, listed, row?, heldBy?, live?, cardError?, asked? }`: `listed` is this strut's publisher name on that index's signed card with its PUBLIC key, read now; `heldBy` another key holding the name there; `live` the card's live row under the name (`{ url, description? }`: the store shows this server's public view); `requests` where an ask goes (absent when the card is a file no index strut serves); `asked` the last answer, kept in `<dataDir>/packages/listings.json` (`{ status: listed \| pending \| removed \| refused \| error, reason?, base?, description?, url?, live?, at }`) |
+| POST   | `/publisher/listings` | `{ index, base, description?, url?, live? }` → the index's answer + `record`: ask a followed index to LIST this strut's name, or change its row. Sealed by the PUBLIC key under `strut-listing\n` with the publisher's name as `prefix`, POSTed to the index strut beside the followed card (`…/index/catalog` → `…/index/requests`); the index key comes from the followed record. `base` is where this server is reached — an origin and at most one path segment (`https://<swarm>:3355/lab`); `live` also lists its public view (a live row at the base), `false` drops it. A server with NO package public (`plans/public-view-listing.md`) asks with `live: true`: the ask mints the public key when there is none and seals an EMPTY public catalog with it, which `GET /packages/catalog?public=1` then serves — the index's proof that this base holds the key — and the index lists the name for the public view alone. 200 `{ status: "listed" }`, 202 `{ status: "pending", reason }` (waiting for the index's operator); the index's 4xx passed on with its `error`, 502 when it cannot be reached. 409 `listing_nothing_public` (no package under the name is public and `live` is not `true`: nothing is minted), `publisher_no_name`, `publisher_unsafe_key` (a file store with `STRUT_SECRET_KEY` unset mints no key), `listing_no_route`; 400 `listing_invalid`; 404 `package_index_unknown`. Full scope. After every change to the public catalog, and every save of the public view (`PUT /public-view`, a served box's deploy), this strut also POSTs `{ key }` to `…/index/ping` on every index it asked and has not taken itself off |
 | DELETE | `/publisher/listings/:index` | Take this strut's row — or its waiting request — off that index (a request with `remove: true`) → `{ status: "removed" }`; the index's 404 `listing_not_listed` passed on |
 | POST   | `/publisher/tokens` | `{ subscriber, days? }` → 201 `{ key, subscriber, token, exp }`: a READ TOKEN for a strut that subscribes to this one's catalog (default 60 days, at most 366). Full scope; the key is minted first when there is none |
 | GET    | `/packages/subscriptions` | `{ subscriptions: SubscriptionInfo[] }` (`src/packages/subscriptions.ts`): what this strut follows, what it accepted and applied, and each package it installed with the items edited here (`diverged`). Never a token |
@@ -2363,9 +2401,9 @@ installed it, it can be a mirror. `file:`, `pk:` and `git+` refs resolve
 | DELETE | `/index/live/:prefix` | Drop the live row and re-seal → `{ ok, prefix }`. 404 when there is none |
 | GET    | `/index/live?q=` | `{ items: [{ publisher, url, kind: app \| workflow \| step \| concept, name, title?, description?, version?, runs?, pages?, run?, definition? }] }` — what the live rows' public views show, as last read; the item itself is read from `<url>/public/…` (the store does, in the visitor's browser). `run` (`plans/paid-runs.md` §10): anyone may run it there — `{ base, markup, capUsd, reserve, results, recent? }` as the view's `runnable` listed it (§17.2), each field checked as a stranger's and left out when it is not one the index can show; never its input (read from the publisher). A runnable item whose definition is not public is an item of its own with `definition: false`. **Open to anyone** |
 | POST   | `/index/crawl` | `{ crawled: CrawlState[] }`: read every listed publisher's catalog now. Full scope |
-| POST   | `/index/requests` | **Index role only.** A publisher's LISTING REQUEST (`plans/index-listing.md`; `src/packages/listing.ts`, `src/packages/index-requests.ts`): the RFC 8785 bytes of `{ v: 1, index, prefix, key, base?, description?, url?, remove?, live?, seq, sig }`, sealed by `key` (the publisher's PUBLIC key) under `strut-listing\n` (`listing.test.ts` holds a test vector). Checked cheapest first, nothing fetched until the first five pass: one byte form, ≤ 8 KB, its shape (`base` https on a public name — no IP literal, no local name — an origin and at most one path segment, no query) — `index` this index's key — `seq` (microseconds) within 10 minutes of the index's clock and greater than the last from `key` — the seal — `prefix` not reserved (`strut`, `stakwork`, `sphinx`, `hive`, `stadeum`, `peel`, `jamie`, `index`, `official`, `admin`, + `STRUT_INDEX_RESERVED`) nor refused for this key in the last 30 days (a refusal is of what waited: it never stops a `remove`, nor the row's own key changing its row on the same host) — then `<base>/packages/catalog?public=1` (the ONE URL the index reads: a redirect is refused, never followed, and the body is read no further than 4 MB) is a catalog sealed by `key` listing a package under `prefix/`. Then: the row's own key on the same host, or a NEW name from a host in `STRUT_INDEX_AUTO_HOSTS` (`*`, `host[:port]`, `*.domain[:port]`) from a key and a host that hold no row → 200 `{ status: "listed", prefix, row, live? }`, the publisher read at once; `remove` by the row's key → 200 `{ status: "removed" }`; anything else → 202 `{ status: "pending", id, prefix, reason }`, `reason` one of `host`, `second name`, `same host`, `move` (the row's key, another host), `takeover` (another key holds the name), `live row` (the name is a live row the operator listed with no key). One request waits per (name, key); 200 at most, 3 per host; 30 days. `live: true` also writes a live row at the base, `false` removes it, absent leaves one alone. Errors: 400 `listing_invalid`, 403 `listing_reserved` / `listing_refused` (with the operator's reason), 404 `listing_not_listed`, 409 `listing_rollback`, 422 `listing_no_catalog`, 429 `listing_busy` (also 10 a minute per address), 503 `index_no_key` before the first row. **Open to anyone**: the request carries its own proof |
+| POST   | `/index/requests` | **Index role only.** A publisher's LISTING REQUEST (`plans/index-listing.md`; `src/packages/listing.ts`, `src/packages/index-requests.ts`): the RFC 8785 bytes of `{ v: 1, index, prefix, key, base?, description?, url?, remove?, live?, seq, sig }`, sealed by `key` (the publisher's PUBLIC key) under `strut-listing\n` (`listing.test.ts` holds a test vector). Checked cheapest first, nothing fetched until the first five pass: one byte form, ≤ 8 KB, its shape (`base` https on a public name — no IP literal, no local name — an origin and at most one path segment, no query) — `index` this index's key — `seq` (microseconds) within 10 minutes of the index's clock and greater than the last from `key` — the seal — `prefix` not reserved (`strut`, `stakwork`, `sphinx`, `hive`, `stadeum`, `peel`, `jamie`, `index`, `official`, `admin`, + `STRUT_INDEX_RESERVED`) nor refused for this key in the last 30 days (a refusal is of what waited: it never stops a `remove`, nor the row's own key changing its row on the same host) — then `<base>/packages/catalog?public=1` (the ONE URL the index reads: a redirect is refused, never followed, and the body is read no further than 4 MB) is a catalog sealed by `key` — the proof the base holds the key, empty or not — and the name is USED: the catalog lists a package under `prefix/`, or (`plans/public-view-listing.md` §2) the request says `live: true` and `<base>/public` (that URL alone, no redirect, 4 MB, 15 s; read only once the key is proven) shows an app, a workflow, a step, a Concept root or an item anyone may run — node types alone do not count; `live: false` on a name with no package is refused, saying to `remove` it instead. Then: the row's own key on the same host, or a NEW name from a host in `STRUT_INDEX_AUTO_HOSTS` (`*`, `host[:port]`, `*.domain[:port]`) from a key and a host that hold no row → 200 `{ status: "listed", prefix, row, live? }`, the publisher read at once; `remove` by the row's key → 200 `{ status: "removed" }`; anything else → 202 `{ status: "pending", id, prefix, reason }`, `reason` one of `host`, `second name`, `same host`, `move` (the row's key, another host), `takeover` (another key holds the name), `live row` (the name is a live row the operator listed with no key — unless the request's base IS that live row's URL and the key holds no other row: the server the operator listed is the one asking, and it CLAIMS the row at once, 200, logged `claimed`). One request waits per (name, key); 200 at most, 3 per host; 30 days. `live: true` also writes a live row at the base, `false` removes it, absent leaves one alone. Errors: 400 `listing_invalid`, 403 `listing_reserved` / `listing_refused` (with the operator's reason), 404 `listing_not_listed`, 409 `listing_rollback`, 422 `listing_no_catalog`, 429 `listing_busy` (also 10 a minute per address), 503 `index_no_key` before the first row. **Open to anyone**: the request carries its own proof |
 | POST   | `/index/ping` | **Index role only.** `{ key }` → 202 `{ rows }`: read the rows naming `key` now — at most once a minute each, a ping inside the minute folded into one more read at its end. What a listed publisher sends after a release (its public key). Carries nothing: the catalog is read from the row's own URLs, against the row's key. **Open to anyone**, 10 a minute per address |
-| GET    | `/index/requests` | **Index role only.** `{ pending: PendingListing[], refused, autoHosts }`: the requests waiting for the operator, newest first — `{ id, prefix, key, base, host, reason, description?, url?, live?, receivedAt, catalog: { seq, digest, packages }, heldBy? (a takeover), from? (the host now: the row's on a move, the live row's on a `live row`), request }` — and the refusals of the last 30 days `{ prefix, key, host?, reason, at, by? }`. Every outcome is also appended to `<dataDir>/packages/catalogs/index/requests/log.jsonl`. A credential (the operator's; the Publish dialog's Index tab) |
+| GET    | `/index/requests` | **Index role only.** `{ pending: PendingListing[], refused, autoHosts }`: the requests waiting for the operator, newest first — `{ id, prefix, key, base, host, reason, description?, url?, live?, receivedAt, catalog: { seq, digest, packages }, view? (what `<base>/public` showed, when the name is used by the view alone: `{ apps, workflows, steps, concepts, runnable }`), heldBy? (a takeover), from? (the host now: the row's on a move, the live row's on a `live row`), request }` — and the refusals of the last 30 days `{ prefix, key, host?, reason, at, by? }`. Every outcome is also appended to `<dataDir>/packages/catalogs/index/requests/log.jsonl`. A credential (the operator's; the Publish dialog's Index tab) |
 | POST   | `/index/requests/:id/approve` | List it: the catalog read again, then the row written (a takeover replaces the key; a move the URL) → `{ status: "listed", … }`. Full scope; 404 `listing_unknown`, 422 `listing_no_catalog` |
 | POST   | `/index/requests/:id/refuse` | `{ reason }` → the refusal: the request dropped, and a re-send from that key for that name answered with `reason` for 30 days, without a fetch. Full scope; 404 `listing_unknown` |
 | GET    | `/index/catalog[?digest=]` | The INDEX card as served (RFC 8785 bytes, sealed under `strut-index\n` by the index key; `ETag`, `If-None-Match` → 304; `cache-control: public`): `{ v, key, seq, publishers, urls?, sig }`. **Open to anyone.** A reader checks it with `readCard(bytes, { key, kind: "index" })`; 404 before the first row |
@@ -2373,8 +2411,8 @@ installed it, it can be a mirror. `file:`, `pk:` and `git+` refs resolve
 | GET    | `/index/packages/:publisher/:name` | `IndexPackage`: `{ package, publisher, key, urls, description?, releases (newest first, yanked kept), channels: { "<public channel>": digest }, readAt, detail?, detailError? }`. `detail` is the newest release not yanked read off its archive — `PackageDetail`: `{ digest, version, derivedAt, readme?, apps: [{ name, title, description?, icon?, grants: { workflows, steps }, can, files }], workflows: [{ name, description?, inputs: [{ name, type, required, description?, default? }], steps, grants, can, secrets, peer?, sealed?, claims?, error? }], steps: [{ name, helper?, description?, effect?, secrets, lint: [string], bytes, claims? }], concepts: [{ name, description?, parent?, docs? }], secrets, can, files, bytes }` (names inside the package; `can` = what running it reaches: `spends` an `agent` / `llm` step, `acts` a step declaring `effect: "write"`, `code` an `exec` or one of the package's own steps; the steps' facts are regexes over the source, the lint `src/step-lint.ts`'s findings — a reading, never a check); `detailError` says why there is none (the archive not fetched yet, or unreadable). `?docs=0` leaves each Concept page's `docs` out (the store's read: a page's text is `/index/concepts/:name`'s). **Open to anyone**; 404 when no listed publisher's catalog has it |
 | GET    | `/index/concepts?q=` | `{ concepts: IndexConcept[] }` — every Concept page across the crawled packages AND the live rows' public trees, one per name: `{ name, description?, parent?, packages: [{ package, version }], live?: [{ publisher, url }] }` (the first package by name gives the description and parent, then a live tree's; a page only a live view holds has `packages: []`, and its docs are read from `<url>/public/concepts/<name>`; `q` over names and descriptions). **Open to anyone** |
 | GET    | `/index/concepts/:name` | `IndexConceptPage`: the entry plus `docs?` (the first package's text), `children: [{ name, description? }]` (the pages naming this one as parent) and `parents` (nearest first). **Open to anyone**; 404 when no listed package carries it |
-| GET    | `/llms.txt` | On an index strut, the store as ONE markdown page for an agent that fetches URLs (llmstxt.org; `llmsTxt`, `src/packages/index-tools.ts`), `text/markdown`: an H1 naming the index, a blockquote saying what it is (derived, unsigned past the card, an install re-verifies against the publisher), how an agent reaches it (the `claude mcp add` line for `/index/mcp`) and that a PERSON installs; then `## Reads` (the five open routes above, each a link), `## Packages` (every listed package at its newest release — `- [publisher/name](…/index/packages/publisher/name): description — version; N workflows, M steps, K apps; needs SECRET; spends (model calls), acts on the world, runs code`), `## Concepts` (every page the packages carry, each a link to `/index/concepts/<name>`, its parent and packages) and `## Optional` (the store page `?store=1` when the index serves the UI), and, when this strut also lets anyone run something, `# Run on this server` with §17.8's run and tool lists. **Open to anyone**. On a strut without the role it is the public view's page (§17.8), and `404` when nothing is public |
-| POST   | `/index/mcp` | **Index role only.** The store for an AGENT (§11; `src/packages/index-tools.ts`): the three reads above as MCP tools over the same derived pages — `search_packages { query?, limit? }` → `{ packages: IndexHit[], total, store?, install }`; `get_package { package }` → the `IndexPackage` as a model reads it (`detail.readme` cut at 12 000 chars, the Concept pages' `docs` left out) + `store?` + `install`, or `{ error }`; `get_concept { name?, query? }` → one `IndexConceptPage` (+ `store?`) or `{ concepts: IndexConcept[], total }`. `store` links the store page (`?store=1&pkg=`, `&concept=`, `&q=`) when the index serves the UI; `install` says a PERSON installs, and where. The `instructions` say what the index is, that everything is derived and an install re-verifies against the publisher, and how a person installs. **Open to anyone** — the one POST the gate opens with the role; GET and DELETE are 405 |
+| GET    | `/llms.txt` | On an index strut, the store as ONE markdown page for an agent that fetches URLs (llmstxt.org; `llmsTxt`, `src/packages/index-tools.ts`), `text/markdown`: an H1 naming the index, a blockquote saying what it is (derived, unsigned past the card, an install re-verifies against the publisher), how an agent reaches it (the `claude mcp add` line for `/index/mcp`) and that a PERSON installs; then `## Reads` (the five open routes above, each a link), `## Packages` (every listed package at its newest release — `- [publisher/name](…/index/packages/publisher/name): description — version; N workflows, M steps, K apps; needs SECRET; spends (model calls), acts on the world, runs code`), `## Concepts` (every page the packages carry, each a link to `/index/concepts/<name>`, its parent and packages), `## Live` (`plans/public-view-listing.md`, work item 2: every server whose public view the index lists — `- [prefix](<server>/llms.txt): description — served at <server> — shows N apps, M workflows, K things anyone may run — MCP at <server>/public/mcp`, or `not read: …` — and under it each thing anyone may run there, a link to its run route on the SERVER with its price in words, §17.8's `priceWords`: `- [name](<server>/public/workflows/<name>/run): description — a workflow to run on <prefix> — free` ; run on that server, never here) and `## Optional` (the store page `?store=1` when the index serves the UI), and, when this strut also lets anyone run something, `# Run on this server` with §17.8's run and tool lists. **Open to anyone**. On a strut without the role it is the public view's page (§17.8), and `404` when nothing is public |
+| POST   | `/index/mcp` | **Index role only.** The store for an AGENT (§11; `src/packages/index-tools.ts`): the reads above as MCP tools over the same derived pages — `search_packages { query?, limit? }` → `{ packages: IndexHit[], total, store?, install }`; `get_package { package }` → the `IndexPackage` as a model reads it (`detail.readme` cut at 12 000 chars, the Concept pages' `docs` left out) + `store?` + `install`, or `{ error }`; `get_concept { name?, query? }` → one `IndexConceptPage` (+ `store?`) or `{ concepts: IndexConcept[], total }`; `search_live { query?, runnable?, limit? }` (50, ≤ 200; `runnable: true` only what anyone may run) → `{ items, total, store?, how }`, each item `/index/live`'s (`IndexLiveItem`) + `llms` (`<server>/llms.txt`), `mcp` (`<server>/public/mcp`), `run_at` (the server's run route, when anyone may run it) and `price` (in words) — a live item runs ON its server, with no account there, never through the index. `store` links the store page (`?store=1&pkg=`, `&concept=`, `&q=`) when the index serves the UI; `install` says a PERSON installs, and where. The `instructions` say what the index is, that everything is derived and an install re-verifies against the publisher, and how a person installs. **Open to anyone** — the one POST the gate opens with the role; GET and DELETE are 405 |
 | GET    | `/` | **Index role, with the UI served:** a request for the UI's root with NO credential (no key, no session cookie, no `?key=`) is a 302 to `./?store=1` — the STORE FRONT (§14.3), the index's public face over the four open reads above; what else the URL carried rides along. With a credential, the shell as always |
 
 **Installed at first boot.** `STRUT_PACKAGES` (and `createStrut({
@@ -3037,7 +3075,7 @@ someone puts it there. The UI's door is the topbar's **Publish** dialog, its
 | Route | |
 | --- | --- |
 | `GET /public-view` | `{ surface, missing }` — the record as kept, and what it names that this server does not hold |
-| `PUT /public-view` | replace the record (body below); `{ surface, missing, held? }` |
+| `PUT /public-view` | replace the record (body below); `{ surface, missing, held? }`. Every index this server asked to list it (`/publisher/listings`) is pinged after a save, so its store reads the view again within a minute (`plans/public-view-listing.md` §6) |
 | `GET /public-view/needs?app=<name>` \| `?workflow=<name>` | what adding it brings along, for the dialog to pre-check (`src/public-view.ts`) |
 | `GET /public-view/runnable?workflow=<name>` \| `?step=<type>` | what the "anyone can run it" box shows: what it can do, what its runs here cost, and what the save will ask (below) |
 
@@ -3171,7 +3209,13 @@ anyone may make (`/public/mcp`, a launch and its cancel, a tool's call,
 opens. Each
 answer carries `access-control-allow-origin: *` (a preflight is answered
 too) and no cookie; each visitor address may make 1200 requests a minute
-(the first `x-forwarded-for` hop, else the socket; `429` past it). Paths
+(`429` past it). The visitor address is the socket's peer; only when that
+peer is a TRUSTED proxy is `x-forwarded-for` read, from the right, and the
+first hop that is not a trusted proxy is the visitor (every hop trusted:
+the leftmost). Trusted by default: loopback, link-local and private
+addresses; `STRUT_TRUSTED_PROXIES` (comma-separated IPs and CIDRs, or
+`none`; `createStrut({ trustedProxies })`) replaces the set
+(`src/visitor-address.ts`). Paths
 and shapes mirror the private routes, minus what a visitor never reads:
 who launched, owns or changed a thing, schedules, the job and conversation
 a run belonged to, callback and MCP origins. Anything not on the record is
@@ -3179,7 +3223,7 @@ a `404`, as if it were not there.
 
 | Route | Answer |
 | --- | --- |
-| `GET /public` | `{ workflows: [{ name, activeVersion, versions, description?, category?, runs }], steps: [{ type, source, description?, effect? }], concepts: [{ name, description?, pages }], types, apps: [{ name }], runnable: [{ kind, name, description?, base, markup, capUsd, reserve, results, input, recent }] }` — the roots, with how many pages each holds; what anyone may run (below) |
+| `GET /public` | `{ host: { remote: 1 }, workflows: [{ name, activeVersion, versions, description?, category?, runs }], steps: [{ type, source, description?, effect? }], concepts: [{ name, description?, pages }], types, apps: [{ name }], runnable: [{ kind, name, description?, base, markup, capUsd, reserve, results, input, recent }] }` — the roots, with how many pages each holds; what anyone may run (below) |
 | `GET /llms.txt` | the same as ONE markdown page for an agent that fetches URLs (§17.8); not under `/public`, open the same way |
 | `GET /public/workflows[?q=]` | the public workflows, as above |
 | `GET /public/workflows/:name` | `{ name, active, category?, runs, versions: { vN: { createdAt, description?, hash, source? } } }` |
@@ -3201,6 +3245,11 @@ a `404`, as if it were not there.
 | `GET /public/apps` | `[{ name, version, title, description?, icon?, permissions? }]` — each at the version the public view serves; `permissions` what its frame is granted beyond every app's (as `dist/build.json` says) |
 | `GET /public/apps/:name` | one of them |
 | `GET /public/apps/:name/document` | the page: that version's `dist/index.html` with a VISITOR's identity in `<meta name="strut-app-token">` and `<meta name="strut-public-view" content="1">` beside it |
+
+`host` says what another strut UI may do with this view: `remote` (a
+version, 1 today) — its public apps may be hosted by any strut UI, its `POST
+/public/mcp` answering such a page across origins (§17.9). A strut from
+before it says nothing, and cannot be hosted that way.
 
 `runnable` lists every item of the record's `runnable` that is here and
 not sealed, whether or not its definition is public (its YAML is never
@@ -3226,7 +3275,9 @@ both ends are. The trees are walked live, at most every 30 s.
 
 strut's UI hosts a visitor's page at `?app=<name>&solo=1&public=1`: the
 document from §17.2, framed as for any app (§14.3), its tools/call relayed to
-`POST /public/mcp` with no credential. For a page the door serves
+`POST /public/mcp` with no credential. Another strut server's public app is
+hosted the same way by ANY strut UI, `?app=<name>&public=1&from=<base>`
+(§17.9). For a page the door serves
 `step_run` (app-only, as on `/mcp`, §14.1); beside it, a model sees an
 agent's five tools (§17.8). Its `app` argument must be the VISITOR's
 identity the public document carries — `app:<name>@<vN>.<token>`, the
@@ -3532,21 +3583,43 @@ and its JSON as the text):
 `web/src/app-host.ts`, the sheet in `components/PaymentSheet.tsx`; a native
 host the same):
 
-1. **Keep a purse per tab**, where a reload in the tab finds it and no
-   frame can read it (strut's UI: the host page's `sessionStorage`, under
-   `strut.visitor:<base>`): the visit; the credential it sends; credentials
-   paid for and not yet sent ("spares"); every invoice shown and not yet
-   settled. A reload then keeps the visit's runs readable and its credit
-   spendable.
+1. **Keep a purse per tab AND per server**, where a reload in the tab finds
+   it and no frame can read it (strut's UI: the host page's
+   `sessionStorage`, under `strut.visitor:<base>` for its own server and
+   `strut.store.purse:<seller base>` for another, §17.9): the visit; the
+   credential it sends; credentials paid for and not yet sent ("spares");
+   every invoice shown and not yet settled. A reload then keeps the visit's
+   runs readable and its credit spendable. Two servers never share a visit
+   or a credential: each is sent to its own server alone.
 2. Relay the page's `tools/call` to `/public/mcp` as it is, with
    `x-strut-visit` (and, once it holds one, the credential below) on the
    request.
 3. Watch the result of a `step_run` whose `arguments.type` is `run/launch`.
    When it is `{ payment_required }`, do not hand it to the page. First
-   send the call again with a spare, if the purse has one. Else pay it with
-   the host's own wallet, or show it: the price in dollars and sats, what it
-   is for (`description`), and the `invoice` as a QR code with a Copy
-   button.
+   send the call again with a spare, if the purse has one. Else **check the
+   challenge** before anything is shown or paid (strut's UI:
+   `web/src/challenge.ts`): the invoice is BOLT11, asks for an amount and
+   has not ended; the macaroon is an L402 one naming the SAME payment hash;
+   its `strut_sats` is the challenge's `sats`, which is the invoice's
+   amount; its `strut_credit` is the challenge's `usd`. A challenge that
+   fails is junk: answer the page's call with an error saying so, and pay
+   nothing. The seller writes `usd` and `strut_credit` both, so they agree
+   with each other, not with the world: **the price is the `sats`** the
+   invoice asks. Show them as the price, dollars only at a rate the host
+   trusts (strut's UI: its own strut's `GET /rate`, below), and the
+   seller's `usd` only as the credit it says the payment buys — flagged
+   when it is worth under nine tenths of what is paid. Then pay it with the
+   host's own wallet — in a native host's web view, strut's UI asks the
+   native wallet first, one tap on its own sheet (specs/WALLET.md §1.2) — or
+   show it: the price, what it is for (`description`), the server it is
+   bought on when it is not this one, and the `invoice` as a QR code with a
+   Copy button. Once a wallet SENT the payment, never show the invoice
+   again: a seller holding the first payment knows its preimage and could
+   settle a second one. A wallet that sent nothing — a decline, a refusal,
+   a payment that failed, no answer before the invoice ends — leaves the
+   QR code, and a way to ask the wallet again. A call pays at most once: a
+   seller that asks again after a payment gets nothing more, and the page
+   is told the payment is kept as credit.
 4. **Keep the page's request alive while the visitor pays.** The page's
    `tools/call` times out after 60 s unless progress resets it (ext-apps'
    `callServerTool` asks for that, with a `progressToken` in `_meta`): send
@@ -3554,7 +3627,8 @@ host the same):
    answer. (The kit's `run/launch` also asks for 15 minutes, for a host
    that sends none.)
 5. **Claim every invoice you showed until it settles or ends — whether or
-   not its sheet is still open.** With no preimage of its own (a phone paid
+   not its sheet is still open** — its end as the invoice itself says
+   (decoded), never the challenge's `expires`. With no preimage of its own (a phone paid
    the QR), ask `POST /public/credit/claim { macaroon }` every few seconds
    (§17.5; 120 a minute an address) until it answers `settled` with
    `credential` — `<macaroon>:<preimage>` — or `expired`, and once more a
@@ -3589,8 +3663,11 @@ the page, whose kit `useLaunch` turns it into an error (`payment_required:
 a run of <workflow> costs $X, and this page's host does not pay for runs`)
 — never a launch.
 
-`POST /public/mcp`'s preflight allows `authorization` and `x-strut-visit`, so
-a host on another origin may send both.
+`POST /public/mcp`'s preflight allows `authorization` and `x-strut-visit`
+(and MCP's own `mcp-protocol-version`, `mcp-method`, `mcp-name`), and its
+answer carries `access-control-allow-origin: *` like every `/public` answer,
+so a host on another origin may send both and read what comes back — what
+§17.9 is.
 
 ### 17.7 A public tool — `POST /public/steps/:type/run` (anyone)
 
@@ -3781,6 +3858,96 @@ against the address's `/public` budget (§17.2, `429` past it). `404` when
 nothing is public. On an index strut the index's page answers (§16), with
 the run lists appended when this server also sells.
 
+### 17.9 Another strut server's public app, hosted by YOUR strut UI (`web/src/remote-app.ts`)
+
+A public app's page is two layers: the HOST page — strut's UI, which holds
+the visitor's purse and talks to any native wallet — and the app in a
+sandboxed frame. Opened as `https://<seller>/?app=<name>&solo=1&public=1`,
+the host is the SELLER's copy of strut's UI. In a native host's web view
+(Peel), that copy would run beside the native wallet bridge, and a modified
+copy could ask it to pay anything. So a person's own strut UI hosts the
+stranger's app instead. Only the sandboxed frame is the stranger's.
+
+**The link**, opened in any strut UI — Peel's local strut, or the person's
+own:
+
+```
+<your strut>/?app=<name>&public=1&from=<seller base>[&input=<the app's query>][&theme=light|dark]
+```
+
+- `from` is the seller's base URL (`remoteBase`): an origin, or an origin
+  and a path for a strut mounted under one (`https://swarm.example:3355/lab`).
+  Read like a seller's (src/remote.ts `sellerOf`): the origin and path, no
+  trailing `/` nor `/public`, no query, no credentials.
+- It must be `https`, or `http` to this machine (`localhost`, `*.localhost`,
+  `127.x`, `[::1]`): a development pair. A LAN box gets a certificate.
+- The seller must say it can be hosted so: `host.remote` on its `GET /public`
+  (§17.2). One from before that (whose `/public/mcp` answers no page on
+  another origin) is a page saying "<host> runs an older strut, whose public
+  apps cannot be hosted from another strut yet" — never a bare "Failed to
+  fetch".
+- `solo=1` is implied (the store writes it): the app shows alone, whoever
+  opens it, the key or a session or neither. A served box shows its own app
+  whatever the link says.
+- A `from` the UI does not open is a page that says why. It never falls
+  back to an app of the same name on this strut.
+- Never a credential in it.
+
+**The host:**
+- reads `GET <from>/public/apps/<name>` and its `document` (§17.2) in the
+  browser, with no credential of anyone's;
+- relays the page's `tools/call` to `POST <from>/public/mcp` with the
+  visitor's headers alone, `x-strut-visit` and, once paid,
+  `Authorization: L402 …`;
+- keeps the purse for that seller apart from every other (§17.6 step 1).
+  The store's Run form keeps it for that seller in the same page.
+
+All of it goes straight from the browser to the seller: nothing passes
+through the hosting strut's server, which needs no change and no route.
+
+**The frame is a STRANGER's.** It runs on the hosting strut's origin, so a
+browser grant to that origin (the microphone a person allowed for
+dictation) would reach it through the frame's `allow`. So:
+- it gets scripts, a form's submit event, pointer lock, the clipboard, the
+  gamepad and the wake lock (`strangerFrameAttributes`): never
+  `allow-same-origin`, no microphone, none of the camera, location or motion
+  its version declares, no download (a file saved from this origin), no
+  fullscreen (a page that could cover the host's own sheets);
+- its `ui/initialize` reports the clipboard alone;
+- the build's own CSP (src/apps/build.ts `cspFor()`) is written AHEAD of the
+  document the seller sent (`strangerDocument`). A document that dropped or
+  loosened its own is held to it all the same: no script, fetch, form or
+  image to a host of its choosing. Not covered: a frame navigating itself
+  away. A native host can refuse that, a browser cannot;
+- its page is offered no app wallet (`strut/wallet/*`, specs/WALLET.md
+  §1.1): only the host's own purchase (§1.2);
+- its `ui/open-link` is read against the SELLER's UI. `?app=<other>` is an
+  app there, never one of this strut's: it opens in a new tab HOSTED HERE
+  too, `?app=<other>&public=1&from=<seller>`, never by the seller's own UI.
+  A link to itself (the kit's `appLink`) is its input, in place. Any other
+  link opens on the seller as a plain page. Every page's `ui/open-link`
+  opens `http(s)` and `mailto` alone (never a `javascript:` URL, which a new
+  window runs on the host's origin).
+
+**Paying** is §17.6, with the seller as the server:
+- the challenge is checked, and the sheet's price is the invoice's sats,
+  in dollars at the HOSTING strut's rate alone: `GET /rate` (any
+  credential, a member's session included) → `{ usdPerBtc, at, source }`,
+  read a minute at a time from src/payments/rate.ts, `503` with none to be
+  had. A visitor with no credential on the hosting strut sees sats alone;
+- in Peel, the native wallet is asked first (specs/WALLET.md §1.2, naming
+  the seller, the app and the workflow);
+- else the QR sheet, which names the seller (`on <host>`);
+- every invoice shown is claimed at `<from>/public/credit/claim` until it
+  settles or ends, whether or not the sheet is still open, and again after
+  a reload.
+
+**The store** (`?store=1`): a live app's page has **Open in your strut**
+beside **Open full page** when the seller's `GET /public` says `host.remote`.
+It is this link into the visitor's own strut ("Your strut", kept in
+localStorage, as the Install link keeps it), asked for once when none is
+set.
+
 ## 18. The wallet — what the server receives with (`plans/paid-runs.md` §9)
 
 The wallet a server sells with: the Sphinx daemon (the treasury) or an NWC
@@ -3800,10 +3967,10 @@ Both routes answer `501` when the host brought its own `services.lightning`.
 | Route | |
 | --- | --- |
 | `GET /earnings/wallet[?check=1]` | which wallet is set and what it can do, never a credential; `check=1` also reads its balance |
-| `PUT /earnings/wallet` | set it, change it, or remove it; answers as `GET` does, with `check` |
+| `PUT /earnings/wallet` | set it, change it, or remove it; answers as `GET` does, with `check`. `409 wallet_from_env:` when the environment names the wallet |
 
 ```json
-{ "provider": "sphinx", "receive": true, "pay": true, "url": "http://treasury:3000",
+{ "provider": "sphinx", "receive": true, "pay": true, "url": "http://treasury.sphinx:8095",
   "from": "api", "setAt": "2026-11-10T18:50:08.000Z",
   "check": { "ok": true, "msat": 1250000 } }
 ```
@@ -3813,15 +3980,17 @@ Both routes answer `501` when the host brought its own `services.lightning`.
 a pay credential is on file, so Withdraw can pay (§19). `url` is the
 daemon's (no credential in it); for NWC, `relays` lists the relays' hosts
 instead, since the connection URL is the credential. `from` is `env` or
-`api`. `note` says when the environment names a wallet, which replaces this
-one at the next boot. `check` is `{ ok: true, msat }` or `{ ok: false,
+`api`. `env: true` (with a `note` saying so) when the environment names
+the wallet: the deployment owns it and writes it again at every boot, so
+`PUT` answers `409` and the Earnings tab shows it with no Change or Remove.
+`check` is `{ ok: true, msat }` or `{ ok: false,
 error }`, the wallet's balance read within 5 s; a failed check never
 refuses the save.
 
 `PUT` bodies:
 
 ```json
-{ "provider": "sphinx", "url": "http://treasury:3000", "token": "<receive token>", "payToken": "<pay token>" }
+{ "provider": "sphinx", "url": "http://treasury.sphinx:8095", "token": "<receive token>", "payToken": "<pay token>" }
 { "provider": "nwc", "url": "nostr+walletconnect://…", "payUrl": "nostr+walletconnect://…" }
 { "provider": null }
 ```
@@ -3838,11 +4007,11 @@ goes in the deployment's secrets, and the secrets capability answers
 nothing for any `LIGHTNING_*` name, wherever it is held — nor for
 `STRUT_SECRET_KEY`, which decrypts `payments.json`.
 
-## 19. Earnings and Withdraw — what the server made, and sats out (`plans/paid-runs.md` §8)
+## 19. Earnings, Add sats and Withdraw — what the server made, and sats in and out (`plans/paid-runs.md` §8)
 
 What anyone's runs and calls were charged here, what they cost, and the
 wallet the sats land in (`src/payments/earnings.ts`,
-`earnings-routes.ts`, `withdrawals.ts`). Earned, cost and margin are
+`earnings-routes.ts`, `withdrawals.ts`, `deposits.ts`). Earned, cost and margin are
 DOLLARS (decision 27); the wallet holds sats, in msat. Every number is read
 from the ledger's rollups (`daily`, and the payment and withdrawal entries
 through their partial indexes), never by scanning entries. A server that
@@ -3853,11 +4022,13 @@ A member's session, a peer and a person token are refused (`403`).
 
 | Route | |
 | --- | --- |
-| `GET /earnings?from=&to=&by=&prefix=&package=&wallet=1` | earned, cost, margin, calls, failed — by `item` (default), `day`, `package` or `total` — plus outstanding, received, withdrawn, purchases and the sends still out |
+| `GET /earnings?from=&to=&by=&prefix=&package=&wallet=1` | earned, cost, margin, calls, failed — by `item` (default), `day`, `package` or `total` — plus outstanding, received, deposited, withdrawn, purchases and the sends still out |
 | `GET /earnings/entries?kind=&runId=&token=&before=&limit=` | the ledger's entries, newest first |
 | `POST /earnings/withdraw` | pay a BOLT11 invoice out of the wallet |
 | `POST /earnings/withdrawals/:paymentHash/read` | read a send still out, now |
 | `POST /earnings/withdrawals/:paymentHash/resolve` | record one as paid, or drop it, by hand |
+| `POST /earnings/deposit` | an invoice INTO the wallet, for an admin to pay from their own (Add sats) |
+| `POST /earnings/deposits/:paymentHash/read` | read a deposit invoice now; recorded in the books once it settled |
 
 ### `GET /earnings`
 
@@ -3883,9 +4054,10 @@ prefix whatever the package. `wallet=1` also reads the wallet's balance
   "received": { "count": 14, "msat": 166858000, "usd": 162.25, "days": [{ "day": "2026-11-09", "count": 1, "msat": 10284000, "usd": 10 }] },
   "withdrawn": { "count": 1, "msat": 60000000, "feeMsat": 72000, "days": [{ "day": "2026-11-06", "count": 1, "msat": 60000000, "feeMsat": 72000 }] },
   "purchases": { "count": 0, "msat": 0, "feeMsat": 0 },
+  "deposited": { "count": 1, "msat": 50000000, "days": [{ "day": "2026-11-11", "count": 1, "msat": 50000000 }] },
   "pending": [{ "paymentHash": "<hex>", "msat": 20000000, "maxFeeMsat": 100000, "purpose": "withdrawal", "payer": "sphinx:http://treasury:3000",
     "at": 1794355009628, "expiresAt": 1794358609, "answered": true, "stale": false, "reading": false, "otherWallet": false }],
-  "wallet": { "provider": "sphinx", "receive": true, "pay": true, "url": "http://treasury:3000",
+  "wallet": { "provider": "sphinx", "receive": true, "pay": true, "url": "http://treasury.sphinx:8095",
     "balance": { "msat": 304532000, "sats": 304532, "usd": 296.13 }, "rate": 97240,
     "expectedMsat": 36726000, "pendingMsat": 20000000, "differenceMsat": 267806000 }
 }
@@ -3898,8 +4070,10 @@ prefix whatever the package. `wallet=1` also reads the wallet's balance
   Public view record.
 - `outstanding` is now, not ranged: credit paid for and not yet charged,
   still owed as service; `held` is set aside for runs in flight.
-- `received`, `withdrawn` and `purchases` are ranged; under a `prefix` or
-  `package` they are empty (they are the wallet's, not a package's).
+- `received`, `deposited`, `withdrawn` and `purchases` are ranged; under a
+  `prefix` or `package` they are empty (they are the wallet's, not a
+  package's). `deposited` is sats an admin added by hand (Add sats, below):
+  never credit, never earnings.
   `withdrawn` is a person's withdrawals; `purchases` is credit this strut
   bought from other struts (item 9, `remote/buy-credit`), the same payer's
   other sends.
@@ -3914,8 +4088,10 @@ prefix whatever the package. `wallet=1` also reads the wallet's balance
   `reading`: a read is in flight. `lastError`: what the last read said.
 - `wallet`: `GET /earnings/wallet`'s fields (`pay` true when there is a
   payer), the balance at the rate of the moment (or `error`), and the
-  books' check: `expectedMsat` is everything received less every send and
-  its fee and less what is still out (`pendingMsat`), all time;
+  books' check: `expectedMsat` is everything received and deposited, less
+  every send and its fee and less what is still out (`pendingMsat`), all
+  time (with `wallet=1`, deposit invoices that settled since they were last
+  read are recorded first);
   `differenceMsat` is balance − expected (more: money that came some other
   way, or a paid invoice whose credit was never used; less: money that left
   some other way).
@@ -4011,6 +4187,39 @@ went through a wallet no longer set. `paid` records it as one `withdrawal`
 entry (its purpose and who asked kept; `feeMsat` the fee, when known, else
 0) and answers `{ action, entry }`; `drop` forgets it and records nothing.
 `409 reading` while a read of it is in flight; `404 not_pending`.
+
+### `POST /earnings/deposit` and `…/deposits/:paymentHash/read` — Add sats
+
+Sats INTO this server's wallet, paid by an admin from their own: what the
+server buys credit at other struts with (§20) before it has sold anything.
+The invoice is made by the wallet's receive side, for an hour, and kept on
+file (`<dataDir>/payments/deposits.json`) until it settles or expires; it
+is read every minute, and when `GET /earnings?wallet=1` is read, so one
+paid after the page closed, or across a restart, still lands in the books.
+Once settled it is one row in the ledger's `deposits` table, by payment
+hash, with what SETTLED and who asked: never credit on a token, never
+earnings, not a ledger entry; only the books' check counts it.
+
+```json
+{ "sats": 50000 }
+```
+`sats` alone, a whole number from 1 to 10,000,000 (`400 bad_amount`).
+Answers:
+```json
+{ "state": "pending", "paymentHash": "<hex>", "msat": 50000000, "expires": "2026-11-11T19:40:00.000Z", "invoice": "lnbc500u1…" }
+```
+`409 no_wallet` with no wallet set; `503 wallet_unavailable` when the
+wallet cannot be reached, `502 wallet_refused` when it refused.
+
+`…/deposits/:paymentHash/read` (no body) reads it now and answers the
+same shape: `pending` (with the invoice; `error` when the wallet could
+not be asked just now), `settled` (with `deposit: { at, msat,
+paymentHash, actor? }`, `at` ISO 8601, and no invoice), or `expired`
+(forgotten, nothing recorded). A deposit already in the books answers
+`settled` without asking the wallet. `404 not_found` for one never asked
+for here, one that expired, or one the wallet no longer knows (another
+wallet was set since: forgotten). An invoice the wallet cannot be asked
+about stays `pending`, and is forgotten a day past its expiry.
 
 ### `earnings/read` — the same read as a step
 

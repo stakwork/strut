@@ -379,6 +379,8 @@ comes only with a keyed row:
   key. A request never names it separately.
 
 The operator's `PUT /index/live/:prefix` stays for a server with no key.
+(A server with no package public lists its public view alone with its own
+key: `plans/public-view-listing.md`.)
 A name listed that way is held: a request for it waits as `live row`, and
 approving it lists the key under the name, moving the live row only when
 the request says `live: true`.
@@ -387,7 +389,7 @@ the request says `live: true`.
 
 | Concern | Limit |
 | --- | --- |
-| Request and ping floods | A per-address budget on the two open POSTs (`visitorAddress`, `src/public-routes.ts`): 10 a minute each |
+| Request and ping floods | A per-address budget on the two open POSTs (`visitorAddress`, `src/visitor-address.ts`): 10 a minute each |
 | Expensive requests | The seal and the name are checked before any fetch. One catalog read per request, 4 MB and 30 s. No archive until listed |
 | A full queue | 200 waiting requests in all, 3 per host. Past that, `429 listing_busy:`. A request waits at most 30 days |
 | The same ask again | A refusal is returned for 30 days without a fetch |

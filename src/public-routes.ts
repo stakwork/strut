@@ -52,6 +52,7 @@ import { CREDIT_PURCHASE_MAX_USD, CREDIT_PURCHASE_MIN_USD, type Credit, type Cre
 import { microsToUsd, priceOf, usdToMicros, type Micros } from "./payments/ledger.js";
 import { PUBLIC_LAUNCHES_PER_MINUTE, PUBLIC_RUN_BODY_MAX_BYTES, PUBLIC_RUN_KEY_MAX, PUBLIC_RUN_WAIT_MAX_S, type PublicRuns } from "./public-runs.js";
 import type { PublicTools } from "./public-tools.js";
+import { defaultVisitorAddress } from "./visitor-address.js";
 
 export interface PublicRouteDeps {
   surface: PublicSurfaceService;
@@ -69,6 +70,10 @@ export interface PublicRouteDeps {
   liveStatus: (workflow: string, runId: string) => string;
   /** Requests per visitor address per minute (`PUBLIC_REQUESTS_PER_MINUTE`). */
   ratePerMinute?: number;
+  /** Who a request is from (src/visitor-address.ts): the socket's peer, or
+   *  `x-forwarded-for` read through the TRUSTED proxies createStrut was
+   *  booted with. Absent: the default set. */
+  visitorAddress?: (c: Context) => string;
   /** The apps in the public view, each at the version it serves: what a
    *  visitor's host lists and frames (plans/public-surface.md §5). */
   apps?: {
@@ -200,7 +205,16 @@ export interface PublicDoors {
 }
 
 /** `GET /public`: what the public view shows, and what anyone may run. */
+/** What this server's public view lets another strut UI do with it
+ *  (specs/API.md §17.9): `remote` — its public apps may be hosted by any
+ *  strut UI, `?app=<name>&public=1&from=<this server>`, its `POST
+ *  /public/mcp` answering such a page across origins. A version, raised when
+ *  what such a host may rely on changes; absent on a strut from before it. */
+export const PUBLIC_HOST = { remote: 1 } as const;
+
 export interface PublicListing {
+  /** What another strut UI may do with this server's public view. */
+  host: typeof PUBLIC_HOST;
   workflows: Array<{ name: string; activeVersion: string; versions: string[]; description?: string; category?: string; runs: boolean }>;
   steps: Array<{ type: string; source: string; description?: string; effect?: string }>;
   concepts: Array<{ name: string; description?: string; pages: number }>;
@@ -250,16 +264,6 @@ function creditRefusal(c: Context, r: Pick<CreditRefusal, "status" | "code" | "e
   return c.json({ error: r.error, code: r.code }, r.status, headers);
 }
 
-/** The visitor's address: the first `x-forwarded-for` hop when a proxy in
- *  front set one, else the socket's. A budget, not a boundary — a client
- *  can name any address in the header. */
-export function visitorAddress(c: Context): string {
-  const fwd = c.req.header("x-forwarded-for")?.split(",")[0]?.trim();
-  if (fwd) return fwd;
-  const incoming = (c.env as { incoming?: { socket?: { remoteAddress?: string } } } | undefined)?.incoming;
-  return incoming?.socket?.remoteAddress ?? "unknown";
-}
-
 const enc = encodeURIComponent;
 /** The link a public run event carries for an agent session. */
 export const publicTranscriptUrl = (workflow: string, runId: string, path: string) =>
@@ -293,6 +297,7 @@ function launcherArtifacts(name: string, runId: string, output: unknown): Array<
 
 export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors {
   const { surface, workspace, store } = deps;
+  const visitorAddress = deps.visitorAddress ?? defaultVisitorAddress;
   const notPublic = (c: Context, what: string) => c.json({ error: `${what} is not public on this strut server` }, 404);
 
   // Before every route below: a browser on another origin may read these
@@ -321,8 +326,10 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
         // `authorization`: a launcher's run token as a Bearer, a credit token as L402.
         // `x-strut-visit`: a visitor's page's host names the visit (§10);
         // `x-strut-visitor`: a signed-in visitor's token beside a credit
-        // token (plans/app-repos.md §5.2).
-        "access-control-allow-headers": "content-type, accept, authorization, mcp-protocol-version, x-strut-visit, x-strut-visitor",
+        // token (plans/app-repos.md §5.2). `mcp-method` / `mcp-name`: what
+        // an MCP client may send beside a request whose envelope names a
+        // newer protocol version.
+        "access-control-allow-headers": "content-type, accept, authorization, mcp-protocol-version, mcp-method, mcp-name, x-strut-visit, x-strut-visitor",
         "access-control-max-age": "600",
       });
     }
@@ -336,6 +343,16 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
     // A browser's L402 client reads the challenge's header.
     c.header("access-control-expose-headers", "www-authenticate, retry-after");
     await next();
+    // A handler that answers with a Response of its own — `POST /public/mcp`,
+    // the MCP door's — never carries what `c.header` set: without this a
+    // visitor's page hosted by ANOTHER strut UI (specs/API.md §17.9) passes
+    // the preflight and then cannot read the answer.
+    if (!c.res.headers.get("access-control-allow-origin")) {
+      const res = new Response(c.res.body, c.res);
+      res.headers.set("access-control-allow-origin", "*");
+      res.headers.set("access-control-expose-headers", "www-authenticate, retry-after");
+      c.res = res;
+    }
   };
   // One registration: Hono's `/public/*` matches `/public` too.
   app.use("/public/*", publicMiddleware);
@@ -428,6 +445,7 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
     const tree = s.concepts.length ? await surface.conceptTree() : undefined;
     const roots = tree ? tree.concepts.filter((x) => !x.parent) : [];
     return {
+      host: PUBLIC_HOST,
       workflows: await listedWorkflows(),
       steps: await listedSteps(),
       concepts: roots.map((r) => ({ name: r.name, ...(r.description ? { description: r.description } : {}), pages: tree!.concepts.filter((x) => x.root === r.root).length })),

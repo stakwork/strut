@@ -4675,6 +4675,9 @@ input.package-search { width: 100%; margin-bottom: var(--sp-2); }
 }
 @keyframes pay-sheet-spin { to { transform: rotate(360deg); } }
 .pay-sheet-rate { color: var(--text-dim); font-size: 11px; }
+.pay-sheet-seller { color: var(--text-muted); font-size: 12px; font-weight: 400; overflow-wrap: anywhere; }
+.pay-sheet-note { margin: 0; color: var(--text); line-height: 1.45; font-size: 12px; }
+.pay-sheet-note.is-warning { color: var(--warning); }
 .pay-sheet-actions { display: flex; justify-content: flex-end; gap: var(--sp-2); }
 /* The visitor's sign-in sheet (SignInSheet.tsx): a method a row. */
 .sign-in-methods { display: flex; flex-direction: column; gap: var(--sp-2); }
@@ -5642,6 +5645,7 @@ button.store-stat:hover .store-stat-l { color: var(--accent-strong); }
 
 /* ── The store's live items (Store.tsx LivePage) ─────────────────────────── */
 .store-live-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--sp-3); margin-bottom: var(--sp-3); }
+.store-live-open { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--sp-2); flex: none; max-width: 100%; }
 .store-live-frame { display: block; width: 100%; height: 78vh; border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--surface); }
 /* Running a live item (Store.tsx RunPanel, plans/paid-runs.md §10). */
 .store-price-main { font-size: 14px; font-weight: 600; margin-bottom: var(--sp-2); }
@@ -5753,8 +5757,8 @@ button.store-stat:hover .store-stat-l { color: var(--accent-strong); }
 .earnings-wallet { border: 1px solid var(--border); border-radius: var(--r-lg); padding: var(--sp-3); display: flex; flex-direction: column; gap: var(--sp-2); background: var(--surface); }
 .earnings-wallet-figures { display: grid; grid-template-columns: 1fr 1fr auto; gap: var(--sp-3); align-items: start; }
 .earnings-big { font-size: 22px; font-weight: 500; color: var(--text); line-height: 1.25; font-variant-numeric: tabular-nums; }
-.earnings-withdraw { display: flex; flex-direction: column; align-items: flex-end; gap: var(--sp-1); max-width: 190px; }
-.earnings-withdraw .btn { min-width: 110px; }
+.earnings-withdraw { display: flex; flex-direction: column; align-items: flex-end; gap: var(--sp-1); max-width: 260px; }
+.earnings-withdraw .btn { min-width: 100px; }
 .earnings-blocked { white-space: normal; text-align: right; color: var(--warning); }
 .earnings-wallet-info .earnings-blocked, .earnings-wallet-info .auto-hint { text-align: left; }
 .earnings-check { border-top: 1px solid var(--border); padding-top: var(--sp-2); }
@@ -5800,6 +5804,17 @@ button.store-stat:hover .store-stat-l { color: var(--accent-strong); }
 .withdraw-result.is-failed { border-color: rgba(248, 113, 113, 0.35); background: rgba(248, 113, 113, 0.07); }
 .withdraw-result-title { font-size: 14px; font-weight: 600; color: var(--text); }
 .withdraw-hash { font-size: 10px; color: var(--text-dim); word-break: break-all; }
+/* Add sats (DepositDialog.tsx): the payment sheet's QR and invoice row, in the dialog. */
+.withdraw-dialog a.pay-sheet-qr { display: block; }
+.withdraw-dialog a.btn { text-decoration: none; }
+.deposit-presets { display: flex; gap: var(--sp-2); flex-wrap: wrap; }
+.earnings-wallet-buttons { display: flex; gap: var(--sp-2); justify-content: flex-end; flex-wrap: wrap; }
+/* Buying (BuyingSection.tsx): a purchase still being paid sits under its server's row. */
+.buying-purchase td { padding-top: 0; white-space: normal; text-align: left; color: var(--text); }
+.buying-purchase-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--sp-1) var(--sp-2); }
+.buying-purchase-row .btn { margin-left: auto; }
+.buying-table td { vertical-align: top; }
+.buying-table td.buying-left { white-space: normal; }
 @media (max-width: 640px) {
   .earnings-wallet-figures { grid-template-columns: 1fr 1fr; }
   .earnings-withdraw { grid-column: 1 / -1; align-items: stretch; max-width: none; }

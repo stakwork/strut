@@ -14,7 +14,10 @@
  *     check, where it paces the question (a person's time is the cost). On
  *     a JOB subject (plans/job-claims.md §5) `manual` is the default
  *     whatever the step — the work is verified when it is said to be ready
- *     — and `sample` is refused: a job has turns, not a stream of runs;
+ *     — and `sample` is refused: a job has turns, not a stream of runs. A
+ *     CONCEPT's checks take a template's defaults (they fire on each run
+ *     that opened its page); `when: publish` is refused on a job and on a
+ *     Concept, neither of which is published;
  *   - a job must be ON FILE (a record with a run) before a claim is written
  *     about it, and its `StrutJob` node is upserted from the record then
  *     (`ensureJobNode`): the projector writes it at run END, and the work
@@ -33,6 +36,17 @@
  *     is what the agent's instrument should test, there is no seeded line
  *     to silence, and the person's own external check stays beside it as a
  *     separate stream; edit / retire / detach stay scoped;
+ *   - a claim about a CONCEPT is written through a door that keeps the
+ *     Concept tree, never in passing: the DOOR decides, not the author
+ *     (`ClaimActor.concepts`). It says what the work of every run that
+ *     opened the page must look like, so it is not for an agent to add on
+ *     its way through a build. The regular doors — the builder chat's tools
+ *     and the meta surface — add, attach, edit and retire nothing on one,
+ *     claim or check; their runs are still checked against them, and they
+ *     read the verdicts. A door that sets `concepts` may, whoever writes
+ *     through it: a person's `/claims` routes today, and a workflow that
+ *     tends the tree (an AI author, stamped `ai` like any other, so fixed
+ *     point 2 holds for its checks);
  *   - FIXED POINT 2 — a check stamped `ai` may not reach a grader: nothing
  *     SEALED (`src/sealed.ts`: the sealed namespaces `eval/*`, `meta/*` plus
  *     `STRUT_SEALED`, a step def's `sealed: true`, a workflow's `sealed:
@@ -75,7 +89,7 @@ import { bootEnv } from "./env.js";
 /** A subject as a tool names it. */
 export interface SubjectInput {
   kind: SubjectRef["kind"];
-  /** Workflow name, custom step type, or job id. */
+  /** Workflow name, custom step type, job id, or Concept name. */
   name: string;
 }
 
@@ -101,10 +115,15 @@ export interface ClaimSpecInput {
   checks: CheckSpecInput[];
 }
 
-/** Who is writing. `scoped` = the meta surface: only what it stamped. */
+/** Who is writing, and through which door. `scoped` = the meta surface:
+ *  only what it stamped. `concepts` = a door that may write claims about
+ *  Concepts, and their checks: one that keeps the Concept tree (a person's
+ *  `/claims` routes; a workflow that tends the tree), never the doors of
+ *  ordinary work (the builder chat's tools, the meta surface). */
 export interface ClaimActor {
   publisher: string;
   scoped: boolean;
+  concepts?: boolean;
 }
 
 export type ClaimsResult<T> = ({ ok: true } & T) | { error: string };
@@ -130,7 +149,12 @@ export function toSubjectRef(s: SubjectInput): SubjectRef {
   return subjectOf(s.kind, s.name);
 }
 
-const onJob = (subjects: readonly SubjectRef[]) => subjects.some((s) => s.kind === "job");
+/** What a check's subjects make of it (the write-time rules below). */
+interface CheckOn {
+  job?: boolean;
+  concept?: boolean;
+}
+const onOf = (subjects: readonly SubjectRef[]): CheckOn => ({ job: subjects.some((s) => s.kind === "job"), concept: subjects.some((s) => s.kind === "concept") });
 
 /**
  * One contract from a workflow's `claims:` block and a publish call's
@@ -209,7 +233,8 @@ export interface ClaimListing {
 export interface RunEvidence {
   claim: { id: string; text: string };
   /** The subject and exact version the check observed: the workflow, a
-   *  step it executed, or the job it was a turn of (version = the run). */
+   *  step it executed, the job it was a turn of (version = the run), or a
+   *  Concept whose page it opened. */
   subject?: { kind: SubjectRef["kind"]; name: string; version: string };
   /** `open` = an external check's question, still waiting on someone. */
   verdict: "supports" | "refutes" | "open";
@@ -263,10 +288,12 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
     return { registry, workflows: workflows.map((w) => ({ name: w.name, versions: w.versions })) };
   }
 
-  /** Validate one spec and apply the write-time defaults. `job` = the
+  /** Validate one spec and apply the write-time defaults. `on.job` = the
    *  check is on a job subject (plans/job-claims.md §5): `manual` by
-   *  default whatever the step, `sample` refused. Throws ClaimsError. */
-  async function normalizeCheck(spec: CheckSpecInput, actor: ClaimActor, where: string, ctx: NormalizeCtx, job = false): Promise<CheckData> {
+   *  default whatever the step, `sample` refused. `on.concept` = on a
+   *  Concept: never at publish. Throws ClaimsError. */
+  async function normalizeCheck(spec: CheckSpecInput, actor: ClaimActor, where: string, ctx: NormalizeCtx, on: CheckOn = {}): Promise<CheckData> {
+    const job = !!on.job;
     if (!spec || typeof spec !== "object") throw new ClaimsError("INVALID", `${where}: a check is an object — { type, config } for a step check, { description } for an external one`);
     const when = spec.when ?? "run";
     if (!RUN_WHENS.includes(when)) throw new ClaimsError("INVALID", `${where}: when must be one of ${RUN_WHENS.join(" | ")}`);
@@ -275,6 +302,7 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
       throw new ClaimsError("INVALID", `${where}: policy "sample" has no meaning on a job — a job has turns, not a stream of runs. Use manual (the default: fires on meta/verify-job or a person's Verify), on_change (once per turn) or always`);
     }
     if (job && when === "publish") throw new ClaimsError("INVALID", `${where}: a job is never published — a check on a job runs when the job is verified (when: run)`);
+    if (on.concept && when === "publish") throw new ClaimsError("INVALID", `${where}: a Concept is never published — a check on a Concept runs when a run that opened its page is verified (when: run)`);
     if (spec.freshnessDays !== undefined && !(Number.isInteger(spec.freshnessDays) && spec.freshnessDays > 0)) {
       throw new ClaimsError("INVALID", `${where}: freshnessDays must be a positive integer`);
     }
@@ -345,7 +373,7 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
     };
   }
 
-  async function normalizeClaims(claims: readonly ClaimSpecInput[], actor: ClaimActor, ctx?: NormalizeCtx, job = false): Promise<Array<{ text: string; checks: CheckData[] }>> {
+  async function normalizeClaims(claims: readonly ClaimSpecInput[], actor: ClaimActor, ctx?: NormalizeCtx, on: CheckOn = {}): Promise<Array<{ text: string; checks: CheckData[] }>> {
     const out: Array<{ text: string; checks: CheckData[] }> = [];
     const seen = new Set<string>();
     const resolved = ctx ?? (claims.length > 0 ? await normalizeCtx() : undefined);
@@ -358,7 +386,7 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
         throw new ClaimsError("INVALID", `claims[${i}] ("${boundedName(text).slice(0, 60)}"): every claim needs at least one check — if code cannot check it, give it an external check ({ description })`);
       }
       const checks: CheckData[] = [];
-      for (const [j, k] of c.checks.entries()) checks.push(await normalizeCheck(k, actor, `claims[${i}].checks[${j}]`, resolved!, job));
+      for (const [j, k] of c.checks.entries()) checks.push(await normalizeCheck(k, actor, `claims[${i}].checks[${j}]`, resolved!, on));
       out.push({ text, checks });
     }
     return out;
@@ -411,6 +439,9 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
    *  deliver, so a job subject is always its author's to claim about. */
   async function ownsSubject(subject: SubjectRef, actor: ClaimActor): Promise<boolean> {
     if (subject.kind === "job") return true;
+    // Nobody published a Concept: the meta surface owns none (and its door
+    // is refused before this).
+    if (subject.kind === "concept") return false;
     if (subject.kind === "step") return (await deps.workspace.listSteps({ publisher: actor.publisher })).some((s) => s.type === subject.type);
     return (await deps.workspace.getWorkflowMetadata(subject.name))?.publisher === actor.publisher;
   }
@@ -422,6 +453,21 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
         throw new ClaimsError("REFUSED", `${s.kind} "${subjectName(s)}" was not published by "${actor.publisher}" — the meta surface only ${verb} subjects it authored`);
       }
     }
+  }
+
+  /** A claim about a Concept is written through a door that keeps the
+   *  Concept tree (`ClaimActor.concepts`): the door decides, not the author.
+   *  `subjects` = what the write touches. */
+  function requireConceptDoor(subjects: readonly SubjectRef[], actor: ClaimActor): void {
+    const concept = actor.concepts ? undefined : subjects.find((s) => s.kind === "concept");
+    if (concept) {
+      throw new ClaimsError("REFUSED", `concept "${subjectName(concept)}": claims about a Concept, and their checks, are not written from here — they are kept where the Concept tree is tended. Work done here is checked against them, and changes nothing on them`);
+    }
+  }
+  /** The same, for a write on an existing claim (read only at a door without `concepts`). */
+  async function requireConceptDoorFor(claimIds: readonly string[], actor: ClaimActor): Promise<void> {
+    if (actor.concepts) return;
+    for (const id of claimIds) requireConceptDoor(await subjectsOfClaim(id), actor);
   }
 
   async function requireOwnClaim(id: string, actor: ClaimActor, verb: string): Promise<void> {
@@ -525,8 +571,9 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
     async addClaim(input: { subjects: SubjectInput[]; text: string; checks: CheckSpecInput[] }, actor: ClaimActor): Promise<ClaimsResult<{ id: string; checks: string[] }>> {
       try {
         const subjects = (input.subjects ?? []).map(toSubjectRef);
+        requireConceptDoor(subjects, actor);
         await requireOwnedSubjects(subjects, actor, "adds claims to");
-        const [claim] = await normalizeClaims([{ text: input.text, checks: input.checks }], actor, undefined, onJob(subjects));
+        const [claim] = await normalizeClaims([{ text: input.text, checks: input.checks }], actor, undefined, onOf(subjects));
         await ensureSubjectNodes(subjects);
         return { ok: true, ...(await writer.addClaim({ subjects, text: claim!.text, speaker: actor.publisher, checks: claim!.checks })) };
       } catch (e) {
@@ -536,6 +583,7 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
 
     async editClaim(id: string, text: string, actor: ClaimActor): Promise<ClaimsResult<{ id: string; superseded?: string; unchanged?: true }>> {
       try {
+        await requireConceptDoorFor([id], actor);
         await requireOwnClaim(id, actor, "edits");
         return { ok: true, ...(await writer.editClaim(id, text, actor.publisher)) };
       } catch (e) {
@@ -545,6 +593,7 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
 
     async retireClaim(id: string, actor: ClaimActor): Promise<ClaimsResult<{ id: string }>> {
       try {
+        await requireConceptDoorFor([id], actor);
         await requireOwnClaim(id, actor, "retires");
         return { ok: true, ...(await writer.retireClaim(id)) };
       } catch (e) {
@@ -555,6 +604,8 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
     async attachClaim(id: string, subject: SubjectInput, actor: ClaimActor): Promise<ClaimsResult<{ id: string; attached: boolean }>> {
       try {
         const ref = toSubjectRef(subject);
+        requireConceptDoor([ref], actor);
+        await requireConceptDoorFor([id], actor);
         await requireOwnedSubjects([ref], actor, "attaches claims to");
         await ensureSubjectNodes([ref]);
         return { ok: true, ...(await writer.attachClaim(id, ref)) };
@@ -565,6 +616,7 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
 
     async detachClaim(id: string, subject: SubjectInput, actor: ClaimActor): Promise<ClaimsResult<{ id: string; detached: boolean }>> {
       try {
+        await requireConceptDoorFor([id], actor);
         await requireOwnClaim(id, actor, "detaches");
         return { ok: true, ...(await writer.detachClaim(id, toSubjectRef(subject))) };
       } catch (e) {
@@ -574,11 +626,13 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
 
     async addCheck(claimId: string, spec: CheckSpecInput, actor: ClaimActor): Promise<ClaimsResult<{ id: string }>> {
       try {
-        const job = onJob(await subjectsOfClaim(claimId));
+        const subjects = await subjectsOfClaim(claimId);
+        requireConceptDoor(subjects, actor);
+        const on = onOf(subjects);
         // Fixed point 1's one exception (plans/job-claims.md §1, ruled): on a
         // job the agent may hang its instrument on the person's claim.
-        if (!job) await requireOwnClaim(claimId, actor, "adds checks to");
-        return { ok: true, ...(await writer.addCheck(claimId, await normalizeCheck(spec, actor, "check", await normalizeCtx(), job))) };
+        if (!on.job) await requireOwnClaim(claimId, actor, "adds checks to");
+        return { ok: true, ...(await writer.addCheck(claimId, await normalizeCheck(spec, actor, "check", await normalizeCtx(), on))) };
       } catch (e) {
         return fail(e);
       }
@@ -588,6 +642,7 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
      *  re-validated as a whole and written as a SUCCESSOR. */
     async editCheck(id: string, patch: CheckSpecInput, actor: ClaimActor): Promise<ClaimsResult<{ id: string; superseded?: string; unchanged?: true }>> {
       try {
+        await requireConceptDoorFor((await reader.claimsTestedBy(id)).map((c) => c.id), actor);
         const old = await requireOwnCheck(id, actor, "edits");
         if (!old) throw new ClaimsError("NOT_FOUND", `check "${id}" not found`);
         const current = listingOf(old);
@@ -603,9 +658,9 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
           ...Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined)),
         };
         const tested = await reader.claimsTestedBy(id);
-        let job = false;
-        for (const c of tested) if (onJob(await subjectsOfClaim(c.id))) job = true;
-        const next = await normalizeCheck(merged, actor, "check", await normalizeCtx(), job);
+        const subjects: SubjectRef[] = [];
+        for (const c of tested) subjects.push(...(await subjectsOfClaim(c.id)));
+        const next = await normalizeCheck(merged, actor, "check", await normalizeCtx(), onOf(subjects));
         const same = (["name", "description", "step_type", "step_config", "run_when", "policy", "freshness_days", "sample_rate"] as const).every(
           (f) => (next[f] ?? undefined) === (old[f] ?? undefined),
         );
@@ -618,6 +673,7 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
 
     async retireCheck(id: string, actor: ClaimActor): Promise<ClaimsResult<{ id: string }>> {
       try {
+        await requireConceptDoorFor((await reader.claimsTestedBy(id)).map((c) => c.id), actor);
         await requireOwnCheck(id, actor, "retires");
         return { ok: true, ...(await writer.retireCheck(id)) };
       } catch (e) {
@@ -632,7 +688,7 @@ export function buildClaimsAuthoring(deps: ClaimsAuthoringDeps) {
         // A job on file with nothing claimed yet has no node, and an empty contract.
         if (ref.kind === "job") {
           if (!(await jobOnFile(ref.id))) throw new ClaimsError("NOT_FOUND", `job "${ref.id}" is not on file`);
-        } else if (!(await reader.subjectRefId(ref))) throw new ClaimsError("NOT_FOUND", `${subject.kind} "${subject.name}" is not in the workspace`);
+        } else if (!(await reader.subjectRefId(ref))) throw new ClaimsError("NOT_FOUND", `${subject.kind} "${subject.name}" is not in the ${ref.kind === "concept" ? "graph" : "workspace"}`);
         const rows = await reader.statusFor(ref);
         return {
           ok: true,

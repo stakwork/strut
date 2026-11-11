@@ -34,6 +34,14 @@
  * mid-turn through `meta/verify-job`, a person through `POST
  * /jobs/:id/verify`) APPENDS evidence at `job:<id>#<n>` instead of being a
  * no-op, and accepts a run still in flight.
+ *
+ * A CONCEPT is the fourth: a workflow run observes every Concept whose page
+ * it opened, at the version that read returned — recorded on the run's log
+ * by the read itself (`AccessedNode.version`, graph/graph-get), so this pass
+ * never asks the graph what the Concept says now. Its checks read the run
+ * as a workflow's do, with the Concepts the run opened beside it. A run
+ * that never opened a page is no observation of it: a claim that a page
+ * gets opened belongs on the page that lists it.
  */
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -97,6 +105,9 @@ export interface ObservedSubject {
    *  from the job index at verify time (`buildJobSubject`): a job's product
    *  is its live state, never its log (plans/job-claims.md §3). */
   check: Omit<RunCheckSubject, "artifactsDir">;
+  /** A CONCEPT subject: the node the run read. A subject is a name, and a
+   *  Concept of that name in another namespace is not this graph's own. */
+  ref?: string;
 }
 
 const CONTAINER_STEPS = new Set(["subflow", "loop", "foreach"]);
@@ -105,6 +116,10 @@ const isToolEvent = (e: RunEvent) => typeof e.stepType === "string" && e.stepTyp
 /** A job subject's event path — `job:<id>`; its evidence is written at
  *  `job:<id>#<n>` (plans/job-claims.md §2). */
 export const jobSubjectPath = (job: string) => `job:${job}`;
+
+/** A Concept subject's event path — `concept:<name>`: one per Concept a run
+ *  opened, apart from the run's own path (the workflow subject's). */
+export const conceptSubjectPath = (name: string) => `concept:${name}`;
 
 /**
  * Rebuild the subjects from a run's event log alone (run events carry full
@@ -121,7 +136,14 @@ export const jobSubjectPath = (job: string) => `job:${job}`;
  *   - the JOB a top-level run was a turn of (`run.start.job`, no
  *     `parentRunId`): one subject at the version that is this run, once the
  *     run ENDED — a cancelled or failed turn moves the version (its evidence
- *     goes stale) and nothing is verified for it (plans/job-claims.md §8).
+ *     goes stale) and nothing is verified for it (plans/job-claims.md §8);
+ *   - each CONCEPT whose page a workflow run opened (`step.end.nodes` with a
+ *     `version`: graph/graph-get, as a workflow's step — `context/concept` —
+ *     or an agent's tool call), at the version its last read returned. The
+ *     check reads the run as the workflow subject's does, plus `concept` and
+ *     `concepts` (every one opened, first opened first). A Concept the log
+ *     gives no version for — written, traversed, touched by a run this one
+ *     launched, another strut's — is not observed.
  */
 export function subjectsOfRun(key: string, events: readonly RunEvent[]): ObservedSubject[] {
   const out: ObservedSubject[] = [];
@@ -133,6 +155,8 @@ export function subjectsOfRun(key: string, events: readonly RunEvent[]): Observe
   let stepHashes: Record<string, string> = launch.stepHashes ?? {};
   // The hashes in force when each step STARTED (a resume reloads steps).
   const starts = new Map<string, { event: RunEvent; stepHashes: Record<string, string> }>();
+  // The Concepts whose page the run opened, by name, first opened first.
+  const opened = new Map<string, { ref: string; version: string }>();
 
   const stepSubject = (start: { event: RunEvent; stepHashes: Record<string, string> }, end: RunEvent): ObservedSubject | null => {
     const type = end.stepType;
@@ -163,6 +187,9 @@ export function subjectsOfRun(key: string, events: readonly RunEvent[]): Observe
 
   for (const e of events) {
     if (e.type === "run.resumed" && e.stepHashes) stepHashes = e.stepHashes;
+    if (e.type === "step.end" && Array.isArray(e.nodes)) {
+      for (const n of e.nodes) if (n.node_type === "Concept" && n.name && n.version && !n.peer) opened.set(n.name, { ref: n.ref_id, version: n.version });
+    }
     if (isToolEvent(e)) continue;
     if (e.type === "step.start") starts.set(e.path, { event: e, stepHashes });
     else if (e.type === "step.end" || e.type === "step.error") {
@@ -184,20 +211,33 @@ export function subjectsOfRun(key: string, events: readonly RunEvent[]): Observe
     const end = [...events].reverse().find((e) => e.type === "run.end" || e.type === "run.error");
     const finishedOn = executedWorkflowHash(events);
     if (end) {
+      const check = {
+        ...base,
+        input: launch.input,
+        ...(launch.params ? { params: launch.params } : {}),
+        path: launch.path,
+        ...(end.type === "run.error" ? { error: end.error ?? { message: "unknown error" } } : { output: end.output }),
+      };
       out.push({
         subject: { kind: "workflow", name: key },
         // The version that finished it: a resume may have moved it (§5.4).
         ...(finishedOn ? { version: finishedOn } : {}),
         path: launch.path,
         at: end.ts,
-        check: {
-          ...base,
-          input: launch.input,
-          ...(launch.params ? { params: launch.params } : {}),
-          path: launch.path,
-          ...(end.type === "run.error" ? { error: end.error ?? { message: "unknown error" } } : { output: end.output }),
-        },
+        check,
       });
+      // The Concepts it opened: each reads the same run.
+      const concepts = [...opened.keys()];
+      for (const [name, read] of opened) {
+        out.push({
+          subject: { kind: "concept", name },
+          version: read.version,
+          ref: read.ref,
+          path: conceptSubjectPath(name),
+          at: end.ts,
+          check: { ...check, concept: name, concepts, ...(launch.job ? { job: launch.job } : {}) },
+        });
+      }
     }
   }
   // The job this run was a turn of.
@@ -497,9 +537,17 @@ export function createVerifier(deps: VerifierDeps) {
   }
 
   /** `HAS_SOURCE.context` for a subject: a step's path (and cassette); a
-   *  job's TURN — its path is unused (plans/job-claims.md §2). */
+   *  job's TURN — its path is unused (plans/job-claims.md §2); a Concept's
+   *  VERSION, which no node holds. */
   const contextOf = (o: ObservedSubject): SourceContext =>
-    o.subject.kind === "job" ? { turn: o.version! } : { path: o.path, ...(o.check.cassette ? { cassette: o.check.cassette } : {}) };
+    o.subject.kind === "job"
+      ? { turn: o.version! }
+      : { path: o.path, ...(o.subject.kind === "concept" ? { version: o.version! } : {}), ...(o.check.cassette ? { cassette: o.check.cassette } : {}) };
+
+  /** Is the Concept a run opened this graph's own? Claims are about the
+   *  Concept of that name in the backend's namespace; a run may have read
+   *  one of the same name elsewhere. Every other subject: yes. */
+  const ours = async (o: ObservedSubject): Promise<boolean> => o.subject.kind !== "concept" || (!!o.ref && o.ref === (await reader.subjectRefId(o.subject)));
 
   const claimsOf = async (pass: Pass, s: SubjectRef) => {
     const k = subjectKey(s);
@@ -775,7 +823,7 @@ export function createVerifier(deps: VerifierDeps) {
    *  loop `runPass` and `verifyJob` share. `only` narrows to claim ids. */
   async function verifySubject(pass: Pass, o: ObservedSubject, only?: readonly string[]): Promise<void> {
     const claims = (await claimsOf(pass, o.subject)).filter((c) => !only || only.includes(c.id));
-    if (claims.length === 0) return;
+    if (claims.length === 0 || !(await ours(o))) return;
     if (!pass.result.subjects.some((s) => sameSubject(s, o.subject))) pass.result.subjects.push(o.subject);
 
     let input: RunCheckSubject | JobCheckSubject | null = null;
@@ -790,6 +838,12 @@ export function createVerifier(deps: VerifierDeps) {
         input = await jobInputOf(pass, o.subject.id, o.check.output);
         if (!input) skip = { skipped: "cannot-launch", reason: "the job could not be read from the index" };
       }
+    } else if (o.subject.kind === "concept") {
+      // The run's files: its job's directory when it had one, as job/dir
+      // hands a job's agent; else its artifacts.
+      const files = await artifactsDirOf(pass);
+      const dir = o.check.job ? jobRoot(dataDir(), o.check.job) : files.artifactsDir;
+      input = { ...o.check, ...files, ...(dir ? { dir } : {}) };
     } else {
       input = { ...o.check, ...(await artifactsDirOf(pass)) };
     }
@@ -1004,9 +1058,10 @@ export function createVerifier(deps: VerifierDeps) {
     if (input.job && launch?.job !== input.job) return { error: `run ${input.runId} does not carry job "${input.job}"` };
 
     const about = (await reader.subjectsOf(claim.id)).map((s) => s.subject);
-    const observed = subjectsOfRun(name, events).filter(
-      (o) => o.version && about.some((s) => sameSubject(s, o.subject)) && (!subject || sameSubject(subject, o.subject)),
-    );
+    const observed: ObservedSubject[] = [];
+    for (const o of subjectsOfRun(name, events)) {
+      if (o.version && about.some((s) => sameSubject(s, o.subject)) && (!subject || sameSubject(subject, o.subject)) && (await ours(o))) observed.push(o);
+    }
     const distinct = [...new Map(observed.map((o) => [subjectKey(o.subject), o])).values()];
     if (distinct.length === 0) {
       return { error: `run ${input.runId} did not execute a subject of this claim with a recorded version (${about.map(subjectKey).join(", ") || "no subjects"}) — evidence must be about a version that actually ran` };

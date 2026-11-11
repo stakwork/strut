@@ -206,7 +206,7 @@ describe("the /public routes", () => {
     const { strut } = await boot();
     const res = await strut.app.request("/public");
     assert.equal(res.status, 200);
-    assert.deepEqual(await res.json(), { workflows: [], steps: [], concepts: [], types: [], apps: [], runnable: [] });
+    assert.deepEqual(await res.json(), { host: { remote: 1 }, workflows: [], steps: [], concepts: [], types: [], apps: [], runnable: [] });
     assert.equal((await strut.app.request("/public/workflows/demo")).status, 404);
     assert.equal((await strut.app.request("/public/workflows/demo/flow")).status, 404);
     assert.equal((await strut.app.request("/public/graph/nodes/x")).status, 404);
@@ -305,13 +305,20 @@ describe("the /public routes", () => {
       liveStatus: () => "stale",
       ratePerMinute: 2,
     });
-    const from = (ip: string) => app.request("/public", { headers: { "x-forwarded-for": ip } });
+    // Through a proxy on loopback (trusted by default): its header names the visitor.
+    const from = (ip: string, peer = "127.0.0.1") =>
+      app.request("/public", { headers: { "x-forwarded-for": ip } }, { incoming: { socket: { remoteAddress: peer } } });
     assert.equal((await from("1.1.1.1")).status, 200);
     assert.equal((await from("1.1.1.1")).status, 200);
     const third = await from("1.1.1.1");
     assert.equal(third.status, 429);
     assert.equal(third.headers.get("access-control-allow-origin"), "*");
     assert.equal((await from("2.2.2.2")).status, 200);
+    // A client reaching strut directly names nothing: a fresh header each
+    // time is still its one budget.
+    assert.equal((await from("3.3.3.3", "203.0.113.7")).status, 200);
+    assert.equal((await from("4.4.4.4", "203.0.113.7")).status, 200);
+    assert.equal((await from("5.5.5.5", "203.0.113.7")).status, 429);
   });
 });
 
