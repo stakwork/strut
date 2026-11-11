@@ -251,6 +251,29 @@ export function subjectsOfRun(key: string, events: readonly RunEvent[]): Observe
   return out;
 }
 
+/**
+ * The Concepts whose page a run opened, by name, first opened first — what
+ * `subjectsOfRun` observes, for a reader that wants the names alone (the
+ * dream telling "the page was not opened" from "it was opened and not
+ * followed"). Null when the log cannot say: no events, or it names Concepts
+ * and records a version for none of them — a run from before reads recorded
+ * one, which says nothing either way. Pure.
+ */
+export function conceptsOpenedIn(events: readonly RunEvent[]): string[] | null {
+  if (events.length === 0) return null;
+  const opened = new Set<string>();
+  let named = false;
+  for (const e of events) {
+    if (e.type !== "step.end" || !Array.isArray(e.nodes)) continue;
+    for (const n of e.nodes) {
+      if (n.node_type !== "Concept" || !n.name || n.peer) continue;
+      named = true;
+      if (n.version) opened.add(n.name);
+    }
+  }
+  return named && opened.size === 0 ? null : [...opened];
+}
+
 // ── The check contract ──────────────────────────────────────────────────────
 
 export type MappedCheck =

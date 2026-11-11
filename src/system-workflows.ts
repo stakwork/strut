@@ -14,6 +14,9 @@ import type { WorkspaceStore } from "./workspace.js";
  * src/workflows/system/<name>/ (copied into build/ with the rest of
  * src/workflows) holding `workflow.yaml` and `automation.json`. On boot each
  * is installed as a workflow of category "system" plus its automation, OFF.
+ * A folder with no `automation.json` is a workflow something else runs
+ * (`concept-check`, the check on a claim about a Concept): installed the
+ * same, with no automation.
  *
  * A shipped version is labelled `s-<content hash>`. A seed always matches
  * git, so the rules are:
@@ -53,7 +56,7 @@ const shippedAutomationSchema = automationDraftSchema.extend({ formerNames: z.ar
 export type InstallAction = "created" | "updated" | "unchanged" | "skipped";
 type Installed = { version: string; action: InstallAction; automation?: string };
 
-/** Install one system workflow. `automationJson` is the parsed automation.json. */
+/** Install one system workflow. `automationJson` is the parsed automation.json; undefined, it gets no automation. */
 export async function installSystemWorkflow(
   workspace: WorkspaceStore,
   name: string,
@@ -62,7 +65,7 @@ export async function installSystemWorkflow(
 ): Promise<Installed> {
   const label = shippedVersionLabel(yamlText);
   const description = (yaml.load(yamlText) as { description?: string } | null)?.description;
-  const { formerNames, ...draft } = shippedAutomationSchema.parse(automationJson);
+  const shipped = automationJson === undefined ? undefined : shippedAutomationSchema.parse(automationJson);
   const publish = () => workspace.publishWorkflow(name, label, yamlText, description, SYSTEM_CATEGORY, undefined, { source: "seed" });
 
   const meta = await workspace.getWorkflowMetadata(name);
@@ -84,6 +87,8 @@ export async function installSystemWorkflow(
     }
   }
 
+  if (!shipped) return { version: label, action };
+  const { formerNames, ...draft } = shipped;
   if (meta?.automations?.length) {
     if (meta.automations.some((a) => formerNames.includes(a.name))) {
       await workspace.setWorkflowAutomations(name, meta.automations.map((a) => (formerNames.includes(a.name) ? { ...a, name: draft.name } : a)));
@@ -108,7 +113,8 @@ export async function installSystemWorkflows(workspace: WorkspaceStore): Promise
     // One broken folder never keeps the others from installing.
     try {
       const yamlText = await readFile(join(SYSTEM_DIR, name, "workflow.yaml"), "utf-8");
-      const automationJson = JSON.parse(await readFile(join(SYSTEM_DIR, name, "automation.json"), "utf-8"));
+      const automationFile = join(SYSTEM_DIR, name, "automation.json");
+      const automationJson = existsSync(automationFile) ? JSON.parse(await readFile(automationFile, "utf-8")) : undefined;
       out.push({ name, ...(await installSystemWorkflow(workspace, name, yamlText, automationJson)) });
     } catch (err) {
       console.warn(`[system] could not install ${name}:`, err instanceof Error ? err.message : err);
