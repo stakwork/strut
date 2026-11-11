@@ -179,7 +179,7 @@ import "./privacy/register.js";
 import { seedPrivacyWorkflows } from "./privacy/seed.js";
 import { HOME_POSTS, homeSyncRole, homeSyncRoutes, seedHomeSyncWorkflow, type HomeSyncRole } from "./home-sync.js";
 import { VOICE_CALLS, voiceConfig, voiceRoutes, warmSpeech, type VoiceConfig } from "./voice.js";
-import { createPublicSurface, normalizeSurface, surfaceProblem, visitorRefusal, visitorRuns, type PublicSurface } from "./public-surface.js";
+import { createPublicSurface, normalizeSurface, surfaceProblem, VISIT_HEADER, visitorOfVisit, visitorRefusal, visitorRuns, type PublicSurface } from "./public-surface.js";
 import { brandProblem, brandStyles, normalizeBrand, readBrand, writeBrand } from "./brand.js";
 import { PUBLIC_PATH, PUBLIC_POST, publicRoutes, visitorAddress } from "./public-routes.js";
 import { createPublicRuns, publicRunsMaxFromEnv, publicRunsPath } from "./public-runs.js";
@@ -1039,7 +1039,7 @@ export async function createStrut<TServices = unknown>(
    *  will record them — known from the launch, so a run a caller has just
    *  been handed the id of is theirs before its first event lands (`ownRun`).
    *  A dead run is judged by its log. */
-  const launchedAs = new WeakMap<RunController, { app?: AppRef; actor?: string }>();
+  const launchedAs = new WeakMap<RunController, { app?: AppRef; actor?: string; visitor?: string }>();
   /** Register a run as in-flight, creating its controller (attached to the
    *  launching run's controller when `parentRunId` resolves — controls apply
    *  to whole subtrees). Every launch path must register: HTTP
@@ -1079,6 +1079,12 @@ export async function createStrut<TServices = unknown>(
     controller?.job
       ? { job: controller.job.id, ...(controller.job.title ? { jobTitle: controller.job.title } : {}) }
       : {};
+  /** A live public run's visit (plans/paid-runs.md §10), as its summary
+   *  will carry it: a visitor's own runs list before they end. */
+  const liveVisitor = (controller: RunController | undefined) => {
+    const visitor = controller ? launchedAs.get(controller)?.visitor : undefined;
+    return visitor ? { visitor } : {};
+  };
   /** Append a control marker (run.paused / run.resumed) to a run's log so
    *  the parked gap is visible in the record (§4 observability). A
    *  `run.resumed` written here is an UNPAUSE of a live run, marked `live`:
@@ -2498,6 +2504,7 @@ export async function createStrut<TServices = unknown>(
         ...(p.runStart.origin === "public" ? { origin: "public" as const } : {}),
         ...(p.runStart.maxCostUsd !== undefined ? { maxCostUsd: p.runStart.maxCostUsd } : {}),
         ...(p.runStart.origin === "public" && p.runStart.credit ? { credit: p.runStart.credit } : {}),
+        ...(p.runStart.origin === "public" && p.runStart.visitor ? { visitor: p.runStart.visitor } : {}),
         ...(p.runStart.startedBy ? { startedBy: p.runStart.startedBy } : {}),
         ...(p.runStart.wake ? { wake: p.runStart.wake } : {}),
         // Billed to whoever the original launch was billed to — never
@@ -3273,7 +3280,7 @@ export async function createStrut<TServices = unknown>(
     wallet: () => payments.lightning() !== null,
     ...(opts.publicRuns?.principal ? { principal: opts.publicRuns.principal } : {}),
   };
-  publicRoutes(app, {
+  const publicDoors = publicRoutes(app, {
     surface: publicSurface,
     workspace,
     store,
@@ -3298,7 +3305,11 @@ export async function createStrut<TServices = unknown>(
         if (!dir) return null;
         const bytes = await readAppFile(dir.path, DOCUMENT_FILE);
         if (!bytes) return null;
-        return { version: dir.version, html: withPublicIdentity(Buffer.from(bytes).toString("utf8"), publicAppIdentity(name, dir.version)) };
+        // What its page may start (plans/paid-runs.md §10): the workflows
+        // it grants that anyone may run.
+        const grants = (await apps.get(name, dir.version).catch(() => null))?.manifest.grants.workflows ?? [];
+        const runnable = (await publicSurface.get()).runnable.filter((r) => r.kind === "workflow" && grants.includes(r.name)).map((r) => r.name);
+        return { version: dir.version, html: withPublicIdentity(Buffer.from(bytes).toString("utf8"), publicAppIdentity(name, dir.version), runnable) };
       },
     },
     // Anyone's launch (plans/paid-runs.md §3, §6): the workflow as published
@@ -3324,6 +3335,7 @@ export async function createStrut<TServices = unknown>(
           ...(opts.publicRuns?.principal ? { principal: opts.publicRuns.principal } : {}),
           ...(o.maxCostUsd !== undefined ? { maxCostUsd: o.maxCostUsd } : {}),
           ...(o.credit ? { credit: o.credit } : {}),
+          ...(o.visitor ? { visitor: o.visitor } : {}),
         });
       },
       cancel: async (name, runId) => {
@@ -5749,6 +5761,9 @@ export async function createStrut<TServices = unknown>(
       /** A priced public run's credit token id (§6): on `run.start`, its
        *  sessions' namespace, what its end charges. */
       credit?: string;
+      /** A public run a visitor's app page launched (§10): the visit's
+       *  hash, on `run.start` and the summary — its reads back. */
+      visitor?: string;
       /** A peer's launch through a PERSON's credential (scope
        *  `peer:person`): the run may open its actor's own sessions. */
       peerPerson?: boolean;
@@ -5803,7 +5818,11 @@ export async function createStrut<TServices = unknown>(
       body.job ? { id: body.job, ...(body.title ? { title: body.title } : {}) } : undefined,
     );
     if (extra?.origin === "peer") peerLaunched.add(controller);
-    launchedAs.set(controller, { ...(extra?.app ? { app: extra.app } : {}), ...(extra?.actor ? { actor: extra.actor } : {}) });
+    launchedAs.set(controller, {
+      ...(extra?.app ? { app: extra.app } : {}),
+      ...(extra?.actor ? { actor: extra.actor } : {}),
+      ...(extra?.origin === "public" && extra.visitor ? { visitor: extra.visitor } : {}),
+    });
     const launchedAt = Date.now();
     const callback = extra?.callback;
     const mcp = extra?.mcp?.length ? extra.mcp : undefined;
@@ -5899,6 +5918,7 @@ export async function createStrut<TServices = unknown>(
         ...(attachments?.length ? { attachments } : {}),
         ...(extra?.maxCostUsd !== undefined ? { maxCostUsd: extra.maxCostUsd } : {}),
         ...(isPublic && extra?.credit ? { credit: extra.credit } : {}),
+        ...(isPublic && extra?.visitor ? { visitor: extra.visitor } : {}),
         // Its end, recorded from the terminal event — before the summary is
         // written, so whoever sees the run done sees the conversation say so.
         ...(conversation ? { onEvent: (e: RunEvent) => conversationEnd(conversation, runId, e) } : {}),
@@ -6414,6 +6434,9 @@ export async function createStrut<TServices = unknown>(
   // consumer brought its own. An APP reaches these through `step_run` on
   // its `grants.workflows`; an agent through `agentTools: ["run/*"]`.
 
+  /** How long `run/get` waits for a live run's first event (its launch is
+   *  still on its way to `run.start`). */
+  const RUN_FIRST_EVENT_WAIT_MS = 5_000;
   /** `run/launch { key }` (§5.1): `<workflow>\0<key>` → the run launched
    *  under it, memory-only — a key whose run is no longer live is free. */
   const launchKeys = new Map<string, string>();
@@ -6504,7 +6527,14 @@ export async function createStrut<TServices = unknown>(
         const summary = await store.getRunSummary(workflow, runId);
         const row: RunListEntry & { jobTitle?: string } = summary
           ? listEntryOf(summary)
-          : { runId, workflow, status: liveStatus(workflow, runId), ...liveJob(controllers.get(`${workflow}/${runId}`)), ...(q.workflow ? {} : { job: q.job }) } as RunListEntry;
+          : ({
+              runId,
+              workflow,
+              status: liveStatus(workflow, runId),
+              ...liveJob(controllers.get(`${workflow}/${runId}`)),
+              ...liveVisitor(controllers.get(`${workflow}/${runId}`)),
+              ...(q.workflow ? {} : { job: q.job }),
+            } as RunListEntry);
         if (!matchesRunFilter(row, q)) continue;
         if (scoped && !(await ownRun(workflow, runId, by, summary))) continue;
         const artifacts = summary ? await artifactRefs(runId, summary.output, summary.job).catch(() => undefined) : undefined;
@@ -6515,6 +6545,10 @@ export async function createStrut<TServices = unknown>(
     async get(q, by) {
       if (!(await openRun(q.workflow, q.runId, by)).visible) return null;
       const deadline = Date.now() + Math.min(RUN_GET_MAX_WAIT_MS, Math.max(0, q.wait ?? 0));
+      // A run launched a moment ago may not have written `run.start` yet: a
+      // read right after `run/launch` waits for it rather than answer that
+      // the run does not exist.
+      const firstEvent = Date.now() + RUN_FIRST_EVENT_WAIT_MS;
       for (;;) {
         const summary = await store.getRunSummary(q.workflow, q.runId);
         if (summary) {
@@ -6528,6 +6562,10 @@ export async function createStrut<TServices = unknown>(
           continue;
         }
         const events = await store.getRunEvents(q.workflow, q.runId);
+        if (!events.length && liveKey(q.workflow, q.runId) && Date.now() < firstEvent) {
+          await new Promise((r) => setTimeout(r, 50));
+          continue;
+        }
         const partial = summarizeFromEvents(q.workflow, q.runId, events, liveStatus(q.workflow, q.runId));
         return partial ? { ...partial, partial: true } : null;
       }
@@ -8095,12 +8133,24 @@ export async function createStrut<TServices = unknown>(
      *  `secrets` (for a read a person ticked), the graph's reader held to
      *  visible nodes, the runs held to the public view. Nothing else is on
      *  it, so a step reaching for a write, a shell or a file fails naming
-     *  what is missing. */
+     *  what is missing.
+     *
+     *  One write: `run/launch` of a workflow anyone may run that the app
+     *  grants (plans/paid-runs.md §10), through the SAME launcher as `POST
+     *  /public/workflows/:name/run` — this address's budget, the drain, the
+     *  body, the caps, the price. The HOST pays: a priced launch with no
+     *  credit answers `{ payment_required }`, and the host retries with the
+     *  credit token as this request's `Authorization: L402 …` — never in the
+     *  tool's arguments or result. The host names the VISIT
+     *  (`x-strut-visit`, a secret it mints per page): the runs launched
+     *  under it are the ones its page reads back. */
     app.post("/public/mcp", async (c) => {
       const { buildAppTools, APP_TOOL_META } = await import("./apps/tools.js");
       const { createMcpDoor, toolsetServer } = await import("./ai/mcp.js");
       const bag = services as Record<string, unknown>;
       const reader = publicSurface.reader();
+      const who = visitorAddress(c);
+      const visitor = visitorOfVisit(c.req.header(VISIT_HEADER));
       const visitorBag = {
         ...(bag["http"] ? { http: bag["http"] } : {}),
         ...(bag["secrets"] ? { secrets: bag["secrets"] } : {}),
@@ -8116,7 +8166,23 @@ export async function createStrut<TServices = unknown>(
               },
             }
           : {}),
-        ...(bag["runs"] ? { runs: visitorRuns(bag["runs"] as Parameters<typeof visitorRuns>[0]) } : {}),
+        ...(bag["runs"]
+          ? {
+              runs: visitorRuns(bag["runs"] as Parameters<typeof visitorRuns>[0], {
+                surface: () => publicSurface.get(),
+                ...(visitor ? { visitor } : {}),
+                launch: (workflow, body) =>
+                  publicDoors.launch({
+                    name: workflow,
+                    who,
+                    authorization: c.req.header("authorization"),
+                    readBody: async () => ({ body }),
+                    scope: visitor ? `visit:${visitor}` : who,
+                    ...(visitor ? { visitor } : {}),
+                  }),
+              }),
+            }
+          : {}),
       };
       const tools = buildAppTools({
         apps,
@@ -8127,10 +8193,11 @@ export async function createStrut<TServices = unknown>(
         visitor: {
           identity: publicAppOfIdentity,
           refusal: async (at, type, config) => visitorRefusal(await publicSurface.get(), (await apps.versionDir(at.name).catch(() => null))?.version, at, type, config),
-          viewer: `visitor ${visitorAddress(c)}`,
+          viewer: `visitor ${who}`,
         },
       });
-      const instructions = "A public app's one tool, step_run, for a visitor's page: reads only, held to this strut server's public view.";
+      const instructions =
+        "A public app's one tool, step_run, for a visitor's page: reads held to this strut server's public view, and run/launch of a workflow anyone may run that the app grants — a priced one answers { payment_required } until its host pays.";
       return createMcpDoor(() => toolsetServer({ tools, instructions, meta: APP_TOOL_META })).handle(c.req.raw);
     });
     /** The builder deps both doors spread: public links, and a run that

@@ -5,6 +5,8 @@ import { connectAppHost, type AppHostConnection } from "../app-host";
 import { nativeWalletOf, type NativeWalletApp } from "@strut/kit/wallet";
 import { appToolInput, namesApp, peerAppLink } from "../app-links";
 import { frameAttributes } from "../frame-permissions";
+import type { PaymentRequired, PayOutcome } from "../visitor-pay";
+import { PaymentSheet } from "./PaymentSheet";
 
 // ── An app's page, hosted (plans/apps.md §7.3) ─────────────────────────────
 //
@@ -41,6 +43,9 @@ import { frameAttributes } from "../frame-permissions";
 // artifact viewer. A PEER's app (plans/apps.md §7.4) is the same with every
 // URL under `/peers/<id>`: this strut's read-through reads its listing and
 // document, and relays its tools/call to the peer with the token on file.
+// A VISITOR's page (the public view) may launch a workflow anyone may run;
+// when it costs something this host — never the frame — shows the invoice
+// over the frame and pays (./PaymentSheet, plans/paid-runs.md §10).
 
 /** The frame every app starts in (../frame-permissions). Constant, so a
  *  render never writes over what the effect set for the version on screen. */
@@ -81,6 +86,10 @@ export function AppHost(props: {
   const ready = visitor || !!scope;
   const frameRef = useRef<HTMLIFrameElement>(null);
   const [state, setState] = useState<{ status: "loading" | "ready" | "error"; error?: string }>({ status: "loading" });
+  /** A priced launch the visitor is asked to pay, and where its answer goes. */
+  const [payment, setPayment] = useState<{ p: PaymentRequired; workflow: string; done: (o: PayOutcome) => void } | null>(null);
+  const paymentRef = useRef(payment);
+  paymentRef.current = payment;
   const connRef = useRef<AppHostConnection | null>(null);
   const handlers = useRef({ onMessage: props.onMessage, onNavigate: props.onNavigate, onReady: props.onReady });
   handlers.current = { onMessage: props.onMessage, onNavigate: props.onNavigate, onReady: props.onReady };
@@ -143,6 +152,21 @@ export function AppHost(props: {
           ...(!visitor ? { channels: { name: app.name, version: app.version, ...(app.peer ? { peer: app.peer } : {}) } } : {}),
           handlers: {
             onInitialized: markReady,
+            ...(visitor
+              ? {
+                  onPayment: (p: PaymentRequired, workflow: string) =>
+                    new Promise<PayOutcome>((resolve) => {
+                      setPayment({
+                        p,
+                        workflow,
+                        done: (o) => {
+                          setPayment(null);
+                          resolve(o);
+                        },
+                      });
+                    }),
+                }
+              : {}),
             ...(messages ? { onMessage: (text: string) => handlers.current.onMessage?.(text) } : {}),
             ...(handlers.current.onNavigate ? {
               onNavigate: (params: Record<string, string>) => {
@@ -181,6 +205,8 @@ export function AppHost(props: {
     })();
     return () => {
       cancelled = true;
+      // A sheet still open answers its call: the page is going away.
+      paymentRef.current?.done(null);
       clearTimeout(readyTimer);
       frame.removeEventListener("load", onLoad);
       connRef.current = null;
@@ -211,6 +237,7 @@ export function AppHost(props: {
     <div class={`app-host${theme === "light" ? " light" : ""}`}>
       {/* Every app's attributes; the effect sets the version's before the srcdoc. */}
       <iframe ref={frameRef} class="app-frame" sandbox={BASE_FRAME.sandbox} allow={BASE_FRAME.allow} title={app.name} />
+      {payment && <PaymentSheet payment={payment.p} workflow={payment.workflow} onDone={payment.done} />}
       {state.status !== "ready" && (
         <div class={`app-host-overlay${state.status === "error" ? " is-error" : ""}`}>
           {state.status === "loading" ? "Loading the app…" : `The app could not be loaded: ${state.error}`}

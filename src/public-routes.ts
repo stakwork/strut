@@ -39,7 +39,7 @@ import type { WorkspaceStore } from "./workspace.js";
 import type { ArtifactsCapability } from "./capabilities.js";
 import type { PublicSurfaceService } from "./public-surface.js";
 import type { ListedRunnable } from "./public-runnable.js";
-import { publicEvent, publicSummary, stepHelpers } from "./public-surface.js";
+import { declaredPaths, outputOnlySummary as outputOnly, publicEvent, publicSummary, relativeFile, stepHelpers } from "./public-surface.js";
 import { runsPage } from "./runs.js";
 import { searchWorkflows } from "./search.js";
 import { resolveStep } from "./steps/registry.js";
@@ -100,11 +100,48 @@ export interface PublicLaunchDeps {
   /** Launch the run detached, as published, `origin: "public"`, under the
    *  id the caps minted, with its cap (`RunOptions.maxCostUsd`) and, when
    *  priced, the credit token's id (`run.start.credit`). */
-  launch(flow: Flow, input: unknown, o: { runId: string; maxCostUsd?: number; credit?: string }): void;
+  launch(flow: Flow, input: unknown, o: { runId: string; maxCostUsd?: number; credit?: string; visitor?: string }): void;
   /** Cancel a live run's tree: 202, or why not (404, 409). */
   cancel(name: string, runId: string): Promise<{ status: 202 | 404 | 409; body: Record<string, unknown> }>;
   /** Launches one visitor address may make a minute (`PUBLIC_LAUNCHES_PER_MINUTE`). */
   perMinute?: number;
+}
+
+/** What a public launch answers, whichever door it came through: the
+ *  route's status, body and headers, as data — `POST
+ *  /public/workflows/:name/run` sends it as it is, a visitor's app page
+ *  (`run/launch` through `POST /public/mcp`) reads it into its tool result
+ *  (src/public-surface.ts `visitorRuns`). */
+export interface PublicLaunchOutcome {
+  status: 202 | 400 | 401 | 402 | 403 | 404 | 409 | 413 | 429 | 503;
+  body: Record<string, unknown>;
+  headers?: Record<string, string>;
+}
+
+/** One public launch (§3's order): who, what, and the credential. */
+export interface PublicLaunchRequest {
+  name: string;
+  /** The caller's address (`visitorAddress`): the launch budget and the
+   *  challenge's allowance. */
+  who: string;
+  /** `Authorization` as sent: a credit token as `L402 <macaroon>:<preimage>`. */
+  authorization?: string | undefined;
+  /** The body (`{ input?, key? }` and nothing else), read only once the
+   *  budget, the item and the drain have answered; or the refusal reading
+   *  it came to (too big, not JSON). */
+  readBody: () => Promise<{ body: unknown } | { refused: PublicLaunchOutcome }>;
+  /** What scopes a `key` when no credit token does (the visit, for a
+   *  visitor's page). Default: the address. */
+  scope?: string;
+  /** A visitor's page's launch: the visit's hash, on the run's `run.start`
+   *  (plans/paid-runs.md §10) — what lets that visit read it back. */
+  visitor?: string;
+}
+
+/** What `publicRoutes` hands back to the server: the launch, for the
+ *  visitor's door. */
+export interface PublicDoors {
+  launch(r: PublicLaunchRequest): Promise<PublicLaunchOutcome>;
 }
 
 /** A public app as a visitor's host reads it. */
@@ -156,42 +193,6 @@ const enc = encodeURIComponent;
 export const publicTranscriptUrl = (workflow: string, runId: string, path: string) =>
   `/public/workflows/${enc(workflow)}/runs/${enc(runId)}/transcripts/${path.split("/").map(enc).join("/")}`;
 
-/** A relative path a run's output names as one of its files, or undefined:
- *  `./` dropped, nothing absolute, no `..`, no URL. */
-function relativeFile(v: unknown): string | undefined {
-  if (typeof v !== "string" || !v || /^[a-z][a-z0-9+.-]*:/i.test(v) || v.startsWith("/")) return undefined;
-  const p = v.replace(/^(?:\.\/)+/, "");
-  return p && !p.split("/").includes("..") ? p : undefined;
-}
-
-/** The files a run's output declares (`artifacts[].path`, and `render`
- *  when it is a file): what a launcher shown the output alone may read. */
-export function declaredPaths(output: unknown): Set<string> {
-  const out = new Set<string>();
-  const list = (output as { artifacts?: unknown } | null | undefined)?.artifacts;
-  if (!Array.isArray(list)) return out;
-  for (const e of list) {
-    if (!e || typeof e !== "object") continue;
-    for (const k of ["path", "render"] as const) {
-      const p = relativeFile((e as Record<string, unknown>)[k]);
-      if (p) out.add(p);
-    }
-  }
-  return out;
-}
-
-/** What the launcher of an item that shows its output alone reads of the
- *  summary: never its step counts, nor where an error was raised. */
-function outputOnly(s: Record<string, unknown>): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const k of ["runId", "workflow", "status", "startedAt", "finishedAt", "durationMs", "input", "output", "origin", "totals"]) {
-    if (s[k] !== undefined) out[k] = s[k];
-  }
-  const err = s["error"] as { message?: unknown } | undefined;
-  if (err && typeof err === "object") out["error"] = { message: String(err.message ?? "") };
-  return out;
-}
-
 /** A run's declared artifacts as its launcher opens them: a file here at
  *  its `/public` link (the run token goes beside it, `?t=`), an absolute
  *  link or inline content as declared. */
@@ -218,7 +219,7 @@ function launcherArtifacts(name: string, runId: string, output: unknown): Array<
   return out;
 }
 
-export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): void {
+export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors {
   const { surface, workspace, store } = deps;
   const notPublic = (c: Context, what: string) => c.json({ error: `${what} is not public on this strut server` }, 404);
 
@@ -235,7 +236,8 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): void {
         "access-control-allow-origin": "*",
         "access-control-allow-methods": "GET, HEAD, POST",
         // `authorization`: a launcher's run token as a Bearer, a credit token as L402.
-        "access-control-allow-headers": "content-type, accept, authorization, mcp-protocol-version",
+        // `x-strut-visit`: a visitor's page's host names the visit (§10).
+        "access-control-allow-headers": "content-type, accept, authorization, mcp-protocol-version, x-strut-visit",
         "access-control-max-age": "600",
       });
     }
@@ -557,7 +559,9 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): void {
   // A launch, in order, each step answering before the next costs anything:
   // the per-address budget, the item (404 when nobody made it runnable),
   // the drain, the body, the caps (src/public-runs.ts), the price, then the
-  // run. Item 5 puts the credit token's 402 and the hold in the price's place.
+  // run. ONE function for both doors: this route, and a visitor's app page
+  // (`run/launch` through `POST /public/mcp`, plans/paid-runs.md §10), which
+  // shares the address's budget.
   const launchLimit = deps.launches?.perMinute ?? PUBLIC_LAUNCHES_PER_MINUTE;
   const launchCounts = new Map<string, { minute: number; n: number }>();
   const overLaunchBudget = (who: string): boolean => {
@@ -570,43 +574,42 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): void {
     }
     return ++at.n > launchLimit;
   };
+  /** A credit refusal as an outcome: the route's `creditRefusal`, as data. */
+  const refusalOutcome = (r: Pick<CreditRefusal, "status" | "code" | "error" | "retryAfter">): PublicLaunchOutcome => {
+    const headers: Record<string, string> = {};
+    if (r.retryAfter !== undefined) headers["retry-after"] = String(r.retryAfter);
+    if (r.status === 401) headers["www-authenticate"] = `L402 error="${r.code}"`;
+    return { status: r.status, body: { error: r.error, code: r.code }, headers };
+  };
 
-  app.post("/public/workflows/:name/run", async (c) => {
+  const launch = async (r: PublicLaunchRequest): Promise<PublicLaunchOutcome> => {
     const launches = deps.launches;
-    const name = c.req.param("name");
-    const who = visitorAddress(c);
-    if (overLaunchBudget(who)) return c.json({ error: `too many launches: ${launchLimit} a minute` }, 429, { "retry-after": "60" });
+    const { name, who } = r;
+    const refuse = (status: PublicLaunchOutcome["status"], error: string, headers?: Record<string, string>): PublicLaunchOutcome => ({ status, body: { error }, ...(headers ? { headers } : {}) });
+    if (overLaunchBudget(who)) return refuse(429, `too many launches: ${launchLimit} a minute`, { "retry-after": "60" });
     const item = launches ? await surface.runnable("workflow", name) : undefined;
     const flow = item ? await workspace.getWorkflow(name).catch(() => null) : null;
-    if (!launches || !item || !flow || flow.sealed) return c.json({ error: `workflow "${name}" is not open to anyone to run on this strut server` }, 404);
+    if (!launches || !item || !flow || flow.sealed) return refuse(404, `workflow "${name}" is not open to anyone to run on this strut server`);
     const draining = launches.draining();
-    if (draining) return c.json({ error: draining }, 503, { "retry-after": "60" });
+    if (draining) return refuse(503, draining, { "retry-after": "60" });
 
     // The body: `input` and `key` alone, validated against the `input:`
     // block. Nothing a stranger sends picks the version, the knobs, a job,
     // a callback or files.
-    const length = Number(c.req.header("content-length") ?? 0);
-    if (length > PUBLIC_RUN_BODY_MAX_BYTES) return c.json({ error: `the body is over ${PUBLIC_RUN_BODY_MAX_BYTES / 1024} KB` }, 413);
-    const raw = await c.req.text();
-    if (Buffer.byteLength(raw) > PUBLIC_RUN_BODY_MAX_BYTES) return c.json({ error: `the body is over ${PUBLIC_RUN_BODY_MAX_BYTES / 1024} KB` }, 413);
-    let body: Record<string, unknown>;
-    try {
-      body = raw.trim() ? (JSON.parse(raw) as Record<string, unknown>) : {};
-    } catch {
-      return c.json({ error: "the body is not JSON" }, 400);
-    }
-    if (!body || typeof body !== "object" || Array.isArray(body)) return c.json({ error: "the body is a JSON object: { input?, key? }" }, 400);
+    const read = await r.readBody();
+    if ("refused" in read) return read.refused;
+    const body = read.body as Record<string, unknown>;
+    if (!body || typeof body !== "object" || Array.isArray(body)) return refuse(400, "the body is a JSON object: { input?, key? }");
+    if (Buffer.byteLength(JSON.stringify(body)) > PUBLIC_RUN_BODY_MAX_BYTES) return refuse(413, `the body is over ${PUBLIC_RUN_BODY_MAX_BYTES / 1024} KB`);
     const extra = Object.keys(body).filter((k) => k !== "input" && k !== "key");
-    if (extra.length) return c.json({ error: `a public launch runs the workflow as published and takes { input, key } alone — drop ${extra.join(", ")}` }, 400);
+    if (extra.length) return refuse(400, `a public launch runs the workflow as published and takes { input, key } alone — drop ${extra.join(", ")}`);
     const key = body["key"];
-    if (key !== undefined && (typeof key !== "string" || !key || key.length > PUBLIC_RUN_KEY_MAX)) {
-      return c.json({ error: `key is a string of 1 to ${PUBLIC_RUN_KEY_MAX} characters` }, 400);
-    }
-    if (flow.inputBlock == null) return c.json({ error: `workflow "${name}" no longer declares an input: block, so a stranger's input cannot be checked` }, 409);
+    if (key !== undefined && (typeof key !== "string" || !key || key.length > PUBLIC_RUN_KEY_MAX)) return refuse(400, `key is a string of 1 to ${PUBLIC_RUN_KEY_MAX} characters`);
+    if (flow.inputBlock == null) return refuse(409, `workflow "${name}" no longer declares an input: block, so a stranger's input cannot be checked`);
     const parsed = flow.input.safeParse(body["input"] ?? {});
-    if (!parsed.success) return c.json({ error: `input: ${parsed.error.issues.map((i) => `${i.path.join(".") || "input"}: ${i.message}`).join("; ")}` }, 400);
+    if (!parsed.success) return refuse(400, `input: ${parsed.error.issues.map((i) => `${i.path.join(".") || "input"}: ${i.message}`).join("; ")}`);
     const disabled = await launches.disabled(name);
-    if (disabled) return c.json({ error: disabled }, 409);
+    if (disabled) return refuse(409, disabled);
 
     // A priced item's credit token (§4.3 steps 1 to 3), read before the
     // caps: what it may be used for is known without the wallet, and its id
@@ -617,16 +620,16 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): void {
     let presented: VerifiedToken | undefined;
     let expired = false;
     if (priced) {
-      if (!credit) return c.json({ error: `workflow "${name}" is priced, and this strut server sells no credit` }, 503, { "retry-after": "60" });
-      const auth = parseAuthorization(c.req.header("authorization"));
+      if (!credit) return refuse(503, `workflow "${name}" is priced, and this strut server sells no credit`, { "retry-after": "60" });
+      const auth = parseAuthorization(r.authorization);
       if (auth) {
         const v = await credit.verify(auth);
-        if (!v.ok) return creditRefusal(c, v);
+        if (!v.ok) return refusalOutcome(v);
         presented = v.token;
         const why = tokenRefusal(presented, { now: Date.now(), item, reserve });
-        if (why === "not_this_item") return c.json({ error: `token_not_for_this: the token's holder limited it to other items than workflow "${name}"`, code: "token_not_for_this" }, 403);
+        if (why === "not_this_item") return { status: 403, body: { error: `token_not_for_this: the token's holder limited it to other items than workflow "${name}"`, code: "token_not_for_this" } };
         if (why === "over_max_charge") {
-          return c.json({ error: `token_over_max_charge: a run of "${name}" needs $${microsToUsd(reserve)} set aside, above what the token's holder allowed one run`, code: "token_over_max_charge" }, 403);
+          return { status: 403, body: { error: `token_over_max_charge: a run of "${name}" needs $${microsToUsd(reserve)} set aside, above what the token's holder allowed one run`, code: "token_over_max_charge" } };
         }
         expired = why === "expired";
       }
@@ -634,13 +637,14 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): void {
 
     // The caps. A `key` this caller sent for a run still in flight returns
     // that run, before any cap counts it twice: the caller is the credit
-    // token on a paid launch, else the address.
+    // token on a paid launch, else the request's own scope (the visit, for
+    // a visitor's page), else the address.
     const admitted = await launches.runs.admit(item, {
       ...(await launches.workflowCap(name).then((cap) => (cap !== undefined ? { workflowCapUsd: cap } : {}))),
-      ...(typeof key === "string" ? { key, scope: presented ? `token:${presented.tokenId}` : who } : {}),
+      ...(typeof key === "string" ? { key, scope: presented ? `token:${presented.tokenId}` : (r.scope ?? who) } : {}),
     });
-    if (admitted.ok === "existing") return c.json({ runId: admitted.runId, token: publicRunToken(name, admitted.runId), existing: true }, 202);
-    if (!admitted.ok) return c.json({ error: admitted.error }, admitted.status, { "retry-after": String(admitted.retryAfter) });
+    if (admitted.ok === "existing") return { status: 202, body: { runId: admitted.runId, token: publicRunToken(name, admitted.runId), existing: true } };
+    if (!admitted.ok) return refuse(admitted.status as PublicLaunchOutcome["status"], admitted.error, { "retry-after": String(admitted.retryAfter) });
 
     // The price (§3 step 4, §4, §5). No token, or one that cannot cover the
     // reserve, is a 402: a new macaroon and an invoice for what is missing
@@ -648,25 +652,25 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): void {
     // one (§4.5), the whole reserve otherwise. A good token has the reserve
     // set aside under this run's id.
     if (priced) {
-      const pay = async (usd: Micros, o: { carry?: string; remaining?: Micros; reason?: string } = {}) => {
+      const pay = async (usd: Micros, o: { carry?: string; remaining?: Micros; reason?: string } = {}): Promise<PublicLaunchOutcome> => {
         admitted.release();
         const ch = await credit!.challenge({ usd, description: `${name}: credit for one run`, address: who, ...o });
-        if (!ch.ok) return creditRefusal(c, ch);
-        return c.json(ch.body, 402, { "www-authenticate": ch.header });
+        if (!ch.ok) return refusalOutcome(ch);
+        return { status: 402, body: ch.body as unknown as Record<string, unknown>, headers: { "www-authenticate": ch.header } };
       };
       if (!presented) return pay(reserve);
       if (expired) return pay(reserve, { reason: "expired" });
       const used = await credit!.use(presented);
       if (!used.ok) {
         admitted.release();
-        return creditRefusal(c, used);
+        return refusalOutcome(used);
       }
       let held;
       try {
         held = await admitted.hold({ token: presented.tokenId, price: priceOf(item), reserve, ...(typeof key === "string" ? { key } : {}) });
       } catch (err) {
         console.error(`[public-runs] setting aside the reserve of ${name}/${admitted.runId} failed:`, err);
-        return c.json({ error: "this server cannot set credit aside just now — try again shortly" }, 503, { "retry-after": "30" });
+        return refuse(503, "this server cannot set credit aside just now — try again shortly", { "retry-after": "30" });
       }
       if (!held.ok) {
         // Only a token no holder narrowed is carried from (§4.5): a
@@ -677,32 +681,55 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): void {
         }
         if (held.reason === "expired" || held.reason === "closed") return pay(reserve, { reason: "expired" });
         if (held.reason === "carried") return pay(reserve, { reason: "replaced" });
-        return creditRefusal(c, { status: 401, code: "invalid_token", error: "invalid_token: this server's ledger does not know the token" });
+        return refusalOutcome({ status: 401, code: "invalid_token", error: "invalid_token: this server's ledger does not know the token" });
       }
       // The same token and key as an earlier launch: that run, nothing more set aside.
-      if (held.runId !== admitted.runId) return c.json({ runId: held.runId, token: publicRunToken(name, held.runId), existing: true }, 202);
+      if (held.runId !== admitted.runId) return { status: 202, body: { runId: held.runId, token: publicRunToken(name, held.runId), existing: true } };
     }
     try {
       launches.launch(flow, body["input"] ?? {}, {
         runId: admitted.runId,
         ...(admitted.capUsd !== undefined ? { maxCostUsd: admitted.capUsd } : {}),
         ...(presented ? { credit: presented.tokenId } : {}),
+        ...(r.visitor ? { visitor: r.visitor } : {}),
       });
     } catch (err) {
       admitted.release();
-      return c.json({ error: err instanceof Error ? err.message : String(err) }, 503, { "retry-after": "60" });
+      return refuse(503, err instanceof Error ? err.message : String(err), { "retry-after": "60" });
     }
     const brief = presented ? await credit!.view(presented.tokenId, { entries: false }).catch(() => undefined) : undefined;
-    return c.json(
-      {
+    return {
+      status: 202,
+      body: {
         runId: admitted.runId,
         token: publicRunToken(name, admitted.runId),
         ...(brief
           ? { credit: { held_usd: microsToUsd(reserve), remaining_usd: brief.remaining_usd, remaining_sats: brief.remaining_sats, expires: brief.expires } }
           : {}),
       },
-      202,
-    );
+    };
+  };
+
+  app.post("/public/workflows/:name/run", async (c) => {
+    const out = await launch({
+      name: c.req.param("name"),
+      who: visitorAddress(c),
+      authorization: c.req.header("authorization"),
+      // Read only once the cheaper refusals have answered.
+      readBody: async () => {
+        const length = Number(c.req.header("content-length") ?? 0);
+        const tooBig = { refused: { status: 413 as const, body: { error: `the body is over ${PUBLIC_RUN_BODY_MAX_BYTES / 1024} KB` } } };
+        if (length > PUBLIC_RUN_BODY_MAX_BYTES) return tooBig;
+        const raw = await c.req.text();
+        if (Buffer.byteLength(raw) > PUBLIC_RUN_BODY_MAX_BYTES) return tooBig;
+        try {
+          return { body: raw.trim() ? (JSON.parse(raw) as unknown) : {} };
+        } catch {
+          return { refused: { status: 400 as const, body: { error: "the body is not JSON" } } };
+        }
+      },
+    });
+    return c.json(out.body, out.status, out.headers);
   });
 
   // The launcher's cancel: that run's tree, with its run token.
@@ -912,4 +939,6 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): void {
     if (!node) return notPublic(c, `node "${ref_id}"`);
     return c.json({ ref_id: node.ref_id, node_type: node.node_type ?? null, name: node.name ?? null, title: node.title ?? null, properties: node.properties });
   });
+
+  return { launch };
 }

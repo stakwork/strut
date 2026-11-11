@@ -229,10 +229,17 @@ export function withToken(html: string, token: string): string {
  *  §5): the kit reads it as `useHost().public`. */
 export const PUBLIC_VIEW_META = "strut-public-view";
 
+/** The `<meta name>` listing the workflows a visitor's page may START
+ *  (plans/paid-runs.md §10): the ones the app grants that a person made
+ *  runnable, as a JSON array of names — the kit's `useHost().runnable`. */
+export const PUBLIC_RUNNABLE_META = "strut-public-runnable";
+
 /** The document as the public view serves it: the visitor's identity in the
- *  token meta, and the public view's mark beside it. */
-export function withPublicIdentity(html: string, identity: string): string {
-  return html.replace(TOKEN_PLACEHOLDER, `<meta name="${PUBLIC_VIEW_META}" content="1"><meta name="${TOKEN_META}" content="${escapeHtml(identity)}">`);
+ *  token meta, the public view's mark beside it, and the granted workflows
+ *  a visitor may run, when there are any. */
+export function withPublicIdentity(html: string, identity: string, runnable: readonly string[] = []): string {
+  const run = runnable.length ? `<meta name="${PUBLIC_RUNNABLE_META}" content="${escapeHtml(JSON.stringify(runnable))}">` : "";
+  return html.replace(TOKEN_PLACEHOLDER, `<meta name="${PUBLIC_VIEW_META}" content="1">${run}<meta name="${TOKEN_META}" content="${escapeHtml(identity)}">`);
 }
 
 /** The document read with the key instead of a token: no meta at all. */

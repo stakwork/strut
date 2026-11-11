@@ -22,6 +22,45 @@ export function isPublicView(doc: Document | undefined = typeof document !== "un
   return !!doc?.querySelector(`meta[name="${PUBLIC_VIEW_META}"]`);
 }
 
+/** The `<meta name>` a public view document carries beside its mark when
+ *  a visitor may START some of the workflows the app grants
+ *  (plans/paid-runs.md §10): a JSON array of their names. */
+export const PUBLIC_RUNNABLE_META = "strut-public-runnable";
+
+/** The workflows a visitor's page may start: none outside the public view,
+ *  where a page starts what its viewer may. */
+export function publicRunnable(doc: Document | undefined = typeof document !== "undefined" ? document : undefined): string[] {
+  const content = doc?.querySelector(`meta[name="${PUBLIC_RUNNABLE_META}"]`)?.getAttribute("content");
+  if (!content) return [];
+  try {
+    const names: unknown = JSON.parse(content);
+    return Array.isArray(names) ? names.filter((n): n is string => typeof n === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+/** What a public view's `run/launch` answers when the workflow is priced
+ *  and no credit covers the run (plans/paid-runs.md §10): the HOST pays it
+ *  and retries, so a page only sees one when its host cannot pay. */
+export interface PaymentRequired {
+  macaroon: string;
+  invoice: string;
+  usd: number;
+  sats: number;
+  rate?: { usdPerBtc: number; at: string; source: string };
+  description?: string;
+  expires?: string;
+  remaining_usd?: number;
+  reason?: string;
+}
+
+/** The `payment_required` a launch answered with, else undefined. */
+export function paymentRequiredOf(output: unknown): PaymentRequired | undefined {
+  const p = (output as { payment_required?: unknown } | null | undefined)?.payment_required;
+  return p && typeof p === "object" && typeof (p as PaymentRequired).invoice === "string" ? (p as PaymentRequired) : undefined;
+}
+
 /** Which app a page is (plans/apps.md §7.2): a workspace app at a version. */
 export type AppIdentity = { name: string; version: string };
 

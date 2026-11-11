@@ -1,6 +1,7 @@
 import type { ConnectionRequest } from "@strut/kit/wallet";
 import { fileScopeOf, isPeerPath, type AccessedNode, type RunApp, type TokenUsage } from "@strut/kit/folds";
 import { takeTicket } from "./ticket";
+import { claimAnswerOf, type ClaimAnswer } from "./visitor-pay";
 
 // Mount-path-agnostic API base. Derived at runtime from the app's own
 // script URL so the UI works whether strut is served at the root (`/`) or
@@ -2861,6 +2862,19 @@ async function publicFetch(path: string): Promise<Response> {
 export async function getPublicApp(name: string): Promise<PublicAppInfo | null> {
   const res = await publicFetch(`/public/apps/${encodeURIComponent(name)}`);
   return res.ok ? ((await res.json()) as PublicAppInfo) : null;
+}
+/** `POST /public/credit/claim` with a challenge's macaroon (plans/paid-runs.md
+ *  §4.4): pending, expired, or settled with the credential — how a visitor's
+ *  host learns a QR code was paid from a phone (./visitor-pay). */
+export async function claimPublicCredit(macaroon: string): Promise<ClaimAnswer> {
+  const res = await fetch(`${BASE}/public/credit/claim`, {
+    method: "POST",
+    credentials: "omit",
+    cache: "no-store",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ macaroon }),
+  });
+  return claimAnswerOf(res.status, await res.json().catch(() => null), res.headers.get("retry-after"));
 }
 /** The public app's document, its visitor's identity written in. */
 export async function fetchPublicAppDocument(name: string): Promise<string> {

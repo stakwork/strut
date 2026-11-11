@@ -117,9 +117,11 @@ export function LaunchForm({ workflow, fields: given, initial, dedupe, label = "
     return out;
   };
 
-  // A visitor's page (a strut server's public view) starts nothing: the
-  // form stays, so the visitor sees what it takes, with every control off.
-  const locked = host.public;
+  // A visitor's page (a strut server's public view) starts only what a
+  // person made runnable there (plans/paid-runs.md §10) — free, or paid by
+  // the page's host before the launch returns. Anything else keeps the
+  // form, so the visitor sees what it takes, with every control off.
+  const locked = host.public && !host.runnable.includes(workflow);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -180,7 +182,8 @@ export function LaunchForm({ workflow, fields: given, initial, dedupe, label = "
           {label}
         </Button>
         {running && (
-          <Button type="button" variant="outline" disabled={cancelling} onClick={() => void cancel(workflow, running.runId)}>
+          // A visitor stops nothing: a run anyone started runs to its end.
+          <Button type="button" variant="outline" disabled={cancelling || host.public} onClick={() => void cancel(workflow, running.runId)}>
             <Square />
             Cancel
           </Button>
@@ -192,6 +195,11 @@ export function LaunchForm({ workflow, fields: given, initial, dedupe, label = "
       {locked && (
         <p className="text-xs text-muted-foreground" data-testid="launch-form-public">
           Runs are started by the people who keep this server. This is a public view: you can read its runs, not start one.
+        </p>
+      )}
+      {host.public && !locked && (
+        <p className="text-xs text-muted-foreground" data-testid="launch-form-runnable">
+          Anyone may run this here. If a run costs something, you are asked to pay before it starts.
         </p>
       )}
       {last && (

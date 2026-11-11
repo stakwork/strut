@@ -22,6 +22,7 @@
     "diff": "^5.2.0",
     "js-yaml": "^4.1.1",
     "preact": "^10.28.0",
+    "qrcode-generator": "2.0.4",
     "react-diff-view": "^3.2.1",
     "system-canvas": "^0.2.36",
     "system-canvas-react": "^0.2.36"

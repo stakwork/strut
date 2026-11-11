@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClient } from "@tanstack/react-query";
-import { PUBLIC_VIEW_META, isPublicView, type StrutClient } from "./client.js";
+import { PUBLIC_RUNNABLE_META, PUBLIC_VIEW_META, StrutError, isPublicView, paymentRequiredOf, publicRunnable, type StrutClient } from "./client.js";
 import { createStaticHost, type StaticHost } from "./host.js";
 import { StrutProvider } from "./provider.js";
 import {
@@ -296,6 +296,23 @@ describe("the mutations", () => {
     await h.unmount();
   });
 
+  it("useLaunch: a payment_required its host did not pay is an error the page can show, never a launch", async () => {
+    const p = { macaroon: "m", invoice: "lnbc1", usd: 0.5, sats: 500 };
+    assert.deepEqual(paymentRequiredOf({ payment_required: p }), p);
+    assert.equal(paymentRequiredOf({ runId: "1" }), undefined);
+    const { client } = fakeClient({ [RUN_STEPS.launch]: () => ({ payment_required: p }) });
+    const h = await renderHook(() => useLaunch("priced"), { client });
+    let caught: unknown;
+    await act(async () => {
+      await h.result().launch({}).catch((e: unknown) => {
+        caught = e;
+      });
+    });
+    assert.ok(caught instanceof StrutError);
+    assert.match((caught as Error).message, /^payment_required: a run of priced costs \$0\.5, and this page's host does not pay for runs$/);
+    await h.unmount();
+  });
+
   it("useLaunch passes only what was given", async () => {
     const { client, calls } = fakeClient();
     const h = await renderHook(() => useLaunch("wf"), { client });
@@ -416,7 +433,27 @@ describe("the host hooks", () => {
       assert.equal(isPublicView(), true);
       const v = await renderHook(() => useHost(), { client, host });
       assert.equal(v.result().public, true);
+      assert.deepEqual(v.result().runnable, [], "nothing to start unless the document says so");
       await v.unmount();
+    } finally {
+      meta.remove();
+    }
+  });
+
+  it("useHost().runnable: the granted workflows a visitor may start, off the document's meta", async () => {
+    const { client } = fakeClient();
+    const host = createStaticHost({});
+    const meta = document.createElement("meta");
+    meta.setAttribute("name", PUBLIC_RUNNABLE_META);
+    meta.setAttribute("content", JSON.stringify(["free-out", "priced", 3]));
+    document.head.appendChild(meta);
+    try {
+      assert.deepEqual(publicRunnable(), ["free-out", "priced"]);
+      const h = await renderHook(() => useHost(), { client, host });
+      assert.deepEqual(h.result().runnable, ["free-out", "priced"]);
+      await h.unmount();
+      meta.setAttribute("content", "not json");
+      assert.deepEqual(publicRunnable(), []);
     } finally {
       meta.remove();
     }
