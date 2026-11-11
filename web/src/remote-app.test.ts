@@ -2,7 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { cspFor } from "../../src/apps/build.js";
 import { strutLink } from "./app-links";
-import { APP_CSP, remoteAppHref, remoteBase, remoteHere, strangerDocument } from "./remote-app";
+import { APP_CSP, remoteAppHref, remoteAppLink, remoteBase, remoteHere, strangerDocument } from "./remote-app";
 import { pickPage } from "./page";
 
 // Another strut server's public app with this UI as its host (./remote-app,
@@ -67,6 +67,18 @@ describe("a remote public app's link", () => {
     // A link into THIS strut (where the page is hosted) is not the page's server.
     assert.equal(strutLink("http://localhost:3000/?install=evil%2Fpkg", here), null);
     assert.deepEqual(remoteHere("https://acme.example"), { origin: "https://acme.example", pathname: "/" });
+  });
+
+  it("a link to another app on that server stays in THIS host — never the server's own UI", () => {
+    const params = strutLink("?app=voxel%2Feditor&input=scene%3D3", remoteHere("https://acme.example/lab"))!;
+    assert.equal(
+      remoteAppLink(params, "https://acme.example/lab", "http://127.0.0.1:4410/"),
+      "http://127.0.0.1:4410/?app=voxel%2Feditor&public=1&from=https%3A%2F%2Facme.example%2Flab&solo=1&input=scene%3D3",
+    );
+    // A workflow, a run, a file, another peer's app, a pinned version: opened on the server as a page.
+    assert.equal(remoteAppLink({ wf: "x" }, "https://acme.example", "http://h/"), null);
+    assert.equal(remoteAppLink({ app: "@peer/x" }, "https://acme.example", "http://h/"), null);
+    assert.equal(remoteAppLink({ app: "x@v3" }, "https://acme.example", "http://h/"), null);
   });
 });
 

@@ -200,7 +200,16 @@ export interface PublicDoors {
 }
 
 /** `GET /public`: what the public view shows, and what anyone may run. */
+/** What this server's public view lets another strut UI do with it
+ *  (specs/API.md §17.9): `remote` — its public apps may be hosted by any
+ *  strut UI, `?app=<name>&public=1&from=<this server>`, its `POST
+ *  /public/mcp` answering such a page across origins. A version, raised when
+ *  what such a host may rely on changes; absent on a strut from before it. */
+export const PUBLIC_HOST = { remote: 1 } as const;
+
 export interface PublicListing {
+  /** What another strut UI may do with this server's public view. */
+  host: typeof PUBLIC_HOST;
   workflows: Array<{ name: string; activeVersion: string; versions: string[]; description?: string; category?: string; runs: boolean }>;
   steps: Array<{ type: string; source: string; description?: string; effect?: string }>;
   concepts: Array<{ name: string; description?: string; pages: number }>;
@@ -438,6 +447,7 @@ export function publicRoutes(app: Hono<any>, deps: PublicRouteDeps): PublicDoors
     const tree = s.concepts.length ? await surface.conceptTree() : undefined;
     const roots = tree ? tree.concepts.filter((x) => !x.parent) : [];
     return {
+      host: PUBLIC_HOST,
       workflows: await listedWorkflows(),
       steps: await listedSteps(),
       concepts: roots.map((r) => ({ name: r.name, ...(r.description ? { description: r.description } : {}), pages: tree!.concepts.filter((x) => x.root === r.root).length })),

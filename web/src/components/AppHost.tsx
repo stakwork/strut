@@ -5,7 +5,7 @@ import { connectAppHost, type AppHostConnection } from "../app-host";
 import { nativeWalletOf, type NativeWalletApp } from "@strut/kit/wallet";
 import { appToolInput, namesApp, peerAppLink } from "../app-links";
 import { frameAttributes, strangerFrameAttributes } from "../frame-permissions";
-import type { WalletAnswer } from "../native-pay";
+import type { WalletAsk } from "../native-pay";
 import { strangerDocument } from "../remote-app";
 import type { ClaimEnd, PaymentRequired, PayOutcome } from "../visitor-pay";
 import { PaymentSheet } from "./PaymentSheet";
@@ -109,7 +109,7 @@ export function AppHost(props: {
     p: PaymentRequired;
     workflow: string;
     settled: Promise<ClaimEnd>;
-    wallet?: (signal: AbortSignal) => Promise<WalletAnswer>;
+    wallet?: WalletAsk;
     done: (o: PayOutcome) => void;
   } | null>(null);
   const paymentRef = useRef(payment);
@@ -155,6 +155,9 @@ export function AppHost(props: {
           : visitor
             ? api.getPublicApp(app.name).catch(() => null)
             : api.fetchAppBuildInfo(app.name, app.version, scope!.token, app.peer);
+        // A seller from before remote hosting answers no page on another
+        // origin: say so, rather than a bare "Failed to fetch" at connect.
+        if (from && !(await api.remoteHostable(from))) throw new Error(api.notHostableYet(from));
         const html = from
           ? strangerDocument(await api.fetchRemotePublicAppDocument(from, app.name))
           : visitor ? await api.fetchPublicAppDocument(app.name) : await api.fetchAppDocument(app.name, app.version, scope!.token, app.peer);
@@ -184,7 +187,7 @@ export function AppHost(props: {
             onInitialized: markReady,
             ...(visitor
               ? {
-                  onPayment: (p: PaymentRequired, workflow: string, settled: Promise<ClaimEnd>, wallet?: (signal: AbortSignal) => Promise<WalletAnswer>) =>
+                  onPayment: (p: PaymentRequired, workflow: string, settled: Promise<ClaimEnd>, wallet?: WalletAsk) =>
                     new Promise<PayOutcome>((resolve) => {
                       setPayment({
                         p,
@@ -231,7 +234,10 @@ export function AppHost(props: {
         frame.srcdoc = html;
         setState({ status: "ready" });
       } catch (err) {
-        if (!cancelled) setState({ status: "error", error: err instanceof Error ? err.message : String(err) });
+        const message = err instanceof Error ? err.message : String(err);
+        // A seller that went away between the check and the connect: name it.
+        const error = from && err instanceof TypeError ? `${hostOf(from)} did not answer (${message})` : message;
+        if (!cancelled) setState({ status: "error", error });
         markReady();
       }
     })();

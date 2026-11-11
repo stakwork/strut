@@ -159,11 +159,12 @@ the `sideEffects` and `type` rules, and that the recorded versions are
   (`createBridgeWallet`, which the bootstrap builds, with `window.webln` over
   it), and the relay a native host's main frame runs (`relayNativeWallet`).
   Beside the app's calls, the HOST's own purchase (specs/WALLET.md §1.2):
-  `CreditPurchase` and `creditPurchaseProblems`, `readCreditReply`, and the
-  relay's `probeHostWallet` + `buyCreditNatively` — strut's UI asking a
-  native wallet to pay, with one tap, the credit a visitor's page needs on a
-  strut server. No app identity, no connection, no budget; the
-  `credit_purchases` and `credit_replies` vectors.
+  `CreditPurchase` and `creditPurchaseProblems`, `hostWalletCapabilityOf`,
+  `readCreditReply`, and the relay's `probeHostWallet`, `buyCreditNatively`
+  and `creditStatusNatively` — strut's UI asking a native wallet to pay, with
+  one tap, the credit a visitor's page needs on a strut server, and where a
+  payment it sent stands. No app identity, no connection, no budget; the
+  `host_capabilities`, `credit_purchases` and `credit_replies` vectors.
 - **`src/links.ts`** — `appLink(name, input?)`: a deep link to an app,
   `?app=<name>&input=<input as a query string>` (plans/apps.md §7.1). A host
   follows it and hands `input` back as `tool-input`, flat strings.

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   ERROR_CODES, NOTIFICATION_TYPES, PAY_METHODS, REQUESTABLE_METHODS, WALLET_METHODS, WalletError,
-  checkParams, connectionRequestProblems, creditPurchaseProblems, isHostWalletCapability, isSellerUrl, isWalletErrorCode,
+  checkParams, connectionRequestProblems, creditPurchaseProblems, hostWalletCapabilityOf, isSellerUrl, isWalletErrorCode,
   isWalletMethod, msatToSats, notificationProblems, parseSphinxAddress, readCreditReply, resultProblems, satsToMsat,
   sphinxRouteHint, verifyPreimage, walletErrorBody, walletErrorCodeOf, walletMethodOf, walletRequestMethod, type WalletMethod,
 } from "./protocol.js";
@@ -15,6 +15,7 @@ type Vectors = {
   notifications: Array<{ name: string; notification: unknown; valid: boolean }>;
   connection_requests: Array<{ name: string; request: unknown; valid: boolean }>;
   preimages: Array<{ preimage: string; payment_hash: string; valid: boolean }>;
+  host_capabilities: Array<{ name: string; capability: unknown; expect: unknown }>;
   credit_purchases: Array<{ name: string; purchase: unknown; valid: boolean }>;
   credit_replies: Array<{ name: string; payment_hash: string; reply: unknown; outcome: "paid" | "pending" | "fallback"; preimage?: string; code?: string }>;
   scenarios: Array<{
@@ -77,6 +78,14 @@ describe("wallet vectors: preimages", () => {
   for (const v of vectors.preimages) {
     it(`${v.preimage.slice(0, 8)}… → ${v.payment_hash.slice(0, 8)}… is ${v.valid ? "" : "not "}proof`, async () => {
       assert.equal(await verifyPreimage(v.preimage, v.payment_hash), v.valid);
+    });
+  }
+});
+
+describe("wallet vectors: a native host's capability for the host's own ops (§1.2)", () => {
+  for (const v of vectors.host_capabilities) {
+    it(v.name, () => {
+      assert.deepEqual(hostWalletCapabilityOf(v.capability) ?? null, v.expect);
     });
   }
 });
@@ -216,11 +225,4 @@ describe("wallet contract", () => {
     }
   });
 
-  it("reads a native host's capability for the host's own ops", () => {
-    assert.ok(isHostWalletCapability({ version: 1, ops: ["buy_credit", "buy_credit_cancel"] }));
-    assert.ok(isHostWalletCapability({ version: 1, ops: [] }));
-    assert.ok(!isHostWalletCapability({ version: 2, ops: ["buy_credit"] }));
-    assert.ok(!isHostWalletCapability({ version: 1, ops: ["pay_anything"] }));
-    assert.ok(!isHostWalletCapability({ version: 1, methods: ["connect"], notifications: [], wallet: "sphinx", connected: false }));
-  });
 });

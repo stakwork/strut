@@ -160,13 +160,20 @@ always resolved, `{ result }` or `{ error }`. They are `HostWalletMessage`
 in `protocol.ts`:
 
 ```
-{ v: 1, op: "host_capability" }                         → { result: { version: 1, ops: ["buy_credit", "buy_credit_cancel"] } }
+{ v: 1, op: "host_capability" }                         → { result: { version: 1, ops: ["buy_credit", "buy_credit_status", "buy_credit_cancel"], wallet?: "Peel" } }
 { v: 1, op: "buy_credit", purchase: CreditPurchase }    → { result: Payment } | { error }   (a pay method's answer, §3, §4.1)
+{ v: 1, op: "buy_credit_status", payment_hash }         → { result: Payment } | { error }   (where that purchase stands now)
 { v: 1, op: "buy_credit_cancel", payment_hash }         → { result: {} }
 ```
 
-**`host_capability`** is asked before each purchase.
-- `ops` names what the native host takes. `buy_credit_cancel` is optional.
+**`host_capability`** is asked ONCE per page, as a visitor's page connects,
+so no sheet waits on it.
+- `ops` names what the native host takes: `buy_credit`, and optionally
+  `buy_credit_status` and `buy_credit_cancel`. strut's UI leaves out an op it
+  does not know (a newer native host's), never reading the whole answer as
+  none (`hostWalletCapabilityOf`; the `host_capabilities` vectors, §7).
+- `wallet` is its name for a person ("Peel", at most 40 characters): what
+  strut's sheet calls it ("Confirm in Peel", "Pay with Peel").
 - Any other answer, or none within 5 s (`WALLET_PROBE_MS`), means no
   one-tap purchase, only the QR code. An older native host is read this way.
 
@@ -177,9 +184,10 @@ in `protocol.ts`:
 |---|---|
 | `invoice` | BOLT11, lower case, naming its amount |
 | `payment_hash` | hex 64: the invoice's |
-| `amount` | msat: the invoice's amount, `sats × 1000` |
-| `sats`, `usd` | the price as the seller quoted it; `usd` is the credit it buys |
-| `rate?` | `{ usd_per_btc, at, source }`, the rate the seller quoted at |
+| `amount` | msat: the invoice's amount, `sats × 1000`. **This is the price.** |
+| `sats` | the same in sats |
+| `usd` | the CREDIT the seller says the payment buys, in dollars: the seller's own figure, never the price |
+| `rate?` | `{ usd_per_btc, at, source }`, the rate the seller says it quoted at: the seller's too |
 | `description` | the seller's words for what it sells. The sheet quotes them as the seller's |
 | `expires_at` | unix seconds: when the invoice ends |
 | `seller` | the strut server the credit is bought on, as its base URL: `https://…`, or `http://` on loopback. It has no credentials, query or fragment (`isSellerUrl`) |
@@ -198,37 +206,64 @@ seller's junk is never shown nor paid:
 - its `strut_sats` is the challenge's `sats`, which is the invoice's amount;
 - its `strut_credit` is the challenge's `usd`.
 
+The seller writes both of the last two, so they agree with each other, not
+with the world: a seller may ask 200 000 sats "for $0.02 of credit". The
+price is therefore the sats, everywhere. strut's own sheet headlines the
+sats. It shows dollars only at the hosting strut's own rate (`GET /rate`,
+specs/API.md §17.9), and the seller's dollars only as the credit, flagged
+when that credit is worth under nine tenths of what is paid.
+
 **What the native host does:**
 1. Answers only the main frame it trusts (§1.1's rule).
 2. Runs `creditPurchaseProblems`, and decodes the invoice ITSELF. The amount
    must be `amount`, the payment hash `payment_hash`, and it must not have
    ended. Anything else is `BAD_REQUEST`.
 3. Applies §5.4's gesture rule: `RESTRICTED` unless the person tapped in the
-   web view within the last few seconds. A page that launches on load, with
-   no tap, gets the QR code.
+   web view within the last few seconds. strut's UI asks as soon as the page
+   launches, so a launch with no tap behind it is refused. Then strut's own
+   sheet shows **Pay with ⟨wallet⟩**, whose press is a fresh tap, and sends
+   `buy_credit` again.
 4. Shows its own sheet:
    - the seller by its host;
    - the app's title, "on <seller>";
    - the workflow;
-   - the decoded amount in sats and the seller's dollars;
+   - **the price: the decoded amount in sats**, and in dollars only at the
+     native host's OWN rate;
+   - the seller's `usd` only as what the seller says the payment buys
+     ("buys $0.50 of credit, by the server's own figure"), never as the
+     price. A figure worth far less than the sats paid (more than 10% under,
+     at the native host's rate) is flagged;
    - the description, quoted as the seller's;
    - that this buys CREDIT on that server, which later runs in this page
      spend: what a run does not use stays.
 
    No budget pays it silently: every purchase asks.
-5. On a tap, pays the invoice and answers a `Payment` (§3):
-   - `settled` with the preimage;
-   - `pending` when it has not settled yet;
-   - or `failed`.
+5. **Answers as soon as the person acts**, never only when the payment
+   ends:
+   - on a tap, as soon as the payment is SENT: `pending`, or `settled` with
+     the preimage if it settled at once;
+   - on a decline, `USER_REJECTED`;
+   - `failed` only for a payment that can no longer settle (no route, the
+     HTLC failed back).
 
-   On a decline it answers `USER_REJECTED`.
-6. Answers before `expires_at`. A sheet still up when the invoice ends is
+   strut's UI then shows the invoice NO MORE. A seller holding the first
+   payment knows its preimage, and could settle a second one paid from
+   another wallet.
+6. Answers `buy_credit_status` with where that payment stands now: `pending`,
+   `settled` with the preimage, or `failed` (then the payment can no longer
+   settle, and strut's sheet offers the invoice again). It answers
+   `NOT_FOUND` for a hash it never paid. strut's sheet asks every 3 s while a
+   payment is pending.
+7. **Never pays one payment hash twice.** A second `buy_credit` for a hash it
+   paid, or is paying, answers that payment's state with no sheet.
+8. Answers before `expires_at`. A sheet still up when the invoice ends is
    taken down and answered `RESTRICTED`.
-7. On `buy_credit_cancel` for a sheet still up: takes it down and answers the
-   purchase `USER_REJECTED`. For a payment already made, it does nothing. The
-   host sends the cancel when it stopped waiting: the person chose the QR
-   code, the page went away, or the invoice ended.
-8. Recommended, for a stranger's page (specs/API.md §17.9): refuse any
+9. On `buy_credit_cancel` for a sheet still up (no tap yet): takes it down
+   and answers the purchase `USER_REJECTED`. For a payment already sent, it
+   does nothing: that purchase's answer stands. The host sends the cancel
+   when it stopped waiting: the person chose the QR code, the page went
+   away, or the invoice ended.
+10. Recommended, for a stranger's page (specs/API.md §17.9): refuse any
    navigation of a subframe away from `about:srcdoc` or `about:blank`. strut's
    UI holds the stranger's frame to a CSP that sends nothing anywhere, but a
    frame may still navigate itself, which only the web view can stop.
@@ -238,15 +273,22 @@ seller's junk is never shown nor paid:
 
 | Answer | Outcome |
 |---|---|
-| `settled`, and `sha256(preimage) == payment_hash` | **paid**: the credential is `<macaroon>:<preimage>`, kept by strut's UI; the page's call is sent again with it |
-| `pending` | the sheet waits on the claim, with no QR code to pay a second time from |
-| anything else: an error, `failed`, a preimage that proves nothing, another invoice's payment, not a `Payment` at all, no answer before the invoice ends | **fallback**: the QR code, with why (a decline says so) |
+| a payment of this invoice, `settled`, and `sha256(preimage) == payment_hash` | **paid**: the credential is `<macaroon>:<preimage>`, kept by strut's UI; the page's call is sent again with it |
+| a payment of this invoice, `pending`, or `settled` without a preimage that proves it | **pending**: the person tapped and the payment was sent. The sheet shows no invoice from here on; it waits on the claim and on `buy_credit_status`. After 60 s it says the server may be holding the payment, and Close leaves the credit to be claimed |
+| an error (a decline, a refusal), a payment of this invoice that `failed`, anything that is not a payment of this invoice, no answer before the invoice ends | **fallback**: nothing was sent. The QR code, with why, and **Pay with ⟨wallet⟩** |
+
+If the person chose the QR code while the native host had not answered,
+and its answer then says the payment was sent, the sheet takes the QR code
+down and waits on that payment.
 
 The claim runs whatever the outcome. From the moment the challenge is
 shown, strut's UI claims the invoice (`POST <seller>/public/credit/claim`)
-until it settles or ends, and a reload resumes it. So a payment the native
-host made, whose answer was lost or came late, still buys the credit. Paying
-the same invoice twice is not possible: a Lightning invoice settles once.
+until the invoice's DECODED end, and a reload resumes it. So a payment the
+native host made, whose answer was lost or came late, still buys the credit.
+
+A call pays at most once: a seller that answers `payment_required` again
+after a payment is not paid again. The page is told its payment is kept as
+credit.
 
 ## 2. Methods
 
@@ -504,7 +546,7 @@ one. A lookup of anything else is `NOT_FOUND`.
 
 ## 7. Conformance vectors
 
-`vectors.json` holds eight lists. Every implementation runs all of them in its own
+`vectors.json` holds nine lists. Every implementation runs all of them in its own
 tests. The kit's runner is `kit/src/wallet/protocol.test.ts`.
 
 | List | Each entry | Passing means |
@@ -514,8 +556,9 @@ tests. The kit's runner is `kit/src/wallet/protocol.test.ts`.
 | `notifications` | `{ name, notification, valid }` | the same (`notificationProblems`) |
 | `connection_requests` | `{ name, request, valid }` | an `app.yaml` `wallet:` block is (or is not) accepted |
 | `preimages` | `{ preimage, payment_hash, valid }` | `sha256(preimage) == payment_hash` |
+| `host_capabilities` | `{ name, capability, expect }` | `hostWalletCapabilityOf` reads a native host's `host_capability` answer as `expect`: an op it does not know left out, `null` for no capability (§1.2) |
 | `credit_purchases` | `{ name, purchase, valid }` | a `buy_credit` purchase is (or is not) one the contract allows (`creditPurchaseProblems`, §1.2): shapes and arithmetic, the native host's own decode on top |
-| `credit_replies` | `{ name, payment_hash, reply, outcome, preimage?, code? }` | strut's UI reads the native host's answer to `buy_credit` as `outcome` (`paid` with `preimage`, `pending`, or `fallback` with `code`; `readCreditReply`). A native host checks that its own answers come to `paid` |
+| `credit_replies` | `{ name, payment_hash, reply, outcome, preimage?, code? }` | strut's UI reads the native host's answer to `buy_credit` (or `buy_credit_status`) as `outcome`: `paid` with `preimage`; `pending`, a payment sent, after which the invoice is not shown again; or `fallback` with `code`, nothing sent (`readCreditReply`). A native host checks that its own answers come to what it means |
 | `scenarios` | a host's behaviour, below | the host does what each step says |
 
 **A scenario** starts from:

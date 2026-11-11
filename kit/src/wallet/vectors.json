@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "about": "The wallet contract's conformance vectors (specs/WALLET.md §7). Every implementation passes them: the kit (kit/src/wallet/protocol.test.ts), each host's WalletHost, Peel's Swift. Amounts are msat. `params`: what checkParams answers. `results` / `notifications` / `connection_requests`: shapes, valid or not. `preimages`: sha256(preimage) == payment_hash. `scenarios`: a host's behaviour, step by step, against a scripted wallet. `credit_purchases` / `credit_replies`: the HOST's own purchase (§1.2) — a `buy_credit` purchase's shape, valid or not, and what the host does with the native host's reply: `paid` (the preimage proves the payment), `pending`, or `fallback` (the QR code), with `code` on a fallback.",
+  "about": "The wallet contract's conformance vectors (specs/WALLET.md §7). Every implementation passes them: the kit (kit/src/wallet/protocol.test.ts), each host's WalletHost, Peel's Swift. Amounts are msat. `params`: what checkParams answers. `results` / `notifications` / `connection_requests`: shapes, valid or not. `preimages`: sha256(preimage) == payment_hash. `scenarios`: a host's behaviour, step by step, against a scripted wallet. `host_capabilities` / `credit_purchases` / `credit_replies`: the HOST's own purchase (§1.2) — the native host's capability as a host reads it (null: none), a `buy_credit` purchase's shape, valid or not, and what the host does with the native host's answer: `paid` (the preimage proves the payment), `pending` (sent: wait on the claim, never the QR again), or `fallback` (nothing sent: the QR code), with `code` on a fallback.",
   "params": [
     {
       "name": "pay_invoice: an invoice, lower-cased, with metadata kept",
@@ -1807,7 +1807,7 @@
       "preimage": "0000000000000000000000000000000000000000000000000000000000000000"
     },
     {
-      "name": "settled with the preimage upper-cased: not the contract's lower-case hex",
+      "name": "settled with the preimage upper-cased: sent, unproven — the claim decides, never the QR again",
       "payment_hash": "9a2db2e23f1504cd056606553ac049c5e718e8f9ce9233876df1a7a1821af885",
       "reply": {
         "result": {
@@ -1821,8 +1821,7 @@
           "settled_at": 1793800002
         }
       },
-      "outcome": "fallback",
-      "code": "INTERNAL"
+      "outcome": "pending"
     },
     {
       "name": "pending: the host waits on its claim",
@@ -1839,7 +1838,21 @@
       "outcome": "pending"
     },
     {
-      "name": "settled with a preimage that proves nothing: the QR code",
+      "name": "pending the moment the person taps: never the QR again",
+      "payment_hash": "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925",
+      "reply": {
+        "result": {
+          "transaction_id": "tx-1",
+          "state": "pending",
+          "payment_hash": "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925",
+          "amount": 21000,
+          "created_at": 1793800000
+        }
+      },
+      "outcome": "pending"
+    },
+    {
+      "name": "settled with a preimage that proves nothing: sent, unproven — the claim decides, never the QR again",
       "payment_hash": "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925",
       "reply": {
         "result": {
@@ -1853,11 +1866,10 @@
           "settled_at": 1793800002
         }
       },
-      "outcome": "fallback",
-      "code": "INTERNAL"
+      "outcome": "pending"
     },
     {
-      "name": "settled with no preimage: not a payment the contract allows",
+      "name": "settled with no preimage: sent, unproven — the claim decides",
       "payment_hash": "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925",
       "reply": {
         "result": {
@@ -1870,11 +1882,10 @@
           "settled_at": 1793800002
         }
       },
-      "outcome": "fallback",
-      "code": "INTERNAL"
+      "outcome": "pending"
     },
     {
-      "name": "a payment of another invoice",
+      "name": "a payment of another invoice: nothing of this one was sent",
       "payment_hash": "72cd6e8422c407fb6d098690f1130b7ded7ec2f7f5e1d30bd9d521f015363793",
       "reply": {
         "result": {
@@ -1979,6 +1990,132 @@
       "reply": null,
       "outcome": "fallback",
       "code": "INTERNAL"
+    },
+    {
+      "name": "a state no payment has",
+      "payment_hash": "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925",
+      "reply": {
+        "result": {
+          "transaction_id": "tx-1",
+          "state": "accepted",
+          "payment_hash": "66687aadf862bd776c8fc18b8e9f8e20089714856ee233b3902a591d0d5f2925",
+          "amount": 21000,
+          "created_at": 1793800000
+        }
+      },
+      "outcome": "fallback",
+      "code": "INTERNAL"
+    }
+  ],
+  "host_capabilities": [
+    {
+      "name": "every op, and the wallet's name",
+      "capability": {
+        "version": 1,
+        "ops": [
+          "buy_credit",
+          "buy_credit_status",
+          "buy_credit_cancel"
+        ],
+        "wallet": "Peel"
+      },
+      "expect": {
+        "version": 1,
+        "ops": [
+          "buy_credit",
+          "buy_credit_status",
+          "buy_credit_cancel"
+        ],
+        "wallet": "Peel"
+      }
+    },
+    {
+      "name": "buy_credit alone",
+      "capability": {
+        "version": 1,
+        "ops": [
+          "buy_credit"
+        ]
+      },
+      "expect": {
+        "version": 1,
+        "ops": [
+          "buy_credit"
+        ]
+      }
+    },
+    {
+      "name": "a newer native host's op is left out, never a reason to read none",
+      "capability": {
+        "version": 1,
+        "ops": [
+          "buy_credit",
+          "buy_credit_refund",
+          "buy_credit_status"
+        ]
+      },
+      "expect": {
+        "version": 1,
+        "ops": [
+          "buy_credit",
+          "buy_credit_status"
+        ]
+      }
+    },
+    {
+      "name": "no ops: nothing to buy with",
+      "capability": {
+        "version": 1,
+        "ops": []
+      },
+      "expect": {
+        "version": 1,
+        "ops": []
+      }
+    },
+    {
+      "name": "a name too long to show is left out",
+      "capability": {
+        "version": 1,
+        "ops": [
+          "buy_credit"
+        ],
+        "wallet": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      },
+      "expect": {
+        "version": 1,
+        "ops": [
+          "buy_credit"
+        ]
+      }
+    },
+    {
+      "name": "another version: none",
+      "capability": {
+        "version": 2,
+        "ops": [
+          "buy_credit"
+        ]
+      },
+      "expect": null
+    },
+    {
+      "name": "an app's capability is not this",
+      "capability": {
+        "version": 1,
+        "methods": [
+          "connect"
+        ],
+        "notifications": [],
+        "wallet": "sphinx",
+        "connected": false
+      },
+      "expect": null
+    },
+    {
+      "name": "nothing",
+      "capability": null,
+      "expect": null
     }
   ]
 }

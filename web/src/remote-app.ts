@@ -64,6 +64,18 @@ export function remoteHere(base: string): { origin: string; pathname: string } {
   return { origin: u.origin, pathname: u.pathname };
 }
 
+/** Where a remote page's link to ANOTHER app on its server leads: that app,
+ *  hosted by this same strut UI (`thisStrut`: its base URL), never by the
+ *  server's own UI — the host this design keeps a stranger's code away from.
+ *  Null for anything else (a workflow, a run, a file): that opens on the
+ *  server, as a plain page. `params` as ./app-links `strutLink` reads the
+ *  link against the server (`remoteHere`). */
+export function remoteAppLink(params: Record<string, string>, from: string, thisStrut: string): string | null {
+  const app = params["app"];
+  if (!app || app.startsWith("@") || /@(v\d+|preview-)/.test(app)) return null;
+  return remoteAppHref(thisStrut, { from, name: app, ...(params["input"] ? { input: params["input"] } : {}) });
+}
+
 /** The CSP every app's build writes (src/apps/build.ts `cspFor`, with no
  *  resource domains; held equal by remote-app.test.ts). */
 export const APP_CSP = [
@@ -85,9 +97,9 @@ export const APP_CSP = [
  *  same — the browser enforces every policy a document declares, and the
  *  first is in force before any of the server's markup is parsed — so the
  *  page cannot load a script, fetch, post a form or send an image to a host
- *  of its choosing (what a person typed into it stays in it). Not covered:
- *  a frame navigating ITSELF away (a native host can refuse that; a browser
- *  cannot). */
+ *  of its choosing. It CAN still navigate itself away, a URL carrying
+ *  whatever was typed into it: a native host can refuse that navigation, a
+ *  browser cannot. So a stranger's page is no place for a secret. */
 export function strangerDocument(html: string): string {
   return `<!doctype html><meta http-equiv="Content-Security-Policy" content="${APP_CSP}">${html}`;
 }

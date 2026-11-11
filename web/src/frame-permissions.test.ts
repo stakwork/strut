@@ -50,11 +50,11 @@ describe("an app's frame", () => {
     assert.deepEqual(mcpPermissions(["motion", "geolocation", "camera"]), { camera: {}, microphone: {}, geolocation: {}, clipboardWrite: {} });
   });
 
-  it("a stranger's page (another server's public app, hosted here) gets no microphone and nothing it declares", () => {
+  it("a stranger's page (another server's public app, hosted here) gets no microphone, no download, no fullscreen and nothing it declares", () => {
     const a = strangerFrameAttributes();
-    assert.equal(a.sandbox, SANDBOX, "every app's sandbox, never allow-same-origin");
-    assert.equal(a.allow, "clipboard-write; fullscreen; gamepad; screen-wake-lock");
-    for (const f of ["microphone", "camera", "geolocation", "accelerometer", "gyroscope"]) assert.ok(!a.allow.includes(f), f);
+    assert.equal(a.sandbox, "allow-scripts allow-forms allow-pointer-lock", "no download, no orientation lock, never allow-same-origin");
+    assert.equal(a.allow, "clipboard-write; gamepad; screen-wake-lock");
+    for (const f of ["microphone", "camera", "geolocation", "accelerometer", "gyroscope", "fullscreen"]) assert.ok(!a.allow.includes(f), f);
     assert.deepEqual(strangerMcpPermissions(), { clipboardWrite: {} });
   });
 });

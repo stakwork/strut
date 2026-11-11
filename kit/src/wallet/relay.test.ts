@@ -9,7 +9,7 @@ import {
   type CreditPurchase, type NativeWalletApp, type NativeWalletMessage, type Payment, type WalletCapability, type WalletNotification,
 } from "./protocol.js";
 import {
-  PASS_THROUGH_SCHEMA, buyCreditNatively, nativeWalletNotifications, nativeWalletOf, probeHostWallet, probeNativeWallet,
+  PASS_THROUGH_SCHEMA, buyCreditNatively, creditStatusNatively, nativeWalletNotifications, nativeWalletOf, probeHostWallet, probeNativeWallet,
   relayNativeWallet, type RelayBridge,
 } from "./relay.js";
 import { createBridgeWallet, type WalletBridgeApp, type WalletClient } from "./client.js";
@@ -275,8 +275,8 @@ describe("the host's own purchase through the native wallet (specs/WALLET.md §1
 
   it("asks what the native host takes, and reads an older one's silence as nothing", async () => {
     const native = new FakeNative();
-    native.answer = (m) => (m.op === "host_capability" ? { result: { version: 1, ops: ["buy_credit", "buy_credit_cancel"] } } : { error: {} });
-    assert.deepEqual(await probeHostWallet(native), { version: 1, ops: ["buy_credit", "buy_credit_cancel"] });
+    native.answer = (m) => (m.op === "host_capability" ? { result: { version: 1, ops: ["buy_credit", "buy_credit_cancel", "buy_credit_refund"], wallet: "Peel" } } : { error: {} });
+    assert.deepEqual(await probeHostWallet(native), { version: 1, ops: ["buy_credit", "buy_credit_cancel"], wallet: "Peel" }, "a newer op left out");
     assert.deepEqual(native.sent, [{ v: 1, op: "host_capability" }]);
     const old = new FakeNative();
     old.answer = () => ({ error: { code: -32601, message: "unknown op", data: { code: "NOT_IMPLEMENTED" } } });
@@ -295,12 +295,13 @@ describe("the host's own purchase through the native wallet (specs/WALLET.md §1
     assert.deepEqual(native.sent, [{ v: 1, op: "buy_credit", purchase }]);
   });
 
-  it("falls back on a decline, a bad preimage and a rejected message, and asks nothing more", async () => {
+  it("falls back on a decline and a rejected message; a payment that was SENT is never a fallback", async () => {
     const native = new FakeNative();
     native.answer = () => ({ error: { code: -32000, message: "Declined", data: { code: "USER_REJECTED" } } });
     assert.deepEqual(await buyCreditNatively(native, purchase, { timeoutMs: 1000, cancel: true }), { outcome: "fallback", code: "USER_REJECTED", message: "Declined" });
+    // Settled with a preimage that proves nothing: sent, so the claim decides.
     native.answer = () => ({ result: { ...settled, preimage: "02".repeat(32) } });
-    assert.equal((await buyCreditNatively(native, purchase, { timeoutMs: 1000, cancel: true })).outcome, "fallback");
+    assert.deepEqual(await buyCreditNatively(native, purchase, { timeoutMs: 1000, cancel: true }), { outcome: "pending" });
     const broken = { postMessage: () => Promise.reject(new Error("gone")) };
     const r = await buyCreditNatively(broken, purchase, { timeoutMs: 1000 });
     assert.equal(r.outcome, "fallback");
@@ -333,6 +334,34 @@ describe("the host's own purchase through the native wallet (specs/WALLET.md §1
     assert.equal((await buyCreditNatively(native, purchase, { timeoutMs: 1000, signal: stop.signal })).outcome, "fallback");
     assert.equal((await buyCreditNatively(native, purchase, { timeoutMs: 0 })).outcome, "fallback");
     assert.equal(native.sent.length, sent);
+  });
+
+  it("hands on an answer that comes after the page stopped waiting: a payment sent after all", async () => {
+    const native = new FakeNative();
+    let answer!: (v: unknown) => void;
+    native.answer = (m) => (m.op === "buy_credit" ? new Promise((r) => (answer = r)) : { result: {} });
+    const stop = new AbortController();
+    const late: unknown[] = [];
+    const waiting = buyCreditNatively(native, purchase, { timeoutMs: 60_000, signal: stop.signal, cancel: true, onLate: (o) => late.push(o) });
+    stop.abort();
+    assert.equal((await waiting).outcome, "fallback");
+    answer({ result: { ...pending, payment_hash: HASH, amount: 250_000_000 } });
+    for (let i = 0; i < 20 && !late.length; i++) await new Promise((r) => setTimeout(r, 1));
+    assert.deepEqual(late, [{ outcome: "pending" }]);
+  });
+
+  it("asks where a pending purchase stands: proven, failed, and pending on silence or nonsense", async () => {
+    const native = new FakeNative();
+    native.answer = () => ({ result: settled });
+    assert.deepEqual(await creditStatusNatively(native, HASH), { outcome: "paid", preimage: PREIMAGE });
+    assert.deepEqual(native.sent, [{ v: 1, op: "buy_credit_status", payment_hash: HASH }]);
+    native.answer = () => ({ result: { transaction_id: "t", state: "failed", payment_hash: HASH, amount: 1, created_at: 1, failure_reason: "no route" } });
+    assert.deepEqual(await creditStatusNatively(native, HASH), { outcome: "fallback", code: "PAYMENT_FAILED", message: "no route" });
+    native.answer = () => ({ error: { code: -32000, message: "?", data: { code: "NOT_FOUND" } } });
+    assert.deepEqual(await creditStatusNatively(native, HASH), { outcome: "pending" }, "the person tapped: never the QR on a status it cannot read");
+    native.answer = () => new Promise(() => {});
+    assert.deepEqual(await creditStatusNatively(native, HASH, 10), { outcome: "pending" });
+    assert.deepEqual(await creditStatusNatively({ postMessage: () => Promise.reject(new Error("gone")) }, HASH), { outcome: "pending" });
   });
 
   it("waits for a pending payment's claim", async () => {

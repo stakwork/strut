@@ -12,11 +12,14 @@
 // challenge, the macaroon's `strut_sats`, the invoice). A challenge that
 // fails is junk: nothing is shown or paid.
 //
-// The server can still charge what it likes; what this rules out is a
-// payment that buys nothing (an invoice the macaroon does not name) and a
-// sheet that shows one price while the invoice asks another. Pure — no
-// Buffer, no node:crypto — so the page and the root test run share it
-// (challenge.test.ts).
+// The server can still charge what it likes, and its dollar figure (`usd`,
+// the macaroon's `strut_credit`) is its own word: the check holds it to the
+// macaroon, never to the sats. So the PRICE a host shows is the sats the
+// invoice asks, in dollars only at a rate the host trusts
+// (./visitor-pay `priceView`). What this rules out is a payment that buys
+// nothing (an invoice the macaroon does not name) and a price in sats other
+// than the invoice's. Pure — no Buffer, no node:crypto — so the page and the
+// root test run share it (challenge.test.ts).
 
 import { Bolt11Error, decodeBolt11, type DecodedInvoice } from "../../src/payments/bolt11.js";
 import type { PaymentRequired } from "./visitor-pay";

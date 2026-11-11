@@ -939,6 +939,10 @@ function useLive<T>(base: string, path: string): { data?: T; error?: string } {
 function LiveApp(props: { base: string; name: string; publisher: string; target: string | null; onNeedStrut: (url: string | null) => void }) {
   const info = useLive<{ name: string; version: string; title: string; description?: string; permissions?: string[] }>(props.base, `/public/apps/${encodeURIComponent(props.name)}`);
   const page = liveAppUrl(props.base, props.name);
+  // Whether the publisher's server can be hosted by another strut UI: an
+  // older one says nothing, and the button would only fail there.
+  const listing = useLive<{ host?: { remote?: unknown } }>(props.base, "/public");
+  const hostable = typeof listing.data?.host?.remote === "number" && listing.data.host.remote >= 1;
   // The publisher's page frames the app, and a frame gets only what every
   // frame above it was granted: what every app's frame has for a game, and
   // what the version declared, go on this one too (../frame-permissions).
@@ -960,7 +964,7 @@ function LiveApp(props: { base: string; name: string; publisher: string; target:
           </div>
         </div>
         <div class="store-live-open">
-          <OpenInYourStrut base={props.base} name={props.name} target={props.target} onNeedStrut={props.onNeedStrut} />
+          {hostable && <OpenInYourStrut base={props.base} name={props.name} target={props.target} onNeedStrut={props.onNeedStrut} />}
           <a class="btn" href={page} target="_blank" rel="noopener">Open full page</a>
         </div>
       </div>
@@ -1290,7 +1294,7 @@ function RunPanel(props: { base: string; item: LiveRunnableItem }) {
           {runs.map((r) => <RunView key={r.runId} base={base} run={r} onEnded={readCredit} />)}
         </div>
       )}
-      {payment && <PaymentSheet payment={payment.p} workflow={payment.workflow} settled={payment.settled} onDone={payment.done} />}
+      {payment && <PaymentSheet payment={payment.p} workflow={payment.workflow} settled={payment.settled} onDone={payment.done} seller={props.base.replace(/^https?:\/\//, "")} />}
     </section>
   );
 }

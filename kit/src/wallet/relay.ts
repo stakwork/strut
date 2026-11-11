@@ -9,7 +9,7 @@
  *  No dependency: the bridge is anything with ext-apps' `AppBridge`'s
  *  `setRequestHandler` and `notification`. */
 import {
-  NATIVE_WALLET_GLOBAL, NATIVE_WALLET_HANDLER, WALLET_METHODS, WALLET_NOTIFICATION_METHOD, checkParams, isHostWalletCapability,
+  NATIVE_WALLET_GLOBAL, NATIVE_WALLET_HANDLER, WALLET_METHODS, WALLET_NOTIFICATION_METHOD, checkParams, hostWalletCapabilityOf,
   isWalletCapability, isWalletErrorCode, nativeAppKey, notificationProblems, readCreditReply, walletErrorBody, walletRequestMethod,
   type CreditPurchase, type CreditReplyOutcome, type HostWalletCapability, type NativeWalletApp, type NativeWalletMessage,
   type NativeWalletReply, type WalletCapability, type WalletErrorBody, type WalletMethod, type WalletNotification,
@@ -174,8 +174,7 @@ export async function probeHostWallet(native: NativeWallet, timeoutMs = 5_000): 
       native.postMessage({ v: 1, op: "host_capability" }),
       new Promise<undefined>((resolve) => { timer = setTimeout(() => resolve(undefined), timeoutMs); }),
     ]);
-    const result = (reply as { result?: unknown } | undefined)?.result;
-    return isHostWalletCapability(result) ? result : undefined;
+    return hostWalletCapabilityOf((reply as { result?: unknown } | undefined)?.result);
   } catch {
     return undefined;
   } finally {
@@ -187,12 +186,13 @@ export async function probeHostWallet(native: NativeWallet, timeoutMs = 5_000): 
  *  `readCreditReply`. The wait ends at `timeoutMs` (the invoice's end, at the
  *  latest) or when `signal` aborts (the person chose the QR code, the page
  *  went): both a `fallback`, and the native host is asked to take its sheet
- *  down (`buy_credit_cancel`) when it said it can. A rejected message is a
- *  `fallback` too. Never throws. */
+ *  down (`buy_credit_cancel`) when it said it can. Its answer, should it
+ *  still come, goes to `onLate`: a payment it sent after all is no QR code's
+ *  to pay again. A rejected message is a `fallback` too. Never throws. */
 export async function buyCreditNatively(
   native: NativeWallet,
   purchase: CreditPurchase,
-  o: { timeoutMs: number; signal?: AbortSignal; cancel?: boolean },
+  o: { timeoutMs: number; signal?: AbortSignal; cancel?: boolean; onLate?: (outcome: CreditReplyOutcome) => void },
 ): Promise<CreditReplyOutcome> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let onAbort: (() => void) | undefined;
@@ -212,6 +212,7 @@ export async function buyCreditNatively(
       (err): CreditReplyOutcome => ({ outcome: "fallback", code: "INTERNAL", message: `the wallet did not answer: ${err instanceof Error ? err.message : String(err)}` }),
     );
     const outcome = await Promise.race([answered, ended]);
+    if (gaveUp && o.onLate) void answered.then((late) => o.onLate?.(late));
     if (gaveUp && o.cancel) {
       // Its sheet may still be up: a yes now would pay for a page that has
       // moved on to the QR code (the claim would still credit it).
@@ -221,5 +222,27 @@ export async function buyCreditNatively(
   } finally {
     if (timer) clearTimeout(timer);
     if (onAbort) o.signal?.removeEventListener("abort", onAbort);
+  }
+}
+
+/** Where a purchase the native host answered `pending` stands now
+ *  (`buy_credit_status`), read as its first answer was. A host that does
+ *  not answer within `timeoutMs`, or answers nothing a payment of this
+ *  invoice, is `pending` still: the person tapped, so never the QR code on
+ *  silence. Never throws. */
+export async function creditStatusNatively(native: NativeWallet, paymentHash: string, timeoutMs = 5_000): Promise<CreditReplyOutcome> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const reply = await Promise.race([
+      native.postMessage({ v: 1, op: "buy_credit_status", payment_hash: paymentHash }),
+      new Promise<undefined>((resolve) => { timer = setTimeout(() => resolve(undefined), timeoutMs); }),
+    ]);
+    const r = await readCreditReply(reply, paymentHash);
+    // Only a payment of this invoice that failed, or one proven, moves on.
+    return r.outcome === "fallback" && r.code !== "PAYMENT_FAILED" ? { outcome: "pending" } : r;
+  } catch {
+    return { outcome: "pending" };
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }

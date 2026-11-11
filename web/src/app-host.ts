@@ -26,8 +26,8 @@ import {
   type NativeWalletApp, type RelayBridge,
 } from "@strut/kit/wallet";
 import { checkChallenge } from "./challenge";
-import { walletAsk, type WalletAnswer } from "./native-pay";
-import { remoteHere } from "./remote-app";
+import { createHostWalletProbe, walletAsk, type WalletAsk } from "./native-pay";
+import { remoteAppLink, remoteHere } from "./remote-app";
 import { storePurse } from "./store-purse";
 import { CHANNELS_CAPABILITY, relayChannels } from "@strut/kit/channels";
 import { API_BASE, apiHeaders, channelSocketUrl, channelTicket, claimPublicCredit, type BrandStyles } from "./api";
@@ -61,7 +61,7 @@ export interface AppHostHandlers {
    *  main frame (Peel): ask its wallet first (./native-pay), the QR code
    *  being what is left when it does not pay. Absent, the page's launch
    *  answers that the run was not paid for. */
-  onPayment?: (p: PaymentRequired, workflow: string, settled: Promise<ClaimEnd>, wallet?: (signal: AbortSignal) => Promise<WalletAnswer>) => Promise<PayOutcome>;
+  onPayment?: (p: PaymentRequired, workflow: string, settled: Promise<ClaimEnd>, wallet?: WalletAsk) => Promise<PayOutcome>;
 }
 
 export interface AppHostOptions {
@@ -152,6 +152,15 @@ interface VisitorWallet {
   payTurn: ReturnType<typeof payInTurn>;
 }
 const thisServer: VisitorWallet = { purse: visitorPurse, save: savePurseNow, keeper: claimKeeper, payTurn: visitorPayTurn };
+/** The native host's wallet for a visitor's credit (Peel's web view),
+ *  asked once per page what it takes: warmed as a visitor's relay connects,
+ *  so a priced launch never waits on the question (./native-pay). */
+const hostWallet = createHostWalletProbe();
+
+/** A link a page may open in a new tab: the web's own, and mail. Never a
+ *  `javascript:` URL, which a new window runs on THIS page's origin. */
+const OPENABLE = /^(https?|mailto):$/;
+
 /** This server's, or ANOTHER server's (`from`): one purse per server, so two
  *  servers never see each other's visit or credit. Another server's is the
  *  one the store's Run form keeps for it in this page (./store-purse). */
@@ -263,15 +272,17 @@ export async function connectAppHost(opts: AppHostOptions): Promise<AppHostConne
   const here = from ? remoteHere(from) : opts.here ?? { origin: location.origin, pathname: location.pathname };
   bridge.onopenlink = async ({ url }) => {
     const params = strutLink(url, here);
-    if (!params || !opts.handlers.onNavigate || opts.handlers.onNavigate(params) === false) {
-      let href = url;
-      try {
-        href = new URL(url, `${here.origin}${here.pathname}`).href;
-      } catch {
-        // Not a URL: opened as it came, which the browser refuses.
-      }
-      window.open(href, "_blank", "noopener");
+    if (params && opts.handlers.onNavigate && opts.handlers.onNavigate(params) !== false) return {};
+    // Another app on a remote page's server: hosted HERE too, never by that
+    // server's own UI (./remote-app `remoteAppLink`).
+    const hosted = from && params ? remoteAppLink(params, from, new URL(`${API_BASE}/`, location.href).href) : null;
+    let href: URL;
+    try {
+      href = new URL(hosted ?? url, `${here.origin}${here.pathname}`);
+    } catch {
+      return {};
     }
+    if (OPENABLE.test(href.protocol)) window.open(href.href, "_blank", "noopener");
     return {};
   };
   // `tool-input` goes after the page's `initialized`, as the spec orders it.
@@ -292,6 +303,7 @@ export async function connectAppHost(opts: AppHostOptions): Promise<AppHostConne
   if (opts.visitor) {
     const pay = opts.handlers.onPayment;
     const w = visitorWalletFor(from);
+    void hostWallet(window);
     // The server the credit is bought on, as a native wallet's sheet names it.
     const seller = from ?? new URL(`${API_BASE}/`, location.href).href.replace(/\/+$/, "");
     bridge.oncalltool = async (params, extra) => {
@@ -319,13 +331,14 @@ export async function connectAppHost(opts: AppHostOptions): Promise<AppHostConne
               // Claimed from now until it settles or ends, sheet or no sheet,
               // wallet or no wallet; a top-up replaces the credential it was
               // minted to carry from.
+              // Until the invoice's own end as decoded, never the seller's word.
               const settled = w.keeper.watch({
                 macaroon: q.macaroon,
-                ...(q.expires ? { expires: q.expires } : {}),
+                expires: new Date(check.checked.expiresAt * 1000).toISOString(),
                 ...(q.carries && w.purse.credential ? { carriesFrom: w.purse.credential } : {}),
               });
               // Peel's web view: its wallet pays with one tap, before any QR.
-              const wallet = walletAsk({ native: nativeWalletOf(window), p: q, checked: check.checked, seller, app: opts.visitorApp, workflow: wf });
+              const wallet = walletAsk({ wallet: await hostWallet(window), p: q, checked: check.checked, seller, app: opts.visitorApp, workflow: wf });
               return pay(q, wf, settled, wallet);
             }, p, workflow),
         })) as Awaited<ReturnType<NonNullable<typeof bridge.oncalltool>>>;

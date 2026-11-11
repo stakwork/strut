@@ -861,15 +861,17 @@ export function isWalletCapability(c: unknown): c is WalletCapability {
 // again itself.
 
 /** The ops a host page sends that are its own, not an app's. */
-export const HOST_WALLET_OPS = ["buy_credit", "buy_credit_cancel"] as const;
+export const HOST_WALLET_OPS = ["buy_credit", "buy_credit_status", "buy_credit_cancel"] as const;
 export type HostWalletOp = (typeof HOST_WALLET_OPS)[number];
 
 /** UI → native, the host's own: what the native host takes
- *  (`host_capability`), a purchase (`buy_credit`), and taking down the sheet
- *  of a purchase the page stopped waiting for (`buy_credit_cancel`). */
+ *  (`host_capability`), a purchase (`buy_credit`), where a purchase it
+ *  answered `pending` stands now (`buy_credit_status`), and taking down the
+ *  sheet of a purchase the page stopped waiting for (`buy_credit_cancel`). */
 export type HostWalletMessage =
   | { v: 1; op: "host_capability" }
   | { v: 1; op: "buy_credit"; purchase: CreditPurchase }
+  | { v: 1; op: "buy_credit_status"; payment_hash: string }
   | { v: 1; op: "buy_credit_cancel"; payment_hash: string };
 
 /** What `host_capability` answers: `{ result: HostWalletCapability }`. A
@@ -877,13 +879,23 @@ export type HostWalletMessage =
  *  then the host shows the QR code. */
 export interface HostWalletCapability {
   version: number;
+  /** The ops it takes, of the ones this contract knows. */
   ops: HostWalletOp[];
+  /** Its name for a person ("Peel"): what the host's own sheet calls it. */
+  wallet?: string;
 }
 
-export function isHostWalletCapability(c: unknown): c is HostWalletCapability {
-  if (typeof c !== "object" || c === null) return false;
+/** A native host's capability as this version reads it: an op it does not
+ *  know (a newer native host's) is left out, never a reason to read none;
+ *  a name longer than 40 characters is left out. Undefined when the answer
+ *  is not one — another version, no list of ops. */
+export function hostWalletCapabilityOf(c: unknown): HostWalletCapability | undefined {
+  if (typeof c !== "object" || c === null) return undefined;
   const w = c as Record<string, unknown>;
-  return w.version === WALLET_PROTOCOL_VERSION && Array.isArray(w.ops) && w.ops.every((o) => oneOf(o, HOST_WALLET_OPS));
+  if (w.version !== WALLET_PROTOCOL_VERSION || !Array.isArray(w.ops)) return undefined;
+  const ops = HOST_WALLET_OPS.filter((o) => (w.ops as unknown[]).includes(o));
+  const wallet = typeof w.wallet === "string" && w.wallet.trim() && w.wallet.length <= 40 ? w.wallet.trim() : undefined;
+  return { version: WALLET_PROTOCOL_VERSION, ops, ...(wallet ? { wallet } : {}) };
 }
 
 /** Why the credit is being bought, beside the invoice: the server's own words
@@ -908,7 +920,9 @@ export interface CreditPurchase {
   /** msat: what the invoice asks, which the host decoded: `sats × 1000`. */
   amount: number;
   sats: number;
-  /** The dollars the credit is worth, as the server quoted them. */
+  /** The CREDIT the server says this payment buys, in dollars — its own
+   *  figure, never the price: the price is `amount`, which a native host
+   *  shows in sats and turns into dollars at a rate of its own. */
   usd: number;
   /** The rate the server quoted at. */
   rate?: { usd_per_btc: number; at: string; source: string };
@@ -996,11 +1010,15 @@ export function creditPurchaseProblems(raw: unknown): string[] {
   return out;
 }
 
-/** What the host does with the native host's answer to `buy_credit`: the
- *  payment settled with a preimage that PROVES it (`paid`: the credential is
- *  `<macaroon>:<preimage>`), it is on its way (`pending`: the host waits on
- *  its claim), or anything else (`fallback`: the host shows the invoice as a
- *  QR code — and keeps claiming it, so a payment that did go through still
+/** What the host does with the native host's answer to `buy_credit` (or
+ *  `buy_credit_status`): the payment settled with a preimage that PROVES it
+ *  (`paid`: the credential is `<macaroon>:<preimage>`); it was sent and has
+ *  not settled, or says it settled without proof (`pending`: the person
+ *  tapped, so the host shows the invoice NO MORE — a seller holding the
+ *  first payment could settle a second — and waits on its claim and on
+ *  `buy_credit_status`); or nothing was sent: a refusal, a decline, a
+ *  payment that failed, an answer for another invoice (`fallback`: the
+ *  invoice as a QR code — still claimed, so a payment that did go through
  *  buys the credit). */
 export type CreditReplyOutcome =
   | { outcome: "paid"; preimage: string }
@@ -1020,17 +1038,19 @@ export async function readCreditReply(reply: unknown, paymentHash: string): Prom
     return fallback(code, typeof e?.message === "string" && e.message ? e.message : code);
   }
   if (!("result" in r)) return fallback("INTERNAL", "the wallet answered with neither a result nor an error");
-  const problems = resultProblems("pay_invoice", r.result);
-  if (problems.length) return fallback("INTERNAL", `the wallet's answer is not a payment: ${problems.join("; ")}`);
-  const pay = r.result as Payment;
-  if (pay.payment_hash !== paymentHash.toLowerCase()) return fallback("INTERNAL", "the wallet answered for another invoice");
-  if (pay.state === "failed") return fallback("PAYMENT_FAILED", pay.failure_reason || "the payment failed");
-  if (pay.state === "pending") return { outcome: "pending" };
+  const pay = r.result as Partial<Payment> | null;
+  if (!pay || typeof pay !== "object" || pay.payment_hash !== paymentHash.toLowerCase()) {
+    return fallback("INTERNAL", "the wallet's answer is not a payment of this invoice");
+  }
+  if (pay.state === "failed") return fallback("PAYMENT_FAILED", (typeof pay.failure_reason === "string" && pay.failure_reason) || "the payment failed");
+  if (pay.state !== "settled" && pay.state !== "pending") return fallback("INTERNAL", "the wallet's answer is not a payment state");
+  // A payment of this invoice that was sent: from here on, never the QR code.
+  if (pay.state === "pending" || resultProblems("pay_invoice", pay).length) return { outcome: "pending" };
   let proven = false;
   try {
     proven = await verifyPreimage(pay.preimage!, paymentHash);
   } catch {
     // No WebCrypto here (an insecure page): unproven, the claim decides.
   }
-  return proven ? { outcome: "paid", preimage: pay.preimage!.toLowerCase() } : fallback("INTERNAL", "the wallet's preimage does not prove the payment");
+  return proven ? { outcome: "paid", preimage: pay.preimage!.toLowerCase() } : { outcome: "pending" };
 }

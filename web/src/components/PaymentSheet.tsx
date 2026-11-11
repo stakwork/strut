@@ -1,29 +1,41 @@
-import { useEffect, useMemo, useState } from "preact/hooks";
+import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import qrcode from "qrcode-generator";
-import { creditLine, formatSats, formatUsd, invoiceQrText, secondsLeft, type ClaimEnd, type PayOutcome, type PaymentRequired } from "../visitor-pay";
-import { fallbackNote, type WalletAnswer } from "../native-pay";
+import { trustedRate } from "../api";
+import { creditLine, invoiceQrText, priceView, secondsLeft, type ClaimEnd, type PayOutcome, type PaymentRequired, type TrustedRate } from "../visitor-pay";
+import { PAYING_LONG_MS, STATUS_EVERY_MS, fallbackNote, type WalletAnswer, type WalletAsk } from "../native-pay";
 
 // ── The sheet a visitor pays a priced run on (plans/paid-runs.md §10) ──────
 //
 // Over a public app's frame, never in it: the page asked to launch a
-// workflow that costs something, and its HOST shows what it costs — in
-// dollars and in sats at the quoted rate — what the workflow is, and the
-// invoice as a QR code with a Copy button. The relay claims the invoice —
-// `POST /public/credit/claim` with the challenge's macaroon (§4.4: a phone
-// wallet never gives this page the preimage) — until it settles or ends,
-// whether or not this sheet is still open (../visitor-pay
-// `createClaimKeeper`); the sheet waits on that (`settled`) and answers the
-// credential, and the relay sends the page's call again. Cancel answers the
-// page that the run was not paid for — an invoice paid after it is still
-// claimed, its credit kept for the next launch; an invoice that expired can
-// be asked for again.
+// workflow that costs something, and its HOST shows what it costs and what it
+// is for, and the invoice as a QR code with a Copy button.
 //
-// In a native host's web view (Peel) the host's wallet is asked first
-// (`wallet`, ../native-pay, specs/WALLET.md §1.2): the sheet says to confirm
-// in the wallet, with the invoice one press away should the wallet not
-// answer, and shows it — with why — once the wallet did not pay. A wallet
-// that is paying but has not settled leaves the sheet waiting on the claim,
-// with no QR code to pay a second time from.
+// **The price is the SATS the invoice asks** (../challenge held them equal
+// to the invoice). Dollars appear beside them only at a rate this host
+// trusts, its own strut's `GET /rate`. The server's own dollar figure is
+// shown only as the CREDIT it says the payment buys, with a warning when
+// that credit is worth well under what is paid.
+//
+// **The claim.** The relay claims the invoice — `POST
+// /public/credit/claim` with the challenge's macaroon (§4.4: a phone wallet
+// never gives this page the preimage) — until it settles or ends, whether or
+// not this sheet is still open (../visitor-pay `createClaimKeeper`). The
+// sheet waits on that (`settled`), answers the credential, and the relay
+// sends the page's call again. Cancel answers the page that the run was not
+// paid for. An invoice paid after Cancel is still claimed, and its credit
+// kept for the next launch.
+//
+// **In a native host's web view (Peel)** the host's wallet is asked first
+// (`wallet`, ../native-pay, specs/WALLET.md §1.2): "Confirm in ⟨wallet⟩".
+// - **Show the invoice** is there for a wallet that does not answer.
+// - **Once the person tapped** (the wallet answers `pending`, or paid
+//   unproven), the invoice is shown NO MORE. A seller holding the first
+//   payment knows its preimage and could settle a second one. The sheet
+//   waits on the claim and on the wallet's `buy_credit_status`; a payment
+//   that fails there brings the invoice back.
+// - **A wallet that did not pay** (a decline, a refusal, a failure) leaves
+//   the invoice, why, and **Pay with ⟨wallet⟩**: a fresh tap here, which a
+//   native host that wants a recent tap is waiting for.
 
 /** The invoice as an SVG QR code: dark modules on white, a four-module
  *  quiet zone, scaled by the container. */
@@ -38,8 +50,8 @@ function qrSvg(text: string): string {
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${size} ${size}" shape-rendering="crispEdges"><rect width="${size}" height="${size}" fill="#fff"/><path d="${d}" fill="#000"/></svg>`;
 }
 
-/** What the sheet shows: the wallet asked, the wallet paying, the invoice,
- *  or the invoice ended. */
+/** What the sheet shows: the wallet asked, the wallet paying (no invoice),
+ *  the invoice, or the invoice ended. */
 type Stage = "wallet" | "paying" | "invoice" | "expired";
 
 export function PaymentSheet(props: {
@@ -48,58 +60,99 @@ export function PaymentSheet(props: {
   settled: Promise<ClaimEnd>;
   onDone: (outcome: PayOutcome) => void;
   /** The native host's wallet, asked first (../native-pay). */
-  wallet?: (signal: AbortSignal) => Promise<WalletAnswer>;
+  wallet?: WalletAsk;
   /** Another strut server the credit is bought on: its host, named on the sheet. */
   seller?: string;
 }) {
-  const { payment, workflow, settled, onDone } = props;
-  const [stage, setStage] = useState<Stage>(props.wallet ? "wallet" : "invoice");
+  const { payment, workflow, settled, onDone, wallet } = props;
+  const [stage, setStage] = useState<Stage>(wallet ? "wallet" : "invoice");
   const [note, setNote] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [now, setNow] = useState(() => Date.now());
+  const [payingSince, setPayingSince] = useState<number | null>(null);
+  const [rate, setRate] = useState<TrustedRate | null>(null);
   const svg = useMemo(() => qrSvg(invoiceQrText(payment.invoice)), [payment.invoice]);
-  /** Stops waiting on the wallet: the invoice shown instead, or the sheet gone. */
-  const [askAbort] = useState(() => new AbortController());
+  /** The ask in flight: aborted when the person chooses the invoice or leaves. */
+  const asking = useRef<AbortController | null>(null);
+  const open = useRef(true);
+  const name = wallet?.name ?? "your wallet";
+  const price = priceView(payment, rate, props.seller);
+
+  /** The wallet said it sent the payment: wait on it, invoice hidden for good. */
+  const paying = () => {
+    setNote(null);
+    setStage((s) => (s === "expired" ? s : "paying"));
+    setPayingSince((t) => t ?? Date.now());
+  };
+  const answered = (a: WalletAnswer) => {
+    if (!open.current) return;
+    if (a.outcome === "paid") onDone(a.credential);
+    else if (a.outcome === "pending") paying();
+    else {
+      setNote(fallbackNote(a, name));
+      setStage((s) => (s === "wallet" ? "invoice" : s));
+    }
+  };
+  /** One ask of the wallet. Its late answer, after the person chose the
+   *  invoice, still counts when it says the payment was sent. */
+  const ask = () => {
+    if (!wallet) return;
+    asking.current?.abort();
+    const ctl = new AbortController();
+    asking.current = ctl;
+    setNote(null);
+    setStage("wallet");
+    void wallet
+      .pay(ctl.signal, (late) => {
+        if (late.outcome !== "fallback") answered(late);
+      })
+      .then((a) => {
+        if (!ctl.signal.aborted) answered(a);
+      });
+  };
 
   // Until the invoice settles or ends: then the credential goes to the
   // relay, or the sheet says it expired. Closing the sheet stops only this
   // listener; the relay goes on claiming.
   useEffect(() => {
-    let open = true;
     void settled.then((got) => {
-      if (!open) return;
+      if (!open.current) return;
       if (got.state === "settled") onDone(got.credential);
       else setStage("expired");
     });
-    return () => {
-      open = false;
-    };
   }, [settled]);
 
-  // The wallet, asked once: paid is done; paying waits on the claim;
-  // anything else shows the invoice, saying why.
   useEffect(() => {
-    if (!props.wallet) return;
-    let open = true;
-    void props.wallet(askAbort.signal).then((a) => {
-      if (!open || askAbort.signal.aborted) return;
-      if (a.outcome === "paid") onDone(a.credential);
-      else if (a.outcome === "pending") setStage((s) => (s === "wallet" ? "paying" : s));
-      else {
-        setNote(fallbackNote(a));
-        setStage((s) => (s === "wallet" ? "invoice" : s));
-      }
+    open.current = true;
+    if (wallet) ask();
+    void trustedRate().then((r) => {
+      if (open.current) setRate(r);
     });
+    const t = setInterval(() => setNow(Date.now()), 1000);
     return () => {
-      open = false;
-      askAbort.abort();
+      open.current = false;
+      asking.current?.abort();
+      clearInterval(t);
     };
   }, []);
 
+  // A payment the wallet sent: where it stands, until the claim settles or
+  // the wallet says it failed (the invoice comes back: nothing was paid).
   useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 1000);
+    if (stage !== "paying" || !wallet?.status) return;
+    const t = setInterval(() => {
+      void wallet.status!().then((a) => {
+        if (!open.current) return;
+        if (a.outcome === "paid") onDone(a.credential);
+        else if (a.outcome === "fallback") {
+          setPayingSince(null);
+          setNote(fallbackNote(a, name));
+          setStage((s) => (s === "paying" ? "invoice" : s));
+        }
+      });
+    }, STATUS_EVERY_MS);
     return () => clearInterval(t);
-  }, []);
+  }, [stage]);
 
   const left = secondsLeft(payment.expires, now);
   const ends = left !== undefined ? ` · the invoice ends in ${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}` : "";
@@ -113,14 +166,19 @@ export function PaymentSheet(props: {
     }
   };
   const showInvoice = () => {
-    askAbort.abort();
-    setNote("Pay this invoice from any Lightning wallet. If your wallet pays after all, it is counted once.");
+    asking.current?.abort();
+    setNote(`Pay this invoice from any Lightning wallet. If ${name} pays it after all, this invoice goes away.`);
     setStage("invoice");
   };
   const cancel = () => {
-    askAbort.abort();
-    onDone(null);
+    asking.current?.abort();
+    // Closed while a payment is on its way: no run now, and what settles
+    // later is kept as credit (the relay goes on claiming).
+    if (stage === "paying") {
+      onDone({ error: `payment_pending: the run of ${workflow} did not start, because its payment had not settled — if it settles, the credit is kept on this server for your next run` });
+    } else onDone(null);
   };
+  const payingLong = stage === "paying" && payingSince !== null && now - payingSince > PAYING_LONG_MS;
 
   return (
     <div class="pay-sheet-backdrop" role="dialog" aria-modal="true" aria-labelledby="pay-sheet-title" data-testid="payment-sheet" data-stage={stage}>
@@ -131,24 +189,33 @@ export function PaymentSheet(props: {
             {props.seller && <div class="pay-sheet-seller">on {props.seller}</div>}
           </div>
           <div class="pay-sheet-price">
-            <span class="pay-sheet-usd">{formatUsd(payment.usd)}</span>
-            <span class="pay-sheet-sats">{formatSats(payment.sats)}</span>
+            <span class="pay-sheet-usd" data-testid="pay-sheet-sats">{price.sats}</span>
+            {price.usd && <span class="pay-sheet-sats">{price.usd}</span>}
           </div>
         </div>
         <p class="pay-sheet-what">
-          {payment.description ?? `${workflow}: credit for one run`}. {creditLine(payment)}
+          {payment.description ?? `${workflow}: credit for one run`}. {price.credit} {creditLine(payment)}
         </p>
+        {price.warning && <p class="pay-sheet-note is-warning" data-testid="pay-sheet-warning">{price.warning}</p>}
         {stage === "wallet" && (
           <div class="pay-sheet-status">
             <span class="pay-sheet-spinner" aria-hidden="true" />
-            Confirm the payment in your wallet{ends}
+            Confirm the payment in {name}{ends}
           </div>
         )}
         {stage === "paying" && (
-          <div class="pay-sheet-status">
-            <span class="pay-sheet-spinner" aria-hidden="true" />
-            Your wallet is paying; waiting for it to settle{ends}
-          </div>
+          <>
+            <div class="pay-sheet-status">
+              <span class="pay-sheet-spinner" aria-hidden="true" />
+              {name[0]!.toUpperCase() + name.slice(1)} is paying; waiting for it to settle
+            </div>
+            {payingLong && (
+              <p class="pay-sheet-note">
+                It has not settled yet: a server may hold a payment until it settles or fails on its own. You may close this; if it settles, the credit is
+                kept here for your next run.
+              </p>
+            )}
+          </>
         )}
         {stage === "invoice" && (
           <>
@@ -164,11 +231,6 @@ export function PaymentSheet(props: {
               <span class="pay-sheet-spinner" aria-hidden="true" />
               Waiting for the payment{ends}
             </div>
-            {payment.rate && (
-              <div class="pay-sheet-rate">
-                At {formatUsd(payment.rate.usdPerBtc, { whole: true })} a bitcoin ({payment.rate.source})
-              </div>
-            )}
           </>
         )}
         {stage === "expired" && <div class="pay-sheet-status is-expired">The invoice expired before it was paid.</div>}
@@ -178,13 +240,18 @@ export function PaymentSheet(props: {
               Show the invoice
             </button>
           )}
+          {stage === "invoice" && wallet && (
+            <button type="button" class="btn btn-primary" onClick={ask}>
+              Pay with {name}
+            </button>
+          )}
           {stage === "expired" && (
             <button type="button" class="btn btn-primary" onClick={() => onDone("again")}>
               New invoice
             </button>
           )}
           <button type="button" class="btn" onClick={cancel}>
-            Cancel
+            {stage === "paying" ? "Close" : "Cancel"}
           </button>
         </div>
       </div>

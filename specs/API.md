@@ -3095,7 +3095,7 @@ a `404`, as if it were not there.
 
 | Route | Answer |
 | --- | --- |
-| `GET /public` | `{ workflows: [{ name, activeVersion, versions, description?, category?, runs }], steps: [{ type, source, description?, effect? }], concepts: [{ name, description?, pages }], types, apps: [{ name }], runnable: [{ kind, name, description?, base, markup, capUsd, reserve, results, input, recent }] }` — the roots, with how many pages each holds; what anyone may run (below) |
+| `GET /public` | `{ host: { remote: 1 }, workflows: [{ name, activeVersion, versions, description?, category?, runs }], steps: [{ type, source, description?, effect? }], concepts: [{ name, description?, pages }], types, apps: [{ name }], runnable: [{ kind, name, description?, base, markup, capUsd, reserve, results, input, recent }] }` — the roots, with how many pages each holds; what anyone may run (below) |
 | `GET /llms.txt` | the same as ONE markdown page for an agent that fetches URLs (§17.8); not under `/public`, open the same way |
 | `GET /public/workflows[?q=]` | the public workflows, as above |
 | `GET /public/workflows/:name` | `{ name, active, category?, runs, versions: { vN: { createdAt, description?, hash, source? } } }` |
@@ -3117,6 +3117,11 @@ a `404`, as if it were not there.
 | `GET /public/apps` | `[{ name, version, title, description?, icon?, permissions? }]` — each at the version the public view serves; `permissions` what its frame is granted beyond every app's (as `dist/build.json` says) |
 | `GET /public/apps/:name` | one of them |
 | `GET /public/apps/:name/document` | the page: that version's `dist/index.html` with a VISITOR's identity in `<meta name="strut-app-token">` and `<meta name="strut-public-view" content="1">` beside it |
+
+`host` says what another strut UI may do with this view: `remote` (a
+version, 1 today) — its public apps may be hosted by any strut UI, its `POST
+/public/mcp` answering such a page across origins (§17.9). A strut from
+before it says nothing, and cannot be hosted that way.
 
 `runnable` lists every item of the record's `runnable` that is here and
 not sealed, whether or not its definition is public (its YAML is never
@@ -3470,13 +3475,23 @@ host the same):
    its `strut_sats` is the challenge's `sats`, which is the invoice's
    amount; its `strut_credit` is the challenge's `usd`. A challenge that
    fails is junk: answer the page's call with an error saying so, and pay
-   nothing. Then pay it with the host's own wallet — in a native host's web
-   view, strut's UI asks the native wallet first, one tap on its own sheet
-   (specs/WALLET.md §1.2) — or show it: the price in dollars and sats, what
-   it is for (`description`), the server it is bought on when it is not
-   this one, and the `invoice` as a QR code with a Copy button. A wallet
-   that does not pay — declines, fails, answers a preimage that proves
-   nothing, or says nothing before the invoice ends — leaves the QR code.
+   nothing. The seller writes `usd` and `strut_credit` both, so they agree
+   with each other, not with the world: **the price is the `sats`** the
+   invoice asks. Show them as the price, dollars only at a rate the host
+   trusts (strut's UI: its own strut's `GET /rate`, below), and the
+   seller's `usd` only as the credit it says the payment buys — flagged
+   when it is worth under nine tenths of what is paid. Then pay it with the
+   host's own wallet — in a native host's web view, strut's UI asks the
+   native wallet first, one tap on its own sheet (specs/WALLET.md §1.2) — or
+   show it: the price, what it is for (`description`), the server it is
+   bought on when it is not this one, and the `invoice` as a QR code with a
+   Copy button. Once a wallet SENT the payment, never show the invoice
+   again: a seller holding the first payment knows its preimage and could
+   settle a second one. A wallet that sent nothing — a decline, a refusal,
+   a payment that failed, no answer before the invoice ends — leaves the
+   QR code, and a way to ask the wallet again. A call pays at most once: a
+   seller that asks again after a payment gets nothing more, and the page
+   is told the payment is kept as credit.
 4. **Keep the page's request alive while the visitor pays.** The page's
    `tools/call` times out after 60 s unless progress resets it (ext-apps'
    `callServerTool` asks for that, with a `progressToken` in `_meta`): send
@@ -3484,7 +3499,8 @@ host the same):
    answer. (The kit's `run/launch` also asks for 15 minutes, for a host
    that sends none.)
 5. **Claim every invoice you showed until it settles or ends — whether or
-   not its sheet is still open.** With no preimage of its own (a phone paid
+   not its sheet is still open** — its end as the invoice itself says
+   (decoded), never the challenge's `expires`. With no preimage of its own (a phone paid
    the QR), ask `POST /public/credit/claim { macaroon }` every few seconds
    (§17.5; 120 a minute an address) until it answers `settled` with
    `credential` — `<macaroon>:<preimage>` — or `expired`, and once more a
@@ -3737,6 +3753,11 @@ own:
   trailing `/` nor `/public`, no query, no credentials.
 - It must be `https`, or `http` to this machine (`localhost`, `*.localhost`,
   `127.x`, `[::1]`): a development pair. A LAN box gets a certificate.
+- The seller must say it can be hosted so: `host.remote` on its `GET /public`
+  (§17.2). One from before that (whose `/public/mcp` answers no page on
+  another origin) is a page saying "<host> runs an older strut, whose public
+  apps cannot be hosted from another strut yet" — never a bare "Failed to
+  fetch".
 - `solo=1` is implied (the store writes it): the app shows alone, whoever
   opens it, the key or a session or neither. A served box shows its own app
   whatever the link says.
@@ -3759,10 +3780,11 @@ through the hosting strut's server, which needs no change and no route.
 **The frame is a STRANGER's.** It runs on the hosting strut's origin, so a
 browser grant to that origin (the microphone a person allowed for
 dictation) would reach it through the frame's `allow`. So:
-- it gets the sandbox every app gets (never `allow-same-origin`), the
-  clipboard and a game's features (`strangerFrameAttributes`): no
-  microphone, and none of the camera, location or motion its version
-  declares;
+- it gets scripts, a form's submit event, pointer lock, the clipboard, the
+  gamepad and the wake lock (`strangerFrameAttributes`): never
+  `allow-same-origin`, no microphone, none of the camera, location or motion
+  its version declares, no download (a file saved from this origin), no
+  fullscreen (a page that could cover the host's own sheets);
 - its `ui/initialize` reports the clipboard alone;
 - the build's own CSP (src/apps/build.ts `cspFor()`) is written AHEAD of the
   document the seller sent (`strangerDocument`). A document that dropped or
@@ -3771,12 +3793,20 @@ dictation) would reach it through the frame's `allow`. So:
   away. A native host can refuse that, a browser cannot;
 - its page is offered no app wallet (`strut/wallet/*`, specs/WALLET.md
   §1.1): only the host's own purchase (§1.2);
-- its `ui/open-link` is read against the SELLER's UI: `?app=<other>` is an
-  app there, never one of this strut's, and opens there in a new tab. A
-  link to itself (the kit's `appLink`) is its input, in place.
+- its `ui/open-link` is read against the SELLER's UI. `?app=<other>` is an
+  app there, never one of this strut's: it opens in a new tab HOSTED HERE
+  too, `?app=<other>&public=1&from=<seller>`, never by the seller's own UI.
+  A link to itself (the kit's `appLink`) is its input, in place. Any other
+  link opens on the seller as a plain page. Every page's `ui/open-link`
+  opens `http(s)` and `mailto` alone (never a `javascript:` URL, which a new
+  window runs on the host's origin).
 
 **Paying** is §17.6, with the seller as the server:
-- the challenge is checked;
+- the challenge is checked, and the sheet's price is the invoice's sats,
+  in dollars at the HOSTING strut's rate alone: `GET /rate` (any
+  credential, a member's session included) → `{ usdPerBtc, at, source }`,
+  read a minute at a time from src/payments/rate.ts, `503` with none to be
+  had. A visitor with no credential on the hosting strut sees sats alone;
 - in Peel, the native wallet is asked first (specs/WALLET.md §1.2, naming
   the seller, the app and the workflow);
 - else the QR sheet, which names the seller (`on <host>`);
@@ -3785,9 +3815,10 @@ dictation) would reach it through the frame's `allow`. So:
   a reload.
 
 **The store** (`?store=1`): a live app's page has **Open in your strut**
-beside **Open full page**. It is this link into the visitor's own strut
-("Your strut", kept in localStorage, as the Install link keeps it), asked
-for once when none is set.
+beside **Open full page** when the seller's `GET /public` says `host.remote`.
+It is this link into the visitor's own strut ("Your strut", kept in
+localStorage, as the Install link keeps it), asked for once when none is
+set.
 
 ## 18. The wallet — what the server receives with (`plans/paid-runs.md` §9)
 
