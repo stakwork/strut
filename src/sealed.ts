@@ -4,9 +4,9 @@
  * publish workflows on behalf of a model; a grading harness's run log records
  * what its graders were handed — gold and rubric text — and a candidate that
  * embeds its grader has oracle access. So a SEALED workflow or step is
- * refused by name (run, run history, verify) and a publish whose closure
- * reaches one is refused (the step by type, the workflow through a
- * `subflow`, a grader in an `agentTools` grant).
+ * refused by name (publish over, edit, run, run history, verify) and a
+ * publish whose closure reaches one is refused (the step by type, the
+ * workflow through a `subflow`, a grader in an `agentTools` grant).
  *
  * ONE source, two shapes:
  *   - a step-namespace list: `DEFAULT_SEALED_STEPS` plus `STRUT_SEALED`
@@ -18,10 +18,11 @@
  *
  * Three readers, two functions: the meta surface's gates (`authoring.ts`),
  * a check's closure when it is written (`claims-authoring.ts`, fixed point
- * 2) and when it runs (`verify.ts`). Who PUBLISHED what stays the
- * `publisher` stamp's business, unchanged: the meta surface publishes only
- * over names it stamped `ai`, and only an unstamped harness records
- * `observed` evidence.
+ * 2) and when it runs (`verify.ts`). Sealing is the only line: the meta
+ * surface publishes over any other workflow and edits any other step
+ * (ruled 2026-11-10). Who WROTE what is provenance — a version's `source`,
+ * the workflow's `publisher` stamp — and only a harness the surface never
+ * wrote to records `observed` evidence.
  */
 import type { StepRegistry } from "./core.js";
 import { globToRegExp, type FlowClosure } from "./closure.js";

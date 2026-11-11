@@ -12,10 +12,12 @@
  *   the new run are one step, so twenty launches in one second stay inside
  *   the cap. A `key` the same caller sent for a run still in flight returns
  *   that run, before any cap.
- * - **The run's cap** (§7): the smallest of the item's `capUsd`, the
- *   workflow's own (its `maxRunCostUsd`, else the deployment's, as
- *   `resolveRunCap` reads it) and what is left of the daily cap. It rides on
- *   the launch as `RunOptions.maxCostUsd` to `llmAuth`.
+ * - **The run's cap** (§7): the smallest of the item's per-run cap — its
+ *   `capUsd`, else a tenth of its daily cap (`perRunCapUsd`), so ten runs
+ *   fit in the day's cap at once rather than one — the workflow's own (its
+ *   `maxRunCostUsd`, else the deployment's, as `resolveRunCap` reads it) and
+ *   what is left of the daily cap. It rides on the launch as
+ *   `RunOptions.maxCostUsd` to `llmAuth`.
  * - **The charge** (`ended`, §5): when the run ends — success, error,
  *   cancelled, or finished by a durable resume after a restart — the ledger
  *   records it with no token, a charge of nothing that counts its cost in
@@ -50,7 +52,7 @@ import type { RunStore } from "./store.js";
 import { generateRunId } from "./store.js";
 import { summaryFromLog } from "./runner.js";
 import { FREE, LedgerError, microsToUsd, usdToMicros, type HoldResult, type LedgerStore, type Micros, type Price, type RunOutcome } from "./payments/ledger.js";
-import { runnableSubject } from "./public-runnable.js";
+import { perRunCapUsd, runnableSubject } from "./public-runnable.js";
 import type { PublicRunnable } from "./public-surface.js";
 
 /** The most a launch body may be (§3 step 2). */
@@ -159,6 +161,30 @@ export function secondsToUtcMidnight(now: number): number {
 const usd = (micros: Micros) => `$${microsToUsd(micros).toFixed(2)}`;
 const isTerminal = (e: RunEvent) => e.type === "run.end" || e.type === "run.error" || e.type === "run.cancelled";
 
+/**
+ * Whether the daily cap has room for one more run, and the run's cap if so
+ * (§7). `full` is the cap the run would have with the day out of the
+ * picture: the item's per-run cap and the workflow's, the smaller. Runs in
+ * flight count at their caps (`held`).
+ *
+ * - While what is left of the day holds a FULL cap, a run gets one — never a
+ *   sliver that the gateway would stop partway, the buyer paying for a run
+ *   that could not finish.
+ * - Past that, the last of the day goes to one run at a time, its cap what
+ *   is left: with nothing of the item in flight and something left, a run is
+ *   admitted with that.
+ * - Otherwise a 429: `spent` when the day's cost alone reached the cap.
+ */
+export function dailyRoom(o: { daily: Micros; today: Micros; held: Micros; inFlight: number; full: Micros }):
+  | { ok: true; cap: Micros }
+  | { ok: false; spent: boolean } {
+  const left = o.daily - o.today - o.held;
+  if (o.today >= o.daily) return { ok: false, spent: true };
+  if (left >= o.full) return { ok: true, cap: o.full };
+  if (o.inFlight === 0 && left > 0) return { ok: true, cap: left };
+  return { ok: false, spent: false };
+}
+
 export function createPublicRuns(o: PublicRunsOptions): PublicRuns {
   const now = o.now ?? Date.now;
   const max = o.maxInFlight ?? PUBLIC_RUNS_MAX_IN_FLIGHT;
@@ -211,7 +237,8 @@ export function createPublicRuns(o: PublicRunsOptions): PublicRuns {
         return { ok: false, status: 429, error: `too many public runs in flight on this server (${max}) — try again when one ends`, retryAfter: 30 };
       }
       const caps: Micros[] = [];
-      if (item.capUsd !== undefined) caps.push(usdToMicros(item.capUsd));
+      const own = perRunCapUsd(item);
+      if (own !== undefined) caps.push(usdToMicros(own));
       if (a.workflowCapUsd !== undefined) caps.push(usdToMicros(a.workflowCapUsd));
       if (item.dailyCapUsd !== undefined) {
         const daily = usdToMicros(item.dailyCapUsd);
@@ -222,21 +249,28 @@ export function createPublicRuns(o: PublicRunsOptions): PublicRuns {
           console.error(`[public-runs] reading today's spend of ${subject} failed:`, err);
           return { ok: false, status: 503, error: "the ledger cannot be read just now — try again shortly", retryAfter: 30 };
         }
-        // A run in flight counts at its cap; one with none, at the whole cap.
+        // A run in flight counts at its cap. Every run admitted under a daily
+        // cap has one (`perRunCapUsd`); an entry on file without one, at the
+        // whole cap.
         let held = 0;
-        for (const f of flights.values()) if (f.subject === subject) held += f.cap ?? daily;
-        if (today + held >= daily) {
-          const spent = today >= daily;
+        let inFlight = 0;
+        for (const f of flights.values()) {
+          if (f.subject !== subject) continue;
+          held += f.cap ?? daily;
+          inFlight++;
+        }
+        const room = dailyRoom({ daily, today, held, inFlight, full: caps.length ? Math.min(...caps) : daily });
+        if (!room.ok) {
           return {
             ok: false,
             status: 429,
-            error: spent
+            error: room.spent
               ? `${item.kind} "${item.name}" has spent its daily cap (${usd(daily)}) — try again tomorrow (UTC)`
               : `${item.kind} "${item.name}" has its daily cap (${usd(daily)}) set aside for runs in flight — try again when one ends`,
-            retryAfter: spent ? secondsToUtcMidnight(now()) : 60,
+            retryAfter: room.spent ? secondsToUtcMidnight(now()) : 60,
           };
         }
-        caps.push(daily - today - held);
+        caps.push(room.cap);
       }
       const cap = caps.length ? Math.max(1, Math.min(...caps)) : undefined;
       const runId = generateRunId();

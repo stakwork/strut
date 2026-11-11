@@ -120,6 +120,9 @@ export interface PublicAppInfo {
   title: string;
   description?: string;
   icon?: string;
+  /** The browser features the version's frame is granted (`app.yaml`'s
+   *  `permissions:`), which a visitor's host sets before the document loads. */
+  permissions?: string[];
 }
 
 /** Every path this module serves: what the gate opens to anyone — its

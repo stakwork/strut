@@ -153,7 +153,7 @@ evidence is on disk; the question is how it gets read. The general
 instrument is **`meta/search-runs`** (done — `searchRunEvents`,
 `authoring.ts`): grep a regex across a workflow's recent run event logs →
 matching (runId, event path, snippet) tuples plus a per-run frequency
-summary, behind the same agent-authored gate as `meta/get-run` (raw
+summary, behind the same sealed gate as `meta/get-run` (raw
 filesystem grep over the workspace would read grader logs — §6). That's
 what lets a propose agent hunt *flexibly* — signatures nobody enumerated,
 a tool that exists but is too old — instead of being limited to a fixed
@@ -265,22 +265,23 @@ in-workflow author on iteration one:
 | `meta/list-workflows`, `meta/get-workflow` | workflow discovery | read current source before editing |
 | `meta/validate-workflow` | `validateWorkflowYaml` (the chat's `validate_workflow`) | static check before publishing — a typo never becomes a version |
 | `meta/publish-workflow` | create/edit as an explicit upsert | the candidate artifact |
+| `meta/edit-workflow` | `applyEdits` + the publish above | a small change to a big workflow without resending it (the chat's `edit_workflow { edits }`; `meta/edit-step` takes `edits` too) |
+| `meta/set-active-version` | `setActiveVersion` / `setActiveStepVersion` | rollback without republishing; the version made active is held to what a publish of it would be (nothing sealed, not newly open to peers, within the reach) |
+| `meta/set-workflow-category` | `setWorkflowCategory` | the sidebar label, no version (categories carry no policy) |
 | `meta/run-workflow` | `runWorkflow` | test the candidate end to end |
 | `meta/list-runs`, `meta/get-run` | run-store reads | debug a failed candidate — **provenance-scoped, see §6** |
+| `meta/resume-run`, `meta/cancel-run`, `meta/pause-run` | the run routes' core (RUN_CONTROL_SPEC) | heal, stop or pause a run; never a sealed one, one billed to someone else, or (cancel, pause) the caller's own |
 | `meta/list-secrets` | secret NAMES only | author steps that reference auth by name |
 
 Deliberately absent: `bash` and `web_search` — the agent step grants those
-itself, and §5.3.2 forbids `meta/*` + `bash` on one agent anyway — and
-`set_workflow_category` (UI cosmetics; and keeping it out means an in-run
-author cannot re-file a workflow into the candidate namespace, §6).
+itself, and §5.3.2 forbids `meta/*` + `bash` on one agent anyway.
 
 The chat tools carry real logic worth not duplicating: name-conflict checks,
 JSON-string arg coercion (`coerceJsonArg`), and the load-verify-and-report
 behavior §5.3.4 demands. Both surfaces sit on the one shared core
 (`authoring.ts`); the capability adds the meta POLICY on top — everything it
-publishes is stamped `publisher: "ai"`, it publishes only over that stamped
-set, and its run, run-history and verify operations refuse anything
-**sealed** (§6).
+publishes is stamped `publisher: "ai"`, and its publish, edit, run,
+run-history and verify operations refuse anything **sealed** (§6).
 
 Then `agentTools: ["meta/*"]` closes the loop:
 
@@ -350,20 +351,23 @@ surface, permanently:
   only the wholly harness-side namespaces, `eval/*` and `meta/*` plus a
   deployment's `STRUT_SEALED`, are sealed by name), and the capability
   refuses them: `meta/run-workflow`, `meta/list-runs`, `meta/get-run`,
-  `meta/search-runs`, `meta/verify-run` and `meta/run-step` by name, and
-  `meta/publish-workflow` by CLOSURE — a candidate that names the step,
-  subflows the harness (at any depth), grants a grader to an agent, or
-  seals itself is refused. Everything else the surface runs and inspects
-  like its own — a seeded `pod-pr`, a job — so generation N can inspect
-  generation N−1's candidate runs and a job agent can run the workflows a
-  person seeded: sealing, not provenance, is the line. Provenance still
-  decides what it may EDIT: `meta/publish-workflow` stamps everything it
-  publishes `publisher: "ai"` (the capability sets the stamp; the calling
-  agent cannot override it) and publishes only over names so stamped — an
-  identical-content republish never re-stamps (no claiming a workflow by
-  republishing its own YAML verbatim) — and `meta/edit-step` edits only
-  steps published as `"ai"`; and only an unstamped harness records
-  `observed` evidence (claims §4). This is defense in depth, not the sole
+  `meta/search-runs`, `meta/verify-run`, `meta/run-step` and
+  `meta/edit-step` by name, `meta/publish-workflow` over a sealed
+  workflow's name, and `meta/publish-workflow` by CLOSURE — a candidate
+  that names the step, subflows the harness (at any depth), grants a
+  grader to an agent, or seals itself is refused. Everything else the
+  surface edits, runs and inspects like its own — a seeded `pod-pr`, a
+  person's workflow, a job — so generation N can inspect generation N−1's
+  candidate runs and a job agent can change the workflows a person seeded:
+  sealing, not provenance, is the line, for editing too (ruled 2026-11-10:
+  the ownership rule that kept the surface to names it stamped, and the
+  person's handover to it, are gone). Provenance is still recorded:
+  `meta/publish-workflow` writes every version as `source: "agent"` and
+  stamps the workflow `publisher: "ai"` (the capability sets both; the
+  calling agent cannot override them), and the stamp stays — so only a
+  harness the surface never wrote to records `observed` evidence (claims
+  §4). An identical-content republish never re-stamps. This is defense in
+  depth, not the sole
   barrier: graders must also resolve gold internally (by task id, from the
   services bag) and emit only verdicts, so that NO run's event log carries
   answers even where a seal is missing — including a laundered candidate

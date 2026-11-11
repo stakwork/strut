@@ -93,7 +93,54 @@ before(async () => {
     "src/App.tsx": 'export default function App() { throw new Error("kaboom on render"); }',
   });
   await publish("look-deep", { "app.yaml": "title: Deep\nicon: link\ngrants:\n  workflows: []\n  steps: []\n", "src/App.tsx": DEEP });
+  await publish("look-game", { "app.yaml": "title: Dot\nicon: gamepad\ngrants:\n  workflows: []\n  steps: []\n", "src/App.tsx": GAME });
 });
+
+/** A game whose state no text shows: a dot the arrow keys move while they
+ *  are HELD (the keys down kept in a set, the dot moved each frame), its
+ *  position on `window.__debug`. A link's `mode` swaps what it puts there. */
+const GAME = `import { useToolInput } from "@strut/kit";
+import { useEffect, useRef, useState } from "react";
+const SPEED = 200; // px a second
+export default function App() {
+  const input = useToolInput<{ mode?: string }>();
+  const pos = useRef({ x: 100, y: 100 });
+  const keys = useRef(new Set<string>());
+  const [, draw] = useState(0);
+  useEffect(() => {
+    const down = (e: KeyboardEvent) => void keys.current.add(e.key);
+    const up = (e: KeyboardEvent) => void keys.current.delete(e.key);
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
+    let last = performance.now();
+    let raf = requestAnimationFrame(function tick(t: number) {
+      const step = (SPEED * (t - last)) / 1000;
+      last = t;
+      if (keys.current.has("ArrowRight")) pos.current.x += step;
+      if (keys.current.has("ArrowLeft")) pos.current.x -= step;
+      if (keys.current.has("ArrowDown")) pos.current.y += step;
+      if (keys.current.has("ArrowUp")) pos.current.y -= step;
+      draw((n) => n + 1);
+      raf = requestAnimationFrame(tick);
+    });
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("keydown", down);
+      window.removeEventListener("keyup", up);
+    };
+  }, []);
+  const mode = input?.mode ?? "play";
+  useEffect(() => {
+    const w = window as unknown as { __debug?: unknown };
+    if (mode === "throws") w.__debug = () => { throw new Error("no player yet"); };
+    else if (mode === "big") w.__debug = { cells: Array.from({ length: 5000 }, (_, i) => i) };
+    else if (mode === "slow") w.__debug = () => { const t = Date.now(); while (Date.now() - t < 3000); return { late: true }; };
+    else if (mode === "none") delete w.__debug;
+    else w.__debug = () => ({ x: Math.round(pos.current.x), y: Math.round(pos.current.y), held: [...keys.current] });
+  }, [mode]);
+  return <main className="p-6"><h1>Dot</h1><p>mode {mode}</p>
+    <div style={{ position: "absolute", left: pos.current.x, top: pos.current.y, width: 12, height: 12, borderRadius: 6, background: "red" }} /></main>;
+}`;
 
 /** An app with a page only a link reaches (`{ run }`), tabs only a click
  *  shows, and a filter only typing moves. */
@@ -251,4 +298,52 @@ test("a list a look cannot run fails the step before a page opens: a verb off th
     assert.equal(res.status, "error", JSON.stringify(steps));
     assert.match(res.error?.message ?? "", said);
   }
+});
+
+test("keys HELD in the app's frame move a game, and window.__debug shows it: read at each debug step and after the shot", { skip }, async () => {
+  const out = await look({
+    name: "look-game",
+    steps: [
+      { do: "debug" },
+      { do: "keydown", key: "ArrowRight" },
+      { do: "wait", ms: 500 },
+      { do: "debug" },
+      { do: "keyup", key: "ArrowRight" },
+      { do: "debug" },
+      { do: "keydown", key: "ArrowDown" },
+    ],
+  });
+  assert.equal(out.stopped, undefined, JSON.stringify(out.stopped));
+  assert.deepEqual(out.errors, []);
+  const [before, held, after] = out.debugReads;
+  assert.deepEqual(before, { step: 1, value: { x: 100, y: 100, held: [] } }, "no key has reached the app yet");
+  assert.equal(held.step, 4);
+  assert.deepEqual(held.value.held, ["ArrowRight"], "the key reached the app's frame, and it is still down");
+  assert.ok(held.value.x - before.value.x >= 50, `half a second at 200 px/s moved the dot right: ${before.value.x} → ${held.value.x}`);
+  assert.equal(held.value.y, 100);
+  assert.deepEqual(after.value.held, [], "keyup let it go");
+  assert.ok(after.value.x >= held.value.x);
+  assert.deepEqual(out.debug.held, [], "the ArrowDown the list left held was let go of when it ended");
+  assert.ok(out.debug.x - after.value.x <= 5, "nothing moved the dot right after the keyup");
+  assert.doesNotMatch(out.text, /"x"/, "the state is not in the page's text: only window.__debug has it");
+});
+
+test("window.__debug that throws, is too big, is slow or is not set: each said, never a failed look", { skip }, async () => {
+  const throws = await look({ name: "look-game", input: { mode: "throws" }, steps: [{ do: "wait", text: "mode throws" }, { do: "debug" }] });
+  assert.deepEqual(throws.debugReads, [{ step: 2, error: "window.__debug() threw Error: no player yet" }]);
+  assert.equal("debug" in throws, false);
+  assert.ok(throws.errors.includes("debug: window.__debug() threw Error: no player yet"), throws.errors.join("\n"));
+  assert.equal(throws.rendered, true);
+
+  const big = await look({ name: "look-game", input: { mode: "big" }, steps: [{ do: "wait", text: "mode big" }] });
+  assert.match(big.debug, /^\{"cells":\[0,1,2,/);
+  assert.match(big.debug, /\n… \(window\.__debug's JSON cut at 8000 of \d+ chars\)$/);
+
+  const slow = await look({ name: "look-game", input: { mode: "slow" }, steps: [{ do: "wait", text: "mode slow" }, { do: "debug" }] });
+  assert.deepEqual(slow.debugReads, [{ step: 2, error: "window.__debug did not answer within 2000 ms" }]);
+
+  const none = await look({ name: "look-game", input: { mode: "none" }, steps: [{ do: "wait", text: "mode none" }, { do: "debug" }] });
+  assert.deepEqual(none.debugReads, [{ step: 2, error: "the page has not set window.__debug" }]);
+  assert.equal("debug" in none, false, "left out when the page set none");
+  assert.deepEqual(none.errors, []);
 });

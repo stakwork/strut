@@ -62,6 +62,22 @@ export function runnableReserve(item: PublicRunnable): Micros {
 /** Is `item` priced (a base or a markup above zero)? */
 export const isPriced = (item: PublicRunnable): boolean => !isFree(priceOf(item));
 
+/** How many runs of an item with a daily cap and no per-run cap fit in the
+ *  daily cap at once: each may spend that share of it. A run in flight
+ *  counts against the daily cap at its own cap (§7), so with a run's cap
+ *  left at "what is left of the day" one would run at a time. The dialog
+ *  says the same number (web/src/public-view.ts, held equal by its test). */
+export const DAILY_CAP_SHARE = 10;
+
+/** The most one run of `item` may spend, in dollars, before the workflow's
+ *  own cap and what is left of the day are taken into account: its
+ *  `capUsd`, else a `DAILY_CAP_SHARE`th of its daily cap; none when it sets
+ *  neither. */
+export function perRunCapUsd(item: Pick<PublicRunnable, "capUsd" | "dailyCapUsd">): number | undefined {
+  if (item.capUsd !== undefined) return item.capUsd;
+  return item.dailyCapUsd !== undefined ? item.dailyCapUsd / DAILY_CAP_SHARE : undefined;
+}
+
 /** Built-ins an `agent` step gets with no `toolFilter`; `bash` among them is
  *  a shell for whoever wrote the agent's input. */
 function agentHasShell(cfg: Record<string, unknown> | undefined): boolean {

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight, ExternalLink, FileText } from "lucide-react";
-import { artifactKind, parseWalkthrough, useHost } from "@strut/kit";
+import { artifactKind, parseWalkthrough, runFileBlob, useHost } from "@strut/kit";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Slider } from "@/components/ui/slider";
@@ -26,13 +26,7 @@ const dataUrl = (f: RunFile) => (f.base64 !== undefined ? `data:${f.mediaType};b
 
 /** A blob URL for media the browser plays (the document's CSP allows `blob:`). */
 function useBlobUrl(f: RunFile | null | undefined): string | null {
-  const url = useMemo(() => {
-    if (!f?.base64) return null;
-    const bin = atob(f.base64);
-    const bytes = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    return URL.createObjectURL(new Blob([bytes], { type: f.mediaType }));
-  }, [f]);
+  const url = useMemo(() => (f?.base64 && !f.truncated ? URL.createObjectURL(runFileBlob(f)) : null), [f]);
   useEffect(() => () => void (url && URL.revokeObjectURL(url)), [url]);
   return url;
 }
@@ -42,7 +36,7 @@ function useBlobUrl(f: RunFile | null | undefined): string | null {
  * DocumentView (an HTML page drawn from its safe elements — nothing of it
  * runs), an image, a video or a sound to play, a walkthrough
  * (`browser/walkthrough`'s manifest) as frames to scrub. The page cannot
- * fetch a URL (connect-src 'none'), so the bytes come through `run/files`; a
+ * fetch a server's URL, so the bytes come through `run/files`; a
  * PDF — which the document may not frame — opens in strut instead.
  */
 export function ArtifactView({ workflow, runId, path, file: given, className }: ArtifactViewProps) {

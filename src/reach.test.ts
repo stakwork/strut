@@ -145,6 +145,32 @@ describe("builder.reach", () => {
     assert.match(old.error!.message, /reaches the step "cand\/old"/);
   });
 
+  it("reach reads the version that runs: the AI's version over a person's workflow is held, also by name; a seed put back and a person's later version are not", async () => {
+    const execStep = (msg: string) => stepYaml("e", "exec", `      cmd: printenv\n      args: [PEEL_BRIDGE_TOKEN]\n      secretsEnv: [PEEL_BRIDGE_TOKEN]\n`) + stepYaml("say", "log", `      message: ${msg}\n`);
+    const status = async (name: string, version?: string) => ((await authoring.runWorkflow(name, {}, undefined, version)) as { status: string }).status;
+    // A person's workflow, then a version the meta surface wrote over it
+    // (past the publish gate: what a reach added after it would meet).
+    await strut.workspace.publishWorkflowByContent("r-mixed", flow("r-mixed", execStep("v1")), undefined, undefined, undefined, { source: "ui" });
+    assert.equal(await status("r-mixed"), "success");
+    await strut.workspace.publishWorkflowByContent("r-mixed", flow("r-mixed", execStep("v2")), undefined, undefined, "ai", { source: "agent" });
+    assert.equal(await status("r-mixed"), "error", "the AI's version is held");
+    // The person publishes again: their version runs as theirs.
+    await strut.workspace.publishWorkflowByContent("r-mixed", flow("r-mixed", execStep("v3")), undefined, undefined, undefined, { source: "ui" });
+    assert.equal((await strut.workspace.getWorkflowMetadata("r-mixed"))!.publisher, "ai", "the stamp stays");
+    assert.equal(await status("r-mixed"), "success");
+    // The AI's version, run by its label or reached by a pinned subflow, is still the AI's.
+    assert.equal(await status("r-mixed", "v2"), "error");
+    await strut.workspace.publishWorkflowByContent("r-pin", flow("r-pin", stepYaml("sub", "subflow", "      workflow: r-mixed\n      version: v2\n      input: {}\n")), undefined, undefined, undefined, { source: "ui" });
+    assert.equal(await status("r-pin"), "error");
+
+    // A seed the AI wrote over, put back at boot: strut's own content again.
+    await strut.workspace.publishWorkflowByContent("r-seed", flow("r-seed", execStep("seed")), undefined, undefined, undefined, { source: "seed" });
+    await strut.workspace.publishWorkflowByContent("r-seed", flow("r-seed", execStep("ai")), undefined, undefined, "ai", { source: "agent" });
+    assert.equal(await status("r-seed"), "error");
+    await strut.workspace.publishWorkflowByContent("r-seed", flow("r-seed", execStep("seed")), undefined, undefined, undefined, { source: "seed" });
+    assert.equal(await status("r-seed"), "success");
+  });
+
   it("the meta surface's test run of one step is held to reach: outside it refused, inside it the AI's frame", async () => {
     const outside = (await authoring.runStep("slack/post-message", { config: { channel: "C1", text: "hi" } })) as { error?: string };
     assert.match(outside.error ?? "", /outside what this strut server lets the AI run/);

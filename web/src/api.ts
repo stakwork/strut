@@ -627,15 +627,6 @@ export const setWorkflowDisabled = (name: string, disabled: boolean) =>
     body: JSON.stringify({ disabled }),
   });
 
-/** Hand a workflow to the builder (`"ai"`: Jamie's builder may publish over
- *  it) or take it back (`null`). 409 for a seed, a sealed workflow, one open
- *  to peers, or one a service stamped. */
-export const setWorkflowPublisher = (name: string, publisher: "ai" | null) =>
-  fetchJSON<{ ok: boolean; publisher: "ai" | null }>(`${workflowPath(name)}/publisher`, {
-    method: "PUT",
-    body: JSON.stringify({ publisher }),
-  });
-
 /** Every version, its metadata and its runs. 409 while a run is in flight. */
 export const deleteWorkflow = (name: string) =>
   fetchJSON<{ ok: boolean; workflow: string }>(workflowPath(name), { method: "DELETE" });
@@ -2217,15 +2208,22 @@ export function appDocumentPath(name: string, version: string, peer?: string): s
 }
 
 /** What a version's `dist/build.json` tells a host (src/apps/build.ts
- *  `BuildInfo`): its title and the wallet connection it requests
- *  (specs/WALLET.md §5.1). Read with the scope's token, here and through a
- *  peer's read-through; null when the version has none or it cannot be read. */
+ *  `BuildInfo`): its title, the wallet connection it requests
+ *  (specs/WALLET.md §5.1) and the browser features its frame is granted
+ *  (`permissions`, ./frame-permissions). Read with the scope's token, here
+ *  and through a peer's read-through; null when the version has none or it
+ *  cannot be read — a frame then gets what every app gets. */
+export interface AppBuildInfo {
+  title?: string;
+  wallet?: ConnectionRequest;
+  permissions?: string[];
+}
 export async function fetchAppBuildInfo(
   name: string, version: string, token: string, peer?: string,
-): Promise<{ title?: string; wallet?: ConnectionRequest } | null> {
+): Promise<AppBuildInfo | null> {
   try {
     const res = await apiFetch(`${appFilesScope(name, version, peer)}/dist/build.json${token ? `?t=${encodeURIComponent(token)}` : ""}`, { cache: "no-cache" });
-    return res.ok ? ((await res.json()) as { title?: string; wallet?: ConnectionRequest }) : null;
+    return res.ok ? ((await res.json()) as AppBuildInfo) : null;
   } catch {
     return null;
   }
@@ -2853,6 +2851,8 @@ export interface PublicAppInfo {
   title: string;
   description?: string;
   icon?: string;
+  /** The browser features its frame is granted (./frame-permissions). */
+  permissions?: string[];
 }
 /** A visitor's read: a plain `fetch`, no credential (`credentials: "omit"`). */
 async function publicFetch(path: string): Promise<Response> {
